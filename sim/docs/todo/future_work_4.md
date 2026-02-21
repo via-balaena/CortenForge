@@ -85,6 +85,7 @@ existing `XpbdSolver`.
   types (Sphere, Box, Capsule, Cylinder, Ellipsoid, Plane) are supported for
   vertex-vs-geom contacts. Mesh/Hfield/SDF would require per-triangle or per-cell
   vertex queries.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-70.
 - **GPU batch deformable stepping:** Out of scope. `BatchSim` will step deformable
   bodies sequentially per-environment; GPU-accelerated deformable solve is a separate
   item.
@@ -636,6 +637,7 @@ fn solve_deformable_contacts(model: &Model, data: &mut Data) {
             // projection is a follow-up — the normal-only solver is
             // functionally complete for frictionless contacts and serves
             // as the scaffolding for the full solver.
+            // Tracked in [future_work_10b.md](./future_work_10b.md) §DT-25.
             let impulse = contact.normal * lambda_n;
             impulses.push((contact_idx, impulse));
         }
@@ -774,6 +776,7 @@ internally, re-applying forces at each sub-interval).
 A full re-detect + re-solve loop (the "Option B" from the original spec) is
 **not implemented** in this iteration. If needed, it can be added as a follow-up
 by wrapping Steps 4–7 in a configurable iteration count.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-26.
 
 ##### Step 8 — `ConstraintType::Collision` implementation
 
@@ -874,6 +877,7 @@ constraints with `compliance = 0`, this is benign: `alpha_tilde = 0`, so the
 lambda term drops out and the constraint reduces to a simple position projection.
 Fixing cross-iteration lambda accumulation is a solver improvement outside the
 scope of this spec.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-27.
 
 ##### Step 9 — `VertexFlags::COLLIDING` activation
 
@@ -1066,6 +1070,7 @@ impl Clone for Data {
    geometric mean `sqrt(material.friction * geom_friction.x)`. Behavioral
    friction tests (sliding vs stationary on tilted plane) require friction cone
    projection and are acceptance criteria for that follow-up.
+   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-71.
 4. `ConstraintType::Collision` variant is implemented with `CollisionConstraint`
    struct. Solving a collision constraint with `depth = 0.01` (penetrating) pushes
    the vertex out by `0.01 / (1 + α̃)` in the normal direction. With
@@ -1324,26 +1329,35 @@ velocity and activation columns.
 - **Full position-analytical derivatives** (`∂FK/∂q`, `∂M/∂q`): Massive
   complexity (tensor differentiation through CRBA, RNE). Deferred. Position
   columns remain FD even in Phase D.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-45.
 - **Contact-analytical derivatives** (implicit function theorem through PGS/CG):
   Research-grade. Deferred. Contact sensitivity is captured through FD.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-46.
 - **Sensor derivatives** (C, D matrices): `TransitionMatrices` reserves `Option`
   fields. Implementation deferred.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-47.
 - **Sparse derivative storage**: All matrices are dense. Sparse storage is a
   follow-up for nv > 100.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-48.
 - **Parallel FD computation**: Each perturbation column requires sequential
   `step()`. Parallelism deferred.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-49.
 - **Automatic differentiation** (dual numbers, enzyme): No changes to scalar
   type genericity.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-50.
 - **`mjd_inverseFD`**: Inverse dynamics derivatives deferred. Forward transition
   derivatives are the primary RL/MPC deliverable.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-51.
 - **`mjd_subQuat`**: Quaternion subtraction Jacobians (two 3×3 matrices for
   `d(q1 ⊖ q2)/d(q1)` and `d(q1 ⊖ q2)/d(q2)`). Not needed for transition
   derivatives — `mj_differentiate_pos` handles the full nq→nv mapping.
   Could be useful for constraint derivatives (deferred).
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-52.
 - **Skip-stage optimization**: MuJoCo's `mj_forwardSkip()` avoids recomputing
   position-dependent FK/collision when perturbing only velocities or controls.
   Deferred — black-box `step()` is correct and simpler. See Step 2 DEFERRED
   note.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-53.
 
 #### Specification
 
@@ -1852,6 +1866,7 @@ O(nv + ntendon · depth²). In implicit mode the tendon loop is skipped entirely
 /// Muscle actuators (GainType::Muscle) are SKIPPED here. Their velocity
 /// derivatives involve piecewise FLV curve gradients and are captured via
 /// FD in Phase D.
+/// Tracked in [future_work_10b.md](./future_work_10b.md) §DT-54.
 fn mjd_actuator_vel(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
         if matches!(model.actuator_gaintype[i], GainType::Muscle) { continue; }
@@ -3062,11 +3077,8 @@ Jacobian** (`qDeriv`), assembled by `mjd_smooth_vel()` (derivatives.rs:972) from
 4. **Coriolis/centripetal derivatives** (full, asymmetric):
    `D += −∂(qfrc_bias)/∂(qvel)` via recursive Newton-Euler chain-rule
 5. **Fluid drag derivatives** (6×6 body-level): drag-velocity Jacobian per body.
-   *Not yet implemented in CortenForge — fluid drag computation exists
-   (`Model::wind` `:1153`, `density` `:1157`, `viscosity` `:1159`) but
-   `mjd_passive_vel` does not compute drag-velocity Jacobians. This is a known
-   gap — acceptable because fluid drag is rare in RL workloads. Can be added
-   later as a standalone sub-task.*
+   *✅ Implemented in §40a (`future_work_10.md`). Both inertia-box and ellipsoid
+   models have analytical derivatives integrated into `mjd_passive_vel`.*
 
 The two variants differ in:
 
@@ -3629,12 +3641,11 @@ Integrator::Implicit => {
 correctly default to `can_analytical = true`, which is correct — both
 `ImplicitFast` and `Implicit` support analytical derivatives.
 
-**D.5. Fluid drag velocity derivatives:** Not yet implemented. `mjd_passive_vel`
-does not compute drag-velocity Jacobians. In MuJoCo, this contributes 6×6
-body-level coupling blocks to D via `addJTBJSparse`. For models with non-zero
-`density`/`viscosity`, the implicit integrator will underestimate D (missing drag
-linearization). Acceptable for Phase A/B — fluid drag is rare in RL workloads.
-Can be added as a follow-up sub-task when needed.
+**D.5. Fluid drag velocity derivatives:** ✅ Implemented in §40a
+(`future_work_10.md`). Both inertia-box (diagonal B, 6 rank-1 updates) and
+ellipsoid (full 6×6 B from 5 analytical component functions) models have
+analytical derivatives integrated into `mjd_passive_vel`. 31 tests pass
+including MuJoCo 3.5.0 conformance.
 
 ##### Sub-task 13.E: Scratch Buffer Adjustments
 
@@ -3694,13 +3705,13 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
 2. **Muscle actuator velocity derivatives skipped** (`:529–531`): Matches MuJoCo.
    Muscle FLV curve gradients are piecewise and not cleanly linearizable.
 
-3. **Fluid drag velocity derivatives not implemented** (D.5): Models with
-   non-zero `density`/`viscosity` will have incomplete D. Acceptable for
-   initial implementation; add as follow-up when drag is used in practice.
+3. ~~**Fluid drag velocity derivatives not implemented** (D.5)~~: ✅ Resolved.
+   Implemented in §40a (`future_work_10.md`).
 
 4. **No `skipfactor` / factorization reuse:** MuJoCo's `mj_implicitSkip` allows
    reusing a previously computed factorization when `skipfactor > 0`, amortizing
    cost across steps. Not implemented. Can be added later as an optimization.
+   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-55.
 
 5. **Sleep filtering:** ✅ Implemented (Task #16). Sleeping system (Phases A/B/C)
    filters awake/asleep DOFs via selective CRBA and partial LDL factorization.
@@ -3979,6 +3990,7 @@ logic injection during simulation.
 - **User callbacks:** MuJoCo's `mjcb_*` global function pointers require careful
   Rust API design (closures vs trait objects, `&mut Data` borrowing during
   `forward()`, thread safety for `BatchSim`). Deferred to a dedicated follow-up.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-79.
   Keyframes and mocap are higher priority and self-contained.
 - **Keyframe `key_mpos` / `key_mquat`:** Per-keyframe mocap poses are implemented
   as part of the `Keyframe` struct and `reset_to_keyframe()` — not called out as
@@ -3993,9 +4005,11 @@ logic injection during simulation.
   manipulation tasks). The existing equality constraint solver already supports
   weld constraints — no additional work needed, but this is not explicitly tested
   in this item's acceptance criteria.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-80.
 - **MJCF `<key>` attributes beyond qpos/qvel/act/ctrl/mpos/mquat/time:** MuJoCo
   also supports `key_userdata` — out of scope (no `userdata` concept in
   CortenForge).
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-81.
 
 #### Specification
 

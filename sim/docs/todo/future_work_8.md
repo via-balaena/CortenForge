@@ -1371,7 +1371,7 @@ computed per-row during constraint assembly, PGS/CG automatically pick up
 
 ## 32. Pyramidal Friction Cones
 
-**Status:** ✅ Complete (AC12/AC13 cross-validation pending MuJoCo reference data) | **Effort:** L | **Prerequisites:** #29 (✅ complete), #31 (✅ complete)
+**Status:** ✅ Complete (AC12/AC13 cross-validated against MuJoCo 3.5.0) | **Effort:** L | **Prerequisites:** #29 (✅ complete), #31 (✅ complete)
 
 ### Current State
 
@@ -1718,6 +1718,7 @@ pyramid[2*d + 1] = 0.5 * (a - b)  // negative facet
 
 This is a user-facing utility (`mju_encodePyramid`), not used internally by
 MuJoCo's solver. Implement only if needed for API compatibility.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-84.
 
 #### 32.7 `nefc` sizing
 

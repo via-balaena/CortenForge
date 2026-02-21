@@ -215,6 +215,7 @@ can only come from the root default class. `convert_mjcf_mesh()` reads
 `mjcf_mesh.scale` directly (lines 2295, 2331). Applying root-only mesh scale defaults
 is low-value (few real models rely on it) and would require special-casing since
 there's no `apply_to_mesh()` method. Deferred.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-1.
 
 **Not in scope: equality constraint defaults.** The four equality constraint
 types (Connect, Weld, Joint, Distance) all have `class` fields in their MJCF
@@ -224,6 +225,7 @@ included in any of the defaults structs (`MjcfGeomDefaults`,
 `MjcfJointDefaults`, etc.). These are resolver gaps, not wiring gaps — they
 require extending `DefaultResolver` and the defaults types, which is a separate
 task.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-2.
 
 **Threading the resolver.** The resolver must be accessible from five call
 sites across `ModelBuilder`:
@@ -463,6 +465,7 @@ projection's Step 0 clamp zeroes all friction lambdas — physically correct
 (frictionless behavior) but wasteful (3 constraint rows for a 1D problem). A
 future optimization could detect `mu[0..dim-1] == 0` in `make_contact_from_geoms()`
 and downgrade to `condim=1`.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-18.
 
 **A.5.** Update `make_contact_from_geoms()` to pass the resolved condim and
 full 5-element friction array:
@@ -1511,6 +1514,7 @@ Jacobian: `qfrc_constraint += Jᵢᵀ * λᵢ` for each contact. This would be
 mathematically equivalent and avoid the separate torque function, but would
 couple force application to the Jacobian representation. The manual approach
 is retained for consistency with the existing design and readability.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-20.
 
 **Not in scope: pyramidal friction cones.** See sub-task D.2 rationale.
 Pyramidal cones require a fundamentally different variable count per contact
@@ -1538,6 +1542,7 @@ friction forces onto the cone. Our solver uses sequential SOC projection
 (clamp normal, then scale friction). See D.1 divergence analysis. Upgrading
 to QCQP projection would improve convergence for strongly coupled contacts
 but is a separate optimization task.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-19.
 
 **Not in scope: friction combination method.** ⚠️ Now tracked as
 [#24](./future_work_7.md) (Friction Combination Rule).
@@ -1766,7 +1771,7 @@ instead of normal.
 | D2 | Default `cone` to elliptic? | **Yes** | Our default should match what we implement; pyramidal warn only on explicit MJCF request |
 | D3 | Friction combination: keep geometric mean? | **Deferred → #24** | Now tracked in [future_work_7.md](./future_work_7.md) #24 |
 | D4 | `Contact.friction` field: keep or remove? | **Keep** | Retained for backward compat; documented as `== mu[0]`; solver reads `mu` |
-| D5 | Warmstart: `Vec<f64>` or `SmallVec<[f64; 6]>`? | **`Vec<f64>`** | Optimize later if profiling shows heap allocation pressure |
+| D5 | Warmstart: `Vec<f64>` or `SmallVec<[f64; 6]>`? | **`Vec<f64>`** | Optimize later if profiling shows heap allocation pressure → [future_work_10b.md](./future_work_10b.md) §DT-91 |
 | D6 | `contact.frame` fields: use everywhere? | **Yes** | See D1; pre-computed frame ensures consistency across Jacobian/assembly/forces |
 
 ---
@@ -2638,21 +2643,18 @@ For each `SpatialPathElement`:
    no segment and is a degenerate configuration that wastes a pulley division.
    Emit a warning (not an error, for MuJoCo compatibility) with the tendon
    name and branch index.
-9. Wrapping geom sidesite must be **outside** the wrapping geometry surface.
-   For sphere wrapping geoms: the sidesite position in geom-local frame must
-   satisfy `||sidesite_local|| >= geom_size[0]`. For cylinder wrapping geoms:
-   the XY-projected sidesite must satisfy `||sidesite_local_xy|| >= geom_size[0]`.
-   A sidesite inside the geometry requires MuJoCo's `wrap_inside` algorithm
-   (Newton's method solver), which this spec does not implement. Emit an error
-   with the tendon name, geom name, and sidesite name.
-   **Validation timing:** This rule requires computing the sidesite position in
+9. ~~Wrapping geom sidesite must be **outside** the wrapping geometry surface.~~
+   **Retired** — sidesites inside wrapping geometry are now handled by the
+   `wrap_inside` algorithm (§39, `future_work_10.md`). The build-time
+   validation panic has been removed.
+   ~~**Validation timing:** This rule requires computing the sidesite position in
    the wrapping geom's local frame. When the sidesite and geom are on the
    **same body**, both positions are in the same body-local frame and the
    transform is static (no FK needed). When they are on **different bodies**,
    the relative transform requires FK. Therefore, this validation is performed
    inside `compute_spatial_tendon_length0()` (which runs `mj_fwd_position()`
    first), not in `process_tendons()`. MuJoCo similarly validates at compile
-   time after computing initial body transforms from `qpos0`.
+   time after computing initial body transforms from `qpos0`.~~
 10. A `<joint>` element inside a `<spatial>` tendon is an error. MuJoCo
     supports `mjWRAP_JOINT` within spatial tendons, but this is uncommon and
     not implemented. Emit an error: "Joint elements inside spatial tendons are
@@ -2680,39 +2682,11 @@ pub fn compute_spatial_tendon_length0(&mut self) {
     let mut data = self.make_data();
     mj_fwd_position(self, &mut data);  // runs FK + mj_fwd_tendon
 
-    // Validate rule 9: sidesite outside wrapping geometry.
-    // This validation requires FK because sidesite and geom may be on
-    // different bodies. Now that FK has run, we can compute geom-local
-    // sidesite positions using world-frame transforms.
-    for t in 0..self.ntendon {
-        if self.tendon_type[t] != TendonType::Spatial { continue; }
-        let adr = self.tendon_adr[t];
-        let num = self.tendon_num[t];
-        for w in adr..(adr + num) {
-            if self.wrap_type[w] != WrapType::Geom { continue; }
-            if self.wrap_sidesite[w] == usize::MAX { continue; }
-            let geom_id = self.wrap_objid[w];
-            let ss_id = self.wrap_sidesite[w];
-            let ss_local = data.geom_xmat[geom_id].transpose()
-                * (data.site_xpos[ss_id] - data.geom_xpos[geom_id]);
-            let r = self.geom_size[geom_id].x;
-            let inside = match self.geom_type[geom_id] {
-                Sphere   => ss_local.norm() < r,
-                Cylinder => Vector2::new(ss_local.x, ss_local.y).norm() < r,
-                _ => false,
-            };
-            if inside {
-                let ss_name = self.site_name[ss_id].as_deref().unwrap_or("?");
-                let g_name = self.geom_name[geom_id].as_deref().unwrap_or("?");
-                let t_name = self.tendon_name[t].as_deref().unwrap_or("?");
-                panic!("Sidesite '{}' (site {}) is inside wrapping geom '{}' \
-                        (geom {}) on tendon '{}' (tendon {}). The wrap_inside \
-                        algorithm is not implemented. Move the sidesite outside \
-                        the wrapping geometry surface.",
-                        ss_name, ss_id, g_name, geom_id, t_name, t);
-            }
-        }
-    }
+    // ~~Rule 9 validation (sidesite outside wrapping geometry) — RETIRED per §39.~~
+    // The `wrap_inside` algorithm is now implemented. Sidesites inside wrapping
+    // geometry are handled at runtime by the `wrap_inside_2d()` Newton solver
+    // in `sphere_wrap()` and `cylinder_wrap()`. The build-time panic has been
+    // removed from the actual implementation.
 
     // Compute tendon_length0 and default lengthspring for spatial tendons.
     for t in 0..self.ntendon {
@@ -3149,6 +3123,7 @@ contribution inline during the chain walk, never materializing a full `ten_J`
 row. For initial correctness, the O(nv) scan is acceptable. A follow-up
 optimization could cache nonzero DOF indices during `mj_fwd_tendon_spatial()`
 and iterate only those indices in `apply_tendon_force`.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-34.
 
 **Apply this pattern at all three sites:**
 
@@ -3249,6 +3224,7 @@ Fix: if the spatial tendon has declared `tendon_range` limits, use those (this
 path already works). If unlimited, skip the range estimation and leave
 `lengthrange = (0, 0)` — muscle actuators on unlimited spatial tendons will
 need explicit `lengthrange` in MJCF. Log a warning.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-78.
 
 ##### 4.7 Wrapping Geometry: Sphere
 
@@ -3687,6 +3663,7 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
 - **Pulley systems** — `WrapType::Pulley` divisor scaling is included in the path
   algorithm (4.3), but compound pulley physics (capstan friction, pulley inertia)
   from `sim-tendon/src/pulley.rs` are out of scope.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-30.
 - **Tendon equality constraints** — implemented in §37 (`extract_tendon_equality_jacobian()`).
 - **Wrapping function derivatives** — MuJoCo does not compute derivatives of the
   wrapping function (∂tangent_points/∂q). The tangent points are treated as fixed
@@ -3701,28 +3678,24 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
   tendon path. This wrap type is uncommon and not implemented. The parser rejects
   `<joint>` inside `<spatial>` at parse time (§4.1), and validation rule 10 (§4.2)
   provides defense-in-depth.
-- **`wrap_inside` code path (sidesite inside wrapping geometry)** — MuJoCo has a
-  separate wrapping algorithm (`wrap_inside` in `engine_util_misc.c`) invoked
-  when a sidesite is present and its distance from the geometry center is less
-  than the wrapping radius (i.e., sidesite is inside the sphere/cylinder). This
-  algorithm uses a Newton's method solver for a different formulation. Our spec
-  implements only the `wrap_circle`-equivalent algorithm. To avoid incorrect
-  results, a validation rule (rule 9) rejects sidesites inside the wrapping
-  geometry. Implementing `wrap_inside` is a follow-up for models that place
-  sidesites at bone centers inside wrapping surfaces.
-- **Tendon visualization data (`wrap_xpos`, `wrap_obj`)** — MuJoCo stores tangent
-  point positions in `d->wrap_xpos[]` and object markers in `d->wrap_obj[]`
-  (indexed by `d->ten_wrapadr[i]`/`d->ten_wrapnum[i]`) for rendering the tendon
-  path through wrapping geometry. These `Data` fields are not included in this
-  spec. Adding them is a follow-up needed for tendon visualization.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-31.
+- ~~**`wrap_inside` code path (sidesite inside wrapping geometry)**~~ ✅ — Implemented
+  in §39 (`future_work_10.md`). The `wrap_inside` Newton solver handles sidesites
+  inside wrapping geometry for both spheres and cylinders. Validation rule 9 is retired.
+- ~~**Tendon visualization data (`wrap_xpos`, `wrap_obj`)**~~ ✅ — Implemented
+  in §40b (`future_work_10.md`). `Data` now stores `wrap_xpos`, `wrap_obj`,
+  `ten_wrapadr`, and `ten_wrapnum`, populated during `mj_fwd_tendon_spatial()`
+  with path points for all segment types (straight, wrapped, pulley).
 - **`solref_limit`/`solimp_limit` MJCF attributes** — MuJoCo's `<spatial>` and
   `<fixed>` tendon elements accept per-tendon constraint solver parameters. These
   are not parsed (pre-existing gap shared with fixed tendons). Model-default
   solver params (`tendon_solref`, `tendon_solimp`) are used for all tendon limits.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-32.
 - **Tendon `margin` attribute** — MuJoCo tendons have a `margin` attribute that
   creates an activation distance for limit constraints (constraint activates when
   `|length - limit| < margin`). Not implemented — limits activate at the exact
   boundary. This is a pre-existing gap shared with fixed tendons.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-33.
 - **Pre-existing `add_body_jacobian` free joint bug** — The existing
   `add_body_jacobian` closure (line 7923) uses world-frame unit vectors for free
   joint angular DOFs instead of body-frame `R*e_i`. This is incorrect for bodies
@@ -3730,6 +3703,7 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
   correct formula (matching MuJoCo's `cdof` convention). Fixing the pre-existing
   bug in `add_body_jacobian` and the velocity computation (line 6577) is a
   separate task that should be done independently of spatial tendons.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-75.
 
 #### Acceptance Criteria
 
@@ -3754,7 +3728,7 @@ All tests compare against MuJoCo reference values. Tolerance: `1e-6` for lengths
 | 14 | **Sidesite disambiguation** — wrapping with a `sidesite` attribute selects the correct wrapping direction. Covers three sub-cases: (a) sphere sidesite (Model E), (b) cylinder sidesite (Model I), (c) sidesite-forced wrapping when straight path clears the geometry (Model J). | Unit test: sphere wrapping with sidesite on each side. Verify the two cases produce different tangent points and arc lengths. Verify the selected path passes on the sidesite's side of the geometry. Test cylinder sidesite separately (XY-projected direction code path). Test sidesite-forced wrapping: verify wrapping occurs when `closest.norm() > radius` but sidesite is on the opposite side. |
 | 15 | **Degenerate wrapping plane** — sphere wrapping when p1, center, p2 are collinear does not produce NaN. An arbitrary wrapping plane is chosen. The crossed tangent pairing places both tangent points on the same side of the sphere, so the arc angle is `acos(7/9) ≈ 0.6797 rad` (not π) for the symmetric d=3r case. | Unit test: place sites on opposite sides of a sphere along a line through the center (Model H). Verify `ten_length` is finite and equals `2×√(d²−r²) + r×acos(7/9)` where d=0.3, r=0.1. Expected: `0.63365281` (**confirmed against MuJoCo 3.4.0**). MuJoCo's tangent points at qpos=0 are both on the same side of the sphere (y=z≈0.067), confirming crossed tangent pairing with arc angle `acos(7/9) ≈ 0.6797`. |
 | 16 | **MuJoCo conformance** — end-to-end test with representative MJCF models. Compare `ten_length`, `ten_velocity`, `ten_force` against MuJoCo output at multiple timesteps. | Conformance test: load each test model, step 100 frames, compare state vectors against MuJoCo reference data. |
-| 17 | **Parser/validation rejection** — invalid spatial tendon MJCF is rejected with clear errors. Covers: fewer than 2 sites, path not starting/ending with Site, Geom not followed by Site (includes consecutive Geoms and Geom-Pulley sequences), Pulley immediately followed by Geom, unsupported geom type (e.g., box), zero-radius wrapping geom, zero/negative pulley divisor, unresolved site/geom/sidesite names, sidesite inside wrapping geometry, `<joint>` element inside spatial tendon. | Unit tests: for each invalid pattern, parse the MJCF and assert that the appropriate error is returned. |
+| 17 | **Parser/validation rejection** — invalid spatial tendon MJCF is rejected with clear errors. Covers: fewer than 2 sites, path not starting/ending with Site, Geom not followed by Site (includes consecutive Geoms and Geom-Pulley sequences), Pulley immediately followed by Geom, unsupported geom type (e.g., box), zero-radius wrapping geom, zero/negative pulley divisor, unresolved site/geom/sidesite names, ~~sidesite inside wrapping geometry~~ (no longer rejected — handled by `wrap_inside` per §39), `<joint>` element inside spatial tendon. | Unit tests: for each invalid pattern, parse the MJCF and assert that the appropriate error is returned. |
 | 18 | **Free-joint angular Jacobian** — `accumulate_point_jacobian` uses body-frame axes (`R*e_i`) for free joint angular DOFs, not world-frame unit vectors. | Unit test (Model K): free body rotated 45° about Y with spatial tendon. Attach site at `pos="0.2 0.1 0"` — the Y-offset is critical for discrimination (without it, DOFs 3 and 5 are zero in both conventions). Verify `ten_J` angular columns (DOFs 3-5) via finite difference. MuJoCo reference: `J = [0.989, 0.087, -0.122, +0.061, -0.122, -0.061]`. The test must fail if world-frame unit vectors are used: world-frame would give `J[3]=0.0, J[5]=-0.087` vs correct `J[3]=+0.061, J[5]=-0.061`. |
 | 19 | **Mixed straight + wrapping segments** — spatial tendon with both site-site (straight) and site-geom-site (wrapped) segments in sequence. | Unit test (Model L): 4-site tendon with a wrapping geom between sites 2 and 3 but not between sites 1 and 2. Verify total length = straight_segment_1 + wrapped_segment_2. Verify Jacobian via finite difference covers all DOFs across both segment types. |
 
@@ -4288,7 +4262,7 @@ not just wrong results.
 | `sim/L0/mjcf/src/types.rs` | modify | Add `SpatialPathElement` enum. Replace `sites`+`wrapping_geoms` fields on `MjcfTendon` with `path_elements: Vec<SpatialPathElement>`. |
 | `sim/L0/mjcf/src/parser.rs` | modify | `parse_tendon()`: add `b"pulley"` match arm (currently missing — `<pulley>` elements are silently ignored by the `_ => {}` default). Push `SpatialPathElement` variants in document order. Parse `sidesite` attr on `<geom>` children, `divisor` attr on new `<pulley>` children. |
 | `sim/L0/mjcf/src/model_builder.rs` | modify | `process_tendons()`: iterate `path_elements`, populate `wrap_sidesite`, add geom type validation. Remove spatial tendon warning. Call `compute_spatial_tendon_length0()` before `compute_muscle_params()` in `build()`. Skip `actuator_lengthrange` estimation for unlimited spatial-tendon actuators (log warning; see 4.6B). |
-| `sim/L0/mjcf/src/validation.rs` | modify | Update spatial tendon validation: replace `tendon.sites.len() < 2` check with `path_elements` counting of `Site` variants. Update site/geom/sidesite name-existence checks to iterate `path_elements`. Add validation for Geom-must-be-followed-by-Site rule, start/end-with-Site rule, geom `size[0] > 0` rule, Pulley-Geom adjacency rule, pulley `divisor > 0` rule, per-branch minimum 2 sites (rule 8, warning), sidesite-outside-geometry rule (rule 9), and `<joint>` inside spatial tendon rejection (rule 10). |
+| `sim/L0/mjcf/src/validation.rs` | modify | Update spatial tendon validation: replace `tendon.sites.len() < 2` check with `path_elements` counting of `Site` variants. Update site/geom/sidesite name-existence checks to iterate `path_elements`. Add validation for Geom-must-be-followed-by-Site rule, start/end-with-Site rule, geom `size[0] > 0` rule, Pulley-Geom adjacency rule, pulley `divisor > 0` rule, per-branch minimum 2 sites (rule 8, warning), ~~sidesite-outside-geometry rule (rule 9)~~ (retired per §39 — `wrap_inside` now handles this at runtime), and `<joint>` inside spatial tendon rejection (rule 10). |
 | `sim/L0/mjcf/src/defaults.rs` | verify | `apply_to_tendon()` does not reference `sites`/`wrapping_geoms` — only sets scalar fields (stiffness, damping, etc.). No changes needed, but verify after field removal. |
 | `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `Model::wrap_sidesite` field. Add `mj_fwd_tendon_spatial()`, `accumulate_point_jacobian()`, `sphere_wrap()` + `compute_tangent_pair()` + `sphere_tangent_point()`, `cylinder_wrap()` + `compute_tangent_pair_2d()` + `circle_tangent_2d()` + `directional_wrap_angle()` + `segments_intersect_2d()`, `apply_tendon_force()`, `compute_spatial_tendon_length0()`. Fix force mapping in `mj_fwd_passive()`, `mj_fwd_constraint()`, `mj_fwd_actuation()`. Fix `compute_muscle_params()` for spatial tendons. |
 | `sim/L0/tendon/src/wrapping.rs` | reference | Use `SphereWrap::compute_wrap()` and `CylinderWrap::compute_wrap()` as **rough sanity checks** in tests. These implementations have significant algorithmic divergences from MuJoCo (no sidesite, no dual-candidate selection, no self-intersection check, angle-based Z-interpolation instead of path-length-proportional, 1% margin hack on sphere clearance). They cannot serve as exact verification oracles — use MuJoCo reference data for conformance testing. |
@@ -4297,7 +4271,7 @@ not just wrong results.
 ---
 
 ### 5. Site-Transmission Actuators
-**Status:** Complete (criteria 1–21 implemented; criterion 22 deferred — requires external MuJoCo reference data) | **Effort:** L | **Prerequisites:** #4 (complete)
+**Status:** ✅ Complete (criteria 1–22 implemented; criterion 22 cross-validated against MuJoCo 3.5.0) | **Effort:** L | **Prerequisites:** #4 (complete)
 
 #### Objective
 Implement MuJoCo-conformant site-based actuator transmission. Site transmissions
@@ -4363,10 +4337,9 @@ The implementation spans two commits: `828df4d` (core implementation) and
 - `ActuatorFrc` sensor bug fix (reads `actuator_force[objid]`)
 - Refsite warning for non-Site transmissions (Joint/Tendon branches)
 
-**Test coverage:** 23 integration tests (22 active + 1 `#[ignore]` conformance
-placeholder) + 9 unit tests (7 subquat + 2 jac_site). Criteria 1–21 all have
-passing tests. Criterion 22 (MuJoCo conformance ≤ 1e-8) is deferred pending
-external reference data — see `MUJOCO_CONFORMANCE.md` §5.
+**Test coverage:** 29 integration tests + 9 unit tests (7 subquat + 2 jac_site).
+Criteria 1–22 all have passing tests. Criterion 22 (MuJoCo conformance ≤ 1e-8)
+verified with 7 sub-tests against MuJoCo 3.5.0 — see `MUJOCO_CONFORMANCE.md` §5.
 
 #### Data-Model Changes
 
@@ -4554,6 +4527,7 @@ Mode B: difference Jacobian with common-ancestor zeroing, wrench in refsite fram
 
 No-op for site transmissions — explicit `lengthrange` required in MJCF for
 muscle actuators with site transmission (matches MuJoCo behavior).
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-77.
 
 #### Bug Fix: `ActuatorFrc` Sensor (done)
 
@@ -4632,9 +4606,10 @@ position difference `p_site - p_ref`.
 
 #### Acceptance Criteria
 
-All criteria 1–21 have passing integration tests in
-`sim/L0/tests/integration/site_transmission.rs`. Criterion 22 has an
-`#[ignore]` placeholder pending MuJoCo reference data.
+All criteria 1–22 have passing integration tests in
+`sim/L0/tests/integration/site_transmission.rs`. Criterion 22 cross-validated
+against MuJoCo 3.5.0 with 7 sub-tests (modes A/B, translational/rotational/mixed
+gear, free joint, position actuator).
 
 **Correctness — Mode A (no refsite):**
 1. `actuator_length[i] == 0.0` regardless of configuration.
@@ -4707,4 +4682,4 @@ All criteria 1–21 have passing integration tests in
 - ✅ `sim/L0/mjcf/src/model_builder.rs` — refsite → `actuator_trnid[i][1]`, 6D gear push, refsite warning for non-Site
 - ✅ `sim/L0/mjcf/src/validation.rs` — site/refsite reference validation, mutual exclusivity enforcement
 - ✅ `sim/L0/core/src/mujoco_pipeline.rs` — `actuator_gear` → `Vec<[f64; 6]>`, `actuator_trnid` → `Vec<[usize; 2]>`, `Data.site_xquat`, `Data.actuator_moment`, `mj_jac_site()`, `mj_transmission_site()`, 5 stubs filled, `ActuatorFrc` sensor fix, `subquat()`, common-ancestor zeroing, `subquat_tests` (7), `jac_site_tests` (2)
-- ✅ `sim/L0/tests/integration/site_transmission.rs` — 23 integration tests (criteria 1–21 active, criterion 22 `#[ignore]`)
+- ✅ `sim/L0/tests/integration/site_transmission.rs` — 29 integration tests (criteria 1–22 all active, criterion 22 cross-validated against MuJoCo 3.5.0)

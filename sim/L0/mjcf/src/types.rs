@@ -646,6 +646,10 @@ pub struct MjcfGeomDefaults {
     pub hfield: Option<String>,
     /// Default material asset name.
     pub material: Option<String>,
+    /// Fluid shape for ellipsoid fluid model: `"none"` or `"ellipsoid"`.
+    pub fluidshape: Option<FluidShape>,
+    /// Fluid coefficients `[C_blunt, C_slender, C_ang, C_K, C_M]`.
+    pub fluidcoef: Option<[f64; 5]>,
 }
 
 /// Default actuator parameters.
@@ -991,6 +995,21 @@ impl MjcfInertial {
 // Geometry Types
 // ============================================================================
 
+/// Fluid shape attribute for per-geom fluid model dispatch.
+///
+/// Controls whether a geom participates in the ellipsoid fluid model.
+/// When `Ellipsoid`, `geom_fluid[0]` is set to 1.0 (master switch on).
+/// When `None`, `geom_fluid` remains all zeros (inertia-box model used for body).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum FluidShape {
+    /// Inertia-box model (body-level, legacy). Default.
+    #[default]
+    None,
+    /// Ellipsoid model (per-geom, advanced).
+    Ellipsoid,
+}
+
 /// Geometry type from MJCF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -1121,6 +1140,10 @@ pub struct MjcfGeom {
     pub group: Option<i32>,
     /// Material asset name (for rendering).
     pub material: Option<String>,
+    /// Fluid shape for ellipsoid fluid model: `"none"` or `"ellipsoid"`.
+    pub fluidshape: Option<FluidShape>,
+    /// Fluid coefficients `[C_blunt, C_slender, C_ang, C_K, C_M]`.
+    pub fluidcoef: Option<[f64; 5]>,
 }
 
 impl Default for MjcfGeom {
@@ -1154,6 +1177,8 @@ impl Default for MjcfGeom {
             gap: None,
             group: None,
             material: None,
+            fluidshape: None,
+            fluidcoef: None,
         }
     }
 }

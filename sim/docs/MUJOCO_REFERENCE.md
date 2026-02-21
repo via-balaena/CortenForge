@@ -17,7 +17,7 @@ Data::step():
              mj_sleep            — Sleep state machine (countdown → sleep transition)
              mj_island           — Island discovery (DFS flood-fill over constraints)
      a. mj_fwd_position    — Forward kinematics (skips sleeping bodies)
-        mj_fwd_tendon       — Tendon lengths + Jacobians (fixed tendons)
+        mj_fwd_tendon       — Tendon lengths + Jacobians + wrap visualization data
         mj_collision        — Broad/narrow phase collision detection (skips sleeping pairs)
         mj_transmission_body_dispatch — Body transmission moment arms (§36, requires contacts)
      b. mj_fwd_velocity    — Body + tendon velocities (skips sleeping DOFs)
@@ -476,54 +476,53 @@ coupling cannot be absorbed into the diagonal implicit modification).
 
 ### 4.4 Constraint Forces (`mj_fwd_constraint`)
 
-Four constraint types, applied in order:
+All constraint types use unified solver-based constraint rows assembled in
+`assemble_unified_constraints()`, then solved by PGS, CG, or Newton:
 
-1. **Joint limits** — penalty-based with Baumgarte stabilization (PGS/CG path);
-   solver-based constraint rows (Newton path)
-2. **Tendon limits** — same as joint limits, mapped through J^T
-3. **Equality constraints** — penalty-based with Baumgarte stabilization (PGS/CG
-   path); solver-based constraint rows (Newton path)
-4. **Contact forces** — PGS/CG/Newton solver with friction cones
+1. **Equality constraints** — connect, weld, joint coupling, tendon coupling, distance
+2. **Friction loss** — velocity-dependent friction (joint + tendon)
+3. **Joint limits** — scalar (hinge/slide) and rotation cone (ball)
+4. **Tendon limits** — scalar upper/lower on tendon length
+5. **Contact forces** — normal + friction cones (elliptic/pyramidal)
 
-> **⚠️ Divergence:** MuJoCo uses solver-based constraint rows for ALL four types
-> in ALL solver modes. CortenForge's PGS/CG penalty path for types 1–3 is a
-> known divergence. Migration to unified solver-based constraints is tracked as
-> [#30](todo/future_work_8.md) (PGS/CG Unified Constraints).
+Each constraint row stores Jacobian, `solref`/`solimp`, impedance, `diagApprox`,
+regularization, and `aref` (reference acceleration). The solver operates on the
+unified `efc_*` arrays regardless of constraint origin.
 
 ### 4.5 Joint Limits
 
-Penalty method with configurable stiffness derived from `solref`/`solimp`.
+Solver-based constraint rows with `solref`/`solimp`-derived impedance and
+regularization, matching MuJoCo's `mj_instantiateLimit()`. Constraint is
+activated when `dist < 0` (hardcoded `margin = 0.0`).
 
-When joint position violates a limit (`q < qmin` or `q > qmax`):
-```python
-violation = qmin - q   # or q - qmax
+**Hinge / Slide joints** — up to 2 rows per joint (lower + upper):
+- `dist_lower = q - qmin` (negative when `q < qmin`)
+- `dist_upper = qmax - q` (negative when `q > qmax`)
+- Jacobian: `J = +1` (lower) or `J = -1` (upper) at single DOF
 
-# Stiffness/damping from solref [timeconst, dampratio]
-# Note: solref_to_penalty takes (solref, default_k, default_b, dt), not effective_mass
-k, b = solref_to_penalty(solref, default_k, default_b, dt)
+**Ball joints** — 1 row per joint (rotation cone via quaternion logarithm):
+- Quaternion normalized, then axis-angle extracted via `mju_quat2Vel` + `mju_normalize3`
+- `dist = max(range[0], range[1]) - |theta|` (cone half-angle minus rotation magnitude)
+- Jacobian: `J = -sign(theta) * axis` (3 entries at angular DOFs)
+- Free joint limits silently ignored (matching MuJoCo)
 
-# Constraint force (no impedance scaling — unlike contacts and equality constraints)
-qfrc_constraint[dof] += k * violation + b * violation_velocity
-```
-
-> **Implementation note:** Joint limits do NOT use `compute_impedance()`. The
-> impedance sigmoid is applied for contacts and equality constraints, but joint
-> limits use a direct penalty without impedance modulation.
+See [future_work_10 §38](todo/future_work_10.md) for the full ball joint limit specification.
 
 ### 4.6 Equality Constraints
 
-All equality constraints use penalty enforcement:
+All equality constraints use solver-based constraint rows:
 
-| Type | DOF removed | Description |
-|------|-------------|-------------|
+| Type | Rows | Description |
+|------|------|-------------|
 | Connect | 3 | Two body points coincide (translation only) |
 | Weld | 6 | Two body frames identical (translation + rotation) |
 | Joint | varies | Polynomial coupling: `q2 = c0 + c1*q1 + c2*q1^2 + ...` |
 | Tendon | 1 | Polynomial coupling between tendon lengths (two-tendon coupling or single-tendon lock) |
 | Distance | 1 | Fixed distance between two geom centers |
 
-Stiffness and damping derive from per-constraint `solref`/`solimp` parameters,
-identical to the joint limit mechanism.
+Impedance, regularization, and reference acceleration derive from per-constraint
+`solref`/`solimp` parameters, using the same unified mechanism as joint limits
+and contacts.
 
 ### 4.7 Contact Solver (PGS)
 
@@ -665,7 +664,7 @@ After solving, `qacc = (v_new - v_old) / h` for consistency.
 **Implicit path (ImplicitFast — full Jacobian, Cholesky):**
 
 Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/∂(qvel)` via:
-1. `mjd_passive_vel()` — DOF damping + tendon damping J^T B J
+1. `mjd_passive_vel()` — fluid derivatives (§40a) + DOF damping + tendon damping J^T B J (sleep-filtered, §40c)
 2. `mjd_actuator_vel()` — actuator velocity derivatives (Affine gain/bias)
 
 Symmetrizes D, then solves `(M − h·D) · qacc = f` via dense Cholesky factorization.
@@ -860,7 +859,8 @@ qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias
 
 qDeriv = ∂(passive)/∂v + ∂(actuator)/∂v − ∂(bias)/∂v
 
-mjd_passive_vel():   diagonal −damping[i] + tendon rank-1 −b·J^T·J
+mjd_passive_vel():   fluid derivatives (§40a) + diagonal −damping[i] + tendon −b·J^T·J
+                     (all three loops sleep-filtered via §40c indirection)
 mjd_actuator_vel():  affine gain/bias velocity terms via transmission
 mjd_rne_vel():       chain-rule derivative propagation through kinematic tree
                      Forward pass: Dcvel, Dcacc (6×nv per body)

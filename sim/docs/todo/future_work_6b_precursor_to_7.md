@@ -161,9 +161,12 @@ MuJoCo's flex implementation.
   generated.
 - **`<equality><flex>` constraints.** Flex-flex coupling via equality
   constraints is deferred.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-66.
 - **GPU flex pipeline.** GPU acceleration of flex constraint solve is Phase 3E.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-67.
 - **Per-vertex material variation.** All vertices in a flex share a single
   material. Per-element material variation is deferred.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-68.
 - **Body-attached flex vertices.** The `flexvert_bodyid` field is parsed and
   stored, but vertices attached to rigid bodies (kinematic boundary conditions)
   are treated as pinned (`mass = 1e20`, `invmass = 0`) rather than tracking body motion. Full
@@ -484,6 +487,7 @@ Replace `mj_deformable_collision()` with flex vertex collision via
 tested against every rigid geom. SAP integration deferred to when nflexvert is
 large enough to warrant it (MuJoCo uses BVH midphase for this, which is a
 separate optimization item).
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-69.
 
 ```rust
 /// Detect contacts between flex vertices and rigid geoms.
@@ -894,6 +898,7 @@ MuJoCo has no dedicated volume preservation mechanism for flex bodies.
 Volume preservation is an emergent property of the continuum elasticity model
 (Saint-Venant-Kirchhoff), which is planned for §7. The previously-specified
 `FlexVolume` constraint type has been removed as it had no MuJoCo equivalent.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-73.
 
 ---
 

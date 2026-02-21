@@ -1374,6 +1374,10 @@ pub struct Model {
     /// Solver reference parameters [timeconst, dampratio] or [d, dmin].
     /// Controls constraint dynamics.
     pub geom_solref: Vec<[f64; 2]>,
+    /// Fluid interaction data per geom (12 elements, matching MuJoCo's `geom_fluid`).
+    /// Layout: `[interaction_coef, C_blunt, C_slender, C_ang, C_K, C_M,
+    ///           virtual_mass[3], virtual_inertia[3]]`.
+    pub geom_fluid: Vec<[f64; 12]>,
     /// Optional geom names.
     pub geom_name: Vec<Option<String>>,
     /// Pre-computed bounding sphere radius for each geom (in local frame).
@@ -1721,7 +1725,9 @@ pub struct Model {
     pub tendon_treenum: Vec<usize>,
     /// Packed tree indices for two-tree tendons (§16.10.1).
     /// For tendon t: `tendon_tree[2*t]` and `tendon_tree[2*t+1]`.
-    /// Unused entries (treenum != 2) are `usize::MAX`. Length: 2 * ntendon.
+    /// `tendon_tree[2*t]` is populated when `treenum >= 1`; `tendon_tree[2*t+1]`
+    /// is populated when `treenum == 2`. Unused slots are `usize::MAX`.
+    /// Length: 2 * ntendon.
     pub tendon_tree: Vec<usize>,
 
     // Tendon wrapping path elements (indexed by wrap_id, grouped by tendon; total length = nwrap)
@@ -2280,8 +2286,11 @@ pub struct Data {
     pub qfrc_applied: DVector<f64>,
     /// Coriolis + centrifugal + gravity bias forces (length `nv`).
     pub qfrc_bias: DVector<f64>,
-    /// Passive forces (springs + dampers + gravcomp) (length `nv`).
+    /// Passive forces (springs + dampers + gravcomp + fluid) (length `nv`).
     pub qfrc_passive: DVector<f64>,
+    /// Fluid forces (length `nv`), zeroed each step.
+    /// Separated from `qfrc_passive` for derivative computation.
+    pub qfrc_fluid: DVector<f64>,
     /// Gravity compensation forces (length `nv`), zeroed each step.
     /// Stored separately for future `jnt_actgravcomp` routing.
     pub qfrc_gravcomp: DVector<f64>,
@@ -2376,6 +2385,23 @@ pub struct Data {
     /// Tendon Jacobian: d(length)/d(qpos) (sparse, length varies).
     /// Maps tendon length changes to joint velocities.
     pub ten_J: Vec<DVector<f64>>,
+
+    /// Tendon wrap path point positions in world frame.
+    /// Flat storage: `wrap_xpos[ten_wrapadr[t] .. ten_wrapadr[t] + ten_wrapnum[t]]`
+    /// gives the ordered path points for tendon `t`.
+    /// Allocated with capacity `nwrap * 2` (upper bound).
+    pub wrap_xpos: Vec<Vector3<f64>>,
+
+    /// Object marker for each wrap path point.
+    /// -2 = pulley, -1 = site, >= 0 = geom id (tangent point on wrapping surface).
+    /// Parallel to `wrap_xpos`.
+    pub wrap_obj: Vec<i32>,
+
+    /// Start index in `wrap_xpos`/`wrap_obj` for each tendon (length `ntendon`).
+    pub ten_wrapadr: Vec<usize>,
+
+    /// Number of path points for each tendon (length `ntendon`).
+    pub ten_wrapnum: Vec<usize>,
 
     // ==================== Equality Constraint State ====================
     /// Equality constraint violation (length `neq` * max_dim).
@@ -2722,6 +2748,7 @@ impl Clone for Data {
             qfrc_applied: self.qfrc_applied.clone(),
             qfrc_bias: self.qfrc_bias.clone(),
             qfrc_passive: self.qfrc_passive.clone(),
+            qfrc_fluid: self.qfrc_fluid.clone(),
             qfrc_gravcomp: self.qfrc_gravcomp.clone(),
             qfrc_constraint: self.qfrc_constraint.clone(),
             jnt_limit_frc: self.jnt_limit_frc.clone(),
@@ -2744,6 +2771,11 @@ impl Clone for Data {
             ten_velocity: self.ten_velocity.clone(),
             ten_force: self.ten_force.clone(),
             ten_J: self.ten_J.clone(),
+            // Tendon wrap visualization
+            wrap_xpos: self.wrap_xpos.clone(),
+            wrap_obj: self.wrap_obj.clone(),
+            ten_wrapadr: self.ten_wrapadr.clone(),
+            ten_wrapnum: self.ten_wrapnum.clone(),
             // Equality constraints
             eq_violation: self.eq_violation.clone(),
             eq_force: self.eq_force.clone(),
@@ -2973,6 +3005,7 @@ impl Model {
             geom_sdf: vec![],
             geom_group: vec![],
             geom_rgba: vec![],
+            geom_fluid: vec![],
 
             // Flex bodies (empty)
             flex_dim: vec![],
@@ -3342,6 +3375,7 @@ impl Model {
             qfrc_applied: DVector::zeros(self.nv),
             qfrc_bias: DVector::zeros(self.nv),
             qfrc_passive: DVector::zeros(self.nv),
+            qfrc_fluid: DVector::zeros(self.nv),
             qfrc_gravcomp: DVector::zeros(self.nv),
             qfrc_constraint: DVector::zeros(self.nv),
             jnt_limit_frc: vec![0.0; self.njnt],
@@ -3370,6 +3404,12 @@ impl Model {
             ten_velocity: vec![0.0; self.ntendon],
             ten_force: vec![0.0; self.ntendon],
             ten_J: vec![DVector::zeros(self.nv); self.ntendon],
+
+            // Tendon wrap visualization data
+            wrap_xpos: vec![Vector3::zeros(); self.nwrap * 2],
+            wrap_obj: vec![0i32; self.nwrap * 2],
+            ten_wrapadr: vec![0usize; self.ntendon],
+            ten_wrapnum: vec![0usize; self.ntendon],
 
             // Equality constraint state
             eq_violation: vec![0.0; self.neq * 6], // max 6 DOF per constraint (weld)
@@ -3951,21 +3991,16 @@ impl Model {
         }
     }
 
-    /// Compute `tendon_length0` and default `lengthspring` for spatial tendons.
+    /// Compute `tendon_length0` for spatial tendons via FK at `qpos0`.
     ///
-    /// Runs FK at `qpos0` to evaluate spatial tendon paths, then:
-    /// 1. Validates rule 9 (sidesite outside wrapping geometry) using FK poses.
-    /// 2. Sets `tendon_length0[t] = ten_length[t]` from the FK result.
-    /// 3. Defaults `lengthspring` to `tendon_length0` when stiffness > 0.
+    /// 1. Sets `tendon_length0[t] = ten_length[t]` from the FK result.
+    /// 2. Defaults `lengthspring` to `tendon_length0` when stiffness > 0.
     ///
     /// Must be called after `compute_implicit_params()` and before
     /// `compute_muscle_params()` (which needs valid `tendon_length0` for all types).
     ///
-    /// # Panics
-    ///
-    /// Panics if a sidesite is inside its wrapping geometry (rule 9 validation).
-    /// This is a fatal model configuration error.
-    #[allow(clippy::panic)] // Deliberate: sidesite-inside-geometry is a fatal build error.
+    /// Note: Rule 9 (sidesite outside wrapping geometry) is retired — sidesites
+    /// inside wrapping geometry are now handled by the `wrap_inside` algorithm (§39).
     pub fn compute_spatial_tendon_length0(&mut self) {
         // Early return if no spatial tendons — avoid unnecessary FK + Data allocation.
         let has_spatial = (0..self.ntendon).any(|t| self.tendon_type[t] == TendonType::Spatial);
@@ -3975,45 +4010,6 @@ impl Model {
 
         let mut data = self.make_data();
         mj_fwd_position(self, &mut data); // runs FK + mj_fwd_tendon
-
-        // Validate rule 9: sidesite outside wrapping geometry.
-        // Requires FK because sidesite and geom may be on different bodies.
-        for t in 0..self.ntendon {
-            if self.tendon_type[t] != TendonType::Spatial {
-                continue;
-            }
-            let adr = self.tendon_adr[t];
-            let num = self.tendon_num[t];
-            for w in adr..(adr + num) {
-                if self.wrap_type[w] != WrapType::Geom {
-                    continue;
-                }
-                if self.wrap_sidesite[w] == usize::MAX {
-                    continue;
-                }
-                let geom_id = self.wrap_objid[w];
-                let ss_id = self.wrap_sidesite[w];
-                let ss_local = data.geom_xmat[geom_id].transpose()
-                    * (data.site_xpos[ss_id] - data.geom_xpos[geom_id]);
-                let r = self.geom_size[geom_id].x;
-                let inside = match self.geom_type[geom_id] {
-                    GeomType::Sphere => ss_local.norm() < r,
-                    GeomType::Cylinder => nalgebra::Vector2::new(ss_local.x, ss_local.y).norm() < r,
-                    _ => false,
-                };
-                if inside {
-                    let ss_name = self.site_name[ss_id].as_deref().unwrap_or("?");
-                    let g_name = self.geom_name[geom_id].as_deref().unwrap_or("?");
-                    let t_name = self.tendon_name[t].as_deref().unwrap_or("?");
-                    panic!(
-                        "Sidesite '{ss_name}' (site {ss_id}) is inside wrapping \
-                         geom '{g_name}' (geom {geom_id}) on tendon '{t_name}' \
-                         (tendon {t}). The wrap_inside algorithm is not implemented. \
-                         Move the sidesite outside the wrapping geometry surface."
-                    );
-                }
-            }
-        }
 
         // Compute tendon_length0 and default lengthspring for spatial tendons.
         for t in 0..self.ntendon {
@@ -9333,13 +9329,20 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
                     vel[2] += world_omega.z;
                 }
                 MjJointType::Free => {
-                    // 6-DOF: linear + angular velocity
+                    // 6-DOF: linear (world frame) + angular (body-local → world)
                     vel[3] += data.qvel[dof_adr];
                     vel[4] += data.qvel[dof_adr + 1];
                     vel[5] += data.qvel[dof_adr + 2];
-                    vel[0] += data.qvel[dof_adr + 3];
-                    vel[1] += data.qvel[dof_adr + 4];
-                    vel[2] += data.qvel[dof_adr + 5];
+                    // Angular velocity: rotate from body-local to world frame
+                    let omega_local = Vector3::new(
+                        data.qvel[dof_adr + 3],
+                        data.qvel[dof_adr + 4],
+                        data.qvel[dof_adr + 5],
+                    );
+                    let omega_world = data.xquat[body_id] * omega_local;
+                    vel[0] += omega_world.x;
+                    vel[1] += omega_world.y;
+                    vel[2] += omega_world.z;
                 }
             }
         }
@@ -9356,7 +9359,8 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
 /// Compute tendon lengths and Jacobians from current joint state.
 ///
 /// For fixed tendons: L = Σ coef_i * qpos[dof_adr_i], J[dof_adr_i] = coef_i.
-/// For spatial tendons: silently skipped (deferred to spatial tendon PR).
+/// For spatial tendons: 3D pairwise routing via `mj_fwd_tendon_spatial()`,
+/// with wrap visualization data (`wrap_xpos`/`wrap_obj`, §40b).
 ///
 /// Called from mj_fwd_position() after site transforms, before subtree COM.
 fn mj_fwd_tendon(model: &Model, data: &mut Data) {
@@ -9364,13 +9368,16 @@ fn mj_fwd_tendon(model: &Model, data: &mut Data) {
         return;
     }
 
+    let mut wrapcount: usize = 0;
     for t in 0..model.ntendon {
         match model.tendon_type[t] {
             TendonType::Fixed => {
+                data.ten_wrapadr[t] = wrapcount;
+                data.ten_wrapnum[t] = 0;
                 mj_fwd_tendon_fixed(model, data, t);
             }
             TendonType::Spatial => {
-                mj_fwd_tendon_spatial(model, data, t);
+                mj_fwd_tendon_spatial(model, data, t, &mut wrapcount);
             }
         }
     }
@@ -9418,12 +9425,17 @@ fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
 ///
 /// Algorithm follows MuJoCo's pairwise loop over the wrap array
 /// (`engine_core_smooth.c`, function `mj_tendon`).
-fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
+#[allow(clippy::cast_possible_wrap)] // geom_id as i32: safe for any practical model size (< i32::MAX geoms)
+fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount: &mut usize) {
     let adr = model.tendon_adr[t];
     let num = model.tendon_num[t];
     data.ten_J[t].fill(0.0);
     let mut total_length = 0.0;
     let mut divisor: f64 = 1.0;
+
+    // §40b: record wrap path start address
+    data.ten_wrapadr[t] = *wrapcount;
+    data.ten_wrapnum[t] = 0;
 
     if num < 2 {
         data.ten_length[t] = 0.0;
@@ -9442,6 +9454,17 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
         if type0 == WrapType::Pulley || type1 == WrapType::Pulley {
             if type0 == WrapType::Pulley {
                 divisor = model.wrap_prm[adr + j];
+                // §40b: store pulley marker
+                debug_assert!(
+                    *wrapcount < data.wrap_xpos.len(),
+                    "wrap path overflow: wrapcount={} >= capacity={}",
+                    *wrapcount,
+                    data.wrap_xpos.len()
+                );
+                data.wrap_xpos[*wrapcount] = Vector3::zeros();
+                data.wrap_obj[*wrapcount] = -2;
+                data.ten_wrapnum[t] += 1;
+                *wrapcount += 1;
             }
             j += 1;
             continue;
@@ -9461,6 +9484,18 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
             let id1 = model.wrap_objid[adr + j + 1];
             let p1 = data.site_xpos[id1];
             let body1 = model.site_body[id1];
+
+            // §40b: store leading site
+            debug_assert!(
+                *wrapcount < data.wrap_xpos.len(),
+                "wrap path overflow: wrapcount={} >= capacity={}",
+                *wrapcount,
+                data.wrap_xpos.len()
+            );
+            data.wrap_xpos[*wrapcount] = p0;
+            data.wrap_obj[*wrapcount] = -1;
+            data.ten_wrapnum[t] += 1;
+            *wrapcount += 1;
 
             let diff = p1 - p0;
             let dist = diff.norm();
@@ -9546,6 +9581,22 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
                     let t1 = geom_pos + geom_mat * tangent_point_1;
                     let t2 = geom_pos + geom_mat * tangent_point_2;
 
+                    // §40b: store 3 points: site0, tangent₁, tangent₂
+                    debug_assert!(
+                        *wrapcount + 2 < data.wrap_xpos.len(),
+                        "wrap path overflow: wrapcount+2={} >= capacity={}",
+                        *wrapcount + 2,
+                        data.wrap_xpos.len()
+                    );
+                    data.wrap_xpos[*wrapcount] = p0;
+                    data.wrap_obj[*wrapcount] = -1;
+                    data.wrap_xpos[*wrapcount + 1] = t1;
+                    data.wrap_obj[*wrapcount + 1] = geom_id as i32;
+                    data.wrap_xpos[*wrapcount + 2] = t2;
+                    data.wrap_obj[*wrapcount + 2] = geom_id as i32;
+                    data.ten_wrapnum[t] += 3;
+                    *wrapcount += 3;
+
                     // 3 sub-segments: [p0→t1, t1→t2 (arc), t2→p1]
                     let d1 = t1 - p0;
                     let dist1 = d1.norm();
@@ -9607,6 +9658,18 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
                     }
                 }
                 WrapResult::NoWrap => {
+                    // §40b: store 1 point: site0 only (straight line, no tangent points)
+                    debug_assert!(
+                        *wrapcount < data.wrap_xpos.len(),
+                        "wrap path overflow: wrapcount={} >= capacity={}",
+                        *wrapcount,
+                        data.wrap_xpos.len()
+                    );
+                    data.wrap_xpos[*wrapcount] = p0;
+                    data.wrap_obj[*wrapcount] = -1;
+                    data.ten_wrapnum[t] += 1;
+                    *wrapcount += 1;
+
                     // No wrapping — straight segment p0 → p1
                     let diff = p1 - p0;
                     let dist = diff.norm();
@@ -9644,6 +9707,25 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
                  validation ensures path starts with Site and \
                  geoms are always followed by sites"
             );
+        }
+
+        // §40b: store final site (endpoint of current segment)
+        // After j advance, j points at the endpoint site. Store it if this
+        // is the last element or the next element is a pulley.
+        let at_end = j == num - 1;
+        let before_pulley = j < num - 1 && model.wrap_type[adr + j + 1] == WrapType::Pulley;
+        if at_end || before_pulley {
+            let endpoint_id = model.wrap_objid[adr + j];
+            debug_assert!(
+                *wrapcount < data.wrap_xpos.len(),
+                "wrap path overflow: wrapcount={} >= capacity={}",
+                *wrapcount,
+                data.wrap_xpos.len()
+            );
+            data.wrap_xpos[*wrapcount] = data.site_xpos[endpoint_id];
+            data.wrap_obj[*wrapcount] = -1;
+            data.ten_wrapnum[t] += 1;
+            *wrapcount += 1;
         }
     }
 
@@ -9729,7 +9811,10 @@ fn accumulate_point_jacobian(
 /// Analogous to MuJoCo's `mj_jacSite`. Walks the kinematic chain from
 /// `site_body[site_id]` to root, accumulating per-joint contributions.
 /// Returns `(jac_trans, jac_rot)` where each is a 3×nv `DMatrix`.
-fn mj_jac_site(model: &Model, data: &Data, site_id: usize) -> (DMatrix<f64>, DMatrix<f64>) {
+/// Compute site Jacobian: (jac_trans 3×nv, jac_rot 3×nv).
+#[doc(hidden)]
+#[must_use]
+pub fn mj_jac_site(model: &Model, data: &Data, site_id: usize) -> (DMatrix<f64>, DMatrix<f64>) {
     let mut jac_trans = DMatrix::zeros(3, model.nv);
     let mut jac_rot = DMatrix::zeros(3, model.nv);
 
@@ -9798,6 +9883,96 @@ fn mj_jac_site(model: &Model, data: &Data, site_id: usize) -> (DMatrix<f64>, DMa
     }
 
     (jac_trans, jac_rot)
+}
+
+/// Compute combined 6×nv world-frame Jacobian at `point` on the chain rooted at `body_id`.
+///
+/// Layout: rows 0–2 = angular (ω), rows 3–5 = linear (v).
+/// Same chain-walk as `mj_jac_site` but returns a single 6×nv matrix for `J^T·B·J` projection.
+/// Compute 6×nv Jacobian at a world-frame point on a body's kinematic chain.
+#[doc(hidden)]
+#[must_use]
+pub fn mj_jac_point(
+    model: &Model,
+    data: &Data,
+    body_id: usize,
+    point: &Vector3<f64>,
+) -> DMatrix<f64> {
+    let mut jac = DMatrix::zeros(6, model.nv);
+
+    let mut current = body_id;
+    while current != 0 {
+        let jnt_start = model.body_jnt_adr[current];
+        let jnt_end = jnt_start + model.body_jnt_num[current];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let anchor = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - anchor;
+                    let cross = axis.cross(&r);
+                    for k in 0..3 {
+                        jac[(k, dof)] += axis[k]; // angular
+                        jac[(k + 3, dof)] += cross[k]; // linear
+                    }
+                }
+                MjJointType::Slide => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    for k in 0..3 {
+                        jac[(k + 3, dof)] += axis[k]; // linear only
+                    }
+                }
+                MjJointType::Ball => {
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    let anchor = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - anchor;
+                    for i in 0..3 {
+                        let omega = rot * Vector3::ith(i, 1.0);
+                        let cross = omega.cross(&r);
+                        for k in 0..3 {
+                            jac[(k, dof + i)] += omega[k]; // angular
+                            jac[(k + 3, dof + i)] += cross[k]; // linear
+                        }
+                    }
+                }
+                MjJointType::Free => {
+                    // Translation DOFs (dof+0..dof+3): identity in linear rows
+                    for i in 0..3 {
+                        jac[(i + 3, dof + i)] += 1.0;
+                    }
+                    // Rotation DOFs (dof+3..dof+6): body-frame axes
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    let r = point - data.xpos[jnt_body];
+                    for i in 0..3 {
+                        let omega = rot * Vector3::ith(i, 1.0);
+                        let cross = omega.cross(&r);
+                        for k in 0..3 {
+                            jac[(k, dof + 3 + i)] += omega[k]; // angular
+                            jac[(k + 3, dof + 3 + i)] += cross[k]; // linear
+                        }
+                    }
+                }
+            }
+        }
+        current = model.body_parent[current];
+    }
+
+    jac
+}
+
+/// Compute 6×nv Jacobian at body CoM. Used by inertia-box derivatives.
+pub(crate) fn mj_jac_body_com(model: &Model, data: &Data, body_id: usize) -> DMatrix<f64> {
+    mj_jac_point(model, data, body_id, &data.xipos[body_id])
+}
+
+/// Compute 6×nv Jacobian at geom center. Used by ellipsoid derivatives.
+pub(crate) fn mj_jac_geom(model: &Model, data: &Data, geom_id: usize) -> DMatrix<f64> {
+    let body_id = model.geom_body[geom_id];
+    mj_jac_point(model, data, body_id, &data.geom_xpos[geom_id])
 }
 
 /// Project a Cartesian force + torque at a world-frame point on a body into
@@ -10053,6 +10228,156 @@ fn compute_tangent_pair_2d(
     )
 }
 
+/// Construct the 2D wrapping plane for sphere wrapping.
+///
+/// Returns `(axis0, axis1)` where `axis0 = normalize(p1)` and `axis1` is
+/// perpendicular to `axis0` in the plane containing `(origin, p1, p2)`.
+/// Handles the collinear degenerate case (`p1`, `O`, `p2` collinear) by
+/// constructing an arbitrary perpendicular plane through `p1`.
+fn sphere_wrapping_plane(p1: Vector3<f64>, p2: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    let mut plane_normal = p1.cross(&p2);
+    if plane_normal.norm() < 1e-10 * p1.norm() * p2.norm() {
+        // Degenerate: p1, origin, p2 are collinear.
+        // Construct an arbitrary perpendicular via the least-aligned cardinal axis.
+        let u = p1.normalize();
+        let min_axis = if u.x.abs() <= u.y.abs() && u.x.abs() <= u.z.abs() {
+            Vector3::x()
+        } else if u.y.abs() <= u.z.abs() {
+            Vector3::y()
+        } else {
+            Vector3::z()
+        };
+        plane_normal = u.cross(&min_axis);
+    }
+    plane_normal = plane_normal.normalize();
+    let axis0 = p1.normalize();
+    let axis1 = plane_normal.cross(&axis0).normalize();
+    (axis0, axis1)
+}
+
+/// 2D Newton solver for inverse (inside) tendon wrapping.
+///
+/// Given two 2D endpoint positions (in the wrapping plane, circle centered at
+/// origin) and a circle radius, finds the single tangent point for an inverse
+/// wrap path — the tendon passes *through* the geometry, touching the circle
+/// surface at one point.
+///
+/// Implements MuJoCo's `wrap_inside()` from `engine_util_misc.c`.
+///
+/// Returns `None` (no wrap — tendon goes straight) or `Some(tangent_point)`.
+/// `None` maps to MuJoCo's return `-1`; `Some` maps to return `0`.
+#[allow(clippy::many_single_char_names)] // Newton solver math: z, f, g, a match MuJoCo variable names.
+fn wrap_inside_2d(end0: Vector2<f64>, end1: Vector2<f64>, radius: f64) -> Option<Vector2<f64>> {
+    const EPS: f64 = 1e-15; // MuJoCo's mjMINVAL
+
+    // Step 1 — Validate inputs.
+    let len0 = end0.norm();
+    let len1 = end1.norm();
+    if len0 <= radius || len1 <= radius || radius < EPS || len0 < EPS || len1 < EPS {
+        return None;
+    }
+
+    // Step 2 — Segment-circle intersection check.
+    let dif = end1 - end0;
+    let dd = dif.norm_squared();
+    if dd > EPS {
+        let a = -(dif.dot(&end0)) / dd;
+        if a > 0.0 && a < 1.0 {
+            let nearest = end0 + a * dif;
+            if nearest.norm() <= radius {
+                return None; // straight path crosses circle
+            }
+        }
+    }
+
+    // Step 3 — Compute Newton equation parameters.
+    let cap_a = radius / len0;
+    let cap_b = radius / len1;
+    let cos_g = (len0 * len0 + len1 * len1 - dd) / (2.0 * len0 * len1);
+
+    if cos_g < -1.0 + EPS {
+        return None; // near-antiparallel: no solution
+    }
+
+    // Step 4 — Prepare default fallback (after antiparallel check for NaN safety).
+    let mid = 0.5 * (end0 + end1);
+    let mid_norm = mid.norm();
+    let fallback = if mid_norm > EPS {
+        mid * (radius / mid_norm)
+    } else {
+        // Midpoint near-zero — should not happen after antiparallel guard,
+        // but defend against numerical edge cases.
+        return None;
+    };
+
+    if cos_g > 1.0 - EPS {
+        return Some(fallback); // near-parallel / coincident: use fallback
+    }
+
+    let g = cos_g.acos();
+
+    // Newton equation: f(z) = asin(A·z) + asin(B·z) - 2·asin(z) + G = 0
+    let mut z: f64 = 1.0 - 1e-7; // initial guess near domain boundary
+    let mut f = (cap_a * z).asin() + (cap_b * z).asin() - 2.0 * z.asin() + g;
+
+    if f > 0.0 {
+        return Some(fallback); // init on wrong side of root
+    }
+
+    // Step 5 — Newton iteration.
+    let mut converged = false;
+    for _ in 0..20 {
+        if f.abs() < 1e-6 {
+            converged = true;
+            break;
+        }
+
+        let df = cap_a / (1.0 - z * z * cap_a * cap_a).sqrt().max(EPS)
+            + cap_b / (1.0 - z * z * cap_b * cap_b).sqrt().max(EPS)
+            - 2.0 / (1.0 - z * z).sqrt().max(EPS);
+
+        if df > -EPS {
+            return Some(fallback); // derivative non-negative; abort
+        }
+
+        let z_new = z - f / df;
+
+        if z_new > z {
+            return Some(fallback); // solver moving rightward; abort
+        }
+
+        z = z_new;
+        f = (cap_a * z).asin() + (cap_b * z).asin() - 2.0 * z.asin() + g;
+
+        if f > 1e-6 {
+            return Some(fallback); // overshot positive; abort
+        }
+    }
+
+    if !converged {
+        return Some(fallback);
+    }
+
+    // Step 6 — Geometric reconstruction.
+    let cross = end0.x * end1.y - end0.y * end1.x;
+    let (vec, ang) = if cross > 0.0 {
+        let v = end0.normalize();
+        let a = z.asin() - (cap_a * z).asin();
+        (v, a)
+    } else {
+        let v = end1.normalize();
+        let a = z.asin() - (cap_b * z).asin();
+        (v, a)
+    };
+
+    let tangent = Vector2::new(
+        radius * (ang.cos() * vec.x - ang.sin() * vec.y),
+        radius * (ang.sin() * vec.x + ang.cos() * vec.y),
+    );
+
+    Some(tangent)
+}
+
 /// Compute the shortest path around a sphere between two points.
 ///
 /// Works in the geom-local frame where the sphere is centered at the origin.
@@ -10073,7 +10398,29 @@ fn sphere_wrap(
         return WrapResult::NoWrap; // endpoint inside sphere
     }
 
-    // 2. Check if the straight-line path misses the sphere.
+    // 2. Check for sidesite inside sphere (inverse wrap).
+    //    Uses 3D norm matching MuJoCo's mju_norm3(s) < radius.
+    if let Some(ss) = sidesite {
+        if ss.norm() < radius {
+            let (axis0, axis1) = sphere_wrapping_plane(p1, p2);
+            let end0 = Vector2::new(p1.dot(&axis0), p1.dot(&axis1));
+            let end1 = Vector2::new(p2.dot(&axis0), p2.dot(&axis1));
+
+            return match wrap_inside_2d(end0, end1, radius) {
+                None => WrapResult::NoWrap,
+                Some(t2d) => {
+                    let t3d = axis0 * t2d.x + axis1 * t2d.y;
+                    WrapResult::Wrapped {
+                        tangent_point_1: t3d,
+                        tangent_point_2: t3d, // identical — single tangent point
+                        arc_length: 0.0,
+                    }
+                }
+            };
+        }
+    }
+
+    // 3. Check if the straight-line path misses the sphere.
     let d = p2 - p1;
     if d.norm_squared() < 1e-20 {
         return WrapResult::NoWrap; // coincident sites
@@ -10091,27 +10438,9 @@ fn sphere_wrap(
         }
     }
 
-    // 3. Compute the wrapping plane normal.
-    //    The plane contains the sphere center (origin), p1, and p2.
-    let mut plane_normal = p1.cross(&p2);
-    if plane_normal.norm() < 1e-10 * p1.norm() * p2.norm() {
-        // Degenerate: p1, origin, p2 are collinear.
-        // Construct an arbitrary perpendicular via the least-aligned cardinal axis.
-        let u = p1.normalize();
-        let min_axis = if u.x.abs() <= u.y.abs() && u.x.abs() <= u.z.abs() {
-            Vector3::x()
-        } else if u.y.abs() <= u.z.abs() {
-            Vector3::y()
-        } else {
-            Vector3::z()
-        };
-        plane_normal = u.cross(&min_axis);
-    }
-    plane_normal = plane_normal.normalize();
-
-    // 4. Construct 2D coordinate system in the wrapping plane.
-    let axis0 = p1.normalize();
-    let axis1 = plane_normal.cross(&axis0).normalize();
+    // 4. Construct 2D wrapping plane via shared helper.
+    let (axis0, axis1) = sphere_wrapping_plane(p1, p2);
+    let plane_normal = axis0.cross(&axis1);
 
     // Project endpoints and sidesite into the 2D wrapping plane.
     let p1_2d = Vector2::new(p1.dot(&axis0), p1.dot(&axis1)); // = (||p1||, 0)
@@ -10212,6 +10541,36 @@ fn cylinder_wrap(
     }
     if p1_xy.norm() < radius || p2_xy.norm() < radius {
         return WrapResult::NoWrap; // endpoint inside cylinder cross-section
+    }
+
+    // 2b. Check for sidesite inside cylinder (inverse wrap).
+    //     Uses 3D norm matching MuJoCo's mju_norm3(s) < radius dispatch.
+    //     This differs from the previous panic check which used 2D XY norm —
+    //     a sidesite inside the cross-section but far along Z (norm3 > radius)
+    //     now correctly uses normal wrap instead of inside wrap.
+    if let Some(ss) = sidesite {
+        if ss.norm() < radius {
+            return match wrap_inside_2d(p1_xy, p2_xy, radius) {
+                None => WrapResult::NoWrap,
+                Some(t2d) => {
+                    // Z interpolation with arc_length = 0.
+                    let l0 = (p1_xy - t2d).norm();
+                    let l1 = (p2_xy - t2d).norm();
+                    let total = l0 + l1;
+                    let tz = if total > 1e-10 {
+                        p1.z + (p2.z - p1.z) * l0 / total
+                    } else {
+                        0.5 * (p1.z + p2.z)
+                    };
+                    let t3d = Vector3::new(t2d.x, t2d.y, tz);
+                    WrapResult::Wrapped {
+                        tangent_point_1: t3d,
+                        tangent_point_2: t3d, // identical — single tangent point
+                        arc_length: 0.0,      // no helical component
+                    }
+                }
+            };
+        }
     }
 
     // 3. Compute sidesite XY projection once (used in both early-exit and
@@ -11677,6 +12036,359 @@ fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
     has_gravcomp
 }
 
+// ============================================================================
+// §40 Fluid / Aerodynamic Forces
+// ============================================================================
+
+// MJ_MINVAL (1e-15) is defined once at module scope (Newton solver section).
+// Reused here for fluid force denomination guards.
+
+/// Compute 6D velocity at an object center in its local frame.
+///
+/// Equivalent to MuJoCo's `mj_objectVelocity(m, d, objtype, id, res, flg_local=1)`.
+/// Returns `[ω_local; v_local]`.
+pub(crate) fn object_velocity_local(
+    _model: &Model,
+    data: &Data,
+    body_id: usize,
+    point: &Vector3<f64>,
+    rot: &Matrix3<f64>,
+) -> [f64; 6] {
+    // Static body check: world body (id=0) has mass=0 and is caught by the
+    // dispatch loop's mass guard. For extra safety, return zeros for body 0.
+    if body_id == 0 {
+        return [0.0; 6];
+    }
+
+    let cvel = &data.cvel[body_id];
+    let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
+    let v_origin = Vector3::new(cvel[3], cvel[4], cvel[5]);
+
+    // Shift linear velocity from body origin to requested point.
+    // Our cvel stores velocity at xpos[body_id] (body origin), so the lever
+    // arm is from body origin to the query point.
+    let dif = point - data.xpos[body_id];
+    let v_point = v_origin + omega.cross(&dif);
+
+    // Rotate to local frame
+    let omega_local = rot.transpose() * omega;
+    let v_local = rot.transpose() * v_point;
+
+    [
+        omega_local.x,
+        omega_local.y,
+        omega_local.z,
+        v_local.x,
+        v_local.y,
+        v_local.z,
+    ]
+}
+
+/// Rotate a 6D spatial vector (local frame) to world frame.
+#[inline]
+fn rotate_spatial_to_world(xmat: &Matrix3<f64>, lfrc: &[f64; 6]) -> [f64; 6] {
+    let torque = xmat * Vector3::new(lfrc[0], lfrc[1], lfrc[2]);
+    let force = xmat * Vector3::new(lfrc[3], lfrc[4], lfrc[5]);
+    [torque.x, torque.y, torque.z, force.x, force.y, force.z]
+}
+
+/// Cross product of two 3-vectors stored as slices.
+#[inline]
+fn cross3(a: &[f64], b: &[f64]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Accumulate cross product: `out += a × b`.
+#[inline]
+fn add_cross3(out: &mut [f64], a: &[f64; 3], b: &[f64]) {
+    out[0] += a[1] * b[2] - a[2] * b[1];
+    out[1] += a[2] * b[0] - a[0] * b[2];
+    out[2] += a[0] * b[1] - a[1] * b[0];
+}
+
+/// Euclidean norm of a 3-element slice.
+#[inline]
+pub(crate) fn norm3(v: &[f64]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+/// Compute semi-axes for a geom type, matching MuJoCo's `mju_geomSemiAxes`.
+pub(crate) fn fluid_geom_semi_axes(geom_type: GeomType, size: &Vector3<f64>) -> [f64; 3] {
+    match geom_type {
+        GeomType::Sphere => [size.x, size.x, size.x],
+        GeomType::Capsule => [size.x, size.x, size.y + size.x],
+        GeomType::Cylinder => [size.x, size.x, size.y],
+        _ => [size.x, size.y, size.z], // Ellipsoid, Box, Mesh
+    }
+}
+
+/// Per-axis moment for angular drag: `(8/15)π · s[axis] · max(other_two)⁴`.
+/// Matches MuJoCo's `mji_ellipsoid_max_moment(size, dir)`.
+#[inline]
+pub(crate) fn ellipsoid_moment(s: &[f64; 3], axis: usize) -> f64 {
+    let d1 = s[(axis + 1) % 3];
+    let d2 = s[(axis + 2) % 3];
+    (8.0 / 15.0) * std::f64::consts::PI * s[axis] * d1.max(d2).powi(4)
+}
+
+/// Inertia-box fluid model (legacy, body-level).
+/// Called for bodies where no child geom has `geom_fluid[0] > 0`.
+fn mj_inertia_box_fluid(model: &Model, data: &mut Data, body_id: usize) {
+    let rho = model.density;
+    let beta = model.viscosity;
+    let mass = model.body_mass[body_id];
+    let inertia = model.body_inertia[body_id];
+
+    // 1. Equivalent box dimensions (full side lengths)
+    let bx = ((inertia.y + inertia.z - inertia.x).max(MJ_MINVAL) / mass * 6.0).sqrt();
+    let by = ((inertia.x + inertia.z - inertia.y).max(MJ_MINVAL) / mass * 6.0).sqrt();
+    let bz = ((inertia.x + inertia.y - inertia.z).max(MJ_MINVAL) / mass * 6.0).sqrt();
+
+    // 2. Local 6D velocity at body CoM in inertia frame
+    let mut lvel = object_velocity_local(
+        model,
+        data,
+        body_id,
+        &data.xipos[body_id],
+        &data.ximat[body_id],
+    );
+
+    // 3. Subtract wind (translational only, rotate to inertia frame)
+    let wind_local = data.ximat[body_id].transpose() * model.wind;
+    lvel[3] -= wind_local.x;
+    lvel[4] -= wind_local.y;
+    lvel[5] -= wind_local.z;
+
+    // 4. Compute local forces
+    let mut lfrc = [0.0f64; 6];
+
+    // Viscous resistance (assignment, matching MuJoCo's mji_scl3)
+    if beta > 0.0 {
+        let diam = (bx + by + bz) / 3.0;
+        let d3 = diam * diam * diam;
+        let pi = std::f64::consts::PI;
+        for i in 0..3 {
+            lfrc[i] = -pi * d3 * beta * lvel[i];
+        }
+        for i in 0..3 {
+            lfrc[3 + i] = -3.0 * pi * diam * beta * lvel[3 + i];
+        }
+    }
+
+    // Quadratic drag (density, subtracted from viscous result)
+    if rho > 0.0 {
+        lfrc[3] -= 0.5 * rho * by * bz * lvel[3].abs() * lvel[3];
+        lfrc[4] -= 0.5 * rho * bx * bz * lvel[4].abs() * lvel[4];
+        lfrc[5] -= 0.5 * rho * bx * by * lvel[5].abs() * lvel[5];
+
+        lfrc[0] -= rho * bx * (by.powi(4) + bz.powi(4)) / 64.0 * lvel[0].abs() * lvel[0];
+        lfrc[1] -= rho * by * (bx.powi(4) + bz.powi(4)) / 64.0 * lvel[1].abs() * lvel[1];
+        lfrc[2] -= rho * bz * (bx.powi(4) + by.powi(4)) / 64.0 * lvel[2].abs() * lvel[2];
+    }
+
+    // 5. Rotate to world frame and apply at body CoM
+    let bfrc = rotate_spatial_to_world(&data.ximat[body_id], &lfrc);
+    mj_apply_ft(
+        model,
+        &data.xpos,
+        &data.xquat,
+        &Vector3::new(bfrc[3], bfrc[4], bfrc[5]),
+        &Vector3::new(bfrc[0], bfrc[1], bfrc[2]),
+        &data.xipos[body_id],
+        body_id,
+        &mut data.qfrc_fluid,
+    );
+}
+
+/// Ellipsoid fluid model (advanced, per-geom).
+/// Called for bodies where any child geom has `geom_fluid[0] > 0`.
+#[allow(clippy::similar_names)] // d_min/d_mid/d_max are standard notation for semi-axis ordering
+fn mj_ellipsoid_fluid(model: &Model, data: &mut Data, body_id: usize) {
+    let rho = model.density;
+    let beta = model.viscosity;
+    let pi = std::f64::consts::PI;
+
+    let geom_adr = model.body_geom_adr[body_id];
+    let geom_num = model.body_geom_num[body_id];
+
+    for gid in geom_adr..geom_adr + geom_num {
+        let fluid = &model.geom_fluid[gid];
+        let interaction_coef = fluid[0];
+        if interaction_coef == 0.0 {
+            continue;
+        }
+
+        // Unpack coefficients
+        let (c_blunt, c_slender, c_ang) = (fluid[1], fluid[2], fluid[3]);
+        let (c_kutta, c_magnus) = (fluid[4], fluid[5]);
+        let vmass = [fluid[6], fluid[7], fluid[8]];
+        let vinertia = [fluid[9], fluid[10], fluid[11]];
+
+        // Semi-axes
+        let s = fluid_geom_semi_axes(model.geom_type[gid], &model.geom_size[gid]);
+
+        // Local velocity at geom center in geom frame
+        let geom_body = model.geom_body[gid];
+        let mut lvel = object_velocity_local(
+            model,
+            data,
+            geom_body,
+            &data.geom_xpos[gid],
+            &data.geom_xmat[gid],
+        );
+        let wind_local = data.geom_xmat[gid].transpose() * model.wind;
+        lvel[3] -= wind_local.x;
+        lvel[4] -= wind_local.y;
+        lvel[5] -= wind_local.z;
+
+        let w = [lvel[0], lvel[1], lvel[2]];
+        let v = [lvel[3], lvel[4], lvel[5]];
+        let mut lfrc = [0.0f64; 6];
+        let speed = norm3(&v);
+
+        // ── Component 1: Added mass (gyroscopic, accels=NULL) ──
+        let pv = [
+            rho * vmass[0] * v[0],
+            rho * vmass[1] * v[1],
+            rho * vmass[2] * v[2],
+        ];
+        let lv = [
+            rho * vinertia[0] * w[0],
+            rho * vinertia[1] * w[1],
+            rho * vinertia[2] * w[2],
+        ];
+        add_cross3(&mut lfrc[3..6], &pv, &w); // force  += p_v × ω
+        add_cross3(&mut lfrc[0..3], &pv, &v); // torque += p_v × v
+        add_cross3(&mut lfrc[0..3], &lv, &w); // torque += L_v × ω
+
+        // ── Component 2: Magnus lift ──
+        let vol = (4.0 / 3.0) * pi * s[0] * s[1] * s[2];
+        let mag = cross3(&w, &v);
+        for i in 0..3 {
+            lfrc[3 + i] += c_magnus * rho * vol * mag[i];
+        }
+
+        // ── Component 3: Kutta lift ──
+        let norm_vec = [
+            (s[1] * s[2]).powi(2) * v[0],
+            (s[2] * s[0]).powi(2) * v[1],
+            (s[0] * s[1]).powi(2) * v[2],
+        ];
+        let proj_denom = (s[1] * s[2]).powi(4) * v[0] * v[0]
+            + (s[2] * s[0]).powi(4) * v[1] * v[1]
+            + (s[0] * s[1]).powi(4) * v[2] * v[2];
+        let proj_num = (s[1] * s[2] * v[0]).powi(2)
+            + (s[2] * s[0] * v[1]).powi(2)
+            + (s[0] * s[1] * v[2]).powi(2);
+        let a_proj = pi * (proj_denom / proj_num.max(MJ_MINVAL)).sqrt();
+        let cos_alpha = proj_num / (speed * proj_denom).max(MJ_MINVAL);
+
+        let mut circ = cross3(&norm_vec, &v);
+        let kutta_scale = c_kutta * rho * cos_alpha * a_proj;
+        for i in 0..3 {
+            circ[i] *= kutta_scale;
+        }
+        let kf = cross3(&circ, &v);
+        for i in 0..3 {
+            lfrc[3 + i] += kf[i];
+        }
+
+        // ── Component 4: Combined linear drag ──
+        let eq_d = (2.0 / 3.0) * (s[0] + s[1] + s[2]);
+        let d_max = s[0].max(s[1]).max(s[2]);
+        let d_min = s[0].min(s[1]).min(s[2]);
+        let d_mid = s[0] + s[1] + s[2] - d_max - d_min;
+        let a_max = pi * d_max * d_mid;
+
+        let drag_lin = beta * 3.0 * pi * eq_d
+            + rho * speed * (a_proj * c_blunt + c_slender * (a_max - a_proj));
+        for i in 0..3 {
+            lfrc[3 + i] -= drag_lin * v[i];
+        }
+
+        // ── Component 5: Combined angular drag ──
+        let i_max = (8.0 / 15.0) * pi * d_mid * d_max.powi(4);
+        let ii = [
+            ellipsoid_moment(&s, 0),
+            ellipsoid_moment(&s, 1),
+            ellipsoid_moment(&s, 2),
+        ];
+        let mom_visc = [
+            w[0] * (c_ang * ii[0] + c_slender * (i_max - ii[0])),
+            w[1] * (c_ang * ii[1] + c_slender * (i_max - ii[1])),
+            w[2] * (c_ang * ii[2] + c_slender * (i_max - ii[2])),
+        ];
+        let drag_ang = beta * pi * eq_d.powi(3) + rho * norm3(&mom_visc);
+        for i in 0..3 {
+            lfrc[i] -= drag_ang * w[i];
+        }
+
+        // ── Scale by interaction coefficient and accumulate ──
+        for val in &mut lfrc {
+            *val *= interaction_coef;
+        }
+        let bfrc = rotate_spatial_to_world(&data.geom_xmat[gid], &lfrc);
+        mj_apply_ft(
+            model,
+            &data.xpos,
+            &data.xquat,
+            &Vector3::new(bfrc[3], bfrc[4], bfrc[5]),
+            &Vector3::new(bfrc[0], bfrc[1], bfrc[2]),
+            &data.geom_xpos[gid],
+            body_id,
+            &mut data.qfrc_fluid,
+        );
+    }
+}
+
+/// Top-level fluid force dispatch. Returns `true` if any fluid forces were computed.
+/// Matches MuJoCo's `mj_fluid()` in `engine_passive.c`.
+fn mj_fluid(model: &Model, data: &mut Data) -> bool {
+    if model.density == 0.0 && model.viscosity == 0.0 {
+        return false;
+    }
+
+    // §40c: Sleep filtering — skip sleeping bodies (MuJoCo engine_passive.c pattern)
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+    let nbody = if sleep_filter {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+
+    for idx in 0..nbody {
+        let body_id = if sleep_filter {
+            data.body_awake_ind[idx]
+        } else {
+            idx
+        };
+
+        // Mass guard — applies to both models (matches MuJoCo)
+        if model.body_mass[body_id] < MJ_MINVAL {
+            continue;
+        }
+
+        // Dispatch: does any child geom have geom_fluid[0] > 0?
+        let geom_adr = model.body_geom_adr[body_id];
+        let geom_num = model.body_geom_num[body_id];
+        let use_ellipsoid =
+            (geom_adr..geom_adr + geom_num).any(|gid| model.geom_fluid[gid][0] > 0.0);
+
+        if use_ellipsoid {
+            mj_ellipsoid_fluid(model, data, body_id);
+        } else {
+            mj_inertia_box_fluid(model, data, body_id);
+        }
+    }
+
+    true
+}
+
 /// Compute passive forces (springs and dampers).
 ///
 /// Implements MuJoCo's passive force model:
@@ -11703,6 +12415,7 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     data.qfrc_passive.fill(0.0);
+    data.qfrc_fluid.fill(0.0);
     data.qfrc_gravcomp.fill(0.0);
     // qfrc_frictionloss is now populated post-solve from efc_force (§29).
     // No longer computed in passive forces.
@@ -11974,6 +12687,12 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         }
     }
 
+    // Fluid forces (§40): compute and add to qfrc_passive.
+    // qfrc_fluid is zeroed at the top; mj_fluid accumulates into it.
+    if mj_fluid(model, data) {
+        data.qfrc_passive += &data.qfrc_fluid;
+    }
+
     // Gravity compensation: compute and route to qfrc_passive (§35).
     // MuJoCo computes gravcomp after spring/damper/flex passive forces, then
     // conditionally routes via jnt_actgravcomp. We unconditionally add to
@@ -11984,7 +12703,7 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
 }
 
 /// Check if all DOFs affected by a tendon's Jacobian belong to sleeping trees (§16.5a').
-fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
+pub(crate) fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
     let ten_j = &data.ten_J[t];
     for dof in 0..model.nv {
         if ten_j[dof] != 0.0 && data.tree_awake[model.dof_treeid[dof]] {
@@ -14342,7 +15061,7 @@ fn quaternion_to_axis_angle(quat: &UnitQuaternion<f64>) -> Vector3<f64> {
 // =============================================================================
 
 /// Minimum value to prevent division by zero (matches MuJoCo's mjMINVAL).
-const MJ_MINVAL: f64 = 1e-15;
+pub(crate) const MJ_MINVAL: f64 = 1e-15;
 
 /// Compute KBIP stiffness K and damping B from solref parameters (§15.1).
 ///
@@ -14390,6 +15109,52 @@ fn compute_kbip(solref: [f64; 2], solimp: [f64; 5]) -> (f64, f64) {
 #[inline]
 fn compute_aref(k: f64, b: f64, imp: f64, pos: f64, margin: f64, vel: f64) -> f64 {
     -b * vel - k * imp * (pos - margin)
+}
+
+/// Normalize a quaternion [w, x, y, z]. Returns identity if norm < 1e-10.
+/// Matches MuJoCo's mju_normalize4 and our normalize_quaternion() convention.
+#[inline]
+fn normalize_quat4(q: [f64; 4]) -> [f64; 4] {
+    let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if norm > 1e-10 {
+        [q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm]
+    } else {
+        [1.0, 0.0, 0.0, 0.0] // identity
+    }
+}
+
+/// Compute ball joint limit quantities from a unit quaternion [w, x, y, z].
+/// Returns `(unit_dir, angle)` where:
+///   - `angle = |theta| >= 0` (unsigned rotation magnitude)
+///   - `unit_dir = sign(theta) * axis` (Jacobian direction)
+///
+/// When `angle < 1e-10` (near-identity), returns `(Vector3::z(), 0.0)`.
+/// The unit_dir value is arbitrary in this case — the caller must not use it
+/// because `dist = limit - 0 > 0` means no constraint is instantiated.
+///
+/// Matches MuJoCo's `mju_quat2Vel(angleAxis, q, 1)` followed by
+/// `value = mju_normalize3(angleAxis)`.
+fn ball_limit_axis_angle(q: [f64; 4]) -> (Vector3<f64>, f64) {
+    // Step 1: mju_quat2Vel with dt=1
+    let v = Vector3::new(q[1], q[2], q[3]);
+    let sin_half = v.norm();
+
+    // Guard: near-identity → angle ≈ 0, axis undefined.
+    if sin_half < 1e-10 {
+        return (Vector3::z(), 0.0);
+    }
+
+    let axis = v / sin_half; // unit rotation axis
+    let mut theta = 2.0 * sin_half.atan2(q[0]);
+    if theta > std::f64::consts::PI {
+        theta -= 2.0 * std::f64::consts::PI;
+    }
+
+    // Step 2: |theta * axis| = |theta|, direction = sign(theta) * axis.
+    let angle = theta.abs();
+    let unit_dir = if theta >= 0.0 { axis } else { -axis };
+
+    (unit_dir, angle)
 }
 
 /// Compute exact diagonal approximation of A = J·M⁻¹·J^T for one row (§15.12 step 2).
@@ -14613,7 +15378,26 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
                     nefc += 1;
                 }
             }
-            _ => {} // Ball/Free limits not implemented
+            MjJointType::Ball => {
+                let adr = model.jnt_qpos_adr[jnt_id];
+                let q = normalize_quat4([
+                    data.qpos[adr],
+                    data.qpos[adr + 1],
+                    data.qpos[adr + 2],
+                    data.qpos[adr + 3],
+                ]);
+                let (_, angle) = ball_limit_axis_angle(q);
+                let limit = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
+                let dist = limit - angle;
+                if dist < 0.0 {
+                    // margin = 0.0 (see S6)
+                    nefc += 1;
+                }
+            }
+            MjJointType::Free => {
+                // MuJoCo does not support free joint limits.
+                // Silently ignore — no constraint rows.
+            }
         }
     }
 
@@ -14947,7 +15731,48 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
                     );
                 }
             }
-            _ => {} // Ball/Free limits not implemented
+            MjJointType::Ball => {
+                let qpos_adr = model.jnt_qpos_adr[jnt_id];
+                let dof_adr = model.jnt_dof_adr[jnt_id];
+                let q = normalize_quat4([
+                    data.qpos[qpos_adr],
+                    data.qpos[qpos_adr + 1],
+                    data.qpos[qpos_adr + 2],
+                    data.qpos[qpos_adr + 3],
+                ]);
+                let (unit_dir, angle) = ball_limit_axis_angle(q);
+                let limit = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
+                let dist = limit - angle;
+
+                if dist < 0.0 {
+                    // margin = 0.0 (see S6)
+                    // Jacobian: -unit_dir on 3 angular DOFs
+                    data.efc_J[(row, dof_adr)] = -unit_dir.x;
+                    data.efc_J[(row, dof_adr + 1)] = -unit_dir.y;
+                    data.efc_J[(row, dof_adr + 2)] = -unit_dir.z;
+
+                    // Constraint-space velocity: J · qvel
+                    let vel = -(unit_dir.x * data.qvel[dof_adr]
+                        + unit_dir.y * data.qvel[dof_adr + 1]
+                        + unit_dir.z * data.qvel[dof_adr + 2]);
+
+                    finalize_row!(
+                        model.jnt_solref[jnt_id],
+                        model.jnt_solimp[jnt_id],
+                        dist,
+                        0.0,
+                        vel,
+                        0.0,
+                        ConstraintType::LimitJoint,
+                        1,
+                        jnt_id,
+                        [0.0; 5]
+                    );
+                }
+            }
+            MjJointType::Free => {
+                // No limit support for free joints (matches MuJoCo).
+            }
         }
     }
 
@@ -21307,29 +22132,29 @@ mod sensor_tests {
     }
 
     // ========================================================================
-    // Tendon Sensor Tests (stub behavior)
+    // Tendon Sensor Tests (zero-tendon model)
     // ========================================================================
 
     #[test]
-    fn test_tendon_pos_sensor_stub() {
+    fn test_tendon_pos_sensor_no_tendon() {
         let mut model = make_sensor_test_model();
         add_sensor(
             &mut model,
             MjSensorType::TendonPos,
             MjSensorDataType::Position,
-            MjObjectType::Body, // doesn't matter for stub
+            MjObjectType::Body, // no tendon in model
             0,
         );
 
         let mut data = model.make_data();
         data.forward(&model).unwrap();
 
-        // Should output 0 (stub until tendon pipeline is wired)
+        // No tendon exists (ntendon == 0), sensor reads 0
         assert_eq!(data.sensordata[0], 0.0);
     }
 
     #[test]
-    fn test_tendon_vel_sensor_stub() {
+    fn test_tendon_vel_sensor_no_tendon() {
         let mut model = make_sensor_test_model();
         add_sensor(
             &mut model,
@@ -23364,6 +24189,110 @@ mod subquat_tests {
 }
 
 // =============================================================================
+// Unit tests — ball_limit_axis_angle
+// =============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod ball_limit_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use std::f64::consts::PI;
+
+    /// Build quaternion [w, x, y, z] for rotation of `angle_deg` degrees about `axis`.
+    fn quat_from_axis_angle_deg(axis: [f64; 3], angle_deg: f64) -> [f64; 4] {
+        let half = (angle_deg / 2.0_f64).to_radians();
+        let norm = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        let s = half.sin() / norm;
+        [half.cos(), axis[0] * s, axis[1] * s, axis[2] * s]
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_90deg_about_z() {
+        // 90° rotation about Z: q = (cos(45°), 0, 0, sin(45°))
+        let q = quat_from_axis_angle_deg([0.0, 0.0, 1.0], 90.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, PI / 2.0, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.z, 1.0, epsilon = 1e-10); // +Z (theta > 0)
+        assert!(unit_dir.x.abs() < 1e-10);
+        assert!(unit_dir.y.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_50deg_about_oblique() {
+        // 50° about axis (0.6, 0.8, 0) — matches acceptance criterion 8
+        let q = quat_from_axis_angle_deg([0.6, 0.8, 0.0], 50.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, 50.0_f64.to_radians(), epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.x, 0.6, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.y, 0.8, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_200deg_wraps() {
+        // 200° about Z → wraps to theta = -160°, angle = 160°
+        let q = quat_from_axis_angle_deg([0.0, 0.0, 1.0], 200.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, 160.0_f64.to_radians(), epsilon = 1e-10);
+        // theta < 0 after wrap, so unit_dir = sign(-) * z = -z
+        assert_relative_eq!(unit_dir.z, -1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_identity() {
+        let q = [1.0, 0.0, 0.0, 0.0];
+        let (_, angle) = ball_limit_axis_angle(q);
+        assert!(angle < 1e-10, "identity should have zero rotation angle");
+        // unit_dir is arbitrary (z-axis default) — not asserted
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_negative_quat() {
+        // -q represents the same rotation as q. Verify identical output.
+        let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 60.0);
+        let neg_q = [-q[0], -q[1], -q[2], -q[3]];
+        let (dir1, angle1) = ball_limit_axis_angle(q);
+        let (dir2, angle2) = ball_limit_axis_angle(neg_q);
+        assert_relative_eq!(angle1, angle2, epsilon = 1e-10);
+        assert_relative_eq!(dir1, dir2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_exactly_180deg() {
+        // Boundary case: exactly π rotation
+        let q = quat_from_axis_angle_deg([0.0, 1.0, 0.0], 180.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, PI, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.y, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_exact_boundary() {
+        // Rotation angle exactly equals a typical limit — verify angle is precise
+        let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 45.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, 45.0_f64.to_radians(), epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.x, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_near_zero_quaternion() {
+        // A quaternion with near-zero norm (degenerate) should be caught by
+        // normalize_quat4 (returns identity) before reaching ball_limit_axis_angle.
+        // But ball_limit_axis_angle itself should also handle near-zero sin_half
+        // gracefully — returning angle = 0 and an arbitrary direction.
+        let q = [1.0, 1e-15, 1e-15, 1e-15]; // Nearly identity, sin_half ≈ 1.7e-15
+        let (_, angle) = ball_limit_axis_angle(q);
+        assert!(
+            angle < 1e-10,
+            "near-zero sin_half should produce angle ≈ 0: got {angle}"
+        );
+        // unit_dir is arbitrary (z-axis default) — not asserted
+    }
+}
+
+// =============================================================================
 // Unit tests — mj_jac_site vs accumulate_point_jacobian
 // =============================================================================
 
@@ -23946,5 +24875,95 @@ mod contact_param_tests {
         assert_relative_eq!(mu[0], 1.0, epsilon = 1e-15);
         assert_relative_eq!(mu[2], 0.005, epsilon = 1e-15);
         assert_relative_eq!(mu[3], 0.0001, epsilon = 1e-15);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod wrap_inside_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// T5. Newton convergence and tangency verification.
+    ///
+    /// Reference geometry: end0 = (2, 0), end1 = (1.5, 1.5√3), radius = 1.
+    /// |end0| = 2, |end1| = 3, G = π/3 exactly.
+    #[test]
+    fn t5_newton_convergence_and_tangency() {
+        let end0 = Vector2::new(2.0, 0.0);
+        let end1 = Vector2::new(1.5, 1.5 * 3.0_f64.sqrt());
+        let radius = 1.0;
+
+        let result = wrap_inside_2d(end0, end1, radius);
+        let t = result.expect("wrap_inside_2d should return Some for this geometry");
+
+        // Tangent point lies on the circle.
+        assert_relative_eq!(t.norm(), radius, epsilon = 1e-10);
+
+        // Tangency (stationarity) condition:
+        // τ · (û₀ + û₁) = 0, where τ is the circle tangent at t.
+        let tau = Vector2::new(-t.y, t.x).normalize(); // tangent = perpendicular to radial
+        let u0 = (t - end0).normalize();
+        let u1 = (t - end1).normalize();
+        let stationarity = tau.dot(&(u0 + u1)).abs();
+        assert!(
+            stationarity < 1e-8,
+            "tangency condition violated: |τ·(û₀+û₁)| = {stationarity:.2e}"
+        );
+    }
+
+    /// T11. Degenerate: segment crosses circle.
+    ///
+    /// Endpoints on opposite sides of the circle — the straight line
+    /// intersects the circle. wrap_inside_2d must return None.
+    #[test]
+    fn t11_segment_crosses_circle() {
+        let end0 = Vector2::new(2.0, 0.0);
+        let end1 = Vector2::new(-2.0, 0.1); // opposite side, segment crosses circle
+        let radius = 1.0;
+
+        let result = wrap_inside_2d(end0, end1, radius);
+        assert!(
+            result.is_none(),
+            "expected None when segment crosses circle"
+        );
+    }
+
+    /// T12. Degenerate: endpoint exactly at circle surface.
+    ///
+    /// When |endpoint| = radius, the ≤ check rejects it. Returns None.
+    #[test]
+    fn t12_endpoint_at_surface() {
+        let end0 = Vector2::new(1.0, 0.0); // exactly at radius
+        let end1 = Vector2::new(2.0, 1.0);
+        let radius = 1.0;
+
+        let result = wrap_inside_2d(end0, end1, radius);
+        assert!(
+            result.is_none(),
+            "expected None when endpoint is at circle surface"
+        );
+    }
+
+    /// T13. Fallback behavior: near-degenerate geometry.
+    ///
+    /// Endpoints barely outside the circle (A ≈ 1, B ≈ 1) and close together
+    /// on the same angular side so the connecting segment clears the circle.
+    /// This triggers the cosG > 1-ε fallback path. Must return Some(fallback)
+    /// with the fallback point on the circle surface.
+    #[test]
+    fn t13_fallback_on_circle() {
+        let r = 1.0;
+        // Both endpoints barely outside, nearly coincident (small angular separation).
+        // Segment at x ≈ 1+1e-8 clears the circle. cosG ≈ 1 → fallback.
+        let d = r + 1e-8;
+        let end0 = Vector2::new(d, 1e-6);
+        let end1 = Vector2::new(d, -1e-6);
+
+        let result = wrap_inside_2d(end0, end1, r);
+        let t = result.expect("near-degenerate should return Some(fallback), not None");
+
+        // Fallback point must lie on the circle surface.
+        assert_relative_eq!(t.norm(), r, epsilon = 1e-10);
     }
 }

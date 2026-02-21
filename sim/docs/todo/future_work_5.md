@@ -171,6 +171,7 @@ by constraint row. During assembly, each constraint row populates these fields:
   collision time). **Friction loss** → `DEFAULT_SOLREF` for Phase A (MuJoCo has
   separate `dof_solref_fri`/`dof_solimp_fri` fields; Phase C should add these
   if parity is needed). Same source pattern applies to `efc_solimp[i]`.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-23.
 - `efc_mu[i]`: 5-element friction coefficients (contacts only, `[0;5]` otherwise)
 - `efc_dim[i]`: constraint group size for stepping. For elliptic contacts:
   `dim` for all rows belonging to the same contact group. For everything else
@@ -267,6 +268,7 @@ constraint-space residual `jar_i = (J · qacc − aref)_i`:
   body-weight approximation requires adding `body_invweight0`,
   `dof_invweight0`, and `tendon_invweight0` to Model (computed at build
   time from the mass matrix at `qpos0`).
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-39.
 
 - `floss_i` is the friction loss saturation force (`frictionloss` attribute on
   the joint or tendon, zero for non-friction constraints)
@@ -352,6 +354,7 @@ Where:
   forces accumulated via `mj_xfrcAccumulate()`). Our pipeline does not
   currently support `xfrc_applied`; when/if it is added, it must be included
   in `qfrc_smooth`.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-21.
 - `s_i` is the per-constraint penalty (table in §15.1)
 
 **Cost variable convention:** Throughout this spec, `cost` tracked by the
@@ -405,6 +408,7 @@ is sufficient — precision issues from large `D_i` are mitigated by the
 impedance model clamping `D_i` through `solimp` width. Phase C should evaluate
 whether switching to `LDL^T` for the Hessian factor improves robustness on
 extreme stiffness settings.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-40.
 
 **Incremental updates** (avoiding full refactorization each iteration):
 - Constraint transitions to `Quadratic`: **rank-1 Cholesky update** — add
@@ -1045,6 +1049,7 @@ should emit a warning and fall through to PGS. Phase C may explore extending
 Newton to implicit integration if needed. Also note: `forward_skip_sensors()`
 (used by RK4 intermediate stages) also calls `mj_fwd_acceleration()` and must
 apply the same skip logic.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-41.
 
 ##### 15.9 Warm Start ✅
 
@@ -1070,13 +1075,15 @@ The existing `efc_lambda` warmstart cache (keyed by `WarmstartKey`) remains
 for PGS/CG. The Newton solver does not use it — it works in `qacc` space.
 Constraint forces are recovered from `qacc` after convergence.
 
-##### 15.10 Noslip Post-Processor (deferred)
+##### 15.10 Noslip Post-Processor ✅ (Implemented in §33)
 
 MuJoCo's `noslip_iterations` option runs a modified PGS pass after the main
 solve that updates only friction forces without regularization, suppressing
-slip from soft contacts. This is an ad hoc post-processor (not a well-defined
-optimization) and is deferred to a follow-up. The `noslip_iterations` MJCF
-field should be parsed and stored but ignored with a warning.
+slip from soft contacts. Fully implemented in §33 (`noslip_postprocess()` in
+`mujoco_pipeline.rs`) with PGS iteration, QCQP cone projection, and
+cost-based convergence for both elliptic and pyramidal friction cones. The
+`noslip_iterations` and `noslip_tolerance` MJCF fields are parsed and stored
+in `Model`, and the post-processor is dispatched after all solver types.
 
 ##### 15.11 Integration Points ✅
 
@@ -1153,6 +1160,7 @@ pub efc_imp: Vec<f64>,                      // per-row impedance value (from sol
 // by MuJoCo but never read by any MuJoCo subsystem (solvers, sensors, derivatives).
 // It exists solely for external API introspection. If external parity is needed,
 // Phase C can add `efc_impP: Vec<f64>`.
+// Tracked in [future_work_10b.md](./future_work_10b.md) §DT-22.
 pub efc_aref: DVector<f64>,                 // per-row reference acceleration
 pub efc_floss: Vec<f64>,                    // per-row friction loss saturation
 pub efc_mu: Vec<[f64; 5]>,                  // per-row friction coefs (contacts, [0;5] otherwise)
@@ -2542,6 +2550,7 @@ fn forward(&mut self, model: &Model) -> Result<(), StepError> {
         // Note: MuJoCo optimizes this with mj_collision_incremental()
         // (only re-collide geoms in newly-woken trees). This optimization
         // is deferred — full re-collision is correct and simpler.
+        // Tracked in [future_work_10b.md](./future_work_10b.md) §DT-24.
     }
 
     // 8. Equality constraint wake (§16.13.3)
@@ -4732,6 +4741,7 @@ backward iteration is correct and the cost is O(nbody) with trivial
 constants (one addition per body). Selective backward-pass optimization
 is deferred to §16.29 (selective CRBA) where it can be done correctly
 with per-island block structure.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-43.
 
 | Function | Loop | Current Skip | Conversion | Notes |
 |----------|------|-------------|------------|-------|
@@ -4982,6 +4992,7 @@ exists only for the Newton solver's Hessian (`SparseHessian`, used when
 indexing, which is O(nv_k²) per island — acceptable for typical island
 sizes. If a sparse `qM` representation is added in the future, the
 extraction should iterate nonzero entries via CSC accessors instead.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-44.
 
 ```rust
 // M_island is the principal submatrix of qM for island k's DOFs.
@@ -5183,6 +5194,7 @@ rank-1 update/downdate and the line search to operate on block-diagonal
 structure. This is deferred. PGS and CG solvers are dimension-agnostic
 and work on any `(A, b)` system size, so they benefit from island-local
 assembly immediately.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-42.
 
 ###### 16.28.6 Acceptance Criteria
 

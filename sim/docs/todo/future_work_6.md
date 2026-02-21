@@ -223,6 +223,7 @@ compilation behavior. All attributes use MuJoCo defaults.
   `<lengthrange>` child element. These have no effect on simulation correctness
   and can be implemented later. Store them on `MjcfCompiler` so they are preserved
   for round-tripping.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-10.
 
 ##### Part B — `<include>` file support
 
@@ -1214,7 +1215,9 @@ Assert: `load_model(...)` returns `Err`. Error message contains `"ghost"`.
   are outside the body tree (S5) and have their own `class` attributes
 - Schema-level rejection of `childclass` on `<worldbody>` — correct by construction (S4)
 - `range` as a defaultable joint attribute — not in `MjcfJointDefaults` (separate item)
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-11.
 - Programmatic API enforcement that `worldbody.childclass` must be `None`
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-12.
 
 #### Implementation Notes
 
@@ -1699,7 +1702,9 @@ criterion traces to one or more:
   springs have zero force), not at `qpos0`. CortenForge has no `qpos_spring`
   field — it uses `qpos0` for this purpose. The two are equivalent when
   `qpos_spring == qpos0` (the default and common case). Implementing `qpos_spring`
-  is out of scope for this item; see future work. The spec and implementation here
+  is out of scope for this item; see future work.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-13.
+  The spec and implementation here
   use `qpos0`, matching current CortenForge behavior.
 - **S4 — Validation:** `low ≤ high` is required (non-decreasing).
 - **S5 — Compiled model:** `tendon_lengthspring` has dimensions `ntendon x 2`.

@@ -177,3 +177,29 @@ pub mod unified_solvers;
 
 /// Noslip acceptance tests: PGS/CG/Newton noslip, friction-loss, pyramidal.
 pub mod noslip;
+
+// ============================================================================
+// Ball Joint Limits Tests (§38)
+// ============================================================================
+
+/// Ball joint limit tests: cone constraint, Jacobian, wrapping, multi-joint,
+/// near-π, degenerate range, negative-w, unnormalized quaternion, margin anchor.
+pub mod ball_joint_limits;
+
+// ============================================================================
+// Fluid / Aerodynamic Force Tests (§40)
+// ============================================================================
+
+/// Fluid force tests: inertia-box model, ellipsoid model, body dispatch,
+/// default inheritance, kappa quadrature, mass guard, zero fluid regression.
+#[allow(clippy::excessive_precision, clippy::needless_range_loop)]
+pub mod fluid_forces;
+
+// ============================================================================
+// Fluid Force Velocity Derivative Tests (§40a)
+// ============================================================================
+
+/// Fluid derivative tests: ∂qfrc_fluid/∂qvel for both models, FD validation,
+/// energy dissipation, symmetry, guards, joint types, multi-body.
+#[allow(clippy::excessive_precision, clippy::needless_range_loop)]
+pub mod fluid_derivatives;

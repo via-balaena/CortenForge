@@ -155,7 +155,7 @@ forward():
                mj_island              Island discovery (DFS flood-fill over constraints)
   Position     mj_fwd_position       FK from qpos → body poses (skips sleeping bodies)
                mj_fwd_position_flex  Flex vertex positions from qpos
-               mj_fwd_tendon         Tendon lengths + Jacobians (fixed + spatial)
+               mj_fwd_tendon         Tendon lengths + Jacobians + wrap visualization data (fixed + spatial)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
                                      + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
                mj_transmission_body_dispatch  Body transmission moment arms (§36, requires contacts)
@@ -189,7 +189,7 @@ mj_runge_kutta() [RungeKutta4]:
 ```
 mjd_smooth_vel():
   Zeros data.qDeriv, then accumulates:
-    mjd_passive_vel        ∂(qfrc_passive)/∂qvel (diagonal damping + tendon rank-1)
+    mjd_passive_vel        ∂(qfrc_passive)/∂qvel (fluid §40a + damping + tendon, sleep-filtered §40c)
     mjd_actuator_vel       ∂(qfrc_actuator)/∂qvel (affine gain/bias velocity terms)
     mjd_rne_vel            −∂(qfrc_bias)/∂qvel (chain-rule RNE + direct gyroscopic)
 mjd_transition_fd():
@@ -413,7 +413,8 @@ Standalone cable-driven actuation and routing library:
 
 **Note:** Both fixed and spatial tendons are implemented directly in the MuJoCo
 pipeline (`mj_fwd_tendon` in sim-core). Spatial tendons include sphere and
-cylinder wrapping, sidesite disambiguation, pulley divisors, and Jacobian
+cylinder wrapping, sidesite disambiguation, `wrap_inside` inverse wrapping,
+pulley divisors, and Jacobian
 computation via `accumulate_point_jacobian()`. This crate remains a standalone
 reference library for advanced tendon analysis.
 
@@ -442,7 +443,7 @@ automatic limit inference (`autolimits`), inertia computation
 `discardvisual`, `fusestatic`).
 `<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
 (fixed and spatial tendons fully supported, including sphere/cylinder wrapping,
-sidesite disambiguation, and pulley divisors;
+sidesite disambiguation, `wrap_inside` inverse wrapping, and pulley divisors;
 all 32 pipeline sensor types functional and wired from MJCF via
 `process_sensors()` in `model_builder.rs`). The model builder expands all 8 actuator
 shortcut types to their general gain/bias/dynamics representation (matching

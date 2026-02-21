@@ -184,12 +184,12 @@ pub use defaults::DefaultResolver;
 pub use error::{MjcfError, Result};
 pub use parser::parse_mjcf_str;
 pub use types::{
-    AngleUnit, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody,
-    MjcfCompiler, MjcfConeType, MjcfConnect, MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag,
-    MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator, MjcfJacobianType,
-    MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults,
-    MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType,
-    MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld, SpatialPathElement,
+    AngleUnit, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType,
+    MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect, MjcfDefault, MjcfDistance, MjcfEquality,
+    MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator,
+    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh,
+    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
+    MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
 pub use validation::{ValidationResult, validate, validate_tendons};
 

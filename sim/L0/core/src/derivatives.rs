@@ -58,21 +58,31 @@ use crate::mujoco_pipeline::{
     ActuatorTransmission,
     BiasType,
     Data,
+    ENABLE_SLEEP,
     GainType,
     Integrator,
+    // §40a fluid derivative infrastructure
+    MJ_MINVAL,
     MjJointType,
     Model,
     SpatialVector,
     StepError,
     // pub(crate) functions from mujoco_pipeline
     cholesky_solve_in_place,
+    ellipsoid_moment,
+    fluid_geom_semi_axes,
     joint_motion_subspace,
     lu_solve_factored,
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
+    mj_jac_body_com,
+    mj_jac_geom,
     mj_solve_sparse,
     mj_solve_sparse_batch,
+    norm3,
+    object_velocity_local,
     spatial_cross_motion,
+    tendon_all_dofs_sleeping,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 
@@ -441,8 +451,8 @@ fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>) -> DVector
 /// Compute ∂(qfrc_passive)/∂qvel and add to data.qDeriv.
 ///
 /// Per-DOF damping (all joint types):
-///   qfrc_passive[i] -= damping[i] · qvel[i]
-///   ⇒ ∂/∂qvel[i] = −damping[i]  (diagonal)
+///   qfrc_passive\[i\] -= damping\[i\] · qvel\[i\]
+///   ⇒ ∂/∂qvel\[i\] = −damping\[i\]  (diagonal)
 ///
 /// Tendon damping (explicit mode only):
 ///   qfrc_passive += J^T · (−b · J · qvel)
@@ -462,19 +472,37 @@ fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>) -> DVector
 /// forces. Per-DOF damping is included for all modes (needed by both Euler
 /// and implicit velocity derivative formulas).
 #[allow(non_snake_case)]
-pub(crate) fn mjd_passive_vel(model: &Model, data: &mut Data) {
-    // Per-DOF damping: diagonal entries.
-    for i in 0..model.nv {
+pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
+    // §40c: Sleep filtering — compute once, used by per-DOF and tendon loops.
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let use_dof_ind = sleep_enabled && data.nv_awake < model.nv;
+
+    // 1. Fluid derivatives (has its own internal body-level sleep filtering)
+    mjd_fluid_vel(model, data);
+
+    // 2. Per-DOF damping: diagonal entries.
+    // §40c: Use dof_awake_ind indirection to skip sleeping DOFs.
+    let nv = if use_dof_ind { data.nv_awake } else { model.nv };
+    for idx in 0..nv {
+        let i = if use_dof_ind {
+            data.dof_awake_ind[idx]
+        } else {
+            idx
+        };
         data.qDeriv[(i, i)] += -model.implicit_damping[i];
     }
 
-    // Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
+    // 3. Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
     // Skipped in implicit mode: mj_fwd_passive skips tendon damping forces
     // when implicit_mode is true, so there is no tendon damping contribution
     // to differentiate.
     let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
     if !implicit_mode {
         for t in 0..model.ntendon {
+            // §40c: Skip tendon if ALL target DOFs are sleeping.
+            if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+                continue;
+            }
             let b = model.tendon_damping[t];
             if b <= 0.0 {
                 continue;
@@ -883,12 +911,12 @@ pub(crate) fn mjd_rne_vel(model: &Model, data: &mut Data) {
     }
 
     // ========== Direct gyroscopic derivative for Ball/Free joints ==========
-    // mj_rne computes gyroscopic torques ω × (I·ω) separately from the
-    // Featherstone RNE path. Both contribute to qfrc_bias, so we differentiate
-    // both paths. The Featherstone chain-rule above handles v ×* (I·v), and
-    // this section handles the direct body-frame ω × (I·ω) term.
+    // The Featherstone backward pass above captures spatial Coriolis via
+    // crossForce_vel(I·v) and crossForce_frc(v)·I terms, but body-frame
+    // gyroscopic torques ω × (I·ω) have an additional derivative term
+    // not covered by the spatial chain-rule propagation.
     //
-    // For Ball joint: qfrc_bias[dof..dof+3] += ω_body × (I · ω_body)
+    // For Ball joint: qfrc_bias[dof..dof+3] -= ω_body × (I · ω_body)
     //   where ω_body = qvel[dof..dof+3] and I = diag(body_inertia)
     //   d(ω × I·ω)/dω_j = e_j × (I·ω) + ω × (I·e_j)
     //
@@ -1731,4 +1759,990 @@ pub fn fd_convergence_check(
     let d2 = mjd_transition_fd(model, data, &c2)?;
     let (err, _) = max_relative_error(&d1.A, &d2.A, 1e-10);
     Ok(err < tol)
+}
+
+// ============================================================================
+// §40a — Fluid Force Velocity Derivatives
+// ============================================================================
+
+/// Cross-product Jacobians: `Da = ∂(a×b)/∂a`, `Db = ∂(a×b)/∂b`.
+/// Both are 3×3 row-major. `Da = [b]×^T`, `Db = −[a]×^T`.
+#[inline]
+fn mjd_cross(a: &[f64; 3], b: &[f64; 3]) -> ([f64; 9], [f64; 9]) {
+    let da = [
+        0.0, b[2], -b[1], // row 0
+        -b[2], 0.0, b[0], // row 1
+        b[1], -b[0], 0.0, // row 2
+    ];
+    let db = [
+        0.0, -a[2], a[1], // row 0
+        a[2], 0.0, -a[0], // row 1
+        -a[1], a[0], 0.0, // row 2
+    ];
+    (da, db)
+}
+
+/// Rotate both 3-row blocks of a 6×nv Jacobian to local frame: `J_local = R^T · J_world`.
+#[allow(non_snake_case)]
+fn rotate_jac_to_local(j: &mut DMatrix<f64>, r: &Matrix3<f64>) {
+    let rt = r.transpose();
+    let nv = j.ncols();
+    // Rotate angular rows (0–2)
+    for c in 0..nv {
+        let v = Vector3::new(j[(0, c)], j[(1, c)], j[(2, c)]);
+        let rv = rt * v;
+        j[(0, c)] = rv.x;
+        j[(1, c)] = rv.y;
+        j[(2, c)] = rv.z;
+    }
+    // Rotate linear rows (3–5)
+    for c in 0..nv {
+        let v = Vector3::new(j[(3, c)], j[(4, c)], j[(5, c)]);
+        let rv = rt * v;
+        j[(3, c)] = rv.x;
+        j[(4, c)] = rv.y;
+        j[(5, c)] = rv.z;
+    }
+}
+
+/// Accumulate `J^T · B · J` into `q_deriv`. B is 6×6 as `[[f64; 6]; 6]`.
+/// Zero-skips on J entries for efficiency (body Jacobians are sparse).
+#[allow(non_snake_case)]
+fn add_jtbj(q_deriv: &mut DMatrix<f64>, j: &DMatrix<f64>, b: &[[f64; 6]; 6]) {
+    let nv = j.ncols();
+    let b_mat = Matrix6::from_fn(|i, k| b[i][k]);
+    // Compute BJ = B · J (6×nv)
+    // Column-by-column to avoid allocating a full 6×nv temporary
+    for c in 0..nv {
+        let jcol = nalgebra::Vector6::new(
+            j[(0, c)],
+            j[(1, c)],
+            j[(2, c)],
+            j[(3, c)],
+            j[(4, c)],
+            j[(5, c)],
+        );
+        let bj_col = b_mat * jcol;
+        // Accumulate J^T[:,r] · BJ[:,c] for each r
+        for r in 0..nv {
+            let mut dot = 0.0;
+            for k in 0..6 {
+                let jkr = j[(k, r)];
+                if jkr != 0.0 {
+                    dot += jkr * bj_col[k];
+                }
+            }
+            if dot != 0.0 {
+                q_deriv[(r, c)] += dot;
+            }
+        }
+    }
+}
+
+/// Rank-1 update: `q_deriv += b · row^T · row`. Zero-skips for efficiency.
+#[allow(non_snake_case)]
+fn add_rank1(q_deriv: &mut DMatrix<f64>, b: f64, j: &DMatrix<f64>, row_idx: usize) {
+    let nv = j.ncols();
+    for r in 0..nv {
+        let jr = j[(row_idx, r)];
+        if jr == 0.0 {
+            continue;
+        }
+        let br = b * jr;
+        for c in 0..nv {
+            let jc = j[(row_idx, c)];
+            if jc != 0.0 {
+                q_deriv[(r, c)] += br * jc;
+            }
+        }
+    }
+}
+
+/// Add 3×3 matrix D (row-major `[f64; 9]`) to B at block position `(row_block, col_block)`.
+fn add_to_quadrant(b: &mut [[f64; 6]; 6], d: &[f64; 9], row_block: usize, col_block: usize) {
+    let r0 = 3 * row_block;
+    let c0 = 3 * col_block;
+    for i in 0..3 {
+        for j in 0..3 {
+            b[r0 + i][c0 + j] += d[3 * i + j];
+        }
+    }
+}
+
+// ── Inertia-box derivatives (S4) ──
+
+/// Compute inertia-box fluid velocity derivatives for a single body.
+/// 6 diagonal B scalars → 6 rank-1 updates.
+#[allow(non_snake_case, clippy::needless_range_loop)]
+fn mjd_inertia_box_fluid(model: &Model, data: &mut Data, body_id: usize) {
+    let rho = model.density;
+    let beta = model.viscosity;
+    let mass = model.body_mass[body_id];
+    let inertia = model.body_inertia[body_id];
+
+    // Equivalent box dimensions (same as forward computation)
+    let bx = ((inertia.y + inertia.z - inertia.x).max(MJ_MINVAL) / mass * 6.0).sqrt();
+    let by = ((inertia.x + inertia.z - inertia.y).max(MJ_MINVAL) / mass * 6.0).sqrt();
+    let bz = ((inertia.x + inertia.y - inertia.z).max(MJ_MINVAL) / mass * 6.0).sqrt();
+    let box_dims = [bx, by, bz];
+
+    // Local velocity at body CoM in inertia frame (same as forward)
+    let mut lvel = object_velocity_local(
+        model,
+        data,
+        body_id,
+        &data.xipos[body_id],
+        &data.ximat[body_id],
+    );
+    let wind_local = data.ximat[body_id].transpose() * model.wind;
+    lvel[3] -= wind_local.x;
+    lvel[4] -= wind_local.y;
+    lvel[5] -= wind_local.z;
+
+    let diam = (bx + by + bz) / 3.0;
+    let pi = std::f64::consts::PI;
+
+    // Compute 6 diagonal B entries: b_k = viscous_k + quadratic_k
+    let mut b = [0.0f64; 6];
+
+    // Angular axes (k = 0,1,2)
+    for k in 0..3 {
+        let j = (k + 1) % 3;
+        let l = (k + 2) % 3;
+        if beta > 0.0 {
+            b[k] += -pi * diam.powi(3) * beta;
+        }
+        if rho > 0.0 {
+            b[k] += -2.0 * rho * box_dims[k] * (box_dims[j].powi(4) + box_dims[l].powi(4)) / 64.0
+                * lvel[k].abs();
+        }
+    }
+
+    // Linear axes (k = 3,4,5), mapping to box axes (0,1,2)
+    for k in 0..3 {
+        let j = (k + 1) % 3;
+        let l = (k + 2) % 3;
+        if beta > 0.0 {
+            b[3 + k] += -3.0 * pi * diam * beta;
+        }
+        if rho > 0.0 {
+            b[3 + k] += -2.0 * 0.5 * rho * box_dims[j] * box_dims[l] * lvel[3 + k].abs();
+        }
+    }
+
+    // Jacobian at body CoM, rotated to inertia frame
+    let mut jac = mj_jac_body_com(model, data, body_id);
+    rotate_jac_to_local(&mut jac, &data.ximat[body_id]);
+
+    // 6 rank-1 updates: qDeriv += b_k · J[k,:]^T · J[k,:]
+    for k in 0..6 {
+        if b[k] != 0.0 {
+            add_rank1(&mut data.qDeriv, b[k], &jac, k);
+        }
+    }
+}
+
+// ── Ellipsoid component derivatives (S5) ──
+
+/// Component 1: Added mass (gyroscopic) derivatives.
+/// Fills all four quadrants of B.
+fn mjd_added_mass_forces(
+    b: &mut [[f64; 6]; 6],
+    rho: f64,
+    vmass: &[f64; 3],
+    vinertia: &[f64; 3],
+    w: &[f64; 3],
+    v: &[f64; 3],
+) {
+    // p_ang = ρ·[vi₀·ω₀, vi₁·ω₁, vi₂·ω₂]
+    let p_ang = [
+        rho * vinertia[0] * w[0],
+        rho * vinertia[1] * w[1],
+        rho * vinertia[2] * w[2],
+    ];
+    // p_lin = ρ·[vm₀·v₀, vm₁·v₁, vm₂·v₂]
+    let p_lin = [
+        rho * vmass[0] * v[0],
+        rho * vmass[1] * v[1],
+        rho * vmass[2] * v[2],
+    ];
+
+    // Term 1: torque += p_ang × ω → Q(0,0)
+    {
+        let (mut da, db) = mjd_cross(&p_ang, w);
+        // Chain rule: ∂p_ang/∂ω = diag(ρ·vi) → scale columns of Da
+        for i in 0..9 {
+            da[i] *= rho * vinertia[i % 3];
+        }
+        add_to_quadrant(b, &db, 0, 0);
+        add_to_quadrant(b, &da, 0, 0);
+    }
+
+    // Term 2: torque += p_lin × v → Q(0,1)
+    {
+        let (mut da, db) = mjd_cross(&p_lin, v);
+        // Chain rule: ∂p_lin/∂v = diag(ρ·vm) → scale columns of Da
+        for i in 0..9 {
+            da[i] *= rho * vmass[i % 3];
+        }
+        add_to_quadrant(b, &db, 0, 1);
+        add_to_quadrant(b, &da, 0, 1);
+    }
+
+    // Term 3: force += p_lin × ω → Q(1,0) for Db, Q(1,1) for Da
+    {
+        let (mut da, db) = mjd_cross(&p_lin, w);
+        // Chain rule: ∂p_lin/∂v = diag(ρ·vm) → scale columns of Da
+        for i in 0..9 {
+            da[i] *= rho * vmass[i % 3];
+        }
+        add_to_quadrant(b, &db, 1, 0); // ∂(p_lin × ω)/∂ω → force/ω
+        add_to_quadrant(b, &da, 1, 1); // ∂(p_lin × ω)/∂p_lin · ∂p_lin/∂v → force/v
+    }
+}
+
+/// Component 2: Magnus lift derivative.
+/// Fills Q(1,0) and Q(1,1).
+fn mjd_magnus_force(
+    b: &mut [[f64; 6]; 6],
+    c_mag: f64,
+    rho: f64,
+    vol: f64,
+    w: &[f64; 3],
+    v: &[f64; 3],
+) {
+    let c = c_mag * rho * vol;
+    let sw = [c * w[0], c * w[1], c * w[2]];
+    let sv = [c * v[0], c * v[1], c * v[2]];
+    let (da, db) = mjd_cross(&sw, &sv);
+    add_to_quadrant(b, &da, 1, 0); // ∂F/∂ω
+    add_to_quadrant(b, &db, 1, 1); // ∂F/∂v
+}
+
+/// Component 3: Kutta lift derivative → Q(1,1).
+/// Returns 3×3 row-major. Guard: zero at `|v| < MJ_MINVAL`.
+#[allow(
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    clippy::tuple_array_conversions
+)]
+fn mjd_kutta_lift(coef: &[f64; 3], c_k: f64, rho: f64, v: &[f64; 3]) -> [f64; 9] {
+    let (x, y, z) = (v[0], v[1], v[2]);
+    let (xx, yy, zz) = (x * x, y * y, z * z);
+    let norm2 = xx + yy + zz;
+    if norm2.sqrt() < MJ_MINVAL {
+        return [0.0; 9];
+    }
+
+    let (a, b_c, c) = (coef[0], coef[1], coef[2]);
+    let (aa, bb, cc) = (a * a, b_c * b_c, c * c);
+
+    let proj_denom = aa * xx + bb * yy + cc * zz;
+    let proj_num = a * xx + b_c * yy + c * zz;
+
+    let denom_val = (proj_denom * proj_num * norm2).sqrt().max(MJ_MINVAL);
+    let df_denom = std::f64::consts::PI * c_k * rho / denom_val;
+
+    // Per-axis lift coefficients
+    let dfx_coef = yy * (a - b_c) + zz * (a - c);
+    let dfy_coef = xx * (b_c - a) + zz * (b_c - c);
+    let dfz_coef = xx * (c - a) + yy * (c - b_c);
+    let df_coef = [dfx_coef, dfy_coef, dfz_coef];
+
+    let proj_term = proj_num / proj_denom.max(MJ_MINVAL);
+    let cos_term = proj_num / norm2.max(MJ_MINVAL);
+
+    let vel = [x, y, z];
+    let mut d = [0.0f64; 9];
+
+    // Step 1: D[i][j] = 2·proj_num·(coef[j] − coef[i])
+    let coef_arr = [a, b_c, c];
+    for i in 0..3 {
+        for j in 0..3 {
+            d[3 * i + j] = 2.0 * proj_num * (coef_arr[j] - coef_arr[i]);
+        }
+    }
+
+    // Step 2: inner[k] = coef[k]²·proj_term − coef[k] + cos_term
+    //         D[i][:] += df_coef[i] · inner[:]
+    for k in 0..3 {
+        let inner_k = coef_arr[k] * coef_arr[k] * proj_term - coef_arr[k] + cos_term;
+        for i in 0..3 {
+            d[3 * i + k] += df_coef[i] * inner_k;
+        }
+    }
+
+    // Step 3: D[i][j] *= vel[i]·vel[j]
+    for i in 0..3 {
+        for j in 0..3 {
+            d[3 * i + j] *= vel[i] * vel[j];
+        }
+    }
+
+    // Step 4: D[i][i] -= df_coef[i]·proj_num
+    for i in 0..3 {
+        d[3 * i + i] -= df_coef[i] * proj_num;
+    }
+
+    // Step 5: D *= df_denom
+    for val in &mut d {
+        *val *= df_denom;
+    }
+
+    d
+}
+
+/// Component 4: Combined linear drag derivative → Q(1,1).
+/// Three contributions: quadratic drag, area gradient, Stokes drag.
+#[allow(
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    clippy::tuple_array_conversions
+)]
+fn mjd_viscous_drag(
+    s: &[f64; 3],
+    coef: &[f64; 3],
+    c_b: f64,
+    c_s: f64,
+    beta: f64,
+    rho: f64,
+    v: &[f64; 3],
+) -> [f64; 9] {
+    let pi = std::f64::consts::PI;
+    let (x, y, z) = (v[0], v[1], v[2]);
+    let (xx, yy, zz) = (x * x, y * y, z * z);
+    let norm2 = xx + yy + zz;
+    let norm = norm2.sqrt();
+
+    let eq_d = (2.0 / 3.0) * (s[0] + s[1] + s[2]);
+    let d_max = s[0].max(s[1]).max(s[2]);
+    let d_min = s[0].min(s[1]).min(s[2]);
+    let d_mid = s[0] + s[1] + s[2] - d_max - d_min;
+    let a_max = pi * d_max * d_mid;
+
+    let (a, b_c, c) = (coef[0], coef[1], coef[2]);
+    let (aa, bb, cc) = (a * a, b_c * b_c, c * c);
+
+    let proj_denom = aa * xx + bb * yy + cc * zz;
+    let proj_num = a * xx + b_c * yy + c * zz;
+    let a_proj = pi * (proj_denom / proj_num.max(MJ_MINVAL)).sqrt();
+
+    let lin_coef = beta * 3.0 * pi * eq_d;
+
+    let mut d = [0.0f64; 9];
+
+    // Stokes drag diagonal: always contributed
+    for i in 0..3 {
+        d[3 * i + i] -= lin_coef;
+    }
+
+    // Quadratic + area gradient terms: guarded by speed
+    if norm >= MJ_MINVAL {
+        let inv_norm = 1.0 / norm;
+        let quad_coef = rho * (a_proj * c_b + c_s * (a_max - a_proj));
+
+        // Quadratic drag: d(−quad_coef·|v|·v)/dv = −quad_coef · (vvᵀ + |v|²I)/|v|
+        for i in 0..3 {
+            for j in 0..3 {
+                let vi_vj = [x, y, z][i] * [x, y, z][j];
+                d[3 * i + j] +=
+                    -quad_coef * inv_norm * (vi_vj + norm2 * if i == j { 1.0 } else { 0.0 });
+            }
+        }
+
+        // Area gradient contribution
+        let aproj_coef = rho * norm * (c_b - c_s);
+        let da_coef_val = pi / (proj_num.powi(3) * proj_denom).sqrt().max(MJ_MINVAL);
+        let coef_arr = [a, b_c, c];
+        let vel = [x, y, z];
+
+        let mut da_proj_dv = [0.0f64; 3];
+        for k in 0..3 {
+            let j = (k + 1) % 3;
+            let l = (k + 2) % 3;
+            da_proj_dv[k] = aproj_coef
+                * da_coef_val
+                * coef_arr[k]
+                * vel[k]
+                * (coef_arr[j] * vel[j] * vel[j] * (coef_arr[k] - coef_arr[j])
+                    + coef_arr[l] * vel[l] * vel[l] * (coef_arr[k] - coef_arr[l]));
+        }
+
+        // Area gradient outer product: D[i][j] += −v[i] · dAproj_dv[j]
+        for i in 0..3 {
+            for j in 0..3 {
+                d[3 * i + j] += -vel[i] * da_proj_dv[j];
+            }
+        }
+    }
+
+    d
+}
+
+/// Component 5: Combined angular drag derivative → Q(0,0).
+/// Anisotropic: guarded by `|mom_visc| < MJ_MINVAL` for quadratic term.
+#[allow(clippy::similar_names)]
+fn mjd_viscous_torque(
+    s: &[f64; 3],
+    c_ang: f64,
+    c_s: f64,
+    beta: f64,
+    rho: f64,
+    w: &[f64; 3],
+) -> [f64; 9] {
+    let pi = std::f64::consts::PI;
+    let eq_d = (2.0 / 3.0) * (s[0] + s[1] + s[2]);
+    let d_max = s[0].max(s[1]).max(s[2]);
+    let d_min = s[0].min(s[1]).min(s[2]);
+    let d_mid = s[0] + s[1] + s[2] - d_max - d_min;
+    let i_max = (8.0 / 15.0) * pi * d_mid * d_max.powi(4);
+
+    let ii = [
+        ellipsoid_moment(s, 0),
+        ellipsoid_moment(s, 1),
+        ellipsoid_moment(s, 2),
+    ];
+
+    let mom_coef = [
+        c_ang * ii[0] + c_s * (i_max - ii[0]),
+        c_ang * ii[1] + c_s * (i_max - ii[1]),
+        c_ang * ii[2] + c_s * (i_max - ii[2]),
+    ];
+
+    let mom_visc = [w[0] * mom_coef[0], w[1] * mom_coef[1], w[2] * mom_coef[2]];
+
+    let lin_coef = beta * pi * eq_d.powi(3);
+
+    let mut d = [0.0f64; 9];
+
+    // Stokes torque diagonal: always contributed
+    for i in 0..3 {
+        d[3 * i + i] -= lin_coef;
+    }
+
+    // Anisotropic quadratic term: guarded by |mom_visc|
+    let mom_norm = norm3(&mom_visc);
+    if mom_norm >= MJ_MINVAL {
+        let density = rho / mom_norm;
+        let mom_sq = [
+            -density * w[0] * mom_coef[0] * mom_coef[0],
+            -density * w[1] * mom_coef[1] * mom_coef[1],
+            -density * w[2] * mom_coef[2] * mom_coef[2],
+        ];
+
+        let diag_val: f64 = (0..3).map(|k| w[k] * mom_sq[k]).sum();
+
+        for i in 0..3 {
+            for j in 0..3 {
+                d[3 * i + j] += if i == j { diag_val } else { 0.0 } + w[i] * mom_sq[j];
+            }
+        }
+    }
+
+    d
+}
+
+// ── Ellipsoid assembly (S5 + S6 + S7) ──
+
+/// Compute ellipsoid fluid velocity derivatives for a single body.
+/// Per-geom loop: assemble B from 5 components, project via J^T·B·J.
+#[allow(non_snake_case, clippy::similar_names, clippy::needless_range_loop)]
+fn mjd_ellipsoid_fluid(model: &Model, data: &mut Data, body_id: usize) {
+    let rho = model.density;
+    let beta = model.viscosity;
+    let pi = std::f64::consts::PI;
+    let is_implicitfast = model.integrator == Integrator::ImplicitFast;
+
+    let geom_adr = model.body_geom_adr[body_id];
+    let geom_num = model.body_geom_num[body_id];
+
+    for gid in geom_adr..geom_adr + geom_num {
+        let fluid = &model.geom_fluid[gid];
+        let interaction_coef = fluid[0];
+        if interaction_coef == 0.0 {
+            continue;
+        }
+
+        // Unpack coefficients (same as forward)
+        let (c_blunt, c_slender, c_ang) = (fluid[1], fluid[2], fluid[3]);
+        let (c_kutta, c_magnus) = (fluid[4], fluid[5]);
+        let vmass = [fluid[6], fluid[7], fluid[8]];
+        let vinertia = [fluid[9], fluid[10], fluid[11]];
+
+        // Semi-axes
+        let s = fluid_geom_semi_axes(model.geom_type[gid], &model.geom_size[gid]);
+
+        // Local velocity at geom center (same as forward)
+        let geom_body = model.geom_body[gid];
+        let mut lvel = object_velocity_local(
+            model,
+            data,
+            geom_body,
+            &data.geom_xpos[gid],
+            &data.geom_xmat[gid],
+        );
+        let wind_local = data.geom_xmat[gid].transpose() * model.wind;
+        lvel[3] -= wind_local.x;
+        lvel[4] -= wind_local.y;
+        lvel[5] -= wind_local.z;
+
+        let w = [lvel[0], lvel[1], lvel[2]];
+        let v = [lvel[3], lvel[4], lvel[5]];
+
+        // Assemble 6×6 B matrix from 5 components
+        let mut big_b = [[0.0f64; 6]; 6];
+
+        // Component 1: Added mass
+        mjd_added_mass_forces(&mut big_b, rho, &vmass, &vinertia, &w, &v);
+
+        // Component 2: Magnus lift
+        let vol = (4.0 / 3.0) * pi * s[0] * s[1] * s[2];
+        mjd_magnus_force(&mut big_b, c_magnus, rho, vol, &w, &v);
+
+        // Component 3: Kutta lift
+        let kutta_coef = [
+            (s[1] * s[2]).powi(2),
+            (s[2] * s[0]).powi(2),
+            (s[0] * s[1]).powi(2),
+        ];
+        let kutta_d = mjd_kutta_lift(&kutta_coef, c_kutta, rho, &v);
+        add_to_quadrant(&mut big_b, &kutta_d, 1, 1);
+
+        // Component 4: Viscous drag
+        let drag_coef = kutta_coef; // same projected area coefficients
+        let drag_d = mjd_viscous_drag(&s, &drag_coef, c_blunt, c_slender, beta, rho, &v);
+        add_to_quadrant(&mut big_b, &drag_d, 1, 1);
+
+        // Component 5: Viscous torque
+        let torque_d = mjd_viscous_torque(&s, c_ang, c_slender, beta, rho, &w);
+        add_to_quadrant(&mut big_b, &torque_d, 0, 0);
+
+        // Symmetrize for ImplicitFast (Cholesky requires SPD)
+        if is_implicitfast {
+            for i in 0..6 {
+                for j in (i + 1)..6 {
+                    let avg = 0.5 * (big_b[i][j] + big_b[j][i]);
+                    big_b[i][j] = avg;
+                    big_b[j][i] = avg;
+                }
+            }
+        }
+
+        // Scale by interaction coefficient
+        for row in &mut big_b {
+            for val in row.iter_mut() {
+                *val *= interaction_coef;
+            }
+        }
+
+        // Jacobian at geom center, rotated to geom frame
+        let mut jac = mj_jac_geom(model, data, gid);
+        rotate_jac_to_local(&mut jac, &data.geom_xmat[gid]);
+
+        // Project: qDeriv += J^T · B · J
+        add_jtbj(&mut data.qDeriv, &jac, &big_b);
+    }
+}
+
+// ── Top-level dispatch (S7) ──
+
+/// Compute ∂(qfrc_fluid)/∂qvel and add to data.qDeriv.
+///
+/// Dispatches to inertia-box or ellipsoid derivative computation per body,
+/// matching the forward `mj_fluid()` dispatch logic.
+#[allow(non_snake_case)]
+fn mjd_fluid_vel(model: &Model, data: &mut Data) {
+    if model.density == 0.0 && model.viscosity == 0.0 {
+        return;
+    }
+
+    // §40c: Sleep filtering — skip sleeping bodies (MuJoCo engine_derivative.c pattern)
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+    let nbody = if sleep_filter {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+
+    for idx in 0..nbody {
+        let body_id = if sleep_filter {
+            data.body_awake_ind[idx]
+        } else {
+            idx
+        };
+
+        if model.body_mass[body_id] < MJ_MINVAL {
+            continue;
+        }
+
+        let geom_adr = model.body_geom_adr[body_id];
+        let geom_num = model.body_geom_num[body_id];
+        let use_ellipsoid =
+            (geom_adr..geom_adr + geom_num).any(|gid| model.geom_fluid[gid][0] > 0.0);
+
+        if use_ellipsoid {
+            mjd_ellipsoid_fluid(model, data, body_id);
+        } else {
+            mjd_inertia_box_fluid(model, data, body_id);
+        }
+    }
+}
+
+// ============================================================================
+// Unit tests — per-component FD validation (T7–T11) + Jacobian (T32)
+// ============================================================================
+
+#[cfg(test)]
+#[allow(
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    clippy::needless_range_loop
+)]
+mod fluid_derivative_unit_tests {
+    use super::*;
+    use crate::mujoco_pipeline::{ellipsoid_moment, norm3};
+
+    const EPS: f64 = 1e-6;
+    const FD_TOL: f64 = 1e-5;
+    const PI: f64 = std::f64::consts::PI;
+
+    // ── Forward force helpers (pure-math reimplementations for FD) ──
+
+    fn cross3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    }
+
+    /// Forward added-mass forces: torque = p_ang×ω + p_lin×v, force = p_lin×ω
+    fn fwd_added_mass(
+        rho: f64,
+        vmass: &[f64; 3],
+        vinertia: &[f64; 3],
+        w: &[f64; 3],
+        v: &[f64; 3],
+    ) -> [f64; 6] {
+        let p_ang = [
+            rho * vinertia[0] * w[0],
+            rho * vinertia[1] * w[1],
+            rho * vinertia[2] * w[2],
+        ];
+        let p_lin = [
+            rho * vmass[0] * v[0],
+            rho * vmass[1] * v[1],
+            rho * vmass[2] * v[2],
+        ];
+        let t1 = cross3(&p_ang, w);
+        let t2 = cross3(&p_lin, v);
+        let f1 = cross3(&p_lin, w);
+        [
+            t1[0] + t2[0],
+            t1[1] + t2[1],
+            t1[2] + t2[2],
+            f1[0],
+            f1[1],
+            f1[2],
+        ]
+    }
+
+    /// Forward Magnus lift: F = c_mag·ρ·V·(ω×v)
+    fn fwd_magnus(c_mag: f64, rho: f64, vol: f64, w: &[f64; 3], v: &[f64; 3]) -> [f64; 6] {
+        let c = cross3(w, v);
+        let s = c_mag * rho * vol;
+        [0.0, 0.0, 0.0, s * c[0], s * c[1], s * c[2]]
+    }
+
+    /// Forward Kutta lift: F = c_K·ρ·cos_α·A_proj · ((n×v)×v)
+    fn fwd_kutta(coef: &[f64; 3], c_k: f64, rho: f64, v: &[f64; 3]) -> [f64; 3] {
+        let speed = norm3(v);
+        if speed < MJ_MINVAL {
+            return [0.0; 3];
+        }
+        let (a, b, c) = (coef[0], coef[1], coef[2]);
+        let norm_vec = [a * v[0], b * v[1], c * v[2]];
+        let proj_denom = a * a * v[0] * v[0] + b * b * v[1] * v[1] + c * c * v[2] * v[2];
+        let proj_num = a * v[0] * v[0] + b * v[1] * v[1] + c * v[2] * v[2];
+        let a_proj = PI * (proj_denom / proj_num.max(MJ_MINVAL)).sqrt();
+        let cos_alpha = proj_num / (speed * proj_denom).max(MJ_MINVAL);
+        let circ = cross3(&norm_vec, v);
+        let scale = c_k * rho * cos_alpha * a_proj;
+        let scaled_circ = [circ[0] * scale, circ[1] * scale, circ[2] * scale];
+        cross3(&scaled_circ, v)
+    }
+
+    /// Forward viscous drag: F_i = -(lin_coef + quad_coef·|v|)·v_i
+    fn fwd_viscous_drag(
+        s: &[f64; 3],
+        coef: &[f64; 3],
+        c_b: f64,
+        c_s: f64,
+        beta: f64,
+        rho: f64,
+        v: &[f64; 3],
+    ) -> [f64; 3] {
+        let speed = norm3(v);
+        let eq_d = (2.0 / 3.0) * (s[0] + s[1] + s[2]);
+        let d_max = s[0].max(s[1]).max(s[2]);
+        let d_min = s[0].min(s[1]).min(s[2]);
+        let d_mid = s[0] + s[1] + s[2] - d_max - d_min;
+        let a_max = PI * d_max * d_mid;
+        let (a, b, c) = (coef[0], coef[1], coef[2]);
+        let proj_denom = a * a * v[0] * v[0] + b * b * v[1] * v[1] + c * c * v[2] * v[2];
+        let proj_num = a * v[0] * v[0] + b * v[1] * v[1] + c * v[2] * v[2];
+        let a_proj = PI * (proj_denom / proj_num.max(MJ_MINVAL)).sqrt();
+        let drag_lin =
+            beta * 3.0 * PI * eq_d + rho * speed * (a_proj * c_b + c_s * (a_max - a_proj));
+        [-drag_lin * v[0], -drag_lin * v[1], -drag_lin * v[2]]
+    }
+
+    /// Forward viscous torque: τ_i = -(lin_coef + ρ·|mom_visc|)·ω_i
+    fn fwd_viscous_torque(
+        s: &[f64; 3],
+        c_ang: f64,
+        c_s: f64,
+        beta: f64,
+        rho: f64,
+        w: &[f64; 3],
+    ) -> [f64; 3] {
+        let eq_d = (2.0 / 3.0) * (s[0] + s[1] + s[2]);
+        let d_max = s[0].max(s[1]).max(s[2]);
+        let d_min = s[0].min(s[1]).min(s[2]);
+        let d_mid = s[0] + s[1] + s[2] - d_max - d_min;
+        let i_max = (8.0 / 15.0) * PI * d_mid * d_max.powi(4);
+        let ii = [
+            ellipsoid_moment(s, 0),
+            ellipsoid_moment(s, 1),
+            ellipsoid_moment(s, 2),
+        ];
+        let mom_visc = [
+            w[0] * (c_ang * ii[0] + c_s * (i_max - ii[0])),
+            w[1] * (c_ang * ii[1] + c_s * (i_max - ii[1])),
+            w[2] * (c_ang * ii[2] + c_s * (i_max - ii[2])),
+        ];
+        let drag_ang = beta * PI * eq_d.powi(3) + rho * norm3(&mom_visc);
+        [-drag_ang * w[0], -drag_ang * w[1], -drag_ang * w[2]]
+    }
+
+    /// Compute centered FD of a 6→6 function w.r.t. 6D velocity.
+    fn fd_6x6(
+        f: impl Fn(&[f64; 3], &[f64; 3]) -> [f64; 6],
+        w: &[f64; 3],
+        v: &[f64; 3],
+    ) -> [[f64; 6]; 6] {
+        let mut jac = [[0.0f64; 6]; 6];
+        for j in 0..6 {
+            let mut w_p = *w;
+            let mut v_p = *v;
+            let mut w_m = *w;
+            let mut v_m = *v;
+            if j < 3 {
+                w_p[j] += EPS;
+                w_m[j] -= EPS;
+            } else {
+                v_p[j - 3] += EPS;
+                v_m[j - 3] -= EPS;
+            }
+            let f_p = f(&w_p, &v_p);
+            let f_m = f(&w_m, &v_m);
+            for i in 0..6 {
+                jac[i][j] = (f_p[i] - f_m[i]) / (2.0 * EPS);
+            }
+        }
+        jac
+    }
+
+    /// Compute centered FD of a 3→3 function w.r.t. 3D input.
+    fn fd_3x3(f: impl Fn(&[f64; 3]) -> [f64; 3], x: &[f64; 3]) -> [[f64; 3]; 3] {
+        let mut jac = [[0.0f64; 3]; 3];
+        for j in 0..3 {
+            let mut x_p = *x;
+            let mut x_m = *x;
+            x_p[j] += EPS;
+            x_m[j] -= EPS;
+            let f_p = f(&x_p);
+            let f_m = f(&x_m);
+            for i in 0..3 {
+                jac[i][j] = (f_p[i] - f_m[i]) / (2.0 * EPS);
+            }
+        }
+        jac
+    }
+
+    // ── T7: Added mass per-component FD ──
+
+    #[test]
+    fn t07_added_mass_per_component_fd() {
+        let rho = 1.2;
+        let vmass = [0.05, 0.08, 0.12];
+        let vinertia = [0.002, 0.005, 0.008];
+        let w = [0.5, -1.1, 0.8];
+        let v = [1.2, -0.7, 0.3];
+
+        // Analytical B from production code
+        let mut b_anal = [[0.0f64; 6]; 6];
+        mjd_added_mass_forces(&mut b_anal, rho, &vmass, &vinertia, &w, &v);
+
+        // FD of forward added-mass forces
+        let fd = fd_6x6(
+            |ww, vv| fwd_added_mass(rho, &vmass, &vinertia, ww, vv),
+            &w,
+            &v,
+        );
+
+        for i in 0..6 {
+            for j in 0..6 {
+                assert!(
+                    (b_anal[i][j] - fd[i][j]).abs() < FD_TOL,
+                    "T7 added mass B[{}][{}]: analytical={:.10e}, fd={:.10e}, diff={:.3e}",
+                    i,
+                    j,
+                    b_anal[i][j],
+                    fd[i][j],
+                    (b_anal[i][j] - fd[i][j]).abs()
+                );
+            }
+        }
+    }
+
+    // ── T8: Magnus per-component FD ──
+
+    #[test]
+    fn t08_magnus_per_component_fd() {
+        let c_mag = 0.5;
+        let rho = 1.2;
+        let vol = (4.0 / 3.0) * PI * 0.1 * 0.05 * 0.02;
+        let w = [0.5, -1.1, 0.8];
+        let v = [1.2, -0.7, 0.3];
+
+        // Analytical B from production code
+        let mut b_anal = [[0.0f64; 6]; 6];
+        mjd_magnus_force(&mut b_anal, c_mag, rho, vol, &w, &v);
+
+        // FD of forward Magnus force
+        let fd = fd_6x6(|ww, vv| fwd_magnus(c_mag, rho, vol, ww, vv), &w, &v);
+
+        for i in 0..6 {
+            for j in 0..6 {
+                assert!(
+                    (b_anal[i][j] - fd[i][j]).abs() < FD_TOL,
+                    "T8 Magnus B[{}][{}]: analytical={:.10e}, fd={:.10e}, diff={:.3e}",
+                    i,
+                    j,
+                    b_anal[i][j],
+                    fd[i][j],
+                    (b_anal[i][j] - fd[i][j]).abs()
+                );
+            }
+        }
+    }
+
+    // ── T9: Kutta lift per-component FD ──
+
+    #[test]
+    fn t09_kutta_per_component_fd() {
+        let s: [f64; 3] = [0.1, 0.05, 0.02];
+        let coef: [f64; 3] = [
+            (s[1] * s[2]).powi(2),
+            (s[2] * s[0]).powi(2),
+            (s[0] * s[1]).powi(2),
+        ];
+        let c_k = 1.0;
+        let rho = 1.2;
+        let v = [1.2, -0.7, 0.3];
+
+        // Analytical derivative from production code
+        let d_anal = mjd_kutta_lift(&coef, c_k, rho, &v);
+
+        // FD of forward Kutta force
+        let fd = fd_3x3(|vv| fwd_kutta(&coef, c_k, rho, vv), &v);
+
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (d_anal[3 * i + j] - fd[i][j]).abs() < FD_TOL,
+                    "T9 Kutta D[{}][{}]: analytical={:.10e}, fd={:.10e}, diff={:.3e}",
+                    i,
+                    j,
+                    d_anal[3 * i + j],
+                    fd[i][j],
+                    (d_anal[3 * i + j] - fd[i][j]).abs()
+                );
+            }
+        }
+    }
+
+    // ── T10: Viscous drag per-component FD ──
+
+    #[test]
+    fn t10_viscous_drag_per_component_fd() {
+        let s: [f64; 3] = [0.1, 0.05, 0.02];
+        let coef: [f64; 3] = [
+            (s[1] * s[2]).powi(2),
+            (s[2] * s[0]).powi(2),
+            (s[0] * s[1]).powi(2),
+        ];
+        let c_b = 0.5;
+        let c_s = 0.1;
+        let beta = 0.001;
+        let rho = 1.2;
+        let v = [1.2, -0.7, 0.3];
+
+        // Analytical derivative from production code
+        let d_anal = mjd_viscous_drag(&s, &coef, c_b, c_s, beta, rho, &v);
+
+        // FD of forward viscous drag
+        let fd = fd_3x3(
+            |vv| fwd_viscous_drag(&s, &coef, c_b, c_s, beta, rho, vv),
+            &v,
+        );
+
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (d_anal[3 * i + j] - fd[i][j]).abs() < FD_TOL,
+                    "T10 viscous drag D[{}][{}]: analytical={:.10e}, fd={:.10e}, diff={:.3e}",
+                    i,
+                    j,
+                    d_anal[3 * i + j],
+                    fd[i][j],
+                    (d_anal[3 * i + j] - fd[i][j]).abs()
+                );
+            }
+        }
+    }
+
+    // ── T11: Viscous torque per-component FD ──
+
+    #[test]
+    fn t11_viscous_torque_per_component_fd() {
+        let s = [0.1, 0.05, 0.02];
+        let c_ang = 1.0;
+        let c_s = 0.1;
+        let beta = 0.001;
+        let rho = 1.2;
+        let w = [0.5, -1.1, 0.8];
+
+        // Analytical derivative from production code
+        let d_anal = mjd_viscous_torque(&s, c_ang, c_s, beta, rho, &w);
+
+        // FD of forward viscous torque
+        let fd = fd_3x3(|ww| fwd_viscous_torque(&s, c_ang, c_s, beta, rho, ww), &w);
+
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (d_anal[3 * i + j] - fd[i][j]).abs() < FD_TOL,
+                    "T11 viscous torque D[{}][{}]: analytical={:.10e}, fd={:.10e}, diff={:.3e}",
+                    i,
+                    j,
+                    d_anal[3 * i + j],
+                    fd[i][j],
+                    (d_anal[3 * i + j] - fd[i][j]).abs()
+                );
+            }
+        }
+    }
 }
