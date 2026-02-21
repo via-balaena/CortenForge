@@ -155,7 +155,7 @@ forward():
                mj_island              Island discovery (DFS flood-fill over constraints)
   Position     mj_fwd_position       FK from qpos → body poses (skips sleeping bodies)
                mj_fwd_position_flex  Flex vertex positions from qpos
-               mj_fwd_tendon         Tendon lengths + Jacobians (fixed + spatial)
+               mj_fwd_tendon         Tendon lengths + Jacobians + wrap visualization data (fixed + spatial)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
                                      + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
                mj_transmission_body_dispatch  Body transmission moment arms (§36, requires contacts)

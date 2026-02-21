@@ -665,7 +665,7 @@ Additional visualization resources:
 - `CachedContacts` — stores contact points from the last physics step
 - `BodyEntityMap` — bidirectional `HashMap<BodyId, Entity>` for O(1) lookups
 - `MuscleVisualization` — user-provided muscle state for rendering
-- `TendonVisualization` — user-provided tendon paths for rendering
+- `TendonVisualization` — tendon wrap path data for rendering (reads `Data.wrap_xpos`/`wrap_obj`/`ten_wrapadr`/`ten_wrapnum`, §40b)
 - `SensorVisualization` — user-provided sensor state for rendering
 
 ---

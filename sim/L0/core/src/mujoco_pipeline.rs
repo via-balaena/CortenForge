@@ -9359,7 +9359,8 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
 /// Compute tendon lengths and Jacobians from current joint state.
 ///
 /// For fixed tendons: L = Σ coef_i * qpos[dof_adr_i], J[dof_adr_i] = coef_i.
-/// For spatial tendons: silently skipped (deferred to spatial tendon PR).
+/// For spatial tendons: 3D pairwise routing via `mj_fwd_tendon_spatial()`,
+/// with wrap visualization data (`wrap_xpos`/`wrap_obj`, §40b).
 ///
 /// Called from mj_fwd_position() after site transforms, before subtree COM.
 fn mj_fwd_tendon(model: &Model, data: &mut Data) {
@@ -22116,29 +22117,29 @@ mod sensor_tests {
     }
 
     // ========================================================================
-    // Tendon Sensor Tests (stub behavior)
+    // Tendon Sensor Tests (zero-tendon model)
     // ========================================================================
 
     #[test]
-    fn test_tendon_pos_sensor_stub() {
+    fn test_tendon_pos_sensor_no_tendon() {
         let mut model = make_sensor_test_model();
         add_sensor(
             &mut model,
             MjSensorType::TendonPos,
             MjSensorDataType::Position,
-            MjObjectType::Body, // doesn't matter for stub
+            MjObjectType::Body, // no tendon in model
             0,
         );
 
         let mut data = model.make_data();
         data.forward(&model).unwrap();
 
-        // Should output 0 (stub until tendon pipeline is wired)
+        // No tendon exists (ntendon == 0), sensor reads 0
         assert_eq!(data.sensordata[0], 0.0);
     }
 
     #[test]
-    fn test_tendon_vel_sensor_stub() {
+    fn test_tendon_vel_sensor_no_tendon() {
         let mut model = make_sensor_test_model();
         add_sensor(
             &mut model,

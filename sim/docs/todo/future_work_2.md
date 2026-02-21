@@ -3682,10 +3682,10 @@ Tracked in [future_work_10b.md](./future_work_10b.md) §DT-31.
 - ~~**`wrap_inside` code path (sidesite inside wrapping geometry)**~~ ✅ — Implemented
   in §39 (`future_work_10.md`). The `wrap_inside` Newton solver handles sidesites
   inside wrapping geometry for both spheres and cylinders. Validation rule 9 is retired.
-- ~~**Tendon visualization data (`wrap_xpos`, `wrap_obj`)**~~ — Tracked as §40b
-  (`future_work_10.md`). MuJoCo stores tangent point world positions in
-  `d->wrap_xpos[]` and object markers in `d->wrap_obj[]` for rendering the
-  tendon path through wrapping geometry.
+- ~~**Tendon visualization data (`wrap_xpos`, `wrap_obj`)**~~ ✅ — Implemented
+  in §40b (`future_work_10.md`). `Data` now stores `wrap_xpos`, `wrap_obj`,
+  `ten_wrapadr`, and `ten_wrapnum`, populated during `mj_fwd_tendon_spatial()`
+  with path points for all segment types (straight, wrapped, pulley).
 - **`solref_limit`/`solimp_limit` MJCF attributes** — MuJoCo's `<spatial>` and
   `<fixed>` tendon elements accept per-tendon constraint solver parameters. These
   are not parsed (pre-existing gap shared with fixed tendons). Model-default

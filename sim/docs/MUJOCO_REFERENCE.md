@@ -17,7 +17,7 @@ Data::step():
              mj_sleep            — Sleep state machine (countdown → sleep transition)
              mj_island           — Island discovery (DFS flood-fill over constraints)
      a. mj_fwd_position    — Forward kinematics (skips sleeping bodies)
-        mj_fwd_tendon       — Tendon lengths + Jacobians (fixed tendons)
+        mj_fwd_tendon       — Tendon lengths + Jacobians + wrap visualization data
         mj_collision        — Broad/narrow phase collision detection (skips sleeping pairs)
         mj_transmission_body_dispatch — Body transmission moment arms (§36, requires contacts)
      b. mj_fwd_velocity    — Body + tendon velocities (skips sleeping DOFs)
