@@ -6067,36 +6067,244 @@ tangent points (`geom_id`) across the mixed path.
 
 ---
 
-### 40c. Sleep Filtering for Fluid Derivatives
-**Status:** Not started | **Effort:** S | **Prerequisites:** Sleep system (global)
+### 40c. Sleep Filtering for Fluid Forces and Derivatives
+**Status:** Not started | **Effort:** S | **Prerequisites:** ~~Sleep system (global)~~ Met (§16)
 
 #### Current State
 
-MuJoCo's `mjd_passive_vel` supports sleep filtering via `d->body_awake_ind` and
-`d->nbody_awake` to skip sleeping bodies during derivative computation. Our
-codebase does not yet implement sleep state tracking, so `mjd_fluid_vel` iterates
-all bodies unconditionally.
+The global sleep system is fully implemented (§16 in `future_work_5.md`). All
+required infrastructure exists in `Data`:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `body_awake_ind` | `Vec<usize>` | Sorted indices of awake + static bodies |
+| `nbody_awake` | `usize` | Number of entries in `body_awake_ind` |
+| `body_sleep_state` | `Vec<SleepState>` | Per-body sleep state |
+| `tree_awake` | `Vec<bool>` | Per-tree awake flag |
+
+Other pipeline stages already use `body_awake_ind` indirection for O(awake)
+iteration: `mj_fwd_velocity` (`mujoco_pipeline.rs:9246`), `mj_rne` gyroscopic
+loop (`mujoco_pipeline.rs:11719`), `mj_crba` (`mujoco_pipeline.rs:11264`).
+
+**Two functions still iterate all bodies unconditionally:**
+
+1. **Derivative path:** `mjd_fluid_vel` (`derivatives.rs:2337`) — iterates
+   `0..model.nbody` without sleep filtering
+2. **Forward path:** `mj_fluid` (`mujoco_pipeline.rs:12350`) — same pattern
 
 Deferred from §40a (S7) as a performance optimization that does not affect
 correctness.
 
 #### Objective
 
-Once a global sleep system is implemented, gate the fluid derivative body loop
-in `mjd_fluid_vel` on the body's awake state. Skip sleeping bodies whose
-velocities are clamped to zero — their fluid derivatives are necessarily zero.
+Gate both forward and derivative fluid body loops on `body_awake_ind` /
+`nbody_awake`, matching MuJoCo's sleep filtering pattern in `engine_passive.c`
+(`mj_fluid`) and `engine_derivative.c` (`mjd_passive_vel`).
 
-#### Scope
+#### MuJoCo Reference
 
-- Add `body_awake_ind` / `nbody_awake` to `Data` (or equivalent sleep state)
-- Gate body loop in `mjd_fluid_vel` on awake state
-- Verify no conformance regression (sleeping bodies should produce identical
-  results since their velocities are zero)
+MuJoCo uses the standard `body_awake_ind` indirection pattern for both paths:
+
+```c
+// engine_derivative.c: mjd_passive_vel — fluid derivative section
+// engine_passive.c: mj_fluid — same pattern
+int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
+int nbody = sleep_filter ? d->nbody_awake : m->nbody;
+for (int b = 0; b < nbody; b++) {
+    int i = sleep_filter ? d->body_awake_ind[b] : b;
+    if (m->body_mass[i] < mjMINVAL) continue;
+    // ... fluid force / derivative computation for body i
+}
+```
+
+**Key semantics:**
+- `body_awake_ind[0]` is always body 0 (world/static) — skipped by mass guard
+- When `nbody_awake == nbody` (no sleeping bodies), the branch compiles to the
+  identity `body_id = idx`, so the hot path has zero overhead
+- Sleep filtering is **tree-level**: if one body in a tree sleeps, all do
+  (guaranteed by `mj_sleep` island-level invariant in §16)
+
+#### Correctness Argument
+
+**Sleeping bodies have `cvel = 0` and `qvel = 0`** (zeroed by `sleep_trees` at
+transition, invariant maintained by integrator skipping sleeping DOFs).
+
+**Derivative path:** `∂qfrc_fluid/∂qvel` entries for sleeping DOFs are
+irrelevant because:
+1. The implicit integrator assembles `M − h·D` only for awake DOF blocks
+2. Sleeping DOF rows/columns of `qDeriv` are never read by the solver
+3. Computing them wastes O(nv) work per sleeping body (Jacobian + projection)
+
+**Forward path:** `qfrc_fluid` entries for sleeping DOFs are irrelevant because:
+1. The solver only processes awake DOF constraint rows
+2. Forces on sleeping DOFs do not contribute to any awake-body computation
+
+**Wind interaction:** If `model.wind ≠ 0`, sleeping bodies in a wind field have
+local velocity = `−wind_local` (nonzero). MuJoCo skips these entirely — sleeping
+bodies do not experience fluid forces regardless of wind. This is consistent:
+sleep is a modeling decision (body is frozen), not a physical approximation.
+
+#### Specification
+
+##### S1. Derivative path: `mjd_fluid_vel` (`derivatives.rs`)
+
+Add `ENABLE_SLEEP` to the existing import block:
+
+```rust
+use crate::mujoco_pipeline::{
+    // ... existing imports ...
+    ENABLE_SLEEP,  // §40c: sleep filtering for fluid derivatives
+};
+```
+
+Replace the body loop with `body_awake_ind` indirection:
+
+```rust
+fn mjd_fluid_vel(model: &Model, data: &mut Data) {
+    if model.density == 0.0 && model.viscosity == 0.0 {
+        return;
+    }
+
+    // §40c: Sleep filtering — skip sleeping bodies (MuJoCo engine_derivative.c pattern)
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+    let nbody = if sleep_filter { data.nbody_awake } else { model.nbody };
+
+    for idx in 0..nbody {
+        let body_id = if sleep_filter { data.body_awake_ind[idx] } else { idx };
+
+        if model.body_mass[body_id] < MJ_MINVAL {
+            continue;
+        }
+
+        let geom_adr = model.body_geom_adr[body_id];
+        let geom_num = model.body_geom_num[body_id];
+        let use_ellipsoid =
+            (geom_adr..geom_adr + geom_num).any(|gid| model.geom_fluid[gid][0] > 0.0);
+
+        if use_ellipsoid {
+            mjd_ellipsoid_fluid(model, data, body_id);
+        } else {
+            mjd_inertia_box_fluid(model, data, body_id);
+        }
+    }
+}
+```
+
+**Diff is 4 lines added, 1 line changed** (`for body_id in 0..model.nbody` →
+`for idx in 0..nbody` with indirection).
+
+##### S2. Forward path: `mj_fluid` (`mujoco_pipeline.rs`)
+
+Same pattern:
+
+```rust
+fn mj_fluid(model: &Model, data: &mut Data) -> bool {
+    if model.density == 0.0 && model.viscosity == 0.0 {
+        return false;
+    }
+
+    // §40c: Sleep filtering — skip sleeping bodies (MuJoCo engine_passive.c pattern)
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+    let nbody = if sleep_filter { data.nbody_awake } else { model.nbody };
+
+    for idx in 0..nbody {
+        let body_id = if sleep_filter { data.body_awake_ind[idx] } else { idx };
+
+        if model.body_mass[body_id] < MJ_MINVAL {
+            continue;
+        }
+
+        let geom_adr = model.body_geom_adr[body_id];
+        let geom_num = model.body_geom_num[body_id];
+        let use_ellipsoid =
+            (geom_adr..geom_adr + geom_num).any(|gid| model.geom_fluid[gid][0] > 0.0);
+
+        if use_ellipsoid {
+            mj_ellipsoid_fluid(model, data, body_id);
+        } else {
+            mj_inertia_box_fluid(model, data, body_id);
+        }
+    }
+
+    true
+}
+```
+
+`ENABLE_SLEEP` is already in scope in `mujoco_pipeline.rs` (defined at line 829).
+
+##### S3. Out of scope
+
+The following sleep-filtering gaps in `mjd_passive_vel` are **not** part of §40c:
+
+- **Per-DOF damping loop** (`derivatives.rs:478`): iterates `0..model.nv`
+  unconditionally. Could use `dof_awake_ind` but the damping derivative `−b` is
+  a constant — the optimizer will likely elide it for zero-velocity DOFs anyway.
+- **Tendon damping loop** (`derivatives.rs:488`): iterates `0..model.ntendon`
+  unconditionally. `mj_fwd_passive` already gates tendon passive forces on sleep
+  (line 12423), but the derivative path does not. Separate optimization.
+
+These are minor constant-factor optimizations deferred to future work.
+
+#### Files Modified
+
+| File | Changes |
+|------|---------|
+| `sim/L0/core/src/derivatives.rs` | Add `ENABLE_SLEEP` import; add sleep filtering to `mjd_fluid_vel` |
+| `sim/L0/core/src/mujoco_pipeline.rs` | Add sleep filtering to `mj_fluid` |
+| `sim/L0/tests/integration/fluid_derivatives.rs` | T33–T40 (8 new tests) |
+| `sim/L0/tests/integration/fluid_forces.rs` | T43–T46 (4 new tests) |
+
+#### Test Matrix
+
+All test models use `<flag sleep="enable"/>` and a two-body setup (one
+free-joint body with fluid, one sleeping body with fluid) unless noted.
+
+**Derivative path tests** (`fluid_derivatives.rs`):
+
+| ID | Test | Model | Validates |
+|----|------|-------|-----------|
+| T33 | Sleep disabled: `qDeriv` matches pre-§40c baseline | Inertia-box, 2 bodies, sleep disabled | No regression when `ENABLE_SLEEP` is off — `sleep_filter = false` path is identical to old code |
+| T34 | Sleep enabled, all awake: `qDeriv` identical to sleep-disabled | Inertia-box, 2 bodies, sleep enabled, both awake | Fast-path equivalence: `nbody_awake == nbody` produces same result |
+| T35 | Sleeping body: `qDeriv` for sleeping DOFs is zero | Inertia-box, 2 bodies (body 2 asleep via `sleep="init"`), step until stable sleep | `mjd_fluid_vel` skips sleeping body → no derivative contribution |
+| T36 | Sleeping body: `qDeriv` for awake DOFs matches all-awake reference | Same model as T35 vs all-awake reference | Awake body derivatives unaffected by sleeping neighbor |
+| T37 | Ellipsoid + sleep: sleeping body with ellipsoid geoms skipped | Ellipsoid model (2 bodies, one sleeping) | Both fluid models (inertia-box and ellipsoid) respect sleep filter |
+| T38 | Wind + sleep: sleeping body in wind field has zero fluid derivatives | Inertia-box, `wind="1 0 0"`, body 2 sleeping | Wind does not produce derivatives for sleeping bodies |
+| T39 | Wake transition: waking body gets correct derivatives on first awake step | Body woken by external force, check `qDeriv` immediately after wake | No stale derivative state; `mj_update_sleep_arrays` runs before derivatives |
+| T40 | MuJoCo conformance: sleeping-body `qDeriv` matches MuJoCo 3.5.0 | Same model as T5 with sleep enabled, one body sleeping | Numerical parity with MuJoCo reference (tolerance ≤ 1e-10) |
+
+**Forward path tests** (`fluid_forces.rs`):
+
+| ID | Test | Model | Validates |
+|----|------|-------|-----------|
+| T43 | Sleep enabled, sleeping body: `qfrc_fluid` for sleeping DOFs is zero | Inertia-box, 2 bodies, body 2 sleeping | Forward `mj_fluid` skips sleeping body |
+| T44 | Sleep enabled, sleeping body: awake `qfrc_fluid` matches all-awake reference | Same as T43 vs all-awake | Awake body forces unaffected |
+| T45 | Ellipsoid forward + sleep: sleeping body produces zero `qfrc_fluid` | Ellipsoid model, one sleeping body | Ellipsoid forward path filtered |
+| T46 | Wind + sleep forward: sleeping body in wind has zero `qfrc_fluid` | Wind model, sleeping body | Consistent with derivative path |
+
+**Test count:** 12 new tests (T33–T40 + T43–T46).
+
+**Existing tests:** All 31 existing fluid derivative tests (T1–T32) and 42
+existing fluid force tests (T1–T42) must continue to pass unchanged. These
+exercise the `sleep_filter = false` code path.
+
+#### Risks
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| `body_awake_ind` not updated before `mjd_passive_vel` | Medium | `mj_update_sleep_arrays` runs in `forward_core()` before `mj_fwd_position` → before `mj_fwd_acceleration_{implicit,implicitfast}` → before `mjd_passive_vel`. Already verified by §16 test T77. |
+| Sleep-init model: derivatives computed before first sleep transition | Low | `make_data()` calls `mj_update_sleep_arrays`, so `body_awake_ind` is correct from step 0. Init-sleeping bodies appear in `body_awake_ind` only if awake. |
+| Off-by-one in `body_awake_ind` iteration (world body) | Low | World body (index 0) is always `body_awake_ind[0]` and is skipped by the existing `body_mass < MJ_MINVAL` guard. No change needed. |
+| Dense `qDeriv` entries for sleeping DOFs accumulate garbage | None | With sleep filtering, `mjd_fluid_vel` never writes to sleeping DOF entries. `qDeriv` is cleared to zero before `mjd_passive_vel` (by `mj_fwd_acceleration_implicit*`), so sleeping entries remain zero. |
 
 #### Cross-references
 
-- §40a S7 (`future_work_10.md:5173`): deferral note
+- §40a S7 (`future_work_10.md:5153`): deferral note — `mjd_fluid_vel` sleep filtering
+- §40 S5 (`future_work_10.md:3416`): deferral note — `mj_fluid` sleep filtering
+- §16 (`future_work_5.md`): sleep system implementation
 - MuJoCo `engine_derivative.c`: `mjd_passive_vel` sleep filtering loop
+- MuJoCo `engine_passive.c`: `mj_fluid` sleep filtering loop
 
 ---
 
