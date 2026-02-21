@@ -105,7 +105,7 @@ X varying fastest. No Y-flip is needed.
 - **File-based hfield loading** (`<hfield file="terrain.png"/>`): out of scope.
   Only inline `elevation` + `nrow`/`ncol` required. File loading can be added later
   without API changes.
-  Tracked in [future_work_9b.md](./future_work_9b.md) §DT-3.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-3.
 - **Hfield↔hfield collision:** not supported (no `heightfield_heightfield_contact`
   exists in sim-core; physically degenerate scenario).
 - **Default class inheritance for hfield attribute:** MuJoCo's `<default>` system
@@ -1008,7 +1008,7 @@ GeomType::Sdf => {
 - **MJCF `<sdf>` asset element:** No such element exists in standard MuJoCo.
   SDF geoms are populated programmatically. A future `<sdf>` asset element for
   inline distance grids could be added without API changes.
-  Tracked in [future_work_9b.md](./future_work_9b.md) §DT-4.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-4.
 - **ConvexMesh dispatch via `sdf_convex_mesh_contact`:** The pipeline's `GeomType`
   does not have a `ConvexMesh` variant (meshes are `TriangleMeshData`).
   `sdf_convex_mesh_contact` is unused in the pipeline dispatch but remains
@@ -1650,7 +1650,7 @@ retain the default array values (which are 0 for indices 1–8).
   error as any unrecognized string). No special-case handling is needed —
   the error message is clear enough. These can be added later without API
   changes.
-  Tracked in [future_work_9b.md](./future_work_9b.md) §DT-5.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-5.
 - **`actlimited` / `actrange`:** Activation clamping for stateful actuators.
   **Parsing complete** — both fields are parsed on `MjcfActuator` and
   `MjcfActuatorDefaults` with full defaults pipeline (Option<T>, merge,
@@ -1664,19 +1664,19 @@ retain the default array values (which are 0 for indices 1–8).
   `MjcfActuator` and `MjcfActuatorDefaults` with full defaults pipeline,
   but not yet wired to runtime — our pipeline always computes dynamics
   in the standard order.
-  Tracked in [future_work_9b.md](./future_work_9b.md) §DT-6.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-6.
 - **`actdim`:** Number of activation variables per actuator. MuJoCo default
   is -1 (auto-detect from dyntype: 0 for none, 1 for others). Our pipeline
   hardcodes the same auto-detection logic (`model_builder.rs:1565–1571`).
   Explicit `actdim` override is not needed.
-  Tracked in [future_work_9b.md](./future_work_9b.md) §DT-7.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-7.
 - **Additional transmission types:** `cranksite`, `slidersite`,
   `jointinparent` are not supported by the existing transmission resolver
   (`model_builder.rs:1425–1495`) and are not part of this work item.
-  Tracked in [future_work_9b.md](./future_work_9b.md) §DT-8.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-8.
 - **`nsample`, `interp`, `delay`:** MuJoCo 3.x additions for
   interpolation-based actuators. Out of scope.
-  Tracked in [future_work_9b.md](./future_work_9b.md) §DT-9.
+  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-9.
 - **Default class for shortcut types:** If a `<default>` element sets
   `gaintype="affine"` and a `<motor>` uses that class, the `gaintype` is
   ignored for the motor (the model builder's shortcut expansion overrides
@@ -1816,7 +1816,7 @@ dominated by the `nv × nv` mass matrix per env (~320 KB at nv=200), giving
 structure-of-arrays (SoA) layout across environments would improve cache
 locality for bulk state extraction but adds significant complexity and is
 explicitly deferred to the GPU acceleration work (#10).
-Tracked in [future_work_9b.md](./future_work_9b.md) §DT-82.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-82.
 
 **Why not SoA now:** The `Data::step()` pipeline reads and writes dozens of
 fields on `Data` throughout a single step (FK, collision, RNE, constraint
@@ -2070,13 +2070,13 @@ compared to a single `step_all()` (~ms per env). Parallelizing reset via
 rayon would add thread-pool overhead that exceeds the work itself. If this
 becomes a bottleneck at much larger scales, parallelization can be added
 trivially (the pattern is identical to `step_all()`).
-Tracked in [future_work_9b.md](./future_work_9b.md) §DT-92.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-92.
 
 **Design constraint — single Model:** All environments share the same
 `Arc<Model>` (same `nq`, `nv`, body tree, geom set). Multi-model batching
 (different robots in the same batch) would require per-env dimensions and
 is explicitly out of scope.
-Tracked in [future_work_9b.md](./future_work_9b.md) §DT-83.
+Tracked in [future_work_10b.md](./future_work_10b.md) §DT-83.
 
 **What this API does NOT include (and why):**
 
