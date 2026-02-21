@@ -123,7 +123,11 @@ All items are independent (#29 is the core architectural migration).
 | 38 | Ball / free joint limits (rotation cone via quat log) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | ✅ Complete |
 | 39 | `wrap_inside` algorithm (tendon wrapping) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | ✅ Complete |
 | 40 | Fluid / aerodynamic forces | Medium | High | L | None | [future_work_10.md](./future_work_10.md) | ✅ Complete |
+| 40a | Fluid force velocity derivatives (`mjd_fluid_vel`) | Medium | High | L | §40 | [future_work_10.md](./future_work_10.md) | ✅ Complete |
 | 40b | Tendon visualization data (`wrap_xpos`, `wrap_obj`) | Low | Low | S | None | [future_work_10.md](./future_work_10.md) | ✅ Complete |
+| 40c | Sleep filtering for fluid forces and derivatives | Low | Medium | S | §16, §40, §40a | [future_work_10.md](./future_work_10.md) | ✅ Complete |
+| 40d | Sparse Jacobian support for fluid derivatives | Low | Low | M | §40a | [future_work_10.md](./future_work_10.md) | |
+| 40e | Refactor `mj_jac_site` → `mj_jac_point` kernel | Low | Low | S | §40a | [future_work_10.md](./future_work_10.md) | |
 | 41 | `disableflags` — runtime disable flag effects | Low | Medium | M | None | [future_work_10.md](./future_work_10.md) | |
 | ~~42~~ | ~~`<flex>` / `<flexcomp>` MJCF deformable parsing~~ | — | — | — | — | [future_work_10.md](./future_work_10.md) | Subsumed by §6B |
 | 42A-i | Sparse flex edge Jacobian (`flexedge_J`) | Low | **Critical** | L | §6B, #27D | [future_work_10.md](./future_work_10.md) | |
@@ -489,7 +493,7 @@ Start only after 3A is stable.
 | [future_work_8.md](./future_work_8.md) | 3 | 3A-iii — Constraint System Overhaul | #28,29,30,31,32 | ~~Friction loss solref~~ ✅, ~~PGS/CG unified constraints~~ ✅, ~~flex collision filtering~~ ✅, ~~`solreffriction`~~ ✅, ~~pyramidal cones~~ ✅ |
 | [future_work_9.md](./future_work_9.md) | 3 | 3A-iv — Noslip + Actuator/Dynamics | #33–37 | ~~Noslip PGS/CG~~ ✅, ~~`actlimited`/`actrange`~~ ✅, ~~`gravcomp`~~ ✅, ~~adhesion actuators~~ ✅, ~~tendon equality~~ ✅ |
 | [future_work_10b.md](./future_work_10b.md) | 3 | Deferred Item Tracker | §DT-1–84 | Consolidated tracker for deferred sub-items from §1–§40 not covered by existing §41+ tasks |
-| [future_work_10.md](./future_work_10.md) | 3 | 3A-v — Constraint/Joint + Physics + Trait Architecture | #38–42, §42A-i–v, §42B–F | ~~Ball/free joint limits~~ ✅, ~~`wrap_inside`~~ ✅, ~~fluid forces~~ ✅, `disableflags`, flex edge Jacobian + rigid flags + pre-computed fields, flex self-collision dispatch, flex-flex collision, flex bending trait, elasticity trait, actuator gain trait, contact solver trait, `SimBuilder` |
+| [future_work_10.md](./future_work_10.md) | 3 | 3A-v — Constraint/Joint + Physics + Trait Architecture | #38–42, §40a–e, §42A-i–v, §42B–F | ~~Ball/free joint limits~~ ✅, ~~`wrap_inside`~~ ✅, ~~fluid forces~~ ✅, ~~fluid derivatives~~ ✅, ~~fluid sleep filtering~~ ✅, `disableflags`, sparse fluid Jacobian, `mj_jac_point` refactor, flex edge Jacobian + rigid flags + pre-computed fields, flex self-collision dispatch, flex-flex collision, flex bending trait, elasticity trait, actuator gain trait, contact solver trait, `SimBuilder` |
 | [future_work_11.md](./future_work_11.md) | 3 | 3A-vi — Cleanup + Conformance | #43–45 | Geom `shellinertia`, legacy crate deprecation, MuJoCo conformance test suite |
 | [future_work_12.md](./future_work_12.md) | 3 | 3B — Format Completeness + Performance | #46–50 | `<composite>`, URDF completeness, SIMD audit, non-physics MJCF, CCD |
 | [future_work_13.md](./future_work_13.md) | 3 | 3C — API + Pipeline Completeness | #51–55 | Body accumulators, `mj_inverse`, `step1`/`step2`, heightfield gaps, `*_user` data |

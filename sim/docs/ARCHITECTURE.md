@@ -189,7 +189,7 @@ mj_runge_kutta() [RungeKutta4]:
 ```
 mjd_smooth_vel():
   Zeros data.qDeriv, then accumulates:
-    mjd_passive_vel        ∂(qfrc_passive)/∂qvel (diagonal damping + tendon rank-1)
+    mjd_passive_vel        ∂(qfrc_passive)/∂qvel (fluid §40a + damping + tendon, sleep-filtered §40c)
     mjd_actuator_vel       ∂(qfrc_actuator)/∂qvel (affine gain/bias velocity terms)
     mjd_rne_vel            −∂(qfrc_bias)/∂qvel (chain-rule RNE + direct gyroscopic)
 mjd_transition_fd():
