@@ -4911,7 +4911,15 @@ Shorthand:
   proj_num   = a·xx + b·yy + c·zz
   norm2      = xx + yy + zz
 
-Common factor:
+Common factor (derivation from forward code, `mujoco_pipeline.rs:12087–12088`):
+  cos_α  = proj_num / max(MJ_MINVAL, speed · proj_denom)
+  A_proj = π · √(proj_denom / max(MJ_MINVAL, proj_num))
+  cos_α · A_proj = π · √proj_num / (speed · √proj_denom)
+                 = π · √(proj_num / (proj_denom · norm2))
+  The derivative extracts π·c_K·ρ as a common scalar and absorbs the
+  velocity-dependent factors into Steps 1–4. The `proj_num` factors in
+  Steps 1 and 4 account for chain-rule contributions from cos_α and A_proj.
+
   df_denom = π·c_K·ρ / max(MJ_MINVAL, √(proj_denom · proj_num · norm2))
 
 Per-axis lift coefficients:
@@ -5163,14 +5171,46 @@ forward computation. The velocity extraction code (reference point, wind
 subtraction, rotation matrix) must match `mj_inertia_box_fluid` and
 `mj_ellipsoid_fluid` exactly.
 
-##### S9. Zero-Velocity Safety
+##### S9. Zero-Velocity and Degenerate-Input Guards
 
-When `|v| = 0`, terms involving `d(|v|·v)/dv = 2|v|` naturally evaluate to zero.
-No special guard is needed for zero velocity in the derivative formulas.
+Each component function requires specific guards to prevent numerical
+amplification when velocity or angular velocity is near zero. The guards below
+match MuJoCo's `engine_derivative.c` implementation exactly.
 
-For the Kutta lift and viscous drag derivatives, denominators like `|v|` appear in
-`∂A_proj/∂v`. Guard with `|v| < MJ_MINVAL → skip quadratic contribution` (matching
-the forward computation's `speed.max(MJ_MINVAL)` guard).
+**Inertia-box (S4):** No special guards needed. The `d(|v|·v)/dv = 2|v|`
+identity naturally evaluates to zero at `v = 0`, producing zero quadratic
+diagonal entries. Viscous terms are velocity-independent constants and always
+contribute.
+
+**Added mass (Component 1):** No guards needed. Cross products of zero-valued
+momenta produce zero derivatives naturally.
+
+**Magnus lift (Component 2):** No guards needed. Pre-scaled vectors are zero
+when velocity is zero, producing a zero 3×3 via `mjd_cross`.
+
+**Kutta lift (Component 3):** Early return if `speed < MJ_MINVAL` — return
+zero 3×3 matrix. Without this guard, `df_denom ≈ π·c_K·ρ / MJ_MINVAL ≈
+O(1e22)` would amplify floating-point residuals in the intermediate terms
+(Steps 1–4). MuJoCo's `mjd_kutta_lift` has the same early return. Consistent
+with forward Kutta force being zero at rest.
+
+**Viscous drag (Component 4):** Decompose into guarded and unguarded parts:
+- **Stokes diagonal** (`−lin_coef · I`): always contributed
+  (velocity-independent).
+- **Quadratic drag + area gradient terms:** guarded by `speed < MJ_MINVAL` →
+  skip. The quadratic identity `d(|v|v)/dv = (vvᵀ + |v|²I) / |v|` and area
+  gradient `dA_coef = π / √(proj_num³ · proj_denom)` both have `|v|` or
+  velocity products in their denominators. MuJoCo's `mjd_viscous_drag` guards
+  the quadratic/area block with a speed check, contributing only the Stokes
+  diagonal at zero velocity.
+
+**Viscous torque (Component 5):** Decompose into guarded and unguarded parts:
+- **Stokes torque diagonal** (`−lin_coef · I`): always contributed.
+- **Anisotropic quadratic term** (`ω[i]·mom_sq[j]` outer product + isotropic
+  part): guarded by `|mom_visc| < MJ_MINVAL` → skip. The
+  `density = ρ / |mom_visc|` denominator would otherwise amplify residuals.
+  MuJoCo's `mjd_viscous_torque` uses the same guard. At zero angular velocity,
+  only the Stokes torque diagonal contributes.
 
 #### Test Plan
 
@@ -5263,9 +5303,11 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 | T29 | D matrix | Hinge joint Jacobian | Single body on hinge joint, inertia-box, density=1000. Verify 1D Jacobian row produces correct rank-1 qDeriv update (single nonzero entry). Compare against MuJoCo. Tol: 1e-10. |
 | T30 | D matrix | Ball joint Jacobian | Single body on ball joint, ellipsoid geom. Verify 3-DOF Jacobian structure in 3×3 qDeriv block. Compare against MuJoCo. Tol: 1e-10. |
 | T31 | D matrix | Multi-body chain | 3-body chain (hinge joints), density=1000, non-zero velocity. Verify qDeriv has contributions from all 3 bodies at correct DOF intersections (lower-triangular ancestor pattern). Compare against MuJoCo. Tol: 1e-10. |
+| **Jacobian infrastructure** ||||
+| T32 | Unit | `mj_jac_point` matches `mj_jac_site` | Place a site at body CoM. Verify `mj_jac_point(body_id, xipos)` rows 0–2 match `jac_rot` and rows 3–5 match `jac_trans` from `mj_jac_site`. Test on a 3-body chain (hinge joints) to exercise ancestor chain-walk. Entry-wise exact match (0.0 tolerance). |
 | **Regression** ||||
-| T32 | Regression | §40 T1–T42 still pass | Explicit integrator path unchanged — derivatives only affect implicit path. |
-| T33 | Regression | Existing derivative tests pass | `mjd_smooth_vel` tests in `derivatives.rs` remain green. |
+| T33 | Regression | §40 T1–T42 still pass | Explicit integrator path unchanged — derivatives only affect implicit path. |
+| T34 | Regression | Existing derivative tests pass | `mjd_smooth_vel` tests in `derivatives.rs` remain green. |
 
 ##### Tolerance Justification
 
@@ -5296,17 +5338,17 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 |------|--------|---------|
 | `sim/L0/core/src/derivatives.rs` | modify | Add `mjd_fluid_vel()` (top-level dispatch), `mjd_inertia_box_fluid()`, `mjd_ellipsoid_fluid()`, and 5 component Jacobian helpers (`mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_added_mass_forces`). Add `add_jtbj()`, `add_rank1()`, `add_to_quadrant()` helpers. Insert `mjd_fluid_vel` call at top of `mjd_passive_vel` (before per-DOF damping). |
 | `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `mj_jac_point()` shared kernel, `mj_jac_body_com()`, `mj_jac_geom()`, `rotate_jac_to_local()`. Make `object_velocity_local()`, `fluid_geom_semi_axes()`, `ellipsoid_moment()`, and related fluid helpers `pub(crate)` so `derivatives.rs` can reuse them. |
-| `sim/L0/tests/integration/fluid_forces.rs` | modify | Add derivative-specific tests T1–T33 above. |
+| `sim/L0/tests/integration/fluid_forces.rs` | modify | Add derivative-specific tests T1–T34 above. |
 
 #### Implementation Phases
 
 | Phase | Scope | Deliverable |
 |-------|-------|-------------|
-| P1 | Infrastructure | `mj_jac_point`, `mj_jac_body_com`, `mj_jac_geom`, `rotate_jac_to_local`, `add_jtbj`, `add_rank1`, `add_to_quadrant`, `mjd_cross`. Unit tests T6. |
+| P1 | Infrastructure | `mj_jac_point`, `mj_jac_body_com`, `mj_jac_geom`, `rotate_jac_to_local`, `add_jtbj`, `add_rank1`, `add_to_quadrant`, `mjd_cross`. Unit tests T6, T32. |
 | P2 | Inertia-box derivatives | `mjd_inertia_box_fluid`. Tests T1–T5. |
 | P3 | Ellipsoid component derivatives | 5 component Jacobian functions. Tests T7–T11. |
 | P4 | Ellipsoid assembly + integration | `mjd_ellipsoid_fluid`, symmetrization, `mjd_fluid_vel` dispatch. Tests T12–T16. |
-| P5 | Pipeline integration + conformance | Wire into `mjd_passive_vel`. Tests T17–T33. |
+| P5 | Pipeline integration + conformance | Wire into `mjd_passive_vel`. Tests T17–T31, T33–T34. |
 
 ---
 
