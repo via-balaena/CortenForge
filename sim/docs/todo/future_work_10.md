@@ -4531,24 +4531,59 @@ and hardcoded into the integration tests.
 ---
 
 ### 40a. Fluid Force Velocity Derivatives (Implicit Integration)
-**Status:** Not started | **Effort:** L | **Prerequisites:** §40
+**Status:** ✅ Complete | **Effort:** L | **Prerequisites:** §40
 
 #### Current State
 
-§40 implemented both fluid models (inertia-box and ellipsoid) with full runtime
-force computation and 42 conformance tests. The `qfrc_fluid` buffer is separated
-from `qfrc_passive` specifically to support derivative computation. However,
-`mjd_passive_vel` does not yet compute fluid drag-velocity Jacobians.
+Fully implemented and verified. Both fluid models (inertia-box and ellipsoid)
+have analytical `∂qfrc_fluid/∂qvel` derivatives integrated into `mjd_passive_vel`.
+The implicit integrators (`Implicit` and `ImplicitFast`) now correctly account for
+fluid damping in the D matrix (`M − h·D`).
 
-Without these derivatives, the implicit integrator (`Implicit` and `ImplicitFast`)
-underestimates the D matrix for models with non-zero `density`/`viscosity`. This
-causes under-damped behaviour in fluid-heavy simulations (swimming, flying,
-underwater manipulation).
+**Implementation summary:**
+- `mjd_fluid_vel` top-level dispatch in `derivatives.rs`, called from
+  `mjd_passive_vel` before per-DOF damping (matching MuJoCo dispatch order)
+- `mjd_inertia_box_fluid`: diagonal B (6 rank-1 updates via `add_rank1`)
+- `mjd_ellipsoid_fluid`: full 6×6 B from 5 analytical component functions
+  (`mjd_added_mass_forces`, `mjd_magnus_force`, `mjd_kutta_lift`,
+  `mjd_viscous_drag`, `mjd_viscous_torque`), projected via `add_jtbj`
+- `ImplicitFast` symmetrization: B ← (B + Bᵀ)/2 per-geom before projection
+- Jacobian infrastructure: `mj_jac_point` (6×nv), `mj_jac_body_com`,
+  `mj_jac_geom` in `mujoco_pipeline.rs`
+- 31 integration tests in `fluid_derivatives.rs` (T1–T32, no T18/T33/T34):
+  - T1–T3: inertia-box B scalar unit tests
+  - T4–T5: inertia-box FD validation + MuJoCo conformance
+  - T6: `mjd_cross` helper FD validation
+  - T7–T11: per-component ellipsoid FD validation
+  - T12–T14: full ellipsoid FD + MuJoCo conformance + multi-geom
+  - T15–T16: symmetry verification (ImplicitFast symmetric, Implicit asymmetric)
+  - T17: ImplicitFast MuJoCo conformance
+  - T19–T20: energy dissipation stability (Implicit + ImplicitFast)
+  - T21–T24: guards and edge cases (zero fluid, zero velocity, massless, interaction_coef=0)
+  - T25–T28: Jacobian geometry (geom offset, wind, mixed multi-body, single-axis)
+  - T29–T31: joint-type coverage (hinge, ball, multi-body chain)
+  - T32: `mj_jac_point` vs `mj_jac_site` exact match
+- All MuJoCo conformance tests validated against MuJoCo 3.5.0 reference values
+  extracted via `mj_forward` + sparse-to-dense `qDeriv` conversion
+- DOF convention confirmed: both MuJoCo and our code use [v,ω] (linear first)
+  for free joint DOFs — no permutation needed
 
-`ImplicitSpringDamper` uses a diagonal-only implicit scheme (`M + h·D + h²·K`
-with per-DOF D) that does not build the full `qDeriv` matrix. It is unaffected
-by this work — its fluid damping gap is a pre-existing limitation of the diagonal
-approximation.
+**Files modified:**
+| File | Changes |
+|------|---------|
+| `sim/L0/core/src/derivatives.rs` | Added `mjd_fluid_vel`, `mjd_inertia_box_fluid`, `mjd_ellipsoid_fluid`, 5 component Jacobian functions, `mjd_cross`, `add_jtbj`, `add_rank1`, `add_to_quadrant`, `rotate_jac_to_local`. Inserted `mjd_fluid_vel` call in `mjd_passive_vel`. Promoted `mjd_passive_vel` to `pub`. |
+| `sim/L0/core/src/mujoco_pipeline.rs` | Added `mj_jac_point`, `mj_jac_body_com`, `mj_jac_geom`. Promoted `object_velocity_local`, `fluid_geom_semi_axes`, `ellipsoid_moment`, `norm3`, `MJ_MINVAL` to `pub(crate)`. |
+| `sim/L0/core/src/lib.rs` | Added `mjd_passive_vel`, `mj_jac_point`, `mj_jac_site` to public re-exports. |
+| `sim/L0/tests/integration/fluid_derivatives.rs` | **New file** — 31 tests (T1–T32, see test matrix below). |
+| `sim/L0/tests/integration/mod.rs` | Registered `fluid_derivatives` module. |
+
+**Deviations from spec:**
+- T18 (Implicit conformance with humanoid) was not implemented as a separate test;
+  T13 covers the same implicit path with an ellipsoid model.
+- T33/T34 (regression) are covered implicitly — all existing §40 and derivative
+  tests continue to pass.
+- Test file is `fluid_derivatives.rs` (new file) rather than modifying
+  `fluid_forces.rs`, keeping forward and derivative tests cleanly separated.
 
 #### MuJoCo Reference
 
@@ -5335,23 +5370,25 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 - MuJoCo `engine_derivative.c`: `mjd_passive_vel`, `mjd_inertiaBoxFluid`, `mjd_ellipsoidFluid`
 - MuJoCo `engine_derivative.c`: `mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_addedMassForces`
 
-#### Files to Modify
+#### Files Modified
 
 | File | Action | Changes |
 |------|--------|---------|
-| `sim/L0/core/src/derivatives.rs` | modify | Add `mjd_fluid_vel()` (top-level dispatch), `mjd_inertia_box_fluid()`, `mjd_ellipsoid_fluid()`, and 5 component Jacobian helpers (`mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_added_mass_forces`). Add `add_jtbj()`, `add_rank1()`, `add_to_quadrant()` helpers. Insert `mjd_fluid_vel` call at top of `mjd_passive_vel` (before per-DOF damping). |
-| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `mj_jac_point()` shared kernel, `mj_jac_body_com()`, `mj_jac_geom()`, `rotate_jac_to_local()`. Make `object_velocity_local()`, `fluid_geom_semi_axes()`, `ellipsoid_moment()`, and related fluid helpers `pub(crate)` so `derivatives.rs` can reuse them. |
-| `sim/L0/tests/integration/fluid_forces.rs` | modify | Add derivative-specific tests T1–T34 above. |
+| `sim/L0/core/src/derivatives.rs` | modified | Added `mjd_fluid_vel()` (top-level dispatch), `mjd_inertia_box_fluid()`, `mjd_ellipsoid_fluid()`, and 5 component Jacobian helpers (`mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_added_mass_forces`). Added `add_jtbj()`, `add_rank1()`, `add_to_quadrant()`, `rotate_jac_to_local()` helpers. Inserted `mjd_fluid_vel` call at top of `mjd_passive_vel` (before per-DOF damping). Promoted `mjd_passive_vel` to `pub`. |
+| `sim/L0/core/src/mujoco_pipeline.rs` | modified | Added `mj_jac_point()` shared kernel, `mj_jac_body_com()`, `mj_jac_geom()`. Made `object_velocity_local()`, `fluid_geom_semi_axes()`, `ellipsoid_moment()`, `norm3()`, `MJ_MINVAL` `pub(crate)` so `derivatives.rs` can reuse them. |
+| `sim/L0/core/src/lib.rs` | modified | Added `mjd_passive_vel`, `mj_jac_point`, `mj_jac_site` to public re-exports. |
+| `sim/L0/tests/integration/fluid_derivatives.rs` | **new** | 31 derivative-specific tests (T1–T32, excluding T18/T33/T34). |
+| `sim/L0/tests/integration/mod.rs` | modified | Registered `fluid_derivatives` module. |
 
 #### Implementation Phases
 
-| Phase | Scope | Deliverable |
-|-------|-------|-------------|
-| P1 | Infrastructure | `mj_jac_point`, `mj_jac_body_com`, `mj_jac_geom`, `rotate_jac_to_local`, `add_jtbj`, `add_rank1`, `add_to_quadrant`, `mjd_cross`. Unit tests T6, T32. |
-| P2 | Inertia-box derivatives | `mjd_inertia_box_fluid`. Tests T1–T5. |
-| P3 | Ellipsoid component derivatives | 5 component Jacobian functions. Tests T7–T11. |
-| P4 | Ellipsoid assembly + integration | `mjd_ellipsoid_fluid`, symmetrization, `mjd_fluid_vel` dispatch. Tests T12–T16. |
-| P5 | Pipeline integration + conformance | Wire into `mjd_passive_vel`. Tests T17–T31, T33–T34. |
+| Phase | Scope | Deliverable | Status |
+|-------|-------|-------------|--------|
+| P1 | Infrastructure | `mj_jac_point`, `mj_jac_body_com`, `mj_jac_geom`, `rotate_jac_to_local`, `add_jtbj`, `add_rank1`, `add_to_quadrant`, `mjd_cross`. Unit tests T6, T32. | ✅ |
+| P2 | Inertia-box derivatives | `mjd_inertia_box_fluid`. Tests T1–T5. | ✅ |
+| P3 | Ellipsoid component derivatives | 5 component Jacobian functions. Tests T7–T11. | ✅ |
+| P4 | Ellipsoid assembly + integration | `mjd_ellipsoid_fluid`, symmetrization, `mjd_fluid_vel` dispatch. Tests T12–T16. | ✅ |
+| P5 | Pipeline integration + conformance | Wire into `mjd_passive_vel`. Tests T17–T31. | ✅ |
 
 ---
 
