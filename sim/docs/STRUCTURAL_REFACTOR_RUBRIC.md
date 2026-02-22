@@ -73,7 +73,7 @@ The following files already exceed 800 production lines **before** this refactor
 begins. They are **exempt from S1** during this refactor because it targets only
 `mujoco_pipeline.rs` and `model_builder.rs` — these files are not being touched.
 
-| File | Production lines |
+| File | Production lines (excl. `#[cfg(test)]` blocks) |
 |------|-----------------|
 | `sim-mjcf/src/types.rs` | 3,775 |
 | `sim-mjcf/src/parser.rs` | 3,470 |
@@ -208,6 +208,25 @@ on it.
  integrate/  (leaf — nothing depends on this)
     │
  sensor/  (leaf — reads Data, writes sensordata)
+```
+
+**Constraint sub-module dependency DAG** (see Phase 6 extraction order in
+STRUCTURAL_REFACTOR.md for the full rationale):
+
+```
+constraint/mod.rs
+  ├── impedance.rs  (standalone)
+  ├── jacobian.rs   (standalone)
+  ├── equality.rs   (standalone)
+  ├── assembly.rs   (calls equality, jacobian, impedance)
+  └── solver/
+      ├── mod.rs        (dispatch)
+      ├── primal.rs     (shared infra)
+      ├── pgs.rs        (uses primal)
+      ├── cg.rs         (uses primal)
+      ├── hessian.rs    (used by newton)
+      ├── newton.rs     (uses primal + hessian)
+      └── noslip.rs     (standalone)
 ```
 
 **Known cross-cuts (validated by audit, all are same-crate imports)**:

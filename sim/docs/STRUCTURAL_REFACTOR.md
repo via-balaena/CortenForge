@@ -74,7 +74,7 @@ This single function would consume almost the entire 800-line budget of
 (count rows → allocate → populate equality/friction/limits/contacts → count
 types). It stays as one function (splitting it would lose the unified
 assembly semantics), but `constraint/assembly.rs` gets only this function plus
-`populate_efc_island` (62 lines), totaling **756 lines** — under the limit.
+`populate_efc_island` (~59 lines), totaling **~750 lines** — under the limit.
 The equality Jacobian extraction functions (extract_connect_jacobian, etc.)
 move to a separate `constraint/equality.rs` (626 lines).
 
@@ -190,7 +190,7 @@ is specifically designed for this — the trait is shared, the impls are local.
 ### Constraint/Solver Module Revised Structure
 
 The original spec proposed a simple `pgs.rs` / `cg.rs` / `newton.rs` split.
-The audit revealed the constraint block is **~5,621 lines** with 45+ functions,
+The audit revealed the constraint block is **~5,612 lines** with 45+ functions,
 requiring a finer decomposition. Revised structure (all modules ≤800 lines):
 
 ```
@@ -206,11 +206,9 @@ constraint/
   │                               compute_point_velocity (L20013–L20028, 16 lines).
   │                               Total named functions: 332 lines; the ~400 estimate includes
   │                               whitespace, comments, and local structs between functions.
-  assembly.rs         756 lines  — assemble_unified_constraints (694), populate_efc_island
-  │                               (Line counts include function signature + body + doc comments.
-  │                               Function bodies alone are ~685 and ~59 respectively; the 756
-  │                               total is a conservative upper bound.)
-  │                               **MARGIN WARNING**: 756 is function bodies only. The extracted
+  assembly.rs        ~750 lines  — assemble_unified_constraints (~685 body), populate_efc_island
+  │                               (~59 body), totaling ~750 with signatures + doc comments.
+  │                               **MARGIN WARNING**: ~750 is function bodies only. The extracted
   │                               module will need ~20–30 lines of `use` imports + `//!` doc
   │                               comment. If the total exceeds 800, the fallback is to move
   │                               `populate_efc_island` (62 lines) to `constraint/mod.rs`.
@@ -220,20 +218,18 @@ constraint/
   jacobian.rs        ~337 lines  — compute_flex_contact_jacobian, compute_contact_jacobian,
   │                               add_angular_jacobian (L14269–L14606 — contact Jacobian
   │                               construction for constraint assembly)
-  impedance.rs       ~255 lines  — compute_impedance, quaternion_to_axis_angle, compute_kbip,
+  impedance.rs       ~343 lines  — compute_impedance, quaternion_to_axis_angle, compute_kbip,
   │                               compute_aref, normalize_quat4, ball_limit_axis_angle,
   │                               compute_diag_approx_exact, mj_solve_sparse_vec,
   │                               compute_regularization (L14932–L15274 — constraint impedance,
   │                               stiffness/damping precomputation, diagonal approximation)
   solver/
-    mod.rs             93 lines  — compute_delassus_regularized, compute_qfrc_constraint_from_efc,
+    mod.rs            ~130 lines  — compute_delassus_regularized, compute_qfrc_constraint_from_efc,
     │                              extract_qfrc_frictionloss, decode_pyramid, solver dispatch
-    │                              (named functions ~60 lines + decode_pyramid ~48 lines;
-    │                              remainder is struct defs + dispatch overhead)
-    pgs.rs            430 lines  — pgs_solve_unified, pgs_cost_change, classify_constraint_states
-    cg.rs             286 lines  — cg_solve_unified
-    newton.rs         351 lines  — newton_solve, recover_newton
-    │                              (named functions ~311 lines; remainder is dispatch/struct overhead)
+    │                              (named functions ~114 lines; ~130 with imports/docs/dispatch)
+    pgs.rs           ~400 lines  — pgs_solve_unified, pgs_cost_change, classify_constraint_states
+    cg.rs            ~280 lines  — cg_solve_unified
+    newton.rs        ~313 lines  — newton_solve, recover_newton
     hessian.rs       ~685 lines  — assemble_hessian, SparseHessian struct + 7 impl methods
     │                              (assemble, refactor, fill_numeric, find_entry,
     │                              symbolic_factor, numeric_factor, solve),
@@ -243,17 +239,15 @@ constraint/
     │                              const, and whitespace, the extracted module may approach
     │                              800. If it exceeds, split `SparseHessian` into
     │                              `constraint/solver/sparse_hessian.rs`.
-    primal.rs         675 lines  — compute_gradient_and_search{,_sparse}, primal_prepare,
-    │                              primal_eval, primal_search, evaluate_cost_at
-    noslip.rs        ~720 lines  — project_elliptic_cone (L14607), noslip_qcqp2 (L14661),
-    │                              noslip_qcqp3 (L14757), noslip_postprocess (L18555–L18997)
-    │                              **MARGIN WARNING**: ~720 is function bodies only. The extracted
-    │                              module will need ~20–30 lines of `use` imports + `//!` doc
-    │                              comment. If the total exceeds 800, the fallback is to split
-    │                              `noslip_postprocess` (~442 lines) into its own file.
+    primal.rs        ~653 lines  — compute_gradient_and_search{,_sparse}, primal_prepare,
+    │                              primal_eval, primal_search, evaluate_cost_at,
+    │                              PrimalQuad + PrimalPoint struct definitions
+    noslip.rs        ~695 lines  — project_elliptic_cone (L14607), noslip_qcqp2 (L14661),
+    │                              noslip_qcqp3 (L14757), noslip_postprocess (L18555–L18972,
+    │                              ~418 lines)
 ```
 
-**Total: ~5,621 lines across 12 files. Largest: 756 lines (assembly.rs). All under 800.**
+**Total: ~5,612 lines across 12 files. Largest: ~750 lines (assembly.rs). All under 800.**
 
 ---
 
@@ -327,7 +321,7 @@ This means at any commit during phases 1–8c and 10:
 
 ## Target Structure: sim-core
 
-### Current (12 files)
+### Current (12 files, total lines incl. tests)
 
 ```
 sim-core/src/
@@ -399,19 +393,18 @@ sim-core/src/
   │   ├── crba.rs             mj_crba, cache_body_effective_mass (CRBA + mass matrix)
   │   ├── rne.rs              mj_rne, mj_gravcomp (Recursive Newton-Euler + gravity comp)
   │   ├── factor.rs           mj_factor_sparse, mj_factor_sparse_selective
-  │   │                       (sparse LDL factorization)
+  │   │                       (sparse LDL factorization; sparse solvers → linalg.rs)
   │   ├── spatial.rs          spatial_cross_motion, spatial_cross_force,
   │   │                       compute_body_spatial_inertia, shift_spatial_inertia,
   │   │                       object_velocity_local, rotate_spatial_to_world, etc.
-  │   └── flex.rs             mj_crba_flex, mj_factor_flex, mj_fwd_position_flex,
-  │                           mj_integrate_pos_flex, mj_flex (flex body dynamics)
+  │   └── flex.rs             mj_flex (flex vertex position sync, ~10 lines)
   │
   ├── constraint/
   │   ├── mod.rs              mj_fwd_constraint, mj_fwd_constraint_islands,
   │   │                       compute_qacc_smooth, build_m_impl_for_newton,
   │   │                       compute_qfrc_smooth_implicit (~400 lines)
-  │   ├── assembly.rs         assemble_unified_constraints (694 lines),
-  │   │                       populate_efc_island (756 lines total)
+  │   ├── assembly.rs         assemble_unified_constraints (~685 lines),
+  │   │                       populate_efc_island (~750 lines total)
   │   ├── equality.rs         extract_{connect,weld,joint,tendon,distance}_jacobian,
   │   │                       add_body_{point,angular}_jacobian_row,
   │   │                       get_min_diagonal_mass/translational/rotational (626 lines)
@@ -421,19 +414,19 @@ sim-core/src/
   │   ├── impedance.rs        compute_impedance, quaternion_to_axis_angle, compute_kbip,
   │   │                       compute_aref, normalize_quat4, ball_limit_axis_angle,
   │   │                       compute_diag_approx_exact, mj_solve_sparse_vec,
-  │   │                       compute_regularization (~255 lines — constraint impedance,
+  │   │                       compute_regularization (~343 lines — constraint impedance,
   │   │                       stiffness/damping precomputation, diagonal approximation)
   │   └── solver/
-  │       ├── mod.rs          compute_delassus_regularized, qfrc recovery, dispatch (93 lines)
-  │       ├── pgs.rs          PGS solver, classify_constraint_states (430 lines)
-  │       ├── cg.rs           CG solver (286 lines)
-  │       ├── newton.rs       Newton solver, recover_newton (351 lines)
+  │       ├── mod.rs          compute_delassus_regularized, qfrc recovery, dispatch (~130 lines)
+  │       ├── pgs.rs          PGS solver, classify_constraint_states (~400 lines)
+  │       ├── cg.rs           CG solver (~280 lines)
+  │       ├── newton.rs       Newton solver, recover_newton (~313 lines)
   │       ├── hessian.rs      assemble_hessian, SparseHessian struct + 7 impl methods,
   │       │                   hessian_incremental, hessian_cone (~685 lines)
   │       ├── primal.rs       Shared CG/Newton infrastructure — gradient, linesearch,
-  │       │                   cost evaluation (675 lines)
+  │       │                   cost evaluation, PrimalQuad/PrimalPoint structs (~653 lines)
   │       └── noslip.rs       project_elliptic_cone, noslip_qcqp2, noslip_qcqp3,
-  │                          noslip_postprocess (~720 lines)
+  │                          noslip_postprocess (~695 lines)
   │
   ├── collision/
   │   │  NOTE: The collision/ module tree contains dispatch and primitive pair
@@ -555,21 +548,21 @@ sim-core/src/
 | `forward/acceleration.rs` | ~310 | L20029–L20084 (mj_fwd_acceleration dispatch) + L20085–L20104 + L20559–L20827 (4 accel paths) |
 | `dynamics/crba.rs` | ~350 | L11247–L11609 |
 | `dynamics/rne.rs` | ~350 | L11704–L12038 |
-| `dynamics/factor.rs` | ~280 | L20276–L20557 (mj_factor_sparse, mj_factor_sparse_selective, mj_solve_sparse, mj_solve_sparse_batch) |
+| `dynamics/factor.rs` | ~169 | L20276–L20444 (mj_factor_sparse, mj_factor_sparse_selective — factorization only; sparse solvers go to `linalg.rs`) |
 | `dynamics/spatial.rs` | ~300 | L106–L325 (spatial algebra) + L12038–L12108 |
-| `dynamics/flex.rs` | ~200 | (flex dynamics functions) |
+| `dynamics/flex.rs` | ~10 | L9236–L9244 (mj_flex — flex vertex position sync, 6-line function + imports/doc) |
 | `constraint/mod.rs` | ~400 | mj_fwd_constraint + dispatch (verified) |
-| `constraint/assembly.rs` | 756 | assemble_unified_constraints + populate_efc_island (verified) |
+| `constraint/assembly.rs` | ~750 | assemble_unified_constraints (~685 body) + populate_efc_island (~59 body) |
 | `constraint/equality.rs` | 626 | Jacobian extraction for equality constraints (verified) |
 | `constraint/jacobian.rs` | ~337 | L14269–L14606 (compute_flex_contact_jacobian, compute_contact_jacobian, add_angular_jacobian) |
-| `constraint/impedance.rs` | ~255 | L14932–L15274 (compute_impedance, quaternion_to_axis_angle, compute_kbip, compute_aref, normalize_quat4, ball_limit_axis_angle, compute_diag_approx_exact, mj_solve_sparse_vec, compute_regularization) |
-| `constraint/solver/pgs.rs` | 430 | PGS + classify_constraint_states (verified) |
-| `constraint/solver/cg.rs` | 286 | CG solver (verified) |
-| `constraint/solver/newton.rs` | 351 | Newton solver + recover (verified) |
+| `constraint/impedance.rs` | ~343 | L14932–L15274 (compute_impedance, quaternion_to_axis_angle, compute_kbip, compute_aref, normalize_quat4, ball_limit_axis_angle, compute_diag_approx_exact, mj_solve_sparse_vec, compute_regularization) |
+| `constraint/solver/pgs.rs` | ~400 | PGS + classify_constraint_states |
+| `constraint/solver/cg.rs` | ~280 | CG solver |
+| `constraint/solver/newton.rs` | ~313 | Newton solver + recover |
 | `constraint/solver/hessian.rs` | ~685 | assemble_hessian, SparseHessian struct + 7 impl methods (L16882–L17408, ~527 lines), hessian_incremental, hessian_cone (verified) |
-| `constraint/solver/primal.rs` | 675 | Shared CG/Newton linesearch + cost (verified) |
-| `constraint/solver/noslip.rs` | ~720 | L14607–L14883 (project_elliptic_cone, noslip_qcqp2, noslip_qcqp3) + L18555–L18997 (noslip_postprocess) |
-| `constraint/solver/mod.rs` | 93 | Delassus, qfrc recovery, dispatch (verified) |
+| `constraint/solver/primal.rs` | ~653 | Shared CG/Newton linesearch + cost + PrimalQuad/PrimalPoint structs |
+| `constraint/solver/noslip.rs` | ~695 | L14607–L14883 (project_elliptic_cone, noslip_qcqp2, noslip_qcqp3) + L18555–L18972 (noslip_postprocess, ~418 lines) |
+| `constraint/solver/mod.rs` | ~130 | Delassus, qfrc recovery, decode_pyramid, dispatch |
 | `collision/mod.rs` | ~470 | L5383–L5644 (check_collision_affinity, mj_collision, mj_collision_flex) + L6068–L6240 (contact parameter mixing) |
 | `collision/pair_convex.rs` | ~310 | L7095–L7406 (sphere/capsule/box pairwise) |
 | `collision/pair_cylinder.rs` | ~620 | L7406–L8028 (cylinder pairs + box-box SAT) |
@@ -588,13 +581,13 @@ sim-core/src/
 | `integrate/implicit.rs` | ~127 | L12690–L12816 (tendon K/D helpers only: tendon_all_dofs_sleeping, tendon_all_dofs_sleeping_fields, tendon_deadband_displacement, tendon_active_stiffness, accumulate_tendon_kd) |
 | `integrate/rk4.rs` | ~169 | L21302–L21470 (mj_runge_kutta) |
 | `jacobian.rs` | ~465 | L9830–L10041 + L10795–L10829 + L21085–L21283 (Jacobian utilities + compute_contact_normal_jacobian + mj_differentiate_pos + mj_integrate_pos_explicit; doc comment at L21068–L21084) |
-| `linalg.rs` | ~220 | L20106–L20253 + L20829–L20897 (Cholesky/LU). Note: the target structure (line 437–440) lists `mj_solve_sparse` and `mj_solve_sparse_batch` in `linalg.rs`, but the mapping table places their source range (L20436–L20557) under `dynamics/factor.rs`. Resolve during extraction — if sparse solvers move to `linalg.rs`, add ~120 lines. |
+| `linalg.rs` | ~340 | L20106–L20253 (Cholesky) + L20445–L20557 (mj_solve_sparse, mj_solve_sparse_batch) + L20829–L20897 (LU). Decision: sparse solvers belong in `linalg.rs` (they are solve routines, not factorization); factorization stays in `dynamics/factor.rs`. |
 | `joint_visitor.rs` | ~130 | L389–L454 (JointContext + JointVisitor trait) + L11609–L11669 (joint_motion_subspace) |
 | `energy.rs` | ~89 | L8028–L8116 |
 | **Inline tests** | ~5,246 | L21476–L26722 (move with their modules) |
 
 **Production code**: ~21,476 lines → distributed across ~60 modules
-**Largest module**: `constraint/assembly.rs` at 756 lines (verified)
+**Largest module**: `constraint/assembly.rs` at ~750 lines
 **Average module**: ~430 lines (ideal for comprehension)
 **All modules**: ≤800 lines of production code (verified for constraint block)
 
@@ -694,9 +687,10 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L16608–L16824 | `constraint/solver/pgs.rs` | classify_constraint_states (217 lines) |
 | L16837–L17521 | `constraint/solver/hessian.rs` | assemble_hessian (46), SparseHessian struct+impl (527), hessian_incremental (44), hessian_cone (50) |
 | L17529–L17602 | `constraint/solver/primal.rs` | compute_gradient_and_search (36), compute_gradient_and_search_sparse (36) |
+| L17603–L17654 | `constraint/solver/primal.rs` | PrimalQuad, PrimalPoint struct definitions |
 | L17655–L18181 | `constraint/solver/primal.rs` | primal_prepare (101), primal_eval (133), primal_search (155), evaluate_cost_at (109) |
 | L18204–L18514 | `constraint/solver/newton.rs` | newton_solve (297), recover_newton (8) |
-| L18555–L18972 | `constraint/solver/noslip.rs` | noslip_postprocess (418 lines) |
+| L18555–L18972 | `constraint/solver/noslip.rs` | noslip_postprocess (~418 lines) |
 | L18998–L19086 | `constraint/equality.rs` | get_min_diagonal_mass (68), get_min_translational_mass (3), get_min_rotational_inertia (3) |
 | L19110–L19482 | `constraint/equality.rs` | extract_{connect,weld,joint,tendon,distance}_jacobian |
 | L19490–L19609 | `constraint/equality.rs` | add_body_point_jacobian_row (68), add_body_angular_jacobian_row (47) |
@@ -714,7 +708,8 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L20085–L20104 | `forward/acceleration.rs` | mj_fwd_acceleration_explicit |
 | L20106–L20253 | `linalg.rs` | Cholesky factorization, solve, rank-1 update/downdate |
 | L20255–L20275 | `dynamics/factor.rs` | (doc comment for mj_factor_sparse) |
-| L20276–L20557 | `dynamics/factor.rs` | Sparse LDL factorization + solve |
+| L20276–L20444 | `dynamics/factor.rs` | mj_factor_sparse, mj_factor_sparse_selective (sparse LDL factorization) |
+| L20445–L20557 | `linalg.rs` | mj_solve_sparse, mj_solve_sparse_batch (sparse triangular solves) |
 | L20559–L20827 | `forward/acceleration.rs` | Implicit acceleration paths (3 variants + ImplicitSpringVisitor) |
 | L20828 | (whitespace) | Section boundary |
 | L20829–L20897 | `linalg.rs` | LU factorization + solve |
@@ -731,7 +726,7 @@ sim-mjcf target structure table above.
 
 ## Target Structure: sim-mjcf
 
-### Current
+### Current (total lines incl. tests)
 
 ```
 sim-mjcf/src/
@@ -988,9 +983,11 @@ but the dispatch and primitives live in the monolith.
 
 **Estimated size**: ~3,500 lines moved
 
-### Phase 4: Extract sensor evaluation
+### Phase 4: Extract sensors + energy queries
 
 Self-contained: reads from Model/Data, writes to sensordata.
+Energy is not a sensor but is extracted here because it's physically adjacent
+in the monolith (L8028–L8116) and has no dependencies on later pipeline stages.
 
 - [ ] Create `src/sensor/` module tree
 - [ ] Move mj_sensor_pos → `sensor/position.rs`
@@ -1019,13 +1016,13 @@ Self-contained: reads from Model/Data, writes to sensordata.
 
 ### Phase 6: Extract constraint system
 
-The largest extraction. ~5,621 lines across 45+ functions → 12 files.
+The largest extraction. ~5,612 lines across 45+ functions → 12 files.
 See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 
 - [ ] Create `src/constraint/mod.rs` — move mj_fwd_constraint, mj_fwd_constraint_islands,
       compute_qacc_smooth, build_m_impl_for_newton, compute_qfrc_smooth_implicit (~400 lines)
 - [ ] Create `src/constraint/assembly.rs` — move assemble_unified_constraints,
-      populate_efc_island (756 lines)
+      populate_efc_island (~750 lines)
 - [ ] Create `src/constraint/equality.rs` — move all extract_*_jacobian functions,
       add_body_*_jacobian_row, get_min_* helpers (626 lines)
 - [ ] Create `src/constraint/jacobian.rs` — move compute_flex_contact_jacobian,
@@ -1033,20 +1030,21 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 - [ ] Create `src/constraint/impedance.rs` — move compute_impedance,
       quaternion_to_axis_angle, compute_kbip, compute_aref, normalize_quat4,
       ball_limit_axis_angle, compute_diag_approx_exact, mj_solve_sparse_vec,
-      compute_regularization (~255 lines)
+      compute_regularization (~343 lines)
 - [ ] Create `src/constraint/solver/mod.rs` — compute_delassus_regularized,
       compute_qfrc_constraint_from_efc, extract_qfrc_frictionloss,
-      decode_pyramid (93 lines)
-- [ ] Create `src/constraint/solver/pgs.rs` — pgs_solve_unified, classify_constraint_states (430 lines)
-- [ ] Create `src/constraint/solver/cg.rs` — cg_solve_unified (286 lines)
-- [ ] Create `src/constraint/solver/newton.rs` — newton_solve, recover_newton (351 lines)
+      decode_pyramid (~130 lines)
+- [ ] Create `src/constraint/solver/pgs.rs` — pgs_solve_unified, classify_constraint_states (~400 lines)
+- [ ] Create `src/constraint/solver/cg.rs` — cg_solve_unified (~280 lines)
+- [ ] Create `src/constraint/solver/newton.rs` — newton_solve, recover_newton (~313 lines)
 - [ ] Create `src/constraint/solver/hessian.rs` — assemble_hessian,
       SparseHessian struct + 7 impl methods, hessian_incremental,
       hessian_cone (~685 lines)
 - [ ] Create `src/constraint/solver/primal.rs` — shared CG/Newton infrastructure:
-      compute_gradient_and_search, primal_prepare/eval/search, evaluate_cost_at (675 lines)
+      compute_gradient_and_search, primal_prepare/eval/search, evaluate_cost_at,
+      PrimalQuad/PrimalPoint structs (~653 lines)
 - [ ] Create `src/constraint/solver/noslip.rs` — project_elliptic_cone,
-      noslip_qcqp2, noslip_qcqp3, noslip_postprocess (~720 lines)
+      noslip_qcqp2, noslip_qcqp3, noslip_postprocess (~695 lines)
 
 **Extraction order within Phase 6** (respects internal call dependencies):
 
@@ -1065,7 +1063,7 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 
 - [ ] Run full test suite
 
-**Estimated size**: ~5,621 lines moved. All 12 files under 800 lines.
+**Estimated size**: ~5,612 lines moved. All 12 files under 800 lines.
 
 ### Phase 7: Extract dynamics (CRBA, RNE, factorization)
 
@@ -1073,10 +1071,10 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 - [ ] Move mj_crba + cache_body_effective_mass → `dynamics/crba.rs`
 - [ ] Move mj_rne + mj_gravcomp → `dynamics/rne.rs`
 - [ ] Move mj_factor_sparse* → `dynamics/factor.rs`
-- [ ] Move flex dynamics → `dynamics/flex.rs`
+- [ ] Move mj_flex → `dynamics/flex.rs` (~10 lines — only `mj_flex` exists)
 - [ ] Run full test suite
 
-**Estimated size**: ~1,200 lines moved
+**Estimated size**: ~930 lines moved (crba ~350 + rne ~350 + factor ~169 + flex ~10 + overhead)
 
 ### Phase 8a: Extract forward pipeline
 
@@ -1098,7 +1096,7 @@ integration and island/sleep follows Principle #5 (one PR per major module).
       and `mj_integrate_pos_explicit` — primary callers are `derivatives.rs`)
 - [ ] Run full test suite
 
-**Estimated size**: ~3,200 lines moved
+**Estimated size**: ~2,800 lines moved
 
 ### Phase 8b: Extract integration
 
@@ -1128,22 +1126,22 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 
 **Estimated size**: ~1,295 lines moved (island/sleep.rs: ~708 lines, island/mod.rs: ~587 lines)
 
-> **Accounting note**: The per-phase "Estimated size" values sum to ~21,616
-> lines. The file's production code is ~21,476 lines. The ~140-line overcount
-> comes from conservative rounding (estimates include surrounding whitespace).
-> The per-*module* estimates in the size table sum to ~20,580, leaving a ~900-line
-> gap. This gap is distributed across: the file preamble (`use` imports, ~105
-> lines), the energy/sensor overlap (~89 lines — energy is 89 lines at
-> L8028–L8116, listed separately from sensors at L8118–L9236), and
+> **Accounting note**: The per-phase "Estimated size" values sum to ~20,937
+> lines. The file's production code is ~21,476 lines. The ~539-line undercount
+> comes from conservative rounding (estimates use round numbers, most below
+> actual). The per-*module* estimates in the size table sum to ~19,893, leaving
+> a ~1,583-line gap. This gap is distributed across: the file preamble (`use`
+> imports, ~105 lines), the energy/sensor overlap (~89 lines — energy is 89
+> lines at L8028–L8116, listed separately from sensors at L8118–L9236), and
 > inter-function whitespace, section boundaries, and conservative rounding
-> (~706 lines distributed across all modules — most estimates use round numbers
-> below the actual; ~105 + ~89 + ~706 ≈ ~900). Verify actual module sizes
-> during extraction — estimates are approximate.
+> (~1,389 lines distributed across all modules — most estimates use round
+> numbers below the actual; ~105 + ~89 + ~1,389 ≈ ~1,583). Verify actual
+> module sizes during extraction — estimates are approximate.
 
 ### Phase 10: Extract model_builder.rs into module tree
 
 The second-largest extraction. 10,184 lines total (~6,032 production + ~4,152
-tests; ~70 production functions (44 free functions + 23 impl methods + 3 nested:
+tests; ~68 production functions (42 free functions + 23 impl methods + 3 nested:
 `fmt`, `remove_visual_geoms`, `collect_mesh_refs`) + 151 fn definitions in test
 section (149 `#[test]` + 2 test helpers)) across 19 target modules (including
 `builder/build.rs`). Same strategy as sim-core: move functions, move tests,
