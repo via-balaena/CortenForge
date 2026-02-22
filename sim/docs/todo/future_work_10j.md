@@ -222,6 +222,13 @@ benefit.
   callers should use `mj_jac` (or `mj_jac_body`, `mj_jac_site`) and stack
   rows themselves if they need 6×nv.
 
+**`#[must_use]` policy:**
+All functions that return Jacobian matrices get `#[must_use]` — silently
+discarding an allocated matrix is always a bug. This applies to:
+- `mj_jac` (Step 1 signature already shows it)
+- `mj_jac_body`, `mj_jac_site` (public wrappers)
+- `mj_jac_point`, `mj_jac_body_com`, `mj_jac_geom` (`pub(crate)` wrappers)
+
 #### Step 3: Delete `compute_body_jacobian_at_point`
 
 Remove the broken dead-code function (lines 14177–14259). It has zero callers
