@@ -9790,8 +9790,7 @@ fn accumulate_point_jacobian(
                     ten_j[dof + 1] += scale * direction.y;
                     ten_j[dof + 2] += scale * direction.z;
                     // Rotational DOFs: body-frame axes (R*e_i), matching MuJoCo's
-                    // cdof convention. NOTE: the existing `add_body_jacobian` uses
-                    // world-frame unit vectors — that is a pre-existing bug.
+                    // cdof convention.
                     let jpos = xpos[jnt_body];
                     let r = point - jpos;
                     let rot = xquat[jnt_body].to_rotation_matrix();
@@ -14236,18 +14235,15 @@ fn compute_flex_contact_jacobian(
                             j[(row, dof_adr)] += sign * direction.x;
                             j[(row, dof_adr + 1)] += sign * direction.y;
                             j[(row, dof_adr + 2)] += sign * direction.z;
-                            let jpos = Vector3::new(
-                                data.qpos[model.jnt_qpos_adr[jnt_id]],
-                                data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
-                                data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
-                            );
+
+                            // Angular DOFs (3–5): body-frame axes R·eᵢ, lever arm from xpos.
+                            let jpos = data.xpos[jnt_body];
                             let r = contact.pos - jpos;
-                            let ex = Vector3::x();
-                            let ey = Vector3::y();
-                            let ez = Vector3::z();
-                            j[(row, dof_adr + 3)] += sign * direction.dot(&ex.cross(&r));
-                            j[(row, dof_adr + 4)] += sign * direction.dot(&ey.cross(&r));
-                            j[(row, dof_adr + 5)] += sign * direction.dot(&ez.cross(&r));
+                            let rot = data.xquat[jnt_body].to_rotation_matrix();
+                            for i in 0..3 {
+                                let omega = rot * Vector3::ith(i, 1.0);
+                                j[(row, dof_adr + 3 + i)] += sign * direction.dot(&omega.cross(&r));
+                            }
                         }
                     }
                 }
@@ -14361,25 +14357,19 @@ fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DM
                             }
                         }
                         MjJointType::Free => {
-                            // Linear DOFs
+                            // Linear DOFs (0–2): world-frame identity.
                             j[(row, dof_adr)] += sign * direction.x;
                             j[(row, dof_adr + 1)] += sign * direction.y;
                             j[(row, dof_adr + 2)] += sign * direction.z;
 
-                            // Angular DOFs: v = ω × r
-                            let jpos = Vector3::new(
-                                data.qpos[model.jnt_qpos_adr[jnt_id]],
-                                data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
-                                data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
-                            );
+                            // Angular DOFs (3–5): body-frame axes R·eᵢ, lever arm from xpos.
+                            let jpos = data.xpos[jnt_body];
                             let r = contact.pos - jpos;
-                            // d/dω of (ω × r) in direction d: (e_i × r) · d
-                            let ex = Vector3::x();
-                            let ey = Vector3::y();
-                            let ez = Vector3::z();
-                            j[(row, dof_adr + 3)] += sign * direction.dot(&ex.cross(&r));
-                            j[(row, dof_adr + 4)] += sign * direction.dot(&ey.cross(&r));
-                            j[(row, dof_adr + 5)] += sign * direction.dot(&ez.cross(&r));
+                            let rot = data.xquat[jnt_body].to_rotation_matrix();
+                            for i in 0..3 {
+                                let omega = rot * Vector3::ith(i, 1.0);
+                                j[(row, dof_adr + 3 + i)] += sign * direction.dot(&omega.cross(&r));
+                            }
                         }
                     }
                 }
@@ -14473,10 +14463,12 @@ fn add_angular_jacobian(
                     }
                 }
                 MjJointType::Free => {
-                    // Free joint: only angular DOFs contribute (DOFs 3-5)
-                    j[(row, dof_adr + 3)] += sign * direction.x;
-                    j[(row, dof_adr + 4)] += sign * direction.y;
-                    j[(row, dof_adr + 5)] += sign * direction.z;
+                    // Angular DOFs (3–5): body-frame axes, matching Ball case above.
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        let omega = rot * Vector3::ith(i, 1.0);
+                        j[(row, dof_adr + 3 + i)] += sign * direction.dot(&omega);
+                    }
                 }
             }
         }
@@ -25202,6 +25194,525 @@ mod mj_jac_tests {
         let expected_omega = axis0 * 1.0 + axis1 * 0.5;
         for k in 0..3 {
             assert_relative_eq!(omega[k], expected_omega[k], epsilon = 1e-12);
+        }
+    }
+}
+
+// =============================================================================
+// Unit tests — DT-75: contact Jacobian free-joint body-frame axes fix
+// =============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::similar_names)]
+mod contact_jac_free_joint_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use std::f64::consts::{FRAC_PI_4, FRAC_PI_6};
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    /// Single free-joint body with minimal geom fields for contact tests.
+    ///
+    /// Returns identity orientation with FK already run. Caller can write a
+    /// non-identity quaternion into `data.qpos[3..7]` and re-run
+    /// `mj_fwd_position` for non-trivial orientations.
+    fn make_free_body_contact_model() -> (Model, Data) {
+        let mut model = Model::empty();
+
+        model.nbody = 2;
+        model.body_parent = vec![0, 0];
+        model.body_rootid = vec![0, 1];
+        model.body_jnt_adr = vec![0, 0];
+        model.body_jnt_num = vec![0, 1];
+        model.body_dof_adr = vec![0, 0];
+        model.body_dof_num = vec![0, 6];
+        model.body_pos = vec![Vector3::zeros(); 2];
+        model.body_quat = vec![UnitQuaternion::identity(); 2];
+        model.body_ipos = vec![Vector3::zeros(); 2];
+        model.body_iquat = vec![UnitQuaternion::identity(); 2];
+        model.body_mass = vec![0.0, 1.0];
+        model.body_inertia = vec![Vector3::zeros(), Vector3::new(0.01, 0.01, 0.01)];
+        model.body_name = vec![Some("world".into()), Some("b1".into())];
+        model.body_subtreemass = vec![1.0, 1.0];
+
+        model.njnt = 1;
+        model.nq = 7;
+        model.nv = 6;
+        model.jnt_type = vec![MjJointType::Free];
+        model.jnt_body = vec![1];
+        model.jnt_qpos_adr = vec![0];
+        model.jnt_dof_adr = vec![0];
+        model.jnt_pos = vec![Vector3::zeros()];
+        model.jnt_axis = vec![Vector3::z()];
+        model.jnt_limited = vec![false];
+        model.jnt_range = vec![(0.0, 0.0)];
+        model.jnt_stiffness = vec![0.0];
+        model.jnt_springref = vec![0.0];
+        model.jnt_damping = vec![0.0];
+        model.jnt_armature = vec![0.0];
+        model.jnt_solref = vec![[0.02, 1.0]];
+        model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.jnt_name = vec![Some("j1".into())];
+
+        model.dof_body = vec![1; 6];
+        model.dof_jnt = vec![0; 6];
+        model.dof_parent = vec![None; 6];
+        model.dof_armature = vec![0.0; 6];
+        model.dof_damping = vec![0.0; 6];
+        model.dof_frictionloss = vec![0.0; 6];
+
+        model.nsite = 0;
+        model.site_body = vec![];
+        model.site_pos = vec![];
+        model.site_quat = vec![];
+        model.site_type = vec![];
+        model.site_size = vec![];
+        model.site_name = vec![];
+
+        // Geom fields: compute_contact_jacobian only reads geom_body, but
+        // mj_fwd_position reads geom_pos/geom_quat to compute geom world poses.
+        model.ngeom = 2;
+        model.geom_body = vec![0, 1]; // geom 0 → world, geom 1 → free body
+        model.geom_pos = vec![Vector3::zeros(); 2];
+        model.geom_quat = vec![UnitQuaternion::identity(); 2];
+        model.body_geom_adr = vec![0, 1];
+        model.body_geom_num = vec![1, 1];
+
+        // Identity quaternion for the free joint
+        model.qpos0 = DVector::zeros(7);
+        model.qpos0[3] = 1.0; // w component
+        model.timestep = 0.001;
+
+        model.body_ancestor_joints = vec![vec![]; 2];
+        model.body_ancestor_mask = vec![vec![]; 2];
+        model.compute_ancestors();
+        model.compute_qld_csr_metadata();
+
+        let mut data = model.make_data();
+        mj_fwd_position(&model, &mut data);
+
+        (model, data)
+    }
+
+    /// Two free-joint bodies (no kinematic chain between them) with geom fields.
+    ///
+    /// nbody=3, njnt=2, nv=12, nq=14, ngeom=3. Both free bodies are children of
+    /// the world body. Caller sets orientations in qpos and calls mj_fwd_position.
+    fn make_two_free_body_contact_model() -> (Model, Data) {
+        let mut model = Model::empty();
+
+        // --- Topology: 3 bodies (world + 2 free), no kinematic chain ---
+        model.nbody = 3;
+        model.body_parent = vec![0, 0, 0];
+        model.body_rootid = vec![0, 1, 2];
+        model.body_jnt_adr = vec![0, 0, 1];
+        model.body_jnt_num = vec![0, 1, 1];
+        model.body_dof_adr = vec![0, 0, 6];
+        model.body_dof_num = vec![0, 6, 6];
+        model.body_pos = vec![Vector3::zeros(); 3];
+        model.body_quat = vec![UnitQuaternion::identity(); 3];
+        model.body_ipos = vec![Vector3::zeros(); 3];
+        model.body_iquat = vec![UnitQuaternion::identity(); 3];
+        model.body_mass = vec![0.0, 1.0, 1.0];
+        model.body_inertia = vec![
+            Vector3::zeros(),
+            Vector3::new(0.01, 0.01, 0.01),
+            Vector3::new(0.01, 0.01, 0.01),
+        ];
+        model.body_name = vec![Some("world".into()), Some("b1".into()), Some("b2".into())];
+        model.body_subtreemass = vec![2.0, 1.0, 1.0];
+
+        // --- 2 free joints ---
+        model.njnt = 2;
+        model.nq = 14; // 7 + 7
+        model.nv = 12; // 6 + 6
+        model.jnt_type = vec![MjJointType::Free; 2];
+        model.jnt_body = vec![1, 2];
+        model.jnt_qpos_adr = vec![0, 7];
+        model.jnt_dof_adr = vec![0, 6];
+        model.jnt_axis = vec![Vector3::z(); 2];
+        model.jnt_pos = vec![Vector3::zeros(); 2];
+        model.jnt_limited = vec![false; 2];
+        model.jnt_range = vec![(0.0, 0.0); 2];
+        model.jnt_stiffness = vec![0.0; 2];
+        model.jnt_springref = vec![0.0; 2];
+        model.jnt_damping = vec![0.0; 2];
+        model.jnt_armature = vec![0.0; 2];
+        model.jnt_solref = vec![[0.02, 1.0]; 2];
+        model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 2];
+        model.jnt_name = vec![Some("j1".into()), Some("j2".into())];
+
+        // --- DOF metadata (12 DOFs: 6 per free joint) ---
+        model.dof_body = vec![1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2];
+        model.dof_jnt = vec![0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1];
+        model.dof_parent = vec![None; 12];
+        model.dof_armature = vec![0.0; 12];
+        model.dof_damping = vec![0.0; 12];
+        model.dof_frictionloss = vec![0.0; 12];
+
+        // --- No sites needed for contact tests ---
+        model.nsite = 0;
+        model.site_body = vec![];
+        model.site_pos = vec![];
+        model.site_quat = vec![];
+        model.site_type = vec![];
+        model.site_size = vec![];
+        model.site_name = vec![];
+
+        // --- Geoms: compute_contact_jacobian reads geom_body; mj_fwd_position
+        // reads geom_pos/geom_quat to compute geom world poses ---
+        model.ngeom = 3;
+        model.geom_body = vec![0, 1, 2];
+        model.geom_pos = vec![Vector3::zeros(); 3];
+        model.geom_quat = vec![UnitQuaternion::identity(); 3];
+        model.body_geom_adr = vec![0, 1, 2];
+        model.body_geom_num = vec![1, 1, 1];
+
+        // --- qpos0: identity quaternions for both free joints ---
+        // qpos layout: [x1,y1,z1, w1,i1,j1,k1, x2,y2,z2, w2,i2,j2,k2]
+        model.qpos0 = DVector::zeros(14);
+        model.qpos0[3] = 1.0; // body 1: identity quaternion w-component
+        model.qpos0[10] = 1.0; // body 2: identity quaternion w-component
+        model.timestep = 0.001;
+
+        // --- Ancestor metadata (required by compute_qld_csr_metadata → make_data) ---
+        model.body_ancestor_joints = vec![vec![]; 3];
+        model.body_ancestor_mask = vec![vec![]; 3];
+        model.compute_ancestors();
+        model.compute_qld_csr_metadata();
+
+        let data = model.make_data();
+        (model, data)
+    }
+
+    // =========================================================================
+    // 5a — contact_jac_free_body_frame_vs_world_frame
+    // =========================================================================
+
+    /// Verify that free-joint angular DOF columns use body-frame axes (R·eᵢ),
+    /// not world-frame unit vectors. At 45° about Z, R·e₀ ≠ e₀, so world-frame
+    /// would produce measurably wrong values.
+    #[test]
+    fn contact_jac_free_body_frame_vs_world_frame() {
+        let (model, mut data) = make_free_body_contact_model();
+
+        // Rotate body to 45° about Z
+        let q = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_4);
+        data.qpos[3] = q.w;
+        data.qpos[4] = q.i;
+        data.qpos[5] = q.j;
+        data.qpos[6] = q.k;
+        mj_fwd_position(&model, &mut data);
+
+        let contact = Contact::new(
+            Vector3::new(0.3, 0.2, 0.1), // pos
+            Vector3::new(0.0, 0.0, 1.0), // normal: +Z
+            0.01,                        // depth
+            0,                           // geom1 (world geom)
+            1,                           // geom2 (free body geom)
+            0.5,                         // friction → dim=3
+        );
+        let j = compute_contact_jacobian(&model, &data, &contact);
+        assert_eq!(j.nrows(), 3);
+        assert_eq!(j.ncols(), 6);
+
+        let rot = data.xquat[1].to_rotation_matrix();
+        let r = contact.pos - data.xpos[1];
+        let normal = contact.normal;
+
+        // Verify angular DOF columns (3, 4, 5) use body-frame axes
+        for i in 0..3 {
+            let omega = rot * Vector3::ith(i, 1.0);
+            let expected = normal.dot(&omega.cross(&r));
+            assert_relative_eq!(j[(0, 3 + i)], expected, epsilon = 1e-12);
+        }
+
+        // Sanity: at 45° about Z, R·e₀ ≠ e₀ — world-frame would give wrong answer
+        let body_e0 = rot * Vector3::x();
+        assert!(
+            (body_e0 - Vector3::x()).norm() > 0.1,
+            "R·e₀ should differ from e₀ at 45°"
+        );
+    }
+
+    // =========================================================================
+    // 5b — contact_jac_all_rows_match_mj_jac_projection
+    // =========================================================================
+
+    /// Verify all 3 translational rows (normal + 2 tangents) of the contact
+    /// Jacobian match the relative body Jacobian projected along each direction.
+    #[test]
+    fn contact_jac_all_rows_match_mj_jac_projection() {
+        let (model, mut data) = make_free_body_contact_model();
+
+        // Rotate body to 45° about Z
+        let q = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_4);
+        data.qpos[3] = q.w;
+        data.qpos[4] = q.i;
+        data.qpos[5] = q.j;
+        data.qpos[6] = q.k;
+        mj_fwd_position(&model, &mut data);
+
+        let contact = Contact::new(
+            Vector3::new(0.3, 0.2, 0.1),
+            Vector3::new(0.0, 0.0, 1.0),
+            0.01,
+            0,
+            1,
+            0.5,
+        );
+        let j = compute_contact_jacobian(&model, &data, &contact);
+
+        let body1 = model.geom_body[contact.geom1]; // world (body 0)
+        let body2 = model.geom_body[contact.geom2]; // free body
+
+        let (jacp2, _) = mj_jac(&model, &data, body2, &contact.pos);
+        let (jacp1, _) = mj_jac(&model, &data, body1, &contact.pos);
+
+        let directions = [contact.normal, contact.frame[0], contact.frame[1]];
+        let nv = model.nv;
+        for (row, dir) in directions.iter().enumerate() {
+            for dof in 0..nv {
+                let col2 = Vector3::new(jacp2[(0, dof)], jacp2[(1, dof)], jacp2[(2, dof)]);
+                let col1 = Vector3::new(jacp1[(0, dof)], jacp1[(1, dof)], jacp1[(2, dof)]);
+                let expected = dir.dot(&(col2 - col1));
+                assert_relative_eq!(j[(row, dof)], expected, epsilon = 1e-12);
+            }
+        }
+    }
+
+    // =========================================================================
+    // 5c — angular_jac_free_body_frame (torsional + rolling, condim=6)
+    // =========================================================================
+
+    /// Verify all 6 rows (normal + 2 tangent + torsional + 2 rolling) of a
+    /// condim=6 contact match the relative translational and rotational
+    /// Jacobians from mj_jac.
+    #[test]
+    fn angular_jac_free_body_frame() {
+        let (model, mut data) = make_free_body_contact_model();
+
+        // Rotate body to 45° about Z
+        let q = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_4);
+        data.qpos[3] = q.w;
+        data.qpos[4] = q.i;
+        data.qpos[5] = q.j;
+        data.qpos[6] = q.k;
+        mj_fwd_position(&model, &mut data);
+
+        let contact = Contact::with_condim(
+            Vector3::new(0.3, 0.2, 0.1),
+            Vector3::new(0.0, 0.0, 1.0),
+            0.01,
+            0,
+            1,
+            0.5,   // sliding friction
+            0.01,  // torsional friction
+            0.005, // rolling friction
+            6_i32,
+            DEFAULT_SOLREF,
+            DEFAULT_SOLIMP,
+        );
+        let j = compute_contact_jacobian(&model, &data, &contact);
+        assert_eq!(j.nrows(), 6);
+        assert_eq!(j.ncols(), 6);
+
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+
+        let (jacp2, jacr2) = mj_jac(&model, &data, body2, &contact.pos);
+        let (jacp1, jacr1) = mj_jac(&model, &data, body1, &contact.pos);
+
+        let nv = model.nv;
+
+        // Rows 0–2 (normal + tangents): relative translational Jacobian projection
+        let trans_dirs = [contact.normal, contact.frame[0], contact.frame[1]];
+        for (row, dir) in trans_dirs.iter().enumerate() {
+            for dof in 0..nv {
+                let col2 = Vector3::new(jacp2[(0, dof)], jacp2[(1, dof)], jacp2[(2, dof)]);
+                let col1 = Vector3::new(jacp1[(0, dof)], jacp1[(1, dof)], jacp1[(2, dof)]);
+                let expected = dir.dot(&(col2 - col1));
+                assert_relative_eq!(j[(row, dof)], expected, epsilon = 1e-12);
+            }
+        }
+
+        // Row 3 (torsional): relative rotational Jacobian projected along normal
+        // Rows 4–5 (rolling): relative rotational Jacobian projected along tangents
+        let rot_dirs = [contact.normal, contact.frame[0], contact.frame[1]];
+        for (i, dir) in rot_dirs.iter().enumerate() {
+            let row = 3 + i;
+            for dof in 0..nv {
+                let col2 = Vector3::new(jacr2[(0, dof)], jacr2[(1, dof)], jacr2[(2, dof)]);
+                let col1 = Vector3::new(jacr1[(0, dof)], jacr1[(1, dof)], jacr1[(2, dof)]);
+                let expected = dir.dot(&(col2 - col1));
+                assert_relative_eq!(j[(row, dof)], expected, epsilon = 1e-12);
+            }
+        }
+    }
+
+    // =========================================================================
+    // 5d — contact_jac_two_free_bodies (strongest: both bodies non-identity)
+    // =========================================================================
+
+    /// Two free-joint bodies at different non-identity orientations, condim=6
+    /// contact between them. Validates all 6 rows × 12 DOFs against mj_jac.
+    #[test]
+    fn contact_jac_two_free_bodies() {
+        let (model, mut data) = make_two_free_body_contact_model();
+
+        // Body 1: 45° about Z
+        let q1 = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_4);
+        data.qpos[3] = q1.w;
+        data.qpos[4] = q1.i;
+        data.qpos[5] = q1.j;
+        data.qpos[6] = q1.k;
+        // Body 2: 30° about X
+        let q2 = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), FRAC_PI_6);
+        data.qpos[10] = q2.w;
+        data.qpos[11] = q2.i;
+        data.qpos[12] = q2.j;
+        data.qpos[13] = q2.k;
+        mj_fwd_position(&model, &mut data);
+
+        let contact = Contact::with_condim(
+            Vector3::new(0.3, 0.2, 0.1),
+            Vector3::new(0.0, 0.0, 1.0),
+            0.01,
+            1, // geom1 on body 1
+            2, // geom2 on body 2
+            0.5,
+            0.01,
+            0.005,
+            6_i32,
+            DEFAULT_SOLREF,
+            DEFAULT_SOLIMP,
+        );
+        let j = compute_contact_jacobian(&model, &data, &contact);
+        assert_eq!(j.nrows(), 6);
+        assert_eq!(j.ncols(), 12);
+
+        let body1 = model.geom_body[contact.geom1]; // body 1
+        let body2 = model.geom_body[contact.geom2]; // body 2
+
+        let (jacp1, jacr1) = mj_jac(&model, &data, body1, &contact.pos);
+        let (jacp2, jacr2) = mj_jac(&model, &data, body2, &contact.pos);
+
+        let nv = model.nv;
+
+        // Rows 0–2: relative translational Jacobian
+        let trans_dirs = [contact.normal, contact.frame[0], contact.frame[1]];
+        for (row, dir) in trans_dirs.iter().enumerate() {
+            for dof in 0..nv {
+                let col2 = Vector3::new(jacp2[(0, dof)], jacp2[(1, dof)], jacp2[(2, dof)]);
+                let col1 = Vector3::new(jacp1[(0, dof)], jacp1[(1, dof)], jacp1[(2, dof)]);
+                let expected = dir.dot(&(col2 - col1));
+                assert_relative_eq!(j[(row, dof)], expected, epsilon = 1e-12);
+            }
+        }
+
+        // Rows 3–5: relative rotational Jacobian
+        let rot_dirs = [contact.normal, contact.frame[0], contact.frame[1]];
+        for (i, dir) in rot_dirs.iter().enumerate() {
+            let row = 3 + i;
+            for dof in 0..nv {
+                let col2 = Vector3::new(jacr2[(0, dof)], jacr2[(1, dof)], jacr2[(2, dof)]);
+                let col1 = Vector3::new(jacr1[(0, dof)], jacr1[(1, dof)], jacr1[(2, dof)]);
+                let expected = dir.dot(&(col2 - col1));
+                assert_relative_eq!(j[(row, dof)], expected, epsilon = 1e-12);
+            }
+        }
+    }
+
+    // =========================================================================
+    // 5e — contact_jac_free_identity_unchanged (regression)
+    // =========================================================================
+
+    /// At identity orientation, body-frame axes coincide with world-frame axes.
+    /// Verify the contact Jacobian produces the same values as both the old
+    /// world-frame formula and the mj_jac projection.
+    #[test]
+    fn contact_jac_free_identity_unchanged() {
+        let (model, data) = make_free_body_contact_model();
+
+        // Confirm identity orientation
+        let rot = data.xquat[1].to_rotation_matrix();
+        for i in 0..3 {
+            let body_axis = rot * Vector3::ith(i, 1.0);
+            let world_axis = Vector3::ith(i, 1.0);
+            assert_relative_eq!(body_axis, world_axis, epsilon = 1e-15);
+        }
+
+        let contact = Contact::new(
+            Vector3::new(0.3, 0.2, 0.1),
+            Vector3::new(0.0, 0.0, 1.0),
+            0.01,
+            0,
+            1,
+            0.5,
+        );
+        let j = compute_contact_jacobian(&model, &data, &contact);
+
+        // Cross-check against mj_jac projection
+        let body2 = model.geom_body[contact.geom2];
+        let (jacp2, _) = mj_jac(&model, &data, body2, &contact.pos);
+
+        let directions = [contact.normal, contact.frame[0], contact.frame[1]];
+        let nv = model.nv;
+        for (row, dir) in directions.iter().enumerate() {
+            for dof in 0..nv {
+                let col = Vector3::new(jacp2[(0, dof)], jacp2[(1, dof)], jacp2[(2, dof)]);
+                let expected = dir.dot(&col);
+                assert_relative_eq!(j[(row, dof)], expected, epsilon = 1e-12);
+            }
+        }
+    }
+
+    // =========================================================================
+    // 5f — contact_jac_free_frictionless (condim=1)
+    // =========================================================================
+
+    /// Frictionless contact (condim=1, dim=1): only the normal row, no tangent,
+    /// torsional, or rolling rows. Verify angular DOFs use body-frame axes.
+    #[test]
+    fn contact_jac_free_frictionless() {
+        let (model, mut data) = make_free_body_contact_model();
+
+        // Rotate body to 45° about Z (non-identity to make body-frame meaningful)
+        let q = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_4);
+        data.qpos[3] = q.w;
+        data.qpos[4] = q.i;
+        data.qpos[5] = q.j;
+        data.qpos[6] = q.k;
+        mj_fwd_position(&model, &mut data);
+
+        let contact = Contact::with_condim(
+            Vector3::new(0.3, 0.2, 0.1),
+            Vector3::z(),
+            0.01,
+            0,
+            1,
+            0.0, // no sliding friction
+            0.0, // no torsional
+            0.0, // no rolling
+            1_i32,
+            DEFAULT_SOLREF,
+            DEFAULT_SOLIMP,
+        );
+        let j = compute_contact_jacobian(&model, &data, &contact);
+        assert_eq!(j.nrows(), 1);
+        assert_eq!(j.ncols(), 6);
+
+        // Cross-check the single normal row against mj_jac projection
+        let body2 = model.geom_body[contact.geom2];
+        let (jacp2, _) = mj_jac(&model, &data, body2, &contact.pos);
+        let normal = contact.normal;
+
+        for dof in 0..model.nv {
+            let col = Vector3::new(jacp2[(0, dof)], jacp2[(1, dof)], jacp2[(2, dof)]);
+            let expected = normal.dot(&col);
+            assert_relative_eq!(j[(0, dof)], expected, epsilon = 1e-12);
         }
     }
 }

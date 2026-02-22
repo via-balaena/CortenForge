@@ -3697,13 +3697,11 @@ Tracked in [future_work_10d.md](./future_work_10d.md) §DT-32.
   boundary. This is a pre-existing gap shared with fixed tendons.
 Tracked in [future_work_10d.md](./future_work_10d.md) §DT-33.
 - **Pre-existing `add_body_jacobian` free joint bug** — The existing
-  `add_body_jacobian` closure (line 7923) uses world-frame unit vectors for free
-  joint angular DOFs instead of body-frame `R*e_i`. This is incorrect for bodies
-  with non-identity orientation. The `accumulate_point_jacobian` spec uses the
-  correct formula (matching MuJoCo's `cdof` convention). Fixing the pre-existing
-  bug in `add_body_jacobian` and the velocity computation (line 6577) is a
-  separate task that should be done independently of spatial tendons.
-Tracked in [future_work_10j.md](./future_work_10j.md) §DT-75.
+  ~~`add_body_jacobian` closure uses world-frame unit vectors for free
+  joint angular DOFs instead of body-frame `R*e_i`.~~ **FIXED** in DT-75 —
+  all three affected locations (`compute_contact_jacobian`,
+  `compute_flex_contact_jacobian`, `add_angular_jacobian`) now use body-frame
+  `R*e_i` and `xpos`-based lever arm. See [future_work_10j.md](./future_work_10j.md) §DT-75.
 
 #### Acceptance Criteria
 

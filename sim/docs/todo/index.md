@@ -101,7 +101,7 @@ phase they belong to. Items are grouped by source file for easy cross-reference.
 ~40 of 92 deferred tasks are core v1.0. Full list with phase assignments
 in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 
-**Correctness bugs (Phase 1):** ~~DT-74~~ (done), DT-75, DT-35, DT-16, DT-90, DT-78
+**Correctness bugs (Phase 1):** ~~DT-74~~ (done), ~~DT-75~~ (done), DT-35, DT-16, DT-90, DT-78
 
 **Runtime flags (Phase 2):** DT-61
 
@@ -194,7 +194,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 
 | Phase | Focus | Key Items | Count |
 |-------|-------|-----------|-------|
-| 1 | Correctness bugs | ~~DT-74~~ (done), DT-75, DT-35, DT-16, DT-90, DT-78 | 6 (1 done) |
+| 1 | Correctness bugs | ~~DT-74~~ (done), ~~DT-75~~ (done), DT-35, DT-16, DT-90, DT-78 | 6 (2 done) |
 | 2 | Runtime flag wiring | §41, DT-61 | 2 |
 | 3 | Core API gaps | DT-21, DT-41, §52, §53, §59, DT-79 | 6 |
 | 4 | Core Data fields | §51, §56 | 2 |
@@ -243,7 +243,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 ```
    ┌─────────────────────────────────────────────────────┐
    │ Roadmap Phase 1: Fix correctness bugs               │
-   │ ✓DT-74, DT-75, DT-35, DT-16, DT-90, DT-78        │
+   │ ✓DT-74, ✓DT-75, DT-35, DT-16, DT-90, DT-78       │
    └──────────────────────┬──────────────────────────────┘
                           │
                           ▼
