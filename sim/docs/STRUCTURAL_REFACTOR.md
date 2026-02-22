@@ -65,7 +65,7 @@ The proposed module boundaries were stress-tested against the actual call graph,
 shared mutable state patterns, and function sizes. Eight risks were identified.
 Here is the resolution for each.
 
-### Finding 1: `assemble_unified_constraints` is 694 lines
+### Finding 1: `assemble_unified_constraints` is 685 lines
 
 This single function would consume almost the entire 800-line budget of
 `constraint/assembly.rs`.
@@ -355,7 +355,7 @@ sim-core/src/
   │   ├── model.rs            Model struct definition + field accessors +
   │   │                       is_ancestor() + joint_qpos0() + qld_csr() (~780 lines)
   │   │                       (visit_joints → joint_visitor.rs,
-  │   │                        compute_qld_csr_metadata → linalg.rs or dynamics/factor.rs,
+  │   │                        compute_qld_csr_metadata → dynamics/factor.rs,
   │   │                        compute_muscle_params → forward/actuation.rs,
   │   │                        compute_spatial_tendon_length0 → tendon/mod.rs)
   │   ├── model_init.rs       empty(), make_data(), compute_ancestors(),
@@ -384,16 +384,19 @@ sim-core/src/
   │   ├── actuation.rs        mj_fwd_actuation, mj_actuator_length,
   │   │                       mj_transmission_site, mj_transmission_body,
   │   │                       mj_transmission_body_dispatch, muscle_* helpers
-  │   ├── acceleration.rs     mj_fwd_acceleration_explicit, _implicit, _implicitfast,
-  │   │                       _implicit_full — all four acceleration paths
+  │   ├── acceleration.rs     mj_fwd_acceleration (dispatch), mj_fwd_acceleration_explicit,
+  │   │                       _implicit, _implicitfast, _implicit_full,
+  │   │                       ImplicitSpringVisitor — all four acceleration paths
   │   └── check.rs            mj_check_pos, mj_check_vel, mj_check_acc
   │
   ├── dynamics/
   │   ├── mod.rs              Re-exports
   │   ├── crba.rs             mj_crba, cache_body_effective_mass (CRBA + mass matrix)
   │   ├── rne.rs              mj_rne, mj_gravcomp (Recursive Newton-Euler + gravity comp)
-  │   ├── factor.rs           mj_factor_sparse, mj_factor_sparse_selective
-  │   │                       (sparse LDL factorization; sparse solvers → linalg.rs)
+  │   ├── factor.rs           mj_factor_sparse, mj_factor_sparse_selective,
+  │   │                       compute_qld_csr_metadata
+  │   │                       (sparse LDL factorization + structural precomputation;
+  │   │                       sparse solvers → linalg.rs)
   │   ├── spatial.rs          spatial_cross_motion, spatial_cross_force,
   │   │                       compute_body_spatial_inertia, shift_spatial_inertia,
   │   │                       object_velocity_local, rotate_spatial_to_world, etc.
@@ -417,8 +420,9 @@ sim-core/src/
   │   │                       compute_regularization (~343 lines — constraint impedance,
   │   │                       stiffness/damping precomputation, diagonal approximation)
   │   └── solver/
-  │       ├── mod.rs          compute_delassus_regularized, qfrc recovery, dispatch (~130 lines)
-  │       ├── pgs.rs          PGS solver, classify_constraint_states (~400 lines)
+  │       ├── mod.rs          compute_delassus_regularized, compute_qfrc_constraint_from_efc,
+  │       │                  extract_qfrc_frictionloss, decode_pyramid, solver dispatch (~130 lines)
+  │       ├── pgs.rs          PGS solver, pgs_cost_change, classify_constraint_states (~400 lines)
   │       ├── cg.rs           CG solver (~280 lines)
   │       ├── newton.rs       Newton solver, recover_newton (~313 lines)
   │       ├── hessian.rs      assemble_hessian, SparseHessian struct + 7 impl methods,
@@ -439,7 +443,8 @@ sim-core/src/
   │   │  geometry-type matching into those libraries.
   │   ├── mod.rs              mj_collision (broad + narrow dispatch), mj_collision_flex,
   │   │                       check_collision_affinity, contact parameter mixing
-  │   ├── narrow.rs           collide_geoms dispatch, geom_to_collision_shape
+  │   ├── narrow.rs           collide_geoms dispatch, geom_to_collision_shape,
+  │   │                       apply_pair_overrides, make_contact_from_geoms, GEOM_EPSILON
   │   ├── pair_convex.rs      sphere_sphere, capsule_capsule, sphere_capsule,
   │   │                       sphere_box, closest_point_segment, closest_points_segments (~310 lines)
   │   ├── pair_cylinder.rs    cylinder_sphere, cylinder_capsule, capsule_box,
@@ -466,10 +471,11 @@ sim-core/src/
   │   ├── mod.rs              mj_fwd_tendon (dispatch), Model::compute_spatial_tendon_length0
   │   ├── fixed.rs            mj_fwd_tendon_fixed
   │   ├── spatial.rs          mj_fwd_tendon_spatial, accumulate_point_jacobian,
-  │   │                       sphere_wrap, cylinder_wrap, apply_tendon_force
+  │   │                       apply_tendon_force, subquat, WrapResult enum
   │   └── wrap_math.rs        sphere_tangent_point, compute_tangent_pair, circle_tangent_2d,
   │                           sphere_wrapping_plane, wrap_inside_2d,
-  │                           directional_wrap_angle, segments_intersect_2d
+  │                           directional_wrap_angle, segments_intersect_2d,
+  │                           sphere_wrap, cylinder_wrap
   │
   ├── island/
   │   ├── mod.rs              mj_island, mj_flood_fill, equality_trees,
@@ -477,7 +483,9 @@ sim-core/src/
   │   └── sleep.rs            mj_wake, mj_wake_collision, mj_wake_tendon,
   │                           mj_wake_equality, mj_wake_tree, mj_sleep,
   │                           mj_sleep_cycle, mj_update_sleep_arrays,
-  │                           mj_check_qpos_changed, sensor_body_id
+  │                           mj_check_qpos_changed, sensor_body_id,
+  │                           tree_can_sleep, sleep_trees, sync_tree_fk,
+  │                           reset_sleep_state
   │
   ├── integrate/
   │   ├── mod.rs              integrate() dispatch (Euler/Implicit*/RK4),
@@ -532,23 +540,23 @@ sim-core/src/
 
 | Module | Est. lines | Source (line ranges in current file) |
 |--------|-----------|--------------------------------------|
-| `types/enums.rs` | ~710 | L325–L388 + L455–L1100 (enums, error types — UnionFind moves to linalg.rs; JointContext/JointVisitor at L389–L454 → `joint_visitor.rs`) |
-| `types/model.rs` | ~780 | L1142–L1870 (Model struct + accessors + is_ancestor + joint_qpos0 + qld_csr) |
-| `types/model_init.rs` | ~774 | L2890–L3651 + L3671–L3744 + L4033–L4062 + L12901–L12964 (empty, make_data, compute_ancestors, compute_implicit_params, compute_stat_meaninertia, compute_body_lengths, compute_dof_lengths — see doc reference mapping table for precise per-function ranges) |
+| `types/enums.rs` | ~710 | L325–L383 + L455–L1100 (enums, error types — UnionFind moves to linalg.rs; JointContext/JointVisitor at L384–L454 → `joint_visitor.rs`) |
+| `types/model.rs` | ~780 | L1142–L1870 (Model struct + accessors) + L3652–L3670 (joint_qpos0) + L4063–L4076 (is_ancestor) + qld_csr (inline accessor in Model impl). **MARGIN WARNING**: ~780 is 20 lines from limit. Fallback: move `is_ancestor()` (~14 lines) to `types/model_init.rs`. |
+| `types/model_init.rs` | ~774 | L2890–L3651 + L3671–L3744 + L4033–L4062 + L12901–L12964 (empty, make_data, compute_ancestors, compute_implicit_params, compute_stat_meaninertia, compute_body_lengths, compute_dof_lengths — see doc reference mapping table for precise per-function ranges). **MARGIN WARNING**: raw source spans ~930 lines before whitespace/comment removal. Fallback: move `compute_body_lengths` + `compute_dof_lengths` (~64 lines) to a separate `types/model_precompute.rs` or into the target module they serve. |
 | `types/model_factories.rs` | ~280 | Factory helpers (n_link_pendulum, double_pendulum, etc.) — `#[cfg(test)]`-gated |
-| `types/data.rs` | ~600 | L2185–L2890 (Data struct + Clone) + L4385–L4540 (Data accessors). **MARGIN WARNING**: source ranges total ~859 lines; the ~600 estimate assumes significant whitespace/comment removal. If the extracted module exceeds 800, the fallback is to move `reset()` and `reset_to_keyframe()` (~80 lines) to a separate `types/data_ops.rs`. |
+| `types/data.rs` | ~700 | L2185–L2890 (Data struct + Clone) + L4383–L4537 (Data accessors). **MARGIN WARNING**: source ranges total ~859 lines; the ~700 estimate assumes significant whitespace/comment removal. If the extracted module exceeds 800, the fallback is to move `reset()` and `reset_to_keyframe()` (~80 lines) to a separate `types/data_ops.rs`. |
 | `types/contact_types.rs` | ~302 | L1870–L2171 (ContactPair, Contact struct, impl Contact, compute_tangent_frame) |
 | `types/keyframe.rs` | ~20 | L1105–L1124 (Keyframe struct) |
 | `forward/mod.rs` | ~200 | L4537–L4700 (step, forward, forward_skip_sensors, forward_core + mod declarations/re-exports/docs — the full orchestration is ~90 lines of call sequences) |
 | `forward/position.rs` | ~500 | L4876–L5383 (mj_fwd_position + aabb + SAP) |
 | `forward/velocity.rs` | ~114 | L9244–L9358 (body spatial velocities from qvel) |
 | `forward/passive.rs` | ~660 | L12108–L12690 (fluid helpers + mj_fwd_passive) + L12818–L12899 (PassiveForceVisitor) |
-| `forward/actuation.rs` | ~500 | L10682–L11247 (transmission + actuation + muscle helpers) |
+| `forward/actuation.rs` | ~760 | L10682–L11247 (transmission + actuation + muscle helpers) + L3745–L4003 (compute_muscle_params, joins in Phase 8a). **MARGIN WARNING**: ~760 is close to limit. If extraction exceeds 800, move compute_muscle_params to a separate `forward/muscle.rs`. |
 | `forward/check.rs` | ~30 | L4822–L4876 (mj_check_pos, mj_check_vel, mj_check_acc — ~30 lines of function bodies within a 54-line range that includes comments/whitespace. These are trivial validation guards. May be inlined into `forward/mod.rs` if the separate file feels like overhead.) |
 | `forward/acceleration.rs` | ~310 | L20029–L20084 (mj_fwd_acceleration dispatch) + L20085–L20104 + L20559–L20827 (4 accel paths) |
-| `dynamics/crba.rs` | ~350 | L11247–L11609 |
-| `dynamics/rne.rs` | ~350 | L11704–L12038 |
-| `dynamics/factor.rs` | ~169 | L20276–L20444 (mj_factor_sparse, mj_factor_sparse_selective — factorization only; sparse solvers go to `linalg.rs`) |
+| `dynamics/crba.rs` | ~350 | L11247–L11598 |
+| `dynamics/rne.rs` | ~350 | L11677–L12038 (includes doc comment starting at L11677; fn mj_rne at L11704) |
+| `dynamics/factor.rs` | ~200 | L20276–L20444 (mj_factor_sparse, mj_factor_sparse_selective) + compute_qld_csr_metadata (~30 lines, joins from Model impl in Phase 7). Factorization + structural precomputation; sparse solvers go to `linalg.rs`. |
 | `dynamics/spatial.rs` | ~300 | L106–L325 (spatial algebra) + L12038–L12108 |
 | `dynamics/flex.rs` | ~10 | L9236–L9244 (mj_flex — flex vertex position sync, 6-line function + imports/doc) |
 | `constraint/mod.rs` | ~400 | mj_fwd_constraint + dispatch (verified) |
@@ -568,6 +576,9 @@ sim-core/src/
 | `collision/pair_cylinder.rs` | ~620 | L7406–L8028 (cylinder pairs + box-box SAT) |
 | `collision/plane.rs` | ~415 | L6673–L7088 (collide_with_plane, collide_cylinder_plane_impl, collide_ellipsoid_plane_impl) |
 | `collision/narrow.rs` | ~470 | L5644–L6068 + L6241–L6288 (collide_geoms dispatch, geom_to_collision_shape, apply_pair_overrides, make_contact_from_geoms, constants) |
+| `collision/hfield.rs` | ~87 | L6290–L6376 (collide_with_hfield) |
+| `collision/sdf_collide.rs` | ~119 | L6378–L6496 (collide_with_sdf) |
+| `collision/mesh_collide.rs` | ~174 | L6498–L6671 (collide_with_mesh + collide_mesh_plane) |
 | `sensor/mod.rs` | ~17 | L8118–L8134 (dispatch + mod declarations) |
 | `sensor/position.rs` | ~289 | L8135–L8423 (mj_sensor_pos) |
 | `sensor/velocity.rs` | ~190 | L8437–L8626 (mj_sensor_vel) |
@@ -582,7 +593,7 @@ sim-core/src/
 | `integrate/rk4.rs` | ~169 | L21302–L21470 (mj_runge_kutta) |
 | `jacobian.rs` | ~465 | L9830–L10041 + L10795–L10829 + L21085–L21283 (Jacobian utilities + compute_contact_normal_jacobian + mj_differentiate_pos + mj_integrate_pos_explicit; doc comment at L21068–L21084) |
 | `linalg.rs` | ~340 | L20106–L20253 (Cholesky) + L20445–L20557 (mj_solve_sparse, mj_solve_sparse_batch) + L20829–L20897 (LU). Decision: sparse solvers belong in `linalg.rs` (they are solve routines, not factorization); factorization stays in `dynamics/factor.rs`. |
-| `joint_visitor.rs` | ~130 | L389–L454 (JointContext + JointVisitor trait) + L11609–L11669 (joint_motion_subspace) |
+| `joint_visitor.rs` | ~130 | L384–L454 (JointContext + JointVisitor trait) + L11599–L11669 (joint_motion_subspace + boundary lines from CRBA) |
 | `energy.rs` | ~89 | L8028–L8116 |
 | **Inline tests** | ~5,246 | L21476–L26722 (move with their modules) |
 
@@ -601,8 +612,8 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 |---------------------|---------------|----------|
 | L1–L105 | (preamble) | File header, `use` imports, module-level items |
 | L106–L325 | `dynamics/spatial.rs` | Spatial algebra (spatial_cross_motion, spatial_cross_force, etc.) |
-| L325–L388 | `types/enums.rs` | Enums part 1 (MjJointType through end of preceding items) |
-| L389–L454 | `joint_visitor.rs` | JointContext struct + JointVisitor trait |
+| L325–L383 | `types/enums.rs` | Enums part 1 (MjJointType through end of preceding items — L384 starts JointContext's #[derive]) |
+| L384–L454 | `joint_visitor.rs` | JointContext struct (#[derive] at L384) + JointVisitor trait |
 | L455–L1100 | `types/enums.rs` | Enums part 2 (GeomType, SolverType, Integrator, ... ResetError) |
 | L1105–L1124 | `types/keyframe.rs` | Keyframe struct |
 | L1125–L1141 | (whitespace/derives) | Model doc comment + `#[derive]` — precedes Model struct |
@@ -614,18 +625,19 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L3600–L3651 | `types/model_init.rs` | End of `compute_implicit_params()` |
 | L3652–L3670 | `types/model.rs` | `joint_qpos0()` |
 | L3671–L3696 | `types/model_init.rs` | `compute_ancestors()` |
+| L3697–L3704 | (whitespace/comments) | Section boundary — no production code |
 | L3705–L3744 | `types/model_init.rs` | `compute_implicit_params()` (additional block) |
 | L3745–L4003 | `forward/actuation.rs` | `compute_muscle_params()` — stays in monolith until Phase 8a |
 | L4004–L4032 | `tendon/mod.rs` | `compute_spatial_tendon_length0()` — stays in monolith until Phase 5 |
 | L4033–L4062 | `types/model_init.rs` | `compute_stat_meaninertia()` |
 | L4063–L4076 | `types/model.rs` | `is_ancestor()` |
 | L4078–L4383 | `types/model_factories.rs` | Factory methods (n_link_pendulum, double_pendulum, spherical_pendulum, free_body) |
-| L4383–L4537 | `types/data.rs` | Data accessors (qld_diag, reset, reset_to_keyframe) |
+| L4383–L4537 | `types/data.rs` | Data accessors (qld_diag, reset, reset_to_keyframe, total_energy, sleep_state, tree_awake, nbody_awake, nisland) |
 | L4537–L4700 | `forward/mod.rs` | step, forward, forward_skip_sensors, forward_core |
 | L4701–L4821 | `integrate/mod.rs` | integrate(), integrate_without_velocity() |
 | L4822–L4876 | `forward/check.rs` | mj_check_pos, mj_check_vel, mj_check_acc (~24 lines + whitespace) |
 | L4876–L5383 | `forward/position.rs` | mj_fwd_position + AABB + SAP |
-| L5383–L5644 | `collision/mod.rs` | check_collision_affinity (L5383), mj_collision (L5430), mj_collision_flex (L5578) |
+| L5383–L5644 | `collision/mod.rs` | check_collision_affinity (L5383), mj_collision (L5454), mj_collision_flex (L5584) |
 | L5644–L6068 | `collision/narrow.rs` | Narrow-phase dispatch + geom_to_collision_shape |
 | L6068–L6240 | `collision/mod.rs` | Contact parameter mixing (contact_param (L6068), contact_param_flex_rigid (L6129), solmix_weight (L6188), combine_solref (L6206), combine_solimp (L6218)) |
 | L6241–L6265 | `collision/narrow.rs` | End of make_contact_from_geoms |
@@ -654,7 +666,8 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L10675–L10681 | (whitespace/comments) | Section boundary between tendon wrapping and actuation |
 | L10795–L10829 | `jacobian.rs` | compute_contact_normal_jacobian (~35 lines) — private, called only by `mj_transmission_body`. Despite sitting in the actuation section of the monolith, logically belongs with Jacobian utilities. |
 | L10682–L11247 | `forward/actuation.rs` | Transmission + actuation + muscle helpers (excluding L10795–L10829 which goes to jacobian.rs) |
-| L11247–L11609 | `dynamics/crba.rs` | CRBA + mass matrix |
+| L11247–L11598 | `dynamics/crba.rs` | CRBA + mass matrix |
+| L11599–L11608 | `joint_visitor.rs` | (end of CRBA range / start of joint_motion_subspace — boundary overlap resolved) |
 | L11609–L11669 | `joint_visitor.rs` | joint_motion_subspace (motion subspace computation) |
 | L11670–L11676 | (whitespace/comments) | Section boundary between joint_motion_subspace and mj_rne |
 | L11677–L12038 | `dynamics/rne.rs` | RNE + gravity comp (doc comment starts at L11677, fn mj_rne at L11704) |
@@ -675,10 +688,12 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L14932–L15043 | `constraint/impedance.rs` | compute_impedance (L14932) — constraint impedance model |
 | L15044–L15082 | `constraint/impedance.rs` | quaternion_to_axis_angle (L15044) — used in weld/ball constraint assembly |
 | L15083–L15118 | `constraint/impedance.rs` | compute_kbip (L15083), compute_aref (L15116) — constraint stiffness/damping/reference |
+| L15119–L15122 | (whitespace) | Section boundary — no production code |
 | L15123–L15164 | `constraint/impedance.rs` | normalize_quat4 (L15123), ball_limit_axis_angle (L15143) — quaternion helpers for ball joint limits |
+| L15165–L15171 | (whitespace) | Section boundary — no production code |
 | L15172–L15274 | `constraint/impedance.rs` | compute_diag_approx_exact (L15172), mj_solve_sparse_vec (L15208), compute_regularization (L15255) — diagonal approximation and regularization |
 | L15275–L15315 | `constraint/mod.rs` | compute_qacc_smooth (~41 lines) |
-| L15334–L16018 | `constraint/assembly.rs` | assemble_unified_constraints (694 lines) |
+| L15334–L16018 | `constraint/assembly.rs` | assemble_unified_constraints (685 lines) |
 | L16028–L16062 | `constraint/solver/mod.rs` | compute_delassus_regularized (35 lines) |
 | L16074–L16220 | `constraint/solver/pgs.rs` | pgs_solve_unified (147 lines) |
 | L16237–L16516 | `constraint/solver/cg.rs` | cg_solve_unified (280 lines) |
@@ -689,7 +704,7 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L17529–L17602 | `constraint/solver/primal.rs` | compute_gradient_and_search (36), compute_gradient_and_search_sparse (36) |
 | L17603–L17654 | `constraint/solver/primal.rs` | PrimalQuad, PrimalPoint struct definitions |
 | L17655–L18181 | `constraint/solver/primal.rs` | primal_prepare (101), primal_eval (133), primal_search (155), evaluate_cost_at (109) |
-| L18204–L18514 | `constraint/solver/newton.rs` | newton_solve (297), recover_newton (8) |
+| L18204–L18514 | `constraint/solver/newton.rs` | newton_solve (303), recover_newton (8) |
 | L18555–L18972 | `constraint/solver/noslip.rs` | noslip_postprocess (~418 lines) |
 | L18998–L19086 | `constraint/equality.rs` | get_min_diagonal_mass (68), get_min_translational_mass (3), get_min_rotational_inertia (3) |
 | L19110–L19482 | `constraint/equality.rs` | extract_{connect,weld,joint,tendon,distance}_jacobian |
@@ -704,7 +719,7 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L19850–L20006 | `constraint/mod.rs` | mj_fwd_constraint (~157 lines) |
 | L20006–L20013 | (whitespace/comments) | Section boundary — no production code |
 | L20013–L20028 | `constraint/mod.rs` | compute_point_velocity (~16 lines) |
-| L20029–L20084 | `forward/acceleration.rs` | mj_fwd_acceleration (L20066) — dispatch to explicit/implicit/implicitfast/implicit_full |
+| L20029–L20083 | `forward/acceleration.rs` | mj_fwd_acceleration (L20066) — dispatch to explicit/implicit/implicitfast/implicit_full (L20084 starts mj_fwd_acceleration_explicit) |
 | L20085–L20104 | `forward/acceleration.rs` | mj_fwd_acceleration_explicit |
 | L20106–L20253 | `linalg.rs` | Cholesky factorization, solve, rank-1 update/downdate |
 | L20255–L20275 | `dynamics/factor.rs` | (doc comment for mj_factor_sparse) |
@@ -931,12 +946,15 @@ struct/enum definitions.
 - [ ] Move Model struct definition + field accessors + `is_ancestor()` +
       `joint_qpos0()` + `qld_csr()` → `types/model.rs` (~780 lines)
 - [ ] Move `empty()`, `make_data()`, `compute_ancestors()`,
-      `compute_implicit_params()`, `compute_stat_meaninertia()` →
-      `types/model_init.rs` (~760 lines — construction + precomputation)
+      `compute_implicit_params()`, `compute_stat_meaninertia()`,
+      `compute_body_lengths()`, `compute_dof_lengths()` →
+      `types/model_init.rs` (~774 lines — construction + precomputation).
+      Note: compute_body_lengths + compute_dof_lengths are at L12901–L12964,
+      physically distant from the other model_init functions.
 - [ ] Move `n_link_pendulum()`, `double_pendulum()`, `spherical_pendulum()`,
       `free_body()` → `types/model_factories.rs` (~280 lines, `#[cfg(test)]`-gated)
 - [ ] Methods destined for other modules (`visit_joints` → `joint_visitor.rs`,
-      `compute_qld_csr_metadata` → `linalg.rs`/`dynamics/factor.rs`,
+      `compute_qld_csr_metadata` → `dynamics/factor.rs`,
       `compute_muscle_params` → `forward/actuation.rs`,
       `compute_spatial_tendon_length0` → `tendon/mod.rs`) stay in the monolith
       until their target module is created in a later phase.
@@ -944,7 +962,7 @@ struct/enum definitions.
       the `impl Data` methods that belong there: `reset()`, `reset_to_keyframe()`,
       `qld_diag()`, and field accessors. Pipeline methods (`step`, `forward`,
       `integrate`, etc.) stay in the monolith until Phase 8.
-- [ ] Move Contact/ContactPair → `types/contact_types.rs`
+- [ ] Move Contact/ContactPair + compute_tangent_frame → `types/contact_types.rs`
 - [ ] Move Keyframe → `types/keyframe.rs`
 - [ ] Update `lib.rs` re-exports (same public API)
 - [ ] Run full test suite — must match baseline
@@ -960,7 +978,7 @@ Pure math functions with no pipeline state dependencies.
       spatial_cross_motion/force, compute_body_spatial_inertia,
       shift_spatial_inertia (remaining dynamics/ modules filled in Phase 7)
 - [ ] Create `src/joint_visitor.rs` — move JointVisitor trait, JointContext,
-      joint_motion_subspace
+      joint_motion_subspace, Model::visit_joints()
 - [ ] Run full test suite
 
 **Estimated size**: ~900 lines moved
@@ -1005,9 +1023,10 @@ in the monolith (L8028–L8116) and has no dependencies on later pipeline stages
 ### Phase 5: Extract tendon pipeline
 
 - [ ] Create `src/tendon/` module tree
-- [ ] Move mj_fwd_tendon → `tendon/mod.rs`
+- [ ] Move mj_fwd_tendon, compute_spatial_tendon_length0 → `tendon/mod.rs`
 - [ ] Move mj_fwd_tendon_fixed → `tendon/fixed.rs`
-- [ ] Move mj_fwd_tendon_spatial + accumulate_point_jacobian → `tendon/spatial.rs`
+- [ ] Move mj_fwd_tendon_spatial + accumulate_point_jacobian + apply_tendon_force →
+      `tendon/spatial.rs`
 - [ ] Move wrapping math (sphere_tangent_point, wrap_inside_2d, etc.) →
       `tendon/wrap_math.rs`
 - [ ] Update the call site in the still-monolithic `mj_fwd_position` to use
@@ -1022,7 +1041,8 @@ The largest extraction. ~5,612 lines across 45+ functions → 12 files.
 See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 
 - [ ] Create `src/constraint/mod.rs` — move mj_fwd_constraint, mj_fwd_constraint_islands,
-      compute_qacc_smooth, build_m_impl_for_newton, compute_qfrc_smooth_implicit (~400 lines)
+      compute_qacc_smooth, build_m_impl_for_newton, compute_qfrc_smooth_implicit,
+      compute_point_velocity (~400 lines)
 - [ ] Create `src/constraint/assembly.rs` — move assemble_unified_constraints,
       populate_efc_island (~750 lines)
 - [ ] Create `src/constraint/equality.rs` — move all extract_*_jacobian functions,
@@ -1036,7 +1056,8 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 - [ ] Create `src/constraint/solver/mod.rs` — compute_delassus_regularized,
       compute_qfrc_constraint_from_efc, extract_qfrc_frictionloss,
       decode_pyramid (~130 lines)
-- [ ] Create `src/constraint/solver/pgs.rs` — pgs_solve_unified, classify_constraint_states (~400 lines)
+- [ ] Create `src/constraint/solver/pgs.rs` — pgs_solve_unified, pgs_cost_change,
+      classify_constraint_states (~400 lines)
 - [ ] Create `src/constraint/solver/cg.rs` — cg_solve_unified (~280 lines)
 - [ ] Create `src/constraint/solver/newton.rs` — newton_solve, recover_newton (~313 lines)
 - [ ] Create `src/constraint/solver/hessian.rs` — assemble_hessian,
@@ -1072,7 +1093,7 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 - [ ] Extend `src/dynamics/` module tree (created in Phase 2 with `spatial.rs`)
 - [ ] Move mj_crba + cache_body_effective_mass → `dynamics/crba.rs`
 - [ ] Move mj_rne + mj_gravcomp → `dynamics/rne.rs`
-- [ ] Move mj_factor_sparse* → `dynamics/factor.rs`
+- [ ] Move mj_factor_sparse*, compute_qld_csr_metadata → `dynamics/factor.rs`
 - [ ] Move mj_flex → `dynamics/flex.rs` (~10 lines — only `mj_flex` exists)
 - [ ] Run full test suite
 
@@ -1084,14 +1105,14 @@ The forward pipeline is the most interconnected extraction. Splitting it from
 integration and island/sleep follows Principle #5 (one PR per major module).
 
 - [ ] Create `src/forward/` module tree
-- [ ] Move step/forward/forward_core → `forward/mod.rs`
-- [ ] Move mj_fwd_position → `forward/position.rs`
+- [ ] Move step/forward/forward_skip_sensors/forward_core → `forward/mod.rs`
+- [ ] Move mj_fwd_position + aabb_from_geom + SweepAndPrune → `forward/position.rs`
 - [ ] Move mj_fwd_velocity → `forward/velocity.rs`
 - [ ] Move passive forces + PassiveForceVisitor → `forward/passive.rs`
       **WARNING**: L12690–L12816 (tendon implicit K/D helpers) sits between the
       two passive ranges but goes to `integrate/implicit.rs` in Phase 8b, NOT
       to `forward/passive.rs`. Only take L12108–L12690 and L12818–L12899.
-- [ ] Move actuation pipeline → `forward/actuation.rs`
+- [ ] Move actuation pipeline + compute_muscle_params → `forward/actuation.rs`
 - [ ] Move acceleration paths → `forward/acceleration.rs`
 - [ ] Move check functions → `forward/check.rs`
 - [ ] Move Jacobian functions → `src/jacobian.rs` (includes `mj_differentiate_pos`
@@ -1103,7 +1124,7 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 ### Phase 8b: Extract integration
 
 - [ ] Create `src/integrate/` module tree
-- [ ] Move integrate() dispatch → `integrate/mod.rs`
+- [ ] Move integrate() dispatch + integrate_without_velocity() → `integrate/mod.rs`
 - [ ] Move Euler integration + mj_integrate_pos + mj_normalize_quat +
       PositionIntegrateVisitor + QuaternionNormalizeVisitor →
       `integrate/euler.rs` (NOT mj_differentiate_pos or
@@ -1123,7 +1144,8 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 - [ ] Create `src/island/` module tree
 - [ ] Move mj_island, mj_flood_fill, equality_trees, constraint_tree → `island/mod.rs`
 - [ ] Move mj_wake*, mj_sleep, mj_sleep_cycle, mj_update_sleep_arrays,
-      mj_check_qpos_changed, mj_wake_tree, sensor_body_id → `island/sleep.rs`
+      mj_check_qpos_changed, mj_wake_tree, sensor_body_id, tree_can_sleep,
+      sleep_trees, sync_tree_fk, reset_sleep_state → `island/sleep.rs`
 - [ ] Run full test suite
 
 **Estimated size**: ~1,295 lines moved (island/sleep.rs: ~708 lines, island/mod.rs: ~587 lines)
