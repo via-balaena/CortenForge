@@ -1040,10 +1040,9 @@ routing through sites with wrapping geometry) are deferred to a follow-up.
   DM Control suite). They cover differential drives, antagonistic pairs, and linear
   coupling — the core use cases for tendon-driven actuators.
 - Fixed tendons have **constant Jacobians** (the coupling coefficients), eliminating
-  the need for body positional Jacobians. `compute_body_jacobian_at_point()`
-  (`mujoco_pipeline.rs:6816`) is incomplete (only x-component per DOF, marked
-  `#[allow(dead_code)]`) and would need a full rewrite for spatial tendons.
-  Tracked in [future_work_10j.md](./future_work_10j.md) §DT-74.
+  the need for body positional Jacobians. The broken `compute_body_jacobian_at_point()`
+  has been deleted and replaced by the canonical `mj_jac` API (DT-74, done).
+  Spatial tendons can use `mj_jac` for configuration-dependent Jacobians.
 - Spatial tendons require wrapping geometry (sphere/cylinder geodesics) and
   configuration-dependent Jacobians via the chain rule through `mj_jac()`. This is
   a separate body of work that can land independently.

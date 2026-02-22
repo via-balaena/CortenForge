@@ -164,6 +164,8 @@ pub use mujoco_pipeline::{
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
     // Jacobian infrastructure (§40a derivative tests)
+    mj_jac,
+    mj_jac_body,
     mj_jac_point,
     mj_jac_site,
     // LDL solve (for test/verification access to M⁻¹ via factored mass matrix)

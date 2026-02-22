@@ -505,10 +505,8 @@ Two new helpers are needed. Two existing functions are reused:
 /// where J is the 3×nv translational Jacobian at the contact point.
 ///
 /// **NEW — does not exist in the codebase.**
-/// Requires the full 3×nv Jacobian (not just the x-row from the existing
-/// `compute_body_jacobian_at_point()`). The 3-row Jacobian is built with
-/// the same kinematic-chain walk as the existing function but stores all
-/// 3 components (j_col.x/y/z) in rows 0/1/2.
+/// Requires the full 3×nv translational Jacobian. Use `mj_jac()` (DT-74)
+/// which returns `(jacp 3×nv, jacr 3×nv)` via the canonical chain-walk.
 fn compute_rigid_inv_mass_at_point(
     model: &Model,
     data: &Data,
@@ -518,11 +516,9 @@ fn compute_rigid_inv_mass_at_point(
 ) -> f64 {
     if body_id == 0 { return 0.0; } // World body = infinite mass
 
-    // Build 3×nv translational Jacobian at point.
-    // Same walk as compute_body_jacobian_at_point() (line 9339-9401)
-    // but stores all 3 rows (x, y, z).
-    let mut jac = DMatrix::zeros(3, model.nv);
-    // ... kinematic chain walk, storing j_col.x/y/z in rows 0/1/2 ...
+    // Build 3×nv translational Jacobian at point via mj_jac (DT-74).
+    let (jac, _jacr) = mj_jac(model, data, body_id, &point);
+    // jac is 3×nv translational Jacobian
 
     // j_n = J^T * n  (nv×3 * 3×1 = nv×1)
     let n = DVector::from_column_slice(normal.as_slice());
@@ -1223,7 +1219,7 @@ the constraint solver, but these were not exposed as a general derivative API:
 | Component | Location | Description |
 |-----------|----------|-------------|
 | `compute_contact_jacobian()` | `mujoco_pipeline.rs:9647` | dim×nv contact Jacobian for PGS/CG. Not public. |
-| `compute_body_jacobian_at_point()` | `mujoco_pipeline.rs:9561` | 1×nv translational Jacobian. `#[allow(dead_code)]`. |
+| ~~`compute_body_jacobian_at_point()`~~ | ~~`mujoco_pipeline.rs:9561`~~ | Deleted in DT-74. Replaced by `mj_jac()` returning `(jacp 3×nv, jacr 3×nv)`. |
 | Tendon Jacobians | `mujoco_pipeline.rs:7454,7488` | 1×nv rows accumulated during `mj_fwd_tendon_fixed` / `mj_fwd_tendon_spatial`. Stored in `data.ten_J` (line 1819). |
 | `mj_differentiate_pos()` | `mujoco_pipeline.rs:13212` | Position-space finite differences (qpos₁, qpos₂) → qvel. Public. |
 | `mj_integrate_pos_explicit()` | `mujoco_pipeline.rs:13330` | Velocity integration on SO(3) manifold. Public. |

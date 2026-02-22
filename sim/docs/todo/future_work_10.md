@@ -4774,10 +4774,9 @@ fn rotate_jac_to_local(J: &mut DMatrix<f64>, R: &Matrix3<f64>) {
 }
 ```
 
-**Refactor deferral:** `mj_jac_site` currently implements its own chain-walk
-returning `(3×nv, 3×nv)`. A future cleanup could refactor it to call
-`mj_jac_point` and split the 6×nv result. Deferred to §40e to avoid widening
-§40a's blast radius.
+**Refactor deferral:** ~~`mj_jac_site` currently implements its own chain-walk
+returning `(3×nv, 3×nv)`.~~ **Resolved by DT-74:** both `mj_jac_site` and
+`mj_jac_point` now delegate to the canonical `mj_jac()`. See §40e update.
 
 ##### S4. Inertia-Box B Matrix (Diagonal, Per-Body)
 
@@ -6745,37 +6744,22 @@ fluid derivative performance for models with `nv > 200`. This mirrors MuJoCo's
 
 ---
 
-### 40e. Refactor `mj_jac_site` to Use `mj_jac_point` Kernel
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### 40e. Refactor `mj_jac_site` to Use Shared Jacobian Kernel
+**Status:** **DONE** (completed by DT-74, 2026-02-22) | **Effort:** S | **Prerequisites:** None
 
-#### Current State
+#### Resolution
 
-`mj_jac_site` in `mujoco_pipeline.rs` implements its own chain-walk algorithm,
-returning two separate 3×nv matrices `(jac_trans, jac_rot)`. The §40a
-implementation added `mj_jac_point` as a shared 6×nv Jacobian kernel using the
-same chain-walk pattern. Both functions are correct but the duplicated chain-walk
-logic is a maintenance burden.
+Superseded and fully resolved by DT-74 (canonical `mj_jac` API). The refactoring
+went further than originally scoped: instead of making `mj_jac_site` call
+`mj_jac_point`, DT-74 introduced `mj_jac()` as the single source of truth and
+refactored **both** `mj_jac_site` and `mj_jac_point` as thin wrappers around it.
 
-Deferred from §40a (S3) to avoid widening the blast radius of the fluid
-derivative implementation.
+- `mj_jac_site` → delegates to `mj_jac(model, data, site_body[site_id], &site_xpos[site_id])`
+- `mj_jac_point` → calls `mj_jac`, stacks `(jacr, jacp)` into 6×nv
+- Chain-walk duplication eliminated (was ~140 lines across two functions)
+- T32 integration test passes, all 396 sim-core tests pass
 
-#### Objective
-
-Refactor `mj_jac_site` to call `mj_jac_point` internally and split the 6×nv
-result into the existing `(jac_trans, jac_rot)` return format. This eliminates
-the duplicated chain-walk code.
-
-#### Scope
-
-- Refactor `mj_jac_site` to delegate to `mj_jac_point`
-- Split rows 0–2 (angular) → `jac_rot`, rows 3–5 (linear) → `jac_trans`
-- Verify T32 (`mj_jac_point` vs `mj_jac_site` exact match) still passes
-- Run full `sim-conformance-tests` to confirm no regression
-
-#### Cross-references
-
-- §40a S3 (`future_work_10.md:4770`): deferral note
-- §40a T32: `mj_jac_point` vs `mj_jac_site` exact match test
+See [future_work_10j.md](./future_work_10j.md) §DT-74 for full spec and implementation details.
 
 ---
 

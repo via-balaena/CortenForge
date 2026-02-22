@@ -14,7 +14,7 @@ DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
 
 | §DT | Origin | Description | Priority | Tier |
 |-----|--------|-------------|----------|------|
-| DT-74 | §4 | `compute_body_jacobian_at_point()` incomplete — only x-component, `#[allow(dead_code)]` | Medium | T3 |
+| ~~DT-74~~ | §4 | ~~`compute_body_jacobian_at_point()` incomplete — only x-component, `#[allow(dead_code)]`~~ **DONE** — canonical `mj_jac` API landed, dead code deleted, 14 tests | Medium | T3 |
 | DT-75 | §4 | `add_body_jacobian` free joint bug — world-frame unit vectors instead of body-frame `R*e_i` | Medium | T3 |
 | DT-76 | §8 | Pre-allocated `efc_lambda_saved` for RK4 — avoid `efc_lambda.clone()` per step | Low | T1 |
 | DT-77 | §5 | Length-range auto-estimation for site-transmission muscle actuators (no-op stub) | Low | T2 |
@@ -350,3 +350,19 @@ cargo test -p sim-core                 # full crate regression
 cargo clippy -p sim-core -- -D warnings
 cargo fmt --all -- --check
 ```
+
+### Implementation Status: DONE (2026-02-22)
+
+All 9 deliverables (D1–D9) implemented. Summary:
+
+- **`mj_jac`** added as canonical body-chain Jacobian (single source of truth)
+- **`mj_jac_body`** added (MuJoCo `mj_jacBody` equivalent)
+- **`mj_jac_site`** refactored to thin wrapper, `#[doc(hidden)]` removed
+- **`mj_jac_point`** refactored to thin wrapper (keeps `#[doc(hidden)]`)
+- **`#[must_use]`** added to `mj_jac_body_com` and `mj_jac_geom`
+- **`compute_body_jacobian_at_point`** deleted (88 lines of broken dead code)
+- **`lib.rs`** exports updated (`mj_jac`, `mj_jac_body`)
+- **14 new tests** in `mj_jac_tests` module: 6 per-joint-type analytical, 5 wrapper
+  consistency, 1 multi-joint chain (free→hinge→hinge, 8 DOFs + FD), 1 free+ball FD
+  validation (jacp + jacr), 1 jacr hinge cross-check (jacr·qvel = ω)
+- All 396 sim-core tests pass, clippy clean, fmt clean

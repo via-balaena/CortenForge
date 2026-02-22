@@ -2972,9 +2972,9 @@ tendon Jacobian row. This is the same kinematic chain walk as
 (`mujoco_pipeline.rs:7870`), but operating on a `DVector<f64>` (1×nv) instead
 of a `DMatrix` row. All joint type formulas (Hinge, Slide, Ball, Free) are
 verified to exactly match the existing `add_body_jacobian` implementation.
-**Note:** `compute_body_jacobian_at_point()` (line 7766) is dead code with a
-broken implementation (only stores `.x` component) — do NOT use it as a
-reference.
+**Note:** `compute_body_jacobian_at_point()` was dead code with a broken
+implementation — it has been deleted and replaced by the canonical `mj_jac()`
+API (DT-74). Use `mj_jac()` for full `(jacp 3×nv, jacr 3×nv)` Jacobians.
 
 **Borrow safety:** The function takes `ten_j: &mut DVector<f64>` as a direct
 mutable reference (not through `data`), plus immutable references `xpos` and
