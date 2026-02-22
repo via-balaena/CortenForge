@@ -589,7 +589,7 @@ The implementation:
 6. Sleep filtering: bodies in sleeping trees are skipped via `tree_awake`.
 7. Routing: `qfrc_gravcomp` added to `qfrc_passive` at end of `mj_fwd_passive()`.
    Future `jnt_actgravcomp` routing to `qfrc_actuator` is documented as TODO.
-   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-60.
+   Tracked in [future_work_10g.md](./future_work_10g.md) §DT-60.
 8. `ngravcomp` intentionally uses `!= 0.0` (not MuJoCo's `> 0`) to handle negative values.
 
 #### Objective
@@ -775,7 +775,7 @@ fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
    `gravity.norm() == 0.0` check suffices because `<option gravity="0 0 0"/>`
    is the only way to disable gravity in our pipeline. When/if `DISABLE_GRAVITY`
    is added, update this guard.
-   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-61.
+   Tracked in [future_work_10g.md](./future_work_10g.md) §DT-61.
 
 5. **Zero-mass bodies**: `force = -gravity * body_mass * gc` produces zero
    for massless bodies regardless of `gc`. This is correct — gravcomp is a
@@ -967,7 +967,7 @@ as a bias force adjustment. Gravcomp counteracts the gravity portion of
 `mjTRN_BODY` in `engine_core_smooth.c`.
 Thirteen integration tests verify the implementation (`adhesion.rs`, AC1–AC14;
 AC12 documented skip — flex contacts not yet wired).
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-72.
+Tracked in [future_work_10i.md](./future_work_10i.md) §DT-72.
 
 The implementation:
 1. `ActuatorTransmission::Body` enum variant added.

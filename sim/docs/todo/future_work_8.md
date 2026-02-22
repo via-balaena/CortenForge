@@ -1718,7 +1718,7 @@ pyramid[2*d + 1] = 0.5 * (a - b)  // negative facet
 
 This is a user-facing utility (`mju_encodePyramid`), not used internally by
 MuJoCo's solver. Implement only if needed for API compatibility.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-84.
+Tracked in [future_work_10j.md](./future_work_10j.md) §DT-84.
 
 #### 32.7 `nefc` sizing
 

@@ -2525,14 +2525,14 @@ rolling. Our `MjcfFlex.friction` is `f64` (scalar = sliding only). The parser
 must handle multi-component input by taking the first value to avoid silent
 `parse::<f64>()` failure on `"1 0.005 0.0001"`. The upgrade from `f64` to
 `Vector3<f64>` is a pre-existing gap (noted in #24 spec) and out of scope.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-90.
+Tracked in [future_work_10i.md](./future_work_10i.md) §DT-90.
 
 **Note on deferred attrs:** `contype`, `conaffinity`, `internal`,
 `activelayers`, `vertcollide`, `passive` require runtime support (flex collision
 filtering, layer-based self-collision, passive force flags) that doesn't exist.
 Parsing without runtime wiring would be misleading. Add when runtime is ready.
 (`contype`/`conaffinity` covered by §30; `internal`, `activelayers`,
-`vertcollide`, `passive` tracked in [future_work_10b.md](./future_work_10b.md) §DT-85.)
+`vertcollide`, `passive` tracked in [future_work_10i.md](./future_work_10i.md) §DT-85.)
 
 ##### `<flex><elasticity>` / `<flexcomp><elasticity>` attributes
 
@@ -2542,7 +2542,7 @@ Parsing without runtime wiring would be misleading. Add when runtime is ready.
 | `poisson` | real | 0 | `poisson` | `flex_poisson` | Relocate in #27B |
 | `damping` | real | 0 | `damping` | `flex_damping` | Relocate in #27B |
 | `thickness` | real | -1 (sentinel: "not set") | `thickness` | `flex_thickness` | Relocate in #27B |
-| `elastic2d` | keyword `[none,bend,stretch,both]` | "none" | — | — | Deferred (not implemented) → §DT-86 |
+| `elastic2d` | keyword `[none,bend,stretch,both]` | "none" | — | — | Deferred (not implemented) → [10i](./future_work_10i.md) §DT-86 |
 
 **Note on default changes:** Our `MjcfFlex::default()` currently uses `young: 1e6`
 and `thickness: 0.001`. MuJoCo defaults are `young: 0` and `thickness: -1`.
@@ -3293,7 +3293,7 @@ damper forces in engine_passive.c. See future_work_7.md #27C for details.
 > vertices (multiple vertices referencing the same body name) would require
 > skipping body/joint creation and pointing `flexvert_dofadr` at the
 > existing body's DOFs. This is a niche use case with no current test or
-> RL workflow exercising it. Tracked in [future_work_10b.md](./future_work_10b.md) §DT-87.
+> RL workflow exercising it. Tracked in [future_work_10i.md](./future_work_10i.md) §DT-87.
 
 #### Discovery Context
 
@@ -3539,15 +3539,15 @@ Only the `mass` attribute is in scope. Other missing `<flexcomp>` attributes:
 | Attribute | Type | Default | Physics? | Status |
 |-----------|------|---------|----------|--------|
 | `mass` | real | 0.0* | **Yes** | **#27E scope** |
-| `inertiabox` | real | 0.0* | Yes (body inertia: `mass/n * 2*ib²/3`) | Deferred → §DT-88 |
+| `inertiabox` | real | 0.0* | Yes (body inertia: `mass/n * 2*ib²/3`) | Deferred → [10i](./future_work_10i.md) §DT-88 |
 | `rigid` | bool | false | Yes (marks rigid vertices) | Deferred — relates to §42A-ii |
-| `scale` | real(3) | 1 1 1 | No (vertex transform) | Deferred → §DT-88 |
-| `flatskin` | bool | false | No (rendering) | Deferred → §DT-89 |
+| `scale` | real(3) | 1 1 1 | No (vertex transform) | Deferred → [10i](./future_work_10i.md) §DT-88 |
+| `flatskin` | bool | false | No (rendering) | Deferred → [10i](./future_work_10i.md) §DT-89 |
 | `pos` | real(3) | 0 0 0 | No (vertex transform) | Already handled |
-| `quat` | real(4) | 1 0 0 0 | No (vertex transform) | Deferred → §DT-88 |
-| `file` | string | — | No (mesh source) | Deferred → §DT-88 |
-| `material` | string | — | No (rendering) | Deferred → §DT-89 |
-| `rgba` | real(4) | — | No (rendering) | Deferred → §DT-89 |
+| `quat` | real(4) | 1 0 0 0 | No (vertex transform) | Deferred → [10i](./future_work_10i.md) §DT-88 |
+| `file` | string | — | No (mesh source) | Deferred → [10i](./future_work_10i.md) §DT-88 |
+| `material` | string | — | No (rendering) | Deferred → [10i](./future_work_10i.md) §DT-89 |
+| `rgba` | real(4) | — | No (rendering) | Deferred → [10i](./future_work_10i.md) §DT-89 |
 
 *MuJoCo zero-initializes via `memset`; mass=0 makes the object massless.
 In practice, `mass` is effectively required for any dynamic flexcomp.

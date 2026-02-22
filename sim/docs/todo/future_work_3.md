@@ -1816,7 +1816,7 @@ dominated by the `nv × nv` mass matrix per env (~320 KB at nv=200), giving
 structure-of-arrays (SoA) layout across environments would improve cache
 locality for bulk state extraction but adds significant complexity and is
 explicitly deferred to the GPU acceleration work (#10).
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-82.
+Tracked in [future_work_10j.md](./future_work_10j.md) §DT-82.
 
 **Why not SoA now:** The `Data::step()` pipeline reads and writes dozens of
 fields on `Data` throughout a single step (FK, collision, RNE, constraint
@@ -2070,13 +2070,13 @@ compared to a single `step_all()` (~ms per env). Parallelizing reset via
 rayon would add thread-pool overhead that exceeds the work itself. If this
 becomes a bottleneck at much larger scales, parallelization can be added
 trivially (the pattern is identical to `step_all()`).
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-92.
+Tracked in [future_work_10j.md](./future_work_10j.md) §DT-92.
 
 **Design constraint — single Model:** All environments share the same
 `Arc<Model>` (same `nq`, `nv`, body tree, geom set). Multi-model batching
 (different robots in the same batch) would require per-env dimensions and
 is explicitly out of scope.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-83.
+Tracked in [future_work_10j.md](./future_work_10j.md) §DT-83.
 
 **What this API does NOT include (and why):**
 

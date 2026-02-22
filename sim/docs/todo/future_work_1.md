@@ -216,7 +216,7 @@ Keep `qLD_diag`, `qLD_L`, `qLD_valid` as-is. The `Vec<Vec<(usize, f64)>>` for `q
 involves heap allocations per row, but rows are allocated once in `make_data()` and
 reused via `clear()` + `push()`. For nv ≤ 200 (typical RL), the overhead is negligible
 vs. the O(nv³→nv) savings. Switching to flat CSR is a future optimization.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-36.
+Tracked in [future_work_10e.md](./future_work_10e.md) §DT-36.
 
 ##### Step 1: `mj_factor_sparse(model: &Model, data: &mut Data)`
 
@@ -389,7 +389,7 @@ factorization — the modified matrix has different diagonal values.
 `cholesky_in_place()` from #1. Sparse factorization would require duplicating
 the qLD fields. The benefit is marginal since implicit integration is rare
 in RL (most RL uses Euler). We can upgrade in a future PR if profiling shows
-it matters. Tracked in [future_work_10b.md](./future_work_10b.md) §DT-37.
+it matters. Tracked in [future_work_10e.md](./future_work_10e.md) §DT-37.
 
 The implicit path (`mj_fwd_acceleration_implicit`) is **unchanged** by this PR.
 
@@ -578,7 +578,7 @@ memory, O(nefc² · nv) assembly). For 100 contacts this is ~700 KB; for 1000 co
 ~69 MB. MuJoCo's production CG avoids this by computing `J · M⁻¹ · J^T · p` as a
 sequence of sparse operations (O(nv · nefc) per iteration). Transitioning to implicit
 matrix-vector products is a future optimization for large contact counts.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-38.
+Tracked in [future_work_10e.md](./future_work_10e.md) §DT-38.
 
 ```rust
 /// Assemble Delassus matrix A and constraint RHS b for contact constraints.
@@ -1043,7 +1043,7 @@ routing through sites with wrapping geometry) are deferred to a follow-up.
   the need for body positional Jacobians. `compute_body_jacobian_at_point()`
   (`mujoco_pipeline.rs:6816`) is incomplete (only x-component per DOF, marked
   `#[allow(dead_code)]`) and would need a full rewrite for spatial tendons.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-74.
+  Tracked in [future_work_10j.md](./future_work_10j.md) §DT-74.
 - Spatial tendons require wrapping geometry (sphere/cylinder geodesics) and
   configuration-dependent Jacobians via the chain rule through `mj_jac()`. This is
   a separate body of work that can land independently.
@@ -1573,7 +1573,7 @@ length computation for multi-DOF joints requires using `qvel` (generalized veloc
 rather than `qpos` (which includes quaternions). This is a known subtlety — for the
 initial implementation, we validate that fixed tendon joints are hinge or slide only,
 and emit a warning for ball/free.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-28.
+Tracked in [future_work_10d.md](./future_work_10d.md) §DT-28.
 
 ##### Step 6: Tendon Velocity Computation
 
@@ -1628,7 +1628,7 @@ for t in 0..model.ntendon {
     // is a known limitation, NOT equivalent to joint spring/damper handling.
     // A future enhancement could add the tendon contribution to scratch_m_impl
     // as a non-diagonal term, but this would require refactoring the implicit
-    // solver. Tracked in future_work_10b.md §DT-35.
+    // solver. Tracked in future_work_10d.md §DT-35.
 
     // Friction loss: F = -frictionloss * sign(v)
     // Always explicit (velocity-sign-dependent, cannot linearize).
@@ -1661,7 +1661,7 @@ for t in 0..model.ntendon {
 Jacobians are dense (all `nv` entries may be non-zero). The J^T multiplication for
 spatial tendons should use the dense `ten_J[t]` vector instead of the sparse wrap
 arrays. The dispatch on `tendon_type` in the force-mapping block will select the
-appropriate path. Tracked in [future_work_10b.md](./future_work_10b.md) §DT-29.
+appropriate path. Tracked in [future_work_10d.md](./future_work_10d.md) §DT-29.
 
 ##### Step 8: Tendon Limit Forces in `mj_fwd_constraint()`
 
@@ -2010,7 +2010,7 @@ It does **not** wire in the `sim-muscle` crate's richer Hill-type model.
 - `sim-muscle`'s richer Hill model (compliant tendons, pennation geometry, Newton
   iteration) can be offered as an alternative `ActuatorDynamics::HillMuscle` variant
   in a follow-up, for users who need biomechanical fidelity beyond MuJoCo parity.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-58.
+  Tracked in [future_work_10g.md](./future_work_10g.md) §DT-58.
 
 #### Current State
 
@@ -2347,7 +2347,7 @@ pub fn compute_muscle_params(&mut self) {
     // which handles unlimited slide joints correctly. Adding bisection-based
     // lengthrange is a possible follow-up but is not needed for the common case
     // of muscles on limited hinge joints.
-    // Tracked in future_work_10b.md §DT-59.
+    // Tracked in future_work_10g.md §DT-59.
 
     // --- Phase 2: Forward pass at qpos0 for acc0 ---
     // FK populates cinert (body spatial inertias), CRBA builds M and factors
@@ -3713,20 +3713,20 @@ The following are explicitly **out of scope** for this item:
    is correct for the common case (`<framepos site="s1"/>`) but does not handle
    `<framepos body="b1"/>` if a site with the same name also exists. Full
    `objtype` parsing is a follow-up.
-   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-62.
+   Tracked in [future_work_10h.md](./future_work_10h.md) §DT-62.
 
 5. **Frame sensor `reftype`/`refid`** — MuJoCo frame sensors can measure
    quantities relative to a reference frame (another site/body). The
    `sensor_reftype`/`sensor_refid` fields exist but are not wired. This is a
    follow-up enhancement.
-   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-63.
+   Tracked in [future_work_10h.md](./future_work_10h.md) §DT-63.
 
 6. **Multi-geom Touch bodies** — The Touch sensor wiring (Step 3e) resolves
    to the first geom on the site's parent body. If a body has multiple geoms,
    only the first geom's contacts are summed. Full multi-geom support requires
    changing the evaluation code in `mj_sensor_acc()` to iterate all geoms on
    the body, which is a separate fix.
-   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-64.
+   Tracked in [future_work_10h.md](./future_work_10h.md) §DT-64.
 
 7. **User sensor `dim` attribute** — MuJoCo's `<user>` sensor element accepts
    a `dim=` attribute to specify the output dimension. The MJCF parser does
@@ -3738,7 +3738,7 @@ The following are explicitly **out of scope** for this item:
    `sensor_type.dim()`), so this mismatch does not cause incorrect allocation.
    Parsing the `dim` attribute and propagating it through `process_sensors()`
    is a follow-up.
-   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-65.
+   Tracked in [future_work_10h.md](./future_work_10h.md) §DT-65.
 
 8. ~~**Sensor `<default>` class resolution**~~ — **Resolved.** `DefaultResolver`
    is now wired into `model_builder.rs` for all element types (joints, geoms,
@@ -4080,7 +4080,7 @@ Precondition: data.forward() has already been called (qacc is valid).
 - The one heap allocation is `efc_lambda.clone()`. For typical contact counts (<100
   pairs): ~2.4 KiB, ~100ns. If profiling shows this matters, add a pre-allocated
   `efc_lambda_saved` field to `Data`.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-76.
+  Tracked in [future_work_10j.md](./future_work_10j.md) §DT-76.
 
 ##### Changes to `Data::step()`
 
@@ -4321,7 +4321,7 @@ When `dampratio` is added, the builder will:
    reflected inertia from step 2). Reference: MuJoCo `engine_setconst.c`.
 4. Store `-kv` in `biasprm[2]`.
 
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-56 (dampratio) and §DT-57 (acc0).
+Tracked in [future_work_10g.md](./future_work_10g.md) §DT-56 (dampratio) and §DT-57 (acc0).
 
 #### Scope Decision: `general` Actuator MJCF Parsing Deferred
 
