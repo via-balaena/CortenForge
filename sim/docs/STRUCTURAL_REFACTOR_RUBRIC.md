@@ -80,7 +80,18 @@ begins. They are **exempt from S1** during this refactor because it targets only
 | `sim-core/src/mid_phase.rs` | 850 |
 
 **Follow-up mandate**: These files should be decomposed in a future refactor
-pass. Do not add new code to them.
+pass. Do not add new code to them. Tracked as:
+- `parser.rs` (3,470 lines) → `sim/docs/todo/future_work_17.md` or
+  equivalent post-refactor ticket
+- `types.rs` (3,775 lines) → same
+- `defaults.rs` (871 lines) → same
+- `derivatives.rs` (2,393 lines) → same
+- Other sim-core files (sdf, mesh, gjk_epa, contact, raycast,
+  collision_shape, mid_phase) → same
+
+After the structural refactor lands, add a `# [S1 EXEMPT]` comment to the
+top of each file as a visible reminder. Any PR that increases the production
+line count of an exempt file must include justification.
 
 ---
 
@@ -513,7 +524,8 @@ Every box must be checked.
       — **same pass count as baseline**
 - [ ] `cargo clippy -p sim-core -p sim-mjcf -- -D warnings` — **zero warnings**
 - [ ] `cargo fmt --all -- --check` — **no formatting issues**
-- [ ] `cargo doc --no-deps -p sim-core -p sim-mjcf` — **builds without errors**
+- [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p sim-core -p sim-mjcf`
+      — **builds without errors or warnings** (catches broken intra-doc links)
 
 ### Structural criteria (grade each, all must be A):
 
@@ -541,6 +553,9 @@ Every box must be checked.
 
 This script should be run after every phase. It checks the measurable criteria
 automatically.
+
+**Usage**: Save as `sim/scripts/verify_refactor.sh` and run with
+`bash sim/scripts/verify_refactor.sh` (requires bash for `globstar`).
 
 ```bash
 #!/usr/bin/env bash
@@ -647,6 +662,10 @@ echo "Running cargo clippy..."
 cargo clippy -p sim-core -p sim-mjcf -- -D warnings 2>&1 | tail -3
 
 echo ""
+echo "Running cargo doc (strict)..."
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p sim-core -p sim-mjcf 2>&1 | tail -5
+
+echo ""
 echo "Running cargo fmt check..."
 cargo fmt --all -- --check 2>&1 | tail -3
 
@@ -683,7 +702,7 @@ responsibility) by showing the authoritative decomposition.
 
 ## `impl` Block Split Strategy
 
-The audit found one `impl Model` block (37 methods spanning 5+ domains) and
+The audit found one `impl Model` block (16 methods spanning 5+ domains) and
 one `impl Data` block (14 methods spanning state management, queries, and
 the core pipeline orchestrators). Both must be split across files.
 
@@ -778,6 +797,7 @@ acceptance test:
 10. Read forward/mod.rs                     → tells the complete pipeline story in ~90 lines
 11. A newcomer navigate-only test           → 3 out of 3 targets found by directory browsing
 12. Every module has //! doc comment        → verified
+12a. `RUSTDOCFLAGS="-D warnings" cargo doc` → zero broken intra-doc links
 13. Every mod.rs has clear re-exports       → verified
 14. ARCHITECTURE.md reflects new structure  → verified
 ```
