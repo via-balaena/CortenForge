@@ -170,9 +170,13 @@ Rewrite the existing functions to delegate to `mj_jac`:
 
 - **`mj_jac_site`** → calls `mj_jac(model, data, site_body[site_id], &site_xpos[site_id])`.
   **Return type unchanged:** `(DMatrix<f64>, DMatrix<f64>)` = `(jac_trans 3×nv, jac_rot 3×nv)`.
-  All 5 existing callers (mj_fwd_actuator ×2, mj_fwd_actuator_spatial ×2,
-  fluid_derivatives.rs ×1) continue to destructure `(jac_t, jac_r)` with
-  zero signature changes.
+  All 4 existing production callers (`mj_fwd_actuation` method on Model ×2,
+  `mj_fwd_actuation` standalone fn ×2) continue to destructure `(jac_t, jac_r)`
+  with zero signature changes. (Also called by 2 tests in `jac_site_tests` and
+  1 integration test in `fluid_derivatives.rs` — all unaffected.)
+  **Remove `#[doc(hidden)]`** from `mj_jac_site`: after this refactor it is a
+  first-class public wrapper (equivalent to MuJoCo's `mj_jacSite`), not an
+  internal implementation detail.
 - **`mj_jac_body`** → **new**, calls `mj_jac(model, data, body_id, &xpos[body_id])`, returns `(jacp, jacr)` — equivalent to MuJoCo's `mj_jacBody`.
   **Zero callers today** — added for MuJoCo API completeness. No existing code
   calls `mj_jac_point(model, data, body_id, &data.xpos[body_id])` with body
@@ -181,8 +185,12 @@ Rewrite the existing functions to delegate to `mj_jac`:
 - **`mj_jac_body_com`** → keeps delegating to `mj_jac_point(model, data, body_id, &xipos[body_id])`.
   No direct `mj_jac` call — transitive delegation via `mj_jac_point` which
   itself calls `mj_jac` and stacks into 6×nv. Body unchanged from current code.
+  **Stays `pub(crate)`** — only called by `derivatives.rs` (inertia-box
+  derivatives); not part of the user-facing API.
 - **`mj_jac_geom`** → keeps delegating to `mj_jac_point(model, data, geom_body[geom_id], &geom_xpos[geom_id])`.
   Same transitive delegation pattern. Body unchanged from current code.
+  **Stays `pub(crate)`** — only called by `derivatives.rs` (ellipsoid
+  derivatives); not part of the user-facing API.
 
 This eliminates the duplicated ~70-line chain-walk in `mj_jac_point` (lines
 9895–9965) and ensures all paths share one implementation.
@@ -203,14 +211,16 @@ type (rows 0–2 = angular, rows 3–5 = linear) because their callers
 consume 6×nv. Changing them to return `(3×nv, 3×nv)` would churn callers for no
 benefit.
 
-**`#[doc(hidden)]` on `mj_jac_point`:** Currently `mj_jac_point` is marked
-`#[doc(hidden)]` (line 9893). After this refactor, `mj_jac` becomes the
-canonical public API for `(3×nv, 3×nv)` output, and `mj_jac_point` is the
-6×nv spatial-Jacobian variant used by internal derivative code
-(`mj_jac_body_com`, `mj_jac_geom`, `mjd_smooth_vel`). **Keep `#[doc(hidden)]`**
-on `mj_jac_point` — it is a layout convenience for internal consumers, not a
-user-facing API. External callers should use `mj_jac` (or `mj_jac_body`,
-`mj_jac_site`) and stack rows themselves if they need 6×nv.
+**`#[doc(hidden)]` changes:**
+- **Remove `#[doc(hidden)]` from `mj_jac_site`** (line 9815): it becomes a
+  first-class public wrapper, equivalent to MuJoCo's `mj_jacSite`.
+- **Keep `#[doc(hidden)]` on `mj_jac_point`** (line 9893): after this refactor,
+  `mj_jac` becomes the canonical public API for `(3×nv, 3×nv)` output, and
+  `mj_jac_point` is the 6×nv spatial-Jacobian variant used by internal
+  derivative code (`mj_jac_body_com`, `mj_jac_geom`, `mjd_smooth_vel`). It is
+  a layout convenience for internal consumers, not a user-facing API. External
+  callers should use `mj_jac` (or `mj_jac_body`, `mj_jac_site`) and stack
+  rows themselves if they need 6×nv.
 
 #### Step 3: Delete `compute_body_jacobian_at_point`
 
@@ -247,7 +257,7 @@ model at a non-trivial qpos, call `mj_jac`, and verify both `jacp` and `jacr`:
 |------|-----------|
 | `mj_jac_site_delegates_to_mj_jac` | `mj_jac_site(site)` == `mj_jac(site_body, site_xpos)` |
 | `mj_jac_body_delegates_to_mj_jac` | `mj_jac_body(body)` == `mj_jac(body, xpos[body])` |
-| `mj_jac_point_combines_correctly` | `mj_jac_point` rows 0–2 == `jacr`, rows 3–5 == `jacp` (from `mj_jac` on same body/point) |
+| `mj_jac_point_combines_correctly` | `mj_jac_point` rows 0–2 == `jacr`, rows 3–5 == `jacp` (from `mj_jac` on same body/point). Note: `t32_jac_point_matches_jac_site` in `fluid_derivatives.rs` already cross-validates this for a hinge chain — this new test supplements it with an `mj_jac`-based assertion and extends coverage to ball/free joints. |
 | `mj_jac_body_com_consistent` | `mj_jac_body_com(body)` == `mj_jac_point(body, xipos[body])` |
 | `mj_jac_geom_consistent` | `mj_jac_geom(geom)` == `mj_jac_point(geom_body, geom_xpos)` |
 
@@ -310,12 +320,12 @@ require the rotation-log machinery of 5e.
 |---|-------------|
 | D1 | `mj_jac` function with doc-comment containing formula table |
 | D2 | `mj_jac_body` new wrapper |
-| D3 | `mj_jac_site` refactored as thin wrapper |
-| D4 | `mj_jac_point` refactored as thin wrapper |
-| D5 | `mj_jac_body_com` refactored as thin wrapper |
-| D6 | `mj_jac_geom` refactored as thin wrapper |
+| D3 | `mj_jac_site` refactored as thin wrapper, `#[doc(hidden)]` removed |
+| D4 | `mj_jac_point` refactored as thin wrapper (keeps `#[doc(hidden)]`) |
+| D5 | `mj_jac_body_com` unchanged (stays `pub(crate)`, transitive delegation) |
+| D6 | `mj_jac_geom` unchanged (stays `pub(crate)`, transitive delegation) |
 | D7 | `compute_body_jacobian_at_point` deleted |
-| D8 | `lib.rs` exports updated |
+| D8 | `lib.rs` exports updated (`mj_jac`, `mj_jac_body` added) |
 | D9 | Tests 5a–5f |
 
 ### Files Modified
