@@ -2557,11 +2557,12 @@ force anyway). The new code matches MuJoCo semantics exactly: always resolve
 the sentinel. This is correct because stiffness could be changed dynamically,
 and the springlength value might be used by other systems in the future.
 
-**5. No impact on implicit integrator:** The comment at
-`mujoco_pipeline.rs:10842-10845` explicitly states that tendon springs are
-skipped in implicit mode because they couple multiple joints (non-diagonal K/D).
-The deadband change only affects the explicit spring force computation at
-lines 10828-10834, which is inside the `if !implicit_mode` block.
+**5. Implicit integrator interaction:** In `ImplicitSpringDamper` mode,
+`ten_force[t]` is always computed (including deadband logic) for diagnostics,
+but `qfrc_passive` application is skipped — tendon spring/damper forces are
+handled implicitly via non-diagonal K/D matrices using `accumulate_tendon_kd()`
+and `tendon_deadband_displacement()` (DT-35). The deadband change affects both
+the explicit force computation and the implicit displacement calculation.
 
 **6. Implementation order:**
 1. Types (A1, A2) — zero compilation impact, just new optional fields

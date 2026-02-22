@@ -12430,37 +12430,37 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let velocity = data.ten_velocity[t];
         let mut force = 0.0;
 
-        if !implicit_mode {
-            // S6: Deadband spring — force is zero within [lower, upper]
-            let k = model.tendon_stiffness[t];
-            if k > 0.0 {
-                let [lower, upper] = model.tendon_lengthspring[t];
-                if length > upper {
-                    force += k * (upper - length);
-                } else if length < lower {
-                    force += k * (lower - length);
-                }
-                // else: deadband, no spring force
+        // S6: Deadband spring — force is zero within [lower, upper]
+        let k = model.tendon_stiffness[t];
+        if k > 0.0 {
+            let [lower, upper] = model.tendon_lengthspring[t];
+            if length > upper {
+                force += k * (upper - length);
+            } else if length < lower {
+                force += k * (lower - length);
             }
-
-            // Damper: F = -b * v
-            let b = model.tendon_damping[t];
-            if b > 0.0 {
-                force -= b * velocity;
-            }
+            // else: deadband, no spring force
         }
-        // NOTE: In ImplicitSpringDamper mode, tendon spring/damper forces are
-        // handled implicitly in mj_fwd_acceleration_implicit() via non-diagonal
-        // K_tendon and D_tendon matrices (DT-35). The explicit forces are skipped
-        // here to avoid double-counting, matching the joint spring/damper pattern.
+
+        // Damper: F = -b * v
+        let b = model.tendon_damping[t];
+        if b > 0.0 {
+            force -= b * velocity;
+        }
 
         // Friction loss is now handled entirely by solver constraint rows (§29).
         // No tanh approximation in passive forces.
 
         data.ten_force[t] = force;
 
+        // NOTE: In ImplicitSpringDamper mode, tendon spring/damper forces are
+        // handled implicitly in mj_fwd_acceleration_implicit() via non-diagonal
+        // K_tendon and D_tendon matrices (DT-35). ten_force[t] is always populated
+        // for diagnostic purposes, but the explicit qfrc_passive application is
+        // skipped to avoid double-counting, matching the joint spring/damper pattern.
+
         // Map tendon force to joint forces via J^T.
-        if force != 0.0 {
+        if !implicit_mode && force != 0.0 {
             apply_tendon_force(
                 model,
                 &data.ten_J[t],
@@ -18205,7 +18205,7 @@ fn newton_solve(
     model: &Model,
     data: &mut Data,
     m_eff: &DMatrix<f64>,
-    _qfrc_eff: &DVector<f64>,
+    qfrc_eff: &DVector<f64>,
     implicit_sd: bool,
 ) -> NewtonResult {
     let nv = model.nv;
@@ -18213,8 +18213,10 @@ fn newton_solve(
     // === INITIALIZE ===
     // qacc_smooth, qfrc_smooth, and efc_* arrays are already populated by
     // mj_fwd_constraint() before dispatching to this solver.
+    // Use the explicit qfrc_eff parameter (which may contain implicit spring/damper
+    // corrections) rather than reading from data.qfrc_smooth via side-channel mutation.
     let qacc_smooth = data.qacc_smooth.clone();
-    let qfrc_smooth = data.qfrc_smooth.clone();
+    let qfrc_smooth = qfrc_eff.clone();
     let meaninertia = data.stat_meaninertia;
     let nefc = data.efc_type.len();
 

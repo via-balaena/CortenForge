@@ -210,7 +210,8 @@ mjd_transition():
   uses `forward_skip_sensors()` for intermediate stage evaluations and
   `mj_integrate_pos_explicit()` for quaternion-safe position updates
 - `ImplicitSpringDamper` — unconditionally stable for stiff springs/dampers; solves
-  `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
+  `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)` where D/K include
+  both joint diagonal and tendon non-diagonal `J^T·J` coupling (DT-35)
 - `Implicit` — full implicit with asymmetric D (includes Coriolis velocity derivatives)
   and LU factorization with partial pivoting; maximum accuracy
 - `ImplicitFast` — fast implicit with symmetric D (skips Coriolis terms) and Cholesky

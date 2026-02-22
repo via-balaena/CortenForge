@@ -466,8 +466,8 @@ CortenForge uses dense `DMatrix<f64>` (target models have nv < 100).
 
 **Status:** ✅ Complete — ImplicitFast + Implicit integrators with analytical derivatives
 
-Two new integrator variants that use the full velocity-derivative Jacobian `qDeriv`
-instead of the diagonal-only spring-damper approximation of `ImplicitSpringDamper`:
+Two additional integrator variants that use the full velocity-derivative Jacobian `qDeriv`
+instead of `ImplicitSpringDamper`'s direct mass-matrix modification approach:
 
 | Integrator | D Assembly | Symmetrize | Factorization | MuJoCo Equivalent |
 |------------|-----------|------------|---------------|-------------------|
@@ -486,7 +486,8 @@ instead of the diagonal-only spring-damper approximation of `ImplicitSpringDampe
 - Diagonal regression — existing ImplicitSpringDamper tests pass (AC-3)
 
 **Breaking change:** MJCF string `"implicit"` now maps to the full `Implicit` variant.
-Use `"implicitspringdamper"` for the legacy diagonal-only mode.
+Use `"implicitspringdamper"` for the direct mass-matrix modification mode
+(joint diagonal + tendon non-diagonal K/D via DT-35).
 
 **Design note (KA#8):** ImplicitFast analytical derivatives use the full `qDeriv`
 (including Coriolis from `mjd_smooth_vel`) in the RHS but the fast-approximated LHS

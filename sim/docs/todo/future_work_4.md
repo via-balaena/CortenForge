@@ -1717,8 +1717,8 @@ have analytically computable velocity derivatives.
 /// Dense nv × nv matrix. Populated by `mjd_smooth_vel()`.
 ///
 /// Components:
-///   ∂(qfrc_passive)/∂qvel  = diagonal damping (+ tendon damping J^T·b·J
-///                            in explicit mode only; skipped for ImplicitSpringDamper)
+///   ∂(qfrc_passive)/∂qvel  = diagonal damping + tendon damping J^T·b·J
+///                            (included for all integrators; DT-35)
 ///   ∂(qfrc_actuator)/∂qvel = affine velocity-dependent gain/bias terms
 ///   −∂(qfrc_bias)/∂qvel    = −C(q,v) (Coriolis matrix)
 ///
@@ -1788,13 +1788,12 @@ deriv_Dcfrc: self.deriv_Dcfrc.clone(),
 /// # Implicit mode guard
 ///
 /// In `ImplicitSpringDamper` mode, `mj_fwd_passive()` skips per-DOF
-/// spring/damper forces (line 9488) and tendon spring/damper forces
-/// (line 9417). The damping is instead absorbed into the implicit mass
-/// matrix modification `(M + h·D + h²·K)`. This function must match:
-/// per-DOF damping is included regardless of mode (needed by both Euler
-/// and implicit velocity derivative formulas), but tendon damping is
-/// skipped in implicit mode because tendon damping forces are not applied
-/// in `mj_fwd_passive` for implicit mode.
+/// spring/damper forces and tendon spring/damper forces from `qfrc_passive`
+/// — the forces are instead handled implicitly via mass matrix modification
+/// `(M + h·D + h²·K)` where D/K include both joint diagonal and tendon
+/// non-diagonal `J^T·J` coupling (DT-35). Per-DOF damping and tendon
+/// damping are included in `qDeriv` for all integrators (DT-35 removed
+/// the implicit_mode guard for tendon damping).
 ///
 /// See Step 9 for how the implicit velocity derivative formula adjusts
 /// `qDeriv` via `+D` to account for the damping being in the mass matrix
@@ -1810,12 +1809,10 @@ fn mjd_passive_vel(model: &Model, data: &mut Data) {
     }
 
     // Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
-    // Skipped in implicit mode: mj_fwd_passive skips tendon damping forces
-    // when implicit_mode is true (line 9417), so there is no tendon damping
-    // contribution to differentiate. Including it would produce incorrect
-    // qDeriv for ImplicitSpringDamper integrator.
-    let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
-    if !implicit_mode {
+    // Included for all integrators (DT-35). In ImplicitSpringDamper mode,
+    // tendon damping is handled implicitly via the mass matrix modification,
+    // but qDeriv still needs the derivative for analytical derivative
+    // computation and consistency.
         for t in 0..model.ntendon {
             let b = model.tendon_damping[t];
             if b <= 0.0 { continue; }
@@ -1838,7 +1835,8 @@ and `qDeriv` are separate fields of `Data`.
 
 **Complexity:** O(nv) diagonal + O(ntendon · nnz_J²). Tendon Jacobians are
 typically very sparse (only DOFs along the tendon path), so effectively
-O(nv + ntendon · depth²). In implicit mode the tendon loop is skipped entirely.
+O(nv + ntendon · depth²). DT-35 removed the implicit_mode guard — the tendon
+loop now runs for all integrators.
 
 ##### Step 5 — `mjd_actuator_vel()`: Actuator force velocity derivatives
 
@@ -2703,15 +2701,12 @@ The clone `data_work.scratch_m_impl` preserves this factored L. The solve
 uses `cholesky_solve_in_place(&data_work.scratch_m_impl, &mut rhs_col)`
 for each column of the RHS matrix.
 
-**Tendon damping consistency:** `mjd_passive_vel` (Step 4) skips tendon
-damping in implicit mode, matching `mj_fwd_passive` which also skips tendon
-spring/damper forces in implicit mode (lines 9417-9430). This means `qDeriv`
-contains only diagonal per-DOF damping from passive forces (plus actuator
-and bias terms), and the `+D` adjustment exactly cancels the diagonal
-`−D` contribution, leaving `∂f_ext/∂v = ∂(actuator)/∂v − ∂(bias)/∂v`.
-The full implicit integrator (spec #13) with non-diagonal K/D matrices
-would need to revisit this when tendon coupling is absorbed into the
-implicit mass matrix.
+**Tendon damping consistency:** As of DT-35, `mjd_passive_vel` includes
+tendon damping derivatives in `qDeriv` for all integrators. In
+`ImplicitSpringDamper` mode, `mj_fwd_passive` still skips tendon spring/damper
+forces from `qfrc_passive` (they are handled via non-diagonal K/D matrices
+in the implicit solve), but `qDeriv` correctly reflects the velocity
+derivative for analytical derivative computation.
 
 ##### Step 10 — Public API dispatch
 
@@ -2939,11 +2934,11 @@ pub use derivatives::{
     `act`, `ctrl`, `time`, and `efc_lambda` are all restored before each
     perturbation. Verified by checking that centered FD at `eps=1e-6`
     produces identical A matrices when called twice on the same `(model, data)`.
-23. **Tendon damping implicit guard**: For a model with one tendon (damping
+23. **Tendon damping in qDeriv**: For a model with one tendon (damping
     `b > 0`) and `Integrator::ImplicitSpringDamper`, `mjd_passive_vel()`
-    does NOT add tendon damping terms to `qDeriv` (tendon damping is skipped
-    in implicit mode by `mj_fwd_passive`, line 9417). The diagonal per-DOF
-    damping entries are still present.
+    adds tendon damping terms `-b·J^T·J` to `qDeriv` for all integrators
+    (DT-35 removed the implicit_mode guard). The diagonal per-DOF
+    damping entries are also present.
 24. **Performance**: FD derivatives for `Model::n_link_pendulum(6, 1.0, 0.1)`
     (nv=6, nu=0, na=0) complete in < 10ms (wall clock, release mode).
 25. **`cargo clippy -p sim-core -- -D warnings`** passes clean.
@@ -3035,17 +3030,18 @@ pub use derivatives::{
 
 #### Current State
 
-`Integrator::ImplicitSpringDamper` (`:733–741`) implements a diagonal-only implicit
-scheme that absorbs per-DOF joint stiffness K and damping D into the mass matrix:
+`Integrator::ImplicitSpringDamper` (`:733–741`) implements an implicit scheme
+that absorbs spring stiffness K and damping D into the mass matrix:
 
 ```
-(M + h*D_diag + h²*K_diag) v_new = M*v_old + h*f_ext − h*K_diag*(q − q_eq)
+(M + h*D + h²*K) v_new = M*v_old + h*f_ext − h*K*(q − q_eq)
 ```
 
-- K, D stored as `DVector<f64>` — `Model::implicit_stiffness` (`:1210`),
+- Joint K, D are diagonal (`DVector<f64>`) — `Model::implicit_stiffness` (`:1210`),
   `Model::implicit_damping` (`:1213`), `Model::implicit_springref` (`:1216`).
-- Tendon spring/damper forces are **skipped** in implicit mode
-  (`mj_fwd_passive()` `:9454–9467`) because their J^T coupling is non-diagonal.
+- Tendon K, D are non-diagonal rank-1 outer products `k·J^T·J` and `b·J^T·J`,
+  accumulated via `accumulate_tendon_kd()` (DT-35). Tendon spring/damper forces
+  are excluded from `qfrc_passive` in implicit mode (handled via mass matrix).
 - The `ImplicitFast` MJCF variant is parsed (`types.rs:27`) but maps to the
   same diagonal solver (`model_builder.rs:616–618`).
 
@@ -3130,14 +3126,14 @@ pub enum Integrator {
     #[default]
     Euler,
     RungeKutta4,
-    ImplicitSpringDamper,  // Keep for backward compat (diagonal-only)
+    ImplicitSpringDamper,  // Direct mass-matrix modification (joint diagonal + tendon non-diagonal K/D)
     Implicit,              // Full asymmetric D, LU factorization
     ImplicitFast,          // Symmetric D (no Coriolis), Cholesky factorization
 }
 ```
 
 Retain `ImplicitSpringDamper` as a distinct variant so existing tests and models
-that depend on the diagonal-only behavior continue to work without any change.
+that depend on its mass-matrix-modification approach continue to work without any change.
 
 Update `model_builder.rs:616–618` to map `MjcfIntegrator::ImplicitFast` →
 `Integrator::ImplicitFast` (currently both map to `ImplicitSpringDamper`).
@@ -3157,16 +3153,19 @@ The existing `implicit_mode` check (`:9440`) is:
 let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
 ```
 
-This is already correct — `implicit_mode` is true only for the legacy diagonal
-variant, not for the new `Implicit`/`ImplicitFast`. So the joint visitor
+This is already correct — `implicit_mode` is true only for `ImplicitSpringDamper`,
+not for the new `Implicit`/`ImplicitFast`. So the joint visitor
 (`PassiveForceVisitor::visit_1dof_joint` `:9525`) already computes spring and
 damper forces for the new variants.
 
-The tendon loop conditional (`:9454`) also correctly gates on `implicit_mode`:
+The tendon loop conditional (`:9454`) also correctly gates on `implicit_mode`.
+In `ImplicitSpringDamper` mode, `ten_force[t]` is always computed for diagnostics
+but `qfrc_passive` application is skipped — tendon forces are handled implicitly
+via non-diagonal K/D matrices (DT-35):
 
 ```rust
 if !implicit_mode {
-    // spring + damper computed
+    // qfrc_passive application (skipped for ImplicitSpringDamper)
 }
 ```
 
@@ -3176,11 +3175,11 @@ already correct for the new variants.
 
 **A.3. Fix `mjd_passive_vel` tendon-derivative gate** (`derivatives.rs:484`)
 
-Currently `mjd_passive_vel` skips tendon damping derivatives when
-`implicit_mode` is true (`:484–504`). This was correct for the diagonal-only
-scheme (tendon damping forces were skipped, so there's nothing to differentiate).
-For the new implicit variants, tendon damping forces ARE computed explicitly AND
-their derivatives must be included in D.
+Previously `mjd_passive_vel` skipped tendon damping derivatives when
+`implicit_mode` was true (`:484–504`). DT-35 removed this guard — tendon
+damping derivatives are now included in `qDeriv` for all integrators.
+For `ImplicitFast`/`Implicit`, tendon damping forces are computed explicitly
+and their derivatives are included in D.
 
 The current condition is:
 
@@ -3511,7 +3510,7 @@ pub enum MjcfIntegrator {
     RK4,
     Implicit,              // NEW: full implicit (asymmetric D, LU)
     ImplicitFast,          // Symmetric D, Cholesky
-    ImplicitSpringDamper,  // Legacy diagonal-only (keep for regression tests)
+    ImplicitSpringDamper,  // Direct mass-matrix modification (joint diagonal + tendon non-diagonal K/D)
 }
 ```
 
@@ -3536,11 +3535,11 @@ MuJoCo models specifying `integrator="implicit"` now get the full implicit solve
 Models wanting the old diagonal behavior must use `"implicitspringdamper"`.
 
 **⚠ Breaking change:** The string `"implicit"` currently maps to
-`ImplicitSpringDamper` (diagonal-only). After this change, it maps to the new
+`ImplicitSpringDamper`. After this change, it maps to the new
 full `Implicit` variant with asymmetric D and LU factorization. Any existing
 MJCF models using `integrator="implicit"` will silently change integration
 behavior. Migration: switch to `integrator="implicitspringdamper"` to preserve
-the old diagonal-only behavior. Per project principles, this breaking change is
+the mass-matrix-modification approach. Per project principles, this breaking change is
 intentional — it aligns the parser with MuJoCo's semantics.
 
 ##### Sub-task 13.D: Derivatives Interop

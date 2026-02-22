@@ -122,6 +122,14 @@ fn tendon_spring_nonzero_in_implicitspringdamper() {
         qacc_norm > 1e-3,
         "qacc norm should be non-trivial, got {qacc_norm}"
     );
+
+    // ten_force[0] should be populated even in ImplicitSpringDamper mode
+    // (diagnostic field). Spring force for positive displacement is negative.
+    assert!(
+        data.ten_force[0] < -1e-3,
+        "ten_force[0] should be negative (spring restoring), got {}",
+        data.ten_force[0]
+    );
 }
 
 // ============================================================================
@@ -140,6 +148,14 @@ fn tendon_damper_nonzero_in_implicitspringdamper() {
         data.qvel[0] < 1.0 - 1e-6,
         "qvel[0] should decrease from damping, got {}",
         data.qvel[0]
+    );
+
+    // ten_force[0] should be populated even in ImplicitSpringDamper mode
+    // (diagnostic field). Damper resists positive velocity → negative force.
+    assert!(
+        data.ten_force[0] < -1e-3,
+        "ten_force[0] should be negative (damper resisting), got {}",
+        data.ten_force[0]
     );
 }
 
@@ -1003,9 +1019,11 @@ fn tendon_implicit_newton_joint_spring_bonus() {
 
 #[test]
 fn tendon_implicit_sleep_guard_skips_sleeping_tendons() {
+    // Zero gravity so sleeping DOFs have no external forces — qacc must be
+    // exactly zero when all trees are forced asleep.
     let mjcf = r#"
         <mujoco model="tendon_sleep">
-            <option timestep="0.001" integrator="implicitspringdamper" gravity="0 0 -9.81">
+            <option timestep="0.001" integrator="implicitspringdamper" gravity="0 0 0">
                 <flag sleep="enable"/>
             </option>
             <worldbody>
@@ -1041,30 +1059,24 @@ fn tendon_implicit_sleep_guard_skips_sleeping_tendons() {
         "Awake: tendon spring should produce non-trivial qacc, got {qacc_awake_norm}"
     );
 
-    // --- Sleeping: let the system settle until bodies sleep naturally ---
-    // With gravity and sleep enabled, bodies at rest eventually go to sleep.
-    // After sleeping, the implicit solver should skip tendon K/D for sleeping
-    // DOFs, and qacc should be zero (sleeping DOFs are frozen).
+    // --- Sleeping: force all trees asleep, verify tendon K/D is skipped ---
     let mut data_sleep = model.make_data();
-    // Don't displace — keep at rest so bodies can sleep faster
-    // Run many steps to let the system settle and bodies go to sleep
-    for _ in 0..2000 {
-        data_sleep.step(&model).unwrap();
-    }
+    data_sleep.qpos[0] = 0.3;
+    // Run forward to compute tendon Jacobians/lengths with the displacement
+    data_sleep.forward(&model).unwrap();
 
-    // Check if bodies went to sleep
-    let all_sleeping = data_sleep.tree_asleep.iter().all(|&t| t >= 0);
-    if all_sleeping {
-        // Bodies are sleeping — verify stepping produces zero qacc
-        data_sleep.step(&model).unwrap();
-        let qacc_sleep_norm = data_sleep.qacc.norm();
-        assert!(
-            qacc_sleep_norm < 1e-6,
-            "Sleeping: qacc should be ~zero for sleeping DOFs, got norm={qacc_sleep_norm}"
-        );
+    // Force ALL trees to sleep (same pattern as gravcomp.rs:412-414)
+    for i in 0..model.ntree {
+        data_sleep.tree_awake[i] = false;
     }
-    // If bodies didn't sleep (e.g., gravity prevents settling on hinges without
-    // ground contact), that's OK — the awake test above already verified the
-    // tendon forces work. The sleep guard is tested implicitly through the
-    // existing sleep integration tests.
+    data_sleep.nv_awake = 0;
+    data_sleep.dof_awake_ind.clear();
+
+    // Step — implicit solver should skip tendon K/D for sleeping DOFs
+    data_sleep.step(&model).unwrap();
+    let qacc_sleep_norm = data_sleep.qacc.norm();
+    assert!(
+        qacc_sleep_norm < 1e-10,
+        "Sleeping: tendon forces should be skipped, got qacc norm={qacc_sleep_norm}"
+    );
 }

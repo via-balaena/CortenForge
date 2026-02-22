@@ -1597,8 +1597,10 @@ before the function returns):
 
 ```rust
 // Tendon passive forces: spring + damper + friction loss.
-// Pattern matches joint passive forces: spring/damper skipped in implicit mode
-// (handled by mj_fwd_acceleration_implicit), friction always explicit.
+// In ImplicitSpringDamper mode, ten_force[t] is always computed for
+// diagnostics but qfrc_passive application is skipped — spring/damper
+// forces are handled implicitly via non-diagonal K/D matrices (DT-35).
+// Friction loss is always explicit.
 for t in 0..model.ntendon {
     let length = data.ten_length[t];
     let velocity = data.ten_velocity[t];
@@ -1618,9 +1620,10 @@ for t in 0..model.ntendon {
             force -= b * velocity;
         }
     }
-    // NOTE: In implicit mode, tendon spring/damper forces are skipped here
-    // (explicit path) to avoid double-counting — they are instead handled
-    // implicitly via non-diagonal K_tendon and D_tendon matrices in
+    // NOTE: In implicit mode, ten_force[t] is always computed for diagnostic
+    // purposes, but the qfrc_passive application is skipped to avoid
+    // double-counting — the forces are instead handled implicitly via
+    // non-diagonal K_tendon and D_tendon matrices in
     // mj_fwd_acceleration_implicit() and build_m_impl_for_newton().
     // See DT-35 (future_work_10d.md) for implementation details.
 
@@ -5327,7 +5330,7 @@ Replace the blockquote (line 98) with:
 ```markdown
 > The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:629`)
 > with three variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
-> and `ImplicitSpringDamper` (diagonal spring/damper implicit Euler).
+> and `ImplicitSpringDamper` (spring/damper implicit Euler; joint diagonal + tendon non-diagonal K/D via DT-35).
 > A standalone trait-based integrator system was removed in FUTURE_WORK C1.
 ```
 
@@ -5396,7 +5399,7 @@ Replace lines 1471-1517 with:
 - The standalone `ImplicitFast` integrator and its `IntegrationMethod::ImplicitFast`
   dispatch variant were removed in FUTURE_WORK C1 (dead code — not called by
   the pipeline). The pipeline's `Integrator::ImplicitSpringDamper` covers the
-  primary use case (diagonal spring/damper implicit Euler).
+  primary use case (spring/damper implicit Euler).
 
 **Files (removed in consolidation):**
 - `sim-constraint/src/sparse.rs` — removed in Phase 3

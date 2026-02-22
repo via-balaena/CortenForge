@@ -135,7 +135,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 > The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:933`)
 > with five variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
-> `ImplicitSpringDamper` (diagonal spring/damper implicit Euler),
+> `ImplicitSpringDamper` (spring/damper implicit Euler with joint diagonal + tendon non-diagonal K/D),
 > `ImplicitFast` (symmetric D, Cholesky), and `Implicit` (asymmetric D
 > with Coriolis, LU). A standalone trait-based integrator system was
 > removed in FUTURE_WORK C1.
@@ -144,9 +144,11 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 Three implicit integrator variants are implemented:
 
-**`ImplicitSpringDamper` (legacy diagonal-only):**
+**`ImplicitSpringDamper` (diagonal joints + non-diagonal tendons):**
 - Solves: `(M + h·D + h²·K)·v_new = M·v_old + h·f_ext - h·K·(q - q_eq)`
-- D and K are diagonal (per-DOF damping and stiffness only)
+- Joint D and K are diagonal (per-DOF damping and stiffness)
+- Tendon D and K are non-diagonal rank-1 outer products `b·J^T·J` and `k·J^T·J`,
+  accumulated via `accumulate_tendon_kd()` (DT-35)
 - MJCF: `integrator="implicitspringdamper"`
 
 **`ImplicitFast` (full Jacobian, Cholesky):**
