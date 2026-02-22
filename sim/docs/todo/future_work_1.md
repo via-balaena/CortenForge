@@ -1618,16 +1618,11 @@ for t in 0..model.ntendon {
             force -= b * velocity;
         }
     }
-    // NOTE: In implicit mode, tendon spring/damper forces are skipped here.
-    // Joint springs/dampers ARE handled in implicit mode — via diagonal K and D
-    // modifications in mj_fwd_acceleration_implicit(). Tendon springs/dampers
-    // couple multiple joints (K_q = J^T * k * J, which is generally non-diagonal),
-    // so they CANNOT be absorbed into the existing diagonal implicit modification.
-    // For now, tendon springs/dampers produce zero force in implicit mode — this
-    // is a known limitation, NOT equivalent to joint spring/damper handling.
-    // A future enhancement could add the tendon contribution to scratch_m_impl
-    // as a non-diagonal term, but this would require refactoring the implicit
-    // solver. Tracked in future_work_10d.md §DT-35.
+    // NOTE: In implicit mode, tendon spring/damper forces are skipped here
+    // (explicit path) to avoid double-counting — they are instead handled
+    // implicitly via non-diagonal K_tendon and D_tendon matrices in
+    // mj_fwd_acceleration_implicit() and build_m_impl_for_newton().
+    // See DT-35 (future_work_10d.md) for implementation details.
 
     // Friction loss: F = -frictionloss * sign(v)
     // Always explicit (velocity-sign-dependent, cannot linearize).

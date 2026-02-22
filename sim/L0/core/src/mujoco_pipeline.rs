@@ -2669,8 +2669,8 @@ pub struct Data {
     /// Dense nv × nv matrix. Populated by `mjd_smooth_vel()`.
     ///
     /// Components:
-    ///   ∂(qfrc_passive)/∂qvel  = diagonal damping (+ tendon damping J^T·b·J
-    ///                            in explicit mode only; skipped for ImplicitSpringDamper)
+    ///   ∂(qfrc_passive)/∂qvel  = diagonal damping + tendon damping J^T·b·J
+    ///                            (all integrators, including ImplicitSpringDamper per DT-35)
     ///   ∂(qfrc_actuator)/∂qvel = affine velocity-dependent gain/bias terms
     ///   −∂(qfrc_bias)/∂qvel    = −C(q,v) (Coriolis matrix)
     ///
@@ -4744,7 +4744,8 @@ impl Data {
             Integrator::ImplicitSpringDamper => {
                 if self.newton_solved {
                     // Newton already computed qacc with implicit spring/damper effects
-                    // baked into the constraint solve. Update velocity explicitly.
+                    // baked into the constraint solve via M_impl (DT-35: includes
+                    // tendon K/D coupling). Update velocity explicitly.
                     let nv = if use_dof_ind { self.nv_awake } else { model.nv };
                     for idx in 0..nv {
                         let i = if use_dof_ind {
@@ -12448,10 +12449,10 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
                 force -= b * velocity;
             }
         }
-        // NOTE: In implicit mode, tendon spring/damper forces are skipped.
-        // Tendon springs/dampers couple multiple joints (non-diagonal K/D),
-        // so they cannot be absorbed into the existing diagonal implicit
-        // modification. This is a known limitation.
+        // NOTE: In ImplicitSpringDamper mode, tendon spring/damper forces are
+        // handled implicitly in mj_fwd_acceleration_implicit() via non-diagonal
+        // K_tendon and D_tendon matrices (DT-35). The explicit forces are skipped
+        // here to avoid double-counting, matching the joint spring/damper pattern.
 
         // Friction loss is now handled entirely by solver constraint rows (§29).
         // No tanh approximation in passive forces.
@@ -12691,13 +12692,127 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
 /// Check if all DOFs affected by a tendon's Jacobian belong to sleeping trees (§16.5a').
 pub(crate) fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
-    let ten_j = &data.ten_J[t];
+    tendon_all_dofs_sleeping_fields(model, &data.ten_J[t], &data.tree_awake)
+}
+
+/// Field-level variant of `tendon_all_dofs_sleeping` that avoids borrowing all of `Data`.
+/// Used by `accumulate_tendon_kd` where `data.scratch_m_impl` is mutably borrowed.
+fn tendon_all_dofs_sleeping_fields(
+    model: &Model,
+    ten_j: &DVector<f64>,
+    tree_awake: &[bool],
+) -> bool {
     for dof in 0..model.nv {
-        if ten_j[dof] != 0.0 && data.tree_awake[model.dof_treeid[dof]] {
+        if ten_j[dof] != 0.0 && tree_awake[model.dof_treeid[dof]] {
             return false; // At least one target DOF is awake
         }
     }
     true
+}
+
+/// Compute the deadband displacement for a tendon (DT-35).
+///
+/// Returns `length - upper` if `length > upper`, `length - lower` if
+/// `length < lower`, `0.0` if inside the deadband `[lower, upper]`.
+/// At the boundary (`length == lower` or `length == upper`), returns `0.0`
+/// (spring disengaged — see "one-step delay" note in DT-35 Step 2).
+#[inline]
+fn tendon_deadband_displacement(length: f64, range: [f64; 2]) -> f64 {
+    let [lower, upper] = range;
+    if length > upper {
+        length - upper
+    } else if length < lower {
+        length - lower
+    } else {
+        0.0
+    }
+}
+
+/// Return the effective stiffness for implicit treatment (DT-35).
+///
+/// Returns `k` when the tendon is outside its deadband (spring engaged),
+/// `0.0` when inside (spring disengaged). This gates the `h²·K` LHS
+/// modification: no phantom stiffness inside the deadband.
+///
+/// **Note on exact boundary:** At `length == lower` or `length == upper`,
+/// returns `0.0`. The displacement is also `0.0` at the boundary, so no
+/// spring force exists. If velocity moves the tendon outside the deadband,
+/// the spring activates in the next step (one-step delay, consistent with
+/// linearization at the current state).
+#[inline]
+fn tendon_active_stiffness(k: f64, length: f64, range: [f64; 2]) -> f64 {
+    if k <= 0.0 {
+        return 0.0;
+    }
+    let [lower, upper] = range;
+    if length >= lower && length <= upper {
+        0.0
+    } else {
+        k
+    }
+}
+
+/// Accumulate non-diagonal tendon K/D into a mass matrix (DT-35).
+///
+/// For each tendon with nonzero stiffness or damping, adds the rank-1
+/// outer product `(h²·k_active + h·b) · J^T · J` to `matrix`. Uses
+/// deadband-aware `k_active` (zero inside deadband, `k` outside).
+///
+/// Shared by `mj_fwd_acceleration_implicit` (Step 2) and
+/// `build_m_impl_for_newton` (Step 2b). Both call sites must produce
+/// identical mass matrix modifications — factoring this out guarantees it.
+///
+/// **Sleep guard:** Skips tendons whose target DOFs are all sleeping,
+/// matching the guards in `mj_fwd_passive` and `mjd_passive_vel`.
+fn accumulate_tendon_kd(
+    matrix: &mut DMatrix<f64>,
+    model: &Model,
+    ten_j: &[DVector<f64>],
+    ten_length: &[f64],
+    tree_awake: &[bool],
+    h: f64,
+    sleep_enabled: bool,
+) {
+    let h2 = h * h;
+    for t in 0..model.ntendon {
+        if sleep_enabled && tendon_all_dofs_sleeping_fields(model, &ten_j[t], tree_awake) {
+            continue;
+        }
+        let kt = model.tendon_stiffness[t];
+        let bt = model.tendon_damping[t];
+        if kt <= 0.0 && bt <= 0.0 {
+            continue;
+        }
+        let j = &ten_j[t];
+        let k_active = tendon_active_stiffness(kt, ten_length[t], model.tendon_lengthspring[t]);
+        let scale = h2 * k_active + h * bt;
+        // Defensive: skip if scale is non-positive. For valid models (k ≥ 0,
+        // b ≥ 0) this is unreachable when the above guard passes, but protects
+        // against pathological negative parameters that would break SPD.
+        if scale <= 0.0 {
+            continue;
+        }
+        // Rank-1 outer product: (h²·k_active + h·b) · J^T · J
+        //
+        // Sparsity skip `j[r] == 0.0`: for fixed tendons, Jacobian entries
+        // are exact MJCF coefficients (parsed floats), so zero entries are
+        // exactly 0.0. For spatial tendons, entries are computed from 3D
+        // geometry and may be near-zero (e.g. 1e-17) rather than exact
+        // zero — but the contribution of such entries is O(ε²) per matrix
+        // element, which is negligible (well below f64 precision). This
+        // matches MuJoCo's own sparse outer-product loops.
+        for r in 0..model.nv {
+            if j[r] == 0.0 {
+                continue;
+            }
+            for c in 0..model.nv {
+                if j[c] == 0.0 {
+                    continue;
+                }
+                matrix[(r, c)] += scale * j[r] * j[c];
+            }
+        }
+    }
 }
 
 /// Visitor for computing passive forces (springs, dampers, friction loss).
@@ -16145,15 +16260,23 @@ fn cg_solve_unified(model: &Model, data: &mut Data) {
     data.efc_force = DVector::zeros(nefc);
     data.efc_jar = DVector::zeros(nefc);
 
-    // Warmstart selection (same as Newton)
+    // Warmstart selection (same as Newton). CG always uses raw qM.
     let cost_warmstart = evaluate_cost_at(
         data,
         model,
         &data.qacc_warmstart.clone(),
         &qacc_smooth,
         &qfrc_smooth,
+        &data.qM,
     );
-    let cost_smooth = evaluate_cost_at(data, model, &qacc_smooth, &qacc_smooth, &qfrc_smooth);
+    let cost_smooth = evaluate_cost_at(
+        data,
+        model,
+        &qacc_smooth,
+        &qacc_smooth,
+        &qfrc_smooth,
+        &data.qM,
+    );
 
     let mut qacc = if cost_warmstart < cost_smooth {
         data.qacc_warmstart.clone()
@@ -16702,19 +16825,27 @@ fn classify_constraint_states(
 
 /// Assemble the Newton Hessian and factor via Cholesky.
 ///
-/// Phase A: H = M + Σ_{Quadratic rows} D_i · J_i^T · J_i
+/// Phase A: H = M_eff + Σ_{Quadratic rows} D_i · J_i^T · J_i
 /// (No cone Hessian in Phase A — cone rows are treated as Quadratic per-row.)
+///
+/// DT-35: `m_eff` is `M_impl` when `ImplicitSpringDamper` is active,
+/// `data.qM` otherwise. The Hessian starts from `m_eff` so that tendon K/D
+/// contributions are included in the Newton system.
 ///
 /// Returns the Cholesky factor L (lower triangular) such that H = L · L^T,
 /// or an error if the Hessian is not positive definite.
-fn assemble_hessian(data: &Data, nv: usize) -> Result<DMatrix<f64>, StepError> {
+fn assemble_hessian(
+    data: &Data,
+    nv: usize,
+    m_eff: &DMatrix<f64>,
+) -> Result<DMatrix<f64>, StepError> {
     let nefc = data.efc_type.len();
 
-    // Start with mass matrix
+    // Start with effective mass matrix (M or M_impl)
     let mut h = DMatrix::<f64>::zeros(nv, nv);
     for r in 0..nv {
         for c in 0..nv {
-            h[(r, c)] = data.qM[(r, c)];
+            h[(r, c)] = m_eff[(r, c)];
         }
     }
 
@@ -16794,7 +16925,12 @@ impl SparseHessian {
     /// 2. Numeric values
     /// 3. Symbolic factorization (elimination tree + L structure)
     /// 4. Numeric LDL^T factorization
-    fn assemble(model: &Model, data: &Data, nv: usize) -> Result<Self, StepError> {
+    fn assemble(
+        model: &Model,
+        data: &Data,
+        nv: usize,
+        implicit_sd: bool,
+    ) -> Result<Self, StepError> {
         let nefc = data.efc_type.len();
 
         // --- Step 1: Determine sparsity pattern ---
@@ -16836,6 +16972,33 @@ impl SparseHessian {
             }
         }
 
+        // DT-35: Tendon K/D sparsity (ImplicitSpringDamper only).
+        // Conservative: includes entries for all tendons with k > 0 or b > 0,
+        // regardless of deadband state. Actual values use deadband-aware k_active.
+        if implicit_sd {
+            let mut nz: Vec<usize> = Vec::with_capacity(8);
+            for t in 0..model.ntendon {
+                let kt = model.tendon_stiffness[t];
+                let bt = model.tendon_damping[t];
+                if kt <= 0.0 && bt <= 0.0 {
+                    continue;
+                }
+                let j = &data.ten_J[t];
+                nz.clear();
+                for dof in 0..nv {
+                    if j[dof] != 0.0 {
+                        nz.push(dof);
+                    }
+                }
+                for &ci in &nz {
+                    for &cj in &nz {
+                        let (lo, hi) = if ci <= cj { (ci, cj) } else { (cj, ci) };
+                        has_entry[lo][hi] = true;
+                    }
+                }
+            }
+        }
+
         // --- Step 2: Build CSC arrays ---
         let mut col_ptr = vec![0usize; nv + 1];
         let mut row_idx_vec = Vec::new();
@@ -16865,7 +17028,7 @@ impl SparseHessian {
         };
 
         // --- Step 3: Fill numeric values ---
-        h.fill_numeric(model, data, nv, nefc);
+        h.fill_numeric(model, data, nv, nefc, implicit_sd);
 
         // --- Step 4: Symbolic factorization ---
         h.symbolic_factor();
@@ -16878,15 +17041,24 @@ impl SparseHessian {
 
     /// Refactor with updated numeric values (same sparsity pattern).
     /// Used when constraint states change but sparsity doesn't.
-    fn refactor(&mut self, model: &Model, data: &Data) -> Result<(), StepError> {
+    fn refactor(&mut self, model: &Model, data: &Data, implicit_sd: bool) -> Result<(), StepError> {
         let nv = self.nv;
         let nefc = data.efc_type.len();
-        self.fill_numeric(model, data, nv, nefc);
+        self.fill_numeric(model, data, nv, nefc, implicit_sd);
         self.numeric_factor()
     }
 
     /// Fill CSC values with H = M + Σ_{Quadratic} D_i · J_i^T · J_i.
-    fn fill_numeric(&mut self, model: &Model, data: &Data, nv: usize, nefc: usize) {
+    /// DT-35: When `implicit_sd` is true, also adds joint diagonal K/D and
+    /// tendon non-diagonal K/D to match `build_m_impl_for_newton`.
+    fn fill_numeric(
+        &mut self,
+        model: &Model,
+        data: &Data,
+        nv: usize,
+        nefc: usize,
+        implicit_sd: bool,
+    ) {
         // Zero all values
         self.vals.iter_mut().for_each(|v| *v = 0.0);
 
@@ -16907,6 +17079,58 @@ impl SparseHessian {
                     self.vals[idx] += m_val;
                 }
                 p = model.dof_parent[j];
+            }
+        }
+
+        // DT-35: Add joint diagonal K/D and tendon non-diagonal K/D for
+        // ImplicitSpringDamper. This matches build_m_impl_for_newton.
+        if implicit_sd {
+            let h = model.timestep;
+            let h2 = h * h;
+            let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+            // Joint diagonal K/D
+            for i in 0..nv {
+                let kd = h * model.implicit_damping[i] + h2 * model.implicit_stiffness[i];
+                if kd > 0.0 {
+                    if let Some(idx) = self.find_entry(i, i) {
+                        self.vals[idx] += kd;
+                    }
+                }
+            }
+
+            // Tendon non-diagonal K/D (rank-1 outer products)
+            let mut nz: Vec<(usize, f64)> = Vec::with_capacity(8);
+            for t in 0..model.ntendon {
+                if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+                    continue;
+                }
+                let kt = model.tendon_stiffness[t];
+                let bt = model.tendon_damping[t];
+                if kt <= 0.0 && bt <= 0.0 {
+                    continue;
+                }
+                let j = &data.ten_J[t];
+                let k_active =
+                    tendon_active_stiffness(kt, data.ten_length[t], model.tendon_lengthspring[t]);
+                let scale = h2 * k_active + h * bt;
+                if scale <= 0.0 {
+                    continue;
+                }
+                nz.clear();
+                for dof in 0..nv {
+                    if j[dof] != 0.0 {
+                        nz.push((dof, j[dof]));
+                    }
+                }
+                for (ai, &(col_a, j_a)) in nz.iter().enumerate() {
+                    let s_j_a = scale * j_a;
+                    for &(col_b, j_b) in &nz[ai..] {
+                        if let Some(idx) = self.find_entry(col_a, col_b) {
+                            self.vals[idx] += s_j_a * j_b;
+                        }
+                    }
+                }
             }
         }
 
@@ -17196,6 +17420,7 @@ fn hessian_incremental(
     nv: usize,
     chol_l: &mut DMatrix<f64>,
     old_states: &[ConstraintState],
+    m_eff: &DMatrix<f64>,
 ) -> Result<(), StepError> {
     let nefc = data.efc_type.len();
 
@@ -17225,8 +17450,8 @@ fn hessian_incremental(
         } else {
             // Was Quadratic, now not → downdate (remove contribution)
             if cholesky_rank1_downdate(chol_l, &mut v).is_err() {
-                // Downdate failed — fall back to full reassembly
-                *chol_l = assemble_hessian(data, nv)?;
+                // Downdate failed — fall back to full reassembly (DT-35: uses m_eff)
+                *chol_l = assemble_hessian(data, nv, m_eff)?;
                 return Ok(());
             }
         }
@@ -17843,6 +18068,7 @@ fn primal_search(
 ///
 /// Does not modify any data fields — purely evaluative.
 /// Used by warmstart comparison in `newton_solve`.
+/// DT-35: `m_eff` is `M_impl` when `ImplicitSpringDamper` is active.
 #[allow(clippy::many_single_char_names)]
 fn evaluate_cost_at(
     data: &Data,
@@ -17850,6 +18076,7 @@ fn evaluate_cost_at(
     qacc_trial: &DVector<f64>,
     qacc_smooth: &DVector<f64>,
     qfrc_smooth: &DVector<f64>,
+    m_eff: &DMatrix<f64>,
 ) -> f64 {
     let nv = model.nv;
     let nefc = data.efc_type.len();
@@ -17864,11 +18091,11 @@ fn evaluate_cost_at(
         jar_trial[i] = j_dot_qacc - data.efc_aref[i];
     }
 
-    // Compute Ma_trial = M · qacc_trial
+    // Compute Ma_trial = M_eff · qacc_trial
     let mut ma_trial = DVector::<f64>::zeros(nv);
     for r in 0..nv {
         for c in 0..nv {
-            ma_trial[r] += data.qM[(r, c)] * qacc_trial[c];
+            ma_trial[r] += m_eff[(r, c)] * qacc_trial[c];
         }
     }
 
@@ -17969,8 +18196,18 @@ enum NewtonResult {
 /// Computes qacc, qfrc_constraint, efc_state, efc_force, efc_jar, efc_cost
 /// directly via reduced primal optimization. Returns early with `NewtonResult`
 /// indicating success or failure mode for PGS fallback.
+///
+/// DT-35: `m_eff` is the effective mass matrix — `M_impl` when
+/// `ImplicitSpringDamper` is active, `data.qM` otherwise. All M·v products,
+/// Hessian assembly, and cost evaluation use `m_eff`.
 #[allow(clippy::too_many_lines)]
-fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
+fn newton_solve(
+    model: &Model,
+    data: &mut Data,
+    m_eff: &DMatrix<f64>,
+    _qfrc_eff: &DVector<f64>,
+    implicit_sd: bool,
+) -> NewtonResult {
     let nv = model.nv;
 
     // === INITIALIZE ===
@@ -18006,9 +18243,11 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
         &data.qacc_warmstart.clone(),
         &qacc_smooth,
         &qfrc_smooth,
+        m_eff,
     );
     // Evaluate cost at qacc_smooth (Gauss = 0, only constraint cost from efc_b)
-    let cost_smooth = evaluate_cost_at(data, model, &qacc_smooth, &qacc_smooth, &qfrc_smooth);
+    let cost_smooth =
+        evaluate_cost_at(data, model, &qacc_smooth, &qacc_smooth, &qfrc_smooth, m_eff);
 
     let mut qacc = if cost_warmstart < cost_smooth {
         data.qacc_warmstart.clone()
@@ -18016,11 +18255,11 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
         qacc_smooth.clone()
     };
 
-    // Compute Ma = M · qacc
+    // Compute Ma = M_eff · qacc (DT-35: uses M_impl when ImplicitSpringDamper)
     let mut ma = DVector::<f64>::zeros(nv);
     for r in 0..nv {
         for c in 0..nv {
-            ma[r] += data.qM[(r, c)] * qacc[c];
+            ma[r] += m_eff[(r, c)] * qacc[c];
         }
     }
 
@@ -18037,7 +18276,7 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
     let mut sparse_h: Option<SparseHessian> = None;
 
     let (mut grad, mut search) = if use_sparse {
-        let Ok(sh) = SparseHessian::assemble(model, data, nv) else {
+        let Ok(sh) = SparseHessian::assemble(model, data, nv, implicit_sd) else {
             data.solver_niter = 0;
             data.solver_stat.clear();
             return NewtonResult::CholeskyFailed;
@@ -18046,7 +18285,7 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
         sparse_h = Some(sh);
         gs
     } else {
-        let Ok(l) = assemble_hessian(data, nv) else {
+        let Ok(l) = assemble_hessian(data, nv, m_eff) else {
             data.solver_niter = 0;
             data.solver_stat.clear();
             return NewtonResult::CholeskyFailed;
@@ -18073,11 +18312,11 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
     let mut converged = false;
     let mut solver_stats = Vec::with_capacity(max_iters);
 
-    // Precompute Mv = M*search and Jv = J*search for the initial search direction
+    // Precompute Mv = M_eff*search and Jv = J*search for the initial search direction
     let mut mv = DVector::<f64>::zeros(nv);
     for r in 0..nv {
         for c in 0..nv {
-            mv[r] += data.qM[(r, c)] * search[c];
+            mv[r] += m_eff[(r, c)] * search[c];
         }
     }
     let mut jv = DVector::<f64>::zeros(nefc);
@@ -18159,9 +18398,9 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
         let (g, s) = if use_sparse {
             // Sparse path: full refactorization each iteration
             let sh = sparse_h.as_mut().unwrap_or_else(|| unreachable!());
-            if sh.refactor(model, data).is_err() {
+            if sh.refactor(model, data, implicit_sd).is_err() {
                 // Refactorization failed — try full reassembly
-                if let Ok(new_sh) = SparseHessian::assemble(model, data, nv) {
+                if let Ok(new_sh) = SparseHessian::assemble(model, data, nv, implicit_sd) {
                     *sh = new_sh;
                 } else {
                     data.solver_niter = solver_stats.len();
@@ -18173,9 +18412,9 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
         } else {
             // Dense path: incremental rank-1 updates + cone Hessian
             let chol_l = chol_l_dense.as_mut().unwrap_or_else(|| unreachable!());
-            if hessian_incremental(data, nv, chol_l, &old_states).is_err() {
+            if hessian_incremental(data, nv, chol_l, &old_states, m_eff).is_err() {
                 // Incremental update failed — fall back to full reassembly
-                if let Ok(l) = assemble_hessian(data, nv) {
+                if let Ok(l) = assemble_hessian(data, nv, m_eff) {
                     *chol_l = l;
                 } else {
                     data.solver_niter = solver_stats.len();
@@ -18230,11 +18469,11 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
         // 7. SEARCH DIRECTION + recompute Mv, Jv for next iteration
         search = s;
 
-        // Recompute Mv = M * search
+        // Recompute Mv = M_eff * search
         mv.fill(0.0);
         for r in 0..nv {
             for c in 0..nv {
-                mv[r] += data.qM[(r, c)] * search[c];
+                mv[r] += m_eff[(r, c)] * search[c];
             }
         }
         // Recompute Jv = J * search
@@ -19460,6 +19699,146 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
 /// This matches MuJoCo's architecture where every solver type operates on the same
 /// constraint rows.
 ///
+/// Build the implicit-modified mass matrix for Newton solver (DT-35).
+///
+/// Returns `M + h·D_jnt + h²·K_jnt + h·D_ten + h²·K_ten` — joint diagonal
+/// K/D plus tendon non-diagonal K/D. Called once per step in
+/// `mj_fwd_constraint` when `ImplicitSpringDamper` is active. The returned
+/// matrix replaces `data.qM` in all Newton computations.
+///
+/// Uses `accumulate_tendon_kd` for the tendon contribution,
+/// guaranteeing identical mass matrix modification as the non-Newton path
+/// in `mj_fwd_acceleration_implicit`.
+#[must_use]
+fn build_m_impl_for_newton(model: &Model, data: &Data) -> DMatrix<f64> {
+    let h = model.timestep;
+    let h2 = h * h;
+    let nv = model.nv;
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+    let mut m_impl = data.qM.clone();
+
+    // Add diagonal joint K/D (matching mj_fwd_acceleration_implicit)
+    let k = &model.implicit_stiffness;
+    let d = &model.implicit_damping;
+    for i in 0..nv {
+        m_impl[(i, i)] += h * d[i] + h2 * k[i];
+    }
+
+    // Add non-diagonal tendon K/D (shared helper)
+    accumulate_tendon_kd(
+        &mut m_impl,
+        model,
+        &data.ten_J,
+        &data.ten_length,
+        &data.tree_awake,
+        h,
+        sleep_enabled,
+    );
+
+    m_impl
+}
+
+/// Compute implicit-corrected smooth forces for Newton solver (DT-35).
+///
+/// In ImplicitSpringDamper mode, qfrc_passive excludes spring/damper forces.
+/// This function computes the RHS forces that, together with M_impl in the
+/// Hessian, produce the correct unconstrained acceleration matching the
+/// non-Newton implicit path.
+///
+/// From the equivalence derivation:
+///   a = M_impl⁻¹ · (f_ext − D·v − K·(Δq + h·v))
+///
+/// So: qfrc_smooth_impl = qfrc_smooth_base
+///     − D_jnt·v − D_ten·v           (damper forces)
+///     − K_jnt·(Δq + h·v)            (spring forces + velocity correction)
+///     − K_ten·(δ + h·V_ten)          (tendon spring + velocity correction)
+#[must_use]
+fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
+    let h = model.timestep;
+    let nv = model.nv;
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+    // Start with existing qfrc_smooth (which has everything EXCEPT
+    // implicit spring/damper forces)
+    let mut qfrc = data.qfrc_smooth.clone();
+
+    // Add joint spring forces: −K·(Δq + h·v)
+    // where Δq = q − q_eq, so total = −K·(q − q_eq) − h·K·v
+    for jnt_id in 0..model.njnt {
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let k = model.implicit_stiffness[dof_adr];
+        if k <= 0.0 {
+            continue;
+        }
+        let q_eq = model.implicit_springref[dof_adr];
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                let q = data.qpos[model.jnt_qpos_adr[jnt_id]];
+                let v = data.qvel[dof_adr];
+                qfrc[dof_adr] += -k * (q - q_eq) - h * k * v;
+            }
+            // Ball/Free: compute_implicit_params sets implicit_stiffness=0
+            // for these types, so the `k <= 0.0` guard above catches them.
+            _ => {
+                debug_assert!(
+                    k <= 0.0,
+                    "Ball/Free joint {jnt_id} has implicit_stiffness={k} > 0; \
+                     compute_implicit_params should set this to 0.0"
+                );
+            }
+        }
+    }
+
+    // Add joint damper forces: −D·v
+    for i in 0..nv {
+        let d = model.implicit_damping[i];
+        if d > 0.0 {
+            qfrc[i] += -d * data.qvel[i];
+        }
+    }
+
+    // Add tendon spring forces: −k·(δ + h·V_ten) projected via J^T
+    // and tendon damper forces: −b · V projected via J^T
+    for t in 0..model.ntendon {
+        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+            continue;
+        }
+        let kt = model.tendon_stiffness[t];
+        if kt > 0.0 {
+            let displacement =
+                tendon_deadband_displacement(data.ten_length[t], model.tendon_lengthspring[t]);
+            // Only apply spring force + velocity correction when OUTSIDE
+            // deadband. Inside (displacement == 0.0), no spring force exists,
+            // and the velocity correction h·K·v must also be zero.
+            if displacement != 0.0 {
+                let velocity = data.ten_velocity[t]; // J · qvel
+                let f = -kt * (displacement + h * velocity);
+                let j = &data.ten_J[t];
+                for dof in 0..nv {
+                    if j[dof] != 0.0 {
+                        qfrc[dof] += f * j[dof];
+                    }
+                }
+            }
+        }
+        // Add tendon damper forces: −b · V projected via J^T
+        let bt = model.tendon_damping[t];
+        if bt > 0.0 {
+            let j = &data.ten_J[t];
+            let velocity = data.ten_velocity[t]; // J · qvel
+            let f = -bt * velocity;
+            for dof in 0..nv {
+                if j[dof] != 0.0 {
+                    qfrc[dof] += f * j[dof];
+                }
+            }
+        }
+    }
+
+    qfrc
+}
+
 /// Pipeline:
 /// 1. Compute qacc_smooth (unconstrained acceleration)
 /// 2. Assemble ALL constraints into efc_* arrays
@@ -19476,8 +19855,58 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     // Step 1: Shared qacc_smooth computation
     let (qacc_smooth, _qfrc_smooth) = compute_qacc_smooth(model, data);
 
+    let implicit_sd = model.integrator == Integrator::ImplicitSpringDamper;
+
+    // DT-35: For ImplicitSpringDamper, precompute the implicit-modified
+    // quantities that Newton needs. Also recompute qacc_smooth using M_impl
+    // so the constraint assembly sees the correct unconstrained motion.
+    let m_impl_owned: Option<DMatrix<f64>>;
+    let qfrc_impl_owned: Option<DVector<f64>>;
+    let qacc_smooth_impl: DVector<f64>;
+
+    if implicit_sd {
+        let m_impl = build_m_impl_for_newton(model, data);
+        let qfrc_impl = compute_qfrc_smooth_implicit(model, data);
+
+        // qacc_smooth_impl = M_impl⁻¹ · qfrc_smooth_impl
+        let mut m_impl_factor = m_impl.clone();
+        if cholesky_in_place(&mut m_impl_factor).is_err() {
+            // M_impl should always be SPD; if Cholesky fails, fall back to
+            // the base qacc_smooth (degrades gracefully).
+            qacc_smooth_impl = qacc_smooth.clone();
+        } else {
+            let mut qa = qfrc_impl.clone();
+            cholesky_solve_in_place(&m_impl_factor, &mut qa);
+            qacc_smooth_impl = qa;
+        }
+        m_impl_owned = Some(m_impl);
+        qfrc_impl_owned = Some(qfrc_impl);
+    } else {
+        qacc_smooth_impl = qacc_smooth.clone();
+        m_impl_owned = None;
+        qfrc_impl_owned = None;
+    }
+
+    // DT-35: Override data.qacc_smooth and data.qfrc_smooth with implicit
+    // versions so Newton (and other consumers) see the correct values.
+    if implicit_sd {
+        data.qacc_smooth = qacc_smooth_impl.clone();
+        if let Some(ref qfrc) = qfrc_impl_owned {
+            data.qfrc_smooth = qfrc.clone();
+        }
+    }
+
+    // Use implicit-corrected qacc_smooth for constraint assembly when
+    // ImplicitSpringDamper is active, so efc_b sees the correct
+    // unconstrained motion including spring/damper effects.
+    let qacc_for_assembly = if implicit_sd {
+        &qacc_smooth_impl
+    } else {
+        &qacc_smooth
+    };
+
     // Step 2: Assemble ALL constraints (universal for all solver types)
-    assemble_unified_constraints(model, data, &qacc_smooth);
+    assemble_unified_constraints(model, data, qacc_for_assembly);
     let nefc = data.efc_type.len();
 
     // Step 2b: Populate efc_island from constraint rows and island data.
@@ -19485,14 +19914,20 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     populate_efc_island(model, data);
 
     if nefc == 0 {
-        data.qacc.copy_from(&qacc_smooth);
+        data.qacc.copy_from(&qacc_smooth_impl);
         return;
     }
+
+    // Store implicit quantities for Newton solver.
+    // Clone into owned values so we don't hold an immutable borrow on `data`
+    // while passing it mutably to `newton_solve`.
+    let m_eff: DMatrix<f64> = m_impl_owned.unwrap_or_else(|| data.qM.clone());
+    let qfrc_eff: DVector<f64> = qfrc_impl_owned.unwrap_or_else(|| data.qfrc_smooth.clone());
 
     // Step 3: Dispatch to solver
     match model.solver_type {
         SolverType::Newton => {
-            let result = newton_solve(model, data);
+            let result = newton_solve(model, data, &m_eff, &qfrc_eff, implicit_sd);
             match result {
                 NewtonResult::Converged => {
                     // Noslip post-processor (Phase C §15.10, §33)
@@ -20164,12 +20599,27 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     data.scratch_force += &data.qfrc_constraint;
     data.scratch_force -= &data.qfrc_bias;
 
-    // Build modified mass matrix: M_impl = M + h*D + h²*K
-    // Copy M into scratch, then modify diagonal only
+    // Build modified mass matrix: M_impl = M + h*D_jnt + h²*K_jnt
+    // Copy M into scratch, then modify diagonal from joint K/D
     data.scratch_m_impl.copy_from(&data.qM);
     for i in 0..model.nv {
         data.scratch_m_impl[(i, i)] += h * d[i] + h2 * k[i];
     }
+
+    // DT-35: Non-diagonal tendon stiffness and damping (Step 0 helper).
+    // Adds Σ_t (h²·k_active_t + h·b_t) · J_t^T · J_t to scratch_m_impl.
+    // Spring K is deadband-aware: zero inside [lower, upper], k outside.
+    // Damping D always applies. Sleep guard skips fully-sleeping tendons.
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    accumulate_tendon_kd(
+        &mut data.scratch_m_impl,
+        model,
+        &data.ten_J,
+        &data.ten_length,
+        &data.tree_awake,
+        h,
+        sleep_enabled,
+    );
 
     // Build RHS into scratch buffer: M*v_old + h*f_ext - h*K*(q - q_eq)
     // Start with M*v_old
@@ -20180,7 +20630,7 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
         data.scratch_rhs[i] += h * data.scratch_force[i];
     }
 
-    // Subtract h*K*(q - q_eq) for spring displacement using visitor
+    // Subtract h*K*(q - q_eq) for joint spring displacement using visitor
     let mut spring_visitor = ImplicitSpringVisitor {
         k,
         q_eq,
@@ -20189,6 +20639,40 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
         rhs: &mut data.scratch_rhs,
     };
     model.visit_joints(&mut spring_visitor);
+
+    // DT-35: Tendon spring displacement contribution to implicit RHS
+    // RHS[dof] -= h · Σ_t k_t · J_t[dof] · deadband_disp(L_t)
+    // (sleep_enabled already computed in Step 2, same function scope)
+    for t in 0..model.ntendon {
+        // Must match the guard in accumulate_tendon_kd — if K is not in the
+        // LHS, the corresponding spring displacement must not be in the RHS.
+        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+            continue;
+        }
+        let kt = model.tendon_stiffness[t];
+        if kt <= 0.0 {
+            continue;
+        }
+        let displacement =
+            tendon_deadband_displacement(data.ten_length[t], model.tendon_lengthspring[t]);
+        // SAFETY: exact `== 0.0` comparison is correct here.
+        // `tendon_deadband_displacement` returns literal `0.0` from the else
+        // branch (no arithmetic). At boundary, `length - upper` is exactly
+        // 0.0 when both operands are equal.
+        if displacement == 0.0 {
+            continue; // Inside deadband — no spring force
+        }
+        // Spring force in tendon space: F = k * (ref - L) = -k * displacement
+        // Joint-space force: qfrc = J^T * F = -J^T * k * displacement
+        // RHS += h * qfrc = -h * k * displacement * J^T
+        let j = &data.ten_J[t];
+        let scale = -h * kt * displacement;
+        for dof in 0..model.nv {
+            if j[dof] != 0.0 {
+                data.scratch_rhs[dof] += scale * j[dof];
+            }
+        }
+    }
 
     // Factorize M_impl in place (overwrites lower triangle with L where M_impl = L·L^T).
     // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0).

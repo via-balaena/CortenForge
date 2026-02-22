@@ -466,11 +466,12 @@ fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>) -> DVector
 /// that merges `jnt_damping[jnt_id]` for Hinge/Slide joints and
 /// `dof_damping[dof_idx]` for Ball/Free joints.
 ///
-/// # Implicit mode guard
+/// # Tendon damping
 ///
-/// In `ImplicitSpringDamper` mode, `mj_fwd_passive()` skips tendon damping
-/// forces. Per-DOF damping is included for all modes (needed by both Euler
-/// and implicit velocity derivative formulas).
+/// Tendon damping derivatives (−b · J^T · J) are included for all integrators.
+/// In `ImplicitSpringDamper` mode, tendon damping is handled implicitly via
+/// non-diagonal D matrices (DT-35), but the velocity derivative is still
+/// physically present and must be captured here.
 #[allow(non_snake_case)]
 pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     // §40c: Sleep filtering — compute once, used by per-DOF and tendon loops.
@@ -493,31 +494,28 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     }
 
     // 3. Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
-    // Skipped in implicit mode: mj_fwd_passive skips tendon damping forces
-    // when implicit_mode is true, so there is no tendon damping contribution
-    // to differentiate.
-    let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
-    if !implicit_mode {
-        for t in 0..model.ntendon {
-            // §40c: Skip tendon if ALL target DOFs are sleeping.
-            if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+    // DT-35: This runs for ALL integrators. In ImplicitSpringDamper mode the
+    // tendon damping forces are folded into the implicit K/D matrices (not
+    // skipped), so the velocity derivative is always physically present.
+    for t in 0..model.ntendon {
+        // §40c: Skip tendon if ALL target DOFs are sleeping.
+        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+            continue;
+        }
+        let b = model.tendon_damping[t];
+        if b <= 0.0 {
+            continue;
+        }
+        let j = &data.ten_J[t];
+        for r in 0..model.nv {
+            if j[r] == 0.0 {
                 continue;
             }
-            let b = model.tendon_damping[t];
-            if b <= 0.0 {
-                continue;
-            }
-            let j = &data.ten_J[t];
-            for r in 0..model.nv {
-                if j[r] == 0.0 {
+            for c in 0..model.nv {
+                if j[c] == 0.0 {
                     continue;
                 }
-                for c in 0..model.nv {
-                    if j[c] == 0.0 {
-                        continue;
-                    }
-                    data.qDeriv[(r, c)] += -b * j[r] * j[c];
-                }
+                data.qDeriv[(r, c)] += -b * j[r] * j[c];
             }
         }
     }
