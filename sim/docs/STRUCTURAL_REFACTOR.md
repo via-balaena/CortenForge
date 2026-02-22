@@ -490,10 +490,11 @@ sim-core/src/
   │   ├── mod.rs              integrate() dispatch (Euler/Implicit*/RK4),
   │   │                       integrate_without_velocity() (GPU integration path)
   │   ├── euler.rs            Euler integration, mj_integrate_pos,
-  │   │                       mj_normalize_quat, position/quaternion visitors
-  │   ├── implicit.rs         ImplicitSpringDamper, ImplicitFast, Implicit
-  │   │                       integration paths (accumulate K/D, solve linear systems);
-  │   │                       tendon implicit K/D helpers: tendon_all_dofs_sleeping,
+  │   │                       mj_normalize_quat, PositionIntegrateVisitor,
+  │   │                       QuaternionNormalizeVisitor
+  │   ├── implicit.rs         Tendon implicit K/D helpers shared by
+  │   │                       forward/acceleration.rs and constraint/mod.rs:
+  │   │                       tendon_all_dofs_sleeping, tendon_all_dofs_sleeping_fields,
   │   │                       tendon_deadband_displacement, tendon_active_stiffness,
   │   │                       accumulate_tendon_kd
   │   └── rk4.rs              mj_runge_kutta (4-stage Runge-Kutta)
@@ -572,8 +573,8 @@ sim-core/src/
 | `collision/mod.rs` | ~470 | L5383–L5644 (check_collision_affinity, mj_collision, mj_collision_flex) + L6068–L6240 (contact parameter mixing) |
 | `collision/pair_convex.rs` | ~310 | L7095–L7406 (sphere/capsule/box pairwise) |
 | `collision/pair_cylinder.rs` | ~620 | L7406–L8028 (cylinder pairs + box-box SAT) |
-| `collision/plane.rs` | ~500 | L6680–L7095 (plane collisions) |
-| `collision/narrow.rs` | ~424 | L5644–L6068 (collide_geoms dispatch, geom_to_collision_shape, apply_pair_overrides, make_contact_from_geoms, collide_with_hfield, collide_with_sdf, collide_with_mesh, collide_mesh_plane) |
+| `collision/plane.rs` | ~415 | L6673–L7088 (collide_with_plane, collide_cylinder_plane_impl, collide_ellipsoid_plane_impl) |
+| `collision/narrow.rs` | ~470 | L5644–L6068 + L6241–L6288 (collide_geoms dispatch, geom_to_collision_shape, apply_pair_overrides, make_contact_from_geoms, constants) |
 | `sensor/mod.rs` | ~17 | L8118–L8134 (dispatch + mod declarations) |
 | `sensor/position.rs` | ~289 | L8135–L8423 (mj_sensor_pos) |
 | `sensor/velocity.rs` | ~190 | L8437–L8626 (mj_sensor_vel) |
@@ -583,10 +584,10 @@ sim-core/src/
 | `tendon/*.rs` | ~1,100 total | tendon/mod.rs + fixed.rs: L9367–L9429 (~63); tendon/spatial.rs: L9430–L9829 (~400) + L10042–L10113 (~72); tendon/wrap_math.rs: L10114–L10674 (~561) |
 | `island/*.rs` | ~1,295 total | island/sleep.rs: L12966–L13409 (444 lines) + L14005–L14268 (264 lines) = ~708; island/mod.rs: L13411–L13997 = ~587 |
 | `integrate/mod.rs` | ~120 | L4701–L4821 (integrate() dispatch, integrate_without_velocity() — already mapped above) |
-| `integrate/euler.rs` | ~347 | L20900–L21066 + L21085–L21283 (two non-contiguous ranges: position visitors + differentiate/explicit) |
-| `integrate/implicit.rs` | ~86 | L12690–L12816 (tendon K/D helpers — already mapped above) + implicit-specific integration steps within L20899–L21476 (verify during extraction) |
+| `integrate/euler.rs` | ~166 | L20900–L21066 (mj_integrate_pos, PositionIntegrateVisitor, mj_normalize_quat, QuaternionNormalizeVisitor) |
+| `integrate/implicit.rs` | ~127 | L12690–L12816 (tendon K/D helpers only: tendon_all_dofs_sleeping, tendon_all_dofs_sleeping_fields, tendon_deadband_displacement, tendon_active_stiffness, accumulate_tendon_kd) |
 | `integrate/rk4.rs` | ~169 | L21302–L21470 (mj_runge_kutta) |
-| `jacobian.rs` | ~430 | L9830–L10041 + L21085–L21302 |
+| `jacobian.rs` | ~465 | L9830–L10041 + L10795–L10829 + L21085–L21283 (Jacobian utilities + compute_contact_normal_jacobian + mj_differentiate_pos + mj_integrate_pos_explicit; doc comment at L21068–L21084) |
 | `linalg.rs` | ~220 | L20106–L20253 + L20829–L20897 (Cholesky/LU). Note: the target structure (line 437–440) lists `mj_solve_sparse` and `mj_solve_sparse_batch` in `linalg.rs`, but the mapping table places their source range (L20436–L20557) under `dynamics/factor.rs`. Resolve during extraction — if sparse solvers move to `linalg.rs`, add ~120 lines. |
 | `joint_visitor.rs` | ~130 | L389–L454 (JointContext + JointVisitor trait) + L11609–L11669 (joint_motion_subspace) |
 | `energy.rs` | ~89 | L8028–L8116 |
@@ -634,8 +635,12 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L5383–L5644 | `collision/mod.rs` | check_collision_affinity (L5383), mj_collision (L5430), mj_collision_flex (L5578) |
 | L5644–L6068 | `collision/narrow.rs` | Narrow-phase dispatch + geom_to_collision_shape |
 | L6068–L6240 | `collision/mod.rs` | Contact parameter mixing (contact_param (L6068), contact_param_flex_rigid (L6129), solmix_weight (L6188), combine_solref (L6206), combine_solimp (L6218)) |
-| L6241–L6680 | `collision/plane.rs` | Plane collision implementations |
-| L6680–L7095 | `collision/plane.rs` | Additional plane collisions (collide_cylinder_plane_impl, collide_ellipsoid_plane_impl) |
+| L6241–L6265 | `collision/narrow.rs` | End of make_contact_from_geoms |
+| L6267–L6288 | `collision/narrow.rs` | Constants (GEOM_EPSILON, etc.) |
+| L6290–L6376 | `collision/hfield.rs` | collide_with_hfield |
+| L6378–L6496 | `collision/sdf_collide.rs` | collide_with_sdf |
+| L6498–L6671 | `collision/mesh_collide.rs` | collide_with_mesh + collide_mesh_plane |
+| L6673–L7088 | `collision/plane.rs` | collide_with_plane + collide_cylinder_plane_impl + collide_ellipsoid_plane_impl |
 | L7095–L7406 | `collision/pair_convex.rs` | Sphere/capsule/box pairs |
 | L7406–L8028 | `collision/pair_cylinder.rs` | Cylinder pairs + box-box SAT |
 | L8028–L8116 | `energy.rs` | mj_energy_pos, mj_energy_vel |
@@ -654,7 +659,8 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L10042–L10113 | `tendon/spatial.rs` | apply_tendon_force (L10042), subquat (L10073), WrapResult enum (L10095) |
 | L10114–L10674 | `tendon/wrap_math.rs` | segments_intersect_2d (L10114), directional_wrap_angle (L10131), sphere_tangent_point (L10156), compute_tangent_pair (L10170), circle_tangent_2d (L10187), sphere_wrapping_plane (L10219), wrap_inside_2d (L10246), sphere_wrap (L10369), cylinder_wrap (L10509) |
 | L10675–L10681 | (whitespace/comments) | Section boundary between tendon wrapping and actuation |
-| L10682–L11247 | `forward/actuation.rs` | Transmission + actuation + muscle helpers |
+| L10795–L10829 | `jacobian.rs` | compute_contact_normal_jacobian (~35 lines) — private, called only by `mj_transmission_body`. Despite sitting in the actuation section of the monolith, logically belongs with Jacobian utilities. |
+| L10682–L11247 | `forward/actuation.rs` | Transmission + actuation + muscle helpers (excluding L10795–L10829 which goes to jacobian.rs) |
 | L11247–L11609 | `dynamics/crba.rs` | CRBA + mass matrix |
 | L11609–L11669 | `joint_visitor.rs` | joint_motion_subspace (motion subspace computation) |
 | L11670–L11676 | (whitespace/comments) | Section boundary between joint_motion_subspace and mj_rne |
@@ -714,7 +720,7 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L20829–L20897 | `linalg.rs` | LU factorization + solve |
 | L20898 | (whitespace) | Section boundary |
 | L20900–L21066 | `integrate/euler.rs` | mj_integrate_pos (12), PositionIntegrateVisitor (98), mj_normalize_quat (6), QuaternionNormalizeVisitor (44) |
-| L21085–L21283 | `integrate/euler.rs` | mj_differentiate_pos (101), mj_integrate_pos_explicit (81) |
+| L21085–L21283 | `jacobian.rs` | mj_differentiate_pos (101), mj_integrate_pos_explicit (81) — primary callers are `derivatives.rs` for finite-difference Jacobians |
 | L21302–L21470 | `integrate/rk4.rs` | mj_runge_kutta (169 lines) |
 | L21476–L26722 | (inline tests) | Move with their host modules |
 
@@ -877,6 +883,12 @@ Every extraction phase (1–10) ends with these steps. They are not optional.
    in this phase.
 4. **Add `//!` module doc** to every new `.rs` file created in this phase.
 5. **Run rubric S6 stale-reference check** (grep for old filenames).
+5a. **Verify no lazy imports.** After adding monolith re-imports, temporarily
+   comment them out and run `cargo check -p sim-core`. Any errors in files
+   OTHER than the monolith indicate an import that should have been updated
+   to point to the new module. Fix those imports, then uncomment the
+   re-imports. (This is a manual check — can't be automated in the
+   verification script because it requires temporary code changes.)
 6. **Run full test suite** — must match baseline.
 7. **Run `cargo clippy -- -D warnings`** — zero warnings.
 8. **Preserve `#[inline]` attributes.** When moving a function that has
@@ -1043,7 +1055,7 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 3. `constraint/jacobian.rs` — standalone (contact Jacobian construction)
 4. `constraint/equality.rs` — standalone (equality constraint Jacobians)
 5. `constraint/assembly.rs` — calls equality, jacobian, impedance
-6. `constraint/solver/mod.rs` — dispatch (depends on solver sub-modules)
+6. `constraint/solver/mod.rs` — dispatch + Delassus + qfrc recovery (calls solver sub-modules; initially imports from monolith until they're extracted in steps 7–12)
 7. `constraint/solver/primal.rs` — shared infrastructure (used by CG + Newton)
 8. `constraint/solver/pgs.rs` — uses primal
 9. `constraint/solver/cg.rs` — uses primal
@@ -1082,7 +1094,8 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 - [ ] Move actuation pipeline → `forward/actuation.rs`
 - [ ] Move acceleration paths → `forward/acceleration.rs`
 - [ ] Move check functions → `forward/check.rs`
-- [ ] Move Jacobian functions → `src/jacobian.rs`
+- [ ] Move Jacobian functions → `src/jacobian.rs` (includes `mj_differentiate_pos`
+      and `mj_integrate_pos_explicit` — primary callers are `derivatives.rs`)
 - [ ] Run full test suite
 
 **Estimated size**: ~3,200 lines moved
@@ -1091,12 +1104,15 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 
 - [ ] Create `src/integrate/` module tree
 - [ ] Move integrate() dispatch → `integrate/mod.rs`
-- [ ] Move Euler integration + mj_integrate_pos + position/quaternion visitors →
-      `integrate/euler.rs`
-- [ ] Move implicit integration paths → `integrate/implicit.rs`
+- [ ] Move Euler integration + mj_integrate_pos + mj_normalize_quat +
+      PositionIntegrateVisitor + QuaternionNormalizeVisitor →
+      `integrate/euler.rs` (NOT mj_differentiate_pos or
+      mj_integrate_pos_explicit — those go to `jacobian.rs` in Phase 8a)
 - [ ] Move tendon implicit K/D helpers (tendon_all_dofs_sleeping,
-      tendon_deadband_displacement, tendon_active_stiffness,
-      accumulate_tendon_kd) → `integrate/implicit.rs`
+      tendon_all_dofs_sleeping_fields, tendon_deadband_displacement,
+      tendon_active_stiffness, accumulate_tendon_kd) →
+      `integrate/implicit.rs` (ONLY tendon K/D helpers — implicit
+      acceleration functions stay in `forward/acceleration.rs`)
 - [ ] Move mj_runge_kutta → `integrate/rk4.rs`
 - [ ] Run full test suite
 
@@ -1204,7 +1220,7 @@ update imports, verify.
     compute_geom_mass, compute_geom_inertia, geom_effective_com,
     geom_size_to_vec3, compute_fromto_pose).
     Deps: orientation.rs, mesh.rs (resolve_mesh).
-9.  `builder/joint.rs` — joint processing (process_joint, floats_to_array).
+9.  `builder/joint.rs` — joint processing (process_joint).
     Deps: orientation.rs.
 10. `builder/body.rs` — body tree traversal (process_body,
     process_body_with_world_frame, process_worldbody_geoms_and_sites).

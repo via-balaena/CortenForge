@@ -55,6 +55,14 @@ the sweet spot.
 awk '/#\[cfg\(test\)\]/{ stop=1 } !stop{ count++ } END{ print count }' file.rs
 ```
 
+**Edge case**: This awk script stops at the FIRST `#[cfg(test)]`, which could
+be a `#[cfg(test)] pub(crate) mod test_helpers` at the top of a file rather
+than the actual `mod tests` block at the bottom. After the refactor, verify
+that no extracted module has `#[cfg(test)]` attributes above the final
+`mod tests` block. If a module needs `#[cfg(test)]` on individual items
+(e.g., test-only imports), place them inside the `mod tests` block or
+immediately before it.
+
 **Inline tests** (`#[cfg(test)]` blocks) don't count toward the limit. They
 can push a file over 800 total lines, and that's fine — the goal is that the
 production code you need to understand fits in your head.
@@ -441,6 +449,16 @@ grep -rn 'model_builder\.rs' sim/ --include='*.rs' --include='*.md' \
   | grep -v 'STRUCTURAL_REFACTOR' \
   | grep -v 'CHANGELOG'
 ```
+
+**Lazy import check** (manual, per phase — not in the automated script):
+
+The S6 grep catches `.rs` filename strings in comments, but it does NOT catch
+`use crate::mujoco_pipeline::` import paths that route through the re-export
+shim instead of pointing to the real module. To catch those: after adding
+monolith re-imports, temporarily comment them out and run `cargo check -p sim-core`.
+Any errors in files OTHER than the monolith indicate an import that should have
+been updated. Fix those imports, then uncomment. See step 5a in the
+STRUCTURAL_REFACTOR.md phase checklist.
 
 ---
 
