@@ -30,7 +30,7 @@ DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
 
 ---
 
-## DT-74 Spec: Fix `compute_body_jacobian_at_point()` — Full Body Jacobian API
+## DT-74 Spec: Canonical `mj_jac` — Full Body Jacobian API
 
 ### Context
 
@@ -45,36 +45,69 @@ Jacobian at a world-frame point on a body, but:
 4. **Marked `#[allow(dead_code)]`** — zero callers
 
 Meanwhile, the codebase already has **correct** implementations:
-- `mj_jac_site` (line 9817): `(3×nv, 3×nv)` — correct R*e_i for ball/free
-- `mj_jac_point` (line 9895): `6×nv` combined — correct R*e_i
+- `mj_jac_site` (line 9817): `(3×nv, 3×nv)` — correct `R*e_i` for ball/free
+- `mj_jac_point` (line 9895): `6×nv` combined — correct `R*e_i`
 - `mj_jac_body_com` (line 9968): thin wrapper on `mj_jac_point`
 - `mj_jac_geom` (line 9973): thin wrapper on `mj_jac_point`
-- `accumulate_point_jacobian` (line 9746): scalar projection — correct R*e_i
+- `accumulate_point_jacobian` (line 9746): scalar projection — correct `R*e_i`
 
 But MuJoCo's **core** function `mj_jac(m, d, jacp, jacr, point, body)` has no
-direct equivalent. The existing functions are specialized variants.
+direct equivalent. The existing functions are specialized variants, and the
+chain-walk logic is duplicated across `mj_jac_site` (~70 lines) and
+`mj_jac_point` (~70 lines).
+
+### Scope & Dependencies
+
+**In scope:** Canonical `mj_jac` function, wrapper refactor, dead-code removal,
+comprehensive tests.
+
+**Out of scope:** The `add_body_jacobian` closure inside `compute_contact_jacobian`
+has a known free-joint bug (world-frame unit vectors instead of body-frame
+`R*e_i`) — that is **DT-75**, a separate spec. This work does not touch
+contact Jacobian code.
+
+**Not refactored (intentional):** `accumulate_point_jacobian` (line 9746) and
+`mj_apply_ft` (line 9986) both contain chain-walks that compute `J^T * vec`
+without materializing the full Jacobian. These are kept separate for performance:
+they avoid allocating two `3×nv` matrices when only a scalar or 1×nv projection
+is needed. They are correct and tested independently.
 
 ### MuJoCo Reference
 
-MuJoCo's `mj_jac` (engine_core_util.c):
+MuJoCo's `mj_jac` (`engine_core_util.c`):
 - **Signature**: `mj_jac(m, d, jacp, jacr, point, body)` → two 3×nv matrices
 - **`jacp`** (3×nv): translational Jacobian — velocity of `point` per unit DOF
 - **`jacr`** (3×nv): rotational Jacobian — angular velocity per unit DOF
 - Both nullable (caller can request only one)
 
-Per-joint-type formulas (using precomputed `cdof`, but we compute inline):
+#### Per-joint-type formulas
 
-| Joint | `jacp` column | `jacr` column |
-|-------|--------------|--------------|
-| **Hinge** | `axis × r` | `axis` |
-| **Slide** | `axis` | `0` |
-| **Ball** (3 DOFs) | `(R*e_i) × r` | `R*e_i` |
-| **Free** lin (DOFs 0-2) | `e_i` (world identity) | `0` |
-| **Free** ang (DOFs 3-5) | `(R*e_i) × r` | `R*e_i` |
+MuJoCo uses precomputed `cdof`; we compute inline (equivalent result).
 
-Where `axis = R_body * jnt_axis`, `r = point - joint_anchor`, `R = xquat[body].to_rotation_matrix()`.
+| Joint | `jacp` column(s) | `jacr` column(s) | Lever arm `r` |
+|-------|------------------|------------------|---------------|
+| **Hinge** (1 DOF) | `axis × r` | `axis` | `point - anchor` |
+| **Slide** (1 DOF) | `axis` | `0` | n/a |
+| **Ball** (3 DOFs, i∈{0,1,2}) | `(R·eᵢ) × r` | `R·eᵢ` | `point - anchor` |
+| **Free** lin (DOFs 0–2, i∈{0,1,2}) | `eᵢ` (world identity) | `0` | n/a |
+| **Free** ang (DOFs 3–5, i∈{0,1,2}) | `(R·eᵢ) × r` | `R·eᵢ` | `point - xpos[body]` |
 
-All variant functions are thin wrappers:
+Where:
+- `axis = xquat[jnt_body] * jnt_axis` (joint axis rotated to world frame)
+- `anchor = xpos[jnt_body] + xquat[jnt_body] * jnt_pos` (joint anchor in world frame)
+- `R = xquat[jnt_body].to_rotation_matrix()` (body orientation)
+- `eᵢ = Vector3::ith(i, 1.0)` (i-th standard basis vector)
+
+**Critical detail — free joint lever arm:** For hinge, slide, and ball joints,
+`r = point - anchor` where `anchor = xpos[body] + R * jnt_pos`. For free
+joints, `r = point - xpos[body]` directly — there is no `jnt_pos` offset
+because free joints are always at the body origin (`jnt_pos = [0,0,0]` by
+MuJoCo convention). The code must use `xpos[body]`, not the general anchor
+formula, to avoid depending on this convention silently.
+
+#### MuJoCo convenience wrappers
+
+All are thin delegation to `mj_jac`:
 - `mj_jacBody(body)` → `mj_jac(point=xpos[body], body)`
 - `mj_jacBodyCom(body)` → `mj_jac(point=xipos[body], body)`
 - `mj_jacSite(site)` → `mj_jac(point=site_xpos[site], body=site_body[site])`
@@ -88,6 +121,26 @@ Add a new public function `mj_jac` that is the single source of truth for the
 body-chain Jacobian walk. Signature:
 
 ```rust
+/// Compute the body-chain Jacobian at a world-frame point on a body.
+///
+/// Returns `(jacp, jacr)` where:
+/// - `jacp` (3×nv): translational Jacobian — `v_point = jacp · qvel`
+/// - `jacr` (3×nv): rotational Jacobian — `ω = jacr · qvel`
+///
+/// Per-joint-type columns:
+///
+/// | Joint     | jacp column       | jacr column |
+/// |-----------|-------------------|-------------|
+/// | Hinge     | axis × r          | axis        |
+/// | Slide     | axis              | 0           |
+/// | Ball(i)   | (R·eᵢ) × r       | R·eᵢ       |
+/// | Free(0–2) | eᵢ (identity)     | 0           |
+/// | Free(3–5) | (R·eᵢ) × r       | R·eᵢ       |
+///
+/// Returns all-zeros for `body_id == 0` (world body).
+///
+/// Equivalent to MuJoCo's `mj_jac()` in `engine_core_util.c`.
+#[must_use]
 pub fn mj_jac(
     model: &Model,
     data: &Data,
@@ -107,48 +160,68 @@ is already correct for all joint types. The only change is parameterizing by
 Rewrite the existing functions to delegate to `mj_jac`:
 
 - **`mj_jac_site`** → calls `mj_jac(model, data, site_body[site_id], &site_xpos[site_id])`
-- **`mj_jac_point`** (6×nv) → calls `mj_jac`, combines into 6×nv (rows 0-2 = angular, 3-5 = linear)
+- **`mj_jac_body`** → **new**, calls `mj_jac(model, data, body_id, &xpos[body_id])`, returns `(jacp, jacr)` — equivalent to MuJoCo's `mj_jacBody`
+- **`mj_jac_point`** (6×nv) → calls `mj_jac`, combines into 6×nv (rows 0–2 = angular, rows 3–5 = linear)
 - **`mj_jac_body_com`** → calls `mj_jac(model, data, body_id, &xipos[body_id])`, converts to 6×nv
 - **`mj_jac_geom`** → calls `mj_jac(model, data, geom_body[geom_id], &geom_xpos[geom_id])`, converts to 6×nv
 
-This eliminates the duplicated 80-line chain-walk in `mj_jac_point` (lines
+This eliminates the duplicated ~70-line chain-walk in `mj_jac_point` (lines
 9895–9965) and ensures all paths share one implementation.
+
+**Complete MuJoCo API parity:**
+
+| MuJoCo | CortenForge | Returns |
+|--------|-------------|---------|
+| `mj_jac` | `mj_jac` | `(jacp 3×nv, jacr 3×nv)` |
+| `mj_jacBody` | `mj_jac_body` | `(jacp 3×nv, jacr 3×nv)` |
+| `mj_jacBodyCom` | `mj_jac_body_com` | `DMatrix 6×nv` |
+| `mj_jacSite` | `mj_jac_site` | `(jacp 3×nv, jacr 3×nv)` |
+| `mj_jacGeom` | `mj_jac_geom` | `DMatrix 6×nv` |
+
+Note: `mj_jac_body_com` and `mj_jac_geom` retain their existing 6×nv return
+type (rows 0–2 = angular, rows 3–5 = linear) because their callers
+(`mjd_smooth_vel` derivatives, inertia-box derivatives, ellipsoid derivatives)
+consume 6×nv. Changing them to return `(3×nv, 3×nv)` would churn callers for no
+benefit.
 
 #### Step 3: Delete `compute_body_jacobian_at_point`
 
 Remove the broken dead-code function (lines 14177–14259). It has zero callers
 and its functionality is superseded by `mj_jac`.
 
-#### Step 4: Export `mj_jac` from the crate public API
+#### Step 4: Export from the crate public API
 
-Add `mj_jac` to the re-exports in `sim/L0/core/src/lib.rs` alongside the
-existing `mj_jac_point` and `mj_jac_site` exports (line 167-168).
+Add `mj_jac` and `mj_jac_body` to the re-exports in `sim/L0/core/src/lib.rs`
+alongside the existing `mj_jac_point` and `mj_jac_site` exports (line 167–168).
 
 #### Step 5: Tests
 
-All tests in `sim-core` and `sim-conformance-tests`.
+All tests in `sim-core`. Test module: `mj_jac_tests` (new), adjacent to existing
+`jac_site_tests`.
 
 **5a. Unit tests — `mj_jac` correctness per joint type:**
 
 For each joint type (Hinge, Slide, Ball, Free), build a minimal single-joint
-model at a non-trivial qpos, call `mj_jac`, and verify:
+model at a non-trivial qpos, call `mj_jac`, and verify both `jacp` and `jacr`:
 
 | Test | Assertion |
 |------|-----------|
 | `mj_jac_hinge_basic` | `jacp[:,0] = axis × r`, `jacr[:,0] = axis` |
 | `mj_jac_slide_basic` | `jacp[:,0] = axis`, `jacr[:,0] = 0` |
-| `mj_jac_ball_body_frame_axes` | `jacp[:,i] = (R*e_i) × r`, `jacr[:,i] = R*e_i` for i in {0,1,2} |
-| `mj_jac_free_translation` | `jacp[:,0:3] = I_3`, `jacr[:,0:3] = 0` |
-| `mj_jac_free_rotation_body_frame` | `jacp[:,3+i] = (R*e_i) × r`, `jacr[:,3+i] = R*e_i` — **explicitly verify NOT world-frame** by testing at non-identity orientation |
-| `mj_jac_world_body_returns_zeros` | body_id=0 → both matrices all zeros |
+| `mj_jac_ball_body_frame_axes` | `jacp[:,i] = (R·eᵢ) × r`, `jacr[:,i] = R·eᵢ` for i∈{0,1,2} |
+| `mj_jac_free_translation` | `jacp[:,0:3] = I₃`, `jacr[:,0:3] = 0` |
+| `mj_jac_free_rotation_body_frame` | `jacp[:,3+i] = (R·eᵢ) × r`, `jacr[:,3+i] = R·eᵢ` — **must use non-identity orientation** to distinguish body-frame from world-frame |
+| `mj_jac_world_body_returns_zeros` | body_id=0 → both matrices all zeros, dimensions 3×nv |
 
 **5b. Unit tests — wrapper consistency:**
 
 | Test | Assertion |
 |------|-----------|
-| `mj_jac_site_delegates_to_mj_jac` | `mj_jac_site` output == `mj_jac(site_body, site_pos)` |
-| `mj_jac_point_combines_correctly` | `mj_jac_point` rows 0-2 == `jacr`, rows 3-5 == `jacp` |
+| `mj_jac_site_delegates_to_mj_jac` | `mj_jac_site(site)` == `mj_jac(site_body, site_xpos)` |
+| `mj_jac_body_delegates_to_mj_jac` | `mj_jac_body(body)` == `mj_jac(body, xpos[body])` |
+| `mj_jac_point_combines_correctly` | `mj_jac_point` rows 0–2 == `jacr`, rows 3–5 == `jacp` (from `mj_jac` on same body/point) |
 | `mj_jac_body_com_consistent` | `mj_jac_body_com(body)` == `mj_jac_point(body, xipos[body])` |
+| `mj_jac_geom_consistent` | `mj_jac_geom(geom)` == `mj_jac_point(geom_body, geom_xpos)` |
 
 **5c. Regression — existing `jac_site_tests` pass unchanged:**
 
@@ -158,33 +231,71 @@ behavior-preserving.
 
 **5d. Multi-joint chain test:**
 
-Build a 3-body chain (free → hinge → hinge) with non-trivial angles. Verify
-`mj_jac` at a point on body 3 produces a 3×nv matrix with correct columns for
-all 8 DOFs (6 free + 2 hinge). Cross-check translational Jacobian against
-finite-difference: perturb each `qpos` by epsilon, re-run FK, measure
-`delta_point / epsilon ≈ jacp[:,dof]`.
+Build a 3-body chain (free → hinge → hinge) with non-trivial joint angles.
+Verify `mj_jac` at a point on body 3 produces `jacp` (3×8) and `jacr` (3×8)
+with correct columns for all 8 DOFs (6 free + 2 hinge). Cross-check `jacp`
+against finite-difference (see 5e procedure).
 
 **5e. Finite-difference validation (gold standard):**
 
 For a free-joint + ball-joint chain at random non-identity orientation:
-- Perturb each DOF by `epsilon = 1e-7`
-- Re-run `mj_fwd_position`
-- Compute `(point_new - point_old) / epsilon`
-- Assert `≈ jacp[:, dof]` within `1e-5` relative tolerance
 
-This catches any frame convention errors that unit tests might miss.
+1. Run `mj_fwd_position` at baseline `qpos₀`, record `point₀`
+2. For each DOF `d` in `0..nv`:
+   - Clone `qpos₀` into `qpos_pert`
+   - **Apply velocity perturbation via `mj_integrate_pos_explicit`**: set
+     `qvel = 0` except `qvel[d] = 1.0`, integrate for `dt = epsilon = 1e-7`.
+     This correctly handles quaternion DOFs (ball `nq=4,nv=3`; free `nq=7,nv=6`)
+     — naive `qpos[i] += epsilon` is **wrong** for quaternion components.
+   - Run `mj_fwd_position` with `qpos_pert`
+   - `jacp_fd[:, d] = (point_pert - point₀) / epsilon`
+   - `jacr_fd[:, d] = rotation_log(R_pert · R₀⁻¹) / epsilon`
+     where `rotation_log` extracts the axis-angle vector from the relative
+     rotation quaternion (small-angle: `2 * quat.imag` suffices)
+3. Assert `jacp ≈ jacp_fd` within `1e-5` relative tolerance
+4. Assert `jacr ≈ jacr_fd` within `1e-5` relative tolerance
+
+This validates both `jacp` and `jacr` and catches any frame convention errors
+(body-frame vs world-frame) that analytical unit tests might miss.
+
+**Why `mj_integrate_pos_explicit`:** The codebase already exports this function
+(lib.rs:165). It maps a velocity-space perturbation to a valid `qpos`
+perturbation, handling quaternion renormalization. Without it, FD for ball/free
+joints would corrupt the quaternion and produce garbage FK results.
+
+**5f. `jacr` analytical cross-check for hinge chain:**
+
+For a 2-hinge chain, verify `jacr` analytically: each hinge's rotational
+Jacobian column should be its world-frame axis vector, and `jacr · qvel` should
+equal the total angular velocity. This is a simpler cross-check that doesn't
+require the rotation-log machinery of 5e.
+
+### Deliverables
+
+| # | Deliverable |
+|---|-------------|
+| D1 | `mj_jac` function with doc-comment containing formula table |
+| D2 | `mj_jac_body` new wrapper |
+| D3 | `mj_jac_site` refactored as thin wrapper |
+| D4 | `mj_jac_point` refactored as thin wrapper |
+| D5 | `mj_jac_body_com` refactored as thin wrapper |
+| D6 | `mj_jac_geom` refactored as thin wrapper |
+| D7 | `compute_body_jacobian_at_point` deleted |
+| D8 | `lib.rs` exports updated |
+| D9 | Tests 5a–5f |
 
 ### Files Modified
 
 | File | Change |
 |------|--------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | Add `mj_jac`, refactor `mj_jac_site`/`mj_jac_point`/`mj_jac_body_com`/`mj_jac_geom` as wrappers, delete `compute_body_jacobian_at_point`, add tests |
-| `sim/L0/core/src/lib.rs` | Export `mj_jac` |
+| `sim/L0/core/src/mujoco_pipeline.rs` | Add `mj_jac` (D1), add `mj_jac_body` (D2), refactor `mj_jac_site`/`mj_jac_point`/`mj_jac_body_com`/`mj_jac_geom` as wrappers (D3–D6), delete `compute_body_jacobian_at_point` (D7), add `mj_jac_tests` module (D9) |
+| `sim/L0/core/src/lib.rs` | Export `mj_jac`, `mj_jac_body` (D8) |
 
 ### Verification
 
 ```bash
-cargo test -p sim-core -- jac       # all Jacobian tests
-cargo test -p sim-core              # full crate regression
+cargo test -p sim-core -- jac          # all Jacobian tests (old + new)
+cargo test -p sim-core                 # full crate regression
 cargo clippy -p sim-core -- -D warnings
+cargo fmt --all -- --check
 ```
