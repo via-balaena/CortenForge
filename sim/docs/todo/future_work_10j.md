@@ -39,9 +39,18 @@ fundamental correctness bugs. It was intended to compute the translational
 Jacobian at a world-frame point on a body, but:
 
 1. **Returns 1×nv instead of 3×nv** — only stores `.x` component of each column
-2. **Free joint angular DOFs use world-frame unit vectors** (`e_x, e_y, e_z`)
-   instead of body-frame `R*e_i` (MuJoCo's `cdof` convention)
-3. **Free joint linear DOFs hardcode `(1,0,0)`** instead of 3×3 identity
+   (Hinge stores `j_col.x`, Slide stores `axis.x`, Ball stores `j_col.x`,
+   Free linear hardcodes `(1.0, 0.0, 0.0)` — all are the `.x`-only bug)
+2. **Free joint angular DOFs have two bugs:**
+   - Uses **world-frame unit vectors** (`e_x, e_y, e_z`) instead of body-frame
+     `R*e_i` (MuJoCo's `cdof` convention)
+   - Computes lever arm from **raw `data.qpos`** instead of FK-computed
+     `data.xpos[jnt_body]` — reads `qpos[qpos_adr..+3]` directly as the
+     position, which only coincides with `xpos` when the body has no parent
+     transform. The correct source is `data.xpos[jnt_body]` (as `mj_jac_site`
+     and `mj_jac_point` use).
+3. **Free joint linear DOFs hardcode `(1,0,0)`** — same `.x`-only bug as item 1
+   (stores only the x-component of the 3×3 identity)
 4. **Marked `#[allow(dead_code)]`** — zero callers
 
 Meanwhile, the codebase already has **correct** implementations:
@@ -159,11 +168,21 @@ is already correct for all joint types. The only change is parameterizing by
 
 Rewrite the existing functions to delegate to `mj_jac`:
 
-- **`mj_jac_site`** → calls `mj_jac(model, data, site_body[site_id], &site_xpos[site_id])`
-- **`mj_jac_body`** → **new**, calls `mj_jac(model, data, body_id, &xpos[body_id])`, returns `(jacp, jacr)` — equivalent to MuJoCo's `mj_jacBody`
+- **`mj_jac_site`** → calls `mj_jac(model, data, site_body[site_id], &site_xpos[site_id])`.
+  **Return type unchanged:** `(DMatrix<f64>, DMatrix<f64>)` = `(jac_trans 3×nv, jac_rot 3×nv)`.
+  All 5 existing callers (mj_fwd_actuator ×2, mj_fwd_actuator_spatial ×2,
+  fluid_derivatives.rs ×1) continue to destructure `(jac_t, jac_r)` with
+  zero signature changes.
+- **`mj_jac_body`** → **new**, calls `mj_jac(model, data, body_id, &xpos[body_id])`, returns `(jacp, jacr)` — equivalent to MuJoCo's `mj_jacBody`.
+  **Zero callers today** — added for MuJoCo API completeness. No existing code
+  calls `mj_jac_point(model, data, body_id, &data.xpos[body_id])` with body
+  origin as the point, so no migration is needed.
 - **`mj_jac_point`** (6×nv) → calls `mj_jac`, combines into 6×nv (rows 0–2 = angular, rows 3–5 = linear)
-- **`mj_jac_body_com`** → calls `mj_jac(model, data, body_id, &xipos[body_id])`, converts to 6×nv
-- **`mj_jac_geom`** → calls `mj_jac(model, data, geom_body[geom_id], &geom_xpos[geom_id])`, converts to 6×nv
+- **`mj_jac_body_com`** → keeps delegating to `mj_jac_point(model, data, body_id, &xipos[body_id])`.
+  No direct `mj_jac` call — transitive delegation via `mj_jac_point` which
+  itself calls `mj_jac` and stacks into 6×nv. Body unchanged from current code.
+- **`mj_jac_geom`** → keeps delegating to `mj_jac_point(model, data, geom_body[geom_id], &geom_xpos[geom_id])`.
+  Same transitive delegation pattern. Body unchanged from current code.
 
 This eliminates the duplicated ~70-line chain-walk in `mj_jac_point` (lines
 9895–9965) and ensures all paths share one implementation.
@@ -183,6 +202,15 @@ type (rows 0–2 = angular, rows 3–5 = linear) because their callers
 (`mjd_smooth_vel` derivatives, inertia-box derivatives, ellipsoid derivatives)
 consume 6×nv. Changing them to return `(3×nv, 3×nv)` would churn callers for no
 benefit.
+
+**`#[doc(hidden)]` on `mj_jac_point`:** Currently `mj_jac_point` is marked
+`#[doc(hidden)]` (line 9893). After this refactor, `mj_jac` becomes the
+canonical public API for `(3×nv, 3×nv)` output, and `mj_jac_point` is the
+6×nv spatial-Jacobian variant used by internal derivative code
+(`mj_jac_body_com`, `mj_jac_geom`, `mjd_smooth_vel`). **Keep `#[doc(hidden)]`**
+on `mj_jac_point` — it is a layout convenience for internal consumers, not a
+user-facing API. External callers should use `mj_jac` (or `mj_jac_body`,
+`mj_jac_site`) and stack rows themselves if they need 6×nv.
 
 #### Step 3: Delete `compute_body_jacobian_at_point`
 
@@ -251,7 +279,13 @@ For a free-joint + ball-joint chain at random non-identity orientation:
    - `jacp_fd[:, d] = (point_pert - point₀) / epsilon`
    - `jacr_fd[:, d] = rotation_log(R_pert · R₀⁻¹) / epsilon`
      where `rotation_log` extracts the axis-angle vector from the relative
-     rotation quaternion (small-angle: `2 * quat.imag` suffices)
+     rotation quaternion. **Which body's rotation:** use `data.xquat[body_id]`
+     for the body that owns the point — `jacr` gives angular velocity of
+     **that specific body**, not intermediate bodies in the chain.
+     **Small-angle approximation:** for `epsilon = 1e-7`, the relative
+     quaternion `q_rel = q_pert · q₀⁻¹` is near-identity, so
+     `rotation_log(q_rel) ≈ 2 * [q_rel.i, q_rel.j, q_rel.k]` (nalgebra's
+     `[w, i, j, k]` quaternion layout). This avoids `acos` numerical issues.
 3. Assert `jacp ≈ jacp_fd` within `1e-5` relative tolerance
 4. Assert `jacr ≈ jacr_fd` within `1e-5` relative tolerance
 
