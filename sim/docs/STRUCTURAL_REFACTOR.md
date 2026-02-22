@@ -402,7 +402,7 @@ sim-core/src/
   ├── constraint/
   │   ├── mod.rs              mj_fwd_constraint, mj_fwd_constraint_islands,
   │   │                       compute_qacc_smooth, build_m_impl_for_newton,
-  │   │                       compute_qfrc_smooth_implicit (~400 lines)
+  │   │                       compute_qfrc_smooth_implicit, compute_point_velocity (~400 lines)
   │   ├── assembly.rs         assemble_unified_constraints (~685 lines),
   │   │                       populate_efc_island (~750 lines total)
   │   ├── equality.rs         extract_{connect,weld,joint,tendon,distance}_jacobian,
@@ -534,17 +534,17 @@ sim-core/src/
 |--------|-----------|--------------------------------------|
 | `types/enums.rs` | ~710 | L325–L388 + L455–L1100 (enums, error types — UnionFind moves to linalg.rs; JointContext/JointVisitor at L389–L454 → `joint_visitor.rs`) |
 | `types/model.rs` | ~780 | L1142–L1870 (Model struct + accessors + is_ancestor + joint_qpos0 + qld_csr) |
-| `types/model_init.rs` | ~774 | L2890–L3600 approx (empty, make_data, compute_ancestors, compute_implicit_params, compute_stat_meaninertia) + L12901–L12964 (compute_body_lengths, compute_dof_lengths) |
+| `types/model_init.rs` | ~774 | L2890–L3651 + L3671–L3744 + L4033–L4062 + L12901–L12964 (empty, make_data, compute_ancestors, compute_implicit_params, compute_stat_meaninertia, compute_body_lengths, compute_dof_lengths — see doc reference mapping table for precise per-function ranges) |
 | `types/model_factories.rs` | ~280 | Factory helpers (n_link_pendulum, double_pendulum, etc.) — `#[cfg(test)]`-gated |
-| `types/data.rs` | ~600 | L2185–L2890 (Data struct + Clone) + L4385–L4540 (Data accessors) |
+| `types/data.rs` | ~600 | L2185–L2890 (Data struct + Clone) + L4385–L4540 (Data accessors). **MARGIN WARNING**: source ranges total ~859 lines; the ~600 estimate assumes significant whitespace/comment removal. If the extracted module exceeds 800, the fallback is to move `reset()` and `reset_to_keyframe()` (~80 lines) to a separate `types/data_ops.rs`. |
 | `types/contact_types.rs` | ~302 | L1870–L2171 (ContactPair, Contact struct, impl Contact, compute_tangent_frame) |
 | `types/keyframe.rs` | ~20 | L1105–L1124 (Keyframe struct) |
-| `forward/mod.rs` | ~200 | L4537–L4715 (step, forward, forward_skip_sensors, forward_core + mod declarations/re-exports/docs — the full orchestration is ~90 lines of call sequences) |
+| `forward/mod.rs` | ~200 | L4537–L4700 (step, forward, forward_skip_sensors, forward_core + mod declarations/re-exports/docs — the full orchestration is ~90 lines of call sequences) |
 | `forward/position.rs` | ~500 | L4876–L5383 (mj_fwd_position + aabb + SAP) |
 | `forward/velocity.rs` | ~114 | L9244–L9358 (body spatial velocities from qvel) |
 | `forward/passive.rs` | ~660 | L12108–L12690 (fluid helpers + mj_fwd_passive) + L12818–L12899 (PassiveForceVisitor) |
 | `forward/actuation.rs` | ~500 | L10682–L11247 (transmission + actuation + muscle helpers) |
-| `forward/check.rs` | ~30 | L4834–L4870 (mj_check_pos, mj_check_vel, mj_check_acc — ~8 lines each. These are trivial validation guards. May be inlined into `forward/mod.rs` if the separate file feels like overhead.) |
+| `forward/check.rs` | ~30 | L4822–L4876 (mj_check_pos, mj_check_vel, mj_check_acc — ~30 lines of function bodies within a 54-line range that includes comments/whitespace. These are trivial validation guards. May be inlined into `forward/mod.rs` if the separate file feels like overhead.) |
 | `forward/acceleration.rs` | ~310 | L20029–L20084 (mj_fwd_acceleration dispatch) + L20085–L20104 + L20559–L20827 (4 accel paths) |
 | `dynamics/crba.rs` | ~350 | L11247–L11609 |
 | `dynamics/rne.rs` | ~350 | L11704–L12038 |
@@ -613,7 +613,7 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L2890–L3600 | `types/model_init.rs` | empty(), make_data(), compute_ancestors(), etc. |
 | L3600–L3651 | `types/model_init.rs` | End of `compute_implicit_params()` |
 | L3652–L3670 | `types/model.rs` | `joint_qpos0()` |
-| L3671–L3704 | `types/model_init.rs` | `compute_ancestors()` |
+| L3671–L3696 | `types/model_init.rs` | `compute_ancestors()` |
 | L3705–L3744 | `types/model_init.rs` | `compute_implicit_params()` (additional block) |
 | L3745–L4003 | `forward/actuation.rs` | `compute_muscle_params()` — stays in monolith until Phase 8a |
 | L4004–L4032 | `tendon/mod.rs` | `compute_spatial_tendon_length0()` — stays in monolith until Phase 5 |
@@ -776,7 +776,8 @@ sim-mjcf/src/
       ├── sensor.rs          process_sensors, resolve_sensor_object,
       │                      convert_sensor_type, sensor_datatype
       ├── tendon.rs          process_tendons
-      ├── contact.rs         process_contact
+      ├── contact.rs         process_contact, compute_initial_geom_distance,
+      │                      geom_world_position
       ├── equality.rs        process_equality_constraints
       ├── flex.rs            process_flex_bodies, compute_flexedge_crosssection,
       │                      compute_flex_address_table, compute_flex_count_table,
@@ -789,7 +790,8 @@ sim-mjcf/src/
       │                      convert_mjcf_hfield, compute_mesh_inertia, resolve_mesh
       ├── frame.rs           expand_frames, expand_single_frame, frame_accum_child,
       │                      validate_childclass_references, validate_frame_childclass_refs
-      ├── compiler.rs        apply_discardvisual, apply_fusestatic, fuse_static_body
+      ├── compiler.rs        apply_discardvisual, apply_fusestatic, fuse_static_body,
+      │                      remove_visual_geoms, collect_mesh_refs
       ├── orientation.rs     quat_from_wxyz, quat_to_wxyz, euler_seq_to_quat,
       │                      resolve_orientation
       ├── fluid.rs           compute_geom_fluid, geom_semi_axes, get_added_mass_kappa
@@ -1142,7 +1144,8 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 
 The second-largest extraction. 10,184 lines total (~6,032 production + ~4,152
 tests; ~68 production functions (42 free functions + 23 impl methods + 3 nested:
-`fmt`, `remove_visual_geoms`, `collect_mesh_refs`) + 151 fn definitions in test
+`fmt` (`Display` impl on `ModelConversionError` — goes to `builder/mod.rs` with the error type),
+`remove_visual_geoms`, `collect_mesh_refs`) + 151 fn definitions in test
 section (149 `#[test]` + 2 test helpers)) across 19 target modules (including
 `builder/build.rs`). Same strategy as sim-core: move functions, move tests,
 update imports, verify.
