@@ -424,6 +424,7 @@ and correlating with commit history.
 | 6 | constraint/solver/hessian.rs | **(MARGIN)** 721 lines; assemble_hessian, SparseHessian struct + impl, hessian_incremental, hessian_cone | done | 4ed8179 | S13 |
 | 6 | constraint/solver/newton.rs | 352 lines; NewtonResult, newton_solve, recover_newton | done | 2247036 | S13 |
 | 6 | constraint/solver/noslip.rs | 748 lines; project_elliptic_cone, noslip_qcqp2/3, NoslipRowKind, noslip_postprocess | done | a17d28d | S13 |
+| 6 | **Phase 6 audit** | Independent audit: all S1–S8 A-grade. One finding (F1 — stale monolith comment in constraint/mod.rs, fixed). DAG annotations corrected in rubric. 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S13 |
 | 8a | forward/mod.rs | | | | |
 | 8a | forward/position.rs | | | | |
 | 8a | forward/velocity.rs | | | | |
