@@ -90,6 +90,9 @@ pub mod sensor;
 // Energy queries (potential + kinetic)
 pub mod energy;
 
+// Constraint system (assembly, dispatch, solver orchestration)
+pub mod constraint;
+
 // Collision detection pipeline (dispatch, narrow-phase, contact params)
 pub mod collision;
 
