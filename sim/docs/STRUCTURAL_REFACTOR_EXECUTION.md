@@ -379,9 +379,9 @@ and correlating with commit history.
 | 1 | types/contact_types.rs | | done | 5912e68 | S2 |
 | 1 | types/keyframe.rs | | done | 5912e68 | S2 |
 | 1 | lib.rs re-exports | Route pub API through types/ | done | 5912e68 | S2 |
-| 2 | linalg.rs | | | | |
-| 2 | dynamics/mod.rs + spatial.rs | Grouped — mod.rs is pure re-exports | | | |
-| 2 | joint_visitor.rs | | | | |
+| 2 | linalg.rs | 488 lines (419 prod + 69 test); cholesky_tests moved with code | done | | S8 |
+| 2 | dynamics/mod.rs + spatial.rs | Grouped — mod.rs is pure re-exports; spatial.rs 221 lines | done | | S8 |
+| 2 | joint_visitor.rs | 196 lines; JointContext/JointVisitor kept pub (visit_joints is pub on Model) | done | | S8 |
 | 5 | tendon/mod.rs + fixed.rs | Grouped — mod.rs ~91 lines, fixed.rs ~63 lines | | | |
 | 5 | tendon/spatial.rs | | | | |
 | 5 | tendon/wrap_math.rs | | | | |

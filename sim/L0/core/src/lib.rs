@@ -72,6 +72,15 @@
 // Core type definitions (enums, Model, Data, contacts, keyframes)
 pub mod types;
 
+// Linear algebra utilities (Cholesky, LU, sparse solve, union-find)
+pub mod linalg;
+
+// Dynamics computations (spatial algebra, CRBA, RNE, factorization)
+pub mod dynamics;
+
+// Joint visitor pattern and motion subspace
+pub mod joint_visitor;
+
 // Collision shape primitives (canonical source)
 pub mod collision_shape;
 
@@ -150,10 +159,14 @@ pub use types::{
     compute_dof_lengths,
 };
 
+// LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
+pub use linalg::mj_solve_sparse;
+
+// Spatial algebra types (extracted to dynamics/spatial.rs)
+pub use dynamics::SpatialVector;
+
 // MuJoCo-style physics pipeline types (primary API — not yet extracted)
 pub use mujoco_pipeline::{
-    // Spatial algebra types
-    SpatialVector,
     // Pyramidal force recovery (§32)
     decode_pyramid,
     // Utility functions for position/velocity differentiation
@@ -164,8 +177,6 @@ pub use mujoco_pipeline::{
     mj_jac_body,
     mj_jac_point,
     mj_jac_site,
-    // LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
-    mj_solve_sparse,
 };
 
 pub use derivatives::{
