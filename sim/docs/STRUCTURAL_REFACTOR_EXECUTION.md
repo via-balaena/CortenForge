@@ -395,15 +395,16 @@ and correlating with commit history.
 | 4 | sensor/derived.rs | 346 lines; 7 derived computation functions (subtree COM/momentum/angmom, body accel, force/torque) | done | 5670d4e | S1 |
 | 4 | energy.rs | 111 lines; mj_energy_pos, mj_energy_vel, Data::total_energy() | done | 5670d4e | S1 |
 | 4 | **Phase 4 audit** | Independent audit: all S1–S8 A-grade. Two cosmetic findings fixed (duplicate/missing monolith annotation comments). 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S8 |
-| 3 | collision/mod.rs | | | | |
-| 3 | collision/narrow.rs | | | | |
-| 3 | collision/pair_convex.rs | | | | |
-| 3 | collision/pair_cylinder.rs | | | | |
-| 3 | collision/plane.rs | | | | |
-| 3 | collision/mesh_collide.rs | | | | |
-| 3 | collision/hfield.rs | | | | |
-| 3 | collision/sdf_collide.rs | | | | |
-| 3 | collision/flex_collide.rs | | | | |
+| 3 | collision/mod.rs | 472 prod + 426 test; check_collision_affinity, contact_param, contact_param_flex_rigid, solmix_weight, combine_solref, combine_solimp, mj_collision, mj_collision_flex; contact_param_tests (25 tests) | done | | S11 |
+| 3 | collision/narrow.rs | 308 lines; collide_geoms, geom_to_collision_shape, apply_pair_overrides, make_contact_from_geoms; GEOM_EPSILON + 3 constants | done | | S11 |
+| 3 | collision/pair_convex.rs | 314 lines; collide_sphere_sphere, collide_capsule_capsule, collide_sphere_capsule, collide_sphere_box | done | | S11 |
+| 3 | collision/pair_cylinder.rs | 548 lines; collide_cylinder_sphere, collide_cylinder_capsule, collide_capsule_box, collide_box_box, test_sat_axis | done | | S11 |
+| 3 | collision/plane.rs | 429 prod + 544 test; collide_with_plane, collide_cylinder_plane_impl, collide_ellipsoid_plane_impl; primitive_collision_tests (11 tests) | done | | S11 |
+| 3 | collision/mesh_collide.rs | 185 lines; collide_with_mesh, collide_mesh_plane | done | | S11 |
+| 3 | collision/hfield.rs | 93 lines; collide_with_hfield | done | | S11 |
+| 3 | collision/sdf_collide.rs | 131 lines; collide_with_sdf | done | | S11 |
+| 3 | collision/flex_collide.rs | 210 lines; narrowphase_sphere_geom, make_contact_flex_rigid | done | | S11 |
+| 3 | **Phase 3 audit** | Independent audit: all S1–S8 A-grade. Lazy import check passed (errors only in monolith). sensor/position.rs import updated. 2,007/0/20 (11-crate scope). Clippy clean. | done | | S11 |
 | 7 | dynamics/crba.rs | | | | |
 | 7 | dynamics/rne.rs | | | | |
 | 7 | dynamics/factor.rs | | | | |

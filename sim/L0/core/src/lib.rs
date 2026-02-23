@@ -90,6 +90,9 @@ pub mod sensor;
 // Energy queries (potential + kinetic)
 pub mod energy;
 
+// Collision detection pipeline (dispatch, narrow-phase, contact params)
+pub mod collision;
+
 // Collision shape primitives (canonical source)
 pub mod collision_shape;
 

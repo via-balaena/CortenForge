@@ -4,8 +4,8 @@
 //! position: joint position, frame pose, subtree COM, rangefinder, magnetometer,
 //! actuator/tendon position.
 
+use crate::collision::narrow::geom_to_collision_shape;
 use crate::collision_shape::CollisionShape;
-use crate::mujoco_pipeline::geom_to_collision_shape; // monolith: removed in Phase 3
 use crate::raycast::raycast_shape;
 use crate::types::{
     ActuatorTransmission, Data, ENABLE_SLEEP, GeomType, MjJointType, MjObjectType,
