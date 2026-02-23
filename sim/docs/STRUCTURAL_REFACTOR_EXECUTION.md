@@ -9,8 +9,8 @@
 
 ## Core Principle
 
-**Never have more than one function in flight.** Move it, compile, move the
-next. Tedious but zero-risk. The spec is detailed enough that this is mostly
+**Never have more than one item in flight.** Move it, compile, move the next.
+Tedious but zero-risk. The spec is detailed enough that this is mostly
 mechanical — the hard thinking is already done.
 
 ---
@@ -66,38 +66,74 @@ This avoids mental context-switching between two codebases.
 
 ## 3. The Move Protocol
 
-### Per-function (repeat for each function being moved):
+### Per-item (repeat for each function, struct, enum, const, or impl block):
 
 ```
-1. Create target file (if new) with //! doc + use imports
-2. Cut function from monolith → paste into target file
-   - Preserve #[inline], #[inline(always)], #[inline(never)] attributes
+1. Create target file (if new) with //! doc
+2. Cut item from monolith → paste into target file
+   - Copy only the `use` imports that the item needs from the monolith
+     preamble. cargo check will flag any you miss.
+   - Preserve /// doc comments, #[inline], #[inline(always)],
+     #[inline(never)] attributes exactly as they appear.
+   - Do NOT add new #[inline] attributes — only preserve existing ones.
+   - Set visibility: pub if the symbol is in the lib.rs re-export list
+     (sim-core/src/lib.rs lines 111–173), pub(crate) otherwise.
+     Private items only called within the same target file stay private.
+   - If the moved item calls functions still in the monolith, add a
+     temporary `use crate::mujoco_pipeline::{needed_fn};` in the target
+     file. This will be updated when the callee is extracted later.
 3. Add pub(crate) re-import in monolith top
    (e.g., pub(crate) use crate::types::*)
-4. Update lib.rs to re-export moved pub symbols from the new module path
-   (e.g., pub use types::Model;). Keep existing monolith wildcard re-export
-   (pub use mujoco_pipeline::*;) until Phase 12.
-5. cargo check -p sim-core
+4. Update lib.rs re-exports: remove the moved symbol from the existing
+   `pub use mujoco_pipeline::{...}` named list and add a new re-export
+   from the real module path (e.g., pub use types::Model;). Rust does
+   not allow the same name in two `pub use` re-exports. Keep the
+   remaining monolith re-export list until Phase 12.
+5. cargo check -p <crate>  (sim-core for phases 1–8c, sim-mjcf for phase 10)
 6. If error → fix imports, repeat step 5
-7. Move to next function in same sub-module
+7. Move to next item in same sub-module
 ```
 
-### Per-sub-module (after all functions for a sub-module are moved):
+**Move order within a sub-module**: When two items moving to the same target
+file have a call dependency, move the **callee first** so the caller's import
+points to the final location immediately. If there is a circular call (both
+call each other), move both in the same step and fix imports together before
+running `cargo check`.
+
+**`impl` methods**: A method goes in the module that implements its **primary
+computation**, not necessarily the module that defines the type. For example,
+`Data::step()` goes in `forward/mod.rs`, not `types/data.rs`. See the
+[`impl` Block Split Strategy](./STRUCTURAL_REFACTOR_RUBRIC.md#impl-block-split-strategy)
+in the rubric for the full mapping.
+
+**`#[cfg(test)]`-gated modules**: For test-only modules like
+`types/model_factories.rs`, place `#[cfg(test)]` on the `mod` declaration in
+the parent (e.g., `#[cfg(test)] mod model_factories;` in `types/mod.rs`), not
+on the file contents. The file itself uses normal `pub(crate)` visibility.
+
+### Per-sub-module (after all items for a sub-module are moved):
 
 ```
  8. Run the lazy import check:
     - Comment out monolith re-imports
-    - cargo check -p sim-core
+    - cargo check -p <crate>
     - Fix any errors in non-monolith files (point to real module paths)
     - Uncomment re-imports
  9. Update all use imports in existing files that reference moved symbols
-    (derivatives.rs, batch.rs, lib.rs — see spec step 1)
+    (phases 1–8c: derivatives.rs, batch.rs, lib.rs — see spec step 1;
+     phase 10: sim-mjcf/src/lib.rs)
 10. Update code comments that reference mujoco_pipeline.rs or
     model_builder.rs by filename to reference the new module
 11. Update doc references in sim/docs/ for functions moved in this sub-module
 12. Run S6 stale-reference grep for monolith filenames
 13. cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics
-14. cargo clippy -p sim-core -- -D warnings
+    If tests fail: the most common causes are (a) a visibility change
+    (pub → pub(crate)) that broke an external test, (b) a use import
+    routing through the monolith shim instead of the real module, or
+    (c) a test helper that wasn't moved with its code. Bisect by
+    restoring items to the monolith one at a time until the failure is
+    isolated. Do not commit a sub-module with failing tests.
+14. cargo clippy -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics -- -D warnings
 15. Verify pass count matches baseline
     (see spec Phase 0 table — currently 1,526 passed, 0 failed, 15 ignored)
 16. Commit (with approval)
@@ -111,8 +147,22 @@ This avoids mental context-switching between two codebases.
 ```
 
 **Monolith re-imports** (`pub(crate) use crate::types::*;` etc.) accumulate
-throughout phases 1–8c. They are removed in Phase 12 when the monolith shim is
-deleted. Do not remove them during intermediate phases.
+throughout phases 1–8c (and phase 10 for `model_builder.rs`). They are removed
+in Phase 12 when the monolith shims are deleted. Do not remove them during
+intermediate phases.
+
+### Phase 10 Adaptations
+
+The move protocol above is written from the sim-core perspective. For Phase 10
+(sim-mjcf), substitute:
+
+| Protocol reference | Phases 1–8c (sim-core) | Phase 10 (sim-mjcf) |
+|--------------------|------------------------|---------------------|
+| "the monolith" | `mujoco_pipeline.rs` | `model_builder.rs` |
+| `cargo check -p` | `sim-core` | `sim-mjcf` |
+| Re-import pattern | `pub(crate) use crate::types::*;` | `pub(crate) use crate::builder::orientation::*;` etc. |
+| `lib.rs` re-exports | `sim-core/src/lib.rs`: move symbols from `pub use mujoco_pipeline::{...}` to new module paths | `sim-mjcf/src/lib.rs`: change `mod model_builder;` → `mod builder;`, update `pub use` |
+| Files to check for imports | `derivatives.rs`, `batch.rs`, `lib.rs` | `sim-mjcf/src/lib.rs` (only external consumer) |
 
 ---
 
@@ -123,9 +173,10 @@ Before starting any phase, read:
 1. The phase's checklist in [STRUCTURAL_REFACTOR.md](./STRUCTURAL_REFACTOR.md)
 2. The target module sizes + line ranges from the Doc Reference Mapping Table
 3. The ["every phase includes" steps](./STRUCTURAL_REFACTOR.md#every-phase-includes-non-negotiable)
-   (lines 989–1022)
-4. Any MARGIN WARNINGs for modules in this phase (flagged in the progress table
-   with `(MARGIN)`)
+4. The [`impl` Block Split Strategy](./STRUCTURAL_REFACTOR_RUBRIC.md#impl-block-split-strategy)
+   for any `impl` methods moving in this phase
+5. Any MARGIN WARNINGs or HAZARDs for modules in this phase (flagged in Section 6
+   and annotated in the progress table)
 
 This avoids guessing about what goes where.
 
@@ -136,7 +187,6 @@ This avoids guessing about what goes where.
 Before any code moves:
 
 - [ ] Verify the test baseline still matches the spec's Phase 0 table
-      (STRUCTURAL_REFACTOR.md lines 1034–1045)
 - [ ] Audit the test helper categorization (shared vs. local) in the monolith's
       `#[cfg(test)]` section (L21476–L26722)
 - [ ] Create branch: `refactor/structural-decompose`
@@ -146,7 +196,7 @@ Before any code moves:
 
 ## 6. Phase-Specific Hazards
 
-### Phase 1: MARGIN WARNINGs
+### Phase 1: MARGIN WARNINGs + scatter hazard
 
 - `types/model.rs` (~780 lines): 20 lines from limit. Fallback: move
   `is_ancestor()` (~14 lines) to `types/model_init.rs`.
@@ -155,14 +205,22 @@ Before any code moves:
   (~64 lines) to a separate file.
 - `types/data.rs` (~710 lines): raw span ~805. Fallback: move
   `reset_to_keyframe` (~40 lines) to `types/data_keyframe.rs`.
+- **Scatter**: `compute_body_lengths` and `compute_dof_lengths` (L12901–L12964)
+  are physically located ~9,000 lines from the other `model_init` functions
+  (L2890–L3744). Don't miss them.
 
-### Phase 6: MARGIN WARNINGs
+### Phase 6: MARGIN WARNINGs + macro dependency
 
 - `constraint/assembly.rs` (~750 lines): With `use` imports + `//!` doc may
   approach 800. Fallback: move `populate_efc_island` (62 lines) to
   `constraint/mod.rs`.
 - `constraint/solver/hessian.rs` (~685 lines): With overhead may approach 800.
   Fallback: split `SparseHessian` into `constraint/solver/sparse_hessian.rs`.
+- **Macro**: `assemble_unified_constraints` (→ `assembly.rs`) contains a local
+  `macro_rules! finalize_row` (L15469) that calls 5 functions from
+  `constraint/impedance.rs`. The macro moves with the function body, but
+  impedance must be extracted **before** assembly. The Phase 6 extraction order
+  already enforces this (impedance = step 2, assembly = step 5). Do not reorder.
 
 ### Phase 8a: Line range hazard
 
@@ -171,12 +229,27 @@ Before any code moves:
 belong to `integrate/implicit.rs` (Phase 8b), **NOT** to `forward/passive.rs`.
 Only take L12108–L12690 and L12818–L12899 for passive.
 
+### Phase 8b: Naming hazard
+
+**`mj_integrate_pos`** → `integrate/euler.rs` (Euler position integration).
+**`mj_integrate_pos_explicit`** → `jacobian.rs` (Phase 8a — Jacobian utility
+for finite-difference derivatives). The names differ by one suffix. Don't
+confuse them.
+
+### Phase 10: MARGIN WARNING
+
+- `builder/mod.rs` (~732 lines): Only under 800 **because** `new()` (~264
+  lines) is split out to `builder/init.rs`. If `init.rs` is not split, mod.rs
+  would be ~996 lines. Extract `init.rs` immediately after `mod.rs`.
+
 ---
 
 ## 7. Phase 12 — Doc Sweep
 
-The ~694 doc reference updates are mechanical find-and-replace using the
-[Doc Reference Mapping Table](./STRUCTURAL_REFACTOR.md#doc-reference-mapping-table).
+The ~692 doc reference updates are mechanical find-and-replace using the Doc
+Reference Mapping Tables (one for
+[sim-core](./STRUCTURAL_REFACTOR.md#doc-reference-mapping-table), one for
+sim-mjcf immediately below it in the same file).
 
 **Strategy**: Batch by target module to minimize errors. For each target module
 (e.g., `constraint/assembly.rs`), find all `future_work_*.md` lines citing
@@ -190,9 +263,13 @@ the changes before committing.
 Stop and reassess if any of these occur:
 
 - Test count changes (any test appearing or disappearing)
-- A module exceeds 800 production lines after extraction (trigger the documented
-  fallback in the spec)
+- A module exceeds 800 production lines after extraction — first try
+  consolidating `use` imports (one grouped `use` instead of many single lines);
+  if still over, trigger the documented per-module fallback in the spec
 - A circular import that wasn't anticipated in the audit findings
+- A moved function contains a `macro_rules!` that references symbols from a
+  module not yet extracted — move the dependency module first, or move both in
+  the same step
 - Any physics output change (same inputs must produce bitwise-identical outputs)
 
 If an abort criterion is triggered, see the
@@ -211,7 +288,7 @@ respects internal call dependencies (matches the spec's extraction orders).
 | 0 | Preparation | | | | |
 | 1 | types/enums.rs | Extract first — other types/ modules depend on enums | | | |
 | 1 | types/model.rs | **(MARGIN)** ~780 lines | | | |
-| 1 | types/model_init.rs | **(MARGIN)** ~774 lines | | | |
+| 1 | types/model_init.rs | **(MARGIN)** ~774 lines; **SCATTER**: L12901–L12964 | | | |
 | 1 | types/model_factories.rs | `#[cfg(test)]`-gated | | | |
 | 1 | types/data.rs | **(MARGIN)** ~710 lines (raw ~805) | | | |
 | 1 | types/contact_types.rs | | | | |
@@ -257,20 +334,20 @@ respects internal call dependencies (matches the spec's extraction orders).
 | 8a | forward/mod.rs | | | | |
 | 8a | forward/position.rs | | | | |
 | 8a | forward/velocity.rs | | | | |
-| 8a | forward/passive.rs | **HAZARD**: see Phase 8a notes above | | | |
+| 8a | forward/passive.rs | **HAZARD**: skip L12690–L12816 (→ Phase 8b) | | | |
 | 8a | forward/actuation.rs | | | | |
 | 8a | forward/muscle.rs | | | | |
 | 8a | forward/acceleration.rs | | | | |
 | 8a | forward/check.rs | | | | |
-| 8a | jacobian.rs | Top-level, not under forward/ | | | |
+| 8a | jacobian.rs | **(HAZARD)** Top-level; includes `mj_integrate_pos_explicit` | | | |
 | 8b | integrate/mod.rs | | | | |
-| 8b | integrate/euler.rs | | | | |
+| 8b | integrate/euler.rs | **(HAZARD)** `mj_integrate_pos` (NOT `_explicit`) | | | |
 | 8b | integrate/implicit.rs | Receives L12690–L12816 from Phase 8a hazard | | | |
 | 8b | integrate/rk4.rs | | | | |
 | 8c | island/mod.rs | | | | |
 | 8c | island/sleep.rs | | | | |
-| 10 | builder/mod.rs | | | | |
-| 10 | builder/init.rs | | | | |
+| 10 | builder/mod.rs | **(MARGIN)** ~732 lines — requires init.rs split | | | |
+| 10 | builder/init.rs | Split from mod.rs for MARGIN compliance | | | |
 | 10 | builder/orientation.rs | | | | |
 | 10 | builder/asset.rs | | | | |
 | 10 | builder/fluid.rs | | | | |
@@ -291,7 +368,7 @@ respects internal call dependencies (matches the spec's extraction orders).
 | 10 | builder/ inline tests | ~4,152 lines across 151 fn definitions | | | |
 | 12 | Monolith deletion + shim removal | | | | |
 | 12 | Stale reference sweep (grep) | | | | |
-| 12 | future_work_*.md doc updates (~694) | | | | |
+| 12 | future_work_*.md doc updates (~692) | | | | |
 | 12 | ARCHITECTURE.md rewrite | | | | |
-| 12 | Other doc + test comment updates | GAP_ANALYSIS, CONFORMANCE, REFERENCE, test files, gjk_epa.rs | | | |
+| 12 | Other doc + test comment updates | GAP_ANALYSIS, CONFORMANCE, REFERENCE, TRAIT_ARCHITECTURE, CLAUDE.md, test files, gjk_epa.rs | | | |
 | 12 | Final workspace verification + grading | All 15 final-state checks from rubric | | | |
