@@ -1200,7 +1200,7 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 
 - [x] Create `src/constraint/mod.rs` — move mj_fwd_constraint, mj_fwd_constraint_islands,
       compute_qacc_smooth, build_m_impl_for_newton, compute_qfrc_smooth_implicit,
-      compute_point_velocity (425 lines)
+      compute_point_velocity (426 lines)
 - [x] Create `src/constraint/assembly.rs` — move assemble_unified_constraints,
       populate_efc_island, tendon_deadband_displacement (735 lines)
 - [x] Create `src/constraint/equality.rs` — move all extract_*_jacobian functions,

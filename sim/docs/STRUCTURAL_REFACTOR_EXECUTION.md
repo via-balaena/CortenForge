@@ -412,7 +412,7 @@ and correlating with commit history.
 | 7 | dynamics/factor.rs | 237 lines; mj_factor_sparse, mj_factor_sparse_selective, Model::compute_qld_csr_metadata (split impl block) | done | 1f69392 | S12 |
 | 7 | dynamics/flex.rs | 19 lines; mj_flex | done | 1f69392 | S12 |
 | 7 | **Phase 7 audit** | Independent audit: all S1–S8 A-grade. Zero findings. Lazy import check passed (errors only in monolith). model_init.rs updated to import directly from dynamics::crba. 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S12 |
-| 6 | constraint/mod.rs | 425 lines; mj_fwd_constraint_islands, mj_fwd_constraint, compute_qacc_smooth, build_m_impl_for_newton, compute_qfrc_smooth_implicit, compute_point_velocity | done | 2a12dfe | S13 |
+| 6 | constraint/mod.rs | 426 lines; mj_fwd_constraint_islands, mj_fwd_constraint, compute_qacc_smooth, build_m_impl_for_newton, compute_qfrc_smooth_implicit, compute_point_velocity | done | 2a12dfe | S13 |
 | 6 | constraint/impedance.rs | 331 lines; compute_impedance, compute_kbip, compute_aref, compute_regularization, etc. | done | 264a33a | S13 |
 | 6 | constraint/jacobian.rs | 330 lines; compute_contact_jacobian, compute_flex_contact_jacobian, add_angular_jacobian | done | fba1dbd | S13 |
 | 6 | constraint/equality.rs | 661 lines; all extract_*_jacobian, add_body_*_jacobian_row, get_min_* helpers | done | 0478367 | S13 |

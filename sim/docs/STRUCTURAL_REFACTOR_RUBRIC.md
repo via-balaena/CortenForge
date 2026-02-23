@@ -228,16 +228,16 @@ STRUCTURAL_REFACTOR.md for the full rationale):
 constraint/mod.rs
   ├── impedance.rs  (standalone)
   ├── jacobian.rs   (standalone)
-  ├── equality.rs   (standalone)
-  ├── assembly.rs   (calls equality, jacobian, impedance)
+  ├── equality.rs   (uses impedance, mod.rs::compute_point_velocity)
+  ├── assembly.rs   (uses equality, jacobian, impedance)
   └── solver/
       ├── mod.rs        (dispatch)
-      ├── primal.rs     (shared infra)
-      ├── pgs.rs        (uses primal)
-      ├── cg.rs         (uses primal)
-      ├── hessian.rs    (used by newton)
-      ├── newton.rs     (uses primal + hessian)
-      └── noslip.rs     (standalone)
+      ├── primal.rs     (uses impedance, hessian)
+      ├── pgs.rs        (uses impedance, noslip)
+      ├── cg.rs         (uses primal, newton, pgs, impedance)
+      ├── hessian.rs    (used by newton, primal)
+      ├── newton.rs     (uses primal, hessian, pgs)
+      └── noslip.rs     (uses impedance)
 ```
 
 **Known cross-cuts (validated by audit, all are same-crate imports)**:
