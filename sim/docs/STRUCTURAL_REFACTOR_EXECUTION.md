@@ -379,9 +379,10 @@ and correlating with commit history.
 | 1 | types/contact_types.rs | | done | 5912e68 | S2 |
 | 1 | types/keyframe.rs | | done | 5912e68 | S2 |
 | 1 | lib.rs re-exports | Route pub API through types/ | done | 5912e68 | S2 |
-| 2 | linalg.rs | 488 lines (419 prod + 69 test); cholesky_tests moved with code | done | | S8 |
-| 2 | dynamics/mod.rs + spatial.rs | Grouped — mod.rs is pure re-exports; spatial.rs 221 lines | done | | S8 |
-| 2 | joint_visitor.rs | 196 lines; JointContext/JointVisitor kept pub (visit_joints is pub on Model) | done | | S8 |
+| 2 | linalg.rs | 488 lines (419 prod + 69 test); cholesky_tests moved with code | done | d1c6e89 | S8 |
+| 2 | dynamics/mod.rs + spatial.rs | Grouped — mod.rs is pure re-exports; spatial.rs 221 lines | done | d1c6e89 | S8 |
+| 2 | joint_visitor.rs | 196 lines; JointContext/JointVisitor kept pub (visit_joints is pub on Model) | done | d1c6e89 | S8 |
+| 2 | **Phase 2 audit** | Independent audit: all S1–S8 A-grade. One finding fixed (data.rs SpatialVector import routed through monolith shim → pointed to crate::dynamics). 1,526/0/15 baseline preserved. | done | 8db4b78 | S8 |
 | 5 | tendon/mod.rs + fixed.rs | Grouped — mod.rs ~91 lines, fixed.rs ~63 lines | | | |
 | 5 | tendon/spatial.rs | | | | |
 | 5 | tendon/wrap_math.rs | | | | |
