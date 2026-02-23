@@ -757,7 +757,7 @@ module's domain.
 | `Model` struct def, field accessors, `is_ancestor()`, `joint_qpos0()`, `qld_csr()` | `types/model.rs` | Struct definition + accessors (~780 lines) |
 | `Model::empty()`, `make_data()`, `compute_ancestors()`, `compute_stat_meaninertia()` | `types/model_init.rs` | Construction + precomputation (~760 lines) |
 | `Model::compute_implicit_params()` | `types/model_init.rs` | Model precomputation (no pipeline deps; called at construction alongside `empty()` and `make_data()`) |
-| `Model::n_link_pendulum()`, `double_pendulum()`, etc. | `types/model_factories.rs` | `#[cfg(test)]`-gated test factories (~280 lines) |
+| `Model::n_link_pendulum()`, `double_pendulum()`, etc. | `types/model_factories.rs` | factory helpers (NOT `#[cfg(test)]` — used by external test crates; ~280 lines) |
 | `Model::visit_joints()` | `joint_visitor.rs` | Joint iteration |
 | `Model::compute_qld_csr_metadata()` | `dynamics/factor.rs` | Sparse factorization metadata |
 | `Model::compute_muscle_params()` | `forward/muscle.rs` | Muscle precomputation |

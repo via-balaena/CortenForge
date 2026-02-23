@@ -11,8 +11,11 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 use super::enums::{ConstraintState, ConstraintType, ResetError, SleepState};
 use super::model::Model;
 
+use super::contact_types::Contact;
+use super::enums::SolverStat;
+
 // Types still in monolith (will be extracted in later phases)
-use crate::mujoco_pipeline::{Contact, SolverStat, SpatialVector, reset_sleep_state};
+use crate::mujoco_pipeline::{SpatialVector, reset_sleep_state};
 
 /// Dynamic simulation state (like mjData).
 ///

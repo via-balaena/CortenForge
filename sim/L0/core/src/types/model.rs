@@ -16,8 +16,9 @@ use super::enums::{
     WrapType,
 };
 
-// Types still in monolith (will be extracted in later phases)
-use crate::mujoco_pipeline::{ContactPair, Keyframe};
+// Imports from sibling modules
+use super::contact_types::ContactPair;
+use super::keyframe::Keyframe;
 
 // External crate types used by Model fields
 use crate::heightfield::HeightFieldData;

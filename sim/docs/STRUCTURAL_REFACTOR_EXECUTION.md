@@ -153,10 +153,11 @@ type into scope. This is standard Rust — `super::` refers to the parent module
 (`builder/mod.rs` in this case). Add this import alongside the other `use`
 lines copied from the monolith preamble.
 
-**`#[cfg(test)]`-gated modules**: For test-only modules like
-`types/model_factories.rs`, place `#[cfg(test)]` on the `mod` declaration in
-the parent (e.g., `#[cfg(test)] mod model_factories;` in `types/mod.rs`), not
-on the file contents. The file itself uses normal `pub(crate)` visibility.
+**`#[cfg(test)]`-gated modules**: If a module is truly test-only (not imported
+by external test crates), place `#[cfg(test)]` on the `mod` declaration in the
+parent, not on the file contents. Note: `types/model_factories.rs` is **NOT**
+`#[cfg(test)]`-gated because it is used by `sim-conformance-tests` and other
+external test crates — it must be unconditionally compiled.
 
 ### Per-sub-module (after all items for a sub-module are moved):
 
@@ -356,12 +357,12 @@ and correlating with commit history.
 | 0 | Preparation | Baseline verified: 1,526/0/15; sim-urdf: 34/0/1; 13 test helpers all Local | done | — | S1 |
 | 1 | types/mod.rs + enums.rs | Grouped — mod.rs is re-exports; extract enums first | done | d018c7f | S1 |
 | 1 | types/model.rs | **(MARGIN)** ~780 lines; actual 808 total / 305 prod | done | — | S1 |
-| 1 | types/model_init.rs | **(MARGIN)** ~774 est → 844 total / 629 prod; **SCATTER** handled | done | — | S2 |
-| 1 | types/model_factories.rs | NOT cfg(test): used by sim-conformance-tests; 317 lines | done | — | S2 |
-| 1 | types/data.rs | **(MARGIN)** ~710 lines (raw ~805) | | | |
-| 1 | types/contact_types.rs | | | | |
-| 1 | types/keyframe.rs | | | | |
-| 1 | lib.rs re-exports | Route pub API through types/ | | | |
+| 1 | types/model_init.rs | **(MARGIN)** ~774 est → 844 total / 629 prod; **SCATTER** handled | done | 5912e68 | S2 |
+| 1 | types/model_factories.rs | NOT cfg(test): used by sim-conformance-tests; 317 lines | done | 5912e68 | S2 |
+| 1 | types/data.rs | **(MARGIN)** ~710 est → 834 total / 380 prod | done | 5912e68 | S2 |
+| 1 | types/contact_types.rs | | done | 5912e68 | S2 |
+| 1 | types/keyframe.rs | | done | 5912e68 | S2 |
+| 1 | lib.rs re-exports | Route pub API through types/ | done | 5912e68 | S2 |
 | 2 | linalg.rs | | | | |
 | 2 | dynamics/mod.rs + spatial.rs | Grouped — mod.rs is pure re-exports | | | |
 | 2 | joint_visitor.rs | | | | |

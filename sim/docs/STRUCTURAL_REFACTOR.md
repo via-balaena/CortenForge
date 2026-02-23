@@ -362,9 +362,9 @@ sim-core/src/
   │   │                       compute_implicit_params(), compute_stat_meaninertia(),
   │   │                       compute_body_lengths(), compute_dof_lengths()
   │   │                       (~774 lines — Model construction + precomputation)
-  │   ├── model_factories.rs  #[cfg(test)]-gated factory helpers: n_link_pendulum(),
-  │   │                       double_pendulum(), spherical_pendulum(), free_body()
-  │   │                       (~280 lines — test-only model constructors)
+  │   ├── model_factories.rs  factory helpers (NOT cfg(test) — used by external test crates):
+  │   │                       n_link_pendulum(), double_pendulum(), spherical_pendulum(),
+  │   │                       free_body() (~280 lines — model constructors for tests)
   │   ├── data.rs             Data struct + Clone impl + field accessors
   │   │                       (qld_diag, reset, reset_to_keyframe)
   │   │                       — NOT step/forward/integrate
@@ -547,7 +547,7 @@ sim-core/src/
 | `types/enums.rs` | ~710 | L325–L383 + L455–L1100 (enums, error types — UnionFind moves to linalg.rs; JointContext/JointVisitor at L384–L454 → `joint_visitor.rs`) |
 | `types/model.rs` | ~780 | L1142–L1870 (Model struct + accessors) + L3648–L3659 (joint_qpos0) + L4063–L4076 (is_ancestor) + qld_csr (inline accessor in Model impl). **MARGIN WARNING**: ~780 is 20 lines from limit. Fallback: move `is_ancestor()` (~14 lines) to `types/model_init.rs`. |
 | `types/model_init.rs` | ~774 | L2890–L3646 + L3661–L3744 + L4033–L4062 + L12901–L12964 (empty, make_data, compute_ancestors, compute_implicit_params, compute_stat_meaninertia, compute_body_lengths, compute_dof_lengths — see doc reference mapping table for precise per-function ranges). **MARGIN WARNING**: raw source spans ~930 lines before whitespace/comment removal. Fallback: move `compute_body_lengths` + `compute_dof_lengths` (~64 lines) to a separate `types/model_precompute.rs` or into the target module they serve. |
-| `types/model_factories.rs` | ~280 | Factory helpers (n_link_pendulum, double_pendulum, etc.) — `#[cfg(test)]`-gated |
+| `types/model_factories.rs` | ~280 | Factory helpers (n_link_pendulum, double_pendulum, etc.) — NOT `#[cfg(test)]`: used by sim-conformance-tests |
 | `types/data.rs` | ~710 | L2185–L2890 (Data struct + Clone) + L4385–L4483 (qld_diag, reset, reset_to_keyframe — the Data accessors that stay here; total_energy at L4485–L4489 → `energy.rs`, sleep_state/tree_awake/nbody_awake/nisland at L4491–L4519 → `island/sleep.rs`). Source ranges total ~805 lines; the ~710 estimate assumes whitespace/comment removal. **MARGIN WARNING**: raw span (~805) is near the 800 limit. Fallback: move `reset_to_keyframe` (~40 lines) to a separate `types/data_keyframe.rs`. |
 | `types/contact_types.rs` | ~302 | L1870–L2171 (ContactPair, Contact struct, impl Contact, compute_tangent_frame) |
 | `types/keyframe.rs` | ~20 | L1105–L1124 (Keyframe struct) |
@@ -1097,7 +1097,7 @@ struct/enum definitions.
       Note: compute_body_lengths + compute_dof_lengths are at L12901–L12964,
       physically distant from the other model_init functions.
 - [ ] Move `n_link_pendulum()`, `double_pendulum()`, `spherical_pendulum()`,
-      `free_body()` → `types/model_factories.rs` (~280 lines, `#[cfg(test)]`-gated)
+      `free_body()` → `types/model_factories.rs` (~280 lines, NOT `#[cfg(test)]` — used by external test crates)
 - [ ] Methods destined for other modules (`visit_joints` → `joint_visitor.rs`,
       `compute_qld_csr_metadata` → `dynamics/factor.rs`,
       `compute_muscle_params` → `forward/muscle.rs`,
