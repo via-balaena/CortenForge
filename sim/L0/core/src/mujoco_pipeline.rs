@@ -141,11 +141,11 @@ pub(crate) use crate::tendon::subquat;
 // Re-imports from sensor/energy modules (Phase 4 extraction, removed in Phase 12).
 // Only pipeline-callers are re-imported; internal helpers resolved within their modules.
 use crate::energy::mj_energy_pos; // monolith: removed in Phase 12
-use crate::energy::mj_energy_vel;
+use crate::energy::mj_energy_vel; // monolith: removed in Phase 12
 use crate::sensor::mj_sensor_acc; // monolith: removed in Phase 12
 use crate::sensor::mj_sensor_pos; // monolith: removed in Phase 12
 use crate::sensor::mj_sensor_postprocess; // monolith: removed in Phase 12
-use crate::sensor::mj_sensor_vel; // monolith: removed in Phase 12 // monolith: removed in Phase 12
+use crate::sensor::mj_sensor_vel; // monolith: removed in Phase 12
 
 // ============================================================================
 // MuJoCo-Aligned Model/Data Architecture (Phase 1)

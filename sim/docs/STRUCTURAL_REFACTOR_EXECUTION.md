@@ -387,13 +387,14 @@ and correlating with commit history.
 | 5 | tendon/spatial.rs | 458 prod + 79 test lines; includes subquat + subquat_tests | done | 54c86d8 | S9 |
 | 5 | tendon/wrap_math.rs | 590 prod + 90 test lines; includes wrap_inside_tests | done | 54c86d8 | S9 |
 | 5 | **Phase 5 audit** | Independent audit: all S1–S8 A-grade. Zero findings. 2,007/0/20 (11-crate scope); 1,526/0/15 baseline preserved. | done | — | S9 |
-| 4 | sensor/mod.rs | 56 prod + 1330 test lines; sensor_body_id + sensor_tests (32 tests) | done | (pending) | S8 |
-| 4 | sensor/position.rs | 323 lines; mj_sensor_pos; depends on monolith geom_to_collision_shape | done | (pending) | S1 |
-| 4 | sensor/velocity.rs | 218 lines; mj_sensor_vel | done | (pending) | S1 |
-| 4 | sensor/acceleration.rs | 216 lines; mj_sensor_acc; Touch/Force/Torque/Accelerometer | done | (pending) | S1 |
-| 4 | sensor/postprocess.rs | 73 lines; sensor_write helpers + mj_sensor_postprocess | done | (pending) | S1 |
-| 4 | sensor/derived.rs | 346 lines; 7 derived computation functions (subtree COM/momentum/angmom, body accel, force/torque) | done | (pending) | S1 |
-| 4 | energy.rs | 111 lines; mj_energy_pos, mj_energy_vel, Data::total_energy() | done | (pending) | S1 |
+| 4 | sensor/mod.rs | 56 prod + 1330 test lines; sensor_body_id + sensor_tests (32 tests) | done | 5670d4e | S8 |
+| 4 | sensor/position.rs | 323 lines; mj_sensor_pos; depends on monolith geom_to_collision_shape | done | 5670d4e | S1 |
+| 4 | sensor/velocity.rs | 218 lines; mj_sensor_vel | done | 5670d4e | S1 |
+| 4 | sensor/acceleration.rs | 216 lines; mj_sensor_acc; Touch/Force/Torque/Accelerometer | done | 5670d4e | S1 |
+| 4 | sensor/postprocess.rs | 73 lines; sensor_write helpers + mj_sensor_postprocess | done | 5670d4e | S1 |
+| 4 | sensor/derived.rs | 346 lines; 7 derived computation functions (subtree COM/momentum/angmom, body accel, force/torque) | done | 5670d4e | S1 |
+| 4 | energy.rs | 111 lines; mj_energy_pos, mj_energy_vel, Data::total_energy() | done | 5670d4e | S1 |
+| 4 | **Phase 4 audit** | Independent audit: all S1–S8 A-grade. Two cosmetic findings fixed (duplicate/missing monolith annotation comments). 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S8 |
 | 3 | collision/mod.rs | | | | |
 | 3 | collision/narrow.rs | | | | |
 | 3 | collision/pair_convex.rs | | | | |
