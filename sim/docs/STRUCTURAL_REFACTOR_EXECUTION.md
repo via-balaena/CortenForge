@@ -100,6 +100,11 @@ This avoids mental context-switching between two codebases.
    - If the moved item calls functions still in the monolith, add a
      temporary `use crate::mujoco_pipeline::{needed_fn};` in the target
      file. This will be updated when the callee is extracted later.
+   - **Annotate monolith imports**: Every `use crate::mujoco_pipeline::...`
+     in a new file must have a trailing comment indicating when it will be
+     removed (e.g., `// monolith: removed in Phase 8a`). This makes
+     audit rounds faster — the annotation proves the import was
+     intentional, not a lazy routing mistake.
 3. Add named pub(crate) re-import in monolith top
    (e.g., pub(crate) use crate::types::Model;)
    Use named imports during the per-item loop — NOT wildcards.
@@ -176,6 +181,12 @@ external test crates — it must be unconditionally compiled.
     model_builder.rs by filename to reference the new module
 11. Update doc references in sim/docs/ for functions moved in this sub-module
 12. Run S6 stale-reference grep for monolith filenames
+12a. Move inline tests. If the monolith has a `#[cfg(test)] mod <name>_tests`
+    block whose tests exercise functions that just moved to this sub-module,
+    move the entire test module (including local helper functions) into the
+    new file. Consult the test helper audit table in the spec (Phase 0)
+    to verify all helpers in the block are Local. Do not leave test modules
+    behind in the monolith when their production code has moved.
 13. cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics
     If tests fail: the most common causes are (a) a visibility change
     (pub → pub(crate)) that broke an external test, (b) a use import
@@ -241,30 +252,34 @@ This avoids guessing about what goes where.
 
 Before any code moves:
 
-- [ ] Verify the test baseline still matches the spec's Phase 0 table
-- [ ] Record `sim-urdf` pass count (needed for Phase 10 baseline —
+- [x] Verify the test baseline still matches the spec's Phase 0 table
+- [x] Record `sim-urdf` pass count (needed for Phase 10 baseline —
       run `cargo test -p sim-urdf` and add the result to the baseline)
-- [ ] Audit the test helper categorization (shared vs. local) in
+- [x] Audit the test helper categorization (shared vs. local) in
       `mujoco_pipeline.rs` `#[cfg(test)]` section (L21476–L26722)
-- [ ] Create branch: `refactor/structural-decompose`
-- [ ] Commit Phase 0 as the starting point
+- [x] Create branch: `refactor/structural-decompose`
+- [x] Commit Phase 0 as the starting point
 
 ---
 
 ## 6. Phase-Specific Hazards
 
-### Phase 1: MARGIN WARNINGs + scatter hazard
+> **Note on line numbers**: All `L____` references in this document are
+> pre-refactor snapshot positions (before commit `d018c7f`). Each extraction
+> phase shifts the remaining monolith lines. Use **function names** to locate
+> code; line numbers are approximate locator aids, not exact positions.
 
-- `types/model.rs` (~780 lines): 20 lines from limit. Fallback: move
-  `is_ancestor()` (~14 lines) to `types/model_init.rs`.
-- `types/model_init.rs` (~774 lines): raw source ~930 before whitespace
-  removal. Fallback: move `compute_body_lengths` + `compute_dof_lengths`
-  (~64 lines) to a separate file.
-- `types/data.rs` (~710 lines): raw span ~805. Fallback: move
-  `reset_to_keyframe` (~40 lines) to `types/data_keyframe.rs`.
-- **Scatter**: `compute_body_lengths` and `compute_dof_lengths` (L12901–L12964)
-  are physically located ~9,000 lines from the other `model_init` functions
-  (L2890–L3744). Don't miss them.
+### Phase 1: MARGIN WARNINGs + scatter hazard **(RESOLVED)**
+
+All Phase 1 hazards were handled during extraction. Doc-heavy exemption
+(rubric S1) applied to model.rs (809 awk / 306 code), model_init.rs
+(842 awk / 627 code), and data.rs (837 awk / 382 code). Scatter functions
+were located and moved correctly.
+
+- ~~`types/model.rs` (~780 lines): 20 lines from limit.~~ Fallback not needed.
+- ~~`types/model_init.rs` (~774 lines): raw source ~930.~~ Fallback not needed.
+- ~~`types/data.rs` (~710 lines): raw span ~805.~~ Fallback not needed.
+- ~~**Scatter**: `compute_body_lengths` and `compute_dof_lengths`.~~ Found and moved.
 
 ### Phase 6: MARGIN WARNINGs + macro dependency
 
@@ -354,7 +369,7 @@ and correlating with commit history.
 
 | Phase | Sub-module | Notes | Status | Commit | Session |
 |-------|-----------|-------|--------|--------|---------|
-| 0 | Preparation | Baseline verified: 1,526/0/15; sim-urdf: 34/0/1; 13 test helpers all Local | done | — | S1 |
+| 0 | Preparation | Baseline verified: 1,526/0/15; sim-urdf: 34/0/1; 15 test helpers all Local (corrected from 13 — 2 missed in initial scan) | done | — | S1 |
 | 1 | types/mod.rs + enums.rs | Grouped — mod.rs is re-exports; extract enums first | done | d018c7f | S1 |
 | 1 | types/model.rs | **(MARGIN)** 809 awk / 306 code-only — doc-heavy type def exempt per rubric S1 | done | — | S1 |
 | 1 | types/model_init.rs | **(MARGIN)** 842 awk / 627 code-only — doc-heavy type def exempt per rubric S1; **SCATTER** handled | done | 5912e68 | S2 |

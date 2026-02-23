@@ -542,6 +542,11 @@ sim-core/src/
 
 ### Module size estimates
 
+> **Note on line numbers**: All `L____` references throughout this document are
+> pre-refactor snapshot positions (before commit `d018c7f`). Each extraction
+> phase shifts the remaining monolith lines. Use **function names** to locate
+> code; line numbers are approximate locator aids, not exact positions.
+
 | Module | Est. lines | Source (line ranges in current file) |
 |--------|-----------|--------------------------------------|
 | `types/enums.rs` | ~710 | L325–L383 + L455–L1100 (enums, error types — UnionFind moves to linalg.rs; JointContext/JointVisitor at L384–L454 → `joint_visitor.rs`) |
@@ -612,7 +617,8 @@ sim-core/src/
 
 When updating `future_work_*.md` references that cite `mujoco_pipeline.rs` by line
 number (e.g., `mujoco_pipeline.rs:L15334`), use this table to determine the target module.
-Line ranges are approximate and may shift slightly as functions are extracted.
+Line ranges are pre-refactor snapshot positions (before commit `d018c7f`) and
+shift as functions are extracted. Use function names to locate code.
 
 | Line range (approx) | Target module | Contents |
 |---------------------|---------------|----------|
@@ -869,7 +875,8 @@ sim-mjcf/src/
 
 When updating `future_work_*.md` references that cite `model_builder.rs` by line
 number (e.g., `model_builder.rs:L2114`), use this table to determine the target module.
-Line ranges are approximate and may shift slightly as functions are extracted.
+Line ranges are snapshot positions from the pre-refactor source and shift as
+functions are extracted. Use function names to locate code.
 
 | Line range (approx) | Target module | Contents |
 |---------------------|---------------|----------|
@@ -1060,14 +1067,17 @@ Every extraction phase (1–10) ends with these steps. They are not optional.
         test models
       Record the categorization before beginning Phase 1.
 
-      **Test helper audit results (Session S1):**
-      All 13 helpers are **Local** — no shared helpers exist.
+      **Test helper audit results (Session S1, corrected S7):**
+      All 15 helpers are **Local** — no shared helpers exist.
+      (Original audit found 13; 2 were added by DT-74/DT-75 before Phase 0
+      but missed in the initial scan. Corrected here.)
 
       | Helper | Line | Test module | Moves with |
       |--------|------|-------------|------------|
       | `make_collision_test_model` | 21483 | primitive_collision_tests | collision tests |
       | `make_sensor_test_model` | 22180 | sensor_tests | sensor tests |
       | `add_sensor` | 22270 | sensor_tests | sensor tests |
+      | `make_ball_joint_model` | 23210 | sensor_tests | sensor tests |
       | `random_spd` | 23509 | cholesky_tests | linalg tests |
       | `setup_sparse` | 23585 | sparse_factorization_tests | linalg tests |
       | `assert_solve_matches` | 23608 | sparse_factorization_tests | linalg tests |
@@ -1075,6 +1085,7 @@ Every extraction phase (1–10) ends with these steps. They are not optional.
       | `quat_from_axis_angle_deg` | 24580 | ball_limit_tests | constraint tests |
       | `make_single_joint_site_model` | 24683 | jac_site_tests | jacobian tests |
       | `make_single_joint_model` | 24843 | mj_jac_tests | jacobian tests |
+      | `make_free_hinge_hinge_chain` | 25298 | mj_jac_tests | jacobian tests |
       | `make_free_body_contact_model` | 25707 | contact_jac_free_joint_tests | constraint tests |
       | `make_two_free_body_contact_model` | 25789 | contact_jac_free_joint_tests | constraint tests |
       | `make_two_geom_model` | 26217 | contact_param_tests | collision tests |
