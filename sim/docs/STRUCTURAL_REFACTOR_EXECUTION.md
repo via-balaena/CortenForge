@@ -282,18 +282,19 @@ were located and moved correctly.
 - ~~`types/data.rs` (~710 lines): raw span ~805.~~ Fallback not needed.
 - ~~**Scatter**: `compute_body_lengths` and `compute_dof_lengths`.~~ Found and moved.
 
-### Phase 6: MARGIN WARNINGs + macro dependency
+### Phase 6: MARGIN WARNINGs + macro dependency **(RESOLVED)**
 
-- `constraint/assembly.rs` (~750 lines): With `use` imports + `//!` doc may
-  approach 800. Fallback: move `populate_efc_island` (62 lines) to
-  `constraint/mod.rs`.
-- `constraint/solver/hessian.rs` (~685 lines): With overhead may approach 800.
-  Fallback: split `SparseHessian` into `constraint/solver/sparse_hessian.rs`.
-- **Macro**: `assemble_unified_constraints` (→ `assembly.rs`) contains a local
-  `macro_rules! finalize_row` (L15469) that calls 5 functions from
-  `constraint/impedance.rs`. The macro moves with the function body, but
-  impedance must be extracted **before** assembly. The Phase 6 extraction order
-  already enforces this (impedance = step 2, assembly = step 5). Do not reorder.
+All Phase 6 hazards were handled during extraction. Both MARGIN files
+landed well under 800 lines without needing fallbacks (assembly.rs: 735,
+hessian.rs: 721). Macro dependency order enforced correctly (impedance
+step 2 before assembly step 5).
+
+- ~~`constraint/assembly.rs` (~750 lines): With `use` imports + `//!` doc may
+  approach 800.~~ Actual: 735 lines. Fallback not needed.
+- ~~`constraint/solver/hessian.rs` (~685 lines): With overhead may approach 800.~~
+  Actual: 721 lines. Fallback not needed.
+- ~~**Macro**: `finalize_row` in assembly.rs calls impedance functions.~~
+  Extraction order enforced: impedance = step 2, assembly = step 5.
 
 ### Phase 8a: Line range hazard
 
