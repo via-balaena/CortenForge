@@ -20,9 +20,10 @@ use crate::types::{
 };
 
 // Functions still in monolith — will be removed as later Phase 6 steps extract them.
+use crate::constraint::assembly::assemble_unified_constraints;
+use crate::constraint::assembly::tendon_deadband_displacement;
 use crate::mujoco_pipeline::NewtonResult; // monolith: removed in Phase 6 step 11
 use crate::mujoco_pipeline::accumulate_tendon_kd; // monolith: removed in Phase 8a
-use crate::mujoco_pipeline::assemble_unified_constraints; // monolith: removed in Phase 6 step 5
 use crate::mujoco_pipeline::cg_solve_unified; // monolith: removed in Phase 6 step 9
 use crate::mujoco_pipeline::compute_qfrc_constraint_from_efc; // monolith: removed in Phase 6 step 6
 use crate::mujoco_pipeline::extract_qfrc_frictionloss; // monolith: removed in Phase 6 step 6
@@ -31,7 +32,6 @@ use crate::mujoco_pipeline::noslip_postprocess; // monolith: removed in Phase 6 
 use crate::mujoco_pipeline::pgs_solve_unified; // monolith: removed in Phase 6 step 8
 use crate::mujoco_pipeline::populate_efc_island; // monolith: removed in Phase 6 step 5
 use crate::mujoco_pipeline::tendon_all_dofs_sleeping; // monolith: removed in Phase 8a
-use crate::mujoco_pipeline::tendon_deadband_displacement; // monolith: removed in Phase 8a
 
 /// Island-aware constraint dispatch.
 ///
