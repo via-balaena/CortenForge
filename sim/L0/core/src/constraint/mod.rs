@@ -19,7 +19,6 @@ use crate::types::{
     ConstraintType, Data, ENABLE_SLEEP, Integrator, MjJointType, Model, SolverType,
 };
 
-// Functions still in monolith — will be removed as later Phase 6 steps extract them.
 use crate::constraint::assembly::assemble_unified_constraints;
 use crate::constraint::assembly::tendon_deadband_displacement;
 use crate::constraint::solver::cg::cg_solve_unified;
@@ -29,6 +28,8 @@ use crate::constraint::solver::newton::NewtonResult;
 use crate::constraint::solver::newton::newton_solve;
 use crate::constraint::solver::noslip::noslip_postprocess;
 use crate::constraint::solver::pgs::pgs_solve_unified;
+
+// Functions still in monolith — removed when their target phases extract them.
 use crate::mujoco_pipeline::accumulate_tendon_kd; // monolith: removed in Phase 8a
 use crate::mujoco_pipeline::populate_efc_island; // monolith: removed in Phase 8c
 use crate::mujoco_pipeline::tendon_all_dofs_sleeping; // monolith: removed in Phase 8a
