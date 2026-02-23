@@ -185,9 +185,9 @@ on it.
                │      │     from forward_core
                │      │     and Data::total_energy)
            dynamics/   │
-          ┌────┼────┐  │
-          │    │    │  │
-        crba  rne  spatial
+        ┌──┬──┼──┬──┐  │
+        │  │  │  │  │  │
+      crba rne spatial factor flex
           │    │    │
           └────┼────┘
                │
@@ -441,7 +441,7 @@ understands the **entire simulation pipeline** in ~90 lines. That's the goal.
 |------|----------------------|--------|
 | `sim/docs/ARCHITECTURE.md` | ~7 references total | Rewrite to describe new module structure |
 | `sim/docs/MUJOCO_GAP_ANALYSIS.md` | ~35 references | Update module paths |
-| `sim/docs/todo/future_work_*.md` | ~694 references across 19 files (432 `mujoco_pipeline.rs` + 262 `model_builder.rs`) | Bulk find-and-replace using Doc Reference Mapping Table in STRUCTURAL_REFACTOR.md |
+| `sim/docs/todo/future_work_*.md` | ~704 references across 19 files (436 `mujoco_pipeline.rs` + 268 `model_builder.rs`) | Bulk find-and-replace using Doc Reference Mapping Table in STRUCTURAL_REFACTOR.md |
 | `sim/docs/STRUCTURAL_REFACTOR.md` | Many references (this is the spec) | Update to reflect actual final structure |
 | `sim/docs/MUJOCO_CONFORMANCE.md` | 4 references | Update module paths |
 | `sim/docs/MUJOCO_REFERENCE.md` | 1 reference | Update module path |
@@ -720,20 +720,22 @@ responsibility) by showing the authoritative decomposition.
 
 | MuJoCo C file | CortenForge module | Scope |
 |---------------|-------------------|-------|
-| `engine_forward.c` | `forward/mod.rs` | `mj_step`, `mj_forward`, top-level orchestration |
-| `engine_core_smooth.c` | `forward/position.rs`, `forward/velocity.rs`, `dynamics/crba.rs`, `dynamics/rne.rs` | FK, velocity, CRBA, RNE |
+| `engine_forward.c` | `forward/mod.rs`, `forward/acceleration.rs`, `forward/check.rs`, `integrate/` | `mj_step`, `mj_forward`, acceleration, state checks, integration |
+| `engine_core_smooth.c` | `forward/position.rs`, `forward/velocity.rs`, `dynamics/crba.rs`, `dynamics/rne.rs`, `tendon/`, `forward/actuation.rs` | FK, velocity, CRBA, RNE, tendon kinematics, actuation/transmission |
 | `engine_passive.c` | `forward/passive.rs` | Springs, dampers, fluid, flex bending |
 | `engine_core_constraint.c` | `constraint/mod.rs`, `constraint/assembly.rs` | Constraint row construction |
 | `engine_solver.c` | `constraint/solver/` | PGS, CG, Newton |
 | `engine_collision_driver.c` | `collision/mod.rs` | Broad phase + dispatch |
 | `engine_collision_convex.c` | `collision/pair_convex.rs`, `collision/pair_cylinder.rs` | Pairwise narrow phase |
 | `engine_collision_primitive.c` | `collision/plane.rs`, `collision/narrow.rs` | Plane collisions, narrow-phase dispatch |
+| (no 1:1 C file) | `collision/flex_collide.rs`, `collision/mesh_collide.rs`, `collision/hfield.rs`, `collision/sdf_collide.rs` | Dispatch wrappers for flex/mesh/hfield/SDF collisions (route into standalone libraries) |
 | `engine_sensor.c` | `sensor/` | All sensor evaluation |
 | `engine_island.c` | `island/` | Island discovery, sleeping |
 | `engine_derivative.c` | `derivatives.rs` (already separate) | Analytical derivatives |
-| `engine_util_sparse.c` | `linalg.rs` | Sparse factorization, solves |
+| `engine_util_sparse.c` | `linalg.rs`, `dynamics/factor.rs` | Sparse solves (`linalg.rs`), sparse LDL factorization + CSR metadata (`dynamics/factor.rs`) |
 | `engine_util_spatial.c` | `dynamics/spatial.rs` | Spatial algebra |
 | `engine_io.c` | `types/model.rs`, `types/model_init.rs`, `types/data.rs` | Model/Data struct definitions + construction |
+| (no 1:1 C file) | `energy.rs`, `joint_visitor.rs` | Energy query (scattered in MuJoCo), joint visitor pattern (Rust-specific abstraction) |
 
 ---
 
@@ -757,7 +759,7 @@ module's domain.
 | `Model::compute_implicit_params()` | `types/model_init.rs` | Model precomputation (no pipeline deps; called at construction alongside `empty()` and `make_data()`) |
 | `Model::n_link_pendulum()`, `double_pendulum()`, etc. | `types/model_factories.rs` | `#[cfg(test)]`-gated test factories (~280 lines) |
 | `Model::visit_joints()` | `joint_visitor.rs` | Joint iteration |
-| `Model::compute_qld_csr_metadata()` | `linalg.rs` or `dynamics/factor.rs` | Sparse factorization metadata |
+| `Model::compute_qld_csr_metadata()` | `dynamics/factor.rs` | Sparse factorization metadata |
 | `Model::compute_muscle_params()` | `forward/actuation.rs` | Muscle precomputation |
 | `Model::compute_spatial_tendon_length0()` | `tendon/mod.rs` | Tendon precomputation |
 | `Data::reset()`, `reset_to_keyframe()` | `types/data.rs` | State management |
@@ -834,9 +836,9 @@ acceptance test:
 10. Read forward/mod.rs                     → tells the complete pipeline story in ~90 lines
 11. A newcomer navigate-only test           → 3 out of 3 targets found by directory browsing
 12. Every module has //! doc comment        → verified
-12a. `RUSTDOCFLAGS="-D warnings" cargo doc` → zero broken intra-doc links
-13. Every mod.rs has clear re-exports       → verified
-14. ARCHITECTURE.md reflects new structure  → verified
+13. `RUSTDOCFLAGS="-D warnings" cargo doc`  → zero broken intra-doc links
+14. Every mod.rs has clear re-exports       → verified
+15. ARCHITECTURE.md reflects new structure  → verified
 ```
 
-**If all 14 checks pass, the refactor is done.**
+**If all 15 checks pass, the refactor is done.**
