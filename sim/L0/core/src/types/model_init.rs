@@ -11,11 +11,12 @@ use std::collections::HashSet;
 use super::enums::{Integrator, MIN_AWAKE, MjJointType, SleepPolicy, SleepState, SolverType};
 use super::model::Model;
 
+// Types from dynamics module (Phase 7 extraction)
+use crate::dynamics::SpatialVector;
+use crate::dynamics::crba::{DEFAULT_MASS_FALLBACK, mj_crba};
+
 // Types still in monolith (will be extracted in later phases)
-use crate::mujoco_pipeline::{
-    DEFAULT_MASS_FALLBACK, Data, SpatialVector, mj_crba, mj_fwd_position, mj_update_sleep_arrays,
-    reset_sleep_state,
-};
+use crate::mujoco_pipeline::{Data, mj_fwd_position, mj_update_sleep_arrays, reset_sleep_state};
 
 impl Model {
     /// Create an empty model with no bodies/joints.
