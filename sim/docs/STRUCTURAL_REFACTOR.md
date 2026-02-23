@@ -781,9 +781,11 @@ sim-mjcf/src/
   validation.rs              (unchanged)
   │
   └── builder/
-      ├── mod.rs             ModelBuilder struct, new(), load_model(),
+      ├── mod.rs             ModelBuilder struct, load_model(),
       │                      load_model_from_file(), model_from_mjcf(),
-      │                      set_options() — top-level orchestration
+      │                      set_options(), resolve_keyframe() — top-level orchestration
+      ├── init.rs            ModelBuilder::new() — field initialization (~264 lines,
+      │                      split from mod.rs to stay under 800; split-impl-block pattern)
       ├── build.rs           build(self) -> Model — model assembly (~675 lines,
       │                      split from mod.rs via Rust's split-impl-block pattern)
       ├── body.rs            process_body, process_body_with_world_frame,
@@ -817,39 +819,135 @@ sim-mjcf/src/
       │                      resolve_orientation
       ├── fluid.rs           compute_geom_fluid, geom_semi_axes, get_added_mass_kappa
       └── asset.rs           resolve_asset_path
-      (resolve_keyframe stays in mod.rs as part of orchestration)
 ```
 
 ### Module size estimates
 
-| Module | Est. lines |
-|--------|-----------|
-| `builder/mod.rs` | ~669 (ModelBuilder struct + fields (~263), new() + set_options() (~53), model_from_mjcf() (~112), load_model() (~28), load_model_from_file() (~76), resolve_keyframe() (~137) — orchestration + top-level API) |
-| `builder/build.rs` | ~675 (the `build(self) -> Model` method — model assembly; split via Rust's split-impl-block pattern) |
-| `builder/body.rs` | ~300 |
-| `builder/joint.rs` | ~200 |
-| `builder/geom.rs` | ~400 |
-| `builder/actuator.rs` | ~400 |
-| `builder/sensor.rs` | ~300 |
-| `builder/tendon.rs` | ~200 |
-| `builder/contact.rs` | ~200 |
-| `builder/equality.rs` | ~300 |
-| `builder/flex.rs` | ~500 |
-| `builder/mass.rs` | ~200 |
-| `builder/mesh.rs` | ~400 |
-| `builder/frame.rs` | ~200 |
-| `builder/compiler.rs` | ~200 |
-| `builder/orientation.rs` | ~150 |
-| `builder/fluid.rs` | ~400 |
-| `builder/asset.rs` | ~100 |
-| **Tests** | ~4,152 (move to their modules) |
+| Module | Est. lines | Source (line ranges in current file) |
+|--------|-----------|--------------------------------------|
+| `builder/mod.rs` | ~732 | ModelConversionError + Display + Error (L50–L65, ~16), resolve_keyframe (L69–L205, ~137), model_from_mjcf (L206–L317, ~112), load_model (L318–L345, ~28), load_model_from_file (L346–L423, ~78), struct ModelBuilder (L516–L822, ~307), set_options (L1089–L1142, ~54). **Note**: `new()` (L824–L1087, ~264) is split out to `builder/init.rs` (see margin warning below). |
+| `builder/init.rs` | ~264 | ModelBuilder::new() (L824–L1087, ~264 lines of field initialization) — split from mod.rs to stay under 800. |
+| `builder/build.rs` | ~676 | build(self) -> Model (L3505–L4180, ~676 lines — model assembly; split via Rust's split-impl-block pattern) |
+| `builder/body.rs` | ~304 | process_worldbody_geoms_and_sites (L1194–L1232, ~39), process_body (L1233–L1262, ~30), process_body_with_world_frame (L1263–L1497, ~235) |
+| `builder/joint.rs` | ~172 | process_joint (L1498–L1669, ~172) |
+| `builder/geom.rs` | ~503 | process_geom (L1670–L1868, ~199), process_site (L1869–L1933, ~65), geom_effective_com (L5387–L5405, ~19), compute_geom_mass (L5493–L5545, ~53), compute_geom_inertia (L5546–L5640, ~95), compute_fromto_pose (L5641–L5680, ~40), geom_size_to_vec3 (L5681–L5712, ~32) |
+| `builder/actuator.rs` | ~419 | process_actuator (L2114–L2484, ~371), parse_gaintype (L4186–L4196, ~11), parse_biastype (L4197–L4207, ~11), parse_dyntype (L4208–L4224, ~17), floats_to_array (L4225–L4233, ~9) |
+| `builder/sensor.rs` | ~300 | process_sensors (L2485–L2538, ~54), resolve_sensor_object (L2672–L2827, ~156), convert_sensor_type (L5713–L5750, ~38), sensor_datatype (L5751–L5802, ~52) |
+| `builder/tendon.rs` | ~180 | process_tendons (L1934–L2113, ~180) |
+| `builder/contact.rs` | ~160 | process_contact (L2539–L2671, ~133), compute_initial_geom_distance (L3071–L3081, ~11), geom_world_position (L3082–L3097, ~16) |
+| `builder/equality.rs` | ~243 | process_equality_constraints (L2828–L3070, ~243) |
+| `builder/flex.rs` | ~581 | process_flex_bodies (L3154–L3504, ~351), compute_flexedge_crosssection (L5803–L5853, ~51), compute_flex_address_table (L5854–L5867, ~14), compute_flex_count_table (L5868–L5883, ~16), compute_vertex_masses (L5884–L5957, ~74), compute_dihedral_angle (L5958–L5997, ~40), compute_edge_solref (L5998–L6008, ~11), compute_bend_stiffness_from_material (L6009–L6025, ~17), compute_bend_damping_from_material (L6026–L6032, ~7) |
+| `builder/mass.rs` | ~198 | apply_mass_pipeline (L3098–L3153, ~56), extract_inertial_properties (L5081–L5135, ~55), compute_inertia_from_geoms (L5406–L5492, ~87) |
+| `builder/mesh.rs` | ~439 | process_mesh (L1143–L1167, ~25), process_hfield (L1168–L1193, ~26), load_mesh_file (L4719–L4780, ~62), convert_mjcf_hfield (L4781–L4842, ~62), convert_mjcf_mesh (L4843–L4873, ~31), convert_embedded_mesh (L4874–L4960, ~87), compute_mesh_inertia (L4961–L5080, ~120), resolve_mesh (L5361–L5386, ~26) |
+| `builder/frame.rs` | ~242 | frame_accum_child (L4367–L4381, ~15), validate_childclass_references (L4382–L4405, ~24), validate_frame_childclass_refs (L4406–L4434, ~29), expand_frames (L4435–L4464, ~30), expand_single_frame (L4465–L4608, ~144) |
+| `builder/compiler.rs` | ~216 | apply_discardvisual + nested remove_visual_geoms + collect_mesh_refs (L5136–L5183, ~48), apply_fusestatic (L5184–L5245, ~62), fuse_static_body (L5255–L5360, ~106) |
+| `builder/orientation.rs` | ~142 | quat_from_wxyz (L4234–L4248, ~15), euler_seq_to_quat (L4249–L4275, ~27), resolve_orientation (L4276–L4366, ~91), quat_to_wxyz (L5246–L5254, ~9) |
+| `builder/fluid.rs` | ~91 | get_added_mass_kappa (L424–L441, ~18), geom_semi_axes (L442–L454, ~13), compute_geom_fluid (L455–L514, ~60) |
+| `builder/asset.rs` | ~110 | AssetKind enum (L4609–L4632, ~24), resolve_asset_path (L4633–L4718, ~86) |
+| **Inline tests** | ~4,152 | L6033–L10184 (move with their modules) |
 
-**Largest module**: `builder/build.rs` at ~675 lines
+**Production code**: ~6,032 lines → distributed across 19 modules
+**Largest module**: `builder/mod.rs` at ~732 lines (after splitting `new()` to `init.rs`)
+**All modules**: ≤800 lines of production code
 
-> Module estimates sum to ~5,794. The remaining ~238 lines are distributed
-> across module-level doc comments, `use` imports, `mod` declarations, and
-> inter-function whitespace that each module will contain but isn't attributed
-> to any single function estimate. Verify actual sizes during extraction.
+> **MARGIN WARNING — `builder/mod.rs`**: Without the `new()` split, mod.rs
+> would be ~996 lines (struct definition 307 + new 264 + set_options 54 +
+> orchestration 371). The split moves `new()` to `builder/init.rs` (~264
+> lines), reducing mod.rs to ~732. This is the recommended approach. If the
+> split feels like overhead, an alternative fallback is to move the struct
+> definition (307 lines) + new() (264) + set_options() (54) = 625 lines to
+> `builder/types.rs`, leaving mod.rs as pure orchestration (~371 lines).
+
+> Module body estimates sum to ~5,972. The file has ~6,032 production lines.
+> The ~60-line gap is the file preamble (`use` imports, ~49 lines) plus
+> minor inter-function whitespace (~11 lines).
+> Verify actual sizes during extraction — estimates are approximate.
+
+### Doc Reference Mapping Table
+
+When updating `future_work_*.md` references that cite `model_builder.rs` by line
+number (e.g., `model_builder.rs:L2114`), use this table to determine the target module.
+Line ranges are approximate and may shift slightly as functions are extracted.
+
+| Line range (approx) | Target module | Contents |
+|---------------------|---------------|----------|
+| L1–L49 | (preamble) | File header, `use` imports |
+| L50–L65 | `builder/mod.rs` | ModelConversionError struct + Display + Error impls |
+| L66–L68 | (whitespace) | |
+| L69–L205 | `builder/mod.rs` | resolve_keyframe() (~137 lines) |
+| L206–L317 | `builder/mod.rs` | model_from_mjcf() (~112 lines) |
+| L318–L345 | `builder/mod.rs` | load_model() (~28 lines) |
+| L346–L423 | `builder/mod.rs` | load_model_from_file() (~78 lines) |
+| L424–L441 | `builder/fluid.rs` | get_added_mass_kappa() (~18 lines) |
+| L442–L454 | `builder/fluid.rs` | geom_semi_axes() (~13 lines) |
+| L455–L514 | `builder/fluid.rs` | compute_geom_fluid() (~60 lines) |
+| L515 | (whitespace) | |
+| L516–L822 | `builder/mod.rs` | struct ModelBuilder (~307 lines of fields) |
+| L823 | (whitespace) | |
+| L824–L1087 | `builder/init.rs` | ModelBuilder::new() (~264 lines of field init) |
+| L1089–L1142 | `builder/mod.rs` | set_options() (~54 lines) |
+| L1143–L1167 | `builder/mesh.rs` | process_mesh() (~25 lines) |
+| L1168–L1193 | `builder/mesh.rs` | process_hfield() (~26 lines) |
+| L1194–L1232 | `builder/body.rs` | process_worldbody_geoms_and_sites() (~39 lines) |
+| L1233–L1262 | `builder/body.rs` | process_body() (~30 lines) |
+| L1263–L1497 | `builder/body.rs` | process_body_with_world_frame() (~235 lines) |
+| L1498–L1669 | `builder/joint.rs` | process_joint() (~172 lines) |
+| L1670–L1868 | `builder/geom.rs` | process_geom() (~199 lines) |
+| L1869–L1933 | `builder/geom.rs` | process_site() (~65 lines) |
+| L1934–L2113 | `builder/tendon.rs` | process_tendons() (~180 lines) |
+| L2114–L2484 | `builder/actuator.rs` | process_actuator() (~371 lines) |
+| L2485–L2538 | `builder/sensor.rs` | process_sensors() (~54 lines) |
+| L2539–L2671 | `builder/contact.rs` | process_contact() (~133 lines) |
+| L2672–L2827 | `builder/sensor.rs` | resolve_sensor_object() (~156 lines) |
+| L2828–L3070 | `builder/equality.rs` | process_equality_constraints() (~243 lines) |
+| L3071–L3081 | `builder/contact.rs` | compute_initial_geom_distance() (~11 lines) |
+| L3082–L3097 | `builder/contact.rs` | geom_world_position() (~16 lines) |
+| L3098–L3153 | `builder/mass.rs` | apply_mass_pipeline() (~56 lines) |
+| L3154–L3504 | `builder/flex.rs` | process_flex_bodies() (~351 lines) |
+| L3505–L4180 | `builder/build.rs` | build(self) -> Model (~676 lines — model assembly) |
+| L4181–L4185 | (whitespace/comments) | Section boundary |
+| L4186–L4196 | `builder/actuator.rs` | parse_gaintype() (~11 lines) |
+| L4197–L4207 | `builder/actuator.rs` | parse_biastype() (~11 lines) |
+| L4208–L4224 | `builder/actuator.rs` | parse_dyntype() (~17 lines) |
+| L4225–L4233 | `builder/actuator.rs` | floats_to_array() (~9 lines) |
+| L4234–L4248 | `builder/orientation.rs` | quat_from_wxyz() (~15 lines) |
+| L4249–L4275 | `builder/orientation.rs` | euler_seq_to_quat() (~27 lines) |
+| L4276–L4366 | `builder/orientation.rs` | resolve_orientation() (~91 lines) |
+| L4367–L4381 | `builder/frame.rs` | frame_accum_child() (~15 lines) |
+| L4382–L4405 | `builder/frame.rs` | validate_childclass_references() (~24 lines) |
+| L4406–L4434 | `builder/frame.rs` | validate_frame_childclass_refs() (~29 lines) |
+| L4435–L4464 | `builder/frame.rs` | expand_frames() (~30 lines) |
+| L4465–L4608 | `builder/frame.rs` | expand_single_frame() (~144 lines) |
+| L4609–L4632 | `builder/asset.rs` | AssetKind enum (~24 lines) |
+| L4633–L4718 | `builder/asset.rs` | resolve_asset_path() (~86 lines) |
+| L4719–L4780 | `builder/mesh.rs` | load_mesh_file() (~62 lines) |
+| L4781–L4842 | `builder/mesh.rs` | convert_mjcf_hfield() (~62 lines) |
+| L4843–L4873 | `builder/mesh.rs` | convert_mjcf_mesh() (~31 lines) |
+| L4874–L4960 | `builder/mesh.rs` | convert_embedded_mesh() (~87 lines) |
+| L4961–L5080 | `builder/mesh.rs` | compute_mesh_inertia() (~120 lines) |
+| L5081–L5135 | `builder/mass.rs` | extract_inertial_properties() (~55 lines) |
+| L5136–L5183 | `builder/compiler.rs` | apply_discardvisual() + nested remove_visual_geoms + collect_mesh_refs (~48 lines) |
+| L5184–L5245 | `builder/compiler.rs` | apply_fusestatic() (~62 lines) |
+| L5246–L5254 | `builder/orientation.rs` | quat_to_wxyz() (~9 lines) |
+| L5255–L5360 | `builder/compiler.rs` | fuse_static_body() (~106 lines) |
+| L5361–L5386 | `builder/mesh.rs` | resolve_mesh() (~26 lines) |
+| L5387–L5405 | `builder/geom.rs` | geom_effective_com() (~19 lines) |
+| L5406–L5492 | `builder/mass.rs` | compute_inertia_from_geoms() (~87 lines) |
+| L5493–L5545 | `builder/geom.rs` | compute_geom_mass() (~53 lines) |
+| L5546–L5640 | `builder/geom.rs` | compute_geom_inertia() (~95 lines) |
+| L5641–L5680 | `builder/geom.rs` | compute_fromto_pose() (~40 lines) |
+| L5681–L5712 | `builder/geom.rs` | geom_size_to_vec3() (~32 lines) |
+| L5713–L5750 | `builder/sensor.rs` | convert_sensor_type() (~38 lines) |
+| L5751–L5802 | `builder/sensor.rs` | sensor_datatype() (~52 lines) |
+| L5803–L5853 | `builder/flex.rs` | compute_flexedge_crosssection() (~51 lines) |
+| L5854–L5867 | `builder/flex.rs` | compute_flex_address_table() (~14 lines) |
+| L5868–L5883 | `builder/flex.rs` | compute_flex_count_table() (~16 lines) |
+| L5884–L5957 | `builder/flex.rs` | compute_vertex_masses() (~74 lines) |
+| L5958–L5997 | `builder/flex.rs` | compute_dihedral_angle() (~40 lines) |
+| L5998–L6008 | `builder/flex.rs` | compute_edge_solref() (~11 lines) |
+| L6009–L6025 | `builder/flex.rs` | compute_bend_stiffness_from_material() (~17 lines) |
+| L6026–L6032 | `builder/flex.rs` | compute_bend_damping_from_material() (~7 lines) |
+| L6033–L10184 | (inline tests) | ~4,152 lines — move with their host modules |
 
 ---
 
@@ -930,6 +1028,19 @@ Every extraction phase (1–10) ends with these steps. They are not optional.
       they don't depend on `sim-core` internal module paths — only on its public
       API, which doesn't change. If in doubt, run the full CLAUDE.md sim test
       command as a final sanity check.)
+
+      **Pre-refactor baseline snapshot (2026-02-23):**
+      | Crate | Passed | Failed | Ignored |
+      |-------|--------|--------|---------|
+      | `sim-core` (unit) | 402 | 0 | 0 |
+      | `sim-core` (integration) | 2 | 0 | 9 |
+      | `sim-core` (doc) | 0 | 0 | 2 |
+      | `sim-mjcf` (unit) | 281 | 0 | 0 |
+      | `sim-mjcf` (doc) | 1 | 0 | 3 |
+      | `sim-conformance-tests` | 831 | 0 | 1 |
+      | `sim-physics` (unit) | 6 | 0 | 0 |
+      | `sim-physics` (doc) | 3 | 0 | 0 |
+      | **Total** | **1,526** | **0** | **15** |
 - [ ] **Audit test helpers.** Grep the monolith's `#[cfg(test)]` section
       (L21476–L26722) for shared helper functions (non-`#[test]` `fn`
       definitions). Categorize each as:
@@ -1179,13 +1290,16 @@ The second-largest extraction. 10,184 lines total (~6,032 production + ~4,152
 tests; ~71 production functions (47 free functions + 22 impl methods + 2 nested:
 `remove_visual_geoms` and `collect_mesh_refs`, both inside `apply_discardvisual` —
 go to `builder/compiler.rs`) + 151 fn definitions in test
-section (149 `#[test]` + 2 test helpers)) across 18 target modules (including
-`builder/build.rs`). Same strategy as sim-core: move functions, move tests,
+section (149 `#[test]` + 2 test helpers)) across 19 target modules (including
+`builder/build.rs` and `builder/init.rs`). Same strategy as sim-core: move functions, move tests,
 update imports, verify.
 
-- [ ] Create `sim-mjcf/src/builder/mod.rs` — move `ModelBuilder` struct, `new()`,
-      `set_options()`, plus top-level orchestration functions:
+- [ ] Create `sim-mjcf/src/builder/mod.rs` — move `ModelBuilder` struct,
+      `set_options()`, `resolve_keyframe()`, plus top-level orchestration functions:
       `model_from_mjcf()`, `load_model()`, `load_model_from_file()`
+- [ ] Create `builder/init.rs` — move `ModelBuilder::new()` (~264 lines of field
+      initialization; split from mod.rs via Rust's split-impl-block pattern to
+      keep mod.rs under 800 lines)
 - [ ] Create `builder/build.rs` — move `build(self) -> Model` method (~675 lines
       of model assembly; split from mod.rs via Rust's split-impl-block pattern)
 - [ ] Create `builder/body.rs` — move `process_body()`, `process_body_with_world_frame()`,
@@ -1232,10 +1346,12 @@ update imports, verify.
 
 **Extraction order within Phase 10** (respects internal call dependencies):
 
-1.  `builder/mod.rs` — ModelBuilder struct + new() + set_options() +
+1.  `builder/mod.rs` — ModelBuilder struct + set_options() +
     orchestration stubs (model_from_mjcf, load_model, load_model_from_file,
     resolve_keyframe). All process_* calls remain as `self.process_*()` —
     they resolve via Rust's impl-across-files once extracted.
+1b. `builder/init.rs` — ModelBuilder::new() (~264 lines of field initialization).
+    Split from mod.rs immediately to stay under 800 lines.
 2.  `builder/orientation.rs` — leaf helper (resolve_orientation, quat_from_wxyz,
     quat_to_wxyz, euler_seq_to_quat). No internal deps.
 3.  `builder/asset.rs` — leaf helper (resolve_asset_path). No internal deps.
