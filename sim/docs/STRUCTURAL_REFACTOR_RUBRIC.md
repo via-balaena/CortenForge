@@ -441,7 +441,7 @@ understands the **entire simulation pipeline** in ~90 lines. That's the goal.
 |------|----------------------|--------|
 | `sim/docs/ARCHITECTURE.md` | ~7 references total | Rewrite to describe new module structure |
 | `sim/docs/MUJOCO_GAP_ANALYSIS.md` | ~35 references | Update module paths |
-| `sim/docs/todo/future_work_*.md` | ~704 references across 19 files (436 `mujoco_pipeline.rs` + 268 `model_builder.rs`) | Bulk find-and-replace using Doc Reference Mapping Table in STRUCTURAL_REFACTOR.md |
+| `sim/docs/todo/future_work_*.md` | ~692 references across 27 files (432 `mujoco_pipeline.rs` + 262 `model_builder.rs`) | Bulk find-and-replace using Doc Reference Mapping Table in STRUCTURAL_REFACTOR.md |
 | `sim/docs/STRUCTURAL_REFACTOR.md` | Many references (this is the spec) | Update to reflect actual final structure |
 | `sim/docs/MUJOCO_CONFORMANCE.md` | 4 references | Update module paths |
 | `sim/docs/MUJOCO_REFERENCE.md` | 1 reference | Update module path |
@@ -721,7 +721,7 @@ responsibility) by showing the authoritative decomposition.
 | MuJoCo C file | CortenForge module | Scope |
 |---------------|-------------------|-------|
 | `engine_forward.c` | `forward/mod.rs`, `forward/acceleration.rs`, `forward/check.rs`, `integrate/` | `mj_step`, `mj_forward`, acceleration, state checks, integration |
-| `engine_core_smooth.c` | `forward/position.rs`, `forward/velocity.rs`, `dynamics/crba.rs`, `dynamics/rne.rs`, `tendon/`, `forward/actuation.rs` | FK, velocity, CRBA, RNE, tendon kinematics, actuation/transmission |
+| `engine_core_smooth.c` | `forward/position.rs`, `forward/velocity.rs`, `dynamics/crba.rs`, `dynamics/rne.rs`, `tendon/`, `forward/actuation.rs`, `forward/muscle.rs` | FK, velocity, CRBA, RNE, tendon kinematics, actuation/transmission, muscle precomputation |
 | `engine_passive.c` | `forward/passive.rs` | Springs, dampers, fluid, flex bending |
 | `engine_core_constraint.c` | `constraint/mod.rs`, `constraint/assembly.rs` | Constraint row construction |
 | `engine_solver.c` | `constraint/solver/` | PGS, CG, Newton |
@@ -760,7 +760,7 @@ module's domain.
 | `Model::n_link_pendulum()`, `double_pendulum()`, etc. | `types/model_factories.rs` | `#[cfg(test)]`-gated test factories (~280 lines) |
 | `Model::visit_joints()` | `joint_visitor.rs` | Joint iteration |
 | `Model::compute_qld_csr_metadata()` | `dynamics/factor.rs` | Sparse factorization metadata |
-| `Model::compute_muscle_params()` | `forward/actuation.rs` | Muscle precomputation |
+| `Model::compute_muscle_params()` | `forward/muscle.rs` | Muscle precomputation |
 | `Model::compute_spatial_tendon_length0()` | `tendon/mod.rs` | Tendon precomputation |
 | `Data::reset()`, `reset_to_keyframe()` | `types/data.rs` | State management |
 | `Data::total_energy()` | `energy.rs` | Energy query |

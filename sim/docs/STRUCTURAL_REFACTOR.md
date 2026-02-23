@@ -339,7 +339,7 @@ sim-core/src/
   batch.rs                 (batched sim)
 ```
 
-### Target (~60 new files in module tree, ~70 total with existing files)
+### Target (~61 new files in module tree, ~71 total with existing files)
 
 ```
 sim-core/src/
@@ -356,7 +356,7 @@ sim-core/src/
   │   │                       is_ancestor() + joint_qpos0() + qld_csr() (~780 lines)
   │   │                       (visit_joints → joint_visitor.rs,
   │   │                        compute_qld_csr_metadata → dynamics/factor.rs,
-  │   │                        compute_muscle_params → forward/actuation.rs,
+  │   │                        compute_muscle_params → forward/muscle.rs,
   │   │                        compute_spatial_tendon_length0 → tendon/mod.rs)
   │   ├── model_init.rs       empty(), make_data(), compute_ancestors(),
   │   │                       compute_implicit_params(), compute_stat_meaninertia(),
@@ -386,7 +386,8 @@ sim-core/src/
   │   │                       fluid/aerodynamic forces, flex bending + vertex damping)
   │   ├── actuation.rs        mj_fwd_actuation, mj_actuator_length,
   │   │                       mj_transmission_site, mj_transmission_body,
-  │   │                       mj_transmission_body_dispatch, muscle_* helpers
+  │   │                       mj_transmission_body_dispatch
+  │   ├── muscle.rs           compute_muscle_params, muscle_* helpers (~259 lines)
   │   ├── acceleration.rs     mj_fwd_acceleration (dispatch), mj_fwd_acceleration_explicit,
   │   │                       _implicit, _implicitfast, _implicit_full,
   │   │                       ImplicitSpringVisitor — all four acceleration paths
@@ -554,7 +555,8 @@ sim-core/src/
 | `forward/position.rs` | ~500 | L4876–L5383 (mj_fwd_position + aabb + SAP) |
 | `forward/velocity.rs` | ~114 | L9244–L9358 (body spatial velocities from qvel) |
 | `forward/passive.rs` | ~660 | L12108–L12690 (fluid helpers + mj_fwd_passive) + L12818–L12899 (PassiveForceVisitor) |
-| `forward/actuation.rs` | ~760 | L10682–L11247 (transmission + actuation + muscle helpers) + L3745–L4003 (compute_muscle_params, joins in Phase 8a). **MARGIN WARNING**: ~760 is close to limit. If extraction exceeds 800, move compute_muscle_params to a separate `forward/muscle.rs`. |
+| `forward/actuation.rs` | ~566 | L10682–L11247 (transmission + actuation, excluding L10795–L10829 which goes to jacobian.rs). Originally estimated at ~760 with compute_muscle_params included, but raw range totaled ~825 — exceeding the 800-line S1 limit. Split: muscle params moved to `forward/muscle.rs`. |
+| `forward/muscle.rs` | ~259 | L3745–L4003 (compute_muscle_params + muscle_* helpers, joins in Phase 8a) |
 | `forward/check.rs` | ~30 | L4822–L4876 (mj_check_pos, mj_check_vel, mj_check_acc — ~30 lines of function bodies within a 54-line range that includes comments/whitespace. These are trivial validation guards. May be inlined into `forward/mod.rs` if the separate file feels like overhead.) |
 | `forward/acceleration.rs` | ~310 | L20029–L20084 (mj_fwd_acceleration dispatch) + L20085–L20104 + L20559–L20827 (4 accel paths) |
 | `dynamics/crba.rs` | ~350 | L11247–L11598 |
@@ -601,9 +603,9 @@ sim-core/src/
 | `energy.rs` | ~94 | L8028–L8116 + L4485–L4489 (Data::total_energy) |
 | **Inline tests** | ~5,246 | L21476–L26722 (move with their modules) |
 
-**Production code**: ~21,475 lines → distributed across ~60 modules
+**Production code**: ~21,475 lines → distributed across ~61 modules
 **Largest module**: `constraint/assembly.rs` at ~750 lines
-**Average module**: ~430 lines (ideal for comprehension)
+**Average module**: ~420 lines (ideal for comprehension)
 **All modules**: ≤800 lines of production code (verified for constraint block)
 
 ### Doc Reference Mapping Table
@@ -630,7 +632,7 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L3661–L3696 | `types/model_init.rs` | `compute_ancestors()` (doc comment at L3661, fn at L3671) |
 | L3697–L3704 | (whitespace/comments) | Section boundary — no production code |
 | L3705–L3744 | `types/model_init.rs` | `compute_implicit_params()` (doc comment at L3698, fn at L3705) |
-| L3745–L4003 | `forward/actuation.rs` | `compute_muscle_params()` — stays in monolith until Phase 8a |
+| L3745–L4003 | `forward/muscle.rs` | `compute_muscle_params()` — stays in monolith until Phase 8a |
 | L4004–L4032 | `tendon/mod.rs` | `compute_spatial_tendon_length0()` — stays in monolith until Phase 5 |
 | L4033–L4062 | `types/model_init.rs` | `compute_stat_meaninertia()` |
 | L4063–L4076 | `types/model.rs` | `is_ancestor()` |
@@ -671,7 +673,7 @@ Line ranges are approximate and may shift slightly as functions are extracted.
 | L10114–L10674 | `tendon/wrap_math.rs` | segments_intersect_2d (L10114), directional_wrap_angle (L10131), sphere_tangent_point (L10156), compute_tangent_pair (L10170), circle_tangent_2d (L10187), sphere_wrapping_plane (L10219), wrap_inside_2d (L10246), sphere_wrap (L10369), cylinder_wrap (L10509) |
 | L10675–L10681 | (whitespace/comments) | Section boundary between tendon wrapping and actuation |
 | L10795–L10829 | `jacobian.rs` | compute_contact_normal_jacobian (~35 lines) — private, called only by `mj_transmission_body`. Despite sitting in the actuation section of the monolith, logically belongs with Jacobian utilities. |
-| L10682–L11247 | `forward/actuation.rs` | Transmission + actuation + muscle helpers (excluding L10795–L10829 which goes to jacobian.rs) |
+| L10682–L11247 | `forward/actuation.rs` | Transmission + actuation (excluding L10795–L10829 which goes to jacobian.rs; muscle_* helpers referenced in this range call compute_muscle_params from `forward/muscle.rs`) |
 | L11247–L11598 | `dynamics/crba.rs` | CRBA + mass matrix |
 | L11599–L11608 | `joint_visitor.rs` | (end of CRBA range / start of joint_motion_subspace — boundary overlap resolved) |
 | L11609–L11669 | `joint_visitor.rs` | joint_motion_subspace (motion subspace computation) |
@@ -1033,8 +1035,8 @@ Every extraction phase (1–10) ends with these steps. They are not optional.
       | Crate | Passed | Failed | Ignored |
       |-------|--------|--------|---------|
       | `sim-core` (unit) | 402 | 0 | 0 |
-      | `sim-core` (integration) | 2 | 0 | 9 |
-      | `sim-core` (doc) | 0 | 0 | 2 |
+      | `sim-core` (doc, runner 1) | 2 | 0 | 9 |
+      | `sim-core` (doc, runner 2) | 0 | 0 | 2 |
       | `sim-mjcf` (unit) | 281 | 0 | 0 |
       | `sim-mjcf` (doc) | 1 | 0 | 3 |
       | `sim-conformance-tests` | 831 | 0 | 1 |
@@ -1072,7 +1074,7 @@ struct/enum definitions.
       `free_body()` → `types/model_factories.rs` (~280 lines, `#[cfg(test)]`-gated)
 - [ ] Methods destined for other modules (`visit_joints` → `joint_visitor.rs`,
       `compute_qld_csr_metadata` → `dynamics/factor.rs`,
-      `compute_muscle_params` → `forward/actuation.rs`,
+      `compute_muscle_params` → `forward/muscle.rs`,
       `compute_spatial_tendon_length0` → `tendon/mod.rs`) stay in the monolith
       until their target module is created in a later phase.
 - [ ] Move Data struct + Clone impl + accessors → `types/data.rs`, plus only
@@ -1231,7 +1233,8 @@ integration and island/sleep follows Principle #5 (one PR per major module).
       **WARNING**: L12690–L12816 (tendon implicit K/D helpers) sits between the
       two passive ranges but goes to `integrate/implicit.rs` in Phase 8b, NOT
       to `forward/passive.rs`. Only take L12108–L12690 and L12818–L12899.
-- [ ] Move actuation pipeline + compute_muscle_params → `forward/actuation.rs`
+- [ ] Move actuation pipeline → `forward/actuation.rs` (~566 lines)
+- [ ] Move compute_muscle_params + muscle_* helpers → `forward/muscle.rs` (~259 lines)
 - [ ] Move acceleration paths → `forward/acceleration.rs`
 - [ ] Move check functions → `forward/check.rs`
 - [ ] Move Jacobian functions → `src/jacobian.rs` (includes `mj_differentiate_pos`
@@ -1287,7 +1290,7 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 ### Phase 10: Extract model_builder.rs into module tree
 
 The second-largest extraction. 10,184 lines total (~6,032 production + ~4,152
-tests; ~71 production functions (47 free functions + 22 impl methods + 2 nested:
+tests; ~73 production functions (47 free functions + 24 impl methods + 2 nested:
 `remove_visual_geoms` and `collect_mesh_refs`, both inside `apply_discardvisual` —
 go to `builder/compiler.rs`) + 151 fn definitions in test
 section (149 `#[test]` + 2 test helpers)) across 19 target modules (including
@@ -1421,8 +1424,8 @@ sure every trace of the monolith is gone from documentation and comments.
 - [ ] **Rewrite `sim/docs/ARCHITECTURE.md`** — replace the current "The
       simulation engine lives in `mujoco_pipeline.rs`" section with the new
       module tree structure. This is the primary document newcomers read.
-- [ ] **Update all `sim/docs/todo/future_work_*.md`** files — ~704 references
-      across 19 files (436 `mujoco_pipeline.rs` refs + 268 `model_builder.rs` refs).
+- [ ] **Update all `sim/docs/todo/future_work_*.md`** files — ~692 references
+      across 27 files (432 `mujoco_pipeline.rs` refs + 262 `model_builder.rs` refs).
       Use the **Doc Reference Mapping Table** (in the Module Size Estimates section) to map line-range citations
       (e.g., `mujoco_pipeline.rs:L15334`) to target modules. Bulk find-and-replace
       with module-specific paths (e.g., `constraint/solver/newton.rs`, `forward/passive.rs`).
