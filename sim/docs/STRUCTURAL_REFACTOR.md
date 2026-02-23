@@ -1,6 +1,6 @@
 # sim-core Structural Refactor
 
-> **Status**: Executing — 6 of 10 phases complete (2026-02-23)
+> **Status**: Executing — 7 of 10 phases complete (2026-02-23)
 > **Scope**: Decompose `mujoco_pipeline.rs` (26,722 lines) and `model_builder.rs`
 > (10,184 lines total; ~6,032 production + ~4,152 tests) into navigable module
 > trees. Zero physics changes. Zero API changes.
@@ -1248,12 +1248,12 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 
 ### Phase 7: Extract dynamics (CRBA, RNE, factorization)
 
-- [ ] Extend `src/dynamics/` module tree (created in Phase 2 with `spatial.rs`)
-- [ ] Move mj_crba + cache_body_effective_mass → `dynamics/crba.rs`
-- [ ] Move mj_rne + mj_gravcomp → `dynamics/rne.rs`
-- [ ] Move mj_factor_sparse*, compute_qld_csr_metadata → `dynamics/factor.rs`
-- [ ] Move mj_flex → `dynamics/flex.rs` (~10 lines — only `mj_flex` exists)
-- [ ] Run full test suite
+- [x] Extend `src/dynamics/` module tree (created in Phase 2 with `spatial.rs`)
+- [x] Move mj_crba + cache_body_effective_mass → `dynamics/crba.rs`
+- [x] Move mj_rne + mj_gravcomp → `dynamics/rne.rs`
+- [x] Move mj_factor_sparse*, compute_qld_csr_metadata → `dynamics/factor.rs`
+- [x] Move mj_flex → `dynamics/flex.rs` (~10 lines — only `mj_flex` exists)
+- [x] Run full test suite
 
 **Estimated size**: ~930 lines moved (crba ~350 + rne ~350 + factor ~200 + flex ~10 + overhead ~20)
 

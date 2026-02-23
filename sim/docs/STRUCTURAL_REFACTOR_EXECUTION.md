@@ -406,10 +406,11 @@ and correlating with commit history.
 | 3 | collision/sdf_collide.rs | 131 lines; collide_with_sdf | done | 7b2a841 | S11 |
 | 3 | collision/flex_collide.rs | 210 lines; narrowphase_sphere_geom, make_contact_flex_rigid | done | 7b2a841 | S11 |
 | 3 | **Phase 3 audit** | Independent audit: all S1–S8 A-grade. Zero findings. Lazy import check passed (errors only in monolith). sensor/position.rs import updated. 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S11 |
-| 7 | dynamics/crba.rs | | | | |
-| 7 | dynamics/rne.rs | | | | |
-| 7 | dynamics/factor.rs | | | | |
-| 7 | dynamics/flex.rs | | | | |
+| 7 | dynamics/crba.rs | 395 lines; mj_crba, cache_body_effective_mass, MIN_INERTIA_THRESHOLD, DEFAULT_MASS_FALLBACK | done | 1f69392 | S12 |
+| 7 | dynamics/rne.rs | 362 lines; mj_rne, mj_gravcomp (imports mj_apply_ft from monolith until Phase 8a) | done | 1f69392 | S12 |
+| 7 | dynamics/factor.rs | 237 lines; mj_factor_sparse, mj_factor_sparse_selective, Model::compute_qld_csr_metadata (split impl block) | done | 1f69392 | S12 |
+| 7 | dynamics/flex.rs | 19 lines; mj_flex | done | 1f69392 | S12 |
+| 7 | **Phase 7 audit** | Independent audit: all S1–S8 A-grade. Zero findings. Lazy import check passed (errors only in monolith). model_init.rs updated to import directly from dynamics::crba. 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S12 |
 | 6 | constraint/mod.rs | | | | |
 | 6 | constraint/impedance.rs | | | | |
 | 6 | constraint/jacobian.rs | | | | |
