@@ -1166,14 +1166,14 @@ Self-contained: reads from Model/Data, writes to sensordata.
 Energy is not a sensor but is extracted here because it's physically adjacent
 in the monolith (L8028–L8116) and has no dependencies on later pipeline stages.
 
-- [ ] Create `src/sensor/` module tree
-- [ ] Move mj_sensor_pos → `sensor/position.rs`
-- [ ] Move mj_sensor_vel → `sensor/velocity.rs`
-- [ ] Move mj_sensor_acc → `sensor/acceleration.rs`
-- [ ] Move mj_sensor_postprocess + sensor_write helpers → `sensor/postprocess.rs`
-- [ ] Move subtree_com, subtree_momentum, body_acceleration, etc. → `sensor/derived.rs`
-- [ ] Move mj_energy_pos, mj_energy_vel, Data::total_energy() → `src/energy.rs`
-- [ ] Run full test suite
+- [x] Create `src/sensor/` module tree
+- [x] Move mj_sensor_pos → `sensor/position.rs`
+- [x] Move mj_sensor_vel → `sensor/velocity.rs`
+- [x] Move mj_sensor_acc → `sensor/acceleration.rs`
+- [x] Move mj_sensor_postprocess + sensor_write helpers → `sensor/postprocess.rs`
+- [x] Move subtree_com, subtree_momentum, body_acceleration, etc. → `sensor/derived.rs`
+- [x] Move mj_energy_pos, mj_energy_vel, Data::total_energy() → `src/energy.rs`
+- [x] Run full test suite — 2,007 passed / 0 failed / 20 ignored
 
 **Estimated size**: ~1,200 lines moved (sensor modules ~1,036 + energy.rs ~94 +
 inter-function whitespace/doc comments ~70)

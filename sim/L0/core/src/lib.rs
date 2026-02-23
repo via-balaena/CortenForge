@@ -84,6 +84,12 @@ pub mod joint_visitor;
 // Tendon kinematics (fixed-path and spatial-path)
 pub mod tendon;
 
+// Sensor pipeline (position, velocity, acceleration, postprocess)
+pub mod sensor;
+
+// Energy queries (potential + kinetic)
+pub mod energy;
+
 // Collision shape primitives (canonical source)
 pub mod collision_shape;
 
