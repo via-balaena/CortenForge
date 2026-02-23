@@ -1,6 +1,6 @@
 # sim-core Structural Refactor
 
-> **Status**: Spec draft — 2026-02-22
+> **Status**: Executing — 6 of 10 phases complete (2026-02-23)
 > **Scope**: Decompose `mujoco_pipeline.rs` (26,722 lines) and `model_builder.rs`
 > (10,184 lines total; ~6,032 production + ~4,152 tests) into navigable module
 > trees. Zero physics changes. Zero API changes.
@@ -1096,32 +1096,32 @@ Every extraction phase (1–10) ends with these steps. They are not optional.
 The safest first move. Types have no function bodies to worry about — just
 struct/enum definitions.
 
-- [ ] Create `src/types/mod.rs`, `enums.rs`, `model.rs`, `model_init.rs`,
+- [x] Create `src/types/mod.rs`, `enums.rs`, `model.rs`, `model_init.rs`,
       `model_factories.rs`, `data.rs`, `contact_types.rs`, `keyframe.rs`
-- [ ] Move all enums (MjJointType, GeomType, SolverType, etc.) → `types/enums.rs`
-- [ ] Move Model struct definition + field accessors + `is_ancestor()` +
+- [x] Move all enums (MjJointType, GeomType, SolverType, etc.) → `types/enums.rs`
+- [x] Move Model struct definition + field accessors + `is_ancestor()` +
       `joint_qpos0()` + `qld_csr()` → `types/model.rs` (~780 lines)
-- [ ] Move `empty()`, `make_data()`, `compute_ancestors()`,
+- [x] Move `empty()`, `make_data()`, `compute_ancestors()`,
       `compute_implicit_params()`, `compute_stat_meaninertia()`,
       `compute_body_lengths()`, `compute_dof_lengths()` →
       `types/model_init.rs` (~774 lines — construction + precomputation).
       Note: compute_body_lengths + compute_dof_lengths are at L12901–L12964,
       physically distant from the other model_init functions.
-- [ ] Move `n_link_pendulum()`, `double_pendulum()`, `spherical_pendulum()`,
+- [x] Move `n_link_pendulum()`, `double_pendulum()`, `spherical_pendulum()`,
       `free_body()` → `types/model_factories.rs` (~280 lines, NOT `#[cfg(test)]` — used by external test crates)
-- [ ] Methods destined for other modules (`visit_joints` → `joint_visitor.rs`,
+- [x] Methods destined for other modules (`visit_joints` → `joint_visitor.rs`,
       `compute_qld_csr_metadata` → `dynamics/factor.rs`,
       `compute_muscle_params` → `forward/muscle.rs`,
       `compute_spatial_tendon_length0` → `tendon/mod.rs`) stay in the monolith
       until their target module is created in a later phase.
-- [ ] Move Data struct + Clone impl + accessors → `types/data.rs`, plus only
+- [x] Move Data struct + Clone impl + accessors → `types/data.rs`, plus only
       the `impl Data` methods that belong there: `reset()`, `reset_to_keyframe()`,
       `qld_diag()`, and field accessors. Pipeline methods (`step`, `forward`,
       `integrate`, etc.) stay in the monolith until Phase 8.
-- [ ] Move Contact/ContactPair + compute_tangent_frame → `types/contact_types.rs`
-- [ ] Move Keyframe → `types/keyframe.rs`
-- [ ] Update `lib.rs` re-exports (same public API)
-- [ ] Run full test suite — must match baseline
+- [x] Move Contact/ContactPair + compute_tangent_frame → `types/contact_types.rs`
+- [x] Move Keyframe → `types/keyframe.rs`
+- [x] Update `lib.rs` re-exports (same public API)
+- [x] Run full test suite — 1,526 passed / 0 failed / 15 ignored
 
 **Estimated size**: ~3,500 lines moved
 
@@ -1129,13 +1129,13 @@ struct/enum definitions.
 
 Pure math functions with no pipeline state dependencies.
 
-- [ ] Create `src/linalg.rs` — move Cholesky, LU, sparse solve, UnionFind
-- [ ] Create `src/dynamics/mod.rs` + `src/dynamics/spatial.rs` — move
+- [x] Create `src/linalg.rs` — move Cholesky, LU, sparse solve, UnionFind
+- [x] Create `src/dynamics/mod.rs` + `src/dynamics/spatial.rs` — move
       spatial_cross_motion/force, compute_body_spatial_inertia,
       shift_spatial_inertia (remaining dynamics/ modules filled in Phase 7)
-- [ ] Create `src/joint_visitor.rs` — move JointVisitor trait, JointContext,
+- [x] Create `src/joint_visitor.rs` — move JointVisitor trait, JointContext,
       joint_motion_subspace, Model::visit_joints()
-- [ ] Run full test suite
+- [x] Run full test suite — 1,526 passed / 0 failed / 15 ignored
 
 **Estimated size**: ~900 lines moved
 
@@ -1144,18 +1144,18 @@ Pure math functions with no pipeline state dependencies.
 The collision code is already partially separate (gjk_epa.rs, mesh.rs, etc.)
 but the dispatch and primitives live in the monolith.
 
-- [ ] Create `src/collision/` module tree
-- [ ] Move mj_collision, collision filters → `collision/mod.rs`
-- [ ] Move collide_geoms dispatch, geom_to_collision_shape → `collision/narrow.rs`
-- [ ] Move pairwise primitives → `collision/pair_convex.rs` + `collision/pair_cylinder.rs`
-- [ ] Move plane collisions → `collision/plane.rs`
-- [ ] Move mesh collision dispatch → `collision/mesh_collide.rs`
-- [ ] Move hfield collision → `collision/hfield.rs`
-- [ ] Move sdf collision → `collision/sdf_collide.rs`
-- [ ] Move flex collision → `collision/flex_collide.rs`
-- [ ] Move contact parameter mixing (contact_param, solmix, combine_*) →
+- [x] Create `src/collision/` module tree
+- [x] Move mj_collision, collision filters → `collision/mod.rs`
+- [x] Move collide_geoms dispatch, geom_to_collision_shape → `collision/narrow.rs`
+- [x] Move pairwise primitives → `collision/pair_convex.rs` + `collision/pair_cylinder.rs`
+- [x] Move plane collisions → `collision/plane.rs`
+- [x] Move mesh collision dispatch → `collision/mesh_collide.rs`
+- [x] Move hfield collision → `collision/hfield.rs`
+- [x] Move sdf collision → `collision/sdf_collide.rs`
+- [x] Move flex collision → `collision/flex_collide.rs`
+- [x] Move contact parameter mixing (contact_param, solmix, combine_*) →
       `collision/mod.rs` (or `collision/params.rs`)
-- [ ] Run full test suite
+- [x] Run full test suite — 2,007 passed / 0 failed / 20 ignored
 
 **Estimated size**: ~2,700 lines moved (module sizes sum to ~2,664; overhead for
 imports/docs/whitespace in new files ~36)
