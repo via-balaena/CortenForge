@@ -411,18 +411,18 @@ and correlating with commit history.
 | 7 | dynamics/factor.rs | 237 lines; mj_factor_sparse, mj_factor_sparse_selective, Model::compute_qld_csr_metadata (split impl block) | done | 1f69392 | S12 |
 | 7 | dynamics/flex.rs | 19 lines; mj_flex | done | 1f69392 | S12 |
 | 7 | **Phase 7 audit** | Independent audit: all S1–S8 A-grade. Zero findings. Lazy import check passed (errors only in monolith). model_init.rs updated to import directly from dynamics::crba. 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S12 |
-| 6 | constraint/mod.rs | | | | |
-| 6 | constraint/impedance.rs | | | | |
-| 6 | constraint/jacobian.rs | | | | |
-| 6 | constraint/equality.rs | | | | |
-| 6 | constraint/assembly.rs | **(MARGIN)** ~750 lines | | | |
-| 6 | constraint/solver/mod.rs | | | | |
-| 6 | constraint/solver/primal.rs | | | | |
-| 6 | constraint/solver/pgs.rs | | | | |
-| 6 | constraint/solver/cg.rs | | | | |
-| 6 | constraint/solver/hessian.rs | **(MARGIN)** ~685 lines | | | |
-| 6 | constraint/solver/newton.rs | | | | |
-| 6 | constraint/solver/noslip.rs | | | | |
+| 6 | constraint/mod.rs | 425 lines; mj_fwd_constraint_islands, mj_fwd_constraint, compute_qacc_smooth, build_m_impl_for_newton, compute_qfrc_smooth_implicit, compute_point_velocity | done | 2a12dfe | S13 |
+| 6 | constraint/impedance.rs | 331 lines; compute_impedance, compute_kbip, compute_aref, compute_regularization, etc. | done | 264a33a | S13 |
+| 6 | constraint/jacobian.rs | 330 lines; compute_contact_jacobian, compute_flex_contact_jacobian, add_angular_jacobian | done | fba1dbd | S13 |
+| 6 | constraint/equality.rs | 661 lines; all extract_*_jacobian, add_body_*_jacobian_row, get_min_* helpers | done | 0478367 | S13 |
+| 6 | constraint/assembly.rs | **(MARGIN)** 735 lines; assemble_unified_constraints, tendon_deadband_displacement (populate_efc_island deferred — uses island data, moved in Phase 8c) | done | 64159d5 | S13 |
+| 6 | constraint/solver/mod.rs | 77 lines; decode_pyramid, compute_qfrc_constraint_from_efc, extract_qfrc_frictionloss | done | f960b7d | S13 |
+| 6 | constraint/solver/primal.rs | 676 lines; compute_gradient_and_search(_sparse), PrimalQuad, PrimalPoint, primal_prepare/eval/search, evaluate_cost_at | done | f20d719 | S13 |
+| 6 | constraint/solver/pgs.rs | 488 lines; pgs_solve_unified, pgs_cost_change, classify_constraint_states, compute_delassus_regularized | done | c6a15cc | S13 |
+| 6 | constraint/solver/cg.rs | 310 lines; cg_solve_unified | done | 7e7744d | S13 |
+| 6 | constraint/solver/hessian.rs | **(MARGIN)** 721 lines; assemble_hessian, SparseHessian struct + impl, hessian_incremental, hessian_cone | done | 4ed8179 | S13 |
+| 6 | constraint/solver/newton.rs | 352 lines; NewtonResult, newton_solve, recover_newton | done | 2247036 | S13 |
+| 6 | constraint/solver/noslip.rs | 748 lines; project_elliptic_cone, noslip_qcqp2/3, NoslipRowKind, noslip_postprocess | done | a17d28d | S13 |
 | 8a | forward/mod.rs | | | | |
 | 8a | forward/position.rs | | | | |
 | 8a | forward/velocity.rs | | | | |

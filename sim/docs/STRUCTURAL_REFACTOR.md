@@ -1,6 +1,6 @@
 # sim-core Structural Refactor
 
-> **Status**: Executing — 7 of 10 phases complete (2026-02-23)
+> **Status**: Executing — 8 of 10 phases complete (2026-02-23)
 > **Scope**: Decompose `mujoco_pipeline.rs` (26,722 lines) and `model_builder.rs`
 > (10,184 lines total; ~6,032 production + ~4,152 tests) into navigable module
 > trees. Zero physics changes. Zero API changes.
@@ -1198,34 +1198,34 @@ inter-function whitespace/doc comments ~70)
 The largest extraction. ~5,612 lines across 45+ functions → 12 files.
 See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 
-- [ ] Create `src/constraint/mod.rs` — move mj_fwd_constraint, mj_fwd_constraint_islands,
+- [x] Create `src/constraint/mod.rs` — move mj_fwd_constraint, mj_fwd_constraint_islands,
       compute_qacc_smooth, build_m_impl_for_newton, compute_qfrc_smooth_implicit,
-      compute_point_velocity (~400 lines)
-- [ ] Create `src/constraint/assembly.rs` — move assemble_unified_constraints,
-      populate_efc_island (~750 lines)
-- [ ] Create `src/constraint/equality.rs` — move all extract_*_jacobian functions,
-      add_body_*_jacobian_row, get_min_* helpers (626 lines)
-- [ ] Create `src/constraint/jacobian.rs` — move compute_flex_contact_jacobian,
-      compute_contact_jacobian, add_angular_jacobian (~337 lines)
-- [ ] Create `src/constraint/impedance.rs` — move compute_impedance,
+      compute_point_velocity (425 lines)
+- [x] Create `src/constraint/assembly.rs` — move assemble_unified_constraints,
+      populate_efc_island, tendon_deadband_displacement (735 lines)
+- [x] Create `src/constraint/equality.rs` — move all extract_*_jacobian functions,
+      add_body_*_jacobian_row, get_min_* helpers (661 lines)
+- [x] Create `src/constraint/jacobian.rs` — move compute_flex_contact_jacobian,
+      compute_contact_jacobian, add_angular_jacobian (330 lines)
+- [x] Create `src/constraint/impedance.rs` — move compute_impedance,
       quaternion_to_axis_angle, compute_kbip, compute_aref, normalize_quat4,
       ball_limit_axis_angle, compute_diag_approx_exact, mj_solve_sparse_vec,
-      compute_regularization (~343 lines)
-- [ ] Create `src/constraint/solver/mod.rs` — compute_delassus_regularized,
-      compute_qfrc_constraint_from_efc, extract_qfrc_frictionloss,
-      decode_pyramid (~130 lines)
-- [ ] Create `src/constraint/solver/pgs.rs` — pgs_solve_unified, pgs_cost_change,
-      classify_constraint_states (~400 lines)
-- [ ] Create `src/constraint/solver/cg.rs` — cg_solve_unified (~280 lines)
-- [ ] Create `src/constraint/solver/newton.rs` — newton_solve, recover_newton (~313 lines)
-- [ ] Create `src/constraint/solver/hessian.rs` — assemble_hessian,
+      compute_regularization (331 lines)
+- [x] Create `src/constraint/solver/mod.rs` — decode_pyramid,
+      compute_qfrc_constraint_from_efc, extract_qfrc_frictionloss (77 lines)
+- [x] Create `src/constraint/solver/pgs.rs` — pgs_solve_unified, pgs_cost_change,
+      classify_constraint_states, compute_delassus_regularized (488 lines)
+- [x] Create `src/constraint/solver/cg.rs` — cg_solve_unified (310 lines)
+- [x] Create `src/constraint/solver/newton.rs` — NewtonResult, newton_solve,
+      recover_newton (352 lines)
+- [x] Create `src/constraint/solver/hessian.rs` — assemble_hessian,
       SparseHessian struct + 7 impl methods, hessian_incremental,
-      hessian_cone (~685 lines)
-- [ ] Create `src/constraint/solver/primal.rs` — shared CG/Newton infrastructure:
+      hessian_cone (721 lines)
+- [x] Create `src/constraint/solver/primal.rs` — shared CG/Newton infrastructure:
       compute_gradient_and_search, primal_prepare/eval/search, evaluate_cost_at,
-      PrimalQuad/PrimalPoint structs (~653 lines)
-- [ ] Create `src/constraint/solver/noslip.rs` — project_elliptic_cone,
-      noslip_qcqp2, noslip_qcqp3, noslip_postprocess (~695 lines)
+      PrimalQuad/PrimalPoint structs (676 lines)
+- [x] Create `src/constraint/solver/noslip.rs` — project_elliptic_cone,
+      noslip_qcqp2, noslip_qcqp3, noslip_postprocess (748 lines)
 
 **Extraction order within Phase 6** (respects internal call dependencies):
 
@@ -1242,9 +1242,9 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 11. `constraint/solver/newton.rs` — uses primal + hessian
 12. `constraint/solver/noslip.rs` — independent
 
-- [ ] Run full test suite
+- [x] Run full test suite — 2,007/0/20 baseline preserved
 
-**Estimated size**: ~5,612 lines moved. All 12 files under 800 lines.
+**Actual size**: 5,854 lines across 12 files. All under 800 lines.
 
 ### Phase 7: Extract dynamics (CRBA, RNE, factorization)
 
