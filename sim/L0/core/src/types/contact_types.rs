@@ -6,6 +6,7 @@
 
 use nalgebra::Vector3;
 
+// Types still in monolith (will be extracted in later phases)
 use crate::mujoco_pipeline::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
 
 /// Explicit contact pair: geom indices + per-pair overrides.
