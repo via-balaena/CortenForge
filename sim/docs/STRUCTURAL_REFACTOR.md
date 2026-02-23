@@ -1023,7 +1023,7 @@ Every extraction phase (1–10) ends with these steps. They are not optional.
 
 ### Phase 0: Preparation
 
-- [ ] **Verify test baseline.** Run `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics` and record the pass count. This is the
+- [x] **Verify test baseline.** Run `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics` and record the pass count. This is the
       invariant: every phase must produce the same pass count.
       (Note: Other sim crates like `sim-constraint`, `sim-tendon`, `sim-muscle`,
       `sim-sensor`, `sim-urdf`, `sim-types`, `sim-simd` are not included because
@@ -1043,7 +1043,14 @@ Every extraction phase (1–10) ends with these steps. They are not optional.
       | `sim-physics` (unit) | 6 | 0 | 0 |
       | `sim-physics` (doc) | 3 | 0 | 0 |
       | **Total** | **1,526** | **0** | **15** |
-- [ ] **Audit test helpers.** Grep the monolith's `#[cfg(test)]` section
+
+      **sim-urdf baseline (for Phase 10):**
+      | Crate | Passed | Failed | Ignored |
+      |-------|--------|--------|---------|
+      | `sim-urdf` (unit) | 32 | 0 | 0 |
+      | `sim-urdf` (doc) | 2 | 0 | 1 |
+      | **Total** | **34** | **0** | **1** |
+- [x] **Audit test helpers.** Grep the monolith's `#[cfg(test)]` section
       (L21476–L26722) for shared helper functions (non-`#[test]` `fn`
       definitions). Categorize each as:
       - **Local**: used by tests of one domain → moves with those tests
@@ -1052,7 +1059,26 @@ Every extraction phase (1–10) ends with these steps. They are not optional.
         parent module, or to `types/model_factories.rs` if it constructs
         test models
       Record the categorization before beginning Phase 1.
-- [ ] **Create a branch:** `refactor/structural-decompose`
+
+      **Test helper audit results (Session S1):**
+      All 13 helpers are **Local** — no shared helpers exist.
+
+      | Helper | Line | Test module | Moves with |
+      |--------|------|-------------|------------|
+      | `make_collision_test_model` | 21483 | primitive_collision_tests | collision tests |
+      | `make_sensor_test_model` | 22180 | sensor_tests | sensor tests |
+      | `add_sensor` | 22270 | sensor_tests | sensor tests |
+      | `random_spd` | 23509 | cholesky_tests | linalg tests |
+      | `setup_sparse` | 23585 | sparse_factorization_tests | linalg tests |
+      | `assert_solve_matches` | 23608 | sparse_factorization_tests | linalg tests |
+      | `build_muscle_model_joint` | 23931 | muscle_tests | forward/muscle tests |
+      | `quat_from_axis_angle_deg` | 24580 | ball_limit_tests | constraint tests |
+      | `make_single_joint_site_model` | 24683 | jac_site_tests | jacobian tests |
+      | `make_single_joint_model` | 24843 | mj_jac_tests | jacobian tests |
+      | `make_free_body_contact_model` | 25707 | contact_jac_free_joint_tests | constraint tests |
+      | `make_two_free_body_contact_model` | 25789 | contact_jac_free_joint_tests | constraint tests |
+      | `make_two_geom_model` | 26217 | contact_param_tests | collision tests |
+- [x] **Create a branch:** `refactor/structural-decompose`
 
 ### Phase 1: Extract types from `mujoco_pipeline.rs`
 
