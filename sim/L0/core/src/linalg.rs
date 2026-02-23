@@ -59,6 +59,7 @@ impl UnionFind {
 // ============================================================================
 
 /// Minimum value threshold for numerical stability (shared with monolith).
+#[allow(dead_code)]
 const MJ_MINVAL: f64 = 1e-15;
 
 /// In-place Cholesky (LL^T) factorization. Overwrites the lower triangle of `m` with L.
@@ -156,7 +157,7 @@ pub(crate) fn cholesky_rank1_update(l: &mut DMatrix<f64>, v: &mut [f64]) -> Resu
 /// The vector `v` is used as workspace and modified.
 ///
 /// Returns `Err(StepError::CholeskyFailed)` if the result would be indefinite.
-#[allow(clippy::many_single_char_names, clippy::imprecise_flops)]
+#[allow(dead_code, clippy::many_single_char_names, clippy::imprecise_flops)]
 pub(crate) fn cholesky_rank1_downdate(
     l: &mut DMatrix<f64>,
     v: &mut [f64],

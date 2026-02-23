@@ -11,8 +11,8 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::solver::hessian::SparseHessian;
 use crate::linalg::cholesky_solve_in_place;
-use crate::mujoco_pipeline::SparseHessian;
 use crate::types::{ConstraintType, Data, Model};
 
 /// Compute gradient and preconditioned search direction (PrimalUpdateGradient, §15.4).

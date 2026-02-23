@@ -5,6 +5,7 @@
 //! friction pyramid decoding). Corresponds to MuJoCo's `engine_solver.c`.
 
 pub mod cg;
+pub mod hessian;
 pub mod pgs;
 pub mod primal;
 
