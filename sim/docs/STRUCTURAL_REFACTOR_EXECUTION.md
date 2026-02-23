@@ -356,8 +356,8 @@ and correlating with commit history.
 | 0 | Preparation | Baseline verified: 1,526/0/15; sim-urdf: 34/0/1; 13 test helpers all Local | done | — | S1 |
 | 1 | types/mod.rs + enums.rs | Grouped — mod.rs is re-exports; extract enums first | done | d018c7f | S1 |
 | 1 | types/model.rs | **(MARGIN)** ~780 lines; actual 808 total / 305 prod | done | — | S1 |
-| 1 | types/model_init.rs | **(MARGIN)** ~774 lines; **SCATTER**: L12901–L12964 | | | |
-| 1 | types/model_factories.rs | `#[cfg(test)]`-gated | | | |
+| 1 | types/model_init.rs | **(MARGIN)** ~774 est → 844 total / 629 prod; **SCATTER** handled | done | — | S2 |
+| 1 | types/model_factories.rs | NOT cfg(test): used by sim-conformance-tests; 317 lines | done | — | S2 |
 | 1 | types/data.rs | **(MARGIN)** ~710 lines (raw ~805) | | | |
 | 1 | types/contact_types.rs | | | | |
 | 1 | types/keyframe.rs | | | | |

@@ -110,19 +110,26 @@ pub use sdf::{
     sdf_sphere_contact,
 };
 
-// Enums, error types, and constants (extracted to types/ module)
+// Enums, error types, constants, and Model construction (extracted to types/ module)
 pub use types::{
     ActuatorDynamics,
     ActuatorTransmission,
     BiasType,
     ConstraintState,
     ConstraintType,
+    // Contact representation (extracted to types/contact_types.rs)
+    Contact,
+    ContactPair,
     DISABLE_ISLAND,
+    // Data struct (extracted to types/data.rs)
+    Data,
     ENABLE_SLEEP,
     EqualityType,
     GainType,
     GeomType,
     Integrator,
+    // Keyframe (extracted to types/keyframe.rs)
+    Keyframe,
     MIN_AWAKE,
     MjJointType,
     MjObjectType,
@@ -139,21 +146,14 @@ pub use types::{
     StepError,
     TendonType,
     WrapType,
+    // Model construction helpers (extracted to types/model_init.rs)
+    compute_dof_lengths,
 };
 
 // MuJoCo-style physics pipeline types (primary API — not yet extracted)
 pub use mujoco_pipeline::{
-    // Contact representation
-    Contact,
-    ContactPair,
-    // MuJoCo-aligned Model/Data architecture (core API)
-    Data,
-    // Keyframe types
-    Keyframe,
     // Spatial algebra types
     SpatialVector,
-    // dof_length mechanism length computation (§16.14)
-    compute_dof_lengths,
     // Pyramidal force recovery (§32)
     decode_pyramid,
     // Utility functions for position/velocity differentiation
