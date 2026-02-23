@@ -181,9 +181,10 @@ pub use linalg::mj_solve_sparse;
 pub use dynamics::SpatialVector;
 
 // MuJoCo-style physics pipeline types (primary API — not yet extracted)
+// Pyramidal force recovery (§32) — extracted to constraint/solver
+pub use constraint::solver::decode_pyramid;
+
 pub use mujoco_pipeline::{
-    // Pyramidal force recovery (§32)
-    decode_pyramid,
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
