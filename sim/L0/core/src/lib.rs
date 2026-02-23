@@ -112,10 +112,33 @@ pub use sdf::{
 
 // Enums, error types, and constants (extracted to types/ module)
 pub use types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, ConstraintState, ConstraintType,
-    DISABLE_ISLAND, ENABLE_SLEEP, EqualityType, GainType, GeomType, Integrator, MIN_AWAKE,
-    MjJointType, MjObjectType, MjSensorDataType, MjSensorType, ResetError, SleepError, SleepPolicy,
-    SleepState, SolverStat, SolverType, StepError, TendonType, WrapType,
+    ActuatorDynamics,
+    ActuatorTransmission,
+    BiasType,
+    ConstraintState,
+    ConstraintType,
+    DISABLE_ISLAND,
+    ENABLE_SLEEP,
+    EqualityType,
+    GainType,
+    GeomType,
+    Integrator,
+    MIN_AWAKE,
+    MjJointType,
+    MjObjectType,
+    MjSensorDataType,
+    MjSensorType,
+    // Model struct (extracted to types/model.rs)
+    Model,
+    ResetError,
+    SleepError,
+    SleepPolicy,
+    SleepState,
+    SolverStat,
+    SolverType,
+    StepError,
+    TendonType,
+    WrapType,
 };
 
 // MuJoCo-style physics pipeline types (primary API — not yet extracted)
@@ -127,7 +150,6 @@ pub use mujoco_pipeline::{
     Data,
     // Keyframe types
     Keyframe,
-    Model,
     // Spatial algebra types
     SpatialVector,
     // dof_length mechanism length computation (§16.14)

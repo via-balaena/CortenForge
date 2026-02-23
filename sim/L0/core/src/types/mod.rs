@@ -4,5 +4,7 @@
 //! the simulation: enums, Model, Data, contacts, and keyframes.
 
 pub(crate) mod enums;
+pub(crate) mod model;
 
 pub use enums::*;
+pub use model::*;

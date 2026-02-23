@@ -57,7 +57,6 @@ use crate::mujoco_pipeline::{
     Data,
     // §40a fluid derivative infrastructure
     MJ_MINVAL,
-    Model,
     SpatialVector,
     // pub(crate) functions from mujoco_pipeline
     cholesky_solve_in_place,
@@ -78,7 +77,7 @@ use crate::mujoco_pipeline::{
 };
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, ENABLE_SLEEP, GainType, Integrator,
-    MjJointType, StepError,
+    MjJointType, Model, StepError,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 
