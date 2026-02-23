@@ -4,6 +4,8 @@
 //! shared post-solve operations (Delassus regularization, qfrc recovery,
 //! friction pyramid decoding). Corresponds to MuJoCo's `engine_solver.c`.
 
+pub mod primal;
+
 use crate::types::{ConstraintType, Data, Model};
 
 /// Decode pyramidal facet forces into physical normal + friction forces (§32.6).
