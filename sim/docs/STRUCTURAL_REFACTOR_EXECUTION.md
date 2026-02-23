@@ -358,7 +358,7 @@ and correlating with commit history.
 | 1 | types/mod.rs + enums.rs | Grouped — mod.rs is re-exports; extract enums first | done | d018c7f | S1 |
 | 1 | types/model.rs | **(MARGIN)** 809 awk / 306 code-only — doc-heavy type def exempt per rubric S1 | done | — | S1 |
 | 1 | types/model_init.rs | **(MARGIN)** 842 awk / 627 code-only — doc-heavy type def exempt per rubric S1; **SCATTER** handled | done | 5912e68 | S2 |
-| 1 | **Phase 1 audit** | Rounds 1–4: fixed A–F. Round 5 (final): fixed G (`compute_tangent_frame` re-export through hub), added S1 rubric exemption for doc-heavy type defs, updated MARGIN notes with awk/code-only split. All S1–S8 criteria A-grade. 1,526/0/15 baseline preserved. | done | — | S4 |
+| 1 | **Phase 1 audit** | Rounds 1–5: fixed A–G. Round 6: fixed I (`compute_dof_lengths` re-export routed through hub, downgraded to `pub(crate)`), J (removed process comments from `contact_types.rs` and `keyframe.rs` module docs). All S1–S8 criteria A-grade. 1,526/0/15 baseline preserved. | done | — | S5 |
 | 1 | types/model_factories.rs | NOT cfg(test): used by sim-conformance-tests; 317 lines | done | 5912e68 | S2 |
 | 1 | types/data.rs | **(MARGIN)** 837 awk / 382 code-only — doc-heavy type def exempt per rubric S1 | done | 5912e68 | S2 |
 | 1 | types/contact_types.rs | | done | 5912e68 | S2 |

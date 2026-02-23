@@ -113,7 +113,6 @@ pub(crate) use crate::types::SolverType;
 pub(crate) use crate::types::StepError;
 pub(crate) use crate::types::TendonType;
 pub(crate) use crate::types::WrapType;
-pub use crate::types::model_init::compute_dof_lengths;
 
 /// 6D spatial vector: [angular (3), linear (3)].
 ///

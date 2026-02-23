@@ -1,6 +1,4 @@
 //! Keyframe (named state snapshot) type.
-//!
-//! Extracted from `mujoco_pipeline.rs` — Phase 1, structural refactor.
 
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 

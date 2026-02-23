@@ -1,6 +1,5 @@
 //! Contact-related types for constraint generation.
 //!
-//! Extracted from `mujoco_pipeline.rs` — Phase 1, structural refactor.
 //! Contains [`ContactPair`] (explicit pair overrides from MJCF `<pair>`),
 //! [`Contact`] (detected contact point for constraint generation),
 //! and the [`compute_tangent_frame`] helper.
