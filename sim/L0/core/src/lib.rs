@@ -81,6 +81,9 @@ pub mod dynamics;
 // Joint visitor pattern and motion subspace
 pub mod joint_visitor;
 
+// Tendon kinematics (fixed-path and spatial-path)
+pub mod tendon;
+
 // Collision shape primitives (canonical source)
 pub mod collision_shape;
 
