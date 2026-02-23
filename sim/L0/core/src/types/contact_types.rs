@@ -282,6 +282,7 @@ impl Contact {
 /// Returns (t1, t2) where t1, t2, normal form a right-handed orthonormal basis.
 /// Handles degenerate cases (zero/NaN normal) by returning a default frame.
 #[inline]
+#[must_use]
 pub fn compute_tangent_frame(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
     // Safety check: handle zero/NaN normals
     let normal_len = normal.norm();

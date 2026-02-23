@@ -11,7 +11,7 @@ pub(crate) mod model;
 pub(crate) mod model_factories;
 pub(crate) mod model_init;
 
-pub use contact_types::{Contact, ContactPair};
+pub use contact_types::{Contact, ContactPair, compute_tangent_frame};
 pub use data::*;
 pub use enums::*;
 pub use keyframe::Keyframe;

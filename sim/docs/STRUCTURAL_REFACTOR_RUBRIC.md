@@ -101,6 +101,17 @@ After the structural refactor lands, add a `# [S1 EXEMPT]` comment to the
 top of each file as a visible reminder. Any PR that increases the production
 line count of an exempt file must include justification.
 
+#### Doc-Heavy Type Definitions
+
+Files that are primarily struct/enum definitions with extensive field-level
+documentation may exceed 800 awk-measured lines while having far fewer lines
+of actual code. When the code-only line count (excluding blank lines, comments,
+and doc comments) is well under 800, the file satisfies the spirit of S1 —
+the production logic fits in one reading session. The documentation adds value,
+not cognitive load.
+
+These files are noted in the progress table with their awk / code-only split.
+
 ---
 
 ### S2. Module Naming — "Can I guess what's in the file from its name?"

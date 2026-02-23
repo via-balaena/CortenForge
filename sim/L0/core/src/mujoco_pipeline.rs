@@ -467,7 +467,7 @@ impl UnionFind {
 // (no re-export needed — all consumers import directly from types::keyframe)
 
 // Moved to types/contact_types.rs: ContactPair, Contact, impl Contact, compute_tangent_frame
-pub(crate) use crate::types::contact_types::{Contact, ContactPair, compute_tangent_frame};
+pub(crate) use crate::types::{Contact, ContactPair, compute_tangent_frame};
 
 // Moved to types/data.rs: Data struct, Clone impl
 pub(crate) use crate::types::Data;
