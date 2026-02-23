@@ -7,6 +7,7 @@
 pub mod cg;
 pub mod hessian;
 pub mod newton;
+pub mod noslip;
 pub mod pgs;
 pub mod primal;
 

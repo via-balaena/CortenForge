@@ -10,8 +10,8 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::solver::noslip::project_elliptic_cone;
 use crate::linalg::mj_solve_sparse;
-use crate::mujoco_pipeline::project_elliptic_cone;
 use crate::types::{ConstraintState, ConstraintType, Data, Model};
 
 /// Compute the regularized Delassus matrix AR = J·M⁻¹·J^T + diag(R).
