@@ -69,26 +69,50 @@ This avoids mental context-switching between two codebases.
 ### Per-item (repeat for each function, struct, enum, const, or impl block):
 
 ```
+0. Declare module (once per new directory):
+   - Add `mod <dir_name>;` to lib.rs (e.g., `mod types;`)
+   - Create <dir_name>/mod.rs with //! doc and
+     `pub(crate) mod <submodule>;` declarations for planned sub-modules
+   - Add `pub use <submodule>::*;` in mod.rs for each sub-module
+     (so that `crate::types::Model` resolves — keeps re-export chain
+     to 2 hops per rubric anti-pattern #2)
+   - cargo check to verify the empty module structure compiles
 1. Create target file (if new) with //! doc
 2. Cut item from monolith → paste into target file
    - Copy only the `use` imports that the item needs from the monolith
      preamble. cargo check will flag any you miss.
-   - Preserve /// doc comments, #[inline], #[inline(always)],
-     #[inline(never)] attributes exactly as they appear.
-   - Do NOT add new #[inline] attributes — only preserve existing ones.
-   - Set visibility: pub if the symbol is in the lib.rs re-export list
-     (sim-core/src/lib.rs lines 111–173), pub(crate) otherwise.
+   - Preserve ALL attributes exactly as they appear: #[derive(...)],
+     #[repr(...)], #[non_exhaustive], #[must_use], #[allow(...)],
+     #[inline]/[inline(always)]/[inline(never)], and /// doc comments.
+   - Do NOT add new attributes — only preserve existing ones.
+   - Do NOT copy the monolith's file-level #![allow(...)] block into
+     new files. Rely on cargo clippy (step 14) to surface issues.
+   - Set visibility: pub if the symbol is in the crate's lib.rs
+     re-export list (for sim-core: `pub use mujoco_pipeline::{...}`
+     at lib.rs lines 111–173; for sim-mjcf: `pub use model_builder::{...}`
+     at lib.rs line 197), pub(crate) otherwise.
      Private items only called within the same target file stay private.
    - If the moved item calls functions still in the monolith, add a
      temporary `use crate::mujoco_pipeline::{needed_fn};` in the target
      file. This will be updated when the callee is extracted later.
-3. Add pub(crate) re-import in monolith top
-   (e.g., pub(crate) use crate::types::*)
-4. Update lib.rs re-exports: remove the moved symbol from the existing
-   `pub use mujoco_pipeline::{...}` named list and add a new re-export
-   from the real module path (e.g., pub use types::Model;). Rust does
-   not allow the same name in two `pub use` re-exports. Keep the
-   remaining monolith re-export list until Phase 12.
+3. Add named pub(crate) re-import in monolith top
+   (e.g., pub(crate) use crate::types::Model;)
+   Use named imports during the per-item loop — NOT wildcards.
+   A wildcard (use crate::types::*) would shadow items still in the
+   monolith if the target module re-exports them. After all items for
+   a sub-module are moved, you may collapse to a glob.
+4. Update lib.rs re-exports (only if the moved symbol appears in the
+   `pub use mujoco_pipeline::{...}` list in lib.rs):
+   - Remove it from the monolith re-export list
+   - Add a new re-export from the real module path
+     (e.g., pub use types::Model;)
+   - Rust does not allow the same name in two `pub use` re-exports
+   - Keep the remaining monolith re-export list until Phase 12
+
+   Skip this step for:
+   - Private or pub(crate) items (not in the re-export list)
+   - `impl` methods (accessible through the type's own re-export)
+   - Trait impls (automatically available when type + trait are in scope)
 5. cargo check -p <crate>  (sim-core for phases 1–8c, sim-mjcf for phase 10)
 6. If error → fix imports, repeat step 5
 7. Move to next item in same sub-module
@@ -100,9 +124,14 @@ points to the final location immediately. If there is a circular call (both
 call each other), move both in the same step and fix imports together before
 running `cargo check`.
 
-**`impl` methods**: A method goes in the module that implements its **primary
-computation**, not necessarily the module that defines the type. For example,
-`Data::step()` goes in `forward/mod.rs`, not `types/data.rs`. See the
+**Inherent `impl` blocks and trait impls**: When moving an enum, struct, or
+const, treat its inherent `impl` block and all trait impls (`Display`, `Error`,
+`From`, etc.) as part of the same item — move them together in a single step.
+
+**Detached `impl` methods**: Methods on `Model` or `Data` that implement a
+distinct subsystem go in the module of their **primary computation**, not the
+module that defines the type. For example, `Data::step()` goes in
+`forward/mod.rs`, not `types/data.rs`. See the
 [`impl` Block Split Strategy](./STRUCTURAL_REFACTOR_RUBRIC.md#impl-block-split-strategy)
 in the rubric for the full mapping.
 
@@ -117,10 +146,12 @@ on the file contents. The file itself uses normal `pub(crate)` visibility.
  8. Run the lazy import check:
     - Comment out monolith re-imports
     - cargo check -p <crate>
+    - Expect errors inside the monolith itself — ignore those
     - Fix any errors in non-monolith files (point to real module paths)
     - Uncomment re-imports
  9. Update all use imports in existing files that reference moved symbols
-    (phases 1–8c: derivatives.rs, batch.rs, lib.rs — see spec step 1;
+    (phases 1–8c: derivatives.rs, batch.rs, lib.rs — the external
+     consumers listed in the spec's "every phase includes" checklist;
      phase 10: sim-mjcf/src/lib.rs)
 10. Update code comments that reference mujoco_pipeline.rs or
     model_builder.rs by filename to reference the new module
@@ -146,7 +177,7 @@ on the file contents. The file itself uses normal `pub(crate)` visibility.
 18. Verify every new file has a //! module doc comment
 ```
 
-**Monolith re-imports** (`pub(crate) use crate::types::*;` etc.) accumulate
+**Monolith re-imports** (`pub(crate) use crate::types::Model;` etc.) accumulate
 throughout phases 1–8c (and phase 10 for `model_builder.rs`). They are removed
 in Phase 12 when the monolith shims are deleted. Do not remove them during
 intermediate phases.
@@ -161,7 +192,9 @@ The move protocol above is written from the sim-core perspective. For Phase 10
 | "the monolith" | `mujoco_pipeline.rs` | `model_builder.rs` |
 | `cargo check -p` | `sim-core` | `sim-mjcf` |
 | Re-import pattern | `pub(crate) use crate::types::*;` | `pub(crate) use crate::builder::orientation::*;` etc. |
-| `lib.rs` re-exports | `sim-core/src/lib.rs`: move symbols from `pub use mujoco_pipeline::{...}` to new module paths | `sim-mjcf/src/lib.rs`: change `mod model_builder;` → `mod builder;`, update `pub use` |
+| `lib.rs` re-exports | `sim-core/src/lib.rs`: move symbols from `pub use mujoco_pipeline::{...}` to new module paths | `sim-mjcf/src/lib.rs`: add `mod builder;` alongside `mod model_builder;` (both coexist until Phase 12), update `pub use` |
+| Test command (step 13) | `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics` | `cargo test -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-urdf` |
+| Clippy command (step 14) | `cargo clippy -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics -- -D warnings` | `cargo clippy -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-urdf -- -D warnings` |
 | Files to check for imports | `derivatives.rs`, `batch.rs`, `lib.rs` | `sim-mjcf/src/lib.rs` (only external consumer) |
 
 ---
@@ -187,8 +220,8 @@ This avoids guessing about what goes where.
 Before any code moves:
 
 - [ ] Verify the test baseline still matches the spec's Phase 0 table
-- [ ] Audit the test helper categorization (shared vs. local) in the monolith's
-      `#[cfg(test)]` section (L21476–L26722)
+- [ ] Audit the test helper categorization (shared vs. local) in
+      `mujoco_pipeline.rs` `#[cfg(test)]` section (L21476–L26722)
 - [ ] Create branch: `refactor/structural-decompose`
 - [ ] Commit Phase 0 as the starting point
 
@@ -236,11 +269,14 @@ Only take L12108–L12690 and L12818–L12899 for passive.
 for finite-difference derivatives). The names differ by one suffix. Don't
 confuse them.
 
-### Phase 10: MARGIN WARNING
+### Phase 10: MARGIN WARNING + feature gate
 
 - `builder/mod.rs` (~732 lines): Only under 800 **because** `new()` (~264
   lines) is split out to `builder/init.rs`. If `init.rs` is not split, mod.rs
   would be ~996 lines. Extract `init.rs` immediately after `mod.rs`.
+- **Feature gate**: `sim-mjcf` has an `mjb` feature (`mjb.rs`). Run
+  `cargo test -p sim-mjcf --features mjb` at least once per Phase 10 session
+  to verify no regression behind the feature gate.
 
 ---
 
@@ -286,7 +322,7 @@ respects internal call dependencies (matches the spec's extraction orders).
 | Phase | Sub-module | Notes | Status | Commit | Session |
 |-------|-----------|-------|--------|--------|---------|
 | 0 | Preparation | | | | |
-| 1 | types/enums.rs | Extract first — other types/ modules depend on enums | | | |
+| 1 | types/mod.rs + enums.rs | Grouped — mod.rs is re-exports; extract enums first | | | |
 | 1 | types/model.rs | **(MARGIN)** ~780 lines | | | |
 | 1 | types/model_init.rs | **(MARGIN)** ~774 lines; **SCATTER**: L12901–L12964 | | | |
 | 1 | types/model_factories.rs | `#[cfg(test)]`-gated | | | |
@@ -334,7 +370,7 @@ respects internal call dependencies (matches the spec's extraction orders).
 | 8a | forward/mod.rs | | | | |
 | 8a | forward/position.rs | | | | |
 | 8a | forward/velocity.rs | | | | |
-| 8a | forward/passive.rs | **HAZARD**: skip L12690–L12816 (→ Phase 8b) | | | |
+| 8a | forward/passive.rs | **(HAZARD)** skip L12690–L12816 (→ Phase 8b) | | | |
 | 8a | forward/actuation.rs | | | | |
 | 8a | forward/muscle.rs | | | | |
 | 8a | forward/acceleration.rs | | | | |
