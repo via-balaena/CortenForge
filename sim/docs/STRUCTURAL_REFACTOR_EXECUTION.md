@@ -354,7 +354,7 @@ and correlating with commit history.
 | Phase | Sub-module | Notes | Status | Commit | Session |
 |-------|-----------|-------|--------|--------|---------|
 | 0 | Preparation | Baseline verified: 1,526/0/15; sim-urdf: 34/0/1; 13 test helpers all Local | done | — | S1 |
-| 1 | types/mod.rs + enums.rs | Grouped — mod.rs is re-exports; extract enums first | | | |
+| 1 | types/mod.rs + enums.rs | Grouped — mod.rs is re-exports; extract enums first | done | — | S1 |
 | 1 | types/model.rs | **(MARGIN)** ~780 lines | | | |
 | 1 | types/model_init.rs | **(MARGIN)** ~774 lines; **SCATTER**: L12901–L12964 | | | |
 | 1 | types/model_factories.rs | `#[cfg(test)]`-gated | | | |

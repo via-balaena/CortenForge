@@ -69,6 +69,9 @@
     clippy::doc_markdown,               // Not all technical terms need backticks
 )]
 
+// Core type definitions (enums, Model, Data, contacts, keyframes)
+pub mod types;
+
 // Collision shape primitives (canonical source)
 pub mod collision_shape;
 
@@ -107,55 +110,26 @@ pub use sdf::{
     sdf_sphere_contact,
 };
 
-// MuJoCo-style physics pipeline types (primary API)
+// Enums, error types, and constants (extracted to types/ module)
+pub use types::{
+    ActuatorDynamics, ActuatorTransmission, BiasType, ConstraintState, ConstraintType,
+    DISABLE_ISLAND, ENABLE_SLEEP, EqualityType, GainType, GeomType, Integrator, MIN_AWAKE,
+    MjJointType, MjObjectType, MjSensorDataType, MjSensorType, ResetError, SleepError, SleepPolicy,
+    SleepState, SolverStat, SolverType, StepError, TendonType, WrapType,
+};
+
+// MuJoCo-style physics pipeline types (primary API — not yet extracted)
 pub use mujoco_pipeline::{
-    // Actuator types
-    ActuatorDynamics,
-    ActuatorTransmission,
-    BiasType,
-    // Constraint types and state
-    ConstraintState,
-    ConstraintType,
     // Contact representation
     Contact,
     ContactPair,
     // MuJoCo-aligned Model/Data architecture (core API)
-    DISABLE_ISLAND,
     Data,
-    ENABLE_SLEEP,
-    // Equality constraint types
-    EqualityType,
-    GainType,
-    // Geometry types
-    GeomType,
-    // Integration method selection
-    Integrator,
     // Keyframe types
     Keyframe,
-    MIN_AWAKE,
-    // Joint types
-    MjJointType,
-    // Sensor types
-    MjObjectType,
-    MjSensorDataType,
-    MjSensorType,
     Model,
-    // Error handling
-    ResetError,
-    // Sleep / deactivation types (§16)
-    SleepError,
-    SleepPolicy,
-    SleepState,
-    // Constraint solver algorithm
-    SolverStat,
-    SolverType,
     // Spatial algebra types
     SpatialVector,
-    StepError,
-    // Tendon types
-    TendonType,
-    // Wrap object types
-    WrapType,
     // dof_length mechanism length computation (§16.14)
     compute_dof_lengths,
     // Pyramidal force recovery (§32)

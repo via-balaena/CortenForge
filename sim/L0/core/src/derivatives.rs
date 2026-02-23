@@ -54,19 +54,11 @@
 //! ```
 
 use crate::mujoco_pipeline::{
-    ActuatorDynamics,
-    ActuatorTransmission,
-    BiasType,
     Data,
-    ENABLE_SLEEP,
-    GainType,
-    Integrator,
     // §40a fluid derivative infrastructure
     MJ_MINVAL,
-    MjJointType,
     Model,
     SpatialVector,
-    StepError,
     // pub(crate) functions from mujoco_pipeline
     cholesky_solve_in_place,
     ellipsoid_moment,
@@ -83,6 +75,10 @@ use crate::mujoco_pipeline::{
     object_velocity_local,
     spatial_cross_motion,
     tendon_all_dofs_sleeping,
+};
+use crate::types::{
+    ActuatorDynamics, ActuatorTransmission, BiasType, ENABLE_SLEEP, GainType, Integrator,
+    MjJointType, StepError,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 

@@ -39,7 +39,8 @@
 
 use std::sync::Arc;
 
-use crate::mujoco_pipeline::{Data, Model, StepError};
+use crate::mujoco_pipeline::{Data, Model};
+use crate::types::StepError;
 
 /// Batched simulation: N independent environments sharing one [`Model`].
 ///
