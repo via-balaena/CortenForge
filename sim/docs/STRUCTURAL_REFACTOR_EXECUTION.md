@@ -70,13 +70,18 @@ This avoids mental context-switching between two codebases.
 
 ```
 0. Declare module (once per new directory):
-   - Add `mod <dir_name>;` to lib.rs (e.g., `mod types;`)
+   - Add `mod <dir_name>;` to lib.rs — or to the parent mod.rs for
+     nested directories (e.g., `mod solver;` in `constraint/mod.rs`)
    - Create <dir_name>/mod.rs with //! doc and
      `pub(crate) mod <submodule>;` declarations for planned sub-modules
    - Add `pub use <submodule>::*;` in mod.rs for each sub-module
      (so that `crate::types::Model` resolves — keeps re-export chain
      to 2 hops per rubric anti-pattern #2)
    - cargo check to verify the empty module structure compiles
+   Note: When mod.rs is itself an extraction target (e.g., `builder/mod.rs`
+   holds the struct definition + orchestration functions), create it with the
+   //! doc and sub-module declarations, then immediately proceed to step 2
+   to populate it — there is no separate "target file" to create in step 1.
 1. Create target file (if new) with //! doc
 2. Cut item from monolith → paste into target file
    - Copy only the `use` imports that the item needs from the monolith
@@ -108,6 +113,11 @@ This avoids mental context-switching between two codebases.
      (e.g., pub use types::Model;)
    - Rust does not allow the same name in two `pub use` re-exports
    - Keep the remaining monolith re-export list until Phase 12
+   - When a single `pub use <monolith>::{A, B, C}` block has some
+     symbols moving and others staying, split it: remove the moving
+     symbols from the monolith block and add separate `pub use`
+     lines from the new module path. The remaining monolith block
+     keeps only the not-yet-moved symbols.
 
    Skip this step for:
    - Private or pub(crate) items (not in the re-export list)
@@ -128,12 +138,20 @@ running `cargo check`.
 const, treat its inherent `impl` block and all trait impls (`Display`, `Error`,
 `From`, etc.) as part of the same item — move them together in a single step.
 
-**Detached `impl` methods**: Methods on `Model` or `Data` that implement a
-distinct subsystem go in the module of their **primary computation**, not the
-module that defines the type. For example, `Data::step()` goes in
-`forward/mod.rs`, not `types/data.rs`. See the
-[`impl` Block Split Strategy](./STRUCTURAL_REFACTOR_RUBRIC.md#impl-block-split-strategy)
-in the rubric for the full mapping.
+**Detached `impl` methods**: Methods on a type that implement a distinct
+subsystem go in the module of their **primary computation**, not the module
+that defines the type. For example, `Data::step()` goes in `forward/mod.rs`,
+not `types/data.rs`; `ModelBuilder::new()` goes in `builder/init.rs`, not
+`builder/mod.rs`. See the [`impl` Block Split
+Strategy](./STRUCTURAL_REFACTOR_RUBRIC.md#impl-block-split-strategy) in the
+rubric for the sim-core mapping; for sim-mjcf, the Phase 10 checklist in the
+spec lists every split explicitly.
+
+**Split-impl imports**: When an `impl TypeName` block lives in a child module
+(e.g., `builder/init.rs`), that file needs `use super::TypeName;` to bring the
+type into scope. This is standard Rust — `super::` refers to the parent module
+(`builder/mod.rs` in this case). Add this import alongside the other `use`
+lines copied from the monolith preamble.
 
 **`#[cfg(test)]`-gated modules**: For test-only modules like
 `types/model_factories.rs`, place `#[cfg(test)]` on the `mod` declaration in
@@ -191,10 +209,13 @@ The move protocol above is written from the sim-core perspective. For Phase 10
 |--------------------|------------------------|---------------------|
 | "the monolith" | `mujoco_pipeline.rs` | `model_builder.rs` |
 | `cargo check -p` | `sim-core` | `sim-mjcf` |
-| Re-import pattern | `pub(crate) use crate::types::*;` | `pub(crate) use crate::builder::orientation::*;` etc. |
+| Re-import pattern (step 3) | `pub(crate) use crate::types::Model;` (named, per item) | `pub(crate) use crate::builder::orientation::resolve_orientation;` (named, per item) |
+| Intra-module type access | `use crate::types::Model;` (types extracted first) | `use super::ModelBuilder;` in sub-modules (struct defined in `builder/mod.rs`) |
 | `lib.rs` re-exports | `sim-core/src/lib.rs`: move symbols from `pub use mujoco_pipeline::{...}` to new module paths | `sim-mjcf/src/lib.rs`: add `mod builder;` alongside `mod model_builder;` (both coexist until Phase 12), update `pub use` |
 | Test command (step 13) | `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics` | `cargo test -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-urdf` |
 | Clippy command (step 14) | `cargo clippy -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics -- -D warnings` | `cargo clippy -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-urdf -- -D warnings` |
+| Feature gate test (step 13a) | N/A | `cargo test -p sim-mjcf --features mjb` (once per session) |
+| Pass count baseline (step 15) | 1,526 passed, 0 failed, 15 ignored (spec Phase 0 table) | Extend baseline to include `sim-urdf` — record its pass count during Phase 0 |
 | Files to check for imports | `derivatives.rs`, `batch.rs`, `lib.rs` | `sim-mjcf/src/lib.rs` (only external consumer) |
 
 ---
@@ -220,6 +241,8 @@ This avoids guessing about what goes where.
 Before any code moves:
 
 - [ ] Verify the test baseline still matches the spec's Phase 0 table
+- [ ] Record `sim-urdf` pass count (needed for Phase 10 baseline —
+      run `cargo test -p sim-urdf` and add the result to the baseline)
 - [ ] Audit the test helper categorization (shared vs. local) in
       `mujoco_pipeline.rs` `#[cfg(test)]` section (L21476–L26722)
 - [ ] Create branch: `refactor/structural-decompose`
@@ -258,9 +281,10 @@ Before any code moves:
 ### Phase 8a: Line range hazard
 
 **`forward/passive.rs`**: The tendon implicit K/D helpers at L12690–L12816 sit
-**between** the two passive force ranges (L12108–L12690 and L12818–L12899) but
+**between** the two passive force ranges (L12108–L12689 and L12818–L12899) but
 belong to `integrate/implicit.rs` (Phase 8b), **NOT** to `forward/passive.rs`.
-Only take L12108–L12690 and L12818–L12899 for passive.
+Only take L12108–L12689 and L12818–L12899 for passive. (L12690 is the first
+line of `tendon_all_dofs_sleeping` — it belongs to implicit.rs.)
 
 ### Phase 8b: Naming hazard
 
@@ -269,7 +293,7 @@ Only take L12108–L12690 and L12818–L12899 for passive.
 for finite-difference derivatives). The names differ by one suffix. Don't
 confuse them.
 
-### Phase 10: MARGIN WARNING + feature gate
+### Phase 10: MARGIN WARNING + feature gate + shared constants
 
 - `builder/mod.rs` (~732 lines): Only under 800 **because** `new()` (~264
   lines) is split out to `builder/init.rs`. If `init.rs` is not split, mod.rs
@@ -277,6 +301,11 @@ confuse them.
 - **Feature gate**: `sim-mjcf` has an `mjb` feature (`mjb.rs`). Run
   `cargo test -p sim-mjcf --features mjb` at least once per Phase 10 session
   to verify no regression behind the feature gate.
+- **Shared constants**: `DEFAULT_SOLREF` and `DEFAULT_SOLIMP` (L41, L49) are
+  used by 6+ target modules (joint, geom, tendon, equality, flex, contact).
+  Place them in `builder/mod.rs` as `pub(crate) const` items so all
+  sub-modules can access them via `super::DEFAULT_SOLREF`. Move them during
+  the first session (builder/mod.rs extraction).
 
 ---
 
@@ -318,6 +347,9 @@ for revert protocol.
 
 After each commit, update this table. Sub-module order within each phase
 respects internal call dependencies (matches the spec's extraction orders).
+The **Session** column records which context window performed the extraction
+(e.g., "S1", "S2") — useful for tracking progress across multiple sessions
+and correlating with commit history.
 
 | Phase | Sub-module | Notes | Status | Commit | Session |
 |-------|-----------|-------|--------|--------|---------|
@@ -370,7 +402,7 @@ respects internal call dependencies (matches the spec's extraction orders).
 | 8a | forward/mod.rs | | | | |
 | 8a | forward/position.rs | | | | |
 | 8a | forward/velocity.rs | | | | |
-| 8a | forward/passive.rs | **(HAZARD)** skip L12690–L12816 (→ Phase 8b) | | | |
+| 8a | forward/passive.rs | **(HAZARD)** skip L12690–L12816 (→ Phase 8b); take up to L12689 | | | |
 | 8a | forward/actuation.rs | | | | |
 | 8a | forward/muscle.rs | | | | |
 | 8a | forward/acceleration.rs | | | | |
@@ -378,7 +410,7 @@ respects internal call dependencies (matches the spec's extraction orders).
 | 8a | jacobian.rs | **(HAZARD)** Top-level; includes `mj_integrate_pos_explicit` | | | |
 | 8b | integrate/mod.rs | | | | |
 | 8b | integrate/euler.rs | **(HAZARD)** `mj_integrate_pos` (NOT `_explicit`) | | | |
-| 8b | integrate/implicit.rs | Receives L12690–L12816 from Phase 8a hazard | | | |
+| 8b | integrate/implicit.rs | Extracts L12690–L12816 (skipped in Phase 8a) | | | |
 | 8b | integrate/rk4.rs | | | | |
 | 8c | island/mod.rs | | | | |
 | 8c | island/sleep.rs | | | | |
@@ -406,5 +438,5 @@ respects internal call dependencies (matches the spec's extraction orders).
 | 12 | Stale reference sweep (grep) | | | | |
 | 12 | future_work_*.md doc updates (~692) | | | | |
 | 12 | ARCHITECTURE.md rewrite | | | | |
-| 12 | Other doc + test comment updates | GAP_ANALYSIS, CONFORMANCE, REFERENCE, TRAIT_ARCHITECTURE, CLAUDE.md, test files, gjk_epa.rs | | | |
+| 12 | Other doc + test comment updates | GAP_ANALYSIS, CONFORMANCE, REFERENCE, CLAUDE.md, test files, gjk_epa.rs (TRAIT_ARCHITECTURE has 0 references — no update needed) | | | |
 | 12 | Final workspace verification + grading | All 15 final-state checks from rubric | | | |
