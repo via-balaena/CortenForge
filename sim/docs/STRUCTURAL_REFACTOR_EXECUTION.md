@@ -358,6 +358,7 @@ and correlating with commit history.
 | 1 | types/mod.rs + enums.rs | Grouped — mod.rs is re-exports; extract enums first | done | d018c7f | S1 |
 | 1 | types/model.rs | **(MARGIN)** ~780 lines; actual 808 total / 305 prod | done | — | S1 |
 | 1 | types/model_init.rs | **(MARGIN)** ~774 est → 844 total / 629 prod; **SCATTER** handled | done | 5912e68 | S2 |
+| 1 | **Phase 1 audit** | Rounds 1–3: fixed A (import routing), B (progress gaps), C (stale `#[cfg(test)]`). Round 4: fixed D (`batch.rs` imported `Data` via monolith shim), E (`derivatives.rs` same). All S1–S8 criteria A-grade. 1,526/0/15 baseline preserved. | done | — | S3 |
 | 1 | types/model_factories.rs | NOT cfg(test): used by sim-conformance-tests; 317 lines | done | 5912e68 | S2 |
 | 1 | types/data.rs | **(MARGIN)** ~710 est → 834 total / 380 prod | done | 5912e68 | S2 |
 | 1 | types/contact_types.rs | | done | 5912e68 | S2 |

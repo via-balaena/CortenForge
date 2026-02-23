@@ -54,7 +54,6 @@
 //! ```
 
 use crate::mujoco_pipeline::{
-    Data,
     // §40a fluid derivative infrastructure
     MJ_MINVAL,
     SpatialVector,
@@ -76,7 +75,7 @@ use crate::mujoco_pipeline::{
     tendon_all_dofs_sleeping,
 };
 use crate::types::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, ENABLE_SLEEP, GainType, Integrator,
+    ActuatorDynamics, ActuatorTransmission, BiasType, Data, ENABLE_SLEEP, GainType, Integrator,
     MjJointType, Model, StepError,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
