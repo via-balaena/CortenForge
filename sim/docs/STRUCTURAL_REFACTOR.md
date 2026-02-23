@@ -1180,16 +1180,16 @@ inter-function whitespace/doc comments ~70)
 
 ### Phase 5: Extract tendon pipeline
 
-- [ ] Create `src/tendon/` module tree
-- [ ] Move mj_fwd_tendon, compute_spatial_tendon_length0 → `tendon/mod.rs`
-- [ ] Move mj_fwd_tendon_fixed → `tendon/fixed.rs`
-- [ ] Move mj_fwd_tendon_spatial + accumulate_point_jacobian + apply_tendon_force →
+- [x] Create `src/tendon/` module tree
+- [x] Move mj_fwd_tendon, compute_spatial_tendon_length0 → `tendon/mod.rs`
+- [x] Move mj_fwd_tendon_fixed → `tendon/fixed.rs`
+- [x] Move mj_fwd_tendon_spatial + accumulate_point_jacobian + apply_tendon_force →
       `tendon/spatial.rs`
-- [ ] Move wrapping math (sphere_tangent_point, wrap_inside_2d, etc.) →
+- [x] Move wrapping math (sphere_tangent_point, wrap_inside_2d, etc.) →
       `tendon/wrap_math.rs`
-- [ ] Update the call site in the still-monolithic `mj_fwd_position` to use
+- [x] Update the call site in the still-monolithic `mj_fwd_position` to use
       `crate::tendon::mj_fwd_tendon(model, data)` instead of a direct call
-- [ ] Run full test suite
+- [x] Run full test suite
 
 **Estimated size**: ~1,150 lines moved (tendon modules ~1,124 + overhead ~26)
 
