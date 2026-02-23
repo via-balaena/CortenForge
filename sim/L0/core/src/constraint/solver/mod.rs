@@ -4,6 +4,7 @@
 //! shared post-solve operations (Delassus regularization, qfrc recovery,
 //! friction pyramid decoding). Corresponds to MuJoCo's `engine_solver.c`.
 
+pub mod cg;
 pub mod pgs;
 pub mod primal;
 
