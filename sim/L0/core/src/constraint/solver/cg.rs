@@ -10,10 +10,10 @@
 use nalgebra::DVector;
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::solver::newton::recover_newton;
 use crate::constraint::solver::pgs::classify_constraint_states;
 use crate::constraint::solver::primal::{evaluate_cost_at, primal_prepare, primal_search};
 use crate::linalg::mj_solve_sparse;
-use crate::mujoco_pipeline::recover_newton;
 use crate::types::{ConstraintState, Data, Model, SolverStat};
 
 /// Primal CG solver operating on all constraint types in acceleration space.

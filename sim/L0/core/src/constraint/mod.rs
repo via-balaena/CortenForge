@@ -25,10 +25,10 @@ use crate::constraint::assembly::tendon_deadband_displacement;
 use crate::constraint::solver::cg::cg_solve_unified;
 use crate::constraint::solver::compute_qfrc_constraint_from_efc;
 use crate::constraint::solver::extract_qfrc_frictionloss;
+use crate::constraint::solver::newton::NewtonResult;
+use crate::constraint::solver::newton::newton_solve;
 use crate::constraint::solver::pgs::pgs_solve_unified;
-use crate::mujoco_pipeline::NewtonResult; // monolith: removed in Phase 6 step 11
 use crate::mujoco_pipeline::accumulate_tendon_kd; // monolith: removed in Phase 8a
-use crate::mujoco_pipeline::newton_solve; // monolith: removed in Phase 6 step 11
 use crate::mujoco_pipeline::noslip_postprocess; // monolith: removed in Phase 6 step 12
 use crate::mujoco_pipeline::populate_efc_island; // monolith: removed in Phase 6 step 5
 use crate::mujoco_pipeline::tendon_all_dofs_sleeping; // monolith: removed in Phase 8a
