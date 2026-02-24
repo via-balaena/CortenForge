@@ -1262,23 +1262,22 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
 The forward pipeline is the most interconnected extraction. Splitting it from
 integration and island/sleep follows Principle #5 (one PR per major module).
 
-- [ ] Create `src/forward/` module tree
-- [ ] Move step/forward/forward_skip_sensors/forward_core → `forward/mod.rs`
-- [ ] Move mj_fwd_position + aabb_from_geom + SweepAndPrune → `forward/position.rs`
-- [ ] Move mj_fwd_velocity → `forward/velocity.rs`
-- [ ] Move passive forces + PassiveForceVisitor → `forward/passive.rs`
-      **WARNING**: L12690–L12816 (tendon implicit K/D helpers) sits between the
-      two passive ranges but goes to `integrate/implicit.rs` in Phase 8b, NOT
-      to `forward/passive.rs`. Only take L12108–L12690 and L12818–L12899.
-- [ ] Move actuation pipeline → `forward/actuation.rs` (~566 lines)
-- [ ] Move compute_muscle_params + muscle_* helpers → `forward/muscle.rs` (~259 lines)
-- [ ] Move acceleration paths → `forward/acceleration.rs`
-- [ ] Move check functions → `forward/check.rs`
-- [ ] Move Jacobian functions → `src/jacobian.rs` (includes `mj_differentiate_pos`
-      and `mj_integrate_pos_explicit` — primary callers are `derivatives.rs`)
-- [ ] Run full test suite
+- [x] Create `src/forward/` module tree
+- [x] Move step/forward/forward_skip_sensors/forward_core → `forward/mod.rs` (238 lines)
+- [x] Move mj_fwd_position + aabb_from_geom + SweepAndPrune → `forward/position.rs` (601 lines)
+- [x] Move mj_fwd_velocity → `forward/velocity.rs` (125 lines)
+- [x] Move passive forces + PassiveForceVisitor → `forward/passive.rs` (715 lines)
+      **HAZARD OK**: tendon implicit K/D helpers left in monolith for Phase 8b.
+- [x] Move actuation pipeline → `forward/actuation.rs` (461 lines)
+- [x] Move muscle_* helpers → `forward/muscle.rs` (122 lines)
+      Note: `compute_muscle_params` left in monolith (heavy deps: mj_fwd_position, mj_crba, mj_jac_site, mj_solve_sparse).
+- [x] Move acceleration paths → `forward/acceleration.rs` (331 lines)
+- [x] Move check functions → `forward/check.rs` (51 lines)
+- [x] Move Jacobian functions → `src/jacobian.rs` (455 lines)
+      **HAZARD OK**: `mj_integrate_pos_explicit` extracted; `mj_integrate_pos` left for Phase 8b.
+- [x] Run full test suite — 2,007 passed, 0 failed, 20 ignored
 
-**Estimated size**: ~3,050 lines moved (forward/* modules ~2,574 + jacobian.rs ~465 + overhead ~11)
+**Actual size**: ~3,100 lines moved. Monolith 8,275 → 5,364 (35% reduction). Commit: b62d746 (S14).
 
 ### Phase 8b: Extract integration
 

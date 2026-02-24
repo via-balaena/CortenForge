@@ -425,15 +425,15 @@ and correlating with commit history.
 | 6 | constraint/solver/newton.rs | 352 lines; NewtonResult, newton_solve, recover_newton | done | 2247036 | S13 |
 | 6 | constraint/solver/noslip.rs | 748 lines; project_elliptic_cone, noslip_qcqp2/3, NoslipRowKind, noslip_postprocess | done | a17d28d | S13 |
 | 6 | **Phase 6 audit** | Independent audit: all S1–S8 A-grade. One finding (F1 — stale monolith comment in constraint/mod.rs, fixed). DAG annotations corrected in rubric. 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S13 |
-| 8a | forward/mod.rs | | | | |
-| 8a | forward/position.rs | | | | |
-| 8a | forward/velocity.rs | | | | |
-| 8a | forward/passive.rs | **(HAZARD)** skip L12690–L12816 (→ Phase 8b); take up to L12689 | | | |
-| 8a | forward/actuation.rs | | | | |
-| 8a | forward/muscle.rs | | | | |
-| 8a | forward/acceleration.rs | | | | |
-| 8a | forward/check.rs | | | | |
-| 8a | jacobian.rs | **(HAZARD)** Top-level; includes `mj_integrate_pos_explicit` | | | |
+| 8a | forward/mod.rs | 238 lines; step(), forward(), forward_core(), forward_skip_sensors() orchestration | done | b62d746 | S14 |
+| 8a | forward/position.rs | 601 lines; mj_fwd_position, aabb_from_geom, SweepAndPrune, closest_point_segment, closest_points_segments | done | b62d746 | S14 |
+| 8a | forward/velocity.rs | 125 lines; mj_fwd_velocity, tendon velocities | done | b62d746 | S14 |
+| 8a | forward/passive.rs | 715 lines; fluid/aero helpers, mj_fwd_passive, PassiveForceVisitor. **(HAZARD OK)** tendon implicit K/D helpers left in monolith for Phase 8b | done | b62d746 | S14 |
+| 8a | forward/actuation.rs | 461 lines; mj_transmission_site, mj_transmission_body_dispatch, mj_actuator_length, mj_fwd_actuation | done | b62d746 | S14 |
+| 8a | forward/muscle.rs | 122 lines; muscle F-L-V curves, sigmoid, muscle_activation_dynamics. compute_muscle_params left in monolith (heavy deps) | done | b62d746 | S14 |
+| 8a | forward/acceleration.rs | 331 lines; mj_fwd_acceleration dispatch, explicit, implicit, implicitfast, implicit_full, ImplicitSpringVisitor | done | b62d746 | S14 |
+| 8a | forward/check.rs | 51 lines; mj_check_pos, mj_check_vel, mj_check_acc | done | b62d746 | S14 |
+| 8a | jacobian.rs | 455 lines; mj_jac, mj_jac_site/body/point/body_com/geom, mj_apply_ft, mj_differentiate_pos, mj_integrate_pos_explicit. **(HAZARD OK)** mj_integrate_pos (Phase 8b) left in monolith | done | b62d746 | S14 |
 | 8b | integrate/mod.rs | | | | |
 | 8b | integrate/euler.rs | **(HAZARD)** `mj_integrate_pos` (NOT `_explicit`) | | | |
 | 8b | integrate/implicit.rs | Extracts L12690–L12816 (skipped in Phase 8a) | | | |
