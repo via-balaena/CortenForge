@@ -9,6 +9,7 @@
 pub mod actuator;
 pub mod asset;
 pub mod body;
+mod build;
 pub mod compiler;
 pub mod contact;
 pub mod equality;
