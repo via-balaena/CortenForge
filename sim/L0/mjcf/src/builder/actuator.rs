@@ -425,3 +425,446 @@ fn floats_to_array<const N: usize>(input: &[f64], default: [f64; N]) -> [f64; N]
     }
     out
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use crate::builder::load_model;
+    use sim_core::{ActuatorDynamics, ActuatorTransmission, BiasType, GainType};
+
+    /// Test that tendon actuators return proper error.
+    #[test]
+    fn test_tendon_actuator_unknown_tendon_error() {
+        // Actuator referencing a nonexistent tendon should fail with "unknown tendon"
+        let result = load_model(
+            r#"
+            <mujoco model="tendon_test">
+                <worldbody>
+                    <body name="link" pos="0 0 1">
+                        <joint name="j1" type="hinge"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="m1" tendon="some_tendon" gear="1"/>
+                </actuator>
+            </mujoco>
+        "#,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("unknown tendon"));
+    }
+
+    /// Test site actuator transmission.
+    #[test]
+    fn test_site_actuator() {
+        let model = load_model(
+            r#"
+            <mujoco model="site_actuator_test">
+                <worldbody>
+                    <body name="arm" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <site name="end_effector" pos="0 0 -1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <general name="site_act" site="end_effector" gear="50"/>
+                </actuator>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nu, 1);
+        assert_eq!(model.actuator_trntype[0], ActuatorTransmission::Site);
+        assert_eq!(model.actuator_trnid[0][0], 0); // First site
+        assert_eq!(model.actuator_trnid[0][1], usize::MAX); // No refsite
+        assert!((model.actuator_gear[0][0] - 50.0).abs() < 1e-10);
+    }
+
+    /// Test actuator activation states (na) computation.
+    #[test]
+    fn test_actuator_activation_states() {
+        let model = load_model(
+            r#"
+            <mujoco model="activation_test">
+                <worldbody>
+                    <body name="arm" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="0 1 0"/>
+                        <joint name="j2" type="hinge" axis="1 0 0"/>
+                        <joint name="j3" type="hinge" axis="0 0 1"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="motor1" joint="j1" gear="10"/>
+                    <position name="pos1" joint="j2" kp="100"/>
+                    <velocity name="vel1" joint="j3" kv="10"/>
+                </actuator>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nu, 3);
+
+        // Motor has no dynamics -> 0 activation states
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::None);
+        assert_eq!(model.actuator_act_adr[0], 0);
+        assert_eq!(model.actuator_act_num[0], 0);
+
+        // Position servo (no timeconst) has no dynamics -> 0 activation states
+        // MuJoCo: Position defaults to dyntype=None when timeconst=0.
+        assert_eq!(model.actuator_dyntype[1], ActuatorDynamics::None);
+        assert_eq!(model.actuator_act_adr[1], 0);
+        assert_eq!(model.actuator_act_num[1], 0);
+
+        // Velocity servo always has no dynamics -> 0 activation states
+        assert_eq!(model.actuator_dyntype[2], ActuatorDynamics::None);
+        assert_eq!(model.actuator_act_adr[2], 0);
+        assert_eq!(model.actuator_act_num[2], 0);
+
+        // Total activation states
+        assert_eq!(model.na, 0); // 0 + 0 + 0 = 0
+    }
+
+    // ========================================================================
+    // <general> actuator MJCF attributes (spec section 8)
+    // ========================================================================
+
+    /// Helper: minimal MJCF with a single body+joint for actuator tests.
+    fn general_actuator_model(actuator_xml: &str) -> String {
+        format!(
+            r#"
+            <mujoco model="general_actuator_test">
+                <worldbody>
+                    <body name="b" pos="0 0 1">
+                        <joint name="j" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    {actuator_xml}
+                </actuator>
+            </mujoco>
+            "#
+        )
+    }
+
+    /// Criterion 1: Explicit gaintype/biastype on `<general>`.
+    #[test]
+    fn test_general_explicit_gaintype_biastype() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" gaintype="affine" gainprm="0 0 -5"
+                       biastype="none" ctrllimited="true" ctrlrange="0 1"/>"#,
+        );
+        let model = load_model(&xml).expect("should load");
+
+        assert_eq!(model.nu, 1);
+        assert_eq!(model.actuator_gaintype[0], GainType::Affine);
+        assert_eq!(model.actuator_biastype[0], BiasType::None);
+        // gainprm = [0, 0, -5, 0, 0, 0, 0, 0, 0]
+        assert!((model.actuator_gainprm[0][0]).abs() < 1e-10);
+        assert!((model.actuator_gainprm[0][1]).abs() < 1e-10);
+        assert!((model.actuator_gainprm[0][2] - (-5.0)).abs() < 1e-10);
+        for i in 3..9 {
+            assert!((model.actuator_gainprm[0][i]).abs() < 1e-10);
+        }
+    }
+
+    /// Criterion 2: Explicit dyntype with dynprm.
+    #[test]
+    fn test_general_explicit_dyntype() {
+        let xml = general_actuator_model(r#"<general joint="j" dyntype="filter" dynprm="0.05"/>"#);
+        let model = load_model(&xml).expect("should load");
+
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::Filter);
+        assert!((model.actuator_dynprm[0][0] - 0.05).abs() < 1e-10);
+        assert!((model.actuator_dynprm[0][1]).abs() < 1e-10);
+        assert!((model.actuator_dynprm[0][2]).abs() < 1e-10);
+        // Filter -> 1 activation state
+        assert_eq!(model.actuator_act_num[0], 1);
+    }
+
+    /// Criterion 3: Bare `<general>` backward compatibility (Motor-like defaults).
+    #[test]
+    fn test_general_bare_defaults() {
+        let xml = general_actuator_model(r#"<general joint="j"/>"#);
+        let model = load_model(&xml).expect("should load");
+
+        assert_eq!(model.nu, 1);
+        assert_eq!(model.actuator_gaintype[0], GainType::Fixed);
+        assert_eq!(model.actuator_biastype[0], BiasType::None);
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::None);
+        // gainprm = [1, 0, ..., 0] (MuJoCo default)
+        assert!((model.actuator_gainprm[0][0] - 1.0).abs() < 1e-10);
+        for i in 1..9 {
+            assert!((model.actuator_gainprm[0][i]).abs() < 1e-10);
+        }
+        // biasprm = [0, ..., 0]
+        for i in 0..9 {
+            assert!((model.actuator_biasprm[0][i]).abs() < 1e-10);
+        }
+        // dynprm = [1, 0, 0] (MuJoCo default)
+        assert!((model.actuator_dynprm[0][0] - 1.0).abs() < 1e-10);
+        assert!((model.actuator_dynprm[0][1]).abs() < 1e-10);
+        assert!((model.actuator_dynprm[0][2]).abs() < 1e-10);
+        // No dynamics -> 0 activation states
+        assert_eq!(model.actuator_act_num[0], 0);
+    }
+
+    /// Criterion 4: PD servo via `<general>` matches `<position>` shortcut.
+    #[test]
+    fn test_general_pd_servo_equivalence() {
+        let general_xml = general_actuator_model(
+            r#"<general joint="j" gaintype="fixed" gainprm="100"
+                       biastype="affine" biasprm="0 -100 -10"
+                       dyntype="filterexact" dynprm="0.01"/>"#,
+        );
+        let position_xml =
+            general_actuator_model(r#"<position joint="j" kp="100" kv="10" timeconst="0.01"/>"#);
+
+        let m_gen = load_model(&general_xml).expect("should load general");
+        let m_pos = load_model(&position_xml).expect("should load position");
+
+        assert_eq!(m_gen.actuator_gaintype[0], m_pos.actuator_gaintype[0]);
+        assert_eq!(m_gen.actuator_biastype[0], m_pos.actuator_biastype[0]);
+        assert_eq!(m_gen.actuator_dyntype[0], m_pos.actuator_dyntype[0]);
+        for i in 0..9 {
+            assert!(
+                (m_gen.actuator_gainprm[0][i] - m_pos.actuator_gainprm[0][i]).abs() < 1e-10,
+                "gainprm[{i}] mismatch: {} vs {}",
+                m_gen.actuator_gainprm[0][i],
+                m_pos.actuator_gainprm[0][i]
+            );
+            assert!(
+                (m_gen.actuator_biasprm[0][i] - m_pos.actuator_biasprm[0][i]).abs() < 1e-10,
+                "biasprm[{i}] mismatch: {} vs {}",
+                m_gen.actuator_biasprm[0][i],
+                m_pos.actuator_biasprm[0][i]
+            );
+        }
+        for i in 0..3 {
+            assert!(
+                (m_gen.actuator_dynprm[0][i] - m_pos.actuator_dynprm[0][i]).abs() < 1e-10,
+                "dynprm[{i}] mismatch: {} vs {}",
+                m_gen.actuator_dynprm[0][i],
+                m_pos.actuator_dynprm[0][i]
+            );
+        }
+        assert_eq!(m_gen.actuator_act_num[0], m_pos.actuator_act_num[0]);
+    }
+
+    /// Criterion 5: Muscle via `<general>` matches `<muscle>` shortcut.
+    #[test]
+    fn test_general_muscle_equivalence() {
+        let general_xml = general_actuator_model(
+            r#"<general joint="j" gaintype="muscle" biastype="muscle"
+                       dyntype="muscle"
+                       gainprm="0.75 1.05 -1 200 0.5 1.6 1.5 0.6 1.4"
+                       dynprm="0.01 0.04 0"/>"#,
+        );
+        let muscle_xml = general_actuator_model(
+            r#"<muscle joint="j" range="0.75 1.05" force="-1" scale="200"
+                      lmin="0.5" lmax="1.6" vmax="1.5" fpmax="0.6" fvmax="1.4"
+                      timeconst="0.01 0.04"/>"#,
+        );
+
+        let m_gen = load_model(&general_xml).expect("should load general");
+        let m_mus = load_model(&muscle_xml).expect("should load muscle");
+
+        assert_eq!(m_gen.actuator_gaintype[0], m_mus.actuator_gaintype[0]);
+        assert_eq!(m_gen.actuator_biastype[0], m_mus.actuator_biastype[0]);
+        assert_eq!(m_gen.actuator_dyntype[0], m_mus.actuator_dyntype[0]);
+        for i in 0..9 {
+            assert!(
+                (m_gen.actuator_gainprm[0][i] - m_mus.actuator_gainprm[0][i]).abs() < 1e-10,
+                "gainprm[{i}] mismatch: {} vs {}",
+                m_gen.actuator_gainprm[0][i],
+                m_mus.actuator_gainprm[0][i]
+            );
+        }
+        for i in 0..3 {
+            assert!(
+                (m_gen.actuator_dynprm[0][i] - m_mus.actuator_dynprm[0][i]).abs() < 1e-10,
+                "dynprm[{i}] mismatch: {} vs {}",
+                m_gen.actuator_dynprm[0][i],
+                m_mus.actuator_dynprm[0][i]
+            );
+        }
+        assert_eq!(m_gen.actuator_act_num[0], m_mus.actuator_act_num[0]);
+    }
+
+    /// Criterion 6: Default class inheritance for `<general>` attributes.
+    #[test]
+    fn test_general_default_class_inheritance() {
+        let xml = r#"
+            <mujoco model="general_defaults">
+                <default>
+                    <general gaintype="affine" gainprm="0 0 -10"/>
+                </default>
+                <worldbody>
+                    <body name="b" pos="0 0 1">
+                        <joint name="j" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <general joint="j"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_model(xml).expect("should load");
+        assert_eq!(model.actuator_gaintype[0], GainType::Affine);
+        assert!((model.actuator_gainprm[0][0]).abs() < 1e-10);
+        assert!((model.actuator_gainprm[0][1]).abs() < 1e-10);
+        assert!((model.actuator_gainprm[0][2] - (-10.0)).abs() < 1e-10);
+    }
+
+    /// Criterion 6 (continued): Explicit attribute overrides class default.
+    #[test]
+    fn test_general_default_class_override() {
+        let xml = r#"
+            <mujoco model="general_defaults_override">
+                <default>
+                    <general gaintype="affine" gainprm="0 0 -10"/>
+                </default>
+                <worldbody>
+                    <body name="b" pos="0 0 1">
+                        <joint name="j" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <general joint="j" gaintype="fixed" gainprm="50"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_model(xml).expect("should load");
+        // Explicit gaintype="fixed" overrides class default "affine"
+        assert_eq!(model.actuator_gaintype[0], GainType::Fixed);
+        // Explicit gainprm="50" overrides class default "0 0 -10"
+        assert!((model.actuator_gainprm[0][0] - 50.0).abs() < 1e-10);
+        for i in 1..9 {
+            assert!((model.actuator_gainprm[0][i]).abs() < 1e-10);
+        }
+    }
+
+    /// Criterion 7: Partial gainprm (fewer than 9 elements).
+    #[test]
+    fn test_general_partial_gainprm() {
+        let xml = general_actuator_model(r#"<general joint="j" gainprm="50"/>"#);
+        let model = load_model(&xml).expect("should load");
+
+        assert!((model.actuator_gainprm[0][0] - 50.0).abs() < 1e-10);
+        for i in 1..9 {
+            assert!(
+                (model.actuator_gainprm[0][i]).abs() < 1e-10,
+                "gainprm[{i}] should be 0, got {}",
+                model.actuator_gainprm[0][i]
+            );
+        }
+    }
+
+    /// Criterion 8: dynprm defaults to [1,0,0] when dyntype is set but dynprm absent.
+    #[test]
+    fn test_general_dynprm_default() {
+        let xml = general_actuator_model(r#"<general joint="j" dyntype="filter"/>"#);
+        let model = load_model(&xml).expect("should load");
+
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::Filter);
+        assert!((model.actuator_dynprm[0][0] - 1.0).abs() < 1e-10); // tau = 1.0s
+        assert!((model.actuator_dynprm[0][1]).abs() < 1e-10);
+        assert!((model.actuator_dynprm[0][2]).abs() < 1e-10);
+    }
+
+    /// Criterion 9: Invalid enum produces ModelConversionError.
+    #[test]
+    fn test_general_invalid_gaintype_error() {
+        let xml = general_actuator_model(r#"<general joint="j" gaintype="invalid"/>"#);
+        let err = load_model(&xml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown gaintype"),
+            "error should contain 'unknown gaintype', got: {msg}"
+        );
+    }
+
+    /// Criterion 10: "user" type produces error (not special-cased).
+    #[test]
+    fn test_general_user_gaintype_error() {
+        let xml = general_actuator_model(r#"<general joint="j" gaintype="user"/>"#);
+        let err = load_model(&xml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown gaintype 'user'"),
+            "error should contain \"unknown gaintype 'user'\", got: {msg}"
+        );
+    }
+
+    /// Criterion 11: Shortcut types ignore gaintype/biastype/dyntype attributes.
+    #[test]
+    fn test_shortcut_types_ignore_general_attrs() {
+        // A <motor> with gaintype/biastype should still produce Motor-like behavior.
+        // These attributes are not parsed for shortcut types (gated by actuator_type == General).
+        let xml = general_actuator_model(r#"<motor joint="j" gear="1"/>"#);
+        let model = load_model(&xml).expect("should load motor");
+
+        assert_eq!(model.actuator_gaintype[0], GainType::Fixed);
+        assert_eq!(model.actuator_biastype[0], BiasType::None);
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::None);
+        assert!((model.actuator_gainprm[0][0] - 1.0).abs() < 1e-10);
+    }
+
+    /// Criterion 12: All dyntype values wire correctly.
+    #[test]
+    fn test_general_all_dyntype_values() {
+        let cases = [
+            ("none", ActuatorDynamics::None, 0),
+            ("integrator", ActuatorDynamics::Integrator, 1),
+            ("filter", ActuatorDynamics::Filter, 1),
+            ("filterexact", ActuatorDynamics::FilterExact, 1),
+            ("muscle", ActuatorDynamics::Muscle, 1),
+        ];
+        for (dyntype_str, expected_dyn, expected_act_num) in &cases {
+            let xml =
+                general_actuator_model(&format!(r#"<general joint="j" dyntype="{dyntype_str}"/>"#));
+            let model = load_model(&xml).expect("should load dyntype");
+
+            assert_eq!(
+                model.actuator_dyntype[0], *expected_dyn,
+                "dyntype={dyntype_str}: wrong ActuatorDynamics"
+            );
+            assert_eq!(
+                model.actuator_act_num[0], *expected_act_num,
+                "dyntype={dyntype_str}: wrong act_num"
+            );
+        }
+    }
+
+    /// Criterion 13: Extra gainprm elements (>9) silently truncated.
+    #[test]
+    fn test_general_extra_gainprm_truncated() {
+        let xml = general_actuator_model(r#"<general joint="j" gainprm="1 2 3 4 5 6 7 8 9 10"/>"#);
+        let model = load_model(&xml).expect("should load");
+
+        // First 9 elements stored
+        let expected = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        for (i, &exp) in expected.iter().enumerate() {
+            assert!(
+                (model.actuator_gainprm[0][i] - exp).abs() < 1e-10,
+                "gainprm[{i}] expected {exp}, got {}",
+                model.actuator_gainprm[0][i]
+            );
+        }
+        // 10th element (index 9) is silently dropped — no error, and array is only 9 elements
+    }
+}

@@ -471,3 +471,277 @@ pub fn resolve_mesh(
         None
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::{convert_mjcf_mesh, load_mesh_file};
+    use crate::types::{MjcfCompiler, MjcfMesh};
+    use nalgebra::Vector3;
+
+    /// Helper to create a simple STL file for testing.
+    fn create_test_stl(path: &std::path::Path) {
+        use mesh_types::{IndexedMesh, Vertex};
+
+        let mut mesh = IndexedMesh::new();
+        // Simple tetrahedron (4 vertices, 4 faces)
+        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 1.0));
+        mesh.faces.push([0, 1, 2]); // base
+        mesh.faces.push([0, 1, 3]); // front
+        mesh.faces.push([1, 2, 3]); // right
+        mesh.faces.push([2, 0, 3]); // left
+
+        mesh_io::save_mesh(&mesh, path).expect("Failed to save test STL");
+    }
+
+    /// Test load_mesh_file with STL format.
+    #[test]
+    fn test_load_mesh_file_stl() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("test.stl");
+        create_test_stl(&mesh_path);
+
+        let result = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            &MjcfCompiler::default(),
+            Vector3::new(1.0, 1.0, 1.0),
+            "test_mesh",
+        );
+
+        assert!(result.is_ok(), "Should load STL file");
+        let mesh_data = result.unwrap();
+        assert!(
+            mesh_data.vertices().len() >= 4,
+            "Should have at least 4 vertices"
+        );
+        assert!(
+            mesh_data.triangles().len() >= 4,
+            "Should have at least 4 triangles"
+        );
+    }
+
+    /// Test load_mesh_file applies scale correctly.
+    #[test]
+    fn test_load_mesh_file_with_scale() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("scaled.stl");
+        create_test_stl(&mesh_path);
+
+        // Load without scale
+        let unscaled = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            &MjcfCompiler::default(),
+            Vector3::new(1.0, 1.0, 1.0),
+            "unscaled",
+        )
+        .unwrap();
+
+        // Load with 2x scale
+        let scaled = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            &MjcfCompiler::default(),
+            Vector3::new(2.0, 2.0, 2.0),
+            "scaled",
+        )
+        .unwrap();
+
+        // Verify scale was applied: scaled vertices should be 2x unscaled
+        // Find corresponding vertices and compare
+        assert_eq!(scaled.vertices().len(), unscaled.vertices().len());
+        for (s, u) in scaled.vertices().iter().zip(unscaled.vertices().iter()) {
+            assert!(
+                (s.x - u.x * 2.0).abs() < 1e-10,
+                "X should be scaled: {} vs {}",
+                s.x,
+                u.x * 2.0
+            );
+            assert!(
+                (s.y - u.y * 2.0).abs() < 1e-10,
+                "Y should be scaled: {} vs {}",
+                s.y,
+                u.y * 2.0
+            );
+            assert!(
+                (s.z - u.z * 2.0).abs() < 1e-10,
+                "Z should be scaled: {} vs {}",
+                s.z,
+                u.z * 2.0
+            );
+        }
+    }
+
+    /// Test load_mesh_file with non-uniform scale.
+    #[test]
+    fn test_load_mesh_file_nonuniform_scale() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("nonuniform.stl");
+        create_test_stl(&mesh_path);
+
+        // Load with non-uniform scale: 1x, 2x, 3x
+        let scaled = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            &MjcfCompiler::default(),
+            Vector3::new(1.0, 2.0, 3.0),
+            "nonuniform",
+        )
+        .unwrap();
+
+        // Load unscaled for comparison
+        let unscaled = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            &MjcfCompiler::default(),
+            Vector3::new(1.0, 1.0, 1.0),
+            "unscaled",
+        )
+        .unwrap();
+
+        // Verify non-uniform scale: x unchanged, y doubled, z tripled
+        for (s, u) in scaled.vertices().iter().zip(unscaled.vertices().iter()) {
+            assert!((s.x - u.x).abs() < 1e-10, "X should be unchanged");
+            assert!((s.y - u.y * 2.0).abs() < 1e-10, "Y should be 2x");
+            assert!((s.z - u.z * 3.0).abs() < 1e-10, "Z should be 3x");
+        }
+    }
+
+    /// Test load_mesh_file fails for unsupported format.
+    #[test]
+    fn test_load_mesh_file_unsupported_format() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("test.xyz");
+        std::fs::write(&mesh_path, b"invalid mesh data").unwrap();
+
+        let result = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            &MjcfCompiler::default(),
+            Vector3::new(1.0, 1.0, 1.0),
+            "unsupported",
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed to load"));
+    }
+
+    /// Test load_mesh_file fails gracefully for corrupt STL data.
+    ///
+    /// A file with `.stl` extension but invalid content should produce
+    /// a clear error, not panic.
+    #[test]
+    fn test_load_mesh_file_corrupt_stl() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("corrupt.stl");
+
+        // Write invalid STL data (valid STL needs specific binary/ASCII structure)
+        std::fs::write(&mesh_path, b"this is not a valid stl file content").unwrap();
+
+        let result = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            &MjcfCompiler::default(),
+            Vector3::new(1.0, 1.0, 1.0),
+            "corrupt_mesh",
+        );
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("corrupt_mesh") && err_msg.contains("failed to load"),
+            "error should identify mesh and indicate load failure: {err_msg}"
+        );
+    }
+
+    /// Test convert_mjcf_mesh with file attribute.
+    #[test]
+    fn test_convert_mjcf_mesh_from_file() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("mesh.stl");
+        create_test_stl(&mesh_path);
+
+        let mjcf_mesh = MjcfMesh {
+            name: "test_mesh".to_string(),
+            file: Some(mesh_path.to_string_lossy().to_string()),
+            vertex: None,
+            face: None,
+            scale: Some(Vector3::new(1.0, 1.0, 1.0)),
+        };
+
+        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
+        assert!(result.is_ok());
+        let mesh_data = result.unwrap();
+        assert!(!mesh_data.vertices().is_empty());
+        assert!(!mesh_data.triangles().is_empty());
+    }
+
+    /// Test convert_mjcf_mesh with file attribute and relative path.
+    #[test]
+    fn test_convert_mjcf_mesh_relative_path() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let meshes_dir = temp_dir.path().join("assets");
+        std::fs::create_dir_all(&meshes_dir).unwrap();
+        let mesh_path = meshes_dir.join("model.stl");
+        create_test_stl(&mesh_path);
+
+        let mjcf_mesh = MjcfMesh {
+            name: "relative_mesh".to_string(),
+            file: Some("assets/model.stl".to_string()),
+            vertex: None,
+            face: None,
+            scale: Some(Vector3::new(1.0, 1.0, 1.0)),
+        };
+
+        let result = convert_mjcf_mesh(&mjcf_mesh, Some(temp_dir.path()), &MjcfCompiler::default());
+        assert!(result.is_ok());
+    }
+
+    /// Test convert_mjcf_mesh with embedded vertex data (no file).
+    #[test]
+    fn test_convert_mjcf_mesh_embedded() {
+        let mjcf_mesh = MjcfMesh {
+            name: "embedded".to_string(),
+            file: None,
+            vertex: Some(vec![
+                0.0, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.5, 1.0, 0.0, // v2
+                0.5, 0.5, 1.0, // v3
+            ]),
+            face: Some(vec![
+                0, 1, 2, // f0
+                0, 1, 3, // f1
+                1, 2, 3, // f2
+                2, 0, 3, // f3
+            ]),
+            scale: Some(Vector3::new(1.0, 1.0, 1.0)),
+        };
+
+        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
+        assert!(result.is_ok());
+        let mesh_data = result.unwrap();
+        assert_eq!(mesh_data.vertices().len(), 4);
+        assert_eq!(mesh_data.triangles().len(), 4); // 4 triangles
+    }
+
+    /// Test convert_mjcf_mesh fails when neither file nor vertex is present.
+    #[test]
+    fn test_convert_mjcf_mesh_no_data() {
+        let mjcf_mesh = MjcfMesh {
+            name: "empty".to_string(),
+            file: None,
+            vertex: None,
+            face: None,
+            scale: Some(Vector3::new(1.0, 1.0, 1.0)),
+        };
+
+        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no vertex data"));
+    }
+}

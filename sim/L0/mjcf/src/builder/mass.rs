@@ -223,3 +223,289 @@ pub fn compute_inertia_from_geoms(
 
     (total_mass, principal_inertia, com, iquat)
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use crate::builder::load_model;
+
+    // -- Mass pipeline tests --
+
+    #[test]
+    fn test_inertiafromgeom_true_overrides_explicit_inertial() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" inertiafromgeom="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="999.0" diaginertia="1 1 1"/>
+                        <geom type="sphere" size="0.1" mass="2.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // inertiafromgeom="true" -> geom mass (2.0) overrides explicit 999.0
+        assert!(
+            (model.body_mass[1] - 2.0).abs() < 1e-10,
+            "mass should come from geom, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_inertiafromgeom_false_uses_explicit_only() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" inertiafromgeom="false"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="5.0" diaginertia="1 1 1"/>
+                        <geom type="sphere" size="0.1" mass="2.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert!(
+            (model.body_mass[1] - 5.0).abs() < 1e-10,
+            "mass should come from explicit inertial, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_inertiafromgeom_false_no_inertial_gives_zero() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" inertiafromgeom="false"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom type="sphere" size="0.1" mass="2.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert!(
+            model.body_mass[1].abs() < 1e-10,
+            "mass should be zero without explicit inertial, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_inertiafromgeom_auto_no_geoms_gives_zero() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <joint type="hinge" axis="0 1 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Auto mode with no geoms and no inertial -> zero mass
+        assert!(
+            model.body_mass[1].abs() < 1e-10,
+            "empty body should have zero mass, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_boundmass_clamps_minimum() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" boundmass="0.5"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom type="sphere" size="0.01" mass="0.001"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert!(
+            (model.body_mass[1] - 0.5).abs() < 1e-10,
+            "mass should be clamped to 0.5, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_boundinertia_clamps_minimum() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" boundinertia="0.01"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.001 0.001 0.001"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        let inertia = model.body_inertia[1];
+        assert!(
+            (inertia.x - 0.01).abs() < 1e-10
+                && (inertia.y - 0.01).abs() < 1e-10
+                && (inertia.z - 0.01).abs() < 1e-10,
+            "inertia should be clamped to 0.01, got {inertia:?}"
+        );
+    }
+
+    #[test]
+    fn test_balanceinertia_fixes_triangle_inequality() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" balanceinertia="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.5"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // 0.1 + 0.1 < 0.5 violates triangle inequality -> mean = (0.1+0.1+0.5)/3
+        let expected = (0.1 + 0.1 + 0.5) / 3.0;
+        let inertia = model.body_inertia[1];
+        assert!(
+            (inertia.x - expected).abs() < 1e-10
+                && (inertia.y - expected).abs() < 1e-10
+                && (inertia.z - expected).abs() < 1e-10,
+            "inertia should be balanced to mean {expected}, got {inertia:?}"
+        );
+    }
+
+    #[test]
+    fn test_balanceinertia_no_change_when_valid() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" balanceinertia="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.3 0.3 0.3"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        let inertia = model.body_inertia[1];
+        assert!(
+            (inertia.x - 0.3).abs() < 1e-10
+                && (inertia.y - 0.3).abs() < 1e-10
+                && (inertia.z - 0.3).abs() < 1e-10,
+            "valid inertia should not change, got {inertia:?}"
+        );
+    }
+
+    #[test]
+    fn test_settotalmass_rescales() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" settotalmass="10.0"/>
+                <worldbody>
+                    <body name="a" pos="0 0 0">
+                        <geom type="sphere" size="0.1" mass="3.0"/>
+                    </body>
+                    <body name="b" pos="1 0 0">
+                        <geom type="sphere" size="0.1" mass="7.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Original total = 3 + 7 = 10, settotalmass = 10 -> no change
+        let total: f64 = (1..model.nbody).map(|i| model.body_mass[i]).sum();
+        assert!(
+            (total - 10.0).abs() < 1e-10,
+            "total mass should be 10.0, got {total}"
+        );
+    }
+
+    #[test]
+    fn test_settotalmass_rescales_different_target() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" settotalmass="20.0"/>
+                <worldbody>
+                    <body name="a" pos="0 0 0">
+                        <geom type="sphere" size="0.1" mass="3.0"/>
+                    </body>
+                    <body name="b" pos="1 0 0">
+                        <geom type="sphere" size="0.1" mass="7.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Original total = 10, target = 20 -> scale = 2x
+        let total: f64 = (1..model.nbody).map(|i| model.body_mass[i]).sum();
+        assert!(
+            (total - 20.0).abs() < 1e-10,
+            "total mass should be 20.0, got {total}"
+        );
+        // Mass ratios should be preserved: a=6.0, b=14.0
+        assert!(
+            (model.body_mass[1] - 6.0).abs() < 1e-10,
+            "body a mass should be 6.0, got {}",
+            model.body_mass[1]
+        );
+        assert!(
+            (model.body_mass[2] - 14.0).abs() < 1e-10,
+            "body b mass should be 14.0, got {}",
+            model.body_mass[2]
+        );
+    }
+
+    #[test]
+    fn test_mass_pipeline_order_bound_then_settotalmass() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" boundmass="1.0" settotalmass="5.0"/>
+                <worldbody>
+                    <body name="a" pos="0 0 0">
+                        <geom type="sphere" size="0.01" mass="0.1"/>
+                    </body>
+                    <body name="b" pos="1 0 0">
+                        <geom type="sphere" size="0.1" mass="2.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // After boundmass: a=1.0, b=2.0, total=3.0
+        // After settotalmass(5.0): scale=5/3, a=5/3, b=10/3
+        let total: f64 = (1..model.nbody).map(|i| model.body_mass[i]).sum();
+        assert!(
+            (total - 5.0).abs() < 1e-10,
+            "total mass should be 5.0, got {total}"
+        );
+    }
+}

@@ -487,7 +487,7 @@ and correlating with commit history.
 | 10 | builder/equality.rs | 296 lines. process_equality_constraints, compute_initial_geom_distance, geom_world_position (impl). No inline tests | done | | S18 |
 | 10 | builder/flex.rs | 612 lines. process_flex_bodies (impl), compute_flexedge_crosssection, compute_flex_address_table, compute_flex_count_table, compute_vertex_masses, compute_dihedral_angle, compute_edge_solref, compute_bend_stiffness_from_material, compute_bend_damping_from_material (free fns). No inline tests | done | | S18 |
 | 10 | builder/build.rs | 696 lines. build(self) -> Model (impl). References all process_* outputs + flex helpers. No inline tests | done | | S18 |
-| 10 | builder/ inline tests | ~4,152 lines across 151 fn definitions | | | |
+| 10 | builder/ inline tests | 136 tests relocated from monolith to 12 builder sub-modules (build, joint, actuator, geom, body, mesh, mod, orientation, mass, compiler, flex, frame). 3 tests added to existing orientation.rs test module. model_builder.rs replaced with redirect stub. 281/281 tests pass, clippy clean. | done | | S19 |
 | 12 | Monolith deletion + shim removal | | | | |
 | 12 | Stale reference sweep (grep) | | | | |
 | 12 | future_work_*.md doc updates (~692) | | | | |

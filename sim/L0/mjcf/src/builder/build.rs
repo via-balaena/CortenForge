@@ -694,3 +694,105 @@ impl ModelBuilder {
         model
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use crate::builder::load_model;
+    use sim_core::{ActuatorTransmission, MjJointType};
+
+    #[test]
+    fn test_simple_pendulum() {
+        let model = load_model(
+            r#"
+            <mujoco model="pendulum">
+                <option timestep="0.001" gravity="0 0 -9.81"/>
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.1 0.1 0.01"/>
+                        <geom type="capsule" size="0.05 0.5"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nbody, 2); // world + link1
+        assert_eq!(model.njnt, 1);
+        assert_eq!(model.nq, 1); // hinge has 1 qpos
+        assert_eq!(model.nv, 1); // hinge has 1 DOF
+        assert_eq!(model.ngeom, 1);
+
+        // Check body tree
+        assert_eq!(model.body_parent[1], 0); // link1's parent is world
+
+        // Check joint
+        assert_eq!(model.jnt_type[0], MjJointType::Hinge);
+        assert_eq!(model.jnt_body[0], 1); // joint on link1
+
+        // Check options
+        assert!((model.timestep - 0.001).abs() < 1e-10);
+        assert!((model.gravity.z - (-9.81)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_double_pendulum() {
+        let model = load_model(
+            r#"
+            <mujoco model="double_pendulum">
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.1 0.1 0.01"/>
+                        <geom type="capsule" size="0.05 0.25"/>
+                        <body name="link2" pos="0 0 -0.5">
+                            <joint name="j2" type="hinge" axis="0 1 0"/>
+                            <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.1 0.1 0.01"/>
+                            <geom type="capsule" size="0.05 0.25"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nbody, 3); // world + link1 + link2
+        assert_eq!(model.njnt, 2);
+        assert_eq!(model.nq, 2);
+        assert_eq!(model.nv, 2);
+
+        // Check body tree
+        assert_eq!(model.body_parent[1], 0); // link1's parent is world
+        assert_eq!(model.body_parent[2], 1); // link2's parent is link1
+    }
+
+    #[test]
+    fn test_with_actuator() {
+        let model = load_model(
+            r#"
+            <mujoco model="actuated">
+                <worldbody>
+                    <body name="arm" pos="0 0 1">
+                        <joint name="shoulder" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="motor1" joint="shoulder" gear="100"/>
+                </actuator>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nu, 1);
+        assert_eq!(model.actuator_trntype[0], ActuatorTransmission::Joint);
+        assert_eq!(model.actuator_trnid[0][0], 0); // First joint
+        assert_eq!(model.actuator_trnid[0][1], usize::MAX); // No refsite
+        assert!((model.actuator_gear[0][0] - 100.0).abs() < 1e-10);
+    }
+}

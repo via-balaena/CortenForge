@@ -518,3 +518,62 @@ pub fn geom_size_to_vec3(size: &[f64], geom_type: GeomType) -> Vector3<f64> {
         _ => Vector3::new(0.1, 0.1, 0.1),
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::compute_geom_inertia;
+    use crate::types::{MjcfGeom, MjcfGeomType};
+    use nalgebra::Vector3;
+
+    /// Test capsule inertia computation is physically reasonable.
+    #[test]
+    fn test_capsule_inertia() {
+        // A capsule should have I_z < I_x = I_y (axially symmetric, longer than wide)
+        let geom = MjcfGeom {
+            name: None,
+            class: None,
+            geom_type: Some(MjcfGeomType::Capsule),
+            pos: Some(Vector3::zeros()),
+            quat: Some(nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0)),
+            euler: None,
+            axisangle: None,
+            xyaxes: None,
+            zaxis: None,
+            size: vec![0.1, 0.5], // radius=0.1, half-height=0.5
+            fromto: None,
+            density: Some(1000.0),
+            mass: None,
+            friction: Some(Vector3::new(1.0, 0.005, 0.0001)),
+            rgba: Some(nalgebra::Vector4::new(0.5, 0.5, 0.5, 1.0)),
+            contype: Some(1),
+            conaffinity: Some(1),
+            condim: Some(3),
+            mesh: None,
+            hfield: None,
+            solref: None,
+            solimp: None,
+            priority: Some(0),
+            solmix: Some(1.0),
+            margin: Some(0.0),
+            gap: Some(0.0),
+            group: Some(0),
+            material: None,
+            fluidshape: None,
+            fluidcoef: None,
+        };
+
+        let inertia = compute_geom_inertia(&geom, None);
+
+        // Ix = Iy (axially symmetric) — diagonal elements (0,0) and (1,1)
+        assert!((inertia[(0, 0)] - inertia[(1, 1)]).abs() < 1e-10);
+
+        // Iz < Ix (thin cylinder is easier to spin about long axis)
+        assert!(inertia[(2, 2)] < inertia[(0, 0)]);
+
+        // All positive
+        assert!(inertia[(0, 0)] > 0.0);
+        assert!(inertia[(1, 1)] > 0.0);
+        assert!(inertia[(2, 2)] > 0.0);
+    }
+}

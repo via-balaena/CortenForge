@@ -722,3 +722,166 @@ impl ModelBuilder {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use crate::builder::{load_model, load_model_from_file, model_from_mjcf};
+
+    /// Helper to create a simple STL file for testing.
+    fn create_test_stl(path: &std::path::Path) {
+        use mesh_types::{IndexedMesh, Vertex};
+
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 1.0));
+        mesh.faces.push([0, 1, 2]);
+        mesh.faces.push([0, 1, 3]);
+        mesh.faces.push([1, 2, 3]);
+        mesh.faces.push([2, 0, 3]);
+
+        mesh_io::save_mesh(&mesh, path).expect("Failed to save test STL");
+    }
+
+    /// Test load_model_from_file with mesh geometry.
+    #[test]
+    fn test_load_model_from_file_with_mesh() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Create mesh file
+        let mesh_path = temp_dir.path().join("cube.stl");
+        create_test_stl(&mesh_path);
+
+        // Create MJCF file referencing the mesh
+        let mjcf_content = r#"
+            <mujoco model="mesh_test">
+                <asset>
+                    <mesh name="cube_mesh" file="cube.stl"/>
+                </asset>
+                <worldbody>
+                    <body name="cube" pos="0 0 1">
+                        <geom type="mesh" mesh="cube_mesh" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#;
+        let mjcf_path = temp_dir.path().join("model.xml");
+        std::fs::write(&mjcf_path, mjcf_content).unwrap();
+
+        let result = load_model_from_file(&mjcf_path);
+        assert!(
+            result.is_ok(),
+            "Should load model with mesh: {:?}",
+            result.err()
+        );
+        let model = result.unwrap();
+        assert_eq!(model.name, "mesh_test");
+        assert_eq!(model.nmesh, 1);
+        assert!(!model.mesh_data.is_empty());
+    }
+
+    /// Test model_from_mjcf with explicit base_path.
+    #[test]
+    fn test_model_from_mjcf_with_base_path() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Create mesh in subdirectory
+        let assets_dir = temp_dir.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+        let mesh_path = assets_dir.join("shape.stl");
+        create_test_stl(&mesh_path);
+
+        // Parse MJCF referencing relative mesh path
+        let mjcf = crate::parse_mjcf_str(
+            r#"
+            <mujoco model="base_path_test">
+                <asset>
+                    <mesh name="shape" file="assets/shape.stl"/>
+                </asset>
+                <worldbody>
+                    <body name="obj" pos="0 0 1">
+                        <geom type="mesh" mesh="shape" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("Should parse MJCF");
+
+        // Convert with base_path
+        let result = model_from_mjcf(&mjcf, Some(temp_dir.path()));
+        assert!(
+            result.is_ok(),
+            "Should convert with base_path: {:?}",
+            result.err()
+        );
+    }
+
+    // -- Include file integration tests --
+
+    #[test]
+    fn test_load_model_from_file_with_includes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Main model file
+        std::fs::write(
+            dir.path().join("main.xml"),
+            r#"<mujoco model="included">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <include file="arm.xml"/>
+                </worldbody>
+                <include file="actuators.xml"/>
+            </mujoco>"#,
+        )
+        .unwrap();
+
+        // Body definitions
+        std::fs::write(
+            dir.path().join("arm.xml"),
+            r#"<wrapper>
+                <body name="link1" pos="0 0 0.5">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                </body>
+            </wrapper>"#,
+        )
+        .unwrap();
+
+        // Actuator definitions
+        std::fs::write(
+            dir.path().join("actuators.xml"),
+            r#"<mujoco>
+                <actuator>
+                    <motor joint="j1" name="m1"/>
+                </actuator>
+            </mujoco>"#,
+        )
+        .unwrap();
+
+        let model = load_model_from_file(dir.path().join("main.xml")).expect("should load");
+        assert_eq!(model.name, "included");
+        assert!(model.nbody >= 2, "should have world + link1");
+        assert_eq!(model.njnt, 1, "should have 1 joint");
+        assert_eq!(model.nu, 1, "should have 1 actuator");
+    }
+
+    #[test]
+    fn test_load_model_string_rejects_includes() {
+        let result = load_model(
+            r#"<mujoco>
+                <worldbody>
+                    <include file="bodies.xml"/>
+                </worldbody>
+            </mujoco>"#,
+        );
+        assert!(result.is_err(), "string API should reject includes");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("include"),
+            "error should mention include: {err}"
+        );
+    }
+}

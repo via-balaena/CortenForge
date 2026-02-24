@@ -200,3 +200,523 @@ impl ModelBuilder {
         Ok(jnt_id)
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use crate::builder::load_model;
+    use sim_core::MjJointType;
+
+    #[test]
+    fn test_free_joint() {
+        let model = load_model(
+            r#"
+            <mujoco model="floating">
+                <worldbody>
+                    <body name="ball" pos="0 0 1">
+                        <joint type="free"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nq, 7); // 3 pos + 4 quat
+        assert_eq!(model.nv, 6); // 3 linear + 3 angular
+        assert_eq!(model.jnt_type[0], MjJointType::Free);
+    }
+
+    #[test]
+    fn test_ball_joint() {
+        let model = load_model(
+            r#"
+            <mujoco model="ball_joint">
+                <worldbody>
+                    <body name="link" pos="0 0 1">
+                        <joint type="ball"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nq, 4); // quaternion
+        assert_eq!(model.nv, 3); // 3 angular DOFs
+        assert_eq!(model.jnt_type[0], MjJointType::Ball);
+    }
+
+    /// Test that dof_parent forms correct kinematic tree for simple chain.
+    ///
+    /// For a 2-link pendulum (world -> link1 -> link2), each with 1 hinge:
+    /// - DOF 0 (link1's hinge): parent = None (attached to world)
+    /// - DOF 1 (link2's hinge): parent = Some(0) (attached to link1's DOF)
+    #[test]
+    fn test_dof_parent_chain() {
+        let model = load_model(
+            r#"
+            <mujoco model="chain">
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.01"/>
+                        <body name="link2" pos="0 0 -0.5">
+                            <joint name="j2" type="hinge" axis="0 1 0"/>
+                            <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.01"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nv, 2);
+        // DOF 0: link1's hinge, parent is world (None)
+        assert_eq!(model.dof_parent[0], None);
+        // DOF 1: link2's hinge, parent is DOF 0 (link1's hinge)
+        assert_eq!(model.dof_parent[1], Some(0));
+    }
+
+    /// Test dof_parent for multi-DOF joints (ball joint).
+    ///
+    /// For a ball joint (3 DOFs):
+    /// - DOF 0: parent = parent body's last DOF (or None)
+    /// - DOF 1: parent = DOF 0
+    /// - DOF 2: parent = DOF 1
+    #[test]
+    fn test_dof_parent_ball_joint() {
+        let model = load_model(
+            r#"
+            <mujoco model="ball_chain">
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <joint name="j1" type="ball"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nv, 3);
+        // DOF 0: first DOF of ball, parent is world (None)
+        assert_eq!(model.dof_parent[0], None);
+        // DOF 1: second DOF of ball, parent is DOF 0
+        assert_eq!(model.dof_parent[1], Some(0));
+        // DOF 2: third DOF of ball, parent is DOF 1
+        assert_eq!(model.dof_parent[2], Some(1));
+    }
+
+    /// Test dof_parent for free joint (6 DOFs).
+    #[test]
+    fn test_dof_parent_free_joint() {
+        let model = load_model(
+            r#"
+            <mujoco model="free_body">
+                <worldbody>
+                    <body name="floating" pos="0 0 1">
+                        <joint type="free"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nv, 6);
+        // DOF 0: first DOF of free, parent is world (None)
+        assert_eq!(model.dof_parent[0], None);
+        // DOFs 1-5: chain within free joint
+        for i in 1..6 {
+            assert_eq!(model.dof_parent[i], Some(i - 1));
+        }
+    }
+
+    /// Test dof_parent for chain with mixed joint types.
+    ///
+    /// world -> link1 (ball, 3 DOF) -> link2 (hinge, 1 DOF)
+    /// - DOFs 0,1,2: ball joint, parents: None, 0, 1
+    /// - DOF 3: hinge, parent is DOF 2 (last DOF of ball)
+    #[test]
+    fn test_dof_parent_mixed_joints() {
+        let model = load_model(
+            r#"
+            <mujoco model="mixed">
+                <worldbody>
+                    <body name="link1" pos="0 0 1">
+                        <joint name="ball" type="ball"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                        <body name="link2" pos="0 0 -0.5">
+                            <joint name="hinge" type="hinge" axis="0 1 0"/>
+                            <inertial pos="0 0 0" mass="0.5" diaginertia="0.05 0.05 0.01"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nv, 4); // 3 (ball) + 1 (hinge)
+
+        // Ball joint DOFs
+        assert_eq!(model.dof_parent[0], None);
+        assert_eq!(model.dof_parent[1], Some(0));
+        assert_eq!(model.dof_parent[2], Some(1));
+
+        // Hinge DOF: parent is ball's last DOF
+        assert_eq!(model.dof_parent[3], Some(2));
+    }
+
+    /// Test dof_parent for branching tree (two children of same parent).
+    ///
+    /// world -> base (hinge) -+-> left_arm (hinge)
+    ///                        +-> right_arm (hinge)
+    ///
+    /// DOF 0: base
+    /// DOF 1: left_arm, parent = 0
+    /// DOF 2: right_arm, parent = 0
+    #[test]
+    fn test_dof_parent_branching() {
+        let model = load_model(
+            r#"
+            <mujoco model="branching">
+                <worldbody>
+                    <body name="base" pos="0 0 1">
+                        <joint name="j_base" type="hinge" axis="0 0 1"/>
+                        <inertial pos="0 0 0" mass="2.0" diaginertia="0.2 0.2 0.1"/>
+                        <body name="left_arm" pos="0.5 0 0">
+                            <joint name="j_left" type="hinge" axis="0 1 0"/>
+                            <inertial pos="0 0 0" mass="0.5" diaginertia="0.05 0.05 0.01"/>
+                        </body>
+                        <body name="right_arm" pos="-0.5 0 0">
+                            <joint name="j_right" type="hinge" axis="0 1 0"/>
+                            <inertial pos="0 0 0" mass="0.5" diaginertia="0.05 0.05 0.01"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nv, 3);
+
+        // Base joint: attached to world
+        assert_eq!(model.dof_parent[0], None);
+        // Both arms attach to base
+        assert_eq!(model.dof_parent[1], Some(0)); // left_arm
+        assert_eq!(model.dof_parent[2], Some(0)); // right_arm
+    }
+
+    /// Test dof_parent for body with multiple joints (uncommon but valid).
+    ///
+    /// In MuJoCo, a single body can have multiple joints. The DOFs chain:
+    /// world -> link (hinge1, hinge2)
+    /// - DOF 0: hinge1, parent = None
+    /// - DOF 1: hinge2, parent = DOF 0
+    #[test]
+    fn test_dof_parent_multiple_joints_one_body() {
+        let model = load_model(
+            r#"
+            <mujoco model="multi_joint">
+                <worldbody>
+                    <body name="link" pos="0 0 1">
+                        <joint name="j1" type="hinge" axis="1 0 0"/>
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .expect("Should parse");
+
+        assert_eq!(model.nv, 2);
+        assert_eq!(model.njnt, 2);
+
+        // First joint's DOF: attached to world
+        assert_eq!(model.dof_parent[0], None);
+        // Second joint's DOF: attached to first joint
+        assert_eq!(model.dof_parent[1], Some(0));
+    }
+
+    #[test]
+    fn test_angle_conversion_hinge_joint_degrees() {
+        // Default compiler: angle=degree. Hinge range in degrees -> converted to radians.
+        let model = load_model(
+            r#"
+            <mujoco model="deg_test">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" limited="true" range="-90 90"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let pi = std::f64::consts::PI;
+        assert!(
+            (model.jnt_range[0].0 - (-pi / 2.0)).abs() < 1e-10,
+            "range lo: expected {}, got {}",
+            -pi / 2.0,
+            model.jnt_range[0].0
+        );
+        assert!(
+            (model.jnt_range[0].1 - (pi / 2.0)).abs() < 1e-10,
+            "range hi: expected {}, got {}",
+            pi / 2.0,
+            model.jnt_range[0].1
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_ball_joint_range_degrees() {
+        // Ball joint range is angle-valued (swing/twist limits).
+        // With default compiler.angle=degree, range values must be converted to radians.
+        let model = load_model(
+            r#"
+            <mujoco model="ball_deg_test">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="ball" limited="true" range="0 60"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let pi = std::f64::consts::PI;
+        let expected_lo = 0.0;
+        let expected_hi = 60.0 * pi / 180.0; // pi/3
+        assert!(
+            (model.jnt_range[0].0 - expected_lo).abs() < 1e-10,
+            "ball range lo: expected {expected_lo}, got {}",
+            model.jnt_range[0].0
+        );
+        assert!(
+            (model.jnt_range[0].1 - expected_hi).abs() < 1e-10,
+            "ball range hi: expected {expected_hi}, got {}",
+            model.jnt_range[0].1
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_ball_joint_range_radian_passthrough() {
+        // With angle="radian", ball joint range values pass through unchanged.
+        let pi_3 = std::f64::consts::PI / 3.0;
+        let model = load_model(&format!(
+            r#"
+            <mujoco model="ball_rad_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="ball" limited="true" range="0 {pi_3}"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        ))
+        .expect("should load");
+
+        assert!(
+            (model.jnt_range[0].0 - 0.0).abs() < 1e-10,
+            "ball radian range lo: expected 0.0, got {}",
+            model.jnt_range[0].0
+        );
+        assert!(
+            (model.jnt_range[0].1 - pi_3).abs() < 1e-10,
+            "ball radian range hi: expected {pi_3}, got {}",
+            model.jnt_range[0].1
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_radian_passthrough() {
+        // With angle="radian", values pass through unchanged.
+        let model = load_model(
+            r#"
+            <mujoco model="rad_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" limited="true" range="-1.57 1.57"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            (model.jnt_range[0].0 - (-1.57)).abs() < 1e-10,
+            "range lo: expected -1.57, got {}",
+            model.jnt_range[0].0
+        );
+        assert!(
+            (model.jnt_range[0].1 - 1.57).abs() < 1e-10,
+            "range hi: expected 1.57, got {}",
+            model.jnt_range[0].1
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_slide_joint_not_converted() {
+        // Slide joint range is translational — never converted even with angle=degree.
+        let model = load_model(
+            r#"
+            <mujoco model="slide_test">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="slide" limited="true" range="-0.5 0.5"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            (model.jnt_range[0].0 - (-0.5)).abs() < 1e-10,
+            "slide range should not be converted"
+        );
+        assert!(
+            (model.jnt_range[0].1 - 0.5).abs() < 1e-10,
+            "slide range should not be converted"
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_springref_degrees() {
+        // Hinge springref in degrees -> converted to radians.
+        let model = load_model(
+            r#"
+            <mujoco model="springref_deg">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" stiffness="100" springref="45"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = 45.0 * std::f64::consts::PI / 180.0;
+        assert!(
+            (model.jnt_springref[0] - expected).abs() < 1e-10,
+            "springref: expected {expected}, got {}",
+            model.jnt_springref[0]
+        );
+    }
+
+    #[test]
+    fn test_autolimits_infers_limited_from_range() {
+        // Default autolimits=true: range present + no explicit limited -> limited=true.
+        let model = load_model(
+            r#"
+            <mujoco model="autolimits_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" range="-1.0 1.0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            model.jnt_limited[0],
+            "autolimits should infer limited=true from range"
+        );
+    }
+
+    #[test]
+    fn test_autolimits_false_requires_explicit_limited() {
+        // With autolimits=false, range without limited -> limited=false.
+        let model = load_model(
+            r#"
+            <mujoco model="no_autolimits">
+                <compiler angle="radian" autolimits="false"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" range="-1.0 1.0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            !model.jnt_limited[0],
+            "autolimits=false should not infer limited"
+        );
+    }
+
+    #[test]
+    fn test_autolimits_explicit_limited_takes_precedence() {
+        // Explicit limited=false overrides autolimits inference.
+        let model = load_model(
+            r#"
+            <mujoco model="explicit_limited">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" limited="false" range="-1.0 1.0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            !model.jnt_limited[0],
+            "explicit limited=false should override autolimits"
+        );
+    }
+
+    #[test]
+    fn test_autolimits_no_range_no_limited() {
+        // No range and no limited -> limited=false (regardless of autolimits).
+        let model = load_model(
+            r#"
+            <mujoco model="no_range">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(!model.jnt_limited[0], "no range should mean not limited");
+    }
+}

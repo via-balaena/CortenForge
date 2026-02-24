@@ -218,4 +218,86 @@ mod tests {
             "intrinsic zyx failed"
         );
     }
+
+    // -- Body orientation tests (from monolith) --
+
+    #[test]
+    fn test_body_axisangle_orientation() {
+        use crate::builder::load_model;
+        // Body with axisangle should produce correct quaternion.
+        // axisangle="0 0 1 90" with default degree -> 90deg around Z.
+        let model = load_model(
+            r#"
+            <mujoco model="axisangle_test">
+                <worldbody>
+                    <body name="b" axisangle="0 0 1 90">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // 90deg around Z: quaternion = [cos(45deg), 0, 0, sin(45deg)]
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.body_quat[1]; // body 0 is world, body 1 is "b"
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "axisangle 90deg Z: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_body_axisangle_radian() {
+        use crate::builder::load_model;
+        // With angle="radian", axisangle angle is in radians.
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        let model = load_model(&format!(
+            r#"
+                <mujoco model="axisangle_rad">
+                    <compiler angle="radian"/>
+                    <worldbody>
+                        <body name="b" axisangle="0 0 1 {pi_2}">
+                            <geom type="sphere" size="0.1" mass="1.0"/>
+                        </body>
+                    </worldbody>
+                </mujoco>
+                "#,
+        ))
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), pi_2);
+        let got = model.body_quat[1];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "axisangle radian: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_euler_seq_zyx_body_orientation() {
+        use crate::builder::load_model;
+        // With eulerseq="ZYX" and angle="radian", body euler should use ZYX sequence.
+        let model = load_model(
+            r#"
+            <mujoco model="eulerseq_test">
+                <compiler angle="radian" eulerseq="ZYX"/>
+                <worldbody>
+                    <body name="b" euler="0.3 0.2 0.1">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = euler_seq_to_quat(Vector3::new(0.3, 0.2, 0.1), "ZYX");
+        let got = model.body_quat[1];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "ZYX euler: got {got:?}, expected {expected:?}"
+        );
+    }
 }

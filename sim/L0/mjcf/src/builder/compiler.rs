@@ -229,3 +229,426 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::apply_fusestatic;
+    use crate::builder::load_model;
+    use nalgebra::Vector3;
+
+    // -- discardvisual / fusestatic tests --
+
+    #[test]
+    fn test_discardvisual_removes_visual_geoms() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" discardvisual="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom name="collision" type="sphere" size="0.1" contype="1" conaffinity="1"/>
+                        <geom name="visual" type="sphere" size="0.12" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Only collision geom should remain
+        assert_eq!(model.ngeom, 1, "visual geom should be discarded");
+    }
+
+    #[test]
+    fn test_discardvisual_false_keeps_all_geoms() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" discardvisual="false"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom name="collision" type="sphere" size="0.1" contype="1" conaffinity="1"/>
+                        <geom name="visual" type="sphere" size="0.12" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert_eq!(
+            model.ngeom, 2,
+            "all geoms should remain when discardvisual=false"
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_merges_jointless_body() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1"/>
+                        <body name="static_child" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // static_child (no joints) should be fused into parent
+        // parent + world = 2 bodies (static_child merged)
+        assert_eq!(
+            model.nbody, 2,
+            "static child should be fused: nbody={}",
+            model.nbody
+        );
+        // Geoms: parent sphere + fused box = 2
+        assert_eq!(model.ngeom, 2, "both geoms should remain after fusion");
+    }
+
+    #[test]
+    fn test_fusestatic_preserves_jointed_body() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" fusestatic="true"/>
+                <worldbody>
+                    <body name="base" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1"/>
+                        <body name="link" pos="0 0 0.5">
+                            <joint name="j2" type="hinge" axis="0 1 0"/>
+                            <geom type="sphere" size="0.08"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Both bodies have joints — no fusion
+        assert_eq!(
+            model.nbody, 3,
+            "jointed bodies should not be fused: nbody={}",
+            model.nbody
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_false_preserves_all_bodies() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" fusestatic="false"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1"/>
+                        <body name="static_child" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert_eq!(model.nbody, 3, "fusestatic=false should keep all bodies");
+    }
+
+    #[test]
+    fn test_fusestatic_orientation_handling() {
+        // A static body rotated 90deg around Z should rotate its child geom position and orientation.
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="parent_geom" type="sphere" size="0.1" mass="1"/>
+                        <body name="rotated_static" pos="1 0 0" euler="0 0 90">
+                            <geom name="child_geom" type="sphere" size="0.05" pos="0.5 0 0" mass="0.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // The static body should be fused into parent: 2 bodies (world + parent)
+        assert_eq!(model.nbody, 2, "rotated static body should be fused");
+        // Parent should have 2 geoms (its own + child's)
+        assert_eq!(
+            model.body_geom_num[1], 2,
+            "parent should have 2 geoms after fusion"
+        );
+
+        // Check the fused geom position: should be [1, 0.5, 0] after rotation
+        let child_geom_idx = 1; // second geom on this body
+        let fused_pos = model.geom_pos[child_geom_idx];
+        assert!(
+            (fused_pos.x - 1.0).abs() < 1e-10,
+            "fused geom x should be 1.0, got {}",
+            fused_pos.x
+        );
+        assert!(
+            (fused_pos.y - 0.5).abs() < 1e-10,
+            "fused geom y should be 0.5 (rotated), got {}",
+            fused_pos.y
+        );
+        assert!(
+            fused_pos.z.abs() < 1e-10,
+            "fused geom z should be 0, got {}",
+            fused_pos.z
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_no_rotation_preserves_geom_euler() {
+        let with_fuse = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="g0" type="sphere" size="0.1" mass="1"/>
+                        <body name="static_child" pos="0 0 1">
+                            <geom name="g1" type="sphere" size="0.05" pos="0 0 0" euler="0 0 90" mass="0.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("fuse model should load");
+
+        let without_fuse = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="false"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="g0" type="sphere" size="0.1" mass="1"/>
+                        <body name="static_child" pos="0 0 1">
+                            <geom name="g1" type="sphere" size="0.05" pos="0 0 0" euler="0 0 90" mass="0.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("no-fuse model should load");
+
+        assert_eq!(with_fuse.nbody, 2, "fused model should have 2 bodies");
+        assert_eq!(without_fuse.nbody, 3, "unfused model should have 3 bodies");
+
+        assert_eq!(with_fuse.ngeom, 2);
+        assert_eq!(without_fuse.ngeom, 2);
+
+        // Geom quaternions should match
+        let fused_quat = with_fuse.geom_quat[1];
+        let unfused_quat = without_fuse.geom_quat[1];
+        let diff = (fused_quat.into_inner() - unfused_quat.into_inner()).norm();
+        assert!(
+            diff < 1e-10,
+            "fused geom quat should match unfused: fused={fused_quat:?}, unfused={unfused_quat:?}, diff={diff}"
+        );
+
+        // Geom positions should account for body offset
+        let fused_pos = with_fuse.geom_pos[1];
+        assert!(
+            (fused_pos.z - 1.0).abs() < 1e-10,
+            "fused geom z should be 1.0 (body offset), got {}",
+            fused_pos.z
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_protects_sensor_referenced_body() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                        <body name="sensor_target" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <subtreecom name="com_sensor" body="sensor_target"/>
+                </sensor>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert_eq!(
+            model.nbody, 3,
+            "sensor-referenced body should be protected from fusion"
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_protects_actuator_referenced_body() {
+        let mut mjcf = crate::parse_mjcf_str(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1"/>
+                        <body name="actuator_target" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05"/>
+                        </body>
+                        <body name="unprotected" pos="0 0 1">
+                            <geom type="sphere" size="0.05"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <adhesion name="stick" body="actuator_target" gain="1"/>
+                </actuator>
+            </mujoco>
+            "#,
+        )
+        .expect("should parse");
+
+        apply_fusestatic(&mut mjcf);
+
+        // actuator_target should still exist, unprotected should be fused
+        let parent = &mjcf.worldbody.children[0];
+        let child_names: Vec<&str> = parent.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            child_names.contains(&"actuator_target"),
+            "actuator-referenced body should be protected: {child_names:?}"
+        );
+        assert!(
+            !child_names.contains(&"unprotected"),
+            "unprotected body should be fused away: {child_names:?}"
+        );
+    }
+
+    #[test]
+    fn test_discardvisual_protects_sensor_referenced_geom() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" discardvisual="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="collision_geom" type="sphere" size="0.1" mass="1"/>
+                        <geom name="visual_ref" type="sphere" size="0.2" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <framepos name="vis_sensor" objname="visual_ref"/>
+                </sensor>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert_eq!(
+            model.ngeom, 2,
+            "sensor-referenced visual geom should be protected from discard"
+        );
+    }
+
+    // -- Additional coverage: fusestatic + orientation fields, discardvisual + frame --
+
+    #[test]
+    fn test_fusestatic_geom_with_xyaxes() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent">
+                        <joint type="hinge"/>
+                        <body name="static_child" pos="1 0 0" euler="0 0 90">
+                            <geom type="sphere" size="0.1" xyaxes="0 1 0 -1 0 0"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(1.0, 0.0, 0.0)).norm() < 1e-4,
+            "expected (1,0,0), got {pos:?}"
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_site_with_axisangle() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent">
+                        <joint type="hinge"/>
+                        <body name="static_child" pos="0 0 1">
+                            <site name="s" pos="0 0 0" axisangle="0 0 1 90"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.site_pos[0];
+        assert!(
+            (pos - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-4,
+            "expected (0,0,1), got {pos:?}"
+        );
+    }
+
+    #[test]
+    fn test_discardvisual_geom_inside_frame() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler discardvisual="true"/>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0">
+                            <geom type="sphere" size="0.1" contype="0" conaffinity="0"/>
+                        </frame>
+                        <geom type="sphere" size="0.1" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Only the non-visual geom should survive
+        assert_eq!(
+            model.geom_pos.len(),
+            1,
+            "discardvisual should remove visual geom from frame"
+        );
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(0.0, 0.0, 0.0)).norm() < 1e-4,
+            "surviving geom should be at origin"
+        );
+    }
+}

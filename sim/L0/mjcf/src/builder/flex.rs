@@ -610,3 +610,113 @@ fn compute_bend_damping_from_material(flex: &MjcfFlex, k_bend: f64) -> f64 {
     }
     flex.damping * k_bend
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::compute_vertex_masses;
+    use crate::types::MjcfFlex;
+    use nalgebra::Vector3;
+
+    // -- compute_vertex_masses: mass attribute path --
+
+    /// #27E AC1: mass attribute distributes uniformly across vertices
+    #[test]
+    fn test_vertex_masses_from_mass_attribute() {
+        let mut flex = MjcfFlex::default();
+        flex.dim = 2;
+        flex.mass = Some(1.0);
+        flex.vertices = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(1.0, 1.0, 0.0),
+        ];
+        flex.elements = vec![vec![0, 1, 2], vec![1, 3, 2]];
+
+        let masses = compute_vertex_masses(&flex);
+
+        assert_eq!(masses.len(), 4);
+        // 1.0 / 4 = 0.25 per vertex
+        for &m in &masses {
+            assert!((m - 0.25).abs() < 1e-15, "expected 0.25, got {m}");
+        }
+    }
+
+    /// #27E AC2: mass=0 -> per_vert=0 (static vertices, no min-mass floor)
+    #[test]
+    fn test_vertex_masses_zero_mass_produces_zero() {
+        let mut flex = MjcfFlex::default();
+        flex.dim = 2;
+        flex.mass = Some(0.0);
+        flex.vertices = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        ];
+        flex.elements = vec![vec![0, 1, 2]];
+
+        let masses = compute_vertex_masses(&flex);
+
+        assert_eq!(masses.len(), 3);
+        for &m in &masses {
+            assert!(
+                m == 0.0,
+                "mass=0 should produce per_vert=0.0 (static), got {m}"
+            );
+        }
+    }
+
+    /// #27E AC3: mass takes precedence over density
+    #[test]
+    fn test_vertex_masses_mass_overrides_density() {
+        let mut flex = MjcfFlex::default();
+        flex.dim = 2;
+        flex.mass = Some(2.0);
+        flex.density = 99999.0; // Should be ignored when mass is set
+        flex.thickness = 0.01;
+        flex.vertices = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(1.0, 1.0, 0.0),
+            Vector3::new(0.5, 0.5, 0.0),
+        ];
+        flex.elements = vec![vec![0, 1, 4], vec![1, 3, 4], vec![3, 2, 4], vec![2, 0, 4]];
+
+        let masses = compute_vertex_masses(&flex);
+
+        assert_eq!(masses.len(), 5);
+        // 2.0 / 5 = 0.4 per vertex (density is ignored)
+        for &m in &masses {
+            assert!((m - 0.4).abs() < 1e-15, "expected 0.4, got {m}");
+        }
+    }
+
+    /// #27E: density path still applies min-mass floor
+    #[test]
+    fn test_vertex_masses_density_path_has_floor() {
+        let mut flex = MjcfFlex::default();
+        flex.dim = 2;
+        flex.mass = None; // No mass attribute -> density path
+        flex.density = 0.0; // Zero density -> zero mass per vertex before floor
+        flex.thickness = 0.01;
+        flex.vertices = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        ];
+        flex.elements = vec![vec![0, 1, 2]];
+
+        let masses = compute_vertex_masses(&flex);
+
+        assert_eq!(masses.len(), 3);
+        // Density=0 -> element mass=0 -> min-mass floor kicks in -> 0.001
+        for &m in &masses {
+            assert!(
+                (m - 0.001).abs() < 1e-15,
+                "density path should apply min-mass floor 0.001, got {m}"
+            );
+        }
+    }
+}
