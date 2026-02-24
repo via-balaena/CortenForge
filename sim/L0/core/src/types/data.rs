@@ -16,8 +16,7 @@ use super::enums::SolverStat;
 
 // Spatial algebra (extracted in Phase 2)
 use crate::dynamics::SpatialVector;
-// Functions still in monolith (will be extracted in later phases)
-use crate::mujoco_pipeline::reset_sleep_state;
+use crate::island::reset_sleep_state;
 
 /// Dynamic simulation state (like mjData).
 ///

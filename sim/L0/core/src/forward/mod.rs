@@ -92,8 +92,8 @@ impl Data {
         // After integration and before warmstart save.
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
         if sleep_enabled {
-            crate::mujoco_pipeline::mj_sleep(model, self); // monolith: removed in Phase 8c
-            crate::mujoco_pipeline::mj_update_sleep_arrays(model, self); // monolith: removed in Phase 8c
+            crate::island::mj_sleep(model, self);
+            crate::island::mj_update_sleep_arrays(model, self);
         }
 
         // Save qacc for next-step warmstart (§15.9).
@@ -143,10 +143,8 @@ impl Data {
         // ===== Pre-pipeline: Wake detection (§16.4) =====
         // Must update sleep arrays after user-force wake so that
         // body_awake_ind/dof_awake_ind are current before mj_crba (§16.29.3).
-        if sleep_enabled && crate::mujoco_pipeline::mj_wake(model, self) {
-            // monolith: removed in Phase 8c
-            crate::mujoco_pipeline::mj_update_sleep_arrays(model, self);
-            // monolith: removed in Phase 8c
+        if sleep_enabled && crate::island::mj_wake(model, self) {
+            crate::island::mj_update_sleep_arrays(model, self);
         }
 
         // ========== Position Stage ==========
@@ -154,37 +152,29 @@ impl Data {
         crate::dynamics::flex::mj_flex(model, self);
 
         // §16.15: If FK detected external qpos changes on sleeping bodies, wake them
-        if sleep_enabled && crate::mujoco_pipeline::mj_check_qpos_changed(model, self) {
-            // monolith: removed in Phase 8c
-            crate::mujoco_pipeline::mj_update_sleep_arrays(model, self);
-            // monolith: removed in Phase 8c
+        if sleep_enabled && crate::island::mj_check_qpos_changed(model, self) {
+            crate::island::mj_update_sleep_arrays(model, self);
         }
 
         actuation::mj_transmission_site(model, self);
 
         // §16.13.2: Tendon wake — multi-tree tendons with active limits
-        if sleep_enabled && crate::mujoco_pipeline::mj_wake_tendon(model, self) {
-            // monolith: removed in Phase 8c
-            crate::mujoco_pipeline::mj_update_sleep_arrays(model, self);
-            // monolith: removed in Phase 8c
+        if sleep_enabled && crate::island::mj_wake_tendon(model, self) {
+            crate::island::mj_update_sleep_arrays(model, self);
         }
 
         crate::collision::mj_collision(model, self);
 
         // Wake-on-contact: if sleeping body touched awake body, wake it
         // and re-run collision for the newly-awake tree's geoms (§16.5c)
-        if sleep_enabled && crate::mujoco_pipeline::mj_wake_collision(model, self) {
-            // monolith: removed in Phase 8c
-            crate::mujoco_pipeline::mj_update_sleep_arrays(model, self);
-            // monolith: removed in Phase 8c
+        if sleep_enabled && crate::island::mj_wake_collision(model, self) {
+            crate::island::mj_update_sleep_arrays(model, self);
             crate::collision::mj_collision(model, self);
         }
 
         // §16.13.3: Equality constraint wake — cross-tree equality coupling
-        if sleep_enabled && crate::mujoco_pipeline::mj_wake_equality(model, self) {
-            // monolith: removed in Phase 8c
-            crate::mujoco_pipeline::mj_update_sleep_arrays(model, self);
-            // monolith: removed in Phase 8c
+        if sleep_enabled && crate::island::mj_wake_equality(model, self) {
+            crate::island::mj_update_sleep_arrays(model, self);
         }
 
         // §36: Body transmission — requires contacts from mj_collision()
@@ -212,7 +202,7 @@ impl Data {
         // §16.11: Island discovery must run BEFORE constraint solve so that
         // contact_island assignments are available for per-island partitioning.
         if sleep_enabled {
-            crate::mujoco_pipeline::mj_island(model, self); // monolith: removed in Phase 8c
+            crate::island::mj_island(model, self);
         }
 
         // §16.16: Per-island constraint solve when islands are active;

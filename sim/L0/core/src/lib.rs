@@ -102,6 +102,9 @@ pub mod jacobian;
 // Integration dispatch (Euler, implicit tendon K/D, RK4)
 pub mod integrate;
 
+// Island discovery and sleep/wake state machine (§16)
+pub mod island;
+
 // Collision detection pipeline (dispatch, narrow-phase, contact params)
 pub mod collision;
 
