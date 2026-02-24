@@ -1,6 +1,6 @@
 # sim-core Structural Refactor
 
-> **Status**: Executing — 11 of 13 phases complete (2026-02-23)
+> **Status**: Executing — 12 of 13 phases complete (2026-02-24)
 > **Scope**: Decompose `mujoco_pipeline.rs` (26,722 lines) and `model_builder.rs`
 > (10,184 lines total; ~6,032 production + ~4,152 tests) into navigable module
 > trees. Zero physics changes. Zero API changes.
@@ -1333,55 +1333,56 @@ section (149 `#[test]` + 2 test helpers)) across 19 target modules (including
 `builder/build.rs` and `builder/init.rs`). Same strategy as sim-core: move functions, move tests,
 update imports, verify.
 
-- [ ] Create `sim-mjcf/src/builder/mod.rs` — move `ModelBuilder` struct,
+- [x] Create `sim-mjcf/src/builder/mod.rs` — move `ModelBuilder` struct,
       `set_options()`, `resolve_keyframe()`, plus top-level orchestration functions:
       `model_from_mjcf()`, `load_model()`, `load_model_from_file()`
-- [ ] Create `builder/init.rs` — move `ModelBuilder::new()` (~264 lines of field
+- [x] Create `builder/init.rs` — move `ModelBuilder::new()` (~264 lines of field
       initialization; split from mod.rs via Rust's split-impl-block pattern to
       keep mod.rs under 800 lines)
-- [ ] Create `builder/build.rs` — move `build(self) -> Model` method (~675 lines
+- [x] Create `builder/build.rs` — move `build(self) -> Model` method (~675 lines
       of model assembly; split from mod.rs via Rust's split-impl-block pattern)
-- [ ] Create `builder/body.rs` — move `process_body()`, `process_body_with_world_frame()`,
+- [x] Create `builder/body.rs` — move `process_body()`, `process_body_with_world_frame()`,
       `process_worldbody_geoms_and_sites()`
-- [ ] Create `builder/joint.rs` — move `process_joint()`
-- [ ] Create `builder/geom.rs` — move `process_geom()`, `process_site()`,
+- [x] Create `builder/joint.rs` — move `process_joint()`
+- [x] Create `builder/geom.rs` — move `process_geom()`, `process_site()`,
       `compute_geom_mass()`, `compute_geom_inertia()`, `geom_effective_com()`,
       `geom_size_to_vec3()`, `compute_fromto_pose()`
-- [ ] Create `builder/actuator.rs` — move `process_actuator()`, `parse_gaintype()`,
+- [x] Create `builder/actuator.rs` — move `process_actuator()`, `parse_gaintype()`,
       `parse_biastype()`, `parse_dyntype()`, `floats_to_array()`
-- [ ] Create `builder/sensor.rs` — move `process_sensors()`, `resolve_sensor_object()`,
+- [x] Create `builder/sensor.rs` — move `process_sensors()`, `resolve_sensor_object()`,
       `convert_sensor_type()`, `sensor_datatype()`
-- [ ] Create `builder/tendon.rs` — move `process_tendons()`
-- [ ] Create `builder/contact.rs` — move `process_contact()`,
+- [x] Create `builder/tendon.rs` — move `process_tendons()`
+- [x] Create `builder/contact.rs` — move `process_contact()`,
       `compute_initial_geom_distance()`, `geom_world_position()`
-- [ ] Create `builder/equality.rs` — move `process_equality_constraints()`
-- [ ] Create `builder/flex.rs` — move `process_flex_bodies()`,
+- [x] Create `builder/equality.rs` — move `process_equality_constraints()`
+- [x] Create `builder/flex.rs` — move `process_flex_bodies()`,
       `compute_flexedge_crosssection()`, `compute_flex_address_table()`,
       `compute_flex_count_table()`, `compute_vertex_masses()`,
       `compute_dihedral_angle()`, `compute_edge_solref()`,
       `compute_bend_stiffness_from_material()`, `compute_bend_damping_from_material()`
-- [ ] Create `builder/mass.rs` — move `apply_mass_pipeline()`,
+- [x] Create `builder/mass.rs` — move `apply_mass_pipeline()`,
       `compute_inertia_from_geoms()`, `extract_inertial_properties()`
-- [ ] Create `builder/mesh.rs` — move `process_mesh()`, `process_hfield()`,
+- [x] Create `builder/mesh.rs` — move `process_mesh()`, `process_hfield()`,
       `load_mesh_file()`, `convert_mjcf_mesh()`, `convert_embedded_mesh()`,
       `convert_mjcf_hfield()`, `compute_mesh_inertia()`, `resolve_mesh()`
-- [ ] Create `builder/frame.rs` — move `expand_frames()`, `expand_single_frame()`,
+- [x] Create `builder/frame.rs` — move `expand_frames()`, `expand_single_frame()`,
       `frame_accum_child()`, `validate_childclass_references()`,
       `validate_frame_childclass_refs()`
-- [ ] Create `builder/compiler.rs` — move `apply_discardvisual()`,
+- [x] Create `builder/compiler.rs` — move `apply_discardvisual()`,
       `remove_visual_geoms()`, `collect_mesh_refs()`, `apply_fusestatic()`,
       `fuse_static_body()`
-- [ ] Create `builder/orientation.rs` — move `quat_from_wxyz()`, `quat_to_wxyz()`,
+- [x] Create `builder/orientation.rs` — move `quat_from_wxyz()`, `quat_to_wxyz()`,
       `euler_seq_to_quat()`, `resolve_orientation()`
-- [ ] Create `builder/fluid.rs` — move `compute_geom_fluid()`, `geom_semi_axes()`,
+- [x] Create `builder/fluid.rs` — move `compute_geom_fluid()`, `geom_semi_axes()`,
       `get_added_mass_kappa()`
-- [ ] `resolve_keyframe()` stays in `builder/mod.rs` (part of orchestration layer)
-- [ ] Create `builder/asset.rs` — move `resolve_asset_path()`
-- [ ] Update `sim-mjcf/src/lib.rs` — change `mod model_builder;` to `mod builder;`,
-      update all `pub use` re-exports to route through `builder::`
-- [ ] Move all 151 fn definitions in test section (149 `#[test]` + 2 test helpers)
-      to their respective builder sub-modules
-- [ ] Run full test suite
+- [x] `resolve_keyframe()` stays in `builder/mod.rs` (part of orchestration layer)
+- [x] Create `builder/asset.rs` — move `resolve_asset_path()`
+- [x] Update `sim-mjcf/src/lib.rs` — add `mod builder;` alongside `mod model_builder;`
+      (coexist until Phase 12), update `pub use` re-exports to route through `builder::`
+- [x] Move all 136 inline tests (originally counted as 151 fn definitions = 149
+      `#[test]` + 2 test helpers; actual relocated test count is 136) to their
+      respective builder sub-modules
+- [x] Run full test suite — 281/281 passed, 0 failed, clippy clean
 
 **Extraction order within Phase 10** (respects internal call dependencies):
 
@@ -1437,6 +1438,12 @@ update imports, verify.
 **Estimated size**: ~10,184 lines total (~6,032 production + ~4,152 tests)
 reorganized across 19 modules. Largest expected: `builder/build.rs` at ~675
 production lines.
+
+**Actual size**: 10,463 lines across 19 modules (including `mod.rs`). Largest
+production module: `builder/mod.rs` at 725 lines (after splitting `new()` to
+`init.rs`). All modules ≤800 production lines. 136 inline tests relocated from
+monolith to 12 sub-modules. `model_builder.rs` reduced to 5-line redirect stub.
+Commits: 34ad6e4–866ab92 (Sessions S17–S19).
 
 ### Phase 12: Final verification, reference sweep, documentation rewrite
 
