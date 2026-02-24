@@ -483,9 +483,9 @@ and correlating with commit history.
 | 10 | builder/tendon.rs | 193 lines. process_tendons (impl). No inline tests | done | | S18 |
 | 10 | builder/actuator.rs | 427 lines. process_actuator (impl), parse_gaintype, parse_biastype, parse_dyntype, floats_to_array (free fns). No inline tests | done | | S18 |
 | 10 | builder/sensor.rs | 285 lines. process_sensors, resolve_sensor_object (impl), convert_sensor_type, sensor_datatype (free fns). No inline tests | done | | S18 |
-| 10 | builder/contact.rs | | | | |
-| 10 | builder/equality.rs | | | | |
-| 10 | builder/flex.rs | | | | |
+| 10 | builder/contact.rs | 152 lines. process_contact (impl). No inline tests | done | | S18 |
+| 10 | builder/equality.rs | 296 lines. process_equality_constraints, compute_initial_geom_distance, geom_world_position (impl). No inline tests | done | | S18 |
+| 10 | builder/flex.rs | 612 lines. process_flex_bodies (impl), compute_flexedge_crosssection, compute_flex_address_table, compute_flex_count_table, compute_vertex_masses, compute_dihedral_angle, compute_edge_solref, compute_bend_stiffness_from_material, compute_bend_damping_from_material (free fns). No inline tests | done | | S18 |
 | 10 | builder/build.rs | Must be last — references all process_* outputs | | | |
 | 10 | builder/ inline tests | ~4,152 lines across 151 fn definitions | | | |
 | 12 | Monolith deletion + shim removal | | | | |
