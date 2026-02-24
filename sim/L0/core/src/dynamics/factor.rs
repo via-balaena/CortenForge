@@ -235,3 +235,342 @@ pub fn mj_factor_sparse_selective(model: &Model, data: &mut Data) {
 
     data.qLD_valid = true;
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
+mod sparse_factorization_tests {
+    use super::mj_factor_sparse;
+    use crate::linalg::{mj_solve_sparse, mj_solve_sparse_batch};
+    use crate::types::{Data, Model};
+    use approx::assert_relative_eq;
+    use nalgebra::{DMatrix, DVector};
+
+    /// Helper: build a Model + Data with a given dof_parent tree and mass matrix.
+    /// Returns (model, data) with qM set to the given matrix and sparse factorization run.
+    fn setup_sparse(nv: usize, dof_parent: Vec<Option<usize>>, qm: &DMatrix<f64>) -> (Model, Data) {
+        let mut model = Model::empty();
+        model.nv = nv;
+        model.nq = nv;
+        model.qpos0 = DVector::zeros(nv);
+        model.implicit_stiffness = DVector::zeros(nv);
+        model.implicit_damping = DVector::zeros(nv);
+        model.implicit_springref = DVector::zeros(nv);
+        model.dof_parent = dof_parent;
+        // Fill other required fields for make_data
+        model.dof_body = vec![0; nv];
+        model.dof_jnt = vec![0; nv];
+        model.dof_armature = vec![0.0; nv];
+        model.dof_damping = vec![0.0; nv];
+        model.dof_frictionloss = vec![0.0; nv];
+        model.compute_qld_csr_metadata();
+        let mut data = model.make_data();
+        data.qM.copy_from(qm);
+        mj_factor_sparse(&model, &mut data);
+        (model, data)
+    }
+
+    /// Verify sparse solve matches nalgebra dense Cholesky.
+    fn assert_solve_matches(model: &Model, data: &Data, qm: &DMatrix<f64>, nv: usize) {
+        let rhs = DVector::from_fn(nv, |i, _| (i as f64 + 1.0) * 0.7);
+
+        // Reference: nalgebra dense Cholesky
+        let chol = qm.clone().cholesky().expect("nalgebra cholesky failed");
+        let x_ref = chol.solve(&rhs);
+
+        // CSR sparse solve — validate against reference
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        let mut x_csr = rhs;
+        mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut x_csr,
+        );
+
+        for i in 0..nv {
+            assert_relative_eq!(x_csr[i], x_ref[i], epsilon = 1e-12, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn single_hinge() {
+        // nv=1, no parent. M = [[5.0]]
+        let nv = 1;
+        let dof_parent = vec![None];
+        let mut qm = DMatrix::zeros(1, 1);
+        qm[(0, 0)] = 5.0;
+
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
+
+        // D[0] = 5.0, L has no off-diag entries
+        assert_relative_eq!(data.qld_diag(&model, 0), 5.0);
+        assert_eq!(model.qLD_rownnz[0], 1); // diagonal only
+        assert!(data.qLD_valid);
+
+        assert_solve_matches(&model, &data, &qm, nv);
+    }
+
+    #[test]
+    fn two_link_chain() {
+        // nv=2, DOF 1 child of DOF 0
+        // M = [[4, 2], [2, 3]]
+        let nv = 2;
+        let dof_parent = vec![None, Some(0)];
+        let mut qm = DMatrix::zeros(2, 2);
+        qm[(0, 0)] = 4.0;
+        qm[(0, 1)] = 2.0;
+        qm[(1, 0)] = 2.0;
+        qm[(1, 1)] = 3.0;
+
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
+
+        // Manual: D[1] = 3, L[1,0] = 2/3, D[0] = 4 - (2/3)^2 * 3 = 4 - 4/3 = 8/3
+        assert_relative_eq!(data.qld_diag(&model, 1), 3.0);
+        assert_relative_eq!(data.qld_diag(&model, 0), 8.0 / 3.0, epsilon = 1e-14);
+        assert_eq!(model.qLD_rownnz[1], 2); // 1 off-diag + 1 diagonal
+        assert_eq!(model.qLD_colind[model.qLD_rowadr[1]], 0);
+        assert_relative_eq!(
+            data.qLD_data[model.qLD_rowadr[1]],
+            2.0 / 3.0,
+            epsilon = 1e-14
+        );
+
+        assert_solve_matches(&model, &data, &qm, nv);
+    }
+
+    #[test]
+    fn branching_tree() {
+        // nv=3: DOF 0 = root, DOF 1 = left child of 0, DOF 2 = right child of 0
+        // DOFs 1 and 2 don't couple with each other.
+        // M = [[5, 2, 1], [2, 4, 0], [1, 0, 3]]
+        let nv = 3;
+        let dof_parent = vec![None, Some(0), Some(0)];
+        let mut qm = DMatrix::zeros(3, 3);
+        qm[(0, 0)] = 5.0;
+        qm[(0, 1)] = 2.0;
+        qm[(1, 0)] = 2.0;
+        qm[(1, 1)] = 4.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 0)] = 1.0;
+        qm[(2, 2)] = 3.0;
+
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
+
+        // D[2] = 3, L[2,0] = 1/3
+        // D[1] = 4, L[1,0] = 2/4 = 0.5
+        // D[0] = 5 - (0.5)^2 * 4 - (1/3)^2 * 3 = 5 - 1 - 1/3 = 11/3
+        assert_relative_eq!(data.qld_diag(&model, 2), 3.0);
+        assert_relative_eq!(data.qld_diag(&model, 1), 4.0);
+        assert_relative_eq!(data.qld_diag(&model, 0), 11.0 / 3.0, epsilon = 1e-14);
+
+        assert_solve_matches(&model, &data, &qm, nv);
+    }
+
+    #[test]
+    fn ball_joint_chain() {
+        // Simulates a ball joint (3 DOFs) followed by a hinge (1 DOF).
+        // DOF tree: 0→1→2→3 (linear chain, nv=4)
+        // This tests multi-DOF within a joint (ball: DOFs 0,1,2) plus a child.
+        let nv = 4;
+        let dof_parent = vec![None, Some(0), Some(1), Some(2)];
+
+        // Build a random SPD matrix with tree sparsity: M[i,j] = 0 unless
+        // j is ancestor of i or vice versa. For a chain, all entries are non-zero.
+        let mut qm = DMatrix::zeros(nv, nv);
+        // Diagonal
+        qm[(0, 0)] = 10.0;
+        qm[(1, 1)] = 8.0;
+        qm[(2, 2)] = 6.0;
+        qm[(3, 3)] = 4.0;
+        // Off-diagonal (all are on the ancestor path for a chain)
+        qm[(1, 0)] = 3.0;
+        qm[(0, 1)] = 3.0;
+        qm[(2, 0)] = 1.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 1)] = 2.0;
+        qm[(1, 2)] = 2.0;
+        qm[(3, 0)] = 0.5;
+        qm[(0, 3)] = 0.5;
+        qm[(3, 1)] = 0.3;
+        qm[(1, 3)] = 0.3;
+        qm[(3, 2)] = 1.5;
+        qm[(2, 3)] = 1.5;
+
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+        assert_solve_matches(&model, &data, &qm, nv);
+    }
+
+    #[test]
+    fn free_body_plus_hinge() {
+        // Free joint (6 DOFs: 0→1→2→3→4→5) + hinge child (DOF 6, parent = DOF 5)
+        // nv = 7
+        let nv = 7;
+        let dof_parent = vec![None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)];
+
+        // Build SPD matrix: A^T A + n*I with tree-compatible sparsity
+        // For a chain, all entries can be non-zero. Use random SPD.
+        let mut state: u64 = 12345;
+        let mut next = || -> f64 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 33) as f64) / f64::from(u32::MAX) - 0.5
+        };
+        let a = DMatrix::from_fn(nv, nv, |_, _| next());
+        let qm = a.transpose() * &a + DMatrix::identity(nv, nv) * (nv as f64);
+
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+        assert_solve_matches(&model, &data, &qm, nv);
+    }
+
+    #[test]
+    fn complex_branching_tree() {
+        // A more complex tree:
+        //       0
+        //      / \
+        //     1   4
+        //    / \
+        //   2   3
+        // nv=5, dof_parent = [None, Some(0), Some(1), Some(1), Some(0)]
+        let nv = 5;
+        let dof_parent = vec![None, Some(0), Some(1), Some(1), Some(0)];
+
+        // Build SPD matrix with correct sparsity:
+        // M[2,0], M[2,1] non-zero (ancestors of 2: 1, 0)
+        // M[3,0], M[3,1] non-zero (ancestors of 3: 1, 0)
+        // M[4,0] non-zero (ancestor of 4: 0)
+        // M[2,3] = 0 (neither is ancestor of the other — siblings)
+        // M[2,4] = 0 (4 is not ancestor of 2)
+        // M[3,4] = 0 (4 is not ancestor of 3)
+        let mut qm = DMatrix::zeros(nv, nv);
+        qm[(0, 0)] = 10.0;
+        qm[(1, 1)] = 8.0;
+        qm[(2, 2)] = 5.0;
+        qm[(3, 3)] = 6.0;
+        qm[(4, 4)] = 7.0;
+        // Ancestor pairs
+        qm[(1, 0)] = 2.0;
+        qm[(0, 1)] = 2.0;
+        qm[(2, 0)] = 1.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 1)] = 1.5;
+        qm[(1, 2)] = 1.5;
+        qm[(3, 0)] = 0.5;
+        qm[(0, 3)] = 0.5;
+        qm[(3, 1)] = 1.0;
+        qm[(1, 3)] = 1.0;
+        qm[(4, 0)] = 0.8;
+        qm[(0, 4)] = 0.8;
+        // Non-ancestor pairs are zero (enforced by zeros init)
+
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+
+        // Verify zero entries in L for non-ancestor pairs
+        // DOF 2's ancestors: [0, 1] — should not have entry for 3 or 4
+        // rownnz includes diagonal (last element is self-index), so off-diag = 0..rownnz-1
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        let nnz_offdiag_2 = rownnz[2] - 1;
+        for k in 0..nnz_offdiag_2 {
+            let col = colind[rowadr[2] + k];
+            assert!(
+                col == 0 || col == 1,
+                "DOF 2 should only have ancestors 0 and 1"
+            );
+        }
+        // Last element should be self-index (diagonal)
+        assert_eq!(colind[rowadr[2] + nnz_offdiag_2], 2);
+        // DOF 4's ancestors: [0] — should not have entry for 1, 2, or 3
+        assert_eq!(model.qLD_rownnz[4], 2); // 1 off-diag + 1 diagonal
+        assert_eq!(model.qLD_colind[model.qLD_rowadr[4]], 0);
+
+        assert_solve_matches(&model, &data, &qm, nv);
+    }
+
+    #[test]
+    fn invalidation_flag() {
+        let nv = 2;
+        let dof_parent = vec![None, Some(0)];
+        let mut qm = DMatrix::zeros(2, 2);
+        qm[(0, 0)] = 4.0;
+        qm[(0, 1)] = 1.0;
+        qm[(1, 0)] = 1.0;
+        qm[(1, 1)] = 3.0;
+
+        let (_, mut data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+
+        // Simulate invalidation (as mj_crba would do)
+        data.qLD_valid = false;
+        assert!(!data.qLD_valid);
+    }
+
+    #[test]
+    fn batch_solve_matches_single() {
+        // nv=3 branching tree, solve 3 different RHS via batch and single.
+        let nv = 3;
+        let dof_parent = vec![None, Some(0), Some(0)];
+        let mut qm = DMatrix::zeros(3, 3);
+        qm[(0, 0)] = 5.0;
+        qm[(0, 1)] = 2.0;
+        qm[(1, 0)] = 2.0;
+        qm[(1, 1)] = 4.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 0)] = 1.0;
+        qm[(2, 2)] = 3.0;
+
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        let n_rhs = 3;
+
+        // Build nv × n_rhs matrix of RHS vectors.
+        let mut batch_rhs = DMatrix::zeros(nv, n_rhs);
+        for v in 0..n_rhs {
+            for i in 0..nv {
+                batch_rhs[(i, v)] = (i as f64 + 1.0) * (v as f64 + 0.5);
+            }
+        }
+
+        // Single-vector solve for each column.
+        let mut single_results = Vec::new();
+        for v in 0..n_rhs {
+            let mut x = batch_rhs.column(v).clone_owned();
+            mj_solve_sparse(
+                rowadr,
+                rownnz,
+                colind,
+                &data.qLD_data,
+                &data.qLD_diag_inv,
+                &mut x,
+            );
+            single_results.push(x);
+        }
+
+        // Batch solve.
+        let mut batch_x = batch_rhs;
+        mj_solve_sparse_batch(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut batch_x,
+        );
+
+        // Compare: each batch column must match the corresponding single solve.
+        for v in 0..n_rhs {
+            for i in 0..nv {
+                assert_relative_eq!(
+                    batch_x[(i, v)],
+                    single_results[v][i],
+                    epsilon = 1e-14,
+                    max_relative = 1e-14
+                );
+            }
+        }
+    }
+}

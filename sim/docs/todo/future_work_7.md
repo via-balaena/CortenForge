@@ -15,7 +15,7 @@ defaults system refactor completed alongside Batch 1.
 The contact parameter work exposed that the defaults system needed a full
 Option<T> refactoring pass for MuJoCo conformance. The refactor touched all
 four pipeline stages across four files (`types.rs`, `parser.rs`, `defaults.rs`,
-`model_builder.rs`) and covers all 8 element types:
+`builder/`) and covers all 8 element types:
 
 | Element | Defaultable Fields | Status |
 |---------|-------------------|--------|
@@ -54,10 +54,10 @@ skips this attribute entirely. The attribute is silently ignored in MJCF input.
 **Mesh inertia gap — completely broken:** When inertia is computed from geoms,
 mesh-type geoms fall through to hardcoded placeholders:
 
-- `compute_geom_mass()` (`model_builder.rs:4396-4426`): The `match` on
+- `compute_geom_mass()` (`builder/`): The `match` on
   `geom_type` handles Sphere, Box, Capsule, Cylinder. All other types
   (including Mesh) fall to `_ => 0.001` — a hardcoded tiny volume.
-- `compute_geom_inertia()` (`model_builder.rs:4435-4513`): Same pattern.
+- `compute_geom_inertia()` (`builder/`): Same pattern.
   Mesh falls to `_ => Vector3::new(0.001, 0.001, 0.001)` — a hardcoded
   tiny diagonal inertia.
 
@@ -66,26 +66,26 @@ gets mass ≈ `density * 0.001` and near-zero diagonal inertia, regardless
 of the actual mesh geometry.
 
 **Inertia accumulation gap — diagonal only:** `compute_inertia_from_geoms()`
-(`model_builder.rs:4348-4393`) has two pre-existing architectural problems:
+(`builder/`) has two pre-existing architectural problems:
 
 1. **Diagonal-only accumulation:** It accumulates `Vector3<f64>` (diagonal
    inertia only), discarding off-diagonal terms. This is correct only when
    all geoms are aligned to the body frame principal axes — which is rarely
    true for meshes or rotated primitives.
 2. **No geom orientation handling:** The parallel axis theorem application
-   (`model_builder.rs:4382-4389`) uses `geom.pos` for the displacement but
+   (`builder/`) uses `geom.pos` for the displacement but
    ignores `geom.quat` entirely. A rotated geom's local inertia tensor
    must be rotated (`R * I_local * Rᵀ`) before applying the parallel axis
    theorem. The function always returns `UnitQuaternion::identity()`.
 
 The eigendecomposition pattern for extracting principal axes from a full 3×3
-tensor already exists in `extract_inertial_properties()` (`model_builder.rs:
-4065-4121`), where it handles `fullinertia` → `symmetric_eigen()` → principal
+tensor already exists in `extract_inertial_properties()` (`builder/`),
+where it handles `fullinertia` → `symmetric_eigen()` → principal
 values + orientation quaternion.
 
 **Mesh data is available:** `ModelBuilder.mesh_data: Vec<Arc<TriangleMeshData>>`
-(`model_builder.rs:447`) and `ModelBuilder.mesh_name_to_id: HashMap<String,
-usize>` (`model_builder.rs:443`) are populated during asset processing (before
+(`builder/`) and `ModelBuilder.mesh_name_to_id: HashMap<String,
+usize>` (`builder/`) are populated during asset processing (before
 body processing). `TriangleMeshData` (`sim/L0/core/src/mesh.rs:89-101`)
 provides `vertices() -> &[Point3<f64>]` and `triangles() -> &[Triangle]` where
 `Triangle { v0, v1, v2 }` are vertex indices.
@@ -160,7 +160,7 @@ non-convex meshes (matching MuJoCo's `true` mode).
 - **Non-mesh geom inertia improvements**: The existing analytical formulas
   for sphere, box, cylinder, capsule, ellipsoid are correct and unchanged.
 - **`inertiafromgeom` semantics**: The existing `True`/`Auto`/`False` dispatch
-  (`model_builder.rs:1045-1066`) is correct and unchanged. This item only
+  (`builder/`) is correct and unchanged. This item only
   changes what happens inside the `compute_inertia_from_geoms()` path.
 
 #### Specification
@@ -202,7 +202,7 @@ string comparison.
 
 ##### C1. Algorithm — `compute_mesh_inertia()`
 
-New function in `model_builder.rs`. Computes exact mass properties of a
+New function in `builder/`. Computes exact mass properties of a
 triangle mesh using signed tetrahedron decomposition (Mirtich 1996).
 
 **Signature:**
@@ -299,10 +299,10 @@ if total_volume.abs() < 1e-10 {
 
 ##### D1. Pipeline Refactor — `compute_geom_mass()` Mesh Support
 
-Replace the `_ => 0.001` fallback in `compute_geom_mass()` (`model_builder.rs:
-4396-4426`) with actual mesh volume computation.
+Replace the `_ => 0.001` fallback in `compute_geom_mass()` (`builder/`)
+with actual mesh volume computation.
 
-**BEFORE** (`model_builder.rs:4401-4423`):
+**BEFORE** (`builder/`):
 
 ```rust
 let volume = match geom.geom_type {
@@ -342,7 +342,7 @@ meaningful volume.
 
 ##### D2. Pipeline Refactor — `compute_geom_inertia()` Full Tensor Return
 
-Change `compute_geom_inertia()` (`model_builder.rs:4435-4513`) to return
+Change `compute_geom_inertia()` (`builder/`) to return
 `Matrix3<f64>` instead of `Vector3<f64>`. This is required because mesh
 inertia produces off-diagonal terms, and even rotated primitive geoms
 contribute off-diagonal terms after rotation.
@@ -391,7 +391,7 @@ MjcfGeomType::Mesh => {
 
 ##### D3. Pipeline Refactor — `compute_inertia_from_geoms()` Full Tensor Accumulation
 
-Refactor `compute_inertia_from_geoms()` (`model_builder.rs:4348-4393`) from
+Refactor `compute_inertia_from_geoms()` (`builder/`) from
 diagonal-only accumulation to full 3×3 tensor accumulation with geom
 orientation and eigendecomposition.
 
@@ -415,7 +415,7 @@ fn compute_inertia_from_geoms(
 
 **Algorithm (second pass — inertia accumulation):**
 
-Replace the diagonal-only accumulation (`model_builder.rs:4377-4389`) with:
+Replace the diagonal-only accumulation (`builder/`) with:
 
 ```rust
 // Second pass: accumulate full 3×3 inertia tensor about COM
@@ -446,7 +446,7 @@ for geom in geoms {
 
 After accumulation, eigendecompose the full tensor to extract principal
 inertia and orientation. This reuses the exact pattern from
-`extract_inertial_properties()` (`model_builder.rs:4087-4108`):
+`extract_inertial_properties()` (`builder/`):
 
 ```rust
 // Eigendecompose to get principal axes
@@ -493,7 +493,7 @@ fn resolve_mesh(
 
 Update the two call sites of `compute_inertia_from_geoms()`:
 
-1. **`InertiaFromGeom::True` branch** (`model_builder.rs:1046`):
+1. **`InertiaFromGeom::True` branch** (`builder/`):
 
 ```rust
 // BEFORE:
@@ -506,7 +506,7 @@ compute_inertia_from_geoms(
 )
 ```
 
-2. **`InertiaFromGeom::Auto` branch** (`model_builder.rs:1051`):
+2. **`InertiaFromGeom::Auto` branch** (`builder/`):
 
 ```rust
 // Same change — pass mesh lookup tables
@@ -517,7 +517,7 @@ compute_inertia_from_geoms(
 )
 ```
 
-The `InertiaFromGeom::False` branch (`model_builder.rs:1054-1064`) is
+The `InertiaFromGeom::False` branch (`builder/`) is
 unchanged — it never calls `compute_inertia_from_geoms()`.
 
 #### Acceptance Criteria
@@ -698,24 +698,24 @@ Each step must compile and pass existing tests before proceeding.
 2. **B2: `parser.rs`** — Add parsing in `parse_compiler_attrs()`. Run
    `cargo test -p sim-mjcf` to verify no regressions.
 
-3. **C1: `model_builder.rs`** — Add `compute_mesh_inertia()` function.
+3. **C1: `builder/`** — Add `compute_mesh_inertia()` function.
    No callers yet — just ensure it compiles.
 
-4. **D1: `model_builder.rs`** — Refactor `compute_geom_mass()`: add
+4. **D1: `builder/`** — Refactor `compute_geom_mass()`: add
    `mesh_data` parameter, add Mesh arm. Update call sites to pass `None`
    temporarily. Run `cargo test -p sim-mjcf` — all existing tests pass
    (no mesh geoms in existing tests use auto-inertia).
 
-5. **D2: `model_builder.rs`** — Refactor `compute_geom_inertia()`: change
+5. **D2: `builder/`** — Refactor `compute_geom_inertia()`: change
    return type to `Matrix3<f64>`, add `mesh_data` parameter, add Mesh arm.
    Update `compute_inertia_from_geoms()` to handle `Matrix3` return
    (temporarily extract diagonal for backwards compat).
 
-6. **D3: `model_builder.rs`** — Full tensor refactor of
+6. **D3: `builder/`** — Full tensor refactor of
    `compute_inertia_from_geoms()`: add parameters, full 3×3 accumulation
    with geom orientation, eigendecomposition. Add `resolve_mesh()` helper.
 
-7. **D4: `model_builder.rs`** — Update call sites at lines 1046 and 1051
+7. **D4: `builder/`** — Update call sites
    to pass `&self.mesh_name_to_id` and `&self.mesh_data`.
 
 8. **Tests** — Write all 9 acceptance tests in
@@ -753,7 +753,7 @@ Each step must compile and pass existing tests before proceeding.
 
 - `sim/L0/mjcf/src/types.rs` — `MjcfCompiler` field + Default
 - `sim/L0/mjcf/src/parser.rs` — parsing in `parse_compiler_attrs()`
-- `sim/L0/mjcf/src/model_builder.rs` — `compute_mesh_inertia()`,
+- `sim/L0/mjcf/src/builder/` — `compute_mesh_inertia()`,
   `compute_geom_mass()`, `compute_geom_inertia()`,
   `compute_inertia_from_geoms()`, `resolve_mesh()`, call site updates
 - `sim/L0/tests/integration/exactmeshinertia.rs` — 9 acceptance tests
@@ -866,7 +866,7 @@ Margin and gap flow through the entire collision pipeline, not just `mj_contactP
 
 ### Our Codebase: Current State
 
-**Contact parameter combination** lives in `mujoco_pipeline.rs`:
+**Contact parameter combination** lives in the sim-core collision modules:
 
 | Function | Lines | What It Does | Status |
 |----------|-------|-------------|--------|
@@ -894,7 +894,7 @@ Margin and gap flow through the entire collision pipeline, not just `mj_contactP
 | `geom_priority: Vec<i32>` | ❌ | — | — |
 | `geom_solmix: Vec<f64>` | ❌ | — | — |
 
-**MJCF parsing** (`parser.rs` / `model_builder.rs` / `types.rs`):
+**MJCF parsing** (`parser.rs` / `builder/` / `types.rs`):
 
 | Attribute | In `MjcfGeom` struct? | Parsed? | In defaults cascade? |
 |-----------|----------------------|---------|---------------------|
@@ -907,7 +907,7 @@ Margin and gap flow through the entire collision pipeline, not just `mj_contactP
 | `priority` | ❌ | ❌ | ❌ |
 | `solmix` | ❌ | ❌ | ❌ |
 
-**Contact struct** (`mujoco_pipeline.rs:1862–1896`):
+**Contact struct** (`types/contact_types.rs`):
 
 | Field | Type | Status |
 |-------|------|--------|
@@ -1160,7 +1160,7 @@ fn make_contact_flex_rigid(
          │
          ▼
   ┌──────────────────┐     New Model fields:
-  │ model_builder.rs  │     geom_priority: Vec<i32>     (#25)
+  │ builder/          │     geom_priority: Vec<i32>     (#25)
   │ process_geom()    │     geom_solmix: Vec<f64>       (#26)
   │                   │     geom_margin: Vec<f64>        (#27, already exists, wire parsing)
   │                   │     geom_gap: Vec<f64>           (#27, already exists, wire parsing)
@@ -1168,7 +1168,7 @@ fn make_contact_flex_rigid(
          │
          ▼
   ┌──────────────────────┐
-  │ mujoco_pipeline.rs    │
+  │ sim-core modules      │
   │                       │
   │  Broadphase:          │     #27: Add margin to AABB expansion
   │  SAP + distance cull  │         + automatic contact distance cull
@@ -1448,7 +1448,7 @@ existing tests that depend on the old (wrong) geometric mean behavior — these
 must be found and updated, not suppressed.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `make_contact_from_geoms()` (lines 6068–6070)
+- `sim/L0/core/src/collision/` — `make_contact_from_geoms()`
 - `sim/L0/tests/integration/` — new `contact_friction_combination.rs` test file
 - `sim/L0/mjcf/src/parser.rs` — comment fix (line ~1487)
 
@@ -1538,13 +1538,13 @@ if geom.priority == 0 {  // still at default
 
 ##### S4. Add `geom_priority` to `Model`
 
-In `sim/L0/core/src/mujoco_pipeline.rs`, add to `Model`:
+In `sim/L0/core/src/types/model.rs`, add to `Model`:
 
 ```rust
 pub geom_priority: Vec<i32>,
 ```
 
-Initialize in `model_builder.rs` `process_geom()`:
+Initialize in `builder/` `process_geom()`:
 
 ```rust
 self.geom_priority.push(geom.priority);
@@ -1659,11 +1659,11 @@ explicitly sets priority, so regression risk is near zero.
 - `sim/L0/mjcf/src/parser.rs` — parse `priority` in `parse_geom_attrs()` and
   `parse_geom_defaults()`
 - `sim/L0/mjcf/src/defaults.rs` — cascade `priority` in `apply_to_geom()`
-- `sim/L0/mjcf/src/model_builder.rs` — `self.geom_priority.push(geom.priority)`
+- `sim/L0/mjcf/src/builder/` — `self.geom_priority.push(geom.priority)`
   in `process_geom()`
-- `sim/L0/core/src/mujoco_pipeline.rs` — `Model.geom_priority: Vec<i32>`,
-  priority gate in `make_contact_from_geoms()`, `flex_priority: Vec<i32>` on
-  Model (initialized to 0)
+- `sim/L0/core/src/types/model.rs` — `Model.geom_priority: Vec<i32>`,
+  `flex_priority: Vec<i32>` on Model (initialized to 0)
+- `sim/L0/core/src/collision/` — priority gate in `make_contact_from_geoms()`
 - `sim/L0/tests/integration/` — new tests in `contact_priority.rs`
 
 ---
@@ -1768,7 +1768,7 @@ if (geom.solmix - 1.0).abs() < 1e-10 {  // still at default
 
 ##### S4. Add `geom_solmix` to `Model`
 
-In `sim/L0/core/src/mujoco_pipeline.rs`, add to `Model`:
+In `sim/L0/core/src/types/model.rs`, add to `Model`:
 
 ```rust
 pub geom_solmix: Vec<f64>,
@@ -1923,11 +1923,12 @@ Update expected values to match MuJoCo reference.
 - `sim/L0/mjcf/src/parser.rs` — parse `solmix` in `parse_geom_attrs()` and
   `parse_geom_defaults()`
 - `sim/L0/mjcf/src/defaults.rs` — cascade `solmix` in `apply_to_geom()`
-- `sim/L0/mjcf/src/model_builder.rs` — `self.geom_solmix.push(geom.solmix)`
-- `sim/L0/core/src/mujoco_pipeline.rs` — `Model.geom_solmix: Vec<f64>`,
-  `solmix_weight()`, `combine_solref()`, `combine_solimp()`, delete old
-  `combine_solver_params()`, create unified `contact_param()`,
+- `sim/L0/mjcf/src/builder/` — `self.geom_solmix.push(geom.solmix)`
+- `sim/L0/core/src/types/model.rs` — `Model.geom_solmix: Vec<f64>`,
   `flex_solmix: Vec<f64>` on Model
+- `sim/L0/core/src/collision/` — `solmix_weight()`, `combine_solref()`,
+  `combine_solimp()`, delete old `combine_solver_params()`, create unified
+  `contact_param()`
 - `sim/L0/tests/integration/` — new tests in `contact_solmix.rs`
 
 ---
@@ -2005,17 +2006,17 @@ assembly must account for this sign convention.
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| `Model.geom_margin: Vec<f64>` | Exists, zeroed | `mujoco_pipeline.rs:1349` |
-| `Model.geom_gap: Vec<f64>` | Exists, zeroed | `mujoco_pipeline.rs:1351` |
-| `<geom margin="...">` parsing | **NOT parsed** | `model_builder.rs` TODO comment |
-| `<geom gap="...">` parsing | **NOT parsed** | `model_builder.rs` TODO comment |
+| `Model.geom_margin: Vec<f64>` | Exists, zeroed | `types/model.rs` |
+| `Model.geom_gap: Vec<f64>` | Exists, zeroed | `types/model.rs` |
+| `<geom margin="...">` parsing | **NOT parsed** | `builder/` TODO comment |
+| `<geom gap="...">` parsing | **NOT parsed** | `builder/` TODO comment |
 | `ContactPair.margin` | Parsed from `<pair>` | `types.rs` |
 | `ContactPair.gap` | Parsed from `<pair>` | `types.rs` |
 | Broadphase (automatic) | No margin in AABB | SAP at line 5500 |
 | Broadphase (explicit pairs) | Uses `pair.margin` ✅ | Distance cull at line 5558 |
 | `collide_*()` signatures | No margin parameter | All return `Option<Contact>` |
 | `collide_*()` activation | `penetration > 0.0` | All narrow-phase functions |
-| `Contact.includemargin` | `bool`, always `false` | `mujoco_pipeline.rs:1874` |
+| `Contact.includemargin` | `bool`, always `false` | `types/contact_types.rs` |
 | `apply_pair_overrides()` | Skips margin/gap | Comment "NOT applied here" |
 | `assemble_contact_system()` | `margin = 0.0` hardcoded | Line ~15410 |
 | `compute_aref()` | Correct signature, receives `0.0` | Line 14911 |
@@ -2043,7 +2044,7 @@ geom.gap = parse_float_attr(e, "gap").unwrap_or(0.0);
 Add to `MjcfGeomDefaults` and cascade in `apply_to_geom()`. Only cascade when
 still at default (0.0).
 
-Wire in `process_geom()` (`model_builder.rs`):
+Wire in `process_geom()` (`builder/`):
 
 ```rust
 self.geom_margin.push(geom.margin);
@@ -2272,7 +2273,7 @@ This flows into:
    With `depth > 0`, aref is negative — **this is a sign error** that produces
    destabilizing acceleration (pulling objects together instead of apart).
 
-   **Fix** (line ~15424 in `mujoco_pipeline.rs`):
+   **Fix** (in `constraint/`):
    ```rust
    // BEFORE:
    let pos = if r == 0 { contact.depth } else { 0.0 };
@@ -2387,8 +2388,8 @@ set in MJCF.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs`:
-  - `Contact` struct — `includemargin: bool → f64`
+- `sim/L0/core/src/types/contact_types.rs` — `Contact` struct `includemargin: bool → f64`
+- `sim/L0/core/src/collision/` —
   - `Contact::new()`, `Contact::with_condim()` — update construction
   - `collide_geoms()` — add `margin: f64` parameter
   - All 14 `collide_*()` functions — add `margin: f64`, change activation check
@@ -2404,7 +2405,7 @@ set in MJCF.
   `MjcfGeomDefaults.margin`, `MjcfGeomDefaults.gap`
 - `sim/L0/mjcf/src/parser.rs` — parse `margin`/`gap` from `<geom>`
 - `sim/L0/mjcf/src/defaults.rs` — cascade `margin`/`gap`
-- `sim/L0/mjcf/src/model_builder.rs` — wire into `Model.geom_margin`/`geom_gap`
+- `sim/L0/mjcf/src/builder/` — wire into `Model.geom_margin`/`geom_gap`
 - `sim/L0/tests/integration/` — new `contact_margin_gap.rs`
 
 ---
@@ -2877,7 +2878,7 @@ grep). This is safe.
 Change `MjcfFlex.selfcollide` from `bool` to `Option<String>`. Update
 references:
 
-- `model_builder.rs`:
+- `builder/`:
   `self.flex_selfcollide.push(flex.selfcollide.as_deref() != Some("none"))`
   When absent (None), defaults to `true` (MuJoCo default is `"auto"` = enabled).
   `Some("none")` maps to `false`. All other keywords map to `true`.
@@ -2887,7 +2888,7 @@ references:
 
 ##### S7. Wire new fields into model builder
 
-In `process_flex()` (`model_builder.rs:3002-3004`), replace hardcoded defaults
+In `process_flex()` (`builder/`), replace hardcoded defaults
 and add new pushes:
 
 ```rust
@@ -2904,19 +2905,19 @@ self.flex_solmix.push(flex.solmix);
 
 Add new fields for edge stiffness/damping in three places:
 ```rust
-// 1. ModelBuilder struct (model_builder.rs, after flex_selfcollide):
+// 1. ModelBuilder struct (builder/, after flex_selfcollide):
 flex_edgestiffness: Vec<f64>,
 flex_edgedamping: Vec<f64>,
 
-// 2. ModelBuilder init (model_builder.rs, in new()):
+// 2. ModelBuilder init (builder/, in new()):
 flex_edgestiffness: vec![],
 flex_edgedamping: vec![],
 
-// 3. Model struct (mujoco_pipeline.rs, after flex_selfcollide):
+// 3. Model struct (types/model.rs, after flex_selfcollide):
 pub flex_edgestiffness: Vec<f64>,  // passive edge spring stiffness
 pub flex_edgedamping: Vec<f64>,    // passive edge damping coefficient
 
-// 4. Model default init (mujoco_pipeline.rs):
+// 4. Model default init (types/model.rs):
 flex_edgestiffness: vec![],
 flex_edgedamping: vec![],
 
@@ -2995,10 +2996,10 @@ computation (spring-damper forces on edges, analogous to MuJoCo's
   (`parse_flex_contact_attrs`, `parse_flex_elasticity_attrs`,
   `parse_flex_edge_attrs`), wire into `parse_flex()` + `parse_flexcomp()`,
   strip `parse_flex_attrs()` to `name`/`dim`/`radius` only
-- `sim/L0/mjcf/src/model_builder.rs` — wire `flex.gap/priority/solmix`,
+- `sim/L0/mjcf/src/builder/` — wire `flex.gap/priority/solmix`,
   update `selfcollide` push to `flex.selfcollide.as_deref() != Some("none")`, push
   `edge_stiffness`/`edge_damping` to new Model fields
-- `sim/L0/core/src/mujoco_pipeline.rs` — add `flex_edgestiffness: Vec<f64>`
+- `sim/L0/core/src/types/model.rs` — add `flex_edgestiffness: Vec<f64>`
   and `flex_edgedamping: Vec<f64>` to Model struct
 
 ---
@@ -3069,7 +3070,7 @@ Our codebase conflates these two mechanisms:
 
 ##### S1. Add passive edge spring-damper forces in `mj_fwd_passive()`
 
-Add a new section in `mj_fwd_passive()` (`mujoco_pipeline.rs:11569`), after the
+Add a new section in `mj_fwd_passive()` (`forward/passive.rs`), after the
 flex vertex damping loop and before the flex bending passive forces. This matches
 MuJoCo's `engine_passive.c` ordering.
 
@@ -3211,13 +3212,13 @@ Changes:
   — removes the misleading "from_material" suffix
 - Replace the dead-code guard (`if flex.young <= 0.0 || ...`) with a direct
   return — the function is an intentional passthrough, not a stub
-- Update the call site at `model_builder.rs:2990`
-- Update the doc comment on `Model.flex_edge_solref` (`mujoco_pipeline.rs:1420`)
+- Update the call site in `builder/`
+- Update the doc comment on `Model.flex_edge_solref` (`types/model.rs`)
   from "derived from young/poisson/damping" to "per-flex solref passthrough"
 
 ##### S3. Update documentation comment on `flex_edge_solref`
 
-In `mujoco_pipeline.rs:1420`:
+In `types/model.rs`:
 ```rust
 // BEFORE:
 /// Per-flex: edge constraint solref (derived from young/poisson/damping).
@@ -3260,7 +3261,7 @@ damper forces in engine_passive.c. See future_work_7.md #27C for details.
    (`invmass == 0.0`) is skipped. An edge where one vertex is pinned applies
    force only to the non-pinned vertex.
 5. **Rename compiles:** `compute_edge_solref_from_material` no longer exists.
-   `compute_edge_solref` used at `model_builder.rs:2990`. No other references.
+   `compute_edge_solref` used in `builder/`. No other references.
 6. **Doc comment updated:** `Model.flex_edge_solref` comment no longer
    references Young's modulus or material derivation.
 7. **6b correction note added:** `future_work_6b_precursor_to_7.md` S8 section
@@ -3270,9 +3271,10 @@ damper forces in engine_passive.c. See future_work_7.md #27C for details.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — passive edge spring-damper loop in
-  `mj_fwd_passive()`, Model field doc comment update
-- `sim/L0/mjcf/src/model_builder.rs` — rename
+- `sim/L0/core/src/forward/passive.rs` — passive edge spring-damper loop in
+  `mj_fwd_passive()`
+- `sim/L0/core/src/types/model.rs` — Model field doc comment update
+- `sim/L0/mjcf/src/builder/` — rename
   `compute_edge_solref_from_material()` → `compute_edge_solref()`, simplify body
 - `sim/docs/todo/future_work_6b_precursor_to_7.md` — correction note on S8
 
@@ -3317,7 +3319,7 @@ will be stripped to only `name`/`dim`/`radius` — the contact/elasticity attrs
 move to child element helpers. The `body`/`node`/`group` additions in this spec
 apply to the post-#27B version of `parse_flex_attrs()`.
 
-**Model builder (`model_builder.rs:3177`):** `flexvert_bodyid` is hardcoded:
+**Model builder (`builder/`):** `flexvert_bodyid` is hardcoded:
 ```rust
 flexvert_bodyid: vec![usize::MAX; self.nflexvert],  // Free vertices: no body attachment
 ```
@@ -3397,7 +3399,7 @@ frame, cables tethered to moving bodies).
    }
    ```
 
-3. **Wire `flexvert_bodyid` in model builder** (`model_builder.rs`):
+3. **Wire `flexvert_bodyid` in model builder** (`builder/`):
    - For `<flex>`: `body` is required — resolve each body name to a body ID
      using the existing body name → ID mapping. Populate `flexvert_bodyid[v]`
      with the resolved ID. Validate: `flex.body.len()` must equal vertex count.
@@ -3442,7 +3444,7 @@ frame, cables tethered to moving bodies).
 
 - `sim/L0/mjcf/src/types.rs` — add `body`, `node`, `group` fields to `MjcfFlex`
 - `sim/L0/mjcf/src/parser.rs` — parse `body`, `node`, `group` in `parse_flex_attrs()`
-- `sim/L0/mjcf/src/model_builder.rs` — resolve body names → IDs, wire
+- `sim/L0/mjcf/src/builder/` — resolve body names → IDs, wire
   `flexvert_bodyid`, adjust DOF allocation for body-attached vertices
 
 ---
@@ -3491,7 +3493,7 @@ are attached to MuJoCo bodies (`flex_vertbodyid`), and the body's own
 **Our architecture differs:** Post-§6B unification, flex vertex DOFs are
 appended directly to `qpos`/`qvel`/`qacc` — they are not full MuJoCo bodies.
 So we maintain `flexvert_mass` / `flexvert_invmass` arrays
-(`mujoco_pipeline.rs:1453-1455`) that feed into the mass matrix and passive
+(`types/model.rs`) that feed into the mass matrix and passive
 force computation. This is the correct design for `<flexcomp>` (independent
 point masses), but it means we need an explicit mass-computation path per
 vertex.
@@ -3512,7 +3514,7 @@ vertex.
 **Current (non-conformant) — density-based mass lumping:**
 ```
 parse_flex_attrs() → density field
-  → compute_vertex_masses() in model_builder.rs:5425
+  → compute_vertex_masses() in builder/
     → dim=1: mass[v] += density * edge_length / 2
     → dim=2: mass[v] += density * thickness * tri_area / 3
     → dim=3: mass[v] += density * tet_volume / 4
@@ -3790,7 +3792,7 @@ by `ac_flexcomp_mass_overrides_density`.
 
 - `sim/L0/mjcf/src/types.rs` — add `mass: Option<f64>` to `MjcfFlex`
 - `sim/L0/mjcf/src/parser.rs` — parse `mass` in `parse_flex_attrs()`
-- `sim/L0/mjcf/src/model_builder.rs` — early-return uniform path in
+- `sim/L0/mjcf/src/builder/` — early-return uniform path in
   `compute_vertex_masses()`
 - `sim/L0/tests/integration/flex_unified.rs` — migrate flexcomp fixture,
   add mass distribution test
@@ -4016,8 +4018,8 @@ dynamics.
   architecture changes fundamentally — `mj_crba_flex`, `mj_factor_flex`,
   and the flex sections of `mj_rne` all get deleted, replaced by standard
   body-joint code.
-- **Scope estimate:** ~2000-3000 LOC. Major changes in model_builder.rs
-  (body/joint creation), mujoco_pipeline.rs (delete flex-specific CRBA/RNE
+- **Scope estimate:** ~2000-3000 LOC. Major changes in builder/
+  (body/joint creation), sim-core modules (delete flex-specific CRBA/RNE
   code, add flex FK, rewire qpos/qvel allocation), flex_unified.rs
   (rewrite all tests for body-based DOF addresses).
 
@@ -4114,16 +4116,16 @@ justified by a concrete use case.
 #### Files
 
 **Option C (near-term):**
-- `sim/L0/mjcf/src/model_builder.rs` — warning emission in
+- `sim/L0/mjcf/src/builder/` — warning emission in
   `process_flex_bodies()` after bodyid resolution
 - `sim/L0/tests/integration/flex_unified.rs` — body-attached flex test
 - `sim/docs/MUJOCO_GAP_ANALYSIS.md` — document limitation
 
 **Option A (eventual, estimated):**
-- `sim/L0/core/src/mujoco_pipeline.rs` — delete `mj_crba_flex`,
+- `sim/L0/core/src/forward/position.rs` — delete `mj_crba_flex`,
   `mj_factor_flex`, flex sections of `mj_rne`; add `mj_flex()` FK;
   add `flexvert_xpos` to Data; rewire DOF allocation
-- `sim/L0/mjcf/src/model_builder.rs` — create bodies/joints per flex
+- `sim/L0/mjcf/src/builder/` — create bodies/joints per flex
   vertex; add `flex_vert`/`flex_centered` to Model; remove
   `flexvert_mass`/`flexvert_invmass` computation
 - `sim/L0/tests/integration/flex_unified.rs` — rewrite DOF address

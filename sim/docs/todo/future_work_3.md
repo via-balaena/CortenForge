@@ -31,10 +31,10 @@ priority table, dependency graph, and file map.
   to asset; `MjcfModel.hfields` stores parsed assets.
 - `parse_asset()` (`parser.rs`) parses `<hfield>` elements (both `Event::Start` and
   `Event::Empty`). `parse_hfield_attrs()` validates nrow/ncol/size/elevation.
-- `model_builder.rs`: `process_hfield()` converts MJCF hfield to `HeightFieldData`;
+- `builder/`: `process_hfield()` converts MJCF hfield to `HeightFieldData`;
   `process_geom()` maps `MjcfGeomType::Hfield → GeomType::Hfield` with asset linking
   and geom_size override from `hfield_size`.
-- `GeomType::Hfield` variant in enum (`mujoco_pipeline.rs`).
+- `GeomType::Hfield` variant in enum (`types/enums.rs`).
 
 **Collision pipeline** has full hfield dispatch:
 - `collide_geoms()` dispatches `GeomType::Hfield` to `collide_with_hfield()`.
@@ -200,9 +200,9 @@ In `parse_geom_attrs()` (`parser.rs:1039`), add:
 geom.hfield = get_attribute_opt(e, "hfield");
 ```
 
-**Step 3 — GeomType enum** (`mujoco_pipeline.rs`)
+**Step 3 — GeomType enum** (`types/enums.rs`)
 
-Add `Hfield` variant to `GeomType` (`mujoco_pipeline.rs:361`):
+Add `Hfield` variant to `GeomType` (`types/enums.rs`):
 
 ```rust
 pub enum GeomType {
@@ -211,16 +211,16 @@ pub enum GeomType {
 }
 ```
 
-Update `GeomType::bounding_radius()` (`mujoco_pipeline.rs:396`): add
+Update `GeomType::bounding_radius()` (`types/enums.rs`): add
 `Self::Hfield` arm. Like `Mesh`, the bounding radius cannot be computed from
 `size` alone — it depends on the actual elevation data. Return a conservative
 estimate from `geom_size`: `Vector2::new(size.x, size.y).norm()` (horizontal
 half-diagonal). The true bounding radius is overwritten by the model builder's
-post-build pass (`model_builder.rs:2392`) using the `HeightFieldData` AABB.
+post-build pass (`builder/`) using the `HeightFieldData` AABB.
 
-**Step 4 — Model storage** (`mujoco_pipeline.rs`)
+**Step 4 — Model storage** (`types/model.rs`)
 
-Add to `Model` (following the mesh pattern at `mujoco_pipeline.rs:908–915`):
+Add to `Model` (following the mesh pattern at `types/model.rs`):
 
 ```rust
 // ==================== Height Fields (indexed by hfield_id) ====================
@@ -237,9 +237,9 @@ The `hfield_size` is stored because the centering offset (`-size[0]`, `-size[1]`
 is needed at collision time to convert from `HeightFieldData`'s corner-origin
 coordinate system to MuJoCo's center-origin system.
 
-**Step 5 — Model builder** (`model_builder.rs`)
+**Step 5 — Model builder** (`builder/`)
 
-Add `ModelBuilder` fields (following the mesh pattern at `model_builder.rs:265–271`):
+Add `ModelBuilder` fields (following the mesh pattern at `builder/`):
 
 ```rust
 hfield_name_to_id: HashMap<String, usize>,
@@ -249,9 +249,9 @@ hfield_size: Vec<[f64; 4]>,
 geom_hfield: Vec<Option<usize>>,
 ```
 
-Initialize all to empty in `ModelBuilder::new()` (`model_builder.rs:440`).
+Initialize all to empty in `ModelBuilder::new()` (`builder/`).
 
-Add `process_hfield()` method (following `process_mesh()` at `model_builder.rs:617`):
+Add `process_hfield()` method (following `process_mesh()` at `builder/`):
 
 ```rust
 fn process_hfield(&mut self, hfield: &MjcfHfield) -> Result<(), ModelConversionError> {
@@ -289,12 +289,12 @@ Construct `HeightFieldData::new(heights, ncol, nrow, cell_size)` where
 `width = ncol` (X samples) and `depth = nrow` (Y samples). Row-major ordering
 matches — no flip needed.
 
-In `model_from_mjcf()` (`model_builder.rs:107`), call `process_hfield()` for each
+In `model_from_mjcf()` (`builder/`), call `process_hfield()` for each
 hfield asset before processing bodies (like `process_mesh` at line 110–112).
 
-In `process_geom()` (`model_builder.rs:984`):
+In `process_geom()` (`builder/`):
 - `MjcfGeomType::Hfield` → `GeomType::Hfield` (remove Box fallback).
-- Add hfield asset linking (parallel to mesh linking at `model_builder.rs:1017–1042`):
+- Add hfield asset linking (parallel to mesh linking at `builder/`):
 
 ```rust
 let geom_hfield_ref = if geom_type == GeomType::Hfield {
@@ -317,9 +317,9 @@ let geom_hfield_ref = if geom_type == GeomType::Hfield {
 };
 ```
 
-Push `geom_hfield_ref` alongside `geom_mesh_ref` (at `model_builder.rs:1122`).
+Push `geom_hfield_ref` alongside `geom_mesh_ref` (at `builder/`).
 
-**Geom size override for Hfield:** `geom_size_to_vec3()` (`model_builder.rs:2970`)
+**Geom size override for Hfield:** `geom_size_to_vec3()` (`builder/`)
 takes only `&geom.size` (the MJCF geom element's `size` attribute) and `geom_type`
 — it has **no access** to hfield asset data. For hfield geoms, the geom's `size`
 attribute is typically absent (defaults to `vec![0.1]`), so `geom_size_to_vec3`
@@ -346,7 +346,7 @@ This stores `[x_half_extent, y_half_extent, z_top]` in `geom_size`, enabling
 No change to `geom_size_to_vec3()` is needed — the catch-all `_ => (0.1, ...)` is
 dead code for Hfield since the override above always runs first.
 
-**Bounding radius** (post-build pass at `model_builder.rs:2392`): extend the
+**Bounding radius** (post-build pass at `builder/`): extend the
 existing `if let Some(mesh_id)` chain with an hfield branch:
 
 ```rust
@@ -371,11 +371,11 @@ model.geom_rbound[geom_id] = if let Some(mesh_id) = model.geom_mesh[geom_id] {
 Note: the half-diagonal is origin-independent (it's `(max - min) / 2`), so the
 centering offset does not affect it.
 
-Wire `geom_hfield` and hfield arrays into `build()` (`model_builder.rs:2258`).
+Wire `geom_hfield` and hfield arrays into `build()` (`builder/`).
 
-**Step 6 — Collision pipeline** (`mujoco_pipeline.rs`)
+**Step 6 — Collision pipeline** (`collision/mod.rs`)
 
-In `collide_geoms()` (`mujoco_pipeline.rs:3792`), add a height field branch
+In `collide_geoms()` (`collision/narrow.rs`), add a height field branch
 before the GJK/EPA slow path (after Mesh and Plane checks):
 
 ```rust
@@ -386,7 +386,7 @@ if type1 == GeomType::Hfield || type2 == GeomType::Hfield {
 ```
 
 Implement `collide_with_hfield()` (following `collide_with_mesh()` at
-`mujoco_pipeline.rs:4072`):
+`types/model_init.rs`):
 
 ```rust
 fn collide_with_hfield(
@@ -473,10 +473,10 @@ fn collide_with_hfield(
 }
 ```
 
-Update `geom_to_collision_shape()` (`mujoco_pipeline.rs:3918`):
+Update `geom_to_collision_shape()` (`collision/`):
 add `GeomType::Hfield => None` (handled by `collide_with_hfield`, not GJK/EPA).
 
-Update `aabb_from_geom()` (`mujoco_pipeline.rs:3374`):
+Update `aabb_from_geom()` (`types/model_init.rs`):
 add `GeomType::Hfield` arm. The function signature is
 `fn aabb_from_geom(geom_type: GeomType, size: Vector3<f64>, pos: Vector3<f64>, mat: Matrix3<f64>) -> Aabb`
 — it has **no `Model` reference**, only `size`/`pos`/`mat`. This matches the
@@ -555,12 +555,12 @@ broad-phase.
 - `sim/L0/mjcf/src/parser.rs` — `parse_hfield_attrs()`, `b"hfield"` arms in
   both `Event::Start` and `Event::Empty` branches of `parse_asset()`, change
   `parse_asset()` return type, `hfield` attr in `parse_geom_attrs()`
-- `sim/L0/mjcf/src/model_builder.rs` — `process_hfield()`, `convert_mjcf_hfield()`,
+- `sim/L0/mjcf/src/builder/` — `process_hfield()`, `convert_mjcf_hfield()`,
   hfield geom dispatch + asset linking + geom_size override in `process_geom()`,
   bounding radius post-build, `build()` wiring
-- `sim/L0/core/src/mujoco_pipeline.rs` — `GeomType::Hfield` + `bounding_radius()`
-  arm, `hfield_data`/`hfield_size`/`hfield_name`/`nhfield`/`geom_hfield` on `Model`,
-  `collide_with_hfield()`, `geom_to_collision_shape()` arm, `aabb_from_geom()` arm
+- `sim/L0/core/src/` (multiple modules) — `GeomType::Hfield` + `bounding_radius()`
+  arm in `types/enums.rs`, `hfield_data`/`hfield_size`/`hfield_name`/`nhfield`/`geom_hfield` on `Model`,
+  `collide_with_hfield()` in `collision/`, `geom_to_collision_shape()` arm, `aabb_from_geom()` arm
 - `sim/L0/mjcf/src/validation.rs` — validate hfield references exist in asset list
   (optional — mesh references are also not validated today; implement if time permits)
 
@@ -608,9 +608,9 @@ broad-phase.
 
 **MJCF layer** wires `type="sdf"` for programmatic construction:
 - `MjcfGeomType::Sdf` is parsed (`types.rs`).
-- `model_builder.rs`: `MjcfGeomType::Sdf → GeomType::Sdf` (no Box fallback).
+- `builder/`: `MjcfGeomType::Sdf → GeomType::Sdf` (no Box fallback).
   `geom_sdf` always `None` from MJCF — SDF data is populated programmatically.
-- `GeomType::Sdf` variant in enum (`mujoco_pipeline.rs`).
+- `GeomType::Sdf` variant in enum (`types/enums.rs`).
 - `Model` stores `nsdf`, `sdf_data: Vec<Arc<SdfCollisionData>>`, and
   `geom_sdf: Vec<Option<usize>>`.
 
@@ -642,9 +642,9 @@ only — there is no `<sdf>` asset element to parse.
 
 #### Specification
 
-**Step 1 — GeomType enum** (`mujoco_pipeline.rs`)
+**Step 1 — GeomType enum** (`types/enums.rs`)
 
-Add `Sdf` variant to `GeomType` (`mujoco_pipeline.rs:365`):
+Add `Sdf` variant to `GeomType` (`types/enums.rs`):
 
 ```rust
 pub enum GeomType {
@@ -653,7 +653,7 @@ pub enum GeomType {
 }
 ```
 
-Add `bounding_radius()` arm (`mujoco_pipeline.rs:402`):
+Add `bounding_radius()` arm (`types/enums.rs`):
 
 ```rust
 Self::Sdf => {
@@ -665,9 +665,9 @@ Self::Sdf => {
 }
 ```
 
-**Step 2 — Model storage** (`mujoco_pipeline.rs`)
+**Step 2 — Model storage** (`types/model.rs`)
 
-Add to `Model` (after hfield fields at `mujoco_pipeline.rs:939`, before the
+Add to `Model` (after hfield fields at `types/model.rs`, before the
 Sites section):
 
 ```rust
@@ -684,7 +684,7 @@ pub sdf_data: Vec<Arc<SdfCollisionData>>,
 pub geom_sdf: Vec<Option<usize>>,
 ```
 
-Add to `Model::empty()` (after hfield initialization at `mujoco_pipeline.rs:1918`):
+Add to `Model::empty()` (after hfield initialization at `types/model_init.rs`):
 
 ```rust
 // SDFs (empty)
@@ -693,10 +693,10 @@ sdf_data: vec![],
 geom_sdf: vec![],
 ```
 
-**Step 3 — Model builder** (`model_builder.rs`)
+**Step 3 — Model builder** (`builder/`)
 
 Change the `MjcfGeomType::Sdf` arm in `process_geom()` (currently at
-`model_builder.rs:1044–1049`) from a Box fallback to `GeomType::Sdf`:
+`builder/`) from a Box fallback to `GeomType::Sdf`:
 
 ```rust
 MjcfGeomType::Sdf => GeomType::Sdf,
@@ -745,7 +745,7 @@ nsdf: 0,       // programmatic — always 0 from MJCF
 sdf_data: vec![],  // programmatic — always empty from MJCF
 ```
 
-**Post-build bounding radius pass** (`model_builder.rs:2475`): extend the
+**Post-build bounding radius pass** (`builder/`): extend the
 if/else chain with an SDF branch after hfield:
 
 ```rust
@@ -775,10 +775,10 @@ Note: for MJCF-loaded models, the SDF branch never fires (`geom_sdf` is always
 `None` from MJCF). It activates only for programmatically constructed models
 where `geom_sdf` and `sdf_data` are populated directly.
 
-**Step 4 — Collision pipeline** (`mujoco_pipeline.rs`)
+**Step 4 — Collision pipeline** (`collision/mod.rs`)
 
 **Dispatch order.** Add SDF branch **before Mesh** in `collide_geoms()`
-(`mujoco_pipeline.rs:3855`). This is critical because:
+(`collision/narrow.rs`). This is critical because:
 - SDF↔Mesh: if Mesh fires first, `collide_with_mesh()` has no SDF arm →
   would require adding dispatch logic inside `collide_with_mesh`. Putting SDF
   first keeps all SDF dispatch in one function.
@@ -970,13 +970,13 @@ fn collide_with_sdf(
 }
 ```
 
-**Update `geom_to_collision_shape()`** (`mujoco_pipeline.rs:3968`):
+**Update `geom_to_collision_shape()`** (`collision/`):
 
 ```rust
 GeomType::Sdf => None,  // Handled via collide_with_sdf()
 ```
 
-**Update `aabb_from_geom()`** (`mujoco_pipeline.rs:3404`):
+**Update `aabb_from_geom()`** (`types/model_init.rs`):
 
 `aabb_from_geom` has **no Model reference** — only `(geom_type, size, pos, mat)`.
 For MJCF-loaded SDF geoms, `geom_size` is `(0.1, 0.1, 0.1)` (the catch-all
@@ -1049,12 +1049,12 @@ GeomType::Sdf => {
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — `GeomType::Sdf` + `bounding_radius()`
-  arm, `sdf_data`/`nsdf`/`geom_sdf` on `Model` + `Model::empty()`,
-  `collide_with_sdf()`, SDF dispatch in `collide_geoms()`, `aabb_from_geom()`
+- `sim/L0/core/src/` (multiple modules) — `GeomType::Sdf` + `bounding_radius()`
+  arm in `types/enums.rs`, `sdf_data`/`nsdf`/`geom_sdf` on `Model` + `Model::empty()`,
+  `collide_with_sdf()` in `collision/`, SDF dispatch in `collide_geoms()`, `aabb_from_geom()`
   arm, `geom_to_collision_shape()` arm, `unreachable!()` arms in
   `collide_with_mesh()` and `collide_with_plane()`
-- `sim/L0/mjcf/src/model_builder.rs` — `MjcfGeomType::Sdf → GeomType::Sdf`
+- `sim/L0/mjcf/src/builder/` — `MjcfGeomType::Sdf → GeomType::Sdf`
   (remove Box fallback), `geom_sdf` field + push, `build()` wiring,
   post-build bounding radius SDF branch
 
@@ -1091,7 +1091,7 @@ separately when accumulating into `qfrc_constraint`.
 
 #### Implementation
 
-**`Data` cache fields** (`mujoco_pipeline.rs`, after `qfrc_constraint`):
+**`Data` cache fields** (`constraint/`, after `qfrc_constraint`):
 - `jnt_limit_frc: Vec<f64>` — per-joint limit force cache (length `njnt`)
 - `ten_limit_frc: Vec<f64>` — per-tendon limit force cache (length `ntendon`)
 
@@ -1114,7 +1114,7 @@ of `mj_fwd_constraint()` each forward pass.
 
 Both are simple cache reads with bounds checking.
 
-**Model builder wiring** (`model_builder.rs`):
+**Model builder wiring** (`builder/`):
 - `convert_sensor_type()`: `Jointlimitfrc → JointLimitFrc`,
   `Tendonlimitfrc → TendonLimitFrc`
 - `sensor_datatype()`: both in the `Acceleration` arm
@@ -1122,7 +1122,7 @@ Both are simple cache reads with bounds checking.
   `objname` via `joint_name_to_id`), `TendonLimitFrc` in the tendon arm
   (resolves via `tendon_name_to_id`)
 
-**`MjSensorType` enum** (`mujoco_pipeline.rs`):
+**`MjSensorType` enum** (`sensor/mod.rs`):
 - `JointLimitFrc` and `TendonLimitFrc` variants after `ActuatorFrc`
 - Both in the `dim() => 1` arm
 
@@ -1160,11 +1160,11 @@ All 12 acceptance criteria verified:
 
 #### Files Changed
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — `JointLimitFrc`/`TendonLimitFrc`
+- `sim/L0/core/src/` (multiple modules) — `JointLimitFrc`/`TendonLimitFrc`
   enum variants + `dim()` arm; `jnt_limit_frc`/`ten_limit_frc` cache fields
   on `Data` + initialization in `Model::make_data()`; cache clearing and
   population in `mj_fwd_constraint()`; evaluation arms in `mj_sensor_acc()`
-- `sim/L0/mjcf/src/model_builder.rs` — `convert_sensor_type()` mappings;
+- `sim/L0/mjcf/src/builder/` — `convert_sensor_type()` mappings;
   `sensor_datatype()` Acceleration arm; `resolve_sensor_object()` joint and
   tendon arms
 - `sim/L0/tests/integration/mjcf_sensors.rs` — `test_joint_limit_frc_sensor`
@@ -1178,7 +1178,7 @@ All 12 acceptance criteria verified:
 #### Current State
 
 **Runtime layer is fully general.** `mj_fwd_actuation()`
-(`mujoco_pipeline.rs:8300`) dispatches on `GainType` (Fixed/Affine/Muscle),
+(`sensor/mod.rs`) dispatches on `GainType` (Fixed/Affine/Muscle),
 `BiasType` (None/Affine/Muscle), and `ActuatorDynamics`
 (None/Filter/FilterExact/Integrator/Muscle) using per-actuator parameter
 arrays `gainprm: [f64; 9]`, `biasprm: [f64; 9]`, `dynprm: [f64; 3]`. The
@@ -1192,10 +1192,10 @@ type combinations work correctly at runtime — no runtime changes needed.
 `gaintype`, `biastype`, `dyntype`, `gainprm`, `biasprm`, `dynprm`.
 
 **Model builder hardcodes Motor-like defaults.** `process_actuator()`
-(`model_builder.rs:1668–1675`) has a TODO comment and treats all `<general>`
+(`builder/`) has a TODO comment and treats all `<general>`
 actuators as Motor-like: `GainType::Fixed`, `BiasType::None`,
 `gainprm=[1,0,...,0]`, `biasprm=[0,...,0]`, `dynprm=[0,0,0]`. The dyntype
-determination (`model_builder.rs:1521–1526`) also hardcodes General →
+determination (`builder/`) also hardcodes General →
 `ActuatorDynamics::None`, ignoring any parsed `dyntype`.
 
 **`MjcfActuator` struct lacks fields** (`types.rs:1819–1890`) for
@@ -1264,7 +1264,7 @@ to `<motor joint="j"/>` — fixed unit gain, no bias, no dynamics.
 
 MuJoCo uses 10-element arrays for all three (`mjNGAIN=10`, `mjNBIAS=10`,
 `mjNDYN=10`). CortenForge uses `[f64; 9]` for gainprm/biasprm and
-`[f64; 3]` for dynprm (`mujoco_pipeline.rs:1044–1055`). This is intentional:
+`[f64; 3]` for dynprm (`types/enums.rs`). This is intentional:
 - `gainprm`/`biasprm`: only indices 0–8 are used by Fixed/Affine/Muscle
   gain/bias (the 10th element, index 9, is only used by MuJoCo's `user`
   callback type, which is out of scope).
@@ -1484,7 +1484,7 @@ is the correct semantics: an explicit attribute on the element overrides
 the class default, and an absent attribute inherits from the class default.
 This matches how `ctrlrange`, `forcerange`, and `kv` are already handled.
 
-**Step 4 — Model builder** (`model_builder.rs`)
+**Step 4 — Model builder** (`builder/`)
 
 **4a. Enum conversion helpers.** Add three private functions:
 
@@ -1541,7 +1541,7 @@ fn floats_to_array<const N: usize>(input: &[f64], default: [f64; N]) -> [f64; N]
 }
 ```
 
-**4c. Dyntype determination** (`model_builder.rs:1521–1536`).
+**4c. Dyntype determination** (`builder/`).
 
 Change the General arm from the hardcoded `ActuatorDynamics::None` to use
 the parsed `dyntype` attribute:
@@ -1575,7 +1575,7 @@ This is critical: dyntype must be determined **before** the activation state
 count (`act_num`) computation at line 1565, because `act_num` depends on
 `dyntype`. A `<general dyntype="filter">` must allocate 1 activation state.
 
-**4d. Gain/bias/dynprm expansion** (`model_builder.rs:1668–1675`).
+**4d. Gain/bias/dynprm expansion** (`builder/`).
 
 Replace the current General arm:
 
@@ -1667,12 +1667,12 @@ retain the default array values (which are 0 for indices 1–8).
   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-6.
 - **`actdim`:** Number of activation variables per actuator. MuJoCo default
   is -1 (auto-detect from dyntype: 0 for none, 1 for others). Our pipeline
-  hardcodes the same auto-detection logic (`model_builder.rs:1565–1571`).
+  hardcodes the same auto-detection logic (`builder/`).
   Explicit `actdim` override is not needed.
   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-7.
 - **Additional transmission types:** `cranksite`, `slidersite`,
   `jointinparent` are not supported by the existing transmission resolver
-  (`model_builder.rs:1425–1495`) and are not part of this work item.
+  (`builder/`) and are not part of this work item.
   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-8.
 - **`nsample`, `interp`, `delay`:** MuJoCo 3.x additions for
   interpolation-based actuators. Out of scope.
@@ -1710,7 +1710,7 @@ retain the default array values (which are 0 for indices 1–8).
    to the equivalent `<muscle>` shortcut with the same parameters. Note:
    `biasprm` is not specified here — it defaults to `[0,...,0]`. This is
    correct because `BiasType::Muscle` reads from `gainprm` at runtime
-   (`mujoco_pipeline.rs:8367`: `let prm = &model.actuator_gainprm[i]`),
+   (`sensor/mod.rs`: `let prm = &model.actuator_gainprm[i]`),
    not from `biasprm`. The `<muscle>` shortcut sets `biasprm = gainprm`
    (MuJoCo convention), but the actual `biasprm` values are unused for
    `BiasType::Muscle`.
@@ -1752,11 +1752,11 @@ retain the default array values (which are 0 for indices 1–8).
   `actuator_type == General`); parse same in `parse_actuator_defaults()`
 - `sim/L0/mjcf/src/defaults.rs` — extend `apply_to_actuator()` with
   6 new `is_none()` default propagation blocks
-- `sim/L0/mjcf/src/model_builder.rs` — add `parse_gaintype()`,
+- `sim/L0/mjcf/src/builder/` — add `parse_gaintype()`,
   `parse_biastype()`, `parse_dyntype()`, `floats_to_array()` helpers;
-  replace General arm in dyntype determination (`model_builder.rs:1521`);
+  replace General arm in dyntype determination (`builder/`);
   replace General arm in gain/bias/dynprm expansion
-  (`model_builder.rs:1668`)
+  (`builder/`)
 
 ---
 
@@ -1770,12 +1770,12 @@ retain the default array values (which are 0 for indices 1–8).
 #### Current State
 
 Single-environment execution. `Data::step(&mut self, &Model)`
-(`mujoco_pipeline.rs:3032`) steps one simulation. `Model` is immutable after
+(`types/model.rs`) steps one simulation. `Model` is immutable after
 construction, uses `Arc<TriangleMeshData>` for shared mesh data
-(`mujoco_pipeline.rs:955`). `Data` is fully independent — no shared mutable
-state, no interior mutability, derives `Clone` (`mujoco_pipeline.rs:1593`).
+(`types/data.rs`). `Data` is fully independent — no shared mutable
+state, no interior mutability, derives `Clone` (`types/model.rs`).
 
-`Data::reset(&mut self, &Model)` (`mujoco_pipeline.rs:2993`) resets a subset
+`Data::reset(&mut self, &Model)` (`types/data.rs`) resets a subset
 of fields to initial state:
 - **Zeroed:** `qpos` (← `qpos0`), `qvel`, `qacc`, `qacc_warmstart`, `ctrl`,
   `act`, `act_dot`, `actuator_length`, `actuator_velocity`, `actuator_force`,
@@ -1838,7 +1838,7 @@ rayon's `par_iter_mut` gives each closure an `&mut Data` — exclusive, no
 aliasing.
 
 **Known global state:** One `static WARN_ONCE: Once` exists in
-`mj_fwd_constraint()` (`mujoco_pipeline.rs:10435`) for unimplemented tendon
+`mj_fwd_constraint()` (`constraint/mod.rs`) for unimplemented tendon
 equality constraints. `Once` is `Sync` — concurrent calls are safe (one thread
 prints, others skip). No correctness impact.
 
@@ -3208,7 +3208,7 @@ All three must still run on CPU. This requires a new method on `Data`
 that does everything `integrate()` does EXCEPT the velocity update:
 
 ```rust
-// In mujoco_pipeline.rs, add to `impl Data` block:
+// In types/data.rs, add to `impl Data` block:
 
 /// Integration step without velocity update.
 ///
@@ -3269,7 +3269,7 @@ pub fn integrate_without_velocity(&mut self, model: &Model) {
 }
 ```
 
-The method lives inside `mujoco_pipeline.rs` (same module as the private
+The method lives inside `sim-core` (same crate as the private
 `mj_integrate_pos()`, `mj_normalize_quat()`, and `ActuatorDynamics`), so
 it can call them directly.
 
@@ -3279,8 +3279,7 @@ it can call them directly.
 This pattern works because:
 - `integrate_without_velocity` is `pub fn` → visible to `sim-gpu`
   (external crate).
-- It lives in `mujoco_pipeline.rs` → can call private helpers (same
-  module).
+- It lives in `sim-core` → can call `pub(crate)` helpers (same crate).
 - `#[cfg(feature = "gpu-internals")]` → not compiled or visible unless
   the feature is explicitly enabled.
 - `#[doc(hidden)]` → excluded from `cargo doc` output.
@@ -3773,7 +3772,7 @@ fn gpu_batch_too_large() {
   # In [features]:
   gpu-internals = []  # Exposes internal helpers for sim-gpu. No deps.
   ```
-- `sim/L0/core/src/mujoco_pipeline.rs` — add `integrate_without_velocity()`
+- `sim/L0/core/src/integrate/mod.rs` — add `integrate_without_velocity()`
   method on `Data`, behind `#[cfg(feature = "gpu-internals")]`
 - `sim/L0/core/src/batch.rs` — add `envs_as_mut_slice()` and `model_arc()`
   on `BatchSim`, behind `#[cfg(feature = "gpu-internals")]`

@@ -1,7 +1,7 @@
 //! MJCF → MuJoCo pipeline sensor wiring integration tests.
 //!
 //! These tests verify the full round-trip from MJCF XML sensor declarations
-//! through `model_builder.rs` wiring to `mujoco_pipeline.rs` sensor evaluation.
+//! through `builder/` wiring to `sensor/` evaluation.
 //! They exercise `load_model()` → `make_data()` → `forward()` → check `sensordata`.
 //!
 //! Note: `sensors.rs` in this directory tests the standalone `sim-sensor` crate.

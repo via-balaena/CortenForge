@@ -26,7 +26,7 @@ correctness bugs** in every model that relies on compiler defaults:
 
 - **`angle="degree"` (MuJoCo default):** The parser currently hardcodes
   degree-to-radian conversion for `euler` attributes on bodies (line 957) and
-  geoms (line 1305) in `model_builder.rs`. However, joint `range`, joint `ref`,
+  geoms in `builder/`. However, joint `range`, joint `ref`,
   and the angle component of `axisangle` receive **no conversion** — these values
   are stored as raw degrees and interpreted as radians at runtime. This silently
   corrupts joint limits for every model that does not explicitly set
@@ -69,7 +69,7 @@ compilation behavior. All attributes use MuJoCo defaults.
   - Body `euler` angles (currently converted — keep working)
   - Body `axisangle` angle component (4th element only — axis stays untouched).
     **Additional bug:** body `axisangle` is parsed into `MjcfBody.axisangle` but
-    `model_builder.rs:956-961` never checks it — the code only checks `euler` then
+    `builder/` never checks it — the code only checks `euler` then
     falls back to `quat`, silently ignoring `axisangle`. Fix: add `axisangle`
     handling to the body orientation resolution chain (euler > axisangle > quat),
     then apply degree-to-radian conversion to the angle component.
@@ -82,7 +82,7 @@ compilation behavior. All attributes use MuJoCo defaults.
   Angle conversion for sites is not needed until those orientation alternatives
   are added to the site type.
 - When `angle == Radian`, **no conversion** is applied (values are already in
-  radians). The current hardcoded `euler_deg * (PI / 180.0)` in `model_builder.rs`
+  radians). The current hardcoded `euler_deg * (PI / 180.0)` in `builder/`
   must be made conditional on this setting.
 - Ball joint `range` **is** angle-valued (limits the total rotation angle) and
   must be converted. Ball joint `ref` is not angle-valued (it's a quaternion).
@@ -371,7 +371,7 @@ load_model_from_file()")`. The `<compiler>` element works in all API paths since
 it requires no file I/O.
 
 **Existing bug to fix:** The current code hardcodes `euler_deg * (PI / 180.0)` at
-`model_builder.rs:957` and `:1305`. This is correct only when `angle="degree"`.
+`builder/`. This is correct only when `angle="degree"`.
 After this change, the conversion must be conditional: apply the factor only when
 `compiler.angle == Degree`. When `angle == Radian`, euler values pass through
 unchanged.
@@ -405,7 +405,7 @@ MuJoCo convention.
   case to `parse_mujoco` match; section merging for duplicate elements
 - `sim/L0/mjcf/src/include.rs` — **new file**: XML pre-processing for `<include>`
   expansion, path resolution, uniqueness tracking
-- `sim/L0/mjcf/src/model_builder.rs` — `CompilerPaths` context replacing bare
+- `sim/L0/mjcf/src/builder/` — `CompilerPaths` context replacing bare
   `base_path`; conditional angle conversion; `euler_seq_to_quat()` replacing
   `euler_xyz_to_quat()`; `autolimits` inference; `inertiafromgeom` gating;
   mass post-processing pipeline (`balanceinertia` → `boundmass`/`boundinertia` →
@@ -554,7 +554,7 @@ Frame expansion is a pre-processing step in `model_from_mjcf()`. It runs before
 `discardvisual`/`fusestatic` (matching MuJoCo's order) and before `ModelBuilder`
 processes bodies.
 
-**C1. `resolve_orientation()` — unified orientation resolution** (in `model_builder.rs`)
+**C1. `resolve_orientation()` — unified orientation resolution** (in `builder/`)
 
 A single function replacing the duplicated inline logic in body, geom, and site
 processing. Priority when multiple alternatives are present (MuJoCo errors on
@@ -606,7 +606,7 @@ After adding this function, refactor the existing orientation resolution in
 1408–1424), and `process_site()` to call `resolve_orientation()`. This eliminates
 three copies of the same logic.
 
-**C2. `frame_accum_child()` — core SE(3) composition** (in `model_builder.rs`)
+**C2. `frame_accum_child()` — core SE(3) composition** (in `builder/`)
 
 Direct translation of MuJoCo's `mjuu_frameaccumChild`:
 
@@ -623,7 +623,7 @@ Math:
 - `child_pos_new = frame_pos + frame_quat.transform_vector(child_pos_old)`
 - `child_quat_new = frame_quat * child_quat_old`
 
-**C3. `expand_frames()` — recursive frame expansion** (in `model_builder.rs`)
+**C3. `expand_frames()` — recursive frame expansion** (in `builder/`)
 
 ```
 fn expand_frames(
@@ -642,7 +642,7 @@ Algorithm:
 4. Recursively call `expand_frames(child, compiler, effective)` on each child body,
    passing this body's effective childclass as the child's `parent_childclass`.
 
-**C4. `expand_single_frame()` — single frame expansion** (in `model_builder.rs`)
+**C4. `expand_single_frame()` — single frame expansion** (in `builder/`)
 
 ```
 fn expand_single_frame(
@@ -676,7 +676,7 @@ Algorithm:
    - Resolve body orientation, compose with frame, store as `quat`, clear `euler`/`axisangle`.
 7. **For each nested frame**: recurse with the composed transform and effective childclass.
 
-**C5. Wire into `model_from_mjcf()`** (in `model_builder.rs`)
+**C5. Wire into `model_from_mjcf()`** (in `builder/`)
 
 Insert before `discardvisual`/`fusestatic` (matching MuJoCo's expansion order):
 
@@ -857,7 +857,7 @@ set (or was already explicit), so C6's "if class is None" check naturally skips 
 There is no double-application risk.
 
 **Refactoring `resolve_orientation()`:** The existing inline orientation resolution
-(3 copies: body at model_builder.rs:984, geom at :1408, site at :1531) should be
+(3 copies in `builder/`: body, geom, and site processing) should be
 replaced with calls to the new `resolve_orientation()` function. This is part of
 the implementation scope — not a separate refactoring item.
 
@@ -870,7 +870,7 @@ the implementation scope — not a separate refactoring item.
   `b"frame"` arms in `parse_body()` and `parse_worldbody()`; `childclass` parsing
   in `parse_body_attrs()`; additional orientation parsing in `parse_geom_attrs()`
   and `parse_site_attrs()`
-- `sim/L0/mjcf/src/model_builder.rs` — `resolve_orientation()`,
+- `sim/L0/mjcf/src/builder/` — `resolve_orientation()`,
   `frame_accum_child()`, `expand_frames()`, `expand_single_frame()`;
   wire into `model_from_mjcf()`; thread `inherited_childclass` through
   `process_body_with_world_frame()`; refactor body/geom/site orientation resolution
@@ -896,15 +896,15 @@ All core functionality is working. The following is implemented and tested:
 |-----------|----------|--------|
 | `MjcfBody.childclass` field | `types.rs:1896` | ✅ Parsed (`parser.rs:1267`) |
 | `MjcfFrame.childclass` field | `types.rs:1833` | ✅ Parsed (`parser.rs:1652`) |
-| Effective childclass computation | `model_builder.rs:1024` | ✅ `body.childclass.or(inherited)` |
-| Geom class injection | `model_builder.rs:1028-1038` | ✅ `if g.class.is_none() → effective` |
-| Joint class injection | `model_builder.rs:1118-1123` | ✅ Same pattern |
-| Site class injection | `model_builder.rs:1146-1151` | ✅ Same pattern |
-| Recursive propagation to children | `model_builder.rs:1163` | ✅ Passes `effective_childclass` |
-| Frame expansion childclass | `model_builder.rs:3606` | ✅ `frame.childclass.or(parent)` |
-| Frame→geom/site class injection | `model_builder.rs:3613-3614, 3650-3651` | ✅ |
-| Frame→body childclass inheritance | `model_builder.rs:3673-3676` | ✅ |
-| Childclass validation (new) | `model_builder.rs:3494-3540` | ✅ Pre-expansion validation |
+| Effective childclass computation | `builder/` | ✅ `body.childclass.or(inherited)` |
+| Geom class injection | `builder/` | ✅ `if g.class.is_none() → effective` |
+| Joint class injection | `builder/` | ✅ Same pattern |
+| Site class injection | `builder/` | ✅ Same pattern |
+| Recursive propagation to children | `builder/` | ✅ Passes `effective_childclass` |
+| Frame expansion childclass | `builder/` | ✅ `frame.childclass.or(parent)` |
+| Frame→geom/site class injection | `builder/` | ✅ |
+| Frame→body childclass inheritance | `builder/` | ✅ |
+| Childclass validation (new) | `builder/` | ✅ Pre-expansion validation |
 | Default resolver site fix | `defaults.rs:325` | ✅ Uses `site.class.as_deref()` |
 
 **Existing tests (6):** AC20 (basic body childclass), AC21 (explicit class overrides),
@@ -951,7 +951,7 @@ These rules govern all behavior. Every acceptance criterion traces to one or mor
 
 ##### Part A — Validation: Undefined `childclass` References (Code Fix)
 
-**A1. `validate_childclass_references()` function** (in `model_builder.rs`)
+**A1. `validate_childclass_references()` function** (in `builder/`)
 
 Add a validation pass that runs BEFORE `expand_frames()` in `model_from_mjcf()`.
 This must run before frame expansion because `expand_frames` dissolves frames
@@ -982,7 +982,7 @@ fn validate_frame_childclass_refs(
 Same check for `frame.childclass`. Recurses into `frame.frames` (nested) and
 `frame.bodies` (bodies inside frames may have their own childclass).
 
-**A2. Wire into `model_from_mjcf()`** (at `model_builder.rs:211-216`)
+**A2. Wire into `model_from_mjcf()`** (in `builder/`)
 
 Between the clone and `expand_frames`:
 
@@ -1006,18 +1006,18 @@ build from a small vec of defaults. Correctness over premature optimization.
 
 ##### Part B — Documentation (Doc Comments Only)
 
-**B1.** At `model_builder.rs:252` (the `process_body` call): Add comment
+**B1.** At the `process_body` call in `builder/`: Add comment
 explaining that `worldbody.childclass` is always `None` for parsed MJCF per
 MuJoCo semantics — `<worldbody>` accepts no attributes. The programmatic API
 does not enforce this; enforcement is structural via the parser.
 
-**B2.** At `model_builder.rs:886` (in `process_worldbody_geoms_and_sites`): Add
+**B2.** In `process_worldbody_geoms_and_sites` in `builder/`: Add
 comment noting that no childclass is applied to worldbody's own geoms/sites,
 which is correct per MuJoCo — worldbody has no childclass (S4).
 
 ##### Part C — Edge-Case Tests
 
-Eight new tests in the existing test module in `model_builder.rs`, after AC27.
+Eight new tests in the existing test module in `builder/`, after AC27.
 All use `load_model()` and assert on compiled model fields. (AC26–AC27 are used
 by item #19's frame orientation composition tests.)
 
@@ -1242,13 +1242,13 @@ to the root default). MuJoCo stores the root default as `"main"` internally, so
 `childclass=""`, and the behavioral outcome is equivalent (root default applies
 either way). Acceptable as-is.
 
-**Single file change:** All code changes and tests are in
-`sim/L0/mjcf/src/model_builder.rs`. No type changes, no API changes, no new
+**Single module change:** All code changes and tests are in
+`sim/L0/mjcf/src/builder/`. No type changes, no API changes, no new
 dependencies.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — `validate_childclass_references()` +
+- `sim/L0/mjcf/src/builder/` — `validate_childclass_references()` +
   `validate_frame_childclass_refs()` (~35 lines); wire into `model_from_mjcf()`
   (~3 lines); 2 doc comments; 8 tests AC28–AC35 (~200 lines)
 
@@ -1266,9 +1266,9 @@ in place and working:
 |-----------|----------|--------|
 | `MjcfSite` with all 5 orientation fields | `types.rs:1296-1319` | ✅ Done |
 | `parse_site_attrs()` parses euler/axisangle/xyaxes/zaxis/quat | `parser.rs:1527-1564` | ✅ Done |
-| `process_site()` calls `resolve_orientation()` | `model_builder.rs:1554-1561` | ✅ Done |
-| `resolve_orientation()` unified function (body/geom/site/frame) | `model_builder.rs:3388-3468` | ✅ Done |
-| Frame expansion composes site orientation | `model_builder.rs:3647-3666` | ✅ Done |
+| `process_site()` calls `resolve_orientation()` | `builder/` | ✅ Done |
+| `resolve_orientation()` unified function (body/geom/site/frame) | `builder/` | ✅ Done |
+| Frame expansion composes site orientation | `builder/` | ✅ Done |
 | `apply_to_site()` uses `site.class` correctly | `defaults.rs:322-349` | ✅ Done |
 
 **Test coverage gap:** Zero dedicated tests verify the resolved quaternion for any
@@ -1294,7 +1294,7 @@ function shared by body, geom, site, and frame elements. The semantics:
 - **Priority** (when multiple specifiers present — MuJoCo errors on this; we
   silently use highest priority for robustness):
   `euler` > `axisangle` > `xyaxes` > `zaxis` > `quat`.
-  This matches `resolve_orientation()` at `model_builder.rs:3385-3387`.
+  This matches `resolve_orientation()` in `builder/`.
 
 - **Compiler angle unit** (`compiler.angle`): applies to `euler` (all 3 components)
   and `axisangle` (4th element only — axis stays untouched). Default: `Degree`.
@@ -1317,7 +1317,7 @@ function shared by body, geom, site, and frame elements. The semantics:
 
 #### Acceptance Criteria
 
-All tests go in `sim/L0/mjcf/src/model_builder.rs` in the existing `#[cfg(test)]
+All tests go in `sim/L0/mjcf/src/builder/` in the existing `#[cfg(test)]
 mod tests` block, grouped after `test_fusestatic_site_with_axisangle` (~line 8198).
 Each test uses `load_model()` and asserts on `model.site_quat[0]`.
 
@@ -1628,14 +1628,14 @@ Expected: `UnitQuaternion::identity()`.
    cases (matches frame tests at line 7517).
 
 4. **`euler_seq_to_quat()` is available in tests** because it's a module-level
-   function in `model_builder.rs`. AC3 uses it directly to compute the expected
+   function in `builder/`. AC3 uses it directly to compute the expected
    value (pattern from `test_euler_seq_zyx_body_orientation`).
 
 5. **Run with:** `cargo test -p sim-mjcf`
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — 16 acceptance tests (~250 lines, tests only)
+- `sim/L0/mjcf/src/builder/` — 16 acceptance tests (~250 lines, tests only)
 
 ---
 
@@ -1647,21 +1647,21 @@ Expected: `UnitQuaternion::identity()`.
 The pipeline stores `tendon_lengthspring` as a single `f64` per tendon in two
 locations:
 
-- **`ModelBuilder`** (`model_builder.rs:545`): `tendon_lengthspring: Vec<f64>`
-- **`Model`** (runtime) (`mujoco_pipeline.rs:1495`): `pub tendon_lengthspring: Vec<f64>`
+- **`ModelBuilder`** (`builder/`): `tendon_lengthspring: Vec<f64>`
+- **`Model`** (runtime) (`types/model.rs`): `pub tendon_lengthspring: Vec<f64>`
 
 The MJCF parser has **no mention** of `springlength`. The `parse_tendon_attrs()`
 function (`parser.rs:2449`) and `parse_tendon_defaults()` function (`parser.rs:661`)
 both skip this attribute entirely. The MJCF types (`MjcfTendon` at `types.rs:2352`,
 `MjcfTendonDefaults` at `types.rs:643`) have no `springlength` field.
 
-At build time, `process_tendons()` (`model_builder.rs:1624`) always pushes `0.0` as a
-sentinel. In `compile_model()` (`model_builder.rs:3018`), if
+At build time, `process_tendons()` (`builder/`) always pushes `0.0` as a
+sentinel. In `compile_model()` (`builder/`), if
 `stiffness > 0 && lengthspring == 0.0`, the sentinel is replaced with the computed
 tendon length at `qpos0`. For spatial tendons, `compute_spatial_tendon_length0()`
-(`mujoco_pipeline.rs:3859`) uses the same pattern.
+(`tendon/mod.rs`) uses the same pattern.
 
-At runtime, `mj_fwd_passive()` (`mujoco_pipeline.rs:10830-10833`) computes:
+At runtime, `mj_fwd_passive()` (`forward/passive.rs`) computes:
 ```
 force -= k * (length - l_ref)
 ```
@@ -1943,9 +1943,9 @@ the new field. The `(Some(p), Some(c))` arm constructs the struct field-by-field
 — the compiler will error if `springlength` is omitted, ensuring it cannot be
 forgotten.
 
-##### Part D — Model Builder (`model_builder.rs`)
+##### Part D — Model Builder (`builder/`)
 
-**D1. Change `ModelBuilder.tendon_lengthspring` type** (at `model_builder.rs:545`)
+**D1. Change `ModelBuilder.tendon_lengthspring` type** (in `builder/`)
 
 ```rust
 // BEFORE:
@@ -1956,8 +1956,7 @@ tendon_lengthspring: Vec<[f64; 2]>,
 
 Initialization at line 738 (`vec![]`) infers the new type automatically.
 
-**D2. Use parsed `springlength` in `process_tendons()`** (at
-`model_builder.rs:1624`)
+**D2. Use parsed `springlength` in `process_tendons()`** (in `builder/`)
 
 Replace:
 ```rust
@@ -1972,8 +1971,7 @@ self.tendon_lengthspring.push(match tendon.springlength {
 });
 ```
 
-**D3. Update fixed-tendon auto-compute in `compile_model()`** (at
-`model_builder.rs:3017-3020`)
+**D3. Update fixed-tendon auto-compute in `compile_model()`** (in `builder/`)
 
 Replace:
 ```rust
@@ -1991,14 +1989,14 @@ if model.tendon_lengthspring[t] == [-1.0, -1.0] {
 }
 ```
 
-**D4. Transfer to compiled model** (at `model_builder.rs:2882`)
+**D4. Transfer to compiled model** (in `builder/`)
 
 No change needed — `tendon_lengthspring: self.tendon_lengthspring` automatically
 follows the type change.
 
-##### Part E — Runtime Model (`mujoco_pipeline.rs`)
+##### Part E — Runtime Model (`types/model.rs`, `tendon/`, `forward/passive.rs`)
 
-**E1. Change `Model.tendon_lengthspring` type** (at `mujoco_pipeline.rs:1494-1495`)
+**E1. Change `Model.tendon_lengthspring` type** (in `types/model.rs`)
 
 ```rust
 // BEFORE:
@@ -2014,7 +2012,7 @@ pub tendon_lengthspring: Vec<[f64; 2]>,
 Initialization at line 2931 (`vec![]`) infers the new type automatically.
 
 **E2. Update spatial tendon auto-compute in `compute_spatial_tendon_length0()`**
-(at `mujoco_pipeline.rs:3859-3860`)
+(in `tendon/mod.rs`)
 
 Replace:
 ```rust
@@ -2031,7 +2029,7 @@ if self.tendon_lengthspring[t] == [-1.0, -1.0] {
 ```
 
 **E3. Implement deadband spring in `mj_fwd_passive()`** (at
-`mujoco_pipeline.rs:10828-10834`)
+`forward/passive.rs`)
 
 Replace:
 ```rust
@@ -2514,7 +2512,7 @@ because the sentinel is always resolved before any physics code runs. Models
 without `springlength` produce identical physics output.
 
 Specific tests to verify:
-- `test_tendon_actuator_unknown_tendon_error` (`model_builder.rs:5006`)
+- `test_tendon_actuator_unknown_tendon_error` (`builder/`)
 - `test_tendon_stiffness_defaults` (`default_classes.rs:139`)
 - `test_implicitfast_tendon_spring_explicit` (`implicit_integration.rs:939`)
 - All spatial tendon tests (`spatial_tendons.rs`)
@@ -2534,14 +2532,14 @@ spring). The `0.0` sentinel would be indistinguishable from this explicit user
 value. MuJoCo uses `{-1, -1}` which is safe because tendon lengths are always
 ≥ 0, so `-1` can never be a valid user-specified value. The 3 sentinel-check
 sites are:
-- `model_builder.rs:3018` (fixed tendon compile)
-- `mujoco_pipeline.rs:3859` (spatial tendon compile)
-- `model_builder.rs:1624` (initial push — changes from `push(0.0)` to
+- `builder/` (fixed tendon compile)
+- `tendon/mod.rs` (spatial tendon compile)
+- `builder/` (initial push — changes from `push(0.0)` to
   `push([-1.0, -1.0])`)
 
 **2. Breaking type change is contained:** `Vec<f64>` → `Vec<[f64; 2]>` affects
 exactly **2 source files** with **11 reference sites** total (6 in
-`model_builder.rs`, 5 in `mujoco_pipeline.rs`). No other crate (sim-physics,
+`builder/`, 5 in sim-core modules). No other crate (sim-physics,
 sim-types, sim-constraint, etc.) references `tendon_lengthspring`. The breaking
 change is fully contained.
 
@@ -2606,12 +2604,14 @@ and MJB files are regenerated from MJCF source.
   update 2 call sites (lines 2357, 2378)
 - `sim/L0/mjcf/src/defaults.rs` — Apply `springlength` default in
   `apply_to_tendon()` (line 390); merge in `merge_tendon_defaults()` (line 625)
-- `sim/L0/mjcf/src/model_builder.rs` — Change `tendon_lengthspring: Vec<f64>`
-  to `Vec<[f64; 2]>` (line 545); use parsed springlength with sentinel
-  `[-1, -1]` in `process_tendons()` (line 1624); update auto-compute in
-  `compile_model()` (lines 3017-3020); acceptance tests (AC1-AC15, AC3b, AC5b-d, AC8b, AC13b)
-- `sim/L0/core/src/mujoco_pipeline.rs` — Change `tendon_lengthspring: Vec<f64>`
-  to `Vec<[f64; 2]>` (line 1495); update spatial tendon auto-compute in
-  `compute_spatial_tendon_length0()` (lines 3859-3860); implement deadband
-  spring in `mj_fwd_passive()` (lines 10828-10834)
+- `sim/L0/mjcf/src/builder/` — Change `tendon_lengthspring: Vec<f64>`
+  to `Vec<[f64; 2]>`; use parsed springlength with sentinel
+  `[-1, -1]` in `process_tendons()`; update auto-compute in
+  `compile_model()`; acceptance tests (AC1-AC15, AC3b, AC5b-d, AC8b, AC13b)
+- `sim/L0/core/src/types/model.rs` — Change `tendon_lengthspring: Vec<f64>`
+  to `Vec<[f64; 2]>`
+- `sim/L0/core/src/tendon/mod.rs` — Update spatial tendon auto-compute in
+  `compute_spatial_tendon_length0()`
+- `sim/L0/core/src/forward/passive.rs` — Implement deadband spring in
+  `mj_fwd_passive()`
 - `sim/L0/mjcf/src/mjb.rs` — Bump `MJB_VERSION` from 1 to 2 (line 52)

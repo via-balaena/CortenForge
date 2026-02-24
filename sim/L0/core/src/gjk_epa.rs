@@ -261,7 +261,7 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
         CollisionShape::Sdf { data } => {
             // SDFs are not convex, so GJK/EPA is not ideal.
             // Return an extreme point from the AABB as a fallback.
-            // Dedicated SDF collision is handled separately in mujoco_pipeline.rs.
+            // Dedicated SDF collision is handled separately in collision/sdf_collide.rs.
             let (local_min, local_max) = data.aabb();
             let local_dir = pose.rotation.inverse() * direction;
 
@@ -288,7 +288,7 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
         CollisionShape::TriangleMesh { data } => {
             // Triangle meshes are not convex, so GJK/EPA is not ideal.
             // Return an extreme point from the AABB as a fallback.
-            // Dedicated triangle mesh collision is handled separately in mujoco_pipeline.rs.
+            // Dedicated triangle mesh collision is handled separately in collision/mesh_collide.rs.
             let (local_min, local_max) = data.aabb();
             let local_dir = pose.rotation.inverse() * direction;
 

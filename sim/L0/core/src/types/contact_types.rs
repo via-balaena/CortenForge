@@ -6,8 +6,7 @@
 
 use nalgebra::Vector3;
 
-// Types still in monolith (will be extracted in later phases)
-use crate::mujoco_pipeline::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
+use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
 
 /// Explicit contact pair: geom indices + per-pair overrides.
 /// All fields are fully resolved at build time (no Options).
@@ -238,7 +237,7 @@ impl Contact {
         // condim=4: normal + 2 sliding + 1 torsional
         // condim=6: normal + 2 sliding + 1 torsional + 2 rolling
         //
-        // Note: condim is validated and clamped in the MJCF loader (model_builder.rs)
+        // Note: condim is validated and clamped in the MJCF loader (builder/mod.rs)
         // to {1, 3, 4, 6}. This fallback handles test code that constructs contacts
         // directly without going through the loader.
         //

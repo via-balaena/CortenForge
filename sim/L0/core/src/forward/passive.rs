@@ -5,11 +5,11 @@
 //! MuJoCo's `engine_passive.c`.
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::dynamics::object_velocity_local;
 use crate::dynamics::rne::mj_gravcomp;
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::{JointContext, JointVisitor};
-use crate::mujoco_pipeline::object_velocity_local; // monolith: removed in Phase 12
 use crate::tendon::apply_tendon_force;
 use crate::types::{Data, ENABLE_SLEEP, GeomType, Integrator, Model, SleepState};
 use nalgebra::{Matrix3, Vector3};

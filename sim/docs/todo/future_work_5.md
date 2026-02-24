@@ -1080,7 +1080,7 @@ Constraint forces are recovered from `qacc` after convergence.
 MuJoCo's `noslip_iterations` option runs a modified PGS pass after the main
 solve that updates only friction forces without regularization, suppressing
 slip from soft contacts. Fully implemented in §33 (`noslip_postprocess()` in
-`mujoco_pipeline.rs`) with PGS iteration, QCQP cone projection, and
+`constraint/solver/noslip.rs`) with PGS iteration, QCQP cone projection, and
 cost-based convergence for both elliptic and pyramidal friction cones. The
 `noslip_iterations` and `noslip_tolerance` MJCF fields are parsed and stored
 in `Model`, and the post-processor is dispatched after all solver types.
@@ -1177,7 +1177,7 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
 ```
 
 **MJCF wiring:**
-- `model_builder.rs`: Change `MjcfSolverType::Newton => SolverType::Newton`
+- `builder/`: Change `MjcfSolverType::Newton => SolverType::Newton`
 - Parse `<option noslip_iterations="..." noslip_tolerance="..."/>` into Model
   fields (store with warning that noslip is not yet implemented)
 
@@ -1256,7 +1256,7 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
     **Replaced by exact 1D Newton line search in Phase B.** The Armijo
     placeholder has been deleted.
 11. ✅ Outer loop with convergence check
-12. ✅ `SolverType::Newton` wiring + `model_builder.rs` fix +
+12. ✅ `SolverType::Newton` wiring + `builder/` fix +
     `forward()` and `forward_skip_sensors()` dispatch to skip
     `mj_fwd_acceleration()` for Newton (Euler and RK4 only; Newton +
     implicit → warn and fall back to PGS per §15.8)
@@ -1352,7 +1352,7 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
     Weld equality (6 rows) tested via `test_newton_equality_weld`.
 
 #### Files (✅ = modified)
-- ✅ `sim/L0/core/src/mujoco_pipeline.rs` — `SolverType::Newton`,
+- ✅ `sim/L0/core/src/types/enums.rs` — `SolverType::Newton`,
   `ConstraintType`, `ConstraintState`, `SolverStat`,
   `assemble_unified_constraints()`, `classify_constraint_states()`,
   `newton_solve()`, `primal_prepare()`, `primal_eval()`, `primal_search()`,
@@ -1363,7 +1363,7 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
   `compute_gradient_and_search_sparse()`,
   dispatch in `mj_fwd_constraint()` and `forward()`,
   `qacc_warmstart` save, new Model/Data fields (~3500 lines added)
-- ✅ `sim/L0/mjcf/src/model_builder.rs` — Newton → Newton mapping,
+- ✅ `sim/L0/mjcf/src/builder/` — Newton → Newton mapping,
   `noslip_*`/`ls_*` field parsing, `stat_meaninertia` computation,
   tendon_solref default fix (DEFAULT_SOLREF instead of [0,0])
 - ✅ `sim/L0/mjcf/src/parser.rs` — parse `ls_iterations`, `ls_tolerance`,
@@ -1605,9 +1605,9 @@ Similarly for DOFs: each DOF's tree is `body_treeid[dof_body[dof]]`.
 
 **Construction sites requiring new fields:**
 
-1. `Model::empty()` (`mujoco_pipeline.rs:~2382`) — initialize tree arrays
+1. `Model::empty()` (`types/model_init.rs:~2382`) — initialize tree arrays
    as empty vecs, `ntree = 0`, `sleep_tolerance = 1e-4`.
-2. `ModelBuilder::build()` (`model_builder.rs:~2470`) — compute tree
+2. `ModelBuilder::build()` (`builder/:~2470`) — compute tree
    enumeration from `body_rootid`, resolve sleep policies, compute
    `dof_length`. This is where the policy resolution algorithm (§16.0
    steps 1–5) executes.
@@ -1687,7 +1687,7 @@ Sleep logic is gated on `model.enableflags & ENABLE_SLEEP != 0`. When the
 flag is not set, all trees remain awake and the sleep pipeline is a no-op.
 
 **`Data` construction site:** All `Data` instances are created via
-`Model::make_data()` (`mujoco_pipeline.rs:~2650`). Add sleep field
+`Model::make_data()` (`types/model_init.rs:~2650`). Add sleep field
 initialization:
 
 ```rust
@@ -3470,7 +3470,7 @@ so `sleep_tolerance * 1.0 = 1e-4 rad/s`. A 10-cm arm gets
 tighter, because the same angular velocity produces less tip motion.
 
 **Phase A → Phase B migration:** Replace the `for dof { dof_length[dof] = 1.0 }`
-loop in `model_builder.rs` with a call to `compute_dof_lengths(model)`.
+loop in `builder/` with a call to `compute_dof_lengths(model)`.
 
 ##### 16.15 Phase B — qpos/qvel Change Detection
 
@@ -4120,9 +4120,9 @@ tendons with nonzero stiffness, damping, or active limits force
 
 | File | Action | Description |
 |------|--------|-------------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | Modify | Island discovery (§16.11), sleep cycle (§16.12), cross-island wake (§16.13), dof_length (§16.14), qpos detection (§16.15), per-island solve (§16.16), awake-index arrays (§16.17), policy relaxation (§16.18) |
+| `sim/L0/core/src/island/mod.rs` | Modify | Island discovery (§16.11), sleep cycle (§16.12), cross-island wake (§16.13), dof_length (§16.14), qpos detection (§16.15), per-island solve (§16.16), awake-index arrays (§16.17), policy relaxation (§16.18) |
 | `sim/L0/core/src/lib.rs` | Modify | Export new types, DISABLE_ISLAND constant |
-| `sim/L0/mjcf/src/model_builder.rs` | Modify | dof_length computation (§16.14), tendon tree enumeration for wake (§16.13.2) |
+| `sim/L0/mjcf/src/builder/` | Modify | dof_length computation (§16.14), tendon tree enumeration for wake (§16.13.2) |
 | `sim/L0/mjcf/src/parser.rs` | Modify | Parse `<flag island="enable\|disable"/>` attribute |
 | `sim/L0/tests/integration/sleeping.rs` | Modify | Add tests T31–T65 (excluding benchmarks) |
 | `sim/L0/core/benches/sleep_benchmarks.rs` | Modify | Add island benchmarks T50, T55, T66 |
@@ -4218,7 +4218,7 @@ each affected function, field, and semantic.
 Phase A code that is **deleted** (not just extended):
 - The `mj_update_sleep()` sleep-transition logic (countdown + put-to-sleep)
   → replaced by `mj_sleep()`.
-- The `dof_length = 1.0` initialization loop in `model_builder.rs`
+- The `dof_length = 1.0` initialization loop in `builder/`
   → replaced by `compute_dof_lengths()`.
 
 Phase A code that is **extended** (backward compatible):
@@ -4524,7 +4524,7 @@ Phase B should either:
 
 The spec (§16.0) mentions that trees containing deformable bodies should
 receive `AutoNever` policy, gated on `#[cfg(feature = "deformable")]`.
-The Phase A implementation in `model_builder.rs` does NOT implement
+The Phase A implementation in `builder/` does NOT implement
 this check — deformable bodies are not scanned during policy resolution.
 Phase B must add this guard:
 
@@ -6164,10 +6164,10 @@ linear cost in awake bodies for skipped stages.
 
 | File | Action | Description |
 |------|--------|-------------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | Modify | Model fields (§16.0), Data fields (§16.1), sleep update (§16.3), wake detection (§16.4), pipeline skip logic (§16.5), RK4 guard (§16.6), init/reset (§16.7) |
+| `sim/L0/core/src/types/data.rs` | Modify | Model fields (§16.0), Data fields (§16.1), sleep update (§16.3), wake detection (§16.4), pipeline skip logic (§16.5), RK4 guard (§16.6), init/reset (§16.7) |
 | `sim/L0/mjcf/src/parser.rs` | Modify | Parse `sleep_tolerance`, `<flag sleep>`, `<body sleep>` attributes (§16.2) |
 | `sim/L0/mjcf/src/types.rs` | Modify | Add `SleepPolicy` to MJCF types, `sleep` field on body element |
-| `sim/L0/mjcf/src/model_builder.rs` | Modify | Propagate sleep attributes to `Model` during build |
+| `sim/L0/mjcf/src/builder/` | Modify | Propagate sleep attributes to `Model` during build |
 | `sim/L0/tests/integration/mod.rs` | Modify | Register new test modules |
 | `sim/L0/tests/integration/sleeping.rs` | Create | Tests T1–T14, T17–T28 |
 | `sim/L0/core/benches/sleep_benchmarks.rs` | Create | Benchmarks T15–T16 |

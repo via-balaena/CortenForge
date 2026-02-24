@@ -174,7 +174,6 @@ mod error;
 mod include;
 #[cfg(feature = "mjb")]
 mod mjb;
-mod model_builder;
 mod parser;
 mod types;
 mod validation;

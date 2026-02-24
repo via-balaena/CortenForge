@@ -28,7 +28,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ### Context
 
-`mj_fwd_passive()` (mujoco_pipeline.rs:12401) gates **all** tendon spring and
+`mj_fwd_passive()` (forward/passive.rs) gates **all** tendon spring and
 damper forces behind `if !implicit_mode` (line 12432), where `implicit_mode` is
 true only for `Integrator::ImplicitSpringDamper`. When this integrator is
 selected, `ten_force[t]` is zero for every tendon, and no tendon contribution
@@ -113,25 +113,25 @@ by extending the solver to handle the non-diagonal tendon K/D contribution.
 **Referenced code locations** (as of commit `b40917d`; line numbers may shift
 after implementation):
 
-| Location | File:Line | Description |
-|----------|-----------|-------------|
-| `mj_fwd_passive` tendon gate | mujoco_pipeline.rs:12463 | `if !implicit_mode` — gates `qfrc_passive` only (force always computed) |
-| `mj_fwd_acceleration_implicit` | mujoco_pipeline.rs:20145 | Diagonal-only `M + h·D + h²·K` solver |
-| `compute_implicit_params` | mujoco_pipeline.rs:3705 | Populates diagonal K/D from joint properties only |
-| `ImplicitSpringVisitor` | mujoco_pipeline.rs:20210 | RHS spring displacement `h·K·(q-q_eq)` — diagonal only |
+| Location | File | Description |
+|----------|------|-------------|
+| `mj_fwd_passive` tendon gate | forward/passive.rs | `if !implicit_mode` — gates `qfrc_passive` only (force always computed) |
+| `mj_fwd_acceleration_implicit` | integrate/implicit.rs | Diagonal-only `M + h·D + h²·K` solver |
+| `compute_implicit_params` | types/model_init.rs | Populates diagonal K/D from joint properties only |
+| `ImplicitSpringVisitor` | integrate/implicit.rs | RHS spring displacement `h·K·(q-q_eq)` — diagonal only |
 | `mjd_passive_vel` tendon skip | derivatives.rs:499 | Skips tendon damping in `qDeriv` for ImplicitSpringDamper |
-| Diagnostic/gate comment | mujoco_pipeline.rs:12456-12460 | Documents the gate (ten_force always populated, qfrc_passive gated) |
+| Diagnostic/gate comment | forward/passive.rs | Documents the gate (ten_force always populated, qfrc_passive gated) |
 | Tracked-from comment | future_work_1.md:1626-1630 | Original tracking reference |
-| `newton_solve` | mujoco_pipeline.rs:17973 | Newton solver — uses `data.qM` directly, not `scratch_m_impl` |
-| `assemble_hessian` | mujoco_pipeline.rs:16710 | Dense Newton Hessian — starts from `data.qM[(r,c)]` |
-| `SparseHessian::assemble` | mujoco_pipeline.rs:16797 | Sparse Newton Hessian — starts from `data.qM` via `dof_parent` walk |
-| `SparseHessian::fill_numeric` | mujoco_pipeline.rs:16889 | Sparse Hessian numeric fill — M values from `data.qM` |
-| `compute_qacc_smooth` | mujoco_pipeline.rs:15160 | `qfrc_smooth` = applied + actuator + passive − bias (passive is zero for tendon K/D) |
-| `evaluate_cost_at` | mujoco_pipeline.rs:17847 | Newton cost function — `Ma_trial` uses `data.qM` |
-| `hessian_incremental` | mujoco_pipeline.rs:17194 | Rank-1 Cholesky update/downdate; fallback calls `assemble_hessian` |
-| `primal_prepare` | mujoco_pipeline.rs:17430 | Line search quadratic — uses precomputed `ma`/`mv`, no `data.qM` |
-| `mj_fwd_acceleration` skip | mujoco_pipeline.rs:4686 | `if !newton_solved` — skips implicit solver when Newton succeeds |
-| Newton velocity update | mujoco_pipeline.rs:4755 | `qvel += qacc * h` when `newton_solved` + `ImplicitSpringDamper` |
+| `newton_solve` | constraint/solver/ | Newton solver — uses `data.qM` directly, not `scratch_m_impl` |
+| `assemble_hessian` | constraint/solver/ | Dense Newton Hessian — starts from `data.qM[(r,c)]` |
+| `SparseHessian::assemble` | constraint/solver/ | Sparse Newton Hessian — starts from `data.qM` via `dof_parent` walk |
+| `SparseHessian::fill_numeric` | constraint/solver/ | Sparse Hessian numeric fill — M values from `data.qM` |
+| `compute_qacc_smooth` | constraint/solver/ | `qfrc_smooth` = applied + actuator + passive − bias (passive is zero for tendon K/D) |
+| `evaluate_cost_at` | constraint/solver/ | Newton cost function — `Ma_trial` uses `data.qM` |
+| `hessian_incremental` | constraint/solver/ | Rank-1 Cholesky update/downdate; fallback calls `assemble_hessian` |
+| `primal_prepare` | constraint/solver/ | Line search quadratic — uses precomputed `ma`/`mv`, no `data.qM` |
+| `mj_fwd_acceleration` skip | forward/mod.rs | `if !newton_solved` — skips implicit solver when Newton succeeds |
+| Newton velocity update | forward/mod.rs | `qvel += qacc * h` when `newton_solved` + `ImplicitSpringDamper` |
 
 ### Scope & Dependencies
 
@@ -260,7 +260,7 @@ with MuJoCo's treatment in `ImplicitFast`/`Implicit`.
 
 #### Step 0: Shared helpers — deadband and tendon K/D accumulation
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs` (private helpers near tendon code)
+**File:** `sim/L0/core/src/forward/passive.rs` (private helpers near tendon code)
 
 The deadband displacement logic and the tendon K/D outer-product accumulation
 are used in multiple steps (Step 2, Step 3, Step 2b, Step 3b). Extract them
@@ -381,7 +381,7 @@ naturally. `accumulate_tendon_kd` is a `&mut` accumulator (no return value), so
 
 #### Step 1: Keep tendon forces gated in `mj_fwd_passive` — comment update only
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs`, lines 12432–12454.
+**File:** `sim/L0/core/src/forward/passive.rs`.
 
 The `if !implicit_mode` gate at line 12432 is **correct architecture**. In
 `ImplicitSpringDamper` mode, both joint and tendon spring/damper forces are
@@ -411,7 +411,7 @@ behind `!implicit_mode` to avoid double-counting:
 
 #### Step 2: Add non-diagonal tendon K/D to `mj_fwd_acceleration_implicit`
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs`, lines 20145–20206.
+**File:** `sim/L0/core/src/integrate/implicit.rs`.
 
 After the existing diagonal modification at line 20170–20172:
 
@@ -501,8 +501,8 @@ path in `mj_fwd_acceleration_implicit` must be updated together.
 
 #### Step 3: Add tendon spring displacement to the implicit RHS
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs`, after the existing
-`ImplicitSpringVisitor` call at line 20191.
+**File:** `sim/L0/core/src/integrate/implicit.rs`, after the existing
+`ImplicitSpringVisitor` call.
 
 The `ImplicitSpringDamper` formulation requires the RHS to include the spring
 force term `h · qfrc_spring`. For tendons, the spring force in tendon space is
@@ -578,7 +578,7 @@ matrix diagonal but has no RHS correction.
 
 #### Step 2b: Newton solver — use `M_impl` in Hessian, gradient, and M·v products
 
-**Files:** `sim/L0/core/src/mujoco_pipeline.rs`
+**Files:** `sim/L0/core/src/constraint/solver/` and `sim/L0/core/src/forward/mod.rs`
 
 When `newton_solved == true` and `ImplicitSpringDamper` is active,
 `mj_fwd_acceleration_implicit` is **skipped** (line 4686). Newton builds its
@@ -864,9 +864,9 @@ factorization remains valid.
 
 #### Step 3b: Newton solver — augment `qfrc_smooth` with implicit tendon spring RHS
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs`
+**File:** `sim/L0/core/src/constraint/solver/`
 
-`compute_qacc_smooth()` (line 15160) computes:
+`compute_qacc_smooth()` computes:
 ```
 qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
 ```
@@ -1265,10 +1265,10 @@ derivative system consistent and correct for analytical derivative computation.
 
 #### Step 5: Update stale comments
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs`
+**Files:** `sim/L0/core/src/forward/passive.rs`, `sim/L0/core/src/types/data.rs`
 
-1. Line 12451–12454: Update NOTE comment (see Step 1)
-2. Line 2668–2680 (`qDeriv` doc): Remove the "in explicit mode only; skipped
+1. Update NOTE comment in `forward/passive.rs` (see Step 1)
+2. Update `qDeriv` doc in `types/data.rs`: Remove the "in explicit mode only; skipped
    for ImplicitSpringDamper" qualifier — tendon damping is now included for all
    modes
 3. Line 4746–4748: Update Newton velocity update comment to note that
@@ -1288,7 +1288,7 @@ derivative system consistent and correct for analytical derivative computation.
 ### Tests
 
 All tests in `sim-core` and `sim-conformance-tests`. Test module:
-`tendon_implicit_tests` (new), in `mujoco_pipeline.rs` as a `#[cfg(test)]`
+`tendon_implicit_tests` (new), in `forward/passive.rs` as a `#[cfg(test)]`
 submodule.
 
 **Solver path coverage:** Each test exercises a specific solver codepath:
@@ -1316,7 +1316,7 @@ exercised. Test 6p is the primary test for the Newton + `M_impl` codepath
 Build a 2-DOF model (two hinge joints on a serial chain) with a fixed tendon
 coupling them. Parameterize by integrator, stiffness, damping, and solver.
 
-**Import note:** Tests in `mujoco_pipeline.rs` use `sim_mjcf::load_model` for
+**Import note:** Tests in `sim-core` modules use `sim_mjcf::load_model` for
 MJCF string parsing. The existing test at `derivatives.rs:1058` confirms this
 pattern: `let model = sim_mjcf::load_model(mjcf).unwrap();`.
 
@@ -2470,7 +2470,7 @@ of the predicate into the new implicit tendon codepath specifically.
 | D3 | Tendon spring displacement in implicit RHS via `tendon_deadband_displacement` (Step 3) |
 | D4 | Newton solver `M_impl` + `qfrc_smooth_impl` for `ImplicitSpringDamper` (Step 2b/3b) |
 | D5 | Remove `implicit_mode` guard in `mjd_passive_vel` for tendon damping (Step 4) |
-| D6 | Update stale comments in mujoco_pipeline.rs, derivatives.rs, future_work_1.md (Step 5) |
+| D6 | Update stale comments in forward/passive.rs, types/data.rs, derivatives.rs, future_work_1.md (Step 5) |
 | D7 | `make_tendon_implicit_model` / `make_tendon_implicit_model_with_solver` test helpers |
 | D8 | Tests 6a–6s (18 new tests + 1 new sub-case 6k-D + 3 regression checks) |
 
@@ -2478,7 +2478,10 @@ of the predicate into the new implicit tendon codepath specifically.
 
 | File | Change |
 |------|--------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | Add shared helpers `tendon_deadband_displacement`, `tendon_active_stiffness`, `accumulate_tendon_kd` (D0); update `mj_fwd_passive` comment (D1); add non-diagonal tendon K/D via `accumulate_tendon_kd` + RHS via `tendon_deadband_displacement` to `mj_fwd_acceleration_implicit` (D2, D3); add `build_m_impl_for_newton`, `compute_qfrc_smooth_implicit` helpers (using D0 helpers), modify `mj_fwd_constraint`/`newton_solve`/`assemble_hessian`/`SparseHessian`/`evaluate_cost_at`/`hessian_incremental` to use `M_impl` when `ImplicitSpringDamper` active (D4); update comments (D6); add `tendon_implicit_tests` module with helpers and 18 new tests + 1 new sub-case (D7, D8) |
+| `sim/L0/core/src/forward/passive.rs` | Add shared helpers `tendon_deadband_displacement`, `tendon_active_stiffness`, `accumulate_tendon_kd` (D0); update `mj_fwd_passive` comment (D1); add `tendon_implicit_tests` module (D7, D8) |
+| `sim/L0/core/src/integrate/implicit.rs` | Add non-diagonal tendon K/D via `accumulate_tendon_kd` + RHS via `tendon_deadband_displacement` to `mj_fwd_acceleration_implicit` (D2, D3) |
+| `sim/L0/core/src/constraint/solver/` | Add `build_m_impl_for_newton`, `compute_qfrc_smooth_implicit` helpers, modify `newton_solve`/`assemble_hessian`/`SparseHessian`/`evaluate_cost_at`/`hessian_incremental` to use `M_impl` when `ImplicitSpringDamper` active (D4) |
+| `sim/L0/core/src/forward/mod.rs` | Modify `mj_fwd_constraint` to use `M_impl` when `ImplicitSpringDamper` active (D4); update comments (D6) |
 | `sim/L0/core/src/derivatives.rs` | Remove `implicit_mode` guard in `mjd_passive_vel` tendon damping loop (D5); update comments (D6) |
 | `sim/L0/tests/integration/derivatives.rs` | Rename `test_tendon_damping_implicit_guard` → `test_tendon_damping_in_qDeriv_all_integrators`; update assertions to expect non-zero `qDeriv` entries for `ImplicitSpringDamper` (D8/6m) |
 | `sim/docs/todo/future_work_1.md` | Update known-limitation comment at lines 1626–1630 (D6) |
@@ -2487,7 +2490,7 @@ of the predicate into the new implicit tendon codepath specifically.
 ### Verification
 
 ```bash
-# New tendon implicit tests (unit tests in mujoco_pipeline.rs)
+# New tendon implicit tests (unit tests in forward/passive.rs)
 cargo test -p sim-core -- tendon_implicit
 
 # Updated integration test (6m — lives in sim-conformance-tests)

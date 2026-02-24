@@ -13,10 +13,9 @@ pub(crate) mod pair_cylinder;
 pub(crate) mod plane;
 pub(crate) mod sdf_collide;
 
-// Re-exports: uncomment in Phase 12 when monolith shim is deleted and callers
-// import via crate::collision:: instead of crate::mujoco_pipeline::.
-// pub(crate) use narrow::{collide_geoms, geom_to_collision_shape};
-// pub(crate) use flex_collide::{make_contact_flex_rigid, narrowphase_sphere_geom};
+// Note: collide_geoms, geom_to_collision_shape, make_contact_flex_rigid, and
+// narrowphase_sphere_geom are accessed internally via self::narrow:: and
+// self::flex_collide:: within this module. No pub(crate) re-export needed.
 
 use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};

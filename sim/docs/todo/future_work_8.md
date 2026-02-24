@@ -133,7 +133,7 @@ Add `solreffriction` and `solimpfriction` attribute parsing to:
 
 The model builder resolves the default chain:
 ```rust
-// model_builder.rs, for each joint:
+// builder/, for each joint:
 let solref_friction = joint.solreffriction
     .or(default_class.solreffriction)
     .unwrap_or(DEFAULT_SOLREF);
@@ -167,10 +167,10 @@ Optionally accept both names during a transition period.
 
 ### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — `Model` struct (add `dof_solref`,
-  `dof_solimp`, `tendon_solref_fri`, `tendon_solimp_fri`),
-  `assemble_unified_constraints()` (use new fields)
-- `sim/L0/mjcf/src/model_builder.rs` — compile `solreffriction`/`solimpfriction`
+- `sim/L0/core/src/types/model.rs` — `Model` struct (add `dof_solref`,
+  `dof_solimp`, `tendon_solref_fri`, `tendon_solimp_fri`)
+- `sim/L0/core/src/constraint/` — `assemble_unified_constraints()` (use new fields)
+- `sim/L0/mjcf/src/builder/` — compile `solreffriction`/`solimpfriction`
   into per-DOF fields, resolve default chain at build time
 - `sim/L0/mjcf/src/types.rs` — add `solreffriction`/`solimpfriction` to
   `MjcfJoint`, `MjcfTendon`, `MjcfJointDefaults`, `MjcfTendonDefaults`
@@ -209,7 +209,7 @@ The PGS/CG path has two categories of divergence:
 **A. Friction loss as tanh passive force** (instead of solver constraint rows):
 
 ```rust
-// mujoco_pipeline.rs:11719 (DOF friction loss)
+// forward/passive.rs (DOF friction loss)
 let smooth_sign = (qvel * model.friction_smoothing).tanh();
 let fl_force = frictionloss * smooth_sign;
 self.data.qfrc_passive[dof_idx] -= fl_force;
@@ -927,19 +927,19 @@ correctly for equality and limit rows.
 
 ### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs`:
-  - `mj_fwd_constraint()` — refactored dispatcher
-  - `compute_qacc_smooth()` — factored out from `newton_solve()`
-  - `pgs_solve_unified()` — new unified PGS (dual space, AR matrix)
-  - `project_pgs_row()` — per-type projection for PGS
-  - `project_elliptic_pgs()` — ray + QCQP for elliptic contacts in PGS
-  - `qcqp_2d()` / `qcqp_3d()` / `qcqp_nd()` — QCQP solvers (Newton on λ)
-  - `mj_sol_primal()` — shared CG/Newton driver (primal space)
-  - `primal_update_constraint()` — shared constraint update (from Newton)
-  - `primal_search()` — shared Newton line search (from Newton)
-  - `compute_delassus_regularized()` — generalized from `assemble_contact_system()`
-  - `mj_fwd_passive()` — remove friction loss computation
-  - `newton_solve()` — refactored into `mj_sol_primal(flg_Newton=true)`
+- sim-core modules:
+  - `forward/mod.rs` — `mj_fwd_constraint()` refactored dispatcher
+  - `forward/mod.rs` — `compute_qacc_smooth()` factored out from `newton_solve()`
+  - `constraint/` — `pgs_solve_unified()` new unified PGS (dual space, AR matrix)
+  - `constraint/` — `project_pgs_row()` per-type projection for PGS
+  - `constraint/` — `project_elliptic_pgs()` ray + QCQP for elliptic contacts in PGS
+  - `constraint/` — `qcqp_2d()` / `qcqp_3d()` / `qcqp_nd()` QCQP solvers (Newton on lambda)
+  - `constraint/` — `mj_sol_primal()` shared CG/Newton driver (primal space)
+  - `constraint/` — `primal_update_constraint()` shared constraint update (from Newton)
+  - `constraint/` — `primal_search()` shared Newton line search (from Newton)
+  - `constraint/` — `compute_delassus_regularized()` generalized from `assemble_contact_system()`
+  - `forward/passive.rs` — remove friction loss computation
+  - `constraint/` — `newton_solve()` refactored into `mj_sol_primal(flg_Newton=true)`
   - Remove: `solref_to_penalty()`, `apply_equality_constraints()`,
     `apply_connect_constraint()`, `apply_weld_constraint()`,
     `apply_joint_equality_constraint()`, `apply_distance_constraint()`,
@@ -955,7 +955,7 @@ correctly for equality and limit rows.
 
 This combines the friction loss migration (§15 Phase C continuation) with
 the penalty-to-solver migration (acknowledged in code comments at lines 19452
-and 19554 of `mujoco_pipeline.rs`). These were originally tracked as separate
+and in sim-core constraint modules). These were originally tracked as separate
 items (#29 and #30) but are merged because:
 1. They share the same architectural change (unified assembly for PGS/CG)
 2. Implementing friction loss separately would create an intermediate state
@@ -1088,15 +1088,15 @@ each other. This is a broadphase-level filter.
    ```
    Follow exact pattern from geom parsing at `parser.rs:1646–1647`.
 
-3. **Add builder arrays** (`model_builder.rs:613–642`)
+3. **Add builder arrays** (`builder/`)
    ```rust
    flex_contype: Vec<u32>,
    flex_conaffinity: Vec<u32>,
    ```
-   Push with `unwrap_or(1) as u32` default (same as `geom_contype` at
-   `model_builder.rs:1655–1657`).
+   Push with `unwrap_or(1) as u32` default (same as `geom_contype` in
+   `builder/`).
 
-4. **Add Model fields** (`mujoco_pipeline.rs:1389–1455`)
+4. **Add Model fields** (`types/model.rs`)
    ```rust
    pub flex_contype: Vec<u32>,
    pub flex_conaffinity: Vec<u32>,
@@ -1134,8 +1134,9 @@ each other. This is a broadphase-level filter.
 
 - `sim/L0/mjcf/src/types.rs`: Add `contype`/`conaffinity` to `MjcfFlex` (lines 3330–3349)
 - `sim/L0/mjcf/src/parser.rs`: Parse in `parse_flex_contact_attrs()` (lines 2570–2618)
-- `sim/L0/mjcf/src/model_builder.rs`: Add builder arrays + push logic (lines 613–642, 2899–3098)
-- `sim/L0/core/src/mujoco_pipeline.rs`: Model fields (lines 1389–1455) + `mj_collision_flex()` fix (lines 5564–5568) + self-collision gate
+- `sim/L0/mjcf/src/builder/`: Add builder arrays + push logic
+- `sim/L0/core/src/types/model.rs`: Model fields
+- `sim/L0/core/src/collision/`: `mj_collision_flex()` fix + self-collision gate
 - `sim/L0/tests/integration/flex_unified.rs`: New bitmask filtering tests
 
 ### Acceptance Criteria
@@ -1357,12 +1358,10 @@ computed per-row during constraint assembly, PGS/CG automatically pick up
 
 ### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs`:
-  - `Contact` struct — add `solreffriction: [f64; 2]` field (default `[0.0, 0.0]`)
-  - `apply_pair_overrides()` — propagate `ContactPair.solreffriction` → `Contact`
-  - `assemble_unified_constraints()` section 3f — split solref for elliptic friction rows
-  - `finalize_row!` / `compute_kbip()` — use `solreffriction` for B when applicable
-- `sim/L0/mjcf/src/model_builder.rs` — verify `solreffriction` on `<pair>`
+- `sim/L0/core/src/types/contact_types.rs` — `Contact` struct add `solreffriction: [f64; 2]` field (default `[0.0, 0.0]`)
+- `sim/L0/core/src/collision/` — `apply_pair_overrides()` propagate `ContactPair.solreffriction` → `Contact`
+- `sim/L0/core/src/constraint/` — `assemble_unified_constraints()` section 3f split solref for elliptic friction rows; `finalize_row!` / `compute_kbip()` use `solreffriction` for B when applicable
+- `sim/L0/mjcf/src/builder/` — verify `solreffriction` on `<pair>`
 - `sim/L0/mjcf/src/types.rs` — verify field exists on parsed pair types
 - `sim/L0/tests/integration/newton_solver.rs` — solreffriction test
 - `sim/L0/tests/integration/contact_solver.rs` — PGS/CG solreffriction test
@@ -1801,15 +1800,15 @@ during penetration, so both terms contribute.
 
 ### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs`:
-  - `ConstraintType` enum (line ~868) — add `ContactPyramidal`, optionally split `ContactNonElliptic`
-  - `assemble_unified_constraints()` section 3f (line ~14422) — pyramidal contact row emission
-  - `classify_constraint_states()` (line ~15171) — add `ContactPyramidal` to Quadratic/Satisfied arm
-  - PGS projection (line ~14636) — non-negativity for pyramidal facets
-  - CG projection — same non-negativity treatment
-  - Noslip postprocessor (line ~16891) — handle pyramidal facets
-  - R scaling — pyramidal `Rpy = 2·μ_reg²·R_normal` after `compute_regularization`
-  - Force recovery — new `decode_pyramid()` function for physical force output
-  - Model default `cone: 1` (line ~3108) — change to `cone: 0` (MuJoCo default)
+- sim-core modules:
+  - `types/enums.rs` — `ConstraintType` enum add `ContactPyramidal`, optionally split `ContactNonElliptic`
+  - `constraint/` — `assemble_unified_constraints()` section 3f pyramidal contact row emission
+  - `constraint/` — `classify_constraint_states()` add `ContactPyramidal` to Quadratic/Satisfied arm
+  - `constraint/` — PGS projection non-negativity for pyramidal facets
+  - `constraint/` — CG projection same non-negativity treatment
+  - `constraint/` — Noslip postprocessor handle pyramidal facets
+  - `constraint/` — R scaling pyramidal `Rpy = 2*mu_reg^2*R_normal` after `compute_regularization`
+  - `constraint/` — Force recovery new `decode_pyramid()` function for physical force output
+  - `types/model.rs` — Model default `cone: 1` change to `cone: 0` (MuJoCo default)
 - `sim/L0/tests/integration/unified_solvers.rs` — pyramidal cone tests (PGS, CG, Newton)
 - `sim/L0/tests/integration/newton_solver.rs` — Newton + pyramidal classification tests

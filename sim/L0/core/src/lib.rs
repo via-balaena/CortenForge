@@ -116,7 +116,6 @@ pub mod gjk_epa;
 pub mod heightfield;
 pub mod mesh;
 pub mod mid_phase;
-pub mod mujoco_pipeline;
 pub mod raycast;
 pub mod sdf;
 

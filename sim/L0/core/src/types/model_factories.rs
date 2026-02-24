@@ -9,8 +9,7 @@ use std::f64::consts::PI;
 
 use super::enums::MjJointType;
 use super::model::Model;
-// Types still in monolith (will be extracted in later phases)
-use crate::mujoco_pipeline::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
+use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
 
 impl Model {
     /// Create an n-link serial pendulum (hinge joints only).

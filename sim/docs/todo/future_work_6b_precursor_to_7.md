@@ -35,18 +35,18 @@ solver, and no contact data structures.
 
 | Component | Location | Role |
 |-----------|----------|------|
-| `Model.nq`, `Model.nv` | `mujoco_pipeline.rs:1147–1149` | Generalized coordinate dimensions (rigid joints only) |
-| `Data.qpos/qvel/qacc` | `mujoco_pipeline.rs:2080–2084` | Global state vectors (rigid DOFs only) |
-| `Data.qM` | `mujoco_pipeline.rs:2206` | Joint-space inertia matrix (nv × nv) |
-| `Data.qLD_data/qLD_diag_inv` | `mujoco_pipeline.rs:2229–2234` | Sparse L^T D L factorization |
-| `Data.contacts: Vec<Contact>` | `mujoco_pipeline.rs:2280` | Rigid-rigid contacts |
-| `assemble_unified_constraints()` | `mujoco_pipeline.rs:14231` | Unified Jacobian assembly (equality, friction loss, limits, contacts) |
-| `finalize_row!` macro | `mujoco_pipeline.rs:14336` | Per-row metadata: impedance, KBIP, aref, diagApprox, R, D |
-| `mj_crba()` | `mujoco_pipeline.rs:10051` | Composite rigid body algorithm → M + LDL |
-| `mj_factor_sparse()` | `mujoco_pipeline.rs:19680` | Sparse LDL factorization |
-| `ConstraintType` enum | `mujoco_pipeline.rs:868` | {Equality, FrictionLoss, LimitJoint, LimitTendon, ContactNonElliptic, ContactElliptic, FlexEdge} |
-| `extract_distance_jacobian()` | `mujoco_pipeline.rs:17555` | 1D distance equality Jacobian (pattern reuse for flex edges) |
-| `add_body_point_jacobian_row()` | `mujoco_pipeline.rs:17624` | Kinematic chain Jacobian for body point (reuse for flex-rigid contacts) |
+| `Model.nq`, `Model.nv` | `types/model.rs` | Generalized coordinate dimensions (rigid joints only) |
+| `Data.qpos/qvel/qacc` | `types/data.rs` | Global state vectors (rigid DOFs only) |
+| `Data.qM` | `types/data.rs` | Joint-space inertia matrix (nv × nv) |
+| `Data.qLD_data/qLD_diag_inv` | `types/data.rs` | Sparse L^T D L factorization |
+| `Data.contacts: Vec<Contact>` | `types/data.rs` | Rigid-rigid contacts |
+| `assemble_unified_constraints()` | `constraint/` | Unified Jacobian assembly (equality, friction loss, limits, contacts) |
+| `finalize_row!` macro | `constraint/` | Per-row metadata: impedance, KBIP, aref, diagApprox, R, D |
+| `mj_crba()` | `forward/position.rs` | Composite rigid body algorithm → M + LDL |
+| `mj_factor_sparse()` | `forward/` | Sparse LDL factorization |
+| `ConstraintType` enum | `types/enums.rs` | {Equality, FrictionLoss, LimitJoint, LimitTendon, ContactNonElliptic, ContactElliptic, FlexEdge} |
+| `extract_distance_jacobian()` | `constraint/` | 1D distance equality Jacobian (pattern reuse for flex edges) |
+| `add_body_point_jacobian_row()` | `constraint/` | Kinematic chain Jacobian for body point (reuse for flex-rigid contacts) |
 
 ##### Deformable Pipeline (what gets replaced)
 
@@ -54,27 +54,27 @@ solver, and no contact data structures.
 |-----------|----------|------|
 | `DeformableBody` trait | `deformable/lib.rs:173` | **Deleted.** Replaced by Model `flex_*` arrays. |
 | `XpbdSolver` | `deformable/solver.rs` | **Deleted.** Unified Newton/PGS/CG solver handles all constraints. |
-| `Data.deformable_bodies` | `mujoco_pipeline.rs:2404` | **Deleted.** Flex state lives in `qpos`/`qvel`. |
-| `Data.deformable_solvers` | `mujoco_pipeline.rs:2407` | **Deleted.** |
-| `Data.deformable_contacts` | `mujoco_pipeline.rs:2410` | **Deleted.** Flex-rigid contacts are regular `Contact` entries. |
-| `DeformableContact` struct | `mujoco_pipeline.rs:1786–1813` | **Deleted.** |
-| `mj_deformable_collision()` | `mujoco_pipeline.rs:18935` | **Replaced** by vertex-vs-geom collision in unified `mj_collision()`. |
-| `solve_deformable_contacts()` | `mujoco_pipeline.rs:18860` | **Deleted.** Contact impulses computed by unified solver. |
-| `mj_deformable_step()` | `mujoco_pipeline.rs:19273` | **Deleted.** Edge constraints in `mj_fwd_constraint()`, bending in `mj_fwd_passive()`. |
+| `Data.deformable_bodies` | `types/data.rs` | **Deleted.** Flex state lives in `qpos`/`qvel`. |
+| `Data.deformable_solvers` | `types/data.rs` | **Deleted.** |
+| `Data.deformable_contacts` | `types/data.rs` | **Deleted.** Flex-rigid contacts are regular `Contact` entries. |
+| `DeformableContact` struct | `types/contact_types.rs` | **Deleted.** |
+| `mj_deformable_collision()` | `collision/` | **Replaced** by vertex-vs-geom collision in unified `mj_collision()`. |
+| `solve_deformable_contacts()` | `collision/` | **Deleted.** Contact impulses computed by unified solver. |
+| `mj_deformable_step()` | `forward/` | **Deleted.** Edge constraints in `mj_fwd_constraint()`, bending in `mj_fwd_passive()`. |
 | `deformable` feature flag | `sim-core/Cargo.toml:37` | **Deleted.** Flex is always available (zero-cost when nflex=0). |
 
 ##### sim-deformable Crate Migration
 
 | Component | Current location | Destination |
 |-----------|-----------------|-------------|
-| Cloth grid generation | `deformable/cloth.rs` | `sim-mjcf/model_builder.rs` (`<flexcomp type="grid">` expansion) |
-| SoftBody tetrahedralization | `deformable/soft_body.rs` | `sim-mjcf/model_builder.rs` (`<flexcomp type="box">` expansion) |
-| CapsuleChain construction | `deformable/capsule_chain.rs` | `sim-mjcf/model_builder.rs` (1D flex construction) |
-| Material presets | `deformable/material.rs` | `sim-mjcf/model_builder.rs` (default constants) |
-| Constraint topology extraction | `deformable/constraints.rs` | `sim-mjcf/model_builder.rs` (build-time edge/hinge topology extraction) |
+| Cloth grid generation | `deformable/cloth.rs` | `sim-mjcf/builder/` (`<flexcomp type="grid">` expansion) |
+| SoftBody tetrahedralization | `deformable/soft_body.rs` | `sim-mjcf/builder/` (`<flexcomp type="box">` expansion) |
+| CapsuleChain construction | `deformable/capsule_chain.rs` | `sim-mjcf/builder/` (1D flex construction) |
+| Material presets | `deformable/material.rs` | `sim-mjcf/builder/` (default constants) |
+| Constraint topology extraction | `deformable/constraints.rs` | `sim-mjcf/builder/` (build-time edge/hinge topology extraction) |
 | Skinning (visual deformation) | `deformable/skinning.rs` | `sim-bevy` or standalone crate (rendering, not physics) |
 | XPBD solver | `deformable/solver.rs` | **Deleted.** |
-| Deformable mesh types | `deformable/mesh.rs` | `sim-core/mujoco_pipeline.rs` (Model fields) |
+| Deformable mesh types | `deformable/mesh.rs` | `sim-core/types/model.rs` (Model fields) |
 
 ##### Key Architectural Divergence
 
@@ -176,8 +176,8 @@ MuJoCo's flex implementation.
 
 ##### P1. Model Data Extension
 
-Add flex dimensions and data arrays to `Model` (`mujoco_pipeline.rs`,
-after the existing geom arrays ~line 1360):
+Add flex dimensions and data arrays to `Model` (`types/model.rs`,
+after the existing geom arrays):
 
 ```rust
 // ==================== Flex Bodies ====================
@@ -336,7 +336,7 @@ for i in 0..nflexvert {
 
 ##### P2. Data Extension
 
-**Grow global state vectors** (`make_data()`, `mujoco_pipeline.rs:3117+`):
+**Grow global state vectors** (`make_data()`, `types/data.rs`):
 
 ```rust
 data.qpos = DVector::zeros(model.nq);   // now includes flex positions
@@ -392,7 +392,7 @@ Also remove the `DeformableContact` struct definition (lines 1786–1813).
 ##### P3. Forward Kinematics for Flex Vertices
 
 Add `mj_fwd_position_flex()` immediately after `mj_fwd_position()` in
-`forward_core()` (`mujoco_pipeline.rs:4498+`):
+`forward_core()` (`forward/mod.rs`):
 
 ```rust
 /// Copy flex vertex positions from qpos to flexvert_xpos.
@@ -413,8 +413,8 @@ No-op when `nflexvert == 0`.
 
 ##### P4. Mass Matrix Extension (CRBA + LDL)
 
-After the existing `mj_crba()` computes M for rigid DOFs (`mujoco_pipeline.rs:
-10051+`), append diagonal entries for flex vertex masses:
+After the existing `mj_crba()` computes M for rigid DOFs (`forward/position.rs`),
+append diagonal entries for flex vertex masses:
 
 ```rust
 /// Extend mass matrix M with flex vertex diagonal blocks.
@@ -480,7 +480,7 @@ model.qLD_nnz = ld_nnz_cursor;
 ##### P5. Collision Detection Unification
 
 Replace `mj_deformable_collision()` with flex vertex collision via
-`mj_collision_flex()` (`mujoco_pipeline.rs:5586`), called from outside the
+`mj_collision_flex()` (`collision/`), called from outside the
 `if ngeom >= 2` SAP guard in `mj_collision()`.
 
 **Approach:** Brute-force O(V×G) broadphase for simplicity. Each flex vertex is
@@ -681,7 +681,7 @@ counting (Phase 1) and population (Phase 3) sections.
 FlexEdge,
 ```
 
-**Row counting** (insert after contact counting, `mujoco_pipeline.rs:14304`):
+**Row counting** (insert after contact counting, `constraint/`):
 
 ```rust
 // Flex edge-length constraints
@@ -752,7 +752,7 @@ for e in 0..model.nflexedge {
 
 **Penalty path** — for PGS/CG solvers (non-Newton), edge constraints are
 applied via penalty-based Baumgarte stabilization in `apply_flex_edge_constraints()`
-(`mujoco_pipeline.rs:14576`). This is the explicit-integration counterpart of
+(`constraint/`). This is the explicit-integration counterpart of
 the unified Jacobian assembly above:
 
 ```rust
@@ -964,12 +964,12 @@ fn extract_hinges(
 ##### P8. Integration Extension
 
 **Velocity integration** — already handled. The existing loop in `integrate()`
-(`mujoco_pipeline.rs:4637`) iterates over all `model.nv` DOFs:
+(`integrate/mod.rs`) iterates over all `model.nv` DOFs:
 `qvel[i] += qacc[i] * h`. Once `nv` includes flex DOFs, this loop automatically
 covers flex velocity integration with zero additional code.
 
 **Position integration** — needs explicit flex handling. The existing
-`mj_integrate_pos()` (`mujoco_pipeline.rs:20255`) uses `visit_joints()` which
+`mj_integrate_pos()` (`integrate/mod.rs`) uses `visit_joints()` which
 only iterates over joints (not flex vertices). Add `mj_integrate_pos_flex()`
 after `mj_integrate_pos()` in `integrate()`:
 
@@ -1041,7 +1041,7 @@ force, so gravity contribution is negative.)
 ##### P9. MJCF Parsing (`<flex>` and `<flexcomp>`)
 
 Parse `<flex>` and `<flexcomp>` elements from `<deformable>` in
-`parser.rs` and wire into `model_builder.rs`.
+`parser.rs` and wire into `builder/`.
 
 **`<flex>` parsing** — add to `parse_deformable()` (or new `parse_flex()`):
 
@@ -1275,14 +1275,14 @@ fn process_flex(&mut self, flex: &MjcfFlex) {
 ##### P10. sim-deformable Crate Deprecation
 
 1. **Migrate mesh generators** — move `Cloth::grid()`, `SoftBody::box_mesh()`,
-   `CapsuleChain::new()` logic into `model_builder.rs` as `<flexcomp>`
+   `CapsuleChain::new()` logic into `builder/` as `<flexcomp>`
    expansion functions.
 
 2. **Migrate material presets** — move `MaterialPreset` enum and default values
-   into `model_builder.rs` as constants.
+   into `builder/` as constants.
 
 3. **Migrate constraint topology extraction** — move edge extraction, bending
-   hinge finding, tetrahedron volume computation into `mujoco_pipeline.rs`
+   hinge finding, tetrahedron volume computation into sim-core modules
    (called during `build()`).
 
 4. **Relocate skinning** — move `skinning.rs` to `sim-bevy` or a standalone
@@ -1470,10 +1470,16 @@ Each phase must compile and pass `cargo test -p sim-core` before proceeding.
 
 | File | Changes |
 |------|---------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | Model: add `flex_*` fields, `nq_rigid`, `nv_rigid`. Data: remove deformable fields, add `flexvert_xpos`, extend allocations. Pipeline: add `mj_fwd_position_flex()`, `mj_crba_flex()`, `mj_factor_flex()`, `mj_collision_flex()`, `mj_integrate_pos_flex()`, flex constraint assembly in `assemble_unified_constraints()`, flex gravity in `mj_rne()`, flex damping in `mj_fwd_passive()`. Remove: `DeformableContact`, `mj_deformable_collision()`, `solve_deformable_contacts()`, `mj_deformable_step()`. |
+| `sim/L0/core/src/types/model.rs` | Model: add `flex_*` fields, `nq_rigid`, `nv_rigid`. |
+| `sim/L0/core/src/types/data.rs` | Data: remove deformable fields, add `flexvert_xpos`, extend allocations. |
+| `sim/L0/core/src/types/contact_types.rs` | Remove `DeformableContact`. |
+| `sim/L0/core/src/forward/` | Add `mj_fwd_position_flex()`, `mj_crba_flex()`, `mj_factor_flex()`, `mj_integrate_pos_flex()`, flex gravity in `mj_rne()`, flex damping in `mj_fwd_passive()`. |
+| `sim/L0/core/src/collision/` | Add `mj_collision_flex()`. Remove `mj_deformable_collision()`, `solve_deformable_contacts()`. |
+| `sim/L0/core/src/constraint/` | Flex constraint assembly in `assemble_unified_constraints()`. |
+| `sim/L0/core/src/integrate/` | Remove `mj_deformable_step()`. |
 | `sim/L0/mjcf/src/parser.rs` | Add `parse_flex()`, `parse_flexcomp()` inside `parse_deformable()`. |
 | `sim/L0/mjcf/src/types.rs` | Add `MjcfFlex` struct with all flex MJCF attributes. |
-| `sim/L0/mjcf/src/model_builder.rs` | Add `process_flex()`. Migrate mesh generators from sim-deformable. Compute edge/hinge topology. Compute `solref` and bending stiffness from material. |
+| `sim/L0/mjcf/src/builder/` | Add `process_flex()`. Migrate mesh generators from sim-deformable. Compute edge/hinge topology. Compute `solref` and bending stiffness from material. |
 | `sim/L0/tests/integration/` | New: `flex_unified.rs` (AC1–AC15). Update or remove `deformable_contact.rs`. |
 | `sim/L0/tests/Cargo.toml` | Remove `sim-deformable` dependency. |
 | `sim/L0/core/Cargo.toml` | Remove `sim-deformable` optional dependency and `deformable` feature. |

@@ -53,6 +53,8 @@
 //! // derivs.A is 6×6 (2*nv), derivs.B is 6×0 (nu=0)
 //! ```
 
+use crate::constraint::impedance::MJ_MINVAL;
+use crate::dynamics::object_velocity_local;
 use crate::dynamics::spatial::{SpatialVector, spatial_cross_motion};
 use crate::forward::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
@@ -62,12 +64,6 @@ use crate::jacobian::{
 use crate::joint_visitor::joint_motion_subspace;
 use crate::linalg::{
     cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse, mj_solve_sparse_batch,
-};
-use crate::mujoco_pipeline::{
-    // §40a fluid derivative infrastructure
-    MJ_MINVAL,
-    // pub(crate) functions still in monolith (moved in later phases)
-    object_velocity_local,
 };
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, Data, ENABLE_SLEEP, GainType, Integrator,

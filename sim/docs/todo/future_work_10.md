@@ -480,7 +480,7 @@ fn quat_from_axis_angle_deg(axis: [f64; 3], angle_deg: f64) -> [f64; 4] {
 ```
 
 **Test placement:** T1 + T1b unit tests (8 tests) go in a `#[cfg(test)] mod
-ball_limit_tests` module inside `mujoco_pipeline.rs` (they test private helper
+ball_limit_tests` module inside `constraint/assembly.rs` (they test private helper
 functions — matching the established pattern of `impedance_tests`,
 `subquat_tests`, etc.). T2–T22 integration tests (22 tests) go in
 `sim/L0/tests/integration/ball_joint_limits.rs`. The `quat_from_axis_angle_deg`
@@ -489,7 +489,7 @@ is simpler than creating a shared test utility crate).
 
 **Integration test helpers:** T7, T14, and T15 extract the rotation angle from
 the simulated quaternion to verify solver convergence. Since `normalize_quat4`
-and `ball_limit_axis_angle` are private to `mujoco_pipeline.rs`, the integration
+and `ball_limit_axis_angle` are private to `constraint/assembly.rs`, the integration
 test file defines a local `extract_ball_angle(qpos: &[f64], offset: usize) -> f64`
 helper that reimplements the same quaternion-to-angle computation:
 
@@ -509,7 +509,7 @@ fn extract_ball_angle(qpos: &[f64], offset: usize) -> f64 {
 }
 ```
 
-##### T1. Unit test: `ball_limit_axis_angle` (in `mujoco_pipeline.rs`)
+##### T1. Unit test: `ball_limit_axis_angle` (in `constraint/assembly.rs`)
 
 ```rust
 #[test]
@@ -1731,7 +1731,7 @@ fn test_ball_limit_margin_zero_regression() {
 }
 ```
 
-##### T1b. Unit test: `ball_limit_axis_angle` with near-zero norm quaternion (in `mujoco_pipeline.rs`)
+##### T1b. Unit test: `ball_limit_axis_angle` with near-zero norm quaternion (in `constraint/assembly.rs`)
 
 ```rust
 #[test]
@@ -1766,7 +1766,7 @@ Our implementation matches this algorithm exactly, with the documented deviation
 - Margin: hardcoded `0.0` (ours) vs `jnt_margin[i]` (MuJoCo) — pre-existing gap (S6)
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `assemble_unified_constraints()`: add
+- `sim/L0/core/src/constraint/assembly.rs` — `assemble_unified_constraints()`: add
   `Ball` arm to constraint counting loop and assembly loop. Add `normalize_quat4()`
   and `ball_limit_axis_angle()` helper functions. Add `Free => {}` arm (no-op,
   matching MuJoCo). Add `#[cfg(test)] mod ball_limit_tests` with T1 + T1b unit
@@ -1784,13 +1784,13 @@ Our implementation matches this algorithm exactly, with the documented deviation
 
 Two issues exist:
 
-1. **Build-time panic** (`mujoco_pipeline.rs:~3990`): `compute_spatial_tendon_length0()`
+1. **Build-time panic** (`tendon/spatial.rs`): `compute_spatial_tendon_length0()`
    panics if a sidesite is inside a wrapping geometry at model build time. MuJoCo
    treats this as valid — "side sites can be placed inside the sphere or cylinder,
    which causes an inverse wrap: the tendon path is constrained to pass through the
    object instead of going around it."
 
-2. **Runtime silent degradation** (`mujoco_pipeline.rs:~10072`): `sphere_wrap()` returns
+2. **Runtime silent degradation** (`tendon/wrap_math.rs`): `sphere_wrap()` returns
    `WrapResult::NoWrap` when an endpoint is inside the sphere. During simulation,
    if joint motion causes a sidesite to enter a wrapping geometry, the tendon
    silently loses its wrapping instead of switching to the inverse wrap algorithm.
@@ -2221,8 +2221,8 @@ This rule was a stopgap because `wrap_inside` was not implemented. With
 `wrap_inside` now implemented, rule 9 is **retired** — sidesites inside
 wrapping geometry are valid. The following updates are required:
 
-1. `mujoco_pipeline.rs` — delete the rule 9 validation loop (lines 3979–4016)
-   and update the `compute_spatial_tendon_length0()` doc comment (lines 3957–3968)
+1. `tendon/spatial.rs` — delete the rule 9 validation loop
+   and update the `compute_spatial_tendon_length0()` doc comment
    to remove the panic mention and the `#[allow(clippy::panic)]` attribute.
 2. `future_work_2.md` — update rule 9 text (lines ~2641–2647) to note it is
    retired: "Rule 9 (sidesite outside wrapping geometry) is retired — sidesites
@@ -2689,12 +2689,13 @@ wrap, which is exercised by the existing tests 1–19b (T9 regression).
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs`:
+- `sim/L0/core/src/tendon/wrap_math.rs`:
   - New `wrap_inside_2d()` function (2D Newton solver, ~80 LOC)
   - New `sphere_wrapping_plane()` helper (extracted from `sphere_wrap`, ~20 LOC)
   - Modify `sphere_wrap()`: refactor plane construction to use helper, add inside-wrap
     branch (~20 LOC net new)
   - Modify `cylinder_wrap()`: add inside-wrap branch (~25 LOC)
+- `sim/L0/core/src/tendon/spatial.rs`:
   - Delete sidesite-inside validation in `compute_spatial_tendon_length0()` (~30 LOC removed)
   - New `#[cfg(test)] mod wrap_inside_tests` — unit tests T5, T11, T12, T13 that
     call `wrap_inside_2d` directly with known 2D geometries. These must be in-file
@@ -3344,7 +3345,7 @@ elements 6–11 from virtual mass/inertia computation.
 
 ##### S3. Build-time precomputation
 
-In `model_builder.rs`, after geom sizes are resolved:
+In `builder/`, after geom sizes are resolved:
 
 1. For each geom with `fluidshape == Ellipsoid`:
    a. Compute semi-axes via `fluid_geom_semi_axes(geom_type, geom_size)`.
@@ -3655,7 +3656,7 @@ fn ellipsoid_moment(s: &[f64; 3], axis: usize) -> f64 {
 
 ##### S8. Force accumulation (`mj_apply_ft`)
 
-Already exists in the codebase (`mujoco_pipeline.rs:9767`). It projects a 6D
+Already exists in the codebase (`jacobian.rs`). It projects a 6D
 force/torque at a world-frame point through the body Jacobian into generalized
 forces. No changes needed — reuse directly for fluid force accumulation.
 
@@ -4496,8 +4497,10 @@ and hardcoded into the integration tests.
 | `sim/L0/mjcf/src/types.rs` | modify | `FluidShape` enum, add `fluidshape`/`fluidcoef` to `MjcfGeom` |
 | `sim/L0/mjcf/src/parser.rs` | modify | Parse `fluidshape`, `fluidcoef` attributes on `<geom>` |
 | `sim/L0/mjcf/src/defaults.rs` | modify | Add `fluidshape`/`fluidcoef` to `apply_to_geom()` default inheritance |
-| `sim/L0/mjcf/src/model_builder.rs` | modify | Precompute `geom_fluid[12]` per geom (semi-axes → kappa → virtual mass/inertia), pack into Model |
-| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `Model::geom_fluid`, `Data::qfrc_fluid`. Add `mj_fluid()`, `mj_inertia_box_fluid()`, `mj_ellipsoid_fluid()`, `fluid_geom_semi_axes()`, `get_added_mass_kappa()`, `ellipsoid_moment()`, `rotate_spatial_to_world()`, `object_velocity_local()`, `cross3()`, `add_cross3()`, `norm3()`. Call from `mj_fwd_passive()`. Reuse existing `mj_apply_ft()`. |
+| `sim/L0/mjcf/src/builder/` | modify | Precompute `geom_fluid[12]` per geom (semi-axes → kappa → virtual mass/inertia), pack into Model |
+| `sim/L0/core/src/types/model.rs` | modify | Add `Model::geom_fluid` |
+| `sim/L0/core/src/types/data.rs` | modify | Add `Data::qfrc_fluid` |
+| `sim/L0/core/src/forward/passive.rs` | modify | Add `mj_fluid()`, `mj_inertia_box_fluid()`, `mj_ellipsoid_fluid()`, `fluid_geom_semi_axes()`, `get_added_mass_kappa()`, `ellipsoid_moment()`, `rotate_spatial_to_world()`, `object_velocity_local()`, `cross3()`, `add_cross3()`, `norm3()`. Call from `mj_fwd_passive()`. Reuse existing `mj_apply_ft()`. |
 | `sim/L0/tests/integration/fluid_forces.rs` | create | Tests T1–T42 (36 integration/unit + 2 parse error + 4 new coverage), MJCF model constants, MuJoCo 3.5.0 reference values |
 
 #### Deferred Items
@@ -4513,7 +4516,7 @@ and hardcoded into the integration tests.
   **Results:**
   - 38/42 tests: exact match (tolerance 1e-10)
   - T13: 0.3% deviation — eigendecomposition ordering in composite body inertia
-    (model_builder.rs). Tracked as future fix in capsule inertia eigenvalue ordering.
+    (builder/). Tracked as future fix in capsule inertia eigenvalue ordering.
   - T15, T26: MuJoCo rejects `mass < mjMINVAL` at XML load time; these test our
     internal mass guard only — cannot verify against MuJoCo.
   - T20: 50-step trajectory match within 1e-6 accumulated tolerance.
@@ -4548,7 +4551,7 @@ fluid damping in the D matrix (`M − h·D`).
   `mjd_viscous_drag`, `mjd_viscous_torque`), projected via `add_jtbj`
 - `ImplicitFast` symmetrization: B ← (B + Bᵀ)/2 per-geom before projection
 - Jacobian infrastructure: `mj_jac_point` (6×nv), `mj_jac_body_com`,
-  `mj_jac_geom` in `mujoco_pipeline.rs`
+  `mj_jac_geom` in `jacobian.rs`
 - 31 integration tests in `fluid_derivatives.rs` (T1–T32, no T18/T33/T34):
   - T1–T3: inertia-box B scalar analytical validation (T1: viscous formula +
     velocity-independence, T2: density formula at known velocity, T3: viscous +
@@ -4578,7 +4581,9 @@ fluid damping in the D matrix (`M − h·D`).
 | File | Changes |
 |------|---------|
 | `sim/L0/core/src/derivatives.rs` | Added `mjd_fluid_vel`, `mjd_inertia_box_fluid`, `mjd_ellipsoid_fluid`, 5 component Jacobian functions, `mjd_cross`, `add_jtbj`, `add_rank1`, `add_to_quadrant`, `rotate_jac_to_local`. Inserted `mjd_fluid_vel` call in `mjd_passive_vel`. Promoted `mjd_passive_vel` to `pub`. |
-| `sim/L0/core/src/mujoco_pipeline.rs` | Added `mj_jac_point`, `mj_jac_body_com`, `mj_jac_geom`. Promoted `object_velocity_local`, `fluid_geom_semi_axes`, `ellipsoid_moment`, `norm3`, `MJ_MINVAL` to `pub(crate)`. |
+| `sim/L0/core/src/jacobian.rs` | Added `mj_jac_point`, `mj_jac_body_com`, `mj_jac_geom`. |
+| `sim/L0/core/src/dynamics/spatial.rs` | `object_velocity_local` promoted to `pub(crate)`. |
+| `sim/L0/core/src/forward/passive.rs` | `fluid_geom_semi_axes`, `ellipsoid_moment`, `norm3`, `MJ_MINVAL` promoted to `pub(crate)`. |
 | `sim/L0/core/src/lib.rs` | Added `mjd_passive_vel`, `mj_jac_point`, `mj_jac_site` to public re-exports. |
 | `sim/L0/tests/integration/fluid_derivatives.rs` | **New file** — 31 tests (T1–T32, see test matrix below). |
 | `sim/L0/tests/integration/mod.rs` | Registered `fluid_derivatives` module. |
@@ -4753,7 +4758,7 @@ fn mj_jac_point(model: &Model, data: &Data, body_id: usize, point: &Vector3<f64>
 }
 ```
 
-**Location:** `mujoco_pipeline.rs` alongside existing `mj_jac_site` and
+**Location:** `jacobian.rs` alongside existing `mj_jac_site` and
 `mj_apply_ft`. The derivative code in `derivatives.rs` calls these via
 `pub(crate)` visibility.
 
@@ -5089,7 +5094,7 @@ captures both the linear drag and the isotropic part of the quadratic drag.
 2. Scale by `interaction_coef`: `B *= interaction_coef`
    *(MuJoCo's `mjd_ellipsoidFluid` uses `interaction_coef` only as a 0/1 gate
    (`if (geom_interaction_coef == 0.0) continue`). Our forward code
-   (`mujoco_pipeline.rs:12131`) scales forces by `interaction_coef`, so our
+   (`forward/passive.rs`) scales forces by `interaction_coef`, so our
    derivatives must include this factor for mathematical correctness:
    `∂(c·f)/∂v = c · ∂f/∂v`. Since `interaction_coef ∈ {0.0, 1.0}` in all
    valid models, the numerical result is identical to MuJoCo.)*
@@ -5182,7 +5187,7 @@ Called from `mjd_passive_vel()` **before** per-DOF damping and tendon damping
 ##### S8. Velocity Extraction and Wind Subtraction
 
 Both derivative functions need the same local-frame velocity used by the forward
-computation. Reuse `object_velocity_local()` from `mujoco_pipeline.rs` and apply
+computation. Reuse `object_velocity_local()` from `dynamics/spatial.rs` and apply
 the same wind subtraction (translational only, rotated to local frame):
 
 ```rust
@@ -5382,7 +5387,9 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 | File | Action | Changes |
 |------|--------|---------|
 | `sim/L0/core/src/derivatives.rs` | modified | Added `mjd_fluid_vel()` (top-level dispatch), `mjd_inertia_box_fluid()`, `mjd_ellipsoid_fluid()`, and 5 component Jacobian helpers (`mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_added_mass_forces`). Added `add_jtbj()`, `add_rank1()`, `add_to_quadrant()`, `rotate_jac_to_local()` helpers. Inserted `mjd_fluid_vel` call at top of `mjd_passive_vel` (before per-DOF damping). Promoted `mjd_passive_vel` to `pub`. |
-| `sim/L0/core/src/mujoco_pipeline.rs` | modified | Added `mj_jac_point()` shared kernel, `mj_jac_body_com()`, `mj_jac_geom()`. Made `object_velocity_local()`, `fluid_geom_semi_axes()`, `ellipsoid_moment()`, `norm3()`, `MJ_MINVAL` `pub(crate)` so `derivatives.rs` can reuse them. |
+| `sim/L0/core/src/jacobian.rs` | modified | Added `mj_jac_point()` shared kernel, `mj_jac_body_com()`, `mj_jac_geom()`. |
+| `sim/L0/core/src/dynamics/spatial.rs` | modified | Made `object_velocity_local()` `pub(crate)` so `derivatives.rs` can reuse it. |
+| `sim/L0/core/src/forward/passive.rs` | modified | Made `fluid_geom_semi_axes()`, `ellipsoid_moment()`, `norm3()`, `MJ_MINVAL` `pub(crate)` so `derivatives.rs` can reuse them. |
 | `sim/L0/core/src/lib.rs` | modified | Added `mjd_passive_vel`, `mj_jac_point`, `mj_jac_site` to public re-exports. |
 | `sim/L0/tests/integration/fluid_derivatives.rs` | **new** | 31 derivative-specific tests (T1–T32, excluding T18/T33/T34). |
 | `sim/L0/tests/integration/mod.rs` | modified | Registered `fluid_derivatives` module. |
@@ -5404,11 +5411,11 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 
 #### Current State
 
-The spatial tendon pipeline (`mj_fwd_tendon_spatial()`, line ~9396 of
-`mujoco_pipeline.rs`) computes correct physics — length, Jacobian, forces —
+The spatial tendon pipeline (`mj_fwd_tendon_spatial()` in
+`tendon/spatial.rs`) computes correct physics — length, Jacobian, forces —
 but discards the intermediate geometric results needed for visualization.
 Specifically, tangent points computed during `sphere_wrap()` / `cylinder_wrap()`
-are transformed to world frame (lines 9521–9522) and used for Jacobian
+are transformed to world frame and used for Jacobian
 accumulation, then thrown away.
 
 MuJoCo stores these path points in four `Data` arrays:
@@ -6047,7 +6054,9 @@ tangent points (`geom_id`) across the mixed path.
 
 | File | Action | Changes |
 |------|--------|---------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `wrap_xpos`, `wrap_obj`, `ten_wrapadr`, `ten_wrapnum` to `Data` struct (S1). Update manual `Clone` impl (line ~2756). Allocate in `make_data()` (S2). Add `wrapcount` parameter to `mj_fwd_tendon_spatial()` and populate path points (S3–S6). Wire `wrapcount` through tendon loop (S5). |
+| `sim/L0/core/src/types/data.rs` | modify | Add `wrap_xpos`, `wrap_obj`, `ten_wrapadr`, `ten_wrapnum` to `Data` struct (S1). Update manual `Clone` impl. |
+| `sim/L0/core/src/types/model_factories.rs` | modify | Allocate in `make_data()` (S2). |
+| `sim/L0/core/src/tendon/spatial.rs` | modify | Add `wrapcount` parameter to `mj_fwd_tendon_spatial()` and populate path points (S3–S6). Wire `wrapcount` through tendon loop (S5). |
 | `sim/L0/tests/integration/spatial_tendons.rs` | modify | Add tests T2–T15 verifying wrap path points for all existing test models. Extract and embed MuJoCo reference values for tangent positions. |
 
 #### Cross-references
@@ -6081,14 +6090,14 @@ required infrastructure exists in `Data`:
 | `tree_awake` | `Vec<bool>` | Per-tree awake flag |
 
 Other pipeline stages already use `body_awake_ind` indirection for O(awake)
-iteration: `mj_fwd_velocity` (`mujoco_pipeline.rs:9246`), `mj_rne` gyroscopic
-loop (`mujoco_pipeline.rs:11719`), `mj_crba` (`mujoco_pipeline.rs:11264`).
+iteration: `mj_fwd_velocity` (`forward/velocity.rs`), `mj_rne` gyroscopic
+loop (`dynamics/rne.rs`), `mj_crba` (`dynamics/crba.rs`).
 
 **Two functions still iterate all bodies unconditionally:**
 
 1. **Derivative path:** `mjd_fluid_vel` (`derivatives.rs:2337`) — iterates
    `0..model.nbody` without sleep filtering
-2. **Forward path:** `mj_fluid` (`mujoco_pipeline.rs:12350`) — same pattern
+2. **Forward path:** `mj_fluid` (`forward/passive.rs`) — same pattern
 
 Both are called from sleep-aware parent functions (`mj_fwd_passive` already
 gates springs/dampers on sleep via `PassiveForceVisitor` at line 12410, but
@@ -6269,7 +6278,7 @@ fn mjd_fluid_vel(model: &Model, data: &mut Data) {
 **Diff is 4 lines added, 1 line changed** (`for body_id in 0..model.nbody` →
 `for idx in 0..nbody` with indirection).
 
-##### S2. Forward path: `mj_fluid` (`mujoco_pipeline.rs`)
+##### S2. Forward path: `mj_fluid` (`forward/passive.rs`)
 
 Same pattern:
 
@@ -6307,7 +6316,7 @@ fn mj_fluid(model: &Model, data: &mut Data) -> bool {
 }
 ```
 
-`ENABLE_SLEEP` is already in scope in `mujoco_pipeline.rs` (defined at line 829).
+`ENABLE_SLEEP` is already in scope in the pipeline modules.
 
 ##### S3. Resolved (§40c-damping)
 
@@ -6326,7 +6335,7 @@ Tests T52–T57 in `fluid_derivatives.rs` validate both paths.
 | File | Changes |
 |------|---------|
 | `sim/L0/core/src/derivatives.rs` | Add `ENABLE_SLEEP` import; add sleep filtering to `mjd_fluid_vel`; §40c-damping: add `tendon_all_dofs_sleeping` import, `dof_awake_ind` indirection for per-DOF damping, tendon sleep gate |
-| `sim/L0/core/src/mujoco_pipeline.rs` | Add sleep filtering to `mj_fluid`; §40c-damping: make `tendon_all_dofs_sleeping` `pub(crate)` |
+| `sim/L0/core/src/forward/passive.rs` | Add sleep filtering to `mj_fluid`; §40c-damping: make `tendon_all_dofs_sleeping` `pub(crate)` |
 | `sim/L0/tests/integration/fluid_derivatives.rs` | T33–T43 (11 new tests); §40c-damping: T52–T57 (6 new tests) |
 | `sim/L0/tests/integration/fluid_forces.rs` | T44–T51 (8 new tests) |
 
@@ -6769,7 +6778,7 @@ See [future_work_10j.md](./future_work_10j.md) §DT-74 for full spec and impleme
 #### Current State
 
 The MJCF parser (`parser.rs:441-470`) parses 21 `<flag>` attributes into `MjcfFlag`
-boolean fields. The model builder (`model_builder.rs:968-970`) wires **only**
+boolean fields. The model builder (`builder/`) wires **only**
 `ENABLE_SLEEP`. `DISABLE_ISLAND` has a runtime constant but is hardcoded, not parsed
 from `MjcfFlag.island`.
 
@@ -6835,7 +6844,7 @@ MuJoCo uses two `u32` bitfields (`mjtDisableBit` and `mjtEnableBit`) from
 
 ##### S1. Flag constants
 
-Define in `mujoco_pipeline.rs`:
+Define in `types/enums.rs`:
 
 ```rust
 // Disable flags (mjtDisableBit)
@@ -7023,7 +7032,7 @@ vertex damping.
 10. **Fluid force disable interaction** (from §40): When both `DISABLE_SPRING`
     and `DISABLE_DAMPER` are set, `mj_fluid()` is skipped — fluid forces
     require at least one of spring/damper to be enabled (MuJoCo semantics).
-    Gate location: `mujoco_pipeline.rs` around `mj_fluid()` call in
+    Gate location: `forward/passive.rs` around `mj_fluid()` call in
     `mj_fwd_passive()`.
 
 11. **Default values**: An unmodified `<option/>` with no `<flag>` produces
@@ -7037,7 +7046,7 @@ vertex damping.
     in `mj_fluid()` with sleep-filtered body iteration. MuJoCo gates the body
     loop on sleep state. No correctness impact (sleeping bodies have zero
     velocity), but skipping them is a performance win and matches MuJoCo
-    semantics. Location: `mujoco_pipeline.rs` `mj_fluid()`.
+    semantics. Location: `forward/passive.rs` `mj_fluid()`.
 
 14. **MuJoCo conformance**: For each of the 19 disable flags, compare 10-step
     trajectory against MuJoCo 3.4.0 with only that flag disabled. Tolerance:
@@ -7045,13 +7054,13 @@ vertex damping.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — all 19+6 flag constants, runtime checks
-  at each pipeline stage (see S4 table for locations)
+- `sim/L0/core/src/types/enums.rs` — all 19+6 flag constants
+- `sim/L0/core/src/forward/` — runtime checks at each pipeline stage (see S4 table for locations)
 - `sim/L0/mjcf/src/types.rs` — split `MjcfFlag.passive` into `spring` + `damper`,
   add `fwdinv`, `invdiscrete`, `autoreset` fields
 - `sim/L0/mjcf/src/parser.rs` — parse `spring`, `damper` (+ backward compat
   `passive`), `fwdinv`, `invdiscrete`, `autoreset`
-- `sim/L0/mjcf/src/model_builder.rs` — `flags_to_bits()` conversion, wire all
+- `sim/L0/mjcf/src/builder/` — `flags_to_bits()` conversion, wire all
   flags to `Model.disableflags` / `Model.enableflags`
 - `sim/L0/tests/integration/` — per-flag disable/enable tests
 
@@ -7104,7 +7113,7 @@ deformable pipeline.
 
 #### Files
 - `sim/L0/mjcf/src/parser.rs` — parse `<flex>`, `<flexcomp>` elements
-- `sim/L0/mjcf/src/model_builder.rs` — convert to `DeformableBody`, register with pipeline
+- `sim/L0/mjcf/src/builder/` — convert to `DeformableBody`, register with pipeline
 
 ---
 
@@ -7186,9 +7195,9 @@ required for full MuJoCo Data layout parity.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — `Model` (sparse Jacobian fields),
-  `Data` (pre-computed Jacobian + optional length/velocity), edge/bending/penalty
-  force application paths
+- `sim/L0/core/src/types/model.rs` — `Model` (sparse Jacobian fields)
+- `sim/L0/core/src/types/data.rs` — `Data` (pre-computed Jacobian + optional length/velocity)
+- `sim/L0/core/src/dynamics/flex.rs` — edge/bending/penalty force application paths
 
 ---
 
@@ -7241,12 +7250,13 @@ Add `flex_rigid` and `flexedge_rigid` pre-computed boolean arrays for efficiency
 
 **Downstream dependency:** `flex_rigid` is required by §42A-iv (flex
 self-collision dispatch) as the first gate condition: `!flex_rigid[f]`.
-See §30 AC7 documentation on `flex_selfcollide` in `mujoco_pipeline.rs`.
+See §30 AC7 documentation on `flex_selfcollide` in `dynamics/flex.rs`.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — Model fields, flex loop optimizations
-- `sim/L0/mjcf/src/model_builder.rs` — pre-compute rigid flags
+- `sim/L0/core/src/types/model.rs` — Model fields
+- `sim/L0/core/src/dynamics/flex.rs` — flex loop optimizations
+- `sim/L0/mjcf/src/builder/` — pre-compute rigid flags
 
 ---
 
@@ -7304,8 +7314,9 @@ efficiency and MuJoCo Data layout parity.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — Data fields, computation in
-  kinematics phase, consumer updates
+- `sim/L0/core/src/types/data.rs` — Data fields
+- `sim/L0/core/src/forward/position.rs` — computation in kinematics phase
+- `sim/L0/core/src/dynamics/flex.rs` — consumer updates
 
 ---
 
@@ -7407,11 +7418,11 @@ Three conjunctive gate conditions:
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — dispatch loop, `mj_collide_flex_internal()`,
+- `sim/L0/core/src/collision/flex_collide.rs` — dispatch loop, `mj_collide_flex_internal()`,
   `mj_collide_flex_self()`, `FlexSelfCollide` enum, `flex_internal` field
 - `sim/L0/mjcf/src/types.rs` — `internal` field on `MjcfFlex`
 - `sim/L0/mjcf/src/parser.rs` — parse `internal` attribute
-- `sim/L0/mjcf/src/model_builder.rs` — wire `flex_internal`, upgrade
+- `sim/L0/mjcf/src/builder/` — wire `flex_internal`, upgrade
   `flex_selfcollide` push
 - `sim/L0/tests/integration/flex_unified.rs` — self-collision tests
 
@@ -7488,7 +7499,7 @@ flex object.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — flex-flex broadphase loop,
+- `sim/L0/core/src/collision/flex_collide.rs` — flex-flex broadphase loop,
   `mj_collide_flex_flex()`, `contact_param_flex_flex()`
 - `sim/L0/tests/integration/flex_unified.rs` — flex-flex collision tests
 
@@ -7522,7 +7533,7 @@ stable, and matches MuJoCo exactly. We should support both via a trait.
 
 #### Current State
 
-Bending force computation in `mj_fwd_passive()` (`mujoco_pipeline.rs:11370+`):
+Bending force computation in `mj_fwd_passive()` (`forward/passive.rs`):
 - Bridson dihedral angle springs with per-vertex force clamping
 - `Model.flex_bend_stiffness: Vec<f64>` (scalar per flex body)
 - `Model.flex_bend_damping: Vec<f64>` (scalar per flex body)
@@ -7611,7 +7622,7 @@ pub enum FlexBendingType {
 
 ##### S3. Precomputation (cotangent model)
 
-During model compilation in `model_builder.rs`, for each flex body with
+During model compilation in `builder/`, for each flex body with
 `bending_model == Cotangent` and `dim == 2`:
 
 **Prerequisites**: `flexedge_flap` (S7) must be computed first.
@@ -7748,9 +7759,9 @@ This is computed during model compilation from element connectivity.
    of the [trait architecture](../TRAIT_ARCHITECTURE.md).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `FlexBendingModel` trait,
+- `sim/L0/core/src/forward/passive.rs` — `FlexBendingModel` trait,
   `CotangentBending`, `BridsonBending`, `mj_fwd_passive()` dispatch
-- `sim/L0/mjcf/src/model_builder.rs` — `flex_bending` precomputation,
+- `sim/L0/mjcf/src/builder/` — `flex_bending` precomputation,
   `flexedge_flap` topology, `bending_model` attribute parsing
 - `sim/L0/mjcf/src/parser.rs` — parse `bending_model` attribute from `<flex>`
 - `sim/L0/tests/integration/flex_unified.rs` — conformance tests, stability
@@ -7865,9 +7876,10 @@ Default: `linear` (MuJoCo conformance).
    (validation: compare forces at 1% strain, should agree within 5%).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `FlexElasticityModel` trait,
-  `LinearElastic`, `NeoHookean`, dispatch in constraint assembly + passive forces
-- `sim/L0/mjcf/src/model_builder.rs` — `elasticity_model` attribute, precomputation
+- `sim/L0/core/src/constraint/assembly.rs` — `FlexElasticityModel` trait,
+  `LinearElastic`, `NeoHookean`, dispatch in constraint assembly
+- `sim/L0/core/src/forward/passive.rs` — dispatch in passive forces
+- `sim/L0/mjcf/src/builder/` — `elasticity_model` attribute, precomputation
 - `sim/L0/mjcf/src/parser.rs` — parse `elasticity_model` from `<flex>`
 - `sim/L0/tests/integration/flex_unified.rs` — hyperelastic tests, regression tests
 
@@ -7981,7 +7993,7 @@ model.set_actuator_gain(actuator_id, SeriesElasticGain {
 5. Implicit integrator works correctly with custom gain models (uses `dgain_dvel`).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `ActuatorGainModel` trait, built-in
+- `sim/L0/core/src/forward/actuation.rs` — `ActuatorGainModel` trait, built-in
   implementations, `SeriesElasticGain`, dispatch in `mj_fwd_actuation()`
 - `sim/L0/mjcf/src/parser.rs` — parse custom gain attributes
 - `sim/L0/tests/` — regression tests for built-in gains, SEA model tests
@@ -8096,7 +8108,7 @@ Default: `Lcp(SolverType::Newton)`.
 5. Switching solver type at runtime (between steps) works correctly.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `ContactSolver` trait, `LcpSolver`,
+- `sim/L0/core/src/constraint/solver/` — `ContactSolver` trait, `LcpSolver`,
   `XpbdSolver`, dispatch in constraint solve stage
 - `sim/L0/tests/` — regression tests for LCP, XPBD stability tests
 
@@ -8219,7 +8231,7 @@ All dispatch is monomorphized — the compiler sees concrete types, not trait ob
 - `sim/L0/core/src/sim_builder.rs` — new module: `Sim<B, E, A, C>`, `SimBuilder`,
   type aliases
 - `sim/L0/core/src/lib.rs` — re-export `SimBuilder`, `MujocoSim`, etc.
-- `sim/L0/core/src/mujoco_pipeline.rs` — refactor pipeline stages to accept trait
+- `sim/L0/core/src/forward/` — refactor pipeline stages to accept trait
   parameters
 - `sim/L0/tests/` — builder composition tests, regression tests, domain randomization
   example test

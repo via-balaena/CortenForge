@@ -329,3 +329,252 @@ pub fn compute_regularization(imp: f64, diag_approx: f64) -> (f64, f64) {
     let d = 1.0 / r;
     (r, d)
 }
+
+// ==========================================================================
+// Tests — moved from monolith (Phase 12)
+// ==========================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod impedance_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Default solimp: [d0=0.9, d_width=0.95, width=0.001, midpoint=0.5, power=2.0]
+    const DEFAULT: [f64; 5] = DEFAULT_SOLIMP;
+
+    // ========================================================================
+    // compute_impedance unit tests
+    // ========================================================================
+
+    #[test]
+    fn test_impedance_at_zero_violation() {
+        // At zero violation, impedance should be d0
+        let d = compute_impedance(DEFAULT, 0.0);
+        assert_relative_eq!(d, 0.9, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_at_full_width() {
+        // At violation >= width, impedance should be d_width
+        let d = compute_impedance(DEFAULT, 0.001);
+        assert_relative_eq!(d, 0.95, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_beyond_width() {
+        // Beyond width, impedance should saturate at d_width
+        let d = compute_impedance(DEFAULT, 0.01);
+        assert_relative_eq!(d, 0.95, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_at_midpoint() {
+        // At midpoint of transition, impedance should be between d0 and d_width.
+        // For power=2 and midpoint=0.5:
+        //   x = 0.5*width / width = 0.5
+        //   y(0.5) = a * 0.5^2 where a = 1/0.5^(2-1) = 2
+        //   y = 2 * 0.25 = 0.5
+        //   d = 0.9 + 0.5 * (0.95 - 0.9) = 0.925
+        let d = compute_impedance(DEFAULT, 0.0005);
+        assert_relative_eq!(d, 0.925, epsilon = 1e-3);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "non-negative violation")]
+    fn test_impedance_rejects_negative_violation() {
+        // Negative violation is a caller bug — debug_assert catches it
+        compute_impedance(DEFAULT, -0.0005);
+    }
+
+    #[test]
+    fn test_impedance_flat_when_d0_equals_dwidth() {
+        // When d0 == d_width, impedance is constant
+        let solimp = [0.9, 0.9, 0.001, 0.5, 2.0];
+        let d_zero = compute_impedance(solimp, 0.0);
+        let d_mid = compute_impedance(solimp, 0.0005);
+        let d_full = compute_impedance(solimp, 0.001);
+        assert_relative_eq!(d_zero, 0.9, epsilon = 1e-4);
+        assert_relative_eq!(d_mid, 0.9, epsilon = 1e-4);
+        assert_relative_eq!(d_full, 0.9, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_linear_power() {
+        // With power=1, transition should be linear
+        let solimp = [0.5, 1.0, 0.01, 0.5, 1.0];
+        let d_quarter = compute_impedance(solimp, 0.0025);
+        // x = 0.25, y = 0.25 (linear), d = 0.5 + 0.25*0.5 = 0.625
+        assert_relative_eq!(d_quarter, 0.625, epsilon = 1e-3);
+
+        let d_half = compute_impedance(solimp, 0.005);
+        // x = 0.5, y = 0.5 (linear), d = 0.5 + 0.5*0.5 = 0.75
+        assert_relative_eq!(d_half, 0.75, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn test_impedance_clamped_to_valid_range() {
+        // Impedance should be clamped to (0, 1) even with extreme solimp values
+        let solimp_low = [0.0, 0.0, 0.001, 0.5, 2.0];
+        let d = compute_impedance(solimp_low, 0.0);
+        assert!(d >= 0.0001, "Impedance should be at least MIN_IMPEDANCE");
+
+        let solimp_high = [1.0, 1.0, 0.001, 0.5, 2.0];
+        let d = compute_impedance(solimp_high, 0.0);
+        assert!(d <= 0.9999, "Impedance should be at most MAX_IMPEDANCE");
+    }
+
+    #[test]
+    fn test_impedance_monotonic_increasing() {
+        // With d_width > d0, impedance should increase with violation
+        let solimp = [0.5, 0.95, 0.01, 0.5, 2.0];
+        let mut prev = compute_impedance(solimp, 0.0);
+        for i in 1..=10 {
+            let pos = f64::from(i) * 0.001;
+            let d = compute_impedance(solimp, pos);
+            assert!(
+                d >= prev - 1e-10,
+                "Impedance should be monotonically increasing: d({})={} < d({})={}",
+                pos - 0.001,
+                prev,
+                pos,
+                d
+            );
+            prev = d;
+        }
+    }
+
+    #[test]
+    fn test_impedance_zero_width() {
+        // Zero width should return average of d0 and d_width
+        let solimp = [0.5, 0.9, 0.0, 0.5, 2.0];
+        let d = compute_impedance(solimp, 0.1);
+        assert_relative_eq!(d, 0.7, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_extreme_midpoint_no_nan() {
+        // midpoint=0 would cause division by zero without input clamping.
+        // Clamped to 0.0001, so this must produce a finite result.
+        let solimp = [0.5, 0.9, 0.01, 0.0, 3.0];
+        let d = compute_impedance(solimp, 0.005);
+        assert!(d.is_finite(), "midpoint=0 should not produce NaN, got {d}");
+        assert!(d > 0.0 && d < 1.0);
+
+        // midpoint=1 same issue on the upper branch
+        let solimp = [0.5, 0.9, 0.01, 1.0, 3.0];
+        let d = compute_impedance(solimp, 0.005);
+        assert!(d.is_finite(), "midpoint=1 should not produce NaN, got {d}");
+        assert!(d > 0.0 && d < 1.0);
+    }
+
+    #[test]
+    fn test_impedance_power_below_one_clamped() {
+        // power < 1 is invalid in MuJoCo (clamped to 1). Should behave as linear.
+        let solimp = [0.5, 1.0, 0.01, 0.5, 0.5]; // power=0.5, clamped to 1.0
+        let d = compute_impedance(solimp, 0.005);
+        // With power clamped to 1 (linear): x=0.5, y=0.5, d = 0.5 + 0.5*0.5 = 0.75
+        assert_relative_eq!(d, 0.75, epsilon = 1e-3);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod ball_limit_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use std::f64::consts::PI;
+
+    /// Build quaternion [w, x, y, z] for rotation of `angle_deg` degrees about `axis`.
+    fn quat_from_axis_angle_deg(axis: [f64; 3], angle_deg: f64) -> [f64; 4] {
+        let half = (angle_deg / 2.0_f64).to_radians();
+        let norm = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        let s = half.sin() / norm;
+        [half.cos(), axis[0] * s, axis[1] * s, axis[2] * s]
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_90deg_about_z() {
+        // 90 deg rotation about Z: q = (cos(45 deg), 0, 0, sin(45 deg))
+        let q = quat_from_axis_angle_deg([0.0, 0.0, 1.0], 90.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, PI / 2.0, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.z, 1.0, epsilon = 1e-10); // +Z (theta > 0)
+        assert!(unit_dir.x.abs() < 1e-10);
+        assert!(unit_dir.y.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_50deg_about_oblique() {
+        // 50 deg about axis (0.6, 0.8, 0) -- matches acceptance criterion 8
+        let q = quat_from_axis_angle_deg([0.6, 0.8, 0.0], 50.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, 50.0_f64.to_radians(), epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.x, 0.6, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.y, 0.8, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_200deg_wraps() {
+        // 200 deg about Z -> wraps to theta = -160 deg, angle = 160 deg
+        let q = quat_from_axis_angle_deg([0.0, 0.0, 1.0], 200.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, 160.0_f64.to_radians(), epsilon = 1e-10);
+        // theta < 0 after wrap, so unit_dir = sign(-) * z = -z
+        assert_relative_eq!(unit_dir.z, -1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_identity() {
+        let q = [1.0, 0.0, 0.0, 0.0];
+        let (_, angle) = ball_limit_axis_angle(q);
+        assert!(angle < 1e-10, "identity should have zero rotation angle");
+        // unit_dir is arbitrary (z-axis default) -- not asserted
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_negative_quat() {
+        // -q represents the same rotation as q. Verify identical output.
+        let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 60.0);
+        let neg_q = [-q[0], -q[1], -q[2], -q[3]];
+        let (dir1, angle1) = ball_limit_axis_angle(q);
+        let (dir2, angle2) = ball_limit_axis_angle(neg_q);
+        assert_relative_eq!(angle1, angle2, epsilon = 1e-10);
+        assert_relative_eq!(dir1, dir2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_exactly_180deg() {
+        // Boundary case: exactly pi rotation
+        let q = quat_from_axis_angle_deg([0.0, 1.0, 0.0], 180.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, PI, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.y, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_exact_boundary() {
+        // Rotation angle exactly equals a typical limit -- verify angle is precise
+        let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 45.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, 45.0_f64.to_radians(), epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.x, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_near_zero_quaternion() {
+        // A quaternion with near-zero norm (degenerate) should be caught by
+        // normalize_quat4 (returns identity) before reaching ball_limit_axis_angle.
+        // But ball_limit_axis_angle itself should also handle near-zero sin_half
+        // gracefully -- returning angle = 0 and an arbitrary direction.
+        let q = [1.0, 1e-15, 1e-15, 1e-15]; // Nearly identity, sin_half ~ 1.7e-15
+        let (_, angle) = ball_limit_axis_angle(q);
+        assert!(
+            angle < 1e-10,
+            "near-zero sin_half should produce angle ~ 0: got {angle}"
+        );
+        // unit_dir is arbitrary (z-axis default) -- not asserted
+    }
+}

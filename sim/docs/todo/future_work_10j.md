@@ -35,7 +35,7 @@ DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
 
 ### Context
 
-`compute_body_jacobian_at_point()` (mujoco_pipeline.rs:14182) is dead code with
+`compute_body_jacobian_at_point()` (now deleted; was in `jacobian.rs`) is dead code with
 fundamental correctness bugs. It was intended to compute the translational
 Jacobian at a world-frame point on a body, but:
 
@@ -163,7 +163,7 @@ Implementation: identical chain-walk to `mj_jac_site` (line 9817–9886), which
 is already correct for all joint types. The only change is parameterizing by
 `(body_id, point)` instead of `site_id`.
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs`, near line 9817.
+**File:** `sim/L0/core/src/jacobian.rs`.
 
 #### Step 2: Refactor existing functions as thin wrappers
 
@@ -340,7 +340,7 @@ require the rotation-log machinery of 5e.
 
 | File | Change |
 |------|--------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | Add `mj_jac` (D1), add `mj_jac_body` (D2), refactor `mj_jac_site`/`mj_jac_point`/`mj_jac_body_com`/`mj_jac_geom` as wrappers (D3–D6), delete `compute_body_jacobian_at_point` (D7), add `mj_jac_tests` module (D9) |
+| `sim/L0/core/src/jacobian.rs` | Add `mj_jac` (D1), add `mj_jac_body` (D2), refactor `mj_jac_site`/`mj_jac_point`/`mj_jac_body_com`/`mj_jac_geom` as wrappers (D3–D6), delete `compute_body_jacobian_at_point` (D7), add `mj_jac_tests` module (D9) |
 | `sim/L0/core/src/lib.rs` | Export `mj_jac`, `mj_jac_body` (D8) |
 
 ### Verification
@@ -543,7 +543,7 @@ MjJointType::Free => {
 }
 ```
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs`, lines 14363–14383.
+**File:** `sim/L0/core/src/constraint/jacobian.rs`.
 
 #### Step 2: Fix `add_body_jacobian` closure in `compute_flex_contact_jacobian`
 
@@ -567,7 +567,7 @@ MjJointType::Free => {
 }
 ```
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs`, lines 14235–14251.
+**File:** `sim/L0/core/src/constraint/jacobian.rs`.
 
 #### Step 3: Fix `add_angular_jacobian` standalone function
 
@@ -589,7 +589,7 @@ Jacobian projection, not the translational one. The rotational Jacobian column
 for a free-joint angular DOF is simply `R·eᵢ` (same as the `jacr` column in
 `mj_jac`).
 
-**File:** `sim/L0/core/src/mujoco_pipeline.rs`, lines 14475–14480.
+**File:** `sim/L0/core/src/constraint/jacobian.rs`.
 
 #### Step 4: Remove stale comment in `accumulate_point_jacobian`
 
@@ -609,12 +609,12 @@ Replace with a clean comment (the bug is now fixed):
 #### Step 5: Tests
 
 All tests in `sim-core`. Test module: `contact_jac_free_joint_tests` (new),
-placed in `mujoco_pipeline.rs` as a `#[cfg(test)]` submodule alongside the
+placed in `constraint/jacobian.rs` as a `#[cfg(test)]` submodule alongside the
 existing `mj_jac_tests` module.
 
-**Visibility note:** `compute_contact_jacobian` (line 14299) and
-`add_angular_jacobian` (line 14436) are module-private functions (plain `fn`,
-no `pub`). Tests in `#[cfg(test)]` submodules *within* `mujoco_pipeline.rs`
+**Visibility note:** `compute_contact_jacobian` and
+`add_angular_jacobian` are module-private functions (plain `fn`,
+no `pub`). Tests in `#[cfg(test)]` submodules *within* `constraint/jacobian.rs`
 can call them directly — Rust's visibility rules grant child modules access to
 all items in their parent module, regardless of visibility modifier. This is
 the same pattern used by the existing `mj_jac_tests` module.
@@ -1034,7 +1034,7 @@ rolling rows).
 
 | File | Change |
 |------|--------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | Fix free-joint angular DOFs in `compute_contact_jacobian` (D1), `compute_flex_contact_jacobian` (D2), `add_angular_jacobian` (D3), clean stale comment (D4), add `contact_jac_free_joint_tests` module with helpers and 6 tests (D5, D6) |
+| `sim/L0/core/src/constraint/jacobian.rs` | Fix free-joint angular DOFs in `compute_contact_jacobian` (D1), `compute_flex_contact_jacobian` (D2), `add_angular_jacobian` (D3), clean stale comment (D4), add `contact_jac_free_joint_tests` module with helpers and 6 tests (D5, D6) |
 
 ### Verification
 

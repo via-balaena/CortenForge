@@ -42,7 +42,8 @@ each forward pass.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — Data fields, forward-pass computation
+- `sim/L0/core/src/types/data.rs` — Data fields
+- `sim/L0/core/src/forward/` — forward-pass computation
 
 ---
 
@@ -77,8 +78,8 @@ control SDF collision quality.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse option attributes
-- `sim/L0/core/src/mujoco_pipeline.rs` — pass to SDF collision
+- `sim/L0/mjcf/src/builder/` — parse option attributes
+- `sim/L0/core/src/collision/sdf_collide.rs` — pass to SDF collision
 
 ---
 
@@ -126,7 +127,7 @@ Jacobians.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — analytical position derivative functions
+- `sim/L0/core/src/derivatives.rs` — analytical position derivative functions
 
 ---
 
@@ -170,5 +171,5 @@ Expose O(1) bidirectional name↔index lookup on `Model`.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — Model fields and API methods
-- `sim/L0/mjcf/src/model_builder.rs` — populate lookup tables during build
+- `sim/L0/core/src/types/model.rs` — Model fields and API methods
+- `sim/L0/mjcf/src/builder/` — populate lookup tables during build

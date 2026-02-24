@@ -42,7 +42,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Sensors (32 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, JointLimitFrc, TendonLimitFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim)
 - Derivatives (complete): FD transition Jacobians (`mjd_transition_fd`), analytical velocity derivatives (`mjd_smooth_vel` → `Data.qDeriv`), hybrid FD+analytical transition Jacobians (`mjd_transition_hybrid`), SO(3) quaternion integration Jacobians (`mjd_quat_integrate`), public dispatch API (`mjd_transition`), validation utilities
 - Sleeping / Body Deactivation (complete): Tree-based sleeping with island discovery (DFS flood-fill), selective CRBA, partial LDL factorization, awake-index iteration, per-island block-diagonal constraint solving, 93 integration tests ([future_work_5 §16](./todo/future_work_5.md))
-- Model loading (URDF, MJCF with `<default>` class resolution, `childclass` propagation (body/frame with undefined-class validation), `<frame>` element (pose composition, recursive nesting), `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` with Option<T> pattern wired into `model_builder.rs` for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair) with 91+ defaultable fields across four-stage pipeline (types → parser → merge → apply); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
+- Model loading (URDF, MJCF with `<default>` class resolution, `childclass` propagation (body/frame with undefined-class validation), `<frame>` element (pose composition, recursive nesting), `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` with Option<T> pattern wired into `builder/` for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair) with 91+ defaultable fields across four-stage pipeline (types → parser → merge → apply); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
 
 ### Placeholder / Stub (in pipeline)
 
@@ -63,18 +63,18 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 ### Standalone Crates (not wired into pipeline)
 - sim-tendon (3,919 lines) — standalone crate; fixed tendons now implemented directly in pipeline ([future_work_1 #4](./todo/future_work_1.md) ✅)
 - sim-muscle (2,550 lines) — standalone Hill model; MuJoCo FLV muscle model now implemented directly in pipeline ([future_work_1 #5](./todo/future_work_1.md) ✅)
-- ~~sim-deformable~~ **Deleted** — replaced by unified flex architecture in sim-core (`mujoco_pipeline.rs`). Useful code migrated to `model_builder.rs`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅
+- ~~sim-deformable~~ **Deleted** — replaced by unified flex architecture in sim-core (`forward/`, `constraint/`, `dynamics/`). Useful code migrated to `builder/`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅
 - sim-sensor (rangefinder, magnetometer, force/torque) — standalone crate with own API; pipeline has independent implementations
-- CGSolver in sim-constraint (1,664 lines) — standalone joint-space CG; pipeline contact CG is separate in `mujoco_pipeline.rs` ([future_work_1 #3](./todo/future_work_1.md) ✅)
+- CGSolver in sim-constraint (1,664 lines) — standalone joint-space CG; pipeline contact CG is separate in `constraint/solve.rs` ([future_work_1 #3](./todo/future_work_1.md) ✅)
 - ~~`integrators.rs` trait system~~ — removed in FUTURE_WORK C1
 - Pneumatic actuators in sim-constraint — standalone `PneumaticCylinderActuator`; pipeline cylinder/adhesion actuators use gain/bias model ([future_work_1 #12](./todo/future_work_1.md) ✅)
 - Universal, Planar, Cylindrical joints in sim-constraint — CortenForge extensions, not MuJoCo joint types (not in pipeline `MjJointType`)
 
 ### Removed (Phase 3 Consolidation — standalone crate code only)
-- Standalone Newton solver (`sim-constraint/src/newton.rs` — deleted; replaced by pipeline-native `newton_solve()` in `mujoco_pipeline.rs`)
-- Standalone constraint island discovery (`sim-constraint/src/islands.rs` — deleted; replaced by pipeline-native `mj_island()` DFS flood-fill in `mujoco_pipeline.rs`)
+- Standalone Newton solver (`sim-constraint/src/newton.rs` — deleted; replaced by pipeline-native `newton_solve()` in `constraint/solve.rs`)
+- Standalone constraint island discovery (`sim-constraint/src/islands.rs` — deleted; replaced by pipeline-native `mj_island()` DFS flood-fill in `island/`)
 - Standalone sparse Jacobian operations (`sim-constraint/src/sparse.rs` — deleted)
-- Standalone PGS (`sim-constraint/src/pgs.rs` — deleted; pipeline PGS in `mujoco_pipeline.rs` is MuJoCo-aligned pure Gauss-Seidel)
+- Standalone PGS (`sim-constraint/src/pgs.rs` — deleted; pipeline PGS in `constraint/solve.rs` is MuJoCo-aligned pure Gauss-Seidel)
 - Standalone island-parallel constraint solving (`sim-constraint/src/parallel.rs` — deleted; per-island block-diagonal solving now in `mj_fwd_constraint_islands()`)
 
 ### ✅ Recently Completed (January–February 2026)
@@ -85,7 +85,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Contact Condim (1/3/4/6) + Friction Cones | Variable-dimension contacts with elliptic friction cones, torsional friction (condim 4), rolling friction (condim 6), two-step projection, `apply_contact_torque()` | [§3](#3-contact-physics) |
 | General gain/bias actuator force model | All 8 shortcut types with `GainType`/`BiasType` dispatch, `FilterExact` dynamics, `ctrllimited` enforcement for Damper/Adhesion | [§7](#7-actuators) |
 | RK4 integrator | True 4-stage Runge-Kutta via `mj_runge_kutta()` with quaternion-safe position updates | [§1](#1-integration-methods) |
-| Pipeline sensors (32 types) | All 32 types functional and wired from MJCF `<sensor>` elements via `model_builder.rs`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
+| Pipeline sensors (32 types) | All 32 types functional and wired from MJCF `<sensor>` elements via `builder/`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
 | Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
 | MJCF `<default>` element | ✅ Full — `DefaultResolver` with Option<T> pattern, complete four-stage pipeline (types → parser → merge → apply) for all 8 element types; 91+ defaultable fields across geom/joint/site/tendon/actuator/sensor/mesh/pair | [§13](#13-model-format) |
@@ -133,7 +133,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Implicit-in-velocity | Core feature | - | **Implemented** (`Implicit` — full D with Coriolis, LU factorization) | - | - |
 | Implicit-fast (no Coriolis) | Optimization | - | **Implemented** (`ImplicitFast` — symmetric D, Cholesky factorization) | - | - |
 
-> The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:933`)
+> The pipeline uses a single `Integrator` enum (`integrate/mod.rs`)
 > with five variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
 > `ImplicitSpringDamper` (spring/damper implicit Euler with joint diagonal + tendon non-diagonal K/D),
 > `ImplicitFast` (symmetric D, Cholesky), and `Implicit` (asymmetric D
@@ -181,7 +181,7 @@ let mut data = model.make_data();
 data.step(&model).expect("step");
 ```
 
-**Files:** `sim-core/src/mujoco_pipeline.rs` (`Integrator::ImplicitSpringDamper`, `Integrator::ImplicitFast`, `Integrator::Implicit`)
+**Files:** `sim-core/src/integrate/` (`Integrator::ImplicitSpringDamper`, `Integrator::ImplicitFast`, `Integrator::Implicit`)
 
 ---
 
@@ -195,7 +195,7 @@ data.step(&model).expect("step");
 | Constraint islands | Auto-detected | `mj_island()` (pipeline DFS flood-fill) | **Implemented** (replaced old `islands.rs` with pipeline-native island discovery + per-island solving) | - | - |
 | Warm starting | Supported | `qacc_warmstart`-based warmstart (universal for all solvers) | **Implemented** | - | - |
 
-> **Note:** The pipeline has four solver variants in `SolverType` enum (`mujoco_pipeline.rs`): **Newton** (reduced primal formulation, §15 — quadratic convergence in 2-5 iterations, falls back to PGS on Cholesky failure), **PGS** (pure Gauss-Seidel, ω=1.0 — MuJoCo-aligned, no SOR), **CG** (preconditioned PGD with Barzilai-Borwein step size, falls back to PGS on non-convergence), and **CGStrict** (same as CG but returns zero forces instead of PGS fallback — used in tests to detect convergence regressions). All share `assemble_contact_system()` for Delassus assembly. PGS matches MuJoCo's `mj_solPGS` — pure GS with no SOR (verified against `engine_solver.c`; `mjOption` has no `sor` field). `CGSolver` in `sim-constraint/src/cg.rs` remains a standalone joint-space solver unrelated to the pipeline contact solvers.
+> **Note:** The pipeline has four solver variants in `SolverType` enum (`constraint/solve.rs`): **Newton** (reduced primal formulation, §15 — quadratic convergence in 2-5 iterations, falls back to PGS on Cholesky failure), **PGS** (pure Gauss-Seidel, ω=1.0 — MuJoCo-aligned, no SOR), **CG** (preconditioned PGD with Barzilai-Borwein step size, falls back to PGS on non-convergence), and **CGStrict** (same as CG but returns zero forces instead of PGS fallback — used in tests to detect convergence regressions). All share `assemble_contact_system()` for Delassus assembly. PGS matches MuJoCo's `mj_solPGS` — pure GS with no SOR (verified against `engine_solver.c`; `mjOption` has no `sor` field). `CGSolver` in `sim-constraint/src/cg.rs` remains a standalone joint-space solver unrelated to the pipeline contact solvers.
 
 ### Implementation Notes: Newton Solver ✅ IMPLEMENTED (pipeline-native, §15)
 
@@ -203,7 +203,7 @@ data.step(&model).expect("step");
 > removed in Phase 3 consolidation (dead code — never called by pipeline). A ground-up
 > pipeline-native Newton solver was then implemented as §15 in the pipeline.
 
-The pipeline Newton solver (`newton_solve()` in `mujoco_pipeline.rs`) uses a reduced primal
+The pipeline Newton solver (`newton_solve()` in `constraint/solve.rs`) uses a reduced primal
 formulation operating on the unified constraint Jacobian (equality, friction loss, limits, contacts):
 
 - **Reduced primal formulation**: Optimizes over constraint forces directly
@@ -214,13 +214,13 @@ formulation operating on the unified constraint Jacobian (equality, friction los
 - Typically converges in 2-5 iterations (quadratic convergence)
 - Selected via `<option solver="Newton"/>` in MJCF
 
-**Files:** `sim-core/src/mujoco_pipeline.rs` (`newton_solve()`, `SolverType::Newton`); see [future_work_5 §15](./todo/future_work_5.md) ✅
+**Files:** `sim-core/src/constraint/solve.rs` (`newton_solve()`, `SolverType::Newton`); see [future_work_5 §15](./todo/future_work_5.md) ✅
 
 ### Implementation Notes: PGS (Gauss-Seidel) Solver ⚠️ REMOVED from sim-constraint; reimplemented in pipeline
 
 > The standalone `PGSSolver` in `sim-constraint/src/pgs.rs` was **deleted in Phase 3 consolidation**. That solver included an SOR (Successive Over-Relaxation) parameter — this was a design error based on the incorrect assumption that MuJoCo uses SOR in its PGS. Verification against MuJoCo source (`engine_solver.c`, `mj_solPGS`) confirms MuJoCo uses pure Gauss-Seidel with no SOR blending; `mjOption` has no `sor` field and `<option>` has no `sor` attribute.
 
-The pipeline PGS in `mujoco_pipeline.rs` (`pgs_solve_contacts()`) correctly uses pure Gauss-Seidel (ω=1.0), matching MuJoCo's implementation. SOR was considered as future work (§17) but was dropped after the MuJoCo source verification.
+The pipeline PGS in `constraint/solve.rs` (`pgs_solve_contacts()`) correctly uses pure Gauss-Seidel (ω=1.0), matching MuJoCo's implementation. SOR was considered as future work (§17) but was dropped after the MuJoCo source verification.
 
 **Files:** `sim-constraint/src/pgs.rs` (removed in Phase 3 consolidation)
 
@@ -230,14 +230,14 @@ The pipeline PGS in `mujoco_pipeline.rs` (`pgs_solve_contacts()`) correctly uses
 > with the Newton solver. It was removed in Phase 3 consolidation. Island discovery has been
 > reimplemented directly in the MuJoCo pipeline as part of the sleeping system.
 
-**Current implementation** (`mj_island()` in `mujoco_pipeline.rs`):
+**Current implementation** (`mj_island()` in `island/`):
 - DFS flood-fill over tree-tree adjacency graph (trees connected by contacts, tendons, or equality constraints)
 - Produces island arrays: `tree_island`, `island_ntree`, `dof_island`, `contact_island`, `efc_island`, etc.
 - `mj_fwd_constraint_islands()` solves each island independently via block-diagonal decomposition
 - Single-island scenes use the global solver path (no overhead)
 - Controlled by `DISABLE_ISLAND` flag (disable via `<flag island="disable"/>`)
 
-**Files:** `sim-core/src/mujoco_pipeline.rs` (`mj_island`, `mj_fwd_constraint_islands`),
+**Files:** `sim-core/src/island/` (`mj_island`, `mj_fwd_constraint_islands`),
 `sim/L0/tests/integration/sleeping.rs` (island-related tests)
 
 ---
@@ -246,7 +246,7 @@ The pipeline PGS in `mujoco_pipeline.rs` (`pgs_solve_contacts()`) correctly uses
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| Compliant contacts | Core | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
+| Compliant contacts | Core | Inline in PGS solver (`constraint/solve.rs`) | **Implemented** | - | - |
 | Spring-damper (F = k*d^p + c*v) | Core | `compute_normal_force_magnitude` | **Standalone** (in sim-simd `batch_ops.rs` only; pipeline uses constraint-based PGS, not penalty spring-damper) | - | - |
 | Nonlinear stiffness (d^p) | Core | `stiffness_power` param | **Standalone** (same as above — sim-simd only) | - | - |
 | Contact margin/gap | Supported | margin/gap in `contact_param()`, broadphase AABB expansion, activation thresholds, `includemargin` constraint assembly | **Implemented** (full pipeline: broadphase → narrow-phase → constraint assembly) | - | - |
@@ -274,7 +274,7 @@ f_n ≥ 0, ||(f_t1/μ_1, f_t2/μ_2, ...)|| ≤ f_n
 - `Model.cone = 0` (pyramidal, MuJoCo default); elliptic via `cone="elliptic"`
 - Per-contact `mu: [f64; 5]` for [sliding1, sliding2, torsional, rolling1, rolling2]
 
-**Files modified:** `sim-core/src/mujoco_pipeline.rs` (lines 13185-13220)
+**Files modified:** `sim-core/src/constraint/solve.rs` (`project_elliptic_cone()`, `project_friction_cone()`)
 
 ### Implementation Notes: Variable Condim + Advanced Friction Models ✅ IMPLEMENTED
 
@@ -521,7 +521,7 @@ MuJoCo's muscle model includes:
 - Force-length-velocity relationships
 - Pennation angle
 
-**Pipeline implementation (MuJoCo FLV model in `mujoco_pipeline.rs`):**
+**Pipeline implementation (MuJoCo FLV model in `forward/muscle.rs`):**
 
 MuJoCo's simplified FLV muscle model is implemented directly in the pipeline,
 matching `mju_muscleGain`, `mju_muscleBias`, and `mju_muscleDynamics` from
@@ -655,7 +655,7 @@ let torque = elbow.compute_joint_force(velocity, dt);
 | TendonPos / TendonVel | Yes | `MjSensorType::TendonPos/Vel` | ✅ **Implemented** (reads `ten_length`/`ten_velocity`; [future_work_1 #4](./todo/future_work_1.md)) | - |
 | Camera (rendered) | Yes | Out of scope | N/A | - |
 
-> **Two sensor systems exist.** The sim-sensor crate has standalone `Imu`, `ForceTorqueSensor`, `TouchSensor`, `Rangefinder`, and `Magnetometer` implementations that operate on `RigidBodyState` objects. The MuJoCo pipeline has its own sensor readout in `mj_sensor_pos()`/`mj_sensor_vel()`/`mj_sensor_acc()` within `mujoco_pipeline.rs`. All 32 pipeline sensor types are functional and fully wired from MJCF `<sensor>` elements via `process_sensors()` in `model_builder.rs` ([future_work_1 #6](./todo/future_work_1.md)). The MJCF parser recognizes 32 `MjcfSensorType` variants; all 32 map to pipeline `MjSensorType`. JointLimitFrc and TendonLimitFrc read cached penalty force magnitudes from `mj_fwd_constraint()`. `set_options()` propagates `magnetic`, `wind`, `density`, and `viscosity` from MJCF `<option>`. Magnetometer is evaluated in the Position stage (depends only on `site_xmat` from FK). ActuatorVel reads from pre-computed `data.actuator_velocity`.
+> **Two sensor systems exist.** The sim-sensor crate has standalone `Imu`, `ForceTorqueSensor`, `TouchSensor`, `Rangefinder`, and `Magnetometer` implementations that operate on `RigidBodyState` objects. The MuJoCo pipeline has its own sensor readout in `mj_sensor_pos()`/`mj_sensor_vel()`/`mj_sensor_acc()` within `sensor/`. All 32 pipeline sensor types are functional and fully wired from MJCF `<sensor>` elements via `process_sensors()` in `builder/` ([future_work_1 #6](./todo/future_work_1.md)). The MJCF parser recognizes 32 `MjcfSensorType` variants; all 32 map to pipeline `MjSensorType`. JointLimitFrc and TendonLimitFrc read cached penalty force magnitudes from `mj_fwd_constraint()`. `set_options()` propagates `magnetic`, `wind`, `density`, and `viscosity` from MJCF `<option>`. Magnetometer is evaluated in the Position stage (depends only on `site_xmat` from FK). ActuatorVel reads from pre-computed `data.actuator_velocity`.
 
 ### Implementation Notes: Sensors ✅ COMPLETED (both standalone sim-sensor crate and pipeline sensors)
 
@@ -862,7 +862,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 - `sim-constraint/src/equality.rs` - `ConnectConstraint` implementation
 - `sim-mjcf/src/types.rs` - `MjcfConnect`, `MjcfEquality` types
 - `sim-mjcf/src/parser.rs` - `<equality>` and `<connect>` element parsing
-- `sim-mjcf/src/model_builder.rs` - Conversion to `ConnectConstraint`
+- `sim-mjcf/src/builder/` - Conversion to `ConnectConstraint`
 
 ---
 
@@ -886,7 +886,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | `<flexcomp mass="...">` attribute | Yes (total mass → per-vertex) | ~~Non-standard `density` extension~~ → `mass` attr parsed, uniform `mass/npnt` distribution | ✅ **Done** — [#27E](./todo/future_work_7.md) | - | - |
 | Body-coupled flex vertex CRBA + FK | Yes (vertices ARE bodies; `mj_crb`/`mj_rne` have zero flex code) | ~~`flexvert_bodyid` stored but dead; diagonal `m*I₃` blocks only~~ → Vertices promoted to real bodies with 3 slide joints; standard CRBA/RNE/FK handles all flex physics | ✅ **Done** — [#27F](./todo/future_work_7.md) | - | - |
 
-> ✅ **Unified flex architecture (§6B).** Flex vertex DOFs are appended to `qpos`/`qvel`/`qacc` after rigid DOFs. Edge constraints enter the unified Jacobian as `FlexEdge` rows. Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries (discriminated by `flex_vertex: Option<usize>`). The previous `sim-deformable` crate (XPBD solver) has been deleted — useful code migrated to `model_builder.rs`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅.
+> ✅ **Unified flex architecture (§6B).** Flex vertex DOFs are appended to `qpos`/`qvel`/`qacc` after rigid DOFs. Edge constraints enter the unified Jacobian as `FlexEdge` rows. Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries (discriminated by `flex_vertex: Option<usize>`). The previous `sim-deformable` crate (XPBD solver) has been deleted — useful code migrated to `builder/`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅.
 >
 > **Key pipeline functions:** `mj_collision_flex()`, `mj_flex()` (FK → xpos), `apply_flex_edge_constraints()`. Post-§27F: `mj_crba_flex()`, `mj_factor_flex()`, `mj_fwd_position_flex()`, and `mj_integrate_pos_flex()` have been **deleted** — flex vertices are now real bodies with 3 slide joints, so the standard CRBA/RNE/FK/integration handles everything.
 >
@@ -1056,8 +1056,8 @@ Three phases fully implemented with 93 integration tests in `sleeping.rs`.
 `mj_wake_equality()`, `mj_island()`, `mj_fwd_constraint_islands()`, `mj_update_sleep_arrays()`,
 `mj_factor_sparse_selective()`, `reset_sleep_state()`
 
-**Files:** `sim-core/src/mujoco_pipeline.rs` (implementation), `sim/L0/tests/integration/sleeping.rs` (93 tests),
-`sim/L0/mjcf/src/model_builder.rs` (MJCF parsing for sleep attributes)
+**Files:** `sim-core/src/island/` (implementation), `sim/L0/tests/integration/sleeping.rs` (93 tests),
+`sim/L0/mjcf/src/builder/` (MJCF parsing for sleep attributes)
 
 ---
 
@@ -1180,7 +1180,7 @@ data.step(&model).expect("should step");
 - Composite bodies not supported
 - Textures and materials parsed but not loaded (meshes are loaded)
 
-**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `model_builder.rs`, `validation.rs`, `config.rs`, `include.rs`
+**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `builder/`, `validation.rs`, `config.rs`, `include.rs`
 
 ### Implementation Notes: MJCF `<option>` Element ✅ COMPLETED
 
@@ -1261,7 +1261,7 @@ assert!(ext_config.warmstart_enabled());
 assert!(ext_config.flags.contact);
 ```
 
-**Files:** `sim-mjcf/src/types.rs`, `parser.rs`, `config.rs`, `model_builder.rs`, `validation.rs`
+**Files:** `sim-mjcf/src/types.rs`, `parser.rs`, `config.rs`, `builder/`, `validation.rs`
 
 ---
 
@@ -1406,12 +1406,12 @@ Focus: All collision detection improvements, primarily in sim-core.
 - Check: `(a.contype & b.conaffinity) != 0 && (b.contype & a.conaffinity) != 0`
 - Defaults: `contype = 1`, `conaffinity = 1` (everything collides)
 
-**MJCF Model Builder Updates (`sim-mjcf/src/model_builder.rs`):**
+**MJCF Model Builder Updates (`sim-mjcf/src/builder/`):**
 - Transfer `contype`/`conaffinity` from MJCF geoms to Model arrays
 - Native `CollisionShape::Cylinder` for MJCF cylinders (no longer approximated)
 - Native `CollisionShape::Ellipsoid` for MJCF ellipsoids
 
-**Files:** `sim-core/src/mujoco_pipeline.rs`, `sim-core/src/gjk_epa.rs`, `sim-core/src/mid_phase.rs`, `sim-mjcf/src/model_builder.rs`
+**Files:** `sim-core/src/collision/`, `sim-core/src/gjk_epa.rs`, `sim-core/src/mid_phase.rs`, `sim-mjcf/src/builder/`
 
 ### Phase 6: Contact Physics ✅ RE-IMPLEMENTED
 
@@ -1423,7 +1423,7 @@ Focus: Advanced friction models — **originally implemented in sim-contact, rem
 | ~~Rolling friction~~ | §3 Contact | High | ✅ **Implemented** (`Contact.mu[3..5]`, angular Jacobian rows 4-5, `apply_contact_torque()`) |
 | ~~Pyramidal friction cones~~ | §3 Contact | Low | ⚠️ **Stub** (warning emitted, falls back to elliptic — requires different system size) |
 
-**Implemented (in `sim-core/src/mujoco_pipeline.rs`):**
+**Implemented (in `sim-core/src/constraint/`):**
 
 **Variable Contact Dimensions:**
 - `Contact.dim: usize` — Contact dimensionality (1, 3, 4, or 6)
@@ -1475,7 +1475,7 @@ fn apply_contact_torque(data: &mut Data, contact: &Contact, lambda: &[f64]) {
 ```
 
 **Files:**
-- `sim-core/src/mujoco_pipeline.rs` — `project_elliptic_cone()`, `project_friction_cone()`, `apply_contact_torque()`, PGS/CG solvers
+- `sim-core/src/constraint/solve.rs` — `project_elliptic_cone()`, `project_friction_cone()`, `apply_contact_torque()`, PGS/CG solvers
 - `sim-core/src/contact.rs` — `Contact` struct with `dim`, `mu`, `frame` fields
 - Formerly `sim-contact/src/friction.rs`, `sim-contact/src/model.rs` — removed in Phase 3 consolidation, re-implemented in pipeline
 
@@ -1668,7 +1668,7 @@ Focus: Large standalone features, each potentially its own PR.
 | Feature | Section | Complexity | Status | Notes |
 |---------|---------|------------|--------|-------|
 | ~~Height field collision~~ | §4 Collision, §5 Geoms | High | ✅ COMPLETED | Terrain simulation |
-| ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Pipeline CG in `mujoco_pipeline.rs` (`cg_solve_contacts()`); `CGSolver` in sim-constraint remains standalone joint-space solver (see FUTURE_WORK #3 ✅) |
+| ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Pipeline CG in `constraint/solve.rs` (`cg_solve_contacts()`); `CGSolver` in sim-constraint remains standalone joint-space solver (see FUTURE_WORK #3 ✅) |
 | ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ **COMPLETED** | Pipeline `EqualityType::Tendon` + `extract_tendon_equality_jacobian()` in unified solver; two-tendon polynomial coupling + single-tendon lock (§37) |
 | ~~Flex edge constraints~~ | §10 Equality, §11 Deformables | Low | ✅ **COMPLETED** | Unified `FlexEdge` constraint rows in `assemble_unified_constraints()` (§6B) |
 | ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
@@ -1678,7 +1678,7 @@ Focus: Large standalone features, each potentially its own PR.
 
 **Implemented (some now standalone or removed — see table above for current status):**
 
-> **⚠️ Note:** The `CGSolver` below is standalone (`sim-constraint`), operating on joint-space constraints via the `Joint` trait. The pipeline's contact CG solver (`cg_solve_contacts()` in `mujoco_pipeline.rs`) is a separate implementation using PGD with Barzilai-Borwein step. Tendon *equality* constraints (`TendonConstraint`) are in `sim-constraint` and not used by the pipeline (the pipeline handles tendon kinematics, actuation, limits, and passive forces directly). Island-parallel solving was removed in Phase 3 consolidation.
+> **⚠️ Note:** The `CGSolver` below is standalone (`sim-constraint`), operating on joint-space constraints via the `Joint` trait. The pipeline's contact CG solver (`cg_solve_contacts()` in `constraint/solve.rs`) is a separate implementation using PGD with Barzilai-Borwein step. Tendon *equality* constraints (`TendonConstraint`) are in `sim-constraint` and not used by the pipeline (the pipeline handles tendon kinematics, actuation, limits, and passive forces directly). Island-parallel solving was removed in Phase 3 consolidation.
 
 **Conjugate Gradient Solver (`sim-constraint/src/cg.rs`) — ⚠️ Standalone:**
 - `CGSolver` - Conjugate gradient method for constraint solving
@@ -1721,7 +1721,7 @@ network.add_tendon(tendon);
 let forces = network.compute_all_forces(&get_position, &get_velocity, dt);
 ```
 
-**Flex Edge Constraints (`sim-core/mujoco_pipeline.rs`) — ✅ Pipeline-integrated (§6B):**
+**Flex Edge Constraints (`sim-core/src/constraint/`) — ✅ Pipeline-integrated (§6B):**
 - `FlexEdge` variant in `ConstraintType` enum
 - Edge-length constraints as rows in unified Jacobian (`assemble_unified_constraints()`)
 - Penalty path via `apply_flex_edge_constraints()` for PGS/CG solvers
@@ -1774,7 +1774,7 @@ let terrain = CollisionShape::heightfield(Arc::new(data));
 **Files:**
 - `sim-constraint/src/cg.rs` - Conjugate Gradient solver
 - `sim-constraint/src/equality.rs` - Tendon coupling constraints (additions)
-- ~~`sim-deformable/src/constraints.rs`~~ - Deleted (flex constraints now in `mujoco_pipeline.rs`)
+- ~~`sim-deformable/src/constraints.rs`~~ - Deleted (flex constraints now in `constraint/`)
 - `sim-core/src/heightfield.rs` - Height field collision
 - `sim-core/src/collision_shape.rs` - CollisionShape::HeightField variant
 - `sim-core/src/gjk_epa.rs` - HeightField support function
@@ -1788,11 +1788,11 @@ let terrain = CollisionShape::heightfield(Arc::new(data));
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs`, `body.rs`, `config.rs` |
-| `sim-core` | Integration, MuJoCo pipeline, Collision, Derivatives | `mujoco_pipeline.rs`, `derivatives.rs`, `collision_shape.rs`, `contact.rs`, `gjk_epa.rs`, `mid_phase.rs`, `heightfield.rs`, `sdf.rs`, `mesh.rs`, `raycast.rs`, `batch.rs` (removed: `world.rs`, `stepper.rs`, `broad_phase.rs`, `integrators.rs`) |
+| `sim-core` | Integration, MuJoCo pipeline, Collision, Derivatives | `types/`, `dynamics/`, `collision/`, `sensor/`, `constraint/`, `forward/`, `integrate/`, `island/`, `jacobian.rs`, `energy.rs`, `derivatives.rs`, `collision_shape.rs`, `contact.rs`, `gjk_epa.rs`, `mid_phase.rs`, `heightfield.rs`, `sdf.rs`, `mesh.rs`, `raycast.rs`, `batch.rs` (removed: `mujoco_pipeline.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `integrators.rs`) |
 | `sim-constraint` | Joint constraints (⚠️ standalone) | `joint.rs`, `types.rs`, `actuator.rs`, `equality.rs`, `cg.rs`, `limits.rs`, `motor.rs`, `muscle.rs` (removed in Phase 3: `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `pgs.rs`, `parallel.rs`) |
 | `sim-sensor` | Sensor simulation (⚠️ standalone) | `imu.rs`, `force_torque.rs`, `touch.rs`, `rangefinder.rs`, `magnetometer.rs` |
 | `sim-urdf` | URDF loading | `lib.rs`, `parser.rs`, `converter.rs`, `types.rs`, `validation.rs`, `error.rs` |
-| `sim-mjcf` | MJCF loading | `lib.rs`, `parser.rs`, `types.rs`, `validation.rs`, `model_builder.rs`, `defaults.rs`, `config.rs`, `error.rs`, `mjb.rs`, `include.rs` |
+| `sim-mjcf` | MJCF loading | `lib.rs`, `parser.rs`, `types.rs`, `validation.rs`, `builder/`, `defaults.rs`, `config.rs`, `error.rs`, `mjb.rs`, `include.rs` |
 | `sim-muscle` | Muscle actuators (⚠️ standalone) | `activation.rs`, `curves.rs`, `hill.rs`, `kinematics.rs` |
 | `sim-tendon` | Tendon/cable systems (⚠️ standalone) | `fixed.rs`, `spatial.rs`, `path.rs`, `wrapping.rs`, `pulley.rs`, `cable.rs` |
 | `sim-physics` | Umbrella re-export | `lib.rs` |

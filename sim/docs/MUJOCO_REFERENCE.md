@@ -1,7 +1,7 @@
 # MuJoCo Reference Architecture
 
 This document defines the physics pipeline architecture implemented in
-`sim/L0/core/src/mujoco_pipeline.rs`. The pipeline follows MuJoCo's computation
+`sim/L0/core/src/` (decomposed across `types/`, `dynamics/`, `collision/`, `sensor/`, `constraint/`, `forward/`, `integrate/`, `island/`, `jacobian.rs`, `energy.rs`). The pipeline follows MuJoCo's computation
 model: `forward()` (8 sub-stages) then either `integrate()` (Euler/ImplicitSpringDamper)
 or `mj_runge_kutta()` (RK4) run each timestep, operating on a static `Model` and
 mutable `Data`.

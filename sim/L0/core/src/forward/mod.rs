@@ -36,11 +36,6 @@ pub(crate) use passive::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
 pub(crate) use position::SweepAndPrune;
 pub(crate) use position::{aabb_from_geom, closest_point_segment, closest_points_segments};
 
-// Test-only re-exports: inline tests in mujoco_pipeline.rs reference these.
-// Removed when monolith inline tests are migrated in Phase 12.
-#[cfg(test)]
-pub(crate) use muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_force, sigmoid};
-
 use crate::types::{Data, ENABLE_SLEEP, Integrator, Model, StepError};
 
 impl Data {

@@ -22,7 +22,7 @@ tendon equality constraints.
 #### Current State
 
 The noslip post-processor is **fully implemented with A+ MuJoCo conformance** as
-`noslip_postprocess()` (`mujoco_pipeline.rs`, ~440 LOC).
+`noslip_postprocess()` (`constraint/`, ~440 LOC).
 Twenty integration tests verify it (3 in `newton_solver.rs`, 17 in `noslip.rs`):
 - PGS/CG/Newton slip reduction, zero-iterations no-op
 - Friction-loss clamping, pyramidal 2x2 block solve, elliptic QCQP
@@ -316,7 +316,7 @@ rows). This is the clamping limit for the noslip PGS update.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — add noslip call after PGS/CG solve
+- `sim/L0/core/src/constraint/` — add noslip call after PGS/CG solve
   (6 lines at dispatch); add friction-loss loop and pyramidal branch to
   `noslip_postprocess()` (~60-80 LOC)
 - `sim/L0/tests/integration/` — new tests for PGS+noslip, CG+noslip,
@@ -330,7 +330,7 @@ rows). This is the clamping limit for the noslip PGS update.
 #### Current State
 
 **Fully implemented with A+ MuJoCo conformance.** The `mj_next_activation()`
-helper (`mujoco_pipeline.rs`) handles integration (Euler/FilterExact) and
+helper (`forward/actuation.rs`) handles integration (Euler/FilterExact) and
 `actlimited` clamping in a single function, matching MuJoCo's
 `mj_nextActivation()` from `engine_forward.c`. Fifteen integration tests
 verify the implementation (`activation_clamping.rs`).
@@ -415,7 +415,7 @@ pub actuator_actrange: Vec<(f64, f64)>,  // default: (0.0, 0.0)
 pub actuator_actearly: Vec<bool>,      // default: false
 ```
 
-Initialize from parsed MJCF values in `model_builder.rs`. Forward from
+Initialize from parsed MJCF values in `builder/`. Forward from
 `MjcfActuator.actlimited`, `.actrange`, `.actearly`.
 
 ##### S2. `mj_next_activation()` helper
@@ -501,7 +501,7 @@ This naturally handles:
 
 ##### S5. Muscle default actrange in model builder
 
-In `model_builder.rs`, when processing muscle actuators where `actlimited` is
+In `builder/`, when processing muscle actuators where `actlimited` is
 not explicitly set:
 
 ```rust
@@ -556,10 +556,11 @@ without requiring explicit `actlimited="true"` in MJCF.
 
 #### Files
 
-- ~~`sim/L0/mjcf/src/model_builder.rs` — parse actlimited/actrange from MJCF~~ Done
-- ~~`sim/L0/mjcf/src/model_builder.rs` — forward parsed values to Model; muscle
+- ~~`sim/L0/mjcf/src/builder/` — parse actlimited/actrange from MJCF~~ Done
+- ~~`sim/L0/mjcf/src/builder/` — forward parsed values to Model; muscle
   default actrange setup~~ Done
-- ~~`sim/L0/core/src/mujoco_pipeline.rs` — add Model fields; implement
+- ~~`sim/L0/core/src/types/model.rs` — add Model fields~~ Done
+- ~~`sim/L0/core/src/forward/actuation.rs` — implement
   `mj_next_activation()`; wire `actearly` in force computation; replace
   muscle-only clamping in integrator with `mj_next_activation()` call~~ Done
 - `sim/L0/tests/integration/activation_clamping.rs` — 15 acceptance tests
@@ -689,7 +690,7 @@ Add to `Data`:
 pub qfrc_gravcomp: DVector<f64>,  // nv-dimensional, zeroed each step
 ```
 
-Forward from `MjcfBody.gravcomp` in `model_builder.rs`. Compute `ngravcomp`
+Forward from `MjcfBody.gravcomp` in `builder/`. Compute `ngravcomp`
 as the count of bodies where `body_gravcomp[b] != 0.0` for early-exit
 optimization. World body (index 0) always has `gravcomp = 0.0`.
 
@@ -946,13 +947,15 @@ as a bias force adjustment. Gravcomp counteracts the gravity portion of
 
 - `sim/L0/mjcf/src/types.rs` — add `gravcomp: Option<f64>` to `MjcfBody`
 - `sim/L0/mjcf/src/parser.rs` — parse `gravcomp` in `parse_body_attrs()`
-- `sim/L0/mjcf/src/model_builder.rs` — forward to `Model.body_gravcomp`,
+- `sim/L0/mjcf/src/builder/` — forward to `Model.body_gravcomp`,
   compute `ngravcomp`
-- `sim/L0/core/src/mujoco_pipeline.rs` — add `body_gravcomp: Vec<f64>` and
-  `ngravcomp: usize` to Model; add `qfrc_gravcomp: DVector<f64>` to Data;
-  implement `mj_apply_ft()` (general utility near Jacobian functions) and
-  `mj_gravcomp()`; call from `mj_fwd_passive()` with routing to `qfrc_passive`;
+- `sim/L0/core/src/types/model.rs` — add `body_gravcomp: Vec<f64>` and
+  `ngravcomp: usize` to Model
+- `sim/L0/core/src/types/data.rs` — add `qfrc_gravcomp: DVector<f64>` to Data
+- `sim/L0/core/src/forward/passive.rs` — implement `mj_gravcomp()`;
+  call from `mj_fwd_passive()` with routing to `qfrc_passive`;
   zero `qfrc_gravcomp` at top of `mj_fwd_passive()`
+- `sim/L0/core/src/jacobian.rs` — implement `mj_apply_ft()` (general utility)
 - `sim/L0/tests/integration/` — new `gravcomp.rs` with tests for AC1-AC14
 
 ---
@@ -986,7 +989,7 @@ The implementation:
    (Phase 1 & 2), `mj_sensor_pos` (ActuatorPos), derivatives (`derivatives.rs`),
    and sleep policy resolution.
 
-**Files:** `mujoco_pipeline.rs` (7 changes), `model_builder.rs` (2 changes),
+**Files:** sim-core modules (7 changes), `builder/` (2 changes),
 `derivatives.rs` (1 change).
 - Body case in `mj_actuator_length()` for velocity computation.
 
@@ -1062,7 +1065,7 @@ not by `gear`. The default `gear[0] = 1` has no effect.
 
 ##### S1. `ActuatorTransmission::Body` enum variant
 
-Add a new variant to the transmission enum (line ~527 in `mujoco_pipeline.rs`).
+Add a new variant to the transmission enum (`types/enums.rs`).
 Since the body ID is already stored in `actuator_trnid`, we do NOT need to embed
 it in the enum:
 
@@ -1197,7 +1200,7 @@ fn compute_contact_normal_jacobian(
 }
 ```
 
-`accumulate_point_jacobian()` (line ~9656 in `mujoco_pipeline.rs`) is an
+`accumulate_point_jacobian()` (`jacobian.rs`) is an
 existing function used for tendon Jacobian computation. It walks the kinematic
 chain from `body_id` to root, accumulating
 `scale * (direction · joint_contribution)` per DOF. For each joint type:
@@ -1295,7 +1298,7 @@ ActuatorTransmission::Body => {
 
 ##### S6. Model builder: remove error, resolve body name to ID
 
-In `model_builder.rs` (line ~2019), replace the error with body name resolution:
+In `builder/`, replace the error with body name resolution:
 
 ```rust
 } else if let Some(ref body_name) = actuator.body {
@@ -1455,19 +1458,18 @@ Six match/if-check sites exist:
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs`:
-  - Add `Body` variant to `ActuatorTransmission` enum (line ~527)
-  - Implement `mj_transmission_body()` and `compute_contact_normal_jacobian()`
-    (new functions, place near `mj_transmission_site()` at line ~10321)
-  - Implement `mj_transmission_body_dispatch()` (thin loop wrapper)
-  - Add call to `mj_transmission_body_dispatch()` in `forward_core()` after
-    the collision + wake cycle (after line ~4651)
-  - Add `Body` arm to Phase 3 match in `mj_fwd_actuation()` (line ~10726)
-  - Add `Body` arm to `mj_actuator_length()` (line ~10442)
-  - Add `Body => {}` to both matches in `compute_muscle_params()` (lines ~3731, ~3809)
-  - Add `Body` arm to `mj_sensor_pos()` ActuatorPos sensor (line ~8373)
-- `sim/L0/mjcf/src/model_builder.rs`:
-  - Replace error (line ~2019) with body name → ID resolution
+- sim-core modules:
+  - `types/enums.rs` — Add `Body` variant to `ActuatorTransmission` enum
+  - `forward/actuation.rs` — Implement `mj_transmission_body()` and
+    `compute_contact_normal_jacobian()`, `mj_transmission_body_dispatch()`,
+    add `Body` arm to Phase 3 match in `mj_fwd_actuation()`,
+    add `Body` arm to `mj_actuator_length()`,
+    add `Body => {}` to both matches in `compute_muscle_params()`
+  - `forward/mod.rs` — Add call to `mj_transmission_body_dispatch()` in
+    `forward_core()` after the collision + wake cycle
+  - `sensor/` — Add `Body` arm to `mj_sensor_pos()` ActuatorPos sensor
+- `sim/L0/mjcf/src/builder/`:
+  - Replace error with body name → ID resolution
 - `sim/L0/tests/integration/`:
   - New `adhesion.rs` test file with tests for AC1–AC14
 
@@ -1478,7 +1480,7 @@ Six match/if-check sites exist:
 
 #### Current State
 
-**Pipeline:** `EqualityType::Tendon` exists in the enum (`mujoco_pipeline.rs:611`)
+**Pipeline:** `EqualityType::Tendon` exists in the enum (`types/enums.rs`)
 but is ignored during constraint assembly. Row count returns 0 (line 14553),
 extraction returns `continue` (line 14719). Any model using `<equality><tendon>`
 silently gets no constraint enforcement.
@@ -1489,36 +1491,36 @@ comment: "Skip other equality constraint types (tendon, flex)"). Models with
 tendon equality constraints silently drop the element.
 
 **Tendon kinematics:** Fully computed for both fixed and spatial tendons:
-- `data.ten_length: Vec<f64>` — current tendon lengths (`mujoco_pipeline.rs:2370`)
-- `data.ten_velocity: Vec<f64>` — tendon velocities (`mujoco_pipeline.rs:2373`)
+- `data.ten_length: Vec<f64>` — current tendon lengths (`types/data.rs`)
+- `data.ten_velocity: Vec<f64>` — tendon velocities (`types/data.rs`)
 - `data.ten_J: Vec<DVector<f64>>` — tendon Jacobians, nv-dimensional per tendon
-  (`mujoco_pipeline.rs:2378`)
+  (`types/data.rs`)
 - `model.tendon_length0: Vec<f64>` — reference length at qpos0
-  (`mujoco_pipeline.rs:1692`), populated for both fixed (line 3669) and spatial
-  (line 4018) tendons during model building
+  (`types/model.rs`), populated for both fixed and spatial tendons during
+  model building
 
 **Tendon tree mapping:** Already precomputed during model building
-(`model_builder.rs:3757–3808`):
+(`builder/`):
 - `model.tendon_treenum: Vec<usize>` — trees spanned per tendon
-  (`mujoco_pipeline.rs:1721`)
+  (`types/model.rs`)
 - `model.tendon_tree: Vec<usize>` — packed tree IDs, indexed as
   `tendon_tree[2*t]` and `tendon_tree[2*t+1]`, sentinel `usize::MAX` for unused
-  slots (`mujoco_pipeline.rs:1725`)
+  slots (`types/model.rs`)
 
-**Pre-existing bug in tendon tree builder:** The tree ID computation at
-`model_builder.rs:3801` only stores tree IDs when `tree_set.len() == 2`. For
+**Pre-existing bug in tendon tree builder:** The tree ID computation in
+`builder/` only stores tree IDs when `tree_set.len() == 2`. For
 single-tree tendons (`treenum == 1`), `tendon_tree[2*t]` remains at the
 initialization value of `usize::MAX`. This causes the existing tendon-limit wake
-propagation code (`mujoco_pipeline.rs:12770–12771`) to silently skip single-tree
+propagation code (`island/`) to silently skip single-tree
 tendons. This bug must be fixed as part of this work (see S6).
 
-**Existing pattern:** `extract_joint_equality_jacobian()` (`mujoco_pipeline.rs:18294`)
+**Existing pattern:** `extract_joint_equality_jacobian()` (`constraint/`)
 implements the Joint equality case with polynomial coupling. Tendon equality
 follows the same pattern but uses tendon lengths and Jacobians instead of joint
 positions and DOF columns.
 
 **Name lookup:** `tendon_name_to_id: HashMap<String, usize>` exists on the model
-builder (`model_builder.rs:563`) and is populated during tendon processing
+builder (`builder/`) and is populated during tendon processing
 (line 1777).
 
 #### Objective
@@ -1642,7 +1644,7 @@ there is no ambiguity at any level.
 
 ##### S2. Model builder
 
-In `process_equality_constraints()` (`model_builder.rs:2664`), add a branch for
+In `process_equality_constraints()` (`builder/`), add a branch for
 tendon equality after the existing Distance block (line 2859). Follows the
 identical pattern used by Joint equality (lines 2774–2813):
 
@@ -1694,7 +1696,7 @@ incremented manually.
 
 ##### S3. Constraint assembly: row counting
 
-In `assemble_unified_constraints()` (`mujoco_pipeline.rs:14553`), change:
+In `assemble_unified_constraints()` (`constraint/`), change:
 
 ```rust
 EqualityType::Tendon => 0,  // was: not implemented
@@ -1708,8 +1710,8 @@ EqualityType::Tendon => 1,  // scalar constraint
 
 ##### S4. Constraint assembly: extraction
 
-Implement `extract_tendon_equality_jacobian()` in `mujoco_pipeline.rs`, adjacent
-to `extract_joint_equality_jacobian()` (line 18294). The function follows the
+Implement `extract_tendon_equality_jacobian()` in `constraint/`, adjacent
+to `extract_joint_equality_jacobian()`. The function follows the
 same signature and return type (`EqualityConstraintRows`):
 
 ```rust
@@ -1784,7 +1786,7 @@ fn extract_tendon_equality_jacobian(
 
 ##### S5. Constraint extraction dispatch
 
-In the extraction phase (`mujoco_pipeline.rs:14719`), change:
+In the extraction phase (`constraint/`), change:
 
 ```rust
 EqualityType::Tendon => continue,
@@ -1799,13 +1801,13 @@ EqualityType::Tendon => extract_tendon_equality_jacobian(model, data, eq_id),
 ##### S6. Fix tendon tree builder + implement equality_trees for Tendon
 
 **Background:** `tendon_treenum` and `tendon_tree` already exist on Model and
-are computed during model building (`model_builder.rs:3757–3808`). No new fields
+are computed during model building (`builder/`). No new fields
 or computation functions are needed. However, the existing builder has a bug: it
 only stores tree IDs for two-tree tendons (`tree_set.len() == 2`), leaving
 single-tree tendons with `tendon_tree[2*t] == usize::MAX`. This breaks the
-existing wake propagation code at `mujoco_pipeline.rs:12770–12771`.
+existing wake propagation code in `island/`.
 
-**S6a. Fix tendon tree builder** (`model_builder.rs:3801`):
+**S6a. Fix tendon tree builder** (`builder/`):
 
 Change:
 ```rust
@@ -1835,7 +1837,7 @@ This stores the tree ID for single-tree tendons in `tendon_tree[2*t]`, fixing
 both the existing wake propagation bug and enabling correct lookups for tendon
 equality constraints.
 
-**S6b. Implement equality_trees for Tendon** (`mujoco_pipeline.rs:13029`):
+**S6b. Implement equality_trees for Tendon** (`island/`):
 
 Replace:
 ```rust
@@ -1888,7 +1890,7 @@ EqualityType::Tendon => {
 ##### S7. Wake propagation
 
 No explicit changes needed. Wake propagation already iterates all active equality
-constraints and calls `equality_trees()` (`mujoco_pipeline.rs:12715–12732`).
+constraints and calls `equality_trees()` (`island/`).
 Fixing the Tendon arm in `equality_trees()` (S6b) is sufficient — the existing
 edge-propagation logic handles tree-pair waking correctly for all constraint
 types.
@@ -1951,7 +1953,7 @@ types.
 #### Implementation Notes
 
 **Follow the Joint equality pattern.** `extract_joint_equality_jacobian()`
-(`mujoco_pipeline.rs:18294`) is the exact template. The tendon case differs
+(`constraint/`) is the exact template. The tendon case differs
 only in:
 - Uses `data.ten_length[t]` instead of `data.qpos[dof]`
 - Uses `model.tendon_length0[t]` for reference lengths
@@ -1961,19 +1963,19 @@ only in:
 
 **Reference length computation.** `tendon_length0` is computed during model
 building by running FK at `qpos0` and evaluating tendon lengths. Fixed tendons
-are computed at `model_builder.rs:3669`; spatial tendons at
-`model_builder.rs:4018`. Both are populated before constraint assembly runs.
+are computed in `builder/`; spatial tendons also in `builder/`.
+Both are populated before constraint assembly runs.
 
 **Jacobian storage.** `data.ten_J[t]` is a `DVector<f64>` of length `nv`,
-recomputed each step by `mj_fwd_tendon()` (`mujoco_pipeline.rs:9362`). It is
+recomputed each step by `mj_fwd_tendon()` (`tendon/mod.rs`). It is
 available when constraint assembly runs (after the velocity phase).
 
 **Tendon tree fields.** `tendon_treenum` and `tendon_tree` are precomputed
-during model building (`model_builder.rs:3757–3808`) by walking each tendon's
+during model building (`builder/`) by walking each tendon's
 wrap objects to find body → tree mappings. No new model fields are needed.
 
 **Match exhaustiveness.** `EqualityType::Tendon` appears in 3 match sites in
-`mujoco_pipeline.rs`, plus the builder. The compiler enforces exhaustiveness
+sim-core modules, plus the builder. The compiler enforces exhaustiveness
 on all `EqualityType` matches, so a missing arm is a compile error.
 
 | # | Location | Current | Change | Spec |
@@ -1981,9 +1983,9 @@ on all `EqualityType` matches, so a missing arm is a compile error.
 | 1 | `equality_trees()` (line 13029) | Returns `(sentinel, sentinel)` | Tendon tree lookup | S6b |
 | 2 | Row counting (line 14553) | Returns `0` | Returns `1` | S3 |
 | 3 | Extraction dispatch (line 14719) | `continue` | Calls `extract_tendon_equality_jacobian()` | S5 |
-| 4 | `model_builder.rs` `process_equality_constraints()` (line 2664) | No Tendon branch | Pushes `EqualityType::Tendon` + tendon IDs + polycoef | S2 |
+| 4 | `builder/` `process_equality_constraints()` | No Tendon branch | Pushes `EqualityType::Tendon` + tendon IDs + polycoef | S2 |
 
-No other match sites exist. The enum definition (`mujoco_pipeline.rs:611`)
+No other match sites exist. The enum definition (`types/enums.rs`)
 and parser (`parser.rs`) are additive (new variant / new parse arm), not
 match-dependent.
 
@@ -1994,10 +1996,11 @@ match-dependent.
 - `sim/L0/mjcf/src/parser.rs` — parse `<equality><tendon>` elements (add
   `b"tendon"` arms in `parse_equality()`, implement
   `parse_tendon_equality_attrs()`)
-- `sim/L0/mjcf/src/model_builder.rs` — process tendon equality in
+- `sim/L0/mjcf/src/builder/` — process tendon equality in
   `process_equality_constraints()`; fix tendon tree builder to store IDs for
   single-tree tendons (S6a)
-- `sim/L0/core/src/mujoco_pipeline.rs` — implement
+- `sim/L0/core/src/constraint/` — implement
   `extract_tendon_equality_jacobian()`; update row counting (0 → 1);
-  update extraction dispatch; update `equality_trees()` Tendon arm
+  update extraction dispatch
+- `sim/L0/core/src/island/` — update `equality_trees()` Tendon arm
 - `sim/L0/tests/integration/` — new tests for tendon equality scenarios

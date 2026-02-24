@@ -4,6 +4,7 @@
 //! dynamics pipeline (CRBA, RNE, forward kinematics). Functions here are
 //! pure math — no pipeline state dependencies.
 
+use crate::types::{Data, Model};
 use nalgebra::{Matrix3, Matrix6, Vector3, Vector6};
 
 /// 6D spatial vector: [angular (3), linear (3)].
@@ -218,4 +219,45 @@ pub fn shift_spatial_inertia(phi: &Matrix6<f64>, d: &Vector3<f64>) -> Matrix6<f6
     result[(4, 2)] = mhn_x;
 
     result
+}
+
+/// Compute 6D velocity at an object center in its local frame.
+///
+/// Equivalent to MuJoCo's `mj_objectVelocity(m, d, objtype, id, res, flg_local=1)`.
+/// Returns `[ω_local; v_local]`.
+pub fn object_velocity_local(
+    _model: &Model,
+    data: &Data,
+    body_id: usize,
+    point: &Vector3<f64>,
+    rot: &Matrix3<f64>,
+) -> [f64; 6] {
+    // Static body check: world body (id=0) has mass=0 and is caught by the
+    // dispatch loop's mass guard. For extra safety, return zeros for body 0.
+    if body_id == 0 {
+        return [0.0; 6];
+    }
+
+    let cvel = &data.cvel[body_id];
+    let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
+    let v_origin = Vector3::new(cvel[3], cvel[4], cvel[5]);
+
+    // Shift linear velocity from body origin to requested point.
+    // Our cvel stores velocity at xpos[body_id] (body origin), so the lever
+    // arm is from body origin to the query point.
+    let dif = point - data.xpos[body_id];
+    let v_point = v_origin + omega.cross(&dif);
+
+    // Rotate to local frame
+    let omega_local = rot.transpose() * omega;
+    let v_local = rot.transpose() * v_point;
+
+    [
+        omega_local.x,
+        omega_local.y,
+        omega_local.z,
+        v_local.x,
+        v_local.y,
+        v_local.z,
+    ]
 }

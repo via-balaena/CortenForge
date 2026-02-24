@@ -13,4 +13,6 @@ pub(crate) mod spatial;
 
 pub(crate) use crba::DEFAULT_MASS_FALLBACK;
 pub use spatial::SpatialVector;
-pub(crate) use spatial::{compute_body_spatial_inertia, shift_spatial_inertia};
+pub(crate) use spatial::{
+    compute_body_spatial_inertia, object_velocity_local, shift_spatial_inertia,
+};
