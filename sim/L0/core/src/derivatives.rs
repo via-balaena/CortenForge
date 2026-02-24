@@ -54,6 +54,10 @@
 //! ```
 
 use crate::dynamics::spatial::{SpatialVector, spatial_cross_motion};
+use crate::forward::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
+use crate::jacobian::{
+    mj_differentiate_pos, mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom,
+};
 use crate::joint_visitor::joint_motion_subspace;
 use crate::linalg::{
     cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse, mj_solve_sparse_batch,
@@ -62,13 +66,6 @@ use crate::mujoco_pipeline::{
     // §40a fluid derivative infrastructure
     MJ_MINVAL,
     // pub(crate) functions still in monolith (moved in later phases)
-    ellipsoid_moment,
-    fluid_geom_semi_axes,
-    mj_differentiate_pos,
-    mj_integrate_pos_explicit,
-    mj_jac_body_com,
-    mj_jac_geom,
-    norm3,
     object_velocity_local,
     tendon_all_dofs_sleeping,
 };
@@ -2391,7 +2388,7 @@ fn mjd_fluid_vel(model: &Model, data: &mut Data) {
 )]
 mod fluid_derivative_unit_tests {
     use super::*;
-    use crate::mujoco_pipeline::{ellipsoid_moment, norm3};
+    use crate::forward::{ellipsoid_moment, norm3};
 
     const EPS: f64 = 1e-6;
     const FD_TOL: f64 = 1e-5;

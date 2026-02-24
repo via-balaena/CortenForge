@@ -93,6 +93,12 @@ pub mod energy;
 // Constraint system (assembly, dispatch, solver orchestration)
 pub mod constraint;
 
+// Forward dynamics pipeline (step, forward, position, velocity, passive, actuation, acceleration)
+pub mod forward;
+
+// Jacobian computation and position differentiation/integration
+pub mod jacobian;
+
 // Collision detection pipeline (dispatch, narrow-phase, contact params)
 pub mod collision;
 
@@ -184,7 +190,7 @@ pub use dynamics::SpatialVector;
 // Pyramidal force recovery (§32) — extracted to constraint/solver
 pub use constraint::solver::decode_pyramid;
 
-pub use mujoco_pipeline::{
+pub use jacobian::{
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,

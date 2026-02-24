@@ -7,8 +7,8 @@
 use nalgebra::Vector3;
 
 use crate::dynamics::spatial::{SpatialVector, spatial_cross_force, spatial_cross_motion};
+use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::joint_motion_subspace;
-use crate::mujoco_pipeline::mj_apply_ft; // monolith: removed in Phase 8a
 use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SleepState};
 
 /// Recursive Newton-Euler: compute bias forces (Coriolis + centrifugal + gravity).

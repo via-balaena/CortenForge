@@ -1,7 +1,7 @@
 //! Flex-rigid collision helpers — narrowphase for flex vertex spheres against rigid geoms.
 
 use super::contact_param_flex_rigid;
-use crate::mujoco_pipeline::closest_point_segment; // monolith: removed in Phase 8a
+use crate::forward::closest_point_segment;
 use crate::types::{Contact, GeomType, Model, compute_tangent_frame};
 use nalgebra::{Matrix3, Vector2, Vector3};
 

@@ -12,8 +12,7 @@ pub(crate) use spatial::*;
 
 use crate::types::{Data, Model, TendonType};
 
-// mj_fwd_position lives in the monolith until Phase 8a.
-use crate::mujoco_pipeline::mj_fwd_position; // monolith: removed in Phase 8a
+use crate::forward::mj_fwd_position;
 
 /// Compute tendon lengths and Jacobians from current joint state.
 ///

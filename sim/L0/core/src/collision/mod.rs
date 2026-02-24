@@ -19,8 +19,7 @@ pub(crate) mod sdf_collide;
 // pub(crate) use flex_collide::{make_contact_flex_rigid, narrowphase_sphere_geom};
 
 use crate::collision_shape::Aabb;
-use crate::mujoco_pipeline::SweepAndPrune; // monolith: removed in Phase 8a
-use crate::mujoco_pipeline::aabb_from_geom; // monolith: removed in Phase 8a
+use crate::forward::{SweepAndPrune, aabb_from_geom};
 use crate::types::{Data, ENABLE_SLEEP, Model, SleepState};
 use nalgebra::{Point3, Vector3};
 

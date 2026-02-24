@@ -16,7 +16,8 @@ use crate::dynamics::SpatialVector;
 use crate::dynamics::crba::{DEFAULT_MASS_FALLBACK, mj_crba};
 
 // Types still in monolith (will be extracted in later phases)
-use crate::mujoco_pipeline::{Data, mj_fwd_position, mj_update_sleep_arrays, reset_sleep_state};
+use crate::forward::mj_fwd_position;
+use crate::mujoco_pipeline::{Data, mj_update_sleep_arrays, reset_sleep_state};
 
 impl Model {
     /// Create an empty model with no bodies/joints.

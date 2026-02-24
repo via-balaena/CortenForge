@@ -1,8 +1,7 @@
 //! Analytical pairwise collision for cylinders and box-box SAT.
 
 use super::narrow::{CAP_COLLISION_THRESHOLD, GEOM_EPSILON, make_contact_from_geoms};
-use crate::mujoco_pipeline::closest_point_segment; // monolith: removed in Phase 8a
-use crate::mujoco_pipeline::closest_points_segments; // monolith: removed in Phase 8a
+use crate::forward::{closest_point_segment, closest_points_segments};
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Vector3};
 
