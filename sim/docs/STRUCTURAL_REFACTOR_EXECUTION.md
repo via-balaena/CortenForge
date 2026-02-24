@@ -308,12 +308,16 @@ left in monolith (heavy deps). ~3,100 lines moved; monolith 8,275 → 5,364.
   belong to `integrate/implicit.rs` (Phase 8b), **NOT** to `forward/passive.rs`.~~
   Hazard avoided: only L12108–L12689 and L12818–L12899 taken for passive.
 
-### Phase 8b: Naming hazard
+### Phase 8b: Naming hazard **(RESOLVED)**
 
-**`mj_integrate_pos`** → `integrate/euler.rs` (Euler position integration).
-**`mj_integrate_pos_explicit`** → `jacobian.rs` (Phase 8a — Jacobian utility
-for finite-difference derivatives). The names differ by one suffix. Don't
-confuse them.
+All Phase 8b hazards were handled during extraction. `mj_integrate_pos`
+correctly placed in `integrate/euler.rs`; `mj_integrate_pos_explicit` already
+in `jacobian.rs` (Phase 8a). ~566 lines moved; monolith 5,364 → 4,798.
+
+- ~~**`mj_integrate_pos`** → `integrate/euler.rs` (Euler position integration).~~
+  Hazard avoided: placed correctly, not confused with `_explicit` variant.
+- ~~**`mj_integrate_pos_explicit`** → `jacobian.rs` (Phase 8a).~~
+  Already extracted; no action needed.
 
 ### Phase 10: MARGIN WARNING + feature gate + shared constants
 
@@ -439,10 +443,11 @@ and correlating with commit history.
 | 8a | forward/check.rs | 51 lines; mj_check_pos, mj_check_vel, mj_check_acc | done | b62d746 | S14 |
 | 8a | jacobian.rs | 455 lines; mj_jac, mj_jac_site/body/point/body_com/geom, mj_apply_ft, mj_differentiate_pos, mj_integrate_pos_explicit. **(HAZARD OK)** mj_integrate_pos (Phase 8b) left in monolith | done | b62d746 | S14 |
 | 8a | **Phase 8a audit** | Independent audit: all S1–S8 A-grade. Zero code findings. Checklist and progress table updated. 2,007/0/20 (11-crate scope). Clippy clean. | done | 6a4724a | S14 |
-| 8b | integrate/mod.rs | | | | |
-| 8b | integrate/euler.rs | **(HAZARD)** `mj_integrate_pos` (NOT `_explicit`) | | | |
-| 8b | integrate/implicit.rs | Extracts L12690–L12816 (skipped in Phase 8a) | | | |
-| 8b | integrate/rk4.rs | | | | |
+| 8b | integrate/euler.rs | 180 lines; mj_integrate_pos, mj_normalize_quat, PositionIntegrateVisitor, QuaternionNormalizeVisitor. **(HAZARD OK)** mj_integrate_pos (NOT `_explicit`) correctly placed | done | 2d8bb9f | S15 |
+| 8b | integrate/implicit.rs | 117 lines; tendon_all_dofs_sleeping, tendon_active_stiffness, accumulate_tendon_kd. Extracts tendon K/D helpers skipped in Phase 8a | done | 2d8bb9f | S15 |
+| 8b | integrate/rk4.rs | 191 lines; mj_runge_kutta (classic RK4 Butcher tableau) | done | 2d8bb9f | S15 |
+| 8b | integrate/mod.rs | 140 lines; Data::integrate() + integrate_without_velocity() dispatch | done | 2d8bb9f | S15 |
+| 8b | **Phase 8b audit** | Independent audit: all S1–S8 A-grade. Zero findings. Lazy import check passed. 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S15 |
 | 8c | island/mod.rs | | | | |
 | 8c | island/sleep.rs | | | | |
 | 10 | builder/mod.rs | **(MARGIN)** ~732 lines — requires init.rs split | | | |
