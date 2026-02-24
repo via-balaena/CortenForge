@@ -7,12 +7,14 @@
 //! orchestration sequence that wires everything together.
 
 pub mod asset;
+pub mod body;
 pub mod compiler;
 pub mod fluid;
 pub mod frame;
 pub mod geom;
 mod init;
 pub mod joint;
+pub mod mass;
 pub mod mesh;
 pub mod orientation;
 

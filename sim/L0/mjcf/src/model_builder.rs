@@ -4,21 +4,17 @@
 //! retains functions that will move to `builder/` sub-modules in later
 //! Phase 10 sessions. It will be deleted in Phase 12.
 
-use nalgebra::{DVector, Matrix3, Quaternion, UnitQuaternion, Vector3, Vector4};
-use sim_core::mesh::TriangleMeshData;
+use nalgebra::{DVector, UnitQuaternion, Vector3};
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, ENABLE_SLEEP, EqualityType,
     GainType, GeomType, Integrator, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
     Model, SleepPolicy, TendonType, WrapType, compute_dof_lengths,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::warn;
 
 use crate::types::{
-    InertiaFromGeom, MjcfActuator, MjcfActuatorType, MjcfBody, MjcfContact, MjcfEquality, MjcfFlex,
-    MjcfGeom, MjcfInertial, MjcfSensor, MjcfSensorType, MjcfTendon, MjcfTendonType,
-    SpatialPathElement,
+    MjcfActuator, MjcfActuatorType, MjcfContact, MjcfEquality, MjcfFlex, MjcfSensor,
+    MjcfSensorType, MjcfTendon, MjcfTendonType, SpatialPathElement,
 };
 
 // Re-imports from builder/ (extracted in Phase 10)
@@ -37,302 +33,10 @@ use crate::builder::{load_model, load_model_from_file, model_from_mjcf};
 
 // process_mesh, process_hfield → crate::builder::mesh (Phase 10)
 
+// process_worldbody_geoms_and_sites, process_body, process_body_with_world_frame
+// → crate::builder::body (Phase 10)
+
 impl ModelBuilder {
-    /// Process geoms and sites directly attached to worldbody (body 0).
-    ///
-    /// In MJCF, the worldbody can have geoms (like ground planes) and sites
-    /// directly attached to it. These are static geometries at world coordinates.
-    ///
-    /// No childclass is applied here — MuJoCo's worldbody accepts no attributes
-    /// (including childclass), so worldbody elements use only their own explicit
-    /// class or the unnamed top-level default.
-    pub(crate) fn process_worldbody_geoms_and_sites(
-        &mut self,
-        worldbody: &MjcfBody,
-    ) -> std::result::Result<(), ModelConversionError> {
-        // Track geom start address for body 0
-        let geom_adr = self.geom_type.len();
-
-        // Process worldbody geoms
-        for geom in &worldbody.geoms {
-            let geom = self.resolver.apply_to_geom(geom);
-            self.process_geom(&geom, 0)?;
-        }
-
-        // Process worldbody sites
-        for site in &worldbody.sites {
-            let site = self.resolver.apply_to_site(site);
-            self.process_site(&site, 0)?;
-        }
-
-        // Update body 0's geom range
-        let num_geoms = self.geom_type.len() - geom_adr;
-        self.body_geom_adr[0] = geom_adr;
-        self.body_geom_num[0] = num_geoms;
-
-        Ok(())
-    }
-
-    /// Process a body and its descendants.
-    ///
-    /// This is the public-facing entry point that initializes world frame tracking.
-    ///
-    /// # Arguments
-    /// * `body` - The MJCF body to process
-    /// * `parent_id` - Index of the parent body in the Model
-    /// * `parent_last_dof` - Index of the last DOF in the parent body's kinematic chain
-    ///   (None for bodies attached to world)
-    ///
-    /// # Returns
-    /// The body index in the Model
-    pub(crate) fn process_body(
-        &mut self,
-        body: &MjcfBody,
-        parent_id: usize,
-        parent_last_dof: Option<usize>,
-        inherited_childclass: Option<&str>,
-    ) -> std::result::Result<usize, ModelConversionError> {
-        // Start with parent's world frame (world body is at origin)
-        let (parent_world_pos, parent_world_quat) = if parent_id == 0 {
-            (Vector3::zeros(), UnitQuaternion::identity())
-        } else {
-            // For non-world parents, we need to look up their world positions
-            // Since we process in topological order, parent is already processed
-            // We stored parent's world position when we added them
-            (
-                self.body_world_pos[parent_id - 1],
-                self.body_world_quat[parent_id - 1],
-            )
-        };
-        self.process_body_with_world_frame(
-            body,
-            parent_id,
-            parent_last_dof,
-            parent_world_pos,
-            parent_world_quat,
-            inherited_childclass,
-        )
-    }
-
-    /// Internal body processing with world frame tracking.
-    fn process_body_with_world_frame(
-        &mut self,
-        body: &MjcfBody,
-        parent_id: usize,
-        parent_last_dof: Option<usize>,
-        parent_world_pos: Vector3<f64>,
-        parent_world_quat: UnitQuaternion<f64>,
-        inherited_childclass: Option<&str>,
-    ) -> std::result::Result<usize, ModelConversionError> {
-        let body_id = self.body_parent.len();
-
-        // Validate mocap body constraints (before any state mutations)
-        if body.mocap {
-            if parent_id != 0 {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "mocap body '{}' must be a direct child of worldbody",
-                        body.name
-                    ),
-                });
-            }
-            if !body.joints.is_empty() {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "mocap body '{}' must not have joints (has {})",
-                        body.name,
-                        body.joints.len()
-                    ),
-                });
-            }
-        }
-
-        // Store name mapping
-        if !body.name.is_empty() {
-            self.body_name_to_id.insert(body.name.clone(), body_id);
-        }
-
-        // Determine root: if parent is world, this body is its own root
-        let root_id = if parent_id == 0 {
-            body_id
-        } else {
-            self.body_rootid[parent_id]
-        };
-
-        // Body position/orientation relative to parent.
-        // Priority: euler > axisangle > xyaxes > zaxis > quat (MuJoCo convention).
-        let body_pos = body.pos;
-        let body_quat = resolve_orientation(
-            body.quat,
-            body.euler,
-            body.axisangle,
-            None,
-            None,
-            &self.compiler,
-        );
-
-        // Compute world frame position for this body (used for free joint qpos0)
-        let world_pos = parent_world_pos + parent_world_quat * body_pos;
-        let world_quat = parent_world_quat * body_quat;
-
-        // Store world positions for child body processing
-        self.body_world_pos.push(world_pos);
-        self.body_world_quat.push(world_quat);
-
-        // Determine effective childclass for this body's children
-        let effective_childclass = body.childclass.as_deref().or(inherited_childclass);
-
-        // Resolve geom defaults once for both inertia computation and geom processing.
-        // Apply childclass: if a geom has no explicit class, set it from effective_childclass.
-        let resolved_geoms: Vec<MjcfGeom> = body
-            .geoms
-            .iter()
-            .map(|g| {
-                let mut g = g.clone();
-                if g.class.is_none() {
-                    g.class = effective_childclass.map(|s| s.to_string());
-                }
-                self.resolver.apply_to_geom(&g)
-            })
-            .collect();
-
-        // Process inertial properties with full MuJoCo semantics.
-        // Gated by compiler.inertiafromgeom:
-        //   True  — always compute from geoms (overrides explicit <inertial>)
-        //   Auto  — compute from geoms only when no explicit <inertial>
-        //   False — use explicit <inertial> or zero
-        let (mass, inertia, ipos, iquat) = match self.compiler.inertiafromgeom {
-            InertiaFromGeom::True => {
-                compute_inertia_from_geoms(&resolved_geoms, &self.mesh_name_to_id, &self.mesh_data)
-            }
-            InertiaFromGeom::Auto => {
-                if let Some(ref inertial) = body.inertial {
-                    extract_inertial_properties(inertial)
-                } else {
-                    compute_inertia_from_geoms(
-                        &resolved_geoms,
-                        &self.mesh_name_to_id,
-                        &self.mesh_data,
-                    )
-                }
-            }
-            InertiaFromGeom::False => {
-                if let Some(ref inertial) = body.inertial {
-                    extract_inertial_properties(inertial)
-                } else {
-                    (
-                        0.0,
-                        Vector3::zeros(),
-                        Vector3::zeros(),
-                        UnitQuaternion::identity(),
-                    )
-                }
-            }
-        };
-
-        // Track joint/DOF addresses for this body
-        let jnt_adr = self.jnt_type.len();
-        let dof_adr = self.nv;
-        let geom_adr = self.geom_type.len();
-
-        // Add body arrays
-        self.body_parent.push(parent_id);
-        self.body_rootid.push(root_id);
-        self.body_jnt_adr.push(jnt_adr);
-        self.body_dof_adr.push(dof_adr);
-        self.body_geom_adr.push(geom_adr);
-        self.body_pos.push(body_pos);
-        self.body_quat.push(body_quat);
-        self.body_ipos.push(ipos);
-        self.body_iquat.push(iquat);
-        self.body_mass.push(mass);
-        self.body_inertia.push(inertia);
-        if body.mocap {
-            self.body_mocapid.push(Some(self.nmocap));
-            self.nmocap += 1;
-        } else {
-            self.body_mocapid.push(None);
-        }
-        self.body_name.push(if body.name.is_empty() {
-            None
-        } else {
-            Some(body.name.clone())
-        });
-        // Parse body-level sleep policy
-        let sleep_policy = body.sleep.as_ref().and_then(|s| match s.as_str() {
-            "auto" => Some(SleepPolicy::Auto),
-            "allowed" => Some(SleepPolicy::Allowed),
-            "never" => Some(SleepPolicy::Never),
-            "init" => Some(SleepPolicy::Init),
-            _ => {
-                warn!(
-                    "body '{}': unknown sleep policy '{}', ignoring",
-                    body.name, s
-                );
-                None
-            }
-        });
-        self.body_sleep_policy.push(sleep_policy);
-        self.body_gravcomp.push(body.gravcomp.unwrap_or(0.0));
-
-        // Process joints for this body, tracking the last DOF for kinematic tree linkage
-        // MuJoCo semantics: first DOF of first joint links to parent body's last DOF,
-        // subsequent DOFs form a chain within and across joints
-        let mut body_nv = 0;
-        let mut current_last_dof = parent_last_dof;
-
-        for joint in &body.joints {
-            let mut joint = joint.clone();
-            if joint.class.is_none() {
-                joint.class = effective_childclass.map(|s| s.to_string());
-            }
-            let joint = self.resolver.apply_to_joint(&joint);
-            let jnt_id =
-                self.process_joint(&joint, body_id, current_last_dof, world_pos, world_quat)?;
-            let jnt_nv = self.jnt_type[jnt_id].nv();
-            body_nv += jnt_nv;
-
-            // Update current_last_dof to the last DOF of this joint
-            if jnt_nv > 0 {
-                current_last_dof = Some(self.nv - 1);
-            }
-        }
-
-        // Update body joint/DOF counts
-        self.body_jnt_num.push(body.joints.len());
-        self.body_dof_num.push(body_nv);
-
-        // Process geoms for this body (using pre-resolved defaults)
-        for geom in &resolved_geoms {
-            self.process_geom(geom, body_id)?;
-        }
-        self.body_geom_num.push(body.geoms.len());
-
-        // Process sites for this body
-        for site in &body.sites {
-            let mut site = site.clone();
-            if site.class.is_none() {
-                site.class = effective_childclass.map(|s| s.to_string());
-            }
-            let site = self.resolver.apply_to_site(&site);
-            self.process_site(&site, body_id)?;
-        }
-
-        // Recursively process children, passing this body's last DOF and world frame
-        for child in &body.children {
-            self.process_body_with_world_frame(
-                child,
-                body_id,
-                current_last_dof,
-                world_pos,
-                world_quat,
-                effective_childclass,
-            )?;
-        }
-
-        Ok(body_id)
-    }
-
     // process_joint → crate::builder::joint (Phase 10)
     // process_geom, process_site → crate::builder::geom (Phase 10)
 
@@ -1495,61 +1199,7 @@ impl ModelBuilder {
         }
     }
 
-    /// Apply the mass pipeline post-processing in MuJoCo order:
-    ///   1. inertiafromgeom — already handled per-body in process_body
-    ///   2. balanceinertia — triangle inequality correction
-    ///   3. boundmass / boundinertia — minimum clamping
-    ///   4. settotalmass — rescale to target total mass
-    pub(crate) fn apply_mass_pipeline(&mut self) {
-        let nbody = self.body_mass.len();
-
-        // Step 2: balanceinertia (A7)
-        // For each non-world body, check the triangle inequality on diagonal inertia.
-        // If violated (A + B < C for any permutation), set all three to their mean.
-        if self.compiler.balanceinertia {
-            for i in 1..nbody {
-                let inertia = &self.body_inertia[i];
-                let a = inertia.x;
-                let b = inertia.y;
-                let c = inertia.z;
-                if a + b < c || a + c < b || b + c < a {
-                    let mean = (a + b + c) / 3.0;
-                    self.body_inertia[i] = Vector3::new(mean, mean, mean);
-                }
-            }
-        }
-
-        // Step 3: boundmass / boundinertia (A6)
-        // Clamp every non-world body's mass and inertia to compiler minimums.
-        if self.compiler.boundmass > 0.0 {
-            for i in 1..nbody {
-                if self.body_mass[i] < self.compiler.boundmass {
-                    self.body_mass[i] = self.compiler.boundmass;
-                }
-            }
-        }
-        if self.compiler.boundinertia > 0.0 {
-            for i in 1..nbody {
-                let inertia = &mut self.body_inertia[i];
-                inertia.x = inertia.x.max(self.compiler.boundinertia);
-                inertia.y = inertia.y.max(self.compiler.boundinertia);
-                inertia.z = inertia.z.max(self.compiler.boundinertia);
-            }
-        }
-
-        // Step 4: settotalmass (A8)
-        // When positive, rescale all body masses and inertias so total == target.
-        if self.compiler.settotalmass > 0.0 {
-            let total_mass: f64 = (1..nbody).map(|i| self.body_mass[i]).sum();
-            if total_mass > 0.0 {
-                let scale = self.compiler.settotalmass / total_mass;
-                for i in 1..nbody {
-                    self.body_mass[i] *= scale;
-                    self.body_inertia[i] *= scale;
-                }
-            }
-        }
-    }
+    // apply_mass_pipeline → crate::builder::mass (Phase 10)
 
     /// Process flex deformable bodies: create a real body (+ 3 slide joints for unpinned
     /// vertices) per flex vertex, extract edges/hinges, populate Model flex_* arrays.
@@ -2638,7 +2288,6 @@ fn floats_to_array<const N: usize>(input: &[f64], default: [f64; N]) -> [f64; N]
 // quat_from_wxyz, quat_to_wxyz, euler_seq_to_quat, resolve_orientation → crate::builder::orientation (Phase 10)
 #[cfg(test)]
 use crate::builder::orientation::euler_seq_to_quat;
-pub use crate::builder::orientation::{quat_from_wxyz, resolve_orientation};
 
 // frame_accum_child, validate_childclass_references, validate_frame_childclass_refs,
 // expand_frames, expand_single_frame → crate::builder::frame (Phase 10)
@@ -2653,167 +2302,17 @@ pub use crate::builder::orientation::{quat_from_wxyz, resolve_orientation};
 
 // load_mesh_file, convert_mjcf_hfield, convert_mjcf_mesh, convert_embedded_mesh,
 // compute_mesh_inertia → crate::builder::mesh (Phase 10)
-use crate::builder::mesh::{MeshProps, compute_mesh_inertia, resolve_mesh};
-
-/// Extract inertial properties from MjcfInertial with full MuJoCo semantics.
-///
-/// Handles both `diaginertia` and `fullinertia` specifications.
-/// When `fullinertia` is specified, diagonalizes via eigendecomposition
-/// and returns the principal axis orientation in `iquat`.
-fn extract_inertial_properties(
-    inertial: &MjcfInertial,
-) -> (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>) {
-    let mass = inertial.mass;
-    let ipos = inertial.pos;
-
-    // Priority: fullinertia > diaginertia > default
-    if let Some(full) = inertial.fullinertia {
-        // Full inertia tensor [Ixx, Iyy, Izz, Ixy, Ixz, Iyz]
-        // Build symmetric matrix and diagonalize
-        let inertia_matrix = Matrix3::new(
-            full[0], full[3], full[4], // Ixx, Ixy, Ixz
-            full[3], full[1], full[5], // Ixy, Iyy, Iyz
-            full[4], full[5], full[2], // Ixz, Iyz, Izz
-        );
-
-        // Eigendecomposition to get principal axes
-        let eigen = inertia_matrix.symmetric_eigen();
-        let principal_inertia = Vector3::new(
-            eigen.eigenvalues[0].abs(),
-            eigen.eigenvalues[1].abs(),
-            eigen.eigenvalues[2].abs(),
-        );
-
-        // Eigenvectors form rotation matrix to principal axes
-        // Ensure right-handed coordinate system
-        let mut rot = eigen.eigenvectors;
-        if rot.determinant() < 0.0 {
-            // Flip one column to make it right-handed
-            rot.set_column(2, &(-rot.column(2)));
-        }
-
-        let iquat = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_matrix(&rot));
-
-        // Combine with any existing inertial frame orientation
-        let base_iquat = quat_from_wxyz(inertial.quat);
-        let final_iquat = base_iquat * iquat;
-
-        (mass, principal_inertia, ipos, final_iquat)
-    } else if let Some(diag) = inertial.diaginertia {
-        // Diagonal inertia already in principal axes
-        (mass, diag, ipos, quat_from_wxyz(inertial.quat))
-    } else {
-        // Default: small uniform inertia
-        (
-            mass,
-            Vector3::new(0.001, 0.001, 0.001),
-            ipos,
-            quat_from_wxyz(inertial.quat),
-        )
-    }
-}
+// extract_inertial_properties, compute_inertia_from_geoms, apply_mass_pipeline
+// → crate::builder::mass (Phase 10)
 
 #[cfg(test)]
 use crate::builder::compiler::apply_fusestatic;
 #[cfg(test)]
+use crate::builder::geom::compute_geom_inertia;
+#[cfg(test)]
 use crate::builder::mesh::{convert_mjcf_mesh, load_mesh_file};
 #[cfg(test)]
-use crate::types::{MjcfCompiler, MjcfGeomType, MjcfMesh};
-
-// resolve_mesh, MeshProps → crate::builder::mesh (Phase 10)
-// geom_effective_com, compute_geom_mass, compute_geom_inertia, compute_fromto_pose,
-// geom_size_to_vec3 → crate::builder::geom (Phase 10)
-use crate::builder::geom::{compute_geom_inertia, compute_geom_mass, geom_effective_com};
-
-/// Compute inertia from geoms (fallback when no explicit inertial).
-///
-/// Accumulates full 3×3 inertia tensor with geom orientation handling,
-/// then eigendecomposes to extract principal inertia and orientation.
-///
-/// Mesh inertia is computed once per geom and cached across the mass and
-/// inertia passes (avoids O(3n) calls to `compute_mesh_inertia`).
-fn compute_inertia_from_geoms(
-    geoms: &[MjcfGeom],
-    mesh_lookup: &HashMap<String, usize>,
-    mesh_data: &[Arc<TriangleMeshData>],
-) -> (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>) {
-    if geoms.is_empty() {
-        // No geoms: zero mass/inertia (matches MuJoCo).
-        // Use boundmass/boundinertia to set minimums instead.
-        return (
-            0.0,
-            Vector3::zeros(),
-            Vector3::zeros(),
-            UnitQuaternion::identity(),
-        );
-    }
-
-    // Pre-compute mesh inertia once per geom (avoids 3× recomputation).
-    let mesh_props: Vec<Option<MeshProps>> = geoms
-        .iter()
-        .map(|geom| {
-            resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| compute_mesh_inertia(&mesh))
-        })
-        .collect();
-
-    let mut total_mass = 0.0;
-    let mut com = Vector3::zeros();
-
-    // First pass: compute total mass and COM
-    // For mesh geoms, the effective center of mass in the body frame is
-    // `geom.pos + R * mesh_com` (mesh COM is in mesh-local coordinates).
-    // For primitive geoms, the local COM is at the geom origin: `geom.pos`.
-    for (geom, props) in geoms.iter().zip(mesh_props.iter()) {
-        let geom_mass = compute_geom_mass(geom, props.as_ref());
-        let effective_pos = geom_effective_com(geom, props.as_ref());
-        total_mass += geom_mass;
-        com += effective_pos * geom_mass;
-    }
-
-    if total_mass > 1e-10 {
-        com /= total_mass;
-    }
-
-    // Second pass: accumulate full 3×3 inertia tensor about COM
-    let mut inertia_tensor = Matrix3::zeros();
-    for (geom, props) in geoms.iter().zip(mesh_props.iter()) {
-        let geom_mass = compute_geom_mass(geom, props.as_ref());
-        let geom_inertia = compute_geom_inertia(geom, props.as_ref());
-
-        // 1. Rotate local inertia to body frame: I_rot = R * I_local * Rᵀ
-        let q = geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
-        let r = UnitQuaternion::from_quaternion(Quaternion::new(q[0], q[1], q[2], q[3]));
-        let rot = r.to_rotation_matrix();
-        let i_rotated = rot * geom_inertia * rot.transpose();
-
-        // 2. Parallel axis theorem (full tensor):
-        //    I_shifted = I_rotated + m * (d·d * I₃ - d ⊗ d)
-        //    d = displacement from body COM to geom effective COM
-        let effective_pos = geom_effective_com(geom, props.as_ref());
-        let d = effective_pos - com;
-        let d_sq = d.dot(&d);
-        let parallel_axis = geom_mass * (Matrix3::identity() * d_sq - d * d.transpose());
-        inertia_tensor += i_rotated + parallel_axis;
-    }
-
-    // Eigendecompose to get principal axes
-    let eigen = inertia_tensor.symmetric_eigen();
-    let principal_inertia = Vector3::new(
-        eigen.eigenvalues[0].abs(),
-        eigen.eigenvalues[1].abs(),
-        eigen.eigenvalues[2].abs(),
-    );
-
-    // Eigenvectors form rotation to principal axes
-    // Ensure right-handed coordinate system
-    let mut rot = eigen.eigenvectors;
-    if rot.determinant() < 0.0 {
-        rot.set_column(2, &(-rot.column(2)));
-    }
-    let iquat = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_matrix(&rot));
-
-    (total_mass, principal_inertia, com, iquat)
-}
+use crate::types::{MjcfCompiler, MjcfGeom, MjcfGeomType, MjcfMesh};
 
 /// Map `MjcfSensorType` to pipeline `MjSensorType`.
 /// Returns `None` for types not yet implemented in the pipeline.

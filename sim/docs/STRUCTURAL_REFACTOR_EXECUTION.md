@@ -478,8 +478,8 @@ and correlating with commit history.
 | 10 | builder/mesh.rs | 473 lines. process_mesh, process_hfield (impl), load_mesh_file, convert_mjcf_hfield, convert_mjcf_mesh, convert_embedded_mesh, compute_mesh_inertia, resolve_mesh, MeshProps type. No inline tests | done | | S18 |
 | 10 | builder/geom.rs | 520 lines. process_geom, process_site (impl), geom_effective_com, compute_geom_mass, compute_geom_inertia, compute_fromto_pose, geom_size_to_vec3. No inline tests | done | | S18 |
 | 10 | builder/joint.rs | 202 lines. process_joint (impl). No inline tests | done | | S18 |
-| 10 | builder/body.rs | | | | |
-| 10 | builder/mass.rs | | | | |
+| 10 | builder/body.rs | 311 lines. process_worldbody_geoms_and_sites, process_body, process_body_with_world_frame (impl). No inline tests | done | | S18 |
+| 10 | builder/mass.rs | 225 lines. apply_mass_pipeline (impl), extract_inertial_properties, compute_inertia_from_geoms (free fns). No inline tests | done | | S18 |
 | 10 | builder/actuator.rs | | | | |
 | 10 | builder/sensor.rs | | | | |
 | 10 | builder/tendon.rs | | | | |
