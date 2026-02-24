@@ -436,18 +436,19 @@ the goal.
 
 #### Code references (MUST be correct — compiler enforces):
 
-| File | Reference | What to update |
-|------|-----------|----------------|
-| `sim-core/src/lib.rs:80` | `pub mod mujoco_pipeline;` | Change to new module declarations |
-| `sim-core/src/lib.rs:111` | `pub use mujoco_pipeline::{...}` | Route through new modules |
-| `sim-core/src/derivatives.rs:56` | `use crate::mujoco_pipeline::{...}` | Point to new module paths |
-| `sim-core/src/derivatives.rs:2402` | `use crate::mujoco_pipeline::{ellipsoid_moment, norm3}` | Point to `forward::passive` (fluid/aero helpers) |
-| `sim-core/src/batch.rs:42` | `use crate::mujoco_pipeline::{Data, Model, StepError}` | Point to `types::` |
-| `sim-mjcf/src/lib.rs:176` | `mod model_builder;` | Change to `mod builder;` |
-| `sim-mjcf/src/lib.rs:197` | `pub use model_builder::{...}` | Route through `builder::` |
-| `sim-core/src/mujoco_pipeline.rs:2096` | Comment referencing `model_builder.rs` | Update path |
-| `sim-core/src/gjk_epa.rs:264,291` | Comments referencing `mujoco_pipeline.rs` | Update to new module path |
-| `sim-core/src/derivatives.rs:70` | Comment referencing `mujoco_pipeline` | Update to new module path |
+| File | Reference | What to update | Status |
+|------|-----------|----------------|--------|
+| `sim-core/src/lib.rs:119` | `pub mod mujoco_pipeline;` | Remove when monolith is deleted | Phase 12 |
+| ~~`sim-core/src/lib.rs:111`~~ | ~~`pub use mujoco_pipeline::{...}`~~ | ~~Route through new modules~~ | Done (Phases 1–8c) |
+| `sim-core/src/derivatives.rs:66` | `use crate::mujoco_pipeline::{MJ_MINVAL, object_velocity_local}` | Point to new module paths | Phase 12 |
+| ~~`sim-core/src/derivatives.rs:2402`~~ | ~~`use crate::mujoco_pipeline::{ellipsoid_moment, norm3}`~~ | ~~Point to `forward::passive`~~ | Done (Phase 8a) |
+| ~~`sim-core/src/batch.rs:42`~~ | ~~`use crate::mujoco_pipeline::{Data, Model, StepError}`~~ | ~~Point to `types::`~~ | Done (Phase 1) |
+| `sim-mjcf/src/lib.rs:177` | `mod model_builder;` | Remove when stub is deleted | Phase 12 |
+| ~~`sim-mjcf/src/lib.rs:197`~~ | ~~`pub use model_builder::{...}`~~ | ~~Route through `builder::`~~ | Done (Phase 10) |
+| `sim-core/src/types/contact_types.rs:241` | Comment referencing `model_builder.rs` | Update path (moved from monolith in Phase 1) | Phase 12 |
+| `sim-core/src/gjk_epa.rs:264,291` | Comments referencing `mujoco_pipeline.rs` | Update to new module path | Phase 12 |
+| `sim-core/src/derivatives.rs:69` | Comment referencing `mujoco_pipeline` | Update to new module path | Phase 12 |
+| `sim-core/src/forward/mod.rs:39` | Comment referencing `mujoco_pipeline.rs` | Update or remove (test re-export annotation) | Phase 12 |
 
 #### Documentation references (MUST be updated — humans and AI read these):
 

@@ -1201,7 +1201,8 @@ See "Constraint/Solver Module Revised Structure" in the Audit Findings section.
       compute_qacc_smooth, build_m_impl_for_newton, compute_qfrc_smooth_implicit,
       compute_point_velocity (426 lines)
 - [x] Create `src/constraint/assembly.rs` — move assemble_unified_constraints,
-      populate_efc_island, tendon_deadband_displacement (735 lines)
+      tendon_deadband_displacement (735 lines)
+      (populate_efc_island deferred to Phase 8c → island/mod.rs)
 - [x] Create `src/constraint/equality.rs` — move all extract_*_jacobian functions,
       add_body_*_jacobian_row, get_min_* helpers (661 lines)
 - [x] Create `src/constraint/jacobian.rs` — move compute_flex_contact_jacobian,
@@ -1459,10 +1460,17 @@ sure every trace of the monolith is gone from documentation and comments.
   - `model_builder.rs` ≤100 lines (re-export shim) or deleted
 - [ ] **Exhaustive stale reference sweep** (must return zero matches):
   ```bash
+  # Filename references in comments and docs
   grep -rn 'mujoco_pipeline\.rs' sim/ --include='*.rs' --include='*.md' \
     | grep -v 'STRUCTURAL_REFACTOR\|CHANGELOG'
   grep -rn 'model_builder\.rs' sim/ --include='*.rs' --include='*.md' \
     | grep -v 'STRUCTURAL_REFACTOR\|CHANGELOG'
+
+  # Import paths still routing through monolith shims
+  grep -rn 'crate::mujoco_pipeline::' sim/ --include='*.rs' \
+    | grep -v 'mujoco_pipeline.rs'
+  grep -rn 'crate::model_builder::' sim/ --include='*.rs' \
+    | grep -v 'model_builder.rs'
   ```
 - [ ] **Rewrite `sim/docs/ARCHITECTURE.md`** — replace the current "The
       simulation engine lives in `mujoco_pipeline.rs`" section with the new
@@ -1485,6 +1493,17 @@ sure every trace of the monolith is gone from documentation and comments.
   - `mod.rs:57` — update module reference
 - [ ] **Update `sim-core/src/gjk_epa.rs`** lines 264, 291 — comments reference
       `mujoco_pipeline.rs`
+- [ ] **Update `sim-core/src/types/contact_types.rs:241`** — comment references
+      `model_builder.rs` (moved from monolith during Phase 1)
+- [ ] **Update `sim-core/src/forward/mod.rs:39`** — comment references
+      `mujoco_pipeline.rs` (test re-export annotation)
+- [ ] **Migrate remaining `mujoco_pipeline.rs` content** — 109 production lines
+      (re-imports + `object_velocity_local` + `MJ_MINVAL`) and ~3,311 inline test
+      lines (17 `#[cfg(test)]` blocks). Move `object_velocity_local` to
+      `dynamics/spatial.rs`, update `derivatives.rs:66` import, relocate inline
+      tests to their respective modules, then delete the monolith.
+- [ ] **Delete `model_builder.rs`** — currently a 5-line redirect stub. Remove
+      and update `lib.rs` to drop `mod model_builder;`.
 - [ ] **Update `CLAUDE.md`** if any workflow changes
 - [ ] **Run the rubric verification script** from STRUCTURAL_REFACTOR_RUBRIC.md
 - [ ] **Grade all 15 final-state checks** from the rubric
@@ -1493,20 +1512,21 @@ sure every trace of the monolith is gone from documentation and comments.
 
 ## What stays in `mujoco_pipeline.rs`
 
-After all phases complete, `mujoco_pipeline.rs` should either:
+**Pre-Phase-12 state** (after Phases 0–8c, 10): 109 production lines
+(~85 lines of `pub(crate) use` re-imports, `object_velocity_local`,
+`MJ_MINVAL`, allow attributes, and comments) plus ~3,311 lines of inline
+tests (17 `#[cfg(test)]` blocks) = 3,420 total lines. `derivatives.rs:66`
+still imports `object_velocity_local` and `MJ_MINVAL` through the monolith.
 
-**Option A: Delete entirely.** All code moved to modules. `lib.rs` declares
-the modules directly.
+**Phase 12 target**: Delete entirely (Option A). All re-exports have been
+superseded by real module paths. The remaining production function
+(`object_velocity_local`) moves to `dynamics/spatial.rs`. The inline tests
+move to their respective modules. `lib.rs` drops `pub mod mujoco_pipeline;`.
 
-**Option B: Thin re-export file.** `mujoco_pipeline.rs` becomes a ~50-line
-file that re-exports from the new modules, preserving the `pub use
-mujoco_pipeline::*` pattern in `lib.rs`. This avoids changing downstream
-import paths.
-
-**Recommendation: Option B.** It's the smallest diff for downstream code
-(sim-mjcf, sim-conformance-tests, sim-bevy all import from
-`sim_core::mujoco_pipeline::*` or `sim_core::Model`). We can delete the
-shim later when convenient.
+The original Option B (thin re-export shim) is no longer needed — all
+downstream code (`sim-mjcf`, `sim-conformance-tests`, `sim-bevy`) already
+imports through `sim_core::Model`, `sim_core::Data`, etc., which route
+through `lib.rs` re-exports from the real modules.
 
 ---
 

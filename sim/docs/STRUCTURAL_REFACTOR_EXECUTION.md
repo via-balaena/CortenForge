@@ -336,19 +336,21 @@ inline tests).
 - ~~**Deferred function**: `populate_efc_island` deferred from Phase 6.~~
   Placed in `island/mod.rs` (depends on island data, not constraint assembly).
 
-### Phase 10: MARGIN WARNING + feature gate + shared constants
+### Phase 10: MARGIN WARNING + feature gate + shared constants **(RESOLVED)**
 
-- `builder/mod.rs` (~732 lines): Only under 800 **because** `new()` (~264
-  lines) is split out to `builder/init.rs`. If `init.rs` is not split, mod.rs
-  would be ~996 lines. Extract `init.rs` immediately after `mod.rs`.
-- **Feature gate**: `sim-mjcf` has an `mjb` feature (`mjb.rs`). Run
-  `cargo test -p sim-mjcf --features mjb` at least once per Phase 10 session
-  to verify no regression behind the feature gate.
-- **Shared constants**: `DEFAULT_SOLREF` and `DEFAULT_SOLIMP` (L41, L49) are
-  used by 6+ target modules (joint, geom, tendon, equality, flex, contact).
-  Place them in `builder/mod.rs` as `pub(crate) const` items so all
-  sub-modules can access them via `super::DEFAULT_SOLREF`. Move them during
-  the first session (builder/mod.rs extraction).
+All Phase 10 hazards were handled during extraction. `builder/mod.rs` landed
+at 725 production lines (with `new()` split to `init.rs` at 275 lines).
+Feature gate verified (`cargo test -p sim-mjcf --features mjb` passed each
+session). `DEFAULT_SOLREF`/`DEFAULT_SOLIMP` placed in `builder/mod.rs` as
+`pub const` items, accessed by sub-modules via `super::DEFAULT_SOLREF`.
+
+- ~~`builder/mod.rs` (~732 lines): Only under 800 because `new()` (~264
+  lines) is split out to `builder/init.rs`.~~ Actual: 725 prod lines.
+  Fallback not needed.
+- ~~**Feature gate**: Run `cargo test -p sim-mjcf --features mjb`.~~
+  Verified each session (S17–S19). No regressions.
+- ~~**Shared constants**: `DEFAULT_SOLREF` and `DEFAULT_SOLIMP`.~~
+  Placed in `builder/mod.rs` during first session (S17).
 
 ---
 
