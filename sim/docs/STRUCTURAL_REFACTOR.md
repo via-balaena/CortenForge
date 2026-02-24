@@ -500,8 +500,8 @@ sim-core/src/
   │   ├── implicit.rs         Tendon implicit K/D helpers shared by
   │   │                       forward/acceleration.rs and constraint/mod.rs:
   │   │                       tendon_all_dofs_sleeping, tendon_all_dofs_sleeping_fields,
-  │   │                       tendon_deadband_displacement, tendon_active_stiffness,
-  │   │                       accumulate_tendon_kd
+  │   │                       tendon_active_stiffness, accumulate_tendon_kd
+  │   │                       (tendon_deadband_displacement is in constraint/assembly.rs)
   │   └── rk4.rs              mj_runge_kutta (4-stage Runge-Kutta)
   │
   ├── jacobian.rs             mj_jac, mj_jac_site, mj_jac_body, mj_jac_point,
@@ -600,7 +600,7 @@ sim-core/src/
 | `island/*.rs` | ~1,324 total | island/sleep.rs: L12966–L13409 (444) + L14005–L14268 (264) + L4491–L4519 (29, Data sleep methods) = ~737; island/mod.rs: L13411–L13997 = ~587 |
 | `integrate/mod.rs` | ~120 | L4701–L4821 (integrate() dispatch, integrate_without_velocity() — already mapped above) |
 | `integrate/euler.rs` | ~166 | L20900–L21066 (mj_integrate_pos, PositionIntegrateVisitor, mj_normalize_quat, QuaternionNormalizeVisitor) |
-| `integrate/implicit.rs` | ~127 | L12690–L12816 (tendon K/D helpers only: tendon_all_dofs_sleeping, tendon_all_dofs_sleeping_fields, tendon_deadband_displacement, tendon_active_stiffness, accumulate_tendon_kd) |
+| `integrate/implicit.rs` | ~127 | L12690–L12816 (tendon K/D helpers only: tendon_all_dofs_sleeping, tendon_all_dofs_sleeping_fields, tendon_active_stiffness, accumulate_tendon_kd; tendon_deadband_displacement went to `constraint/assembly.rs` in Phase 6) |
 | `integrate/rk4.rs` | ~169 | L21302–L21470 (mj_runge_kutta) |
 | `jacobian.rs` | ~465 | L9830–L10041 + L10795–L10829 + L21085–L21283 (Jacobian utilities + compute_contact_normal_jacobian + mj_differentiate_pos + mj_integrate_pos_explicit; doc comment at L21068–L21084) |
 | `linalg.rs` | ~340 | L20106–L20253 (Cholesky) + L20445–L20557 (mj_solve_sparse, mj_solve_sparse_batch) + L20829–L20897 (LU). Decision: sparse solvers belong in `linalg.rs` (they are solve routines, not factorization); factorization stays in `dynamics/factor.rs`. |
@@ -688,7 +688,7 @@ shift as functions are extracted. Use function names to locate code.
 | L12038–L12108 | `dynamics/spatial.rs` | Additional spatial algebra |
 | L12108–L12401 | `forward/passive.rs` | Fluid model helpers (mj_inertia_box_fluid, mj_ellipsoid_fluid, mj_fluid dispatch) + mj_fwd_passive doc comment |
 | L12402–L12690 | `forward/passive.rs` | mj_fwd_passive (L12402) — spring/damper/frictionloss/flex bending |
-| L12690–L12816 | `integrate/implicit.rs` | **WARNING: These lines sit between the two `forward/passive.rs` ranges (L12108–L12690 and L12818–L12899) but belong to `integrate/implicit.rs`, NOT to `forward/passive.rs`.** Tendon implicit K/D helpers: tendon_all_dofs_sleeping (L12690), tendon_all_dofs_sleeping_fields (L12700), tendon_deadband_displacement (L12713), tendon_active_stiffness (L12743), accumulate_tendon_kd (L12755). Used by acceleration and constraint code. `tendon_all_dofs_sleeping` also imported by `island/sleep.rs` as `pub(crate)`. |
+| L12690–L12816 | `integrate/implicit.rs` | **WARNING: These lines sit between the two `forward/passive.rs` ranges (L12108–L12690 and L12818–L12899) but belong to `integrate/implicit.rs`, NOT to `forward/passive.rs`.** Tendon implicit K/D helpers: tendon_all_dofs_sleeping (L12690), tendon_all_dofs_sleeping_fields (L12700), tendon_active_stiffness (L12743), accumulate_tendon_kd (L12755). tendon_deadband_displacement (L12713) went to `constraint/assembly.rs` in Phase 6. Used by acceleration and constraint code. `tendon_all_dofs_sleeping` also imported by `island/sleep.rs` as `pub(crate)`. |
 | L12818–L12899 | `forward/passive.rs` | PassiveForceVisitor struct + impl JointVisitor (joint visitor for passive spring/damper forces) |
 | L12901–L12964 | `types/model_init.rs` | compute_body_lengths (L12901), compute_dof_lengths (L12937) — model construction helpers for §16.14 mechanism lengths |
 | L12966–L13409 | `island/sleep.rs` | mj_sleep (L12966), tree_can_sleep (L13035), sleep_trees (L13082), sync_tree_fk (L13130), reset_sleep_state (L13197), mj_update_sleep_arrays (L13297), mj_check_qpos_changed (L13386) |
@@ -1281,21 +1281,22 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 
 ### Phase 8b: Extract integration
 
-- [ ] Create `src/integrate/` module tree
-- [ ] Move integrate() dispatch + integrate_without_velocity() → `integrate/mod.rs`
-- [ ] Move Euler integration + mj_integrate_pos + mj_normalize_quat +
+- [x] Create `src/integrate/` module tree
+- [x] Move integrate() dispatch + integrate_without_velocity() → `integrate/mod.rs`
+- [x] Move Euler integration + mj_integrate_pos + mj_normalize_quat +
       PositionIntegrateVisitor + QuaternionNormalizeVisitor →
       `integrate/euler.rs` (NOT mj_differentiate_pos or
       mj_integrate_pos_explicit — those go to `jacobian.rs` in Phase 8a)
-- [ ] Move tendon implicit K/D helpers (tendon_all_dofs_sleeping,
-      tendon_all_dofs_sleeping_fields, tendon_deadband_displacement,
-      tendon_active_stiffness, accumulate_tendon_kd) →
-      `integrate/implicit.rs` (ONLY tendon K/D helpers — implicit
-      acceleration functions stay in `forward/acceleration.rs`)
-- [ ] Move mj_runge_kutta → `integrate/rk4.rs`
-- [ ] Run full test suite
+- [x] Move tendon implicit K/D helpers (tendon_all_dofs_sleeping,
+      tendon_all_dofs_sleeping_fields, tendon_active_stiffness,
+      accumulate_tendon_kd) → `integrate/implicit.rs`
+      (tendon_deadband_displacement went to `constraint/assembly.rs` in
+      Phase 6; ONLY tendon K/D helpers — implicit acceleration functions
+      stay in `forward/acceleration.rs`)
+- [x] Move mj_runge_kutta → `integrate/rk4.rs`
+- [x] Run full test suite
 
-**Estimated size**: ~600 lines moved (integrate modules sum: 120 + 166 + 127 + 169 = 582)
+**Estimated size**: ~600 lines moved (estimate: 120 + 166 + 127 + 169 = 582; actual: 140 + 181 + 117 + 191 = 629)
 
 ### Phase 8c: Extract island/sleep
 

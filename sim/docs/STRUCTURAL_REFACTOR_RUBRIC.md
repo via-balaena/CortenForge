@@ -414,11 +414,11 @@ impl Data {
 
 This is the **aspirational end-state** of `forward/mod.rs` after Phases 8a–8c
 are complete — when `integrate/` and `island/` calls route to their final
-modules instead of through the monolith shim. As of Phase 8a, the orchestration
-structure and forward/* calls are in place; `integrate::*` and `island::*` calls
-still route through `crate::mujoco_pipeline::` until Phases 8b and 8c extract
-them. A reader who sees only this understands the **entire simulation pipeline**
-in ~90 lines. That's the goal.
+modules instead of through the monolith shim. As of Phase 8b, the orchestration
+structure, forward/* calls, and `integrate::*` calls are all in place;
+`island::*` calls still route through `crate::mujoco_pipeline::` until
+Phase 8c extracts them. A reader who sees only this understands the **entire
+simulation pipeline** in ~90 lines. That's the goal.
 
 ---
 
