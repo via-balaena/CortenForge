@@ -1,6 +1,6 @@
 # sim-core Structural Refactor
 
-> **Status**: Executing — 8 of 10 phases complete (2026-02-23)
+> **Status**: Executing — 9 of 13 phases complete (2026-02-23)
 > **Scope**: Decompose `mujoco_pipeline.rs` (26,722 lines) and `model_builder.rs`
 > (10,184 lines total; ~6,032 production + ~4,152 tests) into navigable module
 > trees. Zero physics changes. Zero API changes.

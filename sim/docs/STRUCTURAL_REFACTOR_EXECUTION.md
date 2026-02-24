@@ -296,13 +296,17 @@ step 2 before assembly step 5).
 - ~~**Macro**: `finalize_row` in assembly.rs calls impedance functions.~~
   Extraction order enforced: impedance = step 2, assembly = step 5.
 
-### Phase 8a: Line range hazard
+### Phase 8a: Line range hazard **(RESOLVED)**
 
-**`forward/passive.rs`**: The tendon implicit K/D helpers at L12690–L12816 sit
-**between** the two passive force ranges (L12108–L12689 and L12818–L12899) but
-belong to `integrate/implicit.rs` (Phase 8b), **NOT** to `forward/passive.rs`.
-Only take L12108–L12689 and L12818–L12899 for passive. (L12690 is the first
-line of `tendon_all_dofs_sleeping` — it belongs to implicit.rs.)
+All Phase 8a hazards were handled during extraction. Tendon implicit K/D
+helpers correctly left in monolith for Phase 8b. `mj_integrate_pos_explicit`
+extracted to `jacobian.rs`; `mj_integrate_pos` left for Phase 8b. `compute_muscle_params`
+left in monolith (heavy deps). ~3,100 lines moved; monolith 8,275 → 5,364.
+
+- ~~**`forward/passive.rs`**: The tendon implicit K/D helpers at L12690–L12816 sit
+  **between** the two passive force ranges (L12108–L12689 and L12818–L12899) but
+  belong to `integrate/implicit.rs` (Phase 8b), **NOT** to `forward/passive.rs`.~~
+  Hazard avoided: only L12108–L12689 and L12818–L12899 taken for passive.
 
 ### Phase 8b: Naming hazard
 
@@ -434,6 +438,7 @@ and correlating with commit history.
 | 8a | forward/acceleration.rs | 331 lines; mj_fwd_acceleration dispatch, explicit, implicit, implicitfast, implicit_full, ImplicitSpringVisitor | done | b62d746 | S14 |
 | 8a | forward/check.rs | 51 lines; mj_check_pos, mj_check_vel, mj_check_acc | done | b62d746 | S14 |
 | 8a | jacobian.rs | 455 lines; mj_jac, mj_jac_site/body/point/body_com/geom, mj_apply_ft, mj_differentiate_pos, mj_integrate_pos_explicit. **(HAZARD OK)** mj_integrate_pos (Phase 8b) left in monolith | done | b62d746 | S14 |
+| 8a | **Phase 8a audit** | Independent audit: all S1–S8 A-grade. Zero code findings. Checklist and progress table updated. 2,007/0/20 (11-crate scope). Clippy clean. | done | 6a4724a | S14 |
 | 8b | integrate/mod.rs | | | | |
 | 8b | integrate/euler.rs | **(HAZARD)** `mj_integrate_pos` (NOT `_explicit`) | | | |
 | 8b | integrate/implicit.rs | Extracts L12690–L12816 (skipped in Phase 8a) | | | |
