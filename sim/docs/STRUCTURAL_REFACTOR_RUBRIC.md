@@ -1,10 +1,12 @@
 # Structural Refactor — Grading Rubric
 
 > **Purpose**: Enforce A-grade readability and organization throughout the
-> `sim-core` and `sim-mjcf` structural refactor. Every phase is graded against
-> this rubric before it can be committed. The rubric measures what matters:
+> `sim-core` and `sim-mjcf` structural refactor. Every phase was graded against
+> this rubric before it could be committed. The rubric measures what matters:
 > can a human or AI read this code and immediately understand where they are,
 > what this module does, and how it fits into the whole?
+>
+> **Status**: COMPLETE. All 13 phases passed all 8 criteria at A-grade.
 >
 > **Relationship to STANDARDS.md**: The project-wide 7-criterion system
 > (coverage, docs, clippy, safety, deps, bevy-free, API design) continues to
@@ -125,16 +127,16 @@ These files are noted in the progress table with their awk / code-only split.
 
 **A-grade naming checklist**:
 
-- [ ] Module name = the thing it computes, not the data it touches
+- [x] Module name = the thing it computes, not the data it touches
   - `crba.rs` (what it does) not `mass_matrix.rs` (what it writes to)
   - `pgs.rs` (the algorithm) not `dual_solver.rs` (a vague category)
-- [ ] No `utils.rs`, `util.rs`, `helpers.rs`, `misc.rs`, or `common.rs` —
+- [x] No `utils.rs`, `util.rs`, `helpers.rs`, `misc.rs`, or `common.rs` —
       these are code smell names that become dumping grounds
-- [ ] No `pipeline.rs` — that's what we're escaping
-- [ ] Nested modules use the parent as namespace:
+- [x] No `pipeline.rs` — that's what we're escaping
+- [x] Nested modules use the parent as namespace:
   - `constraint/solver/pgs.rs` reads as "the PGS constraint solver"
   - `forward/position.rs` reads as "forward kinematics position stage"
-- [ ] The `mod.rs` in each directory is the **orchestration** — it calls the
+- [x] The `mod.rs` in each directory is the **orchestration** — it calls the
       sub-modules. It is not a dumping ground for leftover code.
 
 **The test**: If you told a physics PhD student "find where the Newton solver
@@ -438,17 +440,17 @@ the goal.
 
 | File | Reference | What to update | Status |
 |------|-----------|----------------|--------|
-| `sim-core/src/lib.rs:119` | `pub mod mujoco_pipeline;` | Remove when monolith is deleted | Phase 12 |
+| ~~`sim-core/src/lib.rs:119`~~ | ~~`pub mod mujoco_pipeline;`~~ | ~~Remove when monolith is deleted~~ | Done (Phase 12) |
 | ~~`sim-core/src/lib.rs:111`~~ | ~~`pub use mujoco_pipeline::{...}`~~ | ~~Route through new modules~~ | Done (Phases 1–8c) |
-| `sim-core/src/derivatives.rs:66` | `use crate::mujoco_pipeline::{MJ_MINVAL, object_velocity_local}` | Point to new module paths | Phase 12 |
+| ~~`sim-core/src/derivatives.rs:66`~~ | ~~`use crate::mujoco_pipeline::{MJ_MINVAL, object_velocity_local}`~~ | ~~Point to new module paths~~ | Done (Phase 12) |
 | ~~`sim-core/src/derivatives.rs:2402`~~ | ~~`use crate::mujoco_pipeline::{ellipsoid_moment, norm3}`~~ | ~~Point to `forward::passive`~~ | Done (Phase 8a) |
 | ~~`sim-core/src/batch.rs:42`~~ | ~~`use crate::mujoco_pipeline::{Data, Model, StepError}`~~ | ~~Point to `types::`~~ | Done (Phase 1) |
-| `sim-mjcf/src/lib.rs:177` | `mod model_builder;` | Remove when stub is deleted | Phase 12 |
+| ~~`sim-mjcf/src/lib.rs:177`~~ | ~~`mod model_builder;`~~ | ~~Remove when stub is deleted~~ | Done (Phase 12) |
 | ~~`sim-mjcf/src/lib.rs:197`~~ | ~~`pub use model_builder::{...}`~~ | ~~Route through `builder::`~~ | Done (Phase 10) |
-| `sim-core/src/types/contact_types.rs:241` | Comment referencing `model_builder.rs` | Update path (moved from monolith in Phase 1) | Phase 12 |
-| `sim-core/src/gjk_epa.rs:264,291` | Comments referencing `mujoco_pipeline.rs` | Update to new module path | Phase 12 |
-| `sim-core/src/derivatives.rs:69` | Comment referencing `mujoco_pipeline` | Update to new module path | Phase 12 |
-| `sim-core/src/forward/mod.rs:39` | Comment referencing `mujoco_pipeline.rs` | Update or remove (test re-export annotation) | Phase 12 |
+| ~~`sim-core/src/types/contact_types.rs:241`~~ | ~~Comment referencing `model_builder.rs`~~ | ~~Update path~~ | Done (Phase 12) |
+| ~~`sim-core/src/gjk_epa.rs:264,291`~~ | ~~Comments referencing `mujoco_pipeline.rs`~~ | ~~Update to new module path~~ | Done (Phase 12) |
+| ~~`sim-core/src/derivatives.rs:69`~~ | ~~Comment referencing `mujoco_pipeline`~~ | ~~Update to new module path~~ | Done (Phase 12) |
+| ~~`sim-core/src/forward/mod.rs:39`~~ | ~~Comment referencing `mujoco_pipeline.rs`~~ | ~~Removed (test re-export annotation)~~ | Done (Phase 12) |
 
 #### Documentation references (MUST be updated — humans and AI read these):
 
@@ -507,19 +509,19 @@ STRUCTURAL_REFACTOR.md phase checklist.
 
 **A-grade discoverability checklist**:
 
-- [ ] **3-click rule**: From `sim-core/src/lib.rs`, any function is reachable
+- [x] **3-click rule**: From `sim-core/src/lib.rs`, any function is reachable
       by navigating at most 3 levels of `mod.rs` files
       (e.g., `lib.rs` → `constraint/mod.rs` → `constraint/solver/mod.rs` → `newton.rs`)
-- [ ] **Module-level doc comments** (`//!`) on every module explain:
+- [x] **Module-level doc comments** (`//!`) on every module explain:
   1. What pipeline stage this implements
   2. What the key public functions are
   3. What MuJoCo C file this corresponds to (where applicable)
-- [ ] **Re-exports in `mod.rs`** surface the most important symbols — a reader
+- [x] **Re-exports in `mod.rs`** surface the most important symbols — a reader
       doesn't have to guess which sub-module contains `mj_fwd_constraint`
-- [ ] **No hidden coupling**: If module A calls a function in module B, that
+- [x] **No hidden coupling**: If module A calls a function in module B, that
       function is visible in B's `mod.rs` re-exports. No reaching into
       `B::internal_submodule::private_helper` from outside.
-- [ ] **Alphabetical ordering** of `mod` declarations and `use` statements
+- [x] **Alphabetical ordering** of `mod` declarations and `use` statements
       within each file (unless pipeline-order is more informative)
 
 **The discoverability test**: Hand the `sim-core/src/` directory listing to
@@ -553,51 +555,44 @@ hesitation, that's an A.
    `#[cfg(test)] pub(crate) mod test_utils` module in the most appropriate
    parent, or use `#[cfg(test)]` helper functions in `mod.rs`.
 
-4. **No orphaned tests**: After extraction, `mujoco_pipeline.rs` should have
-   **zero** `#[cfg(test)]` blocks remaining (since all code moved out).
-
-**Verification**:
-```bash
-# After final phase, this should return nothing:
-grep -c '#\[cfg(test)\]' sim/L0/core/src/mujoco_pipeline.rs
-# Expected: 0 (file is either deleted or a thin re-export)
-```
+4. **No orphaned tests**: `mujoco_pipeline.rs` has been deleted — zero
+   orphaned tests remain. All inline tests relocated to their target modules.
 
 ---
 
 ## Phase Completion Checklist
 
-Before committing any phase of the refactor, run through this entire checklist.
-Every box must be checked.
+This checklist was verified for every phase. All boxes checked at final
+verification (Session S20).
 
-### Automated (must pass):
+### Automated (all passed):
 
-- [ ] `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics`
-      — **same pass count as baseline**
-- [ ] `cargo clippy -p sim-core -p sim-mjcf -- -D warnings` — **zero warnings**
-- [ ] `cargo fmt --all -- --check` — **no formatting issues**
-- [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p sim-core -p sim-mjcf`
-      — **builds without errors or warnings** (catches broken intra-doc links)
+- [x] `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics`
+      — **1,526 passed, 0 failed, 15 ignored** (exact baseline)
+- [x] `cargo clippy -p sim-core -p sim-mjcf -- -D warnings` — **zero warnings**
+- [x] `cargo fmt --all -- --check` — **no formatting issues**
+- [x] `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p sim-core -p sim-mjcf`
+      — **builds without errors or warnings**
 
-### Structural criteria (grade each, all must be A):
+### Structural criteria (all A-grade):
 
 | # | Criterion | Grade | Notes |
 |---|-----------|-------|-------|
-| S1 | Module Size (≤800 lines prod) | | |
-| S2 | Module Naming (predictable) | | |
-| S3 | Single Responsibility (one sentence) | | |
-| S4 | Dependency Direction (clean DAG) | | |
-| S5 | `mod.rs` Clarity (table of contents) | | |
-| S6 | Reference Completeness (zero stale) | | |
-| S7 | Discoverability (3-click rule) | | |
-| S8 | Test Colocation (tests move with code) | | |
+| S1 | Module Size (≤800 lines prod) | **A** | All extracted modules ≤800 lines; pre-existing exemptions unchanged |
+| S2 | Module Naming (predictable) | **A** | Zero forbidden names; all modules map 1:1 to pipeline stages |
+| S3 | Single Responsibility (one sentence) | **A** | Every module has a one-sentence `//!` doc that fully captures scope |
+| S4 | Dependency Direction (clean DAG) | **A** | Clean DAG, no cycles; types → dynamics → forward → constraint → integrate |
+| S5 | `mod.rs` Clarity (table of contents) | **A** | Every `mod.rs` reads as orchestration; `forward/mod.rs` tells full pipeline story |
+| S6 | Reference Completeness (zero stale) | **A** | Zero stale references in code or docs (excluding STRUCTURAL_REFACTOR* spec docs) |
+| S7 | Discoverability (3-click rule) | **A** | All functions reachable within 3 levels from `lib.rs` |
+| S8 | Test Colocation (tests move with code) | **A** | All inline tests relocated; monolith deleted; zero orphaned tests |
 
-### Manual review:
+### Manual review (all passed):
 
-- [ ] Read every new `mod.rs` — does it tell a clear story?
-- [ ] Read every new `//!` module doc — is it one sentence, accurate?
-- [ ] Spot-check 3 random functions — can you find them by navigation alone?
-- [ ] Check that `lib.rs` public API is **identical** to before the phase
+- [x] Read every new `mod.rs` — does it tell a clear story?
+- [x] Read every new `//!` module doc — is it one sentence, accurate?
+- [x] Spot-check 3 random functions — can you find them by navigation alone?
+- [x] Check that `lib.rs` public API is **identical** to before the phase
 
 ---
 
@@ -832,28 +827,27 @@ module, not the shim.
 
 ---
 
-## Final State Verification
+## Final State Verification — all 15 checks passed
 
-When the entire refactor is complete (all 13 phases (0–8c, 10, 12; 9 and 11 are intentionally
-skipped to separate sim-core extraction from sim-mjcf extraction and final cleanup)), this is the definitive
-acceptance test:
+All 13 phases complete (0–8c, 10, 12; 9 and 11 intentionally skipped).
+Verified in Session S20:
 
 ```
-1. cargo test                               → same total pass count as baseline
-2. cargo clippy -- -D warnings              → zero warnings
-3. cargo fmt --all -- --check               → clean
-4. cargo xtask check                        → passes
-5. S1 check (module size)                   → all files ≤800 production lines
-6. S2 check (naming)                        → zero forbidden names
-7. S6 check (stale references)              → zero matches
-8. S8 check (monolith remnant)              → mujoco_pipeline.rs ≤100 lines or deleted
-9. model_builder.rs                         → ≤100 lines or deleted
-10. Read forward/mod.rs                     → tells the complete pipeline story in ~90 lines
-11. A newcomer navigate-only test           → 3 out of 3 targets found by directory browsing
-12. Every module has //! doc comment        → verified
-13. `RUSTDOCFLAGS="-D warnings" cargo doc`  → zero broken intra-doc links
-14. Every mod.rs has clear re-exports       → verified
-15. ARCHITECTURE.md reflects new structure  → verified
+ 1. cargo test                               → 1,526/0/15 (4-crate), 2,007/0/20 (11-crate) ✓
+ 2. cargo clippy -- -D warnings              → zero warnings ✓
+ 3. cargo fmt --all -- --check               → clean ✓
+ 4. cargo xtask check                        → passes (pre-existing safety warning only) ✓
+ 5. S1 check (module size)                   → all extracted files ≤800 production lines ✓
+ 6. S2 check (naming)                        → zero forbidden names ✓
+ 7. S6 check (stale references)              → zero matches ✓
+ 8. S8 check (monolith remnant)              → mujoco_pipeline.rs deleted ✓
+ 9. model_builder.rs                         → deleted ✓
+10. Read forward/mod.rs                      → tells the complete pipeline story in ~90 lines ✓
+11. A newcomer navigate-only test            → 3 out of 3 targets found by directory browsing ✓
+12. Every module has //! doc comment         → verified ✓
+13. `RUSTDOCFLAGS="-D warnings" cargo doc`   → zero broken intra-doc links ✓
+14. Every mod.rs has clear re-exports        → verified ✓
+15. ARCHITECTURE.md reflects new structure   → verified ✓
 ```
 
-**If all 15 checks pass, the refactor is done.**
+**All 15 checks pass. The refactor is done.**

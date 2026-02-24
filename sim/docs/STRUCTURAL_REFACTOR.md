@@ -1,10 +1,10 @@
 # sim-core Structural Refactor
 
-> **Status**: Executing — 12 of 13 phases complete (2026-02-24)
-> **Scope**: Decompose `mujoco_pipeline.rs` (26,722 lines) and `model_builder.rs`
+> **Status**: Complete — 13 of 13 phases done (2026-02-24)
+> **Scope**: Decomposed `mujoco_pipeline.rs` (26,722 lines) and `model_builder.rs`
 > (10,184 lines total; ~6,032 production + ~4,152 tests) into navigable module
 > trees. Zero physics changes. Zero API changes.
-> Every test passes identically before and after.
+> All tests pass identically before and after.
 >
 > **Grading**: [STRUCTURAL_REFACTOR_RUBRIC.md](./STRUCTURAL_REFACTOR_RUBRIC.md) —
 > 8 structural criteria (S1–S8), all must be A-grade per phase.
@@ -13,16 +13,16 @@
 
 ## Why
 
-`mujoco_pipeline.rs` is a 26,722-line file containing ~457 functions (named `fn` definitions; `grep 'fn '` returns ~459 including function pointer types and closures) and 149
-inline tests. It holds the Model struct, the Data struct, all enums, forward
+`mujoco_pipeline.rs` was a 26,722-line file containing ~457 functions (named `fn` definitions; `grep 'fn '` returned ~459 including function pointer types and closures) and 149
+inline tests. It held the Model struct, the Data struct, all enums, forward
 kinematics, collision detection, three constraint solvers, island discovery,
 sleeping, five integrators, actuation, sensors, tendons, flex bodies, Jacobians,
 spatial algebra, muscle dynamics, and linear algebra utilities — in one file.
 
-A newcomer opens `sim-core/src/` and sees 12 files, one of which is impenetrable.
-An AI assistant loses context partway through the file. A `grep` for any function
-name returns hits buried in a 27K-line wall. The crate-level architecture is sound
-(13 crates, clean L0/L1 split), but the two biggest crates are internally flat.
+A newcomer opened `sim-core/src/` and saw 12 files, one of which was impenetrable.
+An AI assistant lost context partway through the file. A `grep` for any function
+name returned hits buried in a 27K-line wall. The crate-level architecture was sound
+(13 crates, clean L0/L1 split), but the two biggest crates were internally flat.
 
 MuJoCo itself splits its engine across ~15 C files:
 
@@ -276,56 +276,58 @@ constraint/
 
 ---
 
-## Intermediate State Compilation
+## Intermediate State Compilation (historical)
+
+> **Note**: This section describes the strategy used during execution. Both
+> monoliths have been deleted and all shims removed (Phase 12, commit 00b6ea2).
 
 During phases 1–8c, the sim-core monolith (`mujoco_pipeline.rs`) and the new modules
-coexist. The monolith shrinks each phase. During Phase 10, the sim-mjcf monolith
-(`model_builder.rs`) and the new `builder/` modules coexist. To keep every intermediate
+coexisted. The monolith shrank each phase. During Phase 10, the sim-mjcf monolith
+(`model_builder.rs`) and the new `builder/` modules coexisted. To keep every intermediate
 state compilable:
 
-- The monolith continues to `pub(crate)` export everything it still contains.
-- New modules import from `crate::mujoco_pipeline::*` for symbols not yet extracted.
-- As each symbol moves to its final module, imports in *all* files (including other
-  new modules) are updated to point to the real location — never through the shim.
-- Phase 12 removes both shims entirely. Any remaining `crate::mujoco_pipeline::` or
-  `crate::model_builder::` import is a bug.
+- The monolith continued to `pub(crate)` export everything it still contained.
+- New modules imported from `crate::mujoco_pipeline::*` for symbols not yet extracted.
+- As each symbol moved to its final module, imports in *all* files (including other
+  new modules) were updated to point to the real location — never through the shim.
+- Phase 12 removed both shims entirely. Any remaining `crate::mujoco_pipeline::` or
+  `crate::model_builder::` import would be a bug.
 - **Monolith re-imports**: After extracting symbols, the shrinking monolith
-  needs `pub(crate) use crate::types::*;` (etc.) re-imports at its top so
-  remaining code can still use bare names. Without these, every remaining
-  function referencing an extracted symbol fails to compile. These re-imports
-  are removed in Phase 12 when the monolith is deleted.
+  needed `pub(crate) use crate::types::*;` (etc.) re-imports at its top so
+  remaining code could still use bare names. Without these, every remaining
+  function referencing an extracted symbol would fail to compile. These re-imports
+  were removed in Phase 12 when the monolith was deleted.
 
-**`lib.rs` complexity peak**: During intermediate phases, `lib.rs` will
-simultaneously re-export from both the monolith (`mujoco_pipeline::*`) and
+**`lib.rs` complexity peak**: During intermediate phases, `lib.rs`
+simultaneously re-exported from both the monolith (`mujoco_pipeline::*`) and
 from new modules (`types::Model`, `constraint::mj_fwd_constraint`, etc.).
-This duplication is expected and correct — the monolith re-imports ensure
-remaining monolith code compiles, while `lib.rs` re-exports ensure the
-public API routes through real module paths. The duplication resolves in
-Phase 12 when the monolith is deleted. Do not try to "clean up" `lib.rs`
-during intermediate phases.
+This duplication was expected and correct — the monolith re-imports ensured
+remaining monolith code compiled, while `lib.rs` re-exports ensured the
+public API routed through real module paths. The duplication resolved in
+Phase 12 when the monolith was deleted.
 
-**Import update scope**: "All files" means both newly created modules AND
-existing files (`derivatives.rs`, `batch.rs`, `lib.rs`, etc.) that import
-symbols whose home module changed in this phase. The monolith re-imports
-(`pub(crate) use crate::types::*;` etc.) provide a compilation safety net,
-but imports in existing files should be updated to point to the real location
-in the same phase that moves the symbol — don't defer to Phase 12.
+**Import update scope**: "All files" meant both newly created modules AND
+existing files (`derivatives.rs`, `batch.rs`, `lib.rs`, etc.) that imported
+symbols whose home module changed in a given phase. The monolith re-imports
+(`pub(crate) use crate::types::*;` etc.) provided a compilation safety net,
+but imports in existing files were updated to point to the real location
+in the same phase that moved the symbol — not deferred to Phase 12.
 
-This means at any commit during phases 1–8c and 10:
-1. `cargo check -p sim-core` passes
-2. `cargo test -p sim-core` passes
-3. No import points through the re-export shim to a symbol that already has a real home
+This meant at any commit during phases 1–8c and 10:
+1. `cargo check -p sim-core` passed
+2. `cargo test -p sim-core` passed
+3. No import pointed through the re-export shim to a symbol that already had a real home
 
 ---
 
 ## Target Structure: sim-core
 
-### Current (12 files, total lines incl. tests)
+### Pre-refactor (12 files, total lines incl. tests)
 
 ```
 sim-core/src/
   lib.rs                   255 lines
-  mujoco_pipeline.rs    26,722 lines  ← THE PROBLEM
+  mujoco_pipeline.rs    26,722 lines  ← THE PROBLEM (now deleted)
   derivatives.rs         2,746 lines
   collision_shape.rs     1,734 lines
   contact.rs             1,503 lines
@@ -338,7 +340,7 @@ sim-core/src/
   batch.rs                 (batched sim)
 ```
 
-### Target (~61 new files in module tree, ~71 total with existing files)
+### Post-refactor (~61 new files in module tree, ~71 total with existing files)
 
 ```
 sim-core/src/
@@ -754,12 +756,12 @@ sim-mjcf target structure table above.
 
 ## Target Structure: sim-mjcf
 
-### Current (total lines incl. tests)
+### Pre-refactor (total lines incl. tests)
 
 ```
 sim-mjcf/src/
   lib.rs
-  model_builder.rs    10,184 lines  ← SECOND PROBLEM
+  model_builder.rs    10,184 lines  ← SECOND PROBLEM (now deleted)
   parser.rs            5,273 lines
   types.rs             3,883 lines
   defaults.rs          1,310 lines
@@ -770,7 +772,7 @@ sim-mjcf/src/
   validation.rs
 ```
 
-### Target
+### Post-refactor
 
 ```
 sim-mjcf/src/
@@ -1451,95 +1453,68 @@ Commits: 34ad6e4–866ab92 (Sessions S17–S19).
 This is the most important phase. The code is already modular — now we make
 sure every trace of the monolith is gone from documentation and comments.
 
-- [ ] **Run full workspace tests**: `cargo test`
-- [ ] **Run clippy**: `cargo clippy -- -D warnings`
-- [ ] **Run fmt**: `cargo fmt --all -- --check`
-- [ ] **Run quality gate**: `cargo xtask check`
-- [ ] **Verify monolith is gone**:
-  - `mujoco_pipeline.rs` ≤100 lines (re-export shim) or deleted
-  - `model_builder.rs` ≤100 lines (re-export shim) or deleted
-- [ ] **Exhaustive stale reference sweep** (must return zero matches):
-  ```bash
-  # Filename references in comments and docs
-  grep -rn 'mujoco_pipeline\.rs' sim/ --include='*.rs' --include='*.md' \
-    | grep -v 'STRUCTURAL_REFACTOR\|CHANGELOG'
-  grep -rn 'model_builder\.rs' sim/ --include='*.rs' --include='*.md' \
-    | grep -v 'STRUCTURAL_REFACTOR\|CHANGELOG'
-
-  # Import paths still routing through monolith shims
-  grep -rn 'crate::mujoco_pipeline::' sim/ --include='*.rs' \
-    | grep -v 'mujoco_pipeline.rs'
-  grep -rn 'crate::model_builder::' sim/ --include='*.rs' \
-    | grep -v 'model_builder.rs'
-  ```
-- [ ] **Rewrite `sim/docs/ARCHITECTURE.md`** — replace the current "The
-      simulation engine lives in `mujoco_pipeline.rs`" section with the new
-      module tree structure. This is the primary document newcomers read.
-- [ ] **Update all `sim/docs/todo/future_work_*.md`** files — ~692 references
-      across 27 files (432 `mujoco_pipeline.rs` refs + 262 `model_builder.rs` refs).
-      Use the **Doc Reference Mapping Table** (in the Module Size Estimates section) to map line-range citations
-      (e.g., `mujoco_pipeline.rs:L15334`) to target modules. Bulk find-and-replace
-      with module-specific paths (e.g., `constraint/solver/newton.rs`, `forward/passive.rs`).
-- [ ] **Update `sim/docs/MUJOCO_GAP_ANALYSIS.md`** — fix module references
-- [ ] **Verify `sim/docs/TRAIT_ARCHITECTURE.md`** — 0 references (verified 2026-02-22,
-      likely no update needed; re-verify at execution time)
-- [ ] **Update `sim/docs/MUJOCO_CONFORMANCE.md`** — 4 references to fix
-- [ ] **Update `sim/docs/MUJOCO_REFERENCE.md`** — 1 reference to fix
-- [ ] **Update test file comments** in `sim/L0/tests/integration/`:
-  - `mjcf_sensors.rs:4` — update module references
-  - `spatial_tendons.rs:1171` — update test location reference
-  - `sensors.rs:6` — update module reference
-  - `equality_constraints.rs:1017` — update module reference
-  - `mod.rs:57` — update module reference
-- [ ] **Update `sim-core/src/gjk_epa.rs`** lines 264, 291 — comments reference
-      `mujoco_pipeline.rs`
-- [ ] **Update `sim-core/src/types/contact_types.rs:241`** — comment references
-      `model_builder.rs` (moved from monolith during Phase 1)
-- [ ] **Update `sim-core/src/forward/mod.rs:39`** — comment references
-      `mujoco_pipeline.rs` (test re-export annotation)
-- [ ] **Migrate remaining `mujoco_pipeline.rs` content** — 109 production lines
-      (re-imports + `object_velocity_local` + `MJ_MINVAL`) and ~3,311 inline test
-      lines (17 `#[cfg(test)]` blocks). Move `object_velocity_local` to
-      `dynamics/spatial.rs`, update `derivatives.rs:66` import, relocate inline
-      tests to their respective modules, then delete the monolith.
-- [ ] **Delete `model_builder.rs`** — currently a 5-line redirect stub. Remove
-      and update `lib.rs` to drop `mod model_builder;`.
-- [ ] **Update `CLAUDE.md`** if any workflow changes
-- [ ] **Run the rubric verification script** from STRUCTURAL_REFACTOR_RUBRIC.md
-- [ ] **Grade all 15 final-state checks** from the rubric
+- [x] **Run full workspace tests**: `cargo test`
+- [x] **Run clippy**: `cargo clippy -- -D warnings`
+- [x] **Run fmt**: `cargo fmt --all -- --check`
+- [x] **Run quality gate**: `cargo xtask check`
+- [x] **Verify monolith is gone**:
+  - `mujoco_pipeline.rs` — deleted (commit 00b6ea2)
+  - `model_builder.rs` — deleted (commit 00b6ea2)
+- [x] **Exhaustive stale reference sweep** — zero matches (commit 00b6ea2;
+      7 stragglers in `future_work_*.md` fixed in commit 23d6858)
+- [x] **Rewrite `sim/docs/ARCHITECTURE.md`** — new module tree structure (commit 00b6ea2)
+- [x] **Update all `sim/docs/todo/future_work_*.md`** files — ~700+ references
+      updated across future_work_1.md through future_work_16.md (commit 00b6ea2, 23d6858)
+- [x] **Update `sim/docs/MUJOCO_GAP_ANALYSIS.md`** — ~30 references fixed (commit 00b6ea2)
+- [x] **Verify `sim/docs/TRAIT_ARCHITECTURE.md`** — confirmed 0 references, no update needed
+- [x] **Update `sim/docs/MUJOCO_CONFORMANCE.md`** — 4 references fixed (commit 00b6ea2)
+- [x] **Update `sim/docs/MUJOCO_REFERENCE.md`** — 1 reference fixed (commit 00b6ea2)
+- [x] **Update test file comments** in `sim/L0/tests/integration/`:
+  - `mjcf_sensors.rs:4` — updated
+  - `spatial_tendons.rs:1171` — updated
+  - `sensors.rs:6` — updated
+  - `equality_constraints.rs:1017` — updated
+  - `mod.rs:57` — updated
+- [x] **Update `sim-core/src/gjk_epa.rs`** lines 264, 291 — comments updated (commit 00b6ea2)
+- [x] **Update `sim-core/src/types/contact_types.rs:241`** — comment updated (commit 00b6ea2)
+- [x] **Update `sim-core/src/forward/mod.rs:39`** — test re-export annotation removed (commit 00b6ea2)
+- [x] **Migrate remaining `mujoco_pipeline.rs` content** — `object_velocity_local` moved to
+      `dynamics/spatial.rs`, `compute_muscle_params` moved to `forward/muscle.rs`,
+      7 inline test modules relocated, `derivatives.rs` import updated (commit 00b6ea2)
+- [x] **Delete `model_builder.rs`** — 5-line stub removed, `lib.rs` dropped
+      `mod model_builder;` (commit 00b6ea2)
+- [x] **Update `CLAUDE.md`** — no workflow changes needed
+- [x] **Run the rubric verification script** — all checks pass
+- [x] **Grade all 15 final-state checks** — all 15 pass (see audit in Session S20)
 
 ---
 
-## What stays in `mujoco_pipeline.rs`
+## What stayed in `mujoco_pipeline.rs` (historical)
 
 **Pre-Phase-12 state** (after Phases 0–8c, 10): 109 production lines
 (~85 lines of `pub(crate) use` re-imports, `object_velocity_local`,
 `MJ_MINVAL`, allow attributes, and comments) plus ~3,311 lines of inline
 tests (17 `#[cfg(test)]` blocks) = 3,420 total lines. `derivatives.rs:66`
-still imports `object_velocity_local` and `MJ_MINVAL` through the monolith.
+still imported `object_velocity_local` and `MJ_MINVAL` through the monolith.
 
-**Phase 12 target**: Delete entirely (Option A). All re-exports have been
-superseded by real module paths. The remaining production function
-(`object_velocity_local`) moves to `dynamics/spatial.rs`. The inline tests
-move to their respective modules. `lib.rs` drops `pub mod mujoco_pipeline;`.
-
-The original Option B (thin re-export shim) is no longer needed — all
-downstream code (`sim-mjcf`, `sim-conformance-tests`, `sim-bevy`) already
-imports through `sim_core::Model`, `sim_core::Data`, etc., which route
-through `lib.rs` re-exports from the real modules.
+**Phase 12 outcome**: Deleted entirely (Option A). `object_velocity_local`
+moved to `dynamics/spatial.rs`, `compute_muscle_params` moved to
+`forward/muscle.rs`, 7 inline test modules relocated to their target files,
+`derivatives.rs` import updated, `lib.rs` dropped `pub mod mujoco_pipeline;`.
+Commit 00b6ea2.
 
 ---
 
-## Risk Assessment
+## Risk Assessment (historical)
 
-| Risk | Mitigation |
-|------|-----------|
-| Visibility errors after move (`pub` vs `pub(crate)`) | Each phase runs full test suite; compiler catches this |
-| Circular module dependencies | Module tree follows the pipeline's data flow (types → dynamics → forward → constraint → integrate) — no cycles |
-| Merge conflicts with in-progress feature work | Do this before next feature phase. No concurrent physics changes. |
-| Performance regression from module boundaries | Zero-cost: Rust modules have no runtime overhead. `#[inline]` on hot paths if needed. |
-| Import path changes breaking downstream | Option B (re-export shim) prevents this entirely |
-| "While we're here" scope creep | Principle #6. Enforce in review. |
+| Risk | Mitigation | Outcome |
+|------|-----------|---------|
+| Visibility errors after move (`pub` vs `pub(crate)`) | Each phase runs full test suite; compiler catches this | No visibility bugs encountered |
+| Circular module dependencies | Module tree follows the pipeline's data flow (types → dynamics → forward → constraint → integrate) — no cycles | Clean DAG confirmed all phases |
+| Merge conflicts with in-progress feature work | Do this before next feature phase. No concurrent physics changes. | No merge conflicts |
+| Performance regression from module boundaries | Zero-cost: Rust modules have no runtime overhead. `#[inline]` on hot paths if needed. | Zero performance impact |
+| Import path changes breaking downstream | Option B (re-export shim) prevents this entirely | All downstream code already used `lib.rs` re-exports |
+| "While we're here" scope creep | Principle #6. Enforce in review. | Zero scope creep |
 
 ### Rollback Procedure
 
@@ -1561,49 +1536,44 @@ in reverse order independently.
 
 ---
 
-## Success Criteria
+## Success Criteria — all met
 
 See [STRUCTURAL_REFACTOR_RUBRIC.md](./STRUCTURAL_REFACTOR_RUBRIC.md) for the
-full 8-criterion grading rubric. Every criterion must be **A-grade** before
-each phase is committed.
+full 8-criterion grading rubric. Every criterion was **A-grade** for every
+phase committed.
 
-**Summary of hard gates**:
+**Summary of hard gates** (all verified in Session S20):
 
-1. **Same test count, same test results.** `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics` produces
-   identical pass/fail/skip counts before and after.
-2. **No file over 800 lines of production code.** (Tests can push individual
-   files higher, but production logic stays under 800.) See rubric S1.
-3. **`mujoco_pipeline.rs` either deleted or ≤100 lines** (re-export shim).
-4. **`model_builder.rs` either deleted or ≤100 lines**.
+1. **Same test count, same test results.** 4-crate: 1,526/0/15. 11-crate: 2,007/0/20. Exact baseline match. ✓
+2. **No file over 800 lines of production code.** All extracted modules ≤800. ✓
+3. **`mujoco_pipeline.rs` deleted.** ✓
+4. **`model_builder.rs` deleted.** ✓
 5. **A newcomer can understand the pipeline stages** by reading `forward/mod.rs`
-   (~90 lines of orchestration) without opening any other file. See rubric S5.
-6. **`cargo clippy -- -D warnings` passes.**
-7. **`cargo fmt --all -- --check` passes.**
+   (~90 lines of orchestration) without opening any other file. ✓
+6. **`cargo clippy -- -D warnings` passes.** ✓
+7. **`cargo fmt --all -- --check` passes.** ✓
 8. **Zero stale references** to `mujoco_pipeline.rs` or `model_builder.rs`
-   anywhere in the codebase. See rubric S6.
-9. **Every module has a `//!` doc comment** — one sentence describing its
-   scope and the MuJoCo C file it corresponds to. See rubric S7.
-10. **3-click discoverability** — any function reachable from `lib.rs` by
-    navigating at most 3 levels of `mod.rs`. See rubric S7.
+   in code. Zero in docs (excluding STRUCTURAL_REFACTOR* spec docs). ✓
+9. **Every module has a `//!` doc comment.** ✓
+10. **3-click discoverability** — all functions reachable from `lib.rs` by
+    navigating at most 3 levels of `mod.rs`. ✓
 
 ---
 
 ## Timeline and Ordering
 
-This refactor should happen **before** the next batch of v1.0 feature work
-(Phase 1 correctness bugs). Reasons:
+This refactor was completed **before** the next batch of v1.0 feature work
+(Phase 1 correctness bugs), as planned. Reasons it was prioritized:
 
-1. Every future feature adds more code to the monolith, making the refactor
-   harder.
-2. The refactor creates clean seams that make future features easier to
+1. Every future feature would have added more code to the monolith, making
+   the refactor harder.
+2. The refactor created clean seams that make future features easier to
    implement and review.
-3. No physics knowledge is needed for most of the extraction — it's mechanical
-   code movement.
+3. No physics knowledge was needed for most of the extraction — it was
+   mechanical code movement.
 
-Estimated effort: 13 phases (0–8c, 10, 12; 9 and 11 are intentionally skipped
-to separate sim-core extraction from sim-mjcf extraction and final cleanup),
-each independently committable. The whole refactor can be done incrementally
-over multiple sessions with commits between each phase.
+Actual effort: 13 phases (0–8c, 10, 12; 9 and 11 intentionally skipped),
+executed over 20 sessions (S1–S20) on branch `refactor/structural-decompose`.
 
 ## Phase Dependencies
 
@@ -1658,4 +1628,4 @@ Phase 12 (final verification) ← requires ALL above phases
 | `ROADMAP_V1.md` | This refactor is a **prerequisite** inserted before Phase 1. No roadmap items are changed. |
 | `TRAIT_ARCHITECTURE.md` | The trait boundaries (FlexBendingModel, etc.) need module seams to slot into. This refactor creates those seams. |
 | `future_work_11.md #44` | Legacy crate deprecation. Independent of this refactor but becomes easier once module boundaries are clear. |
-| `ARCHITECTURE.md` | Must be updated in Phase 12 to reflect new structure. |
+| `ARCHITECTURE.md` | Updated in Phase 12 to reflect new structure (commit 00b6ea2). |

@@ -4,6 +4,11 @@
 > Complements [STRUCTURAL_REFACTOR.md](./STRUCTURAL_REFACTOR.md) (the plan) and
 > [STRUCTURAL_REFACTOR_RUBRIC.md](./STRUCTURAL_REFACTOR_RUBRIC.md) (the grading
 > criteria). This document answers: *how do we actually do this safely?*
+>
+> **Status**: COMPLETE. All 13 phases finished across 20 sessions (S1–S20).
+> Final baselines: 4-crate 1,526/0/15, 11-crate 2,007/0/20. All S1–S8
+> criteria A-grade. No abort criteria triggered. This document is now a
+> historical record of the execution strategy used.
 
 ---
 
@@ -354,17 +359,20 @@ session). `DEFAULT_SOLREF`/`DEFAULT_SOLIMP` placed in `builder/mod.rs` as
 
 ---
 
-## 7. Phase 12 — Doc Sweep
+## 7. Phase 12 — Doc Sweep **(RESOLVED)**
 
-The ~692 doc reference updates are mechanical find-and-replace using the Doc
+The ~692 doc reference updates were mechanical find-and-replace using the Doc
 Reference Mapping Tables (one for
 [sim-core](./STRUCTURAL_REFACTOR.md#doc-reference-mapping-table), one for
 sim-mjcf immediately below it in the same file).
 
-**Strategy**: Batch by target module to minimize errors. For each target module
-(e.g., `constraint/assembly.rs`), find all `future_work_*.md` lines citing
-source ranges that map to that module and update them in one pass. Diff-review
-the changes before committing.
+**Strategy**: Batched by target module to minimize errors. For each target module
+(e.g., `constraint/assembly.rs`), all `future_work_*.md` lines citing
+source ranges that mapped to that module were updated in one pass. Diff-reviewed
+before committing.
+
+**Outcome**: ~700+ references updated in commit 00b6ea2. Post-completion audit
+(Session S20) found 7 stragglers in `future_work_*.md` — fixed in commit 23d6858.
 
 ---
 
@@ -385,6 +393,8 @@ Stop and reassess if any of these occur:
 If an abort criterion is triggered, see the
 [Rollback Procedure](./STRUCTURAL_REFACTOR.md#rollback-procedure) in the spec
 for revert protocol.
+
+**Outcome**: No abort criteria were triggered during the refactor.
 
 ---
 
@@ -492,8 +502,26 @@ and correlating with commit history.
 | 10 | builder/mod.rs | 887 lines (724 prod + 163 tests). ModelBuilder struct, orchestration fns, constants + 4 tests (file load, includes) | done | 34ad6e4, 866ab92 | S17–S19 |
 | 10 | builder/ inline tests | 136 tests relocated from monolith to 12 builder sub-modules. model_builder.rs replaced with 5-line redirect stub. 281/281 tests pass, clippy clean. | done | 866ab92 | S19 |
 | 12 | Monolith deletion + shim removal | Deleted mujoco_pipeline.rs (3,420 lines) and model_builder.rs (5-line stub). Removed `pub mod mujoco_pipeline;` from sim-core lib.rs, `mod model_builder;` from sim-mjcf lib.rs. Migrated last 2 production functions (object_velocity_local → dynamics/spatial.rs, compute_muscle_params → forward/muscle.rs). Relocated 7 inline test modules (~50 tests) to target files. Fixed 4 stale imports (derivatives.rs, passive.rs, contact_types.rs, model_factories.rs). | done | 00b6ea2 | S20 |
-| 12 | Stale reference sweep (grep) | 4 exhaustive greps (mujoco_pipeline, model_builder across .rs and .md) — zero matches. 3 intentional historical/provenance references retained. | done | 00b6ea2 | S20 |
+| 12 | Stale reference sweep (grep) | 4 exhaustive greps (mujoco_pipeline, model_builder across .rs and .md). 7 stale references in future_work docs found in follow-up audit (fixed in 23d6858). 3 intentional historical/provenance references retained. | done | 00b6ea2, 23d6858 | S20 |
 | 12 | future_work_*.md doc updates (~692) | ~700+ references updated across future_work_1.md through future_work_16.md (including 6b). All mujoco_pipeline.rs and model_builder.rs line-range citations replaced with new module paths. | done | 00b6ea2 | S20 |
 | 12 | ARCHITECTURE.md rewrite | Major rewrite: replaced monolith-era module tree with new modular structure showing all extracted modules in sim-core and sim-mjcf. | done | 00b6ea2 | S20 |
 | 12 | Other doc + test comment updates | GAP_ANALYSIS (~30 refs), CONFORMANCE (4 refs), REFERENCE (1 ref) updated. 5 integration test files updated. gjk_epa.rs (2 comments). collision/mod.rs (1 stale comment). TRAIT_ARCHITECTURE confirmed 0 references. | done | 00b6ea2 | S20 |
-| 12 | Final workspace verification + grading | fmt clean, clippy clean (--all-targets), 4-crate: 1,526/0/15 (exact baseline), 11-crate: 2,007/0/20 (exact baseline), xtask check passed (pre-existing safety warning only). | done | 00b6ea2 | S20 |
+| 12 | Final workspace verification + grading | fmt clean, clippy clean (--all-targets), 4-crate: 1,526/0/15 (exact baseline), 11-crate: 2,007/0/20 (exact baseline), xtask check passed (pre-existing safety warning only). All S1–S8 A-grade. | done | 00b6ea2 | S20 |
+
+---
+
+## 10. Refactor Complete
+
+**All 13 phases finished.** Both monolith files deleted, all tests pass at
+exact baseline counts, all rubric criteria A-grade, zero stale references.
+
+| Metric | Value |
+|--------|-------|
+| Sessions | S1–S20 |
+| Execution order | 0 → 1 → 2 → 5 → 4 → 3 → 7 → 6 → 8a → 8b → 8c → 10 → 12 |
+| Lines decomposed | ~26,722 (mujoco_pipeline.rs) + ~10,184 (model_builder.rs) |
+| New modules created | ~61 (sim-core) + ~19 (sim-mjcf) |
+| 4-crate baseline | 1,526 passed, 0 failed, 15 ignored |
+| 11-crate baseline | 2,007 passed, 0 failed, 20 ignored |
+| Abort criteria triggered | 0 |
+| Rubric grade | A on all S1–S8, every phase |
