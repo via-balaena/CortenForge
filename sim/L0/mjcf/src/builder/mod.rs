@@ -6,6 +6,7 @@
 //! ([`model_from_mjcf`], [`load_model`], [`load_model_from_file`]), and the
 //! orchestration sequence that wires everything together.
 
+pub mod actuator;
 pub mod asset;
 pub mod body;
 pub mod compiler;
@@ -17,6 +18,8 @@ pub mod joint;
 pub mod mass;
 pub mod mesh;
 pub mod orientation;
+pub mod sensor;
+pub mod tendon;
 
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 use sim_core::{

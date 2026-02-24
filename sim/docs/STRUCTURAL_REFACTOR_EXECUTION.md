@@ -480,9 +480,9 @@ and correlating with commit history.
 | 10 | builder/joint.rs | 202 lines. process_joint (impl). No inline tests | done | | S18 |
 | 10 | builder/body.rs | 311 lines. process_worldbody_geoms_and_sites, process_body, process_body_with_world_frame (impl). No inline tests | done | | S18 |
 | 10 | builder/mass.rs | 225 lines. apply_mass_pipeline (impl), extract_inertial_properties, compute_inertia_from_geoms (free fns). No inline tests | done | | S18 |
-| 10 | builder/actuator.rs | | | | |
-| 10 | builder/sensor.rs | | | | |
-| 10 | builder/tendon.rs | | | | |
+| 10 | builder/tendon.rs | 193 lines. process_tendons (impl). No inline tests | done | | S18 |
+| 10 | builder/actuator.rs | 427 lines. process_actuator (impl), parse_gaintype, parse_biastype, parse_dyntype, floats_to_array (free fns). No inline tests | done | | S18 |
+| 10 | builder/sensor.rs | 285 lines. process_sensors, resolve_sensor_object (impl), convert_sensor_type, sensor_datatype (free fns). No inline tests | done | | S18 |
 | 10 | builder/contact.rs | | | | |
 | 10 | builder/equality.rs | | | | |
 | 10 | builder/flex.rs | | | | |
