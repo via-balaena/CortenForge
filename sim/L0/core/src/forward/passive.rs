@@ -6,9 +6,10 @@
 
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::rne::mj_gravcomp;
+use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::{JointContext, JointVisitor};
-use crate::mujoco_pipeline::{object_velocity_local, tendon_all_dofs_sleeping}; // monolith: removed in Phase 8b/8c
+use crate::mujoco_pipeline::object_velocity_local; // monolith: removed in Phase 8c
 use crate::tendon::apply_tendon_force;
 use crate::types::{Data, ENABLE_SLEEP, GeomType, Integrator, Model, SleepState};
 use nalgebra::{Matrix3, Vector3};

@@ -29,10 +29,9 @@ use crate::constraint::solver::newton::newton_solve;
 use crate::constraint::solver::noslip::noslip_postprocess;
 use crate::constraint::solver::pgs::pgs_solve_unified;
 
+use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
 // Functions still in monolith — removed when their target phases extract them.
-use crate::mujoco_pipeline::accumulate_tendon_kd; // monolith: removed in Phase 8a
 use crate::mujoco_pipeline::populate_efc_island; // monolith: removed in Phase 8c
-use crate::mujoco_pipeline::tendon_all_dofs_sleeping; // monolith: removed in Phase 8a
 
 /// Island-aware constraint dispatch.
 ///

@@ -55,6 +55,7 @@
 
 use crate::dynamics::spatial::{SpatialVector, spatial_cross_motion};
 use crate::forward::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
+use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{
     mj_differentiate_pos, mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom,
 };
@@ -67,7 +68,6 @@ use crate::mujoco_pipeline::{
     MJ_MINVAL,
     // pub(crate) functions still in monolith (moved in later phases)
     object_velocity_local,
-    tendon_all_dofs_sleeping,
 };
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, Data, ENABLE_SLEEP, GainType, Integrator,

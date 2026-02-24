@@ -76,7 +76,7 @@ impl Data {
                 // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
                 self.forward(model)?;
                 check::mj_check_acc(model, self)?;
-                crate::mujoco_pipeline::mj_runge_kutta(model, self)?; // monolith: removed in Phase 8b
+                crate::integrate::rk4::mj_runge_kutta(model, self)?;
             }
             Integrator::Euler
             | Integrator::ImplicitSpringDamper

@@ -5,12 +5,12 @@
 //! portion of MuJoCo's `engine_forward.c`.
 
 use crate::constraint::assembly::tendon_deadband_displacement;
+use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
 use crate::joint_visitor::{JointContext, JointVisitor};
 use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_factor_in_place, lu_solve_factored,
     mj_solve_sparse,
 };
-use crate::mujoco_pipeline::{accumulate_tendon_kd, tendon_all_dofs_sleeping}; // monolith: removed in Phase 8b
 use crate::types::{Data, ENABLE_SLEEP, Integrator, Model, StepError};
 use nalgebra::DVector;
 

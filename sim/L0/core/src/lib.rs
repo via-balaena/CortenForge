@@ -99,6 +99,9 @@ pub mod forward;
 // Jacobian computation and position differentiation/integration
 pub mod jacobian;
 
+// Integration dispatch (Euler, implicit tendon K/D, RK4)
+pub mod integrate;
+
 // Collision detection pipeline (dispatch, narrow-phase, contact params)
 pub mod collision;
 

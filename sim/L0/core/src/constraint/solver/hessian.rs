@@ -10,8 +10,8 @@
 
 use nalgebra::{DMatrix, DVector};
 
+use crate::integrate::implicit::{tendon_active_stiffness, tendon_all_dofs_sleeping};
 use crate::linalg::{cholesky_in_place, cholesky_rank1_update};
-use crate::mujoco_pipeline::{tendon_active_stiffness, tendon_all_dofs_sleeping}; // monolith: removed in Phase 8b
 use crate::types::{ConstraintState, ConstraintType, Data, ENABLE_SLEEP, Model, StepError};
 
 /// DOF count above which Newton switches from dense O(nv³) Cholesky to
