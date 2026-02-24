@@ -475,9 +475,9 @@ and correlating with commit history.
 | 10 | builder/fluid.rs | 142 lines. KRONROD_L/W/D, MJ_EPS, get_added_mass_kappa, geom_semi_axes, compute_geom_fluid. No inline tests | done | | S18 |
 | 10 | builder/compiler.rs | 233 lines. apply_discardvisual (with nested remove_visual_geoms, collect_mesh_refs), apply_fusestatic, fuse_static_body. No inline tests (all integration tests stay in monolith) | done | | S18 |
 | 10 | builder/frame.rs | 260 lines. frame_accum_child, validate_childclass_references, validate_frame_childclass_refs, expand_frames, expand_single_frame. No inline tests (all integration tests stay in monolith) | done | | S18 |
-| 10 | builder/mesh.rs | | | | |
-| 10 | builder/geom.rs | | | | |
-| 10 | builder/joint.rs | | | | |
+| 10 | builder/mesh.rs | 473 lines. process_mesh, process_hfield (impl), load_mesh_file, convert_mjcf_hfield, convert_mjcf_mesh, convert_embedded_mesh, compute_mesh_inertia, resolve_mesh, MeshProps type. No inline tests | done | | S18 |
+| 10 | builder/geom.rs | 520 lines. process_geom, process_site (impl), geom_effective_com, compute_geom_mass, compute_geom_inertia, compute_fromto_pose, geom_size_to_vec3. No inline tests | done | | S18 |
+| 10 | builder/joint.rs | 202 lines. process_joint (impl). No inline tests | done | | S18 |
 | 10 | builder/body.rs | | | | |
 | 10 | builder/mass.rs | | | | |
 | 10 | builder/actuator.rs | | | | |
