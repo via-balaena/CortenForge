@@ -412,9 +412,13 @@ impl Data {
 }
 ```
 
-This matches the **actual** `step` and `forward_core` implementations from
-`mujoco_pipeline.rs` (as of 2026-02-22). A reader who sees only this
-understands the **entire simulation pipeline** in ~90 lines. That's the goal.
+This is the **aspirational end-state** of `forward/mod.rs` after Phases 8a–8c
+are complete — when `integrate/` and `island/` calls route to their final
+modules instead of through the monolith shim. As of Phase 8a, the orchestration
+structure and forward/* calls are in place; `integrate::*` and `island::*` calls
+still route through `crate::mujoco_pipeline::` until Phases 8b and 8c extract
+them. A reader who sees only this understands the **entire simulation pipeline**
+in ~90 lines. That's the goal.
 
 ---
 
@@ -732,7 +736,7 @@ responsibility) by showing the authoritative decomposition.
 | MuJoCo C file | CortenForge module | Scope |
 |---------------|-------------------|-------|
 | `engine_forward.c` | `forward/mod.rs`, `forward/acceleration.rs`, `forward/check.rs`, `integrate/` | `mj_step`, `mj_forward`, acceleration, state checks, integration |
-| `engine_core_smooth.c` | `forward/position.rs`, `forward/velocity.rs`, `dynamics/crba.rs`, `dynamics/rne.rs`, `tendon/`, `forward/actuation.rs`, `forward/muscle.rs` | FK, velocity, CRBA, RNE, tendon kinematics, actuation/transmission, muscle precomputation |
+| `engine_core_smooth.c` | `jacobian.rs`, `forward/position.rs`, `forward/velocity.rs`, `dynamics/crba.rs`, `dynamics/rne.rs`, `tendon/`, `forward/actuation.rs`, `forward/muscle.rs` | Body/site Jacobians, FK, velocity, CRBA, RNE, tendon kinematics, actuation/transmission, muscle precomputation |
 | `engine_passive.c` | `forward/passive.rs` | Springs, dampers, fluid, flex bending |
 | `engine_core_constraint.c` | `constraint/mod.rs`, `constraint/assembly.rs` | Constraint row construction |
 | `engine_solver.c` | `constraint/solver/` | PGS, CG, Newton |
