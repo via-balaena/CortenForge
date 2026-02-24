@@ -319,6 +319,23 @@ in `jacobian.rs` (Phase 8a). ~566 lines moved; monolith 5,364 → 4,798.
 - ~~**`mj_integrate_pos_explicit`** → `jacobian.rs` (Phase 8a).~~
   Already extracted; no action needed.
 
+### Phase 8c: Island/sleep extraction **(RESOLVED)**
+
+All Phase 8c hazards were handled during extraction. Both island files
+landed well under 800 lines (mod.rs: 671, sleep.rs: 745). `populate_efc_island`
+(deferred from Phase 6) was successfully placed in `island/mod.rs`.
+~1,416 lines moved; monolith 4,798 → 109 prod lines (3,420 total with
+inline tests).
+
+- ~~**`island/mod.rs`** (~587 estimate): Risk of exceeding limit with all
+  island discovery functions plus `populate_efc_island`.~~ Actual: 671 lines.
+  Fallback not needed.
+- ~~**`island/sleep.rs`** (~737 estimate): Risk of exceeding limit with all
+  sleep/wake state machine functions plus Data query methods.~~ Actual: 745
+  lines. Fallback not needed.
+- ~~**Deferred function**: `populate_efc_island` deferred from Phase 6.~~
+  Placed in `island/mod.rs` (depends on island data, not constraint assembly).
+
 ### Phase 10: MARGIN WARNING + feature gate + shared constants
 
 - `builder/mod.rs` (~732 lines): Only under 800 **because** `new()` (~264
@@ -450,6 +467,7 @@ and correlating with commit history.
 | 8b | **Phase 8b audit** | Independent audit: all S1–S8 A-grade. Zero findings. Lazy import check passed. 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S15 |
 | 8c | island/mod.rs | 671 lines; mj_island, mj_flood_fill, equality_trees, constraint_tree, populate_efc_island (deferred from Phase 6) | done | 961396f | S16 |
 | 8c | island/sleep.rs | 745 lines; mj_sleep, mj_wake*, mj_update_sleep_arrays, mj_check_qpos_changed, reset_sleep_state, Data sleep query methods, all private helpers | done | 961396f | S16 |
+| 8c | **Phase 8c audit** | Independent audit: all S1–S8 A-grade. Zero findings. populate_efc_island correctly placed in island/mod.rs. forward/mod.rs matches aspirational end-state (all 12 crate::island:: calls final). 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S16 |
 | 10 | builder/mod.rs | **(MARGIN)** ~732 lines — requires init.rs split | | | |
 | 10 | builder/init.rs | Split from mod.rs for MARGIN compliance | | | |
 | 10 | builder/orientation.rs | | | | |

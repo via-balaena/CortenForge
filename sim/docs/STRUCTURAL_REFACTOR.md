@@ -1,6 +1,6 @@
 # sim-core Structural Refactor
 
-> **Status**: Executing — 9 of 13 phases complete (2026-02-23)
+> **Status**: Executing — 11 of 13 phases complete (2026-02-23)
 > **Scope**: Decompose `mujoco_pipeline.rs` (26,722 lines) and `model_builder.rs`
 > (10,184 lines total; ~6,032 production + ~4,152 tests) into navigable module
 > trees. Zero physics changes. Zero API changes.
@@ -73,8 +73,10 @@ This single function would consume almost the entire 800-line budget of
 **Resolution**: `assemble_unified_constraints` has clear internal phases
 (count rows → allocate → populate equality/friction/limits/contacts → count
 types). It stays as one function (splitting it would lose the unified
-assembly semantics), but `constraint/assembly.rs` gets only this function plus
-`populate_efc_island` (~59 lines), totaling **~750 lines** — under the limit.
+assembly semantics), and `constraint/assembly.rs` gets only this function
+(735 lines actual) — under the limit. `populate_efc_island` (~59 lines) was
+originally planned for assembly.rs but was placed in `island/mod.rs` during
+Phase 8c extraction (it depends on island data, not constraint assembly).
 The equality Jacobian extraction functions (extract_connect_jacobian, etc.)
 move to a separate `constraint/equality.rs` (626 lines).
 
@@ -206,12 +208,9 @@ constraint/
   │                               compute_point_velocity (L20013–L20028, 16 lines).
   │                               Total named functions: 332 lines; the ~400 estimate includes
   │                               whitespace, comments, and local structs between functions.
-  assembly.rs        ~750 lines  — assemble_unified_constraints (~685 body), populate_efc_island
-  │                               (~59 body), totaling ~750 with signatures + doc comments.
-  │                               **MARGIN WARNING**: ~750 is function bodies only. The extracted
-  │                               module will need ~20–30 lines of `use` imports + `//!` doc
-  │                               comment. If the total exceeds 800, the fallback is to move
-  │                               `populate_efc_island` (62 lines) to `constraint/mod.rs`.
+  assembly.rs         735 lines  — assemble_unified_constraints (~685 body) + tendon_deadband_
+  │                               displacement. `populate_efc_island` originally planned here but
+  │                               placed in `island/mod.rs` during Phase 8c (depends on island data).
   equality.rs         626 lines  — extract_{connect,weld,joint,tendon,distance}_jacobian,
   │                               add_body_{point,angular}_jacobian_row,
   │                               get_min_{diagonal_mass,translational_mass,rotational_inertia}
@@ -247,7 +246,7 @@ constraint/
     │                              ~418 lines)
 ```
 
-**Total: ~5,612 lines across 12 files. Largest: ~750 lines (assembly.rs). All under 800.**
+**Total: ~5,612 lines across 12 files. Largest: 748 lines (constraint/solver/noslip.rs). All under 800.**
 
 ---
 
@@ -410,8 +409,8 @@ sim-core/src/
   │   ├── mod.rs              mj_fwd_constraint, mj_fwd_constraint_islands,
   │   │                       compute_qacc_smooth, build_m_impl_for_newton,
   │   │                       compute_qfrc_smooth_implicit, compute_point_velocity (~400 lines)
-  │   ├── assembly.rs         assemble_unified_constraints (~685 lines),
-  │   │                       populate_efc_island (~750 lines total)
+  │   ├── assembly.rs         assemble_unified_constraints + tendon_deadband_displacement
+  │   │                       (735 lines; populate_efc_island moved to island/mod.rs in Phase 8c)
   │   ├── equality.rs         extract_{connect,weld,joint,tendon,distance}_jacobian,
   │   │                       add_body_{point,angular}_jacobian_row,
   │   │                       get_min_diagonal_mass/translational/rotational (626 lines)
@@ -570,7 +569,7 @@ sim-core/src/
 | `dynamics/spatial.rs` | ~300 | L106–L325 (spatial algebra) + L12038–L12108 |
 | `dynamics/flex.rs` | ~10 | L9236–L9244 (mj_flex — flex vertex position sync, 6-line function + imports/doc) |
 | `constraint/mod.rs` | ~400 | mj_fwd_constraint + dispatch (verified) |
-| `constraint/assembly.rs` | ~750 | assemble_unified_constraints (~685 body) + populate_efc_island (~59 body) |
+| `constraint/assembly.rs` | 735 | assemble_unified_constraints (~685 body) + tendon_deadband_displacement. `populate_efc_island` placed in `island/mod.rs` (Phase 8c). |
 | `constraint/equality.rs` | 626 | Jacobian extraction for equality constraints (verified) |
 | `constraint/jacobian.rs` | ~337 | L14269–L14606 (compute_flex_contact_jacobian, compute_contact_jacobian, add_angular_jacobian) |
 | `constraint/impedance.rs` | ~343 | L14932–L15274 (compute_impedance, quaternion_to_axis_angle, compute_kbip, compute_aref, normalize_quat4, ball_limit_axis_angle, compute_diag_approx_exact, mj_solve_sparse_vec, compute_regularization) |
@@ -597,7 +596,7 @@ sim-core/src/
 | `sensor/postprocess.rs` | ~48 | L8833–L8895 (sensor_write helpers + mj_sensor_postprocess) |
 | `sensor/derived.rs` | ~304 | L8897–L9229 (subtree_com, subtree_momentum, body_acceleration, body_angular_acceleration, site_force_torque, is_body_in_subtree, subtree_angmom) — energy at L8028–L8116 is separate, see `energy.rs` |
 | `tendon/*.rs` | ~1,100 total | tendon/mod.rs + fixed.rs: L9367–L9429 (~63) + L4004–L4032 (~28, compute_spatial_tendon_length0); tendon/spatial.rs: L9430–L9829 (~400) + L10042–L10113 (~72); tendon/wrap_math.rs: L10114–L10674 (~561) |
-| `island/*.rs` | ~1,324 total | island/sleep.rs: L12966–L13409 (444) + L14005–L14268 (264) + L4491–L4519 (29, Data sleep methods) = ~737; island/mod.rs: L13411–L13997 = ~587 |
+| `island/*.rs` | 1,416 total | island/mod.rs: 671 lines (mj_island, mj_flood_fill, equality_trees, constraint_tree, populate_efc_island); island/sleep.rs: 745 lines (mj_sleep, mj_wake*, mj_update_sleep_arrays, mj_check_qpos_changed, reset_sleep_state, Data sleep queries) |
 | `integrate/mod.rs` | ~120 | L4701–L4821 (integrate() dispatch, integrate_without_velocity() — already mapped above) |
 | `integrate/euler.rs` | ~166 | L20900–L21066 (mj_integrate_pos, PositionIntegrateVisitor, mj_normalize_quat, QuaternionNormalizeVisitor) |
 | `integrate/implicit.rs` | ~127 | L12690–L12816 (tendon K/D helpers only: tendon_all_dofs_sleeping, tendon_all_dofs_sleeping_fields, tendon_active_stiffness, accumulate_tendon_kd; tendon_deadband_displacement went to `constraint/assembly.rs` in Phase 6) |
@@ -609,7 +608,7 @@ sim-core/src/
 | **Inline tests** | ~5,246 | L21476–L26722 (move with their modules) |
 
 **Production code**: ~21,475 lines → distributed across ~61 modules
-**Largest module**: `constraint/assembly.rs` at ~750 lines
+**Largest module**: `constraint/solver/noslip.rs` at 748 lines
 **Average module**: ~420 lines (ideal for comprehension)
 **All modules**: ≤800 lines of production code (verified for constraint block)
 
@@ -1267,14 +1266,14 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 - [x] Move mj_fwd_position + aabb_from_geom + SweepAndPrune → `forward/position.rs` (601 lines)
 - [x] Move mj_fwd_velocity → `forward/velocity.rs` (125 lines)
 - [x] Move passive forces + PassiveForceVisitor → `forward/passive.rs` (715 lines)
-      **HAZARD OK**: tendon implicit K/D helpers left in monolith for Phase 8b.
+      **HAZARD RESOLVED**: tendon implicit K/D helpers extracted to integrate/implicit.rs (Phase 8b).
 - [x] Move actuation pipeline → `forward/actuation.rs` (461 lines)
 - [x] Move muscle_* helpers → `forward/muscle.rs` (122 lines)
       Note: `compute_muscle_params` left in monolith (heavy deps: mj_fwd_position, mj_crba, mj_jac_site, mj_solve_sparse).
 - [x] Move acceleration paths → `forward/acceleration.rs` (331 lines)
 - [x] Move check functions → `forward/check.rs` (51 lines)
 - [x] Move Jacobian functions → `src/jacobian.rs` (455 lines)
-      **HAZARD OK**: `mj_integrate_pos_explicit` extracted; `mj_integrate_pos` left for Phase 8b.
+      **HAZARD RESOLVED**: `mj_integrate_pos_explicit` extracted to jacobian.rs; `mj_integrate_pos` extracted to integrate/euler.rs (Phase 8b).
 - [x] Run full test suite — 2,007 passed, 0 failed, 20 ignored
 
 **Actual size**: ~3,100 lines moved. Monolith 8,275 → 5,364 (35% reduction). Commit: b62d746 (S14).
@@ -1309,7 +1308,7 @@ integration and island/sleep follows Principle #5 (one PR per major module).
       Data::nisland() → `island/sleep.rs`
 - [x] Run full test suite — 2,007/0/20 (exact baseline)
 
-**Estimated size**: ~1,324 lines moved (island/sleep.rs: ~737 lines, island/mod.rs: ~587 lines)
+**Actual size**: ~1,416 lines moved (island/mod.rs: 671 lines, island/sleep.rs: 745 lines). Monolith 4,798 → 109 prod lines (3,420 total with inline tests). Commit: 961396f (S16).
 
 > **Accounting note**: The per-phase "Estimated size" values sum to ~20,966
 > lines. The file's production code is ~21,475 lines. The ~509-line

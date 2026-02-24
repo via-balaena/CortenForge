@@ -261,8 +261,9 @@ the function to the wrong module.
 | **C** | `mod.rs` contains significant implementation detail |
 | **F** | `mod.rs` is just another big file — the module tree is cosmetic |
 
-**The ideal `forward/mod.rs`** (illustrative — matches the actual `step` and
-`forward_core` implementations structurally from `mujoco_pipeline.rs`):
+**The ideal `forward/mod.rs`** (simplified — the actual implementation includes
+a `muscle` sub-module and additional re-exports for external consumers; this
+example focuses on the orchestration structure):
 
 ```rust
 //! Forward dynamics pipeline — top-level orchestration.
@@ -412,13 +413,11 @@ impl Data {
 }
 ```
 
-This is the **aspirational end-state** of `forward/mod.rs` after Phases 8a–8c
-are complete — when `integrate/` and `island/` calls route to their final
-modules instead of through the monolith shim. As of Phase 8b, the orchestration
-structure, forward/* calls, and `integrate::*` calls are all in place;
-`island::*` calls still route through `crate::mujoco_pipeline::` until
-Phase 8c extracts them. A reader who sees only this understands the **entire
-simulation pipeline** in ~90 lines. That's the goal.
+This is the **actual end-state** of `forward/mod.rs` (completed in Phases
+8a–8c). All `forward/*`, `integrate::*`, and `island::*` calls now route to
+their final modules — no monolith shim indirection remains. A reader who sees
+only this understands the **entire simulation pipeline** in ~90 lines. That's
+the goal.
 
 ---
 
