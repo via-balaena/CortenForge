@@ -3,7 +3,7 @@
 //! Tests sensor readings from the **standalone sim-sensor crate**, including
 //! IMU, force/torque, magnetometer, and rangefinder. These tests exercise
 //! the sensor API directly — they do **not** test the MuJoCo pipeline's
-//! sensor evaluation (`mj_sensor()` in `mujoco_pipeline.rs`).
+//! sensor evaluation (`mj_sensor_pos/vel/acc()` in `sensor/`).
 
 use approx::assert_relative_eq;
 use nalgebra::{Point3, UnitQuaternion, Vector3};

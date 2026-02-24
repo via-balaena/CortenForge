@@ -1014,7 +1014,7 @@ fn test_distance_constraint_zero_target() {
 /// Test: Distance constraint with geom2 omitted (world origin sentinel).
 ///
 /// When geom2 is not specified, the distance is measured from the world origin.
-/// This exercises the `usize::MAX` sentinel path in both model_builder and pipeline.
+/// This exercises the `usize::MAX` sentinel path in both `builder/` and `constraint/`.
 #[test]
 fn test_distance_constraint_geom2_omitted() {
     let mjcf = r#"

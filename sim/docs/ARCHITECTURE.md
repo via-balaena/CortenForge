@@ -63,8 +63,98 @@ sim/
 
 ## Core Architecture: Model/Data
 
-The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~24,800 lines).
-It implements MuJoCo's computation pipeline end-to-end.
+The simulation engine lives in `sim-core/src/`, organized as a module tree that
+mirrors MuJoCo's C file boundaries. The former monolith (`mujoco_pipeline.rs`,
+26,722 lines) has been decomposed into ~40 focused modules across these
+pipeline-stage directories:
+
+```
+sim-core/src/
+├── types/           # Model, Data, enums, contacts, keyframes
+│   ├── model.rs           # Model struct (static configuration)
+│   ├── data.rs            # Data struct (mutable state)
+│   ├── enums.rs           # MjJointType, GeomType, SolverType, etc.
+│   ├── contact_types.rs   # Contact, ContactPair
+│   ├── keyframe.rs        # Keyframe snapshots
+│   ├── model_init.rs      # Model construction helpers
+│   └── model_factories.rs # n_link_pendulum, test factories
+├── dynamics/        # CRBA, RNE, factorization, spatial algebra
+│   ├── crba.rs            # Composite Rigid Body Algorithm
+│   ├── rne.rs             # Recursive Newton-Euler
+│   ├── factor.rs          # Sparse LDL factorization
+│   ├── flex.rs            # Flex mass matrix + flex LDL
+│   └── spatial.rs         # SpatialVector, object_velocity
+├── forward/         # Pipeline orchestration + per-stage functions
+│   ├── mod.rs             # step(), forward(), forward_skip_sensors()
+│   ├── position.rs        # mj_fwd_position (FK from qpos)
+│   ├── velocity.rs        # mj_fwd_velocity (body spatial velocities)
+│   ├── passive.rs         # mj_fwd_passive (springs, dampers, friction)
+│   ├── actuation.rs       # mj_fwd_actuation (gain/bias/act_dot)
+│   ├── muscle.rs          # Muscle actuator computation
+│   ├── acceleration.rs    # mj_fwd_acceleration (qacc = M⁻¹·f)
+│   └── check.rs           # Position/velocity limit checking
+├── constraint/      # Constraint assembly + solver dispatch
+│   ├── mod.rs             # mj_fwd_constraint, island dispatch
+│   ├── assembly.rs        # assemble_unified_constraints()
+│   ├── equality.rs        # Equality constraint Jacobians
+│   ├── impedance.rs       # Solver impedance (solref/solimp)
+│   ├── jacobian.rs        # Constraint Jacobian computation
+│   └── solver/            # PGS, CG, Newton, Noslip, Hessian
+│       ├── pgs.rs         # Projected Gauss-Seidel
+│       ├── cg.rs          # Conjugate Gradient
+│       ├── newton.rs      # Newton (H⁻¹ preconditioner)
+│       ├── primal.rs      # Shared primal infrastructure
+│       ├── noslip.rs      # Noslip post-processing
+│       └── hessian.rs     # Analytical second-order derivatives
+├── integrate/       # Time integration
+│   ├── mod.rs             # integrate() dispatch
+│   ├── euler.rs           # Semi-implicit Euler
+│   ├── implicit.rs        # Implicit / ImplicitFast / ImplicitSpringDamper
+│   └── rk4.rs             # 4th-order Runge-Kutta
+├── island/          # Sleep/wake + constraint islands
+│   ├── mod.rs             # mj_island (DFS flood-fill)
+│   └── sleep.rs           # Sleep state machine, wake detection
+├── collision/       # Collision detection pipeline
+│   ├── mod.rs             # mj_collision (broad + narrow dispatch)
+│   ├── narrow.rs          # Narrow-phase dispatch table
+│   ├── plane.rs           # Plane-vs-geom algorithms
+│   ├── pair_convex.rs     # Convex pair algorithms
+│   ├── pair_cylinder.rs   # Cylinder pair algorithms
+│   ├── mesh_collide.rs    # Mesh collision
+│   ├── hfield.rs          # Height field collision
+│   ├── flex_collide.rs    # Flex vertex-vs-geom
+│   └── sdf_collide.rs     # SDF collision
+├── sensor/          # Sensor pipeline
+│   ├── mod.rs             # Sensor dispatch + computed sensors
+│   ├── position.rs        # Position-stage sensors
+│   ├── velocity.rs        # Velocity-stage sensors
+│   ├── acceleration.rs    # Acceleration-stage sensors
+│   ├── derived.rs         # Derived quantities
+│   └── postprocess.rs     # Sensor post-processing
+├── tendon/          # Tendon kinematics
+│   ├── mod.rs             # mj_fwd_tendon dispatch
+│   ├── fixed.rs           # Fixed-path tendons
+│   ├── spatial.rs         # Spatial-path tendons
+│   └── wrap_math.rs       # Wrapping geometry math
+├── jacobian.rs      # Jacobian computation + position diff/integration
+├── joint_visitor.rs # Joint visitor pattern + motion subspace
+├── energy.rs        # Energy queries (potential + kinetic)
+├── linalg.rs        # Cholesky, LU, sparse solve, union-find
+├── derivatives.rs   # Simulation transition derivatives
+├── contact.rs       # ContactPoint, ContactManifold, ContactForce
+├── batch.rs         # BatchSim (N environments, one Model)
+├── collision_shape.rs # CollisionShape enum, Aabb
+├── gjk_epa.rs       # GJK/EPA for convex shapes
+├── mid_phase.rs     # BVH tree (median-split, traversal)
+├── mesh.rs          # Triangle mesh collision functions
+├── heightfield.rs   # Terrain collision
+├── sdf.rs           # Signed distance field collision
+└── raycast.rs       # Ray-shape intersection
+```
+
+Each directory corresponds to a MuJoCo pipeline stage, with no module exceeding
+~800 lines of production code. The pipeline flows:
+**types -> dynamics -> forward -> constraint -> integrate -> island**.
 
 ### Model (static)
 
@@ -210,7 +300,8 @@ mjd_transition():
   uses `forward_skip_sensors()` for intermediate stage evaluations and
   `mj_integrate_pos_explicit()` for quaternion-safe position updates
 - `ImplicitSpringDamper` — unconditionally stable for stiff springs/dampers; solves
-  `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
+  `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)` where D/K include
+  both joint diagonal and tendon non-diagonal `J^T·J` coupling (DT-35)
 - `Implicit` — full implicit with asymmetric D (includes Coriolis velocity derivatives)
   and LU factorization with partial pivoting; maximum accuracy
 - `ImplicitFast` — fast implicit with symmetric D (skips Coriolis terms) and Cholesky
@@ -299,9 +390,21 @@ by sim-core (GJK); all other batch ops are benchmarked but have no callers.
 
 ### sim-core
 
-The physics engine. Depends on sim-types and sim-simd. Contains:
+The physics engine. Depends on sim-types and sim-simd. Organized as a module
+tree mirroring MuJoCo's pipeline stages (see directory listing above). Key
+modules:
 
-- `mujoco_pipeline.rs` — `Model`, `Data`, full MuJoCo-aligned pipeline
+- `types/` — `Model` (static), `Data` (mutable), enums, contact types, keyframes
+- `dynamics/` — CRBA, RNE, sparse LDL factorization, spatial algebra
+- `forward/` — Pipeline orchestration (`step`, `forward`), per-stage functions (position, velocity, passive, actuation, acceleration, muscle)
+- `constraint/` — Unified constraint assembly + solver dispatch (PGS, CG, Newton, Noslip)
+- `integrate/` — Euler, implicit, RK4 integration
+- `island/` — Constraint island discovery (DFS flood-fill) + sleep/wake state machine
+- `collision/` — Broad + narrow phase collision pipeline, flex collision
+- `sensor/` — Position/velocity/acceleration/derived sensor stages
+- `tendon/` — Fixed-path and spatial-path tendon kinematics
+- `jacobian.rs` — Jacobian computation, position differentiation/integration
+- `energy.rs` — Potential and kinetic energy queries
 - `derivatives.rs` — Simulation transition derivatives (FD, analytical qDeriv, hybrid FD+analytical, SO(3) Jacobians, validation utilities)
 - `collision_shape.rs` — `CollisionShape` enum, `Aabb`
 - `mid_phase.rs` — BVH tree (median-split construction, traversal, ray queries)
@@ -316,7 +419,7 @@ The physics engine. Depends on sim-types and sim-simd. Contains:
 `ContactPoint`, `ContactManifold`, and `ContactForce` live in
 `sim-core/src/contact.rs`. These represent collision geometry output
 (position, normal, penetration, body pair) and resulting forces.
-The MuJoCo pipeline uses unified PGS/CG/Newton solvers in `mujoco_pipeline.rs`
+The MuJoCo pipeline uses unified PGS/CG/Newton solvers in `constraint/solver/`
 with variable condim (1/3/4/6) and elliptic friction cones.
 
 ### sim-constraint
@@ -341,8 +444,8 @@ Also provides: `JointLimits`, `JointMotor`, `MotorMode`, equality constraints
 and `CGSolver` (Conjugate Gradient solver with Block Jacobi preconditioner —
 standalone library for joint-space constraints; see [future_work_1 #3](./todo/future_work_1.md)).
 The pipeline's unified constraint solver (PGS/CG/Newton) lives in
-`mujoco_pipeline.rs` and operates on unified constraint rows assembled by
-`assemble_unified_constraints()`.
+`sim-core/src/constraint/` and operates on unified constraint rows assembled by
+`assemble_unified_constraints()` in `constraint/assembly.rs`.
 
 ### sim-sensor
 
@@ -353,8 +456,10 @@ Simulated sensor suite: `Imu` (6-axis accel + gyro), `ForceTorqueSensor`
 ### Flex (Deformable) Bodies
 
 Deformable bodies are unified into the rigid pipeline as flex bodies (matching
-MuJoCo's flex architecture). No separate crate — all flex code lives in
-`sim-core/mujoco_pipeline.rs` and `sim-mjcf/model_builder.rs`.
+MuJoCo's flex architecture). No separate crate — flex code is distributed
+across the sim-core module tree (`dynamics/flex.rs`, `forward/passive.rs`,
+`forward/position.rs`, `collision/flex_collide.rs`, `integrate/euler.rs`)
+and the sim-mjcf `builder/flex.rs` module.
 
 | Dimension | Use Cases | MJCF Element |
 |-----------|-----------|--------------|
@@ -383,7 +488,7 @@ characteristic stiffness for solids). Pinned vertices use `mass = 1e20`,
 
 See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) for the full
 specification. The previous `sim-deformable` crate (XPBD solver) has been
-deleted — useful code migrated to `model_builder.rs`. The bending and
+deleted — useful code migrated to `builder/flex.rs`. The bending and
 elasticity models are being refactored into trait boundaries — see
 [TRAIT_ARCHITECTURE.md](./TRAIT_ARCHITECTURE.md) for the vision.
 
@@ -411,16 +516,43 @@ Standalone cable-driven actuation and routing library:
 `TendonActuator` trait: `rest_length`, `compute_length`, `compute_velocity`,
 `compute_force`, `jacobian`, `num_joints` (6 methods).
 
-**Note:** Both fixed and spatial tendons are implemented directly in the MuJoCo
-pipeline (`mj_fwd_tendon` in sim-core). Spatial tendons include sphere and
-cylinder wrapping, sidesite disambiguation, `wrap_inside` inverse wrapping,
-pulley divisors, and Jacobian
-computation via `accumulate_point_jacobian()`. This crate remains a standalone
-reference library for advanced tendon analysis.
+**Note:** Both fixed and spatial tendons are implemented directly in sim-core's
+`tendon/` module (`mj_fwd_tendon` in `tendon/mod.rs`, fixed-path in
+`tendon/fixed.rs`, spatial-path in `tendon/spatial.rs`, wrapping geometry in
+`tendon/wrap_math.rs`). Spatial tendons include sphere and cylinder wrapping,
+sidesite disambiguation, `wrap_inside` inverse wrapping, pulley divisors, and
+Jacobian computation via `accumulate_point_jacobian()`. This crate remains a
+standalone reference library for advanced tendon analysis.
 
 ### sim-mjcf
 
-MuJoCo XML format parser. Supports: bodies, joints (hinge, slide, ball, free),
+MuJoCo XML format parser. The former monolith (`model_builder.rs`, 10,184
+lines) has been decomposed into ~19 modules under `builder/`:
+
+```
+sim-mjcf/src/builder/
+├── mod.rs          # ModelBuilder struct, top-level build orchestration
+├── build.rs        # build_model() — final assembly and validation
+├── init.rs         # ModelBuilder initialization and reset
+├── body.rs         # Body processing (kinematic tree, parent links)
+├── joint.rs        # Joint processing (hinge, slide, ball, free)
+├── geom.rs         # Geom processing (collision geometry)
+├── frame.rs        # Frame processing (pose composition, childclass)
+├── actuator.rs     # Actuator expansion (8 shortcut types → general)
+├── sensor.rs       # Sensor wiring (32 pipeline sensor types)
+├── tendon.rs       # Tendon processing (fixed + spatial)
+├── flex.rs         # Flex/flexcomp processing (edges, hinges, volumes)
+├── mass.rs         # Mass computation + post-processing
+├── mesh.rs         # Mesh asset processing
+├── asset.rs        # Asset management (textures, materials)
+├── compiler.rs     # <compiler> element processing
+├── contact.rs      # Contact pair/exclude processing
+├── equality.rs     # Equality constraint processing
+├── fluid.rs        # Fluid model parameters
+└── orientation.rs  # Orientation/quaternion utilities
+```
+
+Supports: bodies, joints (hinge, slide, ball, free),
 geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
 (motor, position, velocity, general, muscle, cylinder, damper, adhesion),
 contype/conaffinity contact bitmasks, `<contact>` `<pair>`/`<exclude>` elements
@@ -445,7 +577,7 @@ automatic limit inference (`autolimits`), inertia computation
 (fixed and spatial tendons fully supported, including sphere/cylinder wrapping,
 sidesite disambiguation, `wrap_inside` inverse wrapping, and pulley divisors;
 all 32 pipeline sensor types functional and wired from MJCF via
-`process_sensors()` in `model_builder.rs`). The model builder expands all 8 actuator
+`process_sensors()` in `builder/sensor.rs`). The model builder expands all 8 actuator
 shortcut types to their general gain/bias/dynamics representation (matching
 MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,
 `actuator_gainprm`, `actuator_biasprm`, and `actuator_dynprm` per actuator.
@@ -454,7 +586,7 @@ MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,
 Muscle parameters are parsed and transferred; `compute_muscle_params()`
 resolves `lengthrange`, `acc0`, and auto-computes `F0` at model build time.
 `<flex>` and `<flexcomp>` elements are parsed via `parse_flex()` /
-`parse_flexcomp()` and processed by `process_flex()` in the model builder,
+`parse_flexcomp()` and processed by `process_flex()` in `builder/flex.rs`,
 which computes edge/hinge topology, bending stiffness from material properties,
 and element rest volumes.
 

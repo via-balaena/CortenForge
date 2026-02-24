@@ -1,7 +1,7 @@
 # MuJoCo Reference Architecture
 
 This document defines the physics pipeline architecture implemented in
-`sim/L0/core/src/mujoco_pipeline.rs`. The pipeline follows MuJoCo's computation
+`sim/L0/core/src/` (decomposed across `types/`, `dynamics/`, `collision/`, `sensor/`, `constraint/`, `forward/`, `integrate/`, `island/`, `jacobian.rs`, `energy.rs`). The pipeline follows MuJoCo's computation
 model: `forward()` (8 sub-stages) then either `integrate()` (Euler/ImplicitSpringDamper)
 or `mj_runge_kutta()` (RK4) run each timestep, operating on a static `Model` and
 mutable `Data`.
@@ -471,8 +471,11 @@ ten_force[t] = frc_spring
 
 qfrc_passive[dof] += coef * ten_force    # for each wrap entry
 ```
-Note: tendon spring/damper forces are skipped in implicit mode (non-diagonal
-coupling cannot be absorbed into the diagonal implicit modification).
+Note: in `ImplicitSpringDamper` mode, `ten_force[t]` is always computed for
+diagnostic purposes, but the explicit `qfrc_passive` application is skipped —
+the forces are instead handled implicitly via non-diagonal `K_tendon = k·J^T·J`
+and `D_tendon = b·J^T·J` matrices in `mj_fwd_acceleration_implicit()` and
+`build_m_impl_for_newton()` (see DT-35).
 
 ### 4.4 Constraint Forces (`mj_fwd_constraint`)
 
@@ -645,7 +648,7 @@ for i in range(nv):
         x[i] -= qLD_data[rowadr[i]+k] * x[j]
 ```
 
-**Implicit path (ImplicitSpringDamper — legacy diagonal):**
+**Implicit path (ImplicitSpringDamper):**
 
 Solves the implicit system for new velocity directly:
 ```
@@ -653,13 +656,16 @@ Solves the implicit system for new velocity directly:
 ```
 
 Where:
-- `D = diag(damping)` per joint DOF
-- `K = diag(stiffness)` per joint DOF
-- `q_eq = springref` per joint
+- `D = diag(damping_jnt) + Σ_t b_t·J_t^T·J_t` — per-joint DOF diagonal + non-diagonal tendon damping
+- `K = diag(stiffness_jnt) + Σ_t k_active_t·J_t^T·J_t` — per-joint DOF diagonal + non-diagonal tendon stiffness (deadband-aware)
+- `q_eq = springref` per joint; tendon spring displacement via `tendon_deadband_displacement()`
 - `f_ext = applied + actuator + passive(friction only) + constraint - bias`
 
-The modified matrix `M + h*D + h^2*K` is SPD when `M` is SPD and `D, K >= 0`.
-After solving, `qacc = (v_new - v_old) / h` for consistency.
+Joint K/D are diagonal. Tendon K/D are non-diagonal rank-1 outer products
+`k·J^T·J` and `b·J^T·J`, accumulated via `accumulate_tendon_kd()` (DT-35).
+The modified matrix `M + h*D + h^2*K` is SPD when `M` is SPD and `D, K >= 0`
+(guaranteed because `J^T·J` is PSD). After solving, `qacc = (v_new - v_old) / h`
+for consistency.
 
 **Implicit path (ImplicitFast — full Jacobian, Cholesky):**
 
@@ -957,7 +963,7 @@ Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
 | `actuator_forcerange[i]` | `(f64, f64)` | Force output limits (gated by forcelimited) |
 | `timestep` | `f64` | Simulation step size |
 | `gravity` | `Vector3` | Gravity vector |
-| `integrator` | `Integrator` | Euler, RungeKutta4, or ImplicitSpringDamper |
+| `integrator` | `Integrator` | Euler, RungeKutta4, ImplicitSpringDamper, ImplicitFast, or Implicit |
 | `solver_iterations` | `usize` | Max PGS iterations (default 100) |
 | `solver_tolerance` | `f64` | PGS convergence threshold (default 1e-8) |
 

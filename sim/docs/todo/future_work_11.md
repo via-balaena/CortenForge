@@ -14,7 +14,7 @@ is the conformance test suite that validates all preceding correctness work (#19
 #### Current State
 
 All mesh geoms compute inertia via the signed tetrahedron decomposition (Mirtich 1996)
-in `compute_mesh_inertia()` (`model_builder.rs:4788`). This treats the mesh as a
+in `compute_mesh_inertia()` (`builder/mod.rs`). This treats the mesh as a
 solid volume. The `exactmeshinertia` compiler attribute is parsed but effectively
 no-op — CortenForge always uses the exact algorithm.
 
@@ -202,7 +202,7 @@ analytically when `shellinertia` is set on primitives.
 - `sim/L0/mjcf/src/types.rs` — `MeshInertia` enum, add `inertia` to `MjcfMesh`,
   add `shellinertia` to `MjcfGeom`
 - `sim/L0/mjcf/src/parser.rs` — parse `inertia` on `<mesh>`, `shellinertia` on `<geom>`
-- `sim/L0/mjcf/src/model_builder.rs` — `compute_mesh_inertia_shell()`, mode dispatch
+- `sim/L0/mjcf/src/builder/` — `compute_mesh_inertia_shell()`, mode dispatch
   in `compute_geom_inertia()`, primitive shell inertia formulas
 - `sim/L0/tests/integration/` — shell inertia tests (new file or extend
   `exactmeshinertia.rs`)
@@ -219,7 +219,7 @@ pipeline (`sim-core`):
 
 | Crate | Lines | Pipeline equivalent | Used by pipeline? |
 |-------|-------|--------------------|--------------------|
-| `sim-constraint` | 10,359 | PGS/CG/Newton in `mujoco_pipeline.rs` | **No** |
+| `sim-constraint` | 10,359 | PGS/CG/Newton in `constraint/` modules | **No** |
 | `sim-muscle` | 2,550 | MuJoCo FLV in `mj_fwd_actuation()` | **No** |
 | `sim-tendon` | 3,919 | `mj_fwd_tendon_fixed/spatial()` | **No** |
 | `sim-sensor` | — | 32 sensor types in `mj_sensor_*()` | **No** |

@@ -466,8 +466,8 @@ CortenForge uses dense `DMatrix<f64>` (target models have nv < 100).
 
 **Status:** ✅ Complete — ImplicitFast + Implicit integrators with analytical derivatives
 
-Two new integrator variants that use the full velocity-derivative Jacobian `qDeriv`
-instead of the diagonal-only spring-damper approximation of `ImplicitSpringDamper`:
+Two additional integrator variants that use the full velocity-derivative Jacobian `qDeriv`
+instead of `ImplicitSpringDamper`'s direct mass-matrix modification approach:
 
 | Integrator | D Assembly | Symmetrize | Factorization | MuJoCo Equivalent |
 |------------|-----------|------------|---------------|-------------------|
@@ -486,7 +486,8 @@ instead of the diagonal-only spring-damper approximation of `ImplicitSpringDampe
 - Diagonal regression — existing ImplicitSpringDamper tests pass (AC-3)
 
 **Breaking change:** MJCF string `"implicit"` now maps to the full `Implicit` variant.
-Use `"implicitspringdamper"` for the legacy diagonal-only mode.
+Use `"implicitspringdamper"` for the direct mass-matrix modification mode
+(joint diagonal + tendon non-diagonal K/D via DT-35).
 
 **Design note (KA#8):** ImplicitFast analytical derivatives use the full `qDeriv`
 (including Coriolis from `mjd_smooth_vel`) in the RHS but the fast-approximated LHS
@@ -529,7 +530,7 @@ in three phases with comprehensive test coverage.
 - Partial LDL: awake-identical, sleeping-preserved, solve-correct, SPD-preserved, multi-tree independence
 - API: `Data::sleep_state()`, `Data::tree_awake()`, `Data::nisland()`
 
-**Files:** `sim/L0/tests/integration/sleeping.rs` (93 tests), `sim/L0/core/src/mujoco_pipeline.rs` (sleep implementation)
+**Files:** `sim/L0/tests/integration/sleeping.rs` (93 tests), `sim/L0/core/src/island/` (sleep/wake/island implementation)
 
 ---
 
@@ -562,7 +563,7 @@ solver) has been deleted.
 | Bending stability clamp | No NaN/divergence with large `k_bend` | ✅ |
 | MJCF round-trip | Parse → build → verify counts and topology | ✅ |
 
-**Files:** `sim/L0/tests/integration/flex_unified.rs` (21 tests), `sim/L0/core/src/mujoco_pipeline.rs` (flex pipeline), `sim/L0/mjcf/src/model_builder.rs` (flex building)
+**Files:** `sim/L0/tests/integration/flex_unified.rs` (21 tests), `sim/L0/core/src/` (flex pipeline — `forward/`, `constraint/`, `dynamics/`), `sim/L0/mjcf/src/builder/` (flex building)
 
 ---
 
@@ -577,7 +578,7 @@ MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
 |-----------------|-------------|--------------|--------|
 | `mj_transmission()` (mjTRN_BODY case) | `mj_transmission_body()` | Contact normal Jacobian moment arms, negated average, no gear | ✅ |
 | `mj_jacDifPair()` helper | `compute_contact_normal_jacobian()` | J(b2) − J(b1) sign convention via `accumulate_point_jacobian()` | ✅ |
-| Body name → ID resolution | `model_builder.rs` body branch | Replaces former `ModelConversionError` with name lookup | ✅ |
+| Body name → ID resolution | `builder/` body branch | Replaces former `ModelConversionError` with name lookup | ✅ |
 | Phase 3 force application | `mj_fwd_actuation()` Body arm | Moment-based `qfrc += m * force` (merged with Site arm) | ✅ |
 | Actuator velocity | `mj_actuator_length()` Body arm | `velocity = moment.dot(&qvel)`, length = 0 | ✅ |
 | Derivatives | `derivatives.rs` Body arm | Merged with Site: `qDeriv += dforce_dv * moment[r] * moment[c]` | ✅ |
@@ -593,7 +594,7 @@ MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
 | Pipeline ordering | `mj_transmission_body_dispatch()` runs after `mj_collision()`, before `mj_sensor_pos()` | ✅ |
 | Zero contacts | No contacts → moment stays zero, length = 0 | ✅ |
 
-**Files:** `sim/L0/core/src/mujoco_pipeline.rs` (body transmission + dispatch), `sim/L0/core/src/derivatives.rs` (Body arm), `sim/L0/mjcf/src/model_builder.rs` (body name resolution + sleep policy), `sim/L0/tests/integration/adhesion.rs` (13 tests, AC1–AC14)
+**Files:** `sim/L0/core/src/forward/actuation.rs` (body transmission + dispatch), `sim/L0/core/src/derivatives.rs` (Body arm), `sim/L0/mjcf/src/builder/` (body name resolution + sleep policy), `sim/L0/tests/integration/adhesion.rs` (13 tests, AC1–AC14)
 
 ---
 

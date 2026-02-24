@@ -41,8 +41,8 @@ term to the mass matrix.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse springinertia
-- `sim/L0/core/src/mujoco_pipeline.rs` — CRBA diagonal modification
+- `sim/L0/mjcf/src/builder/` — parse springinertia
+- `sim/L0/core/src/dynamics/crba.rs` — CRBA diagonal modification
 
 ---
 
@@ -82,8 +82,8 @@ a crank mechanism to a joint.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse crank attributes
-- `sim/L0/core/src/mujoco_pipeline.rs` — slider-crank transmission computation
+- `sim/L0/mjcf/src/builder/` — parse crank attributes
+- `sim/L0/core/src/forward/actuation.rs` — slider-crank transmission computation
 
 ---
 
@@ -125,7 +125,7 @@ Implement missing sensor types.
 #### Files
 
 - `sim/L0/sensor/src/` — sensor evaluation functions
-- `sim/L0/mjcf/src/model_builder.rs` — parse new sensor types
+- `sim/L0/mjcf/src/builder/` — parse new sensor types
 
 ---
 
@@ -160,8 +160,8 @@ Expand `dynprm` to 10 elements to match MuJoCo's array size.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — array size change
-- `sim/L0/mjcf/src/model_builder.rs` — parser update
+- `sim/L0/core/src/types/model.rs` — array size change
+- `sim/L0/mjcf/src/builder/` — parser update
 
 ---
 
@@ -170,7 +170,7 @@ Expand `dynprm` to 10 elements to match MuJoCo's array size.
 
 #### Current State
 
-Stub at `mujoco_pipeline.rs:7454`: "Ball/Free joint springs would use quaternion
+Stub in `energy.rs`: "Ball/Free joint springs would use quaternion
 distance — Not commonly used, skip for now." `energy_potential` is wrong for
 models with ball/free joint stiffness.
 
@@ -200,7 +200,7 @@ quaternion distance.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — `mj_energy_pos()` ball/free joint terms
+- `sim/L0/core/src/energy.rs` — `mj_energy_pos()` ball/free joint terms
 
 ---
 
@@ -247,7 +247,7 @@ three joint limit types.
 2. **Default resolution**: Apply class defaults in the standard cascade
    (joint-level overrides default-level).
 3. **Model storage**: Add `jnt_margin: Vec<f64>` to `Model`. Populate in
-   `model_builder.rs` during joint compilation.
+   `builder/` during joint compilation.
 4. **Constraint counting**: Replace `< 0.0` with `< model.jnt_margin[jnt_id]`
    in all 3 joint limit activation checks in the counting loop:
    - Hinge/Slide lower: `q - limit_min < margin`
@@ -278,6 +278,6 @@ three joint limit types.
 #### Files
 
 - `sim/L0/mjcf/src/parser.rs` — `parse_joint_attrs()`, `parse_joint_defaults()`
-- `sim/L0/mjcf/src/model_builder.rs` — `jnt_margin` storage + population
-- `sim/L0/core/src/mujoco_pipeline.rs` — `assemble_unified_constraints()`:
+- `sim/L0/mjcf/src/builder/` — `jnt_margin` storage + population
+- `sim/L0/core/src/constraint/assembly.rs` — `assemble_unified_constraints()`:
   6 activation checks (3 counting + 3 assembly) + 3 `finalize_row!` margin args

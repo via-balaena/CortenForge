@@ -1027,13 +1027,15 @@ fn test_scratch_state_restoration() {
 }
 
 // ============================================================================
-// Acceptance criterion 23: Tendon damping implicit guard
+// Acceptance criterion 23: Tendon damping in qDeriv for all integrators (DT-35)
 // ============================================================================
 
 #[test]
-fn test_tendon_damping_implicit_guard() {
+#[allow(non_snake_case)]
+fn test_tendon_damping_in_qDeriv_all_integrators() {
     // Use MJCF: 2 hinges with zero damping, one tendon with damping=5.0,
-    // using ImplicitSpringDamper integrator (legacy diagonal-only)
+    // using ImplicitSpringDamper integrator. DT-35: tendon damping is now
+    // included in qDeriv for all integrators (no longer skipped).
     let mjcf = r#"
         <mujoco model="tendon_implicit">
             <option gravity="0 0 -9.81" timestep="0.001" integrator="implicitspringdamper"/>
@@ -1061,15 +1063,46 @@ fn test_tendon_damping_implicit_guard() {
 
     mjd_smooth_vel(&model, &mut data);
 
-    // In implicit mode, tendon damping should NOT be in qDeriv.
-    // With zero joint damping, the passive contribution should be zero.
-    // Only RNE contributes (which at zero velocity should be near-zero).
-    // So qDeriv should be near-zero.
-    let passive_norm = data.qDeriv.norm();
+    // FIXED (DT-35): tendon damping is now included in qDeriv for all integrators.
+    // With J = [1, 1], b = 5: qDeriv += -b * J^T * J = -5 * [[1,1],[1,1]]
+    //   qDeriv[(0,0)] += -5 * 1 * 1 = -5
+    //   qDeriv[(0,1)] += -5 * 1 * 1 = -5
+    //   qDeriv[(1,0)] += -5 * 1 * 1 = -5
+    //   qDeriv[(1,1)] += -5 * 1 * 1 = -5
+    //
+    // Note: mjd_smooth_vel also populates qDeriv with RNE/Coriolis and per-DOF
+    // damping terms. The entry-level assertions below isolate the tendon
+    // contribution (joint damping is zero in this model, and Coriolis at zero
+    // velocity is negligible). The norm check is a coarse sanity guard.
+    let qderiv_norm = data.qDeriv.norm();
     assert!(
-        passive_norm < 1e-6,
-        "Tendon damping should be skipped in implicit mode, qDeriv norm={}",
-        passive_norm
+        qderiv_norm > 1.0,
+        "qDeriv should be non-trivial (includes tendon damping), norm={}",
+        qderiv_norm
+    );
+    // Verify tendon damping structure: all entries ≈ -5 (J=[1,1] makes all
+    // outer-product entries positive, then multiplied by -b = -5).
+    // At qpos[0]=0.3 with gravity, RNE/Coriolis may contribute a small offset,
+    // so use a relaxed threshold (-1.0) rather than exact (-5.0 ± epsilon).
+    assert!(
+        data.qDeriv[(0, 0)] < -1.0,
+        "qDeriv[(0,0)] should be ~-5, got {}",
+        data.qDeriv[(0, 0)]
+    );
+    assert!(
+        data.qDeriv[(0, 1)] < -1.0,
+        "qDeriv[(0,1)] should be ~-5 (J[0]*J[1] = 1*1 = 1, times -b = -5), got {}",
+        data.qDeriv[(0, 1)]
+    );
+    assert!(
+        data.qDeriv[(1, 0)] < -1.0,
+        "qDeriv[(1,0)] should be ~-5, got {}",
+        data.qDeriv[(1, 0)]
+    );
+    assert!(
+        data.qDeriv[(1, 1)] < -1.0,
+        "qDeriv[(1,1)] should be ~-5, got {}",
+        data.qDeriv[(1, 1)]
     );
 }
 

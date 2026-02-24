@@ -1168,7 +1168,7 @@ fn test_reject_fewer_than_two_sites() {
 // ============================================================================
 //
 // Tests T1-T4, T6-T10, T14-T18 from the spec.
-// Unit tests T5, T11, T12, T13 are in mujoco_pipeline.rs (private fn).
+// Unit tests T5, T11, T12, T13 are in tendon/wrap_math.rs (private fn).
 
 /// §39 T6 model: Sphere inside-wrap conformance.
 const MODEL_WRAP_INSIDE_SPHERE: &str = r#"

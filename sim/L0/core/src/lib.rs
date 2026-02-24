@@ -69,6 +69,45 @@
     clippy::doc_markdown,               // Not all technical terms need backticks
 )]
 
+// Core type definitions (enums, Model, Data, contacts, keyframes)
+pub mod types;
+
+// Linear algebra utilities (Cholesky, LU, sparse solve, union-find)
+pub mod linalg;
+
+// Dynamics computations (spatial algebra, CRBA, RNE, factorization)
+pub mod dynamics;
+
+// Joint visitor pattern and motion subspace
+pub mod joint_visitor;
+
+// Tendon kinematics (fixed-path and spatial-path)
+pub mod tendon;
+
+// Sensor pipeline (position, velocity, acceleration, postprocess)
+pub mod sensor;
+
+// Energy queries (potential + kinetic)
+pub mod energy;
+
+// Constraint system (assembly, dispatch, solver orchestration)
+pub mod constraint;
+
+// Forward dynamics pipeline (step, forward, position, velocity, passive, actuation, acceleration)
+pub mod forward;
+
+// Jacobian computation and position differentiation/integration
+pub mod jacobian;
+
+// Integration dispatch (Euler, implicit tendon K/D, RK4)
+pub mod integrate;
+
+// Island discovery and sleep/wake state machine (§16)
+pub mod island;
+
+// Collision detection pipeline (dispatch, narrow-phase, contact params)
+pub mod collision;
+
 // Collision shape primitives (canonical source)
 pub mod collision_shape;
 
@@ -77,7 +116,6 @@ pub mod gjk_epa;
 pub mod heightfield;
 pub mod mesh;
 pub mod mid_phase;
-pub mod mujoco_pipeline;
 pub mod raycast;
 pub mod sdf;
 
@@ -107,67 +145,65 @@ pub use sdf::{
     sdf_sphere_contact,
 };
 
-// MuJoCo-style physics pipeline types (primary API)
-pub use mujoco_pipeline::{
-    // Actuator types
+// Enums, error types, constants, and Model construction (extracted to types/ module)
+pub use types::{
     ActuatorDynamics,
     ActuatorTransmission,
     BiasType,
-    // Constraint types and state
     ConstraintState,
     ConstraintType,
-    // Contact representation
+    // Contact representation (extracted to types/contact_types.rs)
     Contact,
     ContactPair,
-    // MuJoCo-aligned Model/Data architecture (core API)
     DISABLE_ISLAND,
+    // Data struct (extracted to types/data.rs)
     Data,
     ENABLE_SLEEP,
-    // Equality constraint types
     EqualityType,
     GainType,
-    // Geometry types
     GeomType,
-    // Integration method selection
     Integrator,
-    // Keyframe types
+    // Keyframe (extracted to types/keyframe.rs)
     Keyframe,
     MIN_AWAKE,
-    // Joint types
     MjJointType,
-    // Sensor types
     MjObjectType,
     MjSensorDataType,
     MjSensorType,
+    // Model struct (extracted to types/model.rs)
     Model,
-    // Error handling
     ResetError,
-    // Sleep / deactivation types (§16)
     SleepError,
     SleepPolicy,
     SleepState,
-    // Constraint solver algorithm
     SolverStat,
     SolverType,
-    // Spatial algebra types
-    SpatialVector,
     StepError,
-    // Tendon types
     TendonType,
-    // Wrap object types
     WrapType,
-    // dof_length mechanism length computation (§16.14)
+    // Model construction helpers (extracted to types/model_init.rs)
     compute_dof_lengths,
-    // Pyramidal force recovery (§32)
-    decode_pyramid,
+};
+
+// LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
+pub use linalg::mj_solve_sparse;
+
+// Spatial algebra types (extracted to dynamics/spatial.rs)
+pub use dynamics::SpatialVector;
+
+// MuJoCo-style physics pipeline types (primary API — not yet extracted)
+// Pyramidal force recovery (§32) — extracted to constraint/solver
+pub use constraint::solver::decode_pyramid;
+
+pub use jacobian::{
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
     // Jacobian infrastructure (§40a derivative tests)
+    mj_jac,
+    mj_jac_body,
     mj_jac_point,
     mj_jac_site,
-    // LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
-    mj_solve_sparse,
 };
 
 pub use derivatives::{

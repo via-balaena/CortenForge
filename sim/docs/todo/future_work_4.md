@@ -85,7 +85,7 @@ existing `XpbdSolver`.
   types (Sphere, Box, Capsule, Cylinder, Ellipsoid, Plane) are supported for
   vertex-vs-geom contacts. Mesh/Hfield/SDF would require per-triangle or per-cell
   vertex queries.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-70.
+  Tracked in [future_work_10i.md](./future_work_10i.md) §DT-70.
 - **GPU batch deformable stepping:** Out of scope. `BatchSim` will step deformable
   bodies sequentially per-environment; GPU-accelerated deformable solve is a separate
   item.
@@ -110,7 +110,7 @@ sim-deformable = { workspace = true, optional = true }
 
 ##### Step 1 — Model fields for deformable configuration
 
-Add deformable metadata to `Model` (after `enableflags`, ~`mujoco_pipeline.rs:1180`):
+Add deformable metadata to `Model` (after `enableflags`, ~`types/model.rs`):
 
 ```rust
 // --- Deformable configuration (gated by #[cfg(feature = "deformable")]) ---
@@ -129,7 +129,7 @@ pub deformable_solref: [f64; 2],
 pub deformable_solimp: [f64; 5],
 ```
 
-Default values (same as MuJoCo geom defaults, see `mujoco_pipeline.rs:12822`):
+Default values (same as MuJoCo geom defaults, see `forward/passive.rs`):
 
 ```rust
 deformable_condim: 3,
@@ -144,15 +144,15 @@ solver parameters).
 **Construction sites:** `Model` has no `Default` impl. Two struct-literal construction
 sites must be updated with these cfg-gated fields:
 
-1. `Model::empty()` (`mujoco_pipeline.rs:1880`) — factory for programmatic model
+1. `Model::empty()` (`types/model_init.rs`) — factory for programmatic model
    building and tests. Initialize with defaults above.
-2. `ModelBuilder::build()` (`model_builder.rs:2305`) — MJCF-driven construction.
+2. `ModelBuilder::build()` (`builder/`) — MJCF-driven construction.
    Initialize with defaults above (MJCF `<flex>` parsing is out of scope, so these
    are always model-level defaults for now).
 
 ##### Step 2 — Data fields for deformable state
 
-Add deformable runtime state to `Data` (after `energy_kinetic`, ~`mujoco_pipeline.rs:1812`):
+Add deformable runtime state to `Data` (after `energy_kinetic`, ~`types/data.rs`):
 
 ```rust
 // --- Deformable state (gated by #[cfg(feature = "deformable")]) ---
@@ -178,7 +178,7 @@ pub deformable_contacts: Vec<DeformableContact>,
 ```
 
 **`Data` Clone + Debug compatibility:** `Data` derives `Clone` and `Debug`
-(`mujoco_pipeline.rs:1593`). `Box<dyn DeformableBody + Send>` is neither `Clone`
+(`types/model.rs`). `Box<dyn DeformableBody + Send>` is neither `Clone`
 nor `Debug` by default. Adding this field would break both `#[derive(Clone)]`
 and `#[derive(Debug)]`. Fix:
 
@@ -205,7 +205,7 @@ and `#[derive(Debug)]`. Fix:
 `XpbdSolver` already derives `Clone` and `Debug`, and `DeformableContact` is a
 plain data struct that derives both.
 
-The `DeformableContact` struct (new, in `mujoco_pipeline.rs`):
+The `DeformableContact` struct (new, in `types/contact_types.rs`):
 
 ```rust
 /// A contact between a deformable vertex and a rigid geom.
@@ -275,7 +275,7 @@ impl Data {
 }
 ```
 
-`Model::make_data()` (`mujoco_pipeline.rs:2133`) initializes the new fields:
+`Model::make_data()` (`types/model_init.rs`) initializes the new fields:
 
 ```rust
 #[cfg(feature = "deformable")]
@@ -286,7 +286,7 @@ deformable_solvers: Vec::new(),
 deformable_contacts: Vec::with_capacity(256),
 ```
 
-**Reset behavior:** `Data::reset()` (`mujoco_pipeline.rs:2993`) must be extended
+**Reset behavior:** `Data::reset()` (`types/data.rs`) must be extended
 for deformable state when the `deformable` feature is enabled:
 
 ```rust
@@ -431,9 +431,9 @@ the margin-sphere overlaps the geom). A contact is generated when `depth > 0`.
 |-----------|-------------------------|-------|
 | `Plane` | `d = n · (v - p)` (signed distance, positive = outside). | Normal = plane normal. Trivial. |
 | `Sphere` | `d = \|v - center\| - radius`. Normal = `(v - center) / \|v - center\|`. | Handle degenerate `\|v - center\| ≈ 0` with fallback normal. |
-| `Box` | Clamp vertex to box in local frame: `closest = clamp(v_local, -half, +half)`. `d = \|v - closest\|` (outside) or `-min_axis_depth` (inside). | Same algorithm as `collide_sphere_box()` (`mujoco_pipeline.rs:5222`). |
-| `Capsule` | Closest point on axis segment to vertex. `d = \|v - closest\| - capsule_radius`. | Use `closest_point_segment()` (`mujoco_pipeline.rs:5851`). Capsule axis = `geom_mat.column(2) * half_length`. |
-| `Cylinder` | Project vertex onto axis and radial surface. Three cases: endcap, barrel, edge. | Same 3-case dispatch as `collide_cylinder_sphere()` (`mujoco_pipeline.rs:5325`). |
+| `Box` | Clamp vertex to box in local frame: `closest = clamp(v_local, -half, +half)`. `d = \|v - closest\|` (outside) or `-min_axis_depth` (inside). | Same algorithm as `collide_sphere_box()` (`collision/pair_convex.rs`). |
+| `Capsule` | Closest point on axis segment to vertex. `d = \|v - closest\| - capsule_radius`. | Use `closest_point_segment()` (`forward/position.rs`). Capsule axis = `geom_mat.column(2) * half_length`. |
+| `Cylinder` | Project vertex onto axis and radial surface. Three cases: endcap, barrel, edge. | Same 3-case dispatch as `collide_cylinder_sphere()` (`collision/pair_cylinder.rs`). |
 | `Ellipsoid` | Scale vertex into unit-sphere space (divide by radii), compute `d` as sphere, transform back. | Approximate — normal inexact for non-spherical ellipsoids but sufficient. |
 | `Mesh`, `Hfield`, `Sdf` | Return `None`. | Out of scope (see Scope Exclusions). |
 
@@ -444,7 +444,7 @@ This matches the Sphere/Plane normals above (`(v - center)` points away from
 the sphere, `plane_normal` points away from the plane's solid half-space).
 
 **Friction combination** (same rule as `make_contact_from_geoms()`,
-`mujoco_pipeline.rs:4189`):
+`types/model_factories.rs`):
 
 ```rust
 let deform_friction = material.friction;  // material.rs:94
@@ -469,7 +469,7 @@ after the rigid contact solve completes. This avoids modifying the rigid PGS/CG
 solver's Jacobian and mass-matrix assembly (which assumes rigid-body kinematic
 chains).
 
-**In `mj_fwd_constraint()` (`mujoco_pipeline.rs:11504`), append:**
+**In `mj_fwd_constraint()` (`constraint/mod.rs`), append:**
 
 ```rust
 #[cfg(feature = "deformable")]
@@ -478,19 +478,19 @@ if !data.deformable_contacts.is_empty() {
 }
 ```
 
-**Helper functions** (all in `mujoco_pipeline.rs`):
+**Helper functions** (across sim-core modules):
 
 Two new helpers are needed. Two existing functions are reused:
 
 **Existing — reuse directly:**
 
 - `compute_point_velocity(data, body_id, point) -> Vector3<f64>`
-  (`mujoco_pipeline.rs:11783`): Computes rigid body velocity at a world-space
+  (`dynamics/rne.rs`): Computes rigid body velocity at a world-space
   point using spatial velocity (`data.cvel`). O(1) — no Jacobian assembly.
   Already used by the rigid-rigid contact solver.
 
 - `apply_contact_force(model, data, body_id, contact_point, force)`
-  (`mujoco_pipeline.rs:11801`): Maps a world-space force at a contact point
+  (`dynamics/rne.rs`): Maps a world-space force at a contact point
   to generalized forces via kinematic-chain J^T walk. Accumulates into
   `data.qfrc_constraint`. Already used by the rigid-rigid contact solver
   for reaction forces.
@@ -505,10 +505,8 @@ Two new helpers are needed. Two existing functions are reused:
 /// where J is the 3×nv translational Jacobian at the contact point.
 ///
 /// **NEW — does not exist in the codebase.**
-/// Requires the full 3×nv Jacobian (not just the x-row from the existing
-/// `compute_body_jacobian_at_point()`). The 3-row Jacobian is built with
-/// the same kinematic-chain walk as the existing function but stores all
-/// 3 components (j_col.x/y/z) in rows 0/1/2.
+/// Requires the full 3×nv translational Jacobian. Use `mj_jac()` (DT-74)
+/// which returns `(jacp 3×nv, jacr 3×nv)` via the canonical chain-walk.
 fn compute_rigid_inv_mass_at_point(
     model: &Model,
     data: &Data,
@@ -518,11 +516,9 @@ fn compute_rigid_inv_mass_at_point(
 ) -> f64 {
     if body_id == 0 { return 0.0; } // World body = infinite mass
 
-    // Build 3×nv translational Jacobian at point.
-    // Same walk as compute_body_jacobian_at_point() (line 9339-9401)
-    // but stores all 3 rows (x, y, z).
-    let mut jac = DMatrix::zeros(3, model.nv);
-    // ... kinematic chain walk, storing j_col.x/y/z in rows 0/1/2 ...
+    // Build 3×nv translational Jacobian at point via mj_jac (DT-74).
+    let (jac, _jacr) = mj_jac(model, data, body_id, &point);
+    // jac is 3×nv translational Jacobian
 
     // j_n = J^T * n  (nv×3 * 3×1 = nv×1)
     let n = DVector::from_column_slice(normal.as_slice());
@@ -637,7 +633,7 @@ fn solve_deformable_contacts(model: &Model, data: &mut Data) {
             // projection is a follow-up — the normal-only solver is
             // functionally complete for frictionless contacts and serves
             // as the scaffolding for the full solver.
-            // Tracked in [future_work_10b.md](./future_work_10b.md) §DT-25.
+            // Tracked in [future_work_10c.md](./future_work_10c.md) §DT-25.
             let impulse = contact.normal * lambda_n;
             impulses.push((contact_idx, impulse));
         }
@@ -745,8 +741,8 @@ mj_deformable_step(model, self);
 
 **Call site 2 — `mj_runge_kutta()` (RK4):**
 
-`Data::step()` (`mujoco_pipeline.rs:3042`) dispatches to `mj_runge_kutta()`
-for `Integrator::RungeKutta4`. This function (`mujoco_pipeline.rs:12631`) does
+`Data::step()` (`integrate/rk4.rs`) dispatches to `mj_runge_kutta()`
+for `Integrator::RungeKutta4`. This function (`types/enums.rs`) does
 NOT call `Data::integrate()` — it handles position/velocity integration
 internally via Butcher tableau stages. If XPBD stepping only lived in
 `integrate()`, deformable bodies would never be stepped under RK4.
@@ -776,7 +772,7 @@ internally, re-applying forces at each sub-interval).
 A full re-detect + re-solve loop (the "Option B" from the original spec) is
 **not implemented** in this iteration. If needed, it can be added as a follow-up
 by wrapping Steps 4–7 in a configurable iteration count.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-26.
+Tracked in [future_work_10c.md](./future_work_10c.md) §DT-26.
 
 ##### Step 8 — `ConstraintType::Collision` implementation
 
@@ -877,7 +873,7 @@ constraints with `compliance = 0`, this is benign: `alpha_tilde = 0`, so the
 lambda term drops out and the constraint reduces to a simple position projection.
 Fixing cross-iteration lambda accumulation is a solver improvement outside the
 scope of this spec.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-27.
+Tracked in [future_work_10c.md](./future_work_10c.md) §DT-27.
 
 ##### Step 9 — `VertexFlags::COLLIDING` activation
 
@@ -893,7 +889,7 @@ through indexing — safe under NLL because they are separate fields.
 
 ##### Step 10 — Pipeline integration in `Data::forward()` and `Data::step()`
 
-Modify `Data::forward()` (`mujoco_pipeline.rs:3075`) to insert deformable collision
+Modify `Data::forward()` (`forward/mod.rs`) to insert deformable collision
 after rigid collision:
 
 ```rust
@@ -912,7 +908,7 @@ pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
 }
 ```
 
-Also modify `Data::forward_skip_sensors()` (`mujoco_pipeline.rs:3139`), which is
+Also modify `Data::forward_skip_sensors()` (`forward/mod.rs`), which is
 the RK4 sub-stage evaluation function. It has the same structure as `forward()` but
 skips sensor computations. Insert `mj_deformable_collision()` after
 `mj_collision()` (between lines 3142 and 3143):
@@ -933,7 +929,7 @@ Without this, RK4 sub-stages would not detect deformable-rigid contacts, causing
 `mj_fwd_constraint()` → `solve_deformable_contacts()` to operate on stale/empty
 contact data during RK4 stages 2–4.
 
-No changes to `Data::step()` (`mujoco_pipeline.rs:3032`) — it calls `forward()`
+No changes to `Data::step()` (`forward/mod.rs`) — it calls `forward()`
 then `integrate()` (or `mj_runge_kutta()`), both paths now include deformable
 stages.
 
@@ -994,7 +990,7 @@ fn collision_margin(&self) -> f64 { 0.005 }
 ```rust
 /// Clone this deformable body into a new Box.
 ///
-/// Required because `Data` derives `Clone` (`mujoco_pipeline.rs:1593`) but
+/// Required because `Data` derives `Clone` (`types/data.rs`) but
 /// `Box<dyn DeformableBody + Send>` is not `Clone` by default. This is the
 /// standard Rust "clone_box" pattern for clonable trait objects.
 ///
@@ -1070,7 +1066,7 @@ impl Clone for Data {
    geometric mean `sqrt(material.friction * geom_friction.x)`. Behavioral
    friction tests (sliding vs stationary on tilted plane) require friction cone
    projection and are acceptance criteria for that follow-up.
-   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-71.
+   Tracked in [future_work_10i.md](./future_work_10i.md) §DT-71.
 4. `ConstraintType::Collision` variant is implemented with `CollisionConstraint`
    struct. Solving a collision constraint with `depth = 0.01` (penetrating) pushes
    the vertex out by `0.01 / (1 + α̃)` in the normal direction. With
@@ -1110,7 +1106,7 @@ impl Clone for Data {
   default `collision_margin()` of 0.005)
 - `sim/L0/core/Cargo.toml` — modify: add `deformable` feature flag with
   `sim-deformable` optional dependency
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify: add `DeformableContact` struct,
+- `sim/L0/core/src/` (multiple modules) — modify: add `DeformableContact` struct,
   add deformable fields to `Model` and `Data` (cfg-gated), update `Model::empty()`
   (~line 1880) with cfg-gated field defaults, replace
   `#[derive(Debug, Clone)]` on `Data` with `#[derive(Debug)]` + manual
@@ -1124,7 +1120,7 @@ impl Clone for Data {
   called from both `integrate()` and `mj_runge_kutta()`), modify `forward()`,
   `forward_skip_sensors()` (RK4 sub-stage path), `integrate()`, and
   `mj_runge_kutta()` to call deformable stages
-- `sim/L0/mjcf/src/model_builder.rs` — modify: add cfg-gated deformable fields
+- `sim/L0/mjcf/src/builder/` — modify: add cfg-gated deformable fields
   to `ModelBuilder::build()` struct literal (~line 2305) with default values
 - `sim/L0/core/src/batch.rs` — no changes (deformable state lives in `Data`)
 - `sim/L0/tests/integration/` — new: `deformable_contact.rs` test file
@@ -1222,23 +1218,23 @@ the constraint solver, but these were not exposed as a general derivative API:
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| `compute_contact_jacobian()` | `mujoco_pipeline.rs:9647` | dim×nv contact Jacobian for PGS/CG. Not public. |
-| `compute_body_jacobian_at_point()` | `mujoco_pipeline.rs:9561` | 1×nv translational Jacobian. `#[allow(dead_code)]`. |
-| Tendon Jacobians | `mujoco_pipeline.rs:7454,7488` | 1×nv rows accumulated during `mj_fwd_tendon_fixed` / `mj_fwd_tendon_spatial`. Stored in `data.ten_J` (line 1819). |
-| `mj_differentiate_pos()` | `mujoco_pipeline.rs:13212` | Position-space finite differences (qpos₁, qpos₂) → qvel. Public. |
-| `mj_integrate_pos_explicit()` | `mujoco_pipeline.rs:13330` | Velocity integration on SO(3) manifold. Public. |
-| `mj_crba()` | `mujoco_pipeline.rs:8745` | Mass matrix M(q) via CRBA. Dense nv×nv in `data.qM`. |
-| `mj_factor_sparse()` | `mujoco_pipeline.rs:12862` (called at line 8903) | L^T D L factorization for O(nv) solve. |
-| `mj_solve_sparse()` | `mujoco_pipeline.rs:12920` | Solve L^T D L x = b. Private (needs `pub(crate)`). |
-| `mj_rne()` | `mujoco_pipeline.rs:9113` | Bias forces (gravity + gyroscopic + Coriolis) via Featherstone RNE. |
-| `mj_fwd_passive()` | `mujoco_pipeline.rs:9400` | Diagonal springs/dampers + tendon springs/dampers + friction loss. |
-| `mj_fwd_actuation()` | `mujoco_pipeline.rs:8592` | Gain/bias force model + activation dynamics + transmission. |
-| `mj_fwd_acceleration_implicit()` | `mujoco_pipeline.rs:12967` | Solves `(M + hD + h²K) v_new = RHS`. |
-| `joint_motion_subspace()` | `mujoco_pipeline.rs:9025` | 6×6 motion subspace per joint. Private (needs `pub(crate)`). |
-| `spatial_cross_motion()` | `mujoco_pipeline.rs:112` | Spatial motion cross product. Private (needs `pub(crate)`). |
-| `spatial_cross_force()` | `mujoco_pipeline.rs:135` | Spatial force cross product. Private (needs `pub(crate)`). |
-| `Model.implicit_damping` | `mujoco_pipeline.rs:1213` | Cached diagonal D per-DOF. |
-| `Model.implicit_stiffness` | `mujoco_pipeline.rs:1210` | Cached diagonal K per-DOF. |
+| `compute_contact_jacobian()` | `constraint/jacobian.rs` | dim×nv contact Jacobian for PGS/CG. Not public. |
+| ~~`compute_body_jacobian_at_point()`~~ | ~~`constraint/jacobian.rs`~~ | Deleted in DT-74. Replaced by `mj_jac()` returning `(jacp 3×nv, jacr 3×nv)`. |
+| Tendon Jacobians | `tendon/mod.rs,7488` | 1×nv rows accumulated during `mj_fwd_tendon_fixed` / `mj_fwd_tendon_spatial`. Stored in `data.ten_J` (line 1819). |
+| `mj_differentiate_pos()` | `island/mod.rs` | Position-space finite differences (qpos₁, qpos₂) → qvel. Public. |
+| `mj_integrate_pos_explicit()` | `integrate/mod.rs` | Velocity integration on SO(3) manifold. Public. |
+| `mj_crba()` | `dynamics/crba.rs` | Mass matrix M(q) via CRBA. Dense nv×nv in `data.qM`. |
+| `mj_factor_sparse()` | `dynamics/factor.rs` (called at line 8903) | L^T D L factorization for O(nv) solve. |
+| `mj_solve_sparse()` | `linalg.rs` | Solve L^T D L x = b. Private (needs `pub(crate)`). |
+| `mj_rne()` | `dynamics/rne.rs` | Bias forces (gravity + gyroscopic + Coriolis) via Featherstone RNE. |
+| `mj_fwd_passive()` | `forward/passive.rs` | Diagonal springs/dampers + tendon springs/dampers + friction loss. |
+| `mj_fwd_actuation()` | `forward/actuation.rs` | Gain/bias force model + activation dynamics + transmission. |
+| `mj_fwd_acceleration_implicit()` | `forward/acceleration.rs` | Solves `(M + hD + h²K) v_new = RHS`. |
+| `joint_motion_subspace()` | `sensor/mod.rs` | 6×6 motion subspace per joint. Private (needs `pub(crate)`). |
+| `spatial_cross_motion()` | `types/enums.rs` | Spatial motion cross product. Private (needs `pub(crate)`). |
+| `spatial_cross_force()` | `types/enums.rs` | Spatial force cross product. Private (needs `pub(crate)`). |
+| `Model.implicit_damping` | `types/model.rs` | Cached diagonal D per-DOF. |
+| `Model.implicit_stiffness` | `types/model.rs` | Cached diagonal K per-DOF. |
 
 The existing `mj_differentiate_pos()` and `mj_integrate_pos_explicit()` handle
 the nq↔nv mapping for quaternion joints (Ball, Free) and are foundational
@@ -1329,35 +1325,35 @@ velocity and activation columns.
 - **Full position-analytical derivatives** (`∂FK/∂q`, `∂M/∂q`): Massive
   complexity (tensor differentiation through CRBA, RNE). Deferred. Position
   columns remain FD even in Phase D.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-45.
+  Tracked in [future_work_10f.md](./future_work_10f.md) §DT-45.
 - **Contact-analytical derivatives** (implicit function theorem through PGS/CG):
   Research-grade. Deferred. Contact sensitivity is captured through FD.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-46.
+  Tracked in [future_work_10f.md](./future_work_10f.md) §DT-46.
 - **Sensor derivatives** (C, D matrices): `TransitionMatrices` reserves `Option`
   fields. Implementation deferred.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-47.
+  Tracked in [future_work_10f.md](./future_work_10f.md) §DT-47.
 - **Sparse derivative storage**: All matrices are dense. Sparse storage is a
   follow-up for nv > 100.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-48.
+  Tracked in [future_work_10f.md](./future_work_10f.md) §DT-48.
 - **Parallel FD computation**: Each perturbation column requires sequential
   `step()`. Parallelism deferred.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-49.
+  Tracked in [future_work_10f.md](./future_work_10f.md) §DT-49.
 - **Automatic differentiation** (dual numbers, enzyme): No changes to scalar
   type genericity.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-50.
+  Tracked in [future_work_10f.md](./future_work_10f.md) §DT-50.
 - **`mjd_inverseFD`**: Inverse dynamics derivatives deferred. Forward transition
   derivatives are the primary RL/MPC deliverable.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-51.
+  Tracked in [future_work_10f.md](./future_work_10f.md) §DT-51.
 - **`mjd_subQuat`**: Quaternion subtraction Jacobians (two 3×3 matrices for
   `d(q1 ⊖ q2)/d(q1)` and `d(q1 ⊖ q2)/d(q2)`). Not needed for transition
   derivatives — `mj_differentiate_pos` handles the full nq→nv mapping.
   Could be useful for constraint derivatives (deferred).
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-52.
+  Tracked in [future_work_10f.md](./future_work_10f.md) §DT-52.
 - **Skip-stage optimization**: MuJoCo's `mj_forwardSkip()` avoids recomputing
   position-dependent FK/collision when perturbing only velocities or controls.
   Deferred — black-box `step()` is correct and simpler. See Step 2 DEFERRED
   note.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-53.
+  Tracked in [future_work_10f.md](./future_work_10f.md) §DT-53.
 
 #### Specification
 
@@ -1523,7 +1519,7 @@ assert!(config.eps.is_finite() && config.eps > 0.0 && config.eps <= 1e-2,
 /// # Errors
 ///
 /// Returns `StepError` if any perturbed `step()` call fails. Relevant
-/// `StepError` variants (defined at `mujoco_pipeline.rs:748`):
+/// `StepError` variants (defined at `types/enums.rs`):
 /// - `InvalidPosition` / `InvalidVelocity`: NaN/Inf in perturbed state
 /// - `InvalidAcceleration`: singular mass matrix on perturbed configuration
 /// - `CholeskyFailed`: implicit integrator's `(M + hD + h²K)` not positive
@@ -1714,15 +1710,15 @@ and simpler.
 `qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias`. All three components
 have analytically computable velocity derivatives.
 
-**New Data field** (in `mujoco_pipeline.rs`, after `scratch_v_new`, ~line 1889):
+**New Data field** (in `types/data.rs`, after `scratch_v_new`, ~line 1889):
 
 ```rust
 /// Analytical derivative of smooth forces w.r.t. velocity: ∂(qfrc_smooth)/∂qvel.
 /// Dense nv × nv matrix. Populated by `mjd_smooth_vel()`.
 ///
 /// Components:
-///   ∂(qfrc_passive)/∂qvel  = diagonal damping (+ tendon damping J^T·b·J
-///                            in explicit mode only; skipped for ImplicitSpringDamper)
+///   ∂(qfrc_passive)/∂qvel  = diagonal damping + tendon damping J^T·b·J
+///                            (included for all integrators; DT-35)
 ///   ∂(qfrc_actuator)/∂qvel = affine velocity-dependent gain/bias terms
 ///   −∂(qfrc_bias)/∂qvel    = −C(q,v) (Coriolis matrix)
 ///
@@ -1733,7 +1729,7 @@ pub qDeriv: DMatrix<f64>,
 ```
 
 **Per-body Jacobian scratch buffers** for `mjd_rne_vel()` chain-rule
-propagation (in `mujoco_pipeline.rs`, after `body_min_inertia`, ~line 1935):
+propagation (in `types/data.rs`, after `body_min_inertia`):
 
 ```rust
 /// Scratch Jacobian ∂(cvel)/∂(qvel) per body (length `nbody`, each 6 × nv).
@@ -1787,18 +1783,17 @@ deriv_Dcfrc: self.deriv_Dcfrc.clone(),
 /// line 9496 (Hinge/Slide) and `dof_damping` at line 9514 (Ball/Free).
 /// Always populated by model construction (`n_link_pendulum` calls
 /// `compute_implicit_params()` at line 2987; MJCF model builder calls it
-/// at `model_builder.rs:2512`).
+/// at `builder/`).
 ///
 /// # Implicit mode guard
 ///
 /// In `ImplicitSpringDamper` mode, `mj_fwd_passive()` skips per-DOF
-/// spring/damper forces (line 9488) and tendon spring/damper forces
-/// (line 9417). The damping is instead absorbed into the implicit mass
-/// matrix modification `(M + h·D + h²·K)`. This function must match:
-/// per-DOF damping is included regardless of mode (needed by both Euler
-/// and implicit velocity derivative formulas), but tendon damping is
-/// skipped in implicit mode because tendon damping forces are not applied
-/// in `mj_fwd_passive` for implicit mode.
+/// spring/damper forces and tendon spring/damper forces from `qfrc_passive`
+/// — the forces are instead handled implicitly via mass matrix modification
+/// `(M + h·D + h²·K)` where D/K include both joint diagonal and tendon
+/// non-diagonal `J^T·J` coupling (DT-35). Per-DOF damping and tendon
+/// damping are included in `qDeriv` for all integrators (DT-35 removed
+/// the implicit_mode guard for tendon damping).
 ///
 /// See Step 9 for how the implicit velocity derivative formula adjusts
 /// `qDeriv` via `+D` to account for the damping being in the mass matrix
@@ -1814,12 +1809,10 @@ fn mjd_passive_vel(model: &Model, data: &mut Data) {
     }
 
     // Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
-    // Skipped in implicit mode: mj_fwd_passive skips tendon damping forces
-    // when implicit_mode is true (line 9417), so there is no tendon damping
-    // contribution to differentiate. Including it would produce incorrect
-    // qDeriv for ImplicitSpringDamper integrator.
-    let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
-    if !implicit_mode {
+    // Included for all integrators (DT-35). In ImplicitSpringDamper mode,
+    // tendon damping is handled implicitly via the mass matrix modification,
+    // but qDeriv still needs the derivative for analytical derivative
+    // computation and consistency.
         for t in 0..model.ntendon {
             let b = model.tendon_damping[t];
             if b <= 0.0 { continue; }
@@ -1842,7 +1835,8 @@ and `qDeriv` are separate fields of `Data`.
 
 **Complexity:** O(nv) diagonal + O(ntendon · nnz_J²). Tendon Jacobians are
 typically very sparse (only DOFs along the tendon path), so effectively
-O(nv + ntendon · depth²). In implicit mode the tendon loop is skipped entirely.
+O(nv + ntendon · depth²). DT-35 removed the implicit_mode guard — the tendon
+loop now runs for all integrators.
 
 ##### Step 5 — `mjd_actuator_vel()`: Actuator force velocity derivatives
 
@@ -1866,7 +1860,7 @@ O(nv + ntendon · depth²). In implicit mode the tendon loop is skipped entirely
 /// Muscle actuators (GainType::Muscle) are SKIPPED here. Their velocity
 /// derivatives involve piecewise FLV curve gradients and are captured via
 /// FD in Phase D.
-/// Tracked in [future_work_10b.md](./future_work_10b.md) §DT-54.
+/// Tracked in [future_work_10f.md](./future_work_10f.md) §DT-54.
 fn mjd_actuator_vel(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
         if matches!(model.actuator_gaintype[i], GainType::Muscle) { continue; }
@@ -2083,7 +2077,7 @@ fn mjd_cross_force_frc(v: &SpatialVector) -> Matrix6<f64>
 ```
 
 These are small 6×6 matrices derived from the spatial cross product definitions
-at `mujoco_pipeline.rs:112` and `:135`.
+at `types/enums.rs` and `:135`.
 
 **Scratch buffers:** Uses `data.deriv_Dcvel`, `data.deriv_Dcacc`,
 `data.deriv_Dcfrc` (per-body 6×nv Jacobian matrices, defined in Step 3).
@@ -2096,7 +2090,7 @@ For nv=100, nbody=101: ~1.5 MB. Acceptable for target use cases.
 `deriv_Dcacc`, `deriv_Dcfrc`, and `qDeriv`. Reads `data.cvel`, `data.cinert`,
 `data.qvel`, `data.xpos`, `data.xquat`. All separate fields — no aliasing.
 
-**Required visibility changes in `mujoco_pipeline.rs`:**
+**Required visibility changes across sim-core modules:**
 
 The following private functions must be made `pub(crate)` for use by
 `derivatives.rs`:
@@ -2516,8 +2510,8 @@ let dqdv = &integ.dqpos_dqvel * &dvdv;
 // Fill velocity columns of A (same layout as Euler)
 ```
 
-**Required visibility change:** `cholesky_solve_in_place` (line 12862 in
-`mujoco_pipeline.rs`) must be changed from private to `pub(crate)` so that
+**Required visibility change:** `cholesky_solve_in_place` (in
+`linalg.rs`) must be changed from private to `pub(crate)` so that
 `derivatives.rs` can call it for the implicit hybrid path.
 
 **4. Activation columns of A (analytical or FD):**
@@ -2707,15 +2701,12 @@ The clone `data_work.scratch_m_impl` preserves this factored L. The solve
 uses `cholesky_solve_in_place(&data_work.scratch_m_impl, &mut rhs_col)`
 for each column of the RHS matrix.
 
-**Tendon damping consistency:** `mjd_passive_vel` (Step 4) skips tendon
-damping in implicit mode, matching `mj_fwd_passive` which also skips tendon
-spring/damper forces in implicit mode (lines 9417-9430). This means `qDeriv`
-contains only diagonal per-DOF damping from passive forces (plus actuator
-and bias terms), and the `+D` adjustment exactly cancels the diagonal
-`−D` contribution, leaving `∂f_ext/∂v = ∂(actuator)/∂v − ∂(bias)/∂v`.
-The full implicit integrator (spec #13) with non-diagonal K/D matrices
-would need to revisit this when tendon coupling is absorbed into the
-implicit mass matrix.
+**Tendon damping consistency:** As of DT-35, `mjd_passive_vel` includes
+tendon damping derivatives in `qDeriv` for all integrators. In
+`ImplicitSpringDamper` mode, `mj_fwd_passive` still skips tendon spring/damper
+forces from `qfrc_passive` (they are handled via non-diagonal K/D matrices
+in the implicit solve), but `qDeriv` correctly reflects the velocity
+derivative for analytical derivative computation.
 
 ##### Step 10 — Public API dispatch
 
@@ -2943,11 +2934,11 @@ pub use derivatives::{
     `act`, `ctrl`, `time`, and `efc_lambda` are all restored before each
     perturbation. Verified by checking that centered FD at `eps=1e-6`
     produces identical A matrices when called twice on the same `(model, data)`.
-23. **Tendon damping implicit guard**: For a model with one tendon (damping
+23. **Tendon damping in qDeriv**: For a model with one tendon (damping
     `b > 0`) and `Integrator::ImplicitSpringDamper`, `mjd_passive_vel()`
-    does NOT add tendon damping terms to `qDeriv` (tendon damping is skipped
-    in implicit mode by `mj_fwd_passive`, line 9417). The diagonal per-DOF
-    damping entries are still present.
+    adds tendon damping terms `-b·J^T·J` to `qDeriv` for all integrators
+    (DT-35 removed the implicit_mode guard). The diagonal per-DOF
+    damping entries are also present.
 24. **Performance**: FD derivatives for `Model::n_link_pendulum(6, 1.0, 0.1)`
     (nv=6, nu=0, na=0) complete in < 10ms (wall clock, release mode).
 25. **`cargo clippy -p sim-core -- -D warnings`** passes clean.
@@ -3019,7 +3010,7 @@ pub use derivatives::{
 |------|--------|-------------|
 | `sim/L0/core/src/derivatives.rs` | **new** | `TransitionMatrices`, `DerivativeConfig`, `mjd_transition_fd()`, `extract_state()`, `mjd_smooth_vel()`, `mjd_passive_vel()`, `mjd_actuator_vel()`, `mjd_rne_vel()`, `mjd_cross_motion_vel()`, `mjd_cross_force_vel()`, `mjd_cross_force_frc()` |
 | `sim/L0/core/src/lib.rs` | **modify** | Add `pub mod derivatives;` and re-export `DerivativeConfig`, `TransitionMatrices`, `mjd_transition_fd`, `mjd_smooth_vel` |
-| `sim/L0/core/src/mujoco_pipeline.rs` | **modify** | Add `qDeriv: DMatrix<f64>` and `deriv_Dcvel`/`deriv_Dcacc`/`deriv_Dcfrc` per-body Jacobian fields to `Data` (~line 1889). Initialize in `make_data()` (~line 2309). Add to `impl Clone for Data` (~line 1939). Change visibility of `mj_solve_sparse`, `joint_motion_subspace`, `spatial_cross_motion`, `spatial_cross_force` from private to `pub(crate)` |
+| `sim/L0/core/src/linalg.rs` | **modify** | Add `qDeriv: DMatrix<f64>` and `deriv_Dcvel`/`deriv_Dcacc`/`deriv_Dcfrc` per-body Jacobian fields to `Data` (~line 1889). Initialize in `make_data()` (~line 2309). Add to `impl Clone for Data` (~line 1939). Change visibility of `mj_solve_sparse`, `joint_motion_subspace`, `spatial_cross_motion`, `spatial_cross_force` from private to `pub(crate)` |
 | `sim/L0/tests/integration/mod.rs` | **modify** | Add `mod derivatives;` |
 | `sim/L0/tests/integration/derivatives.rs` | **new** | 20+ integration tests covering Part 1 acceptance criteria (1–19) |
 
@@ -3028,7 +3019,7 @@ pub use derivatives::{
 | File | Action | Description |
 |------|--------|-------------|
 | `sim/L0/core/src/derivatives.rs` | **modify** | Add `IntegrationDerivatives`, `mjd_transition_hybrid()`, `mjd_transition()`, `compute_integration_derivatives()`, `mjd_quat_integrate()`, `max_relative_error()`, `validate_analytical_vs_fd()`, `fd_convergence_check()`, `impl Data { fn transition_derivatives() }` |
-| `sim/L0/core/src/mujoco_pipeline.rs` | **modify** | Change visibility of `cholesky_solve_in_place` from private to `pub(crate)` (needed by hybrid ImplicitSpringDamper path) |
+| `sim/L0/core/src/linalg.rs` | **modify** | Change visibility of `cholesky_solve_in_place` from private to `pub(crate)` (needed by hybrid ImplicitSpringDamper path) |
 | `sim/L0/core/src/lib.rs` | **modify** | Expand re-exports: add `mjd_transition`, `mjd_transition_hybrid`, `mjd_quat_integrate`, `max_relative_error`, `validate_analytical_vs_fd`, `fd_convergence_check` |
 | `sim/L0/tests/integration/derivatives.rs` | **modify** | Add tests for Part 2 acceptance criteria (28–39) |
 
@@ -3039,19 +3030,20 @@ pub use derivatives::{
 
 #### Current State
 
-`Integrator::ImplicitSpringDamper` (`:733–741`) implements a diagonal-only implicit
-scheme that absorbs per-DOF joint stiffness K and damping D into the mass matrix:
+`Integrator::ImplicitSpringDamper` (`:733–741`) implements an implicit scheme
+that absorbs spring stiffness K and damping D into the mass matrix:
 
 ```
-(M + h*D_diag + h²*K_diag) v_new = M*v_old + h*f_ext − h*K_diag*(q − q_eq)
+(M + h*D + h²*K) v_new = M*v_old + h*f_ext − h*K*(q − q_eq)
 ```
 
-- K, D stored as `DVector<f64>` — `Model::implicit_stiffness` (`:1210`),
+- Joint K, D are diagonal (`DVector<f64>`) — `Model::implicit_stiffness` (`:1210`),
   `Model::implicit_damping` (`:1213`), `Model::implicit_springref` (`:1216`).
-- Tendon spring/damper forces are **skipped** in implicit mode
-  (`mj_fwd_passive()` `:9454–9467`) because their J^T coupling is non-diagonal.
+- Tendon K, D are non-diagonal rank-1 outer products `k·J^T·J` and `b·J^T·J`,
+  accumulated via `accumulate_tendon_kd()` (DT-35). Tendon spring/damper forces
+  are excluded from `qfrc_passive` in implicit mode (handled via mass matrix).
 - The `ImplicitFast` MJCF variant is parsed (`types.rs:27`) but maps to the
-  same diagonal solver (`model_builder.rs:616–618`).
+  same diagonal solver (`builder/`).
 
 **What MuJoCo actually does:** MuJoCo's implicit integrators (`implicit` and
 `implicitfast`) do not construct a stiffness matrix K. They are implicit **only
@@ -3122,7 +3114,7 @@ integration using the full velocity-derivative Jacobian `qDeriv`. Implement both
 
 ##### Sub-task 13.A: `Integrator::ImplicitFast`
 
-**A.1. Extend `Integrator` enum** (`mujoco_pipeline.rs:733`)
+**A.1. Extend `Integrator` enum** (`types/enums.rs`)
 
 Add `ImplicitFast` and `Implicit` variants alongside existing
 `ImplicitSpringDamper`. Both `Integrator` and `StepError` should carry
@@ -3134,20 +3126,20 @@ pub enum Integrator {
     #[default]
     Euler,
     RungeKutta4,
-    ImplicitSpringDamper,  // Keep for backward compat (diagonal-only)
+    ImplicitSpringDamper,  // Direct mass-matrix modification (joint diagonal + tendon non-diagonal K/D)
     Implicit,              // Full asymmetric D, LU factorization
     ImplicitFast,          // Symmetric D (no Coriolis), Cholesky factorization
 }
 ```
 
 Retain `ImplicitSpringDamper` as a distinct variant so existing tests and models
-that depend on the diagonal-only behavior continue to work without any change.
+that depend on its mass-matrix-modification approach continue to work without any change.
 
-Update `model_builder.rs:616–618` to map `MjcfIntegrator::ImplicitFast` →
+Update `builder/` to map `MjcfIntegrator::ImplicitFast` →
 `Integrator::ImplicitFast` (currently both map to `ImplicitSpringDamper`).
 
 **A.2. Modify `mj_fwd_passive()` to restore tendon spring/damper forces**
-(`mujoco_pipeline.rs:9437`)
+(`forward/passive.rs`)
 
 The `implicit_mode` flag (`:9440`) currently gates **all** tendon spring and damper
 forces. In the new implicit variants, all passive forces are computed explicitly
@@ -3161,16 +3153,19 @@ The existing `implicit_mode` check (`:9440`) is:
 let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
 ```
 
-This is already correct — `implicit_mode` is true only for the legacy diagonal
-variant, not for the new `Implicit`/`ImplicitFast`. So the joint visitor
+This is already correct — `implicit_mode` is true only for `ImplicitSpringDamper`,
+not for the new `Implicit`/`ImplicitFast`. So the joint visitor
 (`PassiveForceVisitor::visit_1dof_joint` `:9525`) already computes spring and
 damper forces for the new variants.
 
-The tendon loop conditional (`:9454`) also correctly gates on `implicit_mode`:
+The tendon loop conditional (`:9454`) also correctly gates on `implicit_mode`.
+In `ImplicitSpringDamper` mode, `ten_force[t]` is always computed for diagnostics
+but `qfrc_passive` application is skipped — tendon forces are handled implicitly
+via non-diagonal K/D matrices (DT-35):
 
 ```rust
 if !implicit_mode {
-    // spring + damper computed
+    // qfrc_passive application (skipped for ImplicitSpringDamper)
 }
 ```
 
@@ -3180,11 +3175,11 @@ already correct for the new variants.
 
 **A.3. Fix `mjd_passive_vel` tendon-derivative gate** (`derivatives.rs:484`)
 
-Currently `mjd_passive_vel` skips tendon damping derivatives when
-`implicit_mode` is true (`:484–504`). This was correct for the diagonal-only
-scheme (tendon damping forces were skipped, so there's nothing to differentiate).
-For the new implicit variants, tendon damping forces ARE computed explicitly AND
-their derivatives must be included in D.
+Previously `mjd_passive_vel` skipped tendon damping derivatives when
+`implicit_mode` was true (`:484–504`). DT-35 removed this guard — tendon
+damping derivatives are now included in `qDeriv` for all integrators.
+For `ImplicitFast`/`Implicit`, tendon damping forces are computed explicitly
+and their derivatives are included in D.
 
 The current condition is:
 
@@ -3199,7 +3194,7 @@ This is already correct for the new variants — `implicit_mode` is false for
 variants don't match `ImplicitSpringDamper`.
 
 **A.4. Implement `mj_fwd_acceleration_implicitfast()`**
-(`mujoco_pipeline.rs`, new function near `:13008`)
+(`forward/acceleration.rs`, new function)
 
 ```rust
 fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<(), StepError> {
@@ -3289,14 +3284,14 @@ standard path in `Data::integrate()` (`:3474`).
   integration path in `Data::integrate()` (`:3474`), avoiding special-case
   dispatch. Position integration then uses the updated velocity (semi-implicit).
 
-**A.5. Wire dispatch** (`mujoco_pipeline.rs`)
+**A.5. Wire dispatch** (`forward/acceleration.rs`)
 
 The `mj_fwd_acceleration` wrapper (`:12797`) already has an `nv == 0` early
 return (`:12798`). The new functions are called through this wrapper, so they
 do NOT need their own `nv == 0` guard.
 
 All three matches below are **exhaustive** (no wildcard `_`) and will fail
-compilation without the new arms. These are the `mujoco_pipeline.rs` counterpart
+compilation without the new arms. These are the sim-core counterpart
 to the `derivatives.rs` matches documented in D.4.
 
 Forward acceleration dispatch (`:12802`):
@@ -3331,7 +3326,7 @@ match model.integrator {
 }
 ```
 
-**A.6. Wire `step()` dispatch** (`mujoco_pipeline.rs:3303`)
+**A.6. Wire `step()` dispatch** (`types/model_init.rs`)
 
 Add `ImplicitFast` and `Implicit` alongside Euler/ImplicitSpringDamper in the
 non-RK4 branch:
@@ -3393,7 +3388,7 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
 }
 ```
 
-**B.2. Implement LU factorization and solve** (new functions in `mujoco_pipeline.rs`)
+**B.2. Implement LU factorization and solve** (new functions in `linalg.rs`)
 
 Split into two functions so the derivative pass (D.4) can reuse the factored
 matrix for multiple solves:
@@ -3469,7 +3464,7 @@ fn lu_solve_factored(a: &DMatrix<f64>, piv: &[usize], x: &mut DVector<f64>) {
 }
 ```
 
-**B.3. Add `LuSingular` to `StepError`** (`mujoco_pipeline.rs:748`)
+**B.3. Add `LuSingular` to `StepError`** (`types/enums.rs`)
 
 ```rust
 #[non_exhaustive]
@@ -3480,7 +3475,7 @@ pub enum StepError {
 }
 ```
 
-Update the `Display` impl (`mujoco_pipeline.rs:763`) — this is an exhaustive match
+Update the `Display` impl (`types/enums.rs`) — this is an exhaustive match
 and will fail compilation without the new arm:
 
 ```rust
@@ -3491,9 +3486,9 @@ Self::LuSingular => {
 
 **B.4. Wire dispatch** — covered in A.5 above.
 
-##### Sub-task 13.C: Update `model_builder.rs` and MJCF Mapping
+##### Sub-task 13.C: Update `builder/` and MJCF Mapping
 
-**C.1.** Map MJCF variants to distinct core integrators (`model_builder.rs:616`):
+**C.1.** Map MJCF variants to distinct core integrators (`builder/`):
 
 ```rust
 // Before:
@@ -3515,7 +3510,7 @@ pub enum MjcfIntegrator {
     RK4,
     Implicit,              // NEW: full implicit (asymmetric D, LU)
     ImplicitFast,          // Symmetric D, Cholesky
-    ImplicitSpringDamper,  // Legacy diagonal-only (keep for regression tests)
+    ImplicitSpringDamper,  // Direct mass-matrix modification (joint diagonal + tendon non-diagonal K/D)
 }
 ```
 
@@ -3540,11 +3535,11 @@ MuJoCo models specifying `integrator="implicit"` now get the full implicit solve
 Models wanting the old diagonal behavior must use `"implicitspringdamper"`.
 
 **⚠ Breaking change:** The string `"implicit"` currently maps to
-`ImplicitSpringDamper` (diagonal-only). After this change, it maps to the new
+`ImplicitSpringDamper`. After this change, it maps to the new
 full `Implicit` variant with asymmetric D and LU factorization. Any existing
 MJCF models using `integrator="implicit"` will silently change integration
 behavior. Migration: switch to `integrator="implicitspringdamper"` to preserve
-the old diagonal-only behavior. Per project principles, this breaking change is
+the mass-matrix-modification approach. Per project principles, this breaking change is
 intentional — it aligns the parser with MuJoCo's semantics.
 
 ##### Sub-task 13.D: Derivatives Interop
@@ -3675,7 +3670,7 @@ against the same factors (Cholesky is non-destructive on the factor matrix).
 A.1 (Integrator enum + #[non_exhaustive])
  ├─→ A.4 (mj_fwd_acceleration_implicitfast)
  │    └─→ A.5 (forward accel + velocity + step dispatch wiring)
- ├─→ C.1 + C.2 + C.3 (model_builder + MJCF types + parser)
+ ├─→ C.1 + C.2 + C.3 (builder/ + MJCF types + parser)
  ├─→ D.4 (derivatives.rs match site updates: :1226, :1320, :1485)
  ├─→ B.1 (mj_fwd_acceleration_implicit_full)
  │    ├─→ B.2 (lu_factor_in_place + lu_solve_factored)
@@ -3711,7 +3706,7 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
 4. **No `skipfactor` / factorization reuse:** MuJoCo's `mj_implicitSkip` allows
    reusing a previously computed factorization when `skipfactor > 0`, amortizing
    cost across steps. Not implemented. Can be added later as an optimization.
-   Tracked in [future_work_10b.md](./future_work_10b.md) §DT-55.
+   Tracked in [future_work_10f.md](./future_work_10f.md) §DT-55.
 
 5. **Sleep filtering:** ✅ Implemented (Task #16). Sleeping system (Phases A/B/C)
    filters awake/asleep DOFs via selective CRBA and partial LDL factorization.
@@ -3845,11 +3840,11 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
 
 | File | Action | Changes |
 |------|--------|---------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | **modify** | Extend `Integrator` enum (`:733`) with `Implicit`, `ImplicitFast`, add `#[non_exhaustive]`; add `LuSingular` to `StepError` (`:748`) + add arm to `Display for StepError` (`:763`); add `mj_fwd_acceleration_implicitfast()` and `mj_fwd_acceleration_implicit_full()` (new functions near `:13008`); add `lu_factor_in_place()` + `lu_solve_factored()` (split LU for derivative reuse); add `scratch_lu_piv: Vec<usize>` to Data (`:1882`); update forward acceleration dispatch (`:12802`); update velocity integration dispatch (`:3474`); update `step()` dispatch (`:3303`) |
+| `sim/L0/core/src/forward/acceleration.rs` | **modify** | Extend `Integrator` enum (`:733`) with `Implicit`, `ImplicitFast`, add `#[non_exhaustive]`; add `LuSingular` to `StepError` (`:748`) + add arm to `Display for StepError` (`:763`); add `mj_fwd_acceleration_implicitfast()` and `mj_fwd_acceleration_implicit_full()` (new functions near `:13008`); add `lu_factor_in_place()` + `lu_solve_factored()` (split LU for derivative reuse); add `scratch_lu_piv: Vec<usize>` to Data (`:1882`); update forward acceleration dispatch (`:12802`); update velocity integration dispatch (`:3474`); update `step()` dispatch (`:3303`) |
 | `sim/L0/core/src/derivatives.rs` | **modify** | Update exhaustive matches at `:1226` (dvdv — add `ImplicitFast`/`Implicit` arms with `(M−hD)⁻¹` solve), `:1320` (dvdact solve dispatch), `:1485` (dvdctrl solve dispatch). All three need new arms for both variants. |
 | `sim/L0/mjcf/src/types.rs` | **modify** | Add `Implicit` variant to `MjcfIntegrator` (`:15`); update `from_str` (`:33`): `"implicit"` → `Implicit`, keep `"implicitspringdamper"` → `ImplicitSpringDamper`; update `as_str` (`:44`): add `Implicit` → `"implicit"`, change `ImplicitSpringDamper` → `"implicitspringdamper"` |
 | `sim/L0/mjcf/src/parser.rs` | **modify** | Update `test_parse_option_integrator_types` (`:2482`): `("implicit", MjcfIntegrator::Implicit)` replaces `("implicit", MjcfIntegrator::ImplicitSpringDamper)`; add `("implicit", MjcfIntegrator::Implicit)` test case |
-| `sim/L0/mjcf/src/model_builder.rs` | **modify** | Separate `ImplicitFast` and `ImplicitSpringDamper` mapping (`:616`); add `Implicit` → `Integrator::Implicit` |
+| `sim/L0/mjcf/src/builder/` | **modify** | Separate `ImplicitFast` and `ImplicitSpringDamper` mapping (`:616`); add `Implicit` → `Integrator::Implicit` |
 | `sim/L0/tests/integration/implicit_integration.rs` | **modify** | Add tests for acceptance criteria 1–10, 16: tendon stability, actuator stability, diagonal regression, zero-damping equivalence, Coriolis delta, MuJoCo conformance ×2, tendon spring explicit, derivative consistency ×2, Cholesky failure on positive velocity feedback |
 | `sim/docs/MUJOCO_REFERENCE.md` | **modify** | Update implicit path description (`:554–568`) to document both `implicit` and `implicitfast` algorithms, D matrix assembly via `mjd_smooth_vel`, linearization derivation, and factorization strategy |
 | `sim/docs/MUJOCO_CONFORMANCE.md` | **modify** | Add conformance entries for `implicit` and `implicitfast` integrators |
@@ -3866,7 +3861,7 @@ no mocap body concept, and no user callback infrastructure. The only reference t
 "keyframe" in the codebase is a doc comment in sim-constraint's equality module.
 
 Relevant existing state:
-- `Model::qpos0` (`mujoco_pipeline.rs:1164`) stores the default joint positions
+- `Model::qpos0` (`types/model.rs`) stores the default joint positions
   (used by `Model::make_data()` initialization). There is no equivalent for qvel,
   act, or ctrl defaults — those initialize to zero.
 - Bodies are stored in topological order (`body_parent`, `body_jnt_adr`,
@@ -3881,7 +3876,7 @@ Relevant existing state:
   perspective.
 - `MjcfBody` (`types.rs:1668`) has no `mocap` field.
 - `MjcfModel` (`types.rs:2883`) has no `keyframes` field.
-- `Data::reset()` (`mujoco_pipeline.rs:3233`) resets `qpos` (from `qpos0`),
+- `Data::reset()` (`types/data.rs`) resets `qpos` (from `qpos0`),
   `qvel`, `qacc`, `qacc_warmstart`, `ctrl`, `act`, `act_dot`, actuator arrays,
   `sensordata`, `time`, and contact state. It does **not** clear `qfrc_applied`
   or `xfrc_applied` — those are user-set external forces that persist across
@@ -3990,7 +3985,7 @@ logic injection during simulation.
 - **User callbacks:** MuJoCo's `mjcb_*` global function pointers require careful
   Rust API design (closures vs trait objects, `&mut Data` borrowing during
   `forward()`, thread safety for `BatchSim`). Deferred to a dedicated follow-up.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-79.
+  Tracked in [future_work_10j.md](./future_work_10j.md) §DT-79.
   Keyframes and mocap are higher priority and self-contained.
 - **Keyframe `key_mpos` / `key_mquat`:** Per-keyframe mocap poses are implemented
   as part of the `Keyframe` struct and `reset_to_keyframe()` — not called out as
@@ -4005,11 +4000,11 @@ logic injection during simulation.
   manipulation tasks). The existing equality constraint solver already supports
   weld constraints — no additional work needed, but this is not explicitly tested
   in this item's acceptance criteria.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-80.
+  Tracked in [future_work_10j.md](./future_work_10j.md) §DT-80.
 - **MJCF `<key>` attributes beyond qpos/qvel/act/ctrl/mpos/mquat/time:** MuJoCo
   also supports `key_userdata` — out of scope (no `userdata` concept in
   CortenForge).
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-81.
+  Tracked in [future_work_10j.md](./future_work_10j.md) §DT-81.
 
 #### Specification
 
@@ -4232,7 +4227,7 @@ nq/nv/na/nu/nmocap are not yet known at parse time.
 
 ##### Step 3 — Model fields for keyframes and mocap
 
-**3a.** Add mocap fields to `Model` (`mujoco_pipeline.rs`, after body fields ~`:867`):
+**3a.** Add mocap fields to `Model` (`types/model.rs`, after body fields ~`:867`):
 
 ```rust
 /// Number of mocap bodies. Mocap arrays are indexed 0..nmocap.
@@ -4262,7 +4257,7 @@ pub nkeyframe: usize,
 pub keyframes: Vec<Keyframe>,
 ```
 
-**3c.** Define the `Keyframe` struct (in `mujoco_pipeline.rs`, near `Model`):
+**3c.** Define the `Keyframe` struct (in `types/model.rs`, near `Model`):
 
 ```rust
 /// A named state snapshot for resetting simulation state.
@@ -4296,7 +4291,7 @@ pub struct Keyframe {
 `Keyframe` derives `PartialEq` for test assertions. `DVector<f64>`,
 `Vector3<f64>`, and `UnitQuaternion<f64>` all implement `PartialEq`.
 
-**3d.** Add mocap state to `Data` (`mujoco_pipeline.rs`, after existing state fields):
+**3d.** Add mocap state to `Data` (`types/data.rs`, after existing state fields):
 
 ```rust
 /// Mocap body positions in world frame (length nmocap).
@@ -4310,7 +4305,7 @@ pub mocap_pos: Vec<Vector3<f64>>,
 pub mocap_quat: Vec<UnitQuaternion<f64>>,
 ```
 
-**3e.** Update `Model::empty()` (`mujoco_pipeline.rs:2099`):
+**3e.** Update `Model::empty()` (`types/model_init.rs`):
 
 `empty()` follows the same section organization as the struct definition.
 Place each new field in its corresponding section:
@@ -4327,7 +4322,7 @@ body_mocapid: vec![None],  // world body
 keyframes: Vec::new(),
 ```
 
-**3f.** Update `Model::make_data()` (`mujoco_pipeline.rs:2358`) to initialize
+**3f.** Update `Model::make_data()` (`types/model_init.rs`) to initialize
 `mocap_pos` and `mocap_quat` from model body offsets:
 
 ```rust
@@ -4347,7 +4342,7 @@ Place between the "Body states" section (`ximat` at `:2381`) and the
 "Geom poses" section (`geom_xpos` at `:2384`). Add a section comment
 `// Mocap bodies` matching the existing organizational pattern.
 
-**3g.** Update `Data`'s manual `Clone` impl (`mujoco_pipeline.rs:1982`). `Data`
+**3g.** Update `Data`'s manual `Clone` impl (`types/data.rs`). `Data`
 derives only `Debug`; `Clone` is implemented manually (required by the
 cfg-gated `deformable_bodies: Vec<Box<dyn DeformableBody + Send + Sync>>` field
 which needs `clone_box()`). Add:
@@ -4357,7 +4352,7 @@ mocap_pos: self.mocap_pos.clone(),
 mocap_quat: self.mocap_quat.clone(),
 ```
 
-**3h.** Update `Data::reset()` (`mujoco_pipeline.rs:3233`) to reset mocap state
+**3h.** Update `Data::reset()` (`types/data.rs`) to reset mocap state
 to model defaults (matching the existing reset pattern):
 
 ```rust
@@ -4381,7 +4376,7 @@ zero user-applied forces.
 
 ##### Step 4 — Model builder: mocap body processing
 
-**Builder initialization:** `ModelBuilder::new()` (`model_builder.rs:414`)
+**Builder initialization:** `ModelBuilder::new()` (`builder/`)
 initializes body arrays with the world body (body 0). Add:
 
 ```rust
@@ -4400,7 +4395,7 @@ enforced **in the builder** during `process_body()` / `process_body_with_world_f
 where `parent_id: usize` is available. `parent_id == 0` means "direct child
 of world."
 
-**4a. Validation rules** (in `process_body_with_world_frame`, `model_builder.rs:759`):
+**4a. Validation rules** (in `process_body_with_world_frame`, `builder/`):
 
 When `body.mocap` is `true`, check early in `process_body_with_world_frame()` —
 after `body_id` is computed (`:767`) but before any state mutations. Place the
@@ -4432,7 +4427,7 @@ Note: MuJoCo does NOT forbid child bodies on mocap bodies. Children are welded
 (their FK is computed relative to the mocap body's overridden pose via the
 normal traversal). No "no children" validation is needed.
 
-**4b. Registration** (in `process_body_with_world_frame`, `model_builder.rs:759`):
+**4b. Registration** (in `process_body_with_world_frame`, `builder/`):
 
 When `body.mocap` is `true` and validation has passed:
 
@@ -4461,9 +4456,9 @@ point (after `body_inertia`, before `body_name`).
 
 ##### Step 5 — Model builder: keyframe processing
 
-`build()` (`model_builder.rs:2298`) consumes the builder and returns a `Model`.
+`build()` (`builder/`) consumes the builder and returns a `Model`.
 It does **not** have access to the `MjcfModel`. Keyframe processing therefore
-happens in `model_from_mjcf()` (`model_builder.rs:97`), which orchestrates the
+happens in `model_from_mjcf()` (`builder/`), which orchestrates the
 full MJCF → Model pipeline and has access to both `mjcf: &MjcfModel` and the
 built `Model`.
 
@@ -4486,7 +4481,7 @@ model.keyframes = mjcf.keyframes.iter()
 model.nkeyframe = model.keyframes.len();
 ```
 
-The `resolve_keyframe()` helper (new function in `model_builder.rs`):
+The `resolve_keyframe()` helper (new function in `builder/`):
 
 For each `MjcfKeyframe`:
 
@@ -4545,7 +4540,7 @@ return Err(ModelConversionError {
 
 ##### Step 6 — FK override for mocap bodies
 
-In `mj_fwd_position()` (`mujoco_pipeline.rs:3637`), the body traversal loop
+In `mj_fwd_position()` (`forward/position.rs`), the body traversal loop
 currently computes every body's world pose from `parent + body_pos/body_quat +
 joints`. For mocap bodies, we replace the local-frame offsets with the mocap
 arrays (matching MuJoCo's `mj_kinematics1` mechanism). Since mocap bodies are
@@ -4649,7 +4644,7 @@ needed.
 
 ##### Step 7 — Velocity FK: no changes needed
 
-In `mj_fwd_velocity()` (`mujoco_pipeline.rs:7387`), the body velocity loop
+In `mj_fwd_velocity()` (`forward/velocity.rs`), the body velocity loop
 retrieves the parent velocity as `v_parent = data.cvel[parent_id]` (`:7405`),
 decomposes into `omega_parent` / `v_lin_parent`, applies the lever-arm offset,
 then adds joint DOF contributions (zero iterations for mocap bodies). The
@@ -4776,7 +4771,7 @@ impl std::error::Error for ResetError {}
 ```
 
 Follow the same manual `Display` + `Error` pattern used by `StepError`
-(`mujoco_pipeline.rs:756`), which does not use `thiserror` derive. `ResetError`
+(`types/enums.rs`), which does not use `thiserror` derive. `ResetError`
 derives `Debug, Clone, Copy, PartialEq, Eq` — the same set as `StepError`.
 All fields are `usize`, which is `Copy + Eq`, so all five derives are valid.
 This enables `Copy` semantics for error propagation and `Eq` for exact test
@@ -4906,8 +4901,8 @@ giving direct mutable access to `mocap_pos`/`mocap_quat` fields.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
-  - Add `Keyframe` struct (~near `Model`), `ResetError` enum (~near `StepError` at `:756`)
+- `sim/L0/core/src/` (multiple modules) — modify:
+  - Add `Keyframe` struct to `types/keyframe.rs`, `ResetError` enum to `types/enums.rs`
   - `Model` (`:807`): add `nmocap`, `body_mocapid`, `nkeyframe`, `keyframes` fields
   - `Data` (`:1657`): add `mocap_pos`, `mocap_quat` fields
   - `Data` manual `Clone` impl (`:1982`): add the two new fields
@@ -4928,7 +4923,7 @@ giving direct mutable access to `mocap_pos`/`mocap_quat` fields.
     before catch-all at `:109`) and `Event::Empty` (`:112`, for `<keyframe/>`)
   - New `parse_keyframes()` helper function for `<key>` sub-elements
   - New `parse_key_attrs()` helper for single `<key>` element attribute extraction
-- `sim/L0/mjcf/src/model_builder.rs` — modify:
+- `sim/L0/mjcf/src/builder/` — modify:
   - `ModelBuilder` struct (`:200`): add `body_mocapid: Vec<Option<usize>>`,
     `nmocap: usize` tracking fields (after `body_name` at `:226`, in the
     `// Body arrays` section)
@@ -4945,8 +4940,8 @@ giving direct mutable access to `mocap_pos`/`mocap_quat` fields.
     after build (new `resolve_keyframe()` helper with finiteness validation for
     all fields including `time`), then `Ok(model)`
 - `sim/L0/core/src/lib.rs` — modify:
-  - Add `Keyframe` and `ResetError` to the `pub use mujoco_pipeline::{...}` block
-    (`:111-151`), alongside existing `StepError` at `:140`
+  - Add `Keyframe` and `ResetError` to the `pub use types::{...}` re-export block,
+    alongside existing `StepError`
 - `sim/L0/mjcf/src/validation.rs` — no changes (mocap validation is in builder)
 - `sim/L0/tests/integration/keyframes.rs` — new: keyframe parsing, reset, mocap
   body semantics, validation error tests

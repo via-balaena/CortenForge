@@ -46,7 +46,7 @@ detection.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — convex hull computation, collision
+- `sim/L0/core/src/collision/` — convex hull computation, collision
   integration
 - Possibly a new utility in the mesh crate family
 
@@ -99,5 +99,5 @@ pipeline with custom behaviors.
 #### Files
 
 - `sim/L0/core/src/plugin.rs` — new module for plugin traits and registry
-- `sim/L0/mjcf/src/model_builder.rs` — parse plugin MJCF elements
-- `sim/L0/core/src/mujoco_pipeline.rs` — plugin dispatch at pipeline stages
+- `sim/L0/mjcf/src/builder/` — parse plugin MJCF elements
+- `sim/L0/core/src/forward/` — plugin dispatch at pipeline stages

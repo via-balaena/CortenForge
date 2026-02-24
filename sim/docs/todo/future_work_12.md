@@ -36,7 +36,7 @@ explicit MJCF elements before model building.
    - Joints (ball or hinge) connecting adjacent bodies
    - Tendons (if `tendon` sub-element specified)
    - Skin (if `skin` sub-element specified)
-3. **Pre-processing**: Expand composites in the XML DOM before `model_builder`
+3. **Pre-processing**: Expand composites in the XML DOM before the builder
    processes the tree. The builder never sees `<composite>` — only expanded elements.
 
 #### Acceptance Criteria
@@ -123,7 +123,7 @@ operations where they provide measurable speedup.
 
 #### Files
 - `sim/L0/simd/src/` — existing batch ops
-- `sim/L0/core/src/mujoco_pipeline.rs` — hot path integration points
+- `sim/L0/core/src/forward/` — hot path integration points
 
 ---
 
@@ -162,8 +162,8 @@ fidelity. No simulation effect.
 3. No simulation behavior change (regression).
 
 #### Files
-- `sim/L0/mjcf/src/model_builder.rs` — parse + store
-- `sim/L0/core/src/mujoco_pipeline.rs` — `Model` struct fields (if needed)
+- `sim/L0/mjcf/src/builder/` — parse + store
+- `sim/L0/core/src/types/model.rs` — `Model` struct fields (if needed)
 
 ---
 
@@ -200,5 +200,5 @@ Implement conservative-advancement CCD for convex geom pairs.
 3. CCD contacts produce forces consistent with discrete contacts at TOI.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — post-broadphase CCD pass
+- `sim/L0/core/src/collision/` — post-broadphase CCD pass
 - `sim/L0/core/src/gjk_epa.rs` — GJK distance query for conservative advancement

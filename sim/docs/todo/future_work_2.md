@@ -15,7 +15,7 @@ attributes with class → parent → root lookup, and provides `apply_to_joint()
 `apply_to_geom()`, `apply_to_actuator()`, `apply_to_tendon()`, `apply_to_sensor()`,
 `apply_to_site()` methods for every element type.
 
-**The resolver is never called.** `model_builder.rs` has zero references to
+**The resolver is never called.** `builder/` has zero references to
 `DefaultResolver`. Defaults are parsed from MJCF, stored in `MjcfModel.defaults`,
 and silently dropped. Every element receives hardcoded defaults instead of the
 values specified in `<default>` classes.
@@ -31,13 +31,13 @@ attributes are applied to elements before per-element attributes override them.
 
 #### Specification
 
-**Import.** `model_builder.rs` does not reference `DefaultResolver` today. Add:
+**Import.** `builder/` does not reference `DefaultResolver` today. Add:
 
 ```rust
 use crate::defaults::DefaultResolver;
 ```
 
-**Integration point:** `model_from_mjcf()` (`model_builder.rs:94`). This is a
+**Integration point:** `model_from_mjcf()` (`builder/`). This is a
 free function that creates a local `ModelBuilder`. After construction, set the
 resolver before any element processing begins:
 
@@ -239,7 +239,7 @@ sites across `ModelBuilder`:
 | `process_sensors()` (:1485) | sensors |
 
 **Approach: store on `ModelBuilder`.** Add a `resolver: DefaultResolver` field
-to the `ModelBuilder` struct (defined at `model_builder.rs:190`), initialized to
+to the `ModelBuilder` struct (defined at `builder/`), initialized to
 `DefaultResolver::default()` in `ModelBuilder::new()` (:382) and set to
 `DefaultResolver::from_model(&mjcf)` at the start of `model_from_mjcf()` before
 any processing begins. All methods access `self.resolver`. This avoids threading
@@ -290,7 +290,7 @@ a parameter through six method signatures and the recursive
     `<default>` classes, so they must be unaffected.
 
 #### Files
-- `sim/L0/mjcf/src/model_builder.rs` — modify: add `DefaultResolver` field to
+- `sim/L0/mjcf/src/builder/` — modify: add `DefaultResolver` field to
   `ModelBuilder`, construct in `model_from_mjcf()`, apply before each
   `process_*` call
 - `sim/L0/mjcf/src/defaults.rs` — minor: fix misleading `get_defaults()` doc
@@ -407,10 +407,10 @@ The redundant function was removed. See `compute_contact_jacobian()`,
 <details>
 <summary><b>Sub-task A: Model plumbing</b> ✅ COMPLETE (click to expand)</summary>
 
-**A.1.** Add `geom_condim: Vec<i32>` to `Model` (`mujoco_pipeline.rs`). Initialize
+**A.1.** Add `geom_condim: Vec<i32>` to `Model` (`types/model.rs`). Initialize
 in `Model::empty()` as an empty `Vec` (the struct derives `Clone` and `Debug`, so
 adding a `Vec<i32>` field requires no trait changes). Populate in
-`model_builder.rs:process_geom()` from `MjcfGeom.condim` — push immediately after
+`builder/:process_geom()` from `MjcfGeom.condim` — push immediately after
 the `geom_friction` push (`:1050`), adjacent to the other per-geom solver data.
 Validate in `process_geom()` (not the parser — the parser should faithfully
 represent the XML): clamp to `{1, 3, 4, 6}` — if a geom specifies an invalid
@@ -465,7 +465,7 @@ projection's Step 0 clamp zeroes all friction lambdas — physically correct
 (frictionless behavior) but wasteful (3 constraint rows for a 1D problem). A
 future optimization could detect `mu[0..dim-1] == 0` in `make_contact_from_geoms()`
 and downgrade to `condim=1`.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-18.
+Tracked in [future_work_10c.md](./future_work_10c.md) §DT-18.
 
 **A.5.** Update `make_contact_from_geoms()` to pass the resolved condim and
 full 5-element friction array:
@@ -509,7 +509,7 @@ This preserves backward compatibility — all existing test code compiles
 unchanged and produces identical contact parameters.
 
 **Struct literal callers.** Three test functions construct `Contact` via struct
-literal syntax (bypassing constructors), all in `mujoco_pipeline.rs`:
+literal syntax (bypassing constructors), all in sim-core test modules:
 - `test_cg_solve_single_contact` (`:13641`) — `mu: [0.5, 0.0]`
 - `test_project_friction_cone_unit` (`:13680`) — `mu: [0.5, 0.0]`
 - `test_project_friction_cone_zero_mu` (`:13825`) — `mu: [0.0, 0.0]`
@@ -1199,7 +1199,7 @@ fn extract_forces(
 **E.7. Consolidated signature changes.**
 
 All function signatures that change in Phase 2, with line references to current
-implementation in `mujoco_pipeline.rs`:
+implementation across sim-core modules:
 
 ```rust
 // CURRENT (line 8236):
@@ -1514,7 +1514,7 @@ Jacobian: `qfrc_constraint += Jᵢᵀ * λᵢ` for each contact. This would be
 mathematically equivalent and avoid the separate torque function, but would
 couple force application to the Jacobian representation. The manual approach
 is retained for consistency with the existing design and readability.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-20.
+Tracked in [future_work_10c.md](./future_work_10c.md) §DT-20.
 
 **Not in scope: pyramidal friction cones.** See sub-task D.2 rationale.
 Pyramidal cones require a fundamentally different variable count per contact
@@ -1542,7 +1542,7 @@ friction forces onto the cone. Our solver uses sequential SOC projection
 (clamp normal, then scale friction). See D.1 divergence analysis. Upgrading
 to QCQP projection would improve convergence for strongly coupled contacts
 but is a separate optimization task.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-19.
+Tracked in [future_work_10c.md](./future_work_10c.md) §DT-19.
 
 **Not in scope: friction combination method.** ⚠️ Now tracked as
 [#24](./future_work_7.md) (Friction Combination Rule).
@@ -1726,7 +1726,7 @@ instead of normal.
 
 #### Files
 
-**Phase 2 changes — `sim/L0/core/src/mujoco_pipeline.rs`:**
+**Phase 2 changes — `sim/L0/core/src/` (multiple modules):**
 
 | Item | Sub-task | Line | Change |
 |------|----------|:----:|--------|
@@ -1744,7 +1744,7 @@ instead of normal.
 | `Model::empty()` | G.1 | :1400~ | Update: `cone: 0` → `cone: 1` (default to elliptic) |
 | Touch sensor | E.2 | :5805~ | Update: type annotation for `Vec` access |
 
-**Phase 2 changes — `sim/L0/mjcf/src/model_builder.rs`:**
+**Phase 2 changes — `sim/L0/mjcf/src/builder/`:**
 - `model_from_mjcf()` — pyramidal cone warning (sub-task G.1)
 
 **Phase 2 changes — `sim/L0/tests/integration/`:**
@@ -1771,7 +1771,7 @@ instead of normal.
 | D2 | Default `cone` to elliptic? | **Yes** | Our default should match what we implement; pyramidal warn only on explicit MJCF request |
 | D3 | Friction combination: keep geometric mean? | **Deferred → #24** | Now tracked in [future_work_7.md](./future_work_7.md) #24 |
 | D4 | `Contact.friction` field: keep or remove? | **Keep** | Retained for backward compat; documented as `== mu[0]`; solver reads `mu` |
-| D5 | Warmstart: `Vec<f64>` or `SmallVec<[f64; 6]>`? | **`Vec<f64>`** | Optimize later if profiling shows heap allocation pressure → [future_work_10b.md](./future_work_10b.md) §DT-91 |
+| D5 | Warmstart: `Vec<f64>` or `SmallVec<[f64; 6]>`? | **`Vec<f64>`** | Optimize later if profiling shows heap allocation pressure → [future_work_10j.md](./future_work_10j.md) §DT-91 |
 | D6 | `contact.frame` fields: use everywhere? | **Yes** | See D1; pre-computed frame ensures consistency across Jacobian/assembly/forces |
 
 ---
@@ -2007,7 +2007,7 @@ pair: Self::merge_pair_defaults(parent.pair.as_ref(), child.pair.as_ref()),
 each `Option` field on `MjcfPairDefaults`. Without this, class inheritance chains
 that set pair defaults on a parent class will silently fail to propagate to children.
 
-##### D. Model Data Structures (`mujoco_pipeline.rs` → `Model`)
+##### D. Model Data Structures (`types/data.rs` → `Model`)
 
 ```rust
 /// Explicit contact pair: geom indices + per-pair overrides.
@@ -2068,7 +2068,7 @@ the same geom pair. The `contact_pair_set` is populated alongside `contact_pairs
 in the builder; the automatic pipeline checks it to skip pairs that will be
 handled by mechanism 2.
 
-##### E. Model Builder (`model_builder.rs`)
+##### E. Model Builder (`builder/`)
 
 Two-stage resolution follows the existing pattern (e.g., geoms, tendons):
 
@@ -2318,7 +2318,7 @@ explicit pair pipelines equally.
   rather than `if let Some(pos)` to catch invariant violations between the
   `contact_pair_set` and `contact_pairs` vec.
 - **`ContactPair` re-export.** `ContactPair` is re-exported from `sim_core`
-  via `lib.rs` so that `sim_mjcf`'s `model_builder` can reference it.
+  via `lib.rs` so that `sim_mjcf`'s `builder/` can reference it.
 
 **Edge cases (valid behavior, no special handling needed):**
 
@@ -2435,9 +2435,9 @@ explicit pair pipelines equally.
 | `sim/L0/mjcf/src/types.rs` | modify | Add `MjcfContactPair`, `MjcfContactExclude`, `MjcfContact`, `MjcfPairDefaults` (all with serde cfg_attr); add `contact` field to `MjcfModel` + update manual `Default` impl; add `pair` field to `MjcfDefault` |
 | `sim/L0/mjcf/src/parser.rs` | modify | Add `b"contact"` arm in `parse_mujoco` dispatch in **both** `Event::Start` (line ~67, calls `parse_contact()`) **and** `Event::Empty` (line ~111, assigns `MjcfContact::default()` for self-closing `<contact/>`); new `parse_contact()` function for `<pair>`/`<exclude>` children; add `b"pair"` arm in `parse_default` (both `Event::Start` and `Event::Empty` branches, since `<pair .../>` is typically self-closing) |
 | `sim/L0/mjcf/src/defaults.rs` | modify | Add `MjcfContactPair`, `MjcfPairDefaults` to imports; add `pair_defaults()` accessor, `apply_to_pair()` method, and `merge_pair_defaults()` to `DefaultResolver`; add `pair` field to `merge_defaults()` struct literal |
-| `sim/L0/mjcf/src/model_builder.rs` | modify | Add `HashSet` import (line ~21); add `ContactPair` import from sim_core; add `MjcfContact` to types import; add `contact_pairs`, `contact_pair_set`, `contact_excludes` fields to `ModelBuilder`; new `process_contact()` method (resolve names, apply defaults, compute geom fallbacks incl. `solreffriction` → `solref`); call `process_contact()` in `model_from_mjcf()` after body tree; move fields into `Model` in `build()` struct literal |
-| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `ContactPair` struct and `contact_pairs`/`contact_pair_set`/`contact_excludes` to `Model`; add `HashSet` import; initialize new fields in `Model::empty()`; add exclude + pair-set checks in `check_collision_affinity`; add mechanism-2 loop in `mj_collision` (rbound cull + `collide_geoms` + `apply_pair_overrides`) |
-| `sim/L0/core/src/lib.rs` | modify | Add `ContactPair` to re-exports from `mujoco_pipeline` |
+| `sim/L0/mjcf/src/builder/` | modify | Add `HashSet` import (line ~21); add `ContactPair` import from sim_core; add `MjcfContact` to types import; add `contact_pairs`, `contact_pair_set`, `contact_excludes` fields to `ModelBuilder`; new `process_contact()` method (resolve names, apply defaults, compute geom fallbacks incl. `solreffriction` → `solref`); call `process_contact()` in `model_from_mjcf()` after body tree; move fields into `Model` in `build()` struct literal |
+| `sim/L0/core/src/types/model_init.rs` | modify | Add `ContactPair` struct and `contact_pairs`/`contact_pair_set`/`contact_excludes` to `Model`; add `HashSet` import; initialize new fields in `Model::empty()`; add exclude + pair-set checks in `check_collision_affinity`; add mechanism-2 loop in `mj_collision` (rbound cull + `collide_geoms` + `apply_pair_overrides`) |
+| `sim/L0/core/src/lib.rs` | modify | Add `ContactPair` to re-exports from `types` |
 
 ---
 
@@ -2573,7 +2573,7 @@ variants for each child element in document order:
 
 ##### 4.2 Model Builder: Spatial Tendon Path → Wrap Arrays
 
-`process_tendons()` in `model_builder.rs` translates `path_elements` into the
+`process_tendons()` in `builder/` translates `path_elements` into the
 flat wrap arrays, **preserving element order**.
 
 **Existing types:** `WrapType::Geom` and `WrapType::Pulley` already exist in
@@ -2666,7 +2666,7 @@ Remove the spatial tendon warning log.
 
 **Compute `tendon_length0` for spatial tendons:** The model builder already
 computes `tendon_length0` and defaults `lengthspring` for fixed tendons
-(`model_builder.rs`, in the `build()` method, loop at ~line 2319). This loop
+(`builder/`, in the `build()` method, loop at ~line 2319). This loop
 only handles `TendonType::Fixed` via the wrap-array DOF pattern. For spatial
 tendons, extend this by adding a new public `Model` method:
 
@@ -2700,7 +2700,7 @@ pub fn compute_spatial_tendon_length0(&mut self) {
 }
 ```
 
-**Build ordering:** In `model_builder.rs`'s `build()` method, the current
+**Build ordering:** In `builder/`'s `build()` method, the current
 order is:
 
 1. Assemble `Model` struct literal (line ~2105)
@@ -2969,12 +2969,12 @@ fn mj_fwd_tendon_spatial(model, data, t):
 joint's velocity contribution through a direction vector and accumulating into a
 tendon Jacobian row. This is the same kinematic chain walk as
 `compute_contact_jacobian`'s inner `add_body_jacobian` closure
-(`mujoco_pipeline.rs:7870`), but operating on a `DVector<f64>` (1×nv) instead
+(`constraint/jacobian.rs`), but operating on a `DVector<f64>` (1×nv) instead
 of a `DMatrix` row. All joint type formulas (Hinge, Slide, Ball, Free) are
 verified to exactly match the existing `add_body_jacobian` implementation.
-**Note:** `compute_body_jacobian_at_point()` (line 7766) is dead code with a
-broken implementation (only stores `.x` component) — do NOT use it as a
-reference.
+**Note:** `compute_body_jacobian_at_point()` was dead code with a broken
+implementation — it has been deleted and replaced by the canonical `mj_jac()`
+API (DT-74). Use `mj_jac()` for full `(jacp 3×nv, jacr 3×nv)` Jacobians.
 
 **Borrow safety:** The function takes `ten_j: &mut DVector<f64>` as a direct
 mutable reference (not through `data`), plus immutable references `xpos` and
@@ -3123,7 +3123,7 @@ contribution inline during the chain walk, never materializing a full `ten_J`
 row. For initial correctness, the O(nv) scan is acceptable. A follow-up
 optimization could cache nonzero DOF indices during `mj_fwd_tendon_spatial()`
 and iterate only those indices in `apply_tendon_force`.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-34.
+Tracked in [future_work_10d.md](./future_work_10d.md) §DT-34.
 
 **Apply this pattern at all three sites:**
 
@@ -3224,7 +3224,7 @@ Fix: if the spatial tendon has declared `tendon_range` limits, use those (this
 path already works). If unlimited, skip the range estimation and leave
 `lengthrange = (0, 0)` — muscle actuators on unlimited spatial tendons will
 need explicit `lengthrange` in MJCF. Log a warning.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-78.
+Tracked in [future_work_10j.md](./future_work_10j.md) §DT-78.
 
 ##### 4.7 Wrapping Geometry: Sphere
 
@@ -3663,7 +3663,7 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
 - **Pulley systems** — `WrapType::Pulley` divisor scaling is included in the path
   algorithm (4.3), but compound pulley physics (capstan friction, pulley inertia)
   from `sim-tendon/src/pulley.rs` are out of scope.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-30.
+Tracked in [future_work_10d.md](./future_work_10d.md) §DT-30.
 - **Tendon equality constraints** — implemented in §37 (`extract_tendon_equality_jacobian()`).
 - **Wrapping function derivatives** — MuJoCo does not compute derivatives of the
   wrapping function (∂tangent_points/∂q). The tangent points are treated as fixed
@@ -3678,7 +3678,7 @@ Tracked in [future_work_10b.md](./future_work_10b.md) §DT-30.
   tendon path. This wrap type is uncommon and not implemented. The parser rejects
   `<joint>` inside `<spatial>` at parse time (§4.1), and validation rule 10 (§4.2)
   provides defense-in-depth.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-31.
+Tracked in [future_work_10d.md](./future_work_10d.md) §DT-31.
 - ~~**`wrap_inside` code path (sidesite inside wrapping geometry)**~~ ✅ — Implemented
   in §39 (`future_work_10.md`). The `wrap_inside` Newton solver handles sidesites
   inside wrapping geometry for both spheres and cylinders. Validation rule 9 is retired.
@@ -3690,20 +3690,18 @@ Tracked in [future_work_10b.md](./future_work_10b.md) §DT-31.
   `<fixed>` tendon elements accept per-tendon constraint solver parameters. These
   are not parsed (pre-existing gap shared with fixed tendons). Model-default
   solver params (`tendon_solref`, `tendon_solimp`) are used for all tendon limits.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-32.
+Tracked in [future_work_10d.md](./future_work_10d.md) §DT-32.
 - **Tendon `margin` attribute** — MuJoCo tendons have a `margin` attribute that
   creates an activation distance for limit constraints (constraint activates when
   `|length - limit| < margin`). Not implemented — limits activate at the exact
   boundary. This is a pre-existing gap shared with fixed tendons.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-33.
+Tracked in [future_work_10d.md](./future_work_10d.md) §DT-33.
 - **Pre-existing `add_body_jacobian` free joint bug** — The existing
-  `add_body_jacobian` closure (line 7923) uses world-frame unit vectors for free
-  joint angular DOFs instead of body-frame `R*e_i`. This is incorrect for bodies
-  with non-identity orientation. The `accumulate_point_jacobian` spec uses the
-  correct formula (matching MuJoCo's `cdof` convention). Fixing the pre-existing
-  bug in `add_body_jacobian` and the velocity computation (line 6577) is a
-  separate task that should be done independently of spatial tendons.
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-75.
+  ~~`add_body_jacobian` closure uses world-frame unit vectors for free
+  joint angular DOFs instead of body-frame `R*e_i`.~~ **FIXED** in DT-75 —
+  all three affected locations (`compute_contact_jacobian`,
+  `compute_flex_contact_jacobian`, `add_angular_jacobian`) now use body-frame
+  `R*e_i` and `xpos`-based lever arm. See [future_work_10j.md](./future_work_10j.md) §DT-75.
 
 #### Acceptance Criteria
 
@@ -4261,10 +4259,10 @@ not just wrong results.
 |------|--------|---------|
 | `sim/L0/mjcf/src/types.rs` | modify | Add `SpatialPathElement` enum. Replace `sites`+`wrapping_geoms` fields on `MjcfTendon` with `path_elements: Vec<SpatialPathElement>`. |
 | `sim/L0/mjcf/src/parser.rs` | modify | `parse_tendon()`: add `b"pulley"` match arm (currently missing — `<pulley>` elements are silently ignored by the `_ => {}` default). Push `SpatialPathElement` variants in document order. Parse `sidesite` attr on `<geom>` children, `divisor` attr on new `<pulley>` children. |
-| `sim/L0/mjcf/src/model_builder.rs` | modify | `process_tendons()`: iterate `path_elements`, populate `wrap_sidesite`, add geom type validation. Remove spatial tendon warning. Call `compute_spatial_tendon_length0()` before `compute_muscle_params()` in `build()`. Skip `actuator_lengthrange` estimation for unlimited spatial-tendon actuators (log warning; see 4.6B). |
+| `sim/L0/mjcf/src/builder/` | modify | `process_tendons()`: iterate `path_elements`, populate `wrap_sidesite`, add geom type validation. Remove spatial tendon warning. Call `compute_spatial_tendon_length0()` before `compute_muscle_params()` in `build()`. Skip `actuator_lengthrange` estimation for unlimited spatial-tendon actuators (log warning; see 4.6B). |
 | `sim/L0/mjcf/src/validation.rs` | modify | Update spatial tendon validation: replace `tendon.sites.len() < 2` check with `path_elements` counting of `Site` variants. Update site/geom/sidesite name-existence checks to iterate `path_elements`. Add validation for Geom-must-be-followed-by-Site rule, start/end-with-Site rule, geom `size[0] > 0` rule, Pulley-Geom adjacency rule, pulley `divisor > 0` rule, per-branch minimum 2 sites (rule 8, warning), ~~sidesite-outside-geometry rule (rule 9)~~ (retired per §39 — `wrap_inside` now handles this at runtime), and `<joint>` inside spatial tendon rejection (rule 10). |
 | `sim/L0/mjcf/src/defaults.rs` | verify | `apply_to_tendon()` does not reference `sites`/`wrapping_geoms` — only sets scalar fields (stiffness, damping, etc.). No changes needed, but verify after field removal. |
-| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `Model::wrap_sidesite` field. Add `mj_fwd_tendon_spatial()`, `accumulate_point_jacobian()`, `sphere_wrap()` + `compute_tangent_pair()` + `sphere_tangent_point()`, `cylinder_wrap()` + `compute_tangent_pair_2d()` + `circle_tangent_2d()` + `directional_wrap_angle()` + `segments_intersect_2d()`, `apply_tendon_force()`, `compute_spatial_tendon_length0()`. Fix force mapping in `mj_fwd_passive()`, `mj_fwd_constraint()`, `mj_fwd_actuation()`. Fix `compute_muscle_params()` for spatial tendons. |
+| `sim/L0/core/src/constraint/mod.rs` | modify | Add `Model::wrap_sidesite` field. Add `mj_fwd_tendon_spatial()`, `accumulate_point_jacobian()`, `sphere_wrap()` + `compute_tangent_pair()` + `sphere_tangent_point()`, `cylinder_wrap()` + `compute_tangent_pair_2d()` + `circle_tangent_2d()` + `directional_wrap_angle()` + `segments_intersect_2d()`, `apply_tendon_force()`, `compute_spatial_tendon_length0()`. Fix force mapping in `mj_fwd_passive()`, `mj_fwd_constraint()`, `mj_fwd_actuation()`. Fix `compute_muscle_params()` for spatial tendons. |
 | `sim/L0/tendon/src/wrapping.rs` | reference | Use `SphereWrap::compute_wrap()` and `CylinderWrap::compute_wrap()` as **rough sanity checks** in tests. These implementations have significant algorithmic divergences from MuJoCo (no sidesite, no dual-candidate selection, no self-intersection check, angle-based Z-interpolation instead of path-length-proportional, 1% margin hack on sphere clearance). They cannot serve as exact verification oracles — use MuJoCo reference data for conformance testing. |
 | `sim/conformance-tests/` | create | Acceptance tests 1-19 and MJCF test models A-L. Parser/validation rejection tests (test 17). Free-joint Jacobian test (test 18, Model K). Mixed straight + wrapping segments test (test 19, Model L). MuJoCo conformance tests (test 16). |
 
@@ -4350,8 +4348,8 @@ verified with 7 sub-tests against MuJoCo 3.5.0 — see `MUJOCO_CONFORMANCE.md` �
 | `MjcfActuator.gear` (types.rs:1814) | `f64` | `[f64; 6]` |
 | `MjcfActuatorDefaults.gear` (types.rs:492) | `Option<f64>` | `Option<[f64; 6]>` |
 | MJCF parser (parser.rs:1240) | `parse_float_attr` → single f64 | `parse_float_array`, pad to 6 with zeros |
-| `Model.actuator_gear` (mujoco_pipeline.rs:967) | `Vec<f64>` | `Vec<[f64; 6]>` |
-| model_builder (model_builder.rs:1439) | `push(actuator.gear)` | `push(actuator.gear)` (type changes) |
+| `Model.actuator_gear` (types/model.rs) | `Vec<f64>` | `Vec<[f64; 6]>` |
+| model_builder (builder/) | `push(actuator.gear)` | `push(actuator.gear)` (type changes) |
 | `MjcfActuator::default()` (types.rs:1879) | `gear: 1.0` | `gear: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]` |
 
 MuJoCo default: `gear="1 0 0 0 0 0"`. When the user writes `gear="50"`, parse as
@@ -4365,8 +4363,8 @@ zeros if fewer than 6. Existing Joint and Tendon transmissions only use `gear[0]
 |-------|---------|--------|
 | `MjcfActuator` (types.rs) | no `refsite` field | `pub refsite: Option<String>` |
 | MJCF parser (parser.rs) | — | `get_attribute_opt(e, "refsite")` |
-| `Model.actuator_trnid` (mujoco_pipeline.rs:965) | `Vec<usize>` (1 per actuator) | `Vec<[usize; 2]>` — `[site_id, refsite_id]` where `refsite_id = usize::MAX` means absent |
-| model_builder | pushes single usize | pushes `[site_id, refsite_id_or_MAX]` |
+| `Model.actuator_trnid` (types/model.rs) | `Vec<usize>` (1 per actuator) | `Vec<[usize; 2]>` — `[site_id, refsite_id]` where `refsite_id = usize::MAX` means absent |
+| builder/ | pushes single usize | pushes `[site_id, refsite_id_or_MAX]` |
 
 All existing Joint/Tendon code reads `actuator_trnid[i]` — change to
 `actuator_trnid[i][0]`. The `[1]` slot is `usize::MAX` for Joint and Tendon
@@ -4393,7 +4391,7 @@ site_xquat[s] = xquat[site_body[s]] * model.site_quat[s]
 
 **4. Site Jacobian function: `mj_jac_site`**
 
-New function in `mujoco_pipeline.rs`:
+New function in `jacobian.rs`:
 ```
 fn mj_jac_site(
     model: &Model,
@@ -4527,7 +4525,7 @@ Mode B: difference Jacobian with common-ancestor zeroing, wrench in refsite fram
 
 No-op for site transmissions — explicit `lengthrange` required in MJCF for
 muscle actuators with site transmission (matches MuJoCo behavior).
-Tracked in [future_work_10b.md](./future_work_10b.md) §DT-77.
+Tracked in [future_work_10j.md](./future_work_10j.md) §DT-77.
 
 #### Bug Fix: `ActuatorFrc` Sensor (done)
 
@@ -4577,7 +4575,7 @@ res = axis * angle                   // axis-angle 3-vector
 // small-angle limit: when sin_half ≈ 0, axis is undefined;
 // atan2(0, 1) = 0 so res = 0-vector (correct)
 ```
-Implemented as `subquat()` in `mujoco_pipeline.rs` with 7 unit tests covering
+Implemented as `subquat()` in `sensor/mod.rs` with 7 unit tests covering
 identity, cardinal axes, 180°, shortest-path wrapping, relative rotation,
 and small-angle guard. It is the rotational analogue of the translational
 position difference `p_site - p_ref`.
@@ -4679,7 +4677,7 @@ gear, free joint, position actuator).
 - ✅ `sim/L0/mjcf/src/types.rs` — `MjcfActuator.gear` → `[f64; 6]`, `refsite: Option<String>`, defaults updated
 - ✅ `sim/L0/mjcf/src/parser.rs` — 6D gear parsing (1–6 floats, zero-padded), `refsite` attribute
 - ✅ `sim/L0/mjcf/src/defaults.rs` — 6D gear defaults propagation
-- ✅ `sim/L0/mjcf/src/model_builder.rs` — refsite → `actuator_trnid[i][1]`, 6D gear push, refsite warning for non-Site
+- ✅ `sim/L0/mjcf/src/builder/` — refsite → `actuator_trnid[i][1]`, 6D gear push, refsite warning for non-Site
 - ✅ `sim/L0/mjcf/src/validation.rs` — site/refsite reference validation, mutual exclusivity enforcement
-- ✅ `sim/L0/core/src/mujoco_pipeline.rs` — `actuator_gear` → `Vec<[f64; 6]>`, `actuator_trnid` → `Vec<[usize; 2]>`, `Data.site_xquat`, `Data.actuator_moment`, `mj_jac_site()`, `mj_transmission_site()`, 5 stubs filled, `ActuatorFrc` sensor fix, `subquat()`, common-ancestor zeroing, `subquat_tests` (7), `jac_site_tests` (2)
+- ✅ `sim/L0/core/src/sensor/mod.rs` — `actuator_gear` → `Vec<[f64; 6]>`, `actuator_trnid` → `Vec<[usize; 2]>`, `Data.site_xquat`, `Data.actuator_moment`, `mj_jac_site()`, `mj_transmission_site()`, 5 stubs filled, `ActuatorFrc` sensor fix, `subquat()`, common-ancestor zeroing, `subquat_tests` (7), `jac_site_tests` (2)
 - ✅ `sim/L0/tests/integration/site_transmission.rs` — 29 integration tests (criteria 1–22 all active, criterion 22 cross-validated against MuJoCo 3.5.0)

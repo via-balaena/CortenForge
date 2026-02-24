@@ -1,0 +1,218 @@
+//! Velocity-dependent sensor evaluation (`mj_sensor_vel`).
+//!
+//! Called after velocity kinematics. Evaluates sensors that depend on velocity:
+//! joint velocity, gyro, velocimeter, frame linear/angular velocity,
+//! subtree linear velocity, subtree angular momentum, actuator/tendon velocity.
+
+use crate::types::{
+    Data, ENABLE_SLEEP, MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model,
+    SleepState,
+};
+use nalgebra::{Matrix3, Vector3};
+
+use super::derived::{compute_subtree_angmom, compute_subtree_com, compute_subtree_momentum};
+use super::postprocess::{sensor_write, sensor_write3};
+use super::sensor_body_id;
+
+/// Compute velocity-dependent sensor values.
+///
+/// This is called after `mj_fwd_velocity` and computes sensors that depend on
+/// velocity (but not acceleration):
+/// - `JointVel`: joint velocity
+/// - Gyro: angular velocity
+/// - Velocimeter: linear velocity
+/// - `FrameLinVel`: site/body linear velocity
+/// - `FrameAngVel`: site/body angular velocity
+/// - `TendonVel`: tendon velocity
+/// - `ActuatorVel`: actuator velocity
+#[allow(clippy::too_many_lines)]
+pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+    for sensor_id in 0..model.nsensor {
+        // Skip non-velocity sensors
+        if model.sensor_datatype[sensor_id] != MjSensorDataType::Velocity {
+            continue;
+        }
+
+        // §16.5d: Skip sensors on sleeping bodies
+        if sleep_enabled {
+            if let Some(body_id) = sensor_body_id(model, sensor_id) {
+                if data.body_sleep_state[body_id] == SleepState::Asleep {
+                    continue;
+                }
+            }
+        }
+
+        let adr = model.sensor_adr[sensor_id];
+        let objid = model.sensor_objid[sensor_id];
+
+        match model.sensor_type[sensor_id] {
+            MjSensorType::JointVel => {
+                // Scalar joint velocity (hinge/slide only).
+                // Ball joints use BallAngVel, free joints use FrameLinVel + FrameAngVel.
+                if objid < model.njnt {
+                    let dof_adr = model.jnt_dof_adr[objid];
+                    match model.jnt_type[objid] {
+                        MjJointType::Hinge | MjJointType::Slide => {
+                            sensor_write(&mut data.sensordata, adr, 0, data.qvel[dof_adr]);
+                        }
+                        _ => {} // Ball/Free not supported by JointVel; use BallAngVel/FrameLinVel
+                    }
+                }
+            }
+
+            MjSensorType::BallAngVel => {
+                // Ball joint angular velocity [wx, wy, wz] in local (child body) frame
+                if objid < model.njnt && model.jnt_type[objid] == MjJointType::Ball {
+                    let dof_adr = model.jnt_dof_adr[objid];
+                    let omega = Vector3::new(
+                        data.qvel[dof_adr],
+                        data.qvel[dof_adr + 1],
+                        data.qvel[dof_adr + 2],
+                    );
+                    sensor_write3(&mut data.sensordata, adr, &omega);
+                }
+            }
+
+            MjSensorType::Gyro => {
+                // Angular velocity in sensor (site) frame
+                let (omega_world, site_mat) = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        let omega = Vector3::new(
+                            data.cvel[body_id][0],
+                            data.cvel[body_id][1],
+                            data.cvel[body_id][2],
+                        );
+                        (omega, data.site_xmat[objid])
+                    }
+                    MjObjectType::Body if objid < model.nbody => {
+                        let omega = Vector3::new(
+                            data.cvel[objid][0],
+                            data.cvel[objid][1],
+                            data.cvel[objid][2],
+                        );
+                        (omega, data.xmat[objid])
+                    }
+                    _ => (Vector3::zeros(), Matrix3::identity()),
+                };
+                // Transform to sensor frame
+                let omega_sensor = site_mat.transpose() * omega_world;
+                sensor_write3(&mut data.sensordata, adr, &omega_sensor);
+            }
+
+            MjSensorType::Velocimeter => {
+                // Linear velocity in sensor frame
+                let (v_world, site_mat) = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        let v = Vector3::new(
+                            data.cvel[body_id][3],
+                            data.cvel[body_id][4],
+                            data.cvel[body_id][5],
+                        );
+                        (v, data.site_xmat[objid])
+                    }
+                    MjObjectType::Body if objid < model.nbody => {
+                        let v = Vector3::new(
+                            data.cvel[objid][3],
+                            data.cvel[objid][4],
+                            data.cvel[objid][5],
+                        );
+                        (v, data.xmat[objid])
+                    }
+                    _ => (Vector3::zeros(), Matrix3::identity()),
+                };
+                // Transform to sensor frame
+                let v_sensor = site_mat.transpose() * v_world;
+                sensor_write3(&mut data.sensordata, adr, &v_sensor);
+            }
+
+            MjSensorType::FrameLinVel => {
+                // Linear velocity in world frame
+                let v = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        Vector3::new(
+                            data.cvel[body_id][3],
+                            data.cvel[body_id][4],
+                            data.cvel[body_id][5],
+                        )
+                    }
+                    MjObjectType::Body if objid < model.nbody => Vector3::new(
+                        data.cvel[objid][3],
+                        data.cvel[objid][4],
+                        data.cvel[objid][5],
+                    ),
+                    _ => Vector3::zeros(),
+                };
+                sensor_write3(&mut data.sensordata, adr, &v);
+            }
+
+            MjSensorType::FrameAngVel => {
+                // Angular velocity in world frame
+                let omega = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        Vector3::new(
+                            data.cvel[body_id][0],
+                            data.cvel[body_id][1],
+                            data.cvel[body_id][2],
+                        )
+                    }
+                    MjObjectType::Body if objid < model.nbody => Vector3::new(
+                        data.cvel[objid][0],
+                        data.cvel[objid][1],
+                        data.cvel[objid][2],
+                    ),
+                    _ => Vector3::zeros(),
+                };
+                sensor_write3(&mut data.sensordata, adr, &omega);
+            }
+
+            MjSensorType::SubtreeLinVel => {
+                // Subtree linear momentum / total mass = average velocity
+                if objid < model.nbody {
+                    let (_, total_mass) = compute_subtree_com(model, data, objid);
+                    if total_mass > 1e-10 {
+                        let momentum = compute_subtree_momentum(model, data, objid);
+                        let v = momentum / total_mass;
+                        sensor_write3(&mut data.sensordata, adr, &v);
+                    }
+                }
+            }
+
+            MjSensorType::SubtreeAngMom => {
+                // Subtree angular momentum about the subtree center of mass.
+                // L = sum_i [I_i * omega_i + m_i * (r_i - r_com) x v_i]
+                if objid < model.nbody {
+                    let angmom = compute_subtree_angmom(model, data, objid);
+                    sensor_write3(&mut data.sensordata, adr, &angmom);
+                }
+            }
+
+            MjSensorType::ActuatorVel => {
+                // Read from pre-computed actuator_velocity (populated by mj_actuator_length,
+                // which runs before mj_sensor_vel in forward()).
+                let act_id = model.sensor_objid[sensor_id];
+                if act_id < model.nu {
+                    sensor_write(&mut data.sensordata, adr, 0, data.actuator_velocity[act_id]);
+                }
+            }
+
+            MjSensorType::TendonVel => {
+                let tendon_id = model.sensor_objid[sensor_id];
+                let value = if tendon_id < model.ntendon {
+                    data.ten_velocity[tendon_id]
+                } else {
+                    0.0
+                };
+                sensor_write(&mut data.sensordata, adr, 0, value);
+            }
+
+            // Skip position/acceleration-dependent sensors
+            _ => {}
+        }
+    }
+}

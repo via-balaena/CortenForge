@@ -53,36 +53,21 @@
 //! // derivs.A is 6×6 (2*nv), derivs.B is 6×0 (nu=0)
 //! ```
 
-use crate::mujoco_pipeline::{
-    ActuatorDynamics,
-    ActuatorTransmission,
-    BiasType,
-    Data,
-    ENABLE_SLEEP,
-    GainType,
-    Integrator,
-    // §40a fluid derivative infrastructure
-    MJ_MINVAL,
-    MjJointType,
-    Model,
-    SpatialVector,
-    StepError,
-    // pub(crate) functions from mujoco_pipeline
-    cholesky_solve_in_place,
-    ellipsoid_moment,
-    fluid_geom_semi_axes,
-    joint_motion_subspace,
-    lu_solve_factored,
-    mj_differentiate_pos,
-    mj_integrate_pos_explicit,
-    mj_jac_body_com,
-    mj_jac_geom,
-    mj_solve_sparse,
-    mj_solve_sparse_batch,
-    norm3,
-    object_velocity_local,
-    spatial_cross_motion,
-    tendon_all_dofs_sleeping,
+use crate::constraint::impedance::MJ_MINVAL;
+use crate::dynamics::object_velocity_local;
+use crate::dynamics::spatial::{SpatialVector, spatial_cross_motion};
+use crate::forward::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
+use crate::integrate::implicit::tendon_all_dofs_sleeping;
+use crate::jacobian::{
+    mj_differentiate_pos, mj_integrate_pos_explicit, mj_jac_body_com, mj_jac_geom,
+};
+use crate::joint_visitor::joint_motion_subspace;
+use crate::linalg::{
+    cholesky_solve_in_place, lu_solve_factored, mj_solve_sparse, mj_solve_sparse_batch,
+};
+use crate::types::{
+    ActuatorDynamics, ActuatorTransmission, BiasType, Data, ENABLE_SLEEP, GainType, Integrator,
+    MjJointType, Model, StepError,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 
@@ -466,11 +451,12 @@ fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>) -> DVector
 /// that merges `jnt_damping[jnt_id]` for Hinge/Slide joints and
 /// `dof_damping[dof_idx]` for Ball/Free joints.
 ///
-/// # Implicit mode guard
+/// # Tendon damping
 ///
-/// In `ImplicitSpringDamper` mode, `mj_fwd_passive()` skips tendon damping
-/// forces. Per-DOF damping is included for all modes (needed by both Euler
-/// and implicit velocity derivative formulas).
+/// Tendon damping derivatives (−b · J^T · J) are included for all integrators.
+/// In `ImplicitSpringDamper` mode, tendon damping is handled implicitly via
+/// non-diagonal D matrices (DT-35), but the velocity derivative is still
+/// physically present and must be captured here.
 #[allow(non_snake_case)]
 pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     // §40c: Sleep filtering — compute once, used by per-DOF and tendon loops.
@@ -493,31 +479,28 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
     }
 
     // 3. Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
-    // Skipped in implicit mode: mj_fwd_passive skips tendon damping forces
-    // when implicit_mode is true, so there is no tendon damping contribution
-    // to differentiate.
-    let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
-    if !implicit_mode {
-        for t in 0..model.ntendon {
-            // §40c: Skip tendon if ALL target DOFs are sleeping.
-            if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+    // DT-35: This runs for ALL integrators. In ImplicitSpringDamper mode the
+    // tendon damping forces are folded into the implicit K/D matrices (not
+    // skipped), so the velocity derivative is always physically present.
+    for t in 0..model.ntendon {
+        // §40c: Skip tendon if ALL target DOFs are sleeping.
+        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+            continue;
+        }
+        let b = model.tendon_damping[t];
+        if b <= 0.0 {
+            continue;
+        }
+        let j = &data.ten_J[t];
+        for r in 0..model.nv {
+            if j[r] == 0.0 {
                 continue;
             }
-            let b = model.tendon_damping[t];
-            if b <= 0.0 {
-                continue;
-            }
-            let j = &data.ten_J[t];
-            for r in 0..model.nv {
-                if j[r] == 0.0 {
+            for c in 0..model.nv {
+                if j[c] == 0.0 {
                     continue;
                 }
-                for c in 0..model.nv {
-                    if j[c] == 0.0 {
-                        continue;
-                    }
-                    data.qDeriv[(r, c)] += -b * j[r] * j[c];
-                }
+                data.qDeriv[(r, c)] += -b * j[r] * j[c];
             }
         }
     }
@@ -2401,7 +2384,7 @@ fn mjd_fluid_vel(model: &Model, data: &mut Data) {
 )]
 mod fluid_derivative_unit_tests {
     use super::*;
-    use crate::mujoco_pipeline::{ellipsoid_moment, norm3};
+    use crate::forward::{ellipsoid_moment, norm3};
 
     const EPS: f64 = 1e-6;
     const FD_TOL: f64 = 1e-5;

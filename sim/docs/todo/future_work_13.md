@@ -49,7 +49,8 @@ during the forward pass.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — Data fields, accumulator computation
+- `sim/L0/core/src/types/data.rs` — Data fields
+- `sim/L0/core/src/forward/` — accumulator computation
 
 ---
 
@@ -87,7 +88,8 @@ needed to produce given accelerations.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — `inverse()` function, `qfrc_inverse` field
+- `sim/L0/core/src/forward/mod.rs` — `inverse()` function
+- `sim/L0/core/src/types/data.rs` — `qfrc_inverse` field
 
 ---
 
@@ -124,7 +126,7 @@ inject forces between the forward pass and integration.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — `step1()`, `step2()` methods on `Data`
+- `sim/L0/core/src/forward/mod.rs` — `step1()`, `step2()` methods
 
 ---
 
@@ -133,7 +135,7 @@ inject forces between the forward pass and integration.
 
 #### Current State
 
-Explicitly documented as "not supported" at `mujoco_pipeline.rs:5798`:
+Explicitly documented as "not supported" in `collision/` modules:
 `// Hfield↔Hfield, Hfield↔Plane, Hfield↔Mesh: not supported`.
 Heightfield collision works for sphere, capsule, and box geoms only.
 
@@ -162,7 +164,7 @@ hfield↔hfield.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — heightfield collision functions
+- `sim/L0/core/src/collision/hfield.rs` — heightfield collision functions
 
 ---
 
@@ -200,5 +202,5 @@ Parse and store per-element user data arrays from MJCF.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse user attributes
-- `sim/L0/core/src/mujoco_pipeline.rs` — Model storage fields
+- `sim/L0/mjcf/src/builder/` — parse user attributes
+- `sim/L0/core/src/types/model.rs` — Model storage fields

@@ -96,12 +96,12 @@ phase they belong to. Items are grouped by source file for easy cross-reference.
 | 42E | `ContactSolver` trait (XPBD) | No — extension | Post-v1.0 | |
 | 42F | `SimBuilder` composition | No — extension | Post-v1.0 | |
 
-#### From future_work_10b.md (Deferred Tasks DT-1–92)
+#### From future_work_10b–10j (Deferred Tasks DT-1–92)
 
 ~40 of 92 deferred tasks are core v1.0. Full list with phase assignments
 in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 
-**Correctness bugs (Phase 1):** DT-74, DT-75, DT-35, DT-16, DT-90, DT-78
+**Correctness bugs (Phase 1):** ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), DT-16, DT-90, DT-78
 
 **Runtime flags (Phase 2):** DT-61
 
@@ -194,7 +194,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 
 | Phase | Focus | Key Items | Count |
 |-------|-------|-----------|-------|
-| 1 | Correctness bugs | DT-74, DT-75, DT-35, DT-16, DT-90, DT-78 | 6 |
+| 1 | Correctness bugs | ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), DT-16, DT-90, DT-78 | 6 (3 done) |
 | 2 | Runtime flag wiring | §41, DT-61 | 2 |
 | 3 | Core API gaps | DT-21, DT-41, §52, §53, §59, DT-79 | 6 |
 | 4 | Core Data fields | §51, §56 | 2 |
@@ -243,7 +243,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 ```
    ┌─────────────────────────────────────────────────────┐
    │ Roadmap Phase 1: Fix correctness bugs               │
-   │ DT-74, DT-75, DT-35, DT-16, DT-90, DT-78          │
+   │ ✓DT-74, ✓DT-75, ✓DT-35, DT-16, DT-90, DT-78      │
    └──────────────────────┬──────────────────────────────┘
                           │
                           ▼
@@ -321,7 +321,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 | [future_work_8.md](./future_work_8.md) | 3 (complete) | #28–32 | Friction loss, PGS/CG unified constraints, pyramidal cones |
 | [future_work_9.md](./future_work_9.md) | 3 (complete) | #33–37 | Noslip, actlimited, gravcomp, adhesion, tendon equality |
 | [future_work_10.md](./future_work_10.md) | 3 (in progress) | #38–42F | Joint limits ✅, tendon wrapping ✅, fluid forces ✅, fluid derivatives ✅, tendon viz ✅, fluid sleep ✅, disableflags, flex runtime, trait architecture |
-| [future_work_10b.md](./future_work_10b.md) | 3 | DT-1–92 | Deferred task tracker — ~40 core v1.0, ~52 post-v1.0 |
+| [future_work_10b.md](./future_work_10b.md)–[10j](./future_work_10j.md) | 3 | DT-1–92 | Deferred task tracker (9 groups across 10b–10j) — ~40 core v1.0, ~52 post-v1.0 |
 | [future_work_11.md](./future_work_11.md) | 3 | #43–45 | Mesh inertia, legacy crate deprecation, **conformance test suite** |
 | [future_work_12.md](./future_work_12.md) | 3 | #46–50 | `<composite>`, URDF, SIMD, non-physics MJCF, CCD |
 | [future_work_13.md](./future_work_13.md) | 3 | #51–55 | Body accumulators, `mj_inverse`, `step1`/`step2`, heightfield gaps, `*_user` data |

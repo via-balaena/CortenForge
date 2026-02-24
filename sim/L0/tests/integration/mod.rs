@@ -54,7 +54,7 @@ pub mod rk4_integration;
 // Default Class Resolution Tests
 // ============================================================================
 
-/// Default class resolution: wiring DefaultResolver into model_builder.
+/// Default class resolution: wiring DefaultResolver into builder/.
 pub mod default_classes;
 
 // ============================================================================
@@ -203,3 +203,11 @@ pub mod fluid_forces;
 /// energy dissipation, symmetry, guards, joint types, multi-body.
 #[allow(clippy::excessive_precision, clippy::needless_range_loop)]
 pub mod fluid_derivatives;
+
+// ============================================================================
+// DT-35: Tendon Implicit Spring/Damper Tests
+// ============================================================================
+
+/// Tendon implicit spring/damper tests: non-diagonal K/D coupling, deadband,
+/// energy dissipation, Newton solver, spatial tendons, multi-tendon summation.
+pub mod tendon_implicit;
