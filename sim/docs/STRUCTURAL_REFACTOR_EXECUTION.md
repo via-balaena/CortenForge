@@ -470,24 +470,25 @@ and correlating with commit history.
 | 8c | **Phase 8c audit** | Independent audit: all S1–S8 A-grade. Zero findings. populate_efc_island correctly placed in island/mod.rs. forward/mod.rs matches aspirational end-state (all 12 crate::island:: calls final). 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S16 |
 | 10 | builder/mod.rs | **(MARGIN)** 714 lines — requires init.rs split. ModelBuilder struct, orchestration (model_from_mjcf, load_model, load_model_from_file), ModelConversionError, DEFAULT_SOLREF/SOLIMP, resolve_keyframe, set_options | done | 34ad6e4 | S17 |
 | 10 | builder/init.rs | 275 lines. Split from mod.rs for MARGIN compliance. ModelBuilder::new() field initialization | done | 34ad6e4 | S17 |
-| 10 | builder/orientation.rs | 134 lines prod + 57 lines tests. quat_from_wxyz, quat_to_wxyz, euler_seq_to_quat, resolve_orientation + 4 unit tests | done | | S18 |
-| 10 | builder/asset.rs | 100 lines prod + 100 lines tests. AssetKind enum, resolve_asset_path + 8 unit tests | done | | S18 |
-| 10 | builder/fluid.rs | 142 lines. KRONROD_L/W/D, MJ_EPS, get_added_mass_kappa, geom_semi_axes, compute_geom_fluid. No inline tests | done | | S18 |
-| 10 | builder/compiler.rs | 233 lines. apply_discardvisual (with nested remove_visual_geoms, collect_mesh_refs), apply_fusestatic, fuse_static_body. No inline tests (all integration tests stay in monolith) | done | | S18 |
-| 10 | builder/frame.rs | 260 lines. frame_accum_child, validate_childclass_references, validate_frame_childclass_refs, expand_frames, expand_single_frame. No inline tests (all integration tests stay in monolith) | done | | S18 |
-| 10 | builder/mesh.rs | 473 lines. process_mesh, process_hfield (impl), load_mesh_file, convert_mjcf_hfield, convert_mjcf_mesh, convert_embedded_mesh, compute_mesh_inertia, resolve_mesh, MeshProps type. No inline tests | done | | S18 |
-| 10 | builder/geom.rs | 520 lines. process_geom, process_site (impl), geom_effective_com, compute_geom_mass, compute_geom_inertia, compute_fromto_pose, geom_size_to_vec3. No inline tests | done | | S18 |
-| 10 | builder/joint.rs | 202 lines. process_joint (impl). No inline tests | done | | S18 |
-| 10 | builder/body.rs | 311 lines. process_worldbody_geoms_and_sites, process_body, process_body_with_world_frame (impl). No inline tests | done | | S18 |
-| 10 | builder/mass.rs | 225 lines. apply_mass_pipeline (impl), extract_inertial_properties, compute_inertia_from_geoms (free fns). No inline tests | done | | S18 |
-| 10 | builder/tendon.rs | 193 lines. process_tendons (impl). No inline tests | done | | S18 |
-| 10 | builder/actuator.rs | 427 lines. process_actuator (impl), parse_gaintype, parse_biastype, parse_dyntype, floats_to_array (free fns). No inline tests | done | | S18 |
-| 10 | builder/sensor.rs | 285 lines. process_sensors, resolve_sensor_object (impl), convert_sensor_type, sensor_datatype (free fns). No inline tests | done | | S18 |
-| 10 | builder/contact.rs | 152 lines. process_contact (impl). No inline tests | done | | S18 |
-| 10 | builder/equality.rs | 296 lines. process_equality_constraints, compute_initial_geom_distance, geom_world_position (impl). No inline tests | done | | S18 |
-| 10 | builder/flex.rs | 612 lines. process_flex_bodies (impl), compute_flexedge_crosssection, compute_flex_address_table, compute_flex_count_table, compute_vertex_masses, compute_dihedral_angle, compute_edge_solref, compute_bend_stiffness_from_material, compute_bend_damping_from_material (free fns). No inline tests | done | | S18 |
-| 10 | builder/build.rs | 696 lines. build(self) -> Model (impl). References all process_* outputs + flex helpers. No inline tests | done | | S18 |
-| 10 | builder/ inline tests | 136 tests relocated from monolith to 12 builder sub-modules (build, joint, actuator, geom, body, mesh, mod, orientation, mass, compiler, flex, frame). 3 tests added to existing orientation.rs test module. model_builder.rs replaced with redirect stub. 281/281 tests pass, clippy clean. | done | | S19 |
+| 10 | builder/orientation.rs | 303 lines (134 prod + 7 tests = 141 orig; +82 from monolith S19). quat_from_wxyz, quat_to_wxyz, euler_seq_to_quat, resolve_orientation + 7 unit tests | done | 8b1e292, 866ab92 | S18–S19 |
+| 10 | builder/asset.rs | 280 lines (100 prod + 100 tests). AssetKind enum, resolve_asset_path + 8 unit tests | done | 8b1e292 | S18 |
+| 10 | builder/fluid.rs | 157 lines. KRONROD_L/W/D, MJ_EPS, get_added_mass_kappa, geom_semi_axes, compute_geom_fluid. No inline tests | done | 8b1e292 | S18 |
+| 10 | builder/compiler.rs | 654 lines (233 prod + 421 tests). apply_discardvisual, apply_fusestatic, fuse_static_body + 13 tests | done | 3a38c2c, 866ab92 | S18–S19 |
+| 10 | builder/frame.rs | 1,241 lines (260 prod + 981 tests). frame_accum_child, validate_childclass_references, expand_frames, expand_single_frame + 36 tests (AC01–AC35, fromto_geom) | done | 3a38c2c, 866ab92 | S18–S19 |
+| 10 | builder/mesh.rs | 747 lines (473 prod + 274 tests). process_mesh, process_hfield (impl), load_mesh_file, convert_mjcf_mesh, etc. + 9 tests + create_test_stl helper | done | 396a864, 866ab92 | S18–S19 |
+| 10 | builder/geom.rs | 579 lines (520 prod + 59 tests). process_geom, process_site (impl), compute_geom_inertia, etc. + 1 test | done | 396a864, 866ab92 | S18–S19 |
+| 10 | builder/joint.rs | 722 lines (202 prod + 520 tests). process_joint (impl) + 18 tests (dof_parent, angle_conversion, autolimits) | done | 396a864, 866ab92 | S18–S19 |
+| 10 | builder/body.rs | 791 lines (311 prod + 480 tests). process_worldbody_geoms_and_sites, process_body, process_body_with_world_frame (impl) + 17 tests (sites + site orientation) | done | 163f274, 866ab92 | S18–S19 |
+| 10 | builder/mass.rs | 511 lines (225 prod + 286 tests). apply_mass_pipeline (impl), extract_inertial_properties, compute_inertia_from_geoms + 11 tests (inertiafromgeom, bound/balance, settotalmass) | done | 163f274, 866ab92 | S18–S19 |
+| 10 | builder/tendon.rs | 193 lines. process_tendons (impl). No inline tests | done | 9a4cfb5 | S18 |
+| 10 | builder/actuator.rs | 870 lines (427 prod + 443 tests). process_actuator (impl), parse_gaintype, parse_biastype, parse_dyntype + 17 tests + general_actuator_model helper | done | 9a4cfb5, 866ab92 | S18–S19 |
+| 10 | builder/sensor.rs | 285 lines. process_sensors, resolve_sensor_object (impl), convert_sensor_type, sensor_datatype. No inline tests | done | 9a4cfb5 | S18 |
+| 10 | builder/contact.rs | 152 lines. process_contact (impl). No inline tests | done | fa1a92d | S18 |
+| 10 | builder/equality.rs | 296 lines. process_equality_constraints, compute_initial_geom_distance, geom_world_position (impl). No inline tests | done | fa1a92d | S18 |
+| 10 | builder/flex.rs | 722 lines (612 prod + 110 tests). process_flex_bodies (impl), compute_flexedge_crosssection, etc. + 4 vertex_masses tests | done | fa1a92d, 866ab92 | S18–S19 |
+| 10 | builder/build.rs | 798 lines (696 prod + 102 tests). build(self) -> Model (impl) + 3 integration tests (pendulum, double_pendulum, actuator) | done | 6d74a04, 866ab92 | S18–S19 |
+| 10 | builder/mod.rs | 887 lines (724 prod + 163 tests). ModelBuilder struct, orchestration fns, constants + 4 tests (file load, includes) | done | 34ad6e4, 866ab92 | S17–S19 |
+| 10 | builder/ inline tests | 136 tests relocated from monolith to 12 builder sub-modules. model_builder.rs replaced with 5-line redirect stub. 281/281 tests pass, clippy clean. | done | 866ab92 | S19 |
 | 12 | Monolith deletion + shim removal | | | | |
 | 12 | Stale reference sweep (grep) | | | | |
 | 12 | future_work_*.md doc updates (~692) | | | | |
