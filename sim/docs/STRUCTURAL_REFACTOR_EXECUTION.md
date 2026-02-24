@@ -468,11 +468,11 @@ and correlating with commit history.
 | 8c | island/mod.rs | 671 lines; mj_island, mj_flood_fill, equality_trees, constraint_tree, populate_efc_island (deferred from Phase 6) | done | 961396f | S16 |
 | 8c | island/sleep.rs | 745 lines; mj_sleep, mj_wake*, mj_update_sleep_arrays, mj_check_qpos_changed, reset_sleep_state, Data sleep query methods, all private helpers | done | 961396f | S16 |
 | 8c | **Phase 8c audit** | Independent audit: all S1–S8 A-grade. Zero findings. populate_efc_island correctly placed in island/mod.rs. forward/mod.rs matches aspirational end-state (all 12 crate::island:: calls final). 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S16 |
-| 10 | builder/mod.rs | **(MARGIN)** ~732 lines — requires init.rs split | | | |
-| 10 | builder/init.rs | Split from mod.rs for MARGIN compliance | | | |
-| 10 | builder/orientation.rs | | | | |
-| 10 | builder/asset.rs | | | | |
-| 10 | builder/fluid.rs | | | | |
+| 10 | builder/mod.rs | **(MARGIN)** 714 lines — requires init.rs split. ModelBuilder struct, orchestration (model_from_mjcf, load_model, load_model_from_file), ModelConversionError, DEFAULT_SOLREF/SOLIMP, resolve_keyframe, set_options | done | 34ad6e4 | S17 |
+| 10 | builder/init.rs | 275 lines. Split from mod.rs for MARGIN compliance. ModelBuilder::new() field initialization | done | 34ad6e4 | S17 |
+| 10 | builder/orientation.rs | 134 lines prod + 57 lines tests. quat_from_wxyz, quat_to_wxyz, euler_seq_to_quat, resolve_orientation + 4 unit tests | done | | S18 |
+| 10 | builder/asset.rs | 100 lines prod + 100 lines tests. AssetKind enum, resolve_asset_path + 8 unit tests | done | | S18 |
+| 10 | builder/fluid.rs | 142 lines. KRONROD_L/W/D, MJ_EPS, get_added_mass_kappa, geom_semi_axes, compute_geom_fluid. No inline tests | done | | S18 |
 | 10 | builder/compiler.rs | | | | |
 | 10 | builder/frame.rs | | | | |
 | 10 | builder/mesh.rs | | | | |

@@ -6,7 +6,10 @@
 //! ([`model_from_mjcf`], [`load_model`], [`load_model_from_file`]), and the
 //! orchestration sequence that wires everything together.
 
+pub mod asset;
+pub mod fluid;
 mod init;
+pub mod orientation;
 
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 use sim_core::{

@@ -13,7 +13,7 @@ use sim_core::{
     Model, SleepPolicy, TendonType, WrapType, compute_dof_lengths,
 };
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -35,155 +35,8 @@ pub use crate::builder::ModelConversionError;
 #[cfg(test)]
 use crate::builder::{load_model, load_model_from_file, model_from_mjcf};
 
-// ============================================================================
-// §40 Fluid force precomputation (build-time kappa quadrature)
-// ============================================================================
-
-/// 15-point Gauss-Kronrod integration constants from MuJoCo `user_objects.cc`.
-/// Pre-transformed integration nodes: l_i = x_i³ / (1 - x_i)²
-#[allow(clippy::unreadable_literal)]
-const KRONROD_L: [f64; 15] = [
-    7.865151709349917e-08,
-    1.7347976913907274e-05,
-    3.548008144506193e-04,
-    2.846636252924549e-03,
-    1.4094260903596077e-02,
-    5.3063261727396636e-02,
-    1.7041978741317773e-01,
-    5.0e-01,
-    1.4036301548686991e+00,
-    3.9353484827022642e+00,
-    1.1644841677041734e+01,
-    3.953187807410903e+01,
-    1.775711362220801e+02,
-    1.4294772912937397e+03,
-    5.4087416549217705e+04,
-];
-
-/// Gauss-Kronrod integration weights.
-#[allow(clippy::unreadable_literal)]
-const KRONROD_W: [f64; 15] = [
-    0.01146766, 0.03154605, 0.05239501, 0.07032663, 0.08450236, 0.09517529, 0.10221647, 0.10474107,
-    0.10221647, 0.09517529, 0.08450236, 0.07032663, 0.05239501, 0.03154605, 0.01146766,
-];
-
-/// Jacobian dl/dx evaluated at each node: x²(3-x)/(1-x)³
-#[allow(clippy::unreadable_literal)]
-const KRONROD_D: [f64; 15] = [
-    5.538677720489877e-05,
-    2.080868285293228e-03,
-    1.6514126520723166e-02,
-    7.261900344370877e-02,
-    2.3985243401862602e-01,
-    6.868318249020725e-01,
-    1.8551129519182894e+00,
-    5.0e+00,
-    1.4060031152313941e+01,
-    4.328941239611009e+01,
-    1.5658546376397112e+02,
-    7.479826085305024e+02,
-    5.827404295002712e+03,
-    1.167540197944512e+05,
-    2.5482945327264845e+07,
-];
-
-/// Guard for degenerate virtual inertia (matches MuJoCo's mjEPS = 1e-14).
-const MJ_EPS: f64 = 1e-14;
-
-/// Compute kappa integral for one axis via 15-point Gauss-Kronrod quadrature.
-/// `dx` is the "special" axis; `dy`, `dz` are the other two (interchangeable).
-/// Matches MuJoCo's `GetAddedMassKappa` in `user_objects.cc`.
-fn get_added_mass_kappa(dx: f64, dy: f64, dz: f64) -> f64 {
-    let inv_dx2 = 1.0 / (dx * dx);
-    let inv_dy2 = 1.0 / (dy * dy);
-    let inv_dz2 = 1.0 / (dz * dz);
-    let scale = (dx * dx * dx * dy * dz).powf(0.4); // (dx³·dy·dz)^(2/5)
-
-    let mut kappa = 0.0;
-    for i in 0..15 {
-        let lambda = scale * KRONROD_L[i];
-        let denom = (1.0 + lambda * inv_dx2)
-            * ((1.0 + lambda * inv_dx2) * (1.0 + lambda * inv_dy2) * (1.0 + lambda * inv_dz2))
-                .sqrt();
-        kappa += scale * KRONROD_D[i] / denom * KRONROD_W[i];
-    }
-    kappa * inv_dx2
-}
-
-/// Compute semi-axes for a geom, matching MuJoCo's `mju_geomSemiAxes`.
-fn geom_semi_axes(geom_type: GeomType, size: Vector3<f64>) -> [f64; 3] {
-    match geom_type {
-        GeomType::Sphere => [size.x, size.x, size.x],
-        GeomType::Capsule => [size.x, size.x, size.y + size.x],
-        GeomType::Cylinder => [size.x, size.x, size.y],
-        _ => [size.x, size.y, size.z], // Ellipsoid, Box, Mesh
-    }
-}
-
-/// Compute the 12-element `geom_fluid` array for a single geom.
-/// For `FluidShape::None`: all zeros.
-/// For `FluidShape::Ellipsoid`: element 0 = 1.0, elements 1-5 from fluidcoef
-/// (or defaults), elements 6-11 from kappa quadrature.
-fn compute_geom_fluid(
-    fluidshape: FluidShape,
-    fluidcoef: Option<[f64; 5]>,
-    geom_type: GeomType,
-    size: Vector3<f64>,
-) -> [f64; 12] {
-    if fluidshape == FluidShape::None {
-        return [0.0; 12];
-    }
-
-    // Defaults: [C_blunt=0.5, C_slender=0.25, C_ang=1.5, C_K=1.0, C_M=1.0]
-    let coef = fluidcoef.unwrap_or([0.5, 0.25, 1.5, 1.0, 1.0]);
-
-    // Semi-axes (diameters in MuJoCo's convention = semi-axes here)
-    let s = geom_semi_axes(geom_type, size);
-    let dx = s[0];
-    let dy = s[1];
-    let dz = s[2];
-
-    // Kappa integrals via cyclic permutation
-    let kx = get_added_mass_kappa(dx, dy, dz);
-    let ky = get_added_mass_kappa(dy, dz, dx);
-    let kz = get_added_mass_kappa(dz, dx, dy);
-
-    // Volume
-    let vol = (4.0 / 3.0) * std::f64::consts::PI * dx * dy * dz;
-
-    // Virtual mass: V * κ_i / max(EPS, 2 - κ_i)
-    let vm = [
-        vol * kx / (2.0 - kx).max(MJ_EPS),
-        vol * ky / (2.0 - ky).max(MJ_EPS),
-        vol * kz / (2.0 - kz).max(MJ_EPS),
-    ];
-
-    // Virtual inertia: V * I_fac / 5
-    // I_x_fac = (dy²-dz²)² * |κ_z-κ_y| / max(EPS, |2(dy²-dz²)+(dy²+dz²)(κ_y-κ_z)|)
-    #[allow(clippy::suspicious_operation_groupings)]
-    let vi_fac = |da: f64, db: f64, ka: f64, kb: f64| -> f64 {
-        let diff_sq = da * da - db * db;
-        let sum_sq = da * da + db * db;
-        let num = diff_sq * diff_sq * (kb - ka).abs();
-        let den = (2.0 * diff_sq + sum_sq * (ka - kb)).abs();
-        num / den.max(MJ_EPS)
-    };
-    let vi = [
-        vol * vi_fac(dy, dz, ky, kz) / 5.0,
-        vol * vi_fac(dz, dx, kz, kx) / 5.0,
-        vol * vi_fac(dx, dy, kx, ky) / 5.0,
-    ];
-
-    [
-        1.0,     // interaction_coef (master switch)
-        coef[0], // C_blunt
-        coef[1], // C_slender
-        coef[2], // C_ang
-        coef[3], // C_K (Kutta)
-        coef[4], // C_M (Magnus)
-        vm[0], vm[1], vm[2], vi[0], vi[1], vi[2],
-    ]
-}
+// compute_geom_fluid, geom_semi_axes, get_added_mass_kappa, KRONROD_* → crate::builder::fluid (Phase 10)
+pub use crate::builder::fluid::compute_geom_fluid;
 
 // ModelBuilder struct, new(), set_options() → crate::builder (Phase 10)
 
@@ -3293,130 +3146,10 @@ fn floats_to_array<const N: usize>(input: &[f64], default: [f64; N]) -> [f64; N]
     out
 }
 
-/// Convert MJCF quaternion (w, x, y, z) to `UnitQuaternion`.
-fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
-    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
-}
-
-/// Convert euler angles (radians) to quaternion using a configurable rotation sequence.
-///
-/// Mirrors MuJoCo's `mju_euler2Quat` exactly:
-/// - Each character in `seq` selects the rotation axis (x/y/z).
-/// - **Lowercase** = intrinsic (body-fixed): **post-multiply** `q = q * R_i`.
-/// - **Uppercase** = extrinsic (space-fixed): **pre-multiply** `q = R_i * q`.
-///
-/// Examples:
-/// - `"xyz"` (default) → intrinsic XYZ: `q = Rx * Ry * Rz`
-/// - `"XYZ"` → extrinsic XYZ: `q = Rz * Ry * Rx`
-/// - `"XYz"` → extrinsic X, extrinsic Y, intrinsic z: `q = Ry * Rx * Rz`
-fn euler_seq_to_quat(euler_rad: Vector3<f64>, seq: &str) -> UnitQuaternion<f64> {
-    let mut q = UnitQuaternion::identity();
-    for (i, ch) in seq.chars().enumerate() {
-        let angle = euler_rad[i];
-        let axis = match ch.to_ascii_lowercase() {
-            'x' => Vector3::x_axis(),
-            'y' => Vector3::y_axis(),
-            // 'z' or validated-at-parse-time fallback
-            _ => Vector3::z_axis(),
-        };
-        let r = UnitQuaternion::from_axis_angle(&axis, angle);
-        if ch.is_ascii_lowercase() {
-            // Intrinsic: post-multiply
-            q *= r;
-        } else {
-            // Extrinsic: pre-multiply
-            q = r * q;
-        }
-    }
-    q
-}
-
-/// Unified orientation resolution.
-///
-/// Priority when multiple alternatives are present (MuJoCo errors on
-/// multiple; we silently use the highest-priority one for robustness):
-/// `euler` > `axisangle` > `xyaxes` > `zaxis` > `quat`.
-fn resolve_orientation(
-    quat: Vector4<f64>,
-    euler: Option<Vector3<f64>>,
-    axisangle: Option<Vector4<f64>>,
-    xyaxes: Option<[f64; 6]>,
-    zaxis: Option<Vector3<f64>>,
-    compiler: &MjcfCompiler,
-) -> UnitQuaternion<f64> {
-    if let Some(euler) = euler {
-        let euler_rad = if compiler.angle == AngleUnit::Degree {
-            euler * (std::f64::consts::PI / 180.0)
-        } else {
-            euler
-        };
-        euler_seq_to_quat(euler_rad, &compiler.eulerseq)
-    } else if let Some(aa) = axisangle {
-        let axis = Vector3::new(aa.x, aa.y, aa.z);
-        let angle = if compiler.angle == AngleUnit::Degree {
-            aa.w * (std::f64::consts::PI / 180.0)
-        } else {
-            aa.w
-        };
-        let norm = axis.norm();
-        if norm > 1e-10 {
-            UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle)
-        } else {
-            UnitQuaternion::identity()
-        }
-    } else if let Some(xy) = xyaxes {
-        // Gram-Schmidt orthogonalization (matches MuJoCo's ResolveOrientation).
-        let mut x = Vector3::new(xy[0], xy[1], xy[2]);
-        let x_norm = x.norm();
-        if x_norm < 1e-10 {
-            return UnitQuaternion::identity();
-        }
-        x /= x_norm;
-
-        let mut y = Vector3::new(xy[3], xy[4], xy[5]);
-        // Orthogonalize y against x
-        y -= x * x.dot(&y);
-        let y_norm = y.norm();
-        if y_norm < 1e-10 {
-            return UnitQuaternion::identity();
-        }
-        y /= y_norm;
-
-        let z = x.cross(&y);
-        // z is already unit-length since x, y are orthonormal
-
-        let rot = Matrix3::from_columns(&[x, y, z]);
-        let rotation = nalgebra::Rotation3::from_matrix_unchecked(rot);
-        UnitQuaternion::from_rotation_matrix(&rotation)
-    } else if let Some(zdir) = zaxis {
-        // Minimal rotation from (0,0,1) to given direction.
-        // Matches MuJoCo's mjuu_z2quat.
-        let zn = zdir.norm();
-        if zn < 1e-10 {
-            return UnitQuaternion::identity();
-        }
-        let zdir = zdir / zn;
-
-        let default_z = Vector3::z();
-        let mut axis = default_z.cross(&zdir);
-        let s = axis.norm();
-
-        if s < 1e-10 {
-            // Parallel or anti-parallel
-            axis = Vector3::x();
-        } else {
-            axis /= s;
-        }
-
-        let angle = s.atan2(zdir.z);
-        let half = angle / 2.0;
-        let w = half.cos();
-        let xyz = axis * half.sin();
-        UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(w, xyz.x, xyz.y, xyz.z))
-    } else {
-        quat_from_wxyz(quat)
-    }
-}
+// quat_from_wxyz, quat_to_wxyz, euler_seq_to_quat, resolve_orientation → crate::builder::orientation (Phase 10)
+#[cfg(test)]
+use crate::builder::orientation::euler_seq_to_quat;
+pub use crate::builder::orientation::{quat_from_wxyz, quat_to_wxyz, resolve_orientation};
 
 // =============================================================================
 // Frame Expansion
@@ -3671,99 +3404,8 @@ fn expand_single_frame(
 // Mesh File Loading
 // =============================================================================
 
-/// Asset type for path resolution.
-#[allow(dead_code)] // Texture used when texture loading lands
-enum AssetKind {
-    /// Mesh or hfield file (uses `meshdir`).
-    Mesh,
-    /// Texture file (uses `texturedir`).
-    Texture,
-}
-
-/// Resolve an asset file path using compiler path settings.
-///
-/// # Path Resolution Rules (matches MuJoCo exactly)
-///
-/// 1. If `strippath` is enabled, strip directory components first.
-/// 2. If the filename is an absolute path → use it directly.
-/// 3. If the type-specific dir (`meshdir` for Mesh, `texturedir` for Texture) is set:
-///    - If that dir is absolute → `dir / filename`.
-///    - Else → `model_file_dir / dir / filename`.
-/// 4. Else if `assetdir` is set → same logic as above using `assetdir`.
-/// 5. Else → `model_file_dir / filename`.
-///
-/// # Errors
-///
-/// Returns `ModelConversionError` if:
-/// - Path is relative but no base path or directory is available
-/// - Resolved path does not exist
-fn resolve_asset_path(
-    file_path: &str,
-    base_path: Option<&Path>,
-    compiler: &MjcfCompiler,
-    kind: AssetKind,
-) -> std::result::Result<PathBuf, ModelConversionError> {
-    // A9. strippath: strip directory components, keeping only the base filename.
-    let file_name = if compiler.strippath {
-        Path::new(file_path)
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| file_path.to_string())
-    } else {
-        file_path.to_string()
-    };
-
-    let path = Path::new(&file_name);
-
-    // Absolute paths are used directly
-    if path.is_absolute() {
-        if !path.exists() {
-            return Err(ModelConversionError {
-                message: format!("asset file not found: '{}'", path.display()),
-            });
-        }
-        return Ok(path.to_path_buf());
-    }
-
-    // A3. Type-specific directory takes precedence over assetdir.
-    let type_dir = match kind {
-        AssetKind::Mesh => compiler.meshdir.as_deref(),
-        AssetKind::Texture => compiler.texturedir.as_deref(),
-    };
-
-    // Try: type-specific dir, then assetdir, then bare base_path
-    let resolved = if let Some(dir) = type_dir.or(compiler.assetdir.as_deref()) {
-        let dir_path = Path::new(dir);
-        if dir_path.is_absolute() {
-            dir_path.join(path)
-        } else if let Some(base) = base_path {
-            base.join(dir_path).join(path)
-        } else {
-            // No base path but relative dir — try dir/filename as-is
-            dir_path.join(path)
-        }
-    } else if let Some(base) = base_path {
-        base.join(path)
-    } else {
-        return Err(ModelConversionError {
-            message: format!(
-                "asset file '{file_path}' is relative but no base path provided (use load_model_from_file or pass base_path to model_from_mjcf)"
-            ),
-        });
-    };
-
-    if !resolved.exists() {
-        return Err(ModelConversionError {
-            message: format!(
-                "asset file not found: '{}' (resolved to '{}')",
-                file_path,
-                resolved.display()
-            ),
-        });
-    }
-
-    Ok(resolved)
-}
+// AssetKind, resolve_asset_path → crate::builder::asset (Phase 10)
+pub use crate::builder::asset::{AssetKind, resolve_asset_path};
 
 /// Load mesh data from a file and convert to `TriangleMeshData`.
 ///
@@ -4309,11 +3951,7 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) {
     fuse_static_body(&mut mjcf.worldbody, &protected, &mjcf.compiler);
 }
 
-/// Convert a `UnitQuaternion` back to MJCF `Vector4<f64>` (w, x, y, z order).
-fn quat_to_wxyz(q: &UnitQuaternion<f64>) -> Vector4<f64> {
-    let qi = q.into_inner();
-    Vector4::new(qi.w, qi.i, qi.j, qi.k)
-}
+// quat_to_wxyz → re-imported above with other orientation functions
 
 /// Recursively fuse jointless, unprotected children into their parent body.
 /// Operates on a parent body: scans its children, and for any that are static
@@ -5623,129 +5261,11 @@ mod tests {
         assert_eq!(model.na, 0); // 0 + 0 + 0 = 0
     }
 
+    // resolve_asset_path tests → builder/asset.rs
+
     // =========================================================================
     // Mesh file loading tests
     // =========================================================================
-
-    /// Test resolve_asset_path with absolute path.
-    #[test]
-    fn test_resolve_asset_path_absolute() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mesh_path = temp_dir.path().join("test.stl");
-        std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
-
-        let abs_path = mesh_path.to_string_lossy().to_string();
-        let compiler = MjcfCompiler::default();
-        let result = resolve_asset_path(&abs_path, None, &compiler, AssetKind::Mesh);
-        assert!(
-            result.is_ok(),
-            "Absolute path should resolve without base_path"
-        );
-        assert_eq!(result.unwrap(), mesh_path);
-    }
-
-    /// Test resolve_asset_path fails for non-existent absolute path.
-    #[test]
-    fn test_resolve_asset_path_absolute_not_found() {
-        // Use platform-appropriate absolute path that definitely doesn't exist
-        #[cfg(windows)]
-        let nonexistent_path = "C:\\nonexistent_dir_12345\\mesh.stl";
-        #[cfg(not(windows))]
-        let nonexistent_path = "/nonexistent_dir_12345/mesh.stl";
-
-        let compiler = MjcfCompiler::default();
-        let result = resolve_asset_path(nonexistent_path, None, &compiler, AssetKind::Mesh);
-        assert!(result.is_err());
-        assert!(
-            result.unwrap_err().to_string().contains("not found"),
-            "Error should mention 'not found' for non-existent absolute path"
-        );
-    }
-
-    /// Test resolve_asset_path with relative path and base_path.
-    #[test]
-    fn test_resolve_asset_path_relative() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mesh_path = temp_dir.path().join("meshes").join("test.stl");
-        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
-        std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
-
-        let compiler = MjcfCompiler::default();
-        let result = resolve_asset_path(
-            "meshes/test.stl",
-            Some(temp_dir.path()),
-            &compiler,
-            AssetKind::Mesh,
-        );
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), mesh_path);
-    }
-
-    /// Test resolve_asset_path fails for relative path without base_path.
-    #[test]
-    fn test_resolve_asset_path_relative_no_base() {
-        let compiler = MjcfCompiler::default();
-        let result = resolve_asset_path("meshes/test.stl", None, &compiler, AssetKind::Mesh);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("relative"));
-        assert!(err.contains("no base path"));
-    }
-
-    /// Test resolve_asset_path fails for relative path when file doesn't exist.
-    #[test]
-    fn test_resolve_asset_path_relative_not_found() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let compiler = MjcfCompiler::default();
-        let result = resolve_asset_path(
-            "nonexistent.stl",
-            Some(temp_dir.path()),
-            &compiler,
-            AssetKind::Mesh,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
-    }
-
-    /// Test resolve_asset_path with meshdir setting.
-    #[test]
-    fn test_resolve_asset_path_meshdir() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mesh_path = temp_dir.path().join("custom_meshes").join("test.stl");
-        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
-        std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
-
-        let mut compiler = MjcfCompiler::default();
-        compiler.meshdir = Some("custom_meshes".to_string());
-        let result = resolve_asset_path(
-            "test.stl",
-            Some(temp_dir.path()),
-            &compiler,
-            AssetKind::Mesh,
-        );
-        assert!(result.is_ok(), "meshdir should resolve: {result:?}");
-        assert_eq!(result.unwrap(), mesh_path);
-    }
-
-    /// Test resolve_asset_path with strippath.
-    #[test]
-    fn test_resolve_asset_path_strippath() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mesh_path = temp_dir.path().join("test.stl");
-        std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
-
-        let mut compiler = MjcfCompiler::default();
-        compiler.strippath = true;
-        // File path has directory components, but strippath removes them
-        let result = resolve_asset_path(
-            "some/nested/dir/test.stl",
-            Some(temp_dir.path()),
-            &compiler,
-            AssetKind::Mesh,
-        );
-        assert!(result.is_ok(), "strippath should strip dirs: {result:?}");
-        assert_eq!(result.unwrap(), mesh_path);
-    }
 
     /// Helper to create a simple STL file for testing.
     fn create_test_stl(path: &std::path::Path) {
@@ -6424,83 +5944,7 @@ mod tests {
         // 10th element (index 9) is silently dropped — no error, and array is only 9 elements
     }
 
-    // =========================================================================
-    // Compiler / Angle Conversion / Euler Sequence Tests
-    // =========================================================================
-
-    #[test]
-    fn test_euler_seq_to_quat_intrinsic_xyz() {
-        // Default MuJoCo sequence: intrinsic xyz → Rx * Ry * Rz
-        let euler = Vector3::new(0.1, 0.2, 0.3);
-        let q = euler_seq_to_quat(euler, "xyz");
-
-        let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.1);
-        let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.2);
-        let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.3);
-        let expected = rx * ry * rz;
-
-        assert!(
-            (q.into_inner() - expected.into_inner()).norm() < 1e-12,
-            "intrinsic xyz failed: got {q:?}, expected {expected:?}"
-        );
-    }
-
-    #[test]
-    fn test_euler_seq_to_quat_extrinsic_xyz() {
-        // Extrinsic XYZ → pre-multiply: Rz * Ry * Rx (= intrinsic zyx)
-        let euler = Vector3::new(0.1, 0.2, 0.3);
-        let q = euler_seq_to_quat(euler, "XYZ");
-
-        let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.1);
-        let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.2);
-        let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.3);
-        let expected = rz * ry * rx;
-
-        assert!(
-            (q.into_inner() - expected.into_inner()).norm() < 1e-12,
-            "extrinsic XYZ failed: got {q:?}, expected {expected:?}"
-        );
-    }
-
-    #[test]
-    fn test_euler_seq_to_quat_mixed_case() {
-        // Mixed: XYz → extrinsic X, extrinsic Y, intrinsic z
-        // q = identity
-        // ch='X' (extrinsic): q = Rx * q = Rx
-        // ch='Y' (extrinsic): q = Ry * q = Ry * Rx
-        // ch='z' (intrinsic): q = q * Rz = Ry * Rx * Rz
-        let euler = Vector3::new(0.1, 0.2, 0.3);
-        let q = euler_seq_to_quat(euler, "XYz");
-
-        let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.1);
-        let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.2);
-        let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.3);
-        let expected = ry * rx * rz;
-
-        assert!(
-            (q.into_inner() - expected.into_inner()).norm() < 1e-12,
-            "mixed XYz failed: got {q:?}, expected {expected:?}"
-        );
-    }
-
-    #[test]
-    fn test_euler_seq_zyx_matches_different_order() {
-        // Intrinsic zyx should match nalgebra's from_euler_angles(roll, pitch, yaw)
-        // which is extrinsic XYZ
-        let euler = Vector3::new(0.3, 0.2, 0.1); // z, y, x angles
-        let q = euler_seq_to_quat(euler, "zyx");
-
-        // Intrinsic zyx: Rz * Ry * Rx
-        let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.3);
-        let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.2);
-        let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.1);
-        let expected = rz * ry * rx;
-
-        assert!(
-            (q.into_inner() - expected.into_inner()).norm() < 1e-12,
-            "intrinsic zyx failed"
-        );
-    }
+    // euler_seq_to_quat unit tests → builder/orientation.rs
 
     #[test]
     fn test_angle_conversion_hinge_joint_degrees() {
@@ -7552,58 +6996,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resolve_asset_path_texturedir() {
-        let dir = tempfile::tempdir().unwrap();
-        let tex_dir = dir.path().join("textures");
-        std::fs::create_dir_all(&tex_dir).unwrap();
-        std::fs::write(tex_dir.join("wood.png"), b"fake_texture").unwrap();
-
-        let mut compiler = MjcfCompiler::default();
-        compiler.texturedir = Some("textures/".to_string());
-
-        let result =
-            resolve_asset_path("wood.png", Some(dir.path()), &compiler, AssetKind::Texture);
-        assert!(
-            result.is_ok(),
-            "texturedir should resolve texture paths: {result:?}"
-        );
-        assert!(
-            result.unwrap().ends_with("textures/wood.png"),
-            "should resolve to textures/wood.png"
-        );
-    }
-
-    #[test]
-    fn test_resolve_asset_path_texturedir_vs_meshdir() {
-        // meshdir applies to meshes, texturedir applies to textures
-        let dir = tempfile::tempdir().unwrap();
-        let mesh_dir = dir.path().join("meshes");
-        let tex_dir = dir.path().join("textures");
-        std::fs::create_dir_all(&mesh_dir).unwrap();
-        std::fs::create_dir_all(&tex_dir).unwrap();
-        std::fs::write(mesh_dir.join("box.stl"), b"fake_mesh").unwrap();
-        std::fs::write(tex_dir.join("wood.png"), b"fake_texture").unwrap();
-
-        let mut compiler = MjcfCompiler::default();
-        compiler.meshdir = Some("meshes/".to_string());
-        compiler.texturedir = Some("textures/".to_string());
-
-        let mesh_result =
-            resolve_asset_path("box.stl", Some(dir.path()), &compiler, AssetKind::Mesh);
-        let tex_result =
-            resolve_asset_path("wood.png", Some(dir.path()), &compiler, AssetKind::Texture);
-        assert!(mesh_result.is_ok(), "mesh should resolve via meshdir");
-        assert!(tex_result.is_ok(), "texture should resolve via texturedir");
-        assert!(
-            mesh_result.unwrap().to_string_lossy().contains("meshes"),
-            "mesh path should use meshdir"
-        );
-        assert!(
-            tex_result.unwrap().to_string_lossy().contains("textures"),
-            "texture path should use texturedir"
-        );
-    }
+    // resolve_asset_path texturedir tests → builder/asset.rs
 
     // =========================================================================
     // Frame expansion + childclass tests (Spec #19, 27 acceptance criteria)
