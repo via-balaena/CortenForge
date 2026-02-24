@@ -168,10 +168,10 @@ use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::{mj_differentiate_pos, mj_integrate_pos_explicit, mj_solve_sparse};
 ```
 
-This is more explicit than the current `use crate::mujoco_pipeline::*` and
+This is more explicit than the old `use crate::mujoco_pipeline::*` and
 is better for readability — you can see exactly which modules derivatives
-depends on. During the refactor, only the 12 `pub(crate)` imports change
-path as their source modules are extracted; the 3 `pub` functions
+depends on. During the refactor, only the 12 `pub(crate)` imports changed
+path as their source modules were extracted; the 3 `pub` functions
 (`mj_differentiate_pos`, `mj_integrate_pos_explicit`, `mj_solve_sparse`)
 route through `lib.rs` re-exports and are unaffected.
 
@@ -639,8 +639,8 @@ shift as functions are extracted. Use function names to locate code.
 | L3661–L3696 | `types/model_init.rs` | `compute_ancestors()` (doc comment at L3661, fn at L3671) |
 | L3697–L3704 | (whitespace/comments) | Section boundary — no production code |
 | L3705–L3744 | `types/model_init.rs` | `compute_implicit_params()` (doc comment at L3698, fn at L3705) |
-| L3745–L4003 | `forward/muscle.rs` | `compute_muscle_params()` — stays in monolith until Phase 8a |
-| L4004–L4032 | `tendon/mod.rs` | `compute_spatial_tendon_length0()` — stays in monolith until Phase 5 |
+| L3745–L4003 | `forward/muscle.rs` | `compute_muscle_params()` — stayed in monolith until Phase 8a |
+| L4004–L4032 | `tendon/mod.rs` | `compute_spatial_tendon_length0()` — stayed in monolith until Phase 5 |
 | L4033–L4062 | `types/model_init.rs` | `compute_stat_meaninertia()` |
 | L4063–L4076 | `types/model.rs` | `is_ancestor()` |
 | L4078–L4383 | `types/model_factories.rs` | Factory methods (n_link_pendulum, double_pendulum, spherical_pendulum, free_body) |
@@ -1113,12 +1113,12 @@ struct/enum definitions.
 - [x] Methods destined for other modules (`visit_joints` → `joint_visitor.rs`,
       `compute_qld_csr_metadata` → `dynamics/factor.rs`,
       `compute_muscle_params` → `forward/muscle.rs`,
-      `compute_spatial_tendon_length0` → `tendon/mod.rs`) stay in the monolith
-      until their target module is created in a later phase.
+      `compute_spatial_tendon_length0` → `tendon/mod.rs`) stayed in the monolith
+      until their target module was created in a later phase.
 - [x] Move Data struct + Clone impl + accessors → `types/data.rs`, plus only
       the `impl Data` methods that belong there: `reset()`, `reset_to_keyframe()`,
       `qld_diag()`, and field accessors. Pipeline methods (`step`, `forward`,
-      `integrate`, etc.) stay in the monolith until Phase 8.
+      `integrate`, etc.) stayed in the monolith until Phase 8.
 - [x] Move Contact/ContactPair + compute_tangent_frame → `types/contact_types.rs`
 - [x] Move Keyframe → `types/keyframe.rs`
 - [x] Update `lib.rs` re-exports (same public API)

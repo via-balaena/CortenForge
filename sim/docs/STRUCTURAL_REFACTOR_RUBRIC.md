@@ -71,9 +71,9 @@ production code you need to understand fits in your head.
 
 #### Pre-existing File Exemptions
 
-The following files already exceed 800 production lines **before** this refactor
-begins. They are **exempt from S1** during this refactor because it targets only
-`mujoco_pipeline.rs` and `model_builder.rs` — these files are not being touched.
+The following files already exceeded 800 production lines **before** this refactor
+began. They were **exempt from S1** during this refactor because it targeted only
+`mujoco_pipeline.rs` and `model_builder.rs` (both deleted in Phase 12).
 
 | File | Production lines (excl. `#[cfg(test)]` blocks) |
 |------|-----------------|
@@ -99,9 +99,9 @@ pass. Do not add new code to them. Tracked as:
 - Other sim-core files (sdf, mesh, gjk_epa, contact, raycast,
   collision_shape, mid_phase) → same
 
-After the structural refactor lands, add a `# [S1 EXEMPT]` comment to the
-top of each file as a visible reminder. Any PR that increases the production
-line count of an exempt file must include justification.
+**Follow-up**: Add a `# [S1 EXEMPT]` comment to the top of each file as a
+visible reminder. Any PR that increases the production line count of an
+exempt file should include justification.
 
 #### Doc-Heavy Type Definitions
 
