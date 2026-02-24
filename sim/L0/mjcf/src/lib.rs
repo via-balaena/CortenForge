@@ -167,6 +167,7 @@
     clippy::use_self
 )]
 
+mod builder;
 mod config;
 mod defaults;
 mod error;
@@ -194,7 +195,7 @@ pub use types::{
 pub use validation::{ValidationResult, validate, validate_tendons};
 
 // MuJoCo-aligned Model conversion (primary API)
-pub use model_builder::{ModelConversionError, load_model, load_model_from_file, model_from_mjcf};
+pub use builder::{ModelConversionError, load_model, load_model_from_file, model_from_mjcf};
 
 // MJB binary format support (requires "mjb" feature)
 #[cfg(feature = "mjb")]

@@ -1,23 +1,16 @@
-//! MJCF to Model conversion (Phase 4 of MuJoCo consolidation).
+//! MJCF model builder — remaining functions pending extraction.
 //!
-//! This module converts parsed `MjcfModel` structures directly into the
-//! MuJoCo-aligned `Model` struct from sim-core.
-//!
-//! # MuJoCo Semantics
-//!
-//! The conversion follows MuJoCo's exact semantics for:
-//! - **dof_parent**: Forms a kinematic tree linking DOFs across joints and bodies
-//! - **nq vs nv**: Position dimension can exceed velocity dimension (e.g., Ball: nq=4, nv=3)
-//! - **Inertia computation**: Parallel axis theorem for composite bodies
-//! - **Capsule inertia**: Exact formula including hemispherical end caps
+//! Items extracted to `crate::builder` are re-imported below. This module
+//! retains functions that will move to `builder/` sub-modules in later
+//! Phase 10 sessions. It will be deleted in Phase 12.
 
 use nalgebra::{DVector, Matrix3, Point3, Quaternion, UnitQuaternion, Vector3, Vector4};
 use sim_core::HeightFieldData;
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, ENABLE_SLEEP, EqualityType,
-    GainType, GeomType, Integrator, Keyframe, MjJointType, MjObjectType, MjSensorDataType,
-    MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType, compute_dof_lengths,
+    GainType, GeomType, Integrator, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
+    Model, SleepPolicy, TendonType, WrapType, compute_dof_lengths,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -25,343 +18,22 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crate::defaults::DefaultResolver;
-use crate::error::Result;
 use crate::types::{
     AngleUnit, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorType, MjcfBody, MjcfCompiler,
-    MjcfConeType, MjcfContact, MjcfEquality, MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomType,
-    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh,
-    MjcfModel, MjcfOption, MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon,
-    MjcfTendonType, SpatialPathElement,
+    MjcfContact, MjcfEquality, MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfHfield,
+    MjcfInertial, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfSensor, MjcfSensorType,
+    MjcfSite, MjcfTendon, MjcfTendonType, SpatialPathElement,
 };
 
-/// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
-///
-/// - timeconst = 0.02s: 50 Hz natural frequency
-/// - dampratio = 1.0: critical damping
-const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
+// Re-imports from builder/ (extracted in Phase 10)
+pub use crate::builder::DEFAULT_SOLIMP;
+pub use crate::builder::DEFAULT_SOLREF;
+pub use crate::builder::ModelBuilder;
+pub use crate::builder::ModelConversionError;
 
-/// Default solimp parameters `[d0, d_width, width, midpoint, power]` (MuJoCo defaults).
-///
-/// - d0 = 0.9: initial impedance (close to rigid)
-/// - d_width = 0.95: impedance at full penetration
-/// - width = 0.001: penetration depth at which impedance transitions
-/// - midpoint = 0.5, power = 2.0: sigmoid transition shape
-const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
-
-/// Error type for MJCF to Model conversion.
-#[derive(Debug, Clone)]
-pub struct ModelConversionError {
-    /// Error message.
-    pub message: String,
-}
-
-impl std::fmt::Display for ModelConversionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MJCF to Model conversion error: {}", self.message)
-    }
-}
-
-impl std::error::Error for ModelConversionError {}
-
-// Resolve an `MjcfKeyframe` into a `Keyframe` with model-validated dimensions.
-//
-// Validates lengths, finiteness, and fills missing fields with model defaults.
-fn resolve_keyframe(
-    mjcf_kf: &MjcfKeyframe,
-    model: &Model,
-) -> std::result::Result<Keyframe, ModelConversionError> {
-    // Validate time finiteness
-    if !mjcf_kf.time.is_finite() {
-        return Err(ModelConversionError {
-            message: format!(
-                "keyframe '{}': time is not finite ({})",
-                mjcf_kf.name, mjcf_kf.time
-            ),
-        });
-    }
-
-    // Helper: validate length and finiteness for a float array field.
-    let validate_field = |field: &Option<Vec<f64>>,
-                          field_name: &str,
-                          expected_len: usize|
-     -> std::result::Result<(), ModelConversionError> {
-        if let Some(ref v) = *field {
-            if v.len() != expected_len {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "keyframe '{}': {} length {} does not match {}",
-                        mjcf_kf.name,
-                        field_name,
-                        v.len(),
-                        expected_len
-                    ),
-                });
-            }
-            if let Some(pos) = v.iter().position(|x| !x.is_finite()) {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "keyframe '{}': {}[{}] is not finite ({})",
-                        mjcf_kf.name, field_name, pos, v[pos]
-                    ),
-                });
-            }
-        }
-        Ok(())
-    };
-
-    validate_field(&mjcf_kf.qpos, "qpos", model.nq)?;
-    validate_field(&mjcf_kf.qvel, "qvel", model.nv)?;
-    validate_field(&mjcf_kf.act, "act", model.na)?;
-    validate_field(&mjcf_kf.ctrl, "ctrl", model.nu)?;
-    validate_field(&mjcf_kf.mpos, "mpos", 3 * model.nmocap)?;
-    validate_field(&mjcf_kf.mquat, "mquat", 4 * model.nmocap)?;
-
-    // Build resolved keyframe with model defaults for missing fields
-    let qpos = match mjcf_kf.qpos {
-        Some(ref v) => DVector::from_vec(v.clone()),
-        None => model.qpos0.clone(),
-    };
-    let qvel = match mjcf_kf.qvel {
-        Some(ref v) => DVector::from_vec(v.clone()),
-        None => DVector::zeros(model.nv),
-    };
-    let act = match mjcf_kf.act {
-        Some(ref v) => DVector::from_vec(v.clone()),
-        None => DVector::zeros(model.na),
-    };
-    let ctrl = match mjcf_kf.ctrl {
-        Some(ref v) => DVector::from_vec(v.clone()),
-        None => DVector::zeros(model.nu),
-    };
-
-    // Mocap positions: reshape flat array into Vec<Vector3<f64>>
-    let mpos = match mjcf_kf.mpos {
-        Some(ref v) => v
-            .chunks_exact(3)
-            .map(|c| Vector3::new(c[0], c[1], c[2]))
-            .collect(),
-        None => (0..model.nbody)
-            .filter_map(|i| model.body_mocapid[i].map(|_| model.body_pos[i]))
-            .collect(),
-    };
-
-    // Mocap quaternions: reshape flat array into Vec<UnitQuaternion<f64>>
-    let mquat = match mjcf_kf.mquat {
-        Some(ref v) => v
-            .chunks_exact(4)
-            .map(|c| {
-                UnitQuaternion::new_normalize(nalgebra::Quaternion::new(c[0], c[1], c[2], c[3]))
-            })
-            .collect(),
-        None => (0..model.nbody)
-            .filter_map(|i| model.body_mocapid[i].map(|_| model.body_quat[i]))
-            .collect(),
-    };
-
-    Ok(Keyframe {
-        name: mjcf_kf.name.clone(),
-        time: mjcf_kf.time,
-        qpos,
-        qvel,
-        act,
-        ctrl,
-        mpos,
-        mquat,
-    })
-}
-
-/// Convert a parsed [`MjcfModel`] into a physics [`Model`].
-///
-/// This is the primary entry point for Model-based MJCF loading. It builds
-/// all Model arrays in a single tree traversal, resolves keyframes, and
-/// validates mocap body constraints.
-///
-/// # Arguments
-///
-/// * `mjcf` - The parsed MJCF model
-/// * `base_path` - Base directory for resolving relative mesh file paths.
-///   If `None`, meshes with relative file paths will fail to load.
-///   For embedded vertex data, this parameter is ignored.
-///
-/// # Example
-///
-/// ```ignore
-/// use sim_mjcf::{parse_mjcf_str, model_from_mjcf};
-///
-/// let mjcf = parse_mjcf_str(r#"
-///     <mujoco>
-///         <worldbody>
-///             <body name="pendulum" pos="0 0 1">
-///                 <joint type="hinge" axis="0 1 0"/>
-///                 <geom type="capsule" size="0.05 0.5"/>
-///             </body>
-///         </worldbody>
-///     </mujoco>
-/// "#)?;
-///
-/// let model = model_from_mjcf(&mjcf, None)?;
-/// let mut data = model.make_data();
-/// data.step(&model).expect("step failed");
-/// ```
-pub fn model_from_mjcf(
-    mjcf: &MjcfModel,
-    base_path: Option<&Path>,
-) -> std::result::Result<Model, ModelConversionError> {
-    // Apply compiler pre-processing passes on a mutable clone
-    let mut mjcf = mjcf.clone();
-
-    // Validate childclass references before frame expansion dissolves frames.
-    // MuJoCo rejects undefined childclass at schema validation (S7).
-    let pre_resolver = DefaultResolver::from_model(&mjcf);
-    validate_childclass_references(&mjcf.worldbody, &pre_resolver)?;
-
-    // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
-    // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
-    // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
-    expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None);
-
-    if mjcf.compiler.discardvisual {
-        apply_discardvisual(&mut mjcf);
-    }
-    if mjcf.compiler.fusestatic {
-        apply_fusestatic(&mut mjcf);
-    }
-
-    let mut builder = ModelBuilder::new();
-    builder.resolver = DefaultResolver::from_model(&mjcf);
-    builder.compiler = mjcf.compiler.clone();
-
-    // Set model name
-    builder.name.clone_from(&mjcf.name);
-
-    // Set global options
-    builder.set_options(&mjcf.option);
-
-    // Process mesh assets FIRST (before geoms can reference them)
-    for mesh in &mjcf.meshes {
-        let mesh = builder.resolver.apply_to_mesh(mesh);
-        builder.process_mesh(&mesh, base_path)?;
-    }
-
-    // Process hfield assets (before geoms can reference them)
-    for hfield in &mjcf.hfields {
-        builder.process_hfield(hfield)?;
-    }
-
-    // Process worldbody's own geoms and sites (attached to body 0)
-    // These must be processed BEFORE child bodies so geom indices are correct
-    builder.process_worldbody_geoms_and_sites(&mjcf.worldbody)?;
-
-    // Recursively process body tree starting from worldbody children.
-    // World body (body 0) has no DOFs, so parent_last_dof is None.
-    // Note: worldbody.childclass is always None for parsed MJCF — MuJoCo's schema
-    // rejects attributes on <worldbody>. Our parser (parse_worldbody) never reads
-    // worldbody attributes, so this is correct by construction.
-    for child in &mjcf.worldbody.children {
-        builder.process_body(child, 0, None, mjcf.worldbody.childclass.as_deref())?;
-    }
-
-    // Validate tendons before processing (catches bad references early)
-    crate::validation::validate_tendons(&mjcf).map_err(|e| ModelConversionError {
-        message: format!("Tendon validation failed: {e}"),
-    })?;
-
-    // Process tendons (must be before actuators, since actuators may reference tendons)
-    builder.process_tendons(&mjcf.tendons)?;
-
-    // Process actuators
-    for actuator in &mjcf.actuators {
-        let actuator = builder.resolver.apply_to_actuator(actuator);
-        builder.process_actuator(&actuator)?;
-    }
-
-    // Process equality constraints (must be after bodies and joints)
-    builder.process_equality_constraints(&mjcf.equality)?;
-
-    // Process sensors (must be after bodies, joints, tendons, actuators)
-    builder.process_sensors(&mjcf.sensors)?;
-
-    // Process contact pairs and excludes (must be after body tree for name-to-id maps)
-    builder.process_contact(&mjcf.contact)?;
-
-    // Apply mass pipeline (balanceinertia, boundmass/boundinertia, settotalmass)
-    builder.apply_mass_pipeline();
-
-    // Process flex deformable bodies (after mass pipeline, before build)
-    builder.process_flex_bodies(&mjcf.flex)?;
-
-    // Build final model
-    let mut model = builder.build();
-
-    // Process keyframes (after build, so nq/nv/na/nu/nmocap are finalized).
-    // Collect into a temporary Vec first — calling resolve_keyframe(&model)
-    // borrows model immutably, which conflicts with model.keyframes.push()
-    // (mutable borrow). Collecting then assigning avoids the overlap.
-    model.keyframes = mjcf
-        .keyframes
-        .iter()
-        .map(|kf| resolve_keyframe(kf, &model))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    model.nkeyframe = model.keyframes.len();
-
-    Ok(model)
-}
-
-/// Parse MJCF XML and convert directly to Model.
-///
-/// Convenience function that combines parsing and conversion.
-/// Uses no base path, so meshes must use embedded data or absolute paths.
-///
-/// Models containing `<include>` elements cannot be loaded from strings —
-/// use [`load_model_from_file`] instead. This function will return an error
-/// if `<include` is detected in the XML.
-pub fn load_model(xml: &str) -> Result<Model> {
-    if xml.contains("<include") {
-        return Err(crate::error::MjcfError::IncludeError(
-            "<include> elements require file-based loading; use load_model_from_file() instead"
-                .to_string(),
-        ));
-    }
-    let mjcf = crate::parse_mjcf_str(xml)?;
-    model_from_mjcf(&mjcf, None).map_err(|e| crate::error::MjcfError::Unsupported(e.message))
-}
-
-/// Load Model from an MJCF file path.
-///
-/// Automatically resolves mesh file paths relative to the model file's directory.
-///
-/// # Arguments
-///
-/// * `path` - Path to the MJCF XML file
-///
-/// # Example
-///
-/// ```ignore
-/// use sim_mjcf::load_model_from_file;
-///
-/// let model = load_model_from_file("models/humanoid.xml")?;
-/// let mut data = model.make_data();
-/// data.step(&model).expect("step failed");
-/// ```
-pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
-    let path = path.as_ref();
-    let xml = std::fs::read_to_string(path).map_err(|e| {
-        crate::error::MjcfError::Unsupported(format!(
-            "failed to read file '{}': {}",
-            path.display(),
-            e
-        ))
-    })?;
-
-    // Expand <include> elements before parsing
-    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let expanded_xml = crate::include::expand_includes(&xml, base_dir)?;
-
-    let mjcf = crate::parse_mjcf_str(&expanded_xml)?;
-    let base_path = path.parent();
-
-    model_from_mjcf(&mjcf, base_path).map_err(|e| crate::error::MjcfError::Unsupported(e.message))
-}
+// resolve_keyframe → crate::builder::resolve_keyframe (Phase 10)
+#[cfg(test)]
+use crate::builder::{load_model, load_model_from_file, model_from_mjcf};
 
 // ============================================================================
 // §40 Fluid force precomputation (build-time kappa quadrature)
@@ -513,618 +185,9 @@ fn compute_geom_fluid(
     ]
 }
 
-/// Builder for constructing Model from MJCF.
-struct ModelBuilder {
-    // Model name
-    name: String,
-
-    // Default class resolver (applies <default> class attributes to elements)
-    resolver: DefaultResolver,
-
-    // Compiler settings (controls angle conversion, euler sequence, etc.)
-    compiler: MjcfCompiler,
-
-    // Dimensions (computed during building)
-    nq: usize,
-    nv: usize,
-
-    // Body arrays
-    body_parent: Vec<usize>,
-    body_rootid: Vec<usize>,
-    body_jnt_adr: Vec<usize>,
-    body_jnt_num: Vec<usize>,
-    body_dof_adr: Vec<usize>,
-    body_dof_num: Vec<usize>,
-    body_geom_adr: Vec<usize>,
-    body_geom_num: Vec<usize>,
-    body_pos: Vec<Vector3<f64>>,
-    body_quat: Vec<UnitQuaternion<f64>>,
-    body_ipos: Vec<Vector3<f64>>,
-    body_iquat: Vec<UnitQuaternion<f64>>,
-    body_mass: Vec<f64>,
-    body_inertia: Vec<Vector3<f64>>,
-    body_name: Vec<Option<String>>,
-    body_mocapid: Vec<Option<usize>>,
-    /// Per-body sleep policy from MJCF `sleep` attribute (None = default Auto).
-    body_sleep_policy: Vec<Option<SleepPolicy>>,
-    /// Per-body gravity compensation factor (0=none, 1=full).
-    body_gravcomp: Vec<f64>,
-    nmocap: usize,
-
-    // Joint arrays
-    jnt_type: Vec<MjJointType>,
-    jnt_body: Vec<usize>,
-    jnt_qpos_adr: Vec<usize>,
-    jnt_dof_adr: Vec<usize>,
-    jnt_pos: Vec<Vector3<f64>>,
-    jnt_axis: Vec<Vector3<f64>>,
-    jnt_limited: Vec<bool>,
-    jnt_range: Vec<(f64, f64)>,
-    jnt_stiffness: Vec<f64>,
-    jnt_springref: Vec<f64>,
-    jnt_damping: Vec<f64>,
-    jnt_armature: Vec<f64>,
-    jnt_solref: Vec<[f64; 2]>,
-    jnt_solimp: Vec<[f64; 5]>,
-    jnt_name: Vec<Option<String>>,
-    /// Visualization group per joint (0–5).
-    jnt_group: Vec<i32>,
-
-    // DOF arrays
-    dof_body: Vec<usize>,
-    dof_jnt: Vec<usize>,
-    dof_parent: Vec<Option<usize>>,
-    dof_armature: Vec<f64>,
-    dof_damping: Vec<f64>,
-    dof_frictionloss: Vec<f64>,
-    dof_solref: Vec<[f64; 2]>,
-    dof_solimp: Vec<[f64; 5]>,
-
-    // Geom arrays
-    geom_type: Vec<GeomType>,
-    geom_body: Vec<usize>,
-    geom_pos: Vec<Vector3<f64>>,
-    geom_quat: Vec<UnitQuaternion<f64>>,
-    geom_size: Vec<Vector3<f64>>,
-    geom_friction: Vec<Vector3<f64>>,
-    geom_condim: Vec<i32>,
-    geom_contype: Vec<u32>,
-    geom_conaffinity: Vec<u32>,
-    geom_name: Vec<Option<String>>,
-    /// Mesh index for each geom (`None` for non-mesh geoms).
-    geom_mesh: Vec<Option<usize>>,
-    /// Solver reference parameters for each geom [timeconst, dampratio].
-    geom_solref: Vec<[f64; 2]>,
-    /// Solver impedance parameters for each geom [d0, d_width, width, midpoint, power].
-    geom_solimp: Vec<[f64; 5]>,
-    /// Contact priority per geom (MuJoCo mj_contactParam).
-    geom_priority: Vec<i32>,
-    /// Solver mixing weight per geom (MuJoCo mj_contactParam).
-    geom_solmix: Vec<f64>,
-    /// Contact margin per geom (broadphase + narrow-phase activation distance).
-    geom_margin: Vec<f64>,
-    /// Contact gap per geom (buffer zone within margin).
-    geom_gap: Vec<f64>,
-    /// Visualization group per geom (0–5).
-    geom_group: Vec<i32>,
-    /// RGBA color per geom [r, g, b, a].
-    geom_rgba: Vec<[f64; 4]>,
-    /// Fluid interaction data per geom: 12 elements matching MuJoCo's `geom_fluid`.
-    /// See §40 spec for layout: [interaction_coef, C_blunt, C_slender, C_ang, C_K, C_M,
-    /// virtual_mass[3], virtual_inertia[3]].
-    geom_fluid: Vec<[f64; 12]>,
-
-    // Mesh arrays (built from MJCF <asset><mesh> elements)
-    /// Name-to-index lookup for mesh assets.
-    mesh_name_to_id: HashMap<String, usize>,
-    /// Mesh names (for Model).
-    mesh_name: Vec<String>,
-    /// Triangle mesh data with prebuilt BVH (Arc for cheap cloning).
-    mesh_data: Vec<Arc<TriangleMeshData>>,
-
-    // Height field arrays (built from MJCF <asset><hfield> elements)
-    /// Name-to-index lookup for hfield assets.
-    hfield_name_to_id: HashMap<String, usize>,
-    /// Hfield names (for Model).
-    hfield_name: Vec<String>,
-    /// Height field terrain data (Arc for cheap cloning).
-    hfield_data: Vec<Arc<HeightFieldData>>,
-    /// Original MuJoCo size [x, y, z_top, z_bottom] per hfield asset.
-    hfield_size: Vec<[f64; 4]>,
-    /// Hfield index per geom (like geom_mesh).
-    geom_hfield: Vec<Option<usize>>,
-    /// SDF index per geom (like geom_mesh). Always `None` from MJCF — SDF geoms
-    /// are populated programmatically.
-    geom_sdf: Vec<Option<usize>>,
-
-    // Site arrays
-    site_body: Vec<usize>,
-    site_type: Vec<GeomType>,
-    site_pos: Vec<Vector3<f64>>,
-    site_quat: Vec<UnitQuaternion<f64>>,
-    site_size: Vec<Vector3<f64>>,
-    site_name: Vec<Option<String>>,
-    /// Visualization group per site (0–5).
-    site_group: Vec<i32>,
-    /// RGBA color per site [r, g, b, a].
-    site_rgba: Vec<[f64; 4]>,
-
-    // World frame tracking (for free joint qpos0 initialization)
-    // Stores accumulated world positions during tree traversal
-    body_world_pos: Vec<Vector3<f64>>,
-    body_world_quat: Vec<UnitQuaternion<f64>>,
-
-    // Actuator arrays
-    actuator_trntype: Vec<ActuatorTransmission>,
-    actuator_dyntype: Vec<ActuatorDynamics>,
-    actuator_trnid: Vec<[usize; 2]>,
-    actuator_gear: Vec<[f64; 6]>,
-    actuator_ctrlrange: Vec<(f64, f64)>,
-    actuator_forcerange: Vec<(f64, f64)>,
-    actuator_name: Vec<Option<String>>,
-    actuator_act_adr: Vec<usize>,
-    actuator_act_num: Vec<usize>,
-    actuator_gaintype: Vec<GainType>,
-    actuator_biastype: Vec<BiasType>,
-    actuator_dynprm: Vec<[f64; 3]>,
-    actuator_gainprm: Vec<[f64; 9]>,
-    actuator_biasprm: Vec<[f64; 9]>,
-    actuator_lengthrange: Vec<(f64, f64)>,
-    actuator_acc0: Vec<f64>,
-    actuator_actlimited: Vec<bool>,
-    actuator_actrange: Vec<(f64, f64)>,
-    actuator_actearly: Vec<bool>,
-
-    // Total activation states (sum of actuator_act_num)
-    na: usize,
-
-    // Options
-    timestep: f64,
-    gravity: Vector3<f64>,
-    wind: Vector3<f64>,
-    magnetic: Vector3<f64>,
-    density: f64,
-    viscosity: f64,
-    solver_iterations: usize,
-    solver_tolerance: f64,
-    impratio: f64,
-    regularization: f64,
-    friction_smoothing: f64,
-    cone: u8,
-    ls_iterations: usize,
-    ls_tolerance: f64,
-    noslip_iterations: usize,
-    noslip_tolerance: f64,
-    disableflags: u32,
-    enableflags: u32,
-    integrator: Integrator,
-    solver_type: SolverType,
-    sleep_tolerance: f64,
-
-    // qpos0 values (built as we process joints)
-    qpos0_values: Vec<f64>,
-
-    // Name to index lookups (for actuator wiring)
-    joint_name_to_id: HashMap<String, usize>,
-    body_name_to_id: HashMap<String, usize>,
-    site_name_to_id: HashMap<String, usize>,
-    geom_name_to_id: HashMap<String, usize>,
-
-    // Actuator name lookup (for sensor wiring)
-    actuator_name_to_id: HashMap<String, usize>,
-
-    // Tendon arrays (populated by process_tendons)
-    tendon_name_to_id: HashMap<String, usize>,
-    tendon_type: Vec<TendonType>,
-    tendon_range: Vec<(f64, f64)>,
-    tendon_limited: Vec<bool>,
-    tendon_stiffness: Vec<f64>,
-    tendon_damping: Vec<f64>,
-    tendon_frictionloss: Vec<f64>,
-    tendon_solref_fri: Vec<[f64; 2]>,
-    tendon_solimp_fri: Vec<[f64; 5]>,
-    tendon_lengthspring: Vec<[f64; 2]>,
-    tendon_length0: Vec<f64>,
-    tendon_name: Vec<Option<String>>,
-    tendon_solref: Vec<[f64; 2]>,
-    tendon_solimp: Vec<[f64; 5]>,
-    tendon_num: Vec<usize>,
-    tendon_adr: Vec<usize>,
-    /// Visualization group per tendon (0–5).
-    tendon_group: Vec<i32>,
-    /// RGBA color per tendon [r, g, b, a].
-    tendon_rgba: Vec<[f64; 4]>,
-    wrap_type: Vec<WrapType>,
-    wrap_objid: Vec<usize>,
-    wrap_prm: Vec<f64>,
-    wrap_sidesite: Vec<usize>,
-
-    // Equality constraint arrays
-    eq_type: Vec<EqualityType>,
-    eq_obj1id: Vec<usize>,
-    eq_obj2id: Vec<usize>,
-    eq_data: Vec<[f64; 11]>,
-    eq_active: Vec<bool>,
-    eq_solimp: Vec<[f64; 5]>,
-    eq_solref: Vec<[f64; 2]>,
-    eq_name: Vec<Option<String>>,
-
-    // Sensor accumulation fields (populated by process_sensors)
-    sensor_type: Vec<MjSensorType>,
-    sensor_datatype: Vec<MjSensorDataType>,
-    sensor_objtype: Vec<MjObjectType>,
-    sensor_objid: Vec<usize>,
-    sensor_reftype: Vec<MjObjectType>,
-    sensor_refid: Vec<usize>,
-    sensor_adr: Vec<usize>,
-    sensor_dim: Vec<usize>,
-    sensor_noise: Vec<f64>,
-    sensor_cutoff: Vec<f64>,
-    sensor_name_list: Vec<Option<String>>,
-    nsensor: usize,
-    nsensordata: usize,
-
-    // Contact pairs / excludes (populated by process_contact)
-    contact_pairs: Vec<ContactPair>,
-    contact_pair_set: HashSet<(usize, usize)>,
-    contact_excludes: HashSet<(usize, usize)>,
-
-    // Flex deformable body arrays (populated by process_flex_bodies)
-    nflex: usize,
-    nflexvert: usize,
-    nflexedge: usize,
-    nflexelem: usize,
-    nflexhinge: usize,
-    flex_dim: Vec<usize>,
-    flex_vertadr: Vec<usize>,
-    flex_vertnum: Vec<usize>,
-    flex_damping: Vec<f64>,
-    flex_friction: Vec<f64>,
-    flex_condim: Vec<i32>,
-    flex_margin: Vec<f64>,
-    flex_gap: Vec<f64>,
-    flex_priority: Vec<i32>,
-    flex_solmix: Vec<f64>,
-    flex_solref: Vec<[f64; 2]>,
-    flex_solimp: Vec<[f64; 5]>,
-    flex_edge_solref: Vec<[f64; 2]>,
-    flex_edge_solimp: Vec<[f64; 5]>,
-    flex_bend_stiffness: Vec<f64>,
-    flex_bend_damping: Vec<f64>,
-    flex_young: Vec<f64>,
-    flex_poisson: Vec<f64>,
-    flex_thickness: Vec<f64>,
-    flex_density: Vec<f64>,
-    flex_group: Vec<i32>,
-    flex_contype: Vec<u32>,
-    flex_conaffinity: Vec<u32>,
-    flex_selfcollide: Vec<bool>,
-    flex_edgestiffness: Vec<f64>,
-    flex_edgedamping: Vec<f64>,
-    flexvert_qposadr: Vec<usize>,
-    flexvert_dofadr: Vec<usize>,
-    flexvert_mass: Vec<f64>,
-    flexvert_invmass: Vec<f64>,
-    flexvert_radius: Vec<f64>,
-    flexvert_flexid: Vec<usize>,
-    flexvert_bodyid: Vec<usize>,
-    flexvert_initial_pos: Vec<Vector3<f64>>,
-    flexedge_vert: Vec<[usize; 2]>,
-    flexedge_length0: Vec<f64>,
-    flexedge_flexid: Vec<usize>,
-    flexelem_data: Vec<usize>,
-    flexelem_dataadr: Vec<usize>,
-    flexelem_datanum: Vec<usize>,
-    flexelem_volume0: Vec<f64>,
-    flexelem_flexid: Vec<usize>,
-    flexhinge_vert: Vec<[usize; 4]>,
-    flexhinge_angle0: Vec<f64>,
-    flexhinge_flexid: Vec<usize>,
-}
+// ModelBuilder struct, new(), set_options() → crate::builder (Phase 10)
 
 impl ModelBuilder {
-    fn new() -> Self {
-        // Initialize with world body (body 0)
-        Self {
-            name: String::new(),
-            resolver: DefaultResolver::default(),
-            compiler: MjcfCompiler::default(),
-            nq: 0,
-            nv: 0,
-
-            // World body initialized
-            body_parent: vec![0],
-            body_rootid: vec![0],
-            body_jnt_adr: vec![0],
-            body_jnt_num: vec![0],
-            body_dof_adr: vec![0],
-            body_dof_num: vec![0],
-            body_geom_adr: vec![0],
-            body_geom_num: vec![0],
-            body_pos: vec![Vector3::zeros()],
-            body_quat: vec![UnitQuaternion::identity()],
-            body_ipos: vec![Vector3::zeros()],
-            body_iquat: vec![UnitQuaternion::identity()],
-            body_mass: vec![0.0],
-            body_inertia: vec![Vector3::zeros()],
-            body_name: vec![Some("world".to_string())],
-            body_mocapid: vec![None],      // world body is not mocap
-            body_sleep_policy: vec![None], // world body has no sleep policy
-            body_gravcomp: vec![0.0],      // world body has no gravcomp
-            nmocap: 0,
-
-            jnt_type: vec![],
-            jnt_body: vec![],
-            jnt_qpos_adr: vec![],
-            jnt_dof_adr: vec![],
-            jnt_pos: vec![],
-            jnt_axis: vec![],
-            jnt_limited: vec![],
-            jnt_range: vec![],
-            jnt_stiffness: vec![],
-            jnt_springref: vec![],
-            jnt_damping: vec![],
-            jnt_armature: vec![],
-            jnt_solref: vec![],
-            jnt_solimp: vec![],
-            jnt_name: vec![],
-            jnt_group: vec![],
-
-            dof_body: vec![],
-            dof_jnt: vec![],
-            dof_parent: vec![],
-            dof_armature: vec![],
-            dof_damping: vec![],
-            dof_frictionloss: vec![],
-            dof_solref: vec![],
-            dof_solimp: vec![],
-
-            geom_type: vec![],
-            geom_body: vec![],
-            geom_pos: vec![],
-            geom_quat: vec![],
-            geom_size: vec![],
-            geom_friction: vec![],
-            geom_condim: vec![],
-            geom_contype: vec![],
-            geom_conaffinity: vec![],
-            geom_name: vec![],
-            geom_mesh: vec![],
-            geom_solref: vec![],
-            geom_solimp: vec![],
-            geom_priority: vec![],
-            geom_solmix: vec![],
-            geom_margin: vec![],
-            geom_gap: vec![],
-            geom_group: vec![],
-            geom_rgba: vec![],
-            geom_fluid: vec![],
-
-            mesh_name_to_id: HashMap::new(),
-            mesh_name: vec![],
-            mesh_data: vec![],
-
-            hfield_name_to_id: HashMap::new(),
-            hfield_name: vec![],
-            hfield_data: vec![],
-            hfield_size: vec![],
-            geom_hfield: vec![],
-            geom_sdf: vec![],
-
-            site_body: vec![],
-            site_type: vec![],
-            site_pos: vec![],
-            site_quat: vec![],
-            site_size: vec![],
-            site_name: vec![],
-            site_group: vec![],
-            site_rgba: vec![],
-
-            // World frame tracking (world body at origin)
-            body_world_pos: vec![],
-            body_world_quat: vec![],
-
-            actuator_trntype: vec![],
-            actuator_dyntype: vec![],
-            actuator_trnid: vec![],
-            actuator_gear: vec![],
-            actuator_ctrlrange: vec![],
-            actuator_forcerange: vec![],
-            actuator_name: vec![],
-            actuator_act_adr: vec![],
-            actuator_act_num: vec![],
-            actuator_gaintype: vec![],
-            actuator_biastype: vec![],
-            actuator_dynprm: vec![],
-            actuator_gainprm: vec![],
-            actuator_biasprm: vec![],
-            actuator_lengthrange: vec![],
-            actuator_acc0: vec![],
-            actuator_actlimited: vec![],
-            actuator_actrange: vec![],
-            actuator_actearly: vec![],
-
-            na: 0,
-
-            // MuJoCo defaults
-            timestep: 0.002,
-            gravity: Vector3::new(0.0, 0.0, -9.81),
-            wind: Vector3::zeros(),
-            magnetic: Vector3::zeros(),
-            density: 0.0,
-            viscosity: 0.0,
-            solver_iterations: 100,
-            solver_tolerance: 1e-8,
-            impratio: 1.0,
-            regularization: 1e-6,
-            friction_smoothing: 1000.0,
-            cone: 0,
-            ls_iterations: 50,
-            ls_tolerance: 0.01,
-            noslip_iterations: 0,
-            noslip_tolerance: 1e-6,
-            disableflags: 0,
-            enableflags: 0,
-            integrator: Integrator::Euler,
-            solver_type: SolverType::PGS,
-            sleep_tolerance: 1e-4,
-
-            qpos0_values: vec![],
-
-            joint_name_to_id: HashMap::new(),
-            body_name_to_id: HashMap::from([("world".to_string(), 0)]),
-            site_name_to_id: HashMap::new(),
-            geom_name_to_id: HashMap::new(),
-
-            // Tendons (populated by process_tendons)
-            tendon_name_to_id: HashMap::new(),
-            tendon_type: vec![],
-            tendon_range: vec![],
-            tendon_limited: vec![],
-            tendon_stiffness: vec![],
-            tendon_damping: vec![],
-            tendon_frictionloss: vec![],
-            tendon_solref_fri: vec![],
-            tendon_solimp_fri: vec![],
-            tendon_lengthspring: vec![],
-            tendon_length0: vec![],
-            tendon_name: vec![],
-            tendon_solref: vec![],
-            tendon_solimp: vec![],
-            tendon_num: vec![],
-            tendon_adr: vec![],
-            tendon_group: vec![],
-            tendon_rgba: vec![],
-            wrap_type: vec![],
-            wrap_objid: vec![],
-            wrap_prm: vec![],
-            wrap_sidesite: vec![],
-
-            // Actuator name lookup
-            actuator_name_to_id: HashMap::new(),
-
-            // Equality constraints (populated by process_equality_constraints)
-            eq_type: vec![],
-            eq_obj1id: vec![],
-            eq_obj2id: vec![],
-            eq_data: vec![],
-            eq_active: vec![],
-            eq_solimp: vec![],
-            eq_solref: vec![],
-            eq_name: vec![],
-
-            // Sensors (populated by process_sensors)
-            sensor_type: vec![],
-            sensor_datatype: vec![],
-            sensor_objtype: vec![],
-            sensor_objid: vec![],
-            sensor_reftype: vec![],
-            sensor_refid: vec![],
-            sensor_adr: vec![],
-            sensor_dim: vec![],
-            sensor_noise: vec![],
-            sensor_cutoff: vec![],
-            sensor_name_list: vec![],
-            nsensor: 0,
-            nsensordata: 0,
-
-            // Contact pairs / excludes (populated by process_contact)
-            contact_pairs: vec![],
-            contact_pair_set: HashSet::new(),
-            contact_excludes: HashSet::new(),
-
-            nflex: 0,
-            nflexvert: 0,
-            nflexedge: 0,
-            nflexelem: 0,
-            nflexhinge: 0,
-            flex_dim: vec![],
-            flex_vertadr: vec![],
-            flex_vertnum: vec![],
-            flex_damping: vec![],
-            flex_friction: vec![],
-            flex_condim: vec![],
-            flex_margin: vec![],
-            flex_gap: vec![],
-            flex_priority: vec![],
-            flex_solmix: vec![],
-            flex_solref: vec![],
-            flex_solimp: vec![],
-            flex_edge_solref: vec![],
-            flex_edge_solimp: vec![],
-            flex_bend_stiffness: vec![],
-            flex_bend_damping: vec![],
-            flex_young: vec![],
-            flex_poisson: vec![],
-            flex_thickness: vec![],
-            flex_density: vec![],
-            flex_group: vec![],
-            flex_contype: vec![],
-            flex_conaffinity: vec![],
-            flex_selfcollide: vec![],
-            flex_edgestiffness: vec![],
-            flex_edgedamping: vec![],
-            flexvert_qposadr: vec![],
-            flexvert_dofadr: vec![],
-            flexvert_mass: vec![],
-            flexvert_invmass: vec![],
-            flexvert_radius: vec![],
-            flexvert_flexid: vec![],
-            flexvert_bodyid: vec![],
-            flexvert_initial_pos: vec![],
-            flexedge_vert: vec![],
-            flexedge_length0: vec![],
-            flexedge_flexid: vec![],
-            flexelem_data: vec![],
-            flexelem_dataadr: vec![],
-            flexelem_datanum: vec![],
-            flexelem_volume0: vec![],
-            flexelem_flexid: vec![],
-            flexhinge_vert: vec![],
-            flexhinge_angle0: vec![],
-            flexhinge_flexid: vec![],
-        }
-    }
-
-    fn set_options(&mut self, option: &MjcfOption) {
-        self.timestep = option.timestep;
-        self.gravity = option.gravity;
-        self.solver_iterations = option.iterations;
-        self.solver_tolerance = option.tolerance;
-        self.impratio = option.impratio;
-        self.regularization = option.regularization;
-        self.friction_smoothing = option.friction_smoothing;
-        self.integrator = match option.integrator {
-            MjcfIntegrator::Euler => Integrator::Euler,
-            MjcfIntegrator::RK4 => Integrator::RungeKutta4,
-            MjcfIntegrator::Implicit => Integrator::Implicit,
-            MjcfIntegrator::ImplicitFast => Integrator::ImplicitFast,
-            MjcfIntegrator::ImplicitSpringDamper => Integrator::ImplicitSpringDamper,
-        };
-        self.solver_type = match option.solver {
-            MjcfSolverType::PGS => SolverType::PGS,
-            MjcfSolverType::CG => SolverType::CG,
-            MjcfSolverType::Newton => SolverType::Newton,
-        };
-        self.ls_iterations = option.ls_iterations;
-        self.ls_tolerance = option.ls_tolerance;
-        self.noslip_iterations = option.noslip_iterations;
-        self.noslip_tolerance = option.noslip_tolerance;
-        self.cone = match option.cone {
-            MjcfConeType::Pyramidal => 0,
-            MjcfConeType::Elliptic => 1,
-        };
-        self.magnetic = option.magnetic;
-        self.wind = option.wind;
-        self.density = option.density;
-        self.viscosity = option.viscosity;
-        self.sleep_tolerance = option.sleep_tolerance;
-        // Set ENABLE_SLEEP from flag
-        if option.flag.sleep {
-            self.enableflags |= ENABLE_SLEEP;
-        }
-    }
-
     /// Process a single mesh asset from MJCF.
     ///
     /// Converts `MjcfMesh` to `TriangleMeshData` with BVH and registers it
@@ -1140,7 +203,7 @@ impl ModelBuilder {
     /// Returns `ModelConversionError` if:
     /// - Mesh name is a duplicate of an already-processed mesh
     /// - Mesh conversion fails (see [`convert_mjcf_mesh`] for details)
-    fn process_mesh(
+    pub(crate) fn process_mesh(
         &mut self,
         mjcf_mesh: &MjcfMesh,
         base_path: Option<&Path>,
@@ -1165,7 +228,7 @@ impl ModelBuilder {
     }
 
     /// Process a height field asset from MJCF.
-    fn process_hfield(
+    pub(crate) fn process_hfield(
         &mut self,
         hfield: &MjcfHfield,
     ) -> std::result::Result<(), ModelConversionError> {
@@ -1191,7 +254,7 @@ impl ModelBuilder {
     /// No childclass is applied here — MuJoCo's worldbody accepts no attributes
     /// (including childclass), so worldbody elements use only their own explicit
     /// class or the unnamed top-level default.
-    fn process_worldbody_geoms_and_sites(
+    pub(crate) fn process_worldbody_geoms_and_sites(
         &mut self,
         worldbody: &MjcfBody,
     ) -> std::result::Result<(), ModelConversionError> {
@@ -1230,7 +293,7 @@ impl ModelBuilder {
     ///
     /// # Returns
     /// The body index in the Model
-    fn process_body(
+    pub(crate) fn process_body(
         &mut self,
         body: &MjcfBody,
         parent_id: usize,
@@ -1931,7 +994,7 @@ impl ModelBuilder {
         Ok(site_id)
     }
 
-    fn process_tendons(
+    pub(crate) fn process_tendons(
         &mut self,
         tendons: &[MjcfTendon],
     ) -> std::result::Result<(), ModelConversionError> {
@@ -2111,7 +1174,7 @@ impl ModelBuilder {
         Ok(())
     }
 
-    fn process_actuator(
+    pub(crate) fn process_actuator(
         &mut self,
         actuator: &MjcfActuator,
     ) -> std::result::Result<usize, ModelConversionError> {
@@ -2482,7 +1545,7 @@ impl ModelBuilder {
     /// Converts `MjcfSensor` objects into the 13 pipeline sensor arrays.
     /// Must be called AFTER all bodies, joints, tendons, and actuators are processed
     /// (requires name→id lookups for object resolution).
-    fn process_sensors(
+    pub(crate) fn process_sensors(
         &mut self,
         sensors: &[MjcfSensor],
     ) -> std::result::Result<(), ModelConversionError> {
@@ -2536,7 +1599,7 @@ impl ModelBuilder {
     ///
     /// For each `<exclude>`: resolve body names to indices and insert into the
     /// exclude set.
-    fn process_contact(
+    pub(crate) fn process_contact(
         &mut self,
         contact: &MjcfContact,
     ) -> std::result::Result<(), ModelConversionError> {
@@ -2825,7 +1888,7 @@ impl ModelBuilder {
     ///
     /// - **Distance**: Maintains fixed distance between geom centers.
     ///   `eq_data[0]` = target distance.
-    fn process_equality_constraints(
+    pub(crate) fn process_equality_constraints(
         &mut self,
         equality: &MjcfEquality,
     ) -> std::result::Result<(), ModelConversionError> {
@@ -3095,7 +2158,7 @@ impl ModelBuilder {
     ///   2. balanceinertia — triangle inequality correction
     ///   3. boundmass / boundinertia — minimum clamping
     ///   4. settotalmass — rescale to target total mass
-    fn apply_mass_pipeline(&mut self) {
+    pub(crate) fn apply_mass_pipeline(&mut self) {
         let nbody = self.body_mass.len();
 
         // Step 2: balanceinertia (A7)
@@ -3151,7 +2214,7 @@ impl ModelBuilder {
     ///
     /// MuJoCo architecture: flex vertices ARE bodies in the kinematic tree. `mj_crb`/`mj_rne`
     /// have zero flex-specific code — the standard rigid-body pipeline handles everything.
-    fn process_flex_bodies(
+    pub(crate) fn process_flex_bodies(
         &mut self,
         flex_list: &[MjcfFlex],
     ) -> std::result::Result<(), ModelConversionError> {
@@ -3502,7 +2565,7 @@ impl ModelBuilder {
         Ok(())
     }
 
-    fn build(self) -> Model {
+    pub(crate) fn build(self) -> Model {
         let njnt = self.jnt_type.len();
         let nbody = self.body_parent.len();
         let ngeom = self.geom_type.len();
@@ -4379,7 +3442,7 @@ fn frame_accum_child(
 /// dissolves frames (via `std::mem::take`), losing `frame.childclass` values.
 ///
 /// MuJoCo rejects undefined childclass references at schema validation (S7).
-fn validate_childclass_references(
+pub fn validate_childclass_references(
     body: &MjcfBody,
     resolver: &DefaultResolver,
 ) -> std::result::Result<(), ModelConversionError> {
@@ -4432,7 +3495,11 @@ fn validate_frame_childclass_refs(
 /// Frames are coordinate-system wrappers that compose their transform into
 /// each child element and then disappear. This runs before `discardvisual`/`fusestatic`
 /// (matching MuJoCo's order) and before `ModelBuilder` processes bodies.
-fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler, parent_childclass: Option<&str>) {
+pub fn expand_frames(
+    body: &mut MjcfBody,
+    compiler: &MjcfCompiler,
+    parent_childclass: Option<&str>,
+) {
     // Resolve effective childclass early and own it to avoid borrow conflicts
     let effective_owned: Option<String> = body
         .childclass
@@ -5133,7 +4200,7 @@ fn extract_inertial_properties(
 
 /// Apply `discardvisual` pre-processing: remove visual-only geoms (contype=0, conaffinity=0)
 /// and unreferenced mesh assets. Geoms referenced by sensors or actuators are protected.
-fn apply_discardvisual(mjcf: &mut MjcfModel) {
+pub fn apply_discardvisual(mjcf: &mut MjcfModel) {
     // Collect geom names referenced by sensors (site-based sensors reference sites, not geoms,
     // but frame sensors can resolve to geoms) and actuators (no geom refs currently, but future-proof).
     let mut protected_geoms: HashSet<String> = HashSet::new();
@@ -5181,7 +4248,7 @@ fn apply_discardvisual(mjcf: &mut MjcfModel) {
 /// transfers their geoms, sites, and children to the parent, reducing the body
 /// count. Bodies referenced by equality constraints, sensors, or actuators are
 /// not fused (their names must remain valid).
-fn apply_fusestatic(mjcf: &mut MjcfModel) {
+pub fn apply_fusestatic(mjcf: &mut MjcfModel) {
     // Collect names of bodies referenced by constraints, sensors, actuators, skins
     let mut protected: HashSet<String> = HashSet::new();
 
