@@ -491,9 +491,9 @@ and correlating with commit history.
 | 10 | builder/build.rs | 798 lines (696 prod + 102 tests). build(self) -> Model (impl) + 3 integration tests (pendulum, double_pendulum, actuator) | done | 6d74a04, 866ab92 | S18–S19 |
 | 10 | builder/mod.rs | 887 lines (724 prod + 163 tests). ModelBuilder struct, orchestration fns, constants + 4 tests (file load, includes) | done | 34ad6e4, 866ab92 | S17–S19 |
 | 10 | builder/ inline tests | 136 tests relocated from monolith to 12 builder sub-modules. model_builder.rs replaced with 5-line redirect stub. 281/281 tests pass, clippy clean. | done | 866ab92 | S19 |
-| 12 | Monolith deletion + shim removal | | | | |
-| 12 | Stale reference sweep (grep) | | | | |
-| 12 | future_work_*.md doc updates (~692) | | | | |
-| 12 | ARCHITECTURE.md rewrite | | | | |
-| 12 | Other doc + test comment updates | GAP_ANALYSIS, CONFORMANCE, REFERENCE, CLAUDE.md, test files, gjk_epa.rs (TRAIT_ARCHITECTURE has 0 references — no update needed) | | | |
-| 12 | Final workspace verification + grading | All 15 final-state checks from rubric | | | |
+| 12 | Monolith deletion + shim removal | Deleted mujoco_pipeline.rs (3,420 lines) and model_builder.rs (5-line stub). Removed `pub mod mujoco_pipeline;` from sim-core lib.rs, `mod model_builder;` from sim-mjcf lib.rs. Migrated last 2 production functions (object_velocity_local → dynamics/spatial.rs, compute_muscle_params → forward/muscle.rs). Relocated 7 inline test modules (~50 tests) to target files. Fixed 4 stale imports (derivatives.rs, passive.rs, contact_types.rs, model_factories.rs). | done | 00b6ea2 | S20 |
+| 12 | Stale reference sweep (grep) | 4 exhaustive greps (mujoco_pipeline, model_builder across .rs and .md) — zero matches. 3 intentional historical/provenance references retained. | done | 00b6ea2 | S20 |
+| 12 | future_work_*.md doc updates (~692) | ~700+ references updated across future_work_1.md through future_work_16.md (including 6b). All mujoco_pipeline.rs and model_builder.rs line-range citations replaced with new module paths. | done | 00b6ea2 | S20 |
+| 12 | ARCHITECTURE.md rewrite | Major rewrite: replaced monolith-era module tree with new modular structure showing all extracted modules in sim-core and sim-mjcf. | done | 00b6ea2 | S20 |
+| 12 | Other doc + test comment updates | GAP_ANALYSIS (~30 refs), CONFORMANCE (4 refs), REFERENCE (1 ref) updated. 5 integration test files updated. gjk_epa.rs (2 comments). collision/mod.rs (1 stale comment). TRAIT_ARCHITECTURE confirmed 0 references. | done | 00b6ea2 | S20 |
+| 12 | Final workspace verification + grading | fmt clean, clippy clean (--all-targets), 4-crate: 1,526/0/15 (exact baseline), 11-crate: 2,007/0/20 (exact baseline), xtask check passed (pre-existing safety warning only). | done | 00b6ea2 | S20 |
