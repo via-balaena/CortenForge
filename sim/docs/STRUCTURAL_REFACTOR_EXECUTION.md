@@ -448,8 +448,8 @@ and correlating with commit history.
 | 8b | integrate/rk4.rs | 191 lines; mj_runge_kutta (classic RK4 Butcher tableau) | done | 2d8bb9f | S15 |
 | 8b | integrate/mod.rs | 140 lines; Data::integrate() + integrate_without_velocity() dispatch | done | 2d8bb9f | S15 |
 | 8b | **Phase 8b audit** | Independent audit: all S1–S8 A-grade. Zero findings. Lazy import check passed. 2,007/0/20 (11-crate scope). Clippy clean. | done | — | S15 |
-| 8c | island/mod.rs | | | | |
-| 8c | island/sleep.rs | | | | |
+| 8c | island/mod.rs | 671 lines; mj_island, mj_flood_fill, equality_trees, constraint_tree, populate_efc_island (deferred from Phase 6) | done | 961396f | S16 |
+| 8c | island/sleep.rs | 745 lines; mj_sleep, mj_wake*, mj_update_sleep_arrays, mj_check_qpos_changed, reset_sleep_state, Data sleep query methods, all private helpers | done | 961396f | S16 |
 | 10 | builder/mod.rs | **(MARGIN)** ~732 lines — requires init.rs split | | | |
 | 10 | builder/init.rs | Split from mod.rs for MARGIN compliance | | | |
 | 10 | builder/orientation.rs | | | | |

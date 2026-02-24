@@ -1300,14 +1300,14 @@ integration and island/sleep follows Principle #5 (one PR per major module).
 
 ### Phase 8c: Extract island/sleep
 
-- [ ] Create `src/island/` module tree
-- [ ] Move mj_island, mj_flood_fill, equality_trees, constraint_tree → `island/mod.rs`
-- [ ] Move mj_wake*, mj_sleep, mj_sleep_cycle, mj_update_sleep_arrays,
-      mj_check_qpos_changed, mj_wake_tree, sensor_body_id, tree_can_sleep,
+- [x] Create `src/island/` module tree
+- [x] Move mj_island, mj_flood_fill, equality_trees, constraint_tree, populate_efc_island (deferred from Phase 6) → `island/mod.rs`
+- [x] Move mj_wake*, mj_sleep, mj_sleep_cycle, mj_update_sleep_arrays,
+      mj_check_qpos_changed, mj_wake_tree, tree_can_sleep,
       sleep_trees, sync_tree_fk, reset_sleep_state,
       Data::sleep_state(), Data::tree_awake(), Data::nbody_awake(),
       Data::nisland() → `island/sleep.rs`
-- [ ] Run full test suite
+- [x] Run full test suite — 2,007/0/20 (exact baseline)
 
 **Estimated size**: ~1,324 lines moved (island/sleep.rs: ~737 lines, island/mod.rs: ~587 lines)
 
