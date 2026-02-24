@@ -7,7 +7,9 @@
 //! orchestration sequence that wires everything together.
 
 pub mod asset;
+pub mod compiler;
 pub mod fluid;
+pub mod frame;
 mod init;
 pub mod orientation;
 
@@ -27,14 +29,8 @@ use crate::types::{
     MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfKeyframe, MjcfModel, MjcfOption, MjcfSolverType,
 };
 
-// Free functions still in the monolith — temporary imports until their
-// target modules are extracted.
-use crate::model_builder::{
-    apply_discardvisual,            // monolith: removed in step 5 (compiler.rs)
-    apply_fusestatic,               // monolith: removed in step 5 (compiler.rs)
-    expand_frames,                  // monolith: removed in step 6 (frame.rs)
-    validate_childclass_references, // monolith: removed in step 6 (frame.rs)
-};
+use self::compiler::{apply_discardvisual, apply_fusestatic};
+use self::frame::{expand_frames, validate_childclass_references};
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
 ///

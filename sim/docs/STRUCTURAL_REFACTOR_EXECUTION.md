@@ -473,8 +473,8 @@ and correlating with commit history.
 | 10 | builder/orientation.rs | 134 lines prod + 57 lines tests. quat_from_wxyz, quat_to_wxyz, euler_seq_to_quat, resolve_orientation + 4 unit tests | done | | S18 |
 | 10 | builder/asset.rs | 100 lines prod + 100 lines tests. AssetKind enum, resolve_asset_path + 8 unit tests | done | | S18 |
 | 10 | builder/fluid.rs | 142 lines. KRONROD_L/W/D, MJ_EPS, get_added_mass_kappa, geom_semi_axes, compute_geom_fluid. No inline tests | done | | S18 |
-| 10 | builder/compiler.rs | | | | |
-| 10 | builder/frame.rs | | | | |
+| 10 | builder/compiler.rs | 233 lines. apply_discardvisual (with nested remove_visual_geoms, collect_mesh_refs), apply_fusestatic, fuse_static_body. No inline tests (all integration tests stay in monolith) | done | | S18 |
+| 10 | builder/frame.rs | 260 lines. frame_accum_child, validate_childclass_references, validate_frame_childclass_refs, expand_frames, expand_single_frame. No inline tests (all integration tests stay in monolith) | done | | S18 |
 | 10 | builder/mesh.rs | | | | |
 | 10 | builder/geom.rs | | | | |
 | 10 | builder/joint.rs | | | | |
