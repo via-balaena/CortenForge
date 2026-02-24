@@ -36,7 +36,7 @@ explicit MJCF elements before model building.
    - Joints (ball or hinge) connecting adjacent bodies
    - Tendons (if `tendon` sub-element specified)
    - Skin (if `skin` sub-element specified)
-3. **Pre-processing**: Expand composites in the XML DOM before `model_builder`
+3. **Pre-processing**: Expand composites in the XML DOM before the builder
    processes the tree. The builder never sees `<composite>` — only expanded elements.
 
 #### Acceptance Criteria

@@ -2318,7 +2318,7 @@ explicit pair pipelines equally.
   rather than `if let Some(pos)` to catch invariant violations between the
   `contact_pair_set` and `contact_pairs` vec.
 - **`ContactPair` re-export.** `ContactPair` is re-exported from `sim_core`
-  via `lib.rs` so that `sim_mjcf`'s `model_builder` can reference it.
+  via `lib.rs` so that `sim_mjcf`'s `builder/` can reference it.
 
 **Edge cases (valid behavior, no special handling needed):**
 
@@ -4364,7 +4364,7 @@ zeros if fewer than 6. Existing Joint and Tendon transmissions only use `gear[0]
 | `MjcfActuator` (types.rs) | no `refsite` field | `pub refsite: Option<String>` |
 | MJCF parser (parser.rs) | — | `get_attribute_opt(e, "refsite")` |
 | `Model.actuator_trnid` (types/model.rs) | `Vec<usize>` (1 per actuator) | `Vec<[usize; 2]>` — `[site_id, refsite_id]` where `refsite_id = usize::MAX` means absent |
-| model_builder | pushes single usize | pushes `[site_id, refsite_id_or_MAX]` |
+| builder/ | pushes single usize | pushes `[site_id, refsite_id_or_MAX]` |
 
 All existing Joint/Tendon code reads `actuator_trnid[i]` — change to
 `actuator_trnid[i][0]`. The `[1]` slot is `usize::MAX` for Joint and Tendon

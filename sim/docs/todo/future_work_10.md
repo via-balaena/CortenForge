@@ -6225,7 +6225,8 @@ difference addressed by §40d (sparse Jacobian support).
 Add `ENABLE_SLEEP` to the existing import block (`derivatives.rs:56`):
 
 ```rust
-use crate::mujoco_pipeline::{
+use crate::constraint::impedance::MJ_MINVAL;
+use crate::types::{
     ActuatorDynamics,
     ActuatorTransmission,
     BiasType,
@@ -6233,8 +6234,6 @@ use crate::mujoco_pipeline::{
     ENABLE_SLEEP,  // §40c: sleep filtering for fluid derivatives
     GainType,
     Integrator,
-    // §40a fluid derivative infrastructure
-    MJ_MINVAL,
     MjJointType,
     Model,
     // ... remaining existing imports unchanged ...

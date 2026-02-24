@@ -2486,7 +2486,7 @@ Of these, our `MjcfFlex` supports: `name`, `dim`, `radius`. The rest are out
 of scope for #27B: `group`, `material`, `rgba`, `flatskin` are visual/
 organizational; `body` and `node` are physics-relevant (vertex-to-body and
 vertex-to-DOF mapping) but are a pre-existing parsing gap unrelated to
-child element structure. Our `model_builder` derives body/DOF mapping from
+child element structure. Our `builder/` derives body/DOF mapping from
 the enclosing `<body>` hierarchy rather than the `body`/`node` attributes.
 
 ##### `<flex><contact>` / `<flexcomp><contact>` attributes
@@ -3622,7 +3622,7 @@ This parses `mass` on both `<flex>` and `<flexcomp>` (they share
 `parse_flex_attrs`). On bare `<flex>`, `mass` is unusual but harmless —
 MuJoCo doesn't have it there, but we won't reject it.
 
-##### S3. Update `compute_vertex_masses()` in model_builder
+##### S3. Update `compute_vertex_masses()` in `builder/flex.rs`
 
 Add a uniform-distribution early return when `mass` is present:
 

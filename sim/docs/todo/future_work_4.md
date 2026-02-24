@@ -3670,7 +3670,7 @@ against the same factors (Cholesky is non-destructive on the factor matrix).
 A.1 (Integrator enum + #[non_exhaustive])
  ├─→ A.4 (mj_fwd_acceleration_implicitfast)
  │    └─→ A.5 (forward accel + velocity + step dispatch wiring)
- ├─→ C.1 + C.2 + C.3 (model_builder + MJCF types + parser)
+ ├─→ C.1 + C.2 + C.3 (builder/ + MJCF types + parser)
  ├─→ D.4 (derivatives.rs match site updates: :1226, :1320, :1485)
  ├─→ B.1 (mj_fwd_acceleration_implicit_full)
  │    ├─→ B.2 (lu_factor_in_place + lu_solve_factored)
