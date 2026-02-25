@@ -4,7 +4,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ---
 
-## Group 2 — Contact & Collision System (14 items)
+## Group 2 — Contact & Collision System (15 items)
 
 **Spec approach:** DT-19/21/25 each need individual specs (T3). DT-20/24 share
 a "Contact Force Cleanup" spec (T2). DT-23 joins the cross-file "Solver Param
@@ -27,3 +27,4 @@ spec (T2). DT-18/22 implement directly (T1).
 | ~~DT-95~~ | §41 | ~~Global contact parameter override~~ **Subsumed by §41 S10** | Medium | T2 |
 | DT-99 | §41 | BVH midphase integration into collision pipeline (S9-full) — per-mesh BVH storage, build-phase construction, midphase dispatch | Medium | T3 |
 | DT-100 | §41 | Global contact parameter override guard sites (S10-full) — assignment helpers, 6 guard sites in broadphase/narrowphase/constraint | Medium | T2 |
+| DT-101 | §41 | Implement `mj_contactPassive()` — viscous contact damping forces. Guard site (`DISABLE_CONTACT` early return) already specified in §41 S4.7d | Low | T2 |

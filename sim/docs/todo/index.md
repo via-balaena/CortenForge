@@ -96,9 +96,9 @@ phase they belong to. Items are grouped by source file for easy cross-reference.
 | 42E | `ContactSolver` trait (XPBD) | No — extension | Post-v1.0 | |
 | 42F | `SimBuilder` composition | No — extension | Post-v1.0 | |
 
-#### From future_work_10b–10j (Deferred Tasks DT-1–92)
+#### From future_work_10b–10j (Deferred Tasks DT-1–101)
 
-~40 of 92 deferred tasks are core v1.0. Full list with phase assignments
+~40 of 100 deferred tasks are core v1.0. Full list with phase assignments
 in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 
 **Correctness bugs (Phase 1):** ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), ~~DT-78~~ (done), ~~DT-16~~ (done), ~~DT-90~~ (done)
@@ -123,7 +123,8 @@ in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 DT-20, DT-22, DT-24, DT-26, DT-27, DT-29, DT-30, DT-31, DT-34, DT-36,
 DT-37, DT-38, DT-40, DT-42, DT-43, DT-44, DT-45, DT-46, DT-48, DT-49,
 DT-50, DT-55, DT-65, DT-66, DT-67, DT-68, DT-69, DT-71, DT-72, DT-73,
-DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
+DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92,
+DT-101
 
 #### From future_work_11.md (#43–45)
 
@@ -321,7 +322,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 | [future_work_8.md](./future_work_8.md) | 3 (complete) | #28–32 | Friction loss, PGS/CG unified constraints, pyramidal cones |
 | [future_work_9.md](./future_work_9.md) | 3 (complete) | #33–37 | Noslip, actlimited, gravcomp, adhesion, tendon equality |
 | [future_work_10.md](./future_work_10.md) | 3 (in progress) | #38–42F | Joint limits ✅, tendon wrapping ✅, fluid forces ✅, fluid derivatives ✅, tendon viz ✅, fluid sleep ✅, disableflags, flex runtime, trait architecture |
-| [future_work_10b.md](./future_work_10b.md)–[10j](./future_work_10j.md) | 3 | DT-1–100 | Deferred task tracker (9 groups across 10b–10j) — ~40 core v1.0, ~52 post-v1.0, +DT-99/100 post-§41 |
+| [future_work_10b.md](./future_work_10b.md)–[10j](./future_work_10j.md) | 3 | DT-1–101 | Deferred task tracker (9 groups across 10b–10j) — ~40 core v1.0, ~53 post-v1.0, +DT-99/100/101 post-§41 |
 | [future_work_11.md](./future_work_11.md) | 3 | #43–45 | Mesh inertia, legacy crate deprecation, **conformance test suite** |
 | [future_work_12.md](./future_work_12.md) | 3 | #46–50 | `<composite>`, URDF, SIMD, non-physics MJCF, CCD |
 | [future_work_13.md](./future_work_13.md) | 3 | #51–55 | Body accumulators, `mj_inverse`, `step1`/`step2`, heightfield gaps, `*_user` data |

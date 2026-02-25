@@ -881,9 +881,10 @@ are correct — the guards are layered, not redundant.
 
 > **Current state:** `mj_contact_passive()` does not exist in CortenForge
 > yet. MuJoCo's `mj_contactPassive()` computes viscous contact damping
-> forces. When this is implemented (as part of S4.7d or a separate DT),
-> it must have the `DISABLE_CONTACT` early-return guard shown above.
-> Until then, the guard site is a no-op — there is no code to gate.
+> forces. Implementation is tracked as **DT-101** (see `future_work_10c.md`).
+> When implemented, it must have the `DISABLE_CONTACT` early-return guard
+> shown above. Until then, the guard site is a no-op — there is no code
+> to gate.
 
 ##### S4.7e Aggregation into `qfrc_passive`
 
@@ -999,6 +1000,21 @@ If CortenForge currently computes `actuator_velocity` inside
 `forward/actuation.rs` rather than `forward/velocity.rs`, move it to
 `mj_fwd_velocity()` as part of this refactor for MuJoCo conformance.
 This is a pipeline-ordering fix, not a flag guard.
+
+> **Implementation note — splitting `mj_actuator_length()`:**
+> In MuJoCo, `mj_actuator_length()` computes both `actuator_length` and
+> `actuator_velocity` in a single per-actuator loop. The velocity
+> computation reads only already-available velocity-stage data (`qvel`,
+> `ten_velocity`, `actuator_moment`) — no transmission geometry
+> recomputation is needed.
+>
+> **Recommended approach:** Extract a new `mj_actuator_velocity()` function
+> containing just the velocity dispatch (`match model.actuator_trntype[i]`).
+> Leave `mj_actuator_length()` computing only lengths. Call
+> `mj_actuator_velocity()` from `mj_fwd_velocity()`. The transmission-type
+> match arm structure is trivial model reads — duplicating it across the
+> two functions is fine (no meaningful computation is shared between the
+> length and velocity paths).
 
 > **Commit discipline:** This pipeline-ordering move should be its own
 > commit within §41 (before the flag guard commits), with the sim test
@@ -1850,8 +1866,9 @@ implementation is split into two phases:
   narrowphase. When this lands, the guard site from S9-stub gains its
   fast path. S9-full is tracked as **DT-99**.
 
-`mid_phase.rs` (1,178 lines) contains a complete BVH implementation that
-is not yet called from `collision/mod.rs`. S9-full integrates it
+`sim/L0/core/src/mid_phase.rs` (1,178 lines) contains a complete BVH
+implementation (top-down median-split AABB tree) that is not yet called
+from the collision pipeline (`collision/mod.rs`). S9-full integrates it
 into the collision pipeline and activates the `DISABLE_MIDPHASE` guard.
 
 **Verified against:** MuJoCo's `engine_collision_driver.c` midphase
