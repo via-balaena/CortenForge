@@ -586,6 +586,10 @@ pub struct ModelBuilder {
     // Actuator name lookup (for sensor wiring)
     pub(crate) actuator_name_to_id: HashMap<String, usize>,
 
+    // Sensor/equality name lookup (§59)
+    pub(crate) sensor_name_to_id: HashMap<String, usize>,
+    pub(crate) eq_name_to_id: HashMap<String, usize>,
+
     // Tendon arrays (populated by process_tendons)
     pub(crate) tendon_name_to_id: HashMap<String, usize>,
     pub(crate) tendon_type: Vec<TendonType>,

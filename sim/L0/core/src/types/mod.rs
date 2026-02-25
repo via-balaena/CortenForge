@@ -3,6 +3,7 @@
 //! This module contains the fundamental types that flow through every stage of
 //! the simulation: enums, Model, Data, contacts, and keyframes.
 
+pub mod callbacks;
 pub(crate) mod contact_types;
 pub(crate) mod data;
 pub(crate) mod enums;

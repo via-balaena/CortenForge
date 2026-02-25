@@ -323,6 +323,13 @@ pub fn mj_next_activation(
 /// 3. Clamps control inputs and output forces to their declared ranges.
 /// 4. Maps actuator force to joint forces via the transmission.
 pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
+    // DT-79: Invoke user control callback (if set).
+    // Called at the start of actuation, before force computation,
+    // so the callback can set ctrl values (e.g., from an RL policy).
+    if let Some(ref cb) = model.cb_control {
+        (cb.0)(model, data);
+    }
+
     // S4.8: Unconditional zero of per-actuator forces (matches MuJoCo).
     for i in 0..model.nu {
         data.actuator_force[i] = 0.0;

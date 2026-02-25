@@ -6,6 +6,33 @@
 
 use nalgebra::Vector3;
 
+/// Element type for name↔index lookup via [`Model::name2id`] / [`Model::id2name`].
+///
+/// Each variant corresponds to a named element category in the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElementType {
+    /// Body elements (indexed by body_id).
+    Body,
+    /// Joint elements (indexed by jnt_id).
+    Joint,
+    /// Geom elements (indexed by geom_id).
+    Geom,
+    /// Site elements (indexed by site_id).
+    Site,
+    /// Tendon elements (indexed by tendon_id).
+    Tendon,
+    /// Actuator elements (indexed by actuator_id).
+    Actuator,
+    /// Sensor elements (indexed by sensor_id).
+    Sensor,
+    /// Mesh assets (indexed by mesh_id).
+    Mesh,
+    /// Height field assets (indexed by hfield_id).
+    Hfield,
+    /// Equality constraints (indexed by eq_id).
+    Equality,
+}
+
 /// Joint type following `MuJoCo` conventions.
 ///
 /// Named `MjJointType` to distinguish from `sim_types::JointType`.

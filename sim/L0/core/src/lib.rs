@@ -102,6 +102,9 @@ pub mod jacobian;
 // Integration dispatch (Euler, implicit tendon K/D, RK4)
 pub mod integrate;
 
+// Inverse dynamics (§52)
+pub mod inverse;
+
 // Island discovery and sleep/wake state machine (§16)
 pub mod island;
 
@@ -184,6 +187,8 @@ pub use types::{
     ENABLE_MULTICCD,
     ENABLE_OVERRIDE,
     ENABLE_SLEEP,
+    // Name↔index lookup (§59)
+    ElementType,
     EqualityType,
     GainType,
     GeomType,

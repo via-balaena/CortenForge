@@ -300,10 +300,27 @@ impl ModelBuilder {
             eq_solref: self.eq_solref,
             eq_name: self.eq_name,
 
+            // Name↔index lookup (§59) — transfer builder maps
+            body_name_to_id: self.body_name_to_id,
+            jnt_name_to_id: self.joint_name_to_id,
+            geom_name_to_id: self.geom_name_to_id,
+            site_name_to_id: self.site_name_to_id,
+            tendon_name_to_id: self.tendon_name_to_id,
+            actuator_name_to_id: self.actuator_name_to_id,
+            sensor_name_to_id: self.sensor_name_to_id,
+            mesh_name_to_id: self.mesh_name_to_id,
+            hfield_name_to_id: self.hfield_name_to_id,
+            eq_name_to_id: self.eq_name_to_id,
+
             // Contact pairs / excludes (populated by process_contact)
             contact_pairs: self.contact_pairs,
             contact_pair_set: self.contact_pair_set,
             contact_excludes: self.contact_excludes,
+
+            // User callbacks (DT-79) — not set from MJCF, user assigns post-load
+            cb_passive: None,
+            cb_control: None,
+            cb_contactfilter: None,
 
             timestep: self.timestep,
             gravity: self.gravity,

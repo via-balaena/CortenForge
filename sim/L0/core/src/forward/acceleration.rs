@@ -5,13 +5,14 @@
 //! portion of MuJoCo's `engine_forward.c`.
 
 use crate::constraint::assembly::tendon_deadband_displacement;
+use crate::dynamics::spatial::{SpatialVector, spatial_cross_force};
 use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
-use crate::joint_visitor::{JointContext, JointVisitor};
+use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_factor_in_place, lu_solve_factored,
     mj_solve_sparse,
 };
-use crate::types::{Data, ENABLE_SLEEP, Integrator, Model, StepError};
+use crate::types::{DISABLE_GRAVITY, Data, ENABLE_SLEEP, Integrator, Model, StepError};
 use nalgebra::DVector;
 
 /// Dispatch to the correct forward acceleration solver.
@@ -333,4 +334,103 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
     lu_solve_factored(&data.scratch_m_impl, &data.scratch_lu_piv, &mut data.qacc);
 
     Ok(())
+}
+
+/// Compute per-body accelerations and forces after forward dynamics (§51).
+///
+/// Populates `data.cacc`, `data.cfrc_int`, and `data.cfrc_ext`:
+///
+/// 1. **cfrc_ext**: Copy of `xfrc_applied` for each body (Cartesian external forces).
+///
+/// 2. **cacc forward pass** (root→leaf): Propagate accelerations through the
+///    kinematic chain. `cacc[0] = [0,0,0, -gx,-gy,-gz]` (gravity pseudo-acceleration).
+///    For each body: `cacc[b] = cacc[parent] + S * qacc` (joint acceleration
+///    contribution via motion subspace).
+///
+/// 3. **cfrc_int backward pass** (leaf→root):
+///    `cfrc_int[b] = I*cacc[b] + v×*(I*v) - cfrc_ext[b]`, accumulated into parent.
+///
+/// Mirrors the RNE algorithm structure but uses actual `qacc` instead of bias-only.
+///
+/// # MuJoCo Equivalence
+///
+/// Matches `mj_rnePostConstraint()` in `engine_forward.c`.
+#[allow(clippy::needless_range_loop)] // jnt_id indexes both joint_subspaces and model arrays
+pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
+    // ===== Step 1: cfrc_ext = copy of xfrc_applied =====
+    for b in 0..model.nbody {
+        data.cfrc_ext[b] = data.xfrc_applied[b];
+    }
+
+    // ===== Step 2: cacc forward pass (root → leaf) =====
+    // Root pseudo-acceleration: gravity acts as downward acceleration on all bodies.
+    let grav = if model.disableflags & DISABLE_GRAVITY != 0 {
+        SpatialVector::zeros()
+    } else {
+        // Spatial convention: [angular; linear]. Gravity pseudo-acceleration has
+        // zero angular and negative gravity as linear acceleration.
+        let mut sv = SpatialVector::zeros();
+        sv[3] = -model.gravity[0];
+        sv[4] = -model.gravity[1];
+        sv[5] = -model.gravity[2];
+        sv
+    };
+    data.cacc[0] = grav;
+
+    // Pre-compute joint motion subspaces (same cache as RNE)
+    let joint_subspaces: Vec<_> = (0..model.njnt)
+        .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
+        .collect();
+
+    for body_id in 1..model.nbody {
+        let parent_id = model.body_parent[body_id];
+
+        // Start with parent's acceleration
+        let mut acc = data.cacc[parent_id];
+
+        // Add joint acceleration contribution: S * qacc
+        let jnt_start = model.body_jnt_adr[body_id];
+        let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let s = &joint_subspaces[jnt_id];
+            let nv = model.jnt_type[jnt_id].nv();
+
+            for row in 0..6 {
+                for d in 0..nv {
+                    acc[row] += s[(row, d)] * data.qacc[dof_adr + d];
+                }
+            }
+        }
+
+        data.cacc[body_id] = acc;
+    }
+
+    // ===== Step 3: cfrc_int backward pass (leaf → root) =====
+    // For each body: cfrc_int = I*cacc + v×*(I*v) - cfrc_ext
+    for body_id in 1..model.nbody {
+        let inertia = &data.cinert[body_id];
+        let v = data.cvel[body_id];
+        let acc = data.cacc[body_id];
+
+        // I * cacc (inertial force from acceleration)
+        let i_a = inertia * acc;
+
+        // v ×* (I * v) (gyroscopic force, same as RNE backward pass)
+        let i_v = inertia * v;
+        let gyro = spatial_cross_force(v, i_v);
+
+        // cfrc_int = I*cacc + v×*(I*v) - cfrc_ext
+        data.cfrc_int[body_id] = i_a + gyro - data.cfrc_ext[body_id];
+    }
+
+    // Propagate internal forces from leaves to root
+    for body_id in (1..model.nbody).rev() {
+        let parent_id = model.body_parent[body_id];
+        if parent_id != 0 {
+            let child_force = data.cfrc_int[body_id];
+            data.cfrc_int[parent_id] += child_force;
+        }
+    }
 }

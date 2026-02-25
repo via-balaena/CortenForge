@@ -548,6 +548,25 @@ pub struct Data {
     #[allow(non_snake_case)]
     pub deriv_Dcfrc: Vec<DMatrix<f64>>,
 
+    // ==================== Inverse Dynamics (§52) ====================
+    /// Inverse dynamics result: generalized forces that produce current `qacc`.
+    /// Computed by `inverse()`: `qfrc_inverse = M * qacc + qfrc_bias - qfrc_passive`.
+    /// Length `nv`.
+    pub qfrc_inverse: DVector<f64>,
+
+    // ==================== Body Force Accumulators (§51) ====================
+    /// Per-body 6D acceleration in world frame (length `nbody`).
+    /// Forward pass: propagates accelerations root→leaf through joints.
+    /// `cacc[0]` = `[0,0,0, -gx,-gy,-gz]` (gravity pseudo-acceleration).
+    pub cacc: Vec<SpatialVector>,
+    /// Per-body internal (constraint + inertial) forces in world frame (length `nbody`).
+    /// Backward pass: `cfrc_int[b] = I*cacc[b] + v×*(I*v) - cfrc_ext[b]`,
+    /// accumulated into parent.
+    pub cfrc_int: Vec<SpatialVector>,
+    /// Per-body external forces in world frame (length `nbody`).
+    /// Copy of `xfrc_applied` converted to spatial force at body CoM.
+    pub cfrc_ext: Vec<SpatialVector>,
+
     // ==================== Cached Body Effective Mass/Inertia ====================
     // These are extracted from the mass matrix diagonal during forward() and cached
     // for use by constraint force limiting. This avoids O(joints) traversal per constraint.
@@ -742,6 +761,12 @@ impl Clone for Data {
             deriv_Dcvel: self.deriv_Dcvel.clone(),
             deriv_Dcacc: self.deriv_Dcacc.clone(),
             deriv_Dcfrc: self.deriv_Dcfrc.clone(),
+            // Inverse dynamics (§52)
+            qfrc_inverse: self.qfrc_inverse.clone(),
+            // Body force accumulators (§51)
+            cacc: self.cacc.clone(),
+            cfrc_int: self.cfrc_int.clone(),
+            cfrc_ext: self.cfrc_ext.clone(),
             // Cached body mass/inertia
             body_min_mass: self.body_min_mass.clone(),
             body_min_inertia: self.body_min_inertia.clone(),

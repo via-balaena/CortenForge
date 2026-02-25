@@ -6,7 +6,7 @@
 //! across all pipeline stages.
 
 use nalgebra::{DVector, UnitQuaternion, Vector3};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 // Imports from sibling modules
@@ -777,6 +777,28 @@ pub struct Model {
     /// Supports unlimited joints with O(1) lookup per word.
     pub body_ancestor_mask: Vec<Vec<u64>>,
 
+    // ==================== Name↔Index Lookup (§59) ====================
+    /// Body name → index. Populated from `body_name` entries.
+    pub body_name_to_id: HashMap<String, usize>,
+    /// Joint name → index. Populated from `jnt_name` entries.
+    pub jnt_name_to_id: HashMap<String, usize>,
+    /// Geom name → index. Populated from `geom_name` entries.
+    pub geom_name_to_id: HashMap<String, usize>,
+    /// Site name → index. Populated from `site_name` entries.
+    pub site_name_to_id: HashMap<String, usize>,
+    /// Tendon name → index. Populated from `tendon_name` entries.
+    pub tendon_name_to_id: HashMap<String, usize>,
+    /// Actuator name → index. Populated from `actuator_name` entries.
+    pub actuator_name_to_id: HashMap<String, usize>,
+    /// Sensor name → index. Populated from `sensor_name` entries.
+    pub sensor_name_to_id: HashMap<String, usize>,
+    /// Mesh name → index. Populated from `mesh_name` entries.
+    pub mesh_name_to_id: HashMap<String, usize>,
+    /// Height field name → index. Populated from `hfield_name` entries.
+    pub hfield_name_to_id: HashMap<String, usize>,
+    /// Equality constraint name → index. Populated from `eq_name` entries.
+    pub eq_name_to_id: HashMap<String, usize>,
+
     // ==================== Explicit Contact Pairs/Excludes ====================
     /// Explicit contact pairs from `<contact><pair>`.
     /// Processed in mechanism 2 (bypass kinematic and bitmask filters).
@@ -788,6 +810,14 @@ pub struct Model {
     /// Excluded body-pair set from `<contact><exclude>`.
     /// Canonical key: `(min(body1, body2), max(body1, body2))`.
     pub contact_excludes: HashSet<(usize, usize)>,
+
+    // ==================== User Callbacks (DT-79) ====================
+    /// Passive force callback: called at end of `mj_fwd_passive()`.
+    pub cb_passive: Option<super::callbacks::CbPassive>,
+    /// Control callback: called at start of `mj_fwd_actuation()`.
+    pub cb_control: Option<super::callbacks::CbControl>,
+    /// Contact filter callback: called after affinity check in collision.
+    pub cb_contactfilter: Option<super::callbacks::CbContactFilter>,
 }
 
 impl Model {
@@ -809,6 +839,97 @@ impl Model {
         let start = self.jnt_qpos_adr[jnt_id];
         let len = self.jnt_type[jnt_id].nq();
         Some(&self.qpos0.as_slice()[start..start + len])
+    }
+
+    /// Look up element index by name (O(1) via HashMap).
+    ///
+    /// Returns `None` if the name does not exist for the given element type.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use sim_core::ElementType;
+    /// let joint_id = model.name2id(ElementType::Joint, "shoulder").unwrap();
+    /// ```
+    #[must_use]
+    pub fn name2id(&self, element: super::enums::ElementType, name: &str) -> Option<usize> {
+        use super::enums::ElementType;
+        match element {
+            ElementType::Body => self.body_name_to_id.get(name).copied(),
+            ElementType::Joint => self.jnt_name_to_id.get(name).copied(),
+            ElementType::Geom => self.geom_name_to_id.get(name).copied(),
+            ElementType::Site => self.site_name_to_id.get(name).copied(),
+            ElementType::Tendon => self.tendon_name_to_id.get(name).copied(),
+            ElementType::Actuator => self.actuator_name_to_id.get(name).copied(),
+            ElementType::Sensor => self.sensor_name_to_id.get(name).copied(),
+            ElementType::Mesh => self.mesh_name_to_id.get(name).copied(),
+            ElementType::Hfield => self.hfield_name_to_id.get(name).copied(),
+            ElementType::Equality => self.eq_name_to_id.get(name).copied(),
+        }
+    }
+
+    /// Look up element name by index (O(1) via Vec indexing).
+    ///
+    /// Returns `None` if the index is out of bounds or the element has no name.
+    #[must_use]
+    pub fn id2name(&self, element: super::enums::ElementType, id: usize) -> Option<&str> {
+        use super::enums::ElementType;
+        match element {
+            ElementType::Body => self.body_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Joint => self.jnt_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Geom => self.geom_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Site => self.site_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Tendon => self.tendon_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Actuator => self.actuator_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Sensor => self.sensor_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Mesh => self.mesh_name.get(id).map(String::as_str),
+            ElementType::Hfield => self.hfield_name.get(id).map(String::as_str),
+            ElementType::Equality => self.eq_name.get(id).and_then(|n| n.as_deref()),
+        }
+    }
+
+    // ==================== Callback Setters (DT-79) ====================
+
+    /// Set the passive force callback.
+    pub fn set_passive_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &mut super::data::Data) + Send + Sync + 'static,
+    {
+        self.cb_passive = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the passive force callback.
+    pub fn clear_passive_callback(&mut self) {
+        self.cb_passive = None;
+    }
+
+    /// Set the control callback.
+    pub fn set_control_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &mut super::data::Data) + Send + Sync + 'static,
+    {
+        self.cb_control = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the control callback.
+    pub fn clear_control_callback(&mut self) {
+        self.cb_control = None;
+    }
+
+    /// Set the contact filter callback.
+    ///
+    /// The callback receives `(model, data, geom1_id, geom2_id)` and should
+    /// return `true` to KEEP the contact, `false` to REJECT it.
+    pub fn set_contactfilter_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &super::data::Data, usize, usize) -> bool + Send + Sync + 'static,
+    {
+        self.cb_contactfilter = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the contact filter callback.
+    pub fn clear_contactfilter_callback(&mut self) {
+        self.cb_contactfilter = None;
     }
 
     /// Check if joint is an ancestor of body using pre-computed data.

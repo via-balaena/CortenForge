@@ -6,7 +6,7 @@
 //! per-DOF mechanism length computation (§16.14).
 
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::enums::{Integrator, MIN_AWAKE, MjJointType, SleepPolicy, SleepState, SolverType};
 use super::model::Model;
@@ -331,10 +331,27 @@ impl Model {
             body_ancestor_joints: vec![vec![]],
             body_ancestor_mask: vec![vec![]], // Empty vec for world body (no joints yet)
 
+            // Name↔index lookup (§59) — empty maps for empty model
+            body_name_to_id: HashMap::new(),
+            jnt_name_to_id: HashMap::new(),
+            geom_name_to_id: HashMap::new(),
+            site_name_to_id: HashMap::new(),
+            tendon_name_to_id: HashMap::new(),
+            actuator_name_to_id: HashMap::new(),
+            sensor_name_to_id: HashMap::new(),
+            mesh_name_to_id: HashMap::new(),
+            hfield_name_to_id: HashMap::new(),
+            eq_name_to_id: HashMap::new(),
+
             // Contact pairs / excludes (empty = no explicit pairs or excludes)
             contact_pairs: vec![],
             contact_pair_set: HashSet::new(),
             contact_excludes: HashSet::new(),
+
+            // User callbacks (DT-79) — default: no callbacks
+            cb_passive: None,
+            cb_control: None,
+            cb_contactfilter: None,
         }
     }
 
@@ -625,6 +642,14 @@ impl Model {
             deriv_Dcvel: vec![DMatrix::zeros(6, self.nv); self.nbody],
             deriv_Dcacc: vec![DMatrix::zeros(6, self.nv); self.nbody],
             deriv_Dcfrc: vec![DMatrix::zeros(6, self.nv); self.nbody],
+
+            // Inverse dynamics (§52)
+            qfrc_inverse: DVector::zeros(self.nv),
+
+            // Body force accumulators (§51)
+            cacc: vec![SpatialVector::zeros(); self.nbody],
+            cfrc_int: vec![SpatialVector::zeros(); self.nbody],
+            cfrc_ext: vec![SpatialVector::zeros(); self.nbody],
 
             // Cached body mass/inertia (computed in forward() after CRBA)
             // Initialize world body (index 0) to infinity, others to default

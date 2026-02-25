@@ -74,6 +74,10 @@ impl ModelBuilder {
                 .push(connect.solimp.unwrap_or(DEFAULT_SOLIMP));
             self.eq_solref
                 .push(connect.solref.unwrap_or(DEFAULT_SOLREF));
+            let eq_id = self.eq_name.len();
+            if let Some(ref name) = connect.name {
+                self.eq_name_to_id.insert(name.clone(), eq_id);
+            }
             self.eq_name.push(connect.name.clone());
         }
 
@@ -131,6 +135,10 @@ impl ModelBuilder {
             self.eq_active.push(weld.active);
             self.eq_solimp.push(weld.solimp.unwrap_or(DEFAULT_SOLIMP));
             self.eq_solref.push(weld.solref.unwrap_or(DEFAULT_SOLREF));
+            let eq_id = self.eq_name.len();
+            if let Some(ref name) = weld.name {
+                self.eq_name_to_id.insert(name.clone(), eq_id);
+            }
             self.eq_name.push(weld.name.clone());
         }
 
@@ -177,6 +185,10 @@ impl ModelBuilder {
                 .push(joint_eq.solimp.unwrap_or(DEFAULT_SOLIMP));
             self.eq_solref
                 .push(joint_eq.solref.unwrap_or(DEFAULT_SOLREF));
+            let eq_id = self.eq_name.len();
+            if let Some(ref name) = joint_eq.name {
+                self.eq_name_to_id.insert(name.clone(), eq_id);
+            }
             self.eq_name.push(joint_eq.name.clone());
         }
 
@@ -223,6 +235,10 @@ impl ModelBuilder {
             self.eq_active.push(dist.active);
             self.eq_solimp.push(dist.solimp.unwrap_or(DEFAULT_SOLIMP));
             self.eq_solref.push(dist.solref.unwrap_or(DEFAULT_SOLREF));
+            let eq_id = self.eq_name.len();
+            if let Some(ref name) = dist.name {
+                self.eq_name_to_id.insert(name.clone(), eq_id);
+            }
             self.eq_name.push(dist.name.clone());
         }
 
@@ -262,6 +278,10 @@ impl ModelBuilder {
             self.eq_active.push(ten_eq.active);
             self.eq_solimp.push(ten_eq.solimp.unwrap_or(DEFAULT_SOLIMP));
             self.eq_solref.push(ten_eq.solref.unwrap_or(DEFAULT_SOLREF));
+            let eq_id = self.eq_name.len();
+            if let Some(ref name) = ten_eq.name {
+                self.eq_name_to_id.insert(name.clone(), eq_id);
+            }
             self.eq_name.push(ten_eq.name.clone());
         }
 

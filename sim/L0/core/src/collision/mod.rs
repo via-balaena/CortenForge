@@ -407,6 +407,14 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 continue;
             }
 
+            // DT-79: User contact filter callback (if set).
+            // Return false to reject this pair.
+            if let Some(ref cb) = model.cb_contactfilter {
+                if !(cb.0)(model, data, geom1, geom2) {
+                    continue;
+                }
+            }
+
             // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
             // Keep sleeping-vs-awake pairs — they may trigger wake detection (§16.4).
             if sleep_enabled {

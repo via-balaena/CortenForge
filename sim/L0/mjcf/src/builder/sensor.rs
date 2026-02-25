@@ -47,9 +47,12 @@ impl ModelBuilder {
             self.sensor_dim.push(dim);
             self.sensor_noise.push(mjcf_sensor.noise);
             self.sensor_cutoff.push(mjcf_sensor.cutoff);
+            let sensor_id = self.sensor_name_list.len();
             self.sensor_name_list.push(if mjcf_sensor.name.is_empty() {
                 None
             } else {
+                self.sensor_name_to_id
+                    .insert(mjcf_sensor.name.clone(), sensor_id);
                 Some(mjcf_sensor.name.clone())
             });
 

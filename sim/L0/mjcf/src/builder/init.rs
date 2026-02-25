@@ -197,6 +197,10 @@ impl ModelBuilder {
             // Actuator name lookup
             actuator_name_to_id: HashMap::new(),
 
+            // Sensor/equality name lookup (§59)
+            sensor_name_to_id: HashMap::new(),
+            eq_name_to_id: HashMap::new(),
+
             // Equality constraints (populated by process_equality_constraints)
             eq_type: vec![],
             eq_obj1id: vec![],

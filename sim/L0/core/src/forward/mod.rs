@@ -17,6 +17,8 @@ mod velocity;
 // The re-exports here make them available as crate::forward::mj_fwd_position etc.
 // Some are not yet imported externally (used only within forward_core), hence allow.
 #[allow(unused_imports)]
+pub(crate) use acceleration::mj_body_accumulators;
+#[allow(unused_imports)]
 pub(crate) use acceleration::mj_fwd_acceleration;
 #[allow(unused_imports)]
 pub(crate) use actuation::{
@@ -41,6 +43,82 @@ use crate::types::flags::enabled;
 use crate::types::{Data, ENABLE_ENERGY, ENABLE_SLEEP, Integrator, Model, StepError};
 
 impl Data {
+    /// Split-step phase 1: compute forward dynamics.
+    ///
+    /// Performs timestep validation, state checks, forward dynamics, and
+    /// acceleration checks. After `step1()`, the user can inject forces
+    /// (e.g., modify `qfrc_applied` or `xfrc_applied`) before calling
+    /// [`step2()`](Self::step2) to integrate.
+    ///
+    /// # Split-Step Usage
+    ///
+    /// ```ignore
+    /// // Equivalent to data.step(&model) for Euler/Implicit integrators:
+    /// data.step1(&model)?;
+    /// // Inject forces here (e.g., RL policy output)
+    /// data.qfrc_applied[0] = 10.0;
+    /// data.step2(&model);
+    /// ```
+    ///
+    /// # Important
+    ///
+    /// - Always uses Euler-style integration in `step2()` (not RK4). RK4's
+    ///   multi-stage substeps don't work with force injection between stages.
+    /// - `step()` is NOT refactored to call step1/step2 — it remains the
+    ///   canonical entry point with full RK4 support.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(StepError)` if timestep is invalid or forward dynamics fails.
+    pub fn step1(&mut self, model: &Model) -> Result<(), StepError> {
+        // Validate timestep
+        if model.timestep <= 0.0 || !model.timestep.is_finite() {
+            return Err(StepError::InvalidTimestep);
+        }
+
+        // Validate state before stepping
+        check::mj_check_pos(model, self);
+        check::mj_check_vel(model, self);
+
+        // Forward dynamics (with sensors)
+        self.forward(model)?;
+
+        // Validate accelerations
+        check::mj_check_acc(model, self);
+
+        Ok(())
+    }
+
+    /// Split-step phase 2: integrate state.
+    ///
+    /// Integrates positions and velocities using Euler-style integration
+    /// (regardless of `model.integrator`), then performs sleep update and
+    /// warmstart save.
+    ///
+    /// Must be called after [`step1()`](Self::step1). The user may modify
+    /// `qfrc_applied`, `xfrc_applied`, `ctrl`, etc. between step1 and step2
+    /// to inject forces that affect integration.
+    ///
+    /// # Note
+    ///
+    /// This always uses Euler-style integration. RK4 is not compatible with
+    /// split-step force injection because its multi-stage substeps recompute
+    /// `forward()` internally.
+    pub fn step2(&mut self, model: &Model) {
+        // Euler-style integration (matches step() for non-RK4 integrators)
+        self.integrate(model);
+
+        // Sleep update (§16.12): Phase B island-aware sleep transition.
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+        if sleep_enabled {
+            crate::island::mj_sleep(model, self);
+            crate::island::mj_update_sleep_arrays(model, self);
+        }
+
+        // Save qacc for next-step warmstart (§15.9).
+        self.qacc_warmstart.copy_from(&self.qacc);
+    }
+
     /// Perform one simulation step.
     ///
     /// This is the top-level entry point for advancing the simulation by one timestep.
@@ -232,6 +310,9 @@ impl Data {
 
         // (§27F) Pinned flex vertex DOF clamping removed — pinned vertices now have
         // no joints/DOFs (zero body_dof_num), so no qacc/qvel entries to clamp.
+
+        // §51: Compute per-body accelerations and forces after constraints.
+        acceleration::mj_body_accumulators(model, self);
 
         if compute_sensors {
             crate::sensor::mj_sensor_acc(model, self);

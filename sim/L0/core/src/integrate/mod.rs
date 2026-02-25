@@ -20,7 +20,9 @@ use euler::{mj_integrate_pos, mj_normalize_quat};
 impl Data {
     /// Integration step for Euler and implicit-spring-damper integrators.
     ///
-    /// RK4 integration is handled by [`mj_runge_kutta()`] and does not call this method.
+    /// This is exposed as part of the split-step API ([`step1`](Self::step1) /
+    /// [`step2`](Self::step2)). RK4 integration is handled by
+    /// [`mj_runge_kutta()`] and does not call this method.
     ///
     /// # Integration Methods
     ///
@@ -29,7 +31,7 @@ impl Data {
     ///
     /// - **Implicit**: Velocity was already updated in `mj_fwd_acceleration_implicit()`.
     ///   We only integrate positions here.
-    pub(crate) fn integrate(&mut self, model: &Model) {
+    pub fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
         // §16.27: Use indirection array for cache-friendly iteration over awake DOFs.
