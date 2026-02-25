@@ -404,6 +404,8 @@ impl Model {
             qfrc_applied: DVector::zeros(self.nv),
             qfrc_bias: DVector::zeros(self.nv),
             qfrc_passive: DVector::zeros(self.nv),
+            qfrc_spring: DVector::zeros(self.nv),
+            qfrc_damper: DVector::zeros(self.nv),
             qfrc_fluid: DVector::zeros(self.nv),
             qfrc_gravcomp: DVector::zeros(self.nv),
             qfrc_constraint: DVector::zeros(self.nv),

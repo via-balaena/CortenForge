@@ -136,6 +136,12 @@ pub struct Data {
     pub qfrc_bias: DVector<f64>,
     /// Passive forces (springs + dampers + gravcomp + fluid) (length `nv`).
     pub qfrc_passive: DVector<f64>,
+    /// Passive spring forces (length `nv`), zeroed each step.
+    /// Separated from `qfrc_passive` for independent `DISABLE_SPRING` gating.
+    pub qfrc_spring: DVector<f64>,
+    /// Passive damper forces (length `nv`), zeroed each step.
+    /// Separated from `qfrc_passive` for independent `DISABLE_DAMPER` gating.
+    pub qfrc_damper: DVector<f64>,
     /// Fluid forces (length `nv`), zeroed each step.
     /// Separated from `qfrc_passive` for derivative computation.
     pub qfrc_fluid: DVector<f64>,
@@ -600,6 +606,8 @@ impl Clone for Data {
             qfrc_applied: self.qfrc_applied.clone(),
             qfrc_bias: self.qfrc_bias.clone(),
             qfrc_passive: self.qfrc_passive.clone(),
+            qfrc_spring: self.qfrc_spring.clone(),
+            qfrc_damper: self.qfrc_damper.clone(),
             qfrc_fluid: self.qfrc_fluid.clone(),
             qfrc_gravcomp: self.qfrc_gravcomp.clone(),
             qfrc_constraint: self.qfrc_constraint.clone(),

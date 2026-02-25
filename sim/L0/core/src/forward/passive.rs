@@ -344,7 +344,10 @@ fn mj_fluid(model: &Model, data: &mut Data) -> bool {
 pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
+    // Zero all passive force vectors unconditionally (S4.7a).
     data.qfrc_passive.fill(0.0);
+    data.qfrc_spring.fill(0.0);
+    data.qfrc_damper.fill(0.0);
     data.qfrc_fluid.fill(0.0);
     data.qfrc_gravcomp.fill(0.0);
     // qfrc_frictionloss is now populated post-solve from efc_force (§29).
@@ -362,7 +365,7 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     }
     // visitor is dropped here, releasing the mutable borrow on data
 
-    // Tendon passive forces: spring + damper + friction loss.
+    // Tendon passive forces: spring + damper (S4.7-prereq: separate arrays).
     for t in 0..model.ntendon {
         // §16.5a': Skip tendon if ALL target DOFs are sleeping
         if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
@@ -370,16 +373,17 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         }
         let length = data.ten_length[t];
         let velocity = data.ten_velocity[t];
-        let mut force = 0.0;
+        let mut spring_force = 0.0;
+        let mut damper_force = 0.0;
 
         // S6: Deadband spring — force is zero within [lower, upper]
         let k = model.tendon_stiffness[t];
         if k > 0.0 {
             let [lower, upper] = model.tendon_lengthspring[t];
             if length > upper {
-                force += k * (upper - length);
+                spring_force += k * (upper - length);
             } else if length < lower {
-                force += k * (lower - length);
+                spring_force += k * (lower - length);
             }
             // else: deadband, no spring force
         }
@@ -387,34 +391,47 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         // Damper: F = -b * v
         let b = model.tendon_damping[t];
         if b > 0.0 {
-            force -= b * velocity;
+            damper_force -= b * velocity;
         }
 
         // Friction loss is now handled entirely by solver constraint rows (§29).
         // No tanh approximation in passive forces.
 
-        data.ten_force[t] = force;
+        data.ten_force[t] = spring_force + damper_force;
 
         // NOTE: In ImplicitSpringDamper mode, tendon spring/damper forces are
         // handled implicitly in mj_fwd_acceleration_implicit() via non-diagonal
         // K_tendon and D_tendon matrices (DT-35). ten_force[t] is always populated
-        // for diagnostic purposes, but the explicit qfrc_passive application is
+        // for diagnostic purposes, but the explicit force application is
         // skipped to avoid double-counting, matching the joint spring/damper pattern.
 
-        // Map tendon force to joint forces via J^T.
-        if !implicit_mode && force != 0.0 {
-            apply_tendon_force(
-                model,
-                &data.ten_J[t],
-                model.tendon_type[t],
-                t,
-                force,
-                &mut data.qfrc_passive,
-            );
+        if !implicit_mode {
+            // Map tendon spring force to joint forces via J^T.
+            if spring_force != 0.0 {
+                apply_tendon_force(
+                    model,
+                    &data.ten_J[t],
+                    model.tendon_type[t],
+                    t,
+                    spring_force,
+                    &mut data.qfrc_spring,
+                );
+            }
+            // Map tendon damper force to joint forces via J^T.
+            if damper_force != 0.0 {
+                apply_tendon_force(
+                    model,
+                    &data.ten_J[t],
+                    model.tendon_type[t],
+                    t,
+                    damper_force,
+                    &mut data.qfrc_damper,
+                );
+            }
         }
     }
 
-    // Flex vertex damping: qfrc_passive[dof] = -damping * qvel[dof]
+    // Flex vertex damping → qfrc_damper (S4.7-prereq).
     for i in 0..model.nflexvert {
         let dof_base = model.flexvert_dofadr[i];
         if dof_base == usize::MAX {
@@ -426,7 +443,7 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
             continue;
         }
         for k in 0..3 {
-            data.qfrc_passive[dof_base + k] -= damp * data.qvel[dof_base + k];
+            data.qfrc_damper[dof_base + k] -= damp * data.qvel[dof_base + k];
         }
     }
 
@@ -487,19 +504,31 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let edge_velocity = (vel1 - vel0).dot(&direction);
         let frc_damper = -damping * edge_velocity;
 
-        let force_mag = frc_spring + frc_damper;
-
-        // Apply via J^T: edge Jacobian is ±direction for the two endpoint DOFs.
-        // F_v0 = -direction * force_mag (pulls v0 toward v1 when stretched)
-        // F_v1 = +direction * force_mag (pulls v1 toward v0 when stretched)
-        if dof0 < model.nv {
-            for ax in 0..3 {
-                data.qfrc_passive[dof0 + ax] -= direction[ax] * force_mag;
+        // S4.7-prereq: Apply spring and damper to separate arrays.
+        // F_v0 = -direction * force (pulls v0 toward v1 when stretched)
+        // F_v1 = +direction * force (pulls v1 toward v0 when stretched)
+        if frc_spring != 0.0 {
+            if dof0 < model.nv {
+                for ax in 0..3 {
+                    data.qfrc_spring[dof0 + ax] -= direction[ax] * frc_spring;
+                }
+            }
+            if dof1 < model.nv {
+                for ax in 0..3 {
+                    data.qfrc_spring[dof1 + ax] += direction[ax] * frc_spring;
+                }
             }
         }
-        if dof1 < model.nv {
-            for ax in 0..3 {
-                data.qfrc_passive[dof1 + ax] += direction[ax] * force_mag;
+        if frc_damper != 0.0 {
+            if dof0 < model.nv {
+                for ax in 0..3 {
+                    data.qfrc_damper[dof0 + ax] -= direction[ax] * frc_damper;
+                }
+            }
+            if dof1 < model.nv {
+                for ax in 0..3 {
+                    data.qfrc_damper[dof1 + ax] += direction[ax] * frc_damper;
+                }
             }
         }
     }
@@ -584,16 +613,11 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
             grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1) + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
         let damper_mag = -b_bend * theta_dot;
 
-        let force_mag = spring_mag + damper_mag;
-
-        // Apply via J^T to qfrc_passive, with per-vertex stability clamp.
-        // The force on vertex i is: F_i = force_mag * grad_i
-        // The acceleration is: a_i = F_i * invmass_i = force_mag * grad_i * invmass_i
-        // For explicit Euler stability: |a_i * dt| must not exceed the velocity scale.
-        // We clamp the per-vertex force magnitude so that:
-        //   |force_mag * |grad_i| * invmass_i * dt^2| < 1
-        // This prevents any single bending hinge from causing instability, regardless
-        // of how deformed the mesh becomes.
+        // S4.7-prereq: Apply spring and damper to separate arrays.
+        // Per-vertex stability clamp applied independently to each component.
+        // The force on vertex i is: F_i = mag * grad_i
+        // The acceleration is: a_i = F_i * invmass_i = mag * grad_i * invmass_i
+        // Clamp: |mag * |grad_i| * invmass_i * dt^2| < 1
         let grads = [
             (ve0, dof_e0, grad_e0),
             (ve1, dof_e1, grad_e1),
@@ -604,31 +628,53 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
             let invmass = model.flexvert_invmass[v_idx];
             if invmass > 0.0 {
                 let grad_norm = grad.norm();
-                let mut fm = force_mag;
-                if grad_norm > 0.0 {
-                    // Max force_mag so that acceleration * dt doesn't exceed position scale
-                    let fm_max = 1.0 / (dt * dt * grad_norm * invmass);
-                    fm = fm.clamp(-fm_max, fm_max);
+                if spring_mag != 0.0 {
+                    let mut fm = spring_mag;
+                    if grad_norm > 0.0 {
+                        let fm_max = 1.0 / (dt * dt * grad_norm * invmass);
+                        fm = fm.clamp(-fm_max, fm_max);
+                    }
+                    for ax in 0..3 {
+                        data.qfrc_spring[dof + ax] += grad[ax] * fm;
+                    }
                 }
-                for ax in 0..3 {
-                    data.qfrc_passive[dof + ax] += grad[ax] * fm;
+                if damper_mag != 0.0 {
+                    let mut fm = damper_mag;
+                    if grad_norm > 0.0 {
+                        let fm_max = 1.0 / (dt * dt * grad_norm * invmass);
+                        fm = fm.clamp(-fm_max, fm_max);
+                    }
+                    for ax in 0..3 {
+                        data.qfrc_damper[dof + ax] += grad[ax] * fm;
+                    }
                 }
             }
         }
     }
 
-    // Fluid forces (§40): compute and add to qfrc_passive.
-    // qfrc_fluid is zeroed at the top; mj_fluid accumulates into it.
-    if mj_fluid(model, data) {
-        data.qfrc_passive += &data.qfrc_fluid;
-    }
+    // Fluid forces (§40): compute into qfrc_fluid.
+    let has_fluid = mj_fluid(model, data);
 
-    // Gravity compensation: compute and route to qfrc_passive (§35).
+    // Gravity compensation (§35): compute into qfrc_gravcomp.
     // MuJoCo computes gravcomp after spring/damper/flex passive forces, then
     // conditionally routes via jnt_actgravcomp. We unconditionally add to
     // qfrc_passive since jnt_actgravcomp is not yet implemented.
-    if mj_gravcomp(model, data) {
-        data.qfrc_passive += &data.qfrc_gravcomp;
+    let has_gravcomp = mj_gravcomp(model, data);
+
+    // S4.7e: Aggregation into qfrc_passive (matches MuJoCo mj_passive() pattern).
+    // qfrc_passive = qfrc_spring + qfrc_damper [+ qfrc_gravcomp] [+ qfrc_fluid]
+    for dof in 0..model.nv {
+        data.qfrc_passive[dof] = data.qfrc_spring[dof] + data.qfrc_damper[dof];
+    }
+    if has_gravcomp {
+        for dof in 0..model.nv {
+            data.qfrc_passive[dof] += data.qfrc_gravcomp[dof];
+        }
+    }
+    if has_fluid {
+        for dof in 0..model.nv {
+            data.qfrc_passive[dof] += data.qfrc_fluid[dof];
+        }
     }
 }
 
@@ -649,7 +695,7 @@ impl PassiveForceVisitor<'_> {
     }
 
     /// Process a 1-DOF joint (Hinge or Slide) with spring and damper.
-    /// Friction loss is now handled entirely by solver constraint rows (§29).
+    /// S4.7-prereq: writes to `qfrc_spring`/`qfrc_damper` instead of `qfrc_passive`.
     #[inline]
     fn visit_1dof_joint(&mut self, ctx: JointContext) {
         if self.is_joint_sleeping(&ctx) {
@@ -660,21 +706,21 @@ impl PassiveForceVisitor<'_> {
         let jnt_id = ctx.jnt_id;
 
         if !self.implicit_mode {
-            // Spring: τ = -k * (q - springref)
+            // Spring: τ = -k * (q - springref) → qfrc_spring
             let stiffness = self.model.jnt_stiffness[jnt_id];
             let springref = self.model.jnt_springref[jnt_id];
             let q = self.data.qpos[qpos_adr];
-            self.data.qfrc_passive[dof_adr] -= stiffness * (q - springref);
+            self.data.qfrc_spring[dof_adr] -= stiffness * (q - springref);
 
-            // Damper: τ = -b * qvel
+            // Damper: τ = -b * qvel → qfrc_damper
             let damping = self.model.jnt_damping[jnt_id];
             let qvel = self.data.qvel[dof_adr];
-            self.data.qfrc_passive[dof_adr] -= damping * qvel;
+            self.data.qfrc_damper[dof_adr] -= damping * qvel;
         }
     }
 
     /// Process a multi-DOF joint (Ball or Free) with per-DOF damping.
-    /// Friction loss is now handled entirely by solver constraint rows (§29).
+    /// S4.7-prereq: writes to `qfrc_damper` instead of `qfrc_passive`.
     #[inline]
     fn visit_multi_dof_joint(&mut self, ctx: JointContext) {
         if self.is_joint_sleeping(&ctx) {
@@ -684,10 +730,10 @@ impl PassiveForceVisitor<'_> {
             let dof_idx = ctx.dof_adr + i;
 
             if !self.implicit_mode {
-                // Per-DOF damping
+                // Per-DOF damping → qfrc_damper
                 let dof_damping = self.model.dof_damping[dof_idx];
                 let qvel = self.data.qvel[dof_idx];
-                self.data.qfrc_passive[dof_idx] -= dof_damping * qvel;
+                self.data.qfrc_damper[dof_idx] -= dof_damping * qvel;
             }
         }
     }
