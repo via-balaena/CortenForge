@@ -2703,6 +2703,11 @@ The `0.5` factor is because AABB expansion is per-geom (half the contact
 margin), while narrowphase uses the full `o_margin` to replace the summed
 `margin[g1] + margin[g2]`.
 
+> **Note:** The flex broadphase (Site 2) currently uses brute-force O(V×G)
+> all-pairs, not SAP, so the `0.5` factor does not apply there. The
+> implementation correctly uses the full `o_margin` as a narrowphase
+> detection threshold for flex-rigid contacts.
+
 **Sites 3–6: Contact parameter assignment**
 
 **File:** `collision/mod.rs` or `collision/contact_params.rs`

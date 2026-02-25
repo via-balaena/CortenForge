@@ -245,7 +245,7 @@ pub fn apply_global_override(model: &Model, contact: &mut Contact, gap: f64) {
     contact.solreffriction = model.o_solref;
     contact.solimp = model.o_solimp;
     contact.includemargin = model.o_margin - gap;
-    let mu = assign_friction(model, &contact.mu);
+    let mu = assign_friction(model, &model.o_friction);
     contact.mu = mu;
     contact.friction = mu[0];
 }

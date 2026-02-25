@@ -2003,3 +2003,268 @@ fn ac35c_override_with_flex_contacts() {
     // Default flex gap + geom gap = 0.0 for both, so includemargin = o_margin.
     assert_relative_eq!(c.includemargin, custom_margin, epsilon = 1e-12);
 }
+
+// ============================================================================
+// AC35d: ENABLE_OVERRIDE broadphase AABB margin expansion
+// ============================================================================
+
+#[test]
+fn ac35d_override_aabb_margin() {
+    // Two spheres placed so that geom_margin is too small for AABB overlap
+    // but 0.5 * o_margin is large enough. Without override: ncon == 0.
+    // With override + large o_margin: ncon > 0.
+    let mjcf = r#"
+    <mujoco model="override_aabb_margin">
+        <option gravity="0 0 0" timestep="0.002"/>
+        <worldbody>
+            <body name="a" pos="-0.125 0 0">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.01"/>
+            </body>
+            <body name="b" pos="0.125 0 0">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.01"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    // Gap between surfaces = 0.25 - 0.2 = 0.05
+    // Combined geom_margin = 0.01 + 0.01 = 0.02 < 0.05 gap → no contact
+
+    // Case 1: No override — should have no contacts
+    let model_no = load_model(mjcf).expect("load");
+    let mut data_no = model_no.make_data();
+    data_no.forward(&model_no).expect("forward");
+    assert_eq!(
+        data_no.ncon, 0,
+        "without override, geom margins too small for contact"
+    );
+
+    // Case 2: With override — o_margin = 0.2 → 0.5 * 0.2 = 0.1 per AABB side
+    // AABB overlap + narrowphase margin = 0.2 > 0.05 gap → contact generated
+    let custom_solref = [0.05, 0.8];
+    let custom_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    let custom_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
+    let custom_margin = 0.2;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert!(
+        data.ncon > 0,
+        "with override o_margin=0.2, AABB expansion should detect contact (ncon={})",
+        data.ncon,
+    );
+
+    let c = &data.contacts[0];
+    // Contact params must come from global override.
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC36c: Mechanism-2 non-override friction clamping
+// ============================================================================
+
+#[test]
+fn ac36c_pair_non_override_friction_clamping() {
+    // Explicit <pair> with zero friction, override OFF. Assert mu[i] >= 1e-5.
+    let mjcf = r#"
+    <mujoco model="pair_friction_clamp">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <contact>
+            <pair geom1="floor" geom2="sphere"
+                  friction="0 0 0 0 0"
+                  condim="3" solref="0.02 1.0" solimp="0.9 0.95 0.001 0.5 2.0"
+                  margin="0.05"/>
+        </contact>
+    </mujoco>
+    "#;
+
+    let min_mu = 1e-5;
+
+    // Override NOT enabled — non-override pair path
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate pair contact near floor");
+
+    let c = &data.contacts[0];
+    // All friction components must be clamped to MIN_MU
+    for (i, &mu_i) in c.mu.iter().enumerate() {
+        assert!(
+            mu_i >= min_mu,
+            "mu[{i}] = {mu_i} should be >= MIN_MU ({min_mu})"
+        );
+    }
+    assert!(
+        c.friction >= min_mu,
+        "friction = {} should be >= MIN_MU ({min_mu})",
+        c.friction,
+    );
+}
+
+// ============================================================================
+// AC35e: ENABLE_OVERRIDE preserves condim
+// ============================================================================
+
+#[test]
+fn ac35e_override_preserves_condim() {
+    // Geom with condim=6, override active. Assert contact.dim == 6.
+    // Confirms override does NOT affect condim (spec: "Condim is never overridden").
+    let mjcf = r#"
+    <mujoco model="override_condim">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" condim="3"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" condim="6"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = [0.05, 0.8];
+    model.o_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    model.o_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
+    model.o_margin = 0.1;
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact near floor");
+
+    let c = &data.contacts[0];
+    // condim = max(6, 3) = 6, regardless of override
+    assert_eq!(
+        c.dim, 6,
+        "condim must NOT be overridden (expected 6, got {})",
+        c.dim
+    );
+
+    // Solver params still come from override
+    assert_relative_eq!(c.solref[0], 0.05, epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], 0.8, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35f: ENABLE_OVERRIDE with non-zero geom gap
+// ============================================================================
+
+#[test]
+fn ac35f_override_with_geom_gap() {
+    // Geoms with non-zero gap attribute, override active.
+    // includemargin = o_margin - (gap1 + gap2)
+    let mjcf = r#"
+    <mujoco model="override_gap">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" gap="0.005"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" gap="0.005"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let custom_margin = 0.1;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = [0.05, 0.8];
+    model.o_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    model.o_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact near floor");
+
+    let c = &data.contacts[0];
+    // includemargin = o_margin - (gap1 + gap2) = 0.1 - (0.005 + 0.005) = 0.09
+    let expected_includemargin = custom_margin - (0.005 + 0.005);
+    assert_relative_eq!(c.includemargin, expected_includemargin, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35g: ENABLE_OVERRIDE with o_margin = 0
+// ============================================================================
+
+#[test]
+fn ac35g_override_zero_margin() {
+    // Override active with o_margin = 0. Spheres separated by small gap that
+    // would normally be within geom_margin. Override margin = 0 should prevent
+    // contact detection.
+    let mjcf = r#"
+    <mujoco model="override_zero_margin">
+        <option gravity="0 0 0" timestep="0.002"/>
+        <worldbody>
+            <body name="a" pos="-0.105 0 0">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.05"/>
+            </body>
+            <body name="b" pos="0.105 0 0">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.05"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    // Surface gap = 0.21 - 0.2 = 0.01
+    // Combined geom_margin = 0.05 + 0.05 = 0.10 > 0.01 → contact without override
+
+    // Case 1: No override — geom margins detect contact
+    let model_no = load_model(mjcf).expect("load");
+    let mut data_no = model_no.make_data();
+    data_no.forward(&model_no).expect("forward");
+    assert!(
+        data_no.ncon > 0,
+        "without override, geom margins should detect contact (gap=0.01, margin=0.10)"
+    );
+
+    // Case 2: Override with o_margin = 0 → AABB expansion = 0, narrowphase margin = 0
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_margin = 0.0;
+    model.o_solref = [0.02, 1.0];
+    model.o_solimp = [0.9, 0.95, 0.001, 0.5, 2.0];
+    model.o_friction = [1.0, 1.0, 0.005, 0.0001, 0.0001];
+
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(
+        data.ncon, 0,
+        "with override o_margin=0, no contact should be detected (spheres not touching)"
+    );
+}
