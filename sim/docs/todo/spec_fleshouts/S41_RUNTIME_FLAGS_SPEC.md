@@ -416,6 +416,18 @@ These warnings are removed when the corresponding subsystem ships. The
 `tracing::warn!` fires once per model load (not per step), so there is
 no performance concern.
 
+**Cross-reference requirement:** When §50 (CCD) and §52 (inverse
+dynamics) are specced, their specs **must** include a section titled
+"S41 stub-only flag activation" listing which flags gain guard sites:
+- §50 must wire: `ENABLE_MULTICCD`, `DISABLE_NATIVECCD`
+- §52 must wire: `ENABLE_FWDINV`, `ENABLE_INVDISCRETE`
+
+This ensures the connection is bidirectional — not only documented here
+(where someone implementing §50 might not look) but also in the spec
+they will actually be reading. Until those specs exist, this paragraph
+is the canonical tracking point. When a stub-only flag gains its guard
+site, remove the corresponding `tracing::warn!` in the same commit.
+
 ### S4. Runtime disable flag guards
 
 Each guard follows this pattern:
@@ -1015,6 +1027,28 @@ clamp. After the split, clamp each component independently (the clamp
 is per-vertex, so two passes through the vertex loop — or compute both
 clamped magnitudes before the J^T application). Either approach preserves
 the stability guarantee.
+
+**Prescribed approach:** Compute both `spring_mag` and `damper_mag`
+separately, clamp each independently using the same per-vertex stability
+threshold, then apply each to `qfrc_spring` / `qfrc_damper` respectively.
+Do NOT clamp the sum and then split — this changes the clamping
+semantics (the sum-clamp limits total force, independent clamps limit
+each component). Independent clamping is correct because each force
+component can be independently unstable, and the spring/damper flags
+gate them independently.
+
+**Verification note for S4.7-prereq flex bending:** The intermediate
+verification (lines 2674-2683) specifies machine-epsilon tolerance for
+`qfrc_spring + qfrc_damper + qfrc_gravcomp + qfrc_fluid == qfrc_passive`.
+For flex bending specifically, independent per-component clamping may
+produce results that differ from the original sum-then-clamp by more
+than machine epsilon when the clamp was previously active on the
+combined force. This is an **intentional semantic change** (each component
+clamped independently is more correct), not a regression. If the
+verification fails on flex bending DOFs, compare the individual
+`spring_mag` and `damper_mag` values to confirm the clamp is firing on
+both branches correctly. Accept the diff if the only cause is
+independent vs combined clamping.
 
 ##### S4.7c Sub-function guards
 
@@ -1966,7 +2000,21 @@ will stack overflow.
 
 **Current state (verified):** `forward_core()` does NOT call any check
 functions — the checks live in `step()` (`forward/mod.rs:65-66, 73, 81`).
-The pipeline is already structurally correct:
+The pipeline is already structurally correct.
+
+**Mandatory code comment:** The implemented `forward_core()` must include
+this comment at the top of the function body:
+
+```rust
+// INVARIANT: forward_core() must NOT call mj_check_pos, mj_check_vel,
+// or mj_check_acc. mj_check_acc() calls forward() after auto-reset —
+// if forward_core() called check functions, a model that diverges from
+// qpos0 would cause infinite recursion. step() orchestrates the
+// check → forward → check sequence externally. This function is a
+// pure computation with no validation side-effects.
+```
+
+This is the pipeline structure:
 
 ```rust
 // Current step() (forward/mod.rs:58-99):
@@ -2179,6 +2227,34 @@ this allocates. For allocation-free reset (important for RL batch
 environments), implement field-by-field zeroing using the list above.
 Either approach is acceptable for §41 — optimize if profiling shows
 reset is a bottleneck.
+
+**Staleness guard (required regardless of approach):** `Data` will
+gain new fields in future specs. If `mj_reset_data()` uses
+field-by-field zeroing, add a comment at the top listing the canonical
+field inventory version:
+
+```rust
+// Field inventory version: §41 (25 fields in 11 categories).
+// When adding fields to Data, update this function and the inventory
+// in S41_RUNTIME_FLAGS_SPEC.md §S8f.
+```
+
+If `mj_reset_data()` uses `Model::make_data()` + swap, add a
+`#[cfg(test)]` assertion comparing the reset `Data` against
+`Model::make_data()` to catch divergence:
+
+```rust
+#[cfg(test)]
+{
+    let fresh = model.make_data();
+    debug_assert_eq!(
+        std::mem::size_of_val(&data), std::mem::size_of_val(&fresh),
+        "Data struct size changed — mj_reset_data() may need updating"
+    );
+}
+```
+
+Either mechanism ensures new fields don't silently survive resets.
 
 If a `mj_reset_data()` function doesn't exist yet, implement it as part
 of this section. It is analogous to MuJoCo's `mj_resetData()` in
@@ -2841,6 +2917,15 @@ as part of §41 — it is the primary MuJoCo conformance gate for flags.
 end-to-end.** Differential testing (flag on vs off) is too weak to catch
 subtle accumulation-order differences between CortenForge and MuJoCo.
 
+**Minimum merge bar vs full coverage (DT-97 boundary):** §41 requires
+the golden file infrastructure to be operational and **at least one flag**
+(preferably `DISABLE_GRAVITY` — simple, exercises RNE and energy) to have
+a passing golden comparison. This establishes the pattern and proves the
+pipeline works. Full 25-flag golden coverage is tracked as **DT-97**
+(Phase 12) and is NOT a merge blocker for §41. The bootstrap fallback
+(manual capture, below) is acceptable only for the minimum-bar commit;
+DT-97 must use the Python generation script.
+
 1. **Canonical model:** Use a simple but representative MJCF that exercises
    all flag-gated subsystems: joints with stiffness/damping, actuators,
    contacts, limits, equality constraints, gravity. A scaled-down humanoid
@@ -3207,6 +3292,28 @@ in `mj_passive()` (it relies on `mju_zero(ptr, 0)` being a no-op).
   `gpu/tests/integration.rs:213-215` has a hedged NaN-error check
   (`has_nan || errors[1].is_some()`) that needs review post-S8.
   Both must be updated in the **same commit** as S8g.
+- **Reentrancy invariant (S8c):** `forward_core()` must never call check
+  functions (`mj_check_pos`, `mj_check_vel`, `mj_check_acc`).
+  `mj_check_acc()` calls `mj_forward()` after auto-reset — if
+  `forward_core()` contained check calls, a model that diverges from
+  `qpos0` would stack overflow. Currently safe (verified), but a future
+  refactor could break this silently. The mandatory code comment (S8c)
+  documents the invariant at the enforcement site.
+- **Stub-only flag cross-reference gap:** Four flags (`ENABLE_FWDINV`,
+  `ENABLE_INVDISCRETE`, `ENABLE_MULTICCD`, `DISABLE_NATIVECCD`) have
+  constants and parser/builder wiring but no runtime guard site. The
+  `tracing::warn!` (S3b) provides runtime detection, but the reverse
+  cross-reference requirement (S3b addendum) is the primary mitigation —
+  S50 and S52 specs must include a "S41 stub-only flag activation"
+  section when written.
+- **`mj_reset_data()` field staleness:** The exhaustive field inventory
+  (S8f, 11 categories) will go stale as future specs add Data fields.
+  The staleness guard (S8f addendum) mitigates this via a code-level
+  version comment or `#[cfg(test)]` size assertion.
+- **Flex bending force split (S4.7b Site 5):** Independent per-component
+  clamping changes semantics from the current sum-then-clamp. The S4.7b
+  addendum prescribes the correct approach and documents the expected
+  verification behavior.
 - **Low risk:** Most guards are additive (new early-return paths). All disable
   flags default to "off" (bit not set), preserving current behavior.
 
