@@ -1,6 +1,6 @@
 # §41 — Runtime Flag Wiring (+ DT-61)
 
-**Status:** Not started
+**Status:** ✅ Complete
 **Phase:** Roadmap Phase 2 — Runtime Flag Wiring
 **Effort:** L (expanded to subsume DT-93, DT-94, DT-95)
 **Prerequisites:** None
