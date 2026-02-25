@@ -374,7 +374,7 @@ guard site** because their subsystems do not exist yet:
 | `ENABLE_INVDISCRETE` | §52 | Discrete inverse dynamics |
 | `ENABLE_MULTICCD` | §50 | Multi-point CCD |
 | `DISABLE_NATIVECCD` | §50 | Native CCD dispatch |
-| `DISABLE_MIDPHASE` | DT-99 (S9-full) | BVH midphase (stub guard exists, fast path does not) |
+| ~~`DISABLE_MIDPHASE`~~ | ~~DT-99 (S9-full)~~ **Done** | BVH midphase fully wired — `use_bvh` guard in `collide_with_mesh()` |
 
 A user who sets these flags in MJCF gets silent no-op behavior — the flag
 is stored but nothing checks it. This is a conformance trap: the XML
@@ -407,9 +407,8 @@ if !flag.nativeccd {  // default is true (enabled); warn when user disables it
         "DISABLE_NATIVECCD set but CCD (§50) not implemented — flag has no effect"
     );
 }
-// Note: DISABLE_MIDPHASE is not warned here because the stub guard in
-// collision/mod.rs already exists (S9-stub) — it just always takes the
-// brute-force path. The flag IS checked; it just doesn't have a fast path yet.
+// Note: DISABLE_MIDPHASE is not warned here — S9-full (DT-99) is complete.
+// The flag gates BVH vs brute-force in collide_with_mesh() and is fully functional.
 ```
 
 These warnings are removed when the corresponding subsystem ships. The
@@ -2353,25 +2352,22 @@ To detect NaN events:
 
 ### S9. BVH midphase integration (subsumes DT-94)
 
-**Implementation phasing:** S9 is a self-contained feature that happens
-to be gated by a runtime flag. To avoid coupling the BVH integration
-(complex, collision-domain) with the flag wiring (broad, cross-cutting),
-implementation is split into two phases:
+**Implementation phasing:** S9 was implemented in two phases:
 
-- **S9-stub (ships with §41):** Define `DISABLE_MIDPHASE` constant,
-  wire parser/builder, add guard site in `collision/mod.rs` that checks
-  the flag but always takes the brute-force path (no midphase code path
-  yet). This ensures the flag infrastructure is complete even before the
-  BVH is connected.
-- **S9-full (separate commit, can ship independently):** Per-mesh BVH
-  storage, build-phase BVH construction, midphase dispatch in
-  narrowphase. When this lands, the guard site from S9-stub gains its
-  fast path. S9-full is tracked as **DT-99**.
+- **S9-stub (shipped with §41):** ✅ `DISABLE_MIDPHASE` constant,
+  parser/builder wiring, guard site in `collision/mod.rs`.
+- **S9-full (DT-99):** ✅ **Done.** Added `use_bvh: bool` parameter to
+  all 5 mesh collision functions (`mesh_sphere_contact`,
+  `mesh_capsule_contact`, `mesh_box_contact`, `mesh_mesh_contact`,
+  `mesh_mesh_deepest_contact`). `collide_with_mesh()` computes
+  `use_bvh = !disabled(model, DISABLE_MIDPHASE)` and threads it to all
+  13 call sites. Brute-force fallback iterates all triangles / all
+  triangle pairs. AC31/AC33 conformance tests verify equivalence.
 
-`sim/L0/core/src/mid_phase.rs` (1,178 lines) contains a complete BVH
-implementation (top-down median-split AABB tree) that is not yet called
-from the collision pipeline (`collision/mod.rs`). S9-full integrates it
-into the collision pipeline and activates the `DISABLE_MIDPHASE` guard.
+`sim/L0/core/src/mid_phase.rs` contains the BVH implementation (top-down
+median-split AABB tree). `TriangleMeshData` builds a BVH on construction.
+The collision pipeline uses BVH queries by default and falls back to
+brute-force when `DISABLE_MIDPHASE` is set.
 
 **Verified against:** MuJoCo's `engine_collision_driver.c` midphase
 architecture and existing CortenForge `mid_phase.rs` API.
@@ -2800,10 +2796,10 @@ con.friction = assign_friction(model, &combined_friction);
     Model fields (`o_margin`, `o_solref`, `o_solimp`, `o_friction`) with
     defaults + parser for `<option>` attributes. Flag exists but has no
     runtime effect.
-15. **S9-full** (**DT-99**, separate commit, can ship independently of §41)
-    — BVH midphase: per-mesh BVH storage in Model, build BVHs during
-    compilation, midphase dispatch in narrowphase. Activates the guard
-    site from S9-stub.
+15. **S9-full** (**DT-99**, ✅ **Done**)
+    — BVH midphase: `use_bvh` parameter on 5 mesh collision functions,
+    `DISABLE_MIDPHASE` guard in `collide_with_mesh()`, brute-force
+    fallback paths, AC31/AC33 conformance tests.
 16. **S10-full** (**DT-100**, separate commit, can ship independently of §41)
     — Global override: assignment helpers, 6 guard sites in broadphase/
     narrowphase/constraint. Activates the flag from S10-stub.
