@@ -31,6 +31,7 @@ DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
 | ~~DT-93~~ | §41 | ~~Auto-reset on NaN/divergence~~ **Subsumed by §41 S8** | Medium | T2 |
 | DT-96 | §41 | Lazy energy evaluation (`flg_energypos`/`flg_energyvel`) — MuJoCo avoids redundant energy recomputation when a plugin or sensor already triggered it. Only matters once plugins or energy-dependent sensors exist. | Low | T1 |
 | DT-97 | §41 | Golden file generation for per-flag trajectory conformance (AC18). Generate `.npy` reference data from MuJoCo Python for all 25 flags. Required before v1.0 if not completed during §41 implementation. | Medium | T2 |
+| DT-98 | §41 | Remove `passive` backward-compatibility shim in CortenForge v2.0. Currently `<flag passive="..."/>` maps to both `spring` and `damper` with a deprecation warning (S2a). In v2.0, `passive` should be silently ignored (matching MuJoCo 3.3.6+ behavior). | Low | T1 |
 
 ---
 

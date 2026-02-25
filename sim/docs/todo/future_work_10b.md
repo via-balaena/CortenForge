@@ -28,8 +28,8 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | [future_work_10g.md](./future_work_10g.md) | 6. Actuator & Dynamics | DT-56 – DT-61 | 6 | 2 | 3 | 1 |
 | [future_work_10h.md](./future_work_10h.md) | 7. Sensor Gaps | DT-62 – DT-65 | 4 | 1 | 3 | 0 |
 | [future_work_10i.md](./future_work_10i.md) | 8. Flex / Deformable Body | DT-66 – DT-73, DT-85 – DT-90 | 14 | 7 | 3 | 4 |
-| [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92, ~~DT-93~~ (subsumed by §41), DT-96 – DT-97 | 15 | 6 | 4 | 5 |
-| **Total** | | | **96** | **32** | **43** | **22** |
+| [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92, ~~DT-93~~ (subsumed by §41), DT-96 – DT-98 | 16 | 6 | 4 | 6 |
+| **Total** | | | **97** | **32** | **43** | **22** |
 
 **Priority breakdown:** 22 Medium, 70 Low. No High — these are all sub-items
 within completed tasks, not critical gaps.

@@ -2,9 +2,10 @@
 
 > **Status**: Draft — 2026-02-21
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
-> plus the ~96 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-97).
+> plus the ~97 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-98).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
 > DT-96 (lazy energy eval) and DT-97 (golden file conformance) added during §41 audit.
+> DT-98 (`passive` shim v2.0 removal) added during §41 A+ review.
 >
 > **Current position**: Through §40c on `future_work_10.md`.
 

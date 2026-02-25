@@ -205,7 +205,7 @@ If `passive` is encountered, emit a `tracing::warn!` deprecation notice.
 **Removal timeline:** The `passive` backward-compatibility shim will be
 removed in CortenForge v2.0. At that point, `passive` will be silently
 ignored (matching MuJoCo's behavior). Until then, it maps to both `spring`
-and `damper` with a deprecation warning.
+and `damper` with a deprecation warning. **Tracked as DT-98.**
 
 #### S2b. Add missing flag fields
 
@@ -915,32 +915,19 @@ Both arrays must exist in CortenForge. `actuator_force` is the per-actuator
 output (used by sensors, diagnostics); `qfrc_actuator` is the joint-space
 projection consumed by the integrator.
 
-**Site 2 — actuator velocity computation:**
-**File:** `forward/actuation.rs` — `mj_actuator_vel()` / transmission
-velocity loop (lines ~236-270, where `actuator_velocity` is populated)
+~~**Site 2 — actuator velocity computation:**~~ **REMOVED.**
+**Verified against MuJoCo `engine_forward.c`:** `actuator_velocity` is
+computed in `mj_fwdVelocity()` (velocity-dependent stage), NOT in
+`mj_fwdActuation()`. It is `actuator_moment^T * qvel` — pure transmission
+kinematics. MuJoCo computes it **unconditionally**, regardless of
+`DISABLE_ACTUATION`. When actuation is disabled, `actuator_velocity`
+remains valid (it reflects joint velocities projected through the
+transmission, not actuator forces). Do NOT gate it.
 
-Note: despite the name, `actuator_velocity` is computed inside
-`forward/actuation.rs` (not `forward/velocity.rs`). `forward/velocity.rs`
-handles `mj_fwd_velocity()` (Coriolis/centrifugal/passive), which is a
-different pipeline stage.
-
-**VERIFY BEFORE IMPLEMENTATION:** Confirm against MuJoCo
-`engine_forward.c` whether `actuator_velocity` is zeroed when
-`DISABLE_ACTUATION` is set, or whether MuJoCo still computes it as
-part of the transmission block (which runs unconditionally). If MuJoCo
-does NOT gate `actuator_velocity` on `DISABLE_ACTUATION`, remove this
-site — transmission geometry (including velocity) should remain
-unconditional. The current spec assumes it is gated; adjust if wrong.
-
-When actuation is disabled, zero `actuator_velocity` instead of computing it:
-
-```rust
-if !disabled(model, DISABLE_ACTUATION) {
-    // compute actuator_velocity = moment^T * qvel
-} else {
-    data.actuator_velocity.fill(0.0);
-}
-```
+If CortenForge currently computes `actuator_velocity` inside
+`forward/actuation.rs` rather than `forward/velocity.rs`, move it to
+`mj_fwd_velocity()` as part of this refactor for MuJoCo conformance.
+This is a pipeline-ordering fix, not a flag guard.
 
 **Site 3 — Activation integration in `Data::integrate()`:**
 **File:** `integrate/mod.rs` — lines 37–47
@@ -1410,7 +1397,10 @@ pub fn is_bad(x: f64) -> bool {
 }
 ```
 
-**File:** `types/flags.rs` (alongside `disabled()`/`enabled()` helpers).
+**File:** `types/validation.rs` (new). These are numeric validation utilities,
+not flag helpers — they don't depend on `Model` or flag constants. Keeping
+them in `flags.rs` would conflate two unrelated concerns. `validation.rs`
+contains `is_bad()`, `MAX_VAL`, and any future numeric sanity checks.
 
 #### S8b. Warning system
 
@@ -1635,35 +1625,57 @@ and never mutate `Data`. The caller (`step()`) propagates the error via
 `?`, aborting the step. This is idiomatic Rust but does NOT match MuJoCo's
 auto-reset semantics.
 
-**Required change:** Refactor all three functions from error-returning to
-void with internal state mutation:
+**Required change:** Refactor the three check functions from error-returning
+to void with internal state mutation:
 
 | Aspect | Current | After S8 |
 |--------|---------|----------|
-| Signature | `fn(model, data) -> Result<(), StepError>` | `fn(model, data: &mut Data)` |
+| Check signature | `fn(model, data) -> Result<(), StepError>` | `fn(model, data: &mut Data)` |
 | On bad value | Returns `Err(StepError::InvalidPosition)` | Calls `mj_warning()` + `mj_reset_data()` internally |
 | Caller (`step()`) | `check::mj_check_pos(model, self)?;` | `check::mj_check_pos(model, self);` (no `?`) |
-| `StepError` variants | `InvalidPosition`, `InvalidVelocity`, `InvalidAcceleration` | Remove — replaced by `Warning::BadQpos/BadQvel/BadQacc` |
+| `StepError` check variants | `InvalidPosition`, `InvalidVelocity`, `InvalidAcceleration` | **Remove** — replaced by `Warning::BadQpos/BadQvel/BadQacc` |
 | `mj_check_acc` threshold | `is_finite()` only (no magnitude bound — asymmetric with `check_pos`/`check_vel` which already check `abs() > 1e10`) | `is_bad()` — unifies all three to use the same `> MAX_VAL` threshold (MuJoCo conformance) |
 
-**Breaking change:** `step()` currently returns `Result<(), StepError>`.
-After this refactor, NaN/divergence is handled internally (auto-reset)
-and `step()` no longer needs to propagate check errors.
+**Behavior change risk for `mj_check_acc`:** The current implementation
+only rejects non-finite values (NaN/inf). After S8, it will also reject
+values exceeding `MAX_VAL = 1e10` (positive or negative). Simulations
+that produce large-but-finite accelerations (>1e10) will now auto-reset
+where they previously continued. This is correct MuJoCo behavior, but
+may cause regressions in models with extreme force scales. If this
+surfaces, the model's force scales are the root problem, not the check.
 
-**`StepError` scope:** `StepError` is referenced in 10 files across
-sim-core (`enums.rs`, `forward/mod.rs`, `forward/check.rs`,
-`forward/acceleration.rs`, `integrate/rk4.rs`, `lib.rs`, `linalg.rs`,
-`constraint/solver/hessian.rs`, `derivatives.rs`, `batch.rs`). Before
-removing it, audit all variants. If variants beyond
-`InvalidPosition`/`InvalidVelocity`/`InvalidAcceleration` exist (e.g.,
-for solver divergence), keep the enum and remove only the check variants.
-If `StepError` exists solely for check errors, remove it entirely and
-change `step()` to return `()`.
+**`StepError` pruning (not removal):** `StepError` has 6 variants:
 
-**Final `step()` signature:** `pub fn step(model: &Model, data: &mut Data)`
-(returns `()`). This is MuJoCo-conformant — `mj_step()` returns `void`.
+| Variant | Source | After S8 |
+|---------|--------|----------|
+| `InvalidPosition` | check.rs | **Remove** — replaced by `Warning::BadQpos` |
+| `InvalidVelocity` | check.rs | **Remove** — replaced by `Warning::BadQvel` |
+| `InvalidAcceleration` | check.rs | **Remove** — replaced by `Warning::BadQacc` |
+| `CholeskyFailed` | linalg.rs, hessian.rs | **Keep** — non-recoverable math error |
+| `LuSingular` | linalg.rs | **Keep** — non-recoverable math error |
+| `InvalidTimestep` | forward/mod.rs | **Keep** — configuration error |
+
+Remove only the 3 check variants. Keep `StepError` with the remaining 3
+math/config variants. `step()` **keeps returning `Result<(), StepError>`**.
+
+**Deliberate CortenForge deviation from MuJoCo:** MuJoCo's `mj_step()`
+returns `void` and silently absorbs Cholesky failures (producing
+numerically degenerate results). This is inappropriate for Rust —
+`CholeskyFailed`, `LuSingular`, and `InvalidTimestep` represent
+non-recoverable errors that the caller must handle. Silently swallowing
+them would violate Rust's error-handling philosophy and make debugging
+impossible. Auto-reset is the right answer for NaN/divergence (transient,
+recoverable); it is the wrong answer for singular mass matrices
+(structural, non-recoverable).
+
+**Final `step()` signature:** `pub fn step(&mut self, model: &Model) -> Result<(), StepError>`
+(unchanged return type, but check-related `?` calls removed — only
+`CholeskyFailed`/`LuSingular`/`InvalidTimestep` propagate).
 
 **Migration path for users relying on `Result`-based NaN detection:**
+`step()` still returns `Result<(), StepError>`, but NaN/divergence is
+no longer surfaced as `Err` — it's handled internally via auto-reset.
+To detect NaN events:
 1. Set `<flag autoreset="disable"/>` to prevent silent resets
 2. After each `step()`, check `data.warnings[Warning::BadQpos as usize].count`
    (or use `data.warning_mut(Warning::BadQpos).count`) to detect NaN events
@@ -2057,9 +2069,10 @@ con.friction = assign_friction(model, &combined_friction);
 ## Implementation Order
 
 1. **S1** — Define all flag constants in `enums.rs`. Create `types/flags.rs`
-   with `disabled()`, `enabled()`, `actuator_disabled()`, `is_bad()`,
-   `MAX_VAL`. Create `types/warning.rs` with `Warning` enum, `WarningStat`,
-   `NUM_WARNINGS`, `mj_warning()`.
+   with `disabled()`, `enabled()`, `actuator_disabled()`. Create
+   `types/validation.rs` with `is_bad()`, `MAX_VAL`. Create
+   `types/warning.rs` with `Warning` enum, `WarningStat`, `NUM_WARNINGS`,
+   `mj_warning()`.
 2. **S2** — Parser changes: split `passive`, add missing fields, fix docs,
    fix `island` default (S2e), add `actuatorgravcomp` joint attribute.
 3. **S3** — Builder wiring: `apply_flags()` replaces single sleep-only block.
@@ -2103,10 +2116,12 @@ con.friction = assign_friction(model, &combined_friction);
 10. ~~**S6** — Fluid sleep filtering.~~ **Already done** (§40c).
 11. **S7** — Per-group actuator disabling: model fields, builder wiring,
     `actuator_disabled()` helper, runtime guards in actuation + integration.
-12. **S8** — Auto-reset: warning system, `is_bad()` validation, refactor
-    existing `mj_check_pos`/`mj_check_vel`/`mj_check_acc` from
-    `Result<(), StepError>` to void+auto-reset (S8g), `mj_reset_data()`,
-    pipeline integration. Wires `DISABLE_AUTORESET` guard (S4.16).
+12. **S8** — Auto-reset: warning system, `is_bad()` validation (in
+    `types/validation.rs`), refactor existing `mj_check_pos`/`mj_check_vel`/
+    `mj_check_acc` from `Result<(), StepError>` to void+auto-reset (S8g),
+    prune `StepError` (remove 3 check variants, keep `CholeskyFailed`/
+    `LuSingular`/`InvalidTimestep`), `mj_reset_data()`, pipeline
+    integration. Wires `DISABLE_AUTORESET` guard (S4.16).
 13. **S9-stub** — `DISABLE_MIDPHASE` constant + parser/builder wiring +
     guard site in `collision/mod.rs` (always takes brute-force path).
 14. **S10-stub** — `ENABLE_OVERRIDE` constant + parser/builder wiring +
@@ -2395,6 +2410,32 @@ sub-functions (including `mj_contactPassive()`) are skipped via the
 top-level `mj_passive()` early return (S4.7a), regardless of the
 `DISABLE_CONTACT` flag state. Verify both paths independently.
 
+### AC41 — DISABLE_ACTUATION + per-group orthogonality
+When `DISABLE_ACTUATION` is set AND `disableactuator` has bits set, ALL
+actuators are disabled (blanket flag takes precedence — the per-group
+mechanism is redundant but harmless). When only per-group disabling is
+active, only those groups are disabled. When neither is set, all
+actuators are active. Verify the three states independently. Also verify
+that per-group disabling still freezes activation (`act_dot = 0`) when
+`DISABLE_ACTUATION` is NOT set — the two mechanisms use the same
+`act_dot = 0` freezing pattern but at different granularities.
+
+### AC42 — DISABLE_CONSTRAINT cascading `nefc`
+When `DISABLE_CONSTRAINT` is set: `mj_collision()` returns early →
+`data.ncon == 0`. `mj_makeConstraint()` is skipped → `data.nefc == 0`.
+`mj_fwdConstraint()` hits the `nefc == 0` early exit → `qacc ==
+qacc_smooth`, `qfrc_constraint` is all zeros, `efc_force` is all zeros.
+Verify the full causal chain, not just the final `qacc` result.
+
+### AC43 — Sleep-filtered aggregation correctness
+For a fully-awake model (no sleeping bodies), the sleep-filtered
+aggregation path (S4.7e, using `dof_awake_ind` indirection) produces
+bitwise-identical `qfrc_passive` values as the non-filtered path (direct
+`0..nv` iteration). Test by running the same model with `ENABLE_SLEEP`
+set but all bodies awake — the indexed path should produce identical
+results to running with sleep disabled. This catches off-by-one errors
+in the indexed iteration without requiring actual sleeping bodies.
+
 ---
 
 ## Files
@@ -2402,7 +2443,8 @@ top-level `mj_passive()` early return (S4.7a), regardless of the
 | File | Change |
 |------|--------|
 | `sim/L0/core/src/types/enums.rs` | S1: 17 disable + 4 enable constants (pure values, no `Model` dependency) |
-| `sim/L0/core/src/types/flags.rs` (new) | S1: `disabled()`, `enabled()`, `actuator_disabled()` helpers, `is_bad()`, `MAX_VAL` |
+| `sim/L0/core/src/types/flags.rs` (new) | S1: `disabled()`, `enabled()`, `actuator_disabled()` helpers |
+| `sim/L0/core/src/types/validation.rs` (new) | S8a: `is_bad()`, `MAX_VAL` (numeric validation, not flag-related) |
 | `sim/L0/core/src/types/warning.rs` (new) | S8b: `Warning` enum, `WarningStat`, `NUM_WARNINGS`, `mj_warning()` |
 | `sim/L0/mjcf/src/types.rs` | S2: Split `passive` → `spring` + `damper`, add `fwdinv`/`invdiscrete`/`autoreset`, fix docstrings, fix `island` default (S2e) |
 | `sim/L0/mjcf/src/parser.rs` | S2: Parse `spring`, `damper`, `passive` (compat), `fwdinv`, `invdiscrete`, `autoreset`, `actuatorgravcomp` on joints, `actuatorgroupdisable` on option, `o_margin`/`o_solref`/`o_solimp`/`o_friction` on option |
@@ -2410,14 +2452,14 @@ top-level `mj_passive()` early return (S4.7a), regardless of the
 | `sim/L0/core/src/types/data.rs` | S4.7-prereq: Add `qfrc_spring`, `qfrc_damper` fields. S8b: Add `warnings: [WarningStat; NUM_WARNINGS]`, `was_reset()` method |
 | `sim/L0/core/src/types/model.rs` | S4.2a: Add `jnt_actgravcomp: Vec<bool>`. S7a: Add `disableactuator: u32`, `actuator_group: Vec<i32>`. S10a: Add `o_margin`, `o_solref`, `o_solimp`, `o_friction` |
 | `sim/L0/core/src/types/model_init.rs` | S4.2a, S7a, S10a: Initialize new Model fields |
-| `sim/L0/core/src/forward/mod.rs` | S5.1, S8e, S8g: Energy guards, refactor `step()` to remove `?` error propagation from check calls (check functions become void+auto-reset), update `mj_check_acc` pipeline placement |
-| `sim/L0/core/src/forward/actuation.rs` | S4.8 Site 2: Actuator velocity guard (actuator_velocity is computed here, not in velocity.rs) |
+| `sim/L0/core/src/forward/mod.rs` | S5.1, S8e, S8g: Energy guards, remove `?` error propagation from check calls (check functions become void+auto-reset, `step()` keeps `Result` for `CholeskyFailed`/`LuSingular`/`InvalidTimestep`), update `mj_check_acc` pipeline placement |
+| `sim/L0/core/src/forward/actuation.rs` | S4.2, S4.2a, S4.8, S4.9, S8d: Actuation disable guard (Site 1), actuator-level gravcomp routing, clampctrl guard, ctrl validation. ~~Site 2 actuator_velocity~~ removed — `actuator_velocity` is unconditional transmission kinematics, computed in `mj_fwdVelocity()` |
+| `sim/L0/core/src/forward/velocity.rs` | S4.8: Move `actuator_velocity` computation here if currently in `actuation.rs` (MuJoCo computes it in `mj_fwdVelocity()`, unconditionally) |
 | `sim/L0/core/src/sensor/mod.rs` | S4.10: Sensor disable guard (inside each sensor function, no zeroing) |
 | `sim/L0/core/src/dynamics/rne.rs` | S4.2: Gravity guard in `mj_rne()` + `mj_gravcomp()` |
 | `sim/L0/core/src/energy.rs` | S4.2, S5.1: Gravity guard in `mj_energy_pos()`, energy enable guard |
 | `sim/L0/core/src/constraint/assembly.rs` | S4.1, S4.4-S4.6: Contact instantiation guard, equality, frictionloss, limit row guards |
 | `sim/L0/core/src/forward/passive.rs` | S4.7-prereq, S4.7, S4.2a: Refactor to separate spring/damper arrays, mj_passive top-level guard, gravcomp routing (S6 fluid sleep filter already done via §40c) |
-| `sim/L0/core/src/forward/actuation.rs` | S4.2, S4.2a, S4.9, S8d: Actuator-level gravcomp routing, clampctrl guard, ctrl validation |
 | `sim/L0/core/src/constraint/mod.rs` | S4.3, S4.11: Constraint assembly guard, warmstart function |
 | `sim/L0/core/src/collision/mod.rs` | S4.1, S4.12, S4.13, S9e, S10d: Collision disable guard, filterparent guard, midphase dispatch, broadphase margin override |
 | `sim/L0/core/src/collision/narrow.rs` or `mesh_collide.rs` | S9d: Midphase dispatch for mesh-mesh and mesh-primitive pairs |
@@ -2426,6 +2468,7 @@ top-level `mj_passive()` early return (S4.7a), regardless of the
 | `sim/L0/core/src/integrate/rk4.rs` | S4.8 Site 3, S7d Site 2: Add per-actuator disable gating to RK4 activation integration |
 | `sim/L0/core/src/constraint/contact_params.rs` (new) | S10c: `assign_margin`, `assign_ref`, `assign_imp`, `assign_friction` helpers |
 | `sim/L0/core/src/forward/check.rs` (refactor) | S8c, S8g: Refactor existing `mj_check_pos`, `mj_check_vel`, `mj_check_acc` from `Result<(), StepError>` returns to MuJoCo-matching void functions with internal auto-reset. Add `mj_reset_data`. See S8g for migration details. |
+| `sim/L0/core/src/types/enums.rs` (modify) | S8g: Remove `InvalidPosition`, `InvalidVelocity`, `InvalidAcceleration` variants from `StepError`. Keep `CholeskyFailed`, `LuSingular`, `InvalidTimestep`. |
 | `sim/L0/tests/scripts/gen_flag_golden.py` (new) | AC18: Python script to generate golden `.npy` reference data from MuJoCo. Uses `uv run` + `mujoco` pip package. |
 | `sim/L0/tests/assets/golden/flags/` (new dir) | AC18: Golden `.npy` files for per-flag trajectory conformance testing |
 
@@ -2472,6 +2515,12 @@ top-level `mj_passive()` early return (S4.7a), regardless of the
   it must not change which contacts are generated, only the set of
   triangle pairs tested. Run mesh collision tests with midphase enabled
   and disabled and compare results.
+- **Behavior change:** `mj_check_acc` currently rejects only non-finite values.
+  After S8, it also rejects `|qacc| > 1e10` (via unified `is_bad()`). Models
+  with extreme force scales may now auto-reset where they previously continued.
+  This is correct MuJoCo conformance — the model's force scales are the root
+  problem, not the check threshold. If regressions surface, fix the model,
+  don't weaken the check.
 - **Low risk:** Most guards are additive (new early-return paths). All disable
   flags default to "off" (bit not set), preserving current behavior.
 
