@@ -2,9 +2,11 @@
 //!
 //! Implements the full constraint pipeline: compute unconstrained acceleration,
 //! assemble constraint rows, dispatch to the configured solver (PGS, CG, Newton),
-//! and map solver forces back to joint space. Corresponds to MuJoCo's
-//! `engine_core_constraint.c` (assembly) and the solver dispatch in
-//! `engine_forward.c`.
+//! and map solver forces back to joint space. Gated by `DISABLE_CONSTRAINT`
+//! (§41 S4.1) — when set, assembly and solve are skipped entirely.
+//!
+//! Corresponds to MuJoCo's `engine_core_constraint.c` (assembly) and the solver
+//! dispatch in `engine_forward.c`.
 
 pub(crate) mod assembly;
 pub(crate) mod equality;

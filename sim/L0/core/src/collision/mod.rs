@@ -1,6 +1,10 @@
 //! Collision detection pipeline — broad-phase dispatch, affinity filtering, and
 //! contact parameter mixing.
 //!
+//! Gated by `DISABLE_CONTACT` and `DISABLE_CONSTRAINT` (§41 S4.1) — both flags
+//! skip collision entirely. `ENABLE_OVERRIDE` (§41 S10) replaces per-geom solver
+//! parameters with global `o_margin`/`o_solref`/`o_solimp`/`o_friction`.
+//!
 //! Corresponds to MuJoCo's `engine_collision_driver.c` (broad-phase dispatch)
 //! and parameter combination from `engine_collision_primitive.c`.
 
