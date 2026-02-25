@@ -19,7 +19,7 @@ All other 19 parsed flags are dead — never converted to `Model.disableflags`
 / `Model.enableflags` bitfields, never checked at runtime.
 
 Additionally:
-- The parser has a single `passive` field, but MuJoCo 3.3.1+ uses separate
+- The parser has a single `passive` field, but MuJoCo 3.4.0+ uses separate
   `spring` and `damper` flags (the `passive` attribute was removed).
 - Three flags are not parsed at all: `fwdinv`, `invdiscrete`, `autoreset`.
 
@@ -30,7 +30,11 @@ parser, builder, and runtime guards.
 
 ## MuJoCo Reference
 
-Two `u32` bitfields from `mujoco.h`:
+**Verified against:** MuJoCo 3.4.0 and 3.5.0 source (`mjmodel.h`,
+`engine_forward.c`, `engine_passive.c`, `engine_init.c`). Enums are
+identical in both versions — no flags added between 3.4.0 and 3.5.0.
+
+Two `u32` bitfields from `mjmodel.h`:
 
 ### Disable flags (`mjtDisableBit`, `mjNDISABLE = 19`)
 
@@ -138,7 +142,7 @@ pub spring: bool,   // default true — was `passive`
 pub damper: bool,   // default true — was `passive`
 ```
 
-**Note:** MuJoCo 3.3.1+ removed the `passive` XML attribute entirely,
+**Note:** MuJoCo 3.4.0+ removed the `passive` XML attribute entirely,
 replacing it with independent `spring` and `damper`. MuJoCo itself provides
 no backward compatibility — `passive` is silently ignored (unrecognized
 attributes are skipped). As a **CortenForge extension**, our parser accepts
@@ -160,13 +164,13 @@ In `parse_flag_attrs()`:
 
 - Replace `flag.passive = parse_flag(e, "passive", ...)` with:
   ```rust
-  // MuJoCo 3.3.1+ removed `passive`, replacing it with independent
+  // MuJoCo 3.4.0+ removed `passive`, replacing it with independent
   // `spring` and `damper`. Accept `passive` for backward compatibility
   // but warn on deprecation.
   let passive_override = get_attribute_opt(e, "passive");
   if let Some(ref v) = passive_override {
       tracing::warn!(
-          "MJCF <flag passive=\"{}\"/> is deprecated since MuJoCo 3.3.1; \
+          "MJCF <flag passive=\"{}\"/> is deprecated since MuJoCo 3.4.0; \
            use <flag spring=\"{}\" damper=\"{}\"/> instead",
           v, v, v
       );
@@ -193,7 +197,7 @@ Several `MjcfFlag` field docs are wrong. Fix all to match MuJoCo semantics:
 | `refsafe` | "reference configuration in computation" | "Solref time constant safety floor (solref[0] >= 2*timestep)" |
 | `filterparent` | "filtering of contact pairs" | "Parent-child body collision filtering" |
 | `eulerdamp` | "Euler angle damping" | "Implicit damping in Euler integrator" |
-| `island` | "body sleeping/deactivation" | "Island discovery for constraint solving" |
+| `island` | "body sleeping/deactivation" | "Island discovery for parallel constraint solving" |
 | `multiccd` | "multiple CCD iterations" | "Multi-point CCD for flat surfaces" |
 | `nativeccd` | "native CCD" | "Native CCD (vs libccd fallback for convex collision)" |
 
@@ -260,7 +264,12 @@ its own early return):
 
 ```rust
 pub fn mj_collision(model: &Model, data: &mut Data) {
-    data.ncon = 0; // Reset contact count unconditionally
+    // Unconditional initialization — runs regardless of disable flags.
+    // MuJoCo resets ncon, arena, and EFC arrays before checking flags.
+    data.ncon = 0;
+    data.contacts.clear();
+    // If CortenForge has arena/EFC state equivalent to MuJoCo's
+    // resetArena(d) + mj_clearEfc(d), reset it here unconditionally.
 
     if disabled(model, DISABLE_CONTACT)
         || disabled(model, DISABLE_CONSTRAINT)
@@ -273,9 +282,14 @@ pub fn mj_collision(model: &Model, data: &mut Data) {
 }
 ```
 
-MuJoCo zeroes `ncon` at the top of `mj_collision()`, then returns early
-when **any** of the three conditions holds. The call site in
-`forward_core()` remains unconditional — `mj_collision()` is always invoked.
+MuJoCo unconditionally resets `ncon`, calls `resetArena(d)`, and calls
+`mj_clearEfc(d)` at the top of `mj_collision()`, **before** checking any
+disable flags. Only after this cleanup does it check the three-condition
+OR guard and potentially return early. The call site in `forward_core()`
+remains unconditional — `mj_collision()` is always invoked.
+
+Note: `nbodyflex` is `m->nbody + m->nflex` in MuJoCo (computed locally
+inside the function).
 
 **Site 2 — `mj_instantiateContact()` constraint assembly:**
 **File:** `constraint/assembly.rs`
@@ -449,6 +463,16 @@ let damper_force = if has_damper { damping * velocity } else { 0.0 };
 qfrc_passive[dof] += spring_force + damper_force;
 ```
 
+**MuJoCo implementation detail:** MuJoCo uses two gating patterns
+interchangeably:
+1. **Conditional blocks:** `if (has_spring) { ... }` for joint/DOF springs
+2. **Multiplication-based zeroing:** `stiffness = m->tendon_stiffness[i] * has_spring`
+   — multiplying the coefficient by the boolean (0 or 1) to zero it when
+   disabled. This is equivalent but avoids branching.
+
+Either approach is acceptable for CortenForge — the conditional block
+pattern is clearer.
+
 Same pattern applies to:
 - Joint springs/dampers
 - Tendon springs/dampers
@@ -462,9 +486,9 @@ The following sub-functions have their own guards (independent of spring/damper)
 
 - **`mj_gravcomp()`**: Gated on `DISABLE_GRAVITY` and zero gravity only
   (see S4.2). NOT gated on `DISABLE_DAMPER` directly.
-- **`mj_fluid()`**: Gated on `density == 0 && viscosity == 0` only. NOT
-  gated on spring/damper flags directly. Skipped only via the top-level
-  `mj_passive()` early return (S4.7a).
+- **`mj_fluid()`**: Gated on `model.opt.viscosity == 0 && model.opt.density == 0`
+  only (global option fields, not per-body). NOT gated on spring/damper flags
+  directly. Skipped only via the top-level `mj_passive()` early return (S4.7a).
 - **`mj_contactPassive()`**: Gated on `DISABLE_CONTACT` (see S4.7d).
 
 ##### S4.7d `DISABLE_CONTACT` gates `mj_contactPassive()`
@@ -489,15 +513,23 @@ MuJoCo gates actuation at **four** locations:
 **Site 1 — `mj_fwd_actuation()`:**
 **File:** `forward/actuation.rs`
 
-Guard the actuation force computation. When disabled, zero `qfrc_actuator`
-and return early:
+Guard the actuation force computation. MuJoCo unconditionally zeroes the
+per-actuator force vector (`actuator_force`) at the top of the function
+before checking disable flags. Then, when disabled, it zeroes the
+joint-space force vector (`qfrc_actuator`) and returns early:
 
 ```rust
+// Unconditional — zero per-actuator forces regardless of disable flags.
+data.actuator_force[..model.nu].fill(0.0);
+
 if model.nu == 0 || disabled(model, DISABLE_ACTUATION) {
     data.qfrc_actuator.fill(0.0);
     return;
 }
 ```
+
+If CortenForge has a separate `actuator_force` array (distinct from
+`qfrc_actuator`), it must be zeroed unconditionally before the guard.
 
 **Site 2 — `mj_fwd_velocity()` actuator velocity:**
 **File:** `forward/velocity.rs` (or equivalent)
@@ -584,16 +616,28 @@ fn warmstart(model: &Model, data: &mut Data) {
         return;
     }
 
-    // Warmstart: copy qacc_warmstart → qacc, evaluate cost,
-    // fall back to qacc_smooth if warmstart is worse.
-    // For PGS: compare force-based cost
-    // For Newton/CG: compare acceleration-based Gauss cost
-    // Handle island DOFs separately if islands are active
+    // Smart warmstart: copy qacc_warmstart → qacc, evaluate cost via
+    // mj_constraintUpdate(), then compare against qacc_smooth cost.
+    // MuJoCo falls back to qacc_smooth if warmstart produces higher cost.
+    //
+    // Solver-specific logic:
+    //   PGS:       Compare force-based warmstart cost. If > 0, zero
+    //              efc_force and qfrc_constraint instead of warmstarting.
+    //   Newton/CG: Compare Gauss cost (acceleration-based). If warmstart
+    //              cost > smooth cost, fall back to qacc_smooth.
+    //
+    // Island handling: unconstrained DOFs (index >= nidof) always get
+    // qacc_smooth regardless of warmstart outcome.
 }
 ```
 
 Key detail: when disabled, `qacc` is set to `qacc_smooth` (unconstrained
 accelerations) AND `efc_force` is zeroed. Both assignments are required.
+
+When enabled, the warmstart path is NOT a simple copy — it evaluates the
+cost of `qacc_warmstart` via `mj_constraintUpdate()` and falls back to
+`qacc_smooth` if warmstart produces a worse starting point. This "smart
+warmstart" behavior should be matched for full conformance.
 
 #### S4.12 `DISABLE_FILTERPARENT` — disable parent-child filtering
 
@@ -861,7 +905,8 @@ no effect on `qfrc_actuator`. Transmission geometry still computed.
 
 ### AC7 — Sensor disable
 `<flag sensor="disable"/>` skips sensor evaluation. `sensordata` array is
-not updated (retains previous values or zeros).
+not updated (retains previous/stale values — MuJoCo does NOT zero
+`sensordata` on disable).
 
 ### AC8 — Warmstart disable
 `<flag warmstart="disable"/>` starts solver from zero. Solver converges
@@ -940,6 +985,14 @@ sub-functions are skipped: `mj_springdamper()`, `mj_gravcomp()`,
 `gravcomp="1"` still receives gravity compensation when only ONE of
 spring/damper is disabled (the `mj_passive()` early return requires BOTH).
 Gravity compensation is only independently gated by `DISABLE_GRAVITY`.
+
+### AC22 — Unconditional initialization before guards
+`mj_collision()` unconditionally resets `ncon`, clears contacts, and
+resets EFC arrays **before** checking disable flags. `mj_fwd_actuation()`
+unconditionally zeroes `actuator_force` before the `DISABLE_ACTUATION`
+guard. `mj_passive()` unconditionally zeroes all passive force vectors
+before the spring/damper early-return guard. This "init-then-guard"
+pattern ensures deterministic state regardless of which flags are set.
 
 ---
 
