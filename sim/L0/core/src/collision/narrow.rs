@@ -233,14 +233,18 @@ pub fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Optio
 ///
 /// Called **after** `apply_pair_overrides` so the global override wins over
 /// pair-level values. No-op when `ENABLE_OVERRIDE` is not set.
+///
+/// `gap` is the additive gap from the pair (mechanism-2) so that
+/// `includemargin = o_margin - gap` preserves the gap while overriding margin.
 #[inline]
-pub fn apply_global_override(model: &Model, contact: &mut Contact) {
+pub fn apply_global_override(model: &Model, contact: &mut Contact, gap: f64) {
     if !enabled(model, ENABLE_OVERRIDE) {
         return;
     }
     contact.solref = model.o_solref;
     contact.solreffriction = model.o_solref;
     contact.solimp = model.o_solimp;
+    contact.includemargin = model.o_margin - gap;
     let mu = assign_friction(model, &contact.mu);
     contact.mu = mu;
     contact.friction = mu[0];
@@ -320,7 +324,7 @@ pub fn make_contact_from_geoms(
         includemargin,
         mu,
         solref,
-        solreffriction: [0.0, 0.0],
+        solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
         frame: (t1, t2).into(),
         flex_vertex: None,

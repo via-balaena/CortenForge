@@ -1843,3 +1843,153 @@ fn ac36b_non_override_friction_clamping() {
     }
     assert!(c.friction >= min_mu, "friction scalar should be >= MIN_MU");
 }
+
+// ============================================================================
+// AC35b: ENABLE_OVERRIDE + mechanism-2 pair contacts
+// ============================================================================
+
+#[test]
+fn ac35b_override_with_pair_contacts() {
+    // Two spheres with an explicit <pair> entry. ENABLE_OVERRIDE should
+    // replace the pair's solver params (solref, solimp, friction, margin)
+    // with the global o_* values.
+    let mjcf = r#"
+    <mujoco model="override_pair_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <contact>
+            <pair geom1="floor" geom2="sphere"
+                  condim="3" friction="0.3 0.3 0.001 0.0001 0.0001"
+                  solref="0.01 0.5" solimp="0.8 0.85 0.002 0.3 1.5"
+                  margin="0.05" gap="0.01"/>
+        </contact>
+    </mujoco>
+    "#;
+
+    let custom_solref = [0.07, 0.9];
+    let custom_solimp = [0.7, 0.75, 0.003, 0.4, 2.5];
+    let custom_friction = [0.8, 0.8, 0.02, 0.005, 0.005];
+    let custom_margin = 0.15;
+    let pair_gap = 0.01;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    // Place ball near floor so contact is generated within override margin.
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    // Should have generated a mechanism-2 contact (via contact_pairs).
+    assert!(
+        data.ncon > 0,
+        "should generate at least one pair contact near floor"
+    );
+
+    let c = &data.contacts[0];
+
+    // Solver params must come from global override, not the pair.
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+
+    // Friction must come from global override (clamped by MIN_MU).
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
+
+    // includemargin = o_margin - pair.gap
+    assert_relative_eq!(c.includemargin, custom_margin - pair_gap, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35c: ENABLE_OVERRIDE + flex contacts
+// ============================================================================
+
+#[test]
+fn ac35c_override_with_flex_contacts() {
+    // Flex cloth near a rigid sphere with ENABLE_OVERRIDE. Verify flex-rigid
+    // contacts use global override params (solref, solimp, friction, margin).
+    // Uses a sphere on a separate body (not world body) to avoid the
+    // parent-child filter that rejects flex-vertex-vs-worldbody-geom contacts.
+    let mjcf = r#"
+    <mujoco model="override_flex_test">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
+        <worldbody>
+            <body name="sphere" pos="0 0 -0.5">
+                <geom type="sphere" size="1.0" mass="100.0"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cloth" dim="2" density="500" radius="0.02">
+                <contact margin="0.01" condim="3" solref="0.5 2.0" friction="0.5"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <vertex pos="-0.1 -0.1 0.5  0.1 -0.1 0.5  -0.1 0.1 0.5  0.1 0.1 0.5"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let custom_solref = [0.06, 0.85];
+    let custom_solimp = [0.75, 0.8, 0.004, 0.35, 2.0];
+    let custom_friction = [0.9, 0.9, 0.03, 0.006, 0.006];
+    let custom_margin = 0.2;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    // Vertices start at z=0.1 with radius 0.02, so surface at z=0.08.
+    // With o_margin=0.2, detection threshold is generous. Step once.
+    data.forward(&model).expect("forward");
+
+    // Find a flex contact (flex_vertex is Some).
+    let flex_contact = data.contacts.iter().find(|c| c.flex_vertex.is_some());
+    assert!(
+        flex_contact.is_some(),
+        "should generate at least one flex-rigid contact (ncon={}, nflexvert={})",
+        data.ncon,
+        model.nflexvert,
+    );
+
+    let c = flex_contact.unwrap();
+
+    // Solver params must come from global override.
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+
+    // Friction from global override.
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
+
+    // includemargin = o_margin - gap.
+    // Default flex gap + geom gap = 0.0 for both, so includemargin = o_margin.
+    assert_relative_eq!(c.includemargin, custom_margin, epsilon = 1e-12);
+}

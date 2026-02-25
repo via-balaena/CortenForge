@@ -209,7 +209,7 @@ pub fn make_contact_flex_rigid(
         includemargin,
         mu,
         solref,
-        solreffriction: [0.0, 0.0],
+        solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
         frame: (t1, t2).into(),
         flex_vertex: Some(vertex_idx),

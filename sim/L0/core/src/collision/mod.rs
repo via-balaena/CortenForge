@@ -25,7 +25,7 @@ use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
 use crate::types::{
     DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
-    Model, SleepState, enabled,
+    Model, SleepState, disabled, enabled,
 };
 use nalgebra::{Point3, Vector3};
 
@@ -83,7 +83,7 @@ pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize
     //
     // S4.12: Skip parent-child exclusion when DISABLE_FILTERPARENT is set,
     // allowing parent-child geom pairs to collide.
-    if model.disableflags & DISABLE_FILTERPARENT == 0
+    if !disabled(model, DISABLE_FILTERPARENT)
         && body1 != 0
         && body2 != 0
         && (model.body_parent[body1] == body2 || model.body_parent[body2] == body1)
@@ -356,10 +356,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
 
     // S4.1: Skip collision detection when contacts or constraints are disabled.
     let nbodyflex = model.nbody + model.nflex;
-    if model.disableflags & DISABLE_CONTACT != 0
-        || model.disableflags & DISABLE_CONSTRAINT != 0
-        || nbodyflex < 2
-    {
+    if disabled(model, DISABLE_CONTACT) || disabled(model, DISABLE_CONSTRAINT) || nbodyflex < 2 {
         return;
     }
 
@@ -400,7 +397,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         let sap = SweepAndPrune::new(aabbs);
         let candidates = sap.query_pairs();
 
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+        let sleep_enabled = enabled(model, ENABLE_SLEEP);
 
         // Process candidate pairs
         // The SAP already filtered to only AABB-overlapping pairs
@@ -483,7 +480,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
             {
                 apply_pair_overrides(&mut contact, pair);
-                apply_global_override(model, &mut contact);
+                apply_global_override(model, &mut contact, pair.gap);
                 // MIN_MU clamp for the non-override pair path (apply_global_override
                 // already handles the override case; this covers the else branch).
                 if !enabled(model, ENABLE_OVERRIDE) {
@@ -515,12 +512,6 @@ fn mj_collision_flex(model: &Model, data: &mut Data) {
         let vpos = data.flexvert_xpos[vi];
         let flex_id = model.flexvert_flexid[vi];
         let radius = model.flexvert_radius[vi];
-        // S10: When override active, use half the global margin (per-geom expansion).
-        let margin = if enabled(model, ENABLE_OVERRIDE) {
-            0.5 * model.o_margin
-        } else {
-            model.flex_margin[flex_id]
-        };
 
         // Skip pinned vertices (infinite mass = immovable)
         if model.flexvert_invmass[vi] <= 0.0 {
@@ -552,13 +543,26 @@ fn mj_collision_flex(model: &Model, data: &mut Data) {
                 continue;
             }
 
+            // S10: When override active, use full o_margin for narrowphase detection.
+            // Non-override path uses flex_margin only (existing behavior).
+            let effective_margin = if enabled(model, ENABLE_OVERRIDE) {
+                model.o_margin
+            } else {
+                model.flex_margin[flex_id]
+            };
+
             // Narrowphase: vertex sphere vs rigid geom
             let geom_pos = data.geom_xpos[gi];
             let geom_mat = data.geom_xmat[gi];
 
-            if let Some((depth, normal, contact_pos)) =
-                narrowphase_sphere_geom(vpos, radius + margin, gi, model, geom_pos, geom_mat)
-            {
+            if let Some((depth, normal, contact_pos)) = narrowphase_sphere_geom(
+                vpos,
+                radius + effective_margin,
+                gi,
+                model,
+                geom_pos,
+                geom_mat,
+            ) {
                 let contact = make_contact_flex_rigid(model, vi, gi, contact_pos, normal, depth);
                 data.contacts.push(contact);
                 data.ncon += 1;
