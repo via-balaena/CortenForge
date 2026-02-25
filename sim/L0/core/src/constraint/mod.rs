@@ -333,7 +333,7 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
 
     // Step 2: Assemble ALL constraints (universal for all solver types)
     // S4.3: Skip assembly entirely when constraints are disabled.
-    if model.disableflags & DISABLE_CONSTRAINT == 0 {
+    if !disabled(model, DISABLE_CONSTRAINT) {
         assemble_unified_constraints(model, data, qacc_for_assembly);
     }
     let nefc = data.efc_type.len();

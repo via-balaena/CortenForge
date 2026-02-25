@@ -15,6 +15,7 @@ use crate::constraint::impedance::{
     compute_kbip, compute_regularization, normalize_quat4,
 };
 use crate::constraint::jacobian::compute_contact_jacobian;
+use crate::types::flags::disabled;
 use crate::types::{
     ConstraintState, ConstraintType, DISABLE_CONTACT, DISABLE_EQUALITY, DISABLE_FRICTIONLOSS,
     DISABLE_LIMIT, Data, EqualityType, MjJointType, Model,
@@ -56,9 +57,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
 
     // === Phase 1: Count rows ===
     let mut nefc = 0usize;
-    let equality_disabled = model.disableflags & DISABLE_EQUALITY != 0;
-    let frictionloss_disabled = model.disableflags & DISABLE_FRICTIONLOSS != 0;
-    let limit_disabled = model.disableflags & DISABLE_LIMIT != 0;
+    let equality_disabled = disabled(model, DISABLE_EQUALITY);
+    let frictionloss_disabled = disabled(model, DISABLE_FRICTIONLOSS);
+    let limit_disabled = disabled(model, DISABLE_LIMIT);
 
     // Equality constraints (S4.4: gated on DISABLE_EQUALITY)
     if !equality_disabled {
@@ -156,7 +157,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
 
     // Contacts (S4.1 Site 2: defense-in-depth guard on DISABLE_CONTACT)
     // §32: pyramidal contacts emit 2*(dim-1) facet rows instead of dim rows.
-    let contact_disabled = model.disableflags & DISABLE_CONTACT != 0;
+    let contact_disabled = disabled(model, DISABLE_CONTACT);
     if !contact_disabled {
         for c in &data.contacts {
             let is_pyramidal = c.dim >= 3 && model.cone == 0 && c.mu[0] >= 1e-10;

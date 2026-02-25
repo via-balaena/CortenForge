@@ -305,6 +305,7 @@ mod tests {
         // Create a pendulum but step without gravity (check kinetic energy conservation)
         let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
         model.gravity = nalgebra::Vector3::zeros();
+        model.enableflags |= ENABLE_ENERGY; // Explicitly enable energy tracking
         let mut data = model.make_data();
 
         // Give it initial velocity
