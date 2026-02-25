@@ -21,15 +21,15 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | File | Group | Items | Count | T1 | T2 | T3 |
 |------|-------|-------|-------|---:|---:|---:|
 | [future_work_10b.md](./future_work_10b.md) | 1. Defaults & MJCF Parsing Gaps | DT-1 – DT-17 | 17 | 10 | 7 | 0 |
-| [future_work_10c.md](./future_work_10c.md) | 2. Contact & Collision System | DT-18 – DT-27 | 10 | 2 | 5 | 3 |
+| [future_work_10c.md](./future_work_10c.md) | 2. Contact & Collision System | DT-18 – DT-27, ~~DT-94~~, ~~DT-95~~ (subsumed by §41) | 12 | 2 | 6 | 4 |
 | [future_work_10d.md](./future_work_10d.md) | 3. Tendon System | DT-28 – DT-35 | 8 | 2 | 4 | 2 |
 | [future_work_10e.md](./future_work_10e.md) | 4. Solver Optimizations | DT-36 – DT-44 | 9 | 1 | 5 | 3 |
 | [future_work_10f.md](./future_work_10f.md) | 5. Derivatives & Analytical Methods | DT-45 – DT-55 | 11 | 1 | 7 | 3 |
 | [future_work_10g.md](./future_work_10g.md) | 6. Actuator & Dynamics | DT-56 – DT-61 | 6 | 2 | 3 | 1 |
 | [future_work_10h.md](./future_work_10h.md) | 7. Sensor Gaps | DT-62 – DT-65 | 4 | 1 | 3 | 0 |
 | [future_work_10i.md](./future_work_10i.md) | 8. Flex / Deformable Body | DT-66 – DT-73, DT-85 – DT-90 | 14 | 7 | 3 | 4 |
-| [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92 | 13 | 6 | 2 | 5 |
-| **Total** | | | **92** | **32** | **39** | **21** |
+| [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92, ~~DT-93~~ (subsumed by §41) | 14 | 6 | 3 | 5 |
+| **Total** | | | **95** | **32** | **42** | **22** |
 
 **Priority breakdown:** 22 Medium, 70 Low. No High — these are all sub-items
 within completed tasks, not critical gaps.

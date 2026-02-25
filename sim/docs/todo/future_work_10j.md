@@ -4,7 +4,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ---
 
-## Group 9 — Misc Pipeline & API (13 items)
+## Group 9 — Misc Pipeline & API (14 items)
 
 **Spec approach:** ~~DT-74/75 need individual specs (T3 — Jacobian correctness bugs,
 need formula derivation)~~ **DONE** — both specced and implemented.
@@ -28,6 +28,7 @@ DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
 | DT-84 | §32 | `mju_encodePyramid` utility not implemented — API compatibility only | Low | T1 |
 | DT-91 | §2 | Warmstart `Vec<f64>` → `SmallVec<[f64; 6]>` — avoid heap allocation in warmstart vectors | Low | T1 |
 | DT-92 | §9 | Parallel reset for `BatchSim` — sequential O(nq+nv+nu+na) reset deferred | Low | T1 |
+| ~~DT-93~~ | §41 | ~~Auto-reset on NaN/divergence~~ **Subsumed by §41 S8** | Medium | T2 |
 
 ---
 

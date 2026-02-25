@@ -4,7 +4,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ---
 
-## Group 2 — Contact & Collision System (10 items)
+## Group 2 — Contact & Collision System (12 items)
 
 **Spec approach:** DT-19/21/25 each need individual specs (T3). DT-20/24 share
 a "Contact Force Cleanup" spec (T2). DT-23 joins the cross-file "Solver Param
@@ -23,3 +23,5 @@ spec (T2). DT-18/22 implement directly (T1).
 | DT-25 | §11 | Deformable-rigid friction cone projection — normal-only solver is current scaffold | Medium | T3 |
 | DT-26 | §11 | Contact re-detect + re-solve iteration loop after XPBD projection | Low | T2 |
 | DT-27 | §11 | XPBD solver cross-iteration lambda accumulation fix | Low | T2 |
+| ~~DT-94~~ | §41 | ~~BVH midphase integration into rigid body collision pipeline~~ **Subsumed by §41 S9** | Medium | T3 |
+| ~~DT-95~~ | §41 | ~~Global contact parameter override~~ **Subsumed by §41 S10** | Medium | T2 |

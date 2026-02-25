@@ -85,6 +85,10 @@ needed to produce given accelerations.
 2. For a system at equilibrium (qacc=0), `qfrc_inverse` equals gravity + passive.
 3. Round-trip: `forward()` → read `qacc` → `inverse()` → `qfrc_inverse` matches
    the total applied forces.
+4. `ENABLE_FWDINV` guard wired: when set, compute forward/inverse comparison
+   statistics (§41 S5.3).
+5. `ENABLE_INVDISCRETE` guard wired: when set, use discrete-time inverse
+   dynamics (§41 S5.4).
 
 #### Files
 

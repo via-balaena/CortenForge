@@ -2,7 +2,8 @@
 
 > **Status**: Draft — 2026-02-21
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
-> plus the ~92 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-92).
+> plus the ~95 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-95).
+> DT-93/94/95 were added during §41 spec and subsumed into §41.
 >
 > **Current position**: Through §40c on `future_work_10.md`.
 
@@ -80,8 +81,7 @@ high-value, and reduce the chance of compounding errors in later work.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §41 | 10 | — | Wire all 19 `disableflags` and 6 `enableflags` from MJCF `<flag>` through to runtime pipeline gating. Conformance-critical — controls whether gravity, contacts, limits, equality, actuation, sensors, etc. are active. |
-| DT-61 | 10g | T1 | Define `DISABLE_GRAVITY` flag (currently only `gravity.norm() == 0.0` check) |
+| §41 | 10 | — | Wire all 19 `disableflags` and 6 `enableflags` end-to-end. Subsumes DT-61 (DISABLE_GRAVITY), DT-93 (auto-reset on NaN/divergence), DT-94 (BVH midphase integration), DT-95 (global contact parameter override). See [spec](todo/spec_fleshouts/S41_RUNTIME_FLAGS_SPEC.md). |
 
 ---
 

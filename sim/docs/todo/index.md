@@ -103,7 +103,7 @@ in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 
 **Correctness bugs (Phase 1):** ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), ~~DT-78~~ (done), ~~DT-16~~ (done), ~~DT-90~~ (done)
 
-**Runtime flags (Phase 2):** DT-61
+**Runtime flags (Phase 2):** DT-61, DT-93, DT-94, DT-95 (all subsumed by §41)
 
 **Core API (Phase 3):** DT-21, DT-41, DT-79
 
@@ -195,7 +195,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 | Phase | Focus | Key Items | Count |
 |-------|-------|-----------|-------|
 | 1 | Correctness bugs | ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), ~~DT-78~~ (done), ~~DT-16~~ (done), ~~DT-90~~ (done) | 6 (6 done) |
-| 2 | Runtime flag wiring | §41, DT-61 | 2 |
+| 2 | Runtime flag wiring | §41 (subsumes DT-61, DT-93, DT-94, DT-95) | 1 |
 | 3 | Core API gaps | DT-21, DT-41, §52, §53, §59, DT-79 | 6 |
 | 4 | Core Data fields | §51, §56 | 2 |
 | 5 | Actuator completeness | DT-56/57/58/59/77, DT-6/8/9/60, §61, §63 | 11 |
@@ -249,7 +249,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
                           ▼
    ┌─────────────────────────────────────────────────────┐
    │ Roadmap Phase 2: Runtime flags                       │
-   │ §41 disableflags/enableflags, DT-61 DISABLE_GRAVITY │
+   │ §41 (subsumes DT-61, DT-93, DT-94, DT-95)          │
    └──────────────────────┬──────────────────────────────┘
                           │
                           ▼

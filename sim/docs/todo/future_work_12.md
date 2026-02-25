@@ -198,6 +198,10 @@ Implement conservative-advancement CCD for convex geom pairs.
 1. A fast-moving sphere does not tunnel through a thin wall.
 2. `ccd_iterations=0` disables CCD (current behavior, regression).
 3. CCD contacts produce forces consistent with discrete contacts at TOI.
+4. `DISABLE_NATIVECCD` guard wired: when set, fall back to libccd for
+   convex collision (§41 S4.17).
+5. `ENABLE_MULTICCD` guard wired: when set, use multi-point CCD for
+   flat surfaces (§41 S5.5).
 
 #### Files
 - `sim/L0/core/src/collision/` — post-broadphase CCD pass
