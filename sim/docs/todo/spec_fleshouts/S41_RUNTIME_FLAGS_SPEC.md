@@ -19,8 +19,8 @@ All other 19 parsed flags are dead — never converted to `Model.disableflags`
 / `Model.enableflags` bitfields, never checked at runtime.
 
 Additionally:
-- The parser has a single `passive` field, but MuJoCo 3.x uses separate
-  `spring` and `damper` flags.
+- The parser has a single `passive` field, but MuJoCo 3.3.1+ uses separate
+  `spring` and `damper` flags (the `passive` attribute was removed).
 - Three flags are not parsed at all: `fwdinv`, `invdiscrete`, `autoreset`.
 
 This spec wires all 25 flags (19 disable + 6 enable) end-to-end: constants,
@@ -138,7 +138,7 @@ pub spring: bool,   // default true — was `passive`
 pub damper: bool,   // default true — was `passive`
 ```
 
-**Note:** MuJoCo 3.3.6+ removed the `passive` XML attribute entirely,
+**Note:** MuJoCo 3.3.1+ removed the `passive` XML attribute entirely,
 replacing it with independent `spring` and `damper`. MuJoCo itself provides
 no backward compatibility — `passive` is silently ignored (unrecognized
 attributes are skipped). As a **CortenForge extension**, our parser accepts
@@ -160,13 +160,13 @@ In `parse_flag_attrs()`:
 
 - Replace `flag.passive = parse_flag(e, "passive", ...)` with:
   ```rust
-  // MuJoCo 3.3.6+ removed `passive`, replacing it with independent
+  // MuJoCo 3.3.1+ removed `passive`, replacing it with independent
   // `spring` and `damper`. Accept `passive` for backward compatibility
   // but warn on deprecation.
   let passive_override = get_attribute_opt(e, "passive");
   if let Some(ref v) = passive_override {
       tracing::warn!(
-          "MJCF <flag passive=\"{}\"/> is deprecated since MuJoCo 3.3.6; \
+          "MJCF <flag passive=\"{}\"/> is deprecated since MuJoCo 3.3.1; \
            use <flag spring=\"{}\" damper=\"{}\"/> instead",
           v, v, v
       );
@@ -249,9 +249,10 @@ let disabled = |flag: u32| model.disableflags & flag != 0;
 Or uses the `disabled()` helper from S1. Below is the complete guard table
 with exact file/function locations.
 
-#### S4.1 `DISABLE_CONTACT` / `DISABLE_CONSTRAINT` — skip collision detection
+#### S4.1 `DISABLE_CONTACT` / `DISABLE_CONSTRAINT` — skip collision + contact rows
 
-**File:** `collision/mod.rs` — `mj_collision()`
+**Site 1 — `mj_collision()` collision detection:**
+**File:** `collision/mod.rs`
 
 The guard is **inside** `mj_collision()` itself (matching MuJoCo's
 architecture — `mj_collision()` is always called, the function handles
@@ -263,6 +264,7 @@ pub fn mj_collision(model: &Model, data: &mut Data) {
 
     if disabled(model, DISABLE_CONTACT)
         || disabled(model, DISABLE_CONSTRAINT)
+        || model.nbodyflex() < 2  // no collision possible with < 2 bodies/flexes
     {
         return; // No collision detection needed
     }
@@ -272,8 +274,23 @@ pub fn mj_collision(model: &Model, data: &mut Data) {
 ```
 
 MuJoCo zeroes `ncon` at the top of `mj_collision()`, then returns early
-when **either** flag is set. The call site in `forward_core()` remains
-unconditional — `mj_collision()` is always invoked.
+when **any** of the three conditions holds. The call site in
+`forward_core()` remains unconditional — `mj_collision()` is always invoked.
+
+**Site 2 — `mj_instantiateContact()` constraint assembly:**
+**File:** `constraint/assembly.rs`
+
+Even if contacts exist from a previous step (defense-in-depth), contact
+constraint instantiation is independently gated:
+
+```rust
+if disabled(model, DISABLE_CONTACT) || data.ncon == 0 || model.nv == 0 {
+    return;
+}
+```
+
+This is a redundant guard — `mj_collision()` already zeroes `ncon` — but
+matches MuJoCo's layered gating architecture.
 
 #### S4.2 `DISABLE_GRAVITY` — zero gravity in bias forces (DT-61)
 
@@ -325,6 +342,28 @@ let grav = if disabled(model, DISABLE_GRAVITY) {
 potential -= mass * grav.dot(&com);
 ```
 
+**File:** `forward/actuation.rs` — `mj_fwd_actuation()`
+
+Actuator-level gravity compensation. MuJoCo adds `qfrc_gravcomp` to
+`qfrc_actuator` for joints with `jnt_actgravcomp` set, gated on
+`DISABLE_GRAVITY`. This is separate from the passive-level `mj_gravcomp()`:
+
+```rust
+if model.ngravcomp > 0
+    && !disabled(model, DISABLE_GRAVITY)
+    && model.gravity.norm() > 0.0
+{
+    for jnt in 0..model.njnt {
+        if !model.jnt_actgravcomp[jnt] { continue; }
+        let dofadr = model.jnt_dofadr[jnt];
+        let dofnum = jnt_dofnum(model.jnt_type[jnt]);
+        for i in 0..dofnum {
+            data.qfrc_actuator[dofadr + i] += data.qfrc_gravcomp[dofadr + i];
+        }
+    }
+}
+```
+
 #### S4.3 `DISABLE_CONSTRAINT` — skip constraint assembly + solver
 
 **File:** `constraint/mod.rs` — `mj_fwd_constraint()` or
@@ -369,13 +408,26 @@ MuJoCo's passive force pipeline has a **hierarchical guard structure**:
 
 ##### S4.7a Top-level `mj_passive()` early return
 
-When **both** `DISABLE_SPRING` AND `DISABLE_DAMPER` are set, `mj_passive()`
-returns immediately — skipping ALL passive sub-functions:
+MuJoCo **unconditionally zeros** all passive force vectors (`qfrc_spring`,
+`qfrc_damper`, `qfrc_gravcomp`, `qfrc_fluid`, `qfrc_passive`) for awake
+DOFs at the top of `mj_passive()`, **before** the early-return guard. This
+zeroing happens regardless of whether the function continues or returns
+early.
+
+After zeroing, when **both** `DISABLE_SPRING` AND `DISABLE_DAMPER` are set,
+`mj_passive()` returns immediately — skipping ALL passive sub-functions:
 
 ```rust
+// Zero all passive force vectors unconditionally (awake DOFs only).
+data.qfrc_spring[..].fill(0.0);
+data.qfrc_damper[..].fill(0.0);
+data.qfrc_gravcomp[..].fill(0.0);
+data.qfrc_fluid[..].fill(0.0);
+data.qfrc_passive[..].fill(0.0);
+
 if disabled(model, DISABLE_SPRING) && disabled(model, DISABLE_DAMPER) {
-    // Zero all passive force vectors and return.
-    // This skips mj_springdamper, mj_gravcomp, mj_fluid, mj_contactPassive.
+    // Early return — skips mj_springdamper, mj_gravcomp, mj_fluid,
+    // mj_contactPassive. Force vectors are already zeroed above.
     return;
 }
 ```
@@ -432,7 +484,7 @@ also passive contact forces (e.g., viscous contact damping).
 
 #### S4.8 `DISABLE_ACTUATION` — skip actuator forces
 
-MuJoCo gates actuation at **three** locations:
+MuJoCo gates actuation at **four** locations:
 
 **Site 1 — `mj_fwd_actuation()`:**
 **File:** `forward/actuation.rs`
@@ -668,6 +720,14 @@ if enabled(model, ENABLE_ENERGY) {
 Currently both run unconditionally. MuJoCo only computes energy when
 `ENABLE_ENERGY` is set; otherwise both fields are deterministically 0.0.
 
+**Note on lazy evaluation:** MuJoCo wraps the `ENABLE_ENERGY` check inside
+`if (!d->flg_energypos)` / `if (!d->flg_energyvel)` lazy-evaluation flags
+to avoid redundant recomputation when energy was already computed earlier in
+the same step (e.g., by a plugin or sensor). Our pipeline does not currently
+have this lazy-eval mechanism, so the guard simplifies to a direct
+`ENABLE_ENERGY` check. If lazy evaluation is added later, the guard should
+be updated to match.
+
 #### S5.2 `ENABLE_OVERRIDE` — contact parameter override
 
 **File:** `collision/mod.rs` — broadphase margin + contact parameter combination.
@@ -726,6 +786,25 @@ let bodies = if sleep_enabled && data.nbody_awake < model.nbody {
 
 This is a performance optimization — sleeping bodies have zero velocity so
 fluid forces are zero — but it matches MuJoCo semantics.
+
+### S7. Out of scope: `disableactuator` per-group bitmask
+
+MuJoCo has a third bitfield `opt.disableactuator` (an `int`, 31 usable
+bits) that disables actuators by group ID. It is checked via
+`mj_actuatorDisabled()` inside `mj_fwdActuation()`:
+
+```c
+int mj_actuatorDisabled(const mjModel* m, int i) {
+    int group = m->actuator_group[i];
+    if (group < 0 || group > 30) return 0;
+    return m->opt.disableactuator & (1 << group) ? 1 : 0;
+}
+```
+
+This mechanism is orthogonal to `DISABLE_ACTUATION` (which kills ALL
+actuators). Per-group disabling is deferred to a separate spec — it
+requires `actuator_group` parsing and the `disableactuator` field on
+`Model.opt`, neither of which exist yet.
 
 ---
 
@@ -838,8 +917,11 @@ no clamping occurs.
 
 ### AC18 — MuJoCo conformance
 For each wired disable flag, compare 10-step trajectory against MuJoCo 3.4.0
-with only that flag disabled. Tolerance: `1e-10` per `qacc` component. Flags
-should produce exact gating.
+with only that flag disabled. Tolerance: `1e-8` per `qacc` component.
+(`1e-10` is unrealistic across different linear algebra backends and
+floating-point accumulation orders; MuJoCo's own tests use `1e-8` or
+looser.) Flags should produce exact gating — any residual delta should be
+numerical noise, not a logic error.
 
 ### AC19 — Clampctrl disable
 `<flag clampctrl="disable"/>` allows ctrl values outside ctrlrange. An
@@ -874,9 +956,9 @@ Gravity compensation is only independently gated by `DISABLE_GRAVITY`.
 | `sim/L0/core/src/sensor/mod.rs` | S4.10: Sensor disable guard (inside each sensor function) |
 | `sim/L0/core/src/dynamics/rne.rs` | S4.2: Gravity guard in `mj_rne()` + `mj_gravcomp()` |
 | `sim/L0/core/src/energy.rs` | S4.2: Gravity guard in `mj_energy_pos()` |
-| `sim/L0/core/src/constraint/assembly.rs` | S4.4-S4.6: Equality, frictionloss, limit row guards |
+| `sim/L0/core/src/constraint/assembly.rs` | S4.1, S4.4-S4.6: Contact instantiation guard, equality, frictionloss, limit row guards |
 | `sim/L0/core/src/forward/passive.rs` | S4.7, S6: mj_passive top-level guard, spring/damper independence, contactPassive guard, fluid sleep filter |
-| `sim/L0/core/src/forward/actuation.rs` | S4.9: Clampctrl guard |
+| `sim/L0/core/src/forward/actuation.rs` | S4.2, S4.9: Actuator-level gravcomp guard, clampctrl guard |
 | `sim/L0/core/src/constraint/mod.rs` | S4.3, S4.11: Constraint assembly guard, warmstart function |
 | `sim/L0/core/src/collision/mod.rs` | S4.1, S4.12: Collision disable guard (inside function), filterparent guard |
 | `sim/L0/core/src/constraint/impedance.rs` | S4.15: Refsafe guard |
