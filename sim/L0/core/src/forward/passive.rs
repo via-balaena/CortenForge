@@ -366,6 +366,10 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         return;
     }
 
+    // S4.7b: Component-level spring/damper gates.
+    let has_spring = model.disableflags & DISABLE_SPRING == 0;
+    let has_damper = model.disableflags & DISABLE_DAMPER == 0;
+
     let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
     {
         let mut visitor = PassiveForceVisitor {
@@ -373,6 +377,8 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
             data,
             implicit_mode,
             sleep_enabled,
+            has_spring,
+            has_damper,
         };
         model.visit_joints(&mut visitor);
     }
@@ -389,22 +395,25 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let mut spring_force = 0.0;
         let mut damper_force = 0.0;
 
-        // S6: Deadband spring — force is zero within [lower, upper]
-        let k = model.tendon_stiffness[t];
-        if k > 0.0 {
-            let [lower, upper] = model.tendon_lengthspring[t];
-            if length > upper {
-                spring_force += k * (upper - length);
-            } else if length < lower {
-                spring_force += k * (lower - length);
+        // S4.7b + S6: Deadband spring — gated on DISABLE_SPRING.
+        if has_spring {
+            let k = model.tendon_stiffness[t];
+            if k > 0.0 {
+                let [lower, upper] = model.tendon_lengthspring[t];
+                if length > upper {
+                    spring_force += k * (upper - length);
+                } else if length < lower {
+                    spring_force += k * (lower - length);
+                }
             }
-            // else: deadband, no spring force
         }
 
-        // Damper: F = -b * v
-        let b = model.tendon_damping[t];
-        if b > 0.0 {
-            damper_force -= b * velocity;
+        // S4.7b: Damper — gated on DISABLE_DAMPER.
+        if has_damper {
+            let b = model.tendon_damping[t];
+            if b > 0.0 {
+                damper_force -= b * velocity;
+            }
         }
 
         // Friction loss is now handled entirely by solver constraint rows (§29).
@@ -444,19 +453,21 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         }
     }
 
-    // Flex vertex damping → qfrc_damper (S4.7-prereq).
-    for i in 0..model.nflexvert {
-        let dof_base = model.flexvert_dofadr[i];
-        if dof_base == usize::MAX {
-            continue; // Pinned vertex: no DOFs
-        }
-        let flex_id = model.flexvert_flexid[i];
-        let damp = model.flex_damping[flex_id];
-        if damp <= 0.0 {
-            continue;
-        }
-        for k in 0..3 {
-            data.qfrc_damper[dof_base + k] -= damp * data.qvel[dof_base + k];
+    // S4.7b: Flex vertex damping → qfrc_damper (gated on DISABLE_DAMPER).
+    if has_damper {
+        for i in 0..model.nflexvert {
+            let dof_base = model.flexvert_dofadr[i];
+            if dof_base == usize::MAX {
+                continue; // Pinned vertex: no DOFs
+            }
+            let flex_id = model.flexvert_flexid[i];
+            let damp = model.flex_damping[flex_id];
+            if damp <= 0.0 {
+                continue;
+            }
+            for k in 0..3 {
+                data.qfrc_damper[dof_base + k] -= damp * data.qvel[dof_base + k];
+            }
         }
     }
 
@@ -495,11 +506,14 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let direction = diff / dist;
         let rest_len = model.flexedge_length0[e];
 
-        // Spring force: stiffness * (rest_length - current_length)
-        // Positive when compressed (restoring), negative when stretched.
-        let frc_spring = stiffness * (rest_len - dist);
+        // S4.7b: Spring force gated on DISABLE_SPRING.
+        let frc_spring = if has_spring {
+            stiffness * (rest_len - dist)
+        } else {
+            0.0
+        };
 
-        // Damping force: -damping * edge_velocity
+        // S4.7b: Damping force gated on DISABLE_DAMPER.
         // edge_velocity = d(dist)/dt = (v1 - v0) · direction
         // (§27F) Pinned vertices have dofadr=usize::MAX and zero velocity.
         let dof0 = model.flexvert_dofadr[v0];
@@ -515,7 +529,11 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
             Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
         };
         let edge_velocity = (vel1 - vel0).dot(&direction);
-        let frc_damper = -damping * edge_velocity;
+        let frc_damper = if has_damper {
+            -damping * edge_velocity
+        } else {
+            0.0
+        };
 
         // S4.7-prereq: Apply spring and damper to separate arrays.
         // F_v0 = -direction * force (pulls v0 toward v1 when stretched)
@@ -602,8 +620,12 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let grad_e0 = -grad_a * (1.0 - bary_a) - grad_b * (1.0 - bary_b);
         let grad_e1 = -grad_a * bary_a - grad_b * bary_b;
 
-        // Spring: F = -k * angle_error
-        let spring_mag = -k_bend_raw * angle_error;
+        // S4.7b: Spring gated on DISABLE_SPRING.
+        let spring_mag = if has_spring {
+            -k_bend_raw * angle_error
+        } else {
+            0.0
+        };
 
         // Damper: F = -b * d(theta)/dt, where d(theta)/dt = J · qvel
         // (§27F) Pinned vertices have dofadr=usize::MAX and zero velocity.
@@ -624,7 +646,8 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let vel_b = read_vel(dof_b);
         let theta_dot =
             grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1) + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
-        let damper_mag = -b_bend * theta_dot;
+        // S4.7b: Damper gated on DISABLE_DAMPER.
+        let damper_mag = if has_damper { -b_bend * theta_dot } else { 0.0 };
 
         // S4.7-prereq: Apply spring and damper to separate arrays.
         // Per-vertex stability clamp applied independently to each component.
@@ -694,12 +717,17 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     }
 }
 
-/// Visitor for computing passive forces (springs, dampers, friction loss).
+/// Visitor for computing passive forces (springs, dampers).
+#[allow(clippy::struct_excessive_bools)] // 4 independent configuration flags
 struct PassiveForceVisitor<'a> {
     model: &'a Model,
     data: &'a mut Data,
     implicit_mode: bool,
     sleep_enabled: bool,
+    /// S4.7b: false when DISABLE_SPRING is set.
+    has_spring: bool,
+    /// S4.7b: false when DISABLE_DAMPER is set.
+    has_damper: bool,
 }
 
 impl PassiveForceVisitor<'_> {
@@ -722,16 +750,20 @@ impl PassiveForceVisitor<'_> {
         let jnt_id = ctx.jnt_id;
 
         if !self.implicit_mode {
-            // Spring: τ = -k * (q - springref) → qfrc_spring
-            let stiffness = self.model.jnt_stiffness[jnt_id];
-            let springref = self.model.jnt_springref[jnt_id];
-            let q = self.data.qpos[qpos_adr];
-            self.data.qfrc_spring[dof_adr] -= stiffness * (q - springref);
+            // S4.7b: Spring gated on DISABLE_SPRING.
+            if self.has_spring {
+                let stiffness = self.model.jnt_stiffness[jnt_id];
+                let springref = self.model.jnt_springref[jnt_id];
+                let q = self.data.qpos[qpos_adr];
+                self.data.qfrc_spring[dof_adr] -= stiffness * (q - springref);
+            }
 
-            // Damper: τ = -b * qvel → qfrc_damper
-            let damping = self.model.jnt_damping[jnt_id];
-            let qvel = self.data.qvel[dof_adr];
-            self.data.qfrc_damper[dof_adr] -= damping * qvel;
+            // S4.7b: Damper gated on DISABLE_DAMPER.
+            if self.has_damper {
+                let damping = self.model.jnt_damping[jnt_id];
+                let qvel = self.data.qvel[dof_adr];
+                self.data.qfrc_damper[dof_adr] -= damping * qvel;
+            }
         }
     }
 
@@ -745,8 +777,8 @@ impl PassiveForceVisitor<'_> {
         for i in 0..ctx.nv {
             let dof_idx = ctx.dof_adr + i;
 
-            if !self.implicit_mode {
-                // Per-DOF damping → qfrc_damper
+            // S4.7b: Damper gated on DISABLE_DAMPER.
+            if !self.implicit_mode && self.has_damper {
                 let dof_damping = self.model.dof_damping[dof_idx];
                 let qvel = self.data.qvel[dof_idx];
                 self.data.qfrc_damper[dof_idx] -= dof_damping * qvel;

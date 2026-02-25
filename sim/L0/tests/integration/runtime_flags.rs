@@ -221,22 +221,25 @@ fn ac4_equality_disable() {
 
 #[test]
 fn ac5_spring_damper_independence() {
-    // When BOTH spring and damper are disabled, all passive sub-forces are zero.
-    // NOTE: Component-level gating (DISABLE_SPRING alone zeroes spring) is tracked
-    // as S4.7b gap. Currently only the top-level combined guard is implemented.
+    // Spring disabled, damper enabled → spring force zero, damper non-zero
     let mut model = load_model(flag_test_mjcf()).expect("load");
-    model.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
+    model.disableflags |= DISABLE_SPRING;
 
     let mut data = model.make_data();
-    data.qpos[0] = 0.5;
-    data.qvel[0] = 1.0;
+    data.qpos[0] = 0.5; // deflect joint to engage spring
+    data.qvel[0] = 1.0; // give velocity for damping
     data.forward(&model).expect("forward");
 
     assert_relative_eq!(data.qfrc_spring[0], 0.0, epsilon = 1e-12);
-    assert_relative_eq!(data.qfrc_damper[0], 0.0, epsilon = 1e-12);
+    assert!(
+        data.qfrc_damper[0].abs() > 0.1,
+        "damper force should be non-zero when only spring is disabled"
+    );
 
-    // Verify that with neither disabled, both forces are non-zero
-    let model2 = load_model(flag_test_mjcf()).expect("load");
+    // Damper disabled, spring enabled → damper force zero, spring non-zero
+    let mut model2 = load_model(flag_test_mjcf()).expect("load");
+    model2.disableflags |= DISABLE_DAMPER;
+
     let mut data2 = model2.make_data();
     data2.qpos[0] = 0.5;
     data2.qvel[0] = 1.0;
@@ -244,12 +247,9 @@ fn ac5_spring_damper_independence() {
 
     assert!(
         data2.qfrc_spring[0].abs() > 1.0,
-        "spring force should be non-zero with deflection"
+        "spring force should be non-zero when only damper is disabled"
     );
-    assert!(
-        data2.qfrc_damper[0].abs() > 0.1,
-        "damper force should be non-zero with velocity"
-    );
+    assert_relative_eq!(data2.qfrc_damper[0], 0.0, epsilon = 1e-12);
 }
 
 // ============================================================================
@@ -586,6 +586,70 @@ fn ac29_ctrl_validation() {
         !data.divergence_detected(),
         "bad ctrl should not trigger position/velocity reset"
     );
+}
+
+// ============================================================================
+// AC24: Gravcomp routing — jnt_actgravcomp
+// ============================================================================
+
+#[test]
+fn ac24_gravcomp_routing() {
+    let mjcf = r#"
+        <mujoco model="gravcomp_routing">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="link" pos="0 0 1">
+                    <joint name="hinge" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="2.0" pos="0.5 0 0"
+                          contype="0" conaffinity="0"/>
+                    <inertial pos="0.5 0 0" mass="2.0" diaginertia="0.008 0.008 0.008"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    // Default: gravcomp → qfrc_passive (not qfrc_actuator)
+    let mut model = load_model(mjcf).expect("load");
+    model.body_gravcomp[1] = 1.0;
+    model.ngravcomp = 1;
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    let gravcomp_val = data.qfrc_gravcomp[0];
+    assert!(
+        gravcomp_val.abs() > 0.1,
+        "gravcomp should be non-zero for body with gravcomp=1"
+    );
+    // With default (jnt_actgravcomp=false), gravcomp goes to passive
+    assert_relative_eq!(data.qfrc_passive[0], gravcomp_val, epsilon = 1e-10);
+    assert_relative_eq!(data.qfrc_actuator[0], 0.0, epsilon = 1e-12);
+
+    // With jnt_actgravcomp=true: gravcomp → qfrc_actuator (not qfrc_passive)
+    let mut model2 = load_model(mjcf).expect("load");
+    model2.body_gravcomp[1] = 1.0;
+    model2.ngravcomp = 1;
+    model2.jnt_actgravcomp[0] = true;
+    let mut data2 = model2.make_data();
+    data2.forward(&model2).expect("forward");
+
+    let gravcomp_val2 = data2.qfrc_gravcomp[0];
+    assert_relative_eq!(gravcomp_val2, gravcomp_val, epsilon = 1e-12);
+    // Gravcomp NOT in passive
+    assert_relative_eq!(data2.qfrc_passive[0], 0.0, epsilon = 1e-12);
+    // Gravcomp IS in actuator
+    assert_relative_eq!(data2.qfrc_actuator[0], gravcomp_val2, epsilon = 1e-12);
+
+    // With DISABLE_GRAVITY: neither path produces gravcomp
+    let mut model3 = load_model(mjcf).expect("load");
+    model3.body_gravcomp[1] = 1.0;
+    model3.ngravcomp = 1;
+    model3.jnt_actgravcomp[0] = true;
+    model3.disableflags |= DISABLE_GRAVITY;
+    let mut data3 = model3.make_data();
+    data3.forward(&model3).expect("forward");
+
+    assert_relative_eq!(data3.qfrc_gravcomp[0], 0.0, epsilon = 1e-12);
+    assert_relative_eq!(data3.qfrc_actuator[0], 0.0, epsilon = 1e-12);
 }
 
 // ============================================================================

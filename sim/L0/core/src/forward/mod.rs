@@ -20,7 +20,8 @@ mod velocity;
 pub(crate) use acceleration::mj_fwd_acceleration;
 #[allow(unused_imports)]
 pub(crate) use actuation::{
-    mj_actuator_length, mj_fwd_actuation, mj_transmission_body_dispatch, mj_transmission_site,
+    mj_actuator_length, mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
+    mj_transmission_site,
 };
 #[allow(unused_imports)]
 pub(crate) use muscle::muscle_activation_dynamics;
@@ -210,6 +211,10 @@ impl Data {
             self.energy_kinetic = 0.0;
         }
         passive::mj_fwd_passive(model, self);
+
+        // S4.2a: Route gravcomp → qfrc_actuator for jnt_actgravcomp joints.
+        // Must run after mj_fwd_passive() which computes qfrc_gravcomp.
+        actuation::mj_gravcomp_to_actuator(model, self);
 
         // §16.11: Island discovery must run BEFORE constraint solve so that
         // contact_island assignments are available for per-island partitioning.

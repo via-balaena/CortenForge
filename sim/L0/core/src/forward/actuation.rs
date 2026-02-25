@@ -13,9 +13,9 @@ use crate::types::{
 use nalgebra::{DVector, Vector3};
 
 use crate::types::flags::{actuator_disabled, disabled};
-use crate::types::validation::is_bad;
+use crate::types::validation::{MIN_VAL, is_bad};
 use crate::types::warning::{Warning, mj_warning};
-use crate::types::{DISABLE_ACTUATION, DISABLE_CLAMPCTRL};
+use crate::types::{DISABLE_ACTUATION, DISABLE_CLAMPCTRL, DISABLE_GRAVITY};
 
 use super::muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_force};
 
@@ -494,6 +494,28 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Route gravcomp forces to `qfrc_actuator` for joints with `jnt_actgravcomp`.
+///
+/// Must run AFTER `mj_fwd_passive()` (which computes `qfrc_gravcomp` via
+/// `mj_gravcomp()`). Called from `forward_core()` in pipeline order.
+/// Gated on `DISABLE_GRAVITY` — when gravity is disabled, `mj_gravcomp()`
+/// produces zero forces so there's nothing to route.
+pub fn mj_gravcomp_to_actuator(model: &Model, data: &mut Data) {
+    if model.ngravcomp == 0 || disabled(model, DISABLE_GRAVITY) || model.gravity.norm() < MIN_VAL {
+        return;
+    }
+    for jnt in 0..model.njnt {
+        if !model.jnt_actgravcomp[jnt] {
+            continue;
+        }
+        let dofadr = model.jnt_dof_adr[jnt];
+        let dofnum = model.jnt_type[jnt].nv();
+        for i in 0..dofnum {
+            data.qfrc_actuator[dofadr + i] += data.qfrc_gravcomp[dofadr + i];
         }
     }
 }
