@@ -21,7 +21,7 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | File | Group | Items | Count | T1 | T2 | T3 |
 |------|-------|-------|-------|---:|---:|---:|
 | [future_work_10b.md](./future_work_10b.md) | 1. Defaults & MJCF Parsing Gaps | DT-1 – DT-17 | 17 | 10 | 7 | 0 |
-| [future_work_10c.md](./future_work_10c.md) | 2. Contact & Collision System | DT-18 – DT-27, ~~DT-94~~, ~~DT-95~~ (subsumed by §41) | 12 | 2 | 6 | 4 |
+| [future_work_10c.md](./future_work_10c.md) | 2. Contact & Collision System | DT-18 – DT-27, ~~DT-94~~, ~~DT-95~~ (subsumed by §41), DT-99, DT-100 | 14 | 2 | 7 | 5 |
 | [future_work_10d.md](./future_work_10d.md) | 3. Tendon System | DT-28 – DT-35 | 8 | 2 | 4 | 2 |
 | [future_work_10e.md](./future_work_10e.md) | 4. Solver Optimizations | DT-36 – DT-44 | 9 | 1 | 5 | 3 |
 | [future_work_10f.md](./future_work_10f.md) | 5. Derivatives & Analytical Methods | DT-45 – DT-55 | 11 | 1 | 7 | 3 |
@@ -29,18 +29,18 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | [future_work_10h.md](./future_work_10h.md) | 7. Sensor Gaps | DT-62 – DT-65 | 4 | 1 | 3 | 0 |
 | [future_work_10i.md](./future_work_10i.md) | 8. Flex / Deformable Body | DT-66 – DT-73, DT-85 – DT-90 | 14 | 7 | 3 | 4 |
 | [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92, ~~DT-93~~ (subsumed by §41), DT-96 – DT-98 | 16 | 6 | 4 | 6 |
-| **Total** | | | **97** | **32** | **43** | **22** |
+| **Total** | | | **99** | **32** | **44** | **23** |
 
-**Priority breakdown:** 22 Medium, 70 Low. No High — these are all sub-items
+**Priority breakdown:** 24 Medium, 70 Low. No High — these are all sub-items
 within completed tasks, not critical gaps.
 
 **Tier key:**
 - **T1** (plan + implement): Mechanical — parent spec already defines the "what."
   No iterative spec needed. 32 items.
 - **T2** (grouped spec): Related items share one spec covering shared design
-  decisions. Each item gets a "Step N" section. 39 items → ~15 spec groups.
+  decisions. Each item gets a "Step N" section. 41 items → ~15 spec groups.
 - **T3** (individual spec): Algorithmic complexity, multiple valid approaches, or
-  architectural decisions needing dedicated design. 21 items.
+  architectural decisions needing dedicated design. 23 items.
 
 **T2 spec groups (cross-file):**
 1. "Defaults Completeness" — DT-2, DT-11, DT-13, DT-14

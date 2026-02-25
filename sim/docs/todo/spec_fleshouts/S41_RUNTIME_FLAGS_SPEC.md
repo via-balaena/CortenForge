@@ -745,6 +745,13 @@ if disabled(model, DISABLE_SPRING) && disabled(model, DISABLE_DAMPER) {
 This is the ONLY mechanism that gates `mj_fluid()` and `mj_gravcomp()` on
 spring/damper flags — neither function checks these flags internally.
 
+> **User-facing note:** When both `DISABLE_SPRING` and `DISABLE_DAMPER` are
+> set, fluid drag forces and gravity compensation are also suppressed. This
+> matches MuJoCo's hierarchical guard architecture where `mj_passive()` gates
+> all sub-functions (spring, damper, gravcomp, fluid) behind its top-level
+> flag check. Document this interaction in the user-facing API docs for
+> `<flag>` when those are written.
+
 ##### S4.7b Component-level guards in `mj_springdamper()`
 
 Within `mj_springdamper()`, spring and damper forces are gated independently:
@@ -1031,21 +1038,34 @@ from `mj_fwdConstraint()`, not inside individual solvers. Match this:
 ```rust
 fn warmstart(model: &Model, data: &mut Data) {
     if disabled(model, DISABLE_WARMSTART) {
-        // Cold start: unconstrained accelerations, zero constraint forces
+        // Cold start: unconstrained accelerations, zero constraint forces.
+        // Bypasses the smart comparison entirely — each solver starts from
+        // qacc_smooth + efc_force = 0.
         data.qacc.copy_from(&data.qacc_smooth);
         data.efc_force.fill(0.0);
         return;
     }
 
-    // Smart warmstart: copy qacc_warmstart → qacc, evaluate cost via
-    // mj_constraintUpdate(), then compare against qacc_smooth cost.
-    // MuJoCo falls back to qacc_smooth if warmstart produces higher cost.
+    // Smart warmstart (already implemented in all three solvers):
     //
-    // Solver-specific logic:
-    //   PGS:       Compare force-based warmstart cost. If > 0, zero
-    //              efc_force and qfrc_constraint instead of warmstarting.
-    //   Newton/CG: Compare Gauss cost (acceleration-based). If warmstart
-    //              cost > smooth cost, fall back to qacc_smooth.
+    //   PGS (pgs.rs:84-121):
+    //     Calls classify_constraint_states() with qacc_warmstart to compute
+    //     warmstart forces, then evaluates dual cost = ½·f^T·AR·f + f^T·b.
+    //     If dual_cost_warm < 0.0, keeps warmstart forces; otherwise falls
+    //     back to zero forces (cold start).
+    //
+    //   Newton (newton.rs:78-96):
+    //     Calls evaluate_cost_at() with qacc_warmstart and qacc_smooth.
+    //     Compares total Gauss cost (acceleration-based). Selects whichever
+    //     starting point has lower cost.
+    //
+    //   CG (cg.rs:57-79):
+    //     Same evaluate_cost_at() pattern as Newton — compares warmstart
+    //     vs smooth cost and selects the better starting point.
+    //
+    // DISABLE_WARMSTART gates entry to this path: when set, each solver
+    // starts from qacc_smooth + efc_force = 0 (cold start), skipping
+    // the evaluate_cost_at() / classify_constraint_states() comparison.
     //
     // Island handling: unconstrained DOFs (index >= nidof) always get
     // qacc_smooth regardless of warmstart outcome.
@@ -1055,10 +1075,14 @@ fn warmstart(model: &Model, data: &mut Data) {
 Key detail: when disabled, `qacc` is set to `qacc_smooth` (unconstrained
 accelerations) AND `efc_force` is zeroed. Both assignments are required.
 
-When enabled, the warmstart path is NOT a simple copy — it evaluates the
-cost of `qacc_warmstart` via `mj_constraintUpdate()` and falls back to
-`qacc_smooth` if warmstart produces a worse starting point. This "smart
-warmstart" behavior should be matched for full conformance.
+When enabled, the warmstart path is NOT a simple copy — all three solvers
+already implement smart warmstart selection (PGS via dual cost in
+`pgs.rs:84`, Newton/CG via `evaluate_cost_at()` in `newton.rs:78` and
+`cg.rs:57`). Each solver evaluates the cost of `qacc_warmstart` and falls
+back to `qacc_smooth` if warmstart produces a worse starting point.
+`DISABLE_WARMSTART` should gate entry to each solver's warmstart selection
+block — when disabled, each solver starts from `qacc_smooth` + `efc_force
+= 0` (cold start), skipping the cost comparison entirely.
 
 #### S4.12 `DISABLE_FILTERPARENT` — disable parent-child filtering
 
@@ -1634,7 +1658,7 @@ to void with internal state mutation:
 | On bad value | Returns `Err(StepError::InvalidPosition)` | Calls `mj_warning()` + `mj_reset_data()` internally |
 | Caller (`step()`) | `check::mj_check_pos(model, self)?;` | `check::mj_check_pos(model, self);` (no `?`) |
 | `StepError` check variants | `InvalidPosition`, `InvalidVelocity`, `InvalidAcceleration` | **Remove** — replaced by `Warning::BadQpos/BadQvel/BadQacc` |
-| `mj_check_acc` threshold | `is_finite()` only (no magnitude bound — asymmetric with `check_pos`/`check_vel` which already check `abs() > 1e10`) | `is_bad()` — unifies all three to use the same `> MAX_VAL` threshold (MuJoCo conformance) |
+| `mj_check_acc` threshold | `is_finite()` only (no magnitude bound — asymmetric with `check_pos`/`check_vel` which already check `abs() > 1e10`) | `is_bad()` — unifies all three to use the same `> MAX_VAL` threshold (MuJoCo conformance). See **Risk: `mj_check_acc` behavior change** below for impact analysis. |
 
 **Behavior change risk for `mj_check_acc`:** The current implementation
 only rejects non-finite values (NaN/inf). After S8, it will also reject
@@ -1707,7 +1731,7 @@ implementation is split into two phases:
 - **S9-full (separate commit, can ship independently):** Per-mesh BVH
   storage, build-phase BVH construction, midphase dispatch in
   narrowphase. When this lands, the guard site from S9-stub gains its
-  fast path.
+  fast path. S9-full is tracked as **DT-99**.
 
 `mid_phase.rs` (1,178 lines) contains a complete BVH implementation that
 is not yet called from `collision/mod.rs`. S9-full integrates it
@@ -1882,7 +1906,8 @@ gated by a runtime flag. Split into two phases:
   The flag exists but has no runtime effect yet.
 - **S10-full (separate commit, can ship independently):** Assignment
   helper functions, 6 guard sites in broadphase/narrowphase/constraint.
-  When this lands, the flag becomes functional.
+  When this lands, the flag becomes functional. S10-full is tracked as
+  **DT-100**.
 
 Implements the global contact parameter override mechanism gated by
 `ENABLE_OVERRIDE`. When enabled, all contacts use the same margin,
@@ -2128,13 +2153,13 @@ con.friction = assign_friction(model, &combined_friction);
     Model fields (`o_margin`, `o_solref`, `o_solimp`, `o_friction`) with
     defaults + parser for `<option>` attributes. Flag exists but has no
     runtime effect.
-15. **S9-full** (separate commit, can ship independently of §41) — BVH
-    midphase: per-mesh BVH storage in Model, build BVHs during
+15. **S9-full** (**DT-99**, separate commit, can ship independently of §41)
+    — BVH midphase: per-mesh BVH storage in Model, build BVHs during
     compilation, midphase dispatch in narrowphase. Activates the guard
     site from S9-stub.
-16. **S10-full** (separate commit, can ship independently of §41) — Global
-    override: assignment helpers, 6 guard sites in broadphase/narrowphase/
-    constraint. Activates the flag from S10-stub.
+16. **S10-full** (**DT-100**, separate commit, can ship independently of §41)
+    — Global override: assignment helpers, 6 guard sites in broadphase/
+    narrowphase/constraint. Activates the flag from S10-stub.
 
 Steps 1-3 form a single commit (infrastructure). Step 4 is a standalone
 refactor commit. Steps 5-14 can each be a commit (skip step 10 — already
@@ -2515,12 +2540,16 @@ in the indexed iteration without requiring actual sleeping bodies.
   it must not change which contacts are generated, only the set of
   triangle pairs tested. Run mesh collision tests with midphase enabled
   and disabled and compare results.
-- **Behavior change:** `mj_check_acc` currently rejects only non-finite values.
-  After S8, it also rejects `|qacc| > 1e10` (via unified `is_bad()`). Models
-  with extreme force scales may now auto-reset where they previously continued.
-  This is correct MuJoCo conformance — the model's force scales are the root
-  problem, not the check threshold. If regressions surface, fix the model,
-  don't weaken the check.
+- **Behavior change — `mj_check_acc` threshold alignment (intentional MuJoCo
+  conformance fix):** `mj_check_acc` currently rejects only non-finite values
+  (`check.rs:46`). `check_pos`/`check_vel` already check `abs() > 1e10`.
+  After S8, all three are unified via `is_bad()` to use the same `> MAX_VAL`
+  threshold. Models with extreme force scales may now auto-reset where they
+  previously continued. This is an intentional conformance fix (the asymmetry
+  between `check_acc` and `check_pos`/`check_vel` was a CortenForge gap, not
+  a MuJoCo design choice). If regressions surface, fix the model's force
+  scales, don't weaken the check. See S8g migration table for the full
+  before/after comparison.
 - **Low risk:** Most guards are additive (new early-return paths). All disable
   flags default to "off" (bit not set), preserving current behavior.
 
