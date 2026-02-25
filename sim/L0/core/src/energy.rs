@@ -34,7 +34,7 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
     }
 
     // Spring potential energy
-    // E_s = 0.5 * k * (q - q0)²
+    // E_s = 0.5 * k * (q - springref)²
     for jnt_id in 0..model.njnt {
         let stiffness = model.jnt_stiffness[jnt_id];
         if stiffness > 0.0 {
@@ -43,8 +43,8 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge | MjJointType::Slide => {
                     let q = data.qpos[qpos_adr];
-                    let q0 = model.qpos0.get(qpos_adr).copied().unwrap_or(0.0);
-                    let displacement = q - q0;
+                    let springref = model.jnt_springref[jnt_id];
+                    let displacement = q - springref;
                     potential += 0.5 * stiffness * displacement * displacement;
                 }
                 MjJointType::Ball | MjJointType::Free => {

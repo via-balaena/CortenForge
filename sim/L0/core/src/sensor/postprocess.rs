@@ -3,7 +3,8 @@
 //! The `sensor_write*` functions provide bounds-checked writes to `Data::sensordata`.
 //! `mj_sensor_postprocess` applies cutoff clamping after all sensor stages complete.
 
-use crate::types::{Data, MjSensorType, Model};
+use crate::types::flags::disabled;
+use crate::types::{DISABLE_SENSOR, Data, MjSensorType, Model};
 use nalgebra::{DVector, Vector3};
 
 /// Write a single sensor value with bounds checking.
@@ -41,6 +42,10 @@ pub fn sensor_write4(sensordata: &mut DVector<f64>, adr: usize, w: f64, x: f64, 
 ///   For positive-type sensors (Touch, Rangefinder), clamps positive side only:
 ///   min(value, cutoff). This preserves rangefinder's -1.0 no-hit sentinel.
 pub fn mj_sensor_postprocess(model: &Model, data: &mut Data) {
+    // S4.10: Skip post-processing when sensors are disabled (matches MuJoCo).
+    if disabled(model, DISABLE_SENSOR) {
+        return;
+    }
     for sensor_id in 0..model.nsensor {
         let adr = model.sensor_adr[sensor_id];
         let dim = model.sensor_dim[sensor_id];

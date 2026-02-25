@@ -502,10 +502,15 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 ///
 /// Must run AFTER `mj_fwd_passive()` (which computes `qfrc_gravcomp` via
 /// `mj_gravcomp()`). Called from `forward_core()` in pipeline order.
-/// Gated on `DISABLE_GRAVITY` — when gravity is disabled, `mj_gravcomp()`
-/// produces zero forces so there's nothing to route.
+/// Gated on `DISABLE_GRAVITY` and `DISABLE_ACTUATION` — in MuJoCo this
+/// routing lives inside `mj_fwdActuation()`, so disabling actuation
+/// implicitly skips it. We gate explicitly since it's a separate function.
 pub fn mj_gravcomp_to_actuator(model: &Model, data: &mut Data) {
-    if model.ngravcomp == 0 || disabled(model, DISABLE_GRAVITY) || model.gravity.norm() < MIN_VAL {
+    if model.ngravcomp == 0
+        || disabled(model, DISABLE_GRAVITY)
+        || disabled(model, DISABLE_ACTUATION)
+        || model.gravity.norm() < MIN_VAL
+    {
         return;
     }
     for jnt in 0..model.njnt {
