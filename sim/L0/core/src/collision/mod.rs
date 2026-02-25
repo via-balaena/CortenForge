@@ -361,7 +361,10 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             // Compute effective margin for this pair
             let margin = model.geom_margin[geom1] + model.geom_margin[geom2];
 
-            // Narrow-phase collision detection
+            // Narrow-phase collision detection.
+            // S9-stub: When midphase BVH is connected (DT-99), mesh-mesh and
+            // mesh-convex pairs will use BVH culling here unless DISABLE_MIDPHASE
+            // is set. Currently always takes the brute-force path.
             if let Some(contact) =
                 collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
             {

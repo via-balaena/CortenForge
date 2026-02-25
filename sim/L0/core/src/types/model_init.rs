@@ -317,6 +317,10 @@ impl Model {
             enableflags: ENABLE_ENERGY, // Energy on by default for test models
             disableactuator: 0,         // No actuator groups disabled
             actuator_group: Vec::new(), // All actuators in group 0 (empty for empty model)
+            o_margin: 0.0,
+            o_solref: [0.02, 1.0],
+            o_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            o_friction: [1.0, 1.0, 0.005, 0.0001, 0.0001],
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
 

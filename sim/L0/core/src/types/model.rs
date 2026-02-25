@@ -731,6 +731,20 @@ pub struct Model {
     /// Parsed from `<actuator><general group="..."/>`.
     pub actuator_group: Vec<i32>,
 
+    // ==================== Contact Override (§41 S10) ====================
+    /// Global contact margin override. Used when `ENABLE_OVERRIDE` is set.
+    /// Default: 0.0. Parsed from `<option o_margin="..."/>`.
+    pub o_margin: f64,
+    /// Global contact solver reference override `[timeconst, dampratio]`.
+    /// Default: `[0.02, 1.0]`. Parsed from `<option o_solref="..."/>`.
+    pub o_solref: [f64; 2],
+    /// Global contact solver impedance override `[dmin, dmax, width, midpoint, power]`.
+    /// Default: `[0.9, 0.95, 0.001, 0.5, 2.0]`. Parsed from `<option o_solimp="..."/>`.
+    pub o_solimp: [f64; 5],
+    /// Global contact friction override `[tan1, tan2, torsional, rolling1, rolling2]`.
+    /// Default: `[1.0, 1.0, 0.005, 0.0001, 0.0001]`. Parsed from `<option o_friction="..."/>`.
+    pub o_friction: [f64; 5],
+
     /// Integration method.
     pub integrator: Integrator,
     /// Contact constraint solver algorithm (PGS or CG).

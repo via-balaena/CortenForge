@@ -328,6 +328,10 @@ impl ModelBuilder {
             enableflags: self.enableflags,
             disableactuator: self.disableactuator,
             actuator_group: self.actuator_group,
+            o_margin: self.o_margin,
+            o_solref: self.o_solref,
+            o_solimp: self.o_solimp,
+            o_friction: self.o_friction,
             integrator: self.integrator,
             solver_type: self.solver_type,
 

@@ -566,6 +566,10 @@ pub struct ModelBuilder {
     pub(crate) enableflags: u32,
     pub(crate) disableactuator: u32,
     pub(crate) actuator_group: Vec<i32>,
+    pub(crate) o_margin: f64,
+    pub(crate) o_solref: [f64; 2],
+    pub(crate) o_solimp: [f64; 5],
+    pub(crate) o_friction: [f64; 5],
     pub(crate) integrator: Integrator,
     pub(crate) solver_type: SolverType,
     pub(crate) sleep_tolerance: f64,
@@ -726,6 +730,19 @@ impl ModelBuilder {
         self.viscosity = option.viscosity;
         self.sleep_tolerance = option.sleep_tolerance;
         self.disableactuator = option.actuatorgroupdisable;
+
+        // S10-stub: Wire override parameters from parsed <option>.
+        self.o_margin = option.o_margin;
+        if let Some(sr) = option.o_solref {
+            self.o_solref = sr;
+        }
+        if let Some(si) = option.o_solimp {
+            self.o_solimp = si;
+        }
+        if let Some(fr) = option.o_friction {
+            self.o_friction = fr;
+        }
+
         // Wire all flags from parsed MJCF to Model bitfields.
         apply_flags(&option.flag, &mut self.disableflags, &mut self.enableflags);
     }
