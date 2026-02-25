@@ -107,7 +107,7 @@ in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 
 **Core API (Phase 3):** DT-21, DT-41, DT-79
 
-**Actuators (Phase 5):** DT-56, DT-57, DT-58, DT-59, DT-77, DT-6, DT-8, DT-9, DT-60
+**Actuators (Phase 5):** DT-56, DT-57, DT-58, DT-59, DT-77, DT-6, DT-8, DT-9, ~~DT-60~~ (subsumed by §41 S4.2a)
 
 **Sensors (Phase 6):** DT-62, DT-63, DT-64
 

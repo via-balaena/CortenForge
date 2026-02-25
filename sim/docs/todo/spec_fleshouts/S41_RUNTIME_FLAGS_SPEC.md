@@ -61,6 +61,10 @@ and 3.5.0. Key behavioral details re-verified against `main` branch
 | 3.4.0 | 19 | 6 | `mjENBL_SLEEP` added (enable, bit 5) — filled hole left by `ISLAND`'s departure. |
 | 3.5.0 | 19 | 6 | Identical to 3.4.0. |
 
+Note: enable bits 0–4 (`OVERRIDE`, `ENERGY`, `FWDINV`, `INVDISCRETE`,
+`MULTICCD`) are unchanged across all versions. Only bit 5 changed occupants:
+`ISLAND` (3.3.2–3.3.5) → empty (3.3.6) → `SLEEP` (3.4.0+).
+
 This history motivates the backward-compatibility handling of `passive`
 in S2a — `passive` was a real MJCF attribute in MuJoCo ≤ 3.3.3.
 
@@ -160,6 +164,14 @@ pub fn enabled(model: &Model, flag: u32) -> bool {
     model.enableflags & flag != 0
 }
 ```
+
+**Design note:** These helpers take `&Model` for ergonomics at call sites.
+An alternative signature `fn disabled(flags: u32, flag: u32) -> bool` would
+be more composable (easier to test, no `Model` dependency in `enums.rs`),
+but the `&Model` form is chosen to match the dominant usage pattern. If
+`enums.rs` should remain free of `Model` dependencies, place these helpers
+(and `actuator_disabled()` from S7c) in a dedicated `flags.rs` module that
+depends on both `enums` and `model`, or as methods on `Model` itself.
 
 ### S2. Parser update — `mjcf/src/types.rs` + `parser.rs`
 
@@ -559,6 +571,15 @@ if data.nefc == 0 {
 }
 ```
 
+**Causal chain when `DISABLE_CONSTRAINT` is set:** `mj_collision()` returns
+early (S4.1) → `ncon` stays 0. `mj_makeConstraint()` is skipped entirely
+→ `nefc` stays 0. `mj_fwdConstraint()` hits the `nefc == 0` early exit
+shown above → `qacc = qacc_smooth`, return. **Do NOT add a redundant
+`DISABLE_CONSTRAINT` check inside `mj_fwdConstraint()`** — the existing
+`nefc == 0` path is the correct gating mechanism. This matches MuJoCo's
+architecture where the flag gates assembly (upstream), and the solver
+reacts to the resulting empty constraint set (downstream).
+
 When disabled, `efc_force` stays zero, `qacc` = `qacc_smooth`
 (unconstrained accelerations only).
 
@@ -764,6 +785,13 @@ if disabled(model, DISABLE_CONTACT) || data.ncon == 0 || model.nv == 0 {
 This means `DISABLE_CONTACT` gates not only collision detection (S4.1) but
 also passive contact forces (e.g., viscous contact damping).
 
+**Interaction with S4.7a:** If both `DISABLE_SPRING` and `DISABLE_DAMPER`
+are set, `mj_passive()` returns early before `mj_contactPassive()` is
+reached — so the S4.7d guard never fires. If only `DISABLE_CONTACT` is
+set but spring/damper are enabled, `mj_passive()` does NOT exit early,
+but `mj_contactPassive()` returns early via its own guard. Both paths
+are correct — the guards are layered, not redundant.
+
 ##### S4.7e Aggregation into `qfrc_passive`
 
 After all sub-functions run, `mj_passive()` aggregates the individual
@@ -840,26 +868,39 @@ MuJoCo gates actuation at **four** locations:
 **Site 1 — `mj_fwd_actuation()`:**
 **File:** `forward/actuation.rs`
 
-Guard the actuation force computation. MuJoCo unconditionally zeroes the
-per-actuator force vector (`actuator_force`) at the top of the function
-before checking disable flags. Then, when disabled, it zeroes the
-joint-space force vector (`qfrc_actuator`) and returns early:
+Guard the actuation force computation. MuJoCo has **two distinct arrays**:
+- `actuator_force` (length `nu`) — per-actuator scalar forces
+- `qfrc_actuator` (length `nv`) — joint-space force vector (sum of all
+  actuator contributions mapped through the moment arm)
+
+MuJoCo unconditionally zeroes `actuator_force` at the top of the function
+before checking disable flags. Then, when disabled, it zeroes
+`qfrc_actuator` and returns early:
 
 ```rust
 // Unconditional — zero per-actuator forces regardless of disable flags.
+// actuator_force is length nu (one scalar per actuator).
 data.actuator_force[..model.nu].fill(0.0);
 
 if model.nu == 0 || disabled(model, DISABLE_ACTUATION) {
-    data.qfrc_actuator.fill(0.0);
+    // qfrc_actuator is length nv (joint-space force vector).
+    data.qfrc_actuator[..model.nv].fill(0.0);
     return;
 }
 ```
 
-If CortenForge has a separate `actuator_force` array (distinct from
-`qfrc_actuator`), it must be zeroed unconditionally before the guard.
+Both arrays must exist in CortenForge. `actuator_force` is the per-actuator
+output (used by sensors, diagnostics); `qfrc_actuator` is the joint-space
+projection consumed by the integrator.
 
-**Site 2 — `mj_fwd_velocity()` actuator velocity:**
-**File:** `forward/velocity.rs` (or equivalent)
+**Site 2 — actuator velocity computation:**
+**File:** `forward/actuation.rs` — `mj_actuator_vel()` / transmission
+velocity loop (lines ~236-270, where `actuator_velocity` is populated)
+
+Note: despite the name, `actuator_velocity` is computed inside
+`forward/actuation.rs` (not `forward/velocity.rs`). `forward/velocity.rs`
+handles `mj_fwd_velocity()` (Coriolis/centrifugal/passive), which is a
+different pipeline stage.
 
 When actuation is disabled, zero `actuator_velocity` instead of computing it:
 
@@ -1368,7 +1409,20 @@ pub struct WarningStat {
 pub warnings: [WarningStat; NUM_WARNINGS],
 ```
 
-Initialize all to zero in `Data::new()`. The warning function:
+Initialize all to zero in `Data::new()`. Add a typed accessor to avoid
+`as usize` casts scattered across check functions:
+
+```rust
+impl Data {
+    /// Typed accessor for warning statistics.
+    #[inline]
+    pub fn warning_mut(&mut self, w: Warning) -> &mut WarningStat {
+        &mut self.warnings[w as usize]
+    }
+}
+```
+
+The warning function:
 
 ```rust
 fn mj_warning(data: &mut Data, warning: Warning, info: i32) {
@@ -1387,7 +1441,14 @@ fn mj_warning(data: &mut Data, warning: Warning, info: i32) {
 
 #### S8c. Validation functions
 
-**`mj_check_pos()` — before forward dynamics:**
+**`mj_check_pos()` — before forward dynamics (NOT sleep-aware):**
+
+Note: unlike `mj_check_vel` and `mj_check_acc`, position validation scans
+ALL `nq` elements without sleep filtering. Rationale: sleeping bodies can
+have externally-set bad qpos (via `mj_resetData`, user code, keyframe
+loading, etc.) that was never integrated — sleep filtering would miss these.
+Velocity and acceleration can only diverge through integration, so only
+awake DOFs need checking.
 
 ```rust
 pub fn mj_check_pos(model: &Model, data: &mut Data) {
@@ -1555,6 +1616,25 @@ used for other purposes, keep the enum but remove the check variants. If
 `StepError` exists solely for check errors, remove it entirely and change
 `step()` to return `()`.
 
+**Final `step()` signature:** `pub fn step(model: &Model, data: &mut Data)`
+(returns `()`). This is MuJoCo-conformant — `mj_step()` returns `void`.
+
+**Migration path for users relying on `Result`-based NaN detection:**
+1. Set `<flag autoreset="disable"/>` to prevent silent resets
+2. After each `step()`, check `data.warnings[Warning::BadQpos as usize].count`
+   (or use `data.warning_mut(Warning::BadQpos).count`) to detect NaN events
+3. Optionally add a convenience method:
+   ```rust
+   impl Data {
+       /// Returns true if any auto-reset warning fired since last clear.
+       pub fn was_reset(&self) -> bool {
+           self.warnings[Warning::BadQpos as usize].count > 0
+               || self.warnings[Warning::BadQvel as usize].count > 0
+               || self.warnings[Warning::BadQacc as usize].count > 0
+       }
+   }
+   ```
+
 ### S9. BVH midphase integration (subsumes DT-94)
 
 `mid_phase.rs` (1,178 lines) contains a complete BVH implementation that
@@ -1705,6 +1785,12 @@ if use_midphase && is_mesh(model, geom1) && is_mesh(model, geom2) {
 
 When disabled, the existing all-triangle-pairs code path runs unmodified.
 
+**Implementation note on allocation:** The pseudo-code above uses
+`Vec<Contact>` returns for clarity. The actual implementation should write
+contacts directly into `data.contacts` (or a pre-allocated buffer) to
+avoid per-call heap allocation in the hot collision path. MuJoCo writes
+into a pre-allocated arena — match this pattern.
+
 #### S9f. Flex midphase (future extension)
 
 Flex self-collision (§42A-iv) could also benefit from BVH midphase. When
@@ -1770,6 +1856,11 @@ model.o_solref = parse_attr_array(option_elem, "o_solref", model.o_solref);
 model.o_solimp = parse_attr_array(option_elem, "o_solimp", model.o_solimp);
 model.o_friction = parse_attr_array(option_elem, "o_friction", model.o_friction);
 ```
+
+**Note:** `parse_attr_f64()` and `parse_attr_array()` do not currently
+exist in the parser. They must be implemented as part of S10b (or use
+existing attribute-parsing infrastructure — check `get_attribute_opt`,
+`parse_float`, etc. in `parser.rs` for patterns to follow).
 
 The enable flag `override` is already parsed in `MjcfFlag.override_contacts`
 and wired via `apply_flags()` (S3) to `ENABLE_OVERRIDE`.
@@ -1903,6 +1994,14 @@ con.friction = assign_friction(model, &combined_friction);
 4. **S4.7-prereq** — Add `qfrc_spring`, `qfrc_damper` Data fields. Refactor
    `mj_fwd_passive()` to write spring/damper into separate arrays and
    aggregate into `qfrc_passive` at the end.
+   **Intermediate verification (required before proceeding):** Before this
+   refactor, snapshot `qfrc_passive` values from an existing test run (e.g.,
+   humanoid 10-step). After refactor, verify:
+   `qfrc_spring + qfrc_damper + qfrc_gravcomp + qfrc_fluid == qfrc_passive`
+   exactly (bitwise, not approximate). This catches off-by-one errors in
+   the visitor refactor and ensures the aggregation path is correct. Run
+   the full sim domain test suite before moving on — this is the highest-
+   risk refactor in §41.
 5. **S4.2a** — Add `jnt_actgravcomp` Model field. Wire parser. Update
    `mj_fwd_passive()` gravcomp routing (passive-side) and prep actuation-side
    routing.
@@ -1913,7 +2012,17 @@ con.friction = assign_friction(model, &combined_friction);
    warmstart, filterparent.
 8. **S4.14-S4.15** — Implementable guards: eulerdamp, refsafe.
    **S4.17** — Constant only (no guard site): nativeccd (blocked by §50).
-9. **S5.1** — Energy guard. **S5.3-S5.5** — Constant only (no guard
+9. **S5.1** — Energy guard. **Before gating energy behind `ENABLE_ENERGY`**,
+   update all existing tests that assert on `energy_potential` or
+   `energy_kinetic` to set `ENABLE_ENERGY` on their model. Known affected
+   tests (grep `energy_potential\|energy_kinetic\|total_energy`):
+   - `sleeping.rs` T84 (`test_energy_continuous_across_sleep_transition`)
+   - `newton_solver.rs` energy conservation check
+   - `lib.rs` kinetic energy conservation
+   - `batch.rs` batch-vs-sequential energy equality
+   - Bevy examples (`double_pendulum`, `nlink_pendulum`, etc.)
+   This must happen in the **same commit** as the energy guard to avoid
+   a window where tests fail. **S5.3-S5.5** — Constant only (no guard
    site): fwdinv/invdiscrete (blocked by §52), multiccd (blocked by §50).
    **S5.6** — Already wired.
 10. ~~**S6** — Fluid sleep filtering.~~ **Already done** (§40c).
@@ -2032,22 +2141,37 @@ floating-point accumulation orders; MuJoCo's own tests use `1e-8` or
 looser.) Flags should produce exact gating — any residual delta should be
 numerical noise, not a logic error.
 
-**Methodology:** The existing conformance test infrastructure
-(`sim-conformance-tests`) does not yet have trajectory-level MuJoCo
-comparison. Reference data should be generated via a Python script using
-`mujoco` (pip package) that:
-1. Loads a canonical test MJCF (e.g., a humanoid from `assets/mujoco_menagerie/`)
-2. For each flag: sets only that flag, steps 10 times, dumps `qacc` to a
-   `.npy` golden file
-3. Golden files are checked into `sim/L0/tests/assets/golden/flags/`
+**Methodology — golden file generation (required, not deferred):**
 
-The Rust test loads the golden file and compares element-wise. This pattern
-should be established as part of §41 and reused by §45 (full conformance
-suite). If generating golden files is deferred, AC18 falls back to
-**differential testing**: run the same model with flag enabled vs disabled
+The existing conformance test infrastructure (`sim-conformance-tests`) does
+not yet have trajectory-level MuJoCo comparison. This must be established
+as part of §41 — it is the primary MuJoCo conformance gate for flags.
+
+1. **Canonical model:** Use a simple but representative MJCF that exercises
+   all flag-gated subsystems: joints with stiffness/damping, actuators,
+   contacts, limits, equality constraints, gravity. A scaled-down humanoid
+   from `assets/mujoco_menagerie/` or a purpose-built `flag_test.xml` are
+   both acceptable. The model must be checked into `sim/L0/tests/assets/`.
+2. **Generation script:** `sim/L0/tests/scripts/gen_flag_golden.py` (new).
+   Uses `uv run` + `mujoco` pip package. For each flag:
+   - Sets only that flag (all others default)
+   - Steps 10 times from default qpos0
+   - Dumps `qacc` (and optionally `qfrc_passive`, `qfrc_actuator`,
+     `qfrc_constraint`) per step to `.npy`
+   - Output directory: `sim/L0/tests/assets/golden/flags/`
+3. **Golden files checked into repo.** Regeneration instructions in a
+   `README.md` alongside the script.
+4. **Rust test:** Loads golden `.npy`, runs the same model + flag
+   combination, compares element-wise with `1e-8` tolerance.
+
+This pattern is reusable by §45 (full conformance suite).
+
+**Fallback (only if MuJoCo Python is unavailable in dev environment):**
+Differential testing — run the same model with flag enabled vs disabled
 and verify the expected physical effect (e.g., `DISABLE_GRAVITY` → zero
 gravity contribution in qacc). This is weaker but sufficient for initial
-correctness validation.
+correctness validation. If this fallback is used, file a **DT-97** to
+generate golden files before v1.0.
 
 ### AC19 — Clampctrl disable
 `<flag clampctrl="disable"/>` allows ctrl values outside ctrlrange. An
@@ -2163,6 +2287,35 @@ Without `<flag override="enable"/>`, per-geom parameters are used even
 when `o_*` fields are set in `<option>`. The override values are stored
 but have no effect.
 
+### AC38 — Island default correctness (S2e)
+A model with no `<flag>` element produces `disableflags == 0` (island bit
+clear). Island discovery runs by default. All existing tests pass with the
+corrected `island: true` default. Verify by grepping all `DISABLE_ISLAND`
+usage sites and confirming that enabling island discovery by default does
+not cause test regressions. If regressions occur, those tests were relying
+on the wrong default and must be fixed as part of S2e — not papered over.
+
+### AC39 — `mj_reset_data()` correctness (S8f)
+`mj_reset_data()` resets `Data` to the model's initial state. Verify all
+seven properties:
+1. `data.qpos == model.qpos0` (reference configuration restored)
+2. `data.qvel`, `data.qacc`, `data.ctrl`, `data.act` are all zero
+3. `data.time == 0.0`
+4. All warning counters are zero
+5. `data.ncon == 0` and contact/constraint arrays are cleared
+6. All force vectors (`qfrc_passive`, `qfrc_actuator`, `qfrc_constraint`,
+   `qfrc_spring`, `qfrc_damper`, `qfrc_gravcomp`, `qfrc_fluid`) are zero
+7. Mocap bodies are initialized from model (`mocap_pos`, `mocap_quat`)
+
+### AC40 — Contact-passive and spring/damper interaction
+When `DISABLE_CONTACT` is set but spring/damper are enabled,
+`mj_contactPassive()` returns early via its own guard (S4.7d), but
+`mj_springdamper()`, `mj_gravcomp()`, and `mj_fluid()` still run.
+When both `DISABLE_SPRING` and `DISABLE_DAMPER` are set, ALL passive
+sub-functions (including `mj_contactPassive()`) are skipped via the
+top-level `mj_passive()` early return (S4.7a), regardless of the
+`DISABLE_CONTACT` flag state. Verify both paths independently.
+
 ---
 
 ## Files
@@ -2177,7 +2330,7 @@ but have no effect.
 | `sim/L0/core/src/types/model.rs` | S4.2a: Add `jnt_actgravcomp: Vec<bool>`. S7a: Add `disableactuator: u32`, `actuator_group: Vec<i32>`. S10a: Add `o_margin`, `o_solref`, `o_solimp`, `o_friction` |
 | `sim/L0/core/src/types/model_init.rs` | S4.2a, S7a, S10a: Initialize new Model fields |
 | `sim/L0/core/src/forward/mod.rs` | S5.1, S8e, S8g: Energy guards, refactor `step()` to remove `?` error propagation from check calls (check functions become void+auto-reset), update `mj_check_acc` pipeline placement |
-| `sim/L0/core/src/forward/velocity.rs` | S4.8: Actuator velocity guard |
+| `sim/L0/core/src/forward/actuation.rs` | S4.8 Site 2: Actuator velocity guard (actuator_velocity is computed here, not in velocity.rs) |
 | `sim/L0/core/src/sensor/mod.rs` | S4.10: Sensor disable guard (inside each sensor function, no zeroing) |
 | `sim/L0/core/src/dynamics/rne.rs` | S4.2: Gravity guard in `mj_rne()` + `mj_gravcomp()` |
 | `sim/L0/core/src/energy.rs` | S4.2, S5.1: Gravity guard in `mj_energy_pos()`, energy enable guard |
@@ -2192,6 +2345,8 @@ but have no effect.
 | `sim/L0/core/src/integrate/rk4.rs` | S4.8 Site 3, S7d Site 2: Add per-actuator disable gating to RK4 activation integration |
 | `sim/L0/core/src/constraint/contact_params.rs` (new) | S10c: `assign_margin`, `assign_ref`, `assign_imp`, `assign_friction` helpers |
 | `sim/L0/core/src/forward/check.rs` (refactor) | S8c, S8g: Refactor existing `mj_check_pos`, `mj_check_vel`, `mj_check_acc` from `Result<(), StepError>` returns to MuJoCo-matching void functions with internal auto-reset. Add `mj_reset_data`. See S8g for migration details. |
+| `sim/L0/tests/scripts/gen_flag_golden.py` (new) | AC18: Python script to generate golden `.npy` reference data from MuJoCo. Uses `uv run` + `mujoco` pip package. |
+| `sim/L0/tests/assets/golden/flags/` (new dir) | AC18: Golden `.npy` files for per-flag trajectory conformance testing |
 
 ---
 
