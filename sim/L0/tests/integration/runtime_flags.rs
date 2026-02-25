@@ -323,11 +323,9 @@ fn ac10_passive_top_level_gating() {
 fn ac11_default_bitfields() {
     let model = load_model(free_body_space_mjcf()).expect("load");
     assert_eq!(model.disableflags, 0, "all disable flags default to clear");
-    // CortenForge defaults: ENABLE_ENERGY is on (pre-§41 behavior, see S5.1).
-    // MuJoCo defaults enableflags=0, but CortenForge sets energy=true in MjcfFlag.
     assert_eq!(
-        model.enableflags, ENABLE_ENERGY,
-        "CortenForge default: only ENABLE_ENERGY is set"
+        model.enableflags, 0,
+        "all enable flags default to clear (MuJoCo convention)"
     );
 }
 
@@ -337,9 +335,13 @@ fn ac11_default_bitfields() {
 
 #[test]
 fn ac13_energy_gating() {
-    // Without ENABLE_ENERGY: energy fields are zeroed
-    let mut model = load_model(free_body_space_mjcf()).expect("load");
-    model.enableflags &= !ENABLE_ENERGY; // Clear the CortenForge default
+    // Without ENABLE_ENERGY (default): energy fields are zeroed
+    let model = load_model(free_body_space_mjcf()).expect("load");
+    assert_eq!(
+        model.enableflags & ENABLE_ENERGY,
+        0,
+        "energy off by default"
+    );
     let mut data = model.make_data();
     data.forward(&model).expect("forward");
 
@@ -352,9 +354,9 @@ fn ac13_energy_gating() {
         "kinetic energy zeroed without ENABLE_ENERGY"
     );
 
-    // With ENABLE_ENERGY (CortenForge default): energy fields are computed
-    let model2 = load_model(free_body_space_mjcf()).expect("load");
-    assert_ne!(model2.enableflags & ENABLE_ENERGY, 0);
+    // With ENABLE_ENERGY explicitly set: energy fields are computed
+    let mut model2 = load_model(free_body_space_mjcf()).expect("load");
+    model2.enableflags |= ENABLE_ENERGY;
     let mut data2 = model2.make_data();
     data2.qvel[2] = -1.0; // downward velocity for kinetic energy
     data2.forward(&model2).expect("forward");
@@ -854,14 +856,13 @@ fn flag_helpers_disabled() {
 fn flag_helpers_enabled() {
     let mut model = load_model(free_body_space_mjcf()).expect("load");
 
-    // CortenForge default: ENABLE_ENERGY is on, others off
-    assert!(enabled(&model, ENABLE_ENERGY));
+    // MuJoCo default: all enable flags off
+    assert!(!enabled(&model, ENABLE_ENERGY));
     assert!(!enabled(&model, ENABLE_OVERRIDE));
 
-    // Clear energy, set override
-    model.enableflags &= !ENABLE_ENERGY;
-    model.enableflags |= ENABLE_OVERRIDE;
-    assert!(!enabled(&model, ENABLE_ENERGY));
+    // Set energy and override
+    model.enableflags |= ENABLE_ENERGY | ENABLE_OVERRIDE;
+    assert!(enabled(&model, ENABLE_ENERGY));
     assert!(enabled(&model, ENABLE_OVERRIDE));
 }
 

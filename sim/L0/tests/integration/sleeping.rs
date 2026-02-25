@@ -3319,7 +3319,8 @@ fn test_indirection_vel_integration_equivalence() {
 /// zero KE (by qvel=0) and frozen PE (by xpos invariant) (AC #49).
 #[test]
 fn test_energy_all_bodies_always() {
-    let model = load_model(two_tree_sleep_mjcf()).expect("load model");
+    let mut model = load_model(two_tree_sleep_mjcf()).expect("load model");
+    model.enableflags |= sim_core::ENABLE_ENERGY;
     let mut data = model.make_data();
 
     // Step until at least one tree sleeps

@@ -245,7 +245,9 @@ fn test_energy_conservation_model_data() {
     // This ensures we're testing actual energy conservation, not zero=zero
     let mjcf = r#"
         <mujoco model="energy_test">
-            <option gravity="0 0 -9.81" timestep="0.0001"/>
+            <option gravity="0 0 -9.81" timestep="0.0001">
+                <flag energy="enable"/>
+            </option>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
                     <joint type="hinge" axis="0 1 0"/>

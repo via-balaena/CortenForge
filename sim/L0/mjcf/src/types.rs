@@ -241,7 +241,7 @@ impl Default for MjcfFlag {
             island: true, // Fixed: was false, but MuJoCo defaults to disableflags=0 (S2e)
             // Enable flags: false = feature disabled (bit NOT set in enableflags).
             override_contacts: false,
-            energy: true, // S5.1: CortenForge defaults energy on (pre-§41 behavior)
+            energy: false, // MuJoCo default: enableflags=0 (energy off unless explicit)
             fwdinv: false,
             invdiscrete: false,
             multiccd: false,
