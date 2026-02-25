@@ -374,6 +374,76 @@ fn ac13_energy_gating() {
 }
 
 // ============================================================================
+// AC14: Fluid sleep filtering — mj_fluid() skips sleeping bodies
+// ============================================================================
+
+#[test]
+fn ac14_fluid_sleep_filtering() {
+    use sim_core::SleepState;
+
+    // Two free bodies in fluid (density > 0). Body 2 starts asleep via sleep="init".
+    // With ENABLE_SLEEP and a sleeping body, mj_fluid() should skip that body —
+    // its DOFs in qfrc_fluid should remain zero.
+    let mjcf = r#"
+        <mujoco model="fluid_sleep_test">
+            <option density="1.2" viscosity="0.001" timestep="0.002">
+                <flag sleep="enable"/>
+            </option>
+            <worldbody>
+                <body name="awake_body" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.05 0.025" mass="1.0"
+                          contype="0" conaffinity="0"/>
+                </body>
+                <body name="sleeping_body" pos="2 0 1" sleep="init">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.05 0.025" mass="1.0"
+                          contype="0" conaffinity="0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert!(enabled(&model, ENABLE_SLEEP), "sleep should be enabled");
+    assert_eq!(model.nv, 12, "two free joints = 12 DOFs");
+
+    let mut data = model.make_data();
+    // Give the awake body non-zero velocity so it produces fluid forces.
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -1.0;
+    data.qvel[2] = 0.8;
+    data.qvel[3] = 1.2;
+    data.qvel[4] = -0.7;
+    data.qvel[5] = 0.3;
+    // Sleeping body has zero velocity (default).
+
+    data.forward(&model).expect("forward");
+
+    // Verify body 2 is asleep.
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    // Sleeping body (DOFs 6–11): qfrc_fluid must be exactly zero.
+    for dof in 6..12 {
+        assert_eq!(
+            data.qfrc_fluid[dof], 0.0,
+            "qfrc_fluid[{dof}] should be zero for sleeping body"
+        );
+    }
+
+    // Awake body (DOFs 0–5): qfrc_fluid should be non-zero (has velocity + fluid).
+    let awake_has_fluid = (0..6).any(|dof| data.qfrc_fluid[dof] != 0.0);
+    assert!(
+        awake_has_fluid,
+        "awake body should have non-zero qfrc_fluid with velocity in fluid"
+    );
+}
+
+// ============================================================================
 // AC19: Clampctrl disable — ctrl exceeds ctrlrange
 // ============================================================================
 
