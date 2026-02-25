@@ -2650,12 +2650,6 @@ fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
     if let Some(s) = get_attribute_opt(e, "mass") {
         flex.mass = s.parse().ok();
     }
-    // Non-standard extension: density on <flex> for element-based mass lumping.
-    // Fallback when mass attr is not present.
-    if let Some(s) = get_attribute_opt(e, "density") {
-        flex.density = s.parse().unwrap_or(1000.0);
-    }
-
     flex
 }
 
@@ -2671,15 +2665,17 @@ fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
         flex.gap = s.parse().unwrap_or(0.0);
     }
     if let Some(s) = get_attribute_opt(e, "friction") {
-        // MuJoCo friction is real(3): "slide torsion rolling".
-        // MjcfFlex.friction is f64 (scalar = sliding component only).
-        // Parse first whitespace-separated value to handle both "0.5" and
-        // "0.5 0.005 0.0001" without silent parse::<f64>() failure.
-        flex.friction = s
+        // MuJoCo friction is real(3): "tangential torsional rolling".
+        // Accepts 1–3 values, filling MuJoCo defaults for missing components.
+        let parts: Vec<f64> = s
             .split_whitespace()
-            .next()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(1.0);
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        flex.friction = Vector3::new(
+            parts.first().copied().unwrap_or(1.0),
+            parts.get(1).copied().unwrap_or(0.005),
+            parts.get(2).copied().unwrap_or(0.0001),
+        );
     }
     if let Some(s) = get_attribute_opt(e, "condim") {
         flex.condim = s.parse().unwrap_or(3);
@@ -5250,6 +5246,103 @@ mod tests {
         )
         .unwrap();
         assert_eq!(model.sensors.len(), 2, "sensor sections should merge");
+    }
+
+    // ========================================================================
+    // DT-16: density attribute on <flex> silently ignored
+    // ========================================================================
+
+    #[test]
+    fn dt16_flex_density_attribute_silently_ignored() {
+        // DT-16 regression: density="500" on <flex> should be ignored (non-conformant).
+        // The MjcfFlex.density field stays at default 1000.0.
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="dt16_density">
+                <deformable>
+                    <flex name="test" dim="1" density="500">
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.flex.len(), 1);
+        assert_relative_eq!(model.flex[0].density, 1000.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn dt16_flex_mass_attribute_works() {
+        // DT-16 positive: mass="1.5" on <flex> is the conformant API.
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="dt16_mass">
+                <deformable>
+                    <flex name="test" dim="1" mass="1.5">
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.flex.len(), 1);
+        assert_eq!(model.flex[0].mass, Some(1.5));
+    }
+
+    // ========================================================================
+    // DT-90: flex friction parsed as Vector3 (tangential, torsional, rolling)
+    // ========================================================================
+
+    #[test]
+    fn dt90_flex_friction_three_values() {
+        // DT-90: <contact friction="0.8 0.01 0.002"/> → all 3 components stored.
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="dt90_friction3">
+                <deformable>
+                    <flex name="test" dim="1">
+                        <contact friction="0.8 0.01 0.002"/>
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.flex.len(), 1);
+        let f = model.flex[0].friction;
+        assert_relative_eq!(f.x, 0.8, epsilon = 1e-15);
+        assert_relative_eq!(f.y, 0.01, epsilon = 1e-15);
+        assert_relative_eq!(f.z, 0.002, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn dt90_flex_friction_one_value_fills_defaults() {
+        // DT-90: <contact friction="0.5"/> → tangential set, torsional/rolling at defaults.
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="dt90_friction1">
+                <deformable>
+                    <flex name="test" dim="1">
+                        <contact friction="0.5"/>
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.flex.len(), 1);
+        let f = model.flex[0].friction;
+        assert_relative_eq!(f.x, 0.5, epsilon = 1e-15);
+        assert_relative_eq!(f.y, 0.005, epsilon = 1e-15); // MuJoCo torsional default
+        assert_relative_eq!(f.z, 0.0001, epsilon = 1e-15); // MuJoCo rolling default
     }
 
     #[test]

@@ -324,8 +324,8 @@ pub struct Model {
     pub flex_damping: Vec<f64>,
     /// Per-flex material: thickness (for dim=2 shells).
     pub flex_thickness: Vec<f64>,
-    /// Per-flex: contact friction coefficient (scalar).
-    pub flex_friction: Vec<f64>,
+    /// Per-flex: contact friction coefficients (tangential, torsional, rolling).
+    pub flex_friction: Vec<Vector3<f64>>,
     /// Per-flex: contact solver reference [timeconst, dampratio].
     pub flex_solref: Vec<[f64; 2]>,
     /// Per-flex: contact solver impedance.

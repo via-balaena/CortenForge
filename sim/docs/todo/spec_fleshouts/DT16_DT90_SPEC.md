@@ -1,6 +1,6 @@
 # DT-16 + DT-90: Flex Parsing Conformance Fixes
 
-**Status:** Reviewed
+**Status:** Done
 **Phase:** Roadmap Phase 1 — Correctness bugs (last 2 remaining)
 **Tier:** T1 (mechanical — no iterative design needed)
 

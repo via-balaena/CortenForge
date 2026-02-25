@@ -3469,8 +3469,8 @@ pub struct MjcfFlex {
     pub solmix: f64,
     /// Contact gap — buffer zone within margin (default 0.0).
     pub gap: f64,
-    /// Collision friction coefficient (sliding component only).
-    pub friction: f64,
+    /// Collision friction coefficients: tangential, torsional, rolling.
+    pub friction: Vector3<f64>,
     /// Collision contact dimensionality (1, 3, or 4).
     pub condim: i32,
     /// Collision margin [m].
@@ -3538,7 +3538,7 @@ impl Default for MjcfFlex {
             priority: 0,
             solmix: 1.0,
             gap: 0.0,
-            friction: 1.0,
+            friction: Vector3::new(1.0, 0.005, 0.0001),
             condim: 3,
             margin: 0.0,
             solref: [0.02, 1.0],

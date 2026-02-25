@@ -639,7 +639,7 @@ pub struct ModelBuilder {
     pub(crate) flex_vertadr: Vec<usize>,
     pub(crate) flex_vertnum: Vec<usize>,
     pub(crate) flex_damping: Vec<f64>,
-    pub(crate) flex_friction: Vec<f64>,
+    pub(crate) flex_friction: Vec<Vector3<f64>>,
     pub(crate) flex_condim: Vec<i32>,
     pub(crate) flex_margin: Vec<f64>,
     pub(crate) flex_gap: Vec<f64>,

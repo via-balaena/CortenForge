@@ -193,16 +193,14 @@ fn flexcomp_grid_mjcf() -> &'static str {
 
 /// AC12: Single flex vertex with known mass, no rigid bodies.
 fn single_vertex_mass_mjcf() -> &'static str {
-    // A single triangle with 3 vertices. We'll inspect mass matrix structure.
-    // With density=666.667, thickness=0.001, and a triangle of area ~0.433 (unit equilateral),
-    // each vertex gets mass = density * thickness * area / 3.
-    // Simpler: use dim=1, 2 vertices, density = 2.0 (kg/m), length = 1.0
-    // Each vertex mass = density * length / 2 = 2.0 * 1.0 / 2 = 1.0
+    // dim=1, 2 vertices, total mass = 2.0 distributed uniformly → 1.0 per vertex.
+    // Uses MuJoCo-conformant `mass` attribute (not density — density is not a
+    // valid attribute on <flex>/<flexcomp> per MuJoCo spec).
     r#"
     <mujoco model="mass_check">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="mass_test" dim="1" density="2.0">
+            <flex name="mass_test" dim="1" mass="2.0">
                 <elasticity young="1000" damping="0.0"/>
                 <vertex pos="0 0 0  1 0 0"/>
                 <element data="0 1"/>

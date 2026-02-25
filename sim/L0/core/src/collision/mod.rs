@@ -169,13 +169,13 @@ pub(crate) fn contact_param_flex_rigid(
     let gap = model.flex_gap[flex_id] + model.geom_gap[geom_idx];
 
     if priority_flex > priority_geom {
-        let f = model.flex_friction[flex_id]; // scalar until Vec<Vector3> upgrade
+        let f = model.flex_friction[flex_id];
         return (
             model.flex_condim[flex_id],
             gap,
             model.flex_solref[flex_id],
             model.flex_solimp[flex_id],
-            [f, f, f, f, f], // scalar → uniform 5-element unpack
+            [f.x, f.x, f.y, f.z, f.z], // tangential, tangential, torsional, rolling, rolling
         );
     }
     if priority_geom > priority_flex {
@@ -199,15 +199,15 @@ pub(crate) fn contact_param_flex_rigid(
     let solref = combine_solref(model.flex_solref[flex_id], model.geom_solref[geom_idx], mix);
     let solimp = combine_solimp(model.flex_solimp[flex_id], model.geom_solimp[geom_idx], mix);
 
-    // Friction: element-wise max (flex scalar applied to all components)
+    // Friction: element-wise max per component
     let ff = model.flex_friction[flex_id];
     let gf = model.geom_friction[geom_idx];
     let fri = [
-        ff.max(gf.x),
-        ff.max(gf.x), // sliding1, sliding2
-        ff.max(gf.y), // torsional
-        ff.max(gf.z),
-        ff.max(gf.z), // rolling1, rolling2
+        ff.x.max(gf.x),
+        ff.x.max(gf.x), // tangential1, tangential2
+        ff.y.max(gf.y), // torsional
+        ff.z.max(gf.z),
+        ff.z.max(gf.z), // rolling1, rolling2
     ];
 
     (condim, gap, solref, solimp, fri)
@@ -872,6 +872,60 @@ mod contact_param_tests {
         let (condim, _, _, _, _) = contact_param(&model, 0, 1);
 
         assert_eq!(condim, 4);
+    }
+
+    // ========================================================================
+    // DT-90 -- Flex-rigid friction: Vector3 mapping
+    // ========================================================================
+
+    /// Helper to add a single flex entity to a model for flex-rigid contact tests.
+    fn add_flex_to_model(model: &mut Model) {
+        model.nflex = 1;
+        model.flex_friction = vec![Vector3::new(1.0, 0.005, 0.0001)];
+        model.flex_condim = vec![3];
+        model.flex_solref = vec![[0.02, 1.0]];
+        model.flex_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.flex_priority = vec![0];
+        model.flex_solmix = vec![1.0];
+        model.flex_margin = vec![0.0];
+        model.flex_gap = vec![0.0];
+    }
+
+    #[test]
+    fn dt90_flex_priority_friction_mapping() {
+        // DT-90: flex priority > geom → 5-element array = [tan, tan, tor, roll, roll]
+        let mut model = make_two_geom_model();
+        add_flex_to_model(&mut model);
+        model.flex_priority[0] = 5;
+        model.flex_friction[0] = Vector3::new(0.8, 0.03, 0.004);
+
+        let (_condim, _gap, _solref, _solimp, mu) = contact_param_flex_rigid(&model, 0, 0);
+
+        assert_relative_eq!(mu[0], 0.8, epsilon = 1e-15); // tangential1
+        assert_relative_eq!(mu[1], 0.8, epsilon = 1e-15); // tangential2
+        assert_relative_eq!(mu[2], 0.03, epsilon = 1e-15); // torsional
+        assert_relative_eq!(mu[3], 0.004, epsilon = 1e-15); // rolling1
+        assert_relative_eq!(mu[4], 0.004, epsilon = 1e-15); // rolling2
+    }
+
+    #[test]
+    fn dt90_flex_equal_priority_per_component_max() {
+        // DT-90: equal priority → element-wise max uses per-component comparison
+        let mut model = make_two_geom_model();
+        add_flex_to_model(&mut model);
+        model.flex_priority[0] = 0;
+        model.geom_priority[0] = 0;
+        model.flex_friction[0] = Vector3::new(0.3, 0.04, 0.001);
+        model.geom_friction[0] = Vector3::new(0.9, 0.01, 0.005);
+
+        let (_condim, _gap, _solref, _solimp, mu) = contact_param_flex_rigid(&model, 0, 0);
+
+        // Per-component max:
+        assert_relative_eq!(mu[0], 0.9, epsilon = 1e-15); // max(0.3, 0.9) tangential1
+        assert_relative_eq!(mu[1], 0.9, epsilon = 1e-15); // tangential2
+        assert_relative_eq!(mu[2], 0.04, epsilon = 1e-15); // max(0.04, 0.01) torsional
+        assert_relative_eq!(mu[3], 0.005, epsilon = 1e-15); // max(0.001, 0.005) rolling1
+        assert_relative_eq!(mu[4], 0.005, epsilon = 1e-15); // rolling2
     }
 
     #[test]

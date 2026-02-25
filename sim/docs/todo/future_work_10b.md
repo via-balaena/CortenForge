@@ -83,5 +83,5 @@ within completed tasks, not critical gaps.
 | DT-13 | §22 | `qpos_spring` not implemented — uses `qpos0` instead (equivalent only in default case) | Medium | T2 |
 | DT-14 | §27 defaults | Actuator type-specific defaults not yet defaultable (cylinder area/timeconst, muscle params) | Medium | T2 |
 | DT-15 | §27 defaults | Sentinel-value detection for `gear`/`kp`/`noise`/`cutoff` should migrate to `Option<T>` | Low | T1 |
-| DT-16 | §27B | Flex `density` attribute location wrong — on `<flex>` in parser but not on `<flex>` in MuJoCo | Medium | T1 |
+| ~~DT-16~~ | §27B | ~~Flex `density` attribute location wrong — on `<flex>` in parser but not on `<flex>` in MuJoCo~~ **DONE** | Medium | T1 |
 | DT-17 | §27 | Global `<option o_margin>` override deferred — per-geom margin is correct foundation | Low | T1 |
