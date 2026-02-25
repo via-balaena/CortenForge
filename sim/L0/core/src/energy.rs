@@ -4,7 +4,7 @@
 //! FK). `mj_energy_vel` computes kinetic energy from the mass matrix or body
 //! velocities (called after CRBA). `Data::total_energy()` returns the sum.
 
-use crate::types::{Data, MjJointType, Model};
+use crate::types::{DISABLE_GRAVITY, Data, MjJointType, Model};
 use nalgebra::Vector3;
 
 /// Compute potential energy (gravitational + spring).
@@ -15,6 +15,13 @@ use nalgebra::Vector3;
 pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
     let mut potential = 0.0;
 
+    // S4.2: Effective gravity — zero when DISABLE_GRAVITY is set.
+    let grav = if model.disableflags & DISABLE_GRAVITY != 0 {
+        Vector3::zeros()
+    } else {
+        model.gravity
+    };
+
     // Gravitational potential energy
     // E_g = -Σ m_i * g · com_i
     // Using xipos (COM in world frame) for correct calculation
@@ -23,7 +30,7 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
         let com = data.xipos[body_id];
         // Potential energy: -m * g · h (negative of work done by gravity)
         // With g = (0, 0, -9.81), this becomes m * 9.81 * z
-        potential -= mass * model.gravity.dot(&com);
+        potential -= mass * grav.dot(&com);
     }
 
     // Spring potential energy

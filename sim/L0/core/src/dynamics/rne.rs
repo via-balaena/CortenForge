@@ -9,7 +9,7 @@ use nalgebra::Vector3;
 use crate::dynamics::spatial::{SpatialVector, spatial_cross_force, spatial_cross_motion};
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::joint_motion_subspace;
-use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SleepState};
+use crate::types::{DISABLE_GRAVITY, Data, ENABLE_SLEEP, MIN_VAL, MjJointType, Model, SleepState};
 
 /// Recursive Newton-Euler: compute bias forces (Coriolis + centrifugal + gravity).
 ///
@@ -53,6 +53,14 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
     // The bias force is what we need to SUBTRACT from applied forces.
     // For joint i on body b: τ_g[i] = J_i^T * (M_subtree * g)
     // where M_subtree is total mass below body b, and the torque acts at subtree COM
+
+    // S4.2: Effective gravity — zero when DISABLE_GRAVITY is set.
+    let grav = if model.disableflags & DISABLE_GRAVITY != 0 {
+        Vector3::zeros()
+    } else {
+        model.gravity
+    };
+
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let jnt_body = model.jnt_body[jnt_id];
@@ -67,7 +75,7 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
         let subtree_com = data.subtree_com[jnt_body];
 
         // Negative because qfrc_bias opposes motion
-        let gravity_force = -subtree_mass * model.gravity;
+        let gravity_force = -subtree_mass * grav;
 
         match model.jnt_type[jnt_id] {
             MjJointType::Hinge => {
@@ -321,8 +329,11 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
 ///
 /// Returns `true` if any gravcomp was applied (for conditional routing).
 pub fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
-    // Guard: no bodies with gravcomp, or gravity is zero
-    if model.ngravcomp == 0 || model.gravity.norm() == 0.0 {
+    // S4.2: Guard — no gravcomp bodies, gravity disabled, or near-zero gravity.
+    if model.ngravcomp == 0
+        || model.disableflags & DISABLE_GRAVITY != 0
+        || model.gravity.norm() < MIN_VAL
+    {
         return false;
     }
 

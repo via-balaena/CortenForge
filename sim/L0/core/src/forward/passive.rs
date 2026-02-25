@@ -11,7 +11,9 @@ use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::{JointContext, JointVisitor};
 use crate::tendon::apply_tendon_force;
-use crate::types::{Data, ENABLE_SLEEP, GeomType, Integrator, Model, SleepState};
+use crate::types::{
+    DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, GeomType, Integrator, Model, SleepState,
+};
 use nalgebra::{Matrix3, Vector3};
 
 /// Euclidean norm of a 3-element slice.
@@ -342,6 +344,11 @@ fn mj_fluid(model: &Model, data: &mut Data) -> bool {
 /// implicitly in `mj_fwd_acceleration_implicit()`. This function then only
 /// initializes `qfrc_passive` to zero (no explicit passive contributions).
 pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
+    // S4.7a: CortenForge nv == 0 guard — explicit early return for clarity.
+    if model.nv == 0 {
+        return;
+    }
+
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     // Zero all passive force vectors unconditionally (S4.7a).
@@ -352,6 +359,12 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     data.qfrc_gravcomp.fill(0.0);
     // qfrc_frictionloss is now populated post-solve from efc_force (§29).
     // No longer computed in passive forces.
+
+    // S4.7a: When both spring AND damper are disabled, skip all sub-functions.
+    // Force vectors are already zeroed above.
+    if model.disableflags & DISABLE_SPRING != 0 && model.disableflags & DISABLE_DAMPER != 0 {
+        return;
+    }
 
     let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
     {

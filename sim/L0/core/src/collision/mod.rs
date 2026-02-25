@@ -19,7 +19,7 @@ pub(crate) mod sdf_collide;
 
 use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
-use crate::types::{Data, ENABLE_SLEEP, Model, SleepState};
+use crate::types::{DISABLE_CONSTRAINT, DISABLE_CONTACT, Data, ENABLE_SLEEP, Model, SleepState};
 use nalgebra::{Point3, Vector3};
 
 use self::flex_collide::{make_contact_flex_rigid, narrowphase_sphere_geom};
@@ -279,9 +279,18 @@ pub fn combine_solimp(solimp1: [f64; 5], solimp2: [f64; 5], mix: f64) -> [f64; 5
 /// | Any n | O(n log n + k) | k = overlapping pairs |
 /// | Coherent | O(n + k) | Nearly-sorted input |
 pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
-    // Clear existing contacts
+    // Unconditional reset (S4.1 — matches MuJoCo's mj_collision).
     data.contacts.clear();
     data.ncon = 0;
+
+    // S4.1: Skip collision detection when contacts or constraints are disabled.
+    let nbodyflex = model.nbody + model.nflex;
+    if model.disableflags & DISABLE_CONTACT != 0
+        || model.disableflags & DISABLE_CONSTRAINT != 0
+        || nbodyflex < 2
+    {
+        return;
+    }
 
     // Rigid-rigid collision requires at least 2 geoms for a pair.
     // Even with 0 or 1 geoms, flex-vertex-vs-rigid contacts are still possible.

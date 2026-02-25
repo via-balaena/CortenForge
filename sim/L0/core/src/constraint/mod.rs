@@ -16,7 +16,8 @@ use nalgebra::{DMatrix, DVector, Vector3};
 
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse};
 use crate::types::{
-    ConstraintType, Data, ENABLE_SLEEP, Integrator, MjJointType, Model, SolverType,
+    ConstraintType, DISABLE_CONSTRAINT, Data, ENABLE_SLEEP, Integrator, MjJointType, Model,
+    SolverType,
 };
 
 use crate::constraint::assembly::assemble_unified_constraints;
@@ -304,7 +305,10 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     };
 
     // Step 2: Assemble ALL constraints (universal for all solver types)
-    assemble_unified_constraints(model, data, qacc_for_assembly);
+    // S4.3: Skip assembly entirely when constraints are disabled.
+    if model.disableflags & DISABLE_CONSTRAINT == 0 {
+        assemble_unified_constraints(model, data, qacc_for_assembly);
+    }
     let nefc = data.efc_type.len();
 
     // Step 2b: Populate efc_island from constraint rows and island data.
