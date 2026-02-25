@@ -2529,17 +2529,18 @@ guard should also gate flex midphase once it exists.
 
 ### S10. Global contact parameter override (subsumes DT-95)
 
-**Implementation phasing:** Like S9, S10 is a self-contained feature
-gated by a runtime flag. Split into two phases:
+**Implementation phasing:** S10 was implemented in two phases:
 
-- **S10-stub (ships with §41):** Define `ENABLE_OVERRIDE` constant,
-  wire parser/builder, add Model fields (`o_margin`, `o_solref`,
-  `o_solimp`, `o_friction`) with defaults, parse from `<option>`.
-  The flag exists but has no runtime effect yet.
-- **S10-full (separate commit, can ship independently):** Assignment
-  helper functions, 6 guard sites in broadphase/narrowphase/constraint.
-  When this lands, the flag becomes functional. S10-full is tracked as
-  **DT-100**.
+- **S10-stub (shipped with §41):** ✅ `ENABLE_OVERRIDE` constant,
+  parser/builder wiring, Model fields (`o_margin`, `o_solref`,
+  `o_solimp`, `o_friction`) with defaults, parsed from `<option>`.
+- **S10-full (DT-100):** ✅ **Done.** Added 5 assignment helper
+  functions (`assign_margin`, `assign_solref`, `assign_solimp`,
+  `assign_friction`, `assign_solreffriction`) and 6 guard sites in
+  broadphase/narrowphase/constraint. When `ENABLE_OVERRIDE` is set,
+  all contacts use `o_margin`, `o_solref`, `o_solimp`, `o_friction`
+  from Model instead of per-geom/pair computed values. AC34–AC37
+  conformance tests verify override behavior.
 
 Implements the global contact parameter override mechanism gated by
 `ENABLE_OVERRIDE`. When enabled, all contacts use the same margin,
@@ -2800,9 +2801,10 @@ con.friction = assign_friction(model, &combined_friction);
     — BVH midphase: `use_bvh` parameter on 5 mesh collision functions,
     `DISABLE_MIDPHASE` guard in `collide_with_mesh()`, brute-force
     fallback paths, AC31/AC33 conformance tests.
-16. **S10-full** (**DT-100**, separate commit, can ship independently of §41)
-    — Global override: assignment helpers, 6 guard sites in broadphase/
-    narrowphase/constraint. Activates the flag from S10-stub.
+16. **S10-full** (**DT-100**, ✅ **Done**)
+    — Global override: `assign_margin`/`assign_solref`/`assign_solimp`/
+    `assign_friction`/`assign_solreffriction` helpers, 6 guard sites in
+    broadphase/narrowphase/constraint. AC34–AC37 conformance tests.
 
 Steps 1-3 form a single commit (infrastructure). Step 4 is a standalone
 refactor commit. Steps 5-14 can each be a commit (skip step 10 — already

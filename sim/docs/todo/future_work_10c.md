@@ -26,5 +26,5 @@ spec (T2). DT-18/22 implement directly (T1).
 | ~~DT-94~~ | §41 | ~~BVH midphase integration into rigid body collision pipeline~~ **Subsumed by §41 S9** | Medium | T3 |
 | ~~DT-95~~ | §41 | ~~Global contact parameter override~~ **Subsumed by §41 S10** | Medium | T2 |
 | ~~DT-99~~ | §41 | ~~BVH midphase integration into collision pipeline (S9-full) — per-mesh BVH storage, build-phase construction, midphase dispatch~~ **Done** — `use_bvh` param on 5 mesh functions + `DISABLE_MIDPHASE` guard in `collide_with_mesh()`, AC31/AC33 tests | Medium | T3 |
-| DT-100 | §41 | Global contact parameter override guard sites (S10-full) — assignment helpers, 6 guard sites in broadphase/narrowphase/constraint | Medium | T2 |
+| ~~DT-100~~ | §41 | ~~Global contact parameter override guard sites (S10-full) — assignment helpers, 6 guard sites in broadphase/narrowphase/constraint~~ **Done** — `assign_margin`/`assign_solref`/`assign_solimp`/`assign_friction`/`assign_solreffriction` helpers, 6 guard sites, AC34–AC37 tests | Medium | T2 |
 | DT-101 | §41 | Implement `mj_contactPassive()` — viscous contact damping forces. Guard site (`DISABLE_CONTACT` early return) already specified in §41 S4.7d | Low | T2 |

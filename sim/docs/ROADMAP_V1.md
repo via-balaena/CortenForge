@@ -5,11 +5,11 @@
 > plus the ~101 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-101).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
 > DT-96 (lazy energy eval) and DT-97 (golden file conformance) added during §41 audit.
-> ~~DT-99~~ (BVH midphase, §41 S9-full — **done**), DT-100 (global override, §41 S10-full),
+> ~~DT-99~~ (BVH midphase, §41 S9-full — **done**), ~~DT-100~~ (global override, §41 S10-full — **done**),
 > DT-101 (`mj_contactPassive()`) added during §41 spec expansion.
 > ~~DT-98~~ retired — `passive` dropped entirely pre-v1.0 (no shim needed).
 >
-> **Current position**: Through §40c on `future_work_10.md`.
+> **Current position**: Through §41 on `future_work_10.md` (Phase 2 complete).
 
 ---
 
@@ -85,9 +85,9 @@ high-value, and reduce the chance of compounding errors in later work.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §41 | 10 | — | Wire all 19 `disableflags` and 6 `enableflags` end-to-end. Subsumes DT-61 (DISABLE_GRAVITY), DT-93 (auto-reset on NaN/divergence), DT-94 (BVH midphase integration), DT-95 (global contact parameter override). See [spec](todo/spec_fleshouts/S41_RUNTIME_FLAGS_SPEC.md). |
+| ~~§41~~ | 10 | — | ~~Wire all 19 `disableflags` and 6 `enableflags` end-to-end. Subsumes DT-61, DT-93, DT-94, DT-95.~~ **Done** — all AC1–AC48 conformance tests pass. See [spec](todo/spec_fleshouts/S41_RUNTIME_FLAGS_SPEC.md). |
 | ~~DT-99~~ | 10c | T2 | ~~BVH midphase integration into collision pipeline (§41 S9-full, post-§41 commit)~~ **Done** — `use_bvh` param + `DISABLE_MIDPHASE` guard in `collide_with_mesh()`, AC31/AC33 conformance tests |
-| DT-100 | 10c | T2 | Global contact parameter override guard sites (§41 S10-full, post-§41 commit) |
+| ~~DT-100~~ | 10c | T2 | ~~Global contact parameter override guard sites (§41 S10-full, post-§41 commit)~~ **Done** — `assign_margin`/`assign_solref`/`assign_solimp`/`assign_friction`/`assign_solreffriction` helpers, 6 guard sites in broadphase/narrowphase/constraint, AC34–AC37 conformance tests |
 
 ---
 

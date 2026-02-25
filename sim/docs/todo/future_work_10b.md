@@ -21,7 +21,7 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | File | Group | Items | Count | T1 | T2 | T3 |
 |------|-------|-------|-------|---:|---:|---:|
 | [future_work_10b.md](./future_work_10b.md) | 1. Defaults & MJCF Parsing Gaps | DT-1 – DT-17 | 17 | 10 | 7 | 0 |
-| [future_work_10c.md](./future_work_10c.md) | 2. Contact & Collision System | DT-18 – DT-27, ~~DT-94~~, ~~DT-95~~ (subsumed by §41), ~~DT-99~~ (done), DT-100, DT-101 | 15 | 2 | 8 | 5 |
+| [future_work_10c.md](./future_work_10c.md) | 2. Contact & Collision System | DT-18 – DT-27, ~~DT-94~~, ~~DT-95~~ (subsumed by §41), ~~DT-99~~ (done), ~~DT-100~~ (done), DT-101 | 15 | 2 | 8 | 5 |
 | [future_work_10d.md](./future_work_10d.md) | 3. Tendon System | DT-28 – DT-35 | 8 | 2 | 4 | 2 |
 | [future_work_10e.md](./future_work_10e.md) | 4. Solver Optimizations | DT-36 – DT-44 | 9 | 1 | 5 | 3 |
 | [future_work_10f.md](./future_work_10f.md) | 5. Derivatives & Analytical Methods | DT-45 – DT-55 | 11 | 1 | 7 | 3 |

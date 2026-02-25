@@ -6772,7 +6772,7 @@ See [future_work_10j.md](./future_work_10j.md) §DT-74 for full spec and impleme
 ---
 
 ### 41. `disableflags` / `enableflags` — Full Runtime Flag Wiring
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
