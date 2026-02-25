@@ -149,7 +149,17 @@ pub const ENABLE_MULTICCD:    u32 = 1 << 4;
 // ENABLE_SLEEP already exists at 1 << 5
 ```
 
-Also add a `disabled` helper for readable runtime checks:
+Also add a `disabled` helper for readable runtime checks.
+
+**Module placement:** Create a dedicated `types/flags.rs` module for all
+flag-related helpers. `enums.rs` currently has zero dependencies on `Model`
+and should stay that way. The `flags.rs` module depends on both `enums`
+(for constants) and `model` (for `Model`), keeping concerns separated.
+
+Flag constants remain in `enums.rs` (they're pure values with no
+dependencies). Helpers that take `&Model` go in `flags.rs`.
+
+**File:** `types/flags.rs` (new)
 
 ```rust
 /// Returns true if the given disable flag is set on the model.
@@ -165,13 +175,13 @@ pub fn enabled(model: &Model, flag: u32) -> bool {
 }
 ```
 
-**Design note:** These helpers take `&Model` for ergonomics at call sites.
-An alternative signature `fn disabled(flags: u32, flag: u32) -> bool` would
-be more composable (easier to test, no `Model` dependency in `enums.rs`),
-but the `&Model` form is chosen to match the dominant usage pattern. If
-`enums.rs` should remain free of `Model` dependencies, place these helpers
-(and `actuator_disabled()` from S7c) in a dedicated `flags.rs` module that
-depends on both `enums` and `model`, or as methods on `Model` itself.
+**Design note (bare `u32` constants vs `bitflags`):** The spec uses bare
+`u32` constants rather than the `bitflags` crate or a newtype. This
+sacrifices exhaustiveness checking and debug formatting but maximizes
+MuJoCo source fidelity — the constants map 1:1 to `mjtDisableBit` /
+`mjtEnableBit` values, making cross-reference trivial. If a `bitflags`
+migration is desired later, the constants are the source of truth and the
+migration is mechanical.
 
 ### S2. Parser update — `mjcf/src/types.rs` + `parser.rs`
 
@@ -191,6 +201,11 @@ attributes are skipped). As a **CortenForge extension**, our parser accepts
 `passive` for backward compatibility with older MJCF files (maps to both
 `spring` and `damper`), but new models should use the split attributes.
 If `passive` is encountered, emit a `tracing::warn!` deprecation notice.
+
+**Removal timeline:** The `passive` backward-compatibility shim will be
+removed in CortenForge v2.0. At that point, `passive` will be silently
+ignored (matching MuJoCo's behavior). Until then, it maps to both `spring`
+and `damper` with a deprecation warning.
 
 #### S2b. Add missing flag fields
 
@@ -292,6 +307,13 @@ table is the definitive reference for all 25 fields:
 only `island/mod.rs:37` checks this flag. Verify that enabling island
 discovery by default doesn't break tests. If it does, the tests were
 relying on the wrong default and need fixing.
+
+**Verified:** No test MJCF files in `sim/L0/tests/assets/` contain
+`island=` in any `<flag>` element (only the dm_control XML schema
+definition references it). Programmatic `DISABLE_ISLAND` usage in tests
+(`sleeping.rs` T34, T54, T88) sets the flag explicitly via
+`model.disableflags |= DISABLE_ISLAND`, which is unaffected by the
+default change.
 
 ### S3. Builder wiring — `mjcf/src/builder/mod.rs`
 
@@ -902,6 +924,14 @@ Note: despite the name, `actuator_velocity` is computed inside
 handles `mj_fwd_velocity()` (Coriolis/centrifugal/passive), which is a
 different pipeline stage.
 
+**VERIFY BEFORE IMPLEMENTATION:** Confirm against MuJoCo
+`engine_forward.c` whether `actuator_velocity` is zeroed when
+`DISABLE_ACTUATION` is set, or whether MuJoCo still computes it as
+part of the transmission block (which runs unconditionally). If MuJoCo
+does NOT gate `actuator_velocity` on `DISABLE_ACTUATION`, remove this
+site — transmission geometry (including velocity) should remain
+unconditional. The current spec assumes it is gated; adjust if wrong.
+
 When actuation is disabled, zero `actuator_velocity` instead of computing it:
 
 ```rust
@@ -1125,9 +1155,11 @@ let solref_0 = if !disabled(model, DISABLE_REFSAFE) && solref[0] > 0.0 {
 };
 ```
 
-This requires threading `model` (or `timestep`) into `compute_kbip()`. If
-the function signature cannot accept `model`, pass `timestep` as a parameter
-and `None` when refsafe is disabled.
+This requires threading `model` (or at minimum `timestep` and
+`disableflags`) into `compute_kbip()`. Pass `model` directly — do not
+use an `Option<f64>` for timestep or any other workaround. The function
+already operates on model-derived parameters; adding `&Model` is the
+clean fix.
 
 #### S4.16 `DISABLE_AUTORESET` — skip NaN auto-reset
 
@@ -1310,7 +1342,7 @@ if let Some(groups_str) = get_attribute_opt(option_elem, "actuatorgroupdisable")
 
 #### S7c. `actuator_disabled()` helper
 
-Add to `types/enums.rs` next to `disabled()`/`enabled()`:
+Add to `types/flags.rs` (alongside `disabled()`/`enabled()`):
 
 ```rust
 /// Returns true if actuator `i` is disabled by group membership.
@@ -1378,9 +1410,14 @@ pub fn is_bad(x: f64) -> bool {
 }
 ```
 
-**File:** `types/enums.rs` (next to `disabled()`/`enabled()` helpers).
+**File:** `types/flags.rs` (alongside `disabled()`/`enabled()` helpers).
 
 #### S8b. Warning system
+
+**File:** `types/warning.rs` (new) — `Warning` enum, `WarningStat`,
+`NUM_WARNINGS`, and `mj_warning()`. Separate from `flags.rs` (flag
+helpers) and `enums.rs` (type enums) to keep module responsibilities
+clear.
 
 Add a warning tracking system to `Data`:
 
@@ -1607,14 +1644,21 @@ void with internal state mutation:
 | On bad value | Returns `Err(StepError::InvalidPosition)` | Calls `mj_warning()` + `mj_reset_data()` internally |
 | Caller (`step()`) | `check::mj_check_pos(model, self)?;` | `check::mj_check_pos(model, self);` (no `?`) |
 | `StepError` variants | `InvalidPosition`, `InvalidVelocity`, `InvalidAcceleration` | Remove — replaced by `Warning::BadQpos/BadQvel/BadQacc` |
-| `mj_check_acc` threshold | `is_finite()` only (no magnitude bound) | `is_bad()` — adds `> MAX_VAL` threshold (MuJoCo conformance) |
+| `mj_check_acc` threshold | `is_finite()` only (no magnitude bound — asymmetric with `check_pos`/`check_vel` which already check `abs() > 1e10`) | `is_bad()` — unifies all three to use the same `> MAX_VAL` threshold (MuJoCo conformance) |
 
 **Breaking change:** `step()` currently returns `Result<(), StepError>`.
 After this refactor, NaN/divergence is handled internally (auto-reset)
-and `step()` no longer needs to propagate check errors. If `StepError` is
-used for other purposes, keep the enum but remove the check variants. If
-`StepError` exists solely for check errors, remove it entirely and change
-`step()` to return `()`.
+and `step()` no longer needs to propagate check errors.
+
+**`StepError` scope:** `StepError` is referenced in 10 files across
+sim-core (`enums.rs`, `forward/mod.rs`, `forward/check.rs`,
+`forward/acceleration.rs`, `integrate/rk4.rs`, `lib.rs`, `linalg.rs`,
+`constraint/solver/hessian.rs`, `derivatives.rs`, `batch.rs`). Before
+removing it, audit all variants. If variants beyond
+`InvalidPosition`/`InvalidVelocity`/`InvalidAcceleration` exist (e.g.,
+for solver divergence), keep the enum and remove only the check variants.
+If `StepError` exists solely for check errors, remove it entirely and
+change `step()` to return `()`.
 
 **Final `step()` signature:** `pub fn step(model: &Model, data: &mut Data)`
 (returns `()`). This is MuJoCo-conformant — `mj_step()` returns `void`.
@@ -1623,7 +1667,8 @@ used for other purposes, keep the enum but remove the check variants. If
 1. Set `<flag autoreset="disable"/>` to prevent silent resets
 2. After each `step()`, check `data.warnings[Warning::BadQpos as usize].count`
    (or use `data.warning_mut(Warning::BadQpos).count`) to detect NaN events
-3. Optionally add a convenience method:
+3. Use the `was_reset()` convenience method (required — this is the
+   primary API for detecting NaN events after the `Result` removal):
    ```rust
    impl Data {
        /// Returns true if any auto-reset warning fired since last clear.
@@ -1637,9 +1682,24 @@ used for other purposes, keep the enum but remove the check variants. If
 
 ### S9. BVH midphase integration (subsumes DT-94)
 
+**Implementation phasing:** S9 is a self-contained feature that happens
+to be gated by a runtime flag. To avoid coupling the BVH integration
+(complex, collision-domain) with the flag wiring (broad, cross-cutting),
+implementation is split into two phases:
+
+- **S9-stub (ships with §41):** Define `DISABLE_MIDPHASE` constant,
+  wire parser/builder, add guard site in `collision/mod.rs` that checks
+  the flag but always takes the brute-force path (no midphase code path
+  yet). This ensures the flag infrastructure is complete even before the
+  BVH is connected.
+- **S9-full (separate commit, can ship independently):** Per-mesh BVH
+  storage, build-phase BVH construction, midphase dispatch in
+  narrowphase. When this lands, the guard site from S9-stub gains its
+  fast path.
+
 `mid_phase.rs` (1,178 lines) contains a complete BVH implementation that
-is not yet called from `collision/mod.rs`. This section integrates it
-into the collision pipeline and wires the `DISABLE_MIDPHASE` guard.
+is not yet called from `collision/mod.rs`. S9-full integrates it
+into the collision pipeline and activates the `DISABLE_MIDPHASE` guard.
 
 **Verified against:** MuJoCo's `engine_collision_driver.c` midphase
 architecture and existing CortenForge `mid_phase.rs` API.
@@ -1800,6 +1860,17 @@ the same infrastructure and is tracked in §42A-iv. The `DISABLE_MIDPHASE`
 guard should also gate flex midphase once it exists.
 
 ### S10. Global contact parameter override (subsumes DT-95)
+
+**Implementation phasing:** Like S9, S10 is a self-contained feature
+gated by a runtime flag. Split into two phases:
+
+- **S10-stub (ships with §41):** Define `ENABLE_OVERRIDE` constant,
+  wire parser/builder, add Model fields (`o_margin`, `o_solref`,
+  `o_solimp`, `o_friction`) with defaults, parse from `<option>`.
+  The flag exists but has no runtime effect yet.
+- **S10-full (separate commit, can ship independently):** Assignment
+  helper functions, 6 guard sites in broadphase/narrowphase/constraint.
+  When this lands, the flag becomes functional.
 
 Implements the global contact parameter override mechanism gated by
 `ENABLE_OVERRIDE`. When enabled, all contacts use the same margin,
@@ -1985,9 +2056,10 @@ con.friction = assign_friction(model, &combined_friction);
 
 ## Implementation Order
 
-1. **S1** — Define all flag constants + `is_bad()` + `Warning` enum in
-   `enums.rs`. Define `MAX_VAL`, `disabled()`, `enabled()`, `actuator_disabled()`
-   helpers.
+1. **S1** — Define all flag constants in `enums.rs`. Create `types/flags.rs`
+   with `disabled()`, `enabled()`, `actuator_disabled()`, `is_bad()`,
+   `MAX_VAL`. Create `types/warning.rs` with `Warning` enum, `WarningStat`,
+   `NUM_WARNINGS`, `mj_warning()`.
 2. **S2** — Parser changes: split `passive`, add missing fields, fix docs,
    fix `island` default (S2e), add `actuatorgravcomp` joint attribute.
 3. **S3** — Builder wiring: `apply_flags()` replaces single sleep-only block.
@@ -1995,13 +2067,16 @@ con.friction = assign_friction(model, &combined_friction);
    `mj_fwd_passive()` to write spring/damper into separate arrays and
    aggregate into `qfrc_passive` at the end.
    **Intermediate verification (required before proceeding):** Before this
-   refactor, snapshot `qfrc_passive` values from an existing test run (e.g.,
-   humanoid 10-step). After refactor, verify:
-   `qfrc_spring + qfrc_damper + qfrc_gravcomp + qfrc_fluid == qfrc_passive`
-   exactly (bitwise, not approximate). This catches off-by-one errors in
-   the visitor refactor and ensures the aggregation path is correct. Run
-   the full sim domain test suite before moving on — this is the highest-
-   risk refactor in §41.
+   refactor, snapshot `qfrc_passive` values from an existing test run using
+   a deterministic model with known force values (e.g., single pendulum
+   with stiffness and damping — not humanoid, which is too complex to
+   debug if values diverge). After refactor, verify per-DOF:
+   `qfrc_spring[i] + qfrc_damper[i] + qfrc_gravcomp[i] + qfrc_fluid[i]
+   == qfrc_passive[i]` to machine epsilon (`f64::EPSILON * scale`). Note:
+   bitwise equality is ideal but may fail if aggregation order changes
+   (floating-point non-associativity). Per-DOF comparison to machine
+   epsilon is the practical bar. Run the full sim domain test suite
+   before moving on — this is the highest-risk refactor in §41.
 5. **S4.2a** — Add `jnt_actgravcomp` Model field. Wire parser. Update
    `mj_fwd_passive()` gravcomp routing (passive-side) and prep actuation-side
    routing.
@@ -2032,17 +2107,25 @@ con.friction = assign_friction(model, &combined_friction);
     existing `mj_check_pos`/`mj_check_vel`/`mj_check_acc` from
     `Result<(), StepError>` to void+auto-reset (S8g), `mj_reset_data()`,
     pipeline integration. Wires `DISABLE_AUTORESET` guard (S4.16).
-13. **S9** — BVH midphase: per-mesh BVH storage in Model, build BVHs during
-    compilation, midphase dispatch in narrowphase, SAP fallback path.
-    Wires `DISABLE_MIDPHASE` guard (S4.13).
-14. **S10** — Global override: Model fields (`o_margin`, `o_solref`, `o_solimp`,
-    `o_friction`), parser, assignment helpers, 6 guard sites.
-    Wires `ENABLE_OVERRIDE` guard (S5.2).
+13. **S9-stub** — `DISABLE_MIDPHASE` constant + parser/builder wiring +
+    guard site in `collision/mod.rs` (always takes brute-force path).
+14. **S10-stub** — `ENABLE_OVERRIDE` constant + parser/builder wiring +
+    Model fields (`o_margin`, `o_solref`, `o_solimp`, `o_friction`) with
+    defaults + parser for `<option>` attributes. Flag exists but has no
+    runtime effect.
+15. **S9-full** (separate commit, can ship independently of §41) — BVH
+    midphase: per-mesh BVH storage in Model, build BVHs during
+    compilation, midphase dispatch in narrowphase. Activates the guard
+    site from S9-stub.
+16. **S10-full** (separate commit, can ship independently of §41) — Global
+    override: assignment helpers, 6 guard sites in broadphase/narrowphase/
+    constraint. Activates the flag from S10-stub.
 
 Steps 1-3 form a single commit (infrastructure). Step 4 is a standalone
 refactor commit. Steps 5-14 can each be a commit (skip step 10 — already
 done). Steps 12-14 are independent of each other and can be implemented
-in any order.
+in any order. Steps 15-16 are independent follow-up commits that can ship
+after §41 merges.
 
 ---
 
@@ -2141,11 +2224,14 @@ floating-point accumulation orders; MuJoCo's own tests use `1e-8` or
 looser.) Flags should produce exact gating — any residual delta should be
 numerical noise, not a logic error.
 
-**Methodology — golden file generation (required, not deferred):**
+**Methodology — golden file generation (hard gate, not optional):**
 
 The existing conformance test infrastructure (`sim-conformance-tests`) does
 not yet have trajectory-level MuJoCo comparison. This must be established
 as part of §41 — it is the primary MuJoCo conformance gate for flags.
+**§41 does not merge without at least one golden file comparison working
+end-to-end.** Differential testing (flag on vs off) is too weak to catch
+subtle accumulation-order differences between CortenForge and MuJoCo.
 
 1. **Canonical model:** Use a simple but representative MJCF that exercises
    all flag-gated subsystems: joints with stiffness/damping, actuators,
@@ -2165,13 +2251,6 @@ as part of §41 — it is the primary MuJoCo conformance gate for flags.
    combination, compares element-wise with `1e-8` tolerance.
 
 This pattern is reusable by §45 (full conformance suite).
-
-**Fallback (only if MuJoCo Python is unavailable in dev environment):**
-Differential testing — run the same model with flag enabled vs disabled
-and verify the expected physical effect (e.g., `DISABLE_GRAVITY` → zero
-gravity contribution in qacc). This is weaker but sufficient for initial
-correctness validation. If this fallback is used, file a **DT-97** to
-generate golden files before v1.0.
 
 ### AC19 — Clampctrl disable
 `<flag clampctrl="disable"/>` allows ctrl values outside ctrlrange. An
@@ -2322,11 +2401,13 @@ top-level `mj_passive()` early return (S4.7a), regardless of the
 
 | File | Change |
 |------|--------|
-| `sim/L0/core/src/types/enums.rs` | S1: 17 disable + 4 enable constants, `disabled()`/`enabled()` helpers, `is_bad()`, `MAX_VAL`, `Warning` enum, `WarningStat` |
+| `sim/L0/core/src/types/enums.rs` | S1: 17 disable + 4 enable constants (pure values, no `Model` dependency) |
+| `sim/L0/core/src/types/flags.rs` (new) | S1: `disabled()`, `enabled()`, `actuator_disabled()` helpers, `is_bad()`, `MAX_VAL` |
+| `sim/L0/core/src/types/warning.rs` (new) | S8b: `Warning` enum, `WarningStat`, `NUM_WARNINGS`, `mj_warning()` |
 | `sim/L0/mjcf/src/types.rs` | S2: Split `passive` → `spring` + `damper`, add `fwdinv`/`invdiscrete`/`autoreset`, fix docstrings, fix `island` default (S2e) |
 | `sim/L0/mjcf/src/parser.rs` | S2: Parse `spring`, `damper`, `passive` (compat), `fwdinv`, `invdiscrete`, `autoreset`, `actuatorgravcomp` on joints, `actuatorgroupdisable` on option, `o_margin`/`o_solref`/`o_solimp`/`o_friction` on option |
 | `sim/L0/mjcf/src/builder/mod.rs` | S3: `apply_flags()` replacing single sleep-only block |
-| `sim/L0/core/src/types/data.rs` | S4.7-prereq: Add `qfrc_spring`, `qfrc_damper` fields. S8b: Add `warnings: [WarningStat; NUM_WARNINGS]` |
+| `sim/L0/core/src/types/data.rs` | S4.7-prereq: Add `qfrc_spring`, `qfrc_damper` fields. S8b: Add `warnings: [WarningStat; NUM_WARNINGS]`, `was_reset()` method |
 | `sim/L0/core/src/types/model.rs` | S4.2a: Add `jnt_actgravcomp: Vec<bool>`. S7a: Add `disableactuator: u32`, `actuator_group: Vec<i32>`. S10a: Add `o_margin`, `o_solref`, `o_solimp`, `o_friction` |
 | `sim/L0/core/src/types/model_init.rs` | S4.2a, S7a, S10a: Initialize new Model fields |
 | `sim/L0/core/src/forward/mod.rs` | S5.1, S8e, S8g: Energy guards, refactor `step()` to remove `?` error propagation from check calls (check functions become void+auto-reset), update `mj_check_acc` pipeline placement |
