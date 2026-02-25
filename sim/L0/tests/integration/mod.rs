@@ -211,3 +211,10 @@ pub mod fluid_derivatives;
 /// Tendon implicit spring/damper tests: non-diagonal K/D coupling, deadband,
 /// energy dissipation, Newton solver, spatial tendons, multi-tendon summation.
 pub mod tendon_implicit;
+
+// ============================================================================
+// §41 Runtime Flag Conformance Tests
+// ============================================================================
+
+/// Runtime flag conformance tests: AC1–AC48 behavioral gating verification.
+pub mod runtime_flags;
