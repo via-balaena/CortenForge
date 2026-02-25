@@ -745,6 +745,18 @@ if model.nv == 0 {
 }
 ```
 
+**Why only `mj_passive()`:** Other `nv`-iterating functions
+(`mj_fwd_actuation()`, `mj_fwd_constraint()`, check functions) do not
+need this guard because their early-return conditions subsume `nv == 0`:
+`mj_fwd_actuation()` guards on `nu == 0` (no actuators implies no DOFs
+in practice), `mj_fwd_constraint()` guards on `nefc == 0`, and the check
+functions' `0..nv` loops are trivially empty. `mj_passive()` is unique
+because its first non-trivial operation is computing the sleep filter
+(`enabled(model, ENABLE_SLEEP) && data.nv_awake < model.nv`), which
+touches `nv_awake` — an `nv == 0` guard makes this path obviously
+correct without reasoning about the sleep filter's behavior on empty
+models. This is a readability choice, not a safety requirement.
+
 After the `nv == 0` guard, there is **one** MuJoCo-matching early-return
 guard: the spring+damper guard, which returns *after* unconditional
 zeroing of all passive force vectors. When both `DISABLE_SPRING` AND
@@ -1011,27 +1023,28 @@ kinematics. MuJoCo computes it **unconditionally**, regardless of
 remains valid (it reflects joint velocities projected through the
 transmission, not actuator forces). Do NOT gate it.
 
-If CortenForge currently computes `actuator_velocity` inside
-`forward/actuation.rs` rather than `forward/velocity.rs`, move it to
-`mj_fwd_velocity()` as part of this refactor for MuJoCo conformance.
-This is a pipeline-ordering fix, not a flag guard.
+**Current state (already correct):** CortenForge computes
+`actuator_velocity` inside `mj_actuator_length()` (`forward/actuation.rs`),
+but this function is already called from the velocity stage
+(`forward/mod.rs:185`). The pipeline ordering is correct — velocity is
+computed after velocity-FK, unconditionally, regardless of
+`DISABLE_ACTUATION`. No pipeline-ordering fix is needed.
 
-> **Implementation note — splitting `mj_actuator_length()`:**
+> **Optional organizational refactor — splitting `mj_actuator_length()`:**
 > In MuJoCo, `mj_actuator_length()` computes both `actuator_length` and
-> `actuator_velocity` in a single per-actuator loop. The velocity
-> computation reads only already-available velocity-stage data (`qvel`,
-> `ten_velocity`, `actuator_moment`) — no transmission geometry
-> recomputation is needed.
+> `actuator_velocity` in a single per-actuator loop. CortenForge matches
+> this. For naming clarity, a new `mj_actuator_velocity()` function could
+> be extracted containing just the velocity dispatch (`match
+> model.actuator_trntype[i]`), leaving `mj_actuator_length()` computing
+> only lengths. This is a **naming/organizational improvement**, not a
+> correctness fix — the current code is functionally correct.
 >
-> **Recommended approach:** Extract a new `mj_actuator_velocity()` function
-> containing just the velocity dispatch (`match model.actuator_trntype[i]`).
-> Leave `mj_actuator_length()` computing only lengths. Call
-> `mj_actuator_velocity()` from `mj_fwd_velocity()`. The transmission-type
-> match arm structure is trivial model reads — duplicating it across the
-> two functions is fine (no meaningful computation is shared between the
-> length and velocity paths).
+> If split: call `mj_actuator_velocity()` from `mj_fwd_velocity()`. The
+> transmission-type match arm structure is trivial model reads —
+> duplicating it across the two functions is fine (no meaningful
+> computation is shared between the length and velocity paths).
 
-> **Commit discipline:** This pipeline-ordering move should be its own
+> **Commit discipline:** If the split is done, it should be its own
 > commit within §41 (before the flag guard commits), with the sim test
 > suite run before and after to verify no behavioral change.
 
@@ -1145,7 +1158,12 @@ fn warmstart(model: &Model, data: &mut Data) -> bool {
         return false;  // cold start — solvers skip cost comparison
     }
 
-    // Smart warmstart (already implemented in all three solvers):
+    // Warm start: populate qacc from previous timestep's solution.
+    // This is the actual warm data loading — MuJoCo's warmstart() in
+    // engine_forward.c does this work before solver dispatch.
+    data.qacc.copy_from(&data.qacc_warmstart);
+    // efc_force is NOT populated here — each solver's smart comparison
+    // computes it from qacc_warmstart via its own mechanism:
     //
     //   PGS (pgs.rs:84-121):
     //     Calls classify_constraint_states() with qacc_warmstart to compute
@@ -1162,10 +1180,6 @@ fn warmstart(model: &Model, data: &mut Data) -> bool {
     //     Same evaluate_cost_at() pattern as Newton — compares warmstart
     //     vs smooth cost and selects the better starting point.
     //
-    // DISABLE_WARMSTART gates entry to this path: when set, each solver
-    // starts from qacc_smooth + efc_force = 0 (cold start), skipping
-    // the evaluate_cost_at() / classify_constraint_states() comparison.
-    //
     // Island handling: unconstrained DOFs (index >= nidof) always get
     // qacc_smooth regardless of warmstart outcome.
 
@@ -1178,6 +1192,14 @@ fn warmstart(model: &Model, data: &mut Data) -> bool {
   run `evaluate_cost_at()` / `classify_constraint_states()` comparison),
   `false` = cold start (solvers skip comparison, start from
   `qacc_smooth` + `efc_force = 0`).
+- When returning `true`, `warmstart()` has already copied
+  `qacc_warmstart` → `qacc`. Each solver then evaluates whether this
+  warmstart point is better than `qacc_smooth` and selects the better
+  starting point. The warm data loading is in THIS function, not
+  deferred to the solvers.
+- When returning `false`, `warmstart()` has already set `qacc =
+  qacc_smooth` and `efc_force = 0`. Solvers skip their cost comparison
+  entirely — there is nothing to compare against.
 - Each solver receives this `bool` and conditionally skips its warmstart
   comparison block when `false`.
 - Call site: `let warm = warmstart(model, data); solver.solve(model, data, warm);`
@@ -1185,37 +1207,19 @@ fn warmstart(model: &Model, data: &mut Data) -> bool {
 Key detail: when disabled, `qacc` is set to `qacc_smooth` (unconstrained
 accelerations) AND `efc_force` is zeroed. Both assignments are required.
 
-When enabled, the warmstart path is NOT a simple copy — all three solvers
-already implement smart warmstart selection (PGS via dual cost in
-`pgs.rs:84`, Newton/CG via `evaluate_cost_at()` in `newton.rs:78` and
-`cg.rs:57`). Each solver evaluates the cost of `qacc_warmstart` and falls
-back to `qacc_smooth` if warmstart produces a worse starting point.
-`DISABLE_WARMSTART` should gate entry to each solver's warmstart selection
-block — when disabled, each solver starts from `qacc_smooth` + `efc_force
-= 0` (cold start), skipping the cost comparison entirely.
-
 **Relationship between `warmstart()` and per-solver smart selection:**
 The standalone `warmstart()` function and the per-solver warmstart
 comparison are **two levels of the same mechanism**, not independent
 alternatives:
 
-1. `warmstart()` (this function) runs **before** solver dispatch. When
-   `DISABLE_WARMSTART` is set, it sets `qacc = qacc_smooth` + `efc_force
-   = 0` and returns — the solvers receive a cold start and skip their
-   comparison logic (there's nothing to compare against).
-2. When `DISABLE_WARMSTART` is NOT set, `warmstart()` populates `qacc`
-   and `efc_force` from `qacc_warmstart` (the previous timestep's
-   solution). Each solver's smart comparison then evaluates whether
-   this warmstart point is better than `qacc_smooth` and selects the
-   better starting point.
-
-**Implementation approach:** Each solver must check whether warmstart was
-already cold-started by `warmstart()`. The simplest mechanism: have
-`warmstart()` set a `bool` (or check `DISABLE_WARMSTART` again inside
-each solver). The cleaner approach is to have `warmstart()` return a
-`bool` indicating whether warm values were loaded, and pass this to the
-solver — if `false`, the solver skips its `evaluate_cost_at()` /
-`classify_constraint_states()` comparison entirely.
+1. `warmstart()` (this function) runs **before** solver dispatch. It
+   handles data loading: either cold start (`qacc = qacc_smooth`,
+   `efc_force = 0`) or warm start (`qacc = qacc_warmstart`).
+2. Each solver's smart comparison (PGS dual cost, Newton/CG
+   `evaluate_cost_at()`) runs **after** `warmstart()`. It evaluates
+   whether the loaded warm data is better than `qacc_smooth` and
+   selects the better starting point. This comparison is skipped
+   when `warmstart()` returns `false`.
 
 **`qacc_warmstart` saving is unconditional:** The end-of-step save
 (`data.qacc_warmstart.copy_from(&data.qacc)` in `forward/mod.rs:97`)
@@ -1726,6 +1730,26 @@ it runs AFTER the forward pass — the derived quantities (contacts, forces)
 need recomputation from the freshly reset state. `mj_check_pos` and
 `mj_check_vel` run BEFORE forward, so no recomputation is needed.
 
+**Reentrancy guard (critical):** The `mj_forward()` called from
+`mj_check_acc()` must NOT itself invoke `mj_check_acc()` again, or
+infinite recursion occurs if the reset state produces bad `qacc`. In
+MuJoCo this is a non-issue because `mj_checkAcc` is called from
+`mj_step()` — not from within `mj_forward()` — so the re-run
+`mj_forward()` is a one-shot recomputation that never re-enters the
+check. CortenForge must preserve this separation:
+
+- `mj_forward()` (or `forward_core()`) does NOT call any check
+  functions. It is a pure computation with no validation side-effects.
+- `step()` orchestrates the check calls externally: `check_pos` →
+  `check_vel` → `forward()` → `check_acc`.
+- The `mj_forward()` inside `mj_check_acc()` is the same check-free
+  `forward()` — no re-entry possible.
+
+If the existing `forward_core()` already contains check calls, they must
+be extracted as part of S8g. This is a **structural requirement**, not
+optional — without it, a pathological model that diverges from `qpos0`
+will stack overflow.
+
 **Warning counter preservation:** `mj_reset_data()` zeroes all warning
 counters. The explicit `count += 1` after reset ensures the triggering
 warning survives the reset — users can detect that a reset occurred by
@@ -2171,6 +2195,12 @@ pub fn assign_imp(model: &Model, source: &[f64; 5]) -> [f64; 5] {
 
 /// Assign contact friction, applying global override if enabled.
 /// Friction is always clamped to MIN_MU regardless of override.
+///
+/// This is the **sole** MIN_MU clamping site in the contact pipeline.
+/// The non-override path (`contact_param()`) computes combined friction
+/// via element-wise max but does NOT apply MIN_MU clamping — that
+/// happens here, after source selection. Both override and non-override
+/// friction values pass through the same clamp.
 #[inline]
 pub fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
     let src = if enabled(model, ENABLE_OVERRIDE) {
@@ -2686,8 +2716,8 @@ in `mj_passive()` (it relies on `mju_zero(ptr, 0)` being a no-op).
 | `sim/L0/core/src/types/model.rs` | S4.2a: Add `jnt_actgravcomp: Vec<bool>`. S7a: Add `disableactuator: u32`, `actuator_group: Vec<i32>`. S10a: Add `o_margin`, `o_solref`, `o_solimp`, `o_friction` |
 | `sim/L0/core/src/types/model_init.rs` | S4.2a, S7a, S10a: Initialize new Model fields |
 | `sim/L0/core/src/forward/mod.rs` | S5.1, S8e, S8g: Energy guards, remove `?` error propagation from check calls (check functions become void+auto-reset, `step()` keeps `Result` for `CholeskyFailed`/`LuSingular`/`InvalidTimestep`), update `mj_check_acc` pipeline placement |
-| `sim/L0/core/src/forward/actuation.rs` | S4.2, S4.2a, S4.8, S4.9, S8d: Actuation disable guard (Site 1), actuator-level gravcomp routing, clampctrl guard, ctrl validation. ~~Site 2 actuator_velocity~~ removed — `actuator_velocity` is unconditional transmission kinematics, computed in `mj_fwdVelocity()` |
-| `sim/L0/core/src/forward/velocity.rs` | S4.8: Move `actuator_velocity` computation here if currently in `actuation.rs` (MuJoCo computes it in `mj_fwdVelocity()`, unconditionally) |
+| `sim/L0/core/src/forward/actuation.rs` | S4.2, S4.2a, S4.8, S4.9, S8d: Actuation disable guard (Site 1), actuator-level gravcomp routing, clampctrl guard, ctrl validation. `actuator_velocity` stays here (already called from correct pipeline stage via `mj_actuator_length()`); optional split to `mj_actuator_velocity()` is organizational, not correctness |
+| `sim/L0/core/src/forward/velocity.rs` | S4.8: Optional — if `mj_actuator_velocity()` is split out of `mj_actuator_length()`, call it from here. Current code is already correct (pipeline ordering is right, function just lives in `actuation.rs`) |
 | `sim/L0/core/src/sensor/mod.rs` | S4.10: Sensor disable guard (inside each sensor function, no zeroing) |
 | `sim/L0/core/src/dynamics/rne.rs` | S4.2: Gravity guard in `mj_rne()` + `mj_gravcomp()` |
 | `sim/L0/core/src/energy.rs` | S4.2, S5.1: Gravity guard in `mj_energy_pos()`, energy enable guard |
