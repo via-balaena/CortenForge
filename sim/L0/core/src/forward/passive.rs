@@ -656,9 +656,8 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     let has_fluid = mj_fluid(model, data);
 
     // Gravity compensation (§35): compute into qfrc_gravcomp.
-    // MuJoCo computes gravcomp after spring/damper/flex passive forces, then
-    // conditionally routes via jnt_actgravcomp. We unconditionally add to
-    // qfrc_passive since jnt_actgravcomp is not yet implemented.
+    // Route to qfrc_passive only for DOFs whose joint has jnt_actgravcomp == false.
+    // DOFs with jnt_actgravcomp == true are routed via mj_fwd_actuation() (S4.2).
     let has_gravcomp = mj_gravcomp(model, data);
 
     // S4.7e: Aggregation into qfrc_passive (matches MuJoCo mj_passive() pattern).
@@ -668,7 +667,11 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     }
     if has_gravcomp {
         for dof in 0..model.nv {
-            data.qfrc_passive[dof] += data.qfrc_gravcomp[dof];
+            // S4.2a: Only route gravcomp to passive for DOFs without actuator routing.
+            let jnt = model.dof_jnt[dof];
+            if !model.jnt_actgravcomp[jnt] {
+                data.qfrc_passive[dof] += data.qfrc_gravcomp[dof];
+            }
         }
     }
     if has_fluid {

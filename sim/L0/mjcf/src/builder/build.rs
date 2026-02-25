@@ -101,6 +101,7 @@ impl ModelBuilder {
             jnt_solimp: self.jnt_solimp,
             jnt_name: self.jnt_name,
             jnt_group: self.jnt_group,
+            jnt_actgravcomp: self.jnt_actgravcomp,
 
             dof_body: self.dof_body,
             dof_jnt: self.dof_jnt,

@@ -434,6 +434,8 @@ pub struct ModelBuilder {
     pub(crate) jnt_name: Vec<Option<String>>,
     /// Visualization group per joint (0–5).
     pub(crate) jnt_group: Vec<i32>,
+    /// Per-joint: gravcomp routes through qfrc_actuator instead of qfrc_passive.
+    pub(crate) jnt_actgravcomp: Vec<bool>,
 
     // DOF arrays
     pub(crate) dof_body: Vec<usize>,

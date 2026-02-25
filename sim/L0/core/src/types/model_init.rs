@@ -97,6 +97,7 @@ impl Model {
             jnt_solimp: vec![],
             jnt_name: vec![],
             jnt_group: vec![],
+            jnt_actgravcomp: vec![],
 
             // DOFs (empty)
             dof_body: vec![],

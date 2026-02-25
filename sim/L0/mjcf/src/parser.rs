@@ -624,6 +624,9 @@ fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> {
             defaults.solimpfriction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
     }
+    if let Some(val) = get_attribute_opt(e, "actuatorgravcomp") {
+        defaults.actuatorgravcomp = Some(val == "true");
+    }
 
     Ok(defaults)
 }
@@ -1592,6 +1595,11 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
         if parts.len() >= 5 {
             joint.solimpfriction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
+    }
+
+    // Gravity compensation routing (S4.2a).
+    if let Some(val) = get_attribute_opt(e, "actuatorgravcomp") {
+        joint.actuatorgravcomp = Some(val == "true");
     }
 
     Ok(joint)

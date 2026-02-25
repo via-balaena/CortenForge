@@ -200,6 +200,9 @@ pub struct Model {
     pub jnt_name: Vec<Option<String>>,
     /// Visualization group (0–5) for each joint. Used by renderers for group-based filtering.
     pub jnt_group: Vec<i32>,
+    /// Per-joint flag: if true, gravcomp routes through `qfrc_actuator`
+    /// instead of `qfrc_passive`. Parsed from `<joint actuatorgravcomp="true"/>`.
+    pub jnt_actgravcomp: Vec<bool>,
 
     // ==================== DOFs (indexed by dof_id) ====================
     /// Body for this DOF.
