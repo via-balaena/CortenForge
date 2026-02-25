@@ -729,35 +729,38 @@ pattern).
 
 ##### S4.7a Top-level `mj_passive()` early return
 
-MuJoCo's `mj_passive()` has a leading `nv == 0` guard that skips the
-entire function (no DOFs → no passive forces to compute). Add this as
-the first check:
+**CortenForge safety guard (not in MuJoCo):** MuJoCo has NO explicit
+`nv == 0` guard in `mj_passive()` — when `nv == 0`, `mju_zero(ptr, 0)`
+is a harmless no-op and the function proceeds through its zeroing and
+guard logic without issue. However, in Rust, iterating over empty slices
+is safe but the control flow is clearer with an explicit guard. Add this
+as a CortenForge-specific early return:
 
 ```rust
+// CortenForge extension — not in MuJoCo (which relies on mju_zero(ptr, 0)
+// being a no-op). Explicit guard for clarity and to skip unnecessary
+// sleep-filter computation when there are no DOFs.
 if model.nv == 0 {
     return;
 }
 ```
 
-There are **two** early-return guards in `mj_passive()`, in this order:
-
-1. **`nv == 0` guard** (above): returns *before* any zeroing — there are no
-   DOFs, so there are no force vectors to zero. Nothing happens.
-2. **Spring+damper guard** (below): returns *after* unconditional zeroing of
-   all passive force vectors. When both `DISABLE_SPRING` AND `DISABLE_DAMPER`
-   are set, force vectors are zeroed and then the function exits — skipping
-   all sub-functions but leaving arrays in a clean state.
+After the `nv == 0` guard, there is **one** MuJoCo-matching early-return
+guard: the spring+damper guard, which returns *after* unconditional
+zeroing of all passive force vectors. When both `DISABLE_SPRING` AND
+`DISABLE_DAMPER` are set, force vectors are zeroed and then the function
+exits — skipping all sub-functions but leaving arrays in a clean state.
 
 MuJoCo **unconditionally zeros** all passive force vectors (`qfrc_spring`,
 `qfrc_damper`, `qfrc_gravcomp`, `qfrc_fluid`, `qfrc_passive`) for awake
-DOFs between these two guards. This zeroing runs regardless of whether
-the function continues past the spring+damper guard or returns early.
+DOFs before the spring+damper guard. This zeroing runs regardless of
+whether the function continues past the guard or returns early.
 
-After zeroing, when **both** `DISABLE_SPRING` AND `DISABLE_DAMPER` are set,
+When **both** `DISABLE_SPRING` AND `DISABLE_DAMPER` are set,
 `mj_passive()` returns immediately — skipping ALL passive sub-functions:
 
 ```rust
-// nv == 0 guard already handled above.
+// CortenForge nv == 0 guard already handled above.
 //
 // Zero all passive force vectors unconditionally.
 // MuJoCo uses indexed zeroing (mju_zeroInd) for awake DOFs only when
@@ -948,12 +951,24 @@ least one body has non-zero fluid interaction parameters. The aggregation
 loop uses these booleans to skip the `+=` pass entirely when no forces
 were produced, which matters for performance in large models.
 
-After aggregation, MuJoCo invokes the user callback (`mjcb_passive`)
-and plugin dispatch (`mjPLUGIN_PASSIVE`), both of which can modify
-`qfrc_passive` further. **These callbacks are out of scope for §41** —
-they are tracked separately under **DT-79** (user callback system). Once
-DT-79 is implemented, the callback invocation point is here, immediately
-after aggregation and before `qfrc_passive` is consumed downstream.
+After aggregation, the following additions to `qfrc_passive` happen in
+order. Each writes additively (`+=`) to the already-aggregated vector:
+
+1. **DT-101 (`mj_contactPassive()`)** — viscous contact damping forces.
+   Not yet implemented; when it is, it must be called **HERE** (after
+   aggregation, not before). MuJoCo calls `mj_contactPassive()` after
+   the `spring + damper + gravcomp + fluid` aggregation, and it adds
+   its forces to the already-computed `qfrc_passive`. Placing it before
+   aggregation would silently lose its output (aggregation overwrites
+   `qfrc_passive` with `= spring + damper + ...`). See S4.7d for the
+   `DISABLE_CONTACT` guard it requires.
+
+2. **DT-79 (user callback `mjcb_passive`)** — user-defined passive
+   forces, plus plugin dispatch (`mjPLUGIN_PASSIVE`). Both can modify
+   `qfrc_passive` further. Out of scope for §41.
+
+Both insertion points are after aggregation and before `qfrc_passive`
+is consumed downstream.
 
 #### S4.8 `DISABLE_ACTUATION` — skip actuator forces
 
@@ -1836,12 +1851,19 @@ To detect NaN events:
 1. Set `<flag autoreset="disable"/>` to prevent silent resets
 2. After each `step()`, check `data.warnings[Warning::BadQpos as usize].count`
    (or use `data.warning_mut(Warning::BadQpos).count`) to detect NaN events
-3. Use the `was_reset()` convenience method (required — this is the
-   primary API for detecting NaN events after the `Result` removal):
+3. Use the `divergence_detected()` convenience method (required — this
+   is the primary API for detecting NaN/divergence events after the
+   `Result` removal):
    ```rust
    impl Data {
-       /// Returns true if any auto-reset warning fired since last clear.
-       pub fn was_reset(&self) -> bool {
+       /// Returns true if any NaN/divergence warning fired since last clear.
+       ///
+       /// NOTE: This detects bad-state *events*, not necessarily resets.
+       /// When `DISABLE_AUTORESET` is set, warnings still fire but no
+       /// reset occurs. To distinguish: check `DISABLE_AUTORESET` flag
+       /// state alongside this method. When autoreset is enabled (default),
+       /// `divergence_detected() == true` implies a reset happened.
+       pub fn divergence_detected(&self) -> bool {
            self.warnings[Warning::BadQpos as usize].count > 0
                || self.warnings[Warning::BadQvel as usize].count > 0
                || self.warnings[Warning::BadQacc as usize].count > 0
@@ -2639,11 +2661,13 @@ step (consumption is gated, not population).
 in `mj_step1()`/`mj_step2()` will be specified and verified there.
 Forward reference: S8e documents the intended placement.
 
-### AC48 — `nv == 0` passive force guard
+### AC48 — `nv == 0` passive force guard (CortenForge extension)
 A model with zero DOFs (`nv == 0`) does not crash or produce
 out-of-bounds access in `mj_passive()`. The function returns
 immediately without touching any force vectors. This covers the edge
-case of a purely static scene (all bodies welded to world).
+case of a purely static scene (all bodies welded to world). Note: this
+is a CortenForge safety guard — MuJoCo has no explicit `nv == 0` check
+in `mj_passive()` (it relies on `mju_zero(ptr, 0)` being a no-op).
 
 ---
 

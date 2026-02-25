@@ -103,7 +103,8 @@ in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 
 **Correctness bugs (Phase 1):** ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), ~~DT-78~~ (done), ~~DT-16~~ (done), ~~DT-90~~ (done)
 
-**Runtime flags (Phase 2):** DT-61, DT-93, DT-94, DT-95 (all subsumed by §41)
+**Runtime flags (Phase 2):** DT-61, DT-93, DT-94, DT-95 (all subsumed by §41);
+DT-96 (lazy energy eval, post-v1.0), DT-97 (golden file generation, Phase 12)
 
 **Core API (Phase 3):** DT-21, DT-41, DT-79
 
@@ -124,7 +125,7 @@ DT-20, DT-22, DT-24, DT-26, DT-27, DT-29, DT-30, DT-31, DT-34, DT-36,
 DT-37, DT-38, DT-40, DT-42, DT-43, DT-44, DT-45, DT-46, DT-48, DT-49,
 DT-50, DT-55, DT-65, DT-66, DT-67, DT-68, DT-69, DT-71, DT-72, DT-73,
 DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92,
-DT-101
+DT-96, DT-101
 
 #### From future_work_11.md (#43–45)
 
@@ -206,7 +207,7 @@ DT-101
 | 9 | Collision completeness | §43/50/54/57/65, DT-70 | 6 |
 | 10 | Flex pipeline | §42A-i–v, §42B | 6 |
 | 11 | Derivatives | §58, DT-47/51/52/53/54 | 6 |
-| 12 | **Conformance test suite** | **§45** | **1** |
+| 12 | **Conformance test suite** | **§45**, DT-97 (golden file generation) | **2** |
 | 13 | Remaining core | §46, §66 | 2 |
 | | | **Total core v1.0** | **~67** |
 

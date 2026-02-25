@@ -2,9 +2,11 @@
 
 > **Status**: Draft — 2026-02-21
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
-> plus the ~97 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-98).
+> plus the ~101 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-101).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
 > DT-96 (lazy energy eval) and DT-97 (golden file conformance) added during §41 audit.
+> DT-99 (BVH midphase, §41 S9-full), DT-100 (global override, §41 S10-full),
+> DT-101 (`mj_contactPassive()`) added during §41 spec expansion.
 > ~~DT-98~~ retired — `passive` dropped entirely pre-v1.0 (no shim needed).
 >
 > **Current position**: Through §40c on `future_work_10.md`.
@@ -84,6 +86,8 @@ high-value, and reduce the chance of compounding errors in later work.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | §41 | 10 | — | Wire all 19 `disableflags` and 6 `enableflags` end-to-end. Subsumes DT-61 (DISABLE_GRAVITY), DT-93 (auto-reset on NaN/divergence), DT-94 (BVH midphase integration), DT-95 (global contact parameter override). See [spec](todo/spec_fleshouts/S41_RUNTIME_FLAGS_SPEC.md). |
+| DT-99 | 10c | T2 | BVH midphase integration into collision pipeline (§41 S9-full, post-§41 commit) |
+| DT-100 | 10c | T2 | Global contact parameter override guard sites (§41 S10-full, post-§41 commit) |
 
 ---
 
@@ -218,6 +222,7 @@ Persistent fields in `Data` that MuJoCo computes every forward step.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | §45 | 11 | — | Four-layer conformance test suite: self-consistency, per-stage reference, trajectory comparison, property/invariant tests against MuJoCo 3.4.0 |
+| DT-97 | 10j | T2 | Golden file generation for per-flag trajectory conformance (AC18 of §41 — bootstrap pattern reused by §45) |
 
 This is the gate. Run it, identify failures, iterate on phases 1–11 until
 green.
@@ -303,6 +308,12 @@ foundation isn't right.
 | DT-83 | 10j | T3 | Multi-model batching |
 | DT-86 | 10i | T1 | `elastic2d` keyword on `<flex><elasticity>` |
 | DT-87 | 10i | T2 | Shared-body flex vertices |
+
+### §41 Follow-Ons (Post-§41, Low Priority)
+| Task | Source | Tier | Description |
+|------|--------|------|-------------|
+| DT-96 | 10j | T1 | Lazy energy evaluation (`flg_energypos`/`flg_energyvel` — only matters with plugins or energy-dependent sensors) |
+| DT-101 | 10c | T2 | `mj_contactPassive()` — viscous contact damping forces (must be called after `qfrc_passive` aggregation, see §41 S4.7e) |
 
 ### Low-Priority MuJoCo Compat
 | Task | Source | Tier | Description |
