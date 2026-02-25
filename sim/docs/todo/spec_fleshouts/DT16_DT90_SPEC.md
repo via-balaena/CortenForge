@@ -1,6 +1,6 @@
 # DT-16 + DT-90: Flex Parsing Conformance Fixes
 
-**Status:** Draft
+**Status:** Reviewed
 **Phase:** Roadmap Phase 1 — Correctness bugs (last 2 remaining)
 **Tier:** T1 (mechanical — no iterative design needed)
 
@@ -107,11 +107,12 @@ friction data from the MJCF is lost.
 ### What MuJoCo does
 
 `<flex><contact friction="1.0 0.005 0.0001"/>` → 3 values stored per flex:
-- `[0]` = sliding (mapped to friction slots 0, 1)
+- `[0]` = tangential (mapped to friction slots 0, 1)
 - `[1]` = torsional (mapped to friction slot 2)
 - `[2]` = rolling (mapped to friction slots 3, 4)
 
-Same pattern as `geom_friction: Vec<Vector3<f64>>`.
+Same pattern as `geom_friction: Vec<Vector3<f64>>`. MuJoCo docs use "tangential,
+torsional, rolling"; `mjmodel.h` uses "slide, spin, roll" — same semantics.
 
 ### Fix
 
@@ -147,7 +148,7 @@ if let Some(s) = get_attribute_opt(e, "friction") {
 
 `parse_vector3()` can't be used here — it errors on <3 values, and
 `parse_flex_contact_attrs` doesn't return `Result`. MuJoCo accepts 1-3 values,
-filling defaults for missing components: `1.0 0.005 0.0001` (sliding,
+filling defaults for missing components: `1.0 0.005 0.0001` (tangential,
 torsional, rolling).
 
 This matches how geom friction defaults work in MuJoCo.
@@ -162,7 +163,7 @@ return (
     gap,
     model.flex_solref[flex_id],
     model.flex_solimp[flex_id],
-    [f.x, f.x, f.y, f.z, f.z],  // same pattern as geom
+    [f.x, f.x, f.y, f.z, f.z],  // tangential, tangential, torsional, rolling, rolling
 );
 
 // AFTER (collision/mod.rs — equal-priority path):
@@ -179,17 +180,17 @@ let fri = [
 
 #### Default value
 
-MuJoCo default friction for all contact-capable elements: `1.0 0.005 0.0001`
-(sliding, torsional, rolling). Verify this is correct for flex specifically.
+MuJoCo default friction for flex: `1.0 0.005 0.0001` (tangential, torsional,
+rolling) — confirmed identical to geom defaults from `user_init.c:218-220`.
 
 #### Tests
 
 1. **Parse test:** `<flex><contact friction="0.8 0.01 0.002"/>` → verify all 3
    components stored correctly.
-2. **Parse test (1 value):** `<flex><contact friction="0.5"/>` → verify sliding
+2. **Parse test (1 value):** `<flex><contact friction="0.5"/>` → verify tangential
    component set, torsional/rolling at defaults.
 3. **Contact param test (flex priority):** Verify 5-element friction array has
-   correct mapping `[slide, slide, torsion, roll, roll]`.
+   correct mapping `[tangential, tangential, torsional, rolling, rolling]`.
 4. **Contact param test (equal priority):** Verify element-wise max with geom
    friction uses per-component comparison, not scalar.
 
@@ -206,7 +207,7 @@ MuJoCo default friction for all contact-capable elements: `1.0 0.005 0.0001`
 
 Both changes are **breaking** for users who:
 - DT-16: Use `density="..."` on `<flex>` or `<flexcomp>` (non-standard, should use `mass`)
-- DT-90: None (additive — preserves existing sliding friction, adds torsional/rolling)
+- DT-90: None (additive — preserves existing tangential friction, adds torsional/rolling)
 
 DT-16 is intentionally breaking: removing a non-conformant extension to match MuJoCo.
 
