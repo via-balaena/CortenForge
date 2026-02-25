@@ -100,6 +100,36 @@ fn two_group_actuator_mjcf() -> &'static str {
     "#
 }
 
+/// Two filter actuators in different groups — gives activation state (act, act_dot).
+/// Used for per-group activation freeze tests (AC22, AC41).
+fn two_group_filter_actuator_mjcf() -> &'static str {
+    r#"
+    <mujoco model="two_group_filter_actuator">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+            <body name="link2" pos="1 0 1">
+                <joint name="j2" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <general joint="j1" name="filter1" group="0"
+                     dyntype="filter" dynprm="0.05"
+                     gainprm="100" biastype="affine" biasprm="0 -100 0"/>
+            <general joint="j2" name="filter2" group="2"
+                     dyntype="filter" dynprm="0.05"
+                     gainprm="100" biastype="affine" biasprm="0 -100 0"/>
+        </actuator>
+    </mujoco>
+    "#
+}
+
 /// Body with equality (weld) constraint.
 fn weld_constraint_mjcf() -> &'static str {
     r#"
@@ -495,6 +525,58 @@ fn ac22_per_group_actuator_disable() {
     // motor2 (group 2) is disabled → zero force
     // group-2 actuator should produce zero force when disabled
     assert_relative_eq!(data.actuator_force[1], 0.0, epsilon = 1e-12);
+
+    // --- Activation freeze test (filter actuators) ---
+    // Filter actuators have activation state (act). When a group is disabled,
+    // act should freeze (not be zeroed) — the actuator just stops integrating.
+    let mut model_f = load_model(two_group_filter_actuator_mjcf()).expect("load");
+    let mut data_f = model_f.make_data();
+    data_f.ctrl[0] = 1.0;
+    data_f.ctrl[1] = 1.0;
+
+    // Step 20 times to build activation state
+    for _ in 0..20 {
+        data_f.step(&model_f).expect("step");
+    }
+    let act0_before = data_f.act[0];
+    let act1_before = data_f.act[1];
+    assert!(
+        act1_before.abs() > 1e-6,
+        "group-2 activation should build up"
+    );
+
+    // Disable group 2
+    model_f.disableactuator = 1u32 << 2;
+
+    // Step 10 more times
+    for _ in 0..10 {
+        data_f.step(&model_f).expect("step");
+    }
+
+    // Group 0 act should have changed (still active)
+    assert!(
+        (data_f.act[0] - act0_before).abs() > 1e-10,
+        "group-0 activation should continue evolving"
+    );
+    // Group 2 act should be frozen (unchanged)
+    assert_relative_eq!(data_f.act[1], act1_before, epsilon = 1e-12);
+
+    // --- Group > 30 boundary test ---
+    // Actuators with group > 30 are never disabled by disableactuator bitmask.
+    let mut model_b = load_model(two_group_actuator_mjcf()).expect("load");
+    model_b.actuator_group[1] = 31; // Move motor2 to group 31 (outside 0–30)
+    model_b.disableactuator = u32::MAX; // Disable ALL 32 bits
+
+    let mut data_b = model_b.make_data();
+    data_b.ctrl[0] = 1.0;
+    data_b.ctrl[1] = 1.0;
+    data_b.forward(&model_b).expect("forward");
+
+    // motor2 (group 31) should NOT be disabled — groups outside 0–30 are immune
+    assert!(
+        data_b.actuator_force[1].abs() > 0.0,
+        "group-31 actuator should NOT be disabled by disableactuator bitmask"
+    );
 }
 
 // ============================================================================
@@ -797,6 +879,68 @@ fn ac39_reset_correctness() {
 }
 
 // ============================================================================
+// AC39b: reset() restores mocap_pos / mocap_quat from Model defaults
+// ============================================================================
+
+/// Mocap body fixture for reset testing.
+fn mocap_flag_test_mjcf() -> &'static str {
+    r#"
+    <mujoco model="mocap_reset_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="mocap_body" mocap="true" pos="1 2 3">
+                <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+            </body>
+            <body name="link" pos="0 0 1">
+                <joint name="j" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#
+}
+
+#[test]
+fn ac39b_reset_mocap() {
+    let model = load_model(mocap_flag_test_mjcf()).expect("load");
+    assert!(
+        model.nmocap > 0,
+        "model should have at least one mocap body"
+    );
+
+    let mut data = model.make_data();
+
+    // Record default mocap state from make_data()
+    let default_pos = data.mocap_pos[0];
+    let default_quat = data.mocap_quat[0];
+
+    // Verify defaults match body_pos from model (1, 2, 3)
+    assert_relative_eq!(default_pos[0], 1.0, epsilon = 1e-12);
+    assert_relative_eq!(default_pos[1], 2.0, epsilon = 1e-12);
+    assert_relative_eq!(default_pos[2], 3.0, epsilon = 1e-12);
+
+    // Mutate mocap state to arbitrary values
+    data.mocap_pos[0] = nalgebra::Vector3::new(99.0, 88.0, 77.0);
+    data.mocap_quat[0] = nalgebra::UnitQuaternion::from_euler_angles(1.0, 0.5, 0.3);
+
+    // Reset
+    data.reset(&model);
+
+    // mocap_pos should be restored to model defaults
+    assert_relative_eq!(data.mocap_pos[0][0], default_pos[0], epsilon = 1e-12);
+    assert_relative_eq!(data.mocap_pos[0][1], default_pos[1], epsilon = 1e-12);
+    assert_relative_eq!(data.mocap_pos[0][2], default_pos[2], epsilon = 1e-12);
+
+    // mocap_quat should be restored to model defaults
+    let q = data.mocap_quat[0].quaternion().coords;
+    let q_default = default_quat.quaternion().coords;
+    for i in 0..4 {
+        assert_relative_eq!(q[i], q_default[i], epsilon = 1e-12);
+    }
+}
+
+// ============================================================================
 // AC41: DISABLE_ACTUATION + per-group orthogonality
 // ============================================================================
 
@@ -842,6 +986,36 @@ fn ac41_actuation_plus_pergroup_orthogonality() {
 
     assert!(data3.actuator_force[0].abs() > 0.0, "motor1 active");
     assert!(data3.actuator_force[1].abs() > 0.0, "motor2 active");
+
+    // Case 4: Per-group disable freezes activation (act_dot = 0 for disabled group)
+    let mut model4 = load_model(two_group_filter_actuator_mjcf()).expect("load");
+    let mut data4 = model4.make_data();
+    data4.ctrl[0] = 1.0;
+    data4.ctrl[1] = 1.0;
+
+    // Step 20 times to build activation state
+    for _ in 0..20 {
+        data4.step(&model4).expect("step");
+    }
+    let act1_pre = data4.act[1];
+    assert!(act1_pre.abs() > 1e-6, "group-2 activation should build up");
+    assert!(act1_pre != 0.0, "proves freezing, not zeroing");
+
+    // Disable group 2
+    model4.disableactuator = 1u32 << 2;
+
+    // Step 10 more times
+    for _ in 0..10 {
+        data4.step(&model4).expect("step");
+    }
+
+    // Group 2 activation should be frozen at pre-disable value
+    assert_relative_eq!(data4.act[1], act1_pre, epsilon = 1e-12);
+    // Confirm it's nonzero (frozen, not zeroed)
+    assert!(
+        data4.act[1].abs() > 1e-6,
+        "frozen activation should be nonzero (proves freezing, not zeroing)"
+    );
 }
 
 // ============================================================================
@@ -1363,6 +1537,14 @@ fn ac17_refsafe_disable() {
 
 // ============================================================================
 // AC20: Eulerdamp disable — step succeeds (stub, no crash)
+//
+// NOTE: The compound guard behavior (DISABLE_EULERDAMP skipping the implicit
+// Euler damping matrix correction) cannot be fully tested until implicit Euler
+// integration is implemented. Currently only explicit Euler is available, so
+// the flag is a no-op. When implicit Euler lands, expand this test to verify
+// that DISABLE_EULERDAMP causes the solver to skip the damping correction
+// term in the implicit integrator, resulting in different qacc values compared
+// to the default (implicit Euler with damping correction enabled).
 // ============================================================================
 
 #[test]
@@ -1458,7 +1640,7 @@ fn ac21_passive_force_hierarchy() {
 fn ac38_island_default_correctness() {
     use sim_core::DISABLE_ISLAND;
 
-    let model = load_model(free_body_with_floor_mjcf()).expect("load");
+    let mut model = load_model(free_body_with_floor_mjcf()).expect("load");
 
     // Default: DISABLE_ISLAND bit is clear
     assert_eq!(
@@ -1467,17 +1649,19 @@ fn ac38_island_default_correctness() {
         "DISABLE_ISLAND should be clear by default"
     );
 
-    // Forward pass should discover islands (nisland > 0 for a model with contacts)
+    // Enable sleep so mj_island() runs during forward().
+    // Island discovery is gated on ENABLE_SLEEP, not on DISABLE_ISLAND alone.
+    model.enableflags |= ENABLE_SLEEP;
+
     let mut data = model.make_data();
-    data.qpos[2] = 0.11; // near floor
+    data.qpos[2] = 0.05; // penetrating floor (sphere radius=0.1, bottom at z=-0.05)
     data.forward(&model).expect("forward");
 
-    // Island discovery should run (nisland >= 1 when there are constraint rows)
-    // The exact count depends on contact generation, but with disableflags=0
-    // island discovery is not skipped.
-    assert_eq!(
-        model.disableflags, 0,
-        "all disable flags should be zero by default"
+    // Verify contacts and islands are actually discovered
+    assert!(data.ncon > 0, "contacts required for island test");
+    assert!(
+        data.nisland > 0,
+        "island discovery should run by default (nisland > 0 with contacts)"
     );
 }
 
@@ -1654,6 +1838,41 @@ fn ac30_sleep_aware_validation() {
     assert!(
         !data.qvel[0].is_nan(),
         "NaN should be cleared by auto-reset"
+    );
+
+    // --- Negative case: sleeping DOFs skip NaN check ---
+    // Use free-body-with-floor so it settles on the ground and sleeps.
+    let mut model2 = load_model(free_body_with_floor_mjcf()).expect("load");
+    model2.enableflags |= ENABLE_SLEEP;
+
+    let mut data2 = model2.make_data();
+    // Step enough times for the body to settle on the floor and sleep.
+    // The ball starts at z=0.5, falls onto the plane, bounces, and settles.
+    // MIN_AWAKE=10, so after ~2000 steps the sleep countdown should expire.
+    for _ in 0..2000 {
+        data2.step(&model2).expect("step");
+    }
+
+    // Verify body is asleep (tree 0 is the only kinematic tree)
+    assert!(
+        !data2.tree_awake[0],
+        "body should be asleep after 2000 steps settling on floor"
+    );
+
+    // Inject NaN into sleeping body's qvel DOFs
+    let tree_dof_start = model2.tree_dof_adr[0];
+    data2.qvel[tree_dof_start] = f64::NAN;
+
+    let badqvel_before = data2.warnings[Warning::BadQvel as usize].count;
+
+    // Step — mj_check_vel should skip sleeping DOFs
+    data2.step(&model2).expect("step");
+
+    // BadQvel count should NOT increase (sleeping DOFs skipped by mj_check_vel)
+    assert_eq!(
+        data2.warnings[Warning::BadQvel as usize].count,
+        badqvel_before,
+        "BadQvel should NOT fire for NaN in sleeping DOF"
     );
 }
 
