@@ -193,6 +193,9 @@ pub enum ActuatorDynamics {
     Integrator,
     /// Muscle activation dynamics.
     Muscle,
+    /// User-defined dynamics (via `cb_act_dyn` callback).
+    /// MuJoCo reference: `mjDYN_USER`.
+    User,
 }
 
 /// Actuator gain type — controls how `gain` is computed in Phase 2.
@@ -207,6 +210,9 @@ pub enum GainType {
     Affine,
     /// Muscle FLV gain (handled separately in the Muscle path).
     Muscle,
+    /// User-defined gain (via `cb_act_gain` callback).
+    /// MuJoCo reference: `mjGAIN_USER`.
+    User,
 }
 
 /// Actuator bias type — controls how `bias` is computed in Phase 2.
@@ -221,6 +227,9 @@ pub enum BiasType {
     Affine,
     /// Muscle passive force (handled separately in the Muscle path).
     Muscle,
+    /// User-defined bias (via `cb_act_bias` callback).
+    /// MuJoCo reference: `mjBIAS_USER`.
+    User,
 }
 
 /// Tendon wrap object type.
@@ -396,6 +405,20 @@ impl MjSensorType {
             Self::User => 0, // Variable, must be set explicitly
         }
     }
+}
+
+/// Pipeline stage for user sensor callbacks (DT-79).
+///
+/// Passed to `cb_sensor` to indicate which stage the callback is being
+/// invoked from, so the callback can read the appropriate Data fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SensorStage {
+    /// Position stage (after FK, before velocity).
+    Pos,
+    /// Velocity stage (after velocity FK, before acceleration).
+    Vel,
+    /// Acceleration stage (after constraint solve).
+    Acc,
 }
 
 /// Sensor data dependency stage.

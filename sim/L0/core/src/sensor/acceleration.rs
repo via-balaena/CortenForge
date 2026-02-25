@@ -7,7 +7,7 @@
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType,
-    MjSensorType, Model, SleepState,
+    MjSensorType, Model, SensorStage, SleepState,
 };
 use nalgebra::{Matrix3, Vector3};
 
@@ -213,6 +213,15 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                     _ => Vector3::zeros(),
                 };
                 sensor_write3(&mut data.sensordata, adr, &alpha);
+            }
+
+            // DT-79: User-defined sensors at acceleration stage
+            MjSensorType::User => {
+                if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration {
+                    if let Some(ref cb) = model.cb_sensor {
+                        (cb.0)(model, data, sensor_id, SensorStage::Acc);
+                    }
+                }
             }
 
             // Skip position/velocity-dependent sensors

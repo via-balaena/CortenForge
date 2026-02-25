@@ -390,6 +390,11 @@ pub struct Data {
     /// Kinetic energy.
     pub energy_kinetic: f64,
 
+    /// §52: Forward/inverse comparison error (diagnostic).
+    /// `max|qfrc_inverse - (qfrc_applied + qfrc_actuator + qfrc_constraint)|`.
+    /// Populated when `ENABLE_FWDINV` is set; otherwise 0.0.
+    pub fwdinv_error: f64,
+
     // ==================== Sleep State (§16.1) ====================
     /// Per-tree sleep timer (length `ntree`).
     /// `< 0`: Tree is awake. Countdown from `-(1 + MIN_AWAKE)` toward `-1`.
@@ -703,6 +708,7 @@ impl Clone for Data {
             // Energy
             energy_potential: self.energy_potential,
             energy_kinetic: self.energy_kinetic,
+            fwdinv_error: self.fwdinv_error,
             // Sleep state
             tree_asleep: self.tree_asleep.clone(),
             tree_awake: self.tree_awake.clone(),
@@ -873,6 +879,7 @@ impl Data {
         // 7. Energy — zero.
         self.energy_potential = 0.0;
         self.energy_kinetic = 0.0;
+        self.fwdinv_error = 0.0;
 
         // 8. Warning counters — zero.
         for w in &mut self.warnings {

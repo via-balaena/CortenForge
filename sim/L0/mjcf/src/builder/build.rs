@@ -321,6 +321,10 @@ impl ModelBuilder {
             cb_passive: None,
             cb_control: None,
             cb_contactfilter: None,
+            cb_sensor: None,
+            cb_act_dyn: None,
+            cb_act_gain: None,
+            cb_act_bias: None,
 
             timestep: self.timestep,
             gravity: self.gravity,

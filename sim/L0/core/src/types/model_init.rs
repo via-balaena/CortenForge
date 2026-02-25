@@ -352,6 +352,10 @@ impl Model {
             cb_passive: None,
             cb_control: None,
             cb_contactfilter: None,
+            cb_sensor: None,
+            cb_act_dyn: None,
+            cb_act_gain: None,
+            cb_act_bias: None,
         }
     }
 
@@ -519,6 +523,7 @@ impl Model {
             // Energy
             energy_potential: 0.0,
             energy_kinetic: 0.0,
+            fwdinv_error: 0.0,
 
             // Sleep state (§16.7) — initialized from tree sleep policies.
             // For models not built through MJCF (ntree == 0 or body_treeid not populated),

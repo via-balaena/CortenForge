@@ -230,7 +230,8 @@ impl ModelBuilder {
             ActuatorDynamics::Filter
             | ActuatorDynamics::FilterExact
             | ActuatorDynamics::Integrator
-            | ActuatorDynamics::Muscle => 1,
+            | ActuatorDynamics::Muscle
+            | ActuatorDynamics::User => 1,
         };
 
         self.actuator_act_adr.push(self.na);

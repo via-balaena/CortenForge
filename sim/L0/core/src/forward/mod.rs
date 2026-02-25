@@ -3,6 +3,20 @@
 //! This module implements `step`, `forward`, and `forward_core` on `Data`,
 //! which call sub-modules in physics pipeline order. Corresponds to
 //! MuJoCo's `engine_forward.c`.
+//!
+//! ## Pipeline Split (§53)
+//!
+//! The pipeline is factored into two halves for split-step support:
+//!
+//! - **`forward_pos_vel()`**: Position + velocity stages (wake detection,
+//!   FK, collision, velocity FK, energy). Does NOT invoke `cb_control`.
+//!
+//! - **`forward_acc()`**: Acceleration stage (actuation, CRBA, RNE, passive,
+//!   constraints, body accumulators, acc-sensors).
+//!
+//! `forward_core()` calls both halves with `cb_control` firing at the
+//! split boundary. `step1()` runs only `forward_pos_vel()` + `cb_control`;
+//! `step2()` runs `forward_acc()` + integration.
 
 mod acceleration;
 mod actuation;
@@ -40,15 +54,24 @@ pub(crate) use position::SweepAndPrune;
 pub(crate) use position::{aabb_from_geom, closest_point_segment, closest_points_segments};
 
 use crate::types::flags::enabled;
-use crate::types::{Data, ENABLE_ENERGY, ENABLE_SLEEP, Integrator, Model, StepError};
+use crate::types::{
+    Data, ENABLE_ENERGY, ENABLE_FWDINV, ENABLE_SLEEP, Integrator, Model, StepError,
+};
 
 impl Data {
-    /// Split-step phase 1: compute forward dynamics.
+    /// Split-step phase 1: position + velocity stages only.
     ///
-    /// Performs timestep validation, state checks, forward dynamics, and
-    /// acceleration checks. After `step1()`, the user can inject forces
-    /// (e.g., modify `qfrc_applied` or `xfrc_applied`) before calling
-    /// [`step2()`](Self::step2) to integrate.
+    /// Runs the forward pipeline through the velocity stage, then fires
+    /// `cb_control`. After `step1()`, the user can inject forces (e.g.,
+    /// modify `ctrl`, `qfrc_applied`, or `xfrc_applied`) before calling
+    /// [`step2()`](Self::step2) which runs the acceleration stage and
+    /// integrates.
+    ///
+    /// # MuJoCo Equivalence
+    ///
+    /// Matches `mj_step1()` in `engine_forward.c`: runs position + velocity
+    /// stages, fires `mjcb_control`, and returns. `mj_step2()` then runs
+    /// actuation → acceleration → constraints → integration.
     ///
     /// # Split-Step Usage
     ///
@@ -56,8 +79,8 @@ impl Data {
     /// // Equivalent to data.step(&model) for Euler/Implicit integrators:
     /// data.step1(&model)?;
     /// // Inject forces here (e.g., RL policy output)
-    /// data.qfrc_applied[0] = 10.0;
-    /// data.step2(&model);
+    /// data.ctrl[0] = 1.0;
+    /// data.step2(&model)?;
     /// ```
     ///
     /// # Important
@@ -69,7 +92,7 @@ impl Data {
     ///
     /// # Errors
     ///
-    /// Returns `Err(StepError)` if timestep is invalid or forward dynamics fails.
+    /// Returns `Err(StepError)` if timestep is invalid.
     pub fn step1(&mut self, model: &Model) -> Result<(), StepError> {
         // Validate timestep
         if model.timestep <= 0.0 || !model.timestep.is_finite() {
@@ -80,31 +103,49 @@ impl Data {
         check::mj_check_pos(model, self);
         check::mj_check_vel(model, self);
 
-        // Forward dynamics (with sensors)
-        self.forward(model)?;
+        // §53: Position + velocity stages only (matching MuJoCo's mj_step1).
+        self.forward_pos_vel(model, true);
 
-        // Validate accelerations
-        check::mj_check_acc(model, self);
+        // §53: cb_control fires between velocity and acceleration stages.
+        if let Some(ref cb) = model.cb_control {
+            (cb.0)(model, self);
+        }
 
         Ok(())
     }
 
-    /// Split-step phase 2: integrate state.
+    /// Split-step phase 2: acceleration stage + integration.
     ///
-    /// Integrates positions and velocities using Euler-style integration
-    /// (regardless of `model.integrator`), then performs sleep update and
-    /// warmstart save.
+    /// Runs actuation, dynamics, constraints, acc-sensors, then integrates
+    /// positions and velocities using Euler-style integration (regardless of
+    /// `model.integrator`), sleep update, and warmstart save.
     ///
     /// Must be called after [`step1()`](Self::step1). The user may modify
-    /// `qfrc_applied`, `xfrc_applied`, `ctrl`, etc. between step1 and step2
-    /// to inject forces that affect integration.
+    /// `ctrl`, `qfrc_applied`, `xfrc_applied`, etc. between step1 and step2
+    /// to inject forces that affect the acceleration computation.
+    ///
+    /// # MuJoCo Equivalence
+    ///
+    /// Matches `mj_step2()` in `engine_forward.c`: actuation → acceleration
+    /// → constraints → integration → sleep → warmstart.
     ///
     /// # Note
     ///
     /// This always uses Euler-style integration. RK4 is not compatible with
     /// split-step force injection because its multi-stage substeps recompute
     /// `forward()` internally.
-    pub fn step2(&mut self, model: &Model) {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(StepError)` if forward acceleration computation fails
+    /// (e.g., Cholesky failure in implicit integrator).
+    pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
+        // §53: Acceleration stage (actuation, constraints, sensors).
+        self.forward_acc(model, true)?;
+
+        // Validate accelerations
+        check::mj_check_acc(model, self);
+
         // Euler-style integration (matches step() for non-RK4 integrators)
         self.integrate(model);
 
@@ -117,6 +158,8 @@ impl Data {
 
         // Save qacc for next-step warmstart (§15.9).
         self.qacc_warmstart.copy_from(&self.qacc);
+
+        Ok(())
     }
 
     /// Perform one simulation step.
@@ -209,6 +252,10 @@ impl Data {
     /// Shared pipeline core with sleep gating (§16.5).
     ///
     /// `compute_sensors`: `true` for `forward()`, `false` for `forward_skip_sensors()`.
+    ///
+    /// §53: Calls `forward_pos_vel()` + `cb_control` + `forward_acc()`.
+    /// `cb_control` only fires on full forward (compute_sensors=true), not on
+    /// RK4 intermediate stages.
     fn forward_core(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
         // INVARIANT: forward_core() must NOT call mj_check_pos, mj_check_vel,
         // or mj_check_acc. mj_check_acc() calls forward() after auto-reset —
@@ -216,6 +263,27 @@ impl Data {
         // qpos0 would cause infinite recursion. step() orchestrates the
         // check → forward → check sequence externally. This function is a
         // pure computation with no validation side-effects.
+        self.forward_pos_vel(model, compute_sensors);
+
+        // §53: cb_control fires between velocity and acceleration stages.
+        // Only on full forward (not RK4 intermediate stages).
+        if compute_sensors {
+            if let Some(ref cb) = model.cb_control {
+                (cb.0)(model, self);
+            }
+        }
+
+        self.forward_acc(model, compute_sensors)
+    }
+
+    /// Position + velocity stages of the forward pipeline.
+    ///
+    /// Runs wake detection, forward kinematics, collision, velocity FK,
+    /// position/velocity sensors, and energy computation.
+    ///
+    /// §53: This is the first half of the pipeline, used by both
+    /// `forward_core()` and `step1()`.
+    fn forward_pos_vel(&mut self, model: &Model, compute_sensors: bool) {
         // Sleep is only active after the initial forward pass.
         // The first forward (time == 0.0) must compute FK for all bodies
         // to establish initial positions, even for Init-sleeping bodies.
@@ -231,6 +299,12 @@ impl Data {
         // ========== Position Stage ==========
         position::mj_fwd_position(model, self);
         crate::dynamics::flex::mj_flex(model, self);
+
+        // CRBA: Compute mass matrix M from kinematic tree. Depends only on
+        // joint positions (available after FK). MuJoCo computes M in the
+        // position stage; we do the same so that mj_energy_vel (velocity
+        // stage) has a valid mass matrix.
+        crate::dynamics::crba::mj_crba(model, self);
 
         // §16.15: If FK detected external qpos changes on sleeping bodies, wake them
         if sleep_enabled && crate::island::mj_check_qpos_changed(model, self) {
@@ -277,17 +351,35 @@ impl Data {
         if compute_sensors {
             crate::sensor::mj_sensor_vel(model, self);
         }
-
-        // ========== Acceleration Stage ==========
-        actuation::mj_fwd_actuation(model, self);
-        crate::dynamics::crba::mj_crba(model, self);
-        crate::dynamics::rne::mj_rne(model, self);
-        // S5.1: Gate energy computation on ENABLE_ENERGY; zero when disabled.
+        // §53: Kinetic energy belongs to the velocity stage (MuJoCo computes
+        // it in mj_step1, before the acceleration stage).
         if enabled(model, ENABLE_ENERGY) {
             crate::energy::mj_energy_vel(model, self);
         } else {
             self.energy_kinetic = 0.0;
         }
+    }
+
+    /// Acceleration stage of the forward pipeline.
+    ///
+    /// Runs actuation, RNE, passive forces, constraint solve,
+    /// forward acceleration, body accumulators, acc-sensors, and
+    /// forward/inverse comparison. (CRBA runs in forward_pos_vel.)
+    ///
+    /// §53: This is the second half of the pipeline, used by both
+    /// `forward_core()` and `step2()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(StepError)` if implicit acceleration solver fails.
+    fn forward_acc(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+        // ========== Acceleration Stage ==========
+        actuation::mj_fwd_actuation(model, self);
+        // Note: CRBA already ran in forward_pos_vel() (position stage).
+        // The mass matrix depends only on qpos, which doesn't change between stages.
+        crate::dynamics::rne::mj_rne(model, self);
         passive::mj_fwd_passive(model, self);
 
         // S4.2a: Route gravcomp → qfrc_actuator for jnt_actgravcomp joints.
@@ -319,6 +411,38 @@ impl Data {
             crate::sensor::mj_sensor_postprocess(model, self);
         }
 
+        // §52: Forward/inverse comparison (diagnostic only).
+        if enabled(model, ENABLE_FWDINV) {
+            self.compare_fwd_inv(model);
+        }
+
         Ok(())
+    }
+
+    /// Compare forward and inverse dynamics (§52, `ENABLE_FWDINV`).
+    ///
+    /// Runs `inverse()` and computes `max|qfrc_inverse - qfrc_smooth|`
+    /// where `qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_constraint`.
+    /// The result is stored in `data.fwdinv_error` for diagnostic inspection.
+    ///
+    /// This is purely diagnostic — no physics effect. Matches MuJoCo's
+    /// `mj_compareFwdInv()`.
+    fn compare_fwd_inv(&mut self, model: &Model) {
+        if model.nv == 0 {
+            return;
+        }
+
+        // Run inverse dynamics to populate qfrc_inverse
+        self.inverse(model);
+
+        // Compute comparison: qfrc_inverse vs (qfrc_applied + qfrc_actuator + qfrc_constraint)
+        let mut max_abs_diff = 0.0_f64;
+        for i in 0..model.nv {
+            let fwd_force = self.qfrc_applied[i] + self.qfrc_actuator[i] + self.qfrc_constraint[i];
+            let diff = (self.qfrc_inverse[i] - fwd_force).abs();
+            max_abs_diff = max_abs_diff.max(diff);
+        }
+
+        self.fwdinv_error = max_abs_diff;
     }
 }

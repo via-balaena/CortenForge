@@ -50,3 +50,28 @@ pub type CbControl = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 /// Arguments: `(model, data, geom1_id, geom2_id)`.
 /// Return `true` to KEEP the contact, `false` to REJECT it.
 pub type CbContactFilter = Callback<dyn Fn(&Model, &Data, usize, usize) -> bool + Send + Sync>;
+
+/// Sensor callback: called for `MjSensorType::User` sensors.
+///
+/// Arguments: `(model, data, sensor_id, stage)`.
+/// The callback should write to `data.sensordata[adr..adr+dim]`.
+pub type CbSensor =
+    Callback<dyn Fn(&Model, &mut Data, usize, super::enums::SensorStage) + Send + Sync>;
+
+/// User actuator dynamics callback: called for `ActuatorDynamics::User`.
+///
+/// Arguments: `(model, data, actuator_id)`.
+/// Returns `act_dot` (activation derivative).
+pub type CbActDyn = Callback<dyn Fn(&Model, &Data, usize) -> f64 + Send + Sync>;
+
+/// User actuator gain callback: called for `GainType::User`.
+///
+/// Arguments: `(model, data, actuator_id)`.
+/// Returns the gain value.
+pub type CbActGain = Callback<dyn Fn(&Model, &Data, usize) -> f64 + Send + Sync>;
+
+/// User actuator bias callback: called for `BiasType::User`.
+///
+/// Arguments: `(model, data, actuator_id)`.
+/// Returns the bias value.
+pub type CbActBias = Callback<dyn Fn(&Model, &Data, usize) -> f64 + Send + Sync>;

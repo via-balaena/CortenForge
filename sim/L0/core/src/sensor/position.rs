@@ -10,7 +10,7 @@ use crate::raycast::raycast_shape;
 use crate::types::flags::disabled;
 use crate::types::{
     ActuatorTransmission, DISABLE_SENSOR, Data, ENABLE_SLEEP, GeomType, MjJointType, MjObjectType,
-    MjSensorDataType, MjSensorType, Model, SleepState,
+    MjSensorDataType, MjSensorType, Model, SensorStage, SleepState,
 };
 use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
 use sim_types::Pose;
@@ -320,6 +320,15 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     0.0
                 };
                 sensor_write(&mut data.sensordata, adr, 0, value);
+            }
+
+            // DT-79: User-defined sensors at position stage
+            MjSensorType::User => {
+                if model.sensor_datatype[sensor_id] == MjSensorDataType::Position {
+                    if let Some(ref cb) = model.cb_sensor {
+                        (cb.0)(model, data, sensor_id, SensorStage::Pos);
+                    }
+                }
             }
 
             // Skip velocity/acceleration-dependent sensors

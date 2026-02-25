@@ -814,10 +814,18 @@ pub struct Model {
     // ==================== User Callbacks (DT-79) ====================
     /// Passive force callback: called at end of `mj_fwd_passive()`.
     pub cb_passive: Option<super::callbacks::CbPassive>,
-    /// Control callback: called at start of `mj_fwd_actuation()`.
+    /// Control callback: called between velocity and acceleration stages (§53).
     pub cb_control: Option<super::callbacks::CbControl>,
     /// Contact filter callback: called after affinity check in collision.
     pub cb_contactfilter: Option<super::callbacks::CbContactFilter>,
+    /// User sensor callback: called for `MjSensorType::User` sensors.
+    pub cb_sensor: Option<super::callbacks::CbSensor>,
+    /// User actuator dynamics callback: called for `ActuatorDynamics::User`.
+    pub cb_act_dyn: Option<super::callbacks::CbActDyn>,
+    /// User actuator gain callback: called for `GainType::User`.
+    pub cb_act_gain: Option<super::callbacks::CbActGain>,
+    /// User actuator bias callback: called for `BiasType::User`.
+    pub cb_act_bias: Option<super::callbacks::CbActBias>,
 }
 
 impl Model {
@@ -930,6 +938,72 @@ impl Model {
     /// Clear the contact filter callback.
     pub fn clear_contactfilter_callback(&mut self) {
         self.cb_contactfilter = None;
+    }
+
+    /// Set the user sensor callback.
+    ///
+    /// Called for each `MjSensorType::User` sensor at the appropriate stage.
+    pub fn set_sensor_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &mut super::data::Data, usize, super::enums::SensorStage)
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.cb_sensor = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the sensor callback.
+    pub fn clear_sensor_callback(&mut self) {
+        self.cb_sensor = None;
+    }
+
+    /// Set the user actuator dynamics callback.
+    ///
+    /// Called for each actuator with `ActuatorDynamics::User`.
+    /// Should return `act_dot` (activation derivative).
+    pub fn set_act_dyn_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &super::data::Data, usize) -> f64 + Send + Sync + 'static,
+    {
+        self.cb_act_dyn = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the actuator dynamics callback.
+    pub fn clear_act_dyn_callback(&mut self) {
+        self.cb_act_dyn = None;
+    }
+
+    /// Set the user actuator gain callback.
+    ///
+    /// Called for each actuator with `GainType::User`.
+    /// Should return the gain value.
+    pub fn set_act_gain_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &super::data::Data, usize) -> f64 + Send + Sync + 'static,
+    {
+        self.cb_act_gain = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the actuator gain callback.
+    pub fn clear_act_gain_callback(&mut self) {
+        self.cb_act_gain = None;
+    }
+
+    /// Set the user actuator bias callback.
+    ///
+    /// Called for each actuator with `BiasType::User`.
+    /// Should return the bias value.
+    pub fn set_act_bias_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &super::data::Data, usize) -> f64 + Send + Sync + 'static,
+    {
+        self.cb_act_bias = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the actuator bias callback.
+    pub fn clear_act_bias_callback(&mut self) {
+        self.cb_act_bias = None;
     }
 
     /// Check if joint is an ancestor of body using pre-computed data.

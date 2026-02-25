@@ -716,38 +716,9 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         }
     }
 
-    // DT-21: Project xfrc_applied (Cartesian body forces) into qfrc_passive.
-    // Matches MuJoCo's placement: xfrc_applied is projected at the end of mj_passive().
-    // For each body with non-zero xfrc_applied, apply J^T * [torque; force] at body CoM.
-    for body_id in 1..model.nbody {
-        let xfrc = &data.xfrc_applied[body_id];
-
-        // Skip zero-force bodies (bytewise check for efficiency)
-        if xfrc.iter().all(|&v| v == 0.0) {
-            continue;
-        }
-
-        // Skip sleeping bodies
-        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
-            continue;
-        }
-
-        // xfrc_applied layout: [torque_x, torque_y, torque_z, force_x, force_y, force_z]
-        let torque = Vector3::new(xfrc[0], xfrc[1], xfrc[2]);
-        let force = Vector3::new(xfrc[3], xfrc[4], xfrc[5]);
-        let point = data.xipos[body_id]; // Body CoM, matching MuJoCo
-
-        mj_apply_ft(
-            model,
-            &data.xpos,
-            &data.xquat,
-            &force,
-            &torque,
-            &point,
-            body_id,
-            &mut data.qfrc_passive,
-        );
-    }
+    // DT-21: xfrc_applied projection moved to acceleration stage (qfrc_smooth
+    // in compute_qacc_smooth). MuJoCo projects xfrc_applied into qfrc_smooth in
+    // mj_fwdAcceleration, not mj_passive.
 
     // DT-79: Invoke user passive callback (if set).
     if let Some(ref cb) = model.cb_passive {

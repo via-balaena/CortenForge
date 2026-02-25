@@ -322,14 +322,10 @@ pub fn mj_next_activation(
 /// 2. Computes actuator force using gain/bias (muscle FLV for muscles, raw input for others).
 /// 3. Clamps control inputs and output forces to their declared ranges.
 /// 4. Maps actuator force to joint forces via the transmission.
+///
+/// **Note**: `cb_control` is NOT invoked here. It fires at the split boundary
+/// between velocity and acceleration stages — see `forward_core()` and `step1()`.
 pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
-    // DT-79: Invoke user control callback (if set).
-    // Called at the start of actuation, before force computation,
-    // so the callback can set ctrl values (e.g., from an RL policy).
-    if let Some(ref cb) = model.cb_control {
-        (cb.0)(model, data);
-    }
-
     // S4.8: Unconditional zero of per-actuator forces (matches MuJoCo).
     for i in 0..model.nu {
         data.actuator_force[i] = 0.0;
@@ -406,6 +402,21 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     data.act[act_adr]
                 }
             }
+            ActuatorDynamics::User => {
+                // User-defined dynamics via callback
+                let act_adr = model.actuator_act_adr[i];
+                let act_dot = if let Some(ref cb) = model.cb_act_dyn {
+                    (cb.0)(model, data, i)
+                } else {
+                    0.0
+                };
+                data.act_dot[act_adr] = act_dot;
+                if model.actuator_actearly[i] {
+                    mj_next_activation(model, i, data.act[act_adr], act_dot)
+                } else {
+                    data.act[act_adr]
+                }
+            }
         };
 
         // --- Phase 2: Force generation (gain * input + bias) ---
@@ -433,6 +444,13 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 let fv = muscle_gain_velocity(norm_vel, prm[8]);
                 -f0 * fl * fv
             }
+            GainType::User => {
+                if let Some(ref cb) = model.cb_act_gain {
+                    (cb.0)(model, data, i)
+                } else {
+                    0.0
+                }
+            }
         };
 
         let bias = match model.actuator_biastype[i] {
@@ -452,6 +470,13 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
                 let fp = muscle_passive_force(norm_len, prm[5], prm[7]);
                 -f0 * fp
+            }
+            BiasType::User => {
+                if let Some(ref cb) = model.cb_act_bias {
+                    (cb.0)(model, data, i)
+                } else {
+                    0.0
+                }
             }
         };
 

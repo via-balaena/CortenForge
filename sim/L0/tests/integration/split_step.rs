@@ -24,7 +24,7 @@ fn run_split(model: &Model, n: usize) -> (Vec<f64>, Vec<f64>) {
     data.forward(model).unwrap();
     for _ in 0..n {
         data.step1(model).unwrap();
-        data.step2(model);
+        data.step2(model).unwrap();
     }
     (data.qpos.as_slice().to_vec(), data.qvel.as_slice().to_vec())
 }
@@ -94,7 +94,7 @@ fn split_step_force_injection() {
     data_baseline.forward(&model).unwrap();
     for _ in 0..n {
         data_baseline.step1(&model).unwrap();
-        data_baseline.step2(&model);
+        data_baseline.step2(&model).unwrap();
     }
 
     // Injection: apply constant torque between step1/step2
@@ -104,7 +104,7 @@ fn split_step_force_injection() {
     for _ in 0..n {
         data_inject.step1(&model).unwrap();
         data_inject.qfrc_applied[0] = 5.0; // Apply torque before integration
-        data_inject.step2(&model);
+        data_inject.step2(&model).unwrap();
     }
 
     // Trajectories must differ

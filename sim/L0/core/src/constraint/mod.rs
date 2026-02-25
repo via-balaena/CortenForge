@@ -16,11 +16,12 @@ pub(crate) mod solver;
 
 use nalgebra::{DMatrix, DVector, Vector3};
 
+use crate::jacobian::mj_apply_ft;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse};
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_CONSTRAINT, DISABLE_WARMSTART, Data, ENABLE_SLEEP, Integrator,
-    MjJointType, Model, SolverType,
+    MjJointType, Model, SleepState, SolverType,
 };
 
 use crate::constraint::assembly::assemble_unified_constraints;
@@ -78,6 +79,32 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
     for k in 0..nv {
         qfrc_smooth[k] =
             data.qfrc_applied[k] + data.qfrc_actuator[k] + data.qfrc_passive[k] - data.qfrc_bias[k];
+    }
+
+    // DT-21: Project xfrc_applied (Cartesian body forces) into qfrc_smooth.
+    // MuJoCo projects xfrc_applied in mj_fwdAcceleration, not mj_passive.
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    for body_id in 1..model.nbody {
+        let xfrc = &data.xfrc_applied[body_id];
+        if xfrc.iter().all(|&v| v == 0.0) {
+            continue;
+        }
+        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+            continue;
+        }
+        let torque = Vector3::new(xfrc[0], xfrc[1], xfrc[2]);
+        let force = Vector3::new(xfrc[3], xfrc[4], xfrc[5]);
+        let point = data.xipos[body_id];
+        mj_apply_ft(
+            model,
+            &data.xpos,
+            &data.xquat,
+            &force,
+            &torque,
+            &point,
+            body_id,
+            &mut qfrc_smooth,
+        );
     }
 
     // qacc_smooth = M⁻¹ · qfrc_smooth (via sparse LDL solve)
