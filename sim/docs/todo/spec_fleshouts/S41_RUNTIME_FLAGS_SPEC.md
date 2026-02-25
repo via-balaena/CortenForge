@@ -700,6 +700,24 @@ spring and damper contributions directly into `qfrc_passive`. Refactor to:
    }
    ```
 
+**`PassiveForceVisitor` struct update:** The visitor needs two new fields to
+carry the flag state into per-joint iteration:
+
+```rust
+struct PassiveForceVisitor<'a> {
+    model: &'a Model,
+    data: &'a mut Data,
+    implicit_mode: bool,
+    sleep_enabled: bool,
+    has_spring: bool,  // NEW — !disabled(model, DISABLE_SPRING)
+    has_damper: bool,  // NEW — !disabled(model, DISABLE_DAMPER)
+}
+```
+
+These are computed once in `mj_fwd_passive()` (after the `nv == 0` and
+spring+damper guards) and passed into the visitor, avoiding repeated
+`disabled()` calls per joint.
+
 **Tendon and flex passive forces** also write spring/damper components
 separately. The tendon loop (lines 366–430 in `passive.rs`) and flex
 passive computation must be updated to target `qfrc_spring`/`qfrc_damper`
@@ -721,11 +739,19 @@ if model.nv == 0 {
 }
 ```
 
+There are **two** early-return guards in `mj_passive()`, in this order:
+
+1. **`nv == 0` guard** (above): returns *before* any zeroing — there are no
+   DOFs, so there are no force vectors to zero. Nothing happens.
+2. **Spring+damper guard** (below): returns *after* unconditional zeroing of
+   all passive force vectors. When both `DISABLE_SPRING` AND `DISABLE_DAMPER`
+   are set, force vectors are zeroed and then the function exits — skipping
+   all sub-functions but leaving arrays in a clean state.
+
 MuJoCo **unconditionally zeros** all passive force vectors (`qfrc_spring`,
 `qfrc_damper`, `qfrc_gravcomp`, `qfrc_fluid`, `qfrc_passive`) for awake
-DOFs at the top of `mj_passive()`, **before** the early-return guard. This
-zeroing happens regardless of whether the function continues or returns
-early.
+DOFs between these two guards. This zeroing runs regardless of whether
+the function continues past the spring+damper guard or returns early.
 
 After zeroing, when **both** `DISABLE_SPRING` AND `DISABLE_DAMPER` are set,
 `mj_passive()` returns immediately — skipping ALL passive sub-functions:
@@ -778,6 +804,13 @@ spring/damper flags — neither function checks these flags internally.
 > `<flag>` when those are written.
 
 ##### S4.7b Component-level guards in `mj_springdamper()`
+
+> **Naming mapping:** MuJoCo's `mj_springdamper()` corresponds to
+> CortenForge's `PassiveForceVisitor` (joint spring/damper) plus the
+> inline tendon and flex spring/damper loops in `mj_fwd_passive()`.
+> The refactor should wrap these into a `mj_springdamper(model, data)`
+> function for MuJoCo naming conformance, or retain the visitor pattern
+> with a comment documenting the equivalence.
 
 Within `mj_springdamper()`, spring and damper forces are gated independently:
 
@@ -845,6 +878,12 @@ reached — so the S4.7d guard never fires. If only `DISABLE_CONTACT` is
 set but spring/damper are enabled, `mj_passive()` does NOT exit early,
 but `mj_contactPassive()` returns early via its own guard. Both paths
 are correct — the guards are layered, not redundant.
+
+> **Current state:** `mj_contact_passive()` does not exist in CortenForge
+> yet. MuJoCo's `mj_contactPassive()` computes viscous contact damping
+> forces. When this is implemented (as part of S4.7d or a separate DT),
+> it must have the `DISABLE_CONTACT` early-return guard shown above.
+> Until then, the guard site is a no-op — there is no code to gate.
 
 ##### S4.7e Aggregation into `qfrc_passive`
 
@@ -961,6 +1000,10 @@ If CortenForge currently computes `actuator_velocity` inside
 `mj_fwd_velocity()` as part of this refactor for MuJoCo conformance.
 This is a pipeline-ordering fix, not a flag guard.
 
+> **Commit discipline:** This pipeline-ordering move should be its own
+> commit within §41 (before the flag guard commits), with the sim test
+> suite run before and after to verify no behavioral change.
+
 **Site 3 — Activation integration in `Data::integrate()`:**
 **File:** `integrate/mod.rs` — lines 37–47
 
@@ -1061,14 +1104,14 @@ MuJoCo implements warmstart as a standalone `warmstart()` function called
 from `mj_fwdConstraint()`, not inside individual solvers. Match this:
 
 ```rust
-fn warmstart(model: &Model, data: &mut Data) {
+fn warmstart(model: &Model, data: &mut Data) -> bool {
     if disabled(model, DISABLE_WARMSTART) {
         // Cold start: unconstrained accelerations, zero constraint forces.
         // Bypasses the smart comparison entirely — each solver starts from
         // qacc_smooth + efc_force = 0.
         data.qacc.copy_from(&data.qacc_smooth);
         data.efc_force.fill(0.0);
-        return;
+        return false;  // cold start — solvers skip cost comparison
     }
 
     // Smart warmstart (already implemented in all three solvers):
@@ -1094,8 +1137,19 @@ fn warmstart(model: &Model, data: &mut Data) {
     //
     // Island handling: unconstrained DOFs (index >= nidof) always get
     // qacc_smooth regardless of warmstart outcome.
+
+    true  // warm data loaded — solvers should run cost comparison
 }
 ```
+
+**Function contract:**
+- `warmstart()` returns `bool`: `true` = warm data loaded (solvers should
+  run `evaluate_cost_at()` / `classify_constraint_states()` comparison),
+  `false` = cold start (solvers skip comparison, start from
+  `qacc_smooth` + `efc_force = 0`).
+- Each solver receives this `bool` and conditionally skips its warmstart
+  comparison block when `false`.
+- Call site: `let warm = warmstart(model, data); solver.solve(model, data, warm);`
 
 Key detail: when disabled, `qacc` is set to `qacc_smooth` (unconstrained
 accelerations) AND `efc_force` is zeroed. Both assignments are required.
@@ -1675,24 +1729,9 @@ pub fn mj_step(model: &Model, data: &mut Data) {
 }
 ```
 
-**In `mj_step1()`** (split stepping):
-```rust
-pub fn mj_step1(model: &Model, data: &mut Data) {
-    mj_check_pos(model, data);
-    mj_check_vel(model, data);
-    // ... position-dependent computations ...
-    // NOTE: no mj_check_acc — that's in step2
-}
-```
-
-**In `mj_step2()`** (split stepping):
-```rust
-pub fn mj_step2(model: &Model, data: &mut Data) {
-    // ... actuation, acceleration, constraint solve ...
-    mj_check_acc(model, data);
-    // ... integrator ...
-}
-```
+**Split stepping (§53):** When `mj_step1()`/`mj_step2()` are
+implemented in §53, `mj_check_pos` and `mj_check_vel` belong in
+`step1`; `mj_check_acc` belongs in `step2`. See §53 for placement.
 
 #### S8f. Reset behavior
 
@@ -2579,14 +2618,9 @@ independently. Also verify: `qacc_warmstart` is still saved at end of
 step (consumption is gated, not population).
 
 ### AC47 — Split-stepping with auto-reset
-`mj_step1()` + `mj_step2()` produces the same auto-reset behavior as
-`mj_step()`. Specifically:
-1. A model with NaN injected into `qpos` before `mj_step1()` triggers
-   `mj_check_pos` → reset occurs → `mj_step1` continues with clean state.
-2. A model that diverges during the forward pass (qacc exceeds `MAX_VAL`)
-   triggers `mj_check_acc` in `mj_step2()` → reset + `mj_forward()` re-run.
-3. After the split-step sequence, `data.warnings` reflects the same
-   counts as if `mj_step()` had been called.
+*Deferred to §53 (split stepping API).* Auto-reset check placement
+in `mj_step1()`/`mj_step2()` will be specified and verified there.
+Forward reference: S8e documents the intended placement.
 
 ### AC48 — `nv == 0` passive force guard
 A model with zero DOFs (`nv == 0`) does not crash or produce
