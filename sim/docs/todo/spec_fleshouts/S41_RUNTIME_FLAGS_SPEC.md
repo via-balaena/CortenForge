@@ -363,6 +363,59 @@ fn apply_flags(flag: &MjcfFlag, disableflags: &mut u32, enableflags: &mut u32) {
 This replaces the existing `if option.flag.sleep { ... }` block and now also
 wires `DISABLE_ISLAND` from the parsed flag instead of leaving it hardcoded.
 
+#### S3b. Runtime warnings for stub-only flags
+
+Five flags are wired through the parser and builder but have **no runtime
+guard site** because their subsystems do not exist yet:
+
+| Flag | Blocked by | Subsystem |
+|------|------------|-----------|
+| `ENABLE_FWDINV` | §52 | Inverse dynamics |
+| `ENABLE_INVDISCRETE` | §52 | Discrete inverse dynamics |
+| `ENABLE_MULTICCD` | §50 | Multi-point CCD |
+| `DISABLE_NATIVECCD` | §50 | Native CCD dispatch |
+| `DISABLE_MIDPHASE` | DT-99 (S9-full) | BVH midphase (stub guard exists, fast path does not) |
+
+A user who sets these flags in MJCF gets silent no-op behavior — the flag
+is stored but nothing checks it. This is a conformance trap: the XML
+appears to work, but the physics are unchanged.
+
+**Fix:** In `apply_flags()`, after wiring all flags, emit a
+`tracing::warn!` for each stub-only flag that is set to its non-default
+value:
+
+```rust
+// Stub-only flags: subsystem not yet implemented.
+// Warn so users don't silently get no-op behavior.
+if flag.fwdinv {
+    tracing::warn!(
+        "ENABLE_FWDINV set but inverse dynamics (§52) not implemented — flag has no effect"
+    );
+}
+if flag.invdiscrete {
+    tracing::warn!(
+        "ENABLE_INVDISCRETE set but inverse dynamics (§52) not implemented — flag has no effect"
+    );
+}
+if flag.multiccd {
+    tracing::warn!(
+        "ENABLE_MULTICCD set but CCD (§50) not implemented — flag has no effect"
+    );
+}
+if !flag.nativeccd {  // default is true (enabled); warn when user disables it
+    tracing::warn!(
+        "DISABLE_NATIVECCD set but CCD (§50) not implemented — flag has no effect"
+    );
+}
+// Note: DISABLE_MIDPHASE is not warned here because the stub guard in
+// collision/mod.rs already exists (S9-stub) — it just always takes the
+// brute-force path. The flag IS checked; it just doesn't have a fast path yet.
+```
+
+These warnings are removed when the corresponding subsystem ships. The
+`tracing::warn!` fires once per model load (not per step), so there is
+no performance concern.
+
 ### S4. Runtime disable flag guards
 
 Each guard follows this pattern:
@@ -879,12 +932,89 @@ interchangeably:
 Either approach is acceptable for CortenForge — the conditional block
 pattern is clearer.
 
-Same pattern applies to:
-- Joint springs/dampers
-- Tendon springs/dampers
-- Flex edge spring/damper forces
-- Flex bending forces (spring component)
-- Flex vertex damping
+Same pattern applies to all 5 spring/damper write sites. Here is the
+exhaustive redirection inventory (current write target → new target):
+
+**Site 1 — Joint 1-DOF (hinge/slide) in `PassiveForceVisitor::visit_1dof_joint()`
+(`passive.rs:654-673`):**
+```rust
+// BEFORE (writes both to qfrc_passive):
+self.data.qfrc_passive[dof_adr] -= stiffness * (q - springref);  // spring
+self.data.qfrc_passive[dof_adr] -= damping * qvel;               // damper
+
+// AFTER (writes to separate arrays, gated by visitor fields):
+if self.has_spring {
+    self.data.qfrc_spring[dof_adr] -= stiffness * (q - springref);
+}
+if self.has_damper {
+    self.data.qfrc_damper[dof_adr] -= damping * qvel;
+}
+```
+
+**Site 2 — Joint multi-DOF (ball/free) in `PassiveForceVisitor::visit_multi_dof_joint()`
+(`passive.rs:679-693`):**
+```rust
+// BEFORE:
+self.data.qfrc_passive[dof_idx] -= dof_damping * qvel;  // damper only
+
+// AFTER:
+if self.has_damper {
+    self.data.qfrc_damper[dof_idx] -= dof_damping * qvel;
+}
+// Note: ball/free joints have no spring (no stiffness field).
+```
+
+**Site 3 — Tendon spring/damper loop (`passive.rs:366-414`):**
+```rust
+// BEFORE: ten_force combines spring + damper, applied via J^T to qfrc_passive
+// AFTER: Separate spring and damper force scalars, apply each independently:
+let mut spring_force = 0.0;
+let mut damper_force = 0.0;
+if has_spring && k > 0.0 {
+    // deadband spring logic unchanged
+    spring_force = ...;
+}
+if has_damper && b > 0.0 {
+    damper_force = -b * velocity;
+}
+data.ten_force[t] = spring_force + damper_force;  // diagnostic — unchanged semantics
+if !implicit_mode {
+    if spring_force != 0.0 {
+        apply_tendon_force(model, &data.ten_J[t], ..., spring_force, &mut data.qfrc_spring);
+    }
+    if damper_force != 0.0 {
+        apply_tendon_force(model, &data.ten_J[t], ..., damper_force, &mut data.qfrc_damper);
+    }
+}
+```
+
+**Site 4 — Flex vertex damping (`passive.rs:417-431`):**
+```rust
+// BEFORE:
+data.qfrc_passive[dof_base + k] -= damp * data.qvel[dof_base + k];
+
+// AFTER:
+if has_damper {
+    data.qfrc_damper[dof_base + k] -= damp * data.qvel[dof_base + k];
+}
+```
+
+**Site 5 — Flex edge spring/damper + bending (`passive.rs:433-618`):**
+```rust
+// Edge spring (line ~475): qfrc_passive[dof+k] += ... → qfrc_spring[dof+k] += ...
+// Edge damper (line ~490): qfrc_passive[dof+k] += ... → qfrc_damper[dof+k] += ...
+// Bending spring (line ~564): qfrc_passive[dof+ax] += grad[ax] * fm
+//   → Split fm into spring_mag and damper_mag components:
+//     qfrc_spring[dof+ax] += grad[ax] * fm_spring  (gated on has_spring)
+//     qfrc_damper[dof+ax] += grad[ax] * fm_damper  (gated on has_damper)
+```
+
+The bending force split (Site 5) is the trickiest — `force_mag` is
+currently `spring_mag + damper_mag` with a shared per-vertex stability
+clamp. After the split, clamp each component independently (the clamp
+is per-vertex, so two passes through the vertex loop — or compute both
+clamped magnitudes before the J^T application). Either approach preserves
+the stability guarantee.
 
 ##### S4.7c Sub-function guards
 
@@ -1006,6 +1136,21 @@ order. Each writes additively (`+=`) to the already-aggregated vector:
 
 Both insertion points are after aggregation and before `qfrc_passive`
 is consumed downstream.
+
+**Mandatory code comment:** The implemented `mj_fwd_passive()` must
+include a placeholder comment at the post-aggregation insertion point:
+
+```rust
+// ── Post-aggregation additions to qfrc_passive ──
+// DT-101: mj_contactPassive() goes HERE (after aggregation, not before).
+//   Placing it before aggregation would lose its output — aggregation
+//   overwrites qfrc_passive with `= spring + damper + ...`.
+//   See §41 S4.7e for rationale. Gated on DISABLE_CONTACT (S4.7d).
+// DT-79: User callback (mjcb_passive) + plugin dispatch goes HERE.
+```
+
+This prevents a future implementer from placing `mj_contactPassive()`
+at the wrong point in the pipeline.
 
 #### S4.8 `DISABLE_ACTUATION` — skip actuator forces
 
@@ -1819,6 +1964,56 @@ be extracted as part of S8g. This is a **structural requirement**, not
 optional — without it, a pathological model that diverges from `qpos0`
 will stack overflow.
 
+**Current state (verified):** `forward_core()` does NOT call any check
+functions — the checks live in `step()` (`forward/mod.rs:65-66, 73, 81`).
+The pipeline is already structurally correct:
+
+```rust
+// Current step() (forward/mod.rs:58-99):
+pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
+    // ...timestep validation...
+    check::mj_check_pos(model, self)?;   // line 65
+    check::mj_check_vel(model, self)?;   // line 66
+    // ...
+    self.forward(model)?;                // line 72/80
+    check::mj_check_acc(model, self)?;   // line 73/81
+    self.integrate(model);               // line 82
+    // ...sleep + warmstart save...
+}
+```
+
+**After S8g:** The structure stays the same, but the `?` is removed from
+the check calls (they become void) and `forward()` stays untouched:
+
+```rust
+// After S8g refactor:
+pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
+    if model.timestep <= 0.0 || !model.timestep.is_finite() {
+        return Err(StepError::InvalidTimestep);
+    }
+    check::mj_check_pos(model, self);    // void — auto-resets internally
+    check::mj_check_vel(model, self);    // void — auto-resets internally
+    match model.integrator {
+        Integrator::RungeKutta4 => {
+            self.forward(model)?;         // Result — CholeskyFailed propagates
+            check::mj_check_acc(model, self);  // void — auto-resets + re-runs forward internally
+            crate::integrate::rk4::mj_runge_kutta(model, self)?;
+        }
+        _ => {
+            self.forward(model)?;
+            check::mj_check_acc(model, self);
+            self.integrate(model);
+        }
+    }
+    // ...sleep update + warmstart save (unchanged)...
+    Ok(())
+}
+```
+
+No extraction from `forward_core()` is needed — the separation already
+exists. The refactor is purely at the `check.rs` function level (change
+signatures from `Result` to void, add internal auto-reset logic).
+
 **Error handling for the post-reset `mj_forward()` call:** `forward()`
 returns `Result<(), StepError>` (for `CholeskyFailed`/`LuSingular`).
 If the post-reset `mj_forward()` fails, the model has a structural
@@ -1895,14 +2090,95 @@ to a specific caller and require a re-export refactor when other callers
 appear. `reset.rs` imports into `check.rs` for the auto-reset path.
 
 `mj_reset_data()` resets to the model's initial state (`qpos0`), NOT a
-keyframe. It:
-1. Zeroes all `Data` arrays (forces, contacts, constraints, sensors)
-2. Copies `model.qpos0` → `data.qpos` (reference configuration)
-3. Zeroes `qvel`, `qacc`, `ctrl`, `act`
-4. Resets `data.time` to 0.0
-5. Zeroes all warning counters
-6. Resets contact/constraint counts to zero
-7. Initializes mocap bodies from model
+keyframe. The design rule is: **zero every field in Data, then restore
+the fields that have non-zero initial values from Model.** This matches
+MuJoCo's `mj_resetData()` in `engine_io.c`.
+
+Exhaustive field inventory (grouped by category):
+
+**1. State variables — restore from Model:**
+- `data.qpos` ← `model.qpos0` (reference configuration)
+- `data.qvel` ← zero (length `nv`)
+- `data.qacc` ← zero (length `nv`)
+- `data.qacc_warmstart` ← zero (length `nv`) — next step cold-starts
+- `data.time` ← `0.0`
+
+**2. Control / actuation — zero:**
+- `data.ctrl` ← zero (length `nu`)
+- `data.act` ← zero (length `na`)
+- `data.act_dot` ← zero (length `na`)
+- `data.qfrc_actuator` ← zero (length `nv`)
+- `data.actuator_force` ← zero (length `nu`)
+- `data.actuator_velocity` ← zero (length `nu`)
+- `data.actuator_length` ← zero (length `nu`)
+- `data.actuator_moment` ← zero (each length `nv`, count `nu`)
+
+**3. Mocap — restore from Model:**
+- `data.mocap_pos[i]` ← `model.body_pos[mocap_body_id]` for each mocap body
+- `data.mocap_quat[i]` ← `model.body_quat[mocap_body_id]` for each mocap body
+
+**4. Force vectors — zero:**
+- `data.qfrc_passive` ← zero (length `nv`)
+- `data.qfrc_spring` ← zero (length `nv`) — NEW (S4.7-prereq)
+- `data.qfrc_damper` ← zero (length `nv`) — NEW (S4.7-prereq)
+- `data.qfrc_gravcomp` ← zero (length `nv`)
+- `data.qfrc_fluid` ← zero (length `nv`)
+- `data.qfrc_constraint` ← zero (length `nv`)
+- `data.qfrc_bias` ← zero (length `nv`)
+- `data.qfrc_applied` ← zero (length `nv`)
+- `data.qfrc_smooth` ← zero (length `nv`)
+- `data.qfrc_frictionloss` ← zero (length `nv`)
+- `data.xfrc_applied` ← zero (length `nbody`)
+
+**5. Contact / constraint state — zero:**
+- `data.ncon` ← `0`
+- `data.contacts` ← clear
+- `data.ne` ← `0`, `data.nf` ← `0`, `data.ncone` ← `0`
+- `data.efc_force` ← zero, `data.efc_J` ← zero, etc. (all `efc_*` arrays)
+- `data.solver_niter` ← `0`, `data.solver_nnz` ← `0`
+- `data.solver_stat` ← clear
+- `data.newton_solved` ← `false`
+- `data.efc_cost` ← `0.0`
+- `data.stat_meaninertia` ← `0.0`
+
+**6. Sensor data — zero:**
+- `data.sensordata` ← zero (length `nsensordata`)
+
+**7. Energy — zero:**
+- `data.energy_potential` ← `0.0`
+- `data.energy_kinetic` ← `0.0`
+
+**8. Warning counters — zero:**
+- `data.warnings` ← all `WarningStat { last_info: 0, count: 0 }`
+
+**9. Sleep state — reset to fully awake:**
+- `data.nv_awake` ← `model.nv`
+- `data.nbody_awake` ← `model.nbody`
+- `data.ntree_awake` ← `model.ntree`
+- `data.tree_asleep` ← all negative (awake)
+- `data.tree_awake` ← all `true`
+- `data.body_sleep_state` ← all `SleepState::Awake`
+- `data.body_awake_ind` ← `[0, 1, ..., nbody-1]`
+- `data.dof_awake_ind` ← `[0, 1, ..., nv-1]`
+- `data.parent_awake_ind` ← full range
+- `data.nparent_awake` ← `model.nbody`
+- `data.tree_qpos_dirty` ← all `false`
+
+**10. Island state — zero:**
+- `data.nisland` ← `0`
+- `data.tree_island` ← all `-1`
+- All island mapping arrays ← zero/clear
+
+**11. Computed quantities (FK outputs, RNE, etc.) — zero:**
+- These are recomputed by the next `forward()` call, so zeroing is
+  sufficient. No need to run FK during reset.
+
+**Implementation note:** The simplest correct implementation is to
+call `Model::make_data()` to get a fresh `Data`, then swap it in. But
+this allocates. For allocation-free reset (important for RL batch
+environments), implement field-by-field zeroing using the list above.
+Either approach is acceptable for §41 — optimize if profiling shows
+reset is a bottleneck.
 
 If a `mj_reset_data()` function doesn't exist yet, implement it as part
 of this section. It is analogous to MuJoCo's `mj_resetData()` in
@@ -2583,6 +2859,28 @@ subtle accumulation-order differences between CortenForge and MuJoCo.
    combination, compares element-wise with `1e-8` tolerance.
 
 This pattern is reusable by §45 (full conformance suite).
+
+**Exact generation commands (for reproducibility):**
+
+```bash
+# From repo root. Uses uv (per project convention — never pip).
+cd sim/L0/tests/scripts
+uv venv
+uv pip install mujoco==3.4.0 numpy
+uv run gen_flag_golden.py
+# Output: ../assets/golden/flags/*.npy
+```
+
+The script must pin `mujoco==3.4.0` (not `>=3.4.0`) to ensure golden
+files are reproducible across machines. If a newer MuJoCo version is
+needed, update the pin and regenerate all golden files in a single
+commit. Document the pinned version in the script's docstring and in
+`sim/L0/tests/assets/golden/flags/README.md`.
+
+**Rust-side `.npy` loading:** Use the `ndarray-npy` crate (already in
+the Cargo ecosystem, MIT-licensed, zero unsafe). If adding a dev-
+dependency is undesirable, a minimal `.npy` parser (header + f64 blob)
+is ~30 lines. Either approach is acceptable.
 
 **Bootstrap fallback:** If the `mujoco` pip package has version
 compatibility issues or the Python generation script fails, the hard
