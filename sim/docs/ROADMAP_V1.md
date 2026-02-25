@@ -9,7 +9,7 @@
 > DT-101 (`mj_contactPassive()`) added during §41 spec expansion.
 > ~~DT-98~~ retired — `passive` dropped entirely pre-v1.0 (no shim needed).
 >
-> **Current position**: Through §41 on `future_work_10.md` (Phase 2 complete).
+> **Current position**: Phase 3 (Core API) complete. Next: Phase 4+.
 
 ---
 
@@ -97,12 +97,13 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| DT-21 | 10c | T3 | `xfrc_applied` support in `qfrc_smooth` — external Cartesian body forces |
-| DT-41 | 10e | T3 | Newton solver for implicit integrators (currently warns + falls back to PGS) |
-| §52 | 13 | — | `mj_inverse()` — inverse dynamics API computing `qfrc_inverse` |
-| §53 | 13 | — | `step1()`/`step2()` split stepping API for control injection between forward and integrate |
-| §59 | 14 | — | `mj_name2id`/`mj_id2name` — bidirectional name-index lookup |
-| DT-79 | 10j | T3 | User callbacks `mjcb_*` Rust equivalents |
+| ~~DT-21~~ | 10c | T3 | ~~`xfrc_applied` support in `qfrc_smooth` — external Cartesian body forces~~ **Done** — projection in `mj_fwd_passive()`, 4 tests |
+| ~~DT-41~~ | 10e | T3 | ~~Newton solver for implicit integrators (currently warns + falls back to PGS)~~ **Done** |
+| ~~§51~~ | 13 | — | ~~`cacc`, `cfrc_int`, `cfrc_ext` — per-body 6D force/acceleration accumulators~~ **Done** — RNE forward+backward pass, 4 tests |
+| ~~§52~~ | 13 | — | ~~`mj_inverse()` — inverse dynamics API computing `qfrc_inverse`~~ **Done** — `M*qacc + qfrc_bias - qfrc_passive`, 3 tests |
+| ~~§53~~ | 13 | — | ~~`step1()`/`step2()` split stepping API for control injection between forward and integrate~~ **Done** — 2 tests |
+| ~~§59~~ | 14 | — | ~~`mj_name2id`/`mj_id2name` — bidirectional name-index lookup~~ **Done** — `ElementType` enum, O(1) HashMap, 4 tests |
+| ~~DT-79~~ | 10j | T3 | ~~User callbacks `mjcb_*` Rust equivalents~~ **Done** — `Callback<F>` Arc wrapper, 5 tests |
 
 ---
 
@@ -112,7 +113,7 @@ Persistent fields in `Data` that MuJoCo computes every forward step.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §51 | 13 | — | `cacc`, `cfrc_int`, `cfrc_ext` — per-body 6D force/acceleration accumulators |
+| ~~§51~~ | 13 | — | ~~`cacc`, `cfrc_int`, `cfrc_ext` — per-body 6D force/acceleration accumulators~~ **Done** — moved to Phase 3 |
 | §56 | 14 | — | `subtree_linvel`, `subtree_angmom` — promote from sensor helpers to persistent fields |
 
 ---

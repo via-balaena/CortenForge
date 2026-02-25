@@ -8,8 +8,8 @@ for full MuJoCo API parity.
 
 ---
 
-### 51. `cacc` / `cfrc_int` / `cfrc_ext` — Body Force Accumulators
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+### ~~51. `cacc` / `cfrc_int` / `cfrc_ext` — Body Force Accumulators~~
+**Status:** ✅ Done (Phase 3 commit) | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
@@ -54,8 +54,8 @@ during the forward pass.
 
 ---
 
-### 52. `mj_inverse()` — Inverse Dynamics API
-**Status:** Not started | **Effort:** M | **Prerequisites:** #51 (body force accumulators)
+### ~~52. `mj_inverse()` — Inverse Dynamics API~~
+**Status:** ✅ Done (Phase 3 commit) | **Effort:** M | **Prerequisites:** #51 (body force accumulators)
 
 #### Current State
 
@@ -97,8 +97,8 @@ needed to produce given accelerations.
 
 ---
 
-### 53. `mj_step1` / `mj_step2` — Split Stepping API
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~53. `mj_step1` / `mj_step2` — Split Stepping API~~
+**Status:** ✅ Done (Phase 3 commit) | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 

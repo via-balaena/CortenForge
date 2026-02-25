@@ -131,8 +131,8 @@ Jacobians.
 
 ---
 
-### 59. `mj_name2id` / `mj_id2name` — Public Name Lookup API
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~59. `mj_name2id` / `mj_id2name` — Public Name Lookup API~~
+**Status:** ✅ Done (Phase 3 commit) | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 

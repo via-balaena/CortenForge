@@ -2,7 +2,8 @@
 
 Complete roadmap for the simulation engine. Phase 1 (12 items) and Phase 2
 (16 items) are complete. Phase 3A tiers i–iv (items #18–37) are complete.
-Phase 3A-v is in progress — through §41.
+Phase 3A-v complete through §41. Roadmap Phases 1–3 (Core API) all done.
+Next: Phases 4–11 (parallel work streams).
 
 Remaining work is organized by the **v1.0 Roadmap** (see
 [ROADMAP_V1.md](../ROADMAP_V1.md)) which triages all ~135 remaining tasks into
@@ -106,7 +107,7 @@ in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 **Runtime flags (Phase 2):** ~~§41~~ (done, subsumes DT-61, DT-93, DT-94, DT-95); ~~DT-99~~ (done), ~~DT-100~~ (done);
 DT-96 (lazy energy eval, post-v1.0), DT-97 (golden file generation, Phase 12)
 
-**Core API (Phase 3):** DT-21, DT-41, DT-79
+**Core API (Phase 3):** ~~DT-21~~ (done), ~~DT-41~~ (done), ~~DT-79~~ (done)
 
 **Actuators (Phase 5):** DT-56, DT-57, DT-58, DT-59, DT-77, DT-6, DT-8, DT-9, ~~DT-60~~ (subsumed by §41 S4.2a)
 
@@ -149,9 +150,9 @@ DT-96, DT-101
 
 | # | Item | Core v1.0? | Roadmap Phase | Status |
 |---|------|-----------|---------------|--------|
-| 51 | `cacc`/`cfrc_int`/`cfrc_ext` body accumulators | **Yes** | Phase 4 | |
-| 52 | `mj_inverse()` inverse dynamics | **Yes** | Phase 3 | |
-| 53 | `step1()`/`step2()` split stepping API | **Yes** | Phase 3 | |
+| ~~51~~ | ~~`cacc`/`cfrc_int`/`cfrc_ext` body accumulators~~ | **Yes** | Phase 3 | ✅ Done |
+| ~~52~~ | ~~`mj_inverse()` inverse dynamics~~ | **Yes** | Phase 3 | ✅ Done |
+| ~~53~~ | ~~`step1()`/`step2()` split stepping API~~ | **Yes** | Phase 3 | ✅ Done |
 | 54 | Heightfield collision gaps | **Yes** | Phase 9 | |
 | 55 | `*_user` custom data fields | **Yes** | Phase 7 | |
 
@@ -162,7 +163,7 @@ DT-96, DT-101
 | 56 | `subtree_linvel`/`subtree_angmom` Data fields | **Yes** | Phase 4 | |
 | 57 | `sdf_iterations`/`sdf_initpoints` options | **Yes** | Phase 9 | |
 | 58 | `mjd_smooth_pos` position derivatives | **Yes** | Phase 11 | |
-| 59 | `mj_name2id`/`mj_id2name` name lookup | **Yes** | Phase 3 | |
+| ~~59~~ | ~~`mj_name2id`/`mj_id2name` name lookup~~ | **Yes** | Phase 3 | ✅ Done |
 
 #### From future_work_15.md (#60–64a)
 
@@ -198,8 +199,8 @@ DT-96, DT-101
 |-------|-------|-----------|-------|
 | 1 | Correctness bugs | ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), ~~DT-78~~ (done), ~~DT-16~~ (done), ~~DT-90~~ (done) | 6 (6 done) |
 | 2 | Runtime flag wiring | ~~§41~~ (done, subsumes DT-61, DT-93, DT-94, DT-95); ~~DT-99~~ (done), ~~DT-100~~ (done) | 1 (+2 follow-ups, all done) |
-| 3 | Core API gaps | DT-21, DT-41, §52, §53, §59, DT-79 | 6 |
-| 4 | Core Data fields | §51, §56 | 2 |
+| 3 | Core API gaps | ~~DT-21~~ (done), ~~DT-41~~ (done), ~~§51~~ (done), ~~§52~~ (done), ~~§53~~ (done), ~~§59~~ (done), ~~DT-79~~ (done) | 7 (7 done) |
+| 4 | Core Data fields | ~~§51~~ (done, moved to Phase 3), §56 | 2 (1 done) |
 | 5 | Actuator completeness | DT-56/57/58/59/77, DT-6/8/9/60, §61, §63 | 11 |
 | 6 | Sensor completeness | §62, DT-62/63/64 | 4 |
 | 7 | MJCF parsing & defaults | DT-2/3/11/13/14/85/88, §55/60/64/64a | 11 |
@@ -256,17 +257,15 @@ DT-96, DT-101
                           │
                           ▼
    ┌─────────────────────────────────────────────────────┐
-   │ Roadmap Phase 3: Core API                            │
-   │ DT-21 xfrc_applied, DT-41 Newton solver,            │
-   │ §52 mj_inverse, §53 step1/step2, §59 name lookup,   │
-   │ DT-79 user callbacks                                 │
+   │ Roadmap Phase 3: Core API                          ✓ │
+   │ ✓DT-21, ✓DT-41, ✓§51, ✓§52, ✓§53, ✓§59, ✓DT-79    │
    └──────────────────────┬──────────────────────────────┘
                           │
                           ▼
    ┌──────────────────────────────────────────────────────────┐
    │ Roadmap Phases 4–11: Parallel work streams               │
    │                                                          │
-   │  Phase 4: Data fields (§51, §56)                         │
+   │  Phase 4: Data fields (✓§51, §56)                         │
    │  Phase 5: Actuators (11 items)                           │
    │  Phase 6: Sensors (4 items)                              │
    │  Phase 7: Parsing/defaults (11 items)                    │
@@ -275,7 +274,7 @@ DT-96, DT-101
    │  Phase 10: Flex pipeline (6 items)                       │
    │  Phase 11: Derivatives (6 items)                         │
    │                                                          │
-   │  Note: §52 depends on §51. Otherwise independent.        │
+   │  Note: §52→§51 dependency resolved. All independent.      │
    └──────────────────────┬───────────────────────────────────┘
                           │
                           ▼

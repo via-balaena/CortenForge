@@ -17,7 +17,7 @@ spec (T2). DT-43 implements directly (T1). Totals: 1 T1, 5 T2, 3 T3.
 | DT-38 | §3 | Implicit matrix-vector products for CG — avoid dense Delassus assembly for large contact counts | Medium | T3 |
 | DT-39 | §15 | Body-weight diagonal approximation for `diagApprox` — add `body_invweight0`, `dof_invweight0` | Low | T2 |
 | DT-40 | §15 | LDL^T factorization for Hessian — robustness on extreme stiffness settings | Low | T2 |
-| DT-41 | §15 | Newton solver for implicit integrators — currently warns + falls back to PGS | Low | T3 |
+| ~~DT-41~~ | §15 | ~~Newton solver for implicit integrators — currently warns + falls back to PGS~~ **Done** — full Newton solver with warmstart, convergence, fallback; 8 tests | Low | T3 |
 | DT-42 | §15/§16 | Per-island Newton solver dispatch — Hessian block-diagonal refactor needed | Low | T3 |
 | DT-43 | §16 | Selective CRBA backward-pass optimization — defer to per-island block structure | Low | T1 |
 | DT-44 | §16 | Sparse mass matrix for island extraction — currently dense `DMatrix` indexing | Low | T2 |

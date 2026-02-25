@@ -16,7 +16,7 @@ spec (T2). DT-18/22 implement directly (T1).
 | DT-18 | §2 | Zero-friction condim downgrade optimization — detect `mu[0..dim-1] == 0` and downgrade to condim=1 | Low | T1 |
 | DT-19 | §2 | QCQP-based cone projection — jointly project normal+friction forces (MuJoCo PGS style) | Medium | T3 |
 | DT-20 | §2 | `J^T * lambda` vs manual chain-walk force application — unify contact force application | Low | T2 |
-| DT-21 | §15 | `xfrc_applied` support in `qfrc_smooth` — external Cartesian body forces | Medium | T3 |
+| ~~DT-21~~ | §15 | ~~`xfrc_applied` support in `qfrc_smooth` — external Cartesian body forces~~ **Done** — projection in `mj_fwd_passive()`, 4 tests | Medium | T3 |
 | DT-22 | §15 | `efc_impP` — impedance derivative field for external API introspection | Low | T1 |
 | DT-23 | §15 | `dof_solref_fri` / `dof_solimp_fri` — per-DOF friction loss solver params | Medium | T2 |
 | DT-24 | §16 | Incremental collision detection on tree wake — only re-collide woken geoms | Low | T2 |
