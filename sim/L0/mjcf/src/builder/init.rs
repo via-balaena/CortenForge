@@ -152,6 +152,8 @@ impl ModelBuilder {
             noslip_tolerance: 1e-6,
             disableflags: 0,
             enableflags: 0,
+            disableactuator: 0,
+            actuator_group: Vec::new(),
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
             sleep_tolerance: 1e-4,

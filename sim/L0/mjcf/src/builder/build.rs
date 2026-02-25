@@ -325,6 +325,8 @@ impl ModelBuilder {
             noslip_tolerance: self.noslip_tolerance,
             disableflags: self.disableflags,
             enableflags: self.enableflags,
+            disableactuator: self.disableactuator,
+            actuator_group: self.actuator_group,
             integrator: self.integrator,
             solver_type: self.solver_type,
 

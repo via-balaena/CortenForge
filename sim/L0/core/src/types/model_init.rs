@@ -312,6 +312,8 @@ impl Model {
             noslip_tolerance: 1e-6,     // Default tolerance for noslip convergence
             disableflags: 0,            // Nothing disabled
             enableflags: 0,             // Nothing extra enabled
+            disableactuator: 0,         // No actuator groups disabled
+            actuator_group: Vec::new(), // All actuators in group 0 (empty for empty model)
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
 
@@ -486,6 +488,9 @@ impl Model {
 
             // Sensors
             sensordata: DVector::zeros(self.nsensordata),
+
+            // Warnings
+            warnings: [super::warning::WarningStat::default(); super::warning::NUM_WARNINGS],
 
             // Energy
             energy_potential: 0.0,

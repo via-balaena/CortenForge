@@ -27,9 +27,14 @@ pub mod tendon;
 
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, ENABLE_SLEEP, EqualityType,
-    GainType, GeomType, Integrator, Keyframe, MjJointType, MjObjectType, MjSensorDataType,
-    MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, DISABLE_ACTUATION,
+    DISABLE_AUTORESET, DISABLE_CLAMPCTRL, DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_DAMPER,
+    DISABLE_EQUALITY, DISABLE_EULERDAMP, DISABLE_FILTERPARENT, DISABLE_FRICTIONLOSS,
+    DISABLE_GRAVITY, DISABLE_ISLAND, DISABLE_LIMIT, DISABLE_MIDPHASE, DISABLE_NATIVECCD,
+    DISABLE_REFSAFE, DISABLE_SENSOR, DISABLE_SPRING, DISABLE_WARMSTART, ENABLE_ENERGY,
+    ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_MULTICCD, ENABLE_OVERRIDE, ENABLE_SLEEP,
+    EqualityType, GainType, GeomType, Integrator, Keyframe, MjJointType, MjObjectType,
+    MjSensorDataType, MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -557,6 +562,8 @@ pub struct ModelBuilder {
     pub(crate) noslip_tolerance: f64,
     pub(crate) disableflags: u32,
     pub(crate) enableflags: u32,
+    pub(crate) disableactuator: u32,
+    pub(crate) actuator_group: Vec<i32>,
     pub(crate) integrator: Integrator,
     pub(crate) solver_type: SolverType,
     pub(crate) sleep_tolerance: f64,
@@ -716,10 +723,113 @@ impl ModelBuilder {
         self.density = option.density;
         self.viscosity = option.viscosity;
         self.sleep_tolerance = option.sleep_tolerance;
-        // Set ENABLE_SLEEP from flag
-        if option.flag.sleep {
-            self.enableflags |= ENABLE_SLEEP;
-        }
+        // Wire all flags from parsed MJCF to Model bitfields.
+        apply_flags(&option.flag, &mut self.disableflags, &mut self.enableflags);
+    }
+}
+
+/// Convert parsed `MjcfFlag` booleans into Model disable/enable bitfields.
+///
+/// Disable flags: field `true` = feature enabled = bit NOT set.
+/// Enable flags: field `true` = feature enabled = bit SET.
+fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflags: &mut u32) {
+    // Disable flags: field true = feature enabled = bit NOT set.
+    if !flag.constraint {
+        *disableflags |= DISABLE_CONSTRAINT;
+    }
+    if !flag.equality {
+        *disableflags |= DISABLE_EQUALITY;
+    }
+    if !flag.frictionloss {
+        *disableflags |= DISABLE_FRICTIONLOSS;
+    }
+    if !flag.limit {
+        *disableflags |= DISABLE_LIMIT;
+    }
+    if !flag.contact {
+        *disableflags |= DISABLE_CONTACT;
+    }
+    if !flag.spring {
+        *disableflags |= DISABLE_SPRING;
+    }
+    if !flag.damper {
+        *disableflags |= DISABLE_DAMPER;
+    }
+    if !flag.gravity {
+        *disableflags |= DISABLE_GRAVITY;
+    }
+    if !flag.clampctrl {
+        *disableflags |= DISABLE_CLAMPCTRL;
+    }
+    if !flag.warmstart {
+        *disableflags |= DISABLE_WARMSTART;
+    }
+    if !flag.filterparent {
+        *disableflags |= DISABLE_FILTERPARENT;
+    }
+    if !flag.actuation {
+        *disableflags |= DISABLE_ACTUATION;
+    }
+    if !flag.refsafe {
+        *disableflags |= DISABLE_REFSAFE;
+    }
+    if !flag.sensor {
+        *disableflags |= DISABLE_SENSOR;
+    }
+    if !flag.midphase {
+        *disableflags |= DISABLE_MIDPHASE;
+    }
+    if !flag.eulerdamp {
+        *disableflags |= DISABLE_EULERDAMP;
+    }
+    if !flag.autoreset {
+        *disableflags |= DISABLE_AUTORESET;
+    }
+    if !flag.nativeccd {
+        *disableflags |= DISABLE_NATIVECCD;
+    }
+    if !flag.island {
+        *disableflags |= DISABLE_ISLAND;
+    }
+
+    // Enable flags: field true = feature enabled = bit set.
+    if flag.override_contacts {
+        *enableflags |= ENABLE_OVERRIDE;
+    }
+    if flag.energy {
+        *enableflags |= ENABLE_ENERGY;
+    }
+    if flag.fwdinv {
+        *enableflags |= ENABLE_FWDINV;
+    }
+    if flag.invdiscrete {
+        *enableflags |= ENABLE_INVDISCRETE;
+    }
+    if flag.multiccd {
+        *enableflags |= ENABLE_MULTICCD;
+    }
+    if flag.sleep {
+        *enableflags |= ENABLE_SLEEP;
+    }
+
+    // Stub-only flags: subsystem not yet implemented.
+    // Warn so users don't silently get no-op behavior.
+    if flag.fwdinv {
+        tracing::warn!(
+            "ENABLE_FWDINV set but inverse dynamics (§52) not implemented — flag has no effect"
+        );
+    }
+    if flag.invdiscrete {
+        tracing::warn!(
+            "ENABLE_INVDISCRETE set but inverse dynamics (§52) not implemented — flag has no effect"
+        );
+    }
+    if flag.multiccd {
+        tracing::warn!("ENABLE_MULTICCD set but CCD (§50) not implemented — flag has no effect");
+    }
+    if !flag.nativeccd {
+        // default is true (enabled); warn when user disables it
+        tracing::warn!("DISABLE_NATIVECCD set but CCD (§50) not implemented — flag has no effect");
     }
 }
 

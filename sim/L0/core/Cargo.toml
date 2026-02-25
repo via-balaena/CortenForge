@@ -13,6 +13,7 @@ sim-types = { workspace = true }
 sim-simd = { workspace = true }
 nalgebra = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 serde = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 

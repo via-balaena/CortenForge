@@ -374,6 +374,10 @@ pub struct Data {
     /// Each sensor writes to `sensordata[sensor_adr[i]..sensor_adr[i]+sensor_dim[i]]`.
     pub sensordata: DVector<f64>,
 
+    // ==================== Warnings (§41 S8b) ====================
+    /// Per-warning statistics (matches MuJoCo's `mjData.warning`).
+    pub warnings: [super::warning::WarningStat; super::warning::NUM_WARNINGS],
+
     // ==================== Energy (for debugging/validation) ====================
     /// Potential energy (gravity + springs).
     pub energy_potential: f64,
@@ -667,6 +671,8 @@ impl Clone for Data {
             stat_meaninertia: self.stat_meaninertia,
             // Sensors
             sensordata: self.sensordata.clone(),
+            // Warnings
+            warnings: self.warnings,
             // Energy
             energy_potential: self.energy_potential,
             energy_kinetic: self.energy_kinetic,
@@ -745,6 +751,26 @@ impl Data {
     pub fn qld_diag(&self, model: &Model, i: usize) -> f64 {
         let (rowadr, rownnz, _) = model.qld_csr();
         self.qLD_data[rowadr[i] + rownnz[i] - 1]
+    }
+
+    /// Typed accessor for warning statistics.
+    #[inline]
+    pub fn warning_mut(&mut self, w: super::warning::Warning) -> &mut super::warning::WarningStat {
+        &mut self.warnings[w as usize]
+    }
+
+    /// Returns true if any NaN/divergence warning fired since last clear.
+    ///
+    /// NOTE: This detects bad-state *events*, not necessarily resets.
+    /// When `DISABLE_AUTORESET` is set, warnings still fire but no
+    /// reset occurs. To distinguish: check `DISABLE_AUTORESET` flag
+    /// state alongside this method. When autoreset is enabled (default),
+    /// `divergence_detected() == true` implies a reset happened.
+    #[must_use]
+    pub fn divergence_detected(&self) -> bool {
+        self.warnings[super::warning::Warning::BadQpos as usize].count > 0
+            || self.warnings[super::warning::Warning::BadQvel as usize].count > 0
+            || self.warnings[super::warning::Warning::BadQacc as usize].count > 0
     }
 
     /// Reset state to model defaults.

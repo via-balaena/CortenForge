@@ -720,6 +720,13 @@ pub struct Model {
     pub disableflags: u32,
     /// Enable flags (bitmask for enabling optional behaviors).
     pub enableflags: u32,
+    /// Per-group actuator disable bitmask. Bit `i` set = group `i` disabled.
+    /// Parsed from `<option actuatorgroupdisable="2 5"/>` (space-separated
+    /// list of group IDs, each 0–30) or set at runtime.
+    pub disableactuator: u32,
+    /// Group assignment per actuator (0–30). Default 0.
+    /// Parsed from `<actuator><general group="..."/>`.
+    pub actuator_group: Vec<i32>,
 
     /// Integration method.
     pub integrator: Integrator,

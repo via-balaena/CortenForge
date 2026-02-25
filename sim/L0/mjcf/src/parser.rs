@@ -446,12 +446,16 @@ fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
         get_attribute_opt(e, name).map_or(default, |v| v != "disable")
     }
 
+    // Disable flags (true = enabled, false = disabled)
     flag.constraint = parse_flag(e, "constraint", flag.constraint);
     flag.equality = parse_flag(e, "equality", flag.equality);
     flag.frictionloss = parse_flag(e, "frictionloss", flag.frictionloss);
     flag.limit = parse_flag(e, "limit", flag.limit);
     flag.contact = parse_flag(e, "contact", flag.contact);
-    flag.passive = parse_flag(e, "passive", flag.passive);
+    // MuJoCo 3.3.6+ split `passive` into independent `spring` + `damper`.
+    // `passive` is silently ignored (unrecognized attributes are skipped).
+    flag.spring = parse_flag(e, "spring", flag.spring);
+    flag.damper = parse_flag(e, "damper", flag.damper);
     flag.gravity = parse_flag(e, "gravity", flag.gravity);
     flag.clampctrl = parse_flag(e, "clampctrl", flag.clampctrl);
     flag.warmstart = parse_flag(e, "warmstart", flag.warmstart);
@@ -462,9 +466,13 @@ fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
     flag.midphase = parse_flag(e, "midphase", flag.midphase);
     flag.nativeccd = parse_flag(e, "nativeccd", flag.nativeccd);
     flag.eulerdamp = parse_flag(e, "eulerdamp", flag.eulerdamp);
+    flag.autoreset = parse_flag(e, "autoreset", flag.autoreset);
+    flag.island = parse_flag(e, "island", flag.island);
+    // Enable flags (false = disabled, true = enabled)
     flag.override_contacts = parse_flag(e, "override", flag.override_contacts);
     flag.energy = parse_flag(e, "energy", flag.energy);
-    flag.island = parse_flag(e, "island", flag.island);
+    flag.fwdinv = parse_flag(e, "fwdinv", flag.fwdinv);
+    flag.invdiscrete = parse_flag(e, "invdiscrete", flag.invdiscrete);
     flag.multiccd = parse_flag(e, "multiccd", flag.multiccd);
     flag.sleep = parse_flag(e, "sleep", flag.sleep);
 
