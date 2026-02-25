@@ -72,7 +72,7 @@ high-value, and reduce the chance of compounding errors in later work.
 | ~~DT-35~~ | 10d | T3 | ~~Tendon spring/damper forces produce zero in implicit mode — missing non-diagonal K coupling~~ **DONE** — implicit tendon K/D via `accumulate_tendon_kd`, Newton `M_impl`/`qfrc_eff`, `ten_force` diagnostic always populated, 18 tests |
 | DT-16 | 10b | T1 | Flex `density` attribute location wrong in parser vs MuJoCo spec |
 | DT-90 | 10i | T1 | `flex_friction` scalar should be `Vector3<f64>` — torsional/rolling friction data lost |
-| DT-78 | 10j | T2 | `actuator_lengthrange` DOF lookup wrong for unlimited spatial tendons |
+| ~~DT-78~~ | 10j | T2 | ~~`actuator_lengthrange` DOF lookup wrong for unlimited spatial tendons~~ **DONE** — spatial tendon guard in `muscle.rs`, landed in §4 step 5 |
 
 ---
 
