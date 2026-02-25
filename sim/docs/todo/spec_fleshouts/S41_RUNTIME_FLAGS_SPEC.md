@@ -446,12 +446,18 @@ Then replace `model.gravity` with `grav` in the gravity loop (line ~70):
 
 ```rust
 if model.ngravcomp == 0
-    || model.gravity.norm() == 0.0
+    || model.gravity.norm() < MIN_VAL
     || disabled(model, DISABLE_GRAVITY)
 {
     return false;
 }
 ```
+
+Note: MuJoCo uses `mju_norm3(m->opt.gravity) < mjMINVAL` where
+`mjMINVAL = 1e-15`. Define `MIN_VAL` in `types/validation.rs` (alongside
+`MAX_VAL`) and use it here. Do NOT use exact `== 0.0` — floating-point
+arithmetic can produce near-zero gravity vectors (e.g., after
+interpolation or unit conversion) that would bypass this guard.
 
 Note: `mj_gravcomp()` does NOT check `DISABLE_DAMPER` directly. However,
 gravcomp is indirectly skipped when both `DISABLE_SPRING` AND `DISABLE_DAMPER`
@@ -481,7 +487,7 @@ Actuator-level gravity compensation. MuJoCo adds `qfrc_gravcomp` to
 ```rust
 if model.ngravcomp > 0
     && !disabled(model, DISABLE_GRAVITY)
-    && model.gravity.norm() > 0.0
+    && model.gravity.norm() >= MIN_VAL
 {
     for jnt in 0..model.njnt {
         if !model.jnt_actgravcomp[jnt] { continue; }
@@ -551,7 +557,7 @@ if mj_gravcomp(model, data) {
 ```rust
 if model.ngravcomp > 0
     && !disabled(model, DISABLE_GRAVITY)
-    && model.gravity.norm() > 0.0
+    && model.gravity.norm() >= MIN_VAL
 {
     for jnt in 0..model.njnt {
         if !model.jnt_actgravcomp[jnt] { continue; }
@@ -698,6 +704,16 @@ pattern).
 
 ##### S4.7a Top-level `mj_passive()` early return
 
+MuJoCo's `mj_passive()` has a leading `nv == 0` guard that skips the
+entire function (no DOFs → no passive forces to compute). Add this as
+the first check:
+
+```rust
+if model.nv == 0 {
+    return;
+}
+```
+
 MuJoCo **unconditionally zeros** all passive force vectors (`qfrc_spring`,
 `qfrc_damper`, `qfrc_gravcomp`, `qfrc_fluid`, `qfrc_passive`) for awake
 DOFs at the top of `mj_passive()`, **before** the early-return guard. This
@@ -708,6 +724,8 @@ After zeroing, when **both** `DISABLE_SPRING` AND `DISABLE_DAMPER` are set,
 `mj_passive()` returns immediately — skipping ALL passive sub-functions:
 
 ```rust
+// nv == 0 guard already handled above.
+//
 // Zero all passive force vectors unconditionally.
 // MuJoCo uses indexed zeroing (mju_zeroInd) for awake DOFs only when
 // sleep filtering is active, and full zeroing (mju_zero) otherwise.
@@ -1084,6 +1102,36 @@ back to `qacc_smooth` if warmstart produces a worse starting point.
 block — when disabled, each solver starts from `qacc_smooth` + `efc_force
 = 0` (cold start), skipping the cost comparison entirely.
 
+**Relationship between `warmstart()` and per-solver smart selection:**
+The standalone `warmstart()` function and the per-solver warmstart
+comparison are **two levels of the same mechanism**, not independent
+alternatives:
+
+1. `warmstart()` (this function) runs **before** solver dispatch. When
+   `DISABLE_WARMSTART` is set, it sets `qacc = qacc_smooth` + `efc_force
+   = 0` and returns — the solvers receive a cold start and skip their
+   comparison logic (there's nothing to compare against).
+2. When `DISABLE_WARMSTART` is NOT set, `warmstart()` populates `qacc`
+   and `efc_force` from `qacc_warmstart` (the previous timestep's
+   solution). Each solver's smart comparison then evaluates whether
+   this warmstart point is better than `qacc_smooth` and selects the
+   better starting point.
+
+**Implementation approach:** Each solver must check whether warmstart was
+already cold-started by `warmstart()`. The simplest mechanism: have
+`warmstart()` set a `bool` (or check `DISABLE_WARMSTART` again inside
+each solver). The cleaner approach is to have `warmstart()` return a
+`bool` indicating whether warm values were loaded, and pass this to the
+solver — if `false`, the solver skips its `evaluate_cost_at()` /
+`classify_constraint_states()` comparison entirely.
+
+**`qacc_warmstart` saving is unconditional:** The end-of-step save
+(`data.qacc_warmstart.copy_from(&data.qacc)` in `forward/mod.rs:97`)
+runs regardless of `DISABLE_WARMSTART`. The flag gates **consumption**
+of the warmstart cache, not its **population**. This matches MuJoCo:
+even with warmstart disabled, the cache is maintained so re-enabling the
+flag mid-simulation has immediate effect.
+
 #### S4.12 `DISABLE_FILTERPARENT` — disable parent-child filtering
 
 **File:** `collision/mod.rs` — `check_collision_affinity()`
@@ -1410,6 +1458,11 @@ feature enabled by default — `DISABLE_AUTORESET` (S4.16) gates it.
 #### S8a. Detection primitive — `is_bad()`
 
 ```rust
+/// Minimum meaningful value — values below this are treated as zero.
+/// Matches MuJoCo's `mjMINVAL = 1e-15`. Used for gravity-norm checks
+/// and other near-zero guards.
+pub const MIN_VAL: f64 = 1e-15;
+
 /// Maximum allowed value in qpos, qvel, qacc (matches MuJoCo's mjMAXVAL).
 pub const MAX_VAL: f64 = 1e10;
 
@@ -2461,6 +2514,50 @@ set but all bodies awake — the indexed path should produce identical
 results to running with sleep disabled. This catches off-by-one errors
 in the indexed iteration without requiring actual sleeping bodies.
 
+### AC44 — Per-group actuator disabling with RK4
+`<option integrator="RK4" actuatorgroupdisable="1"/>` disables group-1
+actuators across **all four RK4 stages**. Verify: an actuator with
+`group="1"` has `act_dot = 0` at every stage (not just the first).
+Specifically, the activation state at the end of an RK4 step must match
+the state produced by running 4 Euler sub-steps with the same
+per-group disabling. This catches bugs where the gating is applied in
+`integrate/mod.rs` (Euler) but missed in one or more stages of
+`integrate/rk4.rs`.
+
+### AC45 — `actuator_velocity` unconditional after pipeline move
+`actuator_velocity` equals `actuator_moment^T * qvel` unconditionally,
+regardless of `DISABLE_ACTUATION`. Verify by setting
+`<flag actuation="disable"/>` and confirming `actuator_velocity` is
+non-zero for a model with non-zero joint velocities. This validates the
+pipeline-ordering move from `actuation.rs` to `velocity.rs` (S4.8
+Site 2). Also verify that `actuator_velocity` values are identical
+with and without `DISABLE_ACTUATION`.
+
+### AC46 — `DISABLE_WARMSTART` + islands interaction
+When island solving is active (`DISABLE_ISLAND` not set, `nisland > 0`,
+CG or Newton solver, no noslip iterations) AND `DISABLE_WARMSTART` is
+set: constrained DOFs within islands start from `qacc_smooth` +
+`efc_force = 0` (cold start). Unconstrained DOFs (index >= nidof)
+receive `qacc_smooth` regardless. Verify both DOF categories
+independently. Also verify: `qacc_warmstart` is still saved at end of
+step (consumption is gated, not population).
+
+### AC47 — Split-stepping with auto-reset
+`mj_step1()` + `mj_step2()` produces the same auto-reset behavior as
+`mj_step()`. Specifically:
+1. A model with NaN injected into `qpos` before `mj_step1()` triggers
+   `mj_check_pos` → reset occurs → `mj_step1` continues with clean state.
+2. A model that diverges during the forward pass (qacc exceeds `MAX_VAL`)
+   triggers `mj_check_acc` in `mj_step2()` → reset + `mj_forward()` re-run.
+3. After the split-step sequence, `data.warnings` reflects the same
+   counts as if `mj_step()` had been called.
+
+### AC48 — `nv == 0` passive force guard
+A model with zero DOFs (`nv == 0`) does not crash or produce
+out-of-bounds access in `mj_passive()`. The function returns
+immediately without touching any force vectors. This covers the edge
+case of a purely static scene (all bodies welded to world).
+
 ---
 
 ## Files
@@ -2469,7 +2566,7 @@ in the indexed iteration without requiring actual sleeping bodies.
 |------|--------|
 | `sim/L0/core/src/types/enums.rs` | S1: 17 disable + 4 enable constants (pure values, no `Model` dependency) |
 | `sim/L0/core/src/types/flags.rs` (new) | S1: `disabled()`, `enabled()`, `actuator_disabled()` helpers |
-| `sim/L0/core/src/types/validation.rs` (new) | S8a: `is_bad()`, `MAX_VAL` (numeric validation, not flag-related) |
+| `sim/L0/core/src/types/validation.rs` (new) | S8a: `is_bad()`, `MAX_VAL`, `MIN_VAL` (numeric validation, not flag-related) |
 | `sim/L0/core/src/types/warning.rs` (new) | S8b: `Warning` enum, `WarningStat`, `NUM_WARNINGS`, `mj_warning()` |
 | `sim/L0/mjcf/src/types.rs` | S2: Split `passive` → `spring` + `damper`, add `fwdinv`/`invdiscrete`/`autoreset`, fix docstrings, fix `island` default (S2e) |
 | `sim/L0/mjcf/src/parser.rs` | S2: Parse `spring`, `damper`, `passive` (compat), `fwdinv`, `invdiscrete`, `autoreset`, `actuatorgravcomp` on joints, `actuatorgroupdisable` on option, `o_margin`/`o_solref`/`o_solimp`/`o_friction` on option |
