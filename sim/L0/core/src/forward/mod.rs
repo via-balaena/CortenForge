@@ -36,7 +36,8 @@ pub(crate) use passive::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
 pub(crate) use position::SweepAndPrune;
 pub(crate) use position::{aabb_from_geom, closest_point_segment, closest_points_segments};
 
-use crate::types::{Data, ENABLE_SLEEP, Integrator, Model, StepError};
+use crate::types::flags::enabled;
+use crate::types::{Data, ENABLE_ENERGY, ENABLE_SLEEP, Integrator, Model, StepError};
 
 impl Data {
     /// Perform one simulation step.
@@ -178,7 +179,12 @@ impl Data {
         if compute_sensors {
             crate::sensor::mj_sensor_pos(model, self);
         }
-        crate::energy::mj_energy_pos(model, self);
+        // S5.1: Gate energy computation on ENABLE_ENERGY; zero when disabled.
+        if enabled(model, ENABLE_ENERGY) {
+            crate::energy::mj_energy_pos(model, self);
+        } else {
+            self.energy_potential = 0.0;
+        }
 
         // ========== Velocity Stage ==========
         velocity::mj_fwd_velocity(model, self);
@@ -191,7 +197,12 @@ impl Data {
         actuation::mj_fwd_actuation(model, self);
         crate::dynamics::crba::mj_crba(model, self);
         crate::dynamics::rne::mj_rne(model, self);
-        crate::energy::mj_energy_vel(model, self);
+        // S5.1: Gate energy computation on ENABLE_ENERGY; zero when disabled.
+        if enabled(model, ENABLE_ENERGY) {
+            crate::energy::mj_energy_vel(model, self);
+        } else {
+            self.energy_kinetic = 0.0;
+        }
         passive::mj_fwd_passive(model, self);
 
         // §16.11: Island discovery must run BEFORE constraint solve so that

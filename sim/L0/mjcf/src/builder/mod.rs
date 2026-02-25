@@ -732,6 +732,16 @@ impl ModelBuilder {
 
 /// Convert parsed `MjcfFlag` booleans into Model disable/enable bitfields.
 ///
+/// Set or clear an enable flag bit based on a boolean.
+#[inline]
+fn set_enable(enableflags: &mut u32, bit: u32, value: bool) {
+    if value {
+        *enableflags |= bit;
+    } else {
+        *enableflags &= !bit;
+    }
+}
+
 /// Disable flags: field `true` = feature enabled = bit NOT set.
 /// Enable flags: field `true` = feature enabled = bit SET.
 fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflags: &mut u32) {
@@ -794,25 +804,16 @@ fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflag
         *disableflags |= DISABLE_ISLAND;
     }
 
-    // Enable flags: field true = feature enabled = bit set.
-    if flag.override_contacts {
-        *enableflags |= ENABLE_OVERRIDE;
-    }
-    if flag.energy {
-        *enableflags |= ENABLE_ENERGY;
-    }
-    if flag.fwdinv {
-        *enableflags |= ENABLE_FWDINV;
-    }
-    if flag.invdiscrete {
-        *enableflags |= ENABLE_INVDISCRETE;
-    }
-    if flag.multiccd {
-        *enableflags |= ENABLE_MULTICCD;
-    }
-    if flag.sleep {
-        *enableflags |= ENABLE_SLEEP;
-    }
+    // Enable flags: field true = bit SET, field false = bit CLEARED.
+    // Unlike disable flags (which only OR in bits), enable flags must
+    // also clear bits to handle defaults like energy=true being overridden
+    // by <flag energy="false"/>.
+    set_enable(enableflags, ENABLE_OVERRIDE, flag.override_contacts);
+    set_enable(enableflags, ENABLE_ENERGY, flag.energy);
+    set_enable(enableflags, ENABLE_FWDINV, flag.fwdinv);
+    set_enable(enableflags, ENABLE_INVDISCRETE, flag.invdiscrete);
+    set_enable(enableflags, ENABLE_MULTICCD, flag.multiccd);
+    set_enable(enableflags, ENABLE_SLEEP, flag.sleep);
 
     // Stub-only flags: subsystem not yet implemented.
     // Warn so users don't silently get no-op behavior.

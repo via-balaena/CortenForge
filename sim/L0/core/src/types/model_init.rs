@@ -8,7 +8,9 @@
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 use std::collections::HashSet;
 
-use super::enums::{Integrator, MIN_AWAKE, MjJointType, SleepPolicy, SleepState, SolverType};
+use super::enums::{
+    ENABLE_ENERGY, Integrator, MIN_AWAKE, MjJointType, SleepPolicy, SleepState, SolverType,
+};
 use super::model::Model;
 
 // Types from dynamics module (Phase 7 extraction)
@@ -312,7 +314,7 @@ impl Model {
             noslip_iterations: 0,       // Default: no noslip post-processing
             noslip_tolerance: 1e-6,     // Default tolerance for noslip convergence
             disableflags: 0,            // Nothing disabled
-            enableflags: 0,             // Nothing extra enabled
+            enableflags: ENABLE_ENERGY, // Energy on by default for test models
             disableactuator: 0,         // No actuator groups disabled
             actuator_group: Vec::new(), // All actuators in group 0 (empty for empty model)
             integrator: Integrator::Euler,
