@@ -303,21 +303,22 @@ pub(crate) fn assign_imp(model: &Model, source: &[f64; 5]) -> [f64; 5] {
 }
 
 /// Returns the global override friction when `ENABLE_OVERRIDE` is active,
-/// otherwise returns `source` unchanged. All elements are clamped to `MIN_MU`.
+/// otherwise returns `source` unchanged. All elements are clamped to `MIN_MU`
+/// regardless of override status.
 #[inline]
 pub(crate) fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
-    if enabled(model, ENABLE_OVERRIDE) {
-        let f = model.o_friction;
-        [
-            f[0].max(MIN_MU),
-            f[1].max(MIN_MU),
-            f[2].max(MIN_MU),
-            f[3].max(MIN_MU),
-            f[4].max(MIN_MU),
-        ]
+    let f = if enabled(model, ENABLE_OVERRIDE) {
+        model.o_friction
     } else {
         *source
-    }
+    };
+    [
+        f[0].max(MIN_MU),
+        f[1].max(MIN_MU),
+        f[2].max(MIN_MU),
+        f[3].max(MIN_MU),
+        f[4].max(MIN_MU),
+    ]
 }
 
 // ============================================================================
@@ -483,6 +484,12 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             {
                 apply_pair_overrides(&mut contact, pair);
                 apply_global_override(model, &mut contact);
+                // MIN_MU clamp for the non-override pair path (apply_global_override
+                // already handles the override case; this covers the else branch).
+                if !enabled(model, ENABLE_OVERRIDE) {
+                    contact.mu = assign_friction(model, &contact.mu);
+                    contact.friction = contact.mu[0];
+                }
                 data.contacts.push(contact);
                 data.ncon += 1;
             }

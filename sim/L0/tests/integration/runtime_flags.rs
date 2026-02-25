@@ -1802,3 +1802,44 @@ fn ac36_override_friction_clamping() {
     }
     assert!(c2.friction >= min_mu, "friction scalar should be >= MIN_MU");
 }
+
+#[test]
+fn ac36b_non_override_friction_clamping() {
+    let mjcf = r#"
+    <mujoco model="non_override_friction_clamp">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" friction="0 0 0" margin="0.02"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" friction="0 0 0" margin="0.02"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let min_mu = 1e-5;
+
+    // ENABLE_OVERRIDE is NOT set — both geoms have zero friction.
+    // assign_friction must still clamp all mu elements to MIN_MU.
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(
+        model.enableflags & ENABLE_OVERRIDE,
+        0,
+        "override must be off"
+    );
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.105; // sphere radius 0.1 + slight gap, within margin
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact");
+    let c = &data.contacts[0];
+    for (i, &mu_i) in c.mu.iter().enumerate() {
+        assert!(
+            mu_i >= min_mu,
+            "mu[{i}] = {mu_i} should be >= MIN_MU ({min_mu})",
+        );
+    }
+    assert!(c.friction >= min_mu, "friction scalar should be >= MIN_MU");
+}
