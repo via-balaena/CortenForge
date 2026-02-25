@@ -593,6 +593,30 @@ Guard constraint assembly (not just the solver). MuJoCo skips
 `mj_makeConstraint()` entirely when this flag is set — no equality, limit,
 contact, or friction loss rows are assembled.
 
+**Guard site — `mj_fwd_constraint()` in `constraint/mod.rs`:**
+
+The `DISABLE_CONSTRAINT` flag gates `assemble_unified_constraints()`
+(CortenForge's `mj_makeConstraint()` equivalent). The guard goes inside
+`mj_fwd_constraint()`, **before** the assembly call:
+
+```rust
+// Inside mj_fwd_constraint():
+data.qfrc_constraint[..model.nv].fill(0.0);
+
+if disabled(model, DISABLE_CONSTRAINT) {
+    // Skip assembly entirely — no equality, limit, contact, or
+    // friction loss rows. nefc stays 0, falls through to the
+    // nefc == 0 early exit below.
+} else {
+    assemble_unified_constraints(model, data, qacc_for_assembly);
+}
+```
+
+This is the **primary** gate. `mj_collision()` also independently gates
+on `DISABLE_CONSTRAINT` (S4.1), ensuring `ncon == 0` upstream. The
+assembly-level guard here is defense-in-depth: even if contacts somehow
+survived (e.g., from a previous step), no constraint rows are assembled.
+
 MuJoCo **unconditionally zeroes** `qfrc_constraint` at the top of
 `mj_fwdConstraint()`, before checking whether any constraint rows exist:
 
@@ -607,13 +631,14 @@ if data.nefc == 0 {
 ```
 
 **Causal chain when `DISABLE_CONSTRAINT` is set:** `mj_collision()` returns
-early (S4.1) → `ncon` stays 0. `mj_makeConstraint()` is skipped entirely
-→ `nefc` stays 0. `mj_fwdConstraint()` hits the `nefc == 0` early exit
-shown above → `qacc = qacc_smooth`, return. **Do NOT add a redundant
-`DISABLE_CONSTRAINT` check inside `mj_fwdConstraint()`** — the existing
-`nefc == 0` path is the correct gating mechanism. This matches MuJoCo's
-architecture where the flag gates assembly (upstream), and the solver
-reacts to the resulting empty constraint set (downstream).
+early (S4.1) → `ncon` stays 0. `assemble_unified_constraints()` is
+skipped (S4.3 guard above) → `nefc` stays 0. `mj_fwdConstraint()` hits
+the `nefc == 0` early exit shown above → `qacc = qacc_smooth`, return.
+The `DISABLE_CONSTRAINT` check gates assembly (upstream); the solver
+reacts to the resulting empty constraint set (downstream) via the
+existing `nefc == 0` path. No additional flag check is needed inside
+the solver dispatch — the two-level gating (collision + assembly) is
+sufficient.
 
 When disabled, `efc_force` stays zero, `qacc` = `qacc_smooth`
 (unconstrained accelerations only).
@@ -1142,10 +1167,22 @@ is an additional independent gate inside the sensor functions themselves.
 
 #### S4.11 `DISABLE_WARMSTART` — zero-initialize solver
 
-**File:** `constraint/mod.rs` — called from `mj_fwd_constraint()`
+**File:** `constraint/mod.rs` — called from inside `mj_fwd_constraint()`
 
 MuJoCo implements warmstart as a standalone `warmstart()` function called
-from `mj_fwdConstraint()`, not inside individual solvers. Match this:
+from inside `mj_fwdConstraint()`, not inside individual solvers. Match
+this — `warmstart()` is called at the top of `mj_fwd_constraint()`,
+after `assemble_unified_constraints()` and the `nefc == 0` early exit,
+but **before** solver dispatch. It is NOT a separate call from
+`forward_core()`:
+
+```rust
+// Inside mj_fwd_constraint():
+assemble_unified_constraints(model, data, qacc_for_assembly);
+if data.nefc == 0 { ... return; }
+let warm = warmstart(model, data);
+// ... solver dispatch uses `warm` ...
+```
 
 ```rust
 fn warmstart(model: &Model, data: &mut Data) -> bool {
@@ -1315,6 +1352,22 @@ This requires threading `model` (or at minimum `timestep` and
 use an `Option<f64>` for timestep or any other workaround. The function
 already operates on model-derived parameters; adding `&Model` is the
 clean fix.
+
+**Signature change:**
+
+```rust
+// Before:
+pub fn compute_kbip(solref: [f64; 2], solimp: [f64; 5]) -> (f64, f64)
+// After:
+pub fn compute_kbip(model: &Model, solref: [f64; 2], solimp: [f64; 5]) -> (f64, f64)
+```
+
+**Call sites to update (exhaustive — single call site):**
+- `constraint/assembly.rs:223` — `let (k, b) = compute_kbip(sr, si);`
+  → `let (k, b) = compute_kbip(model, sr, si);`
+  (import at `assembly.rs:15` unchanged — function name stays the same)
+
+No other call sites exist in the codebase.
 
 #### S4.16 `DISABLE_AUTORESET` — skip NaN auto-reset
 
@@ -1526,16 +1579,22 @@ for i in 0..model.nu {
 
 **Site 2 — `Data::integrate()` activation state:** Per-actuator gating
 in `integrate/mod.rs` (lines 37–47) and `integrate/rk4.rs` (lines 84–186).
-Same mechanism as S4.8 Site 3 — `actuator_disabled()` replaces the blanket
-`DISABLE_ACTUATION` check with per-group granularity:
+This is the **same code location** as S4.8 Site 3. The final
+implementation must use the compound check from S4.8 (blanket
+`DISABLE_ACTUATION` OR per-group `actuator_disabled()`):
 
 ```rust
 for i in 0..model.nu {
     let act_adr = model.actuator_act_adr[i];
     let act_num = model.actuator_act_num[i];
+    // Compound check: blanket DISABLE_ACTUATION OR per-group disabling.
+    // Identical to S4.8 Site 3 — these are the same guard, not two
+    // independent implementations.
+    let is_disabled = disabled(model, DISABLE_ACTUATION)
+                   || actuator_disabled(model, i);
     for k in 0..act_num {
         let j = act_adr + k;
-        let act_dot_val = if actuator_disabled(model, i) { 0.0 } else { self.act_dot[j] };
+        let act_dot_val = if is_disabled { 0.0 } else { self.act_dot[j] };
         self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val);
     }
 }
@@ -1543,6 +1602,9 @@ for i in 0..model.nu {
 
 This matches MuJoCo's actual mechanism exactly — disabled actuators get
 `act_dot = 0`, freezing their activation state without zeroing it.
+**Implementation note:** S4.8 Site 3 and S7d Site 2 describe the same
+code location. Implement once with the compound check above — do not
+create two separate guard blocks.
 
 ### S8. Auto-reset on NaN/divergence (subsumes DT-93)
 
@@ -1716,8 +1778,15 @@ pub fn mj_check_acc(model: &Model, data: &mut Data) {
             data.warnings[Warning::BadQacc as usize].last_info = i as i32;
             // Unlike checkPos/checkVel, re-run forward after reset
             // to recompute derived quantities from the reset state.
+            // If forward() fails (singular mass matrix at qpos0),
+            // log and continue — the reset state is the best we can do.
             if !disabled(model, DISABLE_AUTORESET) {
-                mj_forward(model, data);
+                if let Err(e) = mj_forward(model, data) {
+                    tracing::error!(
+                        "mj_forward() failed after auto-reset (model's \
+                         qpos0 produces non-recoverable error): {e:?}"
+                    );
+                }
             }
             return;
         }
@@ -1750,6 +1819,29 @@ be extracted as part of S8g. This is a **structural requirement**, not
 optional — without it, a pathological model that diverges from `qpos0`
 will stack overflow.
 
+**Error handling for the post-reset `mj_forward()` call:** `forward()`
+returns `Result<(), StepError>` (for `CholeskyFailed`/`LuSingular`).
+If the post-reset `mj_forward()` fails, the model has a structural
+problem (singular mass matrix at `qpos0`) that auto-reset cannot fix.
+Handle this by logging the error via `tracing::error!` and returning
+without further action — the reset state is the best we can do, and
+propagating the error from inside `mj_check_acc()` would require
+changing its void signature back to `Result`, defeating the S8 design.
+In practice, a model whose `qpos0` produces a singular mass matrix is
+broken at compilation time, not at runtime — this path should never
+fire for well-formed models:
+
+```rust
+if !disabled(model, DISABLE_AUTORESET) {
+    if let Err(e) = mj_forward(model, data) {
+        tracing::error!(
+            "mj_forward() failed after auto-reset (model's qpos0 \
+             produces non-recoverable error): {e:?}"
+        );
+    }
+}
+```
+
 **Warning counter preservation:** `mj_reset_data()` zeroes all warning
 counters. The explicit `count += 1` after reset ensures the triggering
 warning survives the reset — users can detect that a reset occurred by
@@ -1773,15 +1865,15 @@ for i in 0..model.nu {
 
 #### S8e. Pipeline integration
 
-**In `mj_step()`:**
+**In `step()`** (simplified — shows check/forward ordering, not full
+signature; see S8g for the actual `Result<(), StepError>` return type):
 ```rust
-pub fn mj_step(model: &Model, data: &mut Data) {
-    mj_check_pos(model, data);    // (1) validate qpos BEFORE forward
-    mj_check_vel(model, data);    // (2) validate qvel BEFORE forward
-    mj_forward(model, data);      // (3) forward dynamics
-    mj_check_acc(model, data);    // (4) validate qacc AFTER forward
-    // ... integrator ...
-}
+// Check calls are void (S8g) — no `?` propagation.
+mj_check_pos(model, data);        // (1) validate qpos BEFORE forward
+mj_check_vel(model, data);        // (2) validate qvel BEFORE forward
+mj_forward(model, data)?;         // (3) forward dynamics (Result — propagates CholeskyFailed/LuSingular)
+mj_check_acc(model, data);        // (4) validate qacc AFTER forward
+// ... integrator ...
 ```
 
 **Split stepping (§53):** When `mj_step1()`/`mj_step2()` are
@@ -1790,14 +1882,17 @@ implemented in §53, `mj_check_pos` and `mj_check_vel` belong in
 
 #### S8f. Reset behavior
 
-**File:** `forward/check.rs` (alongside the check functions that call it)
+**File:** `core/src/reset.rs` (new)
 **Signature:** `pub fn mj_reset_data(model: &Model, data: &mut Data)`
 
 Free function, not a method on `Data`, because it requires `&Model` for
-`qpos0` and mocap initialization. Placed in `check.rs` because it is
-exclusively called by the check functions in that module (S8c). If a
-broader `mj_resetData`-equivalent is needed later (e.g., user-facing
-reset API), it can be re-exported from a more prominent location.
+`qpos0` and mocap initialization. Placed in a dedicated `reset.rs`
+module (not in `check.rs`) because `mj_reset_data()` is the equivalent
+of MuJoCo's `mj_resetData()` — a general-purpose API function called
+from multiple contexts (auto-reset, user-facing reset, keyframe loading,
+etc.). Placing it in `check.rs` would couple a general-purpose function
+to a specific caller and require a re-export refactor when other callers
+appear. `reset.rs` imports into `check.rs` for the auto-reset path.
 
 `mj_reset_data()` resets to the model's initial state (`qpos0`), NOT a
 keyframe. It:
@@ -1867,6 +1962,15 @@ recoverable); it is the wrong answer for singular mass matrices
 **Final `step()` signature:** `pub fn step(&mut self, model: &Model) -> Result<(), StepError>`
 (unchanged return type, but check-related `?` calls removed — only
 `CholeskyFailed`/`LuSingular`/`InvalidTimestep` propagate).
+
+**Affected tests (must update in same commit as S8g):**
+- `batch_sim.rs:107` — `assert!(errors[1].is_some(), "env 1 should fail")`
+  currently expects `step()` to return `Err` for NaN-injected qpos.
+  After S8, `step()` returns `Ok(())`. Rewrite to:
+  `assert!(data.divergence_detected(), "env 1 should auto-reset");`
+- `gpu/tests/integration.rs:213-215` — hedged check
+  `has_nan || errors[1].is_some()` — review and update to use
+  `divergence_detected()` or warning counter checks.
 
 **Migration path for users relying on `Result`-based NaN detection:**
 `step()` still returns `Result<(), StepError>`, but NaN/divergence is
@@ -2643,8 +2747,9 @@ that per-group disabling still freezes activation (`act_dot = 0`) when
 `act_dot = 0` freezing pattern but at different granularities.
 
 ### AC42 — DISABLE_CONSTRAINT cascading `nefc`
-When `DISABLE_CONSTRAINT` is set: `mj_collision()` returns early →
-`data.ncon == 0`. `mj_makeConstraint()` is skipped → `data.nefc == 0`.
+When `DISABLE_CONSTRAINT` is set: `mj_collision()` returns early (S4.1)
+→ `data.ncon == 0`. `assemble_unified_constraints()` is skipped (S4.3
+guard inside `mj_fwd_constraint()`) → `data.nefc == 0`.
 `mj_fwdConstraint()` hits the `nefc == 0` early exit → `qacc ==
 qacc_smooth`, `qfrc_constraint` is all zeros, `efc_force` is all zeros.
 Verify the full causal chain, not just the final `qacc` result.
@@ -2705,14 +2810,14 @@ in `mj_passive()` (it relies on `mju_zero(ptr, 0)` being a no-op).
 
 | File | Change |
 |------|--------|
-| `sim/L0/core/src/types/enums.rs` | S1: 17 disable + 4 enable constants (pure values, no `Model` dependency) |
+| `sim/L0/core/src/types/enums.rs` | S1: 17 disable + 4 enable constants (pure values, no `Model` dependency). S8g: Remove `InvalidPosition`, `InvalidVelocity`, `InvalidAcceleration` variants from `StepError` (keep `CholeskyFailed`, `LuSingular`, `InvalidTimestep`). |
 | `sim/L0/core/src/types/flags.rs` (new) | S1: `disabled()`, `enabled()`, `actuator_disabled()` helpers |
 | `sim/L0/core/src/types/validation.rs` (new) | S8a: `is_bad()`, `MAX_VAL`, `MIN_VAL` (numeric validation, not flag-related) |
 | `sim/L0/core/src/types/warning.rs` (new) | S8b: `Warning` enum, `WarningStat`, `NUM_WARNINGS`, `mj_warning()` |
 | `sim/L0/mjcf/src/types.rs` | S2: Remove `passive`, add `spring` + `damper`, add `fwdinv`/`invdiscrete`/`autoreset`, fix docstrings, fix `island` default (S2e) |
 | `sim/L0/mjcf/src/parser.rs` | S2: Parse `spring`, `damper` (remove `passive`), `fwdinv`, `invdiscrete`, `autoreset`, `actuatorgravcomp` on joints, `actuatorgroupdisable` on option, `o_margin`/`o_solref`/`o_solimp`/`o_friction` on option |
 | `sim/L0/mjcf/src/builder/mod.rs` | S3: `apply_flags()` replacing single sleep-only block |
-| `sim/L0/core/src/types/data.rs` | S4.7-prereq: Add `qfrc_spring`, `qfrc_damper` fields. S8b: Add `warnings: [WarningStat; NUM_WARNINGS]`, `was_reset()` method |
+| `sim/L0/core/src/types/data.rs` | S4.7-prereq: Add `qfrc_spring`, `qfrc_damper` fields. S8b: Add `warnings: [WarningStat; NUM_WARNINGS]`, `divergence_detected()` method |
 | `sim/L0/core/src/types/model.rs` | S4.2a: Add `jnt_actgravcomp: Vec<bool>`. S7a: Add `disableactuator: u32`, `actuator_group: Vec<i32>`. S10a: Add `o_margin`, `o_solref`, `o_solimp`, `o_friction` |
 | `sim/L0/core/src/types/model_init.rs` | S4.2a, S7a, S10a: Initialize new Model fields |
 | `sim/L0/core/src/forward/mod.rs` | S5.1, S8e, S8g: Energy guards, remove `?` error propagation from check calls (check functions become void+auto-reset, `step()` keeps `Result` for `CholeskyFailed`/`LuSingular`/`InvalidTimestep`), update `mj_check_acc` pipeline placement |
@@ -2730,8 +2835,8 @@ in `mj_passive()` (it relies on `mju_zero(ptr, 0)` being a no-op).
 | `sim/L0/core/src/integrate/mod.rs` | S4.8 Site 3, S7d Site 2: Add per-actuator disable gating to activation integration loop |
 | `sim/L0/core/src/integrate/rk4.rs` | S4.8 Site 3, S7d Site 2: Add per-actuator disable gating to RK4 activation integration |
 | `sim/L0/core/src/constraint/contact_params.rs` (new) | S10c: `assign_margin`, `assign_ref`, `assign_imp`, `assign_friction` helpers |
-| `sim/L0/core/src/forward/check.rs` (refactor) | S8c, S8g: Refactor existing `mj_check_pos`, `mj_check_vel`, `mj_check_acc` from `Result<(), StepError>` returns to MuJoCo-matching void functions with internal auto-reset. Add `mj_reset_data`. See S8g for migration details. |
-| `sim/L0/core/src/types/enums.rs` (modify) | S8g: Remove `InvalidPosition`, `InvalidVelocity`, `InvalidAcceleration` variants from `StepError`. Keep `CholeskyFailed`, `LuSingular`, `InvalidTimestep`. |
+| `sim/L0/core/src/reset.rs` (new) | S8f: `mj_reset_data()` — general-purpose reset to initial state. Imported by `check.rs` for auto-reset path. |
+| `sim/L0/core/src/forward/check.rs` (refactor) | S8c, S8g: Refactor existing `mj_check_pos`, `mj_check_vel`, `mj_check_acc` from `Result<(), StepError>` returns to MuJoCo-matching void functions with internal auto-reset. See S8g for migration details. |
 | `sim/L0/tests/scripts/gen_flag_golden.py` (new) | AC18: Python script to generate golden `.npy` reference data from MuJoCo. Uses `uv run` + `mujoco` pip package. |
 | `sim/L0/tests/assets/golden/flags/` (new dir) | AC18: Golden `.npy` files for per-flag trajectory conformance testing |
 
@@ -2788,6 +2893,22 @@ in `mj_passive()` (it relies on `mju_zero(ptr, 0)` being a no-op).
   a MuJoCo design choice). If regressions surface, fix the model's force
   scales, don't weaken the check. See S8g migration table for the full
   before/after comparison.
+- **Collision guard behavioral change (S4.1):** The current `mj_collision()`
+  guards on `model.ngeom >= 2`. The spec replaces this with MuJoCo's
+  `nbodyflex < 2` (`model.nbody + model.nflex < 2`). For standard
+  rigid-body models these are equivalent, but for flex-only models (bodies
+  with flex elements but 0 geoms) the guard now correctly allows collision
+  detection where it was previously skipped. This is a MuJoCo conformance
+  fix — the old guard was a CortenForge approximation.
+- **Test regression — `batch_sim.rs` NaN error isolation (S8):**
+  `batch_sim.rs:107` asserts `errors[1].is_some()` after injecting NaN
+  into `qpos`. After S8, `step()` returns `Ok(())` for NaN (auto-reset
+  handles it internally), so this assertion will fail. Must be rewritten
+  to check `data.divergence_detected()` or
+  `data.warnings[Warning::BadQpos as usize].count > 0`. Similarly,
+  `gpu/tests/integration.rs:213-215` has a hedged NaN-error check
+  (`has_nan || errors[1].is_some()`) that needs review post-S8.
+  Both must be updated in the **same commit** as S8g.
 - **Low risk:** Most guards are additive (new early-return paths). All disable
   flags default to "off" (bit not set), preserving current behavior.
 
