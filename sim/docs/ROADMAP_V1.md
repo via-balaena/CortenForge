@@ -5,7 +5,7 @@
 > plus the ~97 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-98).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
 > DT-96 (lazy energy eval) and DT-97 (golden file conformance) added during §41 audit.
-> DT-98 (`passive` shim v2.0 removal) added during §41 A+ review.
+> ~~DT-98~~ retired — `passive` dropped entirely pre-v1.0 (no shim needed).
 >
 > **Current position**: Through §40c on `future_work_10.md`.
 

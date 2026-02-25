@@ -65,8 +65,9 @@ Note: enable bits 0–4 (`OVERRIDE`, `ENERGY`, `FWDINV`, `INVDISCRETE`,
 `MULTICCD`) are unchanged across all versions. Only bit 5 changed occupants:
 `ISLAND` (3.3.2–3.3.5) → empty (3.3.6) → `SLEEP` (3.4.0+).
 
-This history motivates the backward-compatibility handling of `passive`
-in S2a — `passive` was a real MJCF attribute in MuJoCo ≤ 3.3.3.
+This history explains why `passive` was dropped in S2a — it was a real
+MJCF attribute in MuJoCo ≤ 3.3.5, removed in 3.3.6. CortenForge targets
+3.4.0+ and silently ignores it (matching MuJoCo's behavior).
 
 Two `u32` bitfields from `mjmodel.h`:
 
@@ -165,15 +166,29 @@ dependencies). Helpers that take `&Model` go in `flags.rs`.
 /// Returns true if the given disable flag is set on the model.
 #[inline]
 pub fn disabled(model: &Model, flag: u32) -> bool {
+    debug_assert!(
+        flag.is_power_of_two() && flag.trailing_zeros() <= 18,
+        "disabled() called with non-disable flag: {flag:#x}"
+    );
     model.disableflags & flag != 0
 }
 
 /// Returns true if the given enable flag is set on the model.
 #[inline]
 pub fn enabled(model: &Model, flag: u32) -> bool {
+    debug_assert!(
+        flag.is_power_of_two() && flag.trailing_zeros() <= 5,
+        "enabled() called with non-enable flag: {flag:#x}"
+    );
     model.enableflags & flag != 0
 }
 ```
+
+The `debug_assert!` guards catch namespace misuse — e.g.,
+`disabled(model, ENABLE_SLEEP)` — in tests and debug builds without
+runtime cost in release. Each flag constant is a single bit; the assert
+verifies the bit position is within the valid range (0–18 for disable,
+0–5 for enable).
 
 **Design note (bare `u32` constants vs `bitflags`):** The spec uses bare
 `u32` constants rather than the `bitflags` crate or a newtype. This
@@ -197,15 +212,19 @@ pub damper: bool,   // default true — was `passive`
 **Note:** MuJoCo 3.3.6+ removed the `passive` XML attribute entirely,
 replacing it with independent `spring` and `damper`. MuJoCo itself provides
 no backward compatibility — `passive` is silently ignored (unrecognized
-attributes are skipped). As a **CortenForge extension**, our parser accepts
-`passive` for backward compatibility with older MJCF files (maps to both
-`spring` and `damper`), but new models should use the split attributes.
-If `passive` is encountered, emit a `tracing::warn!` deprecation notice.
+attributes are skipped).
 
-**Removal timeline:** The `passive` backward-compatibility shim will be
-removed in CortenForge v2.0. At that point, `passive` will be silently
-ignored (matching MuJoCo's behavior). Until then, it maps to both `spring`
-and `damper` with a deprecation warning. **Tracked as DT-98.**
+**Decision: drop `passive` entirely.** CortenForge is pre-v1.0 — there
+are no downstream users to break, and no MJCF assets in
+`sim/L0/tests/assets/` use `<flag passive=...>` (verified by grep). If
+`passive` is encountered in an MJCF file, it will be silently ignored
+(unrecognized attributes are already skipped by the parser), matching
+MuJoCo's current behavior. No shim, no deprecation warning, no DT-98.
+This follows the project principle: "Prefer breaking changes that fix
+the architecture over non-breaking hacks that preserve a bad interface."
+
+**DT-98 is retired** — the backward-compatibility shim it tracked is no
+longer needed. Remove from `future_work_10j.md`.
 
 #### S2b. Add missing flag fields
 
@@ -219,23 +238,11 @@ pub autoreset: bool,    // default true  (disable flag — enabled by default)
 
 In `parse_flag_attrs()`:
 
-- Replace `flag.passive = parse_flag(e, "passive", ...)` with:
+- Remove `flag.passive = parse_flag(e, "passive", ...)`. The `passive`
+  attribute no longer exists (S2a). If an MJCF file contains it, the
+  parser's unrecognized-attribute handling silently skips it (matching
+  MuJoCo's behavior). Replace with the two independent attributes:
   ```rust
-  // MuJoCo 3.4.0+ removed `passive`, replacing it with independent
-  // `spring` and `damper`. Accept `passive` for backward compatibility
-  // but warn on deprecation.
-  let passive_override = get_attribute_opt(e, "passive");
-  if let Some(ref v) = passive_override {
-      tracing::warn!(
-          "MJCF <flag passive=\"{}\"/> is deprecated since MuJoCo 3.4.0; \
-           use <flag spring=\"{}\" damper=\"{}\"/> instead",
-          v, v, v
-      );
-      let val = v != "disable";
-      flag.spring = val;
-      flag.damper = val;
-  }
-  // Explicit spring/damper override passive (order matters).
   flag.spring = parse_flag(e, "spring", flag.spring);
   flag.damper = parse_flag(e, "damper", flag.damper);
   ```
@@ -1409,8 +1416,10 @@ Add to `types/flags.rs` (alongside `disabled()`/`enabled()`):
 #[inline]
 pub fn actuator_disabled(model: &Model, i: usize) -> bool {
     let group = model.actuator_group[i];
-    if group < 0 || group > 30 { return false; }
-    (model.disableactuator & (1u32 << group as u32)) != 0
+    // Range check first — only groups 0–30 map to bitmask bits.
+    // Cast to u32 only after confirming non-negative.
+    if !(0..=30).contains(&group) { return false; }
+    (model.disableactuator & (1u32 << (group as u32))) != 0
 }
 ```
 
@@ -1490,7 +1499,8 @@ Add a warning tracking system to `Data`:
 
 ```rust
 /// Warning types (matches MuJoCo's mjtWarning enum).
-#[repr(usize)]
+/// `repr(u8)` for compact storage; cast to `usize` for array indexing.
+#[repr(u8)]
 pub enum Warning {
     Inertia = 0,
     ContactFull = 1,
@@ -1548,11 +1558,17 @@ fn mj_warning(data: &mut Data, warning: Warning, info: i32) {
 **`mj_check_pos()` — before forward dynamics (NOT sleep-aware):**
 
 Note: unlike `mj_check_vel` and `mj_check_acc`, position validation scans
-ALL `nq` elements without sleep filtering. Rationale: sleeping bodies can
-have externally-set bad qpos (via `mj_resetData`, user code, keyframe
-loading, etc.) that was never integrated — sleep filtering would miss these.
-Velocity and acceleration can only diverge through integration, so only
-awake DOFs need checking.
+ALL `nq` elements without sleep filtering. Two reasons:
+1. **External mutation:** sleeping bodies can have externally-set bad qpos
+   (via `mj_resetData`, user code, keyframe loading, etc.) that was never
+   integrated — sleep filtering would miss these. Velocity and acceleration
+   can only diverge through integration, so only awake DOFs need checking.
+2. **Dimensional mismatch:** the sleep filtering infrastructure
+   (`dof_awake_ind`, `nv_awake`) indexes by DOF (`nv`), not by generalized
+   position element (`nq`). For quaternion joints, `nq != nv` (4 position
+   elements vs 3 DOFs). There is no `qpos_awake_ind` array, so sleep-
+   filtered position iteration would require building a mapping from
+   DOF indices to qpos ranges — unnecessary complexity given reason 1.
 
 ```rust
 pub fn mj_check_pos(model: &Model, data: &mut Data) {
@@ -1679,6 +1695,15 @@ pub fn mj_step2(model: &Model, data: &mut Data) {
 ```
 
 #### S8f. Reset behavior
+
+**File:** `forward/check.rs` (alongside the check functions that call it)
+**Signature:** `pub fn mj_reset_data(model: &Model, data: &mut Data)`
+
+Free function, not a method on `Data`, because it requires `&Model` for
+`qpos0` and mocap initialization. Placed in `check.rs` because it is
+exclusively called by the check functions in that module (S8c). If a
+broader `mj_resetData`-equivalent is needed later (e.g., user-facing
+reset API), it can be re-exported from a more prominent location.
 
 `mj_reset_data()` resets to the model's initial state (`qpos0`), NOT a
 keyframe. It:
@@ -2125,7 +2150,7 @@ properties, the assignment helpers apply override:
 // In contact creation (mj_setContact equivalent):
 con.margin = assign_margin(model, combined_margin);
 con.solref = assign_ref(model, &combined_solref);
-con.solreffriction = assign_ref(model, &combined_solreffriction);  // same o_solref
+con.solreffriction = assign_ref(model, &combined_solreffriction);  // reuses o_solref — no separate o_solreffriction field
 con.solimp = assign_imp(model, &combined_solimp);
 con.friction = assign_friction(model, &combined_friction);
 ```
@@ -2148,10 +2173,10 @@ con.friction = assign_friction(model, &combined_friction);
 
 1. **S1** — Define all flag constants in `enums.rs`. Create `types/flags.rs`
    with `disabled()`, `enabled()`, `actuator_disabled()`. Create
-   `types/validation.rs` with `is_bad()`, `MAX_VAL`. Create
+   `types/validation.rs` with `is_bad()`, `MAX_VAL`, `MIN_VAL`. Create
    `types/warning.rs` with `Warning` enum, `WarningStat`, `NUM_WARNINGS`,
    `mj_warning()`.
-2. **S2** — Parser changes: split `passive`, add missing fields, fix docs,
+2. **S2** — Parser changes: remove `passive` / add `spring`+`damper`, add missing fields, fix docs,
    fix `island` default (S2e), add `actuatorgravcomp` joint attribute.
 3. **S3** — Builder wiring: `apply_flags()` replaces single sleep-only block.
 4. **S4.7-prereq** — Add `qfrc_spring`, `qfrc_damper` Data fields. Refactor
@@ -2284,9 +2309,11 @@ An unmodified `<option/>` with no `<flag>` produces `disableflags == 0`
 `mj_defaultOption()` which sets `opt->disableflags = 0`. Verified by
 the S2e default audit table.
 
-### AC12 — Backward compat
-`<flag passive="disable"/>` sets both `DISABLE_SPRING` and `DISABLE_DAMPER`.
-Explicit `<flag passive="disable" spring="enable"/>` re-enables spring only.
+### AC12 — `passive` attribute silently ignored
+`<flag passive="disable"/>` has no effect — the attribute is silently
+skipped by the parser (matching MuJoCo 3.3.6+ behavior). Only `spring`
+and `damper` are recognized. Verify no error is raised and no flags are
+set when `passive` is the only attribute on `<flag>`.
 
 ### AC13 — Energy gating
 Energy fields `energy_potential` and `energy_kinetic` are only computed when
@@ -2344,6 +2371,15 @@ subtle accumulation-order differences between CortenForge and MuJoCo.
    combination, compares element-wise with `1e-8` tolerance.
 
 This pattern is reusable by §45 (full conformance suite).
+
+**Bootstrap fallback:** If the `mujoco` pip package has version
+compatibility issues or the Python generation script fails, the hard
+gate can be satisfied with manually captured golden data: run `simulate`
+(MuJoCo's GUI), set the flag, step 10 times, and export `qacc` via
+`mj_printData()`. The `.npy` format is preferred (loadable by `ndarray`),
+but a plain-text CSV fallback is acceptable for the bootstrap commit.
+The Python script should be the long-term mechanism — manual capture is
+only for unblocking §41 if needed.
 
 ### AC19 — Clampctrl disable
 `<flag clampctrl="disable"/>` allows ctrl values outside ctrlrange. An
@@ -2568,8 +2604,8 @@ case of a purely static scene (all bodies welded to world).
 | `sim/L0/core/src/types/flags.rs` (new) | S1: `disabled()`, `enabled()`, `actuator_disabled()` helpers |
 | `sim/L0/core/src/types/validation.rs` (new) | S8a: `is_bad()`, `MAX_VAL`, `MIN_VAL` (numeric validation, not flag-related) |
 | `sim/L0/core/src/types/warning.rs` (new) | S8b: `Warning` enum, `WarningStat`, `NUM_WARNINGS`, `mj_warning()` |
-| `sim/L0/mjcf/src/types.rs` | S2: Split `passive` → `spring` + `damper`, add `fwdinv`/`invdiscrete`/`autoreset`, fix docstrings, fix `island` default (S2e) |
-| `sim/L0/mjcf/src/parser.rs` | S2: Parse `spring`, `damper`, `passive` (compat), `fwdinv`, `invdiscrete`, `autoreset`, `actuatorgravcomp` on joints, `actuatorgroupdisable` on option, `o_margin`/`o_solref`/`o_solimp`/`o_friction` on option |
+| `sim/L0/mjcf/src/types.rs` | S2: Remove `passive`, add `spring` + `damper`, add `fwdinv`/`invdiscrete`/`autoreset`, fix docstrings, fix `island` default (S2e) |
+| `sim/L0/mjcf/src/parser.rs` | S2: Parse `spring`, `damper` (remove `passive`), `fwdinv`, `invdiscrete`, `autoreset`, `actuatorgravcomp` on joints, `actuatorgroupdisable` on option, `o_margin`/`o_solref`/`o_solimp`/`o_friction` on option |
 | `sim/L0/mjcf/src/builder/mod.rs` | S3: `apply_flags()` replacing single sleep-only block |
 | `sim/L0/core/src/types/data.rs` | S4.7-prereq: Add `qfrc_spring`, `qfrc_damper` fields. S8b: Add `warnings: [WarningStat; NUM_WARNINGS]`, `was_reset()` method |
 | `sim/L0/core/src/types/model.rs` | S4.2a: Add `jnt_actgravcomp: Vec<bool>`. S7a: Add `disableactuator: u32`, `actuator_group: Vec<i32>`. S10a: Add `o_margin`, `o_solref`, `o_solimp`, `o_friction` |
@@ -2598,9 +2634,9 @@ case of a purely static scene (all bodies welded to world).
 
 ## Risk
 
-- **Breaking:** Splitting `MjcfFlag.passive` into `spring`/`damper` breaks
-  any code that reads `flag.passive`. Grep for `flag.passive` and update all
-  call sites.
+- **Breaking:** Removing `MjcfFlag.passive` field (replaced by `spring`/
+  `damper`). Grep for `flag.passive` and update all call sites. Pre-v1.0
+  so no external users affected.
 - **Breaking:** Refactoring `mj_fwd_passive()` to write spring/damper into
   separate arrays (S4.7-prereq) touches the hot path for every joint, tendon,
   and flex. Must verify force values are identical before and after refactor.
