@@ -54,7 +54,7 @@ Two `u32` bitfields from `mujoco.h`:
 | `mjDSBL_EULERDAMP` | 15 | `eulerdamp` | enable | Skip implicit damping in Euler integrator |
 | `mjDSBL_AUTORESET` | 16 | `autoreset` | enable | Skip auto-reset on NaN/divergence |
 | `mjDSBL_NATIVECCD` | 17 | `nativeccd` | enable | Fall back to libccd for convex collision |
-| `mjDSBL_ISLAND` | 18 | `island` | disable | Skip island discovery → global solve (unique: MJCF default sets bit) |
+| `mjDSBL_ISLAND` | 18 | `island` | enable | Skip island discovery → global solve |
 
 ### Enable flags (`mjtEnableBit`, `mjNENABLE = 6`)
 
@@ -97,14 +97,10 @@ pub const DISABLE_EULERDAMP:    u32 = 1 << 15;
 pub const DISABLE_AUTORESET:    u32 = 1 << 16;
 pub const DISABLE_NATIVECCD:    u32 = 1 << 17;
 // DISABLE_ISLAND already exists at 1 << 18
-// NOTE on DISABLE_ISLAND semantics:
-//   MJCF default: island="disable" → flag.island = false
-//   Builder: !flag.island → DISABLE_ISLAND bit SET in disableflags
-//   Result: default disableflags has bit 18 SET (island discovery OFF).
-//   This is the ONLY disable flag whose default state sets the bit.
-//   All other disable flags default to "enable" → bit NOT set.
-//   MuJoCo recently moved island from mjtEnableBit to mjtDisableBit,
-//   but kept the default behavior (islands off unless explicitly enabled).
+// NOTE: Island follows the same default pattern as all other disable flags.
+//   MJCF default: island="enable" → flag.island = true → bit NOT set.
+//   Default disableflags = 0 (all bits clear). Matches MuJoCo's
+//   mj_defaultOption() which sets opt->disableflags = 0.
 
 // ── Enable flags (mjtEnableBit) ──
 pub const ENABLE_OVERRIDE:    u32 = 1 << 0;
@@ -143,7 +139,9 @@ pub damper: bool,   // default true — was `passive`
 ```
 
 **Note:** MuJoCo 3.3.6+ removed the `passive` XML attribute entirely,
-replacing it with independent `spring` and `damper`. Our parser accepts
+replacing it with independent `spring` and `damper`. MuJoCo itself provides
+no backward compatibility — `passive` is silently ignored (unrecognized
+attributes are skipped). As a **CortenForge extension**, our parser accepts
 `passive` for backward compatibility with older MJCF files (maps to both
 `spring` and `damper`), but new models should use the split attributes.
 If `passive` is encountered, emit a `tracing::warn!` deprecation notice.
@@ -253,29 +251,29 @@ with exact file/function locations.
 
 #### S4.1 `DISABLE_CONTACT` / `DISABLE_CONSTRAINT` — skip collision detection
 
-**File:** `forward/mod.rs` — `forward_core()`
-**Line ~161:** `crate::collision::mj_collision(model, self);`
+**File:** `collision/mod.rs` — `mj_collision()`
 
-MuJoCo's `mj_collision()` has an early return when **either** `DISABLE_CONTACT`
-or `DISABLE_CONSTRAINT` is set — there is no point detecting contacts if the
-solver won't run:
+The guard is **inside** `mj_collision()` itself (matching MuJoCo's
+architecture — `mj_collision()` is always called, the function handles
+its own early return):
 
 ```rust
-let skip_collision = disabled(model, DISABLE_CONTACT)
-                  || disabled(model, DISABLE_CONSTRAINT);
+pub fn mj_collision(model: &Model, data: &mut Data) {
+    data.ncon = 0; // Reset contact count unconditionally
 
-if !skip_collision {
-    crate::collision::mj_collision(model, self);
-    if sleep_enabled && crate::island::mj_wake_collision(model, self) {
-        crate::island::mj_update_sleep_arrays(model, self);
-        crate::collision::mj_collision(model, self);
+    if disabled(model, DISABLE_CONTACT)
+        || disabled(model, DISABLE_CONSTRAINT)
+    {
+        return; // No collision detection needed
     }
-} else {
-    data.ncon = 0; // Explicit zero — don't rely on initialization
+
+    // ... collision detection logic ...
 }
 ```
 
-When either flag is set, `data.ncon` is explicitly zeroed at the guard site.
+MuJoCo zeroes `ncon` at the top of `mj_collision()`, then returns early
+when **either** flag is set. The call site in `forward_core()` remains
+unconditional — `mj_collision()` is always invoked.
 
 #### S4.2 `DISABLE_GRAVITY` — zero gravity in bias forces (DT-61)
 
@@ -296,19 +294,22 @@ Then replace `model.gravity` with `grav` in the gravity loop (line ~70):
 `let gravity_force = -subtree_mass * grav;`
 
 **File:** `dynamics/rne.rs` — `mj_gravcomp()`
-**Line ~325:** Add `DISABLE_GRAVITY` and `DISABLE_DAMPER` to the early-return
-guard. MuJoCo classifies gravity compensation as a passive damper-like force,
-so it is gated on both:
+**Line ~325:** Add `DISABLE_GRAVITY` to the early-return guard. MuJoCo's
+`mj_gravcomp()` checks only `!ngravcomp`, `DISABLE_GRAVITY`, and zero gravity:
 
 ```rust
 if model.ngravcomp == 0
     || model.gravity.norm() == 0.0
     || disabled(model, DISABLE_GRAVITY)
-    || disabled(model, DISABLE_DAMPER)
 {
     return false;
 }
 ```
+
+Note: `mj_gravcomp()` does NOT check `DISABLE_DAMPER` directly. However,
+gravcomp is indirectly skipped when both `DISABLE_SPRING` AND `DISABLE_DAMPER`
+are set, because `mj_passive()` returns early before calling `mj_gravcomp()`.
+See S4.7 for the `mj_passive()` top-level guard.
 
 **File:** `energy.rs` — `mj_energy_pos()`
 **Line ~21-27:** Gravitational potential energy loop. Use same effective
@@ -362,11 +363,29 @@ joints/tendons can exceed their range without constraint forces.
 
 #### S4.7 `DISABLE_SPRING` and `DISABLE_DAMPER` — independent passive force gating
 
-**File:** `forward/passive.rs` — `mj_fwd_passive()`
-**Line ~354+:** Joint/tendon/flex passive force visitor.
+**File:** `forward/passive.rs` — `mj_fwd_passive()` / `mj_passive()`
 
-These are NOT skip-the-loop flags. They gate the force *components*
-independently:
+MuJoCo's passive force pipeline has a **hierarchical guard structure**:
+
+##### S4.7a Top-level `mj_passive()` early return
+
+When **both** `DISABLE_SPRING` AND `DISABLE_DAMPER` are set, `mj_passive()`
+returns immediately — skipping ALL passive sub-functions:
+
+```rust
+if disabled(model, DISABLE_SPRING) && disabled(model, DISABLE_DAMPER) {
+    // Zero all passive force vectors and return.
+    // This skips mj_springdamper, mj_gravcomp, mj_fluid, mj_contactPassive.
+    return;
+}
+```
+
+This is the ONLY mechanism that gates `mj_fluid()` and `mj_gravcomp()` on
+spring/damper flags — neither function checks these flags internally.
+
+##### S4.7b Component-level guards in `mj_springdamper()`
+
+Within `mj_springdamper()`, spring and damper forces are gated independently:
 
 ```rust
 let has_spring = !disabled(model, DISABLE_SPRING);
@@ -385,42 +404,88 @@ Same pattern applies to:
 - Flex bending forces (spring component)
 - Flex vertex damping
 
-**Gravity compensation interaction:** MuJoCo gates `mj_gravcomp()` on
-`DISABLE_DAMPER` (not `DISABLE_SPRING`). Gravity compensation is classified
-as a passive damper-like force. Add a `DISABLE_DAMPER` guard in addition to
-the `DISABLE_GRAVITY` guard from S4.2:
+##### S4.7c Sub-function guards
+
+The following sub-functions have their own guards (independent of spring/damper):
+
+- **`mj_gravcomp()`**: Gated on `DISABLE_GRAVITY` and zero gravity only
+  (see S4.2). NOT gated on `DISABLE_DAMPER` directly.
+- **`mj_fluid()`**: Gated on `density == 0 && viscosity == 0` only. NOT
+  gated on spring/damper flags directly. Skipped only via the top-level
+  `mj_passive()` early return (S4.7a).
+- **`mj_contactPassive()`**: Gated on `DISABLE_CONTACT` (see S4.7d).
+
+##### S4.7d `DISABLE_CONTACT` gates `mj_contactPassive()`
+
+**File:** `forward/passive.rs` — `mj_contact_passive()`
+
+MuJoCo's `mj_contactPassive()` has its own early-return guard:
 
 ```rust
-// mj_gravcomp early return:
-if model.ngravcomp == 0
-    || model.gravity.norm() == 0.0
-    || disabled(model, DISABLE_GRAVITY)
-    || disabled(model, DISABLE_DAMPER)   // MuJoCo bundles gravcomp with damper
-{
-    return false;
+if disabled(model, DISABLE_CONTACT) || data.ncon == 0 || model.nv == 0 {
+    return;
 }
 ```
 
-**Fluid force interaction (from §40):** When both `DISABLE_SPRING` AND
-`DISABLE_DAMPER` are set, skip `mj_fluid()` entirely. Fluid forces are
-passive forces that MuJoCo gates on this combination:
-
-```rust
-if !(disabled(model, DISABLE_SPRING) && disabled(model, DISABLE_DAMPER)) {
-    mj_fluid(model, data);
-}
-```
+This means `DISABLE_CONTACT` gates not only collision detection (S4.1) but
+also passive contact forces (e.g., viscous contact damping).
 
 #### S4.8 `DISABLE_ACTUATION` — skip actuator forces
 
-**File:** `forward/mod.rs` — `forward_core()`
-**Line ~191:** `actuation::mj_fwd_actuation(model, self);`
+MuJoCo gates actuation at **three** locations:
 
-Guard the actuation call. When disabled, `qfrc_actuator` stays zero. Ctrl
-values are still accepted but have no effect.
+**Site 1 — `mj_fwd_actuation()`:**
+**File:** `forward/actuation.rs`
+
+Guard the actuation force computation. When disabled, zero `qfrc_actuator`
+and return early:
+
+```rust
+if model.nu == 0 || disabled(model, DISABLE_ACTUATION) {
+    data.qfrc_actuator.fill(0.0);
+    return;
+}
+```
+
+**Site 2 — `mj_fwd_velocity()` actuator velocity:**
+**File:** `forward/velocity.rs` (or equivalent)
+
+When actuation is disabled, zero `actuator_velocity` instead of computing it:
+
+```rust
+if !disabled(model, DISABLE_ACTUATION) {
+    // compute actuator_velocity = moment^T * qvel
+} else {
+    data.actuator_velocity.fill(0.0);
+}
+```
+
+**Site 3 — `mj_advance()` activation state:**
+**File:** `forward/mod.rs` or `integrate/mod.rs`
+
+When actuation is disabled, skip activation state advancement:
+
+```rust
+if model.na > 0 && !disabled(model, DISABLE_ACTUATION) {
+    // advance activation states (act += act_dot * dt)
+}
+```
+
+**Site 4 — Control callback:**
+If CortenForge has (or will have) a control callback mechanism, gate it on
+`DISABLE_ACTUATION`:
+
+```rust
+if let Some(cb) = control_callback {
+    if !disabled(model, DISABLE_ACTUATION) {
+        cb(model, data);
+    }
+}
+```
 
 Note: `mj_transmission_site` and `mj_actuator_length` still run (they compute
-transmission geometry, not forces). Only force generation is gated.
+transmission geometry, not forces). Only force generation and activation are
+gated.
 
 #### S4.9 `DISABLE_CLAMPCTRL` — skip ctrl clamping
 
@@ -432,37 +497,51 @@ pass through unclamped.
 
 #### S4.10 `DISABLE_SENSOR` — skip sensor evaluation
 
-**File:** `forward/mod.rs` — `forward_core()`
-**Lines ~178-179, 186-187, 214-216:** The four sensor calls.
+**File:** `sensor/mod.rs` — `mj_sensor_pos()`, `mj_sensor_vel()`,
+`mj_sensor_acc()`
 
-Replace the `compute_sensors` guard with `compute_sensors && !disabled(...)`:
+The guard is **inside** each sensor function (matching MuJoCo's architecture
+where each `mj_sensorXxx()` checks the flag independently):
 
 ```rust
-let sensors_active = compute_sensors && !disabled(model, DISABLE_SENSOR);
-// ...
-if sensors_active {
-    crate::sensor::mj_sensor_pos(model, self);
+pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
+    if disabled(model, DISABLE_SENSOR) {
+        return;
+    }
+    // ... sensor evaluation ...
 }
 ```
+
+The call sites in `forward_core()` remain unchanged — they still use the
+existing `compute_sensors` / `skipsensor` logic. The `DISABLE_SENSOR` flag
+is an additional independent gate inside the sensor functions themselves.
 
 #### S4.11 `DISABLE_WARMSTART` — zero-initialize solver
 
-**File:** `constraint/solver/pgs.rs` — `pgs_solve_unified()`
-**Line ~84-118:** Warmstart block.
+**File:** `constraint/mod.rs` — called from `mj_fwd_constraint()`
 
-Guard the warmstart copy. When disabled, solver starts from zero forces
-instead of previous solution:
+MuJoCo implements warmstart as a standalone `warmstart()` function called
+from `mj_fwdConstraint()`, not inside individual solvers. Match this:
 
 ```rust
-if disabled(model, DISABLE_WARMSTART) {
-    // Zero-initialize: skip warmstart
-    efc_force.fill(0.0);
-} else {
-    // Existing warmstart logic
+fn warmstart(model: &Model, data: &mut Data) {
+    if disabled(model, DISABLE_WARMSTART) {
+        // Cold start: unconstrained accelerations, zero constraint forces
+        data.qacc.copy_from(&data.qacc_smooth);
+        data.efc_force.fill(0.0);
+        return;
+    }
+
+    // Warmstart: copy qacc_warmstart → qacc, evaluate cost,
+    // fall back to qacc_smooth if warmstart is worse.
+    // For PGS: compare force-based cost
+    // For Newton/CG: compare acceleration-based Gauss cost
+    // Handle island DOFs separately if islands are active
 }
 ```
 
-Same pattern in Newton and CG solvers if they have warmstart blocks.
+Key detail: when disabled, `qacc` is set to `qacc_smooth` (unconstrained
+accelerations) AND `efc_force` is zeroed. Both assignments are required.
 
 #### S4.12 `DISABLE_FILTERPARENT` — disable parent-child filtering
 
@@ -483,9 +562,33 @@ if !disabled(model, DISABLE_FILTERPARENT) {
 
 **File:** `collision/mod.rs` — `mj_collision()`
 
-When set, bypass BVH midphase and use brute-force all-pairs broadphase.
+When set, bypass BVH midphase and use brute-force all-pairs broadphase:
+
+```rust
+if !disabled(model, DISABLE_MIDPHASE) && bvh1 >= 0 && bvh2 >= 0 {
+    mj_collide_tree(model, data, ...);
+} else {
+    // brute-force all-pairs narrowphase
+}
+```
+
+Also affects flex self-collision midphase and BVH updates on flex objects.
 Check if the current collision pipeline already has a brute-force fallback;
 if not, this flag is a no-op until BVH midphase is the default path.
+
+#### S4.13b `DISABLE_ISLAND` — solver constraint
+
+Note: island-based solving has additional constraints beyond the flag:
+
+```rust
+let islands_supported = !disabled(model, DISABLE_ISLAND)
+    && data.nisland > 0
+    && model.opt.noslip_iterations == 0
+    && matches!(model.opt.solver, Solver::CG | Solver::Newton);
+```
+
+Island solving only works with CG or Newton solvers and requires no noslip
+iterations. PGS always uses global solving regardless of the island flag.
 
 #### S4.14 `DISABLE_EULERDAMP` — skip implicit damping in Euler
 
@@ -567,12 +670,25 @@ Currently both run unconditionally. MuJoCo only computes energy when
 
 #### S5.2 `ENABLE_OVERRIDE` — contact parameter override
 
-**File:** `collision/mod.rs` — contact parameter combination.
+**File:** `collision/mod.rs` — broadphase margin + contact parameter combination.
 
-When enabled, override contact solver parameters (solref, solimp, margin,
-gap) with global override values from `Model`. This requires override fields
-to exist on Model (from `<option><override .../>`). If those fields are not
-yet parsed, this flag is a no-op until they are.
+When enabled, affects **two** locations:
+
+1. **Broadphase margin:** During collision pair filtering, the margin used
+   for broadphase expansion switches from per-geom to global override:
+   ```rust
+   let margin = if enabled(model, ENABLE_OVERRIDE) {
+       0.5 * model.opt.o_margin
+   } else {
+       model.geom_margin[geom_id]
+   };
+   ```
+
+2. **Contact parameters:** Override contact solver parameters (solref,
+   solimp, margin, gap, friction) with global override values from `Model`
+   (from `<option><override .../>`).
+
+If override fields are not yet parsed, this flag is a no-op until they are.
 
 #### S5.3 `ENABLE_FWDINV` — forward/inverse comparison
 
@@ -678,17 +794,22 @@ not updated (retains previous values or zeros).
 detection. No equality, limit, contact, or friction loss constraints apply.
 `data.ncon == 0`. `qacc == qacc_smooth`.
 
-### AC10 — Fluid force gating
-When both `DISABLE_SPRING` and `DISABLE_DAMPER` are set, `mj_fluid()` is
-skipped. `qfrc_fluid` is zero. When only one is set, fluid forces still
-compute.
+### AC10 — Passive top-level gating
+When both `DISABLE_SPRING` and `DISABLE_DAMPER` are set, `mj_passive()`
+returns early — skipping `mj_springdamper()`, `mj_gravcomp()`,
+`mj_fluid()`, and `mj_contactPassive()`. All passive force vectors are
+zero. When only one flag is set, `mj_passive()` runs normally (only the
+individual spring or damper components are gated in `mj_springdamper()`).
 
 ### AC11 — Default bitfields
-An unmodified `<option/>` with no `<flag>` produces
-`disableflags == DISABLE_ISLAND` (bit 18 set, all others clear) and
-`enableflags == 0`. The island bit is set because the MJCF default is
-`island="disable"` → `flag.island = false` → bit set. All other flags
-have their bits clear. Matches MuJoCo defaults.
+An unmodified `<option/>` with no `<flag>` produces `disableflags == 0`
+(all bits clear) and `enableflags == 0`. All disable flags default to
+"enable" (bit not set), including island. Matches MuJoCo's
+`mj_defaultOption()` which sets `opt->disableflags = 0`.
+
+**Codebase fix required:** The existing `MjcfFlag::default()` has
+`island: false`, which causes the builder to set `DISABLE_ISLAND`. This
+must be changed to `island: true` to match MuJoCo defaults.
 
 ### AC12 — Backward compat
 `<flag passive="disable"/>` sets both `DISABLE_SPRING` and `DISABLE_DAMPER`.
@@ -730,11 +851,13 @@ actuator with `ctrlrange="0 1"` accepts ctrl=2.0 without clamping.
 Also verified: when `<flag damper="disable"/>` is set, implicit damping is
 skipped regardless of `eulerdamp` setting (compound guard).
 
-### AC21 — Gravity compensation + damper interaction
-`<flag damper="disable"/>` also disables gravity compensation forces
-(`qfrc_gravcomp`). Verify: a body with `gravcomp="1"` produces zero
-gravity compensation force when damper is disabled, even if gravity is
-enabled.
+### AC21 — Passive force hierarchy
+When both `DISABLE_SPRING` and `DISABLE_DAMPER` are set, ALL passive
+sub-functions are skipped: `mj_springdamper()`, `mj_gravcomp()`,
+`mj_fluid()`, and `mj_contactPassive()`. Verify: a body with
+`gravcomp="1"` still receives gravity compensation when only ONE of
+spring/damper is disabled (the `mj_passive()` early return requires BOTH).
+Gravity compensation is only independently gated by `DISABLE_GRAVITY`.
 
 ---
 
@@ -746,15 +869,16 @@ enabled.
 | `sim/L0/mjcf/src/types.rs` | S2: Split `passive` → `spring` + `damper`, add `fwdinv`/`invdiscrete`/`autoreset`, fix docstrings |
 | `sim/L0/mjcf/src/parser.rs` | S2: Parse `spring`, `damper`, `passive` (compat), `fwdinv`, `invdiscrete`, `autoreset` |
 | `sim/L0/mjcf/src/builder/mod.rs` | S3: `apply_flags()` replacing single sleep-only block |
-| `sim/L0/core/src/forward/mod.rs` | S4.1, S4.8, S4.10, S5.1: Contact+constraint collision guard, actuation, sensor, energy guards |
+| `sim/L0/core/src/forward/mod.rs` | S4.8, S5.1: Actuation activation advance guard, energy guards |
+| `sim/L0/core/src/forward/velocity.rs` | S4.8: Actuator velocity guard |
+| `sim/L0/core/src/sensor/mod.rs` | S4.10: Sensor disable guard (inside each sensor function) |
 | `sim/L0/core/src/dynamics/rne.rs` | S4.2: Gravity guard in `mj_rne()` + `mj_gravcomp()` |
 | `sim/L0/core/src/energy.rs` | S4.2: Gravity guard in `mj_energy_pos()` |
-| `sim/L0/core/src/constraint/mod.rs` | S4.3: Constraint solver guard |
 | `sim/L0/core/src/constraint/assembly.rs` | S4.4-S4.6: Equality, frictionloss, limit row guards |
-| `sim/L0/core/src/forward/passive.rs` | S4.7, S6: Spring/damper independence, fluid gating, fluid sleep filter |
+| `sim/L0/core/src/forward/passive.rs` | S4.7, S6: mj_passive top-level guard, spring/damper independence, contactPassive guard, fluid sleep filter |
 | `sim/L0/core/src/forward/actuation.rs` | S4.9: Clampctrl guard |
-| `sim/L0/core/src/constraint/solver/pgs.rs` | S4.11: Warmstart guard |
-| `sim/L0/core/src/collision/mod.rs` | S4.12: Filterparent guard |
+| `sim/L0/core/src/constraint/mod.rs` | S4.3, S4.11: Constraint assembly guard, warmstart function |
+| `sim/L0/core/src/collision/mod.rs` | S4.1, S4.12: Collision disable guard (inside function), filterparent guard |
 | `sim/L0/core/src/constraint/impedance.rs` | S4.15: Refsafe guard |
 
 ---
@@ -769,12 +893,12 @@ enabled.
   (matching MuJoCo, but differs from current always-compute behavior). Any
   test that asserts on energy values without setting `ENABLE_ENERGY` will
   fail.
-- **Island default:** The default `disableflags` is `DISABLE_ISLAND` (not 0)
-  because `island="disable"` is the MJCF default. Verify this matches the
-  existing hardcoded `DISABLE_ISLAND` behavior — no behavioral change expected.
+- **Island default fix:** The existing `MjcfFlag { island: false }` default
+  is wrong — MuJoCo defaults to `disableflags = 0` (island enabled). Changing
+  `island` to `true` may alter behavior if the hardcoded `DISABLE_ISLAND`
+  constant was being set elsewhere. Audit all `DISABLE_ISLAND` usage sites.
 - **Low risk:** Most guards are additive (new early-return paths). All disable
-  flags except island default to "off" (bit not set), preserving current
-  behavior.
+  flags default to "off" (bit not set), preserving current behavior.
 
 ---
 
