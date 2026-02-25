@@ -2268,3 +2268,181 @@ fn ac35g_override_zero_margin() {
         "with override o_margin=0, no contact should be detected (spheres not touching)"
     );
 }
+
+// ============================================================================
+// AC35h: ENABLE_OVERRIDE — o_margin default preservation
+// ============================================================================
+
+#[test]
+fn ac35h_override_o_margin_default_preserved() {
+    // Load MJCF with no o_margin attribute. The default o_margin should be 0.0
+    // (not the sentinel -1.0). Enabling ENABLE_OVERRIDE without setting o_margin
+    // should use margin=0.0, which still allows touching contacts.
+    let mjcf = r#"
+    <mujoco model="override_default_margin">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let mut model = load_model(mjcf).expect("load");
+
+    // o_margin should default to 0.0, not the sentinel -1.0
+    assert_eq!(
+        model.o_margin, 0.0,
+        "o_margin default must be 0.0, not sentinel -1.0 (got {})",
+        model.o_margin
+    );
+
+    // Enable override programmatically WITHOUT setting o_margin
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = [0.02, 1.0];
+    model.o_solimp = [0.9, 0.95, 0.001, 0.5, 2.0];
+    model.o_friction = [1.0, 1.0, 0.005, 0.0001, 0.0001];
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.099; // slightly penetrating floor (radius 0.1)
+    data.forward(&model).expect("forward");
+
+    assert!(
+        data.ncon > 0,
+        "margin=0.0 should still allow penetrating contacts"
+    );
+
+    let c = &data.contacts[0];
+    // includemargin = o_margin(0.0) - gap(0.0) = 0.0
+    assert_relative_eq!(c.includemargin, 0.0, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35i: ENABLE_OVERRIDE — end-to-end XML→override wiring
+// ============================================================================
+
+#[test]
+fn ac35i_override_end_to_end_xml() {
+    // All override attrs set in XML — no programmatic model.* writes.
+    // Verifies that the builder correctly wires XML <option> attrs through
+    // to the Model and that the pipeline uses them for contact params.
+    let mjcf = r#"
+    <mujoco model="override_e2e_xml">
+        <option gravity="0 0 -9.81" timestep="0.002"
+                o_margin="0.1" o_solref="0.05 0.8"
+                o_solimp="0.8 0.85 0.002 0.3 1.5"
+                o_friction="0.6 0.6 0.02 0.003 0.003">
+            <flag override="true"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+
+    // Verify ENABLE_OVERRIDE was set by XML
+    assert_ne!(
+        model.enableflags & ENABLE_OVERRIDE,
+        0,
+        "ENABLE_OVERRIDE must be set from XML <flag override=\"true\"/>"
+    );
+
+    // Verify override params wired from XML
+    assert_relative_eq!(model.o_margin, 0.1, epsilon = 1e-12);
+    assert_relative_eq!(model.o_solref[0], 0.05, epsilon = 1e-12);
+    assert_relative_eq!(model.o_solref[1], 0.8, epsilon = 1e-12);
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11; // near floor
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact near floor");
+
+    let c = &data.contacts[0];
+    // All contact params should come from XML override values
+    assert_relative_eq!(c.solref[0], 0.05, epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], 0.8, epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[0], 0.05, epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], 0.8, epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip([0.8, 0.85, 0.002, 0.3, 1.5].iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    for (actual, expected) in c.mu.iter().zip([0.6, 0.6, 0.02, 0.003, 0.003].iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, 0.6, epsilon = 1e-12);
+    // includemargin = o_margin(0.1) - gap(0.0) = 0.1
+    assert_relative_eq!(c.includemargin, 0.1, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35j: ENABLE_OVERRIDE ignores geom priority
+// ============================================================================
+
+#[test]
+fn ac35j_override_ignores_priority() {
+    // Two spheres with different geom_priority (5 vs 0) and different
+    // friction/solref per geom. ENABLE_OVERRIDE should replace ALL contact
+    // params with o_* values, ignoring priority-based selection entirely.
+    let mjcf = r#"
+    <mujoco model="override_ignores_priority">
+        <option gravity="0 0 0" timestep="0.002"/>
+        <worldbody>
+            <body name="a" pos="-0.09 0 0">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      priority="5" friction="0.1 0.1 0.001"
+                      solref="0.01 0.5" solmix="1.0"/>
+            </body>
+            <body name="b" pos="0.09 0 0">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      priority="0" friction="0.9 0.9 0.05"
+                      solref="0.08 1.5" solmix="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    // Surface gap = 0.18 - 0.20 = -0.02 → penetrating, so contact is guaranteed.
+
+    let custom_solref = [0.05, 0.8];
+    let custom_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    let custom_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
+    let custom_margin = 0.1;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "overlapping spheres must generate contact");
+
+    let c = &data.contacts[0];
+    // Override params must win over priority-selected geom params
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
+    assert_relative_eq!(c.includemargin, custom_margin, epsilon = 1e-12);
+}

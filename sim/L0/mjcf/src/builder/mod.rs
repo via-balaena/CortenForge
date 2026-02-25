@@ -732,7 +732,9 @@ impl ModelBuilder {
         self.disableactuator = option.actuatorgroupdisable;
 
         // S10-stub: Wire override parameters from parsed <option>.
-        self.o_margin = option.o_margin;
+        if option.o_margin >= 0.0 {
+            self.o_margin = option.o_margin;
+        }
         if let Some(sr) = option.o_solref {
             self.o_solref = sr;
         }
