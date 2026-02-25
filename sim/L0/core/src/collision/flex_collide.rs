@@ -1,6 +1,6 @@
 //! Flex-rigid collision helpers — narrowphase for flex vertex spheres against rigid geoms.
 
-use super::contact_param_flex_rigid;
+use super::{assign_friction, assign_imp, assign_margin, assign_ref, contact_param_flex_rigid};
 use crate::forward::closest_point_segment;
 use crate::types::{Contact, GeomType, Model, compute_tangent_frame};
 use nalgebra::{Matrix3, Vector2, Vector3};
@@ -176,8 +176,15 @@ pub fn make_contact_flex_rigid(
 ) -> Contact {
     let flex_id = model.flexvert_flexid[vertex_idx];
     let (condim, gap, solref, solimp, mu) = contact_param_flex_rigid(model, flex_id, geom_idx);
-    // Effective margin = flex_margin + geom_margin (already used in broadphase at line 5585)
-    let margin = model.flex_margin[flex_id] + model.geom_margin[geom_idx];
+    // S10: apply global override to solver params when ENABLE_OVERRIDE is active.
+    let solref = assign_ref(model, &solref);
+    let solimp = assign_imp(model, &solimp);
+    let mu = assign_friction(model, &mu);
+    // Effective margin = flex_margin + geom_margin, overridden by assign_margin.
+    let margin = assign_margin(
+        model,
+        model.flex_margin[flex_id] + model.geom_margin[geom_idx],
+    );
     let includemargin = margin - gap;
 
     let (t1, t2) = compute_tangent_frame(&normal);

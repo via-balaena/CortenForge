@@ -15,10 +15,12 @@ use super::pair_cylinder::{
 use super::plane::collide_with_plane;
 use super::sdf_collide::collide_with_sdf;
 
-use super::contact_param;
+use super::{assign_friction, assign_imp, assign_ref, contact_param};
 use crate::collision_shape::CollisionShape;
 use crate::gjk_epa::gjk_epa_contact;
-use crate::types::{Contact, ContactPair, GeomType, Model, compute_tangent_frame};
+use crate::types::{
+    Contact, ContactPair, ENABLE_OVERRIDE, GeomType, Model, compute_tangent_frame, enabled,
+};
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
 
@@ -227,6 +229,23 @@ pub fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Optio
 // Contact construction
 // ============================================================================
 
+/// Apply global contact-parameter override to a contact (S10: `ENABLE_OVERRIDE`).
+///
+/// Called **after** `apply_pair_overrides` so the global override wins over
+/// pair-level values. No-op when `ENABLE_OVERRIDE` is not set.
+#[inline]
+pub fn apply_global_override(model: &Model, contact: &mut Contact) {
+    if !enabled(model, ENABLE_OVERRIDE) {
+        return;
+    }
+    contact.solref = model.o_solref;
+    contact.solreffriction = model.o_solref;
+    contact.solimp = model.o_solimp;
+    let mu = assign_friction(model, &contact.mu);
+    contact.mu = mu;
+    contact.friction = mu[0];
+}
+
 /// Apply explicit `<pair>` overrides to a contact produced by `collide_geoms`.
 ///
 /// `collide_geoms` combines friction/condim/solref/solimp from the two geoms.
@@ -275,6 +294,10 @@ pub fn make_contact_from_geoms(
     margin: f64,
 ) -> Contact {
     let (condim, gap, solref, solimp, mu) = contact_param(model, geom1, geom2);
+    // S10: apply global override to solver params when ENABLE_OVERRIDE is active.
+    let solref = assign_ref(model, &solref);
+    let solimp = assign_imp(model, &solimp);
+    let mu = assign_friction(model, &mu);
     let includemargin = margin - gap;
 
     let dim: usize = match condim {

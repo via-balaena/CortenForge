@@ -20,13 +20,13 @@ pub(crate) mod sdf_collide;
 use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
 use crate::types::{
-    DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_SLEEP, Model,
-    SleepState,
+    DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
+    Model, SleepState, enabled,
 };
 use nalgebra::{Point3, Vector3};
 
 use self::flex_collide::{make_contact_flex_rigid, narrowphase_sphere_geom};
-use self::narrow::{apply_pair_overrides, collide_geoms};
+use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
 
 // ============================================================================
 // Collision affinity filtering
@@ -258,6 +258,65 @@ pub fn combine_solimp(solimp1: [f64; 5], solimp2: [f64; 5], mix: f64) -> [f64; 5
 }
 
 // ============================================================================
+// ENABLE_OVERRIDE assignment helpers (S10c)
+// ============================================================================
+
+/// Minimum friction coefficient. Prevents zero-friction contacts from creating
+/// singular constraint Jacobians. Matches MuJoCo's `mjMINMU`.
+pub(crate) const MIN_MU: f64 = 1e-5;
+
+/// Returns the global override margin when `ENABLE_OVERRIDE` is active,
+/// otherwise returns `source` unchanged.
+#[inline]
+pub(crate) fn assign_margin(model: &Model, source: f64) -> f64 {
+    if enabled(model, ENABLE_OVERRIDE) {
+        model.o_margin
+    } else {
+        source
+    }
+}
+
+/// Returns the global override `solref` when `ENABLE_OVERRIDE` is active,
+/// otherwise returns `source` unchanged.
+#[inline]
+pub(crate) fn assign_ref(model: &Model, source: &[f64; 2]) -> [f64; 2] {
+    if enabled(model, ENABLE_OVERRIDE) {
+        model.o_solref
+    } else {
+        *source
+    }
+}
+
+/// Returns the global override `solimp` when `ENABLE_OVERRIDE` is active,
+/// otherwise returns `source` unchanged.
+#[inline]
+pub(crate) fn assign_imp(model: &Model, source: &[f64; 5]) -> [f64; 5] {
+    if enabled(model, ENABLE_OVERRIDE) {
+        model.o_solimp
+    } else {
+        *source
+    }
+}
+
+/// Returns the global override friction when `ENABLE_OVERRIDE` is active,
+/// otherwise returns `source` unchanged. All elements are clamped to `MIN_MU`.
+#[inline]
+pub(crate) fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
+    if enabled(model, ENABLE_OVERRIDE) {
+        let f = model.o_friction;
+        [
+            f[0].max(MIN_MU),
+            f[1].max(MIN_MU),
+            f[2].max(MIN_MU),
+            f[3].max(MIN_MU),
+            f[4].max(MIN_MU),
+        ]
+    } else {
+        *source
+    }
+}
+
+// ============================================================================
 // Broad-phase collision dispatch
 // ============================================================================
 
@@ -314,7 +373,13 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 );
                 // Expand AABB by geom margin so SAP doesn't reject pairs
                 // that are within margin distance but not overlapping.
-                let m = model.geom_margin[geom_id];
+                // S10: When ENABLE_OVERRIDE is active, use half the global override
+                // margin (AABB expansion is per-geom; narrowphase sums both sides).
+                let m = if enabled(model, ENABLE_OVERRIDE) {
+                    0.5 * model.o_margin
+                } else {
+                    model.geom_margin[geom_id]
+                };
                 if m > 0.0 {
                     let expand = Vector3::new(m, m, m);
                     aabb = Aabb::new(
@@ -358,8 +423,9 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             let pos2 = data.geom_xpos[geom2];
             let mat2 = data.geom_xmat[geom2];
 
-            // Compute effective margin for this pair
-            let margin = model.geom_margin[geom1] + model.geom_margin[geom2];
+            // Compute effective margin for this pair.
+            // S10: assign_margin returns o_margin directly when override active.
+            let margin = assign_margin(model, model.geom_margin[geom1] + model.geom_margin[geom2]);
 
             // Narrow-phase collision detection.
             // S9-stub: When midphase BVH is connected (DT-99), mesh-mesh and
@@ -389,8 +455,9 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 }
             }
 
-            // Pair margin overrides geom margins
-            let margin = pair.margin;
+            // Pair margin overrides geom margins.
+            // S10: assign_margin returns o_margin when global override active.
+            let margin = assign_margin(model, pair.margin);
 
             // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
             // geom_rbound is the bounding sphere radius, pre-computed per geom.
@@ -411,6 +478,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
             {
                 apply_pair_overrides(&mut contact, pair);
+                apply_global_override(model, &mut contact);
                 data.contacts.push(contact);
                 data.ncon += 1;
             }
@@ -436,7 +504,12 @@ fn mj_collision_flex(model: &Model, data: &mut Data) {
         let vpos = data.flexvert_xpos[vi];
         let flex_id = model.flexvert_flexid[vi];
         let radius = model.flexvert_radius[vi];
-        let margin = model.flex_margin[flex_id];
+        // S10: When override active, use half the global margin (per-geom expansion).
+        let margin = if enabled(model, ENABLE_OVERRIDE) {
+            0.5 * model.o_margin
+        } else {
+            model.flex_margin[flex_id]
+        };
 
         // Skip pinned vertices (infinite mass = immovable)
         if model.flexvert_invmass[vi] <= 0.0 {

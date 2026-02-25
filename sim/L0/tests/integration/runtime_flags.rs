@@ -1690,3 +1690,115 @@ fn ac46_warmstart_plus_islands() {
         "qacc_warmstart should be saved even with DISABLE_WARMSTART"
     );
 }
+
+// ============================================================================
+// AC35: ENABLE_OVERRIDE margin + solver params
+// ============================================================================
+
+#[test]
+fn ac35_override_margin_solver_params() {
+    // Two spheres near each other, with ENABLE_OVERRIDE + custom o_* params.
+    let mjcf = r#"
+    <mujoco model="override_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let custom_solref = [0.05, 0.8];
+    let custom_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    let custom_margin = 0.1;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    // Place ball near floor so contact is generated
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(
+        data.ncon > 0,
+        "should generate at least one contact near floor"
+    );
+
+    let c = &data.contacts[0];
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    // includemargin should reflect the override margin (o_margin - gap).
+    // Default gap = 0.0 for both geoms, so includemargin = o_margin.
+    assert_relative_eq!(c.includemargin, custom_margin, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC36: ENABLE_OVERRIDE friction clamping
+// ============================================================================
+
+#[test]
+fn ac36_override_friction_clamping() {
+    let mjcf = r#"
+    <mujoco model="override_friction_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let min_mu = 1e-5;
+
+    // Case 1: friction values above MIN_MU — should pass through unchanged
+    let above_mu = [0.5, 0.5, 0.01, 0.001, 0.001];
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_friction = above_mu;
+    model.o_margin = 0.1;
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact");
+    let c = &data.contacts[0];
+    for (actual, expected) in c.mu.iter().zip(above_mu.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, above_mu[0], epsilon = 1e-12);
+
+    // Case 2: friction values at/below MIN_MU — should be clamped
+    let below_mu = [0.0, 1e-6, 1e-10, 0.0, 1e-20];
+    let mut model2 = load_model(mjcf).expect("load");
+    model2.enableflags |= ENABLE_OVERRIDE;
+    model2.o_friction = below_mu;
+    model2.o_margin = 0.1;
+
+    let mut data2 = model2.make_data();
+    data2.qpos[2] = 0.11;
+    data2.forward(&model2).expect("forward");
+
+    assert!(data2.ncon > 0, "should generate contact");
+    let c2 = &data2.contacts[0];
+    for (i, &mu_i) in c2.mu.iter().enumerate() {
+        assert!(
+            mu_i >= min_mu,
+            "mu[{i}] = {mu_i} should be >= MIN_MU ({min_mu})",
+        );
+    }
+    assert!(c2.friction >= min_mu, "friction scalar should be >= MIN_MU");
+}
