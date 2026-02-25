@@ -233,7 +233,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             data.efc_D.push(d_val);
 
             // KBIP + aref
-            let (k, b) = compute_kbip(sr, si);
+            let (k, b) = compute_kbip(model, sr, si);
             data.efc_aref[row] = compute_aref(k, b, imp, pos_val, margin_val, vel_val);
 
             // efc_b = J_row · qacc_smooth - aref

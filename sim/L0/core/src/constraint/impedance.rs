@@ -151,8 +151,16 @@ pub fn quaternion_to_axis_angle(quat: &UnitQuaternion<f64>) -> Vector3<f64> {
 /// - Direct mode (solref[0] ≤ 0): K = -solref[0]/dmax², B = -solref[1]/dmax
 ///
 /// `dmax` = solimp[1] (clamped to [mjMINIMP, mjMAXIMP]).
+///
+/// S4.15: When `DISABLE_REFSAFE` is NOT set (default), standard-mode
+/// `solref[0]` is clamped to `max(solref[0], 2 * timestep)`. This prevents
+/// excessively stiff constraints that would require sub-timestep response.
+///
 /// Matches MuJoCo's `mj_makeImpedance` in `engine_core_constraint.c`.
-pub fn compute_kbip(solref: [f64; 2], solimp: [f64; 5]) -> (f64, f64) {
+pub fn compute_kbip(model: &Model, solref: [f64; 2], solimp: [f64; 5]) -> (f64, f64) {
+    use crate::types::DISABLE_REFSAFE;
+    use crate::types::flags::disabled;
+
     const MJ_MIN_IMP: f64 = 0.0001;
     const MJ_MAX_IMP: f64 = 0.9999;
 
@@ -160,7 +168,12 @@ pub fn compute_kbip(solref: [f64; 2], solimp: [f64; 5]) -> (f64, f64) {
 
     if solref[0] > 0.0 {
         // Standard mode: solref = [timeconst, dampratio]
-        let timeconst = solref[0];
+        // S4.15: Clamp timeconst to 2*timestep unless refsafe is disabled.
+        let timeconst = if disabled(model, DISABLE_REFSAFE) {
+            solref[0]
+        } else {
+            solref[0].max(2.0 * model.timestep)
+        };
         let dampratio = solref[1];
 
         let k = 1.0 / (dmax * dmax * timeconst * timeconst * dampratio * dampratio).max(MJ_MINVAL);
