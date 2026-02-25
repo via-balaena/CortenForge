@@ -2665,3 +2665,91 @@ fn ac35j_override_ignores_priority() {
     assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
     assert_relative_eq!(c.includemargin, custom_margin, epsilon = 1e-12);
 }
+
+// ============================================================================
+// AC31: Midphase BVH matches brute-force (mesh-mesh contacts identical)
+// ============================================================================
+
+#[test]
+fn ac31_midphase_matches_brute_force() {
+    use nalgebra::Point3;
+    use sim_core::mesh::{TriangleMeshData, mesh_mesh_deepest_contact};
+    use sim_types::Pose;
+
+    // Build two cube meshes
+    let vertices = vec![
+        Point3::new(-0.5, -0.5, -0.5),
+        Point3::new(0.5, -0.5, -0.5),
+        Point3::new(0.5, 0.5, -0.5),
+        Point3::new(-0.5, 0.5, -0.5),
+        Point3::new(-0.5, -0.5, 0.5),
+        Point3::new(0.5, -0.5, 0.5),
+        Point3::new(0.5, 0.5, 0.5),
+        Point3::new(-0.5, 0.5, 0.5),
+    ];
+    let indices = vec![
+        0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 5, 1, 0, 4, 5, 2, 7, 3, 2, 6, 7, 0, 7, 4, 0, 3, 7,
+        1, 6, 2, 1, 5, 6,
+    ];
+    let cube_a = TriangleMeshData::new(vertices.clone(), indices.clone());
+    let cube_b = TriangleMeshData::new(vertices, indices);
+
+    let pose_a = Pose::identity();
+    let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+
+    let bvh_result = mesh_mesh_deepest_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
+    let brute_result = mesh_mesh_deepest_contact(&cube_a, &pose_a, &cube_b, &pose_b, false);
+
+    assert!(bvh_result.is_some(), "BVH path should find a contact");
+    assert!(
+        brute_result.is_some(),
+        "brute-force path should find a contact"
+    );
+
+    let b = bvh_result.unwrap();
+    let f = brute_result.unwrap();
+    assert_relative_eq!(b.penetration, f.penetration, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC33: DISABLE_MIDPHASE flag forces brute-force and still produces contacts
+// ============================================================================
+
+#[test]
+fn ac33_midphase_disable_flag_brute_force() {
+    use nalgebra::Point3;
+    use sim_core::DISABLE_MIDPHASE;
+    use sim_core::mesh::{TriangleMeshData, mesh_sphere_contact};
+    use sim_types::Pose;
+
+    let vertices = vec![
+        Point3::new(-0.5, -0.5, -0.5),
+        Point3::new(0.5, -0.5, -0.5),
+        Point3::new(0.5, 0.5, -0.5),
+        Point3::new(-0.5, 0.5, -0.5),
+        Point3::new(-0.5, -0.5, 0.5),
+        Point3::new(0.5, -0.5, 0.5),
+        Point3::new(0.5, 0.5, 0.5),
+        Point3::new(-0.5, 0.5, 0.5),
+    ];
+    let indices = vec![
+        0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 5, 1, 0, 4, 5, 2, 7, 3, 2, 6, 7, 0, 7, 4, 0, 3, 7,
+        1, 6, 2, 1, 5, 6,
+    ];
+    let cube = TriangleMeshData::new(vertices, indices);
+    let pose = Pose::identity();
+
+    // use_bvh=false simulates what collide_with_mesh does when DISABLE_MIDPHASE is set
+    let brute_contact = mesh_sphere_contact(&cube, &pose, Point3::new(0.0, 0.0, 0.7), 0.3, false);
+    assert!(
+        brute_contact.is_some(),
+        "brute-force path (DISABLE_MIDPHASE) should still find contacts"
+    );
+
+    // Verify the flag constant is wired correctly
+    assert_eq!(
+        DISABLE_MIDPHASE,
+        1 << 14,
+        "DISABLE_MIDPHASE should be bit 14"
+    );
+}

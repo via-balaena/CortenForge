@@ -5,7 +5,7 @@ use crate::mesh::{
     MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact,
     mesh_mesh_deepest_contact, mesh_sphere_contact,
 };
-use crate::types::{Contact, GeomType, Model};
+use crate::types::{Contact, DISABLE_MIDPHASE, GeomType, Model, disabled};
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
 
@@ -32,6 +32,9 @@ pub fn collide_with_mesh(
     let size1 = model.geom_size[geom1];
     let size2 = model.geom_size[geom2];
 
+    // Decide once whether to use BVH midphase (§41 DISABLE_MIDPHASE)
+    let use_bvh = !disabled(model, DISABLE_MIDPHASE);
+
     // Build poses (expensive quaternion conversion, but needed for mesh collision)
     let quat1 = UnitQuaternion::from_matrix(&mat1);
     let quat2 = UnitQuaternion::from_matrix(&mat2);
@@ -46,7 +49,7 @@ pub fn collide_with_mesh(
             let mesh1 = &model.mesh_data[mesh1_id];
             let mesh2 = &model.mesh_data[mesh2_id];
 
-            mesh_mesh_deepest_contact(mesh1, &pose1, mesh2, &pose2)
+            mesh_mesh_deepest_contact(mesh1, &pose1, mesh2, &pose2, use_bvh)
         }
 
         // Mesh (geom1) vs Primitive (geom2)
@@ -55,20 +58,22 @@ pub fn collide_with_mesh(
             let mesh = &model.mesh_data[mesh_id];
 
             match prim_type {
-                GeomType::Sphere => mesh_sphere_contact(mesh, &pose1, pose2.position, size2.x),
+                GeomType::Sphere => {
+                    mesh_sphere_contact(mesh, &pose1, pose2.position, size2.x, use_bvh)
+                }
                 // Capsule and Cylinder both use capsule collision (cylinder approximated as capsule)
                 GeomType::Capsule | GeomType::Cylinder => {
                     let half_len = size2.y;
                     let axis = pose2.rotation * Vector3::z();
                     let start = pose2.position - axis * half_len;
                     let end = pose2.position + axis * half_len;
-                    mesh_capsule_contact(mesh, &pose1, start, end, size2.x)
+                    mesh_capsule_contact(mesh, &pose1, start, end, size2.x, use_bvh)
                 }
-                GeomType::Box => mesh_box_contact(mesh, &pose1, &pose2, &size2),
+                GeomType::Box => mesh_box_contact(mesh, &pose1, &pose2, &size2, use_bvh),
                 GeomType::Ellipsoid => {
                     // Approximate as sphere with max radius (conservative)
                     let max_r = size2.x.max(size2.y).max(size2.z);
-                    mesh_sphere_contact(mesh, &pose1, pose2.position, max_r)
+                    mesh_sphere_contact(mesh, &pose1, pose2.position, max_r, use_bvh)
                 }
                 GeomType::Plane => {
                     // Plane normal is local Z-axis
@@ -88,19 +93,21 @@ pub fn collide_with_mesh(
             let mesh = &model.mesh_data[mesh_id];
 
             let contact = match prim_type {
-                GeomType::Sphere => mesh_sphere_contact(mesh, &pose2, pose1.position, size1.x),
+                GeomType::Sphere => {
+                    mesh_sphere_contact(mesh, &pose2, pose1.position, size1.x, use_bvh)
+                }
                 // Capsule and Cylinder both use capsule collision (cylinder approximated as capsule)
                 GeomType::Capsule | GeomType::Cylinder => {
                     let half_len = size1.y;
                     let axis = pose1.rotation * Vector3::z();
                     let start = pose1.position - axis * half_len;
                     let end = pose1.position + axis * half_len;
-                    mesh_capsule_contact(mesh, &pose2, start, end, size1.x)
+                    mesh_capsule_contact(mesh, &pose2, start, end, size1.x, use_bvh)
                 }
-                GeomType::Box => mesh_box_contact(mesh, &pose2, &pose1, &size1),
+                GeomType::Box => mesh_box_contact(mesh, &pose2, &pose1, &size1, use_bvh),
                 GeomType::Ellipsoid => {
                     let max_r = size1.x.max(size1.y).max(size1.z);
-                    mesh_sphere_contact(mesh, &pose2, pose1.position, max_r)
+                    mesh_sphere_contact(mesh, &pose2, pose1.position, max_r, use_bvh)
                 }
                 GeomType::Plane => {
                     let plane_normal = mat1.column(2).into_owned();
