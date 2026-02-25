@@ -15,9 +15,10 @@ pub(crate) mod solver;
 use nalgebra::{DMatrix, DVector, Vector3};
 
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse};
+use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintType, DISABLE_CONSTRAINT, Data, ENABLE_SLEEP, Integrator, MjJointType, Model,
-    SolverType,
+    ConstraintType, DISABLE_CONSTRAINT, DISABLE_WARMSTART, Data, ENABLE_SLEEP, Integrator,
+    MjJointType, Model, SolverType,
 };
 
 use crate::constraint::assembly::assemble_unified_constraints;
@@ -236,6 +237,30 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     qfrc
 }
 
+/// S4.11: Load warmstart data or cold-start the solver.
+///
+/// Returns `true` if warm data was loaded (solvers should run cost comparison),
+/// `false` if cold-started (solvers skip comparison, start from qacc_smooth + efc_force=0).
+///
+/// When disabled, `qacc` is set to `qacc_smooth` and `efc_force` is zeroed.
+/// When enabled, `qacc` is loaded from `qacc_warmstart` — each solver then
+/// evaluates whether this starting point beats `qacc_smooth`.
+///
+/// Note: `qacc_warmstart` saving (end-of-step) is unconditional. This flag
+/// gates consumption only, so re-enabling mid-simulation has immediate effect.
+fn warmstart(model: &Model, data: &mut Data) -> bool {
+    if disabled(model, DISABLE_WARMSTART) {
+        // Cold start: unconstrained accelerations, zero constraint forces.
+        data.qacc.copy_from(&data.qacc_smooth);
+        data.efc_force.fill(0.0);
+        return false;
+    }
+
+    // Warm start: populate qacc from previous timestep's solution.
+    data.qacc.copy_from(&data.qacc_warmstart);
+    true
+}
+
 /// Unified constraint pipeline (§29).
 ///
 /// Pipeline:
@@ -319,6 +344,9 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         data.qacc.copy_from(&qacc_smooth_impl);
         return;
     }
+
+    // S4.11: Load warmstart data or cold-start before solver dispatch.
+    let _warm = warmstart(model, data);
 
     // Store implicit quantities for Newton solver.
     // Clone into owned values so we don't hold an immutable borrow on `data`

@@ -12,6 +12,9 @@ use crate::types::{
 };
 use nalgebra::{DVector, Vector3};
 
+use crate::types::flags::disabled;
+use crate::types::{DISABLE_ACTUATION, DISABLE_CLAMPCTRL};
+
 use super::muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_force};
 
 /// Compute actuator length and moment for site transmissions only.
@@ -318,11 +321,27 @@ pub fn mj_next_activation(
 /// 3. Clamps control inputs and output forces to their declared ranges.
 /// 4. Maps actuator force to joint forces via the transmission.
 pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
+    // S4.8: Unconditional zero of per-actuator forces (matches MuJoCo).
+    for i in 0..model.nu {
+        data.actuator_force[i] = 0.0;
+    }
+
+    // S4.8: Guard — skip force computation when no actuators or actuation disabled.
+    if model.nu == 0 || disabled(model, DISABLE_ACTUATION) {
+        data.qfrc_actuator.fill(0.0);
+        return;
+    }
+
     data.qfrc_actuator.fill(0.0);
 
     for i in 0..model.nu {
         // --- Phase 1: Activation dynamics (compute act_dot, do NOT integrate) ---
-        let ctrl = data.ctrl[i].clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1);
+        // S4.9: Skip ctrl clamping when DISABLE_CLAMPCTRL is set.
+        let ctrl = if disabled(model, DISABLE_CLAMPCTRL) {
+            data.ctrl[i]
+        } else {
+            data.ctrl[i].clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1)
+        };
 
         let input = match model.actuator_dyntype[i] {
             ActuatorDynamics::None => ctrl,

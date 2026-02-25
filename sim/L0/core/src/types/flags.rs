@@ -29,9 +29,14 @@ pub fn enabled(model: &Model, flag: u32) -> bool {
 
 /// Returns true if actuator `i` is disabled by group membership.
 /// Groups outside 0–30 are never disabled (matches MuJoCo).
+/// Returns false if `actuator_group` is not populated for actuator `i`.
 #[inline]
 #[must_use]
 pub fn actuator_disabled(model: &Model, i: usize) -> bool {
+    // Bounds check: actuator_group may not be populated in test models.
+    if i >= model.actuator_group.len() {
+        return false;
+    }
     let group = model.actuator_group[i];
     // Range check first — only groups 0–30 map to bitmask bits.
     // Cast to u32 only after confirming non-negative.

@@ -12,7 +12,8 @@ pub(crate) mod implicit;
 pub(crate) mod rk4;
 
 use crate::forward::mj_next_activation;
-use crate::types::{Data, ENABLE_SLEEP, Integrator, Model};
+use crate::types::flags::{actuator_disabled, disabled};
+use crate::types::{DISABLE_ACTUATION, Data, ENABLE_SLEEP, Integrator, Model};
 
 use euler::{mj_integrate_pos, mj_normalize_quat};
 
@@ -37,12 +38,16 @@ impl Data {
         // Integrate activation per actuator via mj_next_activation() (§34).
         // Handles both integration (Euler/FilterExact) and actlimited clamping.
         // MuJoCo order: activation → velocity → position.
+        // S4.8: Per-actuator disable gating — disabled actuators get act_dot=0,
+        // freezing activation state without zeroing it.
         for i in 0..model.nu {
             let act_adr = model.actuator_act_adr[i];
             let act_num = model.actuator_act_num[i];
+            let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i);
             for k in 0..act_num {
                 let j = act_adr + k;
-                self.act[j] = mj_next_activation(model, i, self.act[j], self.act_dot[j]);
+                let act_dot_val = if is_disabled { 0.0 } else { self.act_dot[j] };
+                self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val);
             }
         }
 
@@ -121,12 +126,15 @@ impl Data {
         let h = model.timestep;
 
         // 1. Activation integration via mj_next_activation() (§34, identical to integrate())
+        // S4.8: Per-actuator disable gating (mirrors integrate() above).
         for i in 0..model.nu {
             let act_adr = model.actuator_act_adr[i];
             let act_num = model.actuator_act_num[i];
+            let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i);
             for k in 0..act_num {
                 let j = act_adr + k;
-                self.act[j] = mj_next_activation(model, i, self.act[j], self.act_dot[j]);
+                let act_dot_val = if is_disabled { 0.0 } else { self.act_dot[j] };
+                self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val);
             }
         }
 

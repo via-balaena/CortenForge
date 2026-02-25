@@ -4,9 +4,10 @@
 //! accelerometer, force/torque, touch, frame linear/angular acceleration,
 //! actuator force, joint/tendon limit force.
 
+use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintType, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType, MjSensorType, Model,
-    SleepState,
+    ConstraintType, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType,
+    MjSensorType, Model, SleepState,
 };
 use nalgebra::{Matrix3, Vector3};
 
@@ -27,6 +28,11 @@ use super::sensor_body_id;
 /// - `FrameAngAcc`: angular acceleration
 /// - `ActuatorFrc`: actuator force
 pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
+    // S4.10: Early return — sensordata is NOT zeroed (intentional MuJoCo match).
+    if disabled(model, DISABLE_SENSOR) {
+        return;
+    }
+
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     for sensor_id in 0..model.nsensor {

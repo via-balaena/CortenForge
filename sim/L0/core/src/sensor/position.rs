@@ -7,8 +7,9 @@
 use crate::collision::narrow::geom_to_collision_shape;
 use crate::collision_shape::CollisionShape;
 use crate::raycast::raycast_shape;
+use crate::types::flags::disabled;
 use crate::types::{
-    ActuatorTransmission, Data, ENABLE_SLEEP, GeomType, MjJointType, MjObjectType,
+    ActuatorTransmission, DISABLE_SENSOR, Data, ENABLE_SLEEP, GeomType, MjJointType, MjObjectType,
     MjSensorDataType, MjSensorType, Model, SleepState,
 };
 use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
@@ -33,6 +34,11 @@ use super::sensor_body_id;
 /// - Touch: contact detection
 #[allow(clippy::too_many_lines)]
 pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
+    // S4.10: Early return — sensordata is NOT zeroed (intentional MuJoCo match).
+    if disabled(model, DISABLE_SENSOR) {
+        return;
+    }
+
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     for sensor_id in 0..model.nsensor {

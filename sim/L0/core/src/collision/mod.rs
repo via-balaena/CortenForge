@@ -19,7 +19,10 @@ pub(crate) mod sdf_collide;
 
 use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
-use crate::types::{DISABLE_CONSTRAINT, DISABLE_CONTACT, Data, ENABLE_SLEEP, Model, SleepState};
+use crate::types::{
+    DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_SLEEP, Model,
+    SleepState,
+};
 use nalgebra::{Point3, Vector3};
 
 use self::flex_collide::{make_contact_flex_rigid, narrowphase_sphere_geom};
@@ -73,7 +76,11 @@ pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize
     // - But the ball should still collide with ground planes on body 0
     // - The "parent-child" filter is for bodies connected by articulated joints
     //   (hinge, slide, ball) where collision would be geometrically impossible
-    if body1 != 0
+    //
+    // S4.12: Skip parent-child exclusion when DISABLE_FILTERPARENT is set,
+    // allowing parent-child geom pairs to collide.
+    if model.disableflags & DISABLE_FILTERPARENT == 0
+        && body1 != 0
         && body2 != 0
         && (model.body_parent[body1] == body2 || model.body_parent[body2] == body1)
     {
