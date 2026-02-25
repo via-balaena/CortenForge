@@ -132,8 +132,9 @@ impl BatchSim {
     /// Step all environments by one timestep.
     ///
     /// Returns per-environment errors. `None` = success, `Some(e)` = that
-    /// environment's step failed. Failed environments are **not** auto-reset
-    /// — the caller decides what to do (reset, skip, abort).
+    /// environment's step failed. NaN/divergence triggers auto-reset (§41 S8)
+    /// — use `data.divergence_detected()` to check. Only non-recoverable
+    /// errors (`CholeskyFailed`, `LuSingular`, `InvalidTimestep`) return `Some`.
     ///
     /// When the `parallel` feature is enabled, environments are stepped in
     /// parallel via rayon `par_iter_mut`. When disabled, environments are
@@ -372,7 +373,7 @@ mod tests {
     /// Acceptance criterion 2: Error isolation.
     /// A StepError in one env does not affect others.
     #[test]
-    fn error_isolation() {
+    fn nan_auto_reset_isolation() {
         let model = Arc::new(pendulum_model());
         let mut batch = BatchSim::new(Arc::clone(&model), 4);
 
@@ -384,24 +385,27 @@ mod tests {
 
         let errors = batch.step_all();
 
-        // Env 1 should have failed
-        assert!(errors[1].is_some(), "env 1 should fail (NaN qpos)");
+        // All envs succeed — NaN env auto-resets (§41 S8).
+        for (i, e) in errors.iter().enumerate() {
+            assert!(e.is_none(), "env {i} should succeed (got {e:?})");
+        }
 
-        // Envs 0, 2, 3 should succeed
-        assert!(errors[0].is_none(), "env 0 should succeed");
-        assert!(errors[2].is_none(), "env 2 should succeed");
-        assert!(errors[3].is_none(), "env 3 should succeed");
+        // Env 1 should have detected divergence (auto-reset happened).
+        assert!(
+            batch.env(1).unwrap().divergence_detected(),
+            "env 1 should auto-reset on NaN"
+        );
 
-        // Verify healthy envs actually stepped (time advanced)
+        // Healthy envs should have advanced
         assert!(batch.env(0).unwrap().time > 0.0);
         assert!(batch.env(2).unwrap().time > 0.0);
         assert!(batch.env(3).unwrap().time > 0.0);
     }
 
-    /// Acceptance criterion 3: No auto-reset.
-    /// Failed envs retain error state on subsequent step_all().
+    /// Acceptance criterion 3: Auto-reset on NaN.
+    /// After §41 S8, NaN triggers auto-reset — second step succeeds from reset state.
     #[test]
-    fn no_auto_reset() {
+    fn auto_reset_on_nan() {
         let model = Arc::new(pendulum_model());
         let mut batch = BatchSim::new(Arc::clone(&model), 2);
 
@@ -409,16 +413,20 @@ mod tests {
         batch.env_mut(0).unwrap().qpos[0] = f64::NAN;
         batch.env_mut(1).unwrap().qpos[0] = 0.5;
 
-        // First step
+        // First step — auto-resets env 0
         let errors1 = batch.step_all();
-        assert!(errors1[0].is_some());
+        assert!(errors1[0].is_none(), "env 0 should auto-reset, not error");
         assert!(errors1[1].is_none());
+        assert!(
+            batch.env(0).unwrap().divergence_detected(),
+            "env 0 should have divergence flag set"
+        );
 
-        // Second step without reset — env 0 should still fail
+        // Second step — env 0 runs from reset state, succeeds
         let errors2 = batch.step_all();
         assert!(
-            errors2[0].is_some(),
-            "env 0 should still fail without reset"
+            errors2[0].is_none(),
+            "env 0 should succeed from reset state"
         );
         assert!(errors2[1].is_none(), "env 1 should still succeed");
     }

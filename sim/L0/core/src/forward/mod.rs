@@ -49,29 +49,29 @@ impl Data {
     /// # Errors
     ///
     /// Returns `Err(StepError)` if:
-    /// - Position/velocity contains NaN or Inf
-    /// - Acceleration computation produces NaN
     /// - Cholesky decomposition fails (implicit integrator only)
+    /// - LU decomposition fails (implicit integrator only)
     /// - Timestep is invalid
     ///
-    /// Unlike MuJoCo which silently resets state on errors, this follows
-    /// Rust idioms by requiring explicit error handling.
+    /// NaN/divergence in qpos, qvel, or qacc triggers auto-reset (matching
+    /// MuJoCo). Disable with `DISABLE_AUTORESET`. Use `data.divergence_detected()`
+    /// to check if a reset occurred.
     pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
         // Validate timestep
         if model.timestep <= 0.0 || !model.timestep.is_finite() {
             return Err(StepError::InvalidTimestep);
         }
 
-        // Validate state before stepping
-        check::mj_check_pos(model, self)?;
-        check::mj_check_vel(model, self)?;
+        // Validate state before stepping — void, auto-resets internally.
+        check::mj_check_pos(model, self);
+        check::mj_check_vel(model, self);
 
         match model.integrator {
             Integrator::RungeKutta4 => {
                 // RK4: forward() evaluates initial state (with sensors).
                 // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
                 self.forward(model)?;
-                check::mj_check_acc(model, self)?;
+                check::mj_check_acc(model, self);
                 crate::integrate::rk4::mj_runge_kutta(model, self)?;
             }
             Integrator::Euler
@@ -79,7 +79,7 @@ impl Data {
             | Integrator::ImplicitFast
             | Integrator::Implicit => {
                 self.forward(model)?;
-                check::mj_check_acc(model, self)?;
+                check::mj_check_acc(model, self);
                 self.integrate(model);
             }
         }
@@ -131,6 +131,12 @@ impl Data {
     ///
     /// `compute_sensors`: `true` for `forward()`, `false` for `forward_skip_sensors()`.
     fn forward_core(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
+        // INVARIANT: forward_core() must NOT call mj_check_pos, mj_check_vel,
+        // or mj_check_acc. mj_check_acc() calls forward() after auto-reset —
+        // if forward_core() called check functions, a model that diverges from
+        // qpos0 would cause infinite recursion. step() orchestrates the
+        // check → forward → check sequence externally. This function is a
+        // pure computation with no validation side-effects.
         // Sleep is only active after the initial forward pass.
         // The first forward (time == 0.0) must compute FK for all bodies
         // to establish initial positions, even for Init-sleeping bodies.

@@ -296,6 +296,20 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
         option.sleep_tolerance = st;
     }
 
+    // Per-group actuator disabling
+    if let Some(groups_str) = get_attribute_opt(e, "actuatorgroupdisable") {
+        for token in groups_str.split_whitespace() {
+            if let Ok(group) = token.parse::<i32>() {
+                if (0..=30).contains(&group) {
+                    #[allow(clippy::cast_sign_loss)]
+                    {
+                        option.actuatorgroupdisable |= 1u32 << (group as u32);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(option)
 }
 

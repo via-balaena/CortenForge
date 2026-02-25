@@ -455,6 +455,11 @@ pub struct MjcfOption {
     /// Velocity threshold for body sleeping (default: 1e-4).
     pub sleep_tolerance: f64,
 
+    // ========== Per-group actuator disabling ==========
+    /// Bitmask parsed from `actuatorgroupdisable` attribute.
+    /// Bit `i` set = group `i` disabled. Parsed from space-separated group IDs (0–30).
+    pub actuatorgroupdisable: u32,
+
     // ========== Flags (child element) ==========
     /// Simulation flags controlling feature enable/disable.
     pub flag: MjcfFlag,
@@ -505,6 +510,9 @@ impl Default for MjcfOption {
 
             // Sleep
             sleep_tolerance: 1e-4,
+
+            // Per-group actuator disabling
+            actuatorgroupdisable: 0,
 
             // Flags
             flag: MjcfFlag::default(),

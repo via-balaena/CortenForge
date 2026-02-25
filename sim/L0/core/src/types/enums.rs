@@ -621,12 +621,6 @@ pub enum Integrator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepError {
-    /// Position coordinates contain NaN or Inf.
-    InvalidPosition,
-    /// Velocity coordinates contain NaN or Inf.
-    InvalidVelocity,
-    /// Computed acceleration contains NaN (indicates singular mass matrix or numerical issues).
-    InvalidAcceleration,
     /// Cholesky decomposition failed in implicit integration.
     /// This indicates the modified mass matrix (M + h*D + h²*K) is not positive definite,
     /// likely due to negative stiffness/damping or numerical instability.
@@ -640,9 +634,6 @@ pub enum StepError {
 impl std::fmt::Display for StepError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidPosition => write!(f, "position contains NaN or Inf"),
-            Self::InvalidVelocity => write!(f, "velocity contains NaN or Inf"),
-            Self::InvalidAcceleration => write!(f, "acceleration contains NaN"),
             Self::CholeskyFailed => {
                 write!(f, "Cholesky decomposition failed in implicit integration")
             }

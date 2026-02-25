@@ -725,6 +725,7 @@ impl ModelBuilder {
         self.density = option.density;
         self.viscosity = option.viscosity;
         self.sleep_tolerance = option.sleep_tolerance;
+        self.disableactuator = option.actuatorgroupdisable;
         // Wire all flags from parsed MJCF to Model bitfields.
         apply_flags(&option.flag, &mut self.disableflags, &mut self.enableflags);
     }

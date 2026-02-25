@@ -12,7 +12,9 @@ use crate::types::{
 };
 use nalgebra::{DVector, Vector3};
 
-use crate::types::flags::disabled;
+use crate::types::flags::{actuator_disabled, disabled};
+use crate::types::validation::is_bad;
+use crate::types::warning::{Warning, mj_warning};
 use crate::types::{DISABLE_ACTUATION, DISABLE_CLAMPCTRL};
 
 use super::muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_force};
@@ -334,7 +336,24 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
     data.qfrc_actuator.fill(0.0);
 
+    // S8d: Bad ctrl validation — zero all ctrl on first bad value.
     for i in 0..model.nu {
+        if is_bad(data.ctrl[i]) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            mj_warning(data, Warning::BadCtrl, i as i32);
+            for j in 0..model.nu {
+                data.ctrl[j] = 0.0;
+            }
+            break;
+        }
+    }
+
+    for i in 0..model.nu {
+        // S7d: Skip force computation for per-group disabled actuators.
+        if actuator_disabled(model, i) {
+            continue;
+        }
+
         // --- Phase 1: Activation dynamics (compute act_dot, do NOT integrate) ---
         // S4.9: Skip ctrl clamping when DISABLE_CLAMPCTRL is set.
         let ctrl = if disabled(model, DISABLE_CLAMPCTRL) {

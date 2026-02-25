@@ -90,9 +90,10 @@ fn batch_matches_sequential_with_contacts() {
     }
 }
 
-/// Acceptance criterion 2: Error isolation with MJCF model.
+/// Acceptance criterion 2: NaN auto-reset with MJCF model.
+/// After §41 S8, NaN qpos triggers auto-reset instead of returning Err.
 #[test]
-fn error_isolation_with_mjcf_model() {
+fn nan_auto_reset_with_mjcf_model() {
     let model = Arc::new(load_model(pendulum_with_contact_mjcf()).unwrap());
     let mut batch = BatchSim::new(Arc::clone(&model), 4);
 
@@ -104,10 +105,16 @@ fn error_isolation_with_mjcf_model() {
 
     let errors = batch.step_all();
 
-    assert!(errors[1].is_some(), "env 1 should fail");
-    assert!(errors[0].is_none(), "env 0 should succeed");
-    assert!(errors[2].is_none(), "env 2 should succeed");
-    assert!(errors[3].is_none(), "env 3 should succeed");
+    // All envs succeed — NaN env auto-resets instead of erroring.
+    for (i, e) in errors.iter().enumerate() {
+        assert!(e.is_none(), "env {i} should succeed (got {e:?})");
+    }
+
+    // Env 1 should have detected divergence (auto-reset happened).
+    assert!(
+        batch.env(1).unwrap().divergence_detected(),
+        "env 1 should auto-reset on NaN"
+    );
 
     // Healthy envs should have advanced
     assert!(batch.env(0).unwrap().time > 0.0);

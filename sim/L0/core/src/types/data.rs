@@ -782,23 +782,30 @@ impl Data {
     }
 
     /// Reset state to model defaults.
+    // Field inventory version: §41 S8f.
+    // When adding fields to Data, update this function and the inventory
+    // in S41_RUNTIME_FLAGS_SPEC.md §S8f.
     pub fn reset(&mut self, model: &Model) {
+        // 1. State variables — restore from Model.
         self.qpos = model.qpos0.clone();
         self.qvel.fill(0.0);
         self.qacc.fill(0.0);
         self.qacc_warmstart.fill(0.0);
+        self.time = 0.0;
+
+        // 2. Control / actuation — zero.
         self.ctrl.fill(0.0);
         self.act.fill(0.0);
         self.act_dot.fill(0.0);
-        self.actuator_length.fill(0.0);
-        self.actuator_velocity.fill(0.0);
+        self.qfrc_actuator.fill(0.0);
         self.actuator_force.fill(0.0);
-        self.sensordata.fill(0.0);
-        self.time = 0.0;
-        self.ncon = 0;
-        self.contacts.clear();
+        self.actuator_velocity.fill(0.0);
+        self.actuator_length.fill(0.0);
+        for m in &mut self.actuator_moment {
+            m.fill(0.0);
+        }
 
-        // Reset mocap poses to model defaults (body_pos/body_quat offsets).
+        // 3. Mocap — restore from Model.
         let mut mocap_idx = 0;
         for (body_id, mid) in model.body_mocapid.iter().enumerate() {
             if mid.is_some() {
@@ -808,10 +815,50 @@ impl Data {
             }
         }
 
-        // Reset sleep state from model policies (§16.7).
+        // 4. Force vectors — zero.
+        self.qfrc_passive.fill(0.0);
+        self.qfrc_spring.fill(0.0);
+        self.qfrc_damper.fill(0.0);
+        self.qfrc_gravcomp.fill(0.0);
+        self.qfrc_fluid.fill(0.0);
+        self.qfrc_constraint.fill(0.0);
+        self.qfrc_bias.fill(0.0);
+        self.qfrc_smooth.fill(0.0);
+        self.qfrc_frictionloss.fill(0.0);
+        // Note: qfrc_applied and xfrc_applied are NOT zeroed — these are
+        // user-set inputs that persist across resets (same as MuJoCo).
+
+        // 5. Contact / constraint state — zero.
+        self.ncon = 0;
+        self.contacts.clear();
+        self.ne = 0;
+        self.nf = 0;
+        self.ncone = 0;
+        self.efc_force.fill(0.0);
+        self.solver_niter = 0;
+        self.solver_nnz = 0;
+        self.solver_stat.clear();
+        self.newton_solved = false;
+        self.efc_cost = 0.0;
+        self.stat_meaninertia = 0.0;
+
+        // 6. Sensor data — zero.
+        self.sensordata.fill(0.0);
+
+        // 7. Energy — zero.
+        self.energy_potential = 0.0;
+        self.energy_kinetic = 0.0;
+
+        // 8. Warning counters — zero.
+        for w in &mut self.warnings {
+            w.last_info = 0;
+            w.count = 0;
+        }
+
+        // 9. Sleep state — reset to fully awake.
         reset_sleep_state(model, self);
 
-        // Clear island discovery state (will be recomputed on next forward()).
+        // 10. Island state — zero.
         self.nisland = 0;
         self.tree_island[..model.ntree].fill(-1);
         self.contact_island.clear();
