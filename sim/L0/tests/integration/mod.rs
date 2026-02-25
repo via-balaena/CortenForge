@@ -218,3 +218,10 @@ pub mod tendon_implicit;
 
 /// Runtime flag conformance tests: AC1–AC48 behavioral gating verification.
 pub mod runtime_flags;
+
+// ============================================================================
+// §41 AC18 Golden-File Flag Conformance Tests
+// ============================================================================
+
+/// Golden-file conformance tests: MuJoCo-reference .npy comparison for flag behavior.
+pub mod golden_flags;

@@ -1,0 +1,18 @@
+<mujoco model="flag_golden_test">
+  <!-- Canonical model for §41 golden-file conformance tests.
+       1-DOF hinge with spring, damper, gravity, motor, floor contact.
+       Small enough for fast tests; exercises critical flag-gated subsystems. -->
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="link" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 1 0"
+             stiffness="100" damping="10"
+             limited="true" range="-90 90"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="hinge" name="motor" ctrlrange="-1 1"/>
+  </actuator>
+</mujoco>
