@@ -287,6 +287,12 @@ pub fn apply_pair_overrides(contact: &mut Contact, pair: &ContactPair) {
 /// Uses the unified `contact_param()` function (MuJoCo `mj_contactParam()`
 /// equivalent) for parameter combination: priority gating, solmix-weighted
 /// solver params, element-wise max friction, and additive gap.
+///
+/// Note: For mechanism-2 contacts, `apply_pair_overrides` + `apply_global_override`
+/// overwrite `solref`/`solimp`/`friction` immediately after this call, so the
+/// `assign_ref`/`assign_imp`/`assign_friction` work here is redundant for that
+/// path. The cost is ~3 predictable branches per contact — accepted overhead to
+/// keep a single construction path for both mechanisms.
 #[inline]
 pub fn make_contact_from_geoms(
     model: &Model,

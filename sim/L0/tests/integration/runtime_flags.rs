@@ -1713,12 +1713,14 @@ fn ac35_override_margin_solver_params() {
 
     let custom_solref = [0.05, 0.8];
     let custom_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    let custom_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
     let custom_margin = 0.1;
 
     let mut model = load_model(mjcf).expect("load");
     model.enableflags |= ENABLE_OVERRIDE;
     model.o_solref = custom_solref;
     model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
     model.o_margin = custom_margin;
 
     let mut data = model.make_data();
@@ -1734,9 +1736,17 @@ fn ac35_override_margin_solver_params() {
     let c = &data.contacts[0];
     assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
     assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    // GAP-1: solreffriction must also equal o_solref under override.
+    assert_relative_eq!(c.solreffriction[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], custom_solref[1], epsilon = 1e-12);
     for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
         assert_relative_eq!(actual, expected, epsilon = 1e-12);
     }
+    // GAP-2: friction/mu must equal o_friction under override.
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
     // includemargin should reflect the override margin (o_margin - gap).
     // Default gap = 0.0 for both geoms, so includemargin = o_margin.
     assert_relative_eq!(c.includemargin, custom_margin, epsilon = 1e-12);

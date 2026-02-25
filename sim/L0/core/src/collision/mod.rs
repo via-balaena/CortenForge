@@ -544,11 +544,12 @@ fn mj_collision_flex(model: &Model, data: &mut Data) {
             }
 
             // S10: When override active, use full o_margin for narrowphase detection.
-            // Non-override path uses flex_margin only (existing behavior).
+            // Non-override path uses flex_margin + geom_margin, matching the
+            // includemargin calculation in make_contact_flex_rigid.
             let effective_margin = if enabled(model, ENABLE_OVERRIDE) {
                 model.o_margin
             } else {
-                model.flex_margin[flex_id]
+                model.flex_margin[flex_id] + model.geom_margin[gi]
             };
 
             // Narrowphase: vertex sphere vs rigid geom
