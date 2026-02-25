@@ -34,6 +34,18 @@ parser, builder, and runtime guards.
 `engine_forward.c`, `engine_passive.c`, `engine_init.c`). Enums are
 identical in both versions — no flags added between 3.4.0 and 3.5.0.
 
+**Version history** (relevant for backward compatibility):
+
+| Version | `mjNDISABLE` | `mjNENABLE` | Key changes |
+|---------|-------------|-------------|-------------|
+| 3.3.2–3.3.3 | 17 | 6 | Single `mjDSBL_PASSIVE` (bit 5). `mjENBL_ISLAND` (enable, bit 5). No `SLEEP`. |
+| 3.3.7 | 19 | 5 | `PASSIVE` split → `SPRING` (bit 5) + `DAMPER` (bit 6). `ISLAND` moved from enable to disable (bit 18). All disable bits 7–17 shifted +1. `SLEEP` not yet added. |
+| 3.4.0 | 19 | 6 | `mjENBL_SLEEP` added (enable, bit 5) — filled hole left by `ISLAND`'s departure. |
+| 3.5.0 | 19 | 6 | Identical to 3.4.0. |
+
+This history motivates the backward-compatibility handling of `passive`
+in S2a — `passive` was a real MJCF attribute in MuJoCo ≤ 3.3.3.
+
 Two `u32` bitfields from `mjmodel.h`:
 
 ### Disable flags (`mjtDisableBit`, `mjNDISABLE = 19`)
@@ -387,6 +399,19 @@ Guard constraint assembly (not just the solver). MuJoCo skips
 `mj_makeConstraint()` entirely when this flag is set — no equality, limit,
 contact, or friction loss rows are assembled.
 
+MuJoCo **unconditionally zeroes** `qfrc_constraint` at the top of
+`mj_fwdConstraint()`, before checking whether any constraint rows exist:
+
+```rust
+data.qfrc_constraint[..model.nv].fill(0.0);
+
+if data.nefc == 0 {
+    // No constraints assembled — qacc = qacc_smooth, return.
+    data.qacc.copy_from(&data.qacc_smooth);
+    return;
+}
+```
+
 When disabled, `efc_force` stays zero, `qacc` = `qacc_smooth`
 (unconstrained accelerations only).
 
@@ -432,12 +457,28 @@ After zeroing, when **both** `DISABLE_SPRING` AND `DISABLE_DAMPER` are set,
 `mj_passive()` returns immediately — skipping ALL passive sub-functions:
 
 ```rust
-// Zero all passive force vectors unconditionally (awake DOFs only).
-data.qfrc_spring[..].fill(0.0);
-data.qfrc_damper[..].fill(0.0);
-data.qfrc_gravcomp[..].fill(0.0);
-data.qfrc_fluid[..].fill(0.0);
-data.qfrc_passive[..].fill(0.0);
+// Zero all passive force vectors unconditionally.
+// MuJoCo uses indexed zeroing (mju_zeroInd) for awake DOFs only when
+// sleep filtering is active, and full zeroing (mju_zero) otherwise.
+let sleep_filter = enabled(model, ENABLE_SLEEP)
+    && data.nbody_awake < model.nbody;
+
+if sleep_filter {
+    // Zero only awake DOFs (indexed by dof_awake_ind).
+    for &dof in &data.dof_awake_ind[..data.ndof_awake] {
+        data.qfrc_spring[dof] = 0.0;
+        data.qfrc_damper[dof] = 0.0;
+        data.qfrc_gravcomp[dof] = 0.0;
+        data.qfrc_fluid[dof] = 0.0;
+        data.qfrc_passive[dof] = 0.0;
+    }
+} else {
+    data.qfrc_spring[..model.nv].fill(0.0);
+    data.qfrc_damper[..model.nv].fill(0.0);
+    data.qfrc_gravcomp[..model.nv].fill(0.0);
+    data.qfrc_fluid[..model.nv].fill(0.0);
+    data.qfrc_passive[..model.nv].fill(0.0);
+}
 
 if disabled(model, DISABLE_SPRING) && disabled(model, DISABLE_DAMPER) {
     // Early return — skips mj_springdamper, mj_gravcomp, mj_fluid,
@@ -505,6 +546,40 @@ if disabled(model, DISABLE_CONTACT) || data.ncon == 0 || model.nv == 0 {
 
 This means `DISABLE_CONTACT` gates not only collision detection (S4.1) but
 also passive contact forces (e.g., viscous contact damping).
+
+##### S4.7e Aggregation into `qfrc_passive`
+
+After all sub-functions run, `mj_passive()` aggregates the individual
+force vectors into the final `qfrc_passive`:
+
+```rust
+// qfrc_passive = qfrc_spring + qfrc_damper
+//              + (if gravcomp ran) qfrc_gravcomp
+//              + (if fluid ran)    qfrc_fluid
+for dof in 0..model.nv {
+    data.qfrc_passive[dof] = data.qfrc_spring[dof] + data.qfrc_damper[dof];
+}
+if has_gravcomp {
+    for dof in 0..model.nv {
+        data.qfrc_passive[dof] += data.qfrc_gravcomp[dof];
+    }
+}
+if has_fluid {
+    for dof in 0..model.nv {
+        data.qfrc_passive[dof] += data.qfrc_fluid[dof];
+    }
+}
+```
+
+MuJoCo's `mj_springdamper()` writes directly into both `qfrc_spring` and
+`qfrc_damper`, while `mj_gravcomp()` and `mj_fluid()` return booleans
+indicating whether they produced non-zero forces. The aggregation uses
+these booleans to skip unnecessary additions. When sleep filtering is
+active, aggregation also uses indexed iteration over awake DOFs only.
+
+After aggregation, MuJoCo invokes the user callback (`mjcb_passive`)
+and plugin dispatch (`mjPLUGIN_PASSIVE`), both of which can modify
+`qfrc_passive` further.
 
 #### S4.8 `DISABLE_ACTUATION` — skip actuator forces
 
@@ -991,8 +1066,10 @@ Gravity compensation is only independently gated by `DISABLE_GRAVITY`.
 resets EFC arrays **before** checking disable flags. `mj_fwd_actuation()`
 unconditionally zeroes `actuator_force` before the `DISABLE_ACTUATION`
 guard. `mj_passive()` unconditionally zeroes all passive force vectors
-before the spring/damper early-return guard. This "init-then-guard"
-pattern ensures deterministic state regardless of which flags are set.
+before the spring/damper early-return guard. `mj_fwd_constraint()`
+unconditionally zeroes `qfrc_constraint` before checking whether any
+constraint rows exist. This "init-then-guard" pattern ensures
+deterministic state regardless of which flags are set.
 
 ---
 
