@@ -200,32 +200,20 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
 }
 ```
 
-#### 4A.6 Sensor Refactor: Use `cacc` Instead of Recomputing
+#### 4A.6 Sensor Refactor: Use `cacc`/`cfrc_int` Instead of Recomputing
 
-Currently, `mj_sensor_acc()` calls `compute_body_acceleration()` and
-`compute_body_angular_acceleration()` from `sensor/derived.rs`. These
-recompute accelerations from `qacc` via joint traversal — duplicating
-work that `mj_body_accumulators()` already stores in `cacc`.
+Refactor all 5 acc-stage sensor types to read from persistent fields
+(`cacc`, `cfrc_int`) instead of recomputing from scratch. This is both a
+conformance fix (MuJoCo reads from these fields) and a performance win.
 
-After the lazy gate ensures `mj_body_accumulators()` has run, these
-sensors should read directly from `cacc`:
+**Full specification:** [SENSOR_CACC_CFRC_REFACTOR.md](./SENSOR_CACC_CFRC_REFACTOR.md)
 
-- **Accelerometer**: `a_world = cacc[body_id].linear()` (indices 3-5)
-- **FrameLinAcc**: `a_world = cacc[body_id].linear()`
-- **FrameAngAcc**: `alpha = cacc[body_id].angular()` (indices 0-2)
-- **Force/Torque**: `compute_site_force_torque()` should read from
-  `cfrc_int` instead of recomputing via subtree inverse dynamics.
-
-This is both a conformance fix (MuJoCo reads from these fields) and a
-performance win (no redundant computation).
-
-**Note:** `compute_site_force_torque()` currently re-derives the force/torque
-from first principles (subtree sum of m*a - f_gravity). MuJoCo reads
-`cfrc_int` at the parent joint and transforms to the site frame. The refactor
-to use `cfrc_int` is a conformance improvement but algorithmically non-trivial
-— it requires extracting the joint-space force from `cfrc_int` and
-transforming to the sensor site frame. This should be specced as a separate
-sub-step (4A.6b) with its own acceptance criteria.
+Summary:
+- **Accelerometer/FrameLinAcc/FrameAngAcc** read `cacc[body_id]` with
+  spatial motion transform + Coriolis correction.
+- **Force/Torque** read `cfrc_int[body_id]` with spatial force transform.
+- Deletes `compute_body_acceleration()`, `compute_body_angular_acceleration()`,
+  `compute_site_force_torque()` and the entire `sensor/derived.rs` module.
 
 #### 4A.7 Inverse Dynamics Consumer
 
@@ -368,7 +356,8 @@ Delete all three from `sensor/derived.rs`. See
    testing since it changes the pipeline flow for models without the
    triggering sensors.
 
-3. **4A.6: sensor refactor** to read `cacc`/`cfrc_int` — optional
+3. **4A.6: sensor refactor** to read `cacc`/`cfrc_int`
+   ([SENSOR_CACC_CFRC_REFACTOR.md](./SENSOR_CACC_CFRC_REFACTOR.md)) —
    conformance improvement that depends on 4A being solid.
 
 ---
@@ -516,4 +505,7 @@ not sleep-gated — they compute for the entire tree.
 ## Out of Scope
 
 - `flg_energypos` / `flg_energyvel` — already gated behind `ENABLE_ENERGY` flag. Not lazy in the same sense (it's a user-facing toggle, not demand-driven by sensors). Could be unified later but no conformance gap today.
-- 4A.6b: Refactoring `compute_site_force_torque()` to read `cfrc_int` instead of recomputing from first principles. Tracked as a follow-on conformance improvement.
+- 4A.6: Refactoring acc-stage sensors to read `cacc`/`cfrc_int` instead of
+  recomputing from first principles. Specified in
+  [SENSOR_CACC_CFRC_REFACTOR.md](./SENSOR_CACC_CFRC_REFACTOR.md). Depends on
+  `flg_rnepost` lazy gate (already landed).

@@ -166,6 +166,25 @@ asking a single clarifying question."
 
 ---
 
+## Grades: `SENSOR_CACC_CFRC_REFACTOR.md`
+
+**Revision 2** — Re-graded after closing all gaps.
+
+| Criterion | Grade | Evidence |
+|-----------|:-----:|----------|
+| Q1. MuJoCo Ref | **A+** | Cites `engine_sensor.c`, `engine_core_util.c` (`mj_objectAcceleration`), `engine_util_spatial.c` (`mju_transformSpatial`). Exact C code snippets for all 5 sensor types. Reference point convention difference documented. `flg_local`, `flg_force` calling conventions explicit. |
+| Q2. Algorithm | **A+** | Full Rust implementation for all 5 sensor arms (Steps 1-5). Spatial motion transform, Coriolis correction, spatial force transform all line-for-line implementable. Coriolis with `r=0` explained (reduces to `omega × v_at_origin`, no offset contribution). Dead code deletion procedure explicit (Step 6). |
+| Q3. Convention | **A+** | Reference point table (cacc/cfrc_int/cvel at xpos[b] vs subtree_com[root]). SpatialVector layout [angular; linear]. Gravity in cacc. cfrc_int formula from mj_body_accumulators. All MuJoCo→CortenForge translations explicit. |
+| Q4. AC Rigor | **A+** | 9 ACs with concrete model configs, exact 3D expected vectors, and tolerances. AC1: `[0,0,+9.81]`. AC2: `[-50,0,0]` with algebraic breakdown. AC3: `[0,0,+9.81]` (conformance fix). AC4: `[0,5.0,0]`. AC5: `[0,0,+19.62]`. AC6: `[0,-50,0]` with spatial transport formula. AC7: regression within 1e-6. AC8/AC9: structural. |
+| Q5. Test Plan | **A+** | 14 tests: T1-T10 (happy path + regression) + T11 (world body), T12 (zero-mass), T13 (DISABLE_SENSOR), T14 (sleep). Existing test impact analyzed (4 specific tests listed). Negative cases covered (T13: lazy gate not reached). |
+| Q6. Dependencies | **A+** | Explicit prerequisite: "flg_rnepost lazy gate (Phase 4A) — already landed (commit 8e8f5f7)." Relationship to umbrella spec documented. No circular dependencies. |
+| Q7. Blast Radius | **A+** | 4-file change list with per-file details. Import cleanup specified (Matrix3, derived::*, mod derived). Existing test impact: 4 tests individually analyzed. Data staleness guard: "No new fields — EXPECTED_SIZE unchanged." |
+| Q8. Consistency | **A+** | Unified 4A.6 naming (no 4A.6b split). Umbrella spec's Out of Scope updated to reference this spec. Field names, convention language, spatial transform terminology identical to other Phase 4 specs. |
+
+**Overall: A+** — All gaps closed.
+
+---
+
 ## Cross-Spec Summary
 
 | Spec | Q1 | Q2 | Q3 | Q4 | Q5 | Q6 | Q7 | Q8 | Overall |
@@ -173,8 +192,9 @@ asking a single clarifying question."
 | CVEL Fixes | A+ | A+ | A+ | A+ | A+ | A+ | A+ | A+ | **A+** |
 | S56 Subtree | A+ | A+ | A+ | A+ | A+ | A+ | A+ | A+ | **A+** |
 | Umbrella | A+ | A+ | A+ | A+ | A+ | A+ | A+ | A+ | **A+** |
+| Sensor Refactor | A+ | A+ | A+ | A+ | A+ | A+ | A+ | A+ | **A+** |
 
-**Ship criteria: All A+. 3/3 specs ready for implementation.**
+**Ship criteria: All A+. 4/4 specs ready for implementation.**
 
 ---
 
@@ -221,6 +241,7 @@ All 19 gaps have been closed. See revision history below.
 ## Next Step
 
 Implement in order:
-1. **cvel reference point fixes** (CVEL_REFERENCE_POINT_FIXES.md) — ~25 lines
-2. **§56 subtree fields** (S56_SUBTREE_VEL_SPEC.md) — new Data fields + O(n) algorithm
-3. **lazy gates** (PHASE4_LAZY_EVAL_SPEC.md 4A) — demand-driven body accumulators
+1. ~~**cvel reference point fixes** (CVEL_REFERENCE_POINT_FIXES.md) — ~25 lines~~ ✓ (commit 444046e)
+2. ~~**§56 subtree fields** (S56_SUBTREE_VEL_SPEC.md) — new Data fields + O(n) algorithm~~ ✓ (commit 503ac6d)
+3. ~~**lazy gates** (PHASE4_LAZY_EVAL_SPEC.md 4A) — demand-driven body accumulators~~ ✓ (commit 8e8f5f7)
+4. **sensor refactor** (SENSOR_CACC_CFRC_REFACTOR.md) — read cacc/cfrc_int, delete derived.rs
