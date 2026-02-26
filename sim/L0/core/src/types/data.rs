@@ -219,13 +219,24 @@ pub struct Data {
     /// Starts as a copy of `cinert`, then accumulates child inertias.
     pub crb_inertia: Vec<Matrix6<f64>>,
 
-    // ==================== Subtree Mass/COM (for O(n) RNE gravity) ====================
+    // ==================== Subtree Mass/COM/Velocity ====================
     /// Total mass of subtree rooted at each body (including the body itself).
     /// Computed during forward kinematics via backward pass.
     pub subtree_mass: Vec<f64>,
     /// Center of mass of subtree in world frame (length `nbody`).
     /// Computed during forward kinematics via backward pass.
     pub subtree_com: Vec<Vector3<f64>>,
+    /// Linear velocity of subtree COM in world frame (length `nbody`).
+    /// `subtree_linvel[0]` = whole-model COM velocity.
+    /// Computed on demand by `mj_subtree_vel()`.
+    pub subtree_linvel: Vec<Vector3<f64>>,
+    /// Angular momentum of subtree about `subtree_com[b]` in world frame (length `nbody`).
+    /// `subtree_angmom[0]` = total angular momentum about system COM.
+    /// Computed on demand by `mj_subtree_vel()`.
+    pub subtree_angmom: Vec<Vector3<f64>>,
+    /// Lazy flag: `mj_subtree_vel()` has been called this step.
+    /// Cleared at velocity stage start, set by `mj_subtree_vel()`.
+    pub flg_subtreevel: bool,
 
     // ==================== Tendon State ====================
     /// Current tendon lengths (length `ntendon`).
@@ -651,9 +662,12 @@ impl Clone for Data {
             // Body/composite inertia
             cinert: self.cinert.clone(),
             crb_inertia: self.crb_inertia.clone(),
-            // Subtree mass/COM
+            // Subtree mass/COM/velocity
             subtree_mass: self.subtree_mass.clone(),
             subtree_com: self.subtree_com.clone(),
+            subtree_linvel: self.subtree_linvel.clone(),
+            subtree_angmom: self.subtree_angmom.clone(),
+            flg_subtreevel: self.flg_subtreevel,
             // Tendon state
             ten_length: self.ten_length.clone(),
             ten_velocity: self.ten_velocity.clone(),
@@ -882,6 +896,15 @@ impl Data {
         }
         self.qfrc_inverse.fill(0.0);
 
+        // 4c. Subtree velocity fields — zero.
+        for v in &mut self.subtree_linvel {
+            *v = Vector3::zeros();
+        }
+        for v in &mut self.subtree_angmom {
+            *v = Vector3::zeros();
+        }
+        self.flg_subtreevel = false;
+
         // 5. Contact / constraint state — zero.
         self.ncon = 0;
         self.contacts.clear();
@@ -996,7 +1019,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4056;
+        const EXPECTED_SIZE: usize = 4104;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

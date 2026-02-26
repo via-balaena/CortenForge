@@ -46,6 +46,7 @@ pub(crate) use passive::mj_fwd_passive;
 pub(crate) use position::mj_fwd_position;
 #[allow(unused_imports)]
 pub(crate) use velocity::mj_fwd_velocity;
+pub(crate) use velocity::mj_subtree_vel;
 
 // Re-exports for external consumers (derivatives.rs, collision/, constraint/, etc.)
 pub(crate) use actuation::mj_next_activation;

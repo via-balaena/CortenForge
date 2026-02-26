@@ -16,7 +16,6 @@ use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
 use sim_types::Pose;
 use std::sync::Arc;
 
-use super::derived::compute_subtree_com;
 use super::postprocess::{sensor_write, sensor_write3, sensor_write4};
 use super::sensor_body_id;
 
@@ -158,10 +157,9 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::SubtreeCom => {
-                // Subtree center of mass (compute weighted average of descendant COMs)
+                // Read from persistent subtree_com field (computed in position stage)
                 if objid < model.nbody {
-                    let (com, _total_mass) = compute_subtree_com(model, data, objid);
-                    sensor_write3(&mut data.sensordata, adr, &com);
+                    sensor_write3(&mut data.sensordata, adr, &data.subtree_com[objid]);
                 }
             }
 

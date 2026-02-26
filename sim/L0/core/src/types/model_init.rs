@@ -452,9 +452,12 @@ impl Model {
             // Composite rigid body inertias (for Featherstone CRBA)
             crb_inertia: vec![Matrix6::zeros(); self.nbody],
 
-            // Subtree mass/COM (for O(n) RNE gravity)
+            // Subtree mass/COM/velocity
             subtree_mass: vec![0.0; self.nbody],
             subtree_com: vec![Vector3::zeros(); self.nbody],
+            subtree_linvel: vec![Vector3::zeros(); self.nbody],
+            subtree_angmom: vec![Vector3::zeros(); self.nbody],
+            flg_subtreevel: false,
 
             // Tendon state
             ten_length: vec![0.0; self.ntendon],
