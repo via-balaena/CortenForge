@@ -35,7 +35,7 @@ during the forward pass.
    - `cacc`: after computing `qacc`, propagate body accelerations via FK Jacobians.
    - `cfrc_int`: backward pass from `qacc` and `cacc` to compute internal forces
      at each joint (reaction forces).
-   - `cfrc_ext`: sum of `xfrc_applied` and actuator-generated forces per body.
+   - `cfrc_ext`: sum of `xfrc_applied` and contact/constraint solver forces per body.
 3. **MuJoCo convention**: Forces are in Cartesian (6D spatial vectors in world
    frame), not generalized coordinates.
 
