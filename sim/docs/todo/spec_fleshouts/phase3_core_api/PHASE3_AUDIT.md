@@ -36,9 +36,11 @@ body to root, accumulating `J^T * f` for each ancestor joint.
 
 Key behaviors:
 - `xfrc_applied[0]` (world body) is ignored (body 0 has no joints)
-- Sleeping bodies are **not** skipped during projection — MuJoCo projects for
-  all bodies unconditionally; sleep filtering occurs at the solver level, not
-  during force accumulation
+- Sleeping bodies are **not** skipped during `xfrc_applied` projection —
+  `mj_xfrcAccumulate()` loops over all bodies unconditionally. Note: the earlier
+  `qfrc_smooth` accumulation (passive - bias + applied + actuator) IS sleep-gated
+  via indexed operations on awake DOFs only. The xfrc_applied projection is the
+  exception that writes to all DOF indices regardless of sleep state.
 - `DISABLE_GRAVITY` does **not** disable `xfrc_applied` — they are independent
 - Forces enter `qfrc_smooth`, not `qfrc_passive`
 
@@ -70,7 +72,7 @@ about this because the MJCF parser handles the mapping.
 | # | Severity | Description | Status |
 |---|----------|-------------|--------|
 | G1 | **Low** | `future_work_10c.md` line 19 says "projection in `mj_fwd_passive()`" — this is outdated. Actual projection is in `compute_qacc_smooth()` (acceleration stage). | Doc-only |
-| G19 | **Medium** | Sleep gating: our code skips `xfrc_applied` projection for sleeping bodies (`constraint/mod.rs:89-92`). MuJoCo projects for ALL bodies — sleep filtering happens at the solver level, not during force accumulation. This can cause different force accumulation when bodies wake up. | Conformance |
+| G19 | **Medium** | Sleep gating: our code skips `xfrc_applied` projection for sleeping bodies (`constraint/mod.rs:89-92`). MuJoCo's `mj_xfrcAccumulate()` projects for ALL bodies unconditionally (note: the earlier qfrc_smooth accumulation IS sleep-gated, but xfrc_applied projection is the exception). This can cause different force accumulation when bodies wake up. | Conformance |
 | G20 | **Info** | Layout convention: our `SpatialVector` uses `[torque_3, force_3]` (Featherstone), MuJoCo user API uses `[force_3, torque_3]`. Internally consistent; no user-facing issue since MJCF parser handles mapping. | By design |
 
 ### 1.4 Remediation
@@ -96,8 +98,11 @@ MuJoCo's Newton solver (`mjSOL_NEWTON`) is a primal-space solver operating on
 4. **Search direction**: `search = -H^{-1} * grad` (via Cholesky)
 5. **Line search**: Exact 1D Newton with bracket refinement
 6. **Convergence**: `scale * ||grad|| < tolerance` where `scale = 1/(meaninertia * max(1,nv))`
-7. **Failure mode**: On Cholesky failure, MuJoCo calls `mjERROR()` (hard abort).
-   It does **not** fall back to PGS. Max iterations exceeded returns best iterate.
+7. **Failure mode**: On Cholesky failure, MuJoCo calls `mjERROR()` which invokes
+   `mju_error_raw()` — by default this calls `exit(EXIT_FAILURE)` (hard process
+   exit; NOT `abort()`). Users can override via `mju_user_error` callback (Python
+   bindings raise exceptions). MuJoCo does **not** fall back to PGS. Max
+   iterations exceeded returns best iterate.
 8. **Sparse threshold**: Dense below ~60 DOFs, sparse LDL^T above
 
 ### 2.2 Implementation Audit
@@ -114,7 +119,7 @@ MuJoCo's Newton solver (`mjSOL_NEWTON`) is a primal-space solver operating on
 | Line search (search) | `solver/primal.rs` | 391-560 | **Pass** — 3-phase bracketed Newton |
 | Constraint states | `types/enums.rs` | 612-625 | **Pass** — Quadratic/Satisfied/LinearNeg/LinearPos/Cone |
 | Convergence check | `newton.rs` | 280-307 | **Pass** — scale * gradient norm < tolerance |
-| PGS fallback | `constraint/mod.rs` | 422-429 | **Divergence** — falls back to PGS on CholeskyFailed; MuJoCo hard-aborts via `mjERROR()`. Intentional robustness improvement. |
+| PGS fallback | `constraint/mod.rs` | 422-429 | **Divergence** — falls back to PGS on CholeskyFailed; MuJoCo hard-exits via `mjERROR()` → `exit(EXIT_FAILURE)`. Intentional robustness improvement. |
 | Implicit support (M_impl) | `constraint/mod.rs` | 140-167 | **Pass** — `M + h*D + h^2*K` with tendon K/D |
 | Implicit support (qfrc_impl) | `constraint/mod.rs` | 184-235 | **Pass** — deadband-aware stiffness |
 | Incremental Cholesky | `solver/hessian.rs` | ~255 | **Pass** — rank-1 updates on state change |
@@ -128,9 +133,9 @@ MuJoCo's Newton solver (`mjSOL_NEWTON`) is a primal-space solver operating on
 
 | # | Severity | Description | Status |
 |---|----------|-------------|--------|
-| G21 | **Info** | PGS fallback on Cholesky failure: MuJoCo calls `mjERROR()` (hard abort). Our code gracefully falls back to PGS solver. This is an **intentional robustness improvement** — aborting is unacceptable in a Rust library. Documented as a justified divergence. | By design |
+| G21 | **Info** | PGS fallback on Cholesky failure: MuJoCo calls `mjERROR()` → `exit(EXIT_FAILURE)` (hard process exit; overridable via `mju_user_error`). Our code gracefully falls back to PGS solver. This is an **intentional robustness improvement** — hard exit is unacceptable in a Rust library. Documented as a justified divergence. | By design |
 
-### 2.4 Grade: **A** (comprehensive implementation; PGS fallback is a justified improvement over MuJoCo's hard abort)
+### 2.4 Grade: **A** (comprehensive implementation; PGS fallback is a justified improvement over MuJoCo's hard exit)
 
 ---
 
@@ -144,7 +149,11 @@ MuJoCo computes per-body accumulators in `mj_rnePostConstraint()`
 - **`cacc`**: Per-body 6D acceleration in world frame. `cacc[0]` is the gravity
   pseudo-acceleration `[0,0,0, -gx,-gy,-gz]` (in `[angular, linear]` order).
   Forward pass: propagate root-to-leaf via
-  `cacc[b] = cacc[parent] + S*qacc + cvel_parent x (S*qvel)`.
+  `cacc[b] = cacc[parent] + cdof_dot*qvel + cdof*qacc`. MuJoCo precomputes
+  `cdof_dot` (the time-derivative of the motion-subspace columns) in `mj_comVel`,
+  encoding the Coriolis/centripetal acceleration. This is equivalent to the
+  textbook `S_dot*qvel + cvel_parent x (S*qvel)` but computed via the
+  precomputed `cdof_dot` array.
 
 - **`cfrc_ext`**: Per-body external forces. Sum of `xfrc_applied` + contact/constraint
   forces from the solver (contact, connect, weld, flex equality). **Not** actuator
@@ -173,7 +182,7 @@ when no sensors need it. MuJoCo zeros these fields via bulk `memset` in
 | Inverse call | `inverse.rs` | 36 | **Pass** — called in `inverse()` |
 | DISABLE_GRAVITY guard | `forward/acceleration.rs` | 533-543 | **Pass** — zeros pseudo-accel when disabled |
 | cacc forward pass | `forward/acceleration.rs` | 531-584 | **Pass** — correct root-to-leaf with Coriolis |
-| Coriolis term | `forward/acceleration.rs` | 573 | **Pass** — uses `cvel_parent x (S*qvel)` |
+| Coriolis term | `forward/acceleration.rs` | 573 | **Pass** — uses `cdof_dot * qvel` (MuJoCo precomputes cdof_dot in mj_comVel) |
 | cfrc_ext: xfrc_applied | `forward/acceleration.rs` | 396-399 | **Pass** — initializes from xfrc_applied |
 | cfrc_ext: contact forces | `forward/acceleration.rs` | 401-528 | **Pass** — reconstructs from efc rows |
 | cfrc_ext: actuator forces | `forward/acceleration.rs` | — | **Pass** — correctly excluded (MuJoCo excludes them too) |
@@ -488,7 +497,7 @@ idioms, robustness, or correctness improvements:
 
 | Item | MuJoCo Behavior | Our Behavior | Justification |
 |------|-----------------|--------------|---------------|
-| G21 — Newton Cholesky | `mjERROR()` hard abort | PGS fallback | Aborting is unacceptable in a library |
+| G21 — Newton Cholesky | `mjERROR()` → `exit(EXIT_FAILURE)` | PGS fallback | Hard exit is unacceptable in a library |
 | G20 — SpatialVector layout | `[force, torque]` | `[torque, force]` (Featherstone) | Standard robotics convention; internally consistent |
 | G16 — mjcb_time | Profiler hook | Not implemented | Rust has `tracing`/`puffin`; C-style timer callback unnecessary |
 | G25 — contactfilter polarity | nonzero = reject | true = keep (negated at call site) | More intuitive API; same behavior |
@@ -559,7 +568,7 @@ idioms, robustness, or correctness improvements:
 | ID | Item | Justification |
 |----|------|---------------|
 | G20 | SpatialVector layout | Featherstone convention standard in robotics; internally consistent |
-| G21 | Newton PGS fallback | Library cannot hard-abort; PGS fallback is strictly better |
+| G21 | Newton PGS fallback | Library cannot hard-exit; PGS fallback is strictly better |
 | G25 | contactfilter polarity | `true=keep` more intuitive than MuJoCo's `nonzero=reject` |
 
 ### Deferred Items (post-v1.0)
