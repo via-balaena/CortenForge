@@ -8,7 +8,6 @@
 use crate::types::{MjObjectType, Model};
 
 pub(crate) mod acceleration;
-pub(crate) mod derived;
 pub(crate) mod position;
 pub(crate) mod postprocess;
 pub(crate) mod velocity;
