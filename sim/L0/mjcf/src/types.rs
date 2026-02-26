@@ -168,7 +168,7 @@ pub struct MjcfFlag {
     pub constraint: bool,
     /// Enable equality constraints.
     pub equality: bool,
-    /// Enable joint/tendon friction loss constraints.
+    /// Joint/tendon friction loss constraints.
     pub frictionloss: bool,
     /// Enable joint/tendon limit constraints.
     pub limit: bool,
