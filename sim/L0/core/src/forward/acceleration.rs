@@ -5,13 +5,16 @@
 //! portion of MuJoCo's `engine_forward.c`.
 
 use crate::constraint::assembly::tendon_deadband_displacement;
+use crate::dynamics::spatial::{SpatialVector, spatial_cross_force, spatial_cross_motion};
 use crate::integrate::implicit::{accumulate_tendon_kd, tendon_all_dofs_sleeping};
-use crate::joint_visitor::{JointContext, JointVisitor};
+use crate::joint_visitor::{JointContext, JointVisitor, joint_motion_subspace};
 use crate::linalg::{
     cholesky_in_place, cholesky_solve_in_place, lu_factor_in_place, lu_solve_factored,
     mj_solve_sparse,
 };
-use crate::types::{Data, ENABLE_SLEEP, Integrator, Model, StepError};
+use crate::types::{
+    ConstraintType, DISABLE_GRAVITY, Data, ENABLE_SLEEP, Integrator, Model, StepError,
+};
 use nalgebra::DVector;
 
 /// Dispatch to the correct forward acceleration solver.
@@ -30,6 +33,11 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
         Integrator::ImplicitFast => mj_fwd_acceleration_implicitfast(model, data),
         Integrator::Implicit => mj_fwd_acceleration_implicit_full(model, data),
         Integrator::Euler | Integrator::RungeKutta4 => {
+            // S4.14: DISABLE_EULERDAMP guard site — MuJoCo's Euler applies
+            // optional implicit damping when both eulerdamp and damper are
+            // enabled. Our Euler currently uses explicit-only; when implicit
+            // Euler damping is added, gate it on:
+            //   !disabled(model, DISABLE_EULERDAMP) && !disabled(model, DISABLE_DAMPER)
             mj_fwd_acceleration_explicit(model, data);
             Ok(())
         }
@@ -38,14 +46,14 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
 
 /// Explicit forward acceleration (semi-implicit Euler or RK4).
 ///
-/// Computes: qacc = M⁻¹ * (f_applied + f_actuator + f_passive + f_constraint - f_bias)
+/// Computes: qacc = M⁻¹ * (qfrc_smooth + qfrc_constraint)
+///
+/// Uses `data.qfrc_smooth` (already computed by `compute_qacc_smooth()`) which
+/// includes `qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias` plus the
+/// DT-21 xfrc_applied projection.
 fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
-    // Sum all forces: τ = applied + actuator + passive + constraint - bias
-    let mut qfrc_total = data.qfrc_applied.clone();
-    qfrc_total += &data.qfrc_actuator;
-    qfrc_total += &data.qfrc_passive;
+    let mut qfrc_total = data.qfrc_smooth.clone();
     qfrc_total += &data.qfrc_constraint;
-    qfrc_total -= &data.qfrc_bias;
 
     // Solve M * qacc = qfrc_total using sparse L^T D L factorization from mj_crba
     data.qacc.copy_from(&qfrc_total);
@@ -97,13 +105,44 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     let d = &model.implicit_damping;
     let q_eq = &model.implicit_springref;
 
-    // Build external forces into scratch buffer (avoids allocation)
-    // f_ext = applied + actuator + passive(friction) + constraint - bias
+    // Build external forces into scratch buffer (avoids allocation).
+    // IMPORTANT: Must NOT use data.qfrc_smooth here — in ImplicitSpringDamper
+    // mode, the Newton solver overwrites qfrc_smooth with the implicit-corrected
+    // version (which includes spring/damper forces). This solver handles
+    // springs/dampers implicitly via K*(q-q_eq) and D in the mass matrix, so
+    // the force vector must exclude them (qfrc_passive has them zeroed in
+    // implicit mode, so assembling from components is correct).
+    // f_ext = qfrc_applied + qfrc_actuator + qfrc_passive + qfrc_constraint - qfrc_bias
+    //       + DT-21 xfrc_applied projection
     data.scratch_force.copy_from(&data.qfrc_applied);
     data.scratch_force += &data.qfrc_actuator;
-    data.scratch_force += &data.qfrc_passive; // Friction loss (explicit even in implicit mode)
+    data.scratch_force += &data.qfrc_passive;
     data.scratch_force += &data.qfrc_constraint;
     data.scratch_force -= &data.qfrc_bias;
+
+    // DT-21: Project xfrc_applied (Cartesian body forces) into scratch_force.
+    // This replicates the projection done in compute_qacc_smooth(), which is
+    // needed because we can't use data.qfrc_smooth (overridden by Newton).
+    // No sleep guard — MuJoCo projects ALL bodies unconditionally.
+    for body_id in 1..model.nbody {
+        let xfrc = &data.xfrc_applied[body_id];
+        if xfrc.iter().all(|&v| v == 0.0) {
+            continue;
+        }
+        let torque = nalgebra::Vector3::new(xfrc[0], xfrc[1], xfrc[2]);
+        let force = nalgebra::Vector3::new(xfrc[3], xfrc[4], xfrc[5]);
+        let point = data.xipos[body_id];
+        crate::jacobian::mj_apply_ft(
+            model,
+            &data.xpos,
+            &data.xquat,
+            &force,
+            &torque,
+            &point,
+            body_id,
+            &mut data.scratch_force,
+        );
+    }
 
     // Build modified mass matrix: M_impl = M + h*D_jnt + h²*K_jnt
     // Copy M into scratch, then modify diagonal from joint K/D
@@ -265,12 +304,10 @@ fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<()
         }
     }
 
-    // Step 4: RHS = qfrc_smooth + qfrc_applied + qfrc_constraint
-    data.scratch_rhs.copy_from(&data.qfrc_applied);
-    data.scratch_rhs += &data.qfrc_actuator;
-    data.scratch_rhs += &data.qfrc_passive;
+    // Step 4: RHS = qfrc_smooth + qfrc_constraint
+    // (qfrc_smooth includes DT-21 xfrc_applied projection)
+    data.scratch_rhs.copy_from(&data.qfrc_smooth);
     data.scratch_rhs += &data.qfrc_constraint;
-    data.scratch_rhs -= &data.qfrc_bias;
 
     // Step 5: Solve (M − h·D) · qacc = rhs via dense Cholesky
     cholesky_in_place(&mut data.scratch_m_impl)?;
@@ -315,12 +352,10 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
         }
     }
 
-    // Step 4: RHS = qfrc_smooth + qfrc_applied + qfrc_constraint
-    data.scratch_rhs.copy_from(&data.qfrc_applied);
-    data.scratch_rhs += &data.qfrc_actuator;
-    data.scratch_rhs += &data.qfrc_passive;
+    // Step 4: RHS = qfrc_smooth + qfrc_constraint
+    // (qfrc_smooth includes DT-21 xfrc_applied projection)
+    data.scratch_rhs.copy_from(&data.qfrc_smooth);
     data.scratch_rhs += &data.qfrc_constraint;
-    data.scratch_rhs -= &data.qfrc_bias;
 
     // Step 5: Factor (M − h·D) = P·L·U, then solve for qacc
     lu_factor_in_place(&mut data.scratch_m_impl, &mut data.scratch_lu_piv)?;
@@ -328,4 +363,246 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
     lu_solve_factored(&data.scratch_m_impl, &data.scratch_lu_piv, &mut data.qacc);
 
     Ok(())
+}
+
+/// Compute per-body accelerations and forces after forward dynamics (§51).
+///
+/// Populates `data.cacc`, `data.cfrc_int`, and `data.cfrc_ext`:
+///
+/// 1. **cfrc_ext**: External forces on each body — `xfrc_applied` plus contact
+///    and constraint forces from the solver.
+///
+/// 2. **cacc forward pass** (root→leaf): Propagate accelerations through the
+///    kinematic chain. `cacc[0] = [0,0,0, -gx,-gy,-gz]` (gravity pseudo-acceleration).
+///    For each body: `cacc[b] = cacc[parent] + S * qacc + cvel×(S * qvel)` (joint
+///    acceleration plus Coriolis term).
+///
+/// 3. **cfrc_int backward pass** (leaf→root):
+///    `cfrc_int[b] = I*cacc[b] + v×*(I*v) - cfrc_ext[b]`, accumulated into parent.
+///    Propagation includes world body (cfrc_int[0] = total gravity force).
+///
+/// Mirrors the RNE algorithm structure but uses actual `qacc` instead of bias-only.
+///
+/// # MuJoCo Equivalence
+///
+/// Matches `mj_rnePostConstraint()` in `engine_forward.c`.
+#[allow(clippy::needless_range_loop)] // jnt_id indexes both joint_subspaces and model arrays
+pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
+    // ===== Step 1: cfrc_ext = xfrc_applied + contact/constraint forces =====
+    for b in 0..model.nbody {
+        data.cfrc_ext[b] = data.xfrc_applied[b];
+    }
+
+    // §51 Fix B: Add contact forces to cfrc_ext.
+    // Per-contact accumulation: gather all efc rows belonging to each contact,
+    // reconstruct the 3D world-frame force, and distribute to both bodies.
+    //
+    // Iterate contacts and find their efc rows by scanning efc_type/efc_id.
+    // We build a per-contact force by summing: for each efc row with this
+    // contact's id, the row contributes f * direction to the world-frame force.
+    // Direction is reconstructed from the contact frame:
+    //   - Frictionless: direction = normal
+    //   - Pyramidal pairs: (n ± μ·t_d), net = (f⁺+f⁻)·n + (f⁺-f⁻)·μ·t_d
+    //   - Elliptic: row 0 = normal, rows 1+ = tangent directions
+    {
+        let nefc = data.efc_type.len();
+        // Build per-contact force from efc rows.
+        // For efficiency, scan efc rows once and accumulate per contact.
+        let mut contact_force: Vec<nalgebra::Vector3<f64>> =
+            vec![nalgebra::Vector3::zeros(); data.ncon];
+
+        let mut row = 0;
+        while row < nefc {
+            match data.efc_type[row] {
+                ConstraintType::ContactFrictionless => {
+                    let ci = data.efc_id[row];
+                    if ci < data.ncon {
+                        contact_force[ci] += data.efc_force[row] * data.contacts[ci].normal;
+                    }
+                    row += 1;
+                }
+                ConstraintType::ContactPyramidal => {
+                    let ci = data.efc_id[row];
+                    if ci < data.ncon {
+                        let contact = &data.contacts[ci];
+                        let n = contact.normal;
+                        // Count rows for this contact (all consecutive pyramidal rows with same id)
+                        let start = row;
+                        while row < nefc
+                            && data.efc_type[row] == ConstraintType::ContactPyramidal
+                            && data.efc_id[row] == ci
+                        {
+                            row += 1;
+                        }
+                        let nrows = row - start;
+                        // Pyramidal rows come in pairs per tangent direction:
+                        // pair 0: n + μ₁·t1, n - μ₁·t1
+                        // pair 1: n + μ₂·t2, n - μ₂·t2
+                        let tangents = [contact.frame[0], contact.frame[1]];
+                        let mut pair_idx = 0;
+                        let mut r = start;
+                        while r + 1 < start + nrows && pair_idx < 2 {
+                            let f_pos = data.efc_force[r];
+                            let f_neg = data.efc_force[r + 1];
+                            let mu_d = contact.mu[pair_idx];
+                            // f_pos * (n + μ·t) + f_neg * (n - μ·t)
+                            // = (f_pos + f_neg) * n + (f_pos - f_neg) * μ * t
+                            contact_force[ci] += (f_pos + f_neg) * n;
+                            contact_force[ci] += (f_pos - f_neg) * mu_d * tangents[pair_idx];
+                            r += 2;
+                            pair_idx += 1;
+                        }
+                    } else {
+                        row += 1;
+                    }
+                }
+                ConstraintType::ContactElliptic => {
+                    let ci = data.efc_id[row];
+                    if ci < data.ncon {
+                        let contact = &data.contacts[ci];
+                        // Elliptic: row 0 = normal, rows 1+ = tangent
+                        contact_force[ci] += data.efc_force[row] * contact.normal;
+                        row += 1;
+                        // Tangent rows
+                        let tangents = [contact.frame[0], contact.frame[1]];
+                        let mut t_idx = 0;
+                        while row < nefc
+                            && data.efc_type[row] == ConstraintType::ContactElliptic
+                            && data.efc_id[row] == ci
+                            && t_idx < 2
+                        {
+                            contact_force[ci] += data.efc_force[row] * tangents[t_idx];
+                            row += 1;
+                            t_idx += 1;
+                        }
+                        // Skip any remaining rows (torsional/rolling)
+                        while row < nefc
+                            && data.efc_type[row] == ConstraintType::ContactElliptic
+                            && data.efc_id[row] == ci
+                        {
+                            row += 1;
+                        }
+                    } else {
+                        row += 1;
+                    }
+                }
+                _ => {
+                    row += 1;
+                }
+            }
+        }
+
+        // Distribute per-contact forces to bodies as 6D spatial wrenches.
+        for ci in 0..data.ncon {
+            let f = contact_force[ci];
+            if f.norm_squared() == 0.0 {
+                continue;
+            }
+            let contact = &data.contacts[ci];
+            let body1 = model.geom_body[contact.geom1];
+            let body2 = model.geom_body[contact.geom2];
+            let cp = contact.pos;
+
+            // Force on body2 = +f, force on body1 = -f (Newton's third law).
+            // Contact normal points from geom1 toward geom2, and positive
+            // constraint force pushes bodies apart → force on body2 is along +normal.
+            for (body_id, sign) in [(body2, 1.0_f64), (body1, -1.0_f64)] {
+                if body_id == 0 {
+                    continue;
+                }
+                let bf = sign * f;
+                let r = cp - data.xipos[body_id];
+                let torque = r.cross(&bf);
+                data.cfrc_ext[body_id][0] += torque.x;
+                data.cfrc_ext[body_id][1] += torque.y;
+                data.cfrc_ext[body_id][2] += torque.z;
+                data.cfrc_ext[body_id][3] += bf.x;
+                data.cfrc_ext[body_id][4] += bf.y;
+                data.cfrc_ext[body_id][5] += bf.z;
+            }
+        }
+    }
+
+    // ===== Step 2: cacc forward pass (root → leaf) =====
+    // Root pseudo-acceleration: gravity acts as downward acceleration on all bodies.
+    let grav = if model.disableflags & DISABLE_GRAVITY != 0 {
+        SpatialVector::zeros()
+    } else {
+        // Spatial convention: [angular; linear]. Gravity pseudo-acceleration has
+        // zero angular and negative gravity as linear acceleration.
+        let mut sv = SpatialVector::zeros();
+        sv[3] = -model.gravity[0];
+        sv[4] = -model.gravity[1];
+        sv[5] = -model.gravity[2];
+        sv
+    };
+    data.cacc[0] = grav;
+
+    // Pre-compute joint motion subspaces (same cache as RNE)
+    let joint_subspaces: Vec<_> = (0..model.njnt)
+        .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
+        .collect();
+
+    for body_id in 1..model.nbody {
+        let parent_id = model.body_parent[body_id];
+
+        // Start with parent's acceleration
+        let mut acc = data.cacc[parent_id];
+
+        // Add joint acceleration + Coriolis contribution
+        let jnt_start = model.body_jnt_adr[body_id];
+        let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let s = &joint_subspaces[jnt_id];
+            let nv = model.jnt_type[jnt_id].nv();
+
+            // S * qacc (joint acceleration contribution)
+            for row in 0..6 {
+                for d in 0..nv {
+                    acc[row] += s[(row, d)] * data.qacc[dof_adr + d];
+                }
+            }
+
+            // §51 Fix A: Coriolis acceleration = cvel_parent × (S * qvel)
+            let mut v_joint = SpatialVector::zeros();
+            for d in 0..nv {
+                for row in 0..6 {
+                    v_joint[row] += s[(row, d)] * data.qvel[dof_adr + d];
+                }
+            }
+            acc += spatial_cross_motion(data.cvel[parent_id], v_joint);
+        }
+
+        data.cacc[body_id] = acc;
+    }
+
+    // ===== Step 3: cfrc_int backward pass (leaf → root) =====
+    // For each body: cfrc_int = I*cacc + v×*(I*v) - cfrc_ext
+    for body_id in 1..model.nbody {
+        let inertia = &data.cinert[body_id];
+        let v = data.cvel[body_id];
+        let acc = data.cacc[body_id];
+
+        // I * cacc (inertial force from acceleration)
+        let i_a = inertia * acc;
+
+        // v ×* (I * v) (gyroscopic force, same as RNE backward pass)
+        let i_v = inertia * v;
+        let gyro = spatial_cross_force(v, i_v);
+
+        // cfrc_int = I*cacc + v×*(I*v) - cfrc_ext
+        data.cfrc_int[body_id] = i_a + gyro - data.cfrc_ext[body_id];
+    }
+
+    // §51 Fix C: Propagate internal forces from leaves to root,
+    // including accumulation into world body (body 0).
+    // MuJoCo propagates cfrc_int[0] = sum of all children.
+    data.cfrc_int[0] = SpatialVector::zeros();
+    for body_id in (1..model.nbody).rev() {
+        let parent_id = model.body_parent[body_id];
+        let child_force = data.cfrc_int[body_id];
+        data.cfrc_int[parent_id] += child_force;
+    }
 }

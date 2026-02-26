@@ -8,8 +8,8 @@ for full MuJoCo API parity.
 
 ---
 
-### 51. `cacc` / `cfrc_int` / `cfrc_ext` — Body Force Accumulators
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+### ~~51. `cacc` / `cfrc_int` / `cfrc_ext` — Body Force Accumulators~~
+**Status:** ✅ Done (Phase 3 commit) | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
@@ -29,13 +29,13 @@ during the forward pass.
      computed during forward dynamics.
    - `cfrc_int: Vec<[f64; 6]>` — per-body internal/constraint forces, computed
      via inverse dynamics pass after constraint solve.
-   - `cfrc_ext: Vec<[f64; 6]>` — per-body external forces (applied + actuator),
+   - `cfrc_ext: Vec<[f64; 6]>` — per-body external forces (applied + contact/constraint),
      accumulated during force assembly.
 2. **Population**: Compute during `forward()`:
    - `cacc`: after computing `qacc`, propagate body accelerations via FK Jacobians.
    - `cfrc_int`: backward pass from `qacc` and `cacc` to compute internal forces
      at each joint (reaction forces).
-   - `cfrc_ext`: sum of `xfrc_applied` and actuator-generated forces per body.
+   - `cfrc_ext`: sum of `xfrc_applied` and contact/constraint solver forces per body.
 3. **MuJoCo convention**: Forces are in Cartesian (6D spatial vectors in world
    frame), not generalized coordinates.
 
@@ -44,7 +44,7 @@ during the forward pass.
 1. `cacc[0]` (world body) is zero (fixed body, no acceleration).
 2. For a free-falling body, `cacc` equals `[0,0,0, 0,0,-g]` (gravity only).
 3. `cfrc_int` at the root joint matches total applied + gravity forces.
-4. `cfrc_ext` reflects applied forces and actuator contributions.
+4. `cfrc_ext` reflects applied forces and contact/constraint forces.
 5. Fields accessible via `data.cacc[body_id]`.
 
 #### Files
@@ -54,8 +54,8 @@ during the forward pass.
 
 ---
 
-### 52. `mj_inverse()` — Inverse Dynamics API
-**Status:** Not started | **Effort:** M | **Prerequisites:** #51 (body force accumulators)
+### ~~52. `mj_inverse()` — Inverse Dynamics API~~
+**Status:** ✅ Done (Phase 3 commit) | **Effort:** M | **Prerequisites:** #51 (body force accumulators)
 
 #### Current State
 
@@ -85,6 +85,10 @@ needed to produce given accelerations.
 2. For a system at equilibrium (qacc=0), `qfrc_inverse` equals gravity + passive.
 3. Round-trip: `forward()` → read `qacc` → `inverse()` → `qfrc_inverse` matches
    the total applied forces.
+4. `ENABLE_FWDINV` guard wired: when set, compute forward/inverse comparison
+   statistics (§41 S5.3).
+5. `ENABLE_INVDISCRETE` guard wired: when set, use discrete-time inverse
+   dynamics (§41 S5.4).
 
 #### Files
 
@@ -93,8 +97,8 @@ needed to produce given accelerations.
 
 ---
 
-### 53. `mj_step1` / `mj_step2` — Split Stepping API
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~53. `mj_step1` / `mj_step2` — Split Stepping API~~
+**Status:** ✅ Done (Phase 3 commit) | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 
@@ -114,7 +118,10 @@ inject forces between the forward pass and integration.
 2. **`step2()`**: Runs integration only — updates `qpos` and `qvel` based on
    computed `qacc`. Users can modify `qfrc_applied` or `xfrc_applied` between
    `step1()` and `step2()`.
-3. **`step()` unchanged**: `step()` remains `step1()` + `step2()` for convenience.
+3. **`step()` intentionally independent**: `step()` is NOT `step1()` + `step2()`.
+   It has its own RK4-capable path; `step1()`+`step2()` always uses Euler-style
+   integration. This matches MuJoCo, where `mj_step()` calls `mj_forward()`
+   (with RK4 substeps) while `mj_step1()`/`mj_step2()` use Euler.
 4. **No state flags**: No internal flag needed to track which step phase was last
    called. `step2()` simply integrates whatever state is current.
 

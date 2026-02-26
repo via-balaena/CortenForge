@@ -207,12 +207,14 @@ fn gpu_error_isolation() {
 
     let errors = batch.step_all().unwrap();
 
-    // Env 1's qvel should be NaN (NaN propagated through qacc → GPU → qvel)
+    // After §41 S8, NaN qpos triggers auto-reset — step returns Ok.
+    // Env 1 should either have auto-reset (divergence_detected) or have
+    // NaN in qvel (GPU path may bypass check functions).
     let env1 = batch.env(1).unwrap();
     let has_nan = (0..model.nv).any(|j| !env1.qvel[j].is_finite());
     assert!(
-        has_nan || errors[1].is_some(),
-        "env 1 should have NaN qvel or a StepError"
+        has_nan || env1.divergence_detected() || errors[1].is_some(),
+        "env 1 should have NaN qvel, auto-reset, or a StepError"
     );
 
     // Env 0, 2, 3 must have valid (non-NaN) qvel — error isolation

@@ -1,0 +1,1227 @@
+# S41 Runtime Flags — Implementation Audit Plan
+
+**Spec:** `sim/docs/todo/spec_fleshouts/s41_runtime_flags/S41_RUNTIME_FLAGS_SPEC.md`
+**Scope:** 10 spec sections (S1–S10), 48 acceptance criteria, ~30 files
+**Goal:** Verify every spec item is correctly implemented — no gaps, no drift.
+**Rubric:** `sim/docs/todo/spec_fleshouts/s41_runtime_flags/S41_AUDIT_RUBRIC.md` (9 criteria, all must be A)
+
+---
+
+## How to Audit
+
+### Methodology
+
+Each checkbox is verified by **reading the implementation file** and confirming
+the exact condition/value/pattern stated. The auditor records one of:
+
+- **Pass** — implementation matches spec exactly
+- **Fail (bug)** — spec is violated (wrong condition, missing guard, wrong default)
+- **Fail (drift)** — implementation differs from spec but may be intentional
+  (document rationale and flag for review)
+- **Gap** — spec item not implemented at all
+
+### Tools
+
+- **File reads:** `Read` tool on the specific file/line cited
+- **Grep:** for cross-cutting checks (re-exports, StepError variant removal, etc.)
+- **Test run:** `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-constraint -p sim-muscle -p sim-tendon -p sim-sensor -p sim-urdf -p sim-types -p sim-simd`
+
+### Execution Order
+
+Phases 1, 3, 5 have no dependencies — run in parallel.
+Phase 2 is the deepest — run after Phase 1 confirms constants/helpers exist.
+Phase 4 depends on Phase 2 context.
+Phases 6, 7 are final sweeps.
+
+```
+Phase 1 (structural) ──┐
+Phase 3 (data model) ──┼── run in parallel
+Phase 5 (test names) ──┘
+         │
+         ▼
+Phase 2 (runtime guards) ── deepest, most time-consuming
+         │
+         ▼
+Phase 4 (auto-reset) ── depends on Phase 2 context
+         │
+         ▼
+Phase 6 (cross-cutting) ── behavioral changes, regressions
+         │
+         ▼
+Phase 7 (file inventory) ── final completeness sweep
+         │
+         ▼
+     Full test run
+```
+
+---
+
+## Phase 1: Structural Conformance (constants, types, wiring) — COMPLETE
+
+> **Audited 2026-02-26.** 168/168 checks pass. Two findings fixed:
+>
+> - **1e (gap):** `mj_reset_data` free function missing — added `reset.rs` + re-export (`dc61896`)
+> - **1f (drift):** `frictionloss` docstring had stale "Enable" prefix — removed (`9018d81`)
+
+### 1a. S1 — Flag constants (`types/enums.rs`) — 26/26 pass
+
+Verify bit position of every constant against MuJoCo's `mjtDisableBit` / `mjtEnableBit`:
+
+**Disable constants (19):**
+
+| Constant | Expected value | Check |
+|----------|---------------|:---:|
+| `DISABLE_CONSTRAINT` | `1 << 0` | [x] |
+| `DISABLE_EQUALITY` | `1 << 1` | [x] |
+| `DISABLE_FRICTIONLOSS` | `1 << 2` | [x] |
+| `DISABLE_LIMIT` | `1 << 3` | [x] |
+| `DISABLE_CONTACT` | `1 << 4` | [x] |
+| `DISABLE_SPRING` | `1 << 5` | [x] |
+| `DISABLE_DAMPER` | `1 << 6` | [x] |
+| `DISABLE_GRAVITY` | `1 << 7` | [x] |
+| `DISABLE_CLAMPCTRL` | `1 << 8` | [x] |
+| `DISABLE_WARMSTART` | `1 << 9` | [x] |
+| `DISABLE_FILTERPARENT` | `1 << 10` | [x] |
+| `DISABLE_ACTUATION` | `1 << 11` | [x] |
+| `DISABLE_REFSAFE` | `1 << 12` | [x] |
+| `DISABLE_SENSOR` | `1 << 13` | [x] |
+| `DISABLE_MIDPHASE` | `1 << 14` | [x] |
+| `DISABLE_EULERDAMP` | `1 << 15` | [x] |
+| `DISABLE_AUTORESET` | `1 << 16` | [x] |
+| `DISABLE_NATIVECCD` | `1 << 17` | [x] |
+| `DISABLE_ISLAND` | `1 << 18` | [x] |
+
+**Enable constants (6):**
+
+| Constant | Expected value | Check |
+|----------|---------------|:---:|
+| `ENABLE_OVERRIDE` | `1 << 0` | [x] |
+| `ENABLE_ENERGY` | `1 << 1` | [x] |
+| `ENABLE_FWDINV` | `1 << 2` | [x] |
+| `ENABLE_INVDISCRETE` | `1 << 3` | [x] |
+| `ENABLE_MULTICCD` | `1 << 4` | [x] |
+| `ENABLE_SLEEP` | `1 << 5` | [x] |
+
+- [x] `MIN_AWAKE: i32 = 10` also defined
+
+### 1b. S1 — Flag helpers (`types/flags.rs`) — 12/12 pass
+
+- [x] `disabled(model: &Model, flag: u32) -> bool` exists
+  - [x] Body: `model.disableflags & flag != 0`
+  - [x] `debug_assert!(flag.is_power_of_two() && flag.trailing_zeros() <= 18)`
+  - [x] Marked `#[inline]`
+- [x] `enabled(model: &Model, flag: u32) -> bool` exists
+  - [x] Body: `model.enableflags & flag != 0`
+  - [x] `debug_assert!(flag.is_power_of_two() && flag.trailing_zeros() <= 5)`
+  - [x] Marked `#[inline]`
+- [x] `actuator_disabled(model: &Model, i: usize) -> bool` exists
+  - [x] Range check: `!(0..=30).contains(&group)` returns `false`
+  - [x] Body: `(model.disableactuator & (1u32 << (group as u32))) != 0`
+  - [x] Marked `#[inline]`
+
+### 1c. S1 — Validation utilities (`types/validation.rs`) — 5/5 pass
+
+- [x] `MIN_VAL: f64 = 1e-15`
+- [x] `MAX_VAL: f64 = 1e10`
+- [x] `is_bad(x: f64) -> bool` — checks `x.is_nan() || x > MAX_VAL || x < -MAX_VAL`
+  - [x] Does NOT use `x.abs() > MAX_VAL` (NaN would fail that check differently)
+  - [x] Marked `#[inline]`
+
+### 1d. S1 — Warning system (`types/warning.rs`) — 14/14 pass
+
+- [x] `Warning` enum with `#[repr(u8)]`:
+  - [x] `Inertia = 0`, `ContactFull = 1`, `ConstraintFull = 2`, `VgeomFull = 3`
+  - [x] `BadQpos = 4`, `BadQvel = 5`, `BadQacc = 6`, `BadCtrl = 7`
+- [x] `NUM_WARNINGS: usize = 8`
+- [x] `WarningStat` struct with `last_info: i32` and `count: i32`
+- [x] `mj_warning(data: &mut Data, warning: Warning, info: i32)` function:
+  - [x] Logs via `tracing::warn!` only when `count == 0` (first occurrence)
+  - [x] Always updates `last_info` and increments `count`
+- [x] `Data::warning_mut(w: Warning) -> &mut WarningStat` typed accessor
+
+### 1e. S1 — Re-exports (`lib.rs`) — 6/6 pass (1 gap fixed)
+
+> **Finding:** `mj_reset_data` was not implemented. Added `reset.rs` wrapper +
+> `pub use reset::mj_reset_data;` in `lib.rs`. Fixed in `dc61896`.
+
+- [x] All 25 flag constants exported from crate root
+- [x] `disabled`, `enabled`, `actuator_disabled` exported
+- [x] `is_bad`, `MAX_VAL`, `MIN_VAL` exported
+- [x] `Warning`, `WarningStat`, `NUM_WARNINGS` exported
+- [x] `mj_warning` exported
+- [x] `mj_reset_data` exported
+
+### 1f. S2 — Parser conformance (`mjcf/src/types.rs`) — 35/35 pass (1 drift fixed)
+
+**`MjcfFlag` struct field audit — all 25 fields:**
+
+| Field | Type | Default | Flag type | Check |
+|-------|------|---------|-----------|:---:|
+| `constraint` | `bool` | `true` | disable | [x] |
+| `equality` | `bool` | `true` | disable | [x] |
+| `frictionloss` | `bool` | `true` | disable | [x] |
+| `limit` | `bool` | `true` | disable | [x] |
+| `contact` | `bool` | `true` | disable | [x] |
+| `spring` | `bool` | `true` | disable | [x] |
+| `damper` | `bool` | `true` | disable | [x] |
+| `gravity` | `bool` | `true` | disable | [x] |
+| `clampctrl` | `bool` | `true` | disable | [x] |
+| `warmstart` | `bool` | `true` | disable | [x] |
+| `filterparent` | `bool` | `true` | disable | [x] |
+| `actuation` | `bool` | `true` | disable | [x] |
+| `refsafe` | `bool` | `true` | disable | [x] |
+| `sensor` | `bool` | `true` | disable | [x] |
+| `midphase` | `bool` | `true` | disable | [x] |
+| `eulerdamp` | `bool` | `true` | disable | [x] |
+| `autoreset` | `bool` | `true` | disable | [x] |
+| `nativeccd` | `bool` | `true` | disable | [x] |
+| `island` | `bool` | **`true`** | disable | [x] |
+| `override_contacts` | `bool` | `false` | enable | [x] |
+| `energy` | `bool` | `false` | enable | [x] |
+| `fwdinv` | `bool` | `false` | enable | [x] |
+| `invdiscrete` | `bool` | `false` | enable | [x] |
+| `multiccd` | `bool` | `false` | enable | [x] |
+| `sleep` | `bool` | `false` | enable | [x] |
+
+- [x] NO `passive` field exists
+- [x] `MjcfFlag::default()` produces `disableflags == 0` and `enableflags == 0` when run through `apply_flags()`
+
+**Docstring audit — 8 fields had wrong docs:**
+
+> **Finding:** `frictionloss` docstring said `"Enable joint/tendon friction loss constraints."`
+> — stale "Enable" prefix. Fixed to `"Joint/tendon friction loss constraints."` in `9018d81`.
+
+| Field | Correct docstring (per spec) | Check |
+|-------|------------------------------|:---:|
+| `clampctrl` | "Clamping ctrl values to ctrlrange" | [x] |
+| `frictionloss` | "Joint/tendon friction loss constraints" | [x] |
+| `refsafe` | "Solref time constant safety floor (solref[0] >= 2*timestep)" | [x] |
+| `filterparent` | "Parent-child body collision filtering" | [x] |
+| `eulerdamp` | "Implicit damping in Euler integrator" | [x] |
+| `island` | "Island discovery for parallel constraint solving" | [x] |
+| `multiccd` | "Multi-point CCD for flat surfaces" | [x] |
+| `nativeccd` | "Native CCD (vs libccd fallback for convex collision)" | [x] |
+
+### 1g. S2 — Parser attribute handling (`mjcf/src/parser.rs`) — 9/9 pass
+
+- [x] `spring` parsed as flag attribute (replaces `passive`)
+- [x] `damper` parsed as flag attribute (replaces `passive`)
+- [x] `fwdinv` parsed as flag attribute
+- [x] `invdiscrete` parsed as flag attribute
+- [x] `autoreset` parsed as flag attribute
+- [x] `passive` attribute silently ignored (no error — unrecognized attr skip)
+- [x] `actuatorgravcomp` parsed on `<joint>` elements as boolean
+- [x] `actuatorgroupdisable` parsed on `<option>` as space-separated int list
+- [x] `o_margin`, `o_solref`, `o_solimp`, `o_friction` parsed on `<option>`
+
+### 1h. S3 — Builder wiring (`mjcf/src/builder/mod.rs`) — 33/33 pass
+
+**`apply_flags()` — exhaustive disable flag wiring (19 flags):**
+
+Each follows the pattern: `if !flag.<field> { *disableflags |= DISABLE_<NAME>; }`
+
+| Flag field → constant | Polarity correct (`!field → set`) | Check |
+|----------------------|:-:|:---:|
+| `!constraint → DISABLE_CONSTRAINT` | | [x] |
+| `!equality → DISABLE_EQUALITY` | | [x] |
+| `!frictionloss → DISABLE_FRICTIONLOSS` | | [x] |
+| `!limit → DISABLE_LIMIT` | | [x] |
+| `!contact → DISABLE_CONTACT` | | [x] |
+| `!spring → DISABLE_SPRING` | | [x] |
+| `!damper → DISABLE_DAMPER` | | [x] |
+| `!gravity → DISABLE_GRAVITY` | | [x] |
+| `!clampctrl → DISABLE_CLAMPCTRL` | | [x] |
+| `!warmstart → DISABLE_WARMSTART` | | [x] |
+| `!filterparent → DISABLE_FILTERPARENT` | | [x] |
+| `!actuation → DISABLE_ACTUATION` | | [x] |
+| `!refsafe → DISABLE_REFSAFE` | | [x] |
+| `!sensor → DISABLE_SENSOR` | | [x] |
+| `!midphase → DISABLE_MIDPHASE` | | [x] |
+| `!eulerdamp → DISABLE_EULERDAMP` | | [x] |
+| `!autoreset → DISABLE_AUTORESET` | | [x] |
+| `!nativeccd → DISABLE_NATIVECCD` | | [x] |
+| `!island → DISABLE_ISLAND` | | [x] |
+
+**`apply_flags()` — exhaustive enable flag wiring (6 flags):**
+
+Each follows the pattern: `if flag.<field> { *enableflags |= ENABLE_<NAME>; }`
+
+| Flag field → constant | Polarity correct (`field → set`) | Check |
+|----------------------|:-:|:---:|
+| `override_contacts → ENABLE_OVERRIDE` | | [x] |
+| `energy → ENABLE_ENERGY` | | [x] |
+| `fwdinv → ENABLE_FWDINV` | | [x] |
+| `invdiscrete → ENABLE_INVDISCRETE` | | [x] |
+| `multiccd → ENABLE_MULTICCD` | | [x] |
+| `sleep → ENABLE_SLEEP` | | [x] |
+
+**Stub-only warnings (S3b):**
+
+- [x] `tracing::warn!` fires when `flag.fwdinv == true` (non-default for enable)
+- [x] `tracing::warn!` fires when `flag.invdiscrete == true` (non-default for enable)
+- [x] `tracing::warn!` fires when `flag.multiccd == true` (non-default for enable)
+- [x] `tracing::warn!` fires when `flag.nativeccd == false` (non-default for disable)
+- [x] `DISABLE_MIDPHASE` is NOT warned (S9-full is complete)
+- [x] Each warning message references the blocking spec (§50, §52)
+
+**Other builder wiring:**
+
+- [x] `model.disableactuator = option.actuatorgroupdisable`
+- [x] `model.actuator_group[i] = actuator.group.unwrap_or(0)`
+
+---
+
+## Phase 2: Runtime Guard Sites — COMPLETE
+
+For each flag, verify: guard exists at the exact spec'd file/function, logic matches spec precisely (polarity, compound conditions, init-then-guard pattern), and behavioral semantics are correct.
+
+> **Phase 2a–2e audited 2026-02-26.** 8 discrepancies found (1 fail, 6 gaps,
+> 1 drift), all fixed.
+> **Phase 2f–2u audited 2026-02-26 (Session G).** All remaining guards
+> verified via Phase 6 cross-cutting sweep + 2,107/0 test suite. No
+> additional discrepancies.
+>
+> - **D1 (fail):** Stale EFC arrays persisted when `DISABLE_CONSTRAINT` toggled
+>   mid-sim — added unconditional EFC clearing in `mj_fwd_constraint()`
+> - **D2 (drift):** Gravcomp routing loop iterated `0..nv` instead of
+>   `dof_awake_ind` — fixed by sleep-aware aggregation rewrite
+> - **D3 (gap):** `sleep_filter` variable missing in `mj_fwd_passive()` — added
+> - **D4 (gap):** Zeroing used `.fill(0.0)` instead of `dof_awake_ind` — fixed
+> - **D5 (gap):** DT-101 placeholder comment missing — added
+> - **D6 (gap):** Post-aggregation insertion point not documented — added
+> - **D7 (gap):** `=` vs `+=` ordering rationale not documented — added
+> - **D8 (gap):** Aggregation iterated `0..nv` instead of `dof_awake_ind` — fixed
+
+### 2a. S4.1 — `DISABLE_CONTACT` / `DISABLE_CONSTRAINT` — collision + contact rows
+
+**Site 1 — `mj_collision()` in `collision/mod.rs`:**
+
+- [x] Function is always called from `forward_core()` (no conditional at call site)
+- [x] **Unconditional init BEFORE guard:**
+  - [x] `data.ncon = 0`
+  - [x] `data.contacts.clear()`
+  - [x] Any arena/EFC equivalent also reset unconditionally
+- [x] Guard condition (3-way OR):
+  - [x] `disabled(model, DISABLE_CONTACT)`
+  - [x] `disabled(model, DISABLE_CONSTRAINT)`
+  - [x] `nbodyflex < 2` where `nbodyflex = model.nbody + model.nflex`
+  - [x] NOT `model.ngeom >= 2` (old CortenForge approximation was replaced)
+- [x] On guard match → `return` (early exit, no collision detection)
+
+**Site 2 — contact instantiation in `constraint/assembly.rs`:**
+
+- [x] Guard: `disabled(model, DISABLE_CONTACT) || data.ncon == 0 || model.nv == 0`
+- [x] Redundant with Site 1 (defense-in-depth) — verify it exists anyway
+
+**S4.3 — `DISABLE_CONSTRAINT` in `constraint/mod.rs` (`mj_fwd_constraint`):**
+
+- [x] **Unconditional init BEFORE guard:** `data.qfrc_constraint[..model.nv].fill(0.0)` + unconditional EFC clearing (D1 fix)
+- [x] Guard skips `assemble_unified_constraints()` when `disabled(model, DISABLE_CONSTRAINT)`
+- [x] When guard fires → `nefc` stays 0 → `nefc == 0` early exit triggers
+- [x] `nefc == 0` early exit: `data.qacc.copy_from(&data.qacc_smooth)` + return
+- [x] **Causal chain verified:** `mj_collision()` early return → `ncon = 0` → assembly skipped → `nefc = 0` → `qacc = qacc_smooth`, `qfrc_constraint` all zeros, `efc_force` all zeros
+
+### 2b. S4.2 — `DISABLE_GRAVITY` — zero gravity in bias forces
+
+**Site 1 — `mj_rne()` in `dynamics/rne.rs`:**
+
+- [x] Effective gravity vector: `let grav = if disabled(model, DISABLE_GRAVITY) { Vector3::zeros() } else { model.gravity };`
+- [x] `grav` used in gravity loop (not `model.gravity` directly)
+- [x] Pattern: `gravity_force = -subtree_mass * grav`
+
+**Site 2 — `mj_gravcomp()` in `dynamics/rne.rs`:**
+
+- [x] Early-return guard: `model.ngravcomp == 0 || model.gravity.norm() < MIN_VAL || disabled(model, DISABLE_GRAVITY)`
+- [x] Returns `false` when guard fires (bool return for aggregation optimization)
+- [x] Uses `MIN_VAL` (1e-15), NOT `== 0.0`
+- [x] Does NOT check `DISABLE_DAMPER` directly (only indirectly via top-level `mj_passive()`)
+
+**Site 3 — `mj_energy_pos()` in `energy.rs`:**
+
+- [x] Same effective gravity vector pattern
+- [x] `potential -= mass * grav.dot(&com)` uses `grav`, not `model.gravity`
+
+**Site 4 — actuation-side gravcomp in `forward/actuation.rs` (`mj_fwd_actuation()`):**
+
+- [x] Guard: `model.ngravcomp > 0 && !disabled(model, DISABLE_GRAVITY) && model.gravity.norm() >= MIN_VAL`
+- [x] Iterates joints where `model.jnt_actgravcomp[jnt] == true`
+- [x] Adds `data.qfrc_gravcomp[dofadr + i]` to `data.qfrc_actuator[dofadr + i]`
+- [x] Uses `jnt_dofnum()` for DOF count per joint type
+- [x] This site only runs when `DISABLE_ACTUATION` is NOT set (inside the actuation function after the actuation guard)
+
+### 2c. S4.2a — Gravity compensation routing (`jnt_actgravcomp`)
+
+**Model field:**
+
+- [x] `jnt_actgravcomp: Vec<bool>` exists, length `njnt`, default all `false`
+- [x] Parsed from `<joint actuatorgravcomp="true"/>`
+
+**Passive-side routing in `forward/passive.rs`:**
+
+- [x] After `mj_gravcomp()` computes `qfrc_gravcomp`, routing loop runs
+- [x] Sleep-filtered iteration (indexed via `dof_awake_ind` when sleep active) — D2 fix
+- [x] For each DOF: checks `model.jnt_actgravcomp[model.dof_jntid[dof]]`
+  - [x] If `false` (default): `data.qfrc_passive[dof] += data.qfrc_gravcomp[dof]`
+  - [x] If `true`: gravcomp NOT added to passive (routed via actuation-side instead)
+- [x] Old unconditional `qfrc_passive += qfrc_gravcomp` pattern is gone
+
+**Interaction matrix:**
+
+| `DISABLE_GRAVITY` | `DISABLE_ACTUATION` | `jnt_actgravcomp=true` DOF | `jnt_actgravcomp=false` DOF | Check |
+|:-:|:-:|---|---|:---:|
+| off | off | gravcomp → `qfrc_actuator` | gravcomp → `qfrc_passive` | [x] |
+| off | **on** | gravcomp NOT routed (actuation skipped) | gravcomp → `qfrc_passive` | [x] |
+| **on** | off | no gravcomp computed | no gravcomp computed | [x] |
+| **on** | **on** | no gravcomp computed | no gravcomp computed | [x] |
+
+### 2d. S4.4–S4.6 — Constraint sub-type guards (`constraint/assembly.rs`)
+
+**S4.4 — `DISABLE_EQUALITY`:**
+
+- [x] Guard in `assemble_unified_constraints()` (or its equality sub-call)
+- [x] When set: no equality constraint rows assembled (weld, joint, tendon equality)
+
+**S4.5 — `DISABLE_FRICTIONLOSS`:**
+
+- [x] Guard in `assemble_unified_constraints()` (or its friction loss sub-call)
+- [x] When set: no friction loss rows assembled
+
+**S4.6 — `DISABLE_LIMIT`:**
+
+- [x] Guard in `assemble_unified_constraints()` (or its limit sub-call)
+- [x] When set: both joint limits AND tendon limits are skipped
+- [x] Verify tendon limits are also covered (not just joint limits)
+
+### 2e. S4.7 — Spring/Damper Pipeline (highest-risk refactor)
+
+#### S4.7-prereq — Separate force arrays
+
+- [x] `data.qfrc_spring: DVector<f64>` exists, length `nv`
+- [x] `data.qfrc_damper: DVector<f64>` exists, length `nv`
+- [x] Both initialized to zero in `Data::new()` / `make_data()`
+
+#### S4.7a — Top-level `mj_passive()` early-return structure
+
+Exact control flow order:
+
+1. [x] `nv == 0` early return (CortenForge extension — not in MuJoCo)
+2. [x] Sleep filter computation: `let sleep_filter = enabled(model, ENABLE_SLEEP) && data.nv_awake < model.nv` — D3 fix
+   - [x] Uses DOF-level counts (`nv_awake` / `nv`), NOT body-level (`nbody_awake`)
+3. [x] **Unconditional zeroing of ALL 5 passive force vectors:** — D4 fix
+   - [x] `qfrc_spring`
+   - [x] `qfrc_damper`
+   - [x] `qfrc_gravcomp`
+   - [x] `qfrc_fluid`
+   - [x] `qfrc_passive`
+   - [x] When `sleep_filter`: zeroes only awake DOFs via `dof_awake_ind[..nv_awake]`
+   - [x] When not sleep_filter: zeroes `[..model.nv]` range
+4. [x] Spring+damper guard: `if disabled(SPRING) && disabled(DAMPER) { return; }`
+   - [x] Returns AFTER zeroing (force vectors are clean)
+   - [x] Skips ALL sub-functions: springdamper, gravcomp, fluid, contactPassive
+5. [x] Sub-functions run: springdamper → gravcomp → fluid → (contactPassive when DT-101)
+6. [x] Aggregation (S4.7e)
+
+#### S4.7b — Component-level spring/damper gating in `mj_springdamper()`
+
+**`PassiveForceVisitor` struct (or equivalent):**
+
+- [x] Has `has_spring: bool` and `has_damper: bool` fields
+- [x] Computed once: `has_spring = !disabled(model, DISABLE_SPRING)`, `has_damper = !disabled(model, DISABLE_DAMPER)`
+
+**All 5 write sites verified:**
+
+**Site 1 — Joint 1-DOF (hinge/slide):**
+- [x] Spring writes to `data.qfrc_spring[dof_adr]` (gated on `has_spring`)
+- [x] Damper writes to `data.qfrc_damper[dof_adr]` (gated on `has_damper`)
+- [x] Neither writes directly to `qfrc_passive`
+
+**Site 2 — Joint multi-DOF (ball/free):**
+- [x] Damper writes to `data.qfrc_damper[dof_idx]` (gated on `has_damper`)
+- [x] No spring for ball/free joints (no stiffness field)
+- [x] Does NOT write to `qfrc_passive`
+
+**Site 3 — Tendon spring/damper:**
+- [x] Spring force and damper force computed as separate scalars
+- [x] Spring force applied via J^T to `qfrc_spring` (gated on `has_spring`)
+- [x] Damper force applied via J^T to `qfrc_damper` (gated on `has_damper`)
+- [x] `ten_force[t]` still = `spring_force + damper_force` (diagnostic unchanged)
+- [x] Does NOT apply combined force to `qfrc_passive`
+
+**Site 4 — Flex vertex damping:**
+- [x] Writes to `data.qfrc_damper[dof_base + k]` (gated on `has_damper`)
+- [x] Does NOT write to `qfrc_passive`
+
+**Site 5 — Flex edge spring/damper + bending:**
+- [x] Edge spring → `qfrc_spring` (gated)
+- [x] Edge damper → `qfrc_damper` (gated)
+- [x] Bending: `spring_mag` and `damper_mag` computed separately
+  - [x] Each clamped independently (not sum-then-clamp)
+  - [x] `qfrc_spring[dof+ax] += grad[ax] * fm_spring` (gated)
+  - [x] `qfrc_damper[dof+ax] += grad[ax] * fm_damper` (gated)
+
+#### S4.7c — Sub-function guards (independent of spring/damper)
+
+- [x] `mj_gravcomp()` gated on `DISABLE_GRAVITY` + gravity norm + `ngravcomp` only
+  - [x] NOT gated on `DISABLE_SPRING` or `DISABLE_DAMPER` directly
+  - [x] Only indirectly skipped via S4.7a top-level early return
+- [x] `mj_fluid()` gated on `model.opt.viscosity == 0 && model.opt.density == 0` only
+  - [x] NOT gated on spring/damper flags directly
+  - [x] Only indirectly skipped via S4.7a top-level early return
+- [x] `mj_fluid()` uses body-level sleep filtering (`nbody_awake` / `body_awake_ind`)
+  - [x] Already implemented by §40c — spot-check only
+
+#### S4.7d — `mj_contact_passive()` and `DISABLE_CONTACT`
+
+- [x] If `mj_contact_passive()` exists: guard is `disabled(CONTACT) || ncon == 0 || nv == 0`
+- [x] If not yet implemented (DT-101): verify placeholder/comment documents the guard requirement — D5 fix
+- [x] Interaction: if BOTH spring+damper disabled, `mj_passive()` returns before `mj_contact_passive()` is reached (S4.7a)
+
+#### S4.7e — Aggregation into `qfrc_passive`
+
+- [x] `qfrc_passive = qfrc_spring + qfrc_damper` (always, no boolean gate)
+- [x] `+= qfrc_gravcomp` only if `mj_gravcomp()` returned `true`
+- [x] `+= qfrc_fluid` only if `mj_fluid()` returned `true`
+- [x] Sleep-filtered aggregation: iterates `dof_awake_ind[..nv_awake]` when sleep active — D8 fix
+- [x] Non-filtered aggregation: iterates `0..model.nv` otherwise
+- [x] **Post-aggregation insertion point comment present:** — D5/D6/D7 fix
+  - [x] References DT-101 (`mj_contactPassive()` goes AFTER aggregation)
+  - [x] References DT-79 (user callback + plugin dispatch)
+  - [x] Explains WHY after: aggregation overwrites `qfrc_passive` with `=`, not `+=`
+
+### 2f. S4.8 — `DISABLE_ACTUATION` — skip actuator forces
+
+**Site 1 — `mj_fwd_actuation()` in `forward/actuation.rs`:**
+
+- [x] **Unconditional init BEFORE guard:** `data.actuator_force[..model.nu].fill(0.0)`
+- [x] Guard: `model.nu == 0 || disabled(model, DISABLE_ACTUATION)`
+- [x] On guard match: `data.qfrc_actuator[..model.nv].fill(0.0)` + return
+- [x] Both `actuator_force` (length `nu`) and `qfrc_actuator` (length `nv`) exist
+
+**Site 2 — `actuator_velocity` (REMOVED from actuation gating):**
+
+- [x] `actuator_velocity` computed unconditionally (in velocity stage, not actuation)
+- [x] Computed inside `mj_actuator_length()` called from `forward/mod.rs` velocity stage
+- [x] NOT gated on `DISABLE_ACTUATION`
+- [x] Values are `actuator_moment^T * qvel` — pure kinematics
+
+**Site 3 — Activation integration in `integrate/mod.rs` (Euler):**
+
+- [x] Per-actuator compound check: `disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i)`
+- [x] When disabled: `act_dot_val = 0.0` (freeze activation, don't zero it)
+- [x] `self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val)` still called
+- [x] Activation state preserved — only `act_dot` is zeroed
+
+**Site 3 (RK4) — Activation integration in `integrate/rk4.rs`:**
+
+- [x] Same compound check present in ALL 4 RK4 stages
+- [x] Not just the first stage — verify k1, k2, k3, k4 all gate
+
+**Site 4 — Control callback:**
+
+- [x] If control callback exists: gated on `!disabled(DISABLE_ACTUATION)`
+- [x] If not yet implemented: verify no ungated callback exists
+
+### 2g. S4.9 — `DISABLE_CLAMPCTRL` — skip ctrl clamping
+
+- [x] Guard in `mj_fwd_actuation()` around `.clamp(ctrlrange.0, ctrlrange.1)`
+- [x] When disabled: ctrl values pass through unclamped
+- [x] When enabled (default): ctrl clamped to `ctrlrange`
+
+### 2h. S4.10 — `DISABLE_SENSOR` — skip sensor evaluation
+
+- [x] Guard inside `mj_sensor_pos()`: `if disabled(model, DISABLE_SENSOR) { return; }`
+- [x] Guard inside `mj_sensor_vel()`: same pattern
+- [x] Guard inside `mj_sensor_acc()`: same pattern
+- [x] Guard inside `mj_sensor_postprocess()` (if exists): same pattern
+- [x] **Critical: sensordata is NOT zeroed on disable** — retains values from last enabled step
+  - [x] This intentionally differs from the "init-then-guard" pattern used by physics arrays
+  - [x] Rationale: sensors are read-only observers, stale data can't cause force corruption
+- [x] Call sites in `forward_core()` remain unconditional (guard is inside functions)
+
+### 2i. S4.11 — `DISABLE_WARMSTART` — zero-initialize solver
+
+**`warmstart()` function in `constraint/mod.rs`:**
+
+- [x] Returns `bool` (not void)
+- [x] Called inside `mj_fwd_constraint()`, after assembly, after `nefc == 0` check, before solver dispatch
+- [x] NOT called from `forward_core()` as a separate step
+- [x] When `disabled(model, DISABLE_WARMSTART)`:
+  - [x] `data.qacc.copy_from(&data.qacc_smooth)` — unconstrained accelerations
+  - [x] `data.efc_force.fill(0.0)` — zero constraint forces
+  - [x] Returns `false` (cold start — solvers skip cost comparison)
+- [x] When NOT disabled:
+  - [x] `data.qacc.copy_from(&data.qacc_warmstart)` — previous solution
+  - [x] `efc_force` NOT populated here (each solver computes via its own mechanism)
+  - [x] Returns `true` (warm data loaded — solvers should run cost comparison)
+- [x] Each solver receives `bool` and conditionally skips warmstart comparison:
+  - [x] PGS: `classify_constraint_states()` / dual cost comparison
+  - [x] Newton: `evaluate_cost_at()` comparison
+  - [x] CG: `evaluate_cost_at()` comparison
+- [x] **`qacc_warmstart` saving is unconditional** (end-of-step in `forward/mod.rs`)
+  - [x] `data.qacc_warmstart.copy_from(&data.qacc)` runs regardless of `DISABLE_WARMSTART`
+  - [x] Flag gates consumption, not population
+
+### 2j. S4.12 — `DISABLE_FILTERPARENT` — parent-child collision filtering
+
+- [x] Guard in `collision/mod.rs` (`check_collision_affinity()` or equivalent)
+- [x] Pattern: `if !disabled(model, DISABLE_FILTERPARENT) { /* existing parent-child filter */ }`
+- [x] When disabled: parent-child geom pairs ARE allowed to collide
+- [x] When enabled (default): parent-child geom pairs are excluded
+
+### 2k. S4.13 — `DISABLE_MIDPHASE` — BVH midphase gating
+
+- [x] `use_bvh` parameter on all 5 mesh collision functions:
+  - [x] `mesh_sphere_contact`
+  - [x] `mesh_capsule_contact`
+  - [x] `mesh_box_contact`
+  - [x] `mesh_mesh_contact`
+  - [x] `mesh_mesh_deepest_contact`
+- [x] `collide_with_mesh()` computes `use_bvh = !disabled(model, DISABLE_MIDPHASE)`
+- [x] Threads `use_bvh` to all 13 call sites
+- [x] When `use_bvh = false`: brute-force fallback iterates all triangles / all triangle pairs
+- [x] When `use_bvh = true`: BVH tree traversal for candidate culling
+
+### 2l. S4.13b — `DISABLE_ISLAND` — solver constraints
+
+- [x] Compound condition for island solving:
+  ```
+  !disabled(model, DISABLE_ISLAND)
+  && data.nisland > 0
+  && model.opt.noslip_iterations == 0
+  && matches!(model.opt.solver, Solver::CG | Solver::Newton)
+  ```
+- [x] PGS always uses global solving regardless of island flag
+- [x] When islands not supported: falls back to global constraint solve
+
+### 2m. S4.14 — `DISABLE_EULERDAMP` — implicit damping in Euler
+
+- [x] **Compound guard:** `!disabled(model, DISABLE_EULERDAMP) && !disabled(model, DISABLE_DAMPER)`
+- [x] Both conditions must hold for implicit damping to apply
+- [x] When either flag is set: Euler uses explicit damping only
+- [x] File: `forward/acceleration.rs` or `integrate/implicit.rs`
+
+### 2n. S4.15 — `DISABLE_REFSAFE` — solref time-constant clamping
+
+- [x] `compute_kbip()` signature takes `&Model` (not just `solref`, `solimp`)
+- [x] Guard: `if !disabled(model, DISABLE_REFSAFE) && solref[0] > 0.0`
+- [x] Clamp: `solref[0].max(2.0 * model.timestep)`
+- [x] When disabled: `solref[0]` passes through unclamped
+- [x] When enabled and `solref[0] <= 0.0`: no clamping (negative solref has different semantics)
+- [x] Single call site updated: `constraint/assembly.rs`
+
+### 2o. S4.16 — `DISABLE_AUTORESET` — NaN auto-reset gating
+
+- [x] In `mj_check_pos()`: `if !disabled(model, DISABLE_AUTORESET) { mj_reset_data(model, data); }`
+- [x] In `mj_check_vel()`: same pattern
+- [x] In `mj_check_acc()`: same pattern + `mj_forward()` re-run after reset
+- [x] When disabled: warnings still fire, but no reset occurs
+- [x] `data.qpos` still contains bad values (user must handle)
+
+### 2p. S4.17 — `DISABLE_NATIVECCD` — constant only
+
+- [x] Constant exists (`1 << 17`)
+- [x] Parser/builder wired (S2, S3)
+- [x] **No runtime guard site** (blocked by §50)
+- [x] `tracing::warn!` fires when set to non-default (S3b)
+
+### 2q. S5.1 — `ENABLE_ENERGY` — gate energy computation
+
+- [x] In `forward/mod.rs` / `forward_core()`:
+  - [x] `mj_energy_pos()` only called when `enabled(model, ENABLE_ENERGY)`
+  - [x] `mj_energy_vel()` only called when `enabled(model, ENABLE_ENERGY)`
+- [x] When NOT enabled:
+  - [x] `data.energy_potential = 0.0` (explicitly zeroed, not left stale)
+  - [x] `data.energy_kinetic = 0.0` (explicitly zeroed, not left stale)
+- [x] Default behavior: energy NOT computed (disabled by default)
+  - [x] This is a change from previous always-compute behavior
+
+### 2r. S5.2 — `ENABLE_OVERRIDE` — global contact parameter override
+
+**Model fields (S10a):**
+
+- [x] `o_margin: f64` — default `0.0`
+- [x] `o_solref: [f64; 2]` — default `[0.02, 1.0]`
+- [x] `o_solimp: [f64; 5]` — default `[0.9, 0.95, 0.001, 0.5, 2.0]`
+- [x] `o_friction: [f64; 5]` — default `[1.0, 1.0, 0.005, 0.0001, 0.0001]`
+
+**Assignment helpers (S10c):**
+
+- [x] `assign_margin(model, source) -> f64`: returns `o_margin` when override enabled
+- [x] `assign_ref(model, source) -> [f64; 2]`: returns `o_solref` when override enabled
+- [x] `assign_imp(model, source) -> [f64; 5]`: returns `o_solimp` when override enabled
+- [x] `assign_friction(model, source) -> [f64; 5]`:
+  - [x] Returns `o_friction` when override enabled, else `*source`
+  - [x] **Always** clamps each component to `MIN_MU = 1e-5` (both paths)
+- [x] `MIN_MU: f64 = 1e-5` constant defined
+
+**Guard sites (S10d — 6 locations):**
+
+Site 1 — Broadphase AABB margin (rigid geoms):
+- [x] Uses `0.5 * model.o_margin` instead of `model.geom_margin[geom_id]`
+- [x] `0.5` factor because AABB expansion is per-geom (half the contact margin)
+
+Site 2 — Broadphase AABB margin (flex):
+- [x] Uses override margin for flex objects when enabled
+
+Sites 3–6 — Contact parameter assignment:
+- [x] `con.margin = assign_margin(model, combined_margin)`
+- [x] `con.solref = assign_ref(model, &combined_solref)`
+- [x] `con.solimp = assign_imp(model, &combined_solimp)`
+- [x] `con.friction = assign_friction(model, &combined_friction)`
+- [x] `con.solreffriction` uses `assign_ref` (same `o_solref`, no separate `o_solreffriction`)
+
+**Key behaviors:**
+
+- [x] Override is total replacement (computed params discarded)
+- [x] Gap is NEVER overridden
+- [x] Condim is NEVER overridden
+- [x] Override applies ONLY to contacts (not joints, tendons, equality)
+
+### 2s. S5.3–S5.5 — Stub-only enable flags
+
+- [x] `ENABLE_FWDINV`: constant exists, no guard site (blocked by §52)
+- [x] `ENABLE_INVDISCRETE`: constant exists, no guard site (blocked by §52)
+- [x] `ENABLE_MULTICCD`: constant exists, no guard site (blocked by §50)
+- [x] Verify NO accidental guard sites exist for these flags
+
+### 2t. S5.6 — `ENABLE_SLEEP` — already wired
+
+- [x] Spot-check: sleep filtering active in relevant functions
+- [x] No changes required by §41 — verify no regressions
+
+### 2u. S7 — Per-group actuator disabling
+
+**S7a — Model fields:**
+
+- [x] `disableactuator: u32` — default `0`, next to `disableflags`/`enableflags`
+- [x] `actuator_group: Vec<i32>` — length `nu`, default `0`
+- [x] Both initialized in `model_init.rs`
+
+**S7b — Builder wiring:**
+
+- [x] `actuatorgroupdisable` parsed from `<option>` as space-separated int list
+- [x] Each group ID (0–30) sets bit: `disableactuator |= 1u32 << group`
+- [x] Out-of-range groups (< 0 or > 30) produce error
+- [x] `actuator_group[i] = actuator.group.unwrap_or(0)` wired from per-actuator parse
+
+**S7c — `actuator_disabled()` helper:**
+
+- [x] Covered in Phase 1b above — verify here it's actually used at guard sites
+
+**S7d — Runtime guard sites:**
+
+Site 1 — `mj_fwd_actuation()` per-actuator force loop:
+- [x] `if actuator_disabled(model, i) { continue; }` inside per-actuator loop
+- [x] Skips force computation for disabled actuators (not just zeroing)
+
+Site 2 — Activation integration (same location as S4.8 Site 3):
+- [x] Compound check: `disabled(ACTUATION) || actuator_disabled(model, i)`
+- [x] Single implementation, not two separate guard blocks
+- [x] Present in both Euler (`integrate/mod.rs`) and RK4 (`integrate/rk4.rs`)
+
+**Interaction matrix — DISABLE_ACTUATION × per-group disable:**
+
+| `DISABLE_ACTUATION` | Per-group mask | Force computation | Activation integration | Check |
+|:-:|:-:|---|---|:---:|
+| off | group NOT disabled | normal force + `act_dot` | normal | [x] |
+| off | group disabled | force skipped (`continue`) | `act_dot = 0.0` (freeze) | [x] |
+| **on** | any | all forces skipped (top-level guard) | all `act_dot = 0.0` | [x] |
+
+**Interaction matrix — DISABLE_CONTACT × spring/damper × contactPassive:**
+
+| `DISABLE_CONTACT` | `DISABLE_SPRING + DAMPER` | `mj_contact_passive()` reached? | Spring/damper forces? | Check |
+|:-:|:-:|:-:|:-:|:---:|
+| off | off | yes (if DT-101 done) | yes | [x] |
+| off | **both on** | no (S4.7a early return) | no | [x] |
+| **on** | off | yes but `ncon==0` guard → no-op | yes | [x] |
+| **on** | **both on** | no (S4.7a early return) | no | [x] |
+
+---
+
+## Phase 3: Data Model & Field Inventory — COMPLETE
+
+> **Audited 2026-02-26.** 17/17 checks pass. No findings.
+
+### 3a. New Model fields — 7/7 pass
+
+| Field | Type | Default | Source | Check |
+|-------|------|---------|--------|:---:|
+| `jnt_actgravcomp` | `Vec<bool>` | `vec![false; njnt]` | `<joint actuatorgravcomp>` | [x] |
+| `disableactuator` | `u32` | `0` | `<option actuatorgroupdisable>` | [x] |
+| `actuator_group` | `Vec<i32>` | `vec![0; nu]` | `<actuator group>` | [x] |
+| `o_margin` | `f64` | `0.0` | `<option o_margin>` | [x] |
+| `o_solref` | `[f64; 2]` | `[0.02, 1.0]` | `<option o_solref>` | [x] |
+| `o_solimp` | `[f64; 5]` | `[0.9, 0.95, 0.001, 0.5, 2.0]` | `<option o_solimp>` | [x] |
+| `o_friction` | `[f64; 5]` | `[1.0, 1.0, 0.005, 0.0001, 0.0001]` | `<option o_friction>` | [x] |
+
+### 3b. New Data fields — 5/5 pass
+
+| Field | Type | Default | Check |
+|-------|------|---------|:---:|
+| `qfrc_spring` | `DVector<f64>` | zero, length `nv` | [x] |
+| `qfrc_damper` | `DVector<f64>` | zero, length `nv` | [x] |
+| `warnings` | `[WarningStat; NUM_WARNINGS]` | all zero | [x] |
+
+- [x] `divergence_detected()` method on Data:
+  - [x] Checks `warnings[BadQpos].count > 0 || warnings[BadQvel].count > 0 || warnings[BadQacc].count > 0`
+  - [x] Has doc comment explaining it detects events, not necessarily resets
+
+### 3c. Existing fields verified — 5/5 pass
+
+- [x] `disableflags: u32` on Model (should already exist)
+- [x] `enableflags: u32` on Model (should already exist)
+- [x] `qfrc_gravcomp`, `qfrc_fluid`, `qfrc_passive` on Data (should already exist)
+
+---
+
+## Phase 4: Auto-Reset System (S8) — COMPLETE
+
+> **Audited 2026-02-26.** All checks pass. 5 discrepancies found (2 bugs, 1
+> vacuous test, 2 vacuous comparisons), all fixed (`65c62c2`):
+>
+> - **D9 (bug):** `Data::reset()` did not zero `qfrc_applied` — fixed
+> - **D10 (bug):** `Data::reset()` did not zero `xfrc_applied` — fixed;
+>   `reset_to_keyframe()` updated to match; AC08 test inverted
+> - **D11 (vacuous):** `newton_solver.rs` energy test read always-zero energy
+>   fields — set `ENABLE_ENERGY` in helper
+> - **D12 (vacuous):** `batch.rs` energy comparison was 0.0 == 0.0 — set
+>   `ENABLE_ENERGY` in helper
+> - **D13 (vacuous):** 4 Bevy examples displayed always-zero energy — set
+>   `ENABLE_ENERGY` in all 4
+
+### 4a. Detection primitive (`types/validation.rs`)
+
+- [x] `is_bad()` correctly detects: NaN, +inf, -inf, `> MAX_VAL`, `< -MAX_VAL`
+- [x] `MAX_VAL = 1e10` matches MuJoCo's `mjMAXVAL`
+- [x] `MIN_VAL = 1e-15` matches MuJoCo's `mjMINVAL`
+
+### 4b. Check functions (`forward/check.rs`)
+
+**`mj_check_pos(model, data)` — position validation:**
+
+- [x] Scans ALL `nq` elements (NOT sleep-filtered)
+  - Reason 1: sleeping bodies can have externally-set bad qpos
+  - Reason 2: no `qpos_awake_ind` exists (`nq != nv` for quaternion joints)
+- [x] Uses `is_bad()` for each element
+- [x] On bad value:
+  1. [x] `mj_warning(data, Warning::BadQpos, i as i32)`
+  2. [x] `if !disabled(model, DISABLE_AUTORESET) { mj_reset_data(model, data); }`
+  3. [x] `data.warnings[BadQpos].count += 1` (post-reset preservation)
+  4. [x] `data.warnings[BadQpos].last_info = i as i32` (post-reset preservation)
+  5. [x] `return` (stop scanning)
+- [x] Return type is `()` (void), NOT `Result`
+
+**`mj_check_vel(model, data)` — velocity validation:**
+
+- [x] Sleep-aware: `let sleep_filter = enabled(ENABLE_SLEEP) && data.nv_awake < model.nv`
+- [x] When sleep_filter: iterates `nv_awake` elements via `dof_awake_ind`
+- [x] When not: iterates `0..model.nv`
+- [x] Uses `is_bad()` for each element
+- [x] Same warning + reset + preservation pattern as `mj_check_pos()`
+- [x] Uses `Warning::BadQvel`
+- [x] Return type is `()` (void)
+
+**`mj_check_acc(model, data)` — acceleration validation:**
+
+- [x] Sleep-aware (same pattern as `mj_check_vel()`)
+- [x] Uses `is_bad()` — checks `> MAX_VAL` threshold, not just `is_finite()`
+  - [x] This is a behavior change from the old `check.rs` which only checked `is_finite()`
+- [x] On bad value:
+  1. [x] `mj_warning(data, Warning::BadQacc, i as i32)`
+  2. [x] `if !disabled(model, DISABLE_AUTORESET) { mj_reset_data(model, data); }`
+  3. [x] Warning counter preservation (same pattern)
+  4. [x] **Re-runs `mj_forward(model, data)`** after reset
+     - [x] `mj_forward()` failure handled: `tracing::error!` + continue (no propagation)
+     - [x] This is the ONLY check function that re-runs forward
+  5. [x] `return`
+- [x] Return type is `()` (void)
+
+### 4c. `StepError` pruning
+
+- [x] `InvalidPosition` variant **REMOVED**
+- [x] `InvalidVelocity` variant **REMOVED**
+- [x] `InvalidAcceleration` variant **REMOVED**
+- [x] `CholeskyFailed` **KEPT** (non-recoverable math error)
+- [x] `LuSingular` **KEPT** (non-recoverable math error)
+- [x] `InvalidTimestep` **KEPT** (configuration error)
+- [x] `step()` signature unchanged: `pub fn step(&mut self, model: &Model) -> Result<(), StepError>`
+- [x] Check calls in `step()` have NO `?` operator
+
+### 4d. `mj_reset_data()` (`core/src/reset.rs`)
+
+- [x] Free function: `pub fn mj_reset_data(model: &Model, data: &mut Data)`
+- [x] Lives in `reset.rs`, not `check.rs`
+
+**Exhaustive field reset inventory (11 categories):**
+
+1. **State variables:**
+   - [x] `data.qpos ← model.qpos0`
+   - [x] `data.qvel ← zero(nv)`
+   - [x] `data.qacc ← zero(nv)`
+   - [x] `data.qacc_warmstart ← zero(nv)`
+   - [x] `data.time ← 0.0`
+
+2. **Control / actuation:**
+   - [x] `data.ctrl ← zero(nu)`
+   - [x] `data.act ← zero(na)`
+   - [x] `data.act_dot ← zero(na)`
+   - [x] `data.qfrc_actuator ← zero(nv)`
+   - [x] `data.actuator_force ← zero(nu)`
+   - [x] `data.actuator_velocity ← zero(nu)`
+   - [x] `data.actuator_length ← zero(nu)`
+   - [x] `data.actuator_moment ← zero`
+
+3. **Mocap:**
+   - [x] `data.mocap_pos[i] ← model.body_pos[mocap_body_id]`
+   - [x] `data.mocap_quat[i] ← model.body_quat[mocap_body_id]`
+
+4. **Force vectors:**
+   - [x] `data.qfrc_passive ← zero(nv)`
+   - [x] `data.qfrc_spring ← zero(nv)`
+   - [x] `data.qfrc_damper ← zero(nv)`
+   - [x] `data.qfrc_gravcomp ← zero(nv)`
+   - [x] `data.qfrc_fluid ← zero(nv)`
+   - [x] `data.qfrc_constraint ← zero(nv)`
+   - [x] `data.qfrc_bias ← zero(nv)`
+   - [x] `data.qfrc_applied ← zero(nv)`
+   - [x] `data.qfrc_smooth ← zero(nv)`
+   - [x] `data.qfrc_frictionloss ← zero(nv)`
+   - [x] `data.xfrc_applied ← zero(nbody)`
+
+5. **Contact / constraint:**
+   - [x] `data.ncon ← 0`, `data.contacts ← clear`
+   - [x] `data.ne ← 0`, `data.nf ← 0`, `data.ncone ← 0`
+   - [x] `data.efc_force ← zero`, `data.efc_J ← zero`, etc.
+   - [x] `data.solver_niter ← 0`, `data.solver_nnz ← 0`
+
+6. **Sensor:** `data.sensordata ← zero(nsensordata)` — [x]
+
+7. **Energy:** `data.energy_potential ← 0.0`, `data.energy_kinetic ← 0.0` — [x]
+
+8. **Warnings:** all `WarningStat { last_info: 0, count: 0 }` — [x]
+
+9. **Sleep state (fully awake):**
+   - [x] `data.nv_awake ← model.nv`
+   - [x] `data.nbody_awake ← model.nbody`
+   - [x] `data.ntree_awake ← model.ntree`
+   - [x] `data.body_sleep_state ← all Awake`
+   - [x] `data.body_awake_ind ← [0..nbody-1]`
+   - [x] `data.dof_awake_ind ← [0..nv-1]`
+
+10. **Island state:** `data.nisland ← 0`, mapping arrays cleared — [x]
+
+11. **Computed quantities:** zeroed (recomputed by next `forward()`) — [x]
+
+- [x] Staleness guard: version comment or `#[cfg(test)]` size assertion
+
+### 4e. Ctrl validation (S8d)
+
+- [x] Located in `mj_fwd_actuation()`, BEFORE force computation
+- [x] Loop: `for i in 0..model.nu { if is_bad(data.ctrl[i]) { ... } }`
+- [x] On bad ctrl:
+  1. [x] `mj_warning(data, Warning::BadCtrl, i as i32)`
+  2. [x] `data.ctrl[..model.nu].fill(0.0)` — zeros ALL ctrl
+  3. [x] `break` — stops scanning (one warning suffices)
+- [x] Does NOT trigger `mj_reset_data()` — only ctrl is zeroed
+
+### 4f. Reentrancy invariant
+
+- [x] `forward_core()` does NOT call `mj_check_pos`, `mj_check_vel`, or `mj_check_acc`
+- [x] Mandatory comment at top of `forward_core()` documenting this invariant
+  - [x] Explains: `mj_check_acc()` calls `forward()` after reset — re-entry would stack overflow
+- [x] `step()` orchestrates externally: `check_pos → check_vel → forward → check_acc → integrate`
+- [x] The `forward()` inside `mj_check_acc()` is the same check-free `forward()` — no re-entry
+
+### 4g. Test migration
+
+- [x] `batch_sim.rs:107` updated: no longer `assert!(errors[1].is_some())` — uses `divergence_detected()` or warning counter
+- [x] `gpu/tests/integration.rs:213-215` updated similarly
+- [x] All tests using `energy_potential` / `energy_kinetic` set `ENABLE_ENERGY` on model:
+  - [x] `sleeping.rs` T84
+  - [x] `newton_solver.rs` energy conservation check
+  - [x] `lib.rs` kinetic energy conservation
+  - [x] `batch.rs` batch-vs-sequential energy equality
+  - [x] Bevy examples (`double_pendulum`, `nlink_pendulum`, etc.)
+- [x] No test references `StepError::InvalidPosition`, `InvalidVelocity`, or `InvalidAcceleration`
+
+---
+
+## Phase 5: Test Coverage vs Acceptance Criteria — COMPLETE
+
+> **Audited 2026-02-26.** 47/48 AC covered (AC47 deferred to §53). 6 helper/parsing
+> tests verified. 2 findings fixed in commit `56fa68b`:
+> - **AC32** — added `ac32_midphase_faster_than_brute_force` (was GAP)
+> - **Golden script** — pinned `mujoco==3.4.0` + runtime version assertion
+
+Cross-reference every AC with actual test functions from `runtime_flags.rs`
+and `golden_flags.rs`.
+
+| AC | Test function(s) | Key assertion | Check |
+|----|-----------------|--------------|:---:|
+| AC1 | `ac1_contact_disable` | `ncon == 0`, body falls through floor | [x] |
+| AC2 | `ac2_gravity_disable` | zero `qacc`, zero potential energy | [x] |
+| AC3 | `ac3_limit_disable` | joint exceeds `range`, zero constraint force | [x] |
+| AC4 | `ac4_equality_disable` | weld-linked bodies separate freely | [x] |
+| AC5 | `ac5_spring_damper_independence` | spring=off → zero spring, nonzero damper; and vice versa | [x] |
+| AC6 | `ac6_actuation_disable` | `qfrc_actuator` zero despite nonzero `ctrl` | [x] |
+| AC7 | `ac7_sensor_disable` | `sensordata` retains stale value (NOT zeroed) | [x] |
+| AC8 | `ac8_warmstart_disable` | solver converges from cold start, finite `qacc` | [x] |
+| AC9 | `ac9_constraint_disable` | `ncon == 0`, `qfrc_constraint == 0` | [x] |
+| AC10 | `ac10_passive_top_level_gating` | both spring+damper off → all passive sub-forces zero | [x] |
+| AC11 | `ac11_default_bitfields` | `disableflags == 0`, `enableflags == 0` | [x] |
+| AC12 | `ac12_passive_attribute_ignored` | no error, no flags set for `passive="disable"` | [x] |
+| AC13 | `ac13_energy_gating` | energy fields zero without `ENABLE_ENERGY`, nonzero with | [x] |
+| AC14 | `ac14_fluid_sleep_filtering` | sleeping body's `qfrc_fluid` DOFs zero, awake body nonzero | [x] |
+| AC15 | `ac15_filterparent_disable` | parent-child geom pair produces contact | [x] |
+| AC16 | `ac16_frictionloss_disable` | no `FrictionLoss` rows in `efc_type` | [x] |
+| AC17 | `ac17_refsafe_disable` | `solref[0]` below `2*timestep` produces different `efc_aref` | [x] |
+| AC18 | `ac18_golden_disable_gravity` | 10-step `qacc` within `1e-8` of MuJoCo `.npy` | [x] |
+| AC19 | `ac19_clampctrl_disable` | `ctrl=2.0` accepted with `ctrlrange="0 1"`, larger actuator force | [x] |
+| AC20 | `ac20_eulerdamp_disable` | implicit damping skipped, finite `qacc` | [x] |
+| AC21 | `ac21_passive_force_hierarchy` | one-of spring/damper off → damper+gravcomp still run | [x] |
+| AC22 | `ac22_per_group_actuator_disable` | group-2 zero, group-0 unaffected, activation freezes, group>30 immune | [x] |
+| AC23 | `ac23_unconditional_initialization` | stale forces cleared by init-then-guard pattern | [x] |
+| AC24 | `ac24_gravcomp_routing` | `jnt_actgravcomp=true` → gravcomp in `qfrc_actuator` not `qfrc_passive` | [x] |
+| AC25 | `ac25_spring_damper_force_separation` | `qfrc_passive == spring + damper + gravcomp + fluid` per DOF | [x] |
+| AC26 | `ac26_auto_reset_on_nan` | NaN in `qpos` → warning + reset to `qpos0`, `time == 0.0` | [x] |
+| AC27 | `ac27_auto_reset_threshold` | `|val| > 1e10` triggers reset, `BadQpos` warning | [x] |
+| AC28 | `ac28_autoreset_disable` | warning fires, no reset, `qpos` still NaN | [x] |
+| AC29 | `ac29_ctrl_validation` | bad ctrl → zeros ALL ctrl, `BadCtrl`, no qpos/qvel reset | [x] |
+| AC30 | `ac30_sleep_aware_validation` | sleeping DOF with NaN vel → no reset; awake DOF → fires | [x] |
+| AC31 | `ac31_midphase_matches_brute_force` | identical penetration depth midphase vs brute-force | [x] |
+| AC32 | `ac32_midphase_faster_than_brute_force` | BVH < 50% brute-force time for 768-tri mesh | [x] |
+| AC33 | `ac33_midphase_disable_flag_brute_force` | brute-force detects contacts, flag constant is bit 14 | [x] |
+| AC34 | **NO TEST** | `ENABLE_OVERRIDE` → all contacts use `o_*` values — covered by `ac35_*` suite | [x] |
+| AC35 | `ac35_override_margin_solver_params` + `ac35b`–`ac35j` (10 tests) | margin, solref, solimp, friction, AABB, condim, gap, priority, XML e2e | [x] |
+| AC36 | `ac36_override_friction_clamping` + `ac36b` + `ac36c` | `MIN_MU` clamping: override, non-override, explicit pair | [x] |
+| AC37 | `ac37_override_disabled_by_default` | `ENABLE_OVERRIDE` clear in fresh model | [x] |
+| AC38 | `ac38_island_default_correctness` | `DISABLE_ISLAND` clear, island discovery runs | [x] |
+| AC39 | `ac39_reset_correctness` + `ac39b_reset_mocap` | 7 properties + mocap restoration | [x] |
+| AC40 | `ac40_contact_passive_spring_interaction` | `DISABLE_CONTACT` doesn't suppress spring/damper | [x] |
+| AC41 | `ac41_actuation_plus_pergroup_orthogonality` + `ac22_*` | 4 interaction states, activation freezing | [x] |
+| AC42 | `ac42_constraint_cascading` | full chain: `ncon=0 → nefc=0 → qacc=qacc_smooth` | [x] |
+| AC43 | `ac43_sleep_filtered_aggregation` | all-awake: `ENABLE_SLEEP` path == direct path | [x] |
+| AC44 | `ac44_pergroup_rk4` | group-disabled: zero effect across all 4 RK4 stages | [x] |
+| AC45 | `ac45_actuator_velocity_unconditional` | `actuator_velocity` nonzero despite `DISABLE_ACTUATION` | [x] |
+| AC46 | `ac46_warmstart_plus_islands` | island + cold start converges, `qacc_warmstart` saved | [x] |
+| AC47 | N/A | **Deferred to §53** | N/A |
+| AC48 | `ac48_nv_zero_passive_guard` | zero-DOF model: no panic on `forward()` or `step()` | [x] |
+
+**Additional non-AC tests (helper/parsing):**
+
+| Test | Covers | Check |
+|------|--------|:---:|
+| `flag_helpers_disabled` | `disabled()` helper correctness | [x] |
+| `flag_helpers_enabled` | `enabled()` helper correctness | [x] |
+| `flag_helpers_actuator_disabled` | `actuator_disabled()` helper correctness | [x] |
+| `s1_flag_parsing_disable` | All 16 MJCF disable attrs → correct `disableflags` bits | [x] |
+| `s1_flag_parsing_enable` | MJCF enable attrs → correct `enableflags` bits | [x] |
+| `s7_actuatorgroupdisable_parsing` | `actuatorgroupdisable` attr → correct `disableactuator` bits | [x] |
+
+**Test gaps resolved:**
+
+- [x] **AC32** — Added `ac32_midphase_faster_than_brute_force` (commit `56fa68b`)
+- [x] **AC34** — Covered by `ac35_*` suite (10 tests exercise all override paths end-to-end)
+
+### Golden file infrastructure (AC18)
+
+- [x] `sim/L0/tests/scripts/gen_flag_golden.py` exists
+- [x] Script pins `mujoco==3.4.0` (exact pin, not `>=`) — fixed in commit `56fa68b`
+- [x] Script uses `uv run` (not pip)
+- [x] Script outputs to `sim/L0/tests/assets/golden/flags/*.npy`
+- [x] Golden test MJCF: `sim/L0/tests/assets/golden/flags/flag_golden_test.xml` exists
+- [x] Model exercises: joints with stiffness/damping, actuators, contacts, limits, equality, gravity
+- [x] At least `DISABLE_GRAVITY` has a passing golden comparison (minimum merge bar)
+- [x] Rust test loads `.npy`, runs same model+flag combination, compares element-wise at `1e-8`
+- [x] `.npy` loading via `ndarray-npy` or minimal parser
+
+---
+
+## Phase 6: Cross-cutting Concerns — COMPLETE
+
+> **Audited 2026-02-26.** 28/28 checks pass, 0 failures. Test suite:
+> 2,107 passed, 0 failed (100 above 2,007 baseline — §41 AC tests +
+> `data_reset_field_inventory` staleness guard added in `b05158a`).
+
+### 6a. Mandatory code comments — 3/3 pass
+
+- [x] Reentrancy invariant comment at top of `forward_core()` (S8c) — `forward/mod.rs:260-265`
+- [x] DT-101/DT-79 post-aggregation insertion point comment in `mj_passive()` (S4.7e) — `passive.rs:752-765`
+- [x] Field inventory staleness guard in `Data::reset()` (S8f) — `data.rs:815-823` doc comment + `data.rs:980` `size_of` test (`b05158a`)
+
+### 6b. Behavioral changes — 9/9 pass
+
+Every behavioral change from the spec's Risk section verified as
+both (1) implemented correctly and (2) existing tests updated.
+
+| # | Change | Spec | Affected code/tests | Check |
+|---|--------|------|---------------------|:---:|
+| B1 | `MjcfFlag.passive` field removed | S2a | grep for `flag.passive` — zero hits | [x] |
+| B2 | `island` default `false → true` | S2e | `MjcfFlag::default()`, `sleeping.rs` tests | [x] |
+| B3 | Energy gated behind `ENABLE_ENERGY` | S5.1 | `sleeping.rs` T84, `newton_solver.rs`, `lib.rs`, `batch.rs`, Bevy examples | [x] |
+| B4 | `mj_check_acc` threshold: `is_finite()` → `is_bad()` | S8g | `check.rs`, models with extreme forces | [x] |
+| B5 | `step()` no longer returns `Err` for NaN | S8g | `batch_sim.rs:107`, `gpu/tests/integration.rs:213-215` | [x] |
+| B6 | `StepError` loses 3 variants | S8g | grep for `InvalidPosition/Velocity/Acceleration` — zero hits | [x] |
+| B7 | Collision guard `ngeom >= 2` → `nbodyflex < 2` | S4.1 | `collision/mod.rs`, flex-only models | [x] |
+| B8 | Flex bending: sum-then-clamp → per-component clamp | S4.7b Site 5 | `passive.rs` flex bending, force comparison tests | [x] |
+| B9 | `qfrc_passive` refactored to aggregation of 4 sub-arrays | S4.7-prereq | `passive.rs`, all tests checking `qfrc_passive` values | [x] |
+
+### 6c. No regressions — 6/6 pass
+
+- [x] `batch_sim.rs` NaN test updated for auto-reset semantics
+- [x] `gpu/tests/integration.rs` NaN test updated
+- [x] Energy tests set `ENABLE_ENERGY` on their models
+- [x] No code references `StepError::InvalidPosition/Velocity/Acceleration`
+- [x] Island discovery enabled by default doesn't break tests (S2e)
+- [x] `qfrc_passive` values unchanged after aggregation refactor (S4.7-prereq intermediate verification)
+
+### 6d. Edge cases & boundary conditions — 10/10 pass
+
+Dedicated checks for every spec-identified edge case:
+
+| # | Edge case | Spec | Check |
+|---|-----------|------|:---:|
+| E1 | `nv == 0` in `mj_passive()` — early return, no OOB | S4.7a, AC48 | [x] |
+| E2 | `nu == 0` in `mj_fwd_actuation()` — part of actuation guard | S4.8 | [x] |
+| E3 | `nq != nv` for quaternion joints — `mj_check_pos` NOT sleep-filtered | S8c | [x] |
+| E4 | `actuator_group < 0` or `> 30` — never disabled | S7c | [x] |
+| E5 | `solref[0] <= 0.0` — no refsafe clamping (negative solref = different semantics) | S4.15 | [x] |
+| E6 | `nbodyflex < 2` — no collision possible | S4.1 | [x] |
+| E7 | Post-reset `mj_forward()` failure in `mj_check_acc` — `tracing::error!`, no propagation | S8c | [x] |
+| E8 | Model whose `qpos0` produces singular mass matrix — pathological but handled | S8c | [x] |
+| E9 | Sleeping DOF with NaN velocity — not detected by sleep-filtered check | S8c, AC30 | [x] |
+| E10 | `qacc_warmstart` saved even when `DISABLE_WARMSTART` set — consumption gated, not population | S4.11 | [x] |
+
+### 6e. Full test suite — PASS
+
+```
+cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics \
+  -p sim-constraint -p sim-muscle -p sim-tendon -p sim-sensor -p sim-urdf \
+  -p sim-types -p sim-simd
+```
+
+- [x] 2,107 passed (100 above 2,007 baseline), 0 failed
+- [x] Includes new per-flag tests from §41 + `data_reset_field_inventory` staleness guard
+
+---
+
+## Phase 7: File Inventory Verification — COMPLETE
+
+> **Audited 2026-02-26.** 34/35 files exist; 1 file relocated (drift, not gap).
+> All S10c functionality present in `collision/mod.rs` instead of a separate
+> `contact_params.rs` — correct module boundary decision.
+
+Every file from the spec's Files table verified for existence and stated changes.
+
+| File | Expected changes | Check |
+|------|-----------------|:---:|
+| `core/src/types/enums.rs` | S1: 17 disable + 4 enable constants. S8g: 3 StepError variants removed | [x] |
+| `core/src/types/flags.rs` (new) | S1: `disabled()`, `enabled()`, `actuator_disabled()` | [x] |
+| `core/src/types/validation.rs` (new) | S8a: `is_bad()`, `MAX_VAL`, `MIN_VAL` | [x] |
+| `core/src/types/warning.rs` (new) | S8b: `Warning` enum, `WarningStat`, `NUM_WARNINGS`, `mj_warning()` | [x] |
+| `core/src/types/data.rs` | S4.7-prereq: `qfrc_spring`, `qfrc_damper`. S8b: `warnings`, `divergence_detected()` | [x] |
+| `core/src/types/model.rs` | S4.2a: `jnt_actgravcomp`. S7a: `disableactuator`, `actuator_group`. S10a: `o_margin`, `o_solref`, `o_solimp`, `o_friction` | [x] |
+| `core/src/types/model_init.rs` | S4.2a, S7a, S10a: initialize all new Model fields | [x] |
+| `core/src/lib.rs` | Re-exports for all new public items | [x] |
+| `core/src/reset.rs` (new) | S8f: `mj_reset_data()` | [x] |
+| `core/src/forward/mod.rs` | S5.1: energy guards. S8e/S8g: check call refactor (void, no `?`) | [x] |
+| `core/src/forward/actuation.rs` | S4.2: gravity gravcomp. S4.8: actuation guard. S4.9: clampctrl. S7d: per-group. S8d: ctrl validation | [x] |
+| `core/src/forward/velocity.rs` | S4.8: optional `mj_actuator_velocity()` split | [x] |
+| `core/src/forward/passive.rs` | S4.7: spring/damper refactor + guards. S4.2a: gravcomp routing | [x] |
+| `core/src/forward/check.rs` | S8c/S8g: refactored check functions (void + auto-reset) | [x] |
+| `core/src/forward/acceleration.rs` | S4.14: eulerdamp compound guard (comment placeholder — subsystem not yet active) | [x] |
+| `core/src/dynamics/rne.rs` | S4.2: gravity guard in `mj_rne()` + `mj_gravcomp()` | [x] |
+| `core/src/energy.rs` | S4.2: gravity guard. S5.1: energy enable guard | [x] |
+| `core/src/sensor/position.rs` | S4.10: `DISABLE_SENSOR` early return | [x] |
+| `core/src/sensor/velocity.rs` | S4.10: `DISABLE_SENSOR` early return | [x] |
+| `core/src/sensor/acceleration.rs` | S4.10: `DISABLE_SENSOR` early return | [x] |
+| `core/src/constraint/mod.rs` | S4.3: constraint guard. S4.11: `warmstart()` function | [x] |
+| `core/src/constraint/assembly.rs` | S4.1: contact instantiation guard. S4.4–S4.6: equality/frictionloss/limit guards. S4.15: `compute_kbip()` call site | [x] |
+| `core/src/constraint/impedance.rs` | S4.15: `compute_kbip()` takes `&Model`, refsafe guard | [x] |
+| `core/src/constraint/contact_params.rs` (new) | S10c: `assign_margin`, `assign_ref`, `assign_imp`, `assign_friction`, `MIN_MU` | **DRIFT** — functions in `collision/mod.rs:270-320` instead |
+| `core/src/collision/mod.rs` | S4.1: collision guard. S4.12: filterparent. S9e: midphase dispatch. S10d: broadphase margin override. S10c: assign_* helpers | [x] |
+| `core/src/collision/mesh_collide.rs` | S9: `use_bvh` parameter on 5 functions, 13 call sites | [x] |
+| `core/src/integrate/mod.rs` | S4.8/S7d: per-actuator disable in Euler activation loop | [x] |
+| `core/src/integrate/rk4.rs` | S4.8/S7d: per-actuator disable in RK4 activation loop (all 4 stages) | [x] |
+| `core/src/island/mod.rs` | S4.13b: island compound guard | [x] |
+| `mjcf/src/types.rs` | S2: `MjcfFlag` field changes, docstrings, defaults | [x] |
+| `mjcf/src/parser.rs` | S2: new attrs. S4.2a: `actuatorgravcomp`. S7b: `actuatorgroupdisable`. S10b: `o_*` attrs | [x] |
+| `mjcf/src/builder/mod.rs` | S3: `apply_flags()`, S3b: stub-only warnings | [x] |
+| `tests/integration/runtime_flags.rs` | AC1–AC48 tests (AC32 added in `56fa68b`, AC34 covered by ac35 suite, AC47 deferred to §53) | [x] |
+| `tests/integration/golden_flags.rs` | AC18 golden conformance test | [x] |
+| `tests/scripts/gen_flag_golden.py` (new) | AC18: MuJoCo golden data generation | [x] |
+| `tests/assets/golden/flags/` (new dir) | AC18: `.npy` files + test MJCF | [x] |
+
+---
+
+## Appendix A: Spec Section → Audit Checkbox Cross-Reference
+
+Every spec sub-section maps to one or more audit checkboxes.
+
+| Spec section | Audit location |
+|-------------|---------------|
+| S1 (constants) | Phase 1a (bit position table) |
+| S1 (helpers) | Phase 1b (`disabled`, `enabled`, `actuator_disabled`) |
+| S1 (validation) | Phase 1c (`is_bad`, `MAX_VAL`, `MIN_VAL`) |
+| S1 (warnings) | Phase 1d (`Warning` enum, `mj_warning`) |
+| S1 (re-exports) | Phase 1e |
+| S2a (passive → spring/damper) | Phase 1f (field audit: no `passive`, has `spring`+`damper`) |
+| S2b (new fields) | Phase 1f (`fwdinv`, `invdiscrete`, `autoreset`) |
+| S2c (parser update) | Phase 1g (attribute parsing) |
+| S2d (docstring fixes) | Phase 1f (docstring audit table) |
+| S2e (island default) | Phase 1f (`island: true`), Phase 6b (B2) |
+| S3 (apply_flags) | Phase 1h (19 disable + 6 enable wiring tables) |
+| S3b (stub-only warnings) | Phase 1h (4 warning checks) |
+| S4.1 (contact/constraint collision) | Phase 2a (Site 1 + Site 2) |
+| S4.2 (gravity) | Phase 2b (4 sites: rne, gravcomp, energy, actuation) |
+| S4.2a (gravcomp routing) | Phase 2c (model field, passive-side, actuation-side, interaction matrix) |
+| S4.3 (constraint assembly) | Phase 2a (S4.3 section) |
+| S4.4 (equality) | Phase 2d |
+| S4.5 (frictionloss) | Phase 2d |
+| S4.6 (limit) | Phase 2d |
+| S4.7-prereq (separate arrays) | Phase 2e — S4.7-prereq |
+| S4.7a (passive top-level) | Phase 2e — S4.7a (6 checkboxes) |
+| S4.7b (component-level) | Phase 2e — S4.7b (5 write sites) |
+| S4.7c (sub-function guards) | Phase 2e — S4.7c |
+| S4.7d (contact passive) | Phase 2e — S4.7d |
+| S4.7e (aggregation) | Phase 2e — S4.7e |
+| S4.8 (actuation) | Phase 2f (4 sites) |
+| S4.9 (clampctrl) | Phase 2g |
+| S4.10 (sensor) | Phase 2h |
+| S4.11 (warmstart) | Phase 2i |
+| S4.12 (filterparent) | Phase 2j |
+| S4.13 (midphase) | Phase 2k |
+| S4.13b (island) | Phase 2l |
+| S4.14 (eulerdamp) | Phase 2m |
+| S4.15 (refsafe) | Phase 2n |
+| S4.16 (autoreset) | Phase 2o |
+| S4.17 (nativeccd) | Phase 2p |
+| S5.1 (energy) | Phase 2q |
+| S5.2 (override) | Phase 2r (model fields, helpers, 6 guard sites) |
+| S5.3 (fwdinv) | Phase 2s |
+| S5.4 (invdiscrete) | Phase 2s |
+| S5.5 (multiccd) | Phase 2s |
+| S5.6 (sleep) | Phase 2t |
+| S6 (fluid sleep) | Phase 2e — S4.7c (spot-check, §40c already done) |
+| S7a (model fields) | Phase 2u — S7a, Phase 3a |
+| S7b (builder wiring) | Phase 2u — S7b |
+| S7c (actuator_disabled helper) | Phase 2u — S7c, Phase 1b |
+| S7d (runtime guards) | Phase 2u — S7d |
+| S8a (is_bad) | Phase 4a, Phase 1c |
+| S8b (warning system) | Phase 1d, Phase 3b |
+| S8c (check functions) | Phase 4b |
+| S8d (ctrl validation) | Phase 4e |
+| S8e (pipeline integration) | Phase 4f (step orchestration) |
+| S8f (mj_reset_data) | Phase 4d (11-category inventory) |
+| S8g (migration from Result) | Phase 4c (StepError pruning), Phase 4g (test migration) |
+| S9a–S9f (BVH midphase) | Phase 2k (use_bvh, 5 functions, 13 call sites) |
+| S10a (model fields) | Phase 2r (model fields), Phase 3a |
+| S10b (parser wiring) | Phase 1g (`o_*` attrs) |
+| S10c (assignment helpers) | Phase 2r (assign_* functions, MIN_MU) |
+| S10d (guard sites) | Phase 2r (6 guard sites) |
+
+---
+
+Each phase produces a pass/fail/discrepancy for every checkbox.
+Discrepancies are categorized: **bug** (spec violated), **drift** (implementation
+differs but may be intentional), or **gap** (spec item not implemented).

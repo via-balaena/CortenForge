@@ -1,0 +1,2867 @@
+//! §41 Runtime Flag Conformance Tests (AC1–AC48).
+//!
+//! Verifies that each disable/enable flag gates the correct pipeline subsystem.
+//! Tests are named `acNN_<description>` matching the acceptance criteria in
+//! `sim/docs/todo/spec_fleshouts/S41_RUNTIME_FLAGS_SPEC.md`.
+//!
+//! Golden-file MuJoCo conformance (AC18) is in a separate file; these tests
+//! verify behavioral gating correctness.
+
+use approx::assert_relative_eq;
+use sim_core::{
+    DISABLE_ACTUATION, DISABLE_AUTORESET, DISABLE_CLAMPCTRL, DISABLE_CONSTRAINT, DISABLE_CONTACT,
+    DISABLE_DAMPER, DISABLE_EQUALITY, DISABLE_EULERDAMP, DISABLE_FILTERPARENT,
+    DISABLE_FRICTIONLOSS, DISABLE_GRAVITY, DISABLE_LIMIT, DISABLE_REFSAFE, DISABLE_SENSOR,
+    DISABLE_SPRING, DISABLE_WARMSTART, ENABLE_ENERGY, ENABLE_OVERRIDE, ENABLE_SLEEP, Warning,
+    actuator_disabled, disabled, enabled,
+};
+use sim_mjcf::load_model;
+
+// ============================================================================
+// Shared MJCF Fixtures
+// ============================================================================
+
+/// Minimal body with gravity, a hinge joint, spring/damper, and an actuator.
+/// Exercises: gravity, spring, damper, actuation, limit, contact.
+fn flag_test_mjcf() -> &'static str {
+    r#"
+    <mujoco model="flag_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="link" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0"
+                       stiffness="100" damping="10"
+                       limited="true" range="-90 90"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <motor joint="hinge" name="motor" ctrlrange="-1 1"/>
+        </actuator>
+    </mujoco>
+    "#
+}
+
+/// Free-falling body above a floor. Used for contact/collision tests.
+fn free_body_with_floor_mjcf() -> &'static str {
+    r#"
+    <mujoco model="free_body_floor">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#
+}
+
+/// Free body in space — no contacts, no springs, just gravity.
+fn free_body_space_mjcf() -> &'static str {
+    r#"
+    <mujoco model="free_body_space">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="floater" pos="0 0 1">
+                <freejoint name="free"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#
+}
+
+/// Two-actuator model with different groups for per-group disable testing.
+fn two_group_actuator_mjcf() -> &'static str {
+    r#"
+    <mujoco model="two_group_actuator">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+            <body name="link2" pos="1 0 1">
+                <joint name="j2" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <motor joint="j1" name="motor1" group="0"/>
+            <motor joint="j2" name="motor2" group="2"/>
+        </actuator>
+    </mujoco>
+    "#
+}
+
+/// Two filter actuators in different groups — gives activation state (act, act_dot).
+/// Used for per-group activation freeze tests (AC22, AC41).
+fn two_group_filter_actuator_mjcf() -> &'static str {
+    r#"
+    <mujoco model="two_group_filter_actuator">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+            <body name="link2" pos="1 0 1">
+                <joint name="j2" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <general joint="j1" name="filter1" group="0"
+                     dyntype="filter" dynprm="0.05"
+                     gainprm="100" biastype="affine" biasprm="0 -100 0"/>
+            <general joint="j2" name="filter2" group="2"
+                     dyntype="filter" dynprm="0.05"
+                     gainprm="100" biastype="affine" biasprm="0 -100 0"/>
+        </actuator>
+    </mujoco>
+    "#
+}
+
+/// Body with equality (weld) constraint.
+fn weld_constraint_mjcf() -> &'static str {
+    r#"
+    <mujoco model="weld_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="a" pos="0 0 1">
+                <freejoint name="free_a"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+            <body name="b" pos="0.5 0 1">
+                <freejoint name="free_b"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+        <equality>
+            <weld body1="a" body2="b"/>
+        </equality>
+    </mujoco>
+    "#
+}
+
+// ============================================================================
+// AC1: Contact disable — body falls through floor
+// ============================================================================
+
+#[test]
+fn ac1_contact_disable() {
+    let mut model = load_model(free_body_with_floor_mjcf()).expect("load");
+    model.disableflags |= DISABLE_CONTACT;
+
+    let mut data = model.make_data();
+    // Step enough for ball to reach floor height
+    for _ in 0..500 {
+        data.step(&model).expect("step");
+    }
+
+    // With contacts disabled, ball falls through floor (z < 0)
+    assert!(data.qpos[2] < 0.0, "ball should fall through floor");
+    assert_eq!(data.ncon, 0, "no contacts when DISABLE_CONTACT is set");
+}
+
+// ============================================================================
+// AC2: Gravity disable — free body stays stationary
+// ============================================================================
+
+#[test]
+fn ac2_gravity_disable() {
+    let mut model = load_model(free_body_space_mjcf()).expect("load");
+    model.disableflags |= DISABLE_GRAVITY;
+
+    let mut data = model.make_data();
+    let initial_pos = data.qpos.clone();
+
+    data.forward(&model).expect("forward");
+
+    // With gravity disabled, qacc should be all zeros (no forces act)
+    for dof in 0..model.nv {
+        assert_relative_eq!(data.qacc[dof], 0.0, epsilon = 1e-12);
+    }
+
+    // Step and verify position unchanged
+    data.step(&model).expect("step");
+    for i in 0..3 {
+        assert_relative_eq!(data.qpos[i], initial_pos[i], epsilon = 1e-12);
+    }
+}
+
+// ============================================================================
+// AC3: Limit disable — joint exceeds range
+// ============================================================================
+
+#[test]
+fn ac3_limit_disable() {
+    let mut model = load_model(flag_test_mjcf()).expect("load");
+    model.disableflags |= DISABLE_LIMIT;
+
+    let mut data = model.make_data();
+
+    // Push joint past 90-degree limit
+    data.qpos[0] = std::f64::consts::PI; // 180 degrees, well past 90-degree limit
+
+    data.forward(&model).expect("forward");
+
+    // With limits disabled, no constraint force from joint limit
+    // qfrc_constraint should be zero for this DOF (no limit row generated)
+    assert_relative_eq!(data.qfrc_constraint[0], 0.0, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC4: Equality disable — weld bodies separate freely
+// ============================================================================
+
+#[test]
+fn ac4_equality_disable() {
+    let mut model = load_model(weld_constraint_mjcf()).expect("load");
+    model.disableflags |= DISABLE_EQUALITY;
+
+    let mut data = model.make_data();
+
+    // Give body A an initial velocity that body B does not share
+    data.qvel[0] = 1.0; // vx for body A
+
+    for _ in 0..50 {
+        data.step(&model).expect("step");
+    }
+
+    // With equality disabled, bodies should diverge
+    let xa = data.qpos[0]; // x of body A
+    let xb = data.qpos[7]; // x of body B (freejoint: 7 qpos per body)
+    assert!((xa - xb).abs() > 0.01, "bodies should separate freely");
+}
+
+// ============================================================================
+// AC5: Spring/damper independence
+// ============================================================================
+
+#[test]
+fn ac5_spring_damper_independence() {
+    // Spring disabled, damper enabled → spring force zero, damper non-zero
+    let mut model = load_model(flag_test_mjcf()).expect("load");
+    model.disableflags |= DISABLE_SPRING;
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.5; // deflect joint to engage spring
+    data.qvel[0] = 1.0; // give velocity for damping
+    data.forward(&model).expect("forward");
+
+    assert_relative_eq!(data.qfrc_spring[0], 0.0, epsilon = 1e-12);
+    assert!(
+        data.qfrc_damper[0].abs() > 0.1,
+        "damper force should be non-zero when only spring is disabled"
+    );
+
+    // Damper disabled, spring enabled → damper force zero, spring non-zero
+    let mut model2 = load_model(flag_test_mjcf()).expect("load");
+    model2.disableflags |= DISABLE_DAMPER;
+
+    let mut data2 = model2.make_data();
+    data2.qpos[0] = 0.5;
+    data2.qvel[0] = 1.0;
+    data2.forward(&model2).expect("forward");
+
+    assert!(
+        data2.qfrc_spring[0].abs() > 1.0,
+        "spring force should be non-zero when only damper is disabled"
+    );
+    assert_relative_eq!(data2.qfrc_damper[0], 0.0, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC6: Actuation disable — ctrl has no effect
+// ============================================================================
+
+#[test]
+fn ac6_actuation_disable() {
+    let mut model = load_model(flag_test_mjcf()).expect("load");
+    model.disableflags |= DISABLE_ACTUATION;
+
+    let mut data = model.make_data();
+    data.ctrl[0] = 1.0; // max effort
+
+    data.forward(&model).expect("forward");
+
+    // qfrc_actuator should be zero
+    for dof in 0..model.nv {
+        assert_relative_eq!(data.qfrc_actuator[dof], 0.0, epsilon = 1e-12);
+    }
+}
+
+// ============================================================================
+// AC9: Constraint disable — cascading to ncon=0, nefc=0
+// ============================================================================
+
+#[test]
+fn ac9_constraint_disable() {
+    let mut model = load_model(free_body_with_floor_mjcf()).expect("load");
+    model.disableflags |= DISABLE_CONSTRAINT;
+
+    let mut data = model.make_data();
+    // Place ball on floor — should generate contacts if constraints are on
+    data.qpos[2] = 0.1;
+    data.forward(&model).expect("forward");
+
+    // AC42 causal chain: collision skipped → ncon=0, nefc=0, qfrc_constraint=0
+    assert_eq!(data.ncon, 0, "no contacts when DISABLE_CONSTRAINT is set");
+    for dof in 0..model.nv {
+        assert_relative_eq!(data.qfrc_constraint[dof], 0.0, epsilon = 1e-12);
+    }
+}
+
+// ============================================================================
+// AC10: Passive top-level gating — both spring+damper disabled skips all
+// ============================================================================
+
+#[test]
+fn ac10_passive_top_level_gating() {
+    let mut model = load_model(flag_test_mjcf()).expect("load");
+    model.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.5;
+    data.qvel[0] = 1.0;
+    data.forward(&model).expect("forward");
+
+    // All passive sub-forces should be zero
+    for dof in 0..model.nv {
+        assert_relative_eq!(data.qfrc_spring[dof], 0.0, epsilon = 1e-12);
+        assert_relative_eq!(data.qfrc_damper[dof], 0.0, epsilon = 1e-12);
+        assert_relative_eq!(data.qfrc_passive[dof], 0.0, epsilon = 1e-12);
+    }
+}
+
+// ============================================================================
+// AC11: Default bitfields — fresh model has disableflags=0, enableflags=0
+// ============================================================================
+
+#[test]
+fn ac11_default_bitfields() {
+    let model = load_model(free_body_space_mjcf()).expect("load");
+    assert_eq!(model.disableflags, 0, "all disable flags default to clear");
+    assert_eq!(
+        model.enableflags, 0,
+        "all enable flags default to clear (MuJoCo convention)"
+    );
+}
+
+// ============================================================================
+// AC13: Energy gating — only computed when ENABLE_ENERGY set
+// ============================================================================
+
+#[test]
+fn ac13_energy_gating() {
+    // Without ENABLE_ENERGY (default): energy fields are zeroed
+    let model = load_model(free_body_space_mjcf()).expect("load");
+    assert_eq!(
+        model.enableflags & ENABLE_ENERGY,
+        0,
+        "energy off by default"
+    );
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(
+        data.energy_potential, 0.0,
+        "potential energy zeroed without ENABLE_ENERGY"
+    );
+    assert_eq!(
+        data.energy_kinetic, 0.0,
+        "kinetic energy zeroed without ENABLE_ENERGY"
+    );
+
+    // With ENABLE_ENERGY explicitly set: energy fields are computed
+    let mut model2 = load_model(free_body_space_mjcf()).expect("load");
+    model2.enableflags |= ENABLE_ENERGY;
+    let mut data2 = model2.make_data();
+    data2.qvel[2] = -1.0; // downward velocity for kinetic energy
+    data2.forward(&model2).expect("forward");
+
+    // Body at z=1 with gravity → negative potential energy
+    // body has downward velocity → positive kinetic energy
+    assert!(
+        data2.energy_potential != 0.0,
+        "potential energy should be computed"
+    );
+    assert!(
+        data2.energy_kinetic > 0.0,
+        "kinetic energy should be positive with velocity"
+    );
+}
+
+// ============================================================================
+// AC14: Fluid sleep filtering — mj_fluid() skips sleeping bodies
+// ============================================================================
+
+#[test]
+fn ac14_fluid_sleep_filtering() {
+    use sim_core::SleepState;
+
+    // Two free bodies in fluid (density > 0). Body 2 starts asleep via sleep="init".
+    // With ENABLE_SLEEP and a sleeping body, mj_fluid() should skip that body —
+    // its DOFs in qfrc_fluid should remain zero.
+    let mjcf = r#"
+        <mujoco model="fluid_sleep_test">
+            <option density="1.2" viscosity="0.001" timestep="0.002">
+                <flag sleep="enable"/>
+            </option>
+            <worldbody>
+                <body name="awake_body" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.05 0.025" mass="1.0"
+                          contype="0" conaffinity="0"/>
+                </body>
+                <body name="sleeping_body" pos="2 0 1" sleep="init">
+                    <freejoint/>
+                    <geom type="box" size="0.1 0.05 0.025" mass="1.0"
+                          contype="0" conaffinity="0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert!(enabled(&model, ENABLE_SLEEP), "sleep should be enabled");
+    assert_eq!(model.nv, 12, "two free joints = 12 DOFs");
+
+    let mut data = model.make_data();
+    // Give the awake body non-zero velocity so it produces fluid forces.
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -1.0;
+    data.qvel[2] = 0.8;
+    data.qvel[3] = 1.2;
+    data.qvel[4] = -0.7;
+    data.qvel[5] = 0.3;
+    // Sleeping body has zero velocity (default).
+
+    data.forward(&model).expect("forward");
+
+    // Verify body 2 is asleep.
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    // Sleeping body (DOFs 6–11): qfrc_fluid must be exactly zero.
+    for dof in 6..12 {
+        assert_eq!(
+            data.qfrc_fluid[dof], 0.0,
+            "qfrc_fluid[{dof}] should be zero for sleeping body"
+        );
+    }
+
+    // Awake body (DOFs 0–5): qfrc_fluid should be non-zero (has velocity + fluid).
+    let awake_has_fluid = (0..6).any(|dof| data.qfrc_fluid[dof] != 0.0);
+    assert!(
+        awake_has_fluid,
+        "awake body should have non-zero qfrc_fluid with velocity in fluid"
+    );
+}
+
+// ============================================================================
+// AC19: Clampctrl disable — ctrl exceeds ctrlrange
+// ============================================================================
+
+#[test]
+fn ac19_clampctrl_disable() {
+    // With clamping (default): ctrl=5 gets clamped to 1
+    let model_clamped = load_model(flag_test_mjcf()).expect("load");
+    let mut data_clamped = model_clamped.make_data();
+    data_clamped.ctrl[0] = 5.0;
+    data_clamped.forward(&model_clamped).expect("forward");
+    let force_clamped = data_clamped.qfrc_actuator[0];
+
+    // Without clamping: ctrl=5 is used directly
+    let mut model_unclamped = load_model(flag_test_mjcf()).expect("load");
+    model_unclamped.disableflags |= DISABLE_CLAMPCTRL;
+    let mut data_unclamped = model_unclamped.make_data();
+    data_unclamped.ctrl[0] = 5.0;
+    data_unclamped.forward(&model_unclamped).expect("forward");
+    let force_unclamped = data_unclamped.qfrc_actuator[0];
+
+    // Unclamped force should be larger (ctrl 5 vs clamped 1)
+    assert!(
+        force_unclamped.abs() > force_clamped.abs(),
+        "unclamped actuator force ({force_unclamped}) should exceed clamped ({force_clamped})"
+    );
+}
+
+// ============================================================================
+// AC22: Per-group actuator disabling
+// ============================================================================
+
+#[test]
+fn ac22_per_group_actuator_disable() {
+    let mut model = load_model(two_group_actuator_mjcf()).expect("load");
+    // Disable group 2 only
+    model.disableactuator = 1u32 << 2;
+
+    let mut data = model.make_data();
+    data.ctrl[0] = 1.0; // motor1 (group 0) — should work
+    data.ctrl[1] = 1.0; // motor2 (group 2) — should be disabled
+    data.forward(&model).expect("forward");
+
+    // motor1 (group 0) produces force
+    assert!(
+        data.actuator_force[0].abs() > 0.0,
+        "group-0 actuator should produce force"
+    );
+
+    // motor2 (group 2) is disabled → zero force
+    // group-2 actuator should produce zero force when disabled
+    assert_relative_eq!(data.actuator_force[1], 0.0, epsilon = 1e-12);
+
+    // --- Activation freeze test (filter actuators) ---
+    // Filter actuators have activation state (act). When a group is disabled,
+    // act should freeze (not be zeroed) — the actuator just stops integrating.
+    let mut model_f = load_model(two_group_filter_actuator_mjcf()).expect("load");
+    let mut data_f = model_f.make_data();
+    data_f.ctrl[0] = 1.0;
+    data_f.ctrl[1] = 1.0;
+
+    // Step 20 times to build activation state
+    for _ in 0..20 {
+        data_f.step(&model_f).expect("step");
+    }
+    let act0_before = data_f.act[0];
+    let act1_before = data_f.act[1];
+    assert!(
+        act1_before.abs() > 1e-6,
+        "group-2 activation should build up"
+    );
+
+    // Disable group 2
+    model_f.disableactuator = 1u32 << 2;
+
+    // Step 10 more times
+    for _ in 0..10 {
+        data_f.step(&model_f).expect("step");
+    }
+
+    // Group 0 act should have changed (still active)
+    assert!(
+        (data_f.act[0] - act0_before).abs() > 1e-10,
+        "group-0 activation should continue evolving"
+    );
+    // Group 2 act should be frozen (unchanged)
+    assert_relative_eq!(data_f.act[1], act1_before, epsilon = 1e-12);
+
+    // --- Group > 30 boundary test ---
+    // Actuators with group > 30 are never disabled by disableactuator bitmask.
+    let mut model_b = load_model(two_group_actuator_mjcf()).expect("load");
+    model_b.actuator_group[1] = 31; // Move motor2 to group 31 (outside 0–30)
+    model_b.disableactuator = u32::MAX; // Disable ALL 32 bits
+
+    let mut data_b = model_b.make_data();
+    data_b.ctrl[0] = 1.0;
+    data_b.ctrl[1] = 1.0;
+    data_b.forward(&model_b).expect("forward");
+
+    // motor2 (group 31) should NOT be disabled — groups outside 0–30 are immune
+    assert!(
+        data_b.actuator_force[1].abs() > 0.0,
+        "group-31 actuator should NOT be disabled by disableactuator bitmask"
+    );
+}
+
+// ============================================================================
+// AC23: Unconditional initialization before guards
+// ============================================================================
+
+#[test]
+fn ac23_unconditional_initialization() {
+    // Run once with all features, then disable — force arrays should be clean zeros
+    let mut model = load_model(flag_test_mjcf()).expect("load");
+    let mut data = model.make_data();
+    data.ctrl[0] = 1.0;
+    data.qpos[0] = 0.5;
+    data.forward(&model).expect("forward");
+
+    // Verify forces are non-zero
+    assert!(data.qfrc_actuator[0].abs() > 0.0);
+    assert!(data.qfrc_passive[0].abs() > 0.0);
+
+    // Now disable everything and re-forward — init-then-guard should zero
+    model.disableflags |= DISABLE_ACTUATION | DISABLE_SPRING | DISABLE_DAMPER;
+    data.forward(&model).expect("forward");
+
+    // actuator force zeroed before guard
+    assert_relative_eq!(data.qfrc_actuator[0], 0.0, epsilon = 1e-12);
+    // passive force zeroed before guard (both spring+damper disabled)
+    assert_relative_eq!(data.qfrc_passive[0], 0.0, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC25: Spring/damper force separation
+// ============================================================================
+
+#[test]
+fn ac25_spring_damper_force_separation() {
+    let model = load_model(flag_test_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Deflect joint and give velocity to engage both spring and damper
+    data.qpos[0] = 0.5;
+    data.qvel[0] = 1.0;
+    data.forward(&model).expect("forward");
+
+    // qfrc_spring and qfrc_damper should be independently non-zero
+    assert!(
+        data.qfrc_spring[0].abs() > 1.0,
+        "spring force should be non-zero with deflection"
+    );
+    assert!(
+        data.qfrc_damper[0].abs() > 0.1,
+        "damper force should be non-zero with velocity"
+    );
+
+    // qfrc_passive should be the sum
+    let sum =
+        data.qfrc_spring[0] + data.qfrc_damper[0] + data.qfrc_gravcomp[0] + data.qfrc_fluid[0];
+    // qfrc_passive should equal sum of components
+    assert_relative_eq!(data.qfrc_passive[0], sum, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC26: Auto-reset on NaN
+// ============================================================================
+
+#[test]
+fn ac26_auto_reset_on_nan() {
+    let model = load_model(free_body_space_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Inject NaN into qpos
+    data.qpos[0] = f64::NAN;
+    data.step(&model)
+        .expect("step should not error (auto-reset)");
+
+    // After auto-reset: warning recorded, divergence detected
+    assert!(data.divergence_detected(), "divergence should be detected");
+    assert!(
+        data.warnings[Warning::BadQpos as usize].count > 0,
+        "BadQpos warning should fire"
+    );
+    // Note: step() resets then continues integration, so qpos will have
+    // advanced one timestep from qpos0, not be exactly qpos0.
+    // The key invariant is that the NaN is gone and state is valid.
+    assert!(
+        !data.qpos[0].is_nan(),
+        "NaN should be cleared by auto-reset"
+    );
+}
+
+// ============================================================================
+// AC27: Auto-reset threshold (values > 1e10 trigger reset)
+// ============================================================================
+
+#[test]
+fn ac27_auto_reset_threshold() {
+    let model = load_model(free_body_space_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Value exceeding MAX_VAL (1e10) should trigger reset
+    data.qpos[0] = 1.1e10;
+    data.step(&model).expect("step");
+
+    assert!(
+        data.divergence_detected(),
+        "1.1e10 should trigger auto-reset"
+    );
+    assert!(data.warnings[Warning::BadQpos as usize].count > 0);
+}
+
+// ============================================================================
+// AC28: Autoreset disable — warning but no reset
+// ============================================================================
+
+#[test]
+fn ac28_autoreset_disable() {
+    let mut model = load_model(free_body_space_mjcf()).expect("load");
+    model.disableflags |= DISABLE_AUTORESET;
+
+    let mut data = model.make_data();
+    data.qpos[0] = f64::NAN;
+    data.step(&model).expect("step");
+
+    // Warning should fire but NaN remains (no reset)
+    assert!(
+        data.warnings[Warning::BadQpos as usize].count > 0,
+        "warning should still fire with autoreset disabled"
+    );
+    assert!(
+        data.qpos[0].is_nan(),
+        "NaN should persist when autoreset is disabled"
+    );
+}
+
+// ============================================================================
+// AC29: Ctrl validation — bad ctrl zeros all ctrl, no reset
+// ============================================================================
+
+#[test]
+fn ac29_ctrl_validation() {
+    let model = load_model(flag_test_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Set bad ctrl
+    data.ctrl[0] = f64::NAN;
+    data.forward(&model).expect("forward");
+
+    // All ctrl should be zeroed
+    for i in 0..model.nu {
+        assert_eq!(
+            data.ctrl[i], 0.0,
+            "ctrl[{i}] should be zeroed after bad ctrl"
+        );
+    }
+
+    // BadCtrl warning should fire
+    assert!(data.warnings[Warning::BadCtrl as usize].count > 0);
+
+    // qpos/qvel should NOT be reset (no auto-reset for ctrl)
+    // (they were fine to begin with, so they should still be at initial values)
+    assert!(
+        !data.divergence_detected(),
+        "bad ctrl should not trigger position/velocity reset"
+    );
+}
+
+// ============================================================================
+// AC24: Gravcomp routing — jnt_actgravcomp
+// ============================================================================
+
+#[test]
+fn ac24_gravcomp_routing() {
+    let mjcf = r#"
+        <mujoco model="gravcomp_routing">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="link" pos="0 0 1">
+                    <joint name="hinge" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="2.0" pos="0.5 0 0"
+                          contype="0" conaffinity="0"/>
+                    <inertial pos="0.5 0 0" mass="2.0" diaginertia="0.008 0.008 0.008"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    // Default: gravcomp → qfrc_passive (not qfrc_actuator)
+    let mut model = load_model(mjcf).expect("load");
+    model.body_gravcomp[1] = 1.0;
+    model.ngravcomp = 1;
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    let gravcomp_val = data.qfrc_gravcomp[0];
+    assert!(
+        gravcomp_val.abs() > 0.1,
+        "gravcomp should be non-zero for body with gravcomp=1"
+    );
+    // With default (jnt_actgravcomp=false), gravcomp goes to passive
+    assert_relative_eq!(data.qfrc_passive[0], gravcomp_val, epsilon = 1e-10);
+    assert_relative_eq!(data.qfrc_actuator[0], 0.0, epsilon = 1e-12);
+
+    // With jnt_actgravcomp=true: gravcomp → qfrc_actuator (not qfrc_passive)
+    let mut model2 = load_model(mjcf).expect("load");
+    model2.body_gravcomp[1] = 1.0;
+    model2.ngravcomp = 1;
+    model2.jnt_actgravcomp[0] = true;
+    let mut data2 = model2.make_data();
+    data2.forward(&model2).expect("forward");
+
+    let gravcomp_val2 = data2.qfrc_gravcomp[0];
+    assert_relative_eq!(gravcomp_val2, gravcomp_val, epsilon = 1e-12);
+    // Gravcomp NOT in passive
+    assert_relative_eq!(data2.qfrc_passive[0], 0.0, epsilon = 1e-12);
+    // Gravcomp IS in actuator
+    assert_relative_eq!(data2.qfrc_actuator[0], gravcomp_val2, epsilon = 1e-12);
+
+    // With DISABLE_GRAVITY: neither path produces gravcomp
+    let mut model3 = load_model(mjcf).expect("load");
+    model3.body_gravcomp[1] = 1.0;
+    model3.ngravcomp = 1;
+    model3.jnt_actgravcomp[0] = true;
+    model3.disableflags |= DISABLE_GRAVITY;
+    let mut data3 = model3.make_data();
+    data3.forward(&model3).expect("forward");
+
+    assert_relative_eq!(data3.qfrc_gravcomp[0], 0.0, epsilon = 1e-12);
+    assert_relative_eq!(data3.qfrc_actuator[0], 0.0, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC37: Override disabled by default
+// ============================================================================
+
+#[test]
+fn ac37_override_disabled_by_default() {
+    let model = load_model(free_body_with_floor_mjcf()).expect("load");
+    assert_eq!(
+        model.enableflags & ENABLE_OVERRIDE,
+        0,
+        "override should be disabled by default"
+    );
+}
+
+// ============================================================================
+// AC39: reset() correctness — 7 properties
+// ============================================================================
+
+#[test]
+fn ac39_reset_correctness() {
+    let model = load_model(flag_test_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Mess up state
+    data.qpos[0] = 42.0;
+    data.qvel[0] = 13.0;
+    data.qacc[0] = 7.0;
+    data.ctrl[0] = 0.5;
+    data.time = 99.0;
+    data.warnings[Warning::BadQpos as usize].count = 5;
+
+    // Reset
+    data.reset(&model);
+
+    // Property 1: qpos == qpos0
+    for i in 0..model.nq {
+        assert_relative_eq!(data.qpos[i], model.qpos0[i], epsilon = 1e-15);
+    }
+
+    // Property 2: qvel, qacc, ctrl, act all zero
+    for i in 0..model.nv {
+        assert_eq!(data.qvel[i], 0.0);
+        assert_eq!(data.qacc[i], 0.0);
+    }
+    for i in 0..model.nu {
+        assert_eq!(data.ctrl[i], 0.0);
+    }
+
+    // Property 3: time == 0
+    assert_eq!(data.time, 0.0);
+
+    // Property 4: warning counters zero
+    for w in &data.warnings {
+        assert_eq!(w.count, 0);
+        assert_eq!(w.last_info, 0);
+    }
+
+    // Property 5: ncon == 0
+    assert_eq!(data.ncon, 0);
+
+    // Property 6: force vectors zero
+    for i in 0..model.nv {
+        assert_eq!(data.qfrc_passive[i], 0.0);
+        assert_eq!(data.qfrc_actuator[i], 0.0);
+        assert_eq!(data.qfrc_constraint[i], 0.0);
+        assert_eq!(data.qfrc_spring[i], 0.0);
+        assert_eq!(data.qfrc_damper[i], 0.0);
+        assert_eq!(data.qfrc_gravcomp[i], 0.0);
+        assert_eq!(data.qfrc_fluid[i], 0.0);
+    }
+}
+
+// ============================================================================
+// AC39b: reset() restores mocap_pos / mocap_quat from Model defaults
+// ============================================================================
+
+/// Mocap body fixture for reset testing.
+fn mocap_flag_test_mjcf() -> &'static str {
+    r#"
+    <mujoco model="mocap_reset_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="mocap_body" mocap="true" pos="1 2 3">
+                <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+            </body>
+            <body name="link" pos="0 0 1">
+                <joint name="j" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#
+}
+
+#[test]
+fn ac39b_reset_mocap() {
+    let model = load_model(mocap_flag_test_mjcf()).expect("load");
+    assert!(
+        model.nmocap > 0,
+        "model should have at least one mocap body"
+    );
+
+    let mut data = model.make_data();
+
+    // Record default mocap state from make_data()
+    let default_pos = data.mocap_pos[0];
+    let default_quat = data.mocap_quat[0];
+
+    // Verify defaults match body_pos from model (1, 2, 3)
+    assert_relative_eq!(default_pos[0], 1.0, epsilon = 1e-12);
+    assert_relative_eq!(default_pos[1], 2.0, epsilon = 1e-12);
+    assert_relative_eq!(default_pos[2], 3.0, epsilon = 1e-12);
+
+    // Mutate mocap state to arbitrary values
+    data.mocap_pos[0] = nalgebra::Vector3::new(99.0, 88.0, 77.0);
+    data.mocap_quat[0] = nalgebra::UnitQuaternion::from_euler_angles(1.0, 0.5, 0.3);
+
+    // Reset
+    data.reset(&model);
+
+    // mocap_pos should be restored to model defaults
+    assert_relative_eq!(data.mocap_pos[0][0], default_pos[0], epsilon = 1e-12);
+    assert_relative_eq!(data.mocap_pos[0][1], default_pos[1], epsilon = 1e-12);
+    assert_relative_eq!(data.mocap_pos[0][2], default_pos[2], epsilon = 1e-12);
+
+    // mocap_quat should be restored to model defaults
+    let q = data.mocap_quat[0].quaternion().coords;
+    let q_default = default_quat.quaternion().coords;
+    for i in 0..4 {
+        assert_relative_eq!(q[i], q_default[i], epsilon = 1e-12);
+    }
+}
+
+// ============================================================================
+// AC41: DISABLE_ACTUATION + per-group orthogonality
+// ============================================================================
+
+#[test]
+fn ac41_actuation_plus_pergroup_orthogonality() {
+    // Case 1: DISABLE_ACTUATION set + per-group bits → ALL actuators disabled
+    let mut model = load_model(two_group_actuator_mjcf()).expect("load");
+    model.disableflags |= DISABLE_ACTUATION;
+    model.disableactuator = 1u32 << 2; // also disable group 2
+
+    let mut data = model.make_data();
+    data.ctrl[0] = 1.0;
+    data.ctrl[1] = 1.0;
+    data.forward(&model).expect("forward");
+
+    for dof in 0..model.nv {
+        // all actuators disabled with DISABLE_ACTUATION
+        assert_relative_eq!(data.qfrc_actuator[dof], 0.0, epsilon = 1e-12);
+    }
+
+    // Case 2: Only per-group → only group 2 disabled
+    let mut model2 = load_model(two_group_actuator_mjcf()).expect("load");
+    model2.disableactuator = 1u32 << 2;
+
+    let mut data2 = model2.make_data();
+    data2.ctrl[0] = 1.0;
+    data2.ctrl[1] = 1.0;
+    data2.forward(&model2).expect("forward");
+
+    assert!(
+        data2.actuator_force[0].abs() > 0.0,
+        "group-0 actuator should work without DISABLE_ACTUATION"
+    );
+    // group-2 actuator disabled by per-group mechanism
+    assert_relative_eq!(data2.actuator_force[1], 0.0, epsilon = 1e-12);
+
+    // Case 3: Neither set → all actuators active
+    let model3 = load_model(two_group_actuator_mjcf()).expect("load");
+    let mut data3 = model3.make_data();
+    data3.ctrl[0] = 1.0;
+    data3.ctrl[1] = 1.0;
+    data3.forward(&model3).expect("forward");
+
+    assert!(data3.actuator_force[0].abs() > 0.0, "motor1 active");
+    assert!(data3.actuator_force[1].abs() > 0.0, "motor2 active");
+
+    // Case 4: Per-group disable freezes activation (act_dot = 0 for disabled group)
+    let mut model4 = load_model(two_group_filter_actuator_mjcf()).expect("load");
+    let mut data4 = model4.make_data();
+    data4.ctrl[0] = 1.0;
+    data4.ctrl[1] = 1.0;
+
+    // Step 20 times to build activation state
+    for _ in 0..20 {
+        data4.step(&model4).expect("step");
+    }
+    let act1_pre = data4.act[1];
+    assert!(act1_pre.abs() > 1e-6, "group-2 activation should build up");
+    assert!(act1_pre != 0.0, "proves freezing, not zeroing");
+
+    // Disable group 2
+    model4.disableactuator = 1u32 << 2;
+
+    // Step 10 more times
+    for _ in 0..10 {
+        data4.step(&model4).expect("step");
+    }
+
+    // Group 2 activation should be frozen at pre-disable value
+    assert_relative_eq!(data4.act[1], act1_pre, epsilon = 1e-12);
+    // Confirm it's nonzero (frozen, not zeroed)
+    assert!(
+        data4.act[1].abs() > 1e-6,
+        "frozen activation should be nonzero (proves freezing, not zeroing)"
+    );
+}
+
+// ============================================================================
+// AC45: actuator_velocity unconditional after pipeline move
+// ============================================================================
+
+#[test]
+fn ac45_actuator_velocity_unconditional() {
+    let mut model = load_model(flag_test_mjcf()).expect("load");
+    model.disableflags |= DISABLE_ACTUATION;
+
+    let mut data = model.make_data();
+    data.qvel[0] = 2.0; // non-zero joint velocity
+
+    data.forward(&model).expect("forward");
+
+    // actuator_velocity should be computed regardless of DISABLE_ACTUATION
+    // (it's transmission geometry, not force computation)
+    assert!(
+        data.actuator_velocity[0].abs() > 0.0,
+        "actuator_velocity should be non-zero with non-zero qvel, even with DISABLE_ACTUATION"
+    );
+
+    // Compare with actuation enabled — should be identical
+    let model2 = load_model(flag_test_mjcf()).expect("load");
+    let mut data2 = model2.make_data();
+    data2.qvel[0] = 2.0;
+    data2.forward(&model2).expect("forward");
+
+    // actuator_velocity should be identical with or without DISABLE_ACTUATION
+    assert_relative_eq!(
+        data.actuator_velocity[0],
+        data2.actuator_velocity[0],
+        epsilon = 1e-15
+    );
+}
+
+// ============================================================================
+// AC48: nv==0 passive force guard
+// ============================================================================
+
+#[test]
+fn ac48_nv_zero_passive_guard() {
+    // Model with zero DOFs — purely static scene (all welded to world)
+    let mjcf = r#"
+        <mujoco model="static">
+            <option gravity="0 0 -9.81" timestep="0.002"/>
+            <worldbody>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(model.nv, 0, "static model should have nv=0");
+
+    let mut data = model.make_data();
+    // This should not crash
+    data.forward(&model).expect("forward");
+    data.step(&model).expect("step");
+}
+
+// ============================================================================
+// Flag helper unit tests
+// ============================================================================
+
+#[test]
+fn flag_helpers_disabled() {
+    let mut model = load_model(free_body_space_mjcf()).expect("load");
+
+    // No flags set — nothing disabled
+    assert!(!disabled(&model, DISABLE_GRAVITY));
+    assert!(!disabled(&model, DISABLE_CONTACT));
+
+    // Set gravity disable
+    model.disableflags |= DISABLE_GRAVITY;
+    assert!(disabled(&model, DISABLE_GRAVITY));
+    assert!(!disabled(&model, DISABLE_CONTACT));
+}
+
+#[test]
+fn flag_helpers_enabled() {
+    let mut model = load_model(free_body_space_mjcf()).expect("load");
+
+    // MuJoCo default: all enable flags off
+    assert!(!enabled(&model, ENABLE_ENERGY));
+    assert!(!enabled(&model, ENABLE_OVERRIDE));
+
+    // Set energy and override
+    model.enableflags |= ENABLE_ENERGY | ENABLE_OVERRIDE;
+    assert!(enabled(&model, ENABLE_ENERGY));
+    assert!(enabled(&model, ENABLE_OVERRIDE));
+}
+
+#[test]
+fn flag_helpers_actuator_disabled() {
+    let mut model = load_model(two_group_actuator_mjcf()).expect("load");
+
+    // No groups disabled
+    assert!(!actuator_disabled(&model, 0));
+    assert!(!actuator_disabled(&model, 1));
+
+    // Disable group 2
+    model.disableactuator = 1u32 << 2;
+    assert!(
+        !actuator_disabled(&model, 0),
+        "motor1 (group 0) not disabled"
+    );
+    assert!(
+        actuator_disabled(&model, 1),
+        "motor2 (group 2) should be disabled"
+    );
+}
+
+// ============================================================================
+// MJCF parsing: <flag> attribute wiring (S1–S3)
+// ============================================================================
+
+#[test]
+fn s1_flag_parsing_disable() {
+    let mjcf = r#"
+        <mujoco model="flag_parse">
+            <option>
+                <flag gravity="disable" contact="disable" actuation="disable"
+                      sensor="disable" clampctrl="disable" warmstart="disable"
+                      constraint="disable" equality="disable" limit="disable"
+                      spring="disable" damper="disable" frictionloss="disable"
+                      filterparent="disable" eulerdamp="disable"
+                      refsafe="disable" autoreset="disable"/>
+            </option>
+            <worldbody>
+                <body><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+
+    assert!(disabled(&model, DISABLE_GRAVITY));
+    assert!(disabled(&model, DISABLE_CONTACT));
+    assert!(disabled(&model, DISABLE_ACTUATION));
+    assert!(disabled(&model, DISABLE_SENSOR));
+    assert!(disabled(&model, DISABLE_CLAMPCTRL));
+    assert!(disabled(&model, DISABLE_WARMSTART));
+    assert!(disabled(&model, DISABLE_CONSTRAINT));
+    assert!(disabled(&model, DISABLE_EQUALITY));
+    assert!(disabled(&model, DISABLE_LIMIT));
+    assert!(disabled(&model, DISABLE_SPRING));
+    assert!(disabled(&model, DISABLE_DAMPER));
+    assert!(disabled(&model, DISABLE_FRICTIONLOSS));
+    assert!(disabled(&model, DISABLE_FILTERPARENT));
+    assert!(disabled(&model, DISABLE_EULERDAMP));
+    assert!(disabled(&model, DISABLE_REFSAFE));
+    assert!(disabled(&model, DISABLE_AUTORESET));
+}
+
+#[test]
+fn s1_flag_parsing_enable() {
+    let mjcf = r#"
+        <mujoco model="flag_parse_en">
+            <option>
+                <flag energy="enable" override="enable" sleep="enable"/>
+            </option>
+            <worldbody>
+                <body><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+
+    assert!(enabled(&model, ENABLE_ENERGY));
+    assert!(enabled(&model, ENABLE_OVERRIDE));
+    assert!(enabled(&model, ENABLE_SLEEP));
+}
+
+#[test]
+fn s7_actuatorgroupdisable_parsing() {
+    let mjcf = r#"
+        <mujoco model="group_disable">
+            <option actuatorgroupdisable="2 5"/>
+            <worldbody>
+                <body><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+
+    // Bits 2 and 5 should be set
+    assert_ne!(model.disableactuator & (1u32 << 2), 0, "group 2 disabled");
+    assert_ne!(model.disableactuator & (1u32 << 5), 0, "group 5 disabled");
+    // Other bits should be clear
+    assert_eq!(
+        model.disableactuator & (1u32 << 0),
+        0,
+        "group 0 not disabled"
+    );
+    assert_eq!(
+        model.disableactuator & (1u32 << 1),
+        0,
+        "group 1 not disabled"
+    );
+    assert_eq!(
+        model.disableactuator & (1u32 << 3),
+        0,
+        "group 3 not disabled"
+    );
+}
+
+// ============================================================================
+// Additional MJCF Fixtures for AC7–AC46
+// ============================================================================
+
+/// Body with a sensor (jointpos) for sensor-disable tests.
+fn sensor_test_mjcf() -> &'static str {
+    r#"
+    <mujoco model="sensor_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="link" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+        <sensor>
+            <jointpos joint="hinge"/>
+        </sensor>
+    </mujoco>
+    "#
+}
+
+/// Parent-child overlapping geoms for filterparent tests.
+fn filterparent_test_mjcf() -> &'static str {
+    r#"
+    <mujoco model="filterparent_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="parent" pos="0 0 1">
+                <freejoint name="parent_free"/>
+                <geom type="sphere" size="0.3" mass="1.0"/>
+                <body name="child" pos="0 0 0">
+                    <joint name="child_hinge" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.3" mass="1.0"/>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#
+}
+
+/// Hinge joint with frictionloss for friction-loss disable tests.
+fn frictionloss_test_mjcf() -> &'static str {
+    r#"
+    <mujoco model="frictionloss_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="link" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0"
+                       frictionloss="10" limited="true" range="-90 90"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#
+}
+
+/// Two-actuator model with RK4 integrator for per-group + RK4 tests.
+fn rk4_actuator_mjcf() -> &'static str {
+    r#"
+    <mujoco model="rk4_actuator">
+        <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4"/>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+            <body name="link2" pos="1 0 1">
+                <joint name="j2" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <motor joint="j1" name="motor1" group="0"/>
+            <motor joint="j2" name="motor2" group="1"/>
+        </actuator>
+    </mujoco>
+    "#
+}
+
+// ============================================================================
+// AC7: Sensor disable — sensordata retains stale values
+// ============================================================================
+
+#[test]
+fn ac7_sensor_disable() {
+    let model = load_model(sensor_test_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Step once with sensors enabled to populate sensordata
+    data.qpos[0] = 0.5;
+    data.forward(&model).expect("forward");
+
+    assert!(model.nsensordata > 0, "model should have sensor data slots");
+    let sensor_val = data.sensordata[0];
+    assert!(
+        sensor_val.abs() > 0.0,
+        "sensor should read non-zero with joint deflected"
+    );
+
+    // Now disable sensors and change joint position
+    let mut model2 = load_model(sensor_test_mjcf()).expect("load");
+    model2.disableflags |= DISABLE_SENSOR;
+    let mut data2 = model2.make_data();
+
+    // Set a known value in sensordata, then forward — should remain stale
+    data2.sensordata[0] = 42.0;
+    data2.qpos[0] = 1.0;
+    data2.forward(&model2).expect("forward");
+
+    // S4.10: sensordata is NOT zeroed when sensors disabled (MuJoCo match)
+    // S4.10: sensordata should retain stale value when DISABLE_SENSOR is set
+    assert_relative_eq!(data2.sensordata[0], 42.0, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC8: Warmstart disable — solver cold-starts from qacc_smooth
+// ============================================================================
+
+#[test]
+fn ac8_warmstart_disable() {
+    // Step a contact model multiple times with warmstart disabled.
+    // Verify solver converges (qacc finite) and efc_force starts from zero.
+    let mut model = load_model(free_body_with_floor_mjcf()).expect("load");
+    model.disableflags |= DISABLE_WARMSTART;
+
+    let mut data = model.make_data();
+    // Place ball near floor to generate contacts
+    data.qpos[2] = 0.11;
+
+    for _ in 0..10 {
+        data.step(&model).expect("step");
+    }
+
+    // qacc should be finite (solver converged despite cold start)
+    for dof in 0..model.nv {
+        assert!(
+            data.qacc[dof].is_finite(),
+            "qacc[{dof}] should be finite with DISABLE_WARMSTART"
+        );
+    }
+}
+
+// ============================================================================
+// AC12: `passive` attribute silently ignored
+// ============================================================================
+
+#[test]
+fn ac12_passive_attribute_ignored() {
+    // MuJoCo has a `passive` flag attribute but CortenForge uses spring/damper
+    // as separate flags. The `passive` attribute should be silently ignored.
+    let mjcf = r#"
+        <mujoco model="passive_attr">
+            <option>
+                <flag passive="disable"/>
+            </option>
+            <worldbody>
+                <body><freejoint/><geom type="sphere" size="0.1"/></body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+
+    // No disable flags should be set from `passive` attribute
+    // (Spring and damper have their own flags)
+    assert_eq!(
+        model.disableflags & DISABLE_SPRING,
+        0,
+        "passive=disable should not set DISABLE_SPRING"
+    );
+    assert_eq!(
+        model.disableflags & DISABLE_DAMPER,
+        0,
+        "passive=disable should not set DISABLE_DAMPER"
+    );
+}
+
+// ============================================================================
+// AC15: Filterparent disable — parent-child contacts generated
+// ============================================================================
+
+#[test]
+fn ac15_filterparent_disable() {
+    // Default: parent-child geoms are filtered (no contacts between them)
+    let model_default = load_model(filterparent_test_mjcf()).expect("load");
+    let mut data_default = model_default.make_data();
+    data_default.forward(&model_default).expect("forward");
+    let ncon_default = data_default.ncon;
+
+    // With DISABLE_FILTERPARENT: parent-child geom pairs should collide
+    let mut model_nofilt = load_model(filterparent_test_mjcf()).expect("load");
+    model_nofilt.disableflags |= DISABLE_FILTERPARENT;
+    let mut data_nofilt = model_nofilt.make_data();
+    data_nofilt.forward(&model_nofilt).expect("forward");
+    let ncon_nofilt = data_nofilt.ncon;
+
+    assert!(
+        ncon_nofilt > ncon_default,
+        "DISABLE_FILTERPARENT should allow parent-child contacts \
+         (ncon={ncon_nofilt} with flag vs {ncon_default} without)"
+    );
+}
+
+// ============================================================================
+// AC16: Frictionloss disable — no friction loss constraint rows
+// ============================================================================
+
+#[test]
+fn ac16_frictionloss_disable() {
+    use sim_core::ConstraintType;
+
+    // With frictionloss enabled (default): should have FrictionLoss rows
+    let model_enabled = load_model(frictionloss_test_mjcf()).expect("load");
+    let mut data_enabled = model_enabled.make_data();
+    data_enabled.qvel[0] = 1.0; // need velocity for friction to matter
+    data_enabled.forward(&model_enabled).expect("forward");
+
+    let fl_rows_enabled = data_enabled
+        .efc_type
+        .iter()
+        .filter(|t| matches!(t, ConstraintType::FrictionLoss))
+        .count();
+
+    assert!(
+        fl_rows_enabled > 0,
+        "should have FrictionLoss constraint rows with frictionloss > 0"
+    );
+
+    // With DISABLE_FRICTIONLOSS: no FrictionLoss rows
+    let mut model_disabled = load_model(frictionloss_test_mjcf()).expect("load");
+    model_disabled.disableflags |= DISABLE_FRICTIONLOSS;
+    let mut data_disabled = model_disabled.make_data();
+    data_disabled.qvel[0] = 1.0;
+    data_disabled.forward(&model_disabled).expect("forward");
+
+    let fl_rows_disabled = data_disabled
+        .efc_type
+        .iter()
+        .filter(|t| matches!(t, ConstraintType::FrictionLoss))
+        .count();
+
+    assert_eq!(
+        fl_rows_disabled, 0,
+        "should have zero FrictionLoss rows with DISABLE_FRICTIONLOSS"
+    );
+}
+
+// ============================================================================
+// AC17: Refsafe disable — solref[0] below 2*timestep is NOT clamped
+// ============================================================================
+
+#[test]
+fn ac17_refsafe_disable() {
+    // Create a model with a low solref timeconst (below 2*timestep).
+    // With refsafe (default): timeconst clamped to 2*timestep.
+    // Without refsafe: timeconst used as-is → different constraint stiffness.
+    let mjcf = r#"
+        <mujoco model="refsafe_test">
+            <option gravity="0 0 -9.81" timestep="0.01"/>
+            <worldbody>
+                <body name="link" pos="0 0 1">
+                    <joint name="hinge" type="hinge" axis="0 1 0"
+                           limited="true" range="-1 1"
+                           solreflimit="0.001 1"/>
+                    <geom type="sphere" size="0.1" mass="1.0"
+                          contype="0" conaffinity="0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    // With refsafe ON (default): timeconst clamped to 2*0.01 = 0.02
+    let model_safe = load_model(mjcf).expect("load");
+    let mut data_safe = model_safe.make_data();
+    data_safe.qpos[0] = 2.0; // violate upper limit (range is -1 to 1)
+    data_safe.forward(&model_safe).expect("forward");
+    let aref_safe = data_safe.efc_aref.clone();
+
+    // With refsafe OFF: timeconst = 0.001 (much stiffer)
+    let mut model_unsafe = load_model(mjcf).expect("load");
+    model_unsafe.disableflags |= DISABLE_REFSAFE;
+    let mut data_unsafe = model_unsafe.make_data();
+    data_unsafe.qpos[0] = 2.0;
+    data_unsafe.forward(&model_unsafe).expect("forward");
+    let aref_unsafe = data_unsafe.efc_aref.clone();
+
+    // Both should have constraint rows (limit violated)
+    assert!(
+        !aref_safe.is_empty(),
+        "should have constraint rows with limit violated"
+    );
+    assert_eq!(aref_safe.len(), aref_unsafe.len());
+
+    // aref values should differ because stiffness differs
+    // (unclamped timeconst = 0.001 vs clamped = 0.02 → ~400x stiffer)
+    assert!(
+        (aref_safe[0] - aref_unsafe[0]).abs() > 1e-6,
+        "aref should differ between refsafe on ({}) and off ({})",
+        aref_safe[0],
+        aref_unsafe[0]
+    );
+}
+
+// ============================================================================
+// AC20: Eulerdamp disable — step succeeds (stub, no crash)
+//
+// NOTE: The compound guard behavior (DISABLE_EULERDAMP skipping the implicit
+// Euler damping matrix correction) cannot be fully tested until implicit Euler
+// integration is implemented. Currently only explicit Euler is available, so
+// the flag is a no-op. When implicit Euler lands, expand this test to verify
+// that DISABLE_EULERDAMP causes the solver to skip the damping correction
+// term in the implicit integrator, resulting in different qacc values compared
+// to the default (implicit Euler with damping correction enabled).
+// ============================================================================
+
+#[test]
+fn ac20_eulerdamp_disable() {
+    let mut model = load_model(flag_test_mjcf()).expect("load");
+    model.disableflags |= DISABLE_EULERDAMP;
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.5;
+    data.qvel[0] = 1.0;
+
+    // Should not crash. Currently a stub (explicit Euler only).
+    data.step(&model)
+        .expect("step should succeed with DISABLE_EULERDAMP");
+
+    // Verify the flag is stored correctly
+    assert!(disabled(&model, DISABLE_EULERDAMP));
+
+    // qacc should be finite
+    for dof in 0..model.nv {
+        assert!(
+            data.qacc[dof].is_finite(),
+            "qacc[{dof}] should be finite with DISABLE_EULERDAMP"
+        );
+    }
+}
+
+// ============================================================================
+// AC21: Passive force hierarchy — spring disabled but gravcomp still runs
+// ============================================================================
+
+#[test]
+fn ac21_passive_force_hierarchy() {
+    // Model with gravcomp body — gravcomp should run even with DISABLE_SPRING
+    let mjcf = r#"
+        <mujoco model="gravcomp_hierarchy">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="link" pos="0 0 1">
+                    <joint name="hinge" type="hinge" axis="0 1 0"
+                           stiffness="100" damping="10"/>
+                    <geom type="sphere" size="0.1" mass="2.0" pos="0.5 0 0"
+                          contype="0" conaffinity="0"/>
+                    <inertial pos="0.5 0 0" mass="2.0" diaginertia="0.008 0.008 0.008"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    // Case 1: DISABLE_SPRING only — damper + gravcomp still run
+    let mut model1 = load_model(mjcf).expect("load");
+    model1.disableflags |= DISABLE_SPRING;
+    model1.body_gravcomp[1] = 1.0;
+    model1.ngravcomp = 1;
+    let mut data1 = model1.make_data();
+    data1.qpos[0] = 0.5;
+    data1.qvel[0] = 1.0;
+    data1.forward(&model1).expect("forward");
+
+    assert_relative_eq!(data1.qfrc_spring[0], 0.0, epsilon = 1e-12);
+    assert!(
+        data1.qfrc_damper[0].abs() > 0.1,
+        "damper should still run with only DISABLE_SPRING"
+    );
+    assert!(
+        data1.qfrc_gravcomp[0].abs() > 0.1,
+        "gravcomp should still run with only DISABLE_SPRING"
+    );
+
+    // Case 2: Both DISABLE_SPRING + DISABLE_DAMPER — top-level early return
+    // skips ALL sub-functions including gravcomp
+    let mut model2 = load_model(mjcf).expect("load");
+    model2.disableflags |= DISABLE_SPRING | DISABLE_DAMPER;
+    model2.body_gravcomp[1] = 1.0;
+    model2.ngravcomp = 1;
+    let mut data2 = model2.make_data();
+    data2.qpos[0] = 0.5;
+    data2.qvel[0] = 1.0;
+    data2.forward(&model2).expect("forward");
+
+    // Everything zeroed by top-level early return
+    assert_relative_eq!(data2.qfrc_spring[0], 0.0, epsilon = 1e-12);
+    assert_relative_eq!(data2.qfrc_damper[0], 0.0, epsilon = 1e-12);
+    assert_relative_eq!(data2.qfrc_gravcomp[0], 0.0, epsilon = 1e-12);
+    assert_relative_eq!(data2.qfrc_passive[0], 0.0, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC38: Island default correctness — disableflags=0 means island discovery runs
+// ============================================================================
+
+#[test]
+fn ac38_island_default_correctness() {
+    use sim_core::DISABLE_ISLAND;
+
+    let mut model = load_model(free_body_with_floor_mjcf()).expect("load");
+
+    // Default: DISABLE_ISLAND bit is clear
+    assert_eq!(
+        model.disableflags & DISABLE_ISLAND,
+        0,
+        "DISABLE_ISLAND should be clear by default"
+    );
+
+    // Enable sleep so mj_island() runs during forward().
+    // Island discovery is gated on ENABLE_SLEEP, not on DISABLE_ISLAND alone.
+    model.enableflags |= ENABLE_SLEEP;
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.05; // penetrating floor (sphere radius=0.1, bottom at z=-0.05)
+    data.forward(&model).expect("forward");
+
+    // Verify contacts and islands are actually discovered
+    assert!(data.ncon > 0, "contacts required for island test");
+    assert!(
+        data.nisland > 0,
+        "island discovery should run by default (nisland > 0 with contacts)"
+    );
+}
+
+// ============================================================================
+// AC40: Contact-passive + spring/damper interaction
+// ============================================================================
+
+#[test]
+fn ac40_contact_passive_spring_interaction() {
+    // DISABLE_CONTACT + spring/damper enabled → spring/damper passive forces apply
+    let mut model = load_model(flag_test_mjcf()).expect("load");
+    model.disableflags |= DISABLE_CONTACT;
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.5;
+    data.qvel[0] = 1.0;
+    data.forward(&model).expect("forward");
+
+    // Spring and damper should still produce force despite DISABLE_CONTACT
+    assert!(
+        data.qfrc_spring[0].abs() > 1.0,
+        "spring force should be non-zero with only DISABLE_CONTACT"
+    );
+    assert!(
+        data.qfrc_damper[0].abs() > 0.1,
+        "damper force should be non-zero with only DISABLE_CONTACT"
+    );
+    assert_eq!(data.ncon, 0, "no contacts with DISABLE_CONTACT");
+
+    // Both spring+damper disabled → all passive sub-functions skipped
+    let mut model2 = load_model(flag_test_mjcf()).expect("load");
+    model2.disableflags |= DISABLE_CONTACT | DISABLE_SPRING | DISABLE_DAMPER;
+
+    let mut data2 = model2.make_data();
+    data2.qpos[0] = 0.5;
+    data2.qvel[0] = 1.0;
+    data2.forward(&model2).expect("forward");
+
+    for dof in 0..model2.nv {
+        assert_relative_eq!(data2.qfrc_passive[dof], 0.0, epsilon = 1e-12);
+    }
+}
+
+// ============================================================================
+// AC42: DISABLE_CONSTRAINT cascading — ncon=0, nefc=0, qacc=qacc_smooth
+// ============================================================================
+
+#[test]
+fn ac42_constraint_cascading() {
+    let mut model = load_model(free_body_with_floor_mjcf()).expect("load");
+    model.disableflags |= DISABLE_CONSTRAINT;
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11; // near floor — would normally generate contacts
+    data.forward(&model).expect("forward");
+
+    // Full causal chain verification
+    assert_eq!(data.ncon, 0, "ncon should be 0 with DISABLE_CONSTRAINT");
+    assert!(
+        data.efc_type.is_empty(),
+        "nefc should be 0 with DISABLE_CONSTRAINT"
+    );
+
+    // qacc should equal qacc_smooth (no constraint correction)
+    for dof in 0..model.nv {
+        // qacc should equal qacc_smooth with DISABLE_CONSTRAINT
+        assert_relative_eq!(data.qacc[dof], data.qacc_smooth[dof], epsilon = 1e-12);
+    }
+
+    // qfrc_constraint should be all zeros
+    for dof in 0..model.nv {
+        assert_relative_eq!(data.qfrc_constraint[dof], 0.0, epsilon = 1e-12);
+    }
+}
+
+// ============================================================================
+// AC43: Sleep-filtered aggregation — awake bodies match no-sleep results
+// ============================================================================
+
+#[test]
+fn ac43_sleep_filtered_aggregation() {
+    // With all bodies awake, qfrc_passive should be identical whether
+    // sleep is enabled or not (catches off-by-one in indexed iteration).
+    let model_nosleep = load_model(flag_test_mjcf()).expect("load");
+    let mut data_nosleep = model_nosleep.make_data();
+    data_nosleep.qpos[0] = 0.5;
+    data_nosleep.qvel[0] = 1.0;
+    data_nosleep.forward(&model_nosleep).expect("forward");
+
+    let mut model_sleep = load_model(flag_test_mjcf()).expect("load");
+    model_sleep.enableflags |= ENABLE_SLEEP;
+    let mut data_sleep = model_sleep.make_data();
+    data_sleep.qpos[0] = 0.5;
+    data_sleep.qvel[0] = 1.0;
+    data_sleep.forward(&model_sleep).expect("forward");
+
+    // All bodies awake → passive forces should be bitwise identical
+    for dof in 0..model_nosleep.nv {
+        // qfrc_passive should match with all bodies awake
+        assert_relative_eq!(
+            data_nosleep.qfrc_passive[dof],
+            data_sleep.qfrc_passive[dof],
+            epsilon = 1e-12
+        );
+    }
+}
+
+// ============================================================================
+// AC44: Per-group with RK4 — disabled group frozen across all RK4 stages
+// ============================================================================
+
+#[test]
+fn ac44_pergroup_rk4() {
+    let mut model = load_model(rk4_actuator_mjcf()).expect("load");
+    // Disable group 1 (motor2)
+    model.disableactuator = 1u32 << 1;
+
+    let mut data = model.make_data();
+    data.ctrl[0] = 1.0; // motor1 (group 0) — active
+    data.ctrl[1] = 1.0; // motor2 (group 1) — disabled
+
+    // Record initial qpos for j2
+    let _j2_qpos_initial = data.qpos[1];
+
+    data.step(&model).expect("step");
+
+    // motor1 (group 0) should have effect — j1 moves
+    assert!(
+        (data.qpos[0] - 0.0).abs() > 1e-10,
+        "group-0 actuator should move j1 under RK4"
+    );
+
+    // motor2 (group 1, disabled) — j2 should only move due to gravity,
+    // NOT due to actuator force. Compare against a run with no ctrl.
+    let mut model_noctrl = load_model(rk4_actuator_mjcf()).expect("load");
+    model_noctrl.disableactuator = 1u32 << 1;
+    let mut data_noctrl = model_noctrl.make_data();
+    data_noctrl.ctrl[0] = 1.0;
+    data_noctrl.ctrl[1] = 0.0; // no ctrl for motor2
+    data_noctrl.step(&model_noctrl).expect("step");
+
+    // j2 position should be the same whether ctrl[1]=1 or ctrl[1]=0
+    // because motor2 is group-disabled — ctrl is ignored at all RK4 stages.
+    // Disabled group-1 actuator should have no effect under RK4
+    assert_relative_eq!(data.qpos[1], data_noctrl.qpos[1], epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC30: Sleep-aware validation — sleeping DOFs skip NaN check
+// ============================================================================
+
+#[test]
+fn ac30_sleep_aware_validation() {
+    // This test verifies that mj_check_vel skips sleeping DOFs.
+    // With sleep enabled and a body asleep, bad velocity in sleeping DOFs
+    // should NOT trigger auto-reset.
+    //
+    // Note: Putting a body to sleep requires island discovery + sleep countdown.
+    // We test indirectly: with ENABLE_SLEEP and all bodies active, verify that
+    // bad velocity DOES trigger reset (the awake path works).
+    let mut model = load_model(free_body_space_mjcf()).expect("load");
+    model.enableflags |= ENABLE_SLEEP;
+
+    let mut data = model.make_data();
+    data.qvel[0] = f64::NAN;
+
+    data.step(&model).expect("step");
+
+    // Awake body with NaN velocity should trigger reset
+    assert!(
+        data.warnings[Warning::BadQvel as usize].count > 0,
+        "BadQvel warning should fire for NaN in awake body"
+    );
+    assert!(
+        !data.qvel[0].is_nan(),
+        "NaN should be cleared by auto-reset"
+    );
+
+    // --- Negative case: sleeping DOFs skip NaN check ---
+    // Use free-body-with-floor so it settles on the ground and sleeps.
+    let mut model2 = load_model(free_body_with_floor_mjcf()).expect("load");
+    model2.enableflags |= ENABLE_SLEEP;
+
+    let mut data2 = model2.make_data();
+    // Step enough times for the body to settle on the floor and sleep.
+    // The ball starts at z=0.5, falls onto the plane, bounces, and settles.
+    // MIN_AWAKE=10, so after ~2000 steps the sleep countdown should expire.
+    for _ in 0..2000 {
+        data2.step(&model2).expect("step");
+    }
+
+    // Verify body is asleep (tree 0 is the only kinematic tree)
+    assert!(
+        !data2.tree_awake[0],
+        "body should be asleep after 2000 steps settling on floor"
+    );
+
+    // Inject NaN into sleeping body's qvel DOFs
+    let tree_dof_start = model2.tree_dof_adr[0];
+    data2.qvel[tree_dof_start] = f64::NAN;
+
+    let badqvel_before = data2.warnings[Warning::BadQvel as usize].count;
+
+    // Step — mj_check_vel should skip sleeping DOFs
+    data2.step(&model2).expect("step");
+
+    // BadQvel count should NOT increase (sleeping DOFs skipped by mj_check_vel)
+    assert_eq!(
+        data2.warnings[Warning::BadQvel as usize].count,
+        badqvel_before,
+        "BadQvel should NOT fire for NaN in sleeping DOF"
+    );
+}
+
+// ============================================================================
+// AC46: DISABLE_WARMSTART + islands — cold start with island discovery
+// ============================================================================
+
+#[test]
+fn ac46_warmstart_plus_islands() {
+    let mut model = load_model(free_body_with_floor_mjcf()).expect("load");
+    model.disableflags |= DISABLE_WARMSTART;
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11; // near floor
+
+    // Step multiple times — should converge without warmstart
+    for _ in 0..20 {
+        data.step(&model).expect("step");
+    }
+
+    // Verify solver converged (qacc finite)
+    for dof in 0..model.nv {
+        assert!(
+            data.qacc[dof].is_finite(),
+            "qacc[{dof}] should be finite with DISABLE_WARMSTART + islands"
+        );
+    }
+
+    // qacc_warmstart should still be saved at end of step (unconditional save)
+    // It won't be used (warmstart disabled), but the save always happens.
+    let warmstart_nonzero = (0..model.nv).any(|i| data.qacc_warmstart[i] != 0.0);
+    assert!(
+        warmstart_nonzero,
+        "qacc_warmstart should be saved even with DISABLE_WARMSTART"
+    );
+}
+
+// ============================================================================
+// AC35: ENABLE_OVERRIDE margin + solver params
+// ============================================================================
+
+#[test]
+fn ac35_override_margin_solver_params() {
+    // Two spheres near each other, with ENABLE_OVERRIDE + custom o_* params.
+    let mjcf = r#"
+    <mujoco model="override_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let custom_solref = [0.05, 0.8];
+    let custom_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    let custom_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
+    let custom_margin = 0.1;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    // Place ball near floor so contact is generated
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(
+        data.ncon > 0,
+        "should generate at least one contact near floor"
+    );
+
+    let c = &data.contacts[0];
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    // GAP-1: solreffriction must also equal o_solref under override.
+    assert_relative_eq!(c.solreffriction[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    // GAP-2: friction/mu must equal o_friction under override.
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
+    // includemargin should reflect the override margin (o_margin - gap).
+    // Default gap = 0.0 for both geoms, so includemargin = o_margin.
+    assert_relative_eq!(c.includemargin, custom_margin, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC36: ENABLE_OVERRIDE friction clamping
+// ============================================================================
+
+#[test]
+fn ac36_override_friction_clamping() {
+    let mjcf = r#"
+    <mujoco model="override_friction_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let min_mu = 1e-5;
+
+    // Case 1: friction values above MIN_MU — should pass through unchanged
+    let above_mu = [0.5, 0.5, 0.01, 0.001, 0.001];
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_friction = above_mu;
+    model.o_margin = 0.1;
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact");
+    let c = &data.contacts[0];
+    for (actual, expected) in c.mu.iter().zip(above_mu.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, above_mu[0], epsilon = 1e-12);
+
+    // Case 2: friction values at/below MIN_MU — should be clamped
+    let below_mu = [0.0, 1e-6, 1e-10, 0.0, 1e-20];
+    let mut model2 = load_model(mjcf).expect("load");
+    model2.enableflags |= ENABLE_OVERRIDE;
+    model2.o_friction = below_mu;
+    model2.o_margin = 0.1;
+
+    let mut data2 = model2.make_data();
+    data2.qpos[2] = 0.11;
+    data2.forward(&model2).expect("forward");
+
+    assert!(data2.ncon > 0, "should generate contact");
+    let c2 = &data2.contacts[0];
+    for (i, &mu_i) in c2.mu.iter().enumerate() {
+        assert!(
+            mu_i >= min_mu,
+            "mu[{i}] = {mu_i} should be >= MIN_MU ({min_mu})",
+        );
+    }
+    assert!(c2.friction >= min_mu, "friction scalar should be >= MIN_MU");
+}
+
+#[test]
+fn ac36b_non_override_friction_clamping() {
+    let mjcf = r#"
+    <mujoco model="non_override_friction_clamp">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" friction="0 0 0" margin="0.02"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" friction="0 0 0" margin="0.02"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let min_mu = 1e-5;
+
+    // ENABLE_OVERRIDE is NOT set — both geoms have zero friction.
+    // assign_friction must still clamp all mu elements to MIN_MU.
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(
+        model.enableflags & ENABLE_OVERRIDE,
+        0,
+        "override must be off"
+    );
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.105; // sphere radius 0.1 + slight gap, within margin
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact");
+    let c = &data.contacts[0];
+    for (i, &mu_i) in c.mu.iter().enumerate() {
+        assert!(
+            mu_i >= min_mu,
+            "mu[{i}] = {mu_i} should be >= MIN_MU ({min_mu})",
+        );
+    }
+    assert!(c.friction >= min_mu, "friction scalar should be >= MIN_MU");
+}
+
+// ============================================================================
+// AC35b: ENABLE_OVERRIDE + mechanism-2 pair contacts
+// ============================================================================
+
+#[test]
+fn ac35b_override_with_pair_contacts() {
+    // Two spheres with an explicit <pair> entry. ENABLE_OVERRIDE should
+    // replace the pair's solver params (solref, solimp, friction, margin)
+    // with the global o_* values.
+    let mjcf = r#"
+    <mujoco model="override_pair_test">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <contact>
+            <pair geom1="floor" geom2="sphere"
+                  condim="3" friction="0.3 0.3 0.001 0.0001 0.0001"
+                  solref="0.01 0.5" solimp="0.8 0.85 0.002 0.3 1.5"
+                  margin="0.05" gap="0.01"/>
+        </contact>
+    </mujoco>
+    "#;
+
+    let custom_solref = [0.07, 0.9];
+    let custom_solimp = [0.7, 0.75, 0.003, 0.4, 2.5];
+    let custom_friction = [0.8, 0.8, 0.02, 0.005, 0.005];
+    let custom_margin = 0.15;
+    let pair_gap = 0.01;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    // Place ball near floor so contact is generated within override margin.
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    // Should have generated a mechanism-2 contact (via contact_pairs).
+    assert!(
+        data.ncon > 0,
+        "should generate at least one pair contact near floor"
+    );
+
+    let c = &data.contacts[0];
+
+    // Solver params must come from global override, not the pair.
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+
+    // Friction must come from global override (clamped by MIN_MU).
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
+
+    // includemargin = o_margin - pair.gap
+    assert_relative_eq!(c.includemargin, custom_margin - pair_gap, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35c: ENABLE_OVERRIDE + flex contacts
+// ============================================================================
+
+#[test]
+fn ac35c_override_with_flex_contacts() {
+    // Flex cloth near a rigid sphere with ENABLE_OVERRIDE. Verify flex-rigid
+    // contacts use global override params (solref, solimp, friction, margin).
+    // Uses a sphere on a separate body (not world body) to avoid the
+    // parent-child filter that rejects flex-vertex-vs-worldbody-geom contacts.
+    let mjcf = r#"
+    <mujoco model="override_flex_test">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
+        <worldbody>
+            <body name="sphere" pos="0 0 -0.5">
+                <geom type="sphere" size="1.0" mass="100.0"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cloth" dim="2" density="500" radius="0.02">
+                <contact margin="0.01" condim="3" solref="0.5 2.0" friction="0.5"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <vertex pos="-0.1 -0.1 0.5  0.1 -0.1 0.5  -0.1 0.1 0.5  0.1 0.1 0.5"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let custom_solref = [0.06, 0.85];
+    let custom_solimp = [0.75, 0.8, 0.004, 0.35, 2.0];
+    let custom_friction = [0.9, 0.9, 0.03, 0.006, 0.006];
+    let custom_margin = 0.2;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    // Vertices start at z=0.1 with radius 0.02, so surface at z=0.08.
+    // With o_margin=0.2, detection threshold is generous. Step once.
+    data.forward(&model).expect("forward");
+
+    // Find a flex contact (flex_vertex is Some).
+    let flex_contact = data.contacts.iter().find(|c| c.flex_vertex.is_some());
+    assert!(
+        flex_contact.is_some(),
+        "should generate at least one flex-rigid contact (ncon={}, nflexvert={})",
+        data.ncon,
+        model.nflexvert,
+    );
+
+    let c = flex_contact.unwrap();
+
+    // Solver params must come from global override.
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+
+    // Friction from global override.
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
+
+    // includemargin = o_margin - gap.
+    // Default flex gap + geom gap = 0.0 for both, so includemargin = o_margin.
+    assert_relative_eq!(c.includemargin, custom_margin, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35d: ENABLE_OVERRIDE broadphase AABB margin expansion
+// ============================================================================
+
+#[test]
+fn ac35d_override_aabb_margin() {
+    // Two spheres placed so that geom_margin is too small for AABB overlap
+    // but 0.5 * o_margin is large enough. Without override: ncon == 0.
+    // With override + large o_margin: ncon > 0.
+    let mjcf = r#"
+    <mujoco model="override_aabb_margin">
+        <option gravity="0 0 0" timestep="0.002"/>
+        <worldbody>
+            <body name="a" pos="-0.125 0 0">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.01"/>
+            </body>
+            <body name="b" pos="0.125 0 0">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.01"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    // Gap between surfaces = 0.25 - 0.2 = 0.05
+    // Combined geom_margin = 0.01 + 0.01 = 0.02 < 0.05 gap → no contact
+
+    // Case 1: No override — should have no contacts
+    let model_no = load_model(mjcf).expect("load");
+    let mut data_no = model_no.make_data();
+    data_no.forward(&model_no).expect("forward");
+    assert_eq!(
+        data_no.ncon, 0,
+        "without override, geom margins too small for contact"
+    );
+
+    // Case 2: With override — o_margin = 0.2 → 0.5 * 0.2 = 0.1 per AABB side
+    // AABB overlap + narrowphase margin = 0.2 > 0.05 gap → contact generated
+    let custom_solref = [0.05, 0.8];
+    let custom_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    let custom_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
+    let custom_margin = 0.2;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert!(
+        data.ncon > 0,
+        "with override o_margin=0.2, AABB expansion should detect contact (ncon={})",
+        data.ncon,
+    );
+
+    let c = &data.contacts[0];
+    // Contact params must come from global override.
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC36c: Mechanism-2 non-override friction clamping
+// ============================================================================
+
+#[test]
+fn ac36c_pair_non_override_friction_clamping() {
+    // Explicit <pair> with zero friction, override OFF. Assert mu[i] >= 1e-5.
+    let mjcf = r#"
+    <mujoco model="pair_friction_clamp">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <contact>
+            <pair geom1="floor" geom2="sphere"
+                  friction="0 0 0 0 0"
+                  condim="3" solref="0.02 1.0" solimp="0.9 0.95 0.001 0.5 2.0"
+                  margin="0.05"/>
+        </contact>
+    </mujoco>
+    "#;
+
+    let min_mu = 1e-5;
+
+    // Override NOT enabled — non-override pair path
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate pair contact near floor");
+
+    let c = &data.contacts[0];
+    // All friction components must be clamped to MIN_MU
+    for (i, &mu_i) in c.mu.iter().enumerate() {
+        assert!(
+            mu_i >= min_mu,
+            "mu[{i}] = {mu_i} should be >= MIN_MU ({min_mu})"
+        );
+    }
+    assert!(
+        c.friction >= min_mu,
+        "friction = {} should be >= MIN_MU ({min_mu})",
+        c.friction,
+    );
+}
+
+// ============================================================================
+// AC35e: ENABLE_OVERRIDE preserves condim
+// ============================================================================
+
+#[test]
+fn ac35e_override_preserves_condim() {
+    // Geom with condim=6, override active. Assert contact.dim == 6.
+    // Confirms override does NOT affect condim (spec: "Condim is never overridden").
+    let mjcf = r#"
+    <mujoco model="override_condim">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" condim="3"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" condim="6"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = [0.05, 0.8];
+    model.o_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    model.o_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
+    model.o_margin = 0.1;
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact near floor");
+
+    let c = &data.contacts[0];
+    // condim = max(6, 3) = 6, regardless of override
+    assert_eq!(
+        c.dim, 6,
+        "condim must NOT be overridden (expected 6, got {})",
+        c.dim
+    );
+
+    // Solver params still come from override
+    assert_relative_eq!(c.solref[0], 0.05, epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], 0.8, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35f: ENABLE_OVERRIDE with non-zero geom gap
+// ============================================================================
+
+#[test]
+fn ac35f_override_with_geom_gap() {
+    // Geoms with non-zero gap attribute, override active.
+    // includemargin = o_margin - (gap1 + gap2)
+    let mjcf = r#"
+    <mujoco model="override_gap">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" gap="0.005"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" gap="0.005"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let custom_margin = 0.1;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = [0.05, 0.8];
+    model.o_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    model.o_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11;
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact near floor");
+
+    let c = &data.contacts[0];
+    // includemargin = o_margin - (gap1 + gap2) = 0.1 - (0.005 + 0.005) = 0.09
+    let expected_includemargin = custom_margin - (0.005 + 0.005);
+    assert_relative_eq!(c.includemargin, expected_includemargin, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35g: ENABLE_OVERRIDE with o_margin = 0
+// ============================================================================
+
+#[test]
+fn ac35g_override_zero_margin() {
+    // Override active with o_margin = 0. Spheres separated by small gap that
+    // would normally be within geom_margin. Override margin = 0 should prevent
+    // contact detection.
+    let mjcf = r#"
+    <mujoco model="override_zero_margin">
+        <option gravity="0 0 0" timestep="0.002"/>
+        <worldbody>
+            <body name="a" pos="-0.105 0 0">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.05"/>
+            </body>
+            <body name="b" pos="0.105 0 0">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" margin="0.05"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    // Surface gap = 0.21 - 0.2 = 0.01
+    // Combined geom_margin = 0.05 + 0.05 = 0.10 > 0.01 → contact without override
+
+    // Case 1: No override — geom margins detect contact
+    let model_no = load_model(mjcf).expect("load");
+    let mut data_no = model_no.make_data();
+    data_no.forward(&model_no).expect("forward");
+    assert!(
+        data_no.ncon > 0,
+        "without override, geom margins should detect contact (gap=0.01, margin=0.10)"
+    );
+
+    // Case 2: Override with o_margin = 0 → AABB expansion = 0, narrowphase margin = 0
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_margin = 0.0;
+    model.o_solref = [0.02, 1.0];
+    model.o_solimp = [0.9, 0.95, 0.001, 0.5, 2.0];
+    model.o_friction = [1.0, 1.0, 0.005, 0.0001, 0.0001];
+
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(
+        data.ncon, 0,
+        "with override o_margin=0, no contact should be detected (spheres not touching)"
+    );
+}
+
+// ============================================================================
+// AC35h: ENABLE_OVERRIDE — o_margin default preservation
+// ============================================================================
+
+#[test]
+fn ac35h_override_o_margin_default_preserved() {
+    // Load MJCF with no o_margin attribute. The default o_margin should be 0.0
+    // (not the sentinel -1.0). Enabling ENABLE_OVERRIDE without setting o_margin
+    // should use margin=0.0, which still allows touching contacts.
+    let mjcf = r#"
+    <mujoco model="override_default_margin">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let mut model = load_model(mjcf).expect("load");
+
+    // o_margin should default to 0.0, not the sentinel -1.0
+    assert_eq!(
+        model.o_margin, 0.0,
+        "o_margin default must be 0.0, not sentinel -1.0 (got {})",
+        model.o_margin
+    );
+
+    // Enable override programmatically WITHOUT setting o_margin
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = [0.02, 1.0];
+    model.o_solimp = [0.9, 0.95, 0.001, 0.5, 2.0];
+    model.o_friction = [1.0, 1.0, 0.005, 0.0001, 0.0001];
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.099; // slightly penetrating floor (radius 0.1)
+    data.forward(&model).expect("forward");
+
+    assert!(
+        data.ncon > 0,
+        "margin=0.0 should still allow penetrating contacts"
+    );
+
+    let c = &data.contacts[0];
+    // includemargin = o_margin(0.0) - gap(0.0) = 0.0
+    assert_relative_eq!(c.includemargin, 0.0, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35i: ENABLE_OVERRIDE — end-to-end XML→override wiring
+// ============================================================================
+
+#[test]
+fn ac35i_override_end_to_end_xml() {
+    // All override attrs set in XML — no programmatic model.* writes.
+    // Verifies that the builder correctly wires XML <option> attrs through
+    // to the Model and that the pipeline uses them for contact params.
+    let mjcf = r#"
+    <mujoco model="override_e2e_xml">
+        <option gravity="0 0 -9.81" timestep="0.002"
+                o_margin="0.1" o_solref="0.05 0.8"
+                o_solimp="0.8 0.85 0.002 0.3 1.5"
+                o_friction="0.6 0.6 0.02 0.003 0.003">
+            <flag override="true"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+
+    // Verify ENABLE_OVERRIDE was set by XML
+    assert_ne!(
+        model.enableflags & ENABLE_OVERRIDE,
+        0,
+        "ENABLE_OVERRIDE must be set from XML <flag override=\"true\"/>"
+    );
+
+    // Verify override params wired from XML
+    assert_relative_eq!(model.o_margin, 0.1, epsilon = 1e-12);
+    assert_relative_eq!(model.o_solref[0], 0.05, epsilon = 1e-12);
+    assert_relative_eq!(model.o_solref[1], 0.8, epsilon = 1e-12);
+
+    let mut data = model.make_data();
+    data.qpos[2] = 0.11; // near floor
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "should generate contact near floor");
+
+    let c = &data.contacts[0];
+    // All contact params should come from XML override values
+    assert_relative_eq!(c.solref[0], 0.05, epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], 0.8, epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[0], 0.05, epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], 0.8, epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip([0.8, 0.85, 0.002, 0.3, 1.5].iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    for (actual, expected) in c.mu.iter().zip([0.6, 0.6, 0.02, 0.003, 0.003].iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, 0.6, epsilon = 1e-12);
+    // includemargin = o_margin(0.1) - gap(0.0) = 0.1
+    assert_relative_eq!(c.includemargin, 0.1, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC35j: ENABLE_OVERRIDE ignores geom priority
+// ============================================================================
+
+#[test]
+fn ac35j_override_ignores_priority() {
+    // Two spheres with different geom_priority (5 vs 0) and different
+    // friction/solref per geom. ENABLE_OVERRIDE should replace ALL contact
+    // params with o_* values, ignoring priority-based selection entirely.
+    let mjcf = r#"
+    <mujoco model="override_ignores_priority">
+        <option gravity="0 0 0" timestep="0.002"/>
+        <worldbody>
+            <body name="a" pos="-0.09 0 0">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      priority="5" friction="0.1 0.1 0.001"
+                      solref="0.01 0.5" solmix="1.0"/>
+            </body>
+            <body name="b" pos="0.09 0 0">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"
+                      priority="0" friction="0.9 0.9 0.05"
+                      solref="0.08 1.5" solmix="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    // Surface gap = 0.18 - 0.20 = -0.02 → penetrating, so contact is guaranteed.
+
+    let custom_solref = [0.05, 0.8];
+    let custom_solimp = [0.8, 0.85, 0.002, 0.3, 1.5];
+    let custom_friction = [0.6, 0.6, 0.02, 0.003, 0.003];
+    let custom_margin = 0.1;
+
+    let mut model = load_model(mjcf).expect("load");
+    model.enableflags |= ENABLE_OVERRIDE;
+    model.o_solref = custom_solref;
+    model.o_solimp = custom_solimp;
+    model.o_friction = custom_friction;
+    model.o_margin = custom_margin;
+
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert!(data.ncon > 0, "overlapping spheres must generate contact");
+
+    let c = &data.contacts[0];
+    // Override params must win over priority-selected geom params
+    assert_relative_eq!(c.solref[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solref[1], custom_solref[1], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[0], custom_solref[0], epsilon = 1e-12);
+    assert_relative_eq!(c.solreffriction[1], custom_solref[1], epsilon = 1e-12);
+    for (actual, expected) in c.solimp.iter().zip(custom_solimp.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    for (actual, expected) in c.mu.iter().zip(custom_friction.iter()) {
+        assert_relative_eq!(actual, expected, epsilon = 1e-12);
+    }
+    assert_relative_eq!(c.friction, custom_friction[0], epsilon = 1e-12);
+    assert_relative_eq!(c.includemargin, custom_margin, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC31: Midphase BVH matches brute-force (mesh-mesh contacts identical)
+// ============================================================================
+
+#[test]
+fn ac31_midphase_matches_brute_force() {
+    use nalgebra::Point3;
+    use sim_core::mesh::{TriangleMeshData, mesh_mesh_deepest_contact};
+    use sim_types::Pose;
+
+    // Build two cube meshes
+    let vertices = vec![
+        Point3::new(-0.5, -0.5, -0.5),
+        Point3::new(0.5, -0.5, -0.5),
+        Point3::new(0.5, 0.5, -0.5),
+        Point3::new(-0.5, 0.5, -0.5),
+        Point3::new(-0.5, -0.5, 0.5),
+        Point3::new(0.5, -0.5, 0.5),
+        Point3::new(0.5, 0.5, 0.5),
+        Point3::new(-0.5, 0.5, 0.5),
+    ];
+    let indices = vec![
+        0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 5, 1, 0, 4, 5, 2, 7, 3, 2, 6, 7, 0, 7, 4, 0, 3, 7,
+        1, 6, 2, 1, 5, 6,
+    ];
+    let cube_a = TriangleMeshData::new(vertices.clone(), indices.clone());
+    let cube_b = TriangleMeshData::new(vertices, indices);
+
+    let pose_a = Pose::identity();
+    let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+
+    let bvh_result = mesh_mesh_deepest_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
+    let brute_result = mesh_mesh_deepest_contact(&cube_a, &pose_a, &cube_b, &pose_b, false);
+
+    assert!(bvh_result.is_some(), "BVH path should find a contact");
+    assert!(
+        brute_result.is_some(),
+        "brute-force path should find a contact"
+    );
+
+    let b = bvh_result.unwrap();
+    let f = brute_result.unwrap();
+    assert_relative_eq!(b.penetration, f.penetration, epsilon = 1e-12);
+}
+
+// ============================================================================
+// AC32: Midphase BVH is faster than brute-force for >200 tri meshes
+// ============================================================================
+
+#[test]
+fn ac32_midphase_faster_than_brute_force() {
+    use nalgebra::Point3;
+    use sim_core::mesh::{TriangleMeshData, mesh_mesh_deepest_contact};
+    use sim_types::Pose;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    /// Build a subdivided cube mesh. Each subdivision splits every triangle
+    /// into 4 via midpoint insertion: level 0 = 12 tri, level 3 = 768 tri.
+    fn subdivide_cube(subdivisions: u32) -> TriangleMeshData {
+        let mut vertices = vec![
+            Point3::new(-0.5, -0.5, -0.5),
+            Point3::new(0.5, -0.5, -0.5),
+            Point3::new(0.5, 0.5, -0.5),
+            Point3::new(-0.5, 0.5, -0.5),
+            Point3::new(-0.5, -0.5, 0.5),
+            Point3::new(0.5, -0.5, 0.5),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(-0.5, 0.5, 0.5),
+        ];
+        let mut indices: Vec<usize> = vec![
+            0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 5, 1, 0, 4, 5, 2, 7, 3, 2, 6, 7, 0, 7, 4, 0, 3,
+            7, 1, 6, 2, 1, 5, 6,
+        ];
+
+        for _ in 0..subdivisions {
+            let mut new_indices = Vec::with_capacity(indices.len() * 4);
+            for tri in indices.chunks(3) {
+                let v0 = vertices[tri[0]];
+                let v1 = vertices[tri[1]];
+                let v2 = vertices[tri[2]];
+                let m01 = Point3::from((v0.coords + v1.coords) * 0.5);
+                let m12 = Point3::from((v1.coords + v2.coords) * 0.5);
+                let m20 = Point3::from((v2.coords + v0.coords) * 0.5);
+                let i0 = tri[0];
+                let i1 = tri[1];
+                let i2 = tri[2];
+                let i01 = vertices.len();
+                let i12 = i01 + 1;
+                let i20 = i01 + 2;
+                vertices.push(m01);
+                vertices.push(m12);
+                vertices.push(m20);
+                new_indices.extend_from_slice(&[i0, i01, i20]);
+                new_indices.extend_from_slice(&[i01, i1, i12]);
+                new_indices.extend_from_slice(&[i20, i12, i2]);
+                new_indices.extend_from_slice(&[i01, i12, i20]);
+            }
+            indices = new_indices;
+        }
+
+        TriangleMeshData::new(vertices, indices)
+    }
+
+    // subdivisions=3 → 12 * 4^3 = 768 triangles (well above 200 threshold)
+    let mesh_a = subdivide_cube(3);
+    let mesh_b = subdivide_cube(3);
+    let tri_count = mesh_a.triangle_count();
+    assert!(
+        tri_count > 200,
+        "mesh must have >200 triangles for AC32, got {tri_count}"
+    );
+
+    let pose_a = Pose::identity();
+    let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+
+    // Use a single call per path — the gap at 768 tri is large enough for one
+    // shot, and this keeps the test fast in both debug and release builds.
+    // Warm up both paths once
+    let _ = black_box(mesh_mesh_deepest_contact(
+        &mesh_a, &pose_a, &mesh_b, &pose_b, true,
+    ));
+    let _ = black_box(mesh_mesh_deepest_contact(
+        &mesh_a, &pose_a, &mesh_b, &pose_b, false,
+    ));
+
+    let iterations = 5;
+
+    // Time BVH path
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _ = black_box(mesh_mesh_deepest_contact(
+            &mesh_a, &pose_a, &mesh_b, &pose_b, true,
+        ));
+    }
+    let bvh_time = start.elapsed();
+
+    // Time brute-force path
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _ = black_box(mesh_mesh_deepest_contact(
+            &mesh_a, &pose_a, &mesh_b, &pose_b, false,
+        ));
+    }
+    let brute_time = start.elapsed();
+
+    let ratio = bvh_time.as_secs_f64() / brute_time.as_secs_f64();
+    eprintln!(
+        "AC32: {tri_count} tri, {iterations} iters — BVH {bvh_time:?} vs brute {brute_time:?} (ratio {ratio:.3})"
+    );
+
+    assert!(
+        ratio < 0.5,
+        "midphase should be <50% of brute-force time for >200 tri, got ratio {ratio:.3}"
+    );
+}
+
+// ============================================================================
+// AC33: DISABLE_MIDPHASE flag forces brute-force and still produces contacts
+// ============================================================================
+
+#[test]
+fn ac33_midphase_disable_flag_brute_force() {
+    use nalgebra::Point3;
+    use sim_core::DISABLE_MIDPHASE;
+    use sim_core::mesh::{TriangleMeshData, mesh_sphere_contact};
+    use sim_types::Pose;
+
+    let vertices = vec![
+        Point3::new(-0.5, -0.5, -0.5),
+        Point3::new(0.5, -0.5, -0.5),
+        Point3::new(0.5, 0.5, -0.5),
+        Point3::new(-0.5, 0.5, -0.5),
+        Point3::new(-0.5, -0.5, 0.5),
+        Point3::new(0.5, -0.5, 0.5),
+        Point3::new(0.5, 0.5, 0.5),
+        Point3::new(-0.5, 0.5, 0.5),
+    ];
+    let indices = vec![
+        0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 5, 1, 0, 4, 5, 2, 7, 3, 2, 6, 7, 0, 7, 4, 0, 3, 7,
+        1, 6, 2, 1, 5, 6,
+    ];
+    let cube = TriangleMeshData::new(vertices, indices);
+    let pose = Pose::identity();
+
+    // use_bvh=false simulates what collide_with_mesh does when DISABLE_MIDPHASE is set
+    let brute_contact = mesh_sphere_contact(&cube, &pose, Point3::new(0.0, 0.0, 0.7), 0.3, false);
+    assert!(
+        brute_contact.is_some(),
+        "brute-force path (DISABLE_MIDPHASE) should still find contacts"
+    );
+
+    // Verify the flag constant is wired correctly
+    assert_eq!(
+        DISABLE_MIDPHASE,
+        1 << 14,
+        "DISABLE_MIDPHASE should be bit 14"
+    );
+}

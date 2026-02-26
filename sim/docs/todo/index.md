@@ -2,7 +2,8 @@
 
 Complete roadmap for the simulation engine. Phase 1 (12 items) and Phase 2
 (16 items) are complete. Phase 3A tiers i–iv (items #18–37) are complete.
-Phase 3A-v is in progress — through §40c.
+Phase 3A-v complete through §41. Roadmap Phases 1–3 (Core API) all done.
+Next: Phases 4–11 (parallel work streams).
 
 Remaining work is organized by the **v1.0 Roadmap** (see
 [ROADMAP_V1.md](../ROADMAP_V1.md)) which triages all ~135 remaining tasks into
@@ -58,7 +59,7 @@ All items #18–37 are complete. See individual future_work files for details.
 
 ### In Progress (3A-v)
 
-Items #38–40c are complete. Current position: **§40c done**.
+Items #38–41 are complete. Current position: **§41 done** (Roadmap Phase 2 complete).
 
 | # | Item | Correctness | Effort | File | Status |
 |---|------|-------------|--------|------|--------|
@@ -83,7 +84,7 @@ phase they belong to. Items are grouped by source file for easy cross-reference.
 |---|------|-----------|---------------|--------|
 | 40d | Sparse Jacobian for fluid derivatives | No — perf opt | Post-v1.0 | |
 | 40e | Refactor `mj_jac_site` → `mj_jac_point` | No — refactor | Post-v1.0 | |
-| 41 | `disableflags`/`enableflags` runtime wiring | **Yes** | Phase 2 | |
+| ~~41~~ | ~~`disableflags`/`enableflags` runtime wiring~~ | **Yes** | Phase 2 | ✅ Done |
 | ~~42~~ | ~~`<flex>`/`<flexcomp>` parsing~~ | — | — | Subsumed by §6B |
 | 42A-i | Sparse flex edge Jacobian | **Yes** | Phase 10 | |
 | 42A-ii | `flex_rigid`/`flexedge_rigid` flags | **Yes** | Phase 10 | |
@@ -96,18 +97,19 @@ phase they belong to. Items are grouped by source file for easy cross-reference.
 | 42E | `ContactSolver` trait (XPBD) | No — extension | Post-v1.0 | |
 | 42F | `SimBuilder` composition | No — extension | Post-v1.0 | |
 
-#### From future_work_10b–10j (Deferred Tasks DT-1–92)
+#### From future_work_10b–10j (Deferred Tasks DT-1–101)
 
-~40 of 92 deferred tasks are core v1.0. Full list with phase assignments
+~40 of 100 deferred tasks are core v1.0. Full list with phase assignments
 in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 
-**Correctness bugs (Phase 1):** ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), DT-16, DT-90, DT-78
+**Correctness bugs (Phase 1):** ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), ~~DT-78~~ (done), ~~DT-16~~ (done), ~~DT-90~~ (done)
 
-**Runtime flags (Phase 2):** DT-61
+**Runtime flags (Phase 2):** ~~§41~~ (done, subsumes DT-61, DT-93, DT-94, DT-95); ~~DT-99~~ (done), ~~DT-100~~ (done);
+DT-96 (lazy energy eval, post-v1.0), DT-97 (golden file generation, Phase 12)
 
-**Core API (Phase 3):** DT-21, DT-41, DT-79
+**Core API (Phase 3):** ~~DT-21~~ (done), ~~DT-41~~ (done), ~~DT-79~~ (done)
 
-**Actuators (Phase 5):** DT-56, DT-57, DT-58, DT-59, DT-77, DT-6, DT-8, DT-9, DT-60
+**Actuators (Phase 5):** DT-56, DT-57, DT-58, DT-59, DT-77, DT-6, DT-8, DT-9, ~~DT-60~~ (subsumed by §41 S4.2a)
 
 **Sensors (Phase 6):** DT-62, DT-63, DT-64
 
@@ -123,7 +125,8 @@ in [ROADMAP_V1.md](../ROADMAP_V1.md). Key items by category:
 DT-20, DT-22, DT-24, DT-26, DT-27, DT-29, DT-30, DT-31, DT-34, DT-36,
 DT-37, DT-38, DT-40, DT-42, DT-43, DT-44, DT-45, DT-46, DT-48, DT-49,
 DT-50, DT-55, DT-65, DT-66, DT-67, DT-68, DT-69, DT-71, DT-72, DT-73,
-DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
+DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92,
+DT-96, DT-101
 
 #### From future_work_11.md (#43–45)
 
@@ -147,9 +150,9 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 
 | # | Item | Core v1.0? | Roadmap Phase | Status |
 |---|------|-----------|---------------|--------|
-| 51 | `cacc`/`cfrc_int`/`cfrc_ext` body accumulators | **Yes** | Phase 4 | |
-| 52 | `mj_inverse()` inverse dynamics | **Yes** | Phase 3 | |
-| 53 | `step1()`/`step2()` split stepping API | **Yes** | Phase 3 | |
+| ~~51~~ | ~~`cacc`/`cfrc_int`/`cfrc_ext` body accumulators~~ | **Yes** | Phase 3 | ✅ Done |
+| ~~52~~ | ~~`mj_inverse()` inverse dynamics~~ | **Yes** | Phase 3 | ✅ Done |
+| ~~53~~ | ~~`step1()`/`step2()` split stepping API~~ | **Yes** | Phase 3 | ✅ Done |
 | 54 | Heightfield collision gaps | **Yes** | Phase 9 | |
 | 55 | `*_user` custom data fields | **Yes** | Phase 7 | |
 
@@ -160,7 +163,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 | 56 | `subtree_linvel`/`subtree_angmom` Data fields | **Yes** | Phase 4 | |
 | 57 | `sdf_iterations`/`sdf_initpoints` options | **Yes** | Phase 9 | |
 | 58 | `mjd_smooth_pos` position derivatives | **Yes** | Phase 11 | |
-| 59 | `mj_name2id`/`mj_id2name` name lookup | **Yes** | Phase 3 | |
+| ~~59~~ | ~~`mj_name2id`/`mj_id2name` name lookup~~ | **Yes** | Phase 3 | ✅ Done |
 
 #### From future_work_15.md (#60–64a)
 
@@ -194,10 +197,10 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 
 | Phase | Focus | Key Items | Count |
 |-------|-------|-----------|-------|
-| 1 | Correctness bugs | ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), DT-16, DT-90, DT-78 | 6 (3 done) |
-| 2 | Runtime flag wiring | §41, DT-61 | 2 |
-| 3 | Core API gaps | DT-21, DT-41, §52, §53, §59, DT-79 | 6 |
-| 4 | Core Data fields | §51, §56 | 2 |
+| 1 | Correctness bugs | ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), ~~DT-78~~ (done), ~~DT-16~~ (done), ~~DT-90~~ (done) | 6 (6 done) |
+| 2 | Runtime flag wiring | ~~§41~~ (done, subsumes DT-61, DT-93, DT-94, DT-95); ~~DT-99~~ (done), ~~DT-100~~ (done) | 1 (+2 follow-ups, all done) |
+| 3 | Core API gaps | ~~DT-21~~ (done), ~~DT-41~~ (done), ~~§51~~ (done), ~~§52~~ (done), ~~§53~~ (done), ~~§59~~ (done), ~~DT-79~~ (done) | 7 (7 done) |
+| 4 | Core Data fields | ~~§51~~ (done, moved to Phase 3), §56 | 2 (1 done) |
 | 5 | Actuator completeness | DT-56/57/58/59/77, DT-6/8/9/60, §61, §63 | 11 |
 | 6 | Sensor completeness | §62, DT-62/63/64 | 4 |
 | 7 | MJCF parsing & defaults | DT-2/3/11/13/14/85/88, §55/60/64/64a | 11 |
@@ -205,7 +208,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 | 9 | Collision completeness | §43/50/54/57/65, DT-70 | 6 |
 | 10 | Flex pipeline | §42A-i–v, §42B | 6 |
 | 11 | Derivatives | §58, DT-47/51/52/53/54 | 6 |
-| 12 | **Conformance test suite** | **§45** | **1** |
+| 12 | **Conformance test suite** | **§45**, DT-97 (golden file generation) | **2** |
 | 13 | Remaining core | §46, §66 | 2 |
 | | | **Total core v1.0** | **~67** |
 
@@ -243,28 +246,26 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 ```
    ┌─────────────────────────────────────────────────────┐
    │ Roadmap Phase 1: Fix correctness bugs               │
-   │ ✓DT-74, ✓DT-75, ✓DT-35, DT-16, DT-90, DT-78      │
+   │ ✓DT-74, ✓DT-75, ✓DT-35, ✓DT-78, ✓DT-16, ✓DT-90   │
    └──────────────────────┬──────────────────────────────┘
                           │
                           ▼
    ┌─────────────────────────────────────────────────────┐
-   │ Roadmap Phase 2: Runtime flags                       │
-   │ §41 disableflags/enableflags, DT-61 DISABLE_GRAVITY │
+   │ Roadmap Phase 2: Runtime flags                     ✓ │
+   │ ✓§41, ✓DT-61, ✓DT-93, ✓DT-94, ✓DT-95               │
    └──────────────────────┬──────────────────────────────┘
                           │
                           ▼
    ┌─────────────────────────────────────────────────────┐
-   │ Roadmap Phase 3: Core API                            │
-   │ DT-21 xfrc_applied, DT-41 Newton solver,            │
-   │ §52 mj_inverse, §53 step1/step2, §59 name lookup,   │
-   │ DT-79 user callbacks                                 │
+   │ Roadmap Phase 3: Core API                          ✓ │
+   │ ✓DT-21, ✓DT-41, ✓§51, ✓§52, ✓§53, ✓§59, ✓DT-79    │
    └──────────────────────┬──────────────────────────────┘
                           │
                           ▼
    ┌──────────────────────────────────────────────────────────┐
    │ Roadmap Phases 4–11: Parallel work streams               │
    │                                                          │
-   │  Phase 4: Data fields (§51, §56)                         │
+   │  Phase 4: Data fields (✓§51, §56)                         │
    │  Phase 5: Actuators (11 items)                           │
    │  Phase 6: Sensors (4 items)                              │
    │  Phase 7: Parsing/defaults (11 items)                    │
@@ -273,7 +274,7 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
    │  Phase 10: Flex pipeline (6 items)                       │
    │  Phase 11: Derivatives (6 items)                         │
    │                                                          │
-   │  Note: §52 depends on §51. Otherwise independent.        │
+   │  Note: §52→§51 dependency resolved. All independent.      │
    └──────────────────────┬───────────────────────────────────┘
                           │
                           ▼
@@ -320,8 +321,8 @@ DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92
 | [future_work_7.md](./future_work_7.md) | 3 (complete) | #23–27, #27B–F | Contact parameters, flex parsing, body-coupled flex |
 | [future_work_8.md](./future_work_8.md) | 3 (complete) | #28–32 | Friction loss, PGS/CG unified constraints, pyramidal cones |
 | [future_work_9.md](./future_work_9.md) | 3 (complete) | #33–37 | Noslip, actlimited, gravcomp, adhesion, tendon equality |
-| [future_work_10.md](./future_work_10.md) | 3 (in progress) | #38–42F | Joint limits ✅, tendon wrapping ✅, fluid forces ✅, fluid derivatives ✅, tendon viz ✅, fluid sleep ✅, disableflags, flex runtime, trait architecture |
-| [future_work_10b.md](./future_work_10b.md)–[10j](./future_work_10j.md) | 3 | DT-1–92 | Deferred task tracker (9 groups across 10b–10j) — ~40 core v1.0, ~52 post-v1.0 |
+| [future_work_10.md](./future_work_10.md) | 3 (§41 done) | #38–42F | Joint limits ✅, tendon wrapping ✅, fluid forces ✅, fluid derivatives ✅, tendon viz ✅, fluid sleep ✅, ~~disableflags~~ ✅, flex runtime (Phase 10), trait architecture (post-v1.0) |
+| [future_work_10b.md](./future_work_10b.md)–[10j](./future_work_10j.md) | 3 | DT-1–101 | Deferred task tracker (9 groups across 10b–10j) — ~40 core v1.0, ~53 post-v1.0, +~~DT-99~~ (done)/~~DT-100~~ (done)/DT-101 post-§41 |
 | [future_work_11.md](./future_work_11.md) | 3 | #43–45 | Mesh inertia, legacy crate deprecation, **conformance test suite** |
 | [future_work_12.md](./future_work_12.md) | 3 | #46–50 | `<composite>`, URDF, SIMD, non-physics MJCF, CCD |
 | [future_work_13.md](./future_work_13.md) | 3 | #51–55 | Body accumulators, `mj_inverse`, `step1`/`step2`, heightfield gaps, `*_user` data |

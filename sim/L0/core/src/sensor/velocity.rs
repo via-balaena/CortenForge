@@ -4,9 +4,10 @@
 //! joint velocity, gyro, velocimeter, frame linear/angular velocity,
 //! subtree linear velocity, subtree angular momentum, actuator/tendon velocity.
 
+use crate::types::flags::disabled;
 use crate::types::{
-    Data, ENABLE_SLEEP, MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model,
-    SleepState,
+    DISABLE_SENSOR, Data, ENABLE_SLEEP, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
+    Model, SensorStage, SleepState,
 };
 use nalgebra::{Matrix3, Vector3};
 
@@ -27,6 +28,11 @@ use super::sensor_body_id;
 /// - `ActuatorVel`: actuator velocity
 #[allow(clippy::too_many_lines)]
 pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
+    // S4.10: Early return — sensordata is NOT zeroed (intentional MuJoCo match).
+    if disabled(model, DISABLE_SENSOR) {
+        return;
+    }
+
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     for sensor_id in 0..model.nsensor {
@@ -209,6 +215,15 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
                     0.0
                 };
                 sensor_write(&mut data.sensordata, adr, 0, value);
+            }
+
+            // DT-79: User-defined sensors at velocity stage
+            MjSensorType::User => {
+                if model.sensor_datatype[sensor_id] == MjSensorDataType::Velocity {
+                    if let Some(ref cb) = model.cb_sensor {
+                        (cb.0)(model, data, sensor_id, SensorStage::Vel);
+                    }
+                }
             }
 
             // Skip position/acceleration-dependent sensors

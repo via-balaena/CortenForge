@@ -12,6 +12,11 @@ use crate::types::{
 };
 use nalgebra::{DVector, Vector3};
 
+use crate::types::flags::{actuator_disabled, disabled};
+use crate::types::validation::{MIN_VAL, is_bad};
+use crate::types::warning::{Warning, mj_warning};
+use crate::types::{DISABLE_ACTUATION, DISABLE_CLAMPCTRL, DISABLE_GRAVITY};
+
 use super::muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_force};
 
 /// Compute actuator length and moment for site transmissions only.
@@ -317,12 +322,48 @@ pub fn mj_next_activation(
 /// 2. Computes actuator force using gain/bias (muscle FLV for muscles, raw input for others).
 /// 3. Clamps control inputs and output forces to their declared ranges.
 /// 4. Maps actuator force to joint forces via the transmission.
+///
+/// **Note**: `cb_control` is NOT invoked here. It fires at the split boundary
+/// between velocity and acceleration stages — see `forward_core()` and `step1()`.
 pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
+    // S4.8: Unconditional zero of per-actuator forces (matches MuJoCo).
+    for i in 0..model.nu {
+        data.actuator_force[i] = 0.0;
+    }
+
+    // S4.8: Guard — skip force computation when no actuators or actuation disabled.
+    if model.nu == 0 || disabled(model, DISABLE_ACTUATION) {
+        data.qfrc_actuator.fill(0.0);
+        return;
+    }
+
     data.qfrc_actuator.fill(0.0);
 
+    // S8d: Bad ctrl validation — zero all ctrl on first bad value.
     for i in 0..model.nu {
+        if is_bad(data.ctrl[i]) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            mj_warning(data, Warning::BadCtrl, i as i32);
+            for j in 0..model.nu {
+                data.ctrl[j] = 0.0;
+            }
+            break;
+        }
+    }
+
+    for i in 0..model.nu {
+        // S7d: Skip force computation for per-group disabled actuators.
+        if actuator_disabled(model, i) {
+            continue;
+        }
+
         // --- Phase 1: Activation dynamics (compute act_dot, do NOT integrate) ---
-        let ctrl = data.ctrl[i].clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1);
+        // S4.9: Skip ctrl clamping when DISABLE_CLAMPCTRL is set.
+        let ctrl = if disabled(model, DISABLE_CLAMPCTRL) {
+            data.ctrl[i]
+        } else {
+            data.ctrl[i].clamp(model.actuator_ctrlrange[i].0, model.actuator_ctrlrange[i].1)
+        };
 
         let input = match model.actuator_dyntype[i] {
             ActuatorDynamics::None => ctrl,
@@ -361,6 +402,21 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     data.act[act_adr]
                 }
             }
+            ActuatorDynamics::User => {
+                // User-defined dynamics via callback
+                let act_adr = model.actuator_act_adr[i];
+                let act_dot = if let Some(ref cb) = model.cb_act_dyn {
+                    (cb.0)(model, data, i)
+                } else {
+                    0.0
+                };
+                data.act_dot[act_adr] = act_dot;
+                if model.actuator_actearly[i] {
+                    mj_next_activation(model, i, data.act[act_adr], act_dot)
+                } else {
+                    data.act[act_adr]
+                }
+            }
         };
 
         // --- Phase 2: Force generation (gain * input + bias) ---
@@ -388,6 +444,13 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 let fv = muscle_gain_velocity(norm_vel, prm[8]);
                 -f0 * fl * fv
             }
+            GainType::User => {
+                if let Some(ref cb) = model.cb_act_gain {
+                    (cb.0)(model, data, i)
+                } else {
+                    0.0
+                }
+            }
         };
 
         let bias = match model.actuator_biastype[i] {
@@ -407,6 +470,13 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
                 let fp = muscle_passive_force(norm_len, prm[5], prm[7]);
                 -f0 * fp
+            }
+            BiasType::User => {
+                if let Some(ref cb) = model.cb_act_bias {
+                    (cb.0)(model, data, i)
+                } else {
+                    0.0
+                }
             }
         };
 
@@ -456,6 +526,33 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Route gravcomp forces to `qfrc_actuator` for joints with `jnt_actgravcomp`.
+///
+/// Must run AFTER `mj_fwd_passive()` (which computes `qfrc_gravcomp` via
+/// `mj_gravcomp()`). Called from `forward_core()` in pipeline order.
+/// Gated on `DISABLE_GRAVITY` and `DISABLE_ACTUATION` — in MuJoCo this
+/// routing lives inside `mj_fwdActuation()`, so disabling actuation
+/// implicitly skips it. We gate explicitly since it's a separate function.
+pub fn mj_gravcomp_to_actuator(model: &Model, data: &mut Data) {
+    if model.ngravcomp == 0
+        || disabled(model, DISABLE_GRAVITY)
+        || disabled(model, DISABLE_ACTUATION)
+        || model.gravity.norm() < MIN_VAL
+    {
+        return;
+    }
+    for jnt in 0..model.njnt {
+        if !model.jnt_actgravcomp[jnt] {
+            continue;
+        }
+        let dofadr = model.jnt_dof_adr[jnt];
+        let dofnum = model.jnt_type[jnt].nv();
+        for i in 0..dofnum {
+            data.qfrc_actuator[dofadr + i] += data.qfrc_gravcomp[dofadr + i];
         }
     }
 }

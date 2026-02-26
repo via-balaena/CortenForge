@@ -260,9 +260,14 @@ fn tendon_implicit_stability_vs_euler() {
         "ImplicitSpringDamper velocity should be bounded, got {vel_impl}"
     );
 
-    // Euler with dt=0.01, k=5000 should be unstable (h²k/m >> 1)
+    // Euler with dt=0.01, k=5000 should be unstable (h²k/m >> 1).
+    // With auto-reset (§41 S8), diverged Euler state gets reset to qpos0,
+    // so vel_euler may be 0 instead of NaN/Inf. Check divergence_detected().
     assert!(
-        vel_impl < vel_euler || vel_euler.is_nan() || vel_euler.is_infinite(),
+        vel_impl < vel_euler
+            || vel_euler.is_nan()
+            || vel_euler.is_infinite()
+            || data_euler.divergence_detected(),
         "Implicit should be more stable: vel_impl={vel_impl}, vel_euler={vel_euler}"
     );
 }

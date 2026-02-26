@@ -211,3 +211,59 @@ pub mod fluid_derivatives;
 /// Tendon implicit spring/damper tests: non-diagonal K/D coupling, deadband,
 /// energy dissipation, Newton solver, spatial tendons, multi-tendon summation.
 pub mod tendon_implicit;
+
+// ============================================================================
+// §41 Runtime Flag Conformance Tests
+// ============================================================================
+
+/// Runtime flag conformance tests: AC1–AC48 behavioral gating verification.
+pub mod runtime_flags;
+
+// ============================================================================
+// §41 AC18 Golden-File Flag Conformance Tests
+// ============================================================================
+
+/// Golden-file conformance tests: MuJoCo-reference .npy comparison for flag behavior.
+pub mod golden_flags;
+
+// ============================================================================
+// §53 Split-Step API Tests
+// ============================================================================
+
+/// Split-step tests: step1/step2 equivalence, force injection.
+pub mod split_step;
+
+// ============================================================================
+// §59 Name Lookup API Tests
+// ============================================================================
+
+/// Name lookup tests: name2id/id2name round-trip, nonexistent, out-of-bounds.
+pub mod name_lookup;
+
+// ============================================================================
+// §51 Body Force Accumulator Tests
+// ============================================================================
+
+/// Body force accumulator tests: cacc, cfrc_int, cfrc_ext.
+pub mod body_accumulators;
+
+// ============================================================================
+// §52 Inverse Dynamics Tests
+// ============================================================================
+
+/// Inverse dynamics tests: round-trip, gravity-only, free body.
+pub mod inverse_dynamics;
+
+// ============================================================================
+// DT-79 User Callback Tests
+// ============================================================================
+
+/// User callback tests: passive, control, contact filter, clone safety.
+pub mod callbacks;
+
+// ============================================================================
+// DT-21 xfrc_applied Projection Tests
+// ============================================================================
+
+/// xfrc_applied tests: free body, hinge torque, anti-gravity, pure torque.
+pub mod xfrc_applied;

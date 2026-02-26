@@ -6,6 +6,33 @@
 
 use nalgebra::Vector3;
 
+/// Element type for name↔index lookup via [`Model::name2id`] / [`Model::id2name`].
+///
+/// Each variant corresponds to a named element category in the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElementType {
+    /// Body elements (indexed by body_id).
+    Body,
+    /// Joint elements (indexed by jnt_id).
+    Joint,
+    /// Geom elements (indexed by geom_id).
+    Geom,
+    /// Site elements (indexed by site_id).
+    Site,
+    /// Tendon elements (indexed by tendon_id).
+    Tendon,
+    /// Actuator elements (indexed by actuator_id).
+    Actuator,
+    /// Sensor elements (indexed by sensor_id).
+    Sensor,
+    /// Mesh assets (indexed by mesh_id).
+    Mesh,
+    /// Height field assets (indexed by hfield_id).
+    Hfield,
+    /// Equality constraints (indexed by eq_id).
+    Equality,
+}
+
 /// Joint type following `MuJoCo` conventions.
 ///
 /// Named `MjJointType` to distinguish from `sim_types::JointType`.
@@ -166,6 +193,9 @@ pub enum ActuatorDynamics {
     Integrator,
     /// Muscle activation dynamics.
     Muscle,
+    /// User-defined dynamics (via `cb_act_dyn` callback).
+    /// MuJoCo reference: `mjDYN_USER`.
+    User,
 }
 
 /// Actuator gain type — controls how `gain` is computed in Phase 2.
@@ -180,6 +210,9 @@ pub enum GainType {
     Affine,
     /// Muscle FLV gain (handled separately in the Muscle path).
     Muscle,
+    /// User-defined gain (via `cb_act_gain` callback).
+    /// MuJoCo reference: `mjGAIN_USER`.
+    User,
 }
 
 /// Actuator bias type — controls how `bias` is computed in Phase 2.
@@ -194,6 +227,9 @@ pub enum BiasType {
     Affine,
     /// Muscle passive force (handled separately in the Muscle path).
     Muscle,
+    /// User-defined bias (via `cb_act_bias` callback).
+    /// MuJoCo reference: `mjBIAS_USER`.
+    User,
 }
 
 /// Tendon wrap object type.
@@ -371,6 +407,20 @@ impl MjSensorType {
     }
 }
 
+/// Pipeline stage for user sensor callbacks (DT-79).
+///
+/// Passed to `cb_sensor` to indicate which stage the callback is being
+/// invoked from, so the callback can read the appropriate Data fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SensorStage {
+    /// Position stage (after FK, before velocity).
+    Pos,
+    /// Velocity stage (after velocity FK, before acceleration).
+    Vel,
+    /// Acceleration stage (after constraint solve).
+    Acc,
+}
+
 /// Sensor data dependency stage.
 ///
 /// Indicates when the sensor can be computed in the forward dynamics pipeline.
@@ -437,17 +487,70 @@ pub enum SleepState {
     Awake,
 }
 
-/// Enable flag bit for body sleeping/deactivation.
+// ── Disable flags (mjtDisableBit, mjNDISABLE = 19) ──
+// Each bit gates a pipeline subsystem. Bit set = subsystem disabled.
+// Default: all bits clear (disableflags = 0), matching MuJoCo's mj_defaultOption().
+
+/// Skip constraint assembly + collision detection.
+pub const DISABLE_CONSTRAINT: u32 = 1 << 0;
+/// Skip equality constraint rows.
+pub const DISABLE_EQUALITY: u32 = 1 << 1;
+/// Skip joint/tendon friction loss constraints.
+pub const DISABLE_FRICTIONLOSS: u32 = 1 << 2;
+/// Skip joint/tendon limit rows.
+pub const DISABLE_LIMIT: u32 = 1 << 3;
+/// Skip collision detection + contact rows.
+pub const DISABLE_CONTACT: u32 = 1 << 4;
+/// Skip passive spring forces.
+pub const DISABLE_SPRING: u32 = 1 << 5;
+/// Skip passive damping forces.
+pub const DISABLE_DAMPER: u32 = 1 << 6;
+/// Zero gravity in `mj_rne()`.
+pub const DISABLE_GRAVITY: u32 = 1 << 7;
+/// Skip clamping ctrl values to ctrlrange.
+pub const DISABLE_CLAMPCTRL: u32 = 1 << 8;
+/// Zero-initialize solver instead of warmstart.
+pub const DISABLE_WARMSTART: u32 = 1 << 9;
+/// Disable parent-child collision filtering.
+pub const DISABLE_FILTERPARENT: u32 = 1 << 10;
+/// Skip actuator force computation.
+pub const DISABLE_ACTUATION: u32 = 1 << 11;
+/// Skip `solref[0] >= 2*timestep` enforcement.
+pub const DISABLE_REFSAFE: u32 = 1 << 12;
+/// Skip all sensor evaluation.
+pub const DISABLE_SENSOR: u32 = 1 << 13;
+/// Skip BVH midphase → brute-force broadphase.
+pub const DISABLE_MIDPHASE: u32 = 1 << 14;
+/// Skip implicit damping in Euler integrator.
+pub const DISABLE_EULERDAMP: u32 = 1 << 15;
+/// Skip auto-reset on NaN/divergence.
+pub const DISABLE_AUTORESET: u32 = 1 << 16;
+/// Fall back to libccd for convex collision.
+pub const DISABLE_NATIVECCD: u32 = 1 << 17;
+/// Skip island discovery → global solve.
+pub const DISABLE_ISLAND: u32 = 1 << 18;
+
+// ── Enable flags (mjtEnableBit, mjNENABLE = 6) ──
+// Each bit enables an optional subsystem. Bit set = subsystem enabled.
+// Default: all bits clear (enableflags = 0).
+
+/// Enable contact parameter override.
+pub const ENABLE_OVERRIDE: u32 = 1 << 0;
+/// Enable potential + kinetic energy computation.
+pub const ENABLE_ENERGY: u32 = 1 << 1;
+/// Enable forward/inverse comparison stats.
+pub const ENABLE_FWDINV: u32 = 1 << 2;
+/// Discrete-time inverse dynamics.
+pub const ENABLE_INVDISCRETE: u32 = 1 << 3;
+/// Multi-point CCD for flat surfaces.
+pub const ENABLE_MULTICCD: u32 = 1 << 4;
+/// Enable body sleeping/deactivation.
 /// Set via MJCF `<option><flag sleep="enable"/>`.
 pub const ENABLE_SLEEP: u32 = 1 << 5;
 
 /// Minimum number of consecutive sub-threshold timesteps before a tree
 /// can transition to sleep. Matches MuJoCo's `mjMINAWAKE = 10`.
 pub const MIN_AWAKE: i32 = 10;
-
-/// Disable-flag bit for island discovery (§16.10.1).
-/// When set, `mj_island()` is a no-op and each tree is its own island.
-pub const DISABLE_ISLAND: u32 = 1 << 18;
 
 /// Constraint solver algorithm (matches MuJoCo's `mjSOL_*`).
 ///
@@ -568,12 +671,6 @@ pub enum Integrator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StepError {
-    /// Position coordinates contain NaN or Inf.
-    InvalidPosition,
-    /// Velocity coordinates contain NaN or Inf.
-    InvalidVelocity,
-    /// Computed acceleration contains NaN (indicates singular mass matrix or numerical issues).
-    InvalidAcceleration,
     /// Cholesky decomposition failed in implicit integration.
     /// This indicates the modified mass matrix (M + h*D + h²*K) is not positive definite,
     /// likely due to negative stiffness/damping or numerical instability.
@@ -587,9 +684,6 @@ pub enum StepError {
 impl std::fmt::Display for StepError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidPosition => write!(f, "position contains NaN or Inf"),
-            Self::InvalidVelocity => write!(f, "velocity contains NaN or Inf"),
-            Self::InvalidAcceleration => write!(f, "acceleration contains NaN"),
             Self::CholeskyFailed => {
                 write!(f, "Cholesky decomposition failed in implicit integration")
             }

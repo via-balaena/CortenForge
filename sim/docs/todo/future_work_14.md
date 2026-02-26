@@ -131,8 +131,8 @@ Jacobians.
 
 ---
 
-### 59. `mj_name2id` / `mj_id2name` — Public Name Lookup API
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~59. `mj_name2id` / `mj_id2name` — Public Name Lookup API~~
+**Status:** ✅ Done (Phase 3 commit) | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 
@@ -157,8 +157,8 @@ Expose O(1) bidirectional name↔index lookup on `Model`.
        pub fn id2name(&self, elem_type: ElementType, id: usize) -> Option<&str>;
    }
    ```
-3. **Element types**: body, joint, geom, site, tendon, actuator, sensor, camera,
-   light, mesh, material, texture.
+3. **Element types**: body, joint, geom, site, tendon, actuator, sensor, mesh.
+   Camera, light, material, and texture are deferred (rendering-layer, post-v1.0).
 4. **Existing id2name**: The existing `body_name: Vec<Option<String>>` etc. fields
    already provide id-to-name. `id2name()` wraps these.
 

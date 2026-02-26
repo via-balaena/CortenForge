@@ -309,6 +309,12 @@ impl TriangleMeshData {
     pub fn bvh(&self) -> Option<&Bvh> {
         self.bvh.as_ref()
     }
+
+    /// Return indices `0..triangle_count()` for brute-force iteration.
+    #[must_use]
+    pub fn all_triangle_indices(&self) -> Vec<usize> {
+        (0..self.triangles.len()).collect()
+    }
 }
 
 /// Contact result from triangle mesh collision.
@@ -1044,26 +1050,31 @@ fn test_axis_triangle_box(
 /// Query a triangle mesh for contact with a sphere.
 ///
 /// Uses BVH acceleration to find candidate triangles, then tests each one.
+/// When `use_bvh` is false, iterates all triangles (brute-force fallback).
 ///
-/// Returns `None` if the BVH is not built (e.g., deserialized mesh without rebuild).
+/// Returns `None` if `use_bvh` is true and the BVH is not built.
 #[must_use]
 pub fn mesh_sphere_contact(
     mesh: &TriangleMeshData,
     mesh_pose: &Pose,
     sphere_center: Point3<f64>,
     sphere_radius: f64,
+    use_bvh: bool,
 ) -> Option<MeshContact> {
     // Transform sphere center to mesh local space
     let local_center = mesh_pose.inverse_transform_point(&sphere_center);
 
-    // Query BVH for candidate triangles
-    let query_aabb = crate::collision_shape::Aabb::from_center(
-        local_center,
-        Vector3::new(sphere_radius, sphere_radius, sphere_radius),
-    );
-
-    let bvh = mesh.bvh.as_ref()?;
-    let candidates = bvh.query(&query_aabb);
+    // Get candidate triangles via BVH or brute-force
+    let candidates = if use_bvh {
+        let query_aabb = crate::collision_shape::Aabb::from_center(
+            local_center,
+            Vector3::new(sphere_radius, sphere_radius, sphere_radius),
+        );
+        let bvh = mesh.bvh.as_ref()?;
+        bvh.query(&query_aabb)
+    } else {
+        mesh.all_triangle_indices()
+    };
 
     // Test each candidate triangle
     let mut best_contact: Option<MeshContact> = None;
@@ -1093,7 +1104,9 @@ pub fn mesh_sphere_contact(
 
 /// Query a triangle mesh for contact with a capsule.
 ///
-/// Returns `None` if the BVH is not built (e.g., deserialized mesh without rebuild).
+/// When `use_bvh` is false, iterates all triangles (brute-force fallback).
+///
+/// Returns `None` if `use_bvh` is true and the BVH is not built.
 #[must_use]
 pub fn mesh_capsule_contact(
     mesh: &TriangleMeshData,
@@ -1101,26 +1114,31 @@ pub fn mesh_capsule_contact(
     capsule_start: Point3<f64>,
     capsule_end: Point3<f64>,
     capsule_radius: f64,
+    use_bvh: bool,
 ) -> Option<MeshContact> {
     // Transform capsule to mesh local space
     let local_start = mesh_pose.inverse_transform_point(&capsule_start);
     let local_end = mesh_pose.inverse_transform_point(&capsule_end);
 
-    // Compute AABB for the capsule
-    let min_x = local_start.x.min(local_end.x) - capsule_radius;
-    let min_y = local_start.y.min(local_end.y) - capsule_radius;
-    let min_z = local_start.z.min(local_end.z) - capsule_radius;
-    let max_x = local_start.x.max(local_end.x) + capsule_radius;
-    let max_y = local_start.y.max(local_end.y) + capsule_radius;
-    let max_z = local_start.z.max(local_end.z) + capsule_radius;
+    // Get candidate triangles via BVH or brute-force
+    let candidates = if use_bvh {
+        let min_x = local_start.x.min(local_end.x) - capsule_radius;
+        let min_y = local_start.y.min(local_end.y) - capsule_radius;
+        let min_z = local_start.z.min(local_end.z) - capsule_radius;
+        let max_x = local_start.x.max(local_end.x) + capsule_radius;
+        let max_y = local_start.y.max(local_end.y) + capsule_radius;
+        let max_z = local_start.z.max(local_end.z) + capsule_radius;
 
-    let query_aabb = crate::collision_shape::Aabb::new(
-        Point3::new(min_x, min_y, min_z),
-        Point3::new(max_x, max_y, max_z),
-    );
+        let query_aabb = crate::collision_shape::Aabb::new(
+            Point3::new(min_x, min_y, min_z),
+            Point3::new(max_x, max_y, max_z),
+        );
 
-    let bvh = mesh.bvh.as_ref()?;
-    let candidates = bvh.query(&query_aabb);
+        let bvh = mesh.bvh.as_ref()?;
+        bvh.query(&query_aabb)
+    } else {
+        mesh.all_triangle_indices()
+    };
 
     // Test each candidate triangle
     let mut best_contact: Option<MeshContact> = None;
@@ -1150,37 +1168,44 @@ pub fn mesh_capsule_contact(
 
 /// Query a triangle mesh for contact with a box.
 ///
-/// Returns `None` if the BVH is not built (e.g., deserialized mesh without rebuild).
+/// When `use_bvh` is false, iterates all triangles (brute-force fallback).
+///
+/// Returns `None` if `use_bvh` is true and the BVH is not built.
 #[must_use]
 pub fn mesh_box_contact(
     mesh: &TriangleMeshData,
     mesh_pose: &Pose,
     box_pose: &Pose,
     half_extents: &Vector3<f64>,
+    use_bvh: bool,
 ) -> Option<MeshContact> {
     // Transform box to mesh local space
     let local_box_center = mesh_pose.inverse_transform_point(&box_pose.position);
     let local_box_rotation = mesh_pose.rotation.inverse() * box_pose.rotation;
 
-    // Compute AABB for the box in mesh local space
-    let rot_mat = local_box_rotation.to_rotation_matrix();
-    let extent_x = (rot_mat[(0, 0)] * half_extents.x).abs()
-        + (rot_mat[(0, 1)] * half_extents.y).abs()
-        + (rot_mat[(0, 2)] * half_extents.z).abs();
-    let extent_y = (rot_mat[(1, 0)] * half_extents.x).abs()
-        + (rot_mat[(1, 1)] * half_extents.y).abs()
-        + (rot_mat[(1, 2)] * half_extents.z).abs();
-    let extent_z = (rot_mat[(2, 0)] * half_extents.x).abs()
-        + (rot_mat[(2, 1)] * half_extents.y).abs()
-        + (rot_mat[(2, 2)] * half_extents.z).abs();
+    // Get candidate triangles via BVH or brute-force
+    let candidates = if use_bvh {
+        let rot_mat = local_box_rotation.to_rotation_matrix();
+        let extent_x = (rot_mat[(0, 0)] * half_extents.x).abs()
+            + (rot_mat[(0, 1)] * half_extents.y).abs()
+            + (rot_mat[(0, 2)] * half_extents.z).abs();
+        let extent_y = (rot_mat[(1, 0)] * half_extents.x).abs()
+            + (rot_mat[(1, 1)] * half_extents.y).abs()
+            + (rot_mat[(1, 2)] * half_extents.z).abs();
+        let extent_z = (rot_mat[(2, 0)] * half_extents.x).abs()
+            + (rot_mat[(2, 1)] * half_extents.y).abs()
+            + (rot_mat[(2, 2)] * half_extents.z).abs();
 
-    let query_aabb = crate::collision_shape::Aabb::from_center(
-        local_box_center,
-        Vector3::new(extent_x, extent_y, extent_z),
-    );
+        let query_aabb = crate::collision_shape::Aabb::from_center(
+            local_box_center,
+            Vector3::new(extent_x, extent_y, extent_z),
+        );
 
-    let bvh = mesh.bvh.as_ref()?;
-    let candidates = bvh.query(&query_aabb);
+        let bvh = mesh.bvh.as_ref()?;
+        bvh.query(&query_aabb)
+    } else {
+        mesh.all_triangle_indices()
+    };
 
     // Test each candidate triangle
     let mut best_contact: Option<MeshContact> = None;
@@ -1242,7 +1267,7 @@ pub fn mesh_box_contact(
 /// let pose_a = Pose::identity();
 /// let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
 ///
-/// let contacts = mesh_mesh_contact(&mesh_a, &pose_a, &mesh_b, &pose_b);
+/// let contacts = mesh_mesh_contact(&mesh_a, &pose_a, &mesh_b, &pose_b, true);
 /// for contact in contacts {
 ///     println!("Contact at {:?}, depth: {}", contact.point, contact.penetration);
 /// }
@@ -1253,21 +1278,30 @@ pub fn mesh_mesh_contact(
     pose_a: &Pose,
     mesh_b: &TriangleMeshData,
     pose_b: &Pose,
+    use_bvh: bool,
 ) -> Vec<MeshContact> {
-    // Get BVHs (return empty if not available)
-    let Some(bvh_a) = mesh_a.bvh() else {
-        return Vec::new();
-    };
-    let Some(bvh_b) = mesh_b.bvh() else {
-        return Vec::new();
-    };
+    // Get candidate triangle pairs via BVH or brute-force
+    let candidate_pairs: Vec<(usize, usize)> = if use_bvh {
+        let Some(bvh_a) = mesh_a.bvh() else {
+            return Vec::new();
+        };
+        let Some(bvh_b) = mesh_b.bvh() else {
+            return Vec::new();
+        };
 
-    // Convert poses to isometries for the BVH query
-    let iso_a = pose_a.to_isometry();
-    let iso_b = pose_b.to_isometry();
-
-    // Query BVH pair for candidate triangle pairs
-    let candidate_pairs = crate::mid_phase::query_bvh_pair(bvh_a, bvh_b, &iso_a, &iso_b);
+        let iso_a = pose_a.to_isometry();
+        let iso_b = pose_b.to_isometry();
+        crate::mid_phase::query_bvh_pair(bvh_a, bvh_b, &iso_a, &iso_b)
+    } else {
+        // Brute-force: all (i, j) triangle pairs
+        let mut pairs = Vec::with_capacity(mesh_a.triangle_count() * mesh_b.triangle_count());
+        for i in 0..mesh_a.triangle_count() {
+            for j in 0..mesh_b.triangle_count() {
+                pairs.push((i, j));
+            }
+        }
+        pairs
+    };
 
     if candidate_pairs.is_empty() {
         return Vec::new();
@@ -1329,8 +1363,9 @@ pub fn mesh_mesh_deepest_contact(
     pose_a: &Pose,
     mesh_b: &TriangleMeshData,
     pose_b: &Pose,
+    use_bvh: bool,
 ) -> Option<MeshContact> {
-    let contacts = mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b);
+    let contacts = mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b, use_bvh);
     contacts.into_iter().max_by(|a, b| {
         a.penetration
             .partial_cmp(&b.penetration)
@@ -1348,7 +1383,8 @@ pub fn mesh_mesh_deepest_contact(
     clippy::expect_used,
     clippy::float_cmp,
     clippy::similar_names,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::panic
 )]
 mod tests {
     use super::*;
@@ -1483,7 +1519,7 @@ mod tests {
         let center = Point3::new(0.0, 0.0, 0.7);
         let radius = 0.3;
 
-        let contact = mesh_sphere_contact(&mesh, &mesh_pose, center, radius);
+        let contact = mesh_sphere_contact(&mesh, &mesh_pose, center, radius, true);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1500,7 +1536,7 @@ mod tests {
         let center = Point3::new(0.0, 0.0, 2.0);
         let radius = 0.3;
 
-        let contact = mesh_sphere_contact(&mesh, &mesh_pose, center, radius);
+        let contact = mesh_sphere_contact(&mesh, &mesh_pose, center, radius, true);
         assert!(contact.is_none());
     }
 
@@ -1887,7 +1923,7 @@ mod tests {
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0)); // Shifted 0.5 units in X
 
-        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
         assert!(
             !contacts.is_empty(),
             "Overlapping cubes should produce contacts"
@@ -1911,7 +1947,7 @@ mod tests {
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(5.0, 0.0, 0.0)); // Far apart
 
-        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
         assert!(
             contacts.is_empty(),
             "Separate cubes should not produce contacts"
@@ -1931,7 +1967,7 @@ mod tests {
             nalgebra::UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_4),
         );
 
-        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
         assert!(
             !contacts.is_empty(),
             "Rotated overlapping cubes should produce contacts"
@@ -1948,7 +1984,7 @@ mod tests {
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(0.3, 0.3, 0.0));
 
-        let contacts = mesh_mesh_contact(&tet_a, &pose_a, &tet_b, &pose_b);
+        let contacts = mesh_mesh_contact(&tet_a, &pose_a, &tet_b, &pose_b, true);
         assert!(
             !contacts.is_empty(),
             "Overlapping tetrahedra should produce contacts"
@@ -1964,14 +2000,14 @@ mod tests {
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
 
-        let deepest = mesh_mesh_deepest_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        let deepest = mesh_mesh_deepest_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
         assert!(
             deepest.is_some(),
             "Overlapping cubes should have a deepest contact"
         );
 
         // Get all contacts and verify deepest
-        let all_contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        let all_contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
         if let Some(deepest_contact) = deepest {
             let max_penetration = all_contacts
                 .iter()
@@ -1994,7 +2030,7 @@ mod tests {
         let pose_a = Pose::identity();
         let pose_b = Pose::identity();
 
-        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
         assert!(
             !contacts.is_empty(),
             "Identical overlapping cubes should produce contacts"
@@ -2012,10 +2048,100 @@ mod tests {
         let pose_b = Pose::from_position(Point3::new(1.0, 1.0, 0.0));
 
         // With edge touching, triangles may or may not intersect depending on precision
-        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
         // Just verify no panic and contacts are well-formed
         for contact in &contacts {
             assert!(contact.penetration >= 0.0 || contact.penetration.abs() < 1e-6);
+        }
+    }
+
+    // =========================================================================
+    // Brute-force vs BVH equivalence tests (DISABLE_MIDPHASE)
+    // =========================================================================
+
+    #[test]
+    fn mesh_sphere_brute_force_matches_bvh() {
+        let mesh = create_cube();
+        let pose = Pose::identity();
+        let center = Point3::new(0.0, 0.0, 0.7);
+        let radius = 0.3;
+
+        let bvh_result = mesh_sphere_contact(&mesh, &pose, center, radius, true);
+        let brute_result = mesh_sphere_contact(&mesh, &pose, center, radius, false);
+
+        match (bvh_result, brute_result) {
+            (Some(b), Some(f)) => {
+                assert_relative_eq!(b.penetration, f.penetration, epsilon = 1e-12);
+                assert_relative_eq!(b.point.x, f.point.x, epsilon = 1e-12);
+                assert_relative_eq!(b.point.y, f.point.y, epsilon = 1e-12);
+                assert_relative_eq!(b.point.z, f.point.z, epsilon = 1e-12);
+            }
+            (None, None) => {}
+            _ => panic!("BVH and brute-force results disagree on contact existence"),
+        }
+    }
+
+    #[test]
+    fn mesh_capsule_brute_force_matches_bvh() {
+        let mesh = create_cube();
+        let pose = Pose::identity();
+        let start = Point3::new(0.0, 0.0, 0.6);
+        let end = Point3::new(0.0, 0.0, 1.0);
+        let radius = 0.2;
+
+        let bvh_result = mesh_capsule_contact(&mesh, &pose, start, end, radius, true);
+        let brute_result = mesh_capsule_contact(&mesh, &pose, start, end, radius, false);
+
+        match (bvh_result, brute_result) {
+            (Some(b), Some(f)) => {
+                assert_relative_eq!(b.penetration, f.penetration, epsilon = 1e-12);
+                assert_relative_eq!(b.point.x, f.point.x, epsilon = 1e-12);
+                assert_relative_eq!(b.point.y, f.point.y, epsilon = 1e-12);
+                assert_relative_eq!(b.point.z, f.point.z, epsilon = 1e-12);
+            }
+            (None, None) => {}
+            _ => panic!("BVH and brute-force results disagree on contact existence"),
+        }
+    }
+
+    #[test]
+    fn mesh_box_brute_force_matches_bvh() {
+        let mesh = create_cube();
+        let mesh_pose = Pose::identity();
+        let box_pose = Pose::from_position(Point3::new(0.0, 0.0, 0.6));
+        let half_extents = Vector3::new(0.2, 0.2, 0.2);
+
+        let bvh_result = mesh_box_contact(&mesh, &mesh_pose, &box_pose, &half_extents, true);
+        let brute_result = mesh_box_contact(&mesh, &mesh_pose, &box_pose, &half_extents, false);
+
+        match (bvh_result, brute_result) {
+            (Some(b), Some(f)) => {
+                assert_relative_eq!(b.penetration, f.penetration, epsilon = 1e-12);
+                assert_relative_eq!(b.point.x, f.point.x, epsilon = 1e-12);
+                assert_relative_eq!(b.point.y, f.point.y, epsilon = 1e-12);
+                assert_relative_eq!(b.point.z, f.point.z, epsilon = 1e-12);
+            }
+            (None, None) => {}
+            _ => panic!("BVH and brute-force results disagree on contact existence"),
+        }
+    }
+
+    #[test]
+    fn mesh_mesh_brute_force_matches_bvh() {
+        let cube_a = create_cube();
+        let cube_b = create_cube();
+        let pose_a = Pose::identity();
+        let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+
+        let bvh_deepest = mesh_mesh_deepest_contact(&cube_a, &pose_a, &cube_b, &pose_b, true);
+        let brute_deepest = mesh_mesh_deepest_contact(&cube_a, &pose_a, &cube_b, &pose_b, false);
+
+        match (bvh_deepest, brute_deepest) {
+            (Some(b), Some(f)) => {
+                assert_relative_eq!(b.penetration, f.penetration, epsilon = 1e-12);
+            }
+            (None, None) => {}
+            _ => panic!("BVH and brute-force results disagree on contact existence"),
         }
     }
 }

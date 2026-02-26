@@ -56,6 +56,7 @@ impl ModelBuilder {
             jnt_solimp: vec![],
             jnt_name: vec![],
             jnt_group: vec![],
+            jnt_actgravcomp: vec![],
 
             dof_body: vec![],
             dof_jnt: vec![],
@@ -152,6 +153,12 @@ impl ModelBuilder {
             noslip_tolerance: 1e-6,
             disableflags: 0,
             enableflags: 0,
+            disableactuator: 0,
+            actuator_group: Vec::new(),
+            o_margin: 0.0,
+            o_solref: [0.02, 1.0],
+            o_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            o_friction: [1.0, 1.0, 0.005, 0.0001, 0.0001],
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
             sleep_tolerance: 1e-4,
@@ -189,6 +196,10 @@ impl ModelBuilder {
 
             // Actuator name lookup
             actuator_name_to_id: HashMap::new(),
+
+            // Sensor/equality name lookup (§59)
+            sensor_name_to_id: HashMap::new(),
+            eq_name_to_id: HashMap::new(),
 
             // Equality constraints (populated by process_equality_constraints)
             eq_type: vec![],

@@ -4,7 +4,8 @@
 
 use crate::integrate::euler::mj_normalize_quat;
 use crate::jacobian::mj_integrate_pos_explicit;
-use crate::types::{ActuatorDynamics, Data, Model, StepError};
+use crate::types::flags::{actuator_disabled, disabled};
+use crate::types::{ActuatorDynamics, DISABLE_ACTUATION, Data, Model, StepError};
 
 /// Standard 4-stage Runge-Kutta integration matching MuJoCo's `mj_RungeKutta`.
 ///
@@ -83,13 +84,20 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
 
         // 2e. Activation trial state: act = act_saved + h_eff * Σ A[(i-1)*3+j] * act_dot[j]
         // where h_eff depends on dynamics type (Euler vs FilterExact).
+        // S4.8: Disabled actuators get zero act_dot, freezing activation.
         for act_i in 0..model.nu {
             let act_adr = model.actuator_act_adr[act_i];
+            let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, act_i);
             for k in 0..model.actuator_act_num[act_i] {
                 let a = act_adr + k;
                 let mut sum = 0.0;
                 for j in 0..3 {
-                    sum += RK4_A[(i - 1) * 3 + j] * data.rk4_act_dot[j][a];
+                    let ad = if is_disabled {
+                        0.0
+                    } else {
+                        data.rk4_act_dot[j][a]
+                    };
+                    sum += RK4_A[(i - 1) * 3 + j] * ad;
                 }
                 match model.actuator_dyntype[act_i] {
                     ActuatorDynamics::FilterExact => {
@@ -160,11 +168,22 @@ pub fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     mj_normalize_quat(model, data);
 
     // Advance activation from saved initial state
+    // S4.8: Disabled actuators get zero act_dot, freezing activation.
     for act_i in 0..model.nu {
         let act_adr = model.actuator_act_adr[act_i];
+        let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, act_i);
         for k in 0..model.actuator_act_num[act_i] {
             let a = act_adr + k;
-            let dact_combined: f64 = (0..4).map(|j| RK4_B[j] * data.rk4_act_dot[j][a]).sum();
+            let dact_combined: f64 = (0..4)
+                .map(|j| {
+                    let ad = if is_disabled {
+                        0.0
+                    } else {
+                        data.rk4_act_dot[j][a]
+                    };
+                    RK4_B[j] * ad
+                })
+                .sum();
             match model.actuator_dyntype[act_i] {
                 ActuatorDynamics::FilterExact => {
                     let tau = model.actuator_dynprm[act_i][0].max(1e-10);

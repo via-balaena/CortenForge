@@ -12,14 +12,17 @@ pub(crate) mod implicit;
 pub(crate) mod rk4;
 
 use crate::forward::mj_next_activation;
-use crate::types::{Data, ENABLE_SLEEP, Integrator, Model};
+use crate::types::flags::{actuator_disabled, disabled};
+use crate::types::{DISABLE_ACTUATION, Data, ENABLE_SLEEP, Integrator, Model};
 
 use euler::{mj_integrate_pos, mj_normalize_quat};
 
 impl Data {
     /// Integration step for Euler and implicit-spring-damper integrators.
     ///
-    /// RK4 integration is handled by [`mj_runge_kutta()`] and does not call this method.
+    /// This is exposed as part of the split-step API ([`step1`](Self::step1) /
+    /// [`step2`](Self::step2)). RK4 integration is handled by
+    /// [`mj_runge_kutta()`] and does not call this method.
     ///
     /// # Integration Methods
     ///
@@ -28,7 +31,7 @@ impl Data {
     ///
     /// - **Implicit**: Velocity was already updated in `mj_fwd_acceleration_implicit()`.
     ///   We only integrate positions here.
-    pub(crate) fn integrate(&mut self, model: &Model) {
+    pub fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
         // §16.27: Use indirection array for cache-friendly iteration over awake DOFs.
@@ -37,12 +40,16 @@ impl Data {
         // Integrate activation per actuator via mj_next_activation() (§34).
         // Handles both integration (Euler/FilterExact) and actlimited clamping.
         // MuJoCo order: activation → velocity → position.
+        // S4.8: Per-actuator disable gating — disabled actuators get act_dot=0,
+        // freezing activation state without zeroing it.
         for i in 0..model.nu {
             let act_adr = model.actuator_act_adr[i];
             let act_num = model.actuator_act_num[i];
+            let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i);
             for k in 0..act_num {
                 let j = act_adr + k;
-                self.act[j] = mj_next_activation(model, i, self.act[j], self.act_dot[j]);
+                let act_dot_val = if is_disabled { 0.0 } else { self.act_dot[j] };
+                self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val);
             }
         }
 
@@ -79,7 +86,17 @@ impl Data {
                 // (non-Newton path solves for v_new directly, not qacc)
             }
             Integrator::RungeKutta4 => {
-                unreachable!("RK4 integration handled by mj_runge_kutta()")
+                // Fallback to Euler when called from step2() split-step API.
+                // Full RK4 is handled by mj_runge_kutta() in step().
+                let nv = if use_dof_ind { self.nv_awake } else { model.nv };
+                for idx in 0..nv {
+                    let i = if use_dof_ind {
+                        self.dof_awake_ind[idx]
+                    } else {
+                        idx
+                    };
+                    self.qvel[i] += self.qacc[i] * h;
+                }
             }
         }
 
@@ -121,12 +138,15 @@ impl Data {
         let h = model.timestep;
 
         // 1. Activation integration via mj_next_activation() (§34, identical to integrate())
+        // S4.8: Per-actuator disable gating (mirrors integrate() above).
         for i in 0..model.nu {
             let act_adr = model.actuator_act_adr[i];
             let act_num = model.actuator_act_num[i];
+            let is_disabled = disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i);
             for k in 0..act_num {
                 let j = act_adr + k;
-                self.act[j] = mj_next_activation(model, i, self.act[j], self.act_dot[j]);
+                let act_dot_val = if is_disabled { 0.0 } else { self.act_dot[j] };
+                self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val);
             }
         }
 

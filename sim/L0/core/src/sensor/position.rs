@@ -7,9 +7,10 @@
 use crate::collision::narrow::geom_to_collision_shape;
 use crate::collision_shape::CollisionShape;
 use crate::raycast::raycast_shape;
+use crate::types::flags::disabled;
 use crate::types::{
-    ActuatorTransmission, Data, ENABLE_SLEEP, GeomType, MjJointType, MjObjectType,
-    MjSensorDataType, MjSensorType, Model, SleepState,
+    ActuatorTransmission, DISABLE_SENSOR, Data, ENABLE_SLEEP, GeomType, MjJointType, MjObjectType,
+    MjSensorDataType, MjSensorType, Model, SensorStage, SleepState,
 };
 use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
 use sim_types::Pose;
@@ -33,6 +34,11 @@ use super::sensor_body_id;
 /// - Touch: contact detection
 #[allow(clippy::too_many_lines)]
 pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
+    // S4.10: Early return — sensordata is NOT zeroed (intentional MuJoCo match).
+    if disabled(model, DISABLE_SENSOR) {
+        return;
+    }
+
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     for sensor_id in 0..model.nsensor {
@@ -314,6 +320,15 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     0.0
                 };
                 sensor_write(&mut data.sensordata, adr, 0, value);
+            }
+
+            // DT-79: User-defined sensors at position stage
+            MjSensorType::User => {
+                if model.sensor_datatype[sensor_id] == MjSensorDataType::Position {
+                    if let Some(ref cb) = model.cb_sensor {
+                        (cb.0)(model, data, sensor_id, SensorStage::Pos);
+                    }
+                }
             }
 
             // Skip velocity/acceleration-dependent sensors

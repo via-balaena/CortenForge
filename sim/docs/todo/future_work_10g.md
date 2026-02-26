@@ -17,5 +17,5 @@ DT-56/57 share an "acc0/dampratio" spec (T2). DT-59 joins the cross-file
 | DT-57 | §12 | `acc0` computation for non-muscle actuators — extend `compute_muscle_params()` | Low | T2 |
 | DT-58 | §5 | sim-muscle Hill-type model as `ActuatorDynamics::HillMuscle` variant | Low | T3 |
 | DT-59 | §5 | Bisection-based lengthrange for unlimited slide joints (`mj_setLengthRange`) | Low | T2 |
-| DT-60 | §35 | `jnt_actgravcomp` routing to `qfrc_actuator` — currently all goes to `qfrc_passive` | Medium | T1 |
-| DT-61 | §35 | `DISABLE_GRAVITY` flag not defined — only `gravity.norm() == 0.0` check exists | Low | T1 |
+| ~~DT-60~~ | §35 | ~~`jnt_actgravcomp` routing to `qfrc_actuator` — currently all goes to `qfrc_passive`~~ **Subsumed by §41 S4.2a** | Medium | T1 |
+| ~~DT-61~~ | §35 | ~~`DISABLE_GRAVITY` flag not defined — only `gravity.norm() == 0.0` check exists~~ **Subsumed by §41 S4.2** | Low | T1 |

@@ -296,6 +296,20 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
         option.sleep_tolerance = st;
     }
 
+    // Per-group actuator disabling
+    if let Some(groups_str) = get_attribute_opt(e, "actuatorgroupdisable") {
+        for token in groups_str.split_whitespace() {
+            if let Ok(group) = token.parse::<i32>() {
+                if (0..=30).contains(&group) {
+                    #[allow(clippy::cast_sign_loss)]
+                    {
+                        option.actuatorgroupdisable |= 1u32 << (group as u32);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(option)
 }
 
@@ -446,12 +460,16 @@ fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
         get_attribute_opt(e, name).map_or(default, |v| v != "disable")
     }
 
+    // Disable flags (true = enabled, false = disabled)
     flag.constraint = parse_flag(e, "constraint", flag.constraint);
     flag.equality = parse_flag(e, "equality", flag.equality);
     flag.frictionloss = parse_flag(e, "frictionloss", flag.frictionloss);
     flag.limit = parse_flag(e, "limit", flag.limit);
     flag.contact = parse_flag(e, "contact", flag.contact);
-    flag.passive = parse_flag(e, "passive", flag.passive);
+    // MuJoCo 3.3.6+ split `passive` into independent `spring` + `damper`.
+    // `passive` is silently ignored (unrecognized attributes are skipped).
+    flag.spring = parse_flag(e, "spring", flag.spring);
+    flag.damper = parse_flag(e, "damper", flag.damper);
     flag.gravity = parse_flag(e, "gravity", flag.gravity);
     flag.clampctrl = parse_flag(e, "clampctrl", flag.clampctrl);
     flag.warmstart = parse_flag(e, "warmstart", flag.warmstart);
@@ -462,9 +480,13 @@ fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
     flag.midphase = parse_flag(e, "midphase", flag.midphase);
     flag.nativeccd = parse_flag(e, "nativeccd", flag.nativeccd);
     flag.eulerdamp = parse_flag(e, "eulerdamp", flag.eulerdamp);
+    flag.autoreset = parse_flag(e, "autoreset", flag.autoreset);
+    flag.island = parse_flag(e, "island", flag.island);
+    // Enable flags (false = disabled, true = enabled)
     flag.override_contacts = parse_flag(e, "override", flag.override_contacts);
     flag.energy = parse_flag(e, "energy", flag.energy);
-    flag.island = parse_flag(e, "island", flag.island);
+    flag.fwdinv = parse_flag(e, "fwdinv", flag.fwdinv);
+    flag.invdiscrete = parse_flag(e, "invdiscrete", flag.invdiscrete);
     flag.multiccd = parse_flag(e, "multiccd", flag.multiccd);
     flag.sleep = parse_flag(e, "sleep", flag.sleep);
 
@@ -615,6 +637,9 @@ fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> {
         if parts.len() >= 5 {
             defaults.solimpfriction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
+    }
+    if let Some(val) = get_attribute_opt(e, "actuatorgravcomp") {
+        defaults.actuatorgravcomp = Some(val == "true");
     }
 
     Ok(defaults)
@@ -1584,6 +1609,11 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
         if parts.len() >= 5 {
             joint.solimpfriction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
+    }
+
+    // Gravity compensation routing (S4.2a).
+    if let Some(val) = get_attribute_opt(e, "actuatorgravcomp") {
+        joint.actuatorgravcomp = Some(val == "true");
     }
 
     Ok(joint)
@@ -2650,12 +2680,6 @@ fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
     if let Some(s) = get_attribute_opt(e, "mass") {
         flex.mass = s.parse().ok();
     }
-    // Non-standard extension: density on <flex> for element-based mass lumping.
-    // Fallback when mass attr is not present.
-    if let Some(s) = get_attribute_opt(e, "density") {
-        flex.density = s.parse().unwrap_or(1000.0);
-    }
-
     flex
 }
 
@@ -2671,15 +2695,17 @@ fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
         flex.gap = s.parse().unwrap_or(0.0);
     }
     if let Some(s) = get_attribute_opt(e, "friction") {
-        // MuJoCo friction is real(3): "slide torsion rolling".
-        // MjcfFlex.friction is f64 (scalar = sliding component only).
-        // Parse first whitespace-separated value to handle both "0.5" and
-        // "0.5 0.005 0.0001" without silent parse::<f64>() failure.
-        flex.friction = s
+        // MuJoCo friction is real(3): "tangential torsional rolling".
+        // Accepts 1–3 values, filling MuJoCo defaults for missing components.
+        let parts: Vec<f64> = s
             .split_whitespace()
-            .next()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(1.0);
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        flex.friction = Vector3::new(
+            parts.first().copied().unwrap_or(1.0),
+            parts.get(1).copied().unwrap_or(0.005),
+            parts.get(2).copied().unwrap_or(0.0001),
+        );
     }
     if let Some(s) = get_attribute_opt(e, "condim") {
         flex.condim = s.parse().unwrap_or(3);
@@ -5250,6 +5276,103 @@ mod tests {
         )
         .unwrap();
         assert_eq!(model.sensors.len(), 2, "sensor sections should merge");
+    }
+
+    // ========================================================================
+    // DT-16: density attribute on <flex> silently ignored
+    // ========================================================================
+
+    #[test]
+    fn dt16_flex_density_attribute_silently_ignored() {
+        // DT-16 regression: density="500" on <flex> should be ignored (non-conformant).
+        // The MjcfFlex.density field stays at default 1000.0.
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="dt16_density">
+                <deformable>
+                    <flex name="test" dim="1" density="500">
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.flex.len(), 1);
+        assert_relative_eq!(model.flex[0].density, 1000.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn dt16_flex_mass_attribute_works() {
+        // DT-16 positive: mass="1.5" on <flex> is the conformant API.
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="dt16_mass">
+                <deformable>
+                    <flex name="test" dim="1" mass="1.5">
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.flex.len(), 1);
+        assert_eq!(model.flex[0].mass, Some(1.5));
+    }
+
+    // ========================================================================
+    // DT-90: flex friction parsed as Vector3 (tangential, torsional, rolling)
+    // ========================================================================
+
+    #[test]
+    fn dt90_flex_friction_three_values() {
+        // DT-90: <contact friction="0.8 0.01 0.002"/> → all 3 components stored.
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="dt90_friction3">
+                <deformable>
+                    <flex name="test" dim="1">
+                        <contact friction="0.8 0.01 0.002"/>
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.flex.len(), 1);
+        let f = model.flex[0].friction;
+        assert_relative_eq!(f.x, 0.8, epsilon = 1e-15);
+        assert_relative_eq!(f.y, 0.01, epsilon = 1e-15);
+        assert_relative_eq!(f.z, 0.002, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn dt90_flex_friction_one_value_fills_defaults() {
+        // DT-90: <contact friction="0.5"/> → tangential set, torsional/rolling at defaults.
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="dt90_friction1">
+                <deformable>
+                    <flex name="test" dim="1">
+                        <contact friction="0.5"/>
+                        <vertex pos="0 0 0  1 0 0"/>
+                        <element data="0 1"/>
+                    </flex>
+                </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.flex.len(), 1);
+        let f = model.flex[0].friction;
+        assert_relative_eq!(f.x, 0.5, epsilon = 1e-15);
+        assert_relative_eq!(f.y, 0.005, epsilon = 1e-15); // MuJoCo torsional default
+        assert_relative_eq!(f.z, 0.0001, epsilon = 1e-15); // MuJoCo rolling default
     }
 
     #[test]

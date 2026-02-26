@@ -15,11 +15,13 @@
 //! - MuJoCo reference value conformance
 
 use approx::assert_relative_eq;
+use sim_core::ENABLE_ENERGY;
 use sim_mjcf::load_model;
 
 /// Helper: load model from MJCF string.
 fn model_from_mjcf(mjcf: &str) -> (sim_core::Model, sim_core::Data) {
-    let model = load_model(mjcf).expect("MJCF should load");
+    let mut model = load_model(mjcf).expect("MJCF should load");
+    model.enableflags |= ENABLE_ENERGY;
     let data = model.make_data();
     (model, data)
 }

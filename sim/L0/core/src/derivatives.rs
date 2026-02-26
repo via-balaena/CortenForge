@@ -543,13 +543,13 @@ pub(crate) fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         let dgain_dv = match model.actuator_gaintype[i] {
             GainType::Fixed => 0.0,
             GainType::Affine => model.actuator_gainprm[i][2],
-            GainType::Muscle => continue,
+            GainType::Muscle | GainType::User => continue,
         };
 
         let dbias_dv = match model.actuator_biastype[i] {
             BiasType::None => 0.0,
             BiasType::Affine => model.actuator_biasprm[i][2],
-            BiasType::Muscle => continue,
+            BiasType::Muscle | BiasType::User => continue,
         };
 
         let dforce_dv = dgain_dv * input + dbias_dv;
@@ -1162,6 +1162,12 @@ fn compute_integration_derivatives(model: &Model, data: &Data) -> IntegrationDer
                 ActuatorDynamics::None => {
                     // No activation state
                 }
+                ActuatorDynamics::User => {
+                    // User-defined dynamics: no analytical derivative available.
+                    // FD fallback handles this via the hybrid path.
+                    dact_dact[(j, j)] = 1.0;
+                    dact_dactdot[(j, j)] = h;
+                }
             }
         }
     }
@@ -1340,8 +1346,9 @@ pub fn mjd_transition_hybrid(
                         + model.actuator_gainprm[actuator_idx][2]
                             * data.actuator_velocity[actuator_idx]
                 }
-                GainType::Muscle => {
-                    // Should not reach — guarded by is_muscle check above
+                GainType::Muscle | GainType::User => {
+                    // Muscle: guarded by is_muscle check above
+                    // User: no analytical derivative — fall back to FD
                     act_fd_indices.push(state_col);
                     continue;
                 }
@@ -1517,7 +1524,7 @@ pub fn mjd_transition_hybrid(
                         + model.actuator_gainprm[actuator_idx][2]
                             * data.actuator_velocity[actuator_idx]
                 }
-                GainType::Muscle => {
+                GainType::Muscle | GainType::User => {
                     ctrl_fd_indices.push(actuator_idx);
                     continue;
                 }

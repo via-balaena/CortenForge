@@ -181,6 +181,9 @@ impl DefaultResolver {
             if result.solimpfriction.is_none() {
                 result.solimpfriction = defaults.solimpfriction;
             }
+            if result.actuatorgravcomp.is_none() {
+                result.actuatorgravcomp = defaults.actuatorgravcomp;
+            }
         }
 
         result
@@ -685,6 +688,7 @@ impl DefaultResolver {
                 solimp_limit: c.solimp_limit.or(p.solimp_limit),
                 solreffriction: c.solreffriction.or(p.solreffriction),
                 solimpfriction: c.solimpfriction.or(p.solimpfriction),
+                actuatorgravcomp: c.actuatorgravcomp.or(p.actuatorgravcomp),
             }),
         }
     }

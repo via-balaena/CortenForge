@@ -2195,8 +2195,11 @@ fn t34_sleep_enabled_all_awake() {
         "body 2 should be awake"
     );
 
-    // Clear xfrc_applied, set qvel, run forward
+    // Clear xfrc_applied, reset qpos/qvel to reference state, run forward.
+    // After DT-21, xfrc_applied affects qfrc_passive during the step, so qpos
+    // diverges from the reference. Reset both to ensure identical state.
     data.xfrc_applied[2][2] = 0.0;
+    data.qpos.copy_from(&ref_data.qpos);
     for (i, &v) in qvel.iter().enumerate() {
         data.qvel[i] = v;
     }
@@ -2580,8 +2583,11 @@ fn t41_wake_transition_derivatives() {
         "body 2 should be awake after wake"
     );
 
-    // Clear xfrc_applied, set qvel, run forward
+    // Clear xfrc_applied, reset qpos/qvel to reference state, run forward.
+    // After DT-21, xfrc_applied affects qfrc_passive during the step, so qpos
+    // diverges from the reference. Reset both to ensure identical state.
     data.xfrc_applied[2][2] = 0.0;
+    data.qpos.copy_from(&ref_data.qpos);
     for (i, &v) in qvel.iter().enumerate() {
         data.qvel[i] = v;
     }

@@ -6,7 +6,7 @@
 //! per-DOF mechanism length computation (§16.14).
 
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::enums::{Integrator, MIN_AWAKE, MjJointType, SleepPolicy, SleepState, SolverType};
 use super::model::Model;
@@ -97,6 +97,7 @@ impl Model {
             jnt_solimp: vec![],
             jnt_name: vec![],
             jnt_group: vec![],
+            jnt_actgravcomp: vec![],
 
             // DOFs (empty)
             dof_body: vec![],
@@ -311,7 +312,13 @@ impl Model {
             noslip_iterations: 0,       // Default: no noslip post-processing
             noslip_tolerance: 1e-6,     // Default tolerance for noslip convergence
             disableflags: 0,            // Nothing disabled
-            enableflags: 0,             // Nothing extra enabled
+            enableflags: 0,             // MuJoCo default: all enable bits clear
+            disableactuator: 0,         // No actuator groups disabled
+            actuator_group: Vec::new(), // All actuators in group 0 (empty for empty model)
+            o_margin: 0.0,
+            o_solref: [0.02, 1.0],
+            o_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            o_friction: [1.0, 1.0, 0.005, 0.0001, 0.0001],
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
 
@@ -324,10 +331,31 @@ impl Model {
             body_ancestor_joints: vec![vec![]],
             body_ancestor_mask: vec![vec![]], // Empty vec for world body (no joints yet)
 
+            // Name↔index lookup (§59) — empty maps for empty model
+            body_name_to_id: HashMap::new(),
+            jnt_name_to_id: HashMap::new(),
+            geom_name_to_id: HashMap::new(),
+            site_name_to_id: HashMap::new(),
+            tendon_name_to_id: HashMap::new(),
+            actuator_name_to_id: HashMap::new(),
+            sensor_name_to_id: HashMap::new(),
+            mesh_name_to_id: HashMap::new(),
+            hfield_name_to_id: HashMap::new(),
+            eq_name_to_id: HashMap::new(),
+
             // Contact pairs / excludes (empty = no explicit pairs or excludes)
             contact_pairs: vec![],
             contact_pair_set: HashSet::new(),
             contact_excludes: HashSet::new(),
+
+            // User callbacks (DT-79) — default: no callbacks
+            cb_passive: None,
+            cb_control: None,
+            cb_contactfilter: None,
+            cb_sensor: None,
+            cb_act_dyn: None,
+            cb_act_gain: None,
+            cb_act_bias: None,
         }
     }
 
@@ -402,6 +430,8 @@ impl Model {
             qfrc_applied: DVector::zeros(self.nv),
             qfrc_bias: DVector::zeros(self.nv),
             qfrc_passive: DVector::zeros(self.nv),
+            qfrc_spring: DVector::zeros(self.nv),
+            qfrc_damper: DVector::zeros(self.nv),
             qfrc_fluid: DVector::zeros(self.nv),
             qfrc_gravcomp: DVector::zeros(self.nv),
             qfrc_constraint: DVector::zeros(self.nv),
@@ -487,9 +517,13 @@ impl Model {
             // Sensors
             sensordata: DVector::zeros(self.nsensordata),
 
+            // Warnings
+            warnings: [super::warning::WarningStat::default(); super::warning::NUM_WARNINGS],
+
             // Energy
             energy_potential: 0.0,
             energy_kinetic: 0.0,
+            solver_fwdinv: [0.0, 0.0],
 
             // Sleep state (§16.7) — initialized from tree sleep policies.
             // For models not built through MJCF (ntree == 0 or body_treeid not populated),
@@ -613,6 +647,14 @@ impl Model {
             deriv_Dcvel: vec![DMatrix::zeros(6, self.nv); self.nbody],
             deriv_Dcacc: vec![DMatrix::zeros(6, self.nv); self.nbody],
             deriv_Dcfrc: vec![DMatrix::zeros(6, self.nv); self.nbody],
+
+            // Inverse dynamics (§52)
+            qfrc_inverse: DVector::zeros(self.nv),
+
+            // Body force accumulators (§51)
+            cacc: vec![SpatialVector::zeros(); self.nbody],
+            cfrc_int: vec![SpatialVector::zeros(); self.nbody],
+            cfrc_ext: vec![SpatialVector::zeros(); self.nbody],
 
             // Cached body mass/inertia (computed in forward() after CRBA)
             // Initialize world body (index 0) to infinity, others to default

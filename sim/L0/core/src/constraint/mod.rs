@@ -2,9 +2,11 @@
 //!
 //! Implements the full constraint pipeline: compute unconstrained acceleration,
 //! assemble constraint rows, dispatch to the configured solver (PGS, CG, Newton),
-//! and map solver forces back to joint space. Corresponds to MuJoCo's
-//! `engine_core_constraint.c` (assembly) and the solver dispatch in
-//! `engine_forward.c`.
+//! and map solver forces back to joint space. Gated by `DISABLE_CONSTRAINT`
+//! (§41 S4.1) — when set, assembly and solve are skipped entirely.
+//!
+//! Corresponds to MuJoCo's `engine_core_constraint.c` (assembly) and the solver
+//! dispatch in `engine_forward.c`.
 
 pub(crate) mod assembly;
 pub(crate) mod equality;
@@ -14,9 +16,12 @@ pub(crate) mod solver;
 
 use nalgebra::{DMatrix, DVector, Vector3};
 
+use crate::jacobian::mj_apply_ft;
 use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse};
+use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintType, Data, ENABLE_SLEEP, Integrator, MjJointType, Model, SolverType,
+    ConstraintType, DISABLE_CONSTRAINT, DISABLE_WARMSTART, Data, ENABLE_SLEEP, Integrator,
+    MjJointType, Model, SolverType,
 };
 
 use crate::constraint::assembly::assemble_unified_constraints;
@@ -74,6 +79,29 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
     for k in 0..nv {
         qfrc_smooth[k] =
             data.qfrc_applied[k] + data.qfrc_actuator[k] + data.qfrc_passive[k] - data.qfrc_bias[k];
+    }
+
+    // DT-21: Project xfrc_applied (Cartesian body forces) into qfrc_smooth.
+    // MuJoCo projects xfrc_applied in mj_fwdAcceleration, not mj_passive.
+    // No sleep guard — MuJoCo projects ALL bodies unconditionally.
+    for body_id in 1..model.nbody {
+        let xfrc = &data.xfrc_applied[body_id];
+        if xfrc.iter().all(|&v| v == 0.0) {
+            continue;
+        }
+        let torque = Vector3::new(xfrc[0], xfrc[1], xfrc[2]);
+        let force = Vector3::new(xfrc[3], xfrc[4], xfrc[5]);
+        let point = data.xipos[body_id];
+        mj_apply_ft(
+            model,
+            &data.xpos,
+            &data.xquat,
+            &force,
+            &torque,
+            &point,
+            body_id,
+            &mut qfrc_smooth,
+        );
     }
 
     // qacc_smooth = M⁻¹ · qfrc_smooth (via sparse LDL solve)
@@ -235,6 +263,30 @@ fn compute_qfrc_smooth_implicit(model: &Model, data: &Data) -> DVector<f64> {
     qfrc
 }
 
+/// S4.11: Load warmstart data or cold-start the solver.
+///
+/// Returns `true` if warm data was loaded (solvers should run cost comparison),
+/// `false` if cold-started (solvers skip comparison, start from qacc_smooth + efc_force=0).
+///
+/// When disabled, `qacc` is set to `qacc_smooth` and `efc_force` is zeroed.
+/// When enabled, `qacc` is loaded from `qacc_warmstart` — each solver then
+/// evaluates whether this starting point beats `qacc_smooth`.
+///
+/// Note: `qacc_warmstart` saving (end-of-step) is unconditional. This flag
+/// gates consumption only, so re-enabling mid-simulation has immediate effect.
+fn warmstart(model: &Model, data: &mut Data) -> bool {
+    if disabled(model, DISABLE_WARMSTART) {
+        // Cold start: unconstrained accelerations, zero constraint forces.
+        data.qacc.copy_from(&data.qacc_smooth);
+        data.efc_force.fill(0.0);
+        return false;
+    }
+
+    // Warm start: populate qacc from previous timestep's solution.
+    data.qacc.copy_from(&data.qacc_warmstart);
+    true
+}
+
 /// Unified constraint pipeline (§29).
 ///
 /// Pipeline:
@@ -249,6 +301,30 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
     data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
     data.newton_solved = false;
+
+    // Defence-in-depth: clear EFC arrays unconditionally so that toggling
+    // DISABLE_CONSTRAINT mid-simulation does not leave stale constraint data.
+    data.efc_type.clear();
+    data.efc_force = DVector::zeros(0);
+    data.efc_b = DVector::zeros(0);
+    data.efc_J = DMatrix::zeros(0, model.nv);
+    data.efc_vel = DVector::zeros(0);
+    data.efc_aref = DVector::zeros(0);
+    data.efc_jar = DVector::zeros(0);
+    data.efc_pos.clear();
+    data.efc_margin.clear();
+    data.efc_solref.clear();
+    data.efc_solimp.clear();
+    data.efc_diagApprox.clear();
+    data.efc_R.clear();
+    data.efc_D.clear();
+    data.efc_imp.clear();
+    data.efc_floss.clear();
+    data.efc_mu.clear();
+    data.efc_dim.clear();
+    data.efc_id.clear();
+    data.efc_state.clear();
+    data.efc_cone_hessian.clear();
 
     // Step 1: Shared qacc_smooth computation
     let (qacc_smooth, _qfrc_smooth) = compute_qacc_smooth(model, data);
@@ -304,7 +380,10 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     };
 
     // Step 2: Assemble ALL constraints (universal for all solver types)
-    assemble_unified_constraints(model, data, qacc_for_assembly);
+    // S4.3: Skip assembly entirely when constraints are disabled.
+    if !disabled(model, DISABLE_CONSTRAINT) {
+        assemble_unified_constraints(model, data, qacc_for_assembly);
+    }
     let nefc = data.efc_type.len();
 
     // Step 2b: Populate efc_island from constraint rows and island data.
@@ -315,6 +394,9 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         data.qacc.copy_from(&qacc_smooth_impl);
         return;
     }
+
+    // S4.11: Load warmstart data or cold-start before solver dispatch.
+    let _warm = warmstart(model, data);
 
     // Store implicit quantities for Newton solver.
     // Clone into owned values so we don't hold an immutable borrow on `data`

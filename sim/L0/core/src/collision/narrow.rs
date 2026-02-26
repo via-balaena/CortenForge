@@ -15,10 +15,12 @@ use super::pair_cylinder::{
 use super::plane::collide_with_plane;
 use super::sdf_collide::collide_with_sdf;
 
-use super::contact_param;
+use super::{assign_friction, assign_imp, assign_ref, contact_param};
 use crate::collision_shape::CollisionShape;
 use crate::gjk_epa::gjk_epa_contact;
-use crate::types::{Contact, ContactPair, GeomType, Model, compute_tangent_frame};
+use crate::types::{
+    Contact, ContactPair, ENABLE_OVERRIDE, GeomType, Model, compute_tangent_frame, enabled,
+};
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
 
@@ -227,6 +229,27 @@ pub fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Optio
 // Contact construction
 // ============================================================================
 
+/// Apply global contact-parameter override to a contact (S10: `ENABLE_OVERRIDE`).
+///
+/// Called **after** `apply_pair_overrides` so the global override wins over
+/// pair-level values. No-op when `ENABLE_OVERRIDE` is not set.
+///
+/// `gap` is the additive gap from the pair (mechanism-2) so that
+/// `includemargin = o_margin - gap` preserves the gap while overriding margin.
+#[inline]
+pub fn apply_global_override(model: &Model, contact: &mut Contact, gap: f64) {
+    if !enabled(model, ENABLE_OVERRIDE) {
+        return;
+    }
+    contact.solref = model.o_solref;
+    contact.solreffriction = model.o_solref;
+    contact.solimp = model.o_solimp;
+    contact.includemargin = model.o_margin - gap;
+    let mu = assign_friction(model, &model.o_friction);
+    contact.mu = mu;
+    contact.friction = mu[0];
+}
+
 /// Apply explicit `<pair>` overrides to a contact produced by `collide_geoms`.
 ///
 /// `collide_geoms` combines friction/condim/solref/solimp from the two geoms.
@@ -264,6 +287,12 @@ pub fn apply_pair_overrides(contact: &mut Contact, pair: &ContactPair) {
 /// Uses the unified `contact_param()` function (MuJoCo `mj_contactParam()`
 /// equivalent) for parameter combination: priority gating, solmix-weighted
 /// solver params, element-wise max friction, and additive gap.
+///
+/// Note: For mechanism-2 contacts, `apply_pair_overrides` + `apply_global_override`
+/// overwrite `solref`/`solimp`/`friction` immediately after this call, so the
+/// `assign_ref`/`assign_imp`/`assign_friction` work here is redundant for that
+/// path. The cost is ~3 predictable branches per contact — accepted overhead to
+/// keep a single construction path for both mechanisms.
 #[inline]
 pub fn make_contact_from_geoms(
     model: &Model,
@@ -275,6 +304,10 @@ pub fn make_contact_from_geoms(
     margin: f64,
 ) -> Contact {
     let (condim, gap, solref, solimp, mu) = contact_param(model, geom1, geom2);
+    // S10: apply global override to solver params when ENABLE_OVERRIDE is active.
+    let solref = assign_ref(model, &solref);
+    let solimp = assign_imp(model, &solimp);
+    let mu = assign_friction(model, &mu);
     let includemargin = margin - gap;
 
     let dim: usize = match condim {
@@ -297,7 +330,7 @@ pub fn make_contact_from_geoms(
         includemargin,
         mu,
         solref,
-        solreffriction: [0.0, 0.0],
+        solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
         frame: (t1, t2).into(),
         flex_vertex: None,

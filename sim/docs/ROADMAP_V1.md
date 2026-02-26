@@ -2,9 +2,14 @@
 
 > **Status**: Draft — 2026-02-21
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
-> plus the ~92 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-92).
+> plus the ~101 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-101).
+> DT-93/94/95 were added during §41 spec and subsumed into §41.
+> DT-96 (lazy energy eval) and DT-97 (golden file conformance) added during §41 audit.
+> ~~DT-99~~ (BVH midphase, §41 S9-full — **done**), ~~DT-100~~ (global override, §41 S10-full — **done**),
+> DT-101 (`mj_contactPassive()`) added during §41 spec expansion.
+> ~~DT-98~~ retired — `passive` dropped entirely pre-v1.0 (no shim needed).
 >
-> **Current position**: Through §40c on `future_work_10.md`.
+> **Current position**: Phase 3 (Core API) complete. Next: Phase 4+.
 
 ---
 
@@ -70,18 +75,23 @@ high-value, and reduce the chance of compounding errors in later work.
 | ~~DT-74~~ | 10j | T3 | ~~`compute_body_jacobian_at_point()` incomplete — only x-component implemented~~ **DONE** — canonical `mj_jac` API, dead code deleted, 14 tests |
 | ~~DT-75~~ | 10j | T3 | ~~`add_body_jacobian` free joint bug — world-frame vectors instead of body-frame `R*e_i`~~ **DONE** — body-frame axes fix in 3 locations, 6 tests |
 | ~~DT-35~~ | 10d | T3 | ~~Tendon spring/damper forces produce zero in implicit mode — missing non-diagonal K coupling~~ **DONE** — implicit tendon K/D via `accumulate_tendon_kd`, Newton `M_impl`/`qfrc_eff`, `ten_force` diagnostic always populated, 18 tests |
-| DT-16 | 10b | T1 | Flex `density` attribute location wrong in parser vs MuJoCo spec |
-| DT-90 | 10i | T1 | `flex_friction` scalar should be `Vector3<f64>` — torsional/rolling friction data lost |
-| DT-78 | 10j | T2 | `actuator_lengthrange` DOF lookup wrong for unlimited spatial tendons |
+| ~~DT-16~~ | 10b | T1 | ~~Flex `density` attribute location wrong in parser vs MuJoCo spec~~ **DONE** — removed non-conformant density parsing from `parse_flex_attrs()` |
+| ~~DT-90~~ | 10i | T1 | ~~`flex_friction` scalar should be `Vector3<f64>` — torsional/rolling friction data lost~~ **DONE** — `flex_friction` upgraded to `Vec<Vector3<f64>>` end-to-end (parser → builder → model → collision) |
+| ~~DT-78~~ | 10j | T2 | ~~`actuator_lengthrange` DOF lookup wrong for unlimited spatial tendons~~ **DONE** — spatial tendon guard in `muscle.rs`, landed in §4 step 5 |
 
 ---
 
-### Phase 2 — Runtime Flag Wiring
+### Phase 2 — Runtime Flag Wiring ✅
+
+> **Complete.** Full 7-phase audit passed (Phases 1–7, all A on R1–R9 rubric).
+> 13 discrepancies found and fixed during audit. 2,107 tests pass, 0 fail.
+> See [audit plan](todo/spec_fleshouts/s41_runtime_flags/S41_AUDIT_PLAN.md) and [rubric](todo/spec_fleshouts/s41_runtime_flags/S41_AUDIT_RUBRIC.md).
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §41 | 10 | — | Wire all 19 `disableflags` and 6 `enableflags` from MJCF `<flag>` through to runtime pipeline gating. Conformance-critical — controls whether gravity, contacts, limits, equality, actuation, sensors, etc. are active. |
-| DT-61 | 10g | T1 | Define `DISABLE_GRAVITY` flag (currently only `gravity.norm() == 0.0` check) |
+| ~~§41~~ | 10 | — | ~~Wire all 19 `disableflags` and 6 `enableflags` end-to-end. Subsumes DT-60, DT-61, DT-93, DT-94, DT-95.~~ **Done** — all AC1–AC48 conformance tests pass. See [spec](todo/spec_fleshouts/s41_runtime_flags/S41_RUNTIME_FLAGS_SPEC.md). |
+| ~~DT-99~~ | 10c | T2 | ~~BVH midphase integration into collision pipeline (§41 S9-full, post-§41 commit)~~ **Done** — `use_bvh` param + `DISABLE_MIDPHASE` guard in `collide_with_mesh()`, AC31/AC33 conformance tests |
+| ~~DT-100~~ | 10c | T2 | ~~Global contact parameter override guard sites (§41 S10-full, post-§41 commit)~~ **Done** — `assign_margin`/`assign_solref`/`assign_solimp`/`assign_friction`/`assign_solreffriction` helpers, 6 guard sites in broadphase/narrowphase/constraint, AC34–AC37 conformance tests |
 
 ---
 
@@ -91,12 +101,13 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| DT-21 | 10c | T3 | `xfrc_applied` support in `qfrc_smooth` — external Cartesian body forces |
-| DT-41 | 10e | T3 | Newton solver for implicit integrators (currently warns + falls back to PGS) |
-| §52 | 13 | — | `mj_inverse()` — inverse dynamics API computing `qfrc_inverse` |
-| §53 | 13 | — | `step1()`/`step2()` split stepping API for control injection between forward and integrate |
-| §59 | 14 | — | `mj_name2id`/`mj_id2name` — bidirectional name-index lookup |
-| DT-79 | 10j | T3 | User callbacks `mjcb_*` Rust equivalents |
+| ~~DT-21~~ | 10c | T3 | ~~`xfrc_applied` support in `qfrc_smooth` — external Cartesian body forces~~ **Done** — projection in `mj_fwd_passive()`, 4 tests |
+| ~~DT-41~~ | 10e | T3 | ~~Newton solver for implicit integrators (currently warns + falls back to PGS)~~ **Done** |
+| ~~§51~~ | 13 | — | ~~`cacc`, `cfrc_int`, `cfrc_ext` — per-body 6D force/acceleration accumulators~~ **Done** — RNE forward+backward pass, 4 tests |
+| ~~§52~~ | 13 | — | ~~`mj_inverse()` — inverse dynamics API computing `qfrc_inverse`~~ **Done** — `M*qacc + qfrc_bias - qfrc_passive`, 3 tests |
+| ~~§53~~ | 13 | — | ~~`step1()`/`step2()` split stepping API for control injection between forward and integrate~~ **Done** — 2 tests |
+| ~~§59~~ | 14 | — | ~~`mj_name2id`/`mj_id2name` — bidirectional name-index lookup~~ **Done** — `ElementType` enum, O(1) HashMap, 4 tests |
+| ~~DT-79~~ | 10j | T3 | ~~User callbacks `mjcb_*` Rust equivalents~~ **Done** — `Callback<F>` Arc wrapper, 5 tests |
 
 ---
 
@@ -106,7 +117,7 @@ Persistent fields in `Data` that MuJoCo computes every forward step.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §51 | 13 | — | `cacc`, `cfrc_int`, `cfrc_ext` — per-body 6D force/acceleration accumulators |
+| ~~§51~~ | 13 | — | ~~`cacc`, `cfrc_int`, `cfrc_ext` — per-body 6D force/acceleration accumulators~~ **Done** — moved to Phase 3 |
 | §56 | 14 | — | `subtree_linvel`, `subtree_angmom` — promote from sensor helpers to persistent fields |
 
 ---
@@ -123,7 +134,7 @@ Persistent fields in `Data` that MuJoCo computes every forward step.
 | DT-6 | 10b | T1 | `actearly` attribute wired to runtime (currently parsed, no effect) |
 | DT-8 | 10b | T2 | Transmission types: `cranksite`, `slidersite`, `jointinparent` |
 | DT-9 | 10b | T2 | `nsample`, `interp`, `delay` — MuJoCo 3.x interpolation actuator attributes |
-| DT-60 | 10g | T1 | `jnt_actgravcomp` routing to `qfrc_actuator` instead of `qfrc_passive` |
+| ~~DT-60~~ | 10g | T1 | ~~`jnt_actgravcomp` routing to `qfrc_actuator` instead of `qfrc_passive`~~ **Done** — subsumed by §41 S4.2a |
 | §61 | 15 | — | `slidercrank` actuator transmission |
 | §63 | 15 | — | `dynprm` array 3→10 elements to match MuJoCo |
 
@@ -216,6 +227,7 @@ Persistent fields in `Data` that MuJoCo computes every forward step.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | §45 | 11 | — | Four-layer conformance test suite: self-consistency, per-stage reference, trajectory comparison, property/invariant tests against MuJoCo 3.4.0 |
+| DT-97 | 10j | T2 | Golden file generation for per-flag trajectory conformance (AC18 of §41 — bootstrap pattern reused by §45) |
 
 This is the gate. Run it, identify failures, iterate on phases 1–11 until
 green.
@@ -301,6 +313,12 @@ foundation isn't right.
 | DT-83 | 10j | T3 | Multi-model batching |
 | DT-86 | 10i | T1 | `elastic2d` keyword on `<flex><elasticity>` |
 | DT-87 | 10i | T2 | Shared-body flex vertices |
+
+### §41 Follow-Ons (Post-§41, Low Priority)
+| Task | Source | Tier | Description |
+|------|--------|------|-------------|
+| DT-96 | 10j | T1 | Lazy energy evaluation (`flg_energypos`/`flg_energyvel` — only matters with plugins or energy-dependent sensors) |
+| DT-101 | 10c | T2 | `mj_contactPassive()` — viscous contact damping forces (must be called after `qfrc_passive` aggregation, see §41 S4.7e) |
 
 ### Low-Priority MuJoCo Compat
 | Task | Source | Tier | Description |

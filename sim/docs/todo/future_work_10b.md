@@ -21,26 +21,26 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | File | Group | Items | Count | T1 | T2 | T3 |
 |------|-------|-------|-------|---:|---:|---:|
 | [future_work_10b.md](./future_work_10b.md) | 1. Defaults & MJCF Parsing Gaps | DT-1 – DT-17 | 17 | 10 | 7 | 0 |
-| [future_work_10c.md](./future_work_10c.md) | 2. Contact & Collision System | DT-18 – DT-27 | 10 | 2 | 5 | 3 |
+| [future_work_10c.md](./future_work_10c.md) | 2. Contact & Collision System | DT-18 – DT-27, ~~DT-94~~, ~~DT-95~~ (subsumed by §41), ~~DT-99~~ (done), ~~DT-100~~ (done), DT-101 | 15 | 2 | 8 | 5 |
 | [future_work_10d.md](./future_work_10d.md) | 3. Tendon System | DT-28 – DT-35 | 8 | 2 | 4 | 2 |
 | [future_work_10e.md](./future_work_10e.md) | 4. Solver Optimizations | DT-36 – DT-44 | 9 | 1 | 5 | 3 |
 | [future_work_10f.md](./future_work_10f.md) | 5. Derivatives & Analytical Methods | DT-45 – DT-55 | 11 | 1 | 7 | 3 |
 | [future_work_10g.md](./future_work_10g.md) | 6. Actuator & Dynamics | DT-56 – DT-61 | 6 | 2 | 3 | 1 |
 | [future_work_10h.md](./future_work_10h.md) | 7. Sensor Gaps | DT-62 – DT-65 | 4 | 1 | 3 | 0 |
 | [future_work_10i.md](./future_work_10i.md) | 8. Flex / Deformable Body | DT-66 – DT-73, DT-85 – DT-90 | 14 | 7 | 3 | 4 |
-| [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92 | 13 | 6 | 2 | 5 |
-| **Total** | | | **92** | **32** | **39** | **21** |
+| [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92, ~~DT-93~~ (subsumed by §41), DT-96 – DT-98 | 16 | 6 | 4 | 6 |
+| **Total** | | | **100** | **32** | **45** | **23** |
 
-**Priority breakdown:** 22 Medium, 70 Low. No High — these are all sub-items
+**Priority breakdown:** 24 Medium, 71 Low. No High — these are all sub-items
 within completed tasks, not critical gaps.
 
 **Tier key:**
 - **T1** (plan + implement): Mechanical — parent spec already defines the "what."
   No iterative spec needed. 32 items.
 - **T2** (grouped spec): Related items share one spec covering shared design
-  decisions. Each item gets a "Step N" section. 39 items → ~15 spec groups.
+  decisions. Each item gets a "Step N" section. 42 items → ~15 spec groups.
 - **T3** (individual spec): Algorithmic complexity, multiple valid approaches, or
-  architectural decisions needing dedicated design. 21 items.
+  architectural decisions needing dedicated design. 23 items.
 
 **T2 spec groups (cross-file):**
 1. "Defaults Completeness" — DT-2, DT-11, DT-13, DT-14
@@ -83,5 +83,5 @@ within completed tasks, not critical gaps.
 | DT-13 | §22 | `qpos_spring` not implemented — uses `qpos0` instead (equivalent only in default case) | Medium | T2 |
 | DT-14 | §27 defaults | Actuator type-specific defaults not yet defaultable (cylinder area/timeconst, muscle params) | Medium | T2 |
 | DT-15 | §27 defaults | Sentinel-value detection for `gear`/`kp`/`noise`/`cutoff` should migrate to `Option<T>` | Low | T1 |
-| DT-16 | §27B | Flex `density` attribute location wrong — on `<flex>` in parser but not on `<flex>` in MuJoCo | Medium | T1 |
+| ~~DT-16~~ | §27B | ~~Flex `density` attribute location wrong — on `<flex>` in parser but not on `<flex>` in MuJoCo~~ **DONE** | Medium | T1 |
 | DT-17 | §27 | Global `<option o_margin>` override deferred — per-geom margin is correct foundation | Low | T1 |

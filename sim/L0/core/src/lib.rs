@@ -102,6 +102,9 @@ pub mod jacobian;
 // Integration dispatch (Euler, implicit tendon K/D, RK4)
 pub mod integrate;
 
+// Inverse dynamics (§52)
+pub mod inverse;
+
 // Island discovery and sleep/wake state machine (§16)
 pub mod island;
 
@@ -124,6 +127,9 @@ pub mod derivatives;
 
 // Contact geometry types (moved from sim-contact)
 pub mod contact;
+
+// State reset (§41 S8f) — mj_reset_data free function
+pub mod reset;
 
 // Batched simulation (N independent environments sharing one Model)
 pub mod batch;
@@ -155,24 +161,58 @@ pub use types::{
     // Contact representation (extracted to types/contact_types.rs)
     Contact,
     ContactPair,
+    // Disable flag constants (§41 S1)
+    DISABLE_ACTUATION,
+    DISABLE_AUTORESET,
+    DISABLE_CLAMPCTRL,
+    DISABLE_CONSTRAINT,
+    DISABLE_CONTACT,
+    DISABLE_DAMPER,
+    DISABLE_EQUALITY,
+    DISABLE_EULERDAMP,
+    DISABLE_FILTERPARENT,
+    DISABLE_FRICTIONLOSS,
+    DISABLE_GRAVITY,
     DISABLE_ISLAND,
+    DISABLE_LIMIT,
+    DISABLE_MIDPHASE,
+    DISABLE_NATIVECCD,
+    DISABLE_REFSAFE,
+    DISABLE_SENSOR,
+    DISABLE_SPRING,
+    DISABLE_WARMSTART,
     // Data struct (extracted to types/data.rs)
     Data,
+    // Enable flag constants (§41 S1)
+    ENABLE_ENERGY,
+    ENABLE_FWDINV,
+    ENABLE_INVDISCRETE,
+    ENABLE_MULTICCD,
+    ENABLE_OVERRIDE,
     ENABLE_SLEEP,
+    // Name↔index lookup (§59)
+    ElementType,
     EqualityType,
     GainType,
     GeomType,
     Integrator,
     // Keyframe (extracted to types/keyframe.rs)
     Keyframe,
+    // Numeric validation (§41 S8a)
+    MAX_VAL,
     MIN_AWAKE,
+    MIN_VAL,
     MjJointType,
     MjObjectType,
     MjSensorDataType,
     MjSensorType,
-    // Model struct (extracted to types/model.rs)
     Model,
+    // Warning system (§41 S8b)
+    NUM_WARNINGS,
     ResetError,
+    // Model struct (extracted to types/model.rs)
+    // Sensor callback stage
+    SensorStage,
     SleepError,
     SleepPolicy,
     SleepState,
@@ -180,10 +220,20 @@ pub use types::{
     SolverType,
     StepError,
     TendonType,
+    Warning,
+    WarningStat,
     WrapType,
+    // Flag helpers (§41 S1)
+    actuator_disabled,
     // Model construction helpers (extracted to types/model_init.rs)
     compute_dof_lengths,
+    disabled,
+    enabled,
+    is_bad,
+    mj_warning,
 };
+
+pub use reset::mj_reset_data;
 
 // LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
 pub use linalg::mj_solve_sparse;
@@ -267,6 +317,7 @@ mod tests {
         // Create a pendulum but step without gravity (check kinetic energy conservation)
         let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
         model.gravity = nalgebra::Vector3::zeros();
+        model.enableflags |= ENABLE_ENERGY; // Explicitly enable energy tracking
         let mut data = model.make_data();
 
         // Give it initial velocity

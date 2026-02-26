@@ -168,41 +168,49 @@ pub struct MjcfFlag {
     pub constraint: bool,
     /// Enable equality constraints.
     pub equality: bool,
-    /// Enable friction limit constraints.
+    /// Joint/tendon friction loss constraints.
     pub frictionloss: bool,
     /// Enable joint/tendon limit constraints.
     pub limit: bool,
     /// Enable contact force computation.
     pub contact: bool,
     /// Enable passive spring forces.
-    pub passive: bool,
+    pub spring: bool,
+    /// Enable passive damping forces.
+    pub damper: bool,
     /// Enable gravity force.
     pub gravity: bool,
-    /// Enable Coriolis/centrifugal forces.
+    /// Clamping ctrl values to ctrlrange.
     pub clampctrl: bool,
     /// Enable warm-starting of constraint solver.
     pub warmstart: bool,
-    /// Enable filtering of contact pairs.
+    /// Parent-child body collision filtering.
     pub filterparent: bool,
     /// Enable actuation.
     pub actuation: bool,
-    /// Enable reference configuration in computation.
+    /// Solref time constant safety floor (solref[0] >= 2*timestep).
     pub refsafe: bool,
     /// Enable sensor computation.
     pub sensor: bool,
-    /// Enable mid-phase collision detection.
+    /// Enable mid-phase collision detection (BVH).
     pub midphase: bool,
-    /// Enable native CCD (continuous collision detection).
+    /// Native CCD (vs libccd fallback for convex collision).
     pub nativeccd: bool,
-    /// Enable Euler angle damping.
+    /// Implicit damping in Euler integrator.
     pub eulerdamp: bool,
-    /// Override contacts (use constraint-based contacts).
+    /// Enable auto-reset on NaN/divergence.
+    pub autoreset: bool,
+    /// Enable contact parameter override.
     pub override_contacts: bool,
     /// Enable energy computation.
     pub energy: bool,
-    /// Enable body sleeping/deactivation.
+    /// Enable forward/inverse comparison stats.
+    pub fwdinv: bool,
+    /// Discrete-time inverse dynamics.
+    pub invdiscrete: bool,
+    /// Island discovery for parallel constraint solving.
     pub island: bool,
-    /// Enable multi-CCD (multiple CCD iterations).
+    /// Multi-point CCD for flat surfaces.
     pub multiccd: bool,
     /// Enable sleep/deactivation (MuJoCo sleep flag).
     pub sleep: bool,
@@ -211,12 +219,14 @@ pub struct MjcfFlag {
 impl Default for MjcfFlag {
     fn default() -> Self {
         Self {
+            // Disable flags: true = feature enabled (bit NOT set in disableflags).
             constraint: true,
             equality: true,
             frictionloss: true,
             limit: true,
             contact: true,
-            passive: true,
+            spring: true,
+            damper: true,
             gravity: true,
             clampctrl: true,
             warmstart: true,
@@ -227,9 +237,13 @@ impl Default for MjcfFlag {
             midphase: true,
             nativeccd: true,
             eulerdamp: true,
+            autoreset: true,
+            island: true, // Fixed: was false, but MuJoCo defaults to disableflags=0 (S2e)
+            // Enable flags: false = feature disabled (bit NOT set in enableflags).
             override_contacts: false,
-            energy: false,
-            island: false,
+            energy: false, // MuJoCo default: enableflags=0 (energy off unless explicit)
+            fwdinv: false,
+            invdiscrete: false,
             multiccd: false,
             sleep: false,
         }
@@ -441,6 +455,11 @@ pub struct MjcfOption {
     /// Velocity threshold for body sleeping (default: 1e-4).
     pub sleep_tolerance: f64,
 
+    // ========== Per-group actuator disabling ==========
+    /// Bitmask parsed from `actuatorgroupdisable` attribute.
+    /// Bit `i` set = group `i` disabled. Parsed from space-separated group IDs (0–30).
+    pub actuatorgroupdisable: u32,
+
     // ========== Flags (child element) ==========
     /// Simulation flags controlling feature enable/disable.
     pub flag: MjcfFlag,
@@ -491,6 +510,9 @@ impl Default for MjcfOption {
 
             // Sleep
             sleep_tolerance: 1e-4,
+
+            // Per-group actuator disabling
+            actuatorgroupdisable: 0,
 
             // Flags
             flag: MjcfFlag::default(),
@@ -590,6 +612,8 @@ pub struct MjcfJointDefaults {
     pub solreffriction: Option<[f64; 2]>,
     /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
     pub solimpfriction: Option<[f64; 5]>,
+    /// Gravity compensation routing via actuator.
+    pub actuatorgravcomp: Option<bool>,
 }
 
 /// Default geom parameters.
@@ -1353,6 +1377,8 @@ pub struct MjcfJoint {
     pub solreffriction: Option<[f64; 2]>,
     /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
     pub solimpfriction: Option<[f64; 5]>,
+    /// If true, gravcomp routes through `qfrc_actuator` instead of `qfrc_passive`.
+    pub actuatorgravcomp: Option<bool>,
     /// Body this joint belongs to (set during parsing).
     pub body: Option<String>,
 }
@@ -1378,6 +1404,7 @@ impl Default for MjcfJoint {
             solimp_limit: None,
             solreffriction: None,
             solimpfriction: None,
+            actuatorgravcomp: None,
             body: None,
         }
     }
@@ -3469,8 +3496,8 @@ pub struct MjcfFlex {
     pub solmix: f64,
     /// Contact gap — buffer zone within margin (default 0.0).
     pub gap: f64,
-    /// Collision friction coefficient (sliding component only).
-    pub friction: f64,
+    /// Collision friction coefficients: tangential, torsional, rolling.
+    pub friction: Vector3<f64>,
     /// Collision contact dimensionality (1, 3, or 4).
     pub condim: i32,
     /// Collision margin [m].
@@ -3538,7 +3565,7 @@ impl Default for MjcfFlex {
             priority: 0,
             solmix: 1.0,
             gap: 0.0,
-            friction: 1.0,
+            friction: Vector3::new(1.0, 0.005, 0.0001),
             condim: 3,
             margin: 0.0,
             solref: [0.02, 1.0],

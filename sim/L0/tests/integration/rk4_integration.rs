@@ -27,7 +27,9 @@ fn pendulum_mjcf(timestep: f64, integrator: &str) -> String {
     format!(
         r#"
         <mujoco model="pendulum">
-            <option gravity="0 0 -9.81" timestep="{timestep}" integrator="{integrator}"/>
+            <option gravity="0 0 -9.81" timestep="{timestep}" integrator="{integrator}">
+                <flag energy="enable"/>
+            </option>
             <worldbody>
                 <body name="link" pos="0 0 0">
                     <joint type="hinge" axis="0 1 0" damping="0"/>

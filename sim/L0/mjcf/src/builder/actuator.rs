@@ -230,7 +230,8 @@ impl ModelBuilder {
             ActuatorDynamics::Filter
             | ActuatorDynamics::FilterExact
             | ActuatorDynamics::Integrator
-            | ActuatorDynamics::Muscle => 1,
+            | ActuatorDynamics::Muscle
+            | ActuatorDynamics::User => 1,
         };
 
         self.actuator_act_adr.push(self.na);
@@ -370,6 +371,9 @@ impl ModelBuilder {
         self.actuator_gainprm.push(gainprm);
         self.actuator_biasprm.push(biasprm);
         self.actuator_dynprm.push(dynprm);
+
+        // Per-actuator group assignment (§41 S7b)
+        self.actuator_group.push(actuator.group.unwrap_or(0));
 
         // Lengthrange and acc0: initialized to zero, computed by compute_muscle_params()
         self.actuator_lengthrange.push((0.0, 0.0));

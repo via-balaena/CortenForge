@@ -115,7 +115,7 @@ fn bench_mesh_mesh_collision(c: &mut Criterion) {
             BenchmarkId::new("overlapping", format!("{tri_count}x{tri_count}_tri")),
             &(&mesh_a, &mesh_b, &pose_a, &pose_b),
             |b, (mesh_a, mesh_b, pose_a, pose_b)| {
-                b.iter(|| black_box(mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b)));
+                b.iter(|| black_box(mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b, true)));
             },
         );
 
@@ -124,7 +124,11 @@ fn bench_mesh_mesh_collision(c: &mut Criterion) {
             BenchmarkId::new("deepest", format!("{tri_count}x{tri_count}_tri")),
             &(&mesh_a, &mesh_b, &pose_a, &pose_b),
             |b, (mesh_a, mesh_b, pose_a, pose_b)| {
-                b.iter(|| black_box(mesh_mesh_deepest_contact(mesh_a, pose_a, mesh_b, pose_b)));
+                b.iter(|| {
+                    black_box(mesh_mesh_deepest_contact(
+                        mesh_a, pose_a, mesh_b, pose_b, true,
+                    ))
+                });
             },
         );
     }
@@ -154,7 +158,7 @@ fn bench_mesh_mesh_rotated(c: &mut Criterion) {
             BenchmarkId::new("rotation", format!("{angle_deg}_deg")),
             &(&mesh_a, &mesh_b, &pose_a, &pose_b),
             |b, (mesh_a, mesh_b, pose_a, pose_b)| {
-                b.iter(|| black_box(mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b)));
+                b.iter(|| black_box(mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b, true)));
             },
         );
     }
@@ -179,7 +183,7 @@ fn bench_mesh_mesh_separate(c: &mut Criterion) {
             BenchmarkId::new("no_overlap", format!("{tri_count}x{tri_count}_tri")),
             &(&mesh_a, &mesh_b, &pose_a, &pose_b),
             |b, (mesh_a, mesh_b, pose_a, pose_b)| {
-                b.iter(|| black_box(mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b)));
+                b.iter(|| black_box(mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b, true)));
             },
         );
     }
@@ -212,7 +216,11 @@ fn bench_10k_triangle_pairs(c: &mut Criterion) {
         BenchmarkId::new("mesh_pair", format!("{pairs}_pairs")),
         &(&mesh_a, &mesh_b, &pose_a, &pose_b),
         |b, (mesh_a, mesh_b, pose_a, pose_b)| {
-            b.iter(|| black_box(mesh_mesh_deepest_contact(mesh_a, pose_a, mesh_b, pose_b)));
+            b.iter(|| {
+                black_box(mesh_mesh_deepest_contact(
+                    mesh_a, pose_a, mesh_b, pose_b, true,
+                ))
+            });
         },
     );
 
@@ -227,7 +235,11 @@ fn bench_10k_triangle_pairs(c: &mut Criterion) {
         BenchmarkId::new("mesh_pair", format!("{pairs_large}_pairs")),
         &(&mesh_a_large, &mesh_b_large, &pose_a, &pose_b),
         |b, (mesh_a, mesh_b, pose_a, pose_b)| {
-            b.iter(|| black_box(mesh_mesh_deepest_contact(mesh_a, pose_a, mesh_b, pose_b)));
+            b.iter(|| {
+                black_box(mesh_mesh_deepest_contact(
+                    mesh_a, pose_a, mesh_b, pose_b, true,
+                ))
+            });
         },
     );
 
@@ -272,6 +284,7 @@ fn bench_humanoid_self_collision(c: &mut Criterion) {
                         &poses[i],
                         &body_parts[j],
                         &poses[j],
+                        true,
                     ) {
                         total_contacts += 1;
                     }
@@ -291,6 +304,7 @@ fn bench_humanoid_self_collision(c: &mut Criterion) {
                     &poses[i],
                     &body_parts[i + 1],
                     &poses[i + 1],
+                    true,
                 ) {
                     total_contacts += 1;
                 }

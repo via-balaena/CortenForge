@@ -101,6 +101,7 @@ impl ModelBuilder {
             jnt_solimp: self.jnt_solimp,
             jnt_name: self.jnt_name,
             jnt_group: self.jnt_group,
+            jnt_actgravcomp: self.jnt_actgravcomp,
 
             dof_body: self.dof_body,
             dof_jnt: self.dof_jnt,
@@ -299,10 +300,31 @@ impl ModelBuilder {
             eq_solref: self.eq_solref,
             eq_name: self.eq_name,
 
+            // Name↔index lookup (§59) — transfer builder maps
+            body_name_to_id: self.body_name_to_id,
+            jnt_name_to_id: self.joint_name_to_id,
+            geom_name_to_id: self.geom_name_to_id,
+            site_name_to_id: self.site_name_to_id,
+            tendon_name_to_id: self.tendon_name_to_id,
+            actuator_name_to_id: self.actuator_name_to_id,
+            sensor_name_to_id: self.sensor_name_to_id,
+            mesh_name_to_id: self.mesh_name_to_id,
+            hfield_name_to_id: self.hfield_name_to_id,
+            eq_name_to_id: self.eq_name_to_id,
+
             // Contact pairs / excludes (populated by process_contact)
             contact_pairs: self.contact_pairs,
             contact_pair_set: self.contact_pair_set,
             contact_excludes: self.contact_excludes,
+
+            // User callbacks (DT-79) — not set from MJCF, user assigns post-load
+            cb_passive: None,
+            cb_control: None,
+            cb_contactfilter: None,
+            cb_sensor: None,
+            cb_act_dyn: None,
+            cb_act_gain: None,
+            cb_act_bias: None,
 
             timestep: self.timestep,
             gravity: self.gravity,
@@ -325,6 +347,12 @@ impl ModelBuilder {
             noslip_tolerance: self.noslip_tolerance,
             disableflags: self.disableflags,
             enableflags: self.enableflags,
+            disableactuator: self.disableactuator,
+            actuator_group: self.actuator_group,
+            o_margin: self.o_margin,
+            o_solref: self.o_solref,
+            o_solimp: self.o_solimp,
+            o_friction: self.o_friction,
             integrator: self.integrator,
             solver_type: self.solver_type,
 

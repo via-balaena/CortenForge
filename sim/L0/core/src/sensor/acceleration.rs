@@ -4,9 +4,10 @@
 //! accelerometer, force/torque, touch, frame linear/angular acceleration,
 //! actuator force, joint/tendon limit force.
 
+use crate::types::flags::disabled;
 use crate::types::{
-    ConstraintType, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType, MjSensorType, Model,
-    SleepState,
+    ConstraintType, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType,
+    MjSensorType, Model, SensorStage, SleepState,
 };
 use nalgebra::{Matrix3, Vector3};
 
@@ -27,6 +28,11 @@ use super::sensor_body_id;
 /// - `FrameAngAcc`: angular acceleration
 /// - `ActuatorFrc`: actuator force
 pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
+    // S4.10: Early return — sensordata is NOT zeroed (intentional MuJoCo match).
+    if disabled(model, DISABLE_SENSOR) {
+        return;
+    }
+
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     for sensor_id in 0..model.nsensor {
@@ -207,6 +213,15 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                     _ => Vector3::zeros(),
                 };
                 sensor_write3(&mut data.sensordata, adr, &alpha);
+            }
+
+            // DT-79: User-defined sensors at acceleration stage
+            MjSensorType::User => {
+                if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration {
+                    if let Some(ref cb) = model.cb_sensor {
+                        (cb.0)(model, data, sensor_id, SensorStage::Acc);
+                    }
+                }
             }
 
             // Skip position/velocity-dependent sensors

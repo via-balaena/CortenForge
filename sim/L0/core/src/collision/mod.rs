@@ -1,6 +1,10 @@
 //! Collision detection pipeline — broad-phase dispatch, affinity filtering, and
 //! contact parameter mixing.
 //!
+//! Gated by `DISABLE_CONTACT` and `DISABLE_CONSTRAINT` (§41 S4.1) — both flags
+//! skip collision entirely. `ENABLE_OVERRIDE` (§41 S10) replaces per-geom solver
+//! parameters with global `o_margin`/`o_solref`/`o_solimp`/`o_friction`.
+//!
 //! Corresponds to MuJoCo's `engine_collision_driver.c` (broad-phase dispatch)
 //! and parameter combination from `engine_collision_primitive.c`.
 
@@ -19,11 +23,14 @@ pub(crate) mod sdf_collide;
 
 use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
-use crate::types::{Data, ENABLE_SLEEP, Model, SleepState};
+use crate::types::{
+    DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
+    Model, SleepState, disabled, enabled,
+};
 use nalgebra::{Point3, Vector3};
 
 use self::flex_collide::{make_contact_flex_rigid, narrowphase_sphere_geom};
-use self::narrow::{apply_pair_overrides, collide_geoms};
+use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
 
 // ============================================================================
 // Collision affinity filtering
@@ -73,7 +80,11 @@ pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize
     // - But the ball should still collide with ground planes on body 0
     // - The "parent-child" filter is for bodies connected by articulated joints
     //   (hinge, slide, ball) where collision would be geometrically impossible
-    if body1 != 0
+    //
+    // S4.12: Skip parent-child exclusion when DISABLE_FILTERPARENT is set,
+    // allowing parent-child geom pairs to collide.
+    if !disabled(model, DISABLE_FILTERPARENT)
+        && body1 != 0
         && body2 != 0
         && (model.body_parent[body1] == body2 || model.body_parent[body2] == body1)
     {
@@ -169,13 +180,13 @@ pub(crate) fn contact_param_flex_rigid(
     let gap = model.flex_gap[flex_id] + model.geom_gap[geom_idx];
 
     if priority_flex > priority_geom {
-        let f = model.flex_friction[flex_id]; // scalar until Vec<Vector3> upgrade
+        let f = model.flex_friction[flex_id];
         return (
             model.flex_condim[flex_id],
             gap,
             model.flex_solref[flex_id],
             model.flex_solimp[flex_id],
-            [f, f, f, f, f], // scalar → uniform 5-element unpack
+            [f.x, f.x, f.y, f.z, f.z], // tangential, tangential, torsional, rolling, rolling
         );
     }
     if priority_geom > priority_flex {
@@ -199,15 +210,15 @@ pub(crate) fn contact_param_flex_rigid(
     let solref = combine_solref(model.flex_solref[flex_id], model.geom_solref[geom_idx], mix);
     let solimp = combine_solimp(model.flex_solimp[flex_id], model.geom_solimp[geom_idx], mix);
 
-    // Friction: element-wise max (flex scalar applied to all components)
+    // Friction: element-wise max per component
     let ff = model.flex_friction[flex_id];
     let gf = model.geom_friction[geom_idx];
     let fri = [
-        ff.max(gf.x),
-        ff.max(gf.x), // sliding1, sliding2
-        ff.max(gf.y), // torsional
-        ff.max(gf.z),
-        ff.max(gf.z), // rolling1, rolling2
+        ff.x.max(gf.x),
+        ff.x.max(gf.x), // tangential1, tangential2
+        ff.y.max(gf.y), // torsional
+        ff.z.max(gf.z),
+        ff.z.max(gf.z), // rolling1, rolling2
     ];
 
     (condim, gap, solref, solimp, fri)
@@ -251,6 +262,66 @@ pub fn combine_solimp(solimp1: [f64; 5], solimp2: [f64; 5], mix: f64) -> [f64; 5
 }
 
 // ============================================================================
+// ENABLE_OVERRIDE assignment helpers (S10c)
+// ============================================================================
+
+/// Minimum friction coefficient. Prevents zero-friction contacts from creating
+/// singular constraint Jacobians. Matches MuJoCo's `mjMINMU`.
+pub(crate) const MIN_MU: f64 = 1e-5;
+
+/// Returns the global override margin when `ENABLE_OVERRIDE` is active,
+/// otherwise returns `source` unchanged.
+#[inline]
+pub(crate) fn assign_margin(model: &Model, source: f64) -> f64 {
+    if enabled(model, ENABLE_OVERRIDE) {
+        model.o_margin
+    } else {
+        source
+    }
+}
+
+/// Returns the global override `solref` when `ENABLE_OVERRIDE` is active,
+/// otherwise returns `source` unchanged.
+#[inline]
+pub(crate) fn assign_ref(model: &Model, source: &[f64; 2]) -> [f64; 2] {
+    if enabled(model, ENABLE_OVERRIDE) {
+        model.o_solref
+    } else {
+        *source
+    }
+}
+
+/// Returns the global override `solimp` when `ENABLE_OVERRIDE` is active,
+/// otherwise returns `source` unchanged.
+#[inline]
+pub(crate) fn assign_imp(model: &Model, source: &[f64; 5]) -> [f64; 5] {
+    if enabled(model, ENABLE_OVERRIDE) {
+        model.o_solimp
+    } else {
+        *source
+    }
+}
+
+/// Returns the global override friction when `ENABLE_OVERRIDE` is active,
+/// otherwise returns `source` unchanged. All elements are clamped to `MIN_MU`
+/// regardless of override status.
+#[inline]
+pub(crate) fn assign_friction(model: &Model, source: &[f64; 5]) -> [f64; 5] {
+    let f = if enabled(model, ENABLE_OVERRIDE) {
+        model.o_friction
+    } else {
+        *source
+    };
+    [
+        f[0].max(MIN_MU),
+        f[1].max(MIN_MU),
+        f[2].max(MIN_MU),
+        f[3].max(MIN_MU),
+        f[4].max(MIN_MU),
+    ]
+}
+
+// ============================================================================
 // Broad-phase collision dispatch
 // ============================================================================
 
@@ -279,9 +350,15 @@ pub fn combine_solimp(solimp1: [f64; 5], solimp2: [f64; 5], mix: f64) -> [f64; 5
 /// | Any n | O(n log n + k) | k = overlapping pairs |
 /// | Coherent | O(n + k) | Nearly-sorted input |
 pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
-    // Clear existing contacts
+    // Unconditional reset (S4.1 — matches MuJoCo's mj_collision).
     data.contacts.clear();
     data.ncon = 0;
+
+    // S4.1: Skip collision detection when contacts or constraints are disabled.
+    let nbodyflex = model.nbody + model.nflex;
+    if disabled(model, DISABLE_CONTACT) || disabled(model, DISABLE_CONSTRAINT) || nbodyflex < 2 {
+        return;
+    }
 
     // Rigid-rigid collision requires at least 2 geoms for a pair.
     // Even with 0 or 1 geoms, flex-vertex-vs-rigid contacts are still possible.
@@ -298,7 +375,13 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 );
                 // Expand AABB by geom margin so SAP doesn't reject pairs
                 // that are within margin distance but not overlapping.
-                let m = model.geom_margin[geom_id];
+                // S10: When ENABLE_OVERRIDE is active, use half the global override
+                // margin (AABB expansion is per-geom; narrowphase sums both sides).
+                let m = if enabled(model, ENABLE_OVERRIDE) {
+                    0.5 * model.o_margin
+                } else {
+                    model.geom_margin[geom_id]
+                };
                 if m > 0.0 {
                     let expand = Vector3::new(m, m, m);
                     aabb = Aabb::new(
@@ -314,7 +397,7 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
         let sap = SweepAndPrune::new(aabbs);
         let candidates = sap.query_pairs();
 
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+        let sleep_enabled = enabled(model, ENABLE_SLEEP);
 
         // Process candidate pairs
         // The SAP already filtered to only AABB-overlapping pairs
@@ -322,6 +405,14 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             // Affinity check: same body, parent-child, contype/conaffinity
             if !check_collision_affinity(model, geom1, geom2) {
                 continue;
+            }
+
+            // DT-79: User contact filter callback (if set).
+            // Return false to reject this pair.
+            if let Some(ref cb) = model.cb_contactfilter {
+                if !(cb.0)(model, data, geom1, geom2) {
+                    continue;
+                }
             }
 
             // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
@@ -342,10 +433,13 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             let pos2 = data.geom_xpos[geom2];
             let mat2 = data.geom_xmat[geom2];
 
-            // Compute effective margin for this pair
-            let margin = model.geom_margin[geom1] + model.geom_margin[geom2];
+            // Compute effective margin for this pair.
+            // S10: assign_margin returns o_margin directly when override active.
+            let margin = assign_margin(model, model.geom_margin[geom1] + model.geom_margin[geom2]);
 
-            // Narrow-phase collision detection
+            // Narrow-phase collision detection.
+            // Midphase BVH culling is active for mesh pairs and gated by
+            // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
             if let Some(contact) =
                 collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
             {
@@ -370,8 +464,9 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 }
             }
 
-            // Pair margin overrides geom margins
-            let margin = pair.margin;
+            // Pair margin overrides geom margins.
+            // S10: assign_margin returns o_margin when global override active.
+            let margin = assign_margin(model, pair.margin);
 
             // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
             // geom_rbound is the bounding sphere radius, pre-computed per geom.
@@ -392,6 +487,13 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
                 collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
             {
                 apply_pair_overrides(&mut contact, pair);
+                apply_global_override(model, &mut contact, pair.gap);
+                // MIN_MU clamp for the non-override pair path (apply_global_override
+                // already handles the override case; this covers the else branch).
+                if !enabled(model, ENABLE_OVERRIDE) {
+                    contact.mu = assign_friction(model, &contact.mu);
+                    contact.friction = contact.mu[0];
+                }
                 data.contacts.push(contact);
                 data.ncon += 1;
             }
@@ -417,7 +519,6 @@ fn mj_collision_flex(model: &Model, data: &mut Data) {
         let vpos = data.flexvert_xpos[vi];
         let flex_id = model.flexvert_flexid[vi];
         let radius = model.flexvert_radius[vi];
-        let margin = model.flex_margin[flex_id];
 
         // Skip pinned vertices (infinite mass = immovable)
         if model.flexvert_invmass[vi] <= 0.0 {
@@ -449,13 +550,27 @@ fn mj_collision_flex(model: &Model, data: &mut Data) {
                 continue;
             }
 
+            // S10: When override active, use full o_margin for narrowphase detection.
+            // Non-override path uses flex_margin + geom_margin, matching the
+            // includemargin calculation in make_contact_flex_rigid.
+            let effective_margin = if enabled(model, ENABLE_OVERRIDE) {
+                model.o_margin
+            } else {
+                model.flex_margin[flex_id] + model.geom_margin[gi]
+            };
+
             // Narrowphase: vertex sphere vs rigid geom
             let geom_pos = data.geom_xpos[gi];
             let geom_mat = data.geom_xmat[gi];
 
-            if let Some((depth, normal, contact_pos)) =
-                narrowphase_sphere_geom(vpos, radius + margin, gi, model, geom_pos, geom_mat)
-            {
+            if let Some((depth, normal, contact_pos)) = narrowphase_sphere_geom(
+                vpos,
+                radius + effective_margin,
+                gi,
+                model,
+                geom_pos,
+                geom_mat,
+            ) {
                 let contact = make_contact_flex_rigid(model, vi, gi, contact_pos, normal, depth);
                 data.contacts.push(contact);
                 data.ncon += 1;
@@ -872,6 +987,60 @@ mod contact_param_tests {
         let (condim, _, _, _, _) = contact_param(&model, 0, 1);
 
         assert_eq!(condim, 4);
+    }
+
+    // ========================================================================
+    // DT-90 -- Flex-rigid friction: Vector3 mapping
+    // ========================================================================
+
+    /// Helper to add a single flex entity to a model for flex-rigid contact tests.
+    fn add_flex_to_model(model: &mut Model) {
+        model.nflex = 1;
+        model.flex_friction = vec![Vector3::new(1.0, 0.005, 0.0001)];
+        model.flex_condim = vec![3];
+        model.flex_solref = vec![[0.02, 1.0]];
+        model.flex_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.flex_priority = vec![0];
+        model.flex_solmix = vec![1.0];
+        model.flex_margin = vec![0.0];
+        model.flex_gap = vec![0.0];
+    }
+
+    #[test]
+    fn dt90_flex_priority_friction_mapping() {
+        // DT-90: flex priority > geom → 5-element array = [tan, tan, tor, roll, roll]
+        let mut model = make_two_geom_model();
+        add_flex_to_model(&mut model);
+        model.flex_priority[0] = 5;
+        model.flex_friction[0] = Vector3::new(0.8, 0.03, 0.004);
+
+        let (_condim, _gap, _solref, _solimp, mu) = contact_param_flex_rigid(&model, 0, 0);
+
+        assert_relative_eq!(mu[0], 0.8, epsilon = 1e-15); // tangential1
+        assert_relative_eq!(mu[1], 0.8, epsilon = 1e-15); // tangential2
+        assert_relative_eq!(mu[2], 0.03, epsilon = 1e-15); // torsional
+        assert_relative_eq!(mu[3], 0.004, epsilon = 1e-15); // rolling1
+        assert_relative_eq!(mu[4], 0.004, epsilon = 1e-15); // rolling2
+    }
+
+    #[test]
+    fn dt90_flex_equal_priority_per_component_max() {
+        // DT-90: equal priority → element-wise max uses per-component comparison
+        let mut model = make_two_geom_model();
+        add_flex_to_model(&mut model);
+        model.flex_priority[0] = 0;
+        model.geom_priority[0] = 0;
+        model.flex_friction[0] = Vector3::new(0.3, 0.04, 0.001);
+        model.geom_friction[0] = Vector3::new(0.9, 0.01, 0.005);
+
+        let (_condim, _gap, _solref, _solimp, mu) = contact_param_flex_rigid(&model, 0, 0);
+
+        // Per-component max:
+        assert_relative_eq!(mu[0], 0.9, epsilon = 1e-15); // max(0.3, 0.9) tangential1
+        assert_relative_eq!(mu[1], 0.9, epsilon = 1e-15); // tangential2
+        assert_relative_eq!(mu[2], 0.04, epsilon = 1e-15); // max(0.04, 0.01) torsional
+        assert_relative_eq!(mu[3], 0.005, epsilon = 1e-15); // max(0.001, 0.005) rolling1
+        assert_relative_eq!(mu[4], 0.005, epsilon = 1e-15); // rolling2
     }
 
     #[test]

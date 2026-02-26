@@ -4,14 +4,14 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ---
 
-## Group 9 — Misc Pipeline & API (13 items)
+## Group 9 — Misc Pipeline & API (16 items)
 
 **Spec approach:** ~~DT-74/75 need individual specs (T3 — Jacobian correctness bugs,
 need formula derivation)~~ **DONE** — both specced and implemented.
 DT-79/82/83 each need individual specs (T3 — API design
-or data layout architecture). DT-77/78 share a "Length-Range Estimation" spec with
+or data layout architecture). DT-77 shares a "Length-Range Estimation" spec with
 DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
-6 T1, 2 T2, 3 T3 remaining (2 T3 done).
+6 T1, 1 T2, 3 T3 remaining (2 T3 + 1 T2 done).
 
 | §DT | Origin | Description | Priority | Tier |
 |-----|--------|-------------|----------|------|
@@ -19,8 +19,8 @@ DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
 | ~~DT-75~~ | §4 | ~~`add_body_jacobian` free joint bug — world-frame unit vectors instead of body-frame `R*e_i`~~ **DONE** — body-frame axes fix in 3 locations, 6 tests | Medium | T3 |
 | DT-76 | §8 | Pre-allocated `efc_lambda_saved` for RK4 — avoid `efc_lambda.clone()` per step | Low | T1 |
 | DT-77 | §5 | Length-range auto-estimation for site-transmission muscle actuators (no-op stub) | Low | T2 |
-| DT-78 | §4 | `actuator_lengthrange` for unlimited spatial tendons — wrap-array DOF lookup wrong | Low | T2 |
-| DT-79 | §14 | User callbacks `mjcb_*` Rust equivalents — closures vs trait objects, thread safety | Medium | T3 |
+| ~~DT-78~~ | §4 | ~~`actuator_lengthrange` for unlimited spatial tendons — wrap-array DOF lookup wrong~~ **DONE** — spatial tendon guard skips DOF lookup, logs warning; landed in §4 step 5 (spatial tendon impl) | Low | T2 |
+| ~~DT-79~~ | §14 | ~~User callbacks `mjcb_*` Rust equivalents — closures vs trait objects, thread safety~~ **Done** — `Callback<F>` Arc wrapper, cb_passive/cb_control/cb_contactfilter, 5 tests | Medium | T3 |
 | DT-80 | §14 | Mocap body + equality weld constraint integration testing | Low | T1 |
 | DT-81 | §14 | `key_userdata` support — no `userdata` concept in CortenForge | Low | T1 |
 | DT-82 | §9 | SoA layout across environments for cache locality — deferred to GPU work | Low | T3 |
@@ -28,6 +28,10 @@ DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
 | DT-84 | §32 | `mju_encodePyramid` utility not implemented — API compatibility only | Low | T1 |
 | DT-91 | §2 | Warmstart `Vec<f64>` → `SmallVec<[f64; 6]>` — avoid heap allocation in warmstart vectors | Low | T1 |
 | DT-92 | §9 | Parallel reset for `BatchSim` — sequential O(nq+nv+nu+na) reset deferred | Low | T1 |
+| ~~DT-93~~ | §41 | ~~Auto-reset on NaN/divergence~~ **Subsumed by §41 S8** | Medium | T2 |
+| DT-96 | §41 | Lazy energy evaluation (`flg_energypos`/`flg_energyvel`) — MuJoCo avoids redundant energy recomputation when a plugin or sensor already triggered it. Only matters once plugins or energy-dependent sensors exist. | Low | T1 |
+| DT-97 | §41 | Golden file generation for per-flag trajectory conformance (AC18). Generate `.npy` reference data from MuJoCo Python for all 25 flags. Required before v1.0 if not completed during §41 implementation. | Medium | T2 |
+| ~~DT-98~~ | §41 | ~~Remove `passive` backward-compatibility shim~~ **Retired** — `passive` dropped entirely in §41 S2a (pre-v1.0, no users to break). Silently ignored by parser, matching MuJoCo 3.3.6+ behavior. | — | — |
 
 ---
 

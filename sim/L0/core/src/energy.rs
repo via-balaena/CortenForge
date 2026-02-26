@@ -4,7 +4,7 @@
 //! FK). `mj_energy_vel` computes kinetic energy from the mass matrix or body
 //! velocities (called after CRBA). `Data::total_energy()` returns the sum.
 
-use crate::types::{Data, MjJointType, Model};
+use crate::types::{DISABLE_GRAVITY, Data, MjJointType, Model};
 use nalgebra::Vector3;
 
 /// Compute potential energy (gravitational + spring).
@@ -15,6 +15,13 @@ use nalgebra::Vector3;
 pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
     let mut potential = 0.0;
 
+    // S4.2: Effective gravity — zero when DISABLE_GRAVITY is set.
+    let grav = if model.disableflags & DISABLE_GRAVITY != 0 {
+        Vector3::zeros()
+    } else {
+        model.gravity
+    };
+
     // Gravitational potential energy
     // E_g = -Σ m_i * g · com_i
     // Using xipos (COM in world frame) for correct calculation
@@ -23,11 +30,11 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
         let com = data.xipos[body_id];
         // Potential energy: -m * g · h (negative of work done by gravity)
         // With g = (0, 0, -9.81), this becomes m * 9.81 * z
-        potential -= mass * model.gravity.dot(&com);
+        potential -= mass * grav.dot(&com);
     }
 
     // Spring potential energy
-    // E_s = 0.5 * k * (q - q0)²
+    // E_s = 0.5 * k * (q - springref)²
     for jnt_id in 0..model.njnt {
         let stiffness = model.jnt_stiffness[jnt_id];
         if stiffness > 0.0 {
@@ -36,8 +43,8 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge | MjJointType::Slide => {
                     let q = data.qpos[qpos_adr];
-                    let q0 = model.qpos0.get(qpos_adr).copied().unwrap_or(0.0);
-                    let displacement = q - q0;
+                    let springref = model.jnt_springref[jnt_id];
+                    let displacement = q - springref;
                     potential += 0.5 * stiffness * displacement * displacement;
                 }
                 MjJointType::Ball | MjJointType::Free => {

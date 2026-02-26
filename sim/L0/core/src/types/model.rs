@@ -6,7 +6,7 @@
 //! across all pipeline stages.
 
 use nalgebra::{DVector, UnitQuaternion, Vector3};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 // Imports from sibling modules
@@ -200,6 +200,9 @@ pub struct Model {
     pub jnt_name: Vec<Option<String>>,
     /// Visualization group (0–5) for each joint. Used by renderers for group-based filtering.
     pub jnt_group: Vec<i32>,
+    /// Per-joint flag: if true, gravcomp routes through `qfrc_actuator`
+    /// instead of `qfrc_passive`. Parsed from `<joint actuatorgravcomp="true"/>`.
+    pub jnt_actgravcomp: Vec<bool>,
 
     // ==================== DOFs (indexed by dof_id) ====================
     /// Body for this DOF.
@@ -324,8 +327,8 @@ pub struct Model {
     pub flex_damping: Vec<f64>,
     /// Per-flex material: thickness (for dim=2 shells).
     pub flex_thickness: Vec<f64>,
-    /// Per-flex: contact friction coefficient (scalar).
-    pub flex_friction: Vec<f64>,
+    /// Per-flex: contact friction coefficients (tangential, torsional, rolling).
+    pub flex_friction: Vec<Vector3<f64>>,
     /// Per-flex: contact solver reference [timeconst, dampratio].
     pub flex_solref: Vec<[f64; 2]>,
     /// Per-flex: contact solver impedance.
@@ -720,6 +723,27 @@ pub struct Model {
     pub disableflags: u32,
     /// Enable flags (bitmask for enabling optional behaviors).
     pub enableflags: u32,
+    /// Per-group actuator disable bitmask. Bit `i` set = group `i` disabled.
+    /// Parsed from `<option actuatorgroupdisable="2 5"/>` (space-separated
+    /// list of group IDs, each 0–30) or set at runtime.
+    pub disableactuator: u32,
+    /// Group assignment per actuator (0–30). Default 0.
+    /// Parsed from `<actuator><general group="..."/>`.
+    pub actuator_group: Vec<i32>,
+
+    // ==================== Contact Override (§41 S10) ====================
+    /// Global contact margin override. Used when `ENABLE_OVERRIDE` is set.
+    /// Default: 0.0. Parsed from `<option o_margin="..."/>`.
+    pub o_margin: f64,
+    /// Global contact solver reference override `[timeconst, dampratio]`.
+    /// Default: `[0.02, 1.0]`. Parsed from `<option o_solref="..."/>`.
+    pub o_solref: [f64; 2],
+    /// Global contact solver impedance override `[dmin, dmax, width, midpoint, power]`.
+    /// Default: `[0.9, 0.95, 0.001, 0.5, 2.0]`. Parsed from `<option o_solimp="..."/>`.
+    pub o_solimp: [f64; 5],
+    /// Global contact friction override `[tan1, tan2, torsional, rolling1, rolling2]`.
+    /// Default: `[1.0, 1.0, 0.005, 0.0001, 0.0001]`. Parsed from `<option o_friction="..."/>`.
+    pub o_friction: [f64; 5],
 
     /// Integration method.
     pub integrator: Integrator,
@@ -753,6 +777,28 @@ pub struct Model {
     /// Supports unlimited joints with O(1) lookup per word.
     pub body_ancestor_mask: Vec<Vec<u64>>,
 
+    // ==================== Name↔Index Lookup (§59) ====================
+    /// Body name → index. Populated from `body_name` entries.
+    pub body_name_to_id: HashMap<String, usize>,
+    /// Joint name → index. Populated from `jnt_name` entries.
+    pub jnt_name_to_id: HashMap<String, usize>,
+    /// Geom name → index. Populated from `geom_name` entries.
+    pub geom_name_to_id: HashMap<String, usize>,
+    /// Site name → index. Populated from `site_name` entries.
+    pub site_name_to_id: HashMap<String, usize>,
+    /// Tendon name → index. Populated from `tendon_name` entries.
+    pub tendon_name_to_id: HashMap<String, usize>,
+    /// Actuator name → index. Populated from `actuator_name` entries.
+    pub actuator_name_to_id: HashMap<String, usize>,
+    /// Sensor name → index. Populated from `sensor_name` entries.
+    pub sensor_name_to_id: HashMap<String, usize>,
+    /// Mesh name → index. Populated from `mesh_name` entries.
+    pub mesh_name_to_id: HashMap<String, usize>,
+    /// Height field name → index. Populated from `hfield_name` entries.
+    pub hfield_name_to_id: HashMap<String, usize>,
+    /// Equality constraint name → index. Populated from `eq_name` entries.
+    pub eq_name_to_id: HashMap<String, usize>,
+
     // ==================== Explicit Contact Pairs/Excludes ====================
     /// Explicit contact pairs from `<contact><pair>`.
     /// Processed in mechanism 2 (bypass kinematic and bitmask filters).
@@ -764,6 +810,22 @@ pub struct Model {
     /// Excluded body-pair set from `<contact><exclude>`.
     /// Canonical key: `(min(body1, body2), max(body1, body2))`.
     pub contact_excludes: HashSet<(usize, usize)>,
+
+    // ==================== User Callbacks (DT-79) ====================
+    /// Passive force callback: called at end of `mj_fwd_passive()`.
+    pub cb_passive: Option<super::callbacks::CbPassive>,
+    /// Control callback: called between velocity and acceleration stages (§53).
+    pub cb_control: Option<super::callbacks::CbControl>,
+    /// Contact filter callback: called after affinity check in collision.
+    pub cb_contactfilter: Option<super::callbacks::CbContactFilter>,
+    /// User sensor callback: called for `MjSensorType::User` sensors.
+    pub cb_sensor: Option<super::callbacks::CbSensor>,
+    /// User actuator dynamics callback: called for `ActuatorDynamics::User`.
+    pub cb_act_dyn: Option<super::callbacks::CbActDyn>,
+    /// User actuator gain callback: called for `GainType::User`.
+    pub cb_act_gain: Option<super::callbacks::CbActGain>,
+    /// User actuator bias callback: called for `BiasType::User`.
+    pub cb_act_bias: Option<super::callbacks::CbActBias>,
 }
 
 impl Model {
@@ -785,6 +847,163 @@ impl Model {
         let start = self.jnt_qpos_adr[jnt_id];
         let len = self.jnt_type[jnt_id].nq();
         Some(&self.qpos0.as_slice()[start..start + len])
+    }
+
+    /// Look up element index by name (O(1) via HashMap).
+    ///
+    /// Returns `None` if the name does not exist for the given element type.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use sim_core::ElementType;
+    /// let joint_id = model.name2id(ElementType::Joint, "shoulder").unwrap();
+    /// ```
+    #[must_use]
+    pub fn name2id(&self, element: super::enums::ElementType, name: &str) -> Option<usize> {
+        use super::enums::ElementType;
+        match element {
+            ElementType::Body => self.body_name_to_id.get(name).copied(),
+            ElementType::Joint => self.jnt_name_to_id.get(name).copied(),
+            ElementType::Geom => self.geom_name_to_id.get(name).copied(),
+            ElementType::Site => self.site_name_to_id.get(name).copied(),
+            ElementType::Tendon => self.tendon_name_to_id.get(name).copied(),
+            ElementType::Actuator => self.actuator_name_to_id.get(name).copied(),
+            ElementType::Sensor => self.sensor_name_to_id.get(name).copied(),
+            ElementType::Mesh => self.mesh_name_to_id.get(name).copied(),
+            ElementType::Hfield => self.hfield_name_to_id.get(name).copied(),
+            ElementType::Equality => self.eq_name_to_id.get(name).copied(),
+        }
+    }
+
+    /// Look up element name by index (O(1) via Vec indexing).
+    ///
+    /// Returns `None` if the index is out of bounds or the element has no name.
+    #[must_use]
+    pub fn id2name(&self, element: super::enums::ElementType, id: usize) -> Option<&str> {
+        use super::enums::ElementType;
+        match element {
+            ElementType::Body => self.body_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Joint => self.jnt_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Geom => self.geom_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Site => self.site_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Tendon => self.tendon_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Actuator => self.actuator_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Sensor => self.sensor_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Mesh => self.mesh_name.get(id).map(String::as_str),
+            ElementType::Hfield => self.hfield_name.get(id).map(String::as_str),
+            ElementType::Equality => self.eq_name.get(id).and_then(|n| n.as_deref()),
+        }
+    }
+
+    // ==================== Callback Setters (DT-79) ====================
+
+    /// Set the passive force callback.
+    pub fn set_passive_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &mut super::data::Data) + Send + Sync + 'static,
+    {
+        self.cb_passive = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the passive force callback.
+    pub fn clear_passive_callback(&mut self) {
+        self.cb_passive = None;
+    }
+
+    /// Set the control callback.
+    pub fn set_control_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &mut super::data::Data) + Send + Sync + 'static,
+    {
+        self.cb_control = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the control callback.
+    pub fn clear_control_callback(&mut self) {
+        self.cb_control = None;
+    }
+
+    /// Set the contact filter callback.
+    ///
+    /// The callback receives `(model, data, geom1_id, geom2_id)` and should
+    /// return `true` to KEEP the contact, `false` to REJECT it.
+    pub fn set_contactfilter_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &super::data::Data, usize, usize) -> bool + Send + Sync + 'static,
+    {
+        self.cb_contactfilter = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the contact filter callback.
+    pub fn clear_contactfilter_callback(&mut self) {
+        self.cb_contactfilter = None;
+    }
+
+    /// Set the user sensor callback.
+    ///
+    /// Called for each `MjSensorType::User` sensor at the appropriate stage.
+    pub fn set_sensor_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &mut super::data::Data, usize, super::enums::SensorStage)
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.cb_sensor = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the sensor callback.
+    pub fn clear_sensor_callback(&mut self) {
+        self.cb_sensor = None;
+    }
+
+    /// Set the user actuator dynamics callback.
+    ///
+    /// Called for each actuator with `ActuatorDynamics::User`.
+    /// Should return `act_dot` (activation derivative).
+    pub fn set_act_dyn_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &super::data::Data, usize) -> f64 + Send + Sync + 'static,
+    {
+        self.cb_act_dyn = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the actuator dynamics callback.
+    pub fn clear_act_dyn_callback(&mut self) {
+        self.cb_act_dyn = None;
+    }
+
+    /// Set the user actuator gain callback.
+    ///
+    /// Called for each actuator with `GainType::User`.
+    /// Should return the gain value.
+    pub fn set_act_gain_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &super::data::Data, usize) -> f64 + Send + Sync + 'static,
+    {
+        self.cb_act_gain = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the actuator gain callback.
+    pub fn clear_act_gain_callback(&mut self) {
+        self.cb_act_gain = None;
+    }
+
+    /// Set the user actuator bias callback.
+    ///
+    /// Called for each actuator with `BiasType::User`.
+    /// Should return the bias value.
+    pub fn set_act_bias_callback<F>(&mut self, f: F)
+    where
+        F: Fn(&Self, &super::data::Data, usize) -> f64 + Send + Sync + 'static,
+    {
+        self.cb_act_bias = Some(super::callbacks::Callback(std::sync::Arc::new(f)));
+    }
+
+    /// Clear the actuator bias callback.
+    pub fn clear_act_bias_callback(&mut self) {
+        self.cb_act_bias = None;
     }
 
     /// Check if joint is an ancestor of body using pre-computed data.

@@ -27,4 +27,4 @@ DT-87/88 share a "Flexcomp Completeness" spec (T2). The rest
 | DT-87 | §27D | Shared-body flex vertices — multiple vertices referencing same body's DOFs not implemented | Low | T2 |
 | DT-88 | §27E | `<flexcomp>` deferred physics attributes: `inertiabox`, `scale`, `quat`, `file` | Low | T2 |
 | DT-89 | §27E | `<flexcomp>` deferred rendering attributes: `flatskin`, `material`, `rgba` | Low | T1 |
-| DT-90 | §27E/§30 | `flex_friction` scalar → `Vector3<f64>` — torsional/rolling friction data lost | Low | T1 |
+| ~~DT-90~~ | §27E/§30 | ~~`flex_friction` scalar → `Vector3<f64>` — torsional/rolling friction data lost~~ **DONE** | Low | T1 |
