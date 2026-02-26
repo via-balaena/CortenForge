@@ -149,11 +149,11 @@ meet the bar").
 
 ## Grades: `DT103_SPATIAL_TRANSPORT.md`
 
-**Revision 4** — Re-graded after closing gaps D9–D14 (implementor clarity).
+**Revision 5** — Re-graded after closing gaps D15–D17 (presentation).
 
 | Criterion | Grade | Evidence |
 |-----------|:-----:|----------|
-| P1. MuJoCo Ref Fidelity | **A+** | Cites `mj_objectVelocity`, `mj_objectAcceleration`, `mju_transformSpatial` with source files. `flg_force=0` vs `flg_force=1` transport formulas exact. Force/Torque sensor C code from `engine_sensor.c`. Edge cases: world body (AC11, T13), zero-mass (Edge Cases section), sleep (Edge Cases section), DISABLE_SENSOR (Edge Cases section). |
+| P1. MuJoCo Ref Fidelity | **A+** | Summary table cites all 3 MuJoCo functions with source files and behavior. `flg_force=0` vs `flg_force=1` transport formulas exact. Force/Torque sensor C code from `engine_sensor.c` shown verbatim. Edge cases: world body (AC11, T13), zero-mass (Edge Cases section), sleep (Edge Cases section), DISABLE_SENSOR (Edge Cases section). Compact — no redundant pseudocode. |
 | P2. Algorithm Completeness | **A+** | Full Rust implementation for all 6 functions. Every formula, every Coriolis correction expanded. `body_id == 0` explicitly addressed: wrapper guards with early return, core functions shown safe without guard (AC11 + Edge Cases section). An implementer can type it in verbatim. No "see MuJoCo source" notes. |
 | P3. Convention Awareness | **A+** | Convention difference table (`xpos[b]` vs `subtree_com[root]`) with explicit porting rule. Design decisions D1 motivation references convention encoding. SpatialVector layout `[angular; linear]` documented. Every `object_*` function doc comment states "reads … at `xpos[body_id]` (our convention)." |
 | P4. AC Rigor | **A+** | 12 ACs with concrete input vectors, exact expected outputs, and numerical tolerances. AC2: `[0,0,10]×[1,0,0]=[0,10,0]`. AC3: `−[0.5,0,0]×[0,0,100]=[0,−50,0]`. AC5: algebraic breakdown of centripetal `[−50,0,0]`. AC10: force invariance across multiple offsets. AC11: world body expected values. AC9, AC12: tagged as code review (structural). |
@@ -161,10 +161,10 @@ meet the bar").
 | P6. Test Coverage | **A+** | 14 tests: T1–T4 unit (pure kernels), T5–T10 integration (model-based), T11–T12 regression (Phase 4 + full domain), T13–T14 edge cases (world body, backward compat). DISABLE_SENSOR and sleep inherited from 4A.6 regression suite (T11 = 39 Phase 4 tests including sleep/disabled). AC→Test traceability: 12 ACs all mapped. 2 supplementary tests (T6, T10) justified. |
 | P7. Dependency Clarity | **A+** | Prerequisites stated in header with commit hashes: 4A.6 (16cfcb3), flg_rnepost (8e8f5f7), cvel fixes (444046e), §56 (503ac6d). DT-102 referenced as future consumer (out of scope). DT-62 referenced for objtype dispatch (out of scope). Implementation steps ordered: kernels (1–2) → composed helpers (3–4) → wrapper (5) → re-exports (6) → sensor rewrites (7–8) → tests (9) → regression (10). |
 | P8. Consumer Completeness | **A+** | 7 consumers (6 sensor arms + 1 helper) listed with file, line count, and transport type — matches problem statement's "6 sensor arms + 1 helper." Before line ranges (commit 16cfcb3) and after code sketches for all 6 sensor arms. Control flow change notes on Velocimeter/FrameLinVel. 3 excluded arms listed with physics justification. Non-sensor consumers (`forward/passive.rs` ×2, `derivatives.rs` ×2) confirmed unchanged via backward compat (AC8). |
-| P9. Blast Radius | **A+** | 5 modified files with per-file change descriptions and estimated line deltas. 5 unmodified files with reasons. `EXPECTED_SIZE` guard (AC12). Import lines specified per-file (Import Changes section). `dynamics/mod.rs` re-export diff shown. Existing test impact analyzed (Phase 4, full domain, derivatives). |
+| P9. Blast Radius | **A+** | 5 modified files with per-file change descriptions and estimated line deltas. 5 unmodified files with reasons. `EXPECTED_SIZE` guard (AC12). Import & re-export changes specified per-file within Blast Radius section (no orphaned section). `dynamics/mod.rs` re-export diff shown. Existing test impact analyzed (Phase 4, full domain, derivatives). |
 | P10. Internal Consistency | **A+** | Consumer count "6 sensor arms + 1 helper = 7 total" consistent across problem statement, scope line, and consumer table. Transport formulas in "New Functions" match "MuJoCo Reference." Implementation steps 7–8 reference files matching consumer table. D6 exclusions match "3 arms unchanged" table. Terminology identical to sibling specs. |
 
-**Overall: A+** — All gaps closed (D1–D14). All 10 criteria ship-ready.
+**Overall: A+** — All gaps closed (D1–D17). All 10 criteria ship-ready.
 
 ---
 
@@ -250,3 +250,13 @@ meet the bar").
 | D12 | `dynamics/mod.rs` re-export diff unspecified | Added before/after diff showing exact `pub(crate) use spatial::{...}` line. Noted `transport_motion`/`transport_force` are NOT re-exported (internal only). |
 | D13 | No "before" code shown — only "after" sketches | Added table with current source file + line ranges (as of commit 16cfcb3) for all 6 sensor arms being rewritten. |
 | D14 | T7 expected value `[0, 0, 0, 0, 0, +9.81]` doesn't match function return type `(Vector3, Vector3)` | Fixed to `([0, 0, 0], [0, 0, +9.81])` with label `(alpha, a_linear)`. |
+
+### Revision 4 → Revision 5 (presentation)
+
+**Spec fixes:**
+
+| # | Gap | Resolution |
+|---|-----|-----------|
+| D15 | MuJoCo Reference section had 3 pseudocode blocks (~40 lines) redundant with the New Functions section's complete Rust | Condensed to a summary table (function, file, one-line description). Kept Force/Torque C snippet (shows MuJoCo sensor pattern we mirror). Saves ~25 lines. |
+| D16 | Import Changes section sat orphaned between Blast Radius and Implementation Steps | Folded into Blast Radius as "Import & Re-Export Changes" subsection. All file-change detail now in one place. |
+| D17 | Force sketch discards `_torque` without noting the wasted computation is intentional | Comment now says "torque component is computed but discarded (minor wasted work, acceptable for API consistency with Torque arm)." |

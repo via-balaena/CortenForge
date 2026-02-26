@@ -1,6 +1,6 @@
 # DT-103 — Extract Spatial Transport Helpers
 
-**Status:** Draft (Revision 4 — implementor clarity fixes D9–D14 closed)
+**Status:** Draft (Revision 5 — presentation fixes D15–D17 closed)
 **Scope:** Extract `transport_motion`, `transport_force`, `object_velocity`,
 `object_acceleration`, and `object_force` helpers into `dynamics/spatial.rs`.
 Rewrite 6 sensor arms and 1 existing helper to call them. Pure refactor — no
@@ -46,55 +46,16 @@ helper** in a third file (7 consumers total). The deficiencies:
 
 ## MuJoCo Reference
 
-### `mj_objectVelocity` (`engine_core_util.c`)
+### Key Functions
 
-```c
-void mj_objectVelocity(const mjModel* m, const mjData* d,
-                        int objtype, int objid, mjtNum* res, int flg_local) {
-    // 1. Resolve body_id and target position from (objtype, objid)
-    // 2. Read cvel[body_id] at subtree_com[root]
-    // 3. mju_transformSpatial(res, cvel, 0, target_pos, subtree_com[root], NULL)
-    //    -> motion transport: angular unchanged, v_lin += omega x r
-    // 4. If flg_local: rotate by object rotation matrix
-}
-```
+| Function | File | What it does |
+|----------|------|-------------|
+| `mj_objectVelocity(m, d, objtype, objid, res, flg_local)` | `engine_core_util.c` | Resolve body+pos from objtype, motion-transport `cvel` from `subtree_com[root]` to target, optional rotation. |
+| `mj_objectAcceleration(m, d, objtype, objid, res, flg_local)` | `engine_core_util.c` | Same as velocity, plus Coriolis correction: transport `cacc`, transport `cvel`, then `a_lin += omega × v_lin`. |
+| `mju_transformSpatial(res, vec, flg_force, newpos, oldpos, rot)` | `engine_util_spatial.c` | Low-level 6D transport. `flg_force=0` (motion): angular unchanged, `linear += angular × r`. `flg_force=1` (force): force unchanged, `torque -= r × force`. Optional rotation. |
 
-### `mj_objectAcceleration` (`engine_core_util.c`)
-
-```c
-void mj_objectAcceleration(const mjModel* m, const mjData* d,
-                            int objtype, int objid, mjtNum* res, int flg_local) {
-    // 1. Resolve body_id and target position from (objtype, objid)
-    // 2. Read cacc[body_id] at subtree_com[root]
-    // 3. mju_transformSpatial(res, cacc, 0, target_pos, subtree_com[root], NULL)
-    //    -> motion transport: angular unchanged, a_lin += alpha x r
-    // 4. Read cvel[body_id], apply same transport to get v_at_point
-    // 5. Coriolis: a_lin += omega x v_lin_at_point
-    // 6. If flg_local: rotate by object rotation matrix
-}
-```
-
-### `mju_transformSpatial` (`engine_util_spatial.c`)
-
-```c
-void mju_transformSpatial(mjtNum* res, const mjtNum* vec, int flg_force,
-                          const mjtNum* newpos, const mjtNum* oldpos,
-                          const mjtNum* rotnew2old) {
-    // r = newpos - oldpos
-    // if flg_force == 0 (motion):
-    //   angular unchanged
-    //   linear += angular x r
-    // if flg_force == 1 (force):
-    //   force unchanged
-    //   torque -= r x force
-    // if rotnew2old != NULL: rotate both components
-}
-```
-
-### Force/Torque sensors (`engine_sensor.c`)
-
-MuJoCo has no separate `mj_objectForce` function. The Force/Torque sensor arms
-call `mju_transformSpatial` with `flg_force=1` directly:
+MuJoCo has no `mj_objectForce`. Force/Torque sensor arms call
+`mju_transformSpatial` with `flg_force=1` directly:
 
 ```c
 case mjSENS_FORCE:
@@ -418,10 +379,9 @@ MjSensorType::Force => {
         }
         _ => { sensor_write3(&mut data.sensordata, adr, &Vector3::zeros()); continue; }
     };
-    // Force is translation-invariant — only torque shifts. Passing site_pos
-    // (which may equal xpos[body_id] for Body-attached sensors) is safe:
-    // transport_force returns force unchanged regardless of offset.
-    // We call object_force to get rotation into the sensor frame.
+    // Force is translation-invariant — only torque shifts. The torque
+    // component is computed but discarded (minor wasted work, acceptable
+    // for API consistency with Torque arm which reads the same wrench).
     let (_torque, force) = object_force(data, body_id, &site_pos, Some(&site_mat));
     sensor_write3(&mut data.sensordata, adr, &force);
 }
@@ -711,49 +671,32 @@ Call `object_velocity_local` from a context identical to its use in
 - **Full sim domain (2,141+ tests):** Must all pass (AC7).
 - **Derivatives tests:** `object_velocity_local` wrapper must be bit-identical (AC8).
 
----
+### Import & Re-Export Changes
 
-## Import Changes
+**`dynamics/spatial.rs`** — no new imports needed. Existing `Data`, `Matrix3`,
+`Vector3` imports already cover the new functions.
 
-### `dynamics/spatial.rs` — new imports
-
-The new `object_velocity`, `object_acceleration`, and `object_force` functions
-read `data.cacc`, `data.cvel`, `data.cfrc_int`, and `data.xpos`. The existing
-file already imports `Data` and `Matrix3`/`Vector3`. No new imports needed in
-this file.
-
-### `dynamics/mod.rs` — re-exports
-
-Current line 16–18:
+**`dynamics/mod.rs`** — update line 16–18 re-exports:
 ```rust
+// Before:
 pub(crate) use spatial::{
     compute_body_spatial_inertia, object_velocity_local, shift_spatial_inertia,
 };
-```
-
-After:
-```rust
+// After:
 pub(crate) use spatial::{
     compute_body_spatial_inertia, object_acceleration, object_force, object_velocity,
     object_velocity_local, shift_spatial_inertia,
 };
 ```
+`transport_motion` and `transport_force` are NOT re-exported — internal to
+`spatial.rs`, used only by the `object_*` functions.
 
-(`transport_motion` and `transport_force` are NOT re-exported — they are
-internal to `dynamics/spatial.rs`, used only by the `object_*` functions.
-Sensor files import `object_velocity`, `object_acceleration`, `object_force`
-via `crate::dynamics::`.)
-
-### `sensor/acceleration.rs` — new import
-
-Add to the existing import block (after line 18):
+**`sensor/acceleration.rs`** — add after line 18:
 ```rust
 use crate::dynamics::{object_acceleration, object_force};
 ```
 
-### `sensor/velocity.rs` — new import
-
-Add to the existing import block (after line 16):
+**`sensor/velocity.rs`** — add after line 16:
 ```rust
 use crate::dynamics::object_velocity;
 ```
