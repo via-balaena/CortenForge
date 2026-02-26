@@ -31,7 +31,7 @@ MuJoCo stores `xfrc_applied` as a per-body `[force_3, torque_3]` 6-vector in
 world frame (note: MuJoCo's layout is `[fx,fy,fz, tx,ty,tz]`). It is projected
 into joint-space forces via `mj_xfrcAccumulate()` → `mj_applyFT()` during
 `mj_fwdAcceleration()` — **not** during `mj_passive()`. The projection uses the
-body CoM (`xipos`) as the application point and walks the kinematic chain from
+body frame origin (`xipos`) as the application point and walks the kinematic chain from
 body to root, accumulating `J^T * f` for each ancestor joint.
 
 Key behaviors:
@@ -498,7 +498,7 @@ idioms, robustness, or correctness improvements:
 | Item | MuJoCo Behavior | Our Behavior | Impact |
 |------|-----------------|--------------|--------|
 | G19 — xfrc_applied sleep | Projects ALL bodies | Skips sleeping | Different force state on wake-up |
-| G22 — inverse formula | `RNE + M*qacc - passive - constraint` | `M*qacc + bias - passive` | Incorrect for constrained systems |
+| G22 — inverse formula | `RNE + tendon_bias + M*qacc - passive - constraint` | `M*qacc + bias - passive` | Incorrect for constrained systems |
 | G23 — fwdinv format | `solver_fwdinv[2]` (two norms) | `fwdinv_error` (one scalar) | Loses decomposition info |
 
 ### 8.4 Documentation Drift
