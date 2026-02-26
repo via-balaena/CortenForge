@@ -221,10 +221,145 @@ pub fn shift_spatial_inertia(phi: &Matrix6<f64>, d: &Vector3<f64>) -> Matrix6<f6
     result
 }
 
+/// Shift a spatial motion vector (velocity or acceleration) from `body_origin`
+/// to `target_pos`.
+///
+/// Motion transport: angular unchanged, linear += angular × r.
+/// Equivalent to `mju_transformSpatial` with `flg_force=0` and no rotation.
+#[inline]
+pub fn transport_motion(
+    angular: &Vector3<f64>,
+    linear: &Vector3<f64>,
+    target_pos: &Vector3<f64>,
+    body_origin: &Vector3<f64>,
+) -> (Vector3<f64>, Vector3<f64>) {
+    let r = target_pos - body_origin;
+    (*angular, linear + angular.cross(&r))
+}
+
+/// Shift a spatial force vector (wrench) from `body_origin` to `target_pos`.
+///
+/// Force transport: force unchanged, torque -= r × force.
+/// Equivalent to `mju_transformSpatial` with `flg_force=1` and no rotation.
+#[inline]
+pub fn transport_force(
+    torque: &Vector3<f64>,
+    force: &Vector3<f64>,
+    target_pos: &Vector3<f64>,
+    body_origin: &Vector3<f64>,
+) -> (Vector3<f64>, Vector3<f64>) {
+    let r = target_pos - body_origin;
+    (torque - r.cross(force), *force)
+}
+
+/// Compute 6D velocity at `target_pos` on body `body_id`, optionally rotated
+/// into a local frame.
+///
+/// Equivalent to `mj_objectVelocity(m, d, ..., flg_local)`:
+/// - `local_rot = None` → world frame (flg_local=0)
+/// - `local_rot = Some(&mat)` → local frame (flg_local=1)
+///
+/// Convention: reads `cvel[body_id]` at `xpos[body_id]` (our convention).
+#[must_use]
+pub fn object_velocity(
+    data: &Data,
+    body_id: usize,
+    target_pos: &Vector3<f64>,
+    local_rot: Option<&Matrix3<f64>>,
+) -> (Vector3<f64>, Vector3<f64>) {
+    let cvel = data.cvel[body_id];
+    let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
+    let v_lin = Vector3::new(cvel[3], cvel[4], cvel[5]);
+
+    let (omega_at_point, v_at_point) =
+        transport_motion(&omega, &v_lin, target_pos, &data.xpos[body_id]);
+
+    match local_rot {
+        Some(rot) => (
+            rot.transpose() * omega_at_point,
+            rot.transpose() * v_at_point,
+        ),
+        None => (omega_at_point, v_at_point),
+    }
+}
+
+/// Compute 6D acceleration at `target_pos` on body `body_id` with Coriolis
+/// correction, optionally rotated into a local frame.
+///
+/// Equivalent to `mj_objectAcceleration(m, d, ..., flg_local)`:
+/// 1. Motion transport of `cacc` from body origin to target
+/// 2. Motion transport of `cvel` from body origin to target (world frame)
+/// 3. Coriolis: a_lin += omega × v_lin
+/// 4. Optional rotation
+///
+/// Convention: reads `cacc[body_id]` and `cvel[body_id]` at `xpos[body_id]`.
+#[must_use]
+pub fn object_acceleration(
+    data: &Data,
+    body_id: usize,
+    target_pos: &Vector3<f64>,
+    local_rot: Option<&Matrix3<f64>>,
+) -> (Vector3<f64>, Vector3<f64>) {
+    let cacc = data.cacc[body_id];
+    let alpha = Vector3::new(cacc[0], cacc[1], cacc[2]);
+    let a_lin = Vector3::new(cacc[3], cacc[4], cacc[5]);
+
+    let (alpha_at_point, a_at_point) =
+        transport_motion(&alpha, &a_lin, target_pos, &data.xpos[body_id]);
+
+    // Velocity at target point (world frame) for Coriolis
+    let (omega_at_point, v_at_point) = object_velocity(data, body_id, target_pos, None);
+
+    // Coriolis correction: a += omega × v
+    let a_corrected = a_at_point + omega_at_point.cross(&v_at_point);
+
+    match local_rot {
+        Some(rot) => (
+            rot.transpose() * alpha_at_point,
+            rot.transpose() * a_corrected,
+        ),
+        None => (alpha_at_point, a_corrected),
+    }
+}
+
+/// Compute constraint wrench at `target_pos` on body `body_id`, optionally
+/// rotated into a local frame.
+///
+/// Force transport: force unchanged, torque shifted by lever arm.
+/// No Coriolis — wrenches are not velocity-dependent.
+///
+/// Convention: reads `cfrc_int[body_id]` at `xpos[body_id]`.
+#[must_use]
+pub fn object_force(
+    data: &Data,
+    body_id: usize,
+    target_pos: &Vector3<f64>,
+    local_rot: Option<&Matrix3<f64>>,
+) -> (Vector3<f64>, Vector3<f64>) {
+    let cfrc = data.cfrc_int[body_id];
+    let torque = Vector3::new(cfrc[0], cfrc[1], cfrc[2]);
+    let force = Vector3::new(cfrc[3], cfrc[4], cfrc[5]);
+
+    let (torque_at_point, force_at_point) =
+        transport_force(&torque, &force, target_pos, &data.xpos[body_id]);
+
+    match local_rot {
+        Some(rot) => (
+            rot.transpose() * torque_at_point,
+            rot.transpose() * force_at_point,
+        ),
+        None => (torque_at_point, force_at_point),
+    }
+}
+
 /// Compute 6D velocity at an object center in its local frame.
 ///
 /// Equivalent to MuJoCo's `mj_objectVelocity(m, d, objtype, id, res, flg_local=1)`.
 /// Returns `[ω_local; v_local]`.
+///
+/// This is a backward-compatible wrapper around `object_velocity`. New code
+/// should call `object_velocity` directly.
+#[must_use]
 pub fn object_velocity_local(
     _model: &Model,
     data: &Data,
@@ -232,32 +367,74 @@ pub fn object_velocity_local(
     point: &Vector3<f64>,
     rot: &Matrix3<f64>,
 ) -> [f64; 6] {
-    // Static body check: world body (id=0) has mass=0 and is caught by the
-    // dispatch loop's mass guard. For extra safety, return zeros for body 0.
     if body_id == 0 {
         return [0.0; 6];
     }
+    let (omega, v) = object_velocity(data, body_id, point, Some(rot));
+    [omega.x, omega.y, omega.z, v.x, v.y, v.z]
+}
 
-    let cvel = &data.cvel[body_id];
-    let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
-    let v_origin = Vector3::new(cvel[3], cvel[4], cvel[5]);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // Shift linear velocity from body origin to requested point.
-    // Our cvel stores velocity at xpos[body_id] (body origin), so the lever
-    // arm is from body origin to the query point.
-    let dif = point - data.xpos[body_id];
-    let v_point = v_origin + omega.cross(&dif);
+    /// T1: transport_motion — zero offset. Output equals input.
+    #[test]
+    fn t01_transport_motion_zero_offset() {
+        let angular = Vector3::new(0.0, 0.0, 10.0);
+        let linear = Vector3::new(1.0, 2.0, 3.0);
+        let pos = Vector3::new(5.0, 6.0, 7.0);
+        let (ang_out, lin_out) = transport_motion(&angular, &linear, &pos, &pos);
+        assert_eq!(ang_out, angular);
+        assert_eq!(lin_out, linear);
+    }
 
-    // Rotate to local frame
-    let omega_local = rot.transpose() * omega;
-    let v_local = rot.transpose() * v_point;
+    /// T2: transport_motion — cross product direction.
+    #[test]
+    fn t02_transport_motion_cross_product() {
+        let angular = Vector3::new(0.0, 0.0, 1.0);
+        let linear = Vector3::new(0.0, 0.0, 0.0);
+        let origin = Vector3::new(0.0, 0.0, 0.0);
+        let target = Vector3::new(1.0, 0.0, 0.0);
+        let (ang_out, lin_out) = transport_motion(&angular, &linear, &target, &origin);
+        assert_eq!(ang_out, angular);
+        assert!((lin_out.x - 0.0).abs() < 1e-15);
+        assert!((lin_out.y - 1.0).abs() < 1e-15);
+        assert!((lin_out.z - 0.0).abs() < 1e-15);
+    }
 
-    [
-        omega_local.x,
-        omega_local.y,
-        omega_local.z,
-        v_local.x,
-        v_local.y,
-        v_local.z,
-    ]
+    /// T3: transport_force — moment arm.
+    #[test]
+    fn t03_transport_force_moment_arm() {
+        let torque = Vector3::new(0.0, 0.0, 0.0);
+        let force = Vector3::new(0.0, 0.0, 1.0);
+        let origin = Vector3::new(0.0, 0.0, 0.0);
+        let target = Vector3::new(1.0, 0.0, 0.0);
+        let (torque_out, force_out) = transport_force(&torque, &force, &target, &origin);
+        assert_eq!(force_out, force);
+        assert!((torque_out.x - 0.0).abs() < 1e-15);
+        assert!((torque_out.y - (1.0)).abs() < 1e-15);
+        assert!((torque_out.z - 0.0).abs() < 1e-15);
+    }
+
+    /// T4: transport_force — force invariance across multiple offsets.
+    #[test]
+    fn t04_transport_force_invariance() {
+        let torque = Vector3::new(1.0, 2.0, 3.0);
+        let force = Vector3::new(3.0, 7.0, 11.0);
+        let origin = Vector3::new(0.0, 0.0, 0.0);
+
+        let offsets = [
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.5, -0.3, 0.8),
+        ];
+        for offset in &offsets {
+            let (_, force_out) = transport_force(&torque, &force, offset, &origin);
+            assert_eq!(
+                force_out, force,
+                "Force should be invariant for offset {offset:?}"
+            );
+        }
+    }
 }

@@ -2,14 +2,14 @@
 
 > **Status**: Draft — 2026-02-21
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
-> plus the ~101 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-101).
+> plus the ~102 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-102).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
 > DT-96 (lazy energy eval) and DT-97 (golden file conformance) added during §41 audit.
 > ~~DT-99~~ (BVH midphase, §41 S9-full — **done**), ~~DT-100~~ (global override, §41 S10-full — **done**),
 > DT-101 (`mj_contactPassive()`) added during §41 spec expansion.
 > ~~DT-98~~ retired — `passive` dropped entirely pre-v1.0 (no shim needed).
 >
-> **Current position**: Phase 3 (Core API) complete. Next: Phase 4+.
+> **Current position**: Phase 4 (Core Data Fields) complete. Next: Phases 5–11 (parallel).
 
 ---
 
@@ -111,14 +111,20 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 4 — Core Data Fields
+### Phase 4 — Core Data Fields ✅
 
-Persistent fields in `Data` that MuJoCo computes every forward step.
+> **Complete (2026-02-26).** All 5 deliverables shipped and audited: CVEL reference
+> point fixes (commit `444046e`), §56 persistent subtree fields (commit `503ac6d`),
+> lazy evaluation gates (commit `8e8f5f7`), acc-stage sensor refactor (commit
+> `16cfcb3`), DT-103 spatial transport helpers (commit `29501df`). 41 acceptance
+> criteria, 39 new tests, 2,148+ domain tests pass. All specs A+, implementation
+> review 6/6 A. See [Phase 4 audit](todo/spec_fleshouts/phase4_lazy_eval/PHASE4_AUDIT.md)
+> and [DT-103 review](todo/spec_fleshouts/phase4_lazy_eval/DT103_IMPLEMENTATION_REVIEW.md).
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | ~~§51~~ | 13 | — | ~~`cacc`, `cfrc_int`, `cfrc_ext` — per-body 6D force/acceleration accumulators~~ **Done** — moved to Phase 3 |
-| §56 | 14 | — | `subtree_linvel`, `subtree_angmom` — promote from sensor helpers to persistent fields |
+| ~~§56~~ | 14 | — | ~~`subtree_linvel`, `subtree_angmom` — promote from sensor helpers to persistent fields~~ **Done** — persistent fields + lazy gates + sensor refactor + DT-103 transport helpers |
 
 ---
 
@@ -148,6 +154,7 @@ Persistent fields in `Data` that MuJoCo computes every forward step.
 | DT-62 | 10h | T2 | Frame sensor `objtype` attribute not parsed — fallback heuristic used |
 | DT-63 | 10h | T2 | Frame sensor `reftype`/`refid` — relative-frame measurements |
 | DT-64 | 10h | T2 | Multi-geom touch sensor aggregation (currently only first geom matched) |
+| DT-102 | 10h | T1 | Geom-attached acc-stage sensors (FrameLinAcc/FrameAngAcc with `MjObjectType::Geom`). Depends on DT-62. |
 
 ---
 

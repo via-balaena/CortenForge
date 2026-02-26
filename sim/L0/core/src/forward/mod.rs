@@ -46,6 +46,7 @@ pub(crate) use passive::mj_fwd_passive;
 pub(crate) use position::mj_fwd_position;
 #[allow(unused_imports)]
 pub(crate) use velocity::mj_fwd_velocity;
+pub(crate) use velocity::mj_subtree_vel;
 
 // Re-exports for external consumers (derivatives.rs, collision/, constraint/, etc.)
 pub(crate) use actuation::mj_next_activation;
@@ -412,8 +413,10 @@ impl Data {
         // (§27F) Pinned flex vertex DOF clamping removed — pinned vertices now have
         // no joints/DOFs (zero body_dof_num), so no qacc/qvel entries to clamp.
 
-        // §51: Compute per-body accelerations and forces after constraints.
-        acceleration::mj_body_accumulators(model, self);
+        // Clear flg_rnepost after constraint solve — cacc/cfrc_int/cfrc_ext are
+        // now stale (qacc changed). mj_body_accumulators() will be triggered on
+        // demand by sensors that need it, or by inverse().
+        self.flg_rnepost = false;
 
         if compute_sensors {
             crate::sensor::mj_sensor_acc(model, self);

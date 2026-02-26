@@ -11,9 +11,10 @@ use crate::types::{
 };
 use nalgebra::{Matrix3, Vector3};
 
-use super::derived::{compute_subtree_angmom, compute_subtree_com, compute_subtree_momentum};
 use super::postprocess::{sensor_write, sensor_write3};
 use super::sensor_body_id;
+use crate::dynamics::object_velocity;
+use crate::forward::mj_subtree_vel;
 
 /// Compute velocity-dependent sensor values.
 ///
@@ -109,50 +110,36 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::Velocimeter => {
-                // Linear velocity in sensor frame
-                let (v_world, site_mat) = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => {
-                        let body_id = model.site_body[objid];
-                        let v = Vector3::new(
-                            data.cvel[body_id][3],
-                            data.cvel[body_id][4],
-                            data.cvel[body_id][5],
-                        );
-                        (v, data.site_xmat[objid])
-                    }
+                let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => (
+                        model.site_body[objid],
+                        data.site_xpos[objid],
+                        data.site_xmat[objid],
+                    ),
                     MjObjectType::Body if objid < model.nbody => {
-                        let v = Vector3::new(
-                            data.cvel[objid][3],
-                            data.cvel[objid][4],
-                            data.cvel[objid][5],
-                        );
-                        (v, data.xmat[objid])
+                        (objid, data.xpos[objid], data.xmat[objid])
                     }
-                    _ => (Vector3::zeros(), Matrix3::identity()),
+                    _ => {
+                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                        continue;
+                    }
                 };
-                // Transform to sensor frame
-                let v_sensor = site_mat.transpose() * v_world;
-                sensor_write3(&mut data.sensordata, adr, &v_sensor);
+                let (_omega, v) = object_velocity(data, body_id, &site_pos, Some(&site_mat));
+                sensor_write3(&mut data.sensordata, adr, &v);
             }
 
             MjSensorType::FrameLinVel => {
-                // Linear velocity in world frame
-                let v = match model.sensor_objtype[sensor_id] {
+                let (body_id, site_pos) = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => {
-                        let body_id = model.site_body[objid];
-                        Vector3::new(
-                            data.cvel[body_id][3],
-                            data.cvel[body_id][4],
-                            data.cvel[body_id][5],
-                        )
+                        (model.site_body[objid], data.site_xpos[objid])
                     }
-                    MjObjectType::Body if objid < model.nbody => Vector3::new(
-                        data.cvel[objid][3],
-                        data.cvel[objid][4],
-                        data.cvel[objid][5],
-                    ),
-                    _ => Vector3::zeros(),
+                    MjObjectType::Body if objid < model.nbody => (objid, data.xpos[objid]),
+                    _ => {
+                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                        continue;
+                    }
                 };
+                let (_omega, v) = object_velocity(data, body_id, &site_pos, None);
                 sensor_write3(&mut data.sensordata, adr, &v);
             }
 
@@ -178,23 +165,22 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::SubtreeLinVel => {
-                // Subtree linear momentum / total mass = average velocity
+                // Subtree linear velocity — read from persistent field.
+                if !data.flg_subtreevel {
+                    mj_subtree_vel(model, data);
+                }
                 if objid < model.nbody {
-                    let (_, total_mass) = compute_subtree_com(model, data, objid);
-                    if total_mass > 1e-10 {
-                        let momentum = compute_subtree_momentum(model, data, objid);
-                        let v = momentum / total_mass;
-                        sensor_write3(&mut data.sensordata, adr, &v);
-                    }
+                    sensor_write3(&mut data.sensordata, adr, &data.subtree_linvel[objid]);
                 }
             }
 
             MjSensorType::SubtreeAngMom => {
-                // Subtree angular momentum about the subtree center of mass.
-                // L = sum_i [I_i * omega_i + m_i * (r_i - r_com) x v_i]
+                // Subtree angular momentum about subtree COM — read from persistent field.
+                if !data.flg_subtreevel {
+                    mj_subtree_vel(model, data);
+                }
                 if objid < model.nbody {
-                    let angmom = compute_subtree_angmom(model, data, objid);
-                    sensor_write3(&mut data.sensordata, adr, &angmom);
+                    sensor_write3(&mut data.sensordata, adr, &data.subtree_angmom[objid]);
                 }
             }
 
@@ -217,9 +203,13 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
                 sensor_write(&mut data.sensordata, adr, 0, value);
             }
 
-            // DT-79: User-defined sensors at velocity stage
+            // DT-79: User-defined sensors at velocity stage.
+            // Conservative: trigger mj_subtree_vel for opaque user callbacks.
             MjSensorType::User => {
                 if model.sensor_datatype[sensor_id] == MjSensorDataType::Velocity {
+                    if !data.flg_subtreevel {
+                        mj_subtree_vel(model, data);
+                    }
                     if let Some(ref cb) = model.cb_sensor {
                         (cb.0)(model, data, sensor_id, SensorStage::Vel);
                     }

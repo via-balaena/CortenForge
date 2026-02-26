@@ -3,17 +3,21 @@
 //! Called after constraint solve. Evaluates sensors that depend on acceleration:
 //! accelerometer, force/torque, touch, frame linear/angular acceleration,
 //! actuator force, joint/tendon limit force.
+//!
+//! Accelerometer, FrameLinAcc, and FrameAngAcc read from `cacc` (populated by
+//! `mj_body_accumulators`). Force and Torque read from `cfrc_int`. This matches
+//! MuJoCo's `mj_sensorAcc` → `mj_objectAcceleration` / `mju_transformSpatial`.
 
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjObjectType, MjSensorDataType,
     MjSensorType, Model, SensorStage, SleepState,
 };
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::Vector3;
 
-use super::derived::{
-    compute_body_acceleration, compute_body_angular_acceleration, compute_site_force_torque,
-};
+use crate::dynamics::{object_acceleration, object_force};
+use crate::forward::mj_body_accumulators;
+
 use super::postprocess::{sensor_write, sensor_write3};
 use super::sensor_body_id;
 
@@ -21,11 +25,11 @@ use super::sensor_body_id;
 ///
 /// This is called after `mj_fwd_acceleration` and computes sensors that depend
 /// on acceleration:
-/// - Accelerometer: linear acceleration (includes gravity in sensor frame)
-/// - Force: constraint force at site
-/// - Torque: constraint torque at site
-/// - `FrameLinAcc`: linear acceleration
-/// - `FrameAngAcc`: angular acceleration
+/// - Accelerometer: proper acceleration in sensor frame (reads `cacc`)
+/// - Force: constraint force at site (reads `cfrc_int`)
+/// - Torque: constraint torque at site (reads `cfrc_int`)
+/// - `FrameLinAcc`: linear acceleration in world frame (reads `cacc`)
+/// - `FrameAngAcc`: angular acceleration in world frame (reads `cacc`)
 /// - `ActuatorFrc`: actuator force
 pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
     // S4.10: Early return — sensordata is NOT zeroed (intentional MuJoCo match).
@@ -53,71 +57,87 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
         let adr = model.sensor_adr[sensor_id];
         let objid = model.sensor_objid[sensor_id];
 
+        // Lazy gate: trigger mj_body_accumulators on demand for sensor types
+        // that read cacc/cfrc_int/cfrc_ext. Touch, ActuatorFrc, and limit
+        // sensors read efc_force directly and do NOT need body accumulators.
+        if !data.flg_rnepost {
+            match model.sensor_type[sensor_id] {
+                MjSensorType::Accelerometer
+                | MjSensorType::Force
+                | MjSensorType::Torque
+                | MjSensorType::FrameLinAcc
+                | MjSensorType::FrameAngAcc => {
+                    mj_body_accumulators(model, data);
+                }
+                MjSensorType::User
+                    if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration =>
+                {
+                    mj_body_accumulators(model, data);
+                }
+                _ => {}
+            }
+        }
+
         match model.sensor_type[sensor_id] {
             MjSensorType::Accelerometer => {
-                // Linear acceleration in sensor frame (includes gravity)
-                // a_sensor = R^T * (a_world - g)
-                // For a body at rest in gravity, accelerometer reads +g (opposing gravity)
-                let (a_world, site_mat) = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => {
-                        let body_id = model.site_body[objid];
-                        // Compute body acceleration from qacc
-                        let a = compute_body_acceleration(model, data, body_id);
-                        (a, data.site_xmat[objid])
-                    }
+                let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => (
+                        model.site_body[objid],
+                        data.site_xpos[objid],
+                        data.site_xmat[objid],
+                    ),
                     MjObjectType::Body if objid < model.nbody => {
-                        let a = compute_body_acceleration(model, data, objid);
-                        (a, data.xmat[objid])
+                        (objid, data.xpos[objid], data.xmat[objid])
                     }
-                    _ => (Vector3::zeros(), Matrix3::identity()),
+                    _ => {
+                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                        continue;
+                    }
                 };
-                // Proper acceleration = a_body - g_field
-                // At rest: a_body=0, g_field=(0,0,-9.81), so a_proper=(0,0,+9.81) (upward)
-                // In free fall: a_body~g_field, so a_proper~0. Matches real IMU behavior.
-                let a_proper = a_world - model.gravity;
-                let a_sensor = site_mat.transpose() * a_proper;
-                sensor_write3(&mut data.sensordata, adr, &a_sensor);
+                let (_alpha, a_lin) =
+                    object_acceleration(data, body_id, &site_pos, Some(&site_mat));
+                sensor_write3(&mut data.sensordata, adr, &a_lin);
             }
 
             MjSensorType::Force => {
-                // Force sensor: measures the interaction force at a site.
-                //
-                // MuJoCo computes this via inverse dynamics on the subtree rooted at
-                // the site's body. The force is the net force that the rest of the
-                // system exerts on the subtree through the site's body, expressed
-                // in the site's local frame.
-                //
-                // F_site = R_site^T * (m*a - f_external)
-                //
-                // We compute this as: the total constraint + applied force transmitted
-                // through the kinematic chain at the sensor's body, projected into
-                // the site frame.
-                let (force_world, _) = compute_site_force_torque(model, data, sensor_id);
-                // Transform to site frame
-                let site_mat = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
-                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
-                    _ => Matrix3::identity(),
+                let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => (
+                        model.site_body[objid],
+                        data.site_xpos[objid],
+                        data.site_xmat[objid],
+                    ),
+                    MjObjectType::Body if objid < model.nbody => {
+                        (objid, data.xpos[objid], data.xmat[objid])
+                    }
+                    _ => {
+                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                        continue;
+                    }
                 };
-                let force_site = site_mat.transpose() * force_world;
-                sensor_write3(&mut data.sensordata, adr, &force_site);
+                // Force is translation-invariant — only torque shifts. The torque
+                // component is computed but discarded (minor wasted work, acceptable
+                // for API consistency with Torque arm which reads the same wrench).
+                let (_torque, force) = object_force(data, body_id, &site_pos, Some(&site_mat));
+                sensor_write3(&mut data.sensordata, adr, &force);
             }
 
             MjSensorType::Torque => {
-                // Torque sensor: measures the interaction torque at a site.
-                //
-                // Similar to Force but returns the torque component. The torque is
-                // the net torque that the rest of the system exerts on the subtree
-                // through the sensor body, expressed in the site's local frame.
-                let (_, torque_world) = compute_site_force_torque(model, data, sensor_id);
-                // Transform to site frame
-                let site_mat = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
-                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
-                    _ => Matrix3::identity(),
+                let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => (
+                        model.site_body[objid],
+                        data.site_xpos[objid],
+                        data.site_xmat[objid],
+                    ),
+                    MjObjectType::Body if objid < model.nbody => {
+                        (objid, data.xpos[objid], data.xmat[objid])
+                    }
+                    _ => {
+                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                        continue;
+                    }
                 };
-                let torque_site = site_mat.transpose() * torque_world;
-                sensor_write3(&mut data.sensordata, adr, &torque_site);
+                let (torque, _force) = object_force(data, body_id, &site_pos, Some(&site_mat));
+                sensor_write3(&mut data.sensordata, adr, &torque);
             }
 
             MjSensorType::Touch => {
@@ -185,33 +205,35 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::FrameLinAcc => {
-                // Linear acceleration in world frame
-                let a = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Body if objid < model.nbody => {
-                        compute_body_acceleration(model, data, objid)
-                    }
+                let (body_id, obj_pos) = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => {
-                        let body_id = model.site_body[objid];
-                        compute_body_acceleration(model, data, body_id)
+                        (model.site_body[objid], data.site_xpos[objid])
                     }
-                    _ => Vector3::zeros(),
+                    MjObjectType::Body if objid < model.nbody => (objid, data.xpos[objid]),
+                    _ => {
+                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                        continue;
+                    }
                 };
-                sensor_write3(&mut data.sensordata, adr, &a);
+                let (_alpha, a_lin) = object_acceleration(data, body_id, &obj_pos, None);
+                sensor_write3(&mut data.sensordata, adr, &a_lin);
             }
 
             MjSensorType::FrameAngAcc => {
-                // Angular acceleration in world frame
-                // Compute from qacc using Jacobian
-                let alpha = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Body if objid < model.nbody => {
-                        compute_body_angular_acceleration(model, data, objid)
+                // Angular acceleration in world frame. Reads the angular
+                // component of cacc. Angular acceleration is reference-point-
+                // independent for a rigid body — no Coriolis correction needed.
+                let body_id = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => model.site_body[objid],
+                    MjObjectType::Body if objid < model.nbody => objid,
+                    _ => {
+                        sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                        continue;
                     }
-                    MjObjectType::Site if objid < model.nsite => {
-                        let body_id = model.site_body[objid];
-                        compute_body_angular_acceleration(model, data, body_id)
-                    }
-                    _ => Vector3::zeros(),
                 };
+
+                let cacc = data.cacc[body_id];
+                let alpha = Vector3::new(cacc[0], cacc[1], cacc[2]);
                 sensor_write3(&mut data.sensordata, adr, &alpha);
             }
 

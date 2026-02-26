@@ -73,8 +73,8 @@ pub(crate) fn mj_energy_vel(model: &Model, data: &mut Data) {
         let m_qvel = &data.qM * &data.qvel;
         0.5 * data.qvel.dot(&m_qvel)
     } else {
-        // Fallback: compute from body velocities directly
-        // E_k = 0.5 * Σ (m_i * v_i^T * v_i + ω_i^T * I_i * ω_i)
+        // Fallback: compute from body velocities directly (König's theorem)
+        // E_k = 0.5 * Σ (m_i * |v_com_i|² + ω_i^T * I_i * ω_i)
         let mut energy = 0.0;
         for body_id in 1..model.nbody {
             let mass = model.body_mass[body_id];
@@ -86,14 +86,18 @@ pub(crate) fn mj_energy_vel(model: &Model, data: &mut Data) {
                 data.cvel[body_id][1],
                 data.cvel[body_id][2],
             );
-            let v = Vector3::new(
+            let v_origin = Vector3::new(
                 data.cvel[body_id][3],
                 data.cvel[body_id][4],
                 data.cvel[body_id][5],
             );
 
-            // Translational kinetic energy: 0.5 * m * |v|²
-            energy += 0.5 * mass * v.norm_squared();
+            // Shift from body origin (xpos) to body COM (xipos)
+            let com_offset = data.xipos[body_id] - data.xpos[body_id];
+            let v_com = v_origin + omega.cross(&com_offset);
+
+            // Translational kinetic energy: 0.5 * m * |v_com|²
+            energy += 0.5 * mass * v_com.norm_squared();
 
             // Rotational kinetic energy: 0.5 * ω^T * I * ω
             // Using diagonal inertia in body frame (approximation - should transform)

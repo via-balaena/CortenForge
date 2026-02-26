@@ -386,6 +386,14 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
 /// # MuJoCo Equivalence
 ///
 /// Matches `mj_rnePostConstraint()` in `engine_forward.c`.
+///
+/// # Convention Difference
+///
+/// Our `cacc[b]`, `cfrc_int[b]`, and `cvel[b]` are stored at `xpos[b]` (body
+/// origin). MuJoCo stores them at `subtree_com[body_rootid[b]]`. The spatial
+/// transform formulas are identical — only the shift vector differs. When
+/// porting MuJoCo code that reads these fields, substitute `xpos[body_id]`
+/// wherever MuJoCo uses `subtree_com + 3*rootid`.
 #[allow(clippy::needless_range_loop)] // jnt_id indexes both joint_subspaces and model arrays
 pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     // ===== Step 1: cfrc_ext = xfrc_applied + contact/constraint forces =====
@@ -605,4 +613,6 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         let child_force = data.cfrc_int[body_id];
         data.cfrc_int[parent_id] += child_force;
     }
+
+    data.flg_rnepost = true;
 }

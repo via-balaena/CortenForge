@@ -2,8 +2,8 @@
 
 Complete roadmap for the simulation engine. Phase 1 (12 items) and Phase 2
 (16 items) are complete. Phase 3A tiers i–iv (items #18–37) are complete.
-Phase 3A-v complete through §41. Roadmap Phases 1–3 (Core API) all done.
-Next: Phases 4–11 (parallel work streams).
+Phase 3A-v complete through §41. Roadmap Phases 1–4 all done.
+Next: Phases 5–11 (parallel work streams).
 
 Remaining work is organized by the **v1.0 Roadmap** (see
 [ROADMAP_V1.md](../ROADMAP_V1.md)) which triages all ~135 remaining tasks into
@@ -57,9 +57,9 @@ All items #18–37 are complete. See individual future_work files for details.
 | 3A-iii: Constraint System | #28–32 | Friction loss, PGS/CG unification, pyramidal cones | ✅ All done |
 | 3A-iv: Noslip + Actuator/Dynamics | #33–37 | Noslip, actlimited, gravcomp, adhesion, tendon equality | ✅ All done |
 
-### In Progress (3A-v)
+### Completed (3A-v)
 
-Items #38–41 are complete. Current position: **§41 done** (Roadmap Phase 2 complete).
+Items #38–41 are complete. §41 done (Roadmap Phase 2). Roadmap Phase 3 (Core API) and Phase 4 (Core Data Fields) also complete.
 
 | # | Item | Correctness | Effort | File | Status |
 |---|------|-------------|--------|------|--------|
@@ -160,7 +160,7 @@ DT-96, DT-101
 
 | # | Item | Core v1.0? | Roadmap Phase | Status |
 |---|------|-----------|---------------|--------|
-| 56 | `subtree_linvel`/`subtree_angmom` Data fields | **Yes** | Phase 4 | |
+| ~~56~~ | ~~`subtree_linvel`/`subtree_angmom` Data fields~~ | **Yes** | Phase 4 | ✅ Done |
 | 57 | `sdf_iterations`/`sdf_initpoints` options | **Yes** | Phase 9 | |
 | 58 | `mjd_smooth_pos` position derivatives | **Yes** | Phase 11 | |
 | ~~59~~ | ~~`mj_name2id`/`mj_id2name` name lookup~~ | **Yes** | Phase 3 | ✅ Done |
@@ -200,7 +200,7 @@ DT-96, DT-101
 | 1 | Correctness bugs | ~~DT-74~~ (done), ~~DT-75~~ (done), ~~DT-35~~ (done), ~~DT-78~~ (done), ~~DT-16~~ (done), ~~DT-90~~ (done) | 6 (6 done) |
 | 2 | Runtime flag wiring | ~~§41~~ (done, subsumes DT-61, DT-93, DT-94, DT-95); ~~DT-99~~ (done), ~~DT-100~~ (done) | 1 (+2 follow-ups, all done) |
 | 3 | Core API gaps | ~~DT-21~~ (done), ~~DT-41~~ (done), ~~§51~~ (done), ~~§52~~ (done), ~~§53~~ (done), ~~§59~~ (done), ~~DT-79~~ (done) | 7 (7 done) |
-| 4 | Core Data fields | ~~§51~~ (done, moved to Phase 3), §56 | 2 (1 done) |
+| 4 | Core Data fields | ~~§51~~ (done), ~~§56~~ (done) + CVEL fixes, lazy gates, sensor refactor, DT-103 | ✅ All done |
 | 5 | Actuator completeness | DT-56/57/58/59/77, DT-6/8/9/60, §61, §63 | 11 |
 | 6 | Sensor completeness | §62, DT-62/63/64 | 4 |
 | 7 | MJCF parsing & defaults | DT-2/3/11/13/14/85/88, §55/60/64/64a | 11 |
@@ -265,7 +265,7 @@ DT-96, DT-101
    ┌──────────────────────────────────────────────────────────┐
    │ Roadmap Phases 4–11: Parallel work streams               │
    │                                                          │
-   │  Phase 4: Data fields (✓§51, §56)                         │
+   │  Phase 4: Data fields (✓§51, ✓§56)              ✅ DONE     │
    │  Phase 5: Actuators (11 items)                           │
    │  Phase 6: Sensors (4 items)                              │
    │  Phase 7: Parsing/defaults (11 items)                    │

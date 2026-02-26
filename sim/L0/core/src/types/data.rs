@@ -30,6 +30,7 @@ use crate::island::reset_sleep_state;
 /// (xpos, xquat, qfrc_*, etc.) is COMPUTED from them via forward dynamics.
 #[derive(Debug)]
 #[allow(non_snake_case)] // qM matches MuJoCo naming convention
+#[allow(clippy::struct_excessive_bools)] // MuJoCo lazy evaluation flags (flg_rnepost, flg_subtreevel, etc.)
 pub struct Data {
     // ==================== Generalized Coordinates (THE source of truth) ====================
     /// Joint positions (length `nq`) - includes quaternion components for ball/free joints.
@@ -219,13 +220,24 @@ pub struct Data {
     /// Starts as a copy of `cinert`, then accumulates child inertias.
     pub crb_inertia: Vec<Matrix6<f64>>,
 
-    // ==================== Subtree Mass/COM (for O(n) RNE gravity) ====================
+    // ==================== Subtree Mass/COM/Velocity ====================
     /// Total mass of subtree rooted at each body (including the body itself).
     /// Computed during forward kinematics via backward pass.
     pub subtree_mass: Vec<f64>,
     /// Center of mass of subtree in world frame (length `nbody`).
     /// Computed during forward kinematics via backward pass.
     pub subtree_com: Vec<Vector3<f64>>,
+    /// Linear velocity of subtree COM in world frame (length `nbody`).
+    /// `subtree_linvel[0]` = whole-model COM velocity.
+    /// Computed on demand by `mj_subtree_vel()`.
+    pub subtree_linvel: Vec<Vector3<f64>>,
+    /// Angular momentum of subtree about `subtree_com[b]` in world frame (length `nbody`).
+    /// `subtree_angmom[0]` = total angular momentum about system COM.
+    /// Computed on demand by `mj_subtree_vel()`.
+    pub subtree_angmom: Vec<Vector3<f64>>,
+    /// Lazy flag: `mj_subtree_vel()` has been called this step.
+    /// Cleared at velocity stage start, set by `mj_subtree_vel()`.
+    pub flg_subtreevel: bool,
 
     // ==================== Tendon State ====================
     /// Current tendon lengths (length `ntendon`).
@@ -575,6 +587,10 @@ pub struct Data {
     /// `xfrc_applied` + contact/constraint solver forces, converted to spatial
     /// force at body CoM. Populated by `mj_body_accumulators()`.
     pub cfrc_ext: Vec<SpatialVector>,
+    /// Lazy flag: `mj_body_accumulators()` has been called this step.
+    /// Cleared after constraint solve (before sensors), set by
+    /// `mj_body_accumulators()`. Mirrors MuJoCo's `flg_rnepost`.
+    pub flg_rnepost: bool,
 
     // ==================== Cached Body Effective Mass/Inertia ====================
     // These are extracted from the mass matrix diagonal during forward() and cached
@@ -651,9 +667,12 @@ impl Clone for Data {
             // Body/composite inertia
             cinert: self.cinert.clone(),
             crb_inertia: self.crb_inertia.clone(),
-            // Subtree mass/COM
+            // Subtree mass/COM/velocity
             subtree_mass: self.subtree_mass.clone(),
             subtree_com: self.subtree_com.clone(),
+            subtree_linvel: self.subtree_linvel.clone(),
+            subtree_angmom: self.subtree_angmom.clone(),
+            flg_subtreevel: self.flg_subtreevel,
             // Tendon state
             ten_length: self.ten_length.clone(),
             ten_velocity: self.ten_velocity.clone(),
@@ -777,6 +796,7 @@ impl Clone for Data {
             cacc: self.cacc.clone(),
             cfrc_int: self.cfrc_int.clone(),
             cfrc_ext: self.cfrc_ext.clone(),
+            flg_rnepost: self.flg_rnepost,
             // Cached body mass/inertia
             body_min_mass: self.body_min_mass.clone(),
             body_min_inertia: self.body_min_inertia.clone(),
@@ -881,6 +901,16 @@ impl Data {
             *v = SpatialVector::zeros();
         }
         self.qfrc_inverse.fill(0.0);
+        self.flg_rnepost = false;
+
+        // 4c. Subtree velocity fields — zero.
+        for v in &mut self.subtree_linvel {
+            *v = Vector3::zeros();
+        }
+        for v in &mut self.subtree_angmom {
+            *v = Vector3::zeros();
+        }
+        self.flg_subtreevel = false;
 
         // 5. Contact / constraint state — zero.
         self.ncon = 0;
@@ -996,7 +1026,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4056;
+        const EXPECTED_SIZE: usize = 4104;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

@@ -8,10 +8,18 @@ use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model};
 use nalgebra::Vector3;
 
 /// Velocity kinematics: compute body velocities from qvel.
+///
+/// Populates `cvel[b]` — the 6D spatial velocity at `xpos[b]` (body origin).
+/// MuJoCo stores `cvel[b]` at `subtree_com[body_rootid[b]]` instead. When
+/// porting MuJoCo code that reads `cvel`, substitute `xpos[body_id]` for
+/// `subtree_com + 3*rootid` in spatial transport calculations.
 pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     // §16.27: Use indirection array for cache-friendly iteration over awake bodies.
     let use_body_ind = sleep_enabled && data.nbody_awake < model.nbody;
+
+    // Invalidate subtree velocity fields from previous step
+    data.flg_subtreevel = false;
 
     // World body has zero velocity
     data.cvel[0] = SpatialVector::zeros();
@@ -122,4 +130,96 @@ pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     for t in 0..model.ntendon {
         data.ten_velocity[t] = data.ten_J[t].dot(&data.qvel);
     }
+}
+
+/// Compute subtree linear velocity and angular momentum (§56).
+///
+/// O(n) three-phase backward accumulation:
+/// 1. Initialize per-body linear momentum and spin angular momentum
+/// 2. Backward accumulate linear momentum → convert to velocity
+/// 3. Backward accumulate angular momentum with reference-point corrections
+///
+/// Requires `subtree_com` and `subtree_mass` from position stage,
+/// and `cvel` from velocity stage.
+///
+/// # MuJoCo Equivalence
+///
+/// Matches `mj_subtreeVel()` in `engine_core_smooth.c`.
+#[allow(clippy::similar_names)] // dx/dv/dp are physics convention (displacement/velocity/momentum)
+pub fn mj_subtree_vel(model: &Model, data: &mut Data) {
+    // Temporary: per-body 6D velocity at COM in world frame
+    let mut body_vel: Vec<[f64; 6]> = vec![[0.0; 6]; model.nbody];
+
+    // Phase 1: Per-body quantities
+    #[allow(clippy::needless_range_loop)] // b indexes data.*[b] and body_vel[b] together
+    for b in 0..model.nbody {
+        let cvel = &data.cvel[b];
+        let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
+        let v_origin = Vector3::new(cvel[3], cvel[4], cvel[5]);
+
+        // Shift linear velocity from xpos[b] to xipos[b] (body COM)
+        let dif = data.xipos[b] - data.xpos[b];
+        let v_com = v_origin + omega.cross(&dif);
+
+        body_vel[b] = [omega.x, omega.y, omega.z, v_com.x, v_com.y, v_com.z];
+
+        // Linear momentum
+        let mass = model.body_mass[b];
+        data.subtree_linvel[b] = mass * v_com;
+
+        // Spin angular momentum: ximat * diag(I) * ximat^T * omega
+        let inertia = model.body_inertia[b];
+        let ximat = &data.ximat[b];
+        let omega_local = ximat.transpose() * omega;
+        let i_omega_local = Vector3::new(
+            inertia.x * omega_local.x,
+            inertia.y * omega_local.y,
+            inertia.z * omega_local.z,
+        );
+        data.subtree_angmom[b] = ximat * i_omega_local;
+    }
+
+    // Phase 2: Backward accumulate linear momentum, then convert to velocity
+    for b in (0..model.nbody).rev() {
+        if b > 0 {
+            let parent = model.body_parent[b];
+            let linvel_b = data.subtree_linvel[b];
+            data.subtree_linvel[parent] += linvel_b;
+        }
+        let smass = data.subtree_mass[b];
+        // MuJoCo uses MJ_MINVAL = 1e-15 as the zero-mass guard
+        if smass > 1e-15 {
+            data.subtree_linvel[b] /= smass;
+        } else {
+            data.subtree_linvel[b] = Vector3::zeros();
+        }
+    }
+
+    // Phase 3: Backward accumulate angular momentum
+    for b in (1..model.nbody).rev() {
+        let parent = model.body_parent[b];
+        let mass = model.body_mass[b];
+        let smass = data.subtree_mass[b];
+        let v_body = Vector3::new(body_vel[b][3], body_vel[b][4], body_vel[b][5]);
+
+        // Part A: Correct angmom from "about xipos[b]" to "about subtree_com[b]"
+        let dx_a = data.xipos[b] - data.subtree_com[b];
+        let dv_a = v_body - data.subtree_linvel[b];
+        let dp_a = mass * dv_a;
+        data.subtree_angmom[b] += dx_a.cross(&dp_a);
+
+        // Part B: Transfer subtree b's angmom to parent
+        let angmom_b = data.subtree_angmom[b];
+        data.subtree_angmom[parent] += angmom_b;
+
+        // Part C: Reference point correction (subtree_com[b] → subtree_com[parent])
+        let dx_c = data.subtree_com[b] - data.subtree_com[parent];
+        let linvel_b = data.subtree_linvel[b];
+        let linvel_p = data.subtree_linvel[parent];
+        let dv_c = linvel_b - linvel_p;
+        let dp_c = smass * dv_c;
+        data.subtree_angmom[parent] += dx_c.cross(&dp_c);
+    }
+
+    data.flg_subtreevel = true;
 }
