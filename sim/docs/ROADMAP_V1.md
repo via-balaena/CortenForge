@@ -85,11 +85,11 @@ high-value, and reduce the chance of compounding errors in later work.
 
 > **Complete.** Full 7-phase audit passed (Phases 1–7, all A on R1–R9 rubric).
 > 13 discrepancies found and fixed during audit. 2,107 tests pass, 0 fail.
-> See [audit plan](todo/S41_AUDIT_PLAN.md) and [rubric](todo/S41_AUDIT_RUBRIC.md).
+> See [audit plan](todo/spec_fleshouts/s41_runtime_flags/S41_AUDIT_PLAN.md) and [rubric](todo/spec_fleshouts/s41_runtime_flags/S41_AUDIT_RUBRIC.md).
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| ~~§41~~ | 10 | — | ~~Wire all 19 `disableflags` and 6 `enableflags` end-to-end. Subsumes DT-60, DT-61, DT-93, DT-94, DT-95.~~ **Done** — all AC1–AC48 conformance tests pass. See [spec](todo/spec_fleshouts/S41_RUNTIME_FLAGS_SPEC.md). |
+| ~~§41~~ | 10 | — | ~~Wire all 19 `disableflags` and 6 `enableflags` end-to-end. Subsumes DT-60, DT-61, DT-93, DT-94, DT-95.~~ **Done** — all AC1–AC48 conformance tests pass. See [spec](todo/spec_fleshouts/s41_runtime_flags/S41_RUNTIME_FLAGS_SPEC.md). |
 | ~~DT-99~~ | 10c | T2 | ~~BVH midphase integration into collision pipeline (§41 S9-full, post-§41 commit)~~ **Done** — `use_bvh` param + `DISABLE_MIDPHASE` guard in `collide_with_mesh()`, AC31/AC33 conformance tests |
 | ~~DT-100~~ | 10c | T2 | ~~Global contact parameter override guard sites (§41 S10-full, post-§41 commit)~~ **Done** — `assign_margin`/`assign_solref`/`assign_solimp`/`assign_friction`/`assign_solreffriction` helpers, 6 guard sites in broadphase/narrowphase/constraint, AC34–AC37 conformance tests |
 

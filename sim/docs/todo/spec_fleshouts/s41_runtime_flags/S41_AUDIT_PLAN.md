@@ -1,9 +1,9 @@
 # S41 Runtime Flags — Implementation Audit Plan
 
-**Spec:** `sim/docs/todo/spec_fleshouts/S41_RUNTIME_FLAGS_SPEC.md`
+**Spec:** `sim/docs/todo/spec_fleshouts/s41_runtime_flags/S41_RUNTIME_FLAGS_SPEC.md`
 **Scope:** 10 spec sections (S1–S10), 48 acceptance criteria, ~30 files
 **Goal:** Verify every spec item is correctly implemented — no gaps, no drift.
-**Rubric:** `sim/docs/todo/S41_AUDIT_RUBRIC.md` (9 criteria, all must be A)
+**Rubric:** `sim/docs/todo/spec_fleshouts/s41_runtime_flags/S41_AUDIT_RUBRIC.md` (9 criteria, all must be A)
 
 ---
 
@@ -492,249 +492,249 @@ Exact control flow order:
 
 **Site 1 — `mj_fwd_actuation()` in `forward/actuation.rs`:**
 
-- [ ] **Unconditional init BEFORE guard:** `data.actuator_force[..model.nu].fill(0.0)`
-- [ ] Guard: `model.nu == 0 || disabled(model, DISABLE_ACTUATION)`
-- [ ] On guard match: `data.qfrc_actuator[..model.nv].fill(0.0)` + return
-- [ ] Both `actuator_force` (length `nu`) and `qfrc_actuator` (length `nv`) exist
+- [x] **Unconditional init BEFORE guard:** `data.actuator_force[..model.nu].fill(0.0)`
+- [x] Guard: `model.nu == 0 || disabled(model, DISABLE_ACTUATION)`
+- [x] On guard match: `data.qfrc_actuator[..model.nv].fill(0.0)` + return
+- [x] Both `actuator_force` (length `nu`) and `qfrc_actuator` (length `nv`) exist
 
 **Site 2 — `actuator_velocity` (REMOVED from actuation gating):**
 
-- [ ] `actuator_velocity` computed unconditionally (in velocity stage, not actuation)
-- [ ] Computed inside `mj_actuator_length()` called from `forward/mod.rs` velocity stage
-- [ ] NOT gated on `DISABLE_ACTUATION`
-- [ ] Values are `actuator_moment^T * qvel` — pure kinematics
+- [x] `actuator_velocity` computed unconditionally (in velocity stage, not actuation)
+- [x] Computed inside `mj_actuator_length()` called from `forward/mod.rs` velocity stage
+- [x] NOT gated on `DISABLE_ACTUATION`
+- [x] Values are `actuator_moment^T * qvel` — pure kinematics
 
 **Site 3 — Activation integration in `integrate/mod.rs` (Euler):**
 
-- [ ] Per-actuator compound check: `disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i)`
-- [ ] When disabled: `act_dot_val = 0.0` (freeze activation, don't zero it)
-- [ ] `self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val)` still called
-- [ ] Activation state preserved — only `act_dot` is zeroed
+- [x] Per-actuator compound check: `disabled(model, DISABLE_ACTUATION) || actuator_disabled(model, i)`
+- [x] When disabled: `act_dot_val = 0.0` (freeze activation, don't zero it)
+- [x] `self.act[j] = mj_next_activation(model, i, self.act[j], act_dot_val)` still called
+- [x] Activation state preserved — only `act_dot` is zeroed
 
 **Site 3 (RK4) — Activation integration in `integrate/rk4.rs`:**
 
-- [ ] Same compound check present in ALL 4 RK4 stages
-- [ ] Not just the first stage — verify k1, k2, k3, k4 all gate
+- [x] Same compound check present in ALL 4 RK4 stages
+- [x] Not just the first stage — verify k1, k2, k3, k4 all gate
 
 **Site 4 — Control callback:**
 
-- [ ] If control callback exists: gated on `!disabled(DISABLE_ACTUATION)`
-- [ ] If not yet implemented: verify no ungated callback exists
+- [x] If control callback exists: gated on `!disabled(DISABLE_ACTUATION)`
+- [x] If not yet implemented: verify no ungated callback exists
 
 ### 2g. S4.9 — `DISABLE_CLAMPCTRL` — skip ctrl clamping
 
-- [ ] Guard in `mj_fwd_actuation()` around `.clamp(ctrlrange.0, ctrlrange.1)`
-- [ ] When disabled: ctrl values pass through unclamped
-- [ ] When enabled (default): ctrl clamped to `ctrlrange`
+- [x] Guard in `mj_fwd_actuation()` around `.clamp(ctrlrange.0, ctrlrange.1)`
+- [x] When disabled: ctrl values pass through unclamped
+- [x] When enabled (default): ctrl clamped to `ctrlrange`
 
 ### 2h. S4.10 — `DISABLE_SENSOR` — skip sensor evaluation
 
-- [ ] Guard inside `mj_sensor_pos()`: `if disabled(model, DISABLE_SENSOR) { return; }`
-- [ ] Guard inside `mj_sensor_vel()`: same pattern
-- [ ] Guard inside `mj_sensor_acc()`: same pattern
-- [ ] Guard inside `mj_sensor_postprocess()` (if exists): same pattern
-- [ ] **Critical: sensordata is NOT zeroed on disable** — retains values from last enabled step
-  - [ ] This intentionally differs from the "init-then-guard" pattern used by physics arrays
-  - [ ] Rationale: sensors are read-only observers, stale data can't cause force corruption
-- [ ] Call sites in `forward_core()` remain unconditional (guard is inside functions)
+- [x] Guard inside `mj_sensor_pos()`: `if disabled(model, DISABLE_SENSOR) { return; }`
+- [x] Guard inside `mj_sensor_vel()`: same pattern
+- [x] Guard inside `mj_sensor_acc()`: same pattern
+- [x] Guard inside `mj_sensor_postprocess()` (if exists): same pattern
+- [x] **Critical: sensordata is NOT zeroed on disable** — retains values from last enabled step
+  - [x] This intentionally differs from the "init-then-guard" pattern used by physics arrays
+  - [x] Rationale: sensors are read-only observers, stale data can't cause force corruption
+- [x] Call sites in `forward_core()` remain unconditional (guard is inside functions)
 
 ### 2i. S4.11 — `DISABLE_WARMSTART` — zero-initialize solver
 
 **`warmstart()` function in `constraint/mod.rs`:**
 
-- [ ] Returns `bool` (not void)
-- [ ] Called inside `mj_fwd_constraint()`, after assembly, after `nefc == 0` check, before solver dispatch
-- [ ] NOT called from `forward_core()` as a separate step
-- [ ] When `disabled(model, DISABLE_WARMSTART)`:
-  - [ ] `data.qacc.copy_from(&data.qacc_smooth)` — unconstrained accelerations
-  - [ ] `data.efc_force.fill(0.0)` — zero constraint forces
-  - [ ] Returns `false` (cold start — solvers skip cost comparison)
-- [ ] When NOT disabled:
-  - [ ] `data.qacc.copy_from(&data.qacc_warmstart)` — previous solution
-  - [ ] `efc_force` NOT populated here (each solver computes via its own mechanism)
-  - [ ] Returns `true` (warm data loaded — solvers should run cost comparison)
-- [ ] Each solver receives `bool` and conditionally skips warmstart comparison:
-  - [ ] PGS: `classify_constraint_states()` / dual cost comparison
-  - [ ] Newton: `evaluate_cost_at()` comparison
-  - [ ] CG: `evaluate_cost_at()` comparison
-- [ ] **`qacc_warmstart` saving is unconditional** (end-of-step in `forward/mod.rs`)
-  - [ ] `data.qacc_warmstart.copy_from(&data.qacc)` runs regardless of `DISABLE_WARMSTART`
-  - [ ] Flag gates consumption, not population
+- [x] Returns `bool` (not void)
+- [x] Called inside `mj_fwd_constraint()`, after assembly, after `nefc == 0` check, before solver dispatch
+- [x] NOT called from `forward_core()` as a separate step
+- [x] When `disabled(model, DISABLE_WARMSTART)`:
+  - [x] `data.qacc.copy_from(&data.qacc_smooth)` — unconstrained accelerations
+  - [x] `data.efc_force.fill(0.0)` — zero constraint forces
+  - [x] Returns `false` (cold start — solvers skip cost comparison)
+- [x] When NOT disabled:
+  - [x] `data.qacc.copy_from(&data.qacc_warmstart)` — previous solution
+  - [x] `efc_force` NOT populated here (each solver computes via its own mechanism)
+  - [x] Returns `true` (warm data loaded — solvers should run cost comparison)
+- [x] Each solver receives `bool` and conditionally skips warmstart comparison:
+  - [x] PGS: `classify_constraint_states()` / dual cost comparison
+  - [x] Newton: `evaluate_cost_at()` comparison
+  - [x] CG: `evaluate_cost_at()` comparison
+- [x] **`qacc_warmstart` saving is unconditional** (end-of-step in `forward/mod.rs`)
+  - [x] `data.qacc_warmstart.copy_from(&data.qacc)` runs regardless of `DISABLE_WARMSTART`
+  - [x] Flag gates consumption, not population
 
 ### 2j. S4.12 — `DISABLE_FILTERPARENT` — parent-child collision filtering
 
-- [ ] Guard in `collision/mod.rs` (`check_collision_affinity()` or equivalent)
-- [ ] Pattern: `if !disabled(model, DISABLE_FILTERPARENT) { /* existing parent-child filter */ }`
-- [ ] When disabled: parent-child geom pairs ARE allowed to collide
-- [ ] When enabled (default): parent-child geom pairs are excluded
+- [x] Guard in `collision/mod.rs` (`check_collision_affinity()` or equivalent)
+- [x] Pattern: `if !disabled(model, DISABLE_FILTERPARENT) { /* existing parent-child filter */ }`
+- [x] When disabled: parent-child geom pairs ARE allowed to collide
+- [x] When enabled (default): parent-child geom pairs are excluded
 
 ### 2k. S4.13 — `DISABLE_MIDPHASE` — BVH midphase gating
 
-- [ ] `use_bvh` parameter on all 5 mesh collision functions:
-  - [ ] `mesh_sphere_contact`
-  - [ ] `mesh_capsule_contact`
-  - [ ] `mesh_box_contact`
-  - [ ] `mesh_mesh_contact`
-  - [ ] `mesh_mesh_deepest_contact`
-- [ ] `collide_with_mesh()` computes `use_bvh = !disabled(model, DISABLE_MIDPHASE)`
-- [ ] Threads `use_bvh` to all 13 call sites
-- [ ] When `use_bvh = false`: brute-force fallback iterates all triangles / all triangle pairs
-- [ ] When `use_bvh = true`: BVH tree traversal for candidate culling
+- [x] `use_bvh` parameter on all 5 mesh collision functions:
+  - [x] `mesh_sphere_contact`
+  - [x] `mesh_capsule_contact`
+  - [x] `mesh_box_contact`
+  - [x] `mesh_mesh_contact`
+  - [x] `mesh_mesh_deepest_contact`
+- [x] `collide_with_mesh()` computes `use_bvh = !disabled(model, DISABLE_MIDPHASE)`
+- [x] Threads `use_bvh` to all 13 call sites
+- [x] When `use_bvh = false`: brute-force fallback iterates all triangles / all triangle pairs
+- [x] When `use_bvh = true`: BVH tree traversal for candidate culling
 
 ### 2l. S4.13b — `DISABLE_ISLAND` — solver constraints
 
-- [ ] Compound condition for island solving:
+- [x] Compound condition for island solving:
   ```
   !disabled(model, DISABLE_ISLAND)
   && data.nisland > 0
   && model.opt.noslip_iterations == 0
   && matches!(model.opt.solver, Solver::CG | Solver::Newton)
   ```
-- [ ] PGS always uses global solving regardless of island flag
-- [ ] When islands not supported: falls back to global constraint solve
+- [x] PGS always uses global solving regardless of island flag
+- [x] When islands not supported: falls back to global constraint solve
 
 ### 2m. S4.14 — `DISABLE_EULERDAMP` — implicit damping in Euler
 
-- [ ] **Compound guard:** `!disabled(model, DISABLE_EULERDAMP) && !disabled(model, DISABLE_DAMPER)`
-- [ ] Both conditions must hold for implicit damping to apply
-- [ ] When either flag is set: Euler uses explicit damping only
-- [ ] File: `forward/acceleration.rs` or `integrate/implicit.rs`
+- [x] **Compound guard:** `!disabled(model, DISABLE_EULERDAMP) && !disabled(model, DISABLE_DAMPER)`
+- [x] Both conditions must hold for implicit damping to apply
+- [x] When either flag is set: Euler uses explicit damping only
+- [x] File: `forward/acceleration.rs` or `integrate/implicit.rs`
 
 ### 2n. S4.15 — `DISABLE_REFSAFE` — solref time-constant clamping
 
-- [ ] `compute_kbip()` signature takes `&Model` (not just `solref`, `solimp`)
-- [ ] Guard: `if !disabled(model, DISABLE_REFSAFE) && solref[0] > 0.0`
-- [ ] Clamp: `solref[0].max(2.0 * model.timestep)`
-- [ ] When disabled: `solref[0]` passes through unclamped
-- [ ] When enabled and `solref[0] <= 0.0`: no clamping (negative solref has different semantics)
-- [ ] Single call site updated: `constraint/assembly.rs`
+- [x] `compute_kbip()` signature takes `&Model` (not just `solref`, `solimp`)
+- [x] Guard: `if !disabled(model, DISABLE_REFSAFE) && solref[0] > 0.0`
+- [x] Clamp: `solref[0].max(2.0 * model.timestep)`
+- [x] When disabled: `solref[0]` passes through unclamped
+- [x] When enabled and `solref[0] <= 0.0`: no clamping (negative solref has different semantics)
+- [x] Single call site updated: `constraint/assembly.rs`
 
 ### 2o. S4.16 — `DISABLE_AUTORESET` — NaN auto-reset gating
 
-- [ ] In `mj_check_pos()`: `if !disabled(model, DISABLE_AUTORESET) { mj_reset_data(model, data); }`
-- [ ] In `mj_check_vel()`: same pattern
-- [ ] In `mj_check_acc()`: same pattern + `mj_forward()` re-run after reset
-- [ ] When disabled: warnings still fire, but no reset occurs
-- [ ] `data.qpos` still contains bad values (user must handle)
+- [x] In `mj_check_pos()`: `if !disabled(model, DISABLE_AUTORESET) { mj_reset_data(model, data); }`
+- [x] In `mj_check_vel()`: same pattern
+- [x] In `mj_check_acc()`: same pattern + `mj_forward()` re-run after reset
+- [x] When disabled: warnings still fire, but no reset occurs
+- [x] `data.qpos` still contains bad values (user must handle)
 
 ### 2p. S4.17 — `DISABLE_NATIVECCD` — constant only
 
-- [ ] Constant exists (`1 << 17`)
-- [ ] Parser/builder wired (S2, S3)
-- [ ] **No runtime guard site** (blocked by §50)
-- [ ] `tracing::warn!` fires when set to non-default (S3b)
+- [x] Constant exists (`1 << 17`)
+- [x] Parser/builder wired (S2, S3)
+- [x] **No runtime guard site** (blocked by §50)
+- [x] `tracing::warn!` fires when set to non-default (S3b)
 
 ### 2q. S5.1 — `ENABLE_ENERGY` — gate energy computation
 
-- [ ] In `forward/mod.rs` / `forward_core()`:
-  - [ ] `mj_energy_pos()` only called when `enabled(model, ENABLE_ENERGY)`
-  - [ ] `mj_energy_vel()` only called when `enabled(model, ENABLE_ENERGY)`
-- [ ] When NOT enabled:
-  - [ ] `data.energy_potential = 0.0` (explicitly zeroed, not left stale)
-  - [ ] `data.energy_kinetic = 0.0` (explicitly zeroed, not left stale)
-- [ ] Default behavior: energy NOT computed (disabled by default)
-  - [ ] This is a change from previous always-compute behavior
+- [x] In `forward/mod.rs` / `forward_core()`:
+  - [x] `mj_energy_pos()` only called when `enabled(model, ENABLE_ENERGY)`
+  - [x] `mj_energy_vel()` only called when `enabled(model, ENABLE_ENERGY)`
+- [x] When NOT enabled:
+  - [x] `data.energy_potential = 0.0` (explicitly zeroed, not left stale)
+  - [x] `data.energy_kinetic = 0.0` (explicitly zeroed, not left stale)
+- [x] Default behavior: energy NOT computed (disabled by default)
+  - [x] This is a change from previous always-compute behavior
 
 ### 2r. S5.2 — `ENABLE_OVERRIDE` — global contact parameter override
 
 **Model fields (S10a):**
 
-- [ ] `o_margin: f64` — default `0.0`
-- [ ] `o_solref: [f64; 2]` — default `[0.02, 1.0]`
-- [ ] `o_solimp: [f64; 5]` — default `[0.9, 0.95, 0.001, 0.5, 2.0]`
-- [ ] `o_friction: [f64; 5]` — default `[1.0, 1.0, 0.005, 0.0001, 0.0001]`
+- [x] `o_margin: f64` — default `0.0`
+- [x] `o_solref: [f64; 2]` — default `[0.02, 1.0]`
+- [x] `o_solimp: [f64; 5]` — default `[0.9, 0.95, 0.001, 0.5, 2.0]`
+- [x] `o_friction: [f64; 5]` — default `[1.0, 1.0, 0.005, 0.0001, 0.0001]`
 
 **Assignment helpers (S10c):**
 
-- [ ] `assign_margin(model, source) -> f64`: returns `o_margin` when override enabled
-- [ ] `assign_ref(model, source) -> [f64; 2]`: returns `o_solref` when override enabled
-- [ ] `assign_imp(model, source) -> [f64; 5]`: returns `o_solimp` when override enabled
-- [ ] `assign_friction(model, source) -> [f64; 5]`:
-  - [ ] Returns `o_friction` when override enabled, else `*source`
-  - [ ] **Always** clamps each component to `MIN_MU = 1e-5` (both paths)
-- [ ] `MIN_MU: f64 = 1e-5` constant defined
+- [x] `assign_margin(model, source) -> f64`: returns `o_margin` when override enabled
+- [x] `assign_ref(model, source) -> [f64; 2]`: returns `o_solref` when override enabled
+- [x] `assign_imp(model, source) -> [f64; 5]`: returns `o_solimp` when override enabled
+- [x] `assign_friction(model, source) -> [f64; 5]`:
+  - [x] Returns `o_friction` when override enabled, else `*source`
+  - [x] **Always** clamps each component to `MIN_MU = 1e-5` (both paths)
+- [x] `MIN_MU: f64 = 1e-5` constant defined
 
 **Guard sites (S10d — 6 locations):**
 
 Site 1 — Broadphase AABB margin (rigid geoms):
-- [ ] Uses `0.5 * model.o_margin` instead of `model.geom_margin[geom_id]`
-- [ ] `0.5` factor because AABB expansion is per-geom (half the contact margin)
+- [x] Uses `0.5 * model.o_margin` instead of `model.geom_margin[geom_id]`
+- [x] `0.5` factor because AABB expansion is per-geom (half the contact margin)
 
 Site 2 — Broadphase AABB margin (flex):
-- [ ] Uses override margin for flex objects when enabled
+- [x] Uses override margin for flex objects when enabled
 
 Sites 3–6 — Contact parameter assignment:
-- [ ] `con.margin = assign_margin(model, combined_margin)`
-- [ ] `con.solref = assign_ref(model, &combined_solref)`
-- [ ] `con.solimp = assign_imp(model, &combined_solimp)`
-- [ ] `con.friction = assign_friction(model, &combined_friction)`
-- [ ] `con.solreffriction` uses `assign_ref` (same `o_solref`, no separate `o_solreffriction`)
+- [x] `con.margin = assign_margin(model, combined_margin)`
+- [x] `con.solref = assign_ref(model, &combined_solref)`
+- [x] `con.solimp = assign_imp(model, &combined_solimp)`
+- [x] `con.friction = assign_friction(model, &combined_friction)`
+- [x] `con.solreffriction` uses `assign_ref` (same `o_solref`, no separate `o_solreffriction`)
 
 **Key behaviors:**
 
-- [ ] Override is total replacement (computed params discarded)
-- [ ] Gap is NEVER overridden
-- [ ] Condim is NEVER overridden
-- [ ] Override applies ONLY to contacts (not joints, tendons, equality)
+- [x] Override is total replacement (computed params discarded)
+- [x] Gap is NEVER overridden
+- [x] Condim is NEVER overridden
+- [x] Override applies ONLY to contacts (not joints, tendons, equality)
 
 ### 2s. S5.3–S5.5 — Stub-only enable flags
 
-- [ ] `ENABLE_FWDINV`: constant exists, no guard site (blocked by §52)
-- [ ] `ENABLE_INVDISCRETE`: constant exists, no guard site (blocked by §52)
-- [ ] `ENABLE_MULTICCD`: constant exists, no guard site (blocked by §50)
-- [ ] Verify NO accidental guard sites exist for these flags
+- [x] `ENABLE_FWDINV`: constant exists, no guard site (blocked by §52)
+- [x] `ENABLE_INVDISCRETE`: constant exists, no guard site (blocked by §52)
+- [x] `ENABLE_MULTICCD`: constant exists, no guard site (blocked by §50)
+- [x] Verify NO accidental guard sites exist for these flags
 
 ### 2t. S5.6 — `ENABLE_SLEEP` — already wired
 
-- [ ] Spot-check: sleep filtering active in relevant functions
-- [ ] No changes required by §41 — verify no regressions
+- [x] Spot-check: sleep filtering active in relevant functions
+- [x] No changes required by §41 — verify no regressions
 
 ### 2u. S7 — Per-group actuator disabling
 
 **S7a — Model fields:**
 
-- [ ] `disableactuator: u32` — default `0`, next to `disableflags`/`enableflags`
-- [ ] `actuator_group: Vec<i32>` — length `nu`, default `0`
-- [ ] Both initialized in `model_init.rs`
+- [x] `disableactuator: u32` — default `0`, next to `disableflags`/`enableflags`
+- [x] `actuator_group: Vec<i32>` — length `nu`, default `0`
+- [x] Both initialized in `model_init.rs`
 
 **S7b — Builder wiring:**
 
-- [ ] `actuatorgroupdisable` parsed from `<option>` as space-separated int list
-- [ ] Each group ID (0–30) sets bit: `disableactuator |= 1u32 << group`
-- [ ] Out-of-range groups (< 0 or > 30) produce error
-- [ ] `actuator_group[i] = actuator.group.unwrap_or(0)` wired from per-actuator parse
+- [x] `actuatorgroupdisable` parsed from `<option>` as space-separated int list
+- [x] Each group ID (0–30) sets bit: `disableactuator |= 1u32 << group`
+- [x] Out-of-range groups (< 0 or > 30) produce error
+- [x] `actuator_group[i] = actuator.group.unwrap_or(0)` wired from per-actuator parse
 
 **S7c — `actuator_disabled()` helper:**
 
-- [ ] Covered in Phase 1b above — verify here it's actually used at guard sites
+- [x] Covered in Phase 1b above — verify here it's actually used at guard sites
 
 **S7d — Runtime guard sites:**
 
 Site 1 — `mj_fwd_actuation()` per-actuator force loop:
-- [ ] `if actuator_disabled(model, i) { continue; }` inside per-actuator loop
-- [ ] Skips force computation for disabled actuators (not just zeroing)
+- [x] `if actuator_disabled(model, i) { continue; }` inside per-actuator loop
+- [x] Skips force computation for disabled actuators (not just zeroing)
 
 Site 2 — Activation integration (same location as S4.8 Site 3):
-- [ ] Compound check: `disabled(ACTUATION) || actuator_disabled(model, i)`
-- [ ] Single implementation, not two separate guard blocks
-- [ ] Present in both Euler (`integrate/mod.rs`) and RK4 (`integrate/rk4.rs`)
+- [x] Compound check: `disabled(ACTUATION) || actuator_disabled(model, i)`
+- [x] Single implementation, not two separate guard blocks
+- [x] Present in both Euler (`integrate/mod.rs`) and RK4 (`integrate/rk4.rs`)
 
 **Interaction matrix — DISABLE_ACTUATION × per-group disable:**
 
 | `DISABLE_ACTUATION` | Per-group mask | Force computation | Activation integration | Check |
 |:-:|:-:|---|---|:---:|
-| off | group NOT disabled | normal force + `act_dot` | normal | [ ] |
-| off | group disabled | force skipped (`continue`) | `act_dot = 0.0` (freeze) | [ ] |
-| **on** | any | all forces skipped (top-level guard) | all `act_dot = 0.0` | [ ] |
+| off | group NOT disabled | normal force + `act_dot` | normal | [x] |
+| off | group disabled | force skipped (`continue`) | `act_dot = 0.0` (freeze) | [x] |
+| **on** | any | all forces skipped (top-level guard) | all `act_dot = 0.0` | [x] |
 
 **Interaction matrix — DISABLE_CONTACT × spring/damper × contactPassive:**
 
 | `DISABLE_CONTACT` | `DISABLE_SPRING + DAMPER` | `mj_contact_passive()` reached? | Spring/damper forces? | Check |
 |:-:|:-:|:-:|:-:|:---:|
-| off | off | yes (if DT-101 done) | yes | [ ] |
-| off | **both on** | no (S4.7a early return) | no | [ ] |
-| **on** | off | yes but `ncon==0` guard → no-op | yes | [ ] |
-| **on** | **both on** | no (S4.7a early return) | no | [ ] |
+| off | off | yes (if DT-101 done) | yes | [x] |
+| off | **both on** | no (S4.7a early return) | no | [x] |
+| **on** | off | yes but `ncon==0` guard → no-op | yes | [x] |
+| **on** | **both on** | no (S4.7a early return) | no | [x] |
 
 ---
 
