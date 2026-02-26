@@ -856,8 +856,10 @@ impl Data {
         self.qfrc_bias.fill(0.0);
         self.qfrc_smooth.fill(0.0);
         self.qfrc_frictionloss.fill(0.0);
-        // Note: qfrc_applied and xfrc_applied are NOT zeroed — these are
-        // user-set inputs that persist across resets (same as MuJoCo).
+        self.qfrc_applied.fill(0.0);
+        for v in &mut self.xfrc_applied {
+            *v = SpatialVector::zeros();
+        }
 
         // 5. Contact / constraint state — zero.
         self.ncon = 0;
@@ -900,9 +902,9 @@ impl Data {
     ///
     /// Overwrites `time`, `qpos`, `qvel`, `act`, `ctrl`, `mocap_pos`, and
     /// `mocap_quat` from the keyframe. Clears derived quantities (`qacc`,
-    /// `qacc_warmstart`, actuator arrays, `sensordata`, contacts).
-    /// Does **not** clear `qfrc_applied` or `xfrc_applied` — matching the
-    /// convention of `Data::reset()`, which also preserves user-applied forces.
+    /// `qacc_warmstart`, actuator arrays, `sensordata`, contacts) and
+    /// user-applied forces (`qfrc_applied`, `xfrc_applied`) — matching the
+    /// convention of `Data::reset()`.
     /// Caller must invoke `forward()` after reset to recompute derived state.
     ///
     /// # Errors
@@ -932,13 +934,17 @@ impl Data {
         self.mocap_pos.copy_from_slice(&kf.mpos);
         self.mocap_quat.copy_from_slice(&kf.mquat);
 
-        // Clear derived quantities (matching Data::reset() convention).
+        // Clear derived quantities and applied forces (matching Data::reset()).
         self.qacc.fill(0.0);
         self.qacc_warmstart.fill(0.0);
         self.act_dot.fill(0.0);
         self.actuator_length.fill(0.0);
         self.actuator_velocity.fill(0.0);
         self.actuator_force.fill(0.0);
+        self.qfrc_applied.fill(0.0);
+        for v in &mut self.xfrc_applied {
+            *v = SpatialVector::zeros();
+        }
         self.sensordata.fill(0.0);
         self.ncon = 0;
         self.contacts.clear();

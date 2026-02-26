@@ -31,7 +31,7 @@ use sim_bevy::convert::vec3_from_vector;
 use sim_bevy::model_data::{
     ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data, sync_model_data_to_bevy,
 };
-use sim_core::Model;
+use sim_core::{ENABLE_ENERGY, Model};
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -88,7 +88,8 @@ fn setup_physics_and_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // Create the physics model using factory method
-    let model = Model::double_pendulum(LINK_LENGTH, LINK_MASS);
+    let mut model = Model::double_pendulum(LINK_LENGTH, LINK_MASS);
+    model.enableflags |= ENABLE_ENERGY;
     let mut data = model.make_data();
 
     // Set initial angles

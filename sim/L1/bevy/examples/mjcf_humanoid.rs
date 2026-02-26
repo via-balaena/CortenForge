@@ -28,6 +28,7 @@
 use bevy::prelude::*;
 use sim_bevy::convert::vec3_from_vector;
 use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, sync_model_data_to_bevy};
+use sim_core::ENABLE_ENERGY;
 use sim_mjcf::load_model;
 
 // ============================================================================
@@ -190,13 +191,14 @@ fn setup_physics_and_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // Parse MJCF directly into Model
-    let model = match load_model(HUMANOID_MJCF) {
+    let mut model = match load_model(HUMANOID_MJCF) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Failed to load MJCF: {e}");
             return;
         }
     };
+    model.enableflags |= ENABLE_ENERGY;
 
     // Create data and run forward kinematics
     let mut data = model.make_data();

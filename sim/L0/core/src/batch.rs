@@ -234,9 +234,12 @@ impl BatchSim {
 )]
 mod tests {
     use super::*;
+    use crate::types::enums::ENABLE_ENERGY;
 
     fn pendulum_model() -> Model {
-        Model::n_link_pendulum(2, 1.0, 0.1)
+        let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+        model.enableflags |= ENABLE_ENERGY;
+        model
     }
 
     // ==================== Construction ====================

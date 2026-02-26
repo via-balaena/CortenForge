@@ -371,11 +371,11 @@ fn ac07_round_trip_reset() {
 }
 
 // ============================================================================
-// AC 8: reset_to_keyframe preserves qfrc_applied/xfrc_applied, clears derived
+// AC 8: reset_to_keyframe zeroes qfrc_applied/xfrc_applied and derived state
 // ============================================================================
 
 #[test]
-fn ac08_reset_preserves_applied_forces() {
+fn ac08_reset_zeroes_applied_forces() {
     let model = load_model(pendulum_with_keyframe()).unwrap();
     let mut data = model.make_data();
 
@@ -391,9 +391,9 @@ fn ac08_reset_preserves_applied_forces() {
     // Reset.
     data.reset_to_keyframe(&model, 0).unwrap();
 
-    // Applied forces preserved.
-    assert_relative_eq!(data.qfrc_applied[0], 42.0, epsilon = 1e-12);
-    assert_relative_eq!(data.xfrc_applied[1][0], 1.0, epsilon = 1e-12);
+    // Applied forces zeroed (matching MuJoCo mj_resetData behaviour).
+    assert_relative_eq!(data.qfrc_applied[0], 0.0, epsilon = 1e-12);
+    assert_relative_eq!(data.xfrc_applied[1][0], 0.0, epsilon = 1e-12);
 
     // Derived quantities cleared.
     assert_relative_eq!(data.qacc[0], 0.0, epsilon = 1e-12);
