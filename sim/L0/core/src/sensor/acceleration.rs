@@ -108,7 +108,10 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 let alpha = Vector3::new(cacc[0], cacc[1], cacc[2]);
                 let a_lin = Vector3::new(cacc[3], cacc[4], cacc[5]);
 
-                // Shift from xpos[body_id] to site_pos (motion spatial transform)
+                // Shift from xpos[body_id] to site_pos (motion spatial transform).
+                // Convention: our cacc/cvel are at xpos[body_id] (body origin).
+                // MuJoCo stores these at subtree_com[body_rootid[b]] — when porting
+                // MuJoCo code, substitute xpos[body_id] for subtree_com[root].
                 let r = site_pos - data.xpos[body_id];
                 let a_at_site = a_lin + alpha.cross(&r);
 
@@ -168,7 +171,10 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 let torque_at_origin = Vector3::new(cfrc[0], cfrc[1], cfrc[2]);
                 let force = Vector3::new(cfrc[3], cfrc[4], cfrc[5]);
 
-                // Spatial force transform: shift from xpos[body_id] to site_pos
+                // Spatial force transform: shift from xpos[body_id] to site_pos.
+                // Convention: our cfrc_int is at xpos[body_id] (body origin).
+                // MuJoCo stores it at subtree_com[body_rootid[b]] — when porting
+                // MuJoCo code, substitute xpos[body_id] for subtree_com[root].
                 let r = site_pos - data.xpos[body_id];
                 let torque_at_site = torque_at_origin - r.cross(&force);
 
@@ -261,6 +267,8 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 let cacc = data.cacc[body_id];
                 let alpha = Vector3::new(cacc[0], cacc[1], cacc[2]);
                 let a_lin = Vector3::new(cacc[3], cacc[4], cacc[5]);
+                // Convention: our cacc is at xpos[body_id], not subtree_com[root].
+                // See Accelerometer arm above for full porting note.
                 let r = obj_pos - data.xpos[body_id];
                 let a_at_point = a_lin + alpha.cross(&r);
 

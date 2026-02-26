@@ -364,6 +364,12 @@ The spatial transform formulas are the same; only the "old position" changes:
 - MuJoCo: `r = target_pos - subtree_com[root]`
 - Ours: `r = target_pos - xpos[body_id]`
 
+**Porting note:** When translating MuJoCo C code that reads `cacc`, `cfrc_int`,
+or `cvel`, substitute `xpos[body_id]` wherever MuJoCo uses
+`subtree_com + 3*rootid`. The transport formula and everything else stays the
+same. Once DT-103 lands (shared `mj_objectAcceleration` helper), new consumers
+should call that helper instead of inlining the transport.
+
 For body-attached sensors where the site is at the body origin, `r = 0` and
 both conventions yield the same result. When `r = 0`, the Coriolis correction
 `omega × v_at_site` reduces to `omega × v_at_origin`, which is the same

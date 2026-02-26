@@ -8,6 +8,11 @@ use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model};
 use nalgebra::Vector3;
 
 /// Velocity kinematics: compute body velocities from qvel.
+///
+/// Populates `cvel[b]` — the 6D spatial velocity at `xpos[b]` (body origin).
+/// MuJoCo stores `cvel[b]` at `subtree_com[body_rootid[b]]` instead. When
+/// porting MuJoCo code that reads `cvel`, substitute `xpos[body_id]` for
+/// `subtree_com + 3*rootid` in spatial transport calculations.
 pub fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     // §16.27: Use indirection array for cache-friendly iteration over awake bodies.
