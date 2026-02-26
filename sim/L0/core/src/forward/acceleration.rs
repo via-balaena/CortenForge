@@ -13,7 +13,7 @@ use crate::linalg::{
     mj_solve_sparse,
 };
 use crate::types::{
-    ConstraintType, DISABLE_GRAVITY, Data, ENABLE_SLEEP, Integrator, Model, SleepState, StepError,
+    ConstraintType, DISABLE_GRAVITY, Data, ENABLE_SLEEP, Integrator, Model, StepError,
 };
 use nalgebra::DVector;
 
@@ -123,30 +123,25 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     // DT-21: Project xfrc_applied (Cartesian body forces) into scratch_force.
     // This replicates the projection done in compute_qacc_smooth(), which is
     // needed because we can't use data.qfrc_smooth (overridden by Newton).
-    {
-        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-        for body_id in 1..model.nbody {
-            let xfrc = &data.xfrc_applied[body_id];
-            if xfrc.iter().all(|&v| v == 0.0) {
-                continue;
-            }
-            if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
-                continue;
-            }
-            let torque = nalgebra::Vector3::new(xfrc[0], xfrc[1], xfrc[2]);
-            let force = nalgebra::Vector3::new(xfrc[3], xfrc[4], xfrc[5]);
-            let point = data.xipos[body_id];
-            crate::jacobian::mj_apply_ft(
-                model,
-                &data.xpos,
-                &data.xquat,
-                &force,
-                &torque,
-                &point,
-                body_id,
-                &mut data.scratch_force,
-            );
+    // No sleep guard — MuJoCo projects ALL bodies unconditionally.
+    for body_id in 1..model.nbody {
+        let xfrc = &data.xfrc_applied[body_id];
+        if xfrc.iter().all(|&v| v == 0.0) {
+            continue;
         }
+        let torque = nalgebra::Vector3::new(xfrc[0], xfrc[1], xfrc[2]);
+        let force = nalgebra::Vector3::new(xfrc[3], xfrc[4], xfrc[5]);
+        let point = data.xipos[body_id];
+        crate::jacobian::mj_apply_ft(
+            model,
+            &data.xpos,
+            &data.xquat,
+            &force,
+            &torque,
+            &point,
+            body_id,
+            &mut data.scratch_force,
+        );
     }
 
     // Build modified mass matrix: M_impl = M + h*D_jnt + h²*K_jnt

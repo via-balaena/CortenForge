@@ -841,11 +841,6 @@ fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflag
 
     // Stub-only flags: subsystem not yet implemented.
     // Warn so users don't silently get no-op behavior.
-    if flag.fwdinv {
-        tracing::warn!(
-            "ENABLE_FWDINV set but inverse dynamics (§52) not implemented — flag has no effect"
-        );
-    }
     if flag.invdiscrete {
         tracing::warn!(
             "ENABLE_INVDISCRETE set but inverse dynamics (§52) not implemented — flag has no effect"

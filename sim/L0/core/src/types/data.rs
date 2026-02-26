@@ -390,10 +390,13 @@ pub struct Data {
     /// Kinetic energy.
     pub energy_kinetic: f64,
 
-    /// §52: Forward/inverse comparison error (diagnostic).
-    /// `max|qfrc_inverse - (qfrc_applied + qfrc_actuator + qfrc_constraint)|`.
-    /// Populated when `ENABLE_FWDINV` is set; otherwise 0.0.
-    pub fwdinv_error: f64,
+    /// §52: Forward/inverse comparison (diagnostic, matches MuJoCo `solver_fwdinv[2]`).
+    ///
+    /// - `[0]`: Constraint discrepancy L2 norm (reserved, 0.0 for now).
+    /// - `[1]`: Applied force discrepancy — `‖qfrc_inverse - (qfrc_applied + qfrc_actuator + J^T*xfrc)‖`.
+    ///
+    /// Populated when `ENABLE_FWDINV` is set; otherwise `[0.0, 0.0]`.
+    pub solver_fwdinv: [f64; 2],
 
     // ==================== Sleep State (§16.1) ====================
     /// Per-tree sleep timer (length `ntree`).
@@ -569,7 +572,8 @@ pub struct Data {
     /// accumulated into parent.
     pub cfrc_int: Vec<SpatialVector>,
     /// Per-body external forces in world frame (length `nbody`).
-    /// Copy of `xfrc_applied` converted to spatial force at body CoM.
+    /// `xfrc_applied` + contact/constraint solver forces, converted to spatial
+    /// force at body CoM. Populated by `mj_body_accumulators()`.
     pub cfrc_ext: Vec<SpatialVector>,
 
     // ==================== Cached Body Effective Mass/Inertia ====================
@@ -708,7 +712,7 @@ impl Clone for Data {
             // Energy
             energy_potential: self.energy_potential,
             energy_kinetic: self.energy_kinetic,
-            fwdinv_error: self.fwdinv_error,
+            solver_fwdinv: self.solver_fwdinv,
             // Sleep state
             tree_asleep: self.tree_asleep.clone(),
             tree_awake: self.tree_awake.clone(),
@@ -866,6 +870,18 @@ impl Data {
             *v = SpatialVector::zeros();
         }
 
+        // 4b. Body accumulators + inverse dynamics — zero.
+        for v in &mut self.cacc {
+            *v = SpatialVector::zeros();
+        }
+        for v in &mut self.cfrc_int {
+            *v = SpatialVector::zeros();
+        }
+        for v in &mut self.cfrc_ext {
+            *v = SpatialVector::zeros();
+        }
+        self.qfrc_inverse.fill(0.0);
+
         // 5. Contact / constraint state — zero.
         self.ncon = 0;
         self.contacts.clear();
@@ -886,7 +902,7 @@ impl Data {
         // 7. Energy — zero.
         self.energy_potential = 0.0;
         self.energy_kinetic = 0.0;
-        self.fwdinv_error = 0.0;
+        self.solver_fwdinv = [0.0, 0.0];
 
         // 8. Warning counters — zero.
         for w in &mut self.warnings {
@@ -980,7 +996,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4048;
+        const EXPECTED_SIZE: usize = 4056;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

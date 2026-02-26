@@ -523,7 +523,7 @@ impl Model {
             // Energy
             energy_potential: 0.0,
             energy_kinetic: 0.0,
-            fwdinv_error: 0.0,
+            solver_fwdinv: [0.0, 0.0],
 
             // Sleep state (§16.7) — initialized from tree sleep policies.
             // For models not built through MJCF (ntree == 0 or body_treeid not populated),

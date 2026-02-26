@@ -4,6 +4,11 @@
 
 /// Test: round-trip — `forward()` → `inverse()` → verify
 /// `qfrc_inverse ≈ qfrc_applied + qfrc_actuator`.
+///
+/// With G22 (inverse subtracts `qfrc_constraint`), the round-trip identity is:
+/// `qfrc_inverse = qfrc_applied + qfrc_actuator + J^T*xfrc_applied`.
+/// This test has no `xfrc_applied`, so the identity simplifies to
+/// `qfrc_inverse = qfrc_applied + qfrc_actuator`.
 #[test]
 fn round_trip() {
     let xml = r#"
@@ -44,13 +49,13 @@ fn round_trip() {
     // Inverse dynamics computes forces from qacc
     data.inverse(&model);
 
-    // qfrc_inverse should equal qfrc_applied + qfrc_actuator + qfrc_constraint
+    // qfrc_inverse should equal qfrc_applied + qfrc_actuator (no xfrc_applied)
     for i in 0..model.nv {
-        let expected = data.qfrc_applied[i] + data.qfrc_actuator[i] + data.qfrc_constraint[i];
+        let expected = data.qfrc_applied[i] + data.qfrc_actuator[i];
         let inv = data.qfrc_inverse[i];
         assert!(
             (inv - expected).abs() < 1e-8,
-            "qfrc_inverse[{i}] = {inv} should match applied+actuator+constraint = {expected}"
+            "qfrc_inverse[{i}] = {inv} should match applied+actuator = {expected}"
         );
     }
 }

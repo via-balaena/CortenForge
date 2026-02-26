@@ -53,9 +53,10 @@ pub(crate) use passive::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
 pub(crate) use position::SweepAndPrune;
 pub(crate) use position::{aabb_from_geom, closest_point_segment, closest_points_segments};
 
-use crate::types::flags::enabled;
+use crate::types::flags::{disabled, enabled};
 use crate::types::{
-    Data, ENABLE_ENERGY, ENABLE_FWDINV, ENABLE_SLEEP, Integrator, Model, StepError,
+    DISABLE_ACTUATION, Data, ENABLE_ENERGY, ENABLE_FWDINV, ENABLE_SLEEP, Integrator, Model,
+    StepError,
 };
 
 impl Data {
@@ -140,6 +141,13 @@ impl Data {
     /// Returns `Err(StepError)` if forward acceleration computation fails
     /// (e.g., Cholesky failure in implicit integrator).
     pub fn step2(&mut self, model: &Model) -> Result<(), StepError> {
+        // §53: RK4 is not compatible with split-step — warn if configured.
+        if model.integrator == Integrator::RungeKutta4 {
+            tracing::warn!(
+                "step2() uses Euler integration; RK4 requires step() for correct multi-stage substeps"
+            );
+        }
+
         // §53: Acceleration stage (actuation, constraints, sensors).
         self.forward_acc(model, true)?;
 
@@ -267,7 +275,8 @@ impl Data {
 
         // §53: cb_control fires between velocity and acceleration stages.
         // Only on full forward (not RK4 intermediate stages).
-        if compute_sensors {
+        // Gated on !DISABLE_ACTUATION — MuJoCo skips mjcb_control when actuation is disabled.
+        if compute_sensors && !disabled(model, DISABLE_ACTUATION) {
             if let Some(ref cb) = model.cb_control {
                 (cb.0)(model, self);
             }
@@ -421,12 +430,16 @@ impl Data {
 
     /// Compare forward and inverse dynamics (§52, `ENABLE_FWDINV`).
     ///
-    /// Runs `inverse()` and computes `max|qfrc_inverse - qfrc_smooth|`
-    /// where `qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_constraint`.
-    /// The result is stored in `data.fwdinv_error` for diagnostic inspection.
+    /// Runs `inverse()` and computes two L2 norms matching MuJoCo's
+    /// `mj_compareFwdInv()`:
+    /// - `solver_fwdinv[0]`: constraint force discrepancy (reserved, 0.0).
+    /// - `solver_fwdinv[1]`: `‖qfrc_inverse - fwd_applied‖` where
+    ///   `fwd_applied = qfrc_smooth + qfrc_bias - qfrc_passive`.
     ///
-    /// This is purely diagnostic — no physics effect. Matches MuJoCo's
-    /// `mj_compareFwdInv()`.
+    /// After G22, `qfrc_inverse = qfrc_applied + qfrc_actuator + J^T*xfrc`,
+    /// so `solver_fwdinv[1]` measures the round-trip residual of applied forces.
+    ///
+    /// This is purely diagnostic — no physics effect.
     fn compare_fwd_inv(&mut self, model: &Model) {
         if model.nv == 0 {
             return;
@@ -435,14 +448,26 @@ impl Data {
         // Run inverse dynamics to populate qfrc_inverse
         self.inverse(model);
 
-        // Compute comparison: qfrc_inverse vs (qfrc_applied + qfrc_actuator + qfrc_constraint)
-        let mut max_abs_diff = 0.0_f64;
-        for i in 0..model.nv {
-            let fwd_force = self.qfrc_applied[i] + self.qfrc_actuator[i] + self.qfrc_constraint[i];
-            let diff = (self.qfrc_inverse[i] - fwd_force).abs();
-            max_abs_diff = max_abs_diff.max(diff);
-        }
+        // solver_fwdinv[0]: constraint discrepancy (reserved — no per-island
+        // solver residual tracked yet).
+        self.solver_fwdinv[0] = 0.0;
 
-        self.fwdinv_error = max_abs_diff;
+        // solver_fwdinv[1]: applied force discrepancy.
+        // Forward: M*qacc = qfrc_smooth + qfrc_constraint
+        //   where qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive
+        //                       - qfrc_bias + J^T*xfrc_applied
+        // Inverse: qfrc_inverse = M*qacc + qfrc_bias - qfrc_passive - qfrc_constraint
+        //        = qfrc_applied + qfrc_actuator + J^T*xfrc_applied
+        //
+        // So the comparison vector is: qfrc_smooth + qfrc_bias - qfrc_passive
+        //   = qfrc_applied + qfrc_actuator + J^T*xfrc_applied
+        // And we compute ‖qfrc_inverse - comparison‖₂.
+        let mut sum_sq = 0.0_f64;
+        for i in 0..model.nv {
+            let fwd = self.qfrc_smooth[i] + self.qfrc_bias[i] - self.qfrc_passive[i];
+            let diff = self.qfrc_inverse[i] - fwd;
+            sum_sq += diff * diff;
+        }
+        self.solver_fwdinv[1] = sum_sq.sqrt();
     }
 }

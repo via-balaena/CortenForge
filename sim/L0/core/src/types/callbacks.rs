@@ -49,6 +49,10 @@ pub type CbControl = Callback<dyn Fn(&Model, &mut Data) + Send + Sync>;
 ///
 /// Arguments: `(model, data, geom1_id, geom2_id)`.
 /// Return `true` to KEEP the contact, `false` to REJECT it.
+///
+/// **Polarity note**: MuJoCo's `mjcb_contactfilter` has the *opposite* convention —
+/// it returns nonzero to REJECT. Our callback uses positive logic (true=keep) for
+/// Rust idiom. Callers porting MuJoCo filters must invert the return value.
 pub type CbContactFilter = Callback<dyn Fn(&Model, &Data, usize, usize) -> bool + Send + Sync>;
 
 /// Sensor callback: called for `MjSensorType::User` sensors.

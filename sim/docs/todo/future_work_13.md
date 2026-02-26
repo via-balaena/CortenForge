@@ -29,7 +29,7 @@ during the forward pass.
      computed during forward dynamics.
    - `cfrc_int: Vec<[f64; 6]>` — per-body internal/constraint forces, computed
      via inverse dynamics pass after constraint solve.
-   - `cfrc_ext: Vec<[f64; 6]>` — per-body external forces (applied + actuator),
+   - `cfrc_ext: Vec<[f64; 6]>` — per-body external forces (applied + contact/constraint),
      accumulated during force assembly.
 2. **Population**: Compute during `forward()`:
    - `cacc`: after computing `qacc`, propagate body accelerations via FK Jacobians.
@@ -118,7 +118,10 @@ inject forces between the forward pass and integration.
 2. **`step2()`**: Runs integration only — updates `qpos` and `qvel` based on
    computed `qacc`. Users can modify `qfrc_applied` or `xfrc_applied` between
    `step1()` and `step2()`.
-3. **`step()` unchanged**: `step()` remains `step1()` + `step2()` for convenience.
+3. **`step()` intentionally independent**: `step()` is NOT `step1()` + `step2()`.
+   It has its own RK4-capable path; `step1()`+`step2()` always uses Euler-style
+   integration. This matches MuJoCo, where `mj_step()` calls `mj_forward()`
+   (with RK4 substeps) while `mj_step1()`/`mj_step2()` use Euler.
 4. **No state flags**: No internal flag needed to track which step phase was last
    called. `step2()` simply integrates whatever state is current.
 

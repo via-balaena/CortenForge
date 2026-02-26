@@ -1,9 +1,10 @@
 //! User callback tests (DT-79).
 //!
-//! Verifies `cb_passive`, `cb_control`, and `cb_contactfilter` hooks.
+//! Verifies `cb_passive`, `cb_control`, `cb_contactfilter`, `cb_sensor`,
+//! `cb_act_dyn`, `cb_act_gain`, and `cb_act_bias` hooks.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Test: passive callback adds constant force → verify qfrc_passive changes.
 #[test]
@@ -181,5 +182,129 @@ fn clone_with_callbacks() {
     assert!(
         data.qfrc_passive[0].abs() > 0.5,
         "Clone's callback should modify qfrc_passive"
+    );
+}
+
+/// G17: sensor callback fires at acceleration stage for User sensor.
+///
+/// User sensors default to Acceleration datatype, so cb_sensor fires
+/// during mj_sensor_acc. The callback receives the sensor ID and stage.
+///
+/// Note: User sensor dim defaults to 0 in our builder (variable-dimension
+/// sensors need programmatic dim override), so we only verify the callback
+/// fires — not that sensordata is written. Writing to sensordata with dim=0
+/// is harmless but out-of-bounds.
+#[test]
+fn sensor_callback_fires_for_user_sensor() {
+    let xml = r#"
+    <mujoco>
+      <option gravity="0 0 -9.81"/>
+      <worldbody>
+        <body name="link" pos="0 0 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" size="0.05 0.5" mass="1.0"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <user name="my_user_sensor"/>
+      </sensor>
+    </mujoco>"#;
+
+    let mut model = sim_mjcf::load_model(xml).expect("load");
+    assert_eq!(model.nsensor, 1, "Should have 1 user sensor");
+
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let count_clone = Arc::clone(&call_count);
+
+    // Track which stages the callback fires at
+    let stages_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stages_clone = Arc::clone(&stages_seen);
+
+    model.set_sensor_callback(move |_model, _data, _sensor_id, stage| {
+        count_clone.fetch_add(1, Ordering::SeqCst);
+        stages_clone.lock().unwrap().push(format!("{stage:?}"));
+    });
+
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    let count = call_count.load(Ordering::SeqCst);
+    assert!(
+        count >= 1,
+        "Sensor callback should fire at least once, fired {count} times"
+    );
+
+    // User sensors default to Acceleration datatype, so we expect Acc stage
+    let stages = stages_seen.lock().unwrap();
+    assert!(
+        stages.iter().any(|s| s == "Acc"),
+        "Sensor callback should fire at Acc stage, got stages: {stages:?}"
+    );
+}
+
+/// G18: actuator user callbacks invoked for User gaintype/biastype.
+///
+/// MJCF parser doesn't yet support `gaintype="user"` / `biastype="user"`,
+/// so we build a motor actuator via MJCF and then patch the model's
+/// gaintype/biastype fields to `User` programmatically. This exercises the
+/// exact same actuation codepath as a fully-wired User actuator.
+#[test]
+fn actuator_user_callbacks_invoked() {
+    use sim_core::{BiasType, GainType};
+
+    let xml = r#"
+    <mujoco>
+      <option gravity="0 0 0"/>
+      <worldbody>
+        <body name="link" pos="0 0 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" size="0.05 0.5" mass="1.0"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor name="m1" joint="hinge" gear="1"/>
+      </actuator>
+    </mujoco>"#;
+
+    let mut model = sim_mjcf::load_model(xml).expect("load");
+
+    // Patch actuator to use User gain/bias callbacks
+    model.actuator_gaintype[0] = GainType::User;
+    model.actuator_biastype[0] = BiasType::User;
+
+    let gain_called = Arc::new(AtomicBool::new(false));
+    let bias_called = Arc::new(AtomicBool::new(false));
+
+    let gain_flag = Arc::clone(&gain_called);
+    let bias_flag = Arc::clone(&bias_called);
+
+    model.set_act_gain_callback(move |_model, _data, _id| {
+        gain_flag.store(true, Ordering::SeqCst);
+        2.0 // gain
+    });
+    model.set_act_bias_callback(move |_model, _data, _id| {
+        bias_flag.store(true, Ordering::SeqCst);
+        -1.0 // bias
+    });
+
+    let mut data = model.make_data();
+    data.ctrl[0] = 1.0;
+    data.forward(&model).expect("forward");
+
+    assert!(
+        gain_called.load(Ordering::SeqCst),
+        "cb_act_gain should have been called for User gaintype"
+    );
+    assert!(
+        bias_called.load(Ordering::SeqCst),
+        "cb_act_bias should have been called for User biastype"
+    );
+
+    // Verify the actuator force was computed using the callback values:
+    // force = gain*ctrl + bias = 2.0*1.0 + (-1.0) = 1.0
+    assert!(
+        (data.qfrc_actuator[0] - 1.0).abs() < 1e-8,
+        "qfrc_actuator should be gain*ctrl+bias = 1.0, got {}",
+        data.qfrc_actuator[0]
     );
 }

@@ -21,7 +21,7 @@ use crate::linalg::{cholesky_in_place, cholesky_solve_in_place, mj_solve_sparse}
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintType, DISABLE_CONSTRAINT, DISABLE_WARMSTART, Data, ENABLE_SLEEP, Integrator,
-    MjJointType, Model, SleepState, SolverType,
+    MjJointType, Model, SolverType,
 };
 
 use crate::constraint::assembly::assemble_unified_constraints;
@@ -83,13 +83,10 @@ fn compute_qacc_smooth(model: &Model, data: &mut Data) -> (DVector<f64>, DVector
 
     // DT-21: Project xfrc_applied (Cartesian body forces) into qfrc_smooth.
     // MuJoCo projects xfrc_applied in mj_fwdAcceleration, not mj_passive.
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    // No sleep guard — MuJoCo projects ALL bodies unconditionally.
     for body_id in 1..model.nbody {
         let xfrc = &data.xfrc_applied[body_id];
         if xfrc.iter().all(|&v| v == 0.0) {
-            continue;
-        }
-        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
             continue;
         }
         let torque = Vector3::new(xfrc[0], xfrc[1], xfrc[2]);
