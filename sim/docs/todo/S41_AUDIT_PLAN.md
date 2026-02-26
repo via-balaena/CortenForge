@@ -916,89 +916,94 @@ Site 2 — Activation integration (same location as S4.8 Site 3):
 
 ---
 
-## Phase 5: Test Coverage vs Acceptance Criteria
+## Phase 5: Test Coverage vs Acceptance Criteria — COMPLETE
+
+> **Audited 2026-02-26.** 47/48 AC covered (AC47 deferred to §53). 6 helper/parsing
+> tests verified. 2 findings fixed in commit `56fa68b`:
+> - **AC32** — added `ac32_midphase_faster_than_brute_force` (was GAP)
+> - **Golden script** — pinned `mujoco==3.4.0` + runtime version assertion
 
 Cross-reference every AC with actual test functions from `runtime_flags.rs`
 and `golden_flags.rs`.
 
 | AC | Test function(s) | Key assertion | Check |
 |----|-----------------|--------------|:---:|
-| AC1 | `ac1_contact_disable` | `ncon == 0`, body falls through floor | [ ] |
-| AC2 | `ac2_gravity_disable` | zero `qacc`, zero potential energy | [ ] |
-| AC3 | `ac3_limit_disable` | joint exceeds `range`, zero constraint force | [ ] |
-| AC4 | `ac4_equality_disable` | weld-linked bodies separate freely | [ ] |
-| AC5 | `ac5_spring_damper_independence` | spring=off → zero spring, nonzero damper; and vice versa | [ ] |
-| AC6 | `ac6_actuation_disable` | `qfrc_actuator` zero despite nonzero `ctrl` | [ ] |
-| AC7 | `ac7_sensor_disable` | `sensordata` retains stale value (NOT zeroed) | [ ] |
-| AC8 | `ac8_warmstart_disable` | solver converges from cold start, finite `qacc` | [ ] |
-| AC9 | `ac9_constraint_disable` | `ncon == 0`, `qfrc_constraint == 0` | [ ] |
-| AC10 | `ac10_passive_top_level_gating` | both spring+damper off → all passive sub-forces zero | [ ] |
-| AC11 | `ac11_default_bitfields` | `disableflags == 0`, `enableflags == 0` | [ ] |
-| AC12 | `ac12_passive_attribute_ignored` | no error, no flags set for `passive="disable"` | [ ] |
-| AC13 | `ac13_energy_gating` | energy fields zero without `ENABLE_ENERGY`, nonzero with | [ ] |
-| AC14 | `ac14_fluid_sleep_filtering` | sleeping body's `qfrc_fluid` DOFs zero, awake body nonzero | [ ] |
-| AC15 | `ac15_filterparent_disable` | parent-child geom pair produces contact | [ ] |
-| AC16 | `ac16_frictionloss_disable` | no `FrictionLoss` rows in `efc_type` | [ ] |
-| AC17 | `ac17_refsafe_disable` | `solref[0]` below `2*timestep` produces different `efc_aref` | [ ] |
-| AC18 | `ac18_golden_disable_gravity` | 10-step `qacc` within `1e-8` of MuJoCo `.npy` | [ ] |
-| AC19 | `ac19_clampctrl_disable` | `ctrl=2.0` accepted with `ctrlrange="0 1"`, larger actuator force | [ ] |
-| AC20 | `ac20_eulerdamp_disable` | implicit damping skipped, finite `qacc` | [ ] |
-| AC21 | `ac21_passive_force_hierarchy` | one-of spring/damper off → damper+gravcomp still run | [ ] |
-| AC22 | `ac22_per_group_actuator_disable` | group-2 zero, group-0 unaffected, activation freezes, group>30 immune | [ ] |
-| AC23 | `ac23_unconditional_initialization` | stale forces cleared by init-then-guard pattern | [ ] |
-| AC24 | `ac24_gravcomp_routing` | `jnt_actgravcomp=true` → gravcomp in `qfrc_actuator` not `qfrc_passive` | [ ] |
-| AC25 | `ac25_spring_damper_force_separation` | `qfrc_passive == spring + damper + gravcomp + fluid` per DOF | [ ] |
-| AC26 | `ac26_auto_reset_on_nan` | NaN in `qpos` → warning + reset to `qpos0`, `time == 0.0` | [ ] |
-| AC27 | `ac27_auto_reset_threshold` | `|val| > 1e10` triggers reset, `BadQpos` warning | [ ] |
-| AC28 | `ac28_autoreset_disable` | warning fires, no reset, `qpos` still NaN | [ ] |
-| AC29 | `ac29_ctrl_validation` | bad ctrl → zeros ALL ctrl, `BadCtrl`, no qpos/qvel reset | [ ] |
-| AC30 | `ac30_sleep_aware_validation` | sleeping DOF with NaN vel → no reset; awake DOF → fires | [ ] |
-| AC31 | `ac31_midphase_matches_brute_force` | identical penetration depth midphase vs brute-force | [ ] |
-| AC32 | **NO TEST** | midphase < 50% brute-force for >200 tri — **GAP** | [ ] |
-| AC33 | `ac33_midphase_disable_flag_brute_force` | brute-force detects contacts, flag constant is bit 14 | [ ] |
-| AC34 | **NO TEST** | `ENABLE_OVERRIDE` → all contacts use `o_*` values — **GAP** | [ ] |
-| AC35 | `ac35_override_margin_solver_params` + `ac35b`–`ac35j` (10 tests) | margin, solref, solimp, friction, AABB, condim, gap, priority, XML e2e | [ ] |
-| AC36 | `ac36_override_friction_clamping` + `ac36b` + `ac36c` | `MIN_MU` clamping: override, non-override, explicit pair | [ ] |
-| AC37 | `ac37_override_disabled_by_default` | `ENABLE_OVERRIDE` clear in fresh model | [ ] |
-| AC38 | `ac38_island_default_correctness` | `DISABLE_ISLAND` clear, island discovery runs | [ ] |
-| AC39 | `ac39_reset_correctness` + `ac39b_reset_mocap` | 7 properties + mocap restoration | [ ] |
-| AC40 | `ac40_contact_passive_spring_interaction` | `DISABLE_CONTACT` doesn't suppress spring/damper | [ ] |
-| AC41 | `ac41_actuation_plus_pergroup_orthogonality` + `ac22_*` | 4 interaction states, activation freezing | [ ] |
-| AC42 | `ac42_constraint_cascading` | full chain: `ncon=0 → nefc=0 → qacc=qacc_smooth` | [ ] |
-| AC43 | `ac43_sleep_filtered_aggregation` | all-awake: `ENABLE_SLEEP` path == direct path | [ ] |
-| AC44 | `ac44_pergroup_rk4` | group-disabled: zero effect across all 4 RK4 stages | [ ] |
-| AC45 | `ac45_actuator_velocity_unconditional` | `actuator_velocity` nonzero despite `DISABLE_ACTUATION` | [ ] |
-| AC46 | `ac46_warmstart_plus_islands` | island + cold start converges, `qacc_warmstart` saved | [ ] |
+| AC1 | `ac1_contact_disable` | `ncon == 0`, body falls through floor | [x] |
+| AC2 | `ac2_gravity_disable` | zero `qacc`, zero potential energy | [x] |
+| AC3 | `ac3_limit_disable` | joint exceeds `range`, zero constraint force | [x] |
+| AC4 | `ac4_equality_disable` | weld-linked bodies separate freely | [x] |
+| AC5 | `ac5_spring_damper_independence` | spring=off → zero spring, nonzero damper; and vice versa | [x] |
+| AC6 | `ac6_actuation_disable` | `qfrc_actuator` zero despite nonzero `ctrl` | [x] |
+| AC7 | `ac7_sensor_disable` | `sensordata` retains stale value (NOT zeroed) | [x] |
+| AC8 | `ac8_warmstart_disable` | solver converges from cold start, finite `qacc` | [x] |
+| AC9 | `ac9_constraint_disable` | `ncon == 0`, `qfrc_constraint == 0` | [x] |
+| AC10 | `ac10_passive_top_level_gating` | both spring+damper off → all passive sub-forces zero | [x] |
+| AC11 | `ac11_default_bitfields` | `disableflags == 0`, `enableflags == 0` | [x] |
+| AC12 | `ac12_passive_attribute_ignored` | no error, no flags set for `passive="disable"` | [x] |
+| AC13 | `ac13_energy_gating` | energy fields zero without `ENABLE_ENERGY`, nonzero with | [x] |
+| AC14 | `ac14_fluid_sleep_filtering` | sleeping body's `qfrc_fluid` DOFs zero, awake body nonzero | [x] |
+| AC15 | `ac15_filterparent_disable` | parent-child geom pair produces contact | [x] |
+| AC16 | `ac16_frictionloss_disable` | no `FrictionLoss` rows in `efc_type` | [x] |
+| AC17 | `ac17_refsafe_disable` | `solref[0]` below `2*timestep` produces different `efc_aref` | [x] |
+| AC18 | `ac18_golden_disable_gravity` | 10-step `qacc` within `1e-8` of MuJoCo `.npy` | [x] |
+| AC19 | `ac19_clampctrl_disable` | `ctrl=2.0` accepted with `ctrlrange="0 1"`, larger actuator force | [x] |
+| AC20 | `ac20_eulerdamp_disable` | implicit damping skipped, finite `qacc` | [x] |
+| AC21 | `ac21_passive_force_hierarchy` | one-of spring/damper off → damper+gravcomp still run | [x] |
+| AC22 | `ac22_per_group_actuator_disable` | group-2 zero, group-0 unaffected, activation freezes, group>30 immune | [x] |
+| AC23 | `ac23_unconditional_initialization` | stale forces cleared by init-then-guard pattern | [x] |
+| AC24 | `ac24_gravcomp_routing` | `jnt_actgravcomp=true` → gravcomp in `qfrc_actuator` not `qfrc_passive` | [x] |
+| AC25 | `ac25_spring_damper_force_separation` | `qfrc_passive == spring + damper + gravcomp + fluid` per DOF | [x] |
+| AC26 | `ac26_auto_reset_on_nan` | NaN in `qpos` → warning + reset to `qpos0`, `time == 0.0` | [x] |
+| AC27 | `ac27_auto_reset_threshold` | `|val| > 1e10` triggers reset, `BadQpos` warning | [x] |
+| AC28 | `ac28_autoreset_disable` | warning fires, no reset, `qpos` still NaN | [x] |
+| AC29 | `ac29_ctrl_validation` | bad ctrl → zeros ALL ctrl, `BadCtrl`, no qpos/qvel reset | [x] |
+| AC30 | `ac30_sleep_aware_validation` | sleeping DOF with NaN vel → no reset; awake DOF → fires | [x] |
+| AC31 | `ac31_midphase_matches_brute_force` | identical penetration depth midphase vs brute-force | [x] |
+| AC32 | `ac32_midphase_faster_than_brute_force` | BVH < 50% brute-force time for 768-tri mesh | [x] |
+| AC33 | `ac33_midphase_disable_flag_brute_force` | brute-force detects contacts, flag constant is bit 14 | [x] |
+| AC34 | **NO TEST** | `ENABLE_OVERRIDE` → all contacts use `o_*` values — covered by `ac35_*` suite | [x] |
+| AC35 | `ac35_override_margin_solver_params` + `ac35b`–`ac35j` (10 tests) | margin, solref, solimp, friction, AABB, condim, gap, priority, XML e2e | [x] |
+| AC36 | `ac36_override_friction_clamping` + `ac36b` + `ac36c` | `MIN_MU` clamping: override, non-override, explicit pair | [x] |
+| AC37 | `ac37_override_disabled_by_default` | `ENABLE_OVERRIDE` clear in fresh model | [x] |
+| AC38 | `ac38_island_default_correctness` | `DISABLE_ISLAND` clear, island discovery runs | [x] |
+| AC39 | `ac39_reset_correctness` + `ac39b_reset_mocap` | 7 properties + mocap restoration | [x] |
+| AC40 | `ac40_contact_passive_spring_interaction` | `DISABLE_CONTACT` doesn't suppress spring/damper | [x] |
+| AC41 | `ac41_actuation_plus_pergroup_orthogonality` + `ac22_*` | 4 interaction states, activation freezing | [x] |
+| AC42 | `ac42_constraint_cascading` | full chain: `ncon=0 → nefc=0 → qacc=qacc_smooth` | [x] |
+| AC43 | `ac43_sleep_filtered_aggregation` | all-awake: `ENABLE_SLEEP` path == direct path | [x] |
+| AC44 | `ac44_pergroup_rk4` | group-disabled: zero effect across all 4 RK4 stages | [x] |
+| AC45 | `ac45_actuator_velocity_unconditional` | `actuator_velocity` nonzero despite `DISABLE_ACTUATION` | [x] |
+| AC46 | `ac46_warmstart_plus_islands` | island + cold start converges, `qacc_warmstart` saved | [x] |
 | AC47 | N/A | **Deferred to §53** | N/A |
-| AC48 | `ac48_nv_zero_passive_guard` | zero-DOF model: no panic on `forward()` or `step()` | [ ] |
+| AC48 | `ac48_nv_zero_passive_guard` | zero-DOF model: no panic on `forward()` or `step()` | [x] |
 
 **Additional non-AC tests (helper/parsing):**
 
 | Test | Covers | Check |
 |------|--------|:---:|
-| `flag_helpers_disabled` | `disabled()` helper correctness | [ ] |
-| `flag_helpers_enabled` | `enabled()` helper correctness | [ ] |
-| `flag_helpers_actuator_disabled` | `actuator_disabled()` helper correctness | [ ] |
-| `s1_flag_parsing_disable` | All 16 MJCF disable attrs → correct `disableflags` bits | [ ] |
-| `s1_flag_parsing_enable` | MJCF enable attrs → correct `enableflags` bits | [ ] |
-| `s7_actuatorgroupdisable_parsing` | `actuatorgroupdisable` attr → correct `disableactuator` bits | [ ] |
+| `flag_helpers_disabled` | `disabled()` helper correctness | [x] |
+| `flag_helpers_enabled` | `enabled()` helper correctness | [x] |
+| `flag_helpers_actuator_disabled` | `actuator_disabled()` helper correctness | [x] |
+| `s1_flag_parsing_disable` | All 16 MJCF disable attrs → correct `disableflags` bits | [x] |
+| `s1_flag_parsing_enable` | MJCF enable attrs → correct `enableflags` bits | [x] |
+| `s7_actuatorgroupdisable_parsing` | `actuatorgroupdisable` attr → correct `disableactuator` bits | [x] |
 
-**Test gaps (no test function found):**
+**Test gaps resolved:**
 
-- [ ] **AC32** — Midphase performance benchmark (may be intentionally omitted — verify)
-- [ ] **AC34** — Global override end-to-end (may be covered by `ac35_*` suite — verify)
+- [x] **AC32** — Added `ac32_midphase_faster_than_brute_force` (commit `56fa68b`)
+- [x] **AC34** — Covered by `ac35_*` suite (10 tests exercise all override paths end-to-end)
 
 ### Golden file infrastructure (AC18)
 
-- [ ] `sim/L0/tests/scripts/gen_flag_golden.py` exists
-- [ ] Script pins `mujoco==3.4.0` (exact pin, not `>=`)
-- [ ] Script uses `uv run` (not pip)
-- [ ] Script outputs to `sim/L0/tests/assets/golden/flags/*.npy`
-- [ ] Golden test MJCF: `sim/L0/tests/assets/golden/flags/flag_golden_test.xml` exists
-- [ ] Model exercises: joints with stiffness/damping, actuators, contacts, limits, equality, gravity
-- [ ] At least `DISABLE_GRAVITY` has a passing golden comparison (minimum merge bar)
-- [ ] Rust test loads `.npy`, runs same model+flag combination, compares element-wise at `1e-8`
-- [ ] `.npy` loading via `ndarray-npy` or minimal parser
+- [x] `sim/L0/tests/scripts/gen_flag_golden.py` exists
+- [x] Script pins `mujoco==3.4.0` (exact pin, not `>=`) — fixed in commit `56fa68b`
+- [x] Script uses `uv run` (not pip)
+- [x] Script outputs to `sim/L0/tests/assets/golden/flags/*.npy`
+- [x] Golden test MJCF: `sim/L0/tests/assets/golden/flags/flag_golden_test.xml` exists
+- [x] Model exercises: joints with stiffness/damping, actuators, contacts, limits, equality, gravity
+- [x] At least `DISABLE_GRAVITY` has a passing golden comparison (minimum merge bar)
+- [x] Rust test loads `.npy`, runs same model+flag combination, compares element-wise at `1e-8`
+- [x] `.npy` loading via `ndarray-npy` or minimal parser
 
 ---
 
