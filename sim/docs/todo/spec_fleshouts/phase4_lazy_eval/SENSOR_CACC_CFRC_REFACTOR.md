@@ -626,7 +626,7 @@ improvement, not a regression.
 - **`mj_objectAcceleration()` as a standalone utility function.** For now, the
   spatial transform is inlined in each sensor arm (Steps 1-3 share the same
   pattern). If a fourth consumer appears, factor out into a shared helper in
-  `sensor/` or `types/spatial.rs`.
+  `sensor/` or `types/spatial.rs`. Tracked as DT-103.
 
 ---
 
