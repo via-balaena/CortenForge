@@ -813,9 +813,14 @@ impl Data {
     }
 
     /// Reset state to model defaults.
-    // Field inventory version: §41 S8f.
-    // When adding fields to Data, update this function and the inventory
-    // in S41_RUNTIME_FLAGS_SPEC.md §S8f.
+    ///
+    /// # Staleness guard
+    ///
+    /// A compile-time assertion at the bottom of this file checks
+    /// `size_of::<Data>()`. If you add a field to [`Data`], the test
+    /// `data_reset_field_inventory` will fail — update `reset()`,
+    /// `reset_to_keyframe()` (if applicable), and the `EXPECTED_SIZE`
+    /// constant in the test.
     pub fn reset(&mut self, model: &Model) {
         // 1. State variables — restore from Model.
         self.qpos = model.qpos0.clone();
@@ -953,5 +958,37 @@ impl Data {
         reset_sleep_state(model, self);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Staleness guard: fails when a field is added to [`Data`] without
+    /// updating [`Data::reset()`].
+    ///
+    /// When this test fails, it means `size_of::<Data>()` changed — someone
+    /// added or removed a field. Steps to fix:
+    ///
+    /// 1. Update `Data::reset()` to handle the new field.
+    /// 2. Update `Data::reset_to_keyframe()` if the field should also be
+    ///    reset on keyframe load.
+    /// 3. Update `EXPECTED_SIZE` below to the new size printed in the
+    ///    failure message.
+    #[test]
+    fn data_reset_field_inventory() {
+        // Update this constant whenever Data's layout changes.
+        // Current value determined empirically — see failure message.
+        const EXPECTED_SIZE: usize = 4048;
+
+        let actual = std::mem::size_of::<Data>();
+        assert_eq!(
+            actual, EXPECTED_SIZE,
+            "\n\nData struct size changed: expected {EXPECTED_SIZE}, got {actual}.\n\
+             A field was likely added or removed.\n\
+             → Update Data::reset() (and reset_to_keyframe() if applicable)\n\
+             → Then set EXPECTED_SIZE = {actual} in this test.\n"
+        );
     }
 }
