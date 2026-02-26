@@ -2712,6 +2712,118 @@ fn ac31_midphase_matches_brute_force() {
 }
 
 // ============================================================================
+// AC32: Midphase BVH is faster than brute-force for >200 tri meshes
+// ============================================================================
+
+#[test]
+fn ac32_midphase_faster_than_brute_force() {
+    use nalgebra::Point3;
+    use sim_core::mesh::{TriangleMeshData, mesh_mesh_deepest_contact};
+    use sim_types::Pose;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    /// Build a subdivided cube mesh. Each subdivision splits every triangle
+    /// into 4 via midpoint insertion: level 0 = 12 tri, level 3 = 768 tri.
+    fn subdivide_cube(subdivisions: u32) -> TriangleMeshData {
+        let mut vertices = vec![
+            Point3::new(-0.5, -0.5, -0.5),
+            Point3::new(0.5, -0.5, -0.5),
+            Point3::new(0.5, 0.5, -0.5),
+            Point3::new(-0.5, 0.5, -0.5),
+            Point3::new(-0.5, -0.5, 0.5),
+            Point3::new(0.5, -0.5, 0.5),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(-0.5, 0.5, 0.5),
+        ];
+        let mut indices: Vec<usize> = vec![
+            0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 5, 1, 0, 4, 5, 2, 7, 3, 2, 6, 7, 0, 7, 4, 0, 3,
+            7, 1, 6, 2, 1, 5, 6,
+        ];
+
+        for _ in 0..subdivisions {
+            let mut new_indices = Vec::with_capacity(indices.len() * 4);
+            for tri in indices.chunks(3) {
+                let v0 = vertices[tri[0]];
+                let v1 = vertices[tri[1]];
+                let v2 = vertices[tri[2]];
+                let m01 = Point3::from((v0.coords + v1.coords) * 0.5);
+                let m12 = Point3::from((v1.coords + v2.coords) * 0.5);
+                let m20 = Point3::from((v2.coords + v0.coords) * 0.5);
+                let i0 = tri[0];
+                let i1 = tri[1];
+                let i2 = tri[2];
+                let i01 = vertices.len();
+                let i12 = i01 + 1;
+                let i20 = i01 + 2;
+                vertices.push(m01);
+                vertices.push(m12);
+                vertices.push(m20);
+                new_indices.extend_from_slice(&[i0, i01, i20]);
+                new_indices.extend_from_slice(&[i01, i1, i12]);
+                new_indices.extend_from_slice(&[i20, i12, i2]);
+                new_indices.extend_from_slice(&[i01, i12, i20]);
+            }
+            indices = new_indices;
+        }
+
+        TriangleMeshData::new(vertices, indices)
+    }
+
+    // subdivisions=3 → 12 * 4^3 = 768 triangles (well above 200 threshold)
+    let mesh_a = subdivide_cube(3);
+    let mesh_b = subdivide_cube(3);
+    let tri_count = mesh_a.triangle_count();
+    assert!(
+        tri_count > 200,
+        "mesh must have >200 triangles for AC32, got {tri_count}"
+    );
+
+    let pose_a = Pose::identity();
+    let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+
+    // Use a single call per path — the gap at 768 tri is large enough for one
+    // shot, and this keeps the test fast in both debug and release builds.
+    // Warm up both paths once
+    let _ = black_box(mesh_mesh_deepest_contact(
+        &mesh_a, &pose_a, &mesh_b, &pose_b, true,
+    ));
+    let _ = black_box(mesh_mesh_deepest_contact(
+        &mesh_a, &pose_a, &mesh_b, &pose_b, false,
+    ));
+
+    let iterations = 5;
+
+    // Time BVH path
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _ = black_box(mesh_mesh_deepest_contact(
+            &mesh_a, &pose_a, &mesh_b, &pose_b, true,
+        ));
+    }
+    let bvh_time = start.elapsed();
+
+    // Time brute-force path
+    let start = Instant::now();
+    for _ in 0..iterations {
+        let _ = black_box(mesh_mesh_deepest_contact(
+            &mesh_a, &pose_a, &mesh_b, &pose_b, false,
+        ));
+    }
+    let brute_time = start.elapsed();
+
+    let ratio = bvh_time.as_secs_f64() / brute_time.as_secs_f64();
+    eprintln!(
+        "AC32: {tri_count} tri, {iterations} iters — BVH {bvh_time:?} vs brute {brute_time:?} (ratio {ratio:.3})"
+    );
+
+    assert!(
+        ratio < 0.5,
+        "midphase should be <50% of brute-force time for >200 tri, got ratio {ratio:.3}"
+    );
+}
+
+// ============================================================================
 // AC33: DISABLE_MIDPHASE flag forces brute-force and still produces contacts
 // ============================================================================
 

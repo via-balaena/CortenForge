@@ -721,37 +721,39 @@ Site 2 — Activation integration (same location as S4.8 Site 3):
 
 ---
 
-## Phase 3: Data Model & Field Inventory
+## Phase 3: Data Model & Field Inventory — COMPLETE
 
-### 3a. New Model fields
+> **Audited 2026-02-26.** 17/17 checks pass. No findings.
+
+### 3a. New Model fields — 7/7 pass
 
 | Field | Type | Default | Source | Check |
 |-------|------|---------|--------|:---:|
-| `jnt_actgravcomp` | `Vec<bool>` | `vec![false; njnt]` | `<joint actuatorgravcomp>` | [ ] |
-| `disableactuator` | `u32` | `0` | `<option actuatorgroupdisable>` | [ ] |
-| `actuator_group` | `Vec<i32>` | `vec![0; nu]` | `<actuator group>` | [ ] |
-| `o_margin` | `f64` | `0.0` | `<option o_margin>` | [ ] |
-| `o_solref` | `[f64; 2]` | `[0.02, 1.0]` | `<option o_solref>` | [ ] |
-| `o_solimp` | `[f64; 5]` | `[0.9, 0.95, 0.001, 0.5, 2.0]` | `<option o_solimp>` | [ ] |
-| `o_friction` | `[f64; 5]` | `[1.0, 1.0, 0.005, 0.0001, 0.0001]` | `<option o_friction>` | [ ] |
+| `jnt_actgravcomp` | `Vec<bool>` | `vec![false; njnt]` | `<joint actuatorgravcomp>` | [x] |
+| `disableactuator` | `u32` | `0` | `<option actuatorgroupdisable>` | [x] |
+| `actuator_group` | `Vec<i32>` | `vec![0; nu]` | `<actuator group>` | [x] |
+| `o_margin` | `f64` | `0.0` | `<option o_margin>` | [x] |
+| `o_solref` | `[f64; 2]` | `[0.02, 1.0]` | `<option o_solref>` | [x] |
+| `o_solimp` | `[f64; 5]` | `[0.9, 0.95, 0.001, 0.5, 2.0]` | `<option o_solimp>` | [x] |
+| `o_friction` | `[f64; 5]` | `[1.0, 1.0, 0.005, 0.0001, 0.0001]` | `<option o_friction>` | [x] |
 
-### 3b. New Data fields
+### 3b. New Data fields — 5/5 pass
 
 | Field | Type | Default | Check |
 |-------|------|---------|:---:|
-| `qfrc_spring` | `DVector<f64>` | zero, length `nv` | [ ] |
-| `qfrc_damper` | `DVector<f64>` | zero, length `nv` | [ ] |
-| `warnings` | `[WarningStat; NUM_WARNINGS]` | all zero | [ ] |
+| `qfrc_spring` | `DVector<f64>` | zero, length `nv` | [x] |
+| `qfrc_damper` | `DVector<f64>` | zero, length `nv` | [x] |
+| `warnings` | `[WarningStat; NUM_WARNINGS]` | all zero | [x] |
 
-- [ ] `divergence_detected()` method on Data:
-  - [ ] Checks `warnings[BadQpos].count > 0 || warnings[BadQvel].count > 0 || warnings[BadQacc].count > 0`
-  - [ ] Has doc comment explaining it detects events, not necessarily resets
+- [x] `divergence_detected()` method on Data:
+  - [x] Checks `warnings[BadQpos].count > 0 || warnings[BadQvel].count > 0 || warnings[BadQacc].count > 0`
+  - [x] Has doc comment explaining it detects events, not necessarily resets
 
-### 3c. Existing fields verified
+### 3c. Existing fields verified — 5/5 pass
 
-- [ ] `disableflags: u32` on Model (should already exist)
-- [ ] `enableflags: u32` on Model (should already exist)
-- [ ] `qfrc_gravcomp`, `qfrc_fluid`, `qfrc_passive` on Data (should already exist)
+- [x] `disableflags: u32` on Model (should already exist)
+- [x] `enableflags: u32` on Model (should already exist)
+- [x] `qfrc_gravcomp`, `qfrc_fluid`, `qfrc_passive` on Data (should already exist)
 
 ---
 

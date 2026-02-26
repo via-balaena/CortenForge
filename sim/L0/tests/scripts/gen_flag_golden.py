@@ -2,7 +2,7 @@
 """Generate golden-file .npy data for §41 runtime flag conformance tests.
 
 Usage:
-    uv pip install mujoco numpy
+    uv pip install mujoco==3.4.0 numpy
     uv run sim/L0/tests/scripts/gen_flag_golden.py
 
 Outputs:
@@ -23,6 +23,12 @@ MODEL_PATH = ASSETS_DIR / "flag_golden_test.xml"
 
 
 def generate(model_path: Path, output_dir: Path) -> None:
+    if mujoco.__version__ != "3.4.0":
+        raise RuntimeError(
+            f"mujoco=={mujoco.__version__} but golden data requires mujoco==3.4.0. "
+            "Install with: uv pip install mujoco==3.4.0"
+        )
+
     model = mujoco.MjModel.from_xml_path(str(model_path))
     data = mujoco.MjData(model)
     nsteps = 10
