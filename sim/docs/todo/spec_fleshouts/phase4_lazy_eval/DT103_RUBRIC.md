@@ -149,7 +149,7 @@ meet the bar").
 
 ## Grades: `DT103_SPATIAL_TRANSPORT.md`
 
-**Revision 3** — Re-graded after closing gaps D4–D8.
+**Revision 4** — Re-graded after closing gaps D9–D14 (implementor clarity).
 
 | Criterion | Grade | Evidence |
 |-----------|:-----:|----------|
@@ -160,11 +160,11 @@ meet the bar").
 | P5. API Design | **A+** | All 6 signatures shown with doc comments. `(Vector3, Vector3)` return justified (D4). `pub(crate)` visibility justified (D1). `&Data`-only justified (D5). `object_velocity_local` wrapper retains exact existing signature + `body_id==0` guard. `Option<&Matrix3>` maps cleanly to `flg_local`. |
 | P6. Test Coverage | **A+** | 14 tests: T1–T4 unit (pure kernels), T5–T10 integration (model-based), T11–T12 regression (Phase 4 + full domain), T13–T14 edge cases (world body, backward compat). DISABLE_SENSOR and sleep inherited from 4A.6 regression suite (T11 = 39 Phase 4 tests including sleep/disabled). AC→Test traceability: 12 ACs all mapped. 2 supplementary tests (T6, T10) justified. |
 | P7. Dependency Clarity | **A+** | Prerequisites stated in header with commit hashes: 4A.6 (16cfcb3), flg_rnepost (8e8f5f7), cvel fixes (444046e), §56 (503ac6d). DT-102 referenced as future consumer (out of scope). DT-62 referenced for objtype dispatch (out of scope). Implementation steps ordered: kernels (1–2) → composed helpers (3–4) → wrapper (5) → re-exports (6) → sensor rewrites (7–8) → tests (9) → regression (10). |
-| P8. Consumer Completeness | **A+** | 7 consumers (6 sensor arms + 1 helper) listed with file, line count, and transport type — matches problem statement's "6 sensor arms + 1 helper." Before/after code sketches for all. 3 excluded arms listed with physics justification. Non-sensor consumers (`forward/passive.rs` ×2, `derivatives.rs` ×2) confirmed unchanged via backward compat (AC8). |
-| P9. Blast Radius | **A+** | 5 modified files with per-file change descriptions and estimated line deltas. 5 unmodified files with reasons. `EXPECTED_SIZE` guard (AC12). Import changes noted. Existing test impact analyzed (Phase 4, full domain, derivatives). |
+| P8. Consumer Completeness | **A+** | 7 consumers (6 sensor arms + 1 helper) listed with file, line count, and transport type — matches problem statement's "6 sensor arms + 1 helper." Before line ranges (commit 16cfcb3) and after code sketches for all 6 sensor arms. Control flow change notes on Velocimeter/FrameLinVel. 3 excluded arms listed with physics justification. Non-sensor consumers (`forward/passive.rs` ×2, `derivatives.rs` ×2) confirmed unchanged via backward compat (AC8). |
+| P9. Blast Radius | **A+** | 5 modified files with per-file change descriptions and estimated line deltas. 5 unmodified files with reasons. `EXPECTED_SIZE` guard (AC12). Import lines specified per-file (Import Changes section). `dynamics/mod.rs` re-export diff shown. Existing test impact analyzed (Phase 4, full domain, derivatives). |
 | P10. Internal Consistency | **A+** | Consumer count "6 sensor arms + 1 helper = 7 total" consistent across problem statement, scope line, and consumer table. Transport formulas in "New Functions" match "MuJoCo Reference." Implementation steps 7–8 reference files matching consumer table. D6 exclusions match "3 arms unchanged" table. Terminology identical to sibling specs. |
 
-**Overall: A+** — All gaps closed. All 10 criteria ship-ready.
+**Overall: A+** — All gaps closed (D1–D14). All 10 criteria ship-ready.
 
 ---
 
@@ -237,3 +237,16 @@ meet the bar").
 | D6 | Consumer table heading "7 sensor arms refactored" — object_velocity_local is not a sensor arm | Fixed to "7 consumers refactored (6 sensor arms + 1 helper; 3 arms unchanged)." |
 | D7 | 4 orphan tests (T6, T9, T10, T13) had no AC | Promoted T9→AC10 (force invariance), T13→AC11 (world body). T4 now maps to AC10. Orphan table reduced to 2 supplementary tests (T6, T10) — genuine sanity checks. |
 | D8 | AC10 was "No new Data fields" — should be AC12 after new ACs inserted | Renumbered: AC10 = force invariance, AC11 = world body, AC12 = no new Data fields. |
+
+### Revision 3 → Revision 4 (implementor clarity)
+
+**Spec fixes:**
+
+| # | Gap | Resolution |
+|---|-----|-----------|
+| D9 | Velocimeter/FrameLinVel sketches change control flow (fallthrough → explicit `continue`) without noting it | Added "Control flow note" callouts on both sketches explaining the current fallthrough pattern and confirming identical observable behavior (`[0,0,0]` either way). |
+| D10 | Force sketch used `&data.xpos[body_id]` but the match only bound `(body_id, site_mat)` — Body arm had no `site_pos` | Changed Force match to bind `(body_id, site_pos, site_mat)` consistently. Passes `&site_pos` to `object_force`. Added comment explaining force is translation-invariant so the offset doesn't affect the force component. |
+| D11 | No `use`/import lines specified for sensor files | Added "Import Changes" section with exact `use` lines for `sensor/acceleration.rs`, `sensor/velocity.rs`, and `dynamics/mod.rs`. |
+| D12 | `dynamics/mod.rs` re-export diff unspecified | Added before/after diff showing exact `pub(crate) use spatial::{...}` line. Noted `transport_motion`/`transport_force` are NOT re-exported (internal only). |
+| D13 | No "before" code shown — only "after" sketches | Added table with current source file + line ranges (as of commit 16cfcb3) for all 6 sensor arms being rewritten. |
+| D14 | T7 expected value `[0, 0, 0, 0, 0, +9.81]` doesn't match function return type `(Vector3, Vector3)` | Fixed to `([0, 0, 0], [0, 0, +9.81])` with label `(alpha, a_linear)`. |

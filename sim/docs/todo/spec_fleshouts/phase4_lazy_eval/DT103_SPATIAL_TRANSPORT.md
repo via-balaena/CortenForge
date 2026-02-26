@@ -1,6 +1,6 @@
 # DT-103 — Extract Spatial Transport Helpers
 
-**Status:** Draft (Revision 3 — gaps D1–D8 closed)
+**Status:** Draft (Revision 4 — implementor clarity fixes D9–D14 closed)
 **Scope:** Extract `transport_motion`, `transport_force`, `object_velocity`,
 `object_acceleration`, and `object_force` helpers into `dynamics/spatial.rs`.
 Rewrite 6 sensor arms and 1 existing helper to call them. Pure refactor — no
@@ -346,7 +346,7 @@ pub fn object_velocity_local(
 |----------|------|--------|-------|----------------|
 | Accelerometer | `sensor/acceleration.rs` | 20 lines inline | `object_acceleration(data, body_id, &site_pos, Some(&site_mat))` | Motion + Coriolis + rotation |
 | FrameLinAcc | `sensor/acceleration.rs` | 16 lines inline | `object_acceleration(data, body_id, &obj_pos, None)` | Motion + Coriolis |
-| Force | `sensor/acceleration.rs` | 5 lines inline | `object_force(data, body_id, &xpos, Some(&site_mat))` | Force (rotation only) |
+| Force | `sensor/acceleration.rs` | 5 lines inline | `object_force(data, body_id, &site_pos, Some(&site_mat))` | Force (rotation only) |
 | Torque | `sensor/acceleration.rs` | 13 lines inline | `object_force(data, body_id, &site_pos, Some(&site_mat))` | Force + shift + rotation |
 | Velocimeter | `sensor/velocity.rs` | 14 lines inline | `object_velocity(data, body_id, &site_pos, Some(&site_mat))` | Motion + rotation |
 | FrameLinVel | `sensor/velocity.rs` | 12 lines inline | `object_velocity(data, body_id, &site_pos, None)` | Motion |
@@ -360,7 +360,19 @@ pub fn object_velocity_local(
 | FrameAngVel | Angular velocity is reference-point-independent. No shift needed. |
 | Gyro | Same as FrameAngVel — rotation only, no transport. |
 
-### Sensor arm sketches (after refactor)
+### Sensor arm sketches (before → after)
+
+Each sketch shows the refactored code. For the **before** code, see the
+current source at the line ranges below (all line numbers as of commit 16cfcb3):
+
+| Consumer | File | Before (current lines) |
+|----------|------|----------------------|
+| Accelerometer | `sensor/acceleration.rs` | Lines 81–127 (20 lines of inline transport + Coriolis) |
+| FrameLinAcc | `sensor/acceleration.rs` | Lines 249–283 (16 lines, near-copy of Accelerometer) |
+| Force | `sensor/acceleration.rs` | Lines 129–148 (5 lines inline, rotation only) |
+| Torque | `sensor/acceleration.rs` | Lines 150–183 (13 lines inline, force transport + rotation) |
+| Velocimeter | `sensor/velocity.rs` | Lines 111–147 (14 lines inline, motion transport + rotation) |
+| FrameLinVel | `sensor/velocity.rs` | Lines 149–178 (12 lines inline, motion transport, world frame) |
 
 **Accelerometer:**
 ```rust
@@ -397,16 +409,20 @@ MjSensorType::FrameLinAcc => {
 **Force:**
 ```rust
 MjSensorType::Force => {
-    let (body_id, site_mat) = match model.sensor_objtype[sensor_id] {
-        MjObjectType::Site if objid < model.nsite => {
-            (model.site_body[objid], data.site_xmat[objid])
+    let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
+        MjObjectType::Site if objid < model.nsite => (
+            model.site_body[objid], data.site_xpos[objid], data.site_xmat[objid],
+        ),
+        MjObjectType::Body if objid < model.nbody => {
+            (objid, data.xpos[objid], data.xmat[objid])
         }
-        MjObjectType::Body if objid < model.nbody => (objid, data.xmat[objid]),
         _ => { sensor_write3(&mut data.sensordata, adr, &Vector3::zeros()); continue; }
     };
-    // Force is translation-invariant. Shift is zero (xpos → xpos).
-    // We call object_force for rotation only.
-    let (_torque, force) = object_force(data, body_id, &data.xpos[body_id], Some(&site_mat));
+    // Force is translation-invariant — only torque shifts. Passing site_pos
+    // (which may equal xpos[body_id] for Body-attached sensors) is safe:
+    // transport_force returns force unchanged regardless of offset.
+    // We call object_force to get rotation into the sensor frame.
+    let (_torque, force) = object_force(data, body_id, &site_pos, Some(&site_mat));
     sensor_write3(&mut data.sensordata, adr, &force);
 }
 ```
@@ -429,6 +445,13 @@ MjSensorType::Torque => {
 ```
 
 **Velocimeter:**
+
+> **Control flow note.** The current code uses a fallthrough pattern: the
+> `_ =>` arm returns `(Vector3::zeros(), Matrix3::identity())` and falls
+> through to `site_mat.transpose() * v_world`, writing `identity^T * [0,0,0]
+> = [0,0,0]`. The refactored version uses explicit `continue` in the `_ =>`
+> arm. Observable behavior is identical: both write `[0, 0, 0]`.
+
 ```rust
 MjSensorType::Velocimeter => {
     let (body_id, site_pos, site_mat) = match model.sensor_objtype[sensor_id] {
@@ -446,6 +469,12 @@ MjSensorType::Velocimeter => {
 ```
 
 **FrameLinVel:**
+
+> **Control flow note.** Same as Velocimeter: current code's `_ =>
+> Vector3::zeros()` falls through to `sensor_write3`, producing `[0,0,0]`.
+> Refactored `_ =>` arm writes `[0,0,0]` explicitly and `continue`s.
+> Observable behavior identical.
+
 ```rust
 MjSensorType::FrameLinVel => {
     let (body_id, site_pos) = match model.sensor_objtype[sensor_id] {
@@ -616,7 +645,8 @@ for a site-attached sensor with nonzero offset.
 
 **T7:** `object_acceleration` — static body.
 Body at rest under gravity. `object_acceleration(data, body_id, &xpos, None)`
-returns `[0, 0, 0, 0, 0, +9.81]`. Tolerance: 1e-10.
+returns `([0, 0, 0], [0, 0, +9.81])` — i.e., zero angular acceleration and
+gravity pseudo-acceleration as `(alpha, a_linear)`. Tolerance: 1e-10.
 
 **T8:** `object_acceleration` — centripetal.
 Body rotating at omega = [0, 0, 10], site at offset [0.5, 0, 0], no gravity.
@@ -660,9 +690,9 @@ Call `object_velocity_local` from a context identical to its use in
 | File | Change | Lines |
 |------|--------|-------|
 | `sim/L0/core/src/dynamics/spatial.rs` | Add `transport_motion`, `transport_force`, `object_velocity`, `object_acceleration`, `object_force`. Rewrite `object_velocity_local` as 6-line wrapper. | +~65, −~15 |
-| `sim/L0/core/src/dynamics/mod.rs` | Add re-exports for new `pub(crate)` functions. | +5 |
-| `sim/L0/core/src/sensor/acceleration.rs` | Rewrite Accelerometer, FrameLinAcc, Force, Torque arms to call helpers. Remove inlined transport logic. Add import for helpers. | −~55, +~10 |
-| `sim/L0/core/src/sensor/velocity.rs` | Rewrite Velocimeter, FrameLinVel arms to call `object_velocity`. Remove inlined transport logic. Add import for helpers. | −~30, +~10 |
+| `sim/L0/core/src/dynamics/mod.rs` | Add `object_acceleration`, `object_force`, `object_velocity` to `pub(crate) use spatial::{...}`. | +3 |
+| `sim/L0/core/src/sensor/acceleration.rs` | Add `use crate::dynamics::{object_acceleration, object_force}`. Rewrite Accelerometer, FrameLinAcc, Force, Torque arms. | −~55, +~12 |
+| `sim/L0/core/src/sensor/velocity.rs` | Add `use crate::dynamics::object_velocity`. Rewrite Velocimeter, FrameLinVel arms. | −~30, +~12 |
 | `sim/L0/tests/integration/` | New test file `spatial_transport.rs` with T1–T14. | +~200 |
 
 ### Files NOT Modified
@@ -680,6 +710,53 @@ Call `object_velocity_local` from a context identical to its use in
 - **39 Phase 4 sensor tests:** Must all pass unchanged (AC6).
 - **Full sim domain (2,141+ tests):** Must all pass (AC7).
 - **Derivatives tests:** `object_velocity_local` wrapper must be bit-identical (AC8).
+
+---
+
+## Import Changes
+
+### `dynamics/spatial.rs` — new imports
+
+The new `object_velocity`, `object_acceleration`, and `object_force` functions
+read `data.cacc`, `data.cvel`, `data.cfrc_int`, and `data.xpos`. The existing
+file already imports `Data` and `Matrix3`/`Vector3`. No new imports needed in
+this file.
+
+### `dynamics/mod.rs` — re-exports
+
+Current line 16–18:
+```rust
+pub(crate) use spatial::{
+    compute_body_spatial_inertia, object_velocity_local, shift_spatial_inertia,
+};
+```
+
+After:
+```rust
+pub(crate) use spatial::{
+    compute_body_spatial_inertia, object_acceleration, object_force, object_velocity,
+    object_velocity_local, shift_spatial_inertia,
+};
+```
+
+(`transport_motion` and `transport_force` are NOT re-exported — they are
+internal to `dynamics/spatial.rs`, used only by the `object_*` functions.
+Sensor files import `object_velocity`, `object_acceleration`, `object_force`
+via `crate::dynamics::`.)
+
+### `sensor/acceleration.rs` — new import
+
+Add to the existing import block (after line 18):
+```rust
+use crate::dynamics::{object_acceleration, object_force};
+```
+
+### `sensor/velocity.rs` — new import
+
+Add to the existing import block (after line 16):
+```rust
+use crate::dynamics::object_velocity;
+```
 
 ---
 
