@@ -61,8 +61,8 @@ about this because the MJCF parser handles the mapping.
 | Primary projection | `constraint/mod.rs` | 84-108 | **Pass** — `compute_qacc_smooth()` via `mj_apply_ft()` |
 | Secondary projection | `forward/acceleration.rs` | 123-150 | **Pass** — implicit path duplicates for `scratch_force` |
 | J^T algorithm | `jacobian.rs` | 178-238 | **Pass** — chain walk, all 4 joint types |
-| Sleep guard | `constraint/mod.rs` | 89-92 | **Drift** — skips sleeping bodies; MuJoCo does NOT skip during projection |
-| Zero skip | `constraint/mod.rs` | 88 | **Pass** — early exit for zero xfrc |
+| Sleep guard | `constraint/mod.rs` | 92-94 | **Drift** — skips sleeping bodies; MuJoCo does NOT skip during projection |
+| Zero skip | `constraint/mod.rs` | 89 | **Pass** — early exit for zero xfrc |
 | DISABLE_GRAVITY independence | `constraint/mod.rs` | 84-108 | **Pass** — no gravity guard on xfrc |
 | cfrc_ext initialization | `forward/acceleration.rs` | 396-399 | **Pass** — cfrc_ext starts from xfrc_applied |
 | Tests | `tests/integration/xfrc_applied.rs` | 4 tests | **Pass** — upward force, torque, anti-gravity, pure torque |
@@ -72,13 +72,13 @@ about this because the MJCF parser handles the mapping.
 | # | Severity | Description | Status |
 |---|----------|-------------|--------|
 | G1 | **Low** | `future_work_10c.md` line 19 says "projection in `mj_fwd_passive()`" — this is outdated. Actual projection is in `compute_qacc_smooth()` (acceleration stage). | Doc-only |
-| G19 | **Medium** | Sleep gating: our code skips `xfrc_applied` projection for sleeping bodies (`constraint/mod.rs:89-92`). MuJoCo's `mj_xfrcAccumulate()` projects for ALL bodies unconditionally (note: the earlier qfrc_smooth accumulation IS sleep-gated, but xfrc_applied projection is the exception). This can cause different force accumulation when bodies wake up. | Conformance |
+| G19 | **Medium** | Sleep gating: our code skips `xfrc_applied` projection for sleeping bodies (`constraint/mod.rs:92-94`). MuJoCo's `mj_xfrcAccumulate()` projects for ALL bodies unconditionally (note: the earlier qfrc_smooth accumulation IS sleep-gated, but xfrc_applied projection is the exception). This can cause different force accumulation when bodies wake up. | Conformance |
 | G20 | **Info** | Layout convention: our `SpatialVector` uses `[torque_3, force_3]` (Featherstone), MuJoCo user API uses `[force_3, torque_3]`. Internally consistent; no user-facing issue since MJCF parser handles mapping. | By design |
 
 ### 1.4 Remediation
 
 - **G1**: Update `future_work_10c.md` DT-21 description to: "projection in `compute_qacc_smooth()` (acceleration stage), 4 tests"
-- **G19**: Remove the sleep guard from `xfrc_applied` projection in `constraint/mod.rs:89-92`. MuJoCo projects all bodies unconditionally; sleep filtering at the solver level is sufficient. This ensures correct force accumulation state when bodies are woken by external forces.
+- **G19**: Remove the sleep guard from `xfrc_applied` projection in `constraint/mod.rs:92-94`. MuJoCo projects all bodies unconditionally; sleep filtering at the solver level is sufficient. This ensures correct force accumulation state when bodies are woken by external forces.
 - **G20**: No action needed — document the convention difference in `dynamics/spatial.rs` docstring.
 
 ### 1.5 Grade: **B+** (correct physics, sleep-gating conformance gap)
@@ -289,8 +289,8 @@ Runtime flags:
 | G8 | **Medium** | `qfrc_inverse` not zeroed in `Data::reset()`. | Bug |
 | G9 | **Low** | `ENABLE_INVDISCRETE` constant defined but has no implementation. Builder warns it has no effect; this is accurate but should be explicitly tracked. MuJoCo's implementation transforms qacc via `M^{-1} * M_hat * qacc` to undo implicit effects. | Deferred feature |
 | G10 | **Low** | Builder warning at `mod.rs:844` says "ENABLE_FWDINV ... not implemented" — outdated, it IS implemented. | Stale warning |
-| G11 | **Low** | `fwdinv_error` not zeroed in `Data::reset()`. | Bug |
-| G22 | **Medium** | Inverse formula omits `qfrc_constraint` term. MuJoCo's full formula includes `- qfrc_constraint` (reconstructed from solver output via `mj_invConstraint()`). Our simplified formula `M*qacc + qfrc_bias - qfrc_passive` is only exact for the unconstrained case. For systems with active contacts/constraints, the inverse result will differ from MuJoCo's. | Conformance |
+| ~~G11~~ | ~~**Low**~~ | ~~`fwdinv_error` not zeroed in `Data::reset()`.~~ Sixth-pass correction: `fwdinv_error` IS zeroed at `data.rs:889`. Not a bug. | ~~Bug~~ Verified |
+| G22 | **Medium** | Inverse formula omits `qfrc_constraint` term. MuJoCo's full formula includes `- qfrc_constraint` (recomputed from scratch by `mj_invConstraint()` via `jar = J*qacc - aref` → `mj_constraintUpdate`, not read from stored forward solver output). Our simplified formula `M*qacc + qfrc_bias - qfrc_passive` is only exact for the unconstrained case. For systems with active contacts/constraints, the inverse result will differ from MuJoCo's. | Conformance |
 | G23 | **Low** | `fwdinv_error` is a single `f64` scalar (max norm). MuJoCo stores `solver_fwdinv[2]`: two L2 norms (constraint force discrepancy + applied force discrepancy). Our single scalar loses the decomposition. | Conformance |
 
 ### 4.4 Remediation
@@ -298,11 +298,11 @@ Runtime flags:
 - **G8** (Bug): Add `self.qfrc_inverse.fill(0.0);` to `Data::reset()`.
 - **G9** (Track): Add `ENABLE_INVDISCRETE` to ROADMAP as a sub-item of S52 (deferred). Reference MuJoCo's `M^{-1} * M_hat * qacc` transform.
 - **G10** (Stale): Remove or update the ENABLE_FWDINV warning in the builder.
-- **G11** (Bug): Add `self.fwdinv_error = 0.0;` to `Data::reset()`.
-- **G22** (Conformance): Implement `mj_invConstraint()` equivalent to compute `qfrc_constraint` from solver output and subtract from `qfrc_inverse`. This requires reconstructing per-constraint forces in Cartesian space and projecting via `J^T`. Track as a Phase 3 follow-up.
-- **G23** (Conformance): Replace `fwdinv_error: f64` with `solver_fwdinv: [f64; 2]` to store both constraint and applied force discrepancy norms separately. Low priority — the single scalar is sufficient for most diagnostic use cases.
+- ~~**G11** (Bug): Add `self.fwdinv_error = 0.0;` to `Data::reset()`.~~ Sixth-pass correction: `fwdinv_error` IS zeroed at `data.rs:889`. No action needed.
+- **G22** (Conformance): Implement `mj_invConstraint()` equivalent: compute `jar = efc_J * qacc - efc_aref`, then implement `mj_constraintUpdate` (impedance-based mapping from `jar` to `efc_force` to `qfrc_constraint = J^T * efc_force`). Subtract `qfrc_constraint` from `qfrc_inverse`. **Prerequisites:** (a) build standalone `mj_constraintUpdate` function; (b) update `compare_fwd_inv` to save/restore `efc_force` and `qfrc_constraint` before calling `inverse()`, since `mj_invConstraint` overwrites both arrays. Track as a Phase 3 follow-up. **G23 is blocked by G22.**
+- **G23** (Conformance): Replace `fwdinv_error: f64` with `solver_fwdinv: [f64; 2]` to store both constraint and applied force discrepancy L2 norms separately. **Blocked by G22** — without `mj_invConstraint`, the two norms are meaningless. Also fix `compare_fwd_inv` to use L2 norm (not max-norm) and to build the forward force vector as `qfrc_applied + xfrc_project + qfrc_actuator` (excluding `qfrc_constraint`, which MuJoCo excludes from the forward side). Low priority — the single scalar is sufficient for most diagnostic use cases.
 
-### 4.5 Grade: **B** (core algorithm correct, inverse formula simplified, reset bugs + stale warning)
+### 4.5 Grade: **B** (core algorithm correct, inverse formula simplified, reset bug + stale warning)
 
 ---
 
@@ -350,7 +350,7 @@ Key behaviors:
 |---|----------|-------------|--------|
 | G12 | **Medium** | No guard/warning when `model.integrator = RK4` and user calls `step2()`. Integration silently uses Euler, producing different results than `step()`. MuJoCo also silently falls back, so this is conformant — but a Rust-idiomatic `tracing::warn!` would be better UX. | UX improvement |
 | G13 | **Low** | Original spec (future_work_13.md line 121) says "step() remains step1()+step2() for convenience" — implementation intentionally does NOT do this (correct decision, but spec wording is misleading). | Spec-doc mismatch |
-| G24 | **Low** | Need to verify: does our `cb_control` in step1 correctly NOT gate on `DISABLE_ACTUATION`? MuJoCo's `mj_step1()` fires `mjcb_control` unconditionally, but `mj_forwardSkip()` gates it with `!mjDISABLED(mjDSBL_ACTUATION)`. | Needs verification |
+| G24 | **Medium** | `cb_control` gating: `step1()` correctly fires unconditionally (matches MuJoCo's `mj_step1`). `forward_core()` is missing the `DISABLE_ACTUATION` gate — MuJoCo's `mj_forwardSkip()` gates with `!mjDISABLED(mjDSBL_ACTUATION)`. | **Fail** — conformance gap |
 
 ### 5.4 Remediation
 
@@ -362,8 +362,9 @@ Key behaviors:
   }
   ```
 - **G13**: Update `future_work_13.md` line 121 to clarify the intentional separation.
+- **G24** (Conformance): In `forward_core()` at `forward/mod.rs:270-273`, add `DISABLE_ACTUATION` gate around `cb_control` invocation: `if !disabled(model, DISABLE_ACTUATION) { (cb.0)(model, self); }`. Do NOT add this gate to `step1()` — MuJoCo's `mj_step1()` fires unconditionally.
 
-### 5.5 Grade: **A-** (correct implementation, missing RK4 guard)
+### 5.5 Grade: **B+** (correct implementation, missing RK4 guard, cb_control DISABLE_ACTUATION gate missing in forward_core)
 
 ---
 
@@ -473,7 +474,7 @@ Key design differences from MuJoCo:
 
 - **G16**: No action needed. `mjcb_time` is a profiler hook; Rust has superior profiling infrastructure. Document in `callbacks.rs` that this is intentionally omitted.
 - **G17-G18**: Add tests per [PHASE3_TEST_SPEC.md](./PHASE3_TEST_SPEC.md).
-- **G25**: No action needed — our convention (`true` = keep) is more intuitive than MuJoCo's (`nonzero` = reject). Document the difference in `callbacks.rs` docstring.
+- **G25**: Document the polarity inversion prominently in `callbacks.rs` CbContactFilter docstring: "MuJoCo's `mjcb_contactfilter` returns nonzero to reject; CortenForge's `CbContactFilter` returns `true` to keep. Users porting MuJoCo filter callbacks must invert the return value." This is a porting hazard that needs visible documentation.
 
 ### 7.5 Grade: **A-** (correct design, minor test gaps)
 
@@ -491,7 +492,9 @@ Multiple Phase 3 fields are not zeroed in `Data::reset()`:
 | `cfrc_int` | `Vec<SpatialVector>` | S51 | Medium |
 | `cfrc_ext` | `Vec<SpatialVector>` | S51 | Medium |
 | `qfrc_inverse` | `DVector<f64>` | S52 | Medium |
-| `fwdinv_error` | `f64` | S52 | Low |
+
+Note: `fwdinv_error` was originally listed here but sixth-pass verification
+confirmed it IS zeroed at `data.rs:889`. Only 4 fields are affected, not 5.
 
 These are all computed fields (populated by `forward()` or `inverse()`), but
 stale values after `reset()` without a subsequent `forward()` call could mislead
@@ -537,7 +540,6 @@ idioms, robustness, or correctness improvements:
 |----|------|-----|------|
 | G2 | S51 reset | Zero `cacc`/`cfrc_int`/`cfrc_ext` in `Data::reset()` | `types/data.rs` |
 | G8 | S52 reset | Zero `qfrc_inverse` in `Data::reset()` | `types/data.rs` |
-| G11 | S52 reset | Zero `fwdinv_error` in `Data::reset()` | `types/data.rs` |
 | G10 | S52 warning | Remove/update stale ENABLE_FWDINV "not implemented" warning | `mjcf/builder/mod.rs` |
 | G12 | S53 RK4 guard | Add `tracing::warn!` in step2() for RK4 integrator | `forward/mod.rs` |
 | G19 | DT-21 sleep | Remove sleep guard from xfrc_applied projection | `constraint/mod.rs` |
@@ -546,9 +548,9 @@ idioms, robustness, or correctness improvements:
 
 | ID | Item | Fix | File |
 |----|------|-----|------|
-| G22 | S52 inverse formula | Implement `mj_invConstraint()` equivalent; subtract `qfrc_constraint` from `qfrc_inverse` | `inverse.rs` |
-| G23 | S52 fwdinv format | Replace `fwdinv_error: f64` with `solver_fwdinv: [f64; 2]` (constraint + applied norms) | `types/data.rs`, `forward/mod.rs` |
-| G24 | S53 cb_control gating | Verify/fix: step1 must fire cb_control unconditionally; forward must gate on DISABLE_ACTUATION | `forward/mod.rs` |
+| G22 | S52 inverse formula | Implement `mj_invConstraint()` equivalent: `jar = J*qacc - aref` → constraint update → subtract `qfrc_constraint` from `qfrc_inverse` | `inverse.rs` |
+| G23 | S52 fwdinv format | Replace `fwdinv_error: f64` with `solver_fwdinv: [f64; 2]` (constraint + applied L2 norms). **Blocked by G22.** | `types/data.rs`, `forward/mod.rs` |
+| G24 | S53 cb_control gating | Add `!disabled(model, DISABLE_ACTUATION)` gate to `cb_control` in `forward_core()`. Do NOT add to `step1()`. | `forward/mod.rs` |
 
 ### Documentation Fixes
 
@@ -595,8 +597,8 @@ idioms, robustness, or correctness improvements:
 | DT-21: xfrc_applied | **B+** | 1 doc, 1 conformance (sleep gating), 1 info (layout) | Yes — sleep gate |
 | DT-41: Newton Solver | **A** | 1 info (PGS fallback — justified) | No |
 | S51: Body Accumulators | **B** | 6 (1 bug, 2 doc, 3 test) | Yes — reset bug |
-| S52: Inverse Dynamics | **B** | 6 (2 bug, 1 stale, 1 deferred, 2 conformance) | Yes — formula gap |
-| S53: Split Stepping | **A-** | 3 (1 UX, 1 doc, 1 needs-verify) | No |
+| S52: Inverse Dynamics | **B** | 5 (1 bug, 1 stale, 1 deferred, 2 conformance) | Yes — formula gap |
+| S53: Split Stepping | **B+** | 3 (1 UX, 1 doc, 1 conformance: cb_control DISABLE_ACTUATION gate) | Yes — cb_control gate |
 | S59: Name Lookup | **A** | 2 info/doc | No |
 | DT-79: Callbacks | **A-** | 4 (1 info, 2 test, 1 info polarity) | No |
 
@@ -605,11 +607,13 @@ The Newton solver is A-grade with a justified divergence (PGS fallback).
 The primary gaps are:
 1. **MuJoCo conformance**: xfrc_applied sleep gating (G19), inverse formula
    missing constraint forces (G22), fwdinv comparison format (G23)
-2. **Data::reset() staleness**: 5 fields not zeroed (G2, G8, G11)
+2. **Data::reset() staleness**: 4 fields not zeroed (G2, G8)
 3. **Documentation drift**: 5 mismatches across spec files and builder
 4. **Test coverage**: 5 test groups missing for edge cases
 
-**To reach A:** Fix 6 bug items, address 3 conformance gaps, update 5 doc
-mismatches, and add 5 test groups. The conformance fixes (G19, G22, G23, G24)
-are the most important — they represent actual behavioral differences from
-MuJoCo that could cause incorrect results in downstream simulations.
+**To reach A:** Fix 5 bug items (including G19 which is also a conformance gap),
+address 3 conformance-only fixes (G22, G23, G24), update 5 doc mismatches,
+add 1 doc fix for porting hazard (G25), and add 5 test groups. The conformance
+fixes (G19, G22, G23, G24) are the most important — they represent actual
+behavioral differences from MuJoCo that could cause incorrect results in
+downstream simulations. **Note:** G23 is blocked by G22; implement in order.
