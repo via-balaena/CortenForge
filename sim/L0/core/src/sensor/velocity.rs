@@ -109,16 +109,27 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::Velocimeter => {
-                // Linear velocity in sensor frame
+                // Linear velocity in sensor frame.
+                // For site-attached sensors, shift cvel from body origin (xpos)
+                // to site position before rotating to sensor frame.
+                // MuJoCo: mj_objectVelocity(flg_local=0) then site_xmat^T * v.
                 let (v_world, site_mat) = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => {
                         let body_id = model.site_body[objid];
-                        let v = Vector3::new(
+                        let omega = Vector3::new(
+                            data.cvel[body_id][0],
+                            data.cvel[body_id][1],
+                            data.cvel[body_id][2],
+                        );
+                        let v_origin = Vector3::new(
                             data.cvel[body_id][3],
                             data.cvel[body_id][4],
                             data.cvel[body_id][5],
                         );
-                        (v, data.site_xmat[objid])
+                        // Shift from body origin (xpos) to site position
+                        let dif = data.site_xpos[objid] - data.xpos[body_id];
+                        let v_site = v_origin + omega.cross(&dif);
+                        (v_site, data.site_xmat[objid])
                     }
                     MjObjectType::Body if objid < model.nbody => {
                         let v = Vector3::new(
@@ -136,15 +147,25 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::FrameLinVel => {
-                // Linear velocity in world frame
+                // Linear velocity in world frame.
+                // For site-attached sensors, shift cvel from body origin (xpos)
+                // to site position. No rotation (world frame output).
                 let v = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => {
                         let body_id = model.site_body[objid];
-                        Vector3::new(
+                        let omega = Vector3::new(
+                            data.cvel[body_id][0],
+                            data.cvel[body_id][1],
+                            data.cvel[body_id][2],
+                        );
+                        let v_origin = Vector3::new(
                             data.cvel[body_id][3],
                             data.cvel[body_id][4],
                             data.cvel[body_id][5],
-                        )
+                        );
+                        // Shift from body origin (xpos) to site position
+                        let dif = data.site_xpos[objid] - data.xpos[body_id];
+                        v_origin + omega.cross(&dif)
                     }
                     MjObjectType::Body if objid < model.nbody => Vector3::new(
                         data.cvel[objid][3],

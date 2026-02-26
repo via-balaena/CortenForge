@@ -55,12 +55,20 @@ pub fn compute_subtree_momentum(model: &Model, data: &Data, root_body: usize) ->
 
         if is_descendant {
             let mass = model.body_mass[body_id];
-            let v = Vector3::new(
+            let omega = Vector3::new(
+                data.cvel[body_id][0],
+                data.cvel[body_id][1],
+                data.cvel[body_id][2],
+            );
+            let v_origin = Vector3::new(
                 data.cvel[body_id][3],
                 data.cvel[body_id][4],
                 data.cvel[body_id][5],
             );
-            momentum += mass * v;
+            // Shift from body origin (xpos) to body COM (xipos)
+            let dif = data.xipos[body_id] - data.xpos[body_id];
+            let v_com = v_origin + omega.cross(&dif);
+            momentum += mass * v_com;
         }
     }
 
@@ -315,21 +323,24 @@ pub fn compute_subtree_angmom(model: &Model, data: &Data, root_body: usize) -> V
 
         let mass = model.body_mass[body_id];
 
-        // Orbital angular momentum: L_orbital = m * (r - r_com) x v
-        let r = data.xipos[body_id] - com;
-        let v = Vector3::new(
-            data.cvel[body_id][3],
-            data.cvel[body_id][4],
-            data.cvel[body_id][5],
-        );
-        angmom += mass * r.cross(&v);
-
-        // Spin angular momentum: L_spin = I * omega
         let omega = Vector3::new(
             data.cvel[body_id][0],
             data.cvel[body_id][1],
             data.cvel[body_id][2],
         );
+        let v_origin = Vector3::new(
+            data.cvel[body_id][3],
+            data.cvel[body_id][4],
+            data.cvel[body_id][5],
+        );
+
+        // Shift velocity from body origin (xpos) to body COM (xipos)
+        let com_offset = data.xipos[body_id] - data.xpos[body_id];
+        let v_com = v_origin + omega.cross(&com_offset);
+
+        // Orbital angular momentum: L_orbital = m * (xipos - subtree_com) x v_com
+        let r = data.xipos[body_id] - com;
+        angmom += mass * r.cross(&v_com);
         let inertia = model.body_inertia[body_id];
         let xi_mat = data.ximat[body_id];
         // I_world * omega = R * diag(I) * R^T * omega
