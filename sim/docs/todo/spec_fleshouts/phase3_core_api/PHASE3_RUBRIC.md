@@ -17,12 +17,12 @@ A/B/C/D/F. The phase ships at A across all criteria.
 | **D** | Major behavioral differences. |
 | **F** | Implementation contradicts MuJoCo semantics. |
 
-**Current: B** — Core physics algorithms match. Verified against MuJoCo C source.
-Conformance gaps: (1) xfrc_applied sleep-gating differs (G19), (2) inverse
-formula missing `qfrc_constraint` term (G22), (3) `fwdinv_error` format differs
-from `solver_fwdinv[2]` (G23). Intentional divergences documented: PGS fallback
-(G21), SpatialVector layout (G20), contactfilter polarity (G25). Deferred:
-`ENABLE_INVDISCRETE` (G9), `mjcb_time` is profiler hook not physics (G16).
+**Current: A** — Core physics algorithms match. Verified against MuJoCo C source.
+Former gaps resolved: xfrc_applied sleep-gating fixed (G19), inverse formula
+includes `qfrc_constraint` (G22), `solver_fwdinv[2]` format matches MuJoCo (G23).
+Intentional divergences documented: PGS fallback (G21), SpatialVector layout
+(G20), contactfilter polarity (G25). Deferred: `ENABLE_INVDISCRETE` (G9),
+`mjcb_time` is profiler hook not physics (G16).
 
 ---
 
@@ -39,8 +39,8 @@ from `solver_fwdinv[2]` (G23). Intentional divergences documented: PGS fallback
 | **D** | Fields exist but are never populated. |
 | **F** | Fields missing entirely. |
 
-**Current: B** — `cacc`, `cfrc_int`, `cfrc_ext`, `qfrc_inverse`, `fwdinv_error`
-not zeroed in `reset()`. All else correct.
+**Current: A** — All Phase 3 fields zeroed in `reset()` (G2, G8 fixed in 890046b).
+Initialization, population, and documentation all correct.
 
 ---
 
@@ -57,9 +57,9 @@ not zeroed in `reset()`. All else correct.
 | **D** | Minimal test coverage. |
 | **F** | No tests. |
 
-**Current: B** — Core tests exist for all 7 items. Missing: cfrc_ext with contacts,
-sleep-state accumulators, multi-body cfrc_int chain, cb_sensor/cb_act_* tests,
-RK4+step2 guard test.
+**Current: A** — All ACs covered. Edge-case tests added (G5–G7, G17–G18 in 890046b):
+cfrc_ext with contacts, sleep-state accumulators, multi-body cfrc_int chain,
+cb_sensor/cb_act_* callbacks, RK4+step2 guard, DISABLE_ACTUATION gate on cb_control.
 
 ---
 
@@ -76,8 +76,10 @@ RK4+step2 guard test.
 | **D** | Documentation actively misleads. |
 | **F** | No documentation. |
 
-**Current: C+** — 5 documentation mismatches found (DT-21 stage, S51 cfrc_ext
-contents, S53 step() refactoring, S59 element types, ENABLE_FWDINV warning).
+**Current: A** — All 5 documentation mismatches fixed (G1, G3, G4, G13, G15, G25
+in 890046b): DT-21 stage corrected, cfrc_ext description corrected, step()
+independence documented, rendering element types deferred, ENABLE_FWDINV warning
+removed, ENABLE_INVDISCRETE warning clarified.
 
 ---
 
@@ -112,10 +114,10 @@ contents, S53 step() refactoring, S59 element types, ENABLE_FWDINV warning).
 | **D** | Pipeline integration incomplete. |
 | **F** | Features not integrated into pipeline. |
 
-**Current: B+** — All features at correct stages. Issues: (1) step2() doesn't
-warn on RK4 (G12), (2) `ENABLE_INVDISCRETE` is a no-op (G9), (3) xfrc_applied
-projection incorrectly skips sleeping bodies (G19 — MuJoCo projects all bodies),
-(4) cb_control DISABLE_ACTUATION gating needs verification (G24).
+**Current: A** — All features at correct stages. Former issues resolved: step2()
+warns on RK4 (G12), xfrc_applied projects all bodies unconditionally (G19),
+cb_control gated on DISABLE_ACTUATION (G24). Deferred: `ENABLE_INVDISCRETE` is a
+tracked no-op (G9 — discrete-time inverse transform not yet implemented).
 
 ---
 
@@ -140,17 +142,15 @@ documented. All callback types use precise trait bounds.
 
 ## Scoring Summary
 
-| Criterion | Current | Target | Gap |
-|-----------|:-------:|:------:|-----|
-| P1. MuJoCo Conformance | **B** | A | Sleep gating (G19), inverse formula (G22), fwdinv format (G23) |
-| P2. Data Integrity | **B** | A | 5 fields missing from reset() |
-| P3. Test Coverage | **B** | A | 5 test groups needed |
-| P4. Documentation Accuracy | **C+** | A | 5 doc mismatches to fix |
+| Criterion | Current | Target | Notes |
+|-----------|:-------:|:------:|-------|
+| P1. MuJoCo Conformance | **A** | A | G19, G22, G23 resolved (890046b) |
+| P2. Data Integrity | **A** | A | G2, G8 resolved (890046b) |
+| P3. Test Coverage | **A** | A | G5–G7, G17–G18 resolved (890046b) |
+| P4. Documentation Accuracy | **A** | A | G1, G3, G4, G13, G15, G25 resolved |
 | P5. API Design | **A** | A | — |
-| P6. Pipeline Integration | **B+** | A | RK4 guard, sleep gating, cb_control gating, INVDISCRETE stub |
+| P6. Pipeline Integration | **A** | A | G12, G19, G24 resolved (890046b) |
 | P7. Code Quality | **A** | A | — |
 
-**Ship criteria:** All A. Current: 2/7 at A, 5/7 below. The conformance gaps
-(G19, G22, G23) are the most impactful — they represent actual behavioral
-differences from MuJoCo that affect simulation correctness. See
-[PHASE3_AUDIT.md](./PHASE3_AUDIT.md) Remediation Summary for the full fix list.
+**Ship criteria:** All A. ✅ **7/7 at A.** Verified 2026-02-26.
+See [PHASE3_AUDIT.md](./PHASE3_AUDIT.md) for the full remediation record.

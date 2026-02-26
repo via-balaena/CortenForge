@@ -321,7 +321,7 @@ DT-96, DT-101
 | [future_work_7.md](./future_work_7.md) | 3 (complete) | #23–27, #27B–F | Contact parameters, flex parsing, body-coupled flex |
 | [future_work_8.md](./future_work_8.md) | 3 (complete) | #28–32 | Friction loss, PGS/CG unified constraints, pyramidal cones |
 | [future_work_9.md](./future_work_9.md) | 3 (complete) | #33–37 | Noslip, actlimited, gravcomp, adhesion, tendon equality |
-| [future_work_10.md](./future_work_10.md) | 3 (in progress) | #38–42F | Joint limits ✅, tendon wrapping ✅, fluid forces ✅, fluid derivatives ✅, tendon viz ✅, fluid sleep ✅, ~~disableflags~~ ✅, flex runtime, trait architecture |
+| [future_work_10.md](./future_work_10.md) | 3 (§41 done) | #38–42F | Joint limits ✅, tendon wrapping ✅, fluid forces ✅, fluid derivatives ✅, tendon viz ✅, fluid sleep ✅, ~~disableflags~~ ✅, flex runtime (Phase 10), trait architecture (post-v1.0) |
 | [future_work_10b.md](./future_work_10b.md)–[10j](./future_work_10j.md) | 3 | DT-1–101 | Deferred task tracker (9 groups across 10b–10j) — ~40 core v1.0, ~53 post-v1.0, +~~DT-99~~ (done)/~~DT-100~~ (done)/DT-101 post-§41 |
 | [future_work_11.md](./future_work_11.md) | 3 | #43–45 | Mesh inertia, legacy crate deprecation, **conformance test suite** |
 | [future_work_12.md](./future_work_12.md) | 3 | #46–50 | `<composite>`, URDF, SIMD, non-physics MJCF, CCD |

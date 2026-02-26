@@ -843,7 +843,7 @@ fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflag
     // Warn so users don't silently get no-op behavior.
     if flag.invdiscrete {
         tracing::warn!(
-            "ENABLE_INVDISCRETE set but inverse dynamics (§52) not implemented — flag has no effect"
+            "ENABLE_INVDISCRETE set but discrete-time inverse (M⁻¹·M̂·qacc transform) not implemented — flag has no effect"
         );
     }
     if flag.multiccd {

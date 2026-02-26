@@ -44,7 +44,7 @@ during the forward pass.
 1. `cacc[0]` (world body) is zero (fixed body, no acceleration).
 2. For a free-falling body, `cacc` equals `[0,0,0, 0,0,-g]` (gravity only).
 3. `cfrc_int` at the root joint matches total applied + gravity forces.
-4. `cfrc_ext` reflects applied forces and actuator contributions.
+4. `cfrc_ext` reflects applied forces and contact/constraint forces.
 5. Fields accessible via `data.cacc[body_id]`.
 
 #### Files
