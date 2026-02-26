@@ -94,7 +94,7 @@ MuJoCo's Newton solver (`mjSOL_NEWTON`) is a primal-space solver operating on
 
 1. **Warmstart**: Compare cost at `qacc_warmstart` vs `qacc_smooth`; pick better
 2. **Hessian**: `H = M + J^T D J` (mass matrix + active constraint contribution)
-3. **Gradient**: `grad = M*qacc - qfrc_smooth - J^T * efc_force`
+3. **Gradient**: `grad = M*qacc - qfrc_smooth - qfrc_constraint` (where `qfrc_constraint = J^T * efc_force`, computed as a separate array)
 4. **Search direction**: `search = -H^{-1} * grad` (via Cholesky)
 5. **Line search**: Bracketed Newton refinement (bracket the optimum via Newton
    steps, then refine via midpoint evaluation and Newton-derived candidates)
@@ -250,9 +250,12 @@ Body accumulators are populated via `mj_rnePostConstraint()`, but only lazily
 
 Runtime flags:
 - `ENABLE_FWDINV`: When set, `mj_compareFwdInv()` runs after forward dynamics.
-  MuJoCo stores **two** L2 norms in `solver_fwdinv[2]`: (1) constraint force
-  discrepancy and (2) applied force discrepancy. Our implementation uses a
-  **single** scalar `fwdinv_error` — see G23.
+  It assembles `qforce = qfrc_applied + qfrc_actuator + xfrcAccumulate(xfrc_applied)`
+  (note: `mj_xfrcAccumulate` projects body-space wrenches into joint space via
+  per-body `mj_applyFT` chain walks, not a single J^T multiply; `qfrc_passive`
+  is excluded). MuJoCo stores **two** L2 norms in `solver_fwdinv[2]`:
+  (1) constraint force discrepancy and (2) applied force discrepancy. Our
+  implementation uses a **single** scalar `fwdinv_error` — see G23.
 - `ENABLE_INVDISCRETE`: When set, modifies `qacc` before inverse computation to
   undo implicit integration effects. Transforms `qacc_discrete` →
   `qacc_continuous` via `mj_discreteAcc()`, which modifies the mass-acceleration
@@ -313,8 +316,9 @@ Together they are equivalent to `mj_step()` for Euler/implicit integrators.
 
 Key behaviors:
 - `step1()` fires `mjcb_control` at the velocity/acceleration boundary
-- `step2()` always uses Euler-style integration (RK4 incompatible with force injection).
-  MuJoCo silently falls back to Euler — no warning emitted.
+- `step2()` dispatches implicit integrators correctly (`mjINT_IMPLICIT`,
+  `mjINT_IMPLICITFAST` → `mj_implicit`) but falls back to Euler for RK4 —
+  no warning emitted. RK4 is incompatible with split-step force injection.
 - `step()` is the canonical entry point (not refactored to call step1+step2)
 - State validation split: positions/velocities in step1, accelerations in step2
 - `mjcb_control` in `mj_step1()`: NOT gated by `DISABLE_ACTUATION`
