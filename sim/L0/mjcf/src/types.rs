@@ -188,7 +188,7 @@ pub struct MjcfFlag {
     pub filterparent: bool,
     /// Enable actuation.
     pub actuation: bool,
-    /// Solref time constant safety floor (solref[0] >= 2*timestep).
+    /// Solref time constant safety floor (solref\[0\] >= 2*timestep).
     pub refsafe: bool,
     /// Enable sensor computation.
     pub sensor: bool,
