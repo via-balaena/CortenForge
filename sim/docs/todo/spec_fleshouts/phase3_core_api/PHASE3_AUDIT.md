@@ -96,7 +96,8 @@ MuJoCo's Newton solver (`mjSOL_NEWTON`) is a primal-space solver operating on
 2. **Hessian**: `H = M + J^T D J` (mass matrix + active constraint contribution)
 3. **Gradient**: `grad = M*qacc - qfrc_smooth - J^T * efc_force`
 4. **Search direction**: `search = -H^{-1} * grad` (via Cholesky)
-5. **Line search**: Exact 1D Newton with bracket refinement
+5. **Line search**: Bracketed Newton refinement (bracket the optimum via Newton
+   steps, then refine via midpoint evaluation and Newton-derived candidates)
 6. **Convergence**: `scale * ||grad|| < tolerance` where `scale = 1/(meaninertia * max(1,nv))`
 7. **Failure mode**: On Cholesky failure, MuJoCo calls `mjERROR()` which invokes
    `mju_error_raw()` — by default this calls `exit(EXIT_FAILURE)` (hard process
@@ -254,8 +255,10 @@ Runtime flags:
   **single** scalar `fwdinv_error` — see G23.
 - `ENABLE_INVDISCRETE`: When set, modifies `qacc` before inverse computation to
   undo implicit integration effects. Transforms `qacc_discrete` →
-  `qacc_continuous` via `qacc_new = M^{-1} * (M_hat * qacc_old)` where `M_hat`
-  is the modified mass matrix from implicit integration.
+  `qacc_continuous` via `mj_discreteAcc()`, which modifies the mass-acceleration
+  product to undo implicit integration effects. For Euler: adds `h*B*qacc`
+  damping correction. For implicit integrators: uses modified mass matrix
+  `M - dt*dDeriv/dvel`. Conceptually: `qacc_new = M^{-1} * M_hat * qacc_old`.
 
 ### 4.2 Implementation Audit
 
@@ -413,7 +416,7 @@ MuJoCo 3.4.0 defines 8 global callbacks:
 
 | MuJoCo Callback | Purpose | Pipeline Stage |
 |-----------------|---------|----------------|
-| `mjcb_passive` | Custom passive forces | End of `mj_passive()` |
+| `mjcb_passive` | Custom passive forces | Near end of `mj_passive()` (after gravity/fluid/contact, before plugins) |
 | `mjcb_control` | Control injection | Between vel and acc stages |
 | `mjcb_contactfilter` | Contact pair filtering | After affinity check |
 | `mjcb_sensor` | User sensor evaluation | Per-stage (pos/vel/acc) |
