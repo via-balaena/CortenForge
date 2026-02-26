@@ -389,6 +389,65 @@ fn actuator_user_callbacks_invoked() {
     );
 }
 
+/// T11/G24: cb_control is skipped when DISABLE_ACTUATION is set.
+///
+/// Verifies that forward() does NOT invoke the control callback when actuation
+/// is disabled, and that no actuator forces are produced.
+#[test]
+fn control_callback_skipped_when_actuation_disabled() {
+    use sim_core::DISABLE_ACTUATION;
+
+    let xml = r#"
+    <mujoco>
+      <option gravity="0 0 0"/>
+      <worldbody>
+        <body name="link" pos="0 0 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" size="0.05 0.5" mass="1.0"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor name="m1" joint="hinge" gear="1"/>
+      </actuator>
+    </mujoco>"#;
+
+    let mut model = sim_mjcf::load_model(xml).expect("load");
+
+    let called = Arc::new(AtomicBool::new(false));
+    let called_clone = Arc::clone(&called);
+
+    model.set_control_callback(move |_model, data| {
+        called_clone.store(true, Ordering::SeqCst);
+        data.ctrl[0] = 99.0;
+    });
+
+    // Disable actuation
+    model.disableflags |= DISABLE_ACTUATION;
+
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    // Assertion 1: callback was never invoked
+    assert!(
+        !called.load(Ordering::SeqCst),
+        "cb_control should NOT be invoked when DISABLE_ACTUATION is set"
+    );
+
+    // Assertion 2: ctrl untouched (callback would have set it to 99.0)
+    assert!(
+        data.ctrl[0].abs() < 1e-15,
+        "ctrl[0] should be 0.0 (callback not invoked), got {}",
+        data.ctrl[0]
+    );
+
+    // Assertion 3: no actuator force
+    assert!(
+        data.qfrc_actuator[0].abs() < 1e-15,
+        "qfrc_actuator[0] should be 0.0 with actuation disabled, got {}",
+        data.qfrc_actuator[0]
+    );
+}
+
 /// T5 safe-defaults: no user callbacks → act_dot=0, gain=0, bias=0.
 #[test]
 fn actuator_user_callbacks_safe_defaults() {
