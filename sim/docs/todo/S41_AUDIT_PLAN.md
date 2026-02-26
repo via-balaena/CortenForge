@@ -771,162 +771,175 @@ Site 2 — Activation integration (same location as S4.8 Site 3):
 
 ---
 
-## Phase 4: Auto-Reset System (S8)
+## Phase 4: Auto-Reset System (S8) — COMPLETE
+
+> **Audited 2026-02-26.** All checks pass. 5 discrepancies found (2 bugs, 1
+> vacuous test, 2 vacuous comparisons), all fixed (`65c62c2`):
+>
+> - **D9 (bug):** `Data::reset()` did not zero `qfrc_applied` — fixed
+> - **D10 (bug):** `Data::reset()` did not zero `xfrc_applied` — fixed;
+>   `reset_to_keyframe()` updated to match; AC08 test inverted
+> - **D11 (vacuous):** `newton_solver.rs` energy test read always-zero energy
+>   fields — set `ENABLE_ENERGY` in helper
+> - **D12 (vacuous):** `batch.rs` energy comparison was 0.0 == 0.0 — set
+>   `ENABLE_ENERGY` in helper
+> - **D13 (vacuous):** 4 Bevy examples displayed always-zero energy — set
+>   `ENABLE_ENERGY` in all 4
 
 ### 4a. Detection primitive (`types/validation.rs`)
 
-- [ ] `is_bad()` correctly detects: NaN, +inf, -inf, `> MAX_VAL`, `< -MAX_VAL`
-- [ ] `MAX_VAL = 1e10` matches MuJoCo's `mjMAXVAL`
-- [ ] `MIN_VAL = 1e-15` matches MuJoCo's `mjMINVAL`
+- [x] `is_bad()` correctly detects: NaN, +inf, -inf, `> MAX_VAL`, `< -MAX_VAL`
+- [x] `MAX_VAL = 1e10` matches MuJoCo's `mjMAXVAL`
+- [x] `MIN_VAL = 1e-15` matches MuJoCo's `mjMINVAL`
 
 ### 4b. Check functions (`forward/check.rs`)
 
 **`mj_check_pos(model, data)` — position validation:**
 
-- [ ] Scans ALL `nq` elements (NOT sleep-filtered)
+- [x] Scans ALL `nq` elements (NOT sleep-filtered)
   - Reason 1: sleeping bodies can have externally-set bad qpos
   - Reason 2: no `qpos_awake_ind` exists (`nq != nv` for quaternion joints)
-- [ ] Uses `is_bad()` for each element
-- [ ] On bad value:
-  1. [ ] `mj_warning(data, Warning::BadQpos, i as i32)`
-  2. [ ] `if !disabled(model, DISABLE_AUTORESET) { mj_reset_data(model, data); }`
-  3. [ ] `data.warnings[BadQpos].count += 1` (post-reset preservation)
-  4. [ ] `data.warnings[BadQpos].last_info = i as i32` (post-reset preservation)
-  5. [ ] `return` (stop scanning)
-- [ ] Return type is `()` (void), NOT `Result`
+- [x] Uses `is_bad()` for each element
+- [x] On bad value:
+  1. [x] `mj_warning(data, Warning::BadQpos, i as i32)`
+  2. [x] `if !disabled(model, DISABLE_AUTORESET) { mj_reset_data(model, data); }`
+  3. [x] `data.warnings[BadQpos].count += 1` (post-reset preservation)
+  4. [x] `data.warnings[BadQpos].last_info = i as i32` (post-reset preservation)
+  5. [x] `return` (stop scanning)
+- [x] Return type is `()` (void), NOT `Result`
 
 **`mj_check_vel(model, data)` — velocity validation:**
 
-- [ ] Sleep-aware: `let sleep_filter = enabled(ENABLE_SLEEP) && data.nv_awake < model.nv`
-- [ ] When sleep_filter: iterates `nv_awake` elements via `dof_awake_ind`
-- [ ] When not: iterates `0..model.nv`
-- [ ] Uses `is_bad()` for each element
-- [ ] Same warning + reset + preservation pattern as `mj_check_pos()`
-- [ ] Uses `Warning::BadQvel`
-- [ ] Return type is `()` (void)
+- [x] Sleep-aware: `let sleep_filter = enabled(ENABLE_SLEEP) && data.nv_awake < model.nv`
+- [x] When sleep_filter: iterates `nv_awake` elements via `dof_awake_ind`
+- [x] When not: iterates `0..model.nv`
+- [x] Uses `is_bad()` for each element
+- [x] Same warning + reset + preservation pattern as `mj_check_pos()`
+- [x] Uses `Warning::BadQvel`
+- [x] Return type is `()` (void)
 
 **`mj_check_acc(model, data)` — acceleration validation:**
 
-- [ ] Sleep-aware (same pattern as `mj_check_vel()`)
-- [ ] Uses `is_bad()` — checks `> MAX_VAL` threshold, not just `is_finite()`
-  - [ ] This is a behavior change from the old `check.rs` which only checked `is_finite()`
-- [ ] On bad value:
-  1. [ ] `mj_warning(data, Warning::BadQacc, i as i32)`
-  2. [ ] `if !disabled(model, DISABLE_AUTORESET) { mj_reset_data(model, data); }`
-  3. [ ] Warning counter preservation (same pattern)
-  4. [ ] **Re-runs `mj_forward(model, data)`** after reset
-     - [ ] `mj_forward()` failure handled: `tracing::error!` + continue (no propagation)
-     - [ ] This is the ONLY check function that re-runs forward
-  5. [ ] `return`
-- [ ] Return type is `()` (void)
+- [x] Sleep-aware (same pattern as `mj_check_vel()`)
+- [x] Uses `is_bad()` — checks `> MAX_VAL` threshold, not just `is_finite()`
+  - [x] This is a behavior change from the old `check.rs` which only checked `is_finite()`
+- [x] On bad value:
+  1. [x] `mj_warning(data, Warning::BadQacc, i as i32)`
+  2. [x] `if !disabled(model, DISABLE_AUTORESET) { mj_reset_data(model, data); }`
+  3. [x] Warning counter preservation (same pattern)
+  4. [x] **Re-runs `mj_forward(model, data)`** after reset
+     - [x] `mj_forward()` failure handled: `tracing::error!` + continue (no propagation)
+     - [x] This is the ONLY check function that re-runs forward
+  5. [x] `return`
+- [x] Return type is `()` (void)
 
 ### 4c. `StepError` pruning
 
-- [ ] `InvalidPosition` variant **REMOVED**
-- [ ] `InvalidVelocity` variant **REMOVED**
-- [ ] `InvalidAcceleration` variant **REMOVED**
-- [ ] `CholeskyFailed` **KEPT** (non-recoverable math error)
-- [ ] `LuSingular` **KEPT** (non-recoverable math error)
-- [ ] `InvalidTimestep` **KEPT** (configuration error)
-- [ ] `step()` signature unchanged: `pub fn step(&mut self, model: &Model) -> Result<(), StepError>`
-- [ ] Check calls in `step()` have NO `?` operator
+- [x] `InvalidPosition` variant **REMOVED**
+- [x] `InvalidVelocity` variant **REMOVED**
+- [x] `InvalidAcceleration` variant **REMOVED**
+- [x] `CholeskyFailed` **KEPT** (non-recoverable math error)
+- [x] `LuSingular` **KEPT** (non-recoverable math error)
+- [x] `InvalidTimestep` **KEPT** (configuration error)
+- [x] `step()` signature unchanged: `pub fn step(&mut self, model: &Model) -> Result<(), StepError>`
+- [x] Check calls in `step()` have NO `?` operator
 
 ### 4d. `mj_reset_data()` (`core/src/reset.rs`)
 
-- [ ] Free function: `pub fn mj_reset_data(model: &Model, data: &mut Data)`
-- [ ] Lives in `reset.rs`, not `check.rs`
+- [x] Free function: `pub fn mj_reset_data(model: &Model, data: &mut Data)`
+- [x] Lives in `reset.rs`, not `check.rs`
 
 **Exhaustive field reset inventory (11 categories):**
 
 1. **State variables:**
-   - [ ] `data.qpos ← model.qpos0`
-   - [ ] `data.qvel ← zero(nv)`
-   - [ ] `data.qacc ← zero(nv)`
-   - [ ] `data.qacc_warmstart ← zero(nv)`
-   - [ ] `data.time ← 0.0`
+   - [x] `data.qpos ← model.qpos0`
+   - [x] `data.qvel ← zero(nv)`
+   - [x] `data.qacc ← zero(nv)`
+   - [x] `data.qacc_warmstart ← zero(nv)`
+   - [x] `data.time ← 0.0`
 
 2. **Control / actuation:**
-   - [ ] `data.ctrl ← zero(nu)`
-   - [ ] `data.act ← zero(na)`
-   - [ ] `data.act_dot ← zero(na)`
-   - [ ] `data.qfrc_actuator ← zero(nv)`
-   - [ ] `data.actuator_force ← zero(nu)`
-   - [ ] `data.actuator_velocity ← zero(nu)`
-   - [ ] `data.actuator_length ← zero(nu)`
-   - [ ] `data.actuator_moment ← zero`
+   - [x] `data.ctrl ← zero(nu)`
+   - [x] `data.act ← zero(na)`
+   - [x] `data.act_dot ← zero(na)`
+   - [x] `data.qfrc_actuator ← zero(nv)`
+   - [x] `data.actuator_force ← zero(nu)`
+   - [x] `data.actuator_velocity ← zero(nu)`
+   - [x] `data.actuator_length ← zero(nu)`
+   - [x] `data.actuator_moment ← zero`
 
 3. **Mocap:**
-   - [ ] `data.mocap_pos[i] ← model.body_pos[mocap_body_id]`
-   - [ ] `data.mocap_quat[i] ← model.body_quat[mocap_body_id]`
+   - [x] `data.mocap_pos[i] ← model.body_pos[mocap_body_id]`
+   - [x] `data.mocap_quat[i] ← model.body_quat[mocap_body_id]`
 
 4. **Force vectors:**
-   - [ ] `data.qfrc_passive ← zero(nv)`
-   - [ ] `data.qfrc_spring ← zero(nv)`
-   - [ ] `data.qfrc_damper ← zero(nv)`
-   - [ ] `data.qfrc_gravcomp ← zero(nv)`
-   - [ ] `data.qfrc_fluid ← zero(nv)`
-   - [ ] `data.qfrc_constraint ← zero(nv)`
-   - [ ] `data.qfrc_bias ← zero(nv)`
-   - [ ] `data.qfrc_applied ← zero(nv)`
-   - [ ] `data.qfrc_smooth ← zero(nv)`
-   - [ ] `data.qfrc_frictionloss ← zero(nv)`
-   - [ ] `data.xfrc_applied ← zero(nbody)`
+   - [x] `data.qfrc_passive ← zero(nv)`
+   - [x] `data.qfrc_spring ← zero(nv)`
+   - [x] `data.qfrc_damper ← zero(nv)`
+   - [x] `data.qfrc_gravcomp ← zero(nv)`
+   - [x] `data.qfrc_fluid ← zero(nv)`
+   - [x] `data.qfrc_constraint ← zero(nv)`
+   - [x] `data.qfrc_bias ← zero(nv)`
+   - [x] `data.qfrc_applied ← zero(nv)`
+   - [x] `data.qfrc_smooth ← zero(nv)`
+   - [x] `data.qfrc_frictionloss ← zero(nv)`
+   - [x] `data.xfrc_applied ← zero(nbody)`
 
 5. **Contact / constraint:**
-   - [ ] `data.ncon ← 0`, `data.contacts ← clear`
-   - [ ] `data.ne ← 0`, `data.nf ← 0`, `data.ncone ← 0`
-   - [ ] `data.efc_force ← zero`, `data.efc_J ← zero`, etc.
-   - [ ] `data.solver_niter ← 0`, `data.solver_nnz ← 0`
+   - [x] `data.ncon ← 0`, `data.contacts ← clear`
+   - [x] `data.ne ← 0`, `data.nf ← 0`, `data.ncone ← 0`
+   - [x] `data.efc_force ← zero`, `data.efc_J ← zero`, etc.
+   - [x] `data.solver_niter ← 0`, `data.solver_nnz ← 0`
 
-6. **Sensor:** `data.sensordata ← zero(nsensordata)` — [ ]
+6. **Sensor:** `data.sensordata ← zero(nsensordata)` — [x]
 
-7. **Energy:** `data.energy_potential ← 0.0`, `data.energy_kinetic ← 0.0` — [ ]
+7. **Energy:** `data.energy_potential ← 0.0`, `data.energy_kinetic ← 0.0` — [x]
 
-8. **Warnings:** all `WarningStat { last_info: 0, count: 0 }` — [ ]
+8. **Warnings:** all `WarningStat { last_info: 0, count: 0 }` — [x]
 
 9. **Sleep state (fully awake):**
-   - [ ] `data.nv_awake ← model.nv`
-   - [ ] `data.nbody_awake ← model.nbody`
-   - [ ] `data.ntree_awake ← model.ntree`
-   - [ ] `data.body_sleep_state ← all Awake`
-   - [ ] `data.body_awake_ind ← [0..nbody-1]`
-   - [ ] `data.dof_awake_ind ← [0..nv-1]`
+   - [x] `data.nv_awake ← model.nv`
+   - [x] `data.nbody_awake ← model.nbody`
+   - [x] `data.ntree_awake ← model.ntree`
+   - [x] `data.body_sleep_state ← all Awake`
+   - [x] `data.body_awake_ind ← [0..nbody-1]`
+   - [x] `data.dof_awake_ind ← [0..nv-1]`
 
-10. **Island state:** `data.nisland ← 0`, mapping arrays cleared — [ ]
+10. **Island state:** `data.nisland ← 0`, mapping arrays cleared — [x]
 
-11. **Computed quantities:** zeroed (recomputed by next `forward()`) — [ ]
+11. **Computed quantities:** zeroed (recomputed by next `forward()`) — [x]
 
-- [ ] Staleness guard: version comment or `#[cfg(test)]` size assertion
+- [x] Staleness guard: version comment or `#[cfg(test)]` size assertion
 
 ### 4e. Ctrl validation (S8d)
 
-- [ ] Located in `mj_fwd_actuation()`, BEFORE force computation
-- [ ] Loop: `for i in 0..model.nu { if is_bad(data.ctrl[i]) { ... } }`
-- [ ] On bad ctrl:
-  1. [ ] `mj_warning(data, Warning::BadCtrl, i as i32)`
-  2. [ ] `data.ctrl[..model.nu].fill(0.0)` — zeros ALL ctrl
-  3. [ ] `break` — stops scanning (one warning suffices)
-- [ ] Does NOT trigger `mj_reset_data()` — only ctrl is zeroed
+- [x] Located in `mj_fwd_actuation()`, BEFORE force computation
+- [x] Loop: `for i in 0..model.nu { if is_bad(data.ctrl[i]) { ... } }`
+- [x] On bad ctrl:
+  1. [x] `mj_warning(data, Warning::BadCtrl, i as i32)`
+  2. [x] `data.ctrl[..model.nu].fill(0.0)` — zeros ALL ctrl
+  3. [x] `break` — stops scanning (one warning suffices)
+- [x] Does NOT trigger `mj_reset_data()` — only ctrl is zeroed
 
 ### 4f. Reentrancy invariant
 
-- [ ] `forward_core()` does NOT call `mj_check_pos`, `mj_check_vel`, or `mj_check_acc`
-- [ ] Mandatory comment at top of `forward_core()` documenting this invariant
-  - [ ] Explains: `mj_check_acc()` calls `forward()` after reset — re-entry would stack overflow
-- [ ] `step()` orchestrates externally: `check_pos → check_vel → forward → check_acc → integrate`
-- [ ] The `forward()` inside `mj_check_acc()` is the same check-free `forward()` — no re-entry
+- [x] `forward_core()` does NOT call `mj_check_pos`, `mj_check_vel`, or `mj_check_acc`
+- [x] Mandatory comment at top of `forward_core()` documenting this invariant
+  - [x] Explains: `mj_check_acc()` calls `forward()` after reset — re-entry would stack overflow
+- [x] `step()` orchestrates externally: `check_pos → check_vel → forward → check_acc → integrate`
+- [x] The `forward()` inside `mj_check_acc()` is the same check-free `forward()` — no re-entry
 
 ### 4g. Test migration
 
-- [ ] `batch_sim.rs:107` updated: no longer `assert!(errors[1].is_some())` — uses `divergence_detected()` or warning counter
-- [ ] `gpu/tests/integration.rs:213-215` updated similarly
-- [ ] All tests using `energy_potential` / `energy_kinetic` set `ENABLE_ENERGY` on model:
-  - [ ] `sleeping.rs` T84
-  - [ ] `newton_solver.rs` energy conservation check
-  - [ ] `lib.rs` kinetic energy conservation
-  - [ ] `batch.rs` batch-vs-sequential energy equality
-  - [ ] Bevy examples (`double_pendulum`, `nlink_pendulum`, etc.)
-- [ ] No test references `StepError::InvalidPosition`, `InvalidVelocity`, or `InvalidAcceleration`
+- [x] `batch_sim.rs:107` updated: no longer `assert!(errors[1].is_some())` — uses `divergence_detected()` or warning counter
+- [x] `gpu/tests/integration.rs:213-215` updated similarly
+- [x] All tests using `energy_potential` / `energy_kinetic` set `ENABLE_ENERGY` on model:
+  - [x] `sleeping.rs` T84
+  - [x] `newton_solver.rs` energy conservation check
+  - [x] `lib.rs` kinetic energy conservation
+  - [x] `batch.rs` batch-vs-sequential energy equality
+  - [x] Bevy examples (`double_pendulum`, `nlink_pendulum`, etc.)
+- [x] No test references `StepError::InvalidPosition`, `InvalidVelocity`, or `InvalidAcceleration`
 
 ---
 
