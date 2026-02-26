@@ -2,7 +2,7 @@
 
 > **Status**: Draft — 2026-02-21
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
-> plus the ~101 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-101).
+> plus the ~102 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-102).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
 > DT-96 (lazy energy eval) and DT-97 (golden file conformance) added during §41 audit.
 > ~~DT-99~~ (BVH midphase, §41 S9-full — **done**), ~~DT-100~~ (global override, §41 S10-full — **done**),
@@ -148,6 +148,7 @@ Persistent fields in `Data` that MuJoCo computes every forward step.
 | DT-62 | 10h | T2 | Frame sensor `objtype` attribute not parsed — fallback heuristic used |
 | DT-63 | 10h | T2 | Frame sensor `reftype`/`refid` — relative-frame measurements |
 | DT-64 | 10h | T2 | Multi-geom touch sensor aggregation (currently only first geom matched) |
+| DT-102 | 10h | T1 | Geom-attached acc-stage sensors (FrameLinAcc/FrameAngAcc with `MjObjectType::Geom`). Depends on DT-62. |
 
 ---
 

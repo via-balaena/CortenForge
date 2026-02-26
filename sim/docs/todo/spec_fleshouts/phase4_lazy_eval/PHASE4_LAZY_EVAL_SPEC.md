@@ -504,8 +504,4 @@ not sleep-gated — they compute for the entire tree.
 
 ## Out of Scope
 
-- `flg_energypos` / `flg_energyvel` — already gated behind `ENABLE_ENERGY` flag. Not lazy in the same sense (it's a user-facing toggle, not demand-driven by sensors). Could be unified later but no conformance gap today.
-- 4A.6: Refactoring acc-stage sensors to read `cacc`/`cfrc_int` instead of
-  recomputing from first principles. Specified in
-  [SENSOR_CACC_CFRC_REFACTOR.md](./SENSOR_CACC_CFRC_REFACTOR.md). Depends on
-  `flg_rnepost` lazy gate (already landed).
+- `flg_energypos` / `flg_energyvel` — already gated behind `ENABLE_ENERGY` flag. Not lazy in the same sense (it's a user-facing toggle, not demand-driven by sensors). Could be unified later but no conformance gap today. Tracked as DT-96.

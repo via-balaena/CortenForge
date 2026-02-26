@@ -622,7 +622,7 @@ improvement, not a regression.
   MuJoCo supports geom-attached frame sensors via `mj_objectAcceleration(m, d, mjOBJ_GEOM, ...)`.
   Currently handled by our `_ => { continue }` fallback (writes zeros).
   Adding geom support requires reading `geom_xpos`/`geom_xmat` and resolving
-  `geom_body[objid]`. This is a separate conformance task.
+  `geom_body[objid]`. Tracked as DT-102 (depends on DT-62 for objtype parsing).
 - **`mj_objectAcceleration()` as a standalone utility function.** For now, the
   spatial transform is inlined in each sensor arm (Steps 1-3 share the same
   pattern). If a fourth consumer appears, factor out into a shared helper in
