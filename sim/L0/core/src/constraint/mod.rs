@@ -305,6 +305,30 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
     data.newton_solved = false;
 
+    // Defence-in-depth: clear EFC arrays unconditionally so that toggling
+    // DISABLE_CONSTRAINT mid-simulation does not leave stale constraint data.
+    data.efc_type.clear();
+    data.efc_force = DVector::zeros(0);
+    data.efc_b = DVector::zeros(0);
+    data.efc_J = DMatrix::zeros(0, model.nv);
+    data.efc_vel = DVector::zeros(0);
+    data.efc_aref = DVector::zeros(0);
+    data.efc_jar = DVector::zeros(0);
+    data.efc_pos.clear();
+    data.efc_margin.clear();
+    data.efc_solref.clear();
+    data.efc_solimp.clear();
+    data.efc_diagApprox.clear();
+    data.efc_R.clear();
+    data.efc_D.clear();
+    data.efc_imp.clear();
+    data.efc_floss.clear();
+    data.efc_mu.clear();
+    data.efc_dim.clear();
+    data.efc_id.clear();
+    data.efc_state.clear();
+    data.efc_cone_hessian.clear();
+
     // Step 1: Shared qacc_smooth computation
     let (qacc_smooth, _qfrc_smooth) = compute_qacc_smooth(model, data);
 

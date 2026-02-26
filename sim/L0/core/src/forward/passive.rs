@@ -350,13 +350,25 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     }
 
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nv_awake < model.nv;
 
-    // Zero all passive force vectors unconditionally (S4.7a).
-    data.qfrc_passive.fill(0.0);
-    data.qfrc_spring.fill(0.0);
-    data.qfrc_damper.fill(0.0);
-    data.qfrc_fluid.fill(0.0);
-    data.qfrc_gravcomp.fill(0.0);
+    // Zero all passive force vectors (S4.7a).
+    // When sleep is active, only zero awake DOFs (sleeping DOFs stay zero from init/reset).
+    if sleep_filter {
+        for &dof in &data.dof_awake_ind[..data.nv_awake] {
+            data.qfrc_passive[dof] = 0.0;
+            data.qfrc_spring[dof] = 0.0;
+            data.qfrc_damper[dof] = 0.0;
+            data.qfrc_fluid[dof] = 0.0;
+            data.qfrc_gravcomp[dof] = 0.0;
+        }
+    } else {
+        data.qfrc_passive.fill(0.0);
+        data.qfrc_spring.fill(0.0);
+        data.qfrc_damper.fill(0.0);
+        data.qfrc_fluid.fill(0.0);
+        data.qfrc_gravcomp.fill(0.0);
+    }
     // qfrc_frictionloss is now populated post-solve from efc_force (§29).
     // No longer computed in passive forces.
 
@@ -698,11 +710,27 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
     // S4.7e: Aggregation into qfrc_passive (matches MuJoCo mj_passive() pattern).
     // qfrc_passive = qfrc_spring + qfrc_damper [+ qfrc_gravcomp] [+ qfrc_fluid]
-    for dof in 0..model.nv {
+    // Uses assignment (=), not accumulation (+=), for the base sum.
+    let agg_count = if sleep_filter {
+        data.nv_awake
+    } else {
+        model.nv
+    };
+    for idx in 0..agg_count {
+        let dof = if sleep_filter {
+            data.dof_awake_ind[idx]
+        } else {
+            idx
+        };
         data.qfrc_passive[dof] = data.qfrc_spring[dof] + data.qfrc_damper[dof];
     }
     if has_gravcomp {
-        for dof in 0..model.nv {
+        for idx in 0..agg_count {
+            let dof = if sleep_filter {
+                data.dof_awake_ind[idx]
+            } else {
+                idx
+            };
             // S4.2a: Only route gravcomp to passive for DOFs without actuator routing.
             let jnt = model.dof_jnt[dof];
             if !model.jnt_actgravcomp[jnt] {
@@ -711,10 +739,21 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         }
     }
     if has_fluid {
-        for dof in 0..model.nv {
+        for idx in 0..agg_count {
+            let dof = if sleep_filter {
+                data.dof_awake_ind[idx]
+            } else {
+                idx
+            };
             data.qfrc_passive[dof] += data.qfrc_fluid[dof];
         }
     }
+
+    // DT-101: mj_contactPassive() insertion point.
+    // When implemented, call here with guard: disabled(CONTACT) || ncon == 0 || nv == 0.
+    // Must go AFTER aggregation because aggregation uses assignment (=), not
+    // accumulation (+=) — contact passive forces would be overwritten if placed
+    // before. The contact passive contribution should use += on qfrc_passive.
 
     // DT-21: xfrc_applied projection moved to acceleration stage (qfrc_smooth
     // in compute_qacc_smooth). MuJoCo projects xfrc_applied into qfrc_smooth in

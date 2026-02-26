@@ -275,201 +275,215 @@ Each follows the pattern: `if flag.<field> { *enableflags |= ENABLE_<NAME>; }`
 
 For each flag, verify: guard exists at the exact spec'd file/function, logic matches spec precisely (polarity, compound conditions, init-then-guard pattern), and behavioral semantics are correct.
 
+> **Phase 2a–2e audited 2026-02-26.** 8 discrepancies found (1 fail, 6 gaps,
+> 1 drift), all fixed:
+>
+> - **D1 (fail):** Stale EFC arrays persisted when `DISABLE_CONSTRAINT` toggled
+>   mid-sim — added unconditional EFC clearing in `mj_fwd_constraint()`
+> - **D2 (drift):** Gravcomp routing loop iterated `0..nv` instead of
+>   `dof_awake_ind` — fixed by sleep-aware aggregation rewrite
+> - **D3 (gap):** `sleep_filter` variable missing in `mj_fwd_passive()` — added
+> - **D4 (gap):** Zeroing used `.fill(0.0)` instead of `dof_awake_ind` — fixed
+> - **D5 (gap):** DT-101 placeholder comment missing — added
+> - **D6 (gap):** Post-aggregation insertion point not documented — added
+> - **D7 (gap):** `=` vs `+=` ordering rationale not documented — added
+> - **D8 (gap):** Aggregation iterated `0..nv` instead of `dof_awake_ind` — fixed
+
 ### 2a. S4.1 — `DISABLE_CONTACT` / `DISABLE_CONSTRAINT` — collision + contact rows
 
 **Site 1 — `mj_collision()` in `collision/mod.rs`:**
 
-- [ ] Function is always called from `forward_core()` (no conditional at call site)
-- [ ] **Unconditional init BEFORE guard:**
-  - [ ] `data.ncon = 0`
-  - [ ] `data.contacts.clear()`
-  - [ ] Any arena/EFC equivalent also reset unconditionally
-- [ ] Guard condition (3-way OR):
-  - [ ] `disabled(model, DISABLE_CONTACT)`
-  - [ ] `disabled(model, DISABLE_CONSTRAINT)`
-  - [ ] `nbodyflex < 2` where `nbodyflex = model.nbody + model.nflex`
-  - [ ] NOT `model.ngeom >= 2` (old CortenForge approximation was replaced)
-- [ ] On guard match → `return` (early exit, no collision detection)
+- [x] Function is always called from `forward_core()` (no conditional at call site)
+- [x] **Unconditional init BEFORE guard:**
+  - [x] `data.ncon = 0`
+  - [x] `data.contacts.clear()`
+  - [x] Any arena/EFC equivalent also reset unconditionally
+- [x] Guard condition (3-way OR):
+  - [x] `disabled(model, DISABLE_CONTACT)`
+  - [x] `disabled(model, DISABLE_CONSTRAINT)`
+  - [x] `nbodyflex < 2` where `nbodyflex = model.nbody + model.nflex`
+  - [x] NOT `model.ngeom >= 2` (old CortenForge approximation was replaced)
+- [x] On guard match → `return` (early exit, no collision detection)
 
 **Site 2 — contact instantiation in `constraint/assembly.rs`:**
 
-- [ ] Guard: `disabled(model, DISABLE_CONTACT) || data.ncon == 0 || model.nv == 0`
-- [ ] Redundant with Site 1 (defense-in-depth) — verify it exists anyway
+- [x] Guard: `disabled(model, DISABLE_CONTACT) || data.ncon == 0 || model.nv == 0`
+- [x] Redundant with Site 1 (defense-in-depth) — verify it exists anyway
 
 **S4.3 — `DISABLE_CONSTRAINT` in `constraint/mod.rs` (`mj_fwd_constraint`):**
 
-- [ ] **Unconditional init BEFORE guard:** `data.qfrc_constraint[..model.nv].fill(0.0)`
-- [ ] Guard skips `assemble_unified_constraints()` when `disabled(model, DISABLE_CONSTRAINT)`
-- [ ] When guard fires → `nefc` stays 0 → `nefc == 0` early exit triggers
-- [ ] `nefc == 0` early exit: `data.qacc.copy_from(&data.qacc_smooth)` + return
-- [ ] **Causal chain verified:** `mj_collision()` early return → `ncon = 0` → assembly skipped → `nefc = 0` → `qacc = qacc_smooth`, `qfrc_constraint` all zeros, `efc_force` all zeros
+- [x] **Unconditional init BEFORE guard:** `data.qfrc_constraint[..model.nv].fill(0.0)` + unconditional EFC clearing (D1 fix)
+- [x] Guard skips `assemble_unified_constraints()` when `disabled(model, DISABLE_CONSTRAINT)`
+- [x] When guard fires → `nefc` stays 0 → `nefc == 0` early exit triggers
+- [x] `nefc == 0` early exit: `data.qacc.copy_from(&data.qacc_smooth)` + return
+- [x] **Causal chain verified:** `mj_collision()` early return → `ncon = 0` → assembly skipped → `nefc = 0` → `qacc = qacc_smooth`, `qfrc_constraint` all zeros, `efc_force` all zeros
 
 ### 2b. S4.2 — `DISABLE_GRAVITY` — zero gravity in bias forces
 
 **Site 1 — `mj_rne()` in `dynamics/rne.rs`:**
 
-- [ ] Effective gravity vector: `let grav = if disabled(model, DISABLE_GRAVITY) { Vector3::zeros() } else { model.gravity };`
-- [ ] `grav` used in gravity loop (not `model.gravity` directly)
-- [ ] Pattern: `gravity_force = -subtree_mass * grav`
+- [x] Effective gravity vector: `let grav = if disabled(model, DISABLE_GRAVITY) { Vector3::zeros() } else { model.gravity };`
+- [x] `grav` used in gravity loop (not `model.gravity` directly)
+- [x] Pattern: `gravity_force = -subtree_mass * grav`
 
 **Site 2 — `mj_gravcomp()` in `dynamics/rne.rs`:**
 
-- [ ] Early-return guard: `model.ngravcomp == 0 || model.gravity.norm() < MIN_VAL || disabled(model, DISABLE_GRAVITY)`
-- [ ] Returns `false` when guard fires (bool return for aggregation optimization)
-- [ ] Uses `MIN_VAL` (1e-15), NOT `== 0.0`
-- [ ] Does NOT check `DISABLE_DAMPER` directly (only indirectly via top-level `mj_passive()`)
+- [x] Early-return guard: `model.ngravcomp == 0 || model.gravity.norm() < MIN_VAL || disabled(model, DISABLE_GRAVITY)`
+- [x] Returns `false` when guard fires (bool return for aggregation optimization)
+- [x] Uses `MIN_VAL` (1e-15), NOT `== 0.0`
+- [x] Does NOT check `DISABLE_DAMPER` directly (only indirectly via top-level `mj_passive()`)
 
 **Site 3 — `mj_energy_pos()` in `energy.rs`:**
 
-- [ ] Same effective gravity vector pattern
-- [ ] `potential -= mass * grav.dot(&com)` uses `grav`, not `model.gravity`
+- [x] Same effective gravity vector pattern
+- [x] `potential -= mass * grav.dot(&com)` uses `grav`, not `model.gravity`
 
 **Site 4 — actuation-side gravcomp in `forward/actuation.rs` (`mj_fwd_actuation()`):**
 
-- [ ] Guard: `model.ngravcomp > 0 && !disabled(model, DISABLE_GRAVITY) && model.gravity.norm() >= MIN_VAL`
-- [ ] Iterates joints where `model.jnt_actgravcomp[jnt] == true`
-- [ ] Adds `data.qfrc_gravcomp[dofadr + i]` to `data.qfrc_actuator[dofadr + i]`
-- [ ] Uses `jnt_dofnum()` for DOF count per joint type
-- [ ] This site only runs when `DISABLE_ACTUATION` is NOT set (inside the actuation function after the actuation guard)
+- [x] Guard: `model.ngravcomp > 0 && !disabled(model, DISABLE_GRAVITY) && model.gravity.norm() >= MIN_VAL`
+- [x] Iterates joints where `model.jnt_actgravcomp[jnt] == true`
+- [x] Adds `data.qfrc_gravcomp[dofadr + i]` to `data.qfrc_actuator[dofadr + i]`
+- [x] Uses `jnt_dofnum()` for DOF count per joint type
+- [x] This site only runs when `DISABLE_ACTUATION` is NOT set (inside the actuation function after the actuation guard)
 
 ### 2c. S4.2a — Gravity compensation routing (`jnt_actgravcomp`)
 
 **Model field:**
 
-- [ ] `jnt_actgravcomp: Vec<bool>` exists, length `njnt`, default all `false`
-- [ ] Parsed from `<joint actuatorgravcomp="true"/>`
+- [x] `jnt_actgravcomp: Vec<bool>` exists, length `njnt`, default all `false`
+- [x] Parsed from `<joint actuatorgravcomp="true"/>`
 
 **Passive-side routing in `forward/passive.rs`:**
 
-- [ ] After `mj_gravcomp()` computes `qfrc_gravcomp`, routing loop runs
-- [ ] Sleep-filtered iteration (indexed via `dof_awake_ind` when sleep active)
-- [ ] For each DOF: checks `model.jnt_actgravcomp[model.dof_jntid[dof]]`
-  - [ ] If `false` (default): `data.qfrc_passive[dof] += data.qfrc_gravcomp[dof]`
-  - [ ] If `true`: gravcomp NOT added to passive (routed via actuation-side instead)
-- [ ] Old unconditional `qfrc_passive += qfrc_gravcomp` pattern is gone
+- [x] After `mj_gravcomp()` computes `qfrc_gravcomp`, routing loop runs
+- [x] Sleep-filtered iteration (indexed via `dof_awake_ind` when sleep active) — D2 fix
+- [x] For each DOF: checks `model.jnt_actgravcomp[model.dof_jntid[dof]]`
+  - [x] If `false` (default): `data.qfrc_passive[dof] += data.qfrc_gravcomp[dof]`
+  - [x] If `true`: gravcomp NOT added to passive (routed via actuation-side instead)
+- [x] Old unconditional `qfrc_passive += qfrc_gravcomp` pattern is gone
 
 **Interaction matrix:**
 
 | `DISABLE_GRAVITY` | `DISABLE_ACTUATION` | `jnt_actgravcomp=true` DOF | `jnt_actgravcomp=false` DOF | Check |
 |:-:|:-:|---|---|:---:|
-| off | off | gravcomp → `qfrc_actuator` | gravcomp → `qfrc_passive` | [ ] |
-| off | **on** | gravcomp NOT routed (actuation skipped) | gravcomp → `qfrc_passive` | [ ] |
-| **on** | off | no gravcomp computed | no gravcomp computed | [ ] |
-| **on** | **on** | no gravcomp computed | no gravcomp computed | [ ] |
+| off | off | gravcomp → `qfrc_actuator` | gravcomp → `qfrc_passive` | [x] |
+| off | **on** | gravcomp NOT routed (actuation skipped) | gravcomp → `qfrc_passive` | [x] |
+| **on** | off | no gravcomp computed | no gravcomp computed | [x] |
+| **on** | **on** | no gravcomp computed | no gravcomp computed | [x] |
 
 ### 2d. S4.4–S4.6 — Constraint sub-type guards (`constraint/assembly.rs`)
 
 **S4.4 — `DISABLE_EQUALITY`:**
 
-- [ ] Guard in `assemble_unified_constraints()` (or its equality sub-call)
-- [ ] When set: no equality constraint rows assembled (weld, joint, tendon equality)
+- [x] Guard in `assemble_unified_constraints()` (or its equality sub-call)
+- [x] When set: no equality constraint rows assembled (weld, joint, tendon equality)
 
 **S4.5 — `DISABLE_FRICTIONLOSS`:**
 
-- [ ] Guard in `assemble_unified_constraints()` (or its friction loss sub-call)
-- [ ] When set: no friction loss rows assembled
+- [x] Guard in `assemble_unified_constraints()` (or its friction loss sub-call)
+- [x] When set: no friction loss rows assembled
 
 **S4.6 — `DISABLE_LIMIT`:**
 
-- [ ] Guard in `assemble_unified_constraints()` (or its limit sub-call)
-- [ ] When set: both joint limits AND tendon limits are skipped
-- [ ] Verify tendon limits are also covered (not just joint limits)
+- [x] Guard in `assemble_unified_constraints()` (or its limit sub-call)
+- [x] When set: both joint limits AND tendon limits are skipped
+- [x] Verify tendon limits are also covered (not just joint limits)
 
 ### 2e. S4.7 — Spring/Damper Pipeline (highest-risk refactor)
 
 #### S4.7-prereq — Separate force arrays
 
-- [ ] `data.qfrc_spring: DVector<f64>` exists, length `nv`
-- [ ] `data.qfrc_damper: DVector<f64>` exists, length `nv`
-- [ ] Both initialized to zero in `Data::new()` / `make_data()`
+- [x] `data.qfrc_spring: DVector<f64>` exists, length `nv`
+- [x] `data.qfrc_damper: DVector<f64>` exists, length `nv`
+- [x] Both initialized to zero in `Data::new()` / `make_data()`
 
 #### S4.7a — Top-level `mj_passive()` early-return structure
 
 Exact control flow order:
 
-1. [ ] `nv == 0` early return (CortenForge extension — not in MuJoCo)
-2. [ ] Sleep filter computation: `let sleep_filter = enabled(model, ENABLE_SLEEP) && data.nv_awake < model.nv`
-   - [ ] Uses DOF-level counts (`nv_awake` / `nv`), NOT body-level (`nbody_awake`)
-3. [ ] **Unconditional zeroing of ALL 5 passive force vectors:**
-   - [ ] `qfrc_spring`
-   - [ ] `qfrc_damper`
-   - [ ] `qfrc_gravcomp`
-   - [ ] `qfrc_fluid`
-   - [ ] `qfrc_passive`
-   - [ ] When `sleep_filter`: zeroes only awake DOFs via `dof_awake_ind[..nv_awake]`
-   - [ ] When not sleep_filter: zeroes `[..model.nv]` range
-4. [ ] Spring+damper guard: `if disabled(SPRING) && disabled(DAMPER) { return; }`
-   - [ ] Returns AFTER zeroing (force vectors are clean)
-   - [ ] Skips ALL sub-functions: springdamper, gravcomp, fluid, contactPassive
-5. [ ] Sub-functions run: springdamper → gravcomp → fluid → (contactPassive when DT-101)
-6. [ ] Aggregation (S4.7e)
+1. [x] `nv == 0` early return (CortenForge extension — not in MuJoCo)
+2. [x] Sleep filter computation: `let sleep_filter = enabled(model, ENABLE_SLEEP) && data.nv_awake < model.nv` — D3 fix
+   - [x] Uses DOF-level counts (`nv_awake` / `nv`), NOT body-level (`nbody_awake`)
+3. [x] **Unconditional zeroing of ALL 5 passive force vectors:** — D4 fix
+   - [x] `qfrc_spring`
+   - [x] `qfrc_damper`
+   - [x] `qfrc_gravcomp`
+   - [x] `qfrc_fluid`
+   - [x] `qfrc_passive`
+   - [x] When `sleep_filter`: zeroes only awake DOFs via `dof_awake_ind[..nv_awake]`
+   - [x] When not sleep_filter: zeroes `[..model.nv]` range
+4. [x] Spring+damper guard: `if disabled(SPRING) && disabled(DAMPER) { return; }`
+   - [x] Returns AFTER zeroing (force vectors are clean)
+   - [x] Skips ALL sub-functions: springdamper, gravcomp, fluid, contactPassive
+5. [x] Sub-functions run: springdamper → gravcomp → fluid → (contactPassive when DT-101)
+6. [x] Aggregation (S4.7e)
 
 #### S4.7b — Component-level spring/damper gating in `mj_springdamper()`
 
 **`PassiveForceVisitor` struct (or equivalent):**
 
-- [ ] Has `has_spring: bool` and `has_damper: bool` fields
-- [ ] Computed once: `has_spring = !disabled(model, DISABLE_SPRING)`, `has_damper = !disabled(model, DISABLE_DAMPER)`
+- [x] Has `has_spring: bool` and `has_damper: bool` fields
+- [x] Computed once: `has_spring = !disabled(model, DISABLE_SPRING)`, `has_damper = !disabled(model, DISABLE_DAMPER)`
 
 **All 5 write sites verified:**
 
 **Site 1 — Joint 1-DOF (hinge/slide):**
-- [ ] Spring writes to `data.qfrc_spring[dof_adr]` (gated on `has_spring`)
-- [ ] Damper writes to `data.qfrc_damper[dof_adr]` (gated on `has_damper`)
-- [ ] Neither writes directly to `qfrc_passive`
+- [x] Spring writes to `data.qfrc_spring[dof_adr]` (gated on `has_spring`)
+- [x] Damper writes to `data.qfrc_damper[dof_adr]` (gated on `has_damper`)
+- [x] Neither writes directly to `qfrc_passive`
 
 **Site 2 — Joint multi-DOF (ball/free):**
-- [ ] Damper writes to `data.qfrc_damper[dof_idx]` (gated on `has_damper`)
-- [ ] No spring for ball/free joints (no stiffness field)
-- [ ] Does NOT write to `qfrc_passive`
+- [x] Damper writes to `data.qfrc_damper[dof_idx]` (gated on `has_damper`)
+- [x] No spring for ball/free joints (no stiffness field)
+- [x] Does NOT write to `qfrc_passive`
 
 **Site 3 — Tendon spring/damper:**
-- [ ] Spring force and damper force computed as separate scalars
-- [ ] Spring force applied via J^T to `qfrc_spring` (gated on `has_spring`)
-- [ ] Damper force applied via J^T to `qfrc_damper` (gated on `has_damper`)
-- [ ] `ten_force[t]` still = `spring_force + damper_force` (diagnostic unchanged)
-- [ ] Does NOT apply combined force to `qfrc_passive`
+- [x] Spring force and damper force computed as separate scalars
+- [x] Spring force applied via J^T to `qfrc_spring` (gated on `has_spring`)
+- [x] Damper force applied via J^T to `qfrc_damper` (gated on `has_damper`)
+- [x] `ten_force[t]` still = `spring_force + damper_force` (diagnostic unchanged)
+- [x] Does NOT apply combined force to `qfrc_passive`
 
 **Site 4 — Flex vertex damping:**
-- [ ] Writes to `data.qfrc_damper[dof_base + k]` (gated on `has_damper`)
-- [ ] Does NOT write to `qfrc_passive`
+- [x] Writes to `data.qfrc_damper[dof_base + k]` (gated on `has_damper`)
+- [x] Does NOT write to `qfrc_passive`
 
 **Site 5 — Flex edge spring/damper + bending:**
-- [ ] Edge spring → `qfrc_spring` (gated)
-- [ ] Edge damper → `qfrc_damper` (gated)
-- [ ] Bending: `spring_mag` and `damper_mag` computed separately
-  - [ ] Each clamped independently (not sum-then-clamp)
-  - [ ] `qfrc_spring[dof+ax] += grad[ax] * fm_spring` (gated)
-  - [ ] `qfrc_damper[dof+ax] += grad[ax] * fm_damper` (gated)
+- [x] Edge spring → `qfrc_spring` (gated)
+- [x] Edge damper → `qfrc_damper` (gated)
+- [x] Bending: `spring_mag` and `damper_mag` computed separately
+  - [x] Each clamped independently (not sum-then-clamp)
+  - [x] `qfrc_spring[dof+ax] += grad[ax] * fm_spring` (gated)
+  - [x] `qfrc_damper[dof+ax] += grad[ax] * fm_damper` (gated)
 
 #### S4.7c — Sub-function guards (independent of spring/damper)
 
-- [ ] `mj_gravcomp()` gated on `DISABLE_GRAVITY` + gravity norm + `ngravcomp` only
-  - [ ] NOT gated on `DISABLE_SPRING` or `DISABLE_DAMPER` directly
-  - [ ] Only indirectly skipped via S4.7a top-level early return
-- [ ] `mj_fluid()` gated on `model.opt.viscosity == 0 && model.opt.density == 0` only
-  - [ ] NOT gated on spring/damper flags directly
-  - [ ] Only indirectly skipped via S4.7a top-level early return
-- [ ] `mj_fluid()` uses body-level sleep filtering (`nbody_awake` / `body_awake_ind`)
-  - [ ] Already implemented by §40c — spot-check only
+- [x] `mj_gravcomp()` gated on `DISABLE_GRAVITY` + gravity norm + `ngravcomp` only
+  - [x] NOT gated on `DISABLE_SPRING` or `DISABLE_DAMPER` directly
+  - [x] Only indirectly skipped via S4.7a top-level early return
+- [x] `mj_fluid()` gated on `model.opt.viscosity == 0 && model.opt.density == 0` only
+  - [x] NOT gated on spring/damper flags directly
+  - [x] Only indirectly skipped via S4.7a top-level early return
+- [x] `mj_fluid()` uses body-level sleep filtering (`nbody_awake` / `body_awake_ind`)
+  - [x] Already implemented by §40c — spot-check only
 
 #### S4.7d — `mj_contact_passive()` and `DISABLE_CONTACT`
 
-- [ ] If `mj_contact_passive()` exists: guard is `disabled(CONTACT) || ncon == 0 || nv == 0`
-- [ ] If not yet implemented (DT-101): verify placeholder/comment documents the guard requirement
-- [ ] Interaction: if BOTH spring+damper disabled, `mj_passive()` returns before `mj_contact_passive()` is reached (S4.7a)
+- [x] If `mj_contact_passive()` exists: guard is `disabled(CONTACT) || ncon == 0 || nv == 0`
+- [x] If not yet implemented (DT-101): verify placeholder/comment documents the guard requirement — D5 fix
+- [x] Interaction: if BOTH spring+damper disabled, `mj_passive()` returns before `mj_contact_passive()` is reached (S4.7a)
 
 #### S4.7e — Aggregation into `qfrc_passive`
 
-- [ ] `qfrc_passive = qfrc_spring + qfrc_damper` (always, no boolean gate)
-- [ ] `+= qfrc_gravcomp` only if `mj_gravcomp()` returned `true`
-- [ ] `+= qfrc_fluid` only if `mj_fluid()` returned `true`
-- [ ] Sleep-filtered aggregation: iterates `dof_awake_ind[..nv_awake]` when sleep active
-- [ ] Non-filtered aggregation: iterates `0..model.nv` otherwise
-- [ ] **Post-aggregation insertion point comment present:**
-  - [ ] References DT-101 (`mj_contactPassive()` goes AFTER aggregation)
-  - [ ] References DT-79 (user callback + plugin dispatch)
-  - [ ] Explains WHY after: aggregation overwrites `qfrc_passive` with `=`, not `+=`
+- [x] `qfrc_passive = qfrc_spring + qfrc_damper` (always, no boolean gate)
+- [x] `+= qfrc_gravcomp` only if `mj_gravcomp()` returned `true`
+- [x] `+= qfrc_fluid` only if `mj_fluid()` returned `true`
+- [x] Sleep-filtered aggregation: iterates `dof_awake_ind[..nv_awake]` when sleep active — D8 fix
+- [x] Non-filtered aggregation: iterates `0..model.nv` otherwise
+- [x] **Post-aggregation insertion point comment present:** — D5/D6/D7 fix
+  - [x] References DT-101 (`mj_contactPassive()` goes AFTER aggregation)
+  - [x] References DT-79 (user callback + plugin dispatch)
+  - [x] Explains WHY after: aggregation overwrites `qfrc_passive` with `=`, not `+=`
 
 ### 2f. S4.8 — `DISABLE_ACTUATION` — skip actuator forces
 
