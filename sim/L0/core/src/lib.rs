@@ -128,6 +128,9 @@ pub mod derivatives;
 // Contact geometry types (moved from sim-contact)
 pub mod contact;
 
+// State reset (§41 S8f) — mj_reset_data free function
+pub mod reset;
+
 // Batched simulation (N independent environments sharing one Model)
 pub mod batch;
 
@@ -227,6 +230,8 @@ pub use types::{
     is_bad,
     mj_warning,
 };
+
+pub use reset::mj_reset_data;
 
 // LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
 pub use linalg::mj_solve_sparse;
