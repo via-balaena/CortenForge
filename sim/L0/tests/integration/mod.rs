@@ -275,3 +275,11 @@ pub mod xfrc_applied;
 /// Phase 4 branch audit: AC-level coverage for CVEL fixes, §56 subtree fields,
 /// flg_rnepost lazy gate, and 4A.6 acc-stage sensor refactor.
 pub mod sensors_phase4;
+
+// ============================================================================
+// DT-103: Spatial Transport Helper Tests
+// ============================================================================
+
+/// Spatial transport tests: object_velocity, object_acceleration, object_force,
+/// backward compatibility, world body edge cases.
+pub mod spatial_transport;
