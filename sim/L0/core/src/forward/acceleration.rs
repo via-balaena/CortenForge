@@ -605,4 +605,6 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
         let child_force = data.cfrc_int[body_id];
         data.cfrc_int[parent_id] += child_force;
     }
+
+    data.flg_rnepost = true;
 }

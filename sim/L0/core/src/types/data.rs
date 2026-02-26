@@ -30,6 +30,7 @@ use crate::island::reset_sleep_state;
 /// (xpos, xquat, qfrc_*, etc.) is COMPUTED from them via forward dynamics.
 #[derive(Debug)]
 #[allow(non_snake_case)] // qM matches MuJoCo naming convention
+#[allow(clippy::struct_excessive_bools)] // MuJoCo lazy evaluation flags (flg_rnepost, flg_subtreevel, etc.)
 pub struct Data {
     // ==================== Generalized Coordinates (THE source of truth) ====================
     /// Joint positions (length `nq`) - includes quaternion components for ball/free joints.
@@ -586,6 +587,10 @@ pub struct Data {
     /// `xfrc_applied` + contact/constraint solver forces, converted to spatial
     /// force at body CoM. Populated by `mj_body_accumulators()`.
     pub cfrc_ext: Vec<SpatialVector>,
+    /// Lazy flag: `mj_body_accumulators()` has been called this step.
+    /// Cleared after constraint solve (before sensors), set by
+    /// `mj_body_accumulators()`. Mirrors MuJoCo's `flg_rnepost`.
+    pub flg_rnepost: bool,
 
     // ==================== Cached Body Effective Mass/Inertia ====================
     // These are extracted from the mass matrix diagonal during forward() and cached
@@ -791,6 +796,7 @@ impl Clone for Data {
             cacc: self.cacc.clone(),
             cfrc_int: self.cfrc_int.clone(),
             cfrc_ext: self.cfrc_ext.clone(),
+            flg_rnepost: self.flg_rnepost,
             // Cached body mass/inertia
             body_min_mass: self.body_min_mass.clone(),
             body_min_inertia: self.body_min_inertia.clone(),
@@ -895,6 +901,7 @@ impl Data {
             *v = SpatialVector::zeros();
         }
         self.qfrc_inverse.fill(0.0);
+        self.flg_rnepost = false;
 
         // 4c. Subtree velocity fields — zero.
         for v in &mut self.subtree_linvel {

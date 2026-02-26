@@ -1,6 +1,11 @@
 //! Body force accumulator tests (§51).
 //!
 //! Verifies `cacc`, `cfrc_int`, and `cfrc_ext` computed by `mj_body_accumulators()`.
+//!
+//! Note: `mj_body_accumulators()` is demand-driven (gated by `flg_rnepost`).
+//! It only runs when acc-stage sensors (accelerometer, force, torque,
+//! framelinacc, frameangacc) or `inverse()` trigger it. Tests that inspect
+//! `cacc`/`cfrc_int`/`cfrc_ext` must include a triggering sensor.
 
 use sim_core::SleepState;
 
@@ -14,8 +19,12 @@ fn free_fall_cacc() {
         <body name="ball" pos="0 0 1">
           <freejoint/>
           <geom type="sphere" size="0.1" mass="1.0"/>
+          <site name="imu" pos="0 0 0"/>
         </body>
       </worldbody>
+      <sensor>
+        <accelerometer site="imu"/>
+      </sensor>
     </mujoco>"#;
 
     let model = sim_mjcf::load_model(xml).expect("load");
@@ -88,8 +97,12 @@ fn cfrc_ext_matches_xfrc_applied() {
         <body name="ball" pos="0 0 1">
           <freejoint/>
           <geom type="sphere" size="0.1" mass="1.0"/>
+          <site name="imu" pos="0 0 0"/>
         </body>
       </worldbody>
+      <sensor>
+        <accelerometer site="imu"/>
+      </sensor>
     </mujoco>"#;
 
     let model = sim_mjcf::load_model(xml).expect("load");
@@ -166,8 +179,12 @@ fn cfrc_ext_includes_contact_forces() {
         <body name="ball" pos="0 0 0.1">
           <freejoint/>
           <geom type="sphere" size="0.1" mass="1.0"/>
+          <site name="imu" pos="0 0 0"/>
         </body>
       </worldbody>
+      <sensor>
+        <accelerometer site="imu"/>
+      </sensor>
     </mujoco>"#;
 
     let model = sim_mjcf::load_model(xml).expect("load");
@@ -212,8 +229,12 @@ fn body_accumulators_zeroed_after_reset() {
         <body name="ball" pos="0 0 1">
           <freejoint/>
           <geom type="sphere" size="0.1" mass="1.0"/>
+          <site name="imu" pos="0 0 0"/>
         </body>
       </worldbody>
+      <sensor>
+        <accelerometer site="imu"/>
+      </sensor>
     </mujoco>"#;
 
     let model = sim_mjcf::load_model(xml).expect("load");
@@ -272,6 +293,7 @@ fn cfrc_int_propagation_chain() {
         <body name="link1" pos="0 0 1">
           <joint name="j1" type="hinge" axis="0 1 0"/>
           <geom type="capsule" size="0.05 0.25" mass="1.0"/>
+          <site name="imu" pos="0 0 0"/>
           <body name="link2" pos="0 0 -0.5">
             <joint name="j2" type="hinge" axis="0 1 0"/>
             <geom type="capsule" size="0.05 0.25" mass="1.0"/>
@@ -282,6 +304,9 @@ fn cfrc_int_propagation_chain() {
           </body>
         </body>
       </worldbody>
+      <sensor>
+        <accelerometer site="imu"/>
+      </sensor>
     </mujoco>"#;
 
     let model = sim_mjcf::load_model(xml).expect("load");
@@ -333,10 +358,15 @@ fn cfrc_int_propagation_chain() {
 
 /// T2/G6: Body accumulators are still computed for sleeping bodies.
 ///
-/// mj_body_accumulators does NOT skip sleeping bodies — gravity pseudo-
+/// `mj_body_accumulators()` does NOT skip sleeping bodies — gravity pseudo-
 /// acceleration and internal forces are computed regardless of sleep state.
+/// The accelerometer sensor on the awake body triggers the lazy gate
+/// (`flg_rnepost`), and the sleeping body's accumulators are also populated.
 #[test]
 fn sleep_state_body_accumulators() {
+    // Two bodies: "ball" will sleep, "sentinel" stays awake (high up, no contact).
+    // The accelerometer on sentinel triggers mj_body_accumulators(), which
+    // computes cacc/cfrc_int for ALL bodies including the sleeping ball.
     let xml = r#"
     <mujoco model="sleep_accum">
       <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
@@ -348,13 +378,21 @@ fn sleep_state_body_accumulators() {
           <freejoint name="ball_free"/>
           <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
         </body>
+        <body name="sentinel" pos="5 0 10">
+          <freejoint name="sentinel_free"/>
+          <geom type="sphere" size="0.05" mass="0.01"/>
+          <site name="imu" pos="0 0 0"/>
+        </body>
       </worldbody>
+      <sensor>
+        <accelerometer site="imu"/>
+      </sensor>
     </mujoco>"#;
 
     let model = sim_mjcf::load_model(xml).expect("load");
     let mut data = model.make_data();
 
-    // Step until the body falls asleep
+    // Step until the ball falls asleep (sentinel is far away, still awake)
     let mut asleep = false;
     for _ in 0..5000 {
         data.step(&model).expect("step");
@@ -363,13 +401,12 @@ fn sleep_state_body_accumulators() {
             break;
         }
     }
-    assert!(asleep, "Body should have fallen asleep after settling");
+    assert!(asleep, "Ball should have fallen asleep after settling");
 
-    // Run forward on the sleeping body
+    // Run forward — sentinel's accelerometer triggers mj_body_accumulators()
     data.forward(&model).expect("forward");
 
-    // Assertion 1: cacc[1] is still computed (sleeping bodies still have gravity).
-    // The world body cacc[0] should contain the gravity pseudo-acceleration.
+    // Assertion 1: cacc[0] (world) has gravity pseudo-acceleration.
     let cacc_world = &data.cacc[0];
     assert!(
         (cacc_world[5] - 9.81).abs() < 1e-6,
@@ -377,18 +414,16 @@ fn sleep_state_body_accumulators() {
         cacc_world[5]
     );
 
-    // Assertion 2: cfrc_int[1] reflects static equilibrium forces (nonzero
-    // because the body has mass and gravity is active).
+    // Assertion 2: cfrc_int for the sleeping ball is nonzero (body accumulators
+    // compute for ALL bodies, not just awake ones).
     let cfrc_int_norm: f64 = data.cfrc_int[1].iter().map(|x| x * x).sum::<f64>().sqrt();
     assert!(
         cfrc_int_norm > 0.1,
         "cfrc_int[1] should be nonzero for sleeping body under gravity, got norm={cfrc_int_norm}"
     );
 
-    // Assertion 3: body accumulators are physically consistent — cfrc_int
-    // should have a gravitational component even while sleeping.
+    // Assertion 3: cfrc_int should have a gravitational component.
     let cfrc_int_z = data.cfrc_int[1][5]; // linear z component
-    // Under gravity, the internal force in z should be related to mg
     assert!(
         cfrc_int_z.abs() > 0.1,
         "cfrc_int[1] z-force should be nonzero under gravity while sleeping, got {cfrc_int_z}"

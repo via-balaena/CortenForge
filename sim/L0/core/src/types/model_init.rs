@@ -658,6 +658,7 @@ impl Model {
             cacc: vec![SpatialVector::zeros(); self.nbody],
             cfrc_int: vec![SpatialVector::zeros(); self.nbody],
             cfrc_ext: vec![SpatialVector::zeros(); self.nbody],
+            flg_rnepost: false,
 
             // Cached body mass/inertia (computed in forward() after CRBA)
             // Initialize world body (index 0) to infinity, others to default

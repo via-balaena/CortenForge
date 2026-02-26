@@ -11,6 +11,8 @@ use crate::types::{
 };
 use nalgebra::{Matrix3, Vector3};
 
+use crate::forward::mj_body_accumulators;
+
 use super::derived::{
     compute_body_acceleration, compute_body_angular_acceleration, compute_site_force_torque,
 };
@@ -52,6 +54,27 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
 
         let adr = model.sensor_adr[sensor_id];
         let objid = model.sensor_objid[sensor_id];
+
+        // Lazy gate: trigger mj_body_accumulators on demand for sensor types
+        // that read cacc/cfrc_int/cfrc_ext. Touch, ActuatorFrc, and limit
+        // sensors read efc_force directly and do NOT need body accumulators.
+        if !data.flg_rnepost {
+            match model.sensor_type[sensor_id] {
+                MjSensorType::Accelerometer
+                | MjSensorType::Force
+                | MjSensorType::Torque
+                | MjSensorType::FrameLinAcc
+                | MjSensorType::FrameAngAcc => {
+                    mj_body_accumulators(model, data);
+                }
+                MjSensorType::User
+                    if model.sensor_datatype[sensor_id] == MjSensorDataType::Acceleration =>
+                {
+                    mj_body_accumulators(model, data);
+                }
+                _ => {}
+            }
+        }
 
         match model.sensor_type[sensor_id] {
             MjSensorType::Accelerometer => {
