@@ -1,6 +1,6 @@
 # Phase 4 Prerequisite — `cvel` Reference Point Fixes
 
-**Status:** Draft
+**Status:** Implemented & Audited (2026-02-26)
 **Priority:** Must-fix before §56
 **Scope:** 5 latent bugs where sensor/energy code reads `cvel[b][3:6]` without
 shifting from `xpos[b]` to the physically correct reference point.

@@ -1,6 +1,6 @@
 # §56 — `subtree_linvel` / `subtree_angmom` Persistent Data Fields
 
-**Status:** Draft
+**Status:** Implemented & Audited (2026-02-26)
 **Source:** `future_work_14.md` §56
 **MuJoCo ref:** `mj_subtreeVel()` in `engine_core_smooth.c`
 **Prerequisites:**

@@ -1,6 +1,6 @@
 # 4A.6 — Refactor Acc-Stage Sensors to Read `cacc`/`cfrc_int`
 
-**Status:** Draft (Revision 2 — all gaps closed)
+**Status:** Implemented & Audited (2026-02-26)
 **Scope:** Accelerometer, FrameLinAcc, FrameAngAcc read from `cacc`; Force/Torque read from `cfrc_int`.
 **Prerequisite:** `flg_rnepost` lazy gate (Phase 4A) — already landed (commit 8e8f5f7).
 **MuJoCo ref:** `engine_sensor.c` (`mj_sensorAcc`), `engine_core_util.c` (`mj_objectAcceleration`), `engine_util_spatial.c` (`mju_transformSpatial`).

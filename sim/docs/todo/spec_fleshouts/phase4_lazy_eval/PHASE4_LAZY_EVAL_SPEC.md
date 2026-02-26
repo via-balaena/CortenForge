@@ -1,6 +1,6 @@
 # Phase 4 — Lazy Evaluation Gates & Persistent Subtree Fields
 
-**Status:** Draft
+**Status:** Implemented & Audited (2026-02-26)
 **Scope:** §56 (`subtree_linvel`/`subtree_angmom` persistent fields) + `flg_rnepost`/`flg_subtreevel` lazy evaluation gates.
 **MuJoCo ref:** `engine_core_smooth.c` (`mj_subtreeVel`, `mj_rnePostConstraint`), `engine_forward.c` (flag clearing), `engine_sensor.c` (flag triggering).
 

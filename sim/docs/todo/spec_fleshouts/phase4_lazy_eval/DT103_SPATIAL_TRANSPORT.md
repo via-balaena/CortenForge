@@ -1,6 +1,6 @@
 # DT-103 — Extract Spatial Transport Helpers
 
-**Status:** Draft (Revision 5 — presentation fixes D15–D17 closed)
+**Status:** Implemented & Audited (2026-02-26)
 **Scope:** Extract `transport_motion`, `transport_force`, `object_velocity`,
 `object_acceleration`, and `object_force` helpers into `dynamics/spatial.rs`.
 Rewrite 6 sensor arms and 1 existing helper to call them. Pure refactor — no

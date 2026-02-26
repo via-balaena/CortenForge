@@ -26,7 +26,7 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | [future_work_10e.md](./future_work_10e.md) | 4. Solver Optimizations | DT-36 – DT-44 | 9 | 1 | 5 | 3 |
 | [future_work_10f.md](./future_work_10f.md) | 5. Derivatives & Analytical Methods | DT-45 – DT-55 | 11 | 1 | 7 | 3 |
 | [future_work_10g.md](./future_work_10g.md) | 6. Actuator & Dynamics | DT-56 – DT-61 | 6 | 2 | 3 | 1 |
-| [future_work_10h.md](./future_work_10h.md) | 7. Sensor Gaps | DT-62 – DT-65, DT-102, DT-103 | 6 | 1 | 3 | 2 |
+| [future_work_10h.md](./future_work_10h.md) | 7. Sensor Gaps | DT-62 – DT-65, DT-102, ~~DT-103~~ (done) | 6 | 1 | 3 | 2 |
 | [future_work_10i.md](./future_work_10i.md) | 8. Flex / Deformable Body | DT-66 – DT-73, DT-85 – DT-90 | 14 | 7 | 3 | 4 |
 | [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92, ~~DT-93~~ (subsumed by §41), DT-96 – DT-98 | 16 | 6 | 4 | 6 |
 | **Total** | | | **100** | **32** | **45** | **23** |

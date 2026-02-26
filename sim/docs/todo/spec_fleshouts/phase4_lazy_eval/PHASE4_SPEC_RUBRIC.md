@@ -244,4 +244,7 @@ Implement in order:
 1. ~~**cvel reference point fixes** (CVEL_REFERENCE_POINT_FIXES.md) — ~25 lines~~ ✓ (commit 444046e)
 2. ~~**§56 subtree fields** (S56_SUBTREE_VEL_SPEC.md) — new Data fields + O(n) algorithm~~ ✓ (commit 503ac6d)
 3. ~~**lazy gates** (PHASE4_LAZY_EVAL_SPEC.md 4A) — demand-driven body accumulators~~ ✓ (commit 8e8f5f7)
-4. **sensor refactor** (SENSOR_CACC_CFRC_REFACTOR.md) — read cacc/cfrc_int, delete derived.rs
+4. ~~**sensor refactor** (SENSOR_CACC_CFRC_REFACTOR.md) — read cacc/cfrc_int, delete derived.rs~~ ✓ (commit 16cfcb3)
+5. ~~**DT-103 spatial transport** (DT103_SPATIAL_TRANSPORT.md) — extract transport helpers, rewrite 6 sensor arms~~ ✓ (commit 29501df, review 6/6 A)
+
+**Phase 4 complete (2026-02-26).** All 5 deliverables shipped and audited.

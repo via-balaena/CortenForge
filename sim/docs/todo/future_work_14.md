@@ -8,8 +8,8 @@ for full MuJoCo parity.
 
 ---
 
-### 56. `subtree_linvel` / `subtree_angmom` as Data Fields
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~56. `subtree_linvel` / `subtree_angmom` as Data Fields~~
+**Status:** ✅ Done (Phase 4, commit `503ac6d`) | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 
