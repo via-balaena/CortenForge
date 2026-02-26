@@ -86,7 +86,17 @@ impl Data {
                 // (non-Newton path solves for v_new directly, not qacc)
             }
             Integrator::RungeKutta4 => {
-                unreachable!("RK4 integration handled by mj_runge_kutta()")
+                // Fallback to Euler when called from step2() split-step API.
+                // Full RK4 is handled by mj_runge_kutta() in step().
+                let nv = if use_dof_ind { self.nv_awake } else { model.nv };
+                for idx in 0..nv {
+                    let i = if use_dof_ind {
+                        self.dof_awake_ind[idx]
+                    } else {
+                        idx
+                    };
+                    self.qvel[i] += self.qacc[i] * h;
+                }
             }
         }
 

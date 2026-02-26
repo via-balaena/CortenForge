@@ -206,11 +206,13 @@ pub use types::{
     MjObjectType,
     MjSensorDataType,
     MjSensorType,
-    // Model struct (extracted to types/model.rs)
     Model,
     // Warning system (§41 S8b)
     NUM_WARNINGS,
     ResetError,
+    // Model struct (extracted to types/model.rs)
+    // Sensor callback stage
+    SensorStage,
     SleepError,
     SleepPolicy,
     SleepState,
