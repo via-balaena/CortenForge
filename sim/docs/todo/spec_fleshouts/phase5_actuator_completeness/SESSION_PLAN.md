@@ -1,10 +1,11 @@
 # Phase 5 — Actuator Completeness: Session Plan
 
-17 sessions, each self-contained. The umbrella spec
+19 sessions, each self-contained. The umbrella spec
 (`PHASE5_UMBRELLA.md`) coordinates across context boundaries.
 
-Each spec follows a three-phase cycle: **write** (rubric + spec) →
+Each spec follows a four-phase cycle: **rubric** → **spec** →
 **implement** → **review** (create review document, then execute it).
+(Sessions 2 and 6 combined rubric + spec before this split was adopted.)
 The review phase catches weak implementations, spec deviations, and
 untracked deferred work before moving to the next spec.
 
@@ -257,18 +258,17 @@ Present the Review Verdict (section 10) to the user when done.
 
 ---
 
-## Session 10: Spec D rubric + spec (interpolation attributes)
+## Session 10: Spec D rubric (interpolation attributes)
 
-- [ ] Complete
+- [x] Complete
 
 ```
-Phase 5 Actuator Completeness — write Spec D rubric and spec.
+Phase 5 Actuator Completeness — write Spec D rubric.
 
 Read these in order:
-1. sim/docs/templates/pre_implementation/WORKFLOW.md — follow phases 1–6
+1. sim/docs/templates/pre_implementation/WORKFLOW.md — follow phases 1–4
 2. sim/docs/templates/pre_implementation/RUBRIC_TEMPLATE.md
-3. sim/docs/templates/pre_implementation/SPEC_TEMPLATE.md
-4. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/PHASE5_UMBRELLA.md
+3. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/PHASE5_UMBRELLA.md
 
 Spec D covers DT-9 (nsample, interp, delay interpolation attributes). This
 is the smallest spec — MJCF parsing and model storage only, no runtime
@@ -277,18 +277,42 @@ behavior change. MuJoCo ref: actuator element parsing in `user_model.cc`.
 Follow the workflow exactly:
 - Phase 1: Read the MuJoCo C source for actuator attribute parsing
 - Phase 2: Build SPEC_D_RUBRIC.md (tailor P1 first with specific C functions)
-- Phase 3: Write SPEC_D.md (MuJoCo Reference section first)
-- Phase 4: Grade honestly (P1 first — do not proceed to P2–P8 until P1 is A+)
-- Phase 5: Close gaps
-- Phase 6: Present for approval — do NOT implement
+- Phase 3: Grade P1 honestly — do not proceed to P2–P8 until P1 is A+
+- Phase 4: Close gaps, re-grade until all criteria are A+
 
-Write files to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/
+Do NOT write the spec — that is the next session.
+
+Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/
 MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 ```
 
 ---
 
-## Session 11: Spec D implementation
+## Session 11: Spec D spec (interpolation attributes)
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — write Spec D spec.
+
+Read these in order:
+1. sim/docs/templates/pre_implementation/WORKFLOW.md — follow phases 5–6
+2. sim/docs/templates/pre_implementation/SPEC_TEMPLATE.md
+3. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/PHASE5_UMBRELLA.md
+4. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_D_RUBRIC.md
+
+Write SPEC_D.md using the rubric as the quality bar:
+- MuJoCo Reference section first (C source is the single source of truth)
+- Grade each spec section against the rubric as you write
+- Present for approval — do NOT implement
+
+Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/
+MuJoCo conformance is the cardinal goal.
+```
+
+---
+
+## Session 12: Spec D implementation
 
 - [ ] Complete
 
@@ -310,7 +334,7 @@ MuJoCo conformance is the cardinal goal.
 
 ---
 
-## Session 12: Spec D review — create review document
+## Session 13: Spec D review — create review document
 
 - [ ] Complete
 
@@ -338,7 +362,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_D_REVIE
 
 ---
 
-## Session 13: Spec D review — execute review
+## Session 14: Spec D review — execute review
 
 - [ ] Complete
 
@@ -364,7 +388,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ---
 
-## Session 14: Spec C rubric + spec (Hill-type muscle dynamics)
+## Session 15: Spec C rubric (Hill-type muscle dynamics)
 
 - [ ] Complete
 
@@ -373,13 +397,12 @@ depends on Spec A's extended `compute_muscle_params()` signature (Contract 2
 in the umbrella).
 
 ```
-Phase 5 Actuator Completeness — write Spec C rubric and spec.
+Phase 5 Actuator Completeness — write Spec C rubric.
 
 Read these in order:
-1. sim/docs/templates/pre_implementation/WORKFLOW.md — follow phases 1–6
+1. sim/docs/templates/pre_implementation/WORKFLOW.md — follow phases 1–4
 2. sim/docs/templates/pre_implementation/RUBRIC_TEMPLATE.md
-3. sim/docs/templates/pre_implementation/SPEC_TEMPLATE.md
-4. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/PHASE5_UMBRELLA.md
+3. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/PHASE5_UMBRELLA.md
 
 Spec C covers DT-58 (Hill-type muscle dynamics variant). This requires an
 architectural decision about integration with the sim-muscle crate.
@@ -394,18 +417,47 @@ integrate with (Contract 2 in the umbrella).
 Follow the workflow exactly:
 - Phase 1: Read the MuJoCo C source for muscle actuation
 - Phase 2: Build SPEC_C_RUBRIC.md (tailor P1 first with specific C functions)
-- Phase 3: Write SPEC_C.md (MuJoCo Reference section first)
-- Phase 4: Grade honestly (P1 first — do not proceed to P2–P8 until P1 is A+)
-- Phase 5: Close gaps
-- Phase 6: Present for approval — do NOT implement
+- Phase 3: Grade P1 honestly — do not proceed to P2–P8 until P1 is A+
+- Phase 4: Close gaps, re-grade until all criteria are A+
 
-Write files to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/
+Do NOT write the spec — that is the next session.
+
+Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/
 MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 ```
 
 ---
 
-## Session 15: Spec C implementation
+## Session 16: Spec C spec (Hill-type muscle dynamics)
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — write Spec C spec.
+
+Read these in order:
+1. sim/docs/templates/pre_implementation/WORKFLOW.md — follow phases 5–6
+2. sim/docs/templates/pre_implementation/SPEC_TEMPLATE.md
+3. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/PHASE5_UMBRELLA.md
+4. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_C_RUBRIC.md
+
+IMPORTANT: Spec A has already been implemented. Read the current state of
+`sim/L0/core/src/forward/muscle.rs` to see the extended
+`compute_muscle_params()` / `compute_actuator_params()` that Spec C must
+integrate with (Contract 2 in the umbrella).
+
+Write SPEC_C.md using the rubric as the quality bar:
+- MuJoCo Reference section first (C source is the single source of truth)
+- Grade each spec section against the rubric as you write
+- Present for approval — do NOT implement
+
+Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/
+MuJoCo conformance is the cardinal goal.
+```
+
+---
+
+## Session 17: Spec C implementation
 
 - [ ] Complete
 
@@ -434,7 +486,7 @@ After Spec C lands, verify Phase 5 aggregate ACs from the umbrella:
 
 ---
 
-## Session 16: Spec C review — create review document
+## Session 18: Spec C review — create review document
 
 - [ ] Complete
 
@@ -462,7 +514,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_C_REVIE
 
 ---
 
-## Session 17: Spec C review — execute review
+## Session 19: Spec C review — execute review
 
 - [ ] Complete
 
@@ -504,11 +556,13 @@ Present the Review Verdict (section 10) to the user when done.
 | 7 | Spec B implementation | Done | aa87169 |
 | 8 | Spec B review — create document | Done | a101de9 |
 | 9 | Spec B review — execute | Done | a312cd4 |
-| 10 | Spec D rubric + spec | Pending | |
-| 11 | Spec D implementation | Pending | |
-| 12 | Spec D review — create document | Pending | |
-| 13 | Spec D review — execute | Pending | |
-| 14 | Spec C rubric + spec | Pending | |
-| 15 | Spec C implementation | Pending | |
-| 16 | Spec C review — create document | Pending | |
-| 17 | Spec C review — execute | Pending | |
+| 10 | Spec D rubric | Done | bbe901f |
+| 11 | Spec D spec | Pending | |
+| 12 | Spec D implementation | Pending | |
+| 13 | Spec D review — create document | Pending | |
+| 14 | Spec D review — execute | Pending | |
+| 15 | Spec C rubric | Pending | |
+| 16 | Spec C spec | Pending | |
+| 17 | Spec C implementation | Pending | |
+| 18 | Spec C review — create document | Pending | |
+| 19 | Spec C review — execute | Pending | |
