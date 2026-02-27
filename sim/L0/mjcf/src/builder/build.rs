@@ -260,6 +260,7 @@ impl ModelBuilder {
             actuator_actlimited: self.actuator_actlimited,
             actuator_actrange: self.actuator_actrange,
             actuator_actearly: self.actuator_actearly,
+            actuator_cranklength: self.actuator_cranklength,
 
             // Tendons (populated by process_tendons)
             ntendon: self.tendon_type.len(),
@@ -563,7 +564,7 @@ impl ModelBuilder {
                 let trn = model.actuator_trntype[act_id];
                 let trnid = model.actuator_trnid[act_id];
                 let body_id = match trn {
-                    ActuatorTransmission::Joint => {
+                    ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                         // trnid[0] is the joint index
                         if trnid[0] < model.njnt {
                             Some(model.jnt_body[trnid[0]])
@@ -635,6 +636,23 @@ impl ModelBuilder {
                         } else {
                             None
                         }
+                    }
+                    ActuatorTransmission::SliderCrank => {
+                        // Mark both crank and slider site trees as AutoNever
+                        let crank_id = trnid[0];
+                        let slider_id = trnid[1];
+                        for &sid in &[crank_id, slider_id] {
+                            if sid < model.nsite {
+                                let bid = model.site_body[sid];
+                                if bid > 0 {
+                                    let tree = model.body_treeid[bid];
+                                    if tree < model.ntree {
+                                        model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
+                                    }
+                                }
+                            }
+                        }
+                        None // body_id not used below — trees already marked
                     }
                 };
                 if let Some(bid) = body_id {

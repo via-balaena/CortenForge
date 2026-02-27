@@ -175,6 +175,13 @@ pub enum ActuatorTransmission {
     Site,
     /// Body (adhesion) actuation.
     Body,
+    /// Slider-crank mechanism: crank site + slider site + rod.
+    /// MuJoCo: `mjTRN_SLIDERCRANK`.
+    SliderCrank,
+    /// Joint transmission with force in parent frame.
+    /// For hinge/slide joints, identical to `Joint`.
+    /// MuJoCo: `mjTRN_JOINTINPARENT`.
+    JointInParent,
 }
 
 /// Actuator dynamics type.

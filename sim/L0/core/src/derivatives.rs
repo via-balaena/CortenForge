@@ -561,7 +561,7 @@ pub(crate) fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         let trnid = model.actuator_trnid[i][0];
 
         match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint => {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                 let dof_adr = model.jnt_dof_adr[trnid];
                 // moment = gear, ∂V/∂qvel[dof] = gear
                 // ∂qfrc[dof]/∂qvel[dof] += gear² · ∂force/∂V
@@ -584,7 +584,9 @@ pub(crate) fn mjd_actuator_vel(model: &Model, data: &mut Data) {
                     }
                 }
             }
-            ActuatorTransmission::Site | ActuatorTransmission::Body => {
+            ActuatorTransmission::Site
+            | ActuatorTransmission::Body
+            | ActuatorTransmission::SliderCrank => {
                 let moment = &data.actuator_moment[i];
                 // moment is nv-dim, ∂V/∂qvel = moment
                 // ∂qfrc/∂qvel += ∂force/∂V · moment · moment^T

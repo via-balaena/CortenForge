@@ -7,7 +7,7 @@
 
 use crate::dynamics::crba::mj_crba;
 use crate::forward::position::mj_fwd_position;
-use crate::jacobian::mj_jac_site;
+use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::linalg::mj_solve_sparse;
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, GainType, LengthRangeError, LengthRangeMode,
@@ -203,16 +203,18 @@ impl Model {
                         }
                     }
                 }
-                ActuatorTransmission::Joint => {
+                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                     let jid = self.actuator_trnid[i][0];
                     if jid < self.njnt && self.jnt_limited[jid] {
                         let (lo, hi) = self.jnt_range[jid];
                         self.actuator_lengthrange[i] = scale_range(lo, hi);
                     }
                 }
-                ActuatorTransmission::Site | ActuatorTransmission::Body => {
-                    // Site: configuration-dependent (full FK required).
-                    // Body: no length concept. Both: no-op, leave at (0, 0).
+                ActuatorTransmission::Site
+                | ActuatorTransmission::Body
+                | ActuatorTransmission::SliderCrank => {
+                    // Site/SliderCrank: configuration-dependent (full FK required).
+                    // Body: no length concept. All: no-op, leave at (0, 0).
                 }
             }
         }
@@ -342,7 +344,7 @@ fn build_actuator_moment(
     let mut j_vec = DVector::zeros(model.nv);
 
     match model.actuator_trntype[actuator_idx] {
-        ActuatorTransmission::Joint => {
+        ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
             let jid = model.actuator_trnid[actuator_idx][0];
             if jid < model.njnt {
                 let dof_adr = model.jnt_dof_adr[jid];
@@ -455,6 +457,41 @@ fn build_actuator_moment(
             // At qpos0 there are no contacts, so J-vector is zero.
             // No-op: j_vec already initialized to zeros.
         }
+        ActuatorTransmission::SliderCrank => {
+            let crank_id = model.actuator_trnid[actuator_idx][0];
+            let slider_id = model.actuator_trnid[actuator_idx][1];
+            let rod = model.actuator_cranklength[actuator_idx];
+
+            let axis: Vector3<f64> = data.site_xmat[slider_id].column(2).into_owned();
+            let vec3 = data.site_xpos[crank_id] - data.site_xpos[slider_id];
+            let av = vec3.dot(&axis);
+            let det = av * av + rod * rod - vec3.dot(&vec3);
+
+            let (dl_daxis, dl_dvec);
+            if det <= 0.0 {
+                dl_daxis = vec3;
+                dl_dvec = axis.clone_owned();
+            } else {
+                let sdet = det.sqrt();
+                let factor = 1.0 - av / sdet;
+                dl_dvec = axis.scale(factor) + vec3.scale(1.0 / sdet);
+                dl_daxis = vec3.scale(factor);
+            }
+
+            let slider_body = model.site_body[slider_id];
+            let (jac_slider_point, jac_axis) =
+                mj_jac_point_axis(model, data, slider_body, &data.site_xpos[slider_id], &axis);
+            let (jac_crank_point, _) = mj_jac_site(model, data, crank_id);
+            let jac_vec = &jac_crank_point - &jac_slider_point;
+
+            for j in 0..model.nv {
+                let mut m = 0.0;
+                for k in 0..3 {
+                    m += dl_daxis[k] * jac_axis[(k, j)] + dl_dvec[k] * jac_vec[(k, j)];
+                }
+                j_vec[j] = m * gear;
+            }
+        }
     }
     j_vec
 }
@@ -507,7 +544,7 @@ fn mj_set_length_range(model: &mut Model, opt: &LengthRangeOpt) {
             };
 
             match model.actuator_trntype[i] {
-                ActuatorTransmission::Joint => {
+                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                     let jid = model.actuator_trnid[i][0];
                     if jid < model.njnt && model.jnt_limited[jid] {
                         let (jlo, jhi) = model.jnt_range[jid];
@@ -523,7 +560,12 @@ fn mj_set_length_range(model: &mut Model, opt: &LengthRangeOpt) {
                         continue;
                     }
                 }
-                _ => {} // Site/Body: no limits to copy
+                ActuatorTransmission::Site
+                | ActuatorTransmission::Body
+                | ActuatorTransmission::SliderCrank => {
+                    // Site/SliderCrank: configuration-dependent, no static limits to copy.
+                    // Body: no length concept. Skip.
+                }
             }
         }
 

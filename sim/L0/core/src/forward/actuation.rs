@@ -5,7 +5,7 @@
 //! actuation portion of `engine_forward.c`.
 
 use super::muscle::muscle_activation_dynamics;
-use crate::jacobian::mj_jac_site;
+use crate::jacobian::{mj_jac_point_axis, mj_jac_site};
 use crate::tendon::{accumulate_point_jacobian, apply_tendon_force, subquat};
 use crate::types::{
     ActuatorDynamics, ActuatorTransmission, BiasType, Contact, Data, GainType, Model,
@@ -235,6 +235,86 @@ pub fn mj_transmission_body_dispatch(model: &Model, data: &mut Data) {
     }
 }
 
+/// Compute actuator length and moment for slider-crank transmissions.
+///
+/// For each `SliderCrank`-transmission actuator:
+/// 1. Extract slider axis (z-column of slider site rotation matrix)
+/// 2. Compute vec = cranksite_pos - slidersite_pos
+/// 3. Compute length = av - sqrt(det), with degenerate fallback
+/// 4. Compute derivatives dlda, dldv via chain rule
+/// 5. Compute Jacobians: `mj_jac_site` on crank, `mj_jac_point_axis` on slider
+/// 6. Compose moment via chain rule
+/// 7. Scale length and moment by gear[0]
+///
+/// Must run after `mj_fwd_position` (needs site_xpos, site_xmat, FK results).
+/// MuJoCo equivalent: `mjTRN_SLIDERCRANK` case in `mj_transmission()`.
+pub fn mj_transmission_slidercrank(model: &Model, data: &mut Data) {
+    for i in 0..model.nu {
+        if model.actuator_trntype[i] != ActuatorTransmission::SliderCrank {
+            continue;
+        }
+
+        let crank_id = model.actuator_trnid[i][0]; // trnid[0] = cranksite
+        let slider_id = model.actuator_trnid[i][1]; // trnid[1] = slidersite
+        let rod = model.actuator_cranklength[i];
+        let gear0 = model.actuator_gear[i][0];
+
+        // Slider axis: z-column of slider site rotation matrix
+        let axis: Vector3<f64> = data.site_xmat[slider_id].column(2).into_owned();
+
+        // Vector from slider site to crank site
+        let vec3 = data.site_xpos[crank_id] - data.site_xpos[slider_id];
+
+        // Length and determinant
+        let av = vec3.dot(&axis);
+        let det = av * av + rod * rod - vec3.dot(&vec3);
+
+        let (length, dl_daxis, dl_dvec);
+        if det <= 0.0 {
+            // Degenerate: silent degradation (matches MuJoCo)
+            length = av;
+            dl_daxis = vec3;
+            dl_dvec = axis.clone_owned();
+        } else {
+            let sdet = det.sqrt();
+            length = av - sdet;
+
+            let factor = 1.0 - av / sdet;
+            // dl_dvec = axis * (1 - av/sdet) + vec / sdet
+            dl_dvec = axis.scale(factor) + vec3.scale(1.0 / sdet);
+            // dl_daxis = vec * (1 - av/sdet)
+            dl_daxis = vec3.scale(factor);
+        }
+
+        // Scale length by gear
+        data.actuator_length[i] = length * gear0;
+
+        // Jacobians:
+        // mj_jac_point_axis on slider site -> (jac_slider_point, jac_axis)
+        let slider_body = model.site_body[slider_id];
+        let (jac_slider_point, jac_axis) =
+            mj_jac_point_axis(model, data, slider_body, &data.site_xpos[slider_id], &axis);
+
+        // mj_jac_site on crank site -> (jac_crank_point, _)
+        // Translational only — rotational Jacobian not used
+        let (jac_crank_point, _) = mj_jac_site(model, data, crank_id);
+
+        // jac_vec = J_crank_point - J_slider_point
+        let jac_vec = &jac_crank_point - &jac_slider_point;
+
+        // Chain rule: moment[j] = sum_k(dl_daxis[k]*jacA[k,j] + dl_dvec[k]*jac_vec[k,j])
+        let moment = &mut data.actuator_moment[i];
+        for j in 0..model.nv {
+            let mut m = 0.0;
+            for k in 0..3 {
+                m += dl_daxis[k] * jac_axis[(k, j)] + dl_dvec[k] * jac_vec[(k, j)];
+            }
+            // Gear scaling baked into moment
+            moment[j] = m * gear0;
+        }
+    }
+}
+
 /// Compute actuator length and velocity from transmission state.
 ///
 /// For each actuator, computes `actuator_length = gear * transmission_length`
@@ -244,7 +324,7 @@ pub fn mj_actuator_length(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
         let gear = model.actuator_gear[i][0];
         match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint => {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                 let jid = model.actuator_trnid[i][0];
                 if jid < model.njnt {
                     // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
@@ -264,8 +344,8 @@ pub fn mj_actuator_length(model: &Model, data: &mut Data) {
                     data.actuator_velocity[i] = gear * data.ten_velocity[tid];
                 }
             }
-            ActuatorTransmission::Site => {
-                // Length already set by mj_transmission_site (position stage).
+            ActuatorTransmission::Site | ActuatorTransmission::SliderCrank => {
+                // Length already set by mj_transmission_site / mj_transmission_slidercrank.
                 // Velocity from cached moment:
                 data.actuator_velocity[i] = data.actuator_moment[i].dot(&data.qvel);
             }
@@ -495,7 +575,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         let gear = model.actuator_gear[i][0];
         let trnid = model.actuator_trnid[i][0];
         match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint => {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                 if trnid < model.njnt {
                     let dof_adr = model.jnt_dof_adr[trnid];
                     let nv = model.jnt_type[trnid].nv();
@@ -517,7 +597,9 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     );
                 }
             }
-            ActuatorTransmission::Site | ActuatorTransmission::Body => {
+            ActuatorTransmission::Site
+            | ActuatorTransmission::Body
+            | ActuatorTransmission::SliderCrank => {
                 // Use cached moment vector from transmission function.
                 for dof in 0..model.nv {
                     let m = data.actuator_moment[i][dof];

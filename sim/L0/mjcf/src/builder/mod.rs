@@ -541,6 +541,7 @@ pub struct ModelBuilder {
     pub(crate) actuator_actlimited: Vec<bool>,
     pub(crate) actuator_actrange: Vec<(f64, f64)>,
     pub(crate) actuator_actearly: Vec<bool>,
+    pub(crate) actuator_cranklength: Vec<f64>,
 
     // Total activation states (sum of actuator_act_num)
     pub(crate) na: usize,

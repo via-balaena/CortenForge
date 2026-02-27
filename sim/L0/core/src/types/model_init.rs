@@ -251,6 +251,7 @@ impl Model {
             actuator_actlimited: vec![],
             actuator_actrange: vec![],
             actuator_actearly: vec![],
+            actuator_cranklength: vec![],
 
             // Tendons (empty)
             ntendon: 0,

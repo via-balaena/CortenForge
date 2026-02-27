@@ -92,10 +92,60 @@ impl ModelBuilder {
                     ),
                 })?;
             (ActuatorTransmission::Body, [body_id, usize::MAX])
+        } else if let Some(ref joint_name) = actuator.jointinparent {
+            let jnt_id =
+                self.joint_name_to_id
+                    .get(joint_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Actuator '{}' references unknown joint: {joint_name}",
+                            actuator.name
+                        ),
+                    })?;
+            (ActuatorTransmission::JointInParent, [*jnt_id, usize::MAX])
+        } else if let Some(ref crank_name) = actuator.cranksite {
+            let slider_name = actuator
+                .slidersite
+                .as_ref()
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': cranksite specified without slidersite",
+                        actuator.name
+                    ),
+                })?;
+            let crank_id = *self
+                .site_name_to_id
+                .get(crank_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': cranksite '{}' not found",
+                        actuator.name, crank_name
+                    ),
+                })?;
+            let slider_id = *self
+                .site_name_to_id
+                .get(slider_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': slidersite '{}' not found",
+                        actuator.name, slider_name
+                    ),
+                })?;
+            let rod = actuator.cranklength.unwrap_or(0.0);
+            if rod <= 0.0 {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': cranklength must be positive, got {}",
+                        actuator.name, rod
+                    ),
+                });
+            }
+            (ActuatorTransmission::SliderCrank, [crank_id, slider_id])
         } else {
             return Err(ModelConversionError {
                 message: format!(
-                    "Actuator '{}' has no transmission target (joint, tendon, site, or body)",
+                    "Actuator '{}' has no transmission target \
+                     (joint, tendon, site, body, jointinparent, or cranksite)",
                     actuator.name
                 ),
             });
@@ -208,6 +258,8 @@ impl ModelBuilder {
         });
         self.actuator_actearly
             .push(actuator.actearly.unwrap_or(false));
+        self.actuator_cranklength
+            .push(actuator.cranklength.unwrap_or(0.0));
 
         // §34 S5: Muscle default actrange — MuJoCo defaults muscles to actlimited=true,
         // actrange=[0,1] when actlimited is not explicitly set. This preserves the

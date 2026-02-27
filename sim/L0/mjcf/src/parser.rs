@@ -2026,6 +2026,10 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
         actuator.gear = gear;
     }
     actuator.refsite = get_attribute_opt(e, "refsite");
+    actuator.jointinparent = get_attribute_opt(e, "jointinparent");
+    actuator.cranksite = get_attribute_opt(e, "cranksite");
+    actuator.slidersite = get_attribute_opt(e, "slidersite");
+    actuator.cranklength = parse_float_attr(e, "cranklength");
 
     if let Some(ctrlrange) = get_attribute_opt(e, "ctrlrange") {
         let parts = parse_float_array(&ctrlrange)?;

@@ -2347,6 +2347,20 @@ pub struct MjcfActuator {
     pub body: Option<String>,
     /// Reference site name (for site transmissions with Cartesian control).
     pub refsite: Option<String>,
+    /// Target joint name for parent-frame transmission.
+    /// Maps to `ActuatorTransmission::JointInParent`.
+    /// For hinge/slide joints, behaviorally identical to `joint`.
+    pub jointinparent: Option<String>,
+    /// Crank site name for slider-crank transmission.
+    /// When specified, `slidersite` must also be present.
+    pub cranksite: Option<String>,
+    /// Slider site name for slider-crank transmission.
+    /// Required when `cranksite` is specified.
+    pub slidersite: Option<String>,
+    /// Rod length connecting crank pin to slider pin (meters).
+    /// Required positive when slider-crank is used.
+    /// MuJoCo validates `cranklength > 0` at compile time.
+    pub cranklength: Option<f64>,
     /// Gear ratio (6D: [tx ty tz rx ry rz]).
     pub gear: [f64; 6],
     /// Control range [lower, upper].
@@ -2456,6 +2470,10 @@ impl Default for MjcfActuator {
             tendon: None,
             body: None,
             refsite: None,
+            jointinparent: None,
+            cranksite: None,
+            slidersite: None,
+            cranklength: None,
             gear: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             ctrlrange: None,
             forcerange: None,

@@ -280,7 +280,7 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                 // For joint-type transmissions, this is gear[0] * qpos[qpos_adr].
                 if objid < model.nu {
                     match model.actuator_trntype[objid] {
-                        ActuatorTransmission::Joint => {
+                        ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                             let jnt_id = model.actuator_trnid[objid][0];
                             if jnt_id < model.njnt {
                                 let qpos_adr = model.jnt_qpos_adr[jnt_id];
@@ -302,7 +302,9 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                             };
                             sensor_write(&mut data.sensordata, adr, 0, value);
                         }
-                        ActuatorTransmission::Site | ActuatorTransmission::Body => {
+                        ActuatorTransmission::Site
+                        | ActuatorTransmission::Body
+                        | ActuatorTransmission::SliderCrank => {
                             // Length set by transmission function (runs before this).
                             sensor_write(&mut data.sensordata, adr, 0, data.actuator_length[objid]);
                         }

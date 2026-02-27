@@ -581,6 +581,11 @@ pub struct Model {
     /// MuJoCo reference: `m->actuator_actearly[i]`.
     pub actuator_actearly: Vec<bool>,
 
+    /// Crank rod length for slider-crank transmissions.
+    /// Only meaningful for `ActuatorTransmission::SliderCrank`.
+    /// MuJoCo reference: `m->actuator_cranklength[i]`.
+    pub actuator_cranklength: Vec<f64>,
+
     // ==================== Tendons (indexed by tendon_id) ====================
     /// Number of tendons.
     pub ntendon: usize,
