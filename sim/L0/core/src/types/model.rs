@@ -829,6 +829,83 @@ pub struct Model {
     pub cb_act_bias: Option<super::callbacks::CbActBias>,
 }
 
+// ============================================================================
+// Length-range estimation types (Phase 5, Spec A §S4)
+// ============================================================================
+
+/// Options for simulation-based actuator length-range estimation.
+/// Matches MuJoCo's `mjLROpt` struct with identical defaults.
+#[derive(Debug, Clone)]
+pub struct LengthRangeOpt {
+    /// Which actuators to compute for.
+    pub mode: LengthRangeMode,
+    /// Skip if range already set (lo < hi).
+    pub useexisting: bool,
+    /// Copy from joint/tendon limits when available.
+    pub uselimit: bool,
+    /// Target acceleration magnitude for the applied force.
+    pub accel: f64,
+    /// Force cap (0 = unlimited).
+    pub maxforce: f64,
+    /// Velocity damping time constant (seconds).
+    pub timeconst: f64,
+    /// Internal simulation timestep (seconds).
+    pub timestep: f64,
+    /// Total simulation time (seconds).
+    pub inttotal: f64,
+    /// Measurement interval — last N seconds used for convergence.
+    pub interval: f64,
+    /// Convergence tolerance (fraction of total range).
+    pub tolrange: f64,
+}
+
+impl Default for LengthRangeOpt {
+    fn default() -> Self {
+        Self {
+            mode: LengthRangeMode::Muscle,
+            useexisting: true,
+            uselimit: true,
+            accel: 20.0,
+            maxforce: 0.0,
+            timeconst: 1.0,
+            timestep: 0.01,
+            inttotal: 10.0,
+            interval: 2.0,
+            tolrange: 0.05,
+        }
+    }
+}
+
+/// Which actuators get simulation-based length-range estimation.
+/// Matches MuJoCo's `mjLRMODE_*` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LengthRangeMode {
+    /// Disabled entirely.
+    None,
+    /// Compute only for muscle actuators (default).
+    #[default]
+    Muscle,
+    /// Compute for muscle and user-defined actuators.
+    MuscleUser,
+    /// Compute for all actuators.
+    All,
+}
+
+/// Errors from simulation-based length-range estimation.
+#[derive(Debug)]
+pub enum LengthRangeError {
+    /// Length range has zero or negative extent (max <= min).
+    InvalidRange {
+        /// Index of the actuator.
+        actuator: usize,
+    },
+    /// Simulation did not converge within tolerance.
+    ConvergenceFailed {
+        /// Index of the actuator.
+        actuator: usize,
+    },
+}
+
 impl Model {
     /// Returns CSR metadata for the sparse LDL factorization: `(rowadr, rownnz, colind)`.
     #[inline]

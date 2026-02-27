@@ -48,7 +48,7 @@ impl Model {
     /// 2. Defaults `lengthspring` to `tendon_length0` when stiffness > 0.
     ///
     /// Must be called after `compute_implicit_params()` and before
-    /// `compute_muscle_params()` (which needs valid `tendon_length0` for all types).
+    /// `compute_actuator_params()` (which needs valid `tendon_length0` for all types).
     ///
     /// Note: Rule 9 (sidesite outside wrapping geometry) is retired — sidesites
     /// inside wrapping geometry are now handled by the `wrap_inside` algorithm (§39).

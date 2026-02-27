@@ -351,6 +351,13 @@ impl DefaultResolver {
                 }
             }
 
+            // dampratio: apply default if not explicitly set
+            if result.dampratio.is_none() {
+                if let Some(dr) = defaults.dampratio {
+                    result.dampratio = Some(dr);
+                }
+            }
+
             // Apply <general>-specific defaults.
             // These only matter for <general> actuators, but we apply them
             // unconditionally — the model builder ignores them for shortcut types.
@@ -747,6 +754,7 @@ impl DefaultResolver {
                 gear: c.gear.or(p.gear),
                 kp: c.kp.or(p.kp),
                 kv: c.kv.or(p.kv),
+                dampratio: c.dampratio.or(p.dampratio),
                 ctrllimited: c.ctrllimited.or(p.ctrllimited),
                 forcelimited: c.forcelimited.or(p.forcelimited),
                 gaintype: c.gaintype.clone().or_else(|| p.gaintype.clone()),

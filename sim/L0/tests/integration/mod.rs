@@ -283,3 +283,11 @@ pub mod sensors_phase4;
 /// Spatial transport tests: object_velocity, object_acceleration, object_force,
 /// backward compatibility, world body edge cases.
 pub mod spatial_transport;
+
+// ============================================================================
+// Phase 5: Actuator Completeness Tests (acc0, dampratio, lengthrange)
+// ============================================================================
+
+/// Phase 5 Spec A tests: acc0 for all actuator types, dampratio MJCF round-trip,
+/// lengthrange from limits.
+pub mod actuator_phase5;

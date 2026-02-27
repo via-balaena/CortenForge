@@ -761,6 +761,7 @@ fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
     }
     defaults.kp = parse_float_attr(e, "kp");
     defaults.kv = parse_float_attr(e, "kv");
+    defaults.dampratio = parse_float_attr(e, "dampratio");
 
     if let Some(ctrllimited) = get_attribute_opt(e, "ctrllimited") {
         defaults.ctrllimited = Some(ctrllimited == "true");
@@ -2051,6 +2052,9 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     }
     if let Some(kv) = parse_float_attr(e, "kv") {
         actuator.kv = Some(kv);
+    }
+    if let Some(dampratio) = parse_float_attr(e, "dampratio") {
+        actuator.dampratio = Some(dampratio);
     }
 
     // ========================================================================

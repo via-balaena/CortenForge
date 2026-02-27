@@ -434,7 +434,7 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 // Muscle gain = -F0 * FL(L) * FV(V)
                 let prm = &model.actuator_gainprm[i];
                 let lengthrange = model.actuator_lengthrange[i];
-                let f0 = prm[2]; // resolved by compute_muscle_params()
+                let f0 = prm[2]; // resolved by compute_actuator_params()
 
                 let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
                 let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);

@@ -261,7 +261,15 @@ impl ModelBuilder {
                 gp[0] = kp;
                 let mut bp = [0.0; 9];
                 bp[1] = -kp;
-                bp[2] = -kv;
+                // dampratio vs explicit kv:
+                // If dampratio is specified, store as positive biasprm[2].
+                // compute_actuator_params() will convert it to -damping at compile time.
+                // If kv is specified (or default 0), store as -kv (explicit damping).
+                if let Some(dr) = actuator.dampratio {
+                    bp[2] = dr; // positive → dampratio (converted by compute_actuator_params)
+                } else {
+                    bp[2] = -kv; // negative or zero → explicit kv
+                }
                 (GainType::Fixed, BiasType::Affine, gp, bp, {
                     let mut d = [0.0; 10];
                     d[0] = tc;
@@ -388,7 +396,7 @@ impl ModelBuilder {
         // Per-actuator group assignment (§41 S7b)
         self.actuator_group.push(actuator.group.unwrap_or(0));
 
-        // Lengthrange and acc0: initialized to zero, computed by compute_muscle_params()
+        // Lengthrange and acc0: initialized to zero, computed by compute_actuator_params()
         self.actuator_lengthrange.push((0.0, 0.0));
         self.actuator_acc0.push(0.0);
 

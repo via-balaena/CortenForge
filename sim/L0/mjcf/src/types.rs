@@ -690,6 +690,8 @@ pub struct MjcfActuatorDefaults {
     pub kp: Option<f64>,
     /// Velocity gain (kv) for velocity actuators.
     pub kv: Option<f64>,
+    /// Damping ratio for position actuators.
+    pub dampratio: Option<f64>,
     /// Control limited.
     pub ctrllimited: Option<bool>,
     /// Force limited.
@@ -2361,6 +2363,11 @@ pub struct MjcfActuator {
     pub kp: f64,
     /// Velocity gain. `None` means use actuator-type default.
     pub kv: Option<f64>,
+    /// Damping ratio for position actuators. When specified, `compute_actuator_params`
+    /// converts it to kv at model compile time using reflected inertia:
+    /// `kv = dampratio * 2 * sqrt(kp * reflected_mass)`.
+    /// Mutually exclusive with explicit kv. `None` means not specified.
+    pub dampratio: Option<f64>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Whether activation is clamped to actrange.
@@ -2456,6 +2463,7 @@ impl Default for MjcfActuator {
             forcelimited: None,
             kp: 1.0,
             kv: None,
+            dampratio: None,
             group: None,
             actlimited: None,
             actrange: None,

@@ -378,11 +378,11 @@ impl ModelBuilder {
         model.compute_qld_csr_metadata();
 
         // Compute tendon_length0 for spatial tendons (requires FK via mj_fwd_position).
-        // Must run before compute_muscle_params() which needs valid tendon_length0.
+        // Must run before compute_actuator_params() which needs valid tendon_length0.
         model.compute_spatial_tendon_length0();
 
-        // Pre-compute muscle-derived parameters (lengthrange, acc0, F0)
-        model.compute_muscle_params();
+        // Pre-compute actuator-derived parameters (lengthrange, acc0, F0, dampratio)
+        model.compute_actuator_params();
 
         // Compute stat_meaninertia = trace(M) / nv at qpos0 (for Newton solver scaling, §15.11)
         model.compute_stat_meaninertia();
