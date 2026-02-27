@@ -247,6 +247,17 @@ if (opt->uselimit) {
 }
 ```
 
+> **⚠ Intentional deviation — DT-106: gear-scaling in uselimit path.**
+> Notice that MuJoCo's uselimit path above copies raw `jnt_range` /
+> `tendon_range` directly — no gear scaling. But MuJoCo's Step 4
+> (simulation-based) path measures `actuator_length` at joint extremes, and
+> `actuator_length = gear * qpos`. So for `gear != 1`, Steps 3 and 4 in
+> MuJoCo produce different answers for the same joint. Our implementation
+> gear-scales in both paths (`actuator_lengthrange = gear * jnt_range`),
+> which is dimensionally self-consistent with `actuator_length = gear * qpos`
+> and required for correct muscle normalization. See `muscle.rs` inline
+> comments and `verify_spec_a.py` for empirical evidence (MuJoCo 3.5.0).
+
 For unlimited joints/tendons: falls through to Step 4.
 For site transmissions: not in Step 3 at all → always Step 4.
 
@@ -454,6 +465,9 @@ pub fn compute_actuator_params(&mut self) {
     for i in 0..self.nu {
         // lengthrange from limits: applies to all actuator types, not just muscles
         let gear = self.actuator_gear[i][0];
+        // NOTE (DT-106): gear scaling here is an intentional deviation from
+        // MuJoCo's uselimit path (which copies raw jnt_range). Our approach
+        // is dimensionally correct — see MuJoCo Reference Step 3 annotation.
         let scale_range = |lo: f64, hi: f64| -> (f64, f64) {
             let a = gear * lo;
             let b = gear * hi;
@@ -890,6 +904,8 @@ fn mj_set_length_range(
         }
 
         // Step 3: Copy from limits
+        // NOTE (DT-106): gear scaling here intentionally deviates from MuJoCo's
+        // uselimit path — see MuJoCo Reference Step 3 annotation for rationale.
         if opt.uselimit {
             let gear = model.actuator_gear[i][0];
             let scale = |a: f64, b: f64| -> (f64, f64) {

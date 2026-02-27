@@ -144,6 +144,7 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | ~~§61~~ | 15 | — | ~~`slidercrank` actuator transmission~~ **Done** — Spec B (Phase 5 Session 7) |
 | DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()` for both `Joint` and `JointInParent` |
 | DT-105 | 10e | T3 | Sparse `actuator_moment` compression (CSR) — performance optimization, numerically equivalent to current dense storage |
+| ~~DT-106~~ | Spec A empirical review | T1 | ~~**Gear-scaling in `uselimit` lengthrange: intentional MuJoCo deviation.**~~ **Done** — our gear-scaled `actuator_lengthrange` is an improvement over MuJoCo's uselimit path, which copies raw `jnt_range` without gear scaling (inconsistent with its own simulation path where `actuator_length = gear * qpos`). CortenForge's approach is dimensionally self-consistent and required for correct muscle normalization. Verified empirically with MuJoCo 3.5.0 (`verify_spec_a.py`). Documented in `muscle.rs`, `SPEC_A.md`, `SPEC_A_RUBRIC.md` (G20). |
 | §63 | 15 | — | `dynprm` array 3→10 elements to match MuJoCo |
 
 ---
