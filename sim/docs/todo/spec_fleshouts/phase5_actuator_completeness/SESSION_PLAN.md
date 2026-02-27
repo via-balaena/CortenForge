@@ -152,7 +152,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 6: Spec B rubric + spec (transmission types + slider-crank)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — write Spec B rubric and spec.
@@ -500,7 +500,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 3 | Spec A implementation | Done | a1cbbba |
 | 4 | Spec A review — create document | Done | d51abb0 |
 | 5 | Spec A review — execute | Done | 0b0fc7b |
-| 6 | Spec B rubric + spec | Pending | |
+| 6 | Spec B rubric + spec | Done | 31feb8a |
 | 7 | Spec B implementation | Pending | |
 | 8 | Spec B review — create document | Pending | |
 | 9 | Spec B review — execute | Pending | |
