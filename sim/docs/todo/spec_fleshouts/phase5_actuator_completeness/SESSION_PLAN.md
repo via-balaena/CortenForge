@@ -502,7 +502,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 5 | Spec A review — execute | Done | 0b0fc7b |
 | 6 | Spec B rubric + spec | Done | 31feb8a |
 | 7 | Spec B implementation | Done | aa87169 |
-| 8 | Spec B review — create document | Done | |
+| 8 | Spec B review — create document | Done | a101de9 |
 | 9 | Spec B review — execute | Pending | |
 | 10 | Spec D rubric + spec | Pending | |
 | 11 | Spec D implementation | Pending | |
