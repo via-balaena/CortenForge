@@ -273,7 +273,7 @@ After Spec C lands, verify Phase 5 aggregate ACs from the umbrella:
 |---------|-------------|--------|--------|
 | 1 | T1-a (DT-6) + T1-b (§63) | Done | d4db634, dc12b8b |
 | 2 | Spec A rubric + spec | Done | ca72ef6 |
-| 3 | Spec A implementation | Done | (pending commit) |
+| 3 | Spec A implementation | Done | a1cbbba |
 | 4 | Spec B rubric + spec | Pending | |
 | 5 | Spec B implementation | Pending | |
 | 6 | Spec D rubric + spec | Pending | |
