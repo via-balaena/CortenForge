@@ -1593,4 +1593,311 @@ mod muscle_tests {
             model.actuator_acc0[0]
         );
     }
+
+    // ---- T13: Multi-body acc0 + dampratio conformance → AC14 ----
+
+    /// Build a 2-link chain (world → link1 → link2) with 2 Y-axis hinges and
+    /// 2 actuators: position on joint 0, motor on joint 1.
+    ///
+    /// Analytical mass matrix at qpos=0:
+    ///   M = [[I1_yy + I2_yy, I2_yy], [I2_yy, I2_yy]]
+    ///   with I1_yy=0.2, I2_yy=0.1 → M = [[0.3, 0.1], [0.1, 0.1]]
+    ///
+    /// M⁻¹ = (1/det) * [[0.1, -0.1], [-0.1, 0.3]]  where det = 0.02
+    ///      = [[5, -5], [-5, 15]]
+    ///
+    /// Actuator 0 (position, joint 0, gear=1): J = [1, 0]
+    ///   M⁻¹ J = [5, -5]  → acc0 = √50 = 5√2 ≈ 7.0710678
+    ///   reflected_mass = M[0,0]/1² = 0.3
+    ///   kv = 1.0 * 2 * √(200 * 0.3) = 2√60 → biasprm[2] = -2√60 ≈ -15.4919334
+    ///
+    /// Actuator 1 (motor, joint 1, gear=3): J = [0, 3]
+    ///   M⁻¹ J = [-15, 45]  → acc0 = √(225+2025) = √2250 = 15√10 ≈ 47.4341649
+    fn build_two_link_chain() -> Model {
+        let mut model = Model::empty();
+
+        // 3 bodies: world (0), link1 (1), link2 (2)
+        model.nbody = 3;
+        model.body_parent = vec![0, 0, 1]; // link1 → world, link2 → link1
+        model.body_rootid = vec![0, 1, 1];
+        model.body_jnt_adr = vec![0, 0, 1];
+        model.body_jnt_num = vec![0, 1, 1];
+        model.body_dof_adr = vec![0, 0, 1];
+        model.body_dof_num = vec![0, 1, 1];
+        model.body_geom_adr = vec![0, 0, 0];
+        model.body_geom_num = vec![0, 0, 0];
+        model.body_pos = vec![Vector3::zeros(); 3];
+        model.body_quat = vec![UnitQuaternion::identity(); 3];
+        model.body_ipos = vec![Vector3::zeros(); 3];
+        model.body_iquat = vec![UnitQuaternion::identity(); 3];
+        model.body_mass = vec![0.0, 2.0, 1.0];
+        // I_yy: link1=0.2, link2=0.1 (only Y matters for Y-axis hinges)
+        model.body_inertia = vec![
+            Vector3::zeros(),
+            Vector3::new(0.1, 0.2, 0.1),
+            Vector3::new(0.05, 0.1, 0.05),
+        ];
+        model.body_name = vec![
+            Some("world".to_string()),
+            Some("link1".to_string()),
+            Some("link2".to_string()),
+        ];
+        model.body_subtreemass = vec![3.0, 3.0, 1.0];
+
+        // 2 hinge joints (both Y-axis)
+        model.njnt = 2;
+        model.nq = 2;
+        model.nv = 2;
+        model.jnt_type = vec![MjJointType::Hinge, MjJointType::Hinge];
+        model.jnt_body = vec![1, 2];
+        model.jnt_qpos_adr = vec![0, 1];
+        model.jnt_dof_adr = vec![0, 1];
+        model.jnt_pos = vec![Vector3::zeros(); 2];
+        model.jnt_axis = vec![Vector3::y(), Vector3::y()];
+        model.jnt_limited = vec![false, false];
+        model.jnt_range = vec![(0.0, 0.0); 2];
+        model.jnt_stiffness = vec![0.0; 2];
+        model.jnt_springref = vec![0.0; 2];
+        model.jnt_damping = vec![0.0; 2];
+        model.jnt_armature = vec![0.0; 2];
+        model.jnt_solref = vec![[0.02, 1.0]; 2];
+        model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 2];
+        model.jnt_name = vec![Some("hinge0".to_string()), Some("hinge1".to_string())];
+
+        // 2 DOFs
+        model.dof_body = vec![1, 2];
+        model.dof_jnt = vec![0, 1];
+        model.dof_parent = vec![None, Some(0)]; // dof1 parent = dof0
+        model.dof_armature = vec![0.0; 2];
+        model.dof_damping = vec![0.0; 2];
+        model.dof_frictionloss = vec![0.0; 2];
+
+        // 2 actuators: position on joint 0, motor on joint 1
+        let kp = 200.0;
+        model.nu = 2;
+        model.na = 0;
+        model.actuator_trntype = vec![ActuatorTransmission::Joint; 2];
+        model.actuator_dyntype = vec![ActuatorDynamics::None; 2];
+        model.actuator_trnid = vec![[0, usize::MAX], [1, usize::MAX]];
+        model.actuator_gear = vec![
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], // position: gear=1
+            [3.0, 0.0, 0.0, 0.0, 0.0, 0.0], // motor: gear=3
+        ];
+        model.actuator_ctrlrange = vec![(f64::NEG_INFINITY, f64::INFINITY); 2];
+        model.actuator_forcerange = vec![(f64::NEG_INFINITY, f64::INFINITY); 2];
+        model.actuator_name = vec![Some("pos_act".to_string()), Some("motor_act".to_string())];
+        model.actuator_act_adr = vec![0, 0];
+        model.actuator_act_num = vec![0, 0];
+        model.actuator_gaintype = vec![GainType::Fixed, GainType::Fixed];
+        model.actuator_biastype = vec![BiasType::Affine, BiasType::None];
+        model.actuator_dynprm = vec![[0.0; 10]; 2];
+        model.actuator_gainprm = vec![
+            {
+                let mut gp = [0.0; 9];
+                gp[0] = kp; // kp=200
+                gp
+            },
+            {
+                let mut gp = [0.0; 9];
+                gp[0] = 1.0; // motor gain=1
+                gp
+            },
+        ];
+        model.actuator_biasprm = vec![
+            {
+                let mut bp = [0.0; 9];
+                bp[1] = -kp; // position-actuator fingerprint
+                bp[2] = 1.0; // positive = dampratio
+                bp
+            },
+            [0.0; 9], // motor: no bias
+        ];
+        model.actuator_lengthrange = vec![(0.0, 0.0); 2];
+        model.actuator_acc0 = vec![0.0; 2];
+        model.actuator_actlimited = vec![false; 2];
+        model.actuator_actrange = vec![(0.0, 0.0); 2];
+        model.actuator_actearly = vec![false; 2];
+
+        model.qpos0 = DVector::zeros(2);
+        model.timestep = 0.001;
+
+        model.body_ancestor_joints = vec![vec![]; 3];
+        model.body_ancestor_mask = vec![vec![]; 3];
+        model.compute_ancestors();
+        model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
+        model.compute_actuator_params();
+
+        model
+    }
+
+    #[test]
+    fn test_acc0_dampratio_multibody() {
+        let model = build_two_link_chain();
+
+        // Actuator 0 (position, joint 0, gear=1):
+        // acc0 = 5√2 ≈ 7.0710678
+        let expected_acc0_0 = 5.0 * 2.0_f64.sqrt();
+        assert!(
+            (model.actuator_acc0[0] - expected_acc0_0).abs() < 1e-6,
+            "acc0[0] should be 5√2 = {:.7}, got {}",
+            expected_acc0_0,
+            model.actuator_acc0[0]
+        );
+
+        // Actuator 1 (motor, joint 1, gear=3):
+        // acc0 = 15√10 ≈ 47.4341649
+        let expected_acc0_1 = 15.0 * 10.0_f64.sqrt();
+        assert!(
+            (model.actuator_acc0[1] - expected_acc0_1).abs() < 1e-6,
+            "acc0[1] should be 15√10 = {:.7}, got {}",
+            expected_acc0_1,
+            model.actuator_acc0[1]
+        );
+
+        // Dampratio conversion on actuator 0:
+        // reflected_mass = M[0,0]/gear² = 0.3/1 = 0.3
+        // kv = 1.0 * 2 * √(200 * 0.3) = 2√60 ≈ 15.4919334
+        // biasprm[2] = -kv
+        let expected_kv = 2.0 * 60.0_f64.sqrt();
+        assert!(
+            (model.actuator_biasprm[0][2] + expected_kv).abs() < 1e-6,
+            "biasprm[0][2] should be -2√60 = {:.7}, got {}",
+            -expected_kv,
+            model.actuator_biasprm[0][2]
+        );
+
+        // Motor actuator biasprm[2] should remain 0 (no dampratio conversion)
+        assert_eq!(
+            model.actuator_biasprm[1][2], 0.0,
+            "Motor biasprm[2] should remain 0.0"
+        );
+    }
+
+    // ---- LR simulation test: non-muscle with mode=All → AC8/AC9 coverage ----
+
+    /// Motor actuator on a limited slide joint: mj_set_length_range with
+    /// mode=All should produce nonzero lengthrange from the simulation.
+    ///
+    /// This tests the LR simulation infrastructure without the circular
+    /// dependency that muscles have (muscle force needs lengthrange, but
+    /// LR estimation runs muscle force). Using a motor with mode=All
+    /// exercises the simulation path on a non-muscle actuator.
+    #[test]
+    fn test_lengthrange_simulation_motor_mode_all() {
+        // Build a motor on a *limited* slide joint. Phase 1 will set
+        // lengthrange from limits. Then we clear it and call
+        // mj_set_length_range with mode=All + useexisting=false to force
+        // the simulation path.
+        let mut model = Model::empty();
+
+        model.nbody = 2;
+        model.body_parent = vec![0, 0];
+        model.body_rootid = vec![0, 1];
+        model.body_jnt_adr = vec![0, 0];
+        model.body_jnt_num = vec![0, 1];
+        model.body_dof_adr = vec![0, 0];
+        model.body_dof_num = vec![0, 1];
+        model.body_geom_adr = vec![0, 0];
+        model.body_geom_num = vec![0, 0];
+        model.body_pos = vec![Vector3::zeros(), Vector3::zeros()];
+        model.body_quat = vec![UnitQuaternion::identity(); 2];
+        model.body_ipos = vec![Vector3::zeros(); 2];
+        model.body_iquat = vec![UnitQuaternion::identity(); 2];
+        model.body_mass = vec![0.0, 2.0];
+        model.body_inertia = vec![Vector3::zeros(), Vector3::new(0.1, 0.1, 0.1)];
+        model.body_name = vec![Some("world".to_string()), Some("body".to_string())];
+        model.body_subtreemass = vec![2.0, 2.0];
+
+        model.njnt = 1;
+        model.nq = 1;
+        model.nv = 1;
+        model.jnt_type = vec![MjJointType::Slide];
+        model.jnt_body = vec![1];
+        model.jnt_qpos_adr = vec![0];
+        model.jnt_dof_adr = vec![0];
+        model.jnt_pos = vec![Vector3::zeros()];
+        model.jnt_axis = vec![Vector3::z()]; // slide along Z
+        model.jnt_limited = vec![true];
+        model.jnt_range = vec![(-1.0, 1.0)]; // limited: -1 to 1 meter
+        model.jnt_stiffness = vec![0.0];
+        model.jnt_springref = vec![0.0];
+        model.jnt_damping = vec![0.0];
+        model.jnt_armature = vec![0.0];
+        model.jnt_solref = vec![[0.02, 1.0]];
+        model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.jnt_name = vec![Some("slide".to_string())];
+
+        model.dof_body = vec![1];
+        model.dof_jnt = vec![0];
+        model.dof_parent = vec![None];
+        model.dof_armature = vec![0.0];
+        model.dof_damping = vec![0.0];
+        model.dof_frictionloss = vec![0.0];
+
+        model.nu = 1;
+        model.na = 0;
+        model.actuator_trntype = vec![ActuatorTransmission::Joint];
+        model.actuator_dyntype = vec![ActuatorDynamics::None];
+        model.actuator_trnid = vec![[0, usize::MAX]];
+        model.actuator_gear = vec![[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]];
+        model.actuator_ctrlrange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
+        model.actuator_forcerange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
+        model.actuator_name = vec![Some("motor".to_string())];
+        model.actuator_act_adr = vec![0];
+        model.actuator_act_num = vec![0];
+        model.actuator_gaintype = vec![GainType::Fixed];
+        model.actuator_biastype = vec![BiasType::None];
+        model.actuator_dynprm = vec![[0.0; 10]];
+        model.actuator_gainprm = vec![{
+            let mut gp = [0.0; 9];
+            gp[0] = 1.0;
+            gp
+        }];
+        model.actuator_biasprm = vec![[0.0; 9]];
+        model.actuator_lengthrange = vec![(0.0, 0.0)];
+        model.actuator_acc0 = vec![0.0];
+        model.actuator_actlimited = vec![false];
+        model.actuator_actrange = vec![(0.0, 0.0)];
+        model.actuator_actearly = vec![false];
+
+        model.qpos0 = DVector::zeros(1);
+        model.timestep = 0.001;
+
+        model.body_ancestor_joints = vec![vec![]; 2];
+        model.body_ancestor_mask = vec![vec![]; 2];
+        model.compute_ancestors();
+        model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
+
+        // Run Phase 2 manually to get acc0 (needed by simulation)
+        model.compute_actuator_params();
+
+        // Phase 1 already set lengthrange from limits: (-1, 1)
+        // Clear it to force the simulation path
+        model.actuator_lengthrange[0] = (0.0, 0.0);
+
+        // Call mj_set_length_range with mode=All, useexisting=false
+        let opt = LengthRangeOpt {
+            mode: LengthRangeMode::All,
+            useexisting: false,
+            uselimit: false, // skip limit copy — force simulation
+            ..LengthRangeOpt::default()
+        };
+        mj_set_length_range(&mut model, &opt);
+
+        let (lo, hi) = model.actuator_lengthrange[0];
+
+        // The simulation should find range close to joint limits (-1, 1) * gear(1).
+        // With 10s of simulation, ±2N force on 2kg body, velocity damping, and
+        // joint limit constraints, the body converges to within a few percent of
+        // the limits. Tolerance of 0.1 (10%) is conservative but catches real
+        // regressions — a broken simulation would produce (0, 0) or wildly wrong values.
+        assert!(
+            lo < -0.9,
+            "LR simulation lo should be near -1.0, got {}",
+            lo
+        );
+        assert!(hi > 0.9, "LR simulation hi should be near 1.0, got {}", hi);
+    }
 }
