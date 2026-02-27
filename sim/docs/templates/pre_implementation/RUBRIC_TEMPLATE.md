@@ -8,8 +8,8 @@ numerically identical output to MuJoCo."
 **MuJoCo conformance is the cardinal goal.** Every criterion in this rubric
 ultimately serves conformance. P1 (MuJoCo Reference Fidelity) is the most
 important criterion — grade it first and hardest. A spec that scores A+ on
-P2–P8 but has P1 wrong is worse than useless: it would produce a clean,
-well-tested implementation of the wrong behavior.
+all other criteria but has P1 wrong is worse than useless: it would produce
+a clean, well-tested implementation of the wrong behavior.
 
 Grade scale: A+ (exemplary) / A (solid) / B (gaps) / C (insufficient).
 Anything below B does not ship.
@@ -20,7 +20,7 @@ Anything below B does not ship.
 
 Before using this rubric, make it specific to the task. A generic rubric
 produces a generic spec — and a generic spec produces conformance bugs.
-Follow these three steps, **starting with MuJoCo specifics:**
+Follow these steps, **starting with MuJoCo specifics:**
 
 ### Step 1: Name the specific MuJoCo functions and fields *(most critical step)*
 
@@ -39,7 +39,23 @@ matter for this task. Remove irrelevant ones (e.g., `nu=0` is irrelevant for
 sensor tasks). Add domain-specific ones (e.g., "sensor attached to world body"
 for sensor tasks).
 
-### Step 3: Add domain-specific criteria (P9+)
+### Step 3: Research the CortenForge codebase
+
+Grep the codebase for the specific files, functions, match sites, and line
+ranges that the task will affect. Document these in criterion bars (especially
+P2 and P7) or in a dedicated Codebase Context section so the spec author knows
+exactly what code to address. Every rubric that skipped this step discovered
+missing files mid-grading (see Spec B R6, Spec D R26).
+
+Examples of what to find:
+- Exhaustive match sites that will break when new enum variants are added
+- Builder pipeline files and the push→transfer→postprocess flow
+- Staleness guard constants (e.g., `EXPECTED_SIZE`) that will need updating
+- Parser attribute gates that could silently skip new attributes
+- Manual `impl Clone`/`impl Default` blocks where forgetting a field is a
+  silent bug
+
+### Step 4: Add domain-specific criteria (P9+)
 
 Every task has 1–3 dimensions that the 8 standard criteria don't cover. If
 you can't think of any, you probably don't understand the task well enough —
@@ -58,6 +74,32 @@ go back to Phase 1 of the workflow.
 
 ---
 
+## Empirical Ground Truth
+
+{Before writing criterion bars, run MuJoCo and document the authoritative
+behavioral facts for this task. A rubric written from header-file assumptions
+instead of empirical verification will produce criterion bars that miss real
+MuJoCo behavior — and the spec will inherit those blind spots.
+
+**What to verify empirically:**
+- Exact field values MuJoCo produces for representative models (these become
+  the expected values in P4 ACs)
+- Edge case behavior (what MuJoCo actually does, not what docs suggest)
+- Validation rules the compiler enforces (accepted vs rejected inputs)
+- Initial data state (zero-initialized? pre-populated? by what formula?)
+- Runtime interactions that affect the compile-time design (e.g., how
+  downstream consumers use the fields being specified)
+
+**Format:** State the MuJoCo version, the Python/C test used, and the exact
+values observed. This section is the authoritative reference — any claim in
+the spec that contradicts it is wrong.
+
+Delete this guidance block and replace it with your empirical findings, or
+delete the entire section if the task requires no empirical verification
+(rare — most tasks benefit from at least one MuJoCo run).}
+
+---
+
 ## Criteria
 
 {Keep all standard criteria (P1–P8) unless one is genuinely inapplicable
@@ -66,10 +108,11 @@ criteria total.}
 
 > **Criterion priority:** P1 (MuJoCo Reference Fidelity) is the cardinal
 > criterion. MuJoCo conformance is the entire reason CortenForge exists.
-> A spec can be A+ on P2–P8 and still be worthless if P1 is wrong — because
-> an incorrect MuJoCo reference means every algorithm, every AC, and every
-> test is verifying the wrong behavior. **Grade P1 first and grade it hardest.**
-> If P1 is not A+, do not proceed to grading P2–P8 until it is fixed.
+> A spec can be A+ on every other criterion and still be worthless if P1 is
+> wrong — because an incorrect MuJoCo reference means every algorithm, every
+> AC, and every test is verifying the wrong behavior. **Grade P1 first and
+> grade it hardest.** If P1 is not A+, do not proceed to grading other
+> criteria until it is fixed.
 
 ### P1. MuJoCo Reference Fidelity *(cardinal criterion)*
 
@@ -243,7 +286,12 @@ step was learned from DT-103, where the rubric had 8 gaps in Rev 1.
 
 - [ ] **Non-overlap:** No two criteria overlap significantly. Test: for any
       gap you might find, can you assign it to exactly one criterion? If a
-      gap could belong to P1 or P3, sharpen the boundary.
+      gap could belong to P1 or P3, sharpen the boundary. For every pair of
+      criteria that intentionally share content (common with P1 vs domain
+      criteria), write a one-sentence boundary explanation: same content
+      graded from which different angle? (e.g., "P1 grades whether the spec
+      GOT the MuJoCo reference right; P10 grades whether the geometric
+      derivation is mathematically rigorous.")
 
 - [ ] **Completeness:** The criteria cover every dimension of the task. Test:
       could the spec be A+ on all criteria but still have a meaningful gap? If
@@ -259,6 +307,11 @@ step was learned from DT-103, where the rubric had 8 gaps in Rev 1.
       verification against C source (not just docs). At least P4 and P5
       reference MuJoCo-derived expected values. If the rubric could produce
       an A+ spec that diverges from MuJoCo's behavior, the rubric is broken.
+
+> **Important:** Replace the generic descriptions above with rubric-specific
+> evidence when checking each box. Name the exact functions, edge cases, and
+> criteria boundaries that justify each checkmark. A checked box without
+> specific evidence is a rubber stamp, not an audit.
 
 ### Criterion → Spec section mapping
 
