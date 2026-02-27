@@ -183,7 +183,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 7: Spec B implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — implement Spec B.
