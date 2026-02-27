@@ -40,7 +40,7 @@ each. MuJoCo conformance is the cardinal goal.
 
 ## Session 2: Spec A rubric + spec (acc0, dampratio, lengthrange)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — write Spec A rubric and spec.
@@ -272,7 +272,7 @@ After Spec C lands, verify Phase 5 aggregate ACs from the umbrella:
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
 | 1 | T1-a (DT-6) + T1-b (§63) | Done | d4db634, dc12b8b |
-| 2 | Spec A rubric + spec | Pending | |
+| 2 | Spec A rubric + spec | Done | (pending commit) |
 | 3 | Spec A implementation | Pending | |
 | 4 | Spec B rubric + spec | Pending | |
 | 5 | Spec B implementation | Pending | |
