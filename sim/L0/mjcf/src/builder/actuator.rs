@@ -5,7 +5,7 @@
 //! adhesion, muscle) and the fully general `<general>` actuator, expanding
 //! each into the canonical gain/bias/dynamics representation.
 
-use sim_core::{ActuatorDynamics, ActuatorTransmission, BiasType, GainType};
+use sim_core::{ActuatorDynamics, ActuatorTransmission, BiasType, GainType, InterpolationType};
 use tracing::warn;
 
 use super::{ModelBuilder, ModelConversionError};
@@ -260,6 +260,27 @@ impl ModelBuilder {
             .push(actuator.actearly.unwrap_or(false));
         self.actuator_cranklength
             .push(actuator.cranklength.unwrap_or(0.0));
+
+        // Interpolation attributes: parse interp keyword → InterpolationType enum
+        let interp = match &actuator.interp {
+            Some(s) => s
+                .parse::<InterpolationType>()
+                .map_err(|e| ModelConversionError { message: e })?,
+            None => InterpolationType::Zoh,
+        };
+
+        // MuJoCo compiler validation: delay > 0 requires nsample > 0
+        let nsample = actuator.nsample.unwrap_or(0);
+        let delay = actuator.delay.unwrap_or(0.0);
+        if delay > 0.0 && nsample <= 0 {
+            return Err(ModelConversionError {
+                message: "setting delay > 0 without a history buffer (nsample must be > 0)".into(),
+            });
+        }
+
+        self.actuator_nsample.push(nsample);
+        self.actuator_interp.push(interp);
+        self.actuator_delay.push(delay);
 
         // §34 S5: Muscle default actrange — MuJoCo defaults muscles to actlimited=true,
         // actrange=[0,1] when actlimited is not explicitly set. This preserves the

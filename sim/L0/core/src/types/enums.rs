@@ -239,6 +239,44 @@ pub enum BiasType {
     User,
 }
 
+/// Interpolation method for actuator history buffer.
+/// MuJoCo: `actuator_history[2*i + 1]` stores 0 (ZOH), 1 (linear), 2 (cubic).
+/// MJCF keywords: `"zoh"`, `"linear"`, `"cubic"` (lowercase only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum InterpolationType {
+    /// Zero-order hold (default). MuJoCo int value: 0.
+    #[default]
+    Zoh = 0,
+    /// Linear interpolation. MuJoCo int value: 1.
+    Linear = 1,
+    /// Cubic interpolation. MuJoCo int value: 2.
+    Cubic = 2,
+}
+
+impl std::str::FromStr for InterpolationType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "zoh" => Ok(Self::Zoh),
+            "linear" => Ok(Self::Linear),
+            "cubic" => Ok(Self::Cubic),
+            _ => Err(format!(
+                "invalid interp keyword '{s}': expected 'zoh', 'linear', or 'cubic'"
+            )),
+        }
+    }
+}
+
+impl From<i32> for InterpolationType {
+    fn from(v: i32) -> Self {
+        match v {
+            1 => Self::Linear,
+            2 => Self::Cubic,
+            _ => Self::Zoh, // 0 or any out-of-range: default to ZOH
+        }
+    }
+}
+
 /// Tendon wrap object type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum WrapType {

@@ -196,6 +196,7 @@ pub use types::{
     GainType,
     GeomType,
     Integrator,
+    InterpolationType,
     // Keyframe (extracted to types/keyframe.rs)
     Keyframe,
     // Numeric validation (§41 S8a)

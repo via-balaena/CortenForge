@@ -396,6 +396,15 @@ impl DefaultResolver {
             if result.lengthrange.is_none() {
                 result.lengthrange = defaults.lengthrange;
             }
+            if result.nsample.is_none() {
+                result.nsample = defaults.nsample;
+            }
+            if result.interp.is_none() {
+                result.interp.clone_from(&defaults.interp);
+            }
+            if result.delay.is_none() {
+                result.delay = defaults.delay;
+            }
         }
 
         result
@@ -768,6 +777,9 @@ impl DefaultResolver {
                 actrange: c.actrange.or(p.actrange),
                 actearly: c.actearly.or(p.actearly),
                 lengthrange: c.lengthrange.or(p.lengthrange),
+                nsample: c.nsample.or(p.nsample),
+                interp: c.interp.clone().or_else(|| p.interp.clone()),
+                delay: c.delay.or(p.delay),
             }),
         }
     }

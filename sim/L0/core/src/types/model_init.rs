@@ -252,6 +252,11 @@ impl Model {
             actuator_actrange: vec![],
             actuator_actearly: vec![],
             actuator_cranklength: vec![],
+            actuator_nsample: vec![],
+            actuator_interp: vec![],
+            actuator_historyadr: vec![],
+            actuator_delay: vec![],
+            nhistory: 0,
 
             // Tendons (empty)
             ntendon: 0,
@@ -379,6 +384,30 @@ impl Model {
             actuator_force: vec![0.0; self.nu],
             actuator_moment: vec![DVector::zeros(self.nv); self.nu],
             act_dot: DVector::zeros(self.na),
+
+            // Allocate and pre-populate history buffer
+            #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss)]
+            history: {
+                let mut buf = vec![0.0f64; self.nhistory];
+                for i in 0..self.actuator_nsample.len() {
+                    let ns = self.actuator_nsample[i];
+                    if ns <= 0 {
+                        continue;
+                    }
+                    let adr = self.actuator_historyadr[i] as usize;
+                    let n = ns as usize;
+                    // metadata0 = 0.0 (already zero)
+                    // metadata1 = float(nsample - 1)
+                    buf[adr + 1] = (n - 1) as f64;
+                    // times = [-(n)*ts, -(n-1)*ts, ..., -ts]
+                    let ts = self.timestep;
+                    for k in 0..n {
+                        buf[adr + 2 + k] = -((n - k) as f64) * ts;
+                    }
+                    // values = all 0.0 (already zero)
+                }
+                buf
+            },
 
             // Body states
             xpos: vec![Vector3::zeros(); self.nbody],

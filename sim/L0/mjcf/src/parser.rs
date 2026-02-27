@@ -802,6 +802,11 @@ fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
         }
     }
 
+    // Interpolation attributes (common to all actuator types)
+    defaults.nsample = parse_int_attr(e, "nsample");
+    defaults.interp = get_attribute_opt(e, "interp");
+    defaults.delay = parse_float_attr(e, "delay");
+
     Ok(defaults)
 }
 
@@ -2060,6 +2065,11 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     if let Some(dampratio) = parse_float_attr(e, "dampratio") {
         actuator.dampratio = Some(dampratio);
     }
+
+    // Interpolation attributes (common to all actuator types)
+    actuator.nsample = parse_int_attr(e, "nsample");
+    actuator.interp = get_attribute_opt(e, "interp");
+    actuator.delay = parse_float_attr(e, "delay");
 
     // ========================================================================
     // <general>-specific attributes

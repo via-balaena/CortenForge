@@ -1,13 +1,17 @@
-//! Phase 5 Spec A integration tests: acc0 for all actuator types, dampratio
-//! MJCF round-trip, lengthrange from limits.
+//! Phase 5 integration tests: Spec A (acc0, dampratio, lengthrange) and
+//! Spec D (interpolation actuator attributes).
 //!
-//! These tests verify the MJCF → Model pipeline for new Phase 5 features:
+//! Spec A tests:
 //! - T11 (AC12): dampratio attribute parsed and stored as positive biasprm[2]
 //! - T7 (AC7): lengthrange from limits unchanged for muscle actuators
 //! - T12 (AC13): lengthrange mode filtering skips non-muscle actuators
+//!
+//! Spec D tests (T1–T16): nsample, interp, delay parsing, historyadr
+//! computation, history buffer pre-population, default class inheritance,
+//! compiler validation, Data::reset()/reset_to_keyframe() restoration.
 
 use approx::assert_relative_eq;
-use sim_core::ActuatorTransmission;
+use sim_core::{ActuatorTransmission, InterpolationType};
 use sim_mjcf::load_model;
 
 // ============================================================================
@@ -673,4 +677,496 @@ fn test_jac_point_axis_correctness() {
     assert_relative_eq!(jac_axis[(0, 0)], 1.0, epsilon = 1e-10);
     assert_relative_eq!(jac_axis[(1, 0)], 0.0, epsilon = 1e-10);
     assert_relative_eq!(jac_axis[(2, 0)], 0.0, epsilon = 1e-10);
+}
+
+// ============================================================================
+// Spec D: Interpolation Actuator Attributes (T1–T16)
+// ============================================================================
+
+/// T1: Basic nsample/delay parsing → AC1, AC3
+/// MuJoCo-verified: actuator_history[0,0] = 4, actuator_delay[0] = 0.006.
+#[test]
+fn spec_d_t1_nsample_delay_parsing() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t1">
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="4" delay="0.006"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+    assert_eq!(model.actuator_nsample[0], 4);
+    assert_relative_eq!(model.actuator_delay[0], 0.006, epsilon = 1e-15);
+}
+
+/// T2: All three interp keywords → AC2
+/// MuJoCo-verified: actuator_history[:,1] = [0, 1, 2].
+#[test]
+fn spec_d_t2_interp_keywords() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t2">
+            <worldbody>
+                <body>
+                    <joint type="hinge" name="j0"/>
+                    <joint type="hinge" name="j1"/>
+                    <joint type="hinge" name="j2"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general joint="j0" nsample="2" interp="zoh"/>
+                <general joint="j1" nsample="2" interp="linear"/>
+                <general joint="j2" nsample="2" interp="cubic"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+    assert_eq!(model.actuator_interp[0], InterpolationType::Zoh);
+    assert_eq!(model.actuator_interp[1], InterpolationType::Linear);
+    assert_eq!(model.actuator_interp[2], InterpolationType::Cubic);
+}
+
+/// T3: Multi-actuator historyadr and nhistory → AC4, AC5
+/// MuJoCo-verified: historyadr=[0, -1, 8], nhistory=14.
+#[test]
+fn spec_d_t3_historyadr_multi_actuator() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t3">
+            <worldbody>
+                <body>
+                    <joint type="hinge" name="j0"/>
+                    <joint type="hinge" name="j1"/>
+                    <joint type="hinge" name="j2"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="3"/>
+                <motor joint="j1"/>
+                <motor joint="j2" nsample="2"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+    assert_eq!(model.actuator_historyadr, vec![0, -1, 8]);
+    assert_eq!(model.nhistory, 14);
+
+    let data = model.make_data();
+    assert_eq!(data.history.len(), 14);
+}
+
+/// T4: Initial history buffer state — MuJoCo conformance → AC6
+/// MuJoCo-verified: meta0=0.0, meta1=3.0, times=[-0.008, -0.006, -0.004, -0.002], values=[0,0,0,0].
+#[test]
+fn spec_d_t4_initial_history_state() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t4">
+            <option timestep="0.002"/>
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="4"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+    let data = model.make_data();
+
+    let expected = vec![0.0, 3.0, -0.008, -0.006, -0.004, -0.002, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(data.history.len(), expected.len());
+    for (i, (&actual, &exp)) in data.history.iter().zip(expected.iter()).enumerate() {
+        assert_relative_eq!(actual, exp, epsilon = 1e-15, max_relative = 1e-15);
+        let _ = i; // suppress unused warning
+    }
+
+    // Also test with timestep=0.01
+    let mjcf2 = r#"
+        <mujoco model="spec_d_t4b">
+            <option timestep="0.01"/>
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="4"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model2 = load_model(mjcf2).expect("should parse");
+    let data2 = model2.make_data();
+    let expected2 = vec![0.0, 3.0, -0.04, -0.03, -0.02, -0.01, 0.0, 0.0, 0.0, 0.0];
+    for (i, (&actual, &exp)) in data2.history.iter().zip(expected2.iter()).enumerate() {
+        assert_relative_eq!(actual, exp, epsilon = 1e-15, max_relative = 1e-15);
+        let _ = i;
+    }
+}
+
+/// T5: Default class inheritance → AC7
+#[test]
+fn spec_d_t5_default_class_inheritance() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t5">
+            <default>
+                <default class="hist">
+                    <general nsample="8" interp="linear" delay="0.02"/>
+                </default>
+            </default>
+            <worldbody>
+                <body>
+                    <joint type="hinge" name="j0"/>
+                    <joint type="hinge" name="j1"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general joint="j0" class="hist"/>
+                <general joint="j1" class="hist" nsample="3"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+
+    // Act 0: inherits all from class "hist"
+    assert_eq!(model.actuator_nsample[0], 8);
+    assert_eq!(model.actuator_interp[0], InterpolationType::Linear);
+    assert_relative_eq!(model.actuator_delay[0], 0.02, epsilon = 1e-15);
+
+    // Act 1: overrides nsample, inherits interp and delay
+    assert_eq!(model.actuator_nsample[1], 3);
+    assert_eq!(model.actuator_interp[1], InterpolationType::Linear);
+    assert_relative_eq!(model.actuator_delay[1], 0.02, epsilon = 1e-15);
+}
+
+/// T6: Compiler validation — delay without history → AC8
+/// MuJoCo-verified: MuJoCo 3.5.0 produces compile error.
+#[test]
+fn spec_d_t6_delay_without_history_error() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t6">
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" delay="0.01"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let result = load_model(mjcf);
+    assert!(
+        result.is_err(),
+        "expected error for delay > 0 without nsample"
+    );
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("delay") || err_msg.contains("history"),
+        "error should mention delay or history: {err_msg}"
+    );
+}
+
+/// T7: Default values when attributes omitted → AC9
+/// MuJoCo-verified: all defaults confirmed.
+#[test]
+fn spec_d_t7_default_values_omitted() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t7">
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+    assert_eq!(model.actuator_nsample[0], 0);
+    assert_eq!(model.actuator_interp[0], InterpolationType::Zoh);
+    assert_relative_eq!(model.actuator_delay[0], 0.0, epsilon = 1e-15);
+    assert_eq!(model.actuator_historyadr[0], -1);
+    assert_eq!(model.nhistory, 0);
+
+    let data = model.make_data();
+    assert_eq!(data.history.len(), 0);
+}
+
+/// T8: Data::reset() restores pre-populated state → AC10
+/// MuJoCo-verified: mj_resetData output matches fresh MjData via np.allclose.
+#[test]
+fn spec_d_t8_reset_restores_history() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t8">
+            <option timestep="0.002"/>
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="4"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+    let fresh_data = model.make_data();
+    let mut data = model.make_data();
+
+    // Mutate history
+    for v in &mut data.history {
+        *v = 99.0;
+    }
+
+    // Reset
+    data.reset(&model);
+
+    // Compare element-by-element
+    assert_eq!(data.history.len(), fresh_data.history.len());
+    for (i, (&actual, &expected)) in data
+        .history
+        .iter()
+        .zip(fresh_data.history.iter())
+        .enumerate()
+    {
+        assert_relative_eq!(actual, expected, epsilon = 1e-15, max_relative = 1e-15,);
+        let _ = i;
+    }
+}
+
+/// T9: Data::reset_to_keyframe() restores pre-populated state → AC11
+/// MuJoCo-verified: mj_resetDataKeyframe produces identical history to mj_resetData.
+#[test]
+fn spec_d_t9_reset_to_keyframe_restores_history() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t9">
+            <option timestep="0.002"/>
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="4"/>
+            </actuator>
+            <keyframe>
+                <key name="start" time="0" qpos="0" qvel="0" ctrl="0"/>
+            </keyframe>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+    let fresh_data = model.make_data();
+    let mut data = model.make_data();
+
+    // Mutate history
+    for v in &mut data.history {
+        *v = 99.0;
+    }
+
+    // Reset to keyframe 0
+    data.reset_to_keyframe(&model, 0)
+        .expect("keyframe 0 exists");
+
+    // Compare element-by-element
+    assert_eq!(data.history.len(), fresh_data.history.len());
+    for (i, (&actual, &expected)) in data
+        .history
+        .iter()
+        .zip(fresh_data.history.iter())
+        .enumerate()
+    {
+        assert_relative_eq!(actual, expected, epsilon = 1e-15, max_relative = 1e-15,);
+        let _ = i;
+    }
+}
+
+/// T10: Invalid interp keyword → AC12
+/// MuJoCo-verified: MuJoCo rejects invalid keywords as XML parse errors.
+#[test]
+fn spec_d_t10_invalid_interp_keyword() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t10">
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="2" interp="spline"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let result = load_model(mjcf);
+    assert!(result.is_err(), "expected error for invalid interp keyword");
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("interp"),
+        "error should mention interp: {err_msg}"
+    );
+}
+
+/// T11: Attributes on shortcut types → AC13
+/// Verifies these attributes are parsed in the common section, not inside
+/// the <general>-only gate.
+#[test]
+fn spec_d_t11_shortcut_type_parsing() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t11">
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <position joint="j0" nsample="3" interp="linear" delay="0.005"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+    assert_eq!(model.actuator_nsample[0], 3);
+    assert_eq!(model.actuator_interp[0], InterpolationType::Linear);
+    assert_relative_eq!(model.actuator_delay[0], 0.005, epsilon = 1e-15);
+}
+
+/// T12 (supplementary): nsample=1 minimum valid buffer
+/// Boundary case — minimum valid allocation.
+#[test]
+fn spec_d_t12_nsample_minimum_valid() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t12">
+            <option timestep="0.002"/>
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="1"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should parse");
+    assert_eq!(model.nhistory, 4); // 2*1 + 2 = 4
+    assert_eq!(model.actuator_historyadr[0], 0);
+
+    let data = model.make_data();
+    assert_eq!(data.history.len(), 4);
+    // meta0=0.0, meta1=0.0 (nsample-1 = 0), time=[-0.002], value=[0.0]
+    assert_relative_eq!(data.history[0], 0.0, epsilon = 1e-15);
+    assert_relative_eq!(data.history[1], 0.0, epsilon = 1e-15);
+    assert_relative_eq!(data.history[2], -0.002, epsilon = 1e-15);
+    assert_relative_eq!(data.history[3], 0.0, epsilon = 1e-15);
+}
+
+/// T13 (supplementary): nsample=-1 negative
+/// MuJoCo conformance — we must not reject values MuJoCo accepts.
+#[test]
+fn spec_d_t13_nsample_negative() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t13">
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="-1"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("negative nsample should be accepted");
+    assert_eq!(model.actuator_nsample[0], -1);
+    assert_eq!(model.actuator_historyadr[0], -1);
+    assert_eq!(model.nhistory, 0);
+}
+
+/// T14 (supplementary): interp="cubic" with nsample=2
+/// MuJoCo conformance — silently accepted, we must not validate.
+#[test]
+fn spec_d_t14_cubic_insufficient_samples() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t14">
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="2" interp="cubic"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("cubic with nsample=2 should be accepted");
+    assert_eq!(model.actuator_interp[0], InterpolationType::Cubic);
+    assert_eq!(model.actuator_nsample[0], 2);
+}
+
+/// T15 (supplementary): delay exceeds buffer capacity
+/// MuJoCo conformance — silently accepted, we must not validate.
+#[test]
+fn spec_d_t15_delay_exceeds_buffer() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t15">
+            <option timestep="0.002"/>
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" nsample="2" delay="0.1"/>
+            </actuator>
+        </mujoco>
+    "#;
+    // delay=0.1 with nsample=2, timestep=0.002 → buffer covers ~0.004s
+    // MuJoCo silently accepts this — no validation
+    let model = load_model(mjcf).expect("delay exceeding buffer should be accepted");
+    assert_relative_eq!(model.actuator_delay[0], 0.1, epsilon = 1e-15);
+    assert_eq!(model.actuator_nsample[0], 2);
+}
+
+/// T16 (supplementary): interp="linear" with nsample=0
+/// MuJoCo conformance — interp set independently of nsample.
+#[test]
+fn spec_d_t16_interp_without_nsample() {
+    let mjcf = r#"
+        <mujoco model="spec_d_t16">
+            <worldbody>
+                <body>
+                    <joint name="j0" type="hinge"/>
+                    <geom size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j0" interp="linear"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("interp without nsample should be accepted");
+    assert_eq!(model.actuator_nsample[0], 0);
+    assert_eq!(model.actuator_interp[0], InterpolationType::Linear);
+    assert_eq!(model.actuator_historyadr[0], -1);
+    assert_eq!(model.nhistory, 0);
 }

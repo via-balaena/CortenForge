@@ -1,6 +1,6 @@
 # Spec D — Interpolation Actuator Attributes: Spec
 
-**Status:** Draft
+**Status:** Implemented
 **Phase:** Roadmap Phase 5 — Actuator Completeness
 **Effort:** M
 **MuJoCo ref:** `mjsActuator_` in `mjspec.h`, `mjModel` in `mjmodel.h`, `mjData` in `mjdata.h`

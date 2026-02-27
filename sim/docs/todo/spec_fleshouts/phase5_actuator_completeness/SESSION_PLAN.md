@@ -314,7 +314,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 12: Spec D implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — implement Spec D.

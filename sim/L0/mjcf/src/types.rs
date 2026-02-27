@@ -718,6 +718,12 @@ pub struct MjcfActuatorDefaults {
     pub actearly: Option<bool>,
     /// Length range for the actuator (requires tendon length range computation).
     pub lengthrange: Option<(f64, f64)>,
+    /// History buffer sample count. MuJoCo: `nsample` (int, default 0).
+    pub nsample: Option<i32>,
+    /// Interpolation method keyword. MuJoCo: `interp` ("zoh"/"linear"/"cubic").
+    pub interp: Option<String>,
+    /// Time delay in seconds. MuJoCo: `delay` (double, default 0.0).
+    pub delay: Option<f64>,
     // #todo: MuJoCo supports actuator-type-specific defaults (cylinder area/timeconst/bias,
     // muscle force/scale/lmin/lmax/vmax/fpmax/fvmax/timeconst, adhesion gain).
     // These fields exist on MjcfActuator but are not yet defaultable.
@@ -2392,6 +2398,12 @@ pub struct MjcfActuator {
     pub actearly: Option<bool>,
     /// Length range for the actuator.
     pub lengthrange: Option<(f64, f64)>,
+    /// History buffer sample count. MuJoCo: `nsample` (int, default 0).
+    pub nsample: Option<i32>,
+    /// Interpolation method keyword. MuJoCo: `interp` ("zoh"/"linear"/"cubic").
+    pub interp: Option<String>,
+    /// Time delay in seconds. MuJoCo: `delay` (double, default 0.0).
+    pub delay: Option<f64>,
 
     // ========================================================================
     // Cylinder-specific attributes
@@ -2487,6 +2499,9 @@ impl Default for MjcfActuator {
             actrange: None,
             actearly: None,
             lengthrange: None,
+            nsample: None,
+            interp: None,
+            delay: None,
             // Cylinder defaults (MuJoCo defaults)
             area: 1.0,
             diameter: None,

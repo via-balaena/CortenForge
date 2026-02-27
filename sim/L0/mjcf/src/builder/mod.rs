@@ -33,8 +33,9 @@ use sim_core::{
     DISABLE_GRAVITY, DISABLE_ISLAND, DISABLE_LIMIT, DISABLE_MIDPHASE, DISABLE_NATIVECCD,
     DISABLE_REFSAFE, DISABLE_SENSOR, DISABLE_SPRING, DISABLE_WARMSTART, ENABLE_ENERGY,
     ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_MULTICCD, ENABLE_OVERRIDE, ENABLE_SLEEP,
-    EqualityType, GainType, GeomType, Integrator, Keyframe, MjJointType, MjObjectType,
-    MjSensorDataType, MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
+    EqualityType, GainType, GeomType, Integrator, InterpolationType, Keyframe, MjJointType,
+    MjObjectType, MjSensorDataType, MjSensorType, Model, SleepPolicy, SolverType, TendonType,
+    WrapType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -542,6 +543,9 @@ pub struct ModelBuilder {
     pub(crate) actuator_actrange: Vec<(f64, f64)>,
     pub(crate) actuator_actearly: Vec<bool>,
     pub(crate) actuator_cranklength: Vec<f64>,
+    pub(crate) actuator_nsample: Vec<i32>,
+    pub(crate) actuator_interp: Vec<InterpolationType>,
+    pub(crate) actuator_delay: Vec<f64>,
 
     // Total activation states (sum of actuator_act_num)
     pub(crate) na: usize,

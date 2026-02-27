@@ -132,6 +132,9 @@ impl ModelBuilder {
             actuator_actrange: vec![],
             actuator_actearly: vec![],
             actuator_cranklength: vec![],
+            actuator_nsample: vec![],
+            actuator_interp: vec![],
+            actuator_delay: vec![],
 
             na: 0,
 

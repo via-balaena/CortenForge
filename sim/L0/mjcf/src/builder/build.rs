@@ -261,6 +261,12 @@ impl ModelBuilder {
             actuator_actrange: self.actuator_actrange,
             actuator_actearly: self.actuator_actearly,
             actuator_cranklength: self.actuator_cranklength,
+            actuator_nsample: self.actuator_nsample,
+            actuator_interp: self.actuator_interp,
+            // historyadr and nhistory computed post-hoc below
+            actuator_historyadr: vec![],
+            actuator_delay: self.actuator_delay,
+            nhistory: 0,
 
             // Tendons (populated by process_tendons)
             ntendon: self.tendon_type.len(),
@@ -377,6 +383,27 @@ impl ModelBuilder {
         // Must be called after dof_parent is finalized and before anything that
         // calls mj_crba (which uses mj_factor_sparse).
         model.compute_qld_csr_metadata();
+
+        // Compute actuator_historyadr and nhistory (cumulative across all actuators).
+        // Must run BEFORE compute_actuator_params() because that calls make_data()
+        // which reads actuator_historyadr for history buffer pre-population.
+        {
+            let nu = model.actuator_nsample.len();
+            let mut historyadr = vec![-1i32; nu];
+            let mut offset: i32 = 0;
+            for (adr, &ns) in historyadr.iter_mut().zip(model.actuator_nsample.iter()) {
+                if ns > 0 {
+                    *adr = offset;
+                    offset += 2 * ns + 2;
+                }
+                // ns <= 0: historyadr stays -1
+            }
+            model.actuator_historyadr = historyadr;
+            #[allow(clippy::cast_sign_loss)]
+            {
+                model.nhistory = offset as usize;
+            }
+        }
 
         // Compute tendon_length0 for spatial tendons (requires FK via mj_fwd_position).
         // Must run before compute_actuator_params() which needs valid tendon_length0.

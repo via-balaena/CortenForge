@@ -12,8 +12,8 @@ use std::sync::Arc;
 // Imports from sibling modules
 use super::enums::{
     ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType, Integrator,
-    MjJointType, MjObjectType, MjSensorDataType, MjSensorType, SleepPolicy, SolverType, TendonType,
-    WrapType,
+    InterpolationType, MjJointType, MjObjectType, MjSensorDataType, MjSensorType, SleepPolicy,
+    SolverType, TendonType, WrapType,
 };
 
 // Imports from sibling modules
@@ -585,6 +585,28 @@ pub struct Model {
     /// Only meaningful for `ActuatorTransmission::SliderCrank`.
     /// MuJoCo reference: `m->actuator_cranklength[i]`.
     pub actuator_cranklength: Vec<f64>,
+
+    /// History sample count per actuator (length `nu`).
+    /// MuJoCo: `actuator_history[2*i + 0]`.  Default: 0 (no history).
+    /// Signed to match MuJoCo — accepts negative values (treated as no history).
+    pub actuator_nsample: Vec<i32>,
+
+    /// Interpolation type per actuator (length `nu`).
+    /// MuJoCo: `actuator_history[2*i + 1]` as int 0/1/2.  Default: Zoh.
+    pub actuator_interp: Vec<InterpolationType>,
+
+    /// Cumulative offset into `Data.history` per actuator (length `nu`).
+    /// MuJoCo: `actuator_historyadr`.  Equals -1 when `nsample <= 0`.
+    pub actuator_historyadr: Vec<i32>,
+
+    /// Time delay per actuator in seconds (length `nu`).
+    /// MuJoCo: `actuator_delay`.  Default: 0.0.  Present for all actuators.
+    pub actuator_delay: Vec<f64>,
+
+    /// Total history buffer size (actuator contributions only).
+    /// MuJoCo: `nhistory` (includes sensors — ours is actuator-only until
+    /// sensor history is implemented).
+    pub nhistory: usize,
 
     // ==================== Tendons (indexed by tendon_id) ====================
     /// Number of tendons.
