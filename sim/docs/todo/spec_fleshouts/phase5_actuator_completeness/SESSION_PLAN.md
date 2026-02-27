@@ -98,7 +98,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 4: Spec A review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — create Spec A review document.
@@ -498,7 +498,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 1 | T1-a (DT-6) + T1-b (§63) | Done | d4db634, dc12b8b |
 | 2 | Spec A rubric + spec | Done | ca72ef6 |
 | 3 | Spec A implementation | Done | a1cbbba |
-| 4 | Spec A review — create document | Pending | |
+| 4 | Spec A review — create document | Done | d51abb0 |
 | 5 | Spec A review — execute | Pending | |
 | 6 | Spec B rubric + spec | Pending | |
 | 7 | Spec B implementation | Pending | |
