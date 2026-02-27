@@ -138,10 +138,12 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | DT-59 | 10g | T2 | Bisection-based `lengthrange` for unlimited slide joints (`mj_setLengthRange`) |
 | DT-77 | 10j | T2 | Length-range auto-estimation for site-transmission muscle actuators |
 | DT-6 | 10b | T1 | `actearly` attribute wired to runtime (currently parsed, no effect) |
-| DT-8 | 10b | T2 | Transmission types: `cranksite`, `slidersite`, `jointinparent` |
+| ~~DT-8~~ | 10b | T2 | ~~Transmission types: `cranksite`, `slidersite`, `jointinparent`~~ **Done** — Spec B (Phase 5 Session 7) |
 | DT-9 | 10b | T2 | `nsample`, `interp`, `delay` — MuJoCo 3.x interpolation actuator attributes |
 | ~~DT-60~~ | 10g | T1 | ~~`jnt_actgravcomp` routing to `qfrc_actuator` instead of `qfrc_passive`~~ **Done** — subsumed by §41 S4.2a |
-| §61 | 15 | — | `slidercrank` actuator transmission |
+| ~~§61~~ | 15 | — | ~~`slidercrank` actuator transmission~~ **Done** — Spec B (Phase 5 Session 7) |
+| DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()` for both `Joint` and `JointInParent` |
+| DT-105 | 10e | T3 | Sparse `actuator_moment` compression (CSR) — performance optimization, numerically equivalent to current dense storage |
 | §63 | 15 | — | `dynprm` array 3→10 elements to match MuJoCo |
 
 ---

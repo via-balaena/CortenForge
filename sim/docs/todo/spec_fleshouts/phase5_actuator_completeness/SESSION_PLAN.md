@@ -233,7 +233,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_B_REVIE
 
 ## Session 9: Spec B review — execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — execute Spec B review.
@@ -503,7 +503,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 6 | Spec B rubric + spec | Done | 31feb8a |
 | 7 | Spec B implementation | Done | aa87169 |
 | 8 | Spec B review — create document | Done | a101de9 |
-| 9 | Spec B review — execute | Pending | |
+| 9 | Spec B review — execute | Done | |
 | 10 | Spec D rubric + spec | Pending | |
 | 11 | Spec D implementation | Pending | |
 | 12 | Spec D review — create document | Pending | |
