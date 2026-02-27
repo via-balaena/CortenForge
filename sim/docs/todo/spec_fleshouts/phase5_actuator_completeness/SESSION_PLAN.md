@@ -11,7 +11,7 @@ documents and commits are the state, not the context window.
 
 ## Session 1: T1 items (DT-6 + §63)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — implement T1 items.
@@ -271,7 +271,7 @@ After Spec C lands, verify Phase 5 aggregate ACs from the umbrella:
 
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
-| 1 | T1-a (DT-6) + T1-b (§63) | Pending | |
+| 1 | T1-a (DT-6) + T1-b (§63) | Done | d4db634, dc12b8b |
 | 2 | Spec A rubric + spec | Pending | |
 | 3 | Spec A implementation | Pending | |
 | 4 | Spec B rubric + spec | Pending | |
