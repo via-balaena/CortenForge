@@ -1,7 +1,12 @@
 # Phase 5 — Actuator Completeness: Session Plan
 
-9 sessions, each self-contained. The umbrella spec
+17 sessions, each self-contained. The umbrella spec
 (`PHASE5_UMBRELLA.md`) coordinates across context boundaries.
+
+Each spec follows a three-phase cycle: **write** (rubric + spec) →
+**implement** → **review** (create review document, then execute it).
+The review phase catches weak implementations, spec deviations, and
+untracked deferred work before moving to the next spec.
 
 **Check off each session as it completes.** If a session runs out of
 context mid-task, start a new session with the same prompt — the
@@ -91,7 +96,61 @@ MuJoCo conformance is the cardinal goal.
 
 ---
 
-## Session 4: Spec B rubric + spec (transmission types + slider-crank)
+## Session 4: Spec A review — create review document
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — create Spec A review document.
+
+Read these:
+1. sim/docs/templates/post_implementation/REVIEW_TEMPLATE.md
+2. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_A.md
+
+Copy the review template into this directory as SPEC_A_REVIEW.md. Fill in the
+structure by walking the spec: populate the Key Behaviors table from the spec's
+Key Behaviors section, list every S1..SN section, every AC, every planned test
+T1..TN, every edge case from the Edge Case Inventory, every row from the
+Convention Notes table, every item from the Blast Radius section, and every
+Out of Scope item.
+
+This session creates the review document — it does NOT execute the review.
+Leave the "Implementation does", "Status", "CortenForge After", and all
+verdict fields blank. The next session fills those in by reading the actual
+implementation.
+
+Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_A_REVIEW.md
+```
+
+---
+
+## Session 5: Spec A review — execute review
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — execute Spec A review.
+
+Read these:
+1. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_A_REVIEW.md
+2. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_A.md
+3. The implementation files listed in SPEC_A.md's Files Affected section
+
+Execute the review: for every row in the review document, read the actual
+implementation and fill in the verdict. Grade each spec section, verify each
+AC has a passing test, check every planned test was written, compare blast
+radius predictions against reality, audit convention notes, scan for weak
+implementations, and verify all deferred work is tracked.
+
+Fix any "fix before shipping" items in this session. For each fix, update the
+review document to reflect the resolution. Run domain tests after fixes.
+
+Present the Review Verdict (section 10) to the user when done.
+```
+
+---
+
+## Session 6: Spec B rubric + spec (transmission types + slider-crank)
 
 - [ ] Complete
 
@@ -122,7 +181,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ---
 
-## Session 5: Spec B implementation
+## Session 7: Spec B implementation
 
 - [ ] Complete
 
@@ -144,7 +203,61 @@ MuJoCo conformance is the cardinal goal.
 
 ---
 
-## Session 6: Spec D rubric + spec (interpolation attributes)
+## Session 8: Spec B review — create review document
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — create Spec B review document.
+
+Read these:
+1. sim/docs/templates/post_implementation/REVIEW_TEMPLATE.md
+2. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_B.md
+
+Copy the review template into this directory as SPEC_B_REVIEW.md. Fill in the
+structure by walking the spec: populate the Key Behaviors table from the spec's
+Key Behaviors section, list every S1..SN section, every AC, every planned test
+T1..TN, every edge case from the Edge Case Inventory, every row from the
+Convention Notes table, every item from the Blast Radius section, and every
+Out of Scope item.
+
+This session creates the review document — it does NOT execute the review.
+Leave the "Implementation does", "Status", "CortenForge After", and all
+verdict fields blank. The next session fills those in by reading the actual
+implementation.
+
+Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_B_REVIEW.md
+```
+
+---
+
+## Session 9: Spec B review — execute review
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — execute Spec B review.
+
+Read these:
+1. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_B_REVIEW.md
+2. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_B.md
+3. The implementation files listed in SPEC_B.md's Files Affected section
+
+Execute the review: for every row in the review document, read the actual
+implementation and fill in the verdict. Grade each spec section, verify each
+AC has a passing test, check every planned test was written, compare blast
+radius predictions against reality, audit convention notes, scan for weak
+implementations, and verify all deferred work is tracked.
+
+Fix any "fix before shipping" items in this session. For each fix, update the
+review document to reflect the resolution. Run domain tests after fixes.
+
+Present the Review Verdict (section 10) to the user when done.
+```
+
+---
+
+## Session 10: Spec D rubric + spec (interpolation attributes)
 
 - [ ] Complete
 
@@ -175,7 +288,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ---
 
-## Session 7: Spec D implementation
+## Session 11: Spec D implementation
 
 - [ ] Complete
 
@@ -197,7 +310,61 @@ MuJoCo conformance is the cardinal goal.
 
 ---
 
-## Session 8: Spec C rubric + spec (Hill-type muscle dynamics)
+## Session 12: Spec D review — create review document
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — create Spec D review document.
+
+Read these:
+1. sim/docs/templates/post_implementation/REVIEW_TEMPLATE.md
+2. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_D.md
+
+Copy the review template into this directory as SPEC_D_REVIEW.md. Fill in the
+structure by walking the spec: populate the Key Behaviors table from the spec's
+Key Behaviors section, list every S1..SN section, every AC, every planned test
+T1..TN, every edge case from the Edge Case Inventory, every row from the
+Convention Notes table, every item from the Blast Radius section, and every
+Out of Scope item.
+
+This session creates the review document — it does NOT execute the review.
+Leave the "Implementation does", "Status", "CortenForge After", and all
+verdict fields blank. The next session fills those in by reading the actual
+implementation.
+
+Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_D_REVIEW.md
+```
+
+---
+
+## Session 13: Spec D review — execute review
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — execute Spec D review.
+
+Read these:
+1. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_D_REVIEW.md
+2. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_D.md
+3. The implementation files listed in SPEC_D.md's Files Affected section
+
+Execute the review: for every row in the review document, read the actual
+implementation and fill in the verdict. Grade each spec section, verify each
+AC has a passing test, check every planned test was written, compare blast
+radius predictions against reality, audit convention notes, scan for weak
+implementations, and verify all deferred work is tracked.
+
+Fix any "fix before shipping" items in this session. For each fix, update the
+review document to reflect the resolution. Run domain tests after fixes.
+
+Present the Review Verdict (section 10) to the user when done.
+```
+
+---
+
+## Session 14: Spec C rubric + spec (Hill-type muscle dynamics)
 
 - [ ] Complete
 
@@ -238,7 +405,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ---
 
-## Session 9: Spec C implementation
+## Session 15: Spec C implementation
 
 - [ ] Complete
 
@@ -267,6 +434,63 @@ After Spec C lands, verify Phase 5 aggregate ACs from the umbrella:
 
 ---
 
+## Session 16: Spec C review — create review document
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — create Spec C review document.
+
+Read these:
+1. sim/docs/templates/post_implementation/REVIEW_TEMPLATE.md
+2. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_C.md
+
+Copy the review template into this directory as SPEC_C_REVIEW.md. Fill in the
+structure by walking the spec: populate the Key Behaviors table from the spec's
+Key Behaviors section, list every S1..SN section, every AC, every planned test
+T1..TN, every edge case from the Edge Case Inventory, every row from the
+Convention Notes table, every item from the Blast Radius section, and every
+Out of Scope item.
+
+This session creates the review document — it does NOT execute the review.
+Leave the "Implementation does", "Status", "CortenForge After", and all
+verdict fields blank. The next session fills those in by reading the actual
+implementation.
+
+Write to: sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_C_REVIEW.md
+```
+
+---
+
+## Session 17: Spec C review — execute review
+
+- [ ] Complete
+
+```
+Phase 5 Actuator Completeness — execute Spec C review.
+
+Read these:
+1. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_C_REVIEW.md
+2. sim/docs/todo/spec_fleshouts/phase5_actuator_completeness/SPEC_C.md
+3. The implementation files listed in SPEC_C.md's Files Affected section
+
+Execute the review: for every row in the review document, read the actual
+implementation and fill in the verdict. Grade each spec section, verify each
+AC has a passing test, check every planned test was written, compare blast
+radius predictions against reality, audit convention notes, scan for weak
+implementations, and verify all deferred work is tracked.
+
+Fix any "fix before shipping" items in this session. For each fix, update the
+review document to reflect the resolution. Run domain tests after fixes.
+
+This is the final review of Phase 5. After the verdict, verify the Phase 5
+aggregate ACs from the umbrella (PH5-AC1 through PH5-AC5) are satisfied.
+
+Present the Review Verdict (section 10) to the user when done.
+```
+
+---
+
 ## Progress Tracker
 
 | Session | Deliverable | Status | Commit |
@@ -274,9 +498,17 @@ After Spec C lands, verify Phase 5 aggregate ACs from the umbrella:
 | 1 | T1-a (DT-6) + T1-b (§63) | Done | d4db634, dc12b8b |
 | 2 | Spec A rubric + spec | Done | ca72ef6 |
 | 3 | Spec A implementation | Done | a1cbbba |
-| 4 | Spec B rubric + spec | Pending | |
-| 5 | Spec B implementation | Pending | |
-| 6 | Spec D rubric + spec | Pending | |
-| 7 | Spec D implementation | Pending | |
-| 8 | Spec C rubric + spec | Pending | |
-| 9 | Spec C implementation | Pending | |
+| 4 | Spec A review — create document | Pending | |
+| 5 | Spec A review — execute | Pending | |
+| 6 | Spec B rubric + spec | Pending | |
+| 7 | Spec B implementation | Pending | |
+| 8 | Spec B review — create document | Pending | |
+| 9 | Spec B review — execute | Pending | |
+| 10 | Spec D rubric + spec | Pending | |
+| 11 | Spec D implementation | Pending | |
+| 12 | Spec D review — create document | Pending | |
+| 13 | Spec D review — execute | Pending | |
+| 14 | Spec C rubric + spec | Pending | |
+| 15 | Spec C implementation | Pending | |
+| 16 | Spec C review — create document | Pending | |
+| 17 | Spec C review — execute | Pending | |
