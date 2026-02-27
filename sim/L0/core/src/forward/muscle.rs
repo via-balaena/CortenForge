@@ -97,7 +97,7 @@ pub fn sigmoid(x: f64) -> f64 {
 ///
 /// When `tausmooth > 0`, uses quintic sigmoid to blend between `tau_act` and
 /// `tau_deact` instead of a hard switch at `ctrl == act`.
-pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 3]) -> f64 {
+pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 10]) -> f64 {
     let ctrl_clamped = ctrl.clamp(0.0, 1.0);
     let act_clamped = act.clamp(0.0, 1.0);
 
@@ -463,7 +463,7 @@ mod muscle_tests {
         model.actuator_act_num = vec![1];
         model.actuator_gaintype = vec![GainType::Muscle];
         model.actuator_biastype = vec![BiasType::Muscle];
-        model.actuator_dynprm = vec![[0.01, 0.04, 0.0]]; // default tau_act, tau_deact
+        model.actuator_dynprm = vec![[0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]; // default tau_act, tau_deact
         model.actuator_gainprm = vec![[0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]];
         model.actuator_biasprm = vec![[0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]];
         model.actuator_lengthrange = vec![(0.0, 0.0)]; // will be computed
@@ -581,7 +581,7 @@ mod muscle_tests {
     // ---- AC #2: Activation asymmetry ----
     #[test]
     fn test_activation_asymmetry() {
-        let dynprm = [0.01, 0.04, 0.0];
+        let dynprm = [0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let dt = 0.001;
 
         // Time to reach 90% from 0 with ctrl=1
@@ -718,7 +718,7 @@ mod muscle_tests {
         model.actuator_act_num = vec![0];
         model.actuator_gaintype = vec![GainType::Fixed];
         model.actuator_biastype = vec![BiasType::None];
-        model.actuator_dynprm = vec![[0.0; 3]];
+        model.actuator_dynprm = vec![[0.0; 10]];
         model.actuator_gainprm = vec![{
             let mut p = [0.0; 9];
             p[0] = 1.0; // Motor: unit gain
@@ -827,7 +827,10 @@ mod muscle_tests {
     #[test]
     fn test_muscle_params_transferred() {
         let model = build_muscle_model_joint(1.0);
-        assert_eq!(model.actuator_dynprm[0], [0.01, 0.04, 0.0]);
+        assert_eq!(
+            model.actuator_dynprm[0],
+            [0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        );
         assert!((model.actuator_gainprm[0][0] - 0.75).abs() < 1e-10); // range[0]
         assert!((model.actuator_gainprm[0][1] - 1.05).abs() < 1e-10); // range[1]
         assert!((model.actuator_gainprm[0][4] - 0.5).abs() < 1e-10); // lmin

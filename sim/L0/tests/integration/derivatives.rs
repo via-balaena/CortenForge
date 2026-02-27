@@ -28,7 +28,7 @@ fn add_torque_actuators(model: &mut Model, n: usize) {
         model.actuator_act_num.push(0);
         model.actuator_gaintype.push(GainType::Fixed);
         model.actuator_biastype.push(BiasType::None);
-        model.actuator_dynprm.push([0.0; 3]);
+        model.actuator_dynprm.push([0.0; 10]);
         model.actuator_gainprm.push({
             let mut p = [0.0; 9];
             p[0] = 1.0; // gain = 1
@@ -58,7 +58,7 @@ fn add_affine_actuator(model: &mut Model, jnt_id: usize, gear: f64, gain_v: f64,
     model.actuator_act_num.push(0);
     model.actuator_gaintype.push(GainType::Affine);
     model.actuator_biastype.push(BiasType::Affine);
-    model.actuator_dynprm.push([0.0; 3]);
+    model.actuator_dynprm.push([0.0; 10]);
     model.actuator_gainprm.push({
         let mut p = [0.0; 9];
         p[0] = 1.0; // gainprm[0] = gain_l (length gain, used as fixed part)
@@ -93,7 +93,7 @@ fn add_filter_actuator(model: &mut Model, jnt_id: usize, tau: f64) {
     model.actuator_gaintype.push(GainType::Fixed);
     model.actuator_biastype.push(BiasType::None);
     model.actuator_dynprm.push({
-        let mut p = [0.0; 3];
+        let mut p = [0.0; 10];
         p[0] = tau; // time constant
         p
     });

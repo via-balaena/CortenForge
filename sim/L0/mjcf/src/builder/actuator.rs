@@ -250,7 +250,7 @@ impl ModelBuilder {
                     p
                 },
                 [0.0; 9],
-                [0.0; 3],
+                [0.0; 10],
             ),
 
             MjcfActuatorType::Position => {
@@ -262,7 +262,11 @@ impl ModelBuilder {
                 let mut bp = [0.0; 9];
                 bp[1] = -kp;
                 bp[2] = -kv;
-                (GainType::Fixed, BiasType::Affine, gp, bp, [tc, 0.0, 0.0])
+                (GainType::Fixed, BiasType::Affine, gp, bp, {
+                    let mut d = [0.0; 10];
+                    d[0] = tc;
+                    d
+                })
             }
 
             MjcfActuatorType::Velocity => {
@@ -271,14 +275,14 @@ impl ModelBuilder {
                 gp[0] = kv;
                 let mut bp = [0.0; 9];
                 bp[2] = -kv;
-                (GainType::Fixed, BiasType::Affine, gp, bp, [0.0; 3])
+                (GainType::Fixed, BiasType::Affine, gp, bp, [0.0; 10])
             }
 
             MjcfActuatorType::Damper => {
                 // kv resolved above from Option<f64> (default 0.0 for damper)
                 let mut gp = [0.0; 9];
                 gp[2] = -kv; // gain = -kv * velocity
-                (GainType::Affine, BiasType::None, gp, [0.0; 9], [0.0; 3])
+                (GainType::Affine, BiasType::None, gp, [0.0; 9], [0.0; 10])
             }
 
             MjcfActuatorType::Cylinder => {
@@ -294,13 +298,17 @@ impl ModelBuilder {
                 bp[0] = actuator.bias[0];
                 bp[1] = actuator.bias[1];
                 bp[2] = actuator.bias[2];
-                (GainType::Fixed, BiasType::Affine, gp, bp, [tc, 0.0, 0.0])
+                (GainType::Fixed, BiasType::Affine, gp, bp, {
+                    let mut d = [0.0; 10];
+                    d[0] = tc;
+                    d
+                })
             }
 
             MjcfActuatorType::Adhesion => {
                 let mut gp = [0.0; 9];
                 gp[0] = actuator.gain;
-                (GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 3])
+                (GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 10])
             }
 
             MjcfActuatorType::Muscle => {
@@ -321,11 +329,12 @@ impl ModelBuilder {
                     BiasType::Muscle,
                     gp,
                     gp, // biasprm = gainprm (shared layout, MuJoCo convention)
-                    [
-                        actuator.muscle_timeconst.0,
-                        actuator.muscle_timeconst.1,
-                        0.0,
-                    ],
+                    {
+                        let mut d = [0.0; 10];
+                        d[0] = actuator.muscle_timeconst.0;
+                        d[1] = actuator.muscle_timeconst.1;
+                        d
+                    },
                 )
             }
 
@@ -356,7 +365,11 @@ impl ModelBuilder {
                 } else {
                     [0.0; 9]
                 };
-                let dynprm_default = [1.0, 0.0, 0.0]; // MuJoCo: dynprm[0]=1
+                let dynprm_default = {
+                    let mut d = [0.0; 10];
+                    d[0] = 1.0; // MuJoCo: dynprm[0]=1
+                    d
+                };
                 let dp = if let Some(v) = &actuator.dynprm {
                     floats_to_array(v, dynprm_default)
                 } else {

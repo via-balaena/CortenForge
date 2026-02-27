@@ -533,7 +533,7 @@ pub struct ModelBuilder {
     pub(crate) actuator_act_num: Vec<usize>,
     pub(crate) actuator_gaintype: Vec<GainType>,
     pub(crate) actuator_biastype: Vec<BiasType>,
-    pub(crate) actuator_dynprm: Vec<[f64; 3]>,
+    pub(crate) actuator_dynprm: Vec<[f64; 10]>,
     pub(crate) actuator_gainprm: Vec<[f64; 9]>,
     pub(crate) actuator_biasprm: Vec<[f64; 9]>,
     pub(crate) actuator_lengthrange: Vec<(f64, f64)>,

@@ -320,7 +320,7 @@ mod sensor_tests {
         model.actuator_act_num.push(0);
         model.actuator_gaintype.push(GainType::Fixed);
         model.actuator_biastype.push(BiasType::None);
-        model.actuator_dynprm.push([0.0; 3]);
+        model.actuator_dynprm.push([0.0; 10]);
         model.actuator_gainprm.push({
             let mut p = [0.0; 9];
             p[0] = 1.0;
@@ -367,7 +367,7 @@ mod sensor_tests {
         model.actuator_act_num.push(0);
         model.actuator_gaintype.push(GainType::Fixed);
         model.actuator_biastype.push(BiasType::None);
-        model.actuator_dynprm.push([0.0; 3]);
+        model.actuator_dynprm.push([0.0; 10]);
         model.actuator_gainprm.push({
             let mut p = [0.0; 9];
             p[0] = 1.0;
@@ -807,7 +807,7 @@ mod sensor_tests {
         model.actuator_act_num.push(0);
         model.actuator_gaintype.push(GainType::Fixed);
         model.actuator_biastype.push(BiasType::None);
-        model.actuator_dynprm.push([0.0; 3]);
+        model.actuator_dynprm.push([0.0; 10]);
         model.actuator_gainprm.push({
             let mut p = [0.0; 9];
             p[0] = 1.0;

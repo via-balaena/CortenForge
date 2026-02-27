@@ -540,10 +540,11 @@ pub struct Model {
     /// Bias type per actuator — dispatches force bias computation.
     pub actuator_biastype: Vec<BiasType>,
 
-    /// Dynamics parameters per actuator (3 elements each).
-    /// For Muscle: [tau_act, tau_deact, tausmooth]. Default: [0.01, 0.04, 0.0].
-    /// For Filter: [tau, 0, 0]. For Integrator/None: unused.
-    pub actuator_dynprm: Vec<[f64; 3]>,
+    /// Dynamics parameters per actuator (10 elements each, MuJoCo parity).
+    /// For Muscle: [tau_act, tau_deact, tausmooth, 0, 0, 0, 0, 0, 0, 0].
+    /// Default: [0.01, 0.04, 0.0, ...]. For Filter: [tau, 0, ...].
+    /// Elements 3–9 are reserved (zero-initialized).
+    pub actuator_dynprm: Vec<[f64; 10]>,
 
     /// Gain parameters per actuator (9 elements each).
     /// For Muscle: [range0, range1, force, scale, lmin, lmax, vmax, fpmax, fvmax].
