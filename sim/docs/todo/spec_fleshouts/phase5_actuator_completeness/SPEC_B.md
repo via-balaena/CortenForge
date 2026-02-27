@@ -1,6 +1,6 @@
 # Spec B — Transmission Types + Slider-Crank
 
-**Status:** Draft
+**Status:** Implemented
 **Phase:** Roadmap Phase 5 — Actuator Completeness
 **Effort:** M
 **MuJoCo ref:** `mj_transmission()` in `engine_core_smooth.c`;
