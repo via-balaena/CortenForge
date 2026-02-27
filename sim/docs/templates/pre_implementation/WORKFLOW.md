@@ -7,8 +7,16 @@ The two templates in this directory are your starting points:
 - `RUBRIC_TEMPLATE.md` — the grading rubric skeleton
 - `SPEC_TEMPLATE.md` — the spec skeleton
 
-> **The core principle:** The rubric defines "A+" *before* the spec exists. The
-> spec is written *to the rubric*. The grading is *honest*. The iteration
+> **The cardinal principle: MuJoCo conformance is non-negotiable.** CortenForge
+> exists to produce numerically identical results to MuJoCo for every supported
+> feature. Every spec, every AC, every test exists to close the gap between
+> "what MuJoCo does" and "what we do." If a spec is beautifully structured but
+> produces behavior that diverges from MuJoCo, it has failed at its primary
+> purpose. Conformance is not one concern among many — it is THE concern that
+> every other concern serves.
+
+> **The process principle:** The rubric defines "A+" *before* the spec exists.
+> The spec is written *to the rubric*. The grading is *honest*. The iteration
 > *converges*. If you do these four things, the spec will be A+. If you skip
 > any one, it won't.
 
@@ -23,8 +31,10 @@ where you could *explain* the task to an implementer.
 ### 1.1 Read the roadmap entry
 
 Read the task description in `sim/docs/ROADMAP_V1.md`. Understand the *why*
-behind the task — is it a correctness fix, a conformance gap, an efficiency
-improvement, or a new capability?
+behind the task — almost every sim task exists to close a MuJoCo conformance
+gap. Categorize it: is it a correctness bug (we produce wrong values), a
+conformance gap (MuJoCo does X, we don't), or an efficiency/ergonomic issue
+(conformance is already achieved, but the API/performance needs work)?
 
 ### 1.2 Read the codebase context
 
@@ -33,29 +43,62 @@ improvement, or a new capability?
 - Read the source files that will be affected — not just the function, but the
   module it lives in, who calls it, and how its outputs are consumed.
 
-### 1.3 Read the MuJoCo reference
+### 1.3 Read the MuJoCo reference (the most important step)
 
-Identify the exact MuJoCo implementation. This is the reference behavior
-against which our spec will be judged.
+**This is the most important step in the entire workflow.** MuJoCo is the
+ground truth. Every decision in every spec traces back to "what does MuJoCo
+do?" If you get the MuJoCo reference wrong, everything downstream is wrong —
+no amount of clean Rust or rigorous testing can compensate.
+
+Study the MuJoCo C source with the same care you'd read a math proof:
+
+- **Read the actual C code** — not just the docs, not just the XML reference.
+  The docs describe intent; the C code is the behavior we must match. When they
+  disagree, the C code wins.
+- **Trace the full call chain.** Don't just read the target function — read
+  what calls it, what it calls, and how its outputs are consumed. MuJoCo's
+  pipeline stages are tightly coupled; understanding one function in isolation
+  leads to subtle conformance bugs.
+- **Identify the numerical expectations.** What values does MuJoCo produce for
+  simple inputs? What tolerances are meaningful? Run MuJoCo yourself on test
+  models if possible. Record the exact numerical outputs — these become your AC
+  expected values.
+- **Document every edge case.** MuJoCo often has special-case handling (world
+  body, zero mass, disabled flags, empty arrays). These edge cases are where
+  conformance bugs hide because they're easy to skip during implementation.
+- **Note the exact field names, array layouts, and index conventions.** A
+  conformance bug can be as subtle as reading `data->cfrc_int + 6*i` vs
+  `data->cfrc_int + 6*(i+1)` — one index off produces wrong physics.
 
 ### 1.4 Understanding checklist
 
 Do not proceed to Phase 2 until you can check every box:
 
+**MuJoCo conformance understanding (the critical ones):**
+
 - [ ] I can name the exact MuJoCo C function(s) involved, their source files,
-      and their call sites in the MuJoCo pipeline.
+      line ranges, and their call sites in the MuJoCo pipeline.
 - [ ] I can describe the inputs and outputs of each function (field names,
-      types, array dimensions).
+      types, array dimensions, index conventions).
+- [ ] I have read the actual C source code — not just docs or summaries.
 - [ ] I can identify at least 3 edge cases and explain what MuJoCo does for
       each (e.g., world body, zero mass, sleeping bodies, disabled flags).
-- [ ] I can describe the current CortenForge state — what we have, what's
-      missing, and exactly where the gap is.
-- [ ] I know which CortenForge crate(s) and module(s) will be affected.
+- [ ] I know the exact numerical values MuJoCo produces for at least one
+      simple test case (this becomes an AC).
 - [ ] I know whether MuJoCo conventions differ from ours (reference points,
-      spatial vector layout, field naming) for this task.
+      spatial vector layout, field naming) for this task, and I can state the
+      exact porting rule for each difference.
 
-**If any box is unchecked, keep reading source code.** The rubric you build in
-Phase 2 can only be as good as your understanding of the problem.
+**CortenForge context:**
+
+- [ ] I can describe the current CortenForge state — what we have, what's
+      missing, and exactly where the conformance gap is.
+- [ ] I know which CortenForge crate(s) and module(s) will be affected.
+
+**If any MuJoCo conformance box is unchecked, stop and go read the C source.**
+The rubric you build in Phase 2 can only be as good as your understanding of
+MuJoCo's behavior. Every conformance bug in our history traces back to
+insufficient understanding of what MuJoCo actually does.
 
 ---
 
@@ -81,11 +124,18 @@ The grade bars in the template are generic. Your job is to make them *specific*
 to this task. A tailored rubric produces a better spec because the author knows
 exactly what A+ looks like.
 
+**Start with P1.** P1 (MuJoCo Reference Fidelity) is the cardinal criterion.
+Tailor it first and tailor it hardest. The A+ bar for P1 should name the exact
+MuJoCo C functions, source files, and edge cases the spec must cite. If P1 is
+generic, the spec will have conformance gaps no matter how good the other
+criteria are.
+
 **How to tailor — three steps:**
 
 1. **Name the specific MuJoCo functions/fields.** Replace generic references
    with exact names: not "MuJoCo function" but "`mj_sensorAcc()` in
-   `engine_sensor.c`".
+   `engine_sensor.c`". This is the most important tailoring step — it tells
+   the spec author exactly what C source to read.
 
 2. **Name the specific edge cases.** Replace generic "zero mass, world body"
    with the ones that actually matter for *this* task. Remove edge cases that
@@ -176,9 +226,13 @@ Correctness bugs are the strongest ("we compute wrong values"), conformance
 gaps next ("MuJoCo does X, we don't"), ergonomic issues last ("the API is
 awkward").
 
-**MuJoCo Reference:** Cite exact function names, source files, field names.
-Include C code snippets where they clarify behavior. Don't paraphrase when you
-can quote.
+**MuJoCo Reference:** This is the most important section of the spec — treat
+it accordingly. Cite exact function names, source files, line ranges, field
+names. Include C code snippets where they clarify behavior. Don't paraphrase
+when you can quote. Every claim about MuJoCo behavior must be verifiable by
+reading the cited source. If you find yourself writing "MuJoCo probably does X"
+or "MuJoCo should do X" — stop and go read the C code until you can write
+"MuJoCo does X in `function()` at `file.c:123`."
 
 **Convention Notes:** Use the formal table structure in the template: Field |
 MuJoCo Convention | CortenForge Convention | Porting Rule. The "Porting Rule"
@@ -189,9 +243,14 @@ implementation.
 equivalent, design decision (why this approach over alternatives), and
 before/after Rust code. Write real Rust, not pseudocode.
 
-**Acceptance Criteria:** Every AC follows the three-part structure:
-(1) concrete input model/state, (2) exact expected value or tolerance,
-(3) field to check. Label each AC as either "runtime test" or "code review."
+**Acceptance Criteria:** Every runtime AC is fundamentally a conformance
+assertion: "given this input, CortenForge produces the same output as MuJoCo."
+Every AC follows the three-part structure: (1) concrete input model/state,
+(2) exact expected value or tolerance (ideally derived from running MuJoCo on
+the same model), (3) field to check. Label each AC as either "runtime test" or
+"code review." The gold standard: expected values come from MuJoCo itself, not
+from manual calculation. If you can run MuJoCo on a test model and record
+its output, that's your expected value.
 
 **AC→Test Traceability Matrix:** After the AC list, add the matrix. Every AC
 maps to at least one test. Every test maps to at least one AC (or is in the
@@ -246,6 +305,10 @@ look for what's *missing*, not what's *present*.
    and what the fix would look like.
 
 ### 4.2 Grade procedure
+
+**Grade P1 first.** P1 is the cardinal criterion. If the MuJoCo reference is
+wrong, every other criterion is grading against the wrong target. Don't
+proceed to P2–P8 until P1 is A+.
 
 Go criterion by criterion (P1, P2, ... P{N}):
 
@@ -330,10 +393,16 @@ When you believe every criterion is A+:
    every criterion. Fresh eyes catch things incremental fixes miss. Don't
    re-grade incrementally — read the whole spec as a coherent document.
 
-2. **Present the final scorecard** to the user with the complete gap log
+2. **Conformance spot-check.** Before declaring done, verify: (a) every claim
+   about MuJoCo behavior cites a specific C source file and function, (b) at
+   least one AC per spec section has a MuJoCo-verified or analytically-derived
+   expected value, (c) the convention notes table has no empty porting rule
+   cells. If any of these fail, the spec has conformance risk — fix it.
+
+3. **Present the final scorecard** to the user with the complete gap log
    showing all gaps closed (from G1 through G{N}, all with resolutions).
 
-3. **Get explicit approval** from the user that the spec is ready for
+4. **Get explicit approval** from the user that the spec is ready for
    implementation.
 
 Only after user approval does the spec status change from "Draft" to
@@ -350,12 +419,22 @@ Implementation follows the approved spec. The spec is the source of truth.
    each one.
 3. Verify each acceptance criterion as you go.
 4. Run the test plan.
-5. Update the spec status to "Implemented" when done.
+5. **Run MuJoCo conformance verification.** After all tests pass, verify that
+   the implementation produces numerically identical results to MuJoCo for
+   representative test models. If MuJoCo produces a different value than your
+   implementation, your implementation is wrong — not MuJoCo.
+6. Update the spec status to "Implemented" when done.
 
 If you discover a spec gap during implementation (something the spec didn't
 anticipate), **stop and update the spec first.** Do not silently deviate.
 Log the gap, fix the spec, re-grade the affected criterion, and get approval
 for the spec change before continuing.
+
+**Conformance-first debugging:** When a test fails, the first question is
+always "what does MuJoCo do?" — not "what do we think the answer should be."
+Trace the MuJoCo C code for the failing input, record MuJoCo's output, and
+make our code match. Never adjust expected values to match our output;
+always adjust our code to match MuJoCo's output.
 
 ---
 
@@ -376,6 +455,9 @@ doing any of these, stop and correct course.
 | **Pseudocode in Specification** | Implementer has to guess the real Rust. Bugs hide in the translation. | Write real Rust with exact types, field names, and function signatures. |
 | **ACs without values** | "Should work correctly" is not testable. | Every runtime AC needs: input, expected value, tolerance, field to check. |
 | **Orphan tests** | Tests in the plan that don't map to any AC — unclear what they're verifying. | Every test maps to an AC, or is in the Supplementary Tests table with a justification. |
+| **"Close enough" conformance** | "Our value is 50.001 and MuJoCo's is 50.0 — that's close enough." No. If MuJoCo produces 50.0, we produce 50.0. Tolerance exists for floating-point representation, not for algorithmic deviation. | Investigate the 0.001 difference. It's a bug — find it. |
+| **Inventing behavior MuJoCo doesn't have** | Adding "improvements" or "Rust-idiomatic" alternatives to MuJoCo's algorithm. | Match MuJoCo exactly first. Improvements can come later as separate, documented extensions — never mixed into conformance work. |
+| **Speccing from docs instead of source** | MuJoCo's XML reference says one thing; the C source does another. The spec follows the docs. | Always read the C source. Docs describe intent; source describes behavior. When they conflict, source wins. |
 
 ---
 
@@ -399,7 +481,9 @@ Use an umbrella when:
 - You need a single document to track overall progress.
 
 The umbrella spec defines the scope, ordering, and shared conventions. The
-individual specs handle the details.
+individual specs handle the details. The umbrella must also define the
+conformance coverage: which MuJoCo features are covered before vs after
+the phase, so progress toward full conformance is tracked explicitly.
 
 ### When to create a sub-spec
 
@@ -415,27 +499,31 @@ a prerequisite.
 
 ## Summary
 
+The entire workflow serves one goal: **MuJoCo conformance.** Every phase exists
+to ensure the final implementation produces numerically identical results to
+MuJoCo.
+
 ```
-Roadmap Task
+Roadmap Task (= MuJoCo conformance gap to close)
     │
     ▼
-Phase 1: Understand (read roadmap + MuJoCo + codebase → pass checklist)
+Phase 1: Understand (read MuJoCo C source + codebase → pass conformance checklist)
     │
     ▼
-Phase 2: Build rubric (RUBRIC_TEMPLATE → tailor → self-audit → user approval)
+Phase 2: Build rubric (tailor P1 first → self-audit → user approval)
     │
     ▼
-Phase 3: Write spec first draft (SPEC_TEMPLATE → write to A+ bar → complete)
+Phase 3: Write spec (MuJoCo Reference first → write to A+ bar → complete)
     │
     ▼
-Phase 4: Grade spec against rubric (honest grading → scorecard + gap log)
+Phase 4: Grade spec (grade P1 first → honest grading → scorecard + gap log)
     │
     ▼
 Phase 5: Close gaps (fix → re-grade → converge monotonically → repeat)
     │
     ▼
-Phase 6: Final re-grade + user approval
+Phase 6: Final re-grade + conformance spot-check + user approval
     │
     ▼
-Phase 7: Implement from approved spec
+Phase 7: Implement + verify against MuJoCo
 ```

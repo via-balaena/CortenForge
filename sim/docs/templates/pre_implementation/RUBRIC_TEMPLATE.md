@@ -1,8 +1,15 @@
 # {TITLE} — Spec Quality Rubric
 
 Grades the {spec_name} spec on {N} criteria. Target: A+ on every criterion
-before implementation begins. A+ means "an implementer could build this without
-asking a single clarifying question."
+before implementation begins. A+ means "an implementer could build this
+without asking a single clarifying question — and the result would produce
+numerically identical output to MuJoCo."
+
+**MuJoCo conformance is the cardinal goal.** Every criterion in this rubric
+ultimately serves conformance. P1 (MuJoCo Reference Fidelity) is the most
+important criterion — grade it first and hardest. A spec that scores A+ on
+P2–P8 but has P1 wrong is worse than useless: it would produce a clean,
+well-tested implementation of the wrong behavior.
 
 Grade scale: A+ (exemplary) / A (solid) / B (gaps) / C (insufficient).
 Anything below B does not ship.
@@ -12,12 +19,13 @@ Anything below B does not ship.
 ## Tailoring Instructions
 
 Before using this rubric, make it specific to the task. A generic rubric
-produces a generic spec. Follow these three steps:
+produces a generic spec — and a generic spec produces conformance bugs.
+Follow these three steps, **starting with MuJoCo specifics:**
 
-### Step 1: Name the specific MuJoCo functions and fields
+### Step 1: Name the specific MuJoCo functions and fields *(most critical step)*
 
 In every criterion that references MuJoCo behavior (P1, P2, P3 at minimum),
-replace the generic placeholders with exact names:
+replace the generic placeholders with exact names from the C source:
 
 - Not "the MuJoCo function" → but "`mj_sensorAcc()` in `engine_sensor.c`"
 - Not "the relevant fields" → but "`data->cacc`, `data->cfrc_int`"
@@ -56,44 +64,65 @@ go back to Phase 1 of the workflow.
 (rare). Add domain-specific criteria at the end (P9+). Most specs need 8–11
 criteria total.}
 
-### P1. MuJoCo Reference Fidelity
+> **Criterion priority:** P1 (MuJoCo Reference Fidelity) is the cardinal
+> criterion. MuJoCo conformance is the entire reason CortenForge exists.
+> A spec can be A+ on P2–P8 and still be worthless if P1 is wrong — because
+> an incorrect MuJoCo reference means every algorithm, every AC, and every
+> test is verifying the wrong behavior. **Grade P1 first and grade it hardest.**
+> If P1 is not A+, do not proceed to grading P2–P8 until it is fixed.
+
+### P1. MuJoCo Reference Fidelity *(cardinal criterion)*
 
 > Spec accurately describes what MuJoCo does — exact function names, field
-> names, calling conventions, and edge cases. No hand-waving.
+> names, calling conventions, and edge cases. No hand-waving. This is the
+> single most important criterion: everything else in the spec is downstream
+> of getting the MuJoCo reference right. An error here propagates to every
+> algorithm, every AC, and every test.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Every MuJoCo function/field/flag cited with source file + behavior. Calling conventions (reference points, spatial layout, frame) explicit. Edge cases ({name the specific edge cases for this task}) addressed with what MuJoCo does for each. |
-| **A** | MuJoCo behavior described correctly. Minor gaps in edge-case coverage. |
-| **B** | Correct at high level, but missing specifics (e.g., "MuJoCo shifts the velocity" without saying from where to where). |
-| **C** | Partially correct. Some MuJoCo behavior misunderstood or assumed. |
+| **A+** | Every MuJoCo function/field/flag cited with source file, line range, and exact behavior. Calling conventions (reference points, spatial layout, frame, index conventions) explicit. Edge cases ({name the specific edge cases for this task}) addressed with what MuJoCo does for each — verified against C source, not assumed from docs. Numerical expectations stated for at least one representative input (ideally from running MuJoCo). C code snippets included where they clarify non-obvious behavior. |
+| **A** | MuJoCo behavior described correctly from C source. Minor gaps in edge-case coverage. |
+| **B** | Correct at high level, but missing specifics (e.g., "MuJoCo shifts the velocity" without saying from where to where) — or description based on docs rather than C source. |
+| **C** | Partially correct. Some MuJoCo behavior misunderstood, assumed, or invented. |
 
 > **Tailoring note:** Replace the generic edge case placeholder above with the
 > exact edge cases for this task. The A+ bar should name the specific MuJoCo
 > functions the spec must cite — an author reading this bar should know exactly
-> what research to do.
+> what C source to read. If you can't name the functions, you haven't done
+> enough Phase 1 research.
+>
+> **Why this criterion is cardinal:** Every conformance bug in our history traces
+> to one of these root causes: (1) MuJoCo behavior assumed from docs instead of
+> verified against C source, (2) edge case missed because the C code wasn't read
+> thoroughly, (3) convention difference (index, layout, reference point) not
+> documented. P1 exists to prevent all three.
 
 ### P2. Algorithm Completeness
 
 > Every algorithmic step is specified unambiguously. No "see MuJoCo source"
-> or "TBD" gaps. Rust code is line-for-line implementable.
+> or "TBD" gaps. Rust code is line-for-line implementable. The algorithm must
+> reproduce MuJoCo's behavior exactly — not an approximation, not a "Rust
+> improvement," but a faithful port that produces identical numerical results.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Every loop, every formula, every edge-case guard is written out in Rust. An implementer can type it in without reading MuJoCo source. No "verify against source" notes. |
-| **A** | Algorithm is complete. One or two minor details left implicit. |
-| **B** | Algorithm structure is clear but some steps are hand-waved or deferred. |
+| **A+** | Every loop, every formula, every edge-case guard is written out in Rust. An implementer can type it in without reading MuJoCo source. No "verify against source" notes. Algorithm matches MuJoCo's computational steps — same formulas, same ordering, same guards. Any intentional deviation from MuJoCo's algorithm is explicitly justified with proof that it produces identical results. |
+| **A** | Algorithm is complete and MuJoCo-conformant. One or two minor details left implicit. |
+| **B** | Algorithm structure is clear but some steps are hand-waved or deferred, or algorithm deviates from MuJoCo without justification. |
 | **C** | Skeleton only — "implement this somehow." |
 
 ### P3. Convention Awareness
 
 > Spec explicitly addresses our codebase's conventions where they differ from
 > MuJoCo (reference points, SpatialVector layout, field naming, etc.) and
-> provides the correct translation.
+> provides the correct translation. Convention mismatches are conformance bugs
+> — a wrong reference point or flipped index produces numerically different
+> results from MuJoCo, even if the algorithm is otherwise correct.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Every MuJoCo → CortenForge translation called out: reference points, SpatialVector layout `[angular; linear]`, field names, sleep arrays, Model vs mjModel mapping. Convention difference table present with explicit porting rules. |
+| **A+** | Every MuJoCo → CortenForge translation called out: reference points, SpatialVector layout `[angular; linear]`, field names, sleep arrays, index conventions, Model vs mjModel mapping. Convention difference table present with explicit porting rules — each rule verified to preserve numerical equivalence (e.g., "substitute `xpos[body_id]` for `subtree_com + 3*rootid` — produces identical values because our reference point matches for non-subtree-com bodies"). No empty or hand-waved porting rule cells. |
 | **A** | Major conventions documented. Minor field-name mappings left to implementer. |
 | **B** | Some conventions noted, others not — risk of silent mismatch during implementation. |
 | **C** | MuJoCo code pasted without adaptation to our conventions. |
@@ -101,29 +130,34 @@ criteria total.}
 ### P4. Acceptance Criteria Rigor
 
 > Each AC is specific, testable, and falsifiable. Contains concrete values,
-> tolerances, and model configurations. No "should work correctly."
+> tolerances, and model configurations. No "should work correctly." The gold
+> standard: every runtime AC is a conformance assertion — "given this input,
+> CortenForge produces the same value as MuJoCo."
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Every runtime AC has the three-part structure: (1) concrete input model/state, (2) exact expected value or tolerance, (3) what field/sensor to check. Could be copy-pasted into a test function. Code-review ACs explicitly labeled as such with specific structural properties to verify. |
-| **A** | ACs are testable. Some lack exact numerical expectations. |
-| **B** | ACs are directionally correct but vague ("output should change"). |
+| **A+** | Every runtime AC has the three-part structure: (1) concrete input model/state, (2) exact expected value or tolerance — ideally derived from MuJoCo's output on the same model, (3) what field/sensor to check. Could be copy-pasted into a test function. At least one AC per spec section has expected values verified against MuJoCo (stated as "MuJoCo produces X; we assert X ± tolerance"). Code-review ACs explicitly labeled as such with specific structural properties to verify. |
+| **A** | ACs are testable. Some lack exact numerical expectations or MuJoCo-verified values. |
+| **B** | ACs are directionally correct but vague ("output should change"), or values are manually calculated without MuJoCo verification. |
 | **C** | ACs are aspirational statements, not tests. |
 
 > **Tailoring note:** For this task, "concrete" means: {numerical tolerances?
 > specific model configurations? flag combinations? sensor types?}. Specify
-> what kind of concreteness the ACs need.
+> what kind of concreteness the ACs need. Always prefer expected values from
+> MuJoCo's actual output over hand-calculated values.
 
 ### P5. Test Plan Coverage
 
 > Tests cover happy path, edge cases, regressions, and interactions. Each AC
 > maps to at least one test. Negative cases (feature NOT triggered) are tested.
+> At least one test per major feature is a direct MuJoCo conformance test:
+> same model, same input, verify our output matches MuJoCo's output.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | AC→Test traceability matrix present — every AC maps to ≥1 test, every test maps to ≥1 AC or is in Supplementary Tests table with justification. Explicit edge case inventory: {name the specific edge cases}. Negative cases are first-class tests. Supplementary tests (if any) justified. |
-| **A** | Good coverage. Minor edge-case gaps. Traceability is implicit but verifiable. |
-| **B** | Happy path covered. Edge cases and negative cases sparse. |
+| **A+** | AC→Test traceability matrix present — every AC maps to ≥1 test, every test maps to ≥1 AC or is in Supplementary Tests table with justification. Explicit edge case inventory: {name the specific edge cases}. Negative cases are first-class tests. At least one MuJoCo-vs-CortenForge conformance test per major code path (test comment states MuJoCo version and expected value source). Supplementary tests (if any) justified. |
+| **A** | Good coverage. Minor edge-case gaps. Conformance tests present but not for all code paths. |
+| **B** | Happy path covered. Edge cases and negative cases sparse. No explicit MuJoCo conformance tests. |
 | **C** | Minimal test plan. |
 
 > **Tailoring note:** Replace the generic edge case placeholder with the
@@ -150,7 +184,7 @@ criteria total.}
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Complete file list with per-file change description. Behavioral changes in dedicated section with migration paths. Existing test impact names specific test functions/files and states whether breakage is expected (behavior change) or unexpected (regression). Data staleness guards addressed. Backward-compat callers confirmed unaffected or migration documented. |
+| **A+** | Complete file list with per-file change description. Behavioral changes in dedicated section with migration paths — each behavioral change states whether it moves *toward* MuJoCo conformance or is conformance-neutral. Existing test impact names specific test functions/files and states whether breakage is expected (behavior change) or unexpected (regression). If existing test values change, the new values are stated and verified as more MuJoCo-conformant. Data staleness guards addressed. Backward-compat callers confirmed unaffected or migration documented. |
 | **A** | File list complete. Most regressions identified. |
 | **B** | File list present but incomplete. Some regression risk unaddressed. |
 | **C** | No blast-radius analysis. |
@@ -219,6 +253,12 @@ step was learned from DT-103, where the rubric had 8 gaps in Rev 1.
       for each criterion, can you name the section(s) you'd read to grade it?
       If not, either the criterion is too vague or the spec template is
       missing a section.
+
+- [ ] **Conformance primacy:** P1 is tailored with specific MuJoCo C function
+      names, source files, and edge cases. The A+ bar for P1 requires
+      verification against C source (not just docs). At least P4 and P5
+      reference MuJoCo-derived expected values. If the rubric could produce
+      an A+ spec that diverges from MuJoCo's behavior, the rubric is broken.
 
 ### Criterion → Spec section mapping
 
