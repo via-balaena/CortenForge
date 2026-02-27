@@ -559,7 +559,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 10 | Spec D rubric | Done | bbe901f |
 | — | DT-106 gear-scaling finding (ad-hoc empirical review) | Done | 456fc9e |
 | 11 | Spec D spec | Done | 25c831a |
-| 12 | Spec D implementation | Pending | |
+| 12 | Spec D implementation | Done | cc996c4 |
 | 13 | Spec D review — create document | Pending | |
 | 14 | Spec D review — execute | Pending | |
 | 15 | Spec C rubric | Pending | |
