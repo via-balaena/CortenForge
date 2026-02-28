@@ -1,10 +1,10 @@
 # Phase 5 — Actuator Completeness: Umbrella Spec
 
-**Status:** Draft
+**Status:** Complete (2026-02-27)
 **Phase:** Roadmap Phase 5
-**Tasks:** 10 (DT-6, DT-8, DT-9, DT-56, DT-57, DT-58, DT-59, DT-77, §61, §63)
-**Deliverables:** 2 T1 items + 4 sub-specs
-**Test baseline:** 2,148+ domain tests (post-Phase 4)
+**Tasks:** 10 (DT-6, DT-8, DT-9, DT-56, DT-57, DT-58, DT-59, DT-77, §61, §63) — all ship-complete
+**Deliverables:** 2 T1 items + 4 sub-specs — all delivered across 19 sessions
+**Test baseline:** 2,148+ domain tests (post-Phase 4) → 2,238+ (post-Phase 5)
 
 ---
 

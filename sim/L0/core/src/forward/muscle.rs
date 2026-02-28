@@ -2402,6 +2402,63 @@ mod hill_muscle_tests {
         );
     }
 
+    // ---- T12: Length-range mode filtering (AC14) ----
+    #[test]
+    fn test_hill_lengthrange_mode_filter() {
+        // Verify that HillMuscle actuators pass the is_muscle filter in
+        // mj_set_length_range() when mode = LengthRangeMode::Muscle.
+        //
+        // Build a model with a HillMuscle actuator on a limited hinge joint.
+        // Phase 1 of compute_actuator_params() copies joint limits to
+        // lengthrange unconditionally. Phase 3b (mj_set_length_range) with
+        // mode=Muscle, useexisting=true will skip it because Phase 1 already
+        // set lr. To test the filter, we call mj_set_length_range directly
+        // with useexisting=false, forcing re-estimation. The key assertion:
+        // after re-estimation, lengthrange must still be nonzero (the filter
+        // included HillMuscle, so estimation ran and produced a valid range).
+        let mut model = build_hill_model(1000.0, 0.10, 0.20, 10.0, 0.0, 35.0, 1.0);
+
+        // Phase 1 already set lengthrange from joint limits. Verify.
+        assert!(
+            model.actuator_lengthrange[0].0 < model.actuator_lengthrange[0].1,
+            "Phase 1 should have set lengthrange from joint limits"
+        );
+
+        // Clear lengthrange to force re-estimation via simulation.
+        model.actuator_lengthrange[0] = (0.0, 0.0);
+
+        // Call mj_set_length_range with mode=Muscle, useexisting=false.
+        let opt = LengthRangeOpt {
+            mode: LengthRangeMode::Muscle,
+            useexisting: false,
+            ..LengthRangeOpt::default()
+        };
+        mj_set_length_range(&mut model, &opt);
+
+        // If HillMuscle was excluded by the filter, lengthrange would remain (0, 0).
+        let (lo, hi) = model.actuator_lengthrange[0];
+        assert!(
+            lo < hi,
+            "HillMuscle should pass is_muscle filter in mode=Muscle, \
+             but lengthrange is ({lo}, {hi}) — was the actuator skipped?"
+        );
+
+        // Contrast: mode=None should skip all actuators.
+        model.actuator_lengthrange[0] = (0.0, 0.0);
+        let opt_none = LengthRangeOpt {
+            mode: LengthRangeMode::None,
+            useexisting: false,
+            ..LengthRangeOpt::default()
+        };
+        mj_set_length_range(&mut model, &opt_none);
+        let (lo2, hi2) = model.actuator_lengthrange[0];
+        assert_eq!(
+            (lo2, hi2),
+            (0.0, 0.0),
+            "mode=None should skip all actuators, but lengthrange was set"
+        );
+    }
+
     // ---- T13: Zero lengthrange (AC15) ----
     #[test]
     fn test_hill_zero_lengthrange() {

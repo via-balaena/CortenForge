@@ -2,8 +2,8 @@
 
 Complete roadmap for the simulation engine. Phase 1 (12 items) and Phase 2
 (16 items) are complete. Phase 3A tiers i–iv (items #18–37) are complete.
-Phase 3A-v complete through §41. Roadmap Phases 1–4 all done.
-Next: Phases 5–11 (parallel work streams).
+Phase 3A-v complete through §41. Roadmap Phases 1–5 all done.
+Next: Phases 6–11 (parallel work streams).
 
 Remaining work is organized by the **v1.0 Roadmap** (see
 [ROADMAP_V1.md](../ROADMAP_V1.md)) which triages all ~135 remaining tasks into
@@ -109,7 +109,7 @@ DT-96 (lazy energy eval, post-v1.0), DT-97 (golden file generation, Phase 12)
 
 **Core API (Phase 3):** ~~DT-21~~ (done), ~~DT-41~~ (done), ~~DT-79~~ (done)
 
-**Actuators (Phase 5):** DT-56, DT-57, DT-58, DT-59, DT-77, DT-6, ~~DT-8~~ (done), ~~DT-9~~ (partially done → DT-107/108), ~~DT-60~~ (subsumed by §41 S4.2a), ~~§61~~ (done), ~~DT-106~~ (done), DT-104, DT-105, DT-107, DT-108, DT-110, §63
+**Actuators (Phase 5) ✅:** ~~DT-6~~ (done), ~~§63~~ (done), ~~DT-56~~ (done), ~~DT-57~~ (done), ~~DT-59~~ (done), ~~DT-77~~ (done), ~~DT-58~~ (done), ~~DT-8~~ (done), ~~DT-9~~ (partially done — parsing landed, runtime → DT-107/108), ~~DT-60~~ (subsumed by §41 S4.2a), ~~§61~~ (done), ~~DT-106~~ (done). Deferred to post-v1.0: DT-104, DT-105, DT-107, DT-108, DT-110, DT-111–116
 
 **Sensors (Phase 6):** §62, DT-62, DT-63, DT-64, DT-102, DT-109
 
@@ -201,7 +201,7 @@ DT-96, DT-101
 | 2 | Runtime flag wiring | ~~§41~~ (done, subsumes DT-61, DT-93, DT-94, DT-95); ~~DT-99~~ (done), ~~DT-100~~ (done) | 1 (+2 follow-ups, all done) |
 | 3 | Core API gaps | ~~DT-21~~ (done), ~~DT-41~~ (done), ~~§51~~ (done), ~~§52~~ (done), ~~§53~~ (done), ~~§59~~ (done), ~~DT-79~~ (done) | 7 (7 done) |
 | 4 | Core Data fields | ~~§51~~ (done), ~~§56~~ (done) + CVEL fixes, lazy gates, sensor refactor, DT-103 | ✅ All done |
-| 5 | Actuator completeness | DT-56/57/58/59/77, DT-6, ~~DT-8~~ (done), ~~DT-9~~ (partial → DT-107/108), ~~DT-60~~ (done), ~~§61~~ (done), ~~DT-106~~ (done), §63, DT-104/105, DT-107/108/110 | 17 (5 done) |
+| 5 | Actuator completeness | ~~DT-6~~, ~~§63~~, ~~DT-56~~, ~~DT-57~~, ~~DT-59~~, ~~DT-77~~, ~~DT-8~~, ~~§61~~, ~~DT-9~~ (partial), ~~DT-58~~, ~~DT-60~~, ~~DT-106~~ — all done. Deferred: DT-104/105/107/108/110/111–116 → post-v1.0 | ✅ All done |
 | 6 | Sensor completeness | §62, DT-62/63/64, DT-102, DT-109 | 6 |
 | 7 | MJCF parsing & defaults | DT-2/3/11/13/14/85/88, §55/60/64/64a | 11 |
 | 8 | Constraint & solver gaps | DT-19/23/25/28/32/33/39 | 7 |
@@ -266,7 +266,7 @@ DT-96, DT-101
    │ Roadmap Phases 4–11: Parallel work streams               │
    │                                                          │
    │  Phase 4: Data fields (✓§51, ✓§56)              ✅ DONE     │
-   │  Phase 5: Actuators (17 items, 5 done)                    │
+   │  Phase 5: Actuators (10 core items)             ✅ DONE     │
    │  Phase 6: Sensors (6 items)                              │
    │  Phase 7: Parsing/defaults (11 items)                    │
    │  Phase 8: Constraints/solver (7 items)                   │

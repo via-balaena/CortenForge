@@ -713,15 +713,15 @@ fn hill_active_fl(norm_len: f64) -> f64 {
     (-x * x).exp()
 }
 
-/// Hill hyperbolic force-velocity (sim-muscle default curve).
+/// Hill hyperbolic force-velocity (normalized so FV(0) = 1.0).
 fn hill_force_velocity(norm_vel: f64) -> f64 {
     let a = 0.25; // curvature
     let fv_max = 1.5; // eccentric plateau
     if norm_vel <= -1.0 {
         0.0
     } else if norm_vel <= 0.0 {
-        // Concentric: Hill hyperbola
-        a * (1.0 + norm_vel) / (a - norm_vel) * a / (a + 1.0)
+        // Concentric: normalized Hill hyperbola, continuous at v=0
+        (1.0 + norm_vel) / (1.0 - norm_vel / a)
     } else {
         // Eccentric: plateau approach
         1.0 + (fv_max - 1.0) * norm_vel / (norm_vel + a)
