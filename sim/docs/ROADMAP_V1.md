@@ -372,6 +372,11 @@ foundation isn't right.
 | DT-108 | 10g | T1 | `dyntype` enum gating interpolation eligibility — restrict which `ActuatorDynamics` variants may use history buffer. Deferred from Phase 5 Spec D. |
 | DT-110 | 10g | T1 | `actuator_plugin` model array — per-actuator plugin ID (`int[nu]`, -1 sentinel). Depends on §66. Deferred from Phase 5 Spec D. |
 
+### Code Quality
+| Task | Source | Tier | Description |
+|------|--------|------|-------------|
+| DT-117 | xtask check | T2 | Eliminate `unwrap()`/`expect()` from library code (~1,085 call sites). Convert to `?` propagation, `Result` returns, or `unsafe { get_unchecked() }` with safety invariant comments where bounds are structurally guaranteed. Prevents unrecoverable panics for library consumers. |
+
 ### Other Non-Critical
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
