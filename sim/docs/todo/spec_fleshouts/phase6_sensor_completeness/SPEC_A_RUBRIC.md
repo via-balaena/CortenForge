@@ -202,6 +202,132 @@ reference-frame transform for acceleration sensors). This is confirmed in
 the C source — the acceleration case has no `refid` check unlike position
 and velocity cases.
 
+### EGT-4: Analytical verification data
+
+All empirical values have derivation chains from physics first principles.
+
+**V1 — Touch sensor total force (EGT-2):**
+Three geoms, each mass = 1 kg. Gravity = 9.81 m/s². Static equilibrium ⇒
+total normal force = 3 × 1 × 9.81 = **29.43 N**. MuJoCo 3.5.0 reports
+29.4237 (within solver tolerance of analytical value).
+
+**V2 — `mj_contactForce()` normal force per contact (EGT-2a):**
+Each geom: F_normal = mg = 1 × 9.81 = **9.81 N**. MuJoCo
+`mj_contactForce()[0]` = 9.808 (within solver tolerance). Raw
+`sum(efc_force)` = 7.356. Discrepancy factor: 9.808/7.356 = **1.333 ≈ 4/3**.
+This arises from the pyramidal friction cone basis: for `dim=3` (1 normal +
+2 tangent), the 4 pyramid edges project onto the normal axis with factor
+`1/sqrt(1 + mu²)` per edge. The reconstruction `mj_contactForce()` inverts
+this projection to recover the physical normal force; raw `efc_force` sums
+the projected facet forces without inversion.
+
+**V3 — body vs xbody position (EGT-1):**
+Capsule geom, half-length = 0.15 m, aligned along x-axis, attached at body
+origin. Uniform density ⇒ COM at geometric center ⇒ COM offset =
+(0.15, 0, 0) from joint frame origin. MuJoCo: `xipos = [0.15, 0, 1]`
+(COM frame), `xpos = [0, 0, 1]` (joint frame). Difference = COM offset.
+
+**V4 — Geom-attached FrameLinAcc static (EGT-3):**
+Static equilibrium, gravity = [0, 0, -9.81]. Body acceleration compensates
+gravity: `cacc[linear] = [0, 0, 9.81]` (in world frame). Spatial transport
+from body origin to geom position adds zero (ω = 0, α = 0 in static case).
+Result: `FrameLinAcc = [0, 0, 9.81]`. MuJoCo reports `[1.2e-17, -2.0e-17,
+9.808]` (gravity-compensated, within solver tolerance).
+
+### EGT-5: Exhaustive match-site inventory
+
+Every `match` on `MjObjectType` or `MjSensorType` in the sim crates that
+Spec A touches or that new `MjObjectType` variants (`XBody`, `Camera`) would
+affect.
+
+#### Table 1: Exhaustive matches (compilation fails if enum gains variants)
+
+| File | Line | Context | Current Arms | Required Change |
+|------|------|---------|-------------|-----------------|
+| `sensor/mod.rs` | 27 | `sensor_body_id()` | `Body`, `Joint`, `Geom`, `Site`, `Tendon\|Actuator\|None` | **Add `XBody` arm** (→ `Some(objid)`, same as Body); **add `Camera` arm** (→ camera's body or `None`). Without these, **compilation fails**. |
+
+#### Table 2: Wildcard matches — semantically incorrect for new variants
+
+These compile but produce **wrong results** for `XBody`/`Geom` because the
+`_` catch-all returns zeros or identity.
+
+| File | Line | Context | Current Arms | Required Change |
+|------|------|---------|-------------|-----------------|
+| `acceleration.rs` | 208 | FrameLinAcc | `Site`, `Body`, `_ → zeros` | **Add `Geom` arm** (DT-102): `model.geom_body[objid]`, `data.geom_xpos[objid]` |
+| `acceleration.rs` | 226 | FrameAngAcc | `Site`, `Body`, `_ → zeros` | **Add `Geom` arm** (DT-102): `model.geom_body[objid]` |
+| `acceleration.rs` | 143 | Touch eval | `Geom`, `_ → skip` | **Rewrite to Site-based** (DT-64): `model.site_body[objid]` → body-level contact iteration |
+| `position.rs` | 108 | FramePos | `Site`, `Body`, `Geom`, `_ → zeros` | Add `XBody` arm: read `data.xipos` (not `xpos`) |
+| `position.rs` | 119 | FrameQuat | `Site`, `Body`, `Geom`, `_ → identity` | Add `XBody` arm: read `mulQuat(xquat, body_iquat)` |
+| `position.rs` | 141 | FrameAxis | `Site`, `Body`, `Geom`, `_ → identity` | Add `XBody` arm: read `data.ximat` |
+| `velocity.rs` | 113 | Velocimeter | `Site`, `Body`, `_ → zeros` | Add `XBody` arm for correct reference point |
+| `velocity.rs` | 132 | FrameLinVel | `Site`, `Body`, `_ → zeros` | Add `XBody` arm |
+| `velocity.rs` | 148 | FrameAngVel | `Site`, `Body`, `_ → zeros` | Add `XBody` arm |
+
+#### Table 3: Wildcard matches — no change needed
+
+These either use types that don't receive new variants, or the `_` catch-all
+is semantically correct (e.g., Rangefinder is always Site-attached).
+
+| File | Line | Context | Reason |
+|------|------|---------|--------|
+| `position.rs` | 170 | Rangefinder | Equality check `== Site` only; always Site-attached |
+| `position.rs` | 269 | Magnetometer | Wildcard; always Site/Body |
+| `velocity.rs` | 87 | Gyro | Wildcard; always Site/Body |
+| `acceleration.rs` | 83 | Accelerometer | Wildcard; always Site/Body |
+| `acceleration.rs` | 103 | Force | Wildcard; always Site/Body |
+| `acceleration.rs` | 125 | Torque | Wildcard; always Site/Body |
+| `postprocess.rs` | 60 | Cutoff clamping | Type-agnostic for non-Touch/Rangefinder |
+
+#### Table 4: `MjSensorType` matches — no change needed
+
+No new `MjSensorType` variants proposed in Spec A. All exhaustive matches
+(`enums.rs:427` dim(), `builder/sensor.rs:82/209/248`) are unaffected.
+
+### EGT-6: Architectural decisions
+
+Spec A must make explicit design decisions for these open questions. The
+rubric does not prescribe the answer — it requires the spec to **choose
+one, justify it, and document the conformance impact**.
+
+**DECISION 1: `XBody` variant scope**
+
+Should Spec A add `MjObjectType::XBody` now, or defer?
+
+| Option | Trade-off |
+|--------|-----------|
+| (a) Add `XBody` now | Correct body/xbody distinction immediately. Touches 10+ match sites across position.rs, velocity.rs, acceleration.rs (Table 2). Larger blast radius but fixes a real conformance gap (EGT-1: 0.15m error for offset-COM bodies). |
+| (b) Defer `XBody` to Spec B/C | Smaller Spec A scope. Current `Body` = MuJoCo's `XBody` (joint frame), which is what MJCF `body=` attribute defaults to. Spec A's parser stores `objtype` string, ready for later dispatch. **Risk:** frame sensors attached via `<framepos objtype="body" objname="b1"/>` will read `xpos` (wrong — should read `xipos`). |
+| (c) Rename current `Body` → `XBody`, add new `Body` | Semantically cleanest: CortenForge names match MuJoCo names. **Risk:** breaks every existing `MjObjectType::Body` consumer. |
+
+**DECISION 2: `Camera` variant scope**
+
+Should Spec A add `MjObjectType::Camera`, or defer?
+
+| Option | Trade-off |
+|--------|-----------|
+| (a) Add `Camera` now | Full MuJoCo objtype parity. Requires `model.cam_xpos`/`cam_xmat`/`cam_quat` arrays (may not exist yet). |
+| (b) Defer with DT-ID | Cameras are rarely used as sensor objects. Defer without conformance risk for typical models. |
+
+**DECISION 3: `mj_contactForce()` implementation scope**
+
+Should Spec A implement `mj_contactForce()` equivalent for touch sensor, or
+defer?
+
+| Option | Trade-off |
+|--------|-----------|
+| (a) Implement now | Full touch conformance. Requires understanding pyramidal/elliptic/frictionless cone basis transforms. **Complex** — the reconstruction depends on `cone` flag, contact `dim`, and friction model. |
+| (b) Defer with DT-ID + impact analysis | Touch sensor works for frictionless/elliptic contacts (where `efc_force[0]` IS the normal force). **33% error** for pyramidal contacts (EGT-2a). Spec must document which contact models are affected and quantify the deviation. |
+| (c) Implement frictionless + elliptic, defer pyramidal | Partial conformance: correct for 2 of 3 contact models. Pyramidal deferred with quantified error. |
+
+**DECISION 4: Ray-geom intersection filter**
+
+Should Spec A implement `mju_rayGeom()` for touch sensor, or defer?
+
+| Option | Trade-off |
+|--------|-----------|
+| (a) Implement now | Full touch conformance layer 4. Requires ray-geometry intersection for sphere/capsule/box/cylinder/ellipsoid site types. **Moderate complexity.** |
+| (b) Defer with DT-ID + impact analysis | Touch sensor sums ALL contacts on the body, not just those whose normal ray intersects the sensor site volume. Over-reports for small sites on large bodies. **Impact depends on site size relative to body.** |
+
 ---
 
 ## Criteria
@@ -231,7 +357,7 @@ and velocity cases.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | **DT-62:** (1) Parser change: `get_attribute_opt(e, "objtype")` → `MjcfSensor.objtype: Option<String>` field. Separate `reftype`/`refname` conflation at `parser.rs:3470` (currently `get_attribute_opt(e, "reftype").or_else(|| get_attribute_opt(e, "refname"))` conflates two attributes into one field). (2) Builder `resolve_sensor_object()` rewrite for frame sensors (lines 165–186): replace site→body→geom heuristic with explicit objtype dispatch — string-to-enum mapping from MJCF `objtype` attribute (`"site"`→`MjObjectType::Site`, `"body"`→`MjObjectType::Body`, `"geom"`→`MjObjectType::Geom`, `"xbody"`→`MjObjectType::XBody`, `"camera"`→`MjObjectType::Camera`; or explicit deferral of XBody/Camera with DT-IDs). Default/fallback when `objtype` omitted specified (MuJoCo infers from which attribute name was used: `site=`→Site, `body=`→XBody, `objname=`→depends on sensor type). **DT-64:** (1) Builder touch resolution (lines 138–163): change from `(MjObjectType::Geom, first_geom_id)` to `(MjObjectType::Site, site_id)`. (2) Evaluation rewrite (lines 143–181): `objid` is now site_id; body resolution at runtime via `model.site_body[objid]`; contact iteration with `model.geom_body[c.geom1] == body_id \|\| model.geom_body[c.geom2] == body_id`; `mj_contactForce()` equivalent or explicit analysis of current `efc_force` approach vs MuJoCo's (with EGT-2a data); ray-geom intersection (implement or defer with DT-ID + impact analysis). Every loop, guard, and formula written in Rust-like pseudocode. **DT-102:** (1) FrameLinAcc Geom arm (after line 211): `MjObjectType::Geom if objid < model.ngeom => (model.geom_body[objid], data.geom_xpos[objid])` — calls existing `object_acceleration(data, body_id, &obj_pos, None)`. (2) FrameAngAcc Geom arm (after line 228): `MjObjectType::Geom if objid < model.ngeom => model.geom_body[objid]`. An implementer can type all three in without reading MuJoCo source. |
+| **A+** | **DT-62:** (1) Parser change: `get_attribute_opt(e, "objtype")` → `MjcfSensor.objtype: Option<String>` field. Separate `reftype`/`refname` conflation at `parser.rs:3470` (currently `get_attribute_opt(e, "reftype").or_else(|| get_attribute_opt(e, "refname"))` conflates two attributes into one field). (2) Builder `resolve_sensor_object()` rewrite for frame sensors (lines 165–186): replace site→body→geom heuristic with explicit objtype dispatch — string-to-enum mapping from MJCF `objtype` attribute (`"site"`→`MjObjectType::Site`, `"body"`→`MjObjectType::Body`, `"geom"`→`MjObjectType::Geom`, `"xbody"`→`MjObjectType::XBody`, `"camera"`→`MjObjectType::Camera`; or explicit deferral of XBody/Camera with DT-IDs). Default/fallback when `objtype` omitted specified (MuJoCo infers from which attribute name was used: `site=`→Site, `body=`→XBody, `objname=`→depends on sensor type). **DT-64:** (1) Builder touch resolution (lines 138–163): change from `(MjObjectType::Geom, first_geom_id)` to `(MjObjectType::Site, site_id)`. (2) Evaluation rewrite (lines 143–181): `objid` is now site_id; body resolution at runtime via `model.site_body[objid]`; contact iteration with `model.geom_body[c.geom1] == body_id \|\| model.geom_body[c.geom2] == body_id`; `mj_contactForce()` equivalent or explicit analysis of current `efc_force` approach vs MuJoCo's (with EGT-2a data); ray-geom intersection (implement or defer with DT-ID + impact analysis). Every loop, guard, and formula written in Rust-like pseudocode. **DT-102:** (1) FrameLinAcc Geom arm (after line 211): `MjObjectType::Geom if objid < model.ngeom => (model.geom_body[objid], data.geom_xpos[objid])` — calls existing `object_acceleration(data, body_id, &obj_pos, None)`. (2) FrameAngAcc Geom arm (after line 228): `MjObjectType::Geom if objid < model.ngeom => model.geom_body[objid]`. FrameAngAcc MUST read `cacc[body_id]` angular components directly (matching MuJoCo), NOT call `object_acceleration()` and discard the linear part — spatial transport only affects linear components; calling it for angular wastes computation and introduces floating-point drift. **Field existence:** For every model/data field referenced (e.g., `model.body_iquat`, `data.xipos`, `data.ximat`, `model.site_body`), the spec verifies the field exists in CortenForge's `Model`/`Data` structs (citing `model.rs`/`data.rs` line number) or specifies its addition with type, default, and population site. An implementer can type all three in without reading MuJoCo source. |
 | **A** | Algorithm is complete and MuJoCo-conformant. One or two minor details left implicit (e.g., bounds check pattern, `efc_address >= 0` guard). |
 | **B** | Algorithm structure is clear but some steps are hand-waved or deferred without justification. |
 | **C** | Skeleton only — "implement this somehow." |
@@ -243,7 +369,7 @@ and velocity cases.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Convention difference table present with every porting rule cell filled. Rules include: (1) `mjOBJ_BODY` uses `xipos`/`ximat` (inertial frame) — CortenForge's current `MjObjectType::Body` uses `xpos`/`xmat` (joint frame), which is MuJoCo's `mjOBJ_XBODY`; spec maps the correct CortenForge fields for each MuJoCo object type. (2) `MjObjectType` enum variants vs MuJoCo `mjtObj` values — missing `XBody` (2) and `Camera` (7); spec states which to add and which to defer. (3) `SpatialVector` layout `[angular; linear]` matches MuJoCo's `tmp[0..3]` = angular, `tmp[3..6]` = linear (confirmed consistent — no porting needed). (4) Touch sensor: `mj_contactForce()` vs current `efc_force` direct access — conformance difference documented with empirical data (EGT-2a: 33% discrepancy for pyramidal contacts); spec either implements equivalent or proves numerical equivalence for non-pyramidal contacts with explicit deviation scope. (5) `sensor_objtype`/`sensor_objid` naming matches MuJoCo model arrays (no porting needed). (6) Contact struct fields: `c.geom1`/`c.geom2` (CortenForge `contact_types.rs:59–60`) vs MuJoCo `con->geom[0]`/`con->geom[1]` — semantically identical. (7) `model.geom_body` (CortenForge, `model.rs:253`) vs `m->geom_bodyid` (MuJoCo) — same semantics. Each rule verified to preserve numerical equivalence or explicitly documents where it diverges. |
+| **A+** | Convention difference table present with every porting rule cell filled. Rules include: (1) `mjOBJ_BODY` uses `xipos`/`ximat` (inertial frame) — CortenForge's current `MjObjectType::Body` uses `xpos`/`xmat` (joint frame), which is MuJoCo's `mjOBJ_XBODY`; spec maps the correct CortenForge fields for each MuJoCo object type. (2) `MjObjectType` enum variants vs MuJoCo `mjtObj` values — missing `XBody` (2) and `Camera` (7); spec states which to add and which to defer. (3) `SpatialVector` layout `[angular; linear]` matches MuJoCo's `tmp[0..3]` = angular, `tmp[3..6]` = linear (confirmed consistent — no porting needed). (4) Touch sensor: `mj_contactForce()` vs current `efc_force` direct access — conformance difference documented with empirical data (EGT-2a: 33% discrepancy for pyramidal contacts); spec either implements equivalent or proves numerical equivalence for non-pyramidal contacts with explicit deviation scope. (5) `sensor_objtype`/`sensor_objid` naming matches MuJoCo model arrays (no porting needed). (6) Contact struct fields: `c.geom1`/`c.geom2` (CortenForge `contact_types.rs:59–60`) vs MuJoCo `con->geom[0]`/`con->geom[1]` — semantically identical. (7) `model.geom_body` (CortenForge, `model.rs:253`) vs `m->geom_bodyid` (MuJoCo) — same semantics. (8) Contact frame layout: MuJoCo's `con->frame[0..3]` is the contact normal (first row of a 3x3 rotation matrix stored as 9 floats). CortenForge's `Contact.frame` is `[Vector3<f64>; 2]` containing tangent vectors only; the normal is in `Contact.normal` separately. Any algorithm reading MuJoCo's `con->frame` for the normal direction must use `contact.normal` in CortenForge. (9) Contact normal direction: MuJoCo's `con->frame[0..3]` vs CortenForge's `Contact.normal` — spec documents whether both point in the same direction (geom1→geom2 or geom2→geom1). If conventions differ, the touch sensor sign-flip logic (`if bodyid == conbody[1]`) must be adjusted. Spec includes a concrete test verifying normal direction for a known contact pair. (10) Contact iteration pattern: MuJoCo iterates `d->contact[j]` (j=0..ncon) and checks `con->efc_address >= 0` to identify active contacts. CortenForge iterates `data.efc_type[ei]` forward and uses `data.efc_id[ei]` to map to `data.contacts[ci]`. The data flow is structurally inverted. The spec must translate the MuJoCo algorithm to CortenForge's iteration pattern, or justify adding MuJoCo-style iteration. Each rule verified to preserve numerical equivalence or explicitly documents where it diverges. |
 | **A** | Major conventions documented. Minor field-name mappings left to implementer. |
 | **B** | Some conventions noted, others not — risk of silent mismatch during implementation. |
 | **C** | MuJoCo code pasted without adaptation to our conventions. |
@@ -267,7 +393,7 @@ and velocity cases.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | AC→Test traceability matrix present — every AC maps to ≥1 test, every test maps to ≥1 AC or is justified as supplementary. Explicit edge case inventory: world body (`body_id == 0` — body COM at origin, sensor reads zeros/identity), multi-geom body with contacts on all geoms (DT-64 regression), body with zero geoms (no contacts — touch sensor = 0), sleeping body with touch sensor (`SleepState::Asleep` → sensor skipped), geom-attached acceleration on world body, `mjDSBL_SENSOR` flag (all sensors return stale values), frame sensor with `objtype="body"` on body with offset COM (must read `xipos`, not `xpos`), `objtype` omitted (must fall back to heuristic or infer from attribute name). Negative cases tested: contact on wrong body → touch sensor unaffected; geom on different body → not aggregated; `objtype="geom"` on Touch sensor → error or fallback (touch only supports site). At least one MuJoCo-vs-CortenForge conformance test per task (DT-62, DT-64, DT-102) — test comment states MuJoCo version 3.5.0, expected value source, and tolerance. At least one test uses a non-trivial model (multi-body, multi-geom, offset COM) to catch bugs that only appear in non-symmetric configurations. |
+| **A+** | AC→Test traceability matrix present — every AC maps to ≥1 test, every test maps to ≥1 AC or is justified as supplementary. Explicit edge case inventory: world body (`body_id == 0` — body COM at origin, sensor reads zeros/identity), multi-geom body with contacts on all geoms (DT-64 regression), body with zero geoms (no contacts — touch sensor = 0), sleeping body with touch sensor (`SleepState::Asleep` → sensor skipped), geom-attached acceleration on world body, `mjDSBL_SENSOR` flag (all sensors return stale values), frame sensor with `objtype="body"` on body with offset COM (must read `xipos`, not `xpos`), frame sensor with `objtype="body"` on zero-mass body (verify `xipos`/`ximat` populated — MuJoCo sets to joint frame origin for massless bodies), `objtype` omitted (must fall back to heuristic or infer from attribute name). Negative cases tested: contact on wrong body → touch sensor unaffected; geom on different body → not aggregated; `objtype="geom"` on Touch sensor → error or fallback (touch only supports site). **Build-time regression:** at least one test loads an existing MJCF model that uses touch sensors (from conformance test suite or existing fixtures) and verifies it builds successfully with the same sensor count and sensor addresses as before the change. At least one MuJoCo-vs-CortenForge conformance test per task (DT-62, DT-64, DT-102) — test comment states MuJoCo version 3.5.0, expected value source, and tolerance. At least one test uses a non-trivial model (multi-body, multi-geom, offset COM) to catch bugs that only appear in non-symmetric configurations. |
 | **A** | Good coverage. Minor edge-case gaps. Conformance tests present but not for all code paths. |
 | **B** | Happy path covered. Edge cases and negative cases sparse. No explicit MuJoCo conformance tests. |
 | **C** | Minimal test plan. |
@@ -291,7 +417,7 @@ and velocity cases.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Complete file list with per-file change description: **sim-mjcf:** `parser.rs` lines 3453–3487 (add `objtype` attribute parsing, separate `reftype`/`refname` at line 3470), `types.rs` lines 3069–3101 (`MjcfSensor` struct: add `objtype: Option<String>` field, separate `reftype` field), `builder/sensor.rs` lines 68–204 (rewrite `resolve_sensor_object()` for frame sensors + touch keying change), lines 40–44 (`process_sensors()`: wire `objtype`). **sim-core:** `acceleration.rs` lines 143–181 (touch evaluation rewrite), lines 207–220 (FrameLinAcc: add Geom arm), lines 222–238 (FrameAngAcc: add Geom arm), lines 64–71 (lazy gate: add Geom to cacc-trigger list if needed), `enums.rs` lines 496–512 (`MjObjectType`: add XBody/Camera if scoped in), `sensor/mod.rs` lines 25–56 (`sensor_body_id`: add XBody/Camera arms). Behavioral changes: (1) touch sensor now body-level (moves toward MuJoCo conformance — current single-geom keying produces wrong results for multi-geom bodies), (2) frame sensor objtype now explicit (moves toward conformance — heuristic guessing produces wrong results when names collide), (3) geom acc sensors now produce non-zero values (moves toward conformance — currently return zeros). Existing test impact: names specific test suites — `sim-sensor` tests, `sim-conformance-tests`, Phase 4 position-stage sensor tests. States whether breakage is expected (touch sensor value changes for multi-geom models = expected, toward conformance) or unexpected (single-geom touch should be unchanged = regression guard). Existing test baseline: 2,238+ domain tests post-Phase 5. Exhaustive match sites that will error if `MjObjectType` gains variants: `sensor_body_id()` at `mod.rs:25`, `acceleration.rs` matches at lines 83/103/125/207/226 (all use `_` catch-all — additive, no breakage), `builder/sensor.rs:82` (exhaustive on `MjSensorType` — no new types in Spec A, no breakage). |
+| **A+** | Complete file list with per-file change description: **sim-mjcf:** `parser.rs` lines 3453–3487 (add `objtype` attribute parsing, separate `reftype`/`refname` at line 3470), `types.rs` lines 3069–3101 (`MjcfSensor` struct: add `objtype: Option<String>` field, separate `reftype` field), `builder/sensor.rs` lines 68–204 (rewrite `resolve_sensor_object()` for frame sensors + touch keying change), lines 40–44 (`process_sensors()`: wire `objtype`). **sim-core:** `acceleration.rs` lines 143–181 (touch evaluation rewrite), lines 207–220 (FrameLinAcc: add Geom arm), lines 222–238 (FrameAngAcc: add Geom arm), lines 64–71 (lazy gate: add Geom to cacc-trigger list if needed), `enums.rs` lines 496–512 (`MjObjectType`: add XBody/Camera if scoped in), `sensor/mod.rs` lines 25–56 (`sensor_body_id`: add XBody/Camera arms). Behavioral changes: (1) touch sensor now body-level (moves toward MuJoCo conformance — current single-geom keying produces wrong results for multi-geom bodies), (2) frame sensor objtype now explicit (moves toward conformance — heuristic guessing produces wrong results when names collide), (3) geom acc sensors now produce non-zero values (moves toward conformance — currently return zeros). Existing test impact: names specific test suites — `sim-sensor` tests, `sim-conformance-tests`, Phase 4 position-stage sensor tests. States whether breakage is expected (touch sensor value changes for multi-geom models = expected, toward conformance) or unexpected (single-geom touch should be unchanged = regression guard). Existing test baseline: 2,238+ domain tests post-Phase 5. Exhaustive match sites that will error if `MjObjectType` gains variants: `sensor_body_id()` at `mod.rs:25`, `acceleration.rs` matches at lines 83/103/125/207/226 (all use `_` catch-all — additive, no breakage), `builder/sensor.rs:82` (exhaustive on `MjSensorType` — no new types in Spec A, no breakage). **Sentinel audit:** spec audits all resolution paths in `resolve_sensor_object()` for sentinel values (`usize::MAX`, `0` for invalid IDs) and confirms that evaluation code either bounds-checks before array access or proves sentinels cannot reach evaluation. **Downstream consumers:** spec lists all crates that read `Model.sensor_objtype` or `Model.sensor_objid` (search across workspace). For each consumer, spec states whether the behavioral change affects it and whether existing tests cover the change. At minimum: `sim-bevy` (L1 ECS integration), `sim-sensor` (test crate), `sim-conformance-tests`. |
 | **A** | File list complete. Most regressions identified. |
 | **B** | File list present but incomplete. Some regression risk unaddressed. |
 | **C** | No blast-radius analysis. |
@@ -325,7 +451,7 @@ including explicit decisions about which layers to implement now vs defer.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | All four layers addressed: (1) Body-level contact iteration with `model.geom_body[c.geom1] == body_id` matching — fully specified. (2) Contact force computation — spec either implements `mj_contactForce()` equivalent that reconstructs normal force from pyramidal/elliptic/frictionless `efc_force` rows (requires understanding the contact model basis transform), or explicitly defers with DT-ID + quantitative impact analysis citing EGT-2a (33% error for pyramidal), and states which contact models produce correct results without it (frictionless: `efc_force[0]` IS the normal force; elliptic: first row IS normal force; pyramidal: facet→normal reconstruction needed). (3) Ray direction construction — `conray = normalize(con.frame * conforce[0])`, sign flip when `body_id == conbody[1]` — spec either implements or defers with impact analysis (without this, touch sensor double-counts contacts whose normal points away from the sensor site). (4) Ray-geom intersection — spec either implements `mju_rayGeom()` equivalent with site type/size/pose, or explicitly defers with DT-ID, conformance impact analysis (e.g., "without ray-geom filter, a touch sensor on a small site attached to a large body sums forces from contacts outside the site volume — MuJoCo would report zero for those contacts"), and names specific test cases that will produce different results without it. Deferred layers have concrete "what's different" analysis with MuJoCo-verified numerical examples. |
+| **A+** | All four layers addressed: (1) Body-level contact iteration with `model.geom_body[c.geom1] == body_id` matching — fully specified. **objid audit:** spec explicitly lists every use of `objid` in the Touch evaluation arm (`acceleration.rs:143–181`), confirms no code path compares `objid` (now a site_id) against geom indices (`c.geom1`/`c.geom2`), and states what `objid` means at each line (site_id, not geom_id). Any line that previously compared `objid` against geom fields is rewritten to compare body IDs. (2) Contact force computation — spec either implements `mj_contactForce()` equivalent that reconstructs normal force from pyramidal/elliptic/frictionless `efc_force` rows (requires understanding the contact model basis transform), or explicitly defers with DT-ID + quantitative impact analysis citing EGT-2a (33% error for pyramidal), and states which contact models produce correct results without it (frictionless: `efc_force[0]` IS the normal force; elliptic: first row IS normal force; pyramidal: facet→normal reconstruction needed). If implementing `mj_contactForce()`, the spec includes numerical edge-case analysis: (a) `mu = 0` (frictionless — bypass reconstruction, use first `efc_force` row), (b) near-zero `mu` (reconstruction matrix condition), (c) `dim = 1` vs `dim = 3` vs `dim = 4` special casing. AC includes a test with near-zero friction verifying no `NaN`/`Inf`. (3) Ray direction construction — `conray = normalize(contact.normal * conforce[0])` (using CortenForge's `Contact.normal`, NOT `contact.frame[0]` which is a tangent vector — see P3 rules 8-9), sign flip when `body_id == conbody[1]` — spec either implements or defers with impact analysis (without this, touch sensor double-counts contacts whose normal points away from the sensor site). (4) Ray-geom intersection — spec either implements `mju_rayGeom()` equivalent with site type/size/pose, or explicitly defers with DT-ID, conformance impact analysis (e.g., "without ray-geom filter, a touch sensor on a small site attached to a large body sums forces from contacts outside the site volume — MuJoCo would report zero for those contacts"), and names specific test cases that will produce different results without it. Deferred layers have concrete "what's different" analysis with MuJoCo-verified numerical examples. |
 | **A** | All four layers acknowledged. One deferred with DT-ID but missing quantitative impact analysis. |
 | **B** | Only body-level fix addressed. `mj_contactForce()` difference not mentioned or dismissed without analysis. |
 | **C** | Touch sensor treated as simple multi-geom fix without awareness of the full MuJoCo algorithm. |
@@ -344,7 +470,7 @@ matches the input expectations of the next.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Full pipeline trace for `objtype`: (1) parser reads `get_attribute_opt(e, "objtype")` → `MjcfSensor.objtype: Option<String>`, (2) builder `resolve_sensor_object()` maps string to `MjObjectType` enum via explicit match (`"site"→Site`, `"body"→Body`, `"geom"→Geom`, `"xbody"→XBody`), validates against allowed types per sensor type (e.g., touch only allows Site; frame sensors allow Site/Body/XBody/Geom/Camera), resolves `objname` against the correct name map for the chosen type, stores result in `self.sensor_objtype.push(objtype)` + `self.sensor_objid.push(objid)`, (3) evaluation reads `model.sensor_objtype[sensor_id]` and dispatches to correct data arrays. Pipeline trace for touch keying change: (1) parser reads `site=` attribute → `objname`, (2) builder resolves to `(MjObjectType::Site, site_id)` (changed from `(MjObjectType::Geom, first_geom_id)`), (3) evaluation reads `model.sensor_objtype[sensor_id] == Site`, resolves `model.site_body[objid]` at runtime to get body_id, then iterates contacts. Each handoff has explicit field names on both sides. Default/fallback behavior when `objtype` is omitted documented — MuJoCo infers from sensor type + attribute name used: `site=` → Site for non-frame sensors, `site=`/`body=`/`geom=` → corresponding type for frame sensors, `objname=` → depends on context. Spec states CortenForge's inference logic with exact match arms. Pipeline trace for `reftype`/`refname` separation: currently conflated at `parser.rs:3470`; after Spec A, `reftype` stored in new `MjcfSensor.reftype: Option<String>` field, `refname` in existing `MjcfSensor.refname` field. Builder wiring deferred to Spec B but field separation is Spec A's responsibility. |
+| **A+** | Full pipeline trace for `objtype`: (1) parser reads `get_attribute_opt(e, "objtype")` → `MjcfSensor.objtype: Option<String>`, (2) builder `resolve_sensor_object()` maps string to `MjObjectType` enum via explicit match (`"site"→Site`, `"body"→Body`, `"geom"→Geom`, `"xbody"→XBody`), validates against allowed types per sensor type (e.g., touch only allows Site; frame sensors allow Site/Body/XBody/Geom/Camera), resolves `objname` against the correct name map for the chosen type, stores result in `self.sensor_objtype.push(objtype)` + `self.sensor_objid.push(objid)`, (3) evaluation reads `model.sensor_objtype[sensor_id]` and dispatches to correct data arrays. **objtype-on-non-frame-sensors:** Spec explicitly states which sensor types honor the `objtype` attribute and which ignore it. For sensor types that ignore `objtype` (touch, accelerometer, gyro, velocimeter, force, torque, rangefinder, magnetometer), the builder ignores the parsed `objtype` value. Pipeline trace includes the "objtype ignored" path (e.g., `<touch site="s1" objtype="geom"/>` → builder ignores `objtype`, resolves via `site=` attribute → `(Site, site_id)`), not just the "objtype honored" path. Pipeline trace for touch keying change: (1) parser reads `site=` attribute → `objname`, (2) builder resolves to `(MjObjectType::Site, site_id)` (changed from `(MjObjectType::Geom, first_geom_id)`), (3) evaluation reads `model.sensor_objtype[sensor_id] == Site`, resolves `model.site_body[objid]` at runtime to get body_id, then iterates contacts. Each handoff has explicit field names on both sides. **Attribute provenance:** When `objtype` is omitted, the spec documents how the implementation determines the default object type. If inference depends on which MJCF attribute name was used (`site=` vs `body=` vs `geom=`), the spec either (a) adds a field to `MjcfSensor` preserving the attribute name, or (b) proves the current parser's try-site-first-then-body-then-geom heuristic at `parser.rs:3463–3468` produces identical results to MuJoCo's attribute-name-based inference for all valid MJCF inputs. **Note:** the current parser collapses `site=`, `body=`, `geom=`, and `objname=` into a single `objname` field, losing provenance — the spec must address this. Pipeline trace for `reftype`/`refname` separation: currently conflated at `parser.rs:3470`; after Spec A, `reftype` stored in new `MjcfSensor.reftype: Option<String>` field, `refname` in existing `MjcfSensor.refname` field. Builder wiring deferred to Spec B but field separation is Spec A's responsibility. |
 | **A** | Pipeline is complete. One handoff detail left implicit. |
 | **B** | Pipeline described at high level but individual handoffs not traced with field names. |
 | **C** | Pipeline not discussed — individual stages treated in isolation. |
@@ -365,6 +491,9 @@ matches the input expectations of the next.
       vs `mjOBJ_BODY` with empirical values, sleeping bodies, `mjDSBL_SENSOR`).
       Two reviewers could independently determine whether the spec cites
       `get_xquat()` with all 5 object types and quaternion formulas.
+      EGT section includes analytical derivations (V1-V4), structured
+      match-site tables (28 sites across 4 tables), and architectural
+      decision points (4 decisions with enumerated options).
 
 - [x] **Non-overlap:** P1 vs P9: P1 grades whether the spec *documents*
       MuJoCo's touch sensor correctly (all 4 layers cited from C source);
@@ -385,7 +514,10 @@ matches the input expectations of the next.
       threading (P10). Could a spec be A+ on all 10 but still have a gap?
       No — P9 catches the touch sensor depth issue (4-layer algorithm,
       `mj_contactForce` 33% discrepancy) that P1/P2 alone would miss, and
-      P10 catches pipeline breaks that per-stage criteria miss.
+      P10 catches pipeline breaks that per-stage criteria miss. EGT-5
+      (match-site inventory) catches blast-radius misses that P7 prose alone
+      would miss. EGT-6 (architectural decisions) forces the spec to make
+      explicit deferral choices rather than ignoring scope questions.
 
 - [x] **Gradeability:** Each criterion maps to specific spec sections:
       P1→MuJoCo Reference + Key Behaviors, P2→Specification (S1-S3),
@@ -393,14 +525,18 @@ matches the input expectations of the next.
       P6→Prerequisites + Execution Order, P7→Risk & Blast Radius,
       P8→cross-cutting, P9→Touch sensor specification section + MuJoCo
       Reference (touch section), P10→Specification sections (all three
-      tasks) + Files Affected.
+      tasks) + Files Affected. EGT sections (EGT-1 through EGT-6)
+      provide reference data for grading P1/P4/P7/P9 — a grader can
+      check spec claims against EGT tables without re-running MuJoCo.
 
 - [x] **Conformance primacy:** P1 is tailored with 5 specific MuJoCo C
       functions, 5 object types, 3 data source tables, and explicit edge
-      cases. P4 requires MuJoCo-verified expected values from EGT-1/2/3.
-      P5 requires MuJoCo-vs-CortenForge conformance tests with version and
-      tolerance stated. P9 evaluates touch sensor conformance at all 4
-      algorithm layers with empirical discrepancy data. The rubric cannot
+      cases. P4 requires MuJoCo-verified expected values from EGT-1/2/3
+      with analytical derivations from EGT-4 (V1-V4). P5 requires
+      MuJoCo-vs-CortenForge conformance tests with version and tolerance
+      stated. P9 evaluates touch sensor conformance at all 4 algorithm
+      layers with empirical discrepancy data. EGT-6 requires architectural
+      decisions to include conformance impact analysis. The rubric cannot
       produce an A+ spec that diverges from MuJoCo without explicit,
       justified, tracked deviations.
 
@@ -458,3 +594,16 @@ matches the input expectations of the next.
 | R12 | P10 | `reftype`/`refname` separation pipeline trace missing. Spec A separates the parser fields (Contract 3 in umbrella) but the rubric didn't require P10 to verify this handoff. | Cross-reference with PHASE6_UMBRELLA.md Contract 3 | Added to P10 A+ bar: pipeline trace for `reftype`/`refname` separation (parser field split → Spec B handoff). | Rev 2 |
 | R13 | P2 | Default/fallback behavior when `objtype` attribute is omitted was not in P2 bar. MuJoCo infers objtype from which attribute name was used (`site=`→Site, `body=`→XBody for frame sensors, `objname=`→depends). CortenForge must implement matching inference. | MuJoCo MJCF schema analysis | Added to P2 A+ bar: default/fallback inference logic when `objtype` omitted. | Rev 2 |
 | R14 | P3 | CortenForge `contact_types.rs` field names and `model.rs` field names not mapped to MuJoCo equivalents. Phase 5 rubrics map every field. | Comparison with Phase 5 Spec B rubric P3 (8 convention items) | Added P3 items (6) and (7): `c.geom1`/`c.geom2` mapping and `model.geom_body` mapping. | Rev 2 |
+| R15 | P4 | Empirical values stated without analytical derivation chains. Phase 5 Spec C rubric has V1-V7 with step-by-step math from first principles to expected value. Without derivations, the rubric can't distinguish "MuJoCo happens to output X" from "X is physically correct." | Structural comparison with Phase 5 Spec C rubric | Added EGT-4: Analytical verification data with derivations V1-V4 (touch total force, `mj_contactForce` discrepancy factor 4/3 from pyramidal basis, body/xbody COM offset, geom acceleration static case). | Rev 3 |
+| R16 | P7 | Match sites discussed in P7 prose but not structured as lookup tables. Phase 5 Spec C rubric has 4 structured tables (exhaustive, wildcard, no-change, MjSensorType) with File/Line/Context/Required-Change columns. An implementer needs these as a checklist. | Structural comparison with Phase 5 Spec C rubric | Added EGT-5: Exhaustive match-site inventory with 4 tables (1 exhaustive compilation-breaker, 9 wildcard-but-wrong, 7 wildcard-no-change, MjSensorType summary). Full codebase audit with 28 match sites catalogued. | Rev 3 |
+| R17 | P2, P9 | Architectural decisions implicit in rubric (add XBody? implement `mj_contactForce` now or defer? ray-geom filter?) but not structured as explicit choice points with trade-off analysis. Phase 5 Spec C rubric has "DECISION NEEDED" flags with enumerated options. | Structural comparison with Phase 5 Spec C rubric | Added EGT-6: Architectural decisions with 4 decision points (XBody scope, Camera scope, `mj_contactForce` scope, ray-geom filter scope), each with 2-3 options and trade-off analysis. Rubric requires spec to choose and justify, not prescribing the answer. | Rev 3 |
+| R18 | P9 | Touch keying change from `(Geom, geom_id)` to `(Site, site_id)` creates type-confusion risk: `objid` changes meaning but all code paths use `usize`, so compiler won't catch site_id compared against geom indices. A spec could pass P9 by describing body-level iteration correctly while residual code still compares `objid` against `c.geom1`/`c.geom2`. | "A+ but still broken" thought experiment | Added to P9 A+ bar: explicit `objid` audit requirement — spec must list every use of `objid` in touch eval arm and confirm no code path compares it against geom indices. | Rev 4 (stress test) |
+| R19 | P3 | Contact frame field layout differs between MuJoCo (3x3 matrix, normal in first row = `con->frame[0..3]`) and CortenForge (`Contact.normal` separate, `Contact.frame` = 2 tangent vectors). Transcribing MuJoCo's `mju_scl3(conray, con->frame, conforce[0])` as `contact.frame[0] * conforce[0]` uses a tangent vector instead of the normal. Also: normal direction convention may differ, requiring sign-flip logic adjustment. | "A+ but still broken" thought experiment | Added P3 rules (8), (9), (10): contact frame layout, normal direction convention, contact iteration pattern inversion. | Rev 4 (stress test) |
+| R20 | P10 | Parser loses MJCF attribute provenance. Current parser at `parser.rs:3463–3468` collapses `site=`, `body=`, `geom=`, `objname=` into a single `objname` field. When `objtype` is omitted, MuJoCo infers type from which attribute name was used, but CortenForge's parser has already lost this information. A spec could document MuJoCo's inference logic perfectly (A+ P1) while the parser can't implement it (broken P10). | "A+ but still broken" thought experiment | Added to P10 A+ bar: attribute provenance requirement — spec must either add a field preserving which MJCF attribute was used, or prove the existing heuristic produces identical results to MuJoCo's inference. | Rev 4 (stress test) |
+| R21 | P10 | `objtype` parsed for ALL sensor types by the parser, but only meaningful for frame sensors in MuJoCo. A spec could pass P10 by tracing the frame-sensor `objtype` path while `<touch site="s1" objtype="geom"/>` bypasses the DT-64 fix by routing through the `objtype` dispatch instead of the touch resolution path. | "A+ but still broken" thought experiment | Added to P10 A+ bar: "objtype-on-non-frame-sensors" path — spec must state which sensor types honor `objtype` and which ignore it, including pipeline trace for the "ignored" case. | Rev 4 (stress test) |
+| R22 | P2 | Spec references model/data fields (`body_iquat`, `xipos`, `ximat`) that may not exist in CortenForge's structs. A spec could cite the correct MuJoCo formula (A+ P1) and write complete pseudocode (A+ P2) but reference fields that don't exist, causing compilation failure. | "A+ but still broken" thought experiment | Added to P2 A+ bar: field existence requirement — for every model/data field referenced, spec verifies it exists in CortenForge's structs (citing line number) or specifies its addition. | Rev 4 (stress test) |
+| R23 | P5 | No build-time regression test required. Touch keying change could cause existing MJCF models to fail at build time (e.g., if site name lookup fails where geom heuristic previously succeeded). Spec could pass all P5 edge cases (runtime behavior) while models break at construction time. | "A+ but still broken" thought experiment | Added to P5 A+ bar: build-time regression test — at least one test loads an existing MJCF with touch sensors and verifies it builds with same sensor count and addresses. | Rev 4 (stress test) |
+| R24 | P7 | No downstream consumer audit. Touch keying change affects `Model.sensor_objtype` semantics. Any crate reading `sensor_objtype == Geom` for touch sensors (e.g., `sim-bevy` L1 ECS integration) would silently break. All criteria focus on L0 crates. | "A+ but still broken" thought experiment | Added to P7 A+ bar: downstream consumer search across workspace for `sensor_objtype`/`sensor_objid` readers, with per-consumer impact assessment. | Rev 4 (stress test) |
+| R25 | P7 | Sentinel values (`usize::MAX`) in resolution paths could cause panics. `builder/sensor.rs:161` uses `unwrap_or(usize::MAX)`. If any resolution path returns this sentinel, evaluation code indexes out of bounds. | "A+ but still broken" thought experiment | Added to P7 A+ bar: sentinel audit for all `resolve_sensor_object()` paths. | Rev 4 (stress test) |
+| R26 | P9 | If spec implements `mj_contactForce()`, no criterion checked numerical stability. Pyramidal reconstruction involves `1/mu` divisions. For near-zero friction (`mu → 0`), this produces `NaN`/`Inf`. MuJoCo special-cases `dim=1` (frictionless). | "A+ but still broken" thought experiment | Added to P9 A+ bar: if implementing `mj_contactForce()`, require numerical edge-case analysis for `mu=0`, near-zero `mu`, and dim-specific special casing. AC must include near-zero friction test. | Rev 4 (stress test) |
+| R27 | P3 | Contact iteration pattern structurally inverted between MuJoCo and CortenForge. MuJoCo iterates `d->contact[j]` forward, CortenForge iterates `efc_type[ei]` and maps via `efc_id[ei]`. Transcribing MuJoCo's algorithm literally would not work. | "A+ but still broken" thought experiment | Added to P3 A+ bar as rule (10): contact iteration pattern translation requirement. | Rev 4 (stress test) |
