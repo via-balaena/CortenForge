@@ -6,7 +6,7 @@
 
 use nalgebra::Vector3;
 
-/// Element type for name↔index lookup via [`Model::name2id`] / [`Model::id2name`].
+/// Element type for name↔index lookup via [`Model::name2id`](super::Model::name2id) / [`Model::id2name`](super::Model::id2name).
 ///
 /// Each variant corresponds to a named element category in the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
