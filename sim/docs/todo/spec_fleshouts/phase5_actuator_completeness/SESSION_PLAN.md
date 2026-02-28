@@ -561,7 +561,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 11 | Spec D spec | Done | 25c831a |
 | 12 | Spec D implementation | Done | cc996c4 |
 | 13 | Spec D review — create document | Done | 8a5be17 |
-| 14 | Spec D review — execute | Done | |
+| 14 | Spec D review — execute | Done | 7bd472a |
 | 15 | Spec C rubric | Pending | |
 | 16 | Spec C spec | Pending | |
 | 17 | Spec C implementation | Pending | |
