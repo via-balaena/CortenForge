@@ -390,7 +390,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 15: Spec C rubric (Hill-type muscle dynamics)
 
-- [ ] Complete
+- [x] Complete
 
 **Prerequisite:** Session 3 (Spec A implementation) must be complete. Spec C
 depends on Spec A's extended `compute_muscle_params()` signature (Contract 2
@@ -562,7 +562,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 12 | Spec D implementation | Done | cc996c4 |
 | 13 | Spec D review — create document | Done | 8a5be17 |
 | 14 | Spec D review — execute | Done | 7bd472a |
-| 15 | Spec C rubric | Pending | |
+| 15 | Spec C rubric | Done | `bb61376` |
 | 16 | Spec C spec | Pending | |
 | 17 | Spec C implementation | Pending | |
 | 18 | Spec C review — create document | Pending | |
