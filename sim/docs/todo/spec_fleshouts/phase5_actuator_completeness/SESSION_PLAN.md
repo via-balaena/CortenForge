@@ -430,7 +430,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 16: Spec C spec (Hill-type muscle dynamics)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — write Spec C spec.
