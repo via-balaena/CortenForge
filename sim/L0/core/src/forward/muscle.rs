@@ -117,7 +117,8 @@ pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 10]) -> f6
         if dctrl > 0.0 { tau_act } else { tau_deact }
     } else {
         // Smooth blending via quintic sigmoid
-        tau_deact + (tau_act - tau_deact) * sigmoid(dctrl / tausmooth + 0.5)
+        // MuJoCo: x = 0.5*(dctrl/smoothing_width + 1)
+        tau_deact + (tau_act - tau_deact) * sigmoid(0.5 * (dctrl / tausmooth + 1.0))
     };
 
     dctrl / tau.max(1e-10)
@@ -333,7 +334,10 @@ impl Model {
 
         // --- Phase 4: Resolve muscle F0 ---
         for i in 0..self.nu {
-            if self.actuator_dyntype[i] != ActuatorDynamics::Muscle {
+            if !matches!(
+                self.actuator_dyntype[i],
+                ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle
+            ) {
                 continue;
             }
             if self.actuator_gainprm[i][2] < 0.0 {
@@ -530,8 +534,13 @@ fn build_actuator_moment(
 fn mj_set_length_range(model: &mut Model, opt: &LengthRangeOpt) {
     for i in 0..model.nu {
         // Step 1: Mode filtering
-        let is_muscle = model.actuator_gaintype[i] == GainType::Muscle
-            || model.actuator_biastype[i] == BiasType::Muscle;
+        let is_muscle = matches!(
+            model.actuator_gaintype[i],
+            GainType::Muscle | GainType::HillMuscle
+        ) || matches!(
+            model.actuator_biastype[i],
+            BiasType::Muscle | BiasType::HillMuscle
+        );
         let is_user = model.actuator_gaintype[i] == GainType::User
             || model.actuator_biastype[i] == BiasType::User;
 
@@ -1961,5 +1970,462 @@ mod muscle_tests {
             lo
         );
         assert!(hi > 0.9, "LR simulation hi should be near 1.0, got {}", hi);
+    }
+}
+
+// ── Hill-type muscle tests (Spec C) ──
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::approx_constant,
+    clippy::uninlined_format_args
+)]
+mod hill_muscle_tests {
+    use super::*;
+    use crate::forward::actuation::{
+        hill_active_fl, hill_force_velocity, hill_passive_fl, mj_fwd_actuation,
+    };
+    use crate::types::{
+        ActuatorDynamics, ActuatorTransmission, BiasType, GainType, MjJointType, Model,
+    };
+    use nalgebra::{DVector, UnitQuaternion, Vector3};
+
+    /// Build a single-hinge model with a HillMuscle actuator.
+    fn build_hill_model(
+        f0: f64,
+        opt_len: f64,
+        slack_len: f64,
+        vmax: f64,
+        pennation: f64,
+        stiffness: f64,
+        gear: f64,
+    ) -> Model {
+        let mut model = Model::empty();
+
+        model.nbody = 2;
+        model.body_parent = vec![0, 0];
+        model.body_rootid = vec![0, 1];
+        model.body_jnt_adr = vec![0, 0];
+        model.body_jnt_num = vec![0, 1];
+        model.body_dof_adr = vec![0, 0];
+        model.body_dof_num = vec![0, 1];
+        model.body_geom_adr = vec![0, 0];
+        model.body_geom_num = vec![0, 0];
+        model.body_pos = vec![Vector3::zeros(), Vector3::zeros()];
+        model.body_quat = vec![UnitQuaternion::identity(); 2];
+        model.body_ipos = vec![Vector3::zeros(); 2];
+        model.body_iquat = vec![UnitQuaternion::identity(); 2];
+        model.body_mass = vec![0.0, 1.0];
+        model.body_inertia = vec![Vector3::zeros(), Vector3::new(0.1, 0.1, 0.1)];
+        model.body_name = vec![Some("world".to_string()), Some("arm".to_string())];
+        model.body_subtreemass = vec![1.0, 1.0];
+
+        model.njnt = 1;
+        model.nq = 1;
+        model.nv = 1;
+        model.jnt_type = vec![MjJointType::Hinge];
+        model.jnt_body = vec![1];
+        model.jnt_qpos_adr = vec![0];
+        model.jnt_dof_adr = vec![0];
+        model.jnt_pos = vec![Vector3::zeros()];
+        model.jnt_axis = vec![Vector3::y()];
+        model.jnt_limited = vec![true];
+        model.jnt_range = vec![(-0.5, 0.5)];
+        model.jnt_stiffness = vec![0.0];
+        model.jnt_springref = vec![0.0];
+        model.jnt_damping = vec![0.0];
+        model.jnt_armature = vec![0.0];
+        model.jnt_solref = vec![[0.02, 1.0]];
+        model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.jnt_name = vec![Some("hinge".to_string())];
+
+        model.dof_body = vec![1];
+        model.dof_jnt = vec![0];
+        model.dof_parent = vec![None];
+        model.dof_armature = vec![0.0];
+        model.dof_damping = vec![0.0];
+        model.dof_frictionloss = vec![0.0];
+
+        // HillMuscle actuator
+        model.nu = 1;
+        model.na = 1;
+        model.actuator_trntype = vec![ActuatorTransmission::Joint];
+        model.actuator_dyntype = vec![ActuatorDynamics::HillMuscle];
+        model.actuator_trnid = vec![[0, usize::MAX]];
+        model.actuator_gear = vec![[gear, 0.0, 0.0, 0.0, 0.0, 0.0]];
+        model.actuator_ctrlrange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
+        model.actuator_forcerange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
+        model.actuator_name = vec![Some("hill".to_string())];
+        model.actuator_act_adr = vec![0];
+        model.actuator_act_num = vec![1];
+        model.actuator_gaintype = vec![GainType::HillMuscle];
+        model.actuator_biastype = vec![BiasType::HillMuscle];
+        // dynprm: [tau_act, tau_deact, tausmooth, ...]
+        model.actuator_dynprm = vec![[0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]];
+        // gainprm: [range_lo, range_hi, F0, scale, opt_len, slack_len, vmax, penn, stiff]
+        model.actuator_gainprm = vec![[
+            0.75, 1.05, f0, 200.0, opt_len, slack_len, vmax, pennation, stiffness,
+        ]];
+        model.actuator_biasprm = vec![[0.0; 9]];
+        model.actuator_lengthrange = vec![(0.0, 0.0)];
+        model.actuator_acc0 = vec![0.0];
+        model.actuator_actlimited = vec![true];
+        model.actuator_actrange = vec![(0.0, 1.0)];
+        model.actuator_actearly = vec![false];
+
+        model.qpos0 = DVector::zeros(1);
+        model.timestep = 0.001;
+
+        model.body_ancestor_joints = vec![vec![]; 2];
+        model.body_ancestor_mask = vec![vec![]; 2];
+        model.compute_ancestors();
+        model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
+        model.compute_actuator_params();
+
+        model
+    }
+
+    // ---- T1: Activation dynamics — hard switch (AC1) ----
+    #[test]
+    fn test_hill_activation_hard_switch() {
+        let prm = [0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.8, 0.3, &prm);
+        // V1: act_clamped=0.3, tau_act=0.01×0.95=0.0095, dctrl=0.5>0 →
+        // tau=0.0095, act_dot=0.5/0.0095=52.6315789...
+        assert!(
+            (act_dot - 52.631_578_947_368_42).abs() < 1e-10,
+            "hard-switch act_dot = {act_dot}"
+        );
+    }
+
+    // ---- T1 additional: V2-V6 boundary conditions ----
+    #[test]
+    fn test_hill_activation_deactivation() {
+        // V2: dctrl < 0 → deactivation path
+        let prm = [0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.2, 0.6, &prm);
+        // act_clamped=0.6, tau_deact=0.04/(0.5+0.9)=0.04/1.4, dctrl=-0.4
+        let tau_deact = 0.04 / (0.5 + 1.5 * 0.6);
+        let expected = -0.4 / tau_deact;
+        assert!(
+            (act_dot - expected).abs() < 1e-10,
+            "deactivation act_dot = {act_dot}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_hill_activation_at_zero() {
+        // V3: act = 0 boundary
+        let prm = [0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.5, 0.0, &prm);
+        // act_clamped=0.0, tau_act=0.01×0.5=0.005, dctrl=0.5
+        let expected = 0.5 / 0.005;
+        assert!(
+            (act_dot - expected).abs() < 1e-10,
+            "act=0 act_dot = {act_dot}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_hill_activation_at_one() {
+        // V4: act = 1 boundary
+        let prm = [0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.5, 1.0, &prm);
+        // act_clamped=1.0, tau_deact=0.04/(0.5+1.5)=0.04/2.0=0.02, dctrl=-0.5
+        let expected = -0.5 / 0.02;
+        assert!(
+            (act_dot - expected).abs() < 1e-10,
+            "act=1 act_dot = {act_dot}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_hill_activation_ctrl_clamped() {
+        // V6: ctrl > 1 is clamped
+        let prm = [0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(1.5, 0.5, &prm);
+        // ctrl clamped to 1.0, so same as ctrl=1.0, act=0.5
+        let act_dot_ref = muscle_activation_dynamics(1.0, 0.5, &prm);
+        assert!(
+            (act_dot - act_dot_ref).abs() < 1e-10,
+            "clamped ctrl act_dot = {act_dot}, reference = {act_dot_ref}"
+        );
+    }
+
+    // ---- T2: Activation dynamics — smooth blend (AC2) ----
+    #[test]
+    fn test_hill_activation_smooth_blend() {
+        let prm = [0.01, 0.04, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let act_dot = muscle_activation_dynamics(0.55, 0.5, &prm);
+        // V7: act_clamped=0.5, tau_act=0.01×1.25=0.0125, tau_deact=0.04/1.25=0.032
+        // dctrl=0.05, x=0.5*(0.05/0.2+1)=0.625
+        // S(0.625)=0.625^3*(0.625*(6*0.625-15)+10)
+        // tau=0.032+(0.0125-0.032)*S(0.625)
+        // act_dot=0.05/tau
+        assert!(
+            (act_dot - 2.798_737).abs() < 1e-3,
+            "smooth blend act_dot = {act_dot}, expected ≈ 2.798_737"
+        );
+    }
+
+    // ---- Hill curve unit tests (supplementary) ----
+    #[test]
+    fn test_hill_active_fl_curve() {
+        // Peak at optimal length
+        assert!(
+            (hill_active_fl(1.0) - 1.0).abs() < 1e-10,
+            "FL(1.0) should be 1.0"
+        );
+        // Zero at boundaries
+        assert_eq!(
+            hill_active_fl(0.49),
+            0.0,
+            "FL(0.49) should be 0 (below lmin)"
+        );
+        assert_eq!(
+            hill_active_fl(1.61),
+            0.0,
+            "FL(1.61) should be 0 (above lmax)"
+        );
+        // At boundaries
+        assert!(hill_active_fl(0.5) > 0.0, "FL(0.5) should be > 0 (at lmin)");
+        assert!(hill_active_fl(1.6) > 0.0, "FL(1.6) should be > 0 (at lmax)");
+        // Monotonically increasing from 0.5 to 1.0
+        assert!(hill_active_fl(0.7) < hill_active_fl(0.9));
+        assert!(hill_active_fl(0.9) < hill_active_fl(1.0));
+    }
+
+    #[test]
+    fn test_hill_force_velocity_curve() {
+        // Isometric
+        assert!(
+            (hill_force_velocity(0.0) - 1.0).abs() < 1e-10,
+            "FV(0) should be 1.0"
+        );
+        // Max shortening
+        assert_eq!(hill_force_velocity(-1.0), 0.0, "FV(-1) should be 0");
+        assert_eq!(hill_force_velocity(-1.5), 0.0, "FV(-1.5) should be 0");
+        // Eccentric
+        assert!(hill_force_velocity(0.5) > 1.0, "FV(0.5) should be > 1.0");
+        // Concentric
+        assert!(
+            hill_force_velocity(-0.5) > 0.0 && hill_force_velocity(-0.5) < 1.0,
+            "FV(-0.5) should be in (0, 1)"
+        );
+    }
+
+    #[test]
+    fn test_hill_passive_fl_curve() {
+        // No passive force at or below optimal length
+        assert_eq!(hill_passive_fl(0.9), 0.0, "FP(0.9) should be 0");
+        assert_eq!(hill_passive_fl(1.0), 0.0, "FP(1.0) should be 0");
+        // Positive passive force beyond optimal
+        assert!(hill_passive_fl(1.5) > 0.0, "FP(1.5) should be > 0");
+        // Monotonically increasing
+        assert!(hill_passive_fl(1.3) < hill_passive_fl(1.5));
+    }
+
+    // ---- T3: Isometric at optimal length (AC3) ----
+    #[test]
+    fn test_hill_force_isometric_optimal() {
+        let model = build_hill_model(
+            1000.0, // F0
+            0.10,   // optimal_fiber_length
+            0.20,   // tendon_slack_length
+            10.0,   // max_contraction_velocity
+            0.0,    // pennation (0°)
+            35.0,   // tendon_stiffness
+            1.0,    // gear
+        );
+        let mut data = model.make_data();
+        // Set actuator length = L_slack + L_opt = 0.30 (isometric at optimal)
+        data.qpos[0] = 0.30; // joint = actuator_length / gear = 0.30
+        data.actuator_length[0] = 0.30;
+        data.actuator_velocity[0] = 0.0;
+        data.act[0] = 1.0; // full activation
+        data.ctrl[0] = 1.0;
+
+        mj_fwd_actuation(&model, &mut data);
+
+        // At optimal fiber length: FL(1.0)=1.0, FV(0)=1.0, cos(0)=1
+        // gain = -1000 × 1 × 1 × 1 = -1000
+        // bias = -1000 × FP(1.0) × 1 = 0 (FP=0 at norm_len=1)
+        // force = -1000 × 1.0 + 0 = -1000
+        assert!(
+            (data.actuator_force[0] - (-1000.0)).abs() < 1e-8,
+            "force at optimal length = {}, expected -1000",
+            data.actuator_force[0]
+        );
+    }
+
+    // ---- T4: Pennation angle effect (AC4) ----
+    #[test]
+    fn test_hill_force_pennation() {
+        let pennation = 0.349_066; // 20° in radians
+        let model = build_hill_model(1000.0, 0.10, 0.20, 10.0, pennation, 35.0, 1.0);
+        let mut data = model.make_data();
+        // Need to set actuator_length so fiber_length = L_opt
+        // fiber_length = (mt_length - slack_len) / cos(α)
+        // L_opt = (mt_length - 0.20) / cos(20°)
+        // mt_length = L_opt × cos(20°) + 0.20
+        let cos_penn = pennation.cos();
+        let mt_length = 0.10 * cos_penn + 0.20;
+        data.qpos[0] = mt_length;
+        data.actuator_length[0] = mt_length;
+        data.actuator_velocity[0] = 0.0;
+        data.act[0] = 1.0;
+        data.ctrl[0] = 1.0;
+
+        mj_fwd_actuation(&model, &mut data);
+
+        // gain = -1000 × FL(1.0) × FV(0) × cos(20°) = -1000 × cos(20°)
+        let expected_gain = -1000.0 * cos_penn;
+        // bias = -1000 × FP(1.0) × cos(20°) = 0
+        // force = gain × act + bias = gain × 1.0 + 0
+        assert!(
+            (data.actuator_force[0] - expected_gain).abs() < 1e-4,
+            "force with 20° pennation = {}, expected {expected_gain}",
+            data.actuator_force[0]
+        );
+    }
+
+    // ---- T5: F0 auto-computation (AC5) ----
+    #[test]
+    fn test_hill_f0_auto_computation() {
+        let model = build_hill_model(
+            -1.0, // auto-compute F0
+            0.10, 0.20, 10.0, 0.0, 35.0, 1.0,
+        );
+        // compute_actuator_params() ran during build_hill_model
+        assert!(
+            model.actuator_gainprm[0][2] > 0.0,
+            "F0 should be auto-computed to positive value, got {}",
+            model.actuator_gainprm[0][2]
+        );
+        // biasprm[2] should be synced
+        assert_eq!(
+            model.actuator_biasprm[0][2], model.actuator_gainprm[0][2],
+            "biasprm[2] should be synced with gainprm[2]"
+        );
+        // F0 = scale / acc0 = 200 / acc0
+        let expected_f0 = 200.0 / model.actuator_acc0[0];
+        assert!(
+            (model.actuator_gainprm[0][2] - expected_f0).abs() < 1e-10,
+            "F0 = {}, expected {} (200/acc0={})",
+            model.actuator_gainprm[0][2],
+            expected_f0,
+            model.actuator_acc0[0]
+        );
+    }
+
+    // ---- T6: Dynamics dispatch equivalence (AC6) ----
+    #[test]
+    fn test_hill_dynamics_matches_muscle() {
+        // Build model with two actuators: one Muscle, one HillMuscle
+        let mut model = build_hill_model(1000.0, 0.10, 0.20, 10.0, 0.0, 35.0, 1.0);
+
+        // Add a second (Muscle) actuator on the same joint
+        model.nu = 2;
+        model.na = 2;
+        model.actuator_trntype.push(ActuatorTransmission::Joint);
+        model.actuator_dyntype.push(ActuatorDynamics::Muscle);
+        model.actuator_trnid.push([0, usize::MAX]);
+        model.actuator_gear.push([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        model
+            .actuator_ctrlrange
+            .push((f64::NEG_INFINITY, f64::INFINITY));
+        model
+            .actuator_forcerange
+            .push((f64::NEG_INFINITY, f64::INFINITY));
+        model.actuator_name.push(Some("muscle_ref".to_string()));
+        model.actuator_act_adr.push(1);
+        model.actuator_act_num.push(1);
+        model.actuator_gaintype.push(GainType::Muscle);
+        model.actuator_biastype.push(BiasType::Muscle);
+        model
+            .actuator_dynprm
+            .push([0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        model
+            .actuator_gainprm
+            .push([0.75, 1.05, 1000.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]);
+        model
+            .actuator_biasprm
+            .push([0.75, 1.05, 1000.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]);
+        model.actuator_lengthrange.push((0.0, 0.0));
+        model.actuator_acc0.push(0.0);
+        model.actuator_actlimited.push(true);
+        model.actuator_actrange.push((0.0, 1.0));
+        model.actuator_actearly.push(false);
+
+        let mut data = model.make_data();
+        data.ctrl[0] = 0.8;
+        data.ctrl[1] = 0.8;
+        data.act[0] = 0.3;
+        data.act[1] = 0.3;
+        data.actuator_length[0] = 0.30;
+        data.actuator_length[1] = 0.30;
+
+        mj_fwd_actuation(&model, &mut data);
+
+        // act_dot should be identical (same activation dynamics function)
+        assert_eq!(
+            data.act_dot[0], data.act_dot[1],
+            "HillMuscle act_dot ({}) should equal Muscle act_dot ({})",
+            data.act_dot[0], data.act_dot[1]
+        );
+    }
+
+    // ---- T7: Actearly interaction (AC7) ----
+    #[test]
+    fn test_hill_actearly() {
+        let mut model = build_hill_model(1000.0, 0.10, 0.20, 10.0, 0.0, 35.0, 1.0);
+        model.actuator_actearly[0] = true;
+
+        let mut data = model.make_data();
+        data.ctrl[0] = 1.0;
+        data.act[0] = 0.0; // start at zero activation
+        data.actuator_length[0] = 0.30;
+        data.actuator_velocity[0] = 0.0;
+
+        mj_fwd_actuation(&model, &mut data);
+
+        // With actearly=true and ctrl=1.0, act=0.0, the predicted next-step
+        // activation should be > 0, leading to nonzero force.
+        assert!(
+            data.actuator_force[0] != 0.0,
+            "force should be nonzero with actearly=true, got {}",
+            data.actuator_force[0]
+        );
+    }
+
+    // ---- T13: Zero lengthrange (AC15) ----
+    #[test]
+    fn test_hill_zero_lengthrange() {
+        let model = build_hill_model(1000.0, 0.10, 0.20, 10.0, 0.0, 35.0, 1.0);
+        // lengthrange is (0,0) or whatever compute_actuator_params set it to.
+        // HillMuscle uses fiber_length/optimal_fiber_length, not MuJoCo's L0 normalization.
+        let mut data = model.make_data();
+        data.actuator_length[0] = 0.30;
+        data.actuator_velocity[0] = 0.0;
+        data.act[0] = 1.0;
+        data.ctrl[0] = 1.0;
+
+        mj_fwd_actuation(&model, &mut data);
+
+        assert!(
+            data.actuator_force[0].is_finite(),
+            "force should be finite with zero lengthrange, got {}",
+            data.actuator_force[0]
+        );
+        // Should match isometric optimal force
+        assert!(
+            (data.actuator_force[0] - (-1000.0)).abs() < 1e-8,
+            "force = {}, expected -1000",
+            data.actuator_force[0]
+        );
     }
 }

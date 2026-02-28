@@ -127,6 +127,13 @@ Quintic Hermite smoothstep: `S(x) = 6x⁵ − 15x⁴ + 10x³`. C²-continuous.
 `sim/L0/core/src/forward/muscle.rs:103–124` matches this exactly, with
 `EPS = 1e-10` ≡ `mjMINVAL`. Quintic sigmoid via `sigmoid()` at lines 85–93.
 
+**Conformance fix (Session 17):** The smooth blend sigmoid input was
+`sigmoid(dctrl / tausmooth + 0.5)` instead of MuJoCo's
+`sigmoid(0.5 * (dctrl / tausmooth + 1.0))`. The difference: CortenForge
+used `dctrl/W + 0.5` where MuJoCo uses `dctrl/(2W) + 0.5` (missing factor
+of 2). Fixed during Spec C implementation. No existing tests covered
+`tausmooth > 0`, so no regression. AC2 now validates the corrected path.
+
 ### MuJoCo three-enum actuation architecture — `mj_fwdActuation()`
 
 **Source:** `engine_forward.c` (MuJoCo 3.5.0).

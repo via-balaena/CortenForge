@@ -19,6 +19,50 @@ use crate::types::{DISABLE_ACTUATION, DISABLE_CLAMPCTRL, DISABLE_GRAVITY};
 
 use super::muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_force};
 
+// ── Hill-type muscle curve functions (CortenForge extension) ──
+// Inlined from sim-muscle to avoid cross-crate dependency.
+// These are simple mathematical functions with stable formulations.
+
+/// Gaussian active force-length curve (Hill-type muscle).
+/// Peak FL=1.0 at normalized length L=1.0. Returns 0 outside [0.5, 1.6].
+pub fn hill_active_fl(norm_len: f64) -> f64 {
+    let (w_asc, w_desc) = (0.45, 0.56);
+    let (l_min, l_max) = (0.5, 1.6);
+    if norm_len < l_min || norm_len > l_max {
+        return 0.0;
+    }
+    let w = if norm_len <= 1.0 { w_asc } else { w_desc };
+    let x = (norm_len - 1.0) / w;
+    (-x * x).exp()
+}
+
+/// Hill hyperbolic force-velocity curve.
+/// FV(0) = 1.0. Concentric: Hill hyperbola. Eccentric: plateau approach.
+pub fn hill_force_velocity(norm_vel: f64) -> f64 {
+    let a = 0.25; // curvature
+    let fv_max = 1.5; // eccentric plateau
+    if norm_vel <= -1.0 {
+        0.0
+    } else if norm_vel <= 0.0 {
+        // Concentric: Hill hyperbola (normalized so FV(0) = 1)
+        (1.0 + norm_vel) / (1.0 - norm_vel / a)
+    } else {
+        // Eccentric: plateau approach
+        1.0 + (fv_max - 1.0) * norm_vel / (norm_vel + a)
+    }
+}
+
+/// Exponential passive force-length curve (Hill-type muscle).
+/// FP = 0 for L_norm <= 1.0, rises exponentially for L_norm > 1.0.
+pub fn hill_passive_fl(norm_len: f64) -> f64 {
+    let shape = 4.0;
+    if norm_len <= 1.0 {
+        0.0
+    } else {
+        (shape * (norm_len - 1.0)).exp_m1() / shape.exp_m1()
+    }
+}
+
 /// Compute actuator length and moment for site transmissions only.
 ///
 /// For each Site-transmission actuator, computes `actuator_length` and
@@ -447,7 +491,8 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
         let input = match model.actuator_dyntype[i] {
             ActuatorDynamics::None => ctrl,
-            ActuatorDynamics::Muscle => {
+            ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle => {
+                // HillMuscle reuses MuJoCo-conformant muscle activation dynamics.
                 let act_adr = model.actuator_act_adr[i];
                 // act_dot computed from UNCLAMPED current activation (MuJoCo convention)
                 data.act_dot[act_adr] =
@@ -524,6 +569,31 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 let fv = muscle_gain_velocity(norm_vel, prm[8]);
                 -f0 * fl * fv
             }
+            GainType::HillMuscle => {
+                // Hill-type active force: -F0 × FL(L_norm) × FV(V_norm) × cos(α)
+                let prm = &model.actuator_gainprm[i];
+                let f0 = prm[2]; // resolved by compute_actuator_params()
+                let optimal_fiber_length = prm[4];
+                let tendon_slack_length = prm[5];
+                let max_contraction_velocity = prm[6];
+                let pennation_angle = prm[7];
+
+                let cos_penn = pennation_angle.cos().max(1e-10);
+
+                // Rigid tendon: fiber geometry from MTU length
+                let fiber_length = (length - tendon_slack_length) / cos_penn;
+                let fiber_velocity = velocity / cos_penn;
+
+                // Normalize
+                let norm_len = fiber_length / optimal_fiber_length.max(1e-10);
+                let norm_vel =
+                    fiber_velocity / (optimal_fiber_length * max_contraction_velocity).max(1e-10);
+
+                let fl = hill_active_fl(norm_len);
+                let fv = hill_force_velocity(norm_vel);
+
+                -f0 * fl * fv * cos_penn
+            }
             GainType::User => {
                 if let Some(ref cb) = model.cb_act_gain {
                     (cb.0)(model, data, i)
@@ -550,6 +620,21 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 
                 let fp = muscle_passive_force(norm_len, prm[5], prm[7]);
                 -f0 * fp
+            }
+            BiasType::HillMuscle => {
+                // Hill-type passive force: -F0 × FP(L_norm) × cos(α)
+                let prm = &model.actuator_gainprm[i]; // HillMuscle shares gainprm layout
+                let f0 = prm[2];
+                let optimal_fiber_length = prm[4];
+                let tendon_slack_length = prm[5];
+                let pennation_angle = prm[7];
+
+                let cos_penn = pennation_angle.cos().max(1e-10);
+                let fiber_length = (length - tendon_slack_length) / cos_penn;
+                let norm_len = fiber_length / optimal_fiber_length.max(1e-10);
+
+                let fp = hill_passive_fl(norm_len);
+                -f0 * fp * cos_penn
             }
             BiasType::User => {
                 if let Some(ref cb) = model.cb_act_bias {

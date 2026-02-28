@@ -200,6 +200,11 @@ pub enum ActuatorDynamics {
     Integrator,
     /// Muscle activation dynamics.
     Muscle,
+    /// Hill-type muscle activation dynamics (CortenForge extension).
+    /// Uses same `muscle_activation_dynamics()` as `Muscle` for activation,
+    /// but pairs with `GainType::HillMuscle` / `BiasType::HillMuscle` for
+    /// Hill-type force generation (Gaussian FL, Hill FV, pennation angle).
+    HillMuscle,
     /// User-defined dynamics (via `cb_act_dyn` callback).
     /// MuJoCo reference: `mjDYN_USER`.
     User,
@@ -217,6 +222,9 @@ pub enum GainType {
     Affine,
     /// Muscle FLV gain (handled separately in the Muscle path).
     Muscle,
+    /// Hill-type muscle active force (CortenForge extension).
+    /// gain = −F0 × FL(L_norm) × FV(V_norm) × cos(α).
+    HillMuscle,
     /// User-defined gain (via `cb_act_gain` callback).
     /// MuJoCo reference: `mjGAIN_USER`.
     User,
@@ -234,6 +242,9 @@ pub enum BiasType {
     Affine,
     /// Muscle passive force (handled separately in the Muscle path).
     Muscle,
+    /// Hill-type muscle passive force (CortenForge extension).
+    /// bias = −F0 × FP(L_norm) × cos(α).
+    HillMuscle,
     /// User-defined bias (via `cb_act_bias` callback).
     /// MuJoCo reference: `mjBIAS_USER`.
     User,
