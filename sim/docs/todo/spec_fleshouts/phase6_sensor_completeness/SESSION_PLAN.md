@@ -13,7 +13,7 @@ documents and commits are the state, not the context window.
 
 ## Session 1: Spec A rubric (objtype + touch + geom acc)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — write Spec A rubric.
@@ -539,7 +539,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
-| 1 | Spec A rubric | Pending | — |
+| 1 | Spec A rubric | Done | — |
 | 2 | Spec A spec | Pending | — |
 | 3 | Spec A implementation | Pending | — |
 | 4 | Spec A review — create document | Pending | — |
