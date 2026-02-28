@@ -3075,7 +3075,12 @@ pub struct MjcfSensor {
     pub sensor_type: MjcfSensorType,
     /// Target object name (joint, site, body, etc. depending on type).
     pub objname: Option<String>,
-    /// Reference object for frame sensors.
+    /// Explicit object type string from MJCF `objtype` attribute.
+    /// E.g., "site", "body", "xbody", "geom", "camera".
+    pub objtype: Option<String>,
+    /// Reference object type string from MJCF `reftype` attribute.
+    pub reftype: Option<String>,
+    /// Reference object name from MJCF `refname` attribute.
     pub refname: Option<String>,
     /// Noise standard deviation.
     pub noise: f64,
@@ -3092,6 +3097,8 @@ impl Default for MjcfSensor {
             class: None,
             sensor_type: MjcfSensorType::default(),
             objname: None,
+            objtype: None,
+            reftype: None,
             refname: None,
             noise: 0.0,
             cutoff: 0.0,

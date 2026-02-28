@@ -116,8 +116,11 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
                         data.site_xpos[objid],
                         data.site_xmat[objid],
                     ),
-                    MjObjectType::Body if objid < model.nbody => {
+                    MjObjectType::XBody if objid < model.nbody => {
                         (objid, data.xpos[objid], data.xmat[objid])
+                    }
+                    MjObjectType::Body if objid < model.nbody => {
+                        (objid, data.xipos[objid], data.ximat[objid])
                     }
                     _ => {
                         sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
@@ -133,7 +136,8 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
                     MjObjectType::Site if objid < model.nsite => {
                         (model.site_body[objid], data.site_xpos[objid])
                     }
-                    MjObjectType::Body if objid < model.nbody => (objid, data.xpos[objid]),
+                    MjObjectType::XBody if objid < model.nbody => (objid, data.xpos[objid]),
+                    MjObjectType::Body if objid < model.nbody => (objid, data.xipos[objid]),
                     _ => {
                         sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
                         continue;
@@ -144,7 +148,7 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::FrameAngVel => {
-                // Angular velocity in world frame
+                // Angular velocity in world frame (reference-point-independent)
                 let omega = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => {
                         let body_id = model.site_body[objid];
@@ -154,11 +158,13 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
                             data.cvel[body_id][2],
                         )
                     }
-                    MjObjectType::Body if objid < model.nbody => Vector3::new(
-                        data.cvel[objid][0],
-                        data.cvel[objid][1],
-                        data.cvel[objid][2],
-                    ),
+                    MjObjectType::XBody | MjObjectType::Body if objid < model.nbody => {
+                        Vector3::new(
+                            data.cvel[objid][0],
+                            data.cvel[objid][1],
+                            data.cvel[objid][2],
+                        )
+                    }
                     _ => Vector3::zeros(),
                 };
                 sensor_write3(&mut data.sensordata, adr, &omega);

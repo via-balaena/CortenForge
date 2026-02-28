@@ -34,8 +34,11 @@ impl ModelBuilder {
             };
             let dim = sensor_type.dim();
             let datatype = sensor_datatype(sensor_type);
-            let (objtype, objid) =
-                self.resolve_sensor_object(sensor_type, mjcf_sensor.objname.as_deref())?;
+            let (objtype, objid) = self.resolve_sensor_object(
+                sensor_type,
+                mjcf_sensor.objname.as_deref(),
+                mjcf_sensor.objtype.as_deref(),
+            )?;
 
             self.sensor_type.push(sensor_type);
             self.sensor_datatype.push(datatype);
@@ -65,10 +68,14 @@ impl ModelBuilder {
     }
 
     /// Returns (MjObjectType, objid) for a given sensor type and MJCF objname.
+    ///
+    /// `objtype_str` is the explicit `objtype` attribute from MJCF. Only frame
+    /// sensors honor it; all other sensor types ignore it.
     fn resolve_sensor_object(
         &self,
         sensor_type: MjSensorType,
         objname: Option<&str>,
+        objtype_str: Option<&str>,
     ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
         // User sensors have no object reference
         if sensor_type == MjSensorType::User {
@@ -135,8 +142,8 @@ impl ModelBuilder {
                 Ok((MjObjectType::Site, id))
             }
 
-            // Touch: MJCF uses site=, but pipeline expects geom ID.
-            // Resolve site → body → first geom on that body.
+            // Touch: always site-based (MuJoCo: sensor_objtype = mjOBJ_SITE).
+            // objtype attribute is silently ignored for non-frame sensors.
             MjSensorType::Touch => {
                 let site_id =
                     *self
@@ -145,24 +152,10 @@ impl ModelBuilder {
                         .ok_or_else(|| ModelConversionError {
                             message: format!("touch sensor references unknown site '{name}'"),
                         })?;
-                let body_id = *self
-                    .site_body
-                    .get(site_id)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!(
-                            "touch sensor: site_id {site_id} out of range for site_body"
-                        ),
-                    })?;
-                // Find first geom belonging to this body
-                let geom_id = self
-                    .geom_body
-                    .iter()
-                    .position(|&b| b == body_id)
-                    .unwrap_or(usize::MAX);
-                Ok((MjObjectType::Geom, geom_id))
+                Ok((MjObjectType::Site, site_id))
             }
 
-            // Frame sensors: resolve objname by trying site → body → geom
+            // Frame sensors: use explicit objtype if provided, else infer from name
             MjSensorType::FramePos
             | MjSensorType::FrameQuat
             | MjSensorType::FrameXAxis
@@ -172,16 +165,68 @@ impl ModelBuilder {
             | MjSensorType::FrameAngVel
             | MjSensorType::FrameLinAcc
             | MjSensorType::FrameAngAcc => {
-                if let Some(&id) = self.site_name_to_id.get(name) {
-                    Ok((MjObjectType::Site, id))
-                } else if let Some(&id) = self.body_name_to_id.get(name) {
-                    Ok((MjObjectType::Body, id))
-                } else if let Some(&id) = self.geom_name_to_id.get(name) {
-                    Ok((MjObjectType::Geom, id))
+                if let Some(ot) = objtype_str {
+                    // Explicit objtype attribute — dispatch directly
+                    match ot {
+                        "site" => {
+                            let id = *self.site_name_to_id.get(name).ok_or_else(|| {
+                                ModelConversionError {
+                                    message: format!(
+                                        "frame sensor references unknown site '{name}'"
+                                    ),
+                                }
+                            })?;
+                            Ok((MjObjectType::Site, id))
+                        }
+                        "body" => {
+                            let id = *self.body_name_to_id.get(name).ok_or_else(|| {
+                                ModelConversionError {
+                                    message: format!(
+                                        "frame sensor references unknown body '{name}'"
+                                    ),
+                                }
+                            })?;
+                            Ok((MjObjectType::Body, id))
+                        }
+                        "xbody" => {
+                            let id = *self.body_name_to_id.get(name).ok_or_else(|| {
+                                ModelConversionError {
+                                    message: format!(
+                                        "frame sensor references unknown body '{name}'"
+                                    ),
+                                }
+                            })?;
+                            Ok((MjObjectType::XBody, id))
+                        }
+                        "geom" => {
+                            let id = *self.geom_name_to_id.get(name).ok_or_else(|| {
+                                ModelConversionError {
+                                    message: format!(
+                                        "frame sensor references unknown geom '{name}'"
+                                    ),
+                                }
+                            })?;
+                            Ok((MjObjectType::Geom, id))
+                        }
+                        "camera" => {
+                            // DT-117: Camera deferred. Warn and fall through to heuristic.
+                            warn!(
+                                "objtype='camera' not yet supported (DT-117); \
+                                 falling back to name heuristic for sensor"
+                            );
+                            self.resolve_frame_sensor_by_name(name)
+                        }
+                        other => Err(ModelConversionError {
+                            message: format!(
+                                "frame sensor has invalid objtype '{other}' \
+                                 (expected site/body/xbody/geom/camera)"
+                            ),
+                        }),
+                    }
                 } else {
-                    Err(ModelConversionError {
-                        message: format!("frame sensor references unknown object '{name}'"),
-                    })
+                    // No explicit objtype — infer from name lookup
+                    // Priority: site → body (as XBody) → geom
+                    self.resolve_frame_sensor_by_name(name)
                 }
             }
 
@@ -200,6 +245,28 @@ impl ModelBuilder {
 
             // User handled above (early return)
             MjSensorType::User => unreachable!(),
+        }
+    }
+
+    /// Resolve a frame sensor object by name lookup heuristic.
+    ///
+    /// Priority: site → body (as XBody) → geom.
+    /// MuJoCo inference: `body=` → `mjOBJ_XBODY` (joint frame, NOT inertial frame).
+    fn resolve_frame_sensor_by_name(
+        &self,
+        name: &str,
+    ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
+        if let Some(&id) = self.site_name_to_id.get(name) {
+            Ok((MjObjectType::Site, id))
+        } else if let Some(&id) = self.body_name_to_id.get(name) {
+            // body= without objtype → XBody (MuJoCo: mjOBJ_XBODY)
+            Ok((MjObjectType::XBody, id))
+        } else if let Some(&id) = self.geom_name_to_id.get(name) {
+            Ok((MjObjectType::Geom, id))
+        } else {
+            Err(ModelConversionError {
+                message: format!("frame sensor references unknown object '{name}'"),
+            })
         }
     }
 }

@@ -497,8 +497,10 @@ pub enum MjObjectType {
     /// No object (world-relative).
     #[default]
     None,
-    /// Body.
+    /// Body — inertial/COM frame (reads `xipos`/`ximat`). MuJoCo `mjOBJ_BODY` (1).
     Body,
+    /// XBody — joint frame origin (reads `xpos`/`xmat`). MuJoCo `mjOBJ_XBODY` (2).
+    XBody,
     /// Joint.
     Joint,
     /// Geom.

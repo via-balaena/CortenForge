@@ -3463,11 +3463,17 @@ fn parse_sensor_attrs(e: &BytesStart, sensor_type: MjcfSensorType) -> MjcfSensor
     sensor.objname = get_attribute_opt(e, "joint")
         .or_else(|| get_attribute_opt(e, "site"))
         .or_else(|| get_attribute_opt(e, "body"))
+        .or_else(|| get_attribute_opt(e, "geom"))
         .or_else(|| get_attribute_opt(e, "tendon"))
         .or_else(|| get_attribute_opt(e, "actuator"))
         .or_else(|| get_attribute_opt(e, "objname"));
 
-    sensor.refname = get_attribute_opt(e, "reftype").or_else(|| get_attribute_opt(e, "refname"));
+    // Explicit object type (frame sensors only — builder validates)
+    sensor.objtype = get_attribute_opt(e, "objtype");
+
+    // Separate reftype and refname (previously conflated)
+    sensor.reftype = get_attribute_opt(e, "reftype");
+    sensor.refname = get_attribute_opt(e, "refname");
 
     if let Some(noise) = parse_float_attr(e, "noise") {
         sensor.noise = noise;

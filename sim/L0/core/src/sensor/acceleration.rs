@@ -141,11 +141,17 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::Touch => {
-                // Touch sensor: sum of normal contact forces on the attached geom.
-                //
-                // Scans efc_force directly for contact constraint rows involving
-                // the sensor's geom. The first row of each contact group holds the
-                // normal force (always >= 0 after projection).
+                // Touch sensor: sum of normal contact forces on all geoms of the
+                // sensor's body. MuJoCo: objid = site_id, resolves to body at
+                // runtime via site_bodyid[objid], then iterates ALL contacts
+                // checking geom_bodyid[con->geom[k]] == bodyid.
+                let body_id = if objid < model.nsite {
+                    model.site_body[objid]
+                } else {
+                    sensor_write(&mut data.sensordata, adr, 0, 0.0);
+                    continue;
+                };
+
                 let mut total_force = 0.0;
                 let nefc = data.efc_type.len();
                 let mut ei = 0;
@@ -160,14 +166,29 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                         let ci = data.efc_id[ei];
                         if ci < data.contacts.len() {
                             let c = &data.contacts[ci];
-                            if c.geom1 == objid || c.geom2 == objid {
+                            // Body-level match: check if either contact geom belongs
+                            // to the sensor's body (MuJoCo: geom_bodyid[con->geom[k]] == bodyid)
+                            let geom1_body = if c.geom1 < model.ngeom {
+                                model.geom_body[c.geom1]
+                            } else {
+                                usize::MAX
+                            };
+                            let geom2_body = if c.geom2 < model.ngeom {
+                                model.geom_body[c.geom2]
+                            } else {
+                                usize::MAX
+                            };
+                            if body_id == geom1_body || body_id == geom2_body {
+                                // Read normal force from efc_force.
+                                // NOTE: This reads efc_force directly, NOT via mj_contactForce().
+                                // For frictionless/elliptic contacts, efc_force[0] IS the normal
+                                // force. For pyramidal contacts, this sums facet projections —
+                                // ~75% of the true normal force (DT-118 tracks full conformance).
                                 if data.efc_type[ei] == ConstraintType::ContactPyramidal {
-                                    // §32: Normal force = sum of ALL facet forces
                                     for k in 0..dim {
                                         total_force += data.efc_force[ei + k];
                                     }
                                 } else {
-                                    // Elliptic/frictionless: first row is normal force
                                     total_force += data.efc_force[ei];
                                 }
                             }
@@ -209,7 +230,11 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                     MjObjectType::Site if objid < model.nsite => {
                         (model.site_body[objid], data.site_xpos[objid])
                     }
-                    MjObjectType::Body if objid < model.nbody => (objid, data.xpos[objid]),
+                    MjObjectType::XBody if objid < model.nbody => (objid, data.xpos[objid]),
+                    MjObjectType::Body if objid < model.nbody => (objid, data.xipos[objid]),
+                    MjObjectType::Geom if objid < model.ngeom => {
+                        (model.geom_body[objid], data.geom_xpos[objid])
+                    }
                     _ => {
                         sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
                         continue;
@@ -225,7 +250,8 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 // independent for a rigid body — no Coriolis correction needed.
                 let body_id = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => model.site_body[objid],
-                    MjObjectType::Body if objid < model.nbody => objid,
+                    MjObjectType::XBody | MjObjectType::Body if objid < model.nbody => objid,
+                    MjObjectType::Geom if objid < model.ngeom => model.geom_body[objid],
                     _ => {
                         sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
                         continue;

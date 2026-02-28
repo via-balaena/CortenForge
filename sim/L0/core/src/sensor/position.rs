@@ -104,10 +104,11 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::FramePos => {
-                // Position of site/body in world frame
+                // Position of site/body/geom in world frame
                 let pos = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => data.site_xpos[objid],
-                    MjObjectType::Body if objid < model.nbody => data.xpos[objid],
+                    MjObjectType::XBody if objid < model.nbody => data.xpos[objid],
+                    MjObjectType::Body if objid < model.nbody => data.xipos[objid],
                     MjObjectType::Geom if objid < model.ngeom => data.geom_xpos[objid],
                     _ => Vector3::zeros(),
                 };
@@ -115,7 +116,7 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::FrameQuat => {
-                // Orientation of site/body as quaternion [w, x, y, z]
+                // Orientation of site/body/geom as quaternion [w, x, y, z]
                 let quat = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => {
                         // Compute site quaternion from rotation matrix
@@ -124,7 +125,11 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                             &nalgebra::Rotation3::from_matrix_unchecked(mat),
                         )
                     }
-                    MjObjectType::Body if objid < model.nbody => data.xquat[objid],
+                    MjObjectType::XBody if objid < model.nbody => data.xquat[objid],
+                    MjObjectType::Body if objid < model.nbody => {
+                        // MuJoCo: mulQuat(xquat[body], body_iquat[body])
+                        data.xquat[objid] * model.body_iquat[objid]
+                    }
                     MjObjectType::Geom if objid < model.ngeom => {
                         let mat = data.geom_xmat[objid];
                         UnitQuaternion::from_rotation_matrix(
@@ -140,7 +145,8 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                 // Frame axis in world coordinates
                 let mat = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
-                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
+                    MjObjectType::XBody if objid < model.nbody => data.xmat[objid],
+                    MjObjectType::Body if objid < model.nbody => data.ximat[objid],
                     MjObjectType::Geom if objid < model.ngeom => data.geom_xmat[objid],
                     _ => Matrix3::identity(),
                 };
