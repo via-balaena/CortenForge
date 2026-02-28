@@ -2,12 +2,14 @@
 
 > **Status**: Draft — 2026-02-21
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
-> plus the ~102 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-102).
+> plus the ~106 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-110).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
 > DT-96 (lazy energy eval) and DT-97 (golden file conformance) added during §41 audit.
 > ~~DT-99~~ (BVH midphase, §41 S9-full — **done**), ~~DT-100~~ (global override, §41 S10-full — **done**),
 > DT-101 (`mj_contactPassive()`) added during §41 spec expansion.
 > ~~DT-98~~ retired — `passive` dropped entirely pre-v1.0 (no shim needed).
+> DT-107 (runtime interpolation), DT-108 (dyntype gating), DT-109 (sensor history),
+> DT-110 (actuator_plugin) added during Spec D review. ~~DT-9~~ partially done (parsing landed).
 >
 > **Current position**: Phase 4 (Core Data Fields) complete. Next: Phases 5–11 (parallel).
 
@@ -139,7 +141,10 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | DT-77 | 10j | T2 | Length-range auto-estimation for site-transmission muscle actuators |
 | DT-6 | 10b | T1 | `actearly` attribute wired to runtime (currently parsed, no effect) |
 | ~~DT-8~~ | 10b | T2 | ~~Transmission types: `cranksite`, `slidersite`, `jointinparent`~~ **Done** — Spec B (Phase 5 Session 7) |
-| DT-9 | 10b | T2 | `nsample`, `interp`, `delay` — MuJoCo 3.x interpolation actuator attributes |
+| ~~DT-9~~ | 10b | T2 | ~~`nsample`, `interp`, `delay` — MuJoCo 3.x interpolation actuator attributes~~ **Partially done** — parsing + model/data storage landed in Spec D (Phase 5 Session 12). Runtime → DT-107, dyntype gating → DT-108 |
+| DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Structures exist (Spec D); runtime missing. |
+| DT-108 | 10g | T1 | `dyntype` enum gating interpolation eligibility — restrict which `ActuatorDynamics` variants may use history buffer |
+| DT-110 | 10g | T1 | `actuator_plugin` model array — per-actuator plugin ID (`int[nu]`, -1 sentinel). Depends on §66. |
 | ~~DT-60~~ | 10g | T1 | ~~`jnt_actgravcomp` routing to `qfrc_actuator` instead of `qfrc_passive`~~ **Done** — subsumed by §41 S4.2a |
 | ~~§61~~ | 15 | — | ~~`slidercrank` actuator transmission~~ **Done** — Spec B (Phase 5 Session 7) |
 | DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()` for both `Joint` and `JointInParent` |
@@ -158,6 +163,7 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | DT-63 | 10h | T2 | Frame sensor `reftype`/`refid` — relative-frame measurements |
 | DT-64 | 10h | T2 | Multi-geom touch sensor aggregation (currently only first geom matched) |
 | DT-102 | 10h | T1 | Geom-attached acc-stage sensors (FrameLinAcc/FrameAngAcc with `MjObjectType::Geom`). Depends on DT-62. |
+| DT-109 | 10h | T2 | Sensor history attributes — `nsample`/`interp`/`delay` on sensors, contributes to `nhistory`. Currently `nhistory` is actuator-only. |
 
 ---
 

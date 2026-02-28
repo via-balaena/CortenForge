@@ -873,8 +873,8 @@ fn spec_d_t6_delay_without_history_error() {
     );
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
-        err_msg.contains("delay") || err_msg.contains("history"),
-        "error should mention delay or history: {err_msg}"
+        err_msg.contains("setting delay > 0 without a history buffer"),
+        "error should contain spec-mandated substring: {err_msg}"
     );
 }
 

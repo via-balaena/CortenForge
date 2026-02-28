@@ -1673,10 +1673,10 @@ retain the default array values (which are 0 for indices 1–8).
 - **Additional transmission types:** `cranksite`, `slidersite`,
   `jointinparent` are not supported by the existing transmission resolver
   (`builder/`) and are not part of this work item.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-8.
+  Tracked in [future_work_10b.md](./future_work_10b.md) ~~§DT-8~~ (**Done** — Spec B, Phase 5 Session 7).
 - **`nsample`, `interp`, `delay`:** MuJoCo 3.x additions for
   interpolation-based actuators. Out of scope.
-  Tracked in [future_work_10b.md](./future_work_10b.md) §DT-9.
+  Tracked in [future_work_10b.md](./future_work_10b.md) ~~§DT-9~~ (**Partially done** — parsing + model/data storage landed in Spec D, Phase 5 Session 12. Runtime → DT-107, dyntype gating → DT-108).
 - **Default class for shortcut types:** If a `<default>` element sets
   `gaintype="affine"` and a `<motor>` uses that class, the `gaintype` is
   ignored for the motor (the model builder's shortcut expansion overrides
