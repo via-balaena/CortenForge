@@ -43,7 +43,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 2: Spec A spec (objtype + touch + geom acc)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — write Spec A spec.
@@ -540,7 +540,7 @@ Present the Review Verdict (section 10) to the user when done.
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
 | 1 | Spec A rubric | Done | a6b6ab1 |
-| 2 | Spec A spec | Pending | — |
+| 2 | Spec A spec | Done | — |
 | 3 | Spec A implementation | Pending | — |
 | 4 | Spec A review — create document | Pending | — |
 | 5 | Spec A review — execute | Pending | — |
