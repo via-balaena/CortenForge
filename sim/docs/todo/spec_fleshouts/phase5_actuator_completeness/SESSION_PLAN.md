@@ -459,7 +459,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 17: Spec C implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — implement Spec C.
@@ -564,6 +564,6 @@ Present the Review Verdict (section 10) to the user when done.
 | 14 | Spec D review — execute | Done | 7bd472a |
 | 15 | Spec C rubric | Done | `bb61376` |
 | 16 | Spec C spec | Done | `c6668fe` |
-| 17 | Spec C implementation | Pending | |
+| 17 | Spec C implementation | Done | `c64bab1` |
 | 18 | Spec C review — create document | Pending | |
 | 19 | Spec C review — execute | Pending | |
