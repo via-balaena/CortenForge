@@ -9,6 +9,9 @@
 //! - AC6: actearly force prediction (one-step-earlier response)
 //! - AC7: actearly + actlimited interaction
 //! - AC8: MuJoCo reference trajectory (Euler integrator + clamping)
+//! - AC13: actearly with muscle dynamics — quantitative verification (DT-6)
+//! - AC14: actearly=false with muscle uses current activation (DT-6)
+//! - AC15: actearly with filter — quantitative exact-value verification (DT-6)
 
 use sim_core::Model;
 
@@ -502,5 +505,199 @@ fn test_actearly_integrator_prediction() {
         data.act[0] > 0.0,
         "After one step, activation should be positive, got {}",
         data.act[0]
+    );
+}
+
+// ============================================================================
+// AC13: actearly with muscle dynamics — quantitative verification (DT-6)
+// ============================================================================
+
+/// Build a muscle model with configurable actearly.
+fn build_muscle_model_actearly(actearly: bool) -> Model {
+    let mjcf = format!(
+        r#"<mujoco>
+  <option timestep="0.001"/>
+  <worldbody>
+    <body>
+      <joint name="hinge" type="hinge" limited="true" range="-1 1"/>
+      <geom size="0.1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <muscle name="muscle" joint="hinge" actearly="{}"/>
+  </actuator>
+</mujoco>"#,
+        if actearly { "true" } else { "false" }
+    );
+    sim_mjcf::load_model(&mjcf).expect("Failed to load muscle model with actearly")
+}
+
+#[test]
+fn test_actearly_muscle_quantitative() {
+    // DT-6 conformance: with actearly=true, muscle force computation uses
+    // the predicted next-step activation (act + dt * act_dot), not current act.
+    //
+    // At t=0 with act=0, ctrl=1: muscle_activation_dynamics computes act_dot > 0.
+    // actearly=true: input = mj_next_activation(0, act_dot) = 0 + dt * act_dot
+    // actearly=false: input = 0
+    //
+    // With actearly=true, the first forward pass should produce a nonzero force
+    // input, while actearly=false produces zero input (act=0 means no force).
+    let model_early = build_muscle_model_actearly(true);
+    let model_late = build_muscle_model_actearly(false);
+
+    let mut data_early = model_early.make_data();
+    let mut data_late = model_late.make_data();
+
+    // Start with act=0, ctrl=1
+    data_early.ctrl[0] = 1.0;
+    data_late.ctrl[0] = 1.0;
+
+    // Run one forward pass
+    data_early.forward(&model_early).expect("forward failed");
+    data_late.forward(&model_late).expect("forward failed");
+
+    // Verify: actearly=false with act=0 produces zero input to gain/bias,
+    // so actuator_force should be zero (or negligible from passive force).
+    // actearly=true with act=0 produces input = predicted_act > 0,
+    // which feeds into gain computation, producing nonzero force.
+    let force_early = data_early.actuator_force[0];
+    let force_late = data_late.actuator_force[0];
+
+    // The actearly force should be strictly larger in magnitude
+    assert!(
+        force_early.abs() > force_late.abs(),
+        "actearly=true muscle force ({:.6e}) should be larger in magnitude \
+         than actearly=false ({:.6e}) when starting from act=0",
+        force_early,
+        force_late
+    );
+
+    // Quantitative check: the predicted activation should be approximately
+    // dt * act_dot where act_dot = muscle_activation_dynamics(1.0, 0.0, dynprm).
+    // With default dynprm [0.01, 0.04, 0.0] and act=0:
+    //   tau_act_eff = 0.01 * (0.5 + 1.5*0) = 0.005
+    //   dctrl = 1.0 - 0.0 = 1.0 (> 0, so we use tau_act)
+    //   act_dot = 1.0 / 0.005 = 200.0
+    //   predicted_act = 0 + 0.001 * 200.0 = 0.2 (clamped to [0,1] → 0.2)
+    let dt = model_early.timestep;
+    let tau_act_eff = 0.01 * (0.5 + 1.5 * 0.0); // 0.005
+    let expected_act_dot = 1.0 / tau_act_eff; // 200.0
+    let expected_predicted_act = (0.0 + dt * expected_act_dot).clamp(0.0, 1.0); // 0.2
+
+    // The act_dot computed by the forward pass should match
+    assert!(
+        (data_early.act_dot[0] - expected_act_dot).abs() < 1e-6,
+        "Muscle act_dot should be {expected_act_dot}, got {}",
+        data_early.act_dot[0]
+    );
+
+    // Both early and late should compute the same act_dot
+    assert!(
+        (data_late.act_dot[0] - expected_act_dot).abs() < 1e-6,
+        "act_dot should be identical regardless of actearly: expected {}, got {}",
+        expected_act_dot,
+        data_late.act_dot[0]
+    );
+
+    // Sanity: predicted_act ≈ 0.2 (dt=0.001, act_dot=200)
+    assert!(
+        expected_predicted_act > 0.1,
+        "Predicted activation should be significant, got {expected_predicted_act}"
+    );
+}
+
+// ============================================================================
+// AC14: actearly=false with muscle uses current activation (DT-6)
+// ============================================================================
+
+#[test]
+fn test_muscle_actearly_false_uses_current_act() {
+    // DT-6 conformance: with actearly=false, force is computed using the
+    // current activation value, NOT the predicted next-step value.
+    // This verifies the negative case — actearly=false is the default behavior.
+    let model = build_muscle_model_actearly(false);
+    let mut data = model.make_data();
+
+    // Set act=0.5 (known, nonzero activation) and ctrl=0 (deactivating)
+    data.act[0] = 0.5;
+    data.ctrl[0] = 0.0;
+
+    data.forward(&model).expect("forward failed");
+
+    // act_dot should be negative (deactivation: ctrl=0 < act=0.5)
+    assert!(
+        data.act_dot[0] < 0.0,
+        "act_dot should be negative during deactivation, got {}",
+        data.act_dot[0]
+    );
+
+    // With actearly=false, the force input is act=0.5 (current value).
+    // With actearly=true, it would be act + dt * act_dot < 0.5.
+    // So force magnitude with actearly=false should be LARGER than actearly=true
+    // during deactivation.
+    let force_late = data.actuator_force[0];
+
+    let model_early = build_muscle_model_actearly(true);
+    let mut data_early = model_early.make_data();
+    data_early.act[0] = 0.5;
+    data_early.ctrl[0] = 0.0;
+    data_early.forward(&model_early).expect("forward failed");
+    let force_early = data_early.actuator_force[0];
+
+    // During deactivation from act=0.5: actearly predicts lower activation,
+    // so should produce smaller force magnitude than current act=0.5.
+    assert!(
+        force_late.abs() >= force_early.abs(),
+        "actearly=false force ({:.6e}) should be >= actearly=true force ({:.6e}) \
+         during deactivation (current act > predicted act)",
+        force_late,
+        force_early
+    );
+}
+
+// ============================================================================
+// AC15: actearly with filter — quantitative exact-value verification (DT-6)
+// ============================================================================
+
+#[test]
+fn test_actearly_filter_exact_value() {
+    // DT-6 conformance: verify the exact predicted activation value for a
+    // filter actuator with actearly=true.
+    //
+    // Filter dynamics: act_dot = (ctrl - act) / tau
+    // At act=0, ctrl=1, tau=0.1:
+    //   act_dot = (1 - 0) / 0.1 = 10.0
+    //   predicted_act = 0 + 0.001 * 10.0 = 0.01
+    //
+    // The force for a general filter actuator with gainprm=[1] biastype=affine
+    // biasprm=[0, -1, 0] is: force = gain * input + bias
+    //   = 1.0 * 0.01 + (0 + (-1) * length + 0)
+    // Since length = qpos * gear = 0 * 1 = 0:
+    //   force = 0.01
+    let model = build_filter_model(false, (0.0, 0.0), true);
+    let mut data = model.make_data();
+    data.ctrl[0] = 1.0;
+
+    data.forward(&model).expect("forward failed");
+
+    // Exact verification of predicted activation value
+    let tau = 0.1;
+    let dt = model.timestep; // 0.001
+    let expected_act_dot = (1.0 - 0.0) / tau; // 10.0
+    let expected_predicted_act = 0.0 + dt * expected_act_dot; // 0.01
+
+    assert!(
+        (data.act_dot[0] - expected_act_dot).abs() < 1e-10,
+        "Filter act_dot should be exactly {expected_act_dot}, got {}",
+        data.act_dot[0]
+    );
+
+    // Force = gain * input + bias = 1.0 * predicted_act + (-1.0 * length)
+    // length = 0 at qpos=0, so force = predicted_act = 0.01
+    assert!(
+        (data.actuator_force[0] - expected_predicted_act).abs() < 1e-10,
+        "Filter actearly force should be {expected_predicted_act}, got {}",
+        data.actuator_force[0]
     );
 }

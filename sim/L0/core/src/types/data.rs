@@ -75,6 +75,11 @@ pub struct Data {
     /// and is required for correct RK4 integration of activation states.
     pub act_dot: DVector<f64>,
 
+    /// Actuator history buffer (length `nhistory`).
+    /// Pre-populated with metadata + past timestamps + zero ctrl values.
+    /// MuJoCo: `mjData.history`.
+    pub history: Vec<f64>,
+
     // ==================== Mocap Bodies ====================
     /// Mocap body positions in world frame (length nmocap).
     /// User-settable: modified between steps to drive mocap body poses.
@@ -624,6 +629,7 @@ impl Clone for Data {
             actuator_force: self.actuator_force.clone(),
             actuator_moment: self.actuator_moment.clone(),
             act_dot: self.act_dot.clone(),
+            history: self.history.clone(),
             // Mocap bodies
             mocap_pos: self.mocap_pos.clone(),
             mocap_quat: self.mocap_quat.clone(),
@@ -865,6 +871,25 @@ impl Data {
             m.fill(0.0);
         }
 
+        // 2b. Restore history buffer to pre-populated initial state (matching mj_resetData)
+        #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss)]
+        {
+            self.history.fill(0.0);
+            for i in 0..model.actuator_nsample.len() {
+                let ns = model.actuator_nsample[i];
+                if ns <= 0 {
+                    continue;
+                }
+                let adr = model.actuator_historyadr[i] as usize;
+                let n = ns as usize;
+                self.history[adr + 1] = (n - 1) as f64;
+                let ts = model.timestep;
+                for k in 0..n {
+                    self.history[adr + 2 + k] = -((n - k) as f64) * ts;
+                }
+            }
+        }
+
         // 3. Mocap — restore from Model.
         let mut mocap_idx = 0;
         for (body_id, mid) in model.body_mocapid.iter().enumerate() {
@@ -1000,6 +1025,25 @@ impl Data {
         self.ncon = 0;
         self.contacts.clear();
 
+        // Restore history buffer to pre-populated initial state (matching mj_resetDataKeyframe)
+        #[allow(clippy::cast_sign_loss, clippy::cast_precision_loss)]
+        {
+            self.history.fill(0.0);
+            for i in 0..model.actuator_nsample.len() {
+                let ns = model.actuator_nsample[i];
+                if ns <= 0 {
+                    continue;
+                }
+                let adr = model.actuator_historyadr[i] as usize;
+                let n = ns as usize;
+                self.history[adr + 1] = (n - 1) as f64;
+                let ts = model.timestep;
+                for k in 0..n {
+                    self.history[adr + 2 + k] = -((n - k) as f64) * ts;
+                }
+            }
+        }
+
         // Reset sleep state from model policies (§16.7).
         reset_sleep_state(model, self);
 
@@ -1026,7 +1070,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4104;
+        const EXPECTED_SIZE: usize = 4128;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

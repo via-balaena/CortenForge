@@ -351,6 +351,13 @@ impl DefaultResolver {
                 }
             }
 
+            // dampratio: apply default if not explicitly set
+            if result.dampratio.is_none() {
+                if let Some(dr) = defaults.dampratio {
+                    result.dampratio = Some(dr);
+                }
+            }
+
             // Apply <general>-specific defaults.
             // These only matter for <general> actuators, but we apply them
             // unconditionally — the model builder ignores them for shortcut types.
@@ -388,6 +395,15 @@ impl DefaultResolver {
             }
             if result.lengthrange.is_none() {
                 result.lengthrange = defaults.lengthrange;
+            }
+            if result.nsample.is_none() {
+                result.nsample = defaults.nsample;
+            }
+            if result.interp.is_none() {
+                result.interp.clone_from(&defaults.interp);
+            }
+            if result.delay.is_none() {
+                result.delay = defaults.delay;
             }
         }
 
@@ -747,6 +763,7 @@ impl DefaultResolver {
                 gear: c.gear.or(p.gear),
                 kp: c.kp.or(p.kp),
                 kv: c.kv.or(p.kv),
+                dampratio: c.dampratio.or(p.dampratio),
                 ctrllimited: c.ctrllimited.or(p.ctrllimited),
                 forcelimited: c.forcelimited.or(p.forcelimited),
                 gaintype: c.gaintype.clone().or_else(|| p.gaintype.clone()),
@@ -760,6 +777,9 @@ impl DefaultResolver {
                 actrange: c.actrange.or(p.actrange),
                 actearly: c.actearly.or(p.actearly),
                 lengthrange: c.lengthrange.or(p.lengthrange),
+                nsample: c.nsample.or(p.nsample),
+                interp: c.interp.clone().or_else(|| p.interp.clone()),
+                delay: c.delay.or(p.delay),
             }),
         }
     }

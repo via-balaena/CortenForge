@@ -37,7 +37,7 @@ pub(crate) use acceleration::mj_fwd_acceleration;
 #[allow(unused_imports)]
 pub(crate) use actuation::{
     mj_actuator_length, mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
-    mj_transmission_site,
+    mj_transmission_site, mj_transmission_slidercrank,
 };
 #[allow(unused_imports)]
 pub(crate) use muscle::muscle_activation_dynamics;
@@ -322,6 +322,7 @@ impl Data {
         }
 
         actuation::mj_transmission_site(model, self);
+        actuation::mj_transmission_slidercrank(model, self);
 
         // §16.13.2: Tendon wake — multi-tree tendons with active limits
         if sleep_enabled && crate::island::mj_wake_tendon(model, self) {

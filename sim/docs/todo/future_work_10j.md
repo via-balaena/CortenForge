@@ -18,7 +18,7 @@ DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
 | ~~DT-74~~ | §4 | ~~`compute_body_jacobian_at_point()` incomplete — only x-component, `#[allow(dead_code)]`~~ **DONE** — canonical `mj_jac` API landed, dead code deleted, 14 tests | Medium | T3 |
 | ~~DT-75~~ | §4 | ~~`add_body_jacobian` free joint bug — world-frame unit vectors instead of body-frame `R*e_i`~~ **DONE** — body-frame axes fix in 3 locations, 6 tests | Medium | T3 |
 | DT-76 | §8 | Pre-allocated `efc_lambda_saved` for RK4 — avoid `efc_lambda.clone()` per step | Low | T1 |
-| DT-77 | §5 | Length-range auto-estimation for site-transmission muscle actuators (no-op stub) | Low | T2 |
+| ~~DT-77~~ | §5 | ~~Length-range auto-estimation for site-transmission muscle actuators (no-op stub)~~ **DONE** — Phase 5 Spec A (Session 3, commit `a1cbbba`). Site-transmission LR via `actuator_moment` build + FK simulation. | Low | T2 |
 | ~~DT-78~~ | §4 | ~~`actuator_lengthrange` for unlimited spatial tendons — wrap-array DOF lookup wrong~~ **DONE** — spatial tendon guard skips DOF lookup, logs warning; landed in §4 step 5 (spatial tendon impl) | Low | T2 |
 | ~~DT-79~~ | §14 | ~~User callbacks `mjcb_*` Rust equivalents — closures vs trait objects, thread safety~~ **Done** — `Callback<F>` Arc wrapper, cb_passive/cb_control/cb_contactfilter, 5 tests | Medium | T3 |
 | DT-80 | §14 | Mocap body + equality weld constraint integration testing | Low | T1 |

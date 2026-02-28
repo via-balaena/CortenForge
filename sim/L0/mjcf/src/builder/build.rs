@@ -260,6 +260,13 @@ impl ModelBuilder {
             actuator_actlimited: self.actuator_actlimited,
             actuator_actrange: self.actuator_actrange,
             actuator_actearly: self.actuator_actearly,
+            actuator_cranklength: self.actuator_cranklength,
+            actuator_nsample: self.actuator_nsample,
+            actuator_interp: self.actuator_interp,
+            // historyadr and nhistory computed post-hoc below
+            actuator_historyadr: vec![],
+            actuator_delay: self.actuator_delay,
+            nhistory: 0,
 
             // Tendons (populated by process_tendons)
             ntendon: self.tendon_type.len(),
@@ -377,12 +384,33 @@ impl ModelBuilder {
         // calls mj_crba (which uses mj_factor_sparse).
         model.compute_qld_csr_metadata();
 
+        // Compute actuator_historyadr and nhistory (cumulative across all actuators).
+        // Must run BEFORE compute_actuator_params() because that calls make_data()
+        // which reads actuator_historyadr for history buffer pre-population.
+        {
+            let nu = model.actuator_nsample.len();
+            let mut historyadr = vec![-1i32; nu];
+            let mut offset: i32 = 0;
+            for (adr, &ns) in historyadr.iter_mut().zip(model.actuator_nsample.iter()) {
+                if ns > 0 {
+                    *adr = offset;
+                    offset += 2 * ns + 2;
+                }
+                // ns <= 0: historyadr stays -1
+            }
+            model.actuator_historyadr = historyadr;
+            #[allow(clippy::cast_sign_loss)]
+            {
+                model.nhistory = offset as usize;
+            }
+        }
+
         // Compute tendon_length0 for spatial tendons (requires FK via mj_fwd_position).
-        // Must run before compute_muscle_params() which needs valid tendon_length0.
+        // Must run before compute_actuator_params() which needs valid tendon_length0.
         model.compute_spatial_tendon_length0();
 
-        // Pre-compute muscle-derived parameters (lengthrange, acc0, F0)
-        model.compute_muscle_params();
+        // Pre-compute actuator-derived parameters (lengthrange, acc0, F0, dampratio)
+        model.compute_actuator_params();
 
         // Compute stat_meaninertia = trace(M) / nv at qpos0 (for Newton solver scaling, §15.11)
         model.compute_stat_meaninertia();
@@ -563,7 +591,7 @@ impl ModelBuilder {
                 let trn = model.actuator_trntype[act_id];
                 let trnid = model.actuator_trnid[act_id];
                 let body_id = match trn {
-                    ActuatorTransmission::Joint => {
+                    ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                         // trnid[0] is the joint index
                         if trnid[0] < model.njnt {
                             Some(model.jnt_body[trnid[0]])
@@ -635,6 +663,23 @@ impl ModelBuilder {
                         } else {
                             None
                         }
+                    }
+                    ActuatorTransmission::SliderCrank => {
+                        // Mark both crank and slider site trees as AutoNever
+                        let crank_id = trnid[0];
+                        let slider_id = trnid[1];
+                        for &sid in &[crank_id, slider_id] {
+                            if sid < model.nsite {
+                                let bid = model.site_body[sid];
+                                if bid > 0 {
+                                    let tree = model.body_treeid[bid];
+                                    if tree < model.ntree {
+                                        model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
+                                    }
+                                }
+                            }
+                        }
+                        None // body_id not used below — trees already marked
                     }
                 };
                 if let Some(bid) = body_id {

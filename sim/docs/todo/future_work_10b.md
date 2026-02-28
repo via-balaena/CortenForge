@@ -25,26 +25,26 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | [future_work_10d.md](./future_work_10d.md) | 3. Tendon System | DT-28 – DT-35 | 8 | 2 | 4 | 2 |
 | [future_work_10e.md](./future_work_10e.md) | 4. Solver Optimizations | DT-36 – DT-44 | 9 | 1 | 5 | 3 |
 | [future_work_10f.md](./future_work_10f.md) | 5. Derivatives & Analytical Methods | DT-45 – DT-55 | 11 | 1 | 7 | 3 |
-| [future_work_10g.md](./future_work_10g.md) | 6. Actuator & Dynamics | DT-56 – DT-61 | 6 | 2 | 3 | 1 |
-| [future_work_10h.md](./future_work_10h.md) | 7. Sensor Gaps | DT-62 – DT-65, DT-102, ~~DT-103~~ (done) | 6 | 1 | 3 | 2 |
+| [future_work_10g.md](./future_work_10g.md) | 6. Actuator & Dynamics | DT-56 – DT-61, DT-107, DT-108, DT-110, DT-111 – DT-116 | 15 | 6 | 6 | 3 |
+| [future_work_10h.md](./future_work_10h.md) | 7. Sensor Gaps | DT-62 – DT-65, DT-102, ~~DT-103~~ (done), DT-109 | 7 | 1 | 4 | 2 |
 | [future_work_10i.md](./future_work_10i.md) | 8. Flex / Deformable Body | DT-66 – DT-73, DT-85 – DT-90 | 14 | 7 | 3 | 4 |
 | [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92, ~~DT-93~~ (subsumed by §41), DT-96 – DT-98 | 16 | 6 | 4 | 6 |
-| **Total** | | | **100** | **32** | **45** | **23** |
+| **Total** | | | **112** | **36** | **48** | **28** |
 
 **Priority breakdown:** 24 Medium, 71 Low. No High — these are all sub-items
 within completed tasks, not critical gaps.
 
 **Tier key:**
 - **T1** (plan + implement): Mechanical — parent spec already defines the "what."
-  No iterative spec needed. 32 items.
+  No iterative spec needed. 34 items.
 - **T2** (grouped spec): Related items share one spec covering shared design
-  decisions. Each item gets a "Step N" section. 42 items → ~15 spec groups.
+  decisions. Each item gets a "Step N" section. 46 items → ~15 spec groups.
 - **T3** (individual spec): Algorithmic complexity, multiple valid approaches, or
-  architectural decisions needing dedicated design. 23 items.
+  architectural decisions needing dedicated design. 26 items.
 
 **T2 spec groups (cross-file):**
 1. "Defaults Completeness" — DT-2, DT-11, DT-13, DT-14
-2. "Actuator Attr Completeness" — DT-5, DT-8, DT-9
+2. "Actuator Attr Completeness" — DT-5 (remaining: ~~DT-8~~ done, ~~DT-9~~ partially done)
 3. "Contact Force Cleanup" — DT-20, DT-24
 4. "Solver Param Completeness" — DT-23, DT-32, DT-33
 5. "XPBD Improvements" — DT-26, DT-27
@@ -53,9 +53,9 @@ within completed tasks, not critical gaps.
 8. "Solver Robustness" — DT-39, DT-40
 9. "Derivative Extensions" — DT-47, DT-51, DT-52, DT-54
 10. "FD Performance" — DT-49, DT-53
-11. "acc0 / dampratio" — DT-56, DT-57
-12. "Length-Range Estimation" — DT-59, DT-77, DT-78
-13. "Sensor Completeness" — DT-62, DT-63, DT-64
+11. ~~"acc0 / dampratio" — DT-56, DT-57~~ **DONE** — Phase 5 Spec A
+12. ~~"Length-Range Estimation" — DT-59, DT-77, DT-78~~ **DONE** — Phase 5 Spec A (DT-59, DT-77) + Phase 1 (DT-78)
+13. "Sensor Completeness" — DT-62, DT-63, DT-64, DT-109
 14. "Flex Collision Improvements" — DT-69 (+ DT-70 if not T3)
 15. "Flexcomp Completeness" — DT-87, DT-88
 
@@ -73,10 +73,10 @@ within completed tasks, not critical gaps.
 | DT-3 | §6a | File-based hfield loading from PNG (`<hfield file="terrain.png"/>`) | Low | T1 |
 | DT-4 | §6b | `<sdf>` asset element for inline distance grids (no standard MuJoCo equivalent) | Low | T1 |
 | DT-5 | §8 | `gaintype/biastype/dyntype="user"` — callback-based types require plugin system | Low | T2 |
-| DT-6 | §8 | `actearly` parsed + defaultable but not wired to runtime (always standard order) | Medium | T1 |
+| ~~DT-6~~ | §8 | ~~`actearly` parsed + defaultable but not wired to runtime (always standard order)~~ **DONE** — Phase 5 Session 1 (commit `dc12b8b`). Already wired; verified + 4 tests added. | Medium | T1 |
 | DT-7 | §8 | `actdim` explicit override not supported (auto-detection only) | Low | T1 |
-| DT-8 | §8 | Transmission types: `cranksite`, `slidersite`, `jointinparent` not supported | Low | T2 |
-| DT-9 | §8 | `nsample`, `interp`, `delay` — MuJoCo 3.x interpolation actuator attributes | Low | T2 |
+| ~~DT-8~~ | §8 | ~~Transmission types: `cranksite`, `slidersite`, `jointinparent` not supported~~ **Done** — Spec B (Phase 5 Session 7) | Low | T2 |
+| ~~DT-9~~ | §8 | ~~`nsample`, `interp`, `delay` — MuJoCo 3.x interpolation actuator attributes~~ **Partially done** — parsing + model/data storage landed in Spec D (Phase 5 Session 12). Runtime interpolation → DT-107, `dyntype` gating → DT-108 | Low | T2 |
 | DT-10 | §18 | Deferred `<compiler>` attributes: `fitaabb`, `usethread`, `alignfree`, `saveinertial`, `inertiagrouprange`, `<lengthrange>` child | Low | T1 |
 | DT-11 | §20 | `range` not in `MjcfJointDefaults` as a defaultable attribute | Medium | T2 |
 | DT-12 | §20 | Programmatic API enforcement that `worldbody.childclass` must be `None` | Low | T1 |

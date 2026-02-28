@@ -119,6 +119,43 @@ pub fn mj_jac_site(model: &Model, data: &Data, site_id: usize) -> (DMatrix<f64>,
     )
 }
 
+/// Compute the translational point Jacobian and the axis Jacobian at a
+/// world-frame point for a given body.
+///
+/// The axis Jacobian column `i` is `cross(jacr_col_i, axis)`, where `jacr`
+/// is the rotational body Jacobian at `point`.
+///
+/// MuJoCo equivalent: `mj_jacPointAxis()` in `engine_core_util.c`.
+///
+/// Returns `(jac_point, jac_axis)` — both 3×nv dense matrices.
+#[must_use]
+#[allow(clippy::similar_names)] // jacp/jacr are canonical MuJoCo names
+pub fn mj_jac_point_axis(
+    model: &Model,
+    data: &Data,
+    body_id: usize,
+    point: &Vector3<f64>,
+    axis: &Vector3<f64>,
+) -> (DMatrix<f64>, DMatrix<f64>) {
+    let (jacp, jacr) = mj_jac(model, data, body_id, point);
+    let mut jac_axis = DMatrix::zeros(3, model.nv);
+
+    for i in 0..model.nv {
+        // jacAxis_col_i = cross(jacr_col_i, axis)
+        // MuJoCo: jacAxis[i] = jacr[nv+i]*axis[2] - jacr[2*nv+i]*axis[1]
+        //         jacAxis[nv+i] = jacr[2*nv+i]*axis[0] - jacr[i]*axis[2]
+        //         jacAxis[2*nv+i] = jacr[i]*axis[1] - jacr[nv+i]*axis[0]
+        let r0 = jacr[(0, i)];
+        let r1 = jacr[(1, i)];
+        let r2 = jacr[(2, i)];
+        jac_axis[(0, i)] = r1 * axis.z - r2 * axis.y;
+        jac_axis[(1, i)] = r2 * axis.x - r0 * axis.z;
+        jac_axis[(2, i)] = r0 * axis.y - r1 * axis.x;
+    }
+
+    (jacp, jac_axis)
+}
+
 /// Compute the body Jacobian at the body origin: `(jacp 3×nv, jacr 3×nv)`.
 ///
 /// Thin wrapper around [`mj_jac`] using the body's world position.

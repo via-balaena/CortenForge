@@ -528,10 +528,16 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
 #[allow(non_snake_case)]
 pub(crate) fn mjd_actuator_vel(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
-        if matches!(model.actuator_gaintype[i], GainType::Muscle) {
+        if matches!(
+            model.actuator_gaintype[i],
+            GainType::Muscle | GainType::HillMuscle
+        ) {
             continue;
         }
-        if matches!(model.actuator_biastype[i], BiasType::Muscle) {
+        if matches!(
+            model.actuator_biastype[i],
+            BiasType::Muscle | BiasType::HillMuscle
+        ) {
             continue;
         }
 
@@ -543,13 +549,13 @@ pub(crate) fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         let dgain_dv = match model.actuator_gaintype[i] {
             GainType::Fixed => 0.0,
             GainType::Affine => model.actuator_gainprm[i][2],
-            GainType::Muscle | GainType::User => continue,
+            GainType::Muscle | GainType::HillMuscle | GainType::User => continue,
         };
 
         let dbias_dv = match model.actuator_biastype[i] {
             BiasType::None => 0.0,
             BiasType::Affine => model.actuator_biasprm[i][2],
-            BiasType::Muscle | BiasType::User => continue,
+            BiasType::Muscle | BiasType::HillMuscle | BiasType::User => continue,
         };
 
         let dforce_dv = dgain_dv * input + dbias_dv;
@@ -561,7 +567,7 @@ pub(crate) fn mjd_actuator_vel(model: &Model, data: &mut Data) {
         let trnid = model.actuator_trnid[i][0];
 
         match model.actuator_trntype[i] {
-            ActuatorTransmission::Joint => {
+            ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
                 let dof_adr = model.jnt_dof_adr[trnid];
                 // moment = gear, ∂V/∂qvel[dof] = gear
                 // ∂qfrc[dof]/∂qvel[dof] += gear² · ∂force/∂V
@@ -584,7 +590,9 @@ pub(crate) fn mjd_actuator_vel(model: &Model, data: &mut Data) {
                     }
                 }
             }
-            ActuatorTransmission::Site | ActuatorTransmission::Body => {
+            ActuatorTransmission::Site
+            | ActuatorTransmission::Body
+            | ActuatorTransmission::SliderCrank => {
                 let moment = &data.actuator_moment[i];
                 // moment is nv-dim, ∂V/∂qvel = moment
                 // ∂qfrc/∂qvel += ∂force/∂V · moment · moment^T
@@ -1152,7 +1160,7 @@ fn compute_integration_derivatives(model: &Model, data: &Data) -> IntegrationDer
                     dact_dact[(j, j)] = 1.0;
                     dact_dactdot[(j, j)] = h;
                 }
-                ActuatorDynamics::Muscle => {
+                ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle => {
                     // Approximate: ignores ∂act_dot/∂act from act-dependent
                     // time constants. Not consumed by hybrid (Muscle uses FD).
                     let at_boundary = data.act[j] <= 0.0 || data.act[j] >= 1.0;
@@ -1323,7 +1331,7 @@ pub fn mjd_transition_hybrid(
 
         let is_muscle = matches!(
             model.actuator_dyntype[actuator_idx],
-            ActuatorDynamics::Muscle
+            ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle
         );
 
         for k in 0..act_num {
@@ -1346,8 +1354,8 @@ pub fn mjd_transition_hybrid(
                         + model.actuator_gainprm[actuator_idx][2]
                             * data.actuator_velocity[actuator_idx]
                 }
-                GainType::Muscle | GainType::User => {
-                    // Muscle: guarded by is_muscle check above
+                GainType::Muscle | GainType::HillMuscle | GainType::User => {
+                    // Muscle/HillMuscle: guarded by is_muscle check above
                     // User: no analytical derivative — fall back to FD
                     act_fd_indices.push(state_col);
                     continue;
@@ -1524,7 +1532,7 @@ pub fn mjd_transition_hybrid(
                         + model.actuator_gainprm[actuator_idx][2]
                             * data.actuator_velocity[actuator_idx]
                 }
-                GainType::Muscle | GainType::User => {
+                GainType::Muscle | GainType::HillMuscle | GainType::User => {
                     ctrl_fd_indices.push(actuator_idx);
                     continue;
                 }

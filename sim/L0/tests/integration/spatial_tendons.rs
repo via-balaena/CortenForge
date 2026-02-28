@@ -813,7 +813,7 @@ fn test_tendon_length0() {
 // Test 13: Model build — muscle acc0 (Model G)
 // ============================================================================
 
-/// Test 13: compute_muscle_params() for spatial tendon — acc0 is non-zero.
+/// Test 13: compute_actuator_params() for spatial tendon — acc0 is non-zero.
 #[test]
 fn test_muscle_acc0_spatial_tendon() {
     let model = load_model(MODEL_G).expect("Failed to load Model G");

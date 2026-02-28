@@ -5,7 +5,7 @@
 //! adhesion, muscle) and the fully general `<general>` actuator, expanding
 //! each into the canonical gain/bias/dynamics representation.
 
-use sim_core::{ActuatorDynamics, ActuatorTransmission, BiasType, GainType};
+use sim_core::{ActuatorDynamics, ActuatorTransmission, BiasType, GainType, InterpolationType};
 use tracing::warn;
 
 use super::{ModelBuilder, ModelConversionError};
@@ -92,10 +92,60 @@ impl ModelBuilder {
                     ),
                 })?;
             (ActuatorTransmission::Body, [body_id, usize::MAX])
+        } else if let Some(ref joint_name) = actuator.jointinparent {
+            let jnt_id =
+                self.joint_name_to_id
+                    .get(joint_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Actuator '{}' references unknown joint: {joint_name}",
+                            actuator.name
+                        ),
+                    })?;
+            (ActuatorTransmission::JointInParent, [*jnt_id, usize::MAX])
+        } else if let Some(ref crank_name) = actuator.cranksite {
+            let slider_name = actuator
+                .slidersite
+                .as_ref()
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': cranksite specified without slidersite",
+                        actuator.name
+                    ),
+                })?;
+            let crank_id = *self
+                .site_name_to_id
+                .get(crank_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': cranksite '{}' not found",
+                        actuator.name, crank_name
+                    ),
+                })?;
+            let slider_id = *self
+                .site_name_to_id
+                .get(slider_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': slidersite '{}' not found",
+                        actuator.name, slider_name
+                    ),
+                })?;
+            let rod = actuator.cranklength.unwrap_or(0.0);
+            if rod <= 0.0 {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': cranklength must be positive, got {}",
+                        actuator.name, rod
+                    ),
+                });
+            }
+            (ActuatorTransmission::SliderCrank, [crank_id, slider_id])
         } else {
             return Err(ModelConversionError {
                 message: format!(
-                    "Actuator '{}' has no transmission target (joint, tendon, site, or body)",
+                    "Actuator '{}' has no transmission target \
+                     (joint, tendon, site, body, jointinparent, or cranksite)",
                     actuator.name
                 ),
             });
@@ -208,11 +258,38 @@ impl ModelBuilder {
         });
         self.actuator_actearly
             .push(actuator.actearly.unwrap_or(false));
+        self.actuator_cranklength
+            .push(actuator.cranklength.unwrap_or(0.0));
+
+        // Interpolation attributes: parse interp keyword → InterpolationType enum
+        let interp = match &actuator.interp {
+            Some(s) => s
+                .parse::<InterpolationType>()
+                .map_err(|e| ModelConversionError { message: e })?,
+            None => InterpolationType::Zoh,
+        };
+
+        // MuJoCo compiler validation: delay > 0 requires nsample > 0
+        let nsample = actuator.nsample.unwrap_or(0);
+        let delay = actuator.delay.unwrap_or(0.0);
+        if delay > 0.0 && nsample <= 0 {
+            return Err(ModelConversionError {
+                message: "setting delay > 0 without a history buffer (nsample must be > 0)".into(),
+            });
+        }
+
+        self.actuator_nsample.push(nsample);
+        self.actuator_interp.push(interp);
+        self.actuator_delay.push(delay);
 
         // §34 S5: Muscle default actrange — MuJoCo defaults muscles to actlimited=true,
         // actrange=[0,1] when actlimited is not explicitly set. This preserves the
         // hardcoded [0,1] clamping behavior that muscles have always had.
-        if actuator.actuator_type == MjcfActuatorType::Muscle && actuator.actlimited.is_none() {
+        // HillMuscle (CortenForge extension) uses the same default: activation ∈ [0, 1].
+        if (actuator.actuator_type == MjcfActuatorType::Muscle
+            || dyntype == ActuatorDynamics::HillMuscle)
+            && actuator.actlimited.is_none()
+        {
             let idx = self.actuator_actlimited.len() - 1;
             self.actuator_actlimited[idx] = true;
             self.actuator_actrange[idx] = (0.0, 1.0);
@@ -231,6 +308,7 @@ impl ModelBuilder {
             | ActuatorDynamics::FilterExact
             | ActuatorDynamics::Integrator
             | ActuatorDynamics::Muscle
+            | ActuatorDynamics::HillMuscle
             | ActuatorDynamics::User => 1,
         };
 
@@ -250,7 +328,7 @@ impl ModelBuilder {
                     p
                 },
                 [0.0; 9],
-                [0.0; 3],
+                [0.0; 10],
             ),
 
             MjcfActuatorType::Position => {
@@ -261,8 +339,20 @@ impl ModelBuilder {
                 gp[0] = kp;
                 let mut bp = [0.0; 9];
                 bp[1] = -kp;
-                bp[2] = -kv;
-                (GainType::Fixed, BiasType::Affine, gp, bp, [tc, 0.0, 0.0])
+                // dampratio vs explicit kv:
+                // If dampratio is specified, store as positive biasprm[2].
+                // compute_actuator_params() will convert it to -damping at compile time.
+                // If kv is specified (or default 0), store as -kv (explicit damping).
+                if let Some(dr) = actuator.dampratio {
+                    bp[2] = dr; // positive → dampratio (converted by compute_actuator_params)
+                } else {
+                    bp[2] = -kv; // negative or zero → explicit kv
+                }
+                (GainType::Fixed, BiasType::Affine, gp, bp, {
+                    let mut d = [0.0; 10];
+                    d[0] = tc;
+                    d
+                })
             }
 
             MjcfActuatorType::Velocity => {
@@ -271,14 +361,14 @@ impl ModelBuilder {
                 gp[0] = kv;
                 let mut bp = [0.0; 9];
                 bp[2] = -kv;
-                (GainType::Fixed, BiasType::Affine, gp, bp, [0.0; 3])
+                (GainType::Fixed, BiasType::Affine, gp, bp, [0.0; 10])
             }
 
             MjcfActuatorType::Damper => {
                 // kv resolved above from Option<f64> (default 0.0 for damper)
                 let mut gp = [0.0; 9];
                 gp[2] = -kv; // gain = -kv * velocity
-                (GainType::Affine, BiasType::None, gp, [0.0; 9], [0.0; 3])
+                (GainType::Affine, BiasType::None, gp, [0.0; 9], [0.0; 10])
             }
 
             MjcfActuatorType::Cylinder => {
@@ -294,13 +384,17 @@ impl ModelBuilder {
                 bp[0] = actuator.bias[0];
                 bp[1] = actuator.bias[1];
                 bp[2] = actuator.bias[2];
-                (GainType::Fixed, BiasType::Affine, gp, bp, [tc, 0.0, 0.0])
+                (GainType::Fixed, BiasType::Affine, gp, bp, {
+                    let mut d = [0.0; 10];
+                    d[0] = tc;
+                    d
+                })
             }
 
             MjcfActuatorType::Adhesion => {
                 let mut gp = [0.0; 9];
                 gp[0] = actuator.gain;
-                (GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 3])
+                (GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 10])
             }
 
             MjcfActuatorType::Muscle => {
@@ -321,11 +415,12 @@ impl ModelBuilder {
                     BiasType::Muscle,
                     gp,
                     gp, // biasprm = gainprm (shared layout, MuJoCo convention)
-                    [
-                        actuator.muscle_timeconst.0,
-                        actuator.muscle_timeconst.1,
-                        0.0,
-                    ],
+                    {
+                        let mut d = [0.0; 10];
+                        d[0] = actuator.muscle_timeconst.0;
+                        d[1] = actuator.muscle_timeconst.1;
+                        d
+                    },
                 )
             }
 
@@ -333,38 +428,119 @@ impl ModelBuilder {
                 // <general> uses explicit attributes; defaults match MuJoCo's
                 // mjs_defaultActuator: gaintype=fixed, biastype=none,
                 // gainprm=[1,0,...], biasprm=[0,...], dynprm=[1,0,0].
-                let gt = match &actuator.gaintype {
-                    Some(s) => parse_gaintype(s)?,
-                    None => GainType::Fixed,
-                };
-                let bt = match &actuator.biastype {
-                    Some(s) => parse_biastype(s)?,
-                    None => BiasType::None,
-                };
-                let gainprm_default = {
-                    let mut d = [0.0; 9];
-                    d[0] = 1.0; // MuJoCo default
-                    d
-                };
-                let gp = if let Some(v) = &actuator.gainprm {
-                    floats_to_array(v, gainprm_default)
+                if dyntype == ActuatorDynamics::HillMuscle {
+                    // HillMuscle auto-sets: gaintype/biastype default to HillMuscle
+                    // unless explicitly overridden by the user.
+                    let gt = match &actuator.gaintype {
+                        Some(s) => parse_gaintype(s)?,
+                        None => GainType::HillMuscle,
+                    };
+                    let bt = match &actuator.biastype {
+                        Some(s) => parse_biastype(s)?,
+                        None => BiasType::HillMuscle,
+                    };
+                    // HillMuscle gainprm defaults:
+                    // [range_lo, range_hi, F0(-1=auto), scale, L_opt, L_slack, vmax, penn, stiff, 0]
+                    let hill_gainprm_default =
+                        [0.75, 1.05, -1.0, 200.0, 0.10, 0.20, 10.0, 0.0, 35.0];
+                    let gp = if let Some(v) = &actuator.gainprm {
+                        floats_to_array(v, hill_gainprm_default)
+                    } else {
+                        hill_gainprm_default
+                    };
+                    let bp = if let Some(v) = &actuator.biasprm {
+                        floats_to_array(v, [0.0; 9])
+                    } else {
+                        [0.0; 9]
+                    };
+                    // HillMuscle dynprm defaults: same as Muscle [tau_act, tau_deact, tausmooth]
+                    let hill_dynprm_default = {
+                        let mut d = [0.0; 10];
+                        d[0] = 0.01; // tau_act
+                        d[1] = 0.04; // tau_deact
+                        d
+                    };
+                    let dp = if let Some(v) = &actuator.dynprm {
+                        floats_to_array(v, hill_dynprm_default)
+                    } else {
+                        hill_dynprm_default
+                    };
+                    (gt, bt, gp, bp, dp)
                 } else {
-                    gainprm_default
-                };
-                let bp = if let Some(v) = &actuator.biasprm {
-                    floats_to_array(v, [0.0; 9])
-                } else {
-                    [0.0; 9]
-                };
-                let dynprm_default = [1.0, 0.0, 0.0]; // MuJoCo: dynprm[0]=1
-                let dp = if let Some(v) = &actuator.dynprm {
-                    floats_to_array(v, dynprm_default)
-                } else {
-                    dynprm_default
-                };
-                (gt, bt, gp, bp, dp)
+                    let gt = match &actuator.gaintype {
+                        Some(s) => parse_gaintype(s)?,
+                        None => GainType::Fixed,
+                    };
+                    let bt = match &actuator.biastype {
+                        Some(s) => parse_biastype(s)?,
+                        None => BiasType::None,
+                    };
+                    let gainprm_default = {
+                        let mut d = [0.0; 9];
+                        d[0] = 1.0; // MuJoCo default
+                        d
+                    };
+                    let gp = if let Some(v) = &actuator.gainprm {
+                        floats_to_array(v, gainprm_default)
+                    } else {
+                        gainprm_default
+                    };
+                    let bp = if let Some(v) = &actuator.biasprm {
+                        floats_to_array(v, [0.0; 9])
+                    } else {
+                        [0.0; 9]
+                    };
+                    let dynprm_default = {
+                        let mut d = [0.0; 10];
+                        d[0] = 1.0; // MuJoCo: dynprm[0]=1
+                        d
+                    };
+                    let dp = if let Some(v) = &actuator.dynprm {
+                        floats_to_array(v, dynprm_default)
+                    } else {
+                        dynprm_default
+                    };
+                    (gt, bt, gp, bp, dp)
+                }
             }
         };
+
+        // HillMuscle parameter validation (CortenForge extension).
+        if dyntype == ActuatorDynamics::HillMuscle {
+            let opt_len = gainprm[4];
+            let slack_len = gainprm[5];
+            let vmax = gainprm[6];
+            let penn = gainprm[7];
+            let stiff = gainprm[8];
+            if opt_len <= 0.0 {
+                return Err(ModelConversionError {
+                    message: "HillMuscle: optimal_fiber_length (gainprm[4]) must be positive"
+                        .into(),
+                });
+            }
+            if slack_len < 0.0 {
+                return Err(ModelConversionError {
+                    message: "HillMuscle: tendon_slack_length (gainprm[5]) must be non-negative"
+                        .into(),
+                });
+            }
+            if vmax <= 0.0 {
+                return Err(ModelConversionError {
+                    message: "HillMuscle: max_contraction_velocity (gainprm[6]) must be positive"
+                        .into(),
+                });
+            }
+            if !(0.0..std::f64::consts::FRAC_PI_2).contains(&penn) {
+                return Err(ModelConversionError {
+                    message: "HillMuscle: pennation_angle (gainprm[7]) must be in [0, π/2)".into(),
+                });
+            }
+            if stiff <= 0.0 {
+                return Err(ModelConversionError {
+                    message: "HillMuscle: tendon_stiffness (gainprm[8]) must be positive".into(),
+                });
+            }
+        }
 
         self.actuator_gaintype.push(gaintype);
         self.actuator_biastype.push(biastype);
@@ -375,7 +551,7 @@ impl ModelBuilder {
         // Per-actuator group assignment (§41 S7b)
         self.actuator_group.push(actuator.group.unwrap_or(0));
 
-        // Lengthrange and acc0: initialized to zero, computed by compute_muscle_params()
+        // Lengthrange and acc0: initialized to zero, computed by compute_actuator_params()
         self.actuator_lengthrange.push((0.0, 0.0));
         self.actuator_acc0.push(0.0);
 
@@ -388,8 +564,9 @@ fn parse_gaintype(s: &str) -> std::result::Result<GainType, ModelConversionError
         "fixed" => Ok(GainType::Fixed),
         "affine" => Ok(GainType::Affine),
         "muscle" => Ok(GainType::Muscle),
+        "hillmuscle" => Ok(GainType::HillMuscle),
         _ => Err(ModelConversionError {
-            message: format!("unknown gaintype '{s}' (valid: fixed, affine, muscle)"),
+            message: format!("unknown gaintype '{s}' (valid: fixed, affine, muscle, hillmuscle)"),
         }),
     }
 }
@@ -399,8 +576,9 @@ fn parse_biastype(s: &str) -> std::result::Result<BiasType, ModelConversionError
         "none" => Ok(BiasType::None),
         "affine" => Ok(BiasType::Affine),
         "muscle" => Ok(BiasType::Muscle),
+        "hillmuscle" => Ok(BiasType::HillMuscle),
         _ => Err(ModelConversionError {
-            message: format!("unknown biastype '{s}' (valid: none, affine, muscle)"),
+            message: format!("unknown biastype '{s}' (valid: none, affine, muscle, hillmuscle)"),
         }),
     }
 }
@@ -412,9 +590,10 @@ fn parse_dyntype(s: &str) -> std::result::Result<ActuatorDynamics, ModelConversi
         "filter" => Ok(ActuatorDynamics::Filter),
         "filterexact" => Ok(ActuatorDynamics::FilterExact),
         "muscle" => Ok(ActuatorDynamics::Muscle),
+        "hillmuscle" => Ok(ActuatorDynamics::HillMuscle),
         _ => Err(ModelConversionError {
             message: format!(
-                "unknown dyntype '{s}' (valid: none, integrator, filter, filterexact, muscle)"
+                "unknown dyntype '{s}' (valid: none, integrator, filter, filterexact, muscle, hillmuscle)"
             ),
         }),
     }
@@ -870,5 +1049,111 @@ mod tests {
             );
         }
         // 10th element (index 9) is silently dropped — no error, and array is only 9 elements
+    }
+
+    // ── HillMuscle builder tests (Spec C: T10, T11, T14) ──
+
+    /// T10: MJCF parsing round-trip for dyntype="hillmuscle" (AC10).
+    #[test]
+    fn test_hillmuscle_parsing_roundtrip() {
+        let xml = general_actuator_model(
+            r#"<general name="hill1" joint="j" dyntype="hillmuscle"
+                       gainprm="0.75 1.05 -1 200 0.10 0.20 10.0 0.349066 35.0"/>"#,
+        );
+        let model = load_model(&xml).expect("should parse HillMuscle");
+
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::HillMuscle);
+        assert_eq!(model.actuator_gaintype[0], GainType::HillMuscle);
+        assert_eq!(model.actuator_biastype[0], BiasType::HillMuscle);
+        assert_eq!(model.actuator_act_num[0], 1);
+        assert!(model.actuator_actlimited[0]);
+        assert_eq!(model.actuator_actrange[0], (0.0, 1.0));
+
+        // gainprm values
+        assert!((model.actuator_gainprm[0][4] - 0.10).abs() < 1e-10);
+        assert!((model.actuator_gainprm[0][7] - 0.349_066).abs() < 1e-10);
+    }
+
+    /// T10 continued: HillMuscle auto-set defaults (no explicit gaintype/biastype).
+    #[test]
+    fn test_hillmuscle_auto_defaults() {
+        let xml = general_actuator_model(r#"<general joint="j" dyntype="hillmuscle"/>"#);
+        let model = load_model(&xml).expect("should parse HillMuscle with defaults");
+
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::HillMuscle);
+        assert_eq!(model.actuator_gaintype[0], GainType::HillMuscle);
+        assert_eq!(model.actuator_biastype[0], BiasType::HillMuscle);
+
+        // Default gainprm values
+        assert!((model.actuator_gainprm[0][0] - 0.75).abs() < 1e-10); // range_lo
+        assert!((model.actuator_gainprm[0][4] - 0.10).abs() < 1e-10); // opt_len
+        assert!((model.actuator_gainprm[0][5] - 0.20).abs() < 1e-10); // slack_len
+
+        // Default dynprm: [0.01, 0.04, 0, ...]
+        assert!((model.actuator_dynprm[0][0] - 0.01).abs() < 1e-10);
+        assert!((model.actuator_dynprm[0][1] - 0.04).abs() < 1e-10);
+    }
+
+    /// T11: Builder validation rejects invalid parameters (AC11).
+    #[test]
+    fn test_hillmuscle_validation_zero_optlen() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" dyntype="hillmuscle"
+                       gainprm="0.75 1.05 -1 200 0.0 0.20 10.0 0.0 35.0"/>"#,
+        );
+        let result = load_model(&xml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("optimal_fiber_length"),
+            "error should mention optimal_fiber_length: {err}"
+        );
+    }
+
+    #[test]
+    fn test_hillmuscle_validation_bad_pennation() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" dyntype="hillmuscle"
+                       gainprm="0.75 1.05 -1 200 0.10 0.20 10.0 1.6 35.0"/>"#,
+        );
+        let result = load_model(&xml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("pennation_angle"),
+            "error should mention pennation_angle: {err}"
+        );
+    }
+
+    #[test]
+    fn test_hillmuscle_validation_negative_vmax() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" dyntype="hillmuscle"
+                       gainprm="0.75 1.05 -1 200 0.10 0.20 -1.0 0.0 35.0"/>"#,
+        );
+        let result = load_model(&xml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("max_contraction_velocity"),
+            "error should mention max_contraction_velocity: {err}"
+        );
+    }
+
+    /// T14: Mixed gain/bias type override (AC16).
+    #[test]
+    fn test_hillmuscle_gaintype_override() {
+        let xml = general_actuator_model(
+            r#"<general joint="j" dyntype="hillmuscle" gaintype="affine"
+                       gainprm="100 0 0" dynprm="0.01 0.04 0.0"/>"#,
+        );
+        let model = load_model(&xml).expect("should parse with override");
+
+        // dyntype is HillMuscle
+        assert_eq!(model.actuator_dyntype[0], ActuatorDynamics::HillMuscle);
+        // gaintype is user-overridden to Affine
+        assert_eq!(model.actuator_gaintype[0], GainType::Affine);
+        // biastype is auto-set to HillMuscle (not overridden)
+        assert_eq!(model.actuator_biastype[0], BiasType::HillMuscle);
     }
 }

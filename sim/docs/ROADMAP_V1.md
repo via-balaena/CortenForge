@@ -1,15 +1,19 @@
 # CortenForge Sim — v1.0 Roadmap
 
-> **Status**: Draft — 2026-02-21
+> **Status**: Draft — 2026-02-27
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
-> plus the ~102 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-102).
+> plus the ~112 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-116).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
 > DT-96 (lazy energy eval) and DT-97 (golden file conformance) added during §41 audit.
 > ~~DT-99~~ (BVH midphase, §41 S9-full — **done**), ~~DT-100~~ (global override, §41 S10-full — **done**),
 > DT-101 (`mj_contactPassive()`) added during §41 spec expansion.
 > ~~DT-98~~ retired — `passive` dropped entirely pre-v1.0 (no shim needed).
+> DT-107 (runtime interpolation), DT-108 (dyntype gating), DT-109 (sensor history),
+> DT-110 (actuator_plugin) added during Spec D review. ~~DT-9~~ partially done (parsing landed).
+> ~~DT-58~~ done (Phase 5 Spec C). DT-111–116 (HillMuscle extension sub-items) added
+> during Spec C review.
 >
-> **Current position**: Phase 4 (Core Data Fields) complete. Next: Phases 5–11 (parallel).
+> **Current position**: Phases 1–5 complete. Next: Phases 6–11 (parallel).
 
 ---
 
@@ -128,21 +132,30 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 5 — Actuator Completeness
+### Phase 5 — Actuator Completeness ✅
+
+> **Complete (2026-02-27).** All 10 originally-scoped tasks ship-complete across 19
+> sessions (4 sub-specs + 2 T1 items). 2,238+ domain tests pass, 0 fail, clippy
+> clean, fmt clean. See [SESSION_PLAN.md](todo/spec_fleshouts/phase5_actuator_completeness/SESSION_PLAN.md)
+> for full session history and commit hashes.
+>
+> Deferred items discovered during implementation (DT-104, DT-105, DT-107, DT-108,
+> DT-110, DT-111–116) tracked in post-v1.0 sections below.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| DT-56 | 10g | T2 | `dampratio` for position actuators (requires `acc0`) |
-| DT-57 | 10g | T2 | `acc0` computation for non-muscle actuators |
-| DT-58 | 10g | T3 | sim-muscle Hill-type model as `ActuatorDynamics::HillMuscle` variant |
-| DT-59 | 10g | T2 | Bisection-based `lengthrange` for unlimited slide joints (`mj_setLengthRange`) |
-| DT-77 | 10j | T2 | Length-range auto-estimation for site-transmission muscle actuators |
-| DT-6 | 10b | T1 | `actearly` attribute wired to runtime (currently parsed, no effect) |
-| DT-8 | 10b | T2 | Transmission types: `cranksite`, `slidersite`, `jointinparent` |
-| DT-9 | 10b | T2 | `nsample`, `interp`, `delay` — MuJoCo 3.x interpolation actuator attributes |
-| ~~DT-60~~ | 10g | T1 | ~~`jnt_actgravcomp` routing to `qfrc_actuator` instead of `qfrc_passive`~~ **Done** — subsumed by §41 S4.2a |
-| §61 | 15 | — | `slidercrank` actuator transmission |
-| §63 | 15 | — | `dynprm` array 3→10 elements to match MuJoCo |
+| ~~DT-6~~ | 10b | T1 | ~~`actearly` attribute wired to runtime~~ **Done** — Phase 5 Session 1 (commit `dc12b8b`). Already wired; verified + 4 tests added. |
+| ~~§63~~ | 15 | — | ~~`dynprm` array 3→10 elements to match MuJoCo~~ **Done** — Phase 5 Session 1 (commit `d4db634`). |
+| ~~DT-57~~ | 10g | T2 | ~~`acc0` computation for non-muscle actuators~~ **Done** — Spec A (Phase 5 Session 3, commit `a1cbbba`). Extended `compute_actuator_params()` to all actuator types. |
+| ~~DT-56~~ | 10g | T2 | ~~`dampratio` for position actuators~~ **Done** — Spec A (Phase 5 Session 3, commit `a1cbbba`). Dampratio-to-damping conversion using `acc0`. |
+| ~~DT-59~~ | 10g | T2 | ~~Bisection-based `lengthrange` for unlimited slide joints~~ **Done** — Spec A (Phase 5 Session 3, commit `a1cbbba`). Simulation-based LR estimation. |
+| ~~DT-77~~ | 10j | T2 | ~~Length-range auto-estimation for site-transmission actuators~~ **Done** — Spec A (Phase 5 Session 3, commit `a1cbbba`). Site-transmission LR via actuator_moment build. |
+| ~~DT-8~~ | 10b | T2 | ~~Transmission types: `cranksite`, `slidersite`, `jointinparent`~~ **Done** — Spec B (Phase 5 Session 7, commit `aa87169`). |
+| ~~§61~~ | 15 | — | ~~`slidercrank` actuator transmission~~ **Done** — Spec B (Phase 5 Session 7, commit `aa87169`). |
+| ~~DT-9~~ | 10b | T2 | ~~`nsample`, `interp`, `delay` — MuJoCo 3.x interpolation attributes~~ **Partially done** — parsing + model/data storage landed in Spec D (Phase 5 Session 12, commit `cc996c4`). Runtime → DT-107, dyntype gating → DT-108. |
+| ~~DT-58~~ | 10g | T3 | ~~sim-muscle Hill-type model as `ActuatorDynamics::HillMuscle` variant~~ **Done** — Spec C (Phase 5 Session 17, commit `c64bab1`). Rigid tendon only; extension sub-items → DT-111–116. |
+| ~~DT-60~~ | 10g | T1 | ~~`jnt_actgravcomp` routing to `qfrc_actuator`~~ **Done** — subsumed by §41 S4.2a. |
+| ~~DT-106~~ | Spec A | T1 | ~~Gear-scaling in `uselimit` lengthrange~~ **Done** — intentional MuJoCo deviation documented (commit `456fc9e`). |
 
 ---
 
@@ -155,6 +168,7 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | DT-63 | 10h | T2 | Frame sensor `reftype`/`refid` — relative-frame measurements |
 | DT-64 | 10h | T2 | Multi-geom touch sensor aggregation (currently only first geom matched) |
 | DT-102 | 10h | T1 | Geom-attached acc-stage sensors (FrameLinAcc/FrameAngAcc with `MjObjectType::Geom`). Depends on DT-62. |
+| DT-109 | 10h | T2 | Sensor history attributes — `nsample`/`interp`/`delay` on sensors, contributes to `nhistory`. Currently `nhistory` is actuator-only. |
 
 ---
 
@@ -297,6 +311,7 @@ foundation isn't right.
 | DT-76 | 10j | T1 | Pre-allocated `efc_lambda_saved` for RK4 |
 | DT-91 | 10j | T1 | Warmstart `SmallVec` optimization |
 | DT-92 | 10j | T1 | Parallel reset for `BatchSim` |
+| DT-105 | 10e | T3 | Sparse `actuator_moment` compression (CSR) — numerically equivalent to current dense storage. Deferred from Phase 5 Spec B. |
 
 ### Advanced Differentiation
 | Task | Source | Tier | Description |
@@ -309,6 +324,12 @@ foundation isn't right.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | DT-4 | 10b | T1 | `<sdf>` inline distance grid asset element |
+| DT-111 | 10g | T3 | HillMuscle compliant tendon mode — persistent fiber state (`act_num ≥ 2` or separate state array) + custom integration |
+| DT-112 | 10g | T1 | HillMuscle named MJCF attributes (`optlen`, `slacklen`, `pennation`) — convenience UX over raw `gainprm` indices |
+| DT-113 | 10g | T1 | `<hillmuscle>` shortcut element — analogous to `<muscle>`, auto-sets dyntype/gaintype/biastype |
+| DT-114 | 10g | T2 | HillMuscle variable pennation angle — `α = asin(w / L_fiber)` as function of fiber length |
+| DT-115 | 10g | T2 | HillMuscle configurable curve parameters — Gaussian FL widths, FV curvature, FP shape via `gainprm`/`biasprm` |
+| DT-116 | 10g | T3 | Per-actuator `GainType::User` / `BiasType::User` callback infrastructure — depends on §66 (plugin system) |
 | DT-26 | 10c | T2 | Contact re-detect + re-solve iteration after XPBD |
 | DT-27 | 10c | T2 | XPBD cross-iteration lambda accumulation fix |
 | DT-30 | 10d | T3 | Compound pulley physics (capstan friction, pulley inertia) |
@@ -346,6 +367,15 @@ foundation isn't right.
 | DT-81 | 10j | T1 | `key_userdata` support |
 | DT-84 | 10j | T1 | `mju_encodePyramid` utility |
 | DT-89 | 10i | T1 | `<flexcomp>` rendering attributes |
+| DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()`. Deferred from Phase 5 Spec B. |
+| DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Structures exist (Spec D); runtime missing. Deferred from Phase 5 Spec D. |
+| DT-108 | 10g | T1 | `dyntype` enum gating interpolation eligibility — restrict which `ActuatorDynamics` variants may use history buffer. Deferred from Phase 5 Spec D. |
+| DT-110 | 10g | T1 | `actuator_plugin` model array — per-actuator plugin ID (`int[nu]`, -1 sentinel). Depends on §66. Deferred from Phase 5 Spec D. |
+
+### Code Quality
+| Task | Source | Tier | Description |
+|------|--------|------|-------------|
+| DT-117 | xtask check | T2 | Eliminate `unwrap()`/`expect()` from library code (~1,085 call sites). Convert to `?` propagation, `Result` returns, or `unsafe { get_unchecked() }` with safety invariant comments where bounds are structurally guaranteed. Prevents unrecoverable panics for library consumers. |
 
 ### Other Non-Critical
 | Task | Source | Tier | Description |

@@ -690,6 +690,8 @@ pub struct MjcfActuatorDefaults {
     pub kp: Option<f64>,
     /// Velocity gain (kv) for velocity actuators.
     pub kv: Option<f64>,
+    /// Damping ratio for position actuators.
+    pub dampratio: Option<f64>,
     /// Control limited.
     pub ctrllimited: Option<bool>,
     /// Force limited.
@@ -716,6 +718,12 @@ pub struct MjcfActuatorDefaults {
     pub actearly: Option<bool>,
     /// Length range for the actuator (requires tendon length range computation).
     pub lengthrange: Option<(f64, f64)>,
+    /// History buffer sample count. MuJoCo: `nsample` (int, default 0).
+    pub nsample: Option<i32>,
+    /// Interpolation method keyword. MuJoCo: `interp` ("zoh"/"linear"/"cubic").
+    pub interp: Option<String>,
+    /// Time delay in seconds. MuJoCo: `delay` (double, default 0.0).
+    pub delay: Option<f64>,
     // #todo: MuJoCo supports actuator-type-specific defaults (cylinder area/timeconst/bias,
     // muscle force/scale/lmin/lmax/vmax/fpmax/fvmax/timeconst, adhesion gain).
     // These fields exist on MjcfActuator but are not yet defaultable.
@@ -2345,6 +2353,20 @@ pub struct MjcfActuator {
     pub body: Option<String>,
     /// Reference site name (for site transmissions with Cartesian control).
     pub refsite: Option<String>,
+    /// Target joint name for parent-frame transmission.
+    /// Maps to `ActuatorTransmission::JointInParent`.
+    /// For hinge/slide joints, behaviorally identical to `joint`.
+    pub jointinparent: Option<String>,
+    /// Crank site name for slider-crank transmission.
+    /// When specified, `slidersite` must also be present.
+    pub cranksite: Option<String>,
+    /// Slider site name for slider-crank transmission.
+    /// Required when `cranksite` is specified.
+    pub slidersite: Option<String>,
+    /// Rod length connecting crank pin to slider pin (meters).
+    /// Required positive when slider-crank is used.
+    /// MuJoCo validates `cranklength > 0` at compile time.
+    pub cranklength: Option<f64>,
     /// Gear ratio (6D: [tx ty tz rx ry rz]).
     pub gear: [f64; 6],
     /// Control range [lower, upper].
@@ -2361,6 +2383,11 @@ pub struct MjcfActuator {
     pub kp: f64,
     /// Velocity gain. `None` means use actuator-type default.
     pub kv: Option<f64>,
+    /// Damping ratio for position actuators. When specified, `compute_actuator_params`
+    /// converts it to kv at model compile time using reflected inertia:
+    /// `kv = dampratio * 2 * sqrt(kp * reflected_mass)`.
+    /// Mutually exclusive with explicit kv. `None` means not specified.
+    pub dampratio: Option<f64>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Whether activation is clamped to actrange.
@@ -2371,6 +2398,12 @@ pub struct MjcfActuator {
     pub actearly: Option<bool>,
     /// Length range for the actuator.
     pub lengthrange: Option<(f64, f64)>,
+    /// History buffer sample count. MuJoCo: `nsample` (int, default 0).
+    pub nsample: Option<i32>,
+    /// Interpolation method keyword. MuJoCo: `interp` ("zoh"/"linear"/"cubic").
+    pub interp: Option<String>,
+    /// Time delay in seconds. MuJoCo: `delay` (double, default 0.0).
+    pub delay: Option<f64>,
 
     // ========================================================================
     // Cylinder-specific attributes
@@ -2449,6 +2482,10 @@ impl Default for MjcfActuator {
             tendon: None,
             body: None,
             refsite: None,
+            jointinparent: None,
+            cranksite: None,
+            slidersite: None,
+            cranklength: None,
             gear: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             ctrlrange: None,
             forcerange: None,
@@ -2456,11 +2493,15 @@ impl Default for MjcfActuator {
             forcelimited: None,
             kp: 1.0,
             kv: None,
+            dampratio: None,
             group: None,
             actlimited: None,
             actrange: None,
             actearly: None,
             lengthrange: None,
+            nsample: None,
+            interp: None,
+            delay: None,
             // Cylinder defaults (MuJoCo defaults)
             area: 1.0,
             diameter: None,

@@ -12,8 +12,8 @@ use std::sync::Arc;
 // Imports from sibling modules
 use super::enums::{
     ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType, Integrator,
-    MjJointType, MjObjectType, MjSensorDataType, MjSensorType, SleepPolicy, SolverType, TendonType,
-    WrapType,
+    InterpolationType, MjJointType, MjObjectType, MjSensorDataType, MjSensorType, SleepPolicy,
+    SolverType, TendonType, WrapType,
 };
 
 // Imports from sibling modules
@@ -540,10 +540,11 @@ pub struct Model {
     /// Bias type per actuator — dispatches force bias computation.
     pub actuator_biastype: Vec<BiasType>,
 
-    /// Dynamics parameters per actuator (3 elements each).
-    /// For Muscle: [tau_act, tau_deact, tausmooth]. Default: [0.01, 0.04, 0.0].
-    /// For Filter: [tau, 0, 0]. For Integrator/None: unused.
-    pub actuator_dynprm: Vec<[f64; 3]>,
+    /// Dynamics parameters per actuator (10 elements each, MuJoCo parity).
+    /// For Muscle: [tau_act, tau_deact, tausmooth, 0, 0, 0, 0, 0, 0, 0].
+    /// Default: [0.01, 0.04, 0.0, ...]. For Filter: [tau, 0, ...].
+    /// Elements 3–9 are reserved (zero-initialized).
+    pub actuator_dynprm: Vec<[f64; 10]>,
 
     /// Gain parameters per actuator (9 elements each).
     /// For Muscle: [range0, range1, force, scale, lmin, lmax, vmax, fpmax, fvmax].
@@ -579,6 +580,33 @@ pub struct Model {
     /// the one-timestep delay between control input and force response.
     /// MuJoCo reference: `m->actuator_actearly[i]`.
     pub actuator_actearly: Vec<bool>,
+
+    /// Crank rod length for slider-crank transmissions.
+    /// Only meaningful for `ActuatorTransmission::SliderCrank`.
+    /// MuJoCo reference: `m->actuator_cranklength[i]`.
+    pub actuator_cranklength: Vec<f64>,
+
+    /// History sample count per actuator (length `nu`).
+    /// MuJoCo: `actuator_history[2*i + 0]`.  Default: 0 (no history).
+    /// Signed to match MuJoCo — accepts negative values (treated as no history).
+    pub actuator_nsample: Vec<i32>,
+
+    /// Interpolation type per actuator (length `nu`).
+    /// MuJoCo: `actuator_history[2*i + 1]` as int 0/1/2.  Default: Zoh.
+    pub actuator_interp: Vec<InterpolationType>,
+
+    /// Cumulative offset into `Data.history` per actuator (length `nu`).
+    /// MuJoCo: `actuator_historyadr`.  Equals -1 when `nsample <= 0`.
+    pub actuator_historyadr: Vec<i32>,
+
+    /// Time delay per actuator in seconds (length `nu`).
+    /// MuJoCo: `actuator_delay`.  Default: 0.0.  Present for all actuators.
+    pub actuator_delay: Vec<f64>,
+
+    /// Total history buffer size (actuator contributions only).
+    /// MuJoCo: `nhistory` (includes sensors — ours is actuator-only until
+    /// sensor history is implemented).
+    pub nhistory: usize,
 
     // ==================== Tendons (indexed by tendon_id) ====================
     /// Number of tendons.
@@ -826,6 +854,83 @@ pub struct Model {
     pub cb_act_gain: Option<super::callbacks::CbActGain>,
     /// User actuator bias callback: called for `BiasType::User`.
     pub cb_act_bias: Option<super::callbacks::CbActBias>,
+}
+
+// ============================================================================
+// Length-range estimation types (Phase 5, Spec A §S4)
+// ============================================================================
+
+/// Options for simulation-based actuator length-range estimation.
+/// Matches MuJoCo's `mjLROpt` struct with identical defaults.
+#[derive(Debug, Clone)]
+pub struct LengthRangeOpt {
+    /// Which actuators to compute for.
+    pub mode: LengthRangeMode,
+    /// Skip if range already set (lo < hi).
+    pub useexisting: bool,
+    /// Copy from joint/tendon limits when available.
+    pub uselimit: bool,
+    /// Target acceleration magnitude for the applied force.
+    pub accel: f64,
+    /// Force cap (0 = unlimited).
+    pub maxforce: f64,
+    /// Velocity damping time constant (seconds).
+    pub timeconst: f64,
+    /// Internal simulation timestep (seconds).
+    pub timestep: f64,
+    /// Total simulation time (seconds).
+    pub inttotal: f64,
+    /// Measurement interval — last N seconds used for convergence.
+    pub interval: f64,
+    /// Convergence tolerance (fraction of total range).
+    pub tolrange: f64,
+}
+
+impl Default for LengthRangeOpt {
+    fn default() -> Self {
+        Self {
+            mode: LengthRangeMode::Muscle,
+            useexisting: true,
+            uselimit: true,
+            accel: 20.0,
+            maxforce: 0.0,
+            timeconst: 1.0,
+            timestep: 0.01,
+            inttotal: 10.0,
+            interval: 2.0,
+            tolrange: 0.05,
+        }
+    }
+}
+
+/// Which actuators get simulation-based length-range estimation.
+/// Matches MuJoCo's `mjLRMODE_*` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LengthRangeMode {
+    /// Disabled entirely.
+    None,
+    /// Compute only for muscle actuators (default).
+    #[default]
+    Muscle,
+    /// Compute for muscle and user-defined actuators.
+    MuscleUser,
+    /// Compute for all actuators.
+    All,
+}
+
+/// Errors from simulation-based length-range estimation.
+#[derive(Debug)]
+pub enum LengthRangeError {
+    /// Length range has zero or negative extent (max <= min).
+    InvalidRange {
+        /// Index of the actuator.
+        actuator: usize,
+    },
+    /// Simulation did not converge within tolerance.
+    ConvergenceFailed {
+        /// Index of the actuator.
+        actuator: usize,
+    },
 }
 
 impl Model {
