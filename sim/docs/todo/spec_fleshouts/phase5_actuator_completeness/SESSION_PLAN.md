@@ -488,7 +488,7 @@ After Spec C lands, verify Phase 5 aggregate ACs from the umbrella:
 
 ## Session 18: Spec C review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 5 Actuator Completeness — create Spec C review document.
@@ -565,5 +565,5 @@ Present the Review Verdict (section 10) to the user when done.
 | 15 | Spec C rubric | Done | `bb61376` |
 | 16 | Spec C spec | Done | `c6668fe` |
 | 17 | Spec C implementation | Done | `c64bab1` |
-| 18 | Spec C review — create document | Pending | |
+| 18 | Spec C review — create document | Done | |
 | 19 | Spec C review — execute | Pending | |
