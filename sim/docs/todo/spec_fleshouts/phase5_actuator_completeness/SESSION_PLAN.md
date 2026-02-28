@@ -566,4 +566,4 @@ Present the Review Verdict (section 10) to the user when done.
 | 16 | Spec C spec | Done | `c6668fe` |
 | 17 | Spec C implementation | Done | `c64bab1` |
 | 18 | Spec C review — create document | Done | `7718725` |
-| 19 | Spec C review — execute | Done | |
+| 19 | Spec C review — execute | Done | `5099fcc` |
