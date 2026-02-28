@@ -87,7 +87,7 @@ after each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 4: Spec A review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — create Spec A review document.
@@ -542,7 +542,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 1 | Spec A rubric | Done | a6b6ab1 |
 | 2 | Spec A spec | Done | b31e1b9 |
 | 3 | Spec A implementation | Done | 28bc9f4 |
-| 4 | Spec A review — create document | Pending | — |
+| 4 | Spec A review — create document | Done | — |
 | 5 | Spec A review — execute | Pending | — |
 | 6 | Spec B rubric | Pending | — |
 | 7 | Spec B spec | Pending | — |
