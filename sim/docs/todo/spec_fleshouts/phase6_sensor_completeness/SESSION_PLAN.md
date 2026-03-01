@@ -548,7 +548,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 7 | Spec B spec | Done | `91ac547` |
 | 8 | Spec B implementation | Done | `fb8ec66` |
 | 9 | Spec B review — create document | Done | `9916dd4` |
-| 10 | Spec B review — execute | Done | *(pending commit)* |
+| 10 | Spec B review — execute | Done | `0683822` |
 | 11 | Spec C rubric | Pending | — |
 | 12 | Spec C spec | Pending | — |
 | 13 | Spec C implementation | Pending | — |
