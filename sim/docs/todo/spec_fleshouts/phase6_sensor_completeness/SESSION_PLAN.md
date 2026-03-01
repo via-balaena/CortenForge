@@ -555,7 +555,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 14 | Spec C review — create document | Done | `1703105` |
 | 15 | Spec C review — execute | Done | `7e6ded4` |
 | 16 | Spec D rubric | Done | `8239eda` |
-| 17 | Spec D spec | Done | — |
+| 17 | Spec D spec | Done | `c914cfe` |
 | 18 | Spec D implementation | Pending | — |
 | 19 | Spec D review — create document | Pending | — |
 | 20 | Spec D review — execute | Pending | — |
