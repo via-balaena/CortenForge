@@ -279,7 +279,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 11: Spec C rubric (missing sensor types)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — write Spec C rubric.
@@ -549,7 +549,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 8 | Spec B implementation | Done | `fb8ec66` |
 | 9 | Spec B review — create document | Done | `9916dd4` |
 | 10 | Spec B review — execute | Done | `0683822` |
-| 11 | Spec C rubric | Pending | — |
+| 11 | Spec C rubric | Done | FILL |
 | 12 | Spec C spec | Pending | — |
 | 13 | Spec C implementation | Pending | — |
 | 14 | Spec C review — create document | Pending | — |
