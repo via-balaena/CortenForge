@@ -360,7 +360,7 @@ foundation isn't right.
 | DT-17 | 10b | T1 | Global `<option o_margin>` override |
 | DT-22 | 10c | T1 | `efc_impP` impedance derivative field |
 | DT-31 | 10d | T2 | `WrapType::Joint` inside spatial tendons |
-| DT-65 | 10h | T1 | User sensor `dim` attribute |
+| DT-65 | 10h | T1 | User sensor `dim` attribute. Also requires `sensor_intprm` array (`mjmodel.h:1213`). |
 | DT-69 | 10i | T2 | SAP for flex broadphase (currently brute-force) |
 | DT-72 | 10i | T1 | Flex contacts wired for adhesion |
 | DT-80 | 10j | T1 | Mocap body + equality weld integration testing |
@@ -368,7 +368,7 @@ foundation isn't right.
 | DT-84 | 10j | T1 | `mju_encodePyramid` utility |
 | DT-89 | 10i | T1 | `<flexcomp>` rendering attributes |
 | DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()`. Deferred from Phase 5 Spec B. |
-| DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Structures exist (Spec D); runtime missing. Deferred from Phase 5 Spec D. |
+| DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Covers both actuators (Phase 5 Spec D) and sensors (Phase 6 Spec D): structures exist for both, runtime missing for both. Includes sensor history pre-population in `reset_data()`. |
 | DT-108 | 10g | T1 | `dyntype` enum gating interpolation eligibility — restrict which `ActuatorDynamics` variants may use history buffer. Deferred from Phase 5 Spec D. |
 | DT-110 | 10g | T1 | `actuator_plugin` model array — per-actuator plugin ID (`int[nu]`, -1 sentinel). Depends on §66. Deferred from Phase 5 Spec D. |
 
