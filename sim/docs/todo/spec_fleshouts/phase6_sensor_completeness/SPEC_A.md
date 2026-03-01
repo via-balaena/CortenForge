@@ -287,7 +287,7 @@ builder stores `XBody` (matching MuJoCo's inference: `body=` → `mjOBJ_XBODY`).
 
 **DECISION 2: `Camera` variant — defer.**
 
-Defer `MjObjectType::Camera` to a new DT-ID (DT-117). Rationale: CortenForge does
+Defer `MjObjectType::Camera` to a new DT-ID (DT-120). Rationale: CortenForge does
 not yet have `cam_xpos`, `cam_xmat`, or `cam_quat` fields in `Data`. Adding camera
 support requires populating these during forward kinematics. Frame sensors attached
 to cameras are rare in RL/robotics models. If `objtype="camera"` is encountered,
@@ -754,8 +754,8 @@ MjSensorType::FramePos
                 Ok((MjObjectType::Geom, id))
             }
             "camera" => {
-                // DT-117: Camera deferred. Warn and fall through.
-                warn!("objtype='camera' not yet supported (DT-117); \
+                // DT-120: Camera deferred. Warn and fall through.
+                warn!("objtype='camera' not yet supported (DT-120); \
                        falling back to name heuristic for sensor '{}'",
                        sensor_name);
                 // Fall through to heuristic below
@@ -1312,7 +1312,7 @@ body has zero mass.
 | Geom at offset position from body | FrameLinAcc includes spatial transport + Coriolis. | T14 | AC14 |
 | `objtype` omitted | Builder falls back to name heuristic, `body=` → XBody. | T8 | AC8 |
 | `objtype` on non-frame sensor | `objtype` silently ignored for Touch, Accelerometer, etc. Builder resolves via type-specific attribute. | T17 | AC18 |
-| `objtype="camera"` (unsupported) | Warning emitted, falls back to heuristic. | — (DT-117) | — |
+| `objtype="camera"` (unsupported) | Warning emitted, falls back to heuristic. | — (DT-120) | — |
 
 ### Supplementary Tests
 
@@ -1440,7 +1440,7 @@ rename.
 
 ## Out of Scope
 
-- **DT-117** (`MjObjectType::Camera`) — deferred. No `cam_xpos`/`cam_xmat`/`cam_quat`
+- **DT-120** (`MjObjectType::Camera`) — deferred. No `cam_xpos`/`cam_xmat`/`cam_quat`
   arrays in `Data` yet. Conformance impact: none for typical RL/robotics models;
   camera frame sensors are rare.
 

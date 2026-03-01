@@ -213,9 +213,9 @@ impl ModelBuilder {
                             Ok((MjObjectType::Geom, id))
                         }
                         "camera" => {
-                            // DT-117: Camera deferred. Warn and fall through to heuristic.
+                            // DT-120: Camera deferred. Warn and fall through to heuristic.
                             warn!(
-                                "objtype='camera' not yet supported (DT-117); \
+                                "objtype='camera' not yet supported (DT-120); \
                                  falling back to name heuristic for sensor"
                             );
                             self.resolve_frame_sensor_by_name(name)
@@ -329,9 +329,9 @@ impl ModelBuilder {
                 Ok((MjObjectType::Geom, id))
             }
             Some("camera") => {
-                // DT-117: Camera not yet implemented. Warn and ignore.
+                // DT-120: Camera not yet implemented. Warn and ignore.
                 warn!(
-                    "reftype='camera' not yet supported (DT-117); \
+                    "reftype='camera' not yet supported (DT-120); \
                      ignoring reftype/refname for sensor"
                 );
                 Ok((MjObjectType::None, 0))

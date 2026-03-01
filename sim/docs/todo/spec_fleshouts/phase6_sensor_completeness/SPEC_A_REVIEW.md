@@ -35,7 +35,7 @@ the conformance gap *before* implementation. Verify each gap is now closed.
 
 | Behavior | MuJoCo (from spec) | CortenForge Before | CortenForge After | Gap Closed? |
 |----------|-------------------|--------------------|-------------------|-------------|
-| Frame sensor objtype dispatch | Explicit `sensor_objtype[i]` set from MJCF `objtype` attribute, with `get_xpos_xmat()` / `get_xquat()` dispatch. 5 object types: `mjOBJ_XBODY`, `mjOBJ_BODY`, `mjOBJ_GEOM`, `mjOBJ_SITE`, `mjOBJ_CAMERA`. | No `objtype` attribute parsed. Builder guesses from name: site→body→geom heuristic. Only 3 types matched in evaluation. | Parser stores `objtype` attribute (`types.rs:3080`). Builder dispatches explicitly when present (`builder/sensor.rs:168–225`): site/body/xbody/geom + camera fallback. 4 of 5 types matched; Camera deferred (DT-117). | Yes (4/5 types; Camera deferred) |
+| Frame sensor objtype dispatch | Explicit `sensor_objtype[i]` set from MJCF `objtype` attribute, with `get_xpos_xmat()` / `get_xquat()` dispatch. 5 object types: `mjOBJ_XBODY`, `mjOBJ_BODY`, `mjOBJ_GEOM`, `mjOBJ_SITE`, `mjOBJ_CAMERA`. | No `objtype` attribute parsed. Builder guesses from name: site→body→geom heuristic. Only 3 types matched in evaluation. | Parser stores `objtype` attribute (`types.rs:3080`). Builder dispatches explicitly when present (`builder/sensor.rs:168–225`): site/body/xbody/geom + camera fallback. 4 of 5 types matched; Camera deferred (DT-120). | Yes (4/5 types; Camera deferred) |
 | `body` vs `xbody` distinction | `mjOBJ_BODY` reads `xipos`/`ximat` (COM/inertial frame); `mjOBJ_XBODY` reads `xpos`/`xmat` (joint frame). 0.15m difference for offset COM. | Only `MjObjectType::Body`, which reads `xpos`/`xmat` = MuJoCo's `mjOBJ_XBODY`. No inertial/COM frame option. | `XBody` variant added to `MjObjectType` (`enums.rs:502–503`). `XBody` reads `xpos`/`xmat`, `Body` reads `xipos`/`ximat`. T6 confirms 0.3m COM offset difference. | Yes |
 | FrameQuat per objtype | `get_xquat()` computes per-type quaternion: `BODY` = `mulQuat(xquat, body_iquat)`, `GEOM` = `mulQuat(xquat[geom_bodyid], geom_quat)`, `SITE` = `mulQuat(xquat[site_bodyid], site_quat)`. | Site and Geom compute from rotation matrix via `from_matrix_unchecked`. Body reads `xquat` directly (= MuJoCo's XBODY behavior). | `XBody` reads `xquat` directly (`position.rs:128`). `Body` computes `xquat * body_iquat` (`position.rs:131`). Site/Geom use `from_matrix_unchecked` (acceptable — equivalent for orthonormal matrices). T7 confirms mulQuat correctness. | Yes |
 | Touch sensor scope | Body-level: `site_bodyid[objid]` → iterate all contacts → `geom_bodyid[con->geom[k]] == bodyid`. ALL geoms contribute. | Single-geom: stores `(Geom, first_geom_id)`. Only contacts on first geom counted. | Stores `(Site, site_id)` (`builder/sensor.rs:147–155`). Evaluation resolves `site→body` at runtime (`acceleration.rs:148–149`), iterates ALL contacts checking `geom_body[c.geom{1,2}] == body_id` (`acceleration.rs:171–181`). T9 confirms 3-geom aggregation (29.43). | Yes |
@@ -114,7 +114,7 @@ Add `XBody` variant to `MjObjectType` enum. Update `sensor_body_id()` to handle 
 - `mod.rs:28`: `sensor_body_id()` handles `MjObjectType::Body | MjObjectType::XBody => Some(objid)`.
 - `builder/sensor.rs:37–41`: `process_sensors()` passes `mjcf_sensor.objtype.as_deref()` to `resolve_sensor_object()`.
 - `builder/sensor.rs:74–79`: `resolve_sensor_object()` signature includes `objtype_str: Option<&str>`.
-- `builder/sensor.rs:159–231`: Frame sensor arm dispatches on explicit `objtype_str` (site/body/xbody/geom/camera) with camera warning and fallback (DT-117). Invalid objtype produces error.
+- `builder/sensor.rs:159–231`: Frame sensor arm dispatches on explicit `objtype_str` (site/body/xbody/geom/camera) with camera warning and fallback (DT-120). Invalid objtype produces error.
 - `builder/sensor.rs:255–271`: `resolve_frame_sensor_by_name()` helper implements site→body(XBody)→geom heuristic.
 
 **Gaps (if any):** Spec's S3.3 "After" code showed `ModelConversionError::NameNotFound` and `ModelConversionError::InvalidAttribute` variants, but actual implementation uses `ModelConversionError { message: format!(...) }`. This is a structural difference (single-field error vs multi-field enum), but functionally equivalent — the error message contains all needed information.
@@ -238,7 +238,7 @@ Cross-reference the spec's Edge Case Inventory. Were all edge cases tested?
 | Geom at offset position from body | FrameLinAcc includes spatial transport + Coriolis. | Yes | `t14_geom_framelinacc_centripetal` | ω=10, r=0.5, a_x ≈ -50. |
 | `objtype` omitted | Builder falls back to name heuristic, `body=` → XBody. | Yes | `t08_default_inference_body_is_xbody` | Direct assertion on `sensor_objtype`. |
 | `objtype` on non-frame sensor | `objtype` silently ignored for Touch, Accelerometer, etc. | Yes | `t17_objtype_ignored_for_touch` | Touch with `objtype="geom"` → Site. |
-| `objtype="camera"` (unsupported) | Warning emitted, falls back to heuristic. | No | — | Deferred: DT-117. Camera variant not implemented. |
+| `objtype="camera"` (unsupported) | Warning emitted, falls back to heuristic. | No | — | Deferred: DT-120. Camera variant not implemented. |
 
 ### Supplementary Tests
 
@@ -249,7 +249,7 @@ Cross-reference the spec's Edge Case Inventory. Were all edge cases tested?
 
 **Missing tests:**
 - T15 is implicit (no dedicated test function), but regression coverage is complete via the full test suite. Acceptable.
-- `objtype="camera"` warning test not implemented (DT-117 scope).
+- `objtype="camera"` warning test not implemented (DT-120 scope).
 - World body edge case has no explicit test, but is covered by existing accumulator tests.
 
 ---
@@ -377,7 +377,7 @@ If it's not tracked anywhere, it's a review finding — add tracking now.
 
 | Item | Spec Reference | Tracked In | Tracking ID | Verified? |
 |------|---------------|------------|-------------|-----------|
-| `MjObjectType::Camera` — no `cam_xpos`/`cam_xmat`/`cam_quat` in Data yet | Out of Scope, bullet 1 | SPEC_A.md (DECISION 2), builder warning message | DT-117 | Partially — tracked in spec and builder code comment, but NOT in `future_work_*.md` or `ROADMAP_V1.md` (DT-117 in roadmap is a different item: unwrap elimination). **Finding: needs tracking.** |
+| `MjObjectType::Camera` — no `cam_xpos`/`cam_xmat`/`cam_quat` in Data yet | Out of Scope, bullet 1 | SPEC_A.md (DECISION 2), builder warning message | DT-120 | Partially — tracked in spec and builder code comment, but NOT in `future_work_*.md` or `ROADMAP_V1.md` (DT-120 in roadmap is a different item: unwrap elimination). **Finding: needs tracking.** |
 | `mj_contactForce()` equivalent — touch reads `efc_force` directly, 33% error for pyramidal | Out of Scope, bullet 2 | SPEC_A.md (DECISION 3), `acceleration.rs` comments | DT-118 | Partially — tracked in spec and code comments, but NOT in `future_work_*.md` or `ROADMAP_V1.md`. **Finding: needs tracking.** |
 | Ray-geom intersection filter for touch — sums all contacts on body without spatial filtering | Out of Scope, bullet 3 | SPEC_A.md (DECISION 4) | DT-119 | Partially — tracked in spec only, NOT in `future_work_*.md` or `ROADMAP_V1.md`. **Finding: needs tracking.** |
 | Frame sensor `reftype`/`refid` — relative-frame measurements (Spec B scope) | Out of Scope, bullet 4 | Phase 6 umbrella spec, Session 6–10 | DT-63 | Yes — tracked in umbrella spec and session plan. |
@@ -432,17 +432,17 @@ Total:                 1,827 passed, 0 failed, 1 ignored
 | Blast radius accuracy | 5 | Pass — all predictions matched, test file location deviated (better organization) |
 | Convention fidelity | 6 | Pass — all 12 conventions followed or correctly deferred |
 | Weak items | 7 | Pass — 2 low-severity items (test tolerances), no conformance risk |
-| Deferred work tracking | 8 | Pass — DT-117/118/119 added to `future_work_15.md` during review |
+| Deferred work tracking | 8 | Pass — DT-120/118/119 added to `future_work_15.md` during review |
 | Test health | 9 | Pass — 1,825 tests, 0 failures, clippy clean, fmt clean |
 
 **Overall:** Ship
 
 **Items fixed during review:**
-1. DT-117/118/119 tracking added to `future_work_15.md`.
+1. DT-120/118/119 tracking added to `future_work_15.md`.
 2. Geom-attached FrameLinVel/FrameAngVel — added missing Geom arms to `velocity.rs` + T19/T20 tests.
 
 **Items tracked for future work:**
-1. DT-117 — `MjObjectType::Camera`
+1. DT-120 — `MjObjectType::Camera`
 2. DT-118 — `mj_contactForce()` equivalent
 3. DT-119 — Ray-geom intersection filter for touch
 4. DT-63 — Frame sensor `reftype`/`refid` (Spec B)

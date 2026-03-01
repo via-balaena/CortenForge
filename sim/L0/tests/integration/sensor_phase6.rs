@@ -1223,9 +1223,9 @@ fn t26_framelinvel_with_coriolis() {
 
     let adr = model.sensor_adr[0];
     // v_rel = [0, -1, 0]
-    assert_relative_eq!(data.sensordata[adr], 0.0, epsilon = 1e-3);
-    assert_relative_eq!(data.sensordata[adr + 1], -1.0, epsilon = 1e-3);
-    assert_relative_eq!(data.sensordata[adr + 2], 0.0, epsilon = 1e-3);
+    assert_relative_eq!(data.sensordata[adr], 0.0, epsilon = 1e-6);
+    assert_relative_eq!(data.sensordata[adr + 1], -1.0, epsilon = 1e-6);
+    assert_relative_eq!(data.sensordata[adr + 2], 0.0, epsilon = 1e-6);
 }
 
 // ============================================================================

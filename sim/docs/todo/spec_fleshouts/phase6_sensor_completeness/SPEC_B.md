@@ -205,7 +205,7 @@ at `builder/sensor.rs:47–48` currently hardcodes `MjObjectType::None` and `0`.
 | Field | MuJoCo Convention | CortenForge Convention | Porting Rule |
 |-------|-------------------|------------------------|-------------|
 | `sensor_refid` disabled marker | `int`, `-1` = no ref | `Vec<usize>`, guard via `sensor_reftype == MjObjectType::None` | Use `sensor_reftype[i] == MjObjectType::None` instead of `refid == -1` |
-| `mjtObj` enum values | `1,2,5,6,7` for body/xbody/geom/site/camera | `MjObjectType` variants Body/XBody/Geom/Site; Camera not yet implemented (DT-117) | Map string → `MjObjectType` variant; camera → warn + skip (deferred) |
+| `mjtObj` enum values | `1,2,5,6,7` for body/xbody/geom/site/camera | `MjObjectType` variants Body/XBody/Geom/Site; Camera not yet implemented (DT-120) | Map string → `MjObjectType` variant; camera → warn + skip (deferred) |
 | `mju_mulMatTVec3(dst, mat, vec)` | Row-major `mat^T * vec` | nalgebra column-major `mat.transpose() * vec` | Direct port — same mathematical result |
 | `mju_negQuat(dst, q)` | Quaternion **conjugate**: `[w, -x, -y, -z]` (negates imaginary only) | `UnitQuaternion::inverse()` returns conjugate for unit quaternions | Use `q_ref.inverse()` — matches `mju_negQuat` semantics |
 | `cvel` spatial velocity layout | `[angular(3); linear(3)]` | `data.cvel[body_id]` — `[0..3]` angular, `[3..6]` linear | `Vector3::new(cvel[0], cvel[1], cvel[2])` for angular |
@@ -302,9 +302,9 @@ fn resolve_reference_object(
             Ok((MjObjectType::Geom, id))
         }
         Some("camera") => {
-            // DT-117: Camera not yet implemented. Warn and ignore.
+            // DT-120: Camera not yet implemented. Warn and ignore.
             warn!(
-                "reftype='camera' not yet supported (DT-117); \
+                "reftype='camera' not yet supported (DT-120); \
                  ignoring reftype/refname for sensor"
             );
             Ok((MjObjectType::None, 0))
@@ -841,13 +841,13 @@ Body B (object) at `[1,0,0]` with site, both at zero linear velocity.
 Sensor `<framelinvel site="sB" reftype="xbody" refname="A"/>`.
 After forward: Coriolis `w_ref × r = [0,0,1] × [1,0,0] = [0,1,0]`.
 `v_rel = 0 - 0 - [0,1,0] = [0,-1,0]`. In ref frame (identity rot): `[0,-1,0]`.
-Assert: `sensordata[1] ≈ -1.0 ± 1e-3`.
+Assert: `sensordata[1] ≈ -1.0 ± 1e-6`.
 Expected value: MuJoCo 3.5.0 C source verified (`mj_sensorVel`,
 `mjSENS_FRAMELINVEL` case with `mj_objectVelocity` and Coriolis correction).
 Derivation: `mj_objectVelocity()` with `flg_local=0` → world-frame velocities.
 `w_ref × (p_obj - p_ref) = [0,0,1] × [1,0,0] = [0,1,0]`.
 `v_rel = 0 - 0 - [0,1,0] = [0,-1,0]`. `R_ref^T * [0,-1,0] = I * [0,-1,0] = [0,-1,0]`.
-Tolerance: 1e-3 (accounts for floating-point in spatial transport).
+Tolerance: 1e-6 (analytically exact result, tight tolerance matches AC6).
 
 ### T7: FrameAngVel in reference frame → AC7
 Model: body A (reference) with hinge about Z, `qvel_A = 2.0`.
@@ -1018,7 +1018,7 @@ cargo test -p sim-core -p sim-mjcf -p sim-sensor -p sim-conformance-tests
 
 ## Out of Scope
 
-- **DT-117** (`Camera` variant in `MjObjectType`) — `reftype="camera"` logs a warning and falls through to `MjObjectType::None` (no transform). Tracked as DT-117. *Conformance impact: minor — camera reference frames are uncommon.*
+- **DT-120** (`Camera` variant in `MjObjectType`) — `reftype="camera"` logs a warning and falls through to `MjObjectType::None` (no transform). Tracked as DT-120. *Conformance impact: minor — camera reference frames are uncommon.*
 
 - **DT-118** (Geom-attached velocity dispatch for FrameLinVel/FrameAngVel — already handled in Spec A review). *Conformance impact: none — landed.*
 

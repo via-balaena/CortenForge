@@ -284,7 +284,7 @@ three joint limit types.
 
 ---
 
-### DT-117. `MjObjectType::Camera` — Frame Sensor Camera Support
+### DT-120. `MjObjectType::Camera` — Frame Sensor Camera Support
 **Status:** Not started | **Effort:** S | **Prerequisites:** Camera FK populating
 `cam_xpos`/`cam_xmat`/`cam_quat` in `Data`
 **Origin:** Phase 6 Spec A, DECISION 2

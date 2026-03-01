@@ -253,7 +253,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase6_sensor_completeness/SPEC_B_REVIEW.
 
 ## Session 10: Spec B review — execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — execute Spec B review.
@@ -548,7 +548,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 7 | Spec B spec | Done | `91ac547` |
 | 8 | Spec B implementation | Done | `fb8ec66` |
 | 9 | Spec B review — create document | Done | `9916dd4` |
-| 10 | Spec B review — execute | Pending | — |
+| 10 | Spec B review — execute | Done | *(pending commit)* |
 | 11 | Spec C rubric | Pending | — |
 | 12 | Spec C spec | Pending | — |
 | 13 | Spec C implementation | Pending | — |
