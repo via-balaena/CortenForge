@@ -141,7 +141,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 6: Spec B rubric (reftype/refid relative-frame)
 
-- [ ] Complete
+- [x] Complete
 
 **Prerequisite:** Session 3 (Spec A implementation) must be complete. Spec B
 depends on Spec A's objtype parsing and parser refactoring.
