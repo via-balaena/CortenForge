@@ -730,3 +730,103 @@ fn t18_body_framepos_zero_mass() {
     // body and xbody should be close for near-zero mass
     assert_relative_eq!((body_pos - xbody_pos).norm(), 0.0, epsilon = 0.01);
 }
+
+// ============================================================================
+// T19: Geom-attached FrameLinVel matches co-located site → review fix
+// ============================================================================
+
+#[test]
+fn t19_geom_framelinvel_matches_site() {
+    // A geom-attached FrameLinVel on the same body as a co-located site-attached
+    // FrameLinVel should produce the same velocity reading.
+    // Hinge joint with non-zero angular velocity → linear velocity at offset.
+    let mjcf = r#"
+        <mujoco model="t19">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom name="g1" type="sphere" size="0.05" pos="0.5 0 0" mass="1"/>
+                    <site name="s1" pos="0.5 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framelinvel name="flv_geom" objtype="geom" objname="g1"/>
+                <framelinvel name="flv_site" site="s1"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(model.sensor_objtype[0], MjObjectType::Geom);
+    assert_eq!(model.sensor_objtype[1], MjObjectType::Site);
+
+    let mut data = model.make_data();
+    data.qvel[0] = 5.0; // 5 rad/s around z
+    data.forward(&model).expect("forward");
+
+    let geom_adr = model.sensor_adr[0];
+    let site_adr = model.sensor_adr[1];
+
+    // Both should report the same linear velocity
+    for i in 0..3 {
+        assert_relative_eq!(
+            data.sensordata[geom_adr + i],
+            data.sensordata[site_adr + i],
+            epsilon = 1e-10,
+        );
+    }
+
+    // Sanity: v_y = ω × r = 5 × 0.5 = 2.5 (cross product of ẑ×x̂ = ŷ)
+    assert_relative_eq!(data.sensordata[geom_adr + 1], 2.5, epsilon = 1e-6);
+}
+
+// ============================================================================
+// T20: Geom-attached FrameAngVel matches co-located site → review fix
+// ============================================================================
+
+#[test]
+fn t20_geom_frameangvel_matches_site() {
+    // Angular velocity is reference-point-independent. A geom-attached
+    // FrameAngVel should produce the same angular velocity as a site on the
+    // same body.
+    let mjcf = r#"
+        <mujoco model="t20">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom name="g1" type="sphere" size="0.05" pos="0.5 0 0" mass="1"/>
+                    <site name="s1" pos="0.3 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <frameangvel name="fav_geom" objtype="geom" objname="g1"/>
+                <frameangvel name="fav_site" site="s1"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(model.sensor_objtype[0], MjObjectType::Geom);
+    assert_eq!(model.sensor_objtype[1], MjObjectType::Site);
+
+    let mut data = model.make_data();
+    data.qvel[0] = 7.0; // 7 rad/s around z
+    data.forward(&model).expect("forward");
+
+    let geom_adr = model.sensor_adr[0];
+    let site_adr = model.sensor_adr[1];
+
+    // Both should report the same angular velocity
+    for i in 0..3 {
+        assert_relative_eq!(
+            data.sensordata[geom_adr + i],
+            data.sensordata[site_adr + i],
+            epsilon = 1e-10,
+        );
+    }
+
+    // Sanity: ω_z = 7.0
+    assert_relative_eq!(data.sensordata[geom_adr + 2], 7.0, epsilon = 1e-10);
+}

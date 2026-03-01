@@ -138,6 +138,9 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
                     }
                     MjObjectType::XBody if objid < model.nbody => (objid, data.xpos[objid]),
                     MjObjectType::Body if objid < model.nbody => (objid, data.xipos[objid]),
+                    MjObjectType::Geom if objid < model.ngeom => {
+                        (model.geom_body[objid], data.geom_xpos[objid])
+                    }
                     _ => {
                         sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
                         continue;
@@ -163,6 +166,14 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
                             data.cvel[objid][0],
                             data.cvel[objid][1],
                             data.cvel[objid][2],
+                        )
+                    }
+                    MjObjectType::Geom if objid < model.ngeom => {
+                        let body_id = model.geom_body[objid];
+                        Vector3::new(
+                            data.cvel[body_id][0],
+                            data.cvel[body_id][1],
+                            data.cvel[body_id][2],
                         )
                     }
                     _ => Vector3::zeros(),
