@@ -306,3 +306,10 @@ pub mod sensor_phase6;
 
 /// Phase 6 Spec C tests: Clock, JointActuatorFrc, GeomDist, GeomNormal, GeomFromTo.
 pub mod sensor_phase6_spec_c;
+
+// ============================================================================
+// Phase 6: Sensor Completeness Tests (Spec D)
+// ============================================================================
+
+/// Phase 6 Spec D tests: sensor history attributes (nsample, interp, delay, interval).
+pub mod sensor_phase6_spec_d;

@@ -1,10 +1,10 @@
 //! Sensor processing.
 //!
-//! Converts MJCF `<sensor>` elements into the 13 pipeline sensor arrays.
+//! Converts MJCF `<sensor>` elements into the 17 pipeline sensor arrays.
 //! Handles object resolution (joint, tendon, actuator, site, body, geom)
 //! and sensor type/datatype mapping.
 
-use sim_core::{MjJointType, MjObjectType, MjSensorDataType, MjSensorType};
+use sim_core::{InterpolationType, MjJointType, MjObjectType, MjSensorDataType, MjSensorType};
 use tracing::warn;
 
 use super::{ModelBuilder, ModelConversionError};
@@ -13,7 +13,7 @@ use crate::types::{MjcfSensor, MjcfSensorType};
 impl ModelBuilder {
     /// Process sensor definitions from MJCF.
     ///
-    /// Converts `MjcfSensor` objects into the 13 pipeline sensor arrays.
+    /// Converts `MjcfSensor` objects into the 17 pipeline sensor arrays.
     /// Must be called AFTER all bodies, joints, tendons, and actuators are processed
     /// (requires name→id lookups for object resolution).
     pub(crate) fn process_sensors(
@@ -25,7 +25,7 @@ impl ModelBuilder {
         for mjcf_sensor in sensors {
             let mjcf_sensor = self.resolver.apply_to_sensor(mjcf_sensor);
             let Some(sensor_type) = convert_sensor_type(mjcf_sensor.sensor_type) else {
-                // Unsupported type (Jointlimitfrc, Tendonlimitfrc) — skip with log
+                // Unknown sensor type — skip with log
                 warn!(
                     "Skipping unsupported sensor type '{:?}' (sensor '{}')",
                     mjcf_sensor.sensor_type, mjcf_sensor.name,
@@ -80,6 +80,32 @@ impl ModelBuilder {
                 (ot, oi, rt, ri)
             };
 
+            // Parse interp keyword → InterpolationType (mirrors actuator.rs)
+            let interp = match &mjcf_sensor.interp {
+                Some(s) => s
+                    .parse::<InterpolationType>()
+                    .map_err(|e| ModelConversionError { message: e })?,
+                None => InterpolationType::Zoh,
+            };
+
+            // MuJoCo compiler validation: delay > 0 requires nsample > 0
+            let nsample = mjcf_sensor.nsample.unwrap_or(0);
+            let delay = mjcf_sensor.delay.unwrap_or(0.0);
+            if delay > 0.0 && nsample <= 0 {
+                return Err(ModelConversionError {
+                    message: "setting delay > 0 without a history buffer (nsample must be > 0)"
+                        .into(),
+                });
+            }
+
+            // MuJoCo compiler validation: negative interval rejected
+            let interval = mjcf_sensor.interval.unwrap_or(0.0);
+            if interval < 0.0 {
+                return Err(ModelConversionError {
+                    message: "negative interval in sensor".into(),
+                });
+            }
+
             self.sensor_type.push(sensor_type);
             self.sensor_datatype.push(datatype);
             self.sensor_objtype.push(objtype);
@@ -98,6 +124,10 @@ impl ModelBuilder {
                     .insert(mjcf_sensor.name.clone(), sensor_id);
                 Some(mjcf_sensor.name.clone())
             });
+            self.sensor_nsample.push(nsample);
+            self.sensor_interp.push(interp);
+            self.sensor_delay.push(delay);
+            self.sensor_interval.push((interval, 0.0));
 
             adr += dim;
         }
@@ -464,7 +494,7 @@ impl ModelBuilder {
 }
 
 /// Map `MjcfSensorType` to pipeline `MjSensorType`.
-/// Returns `None` for types not yet implemented in the pipeline.
+/// All standard sensor types are mapped; returns `Some(...)` for every variant.
 fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
     match mjcf {
         MjcfSensorType::Jointpos => Some(MjSensorType::JointPos),

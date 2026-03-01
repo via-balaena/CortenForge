@@ -515,6 +515,29 @@ pub struct Model {
     /// Optional sensor names.
     pub sensor_name: Vec<Option<String>>,
 
+    /// History sample count per sensor (length `nsensor`).
+    /// MuJoCo: `sensor_history[2*i + 0]`.  Default: 0 (no history).
+    /// Signed to match MuJoCo — accepts negative values (treated as no history).
+    pub sensor_nsample: Vec<i32>,
+
+    /// Interpolation type per sensor (length `nsensor`).
+    /// MuJoCo: `sensor_history[2*i + 1]` as int 0/1/2.  Default: Zoh.
+    pub sensor_interp: Vec<InterpolationType>,
+
+    /// Cumulative offset into `Data.history` per sensor (length `nsensor`).
+    /// MuJoCo: `sensor_historyadr`.  Equals -1 when `nsample <= 0`.
+    /// Offsets start after actuator history (sensors are allocated after actuators).
+    pub sensor_historyadr: Vec<i32>,
+
+    /// Time delay per sensor in seconds (length `nsensor`).
+    /// MuJoCo: `sensor_delay`.  Default: 0.0.  Present for all sensors.
+    pub sensor_delay: Vec<f64>,
+
+    /// Sampling interval per sensor: `(period, phase)` (length `nsensor`).
+    /// MuJoCo: `sensor_interval[2*i]` = period, `sensor_interval[2*i+1]` = phase.
+    /// Phase is always initialized to 0.0 by the compiler.
+    pub sensor_interval: Vec<(f64, f64)>,
+
     // ==================== Actuators (indexed by actuator_id) ====================
     /// Transmission type (Joint, Tendon, Site).
     pub actuator_trntype: Vec<ActuatorTransmission>,
@@ -603,9 +626,10 @@ pub struct Model {
     /// MuJoCo: `actuator_delay`.  Default: 0.0.  Present for all actuators.
     pub actuator_delay: Vec<f64>,
 
-    /// Total history buffer size (actuator contributions only).
-    /// MuJoCo: `nhistory` (includes sensors — ours is actuator-only until
-    /// sensor history is implemented).
+    /// Total history buffer size (actuator + sensor contributions).
+    /// MuJoCo: `nhistory`.
+    /// Layout: actuators first (offset 0 → actuator_total), then sensors
+    /// (actuator_total → nhistory). Formula per entity: nsample * (dim + 1) + 2.
     pub nhistory: usize,
 
     // ==================== Tendons (indexed by tendon_id) ====================

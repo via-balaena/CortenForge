@@ -240,6 +240,11 @@ impl ModelBuilder {
             sensor_noise: self.sensor_noise,
             sensor_cutoff: self.sensor_cutoff,
             sensor_name: self.sensor_name_list,
+            sensor_nsample: self.sensor_nsample,
+            sensor_interp: self.sensor_interp,
+            sensor_delay: self.sensor_delay,
+            sensor_interval: self.sensor_interval,
+            sensor_historyadr: vec![],
 
             actuator_trntype: self.actuator_trntype,
             actuator_dyntype: self.actuator_dyntype,
@@ -384,21 +389,42 @@ impl ModelBuilder {
         // calls mj_crba (which uses mj_factor_sparse).
         model.compute_qld_csr_metadata();
 
-        // Compute actuator_historyadr and nhistory (cumulative across all actuators).
+        // Compute actuator_historyadr and sensor_historyadr, then nhistory
+        // (cumulative across all actuators, then all sensors).
+        // Layout: actuators first (offset 0 → act_total), sensors after (act_total → nhistory).
         // Must run BEFORE compute_actuator_params() because that calls make_data()
         // which reads actuator_historyadr for history buffer pre-population.
         {
+            // Actuator historyadr (unchanged logic)
             let nu = model.actuator_nsample.len();
-            let mut historyadr = vec![-1i32; nu];
+            let mut act_historyadr = vec![-1i32; nu];
             let mut offset: i32 = 0;
-            for (adr, &ns) in historyadr.iter_mut().zip(model.actuator_nsample.iter()) {
+            for (adr, &ns) in act_historyadr.iter_mut().zip(model.actuator_nsample.iter()) {
                 if ns > 0 {
                     *adr = offset;
                     offset += 2 * ns + 2;
                 }
-                // ns <= 0: historyadr stays -1
             }
-            model.actuator_historyadr = historyadr;
+            model.actuator_historyadr = act_historyadr;
+
+            // Sensor historyadr (appends after actuators)
+            let nsens = model.sensor_nsample.len();
+            let mut sens_historyadr = vec![-1i32; nsens];
+            for (i, (adr, &ns)) in sens_historyadr
+                .iter_mut()
+                .zip(model.sensor_nsample.iter())
+                .enumerate()
+            {
+                if ns > 0 {
+                    *adr = offset;
+                    // nsample * (dim + 1) + 2 — generalized formula
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    let dim = model.sensor_dim[i] as i32;
+                    offset += ns * (dim + 1) + 2;
+                }
+            }
+            model.sensor_historyadr = sens_historyadr;
+
             #[allow(clippy::cast_sign_loss)]
             {
                 model.nhistory = offset as usize;

@@ -250,8 +250,9 @@ pub enum BiasType {
     User,
 }
 
-/// Interpolation method for actuator history buffer.
-/// MuJoCo: `actuator_history[2*i + 1]` stores 0 (ZOH), 1 (linear), 2 (cubic).
+/// Interpolation method for actuator and sensor history buffers.
+///
+/// MuJoCo: `actuator_history[2*i + 1]` / `sensor_history[2*i + 1]` stores 0 (ZOH), 1 (linear), 2 (cubic).
 /// MJCF keywords: `"zoh"`, `"linear"`, `"cubic"` (lowercase only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum InterpolationType {

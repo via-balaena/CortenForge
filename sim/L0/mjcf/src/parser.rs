@@ -3520,6 +3520,11 @@ fn parse_sensor_attrs(e: &BytesStart, sensor_type: MjcfSensorType) -> MjcfSensor
         }
     }
 
+    sensor.nsample = parse_int_attr(e, "nsample");
+    sensor.interp = get_attribute_opt(e, "interp");
+    sensor.delay = parse_float_attr(e, "delay");
+    sensor.interval = parse_float_attr(e, "interval");
+
     sensor
 }
 

@@ -3124,6 +3124,18 @@ pub struct MjcfSensor {
     pub body1: Option<String>,
     /// Second body name (for distance/normal/fromto sensors).
     pub body2: Option<String>,
+    /// Number of history samples. MuJoCo: `mjsSensor_::nsample`.
+    /// Default: None (builder treats as 0).
+    pub nsample: Option<i32>,
+    /// Interpolation keyword. MuJoCo: `mjsSensor_::interp`.
+    /// Valid: "zoh", "linear", "cubic" (case-sensitive lowercase only).
+    pub interp: Option<String>,
+    /// Time delay in seconds. MuJoCo: `mjsSensor_::delay`.
+    /// Default: None (builder treats as 0.0).
+    pub delay: Option<f64>,
+    /// Sampling interval (period) in seconds. MuJoCo: `mjsSensor_::interval`.
+    /// Default: None (builder treats as 0.0). Phase is always 0.0.
+    pub interval: Option<f64>,
 }
 
 impl Default for MjcfSensor {
@@ -3143,6 +3155,10 @@ impl Default for MjcfSensor {
             geom2: None,
             body1: None,
             body2: None,
+            nsample: None,
+            interp: None,
+            delay: None,
+            interval: None,
         }
     }
 }
@@ -3210,6 +3226,34 @@ impl MjcfSensor {
     #[must_use]
     pub fn with_user(mut self, user: Vec<f64>) -> Self {
         self.user = user;
+        self
+    }
+
+    /// Set history sample count.
+    #[must_use]
+    pub fn with_nsample(mut self, nsample: i32) -> Self {
+        self.nsample = Some(nsample);
+        self
+    }
+
+    /// Set interpolation type keyword ("zoh", "linear", "cubic").
+    #[must_use]
+    pub fn with_interp(mut self, interp: impl Into<String>) -> Self {
+        self.interp = Some(interp.into());
+        self
+    }
+
+    /// Set time delay in seconds.
+    #[must_use]
+    pub fn with_delay(mut self, delay: f64) -> Self {
+        self.delay = Some(delay);
+        self
+    }
+
+    /// Set sampling interval (period) in seconds.
+    #[must_use]
+    pub fn with_interval(mut self, interval: f64) -> Self {
+        self.interval = Some(interval);
         self
     }
 
