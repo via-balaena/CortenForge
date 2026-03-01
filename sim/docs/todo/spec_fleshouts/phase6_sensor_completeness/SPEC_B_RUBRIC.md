@@ -490,18 +490,20 @@ all valid inputs handled, all invalid inputs caught.
 
 | Criterion | Grade | Evidence |
 |-----------|-------|----------|
-| P1. MuJoCo Reference Fidelity | | |
-| P2. Algorithm Completeness | | |
-| P3. Convention Awareness | | |
-| P4. Acceptance Criteria Rigor | | |
-| P5. Test Plan Coverage | | |
-| P6. Dependency Clarity | | |
-| P7. Blast Radius & Risk | | |
-| P8. Internal Consistency | | |
-| P9. Reference Resolution Completeness | | |
-| P10. Transform Correctness | | |
+| P1. MuJoCo Reference Fidelity | A+ | All 6 functions cited with source file AND line range (header line 6). C code snippets for all 7 transforms (lines 51–110). All 6 edge cases (lines 155–181). Dispatch tables for `get_xpos_xmat` (5 types, lines 120–128) and `get_xquat` (5 types, lines 145–153). Numerical expectations per stage: AC3 (position), AC6 (velocity). |
+| P2. Algorithm Completeness | A+ | 5 algorithm sections: S1 builder (lines 215–338), S2 position helpers + transforms (lines 340–481), S3 velocity (lines 492–646). Each has guard, data source (EGT-4), formula, output. Reference dispatch via `sensor_reftype[i]`/`sensor_refid[i]` (separate helpers). FrameAngVel direct-cvel equivalence to `object_velocity()` explicitly justified (line 580–586). All fields verified with file:line (lines 130–143). |
+| P3. Convention Awareness | A+ | 7-row convention table (lines 198–206). mju_negQuat=conjugate=inverse() explicit (line 203). local_rot=None for BOTH objects with warning (line 206). cvel layout (line 204). |
+| P4. Acceptance Criteria Rigor | A+ | 17 ACs, three-part structure. AC3 "MuJoCo 3.5.0 produces X" (position). AC6 "MuJoCo 3.5.0 produces X" (velocity). AC1 reftype="site" per P4(g). AC4 reference site per P4(b). AC10 dim/adr invariance per P4(h). AC16 code-review. AC17 covers `get_ref_quat` Body arm. |
+| P5. Test Plan Coverage | A+ | AC→Test matrix (17 ACs → 19 tests). 14 edge cases. Test numbering: spec T1–T19 → file t21–t39. T11/T12 negative. T13 reftype-without-refname. T3/T6 conformance v3.5.0. T18 body-vs-xbody (FramePos). T19 body-vs-xbody (FrameQuat, `xquat*body_iquat` path). T17 sleep. Non-trivial model in T18/T19 (offset COM). |
+| P6. Dependency Clarity | A+ | S1→S2→S3→S4 with justification (lines 965–988). Spec A commit `28bc9f4` (line 9). Cross-spec interactions explicit: Spec C non-frame, Spec D orthogonal (lines 990–992). |
+| P7. Blast Radius & Risk | A+ | 5-file list with per-file description (lines 925–931). All 20 tests analyzed (lines 933–956). Regression guarantee (lines 958–959). Phase 5 baseline (line 956). Downstream L1 analysis (lines 973–976). |
+| P8. Internal Consistency | A+ | Terminology note (lines 24–28). Field names consistent. 7 frame sensor list consistent. 14 edge cases match. T4 correctly in reftype=site row (not body-vs-xbody). Test numbering: T1–T19 → t21–t39 (arithmetic verified). `MjObjectType::None` consistent. |
+| P9. Reference Resolution Completeness | A+ | All 5 reftype strings (lines 265–303). Inference heuristic (lines 311–327). Errors: unknown type/name. Non-frame policy: resolve ALL, justified (lines 220–224). Scope audit (lines 332–338). |
+| P10. Transform Correctness | A+ | FramePos: subtraction before rotation (line 427). FrameQuat: inverse left-multiply + normalization note (lines 451–454). FrameXAxis: col 0/1/2 (lines 469–475). FrameLinVel: Coriolis MINUS, `w × r` order (lines 561–567). FrameAngVel: NO Coriolis (line 636). All bounds guards present. |
 
-**Overall: —**
+**Overall: A+**
+
+**Audit history:** Initial scorecard (self-assessed) → adversarial re-audit (round 4) found 8 gaps (R29–R36) → all fixed (Rev 6) → adversarial re-audit (round 5) found 4 more gaps (R37–R40: test numbering off-by-one, stale edge case row, `get_ref_quat` Body arm untested, AC phrasing) → all fixed (Rev 7) → re-verified.
 
 ---
 
@@ -537,3 +539,15 @@ all valid inputs handled, all invalid inputs caught.
 | R26 | P5 | `reftype` without `refname` was listed as producing `ModelConversionError`. But MuJoCo likely silently ignores `reftype` when `refname` is absent (`sensor_refid = -1`, no resolution attempted). Returning an error on valid-in-MuJoCo input would be a conformance divergence. | "A+ but still broken" stress test (round 2) | Updated P5 negative cases: spec must verify MuJoCo's behavior and match it (likely ignore, not error) | Rev 4 |
 | R27 | EGT | V3 (FrameLinVel Coriolis) derivation was incomplete — ended with "depends on reference orientation" without computing a final value. V1 and V2 compute to concrete numbers. An AC writer using V3 couldn't produce a testable expected value. | "A+ but still broken" stress test (round 2) | V3 now specifies identity reference orientation → final value `[0, -1, 0]` with physical interpretation | Rev 4 |
 | R28 | EGT | EGT-4 CortenForge mapping table had wrong file:line reference (`model.rs:504` — actually `sensor_reftype`) for `xipos`, and was missing entries for `xquat` (`data.rs:97`) and `body_iquat` (`model.rs:135`). Without these, a spec writer implementing `get_xquat()` for the reference object would have to search for the fields. All 6 remaining entries also lacked specific line numbers. | "A+ but still broken" stress test (round 3) | Fixed `xipos`→`data.rs:101`, `ximat`→`data.rs:103`, added `xquat`→`data.rs:97` and `body_iquat`→`model.rs:135`, added exact line numbers for all 8 remaining fields | Rev 5 |
+| R29 | P1 | No MuJoCo C source line ranges — rubric says "source file and line range" but spec only cited function names. | Adversarial re-audit (round 4) | Added approximate line ranges for all 6 MuJoCo functions in header line 6 | Rev 6 |
+| R30 | P2 | FrameAngVel algorithm uses direct `cvel` access instead of `object_velocity()`, inconsistent with MuJoCo Reference section which shows `mj_objectVelocity()`. Numerically equivalent but unexplained deviation. | Adversarial re-audit (round 4) | Added explicit justification note before FrameAngVel code: angular velocity is spatial-transport-independent, direct `cvel` access is equivalent | Rev 6 |
+| R31 | P4 | AC4 used `reftype="xbody"` but rubric P4(b) says "FrameQuat relative to a rotated reference **site**". Using xbody skips the `mat2Quat(site_xmat)` code path in `get_ref_quat()`. | Adversarial re-audit (round 4) | Changed AC4 and T4 to use `reftype="site"` with reference site, exercises `mat2Quat` path | Rev 6 |
+| R32 | P5 | Test numbering ambiguity: spec's own T1–T18 clash with rubric's reference to "Spec A tests T1–T18". File-level names are t21–t37 but this was unclear. | Adversarial re-audit (round 4) | Added test numbering clarification note: "T1–T18 below are Spec B local labels → file functions t21–t37" | Rev 6 |
+| R33 | P6 | Missing cross-spec interaction analysis for Spec C and Spec D. Rubric requires explicit statements about interactions. | Adversarial re-audit (round 4) | Added cross-spec interactions section in Execution Order: Spec C non-frame (irrelevant), Spec D orthogonal | Rev 6 |
+| R34 | P7 | No explicit downstream consumer analysis (L1/sim-bevy). Rubric requires identifying all consumers of modified arrays. | Adversarial re-audit (round 4) | Added "Downstream consumers" paragraph: L1 crate reads `sensordata`, not `sensor_reftype`/`sensor_refid` | Rev 6 |
+| R35 | P8 | Title says "Relative-Frame" while body consistently says "reference-frame". Minor terminology inconsistency. | Adversarial re-audit (round 4) | Added terminology note in Problem Statement: "relative-frame measurement" = outcome, "reference-frame transform" = operation | Rev 6 |
+| R36 | P10 | FrameQuat normalization noted in MuJoCo Reference (line 68) but not addressed in algorithm section. Missing explanation of why CortenForge doesn't need explicit normalization. | Adversarial re-audit (round 4) | Added comment in FrameQuat algorithm: "nalgebra UnitQuaternion maintains unit norm by construction, no explicit normalization needed" | Rev 6 |
+| R37 | P8 | Off-by-one: spec says T1–T18 map to t21–t37 (17 slots for 18 tests). Arithmetic error: 21+18-1=38, not 37. | Adversarial re-audit (round 5) | Fixed to T21–T39 (accounting for T19 addition). Updated Files Affected table. | Rev 7 |
+| R38 | P8 | Edge case table row "body vs xbody" listed T4 as coverage, but T4 was changed to reftype=site in R31. Stale cross-reference survived the R31 fix. | Adversarial re-audit (round 5) | Removed T4/AC4 from body-vs-xbody row; added T4 to reftype=site row instead | Rev 7 |
+| R39 | P5 | `get_ref_quat()` Body arm (`xquat * body_iquat`) had zero test coverage. Non-commutative quaternion multiply with no test to catch operand order error. | Adversarial re-audit (round 5) | Added AC17 (FrameQuat body arm) and T19 (body vs xbody via `get_ref_quat`). Updated traceability matrix and edge case table. | Rev 7 |
+| R40 | P4 | AC3/AC6 said "derived from MuJoCo 3.5.0 C source" but P4 A+ bar requires "MuJoCo 3.5.0 produces X; we assert X ± tolerance" phrasing. | Adversarial re-audit (round 5) | Updated AC3 and AC6 to use exact required phrasing: "MuJoCo 3.5.0 produces X; we assert X ± tolerance" | Rev 7 |
