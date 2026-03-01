@@ -177,7 +177,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 7: Spec B spec (reftype/refid relative-frame)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — write Spec B spec.
@@ -204,7 +204,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 8: Spec B implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — implement Spec B.
@@ -545,7 +545,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 4 | Spec A review — create document | Done | f095ff0 |
 | 5 | Spec A review — execute | Done | fce896d |
 | 6 | Spec B rubric | Done | `948c898` |
-| 7 | Spec B spec | Pending | — |
+| 7 | Spec B spec | Done | `91ac547` |
 | 8 | Spec B implementation | Pending | — |
 | 9 | Spec B review — create document | Pending | — |
 | 10 | Spec B review — execute | Pending | — |

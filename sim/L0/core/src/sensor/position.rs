@@ -19,6 +19,44 @@ use std::sync::Arc;
 use super::postprocess::{sensor_write, sensor_write3, sensor_write4};
 use super::sensor_body_id;
 
+/// Resolve position and rotation matrix for a reference object.
+/// Mirrors MuJoCo's `get_xpos_xmat()` dispatch.
+fn get_ref_pos_mat(
+    model: &Model,
+    data: &Data,
+    reftype: MjObjectType,
+    refid: usize,
+) -> (Vector3<f64>, Matrix3<f64>) {
+    match reftype {
+        MjObjectType::Site if refid < model.nsite => (data.site_xpos[refid], data.site_xmat[refid]),
+        MjObjectType::XBody if refid < model.nbody => (data.xpos[refid], data.xmat[refid]),
+        MjObjectType::Body if refid < model.nbody => (data.xipos[refid], data.ximat[refid]),
+        MjObjectType::Geom if refid < model.ngeom => (data.geom_xpos[refid], data.geom_xmat[refid]),
+        _ => (Vector3::zeros(), Matrix3::identity()),
+    }
+}
+
+/// Resolve quaternion for a reference object.
+/// Mirrors MuJoCo's `get_xquat()` dispatch.
+fn get_ref_quat(
+    model: &Model,
+    data: &Data,
+    reftype: MjObjectType,
+    refid: usize,
+) -> UnitQuaternion<f64> {
+    match reftype {
+        MjObjectType::XBody if refid < model.nbody => data.xquat[refid],
+        MjObjectType::Body if refid < model.nbody => data.xquat[refid] * model.body_iquat[refid],
+        MjObjectType::Site if refid < model.nsite => UnitQuaternion::from_rotation_matrix(
+            &nalgebra::Rotation3::from_matrix_unchecked(data.site_xmat[refid]),
+        ),
+        MjObjectType::Geom if refid < model.ngeom => UnitQuaternion::from_rotation_matrix(
+            &nalgebra::Rotation3::from_matrix_unchecked(data.geom_xmat[refid]),
+        ),
+        _ => UnitQuaternion::identity(),
+    }
+}
+
 /// Compute position-dependent sensor values.
 ///
 /// This is called after `mj_fwd_position` and computes sensors that depend only
@@ -104,7 +142,7 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::FramePos => {
-                // Position of site/body/geom in world frame
+                // Position of site/body/geom
                 let pos = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => data.site_xpos[objid],
                     MjObjectType::XBody if objid < model.nbody => data.xpos[objid],
@@ -112,7 +150,19 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     MjObjectType::Geom if objid < model.ngeom => data.geom_xpos[objid],
                     _ => Vector3::zeros(),
                 };
-                sensor_write3(&mut data.sensordata, adr, &pos);
+                // Reference-frame transform: p_relative = R_ref^T * (p_obj - p_ref)
+                if model.sensor_reftype[sensor_id] == MjObjectType::None {
+                    sensor_write3(&mut data.sensordata, adr, &pos);
+                } else {
+                    let (ref_pos, ref_mat) = get_ref_pos_mat(
+                        model,
+                        data,
+                        model.sensor_reftype[sensor_id],
+                        model.sensor_refid[sensor_id],
+                    );
+                    let relative = ref_mat.transpose() * (pos - ref_pos);
+                    sensor_write3(&mut data.sensordata, adr, &relative);
+                }
             }
 
             MjSensorType::FrameQuat => {
@@ -138,11 +188,30 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     }
                     _ => UnitQuaternion::identity(),
                 };
-                sensor_write4(&mut data.sensordata, adr, quat.w, quat.i, quat.j, quat.k);
+                // Reference-frame transform: q_relative = q_ref^{-1} * q_obj
+                if model.sensor_reftype[sensor_id] == MjObjectType::None {
+                    sensor_write4(&mut data.sensordata, adr, quat.w, quat.i, quat.j, quat.k);
+                } else {
+                    let ref_quat = get_ref_quat(
+                        model,
+                        data,
+                        model.sensor_reftype[sensor_id],
+                        model.sensor_refid[sensor_id],
+                    );
+                    let relative = ref_quat.inverse() * quat;
+                    sensor_write4(
+                        &mut data.sensordata,
+                        adr,
+                        relative.w,
+                        relative.i,
+                        relative.j,
+                        relative.k,
+                    );
+                }
             }
 
             MjSensorType::FrameXAxis | MjSensorType::FrameYAxis | MjSensorType::FrameZAxis => {
-                // Frame axis in world coordinates
+                // Frame axis
                 let mat = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
                     MjObjectType::XBody if objid < model.nbody => data.xmat[objid],
@@ -159,7 +228,19 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     _ => 0, // Unreachable but needed for exhaustiveness
                 };
                 let col = Vector3::new(mat[(0, col_idx)], mat[(1, col_idx)], mat[(2, col_idx)]);
-                sensor_write3(&mut data.sensordata, adr, &col);
+                // Reference-frame transform: axis_in_ref = R_ref^T * axis_world
+                if model.sensor_reftype[sensor_id] == MjObjectType::None {
+                    sensor_write3(&mut data.sensordata, adr, &col);
+                } else {
+                    let (_ref_pos, ref_mat) = get_ref_pos_mat(
+                        model,
+                        data,
+                        model.sensor_reftype[sensor_id],
+                        model.sensor_refid[sensor_id],
+                    );
+                    let relative = ref_mat.transpose() * col;
+                    sensor_write3(&mut data.sensordata, adr, &relative);
+                }
             }
 
             MjSensorType::SubtreeCom => {

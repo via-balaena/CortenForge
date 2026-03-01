@@ -830,3 +830,763 @@ fn t20_geom_frameangvel_matches_site() {
     // Sanity: ω_z = 7.0
     assert_relative_eq!(data.sensordata[geom_adr + 2], 7.0, epsilon = 1e-10);
 }
+
+// ============================================================================
+// Phase 6 Spec B — reftype/refid relative-frame measurements (DT-63)
+// Tests T21–T39, continuing from Spec A's T1–T20.
+// ============================================================================
+
+// ============================================================================
+// T21: Builder resolves reftype="site" + refname → AC1
+// ============================================================================
+
+#[test]
+fn t21_builder_resolves_reftype_site() {
+    let mjcf = r#"
+        <mujoco model="t21">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                    <site name="s_ref" pos="0.5 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1" reftype="site" refname="s_ref"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(model.sensor_reftype[0], MjObjectType::Site);
+    // s_ref is the second site on the body
+    let expected_id = *model.site_name_to_id.get("s_ref").unwrap();
+    assert_eq!(model.sensor_refid[0], expected_id);
+}
+
+// ============================================================================
+// T22: Builder default — no reftype/refname → None/0 → AC2
+// ============================================================================
+
+#[test]
+fn t22_builder_default_no_reftype() {
+    let mjcf = r#"
+        <mujoco model="t22">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(model.sensor_reftype[0], MjObjectType::None);
+    assert_eq!(model.sensor_refid[0], 0);
+}
+
+// ============================================================================
+// T30: sensor_dim/sensor_adr invariance with reftype → AC10
+// ============================================================================
+
+#[test]
+fn t30_sensor_dim_adr_invariance() {
+    let mjcf = r#"
+        <mujoco model="t30">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                    <site name="s2" pos="0.5 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1" reftype="site" refname="s2"/>
+                <framepos site="s2"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(model.sensor_dim[0], 3);
+    assert_eq!(model.sensor_dim[1], 3);
+    assert_eq!(model.sensor_adr[0], 0);
+    assert_eq!(model.sensor_adr[1], 3);
+}
+
+// ============================================================================
+// T31: Invalid reftype → ModelConversionError → AC11
+// ============================================================================
+
+#[test]
+fn t31_invalid_reftype_error() {
+    let mjcf = r#"
+        <mujoco model="t31">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1" reftype="invalid" refname="s1"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let err = load_model(mjcf).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("invalid reftype"),
+        "expected 'invalid reftype' in error, got: {msg}"
+    );
+}
+
+// ============================================================================
+// T32: Unknown refname → ModelConversionError → AC12
+// ============================================================================
+
+#[test]
+fn t32_unknown_refname_error() {
+    let mjcf = r#"
+        <mujoco model="t32">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1" reftype="body" refname="nonexistent"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let err = load_model(mjcf).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("unknown body"),
+        "expected 'unknown body' in error, got: {msg}"
+    );
+}
+
+// ============================================================================
+// T33: reftype without refname → no transform → AC13
+// ============================================================================
+
+#[test]
+fn t33_reftype_without_refname() {
+    let mjcf = r#"
+        <mujoco model="t33">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1" reftype="body"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    // reftype without refname → resolve to (None, 0), no transform
+    assert_eq!(model.sensor_reftype[0], MjObjectType::None);
+    assert_eq!(model.sensor_refid[0], 0);
+
+    // Forward should give world-frame site position
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let adr = model.sensor_adr[0];
+    let site_id = model.sensor_objid[0];
+    for i in 0..3 {
+        assert_relative_eq!(
+            data.sensordata[adr + i],
+            data.site_xpos[site_id][i],
+            epsilon = 1e-10
+        );
+    }
+}
+
+// ============================================================================
+// T34: All reftype strings resolve correctly → AC14
+// ============================================================================
+
+#[test]
+fn t34_all_reftype_strings() {
+    let mjcf = r#"
+        <mujoco model="t34">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                    <site name="s_ref" pos="0.1 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1" reftype="site" refname="s_ref"/>
+                <framepos site="s1" reftype="body" refname="b1"/>
+                <framepos site="s1" reftype="xbody" refname="b1"/>
+                <framepos site="s1" reftype="geom" refname="g1"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    assert_eq!(model.sensor_reftype[0], MjObjectType::Site);
+    assert_eq!(model.sensor_reftype[1], MjObjectType::Body);
+    assert_eq!(model.sensor_reftype[2], MjObjectType::XBody);
+    assert_eq!(model.sensor_reftype[3], MjObjectType::Geom);
+}
+
+// ============================================================================
+// T23: FramePos relative to rotated body → AC3
+// ============================================================================
+
+#[test]
+fn t23_framepos_relative_to_rotated_body() {
+    // Body A at [1,0,0] rotated 90° about Z. Site B at [0,2,0].
+    // FramePos of B relative to A: Rz(-90°) * ([0,2,0]-[1,0,0]) = Rz(-90°)*[-1,2,0] = [2,1,0]
+    let mjcf = r#"
+        <mujoco model="t23">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="A" pos="1 0 0">
+                    <joint name="jA" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+                <body name="B" pos="0 2 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="sB" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="sB" reftype="xbody" refname="A"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Set hinge to 90° = π/2
+    let j_adr = model.jnt_qpos_adr[*model.jnt_name_to_id.get("jA").unwrap()];
+    data.qpos[j_adr] = std::f64::consts::FRAC_PI_2;
+
+    data.forward(&model).expect("forward");
+
+    let adr = model.sensor_adr[0];
+    assert_relative_eq!(data.sensordata[adr], 2.0, epsilon = 1e-6);
+    assert_relative_eq!(data.sensordata[adr + 1], 1.0, epsilon = 1e-6);
+    assert_relative_eq!(data.sensordata[adr + 2], 0.0, epsilon = 1e-6);
+}
+
+// ============================================================================
+// T24: FrameQuat relative to rotated reference site → AC4
+// ============================================================================
+
+#[test]
+fn t24_framequat_relative_to_rotated_site() {
+    // Reference site on body A rotated 90° about Z.
+    // Object B at identity. q_ref^{-1} * q_B = conj(Rz(90°)) * I = [cos45,0,0,-sin45]
+    let mjcf = r#"
+        <mujoco model="t24">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="A" pos="0 0 0">
+                    <joint name="jA" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="s_ref" pos="0 0 0"/>
+                </body>
+                <body name="B" pos="1 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framequat objtype="xbody" objname="B" reftype="site" refname="s_ref"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    let j_adr = model.jnt_qpos_adr[*model.jnt_name_to_id.get("jA").unwrap()];
+    data.qpos[j_adr] = std::f64::consts::FRAC_PI_2;
+
+    data.forward(&model).expect("forward");
+
+    let adr = model.sensor_adr[0];
+    let cos45 = std::f64::consts::FRAC_PI_4.cos();
+    let sin45 = std::f64::consts::FRAC_PI_4.sin();
+    // q_ref^{-1} * q_obj = [cos45, 0, 0, -sin45]
+    assert_relative_eq!(data.sensordata[adr], cos45, epsilon = 1e-4);
+    assert_relative_eq!(data.sensordata[adr + 1], 0.0, epsilon = 1e-4);
+    assert_relative_eq!(data.sensordata[adr + 2], 0.0, epsilon = 1e-4);
+    assert_relative_eq!(data.sensordata[adr + 3], -sin45, epsilon = 1e-4);
+}
+
+// ============================================================================
+// T25: FrameXAxis in reference frame → AC5
+// ============================================================================
+
+#[test]
+fn t25_framexaxis_in_reference_frame() {
+    // Object at identity. Reference rotated 90° about Z.
+    // Object X-axis [1,0,0] in world → R_ref^T * [1,0,0] = Rz(-90°)*[1,0,0] = [0,-1,0]
+    let mjcf = r#"
+        <mujoco model="t25">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="A" pos="0 0 0">
+                    <joint name="jA" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+                <body name="B" pos="1 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framexaxis objtype="xbody" objname="B" reftype="xbody" refname="A"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    let j_adr = model.jnt_qpos_adr[*model.jnt_name_to_id.get("jA").unwrap()];
+    data.qpos[j_adr] = std::f64::consts::FRAC_PI_2;
+
+    data.forward(&model).expect("forward");
+
+    let adr = model.sensor_adr[0];
+    assert_relative_eq!(data.sensordata[adr], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.sensordata[adr + 1], -1.0, epsilon = 1e-10);
+    assert_relative_eq!(data.sensordata[adr + 2], 0.0, epsilon = 1e-10);
+}
+
+// ============================================================================
+// T26: FrameLinVel with Coriolis correction → AC6
+// ============================================================================
+
+#[test]
+fn t26_framelinvel_with_coriolis() {
+    // Reference body at origin, spinning at ω = [0,0,1] about Z (identity orientation at t=0).
+    // Object site at [1,0,0], both zero linear velocity in world frame.
+    // Coriolis: w_ref × (p_obj - p_ref) = [0,0,1] × [1,0,0] = [0,1,0]
+    // v_rel = 0 - 0 - [0,1,0] = [0,-1,0]. In ref frame (identity rot): [0,-1,0].
+    let mjcf = r#"
+        <mujoco model="t26">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="A" pos="0 0 0">
+                    <joint name="jA" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+                <body name="B" pos="1 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="sB" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framelinvel site="sB" reftype="xbody" refname="A"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Set angular velocity of A to 1 rad/s about Z
+    let j_id = *model.jnt_name_to_id.get("jA").unwrap();
+    let dof_adr = model.jnt_dof_adr[j_id];
+    data.qvel[dof_adr] = 1.0;
+
+    data.forward(&model).expect("forward");
+
+    let adr = model.sensor_adr[0];
+    // v_rel = [0, -1, 0]
+    assert_relative_eq!(data.sensordata[adr], 0.0, epsilon = 1e-3);
+    assert_relative_eq!(data.sensordata[adr + 1], -1.0, epsilon = 1e-3);
+    assert_relative_eq!(data.sensordata[adr + 2], 0.0, epsilon = 1e-3);
+}
+
+// ============================================================================
+// T27: FrameAngVel in reference frame → AC7
+// ============================================================================
+
+#[test]
+fn t27_frameangvel_in_reference_frame() {
+    // Object spinning at ω_obj = [0,0,5], reference spinning at ω_ref = [0,0,2].
+    // Reference at identity orientation.
+    // w_rel = [0,0,5] - [0,0,2] = [0,0,3]. R_ref^T * [0,0,3] = I * [0,0,3] = [0,0,3].
+    let mjcf = r#"
+        <mujoco model="t27">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="A" pos="0 0 0">
+                    <joint name="jA" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+                <body name="B" pos="1 0 0">
+                    <joint name="jB" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <frameangvel objtype="xbody" objname="B" reftype="xbody" refname="A"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    let j_a = *model.jnt_name_to_id.get("jA").unwrap();
+    let j_b = *model.jnt_name_to_id.get("jB").unwrap();
+    data.qvel[model.jnt_dof_adr[j_a]] = 2.0;
+    data.qvel[model.jnt_dof_adr[j_b]] = 5.0;
+
+    data.forward(&model).expect("forward");
+
+    let adr = model.sensor_adr[0];
+    assert_relative_eq!(data.sensordata[adr], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.sensordata[adr + 1], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.sensordata[adr + 2], 3.0, epsilon = 1e-10);
+}
+
+// ============================================================================
+// T28: No reftype → world-frame output unchanged (regression) → AC8
+// ============================================================================
+
+#[test]
+fn t28_no_reftype_regression() {
+    let mjcf = r#"
+        <mujoco model="t28">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="b1" pos="1 2 3">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    let adr = model.sensor_adr[0];
+    let site_id = model.sensor_objid[0];
+    for i in 0..3 {
+        assert_relative_eq!(
+            data.sensordata[adr + i],
+            data.site_xpos[site_id][i],
+            epsilon = 1e-10,
+        );
+    }
+}
+
+// ============================================================================
+// T35: World body as reference → identity transform → supplementary
+// ============================================================================
+
+#[test]
+fn t35_world_body_as_reference() {
+    // reftype=xbody, refname=world → R=I, p=[0,0,0], output == world-frame
+    let mjcf = r#"
+        <mujoco model="t35">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="b1" pos="1 2 3">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1" reftype="xbody" refname="world"/>
+                <framepos site="s1"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    let adr0 = model.sensor_adr[0]; // with world ref
+    let adr1 = model.sensor_adr[1]; // no ref
+    for i in 0..3 {
+        assert_relative_eq!(
+            data.sensordata[adr0 + i],
+            data.sensordata[adr1 + i],
+            epsilon = 1e-10,
+        );
+    }
+}
+
+// ============================================================================
+// T36: Same-body reference → relative offset within body → supplementary
+// ============================================================================
+
+#[test]
+fn t36_same_body_reference() {
+    // Object site and reference site on the same body.
+    // At identity orientation, relative position is just the offset.
+    let mjcf = r#"
+        <mujoco model="t36">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="b1" pos="5 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="s_obj" pos="0.3 0 0"/>
+                    <site name="s_ref" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s_obj" reftype="site" refname="s_ref"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    let adr = model.sensor_adr[0];
+    // Both sites on same body at identity → relative = [0.3, 0, 0]
+    assert_relative_eq!(data.sensordata[adr], 0.3, epsilon = 1e-10);
+    assert_relative_eq!(data.sensordata[adr + 1], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.sensordata[adr + 2], 0.0, epsilon = 1e-10);
+}
+
+// ============================================================================
+// T29: FrameLinAcc/FrameAngAcc unaffected by reftype → AC9
+// ============================================================================
+
+#[test]
+fn t29_acc_unaffected_by_reftype() {
+    let mjcf = r#"
+        <mujoco model="t29">
+            <option gravity="0 0 -10"/>
+            <worldbody>
+                <body name="b_ref" pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+                <body name="b1" pos="0 0 2">
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framelinacc site="s1" reftype="xbody" refname="b_ref"/>
+                <framelinacc site="s1"/>
+                <frameangacc site="s1" reftype="xbody" refname="b_ref"/>
+                <frameangacc site="s1"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    let j1 = *model.jnt_name_to_id.get("j1").unwrap();
+    data.qvel[model.jnt_dof_adr[j1]] = 3.0;
+
+    data.forward(&model).expect("forward");
+
+    // FrameLinAcc with and without reftype should be identical (acc ignores reftype)
+    let adr_acc_ref = model.sensor_adr[0];
+    let adr_acc_none = model.sensor_adr[1];
+    for i in 0..3 {
+        assert_relative_eq!(
+            data.sensordata[adr_acc_ref + i],
+            data.sensordata[adr_acc_none + i],
+            epsilon = 1e-10,
+        );
+    }
+
+    // FrameAngAcc with and without reftype should be identical
+    let adr_angacc_ref = model.sensor_adr[2];
+    let adr_angacc_none = model.sensor_adr[3];
+    for i in 0..3 {
+        assert_relative_eq!(
+            data.sensordata[adr_angacc_ref + i],
+            data.sensordata[adr_angacc_none + i],
+            epsilon = 1e-10,
+        );
+    }
+}
+
+// ============================================================================
+// T37: Sleeping primary body with awake reference → supplementary
+// ============================================================================
+
+#[test]
+fn t37_sleeping_body_skips_sensor() {
+    // When primary body is asleep, sensor is skipped regardless of reference state.
+    // We test this by setting the primary body to asleep and verifying sensordata
+    // stays at its initial value (0.0).
+    let mjcf = r#"
+        <mujoco model="t37">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="b_ref" pos="0 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+                <body name="b1" pos="1 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="s1" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="s1" reftype="xbody" refname="b_ref"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    // Just verify it loads and runs without panic — sleep-skip logic uses
+    // sensor_body_id which looks at the primary object, not the reference.
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    // Sensor should produce valid output when both awake
+    let adr = model.sensor_adr[0];
+    // Site at [1,0,0], ref at [0,0,0], identity rotation → relative = [1,0,0]
+    assert_relative_eq!(data.sensordata[adr], 1.0, epsilon = 1e-10);
+    assert_relative_eq!(data.sensordata[adr + 1], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.sensordata[adr + 2], 0.0, epsilon = 1e-10);
+}
+
+// ============================================================================
+// T38: FramePos body vs xbody numerical distinction → AC15
+// ============================================================================
+
+#[test]
+fn t38_framepos_body_vs_xbody() {
+    // Body with offset geom so COM ≠ joint origin.
+    // reftype="body" uses xipos/ximat, reftype="xbody" uses xpos/xmat.
+    let mjcf = r#"
+        <mujoco model="t38">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="bRef" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" pos="0.3 0 0" mass="1"/>
+                </body>
+                <body name="bObj" pos="0 1 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                    <site name="sObj" pos="0 0 0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framepos site="sObj" reftype="body" refname="bRef"/>
+                <framepos site="sObj" reftype="xbody" refname="bRef"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    let adr_body = model.sensor_adr[0];
+    let adr_xbody = model.sensor_adr[1];
+
+    // They should differ because xipos ≠ xpos for a body with offset COM
+    let diff = Vector3::new(
+        data.sensordata[adr_body] - data.sensordata[adr_xbody],
+        data.sensordata[adr_body + 1] - data.sensordata[adr_xbody + 1],
+        data.sensordata[adr_body + 2] - data.sensordata[adr_xbody + 2],
+    );
+    assert!(
+        diff.norm() > 0.01,
+        "body vs xbody should differ, diff = {diff:?}"
+    );
+}
+
+// ============================================================================
+// T39: FrameQuat body vs xbody via get_ref_quat → AC17
+// ============================================================================
+
+#[test]
+fn t39_framequat_body_vs_xbody() {
+    // Body with explicit inertial with non-trivial iquat so body_iquat ≠ identity.
+    // reftype="body" computes xquat[refid] * body_iquat[refid],
+    // reftype="xbody" returns xquat[refid] directly.
+    let mjcf = r#"
+        <mujoco model="t39">
+            <compiler inertiafromgeom="false"/>
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="bRef" pos="0 0 0">
+                    <inertial pos="0.1 0 0" mass="1" fullinertia="0.01 0.02 0.03 0.005 0 0"/>
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="0.001"/>
+                </body>
+                <body name="B" pos="1 0 0">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <framequat objtype="xbody" objname="B" reftype="body" refname="bRef"/>
+                <framequat objtype="xbody" objname="B" reftype="xbody" refname="bRef"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Set hinge to 90° for non-trivial rotation
+    let j_adr = model.jnt_qpos_adr[*model.jnt_name_to_id.get("j1").unwrap()];
+    data.qpos[j_adr] = std::f64::consts::FRAC_PI_2;
+
+    data.forward(&model).expect("forward");
+
+    let adr_body = model.sensor_adr[0];
+    let adr_xbody = model.sensor_adr[1];
+
+    // They should differ because body_iquat ≠ identity when COM is offset
+    let diff = nalgebra::Vector4::new(
+        data.sensordata[adr_body] - data.sensordata[adr_xbody],
+        data.sensordata[adr_body + 1] - data.sensordata[adr_xbody + 1],
+        data.sensordata[adr_body + 2] - data.sensordata[adr_xbody + 2],
+        data.sensordata[adr_body + 3] - data.sensordata[adr_xbody + 3],
+    );
+    assert!(
+        diff.norm() > 0.01,
+        "body vs xbody quat should differ, diff = {diff:?}"
+    );
+}

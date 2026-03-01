@@ -44,8 +44,12 @@ impl ModelBuilder {
             self.sensor_datatype.push(datatype);
             self.sensor_objtype.push(objtype);
             self.sensor_objid.push(objid);
-            self.sensor_reftype.push(MjObjectType::None);
-            self.sensor_refid.push(0);
+            let (reftype, refid) = self.resolve_reference_object(
+                mjcf_sensor.reftype.as_deref(),
+                mjcf_sensor.refname.as_deref(),
+            )?;
+            self.sensor_reftype.push(reftype);
+            self.sensor_refid.push(refid);
             self.sensor_adr.push(adr);
             self.sensor_dim.push(dim);
             self.sensor_noise.push(mjcf_sensor.noise);
@@ -267,6 +271,92 @@ impl ModelBuilder {
             Err(ModelConversionError {
                 message: format!("frame sensor references unknown object '{name}'"),
             })
+        }
+    }
+
+    /// Resolve reftype/refname to (MjObjectType, refid).
+    ///
+    /// Resolution rules (matching MuJoCo):
+    /// - Both absent → (None, 0) — no transform
+    /// - reftype present, refname absent → (None, 0) — no transform
+    /// - refname present, reftype absent → infer type from name lookup
+    ///   (site → body as XBody → geom priority)
+    /// - Both present → dispatch on reftype string, look up refname
+    fn resolve_reference_object(
+        &self,
+        reftype_str: Option<&str>,
+        refname: Option<&str>,
+    ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
+        let Some(name) = refname else {
+            return Ok((MjObjectType::None, 0));
+        };
+
+        match reftype_str {
+            Some("site") => {
+                let id = *self
+                    .site_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("sensor refname references unknown site '{name}'"),
+                    })?;
+                Ok((MjObjectType::Site, id))
+            }
+            Some("body") => {
+                let id = *self
+                    .body_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("sensor refname references unknown body '{name}'"),
+                    })?;
+                Ok((MjObjectType::Body, id))
+            }
+            Some("xbody") => {
+                let id = *self
+                    .body_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("sensor refname references unknown body '{name}'"),
+                    })?;
+                Ok((MjObjectType::XBody, id))
+            }
+            Some("geom") => {
+                let id = *self
+                    .geom_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("sensor refname references unknown geom '{name}'"),
+                    })?;
+                Ok((MjObjectType::Geom, id))
+            }
+            Some("camera") => {
+                // DT-117: Camera not yet implemented. Warn and ignore.
+                warn!(
+                    "reftype='camera' not yet supported (DT-117); \
+                     ignoring reftype/refname for sensor"
+                );
+                Ok((MjObjectType::None, 0))
+            }
+            Some(other) => Err(ModelConversionError {
+                message: format!(
+                    "sensor has invalid reftype '{other}' \
+                     (expected site/body/xbody/geom/camera)"
+                ),
+            }),
+            None => {
+                // refname without reftype — infer type from name lookup
+                // Priority: site → body (as XBody) → geom
+                if let Some(&id) = self.site_name_to_id.get(name) {
+                    Ok((MjObjectType::Site, id))
+                } else if let Some(&id) = self.body_name_to_id.get(name) {
+                    Ok((MjObjectType::XBody, id))
+                } else if let Some(&id) = self.geom_name_to_id.get(name) {
+                    Ok((MjObjectType::Geom, id))
+                } else {
+                    Err(ModelConversionError {
+                        message: format!("sensor refname references unknown object '{name}'"),
+                    })
+                }
+            }
         }
     }
 }
