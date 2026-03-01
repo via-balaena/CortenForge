@@ -436,7 +436,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 17: Spec D spec (sensor history attributes)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — write Spec D spec.
@@ -554,8 +554,8 @@ Present the Review Verdict (section 10) to the user when done.
 | 13 | Spec C implementation | Done | `1b2c422` |
 | 14 | Spec C review — create document | Done | `1703105` |
 | 15 | Spec C review — execute | Done | `7e6ded4` |
-| 16 | Spec D rubric | Pending | — |
-| 17 | Spec D spec | Pending | — |
+| 16 | Spec D rubric | Done | `8239eda` |
+| 17 | Spec D spec | Done | — |
 | 18 | Spec D implementation | Pending | — |
 | 19 | Spec D review — create document | Pending | — |
 | 20 | Spec D review — execute | Pending | — |
