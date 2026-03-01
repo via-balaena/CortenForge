@@ -406,7 +406,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 16: Spec D rubric (sensor history attributes)
 
-- [ ] Complete
+- [x] Done — `8239eda`
 
 ```
 Phase 6 Sensor Completeness — write Spec D rubric.
