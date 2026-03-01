@@ -558,4 +558,4 @@ Present the Review Verdict (section 10) to the user when done.
 | 17 | Spec D spec | Done | `c914cfe` |
 | 18 | Spec D implementation | Done | `8b3c248` |
 | 19 | Spec D review — create document | Done | `a103a0d` |
-| 20 | Spec D review — execute | Done | — |
+| 20 | Spec D review — execute | Done | `0851e62` |
