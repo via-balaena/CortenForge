@@ -420,7 +420,7 @@ pub enum MjSensorType {
     /// Simulation clock (reads data.time, 1D). MuJoCo: mjSENS_CLOCK.
     Clock,
     /// Net actuator force at joint DOF (1D). MuJoCo: mjSENS_JOINTACTFRC.
-    /// Reads data.qfrc_actuator[model.jnt_dof_adr[objid]].
+    /// Reads `data.qfrc_actuator[model.jnt_dof_adr[objid]]`.
     JointActuatorFrc,
     /// Signed distance between two geoms or bodies (1D). MuJoCo: mjSENS_GEOMDIST.
     GeomDist,
