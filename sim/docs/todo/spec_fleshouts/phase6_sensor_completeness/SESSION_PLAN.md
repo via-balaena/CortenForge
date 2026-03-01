@@ -544,7 +544,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 3 | Spec A implementation | Done | 28bc9f4 |
 | 4 | Spec A review — create document | Done | f095ff0 |
 | 5 | Spec A review — execute | Done | fce896d |
-| 6 | Spec B rubric | Pending | — |
+| 6 | Spec B rubric | Done | `948c898` |
 | 7 | Spec B spec | Pending | — |
 | 8 | Spec B implementation | Pending | — |
 | 9 | Spec B review — create document | Pending | — |
