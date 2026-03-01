@@ -225,7 +225,7 @@ after each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 9: Spec B review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — create Spec B review document.
