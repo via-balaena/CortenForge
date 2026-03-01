@@ -7,13 +7,14 @@
 
 use crate::types::{MjObjectType, Model};
 
-pub(crate) mod acceleration;
+pub mod acceleration;
+pub(crate) mod geom_distance;
 pub(crate) mod position;
 pub(crate) mod postprocess;
 pub(crate) mod velocity;
 
 // Re-exports added as each sub-module is populated:
-pub(crate) use acceleration::mj_sensor_acc;
+pub use acceleration::mj_sensor_acc;
 pub(crate) use position::mj_sensor_pos;
 pub(crate) use postprocess::mj_sensor_postprocess;
 pub(crate) use velocity::mj_sensor_vel;
@@ -25,7 +26,7 @@ pub(crate) use velocity::mj_sensor_vel;
 pub(crate) fn sensor_body_id(model: &Model, sensor_id: usize) -> Option<usize> {
     let objid = model.sensor_objid[sensor_id];
     match model.sensor_objtype[sensor_id] {
-        MjObjectType::Body => Some(objid),
+        MjObjectType::Body | MjObjectType::XBody => Some(objid),
         MjObjectType::Joint => {
             if objid < model.njnt {
                 Some(model.jnt_body[objid])
@@ -187,12 +188,13 @@ mod sensor_tests {
     #[test]
     fn test_touch_sensor_no_contact() {
         let mut model = make_sensor_test_model();
+        // Touch stores (Site, site_id) — matches MuJoCo where sensor_objtype = mjOBJ_SITE
         add_sensor(
             &mut model,
             MjSensorType::Touch,
             MjSensorDataType::Acceleration, // Touch needs acc stage
-            MjObjectType::Geom,
-            0, // geom 0
+            MjObjectType::Site,
+            0, // site 0 (sensor_site, on body 1 which has geom 0)
         );
 
         let mut data = model.make_data();
@@ -205,12 +207,13 @@ mod sensor_tests {
     #[test]
     fn test_touch_sensor_with_contact() {
         let mut model = make_sensor_test_model();
+        // Touch stores (Site, site_id) — evaluation resolves site→body at runtime
         add_sensor(
             &mut model,
             MjSensorType::Touch,
             MjSensorDataType::Acceleration,
-            MjObjectType::Geom,
-            0,
+            MjObjectType::Site,
+            0, // site 0 (on body 1 which has geom 0)
         );
 
         let mut data = model.make_data();

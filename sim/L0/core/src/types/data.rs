@@ -75,7 +75,7 @@ pub struct Data {
     /// and is required for correct RK4 integration of activation states.
     pub act_dot: DVector<f64>,
 
-    /// Actuator history buffer (length `nhistory`).
+    /// History buffer (actuators + sensors) (length `nhistory`).
     /// Pre-populated with metadata + past timestamps + zero ctrl values.
     /// MuJoCo: `mjData.history`.
     pub history: Vec<f64>,

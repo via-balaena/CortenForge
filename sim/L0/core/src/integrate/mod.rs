@@ -22,7 +22,7 @@ impl Data {
     ///
     /// This is exposed as part of the split-step API ([`step1`](Self::step1) /
     /// [`step2`](Self::step2)). RK4 integration is handled by
-    /// [`mj_runge_kutta()`](rk4::mj_runge_kutta) and does not call this method.
+    /// `mj_runge_kutta()` and does not call this method.
     ///
     /// # Integration Methods
     ///

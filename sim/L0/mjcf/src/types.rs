@@ -2932,6 +2932,18 @@ pub enum MjcfSensorType {
     /// Frame angular acceleration (3D).
     Frameangacc,
 
+    // New sensors (Phase 6 Spec C)
+    /// Clock sensor (simulation time, 1D). MJCF element: `<clock>`.
+    Clock,
+    /// Joint actuator force sensor (1D). MJCF element: `<jointactuatorfrc>`.
+    Jointactuatorfrc,
+    /// Geom distance sensor (1D). MJCF element: `<distance>`.
+    Distance,
+    /// Surface normal between geoms (3D). MJCF element: `<normal>`.
+    Normal,
+    /// From-to points between geoms (6D). MJCF element: `<fromto>`.
+    Fromto,
+
     // User-defined sensors
     /// User-defined sensor.
     User,
@@ -2972,6 +2984,11 @@ impl MjcfSensorType {
             "subtreeangmom" => Some(Self::Subtreeangmom),
             "framelinacc" => Some(Self::Framelinacc),
             "frameangacc" => Some(Self::Frameangacc),
+            "clock" => Some(Self::Clock),
+            "jointactuatorfrc" => Some(Self::Jointactuatorfrc),
+            "distance" => Some(Self::Distance),
+            "normal" => Some(Self::Normal),
+            "fromto" => Some(Self::Fromto),
             "user" => Some(Self::User),
             _ => None,
         }
@@ -3012,6 +3029,11 @@ impl MjcfSensorType {
             Self::Subtreeangmom => "subtreeangmom",
             Self::Framelinacc => "framelinacc",
             Self::Frameangacc => "frameangacc",
+            Self::Clock => "clock",
+            Self::Jointactuatorfrc => "jointactuatorfrc",
+            Self::Distance => "distance",
+            Self::Normal => "normal",
+            Self::Fromto => "fromto",
             Self::User => "user",
         }
     }
@@ -3031,7 +3053,10 @@ impl MjcfSensorType {
             | Self::Jointlimitfrc
             | Self::Tendonlimitfrc
             | Self::Touch
-            | Self::Rangefinder => 1,
+            | Self::Rangefinder
+            | Self::Clock
+            | Self::Jointactuatorfrc
+            | Self::Distance => 1,
 
             Self::Framepos
             | Self::Framexaxis
@@ -3050,9 +3075,12 @@ impl MjcfSensorType {
             | Self::Magnetometer
             | Self::Subtreecom
             | Self::Subtreelinvel
-            | Self::Subtreeangmom => 3,
+            | Self::Subtreeangmom
+            | Self::Normal => 3,
 
             Self::Ballquat | Self::Framequat => 4,
+
+            Self::Fromto => 6,
 
             // User sensors have configurable dimension, default to 1
             Self::User => 1,
@@ -3075,7 +3103,12 @@ pub struct MjcfSensor {
     pub sensor_type: MjcfSensorType,
     /// Target object name (joint, site, body, etc. depending on type).
     pub objname: Option<String>,
-    /// Reference object for frame sensors.
+    /// Explicit object type string from MJCF `objtype` attribute.
+    /// E.g., "site", "body", "xbody", "geom", "camera".
+    pub objtype: Option<String>,
+    /// Reference object type string from MJCF `reftype` attribute.
+    pub reftype: Option<String>,
+    /// Reference object name from MJCF `refname` attribute.
     pub refname: Option<String>,
     /// Noise standard deviation.
     pub noise: f64,
@@ -3083,6 +3116,26 @@ pub struct MjcfSensor {
     pub cutoff: f64,
     /// User-defined data fields.
     pub user: Vec<f64>,
+    /// First geom name (for distance/normal/fromto sensors).
+    pub geom1: Option<String>,
+    /// Second geom name (for distance/normal/fromto sensors).
+    pub geom2: Option<String>,
+    /// First body name (for distance/normal/fromto sensors).
+    pub body1: Option<String>,
+    /// Second body name (for distance/normal/fromto sensors).
+    pub body2: Option<String>,
+    /// Number of history samples. MuJoCo: `mjsSensor_::nsample`.
+    /// Default: None (builder treats as 0).
+    pub nsample: Option<i32>,
+    /// Interpolation keyword. MuJoCo: `mjsSensor_::interp`.
+    /// Valid: "zoh", "linear", "cubic" (case-sensitive lowercase only).
+    pub interp: Option<String>,
+    /// Time delay in seconds. MuJoCo: `mjsSensor_::delay`.
+    /// Default: None (builder treats as 0.0).
+    pub delay: Option<f64>,
+    /// Sampling interval (period) in seconds. MuJoCo: `mjsSensor_::interval`.
+    /// Default: None (builder treats as 0.0). Phase is always 0.0.
+    pub interval: Option<f64>,
 }
 
 impl Default for MjcfSensor {
@@ -3092,10 +3145,20 @@ impl Default for MjcfSensor {
             class: None,
             sensor_type: MjcfSensorType::default(),
             objname: None,
+            objtype: None,
+            reftype: None,
             refname: None,
             noise: 0.0,
             cutoff: 0.0,
             user: Vec::new(),
+            geom1: None,
+            geom2: None,
+            body1: None,
+            body2: None,
+            nsample: None,
+            interp: None,
+            delay: None,
+            interval: None,
         }
     }
 }
@@ -3163,6 +3226,34 @@ impl MjcfSensor {
     #[must_use]
     pub fn with_user(mut self, user: Vec<f64>) -> Self {
         self.user = user;
+        self
+    }
+
+    /// Set history sample count.
+    #[must_use]
+    pub fn with_nsample(mut self, nsample: i32) -> Self {
+        self.nsample = Some(nsample);
+        self
+    }
+
+    /// Set interpolation type keyword ("zoh", "linear", "cubic").
+    #[must_use]
+    pub fn with_interp(mut self, interp: impl Into<String>) -> Self {
+        self.interp = Some(interp.into());
+        self
+    }
+
+    /// Set time delay in seconds.
+    #[must_use]
+    pub fn with_delay(mut self, delay: f64) -> Self {
+        self.delay = Some(delay);
+        self
+    }
+
+    /// Set sampling interval (period) in seconds.
+    #[must_use]
+    pub fn with_interval(mut self, interval: f64) -> Self {
+        self.interval = Some(interval);
         self
     }
 

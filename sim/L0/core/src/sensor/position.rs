@@ -16,8 +16,47 @@ use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
 use sim_types::Pose;
 use std::sync::Arc;
 
-use super::postprocess::{sensor_write, sensor_write3, sensor_write4};
+use super::geom_distance::geom_distance;
+use super::postprocess::{sensor_write, sensor_write3, sensor_write4, sensor_write6};
 use super::sensor_body_id;
+
+/// Resolve position and rotation matrix for a reference object.
+/// Mirrors MuJoCo's `get_xpos_xmat()` dispatch.
+fn get_ref_pos_mat(
+    model: &Model,
+    data: &Data,
+    reftype: MjObjectType,
+    refid: usize,
+) -> (Vector3<f64>, Matrix3<f64>) {
+    match reftype {
+        MjObjectType::Site if refid < model.nsite => (data.site_xpos[refid], data.site_xmat[refid]),
+        MjObjectType::XBody if refid < model.nbody => (data.xpos[refid], data.xmat[refid]),
+        MjObjectType::Body if refid < model.nbody => (data.xipos[refid], data.ximat[refid]),
+        MjObjectType::Geom if refid < model.ngeom => (data.geom_xpos[refid], data.geom_xmat[refid]),
+        _ => (Vector3::zeros(), Matrix3::identity()),
+    }
+}
+
+/// Resolve quaternion for a reference object.
+/// Mirrors MuJoCo's `get_xquat()` dispatch.
+fn get_ref_quat(
+    model: &Model,
+    data: &Data,
+    reftype: MjObjectType,
+    refid: usize,
+) -> UnitQuaternion<f64> {
+    match reftype {
+        MjObjectType::XBody if refid < model.nbody => data.xquat[refid],
+        MjObjectType::Body if refid < model.nbody => data.xquat[refid] * model.body_iquat[refid],
+        MjObjectType::Site if refid < model.nsite => UnitQuaternion::from_rotation_matrix(
+            &nalgebra::Rotation3::from_matrix_unchecked(data.site_xmat[refid]),
+        ),
+        MjObjectType::Geom if refid < model.ngeom => UnitQuaternion::from_rotation_matrix(
+            &nalgebra::Rotation3::from_matrix_unchecked(data.geom_xmat[refid]),
+        ),
+        _ => UnitQuaternion::identity(),
+    }
+}
 
 /// Compute position-dependent sensor values.
 ///
@@ -104,18 +143,31 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::FramePos => {
-                // Position of site/body in world frame
+                // Position of site/body/geom
                 let pos = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => data.site_xpos[objid],
-                    MjObjectType::Body if objid < model.nbody => data.xpos[objid],
+                    MjObjectType::XBody if objid < model.nbody => data.xpos[objid],
+                    MjObjectType::Body if objid < model.nbody => data.xipos[objid],
                     MjObjectType::Geom if objid < model.ngeom => data.geom_xpos[objid],
                     _ => Vector3::zeros(),
                 };
-                sensor_write3(&mut data.sensordata, adr, &pos);
+                // Reference-frame transform: p_relative = R_ref^T * (p_obj - p_ref)
+                if model.sensor_reftype[sensor_id] == MjObjectType::None {
+                    sensor_write3(&mut data.sensordata, adr, &pos);
+                } else {
+                    let (ref_pos, ref_mat) = get_ref_pos_mat(
+                        model,
+                        data,
+                        model.sensor_reftype[sensor_id],
+                        model.sensor_refid[sensor_id],
+                    );
+                    let relative = ref_mat.transpose() * (pos - ref_pos);
+                    sensor_write3(&mut data.sensordata, adr, &relative);
+                }
             }
 
             MjSensorType::FrameQuat => {
-                // Orientation of site/body as quaternion [w, x, y, z]
+                // Orientation of site/body/geom as quaternion [w, x, y, z]
                 let quat = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => {
                         // Compute site quaternion from rotation matrix
@@ -124,7 +176,11 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                             &nalgebra::Rotation3::from_matrix_unchecked(mat),
                         )
                     }
-                    MjObjectType::Body if objid < model.nbody => data.xquat[objid],
+                    MjObjectType::XBody if objid < model.nbody => data.xquat[objid],
+                    MjObjectType::Body if objid < model.nbody => {
+                        // MuJoCo: mulQuat(xquat[body], body_iquat[body])
+                        data.xquat[objid] * model.body_iquat[objid]
+                    }
                     MjObjectType::Geom if objid < model.ngeom => {
                         let mat = data.geom_xmat[objid];
                         UnitQuaternion::from_rotation_matrix(
@@ -133,14 +189,34 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     }
                     _ => UnitQuaternion::identity(),
                 };
-                sensor_write4(&mut data.sensordata, adr, quat.w, quat.i, quat.j, quat.k);
+                // Reference-frame transform: q_relative = q_ref^{-1} * q_obj
+                if model.sensor_reftype[sensor_id] == MjObjectType::None {
+                    sensor_write4(&mut data.sensordata, adr, quat.w, quat.i, quat.j, quat.k);
+                } else {
+                    let ref_quat = get_ref_quat(
+                        model,
+                        data,
+                        model.sensor_reftype[sensor_id],
+                        model.sensor_refid[sensor_id],
+                    );
+                    let relative = ref_quat.inverse() * quat;
+                    sensor_write4(
+                        &mut data.sensordata,
+                        adr,
+                        relative.w,
+                        relative.i,
+                        relative.j,
+                        relative.k,
+                    );
+                }
             }
 
             MjSensorType::FrameXAxis | MjSensorType::FrameYAxis | MjSensorType::FrameZAxis => {
-                // Frame axis in world coordinates
+                // Frame axis
                 let mat = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
-                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
+                    MjObjectType::XBody if objid < model.nbody => data.xmat[objid],
+                    MjObjectType::Body if objid < model.nbody => data.ximat[objid],
                     MjObjectType::Geom if objid < model.ngeom => data.geom_xmat[objid],
                     _ => Matrix3::identity(),
                 };
@@ -153,7 +229,19 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     _ => 0, // Unreachable but needed for exhaustiveness
                 };
                 let col = Vector3::new(mat[(0, col_idx)], mat[(1, col_idx)], mat[(2, col_idx)]);
-                sensor_write3(&mut data.sensordata, adr, &col);
+                // Reference-frame transform: axis_in_ref = R_ref^T * axis_world
+                if model.sensor_reftype[sensor_id] == MjObjectType::None {
+                    sensor_write3(&mut data.sensordata, adr, &col);
+                } else {
+                    let (_ref_pos, ref_mat) = get_ref_pos_mat(
+                        model,
+                        data,
+                        model.sensor_reftype[sensor_id],
+                        model.sensor_refid[sensor_id],
+                    );
+                    let relative = ref_mat.transpose() * col;
+                    sensor_write3(&mut data.sensordata, adr, &relative);
+                }
             }
 
             MjSensorType::SubtreeCom => {
@@ -328,6 +416,74 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     if let Some(ref cb) = model.cb_sensor {
                         (cb.0)(model, data, sensor_id, SensorStage::Pos);
                     }
+                }
+            }
+
+            // Clock: reads simulation time. MuJoCo: mjSENS_CLOCK in mj_computeSensorPos.
+            MjSensorType::Clock => {
+                let adr = model.sensor_adr[sensor_id];
+                sensor_write(&mut data.sensordata, adr, 0, data.time);
+            }
+
+            // Geom distance sensors: shared dual-object + all-pairs minimum distance.
+            // MuJoCo: mj_computeSensorPos case mjSENS_GEOMDIST/GEOMNORMAL/GEOMFROMTO.
+            MjSensorType::GeomDist | MjSensorType::GeomNormal | MjSensorType::GeomFromTo => {
+                let adr = model.sensor_adr[sensor_id];
+                let objtype = model.sensor_objtype[sensor_id];
+                let objid = model.sensor_objid[sensor_id];
+                let reftype = model.sensor_reftype[sensor_id];
+                let refid = model.sensor_refid[sensor_id];
+                let cutoff = model.sensor_cutoff[sensor_id];
+                let sensor_type = model.sensor_type[sensor_id];
+
+                // Resolve geom lists — body ⇒ iterate body's direct geoms; geom ⇒ single
+                let (n1, id1) = if objtype == MjObjectType::Body {
+                    (model.body_geom_num[objid], model.body_geom_adr[objid])
+                } else {
+                    (1, objid)
+                };
+                let (n2, id2) = if reftype == MjObjectType::Body {
+                    (model.body_geom_num[refid], model.body_geom_adr[refid])
+                } else {
+                    (1, refid)
+                };
+
+                // All-pairs minimum distance
+                let mut dist = cutoff;
+                let mut fromto = [0.0f64; 6];
+                for g1 in id1..id1 + n1 {
+                    for g2 in id2..id2 + n2 {
+                        let (dist_new, fromto_new) = geom_distance(model, data, g1, g2, cutoff);
+                        if dist_new < dist {
+                            dist = dist_new;
+                            fromto = fromto_new;
+                        }
+                    }
+                }
+
+                // Per-type output
+                match sensor_type {
+                    MjSensorType::GeomDist => {
+                        sensor_write(&mut data.sensordata, adr, 0, dist);
+                    }
+                    MjSensorType::GeomNormal => {
+                        let normal = Vector3::new(
+                            fromto[3] - fromto[0],
+                            fromto[4] - fromto[1],
+                            fromto[5] - fromto[2],
+                        );
+                        // Zero-vector guard: only normalize if non-zero
+                        let output = if normal.norm_squared() > 0.0 {
+                            normal.normalize()
+                        } else {
+                            normal // stays [0, 0, 0]
+                        };
+                        sensor_write3(&mut data.sensordata, adr, &output);
+                    }
+                    MjSensorType::GeomFromTo => {
+                        sensor_write6(&mut data.sensordata, adr, &fromto);
+                    }
+                    _ => unreachable!(),
                 }
             }
 

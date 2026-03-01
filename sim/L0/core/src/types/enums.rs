@@ -250,8 +250,9 @@ pub enum BiasType {
     User,
 }
 
-/// Interpolation method for actuator history buffer.
-/// MuJoCo: `actuator_history[2*i + 1]` stores 0 (ZOH), 1 (linear), 2 (cubic).
+/// Interpolation method for actuator and sensor history buffers.
+///
+/// MuJoCo: `actuator_history[2*i + 1]` / `sensor_history[2*i + 1]` stores 0 (ZOH), 1 (linear), 2 (cubic).
 /// MJCF keywords: `"zoh"`, `"linear"`, `"cubic"` (lowercase only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum InterpolationType {
@@ -415,6 +416,19 @@ pub enum MjSensorType {
     /// Subtree angular momentum (3D).
     SubtreeAngMom,
 
+    // ========== New sensors (Phase 6 Spec C) ==========
+    /// Simulation clock (reads data.time, 1D). MuJoCo: mjSENS_CLOCK.
+    Clock,
+    /// Net actuator force at joint DOF (1D). MuJoCo: mjSENS_JOINTACTFRC.
+    /// Reads `data.qfrc_actuator[model.jnt_dof_adr[objid]]`.
+    JointActuatorFrc,
+    /// Signed distance between two geoms or bodies (1D). MuJoCo: mjSENS_GEOMDIST.
+    GeomDist,
+    /// Surface normal at nearest point between geoms (3D). MuJoCo: mjSENS_GEOMNORMAL.
+    GeomNormal,
+    /// Nearest surface points between two geoms (6D). MuJoCo: mjSENS_GEOMFROMTO.
+    GeomFromTo,
+
     // ========== User-defined ==========
     /// User-defined sensor (arbitrary dimension).
     User,
@@ -435,7 +449,10 @@ impl MjSensorType {
             | Self::ActuatorFrc
             | Self::JointLimitFrc
             | Self::TendonLimitFrc
-            | Self::Rangefinder => 1,
+            | Self::Rangefinder
+            | Self::Clock
+            | Self::JointActuatorFrc
+            | Self::GeomDist => 1,
 
             Self::Accelerometer
             | Self::Velocimeter
@@ -454,11 +471,37 @@ impl MjSensorType {
             | Self::FrameAngAcc
             | Self::SubtreeCom
             | Self::SubtreeLinVel
-            | Self::SubtreeAngMom => 3,
+            | Self::SubtreeAngMom
+            | Self::GeomNormal => 3,
 
             Self::BallQuat | Self::FrameQuat => 4,
 
+            Self::GeomFromTo => 6,
+
             Self::User => 0, // Variable, must be set explicitly
+        }
+    }
+
+    /// Get the MuJoCo data kind for this sensor type.
+    ///
+    /// Determines how `apply_cutoff()` clamps sensor values. Matches MuJoCo's
+    /// `user_objects.cc` datatype assignment switch.
+    #[must_use]
+    pub const fn data_kind(self) -> MjSensorDataKind {
+        match self {
+            // POSITIVE: non-negative sensors (preserve negative sentinels)
+            Self::Touch | Self::Rangefinder => MjSensorDataKind::Positive,
+
+            // QUATERNION: unit quaternions
+            Self::BallQuat | Self::FrameQuat => MjSensorDataKind::Quaternion,
+
+            // AXIS: unit axis vectors
+            Self::FrameXAxis | Self::FrameYAxis | Self::FrameZAxis | Self::GeomNormal => {
+                MjSensorDataKind::Axis
+            }
+
+            // REAL: everything else (default in MuJoCo)
+            _ => MjSensorDataKind::Real,
         }
     }
 }
@@ -475,6 +518,30 @@ pub enum SensorStage {
     Vel,
     /// Acceleration stage (after constraint solve).
     Acc,
+}
+
+/// MuJoCo sensor data kind — determines postprocess cutoff behavior.
+///
+/// MuJoCo's `sensor_datatype` stores the data kind (`mjDATATYPE_REAL`, etc.),
+/// which controls how `apply_cutoff()` clamps sensor values:
+/// - `Real` → `clamp(-cutoff, cutoff)` (symmetric)
+/// - `Positive` → `min(cutoff, value)` (preserves negative sentinels like -1.0)
+/// - `Axis` / `Quaternion` → no clamping (normalized vectors/quaternions
+///   should not be clamped to a magnitude range)
+///
+/// Note: CortenForge's `MjSensorDataType` stores the *pipeline stage*
+/// (Position/Velocity/Acceleration), NOT this data kind. These are separate
+/// concepts that MuJoCo happens to also call "datatype."
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MjSensorDataKind {
+    /// Scalar real value — clamp to `[-cutoff, cutoff]`. MuJoCo: `mjDATATYPE_REAL` (0).
+    Real,
+    /// Non-negative value — clamp to `min(cutoff, value)`. MuJoCo: `mjDATATYPE_POSITIVE` (1).
+    Positive,
+    /// Unit axis vector — no cutoff clamping. MuJoCo: `mjDATATYPE_AXIS` (2).
+    Axis,
+    /// Unit quaternion — no cutoff clamping. MuJoCo: `mjDATATYPE_QUATERNION` (3).
+    Quaternion,
 }
 
 /// Sensor data dependency stage.
@@ -497,8 +564,10 @@ pub enum MjObjectType {
     /// No object (world-relative).
     #[default]
     None,
-    /// Body.
+    /// Body — inertial/COM frame (reads `xipos`/`ximat`). MuJoCo `mjOBJ_BODY` (1).
     Body,
+    /// XBody — joint frame origin (reads `xpos`/`xmat`). MuJoCo `mjOBJ_XBODY` (2).
+    XBody,
     /// Joint.
     Joint,
     /// Geom.

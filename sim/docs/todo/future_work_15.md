@@ -281,3 +281,132 @@ three joint limit types.
 - `sim/L0/mjcf/src/builder/` — `jnt_margin` storage + population
 - `sim/L0/core/src/constraint/assembly.rs` — `assemble_unified_constraints()`:
   6 activation checks (3 counting + 3 assembly) + 3 `finalize_row!` margin args
+
+---
+
+### DT-120. `MjObjectType::Camera` — Frame Sensor Camera Support
+**Status:** Not started | **Effort:** S | **Prerequisites:** Camera FK populating
+`cam_xpos`/`cam_xmat`/`cam_quat` in `Data`
+**Origin:** Phase 6 Spec A, DECISION 2
+
+#### Current State
+
+`MjObjectType::Camera` is not in the enum. `builder/sensor.rs` emits a warning
+and falls back to the name heuristic when `objtype="camera"` is encountered.
+`Data` does not have `cam_xpos`, `cam_xmat`, or `cam_quat` fields.
+
+#### Objective
+
+Add `Camera` variant to `MjObjectType`. Populate `cam_xpos`/`cam_xmat`/`cam_quat`
+in `Data` during forward kinematics. Add Camera dispatch arms to all frame sensor
+evaluation sites (position, velocity, acceleration).
+
+#### Conformance Impact
+
+Minor — camera-attached frame sensors are uncommon in RL/robotics models.
+
+---
+
+### DT-118. `mj_contactForce()` — Touch Sensor Force Reconstruction
+**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Origin:** Phase 6 Spec A, DECISION 3
+
+#### Current State
+
+Touch sensor reads `efc_force` directly (`acceleration.rs:183–193`). For
+frictionless and elliptic contacts, this produces the correct normal force.
+For pyramidal contacts (`dim=3`), summing facet projections produces ~75% of
+the true normal force (MuJoCo: `mj_contactForce()` reconstructs the physical
+force from the pyramidal basis, yielding ~33% higher values).
+
+#### Objective
+
+Implement `mj_contactForce()` equivalent that reconstructs physical normal force
+from the constraint basis for all contact types (pyramidal, elliptic, frictionless).
+Update the touch sensor to call this function instead of reading `efc_force`
+directly.
+
+#### Conformance Impact
+
+Moderate — pyramidal is MuJoCo's default contact model. Touch sensor values are
+~25% too low for all models using pyramidal contacts.
+
+---
+
+### DT-119. Ray-Geom Intersection Filter for Touch Sensor
+**Status:** Not started | **Effort:** M | **Prerequisites:** DT-118
+**Origin:** Phase 6 Spec A, DECISION 4
+
+#### Current State
+
+Touch sensor sums all contacts on the body without spatial filtering. MuJoCo
+uses `mju_rayGeom()` to filter contacts outside the sensor site's geometric
+volume. Without this filter, touch sensors over-report for small sensor sites
+on large bodies (all contacts on the body contribute regardless of spatial
+proximity to the site).
+
+#### Objective
+
+Implement MuJoCo-equivalent ray-geom intersection filter. For each contributing
+contact, construct a ray from the contact point along the contact normal direction
+(scaled by force, normalized, sign-flipped for `conbody[1]`). Only sum the
+contact's force if the ray intersects the sensor site's geometric volume via
+`mju_rayGeom()`.
+
+#### Conformance Impact
+
+Low to moderate — for typical models where the sensor site covers the full contact
+surface, the difference is zero. Matters for precise tactile sensing with small
+sensor sites on multi-geom bodies.
+
+---
+
+### DT-121. `InsideSite` Sensor (`mjSENS_INSIDESITE`)
+**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Origin:** Phase 6 Spec C, Scope Adjustment (R25/R74)
+
+#### Current State
+
+MuJoCo 3.5.0 has `mjSENS_INSIDESITE` — a sensor that tests whether a
+specified point (site or geom) lies inside a reference site's geometric
+volume. CortenForge does not implement this sensor type. It was not listed
+in the umbrella spec and was discovered during Spec C rubric stress-testing
+(R25).
+
+#### Objective
+
+Add `InsideSite` variant to `MjSensorType` and `MjcfSensorType`. Implement
+geometric containment testing (point-in-geom for sphere, box, capsule,
+cylinder, ellipsoid). Wire into position-stage evaluation.
+
+#### Conformance Impact
+
+Minor — `InsideSite` is uncommon in RL/robotics models. Primarily used for
+spatial trigger detection.
+
+---
+
+### DT-122. Mesh/Hfield/SDF Geom Distance Support
+**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Origin:** Phase 6 Spec C, S3 (geom_distance algorithm)
+
+#### Current State
+
+`geom_distance()` (implemented in Spec C) supports convex primitives only
+(Sphere, Box, Capsule, Cylinder, Ellipsoid). Non-convex geom types (Plane,
+Mesh, Hfield, SDF) return `(cutoff, [0; 6])` with a warning. MuJoCo's
+`mj_geomDistance()` supports all geom types via its collision backend.
+
+#### Objective
+
+Extend `geom_distance()` to support:
+- Plane-geom distance (analytic for plane vs convex primitive)
+- Mesh-geom distance (requires convex hull or GJK on mesh triangles)
+- Hfield-geom distance (requires heightfield sampling)
+- SDF-geom distance (requires signed distance field evaluation)
+
+#### Conformance Impact
+
+Gap for non-convex geometry distance queries. Acceptable for v1.0 since
+common RL/robotics models use convex primitives. Becomes relevant for
+environments with terrain (hfield) or complex objects (mesh).

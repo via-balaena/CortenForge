@@ -1,6 +1,6 @@
 # CortenForge Sim — v1.0 Roadmap
 
-> **Status**: Draft — 2026-02-27
+> **Status**: Draft — 2026-03-01
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
 > plus the ~112 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-116).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
@@ -13,7 +13,7 @@
 > ~~DT-58~~ done (Phase 5 Spec C). DT-111–116 (HillMuscle extension sub-items) added
 > during Spec C review.
 >
-> **Current position**: Phases 1–5 complete. Next: Phases 6–11 (parallel).
+> **Current position**: Phases 1–6 complete. Next: Phases 7–11 (parallel).
 
 ---
 
@@ -159,16 +159,25 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 6 — Sensor Completeness
+### Phase 6 — Sensor Completeness ✅
+
+> **Complete (2026-03-01).** All 6 tasks ship-complete across 20 sessions (4 sub-specs:
+> A, B, C, D). 1,900+ domain tests pass, 0 fail, clippy clean, fmt clean. See
+> [SESSION_PLAN.md](todo/spec_fleshouts/phase6_sensor_completeness/SESSION_PLAN.md)
+> for full session history and commit hashes.
+>
+> Deferred items discovered during implementation (DT-118, DT-119, DT-120,
+> DT-121, DT-122) tracked in post-v1.0 sections below. DT-65 (User sensor dim)
+> already tracked. DT-107/DT-108 updated to cover sensor-side runtime scope.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §62 | 15 | — | Missing sensor types: `clock`, `jointactuatorfrc`, `camprojection`, `geomdist`, `geompoint`, `geomnormal` |
-| DT-62 | 10h | T2 | Frame sensor `objtype` attribute not parsed — fallback heuristic used |
-| DT-63 | 10h | T2 | Frame sensor `reftype`/`refid` — relative-frame measurements |
-| DT-64 | 10h | T2 | Multi-geom touch sensor aggregation (currently only first geom matched) |
-| DT-102 | 10h | T1 | Geom-attached acc-stage sensors (FrameLinAcc/FrameAngAcc with `MjObjectType::Geom`). Depends on DT-62. |
-| DT-109 | 10h | T2 | Sensor history attributes — `nsample`/`interp`/`delay` on sensors, contributes to `nhistory`. Currently `nhistory` is actuator-only. |
+| ~~§62~~ | 15 | — | ~~Missing sensor types: `clock`, `jointactuatorfrc`, `camprojection`, `geomdist`, `geompoint`, `geomnormal`~~ **Done** — Spec C (Phase 6 Sessions 11–15). 6 new `MjSensorType` variants + evaluation arms. |
+| ~~DT-62~~ | 10h | T2 | ~~Frame sensor `objtype` attribute not parsed — fallback heuristic used~~ **Done** — Spec A (Phase 6 Sessions 1–5). Explicit `objtype` parsing + dispatch. |
+| ~~DT-63~~ | 10h | T2 | ~~Frame sensor `reftype`/`refid` — relative-frame measurements~~ **Done** — Spec B (Phase 6 Sessions 6–10). Reference-frame transforms in all 9 frame sensor arms. |
+| ~~DT-64~~ | 10h | T2 | ~~Multi-geom touch sensor aggregation (currently only first geom matched)~~ **Done** — Spec A (Phase 6 Sessions 1–5). Body-level aggregation matching MuJoCo. |
+| ~~DT-102~~ | 10h | T1 | ~~Geom-attached acc-stage sensors (FrameLinAcc/FrameAngAcc with `MjObjectType::Geom`). Depends on DT-62.~~ **Done** — Spec A (Phase 6 Sessions 1–5). Full `mj_objectAcceleration()` at geom position. |
+| ~~DT-109~~ | 10h | T2 | ~~Sensor history attributes — `nsample`/`interp`/`delay`/`interval` on sensors, contributes to `nhistory`.~~ **Done** — Spec D (Phase 6 Sessions 16–20). 5 model fields, historyadr computation, validation. Runtime → DT-107. |
 
 ---
 
@@ -360,7 +369,7 @@ foundation isn't right.
 | DT-17 | 10b | T1 | Global `<option o_margin>` override |
 | DT-22 | 10c | T1 | `efc_impP` impedance derivative field |
 | DT-31 | 10d | T2 | `WrapType::Joint` inside spatial tendons |
-| DT-65 | 10h | T1 | User sensor `dim` attribute |
+| DT-65 | 10h | T1 | User sensor `dim` attribute. Also requires `sensor_intprm` array (`mjmodel.h:1213`). |
 | DT-69 | 10i | T2 | SAP for flex broadphase (currently brute-force) |
 | DT-72 | 10i | T1 | Flex contacts wired for adhesion |
 | DT-80 | 10j | T1 | Mocap body + equality weld integration testing |
@@ -368,9 +377,14 @@ foundation isn't right.
 | DT-84 | 10j | T1 | `mju_encodePyramid` utility |
 | DT-89 | 10i | T1 | `<flexcomp>` rendering attributes |
 | DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()`. Deferred from Phase 5 Spec B. |
-| DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Structures exist (Spec D); runtime missing. Deferred from Phase 5 Spec D. |
+| DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Covers both actuators (Phase 5 Spec D) and sensors (Phase 6 Spec D): structures exist for both, runtime missing for both. Includes sensor history pre-population in `reset_data()`. |
 | DT-108 | 10g | T1 | `dyntype` enum gating interpolation eligibility — restrict which `ActuatorDynamics` variants may use history buffer. Deferred from Phase 5 Spec D. |
 | DT-110 | 10g | T1 | `actuator_plugin` model array — per-actuator plugin ID (`int[nu]`, -1 sentinel). Depends on §66. Deferred from Phase 5 Spec D. |
+| DT-118 | 15 | T2 | `mj_contactForce()` — touch sensor force reconstruction via full contact force vector. Deferred from Phase 6 Spec A. |
+| DT-119 | 15 | T2 | Ray-geom intersection filter for touch sensor — filter contacts by surface normal alignment. Depends on DT-118. Deferred from Phase 6 Spec A. |
+| DT-120 | 15 | T1 | `MjObjectType::Camera` — frame sensor camera support (reftype="camera" currently warns + ignores). Deferred from Phase 6 Spec B. |
+| DT-121 | 15 | T1 | `InsideSite` sensor (`mjSENS_INSIDESITE`) — MuJoCo 3.x sensor type not yet supported. Deferred from Phase 6 Spec C. |
+| DT-122 | 15 | T2 | Mesh/Hfield/SDF geom distance support for `GeomDist`/`GeomPoint`/`GeomNormal` sensors. Deferred from Phase 6 Spec C. |
 
 ### Code Quality
 | Task | Source | Tier | Description |

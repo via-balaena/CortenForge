@@ -3463,11 +3463,48 @@ fn parse_sensor_attrs(e: &BytesStart, sensor_type: MjcfSensorType) -> MjcfSensor
     sensor.objname = get_attribute_opt(e, "joint")
         .or_else(|| get_attribute_opt(e, "site"))
         .or_else(|| get_attribute_opt(e, "body"))
+        .or_else(|| get_attribute_opt(e, "geom"))
         .or_else(|| get_attribute_opt(e, "tendon"))
         .or_else(|| get_attribute_opt(e, "actuator"))
         .or_else(|| get_attribute_opt(e, "objname"));
 
-    sensor.refname = get_attribute_opt(e, "reftype").or_else(|| get_attribute_opt(e, "refname"));
+    // Dual-object attributes for distance/normal/fromto sensors
+    if matches!(
+        sensor_type,
+        MjcfSensorType::Distance | MjcfSensorType::Normal | MjcfSensorType::Fromto
+    ) {
+        sensor.geom1 = get_attribute_opt(e, "geom1");
+        sensor.geom2 = get_attribute_opt(e, "geom2");
+        sensor.body1 = get_attribute_opt(e, "body1");
+        sensor.body2 = get_attribute_opt(e, "body2");
+
+        // Strict XOR validation: exactly one of {geom1, body1} required
+        let has_obj1 = sensor.geom1.is_some() || sensor.body1.is_some();
+        let has_both_obj1 = sensor.geom1.is_some() && sensor.body1.is_some();
+        if !has_obj1 || has_both_obj1 {
+            tracing::warn!(
+                "sensor '{}': exactly one of (geom1, body1) must be specified",
+                sensor.name
+            );
+        }
+
+        // Strict XOR validation: exactly one of {geom2, body2} required
+        let has_obj2 = sensor.geom2.is_some() || sensor.body2.is_some();
+        let has_both_obj2 = sensor.geom2.is_some() && sensor.body2.is_some();
+        if !has_obj2 || has_both_obj2 {
+            tracing::warn!(
+                "sensor '{}': exactly one of (geom2, body2) must be specified",
+                sensor.name
+            );
+        }
+    }
+
+    // Explicit object type (frame sensors only — builder validates)
+    sensor.objtype = get_attribute_opt(e, "objtype");
+
+    // Separate reftype and refname (previously conflated)
+    sensor.reftype = get_attribute_opt(e, "reftype");
+    sensor.refname = get_attribute_opt(e, "refname");
 
     if let Some(noise) = parse_float_attr(e, "noise") {
         sensor.noise = noise;
@@ -3482,6 +3519,11 @@ fn parse_sensor_attrs(e: &BytesStart, sensor_type: MjcfSensorType) -> MjcfSensor
             sensor.user = parts;
         }
     }
+
+    sensor.nsample = parse_int_attr(e, "nsample");
+    sensor.interp = get_attribute_opt(e, "interp");
+    sensor.delay = parse_float_attr(e, "delay");
+    sensor.interval = parse_float_attr(e, "interval");
 
     sensor
 }

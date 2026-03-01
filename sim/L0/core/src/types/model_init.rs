@@ -230,6 +230,11 @@ impl Model {
             sensor_noise: vec![],
             sensor_cutoff: vec![],
             sensor_name: vec![],
+            sensor_nsample: vec![],
+            sensor_interp: vec![],
+            sensor_historyadr: vec![],
+            sensor_delay: vec![],
+            sensor_interval: vec![],
 
             // Actuators (empty)
             actuator_trntype: vec![],

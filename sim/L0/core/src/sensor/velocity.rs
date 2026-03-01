@@ -16,6 +16,26 @@ use super::sensor_body_id;
 use crate::dynamics::object_velocity;
 use crate::forward::mj_subtree_vel;
 
+/// Resolve position and rotation matrix for a reference object.
+/// Mirrors MuJoCo's `get_xpos_xmat()` dispatch — file-local duplicate of
+/// `position.rs::get_ref_pos_mat()` (velocity and position stages have
+/// independent dispatch, matching MuJoCo's `mj_sensorPos`/`mj_sensorVel`
+/// separation).
+fn get_ref_pos_mat(
+    model: &Model,
+    data: &Data,
+    reftype: MjObjectType,
+    refid: usize,
+) -> (Vector3<f64>, Matrix3<f64>) {
+    match reftype {
+        MjObjectType::Site if refid < model.nsite => (data.site_xpos[refid], data.site_xmat[refid]),
+        MjObjectType::XBody if refid < model.nbody => (data.xpos[refid], data.xmat[refid]),
+        MjObjectType::Body if refid < model.nbody => (data.xipos[refid], data.ximat[refid]),
+        MjObjectType::Geom if refid < model.ngeom => (data.geom_xpos[refid], data.geom_xmat[refid]),
+        _ => (Vector3::zeros(), Matrix3::identity()),
+    }
+}
+
 /// Compute velocity-dependent sensor values.
 ///
 /// This is called after `mj_fwd_velocity` and computes sensors that depend on
@@ -116,8 +136,11 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
                         data.site_xpos[objid],
                         data.site_xmat[objid],
                     ),
-                    MjObjectType::Body if objid < model.nbody => {
+                    MjObjectType::XBody if objid < model.nbody => {
                         (objid, data.xpos[objid], data.xmat[objid])
+                    }
+                    MjObjectType::Body if objid < model.nbody => {
+                        (objid, data.xipos[objid], data.ximat[objid])
                     }
                     _ => {
                         sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
@@ -129,23 +152,56 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::FrameLinVel => {
-                let (body_id, site_pos) = match model.sensor_objtype[sensor_id] {
+                let (body_id, obj_pos) = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => {
                         (model.site_body[objid], data.site_xpos[objid])
                     }
-                    MjObjectType::Body if objid < model.nbody => (objid, data.xpos[objid]),
+                    MjObjectType::XBody if objid < model.nbody => (objid, data.xpos[objid]),
+                    MjObjectType::Body if objid < model.nbody => (objid, data.xipos[objid]),
+                    MjObjectType::Geom if objid < model.ngeom => {
+                        (model.geom_body[objid], data.geom_xpos[objid])
+                    }
                     _ => {
                         sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
                         continue;
                     }
                 };
-                let (_omega, v) = object_velocity(data, body_id, &site_pos, None);
-                sensor_write3(&mut data.sensordata, adr, &v);
+
+                if model.sensor_reftype[sensor_id] == MjObjectType::None {
+                    let (_omega, v) = object_velocity(data, body_id, &obj_pos, None);
+                    sensor_write3(&mut data.sensordata, adr, &v);
+                } else {
+                    let reftype = model.sensor_reftype[sensor_id];
+                    let refid = model.sensor_refid[sensor_id];
+                    let (ref_pos, ref_mat) = get_ref_pos_mat(model, data, reftype, refid);
+
+                    // Reference body_id for object_velocity()
+                    let ref_body_id = match reftype {
+                        MjObjectType::Site if refid < model.nsite => model.site_body[refid],
+                        MjObjectType::XBody | MjObjectType::Body if refid < model.nbody => refid,
+                        MjObjectType::Geom if refid < model.ngeom => model.geom_body[refid],
+                        _ => {
+                            sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                            continue;
+                        }
+                    };
+
+                    // Object velocity in world frame (flg_local = 0 → local_rot = None)
+                    let (_w_obj, v_obj) = object_velocity(data, body_id, &obj_pos, None);
+                    // Reference velocity in world frame
+                    let (w_ref, v_ref) = object_velocity(data, ref_body_id, &ref_pos, None);
+
+                    // Coriolis correction: v_relative = v_obj - v_ref - w_ref × (p_obj - p_ref)
+                    let dif = obj_pos - ref_pos;
+                    let coriolis = w_ref.cross(&dif);
+                    let v_relative = ref_mat.transpose() * (v_obj - v_ref - coriolis);
+                    sensor_write3(&mut data.sensordata, adr, &v_relative);
+                }
             }
 
             MjSensorType::FrameAngVel => {
-                // Angular velocity in world frame
-                let omega = match model.sensor_objtype[sensor_id] {
+                // Angular velocity (reference-point-independent for rigid bodies)
+                let w_obj = match model.sensor_objtype[sensor_id] {
                     MjObjectType::Site if objid < model.nsite => {
                         let body_id = model.site_body[objid];
                         Vector3::new(
@@ -154,14 +210,52 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
                             data.cvel[body_id][2],
                         )
                     }
-                    MjObjectType::Body if objid < model.nbody => Vector3::new(
-                        data.cvel[objid][0],
-                        data.cvel[objid][1],
-                        data.cvel[objid][2],
-                    ),
+                    MjObjectType::XBody | MjObjectType::Body if objid < model.nbody => {
+                        Vector3::new(
+                            data.cvel[objid][0],
+                            data.cvel[objid][1],
+                            data.cvel[objid][2],
+                        )
+                    }
+                    MjObjectType::Geom if objid < model.ngeom => {
+                        let body_id = model.geom_body[objid];
+                        Vector3::new(
+                            data.cvel[body_id][0],
+                            data.cvel[body_id][1],
+                            data.cvel[body_id][2],
+                        )
+                    }
                     _ => Vector3::zeros(),
                 };
-                sensor_write3(&mut data.sensordata, adr, &omega);
+
+                if model.sensor_reftype[sensor_id] == MjObjectType::None {
+                    sensor_write3(&mut data.sensordata, adr, &w_obj);
+                } else {
+                    let reftype = model.sensor_reftype[sensor_id];
+                    let refid = model.sensor_refid[sensor_id];
+                    // Only ref_mat needed — angular velocity is reference-point-independent
+                    let (_ref_pos, ref_mat) = get_ref_pos_mat(model, data, reftype, refid);
+
+                    // Reference angular velocity in world frame
+                    let ref_body_id = match reftype {
+                        MjObjectType::Site if refid < model.nsite => model.site_body[refid],
+                        MjObjectType::XBody | MjObjectType::Body if refid < model.nbody => refid,
+                        MjObjectType::Geom if refid < model.ngeom => model.geom_body[refid],
+                        _ => {
+                            sensor_write3(&mut data.sensordata, adr, &Vector3::zeros());
+                            continue;
+                        }
+                    };
+                    let w_ref = Vector3::new(
+                        data.cvel[ref_body_id][0],
+                        data.cvel[ref_body_id][1],
+                        data.cvel[ref_body_id][2],
+                    );
+
+                    // w_relative = R_ref^T * (w_obj - w_ref), NO Coriolis for angular velocity
+                    let w_relative = ref_mat.transpose() * (w_obj - w_ref);
+                    sensor_write3(&mut data.sensordata, adr, &w_relative);
+                }
             }
 
             MjSensorType::SubtreeLinVel => {
