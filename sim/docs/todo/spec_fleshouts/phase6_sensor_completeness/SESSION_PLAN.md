@@ -459,7 +459,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 18: Spec D implementation
 
-- [ ] Complete
+- [x] Done — `8b3c248`
 
 ```
 Phase 6 Sensor Completeness — implement Spec D.
@@ -480,7 +480,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 19: Spec D review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — create Spec D review document.
@@ -556,6 +556,6 @@ Present the Review Verdict (section 10) to the user when done.
 | 15 | Spec C review — execute | Done | `7e6ded4` |
 | 16 | Spec D rubric | Done | `8239eda` |
 | 17 | Spec D spec | Done | `c914cfe` |
-| 18 | Spec D implementation | Pending | — |
-| 19 | Spec D review — create document | Pending | — |
+| 18 | Spec D implementation | Done | `8b3c248` |
+| 19 | Spec D review — create document | Done | — |
 | 20 | Spec D review — execute | Pending | — |
