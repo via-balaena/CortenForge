@@ -480,6 +480,29 @@ impl MjSensorType {
             Self::User => 0, // Variable, must be set explicitly
         }
     }
+
+    /// Get the MuJoCo data kind for this sensor type.
+    ///
+    /// Determines how `apply_cutoff()` clamps sensor values. Matches MuJoCo's
+    /// `user_objects.cc` datatype assignment switch.
+    #[must_use]
+    pub const fn data_kind(self) -> MjSensorDataKind {
+        match self {
+            // POSITIVE: non-negative sensors (preserve negative sentinels)
+            Self::Touch | Self::Rangefinder => MjSensorDataKind::Positive,
+
+            // QUATERNION: unit quaternions
+            Self::BallQuat | Self::FrameQuat => MjSensorDataKind::Quaternion,
+
+            // AXIS: unit axis vectors
+            Self::FrameXAxis | Self::FrameYAxis | Self::FrameZAxis | Self::GeomNormal => {
+                MjSensorDataKind::Axis
+            }
+
+            // REAL: everything else (default in MuJoCo)
+            _ => MjSensorDataKind::Real,
+        }
+    }
 }
 
 /// Pipeline stage for user sensor callbacks (DT-79).
@@ -494,6 +517,30 @@ pub enum SensorStage {
     Vel,
     /// Acceleration stage (after constraint solve).
     Acc,
+}
+
+/// MuJoCo sensor data kind — determines postprocess cutoff behavior.
+///
+/// MuJoCo's `sensor_datatype` stores the data kind (`mjDATATYPE_REAL`, etc.),
+/// which controls how `apply_cutoff()` clamps sensor values:
+/// - `Real` → `clamp(-cutoff, cutoff)` (symmetric)
+/// - `Positive` → `min(cutoff, value)` (preserves negative sentinels like -1.0)
+/// - `Axis` / `Quaternion` → no clamping (normalized vectors/quaternions
+///   should not be clamped to a magnitude range)
+///
+/// Note: CortenForge's `MjSensorDataType` stores the *pipeline stage*
+/// (Position/Velocity/Acceleration), NOT this data kind. These are separate
+/// concepts that MuJoCo happens to also call "datatype."
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MjSensorDataKind {
+    /// Scalar real value — clamp to `[-cutoff, cutoff]`. MuJoCo: `mjDATATYPE_REAL` (0).
+    Real,
+    /// Non-negative value — clamp to `min(cutoff, value)`. MuJoCo: `mjDATATYPE_POSITIVE` (1).
+    Positive,
+    /// Unit axis vector — no cutoff clamping. MuJoCo: `mjDATATYPE_AXIS` (2).
+    Axis,
+    /// Unit quaternion — no cutoff clamping. MuJoCo: `mjDATATYPE_QUATERNION` (3).
+    Quaternion,
 }
 
 /// Sensor data dependency stage.

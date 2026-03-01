@@ -308,7 +308,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 12: Spec C spec (missing sensor types)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — write Spec C spec.
@@ -380,7 +380,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase6_sensor_completeness/SPEC_C_REVIEW.
 
 ## Session 15: Spec C review — execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — execute Spec C review.
@@ -553,7 +553,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 12 | Spec C spec | Done | `0a90285` |
 | 13 | Spec C implementation | Done | `1b2c422` |
 | 14 | Spec C review — create document | Done | `1703105` |
-| 15 | Spec C review — execute | Pending | — |
+| 15 | Spec C review — execute | Done | `pending` |
 | 16 | Spec D rubric | Pending | — |
 | 17 | Spec D spec | Pending | — |
 | 18 | Spec D implementation | Pending | — |

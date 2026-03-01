@@ -111,7 +111,7 @@ DT-96 (lazy energy eval, post-v1.0), DT-97 (golden file generation, Phase 12)
 
 **Actuators (Phase 5) ✅:** ~~DT-6~~ (done), ~~§63~~ (done), ~~DT-56~~ (done), ~~DT-57~~ (done), ~~DT-59~~ (done), ~~DT-77~~ (done), ~~DT-58~~ (done), ~~DT-8~~ (done), ~~DT-9~~ (partially done — parsing landed, runtime → DT-107/108), ~~DT-60~~ (subsumed by §41 S4.2a), ~~§61~~ (done), ~~DT-106~~ (done). Deferred to post-v1.0: DT-104, DT-105, DT-107, DT-108, DT-110, DT-111–116
 
-**Sensors (Phase 6):** §62, DT-62, DT-63, DT-64, DT-102, DT-109. Deferred to post-v1.0: DT-120 (Camera), DT-118 (contactForce), DT-119 (ray-geom filter)
+**Sensors (Phase 6):** §62, DT-62, DT-63, DT-64, DT-102, DT-109. Deferred to post-v1.0: DT-120 (Camera), DT-118 (contactForce), DT-119 (ray-geom filter), DT-121 (InsideSite), DT-122 (Mesh/Hfield/SDF geom distance)
 
 **Parsing/defaults (Phase 7):** DT-2, DT-3, DT-11, DT-13, DT-14, DT-85, DT-88
 

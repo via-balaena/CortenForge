@@ -358,3 +358,55 @@ contact's force if the ray intersects the sensor site's geometric volume via
 Low to moderate — for typical models where the sensor site covers the full contact
 surface, the difference is zero. Matters for precise tactile sensing with small
 sensor sites on multi-geom bodies.
+
+---
+
+### DT-121. `InsideSite` Sensor (`mjSENS_INSIDESITE`)
+**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Origin:** Phase 6 Spec C, Scope Adjustment (R25/R74)
+
+#### Current State
+
+MuJoCo 3.5.0 has `mjSENS_INSIDESITE` — a sensor that tests whether a
+specified point (site or geom) lies inside a reference site's geometric
+volume. CortenForge does not implement this sensor type. It was not listed
+in the umbrella spec and was discovered during Spec C rubric stress-testing
+(R25).
+
+#### Objective
+
+Add `InsideSite` variant to `MjSensorType` and `MjcfSensorType`. Implement
+geometric containment testing (point-in-geom for sphere, box, capsule,
+cylinder, ellipsoid). Wire into position-stage evaluation.
+
+#### Conformance Impact
+
+Minor — `InsideSite` is uncommon in RL/robotics models. Primarily used for
+spatial trigger detection.
+
+---
+
+### DT-122. Mesh/Hfield/SDF Geom Distance Support
+**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Origin:** Phase 6 Spec C, S3 (geom_distance algorithm)
+
+#### Current State
+
+`geom_distance()` (implemented in Spec C) supports convex primitives only
+(Sphere, Box, Capsule, Cylinder, Ellipsoid). Non-convex geom types (Plane,
+Mesh, Hfield, SDF) return `(cutoff, [0; 6])` with a warning. MuJoCo's
+`mj_geomDistance()` supports all geom types via its collision backend.
+
+#### Objective
+
+Extend `geom_distance()` to support:
+- Plane-geom distance (analytic for plane vs convex primitive)
+- Mesh-geom distance (requires convex hull or GJK on mesh triangles)
+- Hfield-geom distance (requires heightfield sampling)
+- SDF-geom distance (requires signed distance field evaluation)
+
+#### Conformance Impact
+
+Gap for non-convex geometry distance queries. Acceptable for v1.0 since
+common RL/robotics models use convex primitives. Becomes relevant for
+environments with terrain (hfield) or complex objects (mesh).
