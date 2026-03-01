@@ -99,6 +99,15 @@ pub fn apply_fusestatic(mjcf: &mut MjcfModel) {
                     protected.insert(name.clone());
                 }
             }
+            // Distance/normal/fromto sensors: protect body references
+            MjcfSensorType::Distance | MjcfSensorType::Normal | MjcfSensorType::Fromto => {
+                if let Some(ref name) = sensor.body1 {
+                    protected.insert(name.clone());
+                }
+                if let Some(ref name) = sensor.body2 {
+                    protected.insert(name.clone());
+                }
+            }
             _ => {}
         }
     }

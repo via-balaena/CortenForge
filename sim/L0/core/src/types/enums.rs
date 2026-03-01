@@ -415,6 +415,19 @@ pub enum MjSensorType {
     /// Subtree angular momentum (3D).
     SubtreeAngMom,
 
+    // ========== New sensors (Phase 6 Spec C) ==========
+    /// Simulation clock (reads data.time, 1D). MuJoCo: mjSENS_CLOCK.
+    Clock,
+    /// Net actuator force at joint DOF (1D). MuJoCo: mjSENS_JOINTACTFRC.
+    /// Reads data.qfrc_actuator[model.jnt_dof_adr[objid]].
+    JointActuatorFrc,
+    /// Signed distance between two geoms or bodies (1D). MuJoCo: mjSENS_GEOMDIST.
+    GeomDist,
+    /// Surface normal at nearest point between geoms (3D). MuJoCo: mjSENS_GEOMNORMAL.
+    GeomNormal,
+    /// Nearest surface points between two geoms (6D). MuJoCo: mjSENS_GEOMFROMTO.
+    GeomFromTo,
+
     // ========== User-defined ==========
     /// User-defined sensor (arbitrary dimension).
     User,
@@ -435,7 +448,10 @@ impl MjSensorType {
             | Self::ActuatorFrc
             | Self::JointLimitFrc
             | Self::TendonLimitFrc
-            | Self::Rangefinder => 1,
+            | Self::Rangefinder
+            | Self::Clock
+            | Self::JointActuatorFrc
+            | Self::GeomDist => 1,
 
             Self::Accelerometer
             | Self::Velocimeter
@@ -454,9 +470,12 @@ impl MjSensorType {
             | Self::FrameAngAcc
             | Self::SubtreeCom
             | Self::SubtreeLinVel
-            | Self::SubtreeAngMom => 3,
+            | Self::SubtreeAngMom
+            | Self::GeomNormal => 3,
 
             Self::BallQuat | Self::FrameQuat => 4,
+
+            Self::GeomFromTo => 6,
 
             Self::User => 0, // Variable, must be set explicitly
         }

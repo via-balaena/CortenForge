@@ -3468,6 +3468,37 @@ fn parse_sensor_attrs(e: &BytesStart, sensor_type: MjcfSensorType) -> MjcfSensor
         .or_else(|| get_attribute_opt(e, "actuator"))
         .or_else(|| get_attribute_opt(e, "objname"));
 
+    // Dual-object attributes for distance/normal/fromto sensors
+    if matches!(
+        sensor_type,
+        MjcfSensorType::Distance | MjcfSensorType::Normal | MjcfSensorType::Fromto
+    ) {
+        sensor.geom1 = get_attribute_opt(e, "geom1");
+        sensor.geom2 = get_attribute_opt(e, "geom2");
+        sensor.body1 = get_attribute_opt(e, "body1");
+        sensor.body2 = get_attribute_opt(e, "body2");
+
+        // Strict XOR validation: exactly one of {geom1, body1} required
+        let has_obj1 = sensor.geom1.is_some() || sensor.body1.is_some();
+        let has_both_obj1 = sensor.geom1.is_some() && sensor.body1.is_some();
+        if !has_obj1 || has_both_obj1 {
+            tracing::warn!(
+                "sensor '{}': exactly one of (geom1, body1) must be specified",
+                sensor.name
+            );
+        }
+
+        // Strict XOR validation: exactly one of {geom2, body2} required
+        let has_obj2 = sensor.geom2.is_some() || sensor.body2.is_some();
+        let has_both_obj2 = sensor.geom2.is_some() && sensor.body2.is_some();
+        if !has_obj2 || has_both_obj2 {
+            tracing::warn!(
+                "sensor '{}': exactly one of (geom2, body2) must be specified",
+                sensor.name
+            );
+        }
+    }
+
     // Explicit object type (frame sensors only — builder validates)
     sensor.objtype = get_attribute_opt(e, "objtype");
 

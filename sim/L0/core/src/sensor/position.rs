@@ -16,7 +16,8 @@ use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
 use sim_types::Pose;
 use std::sync::Arc;
 
-use super::postprocess::{sensor_write, sensor_write3, sensor_write4};
+use super::geom_distance::geom_distance;
+use super::postprocess::{sensor_write, sensor_write3, sensor_write4, sensor_write6};
 use super::sensor_body_id;
 
 /// Resolve position and rotation matrix for a reference object.
@@ -415,6 +416,74 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     if let Some(ref cb) = model.cb_sensor {
                         (cb.0)(model, data, sensor_id, SensorStage::Pos);
                     }
+                }
+            }
+
+            // Clock: reads simulation time. MuJoCo: mjSENS_CLOCK in mj_computeSensorPos.
+            MjSensorType::Clock => {
+                let adr = model.sensor_adr[sensor_id];
+                sensor_write(&mut data.sensordata, adr, 0, data.time);
+            }
+
+            // Geom distance sensors: shared dual-object + all-pairs minimum distance.
+            // MuJoCo: mj_computeSensorPos case mjSENS_GEOMDIST/GEOMNORMAL/GEOMFROMTO.
+            MjSensorType::GeomDist | MjSensorType::GeomNormal | MjSensorType::GeomFromTo => {
+                let adr = model.sensor_adr[sensor_id];
+                let objtype = model.sensor_objtype[sensor_id];
+                let objid = model.sensor_objid[sensor_id];
+                let reftype = model.sensor_reftype[sensor_id];
+                let refid = model.sensor_refid[sensor_id];
+                let cutoff = model.sensor_cutoff[sensor_id];
+                let sensor_type = model.sensor_type[sensor_id];
+
+                // Resolve geom lists — body ⇒ iterate body's direct geoms; geom ⇒ single
+                let (n1, id1) = if objtype == MjObjectType::Body {
+                    (model.body_geom_num[objid], model.body_geom_adr[objid])
+                } else {
+                    (1, objid)
+                };
+                let (n2, id2) = if reftype == MjObjectType::Body {
+                    (model.body_geom_num[refid], model.body_geom_adr[refid])
+                } else {
+                    (1, refid)
+                };
+
+                // All-pairs minimum distance
+                let mut dist = cutoff;
+                let mut fromto = [0.0f64; 6];
+                for g1 in id1..id1 + n1 {
+                    for g2 in id2..id2 + n2 {
+                        let (dist_new, fromto_new) = geom_distance(model, data, g1, g2, cutoff);
+                        if dist_new < dist {
+                            dist = dist_new;
+                            fromto = fromto_new;
+                        }
+                    }
+                }
+
+                // Per-type output
+                match sensor_type {
+                    MjSensorType::GeomDist => {
+                        sensor_write(&mut data.sensordata, adr, 0, dist);
+                    }
+                    MjSensorType::GeomNormal => {
+                        let normal = Vector3::new(
+                            fromto[3] - fromto[0],
+                            fromto[4] - fromto[1],
+                            fromto[5] - fromto[2],
+                        );
+                        // Zero-vector guard: only normalize if non-zero
+                        let output = if normal.norm_squared() > 0.0 {
+                            normal.normalize()
+                        } else {
+                            normal // stays [0, 0, 0]
+                        };
+                        sensor_write3(&mut data.sensordata, adr, &output);
+                    }
+                    MjSensorType::GeomFromTo => {
+                        sensor_write6(&mut data.sensordata, adr, &fromto);
+                    }
+                    _ => unreachable!(),
                 }
             }
 

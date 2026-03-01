@@ -2932,6 +2932,18 @@ pub enum MjcfSensorType {
     /// Frame angular acceleration (3D).
     Frameangacc,
 
+    // New sensors (Phase 6 Spec C)
+    /// Clock sensor (simulation time, 1D). MJCF element: `<clock>`.
+    Clock,
+    /// Joint actuator force sensor (1D). MJCF element: `<jointactuatorfrc>`.
+    Jointactuatorfrc,
+    /// Geom distance sensor (1D). MJCF element: `<distance>`.
+    Distance,
+    /// Surface normal between geoms (3D). MJCF element: `<normal>`.
+    Normal,
+    /// From-to points between geoms (6D). MJCF element: `<fromto>`.
+    Fromto,
+
     // User-defined sensors
     /// User-defined sensor.
     User,
@@ -2972,6 +2984,11 @@ impl MjcfSensorType {
             "subtreeangmom" => Some(Self::Subtreeangmom),
             "framelinacc" => Some(Self::Framelinacc),
             "frameangacc" => Some(Self::Frameangacc),
+            "clock" => Some(Self::Clock),
+            "jointactuatorfrc" => Some(Self::Jointactuatorfrc),
+            "distance" => Some(Self::Distance),
+            "normal" => Some(Self::Normal),
+            "fromto" => Some(Self::Fromto),
             "user" => Some(Self::User),
             _ => None,
         }
@@ -3012,6 +3029,11 @@ impl MjcfSensorType {
             Self::Subtreeangmom => "subtreeangmom",
             Self::Framelinacc => "framelinacc",
             Self::Frameangacc => "frameangacc",
+            Self::Clock => "clock",
+            Self::Jointactuatorfrc => "jointactuatorfrc",
+            Self::Distance => "distance",
+            Self::Normal => "normal",
+            Self::Fromto => "fromto",
             Self::User => "user",
         }
     }
@@ -3031,7 +3053,10 @@ impl MjcfSensorType {
             | Self::Jointlimitfrc
             | Self::Tendonlimitfrc
             | Self::Touch
-            | Self::Rangefinder => 1,
+            | Self::Rangefinder
+            | Self::Clock
+            | Self::Jointactuatorfrc
+            | Self::Distance => 1,
 
             Self::Framepos
             | Self::Framexaxis
@@ -3050,9 +3075,12 @@ impl MjcfSensorType {
             | Self::Magnetometer
             | Self::Subtreecom
             | Self::Subtreelinvel
-            | Self::Subtreeangmom => 3,
+            | Self::Subtreeangmom
+            | Self::Normal => 3,
 
             Self::Ballquat | Self::Framequat => 4,
+
+            Self::Fromto => 6,
 
             // User sensors have configurable dimension, default to 1
             Self::User => 1,
@@ -3088,6 +3116,14 @@ pub struct MjcfSensor {
     pub cutoff: f64,
     /// User-defined data fields.
     pub user: Vec<f64>,
+    /// First geom name (for distance/normal/fromto sensors).
+    pub geom1: Option<String>,
+    /// Second geom name (for distance/normal/fromto sensors).
+    pub geom2: Option<String>,
+    /// First body name (for distance/normal/fromto sensors).
+    pub body1: Option<String>,
+    /// Second body name (for distance/normal/fromto sensors).
+    pub body2: Option<String>,
 }
 
 impl Default for MjcfSensor {
@@ -3103,6 +3139,10 @@ impl Default for MjcfSensor {
             noise: 0.0,
             cutoff: 0.0,
             user: Vec::new(),
+            geom1: None,
+            geom2: None,
+            body1: None,
+            body2: None,
         }
     }
 }

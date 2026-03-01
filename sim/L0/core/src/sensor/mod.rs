@@ -8,6 +8,7 @@
 use crate::types::{MjObjectType, Model};
 
 pub mod acceleration;
+pub(crate) mod geom_distance;
 pub(crate) mod position;
 pub(crate) mod postprocess;
 pub(crate) mod velocity;

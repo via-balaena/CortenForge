@@ -299,3 +299,10 @@ pub mod actuator_phase5;
 /// Phase 6 Spec A tests: objtype attribute parsing (DT-62), multi-geom touch
 /// sensor aggregation (DT-64), geom-attached FrameLinAcc/FrameAngAcc (DT-102).
 pub mod sensor_phase6;
+
+// ============================================================================
+// Phase 6: Sensor Completeness Tests (Spec C)
+// ============================================================================
+
+/// Phase 6 Spec C tests: Clock, JointActuatorFrc, GeomDist, GeomNormal, GeomFromTo.
+pub mod sensor_phase6_spec_c;

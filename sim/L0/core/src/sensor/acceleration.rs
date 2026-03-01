@@ -272,6 +272,15 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 }
             }
 
+            // JointActuatorFrc: reads net actuator force at joint DOF.
+            // MuJoCo: mjSENS_JOINTACTFRC in mj_computeSensorAcc.
+            MjSensorType::JointActuatorFrc => {
+                let objid = model.sensor_objid[sensor_id];
+                let adr = model.sensor_adr[sensor_id];
+                let dof_adr = model.jnt_dof_adr[objid];
+                sensor_write(&mut data.sensordata, adr, 0, data.qfrc_actuator[dof_adr]);
+            }
+
             // Skip position/velocity-dependent sensors
             _ => {}
         }

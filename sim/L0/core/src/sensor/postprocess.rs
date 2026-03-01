@@ -33,6 +33,18 @@ pub fn sensor_write4(sensordata: &mut DVector<f64>, adr: usize, w: f64, x: f64, 
     sensor_write(sensordata, adr, 3, z);
 }
 
+/// Write a 6D vector to sensor data with bounds checking.
+/// Used by GeomFromTo sensor (fromto points).
+#[inline]
+pub fn sensor_write6(sensordata: &mut DVector<f64>, adr: usize, v: &[f64; 6]) {
+    sensor_write(sensordata, adr, 0, v[0]);
+    sensor_write(sensordata, adr, 1, v[1]);
+    sensor_write(sensordata, adr, 2, v[2]);
+    sensor_write(sensordata, adr, 3, v[3]);
+    sensor_write(sensordata, adr, 4, v[4]);
+    sensor_write(sensordata, adr, 5, v[5]);
+}
+
 /// Apply sensor post-processing: noise addition and cutoff clamping.
 ///
 /// MuJoCo applies noise and cutoff after all sensor values are computed:
@@ -54,6 +66,19 @@ pub fn mj_sensor_postprocess(model: &Model, data: &mut Data) {
         let cutoff = model.sensor_cutoff[sensor_id];
         if cutoff > 0.0 {
             let sensor_type = model.sensor_type[sensor_id];
+
+            // Skip cutoff clamping for exempt sensor types:
+            // - GeomFromTo: MuJoCo explicitly returns before clamping
+            //   (cutoff used only as mj_geomDistance search radius)
+            // - GeomNormal: MuJoCo implicitly skips via AXIS datatype
+            //   (only REAL/POSITIVE branches execute in apply_cutoff)
+            if matches!(
+                sensor_type,
+                MjSensorType::GeomFromTo | MjSensorType::GeomNormal
+            ) {
+                continue;
+            }
+
             for i in 0..dim {
                 let idx = adr + i;
                 if idx < data.sensordata.len() {

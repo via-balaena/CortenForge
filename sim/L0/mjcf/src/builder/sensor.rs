@@ -4,7 +4,7 @@
 //! Handles object resolution (joint, tendon, actuator, site, body, geom)
 //! and sensor type/datatype mapping.
 
-use sim_core::{MjObjectType, MjSensorDataType, MjSensorType};
+use sim_core::{MjJointType, MjObjectType, MjSensorDataType, MjSensorType};
 use tracing::warn;
 
 use super::{ModelBuilder, ModelConversionError};
@@ -34,20 +34,56 @@ impl ModelBuilder {
             };
             let dim = sensor_type.dim();
             let datatype = sensor_datatype(sensor_type);
-            let (objtype, objid) = self.resolve_sensor_object(
+
+            // Dual-object sensors (GeomDist/Normal/FromTo) use geom1/body1 + geom2/body2
+            // instead of the standard objname/refname resolution path.
+            let (objtype, objid, reftype, refid) = if matches!(
                 sensor_type,
-                mjcf_sensor.objname.as_deref(),
-                mjcf_sensor.objtype.as_deref(),
-            )?;
+                MjSensorType::GeomDist | MjSensorType::GeomNormal | MjSensorType::GeomFromTo
+            ) {
+                let (ot, oi) = self.resolve_dual_object_side(
+                    mjcf_sensor.geom1.as_deref(),
+                    mjcf_sensor.body1.as_deref(),
+                    "1",
+                )?;
+                let (rt, ri) = self.resolve_dual_object_side(
+                    mjcf_sensor.geom2.as_deref(),
+                    mjcf_sensor.body2.as_deref(),
+                    "2",
+                )?;
+                // Self-distance rejection: same geom on both sides
+                if ot == MjObjectType::Geom && rt == MjObjectType::Geom && oi == ri {
+                    return Err(ModelConversionError {
+                        message:
+                            "distance sensor: 1st body/geom must be different from 2nd body/geom"
+                                .into(),
+                    });
+                }
+                if ot == MjObjectType::Body && rt == MjObjectType::Body && oi == ri {
+                    return Err(ModelConversionError {
+                        message:
+                            "distance sensor: 1st body/geom must be different from 2nd body/geom"
+                                .into(),
+                    });
+                }
+                (ot, oi, rt, ri)
+            } else {
+                let (ot, oi) = self.resolve_sensor_object(
+                    sensor_type,
+                    mjcf_sensor.objname.as_deref(),
+                    mjcf_sensor.objtype.as_deref(),
+                )?;
+                let (rt, ri) = self.resolve_reference_object(
+                    mjcf_sensor.reftype.as_deref(),
+                    mjcf_sensor.refname.as_deref(),
+                )?;
+                (ot, oi, rt, ri)
+            };
 
             self.sensor_type.push(sensor_type);
             self.sensor_datatype.push(datatype);
             self.sensor_objtype.push(objtype);
             self.sensor_objid.push(objid);
-            let (reftype, refid) = self.resolve_reference_object(
-                mjcf_sensor.reftype.as_deref(),
-                mjcf_sensor.refname.as_deref(),
-            )?;
             self.sensor_reftype.push(reftype);
             self.sensor_refid.push(refid);
             self.sensor_adr.push(adr);
@@ -81,8 +117,8 @@ impl ModelBuilder {
         objname: Option<&str>,
         objtype_str: Option<&str>,
     ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
-        // User sensors have no object reference
-        if sensor_type == MjSensorType::User {
+        // Clock and User sensors have no object reference
+        if sensor_type == MjSensorType::User || sensor_type == MjSensorType::Clock {
             return Ok((MjObjectType::None, 0));
         }
 
@@ -234,6 +270,28 @@ impl ModelBuilder {
                 }
             }
 
+            // JointActuatorFrc: objname is a joint name (hinge/slide only)
+            MjSensorType::JointActuatorFrc => {
+                let id = *self
+                    .joint_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "jointactuatorfrc sensor references unknown joint '{name}'"
+                        ),
+                    })?;
+                // Validate joint type: MuJoCo rejects ball/free joints
+                let jnt_type = self.jnt_type[id];
+                if jnt_type != MjJointType::Hinge && jnt_type != MjJointType::Slide {
+                    return Err(ModelConversionError {
+                        message: format!(
+                            "jointactuatorfrc sensor: joint '{name}' must be slide or hinge"
+                        ),
+                    });
+                }
+                Ok((MjObjectType::Joint, id))
+            }
+
             // Subtree sensors: objname is a body name
             MjSensorType::SubtreeCom
             | MjSensorType::SubtreeLinVel
@@ -247,8 +305,14 @@ impl ModelBuilder {
                 Ok((MjObjectType::Body, id))
             }
 
-            // User handled above (early return)
-            MjSensorType::User => unreachable!(),
+            // GeomDist/GeomNormal/GeomFromTo handled in process_sensors() via
+            // resolve_dual_object_side() — they never reach resolve_sensor_object().
+            MjSensorType::GeomDist | MjSensorType::GeomNormal | MjSensorType::GeomFromTo => {
+                unreachable!("geom distance sensors use dual-object resolution")
+            }
+
+            // Clock and User handled above (early return)
+            MjSensorType::Clock | MjSensorType::User => unreachable!(),
         }
     }
 
@@ -271,6 +335,44 @@ impl ModelBuilder {
             Err(ModelConversionError {
                 message: format!("frame sensor references unknown object '{name}'"),
             })
+        }
+    }
+
+    /// Resolve one side of a dual-object sensor (geom1/body1 or geom2/body2).
+    ///
+    /// Exactly one of geom_name or body_name must be Some (validated by parser).
+    /// Returns (MjObjectType::Geom, id) or (MjObjectType::Body, id).
+    fn resolve_dual_object_side(
+        &self,
+        geom_name: Option<&str>,
+        body_name: Option<&str>,
+        side: &str,
+    ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
+        match (geom_name, body_name) {
+            (Some(name), None) => {
+                let id = *self
+                    .geom_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("distance sensor references unknown geom{side} '{name}'"),
+                    })?;
+                Ok((MjObjectType::Geom, id))
+            }
+            (None, Some(name)) => {
+                let id = *self
+                    .body_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("distance sensor references unknown body{side} '{name}'"),
+                    })?;
+                Ok((MjObjectType::Body, id))
+            }
+            _ => Err(ModelConversionError {
+                message: format!(
+                    "distance sensor: exactly one of (geom{side}, body{side}) \
+                     must be specified"
+                ),
+            }),
         }
     }
 
@@ -397,6 +499,11 @@ fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
         MjcfSensorType::User => Some(MjSensorType::User),
         MjcfSensorType::Jointlimitfrc => Some(MjSensorType::JointLimitFrc),
         MjcfSensorType::Tendonlimitfrc => Some(MjSensorType::TendonLimitFrc),
+        MjcfSensorType::Clock => Some(MjSensorType::Clock),
+        MjcfSensorType::Jointactuatorfrc => Some(MjSensorType::JointActuatorFrc),
+        MjcfSensorType::Distance => Some(MjSensorType::GeomDist),
+        MjcfSensorType::Normal => Some(MjSensorType::GeomNormal),
+        MjcfSensorType::Fromto => Some(MjSensorType::GeomFromTo),
     }
 }
 
@@ -415,7 +522,11 @@ fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
         | MjSensorType::FrameZAxis
         | MjSensorType::SubtreeCom
         | MjSensorType::Rangefinder
-        | MjSensorType::Magnetometer => MjSensorDataType::Position,
+        | MjSensorType::Magnetometer
+        | MjSensorType::Clock
+        | MjSensorType::GeomDist
+        | MjSensorType::GeomNormal
+        | MjSensorType::GeomFromTo => MjSensorDataType::Position,
 
         // Velocity stage (evaluated in mj_sensor_vel, after velocity FK)
         MjSensorType::JointVel
@@ -440,6 +551,7 @@ fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
         | MjSensorType::TendonLimitFrc
         | MjSensorType::FrameLinAcc
         | MjSensorType::FrameAngAcc
+        | MjSensorType::JointActuatorFrc
         | MjSensorType::User => MjSensorDataType::Acceleration,
     }
 }
