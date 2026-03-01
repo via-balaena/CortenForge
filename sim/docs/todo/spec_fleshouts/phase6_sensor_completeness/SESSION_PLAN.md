@@ -331,7 +331,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 13: Spec C implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 6 Sensor Completeness — implement Spec C.
@@ -551,7 +551,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 10 | Spec B review — execute | Done | `0683822` |
 | 11 | Spec C rubric | Done | `9a63a6d` |
 | 12 | Spec C spec | Done | `0a90285` |
-| 13 | Spec C implementation | Pending | — |
+| 13 | Spec C implementation | Done | `1b2c422` |
 | 14 | Spec C review — create document | Pending | — |
 | 15 | Spec C review — execute | Pending | — |
 | 16 | Spec D rubric | Pending | — |
