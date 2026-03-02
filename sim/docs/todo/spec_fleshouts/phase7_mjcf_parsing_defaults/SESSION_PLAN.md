@@ -390,7 +390,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase7_mjcf_parsing_defaults/SPEC_B_REVIE
 
 ## Session 12: Spec B review — execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — execute Spec B review.
@@ -563,7 +563,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 9 | Spec B spec | Done | `06e85d7` |
 | 10 | Spec B implementation | Done | `3f70616` |
 | 11 | Spec B review — create document | Done | `038666c` |
-| 12 | Spec B review — execute | Pending | |
+| 12 | Spec B review — execute | Done | |
 | 13 | Spec C rubric | Pending | |
 | 14 | Spec C spec | Pending | |
 | 15 | Spec C implementation | Pending | |

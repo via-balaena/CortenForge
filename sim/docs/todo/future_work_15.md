@@ -8,41 +8,14 @@ for completeness but not blocking typical RL or robotics workflows.
 
 ---
 
-### 60. `springinertia` — Joint Inertia-Spring Coupling
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~60. `springinertia` — Joint Inertia-Spring Coupling~~
+**Status:** DROPPED | **Effort:** — | **Prerequisites:** —
 
-#### Current State
-
-Completely absent. Not parsed, not stored, not enforced.
-
-#### Objective
-
-Parse `springinertia` from `<joint>` and add the inertia-spring coupling
-term to the mass matrix.
-
-#### Specification
-
-1. **MJCF parsing**: Parse `springinertia` (float, default 0) from `<joint>`.
-   Also parse from `<default>` class.
-2. **Model storage**: Add to joint attributes on `Model`.
-3. **Runtime effect**: In CRBA (`mj_crba`), add `springinertia` to the joint's
-   diagonal mass matrix entry. This couples spring stiffness with apparent
-   inertia — MuJoCo uses it to improve implicit integrator stability for
-   stiff springs by making the effective inertia proportional to spring
-   stiffness.
-4. **Formula**: `M[dof,dof] += springinertia * stiffness[dof]`.
-
-#### Acceptance Criteria
-
-1. `springinertia="0"` (default) has no effect.
-2. `springinertia="1"` with `stiffness="100"` adds 100 to the mass matrix
-   diagonal for that DOF.
-3. Improves implicit integrator stability for stiff springs.
-
-#### Files
-
-- `sim/L0/mjcf/src/builder/` — parse springinertia
-- `sim/L0/core/src/dynamics/crba.rs` — CRBA diagonal modification
+> **DROPPED (Phase 7 Spec B, EGT-1):** Verified nonexistent in MuJoCo.
+> Zero GitHub search results for `springinertia` in the MuJoCo repository,
+> no field in `mjmodel.h`, no XML attribute in MuJoCo's schema. The original
+> future_work entry was based on incorrect assumptions. Conformance impact: none
+> — the feature does not exist in MuJoCo C.
 
 ---
 
@@ -165,8 +138,13 @@ Expand `dynprm` to 10 elements to match MuJoCo's array size.
 
 ---
 
-### 64. Ball/Free Joint Spring Force and Energy
-**Status:** Not started | **Effort:** S | **Prerequisites:** Phase 7 Spec A (`qpos_spring` array)
+### ~~64. Ball/Free Joint Spring Force and Energy~~
+**Status:** Done | **Effort:** S | **Prerequisites:** Phase 7 Spec A (`qpos_spring` array)
+
+> **Done (Phase 7 Spec B, commit `3f70616`).** Ball/free spring force in
+> `passive.rs` via quaternion geodesic (`subquat()`), spring energy in
+> `energy.rs`. Also fixed pre-existing energy bugs: DISABLE_SPRING gate,
+> sleep filter, stiffness guard. 17 tests.
 
 #### Current State
 
@@ -221,8 +199,12 @@ free joints using quaternion distance.
 
 ---
 
-### 64a. `jnt_margin` — Joint Limit Activation Margin
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~64a. `jnt_margin` — Joint Limit Activation Margin~~
+**Status:** Done | **Effort:** S | **Prerequisites:** None
+
+> **Done (Phase 7 Spec B, commit `3f70616`).** `margin` parsed from `<joint>`,
+> `jnt_margin: Vec<f64>` on Model, defaults cascade, 9 sites in `assembly.rs`
+> replaced (3 counting + 3 assembly + 3 finalize_row! margin args). 4 tests.
 
 #### Current State
 
@@ -427,3 +409,29 @@ Extend `geom_distance()` to support:
 Gap for non-convex geometry distance queries. Acceptable for v1.0 since
 common RL/robotics models use convex primitives. Becomes relevant for
 environments with terrain (hfield) or complex objects (mesh).
+
+---
+
+### DT-125. `mj_setConst()` Runtime `qpos_spring` Recomputation
+**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Origin:** Phase 7 Spec B, Out of Scope bullet 4
+
+#### Current State
+
+`qpos_spring: Vec<f64>` is populated at build time from `qpos0`/`springref`
+(Phase 7 Spec A). MuJoCo's `setSpring()` in `engine_setconst.c` recomputes
+`qpos_spring` whenever `mj_setConst()` is called — this allows runtime updates
+to spring reference poses (e.g., after modifying `qpos0`). CortenForge has no
+`mj_setConst()` equivalent, so `qpos_spring` is static after model build.
+
+#### Objective
+
+Implement `mj_setConst()` (or equivalent) that recomputes `qpos_spring` and
+other compile-time-derived fields at runtime. The `setSpring()` sub-routine
+must run FK at `qpos0` to get body poses, then compute quaternion `qpos_spring`
+for ball/free joints from the FK result.
+
+#### Conformance Impact
+
+Minor — most models don't call `mj_setConst()` at runtime. Matters for models
+that programmatically modify `qpos0` or spring references during simulation.
