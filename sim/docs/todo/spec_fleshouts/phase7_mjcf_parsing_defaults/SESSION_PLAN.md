@@ -554,8 +554,8 @@ Present the Review Verdict (section 10) to the user when done.
 |---------|-------------|--------|--------|
 | 1 | Phase 7 Umbrella | Done | b025795 |
 | 2 | T1: DT-3 (hfield PNG) + DT-85 (flex contact attrs) | Done | cea5f4c, cf76731 |
-| 3 | Spec A rubric | Done | pending |
-| 4 | Spec A spec | Pending | |
+| 3 | Spec A rubric | Done | a160970 |
+| 4 | Spec A spec | Done | pending |
 | 5 | Spec A implementation | Pending | |
 | 6 | Spec A review — create document | Pending | |
 | 7 | Spec A review — execute | Pending | |
