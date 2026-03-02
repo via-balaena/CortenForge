@@ -7,8 +7,29 @@
 use nalgebra::Vector3;
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
-use crate::types::MjcfEquality;
+use crate::types::{MjcfEquality, MjcfEqualityDefaults};
 use sim_core::EqualityType;
+
+/// Apply equality defaults to active/solref/solimp fields.
+/// Element-level values take precedence; defaults fill in gaps.
+fn apply_eq_defaults(
+    defaults: Option<&MjcfEqualityDefaults>,
+    active: &mut Option<bool>,
+    solref: &mut Option<[f64; 2]>,
+    solimp: &mut Option<[f64; 5]>,
+) {
+    if let Some(d) = defaults {
+        if active.is_none() {
+            *active = d.active;
+        }
+        if solref.is_none() {
+            *solref = d.solref;
+        }
+        if solimp.is_none() {
+            *solimp = d.solimp;
+        }
+    }
+}
 
 impl ModelBuilder {
     /// Process equality constraints from MJCF.
@@ -59,6 +80,16 @@ impl ModelBuilder {
                 0 // World body
             };
 
+            // Apply equality defaults cascade
+            let eq_defaults = self
+                .resolver
+                .equality_defaults(connect.class.as_deref())
+                .cloned();
+            let mut active = connect.active;
+            let mut solref = connect.solref;
+            let mut solimp = connect.solimp;
+            apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+
             // Pack data: anchor point in body1 frame, rest zeroed
             let mut data = [0.0; 11];
             data[0] = connect.anchor.x;
@@ -69,11 +100,9 @@ impl ModelBuilder {
             self.eq_obj1id.push(*body1_id);
             self.eq_obj2id.push(body2_id);
             self.eq_data.push(data);
-            self.eq_active.push(connect.active);
-            self.eq_solimp
-                .push(connect.solimp.unwrap_or(DEFAULT_SOLIMP));
-            self.eq_solref
-                .push(connect.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_active.push(active.unwrap_or(true));
+            self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
             let eq_id = self.eq_name.len();
             if let Some(ref name) = connect.name {
                 self.eq_name_to_id.insert(name.clone(), eq_id);
@@ -128,13 +157,23 @@ impl ModelBuilder {
                 data[3] = 1.0; // qw = 1 (identity)
             }
 
+            // Apply equality defaults cascade
+            let eq_defaults = self
+                .resolver
+                .equality_defaults(weld.class.as_deref())
+                .cloned();
+            let mut active = weld.active;
+            let mut solref = weld.solref;
+            let mut solimp = weld.solimp;
+            apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+
             self.eq_type.push(EqualityType::Weld);
             self.eq_obj1id.push(*body1_id);
             self.eq_obj2id.push(body2_id);
             self.eq_data.push(data);
-            self.eq_active.push(weld.active);
-            self.eq_solimp.push(weld.solimp.unwrap_or(DEFAULT_SOLIMP));
-            self.eq_solref.push(weld.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_active.push(active.unwrap_or(true));
+            self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
             let eq_id = self.eq_name.len();
             if let Some(ref name) = weld.name {
                 self.eq_name_to_id.insert(name.clone(), eq_id);
@@ -176,15 +215,23 @@ impl ModelBuilder {
                 data[i] = coef;
             }
 
+            // Apply equality defaults cascade
+            let eq_defaults = self
+                .resolver
+                .equality_defaults(joint_eq.class.as_deref())
+                .cloned();
+            let mut active = joint_eq.active;
+            let mut solref = joint_eq.solref;
+            let mut solimp = joint_eq.solimp;
+            apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+
             self.eq_type.push(EqualityType::Joint);
             self.eq_obj1id.push(*joint1_id);
             self.eq_obj2id.push(joint2_id);
             self.eq_data.push(data);
-            self.eq_active.push(joint_eq.active);
-            self.eq_solimp
-                .push(joint_eq.solimp.unwrap_or(DEFAULT_SOLIMP));
-            self.eq_solref
-                .push(joint_eq.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_active.push(active.unwrap_or(true));
+            self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
             let eq_id = self.eq_name.len();
             if let Some(ref name) = joint_eq.name {
                 self.eq_name_to_id.insert(name.clone(), eq_id);
@@ -228,13 +275,23 @@ impl ModelBuilder {
             let mut data = [0.0; 11];
             data[0] = target_distance;
 
+            // Apply equality defaults cascade
+            let eq_defaults = self
+                .resolver
+                .equality_defaults(dist.class.as_deref())
+                .cloned();
+            let mut active = dist.active;
+            let mut solref = dist.solref;
+            let mut solimp = dist.solimp;
+            apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+
             self.eq_type.push(EqualityType::Distance);
             self.eq_obj1id.push(geom1_id);
             self.eq_obj2id.push(geom2_id);
             self.eq_data.push(data);
-            self.eq_active.push(dist.active);
-            self.eq_solimp.push(dist.solimp.unwrap_or(DEFAULT_SOLIMP));
-            self.eq_solref.push(dist.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_active.push(active.unwrap_or(true));
+            self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
             let eq_id = self.eq_name.len();
             if let Some(ref name) = dist.name {
                 self.eq_name_to_id.insert(name.clone(), eq_id);
@@ -271,13 +328,23 @@ impl ModelBuilder {
                 data[i] = coef;
             }
 
+            // Apply equality defaults cascade
+            let eq_defaults = self
+                .resolver
+                .equality_defaults(ten_eq.class.as_deref())
+                .cloned();
+            let mut active = ten_eq.active;
+            let mut solref = ten_eq.solref;
+            let mut solimp = ten_eq.solimp;
+            apply_eq_defaults(eq_defaults.as_ref(), &mut active, &mut solref, &mut solimp);
+
             self.eq_type.push(EqualityType::Tendon);
             self.eq_obj1id.push(t1_id);
             self.eq_obj2id.push(t2_id);
             self.eq_data.push(data);
-            self.eq_active.push(ten_eq.active);
-            self.eq_solimp.push(ten_eq.solimp.unwrap_or(DEFAULT_SOLIMP));
-            self.eq_solref.push(ten_eq.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_active.push(active.unwrap_or(true));
+            self.eq_solimp.push(solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref.push(solref.unwrap_or(DEFAULT_SOLREF));
             let eq_id = self.eq_name.len();
             if let Some(ref name) = ten_eq.name {
                 self.eq_name_to_id.insert(name.clone(), eq_id);

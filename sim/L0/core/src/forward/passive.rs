@@ -801,7 +801,7 @@ impl PassiveForceVisitor<'_> {
             // S4.7b: Spring gated on DISABLE_SPRING.
             if self.has_spring {
                 let stiffness = self.model.jnt_stiffness[jnt_id];
-                let springref = self.model.jnt_springref[jnt_id];
+                let springref = self.model.qpos_spring[qpos_adr];
                 let q = self.data.qpos[qpos_adr];
                 self.data.qfrc_spring[dof_adr] -= stiffness * (q - springref);
             }

@@ -33,9 +33,10 @@
 use std::collections::HashMap;
 
 use crate::types::{
-    MjcfActuator, MjcfActuatorDefaults, MjcfContactPair, MjcfDefault, MjcfGeom, MjcfGeomDefaults,
-    MjcfJoint, MjcfJointDefaults, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfPairDefaults,
-    MjcfSensor, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfTendon, MjcfTendonDefaults,
+    MjcfActuator, MjcfActuatorDefaults, MjcfContactPair, MjcfDefault, MjcfEqualityDefaults,
+    MjcfGeom, MjcfGeomDefaults, MjcfJoint, MjcfJointDefaults, MjcfMesh, MjcfMeshDefaults,
+    MjcfModel, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
+    MjcfTendon, MjcfTendonDefaults,
 };
 
 /// Resolves and applies default classes to MJCF elements.
@@ -120,6 +121,36 @@ impl DefaultResolver {
     #[must_use]
     pub fn pair_defaults(&self, class: Option<&str>) -> Option<&MjcfPairDefaults> {
         self.get_defaults(class).and_then(|d| d.pair.as_ref())
+    }
+
+    /// Get the resolved equality defaults for a class.
+    #[must_use]
+    pub fn equality_defaults(&self, class: Option<&str>) -> Option<&MjcfEqualityDefaults> {
+        self.get_defaults(class).and_then(|d| d.equality.as_ref())
+    }
+
+    /// Apply equality defaults to mutable field references.
+    /// Generic across all 5 equality constraint types — they share the same 3
+    /// defaultable fields (active, solref, solimp).
+    /// MuJoCo ref: `OneEquality()` in `xml_native_reader.cc` (defaults context).
+    pub fn apply_equality_defaults(
+        &self,
+        class: Option<&str>,
+        active: &mut Option<bool>,
+        solref: &mut Option<[f64; 2]>,
+        solimp: &mut Option<[f64; 5]>,
+    ) {
+        if let Some(defaults) = self.equality_defaults(class) {
+            if active.is_none() {
+                *active = defaults.active;
+            }
+            if solref.is_none() {
+                *solref = defaults.solref;
+            }
+            if solimp.is_none() {
+                *solimp = defaults.solimp;
+            }
+        }
     }
 
     /// Apply defaults to a joint, returning a new joint with defaults applied.
@@ -405,6 +436,80 @@ impl DefaultResolver {
             if result.delay.is_none() {
                 result.delay = defaults.delay;
             }
+
+            // Cylinder-specific: sentinel-value detection
+            if (result.area - 1.0).abs() < 1e-10 {
+                if let Some(area) = defaults.area {
+                    result.area = area;
+                }
+            }
+            if result.diameter.is_none() {
+                result.diameter = defaults.diameter;
+            }
+            if result.timeconst.is_none() {
+                result.timeconst = defaults.timeconst;
+            }
+            if result.bias == [0.0, 0.0, 0.0] {
+                if let Some(bias) = defaults.bias {
+                    result.bias = bias;
+                }
+            }
+
+            // Muscle-specific: sentinel-value detection
+            if (result.muscle_timeconst.0 - 0.01).abs() < 1e-10
+                && (result.muscle_timeconst.1 - 0.04).abs() < 1e-10
+            {
+                if let Some(tc) = defaults.muscle_timeconst {
+                    result.muscle_timeconst = tc;
+                }
+            }
+            if (result.range.0 - 0.75).abs() < 1e-10 && (result.range.1 - 1.05).abs() < 1e-10 {
+                if let Some(r) = defaults.range {
+                    result.range = r;
+                }
+            }
+            if (result.force - (-1.0)).abs() < 1e-10 {
+                if let Some(f) = defaults.force {
+                    result.force = f;
+                }
+            }
+            if (result.scale - 200.0).abs() < 1e-10 {
+                if let Some(s) = defaults.scale {
+                    result.scale = s;
+                }
+            }
+            if (result.lmin - 0.5).abs() < 1e-10 {
+                if let Some(v) = defaults.lmin {
+                    result.lmin = v;
+                }
+            }
+            if (result.lmax - 1.6).abs() < 1e-10 {
+                if let Some(v) = defaults.lmax {
+                    result.lmax = v;
+                }
+            }
+            if (result.vmax - 1.5).abs() < 1e-10 {
+                if let Some(v) = defaults.vmax {
+                    result.vmax = v;
+                }
+            }
+            if (result.fpmax - 1.3).abs() < 1e-10 {
+                if let Some(v) = defaults.fpmax {
+                    result.fpmax = v;
+                }
+            }
+            if (result.fvmax - 1.2).abs() < 1e-10 {
+                if let Some(v) = defaults.fvmax {
+                    result.fvmax = v;
+                }
+            }
+
+            // Adhesion-specific: sentinel-value detection
+            if (result.gain - 1.0).abs() < 1e-10 {
+                if let Some(g) = defaults.gain {
+                    result.gain = g;
+                }
+            }
         }
 
         result
@@ -676,6 +781,10 @@ impl DefaultResolver {
             mesh: Self::merge_mesh_defaults(parent.mesh.as_ref(), child.mesh.as_ref()),
             site: Self::merge_site_defaults(parent.site.as_ref(), child.site.as_ref()),
             pair: Self::merge_pair_defaults(parent.pair.as_ref(), child.pair.as_ref()),
+            equality: Self::merge_equality_defaults(
+                parent.equality.as_ref(),
+                child.equality.as_ref(),
+            ),
         }
     }
 
@@ -780,6 +889,23 @@ impl DefaultResolver {
                 nsample: c.nsample.or(p.nsample),
                 interp: c.interp.clone().or_else(|| p.interp.clone()),
                 delay: c.delay.or(p.delay),
+                // Cylinder-specific
+                area: c.area.or(p.area),
+                diameter: c.diameter.or(p.diameter),
+                timeconst: c.timeconst.or(p.timeconst),
+                bias: c.bias.or(p.bias),
+                // Muscle-specific
+                muscle_timeconst: c.muscle_timeconst.or(p.muscle_timeconst),
+                range: c.range.or(p.range),
+                force: c.force.or(p.force),
+                scale: c.scale.or(p.scale),
+                lmin: c.lmin.or(p.lmin),
+                lmax: c.lmax.or(p.lmax),
+                vmax: c.vmax.or(p.vmax),
+                fpmax: c.fpmax.or(p.fpmax),
+                fvmax: c.fvmax.or(p.fvmax),
+                // Adhesion-specific
+                gain: c.gain.or(p.gain),
             }),
         }
     }
@@ -882,6 +1008,22 @@ impl DefaultResolver {
                 solimp: c.solimp.or(p.solimp),
                 margin: c.margin.or(p.margin),
                 gap: c.gap.or(p.gap),
+            }),
+        }
+    }
+
+    fn merge_equality_defaults(
+        parent: Option<&MjcfEqualityDefaults>,
+        child: Option<&MjcfEqualityDefaults>,
+    ) -> Option<MjcfEqualityDefaults> {
+        match (parent, child) {
+            (None, None) => None,
+            (Some(p), None) => Some(p.clone()),
+            (None, Some(c)) => Some(c.clone()),
+            (Some(p), Some(c)) => Some(MjcfEqualityDefaults {
+                active: c.active.or(p.active),
+                solref: c.solref.or(p.solref),
+                solimp: c.solimp.or(p.solimp),
             }),
         }
     }

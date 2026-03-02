@@ -345,6 +345,7 @@ impl ModelBuilder {
             timestep: self.timestep,
             gravity: self.gravity,
             qpos0: DVector::from_vec(self.qpos0_values),
+            qpos_spring: self.qpos_spring_values,
             keyframes: Vec::new(), // Populated post-build in model_from_mjcf()
             wind: self.wind,
             magnetic: self.magnetic,
@@ -473,27 +474,38 @@ impl ModelBuilder {
         }
 
         // Pre-compute tendon length0 and lengthspring from qpos0.
-        // For fixed tendons: length = Σ coef_w * qpos0[dof_adr_w].
+        // For fixed tendons: length0 = Σ coef_w * qpos0[dof_adr_w],
+        //                    lengthspring sentinel resolved at qpos_spring configuration.
+        // MuJoCo ref: setSpring() in engine_setconst.c uses qpos_spring for sentinel resolution.
         for t in 0..model.ntendon {
             if model.tendon_type[t] == TendonType::Fixed {
                 let adr = model.tendon_adr[t];
                 let num = model.tendon_num[t];
-                let mut length = 0.0;
+                // Compute tendon_length0 at qpos0 configuration
+                let mut length0 = 0.0;
                 for w in adr..(adr + num) {
                     let dof_adr = model.wrap_objid[w];
                     let coef = model.wrap_prm[w];
                     if dof_adr < model.qpos0.len() {
-                        length += coef * model.qpos0[dof_adr];
+                        length0 += coef * model.qpos0[dof_adr];
                     }
                 }
-                model.tendon_length0[t] = length;
-                // S3: Replace sentinel [-1, -1] with computed length at qpos0
-                // (MuJoCo uses qpos_spring; see S3 divergence note).
-                // Unconditional — MuJoCo resolves sentinel regardless of stiffness.
-                // Sentinel is an exact literal, never a computed float.
+                model.tendon_length0[t] = length0;
+                // Resolve sentinel [-1, -1] at qpos_spring configuration (not qpos0).
+                // MuJoCo ref: setSpring() in engine_setconst.c copies qpos_spring → d->qpos,
+                // then evaluates tendon length. For hinge/slide joints where dof_adr == qpos_adr,
+                // qpos_spring[dof_adr] is the spring reference position.
                 #[allow(clippy::float_cmp)]
                 if model.tendon_lengthspring[t] == [-1.0, -1.0] {
-                    model.tendon_lengthspring[t] = [length, length];
+                    let mut spring_length = 0.0;
+                    for w in adr..(adr + num) {
+                        let dof_adr = model.wrap_objid[w];
+                        let coef = model.wrap_prm[w];
+                        if dof_adr < model.qpos_spring.len() {
+                            spring_length += coef * model.qpos_spring[dof_adr];
+                        }
+                    }
+                    model.tendon_lengthspring[t] = [spring_length, spring_length];
                 }
             }
         }

@@ -215,6 +215,8 @@ impl ModelBuilder {
 
                         // qpos0 = 0 for each slide DOF (body_pos encodes initial position)
                         self.qpos0_values.push(0.0);
+                        // qpos_spring = 0 for flex vertex slide joints (springref = 0)
+                        self.qpos_spring_values.push(0.0);
 
                         self.nq += 1;
                         self.nv += 1;

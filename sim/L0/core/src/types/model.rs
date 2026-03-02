@@ -742,6 +742,12 @@ pub struct Model {
     pub gravity: Vector3<f64>,
     /// Default/reference joint positions.
     pub qpos0: DVector<f64>,
+    /// Spring reference position in generalized coordinates (size nq).
+    /// For hinge/slide: scalar springref value.
+    /// For ball: quaternion \[w,x,y,z\] copied from qpos0.
+    /// For free: 7D \[pos_x,y,z, quat_w,x,y,z\] copied from qpos0.
+    /// MuJoCo ref: `m->qpos_spring` in mjModel (`engine_passive.c`: `mj_springdamper`).
+    pub qpos_spring: Vec<f64>,
     /// Named state snapshots for quick reset.
     pub keyframes: Vec<Keyframe>,
     /// Wind velocity in world frame (for aerodynamic forces).

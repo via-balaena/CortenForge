@@ -43,7 +43,7 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge | MjJointType::Slide => {
                     let q = data.qpos[qpos_adr];
-                    let springref = model.jnt_springref[jnt_id];
+                    let springref = model.qpos_spring[qpos_adr];
                     let displacement = q - springref;
                     potential += 0.5 * stiffness * displacement * displacement;
                 }

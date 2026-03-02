@@ -309,6 +309,7 @@ impl Model {
             timestep: 0.002,                        // 500 Hz
             gravity: Vector3::new(0.0, 0.0, -9.81), // Z-up
             qpos0: DVector::zeros(0),
+            qpos_spring: vec![],
             // Keyframes
             keyframes: Vec::new(),
             wind: Vector3::zeros(),
@@ -820,7 +821,7 @@ impl Model {
                 MjJointType::Hinge | MjJointType::Slide => {
                     self.implicit_stiffness[dof_adr] = self.jnt_stiffness[jnt_id];
                     self.implicit_damping[dof_adr] = self.jnt_damping[jnt_id];
-                    self.implicit_springref[dof_adr] = self.jnt_springref[jnt_id];
+                    self.implicit_springref[dof_adr] = self.qpos_spring[self.jnt_qpos_adr[jnt_id]];
                 }
                 MjJointType::Ball | MjJointType::Free => {
                     // Ball/Free: per-DOF damping only (no spring for quaternion DOFs)

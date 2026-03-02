@@ -168,6 +168,7 @@ impl ModelBuilder {
             sleep_tolerance: 1e-4,
 
             qpos0_values: vec![],
+            qpos_spring_values: vec![],
 
             joint_name_to_id: HashMap::new(),
             body_name_to_id: HashMap::from([("world".to_string(), 0)]),

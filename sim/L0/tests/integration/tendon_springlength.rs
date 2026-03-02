@@ -75,8 +75,9 @@ fn test_ac2_two_value_springlength_fixed() {
 
 /// AC3 — Auto-compute fallback (no springlength specified) (S3).
 ///
-/// Joint has `ref="0.5"`, coef=1.0, so tendon length at qpos0 = 0.5.
-/// Sentinel `[-1, -1]` is resolved to `[0.5, 0.5]`.
+/// Joint has `ref="0.5"`, coef=1.0. No springref → qpos_spring[0] = 0.0.
+/// MuJoCo resolves sentinel at qpos_spring configuration: length = coef * 0.0 = 0.0.
+/// Sentinel `[-1, -1]` is resolved to `[0.0, 0.0]`.
 #[test]
 fn test_ac3_auto_compute_fallback() {
     let mjcf = r#"
@@ -97,14 +98,15 @@ fn test_ac3_auto_compute_fallback() {
     "#;
 
     let model = load_model(mjcf).expect("should load");
-    assert_relative_eq!(model.tendon_lengthspring[0][0], 0.5, epsilon = 1e-10);
-    assert_relative_eq!(model.tendon_lengthspring[0][1], 0.5, epsilon = 1e-10);
+    assert_relative_eq!(model.tendon_lengthspring[0][0], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(model.tendon_lengthspring[0][1], 0.0, epsilon = 1e-10);
 }
 
 /// AC3b — Auto-compute with stiffness=0 (unconditional sentinel resolution) (S3).
 ///
 /// No springlength, no stiffness (defaults to 0). The sentinel `[-1, -1]` must
 /// still be resolved because MuJoCo resolves unconditionally.
+/// Resolved at qpos_spring configuration (springref=0.0 → length=0.0).
 #[test]
 fn test_ac3b_auto_compute_stiffness_zero() {
     let mjcf = r#"
@@ -126,8 +128,9 @@ fn test_ac3b_auto_compute_stiffness_zero() {
 
     let model = load_model(mjcf).expect("should load");
     // Sentinel resolved even though stiffness == 0 (unconditional per S3).
-    assert_relative_eq!(model.tendon_lengthspring[0][0], 0.5, epsilon = 1e-10);
-    assert_relative_eq!(model.tendon_lengthspring[0][1], 0.5, epsilon = 1e-10);
+    // Resolved at qpos_spring configuration (springref=0.0 → length=0.0).
+    assert_relative_eq!(model.tendon_lengthspring[0][0], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(model.tendon_lengthspring[0][1], 0.0, epsilon = 1e-10);
 }
 
 /// AC4 — `springlength="0"` is valid and not confused with sentinel (S2, S3).

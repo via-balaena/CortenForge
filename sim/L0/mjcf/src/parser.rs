@@ -18,13 +18,13 @@ fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
 use crate::types::{
     AngleUnit, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType,
     MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact, MjcfContactExclude,
-    MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfFlex, MjcfFrame,
-    MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator,
-    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfKeyframe,
-    MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor,
-    MjcfSensorDefaults, MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone,
-    MjcfSkinVertex, MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonEquality,
-    MjcfTendonType, MjcfWeld, SpatialPathElement,
+    MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality, MjcfEqualityDefaults, MjcfFlag,
+    MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial,
+    MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality,
+    MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
+    MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite, MjcfSiteDefaults,
+    MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
+    MjcfTendonEquality, MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
 
 /// Parse an MJCF string into a model.
@@ -519,7 +519,8 @@ fn parse_default<R: BufRead>(
                     b"geom" => {
                         default.geom = Some(parse_geom_defaults(e)?);
                     }
-                    b"actuator" | b"motor" | b"position" | b"velocity" | b"general" => {
+                    b"actuator" | b"motor" | b"position" | b"velocity" | b"general"
+                    | b"cylinder" | b"muscle" | b"adhesion" | b"damper" | b"intvelocity" => {
                         default.actuator = Some(parse_actuator_defaults(e)?);
                     }
                     b"tendon" => {
@@ -537,6 +538,9 @@ fn parse_default<R: BufRead>(
                     b"pair" => {
                         default.pair = Some(parse_pair_defaults(e)?);
                     }
+                    b"equality" => {
+                        default.equality = Some(parse_equality_defaults(e)?);
+                    }
                     b"default" => {
                         // Nested default class
                         let nested = parse_default(reader, e, Some(class.clone()))?;
@@ -552,7 +556,8 @@ fn parse_default<R: BufRead>(
                 b"geom" => {
                     default.geom = Some(parse_geom_defaults(e)?);
                 }
-                b"actuator" | b"motor" | b"position" | b"velocity" | b"general" => {
+                b"actuator" | b"motor" | b"position" | b"velocity" | b"general" | b"cylinder"
+                | b"muscle" | b"adhesion" | b"damper" | b"intvelocity" => {
                     default.actuator = Some(parse_actuator_defaults(e)?);
                 }
                 b"tendon" => {
@@ -569,6 +574,9 @@ fn parse_default<R: BufRead>(
                 }
                 b"pair" => {
                     default.pair = Some(parse_pair_defaults(e)?);
+                }
+                b"equality" => {
+                    default.equality = Some(parse_equality_defaults(e)?);
                 }
                 _ => {}
             },
@@ -807,6 +815,44 @@ fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
     defaults.interp = get_attribute_opt(e, "interp");
     defaults.delay = parse_float_attr(e, "delay");
 
+    // Cylinder-specific attributes
+    defaults.area = parse_float_attr(e, "area");
+    defaults.diameter = parse_float_attr(e, "diameter");
+    // `timeconst` is ambiguous: 1 value → cylinder timeconst, 2 values → muscle timeconst.
+    // MuJoCo: <cylinder timeconst="real(1)">, <muscle timeconst="real(2)">.
+    if let Some(tc_str) = get_attribute_opt(e, "timeconst") {
+        let parts = parse_float_array(&tc_str)?;
+        if parts.len() == 1 {
+            defaults.timeconst = Some(parts[0]);
+        } else if parts.len() >= 2 {
+            defaults.muscle_timeconst = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(bias_str) = get_attribute_opt(e, "bias") {
+        let parts = parse_float_array(&bias_str)?;
+        if parts.len() >= 3 {
+            defaults.bias = Some([parts[0], parts[1], parts[2]]);
+        }
+    }
+
+    // Muscle-specific attributes
+    if let Some(range_str) = get_attribute_opt(e, "range") {
+        let parts = parse_float_array(&range_str)?;
+        if parts.len() >= 2 {
+            defaults.range = Some((parts[0], parts[1]));
+        }
+    }
+    defaults.force = parse_float_attr(e, "force");
+    defaults.scale = parse_float_attr(e, "scale");
+    defaults.lmin = parse_float_attr(e, "lmin");
+    defaults.lmax = parse_float_attr(e, "lmax");
+    defaults.vmax = parse_float_attr(e, "vmax");
+    defaults.fpmax = parse_float_attr(e, "fpmax");
+    defaults.fvmax = parse_float_attr(e, "fvmax");
+
+    // Adhesion-specific attributes
+    defaults.gain = parse_float_attr(e, "gain");
+
     Ok(defaults)
 }
 
@@ -994,6 +1040,30 @@ fn parse_pair_defaults(e: &BytesStart) -> Result<MjcfPairDefaults> {
         let parts = parse_float_array(&solreffriction)?;
         if parts.len() >= 2 {
             defaults.solreffriction = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+
+    Ok(defaults)
+}
+
+/// Parse `<default><equality>` attributes: active, solref, solimp.
+/// MuJoCo ref: `OneEquality()` in `xml_native_reader.cc` (defaults context).
+fn parse_equality_defaults(e: &BytesStart) -> Result<MjcfEqualityDefaults> {
+    let mut defaults = MjcfEqualityDefaults::default();
+
+    if let Some(v) = get_attribute_opt(e, "active") {
+        defaults.active = Some(v == "true");
+    }
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solref = Some([parts[0], parts[1]]);
         }
     }
     if let Some(solimp) = get_attribute_opt(e, "solimp") {
@@ -2326,10 +2396,8 @@ fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
         }
     }
 
-    // Parse active flag
-    if let Some(active) = get_attribute_opt(e, "active") {
-        connect.active = active != "false";
-    }
+    // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
+    connect.active = get_attribute_opt(e, "active").map(|v| v == "true");
 
     Ok(connect)
 }
@@ -2377,10 +2445,8 @@ fn parse_weld_attrs(e: &BytesStart) -> Result<MjcfWeld> {
         }
     }
 
-    // Parse active flag
-    if let Some(active) = get_attribute_opt(e, "active") {
-        weld.active = active != "false";
-    }
+    // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
+    weld.active = get_attribute_opt(e, "active").map(|v| v == "true");
 
     Ok(weld)
 }
@@ -2418,10 +2484,8 @@ fn parse_joint_equality_attrs(e: &BytesStart) -> Result<MjcfJointEquality> {
         }
     }
 
-    // Parse active flag
-    if let Some(active) = get_attribute_opt(e, "active") {
-        joint_eq.active = active != "false";
-    }
+    // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
+    joint_eq.active = get_attribute_opt(e, "active").map(|v| v == "true");
 
     Ok(joint_eq)
 }
@@ -2459,10 +2523,8 @@ fn parse_distance_attrs(e: &BytesStart) -> Result<MjcfDistance> {
         }
     }
 
-    // Parse active flag
-    if let Some(active) = get_attribute_opt(e, "active") {
-        distance.active = active != "false";
-    }
+    // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
+    distance.active = get_attribute_opt(e, "active").map(|v| v == "true");
 
     Ok(distance)
 }
@@ -2500,10 +2562,8 @@ fn parse_tendon_equality_attrs(e: &BytesStart) -> Result<MjcfTendonEquality> {
         }
     }
 
-    // Parse active flag
-    if let Some(active) = get_attribute_opt(e, "active") {
-        ten_eq.active = active != "false";
-    }
+    // Parse active flag (Option<bool>: None = not set, cascaded from defaults)
+    ten_eq.active = get_attribute_opt(e, "active").map(|v| v == "true");
 
     Ok(ten_eq)
 }
@@ -4595,7 +4655,7 @@ mod tests {
         assert_relative_eq!(connect.anchor.x, 0.5, epsilon = 1e-10);
         assert_relative_eq!(connect.anchor.y, 0.0, epsilon = 1e-10);
         assert_relative_eq!(connect.anchor.z, 0.0, epsilon = 1e-10);
-        assert!(connect.active);
+        assert_eq!(connect.active, None);
     }
 
     #[test]
@@ -4682,7 +4742,7 @@ mod tests {
 
         let model = parse_mjcf_str(xml).expect("should parse");
         let connect = &model.equality.connects[0];
-        assert!(!connect.active);
+        assert_eq!(connect.active, Some(false));
     }
 
     #[test]

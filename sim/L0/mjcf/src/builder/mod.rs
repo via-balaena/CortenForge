@@ -581,6 +581,8 @@ pub struct ModelBuilder {
 
     // qpos0 values (built as we process joints)
     pub(crate) qpos0_values: Vec<f64>,
+    // qpos_spring values (built as we process joints; per-DOF spring reference)
+    pub(crate) qpos_spring_values: Vec<f64>,
 
     // Name to index lookups (for actuator wiring)
     pub(crate) joint_name_to_id: HashMap<String, usize>,

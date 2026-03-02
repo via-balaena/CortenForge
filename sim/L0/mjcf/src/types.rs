@@ -574,6 +574,8 @@ pub struct MjcfDefault {
     pub site: Option<MjcfSiteDefaults>,
     /// Default pair parameters.
     pub pair: Option<MjcfPairDefaults>,
+    /// Default equality constraint parameters.
+    pub equality: Option<MjcfEqualityDefaults>,
 }
 
 /// Default joint parameters.
@@ -724,9 +726,39 @@ pub struct MjcfActuatorDefaults {
     pub interp: Option<String>,
     /// Time delay in seconds. MuJoCo: `delay` (double, default 0.0).
     pub delay: Option<f64>,
-    // #todo: MuJoCo supports actuator-type-specific defaults (cylinder area/timeconst/bias,
-    // muscle force/scale/lmin/lmax/vmax/fpmax/fvmax/timeconst, adhesion gain).
-    // These fields exist on MjcfActuator but are not yet defaultable.
+    // Cylinder-specific defaults
+    /// Cylinder cross-sectional area (m²).
+    pub area: Option<f64>,
+    /// Cylinder diameter (m). Alternative to area.
+    pub diameter: Option<f64>,
+    /// Activation dynamics time constant (s).
+    pub timeconst: Option<f64>,
+    /// Bias parameters [prm0, prm1, prm2] for cylinder.
+    pub bias: Option<[f64; 3]>,
+
+    // Muscle-specific defaults
+    /// Activation/deactivation time constants [act, deact] for muscle.
+    pub muscle_timeconst: Option<(f64, f64)>,
+    /// Operating length range [lower, upper] in L0 units for muscle.
+    pub range: Option<(f64, f64)>,
+    /// Peak active force (N). Negative triggers automatic computation.
+    pub force: Option<f64>,
+    /// Force scaling factor for muscle.
+    pub scale: Option<f64>,
+    /// Lower FLV curve position (L0 units).
+    pub lmin: Option<f64>,
+    /// Upper FLV curve position (L0 units).
+    pub lmax: Option<f64>,
+    /// Shortening velocity limit (L0/second).
+    pub vmax: Option<f64>,
+    /// Passive force at lmax (relative to peak force).
+    pub fpmax: Option<f64>,
+    /// Active force at lengthening (relative to peak force).
+    pub fvmax: Option<f64>,
+
+    // Adhesion-specific defaults
+    /// Gain in force units for adhesion.
+    pub gain: Option<f64>,
 }
 
 /// Default tendon parameters.
@@ -957,6 +989,23 @@ pub struct MjcfPairDefaults {
     pub margin: Option<f64>,
     /// Contact included if distance < margin - gap.
     pub gap: Option<f64>,
+}
+
+/// Defaults for equality constraints.
+///
+/// Applies to all 5 types (connect, weld, joint, tendon, distance).
+/// MuJoCo uses a single `<equality>` default per class — not per-type.
+/// Only 3 fields are defaultable: active, solref, solimp.
+/// MuJoCo ref: `OneEquality()` in `xml_native_reader.cc` (defaults context).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfEqualityDefaults {
+    /// Whether the constraint is initially active.
+    pub active: Option<bool>,
+    /// Solver reference parameters [timeconst, dampratio].
+    pub solref: Option<[f64; 2]>,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
 }
 
 // ============================================================================
@@ -1550,8 +1599,8 @@ pub struct MjcfConnect {
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     /// Controls constraint dynamics.
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfConnect {
@@ -1564,7 +1613,7 @@ impl Default for MjcfConnect {
             anchor: Vector3::zeros(),
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }
@@ -1642,8 +1691,8 @@ pub struct MjcfWeld {
     pub solimp: Option<[f64; 5]>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfWeld {
@@ -1657,7 +1706,7 @@ impl Default for MjcfWeld {
             relpose: None,
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }
@@ -1741,8 +1790,8 @@ pub struct MjcfJointEquality {
     pub solimp: Option<[f64; 5]>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfJointEquality {
@@ -1755,7 +1804,7 @@ impl Default for MjcfJointEquality {
             polycoef: vec![0.0, 1.0], // Default: q2 = q1
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }
@@ -1854,8 +1903,8 @@ pub struct MjcfDistance {
     pub solimp: Option<[f64; 5]>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfDistance {
@@ -1868,7 +1917,7 @@ impl Default for MjcfDistance {
             distance: None, // Computed from initial configuration
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }
@@ -1945,8 +1994,8 @@ pub struct MjcfTendonEquality {
     pub solimp: Option<[f64; 5]>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfTendonEquality {
@@ -1959,7 +2008,7 @@ impl Default for MjcfTendonEquality {
             polycoef: vec![0.0, 1.0], // Default: equal deviation from reference
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }

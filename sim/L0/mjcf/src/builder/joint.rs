@@ -116,11 +116,12 @@ impl ModelBuilder {
         let convert_ref =
             matches!(jnt_type, MjJointType::Hinge) && self.compiler.angle == AngleUnit::Degree;
         let spring_ref = joint.spring_ref.unwrap_or(0.0);
-        self.jnt_springref.push(if convert_ref {
+        let spring_ref_converted = if convert_ref {
             spring_ref * deg2rad
         } else {
             spring_ref
-        });
+        };
+        self.jnt_springref.push(spring_ref_converted);
         self.jnt_damping.push(joint.damping.unwrap_or(0.0));
         self.jnt_armature.push(joint.armature.unwrap_or(0.0));
         self.jnt_solref
@@ -160,7 +161,7 @@ impl ModelBuilder {
                 .push(joint.solimpfriction.unwrap_or(DEFAULT_SOLIMP));
         }
 
-        // Add qpos0 values (default positions)
+        // Add qpos0 and qpos_spring values (default positions + spring reference)
         match jnt_type {
             MjJointType::Hinge => {
                 let ref_pos = joint.ref_pos.unwrap_or(0.0);
@@ -170,28 +171,29 @@ impl ModelBuilder {
                     ref_pos
                 };
                 self.qpos0_values.push(ref_val);
+                // qpos_spring: uses springref (already converted to radians for hinge)
+                self.qpos_spring_values.push(spring_ref_converted);
             }
             MjJointType::Slide => {
                 // Slide ref is translational — not angle-valued
                 self.qpos0_values.push(joint.ref_pos.unwrap_or(0.0));
+                self.qpos_spring_values.push(spring_ref_converted);
             }
             MjJointType::Ball => {
                 // Quaternion identity [w, x, y, z] = [1, 0, 0, 0]
-                self.qpos0_values.extend_from_slice(&[1.0, 0.0, 0.0, 0.0]);
+                let qpos0_ball = [1.0, 0.0, 0.0, 0.0];
+                self.qpos0_values.extend_from_slice(&qpos0_ball);
+                // Ball: qpos_spring = qpos0 (MuJoCo ignores springref for ball joints)
+                self.qpos_spring_values.extend_from_slice(&qpos0_ball);
             }
             MjJointType::Free => {
                 // Free joint qpos0 is the body's world position and orientation
                 // Position [x, y, z] from world frame, quaternion [w, x, y, z] from world frame
                 let q = world_quat.into_inner();
-                self.qpos0_values.extend_from_slice(&[
-                    world_pos.x,
-                    world_pos.y,
-                    world_pos.z,
-                    q.w,
-                    q.i,
-                    q.j,
-                    q.k,
-                ]);
+                let qpos0_free = [world_pos.x, world_pos.y, world_pos.z, q.w, q.i, q.j, q.k];
+                self.qpos0_values.extend_from_slice(&qpos0_free);
+                // Free: qpos_spring = qpos0 (MuJoCo ignores springref for free joints)
+                self.qpos_spring_values.extend_from_slice(&qpos0_free);
             }
         }
 
