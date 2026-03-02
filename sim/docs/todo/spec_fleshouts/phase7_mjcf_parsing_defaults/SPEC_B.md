@@ -8,8 +8,10 @@
 **MuJoCo version:** 3.x (C source on GitHub, `google-deepmind/mujoco` main branch)
 **Test baseline:** 1,900+ sim domain tests (post-Phase 6)
 **Prerequisites:**
-- Spec A `qpos_spring` array (landed — `qpos_spring` already exists on
-  `Model` at `model.rs:750` and is populated by `builder/joint.rs:164-196`)
+- §64 (spring force + energy): Spec A `qpos_spring` array (landed in
+  `01ae59f` — `qpos_spring` already exists on `Model` at `model.rs:750` and
+  is populated by `builder/joint.rs:164-196`)
+- §64a (jnt_margin): No external prerequisites — adds a new field from scratch
 
 **Independence:** This spec is independent of Spec A and Spec C per the
 umbrella dependency graph. Shared files: `parser.rs` (Spec A touches defaults
@@ -707,8 +709,10 @@ jnt_margin: vec![],
 self.jnt_margin.push(joint.margin.unwrap_or(0.0));
 ```
 
-The builder struct (`ModelBuilder`) needs a `jnt_margin: Vec<f64>` field
-and `model.jnt_margin = self.jnt_margin;` in the finalize/build method.
+The `ModelBuilder` struct declaration in `sim/L0/mjcf/src/builder/mod.rs:383`
+needs a `jnt_margin: Vec<f64>` field. The field initialization (`jnt_margin:
+vec![]`) goes in `ModelBuilder::new()` in `sim/L0/mjcf/src/builder/init.rs`.
+The finalize/build method needs `model.jnt_margin = self.jnt_margin;`.
 
 ### S7. Replace hardcoded activation checks + `finalize_row!` margin args
 
@@ -1150,7 +1154,8 @@ cross-contaminate.
 | `sim/L0/core/src/types/model.rs` | S6: Add `jnt_margin: Vec<f64>` | ~+3 |
 | `sim/L0/core/src/types/model_init.rs` | S6: Init `jnt_margin: vec![]` | ~+1 |
 | `sim/L0/mjcf/src/builder/joint.rs` | S6: Push `jnt_margin` value | ~+2 |
-| `sim/L0/mjcf/src/builder/init.rs` | S6: Add `jnt_margin` field to builder struct | ~+2 |
+| `sim/L0/mjcf/src/builder/mod.rs` | S6: Add `jnt_margin: Vec<f64>` field to `ModelBuilder` struct + finalize line | ~+2 |
+| `sim/L0/mjcf/src/builder/init.rs` | S6: Init `jnt_margin: vec![]` in `ModelBuilder::new()` | ~+1 |
 | `sim/L0/core/src/constraint/assembly.rs` | S7: Replace 6 activation checks + 3 `finalize_row!` margin args | ~+12 / -9 |
 | `sim/L0/core/tests/` (or inline) | T1-T17: New tests | ~+400 |
 
@@ -1174,6 +1179,12 @@ cross-contaminate.
 | `assembly.rs:552` | Tendon limit assembly upper | Same |
 | `passive.rs:800-814` | `visit_1dof_joint` spring/damper | Already correct for hinge/slide — not modified by this spec |
 | `energy.rs` gravity loop | `for body_id in 1..model.nbody` | MuJoCo gravity loop is unconditional — must NOT add sleep filter here |
+
+### Data Staleness
+
+No `EXPECTED_SIZE` constants are affected. `jnt_margin` is a new `Vec<f64>`
+on `Model`, and all other changes modify runtime behavior (energy computation,
+constraint activation), not model structure counts.
 
 ---
 
