@@ -108,7 +108,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 2: T1 items (DT-3 + DT-85)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — implement T1 items.
@@ -552,8 +552,8 @@ Present the Review Verdict (section 10) to the user when done.
 
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
-| 1 | Phase 7 Umbrella | Done | pending |
-| 2 | T1: DT-3 (hfield PNG) + DT-85 (flex contact attrs) | Pending | |
+| 1 | Phase 7 Umbrella | Done | b025795 |
+| 2 | T1: DT-3 (hfield PNG) + DT-85 (flex contact attrs) | Done | cea5f4c, cf76731 |
 | 3 | Spec A rubric | Pending | |
 | 4 | Spec A spec | Pending | |
 | 5 | Spec A implementation | Pending | |
