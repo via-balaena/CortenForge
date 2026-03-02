@@ -20,7 +20,7 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 
 | File | Group | Items | Count | T1 | T2 | T3 |
 |------|-------|-------|-------|---:|---:|---:|
-| [future_work_10b.md](./future_work_10b.md) | 1. Defaults & MJCF Parsing Gaps | DT-1 – DT-17 | 17 | 10 | 7 | 0 |
+| [future_work_10b.md](./future_work_10b.md) | 1. Defaults & MJCF Parsing Gaps | DT-1 – DT-17, DT-123, DT-124 | 19 | 12 | 7 | 0 |
 | [future_work_10c.md](./future_work_10c.md) | 2. Contact & Collision System | DT-18 – DT-27, ~~DT-94~~, ~~DT-95~~ (subsumed by §41), ~~DT-99~~ (done), ~~DT-100~~ (done), DT-101 | 15 | 2 | 8 | 5 |
 | [future_work_10d.md](./future_work_10d.md) | 3. Tendon System | DT-28 – DT-35 | 8 | 2 | 4 | 2 |
 | [future_work_10e.md](./future_work_10e.md) | 4. Solver Optimizations | DT-36 – DT-44 | 9 | 1 | 5 | 3 |
@@ -82,6 +82,8 @@ within completed tasks, not critical gaps.
 | DT-12 | §20 | Programmatic API enforcement that `worldbody.childclass` must be `None` | Low | T1 |
 | DT-13 | §22 | `qpos_spring` not implemented — uses `qpos0` instead (equivalent only in default case) | Medium | T2 |
 | DT-14 | §27 defaults | Actuator type-specific defaults not yet defaultable (cylinder area/timeconst, muscle params) | Medium | T2 |
-| DT-15 | §27 defaults | Sentinel-value detection for `gear`/`kp`/`noise`/`cutoff` should migrate to `Option<T>` | Low | T1 |
+| DT-15 | §27 defaults | Sentinel-value detection for `gear`/`kp`/`noise`/`cutoff` should migrate to `Option<T>`. Phase 7 Spec A added 14 new sentinel-detection fields in `apply_to_actuator()` (area, diameter, bias, muscle_timeconst, range, force, scale, lmin, lmax, vmax, fpmax, fvmax, gain) — these are the primary candidates for this migration. | Low | T1 |
 | ~~DT-16~~ | §27B | ~~Flex `density` attribute location wrong — on `<flex>` in parser but not on `<flex>` in MuJoCo~~ **DONE** | Medium | T1 |
 | DT-17 | §27 | Global `<option o_margin>` override deferred — per-geom margin is correct foundation | Low | T1 |
+| DT-123 | Phase 7 Spec A | `IntVelocity` enum variant — `MjcfActuatorType` (types.rs:2292) is missing the `IntVelocity` variant. Defaults parsing works (`b"intvelocity"` dispatches to `parse_actuator_defaults()`), but concrete `<intvelocity>` elements cannot be created. Requires: variant in enum, parser match arm for concrete elements, expansion values in `builder/actuator.rs` (`gaintype=FIXED`, `biastype=AFFINE`, `dyntype=INTEGRATOR`). | Low | T1 |
+| DT-124 | Phase 7 Spec A | Muscle sentinel detection for `<general dyntype="muscle">` path — MuJoCo's `mjs_setToMuscle()` uses `gainprm[0]==1` as sentinel (overwrites with 0.75 if equal). Only manifests for `<general dyntype="muscle" gainprm="1">`, not for `<muscle>` shortcut (which uses `range` field). CortenForge does not replicate this quirk. Known conformance divergence — rare edge case. | Low | T1 |

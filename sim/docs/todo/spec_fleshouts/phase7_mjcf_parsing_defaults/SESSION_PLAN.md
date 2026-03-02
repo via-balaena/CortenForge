@@ -255,7 +255,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase7_mjcf_parsing_defaults/SPEC_A_REVIE
 
 ## Session 7: Spec A review — execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — execute Spec A review.

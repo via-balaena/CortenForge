@@ -194,7 +194,7 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | DT-88 | 10i | T2 | `<flexcomp>` attributes: `inertiabox`, `scale`, `quat`, `file` |
 | §55 | 13 | — | Per-element `*_user` custom data arrays from MJCF |
 | §60 | 15 | — | `springinertia` joint attribute — inertia-spring coupling in CRBA diagonal |
-| §64 | 15 | — | Ball/free joint spring potential energy (quaternion geodesic) |
+| §64 | 15 | — | Ball/free joint spring force and energy (quaternion geodesic). Depends on Phase 7 Spec A `qpos_spring` array. |
 | §64a | 15 | — | `jnt_margin` for joint limit activation and constraint row margin |
 
 ---
@@ -365,7 +365,7 @@ foundation isn't right.
 | DT-7 | 10b | T1 | `actdim` explicit override |
 | DT-10 | 10b | T1 | Deferred `<compiler>` attributes (`fitaabb`, `usethread`, etc.) |
 | DT-12 | 10b | T1 | Programmatic enforcement that `worldbody.childclass` = None |
-| DT-15 | 10b | T1 | Sentinel-value detection → `Option<T>` migration |
+| DT-15 | 10b | T1 | Sentinel-value detection → `Option<T>` migration. Phase 7 Spec A added 14 sentinel-detection fields in `apply_to_actuator()` (defaults.rs:441-512) — primary migration candidates. |
 | DT-17 | 10b | T1 | Global `<option o_margin>` override |
 | DT-22 | 10c | T1 | `efc_impP` impedance derivative field |
 | DT-31 | 10d | T2 | `WrapType::Joint` inside spatial tendons |
@@ -385,6 +385,8 @@ foundation isn't right.
 | DT-120 | 15 | T1 | `MjObjectType::Camera` — frame sensor camera support (reftype="camera" currently warns + ignores). Deferred from Phase 6 Spec B. |
 | DT-121 | 15 | T1 | `InsideSite` sensor (`mjSENS_INSIDESITE`) — MuJoCo 3.x sensor type not yet supported. Deferred from Phase 6 Spec C. |
 | DT-122 | 15 | T2 | Mesh/Hfield/SDF geom distance support for `GeomDist`/`GeomPoint`/`GeomNormal` sensors. Deferred from Phase 6 Spec C. |
+| DT-123 | 10b | T1 | `IntVelocity` enum variant — concrete `<intvelocity>` elements not yet supported (defaults parsing works). Deferred from Phase 7 Spec A. |
+| DT-124 | 10b | T1 | Muscle sentinel detection for `<general dyntype="muscle">` path (`gainprm[0]==1` quirk). Known conformance divergence. Deferred from Phase 7 Spec A. |
 
 ### Code Quality
 | Task | Source | Tier | Description |

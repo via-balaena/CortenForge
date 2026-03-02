@@ -165,41 +165,58 @@ Expand `dynprm` to 10 elements to match MuJoCo's array size.
 
 ---
 
-### 64. Ball/Free Joint Spring Energy
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### 64. Ball/Free Joint Spring Force and Energy
+**Status:** Not started | **Effort:** S | **Prerequisites:** Phase 7 Spec A (`qpos_spring` array)
 
 #### Current State
 
-Stub in `energy.rs`: "Ball/Free joint springs would use quaternion
-distance — Not commonly used, skip for now." `energy_potential` is wrong for
-models with ball/free joint stiffness.
+Spring force stub in `passive.rs`: ball/free cases in `mj_springdamper()` are
+not implemented (hinge/slide work correctly via `qpos_spring`). Spring energy
+stub in `energy.rs`: "Ball/Free joint springs would use quaternion distance —
+Not commonly used, skip for now." Both `qfrc_spring` and `energy_potential`
+are wrong for models with ball/free joint stiffness.
+
+**Phase 7 Spec A dependency:** Spec A added `qpos_spring: Vec<f64>` to Model
+(sized `nq`), populated from `qpos0` for ball/free joints. This provides the
+quaternion/pose reference data that §64 will consume. The runtime consumers
+(`passive.rs`, `energy.rs`) already read `qpos_spring` — §64 adds the
+ball/free branches that use the quaternion reference.
 
 #### Objective
 
-Implement spring potential energy computation for ball and free joints using
-quaternion distance.
+Implement spring force and spring potential energy computation for ball and
+free joints using quaternion distance.
 
 #### Specification
 
-1. **Ball joint spring energy**: The spring potential energy for a ball joint
-   is `0.5 * stiffness * θ²`, where `θ` is the angle between the current
-   quaternion and the spring reference quaternion. Compute `θ` using
-   `θ = 2 * arccos(|q_current · q_ref|)` (the geodesic distance on S³).
-2. **Free joint spring energy**: Free joints have 3 translational + 3
-   rotational DOFs. Translational spring energy uses the standard
-   `0.5 * k * (x - x_ref)²`. Rotational spring energy uses the ball joint
-   formula above.
-3. **Integration**: Add these terms to `energy_potential` in `mj_energy_pos()`.
+1. **Ball joint spring force**: Compute `dif[3]` via `mji_subQuat(dif, quat,
+   qpos_spring+padr)` — the 3D angular difference between current quaternion
+   and spring reference. Apply `qfrc_spring[dadr+i] = -stiffness * dif[i]`.
+   MuJoCo ref: `mj_springdamper()` in `engine_passive.c` (BALL case).
+2. **Free joint spring force**: Translational: `F = -k * (qpos - qpos_spring)`
+   for 3 position DOFs. Rotational: falls through to ball case above.
+   MuJoCo ref: `mj_springdamper()` FREE case (falls through to BALL).
+3. **Ball joint spring energy**: `E = 0.5 * stiffness * θ²`, where `θ` is the
+   angle between the current quaternion and the spring reference quaternion.
+   Compute `θ = 2 * arccos(|q_current · q_ref|)` (geodesic distance on S³).
+4. **Free joint spring energy**: Translational: `0.5 * k * (x - x_ref)²`.
+   Rotational: ball joint formula above.
+5. **Integration**: Add force terms to `qfrc_spring` in `mj_springdamper()`.
+   Add energy terms to `energy_potential` in `mj_energy_pos()`.
 
 #### Acceptance Criteria
 
-1. A ball joint with stiffness at its reference orientation has zero spring energy.
-2. A ball joint rotated 90° from reference has `0.5 * k * (π/2)²` spring energy.
-3. Free joint spring energy includes both translational and rotational terms.
-4. Hinge/slide joint spring energy unchanged (regression).
+1. A ball joint with stiffness at its reference orientation has zero spring force and energy.
+2. A ball joint rotated 90° from reference has `qfrc_spring = -k * dif` (3D) and
+   energy `0.5 * k * (π/2)²`.
+3. Free joint spring force includes both translational and rotational terms.
+4. Free joint spring energy includes both translational and rotational terms.
+5. Hinge/slide joint spring force and energy unchanged (regression).
+6. `qpos_spring` from Spec A correctly provides reference data for ball/free.
 
 #### Files
 
+- `sim/L0/core/src/forward/passive.rs` — `mj_springdamper()` ball/free force
 - `sim/L0/core/src/energy.rs` — `mj_energy_pos()` ball/free joint terms
 
 ---
