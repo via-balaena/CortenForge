@@ -203,6 +203,9 @@ pub struct Model {
     /// Per-joint flag: if true, gravcomp routes through `qfrc_actuator`
     /// instead of `qfrc_passive`. Parsed from `<joint actuatorgravcomp="true"/>`.
     pub jnt_actgravcomp: Vec<bool>,
+    /// Joint limit activation margin. Constraint activated when dist < margin.
+    /// MuJoCo ref: `m->jnt_margin[i]` in `mj_instantiateLimit()`.
+    pub jnt_margin: Vec<f64>,
 
     // ==================== DOFs (indexed by dof_id) ====================
     /// Body for this DOF.

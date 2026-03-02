@@ -57,6 +57,7 @@ impl ModelBuilder {
             jnt_name: vec![],
             jnt_group: vec![],
             jnt_actgravcomp: vec![],
+            jnt_margin: vec![],
 
             dof_body: vec![],
             dof_jnt: vec![],

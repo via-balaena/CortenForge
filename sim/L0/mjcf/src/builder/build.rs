@@ -102,6 +102,7 @@ impl ModelBuilder {
             jnt_name: self.jnt_name,
             jnt_group: self.jnt_group,
             jnt_actgravcomp: self.jnt_actgravcomp,
+            jnt_margin: self.jnt_margin,
 
             dof_body: self.dof_body,
             dof_jnt: self.dof_jnt,

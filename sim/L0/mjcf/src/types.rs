@@ -616,6 +616,8 @@ pub struct MjcfJointDefaults {
     pub solimpfriction: Option<[f64; 5]>,
     /// Gravity compensation routing via actuator.
     pub actuatorgravcomp: Option<bool>,
+    /// Joint limit activation margin.
+    pub margin: Option<f64>,
 }
 
 /// Default geom parameters.
@@ -1443,6 +1445,8 @@ pub struct MjcfJoint {
     pub solimpfriction: Option<[f64; 5]>,
     /// If true, gravcomp routes through `qfrc_actuator` instead of `qfrc_passive`.
     pub actuatorgravcomp: Option<bool>,
+    /// Joint limit activation margin.
+    pub margin: Option<f64>,
     /// Body this joint belongs to (set during parsing).
     pub body: Option<String>,
 }
@@ -1469,6 +1473,7 @@ impl Default for MjcfJoint {
             solreffriction: None,
             solimpfriction: None,
             actuatorgravcomp: None,
+            margin: None,
             body: None,
         }
     }

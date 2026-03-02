@@ -215,6 +215,9 @@ impl DefaultResolver {
             if result.actuatorgravcomp.is_none() {
                 result.actuatorgravcomp = defaults.actuatorgravcomp;
             }
+            if result.margin.is_none() {
+                result.margin = defaults.margin;
+            }
         }
 
         result
@@ -814,6 +817,7 @@ impl DefaultResolver {
                 solreffriction: c.solreffriction.or(p.solreffriction),
                 solimpfriction: c.solimpfriction.or(p.solimpfriction),
                 actuatorgravcomp: c.actuatorgravcomp.or(p.actuatorgravcomp),
+                margin: c.margin.or(p.margin),
             }),
         }
     }
@@ -1472,5 +1476,94 @@ mod tests {
         let resolved = resolver.apply_to_sensor(&sensor);
         assert_relative_eq!(resolved.noise, 0.001, epsilon = 1e-10); // Inherited from root
         assert_relative_eq!(resolved.cutoff, 10.0, epsilon = 1e-10); // From "filtered"
+    }
+
+    // ---- T14 (Spec B): Margin parsed from MJCF defaults ----
+    #[test]
+    fn t14_margin_parsed_from_defaults() {
+        let defaults = vec![MjcfDefault {
+            class: String::new(),
+            parent_class: None,
+            joint: Some(MjcfJointDefaults {
+                margin: Some(0.05),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let resolver = DefaultResolver::new(&defaults);
+        let joint = MjcfJoint::default(); // no explicit margin
+        let resolved = resolver.apply_to_joint(&joint);
+        assert_eq!(
+            resolved.margin,
+            Some(0.05),
+            "margin should inherit from defaults"
+        );
+
+        // Explicit override
+        let joint_override = MjcfJoint {
+            margin: Some(0.1),
+            ..Default::default()
+        };
+        let resolved_override = resolver.apply_to_joint(&joint_override);
+        assert_eq!(
+            resolved_override.margin,
+            Some(0.1),
+            "explicit margin should override default"
+        );
+    }
+
+    // T14b: End-to-end MJCF parsing + builder → Model.jnt_margin
+    #[test]
+    fn t14b_margin_end_to_end_builder() {
+        use crate::builder::model_from_mjcf;
+        use crate::parse_mjcf_str;
+
+        let mjcf_str = r#"
+        <mujoco>
+          <default>
+            <joint margin="0.05"/>
+          </default>
+          <worldbody>
+            <body>
+              <joint type="hinge" limited="true" range="-1 1"/>
+              <geom type="sphere" size="0.1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        "#;
+
+        let mjcf = parse_mjcf_str(mjcf_str).expect("parse failed");
+        let model = model_from_mjcf(&mjcf, None).expect("build failed");
+
+        assert_eq!(model.jnt_margin.len(), 1, "should have 1 joint");
+        assert!(
+            (model.jnt_margin[0] - 0.05).abs() < 1e-15,
+            "jnt_margin = {}, expected 0.05",
+            model.jnt_margin[0]
+        );
+
+        // Test explicit override
+        let mjcf_str2 = r#"
+        <mujoco>
+          <default>
+            <joint margin="0.05"/>
+          </default>
+          <worldbody>
+            <body>
+              <joint type="hinge" margin="0.1" limited="true" range="-1 1"/>
+              <geom type="sphere" size="0.1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        "#;
+
+        let mjcf2 = parse_mjcf_str(mjcf_str2).expect("parse failed");
+        let model2 = model_from_mjcf(&mjcf2, None).expect("build failed");
+        assert!(
+            (model2.jnt_margin[0] - 0.1).abs() < 1e-15,
+            "explicit margin = {}, expected 0.1",
+            model2.jnt_margin[0]
+        );
     }
 }

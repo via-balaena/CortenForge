@@ -649,6 +649,7 @@ fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> {
     if let Some(val) = get_attribute_opt(e, "actuatorgravcomp") {
         defaults.actuatorgravcomp = Some(val == "true");
     }
+    defaults.margin = parse_float_attr(e, "margin");
 
     Ok(defaults)
 }
@@ -1728,6 +1729,8 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     if let Some(val) = get_attribute_opt(e, "actuatorgravcomp") {
         joint.actuatorgravcomp = Some(val == "true");
     }
+
+    joint.margin = parse_float_attr(e, "margin");
 
     Ok(joint)
 }

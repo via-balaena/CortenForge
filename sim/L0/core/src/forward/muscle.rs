@@ -816,6 +816,7 @@ mod muscle_tests {
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".to_string())];
+        model.jnt_margin = vec![0.0];
 
         // DOFs
         model.dof_body = vec![1];
@@ -1903,6 +1904,7 @@ mod muscle_tests {
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("slide".to_string())];
+        model.jnt_margin = vec![0.0];
 
         model.dof_body = vec![1];
         model.dof_jnt = vec![0];
@@ -2047,6 +2049,7 @@ mod hill_muscle_tests {
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".to_string())];
+        model.jnt_margin = vec![0.0];
 
         model.dof_body = vec![1];
         model.dof_jnt = vec![0];

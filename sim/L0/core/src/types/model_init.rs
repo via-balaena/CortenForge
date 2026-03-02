@@ -98,6 +98,7 @@ impl Model {
             jnt_name: vec![],
             jnt_group: vec![],
             jnt_actgravcomp: vec![],
+            jnt_margin: vec![],
 
             // DOFs (empty)
             dof_body: vec![],
