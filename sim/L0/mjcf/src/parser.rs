@@ -2791,6 +2791,19 @@ fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
     if let Some(s) = get_attribute_opt(e, "selfcollide") {
         flex.selfcollide = Some(s);
     }
+    // DT-85: Flex contact runtime attributes
+    if let Some(s) = get_attribute_opt(e, "internal") {
+        flex.internal = s == "true";
+    }
+    if let Some(val) = parse_int_attr(e, "activelayers") {
+        flex.activelayers = val;
+    }
+    if let Some(s) = get_attribute_opt(e, "vertcollide") {
+        flex.vertcollide = s == "true";
+    }
+    if let Some(s) = get_attribute_opt(e, "passive") {
+        flex.passive = s == "true";
+    }
 }
 
 /// Parse `<elasticity>` child element attributes into MjcfFlex.

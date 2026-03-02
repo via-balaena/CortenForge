@@ -1189,4 +1189,77 @@ mod tests {
             assert!(model.nhfield >= 1, "should have at least 1 hfield");
         }
     }
+
+    // ── DT-85: Flex contact runtime attributes ──────────────────────────
+
+    #[test]
+    fn test_flex_contact_runtime_attrs_parsed() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mjcf_path = temp_dir.path().join("flex_contact.xml");
+        std::fs::write(
+            &mjcf_path,
+            r#"
+            <mujoco>
+              <worldbody>
+                <body pos="0 0 1">
+                  <geom type="sphere" size="0.01" mass="0.1"/>
+                </body>
+              </worldbody>
+              <deformable>
+                <flex name="test_flex" body="0" dim="2"
+                      vertex="0 0 0  1 0 0  0 1 0  1 1 0"
+                      element="0 1 2  1 2 3">
+                  <contact internal="false" activelayers="3"
+                           vertcollide="true" passive="false"/>
+                  <elasticity young="1e6"/>
+                </flex>
+              </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        let model = load_model_from_file(&mjcf_path).expect("should load flex contact attrs");
+        assert_eq!(model.nflex, 1);
+        assert!(!model.flex_internal[0], "internal should be false");
+        assert_eq!(model.flex_activelayers[0], 3);
+        assert!(model.flex_vertcollide[0], "vertcollide should be true");
+        assert!(!model.flex_passive[0], "passive should be false");
+    }
+
+    #[test]
+    fn test_flex_contact_runtime_attrs_defaults() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mjcf_path = temp_dir.path().join("flex_contact_defaults.xml");
+        std::fs::write(
+            &mjcf_path,
+            r#"
+            <mujoco>
+              <worldbody>
+                <body pos="0 0 1">
+                  <geom type="sphere" size="0.01" mass="0.1"/>
+                </body>
+              </worldbody>
+              <deformable>
+                <flex name="test_flex" body="0" dim="2"
+                      vertex="0 0 0  1 0 0  0 1 0  1 1 0"
+                      element="0 1 2  1 2 3">
+                  <contact/>
+                  <elasticity young="1e6"/>
+                </flex>
+              </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        let model =
+            load_model_from_file(&mjcf_path).expect("should load flex contact with defaults");
+        assert_eq!(model.nflex, 1);
+        assert!(model.flex_internal[0], "internal default should be true");
+        assert_eq!(model.flex_activelayers[0], 0);
+        assert!(
+            !model.flex_vertcollide[0],
+            "vertcollide default should be false"
+        );
+        assert!(model.flex_passive[0], "passive default should be true");
+    }
 }

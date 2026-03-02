@@ -3654,6 +3654,18 @@ pub struct MjcfFlex {
     /// Self-collision broadphase mode. MuJoCo keyword: [none, narrow, bvh, sap, auto].
     /// None = absent (default "auto"); Some("none") = disabled; other = enabled.
     pub selfcollide: Option<String>,
+    /// Internal collision flag (default true). When true, contacts between
+    /// elements sharing an edge are generated (adjacent element contacts).
+    pub internal: bool,
+    /// Number of active element layers for collision detection (default 0).
+    /// 0 = all layers active.
+    pub activelayers: i32,
+    /// Per-vertex collision mode (default false). When true, vertex spheres
+    /// collide with other geoms even when not part of a flex element face.
+    pub vertcollide: bool,
+    /// Passive contact flag (default true). When true, flex contacts generate
+    /// passive forces only (no constraint solver involvement).
+    pub passive: bool,
 
     // --- <flex><elasticity> child element attributes ---
     /// Young's modulus [Pa].
@@ -3709,9 +3721,13 @@ impl Default for MjcfFlex {
             margin: 0.0,
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
-            contype: None,     // MuJoCo default: 1
-            conaffinity: None, // MuJoCo default: 1
-            selfcollide: None, // MuJoCo default is "auto" (enabled)
+            contype: None,      // MuJoCo default: 1
+            conaffinity: None,  // MuJoCo default: 1
+            selfcollide: None,  // MuJoCo default is "auto" (enabled)
+            internal: true,     // MuJoCo default
+            activelayers: 0,    // MuJoCo default (0 = all layers)
+            vertcollide: false, // MuJoCo default
+            passive: true,      // MuJoCo default
             // <elasticity> child element (MuJoCo defaults)
             young: 0.0, // MuJoCo default; was 1e6
             poisson: 0.0,

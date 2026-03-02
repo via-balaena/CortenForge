@@ -357,6 +357,18 @@ pub struct Model {
     /// Both `internal` (adjacent elements) and `selfcollide` (non-adjacent)
     /// are independently gated behind conditions 1+2.
     pub flex_selfcollide: Vec<bool>,
+    /// Per-flex: internal collision flag (default true). When true, contacts between
+    /// elements sharing an edge are generated (adjacent element contacts).
+    pub flex_internal: Vec<bool>,
+    /// Per-flex: number of active element layers for collision detection (default 0).
+    /// 0 = all layers active.
+    pub flex_activelayers: Vec<i32>,
+    /// Per-flex: per-vertex collision mode (default false). When true, vertex spheres
+    /// collide with other geoms even when not part of a flex element face.
+    pub flex_vertcollide: Vec<bool>,
+    /// Per-flex: passive contact flag (default true). When true, flex contacts generate
+    /// passive forces only (no constraint solver involvement).
+    pub flex_passive: Vec<bool>,
     /// Per-flex: passive edge spring stiffness (from `<edge stiffness="..."/>`).
     /// Used in passive force path (spring-damper), not constraint solver.
     pub flex_edgestiffness: Vec<f64>,

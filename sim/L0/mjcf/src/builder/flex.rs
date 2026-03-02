@@ -365,6 +365,11 @@ impl ModelBuilder {
             // None (absent) → true; Some("none") → false; all other keywords → true.
             self.flex_selfcollide
                 .push(flex.selfcollide.as_deref() != Some("none"));
+            // DT-85: flex contact runtime attributes
+            self.flex_internal.push(flex.internal);
+            self.flex_activelayers.push(flex.activelayers);
+            self.flex_vertcollide.push(flex.vertcollide);
+            self.flex_passive.push(flex.passive);
             self.flex_edgestiffness.push(flex.edge_stiffness);
             self.flex_edgedamping.push(flex.edge_damping);
         }
