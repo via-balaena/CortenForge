@@ -318,7 +318,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 9: Spec B spec (Joint Physics)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — write Spec B spec.
@@ -560,7 +560,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 6 | Spec A review — create document | Done | 5774690 |
 | 7 | Spec A review — execute | Done | 7fd9dec |
 | 8 | Spec B rubric | Done | 2716517 |
-| 9 | Spec B spec | Pending | |
+| 9 | Spec B spec | Done | `06e85d7` |
 | 10 | Spec B implementation | Pending | |
 | 11 | Spec B review — create document | Pending | |
 | 12 | Spec B review — execute | Pending | |
