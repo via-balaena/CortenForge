@@ -227,7 +227,7 @@ section. MuJoCo conformance is the cardinal goal.
 
 ## Session 6: Spec A review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — create Spec A review document.
