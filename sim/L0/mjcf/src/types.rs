@@ -828,6 +828,11 @@ impl Default for MjcfMesh {
 }
 
 /// Height field asset parsed from `<hfield>` element in MJCF.
+///
+/// Supports two data sources (mutually exclusive):
+/// - **File-based:** `file` attribute pointing to a PNG image. Grid dimensions
+///   (`nrow`, `ncol`) and elevation data are derived from the image.
+/// - **Inline:** `nrow`, `ncol`, and `elevation` attributes in the XML.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfHfield {
@@ -836,13 +841,15 @@ pub struct MjcfHfield {
     /// Size: `[x, y, z_top, z_bottom]`.
     /// x/y = half-extents; z_top = elevation scale; z_bottom = base depth.
     pub size: [f64; 4],
-    /// Number of rows (Y samples).
-    pub nrow: usize,
-    /// Number of columns (X samples).
-    pub ncol: usize,
+    /// Number of rows (Y samples). Required for inline data, derived from image for file-based.
+    pub nrow: Option<usize>,
+    /// Number of columns (X samples). Required for inline data, derived from image for file-based.
+    pub ncol: Option<usize>,
     /// Normalized elevation data, row-major (row 0 = min Y, X varies fastest).
-    /// Length: `nrow × ncol`.
-    pub elevation: Vec<f64>,
+    /// Length: `nrow × ncol`. `None` when data comes from a file.
+    pub elevation: Option<Vec<f64>>,
+    /// Path to PNG file for file-based loading. `None` for inline data.
+    pub file: Option<String>,
 }
 
 impl MjcfMesh {

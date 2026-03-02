@@ -1264,31 +1264,39 @@ fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
 }
 
 /// Parse hfield attributes from a `<hfield>` element.
+///
+/// Supports two data sources:
+/// - **File-based:** `file="terrain.png"` — `nrow`/`ncol`/`elevation` derived from PNG at build time.
+/// - **Inline:** `nrow`, `ncol`, `elevation` attributes in the XML.
+///
+/// At least one of `file` or `elevation` must be present.
 fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
     let name = get_attribute_opt(e, "name").ok_or_else(|| {
         MjcfError::XmlParse("hfield element missing required 'name' attribute".into())
     })?;
 
-    let nrow: usize = get_attribute_opt(e, "nrow")
-        .ok_or_else(|| {
-            MjcfError::XmlParse("hfield element missing required 'nrow' attribute".into())
-        })?
-        .parse()
-        .map_err(|_| MjcfError::XmlParse("hfield 'nrow' must be a positive integer".into()))?;
+    let file = get_attribute_opt(e, "file");
 
-    let ncol: usize = get_attribute_opt(e, "ncol")
-        .ok_or_else(|| {
-            MjcfError::XmlParse("hfield element missing required 'ncol' attribute".into())
-        })?
-        .parse()
-        .map_err(|_| MjcfError::XmlParse("hfield 'ncol' must be a positive integer".into()))?;
+    // Parse nrow/ncol (optional when file is present, required otherwise)
+    let nrow: Option<usize> =
+        if let Some(s) = get_attribute_opt(e, "nrow") {
+            Some(s.parse().map_err(|_| {
+                MjcfError::XmlParse("hfield 'nrow' must be a positive integer".into())
+            })?)
+        } else {
+            None
+        };
 
-    if nrow < 2 || ncol < 2 {
-        return Err(MjcfError::XmlParse(format!(
-            "hfield '{name}': nrow ({nrow}) and ncol ({ncol}) must be >= 2",
-        )));
-    }
+    let ncol: Option<usize> =
+        if let Some(s) = get_attribute_opt(e, "ncol") {
+            Some(s.parse().map_err(|_| {
+                MjcfError::XmlParse("hfield 'ncol' must be a positive integer".into())
+            })?)
+        } else {
+            None
+        };
 
+    // Parse size (always required)
     let size_str = get_attribute_opt(e, "size").ok_or_else(|| {
         MjcfError::XmlParse("hfield element missing required 'size' attribute".into())
     })?;
@@ -1312,17 +1320,45 @@ fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
         )));
     }
 
-    let elevation_str = get_attribute_opt(e, "elevation").ok_or_else(|| {
-        MjcfError::XmlParse("hfield element missing required 'elevation' attribute".into())
-    })?;
-    let elevation = parse_float_array(&elevation_str)?;
-    if elevation.len() != nrow * ncol {
+    // Parse elevation (optional when file is present, required otherwise)
+    let elevation = if let Some(elevation_str) = get_attribute_opt(e, "elevation") {
+        Some(parse_float_array(&elevation_str)?)
+    } else {
+        None
+    };
+
+    // Validation: at least one data source must be present
+    if file.is_none() && elevation.is_none() {
         return Err(MjcfError::XmlParse(format!(
-            "hfield '{}': elevation length ({}) must equal nrow * ncol ({})",
-            name,
-            elevation.len(),
-            nrow * ncol,
+            "hfield '{name}': at least one of 'file' or 'elevation' must be specified",
         )));
+    }
+
+    // Validate inline data completeness
+    if let Some(ref elev) = elevation {
+        let nr = nrow.ok_or_else(|| {
+            MjcfError::XmlParse(format!(
+                "hfield '{name}': 'nrow' is required when 'elevation' is specified",
+            ))
+        })?;
+        let nc = ncol.ok_or_else(|| {
+            MjcfError::XmlParse(format!(
+                "hfield '{name}': 'ncol' is required when 'elevation' is specified",
+            ))
+        })?;
+        if nr < 2 || nc < 2 {
+            return Err(MjcfError::XmlParse(format!(
+                "hfield '{name}': nrow ({nr}) and ncol ({nc}) must be >= 2",
+            )));
+        }
+        if elev.len() != nr * nc {
+            return Err(MjcfError::XmlParse(format!(
+                "hfield '{}': elevation length ({}) must equal nrow * ncol ({})",
+                name,
+                elev.len(),
+                nr * nc,
+            )));
+        }
     }
 
     Ok(MjcfHfield {
@@ -1331,6 +1367,7 @@ fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
         nrow,
         ncol,
         elevation,
+        file,
     })
 }
 

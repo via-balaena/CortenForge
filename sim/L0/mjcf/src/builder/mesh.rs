@@ -61,16 +61,21 @@ impl ModelBuilder {
     }
 
     /// Process a height field asset from MJCF.
+    ///
+    /// Supports two data sources:
+    /// - **File-based:** `file` attribute pointing to a PNG image
+    /// - **Inline:** `nrow`, `ncol`, `elevation` attributes in the XML
     pub(crate) fn process_hfield(
         &mut self,
         hfield: &MjcfHfield,
+        base_path: Option<&Path>,
     ) -> std::result::Result<(), ModelConversionError> {
         if self.hfield_name_to_id.contains_key(&hfield.name) {
             return Err(ModelConversionError {
                 message: format!("duplicate hfield '{}'", hfield.name),
             });
         }
-        let data = convert_mjcf_hfield(hfield)?;
+        let data = convert_mjcf_hfield(hfield, base_path, &self.compiler)?;
         let id = self.hfield_data.len();
         self.hfield_name_to_id.insert(hfield.name.clone(), id);
         self.hfield_name.push(hfield.name.clone());
@@ -152,6 +157,10 @@ pub fn load_mesh_file(
 
 /// Convert an MJCF hfield asset to `HeightFieldData`.
 ///
+/// Handles two data sources:
+/// 1. **File-based:** `file` attribute → load PNG, derive nrow/ncol/elevation
+/// 2. **Inline:** `nrow`/`ncol`/`elevation` attributes in XML
+///
 /// MuJoCo elevation formula: `vertex_z = elevation[i] × size[2]`.
 /// MuJoCo vertex positions: centered at origin, x ∈ `[−size[0], +size[0]]`, y ∈ `[−size[1], +size[1]]`.
 /// `HeightFieldData` uses corner-origin `(0,0)` with uniform `cell_size`.
@@ -162,9 +171,40 @@ pub fn load_mesh_file(
 )]
 pub fn convert_mjcf_hfield(
     hfield: &MjcfHfield,
+    base_path: Option<&Path>,
+    compiler: &MjcfCompiler,
 ) -> std::result::Result<HeightFieldData, ModelConversionError> {
-    let ncol = hfield.ncol;
-    let nrow = hfield.nrow;
+    // Resolve data source: file-based or inline
+    let (ncol, nrow, elevation) = match (&hfield.file, &hfield.elevation) {
+        // Inline elevation data takes precedence (consistent with mesh semantics)
+        (_, Some(elev)) => {
+            let nr = hfield.nrow.ok_or_else(|| ModelConversionError {
+                message: format!(
+                    "hfield '{}': nrow required with inline elevation",
+                    hfield.name
+                ),
+            })?;
+            let nc = hfield.ncol.ok_or_else(|| ModelConversionError {
+                message: format!(
+                    "hfield '{}': ncol required with inline elevation",
+                    hfield.name
+                ),
+            })?;
+            (nc, nr, elev.clone())
+        }
+        // File-based loading
+        (Some(file_path), None) => load_hfield_png(file_path, base_path, compiler, &hfield.name)?,
+        // Neither (should not happen — parser validates)
+        (None, None) => {
+            return Err(ModelConversionError {
+                message: format!(
+                    "hfield '{}': no elevation data and no file specified",
+                    hfield.name,
+                ),
+            });
+        }
+    };
+
     let z_top = hfield.size[2];
 
     // Compute cell spacings
@@ -175,7 +215,7 @@ pub fn convert_mjcf_hfield(
     let (cell_size, heights) = if (dx - dy).abs() / dx.max(dy) < 0.01 {
         // Within 1% tolerance: use average
         let cell_size = f64::midpoint(dx, dy);
-        let heights: Vec<f64> = hfield.elevation.iter().map(|&e| e * z_top).collect();
+        let heights: Vec<f64> = elevation.iter().map(|&e| e * z_top).collect();
         (cell_size, heights)
     } else {
         // Non-square: resample to finer resolution
@@ -198,10 +238,10 @@ pub fn convert_mjcf_hfield(
                 let ix = (fx as usize).min(ncol - 2);
                 let tx = fx - ix as f64;
                 // Bilinear interpolation
-                let e00 = hfield.elevation[iy * ncol + ix];
-                let e10 = hfield.elevation[iy * ncol + ix + 1];
-                let e01 = hfield.elevation[(iy + 1) * ncol + ix];
-                let e11 = hfield.elevation[(iy + 1) * ncol + ix + 1];
+                let e00 = elevation[iy * ncol + ix];
+                let e10 = elevation[iy * ncol + ix + 1];
+                let e01 = elevation[(iy + 1) * ncol + ix];
+                let e11 = elevation[(iy + 1) * ncol + ix + 1];
                 let e = e00 * (1.0 - tx) * (1.0 - ty)
                     + e10 * tx * (1.0 - ty)
                     + e01 * (1.0 - tx) * ty
@@ -213,6 +253,48 @@ pub fn convert_mjcf_hfield(
     };
 
     Ok(HeightFieldData::new(heights, ncol, nrow, cell_size))
+}
+
+/// Load hfield elevation data from a PNG image file.
+///
+/// MuJoCo behavior (from `user_model.cc`):
+/// - Loads image as grayscale
+/// - Normalizes pixel values to `[0.0, 1.0]`: 8-bit → `/255`, 16-bit → `/65535`
+/// - `nrow` = image height, `ncol` = image width
+///
+/// Returns `(ncol, nrow, elevation)`.
+#[allow(clippy::cast_precision_loss)]
+fn load_hfield_png(
+    file_path: &str,
+    base_path: Option<&Path>,
+    compiler: &MjcfCompiler,
+    hfield_name: &str,
+) -> std::result::Result<(usize, usize, Vec<f64>), ModelConversionError> {
+    // Resolve path using the same rules as mesh files (hfields use meshdir)
+    let resolved_path = resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh)?;
+
+    // Load image
+    let img = image::open(&resolved_path).map_err(|e| ModelConversionError {
+        message: format!("hfield '{hfield_name}': failed to load '{file_path}': {e}"),
+    })?;
+
+    // Convert to 16-bit grayscale for maximum precision
+    let gray = img.into_luma16();
+    let ncol = gray.width() as usize;
+    let nrow = gray.height() as usize;
+
+    if nrow < 2 || ncol < 2 {
+        return Err(ModelConversionError {
+            message: format!(
+                "hfield '{hfield_name}': image dimensions ({ncol}x{nrow}) must be >= 2x2",
+            ),
+        });
+    }
+
+    // Normalize to [0.0, 1.0]
+    let elevation: Vec<f64> = gray.pixels().map(|p| f64::from(p.0[0]) / 65535.0).collect();
+
+    Ok((ncol, nrow, elevation))
 }
 
 /// Convert MJCF mesh asset to `TriangleMeshData`.
