@@ -281,7 +281,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 8: Spec B rubric (Joint Physics)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — write Spec B rubric.
