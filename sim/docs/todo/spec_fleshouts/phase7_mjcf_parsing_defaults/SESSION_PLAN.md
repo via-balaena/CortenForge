@@ -556,7 +556,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 2 | T1: DT-3 (hfield PNG) + DT-85 (flex contact attrs) | Done | cea5f4c, cf76731 |
 | 3 | Spec A rubric | Done | a160970 |
 | 4 | Spec A spec | Done | 2883a95 |
-| 5 | Spec A implementation | Done | (pending commit) |
+| 5 | Spec A implementation | Done | 01ae59f |
 | 6 | Spec A review — create document | Pending | |
 | 7 | Spec A review — execute | Pending | |
 | 8 | Spec B rubric | Pending | |
