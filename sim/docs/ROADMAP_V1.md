@@ -15,7 +15,7 @@
 > ~~§60~~ dropped (nonexistent in MuJoCo). DT-125 (`mj_setConst()` runtime
 > `qpos_spring` recomputation) added during Phase 7 Spec B review.
 >
-> **Current position**: Phases 1–6 complete. Phase 7 in progress (Spec A done, Spec B done). Next: Phases 7–11 (parallel).
+> **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
 ---
 
@@ -183,18 +183,18 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 7 — MJCF Parsing & Defaults Gaps
+### Phase 7 — MJCF Parsing & Defaults Gaps ✅
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| DT-2 | 10b | T2 | Equality constraint defaults: `solref`/`solimp` in defaults structs |
-| DT-3 | 10b | T1 | File-based hfield loading from PNG |
-| DT-11 | 10b | T2 | `range` as defaultable attribute in `MjcfJointDefaults` |
+| ~~DT-2~~ | 10b | T2 | ~~Equality constraint defaults: `solref`/`solimp` in defaults structs~~ **Done** — Phase 7 Spec A (commit `01ae59f`). `MjcfEqualityDefaults` struct, `apply_to_equality()` cascade for all 5 equality types. |
+| ~~DT-3~~ | 10b | T1 | ~~File-based hfield loading from PNG~~ **Done** — Phase 7 T1 (commit `cea5f4c`). `file` attribute on `<hfield>`, PNG grayscale loading via `image` crate. |
+| ~~DT-11~~ | 10b | T2 | ~~`range` as defaultable attribute in `MjcfJointDefaults`~~ **Already implemented** — verified during Phase 7 Spec A review (EGT-4). Dropped from spec scope. |
 | ~~DT-13~~ | 10b | T2 | ~~`qpos_spring` — distinct from `qpos0`, not yet implemented~~ **Done** — Phase 7 Spec A (commit `3f70616`). `qpos_spring: Vec<f64>` on Model, populated from `qpos0`/`springref`. Runtime consumers in `passive.rs`/`energy.rs`. |
-| DT-14 | 10b | T2 | Actuator type-specific defaults (cylinder area/timeconst, muscle params) |
-| DT-85 | 10i | T1 | Flex `<contact>` runtime attributes: `internal`, `activelayers`, `vertcollide`, `passive` |
-| DT-88 | 10i | T2 | `<flexcomp>` attributes: `inertiabox`, `scale`, `quat`, `file` |
-| §55 | 13 | — | Per-element `*_user` custom data arrays from MJCF |
+| ~~DT-14~~ | 10b | T2 | ~~Actuator type-specific defaults (cylinder area/timeconst, muscle params)~~ **Done** — Phase 7 Spec A (commit `01ae59f`). Shortcut names in `parse_default()`, cylinder/muscle/adhesion fields on `MjcfActuatorDefaults`. |
+| ~~DT-85~~ | 10i | T1 | ~~Flex `<contact>` runtime attributes: `internal`, `activelayers`, `vertcollide`, `passive`~~ **Done** — Phase 7 T1 (commit `cf76731`). Parse + store + wire to Model arrays. |
+| ~~DT-88~~ | 10i | T2 | ~~`<flexcomp>` attributes: `inertiabox`, `scale`, `quat`, `file`~~ **Done** — Phase 7 Spec C (commit `05ee0a5`). Documentation-fidelity (not in MuJoCo 3.5.0 binary). |
+| ~~§55~~ | 13 | — | ~~Per-element `*_user` custom data arrays from MJCF~~ **Done** — Phase 7 Spec C (commit `05ee0a5`). 7 element types, `<size>` nuser_*, auto-sizing, zero-padding, validation, defaults cascade. |
 | ~~§60~~ | 15 | — | ~~`springinertia` joint attribute — inertia-spring coupling in CRBA diagonal~~ **DROPPED** — Verified nonexistent in MuJoCo (Phase 7 Spec B rubric EGT-1: zero GitHub results, no `mjmodel.h` field, no XML attribute). |
 | ~~§64~~ | 15 | — | ~~Ball/free joint spring force and energy (quaternion geodesic). Depends on Phase 7 Spec A `qpos_spring` array.~~ **Done** — Phase 7 Spec B (commit `3f70616`). Ball/free spring force in `passive.rs`, spring energy in `energy.rs`, quaternion geodesic via `subquat()`. |
 | ~~§64a~~ | 15 | — | ~~`jnt_margin` for joint limit activation and constraint row margin~~ **Done** — Phase 7 Spec B (commit `3f70616`). `margin` parsed from `<joint>`, `jnt_margin: Vec<f64>` on Model, 9 sites in `assembly.rs` replaced. |

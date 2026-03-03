@@ -113,7 +113,7 @@ DT-96 (lazy energy eval, post-v1.0), DT-97 (golden file generation, Phase 12)
 
 **Sensors (Phase 6) ✅:** ~~§62~~ (done), ~~DT-62~~ (done), ~~DT-63~~ (done), ~~DT-64~~ (done), ~~DT-102~~ (done), ~~DT-109~~ (done). Deferred to post-v1.0: DT-65, DT-118, DT-119, DT-120, DT-121, DT-122
 
-**Parsing/defaults (Phase 7):** DT-2, DT-3, DT-11, DT-13, DT-14, DT-85, DT-88
+**Parsing/defaults (Phase 7) ✅:** ~~DT-2~~ (done), ~~DT-3~~ (done), ~~DT-11~~ (already implemented), ~~DT-13~~ (done), ~~DT-14~~ (done), ~~DT-85~~ (done), ~~DT-88~~ (done), ~~§55~~ (done), ~~§60~~ (dropped), ~~§64~~ (done), ~~§64a~~ (done). Deferred to post-v1.0: DT-123, DT-124, DT-125, DT-126
 
 **Constraints/solver (Phase 8):** DT-19, DT-23, DT-25, DT-28, DT-32, DT-33, DT-39
 
@@ -126,7 +126,7 @@ DT-20, DT-22, DT-24, DT-26, DT-27, DT-29, DT-30, DT-31, DT-34, DT-36,
 DT-37, DT-38, DT-40, DT-42, DT-43, DT-44, DT-45, DT-46, DT-48, DT-49,
 DT-50, DT-55, DT-65, DT-66, DT-67, DT-68, DT-69, DT-71, DT-72, DT-73,
 DT-76, DT-80, DT-81, DT-82, DT-83, DT-84, DT-86, DT-87, DT-89, DT-91, DT-92,
-DT-96, DT-101, DT-123, DT-124, DT-126
+DT-96, DT-101, DT-123, DT-124, DT-125, DT-126
 
 #### From future_work_11.md (#43–45)
 
@@ -154,7 +154,7 @@ DT-96, DT-101, DT-123, DT-124, DT-126
 | ~~52~~ | ~~`mj_inverse()` inverse dynamics~~ | **Yes** | Phase 3 | ✅ Done |
 | ~~53~~ | ~~`step1()`/`step2()` split stepping API~~ | **Yes** | Phase 3 | ✅ Done |
 | 54 | Heightfield collision gaps | **Yes** | Phase 9 | |
-| 55 | `*_user` custom data fields | **Yes** | Phase 7 | |
+| ~~55~~ | ~~`*_user` custom data fields~~ | **Yes** | Phase 7 | ✅ Done |
 
 #### From future_work_14.md (#56–59)
 
@@ -169,12 +169,12 @@ DT-96, DT-101, DT-123, DT-124, DT-126
 
 | # | Item | Core v1.0? | Roadmap Phase | Status |
 |---|------|-----------|---------------|--------|
-| 60 | `springinertia` joint attribute | **Yes** | Phase 7 | |
-| 61 | `slidercrank` transmission | **Yes** | Phase 5 | |
-| 62 | Missing sensor types | **Yes** | Phase 6 | |
-| 63 | `dynprm` array 3→10 | **Yes** | Phase 5 | |
-| 64 | Ball/free joint spring energy | **Yes** | Phase 7 | |
-| 64a | `jnt_margin` limit activation | **Yes** | Phase 7 | |
+| ~~60~~ | ~~`springinertia` joint attribute~~ | ~~**Yes**~~ | Phase 7 | Dropped (nonexistent in MuJoCo) |
+| ~~61~~ | ~~`slidercrank` transmission~~ | **Yes** | Phase 5 | ✅ Done |
+| ~~62~~ | ~~Missing sensor types~~ | **Yes** | Phase 6 | ✅ Done |
+| ~~63~~ | ~~`dynprm` array 3→10~~ | **Yes** | Phase 5 | ✅ Done |
+| ~~64~~ | ~~Ball/free joint spring energy~~ | **Yes** | Phase 7 | ✅ Done |
+| ~~64a~~ | ~~`jnt_margin` limit activation~~ | **Yes** | Phase 7 | ✅ Done |
 
 #### From future_work_16.md (#65–66)
 
@@ -202,8 +202,8 @@ DT-96, DT-101, DT-123, DT-124, DT-126
 | 3 | Core API gaps | ~~DT-21~~ (done), ~~DT-41~~ (done), ~~§51~~ (done), ~~§52~~ (done), ~~§53~~ (done), ~~§59~~ (done), ~~DT-79~~ (done) | 7 (7 done) |
 | 4 | Core Data fields | ~~§51~~ (done), ~~§56~~ (done) + CVEL fixes, lazy gates, sensor refactor, DT-103 | ✅ All done |
 | 5 | Actuator completeness | ~~DT-6~~, ~~§63~~, ~~DT-56~~, ~~DT-57~~, ~~DT-59~~, ~~DT-77~~, ~~DT-8~~, ~~§61~~, ~~DT-9~~ (partial), ~~DT-58~~, ~~DT-60~~, ~~DT-106~~ — all done. Deferred: DT-104/105/107/108/110/111–116 → post-v1.0 | ✅ All done |
-| 6 | Sensor completeness | §62, DT-62/63/64, DT-102, DT-109 | 6 |
-| 7 | MJCF parsing & defaults | DT-2/3/11/13/14/85/88, §55/60/64/64a | 11 |
+| 6 | Sensor completeness | ~~§62~~, ~~DT-62/63/64~~, ~~DT-102~~, ~~DT-109~~ — all done. Deferred: DT-65/118/119/120/121/122 → post-v1.0 | ✅ All done |
+| 7 | MJCF parsing & defaults | ~~DT-2/3/11/13/14/85/88~~, ~~§55/64/64a~~ — all done. ~~§60~~ dropped. Deferred: DT-123/124/125/126 → post-v1.0 | ✅ All done |
 | 8 | Constraint & solver gaps | DT-19/23/25/28/32/33/39 | 7 |
 | 9 | Collision completeness | §43/50/54/57/65, DT-70 | 6 |
 | 10 | Flex pipeline | §42A-i–v, §42B | 6 |
@@ -267,8 +267,8 @@ DT-96, DT-101, DT-123, DT-124, DT-126
    │                                                          │
    │  Phase 4: Data fields (✓§51, ✓§56)              ✅ DONE     │
    │  Phase 5: Actuators (10 core items)             ✅ DONE     │
-   │  Phase 6: Sensors (6 items)                              │
-   │  Phase 7: Parsing/defaults (11 items)                    │
+   │  Phase 6: Sensors (6 items)                     ✅ DONE     │
+   │  Phase 7: Parsing/defaults (11 items)           ✅ DONE     │
    │  Phase 8: Constraints/solver (7 items)                   │
    │  Phase 9: Collision (6 items)                             │
    │  Phase 10: Flex pipeline (6 items)                       │

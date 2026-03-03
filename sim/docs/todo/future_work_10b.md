@@ -69,8 +69,8 @@ within completed tasks, not critical gaps.
 | §DT | Origin | Description | Priority | Tier |
 |-----|--------|-------------|----------|------|
 | DT-1 | §1 | Mesh defaults — no `apply_to_mesh()` method; root-only mesh scale defaults deferred | Low | T1 |
-| DT-2 | §1 | Equality constraint defaults — no `apply_to_equality()`, `solref`/`solimp` not in defaults structs | Medium | T2 |
-| DT-3 | §6a | File-based hfield loading from PNG (`<hfield file="terrain.png"/>`) | Low | T1 |
+| ~~DT-2~~ | §1 | ~~Equality constraint defaults — no `apply_to_equality()`, `solref`/`solimp` not in defaults structs~~ **DONE** — Phase 7 Spec A (commit `01ae59f`). `MjcfEqualityDefaults` struct, `apply_to_equality()` cascade. | Medium | T2 |
+| ~~DT-3~~ | §6a | ~~File-based hfield loading from PNG (`<hfield file="terrain.png"/>`)~~ **DONE** — Phase 7 T1 (commit `cea5f4c`). PNG grayscale loading via `image` crate. | Low | T1 |
 | DT-4 | §6b | `<sdf>` asset element for inline distance grids (no standard MuJoCo equivalent) | Low | T1 |
 | DT-5 | §8 | `gaintype/biastype/dyntype="user"` — callback-based types require plugin system | Low | T2 |
 | ~~DT-6~~ | §8 | ~~`actearly` parsed + defaultable but not wired to runtime (always standard order)~~ **DONE** — Phase 5 Session 1 (commit `dc12b8b`). Already wired; verified + 4 tests added. | Medium | T1 |
@@ -78,10 +78,10 @@ within completed tasks, not critical gaps.
 | ~~DT-8~~ | §8 | ~~Transmission types: `cranksite`, `slidersite`, `jointinparent` not supported~~ **Done** — Spec B (Phase 5 Session 7) | Low | T2 |
 | ~~DT-9~~ | §8 | ~~`nsample`, `interp`, `delay` — MuJoCo 3.x interpolation actuator attributes~~ **Partially done** — parsing + model/data storage landed in Spec D (Phase 5 Session 12). Runtime interpolation → DT-107, `dyntype` gating → DT-108 | Low | T2 |
 | DT-10 | §18 | Deferred `<compiler>` attributes: `fitaabb`, `usethread`, `alignfree`, `saveinertial`, `inertiagrouprange`, `<lengthrange>` child | Low | T1 |
-| DT-11 | §20 | `range` not in `MjcfJointDefaults` as a defaultable attribute | Medium | T2 |
+| ~~DT-11~~ | §20 | ~~`range` not in `MjcfJointDefaults` as a defaultable attribute~~ **Already implemented** — verified during Phase 7 Spec A review (EGT-4). | Medium | T2 |
 | DT-12 | §20 | Programmatic API enforcement that `worldbody.childclass` must be `None` | Low | T1 |
-| DT-13 | §22 | `qpos_spring` not implemented — uses `qpos0` instead (equivalent only in default case) | Medium | T2 |
-| DT-14 | §27 defaults | Actuator type-specific defaults not yet defaultable (cylinder area/timeconst, muscle params) | Medium | T2 |
+| ~~DT-13~~ | §22 | ~~`qpos_spring` not implemented — uses `qpos0` instead (equivalent only in default case)~~ **DONE** — Phase 7 Spec A (commit `3f70616`). `qpos_spring: Vec<f64>` on Model. | Medium | T2 |
+| ~~DT-14~~ | §27 defaults | ~~Actuator type-specific defaults not yet defaultable (cylinder area/timeconst, muscle params)~~ **DONE** — Phase 7 Spec A (commit `01ae59f`). Shortcut names + type-specific fields on `MjcfActuatorDefaults`. | Medium | T2 |
 | DT-15 | §27 defaults | Sentinel-value detection for `gear`/`kp`/`noise`/`cutoff` should migrate to `Option<T>`. Phase 7 Spec A added 14 new sentinel-detection fields in `apply_to_actuator()` (area, diameter, bias, muscle_timeconst, range, force, scale, lmin, lmax, vmax, fpmax, fvmax, gain) — these are the primary candidates for this migration. | Low | T1 |
 | ~~DT-16~~ | §27B | ~~Flex `density` attribute location wrong — on `<flex>` in parser but not on `<flex>` in MuJoCo~~ **DONE** | Medium | T1 |
 | DT-17 | §27 | Global `<option o_margin>` override deferred — per-geom margin is correct foundation. Phase 7 Spec B (§64a) implemented per-joint `jnt_margin`; this task covers the separate global `o_margin` option. | Low | T1 |

@@ -175,8 +175,12 @@ hfield↔hfield.
 
 ---
 
-### 55. `*_user` Custom Data Fields
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~55. `*_user` Custom Data Fields~~
+**Status:** Done | **Effort:** S | **Prerequisites:** None
+
+> **Done (Phase 7 Spec C, commit `05ee0a5`).** 7 element types (body, geom,
+> joint, site, tendon, actuator, sensor) with `user` attribute, `<size>` nuser_*
+> parsing, auto-sizing, zero-padding, validation, defaults cascade. 20 tests.
 
 #### Current State
 
