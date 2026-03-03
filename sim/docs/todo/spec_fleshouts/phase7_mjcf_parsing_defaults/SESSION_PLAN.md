@@ -565,7 +565,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 11 | Spec B review — create document | Done | `038666c` |
 | 12 | Spec B review — execute | Done | |
 | 13 | Spec C rubric | Done | 0290ced |
-| 14 | Spec C spec | Done | COMMIT_HASH |
+| 14 | Spec C spec | Done | `0709416` |
 | 15 | Spec C implementation | Pending | |
 | 16 | Spec C review — create document | Pending | |
 | 17 | Spec C review — execute | Pending | |
