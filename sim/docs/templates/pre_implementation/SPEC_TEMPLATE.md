@@ -4,11 +4,17 @@
 **Phase:** Roadmap Phase {N} — {phase_name}
 **Effort:** {S/M/L}
 **MuJoCo ref:** `{function_name()}` in `{source_file}.c`, lines {N–M}
-**MuJoCo version:** {version the C source was read from — e.g., "3.2.6, commit abc1234"}
+**MuJoCo version:** {version the C source was read from — e.g., "3.5.0"}
+**Test baseline:** {current domain test count — e.g., "2,238+ sim domain tests"}
 **Prerequisites:**
 - {list prerequisites — include commit hashes for already-landed work}
 - {e.g., "DT-103 spatial transport utilities (landed in `abc1234`)"}
 - {or "None"}
+
+{**Independence** (include if spec is part of a phase with parallel specs)**:**
+This spec is independent of / depends on {Spec X, Spec Y} per the umbrella
+dependency graph. Shared files: {name them and explain why they don't conflict,
+or state "None"}.}
 
 > **Conformance mandate:** This spec exists to make CortenForge produce
 > numerically identical results to MuJoCo for the feature described below.
@@ -17,6 +23,40 @@
 > not the MuJoCo documentation, not intuition about "what should happen,"
 > not a Rust-idiomatic reinterpretation. When in doubt, read the C source
 > and match its behavior exactly.
+
+{**Extension specs:** If this spec introduces behavior that intentionally extends
+beyond MuJoCo, replace the conformance mandate above with a split version that
+names: (1) which parts must match MuJoCo exactly, (2) which parts are
+CortenForge extensions, and (3) the source of truth for each. See Phase 5
+Spec C (Hill-type muscle) for a worked example. Example:
+
+> **Conformance mandate (split):** This spec has a split conformance posture:
+> 1. **{conformant part}** — MUST produce numerically identical results to
+>    MuJoCo's `{function()}`. The MuJoCo C source code is the source of truth.
+> 2. **{extension part}** — is a CortenForge EXTENSION. {source} is the source
+>    of truth for this behavior.
+
+}
+
+---
+
+## Scope Adjustment
+
+{Delete this section if the spec is standalone (not part of a phase/umbrella).
+
+If the spec is part of a phase or umbrella, document any scope corrections
+discovered during empirical verification against MuJoCo. This section records
+what changed from the umbrella's original task list and why.
+
+| Umbrella claim | MuJoCo reality | Action |
+|----------------|---------------|--------|
+| {feature X listed in umbrella} | {what MuJoCo 3.x.x actually shows} | {In scope / Drop / Defer to DT-{N} / Add (newly discovered)} |
+
+**Final scope:** {numbered list of what this spec actually covers.}
+
+This section was necessary in Phase 6 Spec C (dropped `geompoint`, deferred
+`camprojection`), Phase 6 Spec D (added `interval` attribute discovered during
+empirical testing), and Phase 5 Spec C (split mandate for extension).}
 
 ---
 
@@ -52,6 +92,15 @@ computes it incorrectly."}
 {- **Numerical behavior** — what value does MuJoCo produce for a simple test
    input? (This becomes an AC expected value.)}
 
+{**Structuring a large MuJoCo Reference:** When the reference covers multiple
+functions, struct layouts, or subsystems, organize by topic — not by the order
+you discovered things. Common subsections:}
+{- Per-function algorithm descriptions (with C snippets)}
+{- Struct/field layouts (spec-level, compiled model, data)}
+{- Compiler validation rules (what MuJoCo accepts vs rejects, with exact error messages)}
+{- Edge cases (verified against MuJoCo, not assumed from docs)}
+{- Numerical verification data (values from running MuJoCo — these become AC expected values)}
+
 ### Key Behaviors
 
 | Behavior | MuJoCo | CortenForge (current) |
@@ -78,6 +127,62 @@ match" and explain why you're confident.}
 > substitution: "use X wherever MuJoCo uses Y." If conventions match, say
 > "Direct port — no translation needed."
 
+{### Cross-Subsystem Parity
+
+Include this subsection when the spec implements for one subsystem what already
+exists for another (e.g., sensor history mirroring actuator history). A
+field-by-field parity table prevents subtle inconsistencies.
+
+| Existing field | New field | Type | Default | Parity |
+|---------------|----------|------|---------|--------|
+| `actuator_nsample` (`model.rs:592`) | `sensor_nsample` | `Vec<i32>` | `0` | Exact match |
+| *(no equivalent)* | `sensor_interval` | `Vec<(f64, f64)>` | `(0.0, 0.0)` | **New — subsystem-specific** |
+
+Delete this subsection if the spec does not mirror an existing subsystem.}
+
+{### Conformant vs Extension Boundary
+
+Include this subsection for extension specs (split conformance mandate). Table
+showing which aspects are MuJoCo-conformant and which are extensions.
+
+| Aspect | MuJoCo behavior | This spec | Conformance |
+|--------|----------------|-----------|-------------|
+| {aspect 1} | {what MuJoCo does} | {what we do} | **IDENTICAL** — conformant |
+| {aspect 2} | {what MuJoCo does} | {what we do differently} | **EXTENSION** — documented |
+
+Delete this subsection for pure conformance specs.}
+
+---
+
+## Architecture Decisions
+
+{Delete this section if no cross-cutting design decisions are needed — i.e.,
+every decision is local to a single S-section and fits in its `**Design
+decision:**` field.
+
+Include this section when a design choice affects multiple S-sections or
+involves a non-obvious trade-off between alternatives. Each decision should
+follow the pattern: state the problem, enumerate alternatives, justify the
+choice.
+
+### AD-1: {Decision name}
+
+**Problem:** {What needs to be decided and why it's non-obvious.}
+
+**Alternatives evaluated:**
+
+| Option | Approach | Pros | Cons |
+|--------|----------|------|------|
+| 1 | {approach} | {pros} | {cons} |
+| 2 | {approach} | {pros} | {cons} |
+
+**Chosen:** Option {N} — {brief rationale referencing pros/cons above}.
+
+This section was necessary in Phase 5 Spec C (Gain/Bias type architecture,
+state management) and Phase 6 Spec A (architectural decisions for objtype
+dispatch). Most specs don't need it — the per-S-section `**Design decision:**`
+field suffices for local choices.}
+
 ---
 
 ## Specification
@@ -95,12 +200,13 @@ bugs.}
 
 ### S1. {First change}
 
-**File:** `{exact path relative to sim/L0/}`
+**File:** `{exact path relative to sim/L0/}` {with line range if modifying existing code}
 **MuJoCo equivalent:** `{function_name()}` in `{source_file}.c` {lines N–M}
 **Design decision:** {Why this approach over alternatives. What trade-offs
 were considered. Reference specific codebase patterns this follows. If the
 implementation differs structurally from MuJoCo's C code, explain why and
-prove numerical equivalence.}
+prove numerical equivalence. For cross-cutting decisions, reference AD-N
+above instead of repeating the rationale.}
 
 {Describe the change. Include before/after Rust code where the before state
 aids understanding of the change.}
@@ -117,7 +223,7 @@ aids understanding of the change.}
 
 ### S2. {Second change}
 
-**File:** `{exact path}`
+**File:** `{exact path}` {with line range}
 **MuJoCo equivalent:** `{function()}` in `{file}.c`
 **Design decision:** {Why this approach.}
 
@@ -159,9 +265,9 @@ should produce).}
 
 ### AC{N}: {name} *(code review — not a runtime test)*
 {Structural properties verified by inspection, not execution. Be specific
-about what to look for — e.g., "No `unsafe` blocks in new code," or "All
-public functions have `#[doc]` with MuJoCo reference," or "Module re-exports
-match the consumer list in S3."}
+about what to look for — e.g., "No `unsafe` blocks in new code," "No
+`#[allow(unreachable_patterns)]` in modified files," "New enum variant has
+an arm in all exhaustive match sites listed in Files Affected."}
 
 ---
 
@@ -190,13 +296,13 @@ appears in the Supplementary Tests table. No orphans in either direction.}
 {**Conformance test convention:** Tests that verify against MuJoCo's actual
 output must include a comment in the test body stating: (1) MuJoCo version,
 (2) how the expected value was obtained (e.g., "ran `test_model.xml` through
-MuJoCo 3.2.6 Python bindings"), (3) the exact expected value. This creates an
+MuJoCo 3.5.0 Python bindings"), (3) the exact expected value. This creates an
 audit trail for future MuJoCo version updates.}
 
 ### T1: {MuJoCo conformance — happy path} → AC1
 {Model setup. MuJoCo-verified expected output. Tolerance. State MuJoCo version.}
 
-### T2: {Edge case — zero mass / world body / nv=0} → AC2
+### T2: {Edge case} → AC2
 {Model setup. Expected output. Why this edge case matters. State whether
 expected value is MuJoCo-verified or analytically derived.}
 
@@ -206,19 +312,27 @@ expected value is MuJoCo-verified or analytically derived.}
 ### T4: {Regression — existing tests still pass} → AC{x}
 {Compare before/after values. Tolerance.}
 
-### T5: {Interaction — sleep / disable flags / multi-body} → AC{x}
-{Combined scenarios.}
+### T5: {Interaction — multi-body / combined features} → AC{x}
+{Combined scenarios. At least one test should use a non-trivial model to catch
+bugs that only appear in multi-body or multi-element configurations.}
 
 ### Edge Case Inventory
 
 {Explicit list of all edge cases this spec must test. Cross-reference with
-MuJoCo Reference section to ensure nothing is missed.}
+MuJoCo Reference section to ensure nothing is missed. Replace the examples
+below with edge cases specific to this task.}
 
 | Edge Case | Why it matters | Test(s) | AC(s) |
 |-----------|---------------|---------|-------|
-| World body (`body_id == 0`) | {often a special case in MuJoCo — zero parent, no joint} | T{x} | AC{x} |
-| Zero mass body | {changes inertia calculations, division-by-zero risk} | T{x} | AC{x} |
-| {task-specific edge case} | {why} | T{x} | AC{x} |
+| {task-specific edge case 1} | {why — cite MuJoCo behavior if relevant} | T{x} | AC{x} |
+| {task-specific edge case 2} | {why} | T{x} | AC{x} |
+| {task-specific edge case 3} | {why} | T{x} | AC{x} |
+
+{Common edge case patterns (include only those relevant to this task):
+body/sensor tasks — world body, zero-mass body, sleeping bodies, disabled flags;
+actuator tasks — `nv=0`, `nu=0`, non-unit gear, position-actuator fingerprint;
+parser tasks — invalid keywords, missing attributes, default class inheritance;
+buffer tasks — zero-length, negative values, boundary indices.}
 
 ### Supplementary Tests
 
@@ -227,7 +341,7 @@ supplementary test needs a rationale — no orphan tests.}
 
 | Test | What it covers | Rationale |
 |------|---------------|-----------|
-| T{x} ({name}) | {what scenario} | {why this test exists despite no dedicated AC — e.g., "sanity check subsumed by AC7 regression suite"} |
+| T{x} ({name}) | {what scenario} | {why this test exists despite no dedicated AC} |
 
 ---
 
@@ -258,13 +372,25 @@ unexpected. "Some tests might fail" is never acceptable.}
 
 | Test | File | Expected impact | Reason |
 |------|------|----------------|--------|
-| `test_accelerometer_at_rest` | `sensor/tests.rs:142` | Pass (unchanged) | Does not exercise new code path |
-| `test_phase4_regression_suite` | `conformance/phase4.rs` | 2 values change within tolerance | New computation is more correct; update expected values |
+| `test_{name}` | `{file}:{line}` | Pass (unchanged) | Does not exercise new code path |
+| `test_{name}` | `{file}:{line}` | 2 values change within tolerance | New computation is more correct; update expected values |
 | `test_{name}` | `{file}:{line}` | {Pass/Fail/Value change} | {why} |
 
 > **If you can't name specific tests:** Go read the test suite. The blast
 > radius section exists to prevent surprises during implementation. Vague
 > entries defeat the purpose.
+
+{### Non-Modification Sites
+
+Include this subsection when the spec touches code near other important match
+sites, consumers, or callers that should explicitly NOT be modified. Naming
+them prevents accidental changes and documents that the analysis was thorough.
+
+| File:line | What it does | Why NOT modified |
+|-----------|-------------|-----------------|
+| `{path}:{line}` | {description} | {reason — e.g., "handles a different enum variant", "already conformant"} |
+
+Delete this subsection if the spec's blast radius is small and contained.}
 
 ---
 
@@ -282,6 +408,24 @@ across multiple sections.}
 3. {S3 independent — can parallelize with S2} → verify S3 conformance
 
 ---
+
+{## Performance Characterization
+
+Include this section when the spec introduces a hot loop, clones a model,
+allocates large buffers, or runs simulation steps at compile time. Characterize
+the cost and state whether it's acceptable for target model complexity.
+
+**Cost:** {asymptotic complexity, e.g., "O(nu × steps) integration steps where
+steps = inttotal/timestep (default 1,000)"}
+**Worst case:** {e.g., "humanoid with 20 muscle actuators: ~40,000 integration
+steps at compile time, ~1–5s"}
+**Acceptable?** {yes/no for target use cases, with optimization notes for future}
+
+Delete this section if the spec has no performance-sensitive code paths.
+Phase 5 Spec A needed this for `mj_setLengthRange` (simulation loop at compile
+time); most specs don't.
+
+---}
 
 ## Out of Scope
 

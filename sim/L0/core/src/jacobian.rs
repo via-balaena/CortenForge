@@ -549,6 +549,11 @@ mod jac_site_tests {
         model.jnt_range = vec![(0.0, 0.0)];
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = match jnt_type {
+            MjJointType::Free => vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            MjJointType::Ball => vec![1.0, 0.0, 0.0, 0.0],
+            _ => vec![0.0], // Hinge / Slide
+        };
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
@@ -711,6 +716,11 @@ mod mj_jac_tests {
         model.jnt_range = vec![(0.0, 0.0)];
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = match jnt_type {
+            MjJointType::Free => vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            MjJointType::Ball => vec![1.0, 0.0, 0.0, 0.0],
+            _ => vec![0.0], // Hinge / Slide
+        };
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
@@ -826,6 +836,7 @@ mod mj_jac_tests {
         model.jnt_range = vec![(0.0, 0.0)];
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
@@ -938,6 +949,7 @@ mod mj_jac_tests {
         model.jnt_range = vec![(0.0, 0.0)];
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
@@ -1173,6 +1185,8 @@ mod mj_jac_tests {
         model.jnt_range = vec![(0.0, 0.0); 3];
         model.jnt_stiffness = vec![0.0; 3];
         model.jnt_springref = vec![0.0; 3];
+        // Free(7) + Hinge(1) + Hinge(1) = 9 qpos_spring entries
+        model.qpos_spring = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0; 3];
         model.jnt_armature = vec![0.0; 3];
         model.jnt_solref = vec![[0.02, 1.0]; 3];
@@ -1305,6 +1319,8 @@ mod mj_jac_tests {
         model.jnt_range = vec![(0.0, 0.0); 2];
         model.jnt_stiffness = vec![0.0; 2];
         model.jnt_springref = vec![0.0; 2];
+        // Free(7) + Ball(4) = 11 qpos_spring entries
+        model.qpos_spring = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0; 2];
         model.jnt_armature = vec![0.0; 2];
         model.jnt_solref = vec![[0.02, 1.0]; 2];
@@ -1455,6 +1471,7 @@ mod mj_jac_tests {
         model.jnt_range = vec![(0.0, 0.0); 2];
         model.jnt_stiffness = vec![0.0; 2];
         model.jnt_springref = vec![0.0; 2];
+        model.qpos_spring = vec![0.0; 2];
         model.jnt_damping = vec![0.0; 2];
         model.jnt_armature = vec![0.0; 2];
         model.jnt_solref = vec![[0.02, 1.0]; 2];

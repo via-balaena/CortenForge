@@ -313,3 +313,11 @@ pub mod sensor_phase6_spec_c;
 
 /// Phase 6 Spec D tests: sensor history attributes (nsample, interp, delay, interval).
 pub mod sensor_phase6_spec_d;
+
+// ============================================================================
+// Phase 7: MJCF Parsing & Defaults Gaps — Spec A (DT-2, DT-13, DT-14)
+// ============================================================================
+
+/// Phase 7 Spec A tests: equality defaults cascade (DT-2), qpos_spring array
+/// (DT-13), actuator type-specific defaults (DT-14).
+pub mod phase7_spec_a;

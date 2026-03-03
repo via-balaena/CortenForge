@@ -11,6 +11,14 @@ important criterion — grade it first and hardest. A spec that scores A+ on
 all other criteria but has P1 wrong is worse than useless: it would produce
 a clean, well-tested implementation of the wrong behavior.
 
+> **Extension specs:** If the spec introduces behavior that intentionally
+> extends beyond MuJoCo (e.g., a higher-fidelity muscle model, a new sensor
+> type MuJoCo doesn't have), P1 has a **split mandate**: the MuJoCo-conformant
+> subset must match MuJoCo exactly, and the extension must be explicitly
+> documented as a CortenForge extension with a clear boundary. State which
+> parts of the spec are conformance-critical and which are extensions in the
+> header above. See Phase 5 Spec C (Hill-type muscle) for a worked example.
+
 Grade scale: A+ (exemplary) / A (solid) / B (gaps) / C (insufficient).
 Anything below B does not ship.
 
@@ -20,9 +28,25 @@ Anything below B does not ship.
 
 Before using this rubric, make it specific to the task. A generic rubric
 produces a generic spec — and a generic spec produces conformance bugs.
-Follow these steps, **starting with MuJoCo specifics:**
+Follow these steps, **starting with empirical verification:**
 
-### Step 1: Name the specific MuJoCo functions and fields *(most critical step)*
+### Step 1: Establish Empirical Ground Truth *(most critical step)*
+
+Run MuJoCo and grep the codebase **before writing any criterion bars.** A
+rubric written from header-file assumptions instead of empirical verification
+will produce criterion bars that miss real MuJoCo behavior — and the spec will
+inherit those blind spots. This was learned the hard way: Phase 5 Spec D R6
+("Rev 0 rubric had no Empirical Ground Truth section — rubric was writing bars
+based on header-file assumptions"), Phase 5 Spec D R8 ("history buffer layout
+is contiguous blocks, NOT interleaved pairs" — discovered only by running
+MuJoCo), Phase 6 Spec C R1 ("`geompoint` does not exist" — discovered only by
+running MuJoCo).
+
+Fill in the Empirical Ground Truth section below. If you find yourself writing
+criterion bars without having filled in EGT first, stop — you're building on
+assumptions.
+
+### Step 2: Name the specific MuJoCo functions and fields
 
 In every criterion that references MuJoCo behavior (P1, P2, P3 at minimum),
 replace the generic placeholders with exact names from the C source:
@@ -32,20 +56,20 @@ replace the generic placeholders with exact names from the C source:
 - Not "edge cases" → but "world body (`body_id == 0`), zero-mass bodies,
   `mjDSBL_SENSOR` flag"
 
-### Step 2: Name the specific edge cases
+### Step 3: Name the specific edge cases
 
 For P1 and P5, replace the generic edge case list with the ones that actually
 matter for this task. Remove irrelevant ones (e.g., `nu=0` is irrelevant for
 sensor tasks). Add domain-specific ones (e.g., "sensor attached to world body"
 for sensor tasks).
 
-### Step 3: Research the CortenForge codebase
+### Step 4: Research the CortenForge codebase
 
 Grep the codebase for the specific files, functions, match sites, and line
-ranges that the task will affect. Document these in criterion bars (especially
-P2 and P7) or in a dedicated Codebase Context section so the spec author knows
-exactly what code to address. Every rubric that skipped this step discovered
-missing files mid-grading (see Spec B R6, Spec D R26).
+ranges that the task will affect. Document these in the Codebase Context
+subsection of Empirical Ground Truth so the spec author knows exactly what
+code to address. Every rubric that skipped this step discovered missing files
+mid-grading (see Spec B R6, Spec D R26).
 
 Examples of what to find:
 - Exhaustive match sites that will break when new enum variants are added
@@ -54,8 +78,9 @@ Examples of what to find:
 - Parser attribute gates that could silently skip new attributes
 - Manual `impl Clone`/`impl Default` blocks where forgetting a field is a
   silent bug
+- Catch-all `_ => {}` arms that silently skip new variants (see Spec B R10)
 
-### Step 4: Add domain-specific criteria (P9+)
+### Step 5: Add domain-specific criteria (P9+)
 
 Every task has 1–3 dimensions that the 8 standard criteria don't cover. If
 you can't think of any, you probably don't understand the task well enough —
@@ -69,19 +94,58 @@ go back to Phase 1 of the workflow.
 | Multiple call sites must be updated | Consumer Completeness |
 | Multiple flags or conditions interact | Interaction/Compound Guards |
 | Pipeline stage ordering matters | Pipeline Integration |
-| New fields need init/reset/populate lifecycle | Data Integrity |
+| New fields need init/reset/populate lifecycle | Data Lifecycle |
 | Performance-sensitive hot loop | Performance Characterization |
+| Non-trivial geometric derivation | Geometric Correctness |
+| Enum/type-system refactoring or new variants | Type Architecture |
+| Compiler/builder validation rules to match MuJoCo | Compiler Validation Completeness |
+| Replicating a pattern from another subsystem (e.g., sensor history mirrors actuator history) | Cross-Subsystem Parity |
+| Feature reads from two objects (e.g., distance between two geoms) | Dual Object Resolution |
+| Mathematical transform chains (rotation, projection, transport) | Transform Correctness |
+| Complex conformance depth (not a simple field read) | Conformance Depth |
+| New utility function introduced as prerequisite | Interface Contract |
+| Active force environment matters for correctness | Force-Environment Conformance |
+
+### Step 6: Verify scope against parent *(if spec is part of a phase/umbrella)*
+
+If this spec is part of a larger phase or umbrella spec, fill in the Scope
+Adjustment section. Empirical verification (Step 1) regularly discovers scope
+corrections — features that don't exist, features the umbrella missed, features
+that require infrastructure outside the phase's scope.
+
+---
+
+## Scope Adjustment
+
+{Delete this section if the spec is standalone (not part of a phase/umbrella).
+
+If the spec is part of a phase or umbrella, document any scope corrections
+discovered during empirical verification. This section is the authoritative
+record of what changed from the umbrella's original task list and why.
+
+| Umbrella claim | MuJoCo reality | Action |
+|----------------|---------------|--------|
+| {feature X listed in umbrella} | {what MuJoCo 3.x.x actually shows} | {In scope / Drop / Defer to DT-{N} / Add (newly discovered)} |
+
+**Final scope:** {numbered list of what this spec actually covers}
+
+This section was added because Phase 6 Spec C discovered `geompoint` doesn't
+exist (replaced with `geomfromto`), Phase 6 Spec D discovered `interval` was
+missing from the umbrella, and Phase 5 Spec C needed to document its split
+mandate.}
 
 ---
 
 ## Empirical Ground Truth
 
-{Before writing criterion bars, run MuJoCo and document the authoritative
-behavioral facts for this task. A rubric written from header-file assumptions
-instead of empirical verification will produce criterion bars that miss real
-MuJoCo behavior — and the spec will inherit those blind spots.
+{This section is **required.** Fill it in before writing criterion bars.
 
-**What to verify empirically:**
+Number each subsection EGT-N for cross-referencing from criterion bars, ACs,
+and the gap log (e.g., "per EGT-3, MuJoCo produces X").
+
+### MuJoCo behavioral verification
+
+**What to verify empirically (run MuJoCo, don't assume from docs):**
 - Exact field values MuJoCo produces for representative models (these become
   the expected values in P4 ACs)
 - Edge case behavior (what MuJoCo actually does, not what docs suggest)
@@ -94,9 +158,30 @@ MuJoCo behavior — and the spec will inherit those blind spots.
 values observed. This section is the authoritative reference — any claim in
 the spec that contradicts it is wrong.
 
-Delete this guidance block and replace it with your empirical findings, or
-delete the entire section if the task requires no empirical verification
-(rare — most tasks benefit from at least one MuJoCo run).}
+### Codebase context
+
+**What to find in the CortenForge codebase:**
+- Every file, function, and match site the task will touch (with file:line)
+- Exhaustive match sites for enums being extended (the exact lines that will
+  break or silently skip new variants)
+- Existing field mappings between MuJoCo C names and CortenForge Rust names
+- Builder pipeline flow (parse → push → transfer → postprocess) for the
+  relevant subsystem
+- Existing tests that exercise the code paths being changed
+
+Document findings as tables with file:line references. These become the
+authoritative codebase reference for P2 (algorithm sites), P7 (blast radius),
+and domain-specific criteria.
+
+### EGT-1: {first behavioral fact}
+
+{MuJoCo version, C source location, empirical values, derivation.}
+
+### EGT-2: {second behavioral fact}
+
+{...}
+
+Delete this guidance block and replace with your empirical findings.}
 
 ---
 
@@ -140,6 +225,13 @@ criteria total.}
 > verified against C source, (2) edge case missed because the C code wasn't read
 > thoroughly, (3) convention difference (index, layout, reference point) not
 > documented. P1 exists to prevent all three.
+>
+> **Extension specs:** If this spec has a split mandate (some behavior matches
+> MuJoCo, some is a CortenForge extension), the A+ bar must clearly delineate
+> which parts require MuJoCo conformance and which parts are extensions. The
+> conformance subset must meet the full A+ bar. The extension subset must be
+> documented as non-MuJoCo with a clear boundary statement. See Phase 5 Spec C
+> P1 for a worked example of a split mandate.
 
 ### P2. Algorithm Completeness
 
@@ -179,7 +271,7 @@ criteria total.}
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Every runtime AC has the three-part structure: (1) concrete input model/state, (2) exact expected value or tolerance — ideally derived from MuJoCo's output on the same model, (3) what field/sensor to check. Could be copy-pasted into a test function. At least one AC per spec section has expected values verified against MuJoCo (stated as "MuJoCo produces X; we assert X ± tolerance"). Code-review ACs explicitly labeled as such with specific structural properties to verify. |
+| **A+** | Every runtime AC has the three-part structure: (1) concrete input model/state, (2) exact expected value or tolerance — ideally derived from MuJoCo's output on the same model, (3) what field/sensor to check. Could be copy-pasted into a test function. At least one AC per major feature has expected values verified against MuJoCo (stated as "MuJoCo produces X; we assert X ± tolerance"). Code-review ACs explicitly labeled as such with specific structural properties to verify. |
 | **A** | ACs are testable. Some lack exact numerical expectations or MuJoCo-verified values. |
 | **B** | ACs are directionally correct but vague ("output should change"), or values are manually calculated without MuJoCo verification. |
 | **C** | ACs are aspirational statements, not tests. |
@@ -198,7 +290,7 @@ criteria total.}
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | AC→Test traceability matrix present — every AC maps to ≥1 test, every test maps to ≥1 AC or is in Supplementary Tests table with justification. Explicit edge case inventory: {name the specific edge cases}. Negative cases are first-class tests. At least one MuJoCo-vs-CortenForge conformance test per major code path (test comment states MuJoCo version and expected value source). Supplementary tests (if any) justified. |
+| **A+** | AC→Test traceability matrix present — every AC maps to ≥1 test, every test maps to ≥1 AC or is in Supplementary Tests table with justification. Explicit edge case inventory: {name the specific edge cases}. Negative cases are first-class tests. At least one MuJoCo-vs-CortenForge conformance test per major code path (test comment states MuJoCo version and expected value source). At least one test uses a non-trivial model (multi-body, multi-joint, or multi-element) to catch bugs that only appear in non-trivial configurations. Supplementary tests (if any) justified. |
 | **A** | Good coverage. Minor edge-case gaps. Conformance tests present but not for all code paths. |
 | **B** | Happy path covered. Edge cases and negative cases sparse. No explicit MuJoCo conformance tests. |
 | **C** | Minimal test plan. |
@@ -235,7 +327,8 @@ criteria total.}
 > **Tailoring note:** Name the crates/modules likely affected, the existing
 > test suites to check (e.g., "Phase 4 39-test suite," "full sim domain
 > 2,141+ tests"), and any data staleness guards (e.g., `EXPECTED_SIZE`
-> constants).
+> constants). Use the Codebase Context subsection of EGT to enumerate every
+> exhaustive match site — these are the highest-risk blast-radius items.
 
 ### P8. Internal Consistency
 
@@ -277,6 +370,12 @@ Before using this rubric to grade the spec, grade the rubric itself. A flawed
 rubric cannot produce an A+ spec no matter how many iterations you run. This
 step was learned from DT-103, where the rubric had 8 gaps in Rev 1.
 
+Expect multiple revision rounds. Across Phases 5–6, rubrics averaged 4–8
+revisions before reaching A+ (Spec B Phase 5 reached Rev 8 with 23 R-gaps).
+Each round of self-audit, codebase research, and empirical verification
+typically surfaces 3–8 gaps. This is normal — the rubric is doing its job.
+Track every revision in the gap log.
+
 ### Self-audit checklist
 
 - [ ] **Specificity:** Every A+ bar is specific enough that two independent
@@ -307,6 +406,11 @@ step was learned from DT-103, where the rubric had 8 gaps in Rev 1.
       verification against C source (not just docs). At least P4 and P5
       reference MuJoCo-derived expected values. If the rubric could produce
       an A+ spec that diverges from MuJoCo's behavior, the rubric is broken.
+
+- [ ] **Empirical grounding:** The Empirical Ground Truth section is filled in
+      with verified MuJoCo values and codebase context. Every A+ bar that
+      references specific MuJoCo behavior has a corresponding EGT-N entry.
+      No criterion bar was written from header-file assumptions.
 
 > **Important:** Replace the generic descriptions above with rubric-specific
 > evidence when checking each box. Name the exact functions, edge cases, and
@@ -348,7 +452,7 @@ Log any rubric fixes as R-prefixed gaps (R1, R2, ...) in the gap log.
 | P8. Internal Consistency | | |
 {| P9. {Domain-Specific} | | |}
 
-**Overall: {grade}**
+**Overall: {grade} (Rev {n})**
 
 > **Grading note:** The Evidence column is not optional. For each grade, cite
 > the specific spec content that justifies it. For each gap, state exactly

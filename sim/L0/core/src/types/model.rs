@@ -203,6 +203,9 @@ pub struct Model {
     /// Per-joint flag: if true, gravcomp routes through `qfrc_actuator`
     /// instead of `qfrc_passive`. Parsed from `<joint actuatorgravcomp="true"/>`.
     pub jnt_actgravcomp: Vec<bool>,
+    /// Joint limit activation margin. Constraint activated when dist < margin.
+    /// MuJoCo ref: `m->jnt_margin[i]` in `mj_instantiateLimit()`.
+    pub jnt_margin: Vec<f64>,
 
     // ==================== DOFs (indexed by dof_id) ====================
     /// Body for this DOF.
@@ -357,6 +360,18 @@ pub struct Model {
     /// Both `internal` (adjacent elements) and `selfcollide` (non-adjacent)
     /// are independently gated behind conditions 1+2.
     pub flex_selfcollide: Vec<bool>,
+    /// Per-flex: internal collision flag (default true). When true, contacts between
+    /// elements sharing an edge are generated (adjacent element contacts).
+    pub flex_internal: Vec<bool>,
+    /// Per-flex: number of active element layers for collision detection (default 0).
+    /// 0 = all layers active.
+    pub flex_activelayers: Vec<i32>,
+    /// Per-flex: per-vertex collision mode (default false). When true, vertex spheres
+    /// collide with other geoms even when not part of a flex element face.
+    pub flex_vertcollide: Vec<bool>,
+    /// Per-flex: passive contact flag (default true). When true, flex contacts generate
+    /// passive forces only (no constraint solver involvement).
+    pub flex_passive: Vec<bool>,
     /// Per-flex: passive edge spring stiffness (from `<edge stiffness="..."/>`).
     /// Used in passive force path (spring-damper), not constraint solver.
     pub flex_edgestiffness: Vec<f64>,
@@ -730,6 +745,12 @@ pub struct Model {
     pub gravity: Vector3<f64>,
     /// Default/reference joint positions.
     pub qpos0: DVector<f64>,
+    /// Spring reference position in generalized coordinates (size nq).
+    /// For hinge/slide: scalar springref value.
+    /// For ball: quaternion \[w,x,y,z\] copied from qpos0.
+    /// For free: 7D \[pos_x,y,z, quat_w,x,y,z\] copied from qpos0.
+    /// MuJoCo ref: `m->qpos_spring` in mjModel (`engine_passive.c`: `mj_springdamper`).
+    pub qpos_spring: Vec<f64>,
     /// Named state snapshots for quick reset.
     pub keyframes: Vec<Keyframe>,
     /// Wind velocity in world frame (for aerodynamic forces).
@@ -878,6 +899,36 @@ pub struct Model {
     pub cb_act_gain: Option<super::callbacks::CbActGain>,
     /// User actuator bias callback: called for `BiasType::User`.
     pub cb_act_bias: Option<super::callbacks::CbActBias>,
+
+    // ==================== Per-element User Data (§55) ====================
+    /// Per-body user data. Each inner vec has length nuser_body.
+    pub body_user: Vec<Vec<f64>>,
+    /// Per-joint user data. Each inner vec has length nuser_jnt.
+    pub jnt_user: Vec<Vec<f64>>,
+    /// Per-geom user data. Each inner vec has length nuser_geom.
+    pub geom_user: Vec<Vec<f64>>,
+    /// Per-site user data. Each inner vec has length nuser_site.
+    pub site_user: Vec<Vec<f64>>,
+    /// Per-tendon user data. Each inner vec has length nuser_tendon.
+    pub tendon_user: Vec<Vec<f64>>,
+    /// Per-actuator user data. Each inner vec has length nuser_actuator.
+    pub actuator_user: Vec<Vec<f64>>,
+    /// Per-sensor user data. Each inner vec has length nuser_sensor.
+    pub sensor_user: Vec<Vec<f64>>,
+    /// Number of user data values per body (resolved, >= 0 after build).
+    pub nuser_body: i32,
+    /// Number of user data values per joint.
+    pub nuser_jnt: i32,
+    /// Number of user data values per geom.
+    pub nuser_geom: i32,
+    /// Number of user data values per site.
+    pub nuser_site: i32,
+    /// Number of user data values per tendon.
+    pub nuser_tendon: i32,
+    /// Number of user data values per actuator.
+    pub nuser_actuator: i32,
+    /// Number of user data values per sensor.
+    pub nuser_sensor: i32,
 }
 
 // ============================================================================

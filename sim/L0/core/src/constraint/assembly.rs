@@ -105,12 +105,13 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 MjJointType::Hinge | MjJointType::Slide => {
                     let (limit_min, limit_max) = model.jnt_range[jnt_id];
                     let q = data.qpos[model.jnt_qpos_adr[jnt_id]];
+                    let margin = model.jnt_margin[jnt_id];
                     // Lower limit: dist = q - limit_min (negative when violated)
-                    if q - limit_min < 0.0 {
+                    if q - limit_min < margin {
                         nefc += 1;
                     }
                     // Upper limit: dist = limit_max - q (negative when violated)
-                    if limit_max - q < 0.0 {
+                    if limit_max - q < margin {
                         nefc += 1;
                     }
                 }
@@ -125,8 +126,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     let (_, angle) = ball_limit_axis_angle(q);
                     let limit = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
                     let dist = limit - angle;
-                    if dist < 0.0 {
-                        // margin = 0.0 (see S6)
+                    let margin = model.jnt_margin[jnt_id];
+                    if dist < margin {
                         nefc += 1;
                     }
                 }
@@ -429,14 +430,14 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     let qdot = data.qvel[dof_adr];
                     let sr = model.jnt_solref[jnt_id];
                     let si = model.jnt_solimp[jnt_id];
+                    let margin = model.jnt_margin[jnt_id];
 
                     // MuJoCo convention: dist > 0 = satisfied, dist < 0 = violated.
-                    // Constraint is instantiated when dist < margin (here margin=0,
-                    // so when dist < 0, i.e., limit violated).
+                    // Constraint is instantiated when dist < margin.
 
                     // Lower limit: dist = q - limit_min (negative when q < limit_min)
                     let dist_lower = q - limit_min;
-                    if dist_lower < 0.0 {
+                    if dist_lower < margin {
                         // J = +1 (MuJoCo: jac = -side, side=-1 → jac=+1)
                         data.efc_J[(row, dof_adr)] = 1.0;
                         // pos = dist (negative = violated, MuJoCo convention)
@@ -445,7 +446,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             sr,
                             si,
                             dist_lower,
-                            0.0,
+                            margin,
                             qdot,
                             0.0,
                             ConstraintType::LimitJoint,
@@ -457,7 +458,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
 
                     // Upper limit: dist = limit_max - q (negative when q > limit_max)
                     let dist_upper = limit_max - q;
-                    if dist_upper < 0.0 {
+                    if dist_upper < margin {
                         // J = -1 (MuJoCo: jac = -side, side=+1 → jac=-1)
                         data.efc_J[(row, dof_adr)] = -1.0;
                         // pos = dist (negative = violated, MuJoCo convention)
@@ -466,7 +467,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             sr,
                             si,
                             dist_upper,
-                            0.0,
+                            margin,
                             -qdot,
                             0.0,
                             ConstraintType::LimitJoint,
@@ -488,9 +489,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     let (unit_dir, angle) = ball_limit_axis_angle(q);
                     let limit = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
                     let dist = limit - angle;
+                    let margin = model.jnt_margin[jnt_id];
 
-                    if dist < 0.0 {
-                        // margin = 0.0 (see S6)
+                    if dist < margin {
                         // Jacobian: -unit_dir on 3 angular DOFs
                         data.efc_J[(row, dof_adr)] = -unit_dir.x;
                         data.efc_J[(row, dof_adr + 1)] = -unit_dir.y;
@@ -505,7 +506,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             model.jnt_solref[jnt_id],
                             model.jnt_solimp[jnt_id],
                             dist,
-                            0.0,
+                            margin,
                             vel,
                             0.0,
                             ConstraintType::LimitJoint,
@@ -757,4 +758,232 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     );
 
     data.efc_cost = 0.0;
+}
+
+#[cfg(test)]
+mod spec_b_margin_tests {
+    //! Spec B — Joint margin tests (T8-T11).
+
+    use crate::constraint::assembly::assemble_unified_constraints;
+    use crate::types::{DISABLE_LIMIT, MjJointType, Model};
+    use nalgebra::{DVector, UnitQuaternion, Vector3};
+
+    /// Build a hinge model with limits for constraint testing.
+    fn build_hinge_limit_model(limit_min: f64, limit_max: f64, margin: f64) -> Model {
+        let mut model = Model::empty();
+        model.nbody = 2;
+        model.body_parent = vec![0, 0];
+        model.body_rootid = vec![0, 1];
+        model.body_jnt_adr = vec![0, 0];
+        model.body_jnt_num = vec![0, 1];
+        model.body_dof_adr = vec![0, 0];
+        model.body_dof_num = vec![0, 1];
+        model.body_geom_adr = vec![0, 0];
+        model.body_geom_num = vec![0, 0];
+        model.body_pos = vec![Vector3::zeros(); 2];
+        model.body_quat = vec![UnitQuaternion::identity(); 2];
+        model.body_ipos = vec![Vector3::zeros(); 2];
+        model.body_iquat = vec![UnitQuaternion::identity(); 2];
+        model.body_mass = vec![0.0, 1.0];
+        model.body_inertia = vec![Vector3::zeros(), Vector3::new(0.1, 0.1, 0.1)];
+        model.body_name = vec![Some("world".into()), Some("body".into())];
+        model.body_subtreemass = vec![1.0, 1.0];
+
+        model.njnt = 1;
+        model.nq = 1;
+        model.nv = 1;
+        model.jnt_type = vec![MjJointType::Hinge];
+        model.jnt_body = vec![1];
+        model.jnt_qpos_adr = vec![0];
+        model.jnt_dof_adr = vec![0];
+        model.jnt_pos = vec![Vector3::zeros()];
+        model.jnt_axis = vec![Vector3::y()];
+        model.jnt_limited = vec![true];
+        model.jnt_range = vec![(limit_min, limit_max)];
+        model.jnt_stiffness = vec![0.0];
+        model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![0.0];
+        model.jnt_damping = vec![0.0];
+        model.jnt_armature = vec![0.0];
+        model.jnt_solref = vec![[0.02, 1.0]];
+        model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.jnt_name = vec![Some("hinge".into())];
+        model.jnt_margin = vec![margin];
+
+        model.dof_body = vec![1];
+        model.dof_jnt = vec![0];
+        model.dof_parent = vec![None];
+        model.dof_armature = vec![0.0];
+        model.dof_damping = vec![0.0];
+        model.dof_frictionloss = vec![0.0];
+        model.dof_solref = vec![[0.02, 1.0]];
+        model.dof_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+
+        model.qpos0 = DVector::zeros(1);
+        model.gravity = Vector3::new(0.0, 0.0, -9.81);
+
+        model.body_ancestor_joints = vec![vec![]; 2];
+        model.body_ancestor_mask = vec![vec![]; 2];
+        model.compute_ancestors();
+        model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
+
+        model
+    }
+
+    // ---- T8: margin=0 regression — identical behavior to current code ----
+    #[test]
+    fn t8_margin_zero_regression() {
+        let model = build_hinge_limit_model(-1.0, 1.0, 0.0);
+        let mut data = model.make_data();
+        data.qpos[0] = -1.5; // violates lower limit
+
+        let qacc_smooth = DVector::zeros(model.nv);
+        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+
+        let nefc = data.efc_margin.len();
+        // Should have at least 1 constraint (lower limit violated)
+        assert!(nefc >= 1, "nefc = {nefc}, expected >= 1");
+        // efc_margin should be 0.0
+        assert!(
+            (data.efc_margin[0] - 0.0).abs() < 1e-15,
+            "efc_margin = {}, expected 0.0",
+            data.efc_margin[0]
+        );
+        // efc_pos should be negative (dist = -1.5 - (-1.0) = -0.5)
+        assert!(
+            (data.efc_pos[0] - (-0.5)).abs() < 1e-10,
+            "efc_pos = {}, expected -0.5",
+            data.efc_pos[0]
+        );
+    }
+
+    // ---- T9: margin > 0 pre-activation — hinge ----
+    #[test]
+    fn t9_margin_pre_activation() {
+        let model = build_hinge_limit_model(-1.0, 1.0, 0.1);
+        let mut data = model.make_data();
+        data.qpos[0] = -0.95; // inside limit but within margin: dist = -0.95 - (-1.0) = 0.05 < 0.1
+
+        let qacc_smooth = DVector::zeros(model.nv);
+        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+
+        let nefc = data.efc_margin.len();
+        assert!(nefc >= 1, "nefc = {nefc}, expected >= 1 (pre-activated)");
+        assert!(
+            (data.efc_margin[0] - 0.1).abs() < 1e-15,
+            "efc_margin = {}, expected 0.1",
+            data.efc_margin[0]
+        );
+        assert!(
+            (data.efc_pos[0] - 0.05).abs() < 1e-10,
+            "efc_pos = {}, expected 0.05",
+            data.efc_pos[0]
+        );
+    }
+
+    // ---- T10: Ball joint with margin ----
+    #[test]
+    fn t10_ball_margin() {
+        let mut model = Model::empty();
+        model.nbody = 2;
+        model.body_parent = vec![0, 0];
+        model.body_rootid = vec![0, 1];
+        model.body_jnt_adr = vec![0, 0];
+        model.body_jnt_num = vec![0, 1];
+        model.body_dof_adr = vec![0, 0];
+        model.body_dof_num = vec![0, 3];
+        model.body_geom_adr = vec![0, 0];
+        model.body_geom_num = vec![0, 0];
+        model.body_pos = vec![Vector3::zeros(); 2];
+        model.body_quat = vec![UnitQuaternion::identity(); 2];
+        model.body_ipos = vec![Vector3::zeros(); 2];
+        model.body_iquat = vec![UnitQuaternion::identity(); 2];
+        model.body_mass = vec![0.0, 1.0];
+        model.body_inertia = vec![Vector3::zeros(), Vector3::new(0.1, 0.1, 0.1)];
+        model.body_name = vec![Some("world".into()), Some("body".into())];
+        model.body_subtreemass = vec![1.0, 1.0];
+
+        model.njnt = 1;
+        model.nq = 4;
+        model.nv = 3;
+        model.jnt_type = vec![MjJointType::Ball];
+        model.jnt_body = vec![1];
+        model.jnt_qpos_adr = vec![0];
+        model.jnt_dof_adr = vec![0];
+        model.jnt_pos = vec![Vector3::zeros()];
+        model.jnt_axis = vec![Vector3::z()];
+        model.jnt_limited = vec![true];
+        model.jnt_range = vec![(0.0, 1.0)]; // max angle 1.0 rad
+        model.jnt_stiffness = vec![0.0];
+        model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![1.0, 0.0, 0.0, 0.0];
+        model.jnt_damping = vec![0.0];
+        model.jnt_armature = vec![0.0];
+        model.jnt_solref = vec![[0.02, 1.0]];
+        model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.jnt_name = vec![Some("ball".into())];
+        model.jnt_margin = vec![0.05];
+
+        model.dof_body = vec![1, 1, 1];
+        model.dof_jnt = vec![0, 0, 0];
+        model.dof_parent = vec![None, Some(0), Some(1)];
+        model.dof_armature = vec![0.0; 3];
+        model.dof_damping = vec![0.0; 3];
+        model.dof_frictionloss = vec![0.0; 3];
+        model.dof_solref = vec![[0.02, 1.0]; 3];
+        model.dof_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 3];
+
+        model.qpos0 = DVector::from_vec(vec![1.0, 0.0, 0.0, 0.0]);
+        model.gravity = Vector3::new(0.0, 0.0, -9.81);
+
+        model.body_ancestor_joints = vec![vec![]; 2];
+        model.body_ancestor_mask = vec![vec![]; 2];
+        model.compute_ancestors();
+        model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
+
+        let mut data = model.make_data();
+        // Set angle to 0.97 rad about Z: dist = 1.0 - 0.97 = 0.03 < 0.05
+        let half = 0.97_f64 / 2.0;
+        data.qpos[0] = half.cos(); // w
+        data.qpos[1] = 0.0;
+        data.qpos[2] = 0.0;
+        data.qpos[3] = half.sin(); // z
+
+        let qacc_smooth = DVector::zeros(model.nv);
+        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+
+        let nefc = data.efc_margin.len();
+        assert!(
+            nefc >= 1,
+            "nefc = {nefc}, expected >= 1 (ball pre-activated)",
+        );
+        assert!(
+            (data.efc_margin[0] - 0.05).abs() < 1e-15,
+            "efc_margin = {}, expected 0.05",
+            data.efc_margin[0]
+        );
+        // dist = limit - angle ≈ 1.0 - 0.97 = 0.03
+        assert!(
+            (data.efc_pos[0] - 0.03).abs() < 1e-3,
+            "efc_pos = {}, expected ~0.03",
+            data.efc_pos[0]
+        );
+    }
+
+    // ---- T11: DISABLE_LIMIT ignores margin ----
+    #[test]
+    fn t11_disable_limit_ignores_margin() {
+        let mut model = build_hinge_limit_model(-1.0, 1.0, 0.5);
+        model.disableflags |= DISABLE_LIMIT;
+        let mut data = model.make_data();
+        data.qpos[0] = 0.0; // within margin of both limits
+
+        let qacc_smooth = DVector::zeros(model.nv);
+        assemble_unified_constraints(&model, &mut data, &qacc_smooth);
+
+        let nefc = data.efc_margin.len();
+        assert_eq!(nefc, 0, "DISABLE_LIMIT: nefc should be 0, got {nefc}");
+    }
 }

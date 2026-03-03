@@ -215,6 +215,8 @@ impl ModelBuilder {
 
                         // qpos0 = 0 for each slide DOF (body_pos encodes initial position)
                         self.qpos0_values.push(0.0);
+                        // qpos_spring = 0 for flex vertex slide joints (springref = 0)
+                        self.qpos_spring_values.push(0.0);
 
                         self.nq += 1;
                         self.nv += 1;
@@ -365,6 +367,11 @@ impl ModelBuilder {
             // None (absent) → true; Some("none") → false; all other keywords → true.
             self.flex_selfcollide
                 .push(flex.selfcollide.as_deref() != Some("none"));
+            // DT-85: flex contact runtime attributes
+            self.flex_internal.push(flex.internal);
+            self.flex_activelayers.push(flex.activelayers);
+            self.flex_vertcollide.push(flex.vertcollide);
+            self.flex_passive.push(flex.passive);
             self.flex_edgestiffness.push(flex.edge_stiffness);
             self.flex_edgedamping.push(flex.edge_damping);
         }

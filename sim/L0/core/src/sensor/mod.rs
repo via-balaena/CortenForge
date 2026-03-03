@@ -103,6 +103,7 @@ mod sensor_tests {
         model.jnt_range.push((0.0, 0.0));
         model.jnt_stiffness.push(0.0);
         model.jnt_springref.push(0.0);
+        model.qpos_spring.push(0.0);
         model.jnt_damping.push(0.0);
         model.jnt_armature.push(0.0);
         model.jnt_solref.push([0.02, 1.0]);
@@ -1018,6 +1019,9 @@ mod sensor_tests {
         model.jnt_range.push((0.0, 0.0));
         model.jnt_stiffness.push(0.0);
         model.jnt_springref.push(0.0);
+        model
+            .qpos_spring
+            .extend_from_slice(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
         model.jnt_damping.push(0.0);
         model.jnt_armature.push(0.0);
         model.jnt_solref.push([0.02, 1.0]);
@@ -1135,6 +1139,7 @@ mod sensor_tests {
         model.jnt_range.push((0.0, 0.0));
         model.jnt_stiffness.push(0.0);
         model.jnt_springref.push(0.0);
+        model.qpos_spring.extend_from_slice(&[1.0, 0.0, 0.0, 0.0]);
         model.jnt_damping.push(0.0);
         model.jnt_armature.push(0.0);
         model.jnt_solref.push([0.02, 1.0]);

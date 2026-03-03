@@ -92,6 +92,7 @@ impl Model {
             model.jnt_solref.push(DEFAULT_SOLREF);
             model.jnt_solimp.push(DEFAULT_SOLIMP);
             model.jnt_name.push(Some(format!("hinge_{i}")));
+            model.qpos_spring.push(0.0); // Hinge: scalar springref
 
             // DOF definition
             model.dof_body.push(body_id);
@@ -193,6 +194,7 @@ impl Model {
         model.jnt_solref.push(DEFAULT_SOLREF);
         model.jnt_solimp.push(DEFAULT_SOLIMP);
         model.jnt_name.push(Some("ball".to_string()));
+        model.qpos_spring.extend_from_slice(&[1.0, 0.0, 0.0, 0.0]); // Ball: identity quat from qpos0
 
         // DOF definitions (3 for ball joint)
         for i in 0..3 {
@@ -281,6 +283,9 @@ impl Model {
         model.jnt_solref.push(DEFAULT_SOLREF);
         model.jnt_solimp.push(DEFAULT_SOLIMP);
         model.jnt_name.push(Some("free".to_string()));
+        model
+            .qpos_spring
+            .extend_from_slice(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]); // Free: pos + identity quat
 
         // DOF definitions (6 for free joint)
         for i in 0..6 {

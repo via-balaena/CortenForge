@@ -281,6 +281,7 @@ impl ModelBuilder {
         self.actuator_nsample.push(nsample);
         self.actuator_interp.push(interp);
         self.actuator_delay.push(delay);
+        self.actuator_user_raw.push(actuator.user.clone());
 
         // §34 S5: Muscle default actrange — MuJoCo defaults muscles to actlimited=true,
         // actrange=[0,1] when actlimited is not explicitly set. This preserves the

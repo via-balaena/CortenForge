@@ -18,7 +18,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 | DT-30 | §4 | Compound pulley physics — capstan friction, pulley inertia (`sim-tendon/pulley.rs`) | Low | T3 |
 | DT-31 | §4 | `WrapType::Joint` inside spatial tendons (`mjWRAP_JOINT`) — uncommon, parser rejects | Low | T2 |
 | DT-32 | §4 | Per-tendon `solref_limit`/`solimp_limit` — constraint solver params (pre-existing gap) | Medium | T2 |
-| DT-33 | §4 | Tendon `margin` attribute — limit activation distance (pre-existing gap) | Medium | T2 |
+| DT-33 | §4 | Tendon `margin` attribute — limit activation distance (pre-existing gap). Phase 7 Spec B (§64a) implemented joint `jnt_margin` at 9 sites in `assembly.rs` but explicitly deferred the 4 tendon limit sites (`assembly.rs:148,152,540,564`) which still hardcode `< 0.0`. | Medium | T2 |
 | DT-34 | §4 | Sparse Jacobian representation for spatial tendons — cache nonzero DOF indices | Low | T1 |
 | ~~DT-35~~ | §4 | ~~Tendon spring/damper forces produce zero in implicit mode — non-diagonal K coupling needed~~ **DONE** — implicit tendon K/D via `accumulate_tendon_kd`, Newton `M_impl`/`qfrc_eff`, `ten_force` diagnostic always populated, 18 tests | Medium | T3 |
 

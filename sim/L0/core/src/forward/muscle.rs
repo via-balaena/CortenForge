@@ -810,11 +810,13 @@ mod muscle_tests {
         model.jnt_range = vec![(-1.0, 1.0)];
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".to_string())];
+        model.jnt_margin = vec![0.0];
 
         // DOFs
         model.dof_body = vec![1];
@@ -1066,6 +1068,7 @@ mod muscle_tests {
         model.jnt_range = vec![(-3.14, 3.14)];
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
@@ -1385,6 +1388,7 @@ mod muscle_tests {
         model.jnt_range = vec![(0.0, 0.0)];
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
@@ -1729,6 +1733,7 @@ mod muscle_tests {
         model.jnt_range = vec![(0.0, 0.0); 2];
         model.jnt_stiffness = vec![0.0; 2];
         model.jnt_springref = vec![0.0; 2];
+        model.qpos_spring = vec![0.0; 2];
         model.jnt_damping = vec![0.0; 2];
         model.jnt_armature = vec![0.0; 2];
         model.jnt_solref = vec![[0.02, 1.0]; 2];
@@ -1893,11 +1898,13 @@ mod muscle_tests {
         model.jnt_range = vec![(-1.0, 1.0)]; // limited: -1 to 1 meter
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("slide".to_string())];
+        model.jnt_margin = vec![0.0];
 
         model.dof_body = vec![1];
         model.dof_jnt = vec![0];
@@ -2036,11 +2043,13 @@ mod hill_muscle_tests {
         model.jnt_range = vec![(-0.5, 0.5)];
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![0.0];
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
         model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.jnt_name = vec![Some("hinge".to_string())];
+        model.jnt_margin = vec![0.0];
 
         model.dof_body = vec![1];
         model.dof_jnt = vec![0];

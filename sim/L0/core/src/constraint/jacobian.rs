@@ -387,6 +387,7 @@ mod contact_jac_free_joint_tests {
         model.jnt_range = vec![(0.0, 0.0)];
         model.jnt_stiffness = vec![0.0];
         model.jnt_springref = vec![0.0];
+        model.qpos_spring = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         model.jnt_damping = vec![0.0];
         model.jnt_armature = vec![0.0];
         model.jnt_solref = vec![[0.02, 1.0]];
@@ -475,6 +476,11 @@ mod contact_jac_free_joint_tests {
         model.jnt_range = vec![(0.0, 0.0); 2];
         model.jnt_stiffness = vec![0.0; 2];
         model.jnt_springref = vec![0.0; 2];
+        // Free(7) + Free(7) = 14 qpos_spring entries
+        model.qpos_spring = vec![
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, // joint 0
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, // joint 1
+        ];
         model.jnt_damping = vec![0.0; 2];
         model.jnt_armature = vec![0.0; 2];
         model.jnt_solref = vec![[0.02, 1.0]; 2];

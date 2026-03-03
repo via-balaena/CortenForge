@@ -250,6 +250,7 @@ impl ModelBuilder {
         });
         self.body_sleep_policy.push(sleep_policy);
         self.body_gravcomp.push(body.gravcomp.unwrap_or(0.0));
+        self.body_user_raw.push(body.user.clone());
 
         // Process joints for this body, tracking the last DOF for kinematic tree linkage
         // MuJoCo semantics: first DOF of first joint links to parent body's last DOF,

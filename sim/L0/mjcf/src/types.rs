@@ -574,6 +574,8 @@ pub struct MjcfDefault {
     pub site: Option<MjcfSiteDefaults>,
     /// Default pair parameters.
     pub pair: Option<MjcfPairDefaults>,
+    /// Default equality constraint parameters.
+    pub equality: Option<MjcfEqualityDefaults>,
 }
 
 /// Default joint parameters.
@@ -614,6 +616,10 @@ pub struct MjcfJointDefaults {
     pub solimpfriction: Option<[f64; 5]>,
     /// Gravity compensation routing via actuator.
     pub actuatorgravcomp: Option<bool>,
+    /// Joint limit activation margin.
+    pub margin: Option<f64>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default geom parameters.
@@ -674,6 +680,8 @@ pub struct MjcfGeomDefaults {
     pub fluidshape: Option<FluidShape>,
     /// Fluid coefficients `[C_blunt, C_slender, C_ang, C_K, C_M]`.
     pub fluidcoef: Option<[f64; 5]>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default actuator parameters.
@@ -724,9 +732,41 @@ pub struct MjcfActuatorDefaults {
     pub interp: Option<String>,
     /// Time delay in seconds. MuJoCo: `delay` (double, default 0.0).
     pub delay: Option<f64>,
-    // #todo: MuJoCo supports actuator-type-specific defaults (cylinder area/timeconst/bias,
-    // muscle force/scale/lmin/lmax/vmax/fpmax/fvmax/timeconst, adhesion gain).
-    // These fields exist on MjcfActuator but are not yet defaultable.
+    // Cylinder-specific defaults
+    /// Cylinder cross-sectional area (m²).
+    pub area: Option<f64>,
+    /// Cylinder diameter (m). Alternative to area.
+    pub diameter: Option<f64>,
+    /// Activation dynamics time constant (s).
+    pub timeconst: Option<f64>,
+    /// Bias parameters [prm0, prm1, prm2] for cylinder.
+    pub bias: Option<[f64; 3]>,
+
+    // Muscle-specific defaults
+    /// Activation/deactivation time constants [act, deact] for muscle.
+    pub muscle_timeconst: Option<(f64, f64)>,
+    /// Operating length range [lower, upper] in L0 units for muscle.
+    pub range: Option<(f64, f64)>,
+    /// Peak active force (N). Negative triggers automatic computation.
+    pub force: Option<f64>,
+    /// Force scaling factor for muscle.
+    pub scale: Option<f64>,
+    /// Lower FLV curve position (L0 units).
+    pub lmin: Option<f64>,
+    /// Upper FLV curve position (L0 units).
+    pub lmax: Option<f64>,
+    /// Shortening velocity limit (L0/second).
+    pub vmax: Option<f64>,
+    /// Passive force at lmax (relative to peak force).
+    pub fpmax: Option<f64>,
+    /// Active force at lengthening (relative to peak force).
+    pub fvmax: Option<f64>,
+
+    // Adhesion-specific defaults
+    /// Gain in force units for adhesion.
+    pub gain: Option<f64>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default tendon parameters.
@@ -765,6 +805,8 @@ pub struct MjcfTendonDefaults {
     pub margin: Option<f64>,
     /// Default material asset name.
     pub material: Option<String>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default sensor parameters.
@@ -828,6 +870,11 @@ impl Default for MjcfMesh {
 }
 
 /// Height field asset parsed from `<hfield>` element in MJCF.
+///
+/// Supports two data sources (mutually exclusive):
+/// - **File-based:** `file` attribute pointing to a PNG image. Grid dimensions
+///   (`nrow`, `ncol`) and elevation data are derived from the image.
+/// - **Inline:** `nrow`, `ncol`, and `elevation` attributes in the XML.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfHfield {
@@ -836,13 +883,15 @@ pub struct MjcfHfield {
     /// Size: `[x, y, z_top, z_bottom]`.
     /// x/y = half-extents; z_top = elevation scale; z_bottom = base depth.
     pub size: [f64; 4],
-    /// Number of rows (Y samples).
-    pub nrow: usize,
-    /// Number of columns (X samples).
-    pub ncol: usize,
+    /// Number of rows (Y samples). Required for inline data, derived from image for file-based.
+    pub nrow: Option<usize>,
+    /// Number of columns (X samples). Required for inline data, derived from image for file-based.
+    pub ncol: Option<usize>,
     /// Normalized elevation data, row-major (row 0 = min Y, X varies fastest).
-    /// Length: `nrow × ncol`.
-    pub elevation: Vec<f64>,
+    /// Length: `nrow × ncol`. `None` when data comes from a file.
+    pub elevation: Option<Vec<f64>>,
+    /// Path to PNG file for file-based loading. `None` for inline data.
+    pub file: Option<String>,
 }
 
 impl MjcfMesh {
@@ -930,6 +979,8 @@ pub struct MjcfSiteDefaults {
     pub zaxis: Option<Vector3<f64>>,
     /// Default material asset name.
     pub material: Option<String>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default pair parameters (from `<default><pair .../>`).
@@ -950,6 +1001,23 @@ pub struct MjcfPairDefaults {
     pub margin: Option<f64>,
     /// Contact included if distance < margin - gap.
     pub gap: Option<f64>,
+}
+
+/// Defaults for equality constraints.
+///
+/// Applies to all 5 types (connect, weld, joint, tendon, distance).
+/// MuJoCo uses a single `<equality>` default per class — not per-type.
+/// Only 3 fields are defaultable: active, solref, solimp.
+/// MuJoCo ref: `OneEquality()` in `xml_native_reader.cc` (defaults context).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfEqualityDefaults {
+    /// Whether the constraint is initially active.
+    pub active: Option<bool>,
+    /// Solver reference parameters [timeconst, dampratio].
+    pub solref: Option<[f64; 2]>,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
 }
 
 // ============================================================================
@@ -1176,6 +1244,8 @@ pub struct MjcfGeom {
     pub fluidshape: Option<FluidShape>,
     /// Fluid coefficients `[C_blunt, C_slender, C_ang, C_K, C_M]`.
     pub fluidcoef: Option<[f64; 5]>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfGeom {
@@ -1211,6 +1281,7 @@ impl Default for MjcfGeom {
             material: None,
             fluidshape: None,
             fluidcoef: None,
+            user: Vec::new(),
         }
     }
 }
@@ -1387,8 +1458,12 @@ pub struct MjcfJoint {
     pub solimpfriction: Option<[f64; 5]>,
     /// If true, gravcomp routes through `qfrc_actuator` instead of `qfrc_passive`.
     pub actuatorgravcomp: Option<bool>,
+    /// Joint limit activation margin.
+    pub margin: Option<f64>,
     /// Body this joint belongs to (set during parsing).
     pub body: Option<String>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfJoint {
@@ -1413,7 +1488,9 @@ impl Default for MjcfJoint {
             solreffriction: None,
             solimpfriction: None,
             actuatorgravcomp: None,
+            margin: None,
             body: None,
+            user: Vec::new(),
         }
     }
 }
@@ -1493,6 +1570,8 @@ pub struct MjcfSite {
     pub group: Option<i32>,
     /// Material asset name (for rendering).
     pub material: Option<String>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfSite {
@@ -1511,6 +1590,7 @@ impl Default for MjcfSite {
             rgba: None,
             group: None,
             material: None,
+            user: Vec::new(),
         }
     }
 }
@@ -1543,8 +1623,8 @@ pub struct MjcfConnect {
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     /// Controls constraint dynamics.
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfConnect {
@@ -1557,7 +1637,7 @@ impl Default for MjcfConnect {
             anchor: Vector3::zeros(),
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }
@@ -1635,8 +1715,8 @@ pub struct MjcfWeld {
     pub solimp: Option<[f64; 5]>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfWeld {
@@ -1650,7 +1730,7 @@ impl Default for MjcfWeld {
             relpose: None,
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }
@@ -1734,8 +1814,8 @@ pub struct MjcfJointEquality {
     pub solimp: Option<[f64; 5]>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfJointEquality {
@@ -1748,7 +1828,7 @@ impl Default for MjcfJointEquality {
             polycoef: vec![0.0, 1.0], // Default: q2 = q1
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }
@@ -1847,8 +1927,8 @@ pub struct MjcfDistance {
     pub solimp: Option<[f64; 5]>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfDistance {
@@ -1861,7 +1941,7 @@ impl Default for MjcfDistance {
             distance: None, // Computed from initial configuration
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }
@@ -1938,8 +2018,8 @@ pub struct MjcfTendonEquality {
     pub solimp: Option<[f64; 5]>,
     /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
     pub solref: Option<[f64; 2]>,
-    /// Whether this constraint is active.
-    pub active: bool,
+    /// Whether this constraint is active (None = not explicitly set).
+    pub active: Option<bool>,
 }
 
 impl Default for MjcfTendonEquality {
@@ -1952,7 +2032,7 @@ impl Default for MjcfTendonEquality {
             polycoef: vec![0.0, 1.0], // Default: equal deviation from reference
             solimp: None,
             solref: None,
-            active: true,
+            active: None,
         }
     }
 }
@@ -2187,6 +2267,8 @@ pub struct MjcfBody {
     pub sleep: Option<String>,
     /// Gravity compensation factor (0=none, 1=full, >1=over-compensate, <0=amplify gravity).
     pub gravcomp: Option<f64>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfBody {
@@ -2208,6 +2290,7 @@ impl Default for MjcfBody {
             mocap: false,
             sleep: None,
             gravcomp: None,
+            user: Vec::new(),
         }
     }
 }
@@ -2469,6 +2552,8 @@ pub struct MjcfActuator {
     /// Dynamics parameters (up to 3 elements, zero-padded).
     /// None means use default [1, 0, 0]. Only parsed for `<general>`.
     pub dynprm: Option<Vec<f64>>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfActuator {
@@ -2526,6 +2611,7 @@ impl Default for MjcfActuator {
             gainprm: None,
             biasprm: None,
             dynprm: None,
+            user: Vec::new(),
         }
     }
 }
@@ -2731,6 +2817,8 @@ pub struct MjcfTendon {
     pub path_elements: Vec<SpatialPathElement>,
     /// Joint coefficients for fixed tendons: (joint_name, coefficient).
     pub joints: Vec<(String, f64)>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfTendon {
@@ -2756,6 +2844,7 @@ impl Default for MjcfTendon {
             springlength: None,
             path_elements: Vec::new(),
             joints: Vec::new(),
+            user: Vec::new(),
         }
     }
 }
@@ -3647,6 +3736,18 @@ pub struct MjcfFlex {
     /// Self-collision broadphase mode. MuJoCo keyword: [none, narrow, bvh, sap, auto].
     /// None = absent (default "auto"); Some("none") = disabled; other = enabled.
     pub selfcollide: Option<String>,
+    /// Internal collision flag (default true). When true, contacts between
+    /// elements sharing an edge are generated (adjacent element contacts).
+    pub internal: bool,
+    /// Number of active element layers for collision detection (default 0).
+    /// 0 = all layers active.
+    pub activelayers: i32,
+    /// Per-vertex collision mode (default false). When true, vertex spheres
+    /// collide with other geoms even when not part of a flex element face.
+    pub vertcollide: bool,
+    /// Passive contact flag (default true). When true, flex contacts generate
+    /// passive forces only (no constraint solver involvement).
+    pub passive: bool,
 
     // --- <flex><elasticity> child element attributes ---
     /// Young's modulus [Pa].
@@ -3673,6 +3774,16 @@ pub struct MjcfFlex {
     /// Volumetric density [kg/m³] (dim=2,3) or linear density [kg/m] (dim=1).
     /// Fallback for element-based mass lumping when `mass` is `None`.
     pub density: f64,
+
+    // --- Flexcomp attributes (DT-88) ---
+    /// Flexcomp inertia box size (scalar). Used for vertex inertia calculation.
+    pub inertiabox: f64,
+    /// Flexcomp non-uniform scale applied to generated vertices.
+    pub flexcomp_scale: Option<Vector3<f64>>,
+    /// Flexcomp rotation quaternion applied to generated vertices (after scale).
+    pub flexcomp_quat: Option<UnitQuaternion<f64>>,
+    /// Flexcomp mesh/grid file path.
+    pub flexcomp_file: Option<String>,
 
     // --- Structural data arrays ---
     /// Vertex positions.
@@ -3702,9 +3813,13 @@ impl Default for MjcfFlex {
             margin: 0.0,
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
-            contype: None,     // MuJoCo default: 1
-            conaffinity: None, // MuJoCo default: 1
-            selfcollide: None, // MuJoCo default is "auto" (enabled)
+            contype: None,      // MuJoCo default: 1
+            conaffinity: None,  // MuJoCo default: 1
+            selfcollide: None,  // MuJoCo default is "auto" (enabled)
+            internal: true,     // MuJoCo default
+            activelayers: 0,    // MuJoCo default (0 = all layers)
+            vertcollide: false, // MuJoCo default
+            passive: true,      // MuJoCo default
             // <elasticity> child element (MuJoCo defaults)
             young: 0.0, // MuJoCo default; was 1e6
             poisson: 0.0,
@@ -3716,6 +3831,11 @@ impl Default for MjcfFlex {
             // Internal
             mass: None,
             density: 1000.0,
+            // Flexcomp attributes (DT-88)
+            inertiabox: 0.0,
+            flexcomp_scale: None,
+            flexcomp_quat: None,
+            flexcomp_file: None,
             // Structural data
             vertices: Vec::new(),
             elements: Vec::new(),
@@ -3759,6 +3879,21 @@ pub struct MjcfModel {
     /// Keyframes for quick state reset.
     #[cfg_attr(feature = "serde", serde(default))]
     pub keyframes: Vec<MjcfKeyframe>,
+    /// Per-element user data sizes from `<size>` element.
+    /// Number of user data floats per body. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_body: i32,
+    /// Number of user data floats per joint. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_jnt: i32,
+    /// Number of user data floats per geom. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_geom: i32,
+    /// Number of user data floats per site. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_site: i32,
+    /// Number of user data floats per tendon. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_tendon: i32,
+    /// Number of user data floats per actuator. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_actuator: i32,
+    /// Number of user data floats per sensor. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_sensor: i32,
 }
 
 impl Default for MjcfModel {
@@ -3779,6 +3914,13 @@ impl Default for MjcfModel {
             skins: Vec::new(),
             flex: Vec::new(),
             keyframes: Vec::new(),
+            nuser_body: -1,
+            nuser_jnt: -1,
+            nuser_geom: -1,
+            nuser_site: -1,
+            nuser_tendon: -1,
+            nuser_actuator: -1,
+            nuser_sensor: -1,
         }
     }
 }

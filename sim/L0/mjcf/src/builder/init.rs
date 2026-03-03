@@ -57,6 +57,7 @@ impl ModelBuilder {
             jnt_name: vec![],
             jnt_group: vec![],
             jnt_actgravcomp: vec![],
+            jnt_margin: vec![],
 
             dof_body: vec![],
             dof_jnt: vec![],
@@ -168,6 +169,7 @@ impl ModelBuilder {
             sleep_tolerance: 1e-4,
 
             qpos0_values: vec![],
+            qpos_spring_values: vec![],
 
             joint_name_to_id: HashMap::new(),
             body_name_to_id: HashMap::from([("world".to_string(), 0)]),
@@ -268,6 +270,10 @@ impl ModelBuilder {
             flex_contype: vec![],
             flex_conaffinity: vec![],
             flex_selfcollide: vec![],
+            flex_internal: vec![],
+            flex_activelayers: vec![],
+            flex_vertcollide: vec![],
+            flex_passive: vec![],
             flex_edgestiffness: vec![],
             flex_edgedamping: vec![],
             flexvert_qposadr: vec![],
@@ -289,6 +295,15 @@ impl ModelBuilder {
             flexhinge_vert: vec![],
             flexhinge_angle0: vec![],
             flexhinge_flexid: vec![],
+
+            // Per-element user data accumulation (§55)
+            body_user_raw: vec![vec![]], // World body (body 0) — always empty user data
+            geom_user_raw: vec![],
+            jnt_user_raw: vec![],
+            site_user_raw: vec![],
+            tendon_user_raw: vec![],
+            actuator_user_raw: vec![],
+            sensor_user_raw: vec![],
         }
     }
 }

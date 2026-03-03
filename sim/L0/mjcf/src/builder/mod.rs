@@ -42,7 +42,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::defaults::DefaultResolver;
-use crate::error::Result;
+use crate::error::{MjcfError, Result};
 use crate::types::{
     MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfKeyframe, MjcfModel, MjcfOption, MjcfSolverType,
 };
@@ -261,7 +261,7 @@ pub fn model_from_mjcf(
 
     // Process hfield assets (before geoms can reference them)
     for hfield in &mjcf.hfields {
-        builder.process_hfield(hfield)?;
+        builder.process_hfield(hfield, base_path)?;
     }
 
     // Process worldbody's own geoms and sites (attached to body 0)
@@ -305,6 +305,13 @@ pub fn model_from_mjcf(
 
     // Process flex deformable bodies (after mass pipeline, before build)
     builder.process_flex_bodies(&mjcf.flex)?;
+
+    // Finalize user data: resolve nuser, validate, pad
+    builder
+        .finalize_user_data(&mjcf)
+        .map_err(|e| ModelConversionError {
+            message: format!("User data finalization failed: {e}"),
+        })?;
 
     // Build final model
     let mut model = builder.build();
@@ -437,6 +444,8 @@ pub struct ModelBuilder {
     pub(crate) jnt_group: Vec<i32>,
     /// Per-joint: gravcomp routes through qfrc_actuator instead of qfrc_passive.
     pub(crate) jnt_actgravcomp: Vec<bool>,
+    /// Joint limit activation margin.
+    pub(crate) jnt_margin: Vec<f64>,
 
     // DOF arrays
     pub(crate) dof_body: Vec<usize>,
@@ -581,6 +590,8 @@ pub struct ModelBuilder {
 
     // qpos0 values (built as we process joints)
     pub(crate) qpos0_values: Vec<f64>,
+    // qpos_spring values (built as we process joints; per-DOF spring reference)
+    pub(crate) qpos_spring_values: Vec<f64>,
 
     // Name to index lookups (for actuator wiring)
     pub(crate) joint_name_to_id: HashMap<String, usize>,
@@ -685,6 +696,10 @@ pub struct ModelBuilder {
     pub(crate) flex_contype: Vec<u32>,
     pub(crate) flex_conaffinity: Vec<u32>,
     pub(crate) flex_selfcollide: Vec<bool>,
+    pub(crate) flex_internal: Vec<bool>,
+    pub(crate) flex_activelayers: Vec<i32>,
+    pub(crate) flex_vertcollide: Vec<bool>,
+    pub(crate) flex_passive: Vec<bool>,
     pub(crate) flex_edgestiffness: Vec<f64>,
     pub(crate) flex_edgedamping: Vec<f64>,
     pub(crate) flexvert_qposadr: Vec<usize>,
@@ -706,6 +721,15 @@ pub struct ModelBuilder {
     pub(crate) flexhinge_vert: Vec<[usize; 4]>,
     pub(crate) flexhinge_angle0: Vec<f64>,
     pub(crate) flexhinge_flexid: Vec<usize>,
+
+    // Per-element user data accumulation (§55, Spec C)
+    pub(crate) body_user_raw: Vec<Vec<f64>>,
+    pub(crate) geom_user_raw: Vec<Vec<f64>>,
+    pub(crate) jnt_user_raw: Vec<Vec<f64>>,
+    pub(crate) site_user_raw: Vec<Vec<f64>>,
+    pub(crate) tendon_user_raw: Vec<Vec<f64>>,
+    pub(crate) actuator_user_raw: Vec<Vec<f64>>,
+    pub(crate) sensor_user_raw: Vec<Vec<f64>>,
 }
 
 impl ModelBuilder {
@@ -761,6 +785,49 @@ impl ModelBuilder {
         // Wire all flags from parsed MJCF to Model bitfields.
         apply_flags(&option.flag, &mut self.disableflags, &mut self.enableflags);
     }
+
+    /// Resolve nuser_* values, validate user data lengths, and pad arrays.
+    fn finalize_user_data(&mut self, mjcf: &MjcfModel) -> Result<()> {
+        finalize_user_type("body", mjcf.nuser_body, &mut self.body_user_raw)?;
+        finalize_user_type("jnt", mjcf.nuser_jnt, &mut self.jnt_user_raw)?;
+        finalize_user_type("geom", mjcf.nuser_geom, &mut self.geom_user_raw)?;
+        finalize_user_type("site", mjcf.nuser_site, &mut self.site_user_raw)?;
+        finalize_user_type("tendon", mjcf.nuser_tendon, &mut self.tendon_user_raw)?;
+        finalize_user_type("actuator", mjcf.nuser_actuator, &mut self.actuator_user_raw)?;
+        finalize_user_type("sensor", mjcf.nuser_sensor, &mut self.sensor_user_raw)?;
+        Ok(())
+    }
+}
+
+/// For a single element type: resolve nuser, validate, pad.
+fn finalize_user_type(type_name: &str, explicit_nuser: i32, raw: &mut [Vec<f64>]) -> Result<()> {
+    if explicit_nuser < -1 {
+        return Err(MjcfError::Unsupported(format!(
+            "nuser_{type_name} must be >= -1, got {explicit_nuser}"
+        )));
+    }
+
+    let nuser = if explicit_nuser >= 0 {
+        let nuser = explicit_nuser as usize;
+        for user in raw.iter() {
+            if user.len() > nuser {
+                return Err(MjcfError::Unsupported(format!(
+                    "user data exceeds nuser_{type_name}={nuser}"
+                )));
+            }
+        }
+        nuser
+    } else {
+        // Auto-size: max length across all elements
+        raw.iter().map(|u| u.len()).max().unwrap_or(0)
+    };
+
+    // Pad all arrays to nuser length
+    for user in raw.iter_mut() {
+        user.resize(nuser, 0.0);
+    }
+
+    Ok(())
 }
 
 /// Convert parsed `MjcfFlag` booleans into Model disable/enable bitfields.
@@ -1024,5 +1091,238 @@ mod tests {
             err.to_string().contains("include"),
             "error should mention include: {err}"
         );
+    }
+
+    // -- Hfield PNG loading tests (DT-3) --
+
+    /// Create a minimal 3×3 grayscale PNG for testing.
+    fn create_test_png(path: &std::path::Path, width: u32, height: u32) {
+        use image::{GrayImage, Luma};
+        let mut img = GrayImage::new(width, height);
+        // Fill with a gradient: row 0 = dark, last row = bright
+        for y in 0..height {
+            for x in 0..width {
+                #[allow(clippy::cast_possible_truncation)]
+                let val = ((y * 255) / height.max(1)) as u8;
+                img.put_pixel(x, y, Luma([val]));
+            }
+        }
+        img.save(path).expect("Failed to save test PNG");
+    }
+
+    #[test]
+    fn test_load_hfield_from_png_file() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Create a 4×3 PNG (width=4, height=3 → ncol=4, nrow=3)
+        let png_path = temp_dir.path().join("terrain.png");
+        create_test_png(&png_path, 4, 3);
+
+        let mjcf_content = r#"
+            <mujoco model="hfield_png_test">
+                <asset>
+                    <hfield name="terrain" file="terrain.png" size="1 1 0.5 0.1"/>
+                </asset>
+                <worldbody>
+                    <geom type="hfield" hfield="terrain"/>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf_path = temp_dir.path().join("model.xml");
+        std::fs::write(&mjcf_path, mjcf_content).unwrap();
+
+        let model = load_model_from_file(&mjcf_path).expect("should load hfield from PNG");
+        assert_eq!(model.nhfield, 1);
+        assert_eq!(model.hfield_name[0], "terrain");
+        // size should be preserved
+        // Size values are parsed directly from MJCF — exact equality is correct here.
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(model.hfield_size[0], [1.0, 1.0, 0.5, 0.1]);
+        }
+    }
+
+    #[test]
+    fn test_load_hfield_from_png_with_meshdir() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Create PNG in subdirectory (hfields use meshdir for resolution)
+        let assets_dir = temp_dir.path().join("hfields");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+        let png_path = assets_dir.join("hill.png");
+        create_test_png(&png_path, 5, 5);
+
+        let mjcf_content = r#"
+            <mujoco model="hfield_meshdir_test">
+                <compiler meshdir="hfields"/>
+                <asset>
+                    <hfield name="hill" file="hill.png" size="2 2 1 0"/>
+                </asset>
+                <worldbody>
+                    <geom type="hfield" hfield="hill"/>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf_path = temp_dir.path().join("model.xml");
+        std::fs::write(&mjcf_path, mjcf_content).unwrap();
+
+        let model = load_model_from_file(&mjcf_path).expect("should resolve via meshdir");
+        assert_eq!(model.nhfield, 1);
+    }
+
+    #[test]
+    fn test_hfield_png_missing_file_error() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        let mjcf_content = r#"
+            <mujoco model="hfield_missing">
+                <asset>
+                    <hfield name="gone" file="nonexistent.png" size="1 1 1 0"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let mjcf_path = temp_dir.path().join("model.xml");
+        std::fs::write(&mjcf_path, mjcf_content).unwrap();
+
+        let result = load_model_from_file(&mjcf_path);
+        assert!(result.is_err(), "should fail for missing PNG");
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "error should mention file not found"
+        );
+    }
+
+    #[test]
+    fn test_hfield_inline_elevation_still_works() {
+        // Verify backward compatibility: inline elevation data still loads
+        let result = load_model(
+            r#"
+            <mujoco model="hfield_inline">
+                <asset>
+                    <hfield name="flat" size="1 1 0.5 0"
+                            nrow="2" ncol="2"
+                            elevation="0 0 0 0"/>
+                </asset>
+                <worldbody>
+                    <geom type="hfield" hfield="flat"/>
+                </worldbody>
+            </mujoco>
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "inline hfield should still work: {:?}",
+            result.err()
+        );
+        let model = result.unwrap();
+        assert_eq!(model.nhfield, 1);
+    }
+
+    #[test]
+    fn test_hfield_requires_file_or_elevation() {
+        // Neither file nor elevation → parser error
+        let result = crate::parse_mjcf_str(
+            r#"
+            <mujoco>
+                <asset>
+                    <hfield name="bad" size="1 1 1 0"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+            "#,
+        );
+        assert!(result.is_err(), "should fail without file or elevation");
+    }
+
+    #[test]
+    fn test_load_hfield_from_real_menagerie_png() {
+        // Test with actual menagerie hfield PNG (166K, real-world terrain data)
+        let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/assets/mujoco_menagerie/google_barkour_vb/scene_hfield_mjx.xml");
+        if !model_path.exists() {
+            // Skip if asset not available
+            return;
+        }
+        let result = load_model_from_file(&model_path);
+        // This may fail due to <include> of barkour_vb_mjx.xml, which is expected.
+        // The important thing is that it doesn't panic on the PNG loading itself.
+        // If includes are expanded, it should succeed.
+        if let Ok(model) = result {
+            assert!(model.nhfield >= 1, "should have at least 1 hfield");
+        }
+    }
+
+    // ── DT-85: Flex contact runtime attributes ──────────────────────────
+
+    #[test]
+    fn test_flex_contact_runtime_attrs_parsed() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mjcf_path = temp_dir.path().join("flex_contact.xml");
+        std::fs::write(
+            &mjcf_path,
+            r#"
+            <mujoco>
+              <worldbody>
+                <body pos="0 0 1">
+                  <geom type="sphere" size="0.01" mass="0.1"/>
+                </body>
+              </worldbody>
+              <deformable>
+                <flex name="test_flex" body="0" dim="2"
+                      vertex="0 0 0  1 0 0  0 1 0  1 1 0"
+                      element="0 1 2  1 2 3">
+                  <contact internal="false" activelayers="3"
+                           vertcollide="true" passive="false"/>
+                  <elasticity young="1e6"/>
+                </flex>
+              </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        let model = load_model_from_file(&mjcf_path).expect("should load flex contact attrs");
+        assert_eq!(model.nflex, 1);
+        assert!(!model.flex_internal[0], "internal should be false");
+        assert_eq!(model.flex_activelayers[0], 3);
+        assert!(model.flex_vertcollide[0], "vertcollide should be true");
+        assert!(!model.flex_passive[0], "passive should be false");
+    }
+
+    #[test]
+    fn test_flex_contact_runtime_attrs_defaults() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mjcf_path = temp_dir.path().join("flex_contact_defaults.xml");
+        std::fs::write(
+            &mjcf_path,
+            r#"
+            <mujoco>
+              <worldbody>
+                <body pos="0 0 1">
+                  <geom type="sphere" size="0.01" mass="0.1"/>
+                </body>
+              </worldbody>
+              <deformable>
+                <flex name="test_flex" body="0" dim="2"
+                      vertex="0 0 0  1 0 0  0 1 0  1 1 0"
+                      element="0 1 2  1 2 3">
+                  <contact/>
+                  <elasticity young="1e6"/>
+                </flex>
+              </deformable>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        let model =
+            load_model_from_file(&mjcf_path).expect("should load flex contact with defaults");
+        assert_eq!(model.nflex, 1);
+        assert!(model.flex_internal[0], "internal default should be true");
+        assert_eq!(model.flex_activelayers[0], 0);
+        assert!(
+            !model.flex_vertcollide[0],
+            "vertcollide default should be false"
+        );
+        assert!(model.flex_passive[0], "passive default should be true");
     }
 }

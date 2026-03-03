@@ -66,6 +66,7 @@ impl ModelBuilder {
                 None => [-1.0, -1.0], // sentinel: resolved to [length0, length0] later
             });
             self.tendon_length0.push(0.0); // Computed after construction from qpos0
+            self.tendon_user_raw.push(tendon.user.clone());
 
             let wrap_start = self.wrap_type.len();
             self.tendon_adr.push(wrap_start);

@@ -39,7 +39,8 @@ the conformance gap *before* implementation. Verify each gap is now closed.
 | {behavior 2} | ... | ... | ... | ... |
 
 **Unclosed gaps:**
-{List any behaviors where the gap is not fully closed. Each needs an action.}
+{List any behaviors where the gap is not fully closed. Each needs an action:
+fix now, defer with tracking ID, or justify why partial closure is acceptable.}
 
 ---
 
@@ -112,12 +113,26 @@ Verify every planned test from the spec was actually written. The AC table
 above checks that ACs have *some* test — this section checks that the
 spec's *full* test plan was executed.
 
+> **Test numbering note:** If the spec's test labels (T1, T2, ...) differ
+> from the implementation's test function names (e.g., `t01_*`, `t02_*`),
+> note the mapping convention here so readers can cross-reference.
+
 ### Planned Tests
 
 | Test | Spec Description | Implemented? | Test Function | Notes |
 |------|-----------------|-------------|---------------|-------|
 | T1 | {description from spec's test plan} | {Yes / No / Partial} | {test function name or "—"} | |
 | T2 | ... | ... | ... | ... |
+
+### Supplementary Tests
+
+Tests that were added beyond the spec's planned test list — additional
+coverage discovered during implementation or review. These don't map 1:1
+to ACs but strengthen the test suite.
+
+| Test | Description | Test Function | Notes |
+|------|-------------|---------------|-------|
+| {S1 / T{N+1}} | {what it tests and why it was added} | {test function name} | |
 
 ### Edge Case Inventory
 
@@ -201,6 +216,13 @@ Items that technically work but aren't solid. These should be fixed now —
 | W1 | {file:line} | {what's weak and why} | {High / Medium / Low} | {Fix now / Acceptable with rationale} |
 | W2 | ... | ... | ... | ... |
 
+**If no weak items are found,** document the verification methodology:
+
+> No weak items found. Verified by grepping for `TODO`, `FIXME`, `HACK`,
+> `todo!`, `unimplemented!` in all new/modified files (zero matches).
+> Reviewed all new production code for `unwrap()`, loose tolerances, and
+> algorithm deviations from spec. {N files, ~M lines reviewed.}
+
 **Severity guide:**
 - **High** — Conformance risk. MuJoCo would produce different results.
   Fix before shipping.
@@ -215,8 +237,8 @@ Items that technically work but aren't solid. These should be fixed now —
 ## 8. Deferred Work Tracker
 
 Every item that was in the spec's scope but not fully implemented, plus
-anything discovered during implementation that's out of scope. **The goal:
-nothing deferred is untracked.**
+anything discovered during implementation or review that's out of scope.
+**The goal: nothing deferred is untracked.**
 
 For each item, verify it appears in at least one of:
 - `sim/docs/todo/` (future_work file or spec_fleshout)
@@ -242,6 +264,18 @@ spec. These are the most likely to be untracked.
 | {discovered item 1} | {what prompted the discovery} | {file path or "NOT TRACKED"} | {DT-xxx / —} | {Yes / No} |
 | {discovered item 2} | ... | ... | ... | ... |
 
+### Discovered During Review
+
+Items found during this review that were not surfaced during
+implementation. Reviews are a discovery mechanism — gaps in tracking,
+missing match arms, untracked deferred items, and spec inaccuracies
+often only become visible during side-by-side review.
+
+| Item | Discovery Context | Tracked In | Tracking ID | Verified? |
+|------|-------------------|------------|-------------|-----------|
+| {discovered item 1} | {which review section surfaced this} | {file path or "NOT TRACKED"} | {DT-xxx / —} | {Yes / No} |
+| {discovered item 2} | ... | ... | ... | ... |
+
 ### Spec Gaps Found During Implementation
 
 Items where the spec was wrong or incomplete and was (or should have been)
@@ -259,8 +293,12 @@ Quick sanity check on test health after the implementation.
 
 **Domain test results:**
 ```
-{paste the summary line from cargo test, e.g.:}
-{test result: ok. 2187 passed; 0 failed; 0 ignored}
+{Per-crate breakdown, e.g.:}
+sim-core:              N passed, 0 failed, M ignored
+sim-mjcf:              N passed, 0 failed, M ignored
+sim-conformance-tests: N passed, 0 failed, M ignored
+{... other affected crates ...}
+Total:                 N passed, 0 failed, M ignored
 ```
 
 **New tests added:** {count}
@@ -286,7 +324,24 @@ Quick sanity check on test health after the implementation.
 | Deferred work tracking | 8 | {All tracked / N items need tracking} |
 | Test health | 9 | {Green / Issues} |
 
-**Overall:** {Ship / Fix then ship / Needs rework}
+**Overall:** {Ship / Ship after fixes / Needs rework}
+
+- **Ship** — All sections pass. No High-severity weak items. All deferred
+  work tracked. Ready to merge.
+- **Ship after fixes** — Fixable issues found (weak items, missing tests,
+  untracked deferred work). Fix in the same session, update the relevant
+  rows above, then re-verdict.
+- **Needs rework** — Fundamental gaps: missing spec sections, failing ACs,
+  algorithm deviations. Return to implementation.
+
+**Items fixed during review:**
+{Items that were discovered AND resolved during this review session.
+This is distinct from "Items to fix before shipping" — these are already
+done. Common examples: tightened test tolerances, added missing match
+arms, registered untracked DT items, implemented supplementary tests.}
+
+1. {what was fixed — cite section that surfaced it}
+2. ...
 
 **Items to fix before shipping:**
 1. {item — from any section above}
@@ -315,7 +370,8 @@ Quick sanity check on test health after the implementation.
 4. **Section 8 (Deferred Work) is the most important section for project
    health.** If deferred items aren't tracked, they're forgotten. Check
    every "out of scope" bullet and every "we'll handle that later" from
-   the implementation session.
+   the implementation session. Don't forget the "Discovered During Review"
+   subsection — reviews routinely surface items that implementation missed.
 
 5. **Section 5 (Blast Radius) is the best section for process learning.**
    Compare what the spec predicted against what actually happened. Patterns
@@ -324,7 +380,9 @@ Quick sanity check on test health after the implementation.
 
 6. **Present section 10 (Verdict) to the user.** If there are items to fix
    before shipping, fix them in the same session. If there are untracked
-   deferred items, add tracking now.
+   deferred items, add tracking now. Move resolved items to "Items fixed
+   during review" and update the relevant rows in sections 2/3/7/8.
 
 7. **After fixing all "fix before shipping" items,** update the relevant
-   rows in sections 2/3/7 to reflect the fixes, and re-run the verdict.
+   rows in sections 2/3/7 to reflect the fixes, re-run the verdict, and
+   move the items to "Items fixed during review."

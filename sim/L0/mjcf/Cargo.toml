@@ -16,6 +16,7 @@ nalgebra = { workspace = true }
 quick-xml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+image = { workspace = true }
 serde = { workspace = true, optional = true }
 bincode = { workspace = true, optional = true }
 

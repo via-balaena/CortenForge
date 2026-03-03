@@ -1,6 +1,6 @@
 # CortenForge Sim — v1.0 Roadmap
 
-> **Status**: Draft — 2026-03-01
+> **Status**: Draft — 2026-03-02
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
 > plus the ~112 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-116).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
@@ -11,9 +11,11 @@
 > DT-107 (runtime interpolation), DT-108 (dyntype gating), DT-109 (sensor history),
 > DT-110 (actuator_plugin) added during Spec D review. ~~DT-9~~ partially done (parsing landed).
 > ~~DT-58~~ done (Phase 5 Spec C). DT-111–116 (HillMuscle extension sub-items) added
-> during Spec C review.
+> during Spec C review. DT-123/124 added during Phase 7 Spec A review.
+> ~~§60~~ dropped (nonexistent in MuJoCo). DT-125 (`mj_setConst()` runtime
+> `qpos_spring` recomputation) added during Phase 7 Spec B review.
 >
-> **Current position**: Phases 1–6 complete. Next: Phases 7–11 (parallel).
+> **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
 ---
 
@@ -181,21 +183,21 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 7 — MJCF Parsing & Defaults Gaps
+### Phase 7 — MJCF Parsing & Defaults Gaps ✅
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| DT-2 | 10b | T2 | Equality constraint defaults: `solref`/`solimp` in defaults structs |
-| DT-3 | 10b | T1 | File-based hfield loading from PNG |
-| DT-11 | 10b | T2 | `range` as defaultable attribute in `MjcfJointDefaults` |
-| DT-13 | 10b | T2 | `qpos_spring` — distinct from `qpos0`, not yet implemented |
-| DT-14 | 10b | T2 | Actuator type-specific defaults (cylinder area/timeconst, muscle params) |
-| DT-85 | 10i | T1 | Flex `<contact>` runtime attributes: `internal`, `activelayers`, `vertcollide`, `passive` |
-| DT-88 | 10i | T2 | `<flexcomp>` attributes: `inertiabox`, `scale`, `quat`, `file` |
-| §55 | 13 | — | Per-element `*_user` custom data arrays from MJCF |
-| §60 | 15 | — | `springinertia` joint attribute — inertia-spring coupling in CRBA diagonal |
-| §64 | 15 | — | Ball/free joint spring potential energy (quaternion geodesic) |
-| §64a | 15 | — | `jnt_margin` for joint limit activation and constraint row margin |
+| ~~DT-2~~ | 10b | T2 | ~~Equality constraint defaults: `solref`/`solimp` in defaults structs~~ **Done** — Phase 7 Spec A (commit `01ae59f`). `MjcfEqualityDefaults` struct, `apply_to_equality()` cascade for all 5 equality types. |
+| ~~DT-3~~ | 10b | T1 | ~~File-based hfield loading from PNG~~ **Done** — Phase 7 T1 (commit `cea5f4c`). `file` attribute on `<hfield>`, PNG grayscale loading via `image` crate. |
+| ~~DT-11~~ | 10b | T2 | ~~`range` as defaultable attribute in `MjcfJointDefaults`~~ **Already implemented** — verified during Phase 7 Spec A review (EGT-4). Dropped from spec scope. |
+| ~~DT-13~~ | 10b | T2 | ~~`qpos_spring` — distinct from `qpos0`, not yet implemented~~ **Done** — Phase 7 Spec A (commit `3f70616`). `qpos_spring: Vec<f64>` on Model, populated from `qpos0`/`springref`. Runtime consumers in `passive.rs`/`energy.rs`. |
+| ~~DT-14~~ | 10b | T2 | ~~Actuator type-specific defaults (cylinder area/timeconst, muscle params)~~ **Done** — Phase 7 Spec A (commit `01ae59f`). Shortcut names in `parse_default()`, cylinder/muscle/adhesion fields on `MjcfActuatorDefaults`. |
+| ~~DT-85~~ | 10i | T1 | ~~Flex `<contact>` runtime attributes: `internal`, `activelayers`, `vertcollide`, `passive`~~ **Done** — Phase 7 T1 (commit `cf76731`). Parse + store + wire to Model arrays. |
+| ~~DT-88~~ | 10i | T2 | ~~`<flexcomp>` attributes: `inertiabox`, `scale`, `quat`, `file`~~ **Done** — Phase 7 Spec C (commit `05ee0a5`). Documentation-fidelity (not in MuJoCo 3.5.0 binary). |
+| ~~§55~~ | 13 | — | ~~Per-element `*_user` custom data arrays from MJCF~~ **Done** — Phase 7 Spec C (commit `05ee0a5`). 7 element types, `<size>` nuser_*, auto-sizing, zero-padding, validation, defaults cascade. |
+| ~~§60~~ | 15 | — | ~~`springinertia` joint attribute — inertia-spring coupling in CRBA diagonal~~ **DROPPED** — Verified nonexistent in MuJoCo (Phase 7 Spec B rubric EGT-1: zero GitHub results, no `mjmodel.h` field, no XML attribute). |
+| ~~§64~~ | 15 | — | ~~Ball/free joint spring force and energy (quaternion geodesic). Depends on Phase 7 Spec A `qpos_spring` array.~~ **Done** — Phase 7 Spec B (commit `3f70616`). Ball/free spring force in `passive.rs`, spring energy in `energy.rs`, quaternion geodesic via `subquat()`. |
+| ~~§64a~~ | 15 | — | ~~`jnt_margin` for joint limit activation and constraint row margin~~ **Done** — Phase 7 Spec B (commit `3f70616`). `margin` parsed from `<joint>`, `jnt_margin: Vec<f64>` on Model, 9 sites in `assembly.rs` replaced. |
 
 ---
 
@@ -208,7 +210,7 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | DT-25 | 10c | T3 | Deformable-rigid friction cone projection (currently normal-only) |
 | DT-28 | 10d | T2 | Ball/free joints in fixed tendons — validation + qvel DOF index mapping |
 | DT-32 | 10d | T2 | Per-tendon `solref_limit`/`solimp_limit` constraint solver params |
-| DT-33 | 10d | T2 | Tendon `margin` attribute for limit activation distance |
+| DT-33 | 10d | T2 | Tendon `margin` attribute for limit activation distance. Phase 7 Spec B (§64a) implemented joint `jnt_margin`; tendon limit sites (`assembly.rs:148,152,540,564`) still hardcode `< 0.0`. |
 | DT-39 | 10e | T2 | Body-weight diagonal approximation (`diagApprox`) |
 
 ---
@@ -365,8 +367,8 @@ foundation isn't right.
 | DT-7 | 10b | T1 | `actdim` explicit override |
 | DT-10 | 10b | T1 | Deferred `<compiler>` attributes (`fitaabb`, `usethread`, etc.) |
 | DT-12 | 10b | T1 | Programmatic enforcement that `worldbody.childclass` = None |
-| DT-15 | 10b | T1 | Sentinel-value detection → `Option<T>` migration |
-| DT-17 | 10b | T1 | Global `<option o_margin>` override |
+| DT-15 | 10b | T1 | Sentinel-value detection → `Option<T>` migration. Phase 7 Spec A added 14 sentinel-detection fields in `apply_to_actuator()` (defaults.rs:441-512) — primary migration candidates. |
+| DT-17 | 10b | T1 | Global `<option o_margin>` override. Phase 7 Spec B (§64a) implemented per-joint `jnt_margin`; this covers the separate global option. |
 | DT-22 | 10c | T1 | `efc_impP` impedance derivative field |
 | DT-31 | 10d | T2 | `WrapType::Joint` inside spatial tendons |
 | DT-65 | 10h | T1 | User sensor `dim` attribute. Also requires `sensor_intprm` array (`mjmodel.h:1213`). |
@@ -385,6 +387,9 @@ foundation isn't right.
 | DT-120 | 15 | T1 | `MjObjectType::Camera` — frame sensor camera support (reftype="camera" currently warns + ignores). Deferred from Phase 6 Spec B. |
 | DT-121 | 15 | T1 | `InsideSite` sensor (`mjSENS_INSIDESITE`) — MuJoCo 3.x sensor type not yet supported. Deferred from Phase 6 Spec C. |
 | DT-122 | 15 | T2 | Mesh/Hfield/SDF geom distance support for `GeomDist`/`GeomPoint`/`GeomNormal` sensors. Deferred from Phase 6 Spec C. |
+| DT-123 | 10b | T1 | `IntVelocity` enum variant — concrete `<intvelocity>` elements not yet supported (defaults parsing works). Deferred from Phase 7 Spec A. |
+| DT-124 | 10b | T1 | Muscle sentinel detection for `<general dyntype="muscle">` path (`gainprm[0]==1` quirk). Known conformance divergence. Deferred from Phase 7 Spec A. |
+| DT-125 | 15 | T2 | `mj_setConst()` runtime `qpos_spring` recomputation — when `mj_setConst()` is called at runtime, `qpos_spring` must be recomputed from current `qpos0`/`springref` via `setSpring()` logic (`engine_setconst.c`). Currently `qpos_spring` is set at build time and static. Deferred from Phase 7 Spec B. |
 
 ### Code Quality
 | Task | Source | Tier | Description |

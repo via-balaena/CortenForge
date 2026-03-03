@@ -11,10 +11,12 @@ use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::mj_apply_ft;
 use crate::joint_visitor::{JointContext, JointVisitor};
 use crate::tendon::apply_tendon_force;
+use crate::tendon::subquat;
 use crate::types::{
-    DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, GeomType, Integrator, Model, SleepState,
+    DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, GeomType, Integrator, MjJointType, Model,
+    SleepState,
 };
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3};
 
 /// Euclidean norm of a 3-element slice.
 #[inline]
@@ -801,7 +803,7 @@ impl PassiveForceVisitor<'_> {
             // S4.7b: Spring gated on DISABLE_SPRING.
             if self.has_spring {
                 let stiffness = self.model.jnt_stiffness[jnt_id];
-                let springref = self.model.jnt_springref[jnt_id];
+                let springref = self.model.qpos_spring[qpos_adr];
                 let q = self.data.qpos[qpos_adr];
                 self.data.qfrc_spring[dof_adr] -= stiffness * (q - springref);
             }
@@ -815,16 +817,78 @@ impl PassiveForceVisitor<'_> {
         }
     }
 
-    /// Process a multi-DOF joint (Ball or Free) with per-DOF damping.
-    /// S4.7-prereq: writes to `qfrc_damper` instead of `qfrc_passive`.
+    /// Process a multi-DOF joint (Ball or Free) with spring + damper.
+    /// Spring force: `-k * subquat(q, q_spring)` for rotational DOFs,
+    /// `-k * (pos - pos_spring)` for translational DOFs (free joint only).
+    /// S4.7-prereq: writes to `qfrc_spring`/`qfrc_damper` instead of `qfrc_passive`.
     #[inline]
     fn visit_multi_dof_joint(&mut self, ctx: JointContext) {
         if self.is_joint_sleeping(&ctx) {
             return;
         }
+
+        // Spring force: gated on DISABLE_SPRING and implicit_mode.
+        // Ball/free spring forces are fully suppressed in ImplicitSpringDamper
+        // mode — matching MuJoCo (quaternion springs too nonlinear for diagonal
+        // implicit approximation; implicit_stiffness=0.0 for ball/free).
+        if !self.implicit_mode && self.has_spring {
+            let stiffness = self.model.jnt_stiffness[ctx.jnt_id];
+            if stiffness != 0.0 {
+                match ctx.jnt_type {
+                    MjJointType::Free => {
+                        // Translational: -k * (pos - pos_spring) for 3 DOFs
+                        for i in 0..3 {
+                            let q = self.data.qpos[ctx.qpos_adr + i];
+                            let q_spring = self.model.qpos_spring[ctx.qpos_adr + i];
+                            self.data.qfrc_spring[ctx.dof_adr + i] -= stiffness * (q - q_spring);
+                        }
+                        // Rotational: falls through to ball case.
+                        // Quat starts at qpos_adr + 3, rotational DOFs at dof_adr + 3.
+                        let quat_adr = ctx.qpos_adr + 3;
+                        let rot_dof_adr = ctx.dof_adr + 3;
+                        let q_cur = UnitQuaternion::new_normalize(Quaternion::new(
+                            self.data.qpos[quat_adr],
+                            self.data.qpos[quat_adr + 1],
+                            self.data.qpos[quat_adr + 2],
+                            self.data.qpos[quat_adr + 3],
+                        ));
+                        let q_spring = UnitQuaternion::new_normalize(Quaternion::new(
+                            self.model.qpos_spring[quat_adr],
+                            self.model.qpos_spring[quat_adr + 1],
+                            self.model.qpos_spring[quat_adr + 2],
+                            self.model.qpos_spring[quat_adr + 3],
+                        ));
+                        let dif = subquat(&q_cur, &q_spring);
+                        self.data.qfrc_spring[rot_dof_adr] -= stiffness * dif[0];
+                        self.data.qfrc_spring[rot_dof_adr + 1] -= stiffness * dif[1];
+                        self.data.qfrc_spring[rot_dof_adr + 2] -= stiffness * dif[2];
+                    }
+                    MjJointType::Ball => {
+                        let q_cur = UnitQuaternion::new_normalize(Quaternion::new(
+                            self.data.qpos[ctx.qpos_adr],
+                            self.data.qpos[ctx.qpos_adr + 1],
+                            self.data.qpos[ctx.qpos_adr + 2],
+                            self.data.qpos[ctx.qpos_adr + 3],
+                        ));
+                        let q_spring = UnitQuaternion::new_normalize(Quaternion::new(
+                            self.model.qpos_spring[ctx.qpos_adr],
+                            self.model.qpos_spring[ctx.qpos_adr + 1],
+                            self.model.qpos_spring[ctx.qpos_adr + 2],
+                            self.model.qpos_spring[ctx.qpos_adr + 3],
+                        ));
+                        let dif = subquat(&q_cur, &q_spring);
+                        self.data.qfrc_spring[ctx.dof_adr] -= stiffness * dif[0];
+                        self.data.qfrc_spring[ctx.dof_adr + 1] -= stiffness * dif[1];
+                        self.data.qfrc_spring[ctx.dof_adr + 2] -= stiffness * dif[2];
+                    }
+                    _ => {} // Hinge/Slide handled by visit_1dof_joint
+                }
+            }
+        }
+
+        // Damper (existing code, unchanged).
         for i in 0..ctx.nv {
             let dof_idx = ctx.dof_adr + i;
-
             // S4.7b: Damper gated on DISABLE_DAMPER.
             if !self.implicit_mode && self.has_damper {
                 let dof_damping = self.model.dof_damping[dof_idx];
