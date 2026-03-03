@@ -416,7 +416,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 13: Spec C rubric (Parsing Breadth)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — write Spec C rubric.
@@ -564,7 +564,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 10 | Spec B implementation | Done | `3f70616` |
 | 11 | Spec B review — create document | Done | `038666c` |
 | 12 | Spec B review — execute | Done | |
-| 13 | Spec C rubric | Pending | |
+| 13 | Spec C rubric | Done | 0290ced |
 | 14 | Spec C spec | Pending | |
 | 15 | Spec C implementation | Pending | |
 | 16 | Spec C review — create document | Pending | |
