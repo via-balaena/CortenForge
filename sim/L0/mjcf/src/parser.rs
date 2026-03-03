@@ -2,7 +2,7 @@
 //!
 //! Parses MJCF XML into the intermediate representation types.
 
-use nalgebra::{Vector3, Vector4};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3, Vector4};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
@@ -128,6 +128,10 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         let kfs = parse_keyframes(reader)?;
                         model.keyframes.extend(kfs);
                     }
+                    b"size" => {
+                        parse_size_attrs(e, &mut model);
+                        skip_element(reader, &elem_name)?;
+                    }
                     // Skip other elements
                     _ => skip_element(reader, &elem_name)?,
                 }
@@ -143,6 +147,8 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                 } else if e.name().as_ref() == b"keyframe" {
                     // Empty <keyframe/> — no keyframes defined. model.keyframes is
                     // already Vec::new() from Default, so nothing to do.
+                } else if e.name().as_ref() == b"size" {
+                    parse_size_attrs(e, &mut model);
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"mujoco" => break,
@@ -154,6 +160,32 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
     }
 
     Ok(model)
+}
+
+/// Parse `<size>` element attributes into MjcfModel nuser_* fields.
+/// Multiple `<size>` elements merge with last-writer-wins per attribute.
+fn parse_size_attrs(e: &BytesStart, model: &mut MjcfModel) {
+    if let Some(val) = parse_int_attr(e, "nuser_body") {
+        model.nuser_body = val;
+    }
+    if let Some(val) = parse_int_attr(e, "nuser_jnt") {
+        model.nuser_jnt = val;
+    }
+    if let Some(val) = parse_int_attr(e, "nuser_geom") {
+        model.nuser_geom = val;
+    }
+    if let Some(val) = parse_int_attr(e, "nuser_site") {
+        model.nuser_site = val;
+    }
+    if let Some(val) = parse_int_attr(e, "nuser_tendon") {
+        model.nuser_tendon = val;
+    }
+    if let Some(val) = parse_int_attr(e, "nuser_actuator") {
+        model.nuser_actuator = val;
+    }
+    if let Some(val) = parse_int_attr(e, "nuser_sensor") {
+        model.nuser_sensor = val;
+    }
 }
 
 /// Parse option element.
@@ -650,6 +682,13 @@ fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> {
         defaults.actuatorgravcomp = Some(val == "true");
     }
     defaults.margin = parse_float_attr(e, "margin");
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            if !parts.is_empty() {
+                defaults.user = Some(parts);
+            }
+        }
+    }
 
     Ok(defaults)
 }
@@ -739,6 +778,13 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
             return Err(MjcfError::InvalidFluidCoef(parts.len()));
         }
         defaults.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+    }
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            if !parts.is_empty() {
+                defaults.user = Some(parts);
+            }
+        }
     }
 
     Ok(defaults)
@@ -853,6 +899,13 @@ fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
 
     // Adhesion-specific attributes
     defaults.gain = parse_float_attr(e, "gain");
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            if !parts.is_empty() {
+                defaults.user = Some(parts);
+            }
+        }
+    }
 
     Ok(defaults)
 }
@@ -948,6 +1001,13 @@ fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
 
     // Rendering
     defaults.material = get_attribute_opt(e, "material");
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            if !parts.is_empty() {
+                defaults.user = Some(parts);
+            }
+        }
+    }
 
     Ok(defaults)
 }
@@ -1013,6 +1073,13 @@ fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
 
     // Rendering
     defaults.material = get_attribute_opt(e, "material");
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            if !parts.is_empty() {
+                defaults.user = Some(parts);
+            }
+        }
+    }
 
     Ok(defaults)
 }
@@ -1636,6 +1703,11 @@ fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
             )
         })?);
     }
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            body.user = parts;
+        }
+    }
 
     Ok(body)
 }
@@ -1731,6 +1803,11 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     }
 
     joint.margin = parse_float_attr(e, "margin");
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            joint.user = parts;
+        }
+    }
 
     Ok(joint)
 }
@@ -1862,6 +1939,11 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         }
         geom.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
     }
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            geom.user = parts;
+        }
+    }
 
     Ok(geom)
 }
@@ -1966,6 +2048,11 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     }
     site.group = parse_int_attr(e, "group");
     site.material = get_attribute_opt(e, "material");
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            site.user = parts;
+        }
+    }
 
     Ok(site)
 }
@@ -2284,6 +2371,11 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
         let parts = parse_float_array(&lengthrange)?;
         if parts.len() >= 2 {
             actuator.lengthrange = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            actuator.user = parts;
         }
     }
 
@@ -2798,6 +2890,33 @@ fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
     if let Some(s) = get_attribute_opt(e, "mass") {
         flex.mass = s.parse().ok();
     }
+    // Flexcomp attributes (DT-88)
+    if let Some(s) = get_attribute_opt(e, "inertiabox") {
+        flex.inertiabox = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "scale") {
+        let vals: Vec<f64> = s
+            .split_whitespace()
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        if vals.len() >= 3 {
+            flex.flexcomp_scale = Some(Vector3::new(vals[0], vals[1], vals[2]));
+        }
+    }
+    if let Some(s) = get_attribute_opt(e, "quat") {
+        let vals: Vec<f64> = s
+            .split_whitespace()
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        if vals.len() >= 4 {
+            flex.flexcomp_quat = Some(UnitQuaternion::from_quaternion(Quaternion::new(
+                vals[0], vals[1], vals[2], vals[3],
+            )));
+        }
+    }
+    if let Some(s) = get_attribute_opt(e, "file") {
+        flex.flexcomp_file = Some(s);
+    }
     flex
 }
 
@@ -2914,6 +3033,9 @@ fn parse_flexcomp<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Res
         _ => {} // Unsupported type: leave empty
     }
 
+    // Apply scale and rotation to generated vertices (DT-88)
+    apply_flexcomp_transforms(&mut flex);
+
     // Parse child elements (<contact>, <elasticity>, <edge>, <pin>)
     let mut buf = Vec::new();
     loop {
@@ -2998,7 +3120,27 @@ fn parse_flexcomp_empty(e: &BytesStart) -> MjcfFlex {
         _ => {} // Unsupported type: leave empty
     }
 
+    // Apply scale and rotation to generated vertices (DT-88)
+    apply_flexcomp_transforms(&mut flex);
+
     flex
+}
+
+/// Apply flexcomp scale and quat transforms to generated vertices.
+/// Order: scale first (component-wise), then quaternion rotation.
+fn apply_flexcomp_transforms(flex: &mut MjcfFlex) {
+    if let Some(scale) = flex.flexcomp_scale {
+        for v in &mut flex.vertices {
+            v.x *= scale.x;
+            v.y *= scale.y;
+            v.z *= scale.z;
+        }
+    }
+    if let Some(ref quat) = flex.flexcomp_quat {
+        for v in &mut flex.vertices {
+            *v = quat.transform_vector(v);
+        }
+    }
 }
 
 /// Parse flexcomp count attribute (3 ints).
@@ -3519,6 +3661,11 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<Mjc
 
     // Rendering
     tendon.material = get_attribute_opt(e, "material");
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            tendon.user = parts;
+        }
+    }
 
     Ok(tendon)
 }

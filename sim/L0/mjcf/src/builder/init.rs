@@ -295,6 +295,15 @@ impl ModelBuilder {
             flexhinge_vert: vec![],
             flexhinge_angle0: vec![],
             flexhinge_flexid: vec![],
+
+            // Per-element user data accumulation (§55)
+            body_user_raw: vec![vec![]], // World body (body 0) — always empty user data
+            geom_user_raw: vec![],
+            jnt_user_raw: vec![],
+            site_user_raw: vec![],
+            tendon_user_raw: vec![],
+            actuator_user_raw: vec![],
+            sensor_user_raw: vec![],
         }
     }
 }

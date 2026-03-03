@@ -128,6 +128,7 @@ impl ModelBuilder {
             self.sensor_interp.push(interp);
             self.sensor_delay.push(delay);
             self.sensor_interval.push((interval, 0.0));
+            self.sensor_user_raw.push(mjcf_sensor.user.clone());
 
             adr += dim;
         }

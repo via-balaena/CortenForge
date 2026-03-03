@@ -137,6 +137,7 @@ impl ModelBuilder {
         self.jnt_actgravcomp
             .push(joint.actuatorgravcomp.unwrap_or(false));
         self.jnt_margin.push(joint.margin.unwrap_or(0.0));
+        self.jnt_user_raw.push(joint.user.clone());
 
         // Add DOF arrays with correct kinematic tree linkage
         // MuJoCo semantics: dof_parent forms a tree structure for CRBA/RNE

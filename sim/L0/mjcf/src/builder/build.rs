@@ -26,6 +26,24 @@ impl ModelBuilder {
         let nu = self.actuator_trntype.len();
         let ntendon = self.tendon_type.len();
 
+        // Compute resolved nuser_* values before moving raw arrays.
+        // After finalize_user_data, all inner vecs have uniform length per type.
+        // User data lengths are always small (< 100 typically), so truncation is safe.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let nuser_body = self.body_user_raw.first().map_or(0, |v| v.len()) as i32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let nuser_jnt = self.jnt_user_raw.first().map_or(0, |v| v.len()) as i32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let nuser_geom = self.geom_user_raw.first().map_or(0, |v| v.len()) as i32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let nuser_site = self.site_user_raw.first().map_or(0, |v| v.len()) as i32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let nuser_tendon = self.tendon_user_raw.first().map_or(0, |v| v.len()) as i32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let nuser_actuator = self.actuator_user_raw.first().map_or(0, |v| v.len()) as i32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let nuser_sensor = self.sensor_user_raw.first().map_or(0, |v| v.len()) as i32;
+
         // Pre-compute flex address/count/crosssection tables before self is consumed.
         let flex_edgeadr = compute_flex_address_table(&self.flexedge_flexid, self.nflex);
         let flex_edgenum = compute_flex_count_table(&self.flexedge_flexid, self.nflex);
@@ -382,6 +400,22 @@ impl ModelBuilder {
             // Pre-computed kinematic data (will be populated by compute_ancestors)
             body_ancestor_joints: vec![vec![]; nbody],
             body_ancestor_mask: vec![vec![]; nbody], // Multi-word bitmask, computed by compute_ancestors
+
+            // Per-element user data (§55, Spec C)
+            body_user: self.body_user_raw,
+            jnt_user: self.jnt_user_raw,
+            geom_user: self.geom_user_raw,
+            site_user: self.site_user_raw,
+            tendon_user: self.tendon_user_raw,
+            actuator_user: self.actuator_user_raw,
+            sensor_user: self.sensor_user_raw,
+            nuser_body,
+            nuser_jnt,
+            nuser_geom,
+            nuser_site,
+            nuser_tendon,
+            nuser_actuator,
+            nuser_sensor,
         };
 
         // Pre-compute ancestor lists for O(n) CRBA/RNE
@@ -910,5 +944,602 @@ mod tests {
         assert_eq!(model.actuator_trnid[0][0], 0); // First joint
         assert_eq!(model.actuator_trnid[0][1], usize::MAX); // No refsite
         assert!((model.actuator_gear[0][0] - 100.0).abs() < 1e-10);
+    }
+
+    // ===== Spec C: Per-element user data tests (T1–T18) =====
+
+    /// T1: `<size>` element parsing — multiple elements merge (last-writer-wins).
+    #[test]
+    fn t1_size_element_parsing() {
+        let mjcf = crate::parse_mjcf_str(
+            r#"<mujoco><size nuser_body="5" nuser_geom="3"/>
+            <size nuser_jnt="2"/><worldbody/></mujoco>"#,
+        )
+        .expect("parse");
+        assert_eq!(mjcf.nuser_body, 5);
+        assert_eq!(mjcf.nuser_geom, 3);
+        assert_eq!(mjcf.nuser_jnt, 2);
+        // Others remain at -1 (auto-size sentinel)
+        assert_eq!(mjcf.nuser_site, -1);
+        assert_eq!(mjcf.nuser_tendon, -1);
+        assert_eq!(mjcf.nuser_actuator, -1);
+        assert_eq!(mjcf.nuser_sensor, -1);
+    }
+
+    /// T2: Auto-sizing with world body and padding.
+    #[test]
+    fn t2_auto_sizing_with_world_body_and_padding() {
+        let model = load_model(
+            r#"<mujoco>
+            <worldbody>
+                <body name="b1" pos="0 0 1" user="1 2 3">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+                <body name="b2" pos="0 0 2" user="4 5">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        assert_eq!(model.nuser_body, 3);
+        // World body (index 0): no user attr → zeros
+        assert_eq!(model.body_user[0], vec![0.0, 0.0, 0.0]);
+        // b1: user="1 2 3"
+        assert_eq!(model.body_user[1], vec![1.0, 2.0, 3.0]);
+        // b2: user="4 5" → padded to nuser_body=3
+        assert_eq!(model.body_user[2], vec![4.0, 5.0, 0.0]);
+    }
+
+    /// T2 sub-test: explicit nuser_body=-1 gives identical auto-sizing result.
+    #[test]
+    fn t2_explicit_minus_one_auto_size() {
+        let model = load_model(
+            r#"<mujoco>
+            <size nuser_body="-1"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1" user="1 2 3">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+                <body name="b2" pos="0 0 2" user="4 5">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        assert_eq!(model.nuser_body, 3);
+        assert_eq!(model.body_user[0], vec![0.0, 0.0, 0.0]);
+        assert_eq!(model.body_user[1], vec![1.0, 2.0, 3.0]);
+        assert_eq!(model.body_user[2], vec![4.0, 5.0, 0.0]);
+    }
+
+    /// T3: Explicit nuser_* with zero-padding.
+    #[test]
+    fn t3_explicit_nuser_with_padding() {
+        let model = load_model(
+            r#"<mujoco>
+            <size nuser_geom="5"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" user="1.5 2.5"/>
+                    <geom name="g2" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        assert_eq!(model.nuser_geom, 5);
+        let g1 = model.geom_name_to_id["g1"];
+        let g2 = model.geom_name_to_id["g2"];
+        assert_eq!(model.geom_user[g1], vec![1.5, 2.5, 0.0, 0.0, 0.0]);
+        assert_eq!(model.geom_user[g2], vec![0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// T4: Too-long user data → build error.
+    #[test]
+    fn t4_too_long_user_data_error() {
+        let err = load_model(
+            r#"<mujoco>
+            <size nuser_geom="2"/>
+            <worldbody>
+                <body pos="0 0 1">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1" user="10 20 30 40"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        );
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("nuser_geom"),
+            "error should mention nuser_geom: {msg}"
+        );
+    }
+
+    /// T5: Default class inheritance with full replacement.
+    #[test]
+    fn t5_default_inheritance_full_replacement() {
+        let model = load_model(
+            r#"<mujoco>
+            <default>
+                <joint user="100 200"/>
+            </default>
+            <worldbody>
+                <body pos="0 0 1">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <joint name="j2" type="hinge" axis="0 0 1" user="300"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        let j1 = model.jnt_name_to_id["j1"];
+        let j2 = model.jnt_name_to_id["j2"];
+        assert_eq!(model.nuser_jnt, 2);
+        // j1 inherits default [100, 200]
+        assert_eq!(model.jnt_user[j1], vec![100.0, 200.0]);
+        // j2 overrides with [300] → full replacement, padded to nuser=2
+        assert_eq!(model.jnt_user[j2], vec![300.0, 0.0]);
+    }
+
+    /// T6: No-user-data model — all nuser_*=0, empty inner vecs.
+    #[test]
+    fn t6_no_user_data_model() {
+        let model = load_model(
+            r#"<mujoco>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                    <site pos="0 0 0"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        assert_eq!(model.nuser_body, 0);
+        assert_eq!(model.nuser_jnt, 0);
+        assert_eq!(model.nuser_geom, 0);
+        assert_eq!(model.nuser_site, 0);
+        assert_eq!(model.nuser_tendon, 0);
+        assert_eq!(model.nuser_actuator, 0);
+        assert_eq!(model.nuser_sensor, 0);
+        // Arrays populated but each inner vec is empty
+        assert!(model.body_user.iter().all(|u| u.is_empty()));
+        assert!(model.jnt_user.iter().all(|u| u.is_empty()));
+        assert!(model.geom_user.iter().all(|u| u.is_empty()));
+        assert!(model.site_user.iter().all(|u| u.is_empty()));
+    }
+
+    /// T7: Sensor user data wired to Model.
+    #[test]
+    fn t7_sensor_user_data() {
+        let model = load_model(
+            r#"<mujoco>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <jointpos joint="j1" user="5 10"/>
+            </sensor>
+            </mujoco>"#,
+        )
+        .expect("load");
+        assert_eq!(model.nuser_sensor, 2);
+        assert_eq!(model.sensor_user[0], vec![5.0, 10.0]);
+    }
+
+    /// T8: user="" (not specified → defaults cascade) vs user="0" (data).
+    #[test]
+    fn t8_empty_string_vs_zero() {
+        let model = load_model(
+            r#"<mujoco>
+            <default>
+                <geom user="5 6 7"/>
+            </default>
+            <worldbody>
+                <body pos="0 0 1">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" user=""/>
+                    <geom name="g2" type="sphere" size="0.1" user="0"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        let g1 = model.geom_name_to_id["g1"];
+        let g2 = model.geom_name_to_id["g2"];
+        // g1: user="" = not specified → inherits default [5, 6, 7]
+        assert_eq!(model.geom_user[g1], vec![5.0, 6.0, 7.0]);
+        // g2: user="0" = data → overrides default, padded to nuser=3
+        assert_eq!(model.geom_user[g2], vec![0.0, 0.0, 0.0]);
+    }
+
+    /// T9: Actuator subtype defaults last-write-wins.
+    #[test]
+    fn t9_actuator_subtype_defaults() {
+        let model = load_model(
+            r#"<mujoco>
+            <default>
+                <general user="100"/>
+                <motor user="200"/>
+            </default>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j1"/>
+            </actuator>
+            </mujoco>"#,
+        )
+        .expect("load");
+        assert_eq!(model.nuser_actuator, 1);
+        assert_eq!(model.actuator_user[0], vec![200.0]);
+    }
+
+    /// T10: Transitive 3-level default inheritance.
+    #[test]
+    fn t10_transitive_three_level_inheritance() {
+        let model = load_model(
+            r#"<mujoco>
+            <default>
+                <default class="A">
+                    <joint user="1 2 3"/>
+                    <default class="B">
+                        <default class="C">
+                        </default>
+                    </default>
+                </default>
+            </default>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0" class="C"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        let j1 = model.jnt_name_to_id["j1"];
+        assert_eq!(model.jnt_user[j1], vec![1.0, 2.0, 3.0]);
+    }
+
+    /// T11: All 7 element types with user data.
+    #[test]
+    fn t11_all_seven_element_types() {
+        let model = load_model(
+            r#"<mujoco>
+            <worldbody>
+                <body name="b1" pos="0 0 1" user="10">
+                    <joint name="j1" type="hinge" axis="0 1 0" user="20 21"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" user="30 31 32"/>
+                    <site name="s1" pos="0 0 0" user="40"/>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t1" user="50 51">
+                    <joint joint="j1" coef="1"/>
+                </fixed>
+            </tendon>
+            <actuator>
+                <motor name="a1" joint="j1" user="60 61 62 63"/>
+            </actuator>
+            <sensor>
+                <jointpos joint="j1" user="70 71"/>
+            </sensor>
+            </mujoco>"#,
+        )
+        .expect("load");
+        assert!(model.nuser_body > 0);
+        assert!(model.nuser_jnt > 0);
+        assert!(model.nuser_geom > 0);
+        assert!(model.nuser_site > 0);
+        assert!(model.nuser_tendon > 0);
+        assert!(model.nuser_actuator > 0);
+        assert!(model.nuser_sensor > 0);
+        // Verify values
+        assert_eq!(model.body_user[1], vec![10.0]);
+        let j1 = model.jnt_name_to_id["j1"];
+        assert_eq!(model.jnt_user[j1], vec![20.0, 21.0]);
+        let g1 = model.geom_name_to_id["g1"];
+        assert_eq!(model.geom_user[g1], vec![30.0, 31.0, 32.0]);
+        let s1 = model.site_name_to_id["s1"];
+        assert_eq!(model.site_user[s1], vec![40.0]);
+        assert_eq!(model.tendon_user[0], vec![50.0, 51.0]);
+        assert_eq!(model.actuator_user[0], vec![60.0, 61.0, 62.0, 63.0]);
+        assert_eq!(model.sensor_user[0], vec![70.0, 71.0]);
+    }
+
+    /// T12: Too-long inherited default vs explicit override.
+    #[test]
+    fn t12_inherited_default_too_long_error() {
+        // Sub-test A: inherited default is 3 values, nuser_jnt=2 → error
+        let err = load_model(
+            r#"<mujoco>
+            <size nuser_jnt="2"/>
+            <default>
+                <joint user="1 2 3"/>
+            </default>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        );
+        assert!(
+            err.is_err(),
+            "should fail: inherited user len 3 > nuser_jnt 2"
+        );
+    }
+
+    /// T12 sub-test B: explicit override within nuser limit → success.
+    #[test]
+    fn t12_explicit_override_within_limit() {
+        let model = load_model(
+            r#"<mujoco>
+            <size nuser_jnt="2"/>
+            <default>
+                <joint user="1 2 3"/>
+            </default>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0" user="10 20"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        let j1 = model.jnt_name_to_id["j1"];
+        assert_eq!(model.jnt_user[j1], vec![10.0, 20.0]);
+    }
+
+    /// T13: Flexcomp scale + quat transform.
+    #[test]
+    fn t13_flexcomp_scale_quat_transform() {
+        let mjcf = crate::parse_mjcf_str(
+            r#"<mujoco>
+            <worldbody/>
+            <deformable>
+                <flexcomp type="grid" count="2 2" spacing="1.0"
+                    scale="2 3 1" quat="0.7071068 0 0 0.7071068"/>
+            </deformable>
+            </mujoco>"#,
+        )
+        .expect("parse");
+        // Grid 2x2 with spacing 1.0 generates (row-major): (0,0,0), (1,0,0), (0,1,0), (1,1,0)
+        // Scale (2,3,1): (0,0,0), (2,0,0), (0,3,0), (2,3,0)
+        // Quat w=0.707 z=0.707 → 90° rotation about Z: (x,y,z) → (-y,x,z)
+        // idx0: (0,0,0)→(0,0,0), idx1: (2,0,0)→(0,2,0),
+        // idx2: (0,3,0)→(-3,0,0), idx3: (2,3,0)→(-3,2,0)
+        let flex = &mjcf.flex[0];
+        assert_eq!(flex.vertices.len(), 4);
+        let eps = 1e-6;
+        // Compare in generation order (row-major: iy then ix)
+        let expected = [
+            [0.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [-3.0, 0.0, 0.0],
+            [-3.0, 2.0, 0.0],
+        ];
+        for (i, (v, e)) in flex.vertices.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (v.x - e[0]).abs() < eps && (v.y - e[1]).abs() < eps && (v.z - e[2]).abs() < eps,
+                "vertex {i}: got [{:.6}, {:.6}, {:.6}], expected [{:.6}, {:.6}, {:.6}]",
+                v.x,
+                v.y,
+                v.z,
+                e[0],
+                e[1],
+                e[2]
+            );
+        }
+    }
+
+    /// T14: Flexcomp inertiabox and file parsed.
+    #[test]
+    fn t14_flexcomp_inertiabox_and_file() {
+        let mjcf = crate::parse_mjcf_str(
+            r#"<mujoco>
+            <worldbody/>
+            <deformable>
+                <flexcomp type="grid" count="2 2" spacing="1.0"
+                    inertiabox="0.5" file="mesh.obj"/>
+            </deformable>
+            </mujoco>"#,
+        )
+        .expect("parse");
+        let flex = &mjcf.flex[0];
+        assert!((flex.inertiabox - 0.5).abs() < 1e-10);
+        assert_eq!(flex.flexcomp_file, Some("mesh.obj".to_string()));
+    }
+
+    /// T15: User data physics inertness — user data must not affect simulation.
+    #[test]
+    fn t15_user_data_physics_inertness() {
+        let model_a = load_model(
+            r#"<mujoco>
+            <worldbody>
+                <body pos="0 0 1" user="999 888 777">
+                    <joint name="j1" type="hinge" axis="0 1 0" user="1 2"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.01"/>
+                    <geom type="sphere" size="0.1" user="3 4 5"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <jointpos joint="j1" user="6 7"/>
+            </sensor>
+            <actuator>
+                <motor joint="j1"/>
+            </actuator>
+            </mujoco>"#,
+        )
+        .expect("load A");
+
+        let model_b = load_model(
+            r#"<mujoco>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.01"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <jointpos joint="j1"/>
+            </sensor>
+            <actuator>
+                <motor joint="j1"/>
+            </actuator>
+            </mujoco>"#,
+        )
+        .expect("load B");
+
+        let mut data_a = model_a.make_data();
+        let mut data_b = model_b.make_data();
+        for _ in 0..10 {
+            data_a.ctrl[0] = 1.0;
+            data_b.ctrl[0] = 1.0;
+            data_a.step(&model_a).expect("step A");
+            data_b.step(&model_b).expect("step B");
+        }
+        // qpos and qvel must be bit-identical
+        assert_eq!(data_a.qpos, data_b.qpos, "qpos diverged with user data");
+        assert_eq!(data_a.qvel, data_b.qvel, "qvel diverged with user data");
+    }
+
+    /// T16: childclass propagation with nearest-ancestor rule.
+    #[test]
+    fn t16_childclass_nearest_ancestor() {
+        let model = load_model(
+            r#"<mujoco>
+            <default>
+                <default class="A">
+                    <geom user="1 2"/>
+                </default>
+                <default class="B">
+                    <geom user="10 20 30"/>
+                </default>
+            </default>
+            <worldbody>
+                <body pos="0 0 1" childclass="A">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1"/>
+                    <body pos="0 0 1" childclass="B">
+                        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                        <geom name="g2" type="sphere" size="0.1"/>
+                    </body>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        let g1 = model.geom_name_to_id["g1"];
+        let g2 = model.geom_name_to_id["g2"];
+        assert_eq!(model.nuser_geom, 3);
+        // g1 from class A: [1, 2] padded to nuser=3
+        assert_eq!(model.geom_user[g1], vec![1.0, 2.0, 0.0]);
+        // g2 from class B: [10, 20, 30]
+        assert_eq!(model.geom_user[g2], vec![10.0, 20.0, 30.0]);
+    }
+
+    /// T17: childclass does not shadow root default.
+    #[test]
+    fn t17_childclass_does_not_shadow_root() {
+        let model = load_model(
+            r#"<mujoco>
+            <default>
+                <joint user="1 2 3"/>
+                <default class="myclass">
+                </default>
+            </default>
+            <worldbody>
+                <body pos="0 0 1" childclass="myclass">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        let j1 = model.jnt_name_to_id["j1"];
+        // myclass defines no joint user → inherits root default [1, 2, 3]
+        assert_eq!(model.jnt_user[j1], vec![1.0, 2.0, 3.0]);
+    }
+
+    /// T18: nuser_* validation edge cases.
+    #[test]
+    fn t18_nuser_validation_edge_cases() {
+        // Sub-test A: nuser_geom=-2 → error
+        let err = load_model(
+            r#"<mujoco>
+            <size nuser_geom="-2"/>
+            <worldbody>
+                <body pos="0 0 1">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        );
+        assert!(err.is_err(), "nuser_geom=-2 should be rejected");
+
+        // Sub-test B: nuser_geom=0 with user data → error
+        let err = load_model(
+            r#"<mujoco>
+            <size nuser_geom="0"/>
+            <worldbody>
+                <body pos="0 0 1">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1" user="1 2 3"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        );
+        assert!(
+            err.is_err(),
+            "user data with nuser_geom=0 should be rejected"
+        );
+
+        // Sub-test C: nuser_geom=0 with no user data → success
+        let model = load_model(
+            r#"<mujoco>
+            <size nuser_geom="0"/>
+            <worldbody>
+                <body pos="0 0 1">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            </mujoco>"#,
+        )
+        .expect("load");
+        assert_eq!(model.nuser_geom, 0);
+        assert!(model.geom_user.iter().all(|u| u.is_empty()));
     }
 }

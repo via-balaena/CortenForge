@@ -373,6 +373,22 @@ impl Model {
             cb_act_dyn: None,
             cb_act_gain: None,
             cb_act_bias: None,
+
+            // Per-element user data (§55)
+            body_user: vec![],
+            jnt_user: vec![],
+            geom_user: vec![],
+            site_user: vec![],
+            tendon_user: vec![],
+            actuator_user: vec![],
+            sensor_user: vec![],
+            nuser_body: 0,
+            nuser_jnt: 0,
+            nuser_geom: 0,
+            nuser_site: 0,
+            nuser_tendon: 0,
+            nuser_actuator: 0,
+            nuser_sensor: 0,
         }
     }
 

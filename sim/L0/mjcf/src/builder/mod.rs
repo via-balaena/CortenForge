@@ -42,7 +42,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::defaults::DefaultResolver;
-use crate::error::Result;
+use crate::error::{MjcfError, Result};
 use crate::types::{
     MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfKeyframe, MjcfModel, MjcfOption, MjcfSolverType,
 };
@@ -305,6 +305,13 @@ pub fn model_from_mjcf(
 
     // Process flex deformable bodies (after mass pipeline, before build)
     builder.process_flex_bodies(&mjcf.flex)?;
+
+    // Finalize user data: resolve nuser, validate, pad
+    builder
+        .finalize_user_data(&mjcf)
+        .map_err(|e| ModelConversionError {
+            message: format!("User data finalization failed: {e}"),
+        })?;
 
     // Build final model
     let mut model = builder.build();
@@ -714,6 +721,15 @@ pub struct ModelBuilder {
     pub(crate) flexhinge_vert: Vec<[usize; 4]>,
     pub(crate) flexhinge_angle0: Vec<f64>,
     pub(crate) flexhinge_flexid: Vec<usize>,
+
+    // Per-element user data accumulation (§55, Spec C)
+    pub(crate) body_user_raw: Vec<Vec<f64>>,
+    pub(crate) geom_user_raw: Vec<Vec<f64>>,
+    pub(crate) jnt_user_raw: Vec<Vec<f64>>,
+    pub(crate) site_user_raw: Vec<Vec<f64>>,
+    pub(crate) tendon_user_raw: Vec<Vec<f64>>,
+    pub(crate) actuator_user_raw: Vec<Vec<f64>>,
+    pub(crate) sensor_user_raw: Vec<Vec<f64>>,
 }
 
 impl ModelBuilder {
@@ -769,6 +785,49 @@ impl ModelBuilder {
         // Wire all flags from parsed MJCF to Model bitfields.
         apply_flags(&option.flag, &mut self.disableflags, &mut self.enableflags);
     }
+
+    /// Resolve nuser_* values, validate user data lengths, and pad arrays.
+    fn finalize_user_data(&mut self, mjcf: &MjcfModel) -> Result<()> {
+        finalize_user_type("body", mjcf.nuser_body, &mut self.body_user_raw)?;
+        finalize_user_type("jnt", mjcf.nuser_jnt, &mut self.jnt_user_raw)?;
+        finalize_user_type("geom", mjcf.nuser_geom, &mut self.geom_user_raw)?;
+        finalize_user_type("site", mjcf.nuser_site, &mut self.site_user_raw)?;
+        finalize_user_type("tendon", mjcf.nuser_tendon, &mut self.tendon_user_raw)?;
+        finalize_user_type("actuator", mjcf.nuser_actuator, &mut self.actuator_user_raw)?;
+        finalize_user_type("sensor", mjcf.nuser_sensor, &mut self.sensor_user_raw)?;
+        Ok(())
+    }
+}
+
+/// For a single element type: resolve nuser, validate, pad.
+fn finalize_user_type(type_name: &str, explicit_nuser: i32, raw: &mut [Vec<f64>]) -> Result<()> {
+    if explicit_nuser < -1 {
+        return Err(MjcfError::Unsupported(format!(
+            "nuser_{type_name} must be >= -1, got {explicit_nuser}"
+        )));
+    }
+
+    let nuser = if explicit_nuser >= 0 {
+        let nuser = explicit_nuser as usize;
+        for user in raw.iter() {
+            if user.len() > nuser {
+                return Err(MjcfError::Unsupported(format!(
+                    "user data exceeds nuser_{type_name}={nuser}"
+                )));
+            }
+        }
+        nuser
+    } else {
+        // Auto-size: max length across all elements
+        raw.iter().map(|u| u.len()).max().unwrap_or(0)
+    };
+
+    // Pad all arrays to nuser length
+    for user in raw.iter_mut() {
+        user.resize(nuser, 0.0);
+    }
+
+    Ok(())
 }
 
 /// Convert parsed `MjcfFlag` booleans into Model disable/enable bitfields.

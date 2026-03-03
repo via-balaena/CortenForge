@@ -218,6 +218,11 @@ impl DefaultResolver {
             if result.margin.is_none() {
                 result.margin = defaults.margin;
             }
+            if result.user.is_empty() {
+                if let Some(ref user) = defaults.user {
+                    result.user.clone_from(user);
+                }
+            }
         }
 
         result
@@ -317,6 +322,11 @@ impl DefaultResolver {
             }
             if result.fluidcoef.is_none() {
                 result.fluidcoef = defaults.fluidcoef;
+            }
+            if result.user.is_empty() {
+                if let Some(ref user) = defaults.user {
+                    result.user.clone_from(user);
+                }
             }
         }
 
@@ -513,6 +523,11 @@ impl DefaultResolver {
                     result.gain = g;
                 }
             }
+            if result.user.is_empty() {
+                if let Some(ref user) = defaults.user {
+                    result.user.clone_from(user);
+                }
+            }
         }
 
         result
@@ -559,6 +574,11 @@ impl DefaultResolver {
             // Rendering
             if result.material.is_none() {
                 result.material.clone_from(&defaults.material);
+            }
+            if result.user.is_empty() {
+                if let Some(ref user) = defaults.user {
+                    result.user.clone_from(user);
+                }
             }
         }
 
@@ -628,6 +648,11 @@ impl DefaultResolver {
             // Rendering
             if result.material.is_none() {
                 result.material.clone_from(&defaults.material);
+            }
+            if result.user.is_empty() {
+                if let Some(ref user) = defaults.user {
+                    result.user.clone_from(user);
+                }
             }
         }
 
@@ -818,6 +843,7 @@ impl DefaultResolver {
                 solimpfriction: c.solimpfriction.or(p.solimpfriction),
                 actuatorgravcomp: c.actuatorgravcomp.or(p.actuatorgravcomp),
                 margin: c.margin.or(p.margin),
+                user: c.user.clone().or_else(|| p.user.clone()),
             }),
         }
     }
@@ -858,6 +884,7 @@ impl DefaultResolver {
                 material: c.material.clone().or_else(|| p.material.clone()),
                 fluidshape: c.fluidshape.or(p.fluidshape),
                 fluidcoef: c.fluidcoef.or(p.fluidcoef),
+                user: c.user.clone().or_else(|| p.user.clone()),
             }),
         }
     }
@@ -910,6 +937,7 @@ impl DefaultResolver {
                 fvmax: c.fvmax.or(p.fvmax),
                 // Adhesion-specific
                 gain: c.gain.or(p.gain),
+                user: c.user.clone().or_else(|| p.user.clone()),
             }),
         }
     }
@@ -938,6 +966,7 @@ impl DefaultResolver {
                 solimpfriction: c.solimpfriction.or(p.solimpfriction),
                 margin: c.margin.or(p.margin),
                 material: c.material.clone().or_else(|| p.material.clone()),
+                user: c.user.clone().or_else(|| p.user.clone()),
             }),
         }
     }
@@ -992,6 +1021,7 @@ impl DefaultResolver {
                 xyaxes: c.xyaxes.or(p.xyaxes),
                 zaxis: c.zaxis.or(p.zaxis),
                 material: c.material.clone().or_else(|| p.material.clone()),
+                user: c.user.clone().or_else(|| p.user.clone()),
             }),
         }
     }

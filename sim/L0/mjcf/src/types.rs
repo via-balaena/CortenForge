@@ -618,6 +618,8 @@ pub struct MjcfJointDefaults {
     pub actuatorgravcomp: Option<bool>,
     /// Joint limit activation margin.
     pub margin: Option<f64>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default geom parameters.
@@ -678,6 +680,8 @@ pub struct MjcfGeomDefaults {
     pub fluidshape: Option<FluidShape>,
     /// Fluid coefficients `[C_blunt, C_slender, C_ang, C_K, C_M]`.
     pub fluidcoef: Option<[f64; 5]>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default actuator parameters.
@@ -761,6 +765,8 @@ pub struct MjcfActuatorDefaults {
     // Adhesion-specific defaults
     /// Gain in force units for adhesion.
     pub gain: Option<f64>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default tendon parameters.
@@ -799,6 +805,8 @@ pub struct MjcfTendonDefaults {
     pub margin: Option<f64>,
     /// Default material asset name.
     pub material: Option<String>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default sensor parameters.
@@ -971,6 +979,8 @@ pub struct MjcfSiteDefaults {
     pub zaxis: Option<Vector3<f64>>,
     /// Default material asset name.
     pub material: Option<String>,
+    /// Per-element user data for default class inheritance.
+    pub user: Option<Vec<f64>>,
 }
 
 /// Default pair parameters (from `<default><pair .../>`).
@@ -1234,6 +1244,8 @@ pub struct MjcfGeom {
     pub fluidshape: Option<FluidShape>,
     /// Fluid coefficients `[C_blunt, C_slender, C_ang, C_K, C_M]`.
     pub fluidcoef: Option<[f64; 5]>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfGeom {
@@ -1269,6 +1281,7 @@ impl Default for MjcfGeom {
             material: None,
             fluidshape: None,
             fluidcoef: None,
+            user: Vec::new(),
         }
     }
 }
@@ -1449,6 +1462,8 @@ pub struct MjcfJoint {
     pub margin: Option<f64>,
     /// Body this joint belongs to (set during parsing).
     pub body: Option<String>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfJoint {
@@ -1475,6 +1490,7 @@ impl Default for MjcfJoint {
             actuatorgravcomp: None,
             margin: None,
             body: None,
+            user: Vec::new(),
         }
     }
 }
@@ -1554,6 +1570,8 @@ pub struct MjcfSite {
     pub group: Option<i32>,
     /// Material asset name (for rendering).
     pub material: Option<String>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfSite {
@@ -1572,6 +1590,7 @@ impl Default for MjcfSite {
             rgba: None,
             group: None,
             material: None,
+            user: Vec::new(),
         }
     }
 }
@@ -2248,6 +2267,8 @@ pub struct MjcfBody {
     pub sleep: Option<String>,
     /// Gravity compensation factor (0=none, 1=full, >1=over-compensate, <0=amplify gravity).
     pub gravcomp: Option<f64>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfBody {
@@ -2269,6 +2290,7 @@ impl Default for MjcfBody {
             mocap: false,
             sleep: None,
             gravcomp: None,
+            user: Vec::new(),
         }
     }
 }
@@ -2530,6 +2552,8 @@ pub struct MjcfActuator {
     /// Dynamics parameters (up to 3 elements, zero-padded).
     /// None means use default [1, 0, 0]. Only parsed for `<general>`.
     pub dynprm: Option<Vec<f64>>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfActuator {
@@ -2587,6 +2611,7 @@ impl Default for MjcfActuator {
             gainprm: None,
             biasprm: None,
             dynprm: None,
+            user: Vec::new(),
         }
     }
 }
@@ -2792,6 +2817,8 @@ pub struct MjcfTendon {
     pub path_elements: Vec<SpatialPathElement>,
     /// Joint coefficients for fixed tendons: (joint_name, coefficient).
     pub joints: Vec<(String, f64)>,
+    /// Per-element user data from `user="..."` attribute.
+    pub user: Vec<f64>,
 }
 
 impl Default for MjcfTendon {
@@ -2817,6 +2844,7 @@ impl Default for MjcfTendon {
             springlength: None,
             path_elements: Vec::new(),
             joints: Vec::new(),
+            user: Vec::new(),
         }
     }
 }
@@ -3747,6 +3775,16 @@ pub struct MjcfFlex {
     /// Fallback for element-based mass lumping when `mass` is `None`.
     pub density: f64,
 
+    // --- Flexcomp attributes (DT-88) ---
+    /// Flexcomp inertia box size (scalar). Used for vertex inertia calculation.
+    pub inertiabox: f64,
+    /// Flexcomp non-uniform scale applied to generated vertices.
+    pub flexcomp_scale: Option<Vector3<f64>>,
+    /// Flexcomp rotation quaternion applied to generated vertices (after scale).
+    pub flexcomp_quat: Option<UnitQuaternion<f64>>,
+    /// Flexcomp mesh/grid file path.
+    pub flexcomp_file: Option<String>,
+
     // --- Structural data arrays ---
     /// Vertex positions.
     pub vertices: Vec<Vector3<f64>>,
@@ -3793,6 +3831,11 @@ impl Default for MjcfFlex {
             // Internal
             mass: None,
             density: 1000.0,
+            // Flexcomp attributes (DT-88)
+            inertiabox: 0.0,
+            flexcomp_scale: None,
+            flexcomp_quat: None,
+            flexcomp_file: None,
             // Structural data
             vertices: Vec::new(),
             elements: Vec::new(),
@@ -3836,6 +3879,21 @@ pub struct MjcfModel {
     /// Keyframes for quick state reset.
     #[cfg_attr(feature = "serde", serde(default))]
     pub keyframes: Vec<MjcfKeyframe>,
+    /// Per-element user data sizes from `<size>` element.
+    /// Number of user data floats per body. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_body: i32,
+    /// Number of user data floats per joint. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_jnt: i32,
+    /// Number of user data floats per geom. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_geom: i32,
+    /// Number of user data floats per site. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_site: i32,
+    /// Number of user data floats per tendon. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_tendon: i32,
+    /// Number of user data floats per actuator. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_actuator: i32,
+    /// Number of user data floats per sensor. -1 = auto-size (default), >= 0 = explicit.
+    pub nuser_sensor: i32,
 }
 
 impl Default for MjcfModel {
@@ -3856,6 +3914,13 @@ impl Default for MjcfModel {
             skins: Vec::new(),
             flex: Vec::new(),
             keyframes: Vec::new(),
+            nuser_body: -1,
+            nuser_jnt: -1,
+            nuser_geom: -1,
+            nuser_site: -1,
+            nuser_tendon: -1,
+            nuser_actuator: -1,
+            nuser_sensor: -1,
         }
     }
 }

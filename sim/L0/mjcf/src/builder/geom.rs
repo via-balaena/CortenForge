@@ -209,6 +209,7 @@ impl ModelBuilder {
             size,
         );
         self.geom_fluid.push(fluid);
+        self.geom_user_raw.push(geom.user.clone());
 
         Ok(geom_id)
     }
@@ -274,6 +275,7 @@ impl ModelBuilder {
         let default_rgba = [0.5, 0.5, 0.5, 1.0];
         self.site_rgba
             .push(site.rgba.map_or(default_rgba, |v| [v.x, v.y, v.z, v.w]));
+        self.site_user_raw.push(site.user.clone());
 
         Ok(site_id)
     }
@@ -561,6 +563,7 @@ mod tests {
             material: None,
             fluidshape: None,
             fluidcoef: None,
+            user: vec![],
         };
 
         let inertia = compute_geom_inertia(&geom, None);

@@ -899,6 +899,36 @@ pub struct Model {
     pub cb_act_gain: Option<super::callbacks::CbActGain>,
     /// User actuator bias callback: called for `BiasType::User`.
     pub cb_act_bias: Option<super::callbacks::CbActBias>,
+
+    // ==================== Per-element User Data (§55) ====================
+    /// Per-body user data. Each inner vec has length nuser_body.
+    pub body_user: Vec<Vec<f64>>,
+    /// Per-joint user data. Each inner vec has length nuser_jnt.
+    pub jnt_user: Vec<Vec<f64>>,
+    /// Per-geom user data. Each inner vec has length nuser_geom.
+    pub geom_user: Vec<Vec<f64>>,
+    /// Per-site user data. Each inner vec has length nuser_site.
+    pub site_user: Vec<Vec<f64>>,
+    /// Per-tendon user data. Each inner vec has length nuser_tendon.
+    pub tendon_user: Vec<Vec<f64>>,
+    /// Per-actuator user data. Each inner vec has length nuser_actuator.
+    pub actuator_user: Vec<Vec<f64>>,
+    /// Per-sensor user data. Each inner vec has length nuser_sensor.
+    pub sensor_user: Vec<Vec<f64>>,
+    /// Number of user data values per body (resolved, >= 0 after build).
+    pub nuser_body: i32,
+    /// Number of user data values per joint.
+    pub nuser_jnt: i32,
+    /// Number of user data values per geom.
+    pub nuser_geom: i32,
+    /// Number of user data values per site.
+    pub nuser_site: i32,
+    /// Number of user data values per tendon.
+    pub nuser_tendon: i32,
+    /// Number of user data values per actuator.
+    pub nuser_actuator: i32,
+    /// Number of user data values per sensor.
+    pub nuser_sensor: i32,
 }
 
 // ============================================================================
