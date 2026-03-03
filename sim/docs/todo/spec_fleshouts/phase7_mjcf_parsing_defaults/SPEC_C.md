@@ -41,7 +41,7 @@ refine the umbrella's original scope:
 
 | Umbrella claim | MuJoCo 3.5.0 reality | Action |
 |----------------|----------------------|--------|
-| §55: 7 element types for user data | Confirmed: body, geom, joint, site, tendon, actuator, sensor. MuJoCo also supports `cam_user`/`nuser_cam` (camera). | **Camera out of scope** per umbrella — track as DT-123 |
+| §55: 7 element types for user data | Confirmed: body, geom, joint, site, tendon, actuator, sensor. MuJoCo also supports `cam_user`/`nuser_cam` (camera). | **Camera out of scope** per umbrella — track as DT-126 |
 | §55: `Vec<Vec<f64>>` storage | MuJoCo uses flat `nuser_* × count` stride storage. `Vec<Vec<f64>>` is conformance-equivalent when all inner vecs have uniform length `nuser_*`. | **In scope — conformance-equivalent** |
 | §55: Default class inheritance | MuJoCo supports user defaults on 5 of 7 types: joint, geom, site, tendon, actuator. Body and sensor do NOT support `<default><body>` or `<default><sensor>` (schema violation). CortenForge already has `MjcfSensorDefaults.user` — do not modify. | **5 defaults structs need user field** |
 | DT-88: `<flexcomp>` attributes | `<flexcomp>` NOT recognized by MuJoCo 3.5.0 binary. dm_control schema includes it. | **Documentation fidelity only** |
@@ -1435,7 +1435,7 @@ cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests
 ## Out of Scope
 
 - **Camera user data** (`cam_user`/`nuser_cam`) — Umbrella lists 7 types;
-  camera is the 8th. Track as DT-123 if needed. *Conformance impact:
+  camera is the 8th. Track as DT-126 if needed. *Conformance impact:
   minor — camera user data rarely used.*
 
 - **Flexcomp pos/axisangle/xyaxis/zaxis/euler/origin** — Umbrella lists

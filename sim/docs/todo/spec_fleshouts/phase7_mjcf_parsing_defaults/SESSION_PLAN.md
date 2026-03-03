@@ -183,7 +183,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 4: Spec A spec (Defaults Completeness)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — write Spec A spec.
@@ -521,7 +521,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase7_mjcf_parsing_defaults/SPEC_C_REVIE
 
 ## Session 17: Spec C review — execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — execute Spec C review.
@@ -568,4 +568,4 @@ Present the Review Verdict (section 10) to the user when done.
 | 14 | Spec C spec | Done | `0709416` |
 | 15 | Spec C implementation | Done | `05ee0a5` |
 | 16 | Spec C review — create document | Done | `b56b372` |
-| 17 | Spec C review — execute | Pending | |
+| 17 | Spec C review — execute | Done | |
