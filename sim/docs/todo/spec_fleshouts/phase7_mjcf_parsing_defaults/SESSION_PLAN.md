@@ -567,5 +567,5 @@ Present the Review Verdict (section 10) to the user when done.
 | 13 | Spec C rubric | Done | 0290ced |
 | 14 | Spec C spec | Done | `0709416` |
 | 15 | Spec C implementation | Done | `05ee0a5` |
-| 16 | Spec C review — create document | Done | |
+| 16 | Spec C review — create document | Done | `b56b372` |
 | 17 | Spec C review — execute | Pending | |
