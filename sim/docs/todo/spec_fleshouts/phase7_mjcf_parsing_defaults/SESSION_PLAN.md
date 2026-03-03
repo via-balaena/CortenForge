@@ -472,7 +472,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 15: Spec C implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 7 MJCF Parsing & Defaults Gaps — implement Spec C.
@@ -566,6 +566,6 @@ Present the Review Verdict (section 10) to the user when done.
 | 12 | Spec B review — execute | Done | |
 | 13 | Spec C rubric | Done | 0290ced |
 | 14 | Spec C spec | Done | `0709416` |
-| 15 | Spec C implementation | Pending | |
+| 15 | Spec C implementation | Done | `05ee0a5` |
 | 16 | Spec C review — create document | Pending | |
 | 17 | Spec C review — execute | Pending | |
