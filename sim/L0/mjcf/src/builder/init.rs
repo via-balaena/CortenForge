@@ -167,6 +167,8 @@ impl ModelBuilder {
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
             sleep_tolerance: 1e-4,
+            sdf_iterations: 10,
+            sdf_initpoints: 40,
 
             qpos0_values: vec![],
             qpos_spring_values: vec![],

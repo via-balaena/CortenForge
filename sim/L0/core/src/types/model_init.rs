@@ -341,6 +341,8 @@ impl Model {
             o_solref: [0.02, 1.0],
             o_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
             o_friction: [1.0, 1.0, 0.005, 0.0001, 0.0001],
+            sdf_iterations: 10, // MuJoCo default for SDF Newton iterations
+            sdf_initpoints: 40, // MuJoCo default for SDF initial sample points
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
 

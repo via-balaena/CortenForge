@@ -47,8 +47,8 @@ each forward pass.
 
 ---
 
-### 57. `sdf_iterations` / `sdf_initpoints` Option Attributes
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~57. `sdf_iterations` / `sdf_initpoints` Option Attributes~~
+**Status:** ✅ Done (Phase 9, Session 2) | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 

@@ -395,6 +395,15 @@ pub struct MjcfOption {
     /// Iterations for convex collision detection (default: 50).
     pub ccd_iterations: usize,
 
+    /// Maximum Newton iterations for SDF closest-surface-point refinement (default: 10).
+    /// MuJoCo ref: `mjOption.sdf_iterations` in `mjmodel.h`.
+    pub sdf_iterations: usize,
+
+    /// Number of initial sample points for SDF collision search (default: 40).
+    /// Controls sampling density on non-SDF geom surfaces during SDF contact detection.
+    /// MuJoCo ref: `mjOption.sdf_initpoints` in `mjmodel.h`.
+    pub sdf_initpoints: usize,
+
     // ========== Contact Configuration ==========
     /// Friction cone type (default: Pyramidal).
     pub cone: MjcfConeType,
@@ -481,6 +490,8 @@ impl Default for MjcfOption {
             noslip_iterations: 0,
             noslip_tolerance: 1e-6,
             ccd_iterations: 50,
+            sdf_iterations: 10,
+            sdf_initpoints: 40,
 
             // Contact configuration
             cone: MjcfConeType::default(),

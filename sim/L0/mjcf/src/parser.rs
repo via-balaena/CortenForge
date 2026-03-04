@@ -253,6 +253,12 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(ccd) = parse_int_attr(e, "ccd_iterations") {
         option.ccd_iterations = ccd.max(0) as usize;
     }
+    if let Some(sdf_iter) = parse_int_attr(e, "sdf_iterations") {
+        option.sdf_iterations = sdf_iter.max(0) as usize;
+    }
+    if let Some(sdf_init) = parse_int_attr(e, "sdf_initpoints") {
+        option.sdf_initpoints = sdf_init.max(0) as usize;
+    }
 
     // Contact configuration
     if let Some(cone) = get_attribute_opt(e, "cone") {
@@ -4032,6 +4038,8 @@ mod tests {
                     ls_iterations="100"
                     noslip_iterations="10"
                     ccd_iterations="25"
+                    sdf_iterations="15"
+                    sdf_initpoints="60"
                     cone="elliptic"
                     jacobian="sparse"
                     impratio="2.0"
@@ -4062,6 +4070,8 @@ mod tests {
         assert_eq!(opt.ls_iterations, 100);
         assert_eq!(opt.noslip_iterations, 10);
         assert_eq!(opt.ccd_iterations, 25);
+        assert_eq!(opt.sdf_iterations, 15);
+        assert_eq!(opt.sdf_initpoints, 60);
 
         // Contact configuration
         assert_eq!(opt.cone, MjcfConeType::Elliptic);
@@ -4082,6 +4092,87 @@ mod tests {
 
         // Overrides
         assert_relative_eq!(opt.o_margin, 0.002, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_sdf_option_defaults() {
+        // When sdf_iterations and sdf_initpoints are not specified, defaults apply.
+        let xml = r#"
+            <mujoco model="test">
+                <option timestep="0.001"/>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(
+            model.option.sdf_iterations, 10,
+            "sdf_iterations default should be 10"
+        );
+        assert_eq!(
+            model.option.sdf_initpoints, 40,
+            "sdf_initpoints default should be 40"
+        );
+    }
+
+    #[test]
+    fn test_sdf_option_nondefault_parsing() {
+        // Verify non-default sdf_iterations and sdf_initpoints parse correctly.
+        let xml = r#"
+            <mujoco model="test">
+                <option sdf_iterations="20" sdf_initpoints="80"/>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.option.sdf_iterations, 20);
+        assert_eq!(model.option.sdf_initpoints, 80);
+    }
+
+    #[test]
+    fn test_sdf_options_reach_model() {
+        // Verify sdf_iterations and sdf_initpoints flow through the full
+        // parse → build → Model pipeline.
+        use crate::builder::model_from_mjcf;
+
+        // Non-default values
+        let xml = r#"
+            <mujoco model="test">
+                <option sdf_iterations="7" sdf_initpoints="50"/>
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse");
+        let model = model_from_mjcf(&mjcf, None).expect("should build");
+        assert_eq!(model.sdf_iterations, 7, "sdf_iterations should reach Model");
+        assert_eq!(
+            model.sdf_initpoints, 50,
+            "sdf_initpoints should reach Model"
+        );
+
+        // Default values
+        let xml_defaults = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf_d = parse_mjcf_str(xml_defaults).expect("should parse");
+        let model_d = model_from_mjcf(&mjcf_d, None).expect("should build");
+        assert_eq!(
+            model_d.sdf_iterations, 10,
+            "default sdf_iterations should be 10"
+        );
+        assert_eq!(
+            model_d.sdf_initpoints, 40,
+            "default sdf_initpoints should be 40"
+        );
     }
 
     #[test]

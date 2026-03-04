@@ -47,7 +47,7 @@ overlaps. Each task closes a specific MuJoCo conformance gap.
 
 | Task | Description | Deliverable | Status | Rationale |
 |------|-------------|-------------|--------|-----------|
-| §57 | `sdf_iterations`/`sdf_initpoints` from `<option>` — wire to SDF solver | **T1** | Pending | Pure plumbing: parse 2 int attributes, thread to existing SDF functions |
+| §57 | `sdf_iterations`/`sdf_initpoints` from `<option>` — wire to SDF solver | **T1** | Done | Pure plumbing: parse 2 int attributes, thread to existing SDF functions |
 | §65 | Mesh convex hull auto-computation (Quickhull) | **Spec A** | Pending | Foundational: convex hull is consumed by Spec B (inertia) and collision dispatch |
 | §43 | Mesh inertia modes (exact/shell/convex/legacy) | **Spec B** | Pending | Depends on Spec A for `Convex` mode |
 | §54 | Missing heightfield collision pairs (hfield-mesh, hfield-plane, hfield-hfield) | **Spec C** | Pending | Independent runtime collision pairs |

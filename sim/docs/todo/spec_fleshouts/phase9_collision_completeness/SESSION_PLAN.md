@@ -135,7 +135,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 2: T1 item (§57 SDF options)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- implement T1 item.

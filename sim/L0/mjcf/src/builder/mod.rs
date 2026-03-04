@@ -587,6 +587,8 @@ pub struct ModelBuilder {
     pub(crate) integrator: Integrator,
     pub(crate) solver_type: SolverType,
     pub(crate) sleep_tolerance: f64,
+    pub(crate) sdf_iterations: usize,
+    pub(crate) sdf_initpoints: usize,
 
     // qpos0 values (built as we process joints)
     pub(crate) qpos0_values: Vec<f64>,
@@ -767,6 +769,8 @@ impl ModelBuilder {
         self.density = option.density;
         self.viscosity = option.viscosity;
         self.sleep_tolerance = option.sleep_tolerance;
+        self.sdf_iterations = option.sdf_iterations;
+        self.sdf_initpoints = option.sdf_initpoints;
         self.disableactuator = option.actuatorgroupdisable;
 
         // S10-stub: Wire override parameters from parsed <option>.
