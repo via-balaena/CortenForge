@@ -535,7 +535,7 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 | 3 | Spec A rubric | **Done** | `8db9545` |
 | 4 | Spec A spec | **Done** | `32b966f` |
 | 5 | Spec A implementation | **Done** | `ac54666` |
-| 6 | Spec A review -- create document | | |
+| 6 | Spec A review -- create document | **Done** | `5ae575a` |
 | 7 | Spec A review -- execute | | |
 | 8 | Spec B rubric | | |
 | 9 | Spec B spec | | |
