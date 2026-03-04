@@ -677,10 +677,10 @@ pub struct Model {
     /// Solver parameters for tendon limit constraints (2 elements per tendon).
     /// \[0\] = timeconst (>0) or -stiffness (≤0), \[1\] = dampratio or -damping.
     /// Default: \[0.02, 1.0\] (standard MuJoCo solref).
-    pub tendon_solref: Vec<[f64; 2]>,
+    pub tendon_solref_lim: Vec<[f64; 2]>,
     /// Impedance parameters for tendon limit constraints (5 elements per tendon).
     /// [d_min, d_max, width, midpoint, power]. Default: [0.9, 0.95, 0.001, 0.5, 2.0].
-    pub tendon_solimp: Vec<[f64; 5]>,
+    pub tendon_solimp_lim: Vec<[f64; 5]>,
     /// Velocity-dependent friction loss per tendon (N).
     /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
     pub tendon_frictionloss: Vec<f64>,

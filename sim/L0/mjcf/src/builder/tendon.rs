@@ -56,10 +56,10 @@ impl ModelBuilder {
             let default_rgba = [0.5, 0.5, 0.5, 1.0];
             self.tendon_rgba
                 .push(tendon.rgba.map_or(default_rgba, |v| [v.x, v.y, v.z, v.w]));
-            self.tendon_solref
-                .push(tendon.solref.unwrap_or(DEFAULT_SOLREF));
-            self.tendon_solimp
-                .push(tendon.solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.tendon_solref_lim
+                .push(tendon.solref_limit.unwrap_or(DEFAULT_SOLREF));
+            self.tendon_solimp_lim
+                .push(tendon.solimp_limit.unwrap_or(DEFAULT_SOLIMP));
             // S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
             self.tendon_lengthspring.push(match tendon.springlength {
                 Some(pair) => pair.into(),

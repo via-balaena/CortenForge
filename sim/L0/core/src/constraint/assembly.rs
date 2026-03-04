@@ -530,8 +530,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             let (limit_min, limit_max) = model.tendon_range[t];
             let length = data.ten_length[t];
             let vel = data.ten_velocity[t];
-            let sr = model.tendon_solref[t];
-            let si = model.tendon_solimp[t];
+            let sr = model.tendon_solref_lim[t];
+            let si = model.tendon_solimp_lim[t];
 
             // MuJoCo convention: dist > 0 = satisfied, dist < 0 = violated.
             // Tendon limits follow the same pattern as joint limits.

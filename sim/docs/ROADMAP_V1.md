@@ -209,7 +209,7 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | DT-23 | 10c | T2 | Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`) |
 | DT-25 | 10c | T3 | Deformable-rigid friction cone projection (currently normal-only) |
 | DT-28 | 10d | T2 | Ball/free joints in fixed tendons — validation + qvel DOF index mapping |
-| DT-32 | 10d | T2 | Per-tendon `solref_limit`/`solimp_limit` constraint solver params |
+| ~~DT-32~~ | 10d | T2 | ~~Per-tendon `solref_limit`/`solimp_limit` constraint solver params~~ — **Done** (Phase 8: naming conformance) |
 | DT-33 | 10d | T2 | Tendon `margin` attribute for limit activation distance. Phase 7 Spec B (§64a) implemented joint `jnt_margin`; tendon limit sites (`assembly.rs:148,152,540,564`) still hardcode `< 0.0`. |
 | DT-39 | 10e | T2 | Body-weight diagonal approximation (`diagApprox`) |
 
