@@ -79,6 +79,7 @@ impl Model {
             body_mocapid: vec![None],    // world body
             body_gravcomp: vec![0.0],    // world body has no gravcomp
             ngravcomp: 0,
+            body_invweight0: vec![[0.0; 2]], // world body
 
             // Joints (empty)
             jnt_type: vec![],
@@ -109,6 +110,7 @@ impl Model {
             dof_frictionloss: vec![],
             dof_solref: vec![],
             dof_solimp: vec![],
+            dof_invweight0: vec![],
 
             // Sparse LDL CSR metadata (empty — populated by compute_qld_csr_metadata)
             qLD_rowadr: vec![],
@@ -281,8 +283,9 @@ impl Model {
             tendon_adr: vec![],
             tendon_name: vec![],
             tendon_type: vec![],
-            tendon_solref: vec![],
-            tendon_solimp: vec![],
+            tendon_solref_lim: vec![],
+            tendon_solimp_lim: vec![],
+            tendon_margin: vec![],
             tendon_frictionloss: vec![],
             tendon_solref_fri: vec![],
             tendon_solimp_fri: vec![],
@@ -290,6 +293,7 @@ impl Model {
             tendon_rgba: vec![],
             tendon_treenum: vec![],
             tendon_tree: vec![],
+            tendon_invweight0: vec![],
             wrap_type: vec![],
             wrap_objid: vec![],
             wrap_prm: vec![],
@@ -319,19 +323,20 @@ impl Model {
             viscosity: 0.0, // No fluid by default
             solver_iterations: 100,
             solver_tolerance: 1e-8,
-            impratio: 1.0,              // MuJoCo default
-            regularization: 1e-6,       // PGS constraint softness
-            friction_smoothing: 1000.0, // tanh transition sharpness
-            cone: 0,                    // Pyramidal friction cone (MuJoCo default)
-            stat_meaninertia: 1.0,      // Default (computed at model build from CRBA)
-            ls_iterations: 50,          // Newton line search iterations
-            ls_tolerance: 0.01,         // Newton line search gradient tolerance
-            noslip_iterations: 0,       // Default: no noslip post-processing
-            noslip_tolerance: 1e-6,     // Default tolerance for noslip convergence
-            disableflags: 0,            // Nothing disabled
-            enableflags: 0,             // MuJoCo default: all enable bits clear
-            disableactuator: 0,         // No actuator groups disabled
-            actuator_group: Vec::new(), // All actuators in group 0 (empty for empty model)
+            impratio: 1.0,                // MuJoCo default
+            regularization: 1e-6,         // PGS constraint softness
+            friction_smoothing: 1000.0,   // tanh transition sharpness
+            cone: 0,                      // Pyramidal friction cone (MuJoCo default)
+            stat_meaninertia: 1.0,        // Default (computed at model build from CRBA)
+            ls_iterations: 50,            // Newton line search iterations
+            ls_tolerance: 0.01,           // Newton line search gradient tolerance
+            noslip_iterations: 0,         // Default: no noslip post-processing
+            noslip_tolerance: 1e-6,       // Default tolerance for noslip convergence
+            diagapprox_bodyweight: false, // Default: exact M⁻¹ solve
+            disableflags: 0,              // Nothing disabled
+            enableflags: 0,               // MuJoCo default: all enable bits clear
+            disableactuator: 0,           // No actuator groups disabled
+            actuator_group: Vec::new(),   // All actuators in group 0 (empty for empty model)
             o_margin: 0.0,
             o_solref: [0.02, 1.0],
             o_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -848,6 +853,127 @@ impl Model {
                         self.implicit_damping[dof_idx] = self.dof_damping[dof_idx];
                         self.implicit_springref[dof_idx] = 0.0;
                     }
+                }
+            }
+        }
+    }
+
+    /// Compute `body_invweight0`, `dof_invweight0`, and `tendon_invweight0`.
+    ///
+    /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
+    ///
+    /// - `body_invweight0[b][0]` = 1 / (subtree mass at body b)
+    /// - `body_invweight0[b][1]` = 1 / (subtree rotational inertia trace at body b)
+    /// - `dof_invweight0[d]` = translational or rotational component based on joint type
+    /// - `tendon_invweight0[t]` = Σ(coef² * dof_invweight0\[dof\]) for fixed tendons
+    ///
+    /// Must be called after body_subtreemass, body_inertia, dof_body, dof_jnt,
+    /// jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
+    pub fn compute_invweight0(&mut self) {
+        use crate::types::{TendonType, WrapType};
+        const MIN_VAL: f64 = 1e-15; // mjMINVAL
+
+        // --- body_invweight0 ---
+        // Compute subtree mass and inertia trace via bottom-up accumulation.
+        // This also populates body_subtreemass for use elsewhere.
+        let mut subtree_mass = self.body_mass.clone();
+        let mut subtree_inertia_trace: Vec<f64> = self
+            .body_inertia
+            .iter()
+            .map(|inertia| inertia.x + inertia.y + inertia.z)
+            .collect();
+        for b in (1..self.nbody).rev() {
+            let parent = self.body_parent[b];
+            subtree_mass[parent] += subtree_mass[b];
+            subtree_inertia_trace[parent] += subtree_inertia_trace[b];
+        }
+        self.body_subtreemass = subtree_mass;
+
+        self.body_invweight0 = self
+            .body_subtreemass
+            .iter()
+            .zip(subtree_inertia_trace.iter())
+            .map(|(&mass, &inertia)| [1.0 / mass.max(MIN_VAL), 1.0 / inertia.max(MIN_VAL)])
+            .collect();
+
+        // --- dof_invweight0 ---
+        self.dof_invweight0 = vec![0.0; self.nv];
+        for dof in 0..self.nv {
+            let body = self.dof_body[dof];
+            let jnt_id = self.dof_jnt[dof];
+            let jnt_type = self.jnt_type[jnt_id];
+            let offset = dof - self.jnt_dof_adr[jnt_id];
+
+            let is_translational = match jnt_type {
+                MjJointType::Slide => true,
+                MjJointType::Hinge | MjJointType::Ball => false,
+                MjJointType::Free => offset < 3, // DOFs 0,1,2 are translational
+            };
+
+            self.dof_invweight0[dof] = if is_translational {
+                self.body_invweight0[body][0] // translational
+            } else {
+                self.body_invweight0[body][1] // rotational
+            };
+        }
+
+        // --- tendon_invweight0 ---
+        self.tendon_invweight0 = vec![0.0; self.ntendon];
+        for t in 0..self.ntendon {
+            let adr = self.tendon_adr[t];
+            let num = self.tendon_num[t];
+            match self.tendon_type[t] {
+                TendonType::Fixed => {
+                    // Sum coef² * dof_invweight0[dof] for each joint in the tendon.
+                    let mut w = 0.0;
+                    for wr in adr..(adr + num) {
+                        if self.wrap_type[wr] == WrapType::Joint {
+                            let dof_adr = self.wrap_objid[wr];
+                            if dof_adr < self.nv {
+                                let coef = self.wrap_prm[wr];
+                                w += coef * coef * self.dof_invweight0[dof_adr];
+                            }
+                        }
+                    }
+                    self.tendon_invweight0[t] = w.max(MIN_VAL);
+                }
+                TendonType::Spatial => {
+                    // Spatial tendons: use average translational invweight of endpoint bodies.
+                    // This is an approximation — MuJoCo uses a similar heuristic.
+                    let mut w = 0.0;
+                    let mut count = 0;
+                    for wr in adr..(adr + num) {
+                        let body_opt = match self.wrap_type[wr] {
+                            WrapType::Site => {
+                                let sid = self.wrap_objid[wr];
+                                if sid < self.site_body.len() {
+                                    Some(self.site_body[sid])
+                                } else {
+                                    None
+                                }
+                            }
+                            WrapType::Geom => {
+                                let gid = self.wrap_objid[wr];
+                                if gid < self.geom_body.len() {
+                                    Some(self.geom_body[gid])
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(bid) = body_opt {
+                            if bid > 0 {
+                                w += self.body_invweight0[bid][0];
+                                count += 1;
+                            }
+                        }
+                    }
+                    self.tendon_invweight0[t] = if count > 0 {
+                        (w / f64::from(count)).max(MIN_VAL)
+                    } else {
+                        MIN_VAL
+                    };
                 }
             }
         }

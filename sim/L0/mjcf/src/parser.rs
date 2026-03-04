@@ -971,16 +971,16 @@ fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
     defaults.group = parse_int_attr(e, "group");
 
     // Solver parameters
-    if let Some(solref) = get_attribute_opt(e, "solref") {
+    if let Some(solref) = get_attribute_opt(e, "solreflimit") {
         let parts = parse_float_array(&solref)?;
         if parts.len() >= 2 {
-            defaults.solref = Some([parts[0], parts[1]]);
+            defaults.solref_limit = Some([parts[0], parts[1]]);
         }
     }
-    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+    if let Some(solimp) = get_attribute_opt(e, "solimplimit") {
         let parts = parse_float_array(&solimp)?;
         if parts.len() >= 5 {
-            defaults.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+            defaults.solimp_limit = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
     }
     defaults.margin = parse_float_attr(e, "margin");
@@ -3631,16 +3631,16 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<Mjc
     }
 
     // Solver parameters
-    if let Some(solref) = get_attribute_opt(e, "solref") {
+    if let Some(solref) = get_attribute_opt(e, "solreflimit") {
         let parts = parse_float_array(&solref)?;
         if parts.len() >= 2 {
-            tendon.solref = Some([parts[0], parts[1]]);
+            tendon.solref_limit = Some([parts[0], parts[1]]);
         }
     }
-    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+    if let Some(solimp) = get_attribute_opt(e, "solimplimit") {
         let parts = parse_float_array(&solimp)?;
         if parts.len() >= 5 {
-            tendon.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+            tendon.solimp_limit = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
     }
     tendon.margin = parse_float_attr(e, "margin");

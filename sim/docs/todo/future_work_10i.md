@@ -19,7 +19,7 @@ DT-87/88 share a "Flexcomp Completeness" spec (T2). The rest
 | DT-68 | §6B | Per-vertex material variation — all vertices share single material | Low | T1 |
 | DT-69 | §6B | SAP integration for flex broadphase — currently brute-force O(V*G) | Low | T2 |
 | DT-70 | §11 | Deformable-vs-Mesh/Hfield/SDF narrowphase — only primitives supported | Medium | T3 |
-| DT-71 | §11 | Behavioral friction tests for deformable — deferred until DT-25 lands | Low | T1 |
+| DT-71 | §11 | Behavioral friction tests for deformable — DT-25 verification pass landed (Phase 8 Session 13, 7 tests). Additional behavioral coverage (friction coefficient sweep, stick-slip transition) remains. | Low | T1 |
 | DT-72 | §36 | Flex contacts not wired for adhesion — AC12 test documented skip | Low | T1 |
 | DT-73 | §6B | Volume constraints — no MuJoCo equivalent; emergent from continuum model | Low | T3 |
 | ~~DT-85~~ | §27B | ~~Flex `<contact>` runtime attributes not wired: `internal`, `activelayers`, `vertcollide`, `passive`~~ **DONE** — Phase 7 T1 (commit `cf76731`). Parse + store + wire to Model arrays. | Low | T1 |

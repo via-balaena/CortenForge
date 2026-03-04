@@ -160,6 +160,13 @@ pub struct Model {
     /// Count of bodies with `body_gravcomp != 0.0` (early-exit optimization).
     pub ngravcomp: usize,
 
+    /// Per-body inverse weight for diagonal approximation (length `nbody`).
+    /// `body_invweight0[b][0]` = 1 / (total mass of subtree rooted at body b).
+    /// `body_invweight0[b][1]` = 1 / (trace of subtree rotational inertia at body b).
+    /// Computed at build time from the mass distribution at `qpos0`.
+    /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
+    pub body_invweight0: Vec<[f64; 2]>,
+
     // ==================== Joints (indexed by jnt_id) ====================
     /// Joint type (Hinge, Slide, Ball, Free).
     pub jnt_type: Vec<MjJointType>,
@@ -227,6 +234,11 @@ pub struct Model {
     /// Per-DOF solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
     /// Resolved at compile time from joint solimpfriction → default chain → DEFAULT_SOLIMP.
     pub dof_solimp: Vec<[f64; 5]>,
+    /// Per-DOF inverse weight for diagonal approximation (length `nv`).
+    /// Selects translational or rotational component of `body_invweight0`
+    /// based on joint type and DOF offset.
+    /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
+    pub dof_invweight0: Vec<f64>,
 
     // ==================== Sparse LDL CSR Metadata (immutable, computed once at build) =====
     // The sparsity pattern of the LDL factorization is determined by `dof_parent` chains
@@ -677,10 +689,14 @@ pub struct Model {
     /// Solver parameters for tendon limit constraints (2 elements per tendon).
     /// \[0\] = timeconst (>0) or -stiffness (≤0), \[1\] = dampratio or -damping.
     /// Default: \[0.02, 1.0\] (standard MuJoCo solref).
-    pub tendon_solref: Vec<[f64; 2]>,
+    pub tendon_solref_lim: Vec<[f64; 2]>,
     /// Impedance parameters for tendon limit constraints (5 elements per tendon).
     /// [d_min, d_max, width, midpoint, power]. Default: [0.9, 0.95, 0.001, 0.5, 2.0].
-    pub tendon_solimp: Vec<[f64; 5]>,
+    pub tendon_solimp_lim: Vec<[f64; 5]>,
+    /// Tendon limit activation margin. Constraint activated when dist < margin.
+    /// Default: 0.0 (degenerates to dist < 0.0, i.e., limit-violated-only).
+    /// MuJoCo ref: `m->tendon_margin[i]` in `mj_instantiateLimit()`.
+    pub tendon_margin: Vec<f64>,
     /// Velocity-dependent friction loss per tendon (N).
     /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
     pub tendon_frictionloss: Vec<f64>,
@@ -701,6 +717,11 @@ pub struct Model {
     /// is populated when `treenum == 2`. Unused slots are `usize::MAX`.
     /// Length: 2 * ntendon.
     pub tendon_tree: Vec<usize>,
+    /// Per-tendon inverse weight for diagonal approximation (length `ntendon`).
+    /// For fixed tendons: Σ(coef² * dof_invweight0\[dof\]) across wrap joints.
+    /// For spatial tendons: sum of body_invweight0 translational for endpoint bodies.
+    /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
+    pub tendon_invweight0: Vec<f64>,
 
     // Tendon wrapping path elements (indexed by wrap_id, grouped by tendon; total length = nwrap)
     /// Wrap object type (Site, Geom, Joint, Pulley).
@@ -791,6 +812,13 @@ pub struct Model {
     pub noslip_iterations: usize,
     /// Noslip solver tolerance (parsed from MJCF, stored, not yet implemented; default 1e-6).
     pub noslip_tolerance: f64,
+    /// Use body-weight diagonal approximation instead of exact M⁻¹ solve (DT-39).
+    ///
+    /// When `true`, `efc_diagApprox` is computed as an O(1) lookup from
+    /// precomputed `body_invweight0` / `dof_invweight0` / `tendon_invweight0`
+    /// instead of solving `M · w = J^T` per row (O(nv)).
+    /// Default: `false` (exact diagonal, matching pre-DT-39 behavior).
+    pub diagapprox_bodyweight: bool,
 
     /// Disable flags (bitmask for disabling default behaviors).
     pub disableflags: u32,

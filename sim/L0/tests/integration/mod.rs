@@ -321,3 +321,35 @@ pub mod sensor_phase6_spec_d;
 /// Phase 7 Spec A tests: equality defaults cascade (DT-2), qpos_spring array
 /// (DT-13), actuator type-specific defaults (DT-14).
 pub mod phase7_spec_a;
+
+// ============================================================================
+// Phase 8: DT-28 Fixed Tendon Multi-DOF Joint Tests
+// ============================================================================
+
+/// DT-28 tests: ball/free joints in fixed tendons — qpos/dof index validation,
+/// length computation, Jacobian correctness, mixed joint types.
+pub mod fixed_tendon_multi_dof;
+
+// ============================================================================
+// Phase 8: DT-39 Body-Weight Diagonal Approximation Tests
+// ============================================================================
+
+/// DT-39 tests: invweight0 computation, bodyweight diagApprox mode, comparison
+/// with exact M⁻¹ diagonal.
+pub mod diagapprox_bodyweight;
+
+// ============================================================================
+// Phase 8: Spec B — QCQP Cone Projection Tests (DT-19)
+// ============================================================================
+
+/// Phase 8 Spec B tests: PGS two-phase ray+QCQP, noslip QCQP rewrite,
+/// convergence fixes, CG/Newton regression, cone constraint satisfaction.
+pub mod phase8_spec_b_qcqp;
+
+// ============================================================================
+// Phase 8: DT-25 Deformable Friction Verification Tests
+// ============================================================================
+
+/// DT-25 verification: deformable-rigid friction condim=3 correctness,
+/// R-scaling with asymmetric Jacobians, constraint force verification.
+pub mod deformable_friction_dt25;

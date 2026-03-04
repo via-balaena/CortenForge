@@ -10,6 +10,7 @@ pub mod newton;
 pub mod noslip;
 pub mod pgs;
 pub mod primal;
+pub mod qcqp;
 
 use crate::types::{ConstraintType, Data, Model};
 

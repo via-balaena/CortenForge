@@ -629,11 +629,11 @@ impl DefaultResolver {
             }
 
             // Solver parameters
-            if result.solref.is_none() {
-                result.solref = defaults.solref;
+            if result.solref_limit.is_none() {
+                result.solref_limit = defaults.solref_limit;
             }
-            if result.solimp.is_none() {
-                result.solimp = defaults.solimp;
+            if result.solimp_limit.is_none() {
+                result.solimp_limit = defaults.solimp_limit;
             }
             if result.solreffriction.is_none() {
                 result.solreffriction = defaults.solreffriction;
@@ -960,8 +960,8 @@ impl DefaultResolver {
                 width: c.width.or(p.width),
                 rgba: c.rgba.or(p.rgba),
                 group: c.group.or(p.group),
-                solref: c.solref.or(p.solref),
-                solimp: c.solimp.or(p.solimp),
+                solref_limit: c.solref_limit.or(p.solref_limit),
+                solimp_limit: c.solimp_limit.or(p.solimp_limit),
                 solreffriction: c.solreffriction.or(p.solreffriction),
                 solimpfriction: c.solimpfriction.or(p.solimpfriction),
                 margin: c.margin.or(p.margin),

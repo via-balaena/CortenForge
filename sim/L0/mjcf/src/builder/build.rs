@@ -102,6 +102,7 @@ impl ModelBuilder {
             body_mocapid: self.body_mocapid,
             ngravcomp: self.body_gravcomp.iter().filter(|&&gc| gc != 0.0).count(),
             body_gravcomp: self.body_gravcomp,
+            body_invweight0: vec![[0.0; 2]; nbody], // Computed by compute_invweight0()
 
             jnt_type: self.jnt_type,
             jnt_body: self.jnt_body,
@@ -130,6 +131,7 @@ impl ModelBuilder {
             dof_frictionloss: self.dof_frictionloss,
             dof_solref: self.dof_solref,
             dof_solimp: self.dof_solimp,
+            dof_invweight0: vec![0.0; self.nv], // Computed by compute_invweight0()
 
             // Sparse LDL CSR metadata (computed below via compute_qld_csr_metadata)
             qLD_rowadr: vec![],
@@ -310,6 +312,7 @@ impl ModelBuilder {
             // tendon_treenum/tendon_tree computed below after tree enumeration
             tendon_treenum: vec![0; ntendon],
             tendon_tree: vec![usize::MAX; 2 * ntendon],
+            tendon_invweight0: vec![0.0; ntendon], // Computed by compute_invweight0()
             tendon_lengthspring: self.tendon_lengthspring,
             tendon_length0: self.tendon_length0,
             tendon_num: self.tendon_num,
@@ -317,8 +320,9 @@ impl ModelBuilder {
             tendon_name: self.tendon_name,
             tendon_group: self.tendon_group,
             tendon_rgba: self.tendon_rgba,
-            tendon_solref: self.tendon_solref,
-            tendon_solimp: self.tendon_solimp,
+            tendon_solref_lim: self.tendon_solref_lim,
+            tendon_solimp_lim: self.tendon_solimp_lim,
+            tendon_margin: self.tendon_margin,
             wrap_type: self.wrap_type,
             wrap_objid: self.wrap_objid,
             wrap_prm: self.wrap_prm,
@@ -381,6 +385,7 @@ impl ModelBuilder {
             ls_tolerance: self.ls_tolerance,
             noslip_iterations: self.noslip_iterations,
             noslip_tolerance: self.noslip_tolerance,
+            diagapprox_bodyweight: false, // Default: exact M⁻¹ solve
             disableflags: self.disableflags,
             enableflags: self.enableflags,
             disableactuator: self.disableactuator,
@@ -481,6 +486,9 @@ impl ModelBuilder {
         // Compute stat_meaninertia = trace(M) / nv at qpos0 (for Newton solver scaling, §15.11)
         model.compute_stat_meaninertia();
 
+        // Compute body_invweight0, dof_invweight0, tendon_invweight0 for diagApprox (DT-39)
+        model.compute_invweight0();
+
         // Pre-compute bounding sphere radii for all geoms (used in collision broad-phase)
         for geom_id in 0..ngeom {
             model.geom_rbound[geom_id] = if let Some(mesh_id) = model.geom_mesh[geom_id] {
@@ -509,9 +517,12 @@ impl ModelBuilder {
         }
 
         // Pre-compute tendon length0 and lengthspring from qpos0.
-        // For fixed tendons: length0 = Σ coef_w * qpos0[dof_adr_w],
+        // For fixed tendons: length0 = Σ coef_w * qpos0[jnt_qposadr_w],
         //                    lengthspring sentinel resolved at qpos_spring configuration.
         // MuJoCo ref: setSpring() in engine_setconst.c uses qpos_spring for sentinel resolution.
+        // Note: wrap_objid stores dof_adr; for length computation we look up the
+        // joint's qpos address via dof_jnt → jnt_qpos_adr. This is critical for
+        // ball/free joints where jnt_qposadr != jnt_dofadr.
         for t in 0..model.ntendon {
             if model.tendon_type[t] == TendonType::Fixed {
                 let adr = model.tendon_adr[t];
@@ -521,23 +532,30 @@ impl ModelBuilder {
                 for w in adr..(adr + num) {
                     let dof_adr = model.wrap_objid[w];
                     let coef = model.wrap_prm[w];
-                    if dof_adr < model.qpos0.len() {
-                        length0 += coef * model.qpos0[dof_adr];
+                    if dof_adr < model.nv {
+                        let jnt_id = model.dof_jnt[dof_adr];
+                        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+                        if qpos_adr < model.qpos0.len() {
+                            length0 += coef * model.qpos0[qpos_adr];
+                        }
                     }
                 }
                 model.tendon_length0[t] = length0;
                 // Resolve sentinel [-1, -1] at qpos_spring configuration (not qpos0).
                 // MuJoCo ref: setSpring() in engine_setconst.c copies qpos_spring → d->qpos,
-                // then evaluates tendon length. For hinge/slide joints where dof_adr == qpos_adr,
-                // qpos_spring[dof_adr] is the spring reference position.
+                // then evaluates tendon length. Uses jnt_qposadr (position space).
                 #[allow(clippy::float_cmp)]
                 if model.tendon_lengthspring[t] == [-1.0, -1.0] {
                     let mut spring_length = 0.0;
                     for w in adr..(adr + num) {
                         let dof_adr = model.wrap_objid[w];
                         let coef = model.wrap_prm[w];
-                        if dof_adr < model.qpos_spring.len() {
-                            spring_length += coef * model.qpos_spring[dof_adr];
+                        if dof_adr < model.nv {
+                            let jnt_id = model.dof_jnt[dof_adr];
+                            let qpos_adr = model.jnt_qpos_adr[jnt_id];
+                            if qpos_adr < model.qpos_spring.len() {
+                                spring_length += coef * model.qpos_spring[qpos_adr];
+                            }
                         }
                     }
                     model.tendon_lengthspring[t] = [spring_length, spring_length];

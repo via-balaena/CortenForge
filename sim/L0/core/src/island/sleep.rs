@@ -598,13 +598,16 @@ fn mj_sleep_cycle(tree_asleep: &[i32], start: usize) -> usize {
 }
 
 /// Check if a tendon's limit constraint is active (§16.13.2).
+/// Uses margin-aware activation matching assembly.rs and MuJoCo's
+/// `mj_instantiateLimit()`: constraint fires when `dist < margin`.
 fn tendon_limit_active(model: &Model, data: &Data, t: usize) -> bool {
     if !model.tendon_limited[t] {
         return false;
     }
     let length = data.ten_length[t];
     let (limit_min, limit_max) = model.tendon_range[t];
-    length < limit_min || length > limit_max
+    let margin = model.tendon_margin[t];
+    (length - limit_min) < margin || (limit_max - length) < margin
 }
 
 /// Wake sleeping trees coupled by multi-tree tendons with active limits (§16.13.2).

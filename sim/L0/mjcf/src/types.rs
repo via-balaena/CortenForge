@@ -794,9 +794,9 @@ pub struct MjcfTendonDefaults {
     /// Visualization group (0–5).
     pub group: Option<i32>,
     /// Solver reference parameters for tendon limits [timeconst, dampratio].
-    pub solref: Option<[f64; 2]>,
+    pub solref_limit: Option<[f64; 2]>,
     /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
-    pub solimp: Option<[f64; 5]>,
+    pub solimp_limit: Option<[f64; 5]>,
     /// Solver reference parameters for friction loss [timeconst, dampratio].
     pub solreffriction: Option<[f64; 2]>,
     /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
@@ -2797,9 +2797,9 @@ pub struct MjcfTendon {
     /// Visualization group (0–5). Default 0.
     pub group: Option<i32>,
     /// Solver reference parameters for tendon limits [timeconst, dampratio].
-    pub solref: Option<[f64; 2]>,
+    pub solref_limit: Option<[f64; 2]>,
     /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
-    pub solimp: Option<[f64; 5]>,
+    pub solimp_limit: Option<[f64; 5]>,
     /// Solver reference parameters for friction loss [timeconst, dampratio].
     pub solreffriction: Option<[f64; 2]>,
     /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
@@ -2835,8 +2835,8 @@ impl Default for MjcfTendon {
             width: None,
             rgba: None,
             group: None,
-            solref: None,
-            solimp: None,
+            solref_limit: None,
+            solimp_limit: None,
             solreffriction: None,
             solimpfriction: None,
             margin: None,

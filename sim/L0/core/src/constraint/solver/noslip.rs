@@ -9,16 +9,20 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
+use crate::constraint::solver::qcqp;
 use crate::linalg::mj_solve_sparse;
 use crate::types::{ConstraintType, Data, Model};
 
 /// Project contact forces onto the elliptic friction cone (§32.4).
 ///
 /// Enforces the dual cone constraint: normal force ≥ 0 and weighted friction
-/// norm ≤ normal force. Used by both PGS (per-contact group projection) and
-/// noslip (implicit through QCQP).
+/// norm ≤ normal force.
 ///
 /// Cone shape: ||(λ₁/μ₁, λ₂/μ₂, ...)|| ≤ λ_n
+///
+/// Note: PGS now uses two-phase ray+QCQP projection (Spec B). This function
+/// is retained for potential future use but is currently unused.
+#[allow(dead_code)]
 pub fn project_elliptic_cone(lambda: &mut [f64], mu: &[f64; 5], dim: usize) {
     // Step 1: Enforce unilateral constraint (normal force must be non-negative)
     // Negative normal force = separating contact = release completely
@@ -53,235 +57,6 @@ pub fn project_elliptic_cone(lambda: &mut [f64], mu: &[f64; 5], dim: usize) {
         for l in lambda.iter_mut().take(dim).skip(1) {
             *l *= scale;
         }
-    }
-}
-
-/// Noslip QCQP for 2 friction DOFs (condim=3): solve the constrained tangential subproblem.
-///
-/// Minimizes  `½(f−f_unc)ᵀ·A·(f−f_unc)` subject to `Σ(f_j/μ_j)² ≤ f_n²`
-/// where `f_unc` is the unconstrained GS solution.
-///
-/// This matches MuJoCo's `mju_QCQP2`:
-/// - Scale to unit-friction space: `y_j = f_j / μ_j`
-/// - If unconstrained solution is inside cone → return it
-/// - Otherwise Newton iteration on dual Lagrange multiplier λ
-///
-/// `a` is the 2×2 tangential Delassus subblock (unregularized).
-/// `f_unc` is the unconstrained GS update for the 2 friction DOFs.
-/// `mu` is the friction coefficients for these 2 DOFs.
-/// `fn_abs` is the absolute normal force (cone radius).
-///
-/// Returns the projected (f[0], f[1]).
-#[allow(clippy::many_single_char_names, clippy::suspicious_operation_groupings)]
-fn noslip_qcqp2(a: [[f64; 2]; 2], f_unc: [f64; 2], mu: [f64; 2], fn_abs: f64) -> [f64; 2] {
-    // Scale to unit-friction space: y = f / mu, A_s = D·A·D, b_s stays in y-space
-    // The unconstrained solution in y-space: y_unc = f_unc / mu
-    let y_unc = [
-        f_unc[0] / mu[0].max(MJ_MINVAL),
-        f_unc[1] / mu[1].max(MJ_MINVAL),
-    ];
-
-    // Check if unconstrained solution is inside cone: ||y|| ≤ fn
-    let r2 = fn_abs * fn_abs;
-    let norm2 = y_unc[0] * y_unc[0] + y_unc[1] * y_unc[1];
-    if norm2 <= r2 {
-        return f_unc;
-    }
-
-    // Need to project: solve (A_s + λI)·y = A_s·y_unc with ||y||² = r²
-    // Scale Delassus: A_s[i,j] = mu[i] * A[i,j] * mu[j]
-    let a_s = [
-        [a[0][0] * mu[0] * mu[0], a[0][1] * mu[0] * mu[1]],
-        [a[1][0] * mu[1] * mu[0], a[1][1] * mu[1] * mu[1]],
-    ];
-
-    // RHS in y-space: g = A_s · y_unc
-    let g = [
-        a_s[0][0] * y_unc[0] + a_s[0][1] * y_unc[1],
-        a_s[1][0] * y_unc[0] + a_s[1][1] * y_unc[1],
-    ];
-
-    // Newton on λ: φ(λ) = ||y(λ)||² − r² = 0
-    // y(λ) = (A_s + λI)⁻¹ · g
-    let mut lam = 0.0_f64;
-    for _ in 0..20 {
-        // (A_s + λI) for 2×2
-        let m00 = a_s[0][0] + lam;
-        let m11 = a_s[1][1] + lam;
-        let m01 = a_s[0][1];
-        let det = m00 * m11 - m01 * m01;
-        if det.abs() < MJ_MINVAL {
-            break;
-        }
-        let inv_det = 1.0 / det;
-
-        // y = M⁻¹ · g
-        let y0 = (m11 * g[0] - m01 * g[1]) * inv_det;
-        let y1 = (-m01 * g[0] + m00 * g[1]) * inv_det;
-
-        let phi = y0 * y0 + y1 * y1 - r2;
-        if phi.abs() < 1e-10 {
-            // Converged — unscale and return
-            return [y0 * mu[0], y1 * mu[1]];
-        }
-
-        // φ'(λ) = -2 · yᵀ · M⁻¹ · y
-        let my0 = (m11 * y0 - m01 * y1) * inv_det;
-        let my1 = (-m01 * y0 + m00 * y1) * inv_det;
-        let dphi = -2.0 * (y0 * my0 + y1 * my1);
-
-        if dphi.abs() < MJ_MINVAL {
-            break;
-        }
-        lam -= phi / dphi;
-        lam = lam.max(0.0); // λ ≥ 0 (dual feasibility)
-    }
-
-    // Final solve with converged λ
-    let m00 = a_s[0][0] + lam;
-    let m11 = a_s[1][1] + lam;
-    let m01 = a_s[0][1];
-    let det = m00 * m11 - m01 * m01;
-    if det.abs() < MJ_MINVAL {
-        // Degenerate: simple rescaling fallback
-        let s = norm2.sqrt();
-        if s > MJ_MINVAL {
-            let scale = fn_abs / s;
-            return [f_unc[0] * scale, f_unc[1] * scale];
-        }
-        return [0.0, 0.0];
-    }
-    let inv_det = 1.0 / det;
-    let y0 = (m11 * g[0] - m01 * g[1]) * inv_det;
-    let y1 = (-m01 * g[0] + m00 * g[1]) * inv_det;
-
-    // Exact rescale to cone boundary for numerical safety
-    let yn2 = y0 * y0 + y1 * y1;
-    if yn2 > r2 && yn2 > MJ_MINVAL {
-        let s = fn_abs / yn2.sqrt();
-        [y0 * mu[0] * s, y1 * mu[1] * s]
-    } else {
-        [y0 * mu[0], y1 * mu[1]]
-    }
-}
-
-/// Noslip QCQP for 3 friction DOFs (condim=4): solve the constrained tangential subproblem.
-///
-/// Same algorithm as `noslip_qcqp2` but for 3×3 system. Uses cofactor inverse.
-#[allow(clippy::many_single_char_names)]
-fn noslip_qcqp3(a: [[f64; 3]; 3], f_unc: [f64; 3], mu: [f64; 3], fn_abs: f64) -> [f64; 3] {
-    let y_unc = [
-        f_unc[0] / mu[0].max(MJ_MINVAL),
-        f_unc[1] / mu[1].max(MJ_MINVAL),
-        f_unc[2] / mu[2].max(MJ_MINVAL),
-    ];
-
-    let r2 = fn_abs * fn_abs;
-    let norm2 = y_unc[0] * y_unc[0] + y_unc[1] * y_unc[1] + y_unc[2] * y_unc[2];
-    if norm2 <= r2 {
-        return f_unc;
-    }
-
-    // Scale Delassus: A_s[i,j] = mu[i] * A[i,j] * mu[j]
-    let mut a_s = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            a_s[i][j] = a[i][j] * mu[i] * mu[j];
-        }
-    }
-
-    // g = A_s · y_unc
-    let mut g = [0.0_f64; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            g[i] += a_s[i][j] * y_unc[j];
-        }
-    }
-
-    // Newton on λ
-    let mut lam = 0.0_f64;
-    let mut y = [0.0_f64; 3];
-    for _ in 0..20 {
-        // M = A_s + λI
-        let mut m = a_s;
-        m[0][0] += lam;
-        m[1][1] += lam;
-        m[2][2] += lam;
-
-        // 3×3 cofactor inverse
-        let cof00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
-        let cof01 = -(m[1][0] * m[2][2] - m[1][2] * m[2][0]);
-        let cof02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
-        let det = m[0][0] * cof00 + m[0][1] * cof01 + m[0][2] * cof02;
-        if det.abs() < MJ_MINVAL {
-            break;
-        }
-        let inv_det = 1.0 / det;
-
-        let cof10 = -(m[0][1] * m[2][2] - m[0][2] * m[2][1]);
-        let cof11 = m[0][0] * m[2][2] - m[0][2] * m[2][0];
-        let cof12 = -(m[0][0] * m[2][1] - m[0][1] * m[2][0]);
-        let cof20 = m[0][1] * m[1][2] - m[0][2] * m[1][1];
-        let cof21 = -(m[0][0] * m[1][2] - m[0][2] * m[1][0]);
-        let cof22 = m[0][0] * m[1][1] - m[0][1] * m[1][0];
-
-        // y = M⁻¹ · g (cofactor inverse is transposed)
-        y[0] = (cof00 * g[0] + cof10 * g[1] + cof20 * g[2]) * inv_det;
-        y[1] = (cof01 * g[0] + cof11 * g[1] + cof21 * g[2]) * inv_det;
-        y[2] = (cof02 * g[0] + cof12 * g[1] + cof22 * g[2]) * inv_det;
-
-        let phi = y[0] * y[0] + y[1] * y[1] + y[2] * y[2] - r2;
-        if phi.abs() < 1e-10 {
-            return [y[0] * mu[0], y[1] * mu[1], y[2] * mu[2]];
-        }
-
-        // φ'(λ) = -2 · yᵀ · M⁻¹ · y
-        let my0 = (cof00 * y[0] + cof10 * y[1] + cof20 * y[2]) * inv_det;
-        let my1 = (cof01 * y[0] + cof11 * y[1] + cof21 * y[2]) * inv_det;
-        let my2 = (cof02 * y[0] + cof12 * y[1] + cof22 * y[2]) * inv_det;
-        let dphi = -2.0 * (y[0] * my0 + y[1] * my1 + y[2] * my2);
-
-        if dphi.abs() < MJ_MINVAL {
-            break;
-        }
-        lam -= phi / dphi;
-        lam = lam.max(0.0);
-    }
-
-    // Final solve
-    let mut m = a_s;
-    m[0][0] += lam;
-    m[1][1] += lam;
-    m[2][2] += lam;
-    let cof00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
-    let cof01 = -(m[1][0] * m[2][2] - m[1][2] * m[2][0]);
-    let cof02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
-    let det = m[0][0] * cof00 + m[0][1] * cof01 + m[0][2] * cof02;
-    if det.abs() < MJ_MINVAL {
-        let s = norm2.sqrt();
-        if s > MJ_MINVAL {
-            let scale = fn_abs / s;
-            return [f_unc[0] * scale, f_unc[1] * scale, f_unc[2] * scale];
-        }
-        return [0.0, 0.0, 0.0];
-    }
-    let inv_det = 1.0 / det;
-    let cof10 = -(m[0][1] * m[2][2] - m[0][2] * m[2][1]);
-    let cof11 = m[0][0] * m[2][2] - m[0][2] * m[2][0];
-    let cof12 = -(m[0][0] * m[2][1] - m[0][1] * m[2][0]);
-    let cof20 = m[0][1] * m[1][2] - m[0][2] * m[1][1];
-    let cof21 = -(m[0][0] * m[1][2] - m[0][2] * m[1][0]);
-    let cof22 = m[0][0] * m[1][1] - m[0][1] * m[1][0];
-    y[0] = (cof00 * g[0] + cof10 * g[1] + cof20 * g[2]) * inv_det;
-    y[1] = (cof01 * g[0] + cof11 * g[1] + cof21 * g[2]) * inv_det;
-    y[2] = (cof02 * g[0] + cof12 * g[1] + cof22 * g[2]) * inv_det;
-
-    let yn2 = y[0] * y[0] + y[1] * y[1] + y[2] * y[2];
-    if yn2 > r2 && yn2 > MJ_MINVAL {
-        let s = fn_abs / yn2.sqrt();
-        [y[0] * mu[0] * s, y[1] * mu[1] * s, y[2] * mu[2] * s]
-    } else {
-        [y[0] * mu[0], y[1] * mu[1], y[2] * mu[2]]
     }
 }
 
@@ -475,8 +250,17 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
     // =========================================================================
     // 4. PGS iterations with per-type projection
     // =========================================================================
-    for _iter in 0..noslip_iter {
+    for iter_num in 0..noslip_iter {
         let mut improvement = 0.0_f64;
+
+        // Iter-0 cost correction: account for regularization cost removed by
+        // unregularized noslip pass. Matches MuJoCo's mj_solNoSlip iter==0 branch.
+        if iter_num == 0 {
+            for fi in 0..n {
+                let row = noslip_rows[fi];
+                improvement += 0.5 * f[fi] * f[fi] * data.efc_R[row];
+            }
+        }
 
         // Phase A: Friction-loss rows — scalar PGS + interval clamping
         for fi in 0..n {
@@ -510,11 +294,11 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
                         let mu = data.efc_mu[contact_efc_start];
                         let fn_abs = normal_force.abs();
 
-                        // Save old forces for cost tracking
+                        // Save old friction forces
                         let old_forces: Vec<f64> =
                             (0..group_len).map(|j| f[group_start + j]).collect();
 
-                        // Compute residuals for all friction rows in this group
+                        // Compute residuals for all friction rows
                         let mut residuals: Vec<f64> = Vec::with_capacity(group_len);
                         for local_j in 0..group_len {
                             let idx = group_start + local_j;
@@ -525,80 +309,65 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
                             residuals.push(res);
                         }
 
-                        // Unconstrained GS update for all friction rows
-                        let mut f_unc: Vec<f64> = Vec::with_capacity(group_len);
-                        for local_j in 0..group_len {
-                            let idx = group_start + local_j;
-                            f_unc.push(f[idx] - residuals[local_j] * diag_inv[idx]);
-                        }
-
-                        // QCQP projection based on dimension
                         if fn_abs < MJ_MINVAL {
                             // Zero normal force: zero all friction
                             for local_j in 0..group_len {
                                 f[group_start + local_j] = 0.0;
                             }
-                        } else if group_len == 2 {
-                            // condim=3: 2 friction DOFs — use QCQP2
-                            let a_block = [
-                                [
-                                    a_sub[(group_start, group_start)],
-                                    a_sub[(group_start, group_start + 1)],
-                                ],
-                                [
-                                    a_sub[(group_start + 1, group_start)],
-                                    a_sub[(group_start + 1, group_start + 1)],
-                                ],
-                            ];
-                            let result =
-                                noslip_qcqp2(a_block, [f_unc[0], f_unc[1]], [mu[0], mu[1]], fn_abs);
-                            f[group_start] = result[0];
-                            f[group_start + 1] = result[1];
-                        } else if group_len == 3 {
-                            // condim=4: 3 friction DOFs — use QCQP3
-                            let a_block = [
-                                [
-                                    a_sub[(group_start, group_start)],
-                                    a_sub[(group_start, group_start + 1)],
-                                    a_sub[(group_start, group_start + 2)],
-                                ],
-                                [
-                                    a_sub[(group_start + 1, group_start)],
-                                    a_sub[(group_start + 1, group_start + 1)],
-                                    a_sub[(group_start + 1, group_start + 2)],
-                                ],
-                                [
-                                    a_sub[(group_start + 2, group_start)],
-                                    a_sub[(group_start + 2, group_start + 1)],
-                                    a_sub[(group_start + 2, group_start + 2)],
-                                ],
-                            ];
-                            let result = noslip_qcqp3(
-                                a_block,
-                                [f_unc[0], f_unc[1], f_unc[2]],
-                                [mu[0], mu[1], mu[2]],
-                                fn_abs,
-                            );
-                            f[group_start] = result[0];
-                            f[group_start + 1] = result[1];
-                            f[group_start + 2] = result[2];
                         } else {
-                            // condim=6 or higher: simple rescaling fallback
-                            f[group_start..group_start + group_len]
-                                .copy_from_slice(&f_unc[..group_len]);
-                            let mut s_sq = 0.0;
-                            for local_j in 0..group_len {
-                                let mu_j = mu[local_j];
-                                if mu_j > MJ_MINVAL {
-                                    s_sq += (f[group_start + local_j] / mu_j).powi(2);
+                            // Build friction-friction subblock Ac and bias bc
+                            let mut ac_flat = vec![0.0_f64; group_len * group_len];
+                            let mut bc = vec![0.0_f64; group_len];
+                            for j in 0..group_len {
+                                for k in 0..group_len {
+                                    ac_flat[j * group_len + k] =
+                                        a_sub[(group_start + j, group_start + k)];
+                                }
+                                // bc[j] = res[j] - Σ Ac[j,k] * old[k]
+                                bc[j] = residuals[j];
+                                for k in 0..group_len {
+                                    bc[j] -= ac_flat[j * group_len + k] * old_forces[k];
                                 }
                             }
-                            let s = s_sq.sqrt();
-                            if s > fn_abs && s > MJ_MINVAL {
-                                let rescale = fn_abs / s;
-                                for local_j in 0..group_len {
-                                    f[group_start + local_j] *= rescale;
+
+                            // QCQP dispatch
+                            let (fric_result, active) = if group_len == 2 {
+                                let ac2 = [[ac_flat[0], ac_flat[1]], [ac_flat[2], ac_flat[3]]];
+                                let (r, a) =
+                                    qcqp::qcqp2(ac2, [bc[0], bc[1]], [mu[0], mu[1]], fn_abs);
+                                (r.to_vec(), a)
+                            } else if group_len == 3 {
+                                let ac3 = [
+                                    [ac_flat[0], ac_flat[1], ac_flat[2]],
+                                    [ac_flat[3], ac_flat[4], ac_flat[5]],
+                                    [ac_flat[6], ac_flat[7], ac_flat[8]],
+                                ];
+                                let (r, a) = qcqp::qcqp3(
+                                    ac3,
+                                    [bc[0], bc[1], bc[2]],
+                                    [mu[0], mu[1], mu[2]],
+                                    fn_abs,
+                                );
+                                (r.to_vec(), a)
+                            } else {
+                                qcqp::qcqp_nd(&ac_flat, &bc, &mu[..group_len], fn_abs, group_len)
+                            };
+
+                            // Ellipsoidal rescale if constraint active
+                            if active {
+                                let mut ssq = 0.0_f64;
+                                for j in 0..group_len {
+                                    if mu[j] > MJ_MINVAL {
+                                        ssq += (fric_result[j] / mu[j]).powi(2);
+                                    }
                                 }
+                                let s = (fn_abs * fn_abs / ssq.max(MJ_MINVAL)).sqrt();
+                                for j in 0..group_len {
+                                    f[group_start + j] = fric_result[j] * s;
+                                }
+                            } else {
+                                f[group_start..group_start + group_len]
+                                    .copy_from_slice(&fric_result[..group_len]);
                             }
                         }
 
@@ -686,7 +455,7 @@ pub fn noslip_postprocess(model: &Model, data: &mut Data) {
                             let cost = 0.5 * (d0 * d0 * a00 + d1 * d1 * a11 + 2.0 * d0 * d1 * a01)
                                 + d0 * res0
                                 + d1 * res1;
-                            if cost > MJ_MINVAL {
+                            if cost > 1e-10 {
                                 f[j0] = old[0];
                                 f[j1] = old[1];
                             } else {

@@ -56,10 +56,11 @@ impl ModelBuilder {
             let default_rgba = [0.5, 0.5, 0.5, 1.0];
             self.tendon_rgba
                 .push(tendon.rgba.map_or(default_rgba, |v| [v.x, v.y, v.z, v.w]));
-            self.tendon_solref
-                .push(tendon.solref.unwrap_or(DEFAULT_SOLREF));
-            self.tendon_solimp
-                .push(tendon.solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.tendon_solref_lim
+                .push(tendon.solref_limit.unwrap_or(DEFAULT_SOLREF));
+            self.tendon_solimp_lim
+                .push(tendon.solimp_limit.unwrap_or(DEFAULT_SOLIMP));
+            self.tendon_margin.push(tendon.margin.unwrap_or(0.0));
             // S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
             self.tendon_lengthspring.push(match tendon.springlength {
                 Some(pair) => pair.into(),
@@ -85,15 +86,18 @@ impl ModelBuilder {
                                         tendon.name, joint_name
                                     ),
                                 })?;
-                        // Fixed tendons assume qposadr == dofadr (true for hinge/slide).
-                        // Ball/free joints have different qpos and dof dimensions, so
-                        // a linear coupling L = coef * qpos[dof_adr] would be incorrect.
+                        // Fixed tendons couple to the first qpos component of the joint
+                        // (MuJoCo ref: mj_tendon() in engine_core_smooth.c).
+                        // For hinge/slide: qposadr == dofadr (scalar joint).
+                        // For ball: couples to quaternion w component (unusual).
+                        // For free: couples to x position component (unusual).
+                        // All cases are handled correctly at runtime via dof_jnt → jnt_qpos_adr lookup.
                         let jnt_type = self.jnt_type[jnt_idx];
                         if jnt_type != MjJointType::Hinge && jnt_type != MjJointType::Slide {
                             warn!(
-                                "Tendon '{}' references {} joint '{}' — fixed tendons only \
-                                 support hinge/slide joints. Ball/free joints will produce \
-                                 incorrect results.",
+                                "Tendon '{}' references {} joint '{}' — fixed tendons \
+                                 typically use hinge/slide joints. Ball/free joint coupling \
+                                 is to the first qpos component only.",
                                 tendon.name,
                                 match jnt_type {
                                     MjJointType::Ball => "ball",
