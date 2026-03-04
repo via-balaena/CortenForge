@@ -181,7 +181,7 @@ cardinal goal.
 
 ## Session 3: Spec A rubric (Solver Param & Margin Completeness)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 8 Constraint & Solver Gaps -- write Spec A rubric.
@@ -532,7 +532,7 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 | Pre-spec | DT-32 naming conformance | **Done** | `9f9cf9f` |
 | 1 | Phase 8 Umbrella | **Done** | `4574a03` |
 | 2 | T1: DT-28 (tendon ball/free) + DT-39 (diagApprox) | **Done** | `22c7c3d` |
-| 3 | Spec A rubric | | |
+| 3 | Spec A rubric | **Done** | `8db9545` |
 | 4 | Spec A spec | | |
 | 5 | Spec A implementation | | |
 | 6 | Spec A review -- create document | | |
