@@ -718,7 +718,7 @@ pub struct Model {
     /// Length: 2 * ntendon.
     pub tendon_tree: Vec<usize>,
     /// Per-tendon inverse weight for diagonal approximation (length `ntendon`).
-    /// For fixed tendons: Σ(coef² * dof_invweight0[dof]) across wrap joints.
+    /// For fixed tendons: Σ(coef² * dof_invweight0\[dof\]) across wrap joints.
     /// For spatial tendons: sum of body_invweight0 translational for endpoint bodies.
     /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
     pub tendon_invweight0: Vec<f64>,

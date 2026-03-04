@@ -865,7 +865,7 @@ impl Model {
     /// - `body_invweight0[b][0]` = 1 / (subtree mass at body b)
     /// - `body_invweight0[b][1]` = 1 / (subtree rotational inertia trace at body b)
     /// - `dof_invweight0[d]` = translational or rotational component based on joint type
-    /// - `tendon_invweight0[t]` = Σ(coef² * dof_invweight0[dof]) for fixed tendons
+    /// - `tendon_invweight0[t]` = Σ(coef² * dof_invweight0\[dof\]) for fixed tendons
     ///
     /// Must be called after body_subtreemass, body_inertia, dof_body, dof_jnt,
     /// jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
