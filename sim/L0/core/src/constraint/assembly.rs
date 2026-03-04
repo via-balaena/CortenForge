@@ -11,8 +11,9 @@ use crate::constraint::equality::{
     extract_tendon_equality_jacobian, extract_weld_jacobian,
 };
 use crate::constraint::impedance::{
-    MJ_MINVAL, ball_limit_axis_angle, compute_aref, compute_diag_approx_exact, compute_impedance,
-    compute_kbip, compute_regularization, normalize_quat4,
+    MJ_MINVAL, ball_limit_axis_angle, compute_aref, compute_diag_approx_bodyweight,
+    compute_diag_approx_exact, compute_impedance, compute_kbip, compute_regularization,
+    normalize_quat4,
 };
 use crate::constraint::jacobian::compute_contact_jacobian;
 use crate::types::flags::disabled;
@@ -203,7 +204,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
     // Must be called for each row after J row and pos/vel/margin are set.
     macro_rules! finalize_row {
         ($solref:expr, $solimp:expr, $pos:expr, $margin:expr, $vel:expr, $floss:expr,
-         $ctype:expr, $dim_val:expr, $id_val:expr, $mu_val:expr) => {{
+         $ctype:expr, $dim_val:expr, $id_val:expr, $mu_val:expr, $bw_diag:expr) => {{
             let sr: [f64; 2] = $solref;
             let si: [f64; 5] = $solimp;
             let pos_val: f64 = $pos;
@@ -227,9 +228,13 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             let imp = compute_impedance(si, violation);
             data.efc_imp.push(imp);
 
-            // diagApprox (exact diagonal via M⁻¹ solve)
-            let j_row_slice: Vec<f64> = (0..nv).map(|col| data.efc_J[(row, col)]).collect();
-            let diag = compute_diag_approx_exact(&j_row_slice, nv, model, data);
+            // diagApprox: exact M⁻¹ solve or O(1) bodyweight approximation (DT-39)
+            let diag = if model.diagapprox_bodyweight {
+                ($bw_diag as f64).max(MJ_MINVAL)
+            } else {
+                let j_row_slice: Vec<f64> = (0..nv).map(|col| data.efc_J[(row, col)]).collect();
+                compute_diag_approx_exact(&j_row_slice, nv, model, data)
+            };
             data.efc_diagApprox.push(diag);
 
             // Regularization
@@ -278,6 +283,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 for col in 0..nv {
                     data.efc_J[(row, col)] = rows.j_rows[(r, col)];
                 }
+                let bw =
+                    compute_diag_approx_bodyweight(model, data, ConstraintType::Equality, eq_id, r);
                 finalize_row!(
                     sr,
                     si,
@@ -288,7 +295,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     ConstraintType::Equality,
                     1,
                     eq_id,
-                    [0.0; 5]
+                    [0.0; 5],
+                    bw
                 );
             }
         }
@@ -315,7 +323,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     ConstraintType::FlexEdge,
                     1,
                     e,
-                    [0.0; 5]
+                    [0.0; 5],
+                    MJ_MINVAL
                 );
                 continue;
             }
@@ -361,7 +370,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 ConstraintType::FlexEdge,
                 1,        // dim
                 e,        // id (edge index)
-                [0.0; 5]  // mu (no friction on edge constraints)
+                [0.0; 5], // mu (no friction on edge constraints)
+                MJ_MINVAL
             );
         }
     } // end if !equality_disabled (3a)
@@ -376,6 +386,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             // Jacobian: 1×nv with 1.0 at dof_idx
             data.efc_J[(row, dof_idx)] = 1.0;
             let vel = data.qvel[dof_idx];
+            let bw = model.dof_invweight0.get(dof_idx).copied().unwrap_or(0.0);
             finalize_row!(
                 model.dof_solref[dof_idx],
                 model.dof_solimp[dof_idx],
@@ -386,7 +397,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 ConstraintType::FrictionLoss,
                 1,
                 dof_idx,
-                [0.0; 5]
+                [0.0; 5],
+                bw
             );
         }
 
@@ -401,6 +413,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 data.efc_J[(row, col)] = data.ten_J[t][col];
             }
             let vel = data.ten_velocity[t];
+            let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
             finalize_row!(
                 model.tendon_solref_fri[t],
                 model.tendon_solimp_fri[t],
@@ -411,7 +424,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 ConstraintType::FrictionLoss,
                 1,
                 t,
-                [0.0; 5]
+                [0.0; 5],
+                bw
             );
         }
     } // end if !frictionloss_disabled (3b+3c)
@@ -435,6 +449,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     // MuJoCo convention: dist > 0 = satisfied, dist < 0 = violated.
                     // Constraint is instantiated when dist < margin.
 
+                    let bw = model.dof_invweight0.get(dof_adr).copied().unwrap_or(0.0);
+
                     // Lower limit: dist = q - limit_min (negative when q < limit_min)
                     let dist_lower = q - limit_min;
                     if dist_lower < margin {
@@ -452,7 +468,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             ConstraintType::LimitJoint,
                             1,
                             jnt_id,
-                            [0.0; 5]
+                            [0.0; 5],
+                            bw
                         );
                     }
 
@@ -473,7 +490,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             ConstraintType::LimitJoint,
                             1,
                             jnt_id,
-                            [0.0; 5]
+                            [0.0; 5],
+                            bw
                         );
                     }
                 }
@@ -502,6 +520,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             + unit_dir.y * data.qvel[dof_adr + 1]
                             + unit_dir.z * data.qvel[dof_adr + 2]);
 
+                        let bw = model.dof_invweight0.get(dof_adr).copied().unwrap_or(0.0);
                         finalize_row!(
                             model.jnt_solref[jnt_id],
                             model.jnt_solimp[jnt_id],
@@ -512,7 +531,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             ConstraintType::LimitJoint,
                             1,
                             jnt_id,
-                            [0.0; 5]
+                            [0.0; 5],
+                            bw
                         );
                     }
                 }
@@ -535,6 +555,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
 
             // MuJoCo convention: dist > 0 = satisfied, dist < 0 = violated.
             // Tendon limits follow the same pattern as joint limits.
+            let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
 
             // Lower tendon limit: dist = length - limit_min (negative when too short)
             let dist_lower = length - limit_min;
@@ -555,7 +576,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     ConstraintType::LimitTendon,
                     1,
                     t,
-                    [0.0; 5]
+                    [0.0; 5],
+                    bw
                 );
             }
 
@@ -578,7 +600,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     ConstraintType::LimitTendon,
                     1,
                     t,
-                    [0.0; 5]
+                    [0.0; 5],
+                    bw
                 );
             }
         }
@@ -602,6 +625,42 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             let is_elliptic = dim >= 3 && model.cone == 1 && contact.mu[0] >= 1e-10;
             let is_pyramidal = dim >= 3 && model.cone == 0 && contact.mu[0] >= 1e-10;
 
+            // Precompute contact bodyweight for DT-39
+            let bw_contact = {
+                let b1 = if contact.geom1 < model.geom_body.len() {
+                    model.geom_body[contact.geom1]
+                } else {
+                    0
+                };
+                let b2 = if contact.geom2 < model.geom_body.len() {
+                    model.geom_body[contact.geom2]
+                } else {
+                    0
+                };
+                let w1t = if b1 < model.body_invweight0.len() {
+                    model.body_invweight0[b1][0]
+                } else {
+                    0.0
+                };
+                let w2t = if b2 < model.body_invweight0.len() {
+                    model.body_invweight0[b2][0]
+                } else {
+                    0.0
+                };
+                let w1r = if b1 < model.body_invweight0.len() {
+                    model.body_invweight0[b1][1]
+                } else {
+                    0.0
+                };
+                let w2r = if b2 < model.body_invweight0.len() {
+                    model.body_invweight0[b2][1]
+                } else {
+                    0.0
+                };
+                // [translational, rotational]
+                [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
+            };
+
             if is_pyramidal {
                 // §32: Pyramidal friction cone — emit 2*(dim-1) facet rows.
                 // Each friction direction d produces two facets:
@@ -614,6 +673,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 // MuJoCo: cpos[0] = cpos[1] = con->dist; cmargin[0] = cmargin[1] = con->includemargin;
                 // These are set ONCE before the loop, reused for ALL facet pairs.
                 let pos = -contact.depth;
+
+                // Pyramidal facets combine normal + friction → use translational weight
+                let bw_py = bw_contact[0];
 
                 for d in 1..dim {
                     let mu_d = contact.mu[d - 1]; // friction coefficient for direction d
@@ -636,7 +698,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                         ConstraintType::ContactPyramidal,
                         n_facets,
                         ci,
-                        contact.mu
+                        contact.mu,
+                        bw_py
                     );
 
                     // Negative facet: J_normal - μ_d · J_friction_d
@@ -657,7 +720,8 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                         ConstraintType::ContactPyramidal,
                         n_facets,
                         ci,
-                        contact.mu
+                        contact.mu,
+                        bw_py
                     );
                 }
 
@@ -696,7 +760,11 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                         vel += cj[(r, col)] * data.qvel[col];
                     }
 
-                    finalize_row!(sr, si, pos, margin_r, vel, 0.0, ctype, dim, ci, contact.mu);
+                    // row 0 = normal (translational), rows 1+ = friction (rotational)
+                    let bw_c = if r == 0 { bw_contact[0] } else { bw_contact[1] };
+                    finalize_row!(
+                        sr, si, pos, margin_r, vel, 0.0, ctype, dim, ci, contact.mu, bw_c
+                    );
                 }
             }
         }

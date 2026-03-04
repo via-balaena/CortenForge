@@ -530,8 +530,8 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
 | Pre-spec | DT-32 naming conformance | **Done** | `9f9cf9f` |
-| 1 | Phase 8 Umbrella | **Done** | |
-| 2 | T1: DT-28 (tendon ball/free) + DT-39 (diagApprox) | | |
+| 1 | Phase 8 Umbrella | **Done** | `4574a03` |
+| 2 | T1: DT-28 (tendon ball/free) + DT-39 (diagApprox) | **Done** | pending-commit |
 | 3 | Spec A rubric | | |
 | 4 | Spec A spec | | |
 | 5 | Spec A implementation | | |

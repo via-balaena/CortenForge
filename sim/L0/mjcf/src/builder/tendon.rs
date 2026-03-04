@@ -85,15 +85,18 @@ impl ModelBuilder {
                                         tendon.name, joint_name
                                     ),
                                 })?;
-                        // Fixed tendons assume qposadr == dofadr (true for hinge/slide).
-                        // Ball/free joints have different qpos and dof dimensions, so
-                        // a linear coupling L = coef * qpos[dof_adr] would be incorrect.
+                        // Fixed tendons couple to the first qpos component of the joint
+                        // (MuJoCo ref: mj_tendon() in engine_core_smooth.c).
+                        // For hinge/slide: qposadr == dofadr (scalar joint).
+                        // For ball: couples to quaternion w component (unusual).
+                        // For free: couples to x position component (unusual).
+                        // All cases are handled correctly at runtime via dof_jnt → jnt_qpos_adr lookup.
                         let jnt_type = self.jnt_type[jnt_idx];
                         if jnt_type != MjJointType::Hinge && jnt_type != MjJointType::Slide {
                             warn!(
-                                "Tendon '{}' references {} joint '{}' — fixed tendons only \
-                                 support hinge/slide joints. Ball/free joints will produce \
-                                 incorrect results.",
+                                "Tendon '{}' references {} joint '{}' — fixed tendons \
+                                 typically use hinge/slide joints. Ball/free joint coupling \
+                                 is to the first qpos component only.",
                                 tendon.name,
                                 match jnt_type {
                                     MjJointType::Ball => "ball",
