@@ -540,6 +540,6 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 | 8 | Spec B rubric | **Done** | `d6a9683` |
 | 9 | Spec B spec | **Done** | `fd16168` |
 | 10 | Spec B implementation | **Done** | `4db0275` |
-| 11 | Spec B review -- create document | **Done** | |
+| 11 | Spec B review -- create document | **Done** | `f8d7728` |
 | 12 | Spec B review -- execute | | |
 | 13 | DT-25 verification pass | | |
