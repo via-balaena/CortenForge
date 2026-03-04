@@ -224,7 +224,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 4: Spec A spec (Solver Param & Margin Completeness)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 8 Constraint & Solver Gaps -- write Spec A spec.
