@@ -45,8 +45,8 @@ Every Phase 8 task is assigned to exactly one deliverable:
 | ~~DT-32~~ | Pre-spec | **Done** | Naming conformance only — commit `9f9cf9f` |
 | DT-23 | Spec A | Pending | Per-DOF friction loss solver params — finish item (fields exist, verify defaults cascade + test coverage) |
 | DT-33 | Spec A | Pending | Tendon `margin` — extends Phase 7 `jnt_margin` pattern to tendon limit sites |
-| DT-28 | T1 session | Pending | Ball/Free joints in fixed tendons — validation + DOF mapping |
-| DT-39 | T1 session | Pending | Body-weight diagonal approximation — `body_invweight0`/`dof_invweight0` + `mj_diagApprox()` |
+| DT-28 | T1 session | **Done** | Ball/Free joints in fixed tendons — validation + DOF mapping |
+| DT-39 | T1 session | **Done** | Body-weight diagonal approximation — `body_invweight0`/`dof_invweight0` + `mj_diagApprox()` |
 | DT-19 | Spec B | Pending | QCQP cone projection — algorithmic T3, needs individual spec |
 | DT-25 | Verification | Pending | Deformable-rigid friction — downgraded to 1-session verification pass |
 
@@ -132,7 +132,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 2: T1 items (DT-28 + DT-39)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 8 Constraint & Solver Gaps -- implement T1 items.
@@ -531,7 +531,7 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 |---------|-------------|--------|--------|
 | Pre-spec | DT-32 naming conformance | **Done** | `9f9cf9f` |
 | 1 | Phase 8 Umbrella | **Done** | `4574a03` |
-| 2 | T1: DT-28 (tendon ball/free) + DT-39 (diagApprox) | **Done** | pending-commit |
+| 2 | T1: DT-28 (tendon ball/free) + DT-39 (diagApprox) | **Done** | `22c7c3d` |
 | 3 | Spec A rubric | | |
 | 4 | Spec A spec | | |
 | 5 | Spec A implementation | | |
