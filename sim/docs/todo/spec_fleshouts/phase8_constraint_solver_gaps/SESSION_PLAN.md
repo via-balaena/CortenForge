@@ -1,6 +1,6 @@
 # Phase 8 — Constraint & Solver Gaps: Session Plan
 
-17 sessions, each self-contained. The umbrella spec
+13 sessions, each self-contained. The umbrella spec
 (`PHASE8_UMBRELLA.md`) coordinates across context boundaries.
 
 Phase 8 covers constraint formulation and solver completeness: solver
@@ -20,44 +20,60 @@ documents and commits are the state, not the context window.
 
 ---
 
+## Rescope Notes (post-DT-32)
+
+DT-32 (per-tendon `solref_limit`/`solimp_limit`) was completed as a
+pre-umbrella naming conformance task. The fields already existed and
+were fully wired; the only gap was naming alignment with MuJoCo
+convention. Commit: `9f9cf9f`.
+
+DT-25 (deformable-rigid friction projection) downgraded from a 5-session
+T3 spec to a 1-session verification pass. The friction infrastructure
+already exists (condim support, Jacobian construction, unified projection
+in assembly). What remains is: confirm correctness with targeted tests,
+verify R-scaling with asymmetric Jacobians, and document any real gaps
+as deferred items.
+
+---
+
 ## Task Assignment
 
 Every Phase 8 task is assigned to exactly one deliverable:
 
-| Task | Deliverable | Rationale |
-|------|-------------|-----------|
-| DT-23 | Spec A | Per-DOF friction loss solver params -- shares solver param pattern with DT-32/33 |
-| DT-32 | Spec A | Per-tendon `solref_limit`/`solimp_limit` -- same parse + model + assembly pattern |
-| DT-33 | Spec A | Tendon `margin` -- extends Phase 7 `jnt_margin` pattern to tendon limit sites |
-| DT-28 | T1 session | Ball/Free joints in fixed tendons -- validation + DOF mapping, parent spec (future_work_1.md) defines scope |
-| DT-39 | T1 session | Body-weight diagonal approximation -- `body_invweight0`/`dof_invweight0` model fields + `mj_diagApprox()` |
-| DT-19 | Spec B | QCQP cone projection -- algorithmic T3, needs individual spec |
-| DT-25 | Spec C | Deformable-rigid friction cone projection -- algorithmic T3, needs individual spec |
+| Task | Deliverable | Status | Rationale |
+|------|-------------|--------|-----------|
+| ~~DT-32~~ | Pre-spec | **Done** | Naming conformance only — commit `9f9cf9f` |
+| DT-23 | Spec A | Pending | Per-DOF friction loss solver params — finish item (fields exist, verify defaults cascade + test coverage) |
+| DT-33 | Spec A | Pending | Tendon `margin` — extends Phase 7 `jnt_margin` pattern to tendon limit sites |
+| DT-28 | T1 session | Pending | Ball/Free joints in fixed tendons — validation + DOF mapping |
+| DT-39 | T1 session | Pending | Body-weight diagonal approximation — `body_invweight0`/`dof_invweight0` + `mj_diagApprox()` |
+| DT-19 | Spec B | Pending | QCQP cone projection — algorithmic T3, needs individual spec |
+| DT-25 | Verification | Pending | Deformable-rigid friction — downgraded to 1-session verification pass |
 
 ---
 
 ## Dependency Graph
 
 ```
-Session 1 (Umbrella)
+Session 1 (Umbrella — rescoped)
     |
-    +-- Session 2 (T1: DT-28, DT-39)           <- independent
+    +-- Session 2 (T1: DT-28, DT-39)                <- independent
     |
-    +-- Sessions 3-7 (Spec A: Solver Params)    <- independent
+    +-- Sessions 3-7 (Spec A: DT-23 + DT-33)        <- independent
     |
-    +-- Sessions 8-12 (Spec B: QCQP)           <- independent
+    +-- Sessions 8-12 (Spec B: DT-19 QCQP)          <- independent
     |
-    +-- Sessions 13-17 (Spec C: Deformable)     <- independent
+    +-- Session 13 (DT-25 verification)              <- independent
 ```
 
-No cross-spec dependencies. All three specs and the T1 session are
-independent of each other -- ordering is for clarity, not necessity.
+No cross-spec dependencies. All deliverables are independent of each
+other — ordering is for clarity, not necessity.
 
 ---
 
 ## Session 1: Phase 8 Umbrella
 
-- [ ] Complete
+- [x] Complete (rescoped: DT-32 dropped, DT-25 downgraded)
 
 ```
 Phase 8 Constraint & Solver Gaps -- write the umbrella spec.
@@ -65,7 +81,7 @@ Phase 8 Constraint & Solver Gaps -- write the umbrella spec.
 Read these in order:
 1. sim/docs/ROADMAP_V1.md (Phase 8 section)
 2. sim/docs/todo/future_work_10c.md (DT-19, DT-23, DT-25)
-3. sim/docs/todo/future_work_10d.md (DT-28, DT-32, DT-33 -- first 25 lines + DT entries)
+3. sim/docs/todo/future_work_10d.md (DT-28, DT-33 -- first 25 lines + DT entries)
 4. sim/docs/todo/future_work_10e.md (DT-39)
 5. sim/docs/todo/future_work_5.md (§15 constraint pipeline -- diagApprox sections)
 6. sim/docs/todo/future_work_8.md (§28-29 friction loss, solver params, cone projection)
@@ -80,13 +96,19 @@ friction cone projection algorithms, and tendon/DOF validation. Unlike
 Phase 7 (parsing breadth), Phase 8 tasks all converge on the unified
 constraint pipeline (assembly.rs, solver/).
 
+Rescope from original plan:
+- DT-32 already complete (naming conformance, commit 9f9cf9f)
+- DT-25 downgraded from 5-session Spec C to 1-session verification pass
+- Spec A now covers DT-23 + DT-33 only (both touch assembly.rs constraint
+  parameter wiring)
+
 Write PHASE8_UMBRELLA.md covering:
-- Scope statement with conformance mandate
+- Scope statement with conformance mandate (note DT-32 pre-completed)
 - Task Assignment table (mirror SESSION_PLAN.md assignments)
 - Sub-spec scope statements with MuJoCo C source citations:
-  - Spec A: Solver Param & Margin Completeness (DT-23, DT-32, DT-33)
+  - Spec A: Solver Param & Margin Completeness (DT-23, DT-33)
   - Spec B: QCQP Cone Projection (DT-19)
-  - Spec C: Deformable Friction Projection (DT-25)
+- DT-25 Verification Pass scope (1 session, not a full spec)
 - Dependency Graph (flat -- no cross-spec dependencies)
 - File Ownership Matrix (which spec touches each shared file)
 - API Contracts (cross-spec boundaries, if any)
@@ -98,8 +120,9 @@ Write PHASE8_UMBRELLA.md covering:
 Key differences from Phase 7 umbrella:
 - Phase 8 is constraint/solver depth (single subsystem) not parsing breadth
 - T1 items (DT-28, DT-39) are more algorithmic than Phase 7's T1s
-- Two T3 specs (Spec B, Spec C) with distinct algorithmic complexity
-- Shared file: assembly.rs touched by Spec A, Spec B, and Spec C
+- One T3 spec (Spec B) with genuine algorithmic complexity
+- DT-25 is a verification pass, not a full spec
+- Shared file: assembly.rs touched by Spec A, Spec B, and DT-25 verification
 
 Write to: sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/
 MuJoCo conformance is the cardinal goal.
@@ -168,22 +191,22 @@ Read these in order:
 2. sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/PHASE8_UMBRELLA.md
 
 Spec A covers the "Solver Param & Margin Completeness" group:
-- DT-23: Per-DOF friction loss solver params -- add `dof_solref_fri` /
-  `dof_solimp_fri` fields to Model, parse `solreffriction` / `solimpfriction`
-  from `<joint>`, wire to friction loss constraint rows in assembly.rs.
+- DT-23: Per-DOF friction loss solver params -- the fields may partially
+  exist. Verify: `dof_solref_fri` / `dof_solimp_fri` in Model, parse
+  `solreffriction` / `solimpfriction` from `<joint>`, defaults cascade
+  verification (can you set these in `<default><joint>`?), wire to
+  friction loss constraint rows in assembly.rs. This is a finish item,
+  not greenfield.
   MuJoCo ref: `dof_solref[nv*mjNREF]`, `dof_solimp[nv*mjNIMP]` in
   `mjModel`; `mj_instantiateFriction()` in `engine_core_constraint.c`.
-- DT-32: Per-tendon `solref_limit`/`solimp_limit` -- add
-  `tendon_solref_lim` / `tendon_solimp_lim` fields to Model, parse from
-  `<tendon><fixed>` and `<tendon><spatial>`, wire to tendon limit
-  constraint rows. MuJoCo ref: `tendon_solref_lim[ntendon*mjNREF]`,
-  `tendon_solimp_lim[ntendon*mjNIMP]` in `mjModel`;
-  `mj_instantiateLimit()` in `engine_core_constraint.c`.
 - DT-33: Tendon `margin` attribute -- add `tendon_margin: Vec<f64>` to
   Model, parse from `<tendon>`, replace 4 hardcoded `< 0.0` activation
   checks in assembly.rs (lines 148, 152, 540, 564) with margin-aware
   checks. Phase 7 Spec B (jnt_margin) is the direct reference pattern.
   MuJoCo ref: `tendon_margin[ntendon]` in `mjModel`.
+
+Note: DT-32 (tendon solref_limit/solimp_limit naming) is already done.
+Spec A no longer includes it.
 
 Follow the workflow exactly:
 - Phase 1: Read the MuJoCo C source for these functions
@@ -216,10 +239,14 @@ Write SPEC_A.md using the rubric as the quality bar:
 - Grade each spec section against the rubric as you write
 - Present for approval -- do NOT implement
 
+DT-23 is a finish item: audit what already exists, identify remaining
+gaps (defaults cascade, naming consistency, test coverage), and spec
+only the delta. DT-33 follows the Phase 7 Spec B jnt_margin pattern.
+
 Reference the Phase 7 Spec B implementation of jnt_margin (§64a) as a
 pattern for DT-33. The solver param lifecycle (parse -> defaults cascade
--> model field -> constraint assembly) should be consistent across all
-three items.
+-> model field -> constraint assembly) should be consistent across both
+items.
 
 Write to: sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/
 MuJoCo conformance is the cardinal goal.
@@ -455,149 +482,45 @@ Present the Review Verdict (section 10) to the user when done.
 
 ---
 
-## Session 13: Spec C rubric (Deformable Friction Projection)
+## Session 13: DT-25 verification pass (Deformable Friction Projection)
 
 - [ ] Complete
 
 ```
-Phase 8 Constraint & Solver Gaps -- write Spec C rubric.
+Phase 8 Constraint & Solver Gaps -- DT-25 verification pass.
 
-Read these in order:
-1. sim/docs/templates/pre_implementation/RUBRIC_TEMPLATE.md
-2. sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/PHASE8_UMBRELLA.md
+This is a 1-session verification pass, NOT a full spec. The deformable-rigid
+friction infrastructure already exists (condim support, Jacobian construction,
+unified projection in assembly). This session confirms correctness and
+documents any real gaps as deferred items.
 
-Spec C covers DT-25: Deformable-rigid friction cone projection. Currently
-the deformable contact pipeline handles normal forces only (condim=1
-scaffold). This spec extends it to support friction (condim=3/4/6) for
-deformable-rigid contact pairs.
-
-MuJoCo ref:
-- Flex contact processing in `engine_collision_convex.c` -- deformable
-  contacts generate the same constraint structure as rigid contacts
-- `mj_instantiateContact()` in `engine_core_constraint.c` -- contact
-  constraint row creation, same path for rigid and deformable
-- The deformable contact Jacobian structure differs (vertex-based vs
-  body-based), but the friction cone projection in the solver is unified
-
-Also read:
+Read these first:
+- sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/PHASE8_UMBRELLA.md
 - sim/docs/todo/future_work_10c.md (DT-25 entry)
-- sim/L0/core/src/constraint/assembly.rs (current deformable constraint rows)
+- sim/L0/core/src/constraint/assembly.rs (deformable constraint rows)
 - sim/L0/core/src/forward/deformable.rs (deformable contact generation)
 
-Follow the workflow exactly:
-- Phase 1: Read the MuJoCo C source for deformable contact constraint creation
-- Phase 2: Build SPEC_C_RUBRIC.md (tailor P1 first with specific C functions)
-- Phase 3: Grade P1 honestly -- do not proceed to P2-P8 until P1 is A+
-- Phase 4: Close gaps, re-grade until all criteria are A+
-
-Do NOT write the spec -- that is the next session.
-
-Write to: sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/
-MuJoCo conformance is the cardinal goal. C source is the single source of truth.
-```
-
----
-
-## Session 14: Spec C spec (Deformable Friction Projection)
-
-- [ ] Complete
-
-```
-Phase 8 Constraint & Solver Gaps -- write Spec C spec.
-
-Read these in order:
-1. sim/docs/templates/pre_implementation/SPEC_TEMPLATE.md
-2. sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/PHASE8_UMBRELLA.md
-3. sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/SPEC_C_RUBRIC.md
-
-Write SPEC_C.md using the rubric as the quality bar:
-- MuJoCo Reference section first (C source is the single source of truth)
-- Specify how deformable contact Jacobians map to friction constraint rows
-- Define the condim upgrade path (1 -> 3/4/6) for deformable contacts
-- Grade each spec section against the rubric as you write
-- Present for approval -- do NOT implement
-
-Write to: sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/
-MuJoCo conformance is the cardinal goal.
-```
-
----
-
-## Session 15: Spec C implementation
-
-- [ ] Complete
-
-```
-Phase 8 Constraint & Solver Gaps -- implement Spec C.
-
-Read these:
-1. sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/PHASE8_UMBRELLA.md
-2. sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/SPEC_C.md
-
-Implement per the spec's Execution Order. Commit after each section (S1, S2, ...).
-Verify each AC as you go. The spec is the source of truth -- if you discover
-a gap, stop and update the spec first.
+Deliverables:
+1. Audit: Read existing deformable contact + friction code path end-to-end.
+   Document what condim values are actually supported for deformable contacts.
+2. Test: Write targeted tests confirming deformable-rigid friction works for
+   condim=3 (the common case). Include a flex body sliding on a plane with
+   friction and verify nonzero tangential constraint forces.
+3. R-scaling: Verify R-scaling behavior with asymmetric Jacobians (zero
+   angular component on flex side). Confirm `diagApprox` or exact diagonal
+   handles this correctly.
+4. Gap doc: If any real gaps exist (condim=4/6 for deformable, specific
+   Jacobian issues), document them as deferred items in the roadmap with
+   clear descriptions. Do NOT implement fixes -- just document.
+5. Mark DT-25 in ROADMAP_V1.md as done (or partially done with deferred
+   items noted).
 
 Run `cargo test -p sim-core -p sim-mjcf -p sim-constraint
--p sim-conformance-tests` after each section. MuJoCo conformance is the
-cardinal goal.
-```
+-p sim-conformance-tests` after tests are added. MuJoCo conformance is
+the cardinal goal.
 
----
-
-## Session 16: Spec C review -- create review document
-
-- [ ] Complete
-
-```
-Phase 8 Constraint & Solver Gaps -- create Spec C review document.
-
-Read these:
-1. sim/docs/templates/post_implementation/REVIEW_TEMPLATE.md
-2. sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/SPEC_C.md
-
-Copy the review template into this directory as SPEC_C_REVIEW.md. Fill in the
-structure by walking the spec: populate the Key Behaviors table from the spec's
-Key Behaviors section, list every S1..SN section, every AC, every planned test
-T1..TN, every edge case from the Edge Case Inventory, every row from the
-Convention Notes table, every item from the Blast Radius section, and every
-Out of Scope item.
-
-This session creates the review document -- it does NOT execute the review.
-Leave the "Implementation does", "Status", "CortenForge After", and all
-verdict fields blank. The next session fills those in by reading the actual
-implementation.
-
-Write to: sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/SPEC_C_REVIEW.md
-```
-
----
-
-## Session 17: Spec C review -- execute review
-
-- [ ] Complete
-
-```
-Phase 8 Constraint & Solver Gaps -- execute Spec C review.
-
-Read these:
-1. sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/SPEC_C_REVIEW.md
-2. sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/SPEC_C.md
-3. The implementation files listed in SPEC_C.md's Files Affected section
-
-Execute the review: for every row in the review document, read the actual
-implementation and fill in the verdict. Grade each spec section, verify each
-AC has a passing test, check every planned test was written, compare blast
-radius predictions against reality, audit convention notes, scan for weak
-implementations, and verify all deferred work is tracked.
-
-Fix any "fix before shipping" items in this session. For each fix, update the
-review document to reflect the resolution. Run domain tests after fixes.
-
-This is the final review of Phase 8. After the verdict, verify the Phase 8
+This is the final session of Phase 8. After completing, verify the Phase 8
 aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
-
-Present the Review Verdict (section 10) to the user when done.
 ```
 
 ---
@@ -606,6 +529,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
+| Pre-spec | DT-32 naming conformance | **Done** | `9f9cf9f` |
 | 1 | Phase 8 Umbrella | | |
 | 2 | T1: DT-28 (tendon ball/free) + DT-39 (diagApprox) | | |
 | 3 | Spec A rubric | | |
@@ -618,8 +542,4 @@ Present the Review Verdict (section 10) to the user when done.
 | 10 | Spec B implementation | | |
 | 11 | Spec B review -- create document | | |
 | 12 | Spec B review -- execute | | |
-| 13 | Spec C rubric | | |
-| 14 | Spec C spec | | |
-| 15 | Spec C implementation | | |
-| 16 | Spec C review -- create document | | |
-| 17 | Spec C review -- execute | | |
+| 13 | DT-25 verification pass | | |
