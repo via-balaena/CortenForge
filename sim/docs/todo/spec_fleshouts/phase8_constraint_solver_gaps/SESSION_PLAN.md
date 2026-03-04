@@ -484,7 +484,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 13: DT-25 verification pass (Deformable Friction Projection)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 8 Constraint & Solver Gaps -- DT-25 verification pass.
@@ -542,4 +542,4 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 | 10 | Spec B implementation | **Done** | `4db0275` |
 | 11 | Spec B review -- create document | **Done** | `f8d7728` |
 | 12 | Spec B review -- execute | **Done** | `7d9ed4e` |
-| 13 | DT-25 verification pass | | |
+| 13 | DT-25 verification pass | **Done** | `pending` |

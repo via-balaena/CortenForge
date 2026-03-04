@@ -212,6 +212,10 @@ pub fn make_contact_flex_rigid(
         solreffriction: assign_ref(model, &[0.0, 0.0]),
         solimp,
         frame: (t1, t2).into(),
+        // Safety: vertex_idx comes from iterating 0..model.nflexvert in
+        // mj_collision_flex, so it is always in-bounds. Rust's bounds-checked
+        // indexing would panic loudly if a malformed model violated this.
+        // No additional validation needed (Phase 8 DT-25 audit decision).
         flex_vertex: Some(vertex_idx),
     }
 }

@@ -345,3 +345,11 @@ pub mod diagapprox_bodyweight;
 /// Phase 8 Spec B tests: PGS two-phase ray+QCQP, noslip QCQP rewrite,
 /// convergence fixes, CG/Newton regression, cone constraint satisfaction.
 pub mod phase8_spec_b_qcqp;
+
+// ============================================================================
+// Phase 8: DT-25 Deformable Friction Verification Tests
+// ============================================================================
+
+/// DT-25 verification: deformable-rigid friction condim=3 correctness,
+/// R-scaling with asymmetric Jacobians, constraint force verification.
+pub mod deformable_friction_dt25;
