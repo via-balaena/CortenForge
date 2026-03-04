@@ -337,3 +337,11 @@ pub mod fixed_tendon_multi_dof;
 /// DT-39 tests: invweight0 computation, bodyweight diagApprox mode, comparison
 /// with exact M⁻¹ diagonal.
 pub mod diagapprox_bodyweight;
+
+// ============================================================================
+// Phase 8: Spec B — QCQP Cone Projection Tests (DT-19)
+// ============================================================================
+
+/// Phase 8 Spec B tests: PGS two-phase ray+QCQP, noslip QCQP rewrite,
+/// convergence fixes, CG/Newton regression, cone constraint satisfaction.
+pub mod phase8_spec_b_qcqp;

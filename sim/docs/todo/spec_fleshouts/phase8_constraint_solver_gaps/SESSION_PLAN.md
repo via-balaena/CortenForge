@@ -404,7 +404,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 10: Spec B implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 8 Constraint & Solver Gaps -- implement Spec B.
@@ -539,7 +539,7 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 | 7 | Spec A review -- execute | **Done** | `a349e67` |
 | 8 | Spec B rubric | **Done** | `d6a9683` |
 | 9 | Spec B spec | **Done** | `fd16168` |
-| 10 | Spec B implementation | | |
+| 10 | Spec B implementation | **Done** | |
 | 11 | Spec B review -- create document | | |
 | 12 | Spec B review -- execute | | |
 | 13 | DT-25 verification pass | | |

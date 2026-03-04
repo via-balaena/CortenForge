@@ -10,7 +10,6 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
-use crate::constraint::solver::noslip::project_elliptic_cone;
 use crate::linalg::mj_solve_sparse;
 use crate::types::{ConstraintState, ConstraintType, Data, Model};
 
@@ -60,10 +59,15 @@ fn compute_delassus_regularized(model: &Model, data: &Data) -> DMatrix<f64> {
 /// - Builds AR = J·M⁻¹·J^T + diag(R) (regularized Delassus matrix)
 /// - Gauss-Seidel iteration with per-type projection
 /// - Cost guard: reverts updates that increase dual cost
-/// - Elliptic contacts: group projection via `project_elliptic_cone`
+/// - Elliptic contacts: two-phase ray update + QCQP cone projection
 ///
 /// After convergence, `data.efc_force` contains the constraint forces.
 /// The caller must then compute `qfrc_constraint = J^T · efc_force`.
+#[allow(
+    clippy::many_single_char_names,
+    clippy::needless_range_loop,
+    clippy::suspicious_operation_groupings
+)]
 pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
     let nefc = data.efc_type.len();
     if nefc == 0 {
@@ -128,33 +132,152 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
             let ctype = data.efc_type[i];
             let dim = data.efc_dim[i];
 
-            // Elliptic contacts: group projection
+            // Elliptic contacts: two-phase ray update + QCQP
             if matches!(ctype, ConstraintType::ContactElliptic) && dim > 1 {
-                // Save old force for cost guard
+                let mu = data.efc_mu[i];
+
+                // Save old forces (before any update)
                 let old_force: Vec<f64> = data.efc_force.as_slice()[i..i + dim].to_vec();
 
-                // Compute residual for all rows in this group
+                // Compute full residual for the block
+                let mut res = vec![0.0_f64; dim];
                 for j in 0..dim {
-                    let mut res = data.efc_b[i + j];
+                    res[j] = data.efc_b[i + j];
                     for c in 0..nefc {
-                        res += ar[(i + j, c)] * data.efc_force[c];
+                        res[j] += ar[(i + j, c)] * data.efc_force[c];
                     }
-                    // GS update: subtract residual scaled by diagonal inverse
-                    data.efc_force[i + j] -= res * ar_diag_inv[i + j];
                 }
 
-                // Project onto elliptic friction cone
-                let mu = data.efc_mu[i];
-                project_elliptic_cone(&mut data.efc_force.as_mut_slice()[i..i + dim], &mu, dim);
+                // ---- Phase 1: Ray update ----
+                if data.efc_force[i] < MJ_MINVAL {
+                    // Normal force too small: scalar normal update + clear friction
+                    data.efc_force[i] -= res[0] * ar_diag_inv[i];
+                    if data.efc_force[i] < 0.0 {
+                        data.efc_force[i] = 0.0;
+                    }
+                    for j in 1..dim {
+                        data.efc_force[i + j] = 0.0;
+                    }
+                } else {
+                    // Ray update: scale along current force direction
+                    let v: Vec<f64> = data.efc_force.as_slice()[i..i + dim].to_vec();
 
-                // Cost guard: revert if dual cost increased
-                let delta: Vec<f64> = (0..dim)
-                    .map(|j| data.efc_force[i + j] - old_force[j])
-                    .collect();
-                let cost_change =
-                    pgs_cost_change(&ar, &delta, &data.efc_b, &data.efc_force, i, dim, nefc);
-                if cost_change > 1e-10 {
-                    data.efc_force.as_mut_slice()[i..i + dim].copy_from_slice(&old_force);
+                    // v1 = AR_block * v (dim×dim subblock)
+                    let mut v1 = vec![0.0_f64; dim];
+                    for j in 0..dim {
+                        for k in 0..dim {
+                            v1[j] += ar[(i + j, i + k)] * v[k];
+                        }
+                    }
+
+                    let denom: f64 = v.iter().zip(v1.iter()).map(|(a, b)| a * b).sum();
+                    if denom >= MJ_MINVAL {
+                        let x_step =
+                            -v.iter().zip(res.iter()).map(|(a, b)| a * b).sum::<f64>() / denom;
+                        // Guard: normal force stays non-negative
+                        let x_clamped = if data.efc_force[i] + x_step * v[0] < 0.0 {
+                            -data.efc_force[i] / v[0]
+                        } else {
+                            x_step
+                        };
+                        for j in 0..dim {
+                            data.efc_force[i + j] += x_clamped * v[j];
+                        }
+                    }
+                }
+
+                // ---- Phase 2: Friction QCQP (normal fixed) ----
+                let fn_current = data.efc_force[i];
+                let fdim = dim - 1; // number of friction DOFs
+
+                if fn_current < MJ_MINVAL {
+                    // Zero normal: clear all friction
+                    for j in 1..dim {
+                        data.efc_force[i + j] = 0.0;
+                    }
+                } else {
+                    // Build friction-friction subblock Ac from AR and adjusted bias bc
+                    let mut ac_flat = vec![0.0_f64; fdim * fdim];
+                    let mut bc = vec![0.0_f64; fdim];
+                    for j in 0..fdim {
+                        for k in 0..fdim {
+                            ac_flat[j * fdim + k] = ar[(i + 1 + j, i + 1 + k)];
+                        }
+                        // bc[j] = res[j+1] - Σ Ac[j,k]*old_friction[k] + AR[i+1+j,i]*Δnormal
+                        bc[j] = res[j + 1];
+                        for k in 0..fdim {
+                            bc[j] -= ac_flat[j * fdim + k] * old_force[1 + k];
+                        }
+                        bc[j] += ar[(i + 1 + j, i)] * (fn_current - old_force[0]);
+                    }
+
+                    // QCQP dispatch by dimension
+                    let (fric_result, active) = if fdim == 2 {
+                        let ac2 = [[ac_flat[0], ac_flat[1]], [ac_flat[2], ac_flat[3]]];
+                        let (r, a) = crate::constraint::solver::qcqp::qcqp2(
+                            ac2,
+                            [bc[0], bc[1]],
+                            [mu[0], mu[1]],
+                            fn_current,
+                        );
+                        (r.to_vec(), a)
+                    } else if fdim == 3 {
+                        let ac3 = [
+                            [ac_flat[0], ac_flat[1], ac_flat[2]],
+                            [ac_flat[3], ac_flat[4], ac_flat[5]],
+                            [ac_flat[6], ac_flat[7], ac_flat[8]],
+                        ];
+                        let (r, a) = crate::constraint::solver::qcqp::qcqp3(
+                            ac3,
+                            [bc[0], bc[1], bc[2]],
+                            [mu[0], mu[1], mu[2]],
+                            fn_current,
+                        );
+                        (r.to_vec(), a)
+                    } else {
+                        crate::constraint::solver::qcqp::qcqp_nd(
+                            &ac_flat,
+                            &bc,
+                            &mu[..fdim],
+                            fn_current,
+                            fdim,
+                        )
+                    };
+
+                    // Ellipsoidal rescale if constraint was projected to boundary
+                    if active {
+                        let mut ssq = 0.0_f64;
+                        for j in 0..fdim {
+                            if mu[j] > MJ_MINVAL {
+                                ssq += (fric_result[j] / mu[j]).powi(2);
+                            }
+                        }
+                        let s = (fn_current * fn_current / ssq.max(MJ_MINVAL)).sqrt();
+                        for j in 0..fdim {
+                            data.efc_force[i + 1 + j] = fric_result[j] * s;
+                        }
+                    } else {
+                        for j in 0..fdim {
+                            data.efc_force[i + 1 + j] = fric_result[j];
+                        }
+                    }
+                }
+
+                // ---- Cost guard using AR subblock ----
+                {
+                    let mut cost_change = 0.0_f64;
+                    for j in 0..dim {
+                        let delta_j = data.efc_force[i + j] - old_force[j];
+                        cost_change += delta_j * res[j];
+                        for k in 0..dim {
+                            let delta_k = data.efc_force[i + k] - old_force[k];
+                            cost_change += 0.5 * delta_j * ar[(i + j, i + k)] * delta_k;
+                        }
+                    }
+                    if cost_change > 1e-10 {
+                        // Revert to old forces
+                        data.efc_force.as_mut_slice()[i..i + dim].copy_from_slice(&old_force);
+                    }
                 }
 
                 i += dim;
@@ -210,48 +333,6 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
 
     data.solver_niter = max_iters;
     data.solver_stat.clear();
-}
-
-/// Compute cost change for PGS cost guard (multi-row case).
-///
-/// For a block update δ at rows [i..i+dim):
-/// cost_change = 0.5 · δ^T · AR_block · δ + δ^T · res_old
-/// where res_old is the residual BEFORE the GS update.
-fn pgs_cost_change(
-    ar: &DMatrix<f64>,
-    delta: &[f64],
-    efc_b: &DVector<f64>,
-    efc_force: &DVector<f64>,
-    i: usize,
-    dim: usize,
-    nefc: usize,
-) -> f64 {
-    // Reconstruct the residual before the update:
-    // res_old[j] = b[i+j] + Σ AR[i+j, c] * (force[c] - delta[j] if c==i+j else force[c])
-    // = b[i+j] + Σ AR[i+j, c] * force[c] - AR[i+j, i+j] * delta[j]
-    // But we need the ORIGINAL residual (before force was updated).
-    // force_old[j] = force[j] - delta[j], so:
-    // res_old[j] = b[i+j] + Σ_{c not in block} AR[i+j, c] * force[c] + Σ_{j' in block} AR[i+j, i+j'] * (force[i+j'] - delta[j'])
-    let mut cost = 0.0;
-    for j in 0..dim {
-        // Compute residual at old force values
-        let mut res_old = efc_b[i + j];
-        for c in 0..nefc {
-            if c >= i && c < i + dim {
-                res_old += ar[(i + j, c)] * (efc_force[c] - delta[c - i]);
-            } else {
-                res_old += ar[(i + j, c)] * efc_force[c];
-            }
-        }
-        cost += delta[j] * res_old;
-    }
-    // Quadratic term: 0.5 * δ^T * AR_block * δ
-    for j in 0..dim {
-        for k in 0..dim {
-            cost += 0.5 * delta[j] * ar[(i + j, i + k)] * delta[k];
-        }
-    }
-    cost
 }
 
 /// Classify constraint states, compute forces, and evaluate total cost.
