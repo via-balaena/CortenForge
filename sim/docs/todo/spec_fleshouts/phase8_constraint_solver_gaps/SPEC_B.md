@@ -1850,7 +1850,7 @@ regression for typical models.
 - **DT-18** (Zero-friction condim downgrade) — Performance optimization, not
   conformance. *Conformance impact: none.*
 
-- **PGS early termination / improvement tracking** (DT-126) — MuJoCo's PGS
+- **PGS early termination / improvement tracking** (DT-128) — MuJoCo's PGS
   tracks per-iteration improvement and can exit early. CortenForge PGS
   currently runs fixed iterations. Deferred. *Conformance impact: affects
   convergence speed, not final result given enough iterations.*
@@ -1866,10 +1866,10 @@ regression for typical models.
 - **DT-25 verification** — Deformable-rigid friction. Separate session.
   *Conformance impact: covered by Session 13.*
 
-- **Warmstart improvements** — PGS warmstart selection could use the new
-  two-phase projection for better initial forces. Deferred.
+- **Warmstart improvements** (DT-129) — PGS warmstart selection could use the
+  new two-phase projection for better initial forces. Deferred.
   *Conformance impact: affects convergence speed, not final result.*
 
-- **Dense AR matrix optimization** — PGS currently computes the full nefc×nefc
-  AR matrix. MuJoCo uses sparse row-level operations. Performance
+- **Dense AR matrix optimization** (DT-130) — PGS currently computes the full
+  nefc×nefc AR matrix. MuJoCo uses sparse row-level operations. Performance
   optimization, not conformance. *Conformance impact: none.*

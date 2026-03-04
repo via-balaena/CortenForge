@@ -458,7 +458,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/SPEC_B_REVI
 
 ## Session 12: Spec B review -- execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 8 Constraint & Solver Gaps -- execute Spec B review.
@@ -541,5 +541,5 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 | 9 | Spec B spec | **Done** | `fd16168` |
 | 10 | Spec B implementation | **Done** | `4db0275` |
 | 11 | Spec B review -- create document | **Done** | `f8d7728` |
-| 12 | Spec B review -- execute | | |
+| 12 | Spec B review -- execute | **Done** | |
 | 13 | DT-25 verification pass | | |

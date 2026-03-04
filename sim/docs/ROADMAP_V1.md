@@ -14,7 +14,9 @@
 > during Spec C review. DT-123/124 added during Phase 7 Spec A review.
 > ~~§60~~ dropped (nonexistent in MuJoCo). DT-125 (`mj_setConst()` runtime
 > `qpos_spring` recomputation) added during Phase 7 Spec B review.
-> DT-126 (PGS early termination) added during Phase 8 Spec B rubric stress-test.
+> DT-128 (PGS early termination) added during Phase 8 Spec B rubric stress-test.
+> DT-129 (PGS warmstart two-phase projection), DT-130 (dense AR optimization)
+> added during Phase 8 Spec B review.
 >
 > **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
@@ -207,13 +209,15 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | DT-19 | 10c | T3 | QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style) |
-| DT-126 | 10e | T2 | PGS early termination — accumulate `improvement` from `costChange()`, break when `improvement * scale < tolerance`. Currently always runs `max_iters`. MuJoCo's `mj_solPGS` has this; CortenForge PGS does not. Discovered during Phase 8 Spec B rubric stress-test. |
+| DT-128 | 10e | T2 | PGS early termination — accumulate `improvement` from `costChange()`, break when `improvement * scale < tolerance`. Currently always runs `max_iters`. MuJoCo's `mj_solPGS` has this; CortenForge PGS does not. Discovered during Phase 8 Spec B rubric stress-test. |
 | DT-23 | 10c | T2 | Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`) |
 | DT-25 | 10c | T3 | Deformable-rigid friction cone projection (currently normal-only) |
 | DT-28 | 10d | T2 | Ball/free joints in fixed tendons — validation + qvel DOF index mapping |
 | ~~DT-32~~ | 10d | T2 | ~~Per-tendon `solref_limit`/`solimp_limit` constraint solver params~~ — **Done** (Phase 8: naming conformance) |
 | DT-33 | 10d | T2 | Tendon `margin` attribute for limit activation distance. Phase 7 Spec B (§64a) implemented joint `jnt_margin`; tendon limit sites (`assembly.rs:148,152,540,564`) still hardcode `< 0.0`. |
 | DT-39 | 10e | T2 | Body-weight diagonal approximation (`diagApprox`) |
+| DT-129 | 10e | T3 | PGS warmstart two-phase projection — use ray+QCQP projection on warmstart forces for better initial guess. Currently warmstart comes from `classify_constraint_states` which derives forces from `qacc_warmstart`. Discovered during Phase 8 Spec B review. |
+| DT-130 | 10e | T3 | Dense AR matrix optimization — PGS currently computes full nefc×nefc `efc_AR` matrix. MuJoCo uses sparse row-level operations (`ARblock`). Performance optimization, not conformance. Discovered during Phase 8 Spec B review. |
 
 ---
 
