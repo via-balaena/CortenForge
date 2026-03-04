@@ -115,11 +115,12 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
         if !model.jnt_limited[jnt_id] {
             continue;
         }
-        // Check if limit is actually violated (active)
+        // Check if limit is active (margin-aware, matching assembly.rs)
         let (limit_min, limit_max) = model.jnt_range[jnt_id];
         let qpos_adr = model.jnt_qpos_adr[jnt_id];
         let q = data.qpos[qpos_adr];
-        if q < limit_min || q > limit_max {
+        let margin = model.jnt_margin[jnt_id];
+        if (q - limit_min) < margin || (limit_max - q) < margin {
             let body = model.jnt_body[jnt_id];
             if body > 0 && body < model.body_treeid.len() {
                 let tree = model.body_treeid[body];
@@ -135,10 +136,11 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
         if !model.tendon_limited[t] {
             continue;
         }
-        // Check if tendon limit is actually violated (active)
+        // Check if tendon limit is active (margin-aware, matching assembly.rs)
         let (limit_min, limit_max) = model.tendon_range[t];
         let length = data.ten_length[t];
-        if length < limit_min || length > limit_max {
+        let margin = model.tendon_margin[t];
+        if (length - limit_min) < margin || (limit_max - length) < margin {
             if model.tendon_treenum[t] == 2 {
                 let t1 = model.tendon_tree[2 * t];
                 let t2 = model.tendon_tree[2 * t + 1];

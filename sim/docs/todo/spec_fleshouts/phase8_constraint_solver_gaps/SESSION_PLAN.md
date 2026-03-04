@@ -306,7 +306,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase8_constraint_solver_gaps/SPEC_A_REVI
 
 ## Session 7: Spec A review -- execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 8 Constraint & Solver Gaps -- execute Spec A review.
@@ -536,7 +536,7 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 | 4 | Spec A spec | **Done** | `32b966f` |
 | 5 | Spec A implementation | **Done** | `ac54666` |
 | 6 | Spec A review -- create document | **Done** | `5ae575a` |
-| 7 | Spec A review -- execute | | |
+| 7 | Spec A review -- execute | **Done** | |
 | 8 | Spec B rubric | | |
 | 9 | Spec B spec | | |
 | 10 | Spec B implementation | | |

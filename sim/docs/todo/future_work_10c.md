@@ -4,7 +4,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ---
 
-## Group 2 — Contact & Collision System (15 items)
+## Group 2 — Contact & Collision System (16 items)
 
 **Spec approach:** DT-19/21/25 each need individual specs (T3). DT-20/24 share
 a "Contact Force Cleanup" spec (T2). DT-23 joins the cross-file "Solver Param
@@ -28,3 +28,4 @@ spec (T2). DT-18/22 implement directly (T1).
 | ~~DT-99~~ | §41 | ~~BVH midphase integration into collision pipeline (S9-full) — per-mesh BVH storage, build-phase construction, midphase dispatch~~ **Done** — `use_bvh` param on 5 mesh functions + `DISABLE_MIDPHASE` guard in `collide_with_mesh()`, AC31/AC33 tests | Medium | T3 |
 | ~~DT-100~~ | §41 | ~~Global contact parameter override guard sites (S10-full) — assignment helpers, 6 guard sites in broadphase/narrowphase/constraint~~ **Done** — `assign_margin`/`assign_solref`/`assign_solimp`/`assign_friction`/`assign_solreffriction` helpers, 6 guard sites, AC34–AC37 tests | Medium | T2 |
 | DT-101 | §41 | Implement `mj_contactPassive()` — viscous contact damping forces. Guard site (`DISABLE_CONTACT` early return) already specified in §41 S4.7d | Low | T2 |
+| DT-127 | Phase 8 Spec A | Mixed-sign `solref` validation — `(solref[0] > 0) ^ (solref[1] > 0)` triggers MuJoCo warning and replaces with default `[0.02, 1.0]` via `getsolparam()`. Affects ALL constraint types (limits, friction, equality, contact). CortenForge's `compute_kbip()` does not validate. Rubric gap R11. | Low | T1 |
