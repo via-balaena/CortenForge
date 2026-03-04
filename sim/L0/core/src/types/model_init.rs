@@ -285,6 +285,7 @@ impl Model {
             tendon_type: vec![],
             tendon_solref_lim: vec![],
             tendon_solimp_lim: vec![],
+            tendon_margin: vec![],
             tendon_frictionloss: vec![],
             tendon_solref_fri: vec![],
             tendon_solimp_fri: vec![],

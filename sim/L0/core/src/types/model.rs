@@ -693,6 +693,10 @@ pub struct Model {
     /// Impedance parameters for tendon limit constraints (5 elements per tendon).
     /// [d_min, d_max, width, midpoint, power]. Default: [0.9, 0.95, 0.001, 0.5, 2.0].
     pub tendon_solimp_lim: Vec<[f64; 5]>,
+    /// Tendon limit activation margin. Constraint activated when dist < margin.
+    /// Default: 0.0 (degenerates to dist < 0.0, i.e., limit-violated-only).
+    /// MuJoCo ref: `m->tendon_margin[i]` in `mj_instantiateLimit()`.
+    pub tendon_margin: Vec<f64>,
     /// Velocity-dependent friction loss per tendon (N).
     /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
     pub tendon_frictionloss: Vec<f64>,

@@ -60,6 +60,7 @@ impl ModelBuilder {
                 .push(tendon.solref_limit.unwrap_or(DEFAULT_SOLREF));
             self.tendon_solimp_lim
                 .push(tendon.solimp_limit.unwrap_or(DEFAULT_SOLIMP));
+            self.tendon_margin.push(tendon.margin.unwrap_or(0.0));
             // S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
             self.tendon_lengthspring.push(match tendon.springlength {
                 Some(pair) => pair.into(),

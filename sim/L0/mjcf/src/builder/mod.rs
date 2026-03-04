@@ -621,6 +621,7 @@ pub struct ModelBuilder {
     pub(crate) tendon_name: Vec<Option<String>>,
     pub(crate) tendon_solref_lim: Vec<[f64; 2]>,
     pub(crate) tendon_solimp_lim: Vec<[f64; 5]>,
+    pub(crate) tendon_margin: Vec<f64>,
     pub(crate) tendon_num: Vec<usize>,
     pub(crate) tendon_adr: Vec<usize>,
     /// Visualization group per tendon (0–5).

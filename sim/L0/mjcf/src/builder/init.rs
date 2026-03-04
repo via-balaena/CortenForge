@@ -191,6 +191,7 @@ impl ModelBuilder {
             tendon_name: vec![],
             tendon_solref_lim: vec![],
             tendon_solimp_lim: vec![],
+            tendon_margin: vec![],
             tendon_num: vec![],
             tendon_adr: vec![],
             tendon_group: vec![],

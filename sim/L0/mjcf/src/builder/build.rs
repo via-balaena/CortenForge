@@ -322,6 +322,7 @@ impl ModelBuilder {
             tendon_rgba: self.tendon_rgba,
             tendon_solref_lim: self.tendon_solref_lim,
             tendon_solimp_lim: self.tendon_solimp_lim,
+            tendon_margin: self.tendon_margin,
             wrap_type: self.wrap_type,
             wrap_objid: self.wrap_objid,
             wrap_prm: self.wrap_prm,
