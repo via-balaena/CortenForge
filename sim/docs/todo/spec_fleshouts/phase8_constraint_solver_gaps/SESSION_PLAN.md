@@ -278,7 +278,7 @@ cardinal goal.
 
 ## Session 6: Spec A review -- create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 8 Constraint & Solver Gaps -- create Spec A review document.
