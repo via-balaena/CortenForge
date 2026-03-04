@@ -76,7 +76,7 @@ necessity.
 
 ## Session 1: Phase 9 Umbrella
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- write the umbrella spec.
@@ -1007,7 +1007,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
-| 1 | Phase 9 Umbrella | Pending | — |
+| 1 | Phase 9 Umbrella | Done | `ade7750` |
 | 2 | T1: §57 (SDF options) | Pending | — |
 | 3 | Spec A rubric (§65 Convex Hull) | Pending | — |
 | 4 | Spec A spec | Pending | — |
