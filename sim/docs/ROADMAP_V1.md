@@ -14,6 +14,7 @@
 > during Spec C review. DT-123/124 added during Phase 7 Spec A review.
 > ~~§60~~ dropped (nonexistent in MuJoCo). DT-125 (`mj_setConst()` runtime
 > `qpos_spring` recomputation) added during Phase 7 Spec B review.
+> DT-126 (PGS early termination) added during Phase 8 Spec B rubric stress-test.
 >
 > **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
@@ -206,6 +207,7 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | DT-19 | 10c | T3 | QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style) |
+| DT-126 | 10e | T2 | PGS early termination — accumulate `improvement` from `costChange()`, break when `improvement * scale < tolerance`. Currently always runs `max_iters`. MuJoCo's `mj_solPGS` has this; CortenForge PGS does not. Discovered during Phase 8 Spec B rubric stress-test. |
 | DT-23 | 10c | T2 | Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`) |
 | DT-25 | 10c | T3 | Deformable-rigid friction cone projection (currently normal-only) |
 | DT-28 | 10d | T2 | Ball/free joints in fixed tendons — validation + qvel DOF index mapping |
