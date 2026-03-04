@@ -73,7 +73,7 @@ other — ordering is for clarity, not necessity.
 
 ## Session 1: Phase 8 Umbrella
 
-- [x] Complete (rescoped: DT-32 dropped, DT-25 downgraded)
+- [x] Complete (rescoped: DT-32 dropped, DT-25 downgraded; PHASE8_UMBRELLA.md written)
 
 ```
 Phase 8 Constraint & Solver Gaps -- write the umbrella spec.
@@ -530,7 +530,7 @@ aggregate ACs from the umbrella (PH8-AC1 through PH8-AC5) are satisfied.
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
 | Pre-spec | DT-32 naming conformance | **Done** | `9f9cf9f` |
-| 1 | Phase 8 Umbrella | | |
+| 1 | Phase 8 Umbrella | **Done** | |
 | 2 | T1: DT-28 (tendon ball/free) + DT-39 (diagApprox) | | |
 | 3 | Spec A rubric | | |
 | 4 | Spec A spec | | |
