@@ -1008,7 +1008,7 @@ Present the Review Verdict (section 10) to the user when done.
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
 | 1 | Phase 9 Umbrella | Done | `ade7750` |
-| 2 | T1: §57 (SDF options) | Pending | — |
+| 2 | T1: §57 (SDF options) | Done | `63dd7f0` |
 | 3 | Spec A rubric (§65 Convex Hull) | Pending | — |
 | 4 | Spec A spec | Pending | — |
 | 5 | Spec A implementation | Pending | — |
