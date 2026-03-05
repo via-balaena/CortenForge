@@ -1018,7 +1018,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 9 | Spec B spec | Done | `765d1fa` |
 | 10 | Spec B implementation | Done | `5a30583` |
 | 11 | Spec B review -- create document | Done | `8188d0a` |
-| 12 | Spec B review -- execute | Done | `df4a0df` |
+| 12 | Spec B review -- execute | Done | `df4a0df`, `5a2b949` |
 | 13 | Spec C rubric (§54 Hfield Pairs) | Done | `ef9ca1e` |
 | 14 | Spec C spec | Pending | — |
 | 15 | Spec C implementation | Pending | — |
