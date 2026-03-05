@@ -182,7 +182,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 3: Spec A rubric (Mesh Convex Hull Auto-Computation)
 
-- [ ] Complete
+- [X] Complete
 
 ```
 Phase 9 Collision Completeness -- write Spec A rubric.
@@ -1013,7 +1013,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 4 | Spec A spec | Done | `349e3d5` |
 | 5 | Spec A implementation | Done | `8a6b67b` |
 | 6 | Spec A review -- create document | Done | `9011f04` |
-| 7 | Spec A review -- execute | Pending | — |
+| 7 | Spec A review -- execute | Done | `ba6c261` |
 | 8 | Spec B rubric (§43 Mesh Inertia) | Pending | — |
 | 9 | Spec B spec | Pending | — |
 | 10 | Spec B implementation | Pending | — |
