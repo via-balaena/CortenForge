@@ -8,7 +8,7 @@ Infrastructure items for mesh processing and extensibility.
 ---
 
 ### 65. Mesh Convex Hull Auto-Computation
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** Done (Phase 9, Spec A) | **Effort:** L | **Prerequisites:** None
 
 #### Current State
 

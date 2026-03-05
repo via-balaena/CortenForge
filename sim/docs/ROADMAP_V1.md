@@ -17,6 +17,8 @@
 > DT-128 (PGS early termination) added during Phase 8 Spec B rubric stress-test.
 > DT-129 (PGS warmstart two-phase projection), DT-130 (dense AR optimization)
 > added during Phase 8 Spec B review.
+> DT-134 (mesh-primitive hull dispatch), DT-135 (`needhull_` trigger),
+> DT-136 (GPU convex hull) added during Phase 9 Spec A review.
 >
 > **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
@@ -229,8 +231,9 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | §50 | 12 | — | Continuous Collision Detection (conservative-advancement CCD, tunneling prevention) |
 | §54 | 13 | — | Missing heightfield collision pairs: hfield-mesh, hfield-plane, hfield-hfield |
 | §57 | 14 | — | `sdf_iterations`/`sdf_initpoints` from `<option>` (replace hardcoded values) |
-| §65 | 16 | — | Mesh convex hull auto-computation (Quickhull at build time for GJK/EPA) |
+| ~~§65~~ | 16 | — | ~~Mesh convex hull auto-computation (Quickhull at build time for GJK/EPA)~~ **Done** — Phase 9 Spec A |
 | DT-70 | 10i | T3 | Deformable-vs-mesh/hfield/SDF narrowphase (only primitives currently) |
+| DT-134 | 16 | T2 | Mesh-primitive dispatch to GJK/EPA on convex hulls — mesh-sphere, mesh-capsule, mesh-box pairs currently use per-triangle BVH; should route through `convex_mesh_from_hull()` + `gjk_epa_contact()` when hull available (AD-1 option a). Deferred from Phase 9 Spec A. |
 
 ---
 
@@ -298,6 +301,7 @@ foundation isn't right.
 ### GPU Pipeline (future_work_17)
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
+| DT-136 | 16 | T3 | GPU convex hull computation — move Quickhull to compute shader for large meshes. Pure performance optimization, no conformance impact. Deferred from Phase 9 Spec A. |
 | §67 | 17 | — | GPU forward kinematics (level-set parallel tree traversal) |
 | §68 | 17 | — | GPU collision broad-phase (parallel SAP / spatial hashing) |
 | §69 | 17 | — | GPU collision narrow-phase (GJK/EPA on compute shaders) |
@@ -377,6 +381,7 @@ foundation isn't right.
 | DT-17 | 10b | T1 | Global `<option o_margin>` override. Phase 7 Spec B (§64a) implemented per-joint `jnt_margin`; this covers the separate global option. |
 | DT-22 | 10c | T1 | `efc_impP` impedance derivative field |
 | DT-31 | 10d | T2 | `WrapType::Joint` inside spatial tendons |
+| DT-135 | 16 | T1 | `needhull_` collision-only hull trigger — compute convex hulls only for meshes used in collision (matching MuJoCo's `needhull_` flag) instead of all meshes unconditionally (current AD-3 option A). Conformance-neutral — no behavioral difference. Deferred from Phase 9 Spec A. |
 | DT-65 | 10h | T1 | User sensor `dim` attribute. Also requires `sensor_intprm` array (`mjmodel.h:1213`). |
 | DT-69 | 10i | T2 | SAP for flex broadphase (currently brute-force) |
 | DT-72 | 10i | T1 | Flex contacts wired for adhesion |

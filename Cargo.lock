@@ -7831,6 +7831,7 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "serde",
+ "serde_json",
  "sim-simd",
  "sim-types",
  "thiserror 2.0.18",

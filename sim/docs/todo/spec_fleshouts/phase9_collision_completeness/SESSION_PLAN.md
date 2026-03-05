@@ -310,7 +310,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase9_collision_completeness/SPEC_A_REVI
 
 ## Session 7: Spec A review -- execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- execute Spec A review.
@@ -1012,7 +1012,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 3 | Spec A rubric (§65 Convex Hull) | Done | `9b2a7e9` |
 | 4 | Spec A spec | Done | `349e3d5` |
 | 5 | Spec A implementation | Done | `8a6b67b` |
-| 6 | Spec A review -- create document | Done | `9245adf` |
+| 6 | Spec A review -- create document | Done | `9011f04` |
 | 7 | Spec A review -- execute | Pending | — |
 | 8 | Spec B rubric (§43 Mesh Inertia) | Pending | — |
 | 9 | Spec B spec | Pending | — |
