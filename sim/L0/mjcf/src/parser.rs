@@ -16,15 +16,15 @@ fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
     if n > 1e-10 { v / n } else { Vector3::z() }
 }
 use crate::types::{
-    AngleUnit, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType,
-    MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact, MjcfContactExclude,
-    MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality, MjcfEqualityDefaults, MjcfFlag,
-    MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial,
-    MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality,
-    MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
-    MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite, MjcfSiteDefaults,
-    MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
-    MjcfTendonEquality, MjcfTendonType, MjcfWeld, SpatialPathElement,
+    AngleUnit, FluidShape, InertiaFromGeom, MeshInertia, MjcfActuator, MjcfActuatorDefaults,
+    MjcfActuatorType, MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact,
+    MjcfContactExclude, MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality,
+    MjcfEqualityDefaults, MjcfFlag, MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
+    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
+    MjcfJointEquality, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults, MjcfModel,
+    MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite,
+    MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon,
+    MjcfTendonDefaults, MjcfTendonEquality, MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
 
 /// Parse an MJCF string into a model.
@@ -481,9 +481,13 @@ fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
         compiler.alignfree = alignfree == "true";
     }
 
-    // A13. exactmeshinertia
+    // A13. exactmeshinertia (deprecated — no behavioral effect since MuJoCo 3.5.0)
     if let Some(emi) = get_attribute_opt(e, "exactmeshinertia") {
         compiler.exactmeshinertia = emi == "true";
+        tracing::warn!(
+            "exactmeshinertia is deprecated and has no effect; \
+             use <mesh inertia=\"exact\"/> instead"
+        );
     }
 
     Ok(compiler)
@@ -792,6 +796,9 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
             }
         }
     }
+    if let Some(si) = get_attribute_opt(e, "shellinertia") {
+        defaults.shellinertia = Some(si == "true");
+    }
 
     Ok(defaults)
 }
@@ -1042,6 +1049,20 @@ fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
 
     if let Some(n) = parse_int_attr(e, "maxhullvert") {
         defaults.maxhullvert = parse_maxhullvert(n)?;
+    }
+
+    if let Some(inertia_str) = get_attribute_opt(e, "inertia") {
+        defaults.inertia = Some(match inertia_str.as_str() {
+            "convex" => MeshInertia::Convex,
+            "exact" => MeshInertia::Exact,
+            "legacy" => MeshInertia::Legacy,
+            "shell" => MeshInertia::Shell,
+            other => {
+                return Err(MjcfError::XmlParse(format!(
+                    "mesh default: invalid inertia mode '{other}'"
+                )));
+            }
+        });
     }
 
     Ok(defaults)
@@ -1411,6 +1432,23 @@ fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     // Parse maxhullvert (maximum convex hull vertices)
     if let Some(n) = parse_int_attr(e, "maxhullvert") {
         mesh.maxhullvert = parse_maxhullvert(n)?;
+    }
+
+    // Parse mesh inertia mode
+    if let Some(inertia_str) = get_attribute_opt(e, "inertia") {
+        mesh.inertia = Some(match inertia_str.as_str() {
+            "convex" => MeshInertia::Convex,
+            "exact" => MeshInertia::Exact,
+            "legacy" => MeshInertia::Legacy,
+            "shell" => MeshInertia::Shell,
+            other => {
+                return Err(MjcfError::XmlParse(format!(
+                    "mesh '{}': invalid inertia mode '{}' \
+                     (expected convex, exact, legacy, or shell)",
+                    mesh.name, other
+                )));
+            }
+        });
     }
 
     Ok(mesh)
@@ -1958,6 +1996,11 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         if let Ok(parts) = parse_float_array(&user) {
             geom.user = parts;
         }
+    }
+
+    // Parse shellinertia (boolean attribute)
+    if let Some(si) = get_attribute_opt(e, "shellinertia") {
+        geom.shellinertia = Some(si == "true");
     }
 
     Ok(geom)

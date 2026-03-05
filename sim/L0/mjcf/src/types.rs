@@ -265,6 +265,32 @@ pub enum AngleUnit {
     Radian,
 }
 
+/// Mesh inertia computation mode from `<mesh inertia="..."/>`.
+///
+/// MuJoCo ref: `mjtMeshInertia` in `mjspec.h`.
+/// Ordinals match MuJoCo: Convex=0, Exact=1, Legacy=2, Shell=3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MeshInertia {
+    /// Compute exact (volumetric) inertia on the convex hull.
+    /// Default mode (MuJoCo enum value 0).
+    Convex,
+    /// Compute exact (volumetric) inertia on the original mesh.
+    /// Requires watertight, outward-oriented mesh.
+    Exact,
+    /// Legacy algorithm: absolute tetrahedron volumes (overcounts
+    /// non-convex regions). Pre-MuJoCo 3.0 behavior.
+    Legacy,
+    /// Surface-area-weighted shell inertia. mass = density × total_area.
+    Shell,
+}
+
+impl Default for MeshInertia {
+    fn default() -> Self {
+        Self::Convex // MuJoCo default: enum value 0
+    }
+}
+
 /// Inertia computation control from `<compiler inertiafromgeom="..."/>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -693,6 +719,8 @@ pub struct MjcfGeomDefaults {
     pub fluidcoef: Option<[f64; 5]>,
     /// Per-element user data for default class inheritance.
     pub user: Option<Vec<f64>>,
+    /// Default shell inertia for primitive geoms.
+    pub shellinertia: Option<bool>,
 }
 
 /// Default actuator parameters.
@@ -844,6 +872,8 @@ pub struct MjcfMeshDefaults {
     pub scale: Option<Vector3<f64>>,
     /// Maximum convex hull vertices. `None` = no limit (default).
     pub maxhullvert: Option<usize>,
+    /// Default mesh inertia mode from `<default><mesh inertia="..."/>`.
+    pub inertia: Option<MeshInertia>,
 }
 
 // ============================================================================
@@ -872,6 +902,9 @@ pub struct MjcfMesh {
     /// `Some(n)` where n >= 4 = limit hull to n vertices.
     /// MuJoCo: `maxhullvert` attribute, default -1 (no limit), min 4.
     pub maxhullvert: Option<usize>,
+    /// Mesh inertia computation mode. `None` = not specified in XML
+    /// (defaults to `Convex` at build time).
+    pub inertia: Option<MeshInertia>,
 }
 
 impl Default for MjcfMesh {
@@ -883,6 +916,7 @@ impl Default for MjcfMesh {
             vertex: None,
             face: None,
             maxhullvert: None,
+            inertia: None,
         }
     }
 }
@@ -1264,6 +1298,10 @@ pub struct MjcfGeom {
     pub fluidcoef: Option<[f64; 5]>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,
+    /// Shell inertia for primitive geoms. `None` = not specified (volume).
+    /// `Some(true)` = shell inertia. Rejected on mesh geoms.
+    /// MuJoCo: `shellinertia` attribute, maps to `mjtGeomInertia`.
+    pub shellinertia: Option<bool>,
 }
 
 impl Default for MjcfGeom {
@@ -1300,6 +1338,7 @@ impl Default for MjcfGeom {
             fluidshape: None,
             fluidcoef: None,
             user: Vec::new(),
+            shellinertia: None,
         }
     }
 }

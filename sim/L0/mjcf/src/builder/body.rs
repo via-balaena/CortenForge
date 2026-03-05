@@ -178,9 +178,12 @@ impl ModelBuilder {
         //   Auto  — compute from geoms only when no explicit <inertial>
         //   False — use explicit <inertial> or zero
         let (mass, inertia, ipos, iquat) = match self.compiler.inertiafromgeom {
-            InertiaFromGeom::True => {
-                compute_inertia_from_geoms(&resolved_geoms, &self.mesh_name_to_id, &self.mesh_data)
-            }
+            InertiaFromGeom::True => compute_inertia_from_geoms(
+                &resolved_geoms,
+                &self.mesh_name_to_id,
+                &self.mesh_data,
+                &self.mesh_inertia_modes,
+            ),
             InertiaFromGeom::Auto => {
                 if let Some(ref inertial) = body.inertial {
                     extract_inertial_properties(inertial)
@@ -189,6 +192,7 @@ impl ModelBuilder {
                         &resolved_geoms,
                         &self.mesh_name_to_id,
                         &self.mesh_data,
+                        &self.mesh_inertia_modes,
                     )
                 }
             }

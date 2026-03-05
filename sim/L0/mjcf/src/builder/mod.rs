@@ -44,7 +44,8 @@ use std::sync::Arc;
 use crate::defaults::DefaultResolver;
 use crate::error::{MjcfError, Result};
 use crate::types::{
-    MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfKeyframe, MjcfModel, MjcfOption, MjcfSolverType,
+    MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfKeyframe, MjcfModel, MjcfOption,
+    MjcfSolverType,
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
@@ -498,6 +499,8 @@ pub struct ModelBuilder {
     pub(crate) mesh_name: Vec<String>,
     /// Triangle mesh data with prebuilt BVH (Arc for cheap cloning).
     pub(crate) mesh_data: Vec<Arc<sim_core::mesh::TriangleMeshData>>,
+    /// Per-mesh inertia computation mode (from `<mesh inertia="..."/>`).
+    pub(crate) mesh_inertia_modes: Vec<MeshInertia>,
 
     // Height field arrays (built from MJCF <asset><hfield> elements)
     /// Name-to-index lookup for hfield assets.

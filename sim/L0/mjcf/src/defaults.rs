@@ -328,6 +328,9 @@ impl DefaultResolver {
                     result.user.clone_from(user);
                 }
             }
+            if result.shellinertia.is_none() {
+                result.shellinertia = defaults.shellinertia;
+            }
         }
 
         result
@@ -738,6 +741,9 @@ impl DefaultResolver {
             if result.maxhullvert.is_none() {
                 result.maxhullvert = defaults.maxhullvert;
             }
+            if result.inertia.is_none() {
+                result.inertia = defaults.inertia;
+            }
         }
 
         result
@@ -888,6 +894,7 @@ impl DefaultResolver {
                 fluidshape: c.fluidshape.or(p.fluidshape),
                 fluidcoef: c.fluidcoef.or(p.fluidcoef),
                 user: c.user.clone().or_else(|| p.user.clone()),
+                shellinertia: c.shellinertia.or(p.shellinertia),
             }),
         }
     }
@@ -1001,6 +1008,7 @@ impl DefaultResolver {
             (Some(p), Some(c)) => Some(MjcfMeshDefaults {
                 scale: c.scale.or(p.scale),
                 maxhullvert: c.maxhullvert.or(p.maxhullvert),
+                inertia: c.inertia.or(p.inertia),
             }),
         }
     }
