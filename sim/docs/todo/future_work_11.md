@@ -8,8 +8,8 @@ is the conformance test suite that validates all preceding correctness work (#19
 
 ---
 
-### 43. Mesh `inertia` Attribute (Shell Inertia + Inertia Mode Enum)
-**Status:** Not started | **Effort:** S–M | **Prerequisites:** None
+### ~~43. Mesh `inertia` Attribute (Shell Inertia + Inertia Mode Enum)~~
+**Status:** ✅ Done (Phase 9 Spec B) | **Effort:** S–M | **Prerequisites:** None
 
 #### Current State
 

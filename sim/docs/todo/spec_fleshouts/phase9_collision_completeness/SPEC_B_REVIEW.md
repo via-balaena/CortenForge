@@ -428,10 +428,10 @@ All algorithms are complete, all edge cases guarded, no placeholder code.
 
 | Item | Spec Reference | Tracked In | Tracking ID | Verified? |
 |------|---------------|------------|-------------|-----------|
-| Deeply concave mesh for legacy vs exact demonstration | Out of Scope, bullet 1 | Spec B, Out of Scope | — | **Acceptable** — nice-to-have test mesh, not conformance-blocking |
-| Flex inertia (deformable body) | Out of Scope, bullet 2 | ROADMAP_V1.md, Phase 10 | — | **Acceptable** — separate subsystem |
-| GPU-accelerated inertia computation | Out of Scope, bullet 3 | Spec B, Out of Scope | — | **Acceptable** — post-v1.0 perf optimization |
-| `exactmeshinertia` full removal (match MuJoCo 3.5.0 schema rejection) | Out of Scope, bullet 4 | Spec B, Out of Scope | — | **Acceptable** — backward compat retained, no conformance impact |
+| Deeply concave mesh for legacy vs exact demonstration | Out of Scope, bullet 1 | ROADMAP_V1.md, Other Non-Critical | DT-137 | **Tracked** — nice-to-have test mesh, not conformance-blocking |
+| Flex inertia (deformable body) | Out of Scope, bullet 2 | Spec B, Out of Scope (scope clarification) | — | **N/A** — MeshInertia modes don't apply to flex bodies; not deferred work |
+| GPU-accelerated inertia computation | Out of Scope, bullet 3 | ROADMAP_V1.md, GPU Pipeline | DT-138 | **Tracked** — post-v1.0 perf optimization |
+| `exactmeshinertia` full removal (match MuJoCo 3.5.0 schema rejection) | Out of Scope, bullet 4 | ROADMAP_V1.md, Low-Priority MuJoCo Compat | DT-139 | **Tracked** — backward compat retained, no conformance impact |
 
 ### Discovered During Implementation
 
@@ -508,7 +508,7 @@ Total:                  1999 passed, 0 failed, 17 ignored
 | Blast radius accuracy | 5 | **Accurate** — 2 trivial unexpected files (init.rs, body.rs) |
 | Convention fidelity | 6 | **All 7 conventions followed** |
 | Weak items | 7 | **None found** |
-| Deferred work tracking | 8 | **4 items tracked in spec Out of Scope** |
+| Deferred work tracking | 8 | **3 items tracked as DT-137/138/139; 1 scope clarification (flex inertia N/A)** |
 | Test health | 9 | **1999 pass, 0 fail, 17 ignore** |
 
 **Overall:** Ship (after fixes — all 3 fixes applied in this session)
@@ -522,7 +522,7 @@ Total:                  1999 passed, 0 failed, 17 ignored
 **Items to fix before shipping:** None remaining.
 
 **Items tracked for future work:**
-- Deeply concave mesh test mesh (nice-to-have — needed to distinguish legacy from exact)
-- Flex inertia (Phase 10)
-- GPU-accelerated inertia (post-v1.0)
-- `exactmeshinertia` full removal (minor cleanup)
+- DT-137: Deeply concave mesh test mesh (nice-to-have — needed to distinguish legacy from exact)
+- DT-138: GPU-accelerated mesh inertia computation (post-v1.0)
+- DT-139: `exactmeshinertia` attribute full removal (minor cleanup)
+- Flex inertia: scope clarification only — MeshInertia modes don't apply to flex bodies (not deferred work)
