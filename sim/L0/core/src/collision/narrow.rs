@@ -4,7 +4,6 @@
 //! `make_contact_from_geoms` contact constructor, `apply_pair_overrides` for mechanism-2
 //! contacts, and shared collision constants.
 
-use super::hfield::collide_with_hfield;
 use super::mesh_collide::collide_with_mesh;
 use super::pair_convex::{
     collide_capsule_capsule, collide_sphere_box, collide_sphere_capsule, collide_sphere_sphere,
@@ -83,14 +82,16 @@ pub fn collide_geoms(
         return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
+    // Height field collision handled via collide_hfield_multi at the
+    // broadphase loop level (multi-contact). Return None here as a safety
+    // fallback — hfield pairs should never reach collide_geoms in normal flow.
+    if type1 == GeomType::Hfield || type2 == GeomType::Hfield {
+        return None;
+    }
+
     // Special case: mesh collision (has its own BVH-accelerated path)
     if type1 == GeomType::Mesh || type2 == GeomType::Mesh {
         return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-    }
-
-    // Special case: height field collision
-    if type1 == GeomType::Hfield || type2 == GeomType::Hfield {
-        return collide_with_hfield(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
     // Special case: plane collision

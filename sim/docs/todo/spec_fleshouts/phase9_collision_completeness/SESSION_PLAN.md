@@ -575,7 +575,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 15: Spec C implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- implement Spec C.

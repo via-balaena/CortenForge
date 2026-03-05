@@ -104,7 +104,8 @@ pub fn collide_with_mesh(
                     collide_mesh_plane(mesh, &pose1, plane_normal, plane_d)
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
-                GeomType::Hfield => unreachable!("handled by collide_with_hfield"),
+                // Hfield pairs routed before mesh dispatch (narrow.rs S1 ordering fix)
+                GeomType::Hfield => return None,
                 GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
             }
         }
@@ -137,7 +138,8 @@ pub fn collide_with_mesh(
                     collide_mesh_plane(mesh, &pose2, plane_normal, plane_d)
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
-                GeomType::Hfield => unreachable!("handled by collide_with_hfield"),
+                // Hfield pairs routed before mesh dispatch (narrow.rs S1 ordering fix)
+                GeomType::Hfield => return None,
                 GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
             };
 

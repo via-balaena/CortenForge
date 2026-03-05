@@ -25,11 +25,12 @@ use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
 use crate::types::{
     DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
-    Model, SleepState, disabled, enabled,
+    GeomType, Model, SleepState, disabled, enabled,
 };
 use nalgebra::{Point3, Vector3};
 
 use self::flex_collide::{make_contact_flex_rigid, narrowphase_sphere_geom};
+use self::hfield::collide_hfield_multi;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
 
 // ============================================================================
@@ -437,12 +438,27 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             // S10: assign_margin returns o_margin directly when override active.
             let margin = assign_margin(model, model.geom_margin[geom1] + model.geom_margin[geom2]);
 
-            // Narrow-phase collision detection.
-            // Midphase BVH culling is active for mesh pairs and gated by
-            // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
-            if let Some(contact) =
+            // Check if either geom is a heightfield — use multi-contact path.
+            // EXCLUDE SDF-Hfield pairs: MuJoCo uses mjc_HFieldSDF (not
+            // mjc_ConvexHField) for that pair, and CortenForge's collide_with_sdf
+            // already handles it.
+            let is_hfield_pair = (model.geom_type[geom1] == GeomType::Hfield
+                || model.geom_type[geom2] == GeomType::Hfield)
+                && model.geom_type[geom1] != GeomType::Sdf
+                && model.geom_type[geom2] != GeomType::Sdf;
+
+            if is_hfield_pair {
+                let hf_contacts =
+                    collide_hfield_multi(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
+                for contact in hf_contacts {
+                    data.contacts.push(contact);
+                    data.ncon += 1;
+                }
+            } else if let Some(contact) =
                 collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
             {
+                // Midphase BVH culling is active for mesh pairs and gated by
+                // DISABLE_MIDPHASE in mesh_collide::collide_with_mesh (DT-99).
                 data.contacts.push(contact);
                 data.ncon += 1;
             }
@@ -483,7 +499,25 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
             let pos2 = data.geom_xpos[geom2];
             let mat2 = data.geom_xmat[geom2];
 
-            if let Some(mut contact) =
+            let is_hfield_pair = (model.geom_type[geom1] == GeomType::Hfield
+                || model.geom_type[geom2] == GeomType::Hfield)
+                && model.geom_type[geom1] != GeomType::Sdf
+                && model.geom_type[geom2] != GeomType::Sdf;
+
+            if is_hfield_pair {
+                let hf_contacts =
+                    collide_hfield_multi(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
+                for mut contact in hf_contacts {
+                    apply_pair_overrides(&mut contact, pair);
+                    apply_global_override(model, &mut contact, pair.gap);
+                    if !enabled(model, ENABLE_OVERRIDE) {
+                        contact.mu = assign_friction(model, &contact.mu);
+                        contact.friction = contact.mu[0];
+                    }
+                    data.contacts.push(contact);
+                    data.ncon += 1;
+                }
+            } else if let Some(mut contact) =
                 collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
             {
                 apply_pair_overrides(&mut contact, pair);
