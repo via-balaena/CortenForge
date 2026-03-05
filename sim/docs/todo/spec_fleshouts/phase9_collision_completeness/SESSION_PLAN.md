@@ -257,7 +257,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 5: Spec A implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- implement Spec A.
@@ -282,7 +282,7 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 6: Spec A review -- create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- create Spec A review document.
@@ -1011,8 +1011,8 @@ Present the Review Verdict (section 10) to the user when done.
 | 2 | T1: §57 (SDF options) | Done | `63dd7f0` |
 | 3 | Spec A rubric (§65 Convex Hull) | Done | `9b2a7e9` |
 | 4 | Spec A spec | Done | `349e3d5` |
-| 5 | Spec A implementation | Pending | — |
-| 6 | Spec A review -- create document | Pending | — |
+| 5 | Spec A implementation | Done | `8a6b67b` |
+| 6 | Spec A review -- create document | Done | `9245adf` |
 | 7 | Spec A review -- execute | Pending | — |
 | 8 | Spec B rubric (§43 Mesh Inertia) | Pending | — |
 | 9 | Spec B spec | Pending | — |
