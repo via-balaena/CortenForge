@@ -600,7 +600,7 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 16: Spec C review -- create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- create Spec C review document.
@@ -1022,7 +1022,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 13 | Spec C rubric (§54 Hfield Pairs) | Done | `ef9ca1e`, `f0981e4` |
 | 14 | Spec C spec | Done | `0c59409` |
 | 15 | Spec C implementation | Done | `4867fc5` |
-| 16 | Spec C review -- create document | Pending | — |
+| 16 | Spec C review -- create document | Done | — |
 | 17 | Spec C review -- execute | Pending | — |
 | 18 | Spec D rubric (§50 CCD) | Pending | — |
 | 19 | Spec D spec | Pending | — |
