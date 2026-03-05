@@ -139,7 +139,7 @@ pub fn raycast_shape(
         CollisionShape::Ellipsoid { radii } => {
             raycast_ellipsoid(shape_pose, *radii, ray_origin, ray_direction, max_distance)
         }
-        CollisionShape::ConvexMesh { vertices } => raycast_convex_mesh(
+        CollisionShape::ConvexMesh { vertices, .. } => raycast_convex_mesh(
             shape_pose,
             vertices,
             ray_origin,

@@ -115,6 +115,7 @@ pub mod collision;
 pub mod collision_shape;
 
 // Core simulation algorithms
+pub mod convex_hull;
 pub mod gjk_epa;
 pub mod heightfield;
 pub mod mesh;
@@ -136,6 +137,7 @@ pub mod batch;
 
 pub use batch::BatchSim;
 pub use collision_shape::{Aabb, Axis, CollisionShape};
+pub use convex_hull::{ConvexHull, HullGraph, quickhull};
 
 pub use contact::{ContactForce, ContactManifold, ContactPoint};
 pub use heightfield::{HeightFieldContact, HeightFieldData};

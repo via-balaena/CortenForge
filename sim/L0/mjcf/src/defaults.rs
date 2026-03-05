@@ -735,6 +735,9 @@ impl DefaultResolver {
             if result.scale.is_none() {
                 result.scale = defaults.scale;
             }
+            if result.maxhullvert.is_none() {
+                result.maxhullvert = defaults.maxhullvert;
+            }
         }
 
         result
@@ -997,6 +1000,7 @@ impl DefaultResolver {
             (None, Some(c)) => Some(c.clone()),
             (Some(p), Some(c)) => Some(MjcfMeshDefaults {
                 scale: c.scale.or(p.scale),
+                maxhullvert: c.maxhullvert.or(p.maxhullvert),
             }),
         }
     }

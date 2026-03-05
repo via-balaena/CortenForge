@@ -842,6 +842,8 @@ pub struct MjcfSensorDefaults {
 pub struct MjcfMeshDefaults {
     /// Mesh scale factors [x, y, z].
     pub scale: Option<Vector3<f64>>,
+    /// Maximum convex hull vertices. `None` = no limit (default).
+    pub maxhullvert: Option<usize>,
 }
 
 // ============================================================================
@@ -866,6 +868,10 @@ pub struct MjcfMesh {
     /// Embedded face data (if not loading from file).
     /// Format: flat array of vertex indices (triangles).
     pub face: Option<Vec<u32>>,
+    /// Maximum convex hull vertices. `None` = no limit (default).
+    /// `Some(n)` where n >= 4 = limit hull to n vertices.
+    /// MuJoCo: `maxhullvert` attribute, default -1 (no limit), min 4.
+    pub maxhullvert: Option<usize>,
 }
 
 impl Default for MjcfMesh {
@@ -876,6 +882,7 @@ impl Default for MjcfMesh {
             scale: None,
             vertex: None,
             face: None,
+            maxhullvert: None,
         }
     }
 }

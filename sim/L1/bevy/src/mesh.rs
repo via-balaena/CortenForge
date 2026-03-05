@@ -37,7 +37,7 @@ pub fn mesh_from_collision_shape(shape: &CollisionShape) -> Option<Mesh> {
         } => Some(cylinder_mesh(*half_length, *radius)),
         CollisionShape::Ellipsoid { radii } => Some(ellipsoid_mesh(radii)),
         CollisionShape::Plane { .. } => Some(plane_mesh()),
-        CollisionShape::ConvexMesh { vertices } => Some(convex_mesh_from_vertices(vertices)),
+        CollisionShape::ConvexMesh { vertices, .. } => Some(convex_mesh_from_vertices(vertices)),
         CollisionShape::TriangleMesh { data } => Some(triangle_mesh(data)),
         CollisionShape::HeightField { .. } => {
             // TODO: Implement height field visualization

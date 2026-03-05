@@ -54,10 +54,11 @@
 //! - Casey Muratori's GJK video series
 
 use nalgebra::{Point3, Vector3};
-use sim_simd::find_max_dot;
 use sim_types::Pose;
+use std::cell::Cell;
 
 use crate::CollisionShape;
+use crate::convex_hull::HullGraph;
 
 /// Tolerance for numerical comparisons in GJK/EPA.
 const EPSILON: f64 = 1e-8;
@@ -223,7 +224,11 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
             half_length,
             radius,
         } => support_capsule(pose, *half_length, *radius, direction),
-        CollisionShape::ConvexMesh { vertices } => support_convex_mesh(pose, vertices, direction),
+        CollisionShape::ConvexMesh {
+            vertices,
+            graph,
+            warm_start,
+        } => support_convex_mesh(pose, vertices, graph.as_ref(), warm_start, direction),
         CollisionShape::Plane { normal, distance } => {
             support_plane(pose, normal, *distance, direction)
         }
@@ -371,29 +376,82 @@ fn support_capsule(
 
 /// Support function for a convex mesh.
 ///
-/// Uses SIMD-optimized batch dot products to find the support vertex
-/// efficiently for large meshes.
+/// Selects between hill-climbing (O(√n), when graph is available) and
+/// exhaustive scan (O(n)). Both strategies warm-start from the cached
+/// vertex index.
+///
+/// MuJoCo ref: `mjc_hillclimbSupport()` and `mjc_meshSupport()` in
+/// `engine_collision_convex.c`.
 fn support_convex_mesh(
     pose: &Pose,
     vertices: &[Point3<f64>],
+    graph: Option<&HullGraph>,
+    warm_start: &Cell<usize>,
     direction: &Vector3<f64>,
 ) -> Point3<f64> {
     if vertices.is_empty() {
         return pose.position;
     }
 
-    // Transform direction to local space for efficiency
     let local_dir = pose.rotation.inverse() * direction;
 
-    // Convert vertices to Vector3 for SIMD processing
-    // Note: Point3 and Vector3 have the same memory layout, so this is efficient
-    let vertex_vectors: Vec<Vector3<f64>> = vertices.iter().map(|p| p.coords).collect();
+    let best_idx = if let Some(g) = graph {
+        // Hill-climbing (steepest-ascent): warm-start from cached vertex
+        let start = warm_start.get().min(vertices.len() - 1);
+        let idx = hill_climb_support(vertices, g, &local_dir, start);
+        warm_start.set(idx);
+        idx
+    } else {
+        // Exhaustive: warm-start by initializing max from cached vertex
+        let cached = warm_start.get().min(vertices.len() - 1);
+        let mut best = cached;
+        let mut max_dot = vertices[cached].coords.dot(&local_dir);
+        for (i, v) in vertices.iter().enumerate() {
+            let dot = v.coords.dot(&local_dir);
+            if dot > max_dot {
+                max_dot = dot;
+                best = i;
+            }
+        }
+        warm_start.set(best);
+        best
+    };
 
-    // Use SIMD-optimized find_max_dot for batch processing
-    let (best_idx, _max_dot) = find_max_dot(&vertex_vectors, &local_dir);
-
-    // Transform to world space
     pose.transform_point(&vertices[best_idx])
+}
+
+/// Steepest-ascent hill-climbing support on convex hull graph.
+///
+/// Matches MuJoCo's `mjc_hillclimbSupport()`: at each step, examine ALL
+/// neighbors of the current vertex, move to the neighbor with the highest
+/// dot product, repeat until no neighbor improves.
+///
+/// Guaranteed to find the global maximum because the dot product
+/// is a linear (unimodal) function on a convex surface.
+pub(crate) fn hill_climb_support(
+    vertices: &[Point3<f64>],
+    graph: &HullGraph,
+    direction: &Vector3<f64>,
+    start: usize,
+) -> usize {
+    let mut current = start;
+    let mut max_dot = f64::NEG_INFINITY;
+
+    loop {
+        let prev = current;
+        // Scan ALL neighbors of current vertex (steepest-ascent)
+        for &neighbor in &graph.adjacency[current] {
+            let dot = vertices[neighbor].coords.dot(direction);
+            if dot > max_dot {
+                max_dot = dot;
+                current = neighbor;
+            }
+        }
+        // Converged: no neighbor improved
+        if current == prev {
+            return current;
+        }
+    }
 }
 
 /// Support function for a plane.

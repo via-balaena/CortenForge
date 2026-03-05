@@ -227,7 +227,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 4: Spec A spec (Mesh Convex Hull Auto-Computation)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- write Spec A spec.
@@ -1010,7 +1010,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 1 | Phase 9 Umbrella | Done | `ade7750` |
 | 2 | T1: §57 (SDF options) | Done | `63dd7f0` |
 | 3 | Spec A rubric (§65 Convex Hull) | Done | `9b2a7e9` |
-| 4 | Spec A spec | Pending | — |
+| 4 | Spec A spec | Done | `349e3d5` |
 | 5 | Spec A implementation | Pending | — |
 | 6 | Spec A review -- create document | Pending | — |
 | 7 | Spec A review -- execute | Pending | — |

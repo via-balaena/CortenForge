@@ -1040,6 +1040,10 @@ fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
         defaults.scale = Some(parse_vector3(&scale)?);
     }
 
+    if let Some(n) = parse_int_attr(e, "maxhullvert") {
+        defaults.maxhullvert = parse_maxhullvert(n)?;
+    }
+
     Ok(defaults)
 }
 
@@ -1402,6 +1406,11 @@ fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let face_indices: Vec<u32> = face_data.iter().map(|f| *f as u32).collect();
         mesh.face = Some(face_indices);
+    }
+
+    // Parse maxhullvert (maximum convex hull vertices)
+    if let Some(n) = parse_int_attr(e, "maxhullvert") {
+        mesh.maxhullvert = parse_maxhullvert(n)?;
     }
 
     Ok(mesh)
@@ -3392,6 +3401,21 @@ fn parse_int_attr(e: &BytesStart, name: &str) -> Option<i32> {
     get_attribute_opt(e, name).and_then(|s| s.parse().ok())
 }
 
+/// Parse `maxhullvert` value: -1 → None (no limit), >= 4 → Some(n), else error.
+/// MuJoCo ref: `xml_native_reader.cc` validates `n != -1 && n < 4` → error.
+fn parse_maxhullvert(n: i32) -> Result<Option<usize>> {
+    if n == -1 {
+        Ok(None)
+    } else if n >= 4 {
+        #[allow(clippy::cast_sign_loss)]
+        Ok(Some(n as usize))
+    } else {
+        Err(MjcfError::XmlParse(
+            "maxhullvert must be larger than 3".to_string(),
+        ))
+    }
+}
+
 /// Parse a space-separated vector3 string.
 fn parse_vector3(s: &str) -> Result<Vector3<f64>> {
     let parts = parse_float_array(s)?;
@@ -4814,6 +4838,81 @@ mod tests {
             epsilon = 1e-10
         );
         assert_eq!(model.meshes[2].vertex_count(), 4);
+    }
+
+    // T9: maxhullvert parsing → AC9
+    #[test]
+    fn test_parse_maxhullvert() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="box" maxhullvert="10" vertex="0 0 0 1 0 0 1 1 0 0 1 0 0 0 1 1 0 1 1 1 1 0 1 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes[0].maxhullvert, Some(10));
+    }
+
+    // T10: maxhullvert validation error → AC10
+    #[test]
+    fn test_parse_maxhullvert_invalid() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="box" maxhullvert="2" vertex="0 0 0 1 0 0 1 1 0 0 1 0 0 0 1 1 0 1 1 1 1 0 1 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let err = parse_mjcf_str(xml).expect_err("should fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("maxhullvert must be larger than 3"),
+            "error should mention maxhullvert, got: {msg}"
+        );
+    }
+
+    // T12: Hull available after model build → AC12
+    #[test]
+    fn test_hull_available_after_build() {
+        // Use a tetrahedron mesh (4 vertices — minimum for a hull)
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="tet" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 3 1 2 3 0 2 3"/>
+                </asset>
+                <worldbody>
+                    <body name="b">
+                        <geom type="mesh" mesh="tet"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let model = crate::load_model(xml).expect("should build");
+        assert!(
+            model.mesh_data[0].convex_hull().is_some(),
+            "hull should be computed at build time"
+        );
+    }
+
+    // T18: maxhullvert=-1 parse → AC9
+    #[test]
+    fn test_parse_maxhullvert_minus_one() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="box" maxhullvert="-1" vertex="0 0 0 1 0 0 1 1 0 0 1 0 0 0 1 1 0 1 1 1 1 0 1 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(
+            model.meshes[0].maxhullvert, None,
+            "maxhullvert=-1 should map to None"
+        );
     }
 
     #[test]

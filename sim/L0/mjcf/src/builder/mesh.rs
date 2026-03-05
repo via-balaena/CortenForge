@@ -49,7 +49,11 @@ impl ModelBuilder {
         }
 
         // Convert MJCF mesh to TriangleMeshData
-        let mesh_data = convert_mjcf_mesh(mjcf_mesh, base_path, &self.compiler)?;
+        let mut mesh_data = convert_mjcf_mesh(mjcf_mesh, base_path, &self.compiler)?;
+
+        // Compute convex hull at build time (matching MuJoCo's MakeGraph())
+        let max_hull_vert = mjcf_mesh.maxhullvert;
+        mesh_data.compute_convex_hull(max_hull_vert);
 
         // Register in lookup table
         let mesh_id = self.mesh_data.len();
@@ -753,6 +757,7 @@ mod tests {
             vertex: None,
             face: None,
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
+            maxhullvert: None,
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
@@ -777,6 +782,7 @@ mod tests {
             vertex: None,
             face: None,
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
+            maxhullvert: None,
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, Some(temp_dir.path()), &MjcfCompiler::default());
@@ -802,6 +808,7 @@ mod tests {
                 2, 0, 3, // f3
             ]),
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
+            maxhullvert: None,
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
@@ -820,6 +827,7 @@ mod tests {
             vertex: None,
             face: None,
             scale: Some(Vector3::new(1.0, 1.0, 1.0)),
+            maxhullvert: None,
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());

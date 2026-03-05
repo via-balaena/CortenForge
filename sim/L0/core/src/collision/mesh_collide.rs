@@ -1,6 +1,8 @@
 //! Mesh collision dispatch — routes mesh-geom pairs to the standalone mesh library.
 
 use super::narrow::make_contact_from_geoms;
+use crate::collision_shape::CollisionShape;
+use crate::gjk_epa::gjk_epa_contact;
 use crate::mesh::{
     MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact,
     mesh_mesh_deepest_contact, mesh_sphere_contact,
@@ -49,6 +51,26 @@ pub fn collide_with_mesh(
             let mesh1 = &model.mesh_data[mesh1_id];
             let mesh2 = &model.mesh_data[mesh2_id];
 
+            // If both meshes have convex hulls, use GJK/EPA on hulls
+            // (MuJoCo-conformant path). Early return: hull path produces
+            // Contact directly, bypassing the MeshContact→Contact conversion.
+            if let (Some(hull1), Some(hull2)) = (mesh1.convex_hull(), mesh2.convex_hull()) {
+                let shape1 = CollisionShape::convex_mesh_from_hull(hull1);
+                let shape2 = CollisionShape::convex_mesh_from_hull(hull2);
+                return gjk_epa_contact(&shape1, &pose1, &shape2, &pose2).map(|gjk| {
+                    make_contact_from_geoms(
+                        model,
+                        gjk.point.coords,
+                        gjk.normal,
+                        gjk.penetration,
+                        geom1,
+                        geom2,
+                        margin,
+                    )
+                });
+            }
+
+            // Fallback to per-triangle BVH if either mesh lacks hull.
             mesh_mesh_deepest_contact(mesh1, &pose1, mesh2, &pose2, use_bvh)
         }
 
