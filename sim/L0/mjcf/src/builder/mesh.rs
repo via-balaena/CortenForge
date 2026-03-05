@@ -55,13 +55,27 @@ impl ModelBuilder {
         let max_hull_vert = mjcf_mesh.maxhullvert;
         mesh_data.compute_convex_hull(max_hull_vert);
 
+        // Validate exact mode: reject meshes with negative volume (misoriented triangles).
+        // MuJoCo ref: ComputeInertia() in user_mesh.cc — "mesh volume is negative".
+        let mode = mjcf_mesh.inertia.unwrap_or(MeshInertia::Convex);
+        if mode == MeshInertia::Exact {
+            let (volume, _, _) = compute_mesh_inertia(&mesh_data);
+            if volume < 0.0 {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "mesh volume is negative (misoriented triangles): {}",
+                        mjcf_mesh.name
+                    ),
+                });
+            }
+        }
+
         // Register in lookup table
         let mesh_id = self.mesh_data.len();
         self.mesh_name_to_id.insert(mjcf_mesh.name.clone(), mesh_id);
         self.mesh_name.push(mjcf_mesh.name.clone());
         self.mesh_data.push(Arc::new(mesh_data));
-        self.mesh_inertia_modes
-            .push(mjcf_mesh.inertia.unwrap_or(MeshInertia::Convex));
+        self.mesh_inertia_modes.push(mode);
 
         Ok(())
     }

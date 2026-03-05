@@ -470,7 +470,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase9_collision_completeness/SPEC_B_REVI
 
 ## Session 12: Spec B review -- execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- execute Spec B review.

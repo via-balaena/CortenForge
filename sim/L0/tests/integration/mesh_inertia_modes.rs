@@ -225,8 +225,12 @@ fn t9_convex_mode_non_convex_mesh() {
 </mujoco>"#
     );
     let model = load_model(&mjcf).unwrap();
-    // Convex hull of L-shape is a larger bounding box; mass > exact 2000
-    assert!(model.body_mass[1] > 2000.0);
+    // Convex hull of L-shape is a pentagonal prism, volume = 7.0
+    // mass = density × hull_volume = 1000 × 7.0 = 7000
+    assert_relative_eq!(model.body_mass[1], 7000.0, epsilon = 1.0);
+    assert_relative_eq!(model.body_inertia[1].x, 6666.667, epsilon = 1.0);
+    assert_relative_eq!(model.body_inertia[1].y, 3539.683, epsilon = 1.0);
+    assert_relative_eq!(model.body_inertia[1].z, 9039.683, epsilon = 1.0);
 }
 
 // ============================================================================
@@ -237,16 +241,19 @@ fn t9_convex_mode_non_convex_mesh() {
 fn t10_legacy_mode() {
     let mjcf = format!(
         r#"<mujoco>
-  <asset><mesh name="cube" inertia="legacy" vertex="{CUBE_VERTICES}" face="{CUBE_FACES}"/></asset>
+  <asset><mesh name="lshape" inertia="legacy" vertex="{L_SHAPE_VERTICES}" face="{L_SHAPE_FACES}"/></asset>
   <worldbody><body>
-    <geom type="mesh" mesh="cube" density="1000"/>
+    <geom type="mesh" mesh="lshape" density="1000"/>
   </body></worldbody>
 </mujoco>"#
     );
     let model = load_model(&mjcf).unwrap();
-    // For convex meshes, Legacy == Exact
-    assert_relative_eq!(model.body_mass[1], 1000.0, epsilon = 1.0);
-    assert_relative_eq!(model.body_inertia[1].x, 166.667, epsilon = 1.0);
+    // L-shape: exact volume = 5, legacy uses |det|/6 which equals signed det/6
+    // for this L-shape (centroid inside solid), so legacy == exact: mass = 5000
+    assert_relative_eq!(model.body_mass[1], 5000.0, epsilon = 1.0);
+    assert_relative_eq!(model.body_inertia[1].x, 5833.333, epsilon = 1.0);
+    assert_relative_eq!(model.body_inertia[1].y, 2233.333, epsilon = 1.0);
+    assert_relative_eq!(model.body_inertia[1].z, 7233.333, epsilon = 1.0);
 }
 
 // ============================================================================
@@ -379,15 +386,16 @@ fn t18_exact_mode_rejects_misoriented_mesh() {
 </mujoco>"#
     );
     let result = load_model(&mjcf);
-    // Reversed winding produces negative volume. Exact mode should reject.
-    // If the current implementation doesn't validate this, this test
-    // documents the expectation — it's AC17 from the spec.
-    // For now, we at least verify the model can be loaded (legacy behavior).
-    // The validation will be added in the review if needed.
-    if let Err(e) = &result {
-        assert!(e.to_string().contains("mesh volume is negative"));
-    }
-    // If it loads, the volume will be negative but mass uses abs()
+    // Reversed winding produces negative volume. Exact mode must reject.
+    // MuJoCo ref: "mesh volume is negative (misoriented triangles)"
+    assert!(result.is_err(), "exact mode must reject misoriented mesh");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("mesh volume is negative"),
+        "error must mention 'mesh volume is negative'"
+    );
 }
 
 // ============================================================================
