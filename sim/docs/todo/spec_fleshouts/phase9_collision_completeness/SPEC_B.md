@@ -1196,6 +1196,34 @@ let mode = mjcf_mesh.inertia.unwrap_or(MeshInertia::Convex);
 self.mesh_inertia_modes.push(mode);
 ```
 
+**8e. Negative volume validation for exact mode:**
+
+When `compute_mesh_inertia()` (exact mode) produces a negative volume, the
+mesh has misoriented triangles. MuJoCo rejects this at compile time (EGT-13).
+Add validation after `compute_mesh_inertia_by_mode()` returns for
+`MeshInertia::Exact`:
+
+```rust
+// In compute_inertia_from_geoms() or process_mesh(), after mesh inertia computation:
+if mode == MeshInertia::Exact {
+    let (volume, _, _) = &props;
+    if *volume < 0.0 {
+        return Err(ModelConversionError {
+            message: format!(
+                "mesh volume is negative (misoriented triangles): {}",
+                mesh_name
+            ),
+        });
+    }
+}
+```
+
+**Note:** The existing `compute_mesh_inertia()` returns signed volume. This
+validation is only needed for `Exact` mode — `Legacy` uses `det.abs()` (always
+positive), `Convex` runs on the convex hull (always positive for valid hulls),
+and `Shell` computes area (always positive). If the existing code already
+performs this check, this step is a no-op and AC17 becomes a regression test.
+
 ### S9. Validation: shellinertia rejection on mesh geoms
 
 **File:** `sim/L0/mjcf/src/builder/geom.rs` (or validation pass)
@@ -1317,6 +1345,20 @@ but the test meshes are convex (cubes), so `Convex == Exact` numerically.
 **Assert:** Shell inertia values produced (same as AC2)
 **Field:** Model body mass
 
+### AC17: Exact mode rejects misoriented mesh *(runtime test — MuJoCo-verified)*
+**Given:** Mesh with fully reversed face winding, `inertia="exact"`, density=1000
+**After:** Model load attempt
+**Assert:** Load fails with error containing "mesh volume is negative (misoriented triangles)"
+**Field:** Error message
+**Note:** Only triggers with fully reversed winding. Mixed normals produce "inconsistent orientation" — not tested here. Matches EGT-13.
+
+### AC18: Default class inheritance for shellinertia *(runtime test)*
+**Given:** `<default><geom shellinertia="true"/></default>`, sphere geom with no explicit `shellinertia`
+**After:** Model load
+**Assert:** `body_mass[1]` = 12566.37 ± 0.1 (shell mass, not solid 4188.79)
+**Field:** Model body mass
+**Note:** Validates that `shellinertia` cascades through `apply_to_geom()` / `merge_geom_defaults()`.
+
 ---
 
 ## AC → Test Traceability Matrix
@@ -1339,6 +1381,8 @@ but the test meshes are convex (cubes), so `Convex == Exact` numerically.
 | AC14 (exactmeshinertia warn) | T14 | Direct |
 | AC15 (exact regression) | T15 | Regression |
 | AC16 (inertia parse) | T2 | Direct (covered by T2) |
+| AC17 (exact misoriented error) | T18 | Direct |
+| AC18 (shellinertia default inheritance) | T19 | Direct |
 
 ---
 
@@ -1500,13 +1544,46 @@ assert!(load_model(mjcf).is_ok());
 
 | Edge Case | Why it matters | Test(s) | AC(s) |
 |-----------|---------------|---------|-------|
-| Zero-area degenerate mesh + shell mode | Division by zero in COM/inertia | T16 | AC2 |
+| Zero-area degenerate mesh + shell mode | Division by zero in COM/inertia | T16 | — |
+| Misoriented mesh with exact mode | Must reject with negative volume error | T18 | AC17 |
 | Convex mode on mesh that's already convex (cube) | Must equal exact mode | T1 | AC1, AC15 |
 | Explicit mass override with shell density | Scale factor = mass/(density×area) | T3 | AC3 |
 | `shellinertia` on mesh geom | Must error (MuJoCo 3.5.0 rejects) | T11 | AC11 |
 | `shellinertia` on each of 5 primitive types | All must compute shell inertia | T4-T8 | AC4-AC8 |
 | Default class inheritance for `<mesh inertia>` | Attribute must cascade | T12 | AC12 |
+| Default class inheritance for `<geom shellinertia>` | Attribute must cascade through `apply_to_geom()` | T19 | AC18 |
 | Multi-geom body mixing shell and solid geoms | Mass aggregation must be correct | T17 | — |
+
+### T18: Exact mode rejects misoriented mesh → AC17
+
+```rust
+// Mesh with reversed face winding, inertia="exact".
+// MuJoCo 3.5.0: "mesh volume is negative (misoriented triangles): {name}".
+let mjcf = r#"<mujoco>
+  <asset><mesh name="rev" inertia="exact" vertex="..." face="(reversed winding)"/></asset>
+  <worldbody><body>
+    <geom type="mesh" mesh="rev" density="1000"/>
+  </body></worldbody>
+</mujoco>"#;
+let result = load_model(mjcf);
+assert!(result.is_err());
+assert!(result.unwrap_err().to_string().contains("mesh volume is negative"));
+```
+
+### T19: Default class inheritance for shellinertia → AC18
+
+```rust
+// <default><geom shellinertia="true"/></default>, sphere r=1 density=1000.
+// Shell mass = ρ × 4πr² = 12566.37 (not solid 4188.79).
+let mjcf = r#"<mujoco>
+  <default><geom shellinertia="true"/></default>
+  <worldbody><body>
+    <geom type="sphere" size="1" density="1000"/>
+  </body></worldbody>
+</mujoco>"#;
+let model = load_model(mjcf).unwrap();
+assert_relative_eq!(model.body_mass[1], 12566.37, epsilon = 0.1);
+```
 
 ### Supplementary Tests
 
@@ -1540,7 +1617,7 @@ assert!(load_model(mjcf).is_ok());
 | `sim/L0/mjcf/src/builder/geom.rs` | Shell mass/inertia functions, Ellipsoid volume fix, shellinertia validation, shell primitive formulas, GL quadrature | +250 |
 | `sim/L0/mjcf/src/builder/mass.rs` | `mesh_inertia_modes` parameter on `compute_inertia_from_geoms()` | ~8 modified |
 | `sim/L0/mjcf/src/builder/mod.rs` (or body.rs) | `mesh_inertia_modes` builder field, populate in `process_mesh()`, thread to mass computation | +5 / ~3 modified |
-| Test file(s) | New tests T1–T17 | +400 |
+| Test file(s) | New tests T1–T19 | +450 |
 
 ### Existing Test Impact
 
@@ -1568,22 +1645,20 @@ assert!(load_model(mjcf).is_ok());
 ## Execution Order
 
 1. **S1** (types) — enum + field additions. No behavioral change. Compile and fix struct literals. → verify compilation
-2. **S2** (parser) — parse `inertia` on `<mesh>`, `shellinertia` on `<geom>`, `exactmeshinertia` warning → verify T14, T16 (parse tests)
-3. **S3** (defaults) — cascade `inertia` and `shellinertia` through default classes → verify T12
+2. **S2** (parser) — parse `inertia` on `<mesh>`, `shellinertia` on `<geom>`, `exactmeshinertia` warning → verify T14
+3. **S3** (defaults) — cascade `inertia` and `shellinertia` through default classes → verify T12, T19
 4. **S8a** (Ellipsoid volume fix) — fix `compute_geom_mass()` Ellipsoid case → verify T13
-5. **S4** (shell mesh inertia) — `compute_mesh_inertia_shell()` → verify T2, T3
+5. **S4** (shell mesh inertia) — `compute_mesh_inertia_shell()` → verify T2, T3, T16
 6. **S5** (legacy mesh inertia) — `compute_mesh_inertia_legacy()` → verify T10
 7. **S6** (convex mesh inertia on hull) — `compute_mesh_inertia_on_hull()` → verify T1, T9
-8. **S8b-d** (dispatch integration) — mode threading, `compute_mesh_inertia_by_mode()`, `mesh_inertia_modes` parameter → verify T1 regression
+8. **S8b-e** (dispatch integration) — mode threading, `compute_mesh_inertia_by_mode()`, `mesh_inertia_modes` parameter, negative volume validation for exact mode → verify T1 regression, T18
 9. **S7** (primitive shell formulas) — sphere, box, cylinder, capsule, ellipsoid → verify T4–T8
 10. **S9** (shellinertia rejection on mesh) → verify T11
-11. **T15** — run full `exactmeshinertia.rs` regression suite → verify all 10 existing tests pass
+11. **T15, T18** — run full `exactmeshinertia.rs` regression suite + misoriented mesh rejection → verify all 10 existing tests pass + T18
 
 ---
 
 ## Out of Scope
-
-- **Mesh winding orientation validation** (exact mode negative volume error) — existing tests cover this. A dedicated conformance test for misoriented meshes is tracked as a future enhancement but not part of this spec.
 
 - **Deeply concave mesh for legacy vs exact demonstration** — EGT-12 notes that the L-shape mesh doesn't demonstrate legacy overcounting (centroid inside solid). A C-shape or U-shape mesh would be needed. Deferred — the algorithm is correct per code review; a more dramatic test mesh is nice-to-have.
 
