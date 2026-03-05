@@ -383,7 +383,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 9: Spec B spec (Mesh Inertia Modes)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- write Spec B spec.
@@ -1015,7 +1015,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 6 | Spec A review -- create document | Done | `9011f04` |
 | 7 | Spec A review -- execute | Done | `ba6c261` |
 | 8 | Spec B rubric (§43 Mesh Inertia) | Done | `3e7f593` |
-| 9 | Spec B spec | Pending | — |
+| 9 | Spec B spec | Done | `765d1fa` |
 | 10 | Spec B implementation | Pending | — |
 | 11 | Spec B review -- create document | Pending | — |
 | 12 | Spec B review -- execute | Pending | — |
