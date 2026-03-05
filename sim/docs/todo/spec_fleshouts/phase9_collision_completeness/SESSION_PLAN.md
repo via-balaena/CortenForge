@@ -1017,7 +1017,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 8 | Spec B rubric (§43 Mesh Inertia) | Done | `3e7f593` |
 | 9 | Spec B spec | Done | `765d1fa` |
 | 10 | Spec B implementation | Done | `5a30583` |
-| 11 | Spec B review -- create document | Pending | — |
+| 11 | Spec B review -- create document | Done | `8188d0a` |
 | 12 | Spec B review -- execute | Pending | — |
 | 13 | Spec C rubric (§54 Hfield Pairs) | Pending | — |
 | 14 | Spec C spec | Pending | — |
