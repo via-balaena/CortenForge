@@ -208,8 +208,8 @@ pub fn collide_with_plane(
         // Plane-plane: two infinite half-spaces. Intersection is either empty, a plane,
         // or a half-space—none of which produce a meaningful contact point.
         GeomType::Plane => None,
-        // Hfield is dispatched before plane in collide_geoms()
-        GeomType::Hfield => unreachable!("handled by collide_with_hfield"),
+        // Hfield pairs intercepted at broadphase level (collide_hfield_multi)
+        GeomType::Hfield => unreachable!("hfield pairs routed before plane dispatch"),
         // SDF is dispatched before plane in collide_geoms()
         GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
     }

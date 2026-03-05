@@ -21,6 +21,7 @@
 > DT-136 (GPU convex hull) added during Phase 9 Spec A review.
 > DT-137 (concave mesh test), DT-138 (GPU inertia), DT-139
 > (`exactmeshinertia` removal) added during Phase 9 Spec B review.
+> DT-140 (prism BVH acceleration) added during Phase 9 Spec C review.
 >
 > **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
@@ -231,7 +232,7 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 |------|--------|------|-------------|
 | ~~§43~~ | 11 | — | ~~Mesh inertia modes: exact, shell, convex, legacy~~ **Done** — Phase 9 Spec B |
 | §50 | 12 | — | Continuous Collision Detection (conservative-advancement CCD, tunneling prevention) |
-| §54 | 13 | — | Missing heightfield collision pairs: hfield-mesh, hfield-plane, hfield-hfield |
+| ~~§54~~ | 13 | — | ~~Missing heightfield collision pairs~~ **Done** — Phase 9 Spec C. Prism-based `mjc_ConvexHField` for all convex-vs-hfield pairs (hfield-mesh, cylinder, ellipsoid now exact + multi-contact). Hfield-plane/hfield-hfield dropped (not in MuJoCo). |
 | ~~§57~~ | 14 | — | ~~`sdf_iterations`/`sdf_initpoints` from `<option>` (replace hardcoded values)~~ **Done** — Phase 9 T1 (Session 2) |
 | ~~§65~~ | 16 | — | ~~Mesh convex hull auto-computation (Quickhull at build time for GJK/EPA)~~ **Done** — Phase 9 Spec A |
 | DT-70 | 10i | T3 | Deformable-vs-mesh/hfield/SDF narrowphase (only primitives currently) |
@@ -317,6 +318,7 @@ foundation isn't right.
 | §40d | 10 | — | Sparse Jacobian for fluid derivatives (nv > 200) |
 | §40e | 10 | — | Refactor `mj_jac_site` to use `mj_jac_point` kernel |
 | §48 | 12 | — | SIMD batch audit for hot paths |
+| DT-140 | 13 | T2 | Prism BVH acceleration for heightfield collision — `collide_hfield_multi` iterates sub-grid cells linearly; a quadtree or spatial index could skip empty cells for large hfields. Pure performance optimization, no conformance impact. Deferred from Phase 9 Spec C. |
 | DT-18 | 10c | T1 | Zero-friction condim downgrade optimization |
 | DT-20 | 10c | T2 | Unify `J^T * lambda` vs chain-walk contact force application |
 | DT-24 | 10c | T2 | Incremental collision detection on tree wake |

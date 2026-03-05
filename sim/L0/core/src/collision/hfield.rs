@@ -418,10 +418,11 @@ mod tests {
 
         assert!(!contacts.is_empty(), "Expected at least 1 contact");
         let c = &contacts[0];
-        // Depth should be approximately 0.1 (sphere bottom at 0.4, surface at 0.5)
+        // Depth should be approximately 0.1 (sphere bottom at 0.4, surface at 0.5).
+        // Tolerance ±0.05 per spec.
         assert!(
-            c.depth > 0.0 && c.depth < 0.3,
-            "Depth {} should be positive and reasonable",
+            c.depth > 0.05 && c.depth < 0.15,
+            "Depth {} should be ≈0.1 (±0.05)",
             c.depth
         );
         // Normal should be approximately +Z (flat terrain)
@@ -432,30 +433,65 @@ mod tests {
     // T2: Hfield-mesh contact (new pair) → AC2
     // ========================================================================
     #[test]
-    fn t2_hfield_mesh_no_panic() {
-        // Previously: mesh-hfield triggered unreachable! panic.
-        // Now: collide_hfield_multi handles it (mesh needs convex hull).
-        // Without a hull, 0 contacts — but no panic.
-        let model = flat_hfield_model(
+    fn t2_hfield_mesh_with_hull() {
+        use crate::mesh::TriangleMeshData;
+
+        // Build a unit cube mesh centered at origin with a convex hull.
+        let s = 0.5;
+        let verts = vec![
+            Point3::new(-s, -s, -s),
+            Point3::new(s, -s, -s),
+            Point3::new(s, s, -s),
+            Point3::new(-s, s, -s),
+            Point3::new(-s, -s, s),
+            Point3::new(s, -s, s),
+            Point3::new(s, s, s),
+            Point3::new(-s, s, s),
+        ];
+        #[rustfmt::skip]
+        let indices = vec![
+            0,1,2, 0,2,3, // -Z face
+            4,6,5, 4,7,6, // +Z face
+            0,4,5, 0,5,1, // -Y face
+            2,6,7, 2,7,3, // +Y face
+            0,3,7, 0,7,4, // -X face
+            1,5,6, 1,6,2, // +X face
+        ];
+        let mut mesh = TriangleMeshData::new(verts, indices);
+        mesh.compute_convex_hull(None);
+        assert!(mesh.convex_hull().is_some(), "Hull should be computed");
+
+        // 5×5 flat hfield at z=0.0
+        let mut model = flat_hfield_model(
             5,
             2.0,
             2.0,
             0.0,
             GeomType::Mesh,
             Vector3::new(0.5, 0.5, 0.5),
-            1.0,
+            0.87, // rbound ≈ sqrt(0.5² + 0.5² + 0.5²)
         );
+        model.mesh_data = vec![Arc::new(mesh)];
+        model.geom_mesh = vec![None, Some(0)]; // geom 1 = mesh index 0
+
         let pos1 = Vector3::zeros();
         let mat1 = Matrix3::identity();
-        let pos2 = Vector3::new(0.0, 0.0, 0.4);
+        // Cube center at z=0.2 → bottom face at z=-0.3, deeply penetrating terrain at z=0.0
+        let pos2 = Vector3::new(0.0, 0.0, 0.2);
         let mat2 = Matrix3::identity();
 
-        // Mesh geom has no mesh_data entry → geom_mesh[1] = None → 0 contacts, no panic
         let contacts = collide_hfield_multi(&model, 0, 1, pos1, mat1, pos2, mat2, 0.0);
-        // No convex hull → 0 contacts (conformant). The key assertion is no panic.
         assert!(
-            contacts.is_empty(),
-            "Mesh without hull should produce 0 contacts"
+            !contacts.is_empty(),
+            "Mesh with convex hull penetrating terrain should produce contacts"
+        );
+        // Verify at least one contact has positive depth. Some prism-mesh contacts
+        // may be edge/corner touches with depth=0; the important thing is that
+        // penetrating prisms produce positive-depth contacts.
+        let max_depth = contacts.iter().map(|c| c.depth).fold(0.0_f64, f64::max);
+        assert!(
+            max_depth > 0.0,
+            "At least one contact should have positive depth, max was {max_depth}",
         );
     }
 
@@ -722,6 +758,41 @@ mod tests {
         assert!(
             !contacts.is_empty(),
             "Edge-straddling sphere should produce contacts"
+        );
+    }
+
+    // ========================================================================
+    // TS3: Small geom in single cell — sub-grid converges to 1-2 prisms
+    // ========================================================================
+    #[test]
+    fn ts3_small_geom_one_cell() {
+        // 10×10 hfield with tiny sphere fitting within a single cell.
+        // Cell size = 2*5/(10-1) ≈ 1.11. Sphere radius=0.1, well within one cell.
+        let model = flat_hfield_model(
+            10,
+            5.0,
+            5.0,
+            0.5,
+            GeomType::Sphere,
+            Vector3::new(0.1, 0.0, 0.0),
+            0.1,
+        );
+        let pos1 = Vector3::zeros();
+        let mat1 = Matrix3::identity();
+        // Sphere at origin, z=0.55 → bottom at 0.45, terrain at 0.5 → penetrating
+        let pos2 = Vector3::new(0.0, 0.0, 0.55);
+        let mat2 = Matrix3::identity();
+
+        let contacts = collide_hfield_multi(&model, 0, 1, pos1, mat1, pos2, mat2, 0.0);
+        assert!(
+            !contacts.is_empty(),
+            "Tiny sphere in single cell should produce contacts"
+        );
+        // Tiny sphere should only hit 1-2 prisms → few contacts
+        assert!(
+            contacts.len() <= 4,
+            "Tiny sphere should hit at most a few prisms, got {}",
+            contacts.len()
         );
     }
 

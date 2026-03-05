@@ -221,7 +221,7 @@ pub fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Optio
         GeomType::Ellipsoid => Some(CollisionShape::Ellipsoid { radii: size }),
         GeomType::Plane => None,  // Handled via collide_with_plane()
         GeomType::Mesh => None,   // Handled via collide_with_mesh()
-        GeomType::Hfield => None, // Handled via collide_with_hfield()
+        GeomType::Hfield => None, // Handled via collide_hfield_multi at broadphase level
         GeomType::Sdf => None,    // Handled via collide_with_sdf()
     }
 }

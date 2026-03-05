@@ -84,7 +84,7 @@ pub fn collide_with_sdf(
             let hfield_id = model.geom_hfield[other_geom]?;
             let hfield = &model.hfield_data[hfield_id];
             let hf_size = &model.hfield_size[hfield_id];
-            // Apply centering offset (same as collide_with_hfield)
+            // Apply centering offset for hfield-local frame
             let hf_offset = other_mat * Vector3::new(-hf_size[0], -hf_size[1], 0.0);
             let hf_pose =
                 Pose::from_position_rotation(Point3::from(other_pos + hf_offset), other_quat);
