@@ -71,19 +71,20 @@ Verified by reading C source directly — `engine_collision_convex.c`,
 | File | Lines | Role | Spec C impact |
 |------|-------|------|---------------|
 | `sim/L0/core/src/collision/narrow.rs` | 338 | Narrowphase dispatch | Fix dispatch order: move hfield before mesh (lines 87-93). Change `collide_geoms` return type or add multi-contact path. |
-| `sim/L0/core/src/collision/hfield.rs` | 93 | Hfield dispatch | Major rewrite: replace point-sampling dispatch with prism-based `mjc_ConvexHField` equivalent. Change return type from `Option<Contact>` to `Vec<Contact>`. |
+| `sim/L0/core/src/collision/hfield.rs` | 93 | Hfield dispatch | Major rewrite: replace point-sampling dispatch with prism-based `mjc_ConvexHField` equivalent. Change return type or dispatch pattern to support multi-contact (see EGT-7 options). |
 | `sim/L0/core/src/heightfield.rs` | 941 | HeightFieldData + contact functions | Add prism construction helpers. Existing `heightfield_sphere_contact` etc. may be deprecated or kept as fallback. |
 | `sim/L0/core/src/collision/mesh_collide.rs` | 214 | Mesh collision dispatch | Remove `unreachable!` for Hfield at lines 107, 140 (becomes dead code after dispatch fix). |
 | `sim/L0/core/src/collision/mod.rs` | 1065 | Broadphase + collision loop | Change loop from single-contact push to multi-contact extend for hfield pairs. |
-| `sim/L0/core/src/gjk_epa.rs` | ~1367 | GJK/EPA | Used by prism-vs-convex testing (existing `gjk_epa_contact` on prism shape). |
-| `sim/L0/core/src/collision_shape.rs` | ~1734 | CollisionShape enum | May need `CollisionShape::Prism` variant or construct prisms as `ConvexMesh`. |
+| `sim/L0/core/src/gjk_epa.rs` | ~1425 | GJK/EPA | Used by prism-vs-convex testing (existing `gjk_epa_contact` on prism shape). |
+| `sim/L0/core/src/collision_shape.rs` | ~1771 | CollisionShape enum | May need `CollisionShape::Prism` variant or construct prisms as `ConvexMesh`. |
 
 **Exhaustive match sites that will break or need updating:**
 - `narrow.rs:87-93` — dispatch ordering (mesh before hfield)
 - `mesh_collide.rs:107` — `GeomType::Hfield => unreachable!`
 - `mesh_collide.rs:140` — `GeomType::Hfield => unreachable!`
 - `hfield.rs:48-72` — match on `model.geom_type[other_geom]` (catch-all `_ => return None`)
-- `mod.rs:443-448` — single-contact `if let Some(contact)` push loop
+- `mod.rs:443-448` — single-contact `if let Some(contact)` push loop (mechanism 1)
+- `mod.rs:486-499` — single-contact `if let Some(contact)` push loop (mechanism 2, with pair overrides)
 
 ### EGT-1: `mjc_ConvexHField` algorithm
 
@@ -108,10 +109,28 @@ Returns: number of contacts generated (0 to `mjMAXCONPAIR`).
    `[-size[0], +size[0]] × [-size[1], +size[1]] × [-size[3], +size[2]]`.
    If no overlap, return 0.
 
+   **CortenForge convention note:** MuJoCo uses `+size[2]` as the upper Z
+   bound (correct for normalized [0,1] elevation data). CortenForge stores
+   pre-scaled heights, so the actual max height is `HeightFieldData.max_height`.
+   For conformance, use `hfield_size[2]` (matches MuJoCo); for tighter
+   culling with non-normalized data, use `HeightFieldData.max_height`.
+   The spec should choose one and document the rationale.
+
 3. **AABB computation:** Query geom2's support function along ±X, ±Y, ±Z
    in hfield-local frame to get tight AABB `[xmin,xmax] × [ymin,ymax] ×
    [zmin,zmax]`. Perform AABB-AABB test against hfield extents. If no
    overlap, return 0.
+
+   **CortenForge frame note:** `gjk_epa::support()` operates in world
+   space — it takes a world-space direction and returns a world-space
+   point. To query in hfield-local directions: (1) transform the
+   hfield-local direction to world: `world_dir = hf_rotation * local_dir`,
+   (2) call `support(shape, &geom2_pose, &world_dir)` → world point,
+   (3) transform result to hfield-local:
+   `hf_pose.inverse_transform_point(&world_point)`. Alternatively,
+   construct a relative pose for geom2 in hfield-local frame and call
+   `support` with local-frame directions directly (the function handles
+   internal transforms via `pose.rotation.inverse() * direction`).
 
 4. **Sub-grid clipping:** Map AABB to grid indices:
    ```
@@ -129,8 +148,8 @@ Returns: number of contacts generated (0 to `mjMAXCONPAIR`).
    helper rotates a sliding window of 6 vertices:
    ```c
    // Shift old vertices
-   prism[0] = prism[1]; prism[1] = prism[2];  // top
-   prism[3] = prism[4]; prism[4] = prism[5];  // bottom
+   prism[0] = prism[1]; prism[1] = prism[2];  // bottom
+   prism[3] = prism[4]; prism[4] = prism[5];  // top (surface)
    // Add new vertex
    prism[2].x = prism[5].x = dx*c - size[0];
    prism[2].y = prism[5].y = dy*(r+dr) - size[1];
@@ -205,9 +224,9 @@ conventions. The prism approach must use center-origin coordinates
 static inline void addPrismVert(mjCCDObj* obj, int r, int c, int i,
                                 mjtNum dx, mjtNum dy, mjtNum margin) {
   // Shift old vertices (sliding window of 3)
-  mji_copy3(obj->prism[0], obj->prism[1]);
+  mji_copy3(obj->prism[0], obj->prism[1]);  // bottom
   mji_copy3(obj->prism[1], obj->prism[2]);
-  mji_copy3(obj->prism[3], obj->prism[4]);
+  mji_copy3(obj->prism[3], obj->prism[4]);  // top (surface)
   mji_copy3(obj->prism[4], obj->prism[5]);
 
   int dr = 1 - i;  // i=0 → dr=1 (next row); i=1 → dr=0 (same row)
@@ -221,6 +240,20 @@ static inline void addPrismVert(mjCCDObj* obj, int r, int c, int i,
 
 The bottom vertices (`prism[0..2]`) have fixed Z = `-size[3]`. The top
 vertices (`prism[3..5]`) have Z = `hfield_data[row*ncol + col] * size[2] + margin`.
+
+**Initialization:** The bottom Z = `-size[3]` is NOT set by `addPrismVert` —
+it only updates X/Y for slot [2] and X/Y/Z for slot [5]. The bottom Z
+must be initialized to `-size[3]` for all prism[0..2] **before the loop
+begins**. The sliding window preserves this Z through `mji_copy3` shifts
+(which copy all 3 coordinates), and the subsequent X/Y assignment to
+prism[2] does not touch its Z.
+
+**Data flow:** Prism construction requires data from TWO model fields:
+- `model.hfield_data[hfield_id]` (`HeightFieldData`) — provides heights
+  (pre-scaled in CortenForge) and grid dimensions (`width`, `depth`,
+  `cell_size`)
+- `model.hfield_size[hfield_id]` (`[f64; 4]`) — provides `size[0..1]`
+  for centering offsets and `size[3]` for prism base elevation
 
 The `i` parameter alternates between the two triangles of each grid cell:
 - `i=0`: triangle with vertex at `(c, r+1)` — lower-left diagonal
@@ -274,8 +307,11 @@ prisms), so moving hfield before mesh is the conformant routing.
 
 ### EGT-7: CortenForge single-contact architecture
 
-**File:** `sim/L0/core/src/collision/mod.rs` lines 443-448
+**File:** `sim/L0/core/src/collision/mod.rs`
 
+Two call sites use the single-contact `Option<Contact>` return:
+
+**Mechanism 1 (broadphase loop, lines 443-448):**
 ```rust
 if let Some(contact) = collide_geoms(...) {
     data.contacts.push(contact);
@@ -283,10 +319,22 @@ if let Some(contact) = collide_geoms(...) {
 }
 ```
 
-The `collide_geoms` function returns `Option<Contact>` — at most one
-contact per geom pair. MuJoCo's `mjc_ConvexHField` returns up to 50
-contacts. To support multi-contact hfield pairs, the pipeline must change
-to allow multiple contacts per `collide_geoms` invocation.
+**Mechanism 2 (explicit contact pairs, lines 486-499):**
+```rust
+if let Some(mut contact) = collide_geoms(...) {
+    apply_pair_overrides(&mut contact, pair);
+    ...
+    data.contacts.push(contact);
+    data.ncon += 1;
+}
+```
+
+Both call sites assume `collide_geoms` returns `Option<Contact>` — at
+most one contact per geom pair. MuJoCo's `mjc_ConvexHField` returns up
+to 50 contacts. To support multi-contact hfield pairs, the pipeline must
+change to allow multiple contacts per `collide_geoms` invocation. Both
+mechanism 1 and mechanism 2 loops must be updated (mechanism 2 also
+applies pair overrides to each contact).
 
 **Design options:**
 - **Option A:** Change `collide_geoms` return to `SmallVec<[Contact; 4]>`
@@ -309,12 +357,26 @@ The spec must choose one and justify it.
 CortenForge's `HeightFieldData` uses corner-origin coordinates:
 - X spans `[0, (width-1) * cell_size]`
 - Y spans `[0, (depth-1) * cell_size]`
-- Heights stored as raw values (not scaled by `size[2]`)
+- Heights are **pre-scaled by `size[2]`** in the builder
+  (`builder/mesh.rs:238`: `elevation.iter().map(|&e| e * z_top).collect()`).
+  The prism approach must NOT multiply by `size[2]` again — heights
+  from `HeightFieldData` are already in world-scale meters.
+- Index convention: `heights[y * width + x]` (row-major, Y outer loop).
+  MuJoCo uses `hfield_data[r * ncol + c]` — mapping is `r` = Y index,
+  `c` = X index.
 
 MuJoCo's heightfield uses center-origin coordinates:
 - X spans `[-size[0], +size[0]]`
 - Y spans `[-size[1], +size[1]]`
-- Heights scaled by `size[2]` at runtime
+- Heights scaled by `size[2]` at runtime (`data[i] * size[2]`)
+
+**Cell size uniformity:** `HeightFieldData` has a single `cell_size`
+field (forced square). The builder computes `dx = 2*size[0]/(ncol-1)`
+and `dy = 2*size[1]/(nrow-1)`. If they differ by >1%, the builder
+resamples to a uniform grid, potentially changing `width`/`depth` from
+the original MJCF `ncol`/`nrow`. The prism sub-grid clipping must use
+`HeightFieldData.width`/`depth`, not the original MJCF dimensions. With
+uniform cells, `dx = dy = cell_size`, simplifying the prism math.
 
 The existing `hfield.rs` dispatch (line 39) applies a centering offset:
 ```rust
@@ -350,7 +412,25 @@ For the prism approach, each hfield prism must be represented as a
   function. More efficient but adds enum complexity.
 
 `ConvexMesh` with 6 vertices is likely sufficient — the per-vertex scan
-is O(6) which is negligible.
+is O(6) which is negligible. No `HullGraph` needed (below the 10-vertex
+hill-climbing threshold).
+
+**Pose pairing:** `gjk_epa_contact` takes `(shape_a, pose_a, shape_b,
+pose_b)` and operates in world space. Two valid approaches for the
+prism-vs-convex call:
+- **Option 1 (hfield-local prisms):** Construct prism vertices in
+  center-origin hfield-local coords (matching MuJoCo's grid math).
+  Pass the hfield's world `Pose` as `pose_a`. Pass geom2's world `Pose`
+  as `pose_b`. The `support()` function handles all frame transforms
+  internally.
+- **Option 2 (world-space prisms):** Transform prism vertices to world
+  space during construction. Pass identity `Pose` for the prism.
+  Pass geom2's world `Pose` as `pose_b`.
+
+Option 1 is simpler (prism construction stays in grid math, no per-vertex
+world transform) and matches MuJoCo's pattern (collision in hfield
+frame, contact transformed to world at the end). The spec must choose
+one and state it.
 
 ---
 
@@ -388,7 +468,7 @@ is O(6) which is negligible.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | MuJoCo center-origin vs CortenForge corner-origin coordinate systems documented with explicit conversion rules (EGT-8). `hfield_size[0..3]` mapping to CortenForge's `HeightFieldData` fields documented. Contact normal convention: MuJoCo's prism normal direction vs CortenForge's "from geom_a toward geom_b" convention — translation rule stated. Prism vertex Z: MuJoCo uses `data[i] * size[2]`; CortenForge stores raw heights — conversion documented. Pose convention: MuJoCo modifies `mat2`/`pos2` in-place (relative frame); CortenForge must compute relative transform without mutation. |
+| **A+** | MuJoCo center-origin vs CortenForge corner-origin coordinate systems documented with explicit conversion rules (EGT-8). `hfield_size[0..3]` mapping to CortenForge's `HeightFieldData` fields documented. Contact normal convention: MuJoCo's prism normal direction vs CortenForge's "from geom_a toward geom_b" convention — translation rule stated. Prism vertex Z: MuJoCo uses `data[i] * size[2]`; CortenForge stores heights pre-scaled by `size[2]` in the builder — no double-scaling rule stated. Index mapping: MuJoCo `(r, c)` = CortenForge `(y_index, x_index)` — `heights[y * width + x]` vs `hfield_data[r * ncol + c]`. Pose convention: MuJoCo modifies `mat2`/`pos2` in-place (relative frame); CortenForge must compute relative transform without mutation. |
 | **A** | Major conventions documented. Minor coordinate mapping details left implicit. |
 | **B** | Some conventions noted, others not — risk of wrong coordinates in prism construction. |
 | **C** | MuJoCo code pasted without adaptation to CortenForge conventions. |
@@ -400,7 +480,7 @@ is O(6) which is negligible.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Every runtime AC has the three-part structure: (1) concrete model (hfield dimensions, geom type/size/position), (2) exact expected contact count and approximate contact positions/normals/depths, (3) what field to check. At least one AC for hfield-mesh with expected values. At least one AC for hfield-sphere using the new prism approach matching existing behavior (regression guard). Code-review ACs for dispatch ordering fix and multi-contact pipeline change. AC for mjMAXCONPAIR=50 limit. AC for hfield-cylinder/ellipsoid now being exact (no approximation). |
+| **A+** | Every runtime AC has the three-part structure: (1) concrete model (hfield dimensions, geom type/size/position), (2) exact expected contact count and approximate contact positions/normals/depths, (3) what field to check. At least one AC for hfield-mesh with expected values. At least one AC for hfield-sphere using the new prism approach verifying contacts are still generated (regression guard — values may differ from point-sampling, but contacts must exist for same scenarios). Code-review ACs for dispatch ordering fix and multi-contact pipeline change. AC for mjMAXCONPAIR=50 limit. AC for hfield-cylinder/ellipsoid now being exact (no approximation). AC for hfield-mesh where mesh has no convex hull (expected: 0 contacts). |
 | **A** | ACs are testable. Some lack exact numerical expectations. |
 | **B** | ACs are directionally correct but vague ("contacts should be generated"). |
 | **C** | ACs are aspirational statements, not tests. |
@@ -423,7 +503,7 @@ is O(6) which is negligible.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Execution order is unambiguous. Spec A (convex hull) dependency stated: hfield-mesh uses mesh's convex hull — if hull is absent, behavior documented (no collision? fallback?). No dependency on Spec D (CCD) or Spec E (flex). Dispatch ordering fix (EGT-6) must land before hfield-mesh tests can run. Multi-contact pipeline change (EGT-7) must land before multi-contact tests. Section ordering reflects these dependencies. |
+| **A+** | Execution order is unambiguous. Spec A (convex hull) dependency stated: hfield-mesh uses mesh's convex hull — if `mesh.convex_hull()` returns `None`, return 0 contacts (MuJoCo always computes hulls for mesh geoms, so absent hull = no collision is conformant). No dependency on Spec D (CCD) or Spec E (flex). Dispatch ordering fix (EGT-6) must land before hfield-mesh tests can run. Multi-contact pipeline change (EGT-7) must land before multi-contact tests. Section ordering reflects these dependencies. |
 | **A** | Order is clear. Minor interactions left implicit. |
 | **B** | Order suggested but not enforced. |
 | **C** | No ordering discussion. |
@@ -479,7 +559,7 @@ MuJoCo's table.
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Multi-contact generation is fully specified: how many contacts per prism (1 from `gjk_epa_contact`), how contacts accumulate across prisms (up to `mjMAXCONPAIR=50`), how the contact limit is enforced (break from prism loop). Pipeline integration: how multi-contact results flow into `data.contacts` and `data.ncon`. Downstream impact: constraint solver already handles multiple contacts per geom pair (each contact is independent) — no solver changes needed. Contact ordering: prisms iterated in row-major order matching MuJoCo's `(r, c)` loop — contact order may affect solver behavior with contact limits. |
+| **A+** | Multi-contact generation is fully specified: how many contacts per prism (1 from `gjk_epa_contact`), how contacts accumulate across prisms (up to `mjMAXCONPAIR=50`), how the contact limit is enforced (break from prism loop). Pipeline integration: how multi-contact results flow into `data.contacts` and `data.ncon` for BOTH mechanism 1 (broadphase, `mod.rs:443`) and mechanism 2 (explicit pairs, `mod.rs:486`) loops. Mechanism 2 must apply `apply_pair_overrides` to each contact in the multi-contact set. Downstream impact: constraint solver already handles multiple contacts per geom pair (each contact is independent) — no solver changes needed. Contact ordering: prisms iterated in row-major order matching MuJoCo's `(r, c)` loop — contact order may affect solver behavior with contact limits. |
 | **A** | Multi-contact generation complete. Minor downstream impact details missing. |
 | **B** | Multi-contact mentioned but implementation details incomplete. |
 | **C** | Single-contact assumption preserved. |
@@ -496,9 +576,10 @@ contacts from a single hfield pair.
 
 - [x] **Specificity:** Every A+ bar names specific functions
       (`mjc_ConvexHField`, `addPrismVert`, `gjk_epa_contact`), specific
-      files (`narrow.rs:87-93`, `hfield.rs:48-72`, `mod.rs:443-448`),
-      and specific values (`mjMAXCONPAIR=50`, `hfield_size[0..3]`). Two
-      independent reviewers could assign consistent grades.
+      files (`narrow.rs:87-93`, `hfield.rs:48-72`, `mod.rs:443-448` +
+      `mod.rs:486-499`), and specific values (`mjMAXCONPAIR=50`,
+      `hfield_size[0..3]`). Two independent reviewers could assign
+      consistent grades.
 
 - [x] **Non-overlap:** P1 (MuJoCo reference) vs P9 (dispatch routing) —
       P1 grades correctness of MuJoCo description, P9 grades correctness
@@ -565,7 +646,7 @@ contacts from a single hfield pair.
 | P9. Dispatch Architecture | | |
 | P10. Multi-Contact Conformance | | |
 
-**Overall: — (Rev 1)**
+**Overall: — (Rev 4)**
 
 ---
 
@@ -578,3 +659,20 @@ contacts from a single hfield pair.
 | R3 | P9 | Dispatch ordering bug not in umbrella | Rubric Phase 1 (EGT-6: narrow.rs line 87-93) | Added to scope: dispatch fix is prerequisite for hfield-mesh | Rubric Rev 1 |
 | R4 | P10 | Multi-contact architecture not in umbrella | Rubric Phase 1 (EGT-5 + EGT-7) | Added to scope: multi-contact returns required for conformance | Rubric Rev 1 |
 | R5 | Scope | Umbrella noted cylinder/ellipsoid approximations but didn't flag as conformance gap | Rubric Phase 1 (EGT-2) | Added: prism approach makes all convex types exact — conformance improvement | Rubric Rev 1 |
+| R6 | P3 | EGT-8 claimed CortenForge stores raw heights — actually pre-scaled by `size[2]` in builder | Stress test (builder/mesh.rs:238) | Fixed: EGT-8 now documents pre-scaling, warns against double-scaling | Rubric Rev 2 |
+| R7 | P2 | EGT-4 code block comments swapped top/bottom vertex groups | Stress test (prism[5].z = surface height → prism[3..5] is top) | Fixed: inline comments corrected | Rubric Rev 2 |
+| R8 | P10 | EGT-7 only cited mechanism 1 call site (mod.rs:443); missed mechanism 2 (mod.rs:486) | Stress test (mod.rs:486-499 also uses Option\<Contact\>) | Fixed: both call sites documented in EGT-7 and P10 | Rubric Rev 2 |
+| R9 | P6 | No fallback behavior specified for hfield-mesh when mesh has no convex hull | Stress test (mesh.convex_hull() can return None) | Fixed: P6 specifies 0 contacts when hull absent; P4 requires AC for this case | Rubric Rev 2 |
+| R10 | P3 | HeightFieldData cell_size uniformity and resampling implications not documented | Stress test (builder/mesh.rs:235-272) | Fixed: EGT-8 documents cell_size constraint and resampling | Rubric Rev 2 |
+| R11 | P3 | Row/column index mapping between MuJoCo (r,c) and CortenForge (y,x) not documented | Stress test (heightfield.rs:86 access pattern) | Fixed: EGT-8 and P3 document index mapping | Rubric Rev 2 |
+| R12 | Codebase | gjk_epa.rs and collision_shape.rs line counts stale (~1367/~1734 vs actual 1425/1771) | Stress test (wc -l) | Fixed: updated approximate counts | Rubric Rev 2 |
+| R13 | P2 | EGT-1 Phase 5 code block still had swapped top/bottom comments (second instance missed in Rev 2) | Stress test round 2 | Fixed: comments corrected to match EGT-4 | Rubric Rev 3 |
+| R14 | P7 | Exhaustive match sites list only mentioned mod.rs:443 (mechanism 1), not mod.rs:486 (mechanism 2) | Stress test round 2 | Fixed: added mechanism 2 entry | Rubric Rev 3 |
+| R15 | P2 | Prism bottom vertex Z = -size[3] initialization before loop not documented in EGT-4 | Stress test round 2 (addPrismVert never sets prism[2].z) | Fixed: added initialization note and data flow section to EGT-4 | Rubric Rev 3 |
+| R16 | P2 | Pose pairing for gjk_epa_contact prism-vs-convex call not discussed | Stress test round 2 (support() operates in world space) | Fixed: added pose pairing options to EGT-9 | Rubric Rev 3 |
+| R17 | P2 | AABB support query frame management underspecified — support() is world-space but EGT-1 says "in hfield-local frame" | Stress test round 2 (gjk_epa.rs:219 signature) | Fixed: added CortenForge frame note to EGT-1 Phase 3 | Rubric Rev 3 |
+| R18 | Self-audit | Specificity bullet referenced mod.rs:443-448 but not mod.rs:486-499 | Stress test round 2 | Fixed: updated self-audit | Rubric Rev 3 |
+| R19 | P2 | hfield_size[3] (base elevation) stored in model.hfield_size, not HeightFieldData — data flow gap | Stress test round 2 (HeightFieldData.aabb() has no base elevation) | Fixed: added data flow note to EGT-4 | Rubric Rev 3 |
+| R20 | P3 | EGT-1 Phase 2 Z extent uses +size[2] but CortenForge pre-scales heights — max_height may differ | Stress test round 2 (HeightFieldData.max_height vs hfield_size[2]) | Fixed: added convention translation note to EGT-1 Phase 2 | Rubric Rev 3 |
+| R21 | P8 | Codebase context table pre-decided hfield.rs return type as `Vec<Contact>` while EGT-7 presents 4 open options | Stress test round 3 (line 74 vs EGT-7 lines 339-351) | Fixed: table now says "see EGT-7 options" | Rubric Rev 4 |
+| R22 | P8 | P4 "matching existing behavior" contradicts P7 "may return different values" — ambiguous regression guard | Stress test round 3 (P4 vs P7 A+ bars) | Fixed: P4 now says "verifying contacts are still generated" | Rubric Rev 4 |
