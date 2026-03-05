@@ -417,7 +417,7 @@ MuJoCo conformance is the cardinal goal.
 implementing the `Convex` inertia mode. `Exact` and `Shell` modes
 can be implemented independently.
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- implement Spec B.
@@ -442,7 +442,7 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 11: Spec B review -- create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- create Spec B review document.
@@ -1016,7 +1016,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 7 | Spec A review -- execute | Done | `ba6c261` |
 | 8 | Spec B rubric (§43 Mesh Inertia) | Done | `3e7f593` |
 | 9 | Spec B spec | Done | `765d1fa` |
-| 10 | Spec B implementation | Pending | — |
+| 10 | Spec B implementation | Done | `5a30583` |
 | 11 | Spec B review -- create document | Pending | — |
 | 12 | Spec B review -- execute | Pending | — |
 | 13 | Spec C rubric (§54 Hfield Pairs) | Pending | — |
