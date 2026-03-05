@@ -339,7 +339,7 @@ Present the Review Verdict (section 10) to the user when done.
 **Prerequisite:** Session 7 (Spec A review) must be complete. Spec B's
 `Convex` inertia mode delegates to Spec A's `ConvexHull` computation.
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- write Spec B rubric.
@@ -1014,7 +1014,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 5 | Spec A implementation | Done | `8a6b67b` |
 | 6 | Spec A review -- create document | Done | `9011f04` |
 | 7 | Spec A review -- execute | Done | `ba6c261` |
-| 8 | Spec B rubric (§43 Mesh Inertia) | Pending | — |
+| 8 | Spec B rubric (§43 Mesh Inertia) | Done | `3e7f593` |
 | 9 | Spec B spec | Pending | — |
 | 10 | Spec B implementation | Pending | — |
 | 11 | Spec B review -- create document | Pending | — |
