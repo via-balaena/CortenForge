@@ -544,7 +544,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 14: Spec C spec (Heightfield Collision Pairs)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- write Spec C spec.
