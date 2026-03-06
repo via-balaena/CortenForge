@@ -48,12 +48,18 @@
 //! | [`Sdf`](CollisionShape::Sdf) | Signed distance field | No |
 
 use nalgebra::{Point3, Vector3};
+use std::cell::Cell;
 use std::sync::Arc;
 
+use crate::convex_hull::{ConvexHull, HullGraph};
 use crate::heightfield::HeightFieldData;
 use crate::mesh::TriangleMeshData;
 use crate::sdf::SdfCollisionData;
 use sim_types::Pose;
+
+/// Minimum vertex count for hill-climbing support.
+/// Matches MuJoCo's `mjMESH_HILLCLIMB_MIN = 10`.
+pub const HILL_CLIMB_MIN: usize = 10;
 
 /// Collision shape for a body.
 ///
@@ -92,6 +98,12 @@ pub enum CollisionShape {
     ConvexMesh {
         /// Vertices of the convex hull in local coordinates. Must have at least 4 vertices.
         vertices: Vec<Point3<f64>>,
+        /// Adjacency graph for hill-climbing support queries.
+        /// `None` for manually constructed shapes or hulls with <10 vertices.
+        graph: Option<HullGraph>,
+        /// Warm-start cache: last support vertex index for hill-climbing.
+        /// `Cell` allows mutation through `&self` (interior mutability).
+        warm_start: Cell<usize>,
     },
     /// Cylinder (without hemispherical caps).
     Cylinder {
@@ -281,7 +293,28 @@ impl CollisionShape {
             "ConvexMesh requires at least 4 vertices, got {}",
             vertices.len()
         );
-        Self::ConvexMesh { vertices }
+        Self::ConvexMesh {
+            vertices,
+            graph: None,
+            warm_start: Cell::new(0),
+        }
+    }
+
+    /// Construct a `ConvexMesh` from a precomputed `ConvexHull`.
+    ///
+    /// Hill-climbing graph is included only for hulls with ≥ `HILL_CLIMB_MIN`
+    /// vertices (matching MuJoCo's `mjMESH_HILLCLIMB_MIN = 10`).
+    #[must_use]
+    pub fn convex_mesh_from_hull(hull: &ConvexHull) -> Self {
+        Self::ConvexMesh {
+            vertices: hull.vertices.clone(),
+            graph: if hull.vertices.len() >= HILL_CLIMB_MIN {
+                Some(hull.graph.clone())
+            } else {
+                None
+            },
+            warm_start: Cell::new(0),
+        }
     }
 
     /// Create a regular tetrahedron centered at origin.
@@ -306,7 +339,11 @@ impl CollisionShape {
             Point3::new(-h, h, -h),
             Point3::new(-h, -h, h),
         ];
-        Self::ConvexMesh { vertices }
+        Self::ConvexMesh {
+            vertices,
+            graph: None,
+            warm_start: Cell::new(0),
+        }
     }
 
     /// Create a height field shape.
@@ -497,7 +534,7 @@ impl CollisionShape {
                 radius,
             } => half_length.hypot(*radius),
             Self::Ellipsoid { radii } => radii.x.max(radii.y).max(radii.z),
-            Self::ConvexMesh { vertices } => {
+            Self::ConvexMesh { vertices, .. } => {
                 vertices.iter().map(|v| v.coords.norm()).fold(0.0, f64::max)
             }
             Self::HeightField { data } => {
@@ -570,7 +607,7 @@ impl CollisionShape {
                 Aabb::new(Point3::new(-r, -r, -h), Point3::new(r, r, h))
             }
             Self::Ellipsoid { radii } => Aabb::new(Point3::from(-*radii), Point3::from(*radii)),
-            Self::ConvexMesh { vertices } => {
+            Self::ConvexMesh { vertices, .. } => {
                 if vertices.is_empty() {
                     return Aabb::default();
                 }

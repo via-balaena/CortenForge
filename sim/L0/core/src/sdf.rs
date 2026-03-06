@@ -525,10 +525,16 @@ impl SdfCollisionData {
     ///
     /// Uses gradient descent starting from the query point.
     /// Returns `None` if the point is outside the grid bounds.
+    ///
+    /// `max_iterations` controls the Newton iteration count for surface refinement.
+    /// MuJoCo ref: `mjOption.sdf_iterations` (default 10).
     #[must_use]
-    pub fn closest_surface_point(&self, point: Point3<f64>) -> Option<Point3<f64>> {
+    pub fn closest_surface_point(
+        &self,
+        point: Point3<f64>,
+        max_iterations: usize,
+    ) -> Option<Point3<f64>> {
         let mut p = point;
-        let max_iterations = 10;
 
         for _ in 0..max_iterations {
             let d = self.distance(p)?;
@@ -659,6 +665,10 @@ pub fn sdf_point_contact(
 /// Query an SDF for contact with a capsule.
 ///
 /// Tests multiple points along the capsule axis for the deepest penetration.
+/// The number of axis sample points is derived from `sdf_initpoints`:
+/// `max(2, min(sdf_initpoints, axis_budget))` where axis_budget ensures
+/// reasonable density. Box-corner-like fixed geometry does not apply here;
+/// the axis is a continuous line that benefits from denser sampling.
 ///
 /// # Arguments
 ///
@@ -667,6 +677,7 @@ pub fn sdf_point_contact(
 /// * `capsule_start` - Start point of capsule axis in world space
 /// * `capsule_end` - End point of capsule axis in world space
 /// * `capsule_radius` - Radius of the capsule
+/// * `sdf_initpoints` - Number of initial sample points (from `mjOption.sdf_initpoints`)
 #[must_use]
 pub fn sdf_capsule_contact(
     sdf: &SdfCollisionData,
@@ -674,6 +685,7 @@ pub fn sdf_capsule_contact(
     capsule_start: Point3<f64>,
     capsule_end: Point3<f64>,
     capsule_radius: f64,
+    sdf_initpoints: usize,
 ) -> Option<SdfContact> {
     // Transform capsule to SDF local space
     let local_start = sdf_pose.inverse_transform_point(&capsule_start);
@@ -688,14 +700,14 @@ pub fn sdf_capsule_contact(
         return sdf_sphere_contact(sdf, sdf_pose, capsule_start, capsule_radius);
     }
 
-    // Sample multiple points along the axis for better contact
-    let test_points = [
-        local_start,
-        local_start + axis * 0.25,
-        local_start + axis * 0.5,
-        local_start + axis * 0.75,
-        local_end,
-    ];
+    // Sample points along the axis. Capsule only has a 1D axis, so we cap the
+    // budget at a reasonable maximum (endpoints + intermediate samples).
+    let n_axis = sdf_initpoints.clamp(2, 20);
+    let mut test_points = Vec::with_capacity(n_axis);
+    for i in 0..n_axis {
+        let t = i as f64 / (n_axis - 1).max(1) as f64;
+        test_points.push(local_start + axis * t);
+    }
 
     let mut deepest_contact: Option<SdfContact> = None;
     let mut max_penetration = 0.0;
@@ -789,10 +801,11 @@ pub fn sdf_box_contact(
 
 /// Query an SDF for contact with a cylinder.
 ///
-/// Samples 26 points on the cylinder surface:
-/// - 2 cap centers (top and bottom)
-/// - 16 cap edge points (8 per cap)
-/// - 8 middle circumference points
+/// Samples points on the cylinder surface: 2 cap centers plus circumference
+/// points distributed across cap edges and middle ring. The number of
+/// circumference points per ring is derived from `sdf_initpoints`:
+/// `n_per_ring = max(4, (sdf_initpoints - 2) / 3)`, giving a total of
+/// `2 + 3 * n_per_ring` sample points.
 ///
 /// # Arguments
 ///
@@ -801,6 +814,7 @@ pub fn sdf_box_contact(
 /// * `cylinder_pose` - The pose of the cylinder in world space
 /// * `half_height` - Half-height of the cylinder along its local Z-axis
 /// * `radius` - Radius of the cylinder
+/// * `sdf_initpoints` - Number of initial sample points (from `mjOption.sdf_initpoints`)
 #[must_use]
 pub fn sdf_cylinder_contact(
     sdf: &SdfCollisionData,
@@ -808,28 +822,34 @@ pub fn sdf_cylinder_contact(
     cylinder_pose: &Pose,
     half_height: f64,
     radius: f64,
+    sdf_initpoints: usize,
 ) -> Option<SdfContact> {
     use std::f64::consts::PI;
 
-    // Build sample points in cylinder local space (Z-axis aligned)
-    let mut sample_points = Vec::with_capacity(26);
+    // Derive circumference point count from sdf_initpoints.
+    // Layout: 2 cap centers + n_per_ring top cap + n_per_ring bottom cap + n_per_ring middle.
+    // Total = 2 + 3 * n_per_ring. With default 40: n_per_ring = 12, total = 38.
+    let n_per_ring = (sdf_initpoints.saturating_sub(2) / 3).max(4) as u32;
+
+    let mut sample_points = Vec::with_capacity(2 + 3 * n_per_ring as usize);
 
     // 2 cap centers
     sample_points.push(Point3::new(0.0, 0.0, half_height)); // Top cap center
     sample_points.push(Point3::new(0.0, 0.0, -half_height)); // Bottom cap center
 
-    // 8 points around each cap edge (16 total)
-    for i in 0..8_u32 {
-        let angle = f64::from(i) * PI / 4.0; // 0, 45, 90, ... degrees
+    // n_per_ring points around each cap edge (2 * n_per_ring total)
+    let angle_step = 2.0 * PI / f64::from(n_per_ring);
+    for i in 0..n_per_ring {
+        let angle = f64::from(i) * angle_step;
         let x = radius * angle.cos();
         let y = radius * angle.sin();
         sample_points.push(Point3::new(x, y, half_height)); // Top cap edge
         sample_points.push(Point3::new(x, y, -half_height)); // Bottom cap edge
     }
 
-    // 8 points around middle circumference
-    for i in 0..8_u32 {
-        let angle = f64::from(i) * PI / 4.0;
+    // n_per_ring points around middle circumference
+    for i in 0..n_per_ring {
+        let angle = f64::from(i) * angle_step;
         let x = radius * angle.cos();
         let y = radius * angle.sin();
         sample_points.push(Point3::new(x, y, 0.0)); // Middle circumference
@@ -870,10 +890,9 @@ pub fn sdf_cylinder_contact(
 
 /// Query an SDF for contact with an ellipsoid.
 ///
-/// Samples 26 points on the ellipsoid surface:
-/// - 6 axis-aligned points (±x, ±y, ±z scaled by radii)
-/// - 8 diagonal points (corners of inscribed cube, projected to surface)
-/// - 12 edge midpoints
+/// Samples points on the ellipsoid surface using a latitude/longitude grid.
+/// The number of sample points is controlled by `sdf_initpoints`: 2 poles
+/// plus latitude rings with evenly distributed longitude points.
 ///
 /// # Arguments
 ///
@@ -881,17 +900,20 @@ pub fn sdf_cylinder_contact(
 /// * `sdf_pose` - The pose of the SDF in world space
 /// * `ellipsoid_pose` - The pose of the ellipsoid in world space
 /// * `radii` - Radii along each local axis (X, Y, Z)
+/// * `sdf_initpoints` - Number of initial sample points (from `mjOption.sdf_initpoints`)
 #[must_use]
 pub fn sdf_ellipsoid_contact(
     sdf: &SdfCollisionData,
     sdf_pose: &Pose,
     ellipsoid_pose: &Pose,
     radii: &Vector3<f64>,
+    sdf_initpoints: usize,
 ) -> Option<SdfContact> {
-    // Build sample points in ellipsoid local space
-    let mut sample_points = Vec::with_capacity(26);
+    use std::f64::consts::PI;
 
-    // 6 axis-aligned points (poles)
+    let mut sample_points = Vec::with_capacity(sdf_initpoints.max(6));
+
+    // 6 axis-aligned points (poles) — always included as geometric minimum
     sample_points.push(Point3::new(radii.x, 0.0, 0.0));
     sample_points.push(Point3::new(-radii.x, 0.0, 0.0));
     sample_points.push(Point3::new(0.0, radii.y, 0.0));
@@ -899,38 +921,27 @@ pub fn sdf_ellipsoid_contact(
     sample_points.push(Point3::new(0.0, 0.0, radii.z));
     sample_points.push(Point3::new(0.0, 0.0, -radii.z));
 
-    // 8 diagonal points (corners of inscribed cube, projected to ellipsoid surface)
-    // For a point (±1, ±1, ±1) normalized and scaled by radii
-    let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
-    for &sx in &[-1.0, 1.0] {
-        for &sy in &[-1.0, 1.0] {
-            for &sz in &[-1.0, 1.0] {
+    // Distribute remaining budget across latitude rings on the ellipsoid surface.
+    let remaining = sdf_initpoints.saturating_sub(6);
+    if remaining > 0 {
+        // Choose n_rings latitude bands, each with n_per_ring longitude samples.
+        let n_rings = ((remaining as f64).sqrt().ceil() as usize).max(1);
+        let n_per_ring = (remaining / n_rings).max(1);
+        for ring in 0..n_rings {
+            // Latitude angle from +Z pole to -Z pole (exclude exact poles)
+            let phi = PI * (ring + 1) as f64 / (n_rings + 1) as f64;
+            let sin_phi = phi.sin();
+            let cos_phi = phi.cos();
+            for j in 0..n_per_ring {
+                let theta = 2.0 * PI * j as f64 / n_per_ring as f64;
                 sample_points.push(Point3::new(
-                    radii.x * sx * inv_sqrt3,
-                    radii.y * sy * inv_sqrt3,
-                    radii.z * sz * inv_sqrt3,
+                    radii.x * sin_phi * theta.cos(),
+                    radii.y * sin_phi * theta.sin(),
+                    radii.z * cos_phi,
                 ));
             }
         }
     }
-
-    // 12 edge midpoints (between pairs of axis-aligned points)
-    // XY plane edges
-    let inv_sqrt2 = 1.0 / 2.0_f64.sqrt();
-    sample_points.push(Point3::new(radii.x * inv_sqrt2, radii.y * inv_sqrt2, 0.0));
-    sample_points.push(Point3::new(radii.x * inv_sqrt2, -radii.y * inv_sqrt2, 0.0));
-    sample_points.push(Point3::new(-radii.x * inv_sqrt2, radii.y * inv_sqrt2, 0.0));
-    sample_points.push(Point3::new(-radii.x * inv_sqrt2, -radii.y * inv_sqrt2, 0.0));
-    // XZ plane edges
-    sample_points.push(Point3::new(radii.x * inv_sqrt2, 0.0, radii.z * inv_sqrt2));
-    sample_points.push(Point3::new(radii.x * inv_sqrt2, 0.0, -radii.z * inv_sqrt2));
-    sample_points.push(Point3::new(-radii.x * inv_sqrt2, 0.0, radii.z * inv_sqrt2));
-    sample_points.push(Point3::new(-radii.x * inv_sqrt2, 0.0, -radii.z * inv_sqrt2));
-    // YZ plane edges
-    sample_points.push(Point3::new(0.0, radii.y * inv_sqrt2, radii.z * inv_sqrt2));
-    sample_points.push(Point3::new(0.0, radii.y * inv_sqrt2, -radii.z * inv_sqrt2));
-    sample_points.push(Point3::new(0.0, -radii.y * inv_sqrt2, radii.z * inv_sqrt2));
-    sample_points.push(Point3::new(0.0, -radii.y * inv_sqrt2, -radii.z * inv_sqrt2));
 
     // Find the deepest penetrating point
     let mut deepest_contact: Option<SdfContact> = None;
@@ -1694,13 +1705,13 @@ mod tests {
         // Capsule outside sphere
         let start = Point3::new(3.0, -1.0, 0.0);
         let end = Point3::new(3.0, 1.0, 0.0);
-        let contact = sdf_capsule_contact(&sdf, &sdf_pose, start, end, 0.2);
+        let contact = sdf_capsule_contact(&sdf, &sdf_pose, start, end, 0.2, 40);
         assert!(contact.is_none());
 
         // Capsule intersecting sphere
         let start = Point3::new(0.8, -0.5, 0.0);
         let end = Point3::new(0.8, 0.5, 0.0);
-        let contact = sdf_capsule_contact(&sdf, &sdf_pose, start, end, 0.3);
+        let contact = sdf_capsule_contact(&sdf, &sdf_pose, start, end, 0.3, 40);
         assert!(contact.is_some());
         let c = contact.unwrap();
         assert!(c.penetration > 0.0);
@@ -1786,7 +1797,7 @@ mod tests {
 
         // Cylinder far outside sphere - no contact
         let cylinder_pose = Pose::from_position(Point3::new(3.0, 0.0, 0.0));
-        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.3);
+        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.3, 40);
         assert!(contact.is_none());
     }
 
@@ -1797,7 +1808,7 @@ mod tests {
 
         // Cylinder intersecting sphere (cylinder axis along Z)
         let cylinder_pose = Pose::from_position(Point3::new(0.7, 0.0, 0.0));
-        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.3);
+        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.3, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1813,7 +1824,7 @@ mod tests {
 
         // Cylinder at center of sphere (maximum penetration)
         let cylinder_pose = Pose::identity();
-        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.3, 0.2);
+        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.3, 0.2, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1831,7 +1842,7 @@ mod tests {
         let rotation = UnitQuaternion::from_euler_angles(0.0, std::f64::consts::FRAC_PI_2, 0.0);
         let cylinder_pose = Pose::from_position_rotation(Point3::new(0.0, 0.7, 0.0), rotation);
 
-        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.3);
+        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.3, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1846,7 +1857,7 @@ mod tests {
         // Cylinder positioned so cap center contacts the sphere
         // Cylinder along Z-axis, cap should hit sphere from +Z direction
         let cylinder_pose = Pose::from_position(Point3::new(0.0, 0.0, 0.6));
-        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.2);
+        let contact = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.2, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1867,7 +1878,7 @@ mod tests {
         // Ellipsoid far outside sphere - no contact
         let ellipsoid_pose = Pose::from_position(Point3::new(3.0, 0.0, 0.0));
         let radii = Vector3::new(0.3, 0.3, 0.3);
-        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii);
+        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii, 40);
         assert!(contact.is_none());
     }
 
@@ -1879,7 +1890,7 @@ mod tests {
         // Ellipsoid intersecting sphere
         let ellipsoid_pose = Pose::from_position(Point3::new(0.8, 0.0, 0.0));
         let radii = Vector3::new(0.4, 0.3, 0.3);
-        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii);
+        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1896,7 +1907,7 @@ mod tests {
         // Small ellipsoid at center of sphere (maximum penetration)
         let ellipsoid_pose = Pose::identity();
         let radii = Vector3::new(0.2, 0.2, 0.2);
-        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii);
+        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1912,7 +1923,7 @@ mod tests {
         // Elongated ellipsoid (like a cigar shape)
         let ellipsoid_pose = Pose::from_position(Point3::new(0.0, 0.0, 0.6));
         let radii = Vector3::new(0.2, 0.2, 0.5);
-        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii);
+        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1932,7 +1943,7 @@ mod tests {
         let ellipsoid_pose = Pose::from_position_rotation(Point3::new(0.8, 0.0, 0.0), rotation);
         let radii = Vector3::new(0.4, 0.2, 0.2);
 
-        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii);
+        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1947,7 +1958,7 @@ mod tests {
         // Flat disk-like ellipsoid (like a pancake)
         let ellipsoid_pose = Pose::from_position(Point3::new(0.0, 0.0, 0.8));
         let radii = Vector3::new(0.4, 0.4, 0.1);
-        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii);
+        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1964,12 +1975,104 @@ mod tests {
         let ellipsoid_pose = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
         let radii = Vector3::new(0.3, 0.3, 0.3);
 
-        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii);
+        let contact = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii, 40);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
         // Ellipsoid at SDF center should have penetration
         assert!(c.penetration > 0.0);
+    }
+
+    // =========================================================================
+    // §57 SDF option wiring tests
+    // =========================================================================
+
+    #[test]
+    fn test_closest_surface_point_respects_max_iterations() {
+        let sdf = sphere_sdf(32);
+
+        // With 0 iterations, the result should be the input point (no refinement).
+        let point = Point3::new(0.5, 0.0, 0.0);
+        let result_0 = sdf.closest_surface_point(point, 0);
+        assert!(result_0.is_some());
+        let r0 = result_0.unwrap();
+        assert_relative_eq!(r0.x, 0.5, epsilon = 1e-10);
+
+        // With default iterations (10), should converge closer to the surface (r=1).
+        let result_10 = sdf.closest_surface_point(point, 10);
+        assert!(result_10.is_some());
+        let r10 = result_10.unwrap();
+        let dist_to_surface_10 = (r10.coords.norm() - 1.0).abs();
+        assert!(
+            dist_to_surface_10 < 0.15,
+            "With 10 iterations, should converge near surface; got dist={dist_to_surface_10}"
+        );
+    }
+
+    #[test]
+    fn test_cylinder_initpoints_changes_sample_count() {
+        // With sdf_initpoints=8 (minimum): n_per_ring = max(4, (8-2)/3) = 4
+        // Total = 2 + 3*4 = 14 sample points.
+        // With sdf_initpoints=40 (default): n_per_ring = max(4, (40-2)/3) = 12
+        // Total = 2 + 3*12 = 38 sample points.
+        // Higher initpoints should still find contacts (or find them more reliably).
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+        let cylinder_pose = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+
+        // Cylinder overlapping with sphere — both low and high initpoints should detect
+        let contact_low = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.3, 8);
+        let contact_high = sdf_cylinder_contact(&sdf, &sdf_pose, &cylinder_pose, 0.5, 0.3, 80);
+        assert!(
+            contact_low.is_some(),
+            "Low initpoints should still detect collision"
+        );
+        assert!(
+            contact_high.is_some(),
+            "High initpoints should detect collision"
+        );
+    }
+
+    #[test]
+    fn test_ellipsoid_initpoints_changes_sample_count() {
+        // With sdf_initpoints=6: only 6 poles, no latitude rings.
+        // With sdf_initpoints=40: 6 poles + 34 distributed across latitude rings.
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+        let ellipsoid_pose = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+        let radii = Vector3::new(0.3, 0.3, 0.3);
+
+        let contact_low = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii, 6);
+        let contact_high = sdf_ellipsoid_contact(&sdf, &sdf_pose, &ellipsoid_pose, &radii, 80);
+        assert!(
+            contact_low.is_some(),
+            "Low initpoints should still detect collision"
+        );
+        assert!(
+            contact_high.is_some(),
+            "High initpoints should detect collision"
+        );
+    }
+
+    #[test]
+    fn test_capsule_initpoints_changes_sample_count() {
+        // With sdf_initpoints=2: only 2 endpoint samples.
+        // With sdf_initpoints=20: 20 samples along the axis.
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+        let start = Point3::new(0.8, -0.5, 0.0);
+        let end = Point3::new(0.8, 0.5, 0.0);
+
+        let contact_low = sdf_capsule_contact(&sdf, &sdf_pose, start, end, 0.3, 2);
+        let contact_high = sdf_capsule_contact(&sdf, &sdf_pose, start, end, 0.3, 20);
+        assert!(
+            contact_low.is_some(),
+            "Low initpoints should still detect collision"
+        );
+        assert!(
+            contact_high.is_some(),
+            "High initpoints should detect collision"
+        );
     }
 
     // =========================================================================

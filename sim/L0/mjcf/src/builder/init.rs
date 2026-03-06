@@ -92,6 +92,7 @@ impl ModelBuilder {
             mesh_name_to_id: HashMap::new(),
             mesh_name: vec![],
             mesh_data: vec![],
+            mesh_inertia_modes: vec![],
 
             hfield_name_to_id: HashMap::new(),
             hfield_name: vec![],
@@ -167,6 +168,10 @@ impl ModelBuilder {
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
             sleep_tolerance: 1e-4,
+            ccd_iterations: 35,
+            ccd_tolerance: 1e-6,
+            sdf_iterations: 10,
+            sdf_initpoints: 40,
 
             qpos0_values: vec![],
             qpos_spring_values: vec![],

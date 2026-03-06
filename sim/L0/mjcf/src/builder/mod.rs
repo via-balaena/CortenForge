@@ -44,7 +44,8 @@ use std::sync::Arc;
 use crate::defaults::DefaultResolver;
 use crate::error::{MjcfError, Result};
 use crate::types::{
-    MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfKeyframe, MjcfModel, MjcfOption, MjcfSolverType,
+    MeshInertia, MjcfCompiler, MjcfConeType, MjcfIntegrator, MjcfKeyframe, MjcfModel, MjcfOption,
+    MjcfSolverType,
 };
 
 use self::compiler::{apply_discardvisual, apply_fusestatic};
@@ -498,6 +499,8 @@ pub struct ModelBuilder {
     pub(crate) mesh_name: Vec<String>,
     /// Triangle mesh data with prebuilt BVH (Arc for cheap cloning).
     pub(crate) mesh_data: Vec<Arc<sim_core::mesh::TriangleMeshData>>,
+    /// Per-mesh inertia computation mode (from `<mesh inertia="..."/>`).
+    pub(crate) mesh_inertia_modes: Vec<MeshInertia>,
 
     // Height field arrays (built from MJCF <asset><hfield> elements)
     /// Name-to-index lookup for hfield assets.
@@ -587,6 +590,10 @@ pub struct ModelBuilder {
     pub(crate) integrator: Integrator,
     pub(crate) solver_type: SolverType,
     pub(crate) sleep_tolerance: f64,
+    pub(crate) ccd_iterations: usize,
+    pub(crate) ccd_tolerance: f64,
+    pub(crate) sdf_iterations: usize,
+    pub(crate) sdf_initpoints: usize,
 
     // qpos0 values (built as we process joints)
     pub(crate) qpos0_values: Vec<f64>,
@@ -767,6 +774,10 @@ impl ModelBuilder {
         self.density = option.density;
         self.viscosity = option.viscosity;
         self.sleep_tolerance = option.sleep_tolerance;
+        self.ccd_iterations = option.ccd_iterations;
+        self.ccd_tolerance = option.ccd_tolerance;
+        self.sdf_iterations = option.sdf_iterations;
+        self.sdf_initpoints = option.sdf_initpoints;
         self.disableactuator = option.actuatorgroupdisable;
 
         // S10-stub: Wire override parameters from parsed <option>.
@@ -923,13 +934,8 @@ fn apply_flags(flag: &crate::types::MjcfFlag, disableflags: &mut u32, enableflag
             "ENABLE_INVDISCRETE set but discrete-time inverse (M⁻¹·M̂·qacc transform) not implemented — flag has no effect"
         );
     }
-    if flag.multiccd {
-        tracing::warn!("ENABLE_MULTICCD set but CCD (§50) not implemented — flag has no effect");
-    }
-    if !flag.nativeccd {
-        // default is true (enabled); warn when user disables it
-        tracing::warn!("DISABLE_NATIVECCD set but CCD (§50) not implemented — flag has no effect");
-    }
+    // ENABLE_MULTICCD: wired to multi-point convex contact generation (Spec D S4).
+    // DISABLE_NATIVECCD: conformant no-op — no libccd fallback exists.
 }
 
 #[cfg(test)]

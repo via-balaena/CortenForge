@@ -51,6 +51,7 @@
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
+use crate::convex_hull::{ConvexHull, quickhull};
 use crate::mid_phase::{Bvh, BvhPrimitive};
 
 #[cfg(feature = "serde")]
@@ -98,6 +99,9 @@ pub struct TriangleMeshData {
     /// Skipped during serialization, rebuilt on demand.
     #[cfg_attr(feature = "serde", serde(skip))]
     bvh: Option<Bvh>,
+    /// Convex hull for collision (computed at build time via Quickhull).
+    /// Serialized (unlike BVH) because hull computation is expensive.
+    convex_hull: Option<ConvexHull>,
 }
 
 impl PartialEq for TriangleMeshData {
@@ -154,6 +158,7 @@ impl TriangleMeshData {
             aabb_min,
             aabb_max,
             bvh: Some(bvh),
+            convex_hull: None,
         }
     }
 
@@ -185,6 +190,7 @@ impl TriangleMeshData {
             aabb_min,
             aabb_max,
             bvh: Some(bvh),
+            convex_hull: None,
         }
     }
 
@@ -271,6 +277,19 @@ impl TriangleMeshData {
     #[must_use]
     pub fn center(&self) -> Point3<f64> {
         Point3::from((self.aabb_min.coords + self.aabb_max.coords) * 0.5)
+    }
+
+    /// Compute and store the convex hull of this mesh's vertices.
+    /// If the mesh has fewer than 4 vertices or all points are degenerate,
+    /// `convex_hull` remains `None`.
+    pub fn compute_convex_hull(&mut self, max_vertices: Option<usize>) {
+        self.convex_hull = quickhull(self.vertices(), max_vertices);
+    }
+
+    /// Returns the convex hull if computed.
+    #[must_use]
+    pub fn convex_hull(&self) -> Option<&ConvexHull> {
+        self.convex_hull.as_ref()
     }
 
     /// Get a triangle's vertices.

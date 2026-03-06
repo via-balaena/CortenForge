@@ -76,7 +76,14 @@ pub fn geom_distance(
     let pose2 = Pose::from_position_rotation(Point3::from(pos2), rot2);
 
     // 7. GJK/EPA query
-    if let Some(contact) = gjk_epa_contact(&shape1, &pose1, &shape2, &pose2) {
+    if let Some(contact) = gjk_epa_contact(
+        &shape1,
+        &pose1,
+        &shape2,
+        &pose2,
+        model.ccd_iterations,
+        model.ccd_tolerance,
+    ) {
         // Overlapping — signed distance is negative penetration
         let dist = -contact.penetration;
         // Surface points: from = geom1 surface, to = geom2 surface
@@ -94,7 +101,7 @@ pub fn geom_distance(
         (dist, fromto)
     } else {
         // Non-overlapping — use GJK simplex to get closest points
-        let result = gjk_query(&shape1, &pose1, &shape2, &pose2);
+        let result = gjk_query(&shape1, &pose1, &shape2, &pose2, model.ccd_iterations);
         let (closest_a, closest_b) = closest_points_from_simplex(&result.simplex);
         let diff = closest_a - closest_b;
         let dist = diff.norm();

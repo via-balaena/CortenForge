@@ -16,15 +16,15 @@ fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
     if n > 1e-10 { v / n } else { Vector3::z() }
 }
 use crate::types::{
-    AngleUnit, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType,
-    MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact, MjcfContactExclude,
-    MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality, MjcfEqualityDefaults, MjcfFlag,
-    MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial,
-    MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality,
-    MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
-    MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite, MjcfSiteDefaults,
-    MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
-    MjcfTendonEquality, MjcfTendonType, MjcfWeld, SpatialPathElement,
+    AngleUnit, FluidShape, InertiaFromGeom, MeshInertia, MjcfActuator, MjcfActuatorDefaults,
+    MjcfActuatorType, MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact,
+    MjcfContactExclude, MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality,
+    MjcfEqualityDefaults, MjcfFlag, MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
+    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
+    MjcfJointEquality, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults, MjcfModel,
+    MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite,
+    MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon,
+    MjcfTendonDefaults, MjcfTendonEquality, MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
 
 /// Parse an MJCF string into a model.
@@ -253,6 +253,15 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(ccd) = parse_int_attr(e, "ccd_iterations") {
         option.ccd_iterations = ccd.max(0) as usize;
     }
+    if let Some(ccd_tol) = parse_float_attr(e, "ccd_tolerance") {
+        option.ccd_tolerance = ccd_tol;
+    }
+    if let Some(sdf_iter) = parse_int_attr(e, "sdf_iterations") {
+        option.sdf_iterations = sdf_iter.max(0) as usize;
+    }
+    if let Some(sdf_init) = parse_int_attr(e, "sdf_initpoints") {
+        option.sdf_initpoints = sdf_init.max(0) as usize;
+    }
 
     // Contact configuration
     if let Some(cone) = get_attribute_opt(e, "cone") {
@@ -475,9 +484,13 @@ fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
         compiler.alignfree = alignfree == "true";
     }
 
-    // A13. exactmeshinertia
+    // A13. exactmeshinertia (deprecated — no behavioral effect since MuJoCo 3.5.0)
     if let Some(emi) = get_attribute_opt(e, "exactmeshinertia") {
         compiler.exactmeshinertia = emi == "true";
+        tracing::warn!(
+            "exactmeshinertia is deprecated and has no effect; \
+             use <mesh inertia=\"exact\"/> instead"
+        );
     }
 
     Ok(compiler)
@@ -786,6 +799,9 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
             }
         }
     }
+    if let Some(si) = get_attribute_opt(e, "shellinertia") {
+        defaults.shellinertia = Some(si == "true");
+    }
 
     Ok(defaults)
 }
@@ -1032,6 +1048,24 @@ fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
 
     if let Some(scale) = get_attribute_opt(e, "scale") {
         defaults.scale = Some(parse_vector3(&scale)?);
+    }
+
+    if let Some(n) = parse_int_attr(e, "maxhullvert") {
+        defaults.maxhullvert = parse_maxhullvert(n)?;
+    }
+
+    if let Some(inertia_str) = get_attribute_opt(e, "inertia") {
+        defaults.inertia = Some(match inertia_str.as_str() {
+            "convex" => MeshInertia::Convex,
+            "exact" => MeshInertia::Exact,
+            "legacy" => MeshInertia::Legacy,
+            "shell" => MeshInertia::Shell,
+            other => {
+                return Err(MjcfError::XmlParse(format!(
+                    "mesh default: invalid inertia mode '{other}'"
+                )));
+            }
+        });
     }
 
     Ok(defaults)
@@ -1396,6 +1430,28 @@ fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let face_indices: Vec<u32> = face_data.iter().map(|f| *f as u32).collect();
         mesh.face = Some(face_indices);
+    }
+
+    // Parse maxhullvert (maximum convex hull vertices)
+    if let Some(n) = parse_int_attr(e, "maxhullvert") {
+        mesh.maxhullvert = parse_maxhullvert(n)?;
+    }
+
+    // Parse mesh inertia mode
+    if let Some(inertia_str) = get_attribute_opt(e, "inertia") {
+        mesh.inertia = Some(match inertia_str.as_str() {
+            "convex" => MeshInertia::Convex,
+            "exact" => MeshInertia::Exact,
+            "legacy" => MeshInertia::Legacy,
+            "shell" => MeshInertia::Shell,
+            other => {
+                return Err(MjcfError::XmlParse(format!(
+                    "mesh '{}': invalid inertia mode '{}' \
+                     (expected convex, exact, legacy, or shell)",
+                    mesh.name, other
+                )));
+            }
+        });
     }
 
     Ok(mesh)
@@ -1943,6 +1999,11 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         if let Ok(parts) = parse_float_array(&user) {
             geom.user = parts;
         }
+    }
+
+    // Parse shellinertia (boolean attribute)
+    if let Some(si) = get_attribute_opt(e, "shellinertia") {
+        geom.shellinertia = Some(si == "true");
     }
 
     Ok(geom)
@@ -3386,6 +3447,21 @@ fn parse_int_attr(e: &BytesStart, name: &str) -> Option<i32> {
     get_attribute_opt(e, name).and_then(|s| s.parse().ok())
 }
 
+/// Parse `maxhullvert` value: -1 → None (no limit), >= 4 → Some(n), else error.
+/// MuJoCo ref: `xml_native_reader.cc` validates `n != -1 && n < 4` → error.
+fn parse_maxhullvert(n: i32) -> Result<Option<usize>> {
+    if n == -1 {
+        Ok(None)
+    } else if n >= 4 {
+        #[allow(clippy::cast_sign_loss)]
+        Ok(Some(n as usize))
+    } else {
+        Err(MjcfError::XmlParse(
+            "maxhullvert must be larger than 3".to_string(),
+        ))
+    }
+}
+
 /// Parse a space-separated vector3 string.
 fn parse_vector3(s: &str) -> Result<Vector3<f64>> {
     let parts = parse_float_array(s)?;
@@ -4032,6 +4108,8 @@ mod tests {
                     ls_iterations="100"
                     noslip_iterations="10"
                     ccd_iterations="25"
+                    sdf_iterations="15"
+                    sdf_initpoints="60"
                     cone="elliptic"
                     jacobian="sparse"
                     impratio="2.0"
@@ -4062,6 +4140,8 @@ mod tests {
         assert_eq!(opt.ls_iterations, 100);
         assert_eq!(opt.noslip_iterations, 10);
         assert_eq!(opt.ccd_iterations, 25);
+        assert_eq!(opt.sdf_iterations, 15);
+        assert_eq!(opt.sdf_initpoints, 60);
 
         // Contact configuration
         assert_eq!(opt.cone, MjcfConeType::Elliptic);
@@ -4082,6 +4162,160 @@ mod tests {
 
         // Overrides
         assert_relative_eq!(opt.o_margin, 0.002, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_sdf_option_defaults() {
+        // When sdf_iterations and sdf_initpoints are not specified, defaults apply.
+        let xml = r#"
+            <mujoco model="test">
+                <option timestep="0.001"/>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(
+            model.option.sdf_iterations, 10,
+            "sdf_iterations default should be 10"
+        );
+        assert_eq!(
+            model.option.sdf_initpoints, 40,
+            "sdf_initpoints default should be 40"
+        );
+    }
+
+    #[test]
+    fn test_sdf_option_nondefault_parsing() {
+        // Verify non-default sdf_iterations and sdf_initpoints parse correctly.
+        let xml = r#"
+            <mujoco model="test">
+                <option sdf_iterations="20" sdf_initpoints="80"/>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.option.sdf_iterations, 20);
+        assert_eq!(model.option.sdf_initpoints, 80);
+    }
+
+    #[test]
+    fn test_sdf_options_reach_model() {
+        // Verify sdf_iterations and sdf_initpoints flow through the full
+        // parse → build → Model pipeline.
+        use crate::builder::model_from_mjcf;
+
+        // Non-default values
+        let xml = r#"
+            <mujoco model="test">
+                <option sdf_iterations="7" sdf_initpoints="50"/>
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse");
+        let model = model_from_mjcf(&mjcf, None).expect("should build");
+        assert_eq!(model.sdf_iterations, 7, "sdf_iterations should reach Model");
+        assert_eq!(
+            model.sdf_initpoints, 50,
+            "sdf_initpoints should reach Model"
+        );
+
+        // Default values
+        let xml_defaults = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf_d = parse_mjcf_str(xml_defaults).expect("should parse");
+        let model_d = model_from_mjcf(&mjcf_d, None).expect("should build");
+        assert_eq!(
+            model_d.sdf_iterations, 10,
+            "default sdf_iterations should be 10"
+        );
+        assert_eq!(
+            model_d.sdf_initpoints, 40,
+            "default sdf_initpoints should be 40"
+        );
+    }
+
+    /// T5: AC5 — ccd_iterations non-default value reaches Model
+    #[test]
+    fn test_ccd_iterations_nondefault_reaches_model() {
+        use crate::builder::model_from_mjcf;
+
+        let xml = r#"
+            <mujoco model="test">
+                <option ccd_iterations="10"/>
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse");
+        let model = model_from_mjcf(&mjcf, None).expect("should build");
+        assert_eq!(
+            model.ccd_iterations, 10,
+            "ccd_iterations should reach Model"
+        );
+    }
+
+    /// T6: AC6 — ccd_tolerance non-default value reaches Model
+    #[test]
+    fn test_ccd_tolerance_nondefault_reaches_model() {
+        use crate::builder::model_from_mjcf;
+
+        let xml = r#"
+            <mujoco model="test">
+                <option ccd_tolerance="1e-8"/>
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse");
+        let model = model_from_mjcf(&mjcf, None).expect("should build");
+        assert!(
+            (model.ccd_tolerance - 1e-8).abs() < 1e-15,
+            "ccd_tolerance should reach Model, got {}",
+            model.ccd_tolerance
+        );
+    }
+
+    /// T7: AC7 — ccd_iterations default is 35
+    #[test]
+    fn test_ccd_iterations_default_is_35() {
+        use crate::builder::model_from_mjcf;
+
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse");
+        let model = model_from_mjcf(&mjcf, None).expect("should build");
+        assert_eq!(
+            model.ccd_iterations, 35,
+            "default ccd_iterations should be 35"
+        );
+        assert!(
+            (model.ccd_tolerance - 1e-6).abs() < 1e-15,
+            "default ccd_tolerance should be 1e-6"
+        );
     }
 
     #[test]
@@ -4360,7 +4594,7 @@ mod tests {
         assert_eq!(opt.iterations, 100);
         assert_relative_eq!(opt.tolerance, 1e-8, epsilon = 1e-15);
         assert_eq!(opt.ls_iterations, 50);
-        assert_eq!(opt.ccd_iterations, 50);
+        assert_eq!(opt.ccd_iterations, 35);
         assert_eq!(opt.cone, MjcfConeType::Pyramidal);
         assert_eq!(opt.jacobian, MjcfJacobianType::Dense);
         assert_relative_eq!(opt.impratio, 1.0, epsilon = 1e-10);
@@ -4723,6 +4957,81 @@ mod tests {
             epsilon = 1e-10
         );
         assert_eq!(model.meshes[2].vertex_count(), 4);
+    }
+
+    // T9: maxhullvert parsing → AC9
+    #[test]
+    fn test_parse_maxhullvert() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="box" maxhullvert="10" vertex="0 0 0 1 0 0 1 1 0 0 1 0 0 0 1 1 0 1 1 1 1 0 1 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes[0].maxhullvert, Some(10));
+    }
+
+    // T10: maxhullvert validation error → AC10
+    #[test]
+    fn test_parse_maxhullvert_invalid() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="box" maxhullvert="2" vertex="0 0 0 1 0 0 1 1 0 0 1 0 0 0 1 1 0 1 1 1 1 0 1 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let err = parse_mjcf_str(xml).expect_err("should fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("maxhullvert must be larger than 3"),
+            "error should mention maxhullvert, got: {msg}"
+        );
+    }
+
+    // T12: Hull available after model build → AC12
+    #[test]
+    fn test_hull_available_after_build() {
+        // Use a tetrahedron mesh (4 vertices — minimum for a hull)
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="tet" vertex="0 0 0 1 0 0 0 1 0 0 0 1" face="0 1 2 0 1 3 1 2 3 0 2 3"/>
+                </asset>
+                <worldbody>
+                    <body name="b">
+                        <geom type="mesh" mesh="tet"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let model = crate::load_model(xml).expect("should build");
+        assert!(
+            model.mesh_data[0].convex_hull().is_some(),
+            "hull should be computed at build time"
+        );
+    }
+
+    // T18: maxhullvert=-1 parse → AC9
+    #[test]
+    fn test_parse_maxhullvert_minus_one() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="box" maxhullvert="-1" vertex="0 0 0 1 0 0 1 1 0 0 1 0 0 0 1 1 0 1 1 1 1 0 1 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(
+            model.meshes[0].maxhullvert, None,
+            "maxhullvert=-1 should map to None"
+        );
     }
 
     #[test]

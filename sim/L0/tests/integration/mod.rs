@@ -79,6 +79,14 @@ pub mod tendon_springlength;
 pub mod exactmeshinertia;
 
 // ============================================================================
+// §43 Mesh Inertia Modes Tests (Phase 9, Spec B)
+// ============================================================================
+
+/// Mesh inertia modes: shell, legacy, convex, primitive shell formulas,
+/// shellinertia rejection, default inheritance, ellipsoid volume fix.
+pub mod mesh_inertia_modes;
+
+// ============================================================================
 // Site-Transmission Actuator Tests (§5 Site-Transmission Actuators)
 // ============================================================================
 

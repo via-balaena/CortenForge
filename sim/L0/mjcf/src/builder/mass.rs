@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use super::ModelBuilder;
 use super::geom::{compute_geom_inertia, compute_geom_mass, geom_effective_com};
-use super::mesh::{MeshProps, compute_mesh_inertia, resolve_mesh};
+use super::mesh::{MeshProps, compute_mesh_inertia_by_mode, resolve_mesh};
 use super::orientation::quat_from_wxyz;
-use crate::types::{MjcfGeom, MjcfInertial};
+use crate::types::{MeshInertia, MjcfGeom, MjcfInertial};
 
 impl ModelBuilder {
     /// Apply the mass post-processing pipeline (MuJoCo §A6-A8).
@@ -145,6 +145,7 @@ pub fn compute_inertia_from_geoms(
     geoms: &[MjcfGeom],
     mesh_lookup: &HashMap<String, usize>,
     mesh_data: &[Arc<TriangleMeshData>],
+    mesh_inertia_modes: &[MeshInertia],
 ) -> (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>) {
     if geoms.is_empty() {
         // No geoms: zero mass/inertia (matches MuJoCo).
@@ -161,7 +162,19 @@ pub fn compute_inertia_from_geoms(
     let mesh_props: Vec<Option<MeshProps>> = geoms
         .iter()
         .map(|geom| {
-            resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| compute_mesh_inertia(&mesh))
+            resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| {
+                let mesh_id = geom
+                    .mesh
+                    .as_ref()
+                    .and_then(|name| mesh_lookup.get(name))
+                    .copied()
+                    .unwrap_or(0);
+                let mode = mesh_inertia_modes
+                    .get(mesh_id)
+                    .copied()
+                    .unwrap_or(MeshInertia::Convex);
+                compute_mesh_inertia_by_mode(&mesh, mode)
+            })
         })
         .collect();
 

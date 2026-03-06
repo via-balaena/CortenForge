@@ -47,6 +47,9 @@ pub fn collide_with_sdf(
     let other_pose = Pose::from_position_rotation(Point3::from(other_pos), other_quat);
     let other_size = model.geom_size[other_geom];
 
+    // SDF option parameters from model (§57).
+    let initpoints = model.sdf_initpoints;
+
     // Dispatch on the other geom's type
     let contact = match model.geom_type[other_geom] {
         GeomType::Sphere => sdf_sphere_contact(sdf, &sdf_pose, other_pose.position, other_size.x),
@@ -54,15 +57,24 @@ pub fn collide_with_sdf(
             let axis = other_pose.rotation * Vector3::z();
             let start = other_pose.position - axis * other_size.y;
             let end = other_pose.position + axis * other_size.y;
-            sdf_capsule_contact(sdf, &sdf_pose, start, end, other_size.x)
+            sdf_capsule_contact(sdf, &sdf_pose, start, end, other_size.x, initpoints)
         }
         GeomType::Box => sdf_box_contact(sdf, &sdf_pose, &other_pose, &other_size),
         GeomType::Cylinder => {
             // sdf_cylinder_contact takes (pose, half_height, radius)
             // geom_size for Cylinder: x = radius, y = half_length
-            sdf_cylinder_contact(sdf, &sdf_pose, &other_pose, other_size.y, other_size.x)
+            sdf_cylinder_contact(
+                sdf,
+                &sdf_pose,
+                &other_pose,
+                other_size.y,
+                other_size.x,
+                initpoints,
+            )
         }
-        GeomType::Ellipsoid => sdf_ellipsoid_contact(sdf, &sdf_pose, &other_pose, &other_size),
+        GeomType::Ellipsoid => {
+            sdf_ellipsoid_contact(sdf, &sdf_pose, &other_pose, &other_size, initpoints)
+        }
         GeomType::Mesh => {
             let mesh_id = model.geom_mesh[other_geom]?;
             let mesh_data = &model.mesh_data[mesh_id];
@@ -72,7 +84,7 @@ pub fn collide_with_sdf(
             let hfield_id = model.geom_hfield[other_geom]?;
             let hfield = &model.hfield_data[hfield_id];
             let hf_size = &model.hfield_size[hfield_id];
-            // Apply centering offset (same as collide_with_hfield)
+            // Apply centering offset for hfield-local frame
             let hf_offset = other_mat * Vector3::new(-hf_size[0], -hf_size[1], 0.0);
             let hf_pose =
                 Pose::from_position_rotation(Point3::from(other_pos + hf_offset), other_quat);

@@ -4,7 +4,6 @@
 //! `make_contact_from_geoms` contact constructor, `apply_pair_overrides` for mechanism-2
 //! contacts, and shared collision constants.
 
-use super::hfield::collide_with_hfield;
 use super::mesh_collide::collide_with_mesh;
 use super::pair_convex::{
     collide_capsule_capsule, collide_sphere_box, collide_sphere_capsule, collide_sphere_sphere,
@@ -15,11 +14,13 @@ use super::pair_cylinder::{
 use super::plane::collide_with_plane;
 use super::sdf_collide::collide_with_sdf;
 
+use super::hfield::MAX_CONTACTS_PER_PAIR;
 use super::{assign_friction, assign_imp, assign_ref, contact_param};
 use crate::collision_shape::CollisionShape;
-use crate::gjk_epa::gjk_epa_contact;
+use crate::gjk_epa::{GjkContact, gjk_distance, gjk_epa_contact, support_face_points};
 use crate::types::{
-    Contact, ContactPair, ENABLE_OVERRIDE, GeomType, Model, compute_tangent_frame, enabled,
+    Contact, ContactPair, ENABLE_MULTICCD, ENABLE_OVERRIDE, GeomType, Model, compute_tangent_frame,
+    enabled,
 };
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
@@ -68,7 +69,7 @@ pub fn collide_geoms(
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     let type1 = model.geom_type[geom1];
     let type2 = model.geom_type[geom2];
     let size1 = model.geom_size[geom1];
@@ -80,7 +81,16 @@ pub fn collide_geoms(
     // Special case: SDF collision (before mesh/hfield/plane — SDF has its own
     // contact functions for all shapes including Mesh, Hfield, and Plane)
     if type1 == GeomType::Sdf || type2 == GeomType::Sdf {
-        return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
+        return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
+            .into_iter()
+            .collect();
+    }
+
+    // Height field collision handled via collide_hfield_multi at the
+    // broadphase loop level (multi-contact). Return empty here as a safety
+    // fallback — hfield pairs should never reach collide_geoms in normal flow.
+    if type1 == GeomType::Hfield || type2 == GeomType::Hfield {
+        return vec![];
     }
 
     // Special case: mesh collision (has its own BVH-accelerated path)
@@ -88,28 +98,29 @@ pub fn collide_geoms(
         return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
-    // Special case: height field collision
-    if type1 == GeomType::Hfield || type2 == GeomType::Hfield {
-        return collide_with_hfield(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
-    }
-
     // Special case: plane collision
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
         return collide_with_plane(
             model, geom1, geom2, type1, type2, pos1, mat1, pos2, mat2, size1, size2, margin,
-        );
+        )
+        .into_iter()
+        .collect();
     }
 
     // Special case: sphere-sphere collision (analytical, more robust than GJK/EPA)
     if type1 == GeomType::Sphere && type2 == GeomType::Sphere {
-        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2, margin);
+        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2, margin)
+            .into_iter()
+            .collect();
     }
 
     // Special case: capsule-capsule collision (analytical, much faster than GJK/EPA)
     if type1 == GeomType::Capsule && type2 == GeomType::Capsule {
         return collide_capsule_capsule(
             model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
-        );
+        )
+        .into_iter()
+        .collect();
     }
 
     // Special case: sphere-capsule collision
@@ -118,7 +129,9 @@ pub fn collide_geoms(
     {
         return collide_sphere_capsule(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        );
+        )
+        .into_iter()
+        .collect();
     }
 
     // Special case: sphere-box collision (analytical)
@@ -127,7 +140,9 @@ pub fn collide_geoms(
     {
         return collide_sphere_box(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        );
+        )
+        .into_iter()
+        .collect();
     }
 
     // Special case: capsule-box collision (analytical)
@@ -136,14 +151,18 @@ pub fn collide_geoms(
     {
         return collide_capsule_box(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        );
+        )
+        .into_iter()
+        .collect();
     }
 
     // Special case: box-box collision (SAT)
     if type1 == GeomType::Box && type2 == GeomType::Box {
         return collide_box_box(
             model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
-        );
+        )
+        .into_iter()
+        .collect();
     }
 
     // Special case: cylinder-sphere collision (analytical)
@@ -152,7 +171,9 @@ pub fn collide_geoms(
     {
         return collide_cylinder_sphere(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        );
+        )
+        .into_iter()
+        .collect();
     }
 
     // Special case: cylinder-capsule collision (analytical with GJK/EPA fallback)
@@ -163,7 +184,7 @@ pub fn collide_geoms(
         if let Some(contact) = collide_cylinder_capsule(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         ) {
-            return Some(contact);
+            return vec![contact];
         }
         // Fall through to GJK/EPA for degenerate cases (intersecting/parallel axes, cap collisions)
     }
@@ -179,12 +200,50 @@ pub fn collide_geoms(
     let pose2 = Pose::from_position_rotation(Point3::from(pos2), quat2);
 
     // Use GJK/EPA for general convex collision
-    let collision_shape1 = shape1?;
-    let collision_shape2 = shape2?;
+    let Some(collision_shape1) = shape1 else {
+        return vec![];
+    };
+    let Some(collision_shape2) = shape2 else {
+        return vec![];
+    };
 
-    if let Some(result) = gjk_epa_contact(&collision_shape1, &pose1, &collision_shape2, &pose2) {
+    if let Some(result) = gjk_epa_contact(
+        &collision_shape1,
+        &pose1,
+        &collision_shape2,
+        &pose2,
+        model.ccd_iterations,
+        model.ccd_tolerance,
+    ) {
         if result.penetration > -margin {
-            return Some(make_contact_from_geoms(
+            // MULTICCD: generate multiple contacts for flat contact surfaces
+            if enabled(model, ENABLE_MULTICCD) {
+                let multi = multiccd_contacts(
+                    &collision_shape1,
+                    &pose1,
+                    &collision_shape2,
+                    &pose2,
+                    &result,
+                    model.ccd_iterations,
+                    model.ccd_tolerance,
+                );
+                return multi
+                    .into_iter()
+                    .map(|gjk| {
+                        make_contact_from_geoms(
+                            model,
+                            Vector3::new(gjk.point.x, gjk.point.y, gjk.point.z),
+                            gjk.normal,
+                            gjk.penetration,
+                            geom1,
+                            geom2,
+                            margin,
+                        )
+                    })
+                    .collect();
+            }
+
+            return vec![make_contact_from_geoms(
                 model,
                 Vector3::new(result.point.x, result.point.y, result.point.z),
                 result.normal,
@@ -192,11 +251,100 @@ pub fn collide_geoms(
                 geom1,
                 geom2,
                 margin,
-            ));
+            )];
+        }
+    } else if margin > 0.0 {
+        // Shapes don't overlap — check if within margin distance (margin-zone contact).
+        // MuJoCo's convex solver returns separation distance for non-overlapping shapes;
+        // CortenForge uses gjk_distance() as the equivalent.
+        if let Some(dist_result) = gjk_distance(
+            &collision_shape1,
+            &pose1,
+            &collision_shape2,
+            &pose2,
+            model.ccd_iterations,
+            model.ccd_tolerance,
+        ) {
+            if dist_result.distance < margin {
+                // Margin-zone contact: depth is negative (separated)
+                let depth = -dist_result.distance;
+                let diff = dist_result.witness_b - dist_result.witness_a;
+                let diff_norm = diff.norm();
+                let normal = if diff_norm > GEOM_EPSILON {
+                    diff / diff_norm
+                } else {
+                    Vector3::z()
+                };
+                let midpoint = nalgebra::center(&dist_result.witness_a, &dist_result.witness_b);
+                return vec![make_contact_from_geoms(
+                    model,
+                    midpoint.coords,
+                    normal,
+                    depth,
+                    geom1,
+                    geom2,
+                    margin,
+                )];
+            }
         }
     }
 
-    None
+    vec![]
+}
+
+// ============================================================================
+// MULTICCD helper
+// ============================================================================
+
+/// Duplicate contact distance threshold for MULTICCD filtering.
+const MULTICCD_DEDUP_DIST: f64 = 1e-4;
+
+/// Generate multiple contacts for a convex-convex pair using MULTICCD.
+///
+/// Enumerates face vertices on shape A's contact face to find additional
+/// contact points on flat surfaces. Returns 1-4 contacts.
+/// Only called when `ENABLE_MULTICCD` is set.
+pub fn multiccd_contacts(
+    shape_a: &CollisionShape,
+    pose_a: &Pose,
+    _shape_b: &CollisionShape,
+    _pose_b: &Pose,
+    primary: &GjkContact,
+    _max_iterations: usize,
+    _tolerance: f64,
+) -> Vec<GjkContact> {
+    // MULTICCD strategy: enumerate all vertices on shape A's contact face
+    // (the set of vertices sharing the maximum support value in the -normal
+    // direction). For flat faces (box, convex mesh), this gives the face
+    // corners. For curved shapes, this gives a single point.
+    let face_points = support_face_points(shape_a, pose_a, &(-primary.normal));
+
+    if face_points.len() <= 1 {
+        // Curved surface or single vertex — no additional contacts
+        return vec![primary.clone()];
+    }
+
+    let mut contacts: Vec<GjkContact> =
+        Vec::with_capacity(face_points.len().min(MAX_CONTACTS_PER_PAIR));
+
+    for pt in &face_points {
+        if contacts.len() >= MAX_CONTACTS_PER_PAIR {
+            break;
+        }
+        // Check for duplicates
+        let dominated = contacts
+            .iter()
+            .any(|existing| (existing.point - pt).norm() < MULTICCD_DEDUP_DIST);
+        if !dominated {
+            contacts.push(GjkContact {
+                point: *pt,
+                normal: primary.normal,
+                penetration: primary.penetration,
+            });
+        }
+    }
+
+    contacts
 }
 
 // ============================================================================
@@ -220,7 +368,7 @@ pub fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Optio
         GeomType::Ellipsoid => Some(CollisionShape::Ellipsoid { radii: size }),
         GeomType::Plane => None,  // Handled via collide_with_plane()
         GeomType::Mesh => None,   // Handled via collide_with_mesh()
-        GeomType::Hfield => None, // Handled via collide_with_hfield()
+        GeomType::Hfield => None, // Handled via collide_hfield_multi at broadphase level
         GeomType::Sdf => None,    // Handled via collide_with_sdf()
     }
 }

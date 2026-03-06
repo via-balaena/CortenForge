@@ -69,6 +69,9 @@ pub struct ExtendedSolverConfig {
     /// CCD iterations.
     pub ccd_iterations: usize,
 
+    /// Convex collision solver tolerance.
+    pub ccd_tolerance: f64,
+
     /// Friction-to-normal impedance ratio.
     pub impratio: f64,
 
@@ -114,6 +117,7 @@ impl From<&MjcfOption> for ExtendedSolverConfig {
             ls_iterations: option.ls_iterations,
             noslip_iterations: option.noslip_iterations,
             ccd_iterations: option.ccd_iterations,
+            ccd_tolerance: option.ccd_tolerance,
             impratio: option.impratio,
             nconmax: option.nconmax,
             njmax: option.njmax,
@@ -152,7 +156,7 @@ impl ExtendedSolverConfig {
     /// Check if CCD (continuous collision detection) is enabled.
     #[must_use]
     pub fn ccd_enabled(&self) -> bool {
-        self.ccd_iterations > 0 && self.flags.nativeccd
+        self.ccd_iterations > 0
     }
 
     /// Check if aerodynamic effects are enabled.

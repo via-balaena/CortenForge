@@ -265,6 +265,32 @@ pub enum AngleUnit {
     Radian,
 }
 
+/// Mesh inertia computation mode from `<mesh inertia="..."/>`.
+///
+/// MuJoCo ref: `mjtMeshInertia` in `mjspec.h`.
+/// Ordinals match MuJoCo: Convex=0, Exact=1, Legacy=2, Shell=3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MeshInertia {
+    /// Compute exact (volumetric) inertia on the convex hull.
+    /// Default mode (MuJoCo enum value 0).
+    Convex,
+    /// Compute exact (volumetric) inertia on the original mesh.
+    /// Requires watertight, outward-oriented mesh.
+    Exact,
+    /// Legacy algorithm: absolute tetrahedron volumes (overcounts
+    /// non-convex regions). Pre-MuJoCo 3.0 behavior.
+    Legacy,
+    /// Surface-area-weighted shell inertia. mass = density × total_area.
+    Shell,
+}
+
+impl Default for MeshInertia {
+    fn default() -> Self {
+        Self::Convex // MuJoCo default: enum value 0
+    }
+}
+
 /// Inertia computation control from `<compiler inertiafromgeom="..."/>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -392,8 +418,22 @@ pub struct MjcfOption {
     /// Tolerance for no-slip solver (default: 1e-6).
     pub noslip_tolerance: f64,
 
-    /// Iterations for convex collision detection (default: 50).
+    /// Maximum iterations for GJK/EPA convex collision solver (default: 35).
+    /// MuJoCo ref: `mjOption.ccd_iterations` in `mjmodel.h`.
     pub ccd_iterations: usize,
+
+    /// Convergence tolerance for GJK/EPA convex collision solver (default: 1e-6).
+    /// MuJoCo ref: `mjOption.ccd_tolerance` in `mjmodel.h`.
+    pub ccd_tolerance: f64,
+
+    /// Maximum Newton iterations for SDF closest-surface-point refinement (default: 10).
+    /// MuJoCo ref: `mjOption.sdf_iterations` in `mjmodel.h`.
+    pub sdf_iterations: usize,
+
+    /// Number of initial sample points for SDF collision search (default: 40).
+    /// Controls sampling density on non-SDF geom surfaces during SDF contact detection.
+    /// MuJoCo ref: `mjOption.sdf_initpoints` in `mjmodel.h`.
+    pub sdf_initpoints: usize,
 
     // ========== Contact Configuration ==========
     /// Friction cone type (default: Pyramidal).
@@ -480,7 +520,10 @@ impl Default for MjcfOption {
             ls_tolerance: 0.01,
             noslip_iterations: 0,
             noslip_tolerance: 1e-6,
-            ccd_iterations: 50,
+            ccd_iterations: 35,
+            ccd_tolerance: 1e-6,
+            sdf_iterations: 10,
+            sdf_initpoints: 40,
 
             // Contact configuration
             cone: MjcfConeType::default(),
@@ -682,6 +725,8 @@ pub struct MjcfGeomDefaults {
     pub fluidcoef: Option<[f64; 5]>,
     /// Per-element user data for default class inheritance.
     pub user: Option<Vec<f64>>,
+    /// Default shell inertia for primitive geoms.
+    pub shellinertia: Option<bool>,
 }
 
 /// Default actuator parameters.
@@ -831,6 +876,10 @@ pub struct MjcfSensorDefaults {
 pub struct MjcfMeshDefaults {
     /// Mesh scale factors [x, y, z].
     pub scale: Option<Vector3<f64>>,
+    /// Maximum convex hull vertices. `None` = no limit (default).
+    pub maxhullvert: Option<usize>,
+    /// Default mesh inertia mode from `<default><mesh inertia="..."/>`.
+    pub inertia: Option<MeshInertia>,
 }
 
 // ============================================================================
@@ -855,6 +904,13 @@ pub struct MjcfMesh {
     /// Embedded face data (if not loading from file).
     /// Format: flat array of vertex indices (triangles).
     pub face: Option<Vec<u32>>,
+    /// Maximum convex hull vertices. `None` = no limit (default).
+    /// `Some(n)` where n >= 4 = limit hull to n vertices.
+    /// MuJoCo: `maxhullvert` attribute, default -1 (no limit), min 4.
+    pub maxhullvert: Option<usize>,
+    /// Mesh inertia computation mode. `None` = not specified in XML
+    /// (defaults to `Convex` at build time).
+    pub inertia: Option<MeshInertia>,
 }
 
 impl Default for MjcfMesh {
@@ -865,6 +921,8 @@ impl Default for MjcfMesh {
             scale: None,
             vertex: None,
             face: None,
+            maxhullvert: None,
+            inertia: None,
         }
     }
 }
@@ -1246,6 +1304,10 @@ pub struct MjcfGeom {
     pub fluidcoef: Option<[f64; 5]>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,
+    /// Shell inertia for primitive geoms. `None` = not specified (volume).
+    /// `Some(true)` = shell inertia. Rejected on mesh geoms.
+    /// MuJoCo: `shellinertia` attribute, maps to `mjtGeomInertia`.
+    pub shellinertia: Option<bool>,
 }
 
 impl Default for MjcfGeom {
@@ -1282,6 +1344,7 @@ impl Default for MjcfGeom {
             fluidshape: None,
             fluidcoef: None,
             user: Vec::new(),
+            shellinertia: None,
         }
     }
 }
