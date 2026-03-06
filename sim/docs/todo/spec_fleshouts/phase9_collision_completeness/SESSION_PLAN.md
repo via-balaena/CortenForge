@@ -842,7 +842,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 23: Spec E rubric (Deformable Complex-Geom Narrowphase)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- write Spec E rubric.
@@ -1029,7 +1029,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 20 | Spec D implementation | Done | `990cb85` |
 | 21 | Spec D review -- create document | Done | `fa8c6fa` |
 | 22 | Spec D review -- execute | Done | `2ba7444` |
-| 23 | Spec E rubric (DT-70 Deformable NP) | Pending | — |
+| 23 | Spec E rubric (DT-70 Deformable NP) | Done | PENDING_HASH |
 | 24 | Spec E spec | Pending | — |
 | 25 | Spec E implementation | Pending | — |
 | 26 | Spec E review -- create document | Pending | — |
