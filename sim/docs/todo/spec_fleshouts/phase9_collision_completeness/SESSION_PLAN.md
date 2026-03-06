@@ -1033,4 +1033,4 @@ Present the Review Verdict (section 10) to the user when done.
 | 24 | Spec E spec | Done | `2ca3c68` |
 | 25 | Spec E implementation | Done | `c869340` |
 | 26 | Spec E review -- create document | Done | `ed30920` |
-| 27 | Spec E review -- execute | Done | — |
+| 27 | Spec E review -- execute | Done | `6f12f5b` |
