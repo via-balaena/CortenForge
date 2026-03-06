@@ -948,7 +948,7 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 26: Spec E review -- create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- create Spec E review document.
