@@ -1025,7 +1025,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 16 | Spec C review -- create document | Done | `a37eadb` |
 | 17 | Spec C review -- execute | Done | `47a4fba` |
 | 18 | Spec D rubric (§50 CCD) | Done | `6639c66` |
-| 19 | Spec D spec | Pending | — |
+| 19 | Spec D spec | Done | `119aab9` |
 | 20 | Spec D implementation | Pending | — |
 | 21 | Spec D review -- create document | Pending | — |
 | 22 | Spec D review -- execute | Pending | — |
