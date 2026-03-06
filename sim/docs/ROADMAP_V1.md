@@ -23,6 +23,8 @@
 > (`exactmeshinertia` removal) added during Phase 9 Spec B review.
 > DT-140 (prism BVH acceleration) added during Phase 9 Spec C review.
 > DT-141 (GJK/EPA cross-frame warm-start) added during Phase 9 Spec D review.
+> DT-142 (flex self-collision), DT-143 (flex-flex cross-body filtering),
+> DT-144 (prism-based hfield for flex) added during Phase 9 Spec E review.
 >
 > **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
@@ -232,11 +234,11 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | ~~§43~~ | 11 | — | ~~Mesh inertia modes: exact, shell, convex, legacy~~ **Done** — Phase 9 Spec B |
-| §50 | 12 | — | Continuous Collision Detection (conservative-advancement CCD, tunneling prevention) |
+| ~~§50~~ | 12 | — | ~~Continuous Collision Detection (conservative-advancement CCD, tunneling prevention)~~ **Done** — Phase 9 Spec D. GJK distance query + conservative advancement + MULTICCD multi-contact. |
 | ~~§54~~ | 13 | — | ~~Missing heightfield collision pairs~~ **Done** — Phase 9 Spec C. Prism-based `mjc_ConvexHField` for all convex-vs-hfield pairs (hfield-mesh, cylinder, ellipsoid now exact + multi-contact). Hfield-plane/hfield-hfield dropped (not in MuJoCo). |
 | ~~§57~~ | 14 | — | ~~`sdf_iterations`/`sdf_initpoints` from `<option>` (replace hardcoded values)~~ **Done** — Phase 9 T1 (Session 2) |
 | ~~§65~~ | 16 | — | ~~Mesh convex hull auto-computation (Quickhull at build time for GJK/EPA)~~ **Done** — Phase 9 Spec A |
-| DT-70 | 10i | T3 | Deformable-vs-mesh/hfield/SDF narrowphase (only primitives currently) |
+| ~~DT-70~~ | 10i | T3 | ~~Deformable-vs-mesh/hfield/SDF narrowphase (only primitives currently)~~ **Done** — Phase 9 Spec E. Flex-vs-mesh (convex hull GJK + per-triangle BVH fallback), flex-vs-hfield, flex-vs-SDF. |
 | DT-134 | 16 | T2 | Mesh-primitive dispatch to GJK/EPA on convex hulls — mesh-sphere, mesh-capsule, mesh-box pairs currently use per-triangle BVH; should route through `convex_mesh_from_hull()` + `gjk_epa_contact()` when hull available (AD-1 option a). Deferred from Phase 9 Spec A. |
 
 ---
@@ -248,8 +250,8 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | §42A-i | 10 | — | Sparse flex edge Jacobian (`flexedge_J`) — force projection through body Jacobians |
 | §42A-ii | 10 | — | `flex_rigid`/`flexedge_rigid` boolean arrays — skip rigid bodies/edges |
 | §42A-iii | 10 | — | `flexedge_length`/`flexedge_velocity` pre-computed Data fields |
-| §42A-iv | 10 | — | Flex self-collision dispatch (BVH/SAP midphase + narrowphase) |
-| §42A-v | 10 | — | Flex-flex cross-object collision filtering (contype/conaffinity) |
+| §42A-iv / DT-142 | 10 | — | Flex self-collision dispatch (BVH/SAP midphase + narrowphase). Deferred from Phase 9 Spec E — distinct subsystem from flex-rigid collision. |
+| §42A-v / DT-143 | 10 | — | Flex-flex cross-object collision filtering (contype/conaffinity). Deferred from Phase 9 Spec E — separate feature from flex-rigid contact. |
 | §42B | 10 | — | Flex bending: cotangent Laplacian (MuJoCo's actual bending formulation) |
 
 ---
@@ -393,6 +395,7 @@ foundation isn't right.
 | DT-65 | 10h | T1 | User sensor `dim` attribute. Also requires `sensor_intprm` array (`mjmodel.h:1213`). |
 | DT-69 | 10i | T2 | SAP for flex broadphase (currently brute-force) |
 | DT-72 | 10i | T1 | Flex contacts wired for adhesion |
+| DT-144 | 10i | T2 | Prism-based hfield collision for flex vertices — currently uses point-sampling `heightfield_sphere_contact()` which gives equivalent results for tiny flex radii (< 0.1). MuJoCo uses `mjc_ConvexHField()` (prism-based GJK) for all convex-vs-hfield pairs. Upgrade if divergence found for large-radius flex vertices. Deferred from Phase 9 Spec E. |
 | DT-80 | 10j | T1 | Mocap body + equality weld integration testing |
 | DT-81 | 10j | T1 | `key_userdata` support |
 | DT-84 | 10j | T1 | `mju_encodePyramid` utility |
