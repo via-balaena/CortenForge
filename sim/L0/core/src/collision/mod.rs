@@ -1108,8 +1108,10 @@ mod contact_param_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod spec_d_tests {
     use super::narrow::collide_geoms;
+    use crate::mesh::TriangleMeshData;
     use crate::types::{ENABLE_MULTICCD, GeomType, Model};
-    use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+    use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
+    use std::sync::Arc;
 
     /// Build a minimal Model with two geoms of given types and sizes.
     fn make_model(
@@ -1256,39 +1258,79 @@ mod spec_d_tests {
         );
     }
 
-    /// T8: AC8 — MULTICCD enabled produces multiple contacts for flat surfaces
+    /// Create a box-shaped mesh with given half-sizes, with convex hull computed.
+    fn box_mesh(hx: f64, hy: f64, hz: f64) -> Arc<TriangleMeshData> {
+        let vertices = vec![
+            Point3::new(-hx, -hy, -hz),
+            Point3::new(hx, -hy, -hz),
+            Point3::new(hx, hy, -hz),
+            Point3::new(-hx, hy, -hz),
+            Point3::new(-hx, -hy, hz),
+            Point3::new(hx, -hy, hz),
+            Point3::new(hx, hy, hz),
+            Point3::new(-hx, hy, hz),
+        ];
+        // 12 triangles (2 per face)
+        #[rustfmt::skip]
+        let indices = vec![
+            0,1,2, 0,2,3, // -Z face
+            4,6,5, 4,7,6, // +Z face
+            0,4,5, 0,5,1, // -Y face
+            2,6,7, 2,7,3, // +Y face
+            0,3,7, 0,7,4, // -X face
+            1,5,6, 1,6,2, // +X face
+        ];
+        let mut mesh = TriangleMeshData::new(vertices, indices);
+        mesh.compute_convex_hull(None);
+        Arc::new(mesh)
+    }
+
+    /// T8: AC8 — MULTICCD with mesh-mesh hull pair produces multiple contacts
+    /// at corners of the flat contact surface.
+    ///
+    /// MuJoCo 3.5.0 empirical (EGT-7): two box-shaped meshes with flat face
+    /// contact produce 4 contacts at the corners of the upper mesh's bottom face.
     #[test]
     fn test_multiccd_enabled_multiple_contacts() {
+        // Upper box: half-size 0.3 × 0.3 × 0.3
+        let upper_mesh = box_mesh(0.3, 0.3, 0.3);
+        // Lower box: half-size 0.5 × 0.5 × 0.5
+        let lower_mesh = box_mesh(0.5, 0.5, 0.5);
+
         let mut model = make_model(
-            GeomType::Box,
-            Vector3::new(0.5, 0.5, 0.1),
-            GeomType::Box,
-            Vector3::new(0.5, 0.5, 0.1),
+            GeomType::Mesh,
+            Vector3::new(0.3, 0.3, 0.3),
+            GeomType::Mesh,
+            Vector3::new(0.5, 0.5, 0.5),
         );
-        // Enable MULTICCD flag
         model.enableflags |= ENABLE_MULTICCD;
+        model.geom_mesh = vec![Some(0), Some(1)];
+        model.mesh_data = vec![upper_mesh, lower_mesh];
 
-        // Box-box normally goes through SAT analytical path, which already
-        // generates multi-contact. For MULTICCD to activate on GJK/EPA, we
-        // need cylinder-cylinder or ellipsoid pairs that route through GJK/EPA.
-        // Use cylinder-box (no analytical path → GJK/EPA fallback).
-        model.geom_type[0] = GeomType::Cylinder;
-        model.geom_size[0] = Vector3::new(0.3, 0.5, 0.0);
-        model.geom_type[1] = GeomType::Cylinder;
-        model.geom_size[1] = Vector3::new(0.3, 0.5, 0.0);
-
-        // Overlapping cylinders
-        let pos1 = Vector3::new(0.0, 0.0, 0.0);
-        let pos2 = Vector3::new(0.3, 0.0, 0.0);
+        // Upper mesh at z=0.75 resting on lower mesh at origin.
+        // Bottom face of upper mesh at z=0.45, top face of lower at z=0.5.
+        // Overlap = 0.05 along Z.
+        let pos1 = Vector3::new(0.0, 0.0, 0.75);
+        let pos2 = Vector3::new(0.0, 0.0, 0.0);
         let mat = Matrix3::identity();
 
         let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
-        // MULTICCD should produce ≥ 1 contact (potentially more for flat surfaces)
+
+        // MULTICCD should produce multiple contacts (up to 4 for flat face)
         assert!(
-            !contacts.is_empty(),
-            "MULTICCD should produce at least one contact"
+            contacts.len() > 1,
+            "MULTICCD mesh-mesh hull should produce multiple contacts, got {}",
+            contacts.len()
         );
-        // With MULTICCD the count may be > 1 if perturbed directions find additional contacts
+
+        // All contacts should have approximately equal depth (flat face contact)
+        let depths: Vec<f64> = contacts.iter().map(|c| c.depth).collect();
+        let max_depth = depths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let min_depth = depths.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            (max_depth - min_depth).abs() < 0.01,
+            "all contacts should have similar depth on flat face, range: {min_depth:.4}..{max_depth:.4}",
+        );
     }
 
     /// T15: Edge case — MULTICCD on curved contact (single contact expected)

@@ -22,6 +22,7 @@
 > DT-137 (concave mesh test), DT-138 (GPU inertia), DT-139
 > (`exactmeshinertia` removal) added during Phase 9 Spec B review.
 > DT-140 (prism BVH acceleration) added during Phase 9 Spec C review.
+> DT-141 (GJK/EPA cross-frame warm-start) added during Phase 9 Spec D review.
 >
 > **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
@@ -319,6 +320,7 @@ foundation isn't right.
 | §40e | 10 | — | Refactor `mj_jac_site` to use `mj_jac_point` kernel |
 | §48 | 12 | — | SIMD batch audit for hot paths |
 | DT-140 | 13 | T2 | Prism BVH acceleration for heightfield collision — `collide_hfield_multi` iterates sub-grid cells linearly; a quadtree or spatial index could skip empty cells for large hfields. Pure performance optimization, no conformance impact. Deferred from Phase 9 Spec C. |
+| DT-141 | 12 | T2 | GJK/EPA cross-frame simplex warm-starting — cache previous frame's GJK simplex per geom pair and use as initial simplex for next frame's query. Within-frame vertex warm-start already implemented (Spec A). Pure performance optimization, no conformance impact. Deferred from Phase 9 Spec D. |
 | DT-18 | 10c | T1 | Zero-friction condim downgrade optimization |
 | DT-20 | 10c | T2 | Unify `J^T * lambda` vs chain-walk contact force application |
 | DT-24 | 10c | T2 | Incremental collision detection on tree wake |

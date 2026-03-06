@@ -17,7 +17,7 @@ use super::sdf_collide::collide_with_sdf;
 use super::hfield::MAX_CONTACTS_PER_PAIR;
 use super::{assign_friction, assign_imp, assign_ref, contact_param};
 use crate::collision_shape::CollisionShape;
-use crate::gjk_epa::{GjkContact, gjk_distance, gjk_epa_contact, gjk_epa_contact_with_direction};
+use crate::gjk_epa::{GjkContact, gjk_distance, gjk_epa_contact, support_face_points};
 use crate::types::{
     Contact, ContactPair, ENABLE_MULTICCD, ENABLE_OVERRIDE, GeomType, Model, compute_tangent_frame,
     enabled,
@@ -296,49 +296,51 @@ pub fn collide_geoms(
 // MULTICCD helper
 // ============================================================================
 
+/// Duplicate contact distance threshold for MULTICCD filtering.
+const MULTICCD_DEDUP_DIST: f64 = 1e-4;
+
 /// Generate multiple contacts for a convex-convex pair using MULTICCD.
 ///
-/// Runs GJK/EPA with perturbed initial search directions to find additional
-/// contact points on flat contact surfaces. Returns 1-4 contacts (primary
-/// + up to 3 additional). Only called when `ENABLE_MULTICCD` is set.
+/// Enumerates face vertices on shape A's contact face to find additional
+/// contact points on flat surfaces. Returns 1-4 contacts.
+/// Only called when `ENABLE_MULTICCD` is set.
 pub fn multiccd_contacts(
     shape_a: &CollisionShape,
     pose_a: &Pose,
-    shape_b: &CollisionShape,
-    pose_b: &Pose,
+    _shape_b: &CollisionShape,
+    _pose_b: &Pose,
     primary: &GjkContact,
-    max_iterations: usize,
-    tolerance: f64,
+    _max_iterations: usize,
+    _tolerance: f64,
 ) -> Vec<GjkContact> {
-    let mut contacts = vec![primary.clone()];
+    // MULTICCD strategy: enumerate all vertices on shape A's contact face
+    // (the set of vertices sharing the maximum support value in the -normal
+    // direction). For flat faces (box, convex mesh), this gives the face
+    // corners. For curved shapes, this gives a single point.
+    let face_points = support_face_points(shape_a, pose_a, &(-primary.normal));
 
-    // Generate 3 perturbed search directions by rotating the primary
-    // contact normal ±90° around two orthogonal tangent axes.
-    let (t1, t2) = compute_tangent_frame(&primary.normal);
-    let perturbed_dirs = [t1, -t1, t2];
+    if face_points.len() <= 1 {
+        // Curved surface or single vertex — no additional contacts
+        return vec![primary.clone()];
+    }
 
-    for dir in &perturbed_dirs {
+    let mut contacts: Vec<GjkContact> =
+        Vec::with_capacity(face_points.len().min(MAX_CONTACTS_PER_PAIR));
+
+    for pt in &face_points {
         if contacts.len() >= MAX_CONTACTS_PER_PAIR {
             break;
         }
-
-        if let Some(additional) = gjk_epa_contact_with_direction(
-            shape_a,
-            pose_a,
-            shape_b,
-            pose_b,
-            *dir,
-            max_iterations,
-            tolerance,
-        ) {
-            // Filter duplicates: skip if too close to existing contact
-            let dominated = contacts.iter().any(|existing| {
-                let dp = (additional.point - existing.point).norm();
-                dp < tolerance
+        // Check for duplicates
+        let dominated = contacts
+            .iter()
+            .any(|existing| (existing.point - pt).norm() < MULTICCD_DEDUP_DIST);
+        if !dominated {
+            contacts.push(GjkContact {
+                point: *pt,
+                normal: primary.normal,
+                penetration: primary.penetration,
             });
-            if !dominated {
-                contacts.push(additional);
-            }
         }
     }
 

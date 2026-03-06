@@ -816,7 +816,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase9_collision_completeness/SPEC_D_REVI
 
 ## Session 22: Spec D review -- execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- execute Spec D review.
@@ -1028,7 +1028,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 19 | Spec D spec | Done | `119aab9` |
 | 20 | Spec D implementation | Done | `990cb85` |
 | 21 | Spec D review -- create document | Done | `fa8c6fa` |
-| 22 | Spec D review -- execute | Pending | — |
+| 22 | Spec D review -- execute | Done | — |
 | 23 | Spec E rubric (DT-70 Deformable NP) | Pending | — |
 | 24 | Spec E spec | Pending | — |
 | 25 | Spec E implementation | Pending | — |

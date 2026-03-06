@@ -167,42 +167,36 @@ fidelity. No simulation effect.
 
 ---
 
-### 50. CCD (Continuous Collision Detection)
-**Status:** Parsed only | **Effort:** L | **Prerequisites:** None
+### 50. Convex Collision Solver Completeness (formerly "CCD")
+**Status:** Complete (Phase 9, Spec D) | **Effort:** L | **Prerequisites:** None
 
-#### Current State
-`ccd_iterations` is parsed from `<option>` and stored on `MjcfOption`.
-`nativeccd` and `multiccd` enable flags are stored in `MjcfFlag`. But no CCD
-implementation exists — these fields have no runtime effect.
-Contacts are detected via discrete overlap testing only, which can miss fast-moving
-thin objects (tunneling).
+#### Scope Correction
+The original description of §50 as "conservative-advancement CCD" was based on
+a misconception. MuJoCo's "CCD" stands for "Convex Collision Detection" (from
+the `libccd` library), NOT continuous collision detection. MuJoCo does NOT
+implement conservative advancement or time-of-impact estimation. Tunneling
+prevention relies on soft contacts, small timesteps, and the margin system.
 
-#### Objective
-Implement conservative-advancement CCD for convex geom pairs.
+#### What Was Implemented (Phase 9, Spec D)
+1. **GJK distance query** — `gjk_distance()` in `gjk_epa.rs` for non-overlapping
+   convex shape separation distance (used for margin-zone contacts).
+2. **Margin-zone contact generation** — GJK/EPA pairs now generate contacts when
+   shapes are within margin distance but not overlapping.
+3. **Parameter wiring** — `ccd_iterations` (default fixed: 50→35) and `ccd_tolerance`
+   (newly parsed) threaded from `<option>` through Model to GJK/EPA solver.
+4. **MULTICCD** — multi-point contact generation for flat convex-convex surfaces
+   via perturbed GJK/EPA search directions.
+5. **DISABLE_NATIVECCD** — conformant no-op (no libccd fallback needed).
+6. **Return type migration** — `collide_geoms()` and `collide_with_mesh()` return
+   `Vec<Contact>` for MULTICCD support.
 
-#### Specification
-
-1. **Algorithm**: Conservative advancement — iteratively advance the time-of-impact
-   estimate using upper-bound velocity and minimum separation distance.
-2. **Scope**: Convex-convex pairs only (sphere, capsule, box, ellipsoid, convex mesh).
-   Non-convex pairs (mesh-mesh, hfield) use discrete detection.
-3. **Integration**: After broad-phase, for pairs with relative velocity exceeding a
-   threshold, run CCD to find earliest time-of-impact. Generate contact at TOI
-   configuration.
-4. **Parameters**: `ccd_iterations` (max bisection steps), `ccd_tolerance` (distance
-   threshold for contact).
-5. **SIMD opportunity**: The GJK distance query in the conservative advancement inner
-   loop is a candidate for SIMD batch support function evaluation (see #48 audit).
-
-#### Acceptance Criteria
-1. A fast-moving sphere does not tunnel through a thin wall.
-2. `ccd_iterations=0` disables CCD (current behavior, regression).
-3. CCD contacts produce forces consistent with discrete contacts at TOI.
-4. `DISABLE_NATIVECCD` guard wired: when set, fall back to libccd for
-   convex collision (§41 S4.17).
-5. `ENABLE_MULTICCD` guard wired: when set, use multi-point CCD for
-   flat surfaces (§41 S5.5).
-
-#### Files
-- `sim/L0/core/src/collision/` — post-broadphase CCD pass
-- `sim/L0/core/src/gjk_epa.rs` — GJK distance query for conservative advancement
+#### Files Changed
+- `sim/L0/core/src/gjk_epa.rs` — GJK distance, direction-variant queries, parameter wiring
+- `sim/L0/core/src/collision/narrow.rs` — margin-zone contacts, MULTICCD integration
+- `sim/L0/core/src/collision/mesh_collide.rs` — hull path margin-zone + MULTICCD
+- `sim/L0/core/src/collision/mod.rs` — broadphase loop Vec iteration
+- `sim/L0/core/src/collision/hfield.rs` — call site signature update
+- `sim/L0/mjcf/src/parser.rs` — `ccd_tolerance` parsing
+- `sim/L0/mjcf/src/types.rs` — `ccd_tolerance` field, default fix
+- `sim/L0/mjcf/src/config.rs` — solver config fields
+- `sim/L0/mjcf/src/builder/mod.rs` — threading, warn removal

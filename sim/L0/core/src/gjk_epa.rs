@@ -323,6 +323,77 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
     }
 }
 
+/// Return all support points on a convex shape's contact face in a given direction.
+///
+/// For shapes with flat faces (Box, ConvexMesh), returns all vertices that
+/// share the maximum dot product with `direction` (within `EPSILON`). For
+/// smooth shapes (Sphere, Capsule, Ellipsoid, Cylinder), returns a single
+/// support point (there's only one extremal point on a curved surface).
+///
+/// Used by MULTICCD to enumerate flat-face contact vertices.
+pub fn support_face_points(
+    shape: &CollisionShape,
+    pose: &Pose,
+    direction: &Vector3<f64>,
+) -> Vec<Point3<f64>> {
+    match shape {
+        CollisionShape::Box { half_extents } => {
+            // A box face perpendicular to direction has 4 vertices
+            let local_dir = pose.rotation.inverse() * direction;
+            // For each axis, determine if the face is on the + or - side,
+            // or if the direction is perpendicular (both sides contribute)
+            let signs: Vec<Vec<f64>> = (0..3)
+                .map(|i| {
+                    if local_dir[i].abs() < EPSILON {
+                        vec![-1.0, 1.0] // perpendicular — both sides
+                    } else if local_dir[i] > 0.0 {
+                        vec![1.0]
+                    } else {
+                        vec![-1.0]
+                    }
+                })
+                .collect();
+            let mut points = Vec::new();
+            for &sx in &signs[0] {
+                for &sy in &signs[1] {
+                    for &sz in &signs[2] {
+                        let local_pt = Point3::new(
+                            sx * half_extents.x,
+                            sy * half_extents.y,
+                            sz * half_extents.z,
+                        );
+                        points.push(pose.transform_point(&local_pt));
+                    }
+                }
+            }
+            points
+        }
+        CollisionShape::ConvexMesh {
+            vertices,
+            graph: _,
+            warm_start: _,
+        } => {
+            if vertices.is_empty() {
+                return vec![pose.position];
+            }
+            let local_dir = pose.rotation.inverse() * direction;
+            // Find max dot product
+            let max_dot = vertices
+                .iter()
+                .map(|v| v.coords.dot(&local_dir))
+                .fold(f64::NEG_INFINITY, f64::max);
+            // Return all vertices within EPSILON of max_dot
+            vertices
+                .iter()
+                .filter(|v| (v.coords.dot(&local_dir) - max_dot).abs() < EPSILON * 10.0)
+                .map(|v| pose.transform_point(v))
+                .collect()
+        }
+        // Smooth shapes: single support point
+        _ => vec![support(shape, pose, direction)],
+    }
+}
+
 /// Support function for a sphere.
 fn support_sphere(pose: &Pose, radius: f64, direction: &Vector3<f64>) -> Point3<f64> {
     let dir_norm = direction.norm();
@@ -1126,9 +1197,7 @@ pub fn gjk_epa_contact(
         tolerance,
     )?;
 
-    // Compute contact point
-    // The contact point is approximately on the surface of shape A,
-    // found by moving from the center of A in the normal direction by the support distance
+    // Contact point: support vertex on shape A in the -normal direction.
     let contact_point = support(shape_a, pose_a, &(-epa_result.normal));
 
     Some(GjkContact {
@@ -1386,116 +1455,6 @@ fn reduce_simplex_to_closest(simplex: &mut Simplex, bary: &[(usize, f64)]) {
         .map(|&(idx, _)| simplex.points[idx])
         .collect();
     simplex.set(&active);
-}
-
-// =============================================================================
-// MULTICCD: GJK/EPA with custom initial direction
-// =============================================================================
-
-/// GJK intersection query with a specified initial search direction.
-///
-/// Identical to `gjk_query()` except the initial Minkowski search direction
-/// is `initial_direction` instead of `center_b - center_a`. This causes
-/// the simplex construction to start from a different support vertex,
-/// potentially finding a different contact region on shapes with flat faces.
-#[must_use]
-pub fn gjk_query_with_direction(
-    shape_a: &CollisionShape,
-    pose_a: &Pose,
-    shape_b: &CollisionShape,
-    pose_b: &Pose,
-    initial_direction: Vector3<f64>,
-    max_iterations: usize,
-) -> GjkResult {
-    let dir_norm = initial_direction.norm();
-    let mut direction = if dir_norm > EPSILON {
-        initial_direction / dir_norm
-    } else {
-        Vector3::x()
-    };
-
-    let mut simplex = Simplex::new();
-    let first = support_minkowski(shape_a, pose_a, shape_b, pose_b, &direction);
-    simplex.push(first);
-    direction = -first.point.coords;
-
-    for iteration in 0..max_iterations {
-        if direction.norm_squared() < EPSILON * EPSILON {
-            return GjkResult {
-                intersecting: true,
-                simplex,
-                iterations: iteration,
-            };
-        }
-
-        direction = direction.normalize();
-        let new_point = support_minkowski(shape_a, pose_a, shape_b, pose_b, &direction);
-
-        if new_point.point.coords.dot(&direction) < -EPSILON {
-            return GjkResult {
-                intersecting: false,
-                simplex,
-                iterations: iteration,
-            };
-        }
-
-        simplex.push(new_point);
-
-        if do_simplex(&mut simplex, &mut direction) {
-            return GjkResult {
-                intersecting: true,
-                simplex,
-                iterations: iteration,
-            };
-        }
-    }
-
-    GjkResult {
-        intersecting: false,
-        simplex,
-        iterations: max_iterations,
-    }
-}
-
-/// GJK/EPA contact with a specified initial search direction.
-///
-/// Used by MULTICCD to explore different contact regions on flat surfaces.
-#[must_use]
-pub fn gjk_epa_contact_with_direction(
-    shape_a: &CollisionShape,
-    pose_a: &Pose,
-    shape_b: &CollisionShape,
-    pose_b: &Pose,
-    initial_direction: Vector3<f64>,
-    max_iterations: usize,
-    tolerance: f64,
-) -> Option<GjkContact> {
-    let gjk_result = gjk_query_with_direction(
-        shape_a,
-        pose_a,
-        shape_b,
-        pose_b,
-        initial_direction,
-        max_iterations,
-    );
-    if !gjk_result.intersecting {
-        return None;
-    }
-    let epa = epa_query(
-        shape_a,
-        pose_a,
-        shape_b,
-        pose_b,
-        &gjk_result.simplex,
-        max_iterations,
-        tolerance,
-    )?;
-    let contact_point = support(shape_a, pose_a, &(-epa.normal));
-    Some(GjkContact {
-        point: contact_point,
-        normal: epa.normal,
-        penetration: epa.depth.max(0.0),
-    })
 }
 
 // =============================================================================
