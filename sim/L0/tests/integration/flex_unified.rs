@@ -1736,3 +1736,322 @@ fn s30_ac8_mjcf_parsing_defaults() {
     assert_eq!(model.flex_contype[0], 3, "explicit contype=3");
     assert_eq!(model.flex_conaffinity[0], 5, "explicit conaffinity=5");
 }
+
+// ============================================================================
+// §42A-ii: flex_rigid / flexedge_rigid boolean arrays (Phase 10 T1)
+// ============================================================================
+
+/// All vertices pinned → flex_rigid=true, all edges rigid.
+#[test]
+fn t1_flex_rigid_all_pinned() {
+    let mjcf = r#"
+    <mujoco model="all_pinned">
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    assert!(model.flex_rigid[0], "all vertices pinned → flex_rigid=true");
+    for e in 0..model.nflexedge {
+        assert!(
+            model.flexedge_rigid[e],
+            "edge {e} should be rigid (both endpoints pinned)"
+        );
+    }
+}
+
+/// No vertices pinned → flex_rigid=false, no edges rigid.
+#[test]
+fn t1_flex_rigid_none_pinned() {
+    let mjcf = r#"
+    <mujoco model="none_pinned">
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    assert!(
+        !model.flex_rigid[0],
+        "no vertices pinned → flex_rigid=false"
+    );
+    for e in 0..model.nflexedge {
+        assert!(!model.flexedge_rigid[e], "edge {e} should not be rigid");
+    }
+}
+
+/// Mixed: endpoints pinned, middle free → flex_rigid=false,
+/// edge between two pinned vertices is rigid, others are not.
+#[test]
+fn t1_flex_rigid_mixed_pins() {
+    // Cable: v0(pinned) -- v1(free) -- v2(pinned)
+    // Edge 0: v0-v1 → one pinned, one free → not rigid
+    // Edge 1: v1-v2 → one free, one pinned → not rigid
+    let mjcf = r#"
+    <mujoco model="mixed_pins">
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    assert!(!model.flex_rigid[0], "mixed pins → flex_rigid=false");
+    // Both edges have one free endpoint → not rigid
+    for e in 0..model.nflexedge {
+        assert!(
+            !model.flexedge_rigid[e],
+            "edge {e} has a free endpoint → not rigid"
+        );
+    }
+}
+
+/// Edge between two pinned vertices is rigid even when flex overall is not.
+#[test]
+fn t1_flexedge_rigid_both_endpoints_pinned() {
+    // Cable: v0(pinned) -- v1(pinned) -- v2(free)
+    // Edge 0: v0-v1 → both pinned → rigid
+    // Edge 1: v1-v2 → one pinned, one free → not rigid
+    let mjcf = r#"
+    <mujoco model="edge_rigid">
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    assert!(!model.flex_rigid[0], "not all pinned → flex_rigid=false");
+    // Find the edge with both v0 and v1 (both pinned)
+    let mut found_rigid = false;
+    let mut found_nonrigid = false;
+    for e in 0..model.nflexedge {
+        let [va, vb] = model.flexedge_vert[e];
+        let both_pinned = model.flexvert_invmass[va] == 0.0 && model.flexvert_invmass[vb] == 0.0;
+        assert_eq!(
+            model.flexedge_rigid[e], both_pinned,
+            "edge {e} (v{va}-v{vb}): rigid={} but expected={both_pinned}",
+            model.flexedge_rigid[e]
+        );
+        if both_pinned {
+            found_rigid = true;
+        } else {
+            found_nonrigid = true;
+        }
+    }
+    assert!(found_rigid, "should have at least one rigid edge");
+    assert!(found_nonrigid, "should have at least one non-rigid edge");
+}
+
+// ============================================================================
+// §42A-iii: flexedge_length / flexedge_velocity pre-computed fields (Phase 10 T1)
+// ============================================================================
+
+/// After forward(), flexedge_length matches manual Euclidean distance.
+#[test]
+fn t1_flexedge_length_matches_manual() {
+    let mjcf = r#"
+    <mujoco model="edge_length">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="0.0"/>
+                <vertex pos="0 0 0  3 4 0"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Distance from (0,0,0) to (3,4,0) = 5.0
+    assert_eq!(model.nflexedge, 1);
+    assert_relative_eq!(data.flexedge_length[0], 5.0, epsilon = 1e-10);
+}
+
+/// After forward(), flexedge_velocity is zero when qvel is zero.
+#[test]
+fn t1_flexedge_velocity_zero_at_rest() {
+    let mjcf = r#"
+    <mujoco model="edge_vel_rest">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(model.nflexedge, 1);
+    assert_relative_eq!(data.flexedge_velocity[0], 0.0, epsilon = 1e-14);
+}
+
+/// flexedge_velocity is positive when vertices move apart along edge direction.
+#[test]
+fn t1_flexedge_velocity_separation() {
+    let mjcf = r#"
+    <mujoco model="edge_vel_sep">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+
+    // Set qvel: v0 moving in -x, v1 moving in +x → separating
+    let dof0 = model.flexvert_dofadr[0];
+    let dof1 = model.flexvert_dofadr[1];
+    data.qvel[dof0] = -1.0; // v0: x velocity = -1
+    data.qvel[dof1] = 1.0; // v1: x velocity = +1
+
+    data.forward(&model).expect("forward failed");
+
+    // Edge direction: v1-v0 = (1,0,0), unit = (1,0,0)
+    // Relative velocity: vel1 - vel0 = (1,0,0) - (-1,0,0) = (2,0,0)
+    // Edge velocity = dot((2,0,0), (1,0,0)) = 2.0
+    assert_eq!(model.nflexedge, 1);
+    assert_relative_eq!(data.flexedge_velocity[0], 2.0, epsilon = 1e-10);
+}
+
+/// Pinned vertex contributes zero velocity to edge velocity computation.
+#[test]
+fn t1_flexedge_velocity_pinned_zero() {
+    let mjcf = r#"
+    <mujoco model="edge_vel_pin">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+                <pin id="0"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+
+    // v0 is pinned (no DOFs), v1 is free
+    let dof1 = model.flexvert_dofadr[1];
+    assert_eq!(
+        model.flexvert_dofadr[0],
+        usize::MAX,
+        "v0 pinned → dofadr=MAX"
+    );
+    data.qvel[dof1] = 1.0; // v1: x velocity = +1
+
+    data.forward(&model).expect("forward failed");
+
+    // Edge direction: v1-v0 = (1,0,0), unit = (1,0,0)
+    // vel0 = (0,0,0) (pinned), vel1 = (1,0,0)
+    // Edge velocity = dot((1,0,0), (1,0,0)) = 1.0
+    assert_relative_eq!(data.flexedge_velocity[0], 1.0, epsilon = 1e-10);
+}
+
+/// Rigid edges (both endpoints pinned) are skipped by edge spring-damper —
+/// no forces applied even with nonzero stiffness/damping.
+#[test]
+fn t1_rigid_edge_no_spring_force() {
+    let mjcf = r#"
+    <mujoco model="rigid_no_force">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="1000" damping="10.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // All rigid → qfrc_spring and qfrc_damper should be all zeros
+    // (no DOFs exist, but the arrays should be empty or zero-filled)
+    for v in &data.qfrc_spring {
+        assert_eq!(*v, 0.0, "rigid flex should produce no spring forces");
+    }
+    for v in &data.qfrc_damper {
+        assert_eq!(*v, 0.0, "rigid flex should produce no damper forces");
+    }
+}
+
+/// Simulation regression: single-edge cable with one pinned vertex produces
+/// correct spring-damper forces via the pre-computed Data fields path.
+#[test]
+fn t1_regression_single_edge_spring_damper() {
+    // Single edge with explicit <edge stiffness> (not <elasticity young>).
+    // v0 pinned, v1 free — edge is NOT rigid.
+    let mjcf = r#"
+    <mujoco model="spring_edge">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <edge stiffness="1000" damping="0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+                <pin id="0"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+
+    // Displace v1 to stretch the edge
+    let qpos_adr = model.flexvert_qposadr[1];
+    data.qpos[qpos_adr] = 1.5; // move from x=1 to x=1.5
+
+    data.forward(&model).expect("forward failed");
+
+    // After forward, check the edge state
+    let rest_len = model.flexedge_length0[0];
+    let cur_len = data.flexedge_length[0];
+    let dof1 = model.flexvert_dofadr[1];
+    assert!(dof1 < model.nv, "v1 should have DOFs");
+
+    // frc_spring = stiffness * (rest - current), applied as +direction for v1
+    let expected_frc = 1000.0 * (rest_len - cur_len);
+    let spring_force_x = data.qfrc_spring[dof1];
+    assert!(
+        spring_force_x < 0.0,
+        "stretched edge should produce negative spring force on v1, got {spring_force_x}"
+    );
+    assert_relative_eq!(spring_force_x, expected_frc, epsilon = 1.0);
+}

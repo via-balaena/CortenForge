@@ -116,7 +116,7 @@ combine: cotangent computes forces, edge Jacobian projects them.
 
 ## Session 1: Phase 10 Umbrella
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- write the umbrella spec.
@@ -175,7 +175,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 2: T1 items (§42A-ii flex_rigid + §42A-iii flexedge_length/velocity)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- implement T1 items.
@@ -896,7 +896,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
-| 1 | Phase 10 Umbrella | Pending | |
+| 1 | Phase 10 Umbrella | Done | 6bc8acf |
 | 2 | T1: §42A-ii + §42A-iii | Pending | |
 | 3 | Spec A rubric (§42A-i Edge Jacobian) | Pending | |
 | 4 | Spec A spec | Pending | |

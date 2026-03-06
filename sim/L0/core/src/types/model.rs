@@ -412,6 +412,10 @@ pub struct Model {
     pub flex_density: Vec<f64>,
     /// Visualization group (0–5) for each flex. Used by renderers for group-based filtering.
     pub flex_group: Vec<i32>,
+    /// Per-flex: true if ALL vertices have invmass == 0 (entire flex is rigid).
+    /// Pre-computed at build time. Used as gate condition 1 in self-collision
+    /// dispatch and as outer-loop skip in passive force computation.
+    pub flex_rigid: Vec<bool>,
 
     // --- Per-vertex arrays (length nflexvert) ---
     /// Start index in qpos for this vertex (3 consecutive DOFs).
@@ -441,6 +445,9 @@ pub struct Model {
     pub flexedge_crosssection: Vec<f64>,
     /// Which flex object this edge belongs to.
     pub flexedge_flexid: Vec<usize>,
+    /// Per-edge: true if BOTH endpoint vertices have invmass == 0.
+    /// Pre-computed at build time. Rigid edges are skipped in passive force loops.
+    pub flexedge_rigid: Vec<bool>,
 
     // --- Per-element arrays (length nflexelem) ---
     /// Element connectivity: vertex indices. Length varies by dim:

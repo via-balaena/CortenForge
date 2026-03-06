@@ -260,6 +260,11 @@ impl ModelBuilder {
                 self.flexedge_vert.push([vert_start + a, vert_start + b]);
                 self.flexedge_length0.push(rest_len);
                 self.flexedge_flexid.push(flex_id);
+                // §42A-ii: flexedge_rigid — both endpoints pinned (invmass == 0).
+                let va = vert_start + a;
+                let vb = vert_start + b;
+                self.flexedge_rigid
+                    .push(self.flexvert_invmass[va] == 0.0 && self.flexvert_invmass[vb] == 0.0);
                 self.nflexedge += 1;
             }
 
@@ -374,7 +379,13 @@ impl ModelBuilder {
             self.flex_passive.push(flex.passive);
             self.flex_edgestiffness.push(flex.edge_stiffness);
             self.flex_edgedamping.push(flex.edge_damping);
+
+            // §42A-ii: Compute flex_rigid — true if ALL vertices have invmass == 0.
+            let all_rigid = (vert_start..vert_start + flex.vertices.len())
+                .all(|v| self.flexvert_invmass[v] == 0.0);
+            self.flex_rigid.push(all_rigid);
         }
+
         Ok(())
     }
 }

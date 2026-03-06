@@ -178,6 +178,7 @@ impl Model {
             flex_bend_damping: vec![],
             flex_density: vec![],
             flex_group: vec![],
+            flex_rigid: vec![],
             flexvert_qposadr: vec![],
             flexvert_dofadr: vec![],
             flexvert_mass: vec![],
@@ -189,6 +190,7 @@ impl Model {
             flexedge_length0: vec![],
             flexedge_crosssection: vec![],
             flexedge_flexid: vec![],
+            flexedge_rigid: vec![],
             flexelem_data: vec![],
             flexelem_dataadr: vec![],
             flexelem_datanum: vec![],
@@ -483,6 +485,10 @@ impl Model {
 
             // Flex vertex poses
             flexvert_xpos: vec![Vector3::zeros(); self.nflexvert],
+
+            // Flex edge pre-computed fields
+            flexedge_length: vec![0.0; self.nflexedge],
+            flexedge_velocity: vec![0.0; self.nflexedge],
 
             // Velocities
             cvel: vec![SpatialVector::zeros(); self.nbody],

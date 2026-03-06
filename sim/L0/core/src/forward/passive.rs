@@ -502,21 +502,21 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
             continue;
         }
 
-        let [v0, v1] = model.flexedge_vert[e];
-
-        // Skip edges where both vertices are pinned (rigid edge)
-        if model.flexvert_invmass[v0] == 0.0 && model.flexvert_invmass[v1] == 0.0 {
+        // §42A-ii: Skip rigid edges via pre-computed boolean lookup.
+        if model.flexedge_rigid[e] {
             continue;
         }
 
-        let x0 = data.flexvert_xpos[v0];
-        let x1 = data.flexvert_xpos[v1];
-        let diff = x1 - x0;
-        let dist = diff.norm();
+        // §42A-iii: Read pre-computed edge length and velocity from Data fields.
+        let dist = data.flexedge_length[e];
         if dist < 1e-10 {
             continue;
         }
 
+        let [v0, v1] = model.flexedge_vert[e];
+        let dof0 = model.flexvert_dofadr[v0];
+        let dof1 = model.flexvert_dofadr[v1];
+        let diff = data.flexvert_xpos[v1] - data.flexvert_xpos[v0];
         let direction = diff / dist;
         let rest_len = model.flexedge_length0[e];
 
@@ -528,21 +528,7 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         };
 
         // S4.7b: Damping force gated on DISABLE_DAMPER.
-        // edge_velocity = d(dist)/dt = (v1 - v0) · direction
-        // (§27F) Pinned vertices have dofadr=usize::MAX and zero velocity.
-        let dof0 = model.flexvert_dofadr[v0];
-        let dof1 = model.flexvert_dofadr[v1];
-        let vel0 = if dof0 == usize::MAX {
-            Vector3::zeros()
-        } else {
-            Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
-        };
-        let vel1 = if dof1 == usize::MAX {
-            Vector3::zeros()
-        } else {
-            Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
-        };
-        let edge_velocity = (vel1 - vel0).dot(&direction);
+        let edge_velocity = data.flexedge_velocity[e];
         let frc_damper = if has_damper {
             -damping * edge_velocity
         } else {

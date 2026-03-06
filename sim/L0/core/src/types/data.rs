@@ -121,6 +121,14 @@ pub struct Data {
     /// Length `nflexvert`. Updated by `mj_flex()`.
     pub flexvert_xpos: Vec<Vector3<f64>>,
 
+    // ==================== Flex Edge Pre-computed Fields ====================
+    /// Pre-computed edge lengths (Euclidean distance between endpoints).
+    /// Length `nflexedge`. Computed after `mj_flex()` syncs `flexvert_xpos`.
+    pub flexedge_length: Vec<f64>,
+    /// Pre-computed edge elongation velocities (rate of length change).
+    /// Length `nflexedge`. Computed after `mj_flex()` from `flexvert_xpos` and `qvel`.
+    pub flexedge_velocity: Vec<f64>,
+
     // ==================== Velocities (computed from qvel) ====================
     /// Body spatial velocities (length `nbody`): (angular, linear).
     pub cvel: Vec<SpatialVector>,
@@ -646,6 +654,9 @@ impl Clone for Data {
             site_xquat: self.site_xquat.clone(),
             // Flex vertex poses
             flexvert_xpos: self.flexvert_xpos.clone(),
+            // Flex edge pre-computed fields
+            flexedge_length: self.flexedge_length.clone(),
+            flexedge_velocity: self.flexedge_velocity.clone(),
             // Velocities
             cvel: self.cvel.clone(),
             cdof: self.cdof.clone(),
@@ -928,6 +939,10 @@ impl Data {
         self.qfrc_inverse.fill(0.0);
         self.flg_rnepost = false;
 
+        // 4b2. Flex edge pre-computed fields — zero.
+        self.flexedge_length.fill(0.0);
+        self.flexedge_velocity.fill(0.0);
+
         // 4c. Subtree velocity fields — zero.
         for v in &mut self.subtree_linvel {
             *v = Vector3::zeros();
@@ -1070,7 +1085,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4128;
+        const EXPECTED_SIZE: usize = 4176;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(
