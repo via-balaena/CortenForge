@@ -150,7 +150,7 @@ Takes `(&SdfCollisionData, &Pose, Point3<f64>, f64)` and returns
 | `SdfContact.normal` | Outward from SDF surface (toward object) | Same — `sdf.rs:611` | Direct port — no negation needed |
 | Hfield local coords | Center-origin | Corner-origin in `heightfield_sphere_contact` | Apply centering offset: `hf_offset = geom_mat * Vector3::new(-hf_size[0], -hf_size[1], 0.0)` |
 | `Pose` construction | `(pos, mat)` pair | `Pose::from_position_rotation(Point3::from(pos), UnitQuaternion::from_matrix(&mat))` | Established pattern in `sdf_collide.rs:42-47` |
-| `GjkContact.normal` | From B toward A | CortenForge convention — when sphere is A and hull is B, normal points from hull toward sphere (outward from mesh) | Direct port — matches `narrowphase_sphere_geom` convention |
+| `GjkContact.normal` | From A toward B (despite struct doc claiming B→A) | CortenForge actual behavior — when sphere is A and hull is B, raw normal points from sphere toward hull. Verified by `hfield.rs:170` comment. | **Negate** — `return Some((..., -gjk.normal, ...))` to get outward-from-mesh convention |
 | BVH midphase flag | `DISABLE_MIDPHASE` controls BVH usage for mesh collision | `!disabled(model, DISABLE_MIDPHASE)` → `use_bvh` | Thread `use_bvh` for per-triangle fallback path |
 | GJK/EPA solver params | Model-level `ccd_iterations` and `ccd_tolerance` control solver | `model.ccd_iterations`, `model.ccd_tolerance` — same fields used by `mesh_collide.rs:72-73` and `hfield.rs:167-168` | Use `model.ccd_iterations` and `model.ccd_tolerance` for hull-path GJK call — NOT hardcoded defaults |
 
@@ -235,9 +235,11 @@ GeomType::Mesh => {
             model.ccd_iterations,
             model.ccd_tolerance,
         ) {
-            // GjkContact.normal points from B (hull) toward A (sphere)
-            // = outward from mesh toward vertex. Matches convention.
-            return Some((gjk.penetration, gjk.normal, gjk.point.coords));
+            // GJK/EPA returns normal from shape_a toward shape_b
+            // (see hfield.rs:170 comment). Here A=sphere, B=hull, so
+            // the raw normal points from vertex toward mesh. Negate to
+            // get outward-from-mesh-toward-vertex convention.
+            return Some((gjk.penetration, -gjk.normal, gjk.point.coords));
         }
         return None;
     }
