@@ -654,7 +654,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 18: Spec D rubric (Continuous Collision Detection)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- write Spec D rubric.
