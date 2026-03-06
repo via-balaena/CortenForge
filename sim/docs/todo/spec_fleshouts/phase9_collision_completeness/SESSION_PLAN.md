@@ -894,7 +894,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 24: Spec E spec (Deformable Complex-Geom Narrowphase)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 9 Collision Completeness -- write Spec E spec.
@@ -1030,7 +1030,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 21 | Spec D review -- create document | Done | `fa8c6fa` |
 | 22 | Spec D review -- execute | Done | `2ba7444` |
 | 23 | Spec E rubric (DT-70 Deformable NP) | Done | `db43047` |
-| 24 | Spec E spec | Pending | — |
+| 24 | Spec E spec | Done | `2ca3c68` |
 | 25 | Spec E implementation | Pending | — |
 | 26 | Spec E review -- create document | Pending | — |
 | 27 | Spec E review -- execute | Pending | — |
