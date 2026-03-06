@@ -1112,7 +1112,14 @@ mod tests {
             nalgebra::UnitQuaternion::identity(),
         );
 
-        let contact = gjk_epa_contact(&shape1, &pose1, &shape2, &pose2);
+        let contact = gjk_epa_contact(
+            &shape1,
+            &pose1,
+            &shape2,
+            &pose2,
+            crate::gjk_epa::GJK_MAX_ITERATIONS,
+            crate::gjk_epa::EPA_TOLERANCE,
+        );
         assert!(
             contact.is_some(),
             "overlapping cubes should produce contact"

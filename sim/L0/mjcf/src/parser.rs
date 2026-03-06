@@ -253,6 +253,9 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(ccd) = parse_int_attr(e, "ccd_iterations") {
         option.ccd_iterations = ccd.max(0) as usize;
     }
+    if let Some(ccd_tol) = parse_float_attr(e, "ccd_tolerance") {
+        option.ccd_tolerance = ccd_tol;
+    }
     if let Some(sdf_iter) = parse_int_attr(e, "sdf_iterations") {
         option.sdf_iterations = sdf_iter.max(0) as usize;
     }
@@ -4242,6 +4245,79 @@ mod tests {
         );
     }
 
+    /// T5: AC5 — ccd_iterations non-default value reaches Model
+    #[test]
+    fn test_ccd_iterations_nondefault_reaches_model() {
+        use crate::builder::model_from_mjcf;
+
+        let xml = r#"
+            <mujoco model="test">
+                <option ccd_iterations="10"/>
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse");
+        let model = model_from_mjcf(&mjcf, None).expect("should build");
+        assert_eq!(
+            model.ccd_iterations, 10,
+            "ccd_iterations should reach Model"
+        );
+    }
+
+    /// T6: AC6 — ccd_tolerance non-default value reaches Model
+    #[test]
+    fn test_ccd_tolerance_nondefault_reaches_model() {
+        use crate::builder::model_from_mjcf;
+
+        let xml = r#"
+            <mujoco model="test">
+                <option ccd_tolerance="1e-8"/>
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse");
+        let model = model_from_mjcf(&mjcf, None).expect("should build");
+        assert!(
+            (model.ccd_tolerance - 1e-8).abs() < 1e-15,
+            "ccd_tolerance should reach Model, got {}",
+            model.ccd_tolerance
+        );
+    }
+
+    /// T7: AC7 — ccd_iterations default is 35
+    #[test]
+    fn test_ccd_iterations_default_is_35() {
+        use crate::builder::model_from_mjcf;
+
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse");
+        let model = model_from_mjcf(&mjcf, None).expect("should build");
+        assert_eq!(
+            model.ccd_iterations, 35,
+            "default ccd_iterations should be 35"
+        );
+        assert!(
+            (model.ccd_tolerance - 1e-6).abs() < 1e-15,
+            "default ccd_tolerance should be 1e-6"
+        );
+    }
+
     #[test]
     fn test_parse_compiler_all_attributes() {
         let xml = r#"
@@ -4518,7 +4594,7 @@ mod tests {
         assert_eq!(opt.iterations, 100);
         assert_relative_eq!(opt.tolerance, 1e-8, epsilon = 1e-15);
         assert_eq!(opt.ls_iterations, 50);
-        assert_eq!(opt.ccd_iterations, 50);
+        assert_eq!(opt.ccd_iterations, 35);
         assert_eq!(opt.cone, MjcfConeType::Pyramidal);
         assert_eq!(opt.jacobian, MjcfJacobianType::Dense);
         assert_relative_eq!(opt.impratio, 1.0, epsilon = 1e-10);

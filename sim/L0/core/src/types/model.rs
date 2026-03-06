@@ -846,6 +846,13 @@ pub struct Model {
     /// Default: `[1.0, 1.0, 0.005, 0.0001, 0.0001]`. Parsed from `<option o_friction="..."/>`.
     pub o_friction: [f64; 5],
 
+    /// Maximum iterations for GJK/EPA convex collision solver (default: 35).
+    /// MuJoCo ref: `mjOption.ccd_iterations` in `mjmodel.h`.
+    pub ccd_iterations: usize,
+    /// Convergence tolerance for GJK/EPA convex collision solver (default: 1e-6).
+    /// MuJoCo ref: `mjOption.ccd_tolerance` in `mjmodel.h`.
+    pub ccd_tolerance: f64,
+
     /// Maximum Newton iterations for SDF closest-surface-point refinement (default: 10).
     /// MuJoCo ref: `mjOption.sdf_iterations` in `mjmodel.h`.
     pub sdf_iterations: usize,

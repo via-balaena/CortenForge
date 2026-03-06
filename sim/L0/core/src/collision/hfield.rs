@@ -14,7 +14,7 @@ use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
 
 /// Maximum contacts per heightfield-geom pair (MuJoCo `mjMAXCONPAIR`).
-const MAX_CONTACTS_PER_PAIR: usize = 50;
+pub const MAX_CONTACTS_PER_PAIR: usize = 50;
 
 /// Prism-based heightfield collision for all convex geom types.
 ///
@@ -159,9 +159,14 @@ pub fn collide_hfield_multi(
 
                 // Test prism vs convex geom using GJK/EPA.
                 // Prism is in hfield-local coords → use hfield world pose.
-                if let Some(result) =
-                    gjk_epa_contact(&prism_shape, &hf_pose, &conv_shape, &conv_pose)
-                {
+                if let Some(result) = gjk_epa_contact(
+                    &prism_shape,
+                    &hf_pose,
+                    &conv_shape,
+                    &conv_pose,
+                    model.ccd_iterations,
+                    model.ccd_tolerance,
+                ) {
                     // Contact normal: GJK/EPA returns normal from shape_a
                     // (prism/hfield) toward shape_b (convex geom).
                     // When hfield is geom1, normal points from geom1 to geom2

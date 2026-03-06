@@ -168,6 +168,8 @@ impl ModelBuilder {
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
             sleep_tolerance: 1e-4,
+            ccd_iterations: 35,
+            ccd_tolerance: 1e-6,
             sdf_iterations: 10,
             sdf_initpoints: 40,
 

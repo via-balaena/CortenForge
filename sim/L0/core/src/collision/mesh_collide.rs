@@ -1,13 +1,15 @@
 //! Mesh collision dispatch — routes mesh-geom pairs to the standalone mesh library.
 
-use super::narrow::make_contact_from_geoms;
+use super::narrow::{GEOM_EPSILON, make_contact_from_geoms, multiccd_contacts};
 use crate::collision_shape::CollisionShape;
-use crate::gjk_epa::gjk_epa_contact;
+use crate::gjk_epa::{gjk_distance, gjk_epa_contact};
 use crate::mesh::{
     MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact,
     mesh_mesh_deepest_contact, mesh_sphere_contact,
 };
-use crate::types::{Contact, DISABLE_MIDPHASE, GeomType, Model, disabled};
+use crate::types::{
+    Contact, DISABLE_MIDPHASE, ENABLE_MULTICCD, GeomType, Model, disabled, enabled,
+};
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
 
@@ -28,7 +30,7 @@ pub fn collide_with_mesh(
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
     margin: f64, // TODO: thread margin into mesh helpers
-) -> Option<Contact> {
+) -> Vec<Contact> {
     let type1 = model.geom_type[geom1];
     let type2 = model.geom_type[geom2];
     let size1 = model.geom_size[geom1];
@@ -46,8 +48,12 @@ pub fn collide_with_mesh(
     let mesh_contact: Option<MeshContact> = match (type1, type2) {
         // Mesh-Mesh
         (GeomType::Mesh, GeomType::Mesh) => {
-            let mesh1_id = model.geom_mesh[geom1]?;
-            let mesh2_id = model.geom_mesh[geom2]?;
+            let Some(mesh1_id) = model.geom_mesh[geom1] else {
+                return vec![];
+            };
+            let Some(mesh2_id) = model.geom_mesh[geom2] else {
+                return vec![];
+            };
             let mesh1 = &model.mesh_data[mesh1_id];
             let mesh2 = &model.mesh_data[mesh2_id];
 
@@ -57,8 +63,43 @@ pub fn collide_with_mesh(
             if let (Some(hull1), Some(hull2)) = (mesh1.convex_hull(), mesh2.convex_hull()) {
                 let shape1 = CollisionShape::convex_mesh_from_hull(hull1);
                 let shape2 = CollisionShape::convex_mesh_from_hull(hull2);
-                return gjk_epa_contact(&shape1, &pose1, &shape2, &pose2).map(|gjk| {
-                    make_contact_from_geoms(
+
+                if let Some(gjk) = gjk_epa_contact(
+                    &shape1,
+                    &pose1,
+                    &shape2,
+                    &pose2,
+                    model.ccd_iterations,
+                    model.ccd_tolerance,
+                ) {
+                    // MULTICCD: generate multiple contacts for flat hull surfaces
+                    if enabled(model, ENABLE_MULTICCD) {
+                        let multi = multiccd_contacts(
+                            &shape1,
+                            &pose1,
+                            &shape2,
+                            &pose2,
+                            &gjk,
+                            model.ccd_iterations,
+                            model.ccd_tolerance,
+                        );
+                        return multi
+                            .into_iter()
+                            .map(|c| {
+                                make_contact_from_geoms(
+                                    model,
+                                    c.point.coords,
+                                    c.normal,
+                                    c.penetration,
+                                    geom1,
+                                    geom2,
+                                    margin,
+                                )
+                            })
+                            .collect();
+                    }
+
+                    return vec![make_contact_from_geoms(
                         model,
                         gjk.point.coords,
                         gjk.normal,
@@ -66,8 +107,40 @@ pub fn collide_with_mesh(
                         geom1,
                         geom2,
                         margin,
-                    )
-                });
+                    )];
+                } else if margin > 0.0 {
+                    // Margin-zone contact for hull pairs
+                    if let Some(dist) = gjk_distance(
+                        &shape1,
+                        &pose1,
+                        &shape2,
+                        &pose2,
+                        model.ccd_iterations,
+                        model.ccd_tolerance,
+                    ) {
+                        if dist.distance < margin {
+                            let depth = -dist.distance;
+                            let diff = dist.witness_b - dist.witness_a;
+                            let diff_norm = diff.norm();
+                            let normal = if diff_norm > GEOM_EPSILON {
+                                diff / diff_norm
+                            } else {
+                                Vector3::z()
+                            };
+                            let midpoint = nalgebra::center(&dist.witness_a, &dist.witness_b);
+                            return vec![make_contact_from_geoms(
+                                model,
+                                midpoint.coords,
+                                normal,
+                                depth,
+                                geom1,
+                                geom2,
+                                margin,
+                            )];
+                        }
+                    }
+                }
+                return vec![];
             }
 
             // Fallback to per-triangle BVH if either mesh lacks hull.
@@ -76,7 +149,9 @@ pub fn collide_with_mesh(
 
         // Mesh (geom1) vs Primitive (geom2)
         (GeomType::Mesh, prim_type) => {
-            let mesh_id = model.geom_mesh[geom1]?;
+            let Some(mesh_id) = model.geom_mesh[geom1] else {
+                return vec![];
+            };
             let mesh = &model.mesh_data[mesh_id];
 
             match prim_type {
@@ -105,14 +180,16 @@ pub fn collide_with_mesh(
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
                 // Hfield pairs routed before mesh dispatch (narrow.rs S1 ordering fix)
-                GeomType::Hfield => return None,
+                GeomType::Hfield => return vec![],
                 GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
             }
         }
 
         // Primitive (geom1) vs Mesh (geom2) - swap and negate normal
         (prim_type, GeomType::Mesh) => {
-            let mesh_id = model.geom_mesh[geom2]?;
+            let Some(mesh_id) = model.geom_mesh[geom2] else {
+                return vec![];
+            };
             let mesh = &model.mesh_data[mesh_id];
 
             let contact = match prim_type {
@@ -139,7 +216,7 @@ pub fn collide_with_mesh(
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
                 // Hfield pairs routed before mesh dispatch (narrow.rs S1 ordering fix)
-                GeomType::Hfield => return None,
+                GeomType::Hfield => return vec![],
                 GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
             };
 
@@ -155,17 +232,20 @@ pub fn collide_with_mesh(
     };
 
     // Convert MeshContact to Contact
-    mesh_contact.map(|mc| {
-        make_contact_from_geoms(
-            model,
-            mc.point.coords,
-            mc.normal,
-            mc.penetration,
-            geom1,
-            geom2,
-            margin,
-        )
-    })
+    mesh_contact
+        .map(|mc| {
+            make_contact_from_geoms(
+                model,
+                mc.point.coords,
+                mc.normal,
+                mc.penetration,
+                geom1,
+                geom2,
+                margin,
+            )
+        })
+        .into_iter()
+        .collect()
 }
 
 /// Mesh vs infinite plane collision.

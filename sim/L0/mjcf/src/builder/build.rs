@@ -394,6 +394,8 @@ impl ModelBuilder {
             o_solref: self.o_solref,
             o_solimp: self.o_solimp,
             o_friction: self.o_friction,
+            ccd_iterations: self.ccd_iterations,
+            ccd_tolerance: self.ccd_tolerance,
             sdf_iterations: self.sdf_iterations,
             sdf_initpoints: self.sdf_initpoints,
             integrator: self.integrator,

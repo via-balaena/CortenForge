@@ -418,8 +418,13 @@ pub struct MjcfOption {
     /// Tolerance for no-slip solver (default: 1e-6).
     pub noslip_tolerance: f64,
 
-    /// Iterations for convex collision detection (default: 50).
+    /// Maximum iterations for GJK/EPA convex collision solver (default: 35).
+    /// MuJoCo ref: `mjOption.ccd_iterations` in `mjmodel.h`.
     pub ccd_iterations: usize,
+
+    /// Convergence tolerance for GJK/EPA convex collision solver (default: 1e-6).
+    /// MuJoCo ref: `mjOption.ccd_tolerance` in `mjmodel.h`.
+    pub ccd_tolerance: f64,
 
     /// Maximum Newton iterations for SDF closest-surface-point refinement (default: 10).
     /// MuJoCo ref: `mjOption.sdf_iterations` in `mjmodel.h`.
@@ -515,7 +520,8 @@ impl Default for MjcfOption {
             ls_tolerance: 0.01,
             noslip_iterations: 0,
             noslip_tolerance: 1e-6,
-            ccd_iterations: 50,
+            ccd_iterations: 35,
+            ccd_tolerance: 1e-6,
             sdf_iterations: 10,
             sdf_initpoints: 40,
 

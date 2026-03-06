@@ -37,9 +37,9 @@
 //! let pose_b = Pose::from_position(Point3::new(1.0, 0.0, 0.0));
 //!
 //! // Check for intersection
-//! if gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b) {
+//! if gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b, 35) {
 //!     // Get contact information
-//!     if let Some(contact) = gjk_epa_contact(&shape_a, &pose_a, &shape_b, &pose_b) {
+//!     if let Some(contact) = gjk_epa_contact(&shape_a, &pose_a, &shape_b, &pose_b, 35, 1e-6) {
 //!         println!("Penetration: {}", contact.penetration);
 //!         println!("Normal: {:?}", contact.normal);
 //!     }
@@ -63,17 +63,20 @@ use crate::convex_hull::HullGraph;
 /// Tolerance for numerical comparisons in GJK/EPA.
 const EPSILON: f64 = 1e-8;
 
-/// Maximum iterations for GJK before giving up.
-const GJK_MAX_ITERATIONS: usize = 64;
+/// Default GJK max iterations (used when no Model context available).
+/// MuJoCo default: 35. Historical CortenForge value: 64.
+pub const GJK_MAX_ITERATIONS: usize = 35;
 
-/// Maximum iterations for EPA before giving up.
-const EPA_MAX_ITERATIONS: usize = 64;
+/// Default EPA max iterations (used when no Model context available).
+/// MuJoCo default: 35. Historical CortenForge value: 64.
+pub const EPA_MAX_ITERATIONS: usize = 35;
 
 /// Maximum faces in EPA polytope.
 const EPA_MAX_FACES: usize = 128;
 
-/// EPA convergence tolerance.
-const EPA_TOLERANCE: f64 = 1e-6;
+/// Default EPA convergence tolerance.
+/// MuJoCo default: 1e-6.
+pub const EPA_TOLERANCE: f64 = 1e-6;
 
 /// Result of a GJK query.
 #[derive(Debug, Clone)]
@@ -586,8 +589,9 @@ pub fn gjk_intersection(
     pose_a: &Pose,
     shape_b: &CollisionShape,
     pose_b: &Pose,
+    max_iterations: usize,
 ) -> bool {
-    gjk_query(shape_a, pose_a, shape_b, pose_b).intersecting
+    gjk_query(shape_a, pose_a, shape_b, pose_b, max_iterations).intersecting
 }
 
 /// Run the full GJK algorithm and return detailed results.
@@ -597,6 +601,7 @@ pub fn gjk_query(
     pose_a: &Pose,
     shape_b: &CollisionShape,
     pose_b: &Pose,
+    max_iterations: usize,
 ) -> GjkResult {
     // Initial direction: from center of A to center of B
     let center_a = pose_a.position;
@@ -621,7 +626,7 @@ pub fn gjk_query(
     // New search direction: toward origin from first point
     direction = -first.point.coords;
 
-    for iteration in 0..GJK_MAX_ITERATIONS {
+    for iteration in 0..max_iterations {
         // Check for degenerate direction
         if direction.norm_squared() < EPSILON * EPSILON {
             // Origin is on the simplex - shapes are touching/intersecting
@@ -667,7 +672,7 @@ pub fn gjk_query(
     GjkResult {
         intersecting: false,
         simplex,
-        iterations: GJK_MAX_ITERATIONS,
+        iterations: max_iterations,
     }
 }
 
@@ -833,11 +838,21 @@ pub fn epa_query(
     shape_b: &CollisionShape,
     pose_b: &Pose,
     simplex: &Simplex,
+    max_iterations: usize,
+    tolerance: f64,
 ) -> Option<EpaResult> {
     // We need at least a tetrahedron to start EPA
     if simplex.len() < 4 {
         // Try to build a tetrahedron from the simplex
-        return epa_with_expanded_simplex(shape_a, pose_a, shape_b, pose_b, simplex);
+        return epa_with_expanded_simplex(
+            shape_a,
+            pose_a,
+            shape_b,
+            pose_b,
+            simplex,
+            max_iterations,
+            tolerance,
+        );
     }
 
     // Initialize polytope with the tetrahedron
@@ -856,7 +871,7 @@ pub fn epa_query(
     // Fix face orientations (all normals should point outward)
     fix_face_orientations(&vertices, &mut faces);
 
-    for iteration in 0..EPA_MAX_ITERATIONS {
+    for iteration in 0..max_iterations {
         // Find the closest face to the origin
         let closest_idx = find_closest_face(&faces)?;
         let closest = &faces[closest_idx];
@@ -866,7 +881,7 @@ pub fn epa_query(
 
         // Check convergence: if new point is not significantly further than the face
         let new_distance = new_point.point.coords.dot(&closest.normal);
-        if new_distance - closest.distance < EPA_TOLERANCE {
+        if new_distance - closest.distance < tolerance {
             // Converged
             return Some(EpaResult {
                 depth: closest.distance,
@@ -921,7 +936,7 @@ pub fn epa_query(
         depth: closest.distance,
         normal: closest.normal,
         point: Point3::from(closest.normal * closest.distance),
-        iterations: EPA_MAX_ITERATIONS,
+        iterations: max_iterations,
     })
 }
 
@@ -932,6 +947,8 @@ fn epa_with_expanded_simplex(
     shape_b: &CollisionShape,
     pose_b: &Pose,
     simplex: &Simplex,
+    max_iterations: usize,
+    tolerance: f64,
 ) -> Option<EpaResult> {
     let mut vertices: Vec<MinkowskiPoint> = simplex.points().to_vec();
 
@@ -973,7 +990,15 @@ fn epa_with_expanded_simplex(
         new_simplex.push(*v);
     }
 
-    epa_query(shape_a, pose_a, shape_b, pose_b, &new_simplex)
+    epa_query(
+        shape_a,
+        pose_a,
+        shape_b,
+        pose_b,
+        &new_simplex,
+        max_iterations,
+        tolerance,
+    )
 }
 
 /// Create a face from three vertex indices.
@@ -1080,16 +1105,26 @@ pub fn gjk_epa_contact(
     pose_a: &Pose,
     shape_b: &CollisionShape,
     pose_b: &Pose,
+    max_iterations: usize,
+    tolerance: f64,
 ) -> Option<GjkContact> {
     // Run GJK
-    let gjk_result = gjk_query(shape_a, pose_a, shape_b, pose_b);
+    let gjk_result = gjk_query(shape_a, pose_a, shape_b, pose_b, max_iterations);
 
     if !gjk_result.intersecting {
         return None;
     }
 
     // Run EPA to get penetration info
-    let epa_result = epa_query(shape_a, pose_a, shape_b, pose_b, &gjk_result.simplex)?;
+    let epa_result = epa_query(
+        shape_a,
+        pose_a,
+        shape_b,
+        pose_b,
+        &gjk_result.simplex,
+        max_iterations,
+        tolerance,
+    )?;
 
     // Compute contact point
     // The contact point is approximately on the surface of shape A,
@@ -1100,6 +1135,366 @@ pub fn gjk_epa_contact(
         point: contact_point,
         normal: epa_result.normal,
         penetration: epa_result.depth.max(0.0),
+    })
+}
+
+// =============================================================================
+// GJK Distance Query
+// =============================================================================
+
+/// Result of GJK distance query for non-overlapping convex shapes.
+#[derive(Debug, Clone)]
+pub struct GjkDistanceResult {
+    /// Minimum separating distance (> 0 if non-overlapping).
+    pub distance: f64,
+    /// Closest point on shape A (in world frame).
+    pub witness_a: Point3<f64>,
+    /// Closest point on shape B (in world frame).
+    pub witness_b: Point3<f64>,
+    /// Number of iterations used.
+    pub iterations: usize,
+}
+
+/// Compute minimum separating distance between two non-overlapping convex shapes.
+///
+/// Returns `None` if shapes are overlapping (use `gjk_epa_contact` instead).
+/// Uses GJK distance algorithm (van den Bergen, 2003): iteratively refine the
+/// closest point on the Minkowski difference to the origin.
+///
+/// `max_iterations` and `tolerance` come from `model.ccd_iterations` and
+/// `model.ccd_tolerance` respectively.
+#[must_use]
+pub fn gjk_distance(
+    shape_a: &CollisionShape,
+    pose_a: &Pose,
+    shape_b: &CollisionShape,
+    pose_b: &Pose,
+    max_iterations: usize,
+    tolerance: f64,
+) -> Option<GjkDistanceResult> {
+    let center_a = pose_a.position;
+    let center_b = pose_b.position;
+    let dir_vec = center_b - center_a;
+    let dir_norm = dir_vec.norm();
+
+    let mut direction = if dir_norm > EPSILON {
+        dir_vec / dir_norm
+    } else {
+        Vector3::x()
+    };
+
+    let mut simplex = Simplex::new();
+
+    // Get first support point
+    let first = support_minkowski(shape_a, pose_a, shape_b, pose_b, &direction);
+    simplex.push(first);
+
+    // Track closest distance to detect convergence
+    let mut closest_dist_sq = first.point.coords.norm_squared();
+    direction = -first.point.coords;
+
+    for iteration in 0..max_iterations {
+        let dir_norm_sq = direction.norm_squared();
+        if dir_norm_sq < EPSILON * EPSILON {
+            // Origin is on the simplex — shapes are touching (distance = 0)
+            // Transition to EPA for penetration
+            return None;
+        }
+
+        let dir_normalized = direction / dir_norm_sq.sqrt();
+        let new_point = support_minkowski(shape_a, pose_a, shape_b, pose_b, &dir_normalized);
+
+        // Check if we made progress toward the origin.
+        // If the new support point doesn't pass the current closest point
+        // in the search direction, the shapes may overlap.
+        let dot = new_point.point.coords.dot(&dir_normalized);
+        if dot < EPSILON {
+            // Cannot get closer to origin — shapes don't overlap.
+            // Current simplex contains the closest feature.
+            break;
+        }
+
+        simplex.push(new_point);
+
+        // Find closest point on simplex to origin and reduce simplex
+        let (closest_point, bary) = closest_point_on_simplex_to_origin(&simplex);
+        let new_dist_sq = closest_point.norm_squared();
+
+        // Convergence check: relative distance improvement < tolerance.
+        let improvement = closest_dist_sq - new_dist_sq;
+        if improvement < tolerance * tolerance
+            || (closest_dist_sq > EPSILON && improvement / closest_dist_sq < tolerance)
+        {
+            // Converged — compute witness points from barycentric coords
+            let (wa, wb) = recover_witness_points(&simplex, &bary);
+            return Some(GjkDistanceResult {
+                distance: new_dist_sq.sqrt(),
+                witness_a: wa,
+                witness_b: wb,
+                iterations: iteration,
+            });
+        }
+
+        closest_dist_sq = new_dist_sq;
+
+        // Reduce simplex to closest sub-feature
+        reduce_simplex_to_closest(&mut simplex, &bary);
+
+        // New search direction: from closest point toward origin
+        direction = -closest_point;
+    }
+
+    // Max iterations or early break — compute final result
+    let (closest_point, bary) = closest_point_on_simplex_to_origin(&simplex);
+    let dist = closest_point.norm();
+    if dist < EPSILON {
+        return None; // Touching — use EPA
+    }
+    let (wa, wb) = recover_witness_points(&simplex, &bary);
+    Some(GjkDistanceResult {
+        distance: dist,
+        witness_a: wa,
+        witness_b: wb,
+        iterations: max_iterations,
+    })
+}
+
+/// Compute the closest point on the simplex to the origin.
+///
+/// Returns (closest_point_vector, barycentric_coordinates).
+/// Barycentric coordinates are used to recover witness points from
+/// the `MinkowskiPoint`'s `support_a`/`support_b` fields.
+fn closest_point_on_simplex_to_origin(simplex: &Simplex) -> (Vector3<f64>, Vec<(usize, f64)>) {
+    match simplex.len() {
+        1 => {
+            // Point: closest point is the point itself
+            let p = simplex.points[0].point.coords;
+            (p, vec![(0, 1.0)])
+        }
+        2 => {
+            // Line segment: project origin onto segment [A, B]
+            let a = simplex.points[0].point.coords;
+            let b = simplex.points[1].point.coords;
+            let ab = b - a;
+            let ao = -a;
+            let ab_sq = ab.norm_squared();
+            if ab_sq < EPSILON * EPSILON {
+                return (a, vec![(0, 1.0)]);
+            }
+            let t = (ao.dot(&ab) / ab_sq).clamp(0.0, 1.0);
+            let closest = a + t * ab;
+            (closest, vec![(0, 1.0 - t), (1, t)])
+        }
+        3 => {
+            // Triangle: project origin onto triangle plane, check Voronoi regions
+            closest_point_on_triangle_to_origin(simplex)
+        }
+        _ => {
+            // Should not happen in distance mode (simplex reduced before size 4)
+            let p = simplex.points[0].point.coords;
+            (p, vec![(0, 1.0)])
+        }
+    }
+}
+
+/// Full Voronoi region analysis for the triangle case.
+/// Projects origin onto the triangle ABC and checks all 7 Voronoi regions.
+#[allow(clippy::many_single_char_names)] // standard geometric notation (a, b, c, v, w)
+fn closest_point_on_triangle_to_origin(simplex: &Simplex) -> (Vector3<f64>, Vec<(usize, f64)>) {
+    let a = simplex.points[0].point.coords;
+    let b = simplex.points[1].point.coords;
+    let c = simplex.points[2].point.coords;
+
+    let ab = b - a;
+    let ac = c - a;
+    let ao = -a;
+
+    let d1 = ab.dot(&ao);
+    let d2 = ac.dot(&ao);
+
+    // Vertex A region
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return (a, vec![(0, 1.0)]);
+    }
+
+    let bo = -b;
+    let d3 = ab.dot(&bo);
+    let d4 = ac.dot(&bo);
+
+    // Vertex B region
+    if d3 >= 0.0 && d4 <= d3 {
+        return (b, vec![(1, 1.0)]);
+    }
+
+    // Edge AB region
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let v = d1 / (d1 - d3);
+        let closest = a + v * ab;
+        return (closest, vec![(0, 1.0 - v), (1, v)]);
+    }
+
+    let co = -c;
+    let d5 = ab.dot(&co);
+    let d6 = ac.dot(&co);
+
+    // Vertex C region
+    if d6 >= 0.0 && d5 <= d6 {
+        return (c, vec![(2, 1.0)]);
+    }
+
+    // Edge AC region
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let w = d2 / (d2 - d6);
+        let closest = a + w * ac;
+        return (closest, vec![(0, 1.0 - w), (2, w)]);
+    }
+
+    // Edge BC region
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        let closest = b + w * (c - b);
+        return (closest, vec![(1, 1.0 - w), (2, w)]);
+    }
+
+    // Interior of triangle
+    let denom = 1.0 / (va + vb + vc);
+    let v = vb * denom;
+    let w = vc * denom;
+    let closest = a + v * ab + w * ac;
+    (closest, vec![(0, 1.0 - v - w), (1, v), (2, w)])
+}
+
+/// Recover world-space witness points from barycentric coordinates.
+fn recover_witness_points(simplex: &Simplex, bary: &[(usize, f64)]) -> (Point3<f64>, Point3<f64>) {
+    let mut wa = Vector3::zeros();
+    let mut wb = Vector3::zeros();
+    for &(idx, weight) in bary {
+        wa += simplex.points[idx].support_a.coords * weight;
+        wb += simplex.points[idx].support_b.coords * weight;
+    }
+    (Point3::from(wa), Point3::from(wb))
+}
+
+/// Reduce simplex to only the vertices that contribute to the closest point.
+fn reduce_simplex_to_closest(simplex: &mut Simplex, bary: &[(usize, f64)]) {
+    let active: Vec<MinkowskiPoint> = bary
+        .iter()
+        .filter(|(_, w)| *w > EPSILON)
+        .map(|&(idx, _)| simplex.points[idx])
+        .collect();
+    simplex.set(&active);
+}
+
+// =============================================================================
+// MULTICCD: GJK/EPA with custom initial direction
+// =============================================================================
+
+/// GJK intersection query with a specified initial search direction.
+///
+/// Identical to `gjk_query()` except the initial Minkowski search direction
+/// is `initial_direction` instead of `center_b - center_a`. This causes
+/// the simplex construction to start from a different support vertex,
+/// potentially finding a different contact region on shapes with flat faces.
+#[must_use]
+pub fn gjk_query_with_direction(
+    shape_a: &CollisionShape,
+    pose_a: &Pose,
+    shape_b: &CollisionShape,
+    pose_b: &Pose,
+    initial_direction: Vector3<f64>,
+    max_iterations: usize,
+) -> GjkResult {
+    let dir_norm = initial_direction.norm();
+    let mut direction = if dir_norm > EPSILON {
+        initial_direction / dir_norm
+    } else {
+        Vector3::x()
+    };
+
+    let mut simplex = Simplex::new();
+    let first = support_minkowski(shape_a, pose_a, shape_b, pose_b, &direction);
+    simplex.push(first);
+    direction = -first.point.coords;
+
+    for iteration in 0..max_iterations {
+        if direction.norm_squared() < EPSILON * EPSILON {
+            return GjkResult {
+                intersecting: true,
+                simplex,
+                iterations: iteration,
+            };
+        }
+
+        direction = direction.normalize();
+        let new_point = support_minkowski(shape_a, pose_a, shape_b, pose_b, &direction);
+
+        if new_point.point.coords.dot(&direction) < -EPSILON {
+            return GjkResult {
+                intersecting: false,
+                simplex,
+                iterations: iteration,
+            };
+        }
+
+        simplex.push(new_point);
+
+        if do_simplex(&mut simplex, &mut direction) {
+            return GjkResult {
+                intersecting: true,
+                simplex,
+                iterations: iteration,
+            };
+        }
+    }
+
+    GjkResult {
+        intersecting: false,
+        simplex,
+        iterations: max_iterations,
+    }
+}
+
+/// GJK/EPA contact with a specified initial search direction.
+///
+/// Used by MULTICCD to explore different contact regions on flat surfaces.
+#[must_use]
+pub fn gjk_epa_contact_with_direction(
+    shape_a: &CollisionShape,
+    pose_a: &Pose,
+    shape_b: &CollisionShape,
+    pose_b: &Pose,
+    initial_direction: Vector3<f64>,
+    max_iterations: usize,
+    tolerance: f64,
+) -> Option<GjkContact> {
+    let gjk_result = gjk_query_with_direction(
+        shape_a,
+        pose_a,
+        shape_b,
+        pose_b,
+        initial_direction,
+        max_iterations,
+    );
+    if !gjk_result.intersecting {
+        return None;
+    }
+    let epa = epa_query(
+        shape_a,
+        pose_a,
+        shape_b,
+        pose_b,
+        &gjk_result.simplex,
+        max_iterations,
+        tolerance,
+    )?;
+    let contact_point = support(shape_a, pose_a, &(-epa.normal));
+    Some(GjkContact {
+        point: contact_point,
+        normal: epa.normal,
+        penetration: epa.depth.max(0.0),
     })
 }
 
@@ -1160,7 +1555,13 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.5, 0.0, 0.0); // Centers 1.5 apart, radii sum to 2
 
-        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     #[test]
@@ -1171,7 +1572,13 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(3.0, 0.0, 0.0); // Centers 3 apart, radii sum to 2
 
-        assert!(!gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(!gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     #[test]
@@ -1182,7 +1589,13 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.0, 0.0, 0.0); // Should overlap
 
-        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     #[test]
@@ -1204,7 +1617,13 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(0.8, 0.0, 0.0); // Should overlap
 
-        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     #[test]
@@ -1215,7 +1634,14 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.5, 0.0, 0.0);
 
-        let contact = gjk_epa_contact(&shape_a, &pose_a, &shape_b, &pose_b);
+        let contact = gjk_epa_contact(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS,
+            EPA_TOLERANCE,
+        );
         assert!(contact.is_some());
 
         let contact = contact.unwrap();
@@ -1234,11 +1660,23 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(0.3, 0.0, 0.0); // Should overlap
 
-        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
 
         // Separated
         let pose_b_far = pose_at(2.0, 0.0, 0.0);
-        assert!(!gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b_far));
+        assert!(!gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b_far,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     #[test]
@@ -1288,7 +1726,13 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(0.8, 0.0, 0.0); // Should overlap
 
-        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     #[test]
@@ -1299,7 +1743,13 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(2.0, 0.0, 0.0); // Far away
 
-        assert!(!gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(!gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     #[test]
@@ -1312,7 +1762,14 @@ mod tests {
         let pose_b = Pose::identity();
 
         // Should be penetrating by 0.5
-        let contact = gjk_epa_contact(&shape_a, &pose_a, &shape_b, &pose_b);
+        let contact = gjk_epa_contact(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS,
+            EPA_TOLERANCE,
+        );
         assert!(contact.is_some());
 
         let contact = contact.unwrap();
@@ -1327,7 +1784,13 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(0.8, 0.0, 0.0); // Should overlap
 
-        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     // =========================================================================
@@ -1381,7 +1844,13 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(2.0, 0.0, 0.0); // Just touching at ellipsoid's long axis
 
-        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     #[test]
@@ -1392,7 +1861,13 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(3.0, 0.0, 0.0); // Far away
 
-        assert!(!gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(!gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
     }
 
     #[test]
@@ -1404,7 +1879,14 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.3);
         let pose_b = Pose::identity();
 
-        let contact = gjk_epa_contact(&shape_a, &pose_a, &shape_b, &pose_b);
+        let contact = gjk_epa_contact(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS,
+            EPA_TOLERANCE,
+        );
         assert!(contact.is_some());
 
         let contact = contact.unwrap();
@@ -1420,6 +1902,149 @@ mod tests {
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.5, 0.0, 0.0); // Should overlap along X
 
-        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+        assert!(gjk_intersection(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS
+        ));
+    }
+
+    // =========================================================================
+    // GJK Distance tests (Spec D S1)
+    // =========================================================================
+
+    /// T1: AC1 — separated spheres, analytically derived
+    #[test]
+    fn test_gjk_distance_separated_spheres() {
+        let shape_a = CollisionShape::sphere(1.0);
+        let shape_b = CollisionShape::sphere(1.0);
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(4.0, 0.0, 0.0);
+
+        let result = gjk_distance(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS,
+            EPA_TOLERANCE,
+        );
+        assert!(result.is_some(), "separated spheres should return Some");
+
+        let r = result.unwrap();
+        // Center distance 4.0 minus sum of radii 2.0 = separation 2.0
+        assert_relative_eq!(r.distance, 2.0, epsilon = 1e-6);
+        // Witness A should be at x ≈ 1.0 (surface of sphere A toward B)
+        assert_relative_eq!(r.witness_a.x, 1.0, epsilon = 1e-4);
+        // Witness B should be at x ≈ 3.0 (surface of sphere B toward A)
+        assert_relative_eq!(r.witness_b.x, 3.0, epsilon = 1e-4);
+    }
+
+    /// T2: AC2 — overlapping spheres return None
+    #[test]
+    fn test_gjk_distance_overlapping_spheres_return_none() {
+        let shape_a = CollisionShape::sphere(1.0);
+        let shape_b = CollisionShape::sphere(1.0);
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(1.0, 0.0, 0.0); // Overlapping: center dist < sum of radii
+
+        let result = gjk_distance(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS,
+            EPA_TOLERANCE,
+        );
+        assert!(result.is_none(), "overlapping spheres should return None");
+    }
+
+    /// T12: Edge case — spheres just touching (distance ≈ 0)
+    #[test]
+    fn test_gjk_distance_just_touching_spheres() {
+        let shape_a = CollisionShape::sphere(1.0);
+        let shape_b = CollisionShape::sphere(1.0);
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(2.0, 0.0, 0.0); // Exactly touching
+
+        let result = gjk_distance(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS,
+            EPA_TOLERANCE,
+        );
+        // At the boundary: may return Some with distance ≈ 0 or None
+        if let Some(r) = result {
+            assert!(
+                r.distance < 1e-3,
+                "distance should be near zero, got {}",
+                r.distance
+            );
+        }
+        // Both outcomes (None or Some(~0)) are acceptable at the boundary
+    }
+
+    /// T16: AC1 variant — separated boxes, exercises triangle simplex case
+    #[test]
+    fn test_gjk_distance_separated_boxes() {
+        let shape_a = CollisionShape::box_shape(Vector3::new(0.5, 0.5, 0.5));
+        let shape_b = CollisionShape::box_shape(Vector3::new(0.5, 0.5, 0.5));
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(3.0, 0.0, 0.0); // Separation = 3.0 - 0.5 - 0.5 = 2.0
+
+        let result = gjk_distance(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS,
+            EPA_TOLERANCE,
+        );
+        assert!(result.is_some(), "separated boxes should return Some");
+
+        let r = result.unwrap();
+        assert_relative_eq!(r.distance, 2.0, epsilon = 1e-4);
+    }
+
+    /// T14: Edge case — ccd_iterations=0 → graceful handling
+    #[test]
+    fn test_gjk_epa_contact_zero_iterations() {
+        let shape_a = CollisionShape::sphere(1.0);
+        let shape_b = CollisionShape::sphere(1.0);
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(1.5, 0.0, 0.0);
+
+        // With 0 iterations, should not crash
+        let contact = gjk_epa_contact(&shape_a, &pose_a, &shape_b, &pose_b, 0, EPA_TOLERANCE);
+        // May return None (no iterations to converge) — just verify no panic
+        let _ = contact;
+    }
+
+    /// T18: Edge case — ccd_tolerance=0 → solver runs to max iterations
+    #[test]
+    fn test_gjk_epa_contact_zero_tolerance() {
+        let shape_a = CollisionShape::sphere(1.0);
+        let shape_b = CollisionShape::sphere(1.0);
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(1.5, 0.0, 0.0);
+
+        // With tolerance=0.0, convergence check (< 0) is never true, so runs to max iterations
+        let contact = gjk_epa_contact(
+            &shape_a,
+            &pose_a,
+            &shape_b,
+            &pose_b,
+            GJK_MAX_ITERATIONS,
+            0.0,
+        );
+        // Should still produce a valid contact (just exhausts iterations)
+        assert!(
+            contact.is_some(),
+            "should produce contact even with zero tolerance"
+        );
     }
 }
