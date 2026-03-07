@@ -226,7 +226,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 3: Spec A rubric (Sparse Flex Edge Jacobian)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- write Spec A rubric.
@@ -898,7 +898,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 |---------|-------------|--------|--------|
 | 1 | Phase 10 Umbrella | Done | 6bc8acf |
 | 2 | T1: §42A-ii + §42A-iii | Done | 1f0230c |
-| 3 | Spec A rubric (§42A-i Edge Jacobian) | Pending | |
+| 3 | Spec A rubric (§42A-i Edge Jacobian) | Done | |
 | 4 | Spec A spec | Pending | |
 | 5 | Spec A implementation | Pending | |
 | 6 | Spec A review -- create document | Pending | |
