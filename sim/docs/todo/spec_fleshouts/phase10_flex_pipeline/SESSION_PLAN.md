@@ -548,7 +548,7 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 12: Spec B review -- create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- create Spec B review document.
