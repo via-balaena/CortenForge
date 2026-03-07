@@ -274,7 +274,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 4: Spec A spec (Sparse Flex Edge Jacobian)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- write Spec A spec.
@@ -383,7 +383,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 8: Spec B rubric (Cotangent Laplacian Bending)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- write Spec B rubric.
@@ -434,7 +434,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 9: Spec B spec (Cotangent Laplacian Bending)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- write Spec B spec.
