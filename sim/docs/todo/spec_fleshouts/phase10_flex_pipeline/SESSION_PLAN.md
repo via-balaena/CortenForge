@@ -329,7 +329,7 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 6: Spec A review -- create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- create Spec A review document.
@@ -901,7 +901,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 | 3 | Spec A rubric (§42A-i Edge Jacobian) | Done | 6d03aed |
 | 4 | Spec A spec | Done | 7b1efb1 |
 | 5 | Spec A implementation | Done | 0a46fef |
-| 6 | Spec A review -- create document | Pending | |
+| 6 | Spec A review -- create document | Done | 957fe2d |
 | 7 | Spec A review -- execute | Pending | |
 | 8 | Spec B rubric (§42B Bending) | Pending | |
 | 9 | Spec B spec | Pending | |
