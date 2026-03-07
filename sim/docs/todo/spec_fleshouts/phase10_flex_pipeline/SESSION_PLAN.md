@@ -477,7 +477,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 10: Spec B implementation — build-time (S1-S5)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- implement Spec B build-time sections.
@@ -905,7 +905,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 | 7 | Spec A review -- execute | Done | 5df93f9 |
 | 8 | Spec B rubric (§42B Bending) | Done | bc5b4ac |
 | 9 | Spec B spec | Done | 27ef6e5 |
-| 10 | Spec B implementation -- build-time (S1-S5) | Pending | |
+| 10 | Spec B implementation -- build-time (S1-S5) | Done | 4612f00 |
 | 11 | Spec B implementation -- runtime + trait (S6-S8) | Pending | |
 | 12 | Spec B review -- create document | Pending | |
 | 13 | Spec B review -- execute | Pending | |
