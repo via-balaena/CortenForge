@@ -902,7 +902,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 | 4 | Spec A spec | Done | 7b1efb1 |
 | 5 | Spec A implementation | Done | 0a46fef |
 | 6 | Spec A review -- create document | Done | 957fe2d |
-| 7 | Spec A review -- execute | Done | |
+| 7 | Spec A review -- execute | Done | 5df93f9 |
 | 8 | Spec B rubric (§42B Bending) | Pending | |
 | 9 | Spec B spec | Pending | |
 | 10 | Spec B implementation -- build-time (S1-S5) | Pending | |
