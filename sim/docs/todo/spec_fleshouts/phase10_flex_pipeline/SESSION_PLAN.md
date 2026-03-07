@@ -907,7 +907,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 | 9 | Spec B spec | Done | 27ef6e5 |
 | 10 | Spec B implementation -- build-time (S1-S5) | Done | 4612f00 |
 | 11 | Spec B implementation -- runtime + trait (S6-S8) | Done | 082dd4b |
-| 12 | Spec B review -- create document | Pending | |
+| 12 | Spec B review -- create document | Done | 7a808fb |
 | 13 | Spec B review -- execute | Pending | |
 | 14 | Spec C rubric (§42A-iv Self-Collision) | Pending | |
 | 15 | Spec C spec | Pending | |
