@@ -25,6 +25,7 @@
 > DT-141 (GJK/EPA cross-frame warm-start) added during Phase 9 Spec D review.
 > DT-142 (flex self-collision), DT-143 (flex-flex cross-body filtering),
 > DT-144 (prism-based hfield for flex) added during Phase 9 Spec E review.
+> DT-148 (hinge topology optimization) added during Phase 10 Spec B review.
 >
 > **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
@@ -344,6 +345,7 @@ foundation isn't right.
 | DT-105 | 10e | T3 | Sparse `actuator_moment` compression (CSR) — numerically equivalent to current dense storage. Deferred from Phase 5 Spec B. |
 | DT-146 | 10i | T2 | Sparse constraint assembly — scatter `flexedge_J` into sparse `efc_J` instead of dense DMatrix. Performance optimization, no conformance impact. Deferred from Phase 10 Spec A. |
 | DT-147 | 10i | T1 | `flex_edgeequality` dedicated flag — per-flex boolean for skip_jacobian condition instead of conservative `solref != [0,0]` proxy. Minor optimization. Deferred from Phase 10 Spec A. |
+| DT-148 | 10i | T1 | `flex_hingeadr`/`flex_hingenum` per-flex hinge index arrays — O(1) Bridson bending iteration instead of filter loop. Performance optimization, no conformance impact. Deferred from Phase 10 Spec B. |
 
 ### Advanced Differentiation
 | Task | Source | Tier | Description |

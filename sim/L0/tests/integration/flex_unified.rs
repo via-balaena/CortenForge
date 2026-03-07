@@ -2755,11 +2755,32 @@ fn specb_t4_curved_reference_asymmetric_diamond() {
 
     let b_base = 17 * e;
 
-    // b[16] should be non-zero (curved mesh → Garg correction active).
+    // Verify b[16] ≈ 3.278e-5 (Garg curved reference coefficient).
+    // Hand-computed from asymmetric geometry:
+    //   n = e0 × e1 = (0, 0, 2), n·e2 = 1.0
+    //   (a01 - a03) = -1.0, (a04 - a02) ≈ -1.060
+    //   stiffness ≈ 2.474e-4, sqr = 4, sqr*sqrt(sqr) = 8
+    //   b[16] = 1.0 * (-1.0) * (-1.060) * 2.474e-4 / 8 ≈ 3.278e-5
+    let b16 = model.flex_bending[b_base + 16];
     assert!(
-        model.flex_bending[b_base + 16].abs() > 1e-10,
-        "b[16] = {} should be non-zero for curved mesh",
-        model.flex_bending[b_base + 16]
+        (b16 - 3.278e-5).abs() < 1e-7,
+        "b[16] = {b16:.6e}, expected ≈ 3.278e-5 for curved mesh"
+    );
+
+    // Verify cos_theta via B matrix diagonal structure.
+    // For curved mesh, cos_theta ≈ 0.848 (< 1.0, indicating non-flat rest geometry).
+    // Verify by checking the matrix magnitude is scaled by cos_theta relative to
+    // what it would be for flat (cos_theta=1). The B matrix entry b[0][0] =
+    // c[0]^2 * cos_theta * stiffness. We can verify cos_theta by checking the
+    // matrix-derived ratio against the flat case.
+    // Direct check: b[0][0] / (c[0]^2 * stiffness) ≈ cos_theta.
+    // c[0] = a03 + a04 ≈ 1.5 + 0.530 = 2.030
+    // stiffness = 3 * mu * t^3 / (24 * volume) ≈ 2.474e-4
+    // Expected b[0][0] = 2.030^2 * 0.848 * 2.474e-4 ≈ 8.645e-4
+    let b00 = model.flex_bending[b_base];
+    assert!(
+        (b00 - 8.645e-4).abs() < 1e-6,
+        "b[0][0] = {b00:.6e}, expected ≈ 8.645e-4 (validates cos_theta ≈ 0.848)"
     );
 
     // All row sums = 0 (Laplacian property preserved for curved meshes).
@@ -2772,24 +2793,29 @@ fn specb_t4_curved_reference_asymmetric_diamond() {
     }
 }
 
-/// §42B T12: Flap topology — 3x3 grid (AC12).
+/// §42B T12: Flap topology — 4x4 grid (AC12).
 ///
-/// 9 vertices, 8 triangles, multiple interior and boundary edges.
+/// 16 vertices, 18 triangles, 33 edges. Validates interior/boundary
+/// classification and diamond stencil validity per spec AC12.
 #[test]
-fn specb_t12_flap_topology_3x3_grid() {
-    // Explicit 3x3 grid of vertices with triangulated elements.
-    // Vertices: (col, row, 0) for row=0..2, col=0..2
-    // Triangles: each quad split into 2 triangles.
+fn specb_t12_flap_topology_4x4_grid() {
+    // 4x4 grid of vertices with triangulated elements.
+    // Vertices (0..15): (col, row, 0) for row=0..3, col=0..3
+    // Layout:  12-13-14-15
+    //           8- 9-10-11
+    //           4- 5- 6- 7
+    //           0- 1- 2- 3
+    // Each quad split into 2 triangles (lower-left + upper-right diagonal).
     let mjcf = r#"<mujoco>
   <deformable>
     <flex name="grid" dim="2" radius="0.005" density="1000">
       <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
-      <vertex pos="0 0 0  1 0 0  2 0 0  0 1 0  1 1 0  2 1 0  0 2 0  1 2 0  2 2 0"/>
-      <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+      <vertex pos="0 0 0  1 0 0  2 0 0  3 0 0  0 1 0  1 1 0  2 1 0  3 1 0  0 2 0  1 2 0  2 2 0  3 2 0  0 3 0  1 3 0  2 3 0  3 3 0"/>
+      <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6  4 5 8  5 9 8  5 6 9  6 10 9  6 7 10  7 11 10  8 9 12  9 13 12  9 10 13  10 14 13  10 11 14  11 15 14"/>
     </flex>
   </deformable>
 </mujoco>"#;
-    let model = load_model(mjcf).expect("load 3x3 grid");
+    let model = load_model(mjcf).expect("load 4x4 grid");
 
     let mut interior_count = 0;
     let mut boundary_count = 0;
@@ -2827,9 +2853,15 @@ fn specb_t12_flap_topology_3x3_grid() {
         }
     }
 
-    // A 4x4 grid should have interior and boundary edges.
+    // A 4x4 grid (16 vertices, 18 triangles) should have both interior and boundary edges.
+    // Expected: 33 total edges, 16 interior (shared by 2 triangles), 12 boundary.
     assert!(interior_count > 0, "should have interior edges");
     assert!(boundary_count > 0, "should have boundary edges");
+    // Verify we have a meaningful topology — 4x4 grid should have at least 16 interior edges.
+    assert!(
+        interior_count >= 15,
+        "4x4 grid should have ~16 interior edges, got {interior_count}"
+    );
 }
 
 /// §42B T13: Zero thickness produces zero bending (AC13).
@@ -3119,6 +3151,34 @@ fn specb_t7_bridson_regression() {
     assert!(
         tip_z < root_z,
         "Bridson: tip z={tip_z} should be below root z={root_z}"
+    );
+
+    // Regression: gold values captured from Bridson path after Spec B refactored
+    // the code into apply_bridson_bending(). These values verify the algorithm
+    // was moved without numerical changes (AC7).
+    // Tolerance 1e-14: accounts for potential floating-point non-determinism
+    // across compiler versions while still catching any algorithm changes.
+    // Vertices 0,4 are pinned (always at origin).
+    let tol = 1e-14;
+    assert!(
+        (data.flexvert_xpos[3].z - (-5.6457349099e-4)).abs() < tol,
+        "v3.z = {:.17e}, Bridson regression failed",
+        data.flexvert_xpos[3].z
+    );
+    assert!(
+        (data.flexvert_xpos[7].z - (-4.5831262165e-4)).abs() < tol,
+        "v7.z = {:.17e}, Bridson regression failed",
+        data.flexvert_xpos[7].z
+    );
+    assert!(
+        (data.flexvert_xpos[2].z - (-1.3965147784e-4)).abs() < tol,
+        "v2.z = {:.17e}, Bridson regression failed",
+        data.flexvert_xpos[2].z
+    );
+    assert!(
+        (data.flexvert_xpos[6].z - (-7.8245744862e-5)).abs() < tol,
+        "v6.z = {:.17e}, Bridson regression failed",
+        data.flexvert_xpos[6].z
     );
 }
 

@@ -576,7 +576,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_B_REVIEW.md
 
 ## Session 13: Spec B review -- execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- execute Spec B review.
