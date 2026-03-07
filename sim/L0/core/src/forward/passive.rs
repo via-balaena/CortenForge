@@ -13,8 +13,8 @@ use crate::joint_visitor::{JointContext, JointVisitor};
 use crate::tendon::apply_tendon_force;
 use crate::tendon::subquat;
 use crate::types::{
-    DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, GeomType, Integrator, MjJointType, Model,
-    SleepState,
+    DISABLE_DAMPER, DISABLE_SPRING, Data, ENABLE_SLEEP, FlexBendingType, GeomType, Integrator,
+    MjJointType, Model, SleepState,
 };
 use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3};
 
@@ -545,13 +545,200 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
         }
     }
 
-    // Flex bending passive forces: spring-damper on dihedral angle (Bridson et al. 2003).
-    // MuJoCo computes bending as passive forces in engine_passive.c, NOT as constraint rows.
-    // Force = -k_bend * (theta - theta0) - b_bend * d(theta)/dt, applied via J^T.
+    // §42B S6+S7: Flex bending passive forces — dispatched by FlexBendingType.
+    // MuJoCo computes bending as passive forces in engine_passive.c:192–268.
+    // Cotangent (default): precomputed 4x4 B matrix × position (MuJoCo-conformant).
+    // Bridson (extension): dihedral angle spring-damper with per-vertex stability clamp.
+    for f in 0..model.nflex {
+        let dim = model.flex_dim[f];
+        if dim != 2 || model.flex_rigid[f] {
+            continue;
+        }
+
+        match model.flex_bending_type[f] {
+            FlexBendingType::Cotangent => {
+                // §42B S6: Cotangent Laplacian bending (MuJoCo-conformant).
+                // Runtime: B * xpos (spring) + B * vel (damper) + b[16] * frc (curved ref).
+                // MuJoCo ref: engine_passive.c:206–268.
+                let edge_adr = model.flex_edgeadr[f];
+                let edge_num = model.flex_edgenum[f];
+                let damping_coeff = model.flex_damping[f];
+
+                for local_e in 0..edge_num {
+                    let e = edge_adr + local_e;
+                    let flap = model.flexedge_flap[e];
+                    if flap[1] == -1 {
+                        continue; // boundary edge
+                    }
+
+                    // Diamond stencil vertices: [edge0, edge1, opp_tri1, opp_tri2]
+                    // Safety: flap[0] and flap[1] are >= 0 (boundary edges with -1
+                    // are skipped above).
+                    #[allow(clippy::cast_sign_loss)]
+                    let v = [
+                        model.flexedge_vert[e][0],
+                        model.flexedge_vert[e][1],
+                        flap[0] as usize,
+                        flap[1] as usize,
+                    ];
+
+                    // Runtime edge vectors (from current deformed positions)
+                    let xpos = &data.flexvert_xpos;
+                    let ed0 = xpos[v[1]] - xpos[v[0]]; // v1 - v0
+                    let ed1 = xpos[v[2]] - xpos[v[0]]; // v2 - v0
+                    let ed2 = xpos[v[3]] - xpos[v[0]]; // v3 - v0
+
+                    // Curved reference forces (cross products)
+                    let frc1 = ed1.cross(&ed2); // (v2-v0) x (v3-v0)
+                    let frc2 = ed2.cross(&ed0); // (v3-v0) x (v1-v0)
+                    let frc3 = ed0.cross(&ed1); // (v1-v0) x (v2-v0)
+                    let frc0 = -(frc1 + frc2 + frc3);
+                    let frc = [frc0, frc1, frc2, frc3];
+
+                    // Read velocities for damper
+                    let read_vel = |vi: usize| -> Vector3<f64> {
+                        let dof = model.flexvert_dofadr[vi];
+                        if dof == usize::MAX {
+                            Vector3::zeros()
+                        } else {
+                            Vector3::new(data.qvel[dof], data.qvel[dof + 1], data.qvel[dof + 2])
+                        }
+                    };
+                    let vel = [
+                        read_vel(v[0]),
+                        read_vel(v[1]),
+                        read_vel(v[2]),
+                        read_vel(v[3]),
+                    ];
+
+                    // B matrix coefficients for this edge
+                    let b_base = 17 * e;
+
+                    // Force accumulation: spring[3*i+x] and damper[3*i+x]
+                    let mut spring = [0.0f64; 12]; // 4 vertices x 3 axes
+                    let mut damper = [0.0f64; 12];
+
+                    for i in 0..4 {
+                        for x in 0..3 {
+                            for j in 0..4 {
+                                let b_ij = model.flex_bending[b_base + 4 * i + j];
+                                spring[3 * i + x] += b_ij * xpos[v[j]][x];
+                                damper[3 * i + x] += b_ij * vel[j][x];
+                            }
+                            // Curved reference contribution
+                            spring[3 * i + x] += model.flex_bending[b_base + 16] * frc[i][x];
+                        }
+                    }
+
+                    // Insert forces into qfrc_spring and qfrc_damper
+                    for i in 0..4 {
+                        let dof = model.flexvert_dofadr[v[i]];
+                        if dof == usize::MAX {
+                            continue; // pinned vertex: no DOFs
+                        }
+                        for x in 0..3 {
+                            if has_spring {
+                                // Spring subtracted (negative sign matches MuJoCo)
+                                data.qfrc_spring[dof + x] -= spring[3 * i + x];
+                            }
+                            if has_damper {
+                                // Damper subtracted and multiplied by flex_damping
+                                data.qfrc_damper[dof + x] -= damper[3 * i + x] * damping_coeff;
+                            }
+                        }
+                    }
+                }
+            }
+            FlexBendingType::Bridson => {
+                // §42B S8: Delegate to Bridson dihedral angle springs (extension).
+                apply_bridson_bending(model, data, f, has_spring, has_damper);
+            }
+        }
+    }
+
+    // Fluid forces (§40): compute into qfrc_fluid.
+    let has_fluid = mj_fluid(model, data);
+
+    // Gravity compensation (§35): compute into qfrc_gravcomp.
+    // Route to qfrc_passive only for DOFs whose joint has jnt_actgravcomp == false.
+    // DOFs with jnt_actgravcomp == true are routed via mj_fwd_actuation() (S4.2).
+    let has_gravcomp = mj_gravcomp(model, data);
+
+    // S4.7e: Aggregation into qfrc_passive (matches MuJoCo mj_passive() pattern).
+    // qfrc_passive = qfrc_spring + qfrc_damper [+ qfrc_gravcomp] [+ qfrc_fluid]
+    // Uses assignment (=), not accumulation (+=), for the base sum.
+    let agg_count = if sleep_filter {
+        data.nv_awake
+    } else {
+        model.nv
+    };
+    for idx in 0..agg_count {
+        let dof = if sleep_filter {
+            data.dof_awake_ind[idx]
+        } else {
+            idx
+        };
+        data.qfrc_passive[dof] = data.qfrc_spring[dof] + data.qfrc_damper[dof];
+    }
+    if has_gravcomp {
+        for idx in 0..agg_count {
+            let dof = if sleep_filter {
+                data.dof_awake_ind[idx]
+            } else {
+                idx
+            };
+            // S4.2a: Only route gravcomp to passive for DOFs without actuator routing.
+            let jnt = model.dof_jnt[dof];
+            if !model.jnt_actgravcomp[jnt] {
+                data.qfrc_passive[dof] += data.qfrc_gravcomp[dof];
+            }
+        }
+    }
+    if has_fluid {
+        for idx in 0..agg_count {
+            let dof = if sleep_filter {
+                data.dof_awake_ind[idx]
+            } else {
+                idx
+            };
+            data.qfrc_passive[dof] += data.qfrc_fluid[dof];
+        }
+    }
+
+    // DT-101: mj_contactPassive() insertion point.
+    // When implemented, call here with guard: disabled(CONTACT) || ncon == 0 || nv == 0.
+    // Must go AFTER aggregation because aggregation uses assignment (=), not
+    // accumulation (+=) — contact passive forces would be overwritten if placed
+    // before. The contact passive contribution should use += on qfrc_passive.
+
+    // DT-21: xfrc_applied projection moved to acceleration stage (qfrc_smooth
+    // in compute_qacc_smooth). MuJoCo projects xfrc_applied into qfrc_smooth in
+    // mj_fwdAcceleration, not mj_passive.
+
+    // DT-79: Invoke user passive callback (if set).
+    if let Some(ref cb) = model.cb_passive {
+        (cb.0)(model, data);
+    }
+}
+
+/// §42B S8: Bridson dihedral angle bending (CortenForge extension).
+///
+/// Exact algorithm from the pre-Spec-B bending loop, scoped to one flex body.
+/// Iterates `flexhinge_*` arrays for the given flex, applying dihedral angle
+/// spring/damper forces with per-vertex stability clamp.
+fn apply_bridson_bending(
+    model: &Model,
+    data: &mut Data,
+    flex_id: usize,
+    has_spring: bool,
+    has_damper: bool,
+) {
     let dt = model.timestep;
     for h in 0..model.nflexhinge {
+        if model.flexhinge_flexid[h] != flex_id {
+            continue;
+        }
         let [ve0, ve1, va, vb] = model.flexhinge_vert[h];
-        let flex_id = model.flexhinge_flexid[h];
 
         let k_bend_raw = model.flex_bend_stiffness[flex_id];
         let b_bend = model.flex_bend_damping[flex_id];
@@ -632,9 +819,6 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
         // S4.7-prereq: Apply spring and damper to separate arrays.
         // Per-vertex stability clamp applied independently to each component.
-        // The force on vertex i is: F_i = mag * grad_i
-        // The acceleration is: a_i = F_i * invmass_i = mag * grad_i * invmass_i
-        // Clamp: |mag * |grad_i| * invmass_i * dt^2| < 1
         let grads = [
             (ve0, dof_e0, grad_e0),
             (ve1, dof_e1, grad_e1),
@@ -667,70 +851,6 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
                 }
             }
         }
-    }
-
-    // Fluid forces (§40): compute into qfrc_fluid.
-    let has_fluid = mj_fluid(model, data);
-
-    // Gravity compensation (§35): compute into qfrc_gravcomp.
-    // Route to qfrc_passive only for DOFs whose joint has jnt_actgravcomp == false.
-    // DOFs with jnt_actgravcomp == true are routed via mj_fwd_actuation() (S4.2).
-    let has_gravcomp = mj_gravcomp(model, data);
-
-    // S4.7e: Aggregation into qfrc_passive (matches MuJoCo mj_passive() pattern).
-    // qfrc_passive = qfrc_spring + qfrc_damper [+ qfrc_gravcomp] [+ qfrc_fluid]
-    // Uses assignment (=), not accumulation (+=), for the base sum.
-    let agg_count = if sleep_filter {
-        data.nv_awake
-    } else {
-        model.nv
-    };
-    for idx in 0..agg_count {
-        let dof = if sleep_filter {
-            data.dof_awake_ind[idx]
-        } else {
-            idx
-        };
-        data.qfrc_passive[dof] = data.qfrc_spring[dof] + data.qfrc_damper[dof];
-    }
-    if has_gravcomp {
-        for idx in 0..agg_count {
-            let dof = if sleep_filter {
-                data.dof_awake_ind[idx]
-            } else {
-                idx
-            };
-            // S4.2a: Only route gravcomp to passive for DOFs without actuator routing.
-            let jnt = model.dof_jnt[dof];
-            if !model.jnt_actgravcomp[jnt] {
-                data.qfrc_passive[dof] += data.qfrc_gravcomp[dof];
-            }
-        }
-    }
-    if has_fluid {
-        for idx in 0..agg_count {
-            let dof = if sleep_filter {
-                data.dof_awake_ind[idx]
-            } else {
-                idx
-            };
-            data.qfrc_passive[dof] += data.qfrc_fluid[dof];
-        }
-    }
-
-    // DT-101: mj_contactPassive() insertion point.
-    // When implemented, call here with guard: disabled(CONTACT) || ncon == 0 || nv == 0.
-    // Must go AFTER aggregation because aggregation uses assignment (=), not
-    // accumulation (+=) — contact passive forces would be overwritten if placed
-    // before. The contact passive contribution should use += on qfrc_passive.
-
-    // DT-21: xfrc_applied projection moved to acceleration stage (qfrc_smooth
-    // in compute_qacc_smooth). MuJoCo projects xfrc_applied into qfrc_smooth in
-    // mj_fwdAcceleration, not mj_passive.
-
-    // DT-79: Invoke user passive callback (if set).
-    if let Some(ref cb) = model.cb_passive {
-        (cb.0)(model, data);
     }
 }
 
