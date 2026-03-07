@@ -2249,14 +2249,34 @@ fn spec_a_t4_simulation_regression_bit_identical() {
         assert!(!data.qvel[i].is_nan(), "NaN in qvel[{i}]");
     }
 
-    // Verify forces are reasonable (gravity pulling down, spring restoring)
-    // The key check is that the simulation didn't explode and produced
-    // valid forces. Bit-identity is implicitly verified because the existing
-    // test suite passes with identical expected values.
-    let has_nonzero_spring = (0..model.nv).any(|i| data.qfrc_spring[i] != 0.0);
-    assert!(
-        has_nonzero_spring,
-        "qfrc_spring should have nonzero values after 10 steps"
+    // Verify no NaN in state
+    for i in 0..model.nv {
+        assert!(!data.qpos[i].is_nan(), "NaN in qpos[{i}]");
+        assert!(!data.qvel[i].is_nan(), "NaN in qvel[{i}]");
+    }
+
+    // Bit-identical regression: captured values from the sparse J path.
+    // If these change, the sparse J^T*force path is no longer bit-identical
+    // to the inline ±direction path for free vertices.
+    // qvel[2] (v0 z-velocity) and qvel[5] (v1 z-velocity) are the most
+    // sensitive to force application changes.
+    assert_eq!(
+        data.qvel[2], -9.807_351_723_754_374e-2,
+        "qvel[2] regression"
+    );
+    assert_eq!(
+        data.qvel[5], -9.808_675_755_939_006e-2,
+        "qvel[5] regression"
+    );
+    // qfrc_spring[2] (v0 z-spring) — captures the J^T*force result
+    assert_eq!(
+        data.qfrc_spring[2], 1.177_014_600_533_805_8e-12,
+        "qfrc_spring[2] regression"
+    );
+    // qfrc_damper[2] (v0 z-damper)
+    assert_eq!(
+        data.qfrc_damper[2], 8.826_881_301_323_94e-3,
+        "qfrc_damper[2] regression"
     );
 }
 
@@ -2312,13 +2332,10 @@ fn spec_a_t6_constraint_jacobian_scatter() {
     let model = load_model(spec_a_constraint_cable_mjcf()).expect("load");
     let mut data = model.make_data();
 
-    // Run one step to trigger constraint assembly
-    data.step(&model).expect("step failed");
-
-    // Verify flexedge_J was computed (J needed because solref != [0,0])
+    // Forward populates flexedge_J; step triggers constraint assembly.
     data.forward(&model).expect("forward");
 
-    // Check that J is non-zero for non-rigid edges
+    // Verify flexedge_J was computed (J needed because solref != [0,0])
     for e in 0..model.nflexedge {
         let rowadr = model.flexedge_J_rowadr[e];
         let rownnz = model.flexedge_J_rownnz[e];
@@ -2326,6 +2343,48 @@ fn spec_a_t6_constraint_jacobian_scatter() {
             let j_slice = &data.flexedge_J[rowadr..rowadr + rownnz];
             let has_nonzero = j_slice.iter().any(|&v| v != 0.0);
             assert!(has_nonzero, "edge {e} J should have nonzero values");
+        }
+    }
+
+    // Now run a step to trigger constraint assembly, which scatters
+    // flexedge_J into efc_J rows for FlexEdge constraints.
+    data.step(&model).expect("step failed");
+
+    // After step, efc_J has been populated. Verify that for each edge with
+    // rownnz > 0, the efc_J row for that edge's constraint has non-zero
+    // values at exactly the colind positions matching flexedge_J values.
+    // Re-forward to get fresh J values matching the post-step state.
+    data.forward(&model).expect("forward");
+
+    // Find FlexEdge constraint rows in efc_type and verify efc_J scatter.
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::FlexEdge {
+            let e = data.efc_id[i];
+            let rowadr = model.flexedge_J_rowadr[e];
+            let rownnz = model.flexedge_J_rownnz[e];
+
+            // Verify efc_J has flexedge_J values at colind positions
+            for j in 0..rownnz {
+                let col = model.flexedge_J_colind[rowadr + j];
+                let expected = data.flexedge_J[rowadr + j];
+                let actual = data.efc_J[(i, col)];
+                assert_eq!(
+                    actual, expected,
+                    "efc_J[({i},{col})] = {actual} != flexedge_J = {expected} for edge {e}"
+                );
+            }
+
+            // Verify no other columns are non-zero (only colind positions)
+            for col in 0..model.nv {
+                let is_colind = (0..rownnz).any(|j| model.flexedge_J_colind[rowadr + j] == col);
+                if !is_colind {
+                    assert_eq!(
+                        data.efc_J[(i, col)],
+                        0.0,
+                        "efc_J[({i},{col})] should be 0 (not a colind position)"
+                    );
+                }
+            }
         }
     }
 }

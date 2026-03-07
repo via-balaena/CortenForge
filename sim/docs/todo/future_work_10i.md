@@ -4,7 +4,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ---
 
-## Group 8 — Flex / Deformable Body (14 items)
+## Group 8 — Flex / Deformable Body (16 items)
 
 **Spec approach:** DT-66/67/70/73 each need individual specs (T3 — new constraint
 types, GPU architecture, or new collision pairs). DT-69 shares a "Flex Collision
@@ -28,3 +28,5 @@ DT-87/88 share a "Flexcomp Completeness" spec (T2). The rest
 | ~~DT-88~~ | §27E | ~~`<flexcomp>` deferred physics attributes: `inertiabox`, `scale`, `quat`, `file`~~ **DONE** — Phase 7 Spec C (commit `05ee0a5`). Documentation-fidelity only (not in MuJoCo 3.5.0 binary). | Low | T2 |
 | DT-89 | §27E | `<flexcomp>` deferred rendering attributes: `flatskin`, `material`, `rgba` | Low | T1 |
 | ~~DT-90~~ | §27E/§30 | ~~`flex_friction` scalar → `Vector3<f64>` — torsional/rolling friction data lost~~ **DONE** | Low | T1 |
+| DT-146 | §42A-i | Sparse constraint assembly — MuJoCo's `mj_addConstraint()` accepts sparse J rows natively; CortenForge scatters into dense `efc_J` (DMatrix). Converting to sparse assembly is a performance optimization, not a conformance gap. Deferred from Phase 10 Spec A. | Low | T2 |
+| DT-147 | §42A-i | `flex_edgeequality` dedicated flag — MuJoCo has a per-flex boolean flag indicating whether any equality constraint references this flex's edges; used in `skipjacobian` condition. CortenForge uses `flex_edge_solref != [0,0]` as a conservative proxy (may compute J for edges that don't need it, but never misses). Adding a dedicated flag is a minor optimization. Deferred from Phase 10 Spec A. | Low | T1 |

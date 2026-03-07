@@ -342,6 +342,8 @@ foundation isn't right.
 | DT-91 | 10j | T1 | Warmstart `SmallVec` optimization |
 | DT-92 | 10j | T1 | Parallel reset for `BatchSim` |
 | DT-105 | 10e | T3 | Sparse `actuator_moment` compression (CSR) — numerically equivalent to current dense storage. Deferred from Phase 5 Spec B. |
+| DT-146 | 10i | T2 | Sparse constraint assembly — scatter `flexedge_J` into sparse `efc_J` instead of dense DMatrix. Performance optimization, no conformance impact. Deferred from Phase 10 Spec A. |
+| DT-147 | 10i | T1 | `flex_edgeequality` dedicated flag — per-flex boolean for skip_jacobian condition instead of conservative `solref != [0,0]` proxy. Minor optimization. Deferred from Phase 10 Spec A. |
 
 ### Advanced Differentiation
 | Task | Source | Tier | Description |
