@@ -449,6 +449,20 @@ pub struct Model {
     /// Pre-computed at build time. Rigid edges are skipped in passive force loops.
     pub flexedge_rigid: Vec<bool>,
 
+    // --- Sparse edge Jacobian CSR structure (computed at build time) ---
+    /// Number of non-zero entries per edge Jacobian row. Length `nflexedge`.
+    /// For free vertices: rownnz = dofnum(b1) + dofnum(b2).
+    /// For pinned vertex: rownnz = dofnum(non_pinned_body).
+    /// For both pinned: rownnz = 0.
+    pub flexedge_J_rownnz: Vec<usize>,
+    /// Start index in colind/J arrays for each edge. Length `nflexedge`.
+    /// rowadr[0] = 0, rowadr[e] = rowadr[e-1] + rownnz[e-1].
+    pub flexedge_J_rowadr: Vec<usize>,
+    /// DOF column indices for non-zero entries. Length `total_nnz`.
+    /// Contains the DOF indices for each endpoint body, in order:
+    /// [dofs_of_body(v0), dofs_of_body(v1)].
+    pub flexedge_J_colind: Vec<usize>,
+
     // --- Per-element arrays (length nflexelem) ---
     /// Element connectivity: vertex indices. Length varies by dim:
     /// dim=1: 2 (edge), dim=2: 3 (triangle), dim=3: 4 (tetrahedron).

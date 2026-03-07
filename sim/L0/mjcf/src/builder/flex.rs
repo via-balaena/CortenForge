@@ -386,6 +386,44 @@ impl ModelBuilder {
             self.flex_rigid.push(all_rigid);
         }
 
+        // §42A-i: Allocate CSR structure for sparse edge Jacobian.
+        // Sparsity pattern: union of DOFs from the two endpoint bodies.
+        // Runs once after ALL flexes have been processed so all edges are present.
+        {
+            let nedge = self.nflexedge;
+            let mut rownnz = Vec::with_capacity(nedge);
+            let mut rowadr = Vec::with_capacity(nedge);
+            let mut colind = Vec::new();
+            let mut adr: usize = 0;
+
+            for e in 0..nedge {
+                let [v0, v1] = self.flexedge_vert[e];
+                let b0 = self.flexvert_bodyid[v0];
+                let b1 = self.flexvert_bodyid[v1];
+                let dn0 = self.body_dof_num[b0];
+                let dn1 = self.body_dof_num[b1];
+                let nnz = dn0 + dn1;
+
+                rownnz.push(nnz);
+                rowadr.push(adr);
+
+                let da0 = self.body_dof_adr[b0];
+                for k in 0..dn0 {
+                    colind.push(da0 + k);
+                }
+                let da1 = self.body_dof_adr[b1];
+                for k in 0..dn1 {
+                    colind.push(da1 + k);
+                }
+
+                adr += nnz;
+            }
+
+            self.flexedge_J_rownnz = rownnz;
+            self.flexedge_J_rowadr = rowadr;
+            self.flexedge_J_colind = colind;
+        }
+
         Ok(())
     }
 }

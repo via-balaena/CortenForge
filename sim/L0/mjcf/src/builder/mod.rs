@@ -388,6 +388,7 @@ pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
 }
 
 /// Builder for constructing Model from MJCF.
+#[allow(non_snake_case)] // flexedge_J_* matches MuJoCo naming convention
 pub struct ModelBuilder {
     // Model name
     pub(crate) name: String,
@@ -723,6 +724,9 @@ pub struct ModelBuilder {
     pub(crate) flexedge_length0: Vec<f64>,
     pub(crate) flexedge_flexid: Vec<usize>,
     pub(crate) flexedge_rigid: Vec<bool>,
+    pub(crate) flexedge_J_rownnz: Vec<usize>,
+    pub(crate) flexedge_J_rowadr: Vec<usize>,
+    pub(crate) flexedge_J_colind: Vec<usize>,
     pub(crate) flexelem_data: Vec<usize>,
     pub(crate) flexelem_dataadr: Vec<usize>,
     pub(crate) flexelem_datanum: Vec<usize>,

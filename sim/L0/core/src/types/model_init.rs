@@ -191,6 +191,9 @@ impl Model {
             flexedge_crosssection: vec![],
             flexedge_flexid: vec![],
             flexedge_rigid: vec![],
+            flexedge_J_rownnz: vec![],
+            flexedge_J_rowadr: vec![],
+            flexedge_J_colind: vec![],
             flexelem_data: vec![],
             flexelem_dataadr: vec![],
             flexelem_datanum: vec![],
@@ -489,6 +492,7 @@ impl Model {
             // Flex edge pre-computed fields
             flexedge_length: vec![0.0; self.nflexedge],
             flexedge_velocity: vec![0.0; self.nflexedge],
+            flexedge_J: vec![0.0; self.flexedge_J_colind.len()],
 
             // Velocities
             cvel: vec![SpatialVector::zeros(); self.nbody],

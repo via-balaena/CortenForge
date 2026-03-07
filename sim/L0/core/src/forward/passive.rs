@@ -513,11 +513,6 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
             continue;
         }
 
-        let [v0, v1] = model.flexedge_vert[e];
-        let dof0 = model.flexvert_dofadr[v0];
-        let dof1 = model.flexvert_dofadr[v1];
-        let diff = data.flexvert_xpos[v1] - data.flexvert_xpos[v0];
-        let direction = diff / dist;
         let rest_len = model.flexedge_length0[e];
 
         // S4.7b: Spring force gated on DISABLE_SPRING.
@@ -535,31 +530,17 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
             0.0
         };
 
-        // S4.7-prereq: Apply spring and damper to separate arrays.
-        // F_v0 = -direction * force (pulls v0 toward v1 when stretched)
-        // F_v1 = +direction * force (pulls v1 toward v0 when stretched)
-        if frc_spring != 0.0 {
-            if dof0 < model.nv {
-                for ax in 0..3 {
-                    data.qfrc_spring[dof0 + ax] -= direction[ax] * frc_spring;
-                }
+        // §42A-i: J^T * force — unified sparse loop replacing inline ±direction.
+        let rowadr = model.flexedge_J_rowadr[e];
+        let rownnz = model.flexedge_J_rownnz[e];
+        for j in 0..rownnz {
+            let col = model.flexedge_J_colind[rowadr + j];
+            let jval = data.flexedge_J[rowadr + j];
+            if frc_spring != 0.0 {
+                data.qfrc_spring[col] += jval * frc_spring;
             }
-            if dof1 < model.nv {
-                for ax in 0..3 {
-                    data.qfrc_spring[dof1 + ax] += direction[ax] * frc_spring;
-                }
-            }
-        }
-        if frc_damper != 0.0 {
-            if dof0 < model.nv {
-                for ax in 0..3 {
-                    data.qfrc_damper[dof0 + ax] -= direction[ax] * frc_damper;
-                }
-            }
-            if dof1 < model.nv {
-                for ax in 0..3 {
-                    data.qfrc_damper[dof1 + ax] += direction[ax] * frc_damper;
-                }
+            if frc_damper != 0.0 {
+                data.qfrc_damper[col] += jval * frc_damper;
             }
         }
     }
