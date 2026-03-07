@@ -4,6 +4,7 @@
 //! They closely mirror the MJCF XML schema but use Rust-native types.
 
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3, Vector4};
+use sim_core::FlexBendingType;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -3822,6 +3823,10 @@ pub struct MjcfFlex {
     /// Shell thickness [m] (dim=2 only). -1 = "not set".
     pub thickness: f64,
 
+    /// Bending model selection (default: Cotangent = MuJoCo-conformant).
+    /// CortenForge extension attribute — not in MuJoCo schema.
+    pub bending_model: FlexBendingType,
+
     // --- <flex><edge> child element attributes ---
     /// Passive edge spring stiffness. Default 0.0 = disabled.
     /// Used for direct spring-damper forces in the passive force path.
@@ -3888,6 +3893,8 @@ impl Default for MjcfFlex {
             poisson: 0.0,
             damping: 0.0,
             thickness: -1.0, // MuJoCo default sentinel "not set"; was 0.001
+            // Bending model (CortenForge extension)
+            bending_model: FlexBendingType::Cotangent,
             // <edge> child element
             edge_stiffness: 0.0,
             edge_damping: 0.0,

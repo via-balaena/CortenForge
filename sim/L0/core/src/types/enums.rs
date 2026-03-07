@@ -884,3 +884,17 @@ impl std::fmt::Display for ResetError {
 }
 
 impl std::error::Error for ResetError {}
+
+/// Bending model for dim=2 flex bodies.
+///
+/// `Cotangent` (default) matches MuJoCo's cotangent Laplacian (Wardetzky/Garg).
+/// `Bridson` preserves the dihedral angle spring model (CortenForge extension).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum FlexBendingType {
+    /// Wardetzky/Garg cotangent Laplacian (MuJoCo-conformant, default).
+    #[default]
+    Cotangent,
+    /// Bridson dihedral angle springs (nonlinear, large-deformation accurate).
+    Bridson,
+}

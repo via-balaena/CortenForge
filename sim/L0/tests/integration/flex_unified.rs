@@ -2605,3 +2605,288 @@ fn spec_a_s1_single_vertex_flex() {
         }
     }
 }
+
+// ============================================================================
+// §42B Spec B: Cotangent Laplacian Bending — Build-Time Tests (Session 10)
+// ============================================================================
+
+/// §42B T1: Equilateral diamond precomputation (AC1).
+///
+/// Two equilateral triangles sharing edge (0,0,0)→(1,0,0), with opposite
+/// vertices at (0.5, √3/2, 0) and (0.5, -√3/2, 0).
+/// Material: young=1e4, poisson=0.3, thickness=0.01.
+#[test]
+fn specb_t1_equilateral_diamond_precomputation() {
+    let sqrt3_2 = 3.0_f64.sqrt() / 2.0;
+    let mjcf = format!(
+        r#"<mujoco>
+  <deformable>
+    <flex name="diamond" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01" damping="0.0"/>
+      <vertex pos="0 0 0  1 0 0  0.5 {sqrt3_2} 0  0.5 -{sqrt3_2} 0"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("load diamond model");
+
+    // Find the interior edge (shared by both triangles).
+    // Interior edge has flap[1] >= 0.
+    let mut interior_edge = None;
+    for e in 0..model.nflexedge {
+        if model.flexedge_flap[e][1] >= 0 {
+            interior_edge = Some(e);
+            break;
+        }
+    }
+    let e = interior_edge.expect("should have exactly one interior edge");
+
+    // Verify flap vertices are the two opposite vertices (not edge endpoints).
+    let flap = model.flexedge_flap[e];
+    let edge_v0 = model.flexedge_vert[e][0];
+    let edge_v1 = model.flexedge_vert[e][1];
+    assert!(flap[0] >= 0 && flap[1] >= 0);
+    assert_ne!(flap[0] as usize, edge_v0);
+    assert_ne!(flap[0] as usize, edge_v1);
+    assert_ne!(flap[1] as usize, edge_v0);
+    assert_ne!(flap[1] as usize, edge_v1);
+    assert_ne!(flap[0], flap[1]);
+
+    // Verify cotangent bending coefficients.
+    let b_base = 17 * e;
+    let mu = 1e4 / (2.0 * 1.3); // young / (2*(1+poisson))
+    let diamond_area = sqrt3_2; // 2 × (√3/4) = √3/2
+    let stiffness = 3.0 * mu * 0.01_f64.powi(3) / (24.0 * diamond_area);
+
+    // For equilateral: all cot angles = 1/√3, c = [2/√3, 2/√3, -2/√3, -2/√3]
+    let c_val = 2.0 / 3.0_f64.sqrt();
+    let expected_diag = c_val * c_val * stiffness; // cos_theta=1 for flat mesh
+
+    // Check B matrix sign pattern: [[+,+,-,-],[+,+,-,-],[-,-,+,+],[-,-,+,+]]
+    for i in 0..4 {
+        for j in 0..4 {
+            let val = model.flex_bending[b_base + 4 * i + j];
+            let expected_sign = if (i < 2) == (j < 2) { 1.0 } else { -1.0 };
+            assert!(
+                (val - expected_sign * expected_diag).abs() < 1e-10,
+                "B[{i}][{j}] = {val}, expected {:.6e}",
+                expected_sign * expected_diag
+            );
+        }
+    }
+
+    // All row sums = 0 (cotangent Laplacian property).
+    for i in 0..4 {
+        let row_sum: f64 = (0..4).map(|j| model.flex_bending[b_base + 4 * i + j]).sum();
+        assert!(row_sum.abs() < 1e-12, "row {i} sum = {row_sum}, expected 0");
+    }
+
+    // b[16] = 0 (flat mesh).
+    assert!(
+        model.flex_bending[b_base + 16].abs() < 1e-15,
+        "b[16] = {}, expected 0 for flat mesh",
+        model.flex_bending[b_base + 16]
+    );
+}
+
+/// §42B T2: Boundary edge — single triangle (AC2).
+///
+/// All 3 edges are boundary. Zero bending coefficients.
+#[test]
+fn specb_t2_boundary_edge_single_triangle() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="single_tri" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0"/>
+      <element data="0 1 2"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load single triangle");
+
+    // All edges should be boundary (flap[1] == -1).
+    for e in 0..model.nflexedge {
+        assert_eq!(model.flexedge_flap[e][1], -1, "edge {e} should be boundary");
+    }
+
+    // All flex_bending coefficients should be zero.
+    for e in 0..model.nflexedge {
+        for k in 0..17 {
+            assert_eq!(
+                model.flex_bending[17 * e + k],
+                0.0,
+                "flex_bending[17*{e}+{k}] should be 0 for boundary edge"
+            );
+        }
+    }
+}
+
+/// §42B T4: Curved reference — asymmetric out-of-plane diamond (AC4).
+///
+/// v0=(0,0,0), v1=(2,0,0), v2=(0.5,1,0), v3=(1.5,-0.8,0.5).
+/// Non-flat rest mesh: b[16] should be non-zero.
+#[test]
+fn specb_t4_curved_reference_asymmetric_diamond() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="curved" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  2 0 0  0.5 1 0  1.5 -0.8 0.5"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load curved diamond");
+
+    // Find the interior edge.
+    let mut interior_edge = None;
+    for e in 0..model.nflexedge {
+        if model.flexedge_flap[e][1] >= 0 {
+            interior_edge = Some(e);
+            break;
+        }
+    }
+    let e = interior_edge.expect("should have one interior edge");
+
+    let b_base = 17 * e;
+
+    // b[16] should be non-zero (curved mesh → Garg correction active).
+    assert!(
+        model.flex_bending[b_base + 16].abs() > 1e-10,
+        "b[16] = {} should be non-zero for curved mesh",
+        model.flex_bending[b_base + 16]
+    );
+
+    // All row sums = 0 (Laplacian property preserved for curved meshes).
+    for i in 0..4 {
+        let row_sum: f64 = (0..4).map(|j| model.flex_bending[b_base + 4 * i + j]).sum();
+        assert!(
+            row_sum.abs() < 1e-12,
+            "row {i} sum = {row_sum}, expected 0 for curved mesh"
+        );
+    }
+}
+
+/// §42B T12: Flap topology — 3x3 grid (AC12).
+///
+/// 9 vertices, 8 triangles, multiple interior and boundary edges.
+#[test]
+fn specb_t12_flap_topology_3x3_grid() {
+    // Explicit 3x3 grid of vertices with triangulated elements.
+    // Vertices: (col, row, 0) for row=0..2, col=0..2
+    // Triangles: each quad split into 2 triangles.
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="grid" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  2 0 0  0 1 0  1 1 0  2 1 0  0 2 0  1 2 0  2 2 0"/>
+      <element data="0 1 3  1 4 3  1 2 4  2 5 4  3 4 6  4 7 6  4 5 7  5 8 7"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load 3x3 grid");
+
+    let mut interior_count = 0;
+    let mut boundary_count = 0;
+    for e in 0..model.nflexedge {
+        let flap = model.flexedge_flap[e];
+        if flap[1] >= 0 {
+            // Interior edge: verify diamond stencil validity.
+            let ev0 = model.flexedge_vert[e][0];
+            let ev1 = model.flexedge_vert[e][1];
+            let f0 = flap[0] as usize;
+            let f1 = flap[1] as usize;
+            // All 4 vertices distinct.
+            let mut verts = [ev0, ev1, f0, f1];
+            verts.sort();
+            assert_ne!(
+                verts[0], verts[1],
+                "duplicate in diamond stencil for edge {e}"
+            );
+            assert_ne!(
+                verts[1], verts[2],
+                "duplicate in diamond stencil for edge {e}"
+            );
+            assert_ne!(
+                verts[2], verts[3],
+                "duplicate in diamond stencil for edge {e}"
+            );
+            // Flap vertices NOT on edge.
+            assert_ne!(f0, ev0);
+            assert_ne!(f0, ev1);
+            assert_ne!(f1, ev0);
+            assert_ne!(f1, ev1);
+            interior_count += 1;
+        } else {
+            boundary_count += 1;
+        }
+    }
+
+    // A 4x4 grid should have interior and boundary edges.
+    assert!(interior_count > 0, "should have interior edges");
+    assert!(boundary_count > 0, "should have boundary edges");
+}
+
+/// §42B T13: Zero thickness produces zero bending (AC13).
+#[test]
+fn specb_t13_zero_thickness_zero_bending() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="zero_thick" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.0"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0  0.5 -0.866 0"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load zero thickness model");
+
+    for k in 0..model.flex_bending.len() {
+        assert_eq!(
+            model.flex_bending[k], 0.0,
+            "flex_bending[{k}] should be 0 with thickness=0"
+        );
+    }
+}
+
+/// §42B T14: Default bending type is Cotangent (AC14).
+#[test]
+fn specb_t14_default_bending_type() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="default_bend" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0"/>
+      <element data="0 1 2"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load default bending model");
+    assert_eq!(
+        model.flex_bending_type[0],
+        sim_core::FlexBendingType::Cotangent,
+        "default bending_type should be Cotangent"
+    );
+}
+
+/// §42B T14b: bending_model="bridson" parses correctly.
+#[test]
+fn specb_t14b_bridson_bending_type_parses() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="bridson_bend" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01" bending_model="bridson"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0"/>
+      <element data="0 1 2"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load bridson model");
+    assert_eq!(
+        model.flex_bending_type[0],
+        sim_core::FlexBendingType::Bridson,
+        "bending_model='bridson' should parse as Bridson"
+    );
+}

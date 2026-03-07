@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 // Imports from sibling modules
 use super::enums::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType, Integrator,
-    InterpolationType, MjJointType, MjObjectType, MjSensorDataType, MjSensorType, SleepPolicy,
-    SolverType, TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, FlexBendingType, GainType,
+    GeomType, Integrator, InterpolationType, MjJointType, MjObjectType, MjSensorDataType,
+    MjSensorType, SleepPolicy, SolverType, TendonType, WrapType,
 };
 
 // Imports from sibling modules
@@ -416,6 +416,9 @@ pub struct Model {
     /// Pre-computed at build time. Used as gate condition 1 in self-collision
     /// dispatch and as outer-loop skip in passive force computation.
     pub flex_rigid: Vec<bool>,
+    /// Per-flex: bending model type (Cotangent or Bridson). Default: Cotangent.
+    /// Length `nflex`.
+    pub flex_bending_type: Vec<FlexBendingType>,
 
     // --- Per-vertex arrays (length nflexvert) ---
     /// Start index in qpos for this vertex (3 consecutive DOFs).
@@ -448,6 +451,17 @@ pub struct Model {
     /// Per-edge: true if BOTH endpoint vertices have invmass == 0.
     /// Pre-computed at build time. Rigid edges are skipped in passive force loops.
     pub flexedge_rigid: Vec<bool>,
+    /// Per-edge flap vertices: opposite vertices in adjacent triangles forming
+    /// the diamond stencil. `flexedge_flap[e][0]` = opposite vertex in tri 1,
+    /// `flexedge_flap[e][1]` = opposite vertex in tri 2 (-1 for boundary edges).
+    /// Length `nflexedge`.
+    pub flexedge_flap: Vec<[i32; 2]>,
+    /// Per-edge cotangent bending coefficients (Wardetzky/Garg cotangent Laplacian).
+    /// Layout: 17 f64 per edge, flat — `flex_bending[17*e + 4*i + j]` for the
+    /// 4x4 stiffness matrix, `flex_bending[17*e + 16]` for the Garg curved
+    /// reference coefficient. Zero for boundary edges and non-dim-2 flexes.
+    /// Length `17 * nflexedge`.
+    pub flex_bending: Vec<f64>,
 
     // --- Sparse edge Jacobian CSR structure (computed at build time) ---
     /// Number of non-zero entries per edge Jacobian row. Length `nflexedge`.

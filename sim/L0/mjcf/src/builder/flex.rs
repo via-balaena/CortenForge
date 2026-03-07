@@ -241,7 +241,9 @@ impl ModelBuilder {
             }
 
             // Extract edges from element connectivity
+            let edge_start = self.nflexedge;
             let mut edge_set: HashMap<(usize, usize), bool> = HashMap::new();
+            let mut edge_key_to_global: HashMap<(usize, usize), usize> = HashMap::new();
             for elem in &flex.elements {
                 let n = elem.len();
                 for i_v in 0..n {
@@ -265,6 +267,12 @@ impl ModelBuilder {
                 let vb = vert_start + b;
                 self.flexedge_rigid
                     .push(self.flexvert_invmass[va] == 0.0 && self.flexvert_invmass[vb] == 0.0);
+                // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
+                self.flexedge_flap.push([-1, -1]);
+                // §42B S2+S3: Initialize flex_bending to 17 zeros per edge.
+                self.flex_bending.extend_from_slice(&[0.0; 17]);
+                // Track edge key → global index for flap topology.
+                edge_key_to_global.insert((a, b), self.nflexedge);
                 self.nflexedge += 1;
             }
 
@@ -311,6 +319,39 @@ impl ModelBuilder {
                     self.flexhinge_angle0.push(rest_angle);
                     self.flexhinge_flexid.push(flex_id);
                     self.nflexhinge += 1;
+
+                    // §42B S1: Populate flexedge_flap for this interior edge.
+                    if let Some(&global_e) = edge_key_to_global.get(&(*ve0, *ve1)) {
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                        {
+                            self.flexedge_flap[global_e] =
+                                [(vert_start + va) as i32, (vert_start + vb) as i32];
+                        }
+                    }
+                }
+            }
+
+            // §42B S2+S3: Compute cotangent bending coefficients for dim==2
+            // flex with valid material (young > 0, thickness > 0).
+            if flex.dim == 2 && flex.young > 0.0 && flex.thickness > 0.0 {
+                let mu = flex.young / (2.0 * (1.0 + flex.poisson));
+                let num_edges = self.nflexedge - edge_start;
+                for local_e in 0..num_edges {
+                    let global_e = edge_start + local_e;
+                    let flap = self.flexedge_flap[global_e];
+                    if flap[1] == -1 {
+                        continue; // boundary edge: coefficients stay zero
+                    }
+                    let ev = self.flexedge_vert[global_e];
+                    let v = [
+                        flex.vertices[ev[0] - vert_start],
+                        flex.vertices[ev[1] - vert_start],
+                        flex.vertices[(flap[0] as usize) - vert_start],
+                        flex.vertices[(flap[1] as usize) - vert_start],
+                    ];
+                    let coeffs = compute_bending_coefficients(v, mu, flex.thickness);
+                    let base = 17 * global_e;
+                    self.flex_bending[base..base + 17].copy_from_slice(&coeffs);
                 }
             }
 
@@ -384,6 +425,9 @@ impl ModelBuilder {
             let all_rigid = (vert_start..vert_start + flex.vertices.len())
                 .all(|v| self.flexvert_invmass[v] == 0.0);
             self.flex_rigid.push(all_rigid);
+
+            // §42B S4: Push bending model type (default: Cotangent).
+            self.flex_bending_type.push(flex.bending_model);
         }
 
         // §42A-i: Allocate CSR structure for sparse edge Jacobian.
@@ -665,6 +709,100 @@ fn compute_bend_damping_from_material(flex: &MjcfFlex, k_bend: f64) -> f64 {
         return 0.0;
     }
     flex.damping * k_bend
+}
+
+/// Cotangent of angle at v0 in triangle (v0, v1, v2).
+///
+/// Returns `dot(e1,e2) / |cross(e1,e2)| = cos(alpha) / sin(alpha) = cot(alpha)`.
+/// MuJoCo equivalent: `cot()` in `user_mesh.cc:3645–3654`.
+fn cot_angle(v0: Vector3<f64>, v1: Vector3<f64>, v2: Vector3<f64>) -> f64 {
+    let e1 = v1 - v0;
+    let e2 = v2 - v0;
+    let cross = e1.cross(&e2);
+    let cross_norm = cross.norm();
+    if cross_norm < 1e-30 {
+        return 0.0;
+    }
+    e1.dot(&e2) / cross_norm
+}
+
+/// Area of triangle (v0, v1, v2) = |cross(v1-v0, v2-v0)| / 2.
+///
+/// MuJoCo equivalent: `ComputeVolume()` in `user_mesh.cc:3655–3663`.
+fn triangle_area(v0: Vector3<f64>, v1: Vector3<f64>, v2: Vector3<f64>) -> f64 {
+    let e1 = v1 - v0;
+    let e2 = v2 - v0;
+    e1.cross(&e2).norm() / 2.0
+}
+
+/// Compute 17 bending coefficients for one edge per MuJoCo's `ComputeBending()`.
+///
+/// `v[0]`, `v[1]`: edge endpoints (rest positions)
+/// `v[2]`: opposite vertex in triangle 1
+/// `v[3]`: opposite vertex in triangle 2
+/// `mu`: shear modulus = young / (2 * (1 + poisson))
+/// `thickness`: shell thickness
+///
+/// Returns `[f64; 17]`: `b[0..16]` = 4x4 stiffness matrix, `b[16]` = Garg curved ref.
+///
+/// MuJoCo equivalent: `ComputeBending()` in `user_mesh.cc:3666–3712`.
+fn compute_bending_coefficients(v: [Vector3<f64>; 4], mu: f64, thickness: f64) -> [f64; 17] {
+    let mut b = [0.0f64; 17];
+
+    // Step 1: cotangent weights
+    let a01 = cot_angle(v[0], v[1], v[2]); // angle at v[0] in tri 1
+    let a02 = cot_angle(v[0], v[3], v[1]); // angle at v[0] in tri 2
+    let a03 = cot_angle(v[1], v[2], v[0]); // angle at v[1] in tri 1
+    let a04 = cot_angle(v[1], v[0], v[3]); // angle at v[1] in tri 2
+
+    // Step 2: weight vector
+    let c = [
+        a03 + a04,    // sum of cots at v[1]
+        a01 + a02,    // sum of cots at v[0]
+        -(a01 + a03), // neg sum from tri 1
+        -(a02 + a04), // neg sum from tri 2
+    ];
+
+    // Step 3: diamond volume (sum of triangle areas)
+    let vol1 = triangle_area(v[0], v[1], v[2]);
+    let vol2 = triangle_area(v[1], v[0], v[3]);
+    let volume = vol1 + vol2;
+    if volume < 1e-30 {
+        return b; // degenerate diamond: all zero coefficients
+    }
+
+    // Step 4: material stiffness
+    let stiffness = 3.0 * mu * thickness.powi(3) / (24.0 * volume);
+
+    // Step 5: transport vectors and cos_theta
+    let e0 = v[1] - v[0]; // shared edge
+    let e1 = v[2] - v[0]; // to opp vertex in tri 1
+    let e2 = v[3] - v[0]; // to opp vertex in tri 2
+    let e3 = v[2] - v[1];
+    let e4 = v[3] - v[1];
+    let t0 = -(e1 * a03 + e3 * a01); // transport vector, tri 1
+    let t1 = -(e2 * a04 + e4 * a02); // transport vector, tri 2
+    let sqr = e0.dot(&e0); // |edge|^2
+    let cos_theta = if sqr < 1e-30 {
+        1.0 // degenerate edge: treat as flat
+    } else {
+        -t0.dot(&t1) / sqr
+    };
+
+    // Step 6: 4x4 stiffness matrix (outer product)
+    for i in 0..4 {
+        for j in 0..4 {
+            b[4 * i + j] = c[i] * c[j] * cos_theta * stiffness;
+        }
+    }
+
+    // Step 7: curved reference coefficient (Garg correction)
+    let n = e0.cross(&e1); // normal to tri 1 (unnormalized)
+    if sqr > 1e-30 {
+        b[16] = n.dot(&e2) * (a01 - a03) * (a04 - a02) * stiffness / (sqr * sqr.sqrt());
+    }
+
+    b
 }
 
 #[cfg(test)]

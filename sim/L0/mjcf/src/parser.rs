@@ -3063,6 +3063,13 @@ fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
     if let Some(s) = get_attribute_opt(e, "thickness") {
         flex.thickness = s.parse().unwrap_or(-1.0);
     }
+    // §42B S4: Parse bending_model (CortenForge extension attribute).
+    if let Some(s) = get_attribute_opt(e, "bending_model") {
+        flex.bending_model = match s.as_str() {
+            "bridson" => sim_core::FlexBendingType::Bridson,
+            _ => sim_core::FlexBendingType::Cotangent, // default for unknown or "cotangent"
+        };
+    }
 }
 
 /// Parse `<edge>` child element attributes into MjcfFlex.

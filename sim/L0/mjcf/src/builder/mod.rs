@@ -33,9 +33,9 @@ use sim_core::{
     DISABLE_GRAVITY, DISABLE_ISLAND, DISABLE_LIMIT, DISABLE_MIDPHASE, DISABLE_NATIVECCD,
     DISABLE_REFSAFE, DISABLE_SENSOR, DISABLE_SPRING, DISABLE_WARMSTART, ENABLE_ENERGY,
     ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_MULTICCD, ENABLE_OVERRIDE, ENABLE_SLEEP,
-    EqualityType, GainType, GeomType, Integrator, InterpolationType, Keyframe, MjJointType,
-    MjObjectType, MjSensorDataType, MjSensorType, Model, SleepPolicy, SolverType, TendonType,
-    WrapType,
+    EqualityType, FlexBendingType, GainType, GeomType, Integrator, InterpolationType, Keyframe,
+    MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model, SleepPolicy, SolverType,
+    TendonType, WrapType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -724,6 +724,9 @@ pub struct ModelBuilder {
     pub(crate) flexedge_length0: Vec<f64>,
     pub(crate) flexedge_flexid: Vec<usize>,
     pub(crate) flexedge_rigid: Vec<bool>,
+    pub(crate) flexedge_flap: Vec<[i32; 2]>,
+    pub(crate) flex_bending: Vec<f64>,
+    pub(crate) flex_bending_type: Vec<FlexBendingType>,
     pub(crate) flexedge_J_rownnz: Vec<usize>,
     pub(crate) flexedge_J_rowadr: Vec<usize>,
     pub(crate) flexedge_J_colind: Vec<usize>,
