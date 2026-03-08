@@ -28,6 +28,8 @@
 > DT-148 (hinge topology optimization) added during Phase 10 Spec B review.
 > DT-150 (activelayers filtering), DT-151 (edge-edge tet self-collision),
 > DT-152 (barycentric face distribution) added during Phase 10 Spec C review.
+> DT-153 (island flex contact assignment), DT-154 (flex condim=6 mapping)
+> added during Phase 10 Spec D review.
 >
 > **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
 
@@ -421,6 +423,8 @@ foundation isn't right.
 | DT-150 | 10i | T2 | `activelayers` runtime filtering for flex self-collision — parsed and stored (Phase 7 T1) but not consumed at runtime. MuJoCo uses `activelayers` to filter which element layers participate in self-collision. Minimal conformance impact — affects only models using layer-based filtering. Deferred from Phase 10 Spec C. |
 | DT-151 | 10i | T2 | Edge-edge tests for dim=3 tetrahedral self-collision — MuJoCo performs edge-edge proximity tests between tet edges in addition to vertex-face tests. CortenForge implements vertex-face only. Minor conformance gap for dim=3 self-collision. Deferred from Phase 10 Spec C. |
 | DT-152 | 10i | T2 | Barycentric force distribution on face side for flex self-collision — current Jacobian applies force to nearest vertex rather than distributing across face vertices via barycentric weights. Force direction correct; only distribution approximate. Deferred from Phase 10 Spec C. |
+| DT-153 | 10i | T1 | Island assignment for flex contacts — `island/mod.rs:297-306` and `453-467` skip flex contacts (sentinel geom indices) from island assignment and constraint-to-tree lookup. Affects island-based constraint solving only (not default mode). Deferred from Phase 10 Spec D. |
+| DT-154 | 10i | T1 | Flex contact factory condim=6 mapping — all flex factories map `condim: 1→1, 4→4, _→3`. `condim=6` produces `dim=3` not `dim=6`. Pre-existing across all flex contact types. Deferred from Phase 10 Spec D. |
 
 ### Code Quality
 | Task | Source | Tier | Description |

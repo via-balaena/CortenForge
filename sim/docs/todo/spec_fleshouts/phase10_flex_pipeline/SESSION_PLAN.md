@@ -879,7 +879,7 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 22: Spec D review -- create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- create Spec D review document.
@@ -907,7 +907,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 
 ## Session 23: Spec D review -- execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- execute Spec D review.

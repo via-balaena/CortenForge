@@ -4,7 +4,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ---
 
-## Group 8 — Flex / Deformable Body (17 items)
+## Group 8 — Flex / Deformable Body (19 items)
 
 **Spec approach:** DT-66/67/70/73 each need individual specs (T3 — new constraint
 types, GPU architecture, or new collision pairs). DT-69 shares a "Flex Collision
@@ -34,3 +34,5 @@ DT-87/88 share a "Flexcomp Completeness" spec (T2). The rest
 | DT-150 | §42A-iv | `activelayers` runtime filtering for flex self-collision — `flex_activelayers` is parsed and stored (Phase 7 T1) but not consumed at runtime. MuJoCo uses `activelayers` to filter which element layers participate in self-collision. Minimal conformance impact — affects only models using layer-based collision filtering. Deferred from Phase 10 Spec C. | Low | T2 |
 | DT-151 | §42A-iv | Edge-edge tests for dim=3 tetrahedral self-collision — MuJoCo's `mj_collideFlexSelf()` performs edge-edge proximity tests between tet edges in addition to vertex-face tests. CortenForge implements vertex-face only; edge-edge contacts are secondary for tetrahedral meshes. Minor conformance gap for dim=3 self-collision models. Deferred from Phase 10 Spec C. | Low | T2 |
 | DT-152 | §42A-iv | Barycentric force distribution on face side for flex self-collision contacts — current Jacobian applies force to nearest vertex (`flex_vertex2`) rather than distributing across face vertices via barycentric weights. Force direction is correct; only distribution across face vertices is approximate. Correct for free vertices (all current models). Deferred from Phase 10 Spec C. | Low | T2 |
+| DT-153 | §42A-v | Island assignment for flex contacts — `island/mod.rs:297-306` (contact-to-island) and `island/mod.rs:453-467` (constraint-to-tree) use `geom_body[contact.geom*]` with bounds-check fallback. Flex contacts with sentinel `usize::MAX` geom indices are skipped from island assignment and constraint-to-tree lookup. Not a panic, but flex contacts won't be correctly assigned to islands when island-based constraint solving is active. Default single-island mode unaffected. Deferred from Phase 10 Spec D. | Low | T1 |
+| DT-154 | §42A-v | Flex contact factory condim=6 mapping — all flex contact factories (`make_contact_flex_self`, `make_contact_flex_rigid`, `make_contact_flex_flex`) map condim via `1→1, 4→4, _→3`. This means `condim=6` produces `dim=3`, not `dim=6`. MuJoCo supports condim=6 for torsional+rolling friction. Pre-existing limitation across all flex contact types. Deferred from Phase 10 Spec D. | Low | T1 |
