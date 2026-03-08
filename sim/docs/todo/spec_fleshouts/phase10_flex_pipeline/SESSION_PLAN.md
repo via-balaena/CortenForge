@@ -53,12 +53,12 @@ Every Phase 10 task is assigned to exactly one deliverable:
 
 | Task | Deliverable | Status | Rationale |
 |------|-------------|--------|-----------|
-| §42A-ii | T1 session | Pending | `flex_rigid`/`flexedge_rigid` boolean arrays — S effort, mechanical pre-computed Model fields |
-| §42A-iii | T1 session | Pending | `flexedge_length`/`flexedge_velocity` pre-computed Data fields — S effort, mechanical |
-| §42A-i | Spec A | Pending | Sparse flex edge Jacobian (`flexedge_J`) — L effort, algorithmic (CSR format, body Jacobian projection) |
-| §42B | Spec B | Pending | Cotangent Laplacian bending — L effort, largest algorithmic task (Wardetzky/Garg precomputation + trait abstraction). 6 sessions (split implementation). |
-| §42A-iv / DT-142 | Spec C | Pending | Flex self-collision dispatch — L effort, BVH/SAP midphase + narrowphase, `FlexSelfCollide` enum |
-| §42A-v / DT-143 | Spec D | Pending | Flex-flex cross-object collision filtering — M effort, reuses Spec C primitives. 5 sessions (full cycle). |
+| §42A-ii | T1 session | Done | `flex_rigid`/`flexedge_rigid` boolean arrays — S effort, mechanical pre-computed Model fields |
+| §42A-iii | T1 session | Done | `flexedge_length`/`flexedge_velocity` pre-computed Data fields — S effort, mechanical |
+| §42A-i | Spec A | Done | Sparse flex edge Jacobian (`flexedge_J`) — L effort, algorithmic (CSR format, body Jacobian projection) |
+| §42B | Spec B | Done | Cotangent Laplacian bending — L effort, largest algorithmic task (Wardetzky/Garg precomputation + trait abstraction). 6 sessions (split implementation). |
+| §42A-iv / DT-142 | Spec C | Done | Flex self-collision dispatch — L effort, BVH/SAP midphase + narrowphase, `FlexSelfCollide` enum |
+| §42A-v / DT-143 | Spec D | Done | Flex-flex cross-object collision filtering — M effort, reuses Spec C primitives. 5 sessions (full cycle). |
 
 ---
 
@@ -961,3 +961,8 @@ Present the Review Verdict (section 10) to the user when done.
 | 21 | Spec D implementation | Done | `8945051` |
 | 22 | Spec D review -- create document | Done | `c9951a7` |
 | 23 | Spec D review -- execute | Done | `c9951a7` |
+| 23+ | Spec D deep re-review (test strengthening + DT-155/156) | Done | `0d75931` |
+
+---
+
+**Phase 10 — COMPLETE.** All 6 tasks implemented, reviewed, and shipped across 23 sessions (+ 1 deep re-review). 13 deferred items tracked (DT-146–156).

@@ -32,7 +32,7 @@
 > DT-155 (S10 override test for flex-flex), DT-156 (narrowphase contact count gap)
 > added during Phase 10 Spec D review.
 >
-> **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
+> **Current position**: Phases 1–7 and 10 complete. Next: Phases 8, 9, 11 (parallel).
 
 ---
 
@@ -249,16 +249,16 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 10 — Flex Pipeline
+### Phase 10 — Flex Pipeline ✓
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §42A-i | 10 | — | Sparse flex edge Jacobian (`flexedge_J`) — force projection through body Jacobians |
-| §42A-ii | 10 | — | `flex_rigid`/`flexedge_rigid` boolean arrays — skip rigid bodies/edges |
-| §42A-iii | 10 | — | `flexedge_length`/`flexedge_velocity` pre-computed Data fields |
-| §42A-iv / DT-142 | 10 | — | Flex self-collision dispatch (BVH/SAP midphase + narrowphase). Deferred from Phase 9 Spec E — distinct subsystem from flex-rigid collision. |
-| §42A-v / DT-143 | 10 | — | Flex-flex cross-object collision filtering (contype/conaffinity). Deferred from Phase 9 Spec E — separate feature from flex-rigid contact. |
-| §42B | 10 | — | Flex bending: cotangent Laplacian (MuJoCo's actual bending formulation) |
+| ~~§42A-i~~ | 10 | — | ~~Sparse flex edge Jacobian (`flexedge_J`) — force projection through body Jacobians~~ **DONE** — Spec A (23 sessions). |
+| ~~§42A-ii~~ | 10 | — | ~~`flex_rigid`/`flexedge_rigid` boolean arrays — skip rigid bodies/edges~~ **DONE** — T1 (S2). |
+| ~~§42A-iii~~ | 10 | — | ~~`flexedge_length`/`flexedge_velocity` pre-computed Data fields~~ **DONE** — T1 (S2). |
+| ~~§42A-iv / DT-142~~ | 10 | — | ~~Flex self-collision dispatch (BVH/SAP midphase + narrowphase)~~ **DONE** — Spec C (S14–S18). |
+| ~~§42A-v / DT-143~~ | 10 | — | ~~Flex-flex cross-object collision filtering (contype/conaffinity)~~ **DONE** — Spec D (S19–S23). |
+| ~~§42B~~ | 10 | — | ~~Flex bending: cotangent Laplacian (MuJoCo's actual bending formulation)~~ **DONE** — Spec B (S8–S13). |
 
 ---
 
