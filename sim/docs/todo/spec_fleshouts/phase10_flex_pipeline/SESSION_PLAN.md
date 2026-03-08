@@ -771,7 +771,7 @@ Present the Review Verdict (section 10) to the user when done.
 **Prerequisite:** Session 18 (Spec C review) must be complete. Spec D
 reuses element-element narrowphase primitives from Spec C.
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- write Spec D rubric.
@@ -956,7 +956,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 16 | Spec C implementation | Done | 469c61d |
 | 17 | Spec C review -- create document | Done | b1263d0 |
 | 18 | Spec C review -- execute | Done | 772b8a3 |
-| 19 | Spec D rubric (§42A-v Flex-Flex) | Pending | |
+| 19 | Spec D rubric (§42A-v Flex-Flex) | Done | 460705b |
 | 20 | Spec D spec | Pending | |
 | 21 | Spec D implementation | Pending | |
 | 22 | Spec D review -- create document | Pending | |
