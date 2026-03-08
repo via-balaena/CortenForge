@@ -149,7 +149,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 2: T1 items (DT-52 mjd_subQuat + DT-54 muscle velocity derivatives)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- implement T1 items (analytical extensions).
@@ -624,7 +624,7 @@ Present the Review Verdict (section 10) to the user when done.
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
 | 1 | Phase 11 Umbrella | Done | 33ec878 |
-| 2 | T1: DT-52 (mjd_subQuat) + DT-54 (muscle velocity derivatives) | | |
+| 2 | T1: DT-52 (mjd_subQuat) + DT-54 (muscle velocity derivatives) | Done | 9feebfe |
 | 3 | T1: DT-51 (mjd_inverseFD) + DT-53 (mj_forwardSkip) | | |
 | 4 | Spec A rubric (§58 Analytical Position Derivatives) | | |
 | 5 | Spec A spec | | |
