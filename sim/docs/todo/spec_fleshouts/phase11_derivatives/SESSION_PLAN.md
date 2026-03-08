@@ -269,7 +269,7 @@ each deliverable. MuJoCo conformance is the cardinal goal.
 
 ## Session 4: Spec A rubric (Analytical Position Derivatives)
 
-- [ ] Complete
+- [x] Complete (2d8ffa4)
 
 ```
 Phase 11 Derivatives -- write Spec A rubric.
