@@ -361,3 +361,12 @@ pub mod phase8_spec_b_qcqp;
 /// DT-25 verification: deformable-rigid friction condim=3 correctness,
 /// R-scaling with asymmetric Jacobians, constraint force verification.
 pub mod deformable_friction_dt25;
+
+// ============================================================================
+// Phase 10: Spec D — Flex-Flex Cross-Object Collision Tests (§42A-v)
+// ============================================================================
+
+/// Flex-flex collision tests: bitmask filtering, contact parameter combination,
+/// margin/gap additivity, flex_rigid non-gating, multi-flex all-pairs,
+/// sentinel-safe downstream pipeline, self/flex-rigid regression.
+pub mod flex_flex_collision;

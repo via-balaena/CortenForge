@@ -25,8 +25,14 @@
 > DT-141 (GJK/EPA cross-frame warm-start) added during Phase 9 Spec D review.
 > DT-142 (flex self-collision), DT-143 (flex-flex cross-body filtering),
 > DT-144 (prism-based hfield for flex) added during Phase 9 Spec E review.
+> DT-148 (hinge topology optimization) added during Phase 10 Spec B review.
+> DT-150 (activelayers filtering), DT-151 (edge-edge tet self-collision),
+> DT-152 (barycentric face distribution) added during Phase 10 Spec C review.
+> DT-153 (island flex contact assignment), DT-154 (flex condim=6 mapping),
+> DT-155 (S10 override test for flex-flex), DT-156 (narrowphase contact count gap)
+> added during Phase 10 Spec D review.
 >
-> **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
+> **Current position**: Phases 1–7 and 10 complete. Next: Phases 8, 9, 11 (parallel).
 
 ---
 
@@ -243,16 +249,16 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 10 — Flex Pipeline
+### Phase 10 — Flex Pipeline ✓
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §42A-i | 10 | — | Sparse flex edge Jacobian (`flexedge_J`) — force projection through body Jacobians |
-| §42A-ii | 10 | — | `flex_rigid`/`flexedge_rigid` boolean arrays — skip rigid bodies/edges |
-| §42A-iii | 10 | — | `flexedge_length`/`flexedge_velocity` pre-computed Data fields |
-| §42A-iv / DT-142 | 10 | — | Flex self-collision dispatch (BVH/SAP midphase + narrowphase). Deferred from Phase 9 Spec E — distinct subsystem from flex-rigid collision. |
-| §42A-v / DT-143 | 10 | — | Flex-flex cross-object collision filtering (contype/conaffinity). Deferred from Phase 9 Spec E — separate feature from flex-rigid contact. |
-| §42B | 10 | — | Flex bending: cotangent Laplacian (MuJoCo's actual bending formulation) |
+| ~~§42A-i~~ | 10 | — | ~~Sparse flex edge Jacobian (`flexedge_J`) — force projection through body Jacobians~~ **DONE** — Spec A (23 sessions). |
+| ~~§42A-ii~~ | 10 | — | ~~`flex_rigid`/`flexedge_rigid` boolean arrays — skip rigid bodies/edges~~ **DONE** — T1 (S2). |
+| ~~§42A-iii~~ | 10 | — | ~~`flexedge_length`/`flexedge_velocity` pre-computed Data fields~~ **DONE** — T1 (S2). |
+| ~~§42A-iv / DT-142~~ | 10 | — | ~~Flex self-collision dispatch (BVH/SAP midphase + narrowphase)~~ **DONE** — Spec C (S14–S18). |
+| ~~§42A-v / DT-143~~ | 10 | — | ~~Flex-flex cross-object collision filtering (contype/conaffinity)~~ **DONE** — Spec D (S19–S23). |
+| ~~§42B~~ | 10 | — | ~~Flex bending: cotangent Laplacian (MuJoCo's actual bending formulation)~~ **DONE** — Spec B (S8–S13). |
 
 ---
 
@@ -342,6 +348,9 @@ foundation isn't right.
 | DT-91 | 10j | T1 | Warmstart `SmallVec` optimization |
 | DT-92 | 10j | T1 | Parallel reset for `BatchSim` |
 | DT-105 | 10e | T3 | Sparse `actuator_moment` compression (CSR) — numerically equivalent to current dense storage. Deferred from Phase 5 Spec B. |
+| DT-146 | 10i | T2 | Sparse constraint assembly — scatter `flexedge_J` into sparse `efc_J` instead of dense DMatrix. Performance optimization, no conformance impact. Deferred from Phase 10 Spec A. |
+| DT-147 | 10i | T1 | `flex_edgeequality` dedicated flag — per-flex boolean for skip_jacobian condition instead of conservative `solref != [0,0]` proxy. Minor optimization. Deferred from Phase 10 Spec A. |
+| DT-148 | 10i | T1 | `flex_hingeadr`/`flex_hingenum` per-flex hinge index arrays — O(1) Bridson bending iteration instead of filter loop. Performance optimization, no conformance impact. Deferred from Phase 10 Spec B. |
 
 ### Advanced Differentiation
 | Task | Source | Tier | Description |
@@ -412,6 +421,13 @@ foundation isn't right.
 | DT-123 | 10b | T1 | `IntVelocity` enum variant — concrete `<intvelocity>` elements not yet supported (defaults parsing works). Deferred from Phase 7 Spec A. |
 | DT-124 | 10b | T1 | Muscle sentinel detection for `<general dyntype="muscle">` path (`gainprm[0]==1` quirk). Known conformance divergence. Deferred from Phase 7 Spec A. |
 | DT-125 | 15 | T2 | `mj_setConst()` runtime `qpos_spring` recomputation — when `mj_setConst()` is called at runtime, `qpos_spring` must be recomputed from current `qpos0`/`springref` via `setSpring()` logic (`engine_setconst.c`). Currently `qpos_spring` is set at build time and static. Deferred from Phase 7 Spec B. |
+| DT-150 | 10i | T2 | `activelayers` runtime filtering for flex self-collision — parsed and stored (Phase 7 T1) but not consumed at runtime. MuJoCo uses `activelayers` to filter which element layers participate in self-collision. Minimal conformance impact — affects only models using layer-based filtering. Deferred from Phase 10 Spec C. |
+| DT-151 | 10i | T2 | Edge-edge tests for dim=3 tetrahedral self-collision — MuJoCo performs edge-edge proximity tests between tet edges in addition to vertex-face tests. CortenForge implements vertex-face only. Minor conformance gap for dim=3 self-collision. Deferred from Phase 10 Spec C. |
+| DT-152 | 10i | T2 | Barycentric force distribution on face side for flex self-collision — current Jacobian applies force to nearest vertex rather than distributing across face vertices via barycentric weights. Force direction correct; only distribution approximate. Deferred from Phase 10 Spec C. |
+| DT-153 | 10i | T1 | Island assignment for flex contacts — `island/mod.rs:297-306` and `453-467` skip flex contacts (sentinel geom indices) from island assignment and constraint-to-tree lookup. Affects island-based constraint solving only (not default mode). Deferred from Phase 10 Spec D. |
+| DT-154 | 10i | T1 | Flex contact factory condim=6 mapping — all flex factories map `condim: 1→1, 4→4, _→3`. `condim=6` produces `dim=3` not `dim=6`. Pre-existing across all flex contact types. Deferred from Phase 10 Spec D. |
+| DT-155 | 10i | T1 | S10 override test for flex-flex contacts (AC11/T10) — `ENABLE_OVERRIDE` test infrastructure not wired for flex contact tests. Override logic works (verified in rigid specs); only the test harness is missing. Deferred from Phase 10 Spec D review. |
+| DT-156 | 10i | T2 | Narrowphase triangle-triangle contact count conformance gap — CortenForge produces 36 contacts vs MuJoCo 32 for overlapping 3×3 flex grids. Root cause in triangle-triangle intersection logic (Spec C territory). Behavior correct; only count differs. Identified during Phase 10 Spec D review. |
 
 ### Code Quality
 | Task | Source | Tier | Description |

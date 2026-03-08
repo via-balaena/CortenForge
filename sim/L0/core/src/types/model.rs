@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 // Imports from sibling modules
 use super::enums::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType, Integrator,
-    InterpolationType, MjJointType, MjObjectType, MjSensorDataType, MjSensorType, SleepPolicy,
-    SolverType, TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, FlexBendingType,
+    FlexSelfCollide, GainType, GeomType, Integrator, InterpolationType, MjJointType, MjObjectType,
+    MjSensorDataType, MjSensorType, SleepPolicy, SolverType, TendonType, WrapType,
 };
 
 // Imports from sibling modules
@@ -371,7 +371,7 @@ pub struct Model {
     ///
     /// Both `internal` (adjacent elements) and `selfcollide` (non-adjacent)
     /// are independently gated behind conditions 1+2.
-    pub flex_selfcollide: Vec<bool>,
+    pub flex_selfcollide: Vec<FlexSelfCollide>,
     /// Per-flex: internal collision flag (default true). When true, contacts between
     /// elements sharing an edge are generated (adjacent element contacts).
     pub flex_internal: Vec<bool>,
@@ -412,6 +412,13 @@ pub struct Model {
     pub flex_density: Vec<f64>,
     /// Visualization group (0–5) for each flex. Used by renderers for group-based filtering.
     pub flex_group: Vec<i32>,
+    /// Per-flex: true if ALL vertices have invmass == 0 (entire flex is rigid).
+    /// Pre-computed at build time. Used as gate condition 1 in self-collision
+    /// dispatch and as outer-loop skip in passive force computation.
+    pub flex_rigid: Vec<bool>,
+    /// Per-flex: bending model type (Cotangent or Bridson). Default: Cotangent.
+    /// Length `nflex`.
+    pub flex_bending_type: Vec<FlexBendingType>,
 
     // --- Per-vertex arrays (length nflexvert) ---
     /// Start index in qpos for this vertex (3 consecutive DOFs).
@@ -441,6 +448,34 @@ pub struct Model {
     pub flexedge_crosssection: Vec<f64>,
     /// Which flex object this edge belongs to.
     pub flexedge_flexid: Vec<usize>,
+    /// Per-edge: true if BOTH endpoint vertices have invmass == 0.
+    /// Pre-computed at build time. Rigid edges are skipped in passive force loops.
+    pub flexedge_rigid: Vec<bool>,
+    /// Per-edge flap vertices: opposite vertices in adjacent triangles forming
+    /// the diamond stencil. `flexedge_flap[e][0]` = opposite vertex in tri 1,
+    /// `flexedge_flap[e][1]` = opposite vertex in tri 2 (-1 for boundary edges).
+    /// Length `nflexedge`.
+    pub flexedge_flap: Vec<[i32; 2]>,
+    /// Per-edge cotangent bending coefficients (Wardetzky/Garg cotangent Laplacian).
+    /// Layout: 17 f64 per edge, flat — `flex_bending[17*e + 4*i + j]` for the
+    /// 4x4 stiffness matrix, `flex_bending[17*e + 16]` for the Garg curved
+    /// reference coefficient. Zero for boundary edges and non-dim-2 flexes.
+    /// Length `17 * nflexedge`.
+    pub flex_bending: Vec<f64>,
+
+    // --- Sparse edge Jacobian CSR structure (computed at build time) ---
+    /// Number of non-zero entries per edge Jacobian row. Length `nflexedge`.
+    /// For free vertices: rownnz = dofnum(b1) + dofnum(b2).
+    /// For pinned vertex: rownnz = dofnum(non_pinned_body).
+    /// For both pinned: rownnz = 0.
+    pub flexedge_J_rownnz: Vec<usize>,
+    /// Start index in colind/J arrays for each edge. Length `nflexedge`.
+    /// rowadr\[0\] = 0, rowadr\[e\] = rowadr\[e-1\] + rownnz\[e-1\].
+    pub flexedge_J_rowadr: Vec<usize>,
+    /// DOF column indices for non-zero entries. Length `total_nnz`.
+    /// Contains the DOF indices for each endpoint body, in order:
+    /// [dofs_of_body(v0), dofs_of_body(v1)].
+    pub flexedge_J_colind: Vec<usize>,
 
     // --- Per-element arrays (length nflexelem) ---
     /// Element connectivity: vertex indices. Length varies by dim:
@@ -455,6 +490,16 @@ pub struct Model {
     pub flexelem_volume0: Vec<f64>,
     /// Which flex object this element belongs to.
     pub flexelem_flexid: Vec<usize>,
+
+    // --- Per-element adjacency (for self-collision dispatch) ---
+    /// Flat sorted adjacency list. Element `e`'s adjacent elements are
+    /// `flex_elem_adj[flex_elem_adj_adr[e]..+flex_elem_adj_num[e]]`.
+    /// Two elements are adjacent if they share at least one vertex.
+    pub flex_elem_adj: Vec<usize>,
+    /// Start index in `flex_elem_adj` for element `e`. Length `nflexelem`.
+    pub flex_elem_adj_adr: Vec<usize>,
+    /// Number of adjacent elements for element `e`. Length `nflexelem`.
+    pub flex_elem_adj_num: Vec<usize>,
 
     // --- Per-hinge arrays (bending topology, length nflexhinge) ---
     // A hinge is a pair of adjacent elements sharing an edge.

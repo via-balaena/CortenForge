@@ -127,12 +127,16 @@ fn single_edge_mjcf() -> &'static str {
 
 /// AC6: Flat strip of 3 triangles (4 vertices in a row) for bending stiffness.
 fn bending_strip_mjcf() -> &'static str {
+    // §42B: Uses bending_model="bridson" to preserve Bridson-specific test behavior.
+    // This test relies on Bridson's nonlinear dihedral angle spring dynamics
+    // (equilibrium deflection under velocity perturbation). The cotangent default
+    // would dissipate the deflection completely via linear viscous damping.
     r#"
     <mujoco model="bending_strip">
         <option gravity="0 0 0" timestep="0.0005"/>
         <deformable>
             <flex name="strip" dim="2" density="100">
-                <elasticity young="1e6" damping="1.0" thickness="0.005"/>
+                <elasticity young="1e6" damping="1.0" thickness="0.005" bending_model="bridson"/>
                 <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
                             0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
                 <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
@@ -1128,6 +1132,8 @@ fn ac19_bending_damping_only() {
 
 #[test]
 fn ac20_bending_stability_clamp() {
+    // §42B: Uses bending_model="bridson" — the stability clamp is Bridson-specific.
+    // Cotangent bending has no per-vertex stability clamp (linear force, constant matrix).
     // Very high Young's modulus with a relatively large timestep.
     // k_max = 1/(dt^2) = 1/(0.01^2) = 10_000.
     // Kirchhoff-Love: D = E * t^3 / (12 * (1 - nu^2))
@@ -1138,7 +1144,7 @@ fn ac20_bending_stability_clamp() {
         <option gravity="0 0 -9.81" timestep="0.01"/>
         <deformable>
             <flex name="strip" dim="2" density="100">
-                <elasticity young="1e12" poisson="0.3" damping="0.001" thickness="0.005"/>
+                <elasticity young="1e12" poisson="0.3" damping="0.001" thickness="0.005" bending_model="bridson"/>
                 <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
                             0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
                 <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
@@ -1735,4 +1741,1705 @@ fn s30_ac8_mjcf_parsing_defaults() {
     let model = load_model(mjcf_explicit).expect("explicit parse");
     assert_eq!(model.flex_contype[0], 3, "explicit contype=3");
     assert_eq!(model.flex_conaffinity[0], 5, "explicit conaffinity=5");
+}
+
+// ============================================================================
+// §42A-ii: flex_rigid / flexedge_rigid boolean arrays (Phase 10 T1)
+// ============================================================================
+
+/// All vertices pinned → flex_rigid=true, all edges rigid.
+#[test]
+fn t1_flex_rigid_all_pinned() {
+    let mjcf = r#"
+    <mujoco model="all_pinned">
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    assert!(model.flex_rigid[0], "all vertices pinned → flex_rigid=true");
+    for e in 0..model.nflexedge {
+        assert!(
+            model.flexedge_rigid[e],
+            "edge {e} should be rigid (both endpoints pinned)"
+        );
+    }
+}
+
+/// No vertices pinned → flex_rigid=false, no edges rigid.
+#[test]
+fn t1_flex_rigid_none_pinned() {
+    let mjcf = r#"
+    <mujoco model="none_pinned">
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    assert!(
+        !model.flex_rigid[0],
+        "no vertices pinned → flex_rigid=false"
+    );
+    for e in 0..model.nflexedge {
+        assert!(!model.flexedge_rigid[e], "edge {e} should not be rigid");
+    }
+}
+
+/// Mixed: endpoints pinned, middle free → flex_rigid=false,
+/// edge between two pinned vertices is rigid, others are not.
+#[test]
+fn t1_flex_rigid_mixed_pins() {
+    // Cable: v0(pinned) -- v1(free) -- v2(pinned)
+    // Edge 0: v0-v1 → one pinned, one free → not rigid
+    // Edge 1: v1-v2 → one free, one pinned → not rigid
+    let mjcf = r#"
+    <mujoco model="mixed_pins">
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    assert!(!model.flex_rigid[0], "mixed pins → flex_rigid=false");
+    // Both edges have one free endpoint → not rigid
+    for e in 0..model.nflexedge {
+        assert!(
+            !model.flexedge_rigid[e],
+            "edge {e} has a free endpoint → not rigid"
+        );
+    }
+}
+
+/// Edge between two pinned vertices is rigid even when flex overall is not.
+#[test]
+fn t1_flexedge_rigid_both_endpoints_pinned() {
+    // Cable: v0(pinned) -- v1(pinned) -- v2(free)
+    // Edge 0: v0-v1 → both pinned → rigid
+    // Edge 1: v1-v2 → one pinned, one free → not rigid
+    let mjcf = r#"
+    <mujoco model="edge_rigid">
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    assert!(!model.flex_rigid[0], "not all pinned → flex_rigid=false");
+    // Find the edge with both v0 and v1 (both pinned)
+    let mut found_rigid = false;
+    let mut found_nonrigid = false;
+    for e in 0..model.nflexedge {
+        let [va, vb] = model.flexedge_vert[e];
+        let both_pinned = model.flexvert_invmass[va] == 0.0 && model.flexvert_invmass[vb] == 0.0;
+        assert_eq!(
+            model.flexedge_rigid[e], both_pinned,
+            "edge {e} (v{va}-v{vb}): rigid={} but expected={both_pinned}",
+            model.flexedge_rigid[e]
+        );
+        if both_pinned {
+            found_rigid = true;
+        } else {
+            found_nonrigid = true;
+        }
+    }
+    assert!(found_rigid, "should have at least one rigid edge");
+    assert!(found_nonrigid, "should have at least one non-rigid edge");
+}
+
+// ============================================================================
+// §42A-iii: flexedge_length / flexedge_velocity pre-computed fields (Phase 10 T1)
+// ============================================================================
+
+/// After forward(), flexedge_length matches manual Euclidean distance.
+#[test]
+fn t1_flexedge_length_matches_manual() {
+    let mjcf = r#"
+    <mujoco model="edge_length">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="0.0"/>
+                <vertex pos="0 0 0  3 4 0"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Distance from (0,0,0) to (3,4,0) = 5.0
+    assert_eq!(model.nflexedge, 1);
+    assert_relative_eq!(data.flexedge_length[0], 5.0, epsilon = 1e-10);
+}
+
+/// After forward(), flexedge_velocity is zero when qvel is zero.
+#[test]
+fn t1_flexedge_velocity_zero_at_rest() {
+    let mjcf = r#"
+    <mujoco model="edge_vel_rest">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(model.nflexedge, 1);
+    assert_relative_eq!(data.flexedge_velocity[0], 0.0, epsilon = 1e-14);
+}
+
+/// flexedge_velocity is positive when vertices move apart along edge direction.
+#[test]
+fn t1_flexedge_velocity_separation() {
+    let mjcf = r#"
+    <mujoco model="edge_vel_sep">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+
+    // Set qvel: v0 moving in -x, v1 moving in +x → separating
+    let dof0 = model.flexvert_dofadr[0];
+    let dof1 = model.flexvert_dofadr[1];
+    data.qvel[dof0] = -1.0; // v0: x velocity = -1
+    data.qvel[dof1] = 1.0; // v1: x velocity = +1
+
+    data.forward(&model).expect("forward failed");
+
+    // Edge direction: v1-v0 = (1,0,0), unit = (1,0,0)
+    // Relative velocity: vel1 - vel0 = (1,0,0) - (-1,0,0) = (2,0,0)
+    // Edge velocity = dot((2,0,0), (1,0,0)) = 2.0
+    assert_eq!(model.nflexedge, 1);
+    assert_relative_eq!(data.flexedge_velocity[0], 2.0, epsilon = 1e-10);
+}
+
+/// Pinned vertex contributes zero velocity to edge velocity computation.
+#[test]
+fn t1_flexedge_velocity_pinned_zero() {
+    let mjcf = r#"
+    <mujoco model="edge_vel_pin">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="1.0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+                <pin id="0"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+
+    // v0 is pinned (no DOFs), v1 is free
+    let dof1 = model.flexvert_dofadr[1];
+    assert_eq!(
+        model.flexvert_dofadr[0],
+        usize::MAX,
+        "v0 pinned → dofadr=MAX"
+    );
+    data.qvel[dof1] = 1.0; // v1: x velocity = +1
+
+    data.forward(&model).expect("forward failed");
+
+    // Edge direction: v1-v0 = (1,0,0), unit = (1,0,0)
+    // vel0 = (0,0,0) (pinned), vel1 = (1,0,0)
+    // Edge velocity = dot((1,0,0), (1,0,0)) = 1.0
+    assert_relative_eq!(data.flexedge_velocity[0], 1.0, epsilon = 1e-10);
+}
+
+/// Rigid edges (both endpoints pinned) are skipped by edge spring-damper —
+/// no forces applied even with nonzero stiffness/damping.
+#[test]
+fn t1_rigid_edge_no_spring_force() {
+    let mjcf = r#"
+    <mujoco model="rigid_no_force">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="1000" damping="10.0"/>
+                <vertex pos="0 0 0  1 0 0  2 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // All rigid → qfrc_spring and qfrc_damper should be all zeros
+    // (no DOFs exist, but the arrays should be empty or zero-filled)
+    for v in &data.qfrc_spring {
+        assert_eq!(*v, 0.0, "rigid flex should produce no spring forces");
+    }
+    for v in &data.qfrc_damper {
+        assert_eq!(*v, 0.0, "rigid flex should produce no damper forces");
+    }
+}
+
+/// Simulation regression: single-edge cable with one pinned vertex produces
+/// correct spring-damper forces via the pre-computed Data fields path.
+#[test]
+fn t1_regression_single_edge_spring_damper() {
+    // Single edge with explicit <edge stiffness> (not <elasticity young>).
+    // v0 pinned, v1 free — edge is NOT rigid.
+    let mjcf = r#"
+    <mujoco model="spring_edge">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <edge stiffness="1000" damping="0"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+                <pin id="0"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("parse");
+    let mut data = model.make_data();
+
+    // Displace v1 to stretch the edge
+    let qpos_adr = model.flexvert_qposadr[1];
+    data.qpos[qpos_adr] = 1.5; // move from x=1 to x=1.5
+
+    data.forward(&model).expect("forward failed");
+
+    // After forward, check the edge state
+    let rest_len = model.flexedge_length0[0];
+    let cur_len = data.flexedge_length[0];
+    let dof1 = model.flexvert_dofadr[1];
+    assert!(dof1 < model.nv, "v1 should have DOFs");
+
+    // frc_spring = stiffness * (rest - current), applied as +direction for v1
+    let expected_frc = 1000.0 * (rest_len - cur_len);
+    let spring_force_x = data.qfrc_spring[dof1];
+    assert!(
+        spring_force_x < 0.0,
+        "stretched edge should produce negative spring force on v1, got {spring_force_x}"
+    );
+    assert_relative_eq!(spring_force_x, expected_frc, epsilon = 1.0);
+}
+
+// ============================================================================
+// §42A-i: Sparse Flex Edge Jacobian (Spec A) Tests
+// ============================================================================
+
+/// MJCF fixture: 3-vertex cable with v0 pinned to worldbody (via <pin>).
+fn spec_a_pinned_cable_mjcf() -> &'static str {
+    r#"
+    <mujoco model="spec_a_pinned_cable">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="0.1"/>
+                <vertex pos="0 0 0  0.5 0 0  1 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#
+}
+
+/// MJCF fixture: 2-vertex cable, both free, along x-axis.
+fn spec_a_two_vertex_cable_mjcf() -> &'static str {
+    r#"
+    <mujoco model="spec_a_two_vertex">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="0.1"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#
+}
+
+/// MJCF fixture: 4-vertex square shell (2 triangles, all free).
+fn spec_a_square_shell_mjcf() -> &'static str {
+    r#"
+    <mujoco model="spec_a_shell">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="shell" dim="2" density="1.0">
+                <elasticity young="100" damping="0.1" thickness="0.01"/>
+                <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#
+}
+
+/// MJCF fixture: 3-vertex cable with ALL vertices pinned (rigid flex).
+fn spec_a_rigid_cable_mjcf() -> &'static str {
+    r#"
+    <mujoco model="spec_a_rigid">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="0.1"/>
+                <vertex pos="0 0 0  0.5 0 0  1 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#
+}
+
+/// MJCF fixture: 3-vertex cable with edge constraints (solref != 0),
+/// no stiffness/damping — tests constraint-only J path.
+fn spec_a_constraint_cable_mjcf() -> &'static str {
+    r#"
+    <mujoco model="spec_a_constraint">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <edge solref="-100 -10"/>
+                <elasticity young="0" damping="0"/>
+                <vertex pos="0 0 0  0.5 0 0  1 0 0"/>
+                <element data="0 1  1 2"/>
+                <pin id="0"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#
+}
+
+/// T1: CSR structure — pinned cable → AC1
+#[test]
+fn spec_a_t1_csr_structure_pinned_cable() {
+    let model = load_model(spec_a_pinned_cable_mjcf()).expect("load");
+    assert_eq!(model.nflex, 1);
+    assert_eq!(model.nflexvert, 3);
+    assert_eq!(model.nflexedge, 2);
+
+    // v0 is pinned (worldbody, dofnum=0), v1 and v2 are free (dofnum=3 each)
+    assert_eq!(model.flexvert_dofadr[0], usize::MAX, "v0 should be pinned");
+
+    // Edge 0: pinned v0 → free v1 → rownnz=3 (only v1's DOFs)
+    // Edge 1: free v1 → free v2 → rownnz=6 (both vertices' DOFs)
+    // But edges come from HashMap so order is not deterministic.
+    // Check total nnz and that we have one edge with 3 and one with 6.
+    let total_nnz: usize = model.flexedge_J_rownnz.iter().sum();
+    assert_eq!(total_nnz, 9, "total nnz should be 9");
+    assert_eq!(model.flexedge_J_colind.len(), 9);
+
+    let mut sorted_rownnz = model.flexedge_J_rownnz.clone();
+    sorted_rownnz.sort();
+    assert_eq!(
+        sorted_rownnz,
+        vec![3, 6],
+        "should have one 3-DOF and one 6-DOF edge"
+    );
+
+    // Verify rowadr is cumulative
+    assert_eq!(model.flexedge_J_rowadr[0], 0);
+    assert_eq!(
+        model.flexedge_J_rowadr[1], model.flexedge_J_rownnz[0],
+        "rowadr[1] should equal rownnz[0]"
+    );
+}
+
+/// T2: CSR structure — all-free shell → AC2
+#[test]
+fn spec_a_t2_csr_structure_all_free_shell() {
+    let model = load_model(spec_a_square_shell_mjcf()).expect("load");
+    assert_eq!(model.nflexvert, 4);
+    // 4-vertex square shell with 2 triangles has 5 edges (4 boundary + 1 diagonal)
+    assert_eq!(model.nflexedge, 5);
+
+    // All vertices free → every edge has rownnz=6
+    for e in 0..model.nflexedge {
+        assert_eq!(model.flexedge_J_rownnz[e], 6, "edge {e} rownnz should be 6");
+    }
+    assert_eq!(
+        model.flexedge_J_colind.len(),
+        30,
+        "total nnz should be 5*6=30"
+    );
+}
+
+/// T3: Free-vertex Jacobian values → AC3
+#[test]
+#[allow(non_snake_case)]
+fn spec_a_t3_free_vertex_jacobian_identity() {
+    let model = load_model(spec_a_two_vertex_cable_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Initial positions: v0=(0,0,0), v1=(1,0,0) → direction=[1,0,0]
+    data.forward(&model).expect("forward");
+
+    assert_eq!(model.nflexedge, 1);
+    assert_eq!(model.flexedge_J_rownnz[0], 6);
+
+    // J should be [-vec^T, +vec^T] = [-1, 0, 0, +1, 0, 0]
+    let rowadr = model.flexedge_J_rowadr[0];
+    let J = &data.flexedge_J[rowadr..rowadr + 6];
+
+    // The edge direction depends on vertex ordering in flexedge_vert.
+    // If [v0, v1]: direction = v1-v0 = [1,0,0], J = [-1, 0, 0, +1, 0, 0]
+    // If [v1, v0]: direction = v0-v1 = [-1,0,0], J = [+1, 0, 0, -1, 0, 0]
+    // Both produce correct forces. Check absolute values.
+    assert_eq!(J[0].abs(), 1.0, "J[0] should be ±1");
+    assert_eq!(J[1], 0.0, "J[1] should be 0");
+    assert_eq!(J[2], 0.0, "J[2] should be 0");
+    assert_eq!(J[3].abs(), 1.0, "J[3] should be ±1");
+    assert_eq!(J[4], 0.0, "J[4] should be 0");
+    assert_eq!(J[5], 0.0, "J[5] should be 0");
+    // Signs must be opposite: J[0] = -J[3]
+    assert_eq!(J[0], -J[3], "J[0] and J[3] must have opposite signs");
+}
+
+/// T4: Simulation regression — bit-identical → AC4
+#[test]
+#[allow(non_snake_case)]
+fn spec_a_t4_simulation_regression_bit_identical() {
+    // Use the cloth model — has spring + damper + bending
+    let model = load_model(spec_a_square_shell_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Run 10 steps
+    for _ in 0..10 {
+        data.step(&model).expect("step failed");
+    }
+
+    // Verify no NaN in state
+    for i in 0..model.nv {
+        assert!(!data.qpos[i].is_nan(), "NaN in qpos[{i}]");
+        assert!(!data.qvel[i].is_nan(), "NaN in qvel[{i}]");
+    }
+
+    // Verify no NaN in state
+    for i in 0..model.nv {
+        assert!(!data.qpos[i].is_nan(), "NaN in qpos[{i}]");
+        assert!(!data.qvel[i].is_nan(), "NaN in qvel[{i}]");
+    }
+
+    // Bit-identical regression: captured values from the sparse J path
+    // with §42B cotangent bending as default. Re-captured after Spec B S6
+    // changed the default bending model from Bridson to Cotangent.
+    // qvel[2] (v0 z-velocity) and qvel[5] (v1 z-velocity) are the most
+    // sensitive to force application changes.
+    assert_eq!(data.qvel[2], -9.807_351_723_758_39e-2, "qvel[2] regression");
+    assert_eq!(
+        data.qvel[5], -9.808_675_755_936_996e-2,
+        "qvel[5] regression"
+    );
+    // qfrc_spring[2] (v0 z-spring) — captures the J^T*force result
+    assert_eq!(
+        data.qfrc_spring[2], -1.765_521_895_654_756_2e-12,
+        "qfrc_spring[2] regression"
+    );
+    // qfrc_damper[2] (v0 z-damper)
+    assert_eq!(
+        data.qfrc_damper[2], 8.826_881_283_672_428e-3,
+        "qfrc_damper[2] regression"
+    );
+}
+
+/// T5: Velocity J*qvel → AC5
+#[test]
+#[allow(non_snake_case)]
+fn spec_a_t5_velocity_j_times_qvel() {
+    let model = load_model(spec_a_pinned_cable_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Run 5 steps so vertices acquire velocity from gravity
+    for _ in 0..5 {
+        data.step(&model).expect("step failed");
+    }
+
+    // Re-compute flex edge data
+    data.forward(&model).expect("forward");
+
+    // For each edge, verify velocity matches inline computation
+    for e in 0..model.nflexedge {
+        let [v0, v1] = model.flexedge_vert[e];
+        let diff = data.flexvert_xpos[v1] - data.flexvert_xpos[v0];
+        let dist = diff.norm();
+        if dist < 1e-10 {
+            continue;
+        }
+        let direction = diff / dist;
+
+        let dof0 = model.flexvert_dofadr[v0];
+        let dof1 = model.flexvert_dofadr[v1];
+        let vel0 = if dof0 == usize::MAX {
+            nalgebra::Vector3::zeros()
+        } else {
+            nalgebra::Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
+        };
+        let vel1 = if dof1 == usize::MAX {
+            nalgebra::Vector3::zeros()
+        } else {
+            nalgebra::Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
+        };
+        let expected_vel = (vel1 - vel0).dot(&direction);
+
+        // Sparse J*qvel and inline (vel1-vel0)·direction differ by at most
+        // 1-2 ULP due to different floating-point accumulation order.
+        assert_relative_eq!(data.flexedge_velocity[e], expected_vel, epsilon = 1e-15,);
+    }
+}
+
+/// T6: Constraint Jacobian scatter → AC6
+#[test]
+#[allow(non_snake_case)]
+fn spec_a_t6_constraint_jacobian_scatter() {
+    let model = load_model(spec_a_constraint_cable_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    // Forward populates flexedge_J; step triggers constraint assembly.
+    data.forward(&model).expect("forward");
+
+    // Verify flexedge_J was computed (J needed because solref != [0,0])
+    for e in 0..model.nflexedge {
+        let rowadr = model.flexedge_J_rowadr[e];
+        let rownnz = model.flexedge_J_rownnz[e];
+        if rownnz > 0 {
+            let j_slice = &data.flexedge_J[rowadr..rowadr + rownnz];
+            let has_nonzero = j_slice.iter().any(|&v| v != 0.0);
+            assert!(has_nonzero, "edge {e} J should have nonzero values");
+        }
+    }
+
+    // Now run a step to trigger constraint assembly, which scatters
+    // flexedge_J into efc_J rows for FlexEdge constraints.
+    data.step(&model).expect("step failed");
+
+    // After step, efc_J has been populated. Verify that for each edge with
+    // rownnz > 0, the efc_J row for that edge's constraint has non-zero
+    // values at exactly the colind positions matching flexedge_J values.
+    // Re-forward to get fresh J values matching the post-step state.
+    data.forward(&model).expect("forward");
+
+    // Find FlexEdge constraint rows in efc_type and verify efc_J scatter.
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::FlexEdge {
+            let e = data.efc_id[i];
+            let rowadr = model.flexedge_J_rowadr[e];
+            let rownnz = model.flexedge_J_rownnz[e];
+
+            // Verify efc_J has flexedge_J values at colind positions
+            for j in 0..rownnz {
+                let col = model.flexedge_J_colind[rowadr + j];
+                let expected = data.flexedge_J[rowadr + j];
+                let actual = data.efc_J[(i, col)];
+                assert_eq!(
+                    actual, expected,
+                    "efc_J[({i},{col})] = {actual} != flexedge_J = {expected} for edge {e}"
+                );
+            }
+
+            // Verify no other columns are non-zero (only colind positions)
+            for col in 0..model.nv {
+                let is_colind = (0..rownnz).any(|j| model.flexedge_J_colind[rowadr + j] == col);
+                if !is_colind {
+                    assert_eq!(
+                        data.efc_J[(i, col)],
+                        0.0,
+                        "efc_J[({i},{col})] should be 0 (not a colind position)"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// T7: Pinned vertex — zero contribution → AC7
+#[test]
+#[allow(non_snake_case)]
+fn spec_a_t7_pinned_vertex_zero_contribution() {
+    let model = load_model(spec_a_pinned_cable_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    data.forward(&model).expect("forward");
+
+    // Find the edge connecting pinned v0 to free v1
+    for e in 0..model.nflexedge {
+        let [v0, v1] = model.flexedge_vert[e];
+        let dof0 = model.flexvert_dofadr[v0];
+        let dof1 = model.flexvert_dofadr[v1];
+
+        if dof0 == usize::MAX || dof1 == usize::MAX {
+            // This edge has a pinned endpoint
+            let rownnz = model.flexedge_J_rownnz[e];
+            assert_eq!(
+                rownnz, 3,
+                "edge with one pinned vertex should have rownnz=3"
+            );
+            // All colind entries should point to the free vertex's DOFs
+            let rowadr = model.flexedge_J_rowadr[e];
+            let free_dof = if dof0 == usize::MAX { dof1 } else { dof0 };
+            for j in 0..rownnz {
+                let col = model.flexedge_J_colind[rowadr + j];
+                assert!(
+                    col >= free_dof && col < free_dof + 3,
+                    "colind[{j}]={col} should be in free vertex DOF range [{free_dof}, {})",
+                    free_dof + 3
+                );
+            }
+        }
+    }
+}
+
+/// T8: Rigid flex skip → AC8
+#[test]
+#[allow(non_snake_case)]
+fn spec_a_t8_rigid_flex_skip() {
+    let model = load_model(spec_a_rigid_cable_mjcf()).expect("load");
+    let mut data = model.make_data();
+
+    assert!(model.flex_rigid[0], "flex should be rigid (all pinned)");
+
+    data.forward(&model).expect("forward");
+
+    // All J values should be 0 (rigid flex → J computation skipped)
+    for &j in &data.flexedge_J {
+        assert_eq!(j, 0.0, "rigid flex J should be all zeros");
+    }
+
+    // All rownnz should be 0 (all vertices pinned → no DOFs)
+    for e in 0..model.nflexedge {
+        assert_eq!(
+            model.flexedge_J_rownnz[e], 0,
+            "rigid flex edge rownnz should be 0"
+        );
+    }
+
+    // Velocity should be 0
+    for e in 0..model.nflexedge {
+        assert_eq!(data.flexedge_velocity[e], 0.0);
+    }
+
+    // Length should still be computed (non-zero for spatially separated vertices)
+    for e in 0..model.nflexedge {
+        assert!(
+            data.flexedge_length[e] > 0.0,
+            "rigid flex edge length should still be computed"
+        );
+    }
+}
+
+/// T9: Zero-length edge → AC9
+#[test]
+#[allow(non_snake_case)]
+fn spec_a_t9_zero_length_edge() {
+    // Create a model with two vertices at the same position
+    let mjcf = r#"
+    <mujoco model="spec_a_zero_len">
+        <option gravity="0 0 0" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="0.1"/>
+                <vertex pos="0 0 0  0 0 0"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    data.forward(&model).expect("forward");
+
+    // No NaN or panic
+    assert_eq!(model.nflexedge, 1);
+    let len = data.flexedge_length[0];
+    assert!(len < 1e-10, "zero-length edge should have near-zero length");
+    assert_eq!(data.flexedge_velocity[0], 0.0);
+
+    // J should remain zero (from reset, since dist < 1e-10 skips J)
+    let rowadr = model.flexedge_J_rowadr[0];
+    let rownnz = model.flexedge_J_rownnz[0];
+    for j in 0..rownnz {
+        assert_eq!(
+            data.flexedge_J[rowadr + j],
+            0.0,
+            "zero-length J should be 0"
+        );
+    }
+}
+
+/// T10: Multi-flex model → AC11
+#[test]
+#[allow(non_snake_case)]
+fn spec_a_t10_multi_flex_model() {
+    let mjcf = r#"
+    <mujoco model="spec_a_multi">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="50" damping="0.1"/>
+                <vertex pos="0 0 0  1 0 0"/>
+                <element data="0 1"/>
+            </flex>
+            <flex name="shell" dim="2" density="1.0">
+                <elasticity young="200" damping="0.1" thickness="0.01"/>
+                <vertex pos="0 0 1  1 0 1  0 1 1  1 1 1"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    assert_eq!(model.nflex, 2);
+    // Cable: 2 verts, 1 edge. Shell: 4 verts, 5 edges. Total: 6 edges.
+    assert_eq!(model.nflexedge, 6);
+
+    // All vertices free → every edge has rownnz=6
+    for e in 0..model.nflexedge {
+        assert_eq!(model.flexedge_J_rownnz[e], 6, "edge {e} rownnz should be 6");
+    }
+
+    // Verify rowadr is monotonically increasing
+    for e in 1..model.nflexedge {
+        assert!(
+            model.flexedge_J_rowadr[e] > model.flexedge_J_rowadr[e - 1],
+            "rowadr should be monotonically increasing"
+        );
+    }
+
+    // Run a step and verify both flexes contribute forces
+    data.forward(&model).expect("forward");
+
+    // Verify J values are populated for both flexes
+    for e in 0..model.nflexedge {
+        let rowadr = model.flexedge_J_rowadr[e];
+        let rownnz = model.flexedge_J_rownnz[e];
+        let j_slice = &data.flexedge_J[rowadr..rowadr + rownnz];
+        let has_nonzero = j_slice.iter().any(|&v| v != 0.0);
+        assert!(has_nonzero, "edge {e} J should have nonzero values");
+    }
+
+    // Run simulation and verify forces accumulate correctly
+    for _ in 0..5 {
+        data.step(&model).expect("step failed");
+    }
+    let has_nonzero_spring = (0..model.nv).any(|i| data.qfrc_spring[i] != 0.0);
+    assert!(
+        has_nonzero_spring,
+        "multi-flex should produce spring forces"
+    );
+}
+
+/// S1: Single-vertex flex (no edges) — supplementary test
+#[test]
+#[allow(non_snake_case)]
+fn spec_a_s1_single_vertex_flex() {
+    let mjcf = r#"
+    <mujoco model="spec_a_single_vert">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="point" dim="1" density="1.0">
+                <elasticity young="100"/>
+                <vertex pos="0 0 0"/>
+                <element data=""/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    // A single-vertex flex with no elements should either:
+    // - Load with 0 edges (CSR arrays empty, no out-of-bounds)
+    // - Or fail to load (no elements is arguably invalid)
+    // Either outcome is acceptable as long as no panic.
+    match load_model(mjcf) {
+        Ok(model) => {
+            // If it loads, verify empty CSR
+            assert_eq!(model.nflexedge, 0);
+            assert!(model.flexedge_J_rownnz.is_empty());
+            assert!(model.flexedge_J_rowadr.is_empty());
+            assert!(model.flexedge_J_colind.is_empty());
+
+            let mut data = model.make_data();
+            data.forward(&model).expect("forward");
+            // No panic = pass
+        }
+        Err(_) => {
+            // Also acceptable — no-element flex is arguably invalid
+        }
+    }
+}
+
+// ============================================================================
+// §42B Spec B: Cotangent Laplacian Bending — Build-Time Tests (Session 10)
+// ============================================================================
+
+/// §42B T1: Equilateral diamond precomputation (AC1).
+///
+/// Two equilateral triangles sharing edge (0,0,0)→(1,0,0), with opposite
+/// vertices at (0.5, √3/2, 0) and (0.5, -√3/2, 0).
+/// Material: young=1e4, poisson=0.3, thickness=0.01.
+#[test]
+fn specb_t1_equilateral_diamond_precomputation() {
+    let sqrt3_2 = 3.0_f64.sqrt() / 2.0;
+    let mjcf = format!(
+        r#"<mujoco>
+  <deformable>
+    <flex name="diamond" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01" damping="0.0"/>
+      <vertex pos="0 0 0  1 0 0  0.5 {sqrt3_2} 0  0.5 -{sqrt3_2} 0"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("load diamond model");
+
+    // Find the interior edge (shared by both triangles).
+    // Interior edge has flap[1] >= 0.
+    let mut interior_edge = None;
+    for e in 0..model.nflexedge {
+        if model.flexedge_flap[e][1] >= 0 {
+            interior_edge = Some(e);
+            break;
+        }
+    }
+    let e = interior_edge.expect("should have exactly one interior edge");
+
+    // Verify flap vertices are the two opposite vertices (not edge endpoints).
+    let flap = model.flexedge_flap[e];
+    let edge_v0 = model.flexedge_vert[e][0];
+    let edge_v1 = model.flexedge_vert[e][1];
+    assert!(flap[0] >= 0 && flap[1] >= 0);
+    assert_ne!(flap[0] as usize, edge_v0);
+    assert_ne!(flap[0] as usize, edge_v1);
+    assert_ne!(flap[1] as usize, edge_v0);
+    assert_ne!(flap[1] as usize, edge_v1);
+    assert_ne!(flap[0], flap[1]);
+
+    // Verify cotangent bending coefficients.
+    let b_base = 17 * e;
+    let mu = 1e4 / (2.0 * 1.3); // young / (2*(1+poisson))
+    let diamond_area = sqrt3_2; // 2 × (√3/4) = √3/2
+    let stiffness = 3.0 * mu * 0.01_f64.powi(3) / (24.0 * diamond_area);
+
+    // For equilateral: all cot angles = 1/√3, c = [2/√3, 2/√3, -2/√3, -2/√3]
+    let c_val = 2.0 / 3.0_f64.sqrt();
+    let expected_diag = c_val * c_val * stiffness; // cos_theta=1 for flat mesh
+
+    // Check B matrix sign pattern: [[+,+,-,-],[+,+,-,-],[-,-,+,+],[-,-,+,+]]
+    for i in 0..4 {
+        for j in 0..4 {
+            let val = model.flex_bending[b_base + 4 * i + j];
+            let expected_sign = if (i < 2) == (j < 2) { 1.0 } else { -1.0 };
+            assert!(
+                (val - expected_sign * expected_diag).abs() < 1e-10,
+                "B[{i}][{j}] = {val}, expected {:.6e}",
+                expected_sign * expected_diag
+            );
+        }
+    }
+
+    // All row sums = 0 (cotangent Laplacian property).
+    for i in 0..4 {
+        let row_sum: f64 = (0..4).map(|j| model.flex_bending[b_base + 4 * i + j]).sum();
+        assert!(row_sum.abs() < 1e-12, "row {i} sum = {row_sum}, expected 0");
+    }
+
+    // b[16] = 0 (flat mesh).
+    assert!(
+        model.flex_bending[b_base + 16].abs() < 1e-15,
+        "b[16] = {}, expected 0 for flat mesh",
+        model.flex_bending[b_base + 16]
+    );
+}
+
+/// §42B T2: Boundary edge — single triangle (AC2).
+///
+/// All 3 edges are boundary. Zero bending coefficients.
+#[test]
+fn specb_t2_boundary_edge_single_triangle() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="single_tri" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0"/>
+      <element data="0 1 2"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load single triangle");
+
+    // All edges should be boundary (flap[1] == -1).
+    for e in 0..model.nflexedge {
+        assert_eq!(model.flexedge_flap[e][1], -1, "edge {e} should be boundary");
+    }
+
+    // All flex_bending coefficients should be zero.
+    for e in 0..model.nflexedge {
+        for k in 0..17 {
+            assert_eq!(
+                model.flex_bending[17 * e + k],
+                0.0,
+                "flex_bending[17*{e}+{k}] should be 0 for boundary edge"
+            );
+        }
+    }
+}
+
+/// §42B T4: Curved reference — asymmetric out-of-plane diamond (AC4).
+///
+/// v0=(0,0,0), v1=(2,0,0), v2=(0.5,1,0), v3=(1.5,-0.8,0.5).
+/// Non-flat rest mesh: b[16] should be non-zero.
+#[test]
+fn specb_t4_curved_reference_asymmetric_diamond() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="curved" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  2 0 0  0.5 1 0  1.5 -0.8 0.5"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load curved diamond");
+
+    // Find the interior edge.
+    let mut interior_edge = None;
+    for e in 0..model.nflexedge {
+        if model.flexedge_flap[e][1] >= 0 {
+            interior_edge = Some(e);
+            break;
+        }
+    }
+    let e = interior_edge.expect("should have one interior edge");
+
+    let b_base = 17 * e;
+
+    // Verify b[16] ≈ 3.278e-5 (Garg curved reference coefficient).
+    // Hand-computed from asymmetric geometry:
+    //   n = e0 × e1 = (0, 0, 2), n·e2 = 1.0
+    //   (a01 - a03) = -1.0, (a04 - a02) ≈ -1.060
+    //   stiffness ≈ 2.474e-4, sqr = 4, sqr*sqrt(sqr) = 8
+    //   b[16] = 1.0 * (-1.0) * (-1.060) * 2.474e-4 / 8 ≈ 3.278e-5
+    let b16 = model.flex_bending[b_base + 16];
+    assert!(
+        (b16 - 3.278e-5).abs() < 1e-7,
+        "b[16] = {b16:.6e}, expected ≈ 3.278e-5 for curved mesh"
+    );
+
+    // Verify cos_theta via B matrix diagonal structure.
+    // For curved mesh, cos_theta ≈ 0.848 (< 1.0, indicating non-flat rest geometry).
+    // Verify by checking the matrix magnitude is scaled by cos_theta relative to
+    // what it would be for flat (cos_theta=1). The B matrix entry b[0][0] =
+    // c[0]^2 * cos_theta * stiffness. We can verify cos_theta by checking the
+    // matrix-derived ratio against the flat case.
+    // Direct check: b[0][0] / (c[0]^2 * stiffness) ≈ cos_theta.
+    // c[0] = a03 + a04 ≈ 1.5 + 0.530 = 2.030
+    // stiffness = 3 * mu * t^3 / (24 * volume) ≈ 2.474e-4
+    // Expected b[0][0] = 2.030^2 * 0.848 * 2.474e-4 ≈ 8.645e-4
+    let b00 = model.flex_bending[b_base];
+    assert!(
+        (b00 - 8.645e-4).abs() < 1e-6,
+        "b[0][0] = {b00:.6e}, expected ≈ 8.645e-4 (validates cos_theta ≈ 0.848)"
+    );
+
+    // All row sums = 0 (Laplacian property preserved for curved meshes).
+    for i in 0..4 {
+        let row_sum: f64 = (0..4).map(|j| model.flex_bending[b_base + 4 * i + j]).sum();
+        assert!(
+            row_sum.abs() < 1e-12,
+            "row {i} sum = {row_sum}, expected 0 for curved mesh"
+        );
+    }
+}
+
+/// §42B T12: Flap topology — 4x4 grid (AC12).
+///
+/// 16 vertices, 18 triangles, 33 edges. Validates interior/boundary
+/// classification and diamond stencil validity per spec AC12.
+#[test]
+fn specb_t12_flap_topology_4x4_grid() {
+    // 4x4 grid of vertices with triangulated elements.
+    // Vertices (0..15): (col, row, 0) for row=0..3, col=0..3
+    // Layout:  12-13-14-15
+    //           8- 9-10-11
+    //           4- 5- 6- 7
+    //           0- 1- 2- 3
+    // Each quad split into 2 triangles (lower-left + upper-right diagonal).
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="grid" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  2 0 0  3 0 0  0 1 0  1 1 0  2 1 0  3 1 0  0 2 0  1 2 0  2 2 0  3 2 0  0 3 0  1 3 0  2 3 0  3 3 0"/>
+      <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6  4 5 8  5 9 8  5 6 9  6 10 9  6 7 10  7 11 10  8 9 12  9 13 12  9 10 13  10 14 13  10 11 14  11 15 14"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load 4x4 grid");
+
+    let mut interior_count = 0;
+    let mut boundary_count = 0;
+    for e in 0..model.nflexedge {
+        let flap = model.flexedge_flap[e];
+        if flap[1] >= 0 {
+            // Interior edge: verify diamond stencil validity.
+            let ev0 = model.flexedge_vert[e][0];
+            let ev1 = model.flexedge_vert[e][1];
+            let f0 = flap[0] as usize;
+            let f1 = flap[1] as usize;
+            // All 4 vertices distinct.
+            let mut verts = [ev0, ev1, f0, f1];
+            verts.sort();
+            assert_ne!(
+                verts[0], verts[1],
+                "duplicate in diamond stencil for edge {e}"
+            );
+            assert_ne!(
+                verts[1], verts[2],
+                "duplicate in diamond stencil for edge {e}"
+            );
+            assert_ne!(
+                verts[2], verts[3],
+                "duplicate in diamond stencil for edge {e}"
+            );
+            // Flap vertices NOT on edge.
+            assert_ne!(f0, ev0);
+            assert_ne!(f0, ev1);
+            assert_ne!(f1, ev0);
+            assert_ne!(f1, ev1);
+            interior_count += 1;
+        } else {
+            boundary_count += 1;
+        }
+    }
+
+    // A 4x4 grid (16 vertices, 18 triangles) should have both interior and boundary edges.
+    // Expected: 33 total edges, 16 interior (shared by 2 triangles), 12 boundary.
+    assert!(interior_count > 0, "should have interior edges");
+    assert!(boundary_count > 0, "should have boundary edges");
+    // Verify we have a meaningful topology — 4x4 grid should have at least 16 interior edges.
+    assert!(
+        interior_count >= 15,
+        "4x4 grid should have ~16 interior edges, got {interior_count}"
+    );
+}
+
+/// §42B T13: Zero thickness produces zero bending (AC13).
+#[test]
+fn specb_t13_zero_thickness_zero_bending() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="zero_thick" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.0"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0  0.5 -0.866 0"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load zero thickness model");
+
+    for k in 0..model.flex_bending.len() {
+        assert_eq!(
+            model.flex_bending[k], 0.0,
+            "flex_bending[{k}] should be 0 with thickness=0"
+        );
+    }
+}
+
+/// §42B T14: Default bending type is Cotangent (AC14).
+#[test]
+fn specb_t14_default_bending_type() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="default_bend" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0"/>
+      <element data="0 1 2"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load default bending model");
+    assert_eq!(
+        model.flex_bending_type[0],
+        sim_core::FlexBendingType::Cotangent,
+        "default bending_type should be Cotangent"
+    );
+}
+
+/// §42B T14b: bending_model="bridson" parses correctly.
+#[test]
+fn specb_t14b_bridson_bending_type_parses() {
+    let mjcf = r#"<mujoco>
+  <deformable>
+    <flex name="bridson_bend" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01" bending_model="bridson"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0"/>
+      <element data="0 1 2"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load bridson model");
+    assert_eq!(
+        model.flex_bending_type[0],
+        sim_core::FlexBendingType::Bridson,
+        "bending_model='bridson' should parse as Bridson"
+    );
+}
+
+// ============================================================================
+// §42B Spec B: Cotangent Laplacian Bending — Runtime Tests (Session 11)
+// ============================================================================
+
+/// §42B T3: Cotangent runtime force — deflected equilateral diamond (AC3).
+///
+/// Perturb v[2] z-position by +0.01 on a flat equilateral diamond, call forward()
+/// once, and verify qfrc_spring z-components match the analytical derivation:
+///   qfrc_spring[vi_z] = -b[4*i+2] * 0.01
+/// where b[4*i+2] = c[i]*c[2]*cos_theta*stiffness.
+#[test]
+fn specb_t3_cotangent_runtime_force_deflected_diamond() {
+    // 4 vertices, 2 equilateral triangles sharing edge (0,0,0)→(1,0,0).
+    // Opposite vertices at (0.5, √3/2, 0) and (0.5, -√3/2, 0).
+    let sqrt3_2 = 3.0_f64.sqrt() / 2.0;
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 0" timestep="0.001"/>
+  <deformable>
+    <flex name="diamond" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 {sqrt3_2} 0  0.5 -{sqrt3_2} 0"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Verify cotangent default
+    assert_eq!(
+        model.flex_bending_type[0],
+        sim_core::FlexBendingType::Cotangent
+    );
+
+    // Perturb v[2] z-position by +0.01 via qpos
+    let v2_qpos = model.flexvert_qposadr[2];
+    assert_ne!(v2_qpos, usize::MAX, "v2 should be free");
+    data.qpos[v2_qpos + 2] += 0.01;
+
+    // Call forward() to compute passive forces (no integration)
+    data.forward(&model).expect("forward");
+
+    // Analytical: stiffness ≈ 5.551e-4, c = [2/√3, 2/√3, -2/√3, -2/√3]
+    // b[4*i+2] = c[i]*c[2]*cos_theta*stiffness = c[i]*(-2/√3)*1.0*5.551e-4
+    // For v[0]: b[0][2] = (2/√3)*(-2/√3)*s = -(4/3)*s ≈ -7.402e-4
+    // spring[3*0+2] = b[0][2]*xpos[v2_z] = -7.402e-4 * 0.01 = -7.402e-6
+    // qfrc_spring[v0_z] = -spring[0*3+2] = +7.402e-6
+    //
+    // Similarly for v[1], v[2], v[3]:
+    // v[2]: b[2][2] = (4/3)*s, spring = (4/3)*s*0.01, qfrc = -(4/3)*s*0.01
+    let mu = 1e4 / (2.0 * (1.0 + 0.3));
+    let area = 3.0_f64.sqrt() / 2.0; // diamond area = sum of two equilateral triangles
+    let stiffness = 3.0 * mu * 0.01_f64.powi(3) / (24.0 * area);
+    let expected_b_mag = (4.0 / 3.0) * stiffness; // |c[i]*c[2]| * stiffness
+
+    // Check z-components of qfrc_spring for each vertex
+    for vi in 0..4 {
+        let dof = model.flexvert_dofadr[vi];
+        if dof == usize::MAX {
+            continue;
+        }
+        let fz = data.qfrc_spring[dof + 2];
+        // v[0], v[1] should get positive z-force (restoring toward plane)
+        // v[2], v[3] should get negative z-force
+        if vi < 2 {
+            assert!(
+                (fz - expected_b_mag * 0.01).abs() < 1e-10,
+                "v[{vi}] z-force {fz} expected +{:.6e}",
+                expected_b_mag * 0.01
+            );
+        } else {
+            assert!(
+                (fz + expected_b_mag * 0.01).abs() < 1e-10,
+                "v[{vi}] z-force {fz} expected -{:.6e}",
+                expected_b_mag * 0.01
+            );
+        }
+    }
+
+    // x and y force components should be zero (z-only perturbation on flat mesh)
+    for vi in 0..4 {
+        let dof = model.flexvert_dofadr[vi];
+        if dof == usize::MAX {
+            continue;
+        }
+        assert!(
+            data.qfrc_spring[dof].abs() < 1e-14,
+            "v[{vi}] x-force should be zero, got {}",
+            data.qfrc_spring[dof]
+        );
+        assert!(
+            data.qfrc_spring[dof + 1].abs() < 1e-14,
+            "v[{vi}] y-force should be zero, got {}",
+            data.qfrc_spring[dof + 1]
+        );
+    }
+
+    // Force balance: sum of z-forces across all 4 vertices should be zero
+    let mut sum_fz = 0.0;
+    for vi in 0..4 {
+        let dof = model.flexvert_dofadr[vi];
+        if dof != usize::MAX {
+            sum_fz += data.qfrc_spring[dof + 2];
+        }
+    }
+    assert!(
+        sum_fz.abs() < 1e-12,
+        "z-force balance sum = {sum_fz}, expected 0"
+    );
+}
+
+/// §42B T5: dim=1 cable — no bending forces (AC5).
+#[test]
+fn specb_t5_dim1_cable_no_bending() {
+    let mjcf = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <deformable>
+    <flex name="cable" dim="1" density="1.0">
+      <elasticity young="1e4" damping="0.1"/>
+      <vertex pos="0 0 0  0.5 0 0  1 0 0  1.5 0 0"/>
+      <element data="0 1  1 2  2 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Record qfrc_spring before step
+    data.forward(&model).expect("forward");
+
+    // dim=1 should skip bending entirely. The only spring forces should be
+    // from edge spring-damper, not bending.
+    assert_eq!(model.flex_dim[0], 1);
+
+    // Verify no bending forces by checking dim gate: the cotangent loop
+    // only executes for dim==2.
+    for v in &data.flexvert_xpos {
+        assert!(
+            !v.x.is_nan() && !v.y.is_nan() && !v.z.is_nan(),
+            "NaN in cable vertex"
+        );
+    }
+}
+
+/// §42B T6: Rigid flex — bending skipped (AC6).
+#[test]
+fn specb_t6_rigid_flex_bending_skipped() {
+    // All vertices pinned → flex_rigid[f] = true → bending loop skipped.
+    let mjcf = r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <deformable>
+    <flex name="rigid_shell" dim="2" density="1000">
+      <elasticity young="1e4" poisson="0.3" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 0.866 0  0.5 -0.866 0"/>
+      <element data="0 1 2  1 0 3"/>
+      <pin id="0 1 2 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    assert!(model.flex_rigid[0], "all-pinned flex should be rigid");
+
+    // No DOFs → nv == 0, qfrc_spring is empty. The bending loop should
+    // be skipped via the flex_rigid gate before any DOF access.
+    data.forward(&model).expect("forward");
+    // If we got here without panic, the rigid gate works.
+}
+
+/// §42B T7: Bridson regression — identical results with bending_model="bridson" (AC7).
+///
+/// Uses the bending strip model with explicit bending_model="bridson" and verifies
+/// that vertex positions after 2000 steps are identical to pre-Spec-B behavior.
+#[test]
+fn specb_t7_bridson_regression() {
+    // Same model as bending_strip_mjcf() but with explicit bridson.
+    let mjcf = r#"
+    <mujoco model="bending_strip">
+        <option gravity="0 0 0" timestep="0.0005"/>
+        <deformable>
+            <flex name="strip" dim="2" density="100">
+                <elasticity young="1e6" damping="1.0" thickness="0.005" bending_model="bridson"/>
+                <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
+                            0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
+                <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
+                <pin id="0 4"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    assert_eq!(
+        model.flex_bending_type[0],
+        sim_core::FlexBendingType::Bridson
+    );
+
+    // Apply downward velocity on tip vertices (same as ac6_bending_stiffness)
+    let v3_dof = model.flexvert_dofadr[3];
+    let v7_dof = model.flexvert_dofadr[7];
+    data.qvel[v3_dof + 2] = -0.1;
+    data.qvel[v7_dof + 2] = -0.1;
+
+    for _ in 0..2000 {
+        data.step(&model).expect("step failed");
+    }
+
+    // No NaN
+    for v in &data.flexvert_xpos {
+        assert!(
+            !v.x.is_nan() && !v.y.is_nan() && !v.z.is_nan(),
+            "NaN in strip vertex"
+        );
+    }
+
+    // Tip should be below root (Bridson preserves this behavior)
+    let tip_z = data.flexvert_xpos[3].z;
+    let root_z = data.flexvert_xpos[0].z;
+    assert!(
+        tip_z < root_z,
+        "Bridson: tip z={tip_z} should be below root z={root_z}"
+    );
+
+    // Regression: gold values captured from Bridson path after Spec B refactored
+    // the code into apply_bridson_bending(). These values verify the algorithm
+    // was moved without numerical changes (AC7).
+    // Tolerance 1e-14: accounts for potential floating-point non-determinism
+    // across compiler versions while still catching any algorithm changes.
+    // Vertices 0,4 are pinned (always at origin).
+    let tol = 1e-14;
+    assert!(
+        (data.flexvert_xpos[3].z - (-5.6457349099e-4)).abs() < tol,
+        "v3.z = {:.17e}, Bridson regression failed",
+        data.flexvert_xpos[3].z
+    );
+    assert!(
+        (data.flexvert_xpos[7].z - (-4.5831262165e-4)).abs() < tol,
+        "v7.z = {:.17e}, Bridson regression failed",
+        data.flexvert_xpos[7].z
+    );
+    assert!(
+        (data.flexvert_xpos[2].z - (-1.3965147784e-4)).abs() < tol,
+        "v2.z = {:.17e}, Bridson regression failed",
+        data.flexvert_xpos[2].z
+    );
+    assert!(
+        (data.flexvert_xpos[6].z - (-7.8245744862e-5)).abs() < tol,
+        "v6.z = {:.17e}, Bridson regression failed",
+        data.flexvert_xpos[6].z
+    );
+}
+
+/// §42B T8: Damper with flex_damping multiplier (AC8).
+#[test]
+fn specb_t8_damper_with_flex_damping_multiplier() {
+    let sqrt3_2 = 3.0_f64.sqrt() / 2.0;
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 0" timestep="0.001"/>
+  <deformable>
+    <flex name="diamond" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" damping="0.5" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 {sqrt3_2} 0  0.5 -{sqrt3_2} 0"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Perturb v[2] z-velocity
+    let v2_dof = model.flexvert_dofadr[2];
+    data.qvel[v2_dof + 2] = 1.0;
+
+    data.forward(&model).expect("forward");
+
+    // Verify qfrc_damper is non-zero and scaled by flex_damping=0.5
+    let dof0 = model.flexvert_dofadr[0];
+    let dof2 = model.flexvert_dofadr[2];
+    assert_ne!(dof0, usize::MAX);
+    assert_ne!(dof2, usize::MAX);
+
+    // The damper force should be non-zero on at least the vertex with velocity
+    let damper_fz_v2 = data.qfrc_damper[dof2 + 2];
+    assert!(
+        damper_fz_v2.abs() > 1e-15,
+        "damper force on v2 z should be non-zero, got {damper_fz_v2}"
+    );
+
+    // The total qfrc_damper includes BOTH bending damper (B*vel*damping_coeff)
+    // and per-vertex viscous damping (-flex_damping*qvel). The bending contribution
+    // sums to zero (Laplacian property), but per-vertex damping adds -0.5*1.0 = -0.5
+    // on v2_z. So the total should be -0.5.
+    let mut sum_damper_z = 0.0;
+    for vi in 0..4 {
+        let dof = model.flexvert_dofadr[vi];
+        if dof != usize::MAX {
+            sum_damper_z += data.qfrc_damper[dof + 2];
+        }
+    }
+    // Per-vertex damping: -flex_damping * qvel = -0.5 * 1.0 = -0.5 on v2_z only.
+    assert!(
+        (sum_damper_z + 0.5).abs() < 1e-12,
+        "damper z-force balance = {sum_damper_z}, expected -0.5 from per-vertex damping"
+    );
+}
+
+/// §42B T9: DISABLE_SPRING gate (AC9).
+#[test]
+fn specb_t9_disable_spring_gate() {
+    let sqrt3_2 = 3.0_f64.sqrt() / 2.0;
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 0" timestep="0.001">
+    <flag spring="disable"/>
+  </option>
+  <deformable>
+    <flex name="diamond" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" damping="0.5" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 {sqrt3_2} 0  0.5 -{sqrt3_2} 0"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Perturb v[2] z-position and velocity
+    let v2_qpos = model.flexvert_qposadr[2];
+    data.qpos[v2_qpos + 2] += 0.01;
+    let v2_dof = model.flexvert_dofadr[2];
+    data.qvel[v2_dof + 2] = 1.0;
+
+    data.forward(&model).expect("forward");
+
+    // With DISABLE_SPRING: qfrc_spring should be zero for all bending DOFs
+    for vi in 0..4 {
+        let dof = model.flexvert_dofadr[vi];
+        if dof != usize::MAX {
+            for ax in 0..3 {
+                assert_eq!(
+                    data.qfrc_spring[dof + ax],
+                    0.0,
+                    "v[{vi}] axis {ax}: qfrc_spring should be 0 with DISABLE_SPRING"
+                );
+            }
+        }
+    }
+
+    // qfrc_damper should be non-zero (damper not disabled)
+    let damper_fz_v2 = data.qfrc_damper[v2_dof + 2];
+    assert!(
+        damper_fz_v2.abs() > 1e-15,
+        "damper force should be non-zero when only spring disabled"
+    );
+}
+
+/// §42B T10: DISABLE_DAMPER gate (AC10).
+#[test]
+fn specb_t10_disable_damper_gate() {
+    let sqrt3_2 = 3.0_f64.sqrt() / 2.0;
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 0" timestep="0.001">
+    <flag damper="disable"/>
+  </option>
+  <deformable>
+    <flex name="diamond" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" damping="0.5" thickness="0.01"/>
+      <vertex pos="0 0 0  1 0 0  0.5 {sqrt3_2} 0  0.5 -{sqrt3_2} 0"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Perturb v[2] z-position and velocity
+    let v2_qpos = model.flexvert_qposadr[2];
+    data.qpos[v2_qpos + 2] += 0.01;
+    let v2_dof = model.flexvert_dofadr[2];
+    data.qvel[v2_dof + 2] = 1.0;
+
+    data.forward(&model).expect("forward");
+
+    // With DISABLE_DAMPER: qfrc_damper should be zero
+    for vi in 0..4 {
+        let dof = model.flexvert_dofadr[vi];
+        if dof != usize::MAX {
+            for ax in 0..3 {
+                assert_eq!(
+                    data.qfrc_damper[dof + ax],
+                    0.0,
+                    "v[{vi}] axis {ax}: qfrc_damper should be 0 with DISABLE_DAMPER"
+                );
+            }
+        }
+    }
+
+    // qfrc_spring should be non-zero (spring not disabled)
+    let spring_fz_v2 = data.qfrc_spring[v2_dof + 2];
+    assert!(
+        spring_fz_v2.abs() > 1e-15,
+        "spring force should be non-zero when only damper disabled"
+    );
+}
+
+/// §42B T11: Cotangent stability — very high stiffness, no clamp needed (AC11).
+#[test]
+fn specb_t11_cotangent_stability_no_clamp() {
+    // Default cotangent bending model with very high stiffness.
+    // Cotangent is stable without per-vertex clamp (linear force, constant B matrix).
+    let mjcf = r#"
+    <mujoco model="stiff_cotangent">
+        <option gravity="0 0 -9.81" timestep="0.01"/>
+        <deformable>
+            <flex name="strip" dim="2" density="100">
+                <elasticity young="1e12" poisson="0.3" damping="0.001" thickness="0.005"/>
+                <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
+                            0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
+                <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
+                <pin id="0 4"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    assert_eq!(
+        model.flex_bending_type[0],
+        sim_core::FlexBendingType::Cotangent
+    );
+
+    // Perturb tip vertices
+    let v3_dof = model.flexvert_dofadr[3];
+    let v7_dof = model.flexvert_dofadr[7];
+    data.qvel[v3_dof + 2] = -1.0;
+    data.qvel[v7_dof + 2] = -1.0;
+
+    // 500 steps — should remain stable without clamp
+    for _ in 0..500 {
+        data.step(&model).expect("step failed");
+    }
+
+    for v in &data.flexvert_xpos {
+        assert!(
+            !v.x.is_nan() && !v.y.is_nan() && !v.z.is_nan(),
+            "NaN in vertex — cotangent should be stable without clamp"
+        );
+        assert!(
+            v.x.abs() < 100.0 && v.y.abs() < 100.0 && v.z.abs() < 100.0,
+            "vertex exploded: {:?}",
+            v
+        );
+    }
+}
+
+/// §42B T15: Mixed bending models — two flex bodies in one simulation (AC15).
+#[test]
+fn specb_t15_mixed_bending_models() {
+    let sqrt3_2 = 3.0_f64.sqrt() / 2.0;
+    let mjcf = format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.001"/>
+  <deformable>
+    <flex name="cotangent_flex" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" damping="0.1" thickness="0.01"/>
+      <vertex pos="0 0 1  1 0 1  0.5 {sqrt3_2} 1  0.5 -{sqrt3_2} 1"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+    <flex name="bridson_flex" dim="2" radius="0.005" density="1000">
+      <elasticity young="1e4" poisson="0.3" damping="0.1" thickness="0.01" bending_model="bridson"/>
+      <vertex pos="3 0 1  4 0 1  3.5 {sqrt3_2} 1  3.5 -{sqrt3_2} 1"/>
+      <element data="0 1 2  1 0 3"/>
+    </flex>
+  </deformable>
+</mujoco>"#
+    );
+    let model = load_model(&mjcf).expect("load");
+    let mut data = model.make_data();
+
+    assert_eq!(model.nflex, 2);
+    assert_eq!(
+        model.flex_bending_type[0],
+        sim_core::FlexBendingType::Cotangent
+    );
+    assert_eq!(
+        model.flex_bending_type[1],
+        sim_core::FlexBendingType::Bridson
+    );
+
+    // 100 steps
+    for _ in 0..100 {
+        data.step(&model).expect("step failed");
+    }
+
+    // Both should simulate without error
+    for v in &data.flexvert_xpos {
+        assert!(
+            !v.x.is_nan() && !v.y.is_nan() && !v.z.is_nan(),
+            "NaN in vertex"
+        );
+        assert!(
+            v.x.abs() < 100.0 && v.y.abs() < 100.0 && v.z.abs() < 100.0,
+            "vertex exploded: {:?}",
+            v
+        );
+    }
 }

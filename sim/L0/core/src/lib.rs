@@ -195,6 +195,8 @@ pub use types::{
     // Name↔index lookup (§59)
     ElementType,
     EqualityType,
+    FlexBendingType,
+    FlexSelfCollide,
     GainType,
     GeomType,
     Integrator,

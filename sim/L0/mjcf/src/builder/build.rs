@@ -14,7 +14,8 @@ use tracing::warn;
 
 use super::ModelBuilder;
 use super::flex::{
-    compute_flex_address_table, compute_flex_count_table, compute_flexedge_crosssection,
+    compute_element_adjacency, compute_flex_address_table, compute_flex_count_table,
+    compute_flexedge_crosssection,
 };
 
 impl ModelBuilder {
@@ -56,6 +57,15 @@ impl ModelBuilder {
             &self.flex_thickness,
             &self.flexvert_radius,
             &self.flex_vertadr,
+        );
+
+        // Compute element adjacency for self-collision dispatch (Spec C S4).
+        let (flex_elem_adj, flex_elem_adj_adr, flex_elem_adj_num) = compute_element_adjacency(
+            &self.flexelem_data,
+            &self.flexelem_dataadr,
+            &self.flexelem_datanum,
+            self.flexelem_flexid.len(),
+            self.nflexvert,
         );
 
         let mut model = Model {
@@ -207,6 +217,8 @@ impl ModelBuilder {
             flex_bend_damping: self.flex_bend_damping,
             flex_density: self.flex_density,
             flex_group: self.flex_group,
+            flex_rigid: self.flex_rigid,
+            flex_bending_type: self.flex_bending_type,
             flexvert_qposadr: self.flexvert_qposadr,
             flexvert_dofadr: self.flexvert_dofadr,
             flexvert_mass: self.flexvert_mass,
@@ -218,11 +230,20 @@ impl ModelBuilder {
             flexedge_length0: self.flexedge_length0,
             flexedge_crosssection,
             flexedge_flexid: self.flexedge_flexid,
+            flexedge_rigid: self.flexedge_rigid,
+            flexedge_flap: self.flexedge_flap,
+            flex_bending: self.flex_bending,
+            flexedge_J_rownnz: self.flexedge_J_rownnz,
+            flexedge_J_rowadr: self.flexedge_J_rowadr,
+            flexedge_J_colind: self.flexedge_J_colind,
             flexelem_data: self.flexelem_data,
             flexelem_dataadr: self.flexelem_dataadr,
             flexelem_datanum: self.flexelem_datanum,
             flexelem_volume0: self.flexelem_volume0,
             flexelem_flexid: self.flexelem_flexid,
+            flex_elem_adj,
+            flex_elem_adj_adr,
+            flex_elem_adj_num,
             flexhinge_vert: self.flexhinge_vert,
             flexhinge_angle0: self.flexhinge_angle0,
             flexhinge_flexid: self.flexhinge_flexid,

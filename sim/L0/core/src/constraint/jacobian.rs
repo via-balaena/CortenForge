@@ -138,6 +138,59 @@ pub fn compute_flex_contact_jacobian(
     j
 }
 
+/// Compute the contact Jacobian for a flex self-collision contact.
+///
+/// Both sides are flex vertices with trivial Jacobians (identity on DOF
+/// columns). Vertex 1 (penetrating) contributes positively, vertex 2
+/// (opposing) contributes negatively.
+///
+/// Note: torsional and rolling friction rows (dim>=4) are all-zero for
+/// self-collision contacts because flex vertices have no angular DOFs.
+pub fn compute_flex_self_contact_jacobian(
+    model: &Model,
+    contact: &Contact,
+    vi1: usize,
+    vi2: usize,
+) -> DMatrix<f64> {
+    let nv = model.nv;
+    let dim = contact.dim;
+    let normal = contact.normal;
+    let tangent1 = contact.frame[0];
+    let tangent2 = contact.frame[1];
+
+    let mut j = DMatrix::zeros(dim, nv);
+
+    let dof1 = model.flexvert_dofadr[vi1];
+    let dof2 = model.flexvert_dofadr[vi2];
+
+    // Helper: project direction onto vertex DOFs with given sign
+    let add_vertex =
+        |j: &mut DMatrix<f64>, row: usize, dir: &Vector3<f64>, dof_base: usize, sign: f64| {
+            if dof_base == usize::MAX {
+                return; // pinned vertex
+            }
+            j[(row, dof_base)] += sign * dir.x;
+            j[(row, dof_base + 1)] += sign * dir.y;
+            j[(row, dof_base + 2)] += sign * dir.z;
+        };
+
+    // Row 0: normal direction
+    // Vertex 1 (penetrating) = positive, vertex 2 (opposing) = negative
+    add_vertex(&mut j, 0, &normal, dof1, 1.0);
+    add_vertex(&mut j, 0, &normal, dof2, -1.0);
+
+    // Rows 1-2: tangent directions (sliding friction)
+    if dim >= 3 {
+        add_vertex(&mut j, 1, &tangent1, dof1, 1.0);
+        add_vertex(&mut j, 1, &tangent1, dof2, -1.0);
+        add_vertex(&mut j, 2, &tangent2, dof1, 1.0);
+        add_vertex(&mut j, 2, &tangent2, dof2, -1.0);
+    }
+
+    // Rows 3+ (torsional/rolling): all zero — flex vertices have no angular DOFs
+    j
+}
+
 /// Compute the full dim×nv contact Jacobian for a contact point.
 ///
 /// Returns a `contact.dim`×nv matrix where rows depend on contact dimension:
@@ -152,6 +205,9 @@ pub fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -
     // Flex-rigid contacts: vertex side has trivial Jacobian (identity on DOF columns),
     // rigid side uses the standard kinematic chain traversal.
     if let Some(vi) = contact.flex_vertex {
+        if let Some(vi2) = contact.flex_vertex2 {
+            return compute_flex_self_contact_jacobian(model, contact, vi, vi2);
+        }
         return compute_flex_contact_jacobian(model, data, contact, vi);
     }
 

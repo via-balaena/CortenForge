@@ -507,8 +507,7 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
                 continue;
             }
             let contact = &data.contacts[ci];
-            let body1 = model.geom_body[contact.geom1];
-            let body2 = model.geom_body[contact.geom2];
+            let (body1, body2) = contact.bodies(model);
             let cp = contact.pos;
 
             // Force on body2 = +f, force on body1 = -f (Newton's third law).

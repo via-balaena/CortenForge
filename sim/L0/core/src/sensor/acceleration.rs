@@ -166,18 +166,9 @@ pub fn mj_sensor_acc(model: &Model, data: &mut Data) {
                         let ci = data.efc_id[ei];
                         if ci < data.contacts.len() {
                             let c = &data.contacts[ci];
-                            // Body-level match: check if either contact geom belongs
-                            // to the sensor's body (MuJoCo: geom_bodyid[con->geom[k]] == bodyid)
-                            let geom1_body = if c.geom1 < model.ngeom {
-                                model.geom_body[c.geom1]
-                            } else {
-                                usize::MAX
-                            };
-                            let geom2_body = if c.geom2 < model.ngeom {
-                                model.geom_body[c.geom2]
-                            } else {
-                                usize::MAX
-                            };
+                            // Body-level match: check if either contact body matches
+                            // the sensor's body (MuJoCo: geom_bodyid[con->geom[k]] == bodyid)
+                            let (geom1_body, geom2_body) = c.bodies(model);
                             if body_id == geom1_body || body_id == geom2_body {
                                 // Read normal force from efc_force.
                                 // NOTE: This reads efc_force directly, NOT via mj_contactForce().

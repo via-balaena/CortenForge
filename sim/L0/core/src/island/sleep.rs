@@ -554,8 +554,7 @@ pub fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
     let mut woke_any = false;
     for contact_idx in 0..data.ncon {
         let contact = &data.contacts[contact_idx];
-        let body1 = model.geom_body[contact.geom1];
-        let body2 = model.geom_body[contact.geom2];
+        let (body1, body2) = contact.bodies(model);
         let state1 = data.body_sleep_state[body1];
         let state2 = data.body_sleep_state[body2];
 

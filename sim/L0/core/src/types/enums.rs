@@ -884,3 +884,38 @@ impl std::fmt::Display for ResetError {
 }
 
 impl std::error::Error for ResetError {}
+
+/// Bending model for dim=2 flex bodies.
+///
+/// `Cotangent` (default) matches MuJoCo's cotangent Laplacian (Wardetzky/Garg).
+/// `Bridson` preserves the dihedral angle spring model (CortenForge extension).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum FlexBendingType {
+    /// Wardetzky/Garg cotangent Laplacian (MuJoCo-conformant, default).
+    #[default]
+    Cotangent,
+    /// Bridson dihedral angle springs (nonlinear, large-deformation accurate).
+    Bridson,
+}
+
+/// Self-collision algorithm selection for flex bodies.
+///
+/// Matches MuJoCo's `mjtFlexSelf` enum. Controls how non-adjacent element
+/// pairs are tested for collision within a single flex body.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[repr(u8)]
+pub enum FlexSelfCollide {
+    /// No self-collision (non-adjacent elements not tested).
+    None = 0,
+    /// Brute-force: test all non-adjacent element pairs O(n²).
+    Narrow = 1,
+    /// BVH midphase: per-element AABB tree for candidate pair pruning.
+    Bvh = 2,
+    /// Sweep-and-prune midphase: sort element AABBs along axis of max variance.
+    Sap = 3,
+    /// Automatic: BVH for dim=3 (solids), SAP otherwise (shells/cables).
+    #[default]
+    Auto = 4,
+}

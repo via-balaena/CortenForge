@@ -4,7 +4,7 @@
 //! parameters, and metadata for equality, friction, limit, and contact
 //! constraints. Corresponds to MuJoCo's `engine_core_constraint.c`.
 
-use nalgebra::{DMatrix, DVector, Vector3};
+use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::equality::{
     extract_connect_jacobian, extract_distance_jacobian, extract_joint_equality_jacobian,
@@ -304,13 +304,9 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
 
         // --- 3a': Flex edge-length constraints (equality block) ---
         for e in 0..model.nflexedge {
-            let [v0, v1] = model.flexedge_vert[e];
-            let x0 = data.flexvert_xpos[v0];
-            let x1 = data.flexvert_xpos[v1];
-            let diff = x1 - x0;
-            let dist = diff.norm();
             let rest_len = model.flexedge_length0[e];
             let flex_id = model.flexedge_flexid[e];
+            let dist = data.flexedge_length[e];
 
             if dist < 1e-10 {
                 // Degenerate: zero-length edge, skip (fill zeros, finalize_row! handles it)
@@ -330,36 +326,18 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 continue;
             }
 
-            let direction = diff / dist;
             let pos_error = dist - rest_len; // positive = stretched, negative = compressed
 
-            // Jacobian: ∂C/∂x_v0 = -direction, ∂C/∂x_v1 = +direction
-            // (§27F) Pinned vertices (dofadr=usize::MAX) have zero Jacobian columns.
-            let dof0 = model.flexvert_dofadr[v0];
-            let dof1 = model.flexvert_dofadr[v1];
-            if dof0 != usize::MAX {
-                for k in 0..3 {
-                    data.efc_J[(row, dof0 + k)] = -direction[k];
-                }
-            }
-            if dof1 != usize::MAX {
-                for k in 0..3 {
-                    data.efc_J[(row, dof1 + k)] = direction[k];
-                }
+            // §42A-i: Scatter pre-computed edge Jacobian into dense efc_J row.
+            let rowadr = model.flexedge_J_rowadr[e];
+            let rownnz = model.flexedge_J_rownnz[e];
+            for j in 0..rownnz {
+                let col = model.flexedge_J_colind[rowadr + j];
+                data.efc_J[(row, col)] = data.flexedge_J[rowadr + j];
             }
 
-            // Velocity: relative velocity projected onto edge direction
-            let vel0 = if dof0 == usize::MAX {
-                Vector3::zeros()
-            } else {
-                Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
-            };
-            let vel1 = if dof1 == usize::MAX {
-                Vector3::zeros()
-            } else {
-                Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
-            };
-            let vel_error = (vel1 - vel0).dot(&direction);
+            // Velocity error: read from pre-computed Data field
+            let vel_error = data.flexedge_velocity[e];
 
             finalize_row!(
                 model.flex_edge_solref[flex_id],
@@ -621,40 +599,66 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             let is_pyramidal = dim >= 3 && model.cone == 0 && contact.mu[0] >= 1e-10;
 
             // Precompute contact bodyweight for DT-39
-            let bw_contact = {
-                let b1 = if contact.geom1 < model.geom_body.len() {
-                    model.geom_body[contact.geom1]
+            let bw_contact =
+                if let (Some(vi1), Some(vi2)) = (contact.flex_vertex, contact.flex_vertex2) {
+                    // Self-collision: both sides are flex vertices — use vertex bodies
+                    let b1 = model.flexvert_bodyid[vi1];
+                    let b2 = model.flexvert_bodyid[vi2];
+                    let w1t = if b1 < model.body_invweight0.len() {
+                        model.body_invweight0[b1][0]
+                    } else {
+                        0.0
+                    };
+                    let w2t = if b2 < model.body_invweight0.len() {
+                        model.body_invweight0[b2][0]
+                    } else {
+                        0.0
+                    };
+                    let w1r = if b1 < model.body_invweight0.len() {
+                        model.body_invweight0[b1][1]
+                    } else {
+                        0.0
+                    };
+                    let w2r = if b2 < model.body_invweight0.len() {
+                        model.body_invweight0[b2][1]
+                    } else {
+                        0.0
+                    };
+                    [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
                 } else {
-                    0
+                    let b1 = if contact.geom1 < model.geom_body.len() {
+                        model.geom_body[contact.geom1]
+                    } else {
+                        0
+                    };
+                    let b2 = if contact.geom2 < model.geom_body.len() {
+                        model.geom_body[contact.geom2]
+                    } else {
+                        0
+                    };
+                    let w1t = if b1 < model.body_invweight0.len() {
+                        model.body_invweight0[b1][0]
+                    } else {
+                        0.0
+                    };
+                    let w2t = if b2 < model.body_invweight0.len() {
+                        model.body_invweight0[b2][0]
+                    } else {
+                        0.0
+                    };
+                    let w1r = if b1 < model.body_invweight0.len() {
+                        model.body_invweight0[b1][1]
+                    } else {
+                        0.0
+                    };
+                    let w2r = if b2 < model.body_invweight0.len() {
+                        model.body_invweight0[b2][1]
+                    } else {
+                        0.0
+                    };
+                    // [translational, rotational]
+                    [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
                 };
-                let b2 = if contact.geom2 < model.geom_body.len() {
-                    model.geom_body[contact.geom2]
-                } else {
-                    0
-                };
-                let w1t = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][0]
-                } else {
-                    0.0
-                };
-                let w2t = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][0]
-                } else {
-                    0.0
-                };
-                let w1r = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][1]
-                } else {
-                    0.0
-                };
-                let w2r = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][1]
-                } else {
-                    0.0
-                };
-                // [translational, rotational]
-                [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
-            };
 
             if is_pyramidal {
                 // §32: Pyramidal friction cone — emit 2*(dim-1) facet rows.

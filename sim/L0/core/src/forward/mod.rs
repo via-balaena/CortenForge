@@ -309,6 +309,7 @@ impl Data {
         // ========== Position Stage ==========
         position::mj_fwd_position(model, self);
         crate::dynamics::flex::mj_flex(model, self);
+        crate::dynamics::flex::mj_flex_edge(model, self);
 
         // CRBA: Compute mass matrix M from kinematic tree. Depends only on
         // joint positions (available after FK). MuJoCo computes M in the
