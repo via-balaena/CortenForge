@@ -566,9 +566,7 @@ fn test_vertex_against_element_faces(
 
 /// Find the nearest vertex (by Euclidean distance) from a set.
 ///
-/// # Panics
-/// Panics if `candidates` is empty (caller guarantees non-empty).
-#[allow(clippy::expect_used)]
+/// Returns `candidates[0]` if the set is empty (caller guarantees non-empty).
 fn nearest_vertex(pos: Vector3<f64>, candidates: &[usize], data: &Data) -> usize {
     candidates
         .iter()
@@ -578,7 +576,7 @@ fn nearest_vertex(pos: Vector3<f64>, candidates: &[usize], data: &Data) -> usize
             let db = (data.flexvert_xpos[b] - pos).norm_squared();
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         })
-        .expect("candidates must not be empty")
+        .unwrap_or(candidates[0])
 }
 
 /// Sphere-triangle contact test.

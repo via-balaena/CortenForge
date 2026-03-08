@@ -470,7 +470,7 @@ pub struct Model {
     /// For both pinned: rownnz = 0.
     pub flexedge_J_rownnz: Vec<usize>,
     /// Start index in colind/J arrays for each edge. Length `nflexedge`.
-    /// rowadr[0] = 0, rowadr[e] = rowadr[e-1] + rownnz[e-1].
+    /// rowadr\[0\] = 0, rowadr\[e\] = rowadr\[e-1\] + rownnz\[e-1\].
     pub flexedge_J_rowadr: Vec<usize>,
     /// DOF column indices for non-zero entries. Length `total_nnz`.
     /// Contains the DOF indices for each endpoint body, in order:
