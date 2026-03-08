@@ -1,6 +1,6 @@
 # Phase 10 — Flex Pipeline: Session Plan
 
-21 sessions, each self-contained. The umbrella spec
+23 sessions, each self-contained. The umbrella spec
 (`PHASE10_UMBRELLA.md`) coordinates across context boundaries.
 
 Phase 10 closes the flex (deformable body) pipeline gaps in the v1.0
@@ -39,15 +39,11 @@ runtime: Session 10 handles precomputation and storage, Session 11
 handles runtime force application, trait architecture, and Bridson
 refactor.
 
-**Spec D (§42A-v Flex-Flex): compressed from 5 to 3 sessions.** At M
-effort with heavy reuse of Spec C's element-element narrowphase
-primitives, Spec D doesn't warrant a full 5-session cycle. Combined
-rubric+spec in one session, implement in one session, combined
-review in one session. Precedent: Phase 8 downgraded DT-25 (M effort)
-from 5-session spec to 1-session verification.
+~~**Spec D (§42A-v Flex-Flex): compressed from 5 to 3 sessions.**~~ Reverted
+to full 5-session cycle (rubric, spec, implement, review-create,
+review-execute) for consistency with Specs A/B/C.
 
-Net effect: +1 (Spec B split) -2 (Spec D compression) = **21 sessions**
-(down from 22).
+Net effect: +1 (Spec B split) = **23 sessions** (up from 22).
 
 ---
 
@@ -62,7 +58,7 @@ Every Phase 10 task is assigned to exactly one deliverable:
 | §42A-i | Spec A | Pending | Sparse flex edge Jacobian (`flexedge_J`) — L effort, algorithmic (CSR format, body Jacobian projection) |
 | §42B | Spec B | Pending | Cotangent Laplacian bending — L effort, largest algorithmic task (Wardetzky/Garg precomputation + trait abstraction). 6 sessions (split implementation). |
 | §42A-iv / DT-142 | Spec C | Pending | Flex self-collision dispatch — L effort, BVH/SAP midphase + narrowphase, `FlexSelfCollide` enum |
-| §42A-v / DT-143 | Spec D | Pending | Flex-flex cross-object collision filtering — M effort, reuses Spec C primitives. 3 sessions (compressed cycle). |
+| §42A-v / DT-143 | Spec D | Pending | Flex-flex cross-object collision filtering — M effort, reuses Spec C primitives. 5 sessions (full cycle). |
 
 ---
 
@@ -77,7 +73,7 @@ Session 1 (Umbrella)
     |   Sessions 14-18 (Spec C: §42A-iv Self-Collision)
     |       |
     |       v (hard dep: Spec D reuses Spec C narrowphase primitives)
-    |   Sessions 19-21 (Spec D: §42A-v Flex-Flex)
+    |   Sessions 19-23 (Spec D: §42A-v Flex-Flex)
     |
     +-- Sessions 3-7 (Spec A: §42A-i Edge Jacobian)     <- independent
     |
@@ -606,7 +602,7 @@ Present the Review Verdict (section 10) to the user when done.
 **Prerequisite:** Session 2 (T1: §42A-ii flex_rigid) must be complete.
 Spec C's self-collision gate requires `flex_rigid[f]` from §42A-ii.
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- write Spec C rubric.
@@ -770,7 +766,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ---
 
-## Session 19: Spec D rubric + spec (Flex-Flex Cross-Object Collision)
+## Session 19: Spec D rubric (Flex-Flex Cross-Object Collision)
 
 **Prerequisite:** Session 18 (Spec C review) must be complete. Spec D
 reuses element-element narrowphase primitives from Spec C.
@@ -778,37 +774,15 @@ reuses element-element narrowphase primitives from Spec C.
 - [ ] Complete
 
 ```
-Phase 10 Flex Pipeline -- write Spec D rubric and spec (compressed cycle).
+Phase 10 Flex Pipeline -- write Spec D rubric.
 
 Read these in order:
 1. sim/docs/templates/pre_implementation/RUBRIC_TEMPLATE.md
-2. sim/docs/templates/pre_implementation/SPEC_TEMPLATE.md
-3. sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/PHASE10_UMBRELLA.md
+2. sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/PHASE10_UMBRELLA.md
 
 Spec D covers §42A-v / DT-143: Flex-flex cross-object collision filtering
 — broadphase filtering via contype/conaffinity bitmasks + element-element
-narrowphase between two different flex objects. This is a compressed
-3-session cycle (M effort, heavy reuse of Spec C primitives).
-
-This session produces BOTH SPEC_D_RUBRIC.md and SPEC_D.md:
-
-**Rubric phase first:**
-- Read the MuJoCo C source for flex-flex collision dispatch
-- Build SPEC_D_RUBRIC.md
-- Grade P1 honestly — close gaps until A+
-
-**Spec phase second (same session):**
-Write SPEC_D.md using the rubric as the quality bar:
-- MuJoCo Reference section first (C source is the single source of truth)
-- Broadphase: bodyflex index space, canCollide2() bitmask filter
-- Narrowphase: element-element collision between two flex objects,
-  reusing Spec C's primitives (triangle-triangle, tet-tet)
-- BVH acceleration: per-flex AABB trees for cross-body pair pruning
-- Contact parameter combination: contact_param_flex_flex() with
-  priority + solmix protocol
-- Pipeline integration: dispatch loop after flex-rigid and flex-self
-- Grade each spec section against the rubric as you write
-- Present for approval -- do NOT implement
+narrowphase between two different flex objects.
 
 MuJoCo ref:
 - `engine_collision_driver.c` → `canCollide2()` — unified bodyflex index
@@ -819,13 +793,64 @@ MuJoCo ref:
 - Contact parameter combination: priority + solmix protocol matching
   flex-rigid contact params.
 
+Key areas to validate:
+- Broadphase: bodyflex index space, canCollide2() bitmask filter
+- Narrowphase: element-element collision between two flex objects,
+  reusing Spec C's primitives (triangle-triangle, tet-tet)
+- BVH acceleration: per-flex AABB trees for cross-body pair pruning
+- Contact parameter combination: contact_param_flex_flex() with
+  priority + solmix protocol
+- Pipeline integration: dispatch loop after flex-rigid and flex-self
+
+Follow the workflow exactly:
+- Phase 1: Read the MuJoCo C source for flex-flex collision dispatch
+- Phase 2: Build SPEC_D_RUBRIC.md
+- Phase 3: Grade P1 honestly -- do not proceed to P2-P8 until P1 is A+
+- Phase 4: Close gaps, re-grade until all criteria are A+
+
+Do NOT write the spec -- that is the next session.
+
 Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/
 MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 ```
 
 ---
 
-## Session 20: Spec D implementation
+## Session 20: Spec D spec (Flex-Flex Cross-Object Collision)
+
+- [ ] Complete
+
+```
+Phase 10 Flex Pipeline -- write Spec D spec.
+
+Read these in order:
+1. sim/docs/templates/pre_implementation/SPEC_TEMPLATE.md
+2. sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/PHASE10_UMBRELLA.md
+3. sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_RUBRIC.md
+
+Write SPEC_D.md using the rubric as the quality bar:
+- MuJoCo Reference section first (C source is the single source of truth)
+- Broadphase: bodyflex index space, canCollide2() bitmask filter
+- Narrowphase: element-element collision between two flex objects,
+  reusing Spec C's primitives (triangle-triangle, tet-tet)
+- BVH acceleration: per-flex AABB trees for cross-body pair pruning
+- Contact parameter combination: contact_param_flex_flex() with
+  priority + solmix protocol
+- Pipeline integration: dispatch loop after flex-rigid and flex-self
+- Contact encoding: flex_vertex + flex_vertex2 from different flex objects,
+  geom1/geom2 sentinel convention
+- Constraint Jacobian: reuse self-collision Jacobian pattern with
+  DOFs from two different flex objects
+- Grade each spec section against the rubric as you write
+- Present for approval -- do NOT implement
+
+Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/
+MuJoCo conformance is the cardinal goal. C source is the single source of truth.
+```
+
+---
+
+## Session 21: Spec D implementation
 
 - [ ] Complete
 
@@ -852,42 +877,59 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ---
 
-## Session 21: Spec D review (compressed)
+## Session 22: Spec D review -- create review document
 
 - [ ] Complete
 
 ```
-Phase 10 Flex Pipeline -- create and execute Spec D review (compressed cycle).
+Phase 10 Flex Pipeline -- create Spec D review document.
 
 Read these:
 1. sim/docs/templates/post_implementation/REVIEW_TEMPLATE.md
 2. sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D.md
+
+Copy the review template into this directory as SPEC_D_REVIEW.md. Fill in the
+structure by walking the spec: populate the Key Behaviors table from the spec's
+Key Behaviors section, list every S1..SN section, every AC, every planned test
+T1..TN, every edge case from the Edge Case Inventory, every row from the
+Convention Notes table, every item from the Blast Radius section, and every
+Out of Scope item.
+
+This session creates the review document -- it does NOT execute the review.
+Leave the "Implementation does", "Status", "CortenForge After", and all
+verdict fields blank. The next session fills those in by reading the actual
+implementation.
+
+Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
+```
+
+---
+
+## Session 23: Spec D review -- execute review
+
+- [ ] Complete
+
+```
+Phase 10 Flex Pipeline -- execute Spec D review.
+
+Read these:
+1. sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
+2. sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D.md
 3. The implementation files listed in SPEC_D.md's Files Affected section
 
-This session creates AND executes the review in one pass (compressed
-cycle for M-effort spec with heavy Spec C reuse):
+Execute the review: for every row in the review document, read the actual
+implementation and fill in the verdict. Grade each spec section, verify each
+AC has a passing test, check every planned test was written, compare blast
+radius predictions against reality, audit convention notes, scan for weak
+implementations, and verify all deferred work is tracked.
 
-**Create SPEC_D_REVIEW.md:**
-Copy the review template. Fill in the structure by walking the spec:
-populate the Key Behaviors table, list every S1..SN section, every AC,
-every planned test, every edge case, convention notes, blast radius items,
-and out of scope items.
-
-**Execute the review immediately:**
-For every row, read the actual implementation and fill in the verdict.
-Grade each spec section, verify each AC has a passing test, check every
-planned test was written, compare blast radius predictions against reality,
-audit convention notes, scan for weak implementations, and verify all
-deferred work is tracked.
-
-Fix any "fix before shipping" items. Run domain tests after fixes.
+Fix any "fix before shipping" items in this session. For each fix, update the
+review document to reflect the resolution. Run domain tests after fixes.
 
 This is the final session of Phase 10. After completing, verify the Phase 10
 aggregate ACs from the umbrella (PH10-AC1 through PH10-AC6) are satisfied.
 
 Present the Review Verdict (section 10) to the user when done.
-
-Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 ```
 
 ---
@@ -914,6 +956,8 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 | 16 | Spec C implementation | Done | 469c61d |
 | 17 | Spec C review -- create document | Done | b1263d0 |
 | 18 | Spec C review -- execute | Done | 772b8a3 |
-| 19 | Spec D rubric + spec (§42A-v Flex-Flex) | Pending | |
-| 20 | Spec D implementation | Pending | |
-| 21 | Spec D review (compressed) | Pending | |
+| 19 | Spec D rubric (§42A-v Flex-Flex) | Pending | |
+| 20 | Spec D spec | Pending | |
+| 21 | Spec D implementation | Pending | |
+| 22 | Spec D review -- create document | Pending | |
+| 23 | Spec D review -- execute | Pending | |
