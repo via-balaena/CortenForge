@@ -718,7 +718,7 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 17: Spec C review -- create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- create Spec C review document.
@@ -912,7 +912,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase10_flex_pipeline/SPEC_D_REVIEW.md
 | 14 | Spec C rubric (§42A-iv Self-Collision) | Done | 3db4561 |
 | 15 | Spec C spec | Done | `f384a2f` |
 | 16 | Spec C implementation | Done | 469c61d |
-| 17 | Spec C review -- create document | Pending | |
+| 17 | Spec C review -- create document | Done | b1263d0 |
 | 18 | Spec C review -- execute | Pending | |
 | 19 | Spec D rubric + spec (§42A-v Flex-Flex) | Pending | |
 | 20 | Spec D implementation | Pending | |
