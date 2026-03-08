@@ -959,5 +959,5 @@ Present the Review Verdict (section 10) to the user when done.
 | 19 | Spec D rubric (§42A-v Flex-Flex) | Done | 460705b |
 | 20 | Spec D spec | Done | `fb851d4` |
 | 21 | Spec D implementation | Done | `8945051` |
-| 22 | Spec D review -- create document | Pending | |
-| 23 | Spec D review -- execute | Pending | |
+| 22 | Spec D review -- create document | Done | `c9951a7` |
+| 23 | Spec D review -- execute | Done | `c9951a7` |
