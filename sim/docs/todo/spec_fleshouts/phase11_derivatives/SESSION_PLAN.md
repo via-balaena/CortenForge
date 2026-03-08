@@ -203,7 +203,7 @@ is the cardinal goal.
 
 ## Session 3: T1 items (DT-51 mjd_inverseFD + DT-53 mj_forwardSkip)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- implement T1 items (FD infrastructure).

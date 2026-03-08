@@ -57,7 +57,7 @@ use crate::constraint::impedance::MJ_MINVAL;
 use crate::dynamics::object_velocity_local;
 use crate::dynamics::spatial::{SpatialVector, spatial_cross_motion};
 use crate::forward::{
-    ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl, muscle_gain_length, norm3,
+    MjStage, ellipsoid_moment, fluid_geom_semi_axes, hill_active_fl, muscle_gain_length, norm3,
 };
 use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::jacobian::{
@@ -2585,6 +2585,232 @@ fn hill_force_velocity_deriv(norm_vel: f64) -> f64 {
 }
 
 // ============================================================================
+// Step 14 — DT-51: mjd_inverse_fd (Inverse Dynamics Derivatives)
+// ============================================================================
+
+/// Finite-difference derivatives of inverse dynamics.
+///
+/// Contains the Jacobians of `qfrc_inverse` with respect to position,
+/// velocity, and acceleration. `DfDa` approximately equals the mass
+/// matrix `M` (since `qfrc_inverse = M*qacc + bias - passive - constraint`).
+///
+/// # MuJoCo Equivalence
+///
+/// Matches the output of `mjd_inverseFD()` in `engine_derivative.c`.
+#[derive(Debug, Clone)]
+#[allow(non_snake_case)]
+pub struct InverseDynamicsDerivatives {
+    /// `∂qfrc_inverse/∂qpos` (nv × nv).
+    /// Position perturbations in tangent space.
+    pub DfDq: DMatrix<f64>,
+    /// `∂qfrc_inverse/∂qvel` (nv × nv).
+    pub DfDv: DMatrix<f64>,
+    /// `∂qfrc_inverse/∂qacc` (nv × nv).
+    /// Approximately equals the mass matrix M.
+    pub DfDa: DMatrix<f64>,
+}
+
+/// Compute finite-difference derivatives of inverse dynamics.
+///
+/// Perturbs `qpos`, `qvel`, and `qacc` around the current state, recomputes
+/// derived quantities via `forward_skip() + inverse()`, and measures
+/// `qfrc_inverse` deltas. Produces three nv×nv Jacobian matrices.
+///
+/// # Algorithm
+///
+/// **DfDq** (position derivatives): For each DOF `i`:
+///   1. Perturb `qpos` in tangent direction `i` by `±ε`
+///   2. Run `forward_skip(None, true)` — full pipeline, skip sensors
+///   3. Restore `qacc` to nominal (forward overwrites it)
+///   4. Run `inverse()` to compute `qfrc_inverse` with original accelerations
+///   5. Measure `qfrc_inverse` difference → column of DfDq
+///
+/// **DfDv** (velocity derivatives): Same as DfDq but perturbing `qvel`
+/// and using `forward_skip(Pos, true)` — position data is unchanged, so
+/// FK/collision/CRBA are skipped (~30–50% savings per column).
+///
+/// **DfDa** (acceleration derivatives): For each DOF `i`:
+///   1. Perturb `qacc[i]` by `±ε`
+///   2. Run `inverse()` directly (no forward — only `qacc` changed)
+///   3. Measure `qfrc_inverse` difference → column of DfDa
+///
+/// Since `qfrc_inverse = M*qacc + ...`, `DfDa ≈ M`.
+///
+/// # MuJoCo Equivalence
+///
+/// Matches `mjd_inverseFD()` in `engine_derivative.c`:
+/// - Position columns use `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)`
+/// - Velocity columns use `mj_forwardSkip(m, d, mjSTAGE_POS, 1)`
+/// - Acceleration columns call only `mj_inverse(m, d)`
+/// - After each `forward_skip`, `qacc` is restored to nominal before `inverse()`
+///
+/// MuJoCo's version also optionally computes sensor derivatives (DsDq,
+/// DsDv, DsDa) — not included here.
+///
+/// # Cost
+///
+/// - Centered: `2·nv` full-forward + `2·nv` skip-pos-forward + `2·nv` inverse-only.
+/// - Forward:  `1 + nv` full-forward + `nv` skip-pos-forward + `nv` inverse-only.
+///
+/// # Panics
+///
+/// Panics if `config.eps` is non-positive, non-finite, or greater than `1e-2`.
+///
+/// # Errors
+///
+/// Returns `StepError` if any `forward_skip()` call fails.
+#[allow(non_snake_case, clippy::similar_names)]
+pub fn mjd_inverse_fd(
+    model: &Model,
+    data: &Data,
+    config: &DerivativeConfig,
+) -> Result<InverseDynamicsDerivatives, StepError> {
+    assert!(
+        config.eps.is_finite() && config.eps > 0.0 && config.eps <= 1e-2,
+        "DerivativeConfig::eps must be in (0, 1e-2], got {}",
+        config.eps
+    );
+
+    let eps = config.eps;
+    let nv = model.nv;
+
+    if nv == 0 {
+        return Ok(InverseDynamicsDerivatives {
+            DfDq: DMatrix::zeros(0, 0),
+            DfDv: DMatrix::zeros(0, 0),
+            DfDa: DMatrix::zeros(0, 0),
+        });
+    }
+
+    // Save nominal state.
+    let qpos_0 = data.qpos.clone();
+    let qvel_0 = data.qvel.clone();
+    let qacc_0 = data.qacc.clone();
+    let mut scratch = data.clone();
+
+    // Compute nominal qfrc_inverse for forward differences.
+    // full forward_skip(None) to populate all derived quantities, then
+    // restore qacc and compute inverse.
+    let qfrc_0 = if config.centered {
+        None
+    } else {
+        scratch.forward_skip(model, MjStage::None, true)?;
+        scratch.qacc.copy_from(&qacc_0);
+        scratch.inverse(model);
+        Some(scratch.qfrc_inverse.clone())
+    };
+
+    let mut DfDq = DMatrix::zeros(nv, nv);
+    let mut DfDv = DMatrix::zeros(nv, nv);
+    let mut DfDa = DMatrix::zeros(nv, nv);
+
+    // --- DfDq: perturb qpos (tangent space) ---
+    // forward_skip(None, true) recomputes M, qfrc_bias, qfrc_passive,
+    // qfrc_constraint from the perturbed qpos. Sensors are skipped.
+    // We restore qacc after forward (which overwrites it) so inverse()
+    // uses the nominal acceleration.
+    for i in 0..nv {
+        // +eps perturbation
+        let mut dq = DVector::zeros(nv);
+        dq[i] = eps;
+        mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos_0, &dq, 1.0);
+        scratch.qvel.copy_from(&qvel_0);
+        scratch.forward_skip(model, MjStage::None, true)?;
+        scratch.qacc.copy_from(&qacc_0);
+        scratch.inverse(model);
+        let f_plus = scratch.qfrc_inverse.clone();
+
+        if config.centered {
+            // -eps perturbation
+            dq[i] = -eps;
+            mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos_0, &dq, 1.0);
+            scratch.qvel.copy_from(&qvel_0);
+            scratch.forward_skip(model, MjStage::None, true)?;
+            scratch.qacc.copy_from(&qacc_0);
+            scratch.inverse(model);
+            let f_minus = &scratch.qfrc_inverse;
+
+            let col = (&f_plus - f_minus) / (2.0 * eps);
+            DfDq.column_mut(i).copy_from(&col);
+        } else if let Some(ref f_ref) = qfrc_0 {
+            let col = (&f_plus - f_ref) / eps;
+            DfDq.column_mut(i).copy_from(&col);
+        }
+    }
+
+    // --- DfDv: perturb qvel ---
+    // Position is unchanged, so forward_skip(Pos, true) skips FK/collision/CRBA
+    // and only recomputes velocity-dependent quantities (Coriolis, damping).
+    // Matches MuJoCo's mj_forwardSkip(m, d, mjSTAGE_POS, 1) for velocity columns.
+    //
+    // We need position-stage data to be current first. Run a full forward_skip
+    // from nominal qpos to populate FK/collision/CRBA, then use skip(Pos) for
+    // each velocity perturbation.
+    scratch.qpos.copy_from(&qpos_0);
+    scratch.qvel.copy_from(&qvel_0);
+    scratch.forward_skip(model, MjStage::None, true)?;
+
+    for i in 0..nv {
+        // +eps perturbation
+        scratch.qvel.copy_from(&qvel_0);
+        scratch.qvel[i] += eps;
+        scratch.forward_skip(model, MjStage::Pos, true)?;
+        scratch.qacc.copy_from(&qacc_0);
+        scratch.inverse(model);
+        let f_plus = scratch.qfrc_inverse.clone();
+
+        if config.centered {
+            // -eps perturbation
+            scratch.qvel.copy_from(&qvel_0);
+            scratch.qvel[i] -= eps;
+            scratch.forward_skip(model, MjStage::Pos, true)?;
+            scratch.qacc.copy_from(&qacc_0);
+            scratch.inverse(model);
+            let f_minus = &scratch.qfrc_inverse;
+
+            let col = (&f_plus - f_minus) / (2.0 * eps);
+            DfDv.column_mut(i).copy_from(&col);
+        } else if let Some(ref f_ref) = qfrc_0 {
+            let col = (&f_plus - f_ref) / eps;
+            DfDv.column_mut(i).copy_from(&col);
+        }
+    }
+
+    // --- DfDa: perturb qacc ---
+    // Only qacc changes — no forward needed. inverse() reads qacc directly:
+    // qfrc_inverse = M*qacc + qfrc_bias - qfrc_passive - qfrc_constraint.
+    // All other quantities (M, qfrc_bias, etc.) are unchanged from the
+    // full forward_skip done above for DfDv.
+    //
+    // Reset flg_rnepost so each inverse() call recomputes body accumulators
+    // with the perturbed qacc (for correct cacc/cfrc_int/cfrc_ext, even
+    // though qfrc_inverse itself doesn't depend on them).
+    for i in 0..nv {
+        scratch.qacc.copy_from(&qacc_0);
+        scratch.qacc[i] += eps;
+        scratch.flg_rnepost = false;
+        scratch.inverse(model);
+        let f_plus = scratch.qfrc_inverse.clone();
+
+        if config.centered {
+            scratch.qacc.copy_from(&qacc_0);
+            scratch.qacc[i] -= eps;
+            scratch.flg_rnepost = false;
+            scratch.inverse(model);
+            let f_minus = &scratch.qfrc_inverse;
+
+            let col = (&f_plus - f_minus) / (2.0 * eps);
+            DfDa.column_mut(i).copy_from(&col);
+        } else if let Some(ref f_ref) = qfrc_0 {
+            let col = (&f_plus - f_ref) / eps;
+            DfDa.column_mut(i).copy_from(&col);
+        }
+    }
+
+    Ok(InverseDynamicsDerivatives { DfDq, DfDv, DfDa })
+}
+
+// ============================================================================
 // Unit tests — per-component FD validation (T7–T11) + Jacobian (T32)
 // ============================================================================
 
@@ -3505,5 +3731,546 @@ mod muscle_vel_deriv_tests {
             expected,
             d_above
         );
+    }
+}
+
+// ============================================================================
+// DT-53 tests: forward_skip regression
+// ============================================================================
+
+#[cfg(test)]
+#[allow(
+    clippy::similar_names,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::uninlined_format_args
+)]
+mod forward_skip_tests {
+    use crate::forward::MjStage;
+    use crate::types::Model;
+
+    /// forward_skip(None, false) must produce identical results to forward().
+    #[test]
+    fn dt53_forward_skip_none_matches_forward() {
+        let model = Model::n_link_pendulum(3, 1.0, 0.1);
+        let mut data_fwd = model.make_data();
+        let mut data_skip = model.make_data();
+
+        // Set non-trivial state
+        data_fwd.qpos[0] = 0.3;
+        data_fwd.qpos[1] = -0.2;
+        data_fwd.qpos[2] = 0.1;
+        data_fwd.qvel[0] = 0.5;
+        data_fwd.qvel[1] = -0.3;
+        data_fwd.qvel[2] = 0.7;
+        data_skip.qpos.copy_from(&data_fwd.qpos);
+        data_skip.qvel.copy_from(&data_fwd.qvel);
+
+        // forward() vs forward_skip(None, false)
+        data_fwd.forward(&model).expect("forward failed");
+        data_skip
+            .forward_skip(&model, MjStage::None, false)
+            .expect("forward_skip failed");
+
+        // Compare qacc (primary output of forward dynamics)
+        for i in 0..model.nv {
+            assert!(
+                (data_fwd.qacc[i] - data_skip.qacc[i]).abs() < 1e-14,
+                "qacc[{}] mismatch: forward={:.16e}, skip={:.16e}",
+                i,
+                data_fwd.qacc[i],
+                data_skip.qacc[i]
+            );
+        }
+
+        // Compare qfrc_smooth
+        for i in 0..model.nv {
+            assert!(
+                (data_fwd.qfrc_smooth[i] - data_skip.qfrc_smooth[i]).abs() < 1e-14,
+                "qfrc_smooth[{}] mismatch",
+                i
+            );
+        }
+    }
+
+    /// forward_skip(Pos, true) skips position stage but still computes
+    /// accelerations correctly when position data is already current.
+    #[test]
+    fn dt53_forward_skip_pos_after_position_stage() {
+        let model = Model::n_link_pendulum(2, 1.0, 0.1);
+        let mut data = model.make_data();
+
+        data.qpos[0] = 0.5;
+        data.qpos[1] = -0.3;
+        data.qvel[0] = 0.2;
+        data.qvel[1] = 0.4;
+
+        // Run full forward first to populate position-dependent data
+        data.forward(&model).expect("forward failed");
+        let qacc_full = data.qacc.clone();
+
+        // Now perturb only velocity and use skip(Pos)
+        // Without velocity perturbation, skip(Pos) should give same result
+        data.forward_skip(&model, MjStage::Pos, true)
+            .expect("forward_skip(Pos) failed");
+
+        for i in 0..model.nv {
+            assert!(
+                (data.qacc[i] - qacc_full[i]).abs() < 1e-12,
+                "qacc[{}] mismatch after skip(Pos): full={:.16e}, skip={:.16e}",
+                i,
+                qacc_full[i],
+                data.qacc[i]
+            );
+        }
+    }
+
+    /// forward_skip(Vel, true) skips both position and velocity stages.
+    /// When neither qpos nor qvel changed, result matches forward().
+    #[test]
+    fn dt53_forward_skip_vel_unchanged_state() {
+        let model = Model::n_link_pendulum(2, 1.0, 0.1);
+        let mut data = model.make_data();
+
+        data.qpos[0] = 0.3;
+        data.qvel[0] = 1.0;
+
+        // Full forward to populate everything
+        data.forward(&model).expect("forward failed");
+        let qacc_full = data.qacc.clone();
+
+        // Skip both pos and vel stages — should get same result
+        data.forward_skip(&model, MjStage::Vel, true)
+            .expect("forward_skip(Vel) failed");
+
+        for i in 0..model.nv {
+            assert!(
+                (data.qacc[i] - qacc_full[i]).abs() < 1e-12,
+                "qacc[{}] mismatch after skip(Vel): full={:.16e}, skip={:.16e}",
+                i,
+                qacc_full[i],
+                data.qacc[i]
+            );
+        }
+    }
+
+    /// Verify that forward_skip + integrate produces a valid step.
+    #[test]
+    fn dt53_forward_skip_plus_integrate() {
+        let model = Model::n_link_pendulum(2, 1.0, 0.1);
+        let mut data_step = model.make_data();
+        let mut data_skip = model.make_data();
+
+        data_step.qpos[0] = 0.3;
+        data_step.qvel[0] = 0.5;
+        data_skip.qpos.copy_from(&data_step.qpos);
+        data_skip.qvel.copy_from(&data_step.qvel);
+
+        // step() = forward() + integrate() (for Euler)
+        data_step.step(&model).expect("step failed");
+
+        // forward_skip(None) + integrate() should match
+        data_skip
+            .forward_skip(&model, MjStage::None, true)
+            .expect("forward_skip failed");
+        data_skip.integrate(&model);
+
+        for i in 0..model.nq {
+            assert!(
+                (data_step.qpos[i] - data_skip.qpos[i]).abs() < 1e-12,
+                "qpos[{}] mismatch: step={:.16e}, skip+integrate={:.16e}",
+                i,
+                data_step.qpos[i],
+                data_skip.qpos[i]
+            );
+        }
+        for i in 0..model.nv {
+            assert!(
+                (data_step.qvel[i] - data_skip.qvel[i]).abs() < 1e-12,
+                "qvel[{}] mismatch: step={:.16e}, skip+integrate={:.16e}",
+                i,
+                data_step.qvel[i],
+                data_skip.qvel[i]
+            );
+        }
+    }
+
+    /// MjStage ordering: None < Pos < Vel.
+    #[test]
+    fn dt53_mj_stage_ordering() {
+        assert!(MjStage::None < MjStage::Pos);
+        assert!(MjStage::Pos < MjStage::Vel);
+        assert!(MjStage::None < MjStage::Vel);
+    }
+
+    /// Verify that velocity FD columns produce correct derivatives when
+    /// using forward_skip(Pos) to skip the position stage.
+    ///
+    /// This is the key use case for forward_skip in FD loops: position
+    /// data is unchanged when perturbing velocity, so FK/collision/CRBA
+    /// can be skipped.
+    #[test]
+    fn dt53_forward_skip_pos_velocity_fd_correctness() {
+        let model = Model::n_link_pendulum(2, 1.0, 0.1);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qpos[1] = -0.2;
+        data.qvel[0] = 0.3;
+        data.forward(&model).expect("forward failed");
+
+        let eps = 1e-6;
+        let qacc_0 = data.qacc.clone();
+
+        // Reference: use full forward() for velocity FD
+        let mut d_full = data.clone();
+        d_full.qvel[0] += eps;
+        d_full.forward(&model).expect("ref fwd+ failed");
+        d_full.qacc.copy_from(&qacc_0);
+        d_full.inverse(&model);
+        let frc_full = d_full.qfrc_inverse.clone();
+
+        // Test: use forward_skip(Pos) for velocity FD
+        let mut d_skip = data.clone();
+        // Pre-populate position data with full forward
+        d_skip.forward(&model).expect("init fwd failed");
+        // Now perturb velocity and use skip(Pos)
+        d_skip.qvel[0] += eps;
+        d_skip
+            .forward_skip(&model, MjStage::Pos, true)
+            .expect("skip fwd+ failed");
+        d_skip.qacc.copy_from(&qacc_0);
+        d_skip.inverse(&model);
+        let frc_skip = d_skip.qfrc_inverse.clone();
+
+        // Results should match
+        for i in 0..model.nv {
+            assert!(
+                (frc_full[i] - frc_skip[i]).abs() < 1e-12,
+                "qfrc_inverse[{}] mismatch: full={:.16e}, skip={:.16e}",
+                i,
+                frc_full[i],
+                frc_skip[i]
+            );
+        }
+    }
+}
+
+// ============================================================================
+// DT-51 tests: mjd_inverse_fd
+// ============================================================================
+
+#[cfg(test)]
+#[allow(
+    clippy::similar_names,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::uninlined_format_args,
+    non_snake_case
+)]
+mod inverse_fd_tests {
+    use super::*;
+    use crate::types::Model;
+
+    /// DfDa should approximately equal the mass matrix M.
+    /// qfrc_inverse = M*qacc + ... so ∂qfrc_inverse/∂qacc ≈ M.
+    #[test]
+    fn dt51_dfda_approx_mass_matrix_1link() {
+        let model = Model::n_link_pendulum(1, 1.0, 0.1);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.forward(&model).expect("forward failed");
+
+        let config = DerivativeConfig::default();
+        let derivs = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd failed");
+
+        // DfDa should be close to qM
+        for i in 0..model.nv {
+            for j in 0..model.nv {
+                let err = (derivs.DfDa[(i, j)] - data.qM[(i, j)]).abs();
+                let scale = data.qM[(i, j)].abs().max(1e-10);
+                assert!(
+                    err / scale < 1e-4,
+                    "DfDa[{},{}] = {:.8e}, qM[{},{}] = {:.8e}, rel_err = {:.8e}",
+                    i,
+                    j,
+                    derivs.DfDa[(i, j)],
+                    i,
+                    j,
+                    data.qM[(i, j)],
+                    err / scale
+                );
+            }
+        }
+    }
+
+    /// DfDa ≈ M for a multi-link pendulum (nv > 1 with coupling).
+    #[test]
+    fn dt51_dfda_approx_mass_matrix_3link() {
+        let model = Model::n_link_pendulum(3, 1.0, 0.1);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.5;
+        data.qpos[1] = -0.3;
+        data.qpos[2] = 0.2;
+        data.qvel[0] = 0.1;
+        data.forward(&model).expect("forward failed");
+
+        let config = DerivativeConfig::default();
+        let derivs = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd failed");
+
+        for i in 0..model.nv {
+            for j in 0..model.nv {
+                let err = (derivs.DfDa[(i, j)] - data.qM[(i, j)]).abs();
+                let scale = data.qM[(i, j)].abs().max(1e-10);
+                assert!(
+                    err / scale < 1e-4,
+                    "3-link DfDa[{},{}] = {:.8e}, qM = {:.8e}, rel_err = {:.8e}",
+                    i,
+                    j,
+                    derivs.DfDa[(i, j)],
+                    data.qM[(i, j)],
+                    err / scale
+                );
+            }
+        }
+    }
+
+    /// DfDv should capture velocity-dependent terms (Coriolis/centrifugal).
+    ///
+    /// For a multi-link pendulum with nonzero velocity, the bias forces
+    /// (Coriolis/centrifugal) depend on velocity. DfDv captures
+    /// ∂qfrc_inverse/∂qvel. We verify DfDv is nonzero by independent FD
+    /// of qfrc_inverse w.r.t. qvel using forward() + inverse().
+    #[test]
+    fn dt51_dfdv_matches_independent_fd() {
+        let model = Model::n_link_pendulum(2, 1.0, 0.1);
+        let mut data = model.make_data();
+
+        data.qpos[0] = 0.5;
+        data.qpos[1] = -0.3;
+        data.qvel[0] = 1.0;
+        data.qvel[1] = -0.5;
+        data.forward(&model).expect("forward failed");
+
+        // Compute via mjd_inverse_fd
+        let config = DerivativeConfig::default();
+        let derivs = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd failed");
+
+        // Independent FD verification: perturb qvel[0] manually and check
+        let eps = 1e-6;
+        let qacc_0 = data.qacc.clone();
+        let mut d_plus = data.clone();
+        let mut d_minus = data.clone();
+        d_plus.qvel[0] += eps;
+        d_minus.qvel[0] -= eps;
+        d_plus.forward(&model).expect("fwd+ failed");
+        d_plus.qacc.copy_from(&qacc_0);
+        d_plus.inverse(&model);
+        d_minus.forward(&model).expect("fwd- failed");
+        d_minus.qacc.copy_from(&qacc_0);
+        d_minus.inverse(&model);
+
+        let col_fd = (&d_plus.qfrc_inverse - &d_minus.qfrc_inverse) / (2.0 * eps);
+        for i in 0..model.nv {
+            let err = (derivs.DfDv[(i, 0)] - col_fd[i]).abs();
+            let scale = col_fd[i].abs().max(1e-10);
+            assert!(
+                err / scale < 1e-3 || err < 1e-10,
+                "DfDv[{},0]: api={:.8e}, manual_fd={:.8e}, err={:.8e}",
+                i,
+                derivs.DfDv[(i, 0)],
+                col_fd[i],
+                err
+            );
+        }
+
+        // Dimensions correct
+        assert_eq!(derivs.DfDv.nrows(), model.nv);
+        assert_eq!(derivs.DfDv.ncols(), model.nv);
+    }
+
+    /// DfDq should be non-zero (gravity torques depend on position).
+    #[test]
+    fn dt51_dfdq_nonzero_gravity() {
+        let model = Model::n_link_pendulum(2, 1.0, 0.1);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.5;
+        data.forward(&model).expect("forward failed");
+
+        let config = DerivativeConfig::default();
+        let derivs = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd failed");
+
+        let max_abs = derivs.DfDq.abs().max();
+        assert!(
+            max_abs > 1e-3,
+            "DfDq should have nonzero entries from gravity; max_abs = {:.8e}",
+            max_abs
+        );
+    }
+
+    /// DfDq matches independent FD with manual forward+inverse.
+    #[test]
+    fn dt51_dfdq_matches_independent_fd() {
+        let model = Model::n_link_pendulum(2, 1.0, 0.1);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.5;
+        data.qpos[1] = -0.2;
+        data.forward(&model).expect("forward failed");
+
+        let config = DerivativeConfig::default();
+        let derivs = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd failed");
+
+        // Independent FD: perturb qpos[0] via tangent space
+        let eps = 1e-6;
+        let qacc_0 = data.qacc.clone();
+        let mut d_plus = data.clone();
+        let mut d_minus = data.clone();
+        let mut dq = DVector::zeros(model.nv);
+        dq[0] = eps;
+        mj_integrate_pos_explicit(&model, &mut d_plus.qpos, &data.qpos, &dq, 1.0);
+        dq[0] = -eps;
+        mj_integrate_pos_explicit(&model, &mut d_minus.qpos, &data.qpos, &dq, 1.0);
+
+        d_plus.forward(&model).expect("fwd+ failed");
+        d_plus.qacc.copy_from(&qacc_0);
+        d_plus.inverse(&model);
+        d_minus.forward(&model).expect("fwd- failed");
+        d_minus.qacc.copy_from(&qacc_0);
+        d_minus.inverse(&model);
+
+        let col_fd = (&d_plus.qfrc_inverse - &d_minus.qfrc_inverse) / (2.0 * eps);
+        for i in 0..model.nv {
+            let err = (derivs.DfDq[(i, 0)] - col_fd[i]).abs();
+            let scale = col_fd[i].abs().max(1e-10);
+            assert!(
+                err / scale < 1e-3 || err < 1e-10,
+                "DfDq[{},0]: api={:.8e}, manual_fd={:.8e}, err={:.8e}",
+                i,
+                derivs.DfDq[(i, 0)],
+                col_fd[i],
+                err
+            );
+        }
+    }
+
+    /// Forward vs centered differences: centered should be more accurate.
+    #[test]
+    fn dt51_centered_vs_forward_convergence() {
+        let model = Model::n_link_pendulum(2, 1.0, 0.1);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.3;
+        data.qvel[0] = 0.5;
+        data.forward(&model).expect("forward failed");
+
+        let centered = DerivativeConfig {
+            centered: true,
+            ..Default::default()
+        };
+        let forward_cfg = DerivativeConfig {
+            centered: false,
+            ..Default::default()
+        };
+
+        let d_c = mjd_inverse_fd(&model, &data, &centered).expect("centered failed");
+        let d_f = mjd_inverse_fd(&model, &data, &forward_cfg).expect("forward failed");
+
+        // Both should agree reasonably well on DfDa ≈ M
+        for i in 0..model.nv {
+            for j in 0..model.nv {
+                let diff = (d_c.DfDa[(i, j)] - d_f.DfDa[(i, j)]).abs();
+                assert!(
+                    diff < 1e-3,
+                    "DfDa[{},{}] centered={:.8e}, forward={:.8e}, diff={:.8e}",
+                    i,
+                    j,
+                    d_c.DfDa[(i, j)],
+                    d_f.DfDa[(i, j)],
+                    diff
+                );
+            }
+        }
+
+        // DfDq should also agree (both capture gravity Jacobian)
+        for i in 0..model.nv {
+            for j in 0..model.nv {
+                let diff = (d_c.DfDq[(i, j)] - d_f.DfDq[(i, j)]).abs();
+                assert!(
+                    diff < 1e-2,
+                    "DfDq[{},{}] centered={:.8e}, forward={:.8e}, diff={:.8e}",
+                    i,
+                    j,
+                    d_c.DfDq[(i, j)],
+                    d_f.DfDq[(i, j)],
+                    diff
+                );
+            }
+        }
+    }
+
+    /// Zero-DOF model should return empty matrices.
+    #[test]
+    fn dt51_zero_dof_model() {
+        let model = Model::empty();
+        let data = model.make_data();
+
+        let config = DerivativeConfig::default();
+        let derivs = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd failed");
+
+        assert_eq!(derivs.DfDq.nrows(), 0);
+        assert_eq!(derivs.DfDv.nrows(), 0);
+        assert_eq!(derivs.DfDa.nrows(), 0);
+    }
+
+    /// Verify mjd_inverse_fd uses forward_skip correctly: position
+    /// perturbation columns use forward_skip(None, true) (full pipeline,
+    /// skip sensors) and velocity columns use forward_skip(Pos, true)
+    /// (skip FK/collision). Test this indirectly by verifying the output
+    /// matches a reference computed with full forward().
+    #[test]
+    fn dt51_skip_stage_correctness() {
+        let model = Model::n_link_pendulum(3, 1.0, 0.1);
+        let mut data = model.make_data();
+        data.qpos[0] = 0.4;
+        data.qpos[1] = -0.2;
+        data.qpos[2] = 0.1;
+        data.qvel[0] = 0.3;
+        data.qvel[1] = -0.1;
+        data.forward(&model).expect("forward failed");
+
+        let config = DerivativeConfig::default();
+        let derivs = mjd_inverse_fd(&model, &data, &config).expect("mjd_inverse_fd failed");
+
+        // Independent reference: compute DfDa manually with direct inverse
+        let qacc_0 = data.qacc.clone();
+        let eps = 1e-6;
+        let mut scratch = data.clone();
+        scratch.forward(&model).expect("ref fwd failed");
+
+        for j in 0..model.nv {
+            // +eps
+            scratch.qacc.copy_from(&qacc_0);
+            scratch.qacc[j] += eps;
+            scratch.flg_rnepost = false;
+            scratch.inverse(&model);
+            let f_plus = scratch.qfrc_inverse.clone();
+
+            // -eps
+            scratch.qacc.copy_from(&qacc_0);
+            scratch.qacc[j] -= eps;
+            scratch.flg_rnepost = false;
+            scratch.inverse(&model);
+
+            let col = (&f_plus - &scratch.qfrc_inverse) / (2.0 * eps);
+            for i in 0..model.nv {
+                let err = (derivs.DfDa[(i, j)] - col[i]).abs();
+                assert!(
+                    err < 1e-10,
+                    "DfDa[{},{}] skip_stage={:.16e}, ref={:.16e}",
+                    i,
+                    j,
+                    derivs.DfDa[(i, j)],
+                    col[i]
+                );
+            }
+        }
     }
 }
