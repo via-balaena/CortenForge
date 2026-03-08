@@ -28,7 +28,8 @@
 > DT-148 (hinge topology optimization) added during Phase 10 Spec B review.
 > DT-150 (activelayers filtering), DT-151 (edge-edge tet self-collision),
 > DT-152 (barycentric face distribution) added during Phase 10 Spec C review.
-> DT-153 (island flex contact assignment), DT-154 (flex condim=6 mapping)
+> DT-153 (island flex contact assignment), DT-154 (flex condim=6 mapping),
+> DT-155 (S10 override test for flex-flex), DT-156 (narrowphase contact count gap)
 > added during Phase 10 Spec D review.
 >
 > **Current position**: Phases 1–7 complete. Next: Phases 8–11 (parallel).
@@ -425,6 +426,8 @@ foundation isn't right.
 | DT-152 | 10i | T2 | Barycentric force distribution on face side for flex self-collision — current Jacobian applies force to nearest vertex rather than distributing across face vertices via barycentric weights. Force direction correct; only distribution approximate. Deferred from Phase 10 Spec C. |
 | DT-153 | 10i | T1 | Island assignment for flex contacts — `island/mod.rs:297-306` and `453-467` skip flex contacts (sentinel geom indices) from island assignment and constraint-to-tree lookup. Affects island-based constraint solving only (not default mode). Deferred from Phase 10 Spec D. |
 | DT-154 | 10i | T1 | Flex contact factory condim=6 mapping — all flex factories map `condim: 1→1, 4→4, _→3`. `condim=6` produces `dim=3` not `dim=6`. Pre-existing across all flex contact types. Deferred from Phase 10 Spec D. |
+| DT-155 | 10i | T1 | S10 override test for flex-flex contacts (AC11/T10) — `ENABLE_OVERRIDE` test infrastructure not wired for flex contact tests. Override logic works (verified in rigid specs); only the test harness is missing. Deferred from Phase 10 Spec D review. |
+| DT-156 | 10i | T2 | Narrowphase triangle-triangle contact count conformance gap — CortenForge produces 36 contacts vs MuJoCo 32 for overlapping 3×3 flex grids. Root cause in triangle-triangle intersection logic (Spec C territory). Behavior correct; only count differs. Identified during Phase 10 Spec D review. |
 
 ### Code Quality
 | Task | Source | Tier | Description |

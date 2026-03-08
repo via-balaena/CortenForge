@@ -430,9 +430,29 @@ Total:                 2114 passed, 0 failed, 1 ignored
 2. DT-154 tracked for W3 (flex contact factory condim=6 mapping). Added to
    `future_work_10i.md` and `ROADMAP_V1.md`.
 
+**Items fixed during deep re-review (Session 23+):**
+3. T2 strengthened: asserts exact contact count (36) instead of `> 0`. Notes
+   MuJoCo produces 32 — narrowphase conformance gap (Spec C territory).
+4. T6 strengthened: runs both pinned and unpinned geometries, asserts counts
+   are equal (proves `flex_rigid` is not a gate).
+5. T9 strengthened: asserts `qfrc_constraint` non-zero unconditionally (not
+   conditional on contacts existing). Notes cfrc_ext is lazy-populated by
+   `mj_body_accumulators()` (only triggered by sensors).
+6. T13 strengthened: verifies actual combined contact parameters (solref,
+   solimp, friction, includemargin) on flex-flex contacts with 1e-12 tolerance.
+7. T14 strengthened: mutates `model.flex_elemnum[1] = 0` to exercise the
+   zero-element early return guard in `mj_collide_flex_pair()`. Asserts
+   zero flex-flex contacts.
+8. DT-155 created for AC11/T10 (S10 override test gap). Added to
+   `future_work_10i.md` and `ROADMAP_V1.md`.
+9. DT-156 created for narrowphase triangle-triangle contact count gap
+   (CortenForge 36 vs MuJoCo 32). Added to `future_work_10i.md` and
+   `ROADMAP_V1.md`.
+
 **Items to fix before shipping:** None — all issues tracked.
 
 **Items tracked for future work:**
 1. DT-153: Island assignment for flex contacts (Low, T1)
 2. DT-154: Flex contact factory condim=6 mapping (Low, T1)
-3. AC11/T10: S10 override test — blocked on ENABLE_OVERRIDE test infrastructure
+3. DT-155: S10 override test for flex-flex contacts (Low, T1)
+4. DT-156: Narrowphase triangle-triangle contact count conformance gap (Low, T2)

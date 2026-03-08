@@ -4,7 +4,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ---
 
-## Group 8 — Flex / Deformable Body (19 items)
+## Group 8 — Flex / Deformable Body (24 items)
 
 **Spec approach:** DT-66/67/70/73 each need individual specs (T3 — new constraint
 types, GPU architecture, or new collision pairs). DT-69 shares a "Flex Collision
@@ -36,3 +36,5 @@ DT-87/88 share a "Flexcomp Completeness" spec (T2). The rest
 | DT-152 | §42A-iv | Barycentric force distribution on face side for flex self-collision contacts — current Jacobian applies force to nearest vertex (`flex_vertex2`) rather than distributing across face vertices via barycentric weights. Force direction is correct; only distribution across face vertices is approximate. Correct for free vertices (all current models). Deferred from Phase 10 Spec C. | Low | T2 |
 | DT-153 | §42A-v | Island assignment for flex contacts — `island/mod.rs:297-306` (contact-to-island) and `island/mod.rs:453-467` (constraint-to-tree) use `geom_body[contact.geom*]` with bounds-check fallback. Flex contacts with sentinel `usize::MAX` geom indices are skipped from island assignment and constraint-to-tree lookup. Not a panic, but flex contacts won't be correctly assigned to islands when island-based constraint solving is active. Default single-island mode unaffected. Deferred from Phase 10 Spec D. | Low | T1 |
 | DT-154 | §42A-v | Flex contact factory condim=6 mapping — all flex contact factories (`make_contact_flex_self`, `make_contact_flex_rigid`, `make_contact_flex_flex`) map condim via `1→1, 4→4, _→3`. This means `condim=6` produces `dim=3`, not `dim=6`. MuJoCo supports condim=6 for torsional+rolling friction. Pre-existing limitation across all flex contact types. Deferred from Phase 10 Spec D. | Low | T1 |
+| DT-155 | §42A-v | S10 override test for flex-flex contacts (AC11/T10) — `ENABLE_OVERRIDE` test infrastructure is not wired for flex contact tests. T10 should verify that global override params (`o_margin`, `o_solref`, `o_solimp`, `o_friction`) replace per-flex params on all flex-flex contacts. The override logic itself works (verified in rigid contact specs); only the test harness is missing. Deferred from Phase 10 Spec D review. | Low | T1 |
+| DT-156 | §42A-v | Narrowphase triangle-triangle contact count conformance gap — CortenForge produces 36 contacts for overlapping 3×3 flex grids where MuJoCo 3.5.0 produces 32. Root cause is in triangle-triangle intersection logic (Spec C territory). Force direction and contact behavior are correct; only contact count differs. Identified during Phase 10 Spec D review T2 test strengthening. | Low | T2 |
