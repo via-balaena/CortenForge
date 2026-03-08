@@ -599,40 +599,66 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             let is_pyramidal = dim >= 3 && model.cone == 0 && contact.mu[0] >= 1e-10;
 
             // Precompute contact bodyweight for DT-39
-            let bw_contact = {
-                let b1 = if contact.geom1 < model.geom_body.len() {
-                    model.geom_body[contact.geom1]
+            let bw_contact =
+                if let (Some(vi1), Some(vi2)) = (contact.flex_vertex, contact.flex_vertex2) {
+                    // Self-collision: both sides are flex vertices — use vertex bodies
+                    let b1 = model.flexvert_bodyid[vi1];
+                    let b2 = model.flexvert_bodyid[vi2];
+                    let w1t = if b1 < model.body_invweight0.len() {
+                        model.body_invweight0[b1][0]
+                    } else {
+                        0.0
+                    };
+                    let w2t = if b2 < model.body_invweight0.len() {
+                        model.body_invweight0[b2][0]
+                    } else {
+                        0.0
+                    };
+                    let w1r = if b1 < model.body_invweight0.len() {
+                        model.body_invweight0[b1][1]
+                    } else {
+                        0.0
+                    };
+                    let w2r = if b2 < model.body_invweight0.len() {
+                        model.body_invweight0[b2][1]
+                    } else {
+                        0.0
+                    };
+                    [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
                 } else {
-                    0
+                    let b1 = if contact.geom1 < model.geom_body.len() {
+                        model.geom_body[contact.geom1]
+                    } else {
+                        0
+                    };
+                    let b2 = if contact.geom2 < model.geom_body.len() {
+                        model.geom_body[contact.geom2]
+                    } else {
+                        0
+                    };
+                    let w1t = if b1 < model.body_invweight0.len() {
+                        model.body_invweight0[b1][0]
+                    } else {
+                        0.0
+                    };
+                    let w2t = if b2 < model.body_invweight0.len() {
+                        model.body_invweight0[b2][0]
+                    } else {
+                        0.0
+                    };
+                    let w1r = if b1 < model.body_invweight0.len() {
+                        model.body_invweight0[b1][1]
+                    } else {
+                        0.0
+                    };
+                    let w2r = if b2 < model.body_invweight0.len() {
+                        model.body_invweight0[b2][1]
+                    } else {
+                        0.0
+                    };
+                    // [translational, rotational]
+                    [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
                 };
-                let b2 = if contact.geom2 < model.geom_body.len() {
-                    model.geom_body[contact.geom2]
-                } else {
-                    0
-                };
-                let w1t = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][0]
-                } else {
-                    0.0
-                };
-                let w2t = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][0]
-                } else {
-                    0.0
-                };
-                let w1r = if b1 < model.body_invweight0.len() {
-                    model.body_invweight0[b1][1]
-                } else {
-                    0.0
-                };
-                let w2r = if b2 < model.body_invweight0.len() {
-                    model.body_invweight0[b2][1]
-                } else {
-                    0.0
-                };
-                // [translational, rotational]
-                [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
-            };
 
             if is_pyramidal {
                 // §32: Pyramidal friction cone — emit 2*(dim-1) facet rows.

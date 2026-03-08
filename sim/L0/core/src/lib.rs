@@ -196,6 +196,7 @@ pub use types::{
     ElementType,
     EqualityType,
     FlexBendingType,
+    FlexSelfCollide,
     GainType,
     GeomType,
     Integrator,

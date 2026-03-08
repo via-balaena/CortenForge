@@ -12,7 +12,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 
 use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
 use crate::types::MjcfFlex;
-use sim_core::MjJointType;
+use sim_core::{FlexSelfCollide, MjJointType};
 
 impl ModelBuilder {
     /// Process flex deformable bodies: create a real body (+ 3 slide joints for unpinned
@@ -409,10 +409,15 @@ impl ModelBuilder {
             self.flex_contype.push(flex.contype.unwrap_or(1) as u32);
             self.flex_conaffinity
                 .push(flex.conaffinity.unwrap_or(1) as u32);
-            // MuJoCo default is "auto" (enabled). Only "none" disables self-collision.
-            // None (absent) → true; Some("none") → false; all other keywords → true.
-            self.flex_selfcollide
-                .push(flex.selfcollide.as_deref() != Some("none"));
+            // MuJoCo default is "auto" (enabled). Convert string to FlexSelfCollide enum.
+            let sc = match flex.selfcollide.as_deref() {
+                Some("none") => FlexSelfCollide::None,
+                Some("narrow") => FlexSelfCollide::Narrow,
+                Some("bvh") => FlexSelfCollide::Bvh,
+                Some("sap") => FlexSelfCollide::Sap,
+                Some("auto") | None | Some(_) => FlexSelfCollide::Auto,
+            };
+            self.flex_selfcollide.push(sc);
             // DT-85: flex contact runtime attributes
             self.flex_internal.push(flex.internal);
             self.flex_activelayers.push(flex.activelayers);
@@ -803,6 +808,64 @@ fn compute_bending_coefficients(v: [Vector3<f64>; 4], mu: f64, thickness: f64) -
     }
 
     b
+}
+
+/// Compute element adjacency for self-collision dispatch (Spec C S4).
+///
+/// Two elements are adjacent if they share at least one vertex. Returns
+/// CSR-style flat sorted adjacency list: `(adj_data, adj_adr, adj_num)`.
+pub fn compute_element_adjacency(
+    flexelem_data: &[usize],
+    flexelem_dataadr: &[usize],
+    flexelem_datanum: &[usize],
+    nflexelem: usize,
+    nflexvert: usize,
+) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    if nflexelem == 0 {
+        return (vec![], vec![], vec![]);
+    }
+
+    // Step 1: vertex → element map
+    let mut vert_to_elems: Vec<Vec<usize>> = vec![vec![]; nflexvert];
+    for e in 0..nflexelem {
+        let adr = flexelem_dataadr[e];
+        let num = flexelem_datanum[e];
+        for i in 0..num {
+            let v = flexelem_data[adr + i];
+            if v < nflexvert {
+                vert_to_elems[v].push(e);
+            }
+        }
+    }
+
+    // Step 2: per-element adjacency
+    let mut adj_data = Vec::new();
+    let mut adj_adr = Vec::with_capacity(nflexelem);
+    let mut adj_num = Vec::with_capacity(nflexelem);
+
+    for e in 0..nflexelem {
+        let adr = flexelem_dataadr[e];
+        let num = flexelem_datanum[e];
+        let mut neighbors = Vec::new();
+        for i in 0..num {
+            let v = flexelem_data[adr + i];
+            if v < nflexvert {
+                for &neighbor in &vert_to_elems[v] {
+                    if neighbor != e {
+                        neighbors.push(neighbor);
+                    }
+                }
+            }
+        }
+        neighbors.sort_unstable();
+        neighbors.dedup();
+
+        adj_adr.push(adj_data.len());
+        adj_num.push(neighbors.len());
+        adj_data.extend(neighbors);
+    }
+
+    (adj_data, adj_adr, adj_num)
 }
 
 #[cfg(test)]

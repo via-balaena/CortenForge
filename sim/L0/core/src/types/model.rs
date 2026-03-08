@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 // Imports from sibling modules
 use super::enums::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, FlexBendingType, GainType,
-    GeomType, Integrator, InterpolationType, MjJointType, MjObjectType, MjSensorDataType,
-    MjSensorType, SleepPolicy, SolverType, TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, FlexBendingType,
+    FlexSelfCollide, GainType, GeomType, Integrator, InterpolationType, MjJointType, MjObjectType,
+    MjSensorDataType, MjSensorType, SleepPolicy, SolverType, TendonType, WrapType,
 };
 
 // Imports from sibling modules
@@ -371,7 +371,7 @@ pub struct Model {
     ///
     /// Both `internal` (adjacent elements) and `selfcollide` (non-adjacent)
     /// are independently gated behind conditions 1+2.
-    pub flex_selfcollide: Vec<bool>,
+    pub flex_selfcollide: Vec<FlexSelfCollide>,
     /// Per-flex: internal collision flag (default true). When true, contacts between
     /// elements sharing an edge are generated (adjacent element contacts).
     pub flex_internal: Vec<bool>,
@@ -490,6 +490,16 @@ pub struct Model {
     pub flexelem_volume0: Vec<f64>,
     /// Which flex object this element belongs to.
     pub flexelem_flexid: Vec<usize>,
+
+    // --- Per-element adjacency (for self-collision dispatch) ---
+    /// Flat sorted adjacency list. Element `e`'s adjacent elements are
+    /// `flex_elem_adj[flex_elem_adj_adr[e]..+flex_elem_adj_num[e]]`.
+    /// Two elements are adjacent if they share at least one vertex.
+    pub flex_elem_adj: Vec<usize>,
+    /// Start index in `flex_elem_adj` for element `e`. Length `nflexelem`.
+    pub flex_elem_adj_adr: Vec<usize>,
+    /// Number of adjacent elements for element `e`. Length `nflexelem`.
+    pub flex_elem_adj_num: Vec<usize>,
 
     // --- Per-hinge arrays (bending topology, length nflexhinge) ---
     // A hinge is a pair of adjacent elements sharing an edge.

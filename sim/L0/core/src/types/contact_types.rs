@@ -84,6 +84,12 @@ pub struct Contact {
     /// `geom1` and `geom2` both reference the rigid geom index.
     /// The flex vertex index is stored here. If `None`, standard rigid-rigid contact.
     pub flex_vertex: Option<usize>,
+    /// If `Some(vertex_idx)`, this is a flex self-collision contact.
+    /// `flex_vertex` = penetrating vertex (side 1).
+    /// `flex_vertex2` = nearest opposing vertex (side 2).
+    /// `geom1 = geom2 = usize::MAX` (no rigid geom).
+    /// If `None`, standard flex-rigid or rigid-rigid contact.
+    pub flex_vertex2: Option<usize>,
 }
 
 impl Contact {
@@ -178,6 +184,7 @@ impl Contact {
             solimp,
             frame: (t1, t2).into(),
             flex_vertex: None,
+            flex_vertex2: None,
         }
     }
 
@@ -272,6 +279,7 @@ impl Contact {
             solimp,
             frame: (t1, t2).into(),
             flex_vertex: None,
+            flex_vertex2: None,
         }
     }
 }

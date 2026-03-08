@@ -25,11 +25,14 @@ use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
 use crate::types::{
     DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
-    GeomType, Model, SleepState, disabled, enabled,
+    FlexSelfCollide, GeomType, Model, SleepState, disabled, enabled,
 };
 use nalgebra::{Point3, Vector3};
 
-use self::flex_collide::{make_contact_flex_rigid, narrowphase_sphere_geom};
+use self::flex_collide::{
+    make_contact_flex_rigid, mj_collide_flex_internal, mj_collide_flex_self_bvh,
+    mj_collide_flex_self_narrow, mj_collide_flex_self_sap, narrowphase_sphere_geom,
+};
 use self::hfield::collide_hfield_multi;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
 
@@ -223,6 +226,26 @@ pub(crate) fn contact_param_flex_rigid(
     ];
 
     (condim, gap, solref, solimp, fri)
+}
+
+/// Compute contact parameters for flex self-collision.
+///
+/// Both sides are the same flex — parameters are trivially the flex's own
+/// values. Gap and margin are additive (both sides contribute), so they
+/// are doubled. Follows MuJoCo's `mj_contactParam()` convention for
+/// same-entity pairs.
+pub(crate) fn contact_param_flex_self(
+    model: &Model,
+    flex_id: usize,
+) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
+    let f = model.flex_friction[flex_id];
+    (
+        model.flex_condim[flex_id],
+        2.0 * model.flex_gap[flex_id], // additive: flex_gap + flex_gap
+        model.flex_solref[flex_id],
+        model.flex_solimp[flex_id],
+        [f.x, f.x, f.y, f.z, f.z], // tangential, tangential, torsional, rolling, rolling
+    )
 }
 
 /// Compute solmix weight, matching MuJoCo's edge-case handling.
@@ -538,6 +561,9 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
 
     // Mechanism 3: flex vertex vs rigid geom contacts
     mj_collision_flex(model, data);
+
+    // Mechanism 4: flex self-collision (internal + non-adjacent)
+    mj_collision_flex_self(model, data);
 }
 
 /// Detect contacts between flex vertices and rigid geoms.
@@ -610,6 +636,56 @@ fn mj_collision_flex(model: &Model, data: &mut Data) {
                 let contact = make_contact_flex_rigid(model, vi, gi, contact_pos, normal, depth);
                 data.contacts.push(contact);
                 data.ncon += 1;
+            }
+        }
+    }
+}
+
+/// Dispatch flex self-collision: internal (adjacent) + self (non-adjacent).
+///
+/// Called after `mj_collision_flex()` in the collision pipeline. Iterates all
+/// flex objects, applies three conjunctive gate conditions, dispatches to
+/// internal and self-collision paths independently.
+fn mj_collision_flex_self(model: &Model, data: &mut Data) {
+    if model.nflex == 0 {
+        return;
+    }
+
+    for f in 0..model.nflex {
+        // Gate condition 1: skip rigid flexes (all vertices invmass == 0)
+        if model.flex_rigid[f] {
+            continue;
+        }
+
+        // Gate condition 2: self-bitmask check
+        // contype & conaffinity against ITSELF (not cross-object)
+        if (model.flex_contype[f] & model.flex_conaffinity[f]) == 0 {
+            continue;
+        }
+
+        // Path 1: internal collision (adjacent elements)
+        if model.flex_internal[f] {
+            mj_collide_flex_internal(model, data, f);
+        }
+
+        // Path 2: self-collision (non-adjacent elements)
+        match model.flex_selfcollide[f] {
+            FlexSelfCollide::None => {}
+            FlexSelfCollide::Narrow => {
+                mj_collide_flex_self_narrow(model, data, f);
+            }
+            FlexSelfCollide::Bvh => {
+                mj_collide_flex_self_bvh(model, data, f);
+            }
+            FlexSelfCollide::Sap => {
+                mj_collide_flex_self_sap(model, data, f);
+            }
+            FlexSelfCollide::Auto => {
+                if model.flex_dim[f] == 3 {
+                    mj_collide_flex_self_bvh(model, data, f);
+                } else {
+                    mj_collide_flex_self_sap(model, data, f);
+                }
             }
         }
     }

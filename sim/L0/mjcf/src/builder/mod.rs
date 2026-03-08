@@ -33,9 +33,9 @@ use sim_core::{
     DISABLE_GRAVITY, DISABLE_ISLAND, DISABLE_LIMIT, DISABLE_MIDPHASE, DISABLE_NATIVECCD,
     DISABLE_REFSAFE, DISABLE_SENSOR, DISABLE_SPRING, DISABLE_WARMSTART, ENABLE_ENERGY,
     ENABLE_FWDINV, ENABLE_INVDISCRETE, ENABLE_MULTICCD, ENABLE_OVERRIDE, ENABLE_SLEEP,
-    EqualityType, FlexBendingType, GainType, GeomType, Integrator, InterpolationType, Keyframe,
-    MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model, SleepPolicy, SolverType,
-    TendonType, WrapType,
+    EqualityType, FlexBendingType, FlexSelfCollide, GainType, GeomType, Integrator,
+    InterpolationType, Keyframe, MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model,
+    SleepPolicy, SolverType, TendonType, WrapType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -705,7 +705,7 @@ pub struct ModelBuilder {
     pub(crate) flex_rigid: Vec<bool>,
     pub(crate) flex_contype: Vec<u32>,
     pub(crate) flex_conaffinity: Vec<u32>,
-    pub(crate) flex_selfcollide: Vec<bool>,
+    pub(crate) flex_selfcollide: Vec<FlexSelfCollide>,
     pub(crate) flex_internal: Vec<bool>,
     pub(crate) flex_activelayers: Vec<i32>,
     pub(crate) flex_vertcollide: Vec<bool>,
