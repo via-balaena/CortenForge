@@ -6,6 +6,7 @@
 
 use nalgebra::Vector3;
 
+use super::model::Model;
 use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
 
 /// Explicit contact pair: geom indices + per-pair overrides.
@@ -93,6 +94,43 @@ pub struct Contact {
 }
 
 impl Contact {
+    /// Derive the two body indices for this contact.
+    ///
+    /// For rigid-rigid: `(geom_body[geom1], geom_body[geom2])`.
+    /// For flex-rigid: `(flexvert_bodyid[vertex], geom_body[geom2])`.
+    /// For flex-self/flex-flex: `(flexvert_bodyid[v1], flexvert_bodyid[v2])`.
+    ///
+    /// Returns world body (0) for out-of-bounds geom indices (defensive
+    /// against synthetic test contacts with sentinel geom values).
+    #[inline]
+    #[must_use]
+    pub fn bodies(&self, model: &Model) -> (usize, usize) {
+        match (self.flex_vertex, self.flex_vertex2) {
+            (Some(vi1), Some(vi2)) => {
+                // Flex self-collision or flex-flex
+                (model.flexvert_bodyid[vi1], model.flexvert_bodyid[vi2])
+            }
+            (Some(vi), None) => {
+                // Flex-rigid: vertex body + rigid geom body
+                (model.flexvert_bodyid[vi], model.geom_body[self.geom2])
+            }
+            _ => {
+                // Rigid-rigid (with bounds guard for synthetic contacts)
+                let b1 = if self.geom1 < model.geom_body.len() {
+                    model.geom_body[self.geom1]
+                } else {
+                    0
+                };
+                let b2 = if self.geom2 < model.geom_body.len() {
+                    model.geom_body[self.geom2]
+                } else {
+                    0
+                };
+                (b1, b2)
+            }
+        }
+    }
+
     /// Create a new contact with basic parameters.
     ///
     /// The contact frame (tangent vectors) is computed automatically from the normal.

@@ -2,8 +2,8 @@
 //! and flex self-collision (internal + non-adjacent element pairs).
 
 use super::{
-    assign_friction, assign_imp, assign_margin, assign_ref, contact_param_flex_rigid,
-    contact_param_flex_self,
+    assign_friction, assign_imp, assign_margin, assign_ref, contact_param_flex_flex,
+    contact_param_flex_rigid, contact_param_flex_self,
 };
 use crate::collision_shape::{Aabb, CollisionShape};
 use crate::forward::closest_point_segment;
@@ -350,6 +350,59 @@ pub fn make_contact_flex_self(
     }
 }
 
+/// Create a Contact for a flex-flex cross-object collision.
+///
+/// Side 1: nearest vertex from flex1 (`flex_vertex`).
+/// Side 2: nearest vertex from flex2 (`flex_vertex2`).
+/// No rigid geom — `geom1`/`geom2` set to `usize::MAX` (sentinel).
+/// Margin = flex_margin[f1] + flex_margin[f2] (additive, not doubled).
+pub fn make_contact_flex_flex(
+    model: &Model,
+    vertex1: usize,
+    vertex2: usize,
+    pos: Vector3<f64>,
+    normal: Vector3<f64>,
+    depth: f64,
+) -> Contact {
+    let flex_id1 = model.flexvert_flexid[vertex1];
+    let flex_id2 = model.flexvert_flexid[vertex2];
+    let (condim, gap, solref, solimp, mu) = contact_param_flex_flex(model, flex_id1, flex_id2);
+    let solref = assign_ref(model, &solref);
+    let solimp = assign_imp(model, &solimp);
+    let mu = assign_friction(model, &mu);
+    let margin = assign_margin(
+        model,
+        model.flex_margin[flex_id1] + model.flex_margin[flex_id2],
+    );
+    let includemargin = margin - gap;
+
+    let (t1, t2) = compute_tangent_frame(&normal);
+
+    let dim: usize = match condim {
+        1 => 1,
+        4 => 4,
+        _ => 3,
+    };
+
+    Contact {
+        pos,
+        normal,
+        depth,
+        geom1: usize::MAX, // sentinel — no rigid geom
+        geom2: usize::MAX,
+        friction: mu[0],
+        dim,
+        includemargin,
+        mu,
+        solref,
+        solreffriction: assign_ref(model, &[0.0, 0.0]),
+        solimp,
+        frame: (t1, t2).into(),
+        flex_vertex: Some(vertex1),
+        flex_vertex2: Some(vertex2),
+    }
+}
+
 // =============================================================================
 // S6: Internal collision (adjacent elements)
 // =============================================================================
@@ -390,13 +443,13 @@ pub fn mj_collide_flex_internal(model: &Model, data: &mut Data, f: usize) {
             // Test non-shared vertices of e1 against faces of e2
             for &v in &verts1 {
                 if !verts2.contains(&v) {
-                    test_vertex_against_element_faces(model, data, v, &verts2, dim, f);
+                    test_vertex_against_element_faces(model, data, v, &verts2, dim, f, f);
                 }
             }
             // Test non-shared vertices of e2 against faces of e1
             for &v in &verts2 {
                 if !verts1.contains(&v) {
-                    test_vertex_against_element_faces(model, data, v, &verts1, dim, f);
+                    test_vertex_against_element_faces(model, data, v, &verts1, dim, f, f);
                 }
             }
         }
@@ -415,18 +468,24 @@ fn elem_vertices(model: &Model, elem: usize) -> Vec<usize> {
 /// For dim=2 (triangle): one face (the triangle itself).
 /// For dim=3 (tetrahedron): four triangular faces.
 /// For dim=1 (edge): skip (no faces for vertex-face test).
+///
+/// `flex_id_vertex`: flex ID of the vertex being tested.
+/// `flex_id_elem`: flex ID of the element whose faces are tested against.
+/// When `flex_id_vertex == flex_id_elem`, produces self-collision contacts;
+/// when different, produces flex-flex contacts.
 fn test_vertex_against_element_faces(
     model: &Model,
     data: &mut Data,
     vertex: usize,
     elem_verts: &[usize],
     dim: usize,
-    flex_id: usize,
+    flex_id_vertex: usize,
+    flex_id_elem: usize,
 ) {
     let vpos = data.flexvert_xpos[vertex];
     let radius = model.flexvert_radius[vertex];
-    let margin = 2.0 * model.flex_margin[flex_id];
-    let gap = 2.0 * model.flex_gap[flex_id];
+    let margin = model.flex_margin[flex_id_vertex] + model.flex_margin[flex_id_elem];
+    let gap = model.flex_gap[flex_id_vertex] + model.flex_gap[flex_id_elem];
     let includemargin = margin - gap;
 
     match dim {
@@ -444,8 +503,11 @@ fn test_vertex_against_element_faces(
             {
                 if depth > -includemargin {
                     let nearest = nearest_vertex(vpos, elem_verts, data);
-                    let contact =
-                        make_contact_flex_self(model, vertex, nearest, contact_pos, normal, depth);
+                    let contact = if flex_id_vertex == flex_id_elem {
+                        make_contact_flex_self(model, vertex, nearest, contact_pos, normal, depth)
+                    } else {
+                        make_contact_flex_flex(model, vertex, nearest, contact_pos, normal, depth)
+                    };
                     data.contacts.push(contact);
                     data.ncon += 1;
                 }
@@ -473,14 +535,25 @@ fn test_vertex_against_element_faces(
                 {
                     if depth > -includemargin {
                         let nearest = nearest_vertex(vpos, face, data);
-                        let contact = make_contact_flex_self(
-                            model,
-                            vertex,
-                            nearest,
-                            contact_pos,
-                            normal,
-                            depth,
-                        );
+                        let contact = if flex_id_vertex == flex_id_elem {
+                            make_contact_flex_self(
+                                model,
+                                vertex,
+                                nearest,
+                                contact_pos,
+                                normal,
+                                depth,
+                            )
+                        } else {
+                            make_contact_flex_flex(
+                                model,
+                                vertex,
+                                nearest,
+                                contact_pos,
+                                normal,
+                                depth,
+                            )
+                        };
                         data.contacts.push(contact);
                         data.ncon += 1;
                     }
@@ -622,7 +695,7 @@ pub fn mj_collide_flex_self_narrow(model: &Model, data: &mut Data, f: usize) {
                 continue;
             }
 
-            collide_element_pair(model, data, e1, e2, dim, f);
+            collide_element_pair(model, data, e1, e2, dim, f, f);
         }
     }
 }
@@ -646,36 +719,42 @@ fn elements_adjacent(model: &Model, e1: usize, e2: usize) -> bool {
 
 /// Element-element narrowphase for non-adjacent elements.
 ///
-/// Dispatches based on dim. This is the narrowphase primitive reused by Spec D.
+/// Dispatches based on dim. Accepts two flex IDs for cross-object collision:
+/// when `flex_id1 == flex_id2`, produces self-collision contacts;
+/// when different, produces flex-flex contacts. Margin/gap are additive:
+/// `flex_margin[f1] + flex_margin[f2]` (equals `2*flex_margin[f]` for self).
 pub fn collide_element_pair(
     model: &Model,
     data: &mut Data,
     e1: usize,
     e2: usize,
     dim: usize,
-    flex_id: usize,
+    flex_id1: usize,
+    flex_id2: usize,
 ) {
     let verts1 = elem_vertices(model, e1);
     let verts2 = elem_vertices(model, e2);
 
     match dim {
-        2 => collide_triangles(model, data, &verts1, &verts2, flex_id),
-        3 => collide_tetrahedra(model, data, &verts1, &verts2, flex_id),
-        1 => collide_edges(model, data, &verts1, &verts2, flex_id),
+        2 => collide_triangles(model, data, &verts1, &verts2, flex_id1, flex_id2),
+        3 => collide_tetrahedra(model, data, &verts1, &verts2, flex_id1, flex_id2),
+        1 => collide_edges(model, data, &verts1, &verts2, flex_id1, flex_id2),
         _ => {}
     }
 }
 
-/// Triangle-triangle narrowphase for dim=2 self-collision.
+/// Triangle-triangle narrowphase for dim=2 collision.
 ///
 /// Uses the existing `triangle_triangle_intersection()` (SAT-based) from
-/// mesh.rs. Generates at most one contact per triangle pair.
+/// mesh.rs. Generates at most one contact per triangle pair. Accepts two
+/// flex IDs: self-collision when equal, flex-flex when different.
 fn collide_triangles(
     model: &Model,
     data: &mut Data,
     verts1: &[usize],
     verts2: &[usize],
-    flex_id: usize,
+    flex_id1: usize,
+    flex_id2: usize,
 ) {
     use crate::mesh::triangle_triangle_intersection;
 
@@ -690,8 +769,8 @@ fn collide_triangles(
         Point3::from(data.flexvert_xpos[verts2[2]]),
     ];
 
-    let margin = 2.0 * model.flex_margin[flex_id];
-    let gap = 2.0 * model.flex_gap[flex_id];
+    let margin = model.flex_margin[flex_id1] + model.flex_margin[flex_id2];
+    let gap = model.flex_gap[flex_id1] + model.flex_gap[flex_id2];
     let includemargin = margin - gap;
 
     if let Some(contact_result) = triangle_triangle_intersection(&tri_a, &tri_b) {
@@ -699,50 +778,65 @@ fn collide_triangles(
             let nearest1 = nearest_vertex(contact_result.point.coords, verts1, data);
             let nearest2 = nearest_vertex(contact_result.point.coords, verts2, data);
 
-            let contact = make_contact_flex_self(
-                model,
-                nearest1,
-                nearest2,
-                contact_result.point.coords,
-                contact_result.normal,
-                contact_result.depth,
-            );
+            let contact = if flex_id1 == flex_id2 {
+                make_contact_flex_self(
+                    model,
+                    nearest1,
+                    nearest2,
+                    contact_result.point.coords,
+                    contact_result.normal,
+                    contact_result.depth,
+                )
+            } else {
+                make_contact_flex_flex(
+                    model,
+                    nearest1,
+                    nearest2,
+                    contact_result.point.coords,
+                    contact_result.normal,
+                    contact_result.depth,
+                )
+            };
             data.contacts.push(contact);
             data.ncon += 1;
         }
     }
 }
 
-/// Tetrahedron-tetrahedron narrowphase for dim=3 self-collision.
+/// Tetrahedron-tetrahedron narrowphase for dim=3 collision.
 ///
 /// Tests each vertex of tet A against faces of tet B (and vice versa).
-/// Edge-edge tests deferred to DT-151.
+/// Edge-edge tests deferred to DT-151. Accepts two flex IDs for
+/// cross-object collision.
 fn collide_tetrahedra(
     model: &Model,
     data: &mut Data,
     verts1: &[usize],
     verts2: &[usize],
-    flex_id: usize,
+    flex_id1: usize,
+    flex_id2: usize,
 ) {
     // Vertex-face: each vertex of tet1 against 4 faces of tet2
     for &v in verts1 {
-        test_vertex_against_element_faces(model, data, v, verts2, 3, flex_id);
+        test_vertex_against_element_faces(model, data, v, verts2, 3, flex_id1, flex_id2);
     }
     // Vertex-face: each vertex of tet2 against 4 faces of tet1
     for &v in verts2 {
-        test_vertex_against_element_faces(model, data, v, verts1, 3, flex_id);
+        test_vertex_against_element_faces(model, data, v, verts1, 3, flex_id2, flex_id1);
     }
 }
 
-/// Edge-edge proximity for dim=1 self-collision.
+/// Edge-edge proximity for dim=1 collision.
 ///
 /// Tests two cable segments (each = 2 vertices) for proximity.
+/// Accepts two flex IDs for cross-object collision.
 fn collide_edges(
     model: &Model,
     data: &mut Data,
     verts1: &[usize],
     verts2: &[usize],
-    flex_id: usize,
+    flex_id1: usize,
+    flex_id2: usize,
 ) {
     let p0 = data.flexvert_xpos[verts1[0]];
     let p1 = data.flexvert_xpos[verts1[1]];
@@ -752,8 +846,8 @@ fn collide_edges(
     let r1 = model.flexvert_radius[verts1[0]].max(model.flexvert_radius[verts1[1]]);
     let r2 = model.flexvert_radius[verts2[0]].max(model.flexvert_radius[verts2[1]]);
     let combined_radius = r1 + r2;
-    let margin = 2.0 * model.flex_margin[flex_id];
-    let gap = 2.0 * model.flex_gap[flex_id];
+    let margin = model.flex_margin[flex_id1] + model.flex_margin[flex_id2];
+    let gap = model.flex_gap[flex_id1] + model.flex_gap[flex_id2];
     let includemargin = margin - gap;
 
     let (closest1, closest2) = closest_points_segments(p0, p1, q0, q1);
@@ -782,7 +876,11 @@ fn collide_edges(
         verts2[1]
     };
 
-    let contact = make_contact_flex_self(model, v1, v2, contact_pos, normal, depth);
+    let contact = if flex_id1 == flex_id2 {
+        make_contact_flex_self(model, v1, v2, contact_pos, normal, depth)
+    } else {
+        make_contact_flex_flex(model, v1, v2, contact_pos, normal, depth)
+    };
     data.contacts.push(contact);
     data.ncon += 1;
 }
@@ -894,7 +992,7 @@ pub fn mj_collide_flex_self_bvh(model: &Model, data: &mut Data, f: usize) {
                 continue;
             }
 
-            collide_element_pair(model, data, e1, e2, dim, f);
+            collide_element_pair(model, data, e1, e2, dim, f, f);
         }
     }
 }
@@ -996,7 +1094,73 @@ pub fn mj_collide_flex_self_sap(model: &Model, data: &mut Data, f: usize) {
                 continue;
             }
 
-            collide_element_pair(model, data, ea, eb, dim, f);
+            collide_element_pair(model, data, ea, eb, dim, f, f);
+        }
+    }
+}
+
+// =============================================================================
+// Flex-flex cross-object collision (Spec D)
+// =============================================================================
+
+/// Flex-flex element pair enumeration with BVH midphase.
+///
+/// Builds BVH from the larger flex's elements, queries with each element
+/// of the smaller flex. No adjacency filtering (cross-object elements
+/// cannot be adjacent). Dispatches to `collide_element_pair()` for each
+/// AABB-overlapping pair.
+pub fn mj_collide_flex_pair(model: &Model, data: &mut Data, f1: usize, f2: usize) {
+    let elem_start1 = model.flex_elemadr[f1];
+    let elem_count1 = model.flex_elemnum[f1];
+    let elem_start2 = model.flex_elemadr[f2];
+    let elem_count2 = model.flex_elemnum[f2];
+
+    if elem_count1 == 0 || elem_count2 == 0 {
+        return;
+    }
+
+    // Mixed dimensions: use the minimum dim for narrowphase dispatch.
+    let dim1 = model.flex_dim[f1];
+    let dim2 = model.flex_dim[f2];
+    let dim = dim1.min(dim2);
+
+    // Build BVH from the flex with more elements (better tree balance)
+    let (bvh_start, bvh_count, query_start, query_count, bvh_flex, query_flex) =
+        if elem_count2 >= elem_count1 {
+            (elem_start2, elem_count2, elem_start1, elem_count1, f2, f1)
+        } else {
+            (elem_start1, elem_count1, elem_start2, elem_count2, f1, f2)
+        };
+
+    // Build BVH from larger flex's elements
+    let primitives: Vec<BvhPrimitive> = (0..bvh_count)
+        .map(|i| {
+            let e = bvh_start + i;
+            let verts = elem_vertices(model, e);
+            let aabb = element_aabb(&verts, data);
+            BvhPrimitive {
+                aabb,
+                index: i,
+                data: 0,
+            }
+        })
+        .collect();
+
+    let bvh = Bvh::build(primitives);
+
+    // Query each element of smaller flex against BVH
+    for i in 0..query_count {
+        let e_query = query_start + i;
+        let verts_query = elem_vertices(model, e_query);
+        let aabb_query = element_aabb(&verts_query, data);
+
+        for candidate_idx in bvh.query(&aabb_query) {
+            let e_bvh = bvh_start + candidate_idx;
+
+            // No adjacency filtering — cross-object elements are never adjacent
+            // No duplicate filtering — each (query, bvh) pair is unique
+
+            collide_element_pair(model, data, e_query, e_bvh, dim, query_flex, bvh_flex);
         }
     }
 }

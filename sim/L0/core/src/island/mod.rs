@@ -58,16 +58,7 @@ pub(crate) fn mj_island(model: &Model, data: &mut Data) {
 
     // 1a: Contacts → tree pairs from geom → body → tree
     for contact in &data.contacts {
-        let body1 = if contact.geom1 < model.geom_body.len() {
-            model.geom_body[contact.geom1]
-        } else {
-            continue;
-        };
-        let body2 = if contact.geom2 < model.geom_body.len() {
-            model.geom_body[contact.geom2]
-        } else {
-            continue;
-        };
+        let (body1, body2) = contact.bodies(model);
         let tree1 = if body1 > 0 && body1 < model.body_treeid.len() {
             model.body_treeid[body1]
         } else {

@@ -30,8 +30,9 @@ use crate::types::{
 use nalgebra::{Point3, Vector3};
 
 use self::flex_collide::{
-    make_contact_flex_rigid, mj_collide_flex_internal, mj_collide_flex_self_bvh,
-    mj_collide_flex_self_narrow, mj_collide_flex_self_sap, narrowphase_sphere_geom,
+    make_contact_flex_rigid, mj_collide_flex_internal, mj_collide_flex_pair,
+    mj_collide_flex_self_bvh, mj_collide_flex_self_narrow, mj_collide_flex_self_sap,
+    narrowphase_sphere_geom,
 };
 use self::hfield::collide_hfield_multi;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
@@ -246,6 +247,72 @@ pub(crate) fn contact_param_flex_self(
         model.flex_solimp[flex_id],
         [f.x, f.x, f.y, f.z, f.z], // tangential, tangential, torsional, rolling, rolling
     )
+}
+
+/// Contact parameter combination for flex-flex cross-object collision pairs.
+///
+/// Both sides read `flex_*` arrays. Follows MuJoCo's `mj_contactParam()`
+/// with the same priority + solmix protocol as geom-geom and flex-rigid.
+/// Gap is additive: `flex_gap[f1] + flex_gap[f2]`.
+pub(crate) fn contact_param_flex_flex(
+    model: &Model,
+    flex_id1: usize,
+    flex_id2: usize,
+) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
+    let priority1 = model.flex_priority[flex_id1];
+    let priority2 = model.flex_priority[flex_id2];
+    let gap = model.flex_gap[flex_id1] + model.flex_gap[flex_id2];
+
+    if priority1 > priority2 {
+        let f = model.flex_friction[flex_id1];
+        return (
+            model.flex_condim[flex_id1],
+            gap,
+            model.flex_solref[flex_id1],
+            model.flex_solimp[flex_id1],
+            [f.x, f.x, f.y, f.z, f.z],
+        );
+    }
+    if priority2 > priority1 {
+        let f = model.flex_friction[flex_id2];
+        return (
+            model.flex_condim[flex_id2],
+            gap,
+            model.flex_solref[flex_id2],
+            model.flex_solimp[flex_id2],
+            [f.x, f.x, f.y, f.z, f.z],
+        );
+    }
+
+    // Equal priority — combine
+    let condim = model.flex_condim[flex_id1].max(model.flex_condim[flex_id2]);
+
+    let s1 = model.flex_solmix[flex_id1];
+    let s2 = model.flex_solmix[flex_id2];
+    let mix = solmix_weight(s1, s2);
+
+    let solref = combine_solref(
+        model.flex_solref[flex_id1],
+        model.flex_solref[flex_id2],
+        mix,
+    );
+    let solimp = combine_solimp(
+        model.flex_solimp[flex_id1],
+        model.flex_solimp[flex_id2],
+        mix,
+    );
+
+    let f1 = model.flex_friction[flex_id1];
+    let f2 = model.flex_friction[flex_id2];
+    let fri = [
+        f1.x.max(f2.x),
+        f1.x.max(f2.x), // tangential1, tangential2
+        f1.y.max(f2.y), // torsional
+        f1.z.max(f2.z),
+        f1.z.max(f2.z), // rolling1, rolling2
+    ];
+
+    (condim, gap, solref, solimp, fri)
 }
 
 /// Compute solmix weight, matching MuJoCo's edge-case handling.
@@ -564,6 +631,9 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
 
     // Mechanism 4: flex self-collision (internal + non-adjacent)
     mj_collision_flex_self(model, data);
+
+    // Mechanism 5: flex-flex cross-object collision
+    mj_collide_flex_flex(model, data);
 }
 
 /// Detect contacts between flex vertices and rigid geoms.
@@ -687,6 +757,34 @@ fn mj_collision_flex_self(model: &Model, data: &mut Data) {
                     mj_collide_flex_self_sap(model, data, f);
                 }
             }
+        }
+    }
+}
+
+/// Dispatch flex-flex cross-object collision.
+///
+/// Iterates all flex pair combinations (f1 < f2), applies bitmask filter,
+/// dispatches to element-element narrowphase with BVH midphase. No
+/// `flex_rigid` check — rigid flexes still participate in cross-object
+/// collision (MuJoCo behavior, EGT-4 verified).
+fn mj_collide_flex_flex(model: &Model, data: &mut Data) {
+    if model.nflex < 2 {
+        return;
+    }
+
+    for f1 in 0..model.nflex {
+        let ct1 = model.flex_contype[f1];
+        let ca1 = model.flex_conaffinity[f1];
+
+        for f2 in (f1 + 1)..model.nflex {
+            // filterBitmask: (ct1 & ca2) != 0 || (ct2 & ca1) != 0
+            let ct2 = model.flex_contype[f2];
+            let ca2 = model.flex_conaffinity[f2];
+            if (ct1 & ca2) == 0 && (ct2 & ca1) == 0 {
+                continue;
+            }
+
+            mj_collide_flex_pair(model, data, f1, f2);
         }
     }
 }
