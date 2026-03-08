@@ -85,7 +85,7 @@ ways:
 
 ## Session 1: Phase 11 Umbrella
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- write the umbrella spec.
@@ -623,7 +623,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
-| 1 | Phase 11 Umbrella | | |
+| 1 | Phase 11 Umbrella | Done | 33ec878 |
 | 2 | T1: DT-52 (mjd_subQuat) + DT-54 (muscle velocity derivatives) | | |
 | 3 | T1: DT-51 (mjd_inverseFD) + DT-53 (mj_forwardSkip) | | |
 | 4 | Spec A rubric (§58 Analytical Position Derivatives) | | |

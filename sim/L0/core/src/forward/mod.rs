@@ -35,12 +35,14 @@ pub(crate) use acceleration::mj_body_accumulators;
 #[allow(unused_imports)]
 pub(crate) use acceleration::mj_fwd_acceleration;
 #[allow(unused_imports)]
+pub(crate) use actuation::{hill_active_fl, hill_force_velocity};
+#[allow(unused_imports)]
 pub(crate) use actuation::{
     mj_actuator_length, mj_fwd_actuation, mj_gravcomp_to_actuator, mj_transmission_body_dispatch,
     mj_transmission_site, mj_transmission_slidercrank,
 };
 #[allow(unused_imports)]
-pub(crate) use muscle::muscle_activation_dynamics;
+pub(crate) use muscle::{muscle_activation_dynamics, muscle_gain_length, muscle_gain_velocity};
 #[allow(unused_imports)]
 pub(crate) use passive::mj_fwd_passive;
 pub(crate) use position::mj_fwd_position;
