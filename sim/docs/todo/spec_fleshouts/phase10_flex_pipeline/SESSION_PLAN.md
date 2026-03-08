@@ -818,7 +818,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 20: Spec D spec (Flex-Flex Cross-Object Collision)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- write Spec D spec.
@@ -852,7 +852,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 21: Spec D implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 10 Flex Pipeline -- implement Spec D.
@@ -958,6 +958,6 @@ Present the Review Verdict (section 10) to the user when done.
 | 18 | Spec C review -- execute | Done | 772b8a3 |
 | 19 | Spec D rubric (§42A-v Flex-Flex) | Done | 460705b |
 | 20 | Spec D spec | Done | `fb851d4` |
-| 21 | Spec D implementation | Pending | |
+| 21 | Spec D implementation | Done | `8945051` |
 | 22 | Spec D review -- create document | Pending | |
 | 23 | Spec D review -- execute | Pending | |
