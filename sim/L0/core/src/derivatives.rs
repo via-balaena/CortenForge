@@ -114,12 +114,17 @@ pub struct TransitionMatrices {
     /// Dimensions: `(2*nv + na) × nu`.
     pub B: DMatrix<f64>,
 
-    /// Sensor-state Jacobian `∂s_{t+1}/∂x_t`.
-    /// `None` until sensor derivatives are implemented (see Scope Exclusions).
+    /// Sensor-state Jacobian `∂sensordata_{t+1}/∂x_t`.
+    /// Dimensions: `nsensordata × (2*nv + na)`.
+    /// `None` when `DerivativeConfig.compute_sensor_derivatives` is false (default).
+    /// `Some(matrix)` when sensor derivatives are computed — even if
+    /// `nsensordata == 0` (in which case the matrix has 0 rows).
     pub C: Option<DMatrix<f64>>,
 
-    /// Sensor-control Jacobian `∂s_{t+1}/∂u_t`.
-    /// `None` until sensor derivatives are implemented.
+    /// Sensor-control Jacobian `∂sensordata_{t+1}/∂u_t`.
+    /// Dimensions: `nsensordata × nu`.
+    /// `None` when `DerivativeConfig.compute_sensor_derivatives` is false (default).
+    /// `Some(matrix)` when sensor derivatives are computed.
     pub D: Option<DMatrix<f64>>,
 }
 
@@ -160,6 +165,19 @@ pub struct DerivativeConfig {
     ///
     /// Default: `true`.
     pub use_analytical: bool,
+
+    /// When true, compute sensor derivatives (C, D matrices) alongside
+    /// state transition derivatives (A, B). Sensor outputs are captured
+    /// via finite differencing of `sensordata` during the same perturbation
+    /// loop that computes A/B.
+    ///
+    /// When false (default), C and D remain `None` in `TransitionMatrices`
+    /// and sensor evaluation is skipped during FD perturbation steps,
+    /// reducing computation cost.
+    ///
+    /// MuJoCo equivalent: passing non-NULL `C`/`D` pointers to
+    /// `mjd_transitionFD()`.
+    pub compute_sensor_derivatives: bool,
 }
 
 impl Default for DerivativeConfig {
@@ -168,6 +186,7 @@ impl Default for DerivativeConfig {
             eps: 1e-6,
             centered: true,
             use_analytical: true,
+            compute_sensor_derivatives: false,
         }
     }
 }
@@ -223,7 +242,7 @@ impl Default for DerivativeConfig {
 /// Takes `&Data` (shared reference) and immediately clones to a scratch
 /// buffer. Multiple callers can compute derivatives from the same nominal
 /// state concurrently.
-#[allow(non_snake_case, clippy::similar_names)]
+#[allow(non_snake_case, clippy::similar_names, clippy::unwrap_used)]
 pub fn mjd_transition_fd(
     model: &Model,
     data: &Data,
@@ -246,6 +265,8 @@ pub fn mjd_transition_fd(
     let na = model.na;
     let nu = model.nu;
     let nx = 2 * nv + na;
+    let ns = model.nsensordata;
+    let compute_sensors = config.compute_sensor_derivatives && ns > 0;
 
     // Phase 0 — Save nominal state and clone scratch.
     let mut scratch = data.clone();
@@ -262,6 +283,11 @@ pub fn mjd_transition_fd(
     //   direction is infeasible due to actuator_ctrlrange boundary)
     scratch.step(model)?;
     let y_0 = extract_state(model, &scratch, &qpos_0);
+    let sensor_0 = if compute_sensors {
+        Some(scratch.sensordata.clone())
+    } else {
+        None
+    };
     // Restore scratch to nominal for subsequent perturbations.
     scratch.qpos.copy_from(&qpos_0);
     scratch.qvel.copy_from(&qvel_0);
@@ -272,8 +298,18 @@ pub fn mjd_transition_fd(
 
     let mut A = DMatrix::zeros(nx, nx);
     let mut B = DMatrix::zeros(nx, nu);
+    let mut C = if compute_sensors {
+        Some(DMatrix::zeros(ns, nx))
+    } else {
+        None
+    };
+    let mut D = if compute_sensors {
+        Some(DMatrix::zeros(ns, nu))
+    } else {
+        None
+    };
 
-    // Phase 1 — State perturbation (A matrix, nx columns).
+    // Phase 1 — State perturbation (A matrix + C sensor-state columns).
     for i in 0..nx {
         // Apply +eps perturbation
         apply_state_perturbation(
@@ -292,6 +328,11 @@ pub fn mjd_transition_fd(
         );
         scratch.step(model)?;
         let y_plus = extract_state(model, &scratch, &qpos_0);
+        let s_plus = if compute_sensors {
+            Some(scratch.sensordata.clone())
+        } else {
+            None
+        };
 
         if config.centered {
             // Apply -eps perturbation
@@ -311,18 +352,34 @@ pub fn mjd_transition_fd(
             );
             scratch.step(model)?;
             let y_minus = extract_state(model, &scratch, &qpos_0);
+            let s_minus = if compute_sensors {
+                Some(scratch.sensordata.clone())
+            } else {
+                None
+            };
 
             // Central difference: (y+ - y-) / (2·eps)
             let col = (&y_plus - &y_minus) / (2.0 * eps);
             A.column_mut(i).copy_from(&col);
+
+            // Sensor column
+            if let (Some(c_mat), Some(sp), Some(sm)) = (&mut C, &s_plus, &s_minus) {
+                let scol = (sp - sm) / (2.0 * eps);
+                c_mat.column_mut(i).copy_from(&scol);
+            }
         } else {
             // Forward difference: (y+ - y0) / eps
             let col = (&y_plus - &y_0) / eps;
             A.column_mut(i).copy_from(&col);
+
+            if let (Some(c_mat), Some(sp), Some(s0)) = (&mut C, &s_plus, &sensor_0) {
+                let scol = (sp - s0) / eps;
+                c_mat.column_mut(i).copy_from(&scol);
+            }
         }
     }
 
-    // Phase 2 — Control perturbation (B matrix, nu columns).
+    // Phase 2 — Control perturbation (B matrix + D sensor-control columns).
     // Matches MuJoCo's mjd_stepFD control clamping: only nudge within
     // actuator_ctrlrange. Uses forward-only, backward-only, or centered
     // differencing based on which nudges are feasible.
@@ -332,7 +389,7 @@ pub fn mjd_transition_fd(
         let nudge_back =
             (config.centered || !nudge_fwd) && in_ctrl_range(ctrl_0[j] - eps, ctrl_0[j], range);
 
-        let y_plus = if nudge_fwd {
+        let (y_plus, s_plus) = if nudge_fwd {
             scratch.qpos.copy_from(&qpos_0);
             scratch.qvel.copy_from(&qvel_0);
             scratch.act.copy_from(&act_0);
@@ -341,12 +398,18 @@ pub fn mjd_transition_fd(
             scratch.qacc_warmstart.copy_from(&warmstart_0);
             scratch.time = time_0;
             scratch.step(model)?;
-            Some(extract_state(model, &scratch, &qpos_0))
+            let yp = extract_state(model, &scratch, &qpos_0);
+            let sp = if compute_sensors {
+                Some(scratch.sensordata.clone())
+            } else {
+                None
+            };
+            (Some(yp), sp)
         } else {
-            None
+            (None, None)
         };
 
-        let y_minus = if nudge_back {
+        let (y_minus, s_minus) = if nudge_back {
             scratch.qpos.copy_from(&qpos_0);
             scratch.qvel.copy_from(&qvel_0);
             scratch.act.copy_from(&act_0);
@@ -355,11 +418,18 @@ pub fn mjd_transition_fd(
             scratch.qacc_warmstart.copy_from(&warmstart_0);
             scratch.time = time_0;
             scratch.step(model)?;
-            Some(extract_state(model, &scratch, &qpos_0))
+            let ym = extract_state(model, &scratch, &qpos_0);
+            let sm = if compute_sensors {
+                Some(scratch.sensordata.clone())
+            } else {
+                None
+            };
+            (Some(ym), sm)
         } else {
-            None
+            (None, None)
         };
 
+        // State B column (clamped differencing)
         let col = match (&y_plus, &y_minus) {
             (Some(yp), Some(ym)) => (yp - ym) / (2.0 * eps),
             (Some(yp), None) => (yp - &y_0) / eps,
@@ -367,13 +437,37 @@ pub fn mjd_transition_fd(
             (None, None) => DVector::zeros(nx),
         };
         B.column_mut(j).copy_from(&col);
+
+        // Sensor D column (same clamped differencing)
+        if let Some(d_mat) = &mut D {
+            let s0 = sensor_0.as_ref().unwrap();
+            let scol = match (&s_plus, &s_minus) {
+                (Some(sp), Some(sm)) => (sp - sm) / (2.0 * eps),
+                (Some(sp), None) => (sp - s0) / eps,
+                (None, Some(sm)) => (s0 - sm) / eps,
+                (None, None) => DVector::zeros(ns),
+            };
+            d_mat.column_mut(j).copy_from(&scol);
+        }
     }
+
+    // Handle nsensordata == 0 with compute_sensor_derivatives == true:
+    // Return empty Some matrices (AD-2).
+    let (c_result, d_result) = if config.compute_sensor_derivatives {
+        if ns > 0 {
+            (C, D)
+        } else {
+            (Some(DMatrix::zeros(0, nx)), Some(DMatrix::zeros(0, nu)))
+        }
+    } else {
+        (None, None)
+    };
 
     Ok(TransitionMatrices {
         A,
         B,
-        C: None,
-        D: None,
+        C: c_result,
+        D: d_result,
     })
 }
 
@@ -2401,7 +2495,7 @@ fn compute_integration_derivatives(model: &Model, data: &Data) -> IntegrationDer
 /// # Errors
 ///
 /// Returns `StepError` if any simulation step during FD perturbation fails.
-#[allow(non_snake_case, clippy::similar_names)]
+#[allow(non_snake_case, clippy::similar_names, clippy::unwrap_used)]
 pub fn mjd_transition_hybrid(
     model: &Model,
     data: &Data,
@@ -2635,6 +2729,8 @@ pub fn mjd_transition_hybrid(
     let warmstart_0 = data.qacc_warmstart.clone();
     let time_0 = data.time;
     let mut scratch = data.clone();
+    let ns = model.nsensordata;
+    let compute_sensors = config.compute_sensor_derivatives && ns > 0;
 
     // Compute nominal next state by stepping unperturbed.
     // MuJoCo always computes this unconditionally. We need it for:
@@ -2644,12 +2740,28 @@ pub fn mjd_transition_hybrid(
     scratch.qacc_warmstart.copy_from(&warmstart_0);
     scratch.step(model)?;
     let y_0 = extract_state(model, &scratch, &qpos_0);
+    let sensor_0 = if compute_sensors {
+        Some(scratch.sensordata.clone())
+    } else {
+        None
+    };
     scratch.qpos.copy_from(&qpos_0);
     scratch.qvel.copy_from(&qvel_0);
     scratch.act.copy_from(&act_0);
     scratch.ctrl.copy_from(&ctrl_0);
     scratch.qacc_warmstart.copy_from(&warmstart_0);
     scratch.time = time_0;
+
+    let mut c_mat = if compute_sensors {
+        Some(DMatrix::zeros(ns, nx))
+    } else {
+        None
+    };
+    let mut d_mat = if compute_sensors {
+        Some(DMatrix::zeros(ns, nu))
+    } else {
+        None
+    };
 
     if use_analytical_pos {
         // Analytical position columns via mjd_smooth_pos + chain rule
@@ -2722,8 +2834,56 @@ pub fn mjd_transition_hybrid(
         a_mat.view_mut((0, 0), (nv, nv)).copy_from(&dqdq);
         a_mat.view_mut((nv, 0), (nv, nv)).copy_from(&dvdq);
         // ∂act/∂qpos = 0 (already zero from allocation)
+
+        // Sensor C position columns — need FD since analytical doesn't capture sensor outputs.
+        if compute_sensors {
+            for i in 0..nv {
+                apply_state_perturbation(
+                    model,
+                    &mut scratch,
+                    &qpos_0,
+                    &qvel_0,
+                    &act_0,
+                    &ctrl_0,
+                    &warmstart_0,
+                    time_0,
+                    i,
+                    eps,
+                    nv,
+                    na,
+                );
+                scratch.forward_skip(model, MjStage::None, false)?;
+                scratch.integrate(model);
+                let s_plus = scratch.sensordata.clone();
+
+                if config.centered {
+                    apply_state_perturbation(
+                        model,
+                        &mut scratch,
+                        &qpos_0,
+                        &qvel_0,
+                        &act_0,
+                        &ctrl_0,
+                        &warmstart_0,
+                        time_0,
+                        i,
+                        -eps,
+                        nv,
+                        na,
+                    );
+                    scratch.forward_skip(model, MjStage::None, false)?;
+                    scratch.integrate(model);
+                    let s_minus = scratch.sensordata.clone();
+                    let scol = (&s_plus - &s_minus) / (2.0 * eps);
+                    c_mat.as_mut().unwrap().column_mut(i).copy_from(&scol);
+                } else {
+                    let scol = (&s_plus - sensor_0.as_ref().unwrap()) / eps;
+                    c_mat.as_mut().unwrap().column_mut(i).copy_from(&scol);
+                }
+            }
+        }
     } else {
-        // Position FD columns (0..nv)
+        // Position FD columns (0..nv) — piggyback sensor recording
         for i in 0..nv {
             apply_state_perturbation(
                 model,
@@ -2741,6 +2901,11 @@ pub fn mjd_transition_hybrid(
             );
             scratch.step(model)?;
             let y_plus = extract_state(model, &scratch, &qpos_0);
+            let s_plus = if compute_sensors {
+                Some(scratch.sensordata.clone())
+            } else {
+                None
+            };
 
             if config.centered {
                 apply_state_perturbation(
@@ -2759,16 +2924,162 @@ pub fn mjd_transition_hybrid(
                 );
                 scratch.step(model)?;
                 let y_minus = extract_state(model, &scratch, &qpos_0);
+                let s_minus = if compute_sensors {
+                    Some(scratch.sensordata.clone())
+                } else {
+                    None
+                };
                 let col = (&y_plus - &y_minus) / (2.0 * eps);
                 a_mat.column_mut(i).copy_from(&col);
+
+                if let (Some(c), Some(sp), Some(sm)) = (&mut c_mat, &s_plus, &s_minus) {
+                    let scol = (sp - sm) / (2.0 * eps);
+                    c.column_mut(i).copy_from(&scol);
+                }
             } else {
                 let col = (&y_plus - &y_0) / eps;
                 a_mat.column_mut(i).copy_from(&col);
+
+                if let (Some(c), Some(sp), Some(s0)) = (&mut c_mat, &s_plus, &sensor_0) {
+                    let scol = (sp - s0) / eps;
+                    c.column_mut(i).copy_from(&scol);
+                }
             }
         }
     }
 
-    // Muscle activation FD fallback columns
+    // === Velocity columns: sensor-only FD ===
+    // A velocity columns are analytical (no FD step). Sensor C velocity
+    // columns need FD passes with skipstage=MjStage::Pos.
+    if compute_sensors {
+        for i in 0..nv {
+            let state_col = nv + i;
+            apply_state_perturbation(
+                model,
+                &mut scratch,
+                &qpos_0,
+                &qvel_0,
+                &act_0,
+                &ctrl_0,
+                &warmstart_0,
+                time_0,
+                state_col,
+                eps,
+                nv,
+                na,
+            );
+            scratch.forward_skip(model, MjStage::Pos, false)?;
+            scratch.integrate(model);
+            let s_plus = scratch.sensordata.clone();
+
+            if config.centered {
+                apply_state_perturbation(
+                    model,
+                    &mut scratch,
+                    &qpos_0,
+                    &qvel_0,
+                    &act_0,
+                    &ctrl_0,
+                    &warmstart_0,
+                    time_0,
+                    state_col,
+                    -eps,
+                    nv,
+                    na,
+                );
+                scratch.forward_skip(model, MjStage::Pos, false)?;
+                scratch.integrate(model);
+                let s_minus = scratch.sensordata.clone();
+                let scol = (&s_plus - &s_minus) / (2.0 * eps);
+                c_mat
+                    .as_mut()
+                    .unwrap()
+                    .column_mut(state_col)
+                    .copy_from(&scol);
+            } else {
+                let scol = (&s_plus - sensor_0.as_ref().unwrap()) / eps;
+                c_mat
+                    .as_mut()
+                    .unwrap()
+                    .column_mut(state_col)
+                    .copy_from(&scol);
+            }
+        }
+    }
+
+    // === Activation columns: sensor-only FD for analytically-computed activation columns ===
+    if compute_sensors {
+        // Determine which activation columns were computed analytically
+        // (i.e., NOT in act_fd_indices) and run sensor-only FD for those.
+        let act_fd_set: std::collections::HashSet<usize> = act_fd_indices.iter().copied().collect();
+        for actuator_idx in 0..model.nu {
+            let act_adr = model.actuator_act_adr[actuator_idx];
+            let act_num = model.actuator_act_num[actuator_idx];
+            if act_num == 0 {
+                continue;
+            }
+            for k in 0..act_num {
+                let j = act_adr + k;
+                let state_col = 2 * nv + j;
+                if act_fd_set.contains(&state_col) {
+                    continue; // FD column — sensor recording handled in piggybacked FD below
+                }
+                // Sensor-only FD for analytical activation column
+                apply_state_perturbation(
+                    model,
+                    &mut scratch,
+                    &qpos_0,
+                    &qvel_0,
+                    &act_0,
+                    &ctrl_0,
+                    &warmstart_0,
+                    time_0,
+                    state_col,
+                    eps,
+                    nv,
+                    na,
+                );
+                scratch.forward_skip(model, MjStage::Vel, false)?;
+                scratch.integrate(model);
+                let s_plus = scratch.sensordata.clone();
+
+                if config.centered {
+                    apply_state_perturbation(
+                        model,
+                        &mut scratch,
+                        &qpos_0,
+                        &qvel_0,
+                        &act_0,
+                        &ctrl_0,
+                        &warmstart_0,
+                        time_0,
+                        state_col,
+                        -eps,
+                        nv,
+                        na,
+                    );
+                    scratch.forward_skip(model, MjStage::Vel, false)?;
+                    scratch.integrate(model);
+                    let s_minus = scratch.sensordata.clone();
+                    let scol = (&s_plus - &s_minus) / (2.0 * eps);
+                    c_mat
+                        .as_mut()
+                        .unwrap()
+                        .column_mut(state_col)
+                        .copy_from(&scol);
+                } else {
+                    let scol = (&s_plus - sensor_0.as_ref().unwrap()) / eps;
+                    c_mat
+                        .as_mut()
+                        .unwrap()
+                        .column_mut(state_col)
+                        .copy_from(&scol);
+                }
+            }
+        }
+    }
+
+    // Muscle activation FD fallback columns — piggyback sensor recording
     for &state_col in &act_fd_indices {
         apply_state_perturbation(
             model,
@@ -2786,6 +3097,11 @@ pub fn mjd_transition_hybrid(
         );
         scratch.step(model)?;
         let y_plus = extract_state(model, &scratch, &qpos_0);
+        let s_plus = if compute_sensors {
+            Some(scratch.sensordata.clone())
+        } else {
+            None
+        };
 
         if config.centered {
             apply_state_perturbation(
@@ -2804,11 +3120,26 @@ pub fn mjd_transition_hybrid(
             );
             scratch.step(model)?;
             let y_minus = extract_state(model, &scratch, &qpos_0);
+            let s_minus = if compute_sensors {
+                Some(scratch.sensordata.clone())
+            } else {
+                None
+            };
             let col = (&y_plus - &y_minus) / (2.0 * eps);
             a_mat.column_mut(state_col).copy_from(&col);
+
+            if let (Some(c), Some(sp), Some(sm)) = (&mut c_mat, &s_plus, &s_minus) {
+                let scol = (sp - sm) / (2.0 * eps);
+                c.column_mut(state_col).copy_from(&scol);
+            }
         } else {
             let col = (&y_plus - &y_0) / eps;
             a_mat.column_mut(state_col).copy_from(&col);
+
+            if let (Some(c), Some(sp), Some(s0)) = (&mut c_mat, &s_plus, &sensor_0) {
+                let scol = (sp - s0) / eps;
+                c.column_mut(state_col).copy_from(&scol);
+            }
         }
     }
 
@@ -2880,7 +3211,66 @@ pub fn mjd_transition_hybrid(
         }
     }
 
-    // FD for non-analytical B columns (with clamped differencing for control-limited actuators)
+    // === Sensor-only FD for analytical B columns ===
+    if compute_sensors {
+        let ctrl_fd_set: std::collections::HashSet<usize> =
+            ctrl_fd_indices.iter().copied().collect();
+        for actuator_idx in 0..nu {
+            if ctrl_fd_set.contains(&actuator_idx) {
+                continue; // Handled in piggybacked FD below
+            }
+            // Sensor-only FD for this analytical B column
+            let range = model.actuator_ctrlrange[actuator_idx];
+            let nudge_fwd = in_ctrl_range(ctrl_0[actuator_idx], ctrl_0[actuator_idx] + eps, range);
+            let nudge_back = (config.centered || !nudge_fwd)
+                && in_ctrl_range(ctrl_0[actuator_idx] - eps, ctrl_0[actuator_idx], range);
+
+            let s_plus = if nudge_fwd {
+                scratch.qpos.copy_from(&qpos_0);
+                scratch.qvel.copy_from(&qvel_0);
+                scratch.act.copy_from(&act_0);
+                scratch.ctrl.copy_from(&ctrl_0);
+                scratch.ctrl[actuator_idx] += eps;
+                scratch.qacc_warmstart.copy_from(&warmstart_0);
+                scratch.time = time_0;
+                scratch.forward_skip(model, MjStage::Vel, false)?;
+                scratch.integrate(model);
+                Some(scratch.sensordata.clone())
+            } else {
+                None
+            };
+
+            let s_minus = if nudge_back {
+                scratch.qpos.copy_from(&qpos_0);
+                scratch.qvel.copy_from(&qvel_0);
+                scratch.act.copy_from(&act_0);
+                scratch.ctrl.copy_from(&ctrl_0);
+                scratch.ctrl[actuator_idx] -= eps;
+                scratch.qacc_warmstart.copy_from(&warmstart_0);
+                scratch.time = time_0;
+                scratch.forward_skip(model, MjStage::Vel, false)?;
+                scratch.integrate(model);
+                Some(scratch.sensordata.clone())
+            } else {
+                None
+            };
+
+            let s0 = sensor_0.as_ref().unwrap();
+            let scol = match (&s_plus, &s_minus) {
+                (Some(sp), Some(sm)) => (sp - sm) / (2.0 * eps),
+                (Some(sp), None) => (sp - s0) / eps,
+                (None, Some(sm)) => (s0 - sm) / eps,
+                (None, None) => DVector::zeros(ns),
+            };
+            d_mat
+                .as_mut()
+                .unwrap()
+                .column_mut(actuator_idx)
+                .copy_from(&scol);
+        }
+    }
+
+    // FD for non-analytical B columns — piggyback sensor recording
     let nx = 2 * nv + na;
     for &j in &ctrl_fd_indices {
         let range = model.actuator_ctrlrange[j];
@@ -2888,7 +3278,7 @@ pub fn mjd_transition_hybrid(
         let nudge_back =
             (config.centered || !nudge_fwd) && in_ctrl_range(ctrl_0[j] - eps, ctrl_0[j], range);
 
-        let y_plus = if nudge_fwd {
+        let (y_plus, s_plus) = if nudge_fwd {
             scratch.qpos.copy_from(&qpos_0);
             scratch.qvel.copy_from(&qvel_0);
             scratch.act.copy_from(&act_0);
@@ -2897,12 +3287,18 @@ pub fn mjd_transition_hybrid(
             scratch.ctrl[j] += eps;
             scratch.time = time_0;
             scratch.step(model)?;
-            Some(extract_state(model, &scratch, &qpos_0))
+            let yp = extract_state(model, &scratch, &qpos_0);
+            let sp = if compute_sensors {
+                Some(scratch.sensordata.clone())
+            } else {
+                None
+            };
+            (Some(yp), sp)
         } else {
-            None
+            (None, None)
         };
 
-        let y_minus = if nudge_back {
+        let (y_minus, s_minus) = if nudge_back {
             scratch.qpos.copy_from(&qpos_0);
             scratch.qvel.copy_from(&qvel_0);
             scratch.act.copy_from(&act_0);
@@ -2911,9 +3307,15 @@ pub fn mjd_transition_hybrid(
             scratch.ctrl[j] -= eps;
             scratch.time = time_0;
             scratch.step(model)?;
-            Some(extract_state(model, &scratch, &qpos_0))
+            let ym = extract_state(model, &scratch, &qpos_0);
+            let sm = if compute_sensors {
+                Some(scratch.sensordata.clone())
+            } else {
+                None
+            };
+            (Some(ym), sm)
         } else {
-            None
+            (None, None)
         };
 
         let col = match (&y_plus, &y_minus) {
@@ -2923,13 +3325,37 @@ pub fn mjd_transition_hybrid(
             (None, None) => DVector::zeros(nx),
         };
         b_mat.column_mut(j).copy_from(&col);
+
+        // Sensor D column (piggybacked — same clamped differencing)
+        if let Some(d) = &mut d_mat {
+            let s0 = sensor_0.as_ref().unwrap();
+            let scol = match (&s_plus, &s_minus) {
+                (Some(sp), Some(sm)) => (sp - sm) / (2.0 * eps),
+                (Some(sp), None) => (sp - s0) / eps,
+                (None, Some(sm)) => (s0 - sm) / eps,
+                (None, None) => DVector::zeros(ns),
+            };
+            d.column_mut(j).copy_from(&scol);
+        }
     }
+
+    // Handle nsensordata == 0 with compute_sensor_derivatives == true:
+    // Return empty Some matrices (AD-2).
+    let (c_result, d_result) = if config.compute_sensor_derivatives {
+        if ns > 0 {
+            (c_mat, d_mat)
+        } else {
+            (Some(DMatrix::zeros(0, nx)), Some(DMatrix::zeros(0, nu)))
+        }
+    } else {
+        (None, None)
+    };
 
     Ok(TransitionMatrices {
         A: a_mat,
         B: b_mat,
-        C: None,
-        D: None,
+        C: c_result,
+        D: d_result,
     })
 }
 
@@ -3062,11 +3488,13 @@ pub fn fd_convergence_check(
         eps,
         centered: true,
         use_analytical: false,
+        compute_sensor_derivatives: false,
     };
     let c2 = DerivativeConfig {
         eps: eps / 10.0,
         centered: true,
         use_analytical: false,
+        compute_sensor_derivatives: false,
     };
     let d1 = mjd_transition_fd(model, data, &c1)?;
     let d2 = mjd_transition_fd(model, data, &c2)?;

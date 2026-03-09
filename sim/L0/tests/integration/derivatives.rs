@@ -223,11 +223,13 @@ fn test_centered_vs_forward_convergence() {
         eps: 1e-6,
         centered: true,
         use_analytical: false,
+        compute_sensor_derivatives: false,
     };
     let forward = DerivativeConfig {
         eps: 1e-6,
         centered: false,
         use_analytical: false,
+        compute_sensor_derivatives: false,
     };
 
     let dc = mjd_transition_fd(&model, &data, &centered).unwrap();
@@ -261,6 +263,7 @@ fn test_b_matrix_structure() {
         eps: 1e-6,
         centered: true,
         use_analytical: false,
+        compute_sensor_derivatives: false,
     };
     let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
 
@@ -351,6 +354,7 @@ fn test_activation_derivatives() {
         eps: 1e-6,
         centered: true,
         use_analytical: false,
+        compute_sensor_derivatives: false,
     };
     let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
 
@@ -398,6 +402,7 @@ fn test_contact_sensitivity() {
         eps: 1e-6,
         centered: true,
         use_analytical: false,
+        compute_sensor_derivatives: false,
     };
     let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
 
@@ -496,11 +501,13 @@ fn test_fd_convergence() {
         eps: 1e-6,
         centered: true,
         use_analytical: false,
+        compute_sensor_derivatives: false,
     };
     let c2 = DerivativeConfig {
         eps: 1e-7,
         centered: true,
         use_analytical: false,
+        compute_sensor_derivatives: false,
     };
 
     let d1 = mjd_transition_fd(&model, &data, &c1).unwrap();
@@ -2013,4 +2020,498 @@ fn test_pos_deriv_zero_model() {
         max_val < 1e-15,
         "Zero-derivative model: qDeriv_pos should be zero, max = {max_val}"
     );
+}
+
+// ============================================================================
+// Phase 11 Spec B — Sensor Derivatives (C, D matrices)
+// ============================================================================
+
+/// Helper: build a 2-link pendulum with jointpos sensors and a motor actuator.
+fn sensor_pendulum_2link() -> (sim_core::Model, sim_core::Data) {
+    let mjcf = r#"
+        <mujoco model="sensor_deriv_test">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b2" pos="0.5 0 0">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j1" ctrlrange="-10 10"/>
+            </actuator>
+            <sensor>
+                <jointpos joint="j1"/>
+                <jointpos joint="j2"/>
+            </sensor>
+        </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qvel[1] = 0.5;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).unwrap();
+    (model, data)
+}
+
+/// T1: Sensor derivative dimensions → AC1, AC2
+#[test]
+fn t1_sensor_derivative_dimensions() {
+    let (model, data) = sensor_pendulum_2link();
+    assert_eq!(model.nsensordata, 2);
+    assert_eq!(model.nv, 2);
+    assert_eq!(model.na, 0);
+    assert_eq!(model.nu, 1);
+
+    let config = DerivativeConfig {
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+    let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    // C: nsensordata × (2*nv + na) = 2 × 4
+    let c = derivs.C.as_ref().expect("C should be Some");
+    assert_eq!(c.nrows(), 2);
+    assert_eq!(c.ncols(), 4);
+
+    // D: nsensordata × nu = 2 × 1
+    let d = derivs.D.as_ref().expect("D should be Some");
+    assert_eq!(d.nrows(), 2);
+    assert_eq!(d.ncols(), 1);
+}
+
+/// T2: Opt-in negative case → AC3
+#[test]
+fn t2_sensor_derivative_opt_in_negative() {
+    let (model, data) = sensor_pendulum_2link();
+
+    let config = DerivativeConfig::default();
+    assert!(!config.compute_sensor_derivatives);
+    let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
+    assert!(derivs.C.is_none(), "C should be None when not requested");
+    assert!(derivs.D.is_none(), "D should be None when not requested");
+}
+
+/// T3: C/D accuracy via independent FD validation → AC4, AC5
+#[test]
+fn t3_sensor_derivative_fd_accuracy() {
+    let (model, data) = sensor_pendulum_2link();
+    let eps = 1e-6;
+    let nv = model.nv;
+    let na = model.na;
+    let nu = model.nu;
+    let ns = model.nsensordata;
+    let nx = 2 * nv + na;
+
+    let config = DerivativeConfig {
+        eps,
+        centered: true,
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+    let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
+    let c_api = derivs.C.as_ref().unwrap();
+    let d_api = derivs.D.as_ref().unwrap();
+
+    // Independent manual FD for C matrix (state columns)
+    let mut c_manual = nalgebra::DMatrix::zeros(ns, nx);
+    for i in 0..nx {
+        let mut scratch_p = data.clone();
+        let mut dq = nalgebra::DVector::zeros(nv);
+        if i < nv {
+            dq[i] = eps;
+            let mut qpos_perturbed = data.qpos.clone();
+            mj_integrate_pos_explicit(&model, &mut qpos_perturbed, &data.qpos, &dq, 1.0);
+            scratch_p.qpos.copy_from(&qpos_perturbed);
+        } else if i < 2 * nv {
+            scratch_p.qvel[i - nv] += eps;
+        } else {
+            scratch_p.act[i - 2 * nv] += eps;
+        }
+        scratch_p.step(&model).unwrap();
+        let s_plus = scratch_p.sensordata.clone();
+
+        let mut scratch_m = data.clone();
+        if i < nv {
+            dq[i] = -eps; // it was set to eps above; but let's just rebuild
+            let mut dq_neg = nalgebra::DVector::zeros(nv);
+            dq_neg[i] = -eps;
+            let mut qpos_perturbed = data.qpos.clone();
+            mj_integrate_pos_explicit(&model, &mut qpos_perturbed, &data.qpos, &dq_neg, 1.0);
+            scratch_m.qpos.copy_from(&qpos_perturbed);
+        } else if i < 2 * nv {
+            scratch_m.qvel[i - nv] -= eps;
+        } else {
+            scratch_m.act[i - 2 * nv] -= eps;
+        }
+        scratch_m.step(&model).unwrap();
+        let s_minus = scratch_m.sensordata.clone();
+
+        let scol = (&s_plus - &s_minus) / (2.0 * eps);
+        c_manual.column_mut(i).copy_from(&scol);
+    }
+    let c_err = max_relative_error(c_api, &c_manual, 1e-10);
+    assert!(
+        c_err < 1e-6,
+        "C matrix: API vs manual FD max relative error = {c_err}"
+    );
+
+    // Independent manual FD for D matrix (control columns)
+    let mut d_manual = nalgebra::DMatrix::zeros(ns, nu);
+    for j in 0..nu {
+        let mut scratch_p = data.clone();
+        scratch_p.ctrl[j] += eps;
+        scratch_p.step(&model).unwrap();
+        let s_plus = scratch_p.sensordata.clone();
+
+        let mut scratch_m = data.clone();
+        scratch_m.ctrl[j] -= eps;
+        scratch_m.step(&model).unwrap();
+        let s_minus = scratch_m.sensordata.clone();
+
+        let scol = (&s_plus - &s_minus) / (2.0 * eps);
+        d_manual.column_mut(j).copy_from(&scol);
+    }
+    let d_err = max_relative_error(d_api, &d_manual, 1e-10);
+    assert!(
+        d_err < 1e-6,
+        "D matrix: API vs manual FD max relative error = {d_err}"
+    );
+}
+
+/// T4: Hybrid C/D matches FD C/D → AC6
+#[test]
+fn t4_hybrid_matches_fd_sensor_derivatives() {
+    let (model, data) = sensor_pendulum_2link();
+
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+
+    let fd = mjd_transition_fd(&model, &data, &config).unwrap();
+    let hybrid = mjd_transition_hybrid(&model, &data, &config).unwrap();
+
+    let fd_c = fd.C.as_ref().unwrap();
+    let hybrid_c = hybrid.C.as_ref().unwrap();
+    let c_err = max_relative_error(fd_c, hybrid_c, 1e-10);
+    assert!(
+        c_err < 1e-6,
+        "Hybrid C vs FD C: max relative error = {c_err}"
+    );
+
+    let fd_d = fd.D.as_ref().unwrap();
+    let hybrid_d = hybrid.D.as_ref().unwrap();
+    let d_err = max_relative_error(fd_d, hybrid_d, 1e-10);
+    assert!(
+        d_err < 1e-6,
+        "Hybrid D vs FD D: max relative error = {d_err}"
+    );
+}
+
+/// T5: A/B unchanged when sensors enabled → AC7
+#[test]
+fn t5_ab_unchanged_with_sensors_enabled() {
+    let (model, data) = sensor_pendulum_2link();
+
+    let config_off = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        compute_sensor_derivatives: false,
+        ..DerivativeConfig::default()
+    };
+    let config_on = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+
+    let derivs_off = mjd_transition_fd(&model, &data, &config_off).unwrap();
+    let derivs_on = mjd_transition_fd(&model, &data, &config_on).unwrap();
+
+    // A/B should be bitwise identical
+    assert_eq!(
+        derivs_off.A, derivs_on.A,
+        "A matrices differ when sensor derivatives enabled"
+    );
+    assert_eq!(
+        derivs_off.B, derivs_on.B,
+        "B matrices differ when sensor derivatives enabled"
+    );
+}
+
+/// T6: nsensordata == 0 edge case → AC8
+#[test]
+fn t6_nsensordata_zero_empty_matrices() {
+    let model = Model::n_link_pendulum(2, 1.0, 0.1);
+    assert_eq!(model.nsensordata, 0);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+    let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let c = derivs
+        .C
+        .as_ref()
+        .expect("C should be Some even with nsensordata=0");
+    assert_eq!(c.nrows(), 0, "C should have 0 rows");
+    assert_eq!(c.ncols(), 4, "C should have nx columns"); // 2*nv + na = 4
+
+    let d = derivs
+        .D
+        .as_ref()
+        .expect("D should be Some even with nsensordata=0");
+    assert_eq!(d.nrows(), 0, "D should have 0 rows");
+    assert_eq!(d.ncols(), 0, "D should have nu=0 columns");
+}
+
+/// T7: Multi-sensor-type model → AC9
+#[test]
+fn t7_multi_sensor_type_model() {
+    let mjcf = r#"
+        <mujoco model="multi_sensor">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor name="m1" joint="j1" ctrlrange="-10 10"/>
+            </actuator>
+            <sensor>
+                <jointpos joint="j1"/>
+                <jointvel joint="j1"/>
+                <actuatorfrc actuator="m1"/>
+            </sensor>
+        </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).unwrap();
+    assert_eq!(model.nsensordata, 3);
+    assert_eq!(model.nv, 1);
+    assert_eq!(model.nu, 1);
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.ctrl[0] = 2.0;
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+    let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let c = derivs.C.as_ref().unwrap();
+    assert_eq!(c.nrows(), 3);
+    assert_eq!(c.ncols(), 2); // nx = 2*1 + 0
+
+    let d = derivs.D.as_ref().unwrap();
+    assert_eq!(d.nrows(), 3);
+    assert_eq!(d.ncols(), 1);
+
+    // Sensor types should have non-zero C entries (position-stage and velocity-stage sensors)
+    let c_abs_sum: f64 = c.iter().map(|v| v.abs()).sum();
+    assert!(
+        c_abs_sum > 1e-10,
+        "C matrix should have non-zero entries for multi-sensor model"
+    );
+
+    // D should have non-zero entries for actuatorfrc (depends on ctrl)
+    let d_abs_sum: f64 = d.iter().map(|v| v.abs()).sum();
+    assert!(
+        d_abs_sum > 1e-10,
+        "D matrix should have non-zero entries (actuatorfrc depends on ctrl)"
+    );
+}
+
+/// T8: Control-limited actuator D column → AC10
+///
+/// Uses actuatorfrc sensor which responds to ctrl changes, and sets ctrl at the
+/// upper bound so forward nudge is infeasible — forces backward-only differencing.
+#[test]
+fn t8_control_limited_actuator_d_column() {
+    let mjcf = r#"
+        <mujoco model="ctrl_limited">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor name="m1" joint="j1" ctrlrange="0 1" ctrllimited="true"/>
+            </actuator>
+            <sensor>
+                <actuatorfrc actuator="m1"/>
+            </sensor>
+        </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+    data.ctrl[0] = 1.0; // at upper bound — forward nudge infeasible
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+    let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let d = derivs.D.as_ref().unwrap();
+    // D column should be non-zero (backward-only differencing; actuatorfrc depends on ctrl)
+    assert!(
+        d[(0, 0)].abs() > 1e-15,
+        "D column for control-limited actuator with actuatorfrc sensor should be non-zero, got {}",
+        d[(0, 0)]
+    );
+}
+
+/// T10: Forward-difference sensor derivatives (supplementary)
+#[test]
+fn t10_forward_difference_sensor_derivatives() {
+    let (model, data) = sensor_pendulum_2link();
+
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: false,
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+    let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let c = derivs.C.as_ref().unwrap();
+    let d = derivs.D.as_ref().unwrap();
+
+    // Check dimensions
+    assert_eq!(c.nrows(), 2);
+    assert_eq!(c.ncols(), 4);
+    assert_eq!(d.nrows(), 2);
+    assert_eq!(d.ncols(), 1);
+
+    // Non-zero: forward difference should produce meaningful sensor derivatives
+    let c_abs_sum: f64 = c.iter().map(|v| v.abs()).sum();
+    assert!(
+        c_abs_sum > 1e-10,
+        "Forward-difference C should have non-zero entries"
+    );
+}
+
+/// T11: Structural C matrix test for jointpos sensors → AC13
+///
+/// MuJoCo's `mjd_stepFD` evaluates sensors during `forward()` before integration.
+/// The C matrix captures `∂sensor(x_t)/∂x_t` (current-state observation Jacobian),
+/// matching the standard state-space model: `y_t = C·x_t + D·u_t`.
+///
+/// For jointpos sensors:
+/// - Position columns: C[s, j] ≈ I[s,j] (identity for own joint, 0 for others)
+///   because jointpos directly measures qpos, and position perturbation is identity.
+/// - Velocity columns: C[s, nv+j] ≈ 0 (jointpos doesn't depend on velocity)
+/// - D[s, k] ≈ 0 (jointpos doesn't depend on ctrl at the current timestep)
+#[test]
+fn t11_structural_cd_to_ab_crosscheck() {
+    let (model, data) = sensor_pendulum_2link();
+    let nv = model.nv;
+
+    let config = DerivativeConfig {
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+    let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let c = derivs.C.as_ref().unwrap();
+    let d = derivs.D.as_ref().unwrap();
+
+    // For jointpos sensors: C position block ≈ identity matrix
+    // Sensor 0 is jointpos on j1 (dof 0), sensor 1 is jointpos on j2 (dof 1)
+    for sensor_idx in 0..2 {
+        for j in 0..nv {
+            let expected = if sensor_idx == j { 1.0 } else { 0.0 };
+            let c_val = c[(sensor_idx, j)];
+            let err = (c_val - expected).abs();
+            assert!(
+                err < 1e-6,
+                "C[{sensor_idx},{j}] = {c_val:.8e}, expected {expected:.1}, err = {err:.2e}"
+            );
+        }
+        // Velocity columns should be ~0 for jointpos
+        for j in 0..nv {
+            let c_val = c[(sensor_idx, nv + j)];
+            assert!(
+                c_val.abs() < 1e-6,
+                "C[{sensor_idx},{}] = {c_val:.8e}, expected ~0 for velocity column",
+                nv + j
+            );
+        }
+    }
+
+    // D should be ~0 for jointpos sensors (qpos doesn't depend on ctrl at current timestep)
+    for sensor_idx in 0..2 {
+        for k in 0..model.nu {
+            let d_val = d[(sensor_idx, k)];
+            assert!(
+                d_val.abs() < 1e-6,
+                "D[{sensor_idx},{k}] = {d_val:.8e}, expected ~0 for jointpos sensor"
+            );
+        }
+    }
+}
+
+/// T12: Cutoff-clamped sensor zero derivatives → AC14
+#[test]
+fn t12_cutoff_clamped_sensor_zero_derivatives() {
+    let mjcf = r#"
+        <mujoco model="cutoff_test">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor joint="j1" ctrlrange="-10 10"/>
+            </actuator>
+            <sensor>
+                <jointpos joint="j1" cutoff="0.1"/>
+            </sensor>
+        </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.5; // far exceeds cutoff
+    data.forward(&model).unwrap();
+
+    // Verify sensor is clamped
+    assert!(
+        data.sensordata[0].abs() <= 0.1 + 1e-12,
+        "Sensor should be clamped at cutoff"
+    );
+
+    let config = DerivativeConfig {
+        compute_sensor_derivatives: true,
+        ..DerivativeConfig::default()
+    };
+    let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let c = derivs.C.as_ref().unwrap();
+    // All entries in the C row for the clamped sensor should be approximately zero
+    for j in 0..c.ncols() {
+        assert!(
+            c[(0, j)].abs() < 1e-6,
+            "C[0,{j}] = {} should be ~0 for cutoff-clamped sensor",
+            c[(0, j)]
+        );
+    }
 }

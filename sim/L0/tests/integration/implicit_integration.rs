@@ -1077,6 +1077,7 @@ fn test_implicitfast_derivative_consistency() {
             use_analytical: true,
             centered: true,
             eps: 1e-6,
+            compute_sensor_derivatives: false,
         },
     )
     .unwrap();
@@ -1087,6 +1088,7 @@ fn test_implicitfast_derivative_consistency() {
             use_analytical: false,
             centered: true,
             eps: 1e-6,
+            compute_sensor_derivatives: false,
         },
     )
     .unwrap();
@@ -1148,6 +1150,7 @@ fn test_implicit_derivative_consistency() {
             use_analytical: true,
             centered: true,
             eps: 1e-6,
+            compute_sensor_derivatives: false,
         },
     )
     .unwrap();
@@ -1158,6 +1161,7 @@ fn test_implicit_derivative_consistency() {
             use_analytical: false,
             centered: true,
             eps: 1e-6,
+            compute_sensor_derivatives: false,
         },
     )
     .unwrap();
