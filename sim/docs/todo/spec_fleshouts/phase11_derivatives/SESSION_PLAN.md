@@ -537,7 +537,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 11: Spec B implementation
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- implement Spec B.
@@ -633,6 +633,6 @@ Present the Review Verdict (section 10) to the user when done.
 | 8 | Spec A review — execute | Done | |
 | 9 | Spec B rubric (DT-47 Sensor Derivatives) | Done | 73653cb |
 | 10 | Spec B spec | Done | 33eb5c1 |
-| 11 | Spec B implementation | | |
+| 11 | Spec B implementation | Done | 7bf1043 |
 | 12 | Spec B review — create document | | |
 | 13 | Spec B review — execute | | |
