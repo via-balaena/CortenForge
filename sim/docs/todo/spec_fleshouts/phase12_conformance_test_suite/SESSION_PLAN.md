@@ -387,7 +387,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 3: T1 — Layer A+D Coverage Audit + Gap-Fill
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- implement T1 item (Layer A+D systematic tests).
@@ -1137,7 +1137,7 @@ what stands between CortenForge and v1.0.
 |---------|-------------|--------|--------|
 | 1 | Phase 12 Umbrella | Done | fdb514e |
 | 2 | T1: DT-97 (golden flag expansion + model enrichment) | Done | 0fbdb7c |
-| 3 | T1: Layer A+D (coverage audit + systematic gap-fill) | | |
+| 3 | T1: Layer A+D (coverage audit + systematic gap-fill) | Done | 30972f3 |
 | 4 | T1: Reference data gen infrastructure (models + Python script) | | |
 | 5 | Spec A rubric (Layer B — per-stage reference) | | |
 | 6 | Spec A spec | | |
