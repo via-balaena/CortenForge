@@ -1,18 +1,77 @@
 <mujoco model="flag_golden_test">
-  <!-- Canonical model for §41 golden-file conformance tests.
-       1-DOF hinge with spring, damper, gravity, motor, floor contact.
-       Small enough for fast tests; exercises critical flag-gated subsystems. -->
+  <!-- Canonical model for DT-97 golden-file conformance tests.
+       Enriched to exercise all 25 disable/enable flag-gated subsystems.
+       nv=8 (hinge1 + hinge2 + free body), fast to simulate.
+
+       Subsystems exercised:
+       - Spring/damper/frictionloss/limit on hinge1 (DISABLE_SPRING/DAMPER/FRICTIONLOSS/LIMIT)
+       - Equality constraint coupling hinge1→hinge2 (DISABLE_EQUALITY, DISABLE_REFSAFE)
+       - Fixed tendon with spring/damping/frictionloss (DISABLE_SPRING, DISABLE_FRICTIONLOSS)
+       - Floor contact via free-floating ball (DISABLE_CONTACT, DISABLE_CONSTRAINT)
+       - Parent-child geom overlap: arm_geom + forearm_geom (DISABLE_FILTERPARENT)
+       - Sensor: jointpos on hinge1 (DISABLE_SENSOR)
+       - Motor with ctrlrange [-1,1], ctrl=2.0 in tests (DISABLE_ACTUATION, DISABLE_CLAMPCTRL)
+       - Gravity 9.81 m/s² (DISABLE_GRAVITY)
+       - Euler integrator with damping (DISABLE_EULERDAMP)
+       - Solver warmstart (DISABLE_WARMSTART)
+       - Two constraint islands: arm chain + free ball (DISABLE_ISLAND)
+       - Collision midphase/BVH (DISABLE_MIDPHASE)
+       - NativeCCD collision path (DISABLE_NATIVECCD)
+       - Auto-reset on divergence (DISABLE_AUTORESET)
+       - Enable flags: energy, fwdinv, invdiscrete, multiccd, override, sleep -->
   <option gravity="0 0 -9.81" timestep="0.002"/>
   <worldbody>
-    <geom type="plane" size="5 5 0.1"/>
-    <body name="link" pos="0 0 1">
-      <joint name="hinge" type="hinge" axis="0 1 0"
-             stiffness="100" damping="10"
-             limited="true" range="-90 90"/>
-      <geom type="sphere" size="0.1" mass="1.0"/>
+    <geom name="floor" type="plane" size="5 5 0.1" friction="1 0.005 0.0001"/>
+
+    <!-- Two-link arm: hinge1 has spring, damper, limit, frictionloss.
+         arm_geom and forearm_geom overlap for parent-child filtering test. -->
+    <body name="arm" pos="0 0 1.5">
+      <joint name="hinge1" type="hinge" axis="0 1 0"
+             stiffness="5" damping="1" frictionloss="0.5"
+             limited="true" range="-0.1 0.1"/>
+      <geom name="arm_geom" type="sphere" size="0.05" pos="0.12 0 0" mass="1.0"/>
+
+      <body name="forearm" pos="0.15 0 0">
+        <joint name="hinge2" type="hinge" axis="0 1 0"
+               stiffness="2" damping="0.5"/>
+        <geom name="forearm_geom" type="sphere" size="0.04" mass="0.3"/>
+        <site name="tip" pos="0 0 0"/>
+      </body>
+    </body>
+
+    <!-- Free-floating ball slightly penetrating floor: immediate contact.
+         Creates second constraint island separate from arm chain. -->
+    <body name="ball" pos="1 0 0.049">
+      <freejoint name="ball_joint"/>
+      <geom name="ball_geom" type="sphere" size="0.05" mass="0.5"
+            friction="1 0.005 0.0001"/>
     </body>
   </worldbody>
+
+  <!-- Fixed tendon coupling hinge1 and hinge2 with spring/damping/frictionloss -->
+  <tendon>
+    <fixed name="coupling" stiffness="5" damping="1" frictionloss="0.3">
+      <joint joint="hinge1" coef="1.0"/>
+      <joint joint="hinge2" coef="-1.0"/>
+    </fixed>
+  </tendon>
+
+  <!-- Equality constraint: hinge2 = 0.5*hinge1.
+       solref="0.002 1" is below 2*timestep=0.004, exercises DISABLE_REFSAFE. -->
+  <equality>
+    <joint name="joint_eq" joint1="hinge1" joint2="hinge2"
+           polycoef="0 0.5 0 0 0"
+           solref="0.002 1" solimp="0.9 0.95 0.001 0.5 2"/>
+  </equality>
+
+  <!-- Sensor: exercises DISABLE_SENSOR -->
+  <sensor>
+    <jointpos name="hinge1_pos" joint="hinge1"/>
+  </sensor>
+
+  <!-- Motor with ctrlrange: exercises DISABLE_ACTUATION, DISABLE_CLAMPCTRL.
+       Tests set ctrl[0]=2.0 (outside [-1,1]) so DISABLE_CLAMPCTRL has observable effect. -->
   <actuator>
-    <motor joint="hinge" name="motor" ctrlrange="-1 1"/>
+    <motor joint="hinge1" name="motor" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
