@@ -325,7 +325,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 5: Spec A spec (Analytical Position Derivatives)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- write Spec A spec.
@@ -627,7 +627,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 2 | T1: DT-52 (mjd_subQuat) + DT-54 (muscle velocity derivatives) | Done | 9feebfe |
 | 3 | T1: DT-51 (mjd_inverseFD) + DT-53 (mj_forwardSkip) | Done | c68d9cb |
 | 4 | Spec A rubric (§58 Analytical Position Derivatives) | Done | 2d8ffa4 |
-| 5 | Spec A spec | | |
+| 5 | Spec A spec | Done | 65e8c04 |
 | 6 | Spec A implementation | | |
 | 7 | Spec A review — create document | | |
 | 8 | Spec A review — execute | | |
