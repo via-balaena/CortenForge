@@ -1135,7 +1135,7 @@ what stands between CortenForge and v1.0.
 
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
-| 1 | Phase 12 Umbrella | Done | pending |
+| 1 | Phase 12 Umbrella | Done | fdb514e |
 | 2 | T1: DT-97 (golden flag expansion + model enrichment) | | |
 | 3 | T1: Layer A+D (coverage audit + systematic gap-fill) | | |
 | 4 | T1: Reference data gen infrastructure (models + Python script) | | |
