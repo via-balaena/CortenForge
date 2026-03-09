@@ -185,7 +185,7 @@ Spec A but is not blocked. Session 15 must be last.
 
 ## Session 1: Phase 12 Umbrella
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- write the umbrella spec.
@@ -337,7 +337,7 @@ The current `flag_golden_test.xml` is a 1-DOF hinge with spring/damper/
 motor/floor contact. Many flags won't produce observable qacc differences
 with this model. Enrich it to exercise all flag-gated subsystems:
 - Equality constraint (weld or joint equality — for DISABLE_EQUALITY)
-- Fixed tendon with spring (for DISABLE_TENDON)
+- Fixed tendon with spring (tendon pipeline — passive force via DISABLE_SPRING, friction via DISABLE_FRICTIONLOSS)
 - Joint limits that are active at qpos0 (for DISABLE_LIMIT)
 - At least one sensor (for DISABLE_SENSOR / ENABLE_SENSOR)
 - Contact-producing geometry with friction (for DISABLE_CONTACT,
@@ -1135,7 +1135,7 @@ what stands between CortenForge and v1.0.
 
 | Session | Deliverable | Status | Commit |
 |---------|-------------|--------|--------|
-| 1 | Phase 12 Umbrella | | |
+| 1 | Phase 12 Umbrella | Done | pending |
 | 2 | T1: DT-97 (golden flag expansion + model enrichment) | | |
 | 3 | T1: Layer A+D (coverage audit + systematic gap-fill) | | |
 | 4 | T1: Reference data gen infrastructure (models + Python script) | | |
