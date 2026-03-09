@@ -235,6 +235,11 @@ pub fn mjd_transition_fd(
         "DerivativeConfig::eps must be in (0, 1e-2], got {}",
         config.eps
     );
+    // MuJoCo rejects models with history (delays) for FD derivatives.
+    assert!(
+        model.nhistory == 0,
+        "FD derivatives not supported with nhistory > 0 (delays)"
+    );
 
     let eps = config.eps;
     let nv = model.nv;
@@ -248,21 +253,22 @@ pub fn mjd_transition_fd(
     let qvel_0 = data.qvel.clone();
     let act_0 = data.act.clone();
     let ctrl_0 = data.ctrl.clone();
+    let warmstart_0 = data.qacc_warmstart.clone();
     let time_0 = data.time;
-    // For forward differences, compute nominal output by stepping unperturbed.
-    let y_0 = if config.centered {
-        None
-    } else {
-        scratch.step(model)?;
-        let y = extract_state(model, &scratch, &qpos_0);
-        // Restore scratch to nominal for subsequent perturbations.
-        scratch.qpos.copy_from(&qpos_0);
-        scratch.qvel.copy_from(&qvel_0);
-        scratch.act.copy_from(&act_0);
-        scratch.ctrl.copy_from(&ctrl_0);
-        scratch.time = time_0;
-        Some(y)
-    };
+    // Compute nominal next state by stepping unperturbed.
+    // MuJoCo always computes this unconditionally. We need it for:
+    // - forward differencing (non-centered A/B columns)
+    // - clamped control differencing fallback (centered mode where one
+    //   direction is infeasible due to actuator_ctrlrange boundary)
+    scratch.step(model)?;
+    let y_0 = extract_state(model, &scratch, &qpos_0);
+    // Restore scratch to nominal for subsequent perturbations.
+    scratch.qpos.copy_from(&qpos_0);
+    scratch.qvel.copy_from(&qvel_0);
+    scratch.act.copy_from(&act_0);
+    scratch.ctrl.copy_from(&ctrl_0);
+    scratch.qacc_warmstart.copy_from(&warmstart_0);
+    scratch.time = time_0;
 
     let mut A = DMatrix::zeros(nx, nx);
     let mut B = DMatrix::zeros(nx, nu);
@@ -277,6 +283,7 @@ pub fn mjd_transition_fd(
             &qvel_0,
             &act_0,
             &ctrl_0,
+            &warmstart_0,
             time_0,
             i,
             eps,
@@ -295,6 +302,7 @@ pub fn mjd_transition_fd(
                 &qvel_0,
                 &act_0,
                 &ctrl_0,
+                &warmstart_0,
                 time_0,
                 i,
                 -eps,
@@ -307,42 +315,58 @@ pub fn mjd_transition_fd(
             // Central difference: (y+ - y-) / (2·eps)
             let col = (&y_plus - &y_minus) / (2.0 * eps);
             A.column_mut(i).copy_from(&col);
-        } else if let Some(ref y_ref) = y_0 {
+        } else {
             // Forward difference: (y+ - y0) / eps
-            let col = (&y_plus - y_ref) / eps;
+            let col = (&y_plus - &y_0) / eps;
             A.column_mut(i).copy_from(&col);
         }
     }
 
     // Phase 2 — Control perturbation (B matrix, nu columns).
+    // Matches MuJoCo's mjd_stepFD control clamping: only nudge within
+    // actuator_ctrlrange. Uses forward-only, backward-only, or centered
+    // differencing based on which nudges are feasible.
     for j in 0..nu {
-        // Apply +eps control perturbation
-        scratch.qpos.copy_from(&qpos_0);
-        scratch.qvel.copy_from(&qvel_0);
-        scratch.act.copy_from(&act_0);
-        scratch.ctrl.copy_from(&ctrl_0);
-        scratch.ctrl[j] += eps;
-        scratch.time = time_0;
-        scratch.step(model)?;
-        let y_plus = extract_state(model, &scratch, &qpos_0);
+        let range = model.actuator_ctrlrange[j];
+        let nudge_fwd = in_ctrl_range(ctrl_0[j], ctrl_0[j] + eps, range);
+        let nudge_back =
+            (config.centered || !nudge_fwd) && in_ctrl_range(ctrl_0[j] - eps, ctrl_0[j], range);
 
-        if config.centered {
-            // Apply -eps control perturbation
+        let y_plus = if nudge_fwd {
+            scratch.qpos.copy_from(&qpos_0);
+            scratch.qvel.copy_from(&qvel_0);
+            scratch.act.copy_from(&act_0);
+            scratch.ctrl.copy_from(&ctrl_0);
+            scratch.ctrl[j] += eps;
+            scratch.qacc_warmstart.copy_from(&warmstart_0);
+            scratch.time = time_0;
+            scratch.step(model)?;
+            Some(extract_state(model, &scratch, &qpos_0))
+        } else {
+            None
+        };
+
+        let y_minus = if nudge_back {
             scratch.qpos.copy_from(&qpos_0);
             scratch.qvel.copy_from(&qvel_0);
             scratch.act.copy_from(&act_0);
             scratch.ctrl.copy_from(&ctrl_0);
             scratch.ctrl[j] -= eps;
+            scratch.qacc_warmstart.copy_from(&warmstart_0);
             scratch.time = time_0;
             scratch.step(model)?;
-            let y_minus = extract_state(model, &scratch, &qpos_0);
+            Some(extract_state(model, &scratch, &qpos_0))
+        } else {
+            None
+        };
 
-            let col = (&y_plus - &y_minus) / (2.0 * eps);
-            B.column_mut(j).copy_from(&col);
-        } else if let Some(ref y_ref) = y_0 {
-            let col = (&y_plus - y_ref) / eps;
-            B.column_mut(j).copy_from(&col);
-        }
+        let col = match (&y_plus, &y_minus) {
+            (Some(yp), Some(ym)) => (yp - ym) / (2.0 * eps),
+            (Some(yp), None) => (yp - &y_0) / eps,
+            (None, Some(ym)) => (&y_0 - ym) / eps,
+            (None, None) => DVector::zeros(nx),
+        };
+        B.column_mut(j).copy_from(&col);
     }
 
     Ok(TransitionMatrices {
@@ -355,10 +379,15 @@ pub fn mjd_transition_fd(
 
 /// Apply a state perturbation at index `i` with magnitude `delta`.
 ///
-/// Restores scratch to nominal state first, then applies the perturbation:
+/// Restores scratch to nominal state (including warmstart) first, then applies
+/// the perturbation:
 /// - `i < nv`: position tangent via `mj_integrate_pos_explicit`
 /// - `nv <= i < 2*nv`: velocity direct addition
 /// - `2*nv <= i < 2*nv+na`: activation direct addition
+///
+/// Warmstart is restored to prevent leakage between perturbation columns.
+/// MuJoCo's `mjd_stepFD` saves/restores `mjSTATE_WARMSTART` across each
+/// perturbation for the same reason.
 #[allow(clippy::too_many_arguments)]
 fn apply_state_perturbation(
     model: &Model,
@@ -367,6 +396,7 @@ fn apply_state_perturbation(
     qvel_0: &DVector<f64>,
     act_0: &DVector<f64>,
     ctrl_0: &DVector<f64>,
+    warmstart_0: &DVector<f64>,
     time_0: f64,
     i: usize,
     delta: f64,
@@ -398,7 +428,14 @@ fn apply_state_perturbation(
         scratch.act[act_idx] += delta;
     }
     scratch.ctrl.copy_from(ctrl_0);
+    scratch.qacc_warmstart.copy_from(warmstart_0);
     scratch.time = time_0;
+}
+
+/// Check if both values are within the given range.
+/// Matches MuJoCo's `inRange()` in `engine_derivative_fd.c`.
+fn in_ctrl_range(x1: f64, x2: f64, range: (f64, f64)) -> bool {
+    x1 >= range.0 && x1 <= range.1 && x2 >= range.0 && x2 <= range.1
 }
 
 /// Extract state vector in tangent space from simulation data.
@@ -2375,6 +2412,11 @@ pub fn mjd_transition_hybrid(
         "DerivativeConfig::eps must be in (0, 1e-2], got {}",
         config.eps
     );
+    // MuJoCo rejects models with history (delays) for FD derivatives.
+    assert!(
+        model.nhistory == 0,
+        "FD derivatives not supported with nhistory > 0 (delays)"
+    );
 
     let eps = config.eps;
     let h = model.timestep;
@@ -2590,23 +2632,24 @@ pub fn mjd_transition_hybrid(
     let qvel_0 = data.qvel.clone();
     let act_0 = data.act.clone();
     let ctrl_0 = data.ctrl.clone();
+    let warmstart_0 = data.qacc_warmstart.clone();
     let time_0 = data.time;
     let mut scratch = data.clone();
 
-    // Compute nominal output for forward differences (needed by any FD columns)
-    let needs_fd = !use_analytical_pos || !act_fd_indices.is_empty();
-    let y_0 = if config.centered || !needs_fd {
-        None
-    } else {
-        scratch.step(model)?;
-        let y = extract_state(model, &scratch, &qpos_0);
-        scratch.qpos.copy_from(&qpos_0);
-        scratch.qvel.copy_from(&qvel_0);
-        scratch.act.copy_from(&act_0);
-        scratch.ctrl.copy_from(&ctrl_0);
-        scratch.time = time_0;
-        Some(y)
-    };
+    // Compute nominal next state by stepping unperturbed.
+    // MuJoCo always computes this unconditionally. We need it for:
+    // - forward differencing (non-centered A/B columns)
+    // - clamped control differencing fallback (centered mode where one
+    //   direction is infeasible due to actuator_ctrlrange boundary)
+    scratch.qacc_warmstart.copy_from(&warmstart_0);
+    scratch.step(model)?;
+    let y_0 = extract_state(model, &scratch, &qpos_0);
+    scratch.qpos.copy_from(&qpos_0);
+    scratch.qvel.copy_from(&qvel_0);
+    scratch.act.copy_from(&act_0);
+    scratch.ctrl.copy_from(&ctrl_0);
+    scratch.qacc_warmstart.copy_from(&warmstart_0);
+    scratch.time = time_0;
 
     if use_analytical_pos {
         // Analytical position columns via mjd_smooth_pos + chain rule
@@ -2680,22 +2723,6 @@ pub fn mjd_transition_hybrid(
         a_mat.view_mut((nv, 0), (nv, nv)).copy_from(&dvdq);
         // ∂act/∂qpos = 0 (already zero from allocation)
     } else {
-        // FD fallback: compute nominal output if needed
-        let y_0_fd = if y_0.is_some() {
-            y_0.clone()
-        } else if !config.centered {
-            scratch.step(model)?;
-            let y = extract_state(model, &scratch, &qpos_0);
-            scratch.qpos.copy_from(&qpos_0);
-            scratch.qvel.copy_from(&qvel_0);
-            scratch.act.copy_from(&act_0);
-            scratch.ctrl.copy_from(&ctrl_0);
-            scratch.time = time_0;
-            Some(y)
-        } else {
-            None
-        };
-
         // Position FD columns (0..nv)
         for i in 0..nv {
             apply_state_perturbation(
@@ -2705,6 +2732,7 @@ pub fn mjd_transition_hybrid(
                 &qvel_0,
                 &act_0,
                 &ctrl_0,
+                &warmstart_0,
                 time_0,
                 i,
                 eps,
@@ -2722,6 +2750,7 @@ pub fn mjd_transition_hybrid(
                     &qvel_0,
                     &act_0,
                     &ctrl_0,
+                    &warmstart_0,
                     time_0,
                     i,
                     -eps,
@@ -2732,8 +2761,8 @@ pub fn mjd_transition_hybrid(
                 let y_minus = extract_state(model, &scratch, &qpos_0);
                 let col = (&y_plus - &y_minus) / (2.0 * eps);
                 a_mat.column_mut(i).copy_from(&col);
-            } else if let Some(ref y_ref) = y_0_fd {
-                let col = (&y_plus - y_ref) / eps;
+            } else {
+                let col = (&y_plus - &y_0) / eps;
                 a_mat.column_mut(i).copy_from(&col);
             }
         }
@@ -2748,6 +2777,7 @@ pub fn mjd_transition_hybrid(
             &qvel_0,
             &act_0,
             &ctrl_0,
+            &warmstart_0,
             time_0,
             state_col,
             eps,
@@ -2765,6 +2795,7 @@ pub fn mjd_transition_hybrid(
                 &qvel_0,
                 &act_0,
                 &ctrl_0,
+                &warmstart_0,
                 time_0,
                 state_col,
                 -eps,
@@ -2775,8 +2806,8 @@ pub fn mjd_transition_hybrid(
             let y_minus = extract_state(model, &scratch, &qpos_0);
             let col = (&y_plus - &y_minus) / (2.0 * eps);
             a_mat.column_mut(state_col).copy_from(&col);
-        } else if let Some(ref y_ref) = y_0 {
-            let col = (&y_plus - y_ref) / eps;
+        } else {
+            let col = (&y_plus - &y_0) / eps;
             a_mat.column_mut(state_col).copy_from(&col);
         }
     }
@@ -2849,32 +2880,49 @@ pub fn mjd_transition_hybrid(
         }
     }
 
-    // FD for non-analytical B columns
+    // FD for non-analytical B columns (with clamped differencing for control-limited actuators)
+    let nx = 2 * nv + na;
     for &j in &ctrl_fd_indices {
-        scratch.qpos.copy_from(&qpos_0);
-        scratch.qvel.copy_from(&qvel_0);
-        scratch.act.copy_from(&act_0);
-        scratch.ctrl.copy_from(&ctrl_0);
-        scratch.ctrl[j] += eps;
-        scratch.time = time_0;
-        scratch.step(model)?;
-        let y_plus = extract_state(model, &scratch, &qpos_0);
+        let range = model.actuator_ctrlrange[j];
+        let nudge_fwd = in_ctrl_range(ctrl_0[j], ctrl_0[j] + eps, range);
+        let nudge_back =
+            (config.centered || !nudge_fwd) && in_ctrl_range(ctrl_0[j] - eps, ctrl_0[j], range);
 
-        if config.centered {
+        let y_plus = if nudge_fwd {
             scratch.qpos.copy_from(&qpos_0);
             scratch.qvel.copy_from(&qvel_0);
             scratch.act.copy_from(&act_0);
             scratch.ctrl.copy_from(&ctrl_0);
+            scratch.qacc_warmstart.copy_from(&warmstart_0);
+            scratch.ctrl[j] += eps;
+            scratch.time = time_0;
+            scratch.step(model)?;
+            Some(extract_state(model, &scratch, &qpos_0))
+        } else {
+            None
+        };
+
+        let y_minus = if nudge_back {
+            scratch.qpos.copy_from(&qpos_0);
+            scratch.qvel.copy_from(&qvel_0);
+            scratch.act.copy_from(&act_0);
+            scratch.ctrl.copy_from(&ctrl_0);
+            scratch.qacc_warmstart.copy_from(&warmstart_0);
             scratch.ctrl[j] -= eps;
             scratch.time = time_0;
             scratch.step(model)?;
-            let y_minus = extract_state(model, &scratch, &qpos_0);
-            let col = (&y_plus - &y_minus) / (2.0 * eps);
-            b_mat.column_mut(j).copy_from(&col);
-        } else if let Some(ref y_ref) = y_0 {
-            let col = (&y_plus - y_ref) / eps;
-            b_mat.column_mut(j).copy_from(&col);
-        }
+            Some(extract_state(model, &scratch, &qpos_0))
+        } else {
+            None
+        };
+
+        let col = match (&y_plus, &y_minus) {
+            (Some(yp), Some(ym)) => (yp - ym) / (2.0 * eps),
+            (Some(yp), None) => (yp - &y_0) / eps,
+            (None, Some(ym)) => (&y_0 - ym) / eps,
+            (None, None) => DVector::zeros(nx),
+        };
+        b_mat.column_mut(j).copy_from(&col);
     }
 
     Ok(TransitionMatrices {

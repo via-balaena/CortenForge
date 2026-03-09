@@ -267,26 +267,26 @@ when `compute_sensor_derivatives` is true. Two design options:
 The MuJoCo approach is option 1: a single FD loop computes both state
 and sensor columns simultaneously. Spec should match this for efficiency.
 
-**Critical: ~25 struct literal callers of `DerivativeConfig` will break**
+**~13 of ~28 struct literal callers of `DerivativeConfig` will break**
 
 Adding `compute_sensor_derivatives: bool` to `DerivativeConfig` will cause
-compile errors at every site using struct literal syntax without
-`..Default::default()`. Verified call sites:
+compile errors at sites using struct literal syntax without
+`..Default::default()`. Verified call sites (stress test round 3):
 
-| File | Approx. count | Pattern |
-|------|---------------|---------|
-| `sim/L0/core/src/derivatives.rs` (tests) | 6 | `DerivativeConfig { eps, centered, use_analytical }` |
-| `sim/L0/tests/integration/derivatives.rs` | 15+ | Same struct literal pattern |
-| `sim/L0/tests/integration/implicit_integration.rs` | 4 | Same struct literal pattern |
+| File | Total | Will break | Already use spread |
+|------|-------|-----------|-------------------|
+| `sim/L0/core/src/derivatives.rs` | 6 | 2 (`fd_convergence_check`) | 4 |
+| `sim/L0/tests/integration/derivatives.rs` | 18 | 7 (early acceptance tests) | 11 |
+| `sim/L0/tests/integration/implicit_integration.rs` | 4 | 4 | 0 |
+| **Total** | **28** | **13** | **15** |
 
-Migration: add `compute_sensor_derivatives: false` to each, or switch to
-`DerivativeConfig { ..., ..Default::default() }` pattern. The spec should
-choose and document the migration approach.
+Migration for the 13 breaking sites: add `compute_sensor_derivatives: false`
+to each, or switch to `DerivativeConfig { ..., ..Default::default() }` pattern.
+The spec should choose and document the migration approach.
 
-**Note:** No production callers (only test code) use struct literals.
-`mjd_transition()` dispatches internally and constructs config via
-`Default::default()`. So the breakage is test-only — high count but low
-risk.
+**Note:** Only 2 production callers break (both in `fd_convergence_check()`).
+The remaining 11 are test-only. `mjd_transition()` dispatches internally and
+constructs config via `Default::default()` — unaffected.
 
 ### EGT-9: Existing test infrastructure for derivatives
 
@@ -329,6 +329,42 @@ sensor FD, the loop must use `forward_skip(skipstage, skipsensor=false)` +
 implemented `forward_skip()` and the FD loops can call
 `forward_skip(stage, sensor) + integrate()` to match `mj_stepSkip`.
 
+### EGT-11: Pre-existing FD gap — control clamping in B-matrix loop  **[FIXED]**
+
+**Finding:** CortenForge's B-matrix FD control loop blindly perturbed
+`scratch.ctrl[j] += eps` without checking `actuator_ctrlrange`. MuJoCo's
+`mjd_stepFD()` checks `actuator_ctrllimited` and only nudges within
+range, using `clampedDiff` for asymmetric forward/backward selection.
+
+**Fix (Session 9):** Implemented `in_ctrl_range()` helper and clamped
+differencing in both `mjd_transition_fd()` and `mjd_transition_hybrid()`.
+The control perturbation loop now checks whether forward/backward nudges
+stay within `actuator_ctrlrange`, and selects forward-only, backward-only,
+or centered differencing accordingly — matching MuJoCo's `clampedDiff`
+behavior.
+
+### EGT-12: Pre-existing FD gap — `nhistory` guard  **[FIXED]**
+
+**Finding:** MuJoCo's `mjd_stepFD()` and `mjd_transitionFD()` both error
+if `m->nhistory != 0` ("delays are not supported"). CortenForge had no
+such guard.
+
+**Fix (Session 9):** Added `assert!(model.nhistory == 0, "FD derivatives
+not supported with nhistory > 0 (delays)")` to both `mjd_transition_fd()`
+and `mjd_transition_hybrid()`.
+
+### EGT-13: Pre-existing FD gap — `qacc_warmstart` not restored  **[FIXED]**
+
+**Finding:** MuJoCo's `mjd_stepFD()` saves/restores full state including
+`mjSTATE_WARMSTART` (`qacc_warmstart`) across each FD perturbation.
+CortenForge was not restoring `qacc_warmstart`.
+
+**Fix (Session 9):** Both `mjd_transition_fd()` and `mjd_transition_hybrid()`
+now save `warmstart_0 = data.qacc_warmstart.clone()` at the start and
+restore it before every perturbed step. `apply_state_perturbation()` was
+updated to accept and restore `warmstart_0` as a parameter. All B-matrix
+FD control loops also restore warmstart before each perturbation.
+
 ---
 
 ## Criteria
@@ -342,7 +378,7 @@ implemented `forward_skip()` and the FD loops can call
 
 | Grade | Bar |
 |-------|-----|
-| **A+** | Every MuJoCo function cited with source file and exact behavior: `mjd_transitionFD()` wrapper, `mjd_stepFD()` core loop, `getState()` sensor capture, `mj_stepSkip()` dispatch, `clampedDiff()` for control clamping. Skip-stage assignments per perturbation type documented (`mjSTAGE_VEL` for ctrl/act, `mjSTAGE_POS` for vel, `mjSTAGE_NONE` for pos). Sensor opt-in mechanism (pointer nullability → `skipsensor` flag) fully described. Edge cases addressed: `nsensordata == 0` (empty model), control-limited actuators (`actuator_ctrllimited` + `actuator_ctrlrange` → `clampedDiff` forward/backward/centered selection), cutoff clamping (flat derivative regions), `na == 0` (no activations). C code snippets included for non-obvious patterns (e.g., `clampedDiff`, `getState` sensor capture). Numerical expectations from MuJoCo output stated for at least one representative model. |
+| **A+** | Every MuJoCo function cited with source file and exact behavior: `mjd_transitionFD()` wrapper, `mjd_stepFD()` core loop, `getState()` sensor capture, `mj_stepSkip()` dispatch, `clampedDiff()` for control clamping. Skip-stage assignments per perturbation type documented (`mjSTAGE_VEL` for ctrl/act, `mjSTAGE_POS` for vel, `mjSTAGE_NONE` for pos). Sensor opt-in mechanism (pointer nullability → `skipsensor` flag) fully described. Edge cases addressed: `nsensordata == 0` (empty model), control-limited actuators (`actuator_ctrllimited` + `actuator_ctrlrange` → `clampedDiff` forward/backward/centered selection), cutoff clamping (flat derivative regions), `na == 0` (no activations), `nhistory != 0` (MuJoCo rejects — see EGT-12), `qacc_warmstart` save/restore (MuJoCo does, we don't — see EGT-13). C code snippets included for non-obvious patterns (e.g., `clampedDiff`, `getState` sensor capture). Numerical expectations from MuJoCo output stated for at least one representative model. Pre-existing FD gaps (EGT-11/12/13) explicitly documented with fix-or-defer decision. |
 | **A** | MuJoCo behavior described correctly from C source. Minor gaps in edge-case coverage (e.g., missing control clamping details). |
 | **B** | Correct at high level, but missing specifics (e.g., "sensors are captured during FD" without saying how `getState` works) — or based on docs rather than C source. |
 | **C** | Partially correct. Some MuJoCo behavior misunderstood or invented. |
@@ -550,7 +586,7 @@ when off, ergonomic for callers.
 | P9. FD Loop Integration Design | | |
 | P10. Opt-In API Design | | |
 
-**Overall: — (Rev 2)**
+**Overall: — (Rev 4)**
 
 > Scorecard is blank — this rubric grades the spec, which has not been
 > written yet. Grades will be populated during spec review (Session 10).
@@ -568,6 +604,10 @@ when off, ergonomic for callers.
 | R5 | P1 | Control clamping in `mjd_stepFD` — `actuator_ctrllimited` + `actuator_ctrlrange` interaction was not in initial umbrella scope | EGT verification (mjd_stepFD source) | Added control clamping to P1 edge cases and P4 AC requirements. | Rubric Rev 1 |
 | R6 | P1/P9 | `mj_stepSkip` includes integrator dispatch — not just `forward_skip` | EGT verification (EGT-10) | Added EGT-10 documenting `mj_stepSkip` = `forwardSkip + checkAcc + integrator`. P9 must address `forward_skip + integrate()` vs `step()` for correctness. | Rubric Rev 1 |
 | R7 | P9 | `mjd_transition_fd` and `mjd_transition_hybrid` still use `step()` not `forward_skip + integrate` — DT-53 Contract 3 was aspirational | Stress test (codebase grep for `scratch.step`) | Updated EGT-8 with critical finding. P9 bar requires spec to address `step()` → `forward_skip + integrate` transition. | Rubric Rev 2 |
-| R8 | P10/P7 | ~25 struct literal callers of `DerivativeConfig` in test files will break when field is added | Stress test (codebase grep for `DerivativeConfig {`) | Updated EGT-8 with exact call site counts. P10 bar requires migration plan. P7 bar requires naming affected test files. | Rubric Rev 2 |
+| R8 | P10/P7 | ~13 of ~28 struct literal callers of `DerivativeConfig` will break when field is added (15 already use spread syntax) | Stress test rounds 2+3 (codebase grep for `DerivativeConfig {`) | Updated EGT-8 with exact per-file counts (2 production, 11 test). P10 bar requires migration plan. P7 bar requires naming affected test files. | Rubric Rev 4 |
 | R9 | P9 | Hybrid path analytical columns (velocity, simple B) have no FD step — how to get sensor columns for those? Need explicit design decision in spec. | Stress test (analyzing hybrid path structure) | EGT-8 already had design options (integrated vs separate). P9 A+ bar strengthened to require explicit per-column-type analysis. | Rubric Rev 2 |
 | R10 | P5/P7 | Existing test at `integration/derivatives.rs:206-207` asserts `derivs.C.is_none()` — validates opt-in negative case, not a regression risk | Stress test (grep for C/D pattern matching) | Added to EGT-9 test inventory. P5 bar already requires negative test for `compute_sensor_derivatives=false`. | Rubric Rev 2 |
+| R11 | P1 | Existing B-matrix control perturbation loop does NOT check `actuator_ctrlrange` — MuJoCo uses `clampedDiff`. | Stress test round 2 (grep for ctrlrange in FD loop + actuation.rs) | **FIXED** in Session 9: added `in_ctrl_range()` + clamped differencing to both FD and hybrid B-matrix loops. EGT-11 updated. | Rubric Rev 3 |
+| R12 | P1 | No `nhistory` guard in FD loops — MuJoCo errors if `nhistory != 0` | Stress test round 2 (grep for nhistory) | **FIXED** in Session 9: added assert to both `mjd_transition_fd()` and `mjd_transition_hybrid()`. EGT-12 updated. | Rubric Rev 3 |
+| R13 | P1 | `qacc_warmstart` not saved/restored across FD perturbations — MuJoCo saves `mjSTATE_WARMSTART` | Stress test round 2 (grep for qacc_warmstart in derivatives.rs — no hits) | **FIXED** in Session 9: added warmstart save/restore to both paths + `apply_state_perturbation()`. EGT-13 updated. | Rubric Rev 3 |
+| R14 | P10/P7 | EGT-8 overstated breakage: said "~25 callers will break" but 15 of 28 already use `..Default::default()` spread syntax — only 13 will actually break (2 production, 11 test) | Stress test round 3 (exact per-file struct literal audit) | Corrected EGT-8 with per-file breakdown. R8 updated. | Rubric Rev 4 |
