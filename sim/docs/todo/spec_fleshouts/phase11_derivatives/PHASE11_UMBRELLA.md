@@ -68,8 +68,8 @@ overlaps. Each task closes a specific MuJoCo derivative API gap.
 | DT-54 | Muscle actuator velocity derivatives — piecewise FLV curve gradients | **T1** (Session 2) | Done | M effort, extends existing `mjd_actuator_vel` match block (~100–150 lines). |
 | DT-51 | `mjd_inverseFD` — inverse dynamics derivatives | **T1** (Session 3) | Done | M effort, follows established `mjd_transition_fd` perturbation pattern (~200 lines). |
 | DT-53 | `mj_forwardSkip` — skip-stage forward optimization | **T1** (Session 3) | Done | M effort, conditional pipeline guards + derivative loop integration (~70–100 lines). Existing `forward_pos_vel`/`forward_acc` split reduces scope. |
-| §58 | `mjd_smooth_pos` — analytical position derivatives | **Spec A** | Pending | L effort, algorithmic. Chain-rule FK/RNE/passive position derivatives through kinematic tree. |
-| DT-47 | Sensor derivatives (C, D matrices) for `TransitionMatrices` | **Spec B** | Pending | L effort, per-sensor-type Jacobian logic, extends FD and hybrid paths. |
+| §58 | `mjd_smooth_pos` — analytical position derivatives | **Spec A** | Done | L effort, algorithmic. Chain-rule FK/RNE/passive position derivatives through kinematic tree. |
+| DT-47 | Sensor derivatives (C, D matrices) for `TransitionMatrices` | **Spec B** | Done | L effort, per-sensor-type Jacobian logic, extends FD and hybrid paths. |
 
 ### Sub-spec scope statements
 

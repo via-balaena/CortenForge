@@ -497,7 +497,7 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ## Session 10: Spec B spec (Sensor Derivatives)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- write Spec B spec.
@@ -592,7 +592,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase11_derivatives/SPEC_B_REVIEW.md
 
 ## Session 13: Spec B review — execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- execute Spec B review.
@@ -635,4 +635,4 @@ Present the Review Verdict (section 10) to the user when done.
 | 10 | Spec B spec | Done | 33eb5c1 |
 | 11 | Spec B implementation | Done | 7bf1043 |
 | 12 | Spec B review — create document | Done | b615e82 |
-| 13 | Spec B review — execute | | |
+| 13 | Spec B review — execute | Done | |
