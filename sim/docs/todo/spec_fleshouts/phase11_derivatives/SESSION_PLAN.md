@@ -445,7 +445,7 @@ Present the Review Verdict (section 10) to the user when done.
 
 ## Session 9: Spec B rubric (Sensor Derivatives)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- write Spec B rubric.
@@ -631,7 +631,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 6 | Spec A implementation | Done | 276bed5 |
 | 7 | Spec A review — create document | Done | |
 | 8 | Spec A review — execute | Done | |
-| 9 | Spec B rubric (DT-47 Sensor Derivatives) | | |
+| 9 | Spec B rubric (DT-47 Sensor Derivatives) | Done | |
 | 10 | Spec B spec | | |
 | 11 | Spec B implementation | | |
 | 12 | Spec B review — create document | | |
