@@ -19,8 +19,8 @@ DT-47/51/52/54 share a "Derivative Extensions" spec (T2). DT-49/53 share an
 | DT-48 | §12 | Sparse derivative storage — all matrices dense, follow-up for nv > 100 | Low | T2 |
 | DT-49 | §12 | Parallel FD computation — each perturbation column requires sequential `step()` | Low | T2 |
 | DT-50 | §12 | Automatic differentiation — dual numbers / enzyme, no scalar type genericity changes | Low | T3 |
-| DT-51 | §12 | `mjd_inverseFD` — inverse dynamics derivatives deferred | Low | T2 |
-| DT-52 | §12 | `mjd_subQuat` — quaternion subtraction Jacobians for constraint derivatives | Low | T2 |
-| DT-53 | §12 | Skip-stage optimization (`mj_forwardSkip`) — ~50% per-column FD cost reduction | Medium | T2 |
-| DT-54 | §12 | Muscle actuator velocity derivatives — piecewise FLV curve gradients, FD only | Low | T2 |
+| ~~DT-51~~ | §12 | ~~`mjd_inverseFD` — inverse dynamics derivatives~~ **DONE** (Phase 11 Session 3, `c68d9cb`) | Low | T2 |
+| ~~DT-52~~ | §12 | ~~`mjd_subQuat` — quaternion subtraction Jacobians~~ **DONE** (Phase 11 Session 2, `9feebfe`) | Low | T2 |
+| ~~DT-53~~ | §12 | ~~Skip-stage optimization (`mj_forwardSkip`)~~ **DONE** (Phase 11 Session 3, `c68d9cb`) | Medium | T2 |
+| ~~DT-54~~ | §12 | ~~Muscle actuator velocity derivatives~~ **DONE** (Phase 11 Session 2, `9feebfe`) | Low | T2 |
 | DT-55 | §13 | `skipfactor` / factorization reuse across implicit steps | Low | T1 |

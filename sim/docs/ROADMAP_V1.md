@@ -266,12 +266,12 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §58 | 14 | — | `mjd_smooth_pos` analytical position derivatives |
+| ~~§58~~ | 14 | — | ~~`mjd_smooth_pos` analytical position derivatives~~ **DONE** — Spec A, analytical position force derivatives (`mjd_smooth_pos`) + hybrid integration, 18 tests |
 | DT-47 | 10f | T2 | Sensor derivatives (C, D matrices) for `TransitionMatrices` |
-| DT-51 | 10f | T2 | `mjd_inverseFD` — inverse dynamics derivatives |
-| DT-52 | 10f | T2 | `mjd_subQuat` — quaternion subtraction Jacobians |
-| DT-53 | 10f | T2 | `mj_forwardSkip` — skip-stage optimization for ~50% FD cost reduction |
-| DT-54 | 10f | T2 | Muscle actuator velocity derivatives — piecewise FLV curve gradients |
+| ~~DT-51~~ | 10f | T2 | ~~`mjd_inverseFD` — inverse dynamics derivatives~~ **DONE** — Session 3, FD wrapper around `mj_inverse()` |
+| ~~DT-52~~ | 10f | T2 | ~~`mjd_subQuat` — quaternion subtraction Jacobians~~ **DONE** — Session 2, analytical 3×3 Jacobians |
+| ~~DT-53~~ | 10f | T2 | ~~`mj_forwardSkip` — skip-stage optimization for ~50% FD cost reduction~~ **DONE** — Session 3, `MjStage` enum + `forward_skip()` |
+| ~~DT-54~~ | 10f | T2 | ~~Muscle actuator velocity derivatives — piecewise FLV curve gradients~~ **DONE** — Session 2, Hill-type + MuJoCo muscle velocity derivatives |
 
 ---
 

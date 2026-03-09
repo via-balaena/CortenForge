@@ -1152,8 +1152,7 @@ pub(crate) fn mjd_passive_pos(model: &Model, data: &mut Data) {
         }
 
         let length = data.ten_length[t];
-        let lower = model.tendon_range[t].0;
-        let upper = model.tendon_range[t].1;
+        let [lower, upper] = model.tendon_lengthspring[t];
 
         // Only active when outside deadband
         let active = (length < lower) || (length > upper);
@@ -1577,12 +1576,22 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
         }
 
-        // Self-joint subspace derivative: (∂S/∂q_d)·qvel = S_d ×_m (S·qvel)
-        // Only applies to joint types where S rotates with the joint angle.
-        // Ball and Free joints use world-frame axes, so ∂S/∂q = 0.
-        // For single-DOF hinges, this is zero (axis × axis·qvel = 0).
+        // Joint subspace position derivative: ∂(vJ_total)/∂q_k
+        //
+        // vJ_total = Σ_j S_j · qvel_j is the total joint velocity from all joints
+        // on this body. When DOF d of joint k has an angular component, perturbing
+        // q_kd rotates the body, which rotates ALL joint axes on the body.
+        // The derivative is: [s_ang_kd; 0] ×_m vJ_total
+        //
+        // This handles multi-joint bodies (cross-derivatives between joints on the
+        // same body) and also single-joint cases correctly. Ball and Free joints
+        // use world-frame axes so ∂S/∂q = 0.
         let js = model.body_jnt_adr[body_id];
         let je = js + model.body_jnt_num[body_id];
+
+        // Pre-compute velocity from orientation-dependent joints only (Hinge/Slide).
+        // Ball/Free use world-frame axes that don't change with body rotation.
+        let mut vj_rotating = SpatialVector::zeros();
         for jid in js..je {
             if matches!(
                 model.jnt_type[jid],
@@ -1594,24 +1603,55 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
             let s = &joint_subspaces[jid];
             let nd = model.jnt_type[jid].nv();
             for d in 0..nd {
-                let s_col = SpatialVector::new(
-                    s[(0, d)],
-                    s[(1, d)],
-                    s[(2, d)],
-                    s[(3, d)],
-                    s[(4, d)],
-                    s[(5, d)],
-                );
-                let mut s_qvel = SpatialVector::zeros();
-                for dd in 0..nd {
-                    for row in 0..6 {
-                        s_qvel[row] += s[(row, dd)] * data.qvel[da + dd];
-                    }
+                for row in 0..6 {
+                    vj_rotating[row] += s[(row, d)] * data.qvel[da + d];
                 }
-                let cross = spatial_cross_motion(s_col, s_qvel);
+            }
+        }
+
+        // Derivative w.r.t. each perturbing angular DOF on this body.
+        // Any angular DOF (including Ball/Free) can rotate the body, changing
+        // the orientation-dependent joint axes (Hinge/Slide).
+        for jid in js..je {
+            let da = model.jnt_dof_adr[jid];
+            let nd = model.jnt_type[jid].nv();
+            for d in 0..nd {
+                let axis = dof_axis[da + d];
+                if axis.norm_squared() == 0.0 {
+                    continue; // Pure translational DOF — no body rotation
+                }
+                let s_ang = SpatialVector::new(axis[0], axis[1], axis[2], 0.0, 0.0, 0.0);
+                let cross = spatial_cross_motion(s_ang, vj_rotating);
                 for row in 0..6 {
                     data.deriv_Dcvel_pos[body_id][(row, da + d)] += cross[row];
                 }
+            }
+        }
+
+        // Ancestor joint subspace derivative: ∂(vJ_rotating)/∂q_k for ancestor DOFs.
+        // When an ancestor angular DOF rotates, it changes this body's orientation,
+        // affecting Hinge/Slide joint axes (not Ball/Free world-frame axes).
+        if vj_rotating.norm_squared() > 0.0 {
+            let mut anc = parent_id;
+            while anc != 0 {
+                let anc_js = model.body_jnt_adr[anc];
+                let anc_je = anc_js + model.body_jnt_num[anc];
+                for jid in anc_js..anc_je {
+                    let da = model.jnt_dof_adr[jid];
+                    let nd = model.jnt_type[jid].nv();
+                    for d in 0..nd {
+                        let axis = dof_axis[da + d];
+                        if axis.norm_squared() == 0.0 {
+                            continue;
+                        }
+                        let s_ang = SpatialVector::new(axis[0], axis[1], axis[2], 0.0, 0.0, 0.0);
+                        let cross = spatial_cross_motion(s_ang, vj_rotating);
+                        for row in 0..6 {
+                            data.deriv_Dcvel_pos[body_id][(row, da + d)] += cross[row];
+                        }
+                    }
+                }
+                anc = model.body_parent[anc];
             }
         }
     }
@@ -1663,38 +1703,72 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
             }
         }
 
-        // Term D: (∂S/∂q_d) · qacc — zero for hinges, Ball, Free
+        // Term D: ∂(Σ_j S_j · qacc_j)/∂q — joint acceleration subspace derivative.
+        // When an angular DOF on this body is perturbed, it rotates all joint axes,
+        // changing the total S·qacc contribution. Uses angular-only perturbing axis
+        // with total joint acceleration (handles multi-joint bodies correctly).
         let js = model.body_jnt_adr[b];
         let je = js + model.body_jnt_num[b];
+
+        // Pre-compute S·qacc from orientation-dependent joints only (Hinge/Slide).
+        // Ball/Free use world-frame axes: ∂S/∂q = 0.
+        let mut sj_qacc_rotating = SpatialVector::zeros();
         for jid in js..je {
             if matches!(
                 model.jnt_type[jid],
                 crate::types::MjJointType::Ball | crate::types::MjJointType::Free
             ) {
-                continue; // World-frame axes: ∂S/∂q = 0
+                continue;
             }
             let da = model.jnt_dof_adr[jid];
             let s = &joint_subspaces[jid];
             let nd = model.jnt_type[jid].nv();
             for d in 0..nd {
-                let s_col = SpatialVector::new(
-                    s[(0, d)],
-                    s[(1, d)],
-                    s[(2, d)],
-                    s[(3, d)],
-                    s[(4, d)],
-                    s[(5, d)],
-                );
-                let mut s_qacc = SpatialVector::zeros();
-                for dd in 0..nd {
-                    for row in 0..6 {
-                        s_qacc[row] += s[(row, dd)] * data.qacc[da + dd];
-                    }
+                for row in 0..6 {
+                    sj_qacc_rotating[row] += s[(row, d)] * data.qacc[da + d];
                 }
-                let cross_d = spatial_cross_motion(s_col, s_qacc);
+            }
+        }
+
+        // Same-body angular DOFs
+        for jid in js..je {
+            let da = model.jnt_dof_adr[jid];
+            let nd = model.jnt_type[jid].nv();
+            for d in 0..nd {
+                let axis = dof_axis[da + d];
+                if axis.norm_squared() == 0.0 {
+                    continue;
+                }
+                let s_ang = SpatialVector::new(axis[0], axis[1], axis[2], 0.0, 0.0, 0.0);
+                let cross_d = spatial_cross_motion(s_ang, sj_qacc_rotating);
                 for row in 0..6 {
                     data.deriv_Dcacc_pos[b][(row, da + d)] += cross_d[row];
                 }
+            }
+        }
+
+        // Ancestor DOFs: ancestor angular rotations also change this body's joint axes
+        if sj_qacc_rotating.norm_squared() > 0.0 {
+            let mut anc = pid;
+            while anc != 0 {
+                let anc_js = model.body_jnt_adr[anc];
+                let anc_je = anc_js + model.body_jnt_num[anc];
+                for jid in anc_js..anc_je {
+                    let da = model.jnt_dof_adr[jid];
+                    let nd = model.jnt_type[jid].nv();
+                    for d in 0..nd {
+                        let axis = dof_axis[da + d];
+                        if axis.norm_squared() == 0.0 {
+                            continue;
+                        }
+                        let s_ang = SpatialVector::new(axis[0], axis[1], axis[2], 0.0, 0.0, 0.0);
+                        let cross_d = spatial_cross_motion(s_ang, sj_qacc_rotating);
+                        for row in 0..6 {
+                            data.deriv_Dcacc_pos[b][(row, da + d)] += cross_d[row];
+                        }
+                    }
+                }
+                anc = model.body_parent[anc];
             }
         }
     }
@@ -1807,41 +1881,54 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
         }
     }
 
-    // Part A projection derivative: (∂S/∂q)^T · cfrc_A — zero for Ball/Free
+    // Part A projection derivative: (∂S/∂q)^T · cfrc_A
+    // When an angular DOF on the same body or any ancestor body is perturbed,
+    // it rotates the body, changing the joint subspace S. Unified loop over
+    // all perturbing angular DOFs (same-body + ancestors).
+    // Skip Ball/Free TARGET joints: their world-frame S doesn't depend on q.
     for jid in 0..model.njnt {
         if matches!(
             model.jnt_type[jid],
             crate::types::MjJointType::Ball | crate::types::MjJointType::Free
         ) {
-            continue;
+            continue; // World-frame subspace: ∂S/∂q = 0
         }
         let bid = model.jnt_body[jid];
-        let da = model.jnt_dof_adr[jid];
-        let s = &joint_subspaces[jid];
-        let nd = model.jnt_type[jid].nv();
+        let da_j = model.jnt_dof_adr[jid];
+        let s_j = &joint_subspaces[jid];
+        let nd_j = model.jnt_type[jid].nv();
         let cfrc = cfrc_a[bid];
-        for d in 0..nd {
-            let s_col = SpatialVector::new(
-                s[(0, d)],
-                s[(1, d)],
-                s[(2, d)],
-                s[(3, d)],
-                s[(4, d)],
-                s[(5, d)],
-            );
-            for dd in 0..nd {
-                let s_dd = SpatialVector::new(
-                    s[(0, dd)],
-                    s[(1, dd)],
-                    s[(2, dd)],
-                    s[(3, dd)],
-                    s[(4, dd)],
-                    s[(5, dd)],
-                );
-                let ds = spatial_cross_motion(s_col, s_dd);
-                let proj: f64 = (0..6).map(|row| ds[row] * cfrc[row]).sum();
-                data.qDeriv_pos[(da + dd, da + d)] -= proj;
+
+        // Iterate over all angular DOFs on this body and ancestors
+        let mut anc = bid;
+        while anc != 0 {
+            let anc_js = model.body_jnt_adr[anc];
+            let anc_je = anc_js + model.body_jnt_num[anc];
+            for kid in anc_js..anc_je {
+                let da_k = model.jnt_dof_adr[kid];
+                let nd_k = model.jnt_type[kid].nv();
+                for d in 0..nd_k {
+                    let axis = dof_axis[da_k + d];
+                    if axis.norm_squared() == 0.0 {
+                        continue;
+                    }
+                    let s_ang = SpatialVector::new(axis[0], axis[1], axis[2], 0.0, 0.0, 0.0);
+                    for dd in 0..nd_j {
+                        let s_jdd = SpatialVector::new(
+                            s_j[(0, dd)],
+                            s_j[(1, dd)],
+                            s_j[(2, dd)],
+                            s_j[(3, dd)],
+                            s_j[(4, dd)],
+                            s_j[(5, dd)],
+                        );
+                        let ds = spatial_cross_motion(s_ang, s_jdd);
+                        let proj: f64 = (0..6).map(|row| ds[row] * cfrc[row]).sum();
+                        data.qDeriv_pos[(da_j + dd, da_k + d)] -= proj;
+                    }
+                }
             }
+            anc = model.body_parent[anc];
         }
     }
 
@@ -2004,7 +2091,9 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
         }
     }
 
-    // Part B projection derivative: (∂S/∂q)^T · cfrc_B — zero for Ball/Free
+    // Part B projection derivative: (∂S/∂q)^T · cfrc_B
+    // Same unified ancestor structure as Part A projection derivative.
+    // Skip Ball/Free TARGET joints: their world-frame S doesn't depend on q.
     for jid in 0..model.njnt {
         if matches!(
             model.jnt_type[jid],
@@ -2013,32 +2102,40 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
             continue;
         }
         let bid = model.jnt_body[jid];
-        let da = model.jnt_dof_adr[jid];
-        let s = &joint_subspaces[jid];
-        let nd = model.jnt_type[jid].nv();
+        let da_j = model.jnt_dof_adr[jid];
+        let s_j = &joint_subspaces[jid];
+        let nd_j = model.jnt_type[jid].nv();
         let cfrc = cfrc_b[bid];
-        for d in 0..nd {
-            let s_col = SpatialVector::new(
-                s[(0, d)],
-                s[(1, d)],
-                s[(2, d)],
-                s[(3, d)],
-                s[(4, d)],
-                s[(5, d)],
-            );
-            for dd in 0..nd {
-                let s_dd = SpatialVector::new(
-                    s[(0, dd)],
-                    s[(1, dd)],
-                    s[(2, dd)],
-                    s[(3, dd)],
-                    s[(4, dd)],
-                    s[(5, dd)],
-                );
-                let ds = spatial_cross_motion(s_col, s_dd);
-                let proj: f64 = (0..6).map(|row| ds[row] * cfrc[row]).sum();
-                data.qDeriv_pos[(da + dd, da + d)] -= proj;
+
+        let mut anc = bid;
+        while anc != 0 {
+            let anc_js = model.body_jnt_adr[anc];
+            let anc_je = anc_js + model.body_jnt_num[anc];
+            for kid in anc_js..anc_je {
+                let da_k = model.jnt_dof_adr[kid];
+                let nd_k = model.jnt_type[kid].nv();
+                for d in 0..nd_k {
+                    let axis = dof_axis[da_k + d];
+                    if axis.norm_squared() == 0.0 {
+                        continue;
+                    }
+                    let s_ang = SpatialVector::new(axis[0], axis[1], axis[2], 0.0, 0.0, 0.0);
+                    for dd in 0..nd_j {
+                        let s_jdd = SpatialVector::new(
+                            s_j[(0, dd)],
+                            s_j[(1, dd)],
+                            s_j[(2, dd)],
+                            s_j[(3, dd)],
+                            s_j[(4, dd)],
+                            s_j[(5, dd)],
+                        );
+                        let ds = spatial_cross_motion(s_ang, s_jdd);
+                        let proj: f64 = (0..6).map(|row| ds[row] * cfrc[row]).sum();
+                        data.qDeriv_pos[(da_j + dd, da_k + d)] -= proj;
+                    }
+                }
             }
+            anc = model.body_parent[anc];
         }
     }
 }

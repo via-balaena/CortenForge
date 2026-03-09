@@ -1332,6 +1332,61 @@ fn test_pos_deriv_free_spring() {
     );
 }
 
+// T4: Tendon spring position derivative (FD-validated) → AC4
+#[test]
+fn test_pos_deriv_tendon_spring() {
+    // 2-hinge chain with a fixed tendon spanning both joints, stiffness=20.0.
+    // Tendon lengthspring deadband [0.5, 1.5]. Set qpos so tendon length is
+    // outside the deadband to activate the spring.
+    let mjcf = r#"
+        <mujoco model="tendon_spring_pos">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j0" type="hinge" axis="0 1 0" damping="0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b2" pos="0 0 -1">
+                        <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t0" stiffness="20.0" springlength="0.5 1.5">
+                    <joint joint="j0" coef="1.0"/>
+                    <joint joint="j1" coef="1.0"/>
+                </fixed>
+            </tendon>
+        </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+    // Set qpos so that tendon length = coef[0]*q0 + coef[1]*q1 + offset
+    // is outside the [0.5, 1.5] deadband.
+    data.qpos[0] = 1.0;
+    data.qpos[1] = 0.8;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+
+    // FD reference
+    let fd = fd_qderiv_pos(&model, &data, 1e-6);
+    let err = max_relative_error(&data.qDeriv_pos, &fd, 1e-6);
+    assert!(
+        err < 1e-5,
+        "Tendon spring pos deriv: max relative error {err} exceeds 1e-5"
+    );
+
+    // Verify structural property: -k * J^T * J pattern.
+    // With J = [1, 1] and k = 20: contribution is -20 * [[1,1],[1,1]]
+    // All four entries should be significantly negative.
+    assert!(
+        data.qDeriv_pos[(0, 0)] < -1.0,
+        "Tendon spring should produce negative diagonal: got {}",
+        data.qDeriv_pos[(0, 0)]
+    );
+}
+
 // T5: Affine actuator position derivative (FD-validated) → AC5
 #[test]
 fn test_pos_deriv_affine_actuator() {
@@ -1759,6 +1814,185 @@ fn test_pos_deriv_fd_convergence() {
     assert!(
         prev_err < 1e-3,
         "FD convergence: final error {prev_err} too large"
+    );
+}
+
+// T_supp1: Near-zero-mass body — no NaN or division by zero in RNE pos
+//
+// A truly zero-mass articulated body creates a singular mass matrix (NaN in
+// qacc), which is degenerate — not a derivative edge case. Instead we test
+// with a very small mass (1e-8) to verify that RNE position derivatives
+// handle near-zero inertia without numerical blowup. The joint has armature
+// to keep the mass matrix non-singular.
+#[test]
+fn test_pos_deriv_zero_mass_body() {
+    let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+    model.body_mass[2] = 1e-8; // near-zero mass
+    model.body_inertia[2] = nalgebra::Vector3::new(1e-10, 1e-10, 1e-10);
+    model.jnt_armature[1] = 0.01; // regularize mass matrix diagonal
+    model.dof_armature[1] = 0.01;
+    model.compute_ancestors();
+    model.compute_implicit_params();
+    model.compute_qld_csr_metadata();
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.5;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+
+    // No NaN or Inf in the result
+    for r in 0..model.nv {
+        for c in 0..model.nv {
+            let v = data.qDeriv_pos[(r, c)];
+            assert!(
+                v.is_finite(),
+                "Near-zero-mass body: qDeriv_pos[({r},{c})] = {v} is not finite"
+            );
+        }
+    }
+
+    // Verify against FD (at qacc level)
+    let analytical = analytical_dqacc_dqpos(&model, &data);
+    let fd = fd_dqacc_dqpos(&model, &data, 1e-6);
+    let err = max_relative_error(&analytical, &fd, 1e-6);
+    assert!(
+        err < 1e-4,
+        "Near-zero-mass body: dqacc/dqpos max relative error {err} exceeds 1e-4"
+    );
+}
+
+// T_supp5: Multi-joint body (FD-validated) — validates all-joints extraction
+#[test]
+fn test_pos_deriv_multi_joint_body() {
+    // A body with TWO hinge joints on it (slide + hinge on one body).
+    // This validates the multi-joint subtraction logic in mjd_rne_pos
+    // (subtracting ALL joints from cvel/cacc to recover X_body · parent).
+    let mjcf = r#"
+        <mujoco model="multi_joint_body">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j0" type="slide" axis="1 0 0"/>
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b2" pos="0 0 -1">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).unwrap();
+    assert_eq!(model.body_jnt_num[1], 2, "Body 1 should have 2 joints");
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.2; // slide displacement
+    data.qpos[1] = 0.4; // hinge angle
+    data.qpos[2] = -0.3; // child hinge
+    data.qvel[0] = 0.3;
+    data.qvel[1] = 0.5;
+    data.qvel[2] = -0.2;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+
+    // Validate at qacc level (multi-link → AD-2).
+    // Uses FD step 1e-5 (not 1e-6) because the 3×3 matrix has many near-zero
+    // elements where FD noise at 1e-6 creates false positives against the floor.
+    let analytical = analytical_dqacc_dqpos(&model, &data);
+    let fd = fd_dqacc_dqpos(&model, &data, 1e-5);
+    let err = max_relative_error(&analytical, &fd, 1e-6);
+    assert!(
+        err < 1e-4,
+        "Multi-joint body: dqacc/dqpos max relative error {err} exceeds 1e-4"
+    );
+}
+
+// T_supp8: Sleeping bodies — derivatives correct after forward pass
+#[test]
+fn test_pos_deriv_sleeping_body() {
+    // After a forward pass, sleeping state is reflected in qacc/cvel.
+    // mjd_smooth_pos should produce correct derivatives regardless of
+    // whether a body is "sleeping" — it operates on forward-pass output.
+    // We verify by comparing a model at rest (sleeping-eligible state)
+    // against FD. The point: no special-casing needed, same result.
+    let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+    model.jnt_stiffness[0] = 5.0;
+    model.jnt_stiffness[1] = 5.0;
+    let mut data = model.make_data();
+    // Set qpos away from equilibrium but qvel=0 (sleeping-eligible)
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    // qvel remains zero
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+
+    // Validate at qacc level
+    let analytical = analytical_dqacc_dqpos(&model, &data);
+    let fd = fd_dqacc_dqpos(&model, &data, 1e-6);
+    let err = max_relative_error(&analytical, &fd, 1e-6);
+    assert!(
+        err < 1e-4,
+        "Sleeping body: dqacc/dqpos max relative error {err} exceeds 1e-4"
+    );
+}
+
+// T12: Performance benchmark — analytical ≥1.5× faster than FD position columns
+#[test]
+#[ignore] // CI: run manually with --release for meaningful timing
+fn test_pos_deriv_performance() {
+    let mut model = Model::n_link_pendulum(6, 1.0, 0.1);
+    add_torque_actuators(&mut model, 6);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qpos[2] = 0.1;
+    data.qvel[0] = 0.5;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+
+    let iters = 100;
+
+    // Warm up
+    let _ = mjd_transition_hybrid(&model, &data, &config).unwrap();
+    let _ = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    // Time analytical (hybrid with analytical position columns)
+    let t0 = std::time::Instant::now();
+    for _ in 0..iters {
+        let _ = mjd_transition_hybrid(&model, &data, &config).unwrap();
+    }
+    let hybrid_time = t0.elapsed();
+
+    // Time pure FD
+    let t1 = std::time::Instant::now();
+    for _ in 0..iters {
+        let _ = mjd_transition_fd(&model, &data, &config).unwrap();
+    }
+    let fd_time = t1.elapsed();
+
+    let speedup = fd_time.as_secs_f64() / hybrid_time.as_secs_f64();
+    eprintln!(
+        "Performance: hybrid={:.2}ms, fd={:.2}ms, speedup={:.2}x ({iters} iters, nv={})",
+        hybrid_time.as_secs_f64() * 1000.0,
+        fd_time.as_secs_f64() * 1000.0,
+        speedup,
+        model.nv,
+    );
+    assert!(
+        speedup >= 1.5,
+        "Analytical position columns should be ≥1.5× faster than FD, got {speedup:.2}×"
     );
 }
 

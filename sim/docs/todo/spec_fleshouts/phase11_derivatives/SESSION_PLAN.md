@@ -419,7 +419,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase11_derivatives/SPEC_A_REVIEW.md
 
 ## Session 8: Spec A review — execute review
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- execute Spec A review.
@@ -630,7 +630,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 5 | Spec A spec | Done | 65e8c04 |
 | 6 | Spec A implementation | Done | 276bed5 |
 | 7 | Spec A review — create document | Done | |
-| 8 | Spec A review — execute | | |
+| 8 | Spec A review — execute | Done | |
 | 9 | Spec B rubric (DT-47 Sensor Derivatives) | | |
 | 10 | Spec B spec | | |
 | 11 | Spec B implementation | | |
