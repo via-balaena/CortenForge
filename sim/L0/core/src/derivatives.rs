@@ -439,8 +439,7 @@ pub fn mjd_transition_fd(
         B.column_mut(j).copy_from(&col);
 
         // Sensor D column (same clamped differencing)
-        if let Some(d_mat) = &mut D {
-            let s0 = sensor_0.as_ref().unwrap();
+        if let (Some(d_mat), Some(s0)) = (&mut D, &sensor_0) {
             let scol = match (&s_plus, &s_minus) {
                 (Some(sp), Some(sm)) => (sp - sm) / (2.0 * eps),
                 (Some(sp), None) => (sp - s0) / eps,
@@ -2836,7 +2835,7 @@ pub fn mjd_transition_hybrid(
         // ∂act/∂qpos = 0 (already zero from allocation)
 
         // Sensor C position columns — need FD since analytical doesn't capture sensor outputs.
-        if compute_sensors {
+        if let (Some(c), Some(s0)) = (&mut c_mat, &sensor_0) {
             for i in 0..nv {
                 apply_state_perturbation(
                     model,
@@ -2875,10 +2874,10 @@ pub fn mjd_transition_hybrid(
                     scratch.integrate(model);
                     let s_minus = scratch.sensordata.clone();
                     let scol = (&s_plus - &s_minus) / (2.0 * eps);
-                    c_mat.as_mut().unwrap().column_mut(i).copy_from(&scol);
+                    c.column_mut(i).copy_from(&scol);
                 } else {
-                    let scol = (&s_plus - sensor_0.as_ref().unwrap()) / eps;
-                    c_mat.as_mut().unwrap().column_mut(i).copy_from(&scol);
+                    let scol = (&s_plus - s0) / eps;
+                    c.column_mut(i).copy_from(&scol);
                 }
             }
         }
@@ -2951,7 +2950,7 @@ pub fn mjd_transition_hybrid(
     // === Velocity columns: sensor-only FD ===
     // A velocity columns are analytical (no FD step). Sensor C velocity
     // columns need FD passes with skipstage=MjStage::Pos.
-    if compute_sensors {
+    if let (Some(c), Some(s0)) = (&mut c_mat, &sensor_0) {
         for i in 0..nv {
             let state_col = nv + i;
             apply_state_perturbation(
@@ -2991,24 +2990,16 @@ pub fn mjd_transition_hybrid(
                 scratch.integrate(model);
                 let s_minus = scratch.sensordata.clone();
                 let scol = (&s_plus - &s_minus) / (2.0 * eps);
-                c_mat
-                    .as_mut()
-                    .unwrap()
-                    .column_mut(state_col)
-                    .copy_from(&scol);
+                c.column_mut(state_col).copy_from(&scol);
             } else {
-                let scol = (&s_plus - sensor_0.as_ref().unwrap()) / eps;
-                c_mat
-                    .as_mut()
-                    .unwrap()
-                    .column_mut(state_col)
-                    .copy_from(&scol);
+                let scol = (&s_plus - s0) / eps;
+                c.column_mut(state_col).copy_from(&scol);
             }
         }
     }
 
     // === Activation columns: sensor-only FD for analytically-computed activation columns ===
-    if compute_sensors {
+    if let (Some(c), Some(s0)) = (&mut c_mat, &sensor_0) {
         // Determine which activation columns were computed analytically
         // (i.e., NOT in act_fd_indices) and run sensor-only FD for those.
         let act_fd_set: std::collections::HashSet<usize> = act_fd_indices.iter().copied().collect();
@@ -3062,18 +3053,10 @@ pub fn mjd_transition_hybrid(
                     scratch.integrate(model);
                     let s_minus = scratch.sensordata.clone();
                     let scol = (&s_plus - &s_minus) / (2.0 * eps);
-                    c_mat
-                        .as_mut()
-                        .unwrap()
-                        .column_mut(state_col)
-                        .copy_from(&scol);
+                    c.column_mut(state_col).copy_from(&scol);
                 } else {
-                    let scol = (&s_plus - sensor_0.as_ref().unwrap()) / eps;
-                    c_mat
-                        .as_mut()
-                        .unwrap()
-                        .column_mut(state_col)
-                        .copy_from(&scol);
+                    let scol = (&s_plus - s0) / eps;
+                    c.column_mut(state_col).copy_from(&scol);
                 }
             }
         }
@@ -3212,7 +3195,7 @@ pub fn mjd_transition_hybrid(
     }
 
     // === Sensor-only FD for analytical B columns ===
-    if compute_sensors {
+    if let (Some(d), Some(s0)) = (&mut d_mat, &sensor_0) {
         let ctrl_fd_set: std::collections::HashSet<usize> =
             ctrl_fd_indices.iter().copied().collect();
         for actuator_idx in 0..nu {
@@ -3255,18 +3238,13 @@ pub fn mjd_transition_hybrid(
                 None
             };
 
-            let s0 = sensor_0.as_ref().unwrap();
             let scol = match (&s_plus, &s_minus) {
                 (Some(sp), Some(sm)) => (sp - sm) / (2.0 * eps),
                 (Some(sp), None) => (sp - s0) / eps,
                 (None, Some(sm)) => (s0 - sm) / eps,
                 (None, None) => DVector::zeros(ns),
             };
-            d_mat
-                .as_mut()
-                .unwrap()
-                .column_mut(actuator_idx)
-                .copy_from(&scol);
+            d.column_mut(actuator_idx).copy_from(&scol);
         }
     }
 
@@ -3327,8 +3305,7 @@ pub fn mjd_transition_hybrid(
         b_mat.column_mut(j).copy_from(&col);
 
         // Sensor D column (piggybacked — same clamped differencing)
-        if let Some(d) = &mut d_mat {
-            let s0 = sensor_0.as_ref().unwrap();
+        if let (Some(d), Some(s0)) = (&mut d_mat, &sensor_0) {
             let scol = match (&s_plus, &s_minus) {
                 (Some(sp), Some(sm)) => (sp - sm) / (2.0 * eps),
                 (Some(sp), None) => (sp - s0) / eps,
