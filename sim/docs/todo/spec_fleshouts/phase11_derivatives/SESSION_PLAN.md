@@ -363,7 +363,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 6: Spec A implementation
 
-- [ ] Complete
+- [x] Complete (276bed5)
 
 ```
 Phase 11 Derivatives -- implement Spec A.
@@ -391,7 +391,7 @@ each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 7: Spec A review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 11 Derivatives -- create Spec A review document.
@@ -628,8 +628,8 @@ Present the Review Verdict (section 10) to the user when done.
 | 3 | T1: DT-51 (mjd_inverseFD) + DT-53 (mj_forwardSkip) | Done | c68d9cb |
 | 4 | Spec A rubric (§58 Analytical Position Derivatives) | Done | 2d8ffa4 |
 | 5 | Spec A spec | Done | 65e8c04 |
-| 6 | Spec A implementation | | |
-| 7 | Spec A review — create document | | |
+| 6 | Spec A implementation | Done | 276bed5 |
+| 7 | Spec A review — create document | Done | |
 | 8 | Spec A review — execute | | |
 | 9 | Spec B rubric (DT-47 Sensor Derivatives) | | |
 | 10 | Spec B spec | | |
