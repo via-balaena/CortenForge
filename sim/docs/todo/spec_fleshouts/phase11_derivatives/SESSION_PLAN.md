@@ -626,7 +626,7 @@ Present the Review Verdict (section 10) to the user when done.
 | 1 | Phase 11 Umbrella | Done | 33ec878 |
 | 2 | T1: DT-52 (mjd_subQuat) + DT-54 (muscle velocity derivatives) | Done | 9feebfe |
 | 3 | T1: DT-51 (mjd_inverseFD) + DT-53 (mj_forwardSkip) | Done | c68d9cb |
-| 4 | Spec A rubric (§58 Analytical Position Derivatives) | | |
+| 4 | Spec A rubric (§58 Analytical Position Derivatives) | Done | 2d8ffa4 |
 | 5 | Spec A spec | | |
 | 6 | Spec A implementation | | |
 | 7 | Spec A review — create document | | |
