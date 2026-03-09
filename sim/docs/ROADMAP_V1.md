@@ -266,12 +266,12 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §58 | 14 | — | `mjd_smooth_pos` analytical position derivatives |
+| ~~§58~~ | 14 | — | ~~`mjd_smooth_pos` analytical position derivatives~~ **DONE** — Spec A, analytical position force derivatives (`mjd_smooth_pos`) + hybrid integration, 18 tests |
 | DT-47 | 10f | T2 | Sensor derivatives (C, D matrices) for `TransitionMatrices` |
-| DT-51 | 10f | T2 | `mjd_inverseFD` — inverse dynamics derivatives |
-| DT-52 | 10f | T2 | `mjd_subQuat` — quaternion subtraction Jacobians |
-| DT-53 | 10f | T2 | `mj_forwardSkip` — skip-stage optimization for ~50% FD cost reduction |
-| DT-54 | 10f | T2 | Muscle actuator velocity derivatives — piecewise FLV curve gradients |
+| ~~DT-51~~ | 10f | T2 | ~~`mjd_inverseFD` — inverse dynamics derivatives~~ **DONE** — Session 3, FD wrapper around `mj_inverse()` |
+| ~~DT-52~~ | 10f | T2 | ~~`mjd_subQuat` — quaternion subtraction Jacobians~~ **DONE** — Session 2, analytical 3×3 Jacobians |
+| ~~DT-53~~ | 10f | T2 | ~~`mj_forwardSkip` — skip-stage optimization for ~50% FD cost reduction~~ **DONE** — Session 3, `MjStage` enum + `forward_skip()` |
+| ~~DT-54~~ | 10f | T2 | ~~Muscle actuator velocity derivatives — piecewise FLV curve gradients~~ **DONE** — Session 2, Hill-type + MuJoCo muscle velocity derivatives |
 
 ---
 
@@ -344,6 +344,9 @@ foundation isn't right.
 | DT-48 | 10f | T2 | Sparse derivative storage (nv > 100) |
 | DT-49 | 10f | T2 | Parallel FD computation |
 | DT-55 | 10f | T1 | `skipfactor` / factorization reuse |
+| DT-157 | 10f | T2 | Analytical sensor derivatives — per-sensor-type Jacobians (CortenForge extension, not MuJoCo conformance). Deferred from Phase 11 Spec B. |
+| DT-158 | 10f | T2 | Inverse dynamics sensor derivatives (`DsDq`/`DsDv`/`DsDa` in `mjd_inverseFD`). Deferred from Phase 11 umbrella. |
+| DT-159 | 10f | T1 | `step()` → `forward_skip + integrate` migration for FD loops — `skipsensor` optimization. Deferred from Phase 11 Spec B. |
 | DT-76 | 10j | T1 | Pre-allocated `efc_lambda_saved` for RK4 |
 | DT-91 | 10j | T1 | Warmstart `SmallVec` optimization |
 | DT-92 | 10j | T1 | Parallel reset for `BatchSim` |

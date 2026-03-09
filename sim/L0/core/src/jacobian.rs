@@ -317,8 +317,8 @@ pub fn mj_differentiate_pos(
 
             MjJointType::Ball => {
                 // Quaternion velocity: compute angular velocity from q1 to q2
-                // q2 = q_delta * q1  =>  q_delta = q2 * q1^-1
-                // angular velocity = 2 * log(q_delta) / dt
+                // Right-multiply convention: q2 = q1 * q_delta  =>  q_delta = q1^-1 * q2
+                // angular velocity = log(q_delta) / dt  (body-frame, consistent with integrate)
                 let q1 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                     qpos1[qpos_adr],
                     qpos1[qpos_adr + 1],
@@ -332,8 +332,8 @@ pub fn mj_differentiate_pos(
                     qpos2[qpos_adr + 3],
                 ));
 
-                // q_delta = q2 * q1.inverse()
-                let q_delta = q2 * q1.inverse();
+                // q_delta = q1.inverse() * q2  (right convention)
+                let q_delta = q1.inverse() * q2;
 
                 // Extract axis-angle (clamp w to avoid NaN from floating-point precision)
                 let angle = 2.0 * q_delta.w.clamp(-1.0, 1.0).acos();
@@ -358,7 +358,7 @@ pub fn mj_differentiate_pos(
                 qvel[dof_adr + 1] = (qpos2[qpos_adr + 1] - qpos1[qpos_adr + 1]) * dt_inv;
                 qvel[dof_adr + 2] = (qpos2[qpos_adr + 2] - qpos1[qpos_adr + 2]) * dt_inv;
 
-                // Angular velocity from quaternion difference
+                // Angular velocity from quaternion difference (right convention)
                 let q1 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                     qpos1[qpos_adr + 3],
                     qpos1[qpos_adr + 4],
@@ -372,7 +372,7 @@ pub fn mj_differentiate_pos(
                     qpos2[qpos_adr + 6],
                 ));
 
-                let q_delta = q2 * q1.inverse();
+                let q_delta = q1.inverse() * q2;
                 // Clamp w to avoid NaN from floating-point precision
                 let angle = 2.0 * q_delta.w.clamp(-1.0, 1.0).acos();
                 let sin_half = (1.0 - q_delta.w * q_delta.w).max(0.0).sqrt();

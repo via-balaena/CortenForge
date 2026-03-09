@@ -83,8 +83,8 @@ control SDF collision quality.
 
 ---
 
-### 58. `mjd_smooth_pos` — Analytical Position Derivatives
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+### ~~58. `mjd_smooth_pos` — Analytical Position Derivatives~~
+**Status:** ✅ Done (Phase 11 Spec A, commit 276bed5) | **Effort:** L | **Prerequisites:** None
 
 #### Current State
 
@@ -128,6 +128,23 @@ Jacobians.
 #### Files
 
 - `sim/L0/core/src/derivatives.rs` — analytical position derivative functions
+
+#### Deferred Sub-Components (extend analytical coverage to more model types)
+
+Models with any of these features fall back to FD for position columns.
+See `SPEC_A.md` Scope Adjustment section for details.
+
+| Sub-component | What it needs | Models affected |
+|---------------|--------------|-----------------|
+| Fluid force position derivatives (`∂qfrc_fluid/∂qpos`) | `∂xmat/∂qpos` chain rule through FK for drag coefficients | `density > 0` or `viscosity > 0` |
+| Gravity compensation position derivatives (`∂qfrc_gravcomp/∂qpos`) | `∂xipos/∂qpos` FK Jacobian | `body_gravcomp ≠ 0` |
+| Flex bending position derivatives | Complex vertex-geometry derivatives through deformed mesh | `nflex > 0` |
+| Actuator moment-arm cross-term `(∂moment/∂qpos)·force` | FK Jacobian of site/body positions | Site/Body/SliderCrank actuators |
+| Muscle/HillMuscle bias passive FL derivative (`∂bias/∂L`) | `muscle_passive_fl_deriv` / `hill_passive_fl_deriv` helpers | Muscle/HillMuscle bias actuators |
+
+These are post-v1.0 enhancements — the FD fallback produces correct results for
+all models. Implementing any one extends analytical coverage to that model class.
+DT-45 (full FK Jacobians) is a prerequisite for most of these.
 
 ---
 

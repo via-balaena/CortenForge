@@ -409,7 +409,7 @@ impl ModelBuilder {
                     actuator.lmax,
                     actuator.vmax,
                     actuator.fpmax,
-                    actuator.fvmax,
+                    actuator.fvmax.max(1.0), // fvmax < 1.0 is physically nonsensical
                 ];
                 (
                     GainType::Muscle,
