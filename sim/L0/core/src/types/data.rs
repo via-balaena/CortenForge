@@ -587,6 +587,31 @@ pub struct Data {
     #[allow(non_snake_case)]
     pub deriv_Dcfrc: Vec<DMatrix<f64>>,
 
+    // ==================== Position Derivative Scratch Buffers ====================
+    /// Analytical derivative of smooth forces w.r.t. position: ∂(qfrc_smooth)/∂qpos.
+    /// Dense nv × nv matrix. Populated by `mjd_smooth_pos()`.
+    ///
+    /// Components:
+    ///   ∂(qfrc_passive)/∂qpos  = joint spring stiffness + tendon spring J^T·k·J
+    ///   ∂(qfrc_actuator)/∂qpos = gain/bias length derivatives via moment arm
+    ///   −∂(RNEA(q,v,qacc))/∂qpos = position chain rule through kinematic tree
+    ///
+    /// CortenForge extension — MuJoCo has no equivalent (uses FD for position columns).
+    #[allow(non_snake_case)]
+    pub qDeriv_pos: DMatrix<f64>,
+
+    /// Scratch Jacobian ∂(cvel)/∂(qpos) per body (length `nbody`, each 6 × nv).
+    /// Used by `mjd_rne_pos()` for position chain-rule propagation.
+    #[allow(non_snake_case)]
+    pub deriv_Dcvel_pos: Vec<DMatrix<f64>>,
+    /// Scratch Jacobian ∂(cacc_full)/∂(qpos) per body (length `nbody`, each 6 × nv).
+    /// Uses full acceleration (including qacc) — not just bias.
+    #[allow(non_snake_case)]
+    pub deriv_Dcacc_pos: Vec<DMatrix<f64>>,
+    /// Scratch Jacobian ∂(cfrc)/∂(qpos) per body (length `nbody`, each 6 × nv).
+    #[allow(non_snake_case)]
+    pub deriv_Dcfrc_pos: Vec<DMatrix<f64>>,
+
     // ==================== Inverse Dynamics (§52) ====================
     /// Inverse dynamics result: generalized forces that produce current `qacc`.
     /// Computed by `inverse()`: `qfrc_inverse = M * qacc + qfrc_bias - qfrc_passive`.
@@ -814,6 +839,11 @@ impl Clone for Data {
             deriv_Dcvel: self.deriv_Dcvel.clone(),
             deriv_Dcacc: self.deriv_Dcacc.clone(),
             deriv_Dcfrc: self.deriv_Dcfrc.clone(),
+            // Position derivative scratch buffers
+            qDeriv_pos: self.qDeriv_pos.clone(),
+            deriv_Dcvel_pos: self.deriv_Dcvel_pos.clone(),
+            deriv_Dcacc_pos: self.deriv_Dcacc_pos.clone(),
+            deriv_Dcfrc_pos: self.deriv_Dcfrc_pos.clone(),
             // Inverse dynamics (§52)
             qfrc_inverse: self.qfrc_inverse.clone(),
             // Body force accumulators (§51)
@@ -1093,7 +1123,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4200;
+        const EXPECTED_SIZE: usize = 4312;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

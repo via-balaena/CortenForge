@@ -733,6 +733,12 @@ impl Model {
             deriv_Dcacc: vec![DMatrix::zeros(6, self.nv); self.nbody],
             deriv_Dcfrc: vec![DMatrix::zeros(6, self.nv); self.nbody],
 
+            // Position derivative scratch buffers (for mjd_smooth_pos / mjd_rne_pos)
+            qDeriv_pos: DMatrix::zeros(self.nv, self.nv),
+            deriv_Dcvel_pos: vec![DMatrix::zeros(6, self.nv); self.nbody],
+            deriv_Dcacc_pos: vec![DMatrix::zeros(6, self.nv); self.nbody],
+            deriv_Dcfrc_pos: vec![DMatrix::zeros(6, self.nv); self.nbody],
+
             // Inverse dynamics (§52)
             qfrc_inverse: DVector::zeros(self.nv),
 

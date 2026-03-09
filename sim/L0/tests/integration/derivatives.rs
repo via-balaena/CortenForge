@@ -5,8 +5,9 @@
 
 use approx::assert_relative_eq;
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DerivativeConfig, GainType, Integrator,
-    Model, mjd_smooth_vel, mjd_transition_fd,
+    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_GRAVITY, DISABLE_SPRING,
+    DerivativeConfig, GainType, Integrator, Model, mj_integrate_pos_explicit, mj_solve_sparse,
+    mjd_smooth_pos, mjd_smooth_vel, mjd_transition_fd, mjd_transition_hybrid,
 };
 
 // ============================================================================
@@ -1122,4 +1123,660 @@ fn test_fd_performance() {
     // Just verify it completes without error (timing is release-mode only)
     let derivs = mjd_transition_fd(&model, &data, &config).unwrap();
     assert_eq!(derivs.A.nrows(), 12); // 2*6
+}
+
+// ============================================================================
+// Spec A: Analytical Position Derivatives (§58)
+// ============================================================================
+
+/// FD of (qfrc_passive + qfrc_actuator - qfrc_bias) w.r.t. qpos[col] (centered).
+/// Uses tangent-space perturbation via mj_integrate_pos_explicit.
+fn fd_smooth_force_pos_col(
+    model: &Model,
+    data: &sim_core::Data,
+    col: usize,
+    eps: f64,
+) -> nalgebra::DVector<f64> {
+    let mut scratch = data.clone();
+
+    // +eps: tangent-space perturbation
+    scratch.qpos.copy_from(&data.qpos);
+    let mut dq = nalgebra::DVector::zeros(model.nv);
+    dq[col] = eps;
+    let mut qpos_pert = nalgebra::DVector::zeros(model.nq);
+    mj_integrate_pos_explicit(model, &mut qpos_pert, &data.qpos, &dq, 1.0);
+    scratch.qpos.copy_from(&qpos_pert);
+    scratch.qvel.copy_from(&data.qvel);
+    scratch.forward(model).unwrap();
+    let smooth_plus = &scratch.qfrc_passive + &scratch.qfrc_actuator - &scratch.qfrc_bias;
+
+    // -eps
+    dq[col] = -eps;
+    mj_integrate_pos_explicit(model, &mut qpos_pert, &data.qpos, &dq, 1.0);
+    scratch.qpos.copy_from(&qpos_pert);
+    scratch.qvel.copy_from(&data.qvel);
+    scratch.forward(model).unwrap();
+    let smooth_minus = &scratch.qfrc_passive + &scratch.qfrc_actuator - &scratch.qfrc_bias;
+
+    (&smooth_plus - &smooth_minus) / (2.0 * eps)
+}
+
+/// Build full nv×nv FD position derivative matrix (∂qfrc_smooth/∂qpos).
+///
+/// NOTE: This computes ∂qfrc_smooth/∂qpos, which equals qDeriv_pos only
+/// when M(q) is constant (single-joint models). For multi-link models,
+/// qDeriv_pos (with AD-2) includes the −(∂M/∂q)·qacc term. Use
+/// `fd_dqacc_dqpos` for correct validation of qDeriv_pos on multi-link models.
+fn fd_qderiv_pos(model: &Model, data: &sim_core::Data, eps: f64) -> nalgebra::DMatrix<f64> {
+    let nv = model.nv;
+    let mut mat = nalgebra::DMatrix::zeros(nv, nv);
+    for col in 0..nv {
+        let fd_col = fd_smooth_force_pos_col(model, data, col, eps);
+        for row in 0..nv {
+            mat[(row, col)] = fd_col[row];
+        }
+    }
+    mat
+}
+
+/// FD of qacc w.r.t. qpos — correct validation level for qDeriv_pos (with AD-2).
+///
+/// Since qDeriv_pos includes −(∂M/∂q)·qacc via evaluating RNEA at actual
+/// acceleration, the identity M⁻¹·qDeriv_pos = ∂qacc/∂q holds. This helper
+/// computes the FD reference for ∂qacc/∂q.
+fn fd_dqacc_dqpos(model: &Model, data: &sim_core::Data, eps: f64) -> nalgebra::DMatrix<f64> {
+    let nv = model.nv;
+    let mut mat = nalgebra::DMatrix::zeros(nv, nv);
+    for col in 0..nv {
+        let mut scratch = data.clone();
+
+        // +eps
+        let mut dq = nalgebra::DVector::zeros(nv);
+        dq[col] = eps;
+        let mut qpos_pert = nalgebra::DVector::zeros(model.nq);
+        mj_integrate_pos_explicit(model, &mut qpos_pert, &data.qpos, &dq, 1.0);
+        scratch.qpos.copy_from(&qpos_pert);
+        scratch.qvel.copy_from(&data.qvel);
+        scratch.forward(model).unwrap();
+        let qacc_plus = scratch.qacc.clone();
+
+        // -eps
+        dq[col] = -eps;
+        mj_integrate_pos_explicit(model, &mut qpos_pert, &data.qpos, &dq, 1.0);
+        scratch.qpos.copy_from(&qpos_pert);
+        scratch.qvel.copy_from(&data.qvel);
+        scratch.forward(model).unwrap();
+
+        let fd_col = (&qacc_plus - &scratch.qacc) / (2.0 * eps);
+        for row in 0..nv {
+            mat[(row, col)] = fd_col[row];
+        }
+    }
+    mat
+}
+
+/// Compute M⁻¹ · qDeriv_pos analytically (gives ∂qacc/∂q).
+fn analytical_dqacc_dqpos(model: &Model, data: &sim_core::Data) -> nalgebra::DMatrix<f64> {
+    let nv = model.nv;
+    let mut result = nalgebra::DMatrix::zeros(nv, nv);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    for col in 0..nv {
+        let mut x = data.qDeriv_pos.column(col).clone_owned();
+        mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut x,
+        );
+        result.column_mut(col).copy_from(&x);
+    }
+    result
+}
+
+// T1: Hinge spring position derivative (exact) → AC1
+#[test]
+fn test_pos_deriv_hinge_spring() {
+    let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
+    model.jnt_stiffness[0] = 10.0;
+    model.jnt_springref[0] = 0.0;
+    model.gravity = nalgebra::Vector3::zeros(); // no gravity
+    let mut data = model.make_data();
+    data.qpos[0] = 0.5;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+    assert_relative_eq!(data.qDeriv_pos[(0, 0)], -10.0, epsilon = 1e-12);
+}
+
+// T_supp6: Slide joint spring position derivative (exact) → AC18
+#[test]
+fn test_pos_deriv_slide_spring() {
+    // Build a slide joint model
+    let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
+    // Change joint type to Slide
+    model.jnt_type[0] = sim_core::MjJointType::Slide;
+    model.jnt_stiffness[0] = 15.0;
+    model.jnt_springref[0] = 0.0;
+    model.gravity = nalgebra::Vector3::zeros();
+    model.nq = 1; // Slide has nq=1
+    model.qpos0 = nalgebra::DVector::from_vec(vec![0.0]);
+    model.qpos_spring = vec![0.0];
+    model.compute_ancestors();
+    model.compute_implicit_params();
+    model.compute_qld_csr_metadata();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+    assert_relative_eq!(data.qDeriv_pos[(0, 0)], -15.0, epsilon = 1e-12);
+}
+
+// T2: Ball spring position derivative (FD-validated) → AC2
+#[test]
+fn test_pos_deriv_ball_spring() {
+    let mut model = Model::spherical_pendulum(1.0, 0.1);
+    model.jnt_stiffness[0] = 5.0;
+    model.gravity = nalgebra::Vector3::zeros();
+    let mut data = model.make_data();
+    // Small rotation ~0.3 rad about [1,1,1]/√3
+    let axis = nalgebra::Vector3::new(1.0, 1.0, 1.0).normalize();
+    let q = nalgebra::UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), 0.3);
+    data.qpos[0] = q.w;
+    data.qpos[1] = q.i;
+    data.qpos[2] = q.j;
+    data.qpos[3] = q.k;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+    let fd = fd_qderiv_pos(&model, &data, 1e-6);
+
+    let analytical = data.qDeriv_pos.view((0, 0), (3, 3));
+    let fd_block = fd.view((0, 0), (3, 3));
+    let err = max_relative_error(&analytical.clone_owned(), &fd_block.clone_owned(), 1e-6);
+    assert!(
+        err < 1e-5,
+        "Ball spring pos deriv: max relative error {err} exceeds 1e-5"
+    );
+}
+
+// T3: Free joint spring position derivative (FD-validated) → AC3
+#[test]
+fn test_pos_deriv_free_spring() {
+    let mut model = Model::free_body(0.5, nalgebra::Vector3::new(0.01, 0.01, 0.01));
+    model.jnt_stiffness[0] = 8.0;
+    model.gravity = nalgebra::Vector3::zeros();
+    let mut data = model.make_data();
+    // Translate [1, 0, 0]
+    data.qpos[0] = 1.0;
+    // Small rotation
+    let q = nalgebra::UnitQuaternion::from_axis_angle(
+        &nalgebra::Unit::new_normalize(nalgebra::Vector3::z()),
+        0.2,
+    );
+    data.qpos[3] = q.w;
+    data.qpos[4] = q.i;
+    data.qpos[5] = q.j;
+    data.qpos[6] = q.k;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+    let fd = fd_qderiv_pos(&model, &data, 1e-6);
+
+    let err = max_relative_error(&data.qDeriv_pos, &fd, 1e-6);
+    assert!(
+        err < 1e-5,
+        "Free joint spring pos deriv: max relative error {err} exceeds 1e-5"
+    );
+}
+
+// T5: Affine actuator position derivative (FD-validated) → AC5
+#[test]
+fn test_pos_deriv_affine_actuator() {
+    let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
+    model.gravity = nalgebra::Vector3::zeros();
+
+    // Add affine actuator with gainprm[1]=2.0 (length-dependent gain)
+    model.actuator_trntype.push(ActuatorTransmission::Joint);
+    model.actuator_trnid.push([0, usize::MAX]);
+    model.actuator_gear.push([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    model.actuator_dyntype.push(ActuatorDynamics::None);
+    model.actuator_ctrlrange.push((-100.0, 100.0));
+    model.actuator_forcerange.push((-100.0, 100.0));
+    model.actuator_name.push(None);
+    model.actuator_act_adr.push(0);
+    model.actuator_act_num.push(0);
+    model.actuator_gaintype.push(GainType::Affine);
+    model.actuator_biastype.push(BiasType::None);
+    model.actuator_dynprm.push([0.0; 10]);
+    model.actuator_gainprm.push({
+        let mut p = [0.0; 9];
+        p[1] = 2.0; // gainprm[1] = length-dependent gain
+        p
+    });
+    model.actuator_biasprm.push([0.0; 9]);
+    model.actuator_lengthrange.push((0.0, 0.0));
+    model.actuator_acc0.push(0.0);
+    model.actuator_actlimited.push(false);
+    model.actuator_actrange.push((0.0, 0.0));
+    model.actuator_actearly.push(false);
+    model.nu = 1;
+
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+
+    // Expected: gainprm[1] · ctrl · gear² = 2.0 · 1.0 · 1.0 = 2.0
+    // (positive: increasing q increases actuator length → increases gain →
+    //  increases force applied in positive qfrc_actuator direction)
+    assert_relative_eq!(data.qDeriv_pos[(0, 0)], 2.0, epsilon = 1e-10);
+
+    // Also verify against FD
+    let fd = fd_qderiv_pos(&model, &data, 1e-6);
+    let err = max_relative_error(&data.qDeriv_pos, &fd, 1e-6);
+    assert!(
+        err < 1e-5,
+        "Affine actuator pos deriv: max relative error {err} exceeds 1e-5"
+    );
+}
+
+// T6: RNE position derivatives — 3-link pendulum (FD-validated) → AC6
+// Validated at the qacc level: M⁻¹·qDeriv_pos = ∂qacc/∂q (FD).
+// Direct comparison of qDeriv_pos against FD of qfrc_smooth is invalid
+// for multi-link models because AD-2 includes the −(∂M/∂q)·qacc term.
+#[test]
+fn test_pos_deriv_rne_pendulum() {
+    let model = Model::n_link_pendulum(3, 1.0, 0.1);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qpos[2] = 0.1;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.qvel[2] = 0.2;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+
+    // Compare M⁻¹·qDeriv_pos (analytical ∂qacc/∂q) against FD of qacc
+    let analytical = analytical_dqacc_dqpos(&model, &data);
+    let fd = fd_dqacc_dqpos(&model, &data, 1e-6);
+
+    let err = max_relative_error(&analytical, &fd, 1e-6);
+    assert!(
+        err < 1e-4,
+        "RNE 3-link pendulum pos deriv: max relative error {err} exceeds 1e-4"
+    );
+}
+
+// T7: Transition A matrix — Euler — position columns match FD → AC7, AC16
+#[test]
+fn test_pos_deriv_transition_euler() {
+    let mut model = Model::n_link_pendulum(3, 1.0, 0.1);
+    add_torque_actuators(&mut model, 3);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qpos[2] = 0.1;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.qvel[2] = 0.2;
+    data.ctrl[0] = 1.0;
+    data.ctrl[1] = -0.5;
+    data.ctrl[2] = 0.3;
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+
+    let hybrid = mjd_transition_hybrid(&model, &data, &config).unwrap();
+    let fd = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let nv = model.nv;
+
+    // Position columns (0..nv) of A should match FD
+    let hybrid_pos = hybrid.A.view((0, 0), (2 * nv, nv));
+    let fd_pos = fd.A.view((0, 0), (2 * nv, nv));
+    let err = max_relative_error(&hybrid_pos.clone_owned(), &fd_pos.clone_owned(), 1e-6);
+    assert!(
+        err < 1e-4,
+        "Euler transition pos columns: max relative error {err} exceeds 1e-4"
+    );
+
+    // Velocity columns should be unchanged (identical for both)
+    let hybrid_vel = hybrid.A.view((0, nv), (2 * nv, nv));
+    let fd_vel = fd.A.view((0, nv), (2 * nv, nv));
+    let vel_err = max_relative_error(&hybrid_vel.clone_owned(), &fd_vel.clone_owned(), 1e-6);
+    assert!(
+        vel_err < 1e-4,
+        "Euler transition vel columns: max relative error {vel_err} exceeds 1e-4"
+    );
+}
+
+// T8: Transition A matrix — ISD — position columns match FD → AC8
+#[test]
+fn test_pos_deriv_transition_isd() {
+    let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+    model.integrator = Integrator::ImplicitSpringDamper;
+    model.jnt_stiffness[0] = 10.0;
+    model.jnt_stiffness[1] = 10.0;
+    model.jnt_damping[0] = 1.0;
+    model.jnt_damping[1] = 1.0;
+    model.compute_implicit_params();
+    add_torque_actuators(&mut model, 2);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.ctrl[0] = 1.0;
+    data.ctrl[1] = -0.5;
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+
+    let hybrid = mjd_transition_hybrid(&model, &data, &config).unwrap();
+    let fd = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let nv = model.nv;
+    let hybrid_pos = hybrid.A.view((0, 0), (2 * nv, nv));
+    let fd_pos = fd.A.view((0, 0), (2 * nv, nv));
+    let err = max_relative_error(&hybrid_pos.clone_owned(), &fd_pos.clone_owned(), 1e-6);
+    assert!(
+        err < 1e-4,
+        "ISD transition pos columns: max relative error {err} exceeds 1e-4"
+    );
+}
+
+// T9: Transition A matrix — ImplicitFast — position columns match FD → AC9
+#[test]
+fn test_pos_deriv_transition_implicit_fast() {
+    let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+    model.integrator = Integrator::ImplicitFast;
+    model.jnt_damping[0] = 0.5;
+    model.jnt_damping[1] = 0.5;
+    model.compute_implicit_params();
+    add_torque_actuators(&mut model, 2);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.ctrl[0] = 1.0;
+    data.ctrl[1] = -0.5;
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+
+    let hybrid = mjd_transition_hybrid(&model, &data, &config).unwrap();
+    let fd = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let nv = model.nv;
+    let hybrid_pos = hybrid.A.view((0, 0), (2 * nv, nv));
+    let fd_pos = fd.A.view((0, 0), (2 * nv, nv));
+    let err = max_relative_error(&hybrid_pos.clone_owned(), &fd_pos.clone_owned(), 1e-6);
+    assert!(
+        err < 1e-4,
+        "ImplicitFast transition pos columns: max relative error {err} exceeds 1e-4"
+    );
+}
+
+// T10: Ball/Free joint transition position columns match FD → AC10
+#[test]
+fn test_pos_deriv_transition_ball_free() {
+    // Free body (6 DOF) — test with Euler integrator
+    let model = Model::free_body(0.5, nalgebra::Vector3::new(0.01, 0.01, 0.01));
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1; // x translation
+    data.qpos[1] = 0.2; // y translation
+    data.qpos[2] = 0.3; // z translation
+    // Small rotation
+    let q = nalgebra::UnitQuaternion::from_axis_angle(
+        &nalgebra::Unit::new_normalize(nalgebra::Vector3::new(1.0, 0.5, 0.3)),
+        0.2,
+    );
+    data.qpos[3] = q.w;
+    data.qpos[4] = q.i;
+    data.qpos[5] = q.j;
+    data.qpos[6] = q.k;
+    data.qvel[0] = 0.1;
+    data.qvel[3] = 0.05;
+    data.qvel[4] = -0.03;
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+
+    let hybrid = mjd_transition_hybrid(&model, &data, &config).unwrap();
+    let fd = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let nv = model.nv; // 6
+    let hybrid_pos = hybrid.A.view((0, 0), (2 * nv, nv));
+    let fd_pos = fd.A.view((0, 0), (2 * nv, nv));
+
+    // Two-tier check:
+    // 1. Absolute tolerance 5e-5 for all elements (catches FD noise in near-zero entries)
+    // 2. Relative tolerance 1e-4 for "large" elements (floor 1e-3)
+    //
+    // The free body with isotropic inertia has zero linear-angular cross-coupling
+    // (analytical = 0). FD shows ~2e-5 noise from FP arithmetic in forward dynamics
+    // (centered diff: f(+eps)-f(-eps) ~ 4e-11 for velocity values of O(0.01)).
+    let h_mat = hybrid_pos.clone_owned();
+    let f_mat = fd_pos.clone_owned();
+    let mut max_err = 0.0_f64;
+    for r in 0..h_mat.nrows() {
+        for c in 0..h_mat.ncols() {
+            let diff = (h_mat[(r, c)] - f_mat[(r, c)]).abs();
+            if diff < 5e-5 {
+                continue; // absolute tolerance: skip FD noise in near-zero entries
+            }
+            let denom = h_mat[(r, c)].abs().max(f_mat[(r, c)].abs()).max(1e-6);
+            max_err = max_err.max(diff / denom);
+        }
+    }
+    assert!(
+        max_err < 1e-4,
+        "Ball/Free transition pos columns: max relative error {max_err} exceeds 1e-4"
+    );
+}
+
+// T11: FD fallback for ineligible model → AC11
+#[test]
+fn test_pos_deriv_fd_fallback() {
+    let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+    model.density = 1.0; // makes model ineligible for analytical pos
+    add_torque_actuators(&mut model, 2);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qvel[0] = 0.5;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+
+    let hybrid = mjd_transition_hybrid(&model, &data, &config).unwrap();
+    let fd = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    // FD fallback: position columns of hybrid should match pure FD exactly.
+    // Velocity columns may differ (hybrid always uses analytical velocity derivatives).
+    let nv = model.nv;
+    let hybrid_pos = hybrid.A.view((0, 0), (2 * nv, nv));
+    let fd_pos = fd.A.view((0, 0), (2 * nv, nv));
+    let err = max_relative_error(&hybrid_pos.clone_owned(), &fd_pos.clone_owned(), 1e-10);
+    assert!(
+        err < 1e-10,
+        "FD fallback: max relative error {err} exceeds 1e-10"
+    );
+}
+
+// T14: Contact isolation — analytical matches FD on contact-free models → AC17
+#[test]
+fn test_pos_deriv_contact_free() {
+    let mut model = Model::n_link_pendulum(3, 1.0, 0.1);
+    add_torque_actuators(&mut model, 3);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qpos[2] = 0.1;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.qvel[2] = 0.2;
+    data.ctrl[0] = 1.0;
+    data.ctrl[1] = -0.5;
+    data.ctrl[2] = 0.3;
+    data.forward(&model).unwrap();
+
+    let config = DerivativeConfig {
+        eps: 1e-6,
+        centered: true,
+        ..DerivativeConfig::default()
+    };
+
+    let hybrid = mjd_transition_hybrid(&model, &data, &config).unwrap();
+    let fd = mjd_transition_fd(&model, &data, &config).unwrap();
+
+    let err = max_relative_error(&hybrid.A, &fd.A, 1e-6);
+    assert!(
+        err < 1e-4,
+        "Contact-free full A matrix: max relative error {err} exceeds 1e-4"
+    );
+}
+
+// T_supp2: Disabled gravity → gravity contribution is zero
+#[test]
+fn test_pos_deriv_disabled_gravity() {
+    let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+    model.disableflags |= DISABLE_GRAVITY;
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.5;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+
+    // With gravity disabled, no springs, and no actuators, the only
+    // contribution is Coriolis position derivatives from RNE.
+    // Validate at qacc level (multi-link model, AD-2).
+    let analytical = analytical_dqacc_dqpos(&model, &data);
+    let fd = fd_dqacc_dqpos(&model, &data, 1e-6);
+    // With gravity disabled and only one joint moving, derivatives are very small
+    // (near-zero qacc). Use a higher floor to avoid FD noise inflation.
+    let err = max_relative_error(&analytical, &fd, 1e-3);
+    assert!(
+        err < 1e-4,
+        "Disabled gravity pos deriv: max relative error {err} exceeds 1e-4"
+    );
+}
+
+// T_supp3: Disabled springs → passive contribution is zero
+#[test]
+fn test_pos_deriv_disabled_springs() {
+    let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
+    model.jnt_stiffness[0] = 10.0;
+    model.disableflags |= DISABLE_SPRING;
+    model.gravity = nalgebra::Vector3::zeros();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.5;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+    // With springs disabled, gravity off, no actuators, and qvel=0,
+    // all position derivatives should be zero.
+    let max_val = data.qDeriv_pos.abs().max();
+    assert!(
+        max_val < 1e-15,
+        "Disabled springs: qDeriv_pos should be ~zero, max = {max_val}"
+    );
+}
+
+// T_supp4: nv=0 model → all functions return without error
+#[test]
+fn test_pos_deriv_nv_zero() {
+    let model = Model::empty();
+    let mut data = model.make_data();
+    mjd_smooth_pos(&model, &mut data);
+    // Just verifying no panic
+}
+
+// T_supp7: FD convergence — shrinking epsilon confirms analytical matches FD limit
+#[test]
+fn test_pos_deriv_fd_convergence() {
+    let model = Model::n_link_pendulum(2, 1.0, 0.1);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.4;
+    data.qpos[1] = -0.3;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+
+    // Compare at qacc level (multi-link model, AD-2)
+    let analytical = analytical_dqacc_dqpos(&model, &data);
+
+    // Compute FD at decreasing eps and verify error decreases
+    let eps_vals = [1e-4, 1e-6, 1e-8];
+    let mut prev_err = f64::MAX;
+    for &eps in &eps_vals {
+        let fd = fd_dqacc_dqpos(&model, &data, eps);
+        let err = max_relative_error(&analytical, &fd, 1e-6);
+        // Each step should reduce error (at least not increase by much).
+        // At extremely small analytical error (< 1e-7), FP noise in FD dominates
+        // and monotonic convergence is not guaranteed.
+        if eps > 1e-7 && prev_err > 1e-7 {
+            assert!(
+                err < prev_err * 1.1,
+                "FD convergence: error {err} at eps={eps} not improving (prev={prev_err})"
+            );
+        }
+        prev_err = err;
+    }
+    // Final error should be small
+    assert!(
+        prev_err < 1e-3,
+        "FD convergence: final error {prev_err} too large"
+    );
+}
+
+// T_supp9: Zero-derivative model (negative test)
+#[test]
+fn test_pos_deriv_zero_model() {
+    let mut model = Model::n_link_pendulum(2, 1.0, 0.1);
+    model.disableflags |= DISABLE_SPRING;
+    model.disableflags |= DISABLE_GRAVITY;
+    let mut data = model.make_data();
+    // qvel = 0, so no Coriolis either
+    data.qpos[0] = 0.3;
+    data.forward(&model).unwrap();
+
+    mjd_smooth_pos(&model, &mut data);
+    let max_val = data.qDeriv_pos.abs().max();
+    assert!(
+        max_val < 1e-15,
+        "Zero-derivative model: qDeriv_pos should be zero, max = {max_val}"
+    );
 }

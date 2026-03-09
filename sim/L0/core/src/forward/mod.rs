@@ -18,7 +18,7 @@
 //! split boundary. `step1()` runs only `forward_pos_vel()` + `cb_control`;
 //! `step2()` runs `forward_acc()` + integration.
 
-mod acceleration;
+pub(crate) mod acceleration;
 mod actuation;
 pub(crate) mod check;
 mod muscle;
