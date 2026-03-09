@@ -1,0 +1,89 @@
+<mujoco model="composite_model">
+  <!-- Canonical conformance model (h): composite / full-pipeline model.
+       nv=4, nq=4, nu=1, nsensor=3, ntendon=1.
+       Combines contacts + actuators + sensors + tendons + equality.
+
+       Pipeline stages exercised:
+       - FK: multi-joint chain + sliding bodies
+       - CRBA: 4×4 mass matrix with coupling
+       - RNE: gravity + Coriolis bias forces
+       - Passive: spring/damper on joint1
+       - Collision: spheres on plane contact at qpos0
+       - Constraint: contact constraints + equality constraint
+       - Actuation: motor on joint1, ctrl[0]=1.0
+       - Tendons: fixed tendon coupling joint1-joint2
+       - Sensors: jointpos, framepos, subtreecom
+       - Integration: full pipeline stepping
+
+       qpos0 design: arm chain horizontal (gravity torques non-zero),
+       ball bodies on vertical slide joints slightly penetrating floor
+       (contact at qpos0 with physical constraint resolution), spring
+       has non-zero springref, tendon has non-zero springlength, ctrl
+       is set non-zero.
+
+       Used primarily for Layer C trajectory comparison — tests that all
+       pipeline stages interact correctly over multi-step simulation.
+
+       CRITICAL: Tests must set ctrl=[1.0] before calling forward().
+  -->
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"
+          friction="1 0.005 0.0001"/>
+
+    <!-- Two-link arm with spring, damper, motor, tendon -->
+    <body name="upper" pos="0 0 1.5">
+      <joint name="joint1" type="hinge" axis="0 1 0"
+             stiffness="8" damping="0.5" springref="0.2"/>
+      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.3 0 0"
+            size="0.02" mass="1.0"/>
+
+      <body name="lower" pos="0.3 0 0">
+        <joint name="joint2" type="hinge" axis="0 1 0"
+               damping="0.3"/>
+        <geom name="lower_geom" type="capsule" fromto="0 0 0 0.25 0 0"
+              size="0.015" mass="0.5"/>
+        <site name="tip" pos="0.25 0 0"/>
+      </body>
+    </body>
+
+    <!-- Ball on vertical slide joint, slightly penetrating floor.
+         Slide joint allows vertical translation so contact forces are
+         physically resolvable (unlike hinge which locks position). -->
+    <body name="ball1" pos="0.5 0 0.078">
+      <joint name="ball1_slide" type="slide" axis="0 0 1"/>
+      <geom name="ball1_geom" type="sphere" size="0.08" mass="0.3"
+            friction="1 0.005 0.0001"/>
+    </body>
+
+    <!-- Second ball on vertical slide joint -->
+    <body name="ball2" pos="-0.3 0 0.058">
+      <joint name="ball2_slide" type="slide" axis="0 0 1"/>
+      <geom name="ball2_geom" type="sphere" size="0.06" mass="0.2"
+            friction="0.8 0.005 0.0001"/>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <fixed name="coupling" stiffness="10" damping="0.5" springlength="0.1">
+      <joint joint="joint1" coef="1.0"/>
+      <joint joint="joint2" coef="-0.5"/>
+    </fixed>
+  </tendon>
+
+  <equality>
+    <joint name="ball_coupling" joint1="ball1_slide" joint2="ball2_slide"
+           polycoef="0 0.3 0 0 0"
+           solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2"/>
+  </equality>
+
+  <actuator>
+    <motor name="motor" joint="joint1" gear="1"/>
+  </actuator>
+
+  <sensor>
+    <jointpos name="joint1_pos" joint="joint1"/>
+    <framepos name="tip_pos" objtype="site" objname="tip"/>
+    <subtreecom name="upper_com" body="upper"/>
+  </sensor>
+</mujoco>

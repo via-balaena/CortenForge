@@ -1,0 +1,32 @@
+<mujoco model="contact_scenario">
+  <!-- Canonical conformance model (c): contact scenario.
+       nv=6, nq=7. Sphere with free joint resting on ground plane.
+
+       Pipeline stages exercised:
+       - FK: free joint body position/orientation
+       - Collision: sphere-plane contact detection
+       - Constraint: contact constraint assembly and solver
+       - Integration: constrained dynamics with contact
+
+       qpos0 design: sphere pos="0 0 0.098" with radius=0.1 means the
+       sphere bottom is at z=-0.002, slightly penetrating the plane.
+       This ensures contact with non-zero depth at the initial state,
+       producing non-trivial collision AND constraint output.
+       Friction condim=3 for frictional contacts.
+
+       A wall geom is added to provide a second potential contact surface.
+  -->
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"
+          friction="1 0.005 0.0001"/>
+    <geom name="wall" type="box" pos="0.3 0 0.15" size="0.01 0.3 0.15"
+          friction="0.8 0.005 0.0001"/>
+
+    <body name="sphere" pos="0 0 0.098">
+      <freejoint name="ball"/>
+      <geom name="sphere_geom" type="sphere" size="0.1" mass="1.0"
+            friction="1 0.005 0.0001"/>
+    </body>
+  </worldbody>
+</mujoco>

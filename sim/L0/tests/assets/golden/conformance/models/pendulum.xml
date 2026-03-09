@@ -1,0 +1,27 @@
+<mujoco model="pendulum">
+  <!-- Canonical conformance model (a): single pendulum.
+       nv=1, nq=1. Single hinge joint under gravity with spring and damper.
+
+       Pipeline stages exercised:
+       - FK: body position/orientation from single joint angle
+       - CRBA: 1×1 mass matrix (scalar inertia about hinge axis)
+       - RNE: gravity torque (qfrc_bias) — non-zero at qpos0 because
+         mass is offset from joint axis
+       - Passive: spring force (stiffness=10, springref=0.3 → non-zero
+         at qpos0=0 since springref≠0) + damper (damping=0.5)
+       - Integration: Euler or RK4 stepping
+
+       qpos0 design: mass center at pos="0.3 0 0" is offset horizontally,
+       so gravity produces a non-zero torque at the initial state.
+       Spring has springref=0.3 so passive force is non-zero at qpos0=0.
+  -->
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <body name="link" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 1 0"
+             stiffness="10" damping="0.5" springref="0.3"/>
+      <geom name="link_geom" type="capsule" fromto="0 0 0 0.3 0 0"
+            size="0.02" mass="1.0"/>
+    </body>
+  </worldbody>
+</mujoco>

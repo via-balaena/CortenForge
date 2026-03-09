@@ -1,0 +1,38 @@
+<mujoco model="actuated_system">
+  <!-- Canonical conformance model (d): actuated system.
+       nv=1, nq=1, nu=2, na=1. Motor + position servo on hinge.
+
+       Pipeline stages exercised:
+       - FK: body position from joint angle
+       - Actuation: motor torque + position servo with activation dynamics
+       - CRBA/RNE: standard inertia and bias forces
+       - Integration: dynamics with actuator forces
+
+       qpos0 design: hinge at qpos0=0 with mass offset from axis means
+       gravity produces non-zero torque. Motor ctrl[0]=1.0 and position
+       servo ctrl[1]=0.5 produce non-zero actuator forces at initial state.
+
+       Actuator details:
+       - Motor: direct torque input, ctrl[0]=1.0
+       - Position servo: dyntype=integrator (creates activation state na=1),
+         ctrl[1]=0.5, kp=20. Exercises activation dynamics path.
+
+       CRITICAL: Tests must set ctrl=[1.0, 0.5] before calling forward().
+  -->
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <body name="link" pos="0 0 1">
+      <joint name="hinge" type="hinge" axis="0 1 0"/>
+      <geom name="link_geom" type="capsule" fromto="0 0 0 0.3 0 0"
+            size="0.02" mass="1.0"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="motor" joint="hinge" gear="1"/>
+    <general name="pos_servo" joint="hinge"
+             gaintype="fixed" gainprm="20"
+             biastype="affine" biasprm="0 -20 0"
+             dyntype="integrator" dynprm="1"/>
+  </actuator>
+</mujoco>

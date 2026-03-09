@@ -1,0 +1,48 @@
+<mujoco model="tendon_model">
+  <!-- Canonical conformance model (e): tendon model.
+       nv=2, nq=2. Fixed tendon coupling two hinge joints.
+
+       Pipeline stages exercised:
+       - FK: two-joint chain
+       - Tendons: fixed tendon length, velocity, Jacobian
+       - Passive: tendon spring force (stiffness=15, springref=0.1)
+       - CRBA/RNE: standard chain dynamics
+
+       qpos0 design: joint1 has springref=0.3 (non-zero passive force at
+       qpos0=0). The fixed tendon has springref=0.1 so at qpos0=0 the
+       tendon length (0) differs from springref, producing non-zero
+       tendon passive force. Tendon limitrange is set to trigger limit
+       force computation.
+
+       Tendon details:
+       - Fixed tendon: coef1=1.0 on joint1, coef2=-0.5 on joint2
+         Length = 1.0*q1 + (-0.5)*q2
+       - Spring: stiffness=15, damping=1, springlength=0.1
+       - Limited: range [-0.5, 0.5] to exercise tendon limits
+  -->
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <body name="upper" pos="0 0 1.5">
+      <joint name="joint1" type="hinge" axis="0 1 0"
+             stiffness="5" springref="0.3" damping="0.3"/>
+      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.3 0 0"
+            size="0.02" mass="1.0"/>
+
+      <body name="lower" pos="0.3 0 0">
+        <joint name="joint2" type="hinge" axis="0 1 0"
+               damping="0.2"/>
+        <geom name="lower_geom" type="capsule" fromto="0 0 0 0.25 0 0"
+              size="0.015" mass="0.5"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <fixed name="coupling" stiffness="15" damping="1"
+           springlength="0.1"
+           limited="true" range="-0.5 0.5">
+      <joint joint="joint1" coef="1.0"/>
+      <joint joint="joint2" coef="-0.5"/>
+    </fixed>
+  </tendon>
+</mujoco>

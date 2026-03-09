@@ -1,0 +1,768 @@
+{
+  "mujoco_version": "3.4.0",
+  "generated_at": "2026-03-09T23:48:14Z",
+  "models": {
+    "pendulum": {
+      "nq": 1,
+      "nv": 1,
+      "nu": 0,
+      "na": 0,
+      "nsensor": 0,
+      "nsensordata": 0,
+      "ntendon": 0,
+      "ctrl": null,
+      "trajectory_steps": 100,
+      "model_xml_md5": "3dc95e4e9ff146412b54d150bfb5ff31"
+    },
+    "double_pendulum": {
+      "nq": 2,
+      "nv": 2,
+      "nu": 0,
+      "na": 0,
+      "nsensor": 0,
+      "nsensordata": 0,
+      "ntendon": 0,
+      "ctrl": null,
+      "trajectory_steps": 100,
+      "model_xml_md5": "0b545f83c88aeaa169521f9299cee1b4"
+    },
+    "contact_scenario": {
+      "nq": 7,
+      "nv": 6,
+      "nu": 0,
+      "na": 0,
+      "nsensor": 0,
+      "nsensordata": 0,
+      "ntendon": 0,
+      "ctrl": null,
+      "trajectory_steps": 100,
+      "model_xml_md5": "d8c01452efce12dd27ea6ea800879687"
+    },
+    "actuated_system": {
+      "nq": 1,
+      "nv": 1,
+      "nu": 2,
+      "na": 1,
+      "nsensor": 0,
+      "nsensordata": 0,
+      "ntendon": 0,
+      "ctrl": [
+        1.0,
+        0.5
+      ],
+      "trajectory_steps": 100,
+      "model_xml_md5": "99a53a5d3b530d5abd9887e71214eaba"
+    },
+    "tendon_model": {
+      "nq": 2,
+      "nv": 2,
+      "nu": 0,
+      "na": 0,
+      "nsensor": 0,
+      "nsensordata": 0,
+      "ntendon": 1,
+      "ctrl": null,
+      "trajectory_steps": 100,
+      "model_xml_md5": "58179cd14681d20ae29988ec84361116"
+    },
+    "sensor_model": {
+      "nq": 2,
+      "nv": 2,
+      "nu": 0,
+      "na": 0,
+      "nsensor": 8,
+      "nsensordata": 21,
+      "ntendon": 0,
+      "ctrl": null,
+      "trajectory_steps": 100,
+      "model_xml_md5": "279c282d79bfd76678602ee217c0fb5c"
+    },
+    "equality_model": {
+      "nq": 3,
+      "nv": 3,
+      "nu": 0,
+      "na": 0,
+      "nsensor": 0,
+      "nsensordata": 0,
+      "ntendon": 0,
+      "ctrl": null,
+      "trajectory_steps": 100,
+      "model_xml_md5": "e415187a61e7cd1e00a608aecb9c9f92"
+    },
+    "composite_model": {
+      "nq": 4,
+      "nv": 4,
+      "nu": 1,
+      "na": 0,
+      "nsensor": 3,
+      "nsensordata": 7,
+      "ntendon": 1,
+      "ctrl": [
+        1.0
+      ],
+      "trajectory_steps": 200,
+      "model_xml_md5": "6feefb66b5fe458ea3844f68ba45dbc8"
+    }
+  },
+  "files": {
+    "pendulum_fk_xpos.npy": {
+      "shape": [
+        2,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "pendulum_fk_xquat.npy": {
+      "shape": [
+        2,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "pendulum_fk_xipos.npy": {
+      "shape": [
+        2,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "pendulum_crba_qM.npy": {
+      "shape": [
+        1,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "pendulum_rne_qfrc_bias.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "pendulum_passive_qfrc_passive.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "pendulum_trajectory_qpos.npy": {
+      "shape": [
+        100,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "pendulum_trajectory_qvel.npy": {
+      "shape": [
+        100,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "pendulum_trajectory_qacc.npy": {
+      "shape": [
+        100,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "double_pendulum_fk_xpos.npy": {
+      "shape": [
+        3,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "double_pendulum_fk_xquat.npy": {
+      "shape": [
+        3,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "double_pendulum_fk_xipos.npy": {
+      "shape": [
+        3,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "double_pendulum_crba_qM.npy": {
+      "shape": [
+        2,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "double_pendulum_rne_qfrc_bias.npy": {
+      "shape": [
+        2
+      ],
+      "dtype": "float64"
+    },
+    "double_pendulum_passive_qfrc_passive.npy": {
+      "shape": [
+        2
+      ],
+      "dtype": "float64"
+    },
+    "double_pendulum_trajectory_qpos.npy": {
+      "shape": [
+        100,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "double_pendulum_trajectory_qvel.npy": {
+      "shape": [
+        100,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "double_pendulum_trajectory_qacc.npy": {
+      "shape": [
+        100,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_fk_xpos.npy": {
+      "shape": [
+        2,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_fk_xquat.npy": {
+      "shape": [
+        2,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_fk_xipos.npy": {
+      "shape": [
+        2,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_crba_qM.npy": {
+      "shape": [
+        6,
+        6
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_rne_qfrc_bias.npy": {
+      "shape": [
+        6
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_passive_qfrc_passive.npy": {
+      "shape": [
+        6
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_contact_pos.npy": {
+      "shape": [
+        1,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_contact_normal.npy": {
+      "shape": [
+        1,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_contact_depth.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_contact_geom_pairs.npy": {
+      "shape": [
+        1,
+        2
+      ],
+      "dtype": "int32"
+    },
+    "contact_scenario_constraint_efc_J.npy": {
+      "shape": [
+        4,
+        6
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_constraint_efc_b.npy": {
+      "shape": [
+        4
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_constraint_efc_force.npy": {
+      "shape": [
+        4
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_trajectory_qpos.npy": {
+      "shape": [
+        100,
+        7
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_trajectory_qvel.npy": {
+      "shape": [
+        100,
+        6
+      ],
+      "dtype": "float64"
+    },
+    "contact_scenario_trajectory_qacc.npy": {
+      "shape": [
+        100,
+        6
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_fk_xpos.npy": {
+      "shape": [
+        2,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_fk_xquat.npy": {
+      "shape": [
+        2,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_fk_xipos.npy": {
+      "shape": [
+        2,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_crba_qM.npy": {
+      "shape": [
+        1,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_rne_qfrc_bias.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_passive_qfrc_passive.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_actuator_qfrc_actuator.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_actuator_force.npy": {
+      "shape": [
+        2
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_trajectory_qpos.npy": {
+      "shape": [
+        100,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_trajectory_qvel.npy": {
+      "shape": [
+        100,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "actuated_system_trajectory_qacc.npy": {
+      "shape": [
+        100,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_fk_xpos.npy": {
+      "shape": [
+        3,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_fk_xquat.npy": {
+      "shape": [
+        3,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_fk_xipos.npy": {
+      "shape": [
+        3,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_crba_qM.npy": {
+      "shape": [
+        2,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_rne_qfrc_bias.npy": {
+      "shape": [
+        2
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_passive_qfrc_passive.npy": {
+      "shape": [
+        2
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_tendon_length.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_tendon_velocity.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_trajectory_qpos.npy": {
+      "shape": [
+        100,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_trajectory_qvel.npy": {
+      "shape": [
+        100,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "tendon_model_trajectory_qacc.npy": {
+      "shape": [
+        100,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_fk_xpos.npy": {
+      "shape": [
+        3,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_fk_xquat.npy": {
+      "shape": [
+        3,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_fk_xipos.npy": {
+      "shape": [
+        3,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_crba_qM.npy": {
+      "shape": [
+        2,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_rne_qfrc_bias.npy": {
+      "shape": [
+        2
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_passive_qfrc_passive.npy": {
+      "shape": [
+        2
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_sensor_sensordata.npy": {
+      "shape": [
+        21
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_trajectory_qpos.npy": {
+      "shape": [
+        100,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_trajectory_qvel.npy": {
+      "shape": [
+        100,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "sensor_model_trajectory_qacc.npy": {
+      "shape": [
+        100,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_fk_xpos.npy": {
+      "shape": [
+        4,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_fk_xquat.npy": {
+      "shape": [
+        4,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_fk_xipos.npy": {
+      "shape": [
+        4,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_crba_qM.npy": {
+      "shape": [
+        3,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_rne_qfrc_bias.npy": {
+      "shape": [
+        3
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_passive_qfrc_passive.npy": {
+      "shape": [
+        3
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_constraint_efc_J.npy": {
+      "shape": [
+        7,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_constraint_efc_b.npy": {
+      "shape": [
+        7
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_constraint_efc_force.npy": {
+      "shape": [
+        7
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_trajectory_qpos.npy": {
+      "shape": [
+        100,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_trajectory_qvel.npy": {
+      "shape": [
+        100,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "equality_model_trajectory_qacc.npy": {
+      "shape": [
+        100,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_fk_xpos.npy": {
+      "shape": [
+        5,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_fk_xquat.npy": {
+      "shape": [
+        5,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_fk_xipos.npy": {
+      "shape": [
+        5,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_crba_qM.npy": {
+      "shape": [
+        4,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_rne_qfrc_bias.npy": {
+      "shape": [
+        4
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_passive_qfrc_passive.npy": {
+      "shape": [
+        4
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_actuator_qfrc_actuator.npy": {
+      "shape": [
+        4
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_actuator_force.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_sensor_sensordata.npy": {
+      "shape": [
+        7
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_tendon_length.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_tendon_velocity.npy": {
+      "shape": [
+        1
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_contact_pos.npy": {
+      "shape": [
+        2,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_contact_normal.npy": {
+      "shape": [
+        2,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_contact_depth.npy": {
+      "shape": [
+        2
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_contact_geom_pairs.npy": {
+      "shape": [
+        2,
+        2
+      ],
+      "dtype": "int32"
+    },
+    "composite_model_constraint_efc_J.npy": {
+      "shape": [
+        9,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_constraint_efc_b.npy": {
+      "shape": [
+        9
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_constraint_efc_force.npy": {
+      "shape": [
+        9
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_trajectory_qpos.npy": {
+      "shape": [
+        200,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_trajectory_qvel.npy": {
+      "shape": [
+        200,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "composite_model_trajectory_qacc.npy": {
+      "shape": [
+        200,
+        4
+      ],
+      "dtype": "float64"
+    }
+  }
+}
