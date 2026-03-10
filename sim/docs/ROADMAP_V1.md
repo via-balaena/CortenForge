@@ -222,15 +222,15 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| DT-19 | 10c | T3 | QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style) |
-| DT-128 | 10e | T2 | PGS early termination — accumulate `improvement` from `costChange()`, break when `improvement * scale < tolerance`. Currently always runs `max_iters`. MuJoCo's `mj_solPGS` has this; CortenForge PGS does not. Discovered during Phase 8 Spec B rubric stress-test. |
-| DT-23 | 10c | T2 | Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`) |
+| ~~DT-19~~ | 10c | T3 | ~~QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style)~~ — **Moved to Phase 13** (surfaced by Phase 12 gate triage) |
+| ~~DT-128~~ | 10e | T2 | ~~PGS early termination~~ — **Moved to Phase 13** (surfaced by Phase 12 gate triage) |
+| ~~DT-23~~ | 10c | T2 | ~~Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`)~~ — **Moved to Phase 13** (surfaced by Phase 12 gate triage) |
 | ~~DT-25~~ | 10c | T3 | ~~Deformable-rigid friction cone projection (currently normal-only)~~ **Partial** — Phase 8 Session 13 verification: condim=3 fully works (QCQP cone projection, R-scaling, Jacobian). Remaining gaps: condim=6 silently downgrades to 3 (DT-131), bodyweight diagApprox double-counts rigid body (DT-132), bodyweight uses rotational weight for flex friction rows (DT-133). 7 integration tests. |
 | DT-28 | 10d | T2 | Ball/free joints in fixed tendons — validation + qvel DOF index mapping |
 | ~~DT-32~~ | 10d | T2 | ~~Per-tendon `solref_limit`/`solimp_limit` constraint solver params~~ — **Done** (Phase 8: naming conformance) |
 | DT-33 | 10d | T2 | Tendon `margin` attribute for limit activation distance. Phase 7 Spec B (§64a) implemented joint `jnt_margin`; tendon limit sites (`assembly.rs:148,152,540,564`) still hardcode `< 0.0`. |
-| DT-39 | 10e | T2 | Body-weight diagonal approximation (`diagApprox`) |
-| DT-129 | 10e | T3 | PGS warmstart two-phase projection — use ray+QCQP projection on warmstart forces for better initial guess. Currently warmstart comes from `classify_constraint_states` which derives forces from `qacc_warmstart`. Discovered during Phase 8 Spec B review. |
+| ~~DT-39~~ | 10e | T2 | ~~Body-weight diagonal approximation (`diagApprox`)~~ — **Moved to Phase 13** (partially fixed in Phase 12 Session 15; remaining paths surfaced by gate triage) |
+| ~~DT-129~~ | 10e | T3 | ~~PGS warmstart two-phase projection~~ — **Moved to Phase 13** (surfaced by Phase 12 gate triage) |
 | DT-130 | 10e | T3 | Dense AR matrix optimization — PGS currently computes full nefc×nefc `efc_AR` matrix. MuJoCo uses sparse row-level operations (`ARblock`). Performance optimization, not conformance. Discovered during Phase 8 Spec B review. |
 
 ---
@@ -291,6 +291,11 @@ green.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
+| DT-19 | 10c | T3 | QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style). Surfaced by Phase 12 gate triage — golden flag tests. |
+| DT-23 | 10c | T2 | Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`). Surfaced by Phase 12 gate triage — `golden_disable_frictionloss` (~3.99 divergence). |
+| DT-39 | 10e | T2 | Body-weight diagonal approximation (`diagApprox`) — remaining code paths. Partially fixed in Phase 12 Session 15 Round 2; golden flag model's equality constraint configuration exercises a remaining path. |
+| DT-128 | 10e | T2 | PGS early termination — accumulate `improvement` from `costChange()`, break when `improvement * scale < tolerance`. Surfaced by Phase 12 gate triage. |
+| DT-129 | 10e | T3 | PGS warmstart two-phase projection — use ray+QCQP projection on warmstart forces. Surfaced by Phase 12 gate triage. |
 | §46 | 12 | — | `<composite>` procedural body generation (grid, rope, cable, cloth, box, cylinder, ellipsoid) |
 | §66 | 16 | — | Plugin/extension system — `<plugin>`/`<extension>` MJCF parsing + Rust trait dispatch |
 

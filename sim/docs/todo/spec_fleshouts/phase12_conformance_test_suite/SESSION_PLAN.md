@@ -1067,7 +1067,7 @@ inventory to the user when done.
 
 ## Session 15: Gate Triage
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- gate triage.
@@ -1148,5 +1148,5 @@ what stands between CortenForge and v1.0.
 | 11 | Spec B spec | Done | 1588f94 |
 | 12 | Spec B implementation | Done | b8811c1 |
 | 13 | Spec B review — create document | Done | a07ad98 |
-| 14 | Spec B review — execute + merged #[ignore] inventory | | |
-| 15 | Gate Triage — GATE_ASSESSMENT.md | | |
+| 14 | Spec B review — execute + merged #[ignore] inventory | Done | 86f98e8 |
+| 15 | Gate Triage — GATE_ASSESSMENT.md | Done | |
