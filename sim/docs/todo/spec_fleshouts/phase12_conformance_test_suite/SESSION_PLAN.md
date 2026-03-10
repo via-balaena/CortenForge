@@ -831,7 +831,7 @@ inventory to the user when done.
 
 ## Session 10: Spec B Rubric (Layer C — Trajectory Comparison)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- write Spec B rubric.
@@ -1144,7 +1144,7 @@ what stands between CortenForge and v1.0.
 | 7 | Spec A implementation | Done | f6fa988 |
 | 8 | Spec A review — create document | Done | 30fec10 |
 | 9 | Spec A review — execute + preliminary #[ignore] inventory | Done | ea10a76 |
-| 10 | Spec B rubric (Layer C — trajectory comparison) | | |
+| 10 | Spec B rubric (Layer C — trajectory comparison) | Done | eebf294 |
 | 11 | Spec B spec | | |
 | 12 | Spec B implementation | | |
 | 13 | Spec B review — create document | | |
