@@ -958,7 +958,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 12: Spec B Implementation (Layer C — Trajectory Comparison)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- implement Spec B.
@@ -1146,7 +1146,7 @@ what stands between CortenForge and v1.0.
 | 9 | Spec A review — execute + preliminary #[ignore] inventory | Done | ea10a76 |
 | 10 | Spec B rubric (Layer C — trajectory comparison) | Done | eebf294 |
 | 11 | Spec B spec | Done | 1588f94 |
-| 12 | Spec B implementation | | |
+| 12 | Spec B implementation | Done | b8811c1 |
 | 13 | Spec B review — create document | | |
 | 14 | Spec B review — execute + merged #[ignore] inventory | | |
 | 15 | Gate Triage — GATE_ASSESSMENT.md | | |
