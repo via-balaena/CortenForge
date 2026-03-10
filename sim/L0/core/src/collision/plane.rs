@@ -55,8 +55,11 @@ pub fn collide_with_plane(
             let penetration = radius - center_dist;
 
             if penetration > -margin {
-                // Contact position is at the sphere surface toward the plane
-                let contact_pos = other_pos - plane_normal * center_dist;
+                // Contact position: midpoint between sphere surface and plane surface.
+                // sphere_surface = center - normal * radius
+                // plane_surface  = center - normal * center_dist
+                // midpoint = center - normal * midpoint(radius, center_dist)
+                let contact_pos = other_pos - plane_normal * f64::midpoint(radius, center_dist);
                 // Contact normal points from other_geom toward plane_geom (from ball into plane = -plane_normal)
                 // But for force calculation, we want the force to push the ball OUT of the plane,
                 // so we use +plane_normal for the contact force direction.
@@ -120,9 +123,11 @@ pub fn collide_with_plane(
             let depth = -dist;
 
             if depth > -margin {
-                // Contact position on plane surface (project corner onto plane)
-                // This is consistent with sphere-plane which places contact at surface
-                let contact_pos = lowest_corner - plane_normal * dist;
+                // Contact position: midpoint between box corner and plane surface.
+                // box_surface = lowest_corner (corner IS on the surface)
+                // plane_surface = lowest_corner + normal * depth
+                // midpoint = lowest_corner + normal * depth / 2
+                let contact_pos = lowest_corner + plane_normal * (depth / 2.0);
                 Some(make_contact_from_geoms(
                     model,
                     contact_pos,
@@ -157,7 +162,11 @@ pub fn collide_with_plane(
             let penetration = radius - min_dist;
 
             if penetration > -margin {
-                let contact_pos = closest_end - plane_normal * min_dist;
+                // Contact position: midpoint between capsule surface and plane surface.
+                // capsule_surface = closest_end - normal * radius
+                // plane_surface   = closest_end - normal * min_dist
+                // midpoint = closest_end - normal * midpoint(radius, min_dist)
+                let contact_pos = closest_end - plane_normal * f64::midpoint(radius, min_dist);
                 Some(make_contact_from_geoms(
                     model,
                     contact_pos,
@@ -318,8 +327,11 @@ fn collide_cylinder_plane_impl(
         return None;
     }
 
-    // Contact point is on the plane surface
-    let contact_pos = deepest_point + plane_normal * depth;
+    // Contact position: midpoint between cylinder surface and plane surface.
+    // cylinder_surface = deepest_point (already on cylinder surface)
+    // plane_surface = deepest_point + normal * depth
+    // midpoint = deepest_point + normal * depth / 2
+    let contact_pos = deepest_point + plane_normal * (depth / 2.0);
 
     Some(make_contact_from_geoms(
         model,
@@ -409,8 +421,11 @@ fn collide_ellipsoid_plane_impl(
         return None;
     }
 
-    // Contact point is on plane surface
-    let contact_pos = world_support + plane_normal * depth;
+    // Contact position: midpoint between ellipsoid surface and plane surface.
+    // ellipsoid_surface = world_support (already on ellipsoid surface)
+    // plane_surface = world_support + normal * depth
+    // midpoint = world_support + normal * depth / 2
+    let contact_pos = world_support + plane_normal * (depth / 2.0);
 
     Some(make_contact_from_geoms(
         model,

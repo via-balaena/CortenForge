@@ -28,8 +28,8 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | [future_work_10g.md](./future_work_10g.md) | 6. Actuator & Dynamics | DT-56 – DT-61, DT-107, DT-108, DT-110, DT-111 – DT-116 | 15 | 6 | 6 | 3 |
 | [future_work_10h.md](./future_work_10h.md) | 7. Sensor Gaps ✅ | ~~DT-62~~ – ~~DT-64~~, DT-65, ~~DT-102~~, ~~DT-103~~ (done), ~~DT-109~~ — all core done (Phase 6). DT-65 deferred post-v1.0. | 7 | 1 | 4 | 2 |
 | [future_work_10i.md](./future_work_10i.md) | 8. Flex / Deformable Body | DT-66 – DT-73, DT-85 – DT-90, DT-146 – DT-148 | 17 | 8 | 4 | 5 |
-| [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92, ~~DT-93~~ (subsumed by §41), DT-96 – DT-98 | 16 | 6 | 4 | 6 |
-| **Total** | | | **118** | **38** | **51** | **29** |
+| [future_work_10j.md](./future_work_10j.md) | 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92, ~~DT-93~~ (subsumed by §41), DT-96 – DT-98, DT-160 | 17 | 7 | 4 | 6 |
+| **Total** | | | **119** | **39** | **51** | **29** |
 
 **Priority breakdown:** 24 Medium, 71 Low. No High — these are all sub-items
 within completed tasks, not critical gaps.

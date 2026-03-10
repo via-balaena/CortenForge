@@ -1,21 +1,17 @@
 //! DT-39: Body-weight diagonal approximation tests.
 //!
 //! Validates that `compute_invweight0()` correctly computes:
-//! - `body_invweight0[b] = [1/subtree_mass, 1/subtree_inertia_trace]`
-//! - `dof_invweight0[d]` selects translational or rotational based on joint type
-//! - `tendon_invweight0[t] = Σ(coef² * dof_invweight0[dof])` for fixed tendons
+//! - `body_invweight0[b]` = operational-space inverse inertia (J·M⁻¹·J^T diagonal avg)
+//! - `dof_invweight0[d]` = M⁻¹ diagonal subblock for each joint's DOFs
+//! - `tendon_invweight0[t]` = Σ(coef² · dof_invweight0[dof]) for fixed tendons
 //!
-//! Also validates that `diagapprox_bodyweight` mode produces reasonable
-//! approximations compared to the exact M⁻¹ solve.
-//!
-//! MuJoCo ref: `setInertia()` in `engine_setconst.c`, `mj_diagApprox()` in
-//! `engine_core_constraint.c`.
+//! MuJoCo ref: `setInertia()` / `set0()` in `engine_setconst.c`.
 
 use approx::assert_relative_eq;
 use sim_mjcf::load_model;
 
 // ============================================================================
-// Test 1: body_invweight0 — single body
+// Test 1: body_invweight0 — single hinge body
 // ============================================================================
 
 #[test]
@@ -33,34 +29,32 @@ fn invweight0_single_body() {
     "#;
     let model = load_model(mjcf).expect("should load");
 
-    // World body (index 0): subtreemass includes all children
-    assert!(
-        model.body_invweight0[0][0] > 0.0,
-        "world translational invweight should be > 0"
-    );
-    assert!(
-        model.body_invweight0[0][1] > 0.0,
-        "world rotational invweight should be > 0"
-    );
+    // World body: always [0, 0] (MuJoCo convention)
+    assert_eq!(model.body_invweight0[0], [0.0, 0.0]);
 
-    // Body 1: mass=2.0, subtreemass=2.0 (no children)
-    // invweight0[1][0] = 1/2.0 = 0.5
-    assert_relative_eq!(model.body_invweight0[1][0], 0.5, epsilon = 1e-6);
+    // Body 1 has a single hinge joint (axis=y). The 6×6 operational-space
+    // inverse inertia J·M⁻¹·J^T at COM has only a single nonzero entry
+    // in the rotational block (the y-rotation diagonal = 1/I_yy).
+    // Average of 3×3 rotational diagonal = (0 + 1/I_yy + 0) / 3 = I_yy^{-1}/3.
+    // Average of 3×3 translational diagonal = 0 (hinge doesn't translate).
+    // MuJoCo fallback: if translational < MIN_VAL, copy rotational.
+    let iyy = model.body_inertia[1].y;
+    let rot = 1.0 / (3.0 * iyy);
+    // Translational gets fallback copy from rotational
+    assert_relative_eq!(model.body_invweight0[1][0], rot, epsilon = 1e-6);
+    assert_relative_eq!(model.body_invweight0[1][1], rot, epsilon = 1e-6);
 
-    // Body 1 inertia trace: for a uniform box 0.2×0.2×0.2, mass=2.0:
-    // Ix = m/12 * (h² + d²) = 2/12 * (0.04 + 0.04) = 0.01333...
-    // Iy = Iz = same for a cube → trace = 3 * 0.01333... = 0.04
-    // invweight0[1][1] = 1/0.04 = 25.0
-    let inertia_trace = model.body_inertia[1].x + model.body_inertia[1].y + model.body_inertia[1].z;
-    assert_relative_eq!(
-        model.body_invweight0[1][1],
-        1.0 / inertia_trace,
-        epsilon = 1e-6
-    );
+    // Verify the rotational component relates to 1/(3*I_yy) for a cube
+    // I_yy = m/12*(w²+d²) = 2/12*(0.04+0.04) = 0.01333...
+    assert_relative_eq!(iyy, 2.0 / 12.0 * 0.08, epsilon = 1e-6);
+
+    // Also verify subtree mass is still computed correctly (used elsewhere)
+    assert_relative_eq!(model.body_subtreemass[1], 2.0, epsilon = 1e-10);
+    assert_relative_eq!(model.body_subtreemass[0], 2.0, epsilon = 1e-10);
 }
 
 // ============================================================================
-// Test 2: body_invweight0 — chain with subtree accumulation
+// Test 2: body_invweight0 — chain uses M⁻¹ (NOT subtree accumulation)
 // ============================================================================
 
 #[test]
@@ -82,28 +76,26 @@ fn invweight0_chain_subtree_accumulation() {
     "#;
     let model = load_model(mjcf).expect("should load");
 
-    // Body 2 (leaf): subtreemass = 1.0
-    assert_relative_eq!(model.body_invweight0[2][0], 1.0 / 1.0, epsilon = 1e-6);
+    // World body: always [0, 0]
+    assert_eq!(model.body_invweight0[0], [0.0, 0.0]);
 
-    // Body 1: subtreemass = 3.0 + 1.0 = 4.0
-    assert_relative_eq!(model.body_invweight0[1][0], 1.0 / 4.0, epsilon = 1e-6);
+    // Subtree mass still computed (used elsewhere)
+    assert_relative_eq!(model.body_subtreemass[1], 4.0, epsilon = 1e-10);
+    assert_relative_eq!(model.body_subtreemass[2], 1.0, epsilon = 1e-10);
 
-    // World body: subtreemass = total = 4.0
-    assert_relative_eq!(model.body_invweight0[0][0], 1.0 / 4.0, epsilon = 1e-6);
+    // Body invweight0 values should be positive for bodies with DOFs
+    assert!(model.body_invweight0[1][0] > 0.0);
+    assert!(model.body_invweight0[1][1] > 0.0);
+    assert!(model.body_invweight0[2][0] > 0.0);
+    assert!(model.body_invweight0[2][1] > 0.0);
 
-    // Subtree inertia also accumulates
-    let trace1 = model.body_inertia[1].x + model.body_inertia[1].y + model.body_inertia[1].z;
-    let trace2 = model.body_inertia[2].x + model.body_inertia[2].y + model.body_inertia[2].z;
-    // body 1 subtree inertia trace = trace1 + trace2
-    assert_relative_eq!(
-        model.body_invweight0[1][1],
-        1.0 / (trace1 + trace2),
-        epsilon = 1e-6
-    );
+    // Leaf body (body 2) should have higher invweight than parent (body 1)
+    // because it's the tip of the chain with less effective inertia
+    assert!(model.body_invweight0[2][1] > model.body_invweight0[1][1]);
 }
 
 // ============================================================================
-// Test 3: dof_invweight0 — translational vs rotational selection
+// Test 3: dof_invweight0 — M⁻¹ diagonal for hinge and slide
 // ============================================================================
 
 #[test]
@@ -125,21 +117,22 @@ fn dof_invweight0_joint_type_dispatch() {
     "#;
     let model = load_model(mjcf).expect("should load");
 
-    // Slide joint (translational DOF): should use body_invweight0[body][0]
+    // Slide joint: dof_invweight0 = M⁻¹[dof,dof] = 1/mass (for decoupled body)
     let slide_jnt: usize = model
         .jnt_name
         .iter()
         .position(|n| n.as_deref() == Some("J_slide"))
         .unwrap();
     let slide_dof = model.jnt_dof_adr[slide_jnt];
-    let slide_body = model.dof_body[slide_dof];
-    assert_relative_eq!(
-        model.dof_invweight0[slide_dof],
-        model.body_invweight0[slide_body][0], // translational
-        epsilon = 1e-12
-    );
+    // For a single slide joint body with mass=2: M[0,0] = mass, M⁻¹[0,0] = 1/mass = 0.5
+    assert_relative_eq!(model.dof_invweight0[slide_dof], 0.5, epsilon = 1e-6);
 
-    // Hinge joint (rotational DOF): should use body_invweight0[body][1]
+    // Slide-only body: body_invweight0 = [1/mass, 0] (MuJoCo body_simple==2)
+    let slide_body = model.dof_body[slide_dof];
+    assert_relative_eq!(model.body_invweight0[slide_body][0], 0.5, epsilon = 1e-6);
+    assert_eq!(model.body_invweight0[slide_body][1], 0.0);
+
+    // Hinge joint: dof_invweight0 = M⁻¹[dof,dof] = 1/I_yy (for decoupled body)
     let hinge_jnt: usize = model
         .jnt_name
         .iter()
@@ -147,11 +140,8 @@ fn dof_invweight0_joint_type_dispatch() {
         .unwrap();
     let hinge_dof = model.jnt_dof_adr[hinge_jnt];
     let hinge_body = model.dof_body[hinge_dof];
-    assert_relative_eq!(
-        model.dof_invweight0[hinge_dof],
-        model.body_invweight0[hinge_body][1], // rotational
-        epsilon = 1e-12
-    );
+    let iyy = model.body_inertia[hinge_body].y;
+    assert_relative_eq!(model.dof_invweight0[hinge_dof], 1.0 / iyy, epsilon = 1e-6);
 }
 
 // ============================================================================
@@ -176,21 +166,39 @@ fn dof_invweight0_free_joint_mixed() {
     let body_id = 1usize;
     let dof_adr = model.jnt_dof_adr[0];
 
-    // Free joint: DOFs 0,1,2 = translational, DOFs 3,4,5 = rotational
+    // Free joint: DOFs 0,1,2 = translational (avg of M⁻¹ diagonal = 1/mass)
+    let mass = model.body_mass[body_id];
     for i in 0..3 {
         assert_relative_eq!(
             model.dof_invweight0[dof_adr + i],
-            model.body_invweight0[body_id][0], // translational
-            epsilon = 1e-12
+            1.0 / mass,
+            epsilon = 1e-6
         );
     }
+
+    // Free joint: DOFs 3,4,5 = rotational (avg of M⁻¹ diagonal)
+    // For a uniform sphere, all principal moments are equal: I = 2/5*m*r²
+    let inertia = model.body_inertia[body_id];
+    let avg_inv_inertia = (1.0 / inertia.x + 1.0 / inertia.y + 1.0 / inertia.z) / 3.0;
     for i in 3..6 {
         assert_relative_eq!(
             model.dof_invweight0[dof_adr + i],
-            model.body_invweight0[body_id][1], // rotational
-            epsilon = 1e-12
+            avg_inv_inertia,
+            epsilon = 1e-6
         );
     }
+
+    // body_invweight0 for free body: translational = 1/mass, rotational = avg 1/I
+    assert_relative_eq!(
+        model.body_invweight0[body_id][0],
+        1.0 / mass,
+        epsilon = 1e-6
+    );
+    assert_relative_eq!(
+        model.body_invweight0[body_id][1],
+        avg_inv_inertia,
+        epsilon = 1e-6
+    );
 }
 
 // ============================================================================
@@ -257,8 +265,9 @@ fn diagapprox_bodyweight_mode_produces_values() {
         </worldbody>
     </mujoco>
     "#;
-    let mut model = load_model(mjcf).expect("should load");
-    model.diagapprox_bodyweight = true; // Enable bodyweight mode
+    let model = load_model(mjcf).expect("should load");
+    // MJCF default is now bodyweight (matching MuJoCo)
+    assert!(model.diagapprox_bodyweight);
     let mut data = model.make_data();
 
     // Put joint at limit to trigger a constraint row
@@ -300,18 +309,19 @@ fn diagapprox_bodyweight_vs_exact_order_of_magnitude() {
     </mujoco>
     "#;
 
-    // Exact mode
-    let model_exact = load_model(mjcf).expect("should load");
-    let mut data_exact = model_exact.make_data();
-    data_exact.qpos[model_exact.jnt_qpos_adr[0]] = -1.5;
-    data_exact.forward(&model_exact).expect("forward failed");
-
-    // Bodyweight mode
-    let mut model_bw = load_model(mjcf).expect("should load");
-    model_bw.diagapprox_bodyweight = true;
+    // Bodyweight mode (now the default)
+    let model_bw = load_model(mjcf).expect("should load");
+    assert!(model_bw.diagapprox_bodyweight);
     let mut data_bw = model_bw.make_data();
     data_bw.qpos[model_bw.jnt_qpos_adr[0]] = -1.5;
     data_bw.forward(&model_bw).expect("forward failed");
+
+    // Exact mode (override)
+    let mut model_exact = load_model(mjcf).expect("should load");
+    model_exact.diagapprox_bodyweight = false;
+    let mut data_exact = model_exact.make_data();
+    data_exact.qpos[model_exact.jnt_qpos_adr[0]] = -1.5;
+    data_exact.forward(&model_exact).expect("forward failed");
 
     // Both should have the same number of constraint rows
     assert_eq!(
@@ -337,7 +347,7 @@ fn diagapprox_bodyweight_vs_exact_order_of_magnitude() {
 }
 
 // ============================================================================
-// Test 8: default mode is exact (backward compatibility)
+// Test 8: MJCF default is bodyweight (matching MuJoCo)
 // ============================================================================
 
 #[test]
@@ -355,7 +365,7 @@ fn diagapprox_default_is_exact() {
     "#;
     let model = load_model(mjcf).expect("should load");
     assert!(
-        !model.diagapprox_bodyweight,
-        "default diagapprox_bodyweight should be false"
+        model.diagapprox_bodyweight,
+        "MJCF default diagapprox_bodyweight should be true (matching MuJoCo)"
     );
 }

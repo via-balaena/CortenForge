@@ -261,14 +261,10 @@ fn dt25_flex_frictionless_contact_dim1() {
 
 #[test]
 fn dt25_exact_diag_approx_handles_flex_asymmetric_jacobian() {
-    // When diagapprox_bodyweight is false (default), the exact diagonal
-    // computation (J · M⁻¹ · J^T) should produce valid positive values
-    // even with asymmetric flex-rigid Jacobians.
-    let model = load_model(flex_cloth_friction_mjcf()).expect("should load");
-    assert!(
-        !model.diagapprox_bodyweight,
-        "default should be exact diagonal (not bodyweight)"
-    );
+    // Force exact diagonal mode and verify (J · M⁻¹ · J^T) produces
+    // valid positive values even with asymmetric flex-rigid Jacobians.
+    let mut model = load_model(flex_cloth_friction_mjcf()).expect("should load");
+    model.diagapprox_bodyweight = false; // Force exact mode for this test
 
     let mut data = model.make_data();
 

@@ -406,7 +406,7 @@ impl ModelBuilder {
             ls_tolerance: self.ls_tolerance,
             noslip_iterations: self.noslip_iterations,
             noslip_tolerance: self.noslip_tolerance,
-            diagapprox_bodyweight: false, // Default: exact M⁻¹ solve
+            diagapprox_bodyweight: true, // MuJoCo uses bodyweight diagApprox
             disableflags: self.disableflags,
             enableflags: self.enableflags,
             disableactuator: self.disableactuator,

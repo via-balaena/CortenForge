@@ -14,6 +14,9 @@ use super::model::Model;
 // Types from dynamics module (Phase 7 extraction)
 use crate::dynamics::SpatialVector;
 use crate::dynamics::crba::{DEFAULT_MASS_FALLBACK, mj_crba};
+use crate::dynamics::factor::mj_factor_sparse;
+use crate::jacobian::mj_jac_body_com;
+use crate::linalg::mj_solve_sparse_batch;
 
 use super::data::Data;
 use crate::forward::mj_fwd_position;
@@ -888,59 +891,166 @@ impl Model {
     ///
     /// MuJoCo ref: `setInertia()` in `engine_setconst.c`.
     ///
-    /// - `body_invweight0[b][0]` = 1 / (subtree mass at body b)
-    /// - `body_invweight0[b][1]` = 1 / (subtree rotational inertia trace at body b)
-    /// - `dof_invweight0[d]` = translational or rotational component based on joint type
-    /// - `tendon_invweight0[t]` = Σ(coef² * dof_invweight0\[dof\]) for fixed tendons
+    /// - `body_invweight0[b]` = operational-space inverse inertia at body COM:
+    ///   `[0]` = avg translational diagonal of `J·M⁻¹·J^T` (6×6),
+    ///   `[1]` = avg rotational diagonal
+    /// - `dof_invweight0[d]` = avg diagonal of `M⁻¹` subblock for that joint's DOFs
+    /// - `tendon_invweight0[t]` = Σ(coef² · dof_invweight0\[dof\]) for fixed tendons
     ///
-    /// Must be called after body_subtreemass, body_inertia, dof_body, dof_jnt,
-    /// jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
+    /// Must be called after `compute_qld_csr_metadata()`, body_mass, body_inertia,
+    /// dof_body, dof_jnt, jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
     pub fn compute_invweight0(&mut self) {
         use crate::types::{TendonType, WrapType};
         const MIN_VAL: f64 = 1e-15; // mjMINVAL
 
-        // --- body_invweight0 ---
-        // Compute subtree mass and inertia trace via bottom-up accumulation.
-        // This also populates body_subtreemass for use elsewhere.
+        // --- Subtree mass (still needed for body_subtreemass field used elsewhere) ---
         let mut subtree_mass = self.body_mass.clone();
-        let mut subtree_inertia_trace: Vec<f64> = self
-            .body_inertia
-            .iter()
-            .map(|inertia| inertia.x + inertia.y + inertia.z)
-            .collect();
         for b in (1..self.nbody).rev() {
             let parent = self.body_parent[b];
             subtree_mass[parent] += subtree_mass[b];
-            subtree_inertia_trace[parent] += subtree_inertia_trace[b];
         }
         self.body_subtreemass = subtree_mass;
 
-        self.body_invweight0 = self
-            .body_subtreemass
-            .iter()
-            .zip(subtree_inertia_trace.iter())
-            .map(|(&mass, &inertia)| [1.0 / mass.max(MIN_VAL), 1.0 / inertia.max(MIN_VAL)])
+        // --- Initialize invweight arrays (world body and static bodies stay [0,0]) ---
+        self.body_invweight0 = vec![[0.0; 2]; self.nbody];
+        self.dof_invweight0 = vec![0.0; self.nv];
+
+        if self.nv == 0 {
+            // No DOFs: all bodies are static, invweight stays zero.
+            self.tendon_invweight0 = vec![0.0; self.ntendon];
+            return;
+        }
+
+        // --- MuJoCo algorithm: invweight via M⁻¹ at qpos0 ---
+        // Create temporary Data, run FK + CRBA + factor to get factored M.
+        let mut data = self.make_data();
+        mj_fwd_position(self, &mut data);
+        mj_crba(self, &mut data);
+        mj_factor_sparse(self, &mut data);
+        // Clone CSR metadata to avoid borrow conflict (self.qld_csr() borrows self
+        // immutably, but we need to mutate self.body_invweight0 / self.dof_invweight0).
+        let rowadr = self.qLD_rowadr.clone();
+        let rownnz = self.qLD_rownnz.clone();
+        let colind = self.qLD_colind.clone();
+
+        // --- Detect slide-only bodies (MuJoCo's body_simple == 2) ---
+        // Bodies where ALL joints are slide type get the simple formula: [1/mass, 0]
+        // instead of the general J·M⁻¹·J^T approach which averages the 3×3 diagonal
+        // and incorrectly divides the single-axis contribution by 3.
+        let body_slide_only: Vec<bool> = (0..self.nbody)
+            .map(|b| {
+                if b == 0 {
+                    return false;
+                }
+                let joints_for_body: Vec<_> = (0..self.njnt)
+                    .filter(|&jnt_id| self.jnt_body[jnt_id] == b)
+                    .collect();
+                !joints_for_body.is_empty()
+                    && joints_for_body
+                        .iter()
+                        .all(|&jnt_id| self.jnt_type[jnt_id] == MjJointType::Slide)
+            })
             .collect();
 
-        // --- dof_invweight0 ---
-        self.dof_invweight0 = vec![0.0; self.nv];
-        for dof in 0..self.nv {
-            let body = self.dof_body[dof];
-            let jnt_id = self.dof_jnt[dof];
-            let jnt_type = self.jnt_type[jnt_id];
-            let offset = dof - self.jnt_dof_adr[jnt_id];
+        // --- body_invweight0: avg diagonal of J_com · M⁻¹ · J_com^T (6×6) ---
+        for (i, &is_slide_only) in body_slide_only.iter().enumerate().skip(1) {
+            // body_simple == 2: slider-only body → simple formula
+            if is_slide_only {
+                self.body_invweight0[i] = [1.0 / self.body_mass[i].max(MIN_VAL), 0.0];
+                continue;
+            }
 
-            let is_translational = match jnt_type {
-                MjJointType::Slide => true,
-                MjJointType::Hinge | MjJointType::Ball => false,
-                MjJointType::Free => offset < 3, // DOFs 0,1,2 are translational
-            };
+            // 6×nv Jacobian at body COM. Our layout: rows 0-2 = angular, rows 3-5 = linear.
+            let jac = mj_jac_body_com(self, &data, i);
 
-            self.dof_invweight0[dof] = if is_translational {
-                self.body_invweight0[body][0] // translational
+            // Check for static body (all-zero Jacobian means no DOFs in chain)
+            let jac_norm_sq: f64 = jac.iter().map(|&v| v * v).sum();
+            if jac_norm_sq < MIN_VAL {
+                continue; // stays [0, 0]
+            }
+
+            // Solve M · W = J^T for W = M⁻¹ · J^T (nv × 6)
+            let mut jt = jac.transpose();
+            mj_solve_sparse_batch(
+                &rowadr,
+                &rownnz,
+                &colind,
+                &data.qLD_data,
+                &data.qLD_diag_inv,
+                &mut jt,
+            );
+
+            // A = J · W = J · M⁻¹ · J^T (6×6)
+            let a = &jac * &jt;
+
+            // Our layout: rows 3-5 = linear (translational), rows 0-2 = angular (rotational)
+            let tran = (a[(3, 3)] + a[(4, 4)] + a[(5, 5)]) / 3.0;
+            let rot = (a[(0, 0)] + a[(1, 1)] + a[(2, 2)]) / 3.0;
+
+            // Fallback for degenerate cases (MuJoCo: if one is near-zero, copy the other)
+            self.body_invweight0[i] = if tran < MIN_VAL && rot > MIN_VAL {
+                [rot, rot]
+            } else if rot < MIN_VAL && tran > MIN_VAL {
+                [tran, tran]
             } else {
-                self.body_invweight0[body][1] // rotational
+                [tran, rot]
             };
+        }
+
+        // --- dof_invweight0: avg diagonal of M⁻¹ subblock per joint ---
+        for jnt_id in 0..self.njnt {
+            let dof_adr = self.jnt_dof_adr[jnt_id];
+            let jnt_type = self.jnt_type[jnt_id];
+
+            let dnum = match jnt_type {
+                MjJointType::Free => 6,
+                MjJointType::Ball => 3,
+                _ => 1, // Hinge or Slide
+            };
+
+            // Build selector RHS: column k has 1.0 at row dof_adr+k
+            let mut rhs = DMatrix::zeros(self.nv, dnum);
+            for j in 0..dnum {
+                rhs[(dof_adr + j, j)] = 1.0;
+            }
+
+            // Solve M · W = selector → W columns are M⁻¹ columns at DOF positions
+            mj_solve_sparse_batch(
+                &rowadr,
+                &rownnz,
+                &colind,
+                &data.qLD_data,
+                &data.qLD_diag_inv,
+                &mut rhs,
+            );
+
+            // Extract diagonal: rhs[(dof_adr+k, k)] = M⁻¹[dof_adr+k, dof_adr+k]
+            match jnt_type {
+                MjJointType::Free => {
+                    let tran =
+                        (rhs[(dof_adr, 0)] + rhs[(dof_adr + 1, 1)] + rhs[(dof_adr + 2, 2)]) / 3.0;
+                    let rot =
+                        (rhs[(dof_adr + 3, 3)] + rhs[(dof_adr + 4, 4)] + rhs[(dof_adr + 5, 5)])
+                            / 3.0;
+                    for j in 0..3 {
+                        self.dof_invweight0[dof_adr + j] = tran;
+                    }
+                    for j in 3..6 {
+                        self.dof_invweight0[dof_adr + j] = rot;
+                    }
+                }
+                MjJointType::Ball => {
+                    let avg =
+                        (rhs[(dof_adr, 0)] + rhs[(dof_adr + 1, 1)] + rhs[(dof_adr + 2, 2)]) / 3.0;
+                    for j in 0..3 {
+                        self.dof_invweight0[dof_adr + j] = avg;
+                    }
+                }
+                _ => {
+                    // Hinge or Slide: single scalar M⁻¹[id,id]
+                    self.dof_invweight0[dof_adr] = rhs[(dof_adr, 0)];
+                }
+            }
         }
 
         // --- tendon_invweight0 ---

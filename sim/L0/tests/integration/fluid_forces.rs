@@ -482,7 +482,7 @@ fn t12_body_dispatch_none_geom_skipped() {
 #[test]
 fn t13_inertia_box_non_spherical() {
     let (_model, data) = setup(MODEL_I, &[0.0, 0.0, 0.0, 0.0, 0.0, -1.0]);
-    let expected = [0.0, 0.0, 0.0, 0.0, 0.0, 1.748545218352823e-4];
+    let expected = [0.0, 0.0, 0.0, 0.0, 0.0, 1.742999957254395e-4];
     assert_qfrc_fluid(&data, &expected, FORCE_TOL);
 }
 

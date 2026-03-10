@@ -673,8 +673,12 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 // These are set ONCE before the loop, reused for ALL facet pairs.
                 let pos = -contact.depth;
 
-                // Pyramidal facets combine normal + friction → use translational weight
-                let bw_py = bw_contact[0];
+                // Pyramidal facets combine normal + mu·friction → invweight includes
+                // both normal (1²) and friction (mu²) components, using translational
+                // body weight. After R-scaling (Rpy = 2·mu²·R_base), the effective
+                // diagApprox becomes 2·mu²·(1+mu²)·w_tran, matching MuJoCo.
+                let mu0 = contact.mu[0];
+                let bw_py = (1.0 + mu0 * mu0) * bw_contact[0];
 
                 for d in 1..dim {
                     let mu_d = contact.mu[d - 1]; // friction coefficient for direction d

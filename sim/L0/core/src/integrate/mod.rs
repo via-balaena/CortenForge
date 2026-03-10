@@ -11,9 +11,14 @@ pub(crate) mod euler;
 pub(crate) mod implicit;
 pub(crate) mod rk4;
 
+use crate::dynamics::factor::mj_factor_sparse;
 use crate::forward::mj_next_activation;
+use crate::linalg::mj_solve_sparse;
 use crate::types::flags::{actuator_disabled, disabled};
-use crate::types::{DISABLE_ACTUATION, Data, ENABLE_SLEEP, Integrator, Model};
+use crate::types::{
+    DISABLE_ACTUATION, DISABLE_DAMPER, DISABLE_EULERDAMP, Data, ENABLE_SLEEP, Integrator, Model,
+};
+use nalgebra::DVector;
 
 use euler::{mj_integrate_pos, mj_normalize_quat};
 
@@ -56,7 +61,99 @@ impl Data {
         // For Euler and new implicit variants, update velocity using computed acceleration.
         // For legacy ImplicitSpringDamper, velocity was already updated in mj_fwd_acceleration_implicit.
         match model.integrator {
-            Integrator::Euler | Integrator::ImplicitFast | Integrator::Implicit => {
+            Integrator::Euler => {
+                // Eulerdamp: implicit damping via full matrix solve.
+                //
+                // MuJoCo 3.x solves (M + h·D)·qacc_new = F_total, then qvel += h·qacc_new.
+                // This properly handles off-diagonal coupling in the mass matrix for
+                // multi-DOF systems (chains, branching trees). A per-DOF approximation
+                // only works for 1-DOF systems where M is diagonal.
+                //
+                // Algorithm (matches mj_EulerSkip in engine_forward.c):
+                //   1. Copy M → qH, add h·damp[i] to diagonal
+                //   2. Factorize qH via LDL'
+                //   3. rhs = qfrc_smooth + qfrc_constraint (total force)
+                //   4. Solve qH · qacc_new = rhs
+                //   5. qvel += h · qacc_new
+                //
+                // Gated on: !disabled(DISABLE_EULERDAMP) && !disabled(DISABLE_DAMPER).
+                let eulerdamp = model.disableflags & DISABLE_EULERDAMP == 0
+                    && model.disableflags & DISABLE_DAMPER == 0;
+
+                // Check if any DOF has damping (avoid expensive refactorize for undamped models)
+                let has_damping =
+                    eulerdamp && (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
+
+                if has_damping {
+                    // Save original factorization (restored after solve)
+                    let saved_qld = self.qLD_data.clone();
+                    let saved_inv = self.qLD_diag_inv.clone();
+
+                    // Add h·damp to mass matrix diagonal, then refactorize
+                    for i in 0..model.nv {
+                        let d = model.implicit_damping[i];
+                        if d > 0.0 {
+                            self.qM[(i, i)] += h * d;
+                        }
+                    }
+                    mj_factor_sparse(model, self);
+
+                    // RHS = total force = qfrc_smooth + qfrc_constraint
+                    let mut rhs = DVector::zeros(model.nv);
+                    let nv = if use_dof_ind { self.nv_awake } else { model.nv };
+                    for idx in 0..nv {
+                        let i = if use_dof_ind {
+                            self.dof_awake_ind[idx]
+                        } else {
+                            idx
+                        };
+                        rhs[i] = self.qfrc_smooth[i] + self.qfrc_constraint[i];
+                    }
+
+                    // Solve: (M + h·D) · qacc_new = rhs
+                    let (rowadr, rownnz, colind) = model.qld_csr();
+                    mj_solve_sparse(
+                        rowadr,
+                        rownnz,
+                        colind,
+                        &self.qLD_data,
+                        &self.qLD_diag_inv,
+                        &mut rhs,
+                    );
+
+                    // qvel += h · qacc_new
+                    for idx in 0..nv {
+                        let i = if use_dof_ind {
+                            self.dof_awake_ind[idx]
+                        } else {
+                            idx
+                        };
+                        self.qvel[i] += h * rhs[i];
+                    }
+
+                    // Restore original mass matrix diagonal and factorization
+                    for i in 0..model.nv {
+                        let d = model.implicit_damping[i];
+                        if d > 0.0 {
+                            self.qM[(i, i)] -= h * d;
+                        }
+                    }
+                    self.qLD_data = saved_qld;
+                    self.qLD_diag_inv = saved_inv;
+                } else {
+                    // No damping: simple qvel += h · qacc
+                    let nv = if use_dof_ind { self.nv_awake } else { model.nv };
+                    for idx in 0..nv {
+                        let i = if use_dof_ind {
+                            self.dof_awake_ind[idx]
+                        } else {
+                            idx
+                        };
+                        self.qvel[i] += self.qacc[i] * h;
+                    }
+                }
+            }
+            Integrator::ImplicitFast | Integrator::Implicit => {
                 let nv = if use_dof_ind { self.nv_awake } else { model.nv };
                 for idx in 0..nv {
                     let i = if use_dof_ind {

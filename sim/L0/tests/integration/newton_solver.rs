@@ -270,9 +270,10 @@ fn test_newton_energy_stability() {
         final_energy.is_finite(),
         "Energy should stay finite, got {final_energy}"
     );
-    // With damping, energy should decrease or stay bounded
+    // With damping, energy should decrease or stay bounded.
+    // Use absolute tolerance — multiplying negative energy by a factor gives wrong direction.
     assert!(
-        final_energy <= initial_energy * 1.1,
+        final_energy <= initial_energy + initial_energy.abs() * 0.1,
         "Energy should not increase significantly: initial={initial_energy:.4}, final={final_energy:.4}"
     );
 }

@@ -33,11 +33,9 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
         Integrator::ImplicitFast => mj_fwd_acceleration_implicitfast(model, data),
         Integrator::Implicit => mj_fwd_acceleration_implicit_full(model, data),
         Integrator::Euler | Integrator::RungeKutta4 => {
-            // S4.14: DISABLE_EULERDAMP guard site — MuJoCo's Euler applies
-            // optional implicit damping when both eulerdamp and damper are
-            // enabled. Our Euler currently uses explicit-only; when implicit
-            // Euler damping is added, gate it on:
-            //   !disabled(model, DISABLE_EULERDAMP) && !disabled(model, DISABLE_DAMPER)
+            // qacc is always computed explicitly for Euler/RK4.
+            // MuJoCo's eulerdamp is applied as a post-velocity correction in
+            // the Euler integration step (see integrate/mod.rs), not here.
             mj_fwd_acceleration_explicit(model, data);
             Ok(())
         }
@@ -553,8 +551,22 @@ pub fn mj_body_accumulators(model: &Model, data: &mut Data) {
     for body_id in 1..model.nbody {
         let parent_id = model.body_parent[body_id];
 
-        // Start with parent's acceleration
-        let mut acc = data.cacc[parent_id];
+        // Start with parent's acceleration, transported from xpos[parent] to xpos[child].
+        // Spatial motion transport: angular unchanged, linear += alpha × r.
+        // Our joint_motion_subspace computes S with linear part at xpos[body], so
+        // cacc is stored at xpos[body]. We must transport when propagating.
+        let parent_cacc = data.cacc[parent_id];
+        let alpha_p = nalgebra::Vector3::new(parent_cacc[0], parent_cacc[1], parent_cacc[2]);
+        let a_p = nalgebra::Vector3::new(parent_cacc[3], parent_cacc[4], parent_cacc[5]);
+        let r = data.xpos[body_id] - data.xpos[parent_id];
+        let a_transported = a_p + alpha_p.cross(&r);
+        let mut acc = SpatialVector::zeros();
+        acc[0] = alpha_p.x;
+        acc[1] = alpha_p.y;
+        acc[2] = alpha_p.z;
+        acc[3] = a_transported.x;
+        acc[4] = a_transported.y;
+        acc[5] = a_transported.z;
 
         // Add joint acceleration + Coriolis contribution
         let jnt_start = model.body_jnt_adr[body_id];

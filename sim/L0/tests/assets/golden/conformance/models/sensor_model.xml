@@ -1,0 +1,53 @@
+<mujoco model="sensor_model">
+  <!-- Canonical conformance model (f): sensor-rich model.
+       nv=2, nq=2, nsensor=8. Body with diverse sensors.
+
+       Pipeline stages exercised:
+       - FK: two-joint chain kinematics
+       - Sensors: position-stage, velocity-stage, and acceleration-stage sensors
+       - CRBA/RNE: standard dynamics for velocity/acceleration sensors
+
+       qpos0 design: links are horizontal at qpos0=0 with mass offset from
+       joint axis. Body positions are non-zero in world frame, so position-
+       stage sensors (framepos, framequat) produce non-zero output from
+       FK alone. Gravity produces non-zero torques for acceleration sensors.
+
+       Sensor inventory (8 sensors):
+       1. jointpos (joint1) — position stage
+       2. jointvel (joint1) — velocity stage
+       3. framepos (tip site) — position stage, non-zero at qpos0
+       4. framequat (tip site) — position stage
+       5. framelinvel (tip site) — velocity stage
+       6. subtreecom (upper body) — position stage, non-zero at qpos0
+       7. accelerometer (tip site) — acceleration stage
+       8. gyro (tip site) — velocity stage
+  -->
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <body name="upper" pos="0 0 1.5">
+      <joint name="joint1" type="hinge" axis="0 1 0"
+             stiffness="5" springref="0.2" damping="0.3"/>
+      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.3 0 0"
+            size="0.02" mass="1.0"/>
+
+      <body name="lower" pos="0.3 0 0">
+        <joint name="joint2" type="hinge" axis="0 1 0"
+               damping="0.2"/>
+        <geom name="lower_geom" type="capsule" fromto="0 0 0 0.25 0 0"
+              size="0.015" mass="0.5"/>
+        <site name="tip" pos="0.25 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <jointpos name="joint1_pos" joint="joint1"/>
+    <jointvel name="joint1_vel" joint="joint1"/>
+    <framepos name="tip_pos" objtype="site" objname="tip"/>
+    <framequat name="tip_quat" objtype="site" objname="tip"/>
+    <framelinvel name="tip_linvel" objtype="site" objname="tip"/>
+    <subtreecom name="upper_com" body="upper"/>
+    <accelerometer name="tip_acc" site="tip"/>
+    <gyro name="tip_gyro" site="tip"/>
+  </sensor>
+</mujoco>

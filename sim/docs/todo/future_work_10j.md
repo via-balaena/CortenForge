@@ -4,7 +4,7 @@ Part of the [Deferred Item Tracker](./future_work_10b.md) — see that file for 
 
 ---
 
-## Group 9 — Misc Pipeline & API (16 items)
+## Group 9 — Misc Pipeline & API (17 items)
 
 **Spec approach:** ~~DT-74/75 need individual specs (T3 — Jacobian correctness bugs,
 need formula derivation)~~ **DONE** — both specced and implemented.
@@ -32,6 +32,7 @@ DT-59 (T2). The rest (DT-76/80/81/84/91/92) implement directly (T1). Totals:
 | DT-96 | §41 | Lazy energy evaluation (`flg_energypos`/`flg_energyvel`) — MuJoCo avoids redundant energy recomputation when a plugin or sensor already triggered it. Only matters once plugins or energy-dependent sensors exist. | Low | T1 |
 | DT-97 | §41 | Golden file generation for per-flag trajectory conformance (AC18). Generate `.npy` reference data from MuJoCo Python for all 25 flags. Required before v1.0 if not completed during §41 implementation. | Medium | T2 |
 | ~~DT-98~~ | §41 | ~~Remove `passive` backward-compatibility shim~~ **Retired** — `passive` dropped entirely in §41 S2a (pre-v1.0, no users to break). Silently ignored by parser, matching MuJoCo 3.3.6+ behavior. | — | — |
+| DT-160 | Phase 12 Spec A | Additional FK reference fields — `xmat` (nbody×9), `geom_xpos` (ngeom×3), `geom_xmat` (ngeom×9), `site_xpos` (nsite×3). Extend `gen_conformance_reference.py` to export these fields, then add Layer B tests. Session 4 only generated xpos/xquat/xipos; these secondary FK outputs were deferred. Conformance impact: strengthens FK coverage beyond primary body pose outputs. Deferred from Phase 12 Spec A Out of Scope. | Low | T1 |
 
 ---
 

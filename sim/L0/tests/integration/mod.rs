@@ -370,3 +370,10 @@ pub mod deformable_friction_dt25;
 /// margin/gap additivity, flex_rigid non-gating, multi-flex all-pairs,
 /// sentinel-safe downstream pipeline, self/flex-rigid regression.
 pub mod flex_flex_collision;
+
+// ============================================================================
+// Phase 12: Conformance Model Smoke Tests (temporary — validates D1 models)
+// ============================================================================
+
+/// Smoke test: verify all 8 conformance models parse and forward().
+pub mod smoke_conformance_models;

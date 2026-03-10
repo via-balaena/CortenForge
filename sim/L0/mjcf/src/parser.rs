@@ -16,9 +16,9 @@ fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
     if n > 1e-10 { v / n } else { Vector3::z() }
 }
 use crate::types::{
-    AngleUnit, FluidShape, InertiaFromGeom, MeshInertia, MjcfActuator, MjcfActuatorDefaults,
-    MjcfActuatorType, MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact,
-    MjcfContactExclude, MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality,
+    AngleUnit, EqualityKind, FluidShape, InertiaFromGeom, MeshInertia, MjcfActuator,
+    MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect,
+    MjcfContact, MjcfContactExclude, MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality,
     MjcfEqualityDefaults, MjcfFlag, MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
     MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
     MjcfJointEquality, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults, MjcfModel,
@@ -100,6 +100,24 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                     }
                     b"equality" => {
                         let eq = parse_equality(reader)?;
+                        // Offset order indices before merging (indices are relative
+                        // to the parsed block's vecs, but must reference positions
+                        // in the merged vecs).
+                        let co = model.equality.connects.len();
+                        let wo = model.equality.welds.len();
+                        let jo = model.equality.joints.len();
+                        let do_ = model.equality.distances.len();
+                        let to = model.equality.tendons.len();
+                        for &(kind, idx) in &eq.order {
+                            let offset_idx = match kind {
+                                EqualityKind::Connect => idx + co,
+                                EqualityKind::Weld => idx + wo,
+                                EqualityKind::Joint => idx + jo,
+                                EqualityKind::Distance => idx + do_,
+                                EqualityKind::Tendon => idx + to,
+                            };
+                            model.equality.order.push((kind, offset_idx));
+                        }
                         model.equality.connects.extend(eq.connects);
                         model.equality.welds.extend(eq.welds);
                         model.equality.joints.extend(eq.joints);
@@ -2455,28 +2473,38 @@ fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfEquality> {
                 match elem_name.as_slice() {
                     b"connect" => {
                         let connect = parse_connect_attrs(e)?;
+                        let idx = equality.connects.len();
                         equality.connects.push(connect);
+                        equality.order.push((EqualityKind::Connect, idx));
                         // Skip to closing tag
                         skip_element(reader, &elem_name)?;
                     }
                     b"weld" => {
                         let weld = parse_weld_attrs(e)?;
+                        let idx = equality.welds.len();
                         equality.welds.push(weld);
+                        equality.order.push((EqualityKind::Weld, idx));
                         skip_element(reader, &elem_name)?;
                     }
                     b"joint" => {
                         let joint_eq = parse_joint_equality_attrs(e)?;
+                        let idx = equality.joints.len();
                         equality.joints.push(joint_eq);
+                        equality.order.push((EqualityKind::Joint, idx));
                         skip_element(reader, &elem_name)?;
                     }
                     b"distance" => {
                         let distance = parse_distance_attrs(e)?;
+                        let idx = equality.distances.len();
                         equality.distances.push(distance);
+                        equality.order.push((EqualityKind::Distance, idx));
                         skip_element(reader, &elem_name)?;
                     }
                     b"tendon" => {
                         let ten_eq = parse_tendon_equality_attrs(e)?;
+                        let idx = equality.tendons.len();
                         equality.tendons.push(ten_eq);
+                        equality.order.push((EqualityKind::Tendon, idx));
                         skip_element(reader, &elem_name)?;
                     }
                     // Skip other equality constraint types (flex)
@@ -2487,23 +2515,33 @@ fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfEquality> {
                 match e.name().as_ref() {
                     b"connect" => {
                         let connect = parse_connect_attrs(e)?;
+                        let idx = equality.connects.len();
                         equality.connects.push(connect);
+                        equality.order.push((EqualityKind::Connect, idx));
                     }
                     b"weld" => {
                         let weld = parse_weld_attrs(e)?;
+                        let idx = equality.welds.len();
                         equality.welds.push(weld);
+                        equality.order.push((EqualityKind::Weld, idx));
                     }
                     b"joint" => {
                         let joint_eq = parse_joint_equality_attrs(e)?;
+                        let idx = equality.joints.len();
                         equality.joints.push(joint_eq);
+                        equality.order.push((EqualityKind::Joint, idx));
                     }
                     b"distance" => {
                         let distance = parse_distance_attrs(e)?;
+                        let idx = equality.distances.len();
                         equality.distances.push(distance);
+                        equality.order.push((EqualityKind::Distance, idx));
                     }
                     b"tendon" => {
                         let ten_eq = parse_tendon_equality_attrs(e)?;
+                        let idx = equality.tendons.len();
                         equality.tendons.push(ten_eq);
+                        equality.order.push((EqualityKind::Tendon, idx));
                     }
                     _ => {} // Ignore other self-closing equality constraint types
                 }

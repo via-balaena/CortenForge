@@ -1,0 +1,51 @@
+<mujoco model="equality_model">
+  <!-- Canonical conformance model (g): equality constraints.
+       nv=3, nq=3. Three hinge joints with weld + joint equality constraints.
+
+       Pipeline stages exercised:
+       - FK: three-joint chain
+       - Constraint: equality constraint assembly (efc_J, efc_b)
+       - Solver: constraint force computation (efc_force)
+       - CRBA/RNE: standard chain dynamics
+
+       qpos0 design: masses offset from axes produce non-zero gravity
+       torques. Equality constraints are active at qpos0 (weld tries to
+       lock joint3 to zero, joint equality couples joint1 and joint2).
+       Both constraints produce non-zero efc_J and solver forces.
+
+       Constraint inventory:
+       1. Joint equality: joint2 = 0.5 * joint1 (polycoef)
+       2. Weld equality: locks joint3 body relative to its parent
+  -->
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <body name="link1" pos="0 0 1.5">
+      <joint name="joint1" type="hinge" axis="0 1 0"
+             damping="0.3"/>
+      <geom name="link1_geom" type="capsule" fromto="0 0 0 0.25 0 0"
+            size="0.02" mass="1.0"/>
+
+      <body name="link2" pos="0.25 0 0">
+        <joint name="joint2" type="hinge" axis="0 1 0"
+               damping="0.2"/>
+        <geom name="link2_geom" type="capsule" fromto="0 0 0 0.2 0 0"
+              size="0.015" mass="0.5"/>
+
+        <body name="link3" pos="0.2 0 0">
+          <joint name="joint3" type="hinge" axis="0 1 0"
+                 damping="0.1"/>
+          <geom name="link3_geom" type="capsule" fromto="0 0 0 0.15 0 0"
+                size="0.01" mass="0.3"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <equality>
+    <joint name="joint_coupling" joint1="joint1" joint2="joint2"
+           polycoef="0 0.5 0 0 0"
+           solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2"/>
+    <weld name="lock_joint3" body1="link2" body2="link3"
+          solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2"/>
+  </equality>
+</mujoco>

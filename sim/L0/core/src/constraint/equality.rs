@@ -229,9 +229,10 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
     let nv = model.nv;
 
     let anchor = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
-    let target_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+    let relpose_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
         eq_data[3], eq_data[4], eq_data[5], eq_data[6],
     ));
+    let relpose_pos = Vector3::new(eq_data[7], eq_data[8], eq_data[9]);
 
     let p1 = data.xpos[body1];
     let r1 = data.xquat[body1];
@@ -241,55 +242,57 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
         (Vector3::zeros(), UnitQuaternion::identity())
     };
 
-    // Position error
-    let anchor_world = p1 + r1 * anchor;
-    let pos_error = anchor_world - p2;
+    // Constraint reference point on body1 (includes anchor + relpose offset).
+    // MuJoCo convention: cpos = pos1 + R1*(anchor + relpose_pos)
+    // At qpos0 with auto-relpose, this equals pos2, so error = 0.
+    let offset = anchor + relpose_pos;
+    let cpos = p1 + r1 * offset;
 
-    // Orientation error (axis-angle)
-    let target_r1 = r2 * target_quat;
-    let rot_error_quat = r1 * target_r1.inverse();
-    let rot_error = quaternion_to_axis_angle(&rot_error_quat);
+    // Position error: cpos - pos2 (zero at reference configuration)
+    let pos_error = cpos - p2;
+
+    // Orientation error (axis-angle), scaled by 0.5 (MuJoCo convention).
+    //
+    // MuJoCo scales weld rotation error and Jacobian by 0.5 to match the
+    // quaternion-to-angular-velocity relationship: dq/dt = 0.5 * omega * q.
+    // Error = (r1 * relpose) * r2^{-1} (rotation from body2 to target).
+    let target_r1 = r1 * relpose_quat;
+    let rot_error_quat = target_r1 * r2.inverse();
+    let rot_error = quaternion_to_axis_angle(&rot_error_quat) * 0.5;
 
     let mut j = DMatrix::zeros(6, nv);
 
-    // Rows 0-2: translational (same as connect)
+    // Rows 0-2: translational Jacobian.
+    // body1 point = cpos (the constraint reference point including offset).
+    // body2 point = pos2 (body origin).
     for row in 0..3 {
         let direction = Vector3::ith(row, 1.0);
-        add_body_point_jacobian_row(
-            &mut j,
-            row,
-            &direction,
-            body1,
-            anchor_world,
-            1.0,
-            model,
-            data,
-        );
+        add_body_point_jacobian_row(&mut j, row, &direction, body1, cpos, 1.0, model, data);
         add_body_point_jacobian_row(&mut j, row, &direction, body2, p2, -1.0, model, data);
     }
 
-    // Rows 3-5: rotational Jacobian
+    // Rows 3-5: rotational Jacobian, scaled by 0.5 (MuJoCo convention).
     for row in 0..3 {
         let direction = Vector3::ith(row, 1.0);
-        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body1, 1.0, model, data);
-        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body2, -1.0, model, data);
+        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body1, 0.5, model, data);
+        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body2, -0.5, model, data);
     }
 
-    // Velocities
+    // Velocities (also scaled by 0.5 for rotation)
     let (vel_error, ang_vel_error) = if body1 != 0 {
         let cvel1 = &data.cvel[body1];
         let omega1 = Vector3::new(cvel1[0], cvel1[1], cvel1[2]);
         let v1 = Vector3::new(cvel1[3], cvel1[4], cvel1[5]);
-        let r1_anchor = r1 * anchor;
-        let v_anchor = v1 + omega1.cross(&r1_anchor);
+        let r1_offset = r1 * offset;
+        let v_cpos = v1 + omega1.cross(&r1_offset);
 
         if body2 != 0 {
             let cvel2 = &data.cvel[body2];
             let omega2 = Vector3::new(cvel2[0], cvel2[1], cvel2[2]);
             let v2 = Vector3::new(cvel2[3], cvel2[4], cvel2[5]);
-            (v_anchor - v2, omega1 - omega2)
+            (v_cpos - v2, (omega1 - omega2) * 0.5)
         } else {
-            (v_anchor, omega1)
+            (v_cpos, omega1 * 0.5)
         }
     } else {
         (Vector3::zeros(), Vector3::zeros())
@@ -318,8 +321,9 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
 
 /// Extract joint equality constraint Jacobian (1 row).
 ///
-/// Two-joint: constraint is q2 − poly(q1) = 0, Jacobian has -poly'(q1) at dof1 and +1 at dof2.
-/// Single-joint: constraint is q1 − c0 = 0, Jacobian has +1 at dof1.
+/// MuJoCo convention: `joint1 = poly(joint2)`.
+/// Two-joint: constraint is `q1 − poly(q2) = 0`, Jacobian has +1 at dof1 and -poly'(q2) at dof2.
+/// Single-joint: constraint is `q1 − c0 = 0`, Jacobian has +1 at dof1.
 pub fn extract_joint_equality_jacobian(
     model: &Model,
     data: &Data,
@@ -341,28 +345,29 @@ pub fn extract_joint_equality_jacobian(
     let q1 = data.qpos[qpos1_adr];
     let qd1 = data.qvel[dof1_adr];
 
-    // poly(q1) = c0 + c1*q1 + c2*q1² + c3*q1³ + c4*q1⁴
-    let q2_target = c0 + c1 * q1 + c2 * q1 * q1 + c3 * q1 * q1 * q1 + c4 * q1 * q1 * q1 * q1;
-
-    // poly'(q1) = c1 + 2*c2*q1 + 3*c3*q1² + 4*c4*q1³ (§15, Round 4 Fix 6)
-    let dpoly_dq1 = c1 + 2.0 * c2 * q1 + 3.0 * c3 * q1 * q1 + 4.0 * c4 * q1 * q1 * q1;
-    let qd2_target = dpoly_dq1 * qd1;
-
     let mut j = DMatrix::zeros(1, nv);
 
     if joint2_id < model.njnt {
-        // Two-joint equality: constraint = q2 - poly(q1) = 0
+        // Two-joint equality: constraint = q1 - poly(q2) = 0
+        // MuJoCo convention: joint1 is the dependent joint, joint2 is independent.
         let qpos2_adr = model.jnt_qpos_adr[joint2_id];
         let dof2_adr = model.jnt_dof_adr[joint2_id];
         let q2 = data.qpos[qpos2_adr];
         let qd2 = data.qvel[dof2_adr];
 
-        let pos_error = q2 - q2_target;
-        let vel_error = qd2 - qd2_target;
+        // poly(q2) = c0 + c1*q2 + c2*q2² + c3*q2³ + c4*q2⁴
+        let q1_target = c0 + c1 * q2 + c2 * q2 * q2 + c3 * q2 * q2 * q2 + c4 * q2 * q2 * q2 * q2;
 
-        // Jacobian: d(q2 - poly(q1))/d_qvel = +1 at dof2, -dpoly/dq1 at dof1
-        j[(0, dof2_adr)] = 1.0;
-        j[(0, dof1_adr)] = -dpoly_dq1;
+        // poly'(q2) = c1 + 2*c2*q2 + 3*c3*q2² + 4*c4*q2³
+        let dpoly_dq2 = c1 + 2.0 * c2 * q2 + 3.0 * c3 * q2 * q2 + 4.0 * c4 * q2 * q2 * q2;
+        let qd1_target = dpoly_dq2 * qd2;
+
+        let pos_error = q1 - q1_target;
+        let vel_error = qd1 - qd1_target;
+
+        // Jacobian: d(q1 - poly(q2))/d_qvel = +1 at dof1, -poly'(q2) at dof2
+        j[(0, dof1_adr)] = 1.0;
+        j[(0, dof2_adr)] = -dpoly_dq2;
 
         EqualityConstraintRows {
             j_rows: j,

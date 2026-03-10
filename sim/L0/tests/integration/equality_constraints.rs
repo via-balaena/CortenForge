@@ -257,6 +257,9 @@ fn test_weld_constraint_to_world_fixed() {
     let model = load_model(mjcf).expect("should load");
     let mut data = model.make_data();
 
+    // Must call forward() to compute xpos from qpos before capturing initial position.
+    // make_data() initializes xpos to zeros; forward() runs FK.
+    data.forward(&model).expect("forward failed");
     let initial_pos = data.xpos[1];
 
     // Step simulation - body should stay put despite gravity
@@ -331,7 +334,7 @@ fn test_joint_equality_mimic() {
 
 /// Test: Joint coupling with gear ratio.
 ///
-/// joint2 = 2 * joint1 (2:1 gear ratio)
+/// MuJoCo convention: joint1 = poly(joint2). With polycoef="0 2", j1 = 2*j2.
 #[test]
 fn test_joint_equality_gear_ratio() {
     let mjcf = r#"
@@ -356,24 +359,24 @@ fn test_joint_equality_gear_ratio() {
     let model = load_model(mjcf).expect("should load");
     let mut data = model.make_data();
 
-    // Start with joint1 at 0.3 rad
+    // Start with j2 at 0.15 rad — satisfies j1 = 2*j2 = 0.3
     data.qpos[0] = 0.3;
-    data.qpos[1] = 0.6; // Start at target ratio
+    data.qpos[1] = 0.15;
 
     // Step simulation
     for _ in 0..3000 {
         data.step(&model).expect("step failed");
     }
 
-    // joint2 should be approximately 2 * joint1
+    // Constraint: j1 = 2 * j2 (MuJoCo: joint1 = poly(joint2))
     let q1 = data.qpos[0];
     let q2 = data.qpos[1];
-    let expected_q2 = 2.0 * q1;
-    let error = (q2 - expected_q2).abs();
+    let expected_q1 = 2.0 * q2;
+    let error = (q1 - expected_q1).abs();
 
     assert!(
         error < 0.15,
-        "Gear ratio should be maintained: q1={q1}, q2={q2}, expected q2={expected_q2}"
+        "Gear ratio should be maintained: q1={q1}, q2={q2}, expected q1={expected_q1}"
     );
 }
 
