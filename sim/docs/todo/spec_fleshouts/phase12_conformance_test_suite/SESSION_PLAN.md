@@ -789,7 +789,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase12_conformance_test_suite/SPEC_A_REV
 
 ## Session 9: Spec A Review — Execute
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- execute Spec A review.

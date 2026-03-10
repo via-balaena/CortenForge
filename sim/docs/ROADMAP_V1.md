@@ -431,6 +431,7 @@ foundation isn't right.
 | DT-154 | 10i | T1 | Flex contact factory condim=6 mapping — all flex factories map `condim: 1→1, 4→4, _→3`. `condim=6` produces `dim=3` not `dim=6`. Pre-existing across all flex contact types. Deferred from Phase 10 Spec D. |
 | DT-155 | 10i | T1 | S10 override test for flex-flex contacts (AC11/T10) — `ENABLE_OVERRIDE` test infrastructure not wired for flex contact tests. Override logic works (verified in rigid specs); only the test harness is missing. Deferred from Phase 10 Spec D review. |
 | DT-156 | 10i | T2 | Narrowphase triangle-triangle contact count conformance gap — CortenForge produces 36 contacts vs MuJoCo 32 for overlapping 3×3 flex grids. Root cause in triangle-triangle intersection logic (Spec C territory). Behavior correct; only count differs. Identified during Phase 10 Spec D review. |
+| DT-160 | 10j | T1 | Additional FK reference fields — `xmat` (nbody×9), `geom_xpos` (ngeom×3), `geom_xmat` (ngeom×9), `site_xpos` (nsite×3). Extend `gen_conformance_reference.py` to export these fields, then add Layer B tests. Strengthens FK conformance coverage beyond primary body pose outputs. Deferred from Phase 12 Spec A Out of Scope. |
 
 ### Code Quality
 | Task | Source | Tier | Description |
