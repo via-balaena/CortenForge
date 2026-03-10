@@ -239,3 +239,45 @@ pub fn assert_quat_eq(
         cf[3]
     );
 }
+
+// ── Layer C: Trajectory comparison infrastructure ──
+
+/// Compute step-aware tolerance: tol(step) = base * (1.0 + step as f64 * growth)
+#[allow(dead_code)]
+pub fn step_tolerance(base: f64, growth: f64, step: usize) -> f64 {
+    base * (1.0 + step as f64 * growth)
+}
+
+/// Hinge-only models: smooth dynamics, tight tolerance.
+/// Base = TOL_INTEGRATION (1e-8), growth = 0.01 per step.
+/// At step 100: tol = 1e-8 * (1 + 100*0.01) = 2e-8.
+#[allow(dead_code)]
+pub const TRAJ_BASE_SMOOTH: f64 = 1e-8;
+#[allow(dead_code)]
+pub const TRAJ_GROWTH_SMOOTH: f64 = 0.01;
+
+/// Contact/free-joint models: chaotic sensitivity, wide tolerance.
+/// Base = 1e-6, growth = 0.05 per step.
+/// At step 100: tol = 1e-6 * (1 + 100*0.05) = 6e-6.
+#[allow(dead_code)]
+pub const TRAJ_BASE_CHAOTIC: f64 = 1e-6;
+#[allow(dead_code)]
+pub const TRAJ_GROWTH_CHAOTIC: f64 = 0.05;
+
+/// qacc base tolerance multiplier: qacc includes constraint solver output
+/// (iterative convergence at ~1e-4) so the base tolerance is wider than
+/// qpos/qvel. Multiply the regime's base by this factor for qacc.
+#[allow(dead_code)]
+pub const TRAJ_QACC_FACTOR: f64 = 1e4;
+
+/// Record of a single trajectory divergence.
+#[allow(dead_code)]
+pub struct TrajectoryDivergence {
+    pub step: usize,
+    pub field: &'static str, // "qpos", "qvel", "qacc", or "qpos (quat)"
+    pub dof: usize,
+    pub expected: f64,
+    pub actual: f64,
+    pub diff: f64,
+    pub tol: f64,
+}
