@@ -999,7 +999,7 @@ after each section. MuJoCo conformance is the cardinal goal.
 
 ## Session 13: Spec B Review — Create Document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- create Spec B review document.
