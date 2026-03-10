@@ -600,7 +600,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 5: Spec A Rubric (Layer B — Per-Stage Reference)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- write Spec A rubric.
@@ -1139,7 +1139,7 @@ what stands between CortenForge and v1.0.
 | 2 | T1: DT-97 (golden flag expansion + model enrichment) | Done | 0fbdb7c |
 | 3 | T1: Layer A+D (coverage audit + systematic gap-fill) | Done | 30972f3 |
 | 4 | T1: Reference data gen infrastructure (models + Python script) | Done | c0142b2 |
-| 5 | Spec A rubric (Layer B — per-stage reference) | | |
+| 5 | Spec A rubric (Layer B — per-stage reference) | Pending commit | |
 | 6 | Spec A spec | | |
 | 7 | Spec A implementation | | |
 | 8 | Spec A review — create document | | |
