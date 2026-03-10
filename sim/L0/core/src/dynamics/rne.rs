@@ -228,8 +228,20 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
     for body_id in 1..model.nbody {
         let parent_id = model.body_parent[body_id];
 
-        // Start with parent's bias acceleration
-        let mut a_bias = data.cacc_bias[parent_id];
+        // Start with parent's bias acceleration, transported from xpos[parent] to xpos[child].
+        // Spatial motion transport: angular unchanged, linear += alpha × r.
+        let parent_bias = data.cacc_bias[parent_id];
+        let alpha_p = nalgebra::Vector3::new(parent_bias[0], parent_bias[1], parent_bias[2]);
+        let a_p = nalgebra::Vector3::new(parent_bias[3], parent_bias[4], parent_bias[5]);
+        let r = data.xpos[body_id] - data.xpos[parent_id];
+        let a_transported = a_p + alpha_p.cross(&r);
+        let mut a_bias = SpatialVector::zeros();
+        a_bias[0] = alpha_p.x;
+        a_bias[1] = alpha_p.y;
+        a_bias[2] = alpha_p.z;
+        a_bias[3] = a_transported.x;
+        a_bias[4] = a_transported.y;
+        a_bias[5] = a_transported.z;
 
         // Add velocity-product acceleration from joints on this body
         // c[i] = v[i] ×_m (S[i] @ qdot[i])

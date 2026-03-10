@@ -237,7 +237,6 @@ fn layer_c_trajectory_double_pendulum() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: contact.pos convention + efc_J assembly — Phase 3 collision/constraint
 fn layer_c_trajectory_contact_scenario() {
     compare_trajectory(
         "contact_scenario",
@@ -294,7 +293,6 @@ fn layer_c_trajectory_sensor_model() {
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: constraint Jacobian wrong — Phase 3 constraint
 fn layer_c_trajectory_equality_model() {
     compare_trajectory(
         "equality_model",
@@ -311,7 +309,6 @@ fn layer_c_trajectory_equality_model() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: constraint forces wrong — contact + constraint — Phase 3 collision/constraint
 fn layer_c_trajectory_composite_model() {
     compare_trajectory(
         "composite_model",

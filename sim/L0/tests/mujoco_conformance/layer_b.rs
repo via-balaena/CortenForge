@@ -605,7 +605,6 @@ fn layer_b_tendon_composite_model() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: accelerometer sensor depends on constraint forces — Phase 3 collision/constraint
 fn layer_b_sensor_sensor_model() {
     run_sensor_test("sensor_model", &[]);
 }
