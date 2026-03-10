@@ -1140,7 +1140,7 @@ what stands between CortenForge and v1.0.
 | 3 | T1: Layer A+D (coverage audit + systematic gap-fill) | Done | 30972f3 |
 | 4 | T1: Reference data gen infrastructure (models + Python script) | Done | c0142b2 |
 | 5 | Spec A rubric (Layer B — per-stage reference) | Done | 0068028 |
-| 6 | Spec A spec | Done | PENDING |
+| 6 | Spec A spec | Done | aa2ed08 |
 | 7 | Spec A implementation | | |
 | 8 | Spec A review — create document | | |
 | 9 | Spec A review — execute + preliminary #[ignore] inventory | | |
