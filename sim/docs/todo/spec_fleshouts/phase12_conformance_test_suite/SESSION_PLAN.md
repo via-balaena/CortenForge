@@ -1142,7 +1142,7 @@ what stands between CortenForge and v1.0.
 | 5 | Spec A rubric (Layer B — per-stage reference) | Done | 0068028 |
 | 6 | Spec A spec | Done | aa2ed08 |
 | 7 | Spec A implementation | Done | f6fa988 |
-| 8 | Spec A review — create document | Done | |
+| 8 | Spec A review — create document | Done | 30fec10 |
 | 9 | Spec A review — execute + preliminary #[ignore] inventory | | |
 | 10 | Spec B rubric (Layer C — trajectory comparison) | | |
 | 11 | Spec B spec | | |
