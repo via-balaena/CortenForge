@@ -38,7 +38,7 @@ documents and commits are the state, not the context window.
 | DT-129 | T3 | Conformance | B | PGS warmstart two-phase projection — ray+QCQP on warmstart forces | **Partially implemented** — cold/warm dual-cost selection exists; pre-iteration projection missing. Independent of DT-19 (uses `classify_constraint_states`, not QCQP). |
 | §46 | — | Infrastructure | C | `<composite>` procedural body generation (grid, rope, cable, cloth, box, cylinder, ellipsoid) | Zero existing code; clean slate |
 | §66 | — | Infrastructure | D | Plugin/extension system — `<plugin>`/`<extension>` MJCF parsing + Rust trait dispatch | Zero existing code; clean slate |
-| FILTERPARENT | — | Conformance | S0→A or B | `golden_disable_filterparent` ~51.9 divergence when parent-child pairs enter collision. Session 0 diagnoses root cause and assigns to Spec A (assembly) or Spec B (solver), or creates a new DT item if it's an independent collision filtering bug. | Gate assessment attributes to "collision filtering"; may be compounding effect of baseline ~1.69 |
+| ~~FILTERPARENT~~ | — | ~~Conformance~~ | — | ~~Session 0 initially suspected independent collision filtering bug. Actual current divergence is ~0.020 (same root cause as baseline). DT-131 unnecessary — resolved by Phase 12 fixes.~~ | Not a separate issue |
 
 ### Phase 8 Remaining (not moved to Phase 13, but still v1.0 core)
 
@@ -135,7 +135,7 @@ grouping hypothesis.
 
 ## Session 0: Root cause diagnosis for golden flag divergence
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — diagnostic investigation.
@@ -766,7 +766,7 @@ to verify no regressions from Phase 13 infrastructure work.
 
 | Session | Date | Status | Commit | Notes |
 |---------|------|--------|--------|-------|
-| 0 | — | — | — | Root cause diagnosis for golden flag divergence |
+| 0 | 2026-03-10 | Done | — | Root cause: tendon_invweight0 diagonal-only bug (DT-39). FILTERPARENT not a separate issue (~0.020, same root cause). 2/26 already pass, 24 fail at 0.001–0.02. |
 | 1 | — | — | — | Spec A rubric + spec |
 | 2 | — | — | — | Spec A implement |
 | 3 | — | — | — | Spec A review create |
@@ -796,34 +796,37 @@ un-ignoring progress here.
 
 Session 0 produces predictions for each test. Fill in after diagnostic.
 
-| # | Test | Divergence | Predicted Root Cause | Predicted Fix Spec |
-|---|------|-----------|---------------------|-------------------|
-| 1 | `golden_baseline` | ~1.69 | — | — |
-| 2 | `golden_disable_constraint` | ~25.9 | — | — |
-| 3 | `golden_disable_equality` | ~0.002 | — | — |
-| 4 | `golden_disable_frictionloss` | ~3.99 | — | — |
-| 5 | `golden_disable_limit` | ~1.69 | — | — |
-| 6 | `golden_disable_contact` | ~1.69 | — | — |
-| 7 | `golden_disable_spring` | ~1.69 | — | — |
-| 8 | `golden_disable_damper` | ~1.69 | — | — |
-| 9 | `golden_disable_gravity` | ~0.40 | — | — |
-| 10 | `golden_disable_clampctrl` | ~2.48 | — | — |
-| 11 | `golden_disable_warmstart` | ~1.69 | — | — |
-| 12 | `golden_disable_filterparent` | ~51.9 | — | — |
-| 13 | `golden_disable_actuation` | ~1.69 | — | — |
-| 14 | `golden_disable_refsafe` | ~1.69 | — | — |
-| 15 | `golden_disable_sensor` | ~1.69 | — | — |
-| 16 | `golden_disable_midphase` | ~1.69 | — | — |
-| 17 | `golden_disable_eulerdamp` | ~1.69 | — | — |
-| 18 | `golden_disable_autoreset` | ~1.69 | — | — |
-| 19 | `golden_disable_nativeccd` | ~1.69 | — | — |
-| 20 | `golden_disable_island` | ~1.69 | — | — |
-| 21 | `golden_enable_override` | ~1.69 | — | — |
-| 22 | `golden_enable_energy` | ~1.69 | — | — |
-| 23 | `golden_enable_fwdinv` | ~1.69 | — | — |
-| 24 | `golden_enable_invdiscrete` | ~1.69 | — | — |
-| 25 | `golden_enable_multiccd` | ~1.69 | — | — |
-| 26 | `golden_enable_sleep` | ~1.69 | — | — |
+| # | Test | Gate Divergence | Actual Current | Predicted Root Cause | Fix Spec |
+|---|------|----------------|----------------|---------------------|----------|
+| 1 | `golden_baseline` | ~1.69 | 0.0021 | tendon_invweight0 | A (DT-39) |
+| 2 | `golden_disable_constraint` | ~25.9 | **PASS** | (already passes) | — |
+| 3 | `golden_disable_equality` | ~0.002 | 0.0069 | tendon_invweight0 | A (DT-39) |
+| 4 | `golden_disable_frictionloss` | ~3.99 | **PASS** | (already passes) | — |
+| 5 | `golden_disable_limit` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 6 | `golden_disable_contact` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 7 | `golden_disable_spring` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 8 | `golden_disable_damper` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 9 | `golden_disable_gravity` | ~0.40 | 0.0011 | tendon_invweight0 | A (DT-39) |
+| 10 | `golden_disable_clampctrl` | ~2.48 | 0.0018 | tendon_invweight0 | A (DT-39) |
+| 11 | `golden_disable_warmstart` | ~1.69 | 0.0021 | tendon_invweight0 | A (DT-39) |
+| 12 | `golden_disable_filterparent` | ~51.9 | 0.020 | tendon_invweight0 | A (DT-39) |
+| 13 | `golden_disable_actuation` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 14 | `golden_disable_refsafe` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 15 | `golden_disable_sensor` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 16 | `golden_disable_midphase` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 17 | `golden_disable_eulerdamp` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 18 | `golden_disable_autoreset` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 19 | `golden_disable_nativeccd` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 20 | `golden_disable_island` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 21 | `golden_enable_override` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 22 | `golden_enable_energy` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 23 | `golden_enable_fwdinv` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 24 | `golden_enable_invdiscrete` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 25 | `golden_enable_multiccd` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+| 26 | `golden_enable_sleep` | ~1.69 | ~0.002 | tendon_invweight0 | A (DT-39) |
+
+**Current status: 2 pass, 24 fail. All failures in 0.001–0.02 range.**
+**Prediction: 26/26 pass after Spec A (tendon_invweight0 fix).**
 
 ### After Spec A (Session 4 checkpoint)
 
@@ -881,4 +884,4 @@ be added to the post-v1.0 sections of ROADMAP_V1.md at phase completion.
 
 | DT-# | Tier | Description | Discovered In |
 |-------|------|-------------|---------------|
-| — | — | — | — |
+| ~~DT-131~~ | — | ~~FILTERPARENT — initially suspected. Actual divergence ~0.020, same root cause as baseline. Not a separate issue.~~ | Session 0 (retracted) |

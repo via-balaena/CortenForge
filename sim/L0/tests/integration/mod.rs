@@ -234,6 +234,9 @@ pub mod runtime_flags;
 /// Golden-file conformance tests: MuJoCo-reference .npy comparison for flag behavior.
 pub mod golden_flags;
 
+/// Phase 13 Session 0 diagnostic: per-constraint-row comparison against MuJoCo.
+pub mod phase13_diagnostic;
+
 // ============================================================================
 // §53 Split-Step API Tests
 // ============================================================================
