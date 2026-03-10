@@ -2153,6 +2153,26 @@ impl MjcfTendonEquality {
     }
 }
 
+/// Discriminant for equality constraint document-order tracking.
+///
+/// Used by [`MjcfEquality::order`] to record the XML parse order of
+/// constraints, so that [`ModelBuilder::process_equality_constraints`]
+/// can reproduce MuJoCo's document-order semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum EqualityKind {
+    /// Connect (ball-and-socket) constraint.
+    Connect,
+    /// Weld (6 DOF lock) constraint.
+    Weld,
+    /// Joint equality constraint.
+    Joint,
+    /// Distance constraint between geoms.
+    Distance,
+    /// Tendon equality constraint.
+    Tendon,
+}
+
 /// Container for equality constraints from `<equality>` element.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -2167,6 +2187,12 @@ pub struct MjcfEquality {
     pub distances: Vec<MjcfDistance>,
     /// Tendon equality constraints.
     pub tendons: Vec<MjcfTendonEquality>,
+    /// Document order: `(kind, index_within_kind_vec)`.
+    ///
+    /// MuJoCo processes equality constraints in XML document order, not grouped
+    /// by type. This vec records the insertion order so the model builder can
+    /// reproduce that ordering.
+    pub order: Vec<(EqualityKind, usize)>,
 }
 
 impl MjcfEquality {
@@ -2179,35 +2205,45 @@ impl MjcfEquality {
     /// Add a connect constraint.
     #[must_use]
     pub fn with_connect(mut self, connect: MjcfConnect) -> Self {
+        let idx = self.connects.len();
         self.connects.push(connect);
+        self.order.push((EqualityKind::Connect, idx));
         self
     }
 
     /// Add a weld constraint.
     #[must_use]
     pub fn with_weld(mut self, weld: MjcfWeld) -> Self {
+        let idx = self.welds.len();
         self.welds.push(weld);
+        self.order.push((EqualityKind::Weld, idx));
         self
     }
 
     /// Add a joint equality constraint.
     #[must_use]
     pub fn with_joint(mut self, joint: MjcfJointEquality) -> Self {
+        let idx = self.joints.len();
         self.joints.push(joint);
+        self.order.push((EqualityKind::Joint, idx));
         self
     }
 
     /// Add a distance constraint.
     #[must_use]
     pub fn with_distance(mut self, distance: MjcfDistance) -> Self {
+        let idx = self.distances.len();
         self.distances.push(distance);
+        self.order.push((EqualityKind::Distance, idx));
         self
     }
 
     /// Add a tendon equality constraint.
     #[must_use]
     pub fn with_tendon(mut self, tendon: MjcfTendonEquality) -> Self {
+        let idx = self.tendons.len();
         self.tendons.push(tendon);
+        self.order.push((EqualityKind::Tendon, idx));
         self
     }
 

@@ -634,6 +634,13 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
 
     // Mechanism 5: flex-flex cross-object collision
     mj_collide_flex_flex(model, data);
+
+    // Sort contacts by (geom1, geom2) to match MuJoCo's deterministic ordering.
+    // MuJoCo assigns contact IDs in geom-pair order; our SAP may produce pairs
+    // in a different traversal order. Stable sort preserves per-pair insertion
+    // order (relevant for multi-contact geom pairs like heightfields).
+    data.contacts
+        .sort_by(|a, b| (a.geom1, a.geom2).cmp(&(b.geom1, b.geom2)));
 }
 
 /// Detect contacts between flex vertices and rigid geoms.

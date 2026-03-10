@@ -325,6 +325,9 @@ impl Contact {
 /// Compute orthonormal tangent frame from contact normal.
 ///
 /// Returns (t1, t2) where t1, t2, normal form a right-handed orthonormal basis.
+/// Matches MuJoCo's `mju_makeFrame` convention: pick the axis with the smallest
+/// absolute normal component, then `t1 = normalize(n × axis)`, `t2 = n × t1`.
+///
 /// Handles degenerate cases (zero/NaN normal) by returning a default frame.
 #[inline]
 #[must_use]
@@ -332,31 +335,32 @@ pub fn compute_tangent_frame(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f6
     // Safety check: handle zero/NaN normals
     let normal_len = normal.norm();
     if !normal_len.is_finite() || normal_len < 1e-10 {
-        // Degenerate case: return default frame
         return (Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
     }
 
-    // Normalize the normal (in case it wasn't already)
     let n = normal / normal_len;
 
-    // Choose a reference vector not parallel to normal
-    let reference = if n.x.abs() < 0.9 {
-        Vector3::new(1.0, 0.0, 0.0)
-    } else {
-        Vector3::new(0.0, 1.0, 0.0)
-    };
+    // MuJoCo convention: find axis with smallest |n| component
+    let mut min_idx = 0;
+    if n[1].abs() < n[min_idx].abs() {
+        min_idx = 1;
+    }
+    if n[2].abs() < n[min_idx].abs() {
+        min_idx = 2;
+    }
+    let mut axis = Vector3::zeros();
+    axis[min_idx] = 1.0;
 
-    // Gram-Schmidt orthogonalization
-    let t1 = reference - n * n.dot(&reference);
-    let t1_norm = t1.norm();
+    // t1 = normalize(n × axis)
+    let t1_raw = n.cross(&axis);
+    let t1_norm = t1_raw.norm();
     let t1 = if t1_norm > 1e-10 {
-        t1 / t1_norm
+        t1_raw / t1_norm
     } else {
-        // This shouldn't happen if reference was chosen correctly, but be safe
         Vector3::new(1.0, 0.0, 0.0)
     };
 
+    // t2 = n × t1
     let t2 = n.cross(&t1);
-    // t2 should already be unit length since n and t1 are orthonormal
     (t1, t2)
 }

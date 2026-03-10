@@ -430,17 +430,30 @@ pub fn compute_diag_approx_bodyweight(
                         (w1 + w2).max(MJ_MINVAL)
                     }
                     EqualityType::Joint => {
-                        let jnt_id = model.eq_obj1id[id];
-                        if jnt_id < model.njnt {
-                            let dof = model.jnt_dof_adr[jnt_id];
+                        // MuJoCo: dof_invweight0[dof1] + dof_invweight0[dof2]
+                        let jnt1 = model.eq_obj1id[id];
+                        let jnt2 = model.eq_obj2id[id];
+                        let w1 = if jnt1 < model.njnt {
+                            let dof = model.jnt_dof_adr[jnt1];
                             if dof < model.dof_invweight0.len() {
-                                model.dof_invweight0[dof].max(MJ_MINVAL)
+                                model.dof_invweight0[dof]
                             } else {
-                                MJ_MINVAL
+                                0.0
                             }
                         } else {
-                            MJ_MINVAL
-                        }
+                            0.0
+                        };
+                        let w2 = if jnt2 < model.njnt {
+                            let dof = model.jnt_dof_adr[jnt2];
+                            if dof < model.dof_invweight0.len() {
+                                model.dof_invweight0[dof]
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            0.0
+                        };
+                        (w1 + w2).max(MJ_MINVAL)
                     }
                     EqualityType::Tendon => {
                         let tid = model.eq_obj1id[id];

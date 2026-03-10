@@ -41,14 +41,19 @@ fn test_pgs_noslip_reduces_slip() {
     };
 
     // Without noslip
-    let (model_no, mut data_no) = model_from_mjcf(&make_model(0));
+    // Force exact diagApprox mode: this test measures noslip effectiveness
+    // relative to a no-noslip baseline. The bodyweight approximation (now the
+    // MJCF default per Phase 12) changes R values enough to alter the comparison.
+    let (mut model_no, mut data_no) = model_from_mjcf(&make_model(0));
+    model_no.diagapprox_bodyweight = false;
     assert_eq!(model_no.solver_type, sim_core::SolverType::PGS);
     for _ in 0..100 {
         data_no.step(&model_no).unwrap();
     }
 
     // With noslip
-    let (model_ns, mut data_ns) = model_from_mjcf(&make_model(20));
+    let (mut model_ns, mut data_ns) = model_from_mjcf(&make_model(20));
+    model_ns.diagapprox_bodyweight = false;
     for _ in 0..100 {
         data_ns.step(&model_ns).unwrap();
     }

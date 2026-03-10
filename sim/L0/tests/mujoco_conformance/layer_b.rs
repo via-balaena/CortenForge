@@ -620,13 +620,11 @@ fn layer_b_sensor_composite_model() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: contact.pos z off by 1e-3 — contact position convention difference — Phase 3 collision
 fn layer_b_collision_contact_scenario() {
     run_collision_test("contact_scenario", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: contact.pos z off by 1e-3 — contact position convention difference — Phase 3 collision
 fn layer_b_collision_composite_model() {
     run_collision_test("composite_model", &[1.0]);
 }
@@ -636,19 +634,16 @@ fn layer_b_collision_composite_model() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: efc_J row content differs — constraint Jacobian assembly divergence — Phase 3 constraint
 fn layer_b_constraint_contact_scenario() {
     run_constraint_test("contact_scenario", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: efc_J row content differs — constraint Jacobian assembly divergence — Phase 3 constraint
 fn layer_b_constraint_equality_model() {
     run_constraint_test("equality_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: efc_J row content differs — constraint Jacobian assembly divergence — Phase 3 constraint
 fn layer_b_constraint_composite_model() {
     run_constraint_test("composite_model", &[1.0]);
 }
