@@ -712,7 +712,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 7: Spec A Implementation (Layer B — Per-Stage Reference)
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- implement Spec A.
@@ -1141,7 +1141,7 @@ what stands between CortenForge and v1.0.
 | 4 | T1: Reference data gen infrastructure (models + Python script) | Done | c0142b2 |
 | 5 | Spec A rubric (Layer B — per-stage reference) | Done | 0068028 |
 | 6 | Spec A spec | Done | aa2ed08 |
-| 7 | Spec A implementation | | |
+| 7 | Spec A implementation | Done | f6fa988 |
 | 8 | Spec A review — create document | | |
 | 9 | Spec A review — execute + preliminary #[ignore] inventory | | |
 | 10 | Spec B rubric (Layer C — trajectory comparison) | | |
