@@ -2156,7 +2156,7 @@ impl MjcfTendonEquality {
 /// Discriminant for equality constraint document-order tracking.
 ///
 /// Used by [`MjcfEquality::order`] to record the XML parse order of
-/// constraints, so that [`ModelBuilder::process_equality_constraints`]
+/// constraints, so that `ModelBuilder::process_equality_constraints`
 /// can reproduce MuJoCo's document-order semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
