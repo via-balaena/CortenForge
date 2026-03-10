@@ -1147,6 +1147,6 @@ what stands between CortenForge and v1.0.
 | 10 | Spec B rubric (Layer C — trajectory comparison) | Done | eebf294 |
 | 11 | Spec B spec | Done | 1588f94 |
 | 12 | Spec B implementation | Done | b8811c1 |
-| 13 | Spec B review — create document | | |
+| 13 | Spec B review — create document | Done | a07ad98 |
 | 14 | Spec B review — execute + merged #[ignore] inventory | | |
 | 15 | Gate Triage — GATE_ASSESSMENT.md | | |
