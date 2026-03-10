@@ -1027,7 +1027,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase12_conformance_test_suite/SPEC_B_REV
 
 ## Session 14: Spec B Review — Execute
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 12 Conformance Test Suite -- execute Spec B review.

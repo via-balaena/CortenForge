@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ModelBuilder;
-use super::geom::{compute_geom_inertia, compute_geom_mass, geom_effective_com};
+use super::geom::{
+    compute_geom_inertia, compute_geom_mass, geom_effective_com, resolve_geom_fromto,
+};
 use super::mesh::{MeshProps, compute_mesh_inertia_by_mode, resolve_mesh};
 use super::orientation::quat_from_wxyz;
 use crate::types::{MeshInertia, MjcfGeom, MjcfInertial};
@@ -157,6 +159,15 @@ pub fn compute_inertia_from_geoms(
             UnitQuaternion::identity(),
         );
     }
+
+    // Resolve fromto → pos/quat/size before any computation.
+    // MuJoCo does this during compilation (mjCGeom::Compile); our process_geom
+    // also resolves fromto for the model arrays, but the raw MjcfGeom structs
+    // passed here still carry un-resolved fromto. Without this, geoms defined
+    // via fromto (e.g. capsules) get zero position, identity orientation, and
+    // wrong half-length — producing incorrect body_ipos, inertia, and xipos.
+    let resolved: Vec<_> = geoms.iter().map(resolve_geom_fromto).collect();
+    let geoms = &resolved;
 
     // Pre-compute mesh inertia once per geom (avoids 3× recomputation).
     let mesh_props: Vec<Option<MeshProps>> = geoms

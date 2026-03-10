@@ -401,13 +401,11 @@ fn run_tendon_test(model_name: &str, ctrl_values: &[f64]) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: xipos not computed (body CoM in world frame is zero) — Phase 1 FK
 fn layer_b_fk_pendulum() {
     run_fk_test("pendulum", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: xipos not computed — Phase 1 FK
 fn layer_b_fk_double_pendulum() {
     run_fk_test("double_pendulum", &[]);
 }
@@ -418,31 +416,26 @@ fn layer_b_fk_contact_scenario() {
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: xipos not computed — Phase 1 FK
 fn layer_b_fk_actuated_system() {
     run_fk_test("actuated_system", &[1.0, 0.5]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: xipos not computed — Phase 1 FK
 fn layer_b_fk_tendon_model() {
     run_fk_test("tendon_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: xipos not computed — Phase 1 FK
 fn layer_b_fk_sensor_model() {
     run_fk_test("sensor_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: xipos not computed — Phase 1 FK
 fn layer_b_fk_equality_model() {
     run_fk_test("equality_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: xipos not computed — Phase 1 FK
 fn layer_b_fk_composite_model() {
     run_fk_test("composite_model", &[1.0]);
 }
@@ -452,13 +445,11 @@ fn layer_b_fk_composite_model() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qM wrong — xipos not computed, parallel axis theorem missing — Phase 1 CRBA
 fn layer_b_crba_pendulum() {
     run_crba_test("pendulum", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qM wrong — xipos not computed, parallel axis theorem missing — Phase 1 CRBA
 fn layer_b_crba_double_pendulum() {
     run_crba_test("double_pendulum", &[]);
 }
@@ -469,31 +460,26 @@ fn layer_b_crba_contact_scenario() {
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qM wrong — xipos not computed, parallel axis theorem missing — Phase 1 CRBA
 fn layer_b_crba_actuated_system() {
     run_crba_test("actuated_system", &[1.0, 0.5]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qM wrong — xipos not computed, parallel axis theorem missing — Phase 1 CRBA
 fn layer_b_crba_tendon_model() {
     run_crba_test("tendon_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qM wrong — xipos not computed, parallel axis theorem missing — Phase 1 CRBA
 fn layer_b_crba_sensor_model() {
     run_crba_test("sensor_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qM wrong — xipos not computed, parallel axis theorem missing — Phase 1 CRBA
 fn layer_b_crba_equality_model() {
     run_crba_test("equality_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qM wrong — xipos not computed, parallel axis theorem missing — Phase 1 CRBA
 fn layer_b_crba_composite_model() {
     run_crba_test("composite_model", &[1.0]);
 }
@@ -503,13 +489,11 @@ fn layer_b_crba_composite_model() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qfrc_bias wrong — xipos not computed, gravity torques use wrong CoM — Phase 1 RNE
 fn layer_b_rne_pendulum() {
     run_rne_test("pendulum", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qfrc_bias wrong — xipos not computed, gravity torques use wrong CoM — Phase 1 RNE
 fn layer_b_rne_double_pendulum() {
     run_rne_test("double_pendulum", &[]);
 }
@@ -520,31 +504,26 @@ fn layer_b_rne_contact_scenario() {
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qfrc_bias wrong — xipos not computed, gravity torques use wrong CoM — Phase 1 RNE
 fn layer_b_rne_actuated_system() {
     run_rne_test("actuated_system", &[1.0, 0.5]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qfrc_bias wrong — xipos not computed, gravity torques use wrong CoM — Phase 1 RNE
 fn layer_b_rne_tendon_model() {
     run_rne_test("tendon_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qfrc_bias wrong — xipos not computed, gravity torques use wrong CoM — Phase 1 RNE
 fn layer_b_rne_sensor_model() {
     run_rne_test("sensor_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qfrc_bias wrong — xipos not computed, gravity torques use wrong CoM — Phase 1 RNE
 fn layer_b_rne_equality_model() {
     run_rne_test("equality_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qfrc_bias wrong — xipos not computed, gravity torques use wrong CoM — Phase 1 RNE
 fn layer_b_rne_composite_model() {
     run_rne_test("composite_model", &[1.0]);
 }
@@ -626,13 +605,12 @@ fn layer_b_tendon_composite_model() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: sensordata[12] off — xipos/subtree_com affects framepos sensor — Phase 6 sensor
+#[ignore] // CONFORMANCE GAP: accelerometer sensor depends on constraint forces — Phase 3 collision/constraint
 fn layer_b_sensor_sensor_model() {
     run_sensor_test("sensor_model", &[]);
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: sensordata[4] off — xipos/subtree_com affects framepos sensor — Phase 6 sensor
 fn layer_b_sensor_composite_model() {
     run_sensor_test("composite_model", &[1.0]);
 }

@@ -309,6 +309,31 @@ pub fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Ve
     pos
 }
 
+/// Resolve `fromto` into `pos`/`quat`/`size` for a geom.
+///
+/// MuJoCo compiles `fromto` early (mjCGeom::Compile), converting it to
+/// pos/quat/size before any downstream computation. Our `process_geom` does
+/// this for the model arrays, but the raw `MjcfGeom` structs passed to
+/// `compute_inertia_from_geoms` still carry the un-resolved `fromto`.
+///
+/// This function produces a resolved copy (consumed `fromto` → populated
+/// `pos`/`quat`/`size`). Returns the geom unchanged (cloned) if no `fromto`.
+pub fn resolve_geom_fromto(geom: &MjcfGeom) -> MjcfGeom {
+    if let Some(fromto) = geom.fromto {
+        let (pos, quat, size) = compute_fromto_pose(fromto, &geom.size);
+        let q = quat.quaternion();
+        MjcfGeom {
+            pos: Some(pos),
+            quat: Some(Vector4::new(q.w, q.i, q.j, q.k)),
+            size: vec![size[0], size[1], size[2]],
+            fromto: None,
+            ..geom.clone()
+        }
+    } else {
+        geom.clone()
+    }
+}
+
 /// Compute mass of a single geom.
 ///
 /// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
@@ -434,15 +459,24 @@ pub fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> 
             let i_cyl_x = m_cyl * (3.0 * r.powi(2) + h.powi(2)) / 12.0;
             let i_cyl_z = 0.5 * m_cyl * r.powi(2);
 
-            // Hemisphere inertia about its own center (half of sphere)
-            let i_hemi_own = 0.4 * m_hemi * r.powi(2);
+            // Hemisphere inertia about flat face center (= sphere center).
+            // For any axis through the sphere center: I = 2/5 * m * r².
+            let i_hemi_flat = 0.4 * m_hemi * r.powi(2);
 
-            // Distance from capsule center to hemisphere center
-            let d = h / 2.0 + (3.0 / 8.0) * r; // Center of hemisphere from cylinder end
+            // Hemisphere COM is at 3r/8 from the flat face along the capsule axis.
+            let com_offset = (3.0 / 8.0) * r;
 
-            // Parallel axis theorem for hemispheres
-            let i_hemi_x = i_hemi_own + m_hemi * d.powi(2);
-            let i_hemi_z = i_hemi_own; // No parallel axis for z (axial)
+            // Hemisphere transverse inertia about its own COM:
+            // I_com = I_flat - m * com_offset²  (parallel axis theorem, reverse)
+            let i_hemi_com = i_hemi_flat - m_hemi * com_offset.powi(2);
+
+            // Distance from capsule center to hemisphere COM
+            let d = h / 2.0 + com_offset;
+
+            // Parallel axis theorem: shift from hemisphere COM to capsule center
+            let i_hemi_x = i_hemi_com + m_hemi * d.powi(2);
+            // Axial: hemisphere Izz = 2/5 * m * r², no parallel axis (on-axis)
+            let i_hemi_z = i_hemi_flat;
 
             // Total: cylinder + 2 hemispheres
             let ix = i_cyl_x + 2.0 * i_hemi_x;

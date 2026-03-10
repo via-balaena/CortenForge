@@ -659,12 +659,14 @@ fn tendon_implicit_spatial_tendon_basic() {
         "Spatial tendon should produce non-trivial qacc, got norm={qacc_norm}"
     );
 
-    // Direction check: positive q0 displacement stretches the tendon,
-    // so the restoring spring force should produce negative qacc[0]
+    // Direction check: spring force on joint 0 should be restoring (negative
+    // qfrc_smooth), but qacc[0] may be positive due to mass-matrix off-diagonal
+    // coupling in the 2-DOF chain — M⁻¹ mixes forces from both joints.
+    // Check the force direction instead of acceleration direction.
     assert!(
-        data.qacc[0] < 0.0,
-        "qacc[0] should be negative (restoring) for positive displacement, got {}",
-        data.qacc[0]
+        data.qfrc_smooth[0] < 0.0,
+        "qfrc_smooth[0] should be negative (restoring) for positive displacement, got {}",
+        data.qfrc_smooth[0]
     );
 
     // Cross-coupling

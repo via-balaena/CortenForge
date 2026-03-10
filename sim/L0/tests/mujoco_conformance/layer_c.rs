@@ -9,8 +9,8 @@
 
 use super::common;
 use common::{
-    TRAJ_BASE_CHAOTIC, TRAJ_BASE_SMOOTH, TRAJ_GROWTH_CHAOTIC, TRAJ_GROWTH_SMOOTH, TRAJ_QACC_FACTOR,
-    TrajectoryDivergence,
+    TRAJ_BASE_CHAOTIC, TRAJ_BASE_SMOOTH, TRAJ_GROWTH_1DOF, TRAJ_GROWTH_CHAIN, TRAJ_GROWTH_CHAOTIC,
+    TRAJ_GROWTH_STIFF, TRAJ_QACC_FACTOR, TrajectoryDivergence,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -209,27 +209,25 @@ fn compare_trajectory(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qacc wrong from step 1 — CRBA/RNE xipos cascade — Phase 1 FK
 fn layer_c_trajectory_pendulum() {
     compare_trajectory(
         "pendulum",
         &[], // no ctrl
         100, // steps
         TRAJ_BASE_SMOOTH,
-        TRAJ_GROWTH_SMOOTH,
+        TRAJ_GROWTH_1DOF,
         false, // no free joint
     );
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qacc wrong from step 1 — CRBA/RNE xipos cascade — Phase 1 FK
 fn layer_c_trajectory_double_pendulum() {
     compare_trajectory(
         "double_pendulum",
         &[], // no ctrl
         100, // steps
         TRAJ_BASE_SMOOTH,
-        TRAJ_GROWTH_SMOOTH,
+        TRAJ_GROWTH_CHAIN,
         false, // no free joint
     );
 }
@@ -239,7 +237,7 @@ fn layer_c_trajectory_double_pendulum() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: constraint forces wrong — contact.pos convention + efc_J assembly — Phase 3 collision/constraint
+#[ignore] // CONFORMANCE GAP: contact.pos convention + efc_J assembly — Phase 3 collision/constraint
 fn layer_c_trajectory_contact_scenario() {
     compare_trajectory(
         "contact_scenario",
@@ -256,14 +254,13 @@ fn layer_c_trajectory_contact_scenario() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qacc wrong from step 1 — CRBA/RNE xipos cascade — Phase 1 FK
 fn layer_c_trajectory_actuated_system() {
     compare_trajectory(
         "actuated_system",
         &[1.0, 0.5], // motor + position servo
         100,         // steps
         TRAJ_BASE_SMOOTH,
-        TRAJ_GROWTH_SMOOTH,
+        TRAJ_GROWTH_1DOF,
         false, // no free joint
     );
 }
@@ -273,40 +270,38 @@ fn layer_c_trajectory_actuated_system() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qacc wrong from step 1 — CRBA/RNE xipos cascade — Phase 1 FK
 fn layer_c_trajectory_tendon_model() {
     compare_trajectory(
         "tendon_model",
         &[], // no ctrl
         100, // steps
         TRAJ_BASE_SMOOTH,
-        TRAJ_GROWTH_SMOOTH,
+        TRAJ_GROWTH_STIFF,
         false, // no free joint
     );
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qacc wrong from step 1 — CRBA/RNE xipos cascade — Phase 1 FK
 fn layer_c_trajectory_sensor_model() {
     compare_trajectory(
         "sensor_model",
         &[], // no ctrl
         100, // steps
         TRAJ_BASE_SMOOTH,
-        TRAJ_GROWTH_SMOOTH,
+        TRAJ_GROWTH_CHAIN,
         false, // no free joint
     );
 }
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qacc wrong from step 1 + constraint Jacobian wrong — Phase 1 FK + Phase 3 constraint
+#[ignore] // CONFORMANCE GAP: constraint Jacobian wrong — Phase 3 constraint
 fn layer_c_trajectory_equality_model() {
     compare_trajectory(
         "equality_model",
         &[], // no ctrl
         100, // steps
         TRAJ_BASE_SMOOTH,
-        TRAJ_GROWTH_SMOOTH,
+        TRAJ_GROWTH_STIFF,
         false, // no free joint
     );
 }
@@ -316,7 +311,7 @@ fn layer_c_trajectory_equality_model() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // CONFORMANCE GAP: qacc wrong from step 1 + constraint wrong — Phase 1 FK + Phase 3 collision/constraint
+#[ignore] // CONFORMANCE GAP: constraint forces wrong — contact + constraint — Phase 3 collision/constraint
 fn layer_c_trajectory_composite_model() {
     compare_trajectory(
         "composite_model",

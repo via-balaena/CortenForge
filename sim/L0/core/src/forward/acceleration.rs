@@ -33,11 +33,9 @@ pub fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepErr
         Integrator::ImplicitFast => mj_fwd_acceleration_implicitfast(model, data),
         Integrator::Implicit => mj_fwd_acceleration_implicit_full(model, data),
         Integrator::Euler | Integrator::RungeKutta4 => {
-            // S4.14: DISABLE_EULERDAMP guard site — MuJoCo's Euler applies
-            // optional implicit damping when both eulerdamp and damper are
-            // enabled. Our Euler currently uses explicit-only; when implicit
-            // Euler damping is added, gate it on:
-            //   !disabled(model, DISABLE_EULERDAMP) && !disabled(model, DISABLE_DAMPER)
+            // qacc is always computed explicitly for Euler/RK4.
+            // MuJoCo's eulerdamp is applied as a post-velocity correction in
+            // the Euler integration step (see integrate/mod.rs), not here.
             mj_fwd_acceleration_explicit(model, data);
             Ok(())
         }
