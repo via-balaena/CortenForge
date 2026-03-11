@@ -609,7 +609,7 @@ All non-cable composite types are deprecated. See SPEC_C.md Scope Adjustment.
 
 ## Session 12: Spec C review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — create Spec C review document.
@@ -774,9 +774,9 @@ to verify no regressions from Phase 13 infrastructure work.
 | 7 | 2026-03-11 | Done | — | Spec B review create |
 | 8 | 2026-03-11 | Done | — | Spec B review execute + golden flag final gate. All S1-S4 A+, AC1-AC9 pass, 2273 tests pass. Golden flags: 2/26 pass (unchanged — Newton solver). |
 | 9 | 2026-03-11 | Done | 8fc4d4d | Spec C rubric + spec (A+ 9/9, Rev 2, 16 gaps closed). Scope corrected: MuJoCo 3.4.0 deprecated all composite types except cable. Sessions 10+11 merged. |
-| 10 | 2026-03-11 | Done | — | Spec C implement (cable-only — sessions 10+11 merged). S1: types (CompositeType, MjcfComposite, etc.). S2: parser (parse_composite). S3: cable expansion (builder/composite.rs ~480 lines). S4: pipeline integration. T1-T12 all pass, 2294 tests pass, clippy clean. |
+| 10 | 2026-03-11 | Done | 78f9462 | Spec C implement (cable-only — sessions 10+11 merged). S1: types (CompositeType, MjcfComposite, etc.). S2: parser (parse_composite). S3: cable expansion (builder/composite.rs ~480 lines). S4: pipeline integration. T1-T12 all pass, 2294 tests pass, clippy clean. |
 | 11 | — | SKIP | — | MERGED into Session 10 (scope correction: only cable type needs implementation) |
-| 12 | — | — | — | Spec C review create |
+| 12 | 2026-03-11 | Done | — | Spec C review create |
 | 13 | — | — | — | Spec C review execute |
 | 14 | — | — | — | Spec D rubric + spec |
 | 15 | — | — | — | Spec D implement |
