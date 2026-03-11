@@ -7857,7 +7857,6 @@ name = "sim-types"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
- "glam",
  "nalgebra",
  "serde",
  "thiserror 2.0.18",

@@ -273,11 +273,7 @@ pub use derivatives::{
 };
 
 // Re-export key types from sim-types for convenience
-pub use sim_types::{
-    Action, ActionType, BodyId, ExternalForce, Gravity, JointCommand, JointCommandType, JointId,
-    JointLimits, JointState, JointType, MassProperties, Observation, ObservationType, Pose,
-    RigidBodyState, SimError, SimulationConfig, SolverConfig, Twist,
-};
+pub use sim_types::{BodyId, Pose};
 
 #[cfg(test)]
 #[allow(

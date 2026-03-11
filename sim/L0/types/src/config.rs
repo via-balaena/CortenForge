@@ -3,7 +3,7 @@
 //! This module provides configuration types that control how the simulation
 //! runs: timestep, solver settings, integration method, etc.
 
-use crate::dynamics::Gravity;
+use nalgebra::Vector3;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -369,10 +369,79 @@ impl SolverConfig {
     }
 }
 
+/// Gravity configuration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Gravity {
+    /// Acceleration due to gravity (m/s²).
+    pub acceleration: Vector3<f64>,
+}
+
+impl Default for Gravity {
+    fn default() -> Self {
+        Self::earth()
+    }
+}
+
+impl Gravity {
+    /// Standard Earth gravity (9.81 m/s² in -Z direction).
+    #[must_use]
+    pub fn earth() -> Self {
+        Self {
+            acceleration: Vector3::new(0.0, 0.0, -9.81),
+        }
+    }
+
+    /// Moon gravity (1.62 m/s² in -Z direction).
+    #[must_use]
+    pub fn moon() -> Self {
+        Self {
+            acceleration: Vector3::new(0.0, 0.0, -1.62),
+        }
+    }
+
+    /// Mars gravity (3.71 m/s² in -Z direction).
+    #[must_use]
+    pub fn mars() -> Self {
+        Self {
+            acceleration: Vector3::new(0.0, 0.0, -3.71),
+        }
+    }
+
+    /// Zero gravity (microgravity).
+    #[must_use]
+    pub fn zero() -> Self {
+        Self {
+            acceleration: Vector3::zeros(),
+        }
+    }
+
+    /// Custom gravity vector.
+    #[must_use]
+    pub fn custom(acceleration: Vector3<f64>) -> Self {
+        Self { acceleration }
+    }
+
+    /// Compute the gravitational force on a body.
+    #[must_use]
+    pub fn force_on_mass(&self, mass: f64) -> Vector3<f64> {
+        self.acceleration * mass
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[test]
+    fn test_gravity() {
+        let g = Gravity::earth();
+        assert_relative_eq!(g.acceleration.z, -9.81, epsilon = 1e-10);
+
+        let force = g.force_on_mass(2.0);
+        assert_relative_eq!(force.z, -19.62, epsilon = 1e-10);
+    }
 
     #[test]
     fn test_default_config() {

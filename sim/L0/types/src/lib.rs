@@ -1,22 +1,11 @@
-//! Core types for physics simulation.
+//! Foundation types for the sim-core simulation pipeline.
 //!
-//! This crate provides the foundational types for building physics simulations:
+//! This crate provides the foundational types shared across simulation crates:
 //!
-//! - [`RigidBodyState`] - Position, orientation, velocity of rigid bodies
-//! - [`JointState`] - Position, velocity of articulated joints
-//! - [`Action`] - Control inputs (forces, torques, target positions)
-//! - [`Observation`] - Sensor observations from simulation
-//! - [`SimulationConfig`] - Timestep, solver settings
-//!
-//! # Design Philosophy
-//!
-//! These types are **pure data**. They have no behavior, no physics, no integration.
-//! They're the common language between:
-//!
-//! - Physics engines (sim-core, Avian, external)
-//! - Control policies (ML models, classical controllers)
-//! - Sensor simulation (generating observations from state)
-//! - Logging and replay (serialized state trajectories)
+//! - [`BodyId`] - Unique identifier for rigid bodies
+//! - [`Pose`] - Position and orientation in 3D space
+//! - [`SimulationConfig`] - Timestep, solver, and gravity settings
+//! - [`Gravity`] - Gravity configuration
 //!
 //! # Layer 0
 //!
@@ -39,17 +28,14 @@
 //! # Example
 //!
 //! ```
-//! use sim_types::{RigidBodyState, Pose, Twist};
-//! use nalgebra::{Point3, UnitQuaternion, Vector3};
+//! use sim_types::{Pose, SimulationConfig, Gravity};
+//! use nalgebra::Point3;
 //!
-//! // Create a body at rest at the origin
-//! let state = RigidBodyState::new(
-//!     Pose::from_position(Point3::new(0.0, 0.0, 1.0)),
-//!     Twist::zero(),
-//! );
+//! let pose = Pose::from_position(Point3::new(0.0, 0.0, 1.0));
+//! assert_eq!(pose.position.z, 1.0);
 //!
-//! assert_eq!(state.pose.position.z, 1.0);
-//! assert!(state.twist.linear.norm() < 1e-10);
+//! let config = SimulationConfig::with_timestep(0.001).gravity(Gravity::moon());
+//! assert!(config.validate().is_ok());
 //! ```
 
 #![doc(html_root_url = "https://docs.rs/sim-types/0.7.0")]
@@ -65,23 +51,13 @@
 
 mod body;
 mod config;
-mod dynamics;
 mod error;
-mod joint;
-mod observation;
 
-pub use body::{BodyId, MassProperties, Pose, RigidBodyState, Twist};
-pub use config::{ParallelConfig, SimulationConfig, SolverConfig};
-pub use dynamics::{Action, ActionType, ExternalForce, Gravity, JointCommand, JointCommandType};
+pub use body::{BodyId, Pose};
+pub use config::{Gravity, ParallelConfig, SimulationConfig, SolverConfig};
 pub use error::SimError;
-pub use joint::{JointAxis, JointId, JointLimits, JointState, JointStateExtended, JointType};
-pub use observation::{
-    ContactInfo, ContactStats, Observation, ObservationType, PoseObservation, SensorObservation,
-    VelocityObservation,
-};
 
 // Re-export math types for convenience
-pub use glam::{Quat, Vec3};
 pub use nalgebra::{Isometry3, Point3, UnitQuaternion, Vector3};
 
 /// Result type for simulation operations.
@@ -91,16 +67,6 @@ pub type Result<T> = std::result::Result<T, SimError>;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_rigid_body_state() {
-        let pose = Pose::from_position(Point3::new(1.0, 2.0, 3.0));
-        let twist = Twist::new(Vector3::new(1.0, 0.0, 0.0), Vector3::zeros());
-        let state = RigidBodyState::new(pose, twist);
-
-        assert_eq!(state.pose.position.x, 1.0);
-        assert_eq!(state.twist.linear.x, 1.0);
-    }
 
     #[test]
     fn test_pose_transform() {
