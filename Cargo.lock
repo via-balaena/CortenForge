@@ -7791,17 +7791,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sim-constraint"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "serde",
- "sim-muscle",
- "sim-types",
-]
-
-[[package]]
 name = "sim-core"
 version = "0.7.0"
 dependencies = [
@@ -7853,43 +7842,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sim-muscle"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-physics"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "sim-constraint",
- "sim-core",
- "sim-mjcf",
- "sim-muscle",
- "sim-sensor",
- "sim-tendon",
- "sim-types",
- "sim-urdf",
-]
-
-[[package]]
-name = "sim-sensor"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "serde",
- "sim-types",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "sim-simd"
 version = "0.7.0"
 dependencies = [
@@ -7898,17 +7850,6 @@ dependencies = [
  "nalgebra",
  "proptest",
  "rand 0.8.5",
-]
-
-[[package]]
-name = "sim-tendon"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "serde",
- "sim-types",
- "thiserror 2.0.18",
 ]
 
 [[package]]
