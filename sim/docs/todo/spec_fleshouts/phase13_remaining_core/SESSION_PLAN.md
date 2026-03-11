@@ -629,7 +629,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase13_remaining_core/SPEC_C_REVIEW.md
 
 ## Session 13: Spec C review — execute
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — execute Spec C review.
@@ -777,7 +777,7 @@ to verify no regressions from Phase 13 infrastructure work.
 | 10 | 2026-03-11 | Done | 78f9462 | Spec C implement (cable-only — sessions 10+11 merged). S1: types (CompositeType, MjcfComposite, etc.). S2: parser (parse_composite). S3: cable expansion (builder/composite.rs ~480 lines). S4: pipeline integration. T1-T12 all pass, 2294 tests pass, clippy clean. |
 | 11 | — | SKIP | — | MERGED into Session 10 (scope correction: only cable type needs implementation) |
 | 12 | 2026-03-11 | Done | — | Spec C review create |
-| 13 | — | — | — | Spec C review execute |
+| 13 | 2026-03-11 | Done | — | Spec C review execute. All S1-S4 A+, 18/18 ACs pass, 2,297 tests pass. Fixed 2 minor issues: error message typo ("sphere"→"cylinder"), stale doc comment. 3 new DT items (167-169) for post-v1.0. |
 | 14 | — | — | — | Spec D rubric + spec |
 | 15 | — | — | — | Spec D implement |
 | 16 | — | — | — | Spec D review create |

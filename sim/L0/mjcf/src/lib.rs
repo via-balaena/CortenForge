@@ -124,7 +124,7 @@
 //! # Limitations
 //!
 //! - Height fields (hfield) and signed distance fields (sdf) are parsed but fall back to Box geometry
-//! - Composite bodies are not supported
+//! - Composite bodies: only `type="cable"` is supported (all other types are deprecated in MuJoCo 3.4.0)
 //!
 //! # Coordinate System
 //!

@@ -156,7 +156,7 @@ fn validate_cable(composite: &MjcfComposite) -> Result<()> {
             MjcfGeomType::Cylinder | MjcfGeomType::Capsule | MjcfGeomType::Box => {}
             _ => {
                 return Err(MjcfError::Unsupported(
-                    "Cable geom type must be sphere, capsule or box".to_string(),
+                    "Cable geom type must be cylinder, capsule or box".to_string(),
                 ));
             }
         }

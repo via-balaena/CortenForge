@@ -35,6 +35,8 @@
 > DT-162 (PGS nactive/nchange counting), DT-163 (PGS warmstart primal cost gate)
 > added during Phase 13 Spec B implementation.
 > DT-164 (Newton solver golden flag convergence) added during Phase 13 Session 8 review.
+> DT-165 (cable skin), DT-166 (composite custom text), DT-167 (flexcomp element),
+> DT-168 (replicate element), DT-169 (cable site template) added during Phase 13 Spec C review.
 >
 > **Current position**: Phases 1–7 and 10 complete. Next: Phases 8, 9, 11 (parallel).
 
@@ -300,7 +302,7 @@ green.
 | ~~DT-39~~ | 10e | T2 | ~~Body-weight diagonal approximation (`diagApprox`) — remaining code paths~~ **Done** — Phase 13 Spec A (Session 2). Replaced diagonal-only `tendon_invweight0` with full `J·M⁻¹·J^T` solve. diagApprox/R/D match MuJoCo. Golden flags still blocked by Newton solver convergence (DT-128/129). |
 | ~~DT-128~~ | 10e | T2 | ~~PGS early termination~~ **Done** — Phase 13 Spec B (Session 6). Refactored PGS loop: `while iter < max_iters` with `improvement -= costChange()` accumulation, `improvement *= scale`, `if improvement < tolerance { break }`. `solver_niter` reports actual count. `solver_stat` populated per iteration. MuJoCo conformance verified (T7: efc_force, solver_niter, qacc within 1e-10). |
 | ~~DT-129~~ | 10e | T3 | ~~PGS warmstart two-phase projection~~ **Done** — Phase 13 Spec B (Session 6). Verified existing warmstart logic matches MuJoCo PGS path: `classify_constraint_states()` maps qacc_warmstart → efc_force, dual cost gate zeros forces when warmstart not beneficial. Minor primal/dual cost gate difference tracked as DT-163 (no measurable divergence). |
-| §46 | 12 | — | `<composite>` procedural body generation (grid, rope, cable, cloth, box, cylinder, ellipsoid) |
+| ~~§46~~ | 12 | — | ~~`<composite>` procedural body generation~~ **Done** — Phase 13 Spec C (Session 10). Only `cable` type implemented (non-deprecated in MuJoCo 3.4.0). Deprecated types (particle/grid/rope/loop/cloth) return MuJoCo-matching error messages. Skin (DT-165), custom text (DT-166), `<flexcomp>` (DT-167), `<replicate>` (DT-168), `<site>` template (DT-169) deferred to post-v1.0. |
 | §66 | 16 | — | Plugin/extension system — `<plugin>`/`<extension>` MJCF parsing + Rust trait dispatch |
 
 ---
@@ -424,6 +426,11 @@ foundation isn't right.
 | DT-162 | 13 | T1 | PGS `solver_stat` `nactive`/`nchange` per-iteration counting — MuJoCo calls `dualState()` after each PGS sweep to classify active constraints and count state transitions. CortenForge uses placeholder 0 for both fields. Diagnostic only — does not affect solver forces, qacc, or convergence. Deferred from Phase 13 Spec B. |
 | DT-163 | 13 | T1 | PGS warmstart primal cost gate — MuJoCo evaluates `primal_cost > 0` via `mj_constraintUpdate()`, CortenForge evaluates `dual_cost < 0` via `classify_constraint_states()`. Equivalent at optimum (strong duality); slightly more conservative before convergence (`dual ≤ primal`). No measurable divergence in T7 conformance test. Upgrade to primal cost if divergence found on complex models. Deferred from Phase 13 Spec B. |
 | DT-164 | 13 | T2 | Newton solver golden flag convergence — 24/26 golden flag tests fail at ~0.002 qacc divergence. Assembly (diagApprox, R, D) and PGS solver are verified correct (Specs A+B). Residual divergence traces to Newton solver iteration: efc_force differs by ~3e-6 per row, amplified by M⁻¹ to ~0.002 qacc. Root cause is Newton convergence behavior (line search, Hessian factorization, or tolerance handling), not constraint assembly or PGS. Requires dedicated Newton solver investigation. Identified during Phase 13 Session 8 golden flag gate. |
+| DT-165 | 13 | T2 | Cable skin generation — rendering-only box-geom cable skin with bicubic interpolation and subgrid support. MuJoCo `mjCComposite::MakeSkin()` in `user_composite.cc`. Visual-only feature — no physics impact. Deferred from Phase 13 Spec C. |
+| DT-166 | 13 | T1 | Custom text metadata for composites — cable adds `composite_{prefix}` text element with data `rope_{prefix}` via MuJoCo's `mjsText`. Requires `<custom><text>` infrastructure which CortenForge does not yet support. Metadata-only — no physics impact. Deferred from Phase 13 Spec C. |
+| DT-167 | 13 | T2 | `<flexcomp>` element — separate MJCF element from `<composite>`. Generates flex bodies from templates (box, cylinder, ellipsoid, mesh, etc.). Completely independent infrastructure from composite cable. Not in §46. Deferred from Phase 13 Spec C review. |
+| DT-168 | 13 | T1 | `<replicate>` element — MuJoCo 3.4.0 replacement for deprecated `<composite type="particle">`. Repeats body templates at specified positions. Independent from cable composite. Deferred from Phase 13 Spec C review. |
+| DT-169 | 13 | T1 | Cable `<site>` template customization — `<site>` child element support inside `<composite>` to customize boundary site properties (size, rgba, group, etc.). Currently boundary sites use `MjcfSite::default()`. Deferred from Phase 13 Spec C review. |
 | DT-89 | 10i | T1 | `<flexcomp>` rendering attributes |
 | DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()`. Deferred from Phase 5 Spec B. |
 | DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Covers both actuators (Phase 5 Spec D) and sensors (Phase 6 Spec D): structures exist for both, runtime missing for both. Includes sensor history pre-population in `reset_data()`. |
