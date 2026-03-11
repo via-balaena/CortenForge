@@ -49,9 +49,6 @@ an umbrella re-exporter whose primary value was bundling these legacy crates.
 - Any changes to v1.0 pipeline **behavior** (sim-core internals, sim-mjcf parsing, sim-urdf, sim-simd, sim-gpu, sim-bevy)
 - Any changes to the conformance test suite (except removing dead sim-sensor import)
 
-Note: sim-core's `pub use sim_types::{...}` re-export block is cleaned up in Phase D.
-This is a public API surface change (removing dead re-exports), not a behavior change.
-
 ---
 
 ## Current Dependency Graph
@@ -194,19 +191,19 @@ Delete directories:
 - `sim/L0/muscle/` (entire directory)
 - `sim/L0/physics/` (entire directory — umbrella crate)
 
-Remove from `[workspace.members]` in root `Cargo.toml` (lines 101-107):
-- `sim/L0/constraint`
-- `sim/L0/sensor`
-- `sim/L0/muscle`
-- `sim/L0/tendon`
-- `sim/L0/physics`
+Remove from `[workspace.members]` in root `Cargo.toml` (keep sim-mjcf, sim-urdf — they're v1.0):
+- `"sim/L0/constraint"` (line 101)
+- `"sim/L0/sensor"` (line 102)
+- `"sim/L0/muscle"` (line 103)
+- `"sim/L0/tendon"` (line 104)
+- `"sim/L0/physics"` (line 107)
 
-Remove from `[workspace.dependencies]` in root `Cargo.toml` (lines 325-331):
-- `sim-constraint = { path = "sim/L0/constraint" }`
-- `sim-sensor = { path = "sim/L0/sensor" }`
-- `sim-muscle = { path = "sim/L0/muscle" }`
-- `sim-tendon = { path = "sim/L0/tendon" }`
-- `sim-physics = { path = "sim/L0/physics" }`
+Remove from `[workspace.dependencies]` in root `Cargo.toml` (keep sim-mjcf, sim-urdf):
+- `sim-constraint = { path = "sim/L0/constraint" }` (line 325)
+- `sim-sensor = { path = "sim/L0/sensor" }` (line 326)
+- `sim-muscle = { path = "sim/L0/muscle" }` (line 327)
+- `sim-tendon = { path = "sim/L0/tendon" }` (line 328)
+- `sim-physics = { path = "sim/L0/physics" }` (line 331)
 
 **Checkpoint**: `cargo build` passes.
 
@@ -238,26 +235,47 @@ Remove unused POC types from `sim/L0/types/src/`.
 - `SolverConfig::validate()` → `SimError::invalid_config()`
 - `pub type Result<T>` alias depends on `SimError`
 
-Keep `error.rs` and `thiserror` dependency. Optionally trim to only the variants used by
-kept code (`InvalidTimestep`, `InvalidConfig` + `invalid_config()` helper), but trimming
-is not required for correctness.
+Keep `error.rs` and `thiserror` dependency. **Trim to only the variants used by kept code.**
+8 of 11 variants reference concepts being removed (bodies, joints, actions, mass properties,
+divergence) — keeping them creates a false impression that sim-types still deals with these.
+
+Keep:
+- `InvalidTimestep(f64)`
+- `InvalidConfig { reason: String }`
+- `invalid_config()` helper
+- `is_config_error()` helper
+
+Remove:
+- Variants: `InvalidBodyId`, `InvalidJointId`, `JointLimitViolation`, `Diverged`,
+  `ActionTypeMismatch`, `BodyNotFound`, `JointNotFound`, `ParentRequired`,
+  `InvalidMassProperties`
+- Helpers: `diverged()`, `invalid_mass()`, `is_diverged()`
+- Tests: replace with tests covering only `InvalidTimestep`, `InvalidConfig`,
+  and the `invalid_config()`/`is_config_error()` helpers
 
 **Types to remove from remaining files:**
 
-From `body.rs` (keep `BodyId`, `Pose`):
-- `RigidBodyState` — 0 pipeline uses (Data uses flat arrays)
-- `MassProperties` — 0 pipeline uses (Model uses separate arrays)
-- `Twist` — 0 pipeline uses
+From `body.rs` (keep `BodyId`, `Pose` — remove everything else):
+- `RigidBodyState` (struct + 5 methods + Default impl) — 0 pipeline uses
+- `MassProperties` (struct + 9 methods, including `validate()`) — 0 pipeline uses
+- `Twist` (struct + 14 methods + Default impl) — 0 pipeline uses
+- Remove import: `Matrix3` (only used by removed types)
+- Update module doc comment: "Rigid body state types" → "Body identity and pose types"
+- Remove 6 tests that reference removed types:
+  `test_twist_velocity_at_point`, `test_twist_kinetic_energy`,
+  `test_mass_properties_sphere`, `test_mass_properties_box`,
+  `test_mass_properties_validation`, `test_rigid_body_state_interpolation`
+- Keep 7 tests: `test_body_id`, `test_pose_identity`, `test_pose_translation`,
+  `test_pose_rotation`, `test_pose_inverse`, `test_pose_compose`, `test_pose_lerp`
 
-From `joint.rs` (keep nothing — see below):
+From `joint.rs` (keep nothing — delete entire file):
 - `JointId` — only re-exported by sim-core, 0 internal uses
 - `JointType` — only re-exported by sim-core; pipeline uses `MjJointType` (187 uses in 23 files)
 - `JointLimits` — only re-exported by sim-core, 0 internal uses
 - `JointState` — 0 pipeline uses
 - `JointAxis` — 0 pipeline uses
 - `JointStateExtended` — 0 pipeline uses
-
-→ All 6 types confirmed unused. Delete `joint.rs` entirely.
+- All 6 types + 10 tests confirmed unused. Delete `joint.rs` entirely.
 
 **Other cleanup in sim-types:**
 - Remove `pub use glam::{Quat, Vec3}` re-export (0 pipeline uses; pipeline uses nalgebra)
@@ -286,9 +304,10 @@ From `joint.rs` (keep nothing — see below):
 - `Result<T>` — type alias for `std::result::Result<T, SimError>`
 
 **After cleanup, sim-types contains only:**
-- `body.rs` — `BodyId`, `Pose`
+- `body.rs` — `BodyId`, `Pose` (+ 7 kept tests)
 - `config.rs` — `SimulationConfig`, `SolverConfig`, `ParallelConfig`, `Gravity`
-- `error.rs` — `SimError` (trimmed to variants used by config.rs)
+- `error.rs` — `SimError::InvalidTimestep`, `SimError::InvalidConfig`, `invalid_config()`,
+  `is_config_error()` (2 variants, down from 11)
 - `lib.rs` — re-exports + nalgebra convenience re-exports + `Result<T>` alias
 
 ### Phase D — Clean up sim-core re-exports
@@ -324,6 +343,10 @@ re-exports is a public API change, but no code in the workspace uses them via si
 - Any other docs that reference sim-constraint, sim-sensor, sim-tendon, sim-muscle, sim-physics
 
 **CI/CD (hardcoded legacy crate references):**
+
+Only `sim-constraint` and `sim-physics` appear in CI — sim-sensor, sim-tendon, and
+sim-muscle are confirmed absent from both files.
+
 - `.github/workflows/quality-gate.yml` — remove `sim-constraint` and `sim-physics` from:
   - WASM check crate array (lines 156, 158)
   - Bevy-free / Layer 0 crate array (lines 398, 400)
@@ -369,7 +392,7 @@ re-exports is a public API change, but no code in the workspace uses them via si
 
 - **Phase A**: ~30 min (remove legacy deps from 13 example crates + conformance tests)
 - **Phase B**: ~15 min (delete 5 legacy crate dirs, update workspace Cargo.toml)
-- **Phase C**: ~1 hr (move Gravity, trim sim-types, update lib.rs/Cargo.toml, keep error.rs)
+- **Phase C**: ~1 hr (move Gravity, trim sim-types + error.rs, update lib.rs/Cargo.toml)
 - **Phase D**: ~15 min (clean up sim-core re-export block)
 - **Phase E**: ~30 min (update docs + CI/CD scripts)
 - **Phase F**: ~10 min (build + test + verify)
