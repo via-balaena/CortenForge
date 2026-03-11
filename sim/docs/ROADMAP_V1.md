@@ -292,8 +292,8 @@ green.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | DT-19 | 10c | T3 | QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style). Surfaced by Phase 12 gate triage — golden flag tests. |
-| DT-23 | 10c | T2 | Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`). Surfaced by Phase 12 gate triage — `golden_disable_frictionloss` (~3.99 divergence). |
-| DT-39 | 10e | T2 | Body-weight diagonal approximation (`diagApprox`) — remaining code paths. Partially fixed in Phase 12 Session 15 Round 2; golden flag model's equality constraint configuration exercises a remaining path. |
+| ~~DT-23~~ | 10c | T2 | ~~Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`)~~ **Done** — verified correct in Phase 13 Spec A (Session 2/4). Assembly routes per-DOF `dof_solref`/`dof_solimp` and per-tendon `tendon_solref_fri`/`tendon_solimp_fri`. |
+| ~~DT-39~~ | 10e | T2 | ~~Body-weight diagonal approximation (`diagApprox`) — remaining code paths~~ **Done** — Phase 13 Spec A (Session 2). Replaced diagonal-only `tendon_invweight0` with full `J·M⁻¹·J^T` solve. diagApprox/R/D match MuJoCo. Golden flags still blocked by Newton solver convergence (DT-128/129). |
 | DT-128 | 10e | T2 | PGS early termination — accumulate `improvement` from `costChange()`, break when `improvement * scale < tolerance`. Surfaced by Phase 12 gate triage. |
 | DT-129 | 10e | T3 | PGS warmstart two-phase projection — use ray+QCQP projection on warmstart forces. Surfaced by Phase 12 gate triage. |
 | §46 | 12 | — | `<composite>` procedural body generation (grid, rope, cable, cloth, box, cylinder, ellipsoid) |
@@ -416,6 +416,7 @@ foundation isn't right.
 | DT-80 | 10j | T1 | Mocap body + equality weld integration testing |
 | DT-81 | 10j | T1 | `key_userdata` support |
 | DT-84 | 10j | T1 | `mju_encodePyramid` utility |
+| DT-161 | 13 | T1 | Pyramidal `efc_diagApprox` bodyweight factor-of-2 — CF stores `(1+μ²)·w_tran`, MuJoCo stores `2·(1+μ²)·w_tran` for pyramidal facet rows (`assembly.rs:681`). No downstream effect: Rpy post-processing (`assembly.rs:775-795`) overwrites R/D for all facet rows. Pure conformance of a stored diagnostic field. Root cause unknown — requires reading MuJoCo `mj_diagApprox` C source. Identified during Phase 13 Spec A review. |
 | DT-89 | 10i | T1 | `<flexcomp>` rendering attributes |
 | DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()`. Deferred from Phase 5 Spec B. |
 | DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Covers both actuators (Phase 5 Spec D) and sensors (Phase 6 Spec D): structures exist for both, runtime missing for both. Includes sensor history pre-population in `reset_data()`. |

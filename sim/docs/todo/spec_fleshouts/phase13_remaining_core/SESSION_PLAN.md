@@ -312,7 +312,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase13_remaining_core/SPEC_A_REVIEW.md
 
 ## Session 4: Spec A review — execute + golden flag checkpoint
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — execute Spec A review and run golden flag checkpoint.
@@ -770,7 +770,7 @@ to verify no regressions from Phase 13 infrastructure work.
 | 1 | 2026-03-11 | Done | dd9555d | Spec A rubric + spec |
 | 2 | 2026-03-11 | Done | 099299e | Spec A implement. Assembly fix correct (diagApprox matches MuJoCo). Golden flags: 2/26 pass — residual 0.002 qacc divergence is Newton solver convergence (Spec B). |
 | 3 | 2026-03-11 | Done | — | Spec A review create |
-| 4 | — | — | — | Spec A review execute + golden flag checkpoint |
+| 4 | 2026-03-11 | Done | — | Spec A review execute + golden flag checkpoint. Assembly fix verified correct. 2/26 golden flags pass; 24 blocked by Newton solver convergence (Spec B). Added 4 missing tests (T1-T3, T5). |
 | 5 | — | — | — | Spec B rubric + spec |
 | 6 | — | — | — | Spec B implement |
 | 7 | — | — | — | Spec B review create |
@@ -832,9 +832,16 @@ Session 0 produces predictions for each test. Fill in after diagnostic.
 
 | Result | Count | Tests |
 |--------|-------|-------|
-| Pass | — | — |
-| Fail | — | — |
-| Total | 26 | — |
+| Pass | 2 | `golden_disable_constraint`, `golden_disable_frictionloss` |
+| Fail | 24 | All others — ~0.002 qacc divergence (Newton solver convergence, not assembly) |
+| Total | 26 | Assembly fix correct (diagApprox, R, D match MuJoCo). Residual is efc_force ~3e-6 → qacc ~0.002. |
+
+**Assessment:** Session 0 predicted 26/26 pass after Spec A. Actual: 2/26.
+The prediction was wrong — the assembly fix eliminates the diagApprox/R/D gap
+but a secondary divergence source exists in the Newton solver iteration
+(efc_force differs by ~3e-6 per row, amplified by M⁻¹ to ~0.002 qacc).
+This is Spec B territory (DT-128 early termination + DT-129 warmstart projection).
+`#[ignore]` removal deferred to Session 8.
 
 ### After Spec B (Session 8 final gate)
 

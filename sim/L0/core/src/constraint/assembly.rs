@@ -677,6 +677,10 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 // both normal (1²) and friction (mu²) components, using translational
                 // body weight. After R-scaling (Rpy = 2·mu²·R_base), the effective
                 // diagApprox becomes 2·mu²·(1+mu²)·w_tran, matching MuJoCo.
+                //
+                // NOTE(DT-161): This produces (1+μ²)·w_tran; MuJoCo stores
+                // 2·(1+μ²)·w_tran (factor-of-2 mismatch). No downstream effect —
+                // Rpy post-processing overwrites R/D for all pyramidal facet rows.
                 let mu0 = contact.mu[0];
                 let bw_py = (1.0 + mu0 * mu0) * bw_contact[0];
 
@@ -773,7 +777,6 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
         }
 
         // §32: Post-process R scaling for pyramidal contacts.
-        // TODO(§32): AC12/AC13 cross-validation against MuJoCo reference data.
         // MuJoCo's mj_makeImpedance computes R per-row from each row's own diagApprox,
         // then overrides all facet rows with Rpy = 2 · μ_reg² · R[first_facet].
         // R[first_facet] was already computed by finalize_row! using the first facet's

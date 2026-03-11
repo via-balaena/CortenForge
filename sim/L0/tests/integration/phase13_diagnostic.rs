@@ -175,6 +175,22 @@ fn dump_cortenforge_data(model: &Model, data: &Data) {
     println!("]");
 }
 
+/// T1 (Spec A, AC1): Flag model tendon_invweight0 conformance.
+/// MuJoCo 3.4.0 reference: tendon_invweight0[0] ≈ 5388.92
+#[test]
+fn phase13_tendon_invweight0_flag_model() {
+    let model_path = golden_path("flag_golden_test.xml");
+    let xml = std::fs::read_to_string(&model_path).expect("read model");
+    let model = load_model(&xml).expect("load model");
+
+    // AC1: flag model tendon_invweight0[0] ≈ 5388.92 (MuJoCo 3.4.0 reference)
+    assert!(
+        (model.tendon_invweight0[0] - 5388.92).abs() < 1e-2,
+        "tendon_invweight0[0] = {}, expected ≈ 5388.92",
+        model.tendon_invweight0[0]
+    );
+}
+
 fn compare_field(label: &str, cf_val: f64, mj_val: f64, row: usize) -> bool {
     let diff = (cf_val - mj_val).abs();
     let ok = diff < 1e-6;

@@ -1061,6 +1061,7 @@ impl Model {
         // between DOFs in serial kinematic chains. Applies uniformly to all tendon
         // types (fixed and spatial) — no type-specific branching needed.
         self.tendon_invweight0 = vec![0.0; self.ntendon];
+        let mut rhs = DMatrix::zeros(self.nv, 1);
         for t in 0..self.ntendon {
             let j_tendon = &data.ten_J[t];
 
@@ -1071,11 +1072,8 @@ impl Model {
                 continue;
             }
 
-            // Build 1-column DMatrix from J_tendon for the batch solver
-            let mut rhs = DMatrix::zeros(self.nv, 1);
-            for i in 0..self.nv {
-                rhs[(i, 0)] = j_tendon[i];
-            }
+            // Copy J_tendon into reusable 1-column RHS for the batch solver
+            rhs.column_mut(0).copy_from(j_tendon);
 
             // Solve M · w = J_tendon → w = M⁻¹ · J_tendon
             mj_solve_sparse_batch(
@@ -1087,11 +1085,8 @@ impl Model {
                 &mut rhs,
             );
 
-            // tendon_invweight0 = J_tendon^T · w = J_tendon · M⁻¹ · J_tendon^T
-            let mut w = 0.0;
-            for i in 0..self.nv {
-                w += j_tendon[i] * rhs[(i, 0)];
-            }
+            // tendon_invweight0 = J_tendon · M⁻¹ · J_tendon^T
+            let w = j_tendon.dot(&rhs.column(0));
             self.tendon_invweight0[t] = w.max(MIN_VAL);
         }
     }
