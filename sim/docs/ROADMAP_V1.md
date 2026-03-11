@@ -34,6 +34,7 @@
 > DT-161 (pyramidal diagApprox factor-of-2) added during Phase 13 Spec A review.
 > DT-162 (PGS nactive/nchange counting), DT-163 (PGS warmstart primal cost gate)
 > added during Phase 13 Spec B implementation.
+> DT-164 (Newton solver golden flag convergence) added during Phase 13 Session 8 review.
 >
 > **Current position**: Phases 1–7 and 10 complete. Next: Phases 8, 9, 11 (parallel).
 
@@ -294,11 +295,11 @@ green.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| DT-19 | 10c | T3 | QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style). Surfaced by Phase 12 gate triage — golden flag tests. |
+| ~~DT-19~~ | 10c | T3 | ~~QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style)~~ **Done** — Phase 13 Spec B (Session 6). Verified correct via line-by-line comparison with MuJoCo `mju_QCQP2/3/N()`. No code changes needed; 14/14 unit tests pass. |
 | ~~DT-23~~ | 10c | T2 | ~~Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`)~~ **Done** — verified correct in Phase 13 Spec A (Session 2/4). Assembly routes per-DOF `dof_solref`/`dof_solimp` and per-tendon `tendon_solref_fri`/`tendon_solimp_fri`. |
 | ~~DT-39~~ | 10e | T2 | ~~Body-weight diagonal approximation (`diagApprox`) — remaining code paths~~ **Done** — Phase 13 Spec A (Session 2). Replaced diagonal-only `tendon_invweight0` with full `J·M⁻¹·J^T` solve. diagApprox/R/D match MuJoCo. Golden flags still blocked by Newton solver convergence (DT-128/129). |
-| DT-128 | 10e | T2 | PGS early termination — accumulate `improvement` from `costChange()`, break when `improvement * scale < tolerance`. Surfaced by Phase 12 gate triage. |
-| DT-129 | 10e | T3 | PGS warmstart two-phase projection — use ray+QCQP projection on warmstart forces. Surfaced by Phase 12 gate triage. |
+| ~~DT-128~~ | 10e | T2 | ~~PGS early termination~~ **Done** — Phase 13 Spec B (Session 6). Refactored PGS loop: `while iter < max_iters` with `improvement -= costChange()` accumulation, `improvement *= scale`, `if improvement < tolerance { break }`. `solver_niter` reports actual count. `solver_stat` populated per iteration. MuJoCo conformance verified (T7: efc_force, solver_niter, qacc within 1e-10). |
+| ~~DT-129~~ | 10e | T3 | ~~PGS warmstart two-phase projection~~ **Done** — Phase 13 Spec B (Session 6). Verified existing warmstart logic matches MuJoCo PGS path: `classify_constraint_states()` maps qacc_warmstart → efc_force, dual cost gate zeros forces when warmstart not beneficial. Minor primal/dual cost gate difference tracked as DT-163 (no measurable divergence). |
 | §46 | 12 | — | `<composite>` procedural body generation (grid, rope, cable, cloth, box, cylinder, ellipsoid) |
 | §66 | 16 | — | Plugin/extension system — `<plugin>`/`<extension>` MJCF parsing + Rust trait dispatch |
 
@@ -422,6 +423,7 @@ foundation isn't right.
 | DT-161 | 13 | T1 | Pyramidal `efc_diagApprox` bodyweight factor-of-2 — CF stores `(1+μ²)·w_tran`, MuJoCo stores `2·(1+μ²)·w_tran` for pyramidal facet rows (`assembly.rs:681`). No downstream effect: Rpy post-processing (`assembly.rs:775-795`) overwrites R/D for all facet rows. Pure conformance of a stored diagnostic field. Root cause unknown — requires reading MuJoCo `mj_diagApprox` C source. Identified during Phase 13 Spec A review. |
 | DT-162 | 13 | T1 | PGS `solver_stat` `nactive`/`nchange` per-iteration counting — MuJoCo calls `dualState()` after each PGS sweep to classify active constraints and count state transitions. CortenForge uses placeholder 0 for both fields. Diagnostic only — does not affect solver forces, qacc, or convergence. Deferred from Phase 13 Spec B. |
 | DT-163 | 13 | T1 | PGS warmstart primal cost gate — MuJoCo evaluates `primal_cost > 0` via `mj_constraintUpdate()`, CortenForge evaluates `dual_cost < 0` via `classify_constraint_states()`. Equivalent at optimum (strong duality); slightly more conservative before convergence (`dual ≤ primal`). No measurable divergence in T7 conformance test. Upgrade to primal cost if divergence found on complex models. Deferred from Phase 13 Spec B. |
+| DT-164 | 13 | T2 | Newton solver golden flag convergence — 24/26 golden flag tests fail at ~0.002 qacc divergence. Assembly (diagApprox, R, D) and PGS solver are verified correct (Specs A+B). Residual divergence traces to Newton solver iteration: efc_force differs by ~3e-6 per row, amplified by M⁻¹ to ~0.002 qacc. Root cause is Newton convergence behavior (line search, Hessian factorization, or tolerance handling), not constraint assembly or PGS. Requires dedicated Newton solver investigation. Identified during Phase 13 Session 8 golden flag gate. |
 | DT-89 | 10i | T1 | `<flexcomp>` rendering attributes |
 | DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()`. Deferred from Phase 5 Spec B. |
 | DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Covers both actuators (Phase 5 Spec D) and sensors (Phase 6 Spec D): structures exist for both, runtime missing for both. Includes sensor history pre-population in `reset_data()`. |

@@ -473,7 +473,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase13_remaining_core/SPEC_B_REVIEW.md
 
 ## Session 8: Spec B review — execute + golden flag final gate
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — execute Spec B review and run golden flag final gate.
@@ -774,7 +774,7 @@ to verify no regressions from Phase 13 infrastructure work.
 | 5 | 2026-03-11 | Done | — | Spec B rubric + spec (A+ 9/9, Rev 3) |
 | 6 | 2026-03-11 | Done | 6f056ec | Spec B implement. S1: DT-19 QCQP verified (14/14 tests). S2: PGS early termination + solver_stat + solver_niter. S3: warmstart verified. T1-T7 all pass. PGS MuJoCo conformance exact match (niter, forces, qacc within 1e-10). Golden flags: 2/26 pass (unchanged — Newton solver). |
 | 7 | 2026-03-11 | Done | — | Spec B review create |
-| 8 | — | — | — | Spec B review execute + golden flag final gate |
+| 8 | 2026-03-11 | Done | — | Spec B review execute + golden flag final gate. All S1-S4 A+, AC1-AC9 pass, 2273 tests pass. Golden flags: 2/26 pass (unchanged — Newton solver). |
 | 9 | — | — | — | Spec C rubric + spec |
 | 10 | — | — | — | Spec C implement part 1 (rope, cable, grid) |
 | 11 | — | — | — | Spec C implement part 2 (cloth, box, cylinder, ellipsoid) |
@@ -847,9 +847,19 @@ This is Spec B territory (DT-128 early termination + DT-129 warmstart projection
 
 | Result | Count | Tests |
 |--------|-------|-------|
-| Pass | — | — |
-| Fail | — | — |
-| Total | 26 | — |
+| Pass | 2 | `golden_disable_constraint`, `golden_disable_frictionloss` |
+| Fail | 24 | All others — ~0.002 qacc divergence (Newton solver convergence, NOT PGS) |
+| Total | 26 | PGS solver conformance verified (MuJoCo exact match on PGS model). Newton solver convergence is the remaining root cause. |
+
+**Assessment:** Spec B's PGS changes do not affect golden flag results (which use
+Newton solver). The 24 failing tests at ~0.002 qacc divergence trace to Newton
+solver convergence behavior — this is independent of PGS early termination,
+warmstart, and QCQP. PGS-specific conformance is fully verified via T7 (efc_force,
+solver_niter, qacc all match MuJoCo within 1e-10).
+
+**Conformance gate status:** PGS solver is v1.0-conformant. Newton solver has
+residual ~0.002 qacc divergence on 24 golden flag tests. This is a separate
+investigation (not covered by Phase 13 Specs A-B scope).
 
 ---
 
@@ -894,3 +904,4 @@ be added to the post-v1.0 sections of ROADMAP_V1.md at phase completion.
 | ~~DT-131~~ | — | ~~FILTERPARENT — initially suspected. Actual divergence ~0.020, same root cause as baseline. Not a separate issue.~~ | Session 0 (retracted) |
 | DT-162 | T1 | PGS `solver_stat` `nactive`/`nchange` per-iteration counting — MuJoCo calls `dualState()` per sweep; CF uses placeholder 0. Diagnostic only, no solver output impact. | Session 6 |
 | DT-163 | T1 | PGS warmstart primal cost gate — CF uses dual cost (`< 0`), MuJoCo uses primal cost (`> 0`). Equivalent at optimum; slightly conservative before convergence. No measurable divergence in T7. | Session 6 |
+| DT-164 | T2 | Newton solver golden flag convergence — 24/26 golden flag tests fail at ~0.002 qacc. Assembly and PGS verified correct (Specs A+B). Residual divergence is Newton solver convergence behavior. | Session 8 |
