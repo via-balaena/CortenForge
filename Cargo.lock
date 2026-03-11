@@ -3308,11 +3308,9 @@ dependencies = [
  "route-types",
  "sensor-fusion",
  "sensor-types",
- "sim-constraint",
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
- "sim-sensor",
  "sim-types",
 ]
 
@@ -3329,11 +3327,9 @@ dependencies = [
  "ml-types",
  "sensor-fusion",
  "sensor-types",
- "sim-constraint",
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
- "sim-sensor",
  "sim-types",
 ]
 
@@ -3363,11 +3359,9 @@ dependencies = [
  "route-types",
  "sensor-fusion",
  "sensor-types",
- "sim-constraint",
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
- "sim-sensor",
  "sim-types",
 ]
 
@@ -3382,7 +3376,6 @@ dependencies = [
  "mesh-io",
  "mesh-printability",
  "mesh-types",
- "sim-constraint",
  "sim-core",
  "sim-types",
  "sim-urdf",
@@ -3434,7 +3427,6 @@ dependencies = [
  "mesh-io",
  "mesh-printability",
  "mesh-types",
- "sim-constraint",
  "sim-core",
  "sim-mjcf",
  "sim-types",
@@ -3451,9 +3443,7 @@ dependencies = [
  "route-types",
  "sensor-fusion",
  "sensor-types",
- "sim-constraint",
  "sim-core",
- "sim-sensor",
  "sim-types",
 ]
 
@@ -3466,9 +3456,7 @@ dependencies = [
  "mesh-types",
  "sensor-fusion",
  "sensor-types",
- "sim-constraint",
  "sim-core",
- "sim-sensor",
  "sim-types",
 ]
 
@@ -3485,7 +3473,6 @@ dependencies = [
  "sensor-fusion",
  "sensor-types",
  "sim-core",
- "sim-sensor",
  "sim-types",
 ]
 
@@ -3546,7 +3533,6 @@ dependencies = [
  "mesh-io",
  "mesh-printability",
  "mesh-types",
- "sim-constraint",
  "sim-core",
  "sim-mjcf",
  "sim-types",
@@ -3578,11 +3564,9 @@ dependencies = [
  "route-types",
  "sensor-fusion",
  "sensor-types",
- "sim-constraint",
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
- "sim-sensor",
  "sim-types",
 ]
 
@@ -3601,7 +3585,6 @@ dependencies = [
  "sensor-types",
  "sim-core",
  "sim-gpu",
- "sim-sensor",
  "sim-types",
 ]
 
@@ -3618,7 +3601,6 @@ dependencies = [
  "ml-types",
  "sensor-fusion",
  "sensor-types",
- "sim-constraint",
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
@@ -3638,7 +3620,6 @@ dependencies = [
  "mesh-types",
  "sensor-types",
  "sim-core",
- "sim-sensor",
  "sim-types",
 ]
 
@@ -7805,20 +7786,8 @@ dependencies = [
  "nalgebra",
  "sim-core",
  "sim-mjcf",
- "sim-sensor",
  "sim-types",
  "sim-urdf",
-]
-
-[[package]]
-name = "sim-constraint"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "serde",
- "sim-muscle",
- "sim-types",
 ]
 
 [[package]]
@@ -7873,43 +7842,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sim-muscle"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-physics"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "sim-constraint",
- "sim-core",
- "sim-mjcf",
- "sim-muscle",
- "sim-sensor",
- "sim-tendon",
- "sim-types",
- "sim-urdf",
-]
-
-[[package]]
-name = "sim-sensor"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "serde",
- "sim-types",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "sim-simd"
 version = "0.7.0"
 dependencies = [
@@ -7921,22 +7853,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "sim-tendon"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "serde",
- "sim-types",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "sim-types"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
- "glam",
  "nalgebra",
  "serde",
  "thiserror 2.0.18",

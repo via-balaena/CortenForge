@@ -98,13 +98,8 @@ members = [
     "sim/L0/types",
     "sim/L0/simd",
     "sim/L0/core",
-    "sim/L0/constraint",
-    "sim/L0/sensor",
-    "sim/L0/muscle",
-    "sim/L0/tendon",
     "sim/L0/mjcf",
     "sim/L0/urdf",
-    "sim/L0/physics",
     "sim/L0/tests",
 
     # Simulation domain - Layer 0 GPU (Bevy-free)
@@ -322,13 +317,8 @@ ml-training = { path = "ml/ml-training" }
 sim-types = { path = "sim/L0/types" }
 sim-simd = { path = "sim/L0/simd" }
 sim-core = { path = "sim/L0/core" }
-sim-constraint = { path = "sim/L0/constraint" }
-sim-sensor = { path = "sim/L0/sensor" }
-sim-muscle = { path = "sim/L0/muscle" }
-sim-tendon = { path = "sim/L0/tendon" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
-sim-physics = { path = "sim/L0/physics" }
 sim-gpu = { path = "sim/L0/gpu" }
 
 # Sim domain - Layer 1 (Bevy integration)

@@ -8,7 +8,6 @@ publish = false
 [dependencies]
 sim-types = { workspace = true }
 sim-core = { workspace = true }
-sim-constraint = { workspace = true }
 sim-urdf = { workspace = true }
 curve-types = { workspace = true }
 mesh-from-curves = { workspace = true }

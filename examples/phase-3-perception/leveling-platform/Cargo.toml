@@ -10,8 +10,6 @@ sensor-types = { workspace = true }
 sensor-fusion = { workspace = true }
 sim-types = { workspace = true }
 sim-core = { workspace = true }
-sim-constraint = { workspace = true }
-sim-sensor = { workspace = true }
 mesh-types = { workspace = true }
 mesh-io = { workspace = true }
 anyhow = { workspace = true }

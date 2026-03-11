@@ -25,9 +25,7 @@ curve-types = { workspace = true }
 # Simulation
 sim-types = { workspace = true }
 sim-core = { workspace = true }
-sim-constraint = { workspace = true }
 sim-gpu = { workspace = true }
-sim-sensor = { workspace = true }
 sim-mjcf = { workspace = true }
 
 # Perception

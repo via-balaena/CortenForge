@@ -8,7 +8,6 @@ publish = false
 [dependencies]
 sim-types = { workspace = true }
 sim-core = { workspace = true }
-sim-constraint = { workspace = true }
 sim-gpu = { workspace = true }
 sim-mjcf = { workspace = true }
 sensor-types = { workspace = true }

@@ -18,17 +18,12 @@ are the source of truth), and body poses are computed via forward kinematics.
 ```
 sim/
 ├── L0/                    # Layer 0: Bevy-free simulation
-│   ├── types/             # sim-types — Pure data types
+│   ├── types/             # sim-types — Foundation types (BodyId, Pose, config)
 │   ├── simd/              # sim-simd — SIMD batch operations
 │   ├── core/              # sim-core — Pipeline, collision, integration
-│   ├── constraint/        # sim-constraint — Joint types, motors, limits, CGSolver
-│   ├── sensor/            # sim-sensor — IMU, F/T, touch, rangefinder
-│   ├── muscle/            # sim-muscle — Hill-type muscles
-│   ├── tendon/            # sim-tendon — Cable/tendon routing
 │   ├── gpu/               # sim-gpu — GPU-accelerated batched sim (wgpu)
 │   ├── mjcf/              # sim-mjcf — MuJoCo format parser
 │   ├── urdf/              # sim-urdf — URDF parser
-│   ├── physics/           # sim-physics — Unified L0 API
 │   └── tests/             # sim-conformance-tests — Model loading tests
 ├── L1/                    # Layer 1: Bevy integration
 │   └── bevy/              # sim-bevy — Visualization
@@ -374,10 +369,10 @@ Supporting modules: `mid_phase.rs` (BVH construction and traversal),
 
 ### sim-types
 
-Pure data structures with no physics logic. Minimal dependencies: nalgebra, glam, thiserror.
+Foundation types with no physics logic. Minimal dependencies: nalgebra, thiserror.
 
-`RigidBodyState`, `Pose`, `Twist`, `MassProperties`, `Action`, `ExternalForce`,
-`JointState`, `JointCommand`, `SimulationConfig`, `BodyId`, `JointId`.
+`BodyId`, `Pose`, `Gravity`, `SimulationConfig`, `SolverConfig`, `ParallelConfig`,
+`SimError`.
 
 ### sim-simd
 
@@ -422,37 +417,6 @@ modules:
 The MuJoCo pipeline uses unified PGS/CG/Newton solvers in `constraint/solver/`
 with variable condim (1/3/4/6) and elliptic friction cones.
 
-### sim-constraint
-
-Joint types, motors, limits, and constraint solver for articulated body simulation:
-
-**Joint types** (all implement `Joint` trait):
-
-| Joint | DOF | qpos | qvel |
-|-------|-----|------|------|
-| Fixed | 0 | — | — |
-| Revolute (Hinge) | 1 | angle | angular vel |
-| Prismatic (Slide) | 1 | displacement | linear vel |
-| Universal | 2 | 2 angles | 2 angular vel |
-| Cylindrical | 2 | angle + disp | angular + linear |
-| Planar | 3 | x, y, angle | vx, vy, omega |
-| Spherical (Ball) | 3 | quaternion (4) | angular vel (3) |
-| Free | 6 | pos + quat (7) | lin + ang vel (6) |
-
-Also provides: `JointLimits`, `JointMotor`, `MotorMode`, equality constraints
-(connect, gear coupling, differential, tendon networks), actuator types,
-and `CGSolver` (Conjugate Gradient solver with Block Jacobi preconditioner —
-standalone library for joint-space constraints; see [future_work_1 #3](./todo/future_work_1.md)).
-The pipeline's unified constraint solver (PGS/CG/Newton) lives in
-`sim-core/src/constraint/` and operates on unified constraint rows assembled by
-`assemble_unified_constraints()` in `constraint/assembly.rs`.
-
-### sim-sensor
-
-Simulated sensor suite: `Imu` (6-axis accel + gyro), `ForceTorqueSensor`
-(6-axis), `TouchSensor` (binary/pressure), `Rangefinder` (ray-cast),
-`Magnetometer` (heading).
-
 ### Flex (Deformable) Bodies
 
 Deformable bodies are unified into the rigid pipeline as flex bodies (matching
@@ -491,38 +455,6 @@ specification. The previous `sim-deformable` crate (XPBD solver) has been
 deleted — useful code migrated to `builder/flex.rs`. The bending and
 elasticity models are being refactored into trait boundaries — see
 [TRAIT_ARCHITECTURE.md](./TRAIT_ARCHITECTURE.md) for the vision.
-
-### sim-muscle
-
-Hill-type muscle model:
-
-```
-F = activation * F_max * f_length(l) * f_velocity(v) + F_passive(l)
-```
-
-Three-element model: contractile (CE), parallel elastic (PE), series elastic (SE).
-Activation dynamics with asymmetric time constants, pennation angle support.
-Predefined configs: biceps, quadriceps, gastrocnemius, soleus.
-`MuscleGroup` for antagonist pairs.
-
-### sim-tendon
-
-Standalone cable-driven actuation and routing library:
-
-- **Fixed tendons** — MuJoCo-style linear joint couplings
-- **Spatial tendons** — 3D routing through attachment points with wrapping
-  geometry (sphere, cylinder) and pulley systems
-
-`TendonActuator` trait: `rest_length`, `compute_length`, `compute_velocity`,
-`compute_force`, `jacobian`, `num_joints` (6 methods).
-
-**Note:** Both fixed and spatial tendons are implemented directly in sim-core's
-`tendon/` module (`mj_fwd_tendon` in `tendon/mod.rs`, fixed-path in
-`tendon/fixed.rs`, spatial-path in `tendon/spatial.rs`, wrapping geometry in
-`tendon/wrap_math.rs`). Spatial tendons include sphere and cylinder wrapping,
-sidesite disambiguation, `wrap_inside` inverse wrapping, pulley divisors, and
-Jacobian computation via `accumulate_point_jacobian()`. This crate remains a
-standalone reference library for advanced tendon analysis.
 
 ### sim-mjcf
 
@@ -614,16 +546,6 @@ pollster, thiserror, tracing. Optional rayon (behind `parallel` feature).
 **Phase 10a scope:** Only Euler velocity integration on GPU. FK, collision,
 constraints, dynamics remain on CPU. Transparent fallback via `try_new()`.
 See [future_work_3 #10](./todo/future_work_3.md) for remaining phases.
-
-### sim-physics
-
-Unified L0 API re-exporting all simulation crates:
-
-```rust
-use sim_physics::prelude::*;
-// Gives access to: Model, Data, CollisionShape, MjJointType,
-// all joint types, contact types, muscle/tendon/sensor types, etc.
-```
 
 ### sim-bevy (Layer 1)
 
@@ -799,7 +721,6 @@ is Layer 1 only.
 | `gpu-internals` | sim-core | Exposes internal helpers (`integrate_without_velocity`, `envs_as_mut_slice`, `model_arc`) for sim-gpu. No additional deps. |
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
-| `muscle` | sim-constraint | Hill-type muscle integration |
 
 ## References
 

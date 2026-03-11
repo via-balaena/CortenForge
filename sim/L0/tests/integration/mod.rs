@@ -133,7 +133,6 @@ pub mod cg_solver;
 pub mod mjcf_sensors;
 pub mod model_data_pipeline;
 pub mod passive_forces;
-pub mod sensors;
 pub mod validation;
 
 // ============================================================================

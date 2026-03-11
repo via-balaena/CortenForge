@@ -1,6 +1,6 @@
 # CortenForge Sim — v1.0 Roadmap
 
-> **Status**: Draft — 2026-03-02
+> **Status**: **Complete** — 2026-03-11
 > **Scope**: All remaining work from `future_work_10.md` (§41+) through `future_work_17.md`,
 > plus the ~112 deferred tasks in `future_work_10b.md`–`10j` (DT-1 through DT-116).
 > DT-93/94/95 were added during §41 spec and subsumed into §41.
@@ -42,7 +42,7 @@
 > DT-174 (sensor cutoff stage check) added during Phase 13 Spec D review.
 > ~~§66~~ done (Phase 13 Spec D). DT-110 dependency on §66 satisfied.
 >
-> **Current position**: Phases 1–7 and 10 complete. Next: Phases 8, 9, 11 (parallel).
+> **Current position**: All 13 phases complete. v1.0 shipped. Conformance gate: 79/79.
 
 ---
 
@@ -98,7 +98,7 @@ parallelized.
 
 ---
 
-### Phase 1 — Correctness Bugs
+### Phase 1 — Correctness Bugs ✅
 
 Fix known physics bugs before building more on top of them. These are small,
 high-value, and reduce the chance of compounding errors in later work.
@@ -128,7 +128,7 @@ high-value, and reduce the chance of compounding errors in later work.
 
 ---
 
-### Phase 3 — Core API Gaps
+### Phase 3 — Core API Gaps ✅
 
 Public API functions that MuJoCo exposes and users/conformance tests expect.
 
@@ -228,7 +228,12 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 8 — Constraint & Solver Gaps
+### Phase 8 — Constraint & Solver Gaps ✅
+
+> **Complete (2026-03-04).** All conformance-relevant tasks shipped across 13 sessions
+> (Spec A + Spec B + T1). DT-28 (ball/free tendon fix, commit `22c7c3d`), DT-33
+> (tendon margin, commit `ac54666`), DT-25 condim=3 path verified. DT-130 (dense AR
+> optimization) deferred to post-v1.0 — performance only, zero conformance impact.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
@@ -236,16 +241,19 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | ~~DT-128~~ | 10e | T2 | ~~PGS early termination~~ — **Moved to Phase 13** (surfaced by Phase 12 gate triage) |
 | ~~DT-23~~ | 10c | T2 | ~~Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`)~~ — **Moved to Phase 13** (surfaced by Phase 12 gate triage) |
 | ~~DT-25~~ | 10c | T3 | ~~Deformable-rigid friction cone projection (currently normal-only)~~ **Partial** — Phase 8 Session 13 verification: condim=3 fully works (QCQP cone projection, R-scaling, Jacobian). Remaining gaps: condim=6 silently downgrades to 3 (DT-131), bodyweight diagApprox double-counts rigid body (DT-132), bodyweight uses rotational weight for flex friction rows (DT-133). 7 integration tests. |
-| DT-28 | 10d | T2 | Ball/free joints in fixed tendons — validation + qvel DOF index mapping |
+| ~~DT-28~~ | 10d | T2 | ~~Ball/free joints in fixed tendons — validation + qvel DOF index mapping~~ **Done** — Phase 8 T1 (commit `22c7c3d`). qpos/dof address mapping fix for ball (nq=4/nv=3) and free (nq=7/nv=6) joints, 5 tests. |
 | ~~DT-32~~ | 10d | T2 | ~~Per-tendon `solref_limit`/`solimp_limit` constraint solver params~~ — **Done** (Phase 8: naming conformance) |
-| DT-33 | 10d | T2 | Tendon `margin` attribute for limit activation distance. Phase 7 Spec B (§64a) implemented joint `jnt_margin`; tendon limit sites (`assembly.rs:148,152,540,564`) still hardcode `< 0.0`. |
+| ~~DT-33~~ | 10d | T2 | ~~Tendon `margin` attribute for limit activation distance~~ **Done** — Phase 8 Spec A (commit `ac54666`). `tendon_margin` model field, all 6 hardcoded activation sites replaced, island/sleep wakeup margin-aware, 12 tests. |
 | ~~DT-39~~ | 10e | T2 | ~~Body-weight diagonal approximation (`diagApprox`)~~ — **Moved to Phase 13** (partially fixed in Phase 12 Session 15; remaining paths surfaced by gate triage) |
 | ~~DT-129~~ | 10e | T3 | ~~PGS warmstart two-phase projection~~ — **Moved to Phase 13** (surfaced by Phase 12 gate triage) |
-| DT-130 | 10e | T3 | Dense AR matrix optimization — PGS currently computes full nefc×nefc `efc_AR` matrix. MuJoCo uses sparse row-level operations (`ARblock`). Performance optimization, not conformance. Discovered during Phase 8 Spec B review. |
 
 ---
 
-### Phase 9 — Collision Completeness
+### Phase 9 — Collision Completeness ✅
+
+> **Complete (2026-03-07).** All conformance-relevant collision tasks shipped across
+> 5 specs (A–E) + T1. DT-134 (mesh-primitive GJK/EPA dispatch) deferred to post-v1.0 —
+> per-triangle BVH produces correct results, hull dispatch is a performance optimization.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
@@ -255,11 +263,10 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 | ~~§57~~ | 14 | — | ~~`sdf_iterations`/`sdf_initpoints` from `<option>` (replace hardcoded values)~~ **Done** — Phase 9 T1 (Session 2) |
 | ~~§65~~ | 16 | — | ~~Mesh convex hull auto-computation (Quickhull at build time for GJK/EPA)~~ **Done** — Phase 9 Spec A |
 | ~~DT-70~~ | 10i | T3 | ~~Deformable-vs-mesh/hfield/SDF narrowphase (only primitives currently)~~ **Done** — Phase 9 Spec E. Flex-vs-mesh (convex hull GJK + per-triangle BVH fallback), flex-vs-hfield, flex-vs-SDF. |
-| DT-134 | 16 | T2 | Mesh-primitive dispatch to GJK/EPA on convex hulls — mesh-sphere, mesh-capsule, mesh-box pairs currently use per-triangle BVH; should route through `convex_mesh_from_hull()` + `gjk_epa_contact()` when hull available (AD-1 option a). Deferred from Phase 9 Spec A. |
 
 ---
 
-### Phase 10 — Flex Pipeline ✓
+### Phase 10 — Flex Pipeline ✅
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
@@ -272,12 +279,15 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 11 — Derivatives
+### Phase 11 — Derivatives ✅
+
+> **Complete (2026-03-09).** All 6 tasks shipped (Spec A + Spec B + sessions).
+> Merged in PR #100 (commit `39b8945`).
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | ~~§58~~ | 14 | — | ~~`mjd_smooth_pos` analytical position derivatives~~ **DONE** — Spec A, analytical position force derivatives (`mjd_smooth_pos`) + hybrid integration, 18 tests |
-| DT-47 | 10f | T2 | Sensor derivatives (C, D matrices) for `TransitionMatrices` |
+| ~~DT-47~~ | 10f | T2 | ~~Sensor derivatives (C, D matrices) for `TransitionMatrices`~~ **DONE** — Spec B (Session 11, commit `7bf1043`). C/D matrices via FD, opt-in `compute_sensor_derivatives` flag, 11 tests. |
 | ~~DT-51~~ | 10f | T2 | ~~`mjd_inverseFD` — inverse dynamics derivatives~~ **DONE** — Session 3, FD wrapper around `mj_inverse()` |
 | ~~DT-52~~ | 10f | T2 | ~~`mjd_subQuat` — quaternion subtraction Jacobians~~ **DONE** — Session 2, analytical 3×3 Jacobians |
 | ~~DT-53~~ | 10f | T2 | ~~`mj_forwardSkip` — skip-stage optimization for ~50% FD cost reduction~~ **DONE** — Session 3, `MjStage` enum + `forward_skip()` |
@@ -285,19 +295,24 @@ Public API functions that MuJoCo exposes and users/conformance tests expect.
 
 ---
 
-### Phase 12 — Conformance Test Suite
+### Phase 12 — Conformance Test Suite ✅
+
+> **Complete (2026-03-10).** Four-layer conformance test suite: 79/79 tests pass.
+> 102 golden reference .npy files generated from MuJoCo 3.4.0. 26 golden flag tests
+> generated (DT-97). Merged in PR #101 (commit `001a7fd`). Gate triage identified
+> remaining conformance gaps → routed to Phase 13.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| §45 | 11 | — | Four-layer conformance test suite: self-consistency, per-stage reference, trajectory comparison, property/invariant tests against MuJoCo 3.4.0 |
-| DT-97 | 10j | T2 | Golden file generation for per-flag trajectory conformance (AC18 of §41 — bootstrap pattern reused by §45) |
-
-This is the gate. Run it, identify failures, iterate on phases 1–11 until
-green.
+| ~~§45~~ | 11 | — | ~~Four-layer conformance test suite: self-consistency, per-stage reference, trajectory comparison, property/invariant tests against MuJoCo 3.4.0~~ **Done** — 79/79 tests pass (Layer A: 13, Layer B: 43, Layer C: 8, Layer D: 15). |
+| ~~DT-97~~ | 10j | T2 | ~~Golden file generation for per-flag trajectory conformance (AC18 of §41 — bootstrap pattern reused by §45)~~ **Done** — 26 .npy files (1 baseline + 19 disable + 6 enable flags), `gen_flag_golden.py` + `gen_conformance_reference.py`. |
 
 ---
 
-### Phase 13 — Remaining Core
+### Phase 13 — Remaining Core ✅
+
+> **Complete (2026-03-11).** All 7 tasks shipped across 4 specs (A–D).
+> Merged in PR #102 (commit `bd75fdf`).
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
@@ -339,6 +354,8 @@ foundation isn't right.
 ### Performance Optimizations
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
+| DT-130 | 10e | T3 | Dense AR matrix optimization — PGS currently computes full nefc×nefc `efc_AR` matrix. MuJoCo uses sparse row-level operations (`ARblock`). Performance optimization, not conformance. Discovered during Phase 8 Spec B review. |
+| DT-134 | 16 | T2 | Mesh-primitive dispatch to GJK/EPA on convex hulls — mesh-sphere, mesh-capsule, mesh-box pairs currently use per-triangle BVH; should route through `convex_mesh_from_hull()` + `gjk_epa_contact()` when hull available (AD-1 option a). Deferred from Phase 9 Spec A. |
 | §40d | 10 | — | Sparse Jacobian for fluid derivatives (nv > 200) |
 | §40e | 10 | — | Refactor `mj_jac_site` to use `mj_jac_point` kernel |
 | §48 | 12 | — | SIMD batch audit for hot paths |
@@ -471,7 +488,7 @@ foundation isn't right.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | §42 | 10 | — | `<flex>`/`<flexcomp>` parsing (subsumed by §6B) |
-| §44 | 11 | — | Deprecate legacy standalone crates |
+| ~~§44~~ | 11 | — | ~~Deprecate legacy standalone crates~~ **Done** — crates deleted (not deprecated) per `LEGACY_CRATE_CLEANUP.md` |
 | §47 | 12 | — | URDF loader completeness (mesh collision, mimic joints, etc.) |
 | §49 | 12 | — | Non-physics MJCF elements (`<visual>`, `<statistic>`, `<custom>`, `<size>`) |
 | DT-71 | 10i | T1 | Behavioral friction tests for deformables |
@@ -486,3 +503,4 @@ foundation isn't right.
 | 2026-02-21 | Triaged all ~135 remaining tasks into core v1.0 (~67) vs extra (~68). Core defined as "matches MuJoCo C library behavior, passes conformance." |
 | 2026-02-21 | Split `future_work_10b.md` into 9 files (10b–10j), one per thematic group. Updated all ~75 back-references across future_work_1–9, index.md, and ROADMAP. |
 | 2026-02-21 | Classified all 92 DT items into spec tiers: T1 (32 plan+implement), T2 (39 grouped into ~15 specs), T3 (21 individual specs). Added Tier column to all 10b–10j tables and ROADMAP. |
+| 2026-03-11 | v1.0 complete. All 13 phases shipped. Conformance gate 79/79. DT-130 (dense AR) and DT-134 (mesh-primitive GJK dispatch) moved to post-v1.0 Performance Optimizations — both zero conformance impact. Roadmap status updated from Draft to Complete. |

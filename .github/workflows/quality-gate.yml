@@ -153,9 +153,7 @@ jobs:
             "ml-types"
             "sim-types"
             "sim-core"
-            "sim-constraint"
             "sim-urdf"
-            "sim-physics"
           )
 
           for crate in "${WASM_CRATES[@]}"; do
@@ -395,9 +393,7 @@ jobs:
             "ml-training"
             "sim-types"
             "sim-core"
-            "sim-constraint"
             "sim-urdf"
-            "sim-physics"
           )
 
           FAILED=false
