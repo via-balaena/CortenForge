@@ -445,7 +445,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 7: Spec B review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — create Spec B review document.
@@ -772,8 +772,8 @@ to verify no regressions from Phase 13 infrastructure work.
 | 3 | 2026-03-11 | Done | — | Spec A review create |
 | 4 | 2026-03-11 | Done | — | Spec A review execute + golden flag checkpoint. Assembly fix verified correct. 2/26 golden flags pass; 24 blocked by Newton solver convergence (Spec B). Added 4 missing tests (T1-T3, T5). |
 | 5 | 2026-03-11 | Done | — | Spec B rubric + spec (A+ 9/9, Rev 3) |
-| 6 | 2026-03-11 | Done | — | Spec B implement. S1: DT-19 QCQP verified (14/14 tests). S2: PGS early termination + solver_stat + solver_niter. S3: warmstart verified. T1-T7 all pass. PGS MuJoCo conformance exact match (niter, forces, qacc within 1e-10). Golden flags: 2/26 pass (unchanged — Newton solver). |
-| 7 | — | — | — | Spec B review create |
+| 6 | 2026-03-11 | Done | 6f056ec | Spec B implement. S1: DT-19 QCQP verified (14/14 tests). S2: PGS early termination + solver_stat + solver_niter. S3: warmstart verified. T1-T7 all pass. PGS MuJoCo conformance exact match (niter, forces, qacc within 1e-10). Golden flags: 2/26 pass (unchanged — Newton solver). |
+| 7 | 2026-03-11 | Done | — | Spec B review create |
 | 8 | — | — | — | Spec B review execute + golden flag final gate |
 | 9 | — | — | — | Spec C rubric + spec |
 | 10 | — | — | — | Spec C implement part 1 (rope, cable, grid) |
