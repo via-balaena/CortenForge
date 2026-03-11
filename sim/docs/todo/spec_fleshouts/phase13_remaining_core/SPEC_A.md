@@ -1,6 +1,6 @@
 # Spec A — Constraint Assembly Conformance (DT-39 + DT-23)
 
-**Status:** Draft
+**Status:** Implemented (assembly fix correct; golden flag gate deferred to Spec B — solver convergence)
 **Phase:** Phase 13 — Remaining Core
 **Effort:** S (small — single function fix + verification)
 **MuJoCo ref:** `setInertia()` in `engine_setconst.c`
