@@ -520,7 +520,7 @@ expanded elements. Zero existing code; clean slate.
 
 ## Session 9: Spec C rubric + spec
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — write Spec C rubric and spec.
@@ -598,7 +598,7 @@ MuJoCo conformance is the cardinal goal.
 into Session 10 due to scope correction. All non-cable composite types are
 deprecated in MuJoCo 3.4.0 and only need error messages, not implementation.
 
-- [ ] Complete (skip — work done in Session 10)
+- [x] Complete (skip — work done in Session 10)
 
 ```
 SKIP — merged into Session 10 due to MuJoCo 3.4.0 scope correction.
@@ -658,7 +658,7 @@ clean slate.
 
 ## Session 14: Spec D rubric + spec
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — write Spec D rubric and spec.
@@ -781,7 +781,7 @@ to verify no regressions from Phase 13 infrastructure work.
 | 14 | 2026-03-11 | Done | — | Spec D rubric + spec (A+ 10/10, Rev 2, 24 gaps closed via stress test + verification) |
 | 15 | 2026-03-11 | Done | 3df832c | Spec D implement. S1-S11 all implemented. Plugin trait + registry, Model/Data plugin fields, MJCF parsing (<extension>/<plugin>), builder resolution, forward dispatch hooks (actuation/passive/sensor/advance), lifecycle (init/reset). T1-T16 tests pass, 2766 sim domain tests pass, clippy clean. |
 | 16 | 2026-03-11 | Done | — | Spec D review create |
-| 17 | 2026-03-11 | Done | — | Spec D review execute. All S1-S11 A+, 15/15 ACs pass, 2,319 tests pass. Added 9 missing tests (T3, T5, T7, T8, T9, T11, T12, T15). No regressions. |
+| 17 | 2026-03-11 | Done | 4881b51 | Spec D review execute. All S1-S11 A+, 15/15 ACs pass, 2,319 tests pass. Added 9 missing tests (T3, T5, T7, T8, T9, T11, T12, T15). Created DT-170–174. No regressions. |
 
 ---
 
