@@ -11,6 +11,7 @@ pub mod asset;
 pub mod body;
 mod build;
 pub mod compiler;
+mod composite;
 pub mod contact;
 pub mod equality;
 pub mod flex;
@@ -236,6 +237,15 @@ pub fn model_from_mjcf(
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
     expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None);
+
+    // Expand <composite> elements: generates body chains from composite definitions.
+    // Runs AFTER frame expansion (composites inside frames work) and BEFORE
+    // discardvisual/fusestatic (which need to see the expanded bodies).
+    let composite_excludes =
+        composite::expand_composites(&mut mjcf.worldbody).map_err(|e| ModelConversionError {
+            message: e.to_string(),
+        })?;
+    mjcf.contact.excludes.extend(composite_excludes);
 
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);

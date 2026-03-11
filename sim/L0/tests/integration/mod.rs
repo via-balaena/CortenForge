@@ -383,3 +383,11 @@ pub mod flex_flex_collision;
 
 /// Smoke test: verify all 8 conformance models parse and forward().
 pub mod smoke_conformance_models;
+
+// ============================================================================
+// Phase 13: Spec C — Composite Body Generation Tests (§46)
+// ============================================================================
+
+/// Composite body generation tests: cable chain, naming, excludes, sites,
+/// deprecated types, uservert, validation, pipeline ordering.
+pub mod composite;
