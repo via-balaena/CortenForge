@@ -3,7 +3,7 @@
 //! Validates that `compute_invweight0()` correctly computes:
 //! - `body_invweight0[b]` = operational-space inverse inertia (J·M⁻¹·J^T diagonal avg)
 //! - `dof_invweight0[d]` = M⁻¹ diagonal subblock for each joint's DOFs
-//! - `tendon_invweight0[t]` = Σ(coef² · dof_invweight0[dof]) for fixed tendons
+//! - `tendon_invweight0[t]` = J_tendon · M⁻¹ · J_tendon^T (full quadratic form)
 //!
 //! MuJoCo ref: `setInertia()` / `set0()` in `engine_setconst.c`.
 
@@ -230,7 +230,8 @@ fn tendon_invweight0_fixed_tendon() {
     "#;
     let model = load_model(mjcf).expect("should load");
 
-    // tendon_invweight0[0] = 2.0² * dof_invweight0[J1_dof] + 3.0² * dof_invweight0[J2_dof]
+    // tendon_invweight0 = J · M⁻¹ · J^T; for independent bodies (block-diagonal M)
+    // this equals 2.0² * dof_invweight0[J1_dof] + 3.0² * dof_invweight0[J2_dof]
     let j1_jnt: usize = model
         .jnt_name
         .iter()

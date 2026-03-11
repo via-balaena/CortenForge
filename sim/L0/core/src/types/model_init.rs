@@ -895,12 +895,12 @@ impl Model {
     ///   `[0]` = avg translational diagonal of `J·M⁻¹·J^T` (6×6),
     ///   `[1]` = avg rotational diagonal
     /// - `dof_invweight0[d]` = avg diagonal of `M⁻¹` subblock for that joint's DOFs
-    /// - `tendon_invweight0[t]` = Σ(coef² · dof_invweight0\[dof\]) for fixed tendons
+    /// - `tendon_invweight0[t]` = `J_tendon · M⁻¹ · J_tendon^T` (full quadratic form,
+    ///   matching MuJoCo's `setInertia()` in `engine_setconst.c`)
     ///
     /// Must be called after `compute_qld_csr_metadata()`, body_mass, body_inertia,
     /// dof_body, dof_jnt, jnt_type, jnt_dof_adr, and tendon/wrap arrays are populated.
     pub fn compute_invweight0(&mut self) {
-        use crate::types::{TendonType, WrapType};
         const MIN_VAL: f64 = 1e-15; // mjMINVAL
 
         // --- Subtree mass (still needed for body_subtreemass field used elsewhere) ---
@@ -1054,64 +1054,45 @@ impl Model {
         }
 
         // --- tendon_invweight0 ---
+        // MuJoCo ref: setInertia() in engine_setconst.c
+        // For each tendon: invweight0 = J_tendon · M⁻¹ · J_tendon^T
+        // where J_tendon = data.ten_J[t] (populated by mj_fwd_tendon in mj_fwd_position).
+        // This uses the FULL quadratic form, capturing off-diagonal M⁻¹ coupling
+        // between DOFs in serial kinematic chains. Applies uniformly to all tendon
+        // types (fixed and spatial) — no type-specific branching needed.
         self.tendon_invweight0 = vec![0.0; self.ntendon];
         for t in 0..self.ntendon {
-            let adr = self.tendon_adr[t];
-            let num = self.tendon_num[t];
-            match self.tendon_type[t] {
-                TendonType::Fixed => {
-                    // Sum coef² * dof_invweight0[dof] for each joint in the tendon.
-                    let mut w = 0.0;
-                    for wr in adr..(adr + num) {
-                        if self.wrap_type[wr] == WrapType::Joint {
-                            let dof_adr = self.wrap_objid[wr];
-                            if dof_adr < self.nv {
-                                let coef = self.wrap_prm[wr];
-                                w += coef * coef * self.dof_invweight0[dof_adr];
-                            }
-                        }
-                    }
-                    self.tendon_invweight0[t] = w.max(MIN_VAL);
-                }
-                TendonType::Spatial => {
-                    // Spatial tendons: use average translational invweight of endpoint bodies.
-                    // This is an approximation — MuJoCo uses a similar heuristic.
-                    let mut w = 0.0;
-                    let mut count = 0;
-                    for wr in adr..(adr + num) {
-                        let body_opt = match self.wrap_type[wr] {
-                            WrapType::Site => {
-                                let sid = self.wrap_objid[wr];
-                                if sid < self.site_body.len() {
-                                    Some(self.site_body[sid])
-                                } else {
-                                    None
-                                }
-                            }
-                            WrapType::Geom => {
-                                let gid = self.wrap_objid[wr];
-                                if gid < self.geom_body.len() {
-                                    Some(self.geom_body[gid])
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        };
-                        if let Some(bid) = body_opt {
-                            if bid > 0 {
-                                w += self.body_invweight0[bid][0];
-                                count += 1;
-                            }
-                        }
-                    }
-                    self.tendon_invweight0[t] = if count > 0 {
-                        (w / f64::from(count)).max(MIN_VAL)
-                    } else {
-                        MIN_VAL
-                    };
-                }
+            let j_tendon = &data.ten_J[t];
+
+            // Skip zero Jacobians (no DOFs contribute to this tendon)
+            let j_norm_sq: f64 = j_tendon.iter().map(|&v| v * v).sum();
+            if j_norm_sq < MIN_VAL {
+                self.tendon_invweight0[t] = MIN_VAL;
+                continue;
             }
+
+            // Build 1-column DMatrix from J_tendon for the batch solver
+            let mut rhs = DMatrix::zeros(self.nv, 1);
+            for i in 0..self.nv {
+                rhs[(i, 0)] = j_tendon[i];
+            }
+
+            // Solve M · w = J_tendon → w = M⁻¹ · J_tendon
+            mj_solve_sparse_batch(
+                &rowadr,
+                &rownnz,
+                &colind,
+                &data.qLD_data,
+                &data.qLD_diag_inv,
+                &mut rhs,
+            );
+
+            // tendon_invweight0 = J_tendon^T · w = J_tendon · M⁻¹ · J_tendon^T
+            let mut w = 0.0;
+            for i in 0..self.nv {
+                w += j_tendon[i] * rhs[(i, 0)];
+            }
+            self.tendon_invweight0[t] = w.max(MIN_VAL);
         }
     }
 
