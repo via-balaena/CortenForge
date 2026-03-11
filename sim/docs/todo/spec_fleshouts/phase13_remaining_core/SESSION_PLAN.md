@@ -216,7 +216,7 @@ report will confirm this or redirect the spec scope.
 
 ## Session 1: Spec A rubric + spec
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — write Spec A rubric and spec.
@@ -767,7 +767,7 @@ to verify no regressions from Phase 13 infrastructure work.
 | Session | Date | Status | Commit | Notes |
 |---------|------|--------|--------|-------|
 | 0 | 2026-03-10 | Done | — | Root cause: tendon_invweight0 diagonal-only bug (DT-39). FILTERPARENT not a separate issue (~0.020, same root cause). 2/26 already pass, 24 fail at 0.001–0.02. |
-| 1 | — | — | — | Spec A rubric + spec |
+| 1 | 2026-03-11 | Done | dd9555d | Spec A rubric + spec |
 | 2 | — | — | — | Spec A implement |
 | 3 | — | — | — | Spec A review create |
 | 4 | — | — | — | Spec A review execute + golden flag checkpoint |
