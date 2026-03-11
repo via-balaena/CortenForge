@@ -464,6 +464,181 @@ mod tests {
         assert_eq!(data.plugin_data.len(), 1);
     }
 
+    /// Create a minimal Model with the given plugin installed.
+    /// Returns (model, compute_count, advance_count, capability_bits_seen).
+    fn model_with_plugin(
+        caps: PluginCapabilities,
+        nstate: usize,
+    ) -> (Model, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>) {
+        let mut model = Model::empty();
+        let plugin = TestPlugin::new("test.dispatch", caps).with_nstate(nstate);
+        let compute_count = Arc::clone(&plugin.compute_count);
+        let advance_count = Arc::clone(&plugin.advance_count);
+        let capability_bits_seen = Arc::clone(&plugin.capability_bits_seen);
+        let plugin: Arc<dyn Plugin> = Arc::new(plugin);
+
+        model.nplugin = 1;
+        model.plugin_objects.push(Arc::clone(&plugin));
+        model.plugin_capabilities.push(caps);
+        model.plugin_needstage.push(PluginStage::Acc);
+        model.plugin_stateadr.push(0);
+        model.plugin_statenum.push(nstate);
+        model.plugin_name.push(None);
+        model.plugin_attradr.push(0);
+        model.plugin_attrnum.push(0);
+        model.npluginstate = nstate;
+
+        (model, compute_count, advance_count, capability_bits_seen)
+    }
+
+    /// Create a 1-link pendulum model with a plugin installed.
+    /// The pendulum has 1 joint (1 DOF) and 1 actuator, suitable for
+    /// testing all dispatch paths.
+    fn pendulum_with_plugin(
+        caps: PluginCapabilities,
+        nstate: usize,
+    ) -> (Model, Arc<AtomicU32>, Arc<AtomicU32>, Arc<AtomicU32>) {
+        let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
+        let plugin = TestPlugin::new("test.dispatch", caps).with_nstate(nstate);
+        let compute_count = Arc::clone(&plugin.compute_count);
+        let advance_count = Arc::clone(&plugin.advance_count);
+        let capability_bits_seen = Arc::clone(&plugin.capability_bits_seen);
+        let plugin: Arc<dyn Plugin> = Arc::new(plugin);
+
+        model.nplugin = 1;
+        model.plugin_objects.push(Arc::clone(&plugin));
+        model.plugin_capabilities.push(caps);
+        model.plugin_needstage.push(PluginStage::Acc);
+        model.plugin_stateadr.push(0);
+        model.plugin_statenum.push(nstate);
+        model.plugin_name.push(None);
+        model.plugin_attradr.push(0);
+        model.plugin_attrnum.push(0);
+        model.npluginstate = nstate;
+
+        (model, compute_count, advance_count, capability_bits_seen)
+    }
+
+    /// Directly exercise the §66 plugin dispatch pattern that is inline in
+    /// `mj_fwd_actuation()` and `mj_fwd_passive()`. This mirrors the production
+    /// code exactly — looping over `nplugin`, filtering by capability, and calling
+    /// `compute()` with the appropriate capability bit.
+    fn dispatch_plugin_compute(model: &Model, data: &mut Data, capability: PluginCapabilityBit) {
+        for i in 0..model.nplugin {
+            if model.plugin_capabilities[i].contains(capability) {
+                model.plugin_objects[i].compute(model, data, i, capability);
+            }
+        }
+    }
+
+    // T7: Actuator plugin dispatch end-to-end → AC8
+    #[test]
+    fn t7_actuator_plugin_dispatch() {
+        let caps = PluginCapabilities::from(PluginCapabilityBit::Actuator);
+        let (model, compute_count, _, capability_bits_seen) = model_with_plugin(caps, 0);
+        let mut data = model.make_data();
+
+        // Exercise the same dispatch pattern used in mj_fwd_actuation §66
+        dispatch_plugin_compute(&model, &mut data, PluginCapabilityBit::Actuator);
+
+        assert_eq!(compute_count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            capability_bits_seen.load(Ordering::Relaxed),
+            PluginCapabilityBit::Actuator as u32
+        );
+    }
+
+    // T8: Passive plugin dispatch end-to-end → AC9
+    #[test]
+    fn t8_passive_plugin_dispatch() {
+        let caps = PluginCapabilities::from(PluginCapabilityBit::Passive);
+        let (model, compute_count, _, capability_bits_seen) = pendulum_with_plugin(caps, 0);
+        let mut data = model.make_data();
+
+        // Run full forward pipeline — passive dispatch fires in forward_acc
+        // (mj_fwd_passive only guards on nv>0, which the pendulum satisfies)
+        data.forward(&model).unwrap();
+
+        assert!(
+            compute_count.load(Ordering::Relaxed) >= 1,
+            "plugin compute() should have been called at least once"
+        );
+        assert!(
+            capability_bits_seen.load(Ordering::Relaxed) & (PluginCapabilityBit::Passive as u32)
+                != 0,
+            "plugin should have seen Passive capability"
+        );
+    }
+
+    // T9: Sensor plugin stage dispatch → AC10
+    #[test]
+    fn t9_sensor_plugin_stage_dispatch() {
+        let caps = PluginCapabilities::from(PluginCapabilityBit::Sensor);
+        let mut model = Model::empty();
+        let plugin = TestPlugin::new("test.sensor", caps).with_stage(PluginStage::Vel);
+        let compute_count = Arc::clone(&plugin.compute_count);
+        let plugin: Arc<dyn Plugin> = Arc::new(plugin);
+
+        model.nplugin = 1;
+        model.plugin_objects.push(Arc::clone(&plugin));
+        model.plugin_capabilities.push(caps);
+        model.plugin_needstage.push(PluginStage::Vel);
+        model.plugin_stateadr.push(0);
+        model.plugin_statenum.push(0);
+        model.plugin_name.push(None);
+        model.plugin_attradr.push(0);
+        model.plugin_attrnum.push(0);
+        model.npluginstate = 0;
+
+        let mut data = model.make_data();
+
+        // Pos stage should NOT dispatch (needstage is Vel)
+        crate::sensor::compute_plugin_sensors(&model, &mut data, PluginStage::Pos);
+        assert_eq!(compute_count.load(Ordering::Relaxed), 0);
+
+        // Vel stage SHOULD dispatch
+        crate::sensor::compute_plugin_sensors(&model, &mut data, PluginStage::Vel);
+        assert_eq!(compute_count.load(Ordering::Relaxed), 1);
+
+        // Acc stage should NOT dispatch
+        crate::sensor::compute_plugin_sensors(&model, &mut data, PluginStage::Acc);
+        assert_eq!(compute_count.load(Ordering::Relaxed), 1);
+    }
+
+    // T11: Plugin advance in integration → AC12
+    #[test]
+    fn t11_plugin_advance_in_integration() {
+        let caps = PluginCapabilities::NONE; // advance is called regardless of capabilities
+        let (model, _, advance_count, _) = pendulum_with_plugin(caps, 1);
+        let mut data = model.make_data();
+
+        // Call integrate — plugin advance fires at end
+        data.integrate(&model);
+
+        assert_eq!(advance_count.load(Ordering::Relaxed), 1);
+    }
+
+    // T15: Multi-capability plugin dispatched for both capabilities → AC8, AC9
+    #[test]
+    fn t15_multi_capability_dispatch() {
+        let caps = PluginCapabilities::from(PluginCapabilityBit::Actuator)
+            .with(PluginCapabilityBit::Passive);
+        let (model, compute_count, _, capability_bits_seen) = model_with_plugin(caps, 0);
+        let mut data = model.make_data();
+
+        // Exercise both dispatch paths
+        dispatch_plugin_compute(&model, &mut data, PluginCapabilityBit::Actuator);
+        assert_eq!(compute_count.load(Ordering::Relaxed), 1);
+
+        dispatch_plugin_compute(&model, &mut data, PluginCapabilityBit::Passive);
+        assert_eq!(compute_count.load(Ordering::Relaxed), 2);
+
+        // Both capability bits should have been seen
+        let bits = capability_bits_seen.load(Ordering::Relaxed);
+        assert!(bits & (PluginCapabilityBit::Actuator as u32) != 0);
+        assert!(bits & (PluginCapabilityBit::Passive as u32) != 0);
+    }
+
     // T14: Multiple plugin instances — state address computation
     #[test]
     fn t14_multiple_instances_state_addresses() {

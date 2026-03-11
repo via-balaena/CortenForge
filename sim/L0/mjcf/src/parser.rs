@@ -6819,4 +6819,31 @@ mod tests {
         assert_eq!(inst.name, "inst1");
         assert!(inst.config.is_empty());
     }
+
+    // T3: Duplicate config key rejected → AC4
+    #[test]
+    fn t3_duplicate_config_key_rejected() {
+        let xml = r#"
+            <mujoco model="dup_config">
+                <extension>
+                    <plugin plugin="test.plugin">
+                        <instance name="inst1">
+                            <config key="gain" value="100"/>
+                            <config key="gain" value="200"/>
+                        </instance>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b"/>
+                </worldbody>
+            </mujoco>
+        "#;
+        let result = parse_mjcf_str(xml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("duplicate config key"),
+            "expected 'duplicate config key' error, got: {err}"
+        );
+    }
 }

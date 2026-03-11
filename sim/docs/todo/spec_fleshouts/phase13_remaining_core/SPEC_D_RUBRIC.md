@@ -22,10 +22,10 @@ Anything below B does not ship.
 | `mjPLUGIN_LIB_INIT` constructor macro | C-specific linker attribute for auto-registration. No Rust equivalent needed — users register plugins explicitly via API. | Drop — Rust-idiomatic registration replaces this |
 | Resource providers and decoders | `mjpResourceProvider` and `mjpDecoder` are separate from the 4 plugin types. They handle file I/O and format decoding. | Out of scope — not physics plugins, deferred to post-v1.0 |
 | Plugin visualization (`visualize` callback) | Optional callback for mjv_updateScene. CortenForge has no visualization layer in L0. | Out of scope — L1/Bevy concern |
-| SDF collision integration | Full SDF requires `sdf_distance`, `sdf_gradient`, `sdf_staticdistance`, `sdf_aabb` callbacks integrated into collision detection pipeline. Complex. | In scope for trait definition and registration. Collision dispatch deferred to DT-171 (requires collision pipeline integration). |
+| SDF collision integration | Full SDF requires `sdf_distance`, `sdf_gradient`, `sdf_staticdistance`, `sdf_aabb` callbacks integrated into collision detection pipeline. Complex. | In scope for trait definition and registration. Collision dispatch deferred to DT-170 (requires collision pipeline integration). |
 
 **Final scope:**
-1. Single `Plugin` trait (AD-1) with capability-gated methods — covers all 4 plugin types (including SDF; collision dispatch deferred DT-171)
+1. Single `Plugin` trait (AD-1) with capability-gated methods — covers all 4 plugin types (including SDF; collision dispatch deferred DT-170)
 2. `PluginRegistry`: build-time registration, name-based lookup
 3. Model fields: `nplugin`, per-object plugin IDs, plugin state/attr storage
 4. Data fields: `plugin_state` mutable state vector, `plugin_data` type-erased data
@@ -377,7 +377,7 @@ Child `<config>` elements: key-value configuration pairs.
 | G18 | P8 | PluginStage `#[default]` on `Pos` with misleading comment on `None` variant | Stress test | Added enum-level doc comment clarifying `None` vs `Pos` default semantics | Rev 2 |
 | G19 | P8 | Rubric P8 scorecard said "14 ACs → 15 tests" — should be 15 ACs → 16 tests after Rev 2 additions | Verification | Updated scorecard to "15 ACs → 16 tests" | Rev 2 |
 | G20 | P6 | Rubric P6 scorecard said "10-step execution order" — spec has 11 steps after S10 (reset) added | Verification | Updated to "11-step" | Rev 2 |
-| G21 | P8 | Rubric scope said SDF collision deferred to DT-170; spec uses DT-171 (DT-170 = resource providers) | Verification | Fixed rubric scope to DT-171 | Rev 2 |
+| G21 | P8 | Rubric scope said SDF collision deferred to DT-170; spec uses DT-171 (DT-170 = resource providers) | Verification | Fixed: DT-170 = SDF collision, DT-171 = resource providers/decoders | Rev 2 |
 | G22 | P1 | Spec MuJoCo Reference callback table missing `sdf_attribute` (had 13/14 callbacks) | Verification | Added `sdf_attribute` row to spec callback table | Rev 2 |
 | G23 | P1 | Spec MuJoCo Reference model fields missing `name_pluginadr` (had 12/13 fields) | Verification | Added `name_pluginadr` row to spec model fields table | Rev 2 |
 | G24 | P8 | Rubric Final Scope had 8 items; spec Final Scope had 10 items — misaligned | Verification | Rewrote rubric Final Scope to match spec's 10-item structure | Rev 2 |

@@ -36,9 +36,9 @@ parsing. No shared files conflict.
 |----------------|---------------------|--------|
 | 4 plugin types | Confirmed: ACTUATOR, SENSOR, PASSIVE, SDF (bitfield) | In scope |
 | Dynamic library loading | C `dlopen`/`LoadLibrary` — no Rust equivalent | Replace with `PluginRegistry` struct + explicit registration |
-| Resource providers + decoders | Separate from physics plugins | Out of scope (DT-170) |
+| Resource providers + decoders | Separate from physics plugins | Out of scope (DT-171) |
 | Plugin visualization | `mjv_updateScene` callback — L0 has no viz | Out of scope (L1/Bevy) |
-| SDF collision dispatch | Complex collision pipeline integration | Trait defined; collision dispatch deferred (DT-171) |
+| SDF collision dispatch | Complex collision pipeline integration | Trait defined; collision dispatch deferred (DT-170) |
 
 **Final scope:**
 1. `Plugin` trait + capability types (new `plugin.rs` module)
@@ -1537,7 +1537,7 @@ to track call count and capability bits).
 |-----------|-------------|-----------------|
 | `forward/mod.rs` step/forward | Pipeline orchestration | Dispatch hooks go in sub-functions, not orchestrator |
 | `constraint/` | Constraint solver | Plugins don't affect constraints |
-| `collision/` | Collision detection | SDF dispatch deferred (DT-171) |
+| `collision/` | Collision detection | SDF dispatch deferred (DT-170) |
 
 ---
 
@@ -1562,13 +1562,13 @@ no regressions.
 
 ## Out of Scope
 
-- **SDF collision dispatch** (DT-171) — Trait defined but collision pipeline
+- **SDF collision dispatch** (DT-170) — Trait defined but collision pipeline
   integration requires `mjc_SDF()` equivalent. Conformance impact: models
   with SDF plugins won't have functional collision. Acceptable for v1.0
   (no known MuJoCo test models require SDF plugins for conformance).
-- **Resource providers** (DT-170) — `mjpResourceProvider` handles file I/O,
+- **Resource providers** (DT-171) — `mjpResourceProvider` handles file I/O,
   not physics. No conformance impact.
-- **Decoders** (DT-170) — `mjpDecoder` handles file format decoding.
+- **Decoders** (DT-171) — `mjpDecoder` handles file format decoding.
   No conformance impact.
 - **Plugin visualization** — `mjv_updateScene` callback. L0 has no viz;
   L1/Bevy concern. No conformance impact.

@@ -159,3 +159,125 @@ fn assign_body_plugins(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::sync::Arc;
+
+    use sim_core::plugin::{
+        Plugin, PluginCapabilities, PluginCapabilityBit, PluginRegistry, PluginStage,
+    };
+    use sim_core::types::Model;
+
+    use crate::builder::model_from_mjcf_with_plugins;
+    use crate::parser::parse_mjcf_str;
+
+    /// Minimal test plugin for builder tests.
+    struct BuilderTestPlugin {
+        plugin_name: String,
+        caps: PluginCapabilities,
+        state_count: usize,
+    }
+
+    impl BuilderTestPlugin {
+        fn new(name: &str, caps: PluginCapabilities) -> Self {
+            Self {
+                plugin_name: name.to_string(),
+                caps,
+                state_count: 0,
+            }
+        }
+
+        #[allow(dead_code)]
+        fn with_nstate(mut self, n: usize) -> Self {
+            self.state_count = n;
+            self
+        }
+    }
+
+    impl Plugin for BuilderTestPlugin {
+        fn name(&self) -> &str {
+            &self.plugin_name
+        }
+        fn capabilities(&self) -> PluginCapabilities {
+            self.caps
+        }
+        fn nstate(&self, _model: &Model, _instance: usize) -> usize {
+            self.state_count
+        }
+        fn need_stage(&self) -> PluginStage {
+            PluginStage::Acc
+        }
+    }
+
+    // T5: Model plugin fields populated after build → AC6
+    #[test]
+    fn t5_model_plugin_fields_populated() {
+        let xml = r#"
+            <mujoco model="plugin_build_test">
+                <extension>
+                    <plugin plugin="test.actuator">
+                        <instance name="act1">
+                            <config key="gain" value="100"/>
+                        </instance>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b1">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <general joint="j1">
+                        <plugin plugin="test.actuator" instance="act1"/>
+                    </general>
+                </actuator>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse");
+        let mut registry = PluginRegistry::new();
+        registry.register(Arc::new(BuilderTestPlugin::new(
+            "test.actuator",
+            PluginCapabilities::from(PluginCapabilityBit::Actuator),
+        )));
+        let model = model_from_mjcf_with_plugins(&mjcf, None, &registry)
+            .expect("should build with plugins");
+
+        assert_eq!(model.nplugin, 1);
+        assert_eq!(model.actuator_plugin[0], Some(0));
+        assert!(model.plugin_capabilities[0].contains(PluginCapabilityBit::Actuator));
+        assert_eq!(model.plugin_name[0], Some("act1".to_string()));
+        assert_eq!(model.plugin_attrnum[0], 1);
+        // Config "gain=100" is stored as flattened string
+        assert_eq!(model.plugin_attr[model.plugin_attradr[0]], "gain=100");
+    }
+
+    // T12: Unknown plugin name error → AC14
+    #[test]
+    fn t12_unknown_plugin_name_error() {
+        let xml = r#"
+            <mujoco model="unknown_plugin">
+                <extension>
+                    <plugin plugin="nonexistent.plugin">
+                        <instance name="inst1"/>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b"/>
+                </worldbody>
+            </mujoco>
+        "#;
+        let mjcf = parse_mjcf_str(xml).expect("should parse MJCF");
+        let registry = PluginRegistry::new(); // empty
+        let result = model_from_mjcf_with_plugins(&mjcf, None, &registry);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unknown plugin"),
+            "expected 'unknown plugin' error, got: {err}"
+        );
+    }
+}

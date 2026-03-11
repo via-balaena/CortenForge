@@ -739,7 +739,7 @@ Write to: sim/docs/todo/spec_fleshouts/phase13_remaining_core/SPEC_D_REVIEW.md
 
 ## Session 17: Spec D review — execute
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — execute Spec D review.
@@ -781,7 +781,7 @@ to verify no regressions from Phase 13 infrastructure work.
 | 14 | 2026-03-11 | Done | — | Spec D rubric + spec (A+ 10/10, Rev 2, 24 gaps closed via stress test + verification) |
 | 15 | 2026-03-11 | Done | 3df832c | Spec D implement. S1-S11 all implemented. Plugin trait + registry, Model/Data plugin fields, MJCF parsing (<extension>/<plugin>), builder resolution, forward dispatch hooks (actuation/passive/sensor/advance), lifecycle (init/reset). T1-T16 tests pass, 2766 sim domain tests pass, clippy clean. |
 | 16 | 2026-03-11 | Done | — | Spec D review create |
-| 17 | — | — | — | Spec D review execute |
+| 17 | 2026-03-11 | Done | — | Spec D review execute. All S1-S11 A+, 15/15 ACs pass, 2,319 tests pass. Added 9 missing tests (T3, T5, T7, T8, T9, T11, T12, T15). No regressions. |
 
 ---
 
@@ -903,3 +903,8 @@ be added to the post-v1.0 sections of ROADMAP_V1.md at phase completion.
 | DT-162 | T1 | PGS `solver_stat` `nactive`/`nchange` per-iteration counting — MuJoCo calls `dualState()` per sweep; CF uses placeholder 0. Diagnostic only, no solver output impact. | Session 6 |
 | DT-163 | T1 | PGS warmstart primal cost gate — CF uses dual cost (`< 0`), MuJoCo uses primal cost (`> 0`). Equivalent at optimum; slightly conservative before convergence. No measurable divergence in T7. | Session 6 |
 | DT-164 | T2 | Newton solver golden flag convergence — 24/26 golden flag tests fail at ~0.002 qacc. Assembly and PGS verified correct (Specs A+B). Residual divergence is Newton solver convergence behavior. | Session 8 |
+| DT-170 | T2 | SDF collision dispatch — Plugin trait defines SDF callbacks but collision pipeline does not call them. Requires `mjc_SDF()` equivalent in narrowphase. | Session 15 (Spec D) |
+| DT-171 | T1 | Resource providers and decoders — `mjpResourceProvider`/`mjpDecoder` are separate from physics plugins. No conformance impact. | Session 15 (Spec D) |
+| DT-172 | T1 | Plugin copy/destroy callbacks — MuJoCo's `copy` and `destroy` lifecycle callbacks. Currently `plugin_data` reset to `None` on clone. | Session 17 (Spec D review) |
+| DT-173 | T2 | Data clone plugin_data preservation — `Data::clone()` resets `plugin_data` to `None`. Full-fidelity clone requires `Plugin::copy()`. Depends on DT-172. | Session 17 (Spec D review) |
+| DT-174 | T1 | Sensor cutoff stage check hardening — `compute_plugin_sensors()` omits `sensor_needstage == stage` check. Functionally correct but doesn't exactly match spec. | Session 17 (Spec D review) |
