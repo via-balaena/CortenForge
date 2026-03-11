@@ -224,8 +224,8 @@ Remove unused POC types from `sim/L0/types/src/`.
   1. Copy `Gravity` struct + `impl Default` + `impl Gravity` (6 methods) + `test_gravity`
      test from `dynamics.rs` into `config.rs`
   2. Remove `use crate::dynamics::Gravity;` from `config.rs` (line 6)
-  3. `Gravity` uses `Vector3<f64>` (nalgebra) — already imported by `config.rs` via serde
-     conditionals; add explicit `use nalgebra::Vector3;` if not present
+  3. Add `use nalgebra::Vector3;` to `config.rs` — `Gravity` uses `Vector3<f64>` and
+     config.rs has no nalgebra import (its only imports are the Gravity re-import and serde)
   4. Preserve `#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]` on the struct
   5. Delete `dynamics.rs`
   6. Update `lib.rs`: change `pub use dynamics::Gravity` to `pub use config::Gravity`
@@ -259,7 +259,8 @@ From `body.rs` (keep `BodyId`, `Pose` — remove everything else):
 - `RigidBodyState` (struct + 5 methods + Default impl) — 0 pipeline uses
 - `MassProperties` (struct + 9 methods, including `validate()`) — 0 pipeline uses
 - `Twist` (struct + 14 methods + Default impl) — 0 pipeline uses
-- Remove import: `Matrix3` (only used by removed types)
+- Update import line: `use nalgebra::{Isometry3, Matrix3, Point3, UnitQuaternion, Vector3};`
+  → `use nalgebra::{Isometry3, Point3, UnitQuaternion, Vector3};` (`Matrix3` only used by removed types)
 - Update module doc comment: "Rigid body state types" → "Body identity and pose types"
 - Remove 6 tests that reference removed types:
   `test_twist_velocity_at_point`, `test_twist_kinetic_energy`,
@@ -278,20 +279,39 @@ From `joint.rs` (keep nothing — delete entire file):
 - All 6 types + 10 tests confirmed unused. Delete `joint.rs` entirely.
 
 **Other cleanup in sim-types:**
-- Remove `pub use glam::{Quat, Vec3}` re-export (0 pipeline uses; pipeline uses nalgebra)
 - Remove `glam` from `sim-types/Cargo.toml` dependencies
 - Remove `"glam/serde"` from the `serde` feature in `sim-types/Cargo.toml`
   (current: `serde = ["dep:serde", "nalgebra/serde-serialize", "glam/serde"]`
   → becomes: `serde = ["dep:serde", "nalgebra/serde-serialize"]`)
-- Update `lib.rs` module declarations and re-exports
-- Update `lib.rs` module-level doc comment — currently references `RigidBodyState`, `Action`,
-  `Observation`, and has a code example using `RigidBodyState`/`Twist` (all being removed).
-  Rewrite to reference the kept types (`BodyId`, `Pose`, `SimulationConfig`, `Gravity`).
-- Update `lib.rs` tests — `test_rigid_body_state` and `test_pose_transform` use removed types.
-  Remove `test_rigid_body_state`, keep `test_pose_transform` (uses only `Pose`).
 - Update `Cargo.toml` description (currently: "Core types for physics simulation: state, action,
   observation, dynamics" → something like "Foundation types for sim-core: body identity, pose,
   simulation configuration")
+- Update `lib.rs` module-level doc comment — currently references `RigidBodyState`, `Action`,
+  `Observation`, and has a code example using `RigidBodyState`/`Twist` (all being removed).
+  Rewrite to reference the kept types (`BodyId`, `Pose`, `SimulationConfig`, `Gravity`).
+- Update `lib.rs` tests — `test_rigid_body_state` uses removed types (remove it);
+  `test_pose_transform` uses only `Pose` (keep it)
+
+**`lib.rs` final state** (module declarations + re-exports after all Phase C changes):
+
+```rust
+mod body;
+mod config;
+mod error;
+
+pub use body::{BodyId, Pose};
+pub use config::{Gravity, ParallelConfig, SimulationConfig, SolverConfig};
+pub use error::SimError;
+
+// Re-export math types for convenience
+pub use nalgebra::{Isometry3, Point3, UnitQuaternion, Vector3};
+
+/// Result type for simulation operations.
+pub type Result<T> = std::result::Result<T, SimError>;
+```
+
+Removed from current state: `mod dynamics;`, `mod joint;`, `mod observation;`,
+`pub use glam::{Quat, Vec3}`, and all re-exports of deleted types.
 
 **Types to KEEP (verified active pipeline uses):**
 - `BodyId` — ~80 uses in sim-core + 1 in sim-bevy
@@ -325,13 +345,17 @@ pub use sim_types::{
 Replace with only the types that sim-core actually uses internally:
 
 ```rust
-pub use sim_types::{BodyId, Gravity, Pose};
+pub use sim_types::{BodyId, Pose};
 ```
 
-**Note**: `SimulationConfig` and `SolverConfig` are only re-exported by sim-core — never
-used in its own code. They live in `sim-types` and are imported directly by `sim-mjcf`
-(`use sim_types::{SimulationConfig, SolverConfig}`). Removing them from sim-core's
-re-exports is a public API change, but no code in the workspace uses them via sim-core.
+**Note**: Every other re-exported type — including `Gravity`, `SimulationConfig`,
+`SolverConfig`, and all 15 POC types — is never used in sim-core's own source code
+(only in the re-export block). `Gravity` appears in sim-core doc comments but not in
+code; sim-core's `Model.gravity` field is `nalgebra::Vector3<f64>`, not `sim_types::Gravity`.
+Consumers that need these types import them directly from `sim-types` (e.g., sim-mjcf
+uses `use sim_types::{Gravity, SimulationConfig, SolverConfig}`). Removing them from
+sim-core's re-exports is a public API change, but no code in the workspace uses them
+via sim-core.
 
 ### Phase E — Update documentation and CI
 
@@ -381,7 +405,7 @@ sim-muscle are confirmed absent from both files.
 |------|-----------|------------|
 | External user depends on legacy crate | Very low — not published to crates.io | Git history preserves everything |
 | Example crate needs legacy type later | Low — stubs will be rewritten against v1.0 API | Can add deps back when implementing |
-| sim-types removal breaks sim-core | Low — sim-core re-exports 20 types, only 3 are used internally | Phase D cleans up the re-export block; grep-verified |
+| sim-types removal breaks sim-core | Low — sim-core re-exports 20 types, only 2 are used internally (BodyId, Pose) | Phase D cleans up the re-export block; grep-verified |
 | Gravity migration breaks sim-mjcf | Very low — move within sim-types, same pub API | Explicit sub-steps in Phase C; sim-mjcf imports from `sim_types::Gravity` (path-independent) |
 | SimError removal breaks config.rs | N/A — addressed in spec | error.rs is KEPT; config.rs validate() methods depend on SimError |
 | Forgotten import somewhere | Low | Each phase has a `cargo build` checkpoint |
