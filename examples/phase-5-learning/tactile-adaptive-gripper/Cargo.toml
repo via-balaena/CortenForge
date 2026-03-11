@@ -9,7 +9,6 @@ publish = false
 sim-types = { workspace = true }
 sim-core = { workspace = true }
 sim-gpu = { workspace = true }
-sim-sensor = { workspace = true }
 sensor-types = { workspace = true }
 sensor-fusion = { workspace = true }
 ml-types = { workspace = true }

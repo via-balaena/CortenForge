@@ -1,8 +1,35 @@
 # Legacy Crate Cleanup — Post-v1.0
 
-> **Status**: Spec draft — 2026-03-11
+> **Status**: Executing — Phase A complete, Phase B next
 > **Supersedes**: §44 in `future_work_11.md` (which proposed deprecation-in-place)
 > **Principle**: Foundational fix. Remove dead code, don't decorate it with warnings.
+
+---
+
+## Execution Model
+
+Run **one phase per session**. Each session:
+
+1. Read this spec
+2. Execute the next incomplete phase
+3. Run that phase's checkpoint build
+4. Commit (with permission)
+
+**Starting prompt** (paste at the start of each new session):
+
+> Continue executing the legacy crate cleanup spec at
+> `sim/docs/todo/spec_fleshouts/LEGACY_CRATE_CLEANUP.md`.
+> Pick up from the next incomplete phase. Run the checkpoint build after
+> the phase. Ask before committing. One phase per session.
+
+### Progress
+
+- [x] **Phase A** — Remove downstream references to legacy crates
+- [ ] **Phase B** — Delete legacy crates
+- [ ] **Phase C** — Clean up sim-types
+- [ ] **Phase D** — Clean up sim-core re-exports
+- [ ] **Phase E** — Update documentation and CI
+- [ ] **Phase F** — Verify
 
 ---
 

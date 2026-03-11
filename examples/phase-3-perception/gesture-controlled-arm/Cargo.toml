@@ -10,8 +10,6 @@ sensor-types = { workspace = true }
 sensor-fusion = { workspace = true }
 sim-types = { workspace = true }
 sim-core = { workspace = true }
-sim-constraint = { workspace = true }
-sim-sensor = { workspace = true }
 route-types = { workspace = true }
 route-pathfind = { workspace = true }
 mesh-types = { workspace = true }
