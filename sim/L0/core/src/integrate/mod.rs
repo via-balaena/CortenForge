@@ -205,6 +205,13 @@ impl Data {
 
         // Advance time
         self.time += h;
+
+        // §66: Plugin state advance
+        if model.nplugin > 0 {
+            for i in 0..model.nplugin {
+                model.plugin_objects[i].advance(model, self, i);
+            }
+        }
     }
 
     /// Integration step without velocity update.

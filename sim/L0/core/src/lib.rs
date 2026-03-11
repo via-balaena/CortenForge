@@ -133,6 +133,9 @@ pub mod contact;
 // State reset (§41 S8f) — mj_reset_data free function
 pub mod reset;
 
+// Plugin/extension system (§66) — trait, types, registry
+pub mod plugin;
+
 // Batched simulation (N independent environments sharing one Model)
 pub mod batch;
 

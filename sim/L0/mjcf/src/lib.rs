@@ -124,7 +124,7 @@
 //! # Limitations
 //!
 //! - Height fields (hfield) and signed distance fields (sdf) are parsed but fall back to Box geometry
-//! - Composite bodies are not supported
+//! - Composite bodies: only `type="cable"` is supported (all other types are deprecated in MuJoCo 3.4.0)
 //!
 //! # Coordinate System
 //!
@@ -184,8 +184,9 @@ pub use defaults::DefaultResolver;
 pub use error::{MjcfError, Result};
 pub use parser::parse_mjcf_str;
 pub use types::{
-    AngleUnit, EqualityKind, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults,
-    MjcfActuatorType, MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect, MjcfDefault, MjcfDistance,
+    AngleUnit, CompositeGeom, CompositeJoint, CompositeShape, CompositeType, EqualityKind,
+    FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody,
+    MjcfCompiler, MjcfComposite, MjcfConeType, MjcfConnect, MjcfDefault, MjcfDistance,
     MjcfEquality, MjcfEqualityDefaults, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
     MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
     MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,

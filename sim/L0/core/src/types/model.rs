@@ -9,6 +9,8 @@ use nalgebra::{DVector, UnitQuaternion, Vector3};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::plugin::{Plugin, PluginCapabilities, PluginStage};
+
 // Imports from sibling modules
 use super::enums::{
     ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, FlexBendingType,
@@ -1016,6 +1018,43 @@ pub struct Model {
     pub nuser_actuator: i32,
     /// Number of user data values per sensor.
     pub nuser_sensor: i32,
+
+    // ==================== Plugin Instances (§66) ====================
+    /// Number of plugin instances.
+    pub nplugin: usize,
+    /// Total plugin state values across all instances.
+    pub npluginstate: usize,
+
+    /// Per-body plugin instance ID; `None` = no plugin. Length: `nbody`.
+    pub body_plugin: Vec<Option<usize>>,
+    /// Per-geom plugin instance ID; `None` = no plugin. Length: `ngeom`.
+    pub geom_plugin: Vec<Option<usize>>,
+    /// Per-actuator plugin instance ID; `None` = not a plugin actuator. Length: `nu`.
+    pub actuator_plugin: Vec<Option<usize>>,
+    /// Per-sensor plugin instance ID; `None` = not a plugin sensor. Length: `nsensor`.
+    pub sensor_plugin: Vec<Option<usize>>,
+
+    /// Plugin trait objects for runtime dispatch. Length: `nplugin`.
+    pub plugin_objects: Vec<Arc<dyn Plugin>>,
+    /// Plugin `need_stage` per instance (for sensor dispatch). Length: `nplugin`.
+    pub plugin_needstage: Vec<PluginStage>,
+    /// Plugin capabilities per instance (cached). Length: `nplugin`.
+    pub plugin_capabilities: Vec<PluginCapabilities>,
+
+    /// Address in `Data::plugin_state` for each instance. Length: `nplugin`.
+    pub plugin_stateadr: Vec<usize>,
+    /// Number of state values per instance. Length: `nplugin`.
+    pub plugin_statenum: Vec<usize>,
+
+    /// Flattened plugin config attributes (concatenated key=value strings).
+    pub plugin_attr: Vec<String>,
+    /// Address into `plugin_attr` per instance. Length: `nplugin`.
+    pub plugin_attradr: Vec<usize>,
+    /// Number of attributes per instance. Length: `nplugin`.
+    pub plugin_attrnum: Vec<usize>,
+
+    /// Plugin instance names (for MJCF `instance` attribute lookup). Length: `nplugin`.
+    pub plugin_name: Vec<Option<String>>,
 }
 
 // ============================================================================

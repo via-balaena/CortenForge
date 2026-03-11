@@ -45,6 +45,45 @@ pub fn sensor_write6(sensordata: &mut DVector<f64>, adr: usize, v: &[f64; 6]) {
     sensor_write(sensordata, adr, 5, v[5]);
 }
 
+/// Apply cutoff clamping to a single sensor.
+///
+/// Extracted from `mj_sensor_postprocess` for use by plugin sensor dispatch
+/// (§66), which applies cutoff per-sensor immediately after plugin compute.
+pub fn apply_sensor_cutoff(model: &Model, data: &mut Data, sensor_id: usize) {
+    let adr = model.sensor_adr[sensor_id];
+    let dim = model.sensor_dim[sensor_id];
+    let cutoff = model.sensor_cutoff[sensor_id];
+    if cutoff <= 0.0 {
+        return;
+    }
+    let sensor_type = model.sensor_type[sensor_id];
+    if matches!(sensor_type, MjSensorType::Touch | MjSensorType::GeomFromTo) {
+        return;
+    }
+    let data_kind = sensor_type.data_kind();
+    match data_kind {
+        MjSensorDataKind::Real => {
+            for i in 0..dim {
+                let idx = adr + i;
+                if idx < data.sensordata.len() {
+                    let clamped = data.sensordata[idx].clamp(-cutoff, cutoff);
+                    sensor_write(&mut data.sensordata, adr, i, clamped);
+                }
+            }
+        }
+        MjSensorDataKind::Positive => {
+            for i in 0..dim {
+                let idx = adr + i;
+                if idx < data.sensordata.len() {
+                    let clamped = data.sensordata[idx].min(cutoff);
+                    sensor_write(&mut data.sensordata, adr, i, clamped);
+                }
+            }
+        }
+        MjSensorDataKind::Axis | MjSensorDataKind::Quaternion => {}
+    }
+}
+
 /// Apply sensor post-processing: cutoff clamping.
 ///
 /// Matches MuJoCo's `apply_cutoff()` in `engine_sensor.c:64–89` using a

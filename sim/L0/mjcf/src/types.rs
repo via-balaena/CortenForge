@@ -1309,6 +1309,8 @@ pub struct MjcfGeom {
     /// `Some(true)` = shell inertia. Rejected on mesh geoms.
     /// MuJoCo: `shellinertia` attribute, maps to `mjtGeomInertia`.
     pub shellinertia: Option<bool>,
+    /// Plugin reference (SDF plugin on this geom). §66.
+    pub plugin: Option<MjcfPluginRef>,
 }
 
 impl Default for MjcfGeom {
@@ -1346,6 +1348,7 @@ impl Default for MjcfGeom {
             fluidcoef: None,
             user: Vec::new(),
             shellinertia: None,
+            plugin: None,
         }
     }
 }
@@ -2327,6 +2330,134 @@ impl Default for MjcfFrame {
 }
 
 // ============================================================================
+// Composite
+// ============================================================================
+
+/// Composite type — only Cable is non-deprecated in MuJoCo 3.4.0.
+/// Matches `mjtCompType` enum in `user_composite.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum CompositeType {
+    /// Deprecated — use `<replicate>` instead.
+    Particle,
+    /// Deprecated — use `<flex>` instead.
+    Grid,
+    /// Deprecated — use `<composite type="cable">` instead.
+    Rope,
+    /// Deprecated — use `<flexcomp>` instead.
+    Loop,
+    /// Cable composite (the only non-deprecated type in MuJoCo 3.4.0).
+    Cable,
+    /// Deprecated — use `<shell>` instead.
+    Cloth,
+}
+
+/// Curve shape for cable vertex generation.
+/// Matches `mjtCompShape` enum in `user_composite.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum CompositeShape {
+    /// `v[k] = ix * size[0] / (count[0]-1)`
+    Line,
+    /// `v[k] = size[1] * cos(PI * ix * size[2] / (count[0]-1))`
+    Cos,
+    /// `v[k] = size[1] * sin(PI * ix * size[2] / (count[0]-1))`
+    Sin,
+    /// `v[k] = 0`
+    #[default]
+    Zero,
+}
+
+/// Template joint for cable bodies (from `<joint kind="main">` child).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CompositeJoint {
+    /// Visualization group.
+    pub group: Option<i32>,
+    /// Spring stiffness.
+    pub stiffness: Option<f64>,
+    /// Damping coefficient.
+    pub damping: Option<f64>,
+    /// Armature (rotor inertia).
+    pub armature: Option<f64>,
+    /// Friction loss.
+    pub frictionloss: Option<f64>,
+    /// Whether position limits are enabled.
+    pub limited: Option<bool>,
+    /// Position limit range [lower, upper].
+    pub range: Option<[f64; 2]>,
+}
+
+/// Template geom for cable bodies (from `<geom>` child).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CompositeGeom {
+    /// Geom type (cylinder, capsule, or box for cables).
+    pub geom_type: MjcfGeomType,
+    /// Size parameters.
+    pub size: [f64; 3],
+    /// RGBA color.
+    pub rgba: Option<[f64; 4]>,
+    /// Collision type bitmask.
+    pub contype: Option<i32>,
+    /// Collision affinity bitmask.
+    pub conaffinity: Option<i32>,
+    /// Contact dimensionality.
+    pub condim: Option<i32>,
+    /// Visualization group.
+    pub group: Option<i32>,
+    /// Friction coefficients [sliding, torsional, rolling].
+    pub friction: Option<[f64; 3]>,
+    /// Explicit mass.
+    pub mass: Option<f64>,
+    /// Density for mass computation (kg/m³).
+    pub density: Option<f64>,
+    /// Solver mixing weight.
+    pub solmix: Option<f64>,
+    /// Solver reference parameters for contacts [timeconst, dampratio].
+    pub solref: Option<[f64; 2]>,
+    /// Solver impedance parameters for contacts.
+    pub solimp: Option<[f64; 5]>,
+    /// Contact margin.
+    pub margin: Option<f64>,
+    /// Contact gap.
+    pub gap: Option<f64>,
+    /// Material asset name.
+    pub material: Option<String>,
+    /// Contact priority.
+    pub priority: Option<i32>,
+}
+
+/// Parsed `<composite>` element.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfComposite {
+    /// Name prefix for generated elements.
+    pub prefix: String,
+    /// Composite type.
+    pub comp_type: CompositeType,
+    /// Element count per axis. Cable requires `[N, 1, 1]` with `N >= 2`.
+    pub count: [i32; 3],
+    /// Position offset for first body.
+    pub offset: [f64; 3],
+    /// Orientation quaternion `[w, x, y, z]`.
+    pub quat: [f64; 4],
+    /// Initial joint mode for first body: `"ball"` (default), `"free"`, `"none"`.
+    pub initial: String,
+    /// Curve shape per axis for vertex generation.
+    pub curve: [CompositeShape; 3],
+    /// Size parameters: `[total_length, amplitude, frequency]`.
+    pub size: [f64; 3],
+    /// User-specified vertex positions (alternative to curve generation).
+    /// Flat array of `[x,y,z, x,y,z, ...]`.
+    pub uservert: Vec<f64>,
+    /// Template joint (from `<joint kind="main">` child).
+    pub joint: Option<CompositeJoint>,
+    /// Template geom (from `<geom>` child).
+    pub geom: Option<CompositeGeom>,
+}
+
+// ============================================================================
 // Body
 // ============================================================================
 
@@ -2354,6 +2485,8 @@ pub struct MjcfBody {
     pub sites: Vec<MjcfSite>,
     /// Frames within this body (expanded during model building).
     pub frames: Vec<MjcfFrame>,
+    /// Composite elements to be expanded during builder phase.
+    pub composites: Vec<MjcfComposite>,
     /// Child bodies.
     pub children: Vec<MjcfBody>,
     /// Parent body name (set during flattening).
@@ -2369,6 +2502,8 @@ pub struct MjcfBody {
     pub gravcomp: Option<f64>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,
+    /// Plugin reference (passive force plugin on this body). §66.
+    pub plugin: Option<MjcfPluginRef>,
 }
 
 impl Default for MjcfBody {
@@ -2384,6 +2519,7 @@ impl Default for MjcfBody {
             geoms: Vec::new(),
             sites: Vec::new(),
             frames: Vec::new(),
+            composites: Vec::new(),
             children: Vec::new(),
             parent: None,
             childclass: None,
@@ -2391,6 +2527,7 @@ impl Default for MjcfBody {
             sleep: None,
             gravcomp: None,
             user: Vec::new(),
+            plugin: None,
         }
     }
 }
@@ -2654,6 +2791,8 @@ pub struct MjcfActuator {
     pub dynprm: Option<Vec<f64>>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,
+    /// Plugin reference (plugin-controlled actuator). §66.
+    pub plugin: Option<MjcfPluginRef>,
 }
 
 impl Default for MjcfActuator {
@@ -2712,6 +2851,7 @@ impl Default for MjcfActuator {
             biasprm: None,
             dynprm: None,
             user: Vec::new(),
+            plugin: None,
         }
     }
 }
@@ -3325,6 +3465,8 @@ pub struct MjcfSensor {
     /// Sampling interval (period) in seconds. MuJoCo: `mjsSensor_::interval`.
     /// Default: None (builder treats as 0.0). Phase is always 0.0.
     pub interval: Option<f64>,
+    /// Plugin reference (plugin-controlled sensor). §66.
+    pub plugin: Option<MjcfPluginRef>,
 }
 
 impl Default for MjcfSensor {
@@ -3348,6 +3490,7 @@ impl Default for MjcfSensor {
             interp: None,
             delay: None,
             interval: None,
+            plugin: None,
         }
     }
 }
@@ -3950,6 +4093,64 @@ impl Default for MjcfFlex {
     }
 }
 
+// ============================================================================
+// Plugin/Extension Types (§66)
+// ============================================================================
+
+/// Plugin configuration key-value pair (from `<config>` element).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfPluginConfig {
+    /// Configuration key.
+    pub key: String,
+    /// Configuration value.
+    pub value: String,
+}
+
+/// Plugin instance declaration (from `<instance>` under `<extension>/<plugin>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfPluginInstance {
+    /// Instance name (required, referenced by elements).
+    pub name: String,
+    /// Configuration key-value pairs.
+    pub config: Vec<MjcfPluginConfig>,
+}
+
+/// Plugin type declaration (from `<plugin>` under `<extension>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfExtensionPlugin {
+    /// Plugin type name (e.g., "mujoco.elasticity.cable").
+    pub plugin: String,
+    /// Named instances.
+    pub instances: Vec<MjcfPluginInstance>,
+}
+
+/// Extension element (top-level `<extension>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfExtension {
+    /// Plugin type declarations.
+    pub plugins: Vec<MjcfExtensionPlugin>,
+}
+
+/// Plugin reference on an element (body, geom, actuator, sensor).
+/// Parsed from `<plugin>` child element on a body/geom, or from
+/// plugin/instance attributes on actuator/sensor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfPluginRef {
+    /// Plugin type name.
+    pub plugin: String,
+    /// Reference to a named instance (from `<extension>`).
+    pub instance: Option<String>,
+    /// Inline configuration (when no instance reference).
+    pub config: Vec<MjcfPluginConfig>,
+    /// Whether this plugin reference is active.
+    pub active: bool,
+}
+
 /// A complete MJCF model.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -4000,6 +4201,9 @@ pub struct MjcfModel {
     pub nuser_actuator: i32,
     /// Number of user data floats per sensor. -1 = auto-size (default), >= 0 = explicit.
     pub nuser_sensor: i32,
+    /// Extension declarations (plugin types + instances). §66.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub extensions: Vec<MjcfExtension>,
 }
 
 impl Default for MjcfModel {
@@ -4027,6 +4231,7 @@ impl Default for MjcfModel {
             nuser_tendon: -1,
             nuser_actuator: -1,
             nuser_sensor: -1,
+            extensions: Vec::new(),
         }
     }
 }

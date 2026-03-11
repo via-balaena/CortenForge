@@ -31,6 +31,16 @@
 > DT-153 (island flex contact assignment), DT-154 (flex condim=6 mapping),
 > DT-155 (S10 override test for flex-flex), DT-156 (narrowphase contact count gap)
 > added during Phase 10 Spec D review.
+> DT-161 (pyramidal diagApprox factor-of-2) added during Phase 13 Spec A review.
+> DT-162 (PGS nactive/nchange counting), DT-163 (PGS warmstart primal cost gate)
+> added during Phase 13 Spec B implementation.
+> DT-164 (Newton solver golden flag convergence) added during Phase 13 Session 8 review.
+> DT-165 (cable skin), DT-166 (composite custom text), DT-167 (flexcomp element),
+> DT-168 (replicate element), DT-169 (cable site template) added during Phase 13 Spec C review.
+> DT-170 (SDF collision dispatch), DT-171 (resource providers/decoders),
+> DT-172 (plugin copy/destroy callbacks), DT-173 (Data clone plugin_data),
+> DT-174 (sensor cutoff stage check) added during Phase 13 Spec D review.
+> ~~§66~~ done (Phase 13 Spec D). DT-110 dependency on §66 satisfied.
 >
 > **Current position**: Phases 1–7 and 10 complete. Next: Phases 8, 9, 11 (parallel).
 
@@ -291,13 +301,13 @@ green.
 
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
-| DT-19 | 10c | T3 | QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style). Surfaced by Phase 12 gate triage — golden flag tests. |
-| DT-23 | 10c | T2 | Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`). Surfaced by Phase 12 gate triage — `golden_disable_frictionloss` (~3.99 divergence). |
-| DT-39 | 10e | T2 | Body-weight diagonal approximation (`diagApprox`) — remaining code paths. Partially fixed in Phase 12 Session 15 Round 2; golden flag model's equality constraint configuration exercises a remaining path. |
-| DT-128 | 10e | T2 | PGS early termination — accumulate `improvement` from `costChange()`, break when `improvement * scale < tolerance`. Surfaced by Phase 12 gate triage. |
-| DT-129 | 10e | T3 | PGS warmstart two-phase projection — use ray+QCQP projection on warmstart forces. Surfaced by Phase 12 gate triage. |
-| §46 | 12 | — | `<composite>` procedural body generation (grid, rope, cable, cloth, box, cylinder, ellipsoid) |
-| §66 | 16 | — | Plugin/extension system — `<plugin>`/`<extension>` MJCF parsing + Rust trait dispatch |
+| ~~DT-19~~ | 10c | T3 | ~~QCQP-based cone projection for normal+friction force projection (MuJoCo PGS style)~~ **Done** — Phase 13 Spec B (Session 6). Verified correct via line-by-line comparison with MuJoCo `mju_QCQP2/3/N()`. No code changes needed; 14/14 unit tests pass. |
+| ~~DT-23~~ | 10c | T2 | ~~Per-DOF friction loss solver params (`dof_solref_fri`/`dof_solimp_fri`)~~ **Done** — verified correct in Phase 13 Spec A (Session 2/4). Assembly routes per-DOF `dof_solref`/`dof_solimp` and per-tendon `tendon_solref_fri`/`tendon_solimp_fri`. |
+| ~~DT-39~~ | 10e | T2 | ~~Body-weight diagonal approximation (`diagApprox`) — remaining code paths~~ **Done** — Phase 13 Spec A (Session 2). Replaced diagonal-only `tendon_invweight0` with full `J·M⁻¹·J^T` solve. diagApprox/R/D match MuJoCo. Golden flags still blocked by Newton solver convergence (DT-128/129). |
+| ~~DT-128~~ | 10e | T2 | ~~PGS early termination~~ **Done** — Phase 13 Spec B (Session 6). Refactored PGS loop: `while iter < max_iters` with `improvement -= costChange()` accumulation, `improvement *= scale`, `if improvement < tolerance { break }`. `solver_niter` reports actual count. `solver_stat` populated per iteration. MuJoCo conformance verified (T7: efc_force, solver_niter, qacc within 1e-10). |
+| ~~DT-129~~ | 10e | T3 | ~~PGS warmstart two-phase projection~~ **Done** — Phase 13 Spec B (Session 6). Verified existing warmstart logic matches MuJoCo PGS path: `classify_constraint_states()` maps qacc_warmstart → efc_force, dual cost gate zeros forces when warmstart not beneficial. Minor primal/dual cost gate difference tracked as DT-163 (no measurable divergence). |
+| ~~§46~~ | 12 | — | ~~`<composite>` procedural body generation~~ **Done** — Phase 13 Spec C (Session 10). Only `cable` type implemented (non-deprecated in MuJoCo 3.4.0). Deprecated types (particle/grid/rope/loop/cloth) return MuJoCo-matching error messages. Skin (DT-165), custom text (DT-166), `<flexcomp>` (DT-167), `<replicate>` (DT-168), `<site>` template (DT-169) deferred to post-v1.0. |
+| ~~§66~~ | 16 | — | ~~Plugin/extension system — `<plugin>`/`<extension>` MJCF parsing + Rust trait dispatch~~ **Done** — Phase 13 Spec D (Session 15). Rust `Plugin` trait + `PluginRegistry`, 15 Model fields, Data plugin state, MJCF `<extension>`/`<plugin>` parsing, builder resolution, forward dispatch hooks (actuation/passive/sensor/advance), lifecycle (init/reset). SDF collision dispatch deferred (DT-170), resource providers/decoders deferred (DT-171), plugin copy/destroy callbacks deferred (DT-172), Data clone plugin_data preservation deferred (DT-173). |
 
 ---
 
@@ -376,7 +386,7 @@ foundation isn't right.
 | DT-113 | 10g | T1 | `<hillmuscle>` shortcut element — analogous to `<muscle>`, auto-sets dyntype/gaintype/biastype |
 | DT-114 | 10g | T2 | HillMuscle variable pennation angle — `α = asin(w / L_fiber)` as function of fiber length |
 | DT-115 | 10g | T2 | HillMuscle configurable curve parameters — Gaussian FL widths, FV curvature, FP shape via `gainprm`/`biasprm` |
-| DT-116 | 10g | T3 | Per-actuator `GainType::User` / `BiasType::User` callback infrastructure — depends on §66 (plugin system) |
+| DT-116 | 10g | T3 | Per-actuator `GainType::User` / `BiasType::User` callback infrastructure — dependency on §66 satisfied (Phase 13 Spec D) |
 | DT-26 | 10c | T2 | Contact re-detect + re-solve iteration after XPBD |
 | DT-27 | 10c | T2 | XPBD cross-iteration lambda accumulation fix |
 | DT-30 | 10d | T3 | Compound pulley physics (capstan friction, pulley inertia) |
@@ -416,11 +426,25 @@ foundation isn't right.
 | DT-80 | 10j | T1 | Mocap body + equality weld integration testing |
 | DT-81 | 10j | T1 | `key_userdata` support |
 | DT-84 | 10j | T1 | `mju_encodePyramid` utility |
+| DT-161 | 13 | T1 | Pyramidal `efc_diagApprox` bodyweight factor-of-2 — CF stores `(1+μ²)·w_tran`, MuJoCo stores `2·(1+μ²)·w_tran` for pyramidal facet rows (`assembly.rs:681`). No downstream effect: Rpy post-processing (`assembly.rs:775-795`) overwrites R/D for all facet rows. Pure conformance of a stored diagnostic field. Root cause unknown — requires reading MuJoCo `mj_diagApprox` C source. Identified during Phase 13 Spec A review. |
+| DT-162 | 13 | T1 | PGS `solver_stat` `nactive`/`nchange` per-iteration counting — MuJoCo calls `dualState()` after each PGS sweep to classify active constraints and count state transitions. CortenForge uses placeholder 0 for both fields. Diagnostic only — does not affect solver forces, qacc, or convergence. Deferred from Phase 13 Spec B. |
+| DT-163 | 13 | T1 | PGS warmstart primal cost gate — MuJoCo evaluates `primal_cost > 0` via `mj_constraintUpdate()`, CortenForge evaluates `dual_cost < 0` via `classify_constraint_states()`. Equivalent at optimum (strong duality); slightly more conservative before convergence (`dual ≤ primal`). No measurable divergence in T7 conformance test. Upgrade to primal cost if divergence found on complex models. Deferred from Phase 13 Spec B. |
+| DT-164 | 13 | T2 | Newton solver golden flag convergence — 24/26 golden flag tests fail at ~0.002 qacc divergence. Assembly (diagApprox, R, D) and PGS solver are verified correct (Specs A+B). Residual divergence traces to Newton solver iteration: efc_force differs by ~3e-6 per row, amplified by M⁻¹ to ~0.002 qacc. Root cause is Newton convergence behavior (line search, Hessian factorization, or tolerance handling), not constraint assembly or PGS. Requires dedicated Newton solver investigation. Identified during Phase 13 Session 8 golden flag gate. |
+| DT-165 | 13 | T2 | Cable skin generation — rendering-only box-geom cable skin with bicubic interpolation and subgrid support. MuJoCo `mjCComposite::MakeSkin()` in `user_composite.cc`. Visual-only feature — no physics impact. Deferred from Phase 13 Spec C. |
+| DT-166 | 13 | T1 | Custom text metadata for composites — cable adds `composite_{prefix}` text element with data `rope_{prefix}` via MuJoCo's `mjsText`. Requires `<custom><text>` infrastructure which CortenForge does not yet support. Metadata-only — no physics impact. Deferred from Phase 13 Spec C. |
+| DT-167 | 13 | T2 | `<flexcomp>` element — separate MJCF element from `<composite>`. Generates flex bodies from templates (box, cylinder, ellipsoid, mesh, etc.). Completely independent infrastructure from composite cable. Not in §46. Deferred from Phase 13 Spec C review. |
+| DT-168 | 13 | T1 | `<replicate>` element — MuJoCo 3.4.0 replacement for deprecated `<composite type="particle">`. Repeats body templates at specified positions. Independent from cable composite. Deferred from Phase 13 Spec C review. |
+| DT-169 | 13 | T1 | Cable `<site>` template customization — `<site>` child element support inside `<composite>` to customize boundary site properties (size, rgba, group, etc.). Currently boundary sites use `MjcfSite::default()`. Deferred from Phase 13 Spec C review. |
+| DT-170 | 16 | T2 | SDF collision dispatch — Plugin trait defines `sdf_distance`, `sdf_gradient`, `sdf_staticdistance`, `sdf_aabb`, `sdf_attribute` callbacks, but collision pipeline does not call them. Requires `mjc_SDF()` equivalent integration into narrowphase. No known MuJoCo test models require SDF plugins for conformance. Deferred from Phase 13 Spec D (§66). |
+| DT-171 | 16 | T1 | Resource providers and decoders — MuJoCo's `mjpResourceProvider` (file I/O) and `mjpDecoder` (format decoding) are separate from the 4 physics plugin types. No conformance impact — CortenForge uses Rust native I/O. Deferred from Phase 13 Spec D (§66). |
+| DT-172 | 16 | T1 | Plugin copy/destroy callbacks — MuJoCo's `copy` and `destroy` plugin callbacks for lifecycle management when `mjData` is copied or freed. Currently `plugin_data` is reset to `None` on clone and not explicitly destroyed. Deferred from Phase 13 Spec D (§66). |
+| DT-173 | 16 | T2 | Data clone plugin_data preservation — `Data::clone()` resets `plugin_data` to `None` (each `Option<Box<dyn Any>>` becomes `None`). Full-fidelity clone requires a `Plugin::copy()` callback to deep-copy type-erased plugin state. Depends on DT-172. Deferred from Phase 13 Spec D (§66). |
+| DT-174 | 16 | T1 | Sensor cutoff stage check hardening — `compute_plugin_sensors()` omits `sensor_needstage[j] == stage` check from spec. Functionally correct (plugin needstage == sensor needstage by construction), but adding the check would match the spec exactly and be more robust against future changes. Deferred from Phase 13 Spec D review (Session 17). |
 | DT-89 | 10i | T1 | `<flexcomp>` rendering attributes |
 | DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()`. Deferred from Phase 5 Spec B. |
 | DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Covers both actuators (Phase 5 Spec D) and sensors (Phase 6 Spec D): structures exist for both, runtime missing for both. Includes sensor history pre-population in `reset_data()`. |
 | DT-108 | 10g | T1 | `dyntype` enum gating interpolation eligibility — restrict which `ActuatorDynamics` variants may use history buffer. Deferred from Phase 5 Spec D. |
-| DT-110 | 10g | T1 | `actuator_plugin` model array — per-actuator plugin ID (`int[nu]`, -1 sentinel). Depends on §66. Deferred from Phase 5 Spec D. |
+| DT-110 | 10g | T1 | `actuator_plugin` model array — per-actuator plugin ID (`int[nu]`, -1 sentinel). Dependency on §66 satisfied (Phase 13 Spec D). Deferred from Phase 5 Spec D. |
 | DT-118 | 15 | T2 | `mj_contactForce()` — touch sensor force reconstruction via full contact force vector. Deferred from Phase 6 Spec A. |
 | DT-119 | 15 | T2 | Ray-geom intersection filter for touch sensor — filter contacts by surface normal alignment. Depends on DT-118. Deferred from Phase 6 Spec A. |
 | DT-120 | 15 | T1 | `MjObjectType::Camera` — frame sensor camera support (reftype="camera" currently warns + ignores). Deferred from Phase 6 Spec B. |

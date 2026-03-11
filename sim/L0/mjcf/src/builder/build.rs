@@ -26,6 +26,7 @@ impl ModelBuilder {
         let nsite = self.site_body.len();
         let nu = self.actuator_trntype.len();
         let ntendon = self.tendon_type.len();
+        let nsensor = self.sensor_type.len();
 
         // Compute resolved nuser_* values before moving raw arrays.
         // After finalize_user_data, all inner vecs have uniform length per type.
@@ -446,6 +447,23 @@ impl ModelBuilder {
             nuser_tendon,
             nuser_actuator,
             nuser_sensor,
+
+            // §66: Plugin instances (empty — populated by plugin resolution)
+            nplugin: 0,
+            npluginstate: 0,
+            body_plugin: vec![None; nbody],
+            geom_plugin: vec![None; ngeom],
+            actuator_plugin: vec![None; nu],
+            sensor_plugin: vec![None; nsensor],
+            plugin_objects: Vec::new(),
+            plugin_needstage: Vec::new(),
+            plugin_capabilities: Vec::new(),
+            plugin_stateadr: Vec::new(),
+            plugin_statenum: Vec::new(),
+            plugin_attr: Vec::new(),
+            plugin_attradr: Vec::new(),
+            plugin_attrnum: Vec::new(),
+            plugin_name: Vec::new(),
         };
 
         // Pre-compute ancestor lists for O(n) CRBA/RNE

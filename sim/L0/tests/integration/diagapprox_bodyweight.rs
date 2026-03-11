@@ -3,7 +3,7 @@
 //! Validates that `compute_invweight0()` correctly computes:
 //! - `body_invweight0[b]` = operational-space inverse inertia (J·M⁻¹·J^T diagonal avg)
 //! - `dof_invweight0[d]` = M⁻¹ diagonal subblock for each joint's DOFs
-//! - `tendon_invweight0[t]` = Σ(coef² · dof_invweight0[dof]) for fixed tendons
+//! - `tendon_invweight0[t]` = J_tendon · M⁻¹ · J_tendon^T (full quadratic form)
 //!
 //! MuJoCo ref: `setInertia()` / `set0()` in `engine_setconst.c`.
 
@@ -230,7 +230,8 @@ fn tendon_invweight0_fixed_tendon() {
     "#;
     let model = load_model(mjcf).expect("should load");
 
-    // tendon_invweight0[0] = 2.0² * dof_invweight0[J1_dof] + 3.0² * dof_invweight0[J2_dof]
+    // tendon_invweight0 = J · M⁻¹ · J^T; for independent bodies (block-diagonal M)
+    // this equals 2.0² * dof_invweight0[J1_dof] + 3.0² * dof_invweight0[J2_dof]
     let j1_jnt: usize = model
         .jnt_name
         .iter()
@@ -246,6 +247,169 @@ fn tendon_invweight0_fixed_tendon() {
 
     let expected = 4.0 * model.dof_invweight0[dof1] + 9.0 * model.dof_invweight0[dof2];
     assert_relative_eq!(model.tendon_invweight0[0], expected, epsilon = 1e-10);
+}
+
+// ============================================================================
+// Test 5b: tendon_invweight0 — single-joint tendon (T2, AC2)
+// Full form collapses to diagonal for 1 DOF: invweight0 = dof_invweight0
+// ============================================================================
+
+#[test]
+fn tendon_invweight0_single_joint() {
+    let mjcf = r#"
+    <mujoco model="dt39_single_tendon">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="b1" pos="0 0 1">
+                <joint name="J1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="2.0"/>
+            </body>
+        </worldbody>
+        <tendon>
+            <fixed name="T1">
+                <joint joint="J1" coef="1.0"/>
+            </fixed>
+        </tendon>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should load");
+
+    // AC2: Single-joint tendon: invweight0 = dof_invweight0 (coef=1.0)
+    let dof = model.jnt_dof_adr[0];
+    assert_relative_eq!(
+        model.tendon_invweight0[0],
+        model.dof_invweight0[dof],
+        epsilon = 1e-12
+    );
+}
+
+// ============================================================================
+// Test 5c: tendon_invweight0 — serial chain off-diagonal coupling (T3, AC3)
+// Full J·M⁻¹·J^T > diagonal-only Σ(coef²·M⁻¹[i,i]) for serial chain
+// ============================================================================
+
+#[test]
+fn tendon_invweight0_serial_chain_coupling() {
+    let mjcf = r#"
+    <mujoco model="dt39_serial_tendon">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="b1" pos="0 0 1">
+                <joint name="J1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="2.0"/>
+                <body name="b2" pos="0.5 0 0">
+                    <joint name="J2" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </body>
+        </worldbody>
+        <tendon>
+            <fixed name="T1">
+                <joint joint="J1" coef="1.0"/>
+                <joint joint="J2" coef="-1.0"/>
+            </fixed>
+        </tendon>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should load");
+
+    // AC3: Multi-joint serial chain — full form strictly greater than diagonal
+    let dof0 = model.jnt_dof_adr[0];
+    let dof1 = model.jnt_dof_adr[1];
+    let diagonal_only = model.dof_invweight0[dof0] + model.dof_invweight0[dof1];
+
+    assert!(
+        model.tendon_invweight0[0] > diagonal_only,
+        "Full J·M⁻¹·J^T ({}) should be > diagonal-only ({}) for serial chain",
+        model.tendon_invweight0[0],
+        diagonal_only
+    );
+}
+
+// ============================================================================
+// Test 5d: tendon_invweight0 — spatial tendon regression guard (T5, AC7)
+// Spatial tendons use the same full J·M⁻¹·J^T algorithm; invweight0 > MIN_VAL
+// ============================================================================
+
+#[test]
+fn tendon_invweight0_spatial_regression() {
+    let mjcf = r#"
+    <mujoco model="dt39_spatial_tendon">
+        <worldbody>
+            <body name="upper" pos="0 0 1">
+                <joint name="shoulder" type="hinge" axis="0 1 0"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+                <site name="s1" pos="0 0 0"/>
+                <body name="lower" pos="0 0 -0.5">
+                    <joint name="elbow" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4"/>
+                    <site name="s2" pos="0 0 -0.2"/>
+                </body>
+            </body>
+        </worldbody>
+        <tendon>
+            <spatial name="t1">
+                <site site="s1"/>
+                <site site="s2"/>
+            </spatial>
+        </tendon>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should load");
+
+    // AC7: Spatial tendon invweight0 >= MIN_VAL (1e-15), no panics.
+    // Note: This model has a geometric degeneracy at qpos=0 — the tendon
+    // is collinear with Z and both joints rotate around Y, so
+    // d(length)/d(qvel) = 0. MuJoCo would also give MIN_VAL here.
+    assert!(
+        model.tendon_invweight0[0] >= 1e-15,
+        "Spatial tendon invweight0 should be >= MIN_VAL, got {}",
+        model.tendon_invweight0[0]
+    );
+}
+
+// ============================================================================
+// Test 5e: tendon_invweight0 — spatial tendon non-degenerate (nonzero J)
+// When the tendon is NOT collinear with the joint axis plane, J is nonzero
+// and invweight0 > MIN_VAL.
+// ============================================================================
+
+#[test]
+fn tendon_invweight0_spatial_nondegenerate() {
+    // s1 offset in X so the tendon is NOT collinear with Z — this breaks
+    // the geometric degeneracy and gives a nonzero Jacobian.
+    let mjcf = r#"
+    <mujoco model="dt39_spatial_nondegen">
+        <worldbody>
+            <body name="upper" pos="0 0 1">
+                <joint name="shoulder" type="hinge" axis="0 1 0"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+                <site name="s1" pos="0.3 0 0"/>
+                <body name="lower" pos="0 0 -0.5">
+                    <joint name="elbow" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4"/>
+                    <site name="s2" pos="0 0 -0.2"/>
+                </body>
+            </body>
+        </worldbody>
+        <tendon>
+            <spatial name="t1">
+                <site site="s1"/>
+                <site site="s2"/>
+            </spatial>
+        </tendon>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("should load");
+
+    // With s1 offset in X, the tendon has a nonzero X component.
+    // Hinge rotation around Y moves s1 in X-Z → changes tendon length.
+    // So J is nonzero and invweight0 > MIN_VAL.
+    assert!(
+        model.tendon_invweight0[0] > 1e-15,
+        "Non-degenerate spatial tendon invweight0 should be > MIN_VAL, got {}",
+        model.tendon_invweight0[0]
+    );
 }
 
 // ============================================================================
