@@ -342,8 +342,8 @@ impl ModelBuilder {
                 unreachable!("geom distance sensors use dual-object resolution")
             }
 
-            // Clock and User handled above (early return)
-            MjSensorType::Clock | MjSensorType::User => unreachable!(),
+            // Clock, User, and Plugin handled above (early return)
+            MjSensorType::Clock | MjSensorType::User | MjSensorType::Plugin => unreachable!(),
         }
     }
 
@@ -583,6 +583,7 @@ fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
         | MjSensorType::FrameLinAcc
         | MjSensorType::FrameAngAcc
         | MjSensorType::JointActuatorFrc
-        | MjSensorType::User => MjSensorDataType::Acceleration,
+        | MjSensorType::User
+        | MjSensorType::Plugin => MjSensorDataType::Acceleration,
     }
 }

@@ -314,4 +314,7 @@ pub fn mj_sensor_vel(model: &Model, data: &mut Data) {
             _ => {}
         }
     }
+
+    // §66: Plugin sensor dispatch at velocity stage
+    super::compute_plugin_sensors(model, data, crate::plugin::PluginStage::Vel);
 }

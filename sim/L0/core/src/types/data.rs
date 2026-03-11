@@ -648,6 +648,15 @@ pub struct Data {
     /// Extracted from qM diagonal for angular DOFs (free joint 3-5, ball 0-2, hinge).
     /// World body (index 0) has value `f64::INFINITY`.
     pub body_min_inertia: Vec<f64>,
+
+    // ==================== Plugin State (§66) ====================
+    /// Mutable plugin state vector (length `npluginstate`).
+    /// Each plugin instance owns a contiguous slice at
+    /// `plugin_state[stateadr..stateadr+statenum]`.
+    pub plugin_state: Vec<f64>,
+    /// Plugin-managed data (type-erased). Length: `nplugin`.
+    /// Plugins can store arbitrary data here via `init()`.
+    pub plugin_data: Vec<Option<Box<dyn std::any::Any + Send + Sync>>>,
 }
 
 #[allow(non_snake_case)] // qM, qLD matches MuJoCo naming convention
@@ -854,6 +863,9 @@ impl Clone for Data {
             // Cached body mass/inertia
             body_min_mass: self.body_min_mass.clone(),
             body_min_inertia: self.body_min_inertia.clone(),
+            // §66: Plugin state (shallow clone — plugin_data not cloned)
+            plugin_state: self.plugin_state.clone(),
+            plugin_data: (0..self.plugin_data.len()).map(|_| None).collect(),
         }
     }
 }
@@ -1025,6 +1037,15 @@ impl Data {
         self.nisland = 0;
         self.tree_island[..model.ntree].fill(-1);
         self.contact_island.clear();
+
+        // 11. §66: Plugin state — zero then call plugin reset().
+        self.plugin_state.fill(0.0);
+        for i in 0..model.nplugin {
+            let adr = model.plugin_stateadr[i];
+            let num = model.plugin_statenum[i];
+            let state = &mut self.plugin_state[adr..adr + num];
+            model.plugin_objects[i].reset(model, state, i);
+        }
     }
 
     /// Reset simulation state to a keyframe by index.
@@ -1123,7 +1144,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4312;
+        const EXPECTED_SIZE: usize = 4360;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

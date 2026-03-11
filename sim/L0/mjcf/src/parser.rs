@@ -20,10 +20,11 @@ use crate::types::{
     FluidShape, InertiaFromGeom, MeshInertia, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType,
     MjcfBody, MjcfCompiler, MjcfComposite, MjcfConeType, MjcfConnect, MjcfContact,
     MjcfContactExclude, MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality,
-    MjcfEqualityDefaults, MjcfFlag, MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
-    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
-    MjcfJointEquality, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults, MjcfModel,
-    MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite,
+    MjcfEqualityDefaults, MjcfExtension, MjcfExtensionPlugin, MjcfFlag, MjcfFlex, MjcfFrame,
+    MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator,
+    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfKeyframe,
+    MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfPluginConfig,
+    MjcfPluginInstance, MjcfPluginRef, MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite,
     MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon,
     MjcfTendonDefaults, MjcfTendonEquality, MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
@@ -151,6 +152,10 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                     b"size" => {
                         parse_size_attrs(e, &mut model);
                         skip_element(reader, &elem_name)?;
+                    }
+                    b"extension" => {
+                        let ext = parse_extension(reader)?;
+                        model.extensions.push(ext);
                     }
                     // Skip other elements
                     _ => skip_element(reader, &elem_name)?,
@@ -1703,6 +1708,10 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
                         let composite = parse_composite(reader, e)?;
                         body.composites.push(composite);
                     }
+                    b"plugin" => {
+                        let plugin_ref = parse_plugin_ref(reader, e)?;
+                        body.plugin = Some(plugin_ref);
+                    }
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -1740,6 +1749,10 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
                 b"frame" => {
                     let frame = parse_frame_attrs(e)?;
                     body.frames.push(frame);
+                }
+                b"plugin" => {
+                    let plugin_ref = parse_plugin_ref_empty(e)?;
+                    body.plugin = Some(plugin_ref);
                 }
                 _ => {}
             },
@@ -2268,10 +2281,10 @@ fn parse_actuators<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfActuato
             Ok(Event::Start(ref e)) => {
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if let Some(actuator_type) = MjcfActuatorType::from_str(&elem_name) {
-                    let actuator = parse_actuator_attrs(e, actuator_type)?;
+                    let mut actuator = parse_actuator_attrs(e, actuator_type)?;
+                    // Parse children (may contain <plugin> sub-element)
+                    parse_actuator_children(reader, elem_name.as_bytes(), &mut actuator)?;
                     actuators.push(actuator);
-                    // Skip to closing tag
-                    skip_element(reader, elem_name.as_bytes())?;
                 }
             }
             Ok(Event::Empty(ref e)) => {
@@ -2469,6 +2482,43 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     }
 
     Ok(actuator)
+}
+
+/// Parse children of an actuator element (may contain `<plugin>` sub-element).
+fn parse_actuator_children<R: BufRead>(
+    reader: &mut Reader<R>,
+    parent_tag: &[u8],
+    actuator: &mut MjcfActuator,
+) -> Result<()> {
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if e.name().as_ref() == b"plugin" => {
+                let plugin_ref = parse_plugin_ref(reader, e)?;
+                actuator.plugin = Some(plugin_ref);
+            }
+            Ok(Event::Empty(ref e)) if e.name().as_ref() == b"plugin" => {
+                let plugin_ref = parse_plugin_ref_empty(e)?;
+                actuator.plugin = Some(plugin_ref);
+            }
+            Ok(Event::Start(ref e)) => {
+                // Unknown child — skip
+                let name = e.name().as_ref().to_vec();
+                skip_element(reader, &name)?;
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse(format!(
+                    "unexpected EOF in {}",
+                    String::from_utf8_lossy(parent_tag)
+                )));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+    Ok(())
 }
 
 /// Parse equality constraints element.
@@ -3815,10 +3865,10 @@ fn parse_sensors<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfSensor>> 
             Ok(Event::Start(ref e)) => {
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if let Some(sensor_type) = MjcfSensorType::from_str(&elem_name) {
-                    let sensor = parse_sensor_attrs(e, sensor_type);
+                    let mut sensor = parse_sensor_attrs(e, sensor_type);
+                    // Parse children (may contain <plugin> sub-element)
+                    parse_sensor_children(reader, elem_name.as_bytes(), &mut sensor)?;
                     sensors.push(sensor);
-                    // Skip to closing tag
-                    skip_element(reader, elem_name.as_bytes())?;
                 }
             }
             Ok(Event::Empty(ref e)) => {
@@ -3917,6 +3967,42 @@ fn parse_sensor_attrs(e: &BytesStart, sensor_type: MjcfSensorType) -> MjcfSensor
     sensor.interval = parse_float_attr(e, "interval");
 
     sensor
+}
+
+/// Parse children of a sensor element (may contain `<plugin>` sub-element).
+fn parse_sensor_children<R: BufRead>(
+    reader: &mut Reader<R>,
+    parent_tag: &[u8],
+    sensor: &mut MjcfSensor,
+) -> Result<()> {
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if e.name().as_ref() == b"plugin" => {
+                let plugin_ref = parse_plugin_ref(reader, e)?;
+                sensor.plugin = Some(plugin_ref);
+            }
+            Ok(Event::Empty(ref e)) if e.name().as_ref() == b"plugin" => {
+                let plugin_ref = parse_plugin_ref_empty(e)?;
+                sensor.plugin = Some(plugin_ref);
+            }
+            Ok(Event::Start(ref e)) => {
+                let name = e.name().as_ref().to_vec();
+                skip_element(reader, &name)?;
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse(format!(
+                    "unexpected EOF in {}",
+                    String::from_utf8_lossy(parent_tag)
+                )));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -4207,6 +4293,168 @@ fn parse_curve_shapes(s: &str) -> Result<[CompositeShape; 3]> {
         };
     }
     Ok(shapes)
+}
+
+// ============================================================================
+// §66: Plugin/Extension Parsing
+// ============================================================================
+
+/// Parse `<extension>` element containing plugin declarations.
+fn parse_extension<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfExtension> {
+    let mut ext = MjcfExtension::default();
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if e.name().as_ref() == b"plugin" => {
+                let plugin_name =
+                    get_attribute_opt(e, "plugin").ok_or_else(|| MjcfError::MissingAttribute {
+                        element: "plugin".into(),
+                        attribute: "plugin",
+                    })?;
+                let mut ep = MjcfExtensionPlugin {
+                    plugin: plugin_name,
+                    instances: Vec::new(),
+                };
+                parse_extension_plugin(reader, &mut ep)?;
+                ext.plugins.push(ep);
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"extension" => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse("unexpected EOF in extension".into()));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+    Ok(ext)
+}
+
+/// Parse children of `<plugin>` inside `<extension>`.
+fn parse_extension_plugin<R: BufRead>(
+    reader: &mut Reader<R>,
+    ep: &mut MjcfExtensionPlugin,
+) -> Result<()> {
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if e.name().as_ref() == b"instance" => {
+                let name =
+                    get_attribute_opt(e, "name").ok_or_else(|| MjcfError::MissingAttribute {
+                        element: "instance".into(),
+                        attribute: "name",
+                    })?;
+                let config = parse_plugin_config(reader, b"instance")?;
+                ep.instances.push(MjcfPluginInstance { name, config });
+            }
+            Ok(Event::Empty(ref e)) if e.name().as_ref() == b"instance" => {
+                let name =
+                    get_attribute_opt(e, "name").ok_or_else(|| MjcfError::MissingAttribute {
+                        element: "instance".into(),
+                        attribute: "name",
+                    })?;
+                ep.instances.push(MjcfPluginInstance {
+                    name,
+                    config: Vec::new(),
+                });
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"plugin" => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse("unexpected EOF in plugin".into()));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+    Ok(())
+}
+
+/// Parse `<config key="..." value="..."/>` children inside a parent element.
+fn parse_plugin_config<R: BufRead>(
+    reader: &mut Reader<R>,
+    parent_tag: &[u8],
+) -> Result<Vec<MjcfPluginConfig>> {
+    let mut configs = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) if e.name().as_ref() == b"config" => {
+                let key =
+                    get_attribute_opt(e, "key").ok_or_else(|| MjcfError::MissingAttribute {
+                        element: "config".into(),
+                        attribute: "key",
+                    })?;
+                if !seen_keys.insert(key.clone()) {
+                    return Err(MjcfError::XmlParse(format!("duplicate config key: {key}")));
+                }
+                let value =
+                    get_attribute_opt(e, "value").ok_or_else(|| MjcfError::MissingAttribute {
+                        element: "config".into(),
+                        attribute: "value",
+                    })?;
+                configs.push(MjcfPluginConfig { key, value });
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == parent_tag => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse(format!(
+                    "unexpected EOF in {}",
+                    String::from_utf8_lossy(parent_tag)
+                )));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+    Ok(configs)
+}
+
+/// Parse a `<plugin>` sub-element on a body/geom/etc.
+fn parse_plugin_ref<R: BufRead>(
+    reader: &mut Reader<R>,
+    start: &BytesStart,
+) -> Result<MjcfPluginRef> {
+    let plugin = get_attribute_opt(start, "plugin").ok_or_else(|| MjcfError::MissingAttribute {
+        element: "plugin".into(),
+        attribute: "plugin",
+    })?;
+    let instance = get_attribute_opt(start, "instance");
+    let config = parse_plugin_config(reader, b"plugin")?;
+
+    // Validation: can't have both instance reference and inline config
+    if instance.is_some() && !config.is_empty() {
+        return Err(MjcfError::XmlParse(
+            "plugin configuration attributes cannot be used in an element \
+             that references a predefined plugin instance"
+                .into(),
+        ));
+    }
+
+    Ok(MjcfPluginRef {
+        plugin,
+        instance,
+        config,
+        active: true,
+    })
+}
+
+/// Parse a self-closing `<plugin plugin="..." instance="..."/>` element (Event::Empty).
+/// No child `<config>` elements are possible in a self-closing tag.
+fn parse_plugin_ref_empty(start: &BytesStart) -> Result<MjcfPluginRef> {
+    let plugin = get_attribute_opt(start, "plugin").ok_or_else(|| MjcfError::MissingAttribute {
+        element: "plugin".into(),
+        attribute: "plugin",
+    })?;
+    let instance = get_attribute_opt(start, "instance");
+
+    Ok(MjcfPluginRef {
+        plugin,
+        instance,
+        config: Vec::new(),
+        active: true,
+    })
 }
 
 /// Skip an element and all its children.
@@ -6416,5 +6664,159 @@ mod tests {
             1,
             "should parse one composite on parent body"
         );
+    }
+
+    // T2: Parse `<extension>` with instances and config → AC3
+    #[test]
+    fn t2_parse_extension_with_instances_and_config() {
+        let xml = r#"
+            <mujoco model="plugin_test">
+                <extension>
+                    <plugin plugin="mujoco.elasticity.cable">
+                        <instance name="cable1">
+                            <config key="twist" value="1e-4"/>
+                            <config key="bend" value="1e-2"/>
+                        </instance>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b"/>
+                </worldbody>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse extension");
+        assert_eq!(model.extensions.len(), 1);
+        let ext = &model.extensions[0];
+        assert_eq!(ext.plugins.len(), 1);
+        assert_eq!(ext.plugins[0].plugin, "mujoco.elasticity.cable");
+        assert_eq!(ext.plugins[0].instances.len(), 1);
+        let inst = &ext.plugins[0].instances[0];
+        assert_eq!(inst.name, "cable1");
+        assert_eq!(inst.config.len(), 2);
+        assert_eq!(inst.config[0].key, "twist");
+        assert_eq!(inst.config[0].value, "1e-4");
+        assert_eq!(inst.config[1].key, "bend");
+        assert_eq!(inst.config[1].value, "1e-2");
+    }
+
+    // T4: Plugin sub-element on body → AC5
+    #[test]
+    fn t4_plugin_sub_element_on_body() {
+        let xml = r#"
+            <mujoco model="body_plugin_test">
+                <worldbody>
+                    <body name="b1">
+                        <plugin plugin="test.passive"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse body plugin");
+        let b1 = &model.worldbody.children[0];
+        assert!(b1.plugin.is_some());
+        let pref = b1.plugin.as_ref().unwrap();
+        assert_eq!(pref.plugin, "test.passive");
+        assert!(pref.instance.is_none());
+        assert!(pref.config.is_empty());
+    }
+
+    // T4 variant: Plugin sub-element on actuator
+    #[test]
+    fn t4_plugin_sub_element_on_actuator() {
+        let xml = r#"
+            <mujoco model="actuator_plugin_test">
+                <worldbody>
+                    <body name="b1">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <general joint="j1">
+                        <plugin plugin="test.actuator"/>
+                    </general>
+                </actuator>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse actuator plugin");
+        assert_eq!(model.actuators.len(), 1);
+        assert!(model.actuators[0].plugin.is_some());
+        let pref = model.actuators[0].plugin.as_ref().unwrap();
+        assert_eq!(pref.plugin, "test.actuator");
+    }
+
+    // T4 variant: Plugin sub-element on sensor
+    #[test]
+    fn t4_plugin_sub_element_on_sensor() {
+        let xml = r#"
+            <mujoco model="sensor_plugin_test">
+                <worldbody>
+                    <body name="b1">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <user dim="3" objtype="body" objname="b1">
+                        <plugin plugin="test.sensor"/>
+                    </user>
+                </sensor>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse sensor plugin");
+        assert_eq!(model.sensors.len(), 1);
+        assert!(model.sensors[0].plugin.is_some());
+        let pref = model.sensors[0].plugin.as_ref().unwrap();
+        assert_eq!(pref.plugin, "test.sensor");
+    }
+
+    // T2 variant: Plugin ref with instance attribute
+    #[test]
+    fn t2_plugin_ref_with_instance() {
+        let xml = r#"
+            <mujoco model="instance_ref_test">
+                <extension>
+                    <plugin plugin="test.cable">
+                        <instance name="cable1">
+                            <config key="stiffness" value="100"/>
+                        </instance>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b1">
+                        <plugin plugin="test.cable" instance="cable1"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse instance ref");
+        let b1 = &model.worldbody.children[0];
+        assert!(b1.plugin.is_some());
+        let pref = b1.plugin.as_ref().unwrap();
+        assert_eq!(pref.plugin, "test.cable");
+        assert_eq!(pref.instance.as_deref(), Some("cable1"));
+    }
+
+    // T13: Plugin with empty config (supplementary)
+    #[test]
+    fn t13_extension_plugin_empty_config() {
+        let xml = r#"
+            <mujoco model="empty_config">
+                <extension>
+                    <plugin plugin="test.simple">
+                        <instance name="inst1"/>
+                    </plugin>
+                </extension>
+                <worldbody>
+                    <body name="b"/>
+                </worldbody>
+            </mujoco>
+        "#;
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let inst = &model.extensions[0].plugins[0].instances[0];
+        assert_eq!(inst.name, "inst1");
+        assert!(inst.config.is_empty());
     }
 }

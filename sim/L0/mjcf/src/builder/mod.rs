@@ -23,6 +23,7 @@ pub mod joint;
 pub mod mass;
 pub mod mesh;
 pub mod orientation;
+pub mod plugin;
 pub mod sensor;
 pub mod tendon;
 
@@ -327,6 +328,9 @@ pub fn model_from_mjcf(
     // Build final model
     let mut model = builder.build();
 
+    // §66: Resolve plugins (no registry → no plugins)
+    // Use model_from_mjcf_with_plugins() to pass a populated registry.
+
     // Process keyframes (after build, so nq/nv/na/nu/nmocap are finalized).
     // Collect into a temporary Vec first — calling resolve_keyframe(&model)
     // borrows model immutably, which conflicts with model.keyframes.push()
@@ -337,6 +341,35 @@ pub fn model_from_mjcf(
         .map(|kf| resolve_keyframe(kf, &model))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     model.nkeyframe = model.keyframes.len();
+
+    Ok(model)
+}
+
+/// Build a Model from parsed MJCF with plugin support.
+///
+/// Same as [`model_from_mjcf`], but resolves `<extension>`/`<plugin>` references
+/// against the provided [`PluginRegistry`].
+///
+/// # Errors
+/// Returns error if:
+/// - MJCF references a plugin name not found in the registry
+/// - Plugin instance names are duplicated
+/// - Plugin instance reference + inline config are both present
+#[allow(dead_code)]
+pub fn model_from_mjcf_with_plugins(
+    mjcf: &MjcfModel,
+    base_path: Option<&Path>,
+    registry: &sim_core::plugin::PluginRegistry,
+) -> std::result::Result<Model, ModelConversionError> {
+    // Build the base model without plugins
+    let mut model = model_from_mjcf(mjcf, base_path)?;
+
+    // Resolve and assign plugins
+    plugin::resolve_and_assign_plugins(mjcf, &mut model, registry).map_err(|e| {
+        ModelConversionError {
+            message: format!("Plugin resolution failed: {e}"),
+        }
+    })?;
 
     Ok(model)
 }

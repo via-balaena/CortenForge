@@ -908,6 +908,7 @@ mod tests {
             fluidcoef: None,
             user: vec![],
             shellinertia: None,
+            plugin: None,
         };
 
         let inertia = compute_geom_inertia(&geom, None);

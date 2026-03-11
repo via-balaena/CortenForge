@@ -412,11 +412,32 @@ impl Model {
             nuser_tendon: 0,
             nuser_actuator: 0,
             nuser_sensor: 0,
+
+            // Plugin instances (§66) — empty for models without plugins
+            nplugin: 0,
+            npluginstate: 0,
+            body_plugin: vec![None; 1], // World body 0
+            geom_plugin: vec![],
+            actuator_plugin: vec![],
+            sensor_plugin: vec![],
+            plugin_objects: Vec::new(),
+            plugin_needstage: Vec::new(),
+            plugin_capabilities: Vec::new(),
+            plugin_stateadr: Vec::new(),
+            plugin_statenum: Vec::new(),
+            plugin_attr: Vec::new(),
+            plugin_attradr: Vec::new(),
+            plugin_attrnum: Vec::new(),
+            plugin_name: Vec::new(),
         }
     }
 
     /// Create initial Data struct for this model with all arrays pre-allocated.
+    ///
+    /// # Panics
+    /// Panics if any plugin's `init()` callback returns an error.
     #[must_use]
+    #[allow(clippy::panic)]
     pub fn make_data(&self) -> Data {
         let mut data = Data {
             // Generalized coordinates
@@ -767,6 +788,10 @@ impl Model {
                 }
                 v
             },
+
+            // §66: Plugin state
+            plugin_state: vec![0.0; self.npluginstate],
+            plugin_data: (0..self.nplugin).map(|_| None).collect(),
         };
 
         // Run initial FK to populate body/geom/site positions from qpos0.
@@ -808,6 +833,13 @@ impl Model {
         // This replaces the inline Init-sleep self-links with proper
         // island-aware sleep cycles.
         reset_sleep_state(self, &mut data);
+
+        // §66: Initialize plugin instances
+        for i in 0..self.nplugin {
+            if let Err(e) = self.plugin_objects[i].init(self, &mut data, i) {
+                panic!("plugin init failed for instance {i}: {e}");
+            }
+        }
 
         data
     }

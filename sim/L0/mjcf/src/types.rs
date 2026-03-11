@@ -1309,6 +1309,8 @@ pub struct MjcfGeom {
     /// `Some(true)` = shell inertia. Rejected on mesh geoms.
     /// MuJoCo: `shellinertia` attribute, maps to `mjtGeomInertia`.
     pub shellinertia: Option<bool>,
+    /// Plugin reference (SDF plugin on this geom). §66.
+    pub plugin: Option<MjcfPluginRef>,
 }
 
 impl Default for MjcfGeom {
@@ -1346,6 +1348,7 @@ impl Default for MjcfGeom {
             fluidcoef: None,
             user: Vec::new(),
             shellinertia: None,
+            plugin: None,
         }
     }
 }
@@ -2499,6 +2502,8 @@ pub struct MjcfBody {
     pub gravcomp: Option<f64>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,
+    /// Plugin reference (passive force plugin on this body). §66.
+    pub plugin: Option<MjcfPluginRef>,
 }
 
 impl Default for MjcfBody {
@@ -2522,6 +2527,7 @@ impl Default for MjcfBody {
             sleep: None,
             gravcomp: None,
             user: Vec::new(),
+            plugin: None,
         }
     }
 }
@@ -2785,6 +2791,8 @@ pub struct MjcfActuator {
     pub dynprm: Option<Vec<f64>>,
     /// Per-element user data from `user="..."` attribute.
     pub user: Vec<f64>,
+    /// Plugin reference (plugin-controlled actuator). §66.
+    pub plugin: Option<MjcfPluginRef>,
 }
 
 impl Default for MjcfActuator {
@@ -2843,6 +2851,7 @@ impl Default for MjcfActuator {
             biasprm: None,
             dynprm: None,
             user: Vec::new(),
+            plugin: None,
         }
     }
 }
@@ -3456,6 +3465,8 @@ pub struct MjcfSensor {
     /// Sampling interval (period) in seconds. MuJoCo: `mjsSensor_::interval`.
     /// Default: None (builder treats as 0.0). Phase is always 0.0.
     pub interval: Option<f64>,
+    /// Plugin reference (plugin-controlled sensor). §66.
+    pub plugin: Option<MjcfPluginRef>,
 }
 
 impl Default for MjcfSensor {
@@ -3479,6 +3490,7 @@ impl Default for MjcfSensor {
             interp: None,
             delay: None,
             interval: None,
+            plugin: None,
         }
     }
 }
@@ -4081,6 +4093,64 @@ impl Default for MjcfFlex {
     }
 }
 
+// ============================================================================
+// Plugin/Extension Types (§66)
+// ============================================================================
+
+/// Plugin configuration key-value pair (from `<config>` element).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfPluginConfig {
+    /// Configuration key.
+    pub key: String,
+    /// Configuration value.
+    pub value: String,
+}
+
+/// Plugin instance declaration (from `<instance>` under `<extension>/<plugin>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfPluginInstance {
+    /// Instance name (required, referenced by elements).
+    pub name: String,
+    /// Configuration key-value pairs.
+    pub config: Vec<MjcfPluginConfig>,
+}
+
+/// Plugin type declaration (from `<plugin>` under `<extension>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfExtensionPlugin {
+    /// Plugin type name (e.g., "mujoco.elasticity.cable").
+    pub plugin: String,
+    /// Named instances.
+    pub instances: Vec<MjcfPluginInstance>,
+}
+
+/// Extension element (top-level `<extension>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfExtension {
+    /// Plugin type declarations.
+    pub plugins: Vec<MjcfExtensionPlugin>,
+}
+
+/// Plugin reference on an element (body, geom, actuator, sensor).
+/// Parsed from `<plugin>` child element on a body/geom, or from
+/// plugin/instance attributes on actuator/sensor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfPluginRef {
+    /// Plugin type name.
+    pub plugin: String,
+    /// Reference to a named instance (from `<extension>`).
+    pub instance: Option<String>,
+    /// Inline configuration (when no instance reference).
+    pub config: Vec<MjcfPluginConfig>,
+    /// Whether this plugin reference is active.
+    pub active: bool,
+}
+
 /// A complete MJCF model.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -4131,6 +4201,9 @@ pub struct MjcfModel {
     pub nuser_actuator: i32,
     /// Number of user data floats per sensor. -1 = auto-size (default), >= 0 = explicit.
     pub nuser_sensor: i32,
+    /// Extension declarations (plugin types + instances). §66.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub extensions: Vec<MjcfExtension>,
 }
 
 impl Default for MjcfModel {
@@ -4158,6 +4231,7 @@ impl Default for MjcfModel {
             nuser_tendon: -1,
             nuser_actuator: -1,
             nuser_sensor: -1,
+            extensions: Vec::new(),
         }
     }
 }

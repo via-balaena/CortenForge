@@ -719,6 +719,20 @@ pub fn mj_fwd_passive(model: &Model, data: &mut Data) {
     if let Some(ref cb) = model.cb_passive {
         (cb.0)(model, data);
     }
+
+    // §66: Plugin passive force dispatch
+    if model.nplugin > 0 {
+        for i in 0..model.nplugin {
+            if model.plugin_capabilities[i].contains(crate::plugin::PluginCapabilityBit::Passive) {
+                model.plugin_objects[i].compute(
+                    model,
+                    data,
+                    i,
+                    crate::plugin::PluginCapabilityBit::Passive,
+                );
+            }
+        }
+    }
 }
 
 /// §42B S8: Bridson dihedral angle bending (CortenForge extension).

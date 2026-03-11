@@ -695,6 +695,30 @@ pub fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             }
         }
     }
+
+    // §66: Plugin actuator dispatch — Phase 1: activation derivatives
+    // All act_dot calls run before any compute calls (MuJoCo ordering).
+    if model.nplugin > 0 {
+        for i in 0..model.nplugin {
+            if model.plugin_capabilities[i].contains(crate::plugin::PluginCapabilityBit::Actuator) {
+                model.plugin_objects[i].actuator_act_dot(model, data, i);
+            }
+        }
+    }
+
+    // §66: Plugin actuator dispatch — Phase 2: force computation
+    if model.nplugin > 0 {
+        for i in 0..model.nplugin {
+            if model.plugin_capabilities[i].contains(crate::plugin::PluginCapabilityBit::Actuator) {
+                model.plugin_objects[i].compute(
+                    model,
+                    data,
+                    i,
+                    crate::plugin::PluginCapabilityBit::Actuator,
+                );
+            }
+        }
+    }
 }
 
 /// Route gravcomp forces to `qfrc_actuator` for joints with `jnt_actgravcomp`.

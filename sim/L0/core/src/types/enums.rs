@@ -432,6 +432,11 @@ pub enum MjSensorType {
     // ========== User-defined ==========
     /// User-defined sensor (arbitrary dimension).
     User,
+
+    // ========== Plugin (§66) ==========
+    /// Plugin-controlled sensor (dimension set by plugin `nsensordata`).
+    /// MuJoCo: `mjSENS_PLUGIN`.
+    Plugin,
 }
 
 impl MjSensorType {
@@ -478,7 +483,7 @@ impl MjSensorType {
 
             Self::GeomFromTo => 6,
 
-            Self::User => 0, // Variable, must be set explicitly
+            Self::User | Self::Plugin => 0, // Variable, set explicitly
         }
     }
 
@@ -578,6 +583,8 @@ pub enum MjObjectType {
     Actuator,
     /// Tendon.
     Tendon,
+    /// Plugin instance (§66).
+    Plugin,
 }
 
 /// Per-tree sleep policy controlling automatic body deactivation (§16.0).
