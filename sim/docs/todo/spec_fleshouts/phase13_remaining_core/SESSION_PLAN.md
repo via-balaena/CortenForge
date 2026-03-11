@@ -557,54 +557,52 @@ MuJoCo conformance is the cardinal goal. C source is the single source of truth.
 
 ---
 
-## Session 10: Spec C implementation — part 1 (rope, cable, grid)
+## Session 10: Spec C implementation — cable + deprecation errors
+
+**Scope correction:** MuJoCo 3.4.0 deprecated all composite types except
+`cable`. Sessions 10+11 merged into one session. See SPEC_C.md Scope
+Adjustment for details.
 
 - [ ] Complete
 
 ```
-Phase 13 Remaining Core — implement Spec C part 1.
+Phase 13 Remaining Core — implement Spec C (cable composite + deprecation).
 
 Read these:
 1. sim/docs/templates/pre_implementation/WORKFLOW.md (Phase 7 only)
-2. sim/docs/todo/spec_fleshouts/phase13_remaining_core/PHASE13_UMBRELLA.md
-3. sim/docs/todo/spec_fleshouts/phase13_remaining_core/SPEC_C.md
+2. sim/docs/todo/spec_fleshouts/phase13_remaining_core/SPEC_C.md
 
-Implement the first three composite types in the spec's Execution Order:
-- rope (1D chain, hinge joints)
-- cable (1D chain, ball joints)
-- grid (2D body array)
+IMPORTANT SCOPE CORRECTION: MuJoCo 3.4.0 deprecated all composite types
+except "cable". The original plan assumed 7 types; reality is 1 (cable) +
+deprecation errors for 5 others. box/cylinder/ellipsoid were never composite
+types (they are flexcomp types). See SPEC_C.md Scope Adjustment.
 
-These are the simpler types that establish the expansion infrastructure.
-Commit after each type. Verify ACs for each type as you go.
+Implement per the spec's Execution Order (S1→S2→S3→S4):
+- S1: Types (MjcfComposite, CompositeType, CompositeShape, etc.)
+- S2: Parser (parse_composite() in parser.rs)
+- S3: Cable expansion (builder/composite.rs — core generation logic)
+- S4: Pipeline integration (expand_composites() call in builder/mod.rs)
 
-Run `cargo test -p sim-core -p sim-mjcf` after each type.
+Commit after each section. Verify ACs as you go. The spec is the source
+of truth — if you discover a gap, stop and update the spec first.
+
+Run `cargo test -p sim-mjcf` after each section.
 MuJoCo conformance is the cardinal goal.
 ```
 
 ---
 
-## Session 11: Spec C implementation — part 2 (cloth, box, cylinder, ellipsoid)
+## Session 11: (MERGED into Session 10)
 
-- [ ] Complete
+**Merged:** Original Session 11 (cloth, box, cylinder, ellipsoid) merged
+into Session 10 due to scope correction. All non-cable composite types are
+deprecated in MuJoCo 3.4.0 and only need error messages, not implementation.
+
+- [ ] Complete (skip — work done in Session 10)
 
 ```
-Phase 13 Remaining Core — implement Spec C part 2.
-
-Read these:
-1. sim/docs/todo/spec_fleshouts/phase13_remaining_core/PHASE13_UMBRELLA.md
-2. sim/docs/todo/spec_fleshouts/phase13_remaining_core/SPEC_C.md
-
-Implement the remaining four composite types:
-- cloth (2D deformable mesh with tendons)
-- box (3D volumetric)
-- cylinder (3D volumetric)
-- ellipsoid (3D volumetric)
-
-These build on the infrastructure from part 1. Commit after each type.
-Verify ACs for each type as you go.
-
-Run `cargo test -p sim-core -p sim-mjcf` after each type.
-MuJoCo conformance is the cardinal goal.
+SKIP — merged into Session 10 due to MuJoCo 3.4.0 scope correction.
+All non-cable composite types are deprecated. See SPEC_C.md Scope Adjustment.
 ```
 
 ---
@@ -775,9 +773,9 @@ to verify no regressions from Phase 13 infrastructure work.
 | 6 | 2026-03-11 | Done | 6f056ec | Spec B implement. S1: DT-19 QCQP verified (14/14 tests). S2: PGS early termination + solver_stat + solver_niter. S3: warmstart verified. T1-T7 all pass. PGS MuJoCo conformance exact match (niter, forces, qacc within 1e-10). Golden flags: 2/26 pass (unchanged — Newton solver). |
 | 7 | 2026-03-11 | Done | — | Spec B review create |
 | 8 | 2026-03-11 | Done | — | Spec B review execute + golden flag final gate. All S1-S4 A+, AC1-AC9 pass, 2273 tests pass. Golden flags: 2/26 pass (unchanged — Newton solver). |
-| 9 | — | — | — | Spec C rubric + spec |
-| 10 | — | — | — | Spec C implement part 1 (rope, cable, grid) |
-| 11 | — | — | — | Spec C implement part 2 (cloth, box, cylinder, ellipsoid) |
+| 9 | 2026-03-11 | Done | 8fc4d4d | Spec C rubric + spec (A+ 9/9, Rev 2, 16 gaps closed). Scope corrected: MuJoCo 3.4.0 deprecated all composite types except cable. Sessions 10+11 merged. |
+| 10 | — | — | — | Spec C implement (cable-only — sessions 10+11 merged per scope correction) |
+| 11 | — | SKIP | — | MERGED into Session 10 (scope correction: only cable type needs implementation) |
 | 12 | — | — | — | Spec C review create |
 | 13 | — | — | — | Spec C review execute |
 | 14 | — | — | — | Spec D rubric + spec |
