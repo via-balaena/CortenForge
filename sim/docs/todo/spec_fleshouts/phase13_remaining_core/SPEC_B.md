@@ -471,12 +471,15 @@ call in the After code block).
 
 ## Acceptance Criteria
 
-### AC1: PGS early termination triggers *(runtime test — analytically derived)*
+### AC1: PGS early termination triggers *(runtime test — MuJoCo-verified)*
 
-**Given:** A model with 1 hinge joint, 1 equality constraint, PGS solver
-(`solver_type = PGS`), `solver_iterations = 100`, `solver_tolerance = 1e-8`.
+**Given:** The PGS conformance model (shared with T7): 1 body, 1 hinge joint,
+1 equality constraint (weld or joint coupling), `solver = "PGS"`,
+`solver_iterations = 100`, `solver_tolerance = 1e-8`.
 **After:** `mj_step()` (one full step)
-**Assert:** `data.solver_niter < 100` (PGS converges before max iterations)
+**Assert:** `data.solver_niter` matches MuJoCo 3.4.0's reported PGS iteration
+count exactly (value stored in T7 reference data). Must be < 100 (converges
+before max iterations).
 **Field:** `Data.solver_niter`
 
 ### AC2: PGS produces correct forces *(runtime test — regression)*

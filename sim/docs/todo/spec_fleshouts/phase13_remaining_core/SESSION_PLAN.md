@@ -366,7 +366,7 @@ should study MuJoCo's actual warmstart code in `mj_solPGS()`.
 
 ## Session 5: Spec B rubric + spec
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — write Spec B rubric and spec.
@@ -771,7 +771,7 @@ to verify no regressions from Phase 13 infrastructure work.
 | 2 | 2026-03-11 | Done | 099299e | Spec A implement. Assembly fix correct (diagApprox matches MuJoCo). Golden flags: 2/26 pass — residual 0.002 qacc divergence is Newton solver convergence (Spec B). |
 | 3 | 2026-03-11 | Done | — | Spec A review create |
 | 4 | 2026-03-11 | Done | — | Spec A review execute + golden flag checkpoint. Assembly fix verified correct. 2/26 golden flags pass; 24 blocked by Newton solver convergence (Spec B). Added 4 missing tests (T1-T3, T5). |
-| 5 | — | — | — | Spec B rubric + spec |
+| 5 | 2026-03-11 | Done | — | Spec B rubric + spec (A+ 9/9, Rev 3) |
 | 6 | — | — | — | Spec B implement |
 | 7 | — | — | — | Spec B review create |
 | 8 | — | — | — | Spec B review execute + golden flag final gate |
