@@ -719,7 +719,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 16: Spec D review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — create Spec D review document.
@@ -779,8 +779,8 @@ to verify no regressions from Phase 13 infrastructure work.
 | 12 | 2026-03-11 | Done | — | Spec C review create |
 | 13 | 2026-03-11 | Done | — | Spec C review execute. All S1-S4 A+, 18/18 ACs pass, 2,297 tests pass. Fixed 2 minor issues: error message typo ("sphere"→"cylinder"), stale doc comment. 3 new DT items (167-169) for post-v1.0. |
 | 14 | 2026-03-11 | Done | — | Spec D rubric + spec (A+ 10/10, Rev 2, 24 gaps closed via stress test + verification) |
-| 15 | 2026-03-11 | Done | — | Spec D implement. S1-S11 all implemented. Plugin trait + registry, Model/Data plugin fields, MJCF parsing (<extension>/<plugin>), builder resolution, forward dispatch hooks (actuation/passive/sensor/advance), lifecycle (init/reset). T1-T16 tests pass, 2766 sim domain tests pass, clippy clean. |
-| 16 | — | — | — | Spec D review create |
+| 15 | 2026-03-11 | Done | 3df832c | Spec D implement. S1-S11 all implemented. Plugin trait + registry, Model/Data plugin fields, MJCF parsing (<extension>/<plugin>), builder resolution, forward dispatch hooks (actuation/passive/sensor/advance), lifecycle (init/reset). T1-T16 tests pass, 2766 sim domain tests pass, clippy clean. |
+| 16 | 2026-03-11 | Done | — | Spec D review create |
 | 17 | — | — | — | Spec D review execute |
 
 ---
