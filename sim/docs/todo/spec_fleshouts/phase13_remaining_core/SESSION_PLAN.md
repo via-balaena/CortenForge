@@ -284,7 +284,7 @@ MuJoCo conformance is the cardinal goal.
 
 ## Session 3: Spec A review — create review document
 
-- [ ] Complete
+- [x] Complete
 
 ```
 Phase 13 Remaining Core — create Spec A review document.
@@ -769,7 +769,7 @@ to verify no regressions from Phase 13 infrastructure work.
 | 0 | 2026-03-10 | Done | — | Root cause: tendon_invweight0 diagonal-only bug (DT-39). FILTERPARENT not a separate issue (~0.020, same root cause). 2/26 already pass, 24 fail at 0.001–0.02. |
 | 1 | 2026-03-11 | Done | dd9555d | Spec A rubric + spec |
 | 2 | 2026-03-11 | Done | 099299e | Spec A implement. Assembly fix correct (diagApprox matches MuJoCo). Golden flags: 2/26 pass — residual 0.002 qacc divergence is Newton solver convergence (Spec B). |
-| 3 | — | — | — | Spec A review create |
+| 3 | 2026-03-11 | Done | — | Spec A review create |
 | 4 | — | — | — | Spec A review execute + golden flag checkpoint |
 | 5 | — | — | — | Spec B rubric + spec |
 | 6 | — | — | — | Spec B implement |
