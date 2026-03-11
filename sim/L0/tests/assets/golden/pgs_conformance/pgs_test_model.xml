@@ -1,0 +1,22 @@
+<mujoco model="pgs_conformance_test">
+    <!-- Minimal PGS conformance model: 2-link horizontal arm with equality + friction.
+         Hinge axes along x, arms extend along y. Gravity (-z) creates torque
+         because CoM is offset from the hinge axis.
+         solver=PGS, iterations=100, tolerance=1e-8.
+         Used by Phase 13 Spec B T7 conformance test. -->
+    <option gravity="0 0 -9.81" timestep="0.002" solver="PGS"
+            iterations="100" tolerance="1e-8"/>
+    <worldbody>
+        <body name="arm1" pos="0 0 1">
+            <joint name="hinge1" type="hinge" axis="1 0 0" frictionloss="0.5"/>
+            <geom type="capsule" size="0.05 0.3" mass="1.0" fromto="0 0 0 0 0.3 0"/>
+            <body name="arm2" pos="0 0.6 0">
+                <joint name="hinge2" type="hinge" axis="1 0 0"/>
+                <geom type="capsule" size="0.05 0.3" mass="1.0" fromto="0 0 0 0 0.3 0"/>
+            </body>
+        </body>
+    </worldbody>
+    <equality>
+        <joint joint1="hinge1" joint2="hinge2" polycoef="0 0.5 0 0 0"/>
+    </equality>
+</mujoco>

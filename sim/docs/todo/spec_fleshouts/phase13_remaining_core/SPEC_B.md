@@ -1,6 +1,6 @@
 # Spec B — PGS Solver Conformance (DT-19 verify + DT-128 + DT-129)
 
-**Status:** Draft
+**Status:** Implemented
 **Phase:** Phase 13 — Remaining Core
 **Effort:** S (small — one function modified, no new modules)
 **MuJoCo ref:** `mj_solPGS()` in `engine_solver.c`; `costChange()` in

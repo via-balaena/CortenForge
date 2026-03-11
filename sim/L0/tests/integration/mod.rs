@@ -179,6 +179,9 @@ pub mod flex_unified;
 /// Unified PGS/CG solver tests: ne/nf bookkeeping, all constraint types, cost guard, primal CG.
 pub mod unified_solvers;
 
+/// Phase 13 Spec B — PGS early termination, solver_stat, Newton regression.
+pub mod pgs_spec_b;
+
 // ============================================================================
 // Noslip Post-Processor Tests (§33)
 // ============================================================================

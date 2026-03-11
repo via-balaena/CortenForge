@@ -31,6 +31,9 @@
 > DT-153 (island flex contact assignment), DT-154 (flex condim=6 mapping),
 > DT-155 (S10 override test for flex-flex), DT-156 (narrowphase contact count gap)
 > added during Phase 10 Spec D review.
+> DT-161 (pyramidal diagApprox factor-of-2) added during Phase 13 Spec A review.
+> DT-162 (PGS nactive/nchange counting), DT-163 (PGS warmstart primal cost gate)
+> added during Phase 13 Spec B implementation.
 >
 > **Current position**: Phases 1–7 and 10 complete. Next: Phases 8, 9, 11 (parallel).
 
@@ -417,6 +420,8 @@ foundation isn't right.
 | DT-81 | 10j | T1 | `key_userdata` support |
 | DT-84 | 10j | T1 | `mju_encodePyramid` utility |
 | DT-161 | 13 | T1 | Pyramidal `efc_diagApprox` bodyweight factor-of-2 — CF stores `(1+μ²)·w_tran`, MuJoCo stores `2·(1+μ²)·w_tran` for pyramidal facet rows (`assembly.rs:681`). No downstream effect: Rpy post-processing (`assembly.rs:775-795`) overwrites R/D for all facet rows. Pure conformance of a stored diagnostic field. Root cause unknown — requires reading MuJoCo `mj_diagApprox` C source. Identified during Phase 13 Spec A review. |
+| DT-162 | 13 | T1 | PGS `solver_stat` `nactive`/`nchange` per-iteration counting — MuJoCo calls `dualState()` after each PGS sweep to classify active constraints and count state transitions. CortenForge uses placeholder 0 for both fields. Diagnostic only — does not affect solver forces, qacc, or convergence. Deferred from Phase 13 Spec B. |
+| DT-163 | 13 | T1 | PGS warmstart primal cost gate — MuJoCo evaluates `primal_cost > 0` via `mj_constraintUpdate()`, CortenForge evaluates `dual_cost < 0` via `classify_constraint_states()`. Equivalent at optimum (strong duality); slightly more conservative before convergence (`dual ≤ primal`). No measurable divergence in T7 conformance test. Upgrade to primal cost if divergence found on complex models. Deferred from Phase 13 Spec B. |
 | DT-89 | 10i | T1 | `<flexcomp>` rendering attributes |
 | DT-104 | 10b | T2 | Ball/free joint transmission — `nv == 3` and `nv == 6` sub-paths in `mj_transmission()`. Deferred from Phase 5 Spec B. |
 | DT-107 | 10g | T2 | Runtime interpolation logic — `mj_forward` reads history buffer for delayed ctrl, `mj_step` writes circular buffer. Covers both actuators (Phase 5 Spec D) and sensors (Phase 6 Spec D): structures exist for both, runtime missing for both. Includes sensor history pre-population in `reset_data()`. |

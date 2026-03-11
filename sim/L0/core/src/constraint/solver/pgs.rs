@@ -11,7 +11,7 @@ use nalgebra::{DMatrix, DVector};
 
 use crate::constraint::impedance::MJ_MINVAL;
 use crate::linalg::mj_solve_sparse;
-use crate::types::{ConstraintState, ConstraintType, Data, Model};
+use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
 
 /// Compute the regularized Delassus matrix AR = J·M⁻¹·J^T + diag(R).
 ///
@@ -125,8 +125,16 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
     }
 
     let max_iters = model.solver_iterations;
+    #[allow(clippy::cast_precision_loss)]
+    let scale = 1.0 / (data.stat_meaninertia * 1.0_f64.max(model.nv as f64));
+    let tolerance = model.solver_tolerance;
 
-    for _iter in 0..max_iters {
+    let mut iter = 0;
+    let mut solver_stats: Vec<SolverStat> = Vec::with_capacity(max_iters);
+
+    while iter < max_iters {
+        let mut improvement = 0.0_f64;
+
         let mut i = 0;
         while i < nefc {
             let ctype = data.efc_type[i];
@@ -264,21 +272,26 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
                 }
 
                 // ---- Cost guard using AR subblock ----
-                {
-                    let mut cost_change = 0.0_f64;
+                // Returns cost_change for improvement accumulation (matches MuJoCo costChange)
+                let cost_change = {
+                    let mut cc = 0.0_f64;
                     for j in 0..dim {
                         let delta_j = data.efc_force[i + j] - old_force[j];
-                        cost_change += delta_j * res[j];
+                        cc += delta_j * res[j];
                         for k in 0..dim {
                             let delta_k = data.efc_force[i + k] - old_force[k];
-                            cost_change += 0.5 * delta_j * ar[(i + j, i + k)] * delta_k;
+                            cc += 0.5 * delta_j * ar[(i + j, i + k)] * delta_k;
                         }
                     }
-                    if cost_change > 1e-10 {
+                    if cc > 1e-10 {
                         // Revert to old forces
                         data.efc_force.as_mut_slice()[i..i + dim].copy_from_slice(&old_force);
+                        0.0
+                    } else {
+                        cc
                     }
-                }
+                };
+                improvement -= cost_change;
 
                 i += dim;
             } else {
@@ -315,24 +328,48 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
                     }
                 }
 
-                // Cost guard
+                // Cost guard — returns cost_change for improvement accumulation
                 let delta_f = data.efc_force[i] - old_force;
-                if delta_f.abs() > 0.0 {
-                    // cost_change = 0.5 * delta^2 * AR[i,i] + delta * res_before_update
-                    // where res_before_update = res (computed above before GS update)
-                    let cost_change = 0.5 * delta_f * delta_f * ar[(i, i)] + delta_f * res;
-                    if cost_change > 1e-10 {
+                let cost_change = if delta_f.abs() > 0.0 {
+                    let cc = 0.5 * delta_f * delta_f * ar[(i, i)] + delta_f * res;
+                    if cc > 1e-10 {
                         data.efc_force[i] = old_force;
+                        0.0
+                    } else {
+                        cc
                     }
-                }
+                } else {
+                    0.0
+                };
+                improvement -= cost_change;
 
                 i += 1;
             }
         }
+
+        // Scale improvement (matches MuJoCo: improvement *= scale)
+        improvement *= scale;
+
+        // Record per-iteration stats (MuJoCo saveStats)
+        solver_stats.push(SolverStat {
+            improvement,
+            gradient: 0.0,  // PGS has no gradient
+            lineslope: 0.0, // PGS has no line search
+            nactive: 0,     // Diagnostic only — placeholder
+            nchange: 0,     // Diagnostic only — placeholder
+            nline: 0,       // PGS has no line search
+        });
+
+        iter += 1;
+
+        // Early termination (matches MuJoCo: if improvement < tolerance break)
+        if improvement < tolerance {
+            break;
+        }
     }
 
-    data.solver_niter = max_iters;
-    data.solver_stat.clear();
+    data.solver_niter = iter;
+    data.solver_stat = solver_stats;
 }
 
 /// Classify constraint states, compute forces, and evaluate total cost.
