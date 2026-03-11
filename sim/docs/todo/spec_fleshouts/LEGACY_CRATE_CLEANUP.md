@@ -1,6 +1,6 @@
 # Legacy Crate Cleanup — Post-v1.0
 
-> **Status**: Executing — Phases A–E complete, Phase F next
+> **Status**: Complete — all phases verified
 > **Supersedes**: §44 in `future_work_11.md` (which proposed deprecation-in-place)
 > **Principle**: Foundational fix. Remove dead code, don't decorate it with warnings.
 
@@ -29,7 +29,7 @@ Run **one phase per session**. Each session:
 - [x] **Phase C** — Clean up sim-types
 - [x] **Phase D** — Clean up sim-core re-exports (done in Phase C to maintain compilability)
 - [x] **Phase E** — Update documentation and CI
-- [ ] **Phase F** — Verify
+- [x] **Phase F** — Verify
 
 ---
 
