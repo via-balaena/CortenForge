@@ -778,7 +778,7 @@ to verify no regressions from Phase 13 infrastructure work.
 | 11 | — | SKIP | — | MERGED into Session 10 (scope correction: only cable type needs implementation) |
 | 12 | 2026-03-11 | Done | — | Spec C review create |
 | 13 | 2026-03-11 | Done | — | Spec C review execute. All S1-S4 A+, 18/18 ACs pass, 2,297 tests pass. Fixed 2 minor issues: error message typo ("sphere"→"cylinder"), stale doc comment. 3 new DT items (167-169) for post-v1.0. |
-| 14 | — | — | — | Spec D rubric + spec |
+| 14 | 2026-03-11 | Done | — | Spec D rubric + spec (A+ 10/10, Rev 2, 24 gaps closed via stress test + verification) |
 | 15 | — | — | — | Spec D implement |
 | 16 | — | — | — | Spec D review create |
 | 17 | — | — | — | Spec D review execute |
