@@ -184,9 +184,7 @@ check_wasm() {
         "ml-types"
         "sim-types"
         "sim-core"
-        "sim-constraint"
         "sim-urdf"
-        "sim-physics"
     )
 
     FAILED=false
@@ -236,9 +234,7 @@ check_bevy_free() {
         "ml-training"
         "sim-types"
         "sim-core"
-        "sim-constraint"
         "sim-urdf"
-        "sim-physics"
     )
 
     FAILED=false

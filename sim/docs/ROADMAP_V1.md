@@ -488,7 +488,7 @@ foundation isn't right.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | §42 | 10 | — | `<flex>`/`<flexcomp>` parsing (subsumed by §6B) |
-| §44 | 11 | — | Deprecate legacy standalone crates |
+| ~~§44~~ | 11 | — | ~~Deprecate legacy standalone crates~~ **Done** — crates deleted (not deprecated) per `LEGACY_CRATE_CLEANUP.md` |
 | §47 | 12 | — | URDF loader completeness (mesh collision, mimic joints, etc.) |
 | §49 | 12 | — | Non-physics MJCF elements (`<visual>`, `<statistic>`, `<custom>`, `<size>`) |
 | DT-71 | 10i | T1 | Behavioral friction tests for deformables |

@@ -134,7 +134,7 @@ DT-146, DT-147, DT-148
 | # | Item | Core v1.0? | Roadmap Phase | Status |
 |---|------|-----------|---------------|--------|
 | 43 | Mesh inertia modes (exact/shell/convex/legacy) | **Yes** | Phase 9 | |
-| 44 | Legacy crate deprecation | No — cleanup | Post-v1.0 | |
+| ~~44~~ | ~~Legacy crate deprecation~~ | No — cleanup | Post-v1.0 | ✅ Done (deleted per `LEGACY_CRATE_CLEANUP.md`) |
 | 45 | **MuJoCo conformance test suite** | **Yes** | **Phase 12 (gate)** | |
 
 #### From future_work_12.md (#46–50)
@@ -305,7 +305,7 @@ DT-146, DT-147, DT-148
    Extensions: DT-4/26/27/30/50/66/67/68/73/86/87 (all independent)
 
    Low-priority compat: DT-1/5/7/10/12/15/17/22/31/65/72/80/81/84/89
-                         §44/47/49 (all independent)
+                         ~~§44~~ (done)/§47/49 (all independent)
 ```
 
 ## File Map

@@ -464,31 +464,6 @@ let mut data = model.make_data();
 
 **Supported joints:** fixed, revolute, continuous, prismatic, floating, planar
 
-### sim-constraint: Joint Types
-
-```rust
-use sim_constraint::{
-    RevoluteJoint, PrismaticJoint, FixedJoint, SphericalJoint,
-    JointLimits, JointMotor,
-};
-
-// Joint construction (builder pattern)
-let joint = RevoluteJoint::new(parent_id, child_id, axis)
-    .with_limits(JointLimits::symmetric(range))
-    .with_motor(JointMotor::velocity(target, max_torque))
-    .with_damping(coefficient);
-
-// Available joint types
-RevoluteJoint     // Single-axis rotation (hinge)
-PrismaticJoint    // Single-axis translation (slider)
-FixedJoint        // Rigid connection
-SphericalJoint    // Ball-and-socket (3 DOF)
-UniversalJoint    // Two perpendicular rotation axes
-FreeJoint         // 6 DOF floating base
-PlanarJoint       // XY translation + Z rotation
-CylindricalJoint  // Translation + rotation on same axis
-```
-
 ---
 
 ## Dependencies

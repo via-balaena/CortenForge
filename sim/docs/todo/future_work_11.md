@@ -209,8 +209,8 @@ analytically when `shellinertia` is set on primitives.
 
 ---
 
-### 44. Legacy Crate Deprecation
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~44. Legacy Crate Deprecation~~
+**Status:** ✅ Done (superseded by `LEGACY_CRATE_CLEANUP.md` — crates deleted, not deprecated) | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 
