@@ -24,11 +24,17 @@ nalgebra = { workspace = true }
 # Note: Window backend features (x11, wayland) are optional - enable via features.
 # This allows CI to build without system library dependencies.
 bevy = { workspace = true, default-features = false, features = [
-    "bevy_pbr",
+    "bevy_asset",
+    "bevy_core_pipeline",
     "bevy_gizmos",
     "bevy_gizmos_render",
-    "bevy_winit",
+    "bevy_pbr",
+    "bevy_render",
     "bevy_state",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
 ] }
 
 # Note: For faster local iteration, run with:

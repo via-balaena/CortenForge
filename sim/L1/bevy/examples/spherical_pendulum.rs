@@ -29,7 +29,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
 use sim_bevy::convert::vec3_from_vector;
 use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
-use sim_core::{ENABLE_ENERGY, Model};
+use sim_core::{ENABLE_ENERGY, Integrator, Model};
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -131,6 +131,7 @@ fn setup_physics_and_scene(
     // Create the physics model using factory method
     let mut model = Model::spherical_pendulum(PENDULUM_LENGTH, PENDULUM_MASS);
     model.enableflags |= ENABLE_ENERGY;
+    model.integrator = Integrator::RungeKutta4;
     let mut data = model.make_data();
 
     // Set initial orientation: tilted 45° from vertical with azimuthal velocity

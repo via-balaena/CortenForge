@@ -42,9 +42,9 @@ const LINK_LENGTH: f64 = 1.0;
 /// Link mass in kg.
 const LINK_MASS: f64 = 1.0;
 /// Initial angle for first link (radians from vertical).
-const INITIAL_THETA1: f64 = PI / 2.0; // 90° - horizontal
+const INITIAL_THETA1: f64 = PI / 3.0; // 60°
 /// Initial angle for second link (radians relative to first).
-const INITIAL_THETA2: f64 = PI / 4.0; // 45°
+const INITIAL_THETA2: f64 = PI / 6.0; // 30°
 /// Bob visual radius.
 const BOB_RADIUS: f32 = 0.08;
 
@@ -89,6 +89,14 @@ fn setup_physics_and_scene(
 
     // RK4 for better energy conservation on chaotic systems
     model.integrator = Integrator::RungeKutta4;
+
+    // Light damping for realism (air resistance)
+    for d in model.jnt_damping.iter_mut() {
+        *d = 0.01;
+    }
+    for d in model.dof_damping.iter_mut() {
+        *d = 0.01;
+    }
 
     let mut data = model.make_data();
 

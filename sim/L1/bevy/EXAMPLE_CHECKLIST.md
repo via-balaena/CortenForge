@@ -23,8 +23,9 @@ Run each with `cargo run -p sim-bevy --example <name> --release`.
   3 color-gradient bobs on a chain, orbit camera, RK4 + light damping.
   Smooth oscillation, stable 30s+. Proper rod inertia (m*L²/12).
 
-- [~] **spherical_pendulum** — `Model::spherical_pendulum()` with ball joint.
-  Golden bob with red trail, orbit camera. 3D motion looks correct.
+- [x] **spherical_pendulum** — `Model::spherical_pendulum()` with ball joint.
+  Golden bob with red trail, orbit camera, RK4 integrator. 3D precession,
+  constraint sphere perfect (|r|=1.5000). Energy drift < 1%.
 
 ## Tier 3: MJCF loading + SimViewerPlugin
 

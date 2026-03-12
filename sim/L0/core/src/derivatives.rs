@@ -1033,6 +1033,50 @@ pub(crate) fn mjd_rne_vel(model: &Model, data: &mut Data) {
                     data.deriv_Dcacc[body_id][(r, c)] += col[r];
                 }
             }
+
+            // Free joint correction derivative:
+            // rne.rs subtracts ω × v from a_bias[3:6] for free joints, where
+            //   ω = cvel[body][0:3] (world angular velocity)
+            //   v = qvel[dof:dof+3] (world translational velocity)
+            //
+            // Derivative: Dcacc[3:6, k] -= d(ω × v)/d(qvel_k)
+            //   = (dω/d(qvel_k)) × v + ω × (dv/d(qvel_k))
+            //
+            // Term A: -(Dcvel[body][0:3, k]) × v = v × Dcvel[body][0:3, k]
+            // Term B: -(ω × e_i) for k = dof_adr+i  (i=0,1,2)
+            if model.jnt_type[jnt_id] == MjJointType::Free {
+                let omega = Vector3::new(
+                    data.cvel[body_id][0],
+                    data.cvel[body_id][1],
+                    data.cvel[body_id][2],
+                );
+                let v_trans = Vector3::new(
+                    data.qvel[dof_adr],
+                    data.qvel[dof_adr + 1],
+                    data.qvel[dof_adr + 2],
+                );
+
+                // Term A: Dcacc[3:6, c] += v × Dcvel[0:3, c]  (= -(Dcvel × v))
+                let dcvel_body = data.deriv_Dcvel[body_id].clone();
+                for c in 0..nv {
+                    let dcvel_ang =
+                        Vector3::new(dcvel_body[(0, c)], dcvel_body[(1, c)], dcvel_body[(2, c)]);
+                    let cross = v_trans.cross(&dcvel_ang);
+                    data.deriv_Dcacc[body_id][(3, c)] += cross.x;
+                    data.deriv_Dcacc[body_id][(4, c)] += cross.y;
+                    data.deriv_Dcacc[body_id][(5, c)] += cross.z;
+                }
+
+                // Term B: Dcacc[3:6, dof+i] -= ω × e_i  for i=0,1,2
+                for i in 0..3 {
+                    let mut e_i = Vector3::zeros();
+                    e_i[i] = 1.0;
+                    let cross = omega.cross(&e_i);
+                    data.deriv_Dcacc[body_id][(3, dof_adr + i)] -= cross.x;
+                    data.deriv_Dcacc[body_id][(4, dof_adr + i)] -= cross.y;
+                    data.deriv_Dcacc[body_id][(5, dof_adr + i)] -= cross.z;
+                }
+            }
         }
     }
 
@@ -1103,64 +1147,11 @@ pub(crate) fn mjd_rne_vel(model: &Model, data: &mut Data) {
         }
     }
 
-    // ========== Direct gyroscopic derivative for Ball/Free joints ==========
-    // The Featherstone backward pass above captures spatial Coriolis via
-    // crossForce_vel(I·v) and crossForce_frc(v)·I terms, but body-frame
-    // gyroscopic torques ω × (I·ω) have an additional derivative term
-    // not covered by the spatial chain-rule propagation.
-    //
-    // For Ball joint: qfrc_bias[dof..dof+3] -= ω_body × (I · ω_body)
-    //   where ω_body = qvel[dof..dof+3] and I = diag(body_inertia)
-    //   d(ω × I·ω)/dω_j = e_j × (I·ω) + ω × (I·e_j)
-    //
-    // For Free joint: same but angular DOFs are at dof+3..dof+6
-    for body_id in 1..nbody {
-        let jnt_start = model.body_jnt_adr[body_id];
-        let jnt_end = jnt_start + model.body_jnt_num[body_id];
-
-        for jnt_id in jnt_start..jnt_end {
-            let dof_adr = model.jnt_dof_adr[jnt_id];
-
-            let (ang_offset, has_gyro) = match model.jnt_type[jnt_id] {
-                MjJointType::Ball => (0, true),
-                MjJointType::Free => (3, true),
-                _ => (0, false),
-            };
-
-            if !has_gyro {
-                continue;
-            }
-
-            let omega = Vector3::new(
-                data.qvel[dof_adr + ang_offset],
-                data.qvel[dof_adr + ang_offset + 1],
-                data.qvel[dof_adr + ang_offset + 2],
-            );
-            let inertia = model.body_inertia[body_id];
-            let i_omega = Vector3::new(
-                inertia.x * omega.x,
-                inertia.y * omega.y,
-                inertia.z * omega.z,
-            );
-
-            // Compute 3×3 Jacobian: d(ω × I·ω)/dω
-            // Column j: e_j × (I·ω) + ω × (I·e_j)
-            for j in 0..3 {
-                let mut e_j = Vector3::zeros();
-                e_j[j] = 1.0;
-
-                let term1 = e_j.cross(&i_omega);
-                let i_ej = Vector3::new(inertia.x * e_j.x, inertia.y * e_j.y, inertia.z * e_j.z);
-                let term2 = omega.cross(&i_ej);
-                let deriv = term1 + term2;
-
-                // Subtract from qDeriv (bias is subtracted in qfrc_smooth)
-                for i in 0..3 {
-                    data.qDeriv[(dof_adr + ang_offset + i, dof_adr + ang_offset + j)] -= deriv[i];
-                }
-            }
-        }
-    }
+    // NOTE: Gyroscopic derivative for Ball/Free joints is NOT computed
+    // directly here. The Featherstone backward pass above captures the
+    // full gyroscopic derivative via the v ×* (I @ v) term, including
+    // both the crossForce_vel(I·v) and crossForce_frc(v)·I contributions.
+    // Adding a direct gyroscopic derivative would double-count the effect.
 }
 
 // ============================================================================
