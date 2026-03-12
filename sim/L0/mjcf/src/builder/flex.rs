@@ -14,6 +14,14 @@ use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
 use crate::types::MjcfFlex;
 use sim_core::{FlexSelfCollide, MjJointType};
 
+/// Number of coefficients per bending element in the discrete thin-shell model.
+/// Each edge hinge stores a 4×4 symmetric matrix (16 entries) + 1 rest-angle scalar = 17 values.
+const BENDING_COEFFS: usize = 17;
+
+/// Minimum vertex mass (kg) applied when computed mass is near-zero.
+/// Prevents singular mass matrices in the deformable body integrator.
+const MIN_VERTEX_MASS: f64 = 0.001;
+
 impl ModelBuilder {
     /// Process flex deformable bodies: create a real body (+ 3 slide joints for unpinned
     /// vertices) per flex vertex, extract edges/hinges, populate Model flex_* arrays.
@@ -269,8 +277,8 @@ impl ModelBuilder {
                     .push(self.flexvert_invmass[va] == 0.0 && self.flexvert_invmass[vb] == 0.0);
                 // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
                 self.flexedge_flap.push([-1, -1]);
-                // §42B S2+S3: Initialize flex_bending to 17 zeros per edge.
-                self.flex_bending.extend_from_slice(&[0.0; 17]);
+                // §42B S2+S3: Initialize flex_bending to zeros per edge.
+                self.flex_bending.extend_from_slice(&[0.0; BENDING_COEFFS]);
                 // Track edge key → global index for flap topology.
                 edge_key_to_global.insert((a, b), self.nflexedge);
                 self.nflexedge += 1;
@@ -350,8 +358,8 @@ impl ModelBuilder {
                         flex.vertices[(flap[1] as usize) - vert_start],
                     ];
                     let coeffs = compute_bending_coefficients(v, mu, flex.thickness);
-                    let base = 17 * global_e;
-                    self.flex_bending[base..base + 17].copy_from_slice(&coeffs);
+                    let base = BENDING_COEFFS * global_e;
+                    self.flex_bending[base..base + BENDING_COEFFS].copy_from_slice(&coeffs);
                 }
             }
 
@@ -633,7 +641,7 @@ pub fn compute_vertex_masses(flex: &MjcfFlex) -> Vec<f64> {
     // Ensure minimum mass
     for m in &mut masses {
         if *m < 1e-10 {
-            *m = 0.001;
+            *m = MIN_VERTEX_MASS;
         }
     }
 
@@ -740,7 +748,7 @@ fn triangle_area(v0: Vector3<f64>, v1: Vector3<f64>, v2: Vector3<f64>) -> f64 {
     e1.cross(&e2).norm() / 2.0
 }
 
-/// Compute 17 bending coefficients for one edge per MuJoCo's `ComputeBending()`.
+/// Compute bending coefficients for one edge per MuJoCo's `ComputeBending()`.
 ///
 /// `v[0]`, `v[1]`: edge endpoints (rest positions)
 /// `v[2]`: opposite vertex in triangle 1
@@ -748,11 +756,15 @@ fn triangle_area(v0: Vector3<f64>, v1: Vector3<f64>, v2: Vector3<f64>) -> f64 {
 /// `mu`: shear modulus = young / (2 * (1 + poisson))
 /// `thickness`: shell thickness
 ///
-/// Returns `[f64; 17]`: `b[0..16]` = 4x4 stiffness matrix, `b[16]` = Garg curved ref.
+/// Returns `[f64; BENDING_COEFFS]`: `b[0..16]` = 4x4 stiffness matrix, `b[16]` = Garg curved ref.
 ///
 /// MuJoCo equivalent: `ComputeBending()` in `user_mesh.cc:3666–3712`.
-fn compute_bending_coefficients(v: [Vector3<f64>; 4], mu: f64, thickness: f64) -> [f64; 17] {
-    let mut b = [0.0f64; 17];
+fn compute_bending_coefficients(
+    v: [Vector3<f64>; 4],
+    mu: f64,
+    thickness: f64,
+) -> [f64; BENDING_COEFFS] {
+    let mut b = [0.0f64; BENDING_COEFFS];
 
     // Step 1: cotangent weights
     let a01 = cot_angle(v[0], v[1], v[2]); // angle at v[0] in tri 1
@@ -871,7 +883,7 @@ pub fn compute_element_adjacency(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use super::compute_vertex_masses;
+    use super::{MIN_VERTEX_MASS, compute_vertex_masses};
     use crate::types::MjcfFlex;
     use nalgebra::Vector3;
 
@@ -968,11 +980,11 @@ mod tests {
         let masses = compute_vertex_masses(&flex);
 
         assert_eq!(masses.len(), 3);
-        // Density=0 -> element mass=0 -> min-mass floor kicks in -> 0.001
+        // Density=0 -> element mass=0 -> min-mass floor kicks in -> MIN_VERTEX_MASS
         for &m in &masses {
             assert!(
-                (m - 0.001).abs() < 1e-15,
-                "density path should apply min-mass floor 0.001, got {m}"
+                (m - MIN_VERTEX_MASS).abs() < 1e-15,
+                "density path should apply min-mass floor {MIN_VERTEX_MASS}, got {m}"
             );
         }
     }

@@ -293,7 +293,6 @@ mesh = { path = "mesh/mesh" }
 
 # Geometry domain
 curve-types = { path = "geometry/curve-types" }
-lumen-geometry = { path = "geometry/lumen-geometry" }
 
 # Spatial foundation
 cf-spatial = { path = "crates/cf-spatial" }

@@ -61,11 +61,11 @@ Replace `<N>` with the batch number (e.g., `B1`, `B5`, `B9`).
 
 ### B4 — Housekeeping: TODOs, workspace, feature flag (T16, T37–T40)
 **Checkpoint**: `cargo build` + `cargo test -p sim-mjcf --features mjb`
-- [ ] **T16** — Resolve or convert all TODO comments to tracked deferred tasks
-- [ ] **T37** — Remove stale `lumen-geometry` path dependency from root Cargo.toml
-- [ ] **T38** — Remove stale "vision" domain from xtask grade.rs search locations
-- [ ] **T39** — Extract magic numbers in sim-mjcf (BENDING_COEFFS, MIN_VERTEX_MASS)
-- [ ] **T40** — Review `mjb` feature in sim-mjcf (add integration test or document)
+- [x] **T16** — Resolve or convert all TODO comments to tracked deferred tasks
+- [x] **T37** — Remove stale `lumen-geometry` path dependency from root Cargo.toml
+- [x] **T38** — Remove stale "vision" domain from xtask grade.rs search locations
+- [x] **T39** — Extract magic numbers in sim-mjcf (BENDING_COEFFS, MIN_VERTEX_MASS)
+- [x] **T40** — Review `mjb` feature in sim-mjcf (add integration test or document)
 
 ### B5 — sim-mjcf function refactoring (T17–T23)
 **Checkpoint**: `cargo test -p sim-mjcf -p sim-conformance-tests`

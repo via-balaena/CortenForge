@@ -23,7 +23,7 @@ pub fn collide_with_sdf(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
-    margin: f64, // TODO: thread margin into SDF helpers
+    margin: f64, // DT-176: thread margin into SDF collision helpers
 ) -> Option<Contact> {
     // Identify which geom is the SDF, which is the other
     let (sdf_geom, other_geom, sdf_pos, sdf_mat, other_pos, other_mat) =
