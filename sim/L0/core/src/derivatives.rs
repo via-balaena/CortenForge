@@ -2365,11 +2365,6 @@ struct IntegrationDerivatives {
     dqpos_dqvel: DMatrix<f64>,
     /// ∂act_{t+1}/∂act_t. na × na, diagonal.
     dact_dact: DMatrix<f64>,
-    /// ∂act_{t+1}/∂act_dot. na × na, diagonal.
-    /// Currently unused by the hybrid path — act_dot does not depend on qvel
-    /// for any existing dyntype. Retained for future dynamics types.
-    #[allow(dead_code)]
-    dact_dactdot: DMatrix<f64>,
 }
 
 /// Compute integration Jacobians (pure function, no mutation).
@@ -2382,8 +2377,6 @@ fn compute_integration_derivatives(model: &Model, data: &Data) -> IntegrationDer
     let mut dqpos_dqpos = DMatrix::zeros(nv, nv);
     let mut dqpos_dqvel = DMatrix::zeros(nv, nv);
     let mut dact_dact = DMatrix::zeros(na, na);
-    let mut dact_dactdot = DMatrix::zeros(na, na);
-
     // Joint dispatch
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
@@ -2453,23 +2446,19 @@ fn compute_integration_derivatives(model: &Model, data: &Data) -> IntegrationDer
                 ActuatorDynamics::Filter => {
                     let tau = model.actuator_dynprm[i][0].max(1e-10);
                     dact_dact[(j, j)] = 1.0 - h / tau;
-                    dact_dactdot[(j, j)] = h;
                 }
                 ActuatorDynamics::FilterExact => {
                     let tau = model.actuator_dynprm[i][0].max(1e-10);
                     dact_dact[(j, j)] = (-h / tau).exp();
-                    dact_dactdot[(j, j)] = tau * (1.0 - (-h / tau).exp());
                 }
                 ActuatorDynamics::Integrator => {
                     dact_dact[(j, j)] = 1.0;
-                    dact_dactdot[(j, j)] = h;
                 }
                 ActuatorDynamics::Muscle | ActuatorDynamics::HillMuscle => {
                     // Approximate: ignores ∂act_dot/∂act from act-dependent
                     // time constants. Not consumed by hybrid (Muscle uses FD).
                     let at_boundary = data.act[j] <= 0.0 || data.act[j] >= 1.0;
                     dact_dact[(j, j)] = if at_boundary { 0.0 } else { 1.0 };
-                    dact_dactdot[(j, j)] = if at_boundary { 0.0 } else { h };
                 }
                 ActuatorDynamics::None => {
                     // No activation state
@@ -2478,7 +2467,6 @@ fn compute_integration_derivatives(model: &Model, data: &Data) -> IntegrationDer
                     // User-defined dynamics: no analytical derivative available.
                     // FD fallback handles this via the hybrid path.
                     dact_dact[(j, j)] = 1.0;
-                    dact_dactdot[(j, j)] = h;
                 }
             }
         }
@@ -2488,7 +2476,6 @@ fn compute_integration_derivatives(model: &Model, data: &Data) -> IntegrationDer
         dqpos_dqpos,
         dqpos_dqvel,
         dact_dact,
-        dact_dactdot,
     }
 }
 

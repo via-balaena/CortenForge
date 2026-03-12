@@ -8,60 +8,67 @@
 
 ## Execution Model
 
-Run **one task per session**. Each session:
+Run **one batch per session**. Each session:
 
-1. Read this spec
-2. Execute the next incomplete task
-3. Run that task's checkpoint command
-4. Commit (with permission)
+1. Read this spec — find the batch
+2. Execute all tasks in the batch
+3. Run the batch checkpoint command
+4. Commit once (with permission)
 
 **Starting prompt** (paste at the start of each new session):
 
 ```
-Execute task T<NN> from the v1.0 cleanup spec at
+Execute batch B<N> from the v1.0 cleanup spec at
 sim/docs/todo/spec_fleshouts/v1_cleanup/V1_CLEANUP.md
 
 Steps:
-1. Read the spec — find the task details for T<NN>
+1. Read the spec — find the batch and its tasks
 2. Read the relevant source files before making any changes
-3. Implement the task exactly as specified
-4. Run the checkpoint command from the task
+3. Implement each task in the batch exactly as specified
+4. Run the batch checkpoint command
 5. Ask before committing
 ```
 
-Replace `<NN>` with the task number (e.g., `T01`, `T17`, `T35`).
+Replace `<N>` with the batch number (e.g., `B1`, `B5`, `B9`).
 
 ---
 
 ## Progress
 
-### Dead code removal
-- [ ] **T01** — Delete `project_elliptic_cone()` from noslip solver
-- [ ] **T02** — Delete `MJ_MINVAL` constant from linalg
-- [ ] **T03** — Delete `model_from_mjcf_with_plugins()` from mjcf builder
-- [ ] **T04** — Delete `ensure_bvh()` from mesh
-- [ ] **T05** — Delete `dact_dactdot` field from derivatives
-- [ ] **T06** — Delete `get_min_translational_mass()` and `get_min_rotational_inertia()` from equality constraints
-- [ ] **T07** — Delete plugin builder scaffolding (`resolve_and_assign_plugins()`, `assign_body_plugins()`, `with_nstate()`)
+### B1 — Dead code removal (T01–T07)
+**Checkpoint**: `cargo test -p sim-core -p sim-mjcf`
+- [x] **T01** — Delete `project_elliptic_cone()` from noslip solver
+- [x] **T02** — Delete `MJ_MINVAL` constant from linalg
+- [x] **T03** — Delete `model_from_mjcf_with_plugins()` from mjcf builder
+- [x] **T04** — Delete `ensure_bvh()` from mesh
+- [x] **T05** — Delete `dact_dactdot` field from derivatives
+- [x] **T06** — Delete `get_min_translational_mass()` and `get_min_rotational_inertia()` from equality constraints
+- [x] **T07** — Delete plugin builder scaffolding (`resolve_and_assign_plugins()`, `assign_body_plugins()`, `with_nstate()`)
 
-### Anti-pattern fixes
+### B2 — Anti-patterns + visibility tightening (T08–T11)
+**Checkpoint**: `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests`
 - [ ] **T08** — Replace `unwrap_or_else(|| unreachable!())` with `.expect()` in composite.rs and newton.rs
 - [ ] **T09** — Fix CG solver forced-read workaround
-
-### Visibility tightening
 - [ ] **T10** — Tighten Phase 8b leftovers in forward/position.rs
 - [ ] **T11** — Tighten `cost` field visibility in primal solver
 
-### `#[allow]` audit
+### B3 — `#[allow]` audit (T12–T15)
+**Checkpoint**: `cargo test -p sim-core -p sim-mjcf -p sim-gpu -p sim-conformance-tests` + `cargo clippy -p sim-core -p sim-mjcf -- -D warnings`
 - [ ] **T12** — Audit all `#[allow(dead_code)]` / `#[allow(unused_*)]` in sim-core (~20 annotations)
 - [ ] **T13** — Audit all `#[allow(dead_code)]` / `#[allow(unused_*)]` in sim-mjcf (~5 annotations)
 - [ ] **T14** — Audit all `#[allow(dead_code)]` in sim-gpu (2 annotations)
 - [ ] **T15** — Audit conformance test helpers in common.rs (23 annotations)
 
-### TODO/FIXME comment cleanup
+### B4 — Housekeeping: TODOs, workspace, feature flag (T16, T37–T40)
+**Checkpoint**: `cargo build` + `cargo test -p sim-mjcf --features mjb`
 - [ ] **T16** — Resolve or convert all TODO comments to tracked deferred tasks
+- [ ] **T37** — Remove stale `lumen-geometry` path dependency from root Cargo.toml
+- [ ] **T38** — Remove stale "vision" domain from xtask grade.rs search locations
+- [ ] **T39** — Extract magic numbers in sim-mjcf (BENDING_COEFFS, MIN_VERTEX_MASS)
+- [ ] **T40** — Review `mjb` feature in sim-mjcf (add integration test or document)
 
-### Large function refactoring (sim-mjcf)
+### B5 — sim-mjcf function refactoring (T17–T23)
+**Checkpoint**: `cargo test -p sim-mjcf -p sim-conformance-tests`
 - [ ] **T17** — Refactor `ModelBuilder::build()` (884 lines → extracted helpers)
 - [ ] **T18** — Refactor `process_actuator()` (545 lines → per-type handlers)
 - [ ] **T19** — Refactor `process_flex_bodies()` (454 lines → split mesh/body/integration)
@@ -70,32 +77,30 @@ Replace `<NN>` with the task number (e.g., `T01`, `T17`, `T35`).
 - [ ] **T22** — Refactor `process_body_with_world_frame()` (221 lines → split frame/body)
 - [ ] **T23** — Refactor `process_geom()` (208 lines → extract inertia logic)
 
-### Large file refactoring (sim-core)
+### B6 — sim-core file splits, part 1 (T24–T27)
+**Checkpoint**: `cargo test -p sim-core -p sim-conformance-tests`
 - [ ] **T24** — Split `derivatives.rs` (5,998 lines → fd_perturbations, hybrid_path, integration_derivs)
 - [ ] **T25** — Split `sdf.rs` (2,896 lines → primitive_sdf, operations, interpolation)
 - [ ] **T26** — Split `collision/flex_collide.rs` (2,753 lines → narrowphase_flex, flex_self_collision)
 - [ ] **T27** — Split `forward/muscle.rs` (2,497 lines → hill_dynamics, fiber_length)
+
+### B7 — sim-core file splits, part 2 (T28–T31)
+**Checkpoint**: `cargo test -p sim-core -p sim-conformance-tests`
 - [ ] **T28** — Split `constraint/assembly.rs` (1,903 lines → contact_assembly, equality_assembly)
 - [ ] **T29** — Split `collision/mod.rs` (1,539 lines → collision_pairs)
 - [ ] **T30** — Split `jacobian.rs` (1,532 lines → per-constraint-type builders)
 - [ ] **T31** — Split `sensor/mod.rs` (1,430 lines → per-sensor-type submodules)
 
-### Documentation refresh
+### B8 — Documentation refresh (T32–T36)
+**Checkpoint**: Visual review
 - [ ] **T32** — Update MUJOCO_CONFORMANCE.md (stale status markers, CI section)
 - [ ] **T33** — Update ARCHITECTURE.md (module counts, accuracy review)
 - [ ] **T34** — Clean stale references in phase spec docs (deleted crate names in test commands)
 - [ ] **T35** — Update example crate help text (references to deleted crates)
 - [ ] **T36** — Consolidate future_work_10b–10j.md into themed post-v1.0 roadmap
 
-### Workspace & CI cleanup
-- [ ] **T37** — Remove stale `lumen-geometry` path dependency from root Cargo.toml
-- [ ] **T38** — Remove stale "vision" domain from xtask grade.rs search locations
-- [ ] **T39** — Extract magic numbers in sim-mjcf (BENDING_COEFFS, MIN_VERTEX_MASS)
-
-### Feature flag audit
-- [ ] **T40** — Review `mjb` feature in sim-mjcf (add integration test or document)
-
-### Final verification
+### B9 — Final verification (T41)
+**Checkpoint**: Full suite (see T41 details)
 - [ ] **T41** — Full verification pass (build, test, clippy, fmt, test count regression check)
 
 ---
