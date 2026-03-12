@@ -27,11 +27,10 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use bevy::prelude::*;
+use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
 use sim_bevy::convert::vec3_from_vector;
-use sim_bevy::model_data::{
-    ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data, sync_model_data_to_bevy,
-};
-use sim_core::{ENABLE_ENERGY, Model};
+use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
+use sim_core::{ENABLE_ENERGY, Integrator, Model};
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -43,9 +42,9 @@ const LINK_LENGTH: f64 = 1.0;
 /// Link mass in kg.
 const LINK_MASS: f64 = 1.0;
 /// Initial angle for first link (radians from vertical).
-const INITIAL_THETA1: f64 = PI / 2.0; // 90° - horizontal
+const INITIAL_THETA1: f64 = PI / 3.0; // 60°
 /// Initial angle for second link (radians relative to first).
-const INITIAL_THETA2: f64 = PI / 4.0; // 45°
+const INITIAL_THETA2: f64 = PI / 6.0; // 30°
 /// Bob visual radius.
 const BOB_RADIUS: f32 = 0.08;
 
@@ -68,16 +67,13 @@ struct Rod2;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(OrbitCameraPlugin)
         .init_resource::<DebugPrintState>()
         .add_systems(Startup, setup_physics_and_scene)
         // Use canonical step_model_data system from module
         .add_systems(Update, step_model_data)
-        // Use canonical sync_model_data_to_bevy for body transforms,
-        // plus custom systems for visual elements (rods) and debug output
-        .add_systems(
-            PostUpdate,
-            (sync_model_data_to_bevy, sync_rods_and_debug).chain(),
-        )
+        // Custom sync using xipos (COM positions) for pendulum visualization
+        .add_systems(PostUpdate, sync_rods_and_debug)
         .run();
 }
 
@@ -90,6 +86,18 @@ fn setup_physics_and_scene(
     // Create the physics model using factory method
     let mut model = Model::double_pendulum(LINK_LENGTH, LINK_MASS);
     model.enableflags |= ENABLE_ENERGY;
+
+    // RK4 for better energy conservation on chaotic systems
+    model.integrator = Integrator::RungeKutta4;
+
+    // Light damping for realism (air resistance)
+    for d in model.jnt_damping.iter_mut() {
+        *d = 0.01;
+    }
+    for d in model.dof_damping.iter_mut() {
+        *d = 0.01;
+    }
+
     let mut data = model.make_data();
 
     // Set initial angles
@@ -132,15 +140,18 @@ fn setup_physics_and_scene(
     println!("=============================================");
     println!();
 
-    // Get initial body positions for entity spawning
-    let bob1_pos = vec3_from_vector(&data.xpos[1]);
-    let bob2_pos = vec3_from_vector(&data.xpos[2]);
+    // Get initial COM positions for entity spawning (xipos, not xpos)
+    let bob1_pos = vec3_from_vector(&data.xipos[1]);
+    let bob2_pos = vec3_from_vector(&data.xipos[2]);
 
-    // Camera - positioned to see both links clearly
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, -0.5, 5.0).looking_at(Vec3::new(0.0, -1.0, 0.0), Vec3::Y),
-    ));
+    // Camera with orbit controls
+    let orbit = OrbitCamera::new()
+        .with_target(Vec3::new(0.0, -1.0, 0.0))
+        .with_distance(5.0)
+        .with_angles(0.0, 0.1);
+    let mut cam_transform = Transform::default();
+    orbit.apply_to_transform(&mut cam_transform);
+    commands.spawn((Camera3d::default(), orbit, cam_transform));
 
     // Lighting
     commands.spawn((
@@ -248,14 +259,23 @@ struct DebugPrintState {
 /// so body positions are already updated.
 fn sync_rods_and_debug(
     data: Res<PhysicsData>,
-    mut rod1_query: Query<&mut Transform, (With<Rod1>, Without<Rod2>)>,
-    mut rod2_query: Query<&mut Transform, (With<Rod2>, Without<Rod1>)>,
+    mut bobs: Query<(&ModelBodyIndex, &mut Transform), (Without<Rod1>, Without<Rod2>)>,
+    mut rod1_query: Query<&mut Transform, (With<Rod1>, Without<Rod2>, Without<ModelBodyIndex>)>,
+    mut rod2_query: Query<&mut Transform, (With<Rod2>, Without<Rod1>, Without<ModelBodyIndex>)>,
     mut state: ResMut<DebugPrintState>,
     initial_energy: Res<InitialEnergy>,
 ) {
+    // Sync bob positions from xipos (COM), not xpos (joint frame)
+    for (body_idx, mut transform) in &mut bobs {
+        let idx = body_idx.0;
+        if idx < data.xipos.len() {
+            transform.translation = vec3_from_vector(&data.xipos[idx]);
+        }
+    }
+
     let pivot = Vec3::ZERO;
-    let bob1_pos = vec3_from_vector(&data.xpos[1]);
-    let bob2_pos = vec3_from_vector(&data.xpos[2]);
+    let bob1_pos = vec3_from_vector(&data.xipos[1]);
+    let bob2_pos = vec3_from_vector(&data.xipos[2]);
 
     // Update first rod (pivot to bob1)
     for mut transform in rod1_query.iter_mut() {

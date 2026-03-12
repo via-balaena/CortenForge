@@ -26,11 +26,10 @@
 
 use bevy::prelude::*;
 use nalgebra::{UnitQuaternion, Vector3};
+use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
 use sim_bevy::convert::vec3_from_vector;
-use sim_bevy::model_data::{
-    ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data, sync_model_data_to_bevy,
-};
-use sim_core::{ENABLE_ENERGY, Model};
+use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
+use sim_core::{ENABLE_ENERGY, Integrator, Model};
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -92,21 +91,14 @@ struct DebugPrintState {
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(OrbitCameraPlugin)
         .init_resource::<Trail>()
         .init_resource::<DebugPrintState>()
         .add_systems(Startup, setup_physics_and_scene)
         // Use canonical step_model_data system from module
         .add_systems(Update, step_model_data)
-        // Use canonical sync_model_data_to_bevy for body transforms,
-        // plus custom systems for rod, trail, and debug output
-        .add_systems(
-            PostUpdate,
-            (
-                sync_model_data_to_bevy,
-                sync_rod_and_trail_and_debug,
-            )
-                .chain(),
-        )
+        // Custom sync using xipos (COM positions) for pendulum visualization
+        .add_systems(PostUpdate, sync_rod_and_trail_and_debug)
         .run();
 }
 
@@ -115,7 +107,7 @@ fn main() {
 /// For a point mass on a sphere: L_z = m * (x * vy - y * vx)
 /// where (x, y, z) is position and (vx, vy, vz) is velocity.
 fn angular_momentum_z(model: &Model, data: &PhysicsData) -> f64 {
-    let pos = &data.xpos[1];
+    let pos = &data.xipos[1]; // COM position, not joint frame
     let mass = model.body_mass[0]; // First non-world body
 
     // Get angular velocity in world frame
@@ -139,6 +131,7 @@ fn setup_physics_and_scene(
     // Create the physics model using factory method
     let mut model = Model::spherical_pendulum(PENDULUM_LENGTH, PENDULUM_MASS);
     model.enableflags |= ENABLE_ENERGY;
+    model.integrator = Integrator::RungeKutta4;
     let mut data = model.make_data();
 
     // Set initial orientation: tilted 45° from vertical with azimuthal velocity
@@ -197,13 +190,16 @@ fn setup_physics_and_scene(
     println!();
 
     // Get initial bob position
-    let bob_pos = vec3_from_vector(&data.xpos[1]);
+    let bob_pos = vec3_from_vector(&data.xipos[1]);
 
-    // Camera - positioned to see the 3D motion clearly
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(3.0, 1.0, 3.0).looking_at(Vec3::new(0.0, -0.5, 0.0), Vec3::Y),
-    ));
+    // Camera with orbit controls
+    let orbit = OrbitCamera::new()
+        .with_target(Vec3::new(0.0, -0.5, 0.0))
+        .with_distance(4.5)
+        .with_angles(0.8, 0.3);
+    let mut cam_transform = Transform::default();
+    orbit.apply_to_transform(&mut cam_transform);
+    commands.spawn((Camera3d::default(), orbit, cam_transform));
 
     // Lighting
     commands.spawn((
@@ -321,20 +317,28 @@ fn setup_physics_and_scene(
     });
 }
 
-/// Synchronize rod, update trail, and print debug info.
-///
-/// This runs AFTER sync_model_data_to_bevy so body positions are already updated.
+/// Synchronize bob, rod, trail, and print debug info.
+#[allow(clippy::too_many_arguments)]
 fn sync_rod_and_trail_and_debug(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    mut rod_query: Query<&mut Transform, With<Rod>>,
+    mut bobs: Query<(&ModelBodyIndex, &mut Transform), (Without<Rod>, Without<TrailPoint>)>,
+    mut rod_query: Query<&mut Transform, (With<Rod>, Without<ModelBodyIndex>, Without<TrailPoint>)>,
     mut trail: ResMut<Trail>,
-    mut trail_query: Query<(&mut Transform, &TrailPoint), Without<Rod>>,
+    mut trail_query: Query<(&mut Transform, &TrailPoint), (Without<Rod>, Without<ModelBodyIndex>)>,
     initial: Res<InitialState>,
     mut state: ResMut<DebugPrintState>,
 ) {
+    // Sync bob position from xipos (COM), not xpos (joint frame)
+    for (body_idx, mut transform) in &mut bobs {
+        let idx = body_idx.0;
+        if idx < data.xipos.len() {
+            transform.translation = vec3_from_vector(&data.xipos[idx]);
+        }
+    }
+
     let pivot = Vec3::ZERO;
-    let bob_pos = vec3_from_vector(&data.xpos[1]);
+    let bob_pos = vec3_from_vector(&data.xipos[1]);
 
     // Update rod
     for mut transform in rod_query.iter_mut() {
@@ -394,7 +398,7 @@ fn sync_rod_and_trail_and_debug(
         };
 
         // Extract theta and phi from body position
-        let pos = &data.xpos[1];
+        let pos = &data.xipos[1];
         let r = (pos.x * pos.x + pos.y * pos.y + pos.z * pos.z).sqrt();
         let theta = (pos.z / -r).acos();
         let phi = pos.y.atan2(pos.x);

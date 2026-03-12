@@ -26,11 +26,10 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use bevy::prelude::*;
+use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
 use sim_bevy::convert::vec3_from_vector;
-use sim_bevy::model_data::{
-    ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data, sync_model_data_to_bevy,
-};
-use sim_core::{ENABLE_ENERGY, Model};
+use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
+use sim_core::{ENABLE_ENERGY, Integrator, Model};
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -38,11 +37,11 @@ use std::f64::consts::PI;
 // ============================================================================
 
 /// Number of links in the pendulum chain.
-const N_LINKS: usize = 5;
+const N_LINKS: usize = 3;
 /// Link length in meters.
-const LINK_LENGTH: f64 = 0.4;
+const LINK_LENGTH: f64 = 0.5;
 /// Link mass in kg.
-const LINK_MASS: f64 = 1.0;
+const LINK_MASS: f64 = 0.5;
 /// Bob visual radius.
 const BOB_RADIUS: f32 = 0.06;
 
@@ -61,16 +60,13 @@ struct Rod(usize);
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(OrbitCameraPlugin)
         .init_resource::<DebugPrintState>()
         .add_systems(Startup, setup_physics_and_scene)
         // Use canonical step_model_data system from module
         .add_systems(Update, step_model_data)
-        // Use canonical sync_model_data_to_bevy for body transforms,
-        // plus custom system for rods and debug output
-        .add_systems(
-            PostUpdate,
-            (sync_model_data_to_bevy, sync_rods_and_debug).chain(),
-        )
+        // Custom sync using xipos (COM positions) for pendulum visualization
+        .add_systems(PostUpdate, sync_rods_and_debug)
         .run();
 }
 
@@ -83,11 +79,22 @@ fn setup_physics_and_scene(
     // Create the physics model using factory method
     let mut model = Model::n_link_pendulum(N_LINKS, LINK_LENGTH, LINK_MASS);
     model.enableflags |= ENABLE_ENERGY;
+
+    // RK4 + minimal damping for long-term stability on multi-link chains.
+    // Without damping, RK4 energy drift eventually causes runaway (~16s).
+    model.integrator = Integrator::RungeKutta4;
+    for d in model.jnt_damping.iter_mut() {
+        *d = 0.03;
+    }
+    for d in model.dof_damping.iter_mut() {
+        *d = 0.03;
+    }
+
     let mut data = model.make_data();
 
-    // Set initial angles - varied for interesting motion
+    // Set initial angles - moderate for stable but interesting motion
     for i in 0..N_LINKS {
-        data.qpos[i] = PI / 3.0 - (i as f64) * PI / 20.0;
+        data.qpos[i] = PI / 4.0 * (-1.0_f64).powi(i as i32);
     }
 
     // Compute initial body poses via forward kinematics
@@ -128,11 +135,14 @@ fn setup_physics_and_scene(
     println!("=============================================");
     println!();
 
-    // Camera
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, -1.0, 4.0).looking_at(Vec3::new(0.0, -1.0, 0.0), Vec3::Y),
-    ));
+    // Camera with orbit controls
+    let orbit = OrbitCamera::new()
+        .with_target(Vec3::new(0.0, -1.0, 0.0))
+        .with_distance(4.0)
+        .with_angles(0.0, 0.0);
+    let mut cam_transform = Transform::default();
+    orbit.apply_to_transform(&mut cam_transform);
+    commands.spawn((Camera3d::default(), orbit, cam_transform));
 
     // Lighting
     commands.spawn((
@@ -165,7 +175,7 @@ fn setup_physics_and_scene(
     // Create bobs (linked to physics bodies) and rods
     for (i, &color) in colors.iter().enumerate() {
         let body_id = i + 1; // Body 0 is world
-        let bob_pos = vec3_from_vector(&data.xpos[body_id]);
+        let bob_pos = vec3_from_vector(&data.xipos[body_id]);
 
         // Bob - linked to physics body via ModelBodyIndex
         commands.spawn((
@@ -228,14 +238,23 @@ struct DebugPrintState {
 /// sync_model_data_to_bevy so body positions are already updated.
 fn sync_rods_and_debug(
     data: Res<PhysicsData>,
-    mut rod_query: Query<(&mut Transform, &Rod)>,
+    mut bobs: Query<(&ModelBodyIndex, &mut Transform), Without<Rod>>,
+    mut rod_query: Query<(&mut Transform, &Rod), Without<ModelBodyIndex>>,
     mut state: ResMut<DebugPrintState>,
     initial_energy: Res<InitialEnergy>,
 ) {
-    // Build position array: [pivot, body1, body2, ...]
+    // Sync bob positions from xipos (COM), not xpos (joint frame)
+    for (body_idx, mut transform) in &mut bobs {
+        let idx = body_idx.0;
+        if idx < data.xipos.len() {
+            transform.translation = vec3_from_vector(&data.xipos[idx]);
+        }
+    }
+
+    // Build position array: [pivot, body1_com, body2_com, ...]
     let mut positions: Vec<Vec3> = vec![Vec3::ZERO]; // Pivot at origin
     for i in 1..=N_LINKS {
-        positions.push(vec3_from_vector(&data.xpos[i]));
+        positions.push(vec3_from_vector(&data.xipos[i]));
     }
 
     // Update rods

@@ -932,10 +932,30 @@ pub(crate) fn mjd_rne_vel(model: &Model, data: &mut Data) {
     for body_id in 1..nbody {
         let parent_id = model.body_parent[body_id];
 
-        // Propagate velocity Jacobian from parent: Dcvel[b] = Dcvel[parent]
-        // (clone needed because we borrow data.deriv_Dcvel mutably below)
+        // Spatial transport X(r) from parent body origin to child body origin.
+        // cvel is expressed at xpos (body origin), so propagation needs:
+        //   Dcvel[child][angular, :] = Dcvel[parent][angular, :]
+        //   Dcvel[child][linear, :]  = Dcvel[parent][linear, :] + r× · Dcvel[parent][angular, :]
+        // where r = xpos[child] - xpos[parent].
+        let r = data.xpos[body_id] - data.xpos[parent_id];
+
         let parent_dcvel = data.deriv_Dcvel[parent_id].clone();
-        data.deriv_Dcvel[body_id].copy_from(&parent_dcvel);
+        for c in 0..nv {
+            // Angular part: copy directly
+            for row in 0..3 {
+                data.deriv_Dcvel[body_id][(row, c)] = parent_dcvel[(row, c)];
+            }
+            // Linear part: add lever arm ω × r contribution
+            let omega_col = Vector3::new(
+                parent_dcvel[(0, c)],
+                parent_dcvel[(1, c)],
+                parent_dcvel[(2, c)],
+            );
+            let lever = omega_col.cross(&r);
+            data.deriv_Dcvel[body_id][(3, c)] = parent_dcvel[(3, c)] + lever.x;
+            data.deriv_Dcvel[body_id][(4, c)] = parent_dcvel[(4, c)] + lever.y;
+            data.deriv_Dcvel[body_id][(5, c)] = parent_dcvel[(5, c)] + lever.z;
+        }
 
         // For each joint of this body
         let jnt_start = model.body_jnt_adr[body_id];
@@ -954,9 +974,22 @@ pub(crate) fn mjd_rne_vel(model: &Model, data: &mut Data) {
             }
         }
 
-        // Propagate acceleration Jacobian from parent: Dcacc[b] = Dcacc[parent]
+        // Propagate acceleration Jacobian with same spatial transport X(r).
         let parent_dcacc = data.deriv_Dcacc[parent_id].clone();
-        data.deriv_Dcacc[body_id].copy_from(&parent_dcacc);
+        for c in 0..nv {
+            for row in 0..3 {
+                data.deriv_Dcacc[body_id][(row, c)] = parent_dcacc[(row, c)];
+            }
+            let omega_col = Vector3::new(
+                parent_dcacc[(0, c)],
+                parent_dcacc[(1, c)],
+                parent_dcacc[(2, c)],
+            );
+            let lever = omega_col.cross(&r);
+            data.deriv_Dcacc[body_id][(3, c)] = parent_dcacc[(3, c)] + lever.x;
+            data.deriv_Dcacc[body_id][(4, c)] = parent_dcacc[(4, c)] + lever.y;
+            data.deriv_Dcacc[body_id][(5, c)] = parent_dcacc[(5, c)] + lever.z;
+        }
 
         // For each joint of this body
         for jnt_id in jnt_start..jnt_end {
@@ -998,6 +1031,50 @@ pub(crate) fn mjd_rne_vel(model: &Model, data: &mut Data) {
                 let col = mat * parent_dcvel_ref.column(c);
                 for r in 0..6 {
                     data.deriv_Dcacc[body_id][(r, c)] += col[r];
+                }
+            }
+
+            // Free joint correction derivative:
+            // rne.rs subtracts ω × v from a_bias[3:6] for free joints, where
+            //   ω = cvel[body][0:3] (world angular velocity)
+            //   v = qvel[dof:dof+3] (world translational velocity)
+            //
+            // Derivative: Dcacc[3:6, k] -= d(ω × v)/d(qvel_k)
+            //   = (dω/d(qvel_k)) × v + ω × (dv/d(qvel_k))
+            //
+            // Term A: -(Dcvel[body][0:3, k]) × v = v × Dcvel[body][0:3, k]
+            // Term B: -(ω × e_i) for k = dof_adr+i  (i=0,1,2)
+            if model.jnt_type[jnt_id] == MjJointType::Free {
+                let omega = Vector3::new(
+                    data.cvel[body_id][0],
+                    data.cvel[body_id][1],
+                    data.cvel[body_id][2],
+                );
+                let v_trans = Vector3::new(
+                    data.qvel[dof_adr],
+                    data.qvel[dof_adr + 1],
+                    data.qvel[dof_adr + 2],
+                );
+
+                // Term A: Dcacc[3:6, c] += v × Dcvel[0:3, c]  (= -(Dcvel × v))
+                let dcvel_body = data.deriv_Dcvel[body_id].clone();
+                for c in 0..nv {
+                    let dcvel_ang =
+                        Vector3::new(dcvel_body[(0, c)], dcvel_body[(1, c)], dcvel_body[(2, c)]);
+                    let cross = v_trans.cross(&dcvel_ang);
+                    data.deriv_Dcacc[body_id][(3, c)] += cross.x;
+                    data.deriv_Dcacc[body_id][(4, c)] += cross.y;
+                    data.deriv_Dcacc[body_id][(5, c)] += cross.z;
+                }
+
+                // Term B: Dcacc[3:6, dof+i] -= ω × e_i  for i=0,1,2
+                for i in 0..3 {
+                    let mut e_i = Vector3::zeros();
+                    e_i[i] = 1.0;
+                    let cross = omega.cross(&e_i);
+                    data.deriv_Dcacc[body_id][(3, dof_adr + i)] -= cross.x;
+                    data.deriv_Dcacc[body_id][(4, dof_adr + i)] -= cross.y;
+                    data.deriv_Dcacc[body_id][(5, dof_adr + i)] -= cross.z;
                 }
             }
         }
@@ -1070,64 +1147,11 @@ pub(crate) fn mjd_rne_vel(model: &Model, data: &mut Data) {
         }
     }
 
-    // ========== Direct gyroscopic derivative for Ball/Free joints ==========
-    // The Featherstone backward pass above captures spatial Coriolis via
-    // crossForce_vel(I·v) and crossForce_frc(v)·I terms, but body-frame
-    // gyroscopic torques ω × (I·ω) have an additional derivative term
-    // not covered by the spatial chain-rule propagation.
-    //
-    // For Ball joint: qfrc_bias[dof..dof+3] -= ω_body × (I · ω_body)
-    //   where ω_body = qvel[dof..dof+3] and I = diag(body_inertia)
-    //   d(ω × I·ω)/dω_j = e_j × (I·ω) + ω × (I·e_j)
-    //
-    // For Free joint: same but angular DOFs are at dof+3..dof+6
-    for body_id in 1..nbody {
-        let jnt_start = model.body_jnt_adr[body_id];
-        let jnt_end = jnt_start + model.body_jnt_num[body_id];
-
-        for jnt_id in jnt_start..jnt_end {
-            let dof_adr = model.jnt_dof_adr[jnt_id];
-
-            let (ang_offset, has_gyro) = match model.jnt_type[jnt_id] {
-                MjJointType::Ball => (0, true),
-                MjJointType::Free => (3, true),
-                _ => (0, false),
-            };
-
-            if !has_gyro {
-                continue;
-            }
-
-            let omega = Vector3::new(
-                data.qvel[dof_adr + ang_offset],
-                data.qvel[dof_adr + ang_offset + 1],
-                data.qvel[dof_adr + ang_offset + 2],
-            );
-            let inertia = model.body_inertia[body_id];
-            let i_omega = Vector3::new(
-                inertia.x * omega.x,
-                inertia.y * omega.y,
-                inertia.z * omega.z,
-            );
-
-            // Compute 3×3 Jacobian: d(ω × I·ω)/dω
-            // Column j: e_j × (I·ω) + ω × (I·e_j)
-            for j in 0..3 {
-                let mut e_j = Vector3::zeros();
-                e_j[j] = 1.0;
-
-                let term1 = e_j.cross(&i_omega);
-                let i_ej = Vector3::new(inertia.x * e_j.x, inertia.y * e_j.y, inertia.z * e_j.z);
-                let term2 = omega.cross(&i_ej);
-                let deriv = term1 + term2;
-
-                // Subtract from qDeriv (bias is subtracted in qfrc_smooth)
-                for i in 0..3 {
-                    data.qDeriv[(dof_adr + ang_offset + i, dof_adr + ang_offset + j)] -= deriv[i];
-                }
-            }
-        }
-    }
+    // NOTE: Gyroscopic derivative for Ball/Free joints is NOT computed
+    // directly here. The Featherstone backward pass above captures the
+    // full gyroscopic derivative via the v ×* (I @ v) term, including
+    // both the crossForce_vel(I·v) and crossForce_frc(v)·I contributions.
+    // Adding a direct gyroscopic derivative would double-count the effect.
 }
 
 // ============================================================================
@@ -1714,25 +1738,24 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
         // The derivative is: [s_ang_kd; 0] ×_m vJ_total
         //
         // This handles multi-joint bodies (cross-derivatives between joints on the
-        // same body) and also single-joint cases correctly. Ball and Free joints
-        // use world-frame axes so ∂S/∂q = 0.
+        // same body) and also single-joint cases correctly. All joint types have
+        // orientation-dependent axes (Ball/Free use body-frame S=[R;0]).
         let js = model.body_jnt_adr[body_id];
         let je = js + model.body_jnt_num[body_id];
 
-        // Pre-compute velocity from orientation-dependent joints only (Hinge/Slide).
-        // Ball/Free use world-frame axes that don't change with body rotation.
+        // Pre-compute joint velocity S·qvel from orientation-dependent DOFs only.
+        // Free joint linear DOFs (0-2) have constant S = [0; I] in world frame,
+        // so ∂S/∂q = 0 and they must be excluded. All other DOFs (Hinge, Slide,
+        // Ball, Free angular 3-5) have body-orientation-dependent S.
         let mut vj_rotating = SpatialVector::zeros();
         for jid in js..je {
-            if matches!(
-                model.jnt_type[jid],
-                crate::types::MjJointType::Ball | crate::types::MjJointType::Free
-            ) {
-                continue; // World-frame axes: ∂S/∂q = 0
-            }
             let da = model.jnt_dof_adr[jid];
             let s = &joint_subspaces[jid];
             let nd = model.jnt_type[jid].nv();
             for d in 0..nd {
+                if model.jnt_type[jid] == MjJointType::Free && d < 3 {
+                    continue; // Free linear DOFs have constant S
+                }
                 for row in 0..6 {
                     vj_rotating[row] += s[(row, d)] * data.qvel[da + d];
                 }
@@ -1840,20 +1863,17 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
         let js = model.body_jnt_adr[b];
         let je = js + model.body_jnt_num[b];
 
-        // Pre-compute S·qacc from orientation-dependent joints only (Hinge/Slide).
-        // Ball/Free use world-frame axes: ∂S/∂q = 0.
+        // Pre-compute S·qacc from orientation-dependent DOFs only.
+        // Same filter as vj_rotating: exclude Free linear DOFs (constant S).
         let mut sj_qacc_rotating = SpatialVector::zeros();
         for jid in js..je {
-            if matches!(
-                model.jnt_type[jid],
-                crate::types::MjJointType::Ball | crate::types::MjJointType::Free
-            ) {
-                continue;
-            }
             let da = model.jnt_dof_adr[jid];
             let s = &joint_subspaces[jid];
             let nd = model.jnt_type[jid].nv();
             for d in 0..nd {
+                if model.jnt_type[jid] == MjJointType::Free && d < 3 {
+                    continue;
+                }
                 for row in 0..6 {
                     sj_qacc_rotating[row] += s[(row, d)] * data.qacc[da + d];
                 }
@@ -2015,14 +2035,8 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
     // When an angular DOF on the same body or any ancestor body is perturbed,
     // it rotates the body, changing the joint subspace S. Unified loop over
     // all perturbing angular DOFs (same-body + ancestors).
-    // Skip Ball/Free TARGET joints: their world-frame S doesn't depend on q.
+    // With body-frame convention, Ball/Free S=[R;0] depends on q (∂S/∂q ≠ 0).
     for jid in 0..model.njnt {
-        if matches!(
-            model.jnt_type[jid],
-            crate::types::MjJointType::Ball | crate::types::MjJointType::Free
-        ) {
-            continue; // World-frame subspace: ∂S/∂q = 0
-        }
         let bid = model.jnt_body[jid];
         let da_j = model.jnt_dof_adr[jid];
         let s_j = &joint_subspaces[jid];
@@ -2044,6 +2058,10 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     }
                     let s_ang = SpatialVector::new(axis[0], axis[1], axis[2], 0.0, 0.0, 0.0);
                     for dd in 0..nd_j {
+                        // Skip Free linear DOFs (constant S, ∂S/∂q = 0)
+                        if model.jnt_type[jid] == MjJointType::Free && dd < 3 {
+                            continue;
+                        }
                         let s_jdd = SpatialVector::new(
                             s_j[(0, dd)],
                             s_j[(1, dd)],
@@ -2223,14 +2241,8 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
 
     // Part B projection derivative: (∂S/∂q)^T · cfrc_B
     // Same unified ancestor structure as Part A projection derivative.
-    // Skip Ball/Free TARGET joints: their world-frame S doesn't depend on q.
+    // With body-frame convention, Ball/Free S=[R;0] depends on q (∂S/∂q ≠ 0).
     for jid in 0..model.njnt {
-        if matches!(
-            model.jnt_type[jid],
-            crate::types::MjJointType::Ball | crate::types::MjJointType::Free
-        ) {
-            continue;
-        }
         let bid = model.jnt_body[jid];
         let da_j = model.jnt_dof_adr[jid];
         let s_j = &joint_subspaces[jid];
@@ -2251,6 +2263,10 @@ pub(crate) fn mjd_rne_pos(model: &Model, data: &mut Data) {
                     }
                     let s_ang = SpatialVector::new(axis[0], axis[1], axis[2], 0.0, 0.0, 0.0);
                     for dd in 0..nd_j {
+                        // Skip Free linear DOFs (constant S, ∂S/∂q = 0)
+                        if model.jnt_type[jid] == MjJointType::Free && dd < 3 {
+                            continue;
+                        }
                         let s_jdd = SpatialVector::new(
                             s_j[(0, dd)],
                             s_j[(1, dd)],
@@ -2739,6 +2755,19 @@ pub fn mjd_transition_hybrid(
     scratch.qacc_warmstart.copy_from(&warmstart_0);
     scratch.step(model)?;
     let y_0 = extract_state(model, &scratch, &qpos_0);
+
+    // For implicit integrators, save the transition qacc from the nominal step.
+    // This is qacc_transition = (v⁺⁺ − v⁺)/h, computed by the ISD solver during
+    // the nominal step. The analytical position derivative needs this (not the
+    // qacc from the initial forward pass) as the operating point for (∂M/∂q)·qacc.
+    let qacc_transition = if matches!(
+        model.integrator,
+        Integrator::Euler | Integrator::RungeKutta4
+    ) {
+        None
+    } else {
+        Some(scratch.qacc.clone())
+    };
     let sensor_0 = if compute_sensors {
         Some(scratch.sensordata.clone())
     } else {
@@ -2763,6 +2792,17 @@ pub fn mjd_transition_hybrid(
     };
 
     if use_analytical_pos {
+        // For implicit integrators, the initial forward() sets qacc to
+        // (v⁺ − v_old)/h and updates qvel to v⁺, but cvel was computed with
+        // v_old. The transition maps (q, v⁺) → (q⁺, v⁺⁺), so derivatives
+        // must be evaluated at (q, v⁺):
+        //  - qacc_transition = (v⁺⁺ − v⁺)/h (from nominal step, not initial forward)
+        //  - cvel must reflect v⁺ (recompute velocity FK)
+        if let Some(ref qt) = qacc_transition {
+            data_work.qacc.copy_from(qt);
+            crate::forward::mj_fwd_velocity(model, &mut data_work);
+        }
+
         // Analytical position columns via mjd_smooth_pos + chain rule
         mjd_smooth_pos(model, &mut data_work);
 

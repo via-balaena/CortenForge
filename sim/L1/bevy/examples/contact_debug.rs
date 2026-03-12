@@ -3,8 +3,7 @@
 //! Demonstrates the debug visualization features for contacts, forces, and joints.
 //! Multiple spheres fall and collide, showing contact points and normals.
 //!
-//! Run with: `cargo run -p sim-bevy --example contact_debug --features x11`
-//! (or `--features wayland` on Wayland systems)
+//! Run with: `cargo run -p sim-bevy --example contact_debug --release`
 
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters
 #![allow(clippy::expect_used)] // Examples use expect for clarity
@@ -23,7 +22,11 @@ fn main() {
 }
 
 /// Set up a scene with multiple falling bodies.
-fn setup_scene(mut commands: Commands) {
+fn setup_scene(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
     // Define the scene using MJCF
     let mjcf = r#"
         <mujoco model="contact_debug">
@@ -68,6 +71,9 @@ fn setup_scene(mut commands: Commands) {
     // Create data and run initial forward pass
     let mut data = model.make_data();
     let _ = data.forward(&model);
+
+    // Spawn visual entities for all geoms
+    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
 
     // Insert as Bevy resources
     commands.insert_resource(PhysicsModel::new(model));

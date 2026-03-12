@@ -46,9 +46,10 @@
 //! ```
 
 use bevy::prelude::*;
-use sim_core::{Data, Model};
+use sim_core::{CollisionShape, Data, GeomType, Model};
 
 use crate::convert::{quat_from_unit_quaternion, vec3_from_vector};
+use crate::mesh::mesh_from_collision_shape;
 
 // ============================================================================
 // Resources
@@ -475,6 +476,90 @@ pub fn spawn_model_bodies(commands: &mut Commands, model: &Model, data: &Data) -
     }
 
     entities
+}
+
+/// Spawn Bevy entities with meshes for all geoms in the physics model.
+///
+/// Creates entities with `ModelGeomIndex`, `Mesh3d`, `MeshMaterial3d`, and
+/// `Transform` components. Materials are derived from `geom_rgba`. Meshes
+/// are generated from geom type + size via `mesh_from_collision_shape`.
+///
+/// Planes get a large flat quad. Geom types without mesh support (`Sdf`,
+/// `Hfield`) are skipped.
+#[allow(clippy::needless_range_loop)]
+pub fn spawn_model_geoms(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    model: &Model,
+    data: &Data,
+) {
+    for geom_id in 0..model.ngeom {
+        let geom_type = model.geom_type[geom_id];
+        let size = model.geom_size[geom_id];
+        let rgba = model.geom_rgba[geom_id];
+
+        // Convert GeomType + size to CollisionShape for mesh generation
+        let shape = match geom_type {
+            GeomType::Plane => Some(CollisionShape::Plane {
+                normal: nalgebra::Vector3::z(),
+                distance: 0.0,
+            }),
+            GeomType::Sphere => Some(CollisionShape::Sphere { radius: size.x }),
+            GeomType::Box => Some(CollisionShape::Box { half_extents: size }),
+            GeomType::Capsule => Some(CollisionShape::Capsule {
+                radius: size.x,
+                half_length: size.y,
+            }),
+            GeomType::Cylinder => Some(CollisionShape::Cylinder {
+                radius: size.x,
+                half_length: size.y,
+            }),
+            GeomType::Ellipsoid => Some(CollisionShape::Ellipsoid { radii: size }),
+            // Mesh, Hfield, Sdf need asset data — skip for now
+            _ => None,
+        };
+
+        let mesh = shape.and_then(|s| mesh_from_collision_shape(&s));
+
+        let Some(mesh) = mesh else { continue };
+
+        // Material from MJCF rgba
+        #[allow(clippy::cast_possible_truncation)]
+        let material = materials.add(StandardMaterial {
+            base_color: Color::srgba(
+                rgba[0] as f32,
+                rgba[1] as f32,
+                rgba[2] as f32,
+                rgba[3] as f32,
+            ),
+            alpha_mode: if rgba[3] < 1.0 {
+                AlphaMode::Blend
+            } else {
+                AlphaMode::Opaque
+            },
+            ..default()
+        });
+
+        // Initial transform from computed world-frame geom pose
+        let pos = &data.geom_xpos[geom_id];
+        let mat = &data.geom_xmat[geom_id];
+        let rotation = nalgebra::Rotation3::from_matrix_unchecked(*mat);
+        let quat = nalgebra::UnitQuaternion::from_rotation_matrix(&rotation);
+
+        let transform = Transform {
+            translation: vec3_from_vector(pos),
+            rotation: quat_from_unit_quaternion(&quat),
+            scale: Vec3::ONE,
+        };
+
+        commands.spawn((
+            ModelGeomIndex(geom_id),
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material),
+            transform,
+        ));
+    }
 }
 
 /// Get the body name from the model, or a default name.

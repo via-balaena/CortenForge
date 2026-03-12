@@ -1,9 +1,9 @@
 //! Example: All primitive collision shapes.
 //!
 //! Displays all supported collision shape types in a grid layout.
+//! Uses `spawn_model_geoms` for automatic visual entity generation.
 //!
-//! Run with: `cargo run -p sim-bevy --example collision_shapes --features x11`
-//! (or `--features wayland` on Wayland systems)
+//! Run with: `cargo run -p sim-bevy --example collision_shapes --release`
 
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters
 #![allow(clippy::expect_used)] // Examples use expect for clarity
@@ -21,7 +21,11 @@ fn main() {
 }
 
 /// Set up the physics world with all primitive collision shapes.
-fn setup_shapes(mut commands: Commands) {
+fn setup_shapes(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
     // Define a grid of various collision shapes using MJCF
     // Grid layout: 2 rows, 4 columns with spacing=3.0
     let mjcf = r#"
@@ -42,7 +46,7 @@ fn setup_shapes(mut commands: Commands) {
                     <geom name="box_geom" type="box" size="0.6 0.8 0.5" mass="1.0" rgba="0.3 0.9 0.3 1"/>
                 </body>
 
-                <body name="capsule" pos="1.5 1.5 1.5">
+                <body name="capsule" pos="1.5 1.5 1.5" euler="15 0 0">
                     <freejoint name="capsule_joint"/>
                     <geom name="capsule_geom" type="capsule" size="0.3 0.5" mass="1.0" rgba="0.3 0.3 0.9 1"/>
                 </body>
@@ -82,6 +86,9 @@ fn setup_shapes(mut commands: Commands) {
     // Create data and run initial forward pass
     let mut data = model.make_data();
     let _ = data.forward(&model);
+
+    // Spawn visual entities for all geoms
+    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
 
     // Insert as Bevy resources
     commands.insert_resource(PhysicsModel::new(model));

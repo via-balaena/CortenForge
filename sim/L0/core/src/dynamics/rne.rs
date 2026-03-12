@@ -16,19 +16,22 @@ use crate::types::{DISABLE_GRAVITY, Data, ENABLE_SLEEP, MIN_VAL, MjJointType, Mo
 /// The bias force vector `c(q, qdot)` contains:
 /// - Gravity forces projected to joint space
 /// - Coriolis/centrifugal forces: velocity-dependent terms
+/// - Gyroscopic forces (ω × Iω): captured by the Featherstone backward pass
 ///
 /// For the equation of motion: `M * qacc + c(q, qdot) = τ`
 ///
 /// ## Implementation Notes
 ///
-/// This implementation uses a hybrid approach for efficiency and correctness:
+/// Two-phase approach:
 /// 1. **Gravity**: O(n) computation using precomputed subtree mass and COM
-/// 2. **Gyroscopic**: Direct computation for Ball/Free joints (ω × Iω)
-/// 3. **Coriolis/Centrifugal**: O(n²) computation using body velocities
+/// 2. **Coriolis/Centrifugal/Gyroscopic**: O(n) Featherstone RNE forward-backward
+///    pass with spatial algebra. The backward pass term `v ×* (I @ v)` naturally
+///    captures gyroscopic torques in the angular part.
 ///
-/// A full Featherstone O(n) RNE would use spatial algebra throughout, but this
-/// hybrid approach achieves the same physics with simpler code that's easier
-/// to verify for correctness.
+/// Free joint correction: the forward pass subtracts `[0; ω × v]` from the bias
+/// acceleration to account for the convention difference between spatial acceleration
+/// (`a_O - ω × v_O`) and the world-frame translational acceleration (`a_O`) used
+/// by free joint DOFs.
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 5
 ///
@@ -40,8 +43,6 @@ use crate::types::{DISABLE_GRAVITY, Data, ENABLE_SLEEP, MIN_VAL, MjJointType, Mo
 )]
 pub fn mj_rne(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-    // §16.27: Use indirection array for cache-friendly iteration over awake bodies.
-    let use_body_ind = sleep_enabled && data.nbody_awake < model.nbody;
 
     data.qfrc_bias.fill(0.0);
 
@@ -121,71 +122,11 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
     // (§27F) Flex vertex gravity now handled by the joint loop above — each vertex
     // has a body with 3 slide joints, so the standard gravity path applies automatically.
 
-    // ========== Gyroscopic terms for Ball/Free joints ==========
-    // τ_gyro = ω × (I * ω) - the gyroscopic torque
-    // This is the dominant Coriolis effect for 3D rotations
-    let nbody_gyro = if use_body_ind {
-        data.nbody_awake
-    } else {
-        model.nbody
-    };
-    for idx in 1..nbody_gyro {
-        let body_id = if use_body_ind {
-            data.body_awake_ind[idx]
-        } else {
-            idx
-        };
-
-        let jnt_start = model.body_jnt_adr[body_id];
-        let jnt_end = jnt_start + model.body_jnt_num[body_id];
-
-        for jnt_id in jnt_start..jnt_end {
-            let dof_adr = model.jnt_dof_adr[jnt_id];
-
-            match model.jnt_type[jnt_id] {
-                MjJointType::Ball => {
-                    // Angular velocity in body frame
-                    let omega_body = Vector3::new(
-                        data.qvel[dof_adr],
-                        data.qvel[dof_adr + 1],
-                        data.qvel[dof_adr + 2],
-                    );
-                    // Body inertia (diagonal in principal axes)
-                    let inertia = model.body_inertia[body_id];
-                    // I * ω
-                    let i_omega = Vector3::new(
-                        inertia.x * omega_body.x,
-                        inertia.y * omega_body.y,
-                        inertia.z * omega_body.z,
-                    );
-                    // Gyroscopic torque: ω × (I * ω)
-                    let gyro = omega_body.cross(&i_omega);
-                    data.qfrc_bias[dof_adr] += gyro.x;
-                    data.qfrc_bias[dof_adr + 1] += gyro.y;
-                    data.qfrc_bias[dof_adr + 2] += gyro.z;
-                }
-                MjJointType::Free => {
-                    // Angular DOFs are at dof_adr + 3..6
-                    let omega_body = Vector3::new(
-                        data.qvel[dof_adr + 3],
-                        data.qvel[dof_adr + 4],
-                        data.qvel[dof_adr + 5],
-                    );
-                    let inertia = model.body_inertia[body_id];
-                    let i_omega = Vector3::new(
-                        inertia.x * omega_body.x,
-                        inertia.y * omega_body.y,
-                        inertia.z * omega_body.z,
-                    );
-                    let gyro = omega_body.cross(&i_omega);
-                    data.qfrc_bias[dof_adr + 3] += gyro.x;
-                    data.qfrc_bias[dof_adr + 4] += gyro.y;
-                    data.qfrc_bias[dof_adr + 5] += gyro.z;
-                }
-                _ => {}
-            }
-        }
-    }
+    // NOTE: Gyroscopic torques (ω × Iω) are NOT computed directly here.
+    // They are handled by the Featherstone RNE backward pass below, which
+    // computes v ×* (I @ v) — this naturally includes the gyroscopic term
+    // in the angular part of the spatial force. Computing it directly here
+    // would double-count the gyroscopic effect.
 
     // ========== Coriolis/Centrifugal via Analytical Featherstone RNE ==========
     //
@@ -269,6 +210,31 @@ pub fn mj_rne(model: &Model, data: &mut Data) {
             // and (S@qdot) ×_m (S@qdot) = 0, so v[i] ×_m (S@qdot) = v[parent] ×_m (S@qdot)
             let v_parent = data.cvel[parent_id];
             a_bias += spatial_cross_motion(v_parent, v_joint);
+
+            // Free joint correction: the spatial acceleration convention uses
+            // a_spatial = [α; a_O - ω × v_O], but the free joint's translational
+            // DOFs use world-frame acceleration a_O directly. At qacc=0:
+            //   a_spatial = S @ 0 + c = c (from parent velocity-product)
+            // but the CORRECT spatial bias acceleration also includes the
+            // -[0; ω × v] correction from the velocity convention difference.
+            // Without this, the backward pass produces a spurious m*(ω × v)
+            // force on the translational DOFs.
+            if model.jnt_type[jnt_id] == MjJointType::Free {
+                let omega_world = nalgebra::Vector3::new(
+                    data.cvel[body_id][0],
+                    data.cvel[body_id][1],
+                    data.cvel[body_id][2],
+                );
+                let v_world = nalgebra::Vector3::new(
+                    data.qvel[dof_adr],
+                    data.qvel[dof_adr + 1],
+                    data.qvel[dof_adr + 2],
+                );
+                let correction = omega_world.cross(&v_world);
+                a_bias[3] -= correction.x;
+                a_bias[4] -= correction.y;
+                a_bias[5] -= correction.z;
+            }
         }
 
         data.cacc_bias[body_id] = a_bias;

@@ -427,7 +427,11 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             }
         }
         SolverType::CG => {
-            cg_solve_unified(model, data);
+            let converged = cg_solve_unified(model, data);
+            if !converged {
+                // Fallback to PGS (matching Newton's fallback pattern)
+                pgs_solve_unified(model, data);
+            }
             // §33: Noslip post-processor for CG solver
             if model.noslip_iterations > 0 {
                 noslip_postprocess(model, data);

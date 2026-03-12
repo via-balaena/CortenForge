@@ -390,3 +390,10 @@ pub mod smoke_conformance_models;
 /// Composite body generation tests: cable chain, naming, excludes, sites,
 /// deprecated types, uservert, validation, pipeline ordering.
 pub mod composite;
+
+// ============================================================================
+// Contact Debug Diagnostic (temporary)
+// ============================================================================
+
+/// Diagnostic: multi-body contact solver behavior.
+pub mod contact_debug_diagnostic;
