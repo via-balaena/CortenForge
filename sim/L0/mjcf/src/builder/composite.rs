@@ -432,7 +432,9 @@ fn make_cable(composite: &MjcfComposite) -> Result<(Vec<MjcfBody>, Vec<MjcfConta
         } else {
             // Append to the deepest leaf of the chain
             append_to_chain(
-                bodies.last_mut().unwrap_or_else(|| unreachable!()),
+                bodies
+                    .last_mut()
+                    .unwrap_or_else(|| unreachable!("bodies is non-empty after first push")),
                 cable_body,
             );
         }
@@ -447,7 +449,10 @@ fn append_to_chain(parent: &mut MjcfBody, child: MjcfBody) {
     if parent.children.is_empty() {
         parent.children.push(child);
     } else {
-        let last = parent.children.last_mut().unwrap_or_else(|| unreachable!());
+        let last = parent
+            .children
+            .last_mut()
+            .unwrap_or_else(|| unreachable!("children is non-empty in else branch"));
         append_to_chain(last, child);
     }
 }
@@ -456,7 +461,10 @@ fn append_to_chain(parent: &mut MjcfBody, child: MjcfBody) {
 /// Matches `AddCableBody:392-403` in `user_composite.cc`.
 fn build_cable_geom(composite: &MjcfComposite, name: &str, length: f64) -> MjcfGeom {
     // geom presence validated by validate_cable() before this point
-    let template = composite.geom.as_ref().unwrap_or_else(|| unreachable!());
+    let template = composite
+        .geom
+        .as_ref()
+        .unwrap_or_else(|| unreachable!("geom presence validated by validate_cable()"));
 
     let mut geom = MjcfGeom {
         name: Some(name.to_string()),

@@ -47,10 +47,10 @@ Replace `<N>` with the batch number (e.g., `B1`, `B5`, `B9`).
 
 ### B2 — Anti-patterns + visibility tightening (T08–T11)
 **Checkpoint**: `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests`
-- [ ] **T08** — Replace `unwrap_or_else(|| unreachable!())` with `.expect()` in composite.rs and newton.rs
-- [ ] **T09** — Fix CG solver forced-read workaround
-- [ ] **T10** — Tighten Phase 8b leftovers in forward/position.rs
-- [ ] **T11** — Tighten `cost` field visibility in primal solver
+- [x] **T08** — Replace `unwrap_or_else(|| unreachable!())` with `.expect()` in composite.rs and newton.rs
+- [x] **T09** — Fix CG solver forced-read workaround
+- [x] **T10** — Tighten Phase 8b leftovers in forward/position.rs
+- [x] **T11** — Tighten `cost` field visibility in primal solver
 
 ### B3 — `#[allow]` audit (T12–T15)
 **Checkpoint**: `cargo test -p sim-core -p sim-mjcf -p sim-gpu -p sim-conformance-tests` + `cargo clippy -p sim-core -p sim-mjcf -- -D warnings`

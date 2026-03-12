@@ -139,13 +139,6 @@ pub fn cg_solve_unified(model: &Model, data: &mut Data) -> bool {
     let ls_tolerance = model.ls_tolerance;
     let mut converged = false;
     let mut solver_stats: Vec<SolverStat> = Vec::with_capacity(max_iters);
-    let mut grad_old = grad.clone();
-    let mut mgrad_old = mgrad.clone();
-    // Polak-Ribiere needs previous-iteration gradient; initial values
-    // are overwritten in step 5 before the first read in step 7.
-    // Force-read to silence unused_assignments warning.
-    let _ = (&grad_old, &mgrad_old);
-
     for iter in 0..max_iters {
         // 1. Compute mv = M·search, jv = J·search (for line search)
         let mut mv = DVector::<f64>::zeros(nv);
@@ -228,9 +221,9 @@ pub fn cg_solve_unified(model: &Model, data: &mut Data) -> bool {
         let old_cost = data.efc_cost;
         classify_constraint_states(model, data, &qacc, &qacc_smooth, &qfrc_smooth);
 
-        // 5. Compute gradient
-        grad_old = grad.clone();
-        mgrad_old = mgrad.clone();
+        // 5. Snapshot current gradient for Polak-Ribiere (step 7)
+        let grad_old = grad.clone();
+        let mgrad_old = mgrad.clone();
 
         qfrc_constraint_local.fill(0.0);
         for i in 0..nefc {
