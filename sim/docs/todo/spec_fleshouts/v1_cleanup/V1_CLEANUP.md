@@ -69,13 +69,13 @@ Replace `<N>` with the batch number (e.g., `B1`, `B5`, `B9`).
 
 ### B5 — sim-mjcf function refactoring (T17–T23)
 **Checkpoint**: `cargo test -p sim-mjcf -p sim-conformance-tests`
-- [ ] **T17** — Refactor `ModelBuilder::build()` (884 lines → extracted helpers)
-- [ ] **T18** — Refactor `process_actuator()` (545 lines → per-type handlers)
-- [ ] **T19** — Refactor `process_flex_bodies()` (454 lines → split mesh/body/integration)
-- [ ] **T20** — Refactor `ModelBuilder::new()` (309 lines → extract size computation)
-- [ ] **T21** — Refactor `validate_tendons()` (286 lines → per-constraint helpers)
-- [ ] **T22** — Refactor `process_body_with_world_frame()` (221 lines → split frame/body)
-- [ ] **T23** — Refactor `process_geom()` (208 lines → extract inertia logic)
+- [x] **T17** — Refactor `ModelBuilder::build()` (884 lines → extracted helpers)
+- [x] **T18** — Refactor `process_actuator()` (545 lines → per-type handlers)
+- [x] **T19** — Refactor `process_flex_bodies()` (454 lines → split mesh/body/integration)
+- [x] **T20** — Refactor `ModelBuilder::new()` (309 lines → extract size computation)
+- [x] **T21** — Refactor `validate_tendons()` (286 lines → per-constraint helpers)
+- [x] **T22** — Refactor `process_body_with_world_frame()` (221 lines → split frame/body)
+- [x] **T23** — Refactor `process_geom()` (208 lines → extract inertia logic)
 
 ### B6 — sim-core file splits, part 1 (T24–T27)
 **Checkpoint**: `cargo test -p sim-core -p sim-conformance-tests`

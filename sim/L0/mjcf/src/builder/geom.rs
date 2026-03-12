@@ -20,19 +20,7 @@ impl ModelBuilder {
         body_id: usize,
     ) -> std::result::Result<usize, ModelConversionError> {
         let geom_id = self.geom_type.len();
-
-        // Convert geom type (MuJoCo defaults to Sphere when unspecified)
-        let geom_type = match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
-            MjcfGeomType::Sphere => GeomType::Sphere,
-            MjcfGeomType::Box => GeomType::Box,
-            MjcfGeomType::Capsule => GeomType::Capsule,
-            MjcfGeomType::Cylinder => GeomType::Cylinder,
-            MjcfGeomType::Ellipsoid => GeomType::Ellipsoid,
-            MjcfGeomType::Plane => GeomType::Plane,
-            MjcfGeomType::Mesh | MjcfGeomType::TriangleMesh => GeomType::Mesh,
-            MjcfGeomType::Hfield => GeomType::Hfield,
-            MjcfGeomType::Sdf => GeomType::Sdf,
-        };
+        let geom_type = convert_geom_type(geom.geom_type);
 
         // Reject shellinertia on mesh geoms (MuJoCo 3.5.0 behavior)
         if geom.shellinertia == Some(true) && geom_type == GeomType::Mesh {
@@ -44,62 +32,7 @@ impl ModelBuilder {
             });
         }
 
-        // Handle mesh geom linking
-        let geom_mesh_ref = if geom_type == GeomType::Mesh {
-            match &geom.mesh {
-                Some(mesh_name) => {
-                    let mesh_id = self.mesh_name_to_id.get(mesh_name).ok_or_else(|| {
-                        ModelConversionError {
-                            message: format!(
-                                "geom '{}': references undefined mesh '{}'",
-                                geom.name.as_deref().unwrap_or("<unnamed>"),
-                                mesh_name
-                            ),
-                        }
-                    })?;
-                    Some(*mesh_id)
-                }
-                None => {
-                    return Err(ModelConversionError {
-                        message: format!(
-                            "geom '{}': type is mesh but no mesh attribute specified",
-                            geom.name.as_deref().unwrap_or("<unnamed>")
-                        ),
-                    });
-                }
-            }
-        } else {
-            None
-        };
-
-        // Handle hfield geom linking
-        let geom_hfield_ref = if geom_type == GeomType::Hfield {
-            match &geom.hfield {
-                Some(name) => {
-                    let hfield_id =
-                        self.hfield_name_to_id
-                            .get(name)
-                            .ok_or_else(|| ModelConversionError {
-                                message: format!(
-                                    "geom '{}': references undefined hfield '{}'",
-                                    geom.name.as_deref().unwrap_or("<unnamed>"),
-                                    name
-                                ),
-                            })?;
-                    Some(*hfield_id)
-                }
-                None => {
-                    return Err(ModelConversionError {
-                        message: format!(
-                            "geom '{}': type is hfield but no hfield attribute specified",
-                            geom.name.as_deref().unwrap_or("<unnamed>")
-                        ),
-                    });
-                }
-            }
-        } else {
-            None
-        };
+        let (geom_mesh_ref, geom_hfield_ref) = self.resolve_geom_asset_links(geom, geom_type)?;
 
         // Handle fromto for capsules/cylinders
         let (pos, quat, size) = if let Some(fromto) = geom.fromto {
@@ -139,47 +72,8 @@ impl ModelBuilder {
         self.geom_friction
             .push(geom.friction.unwrap_or(Vector3::new(1.0, 0.005, 0.0001)));
 
-        // Validate and clamp condim to valid values {1, 3, 4, 6}
-        // Invalid values are rounded up to the next valid value per MuJoCo convention
-        let condim = match geom.condim.unwrap_or(3) {
-            1 => 1,
-            2 => {
-                tracing::warn!(
-                    "Geom {:?} has invalid condim=2, rounding up to 3",
-                    geom.name
-                );
-                3
-            }
-            3 => 3,
-            4 => 4,
-            5 => {
-                tracing::warn!(
-                    "Geom {:?} has invalid condim=5, rounding up to 6",
-                    geom.name
-                );
-                6
-            }
-            c if c >= 6 => {
-                if c > 6 {
-                    tracing::warn!(
-                        "Geom {:?} has invalid condim={}, clamping to 6",
-                        geom.name,
-                        c
-                    );
-                }
-                6
-            }
-            c => {
-                // condim <= 0
-                tracing::warn!(
-                    "Geom {:?} has invalid condim={}, defaulting to 3",
-                    geom.name,
-                    c
-                );
-                3
-            }
-        };
-        self.geom_condim.push(condim);
+        self.geom_condim
+            .push(validate_condim(geom.condim, geom.name.as_ref()));
         #[allow(clippy::cast_sign_loss)]
         {
             self.geom_contype.push(geom.contype.unwrap_or(1) as u32);
@@ -288,6 +182,128 @@ impl ModelBuilder {
         self.site_user_raw.push(site.user.clone());
 
         Ok(site_id)
+    }
+
+    /// Resolve mesh and hfield asset references for a geom.
+    fn resolve_geom_asset_links(
+        &self,
+        geom: &MjcfGeom,
+        geom_type: GeomType,
+    ) -> std::result::Result<(Option<usize>, Option<usize>), ModelConversionError> {
+        let geom_mesh_ref = if geom_type == GeomType::Mesh {
+            match &geom.mesh {
+                Some(mesh_name) => {
+                    let mesh_id = self.mesh_name_to_id.get(mesh_name).ok_or_else(|| {
+                        ModelConversionError {
+                            message: format!(
+                                "geom '{}': references undefined mesh '{}'",
+                                geom.name.as_deref().unwrap_or("<unnamed>"),
+                                mesh_name
+                            ),
+                        }
+                    })?;
+                    Some(*mesh_id)
+                }
+                None => {
+                    return Err(ModelConversionError {
+                        message: format!(
+                            "geom '{}': type is mesh but no mesh attribute specified",
+                            geom.name.as_deref().unwrap_or("<unnamed>")
+                        ),
+                    });
+                }
+            }
+        } else {
+            None
+        };
+
+        let geom_hfield_ref = if geom_type == GeomType::Hfield {
+            match &geom.hfield {
+                Some(name) => {
+                    let hfield_id =
+                        self.hfield_name_to_id
+                            .get(name)
+                            .ok_or_else(|| ModelConversionError {
+                                message: format!(
+                                    "geom '{}': references undefined hfield '{}'",
+                                    geom.name.as_deref().unwrap_or("<unnamed>"),
+                                    name
+                                ),
+                            })?;
+                    Some(*hfield_id)
+                }
+                None => {
+                    return Err(ModelConversionError {
+                        message: format!(
+                            "geom '{}': type is hfield but no hfield attribute specified",
+                            geom.name.as_deref().unwrap_or("<unnamed>")
+                        ),
+                    });
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok((geom_mesh_ref, geom_hfield_ref))
+    }
+}
+
+/// Convert MJCF geom type to Model geom type (defaults to Sphere when unspecified).
+fn convert_geom_type(geom_type: Option<MjcfGeomType>) -> GeomType {
+    match geom_type.unwrap_or(MjcfGeomType::Sphere) {
+        MjcfGeomType::Sphere => GeomType::Sphere,
+        MjcfGeomType::Box => GeomType::Box,
+        MjcfGeomType::Capsule => GeomType::Capsule,
+        MjcfGeomType::Cylinder => GeomType::Cylinder,
+        MjcfGeomType::Ellipsoid => GeomType::Ellipsoid,
+        MjcfGeomType::Plane => GeomType::Plane,
+        MjcfGeomType::Mesh | MjcfGeomType::TriangleMesh => GeomType::Mesh,
+        MjcfGeomType::Hfield => GeomType::Hfield,
+        MjcfGeomType::Sdf => GeomType::Sdf,
+    }
+}
+
+/// Validate and clamp condim to valid values {1, 3, 4, 6}.
+///
+/// Invalid values are rounded up to the next valid value per MuJoCo convention.
+fn validate_condim(condim: Option<i32>, geom_name: Option<&String>) -> i32 {
+    match condim.unwrap_or(3) {
+        1 => 1,
+        2 => {
+            tracing::warn!(
+                "Geom {:?} has invalid condim=2, rounding up to 3",
+                geom_name
+            );
+            3
+        }
+        3 => 3,
+        4 => 4,
+        5 => {
+            tracing::warn!(
+                "Geom {:?} has invalid condim=5, rounding up to 6",
+                geom_name
+            );
+            6
+        }
+        c if c >= 6 => {
+            if c > 6 {
+                tracing::warn!(
+                    "Geom {:?} has invalid condim={}, clamping to 6",
+                    geom_name,
+                    c
+                );
+            }
+            6
+        }
+        c => {
+            tracing::warn!(
+                "Geom {:?} has invalid condim={}, defaulting to 3",
+                geom_name,
+                c
+            );
+            3
+        }
     }
 }
 

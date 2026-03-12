@@ -5,7 +5,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{MjcfError, Result};
-use crate::types::{MjcfBody, MjcfModel, MjcfOption, MjcfTendonType};
+use crate::types::{
+    MjcfBody, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType, SpatialPathElement,
+};
 
 /// Validation result containing the flattened body tree structure.
 #[derive(Debug)]
@@ -393,253 +395,269 @@ pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
     );
 
     for tendon in &model.tendons {
-        // Fixed tendons must reference existing joints with valid coefficients
         if tendon.tendon_type == MjcfTendonType::Fixed {
-            if tendon.joints.is_empty() {
-                return Err(MjcfError::invalid_option(
-                    "tendon",
-                    format!("Fixed tendon '{}' has no joint entries", tendon.name),
-                ));
-            }
-            for (joint_name, coef) in &tendon.joints {
-                if !joint_names.contains(joint_name.as_str()) {
-                    return Err(MjcfError::invalid_option(
-                        "tendon",
-                        format!(
-                            "Tendon '{}' references unknown joint '{}'",
-                            tendon.name, joint_name
-                        ),
-                    ));
-                }
-                if !coef.is_finite() {
-                    return Err(MjcfError::invalid_option(
-                        "tendon",
-                        format!(
-                            "Tendon '{}' has non-finite coefficient {} for joint '{}'",
-                            tendon.name, coef, joint_name
-                        ),
-                    ));
-                }
-            }
+            validate_fixed_tendon(tendon, &joint_names)?;
         }
-
-        // Spatial tendons: validate path_elements ordering, name resolution, and constraints
         if tendon.tendon_type == MjcfTendonType::Spatial {
-            use crate::types::SpatialPathElement;
+            validate_spatial_tendon(tendon, &site_names, &geom_names)?;
+        }
+        validate_tendon_params(tendon)?;
+    }
+    Ok(())
+}
 
-            let site_count = tendon
-                .path_elements
-                .iter()
-                .filter(|e| matches!(e, SpatialPathElement::Site { .. }))
-                .count();
+/// Validate a fixed tendon: joints must exist and coefficients must be finite.
+fn validate_fixed_tendon(tendon: &MjcfTendon, joint_names: &HashSet<String>) -> Result<()> {
+    if tendon.joints.is_empty() {
+        return Err(MjcfError::invalid_option(
+            "tendon",
+            format!("Fixed tendon '{}' has no joint entries", tendon.name),
+        ));
+    }
+    for (joint_name, coef) in &tendon.joints {
+        if !joint_names.contains(joint_name.as_str()) {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!(
+                    "Tendon '{}' references unknown joint '{}'",
+                    tendon.name, joint_name
+                ),
+            ));
+        }
+        if !coef.is_finite() {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!(
+                    "Tendon '{}' has non-finite coefficient {} for joint '{}'",
+                    tendon.name, coef, joint_name
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
 
-            // Rule 3: must have at least 2 sites
-            if site_count < 2 {
-                return Err(MjcfError::invalid_option(
-                    "tendon",
-                    format!(
-                        "Spatial tendon '{}' needs at least 2 sites, has {}",
-                        tendon.name, site_count
-                    ),
-                ));
-            }
+/// Validate a spatial tendon: path structure, adjacency rules, and name resolution.
+fn validate_spatial_tendon(
+    tendon: &MjcfTendon,
+    site_names: &HashSet<String>,
+    geom_names: &HashSet<String>,
+) -> Result<()> {
+    let site_count = tendon
+        .path_elements
+        .iter()
+        .filter(|e| matches!(e, SpatialPathElement::Site { .. }))
+        .count();
 
-            // Rule 1: path must start and end with a Site
-            if let Some(first) = tendon.path_elements.first() {
-                if !matches!(first, SpatialPathElement::Site { .. }) {
+    // Rule 3: must have at least 2 sites
+    if site_count < 2 {
+        return Err(MjcfError::invalid_option(
+            "tendon",
+            format!(
+                "Spatial tendon '{}' needs at least 2 sites, has {}",
+                tendon.name, site_count
+            ),
+        ));
+    }
+
+    // Rule 1: path must start and end with a Site
+    if let Some(first) = tendon.path_elements.first() {
+        if !matches!(first, SpatialPathElement::Site { .. }) {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!(
+                    "Spatial tendon '{}' path must start with a Site element",
+                    tendon.name
+                ),
+            ));
+        }
+    }
+    if let Some(last) = tendon.path_elements.last() {
+        if !matches!(last, SpatialPathElement::Site { .. }) {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!(
+                    "Spatial tendon '{}' path must end with a Site element",
+                    tendon.name
+                ),
+            ));
+        }
+    }
+
+    // Rules 2, 6: validate element adjacency
+    for (i, elem) in tendon.path_elements.iter().enumerate() {
+        match elem {
+            SpatialPathElement::Geom { .. } => {
+                // Rule 2: every Geom must be immediately followed by a Site
+                let next = tendon.path_elements.get(i + 1);
+                if !matches!(next, Some(SpatialPathElement::Site { .. })) {
                     return Err(MjcfError::invalid_option(
                         "tendon",
                         format!(
-                            "Spatial tendon '{}' path must start with a Site element",
-                            tendon.name
+                            "Spatial tendon '{}': Geom element at position {} \
+                             must be immediately followed by a Site element",
+                            tendon.name, i
                         ),
                     ));
                 }
             }
-            if let Some(last) = tendon.path_elements.last() {
-                if !matches!(last, SpatialPathElement::Site { .. }) {
+            SpatialPathElement::Pulley { divisor } => {
+                // Rule 7: divisor must be positive
+                if *divisor <= 0.0 {
                     return Err(MjcfError::invalid_option(
                         "tendon",
                         format!(
-                            "Spatial tendon '{}' path must end with a Site element",
-                            tendon.name
+                            "Spatial tendon '{}': Pulley at position {} \
+                             has non-positive divisor {}",
+                            tendon.name, i, divisor
+                        ),
+                    ));
+                }
+                // Rule 6: Pulley must not be immediately followed by a Geom
+                let next = tendon.path_elements.get(i + 1);
+                if matches!(next, Some(SpatialPathElement::Geom { .. })) {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Spatial tendon '{}': Pulley at position {} \
+                             must not be immediately followed by a Geom element",
+                            tendon.name, i
                         ),
                     ));
                 }
             }
+            SpatialPathElement::Site { .. } => {}
+        }
+    }
 
-            // Rules 2, 6: validate element adjacency
-            for (i, elem) in tendon.path_elements.iter().enumerate() {
-                match elem {
-                    SpatialPathElement::Geom { .. } => {
-                        // Rule 2: every Geom must be immediately followed by a Site
-                        let next = tendon.path_elements.get(i + 1);
-                        if !matches!(next, Some(SpatialPathElement::Site { .. })) {
-                            return Err(MjcfError::invalid_option(
-                                "tendon",
-                                format!(
-                                    "Spatial tendon '{}': Geom element at position {} \
-                                     must be immediately followed by a Site element",
-                                    tendon.name, i
-                                ),
-                            ));
-                        }
-                    }
-                    SpatialPathElement::Pulley { divisor } => {
-                        // Rule 7: divisor must be positive
-                        if *divisor <= 0.0 {
-                            return Err(MjcfError::invalid_option(
-                                "tendon",
-                                format!(
-                                    "Spatial tendon '{}': Pulley at position {} \
-                                     has non-positive divisor {}",
-                                    tendon.name, i, divisor
-                                ),
-                            ));
-                        }
-                        // Rule 6: Pulley must not be immediately followed by a Geom
-                        let next = tendon.path_elements.get(i + 1);
-                        if matches!(next, Some(SpatialPathElement::Geom { .. })) {
-                            return Err(MjcfError::invalid_option(
-                                "tendon",
-                                format!(
-                                    "Spatial tendon '{}': Pulley at position {} \
-                                     must not be immediately followed by a Geom element",
-                                    tendon.name, i
-                                ),
-                            ));
-                        }
-                    }
-                    SpatialPathElement::Site { .. } => {}
-                }
-            }
-
-            // Rule 8: each pulley-delimited branch must contain at least 2 sites (warning)
-            {
-                let mut branch_start = 0;
-                let mut branch_idx = 0usize;
-                for (i, elem) in tendon.path_elements.iter().enumerate() {
-                    if matches!(elem, SpatialPathElement::Pulley { .. }) {
-                        let branch_sites = tendon.path_elements[branch_start..i]
-                            .iter()
-                            .filter(|e| matches!(e, SpatialPathElement::Site { .. }))
-                            .count();
-                        if branch_sites < 2 {
-                            tracing::warn!(
-                                "Spatial tendon '{}': branch {} (elements {}..{}) \
-                                 has fewer than 2 sites",
-                                tendon.name,
-                                branch_idx,
-                                branch_start,
-                                i
-                            );
-                        }
-                        branch_start = i + 1;
-                        branch_idx += 1;
-                    }
-                }
-                // Final branch (after last pulley or entire path if no pulleys)
-                let branch_sites = tendon.path_elements[branch_start..]
+    // Rule 8: each pulley-delimited branch must contain at least 2 sites (warning)
+    {
+        let mut branch_start = 0;
+        let mut branch_idx = 0usize;
+        for (i, elem) in tendon.path_elements.iter().enumerate() {
+            if matches!(elem, SpatialPathElement::Pulley { .. }) {
+                let branch_sites = tendon.path_elements[branch_start..i]
                     .iter()
                     .filter(|e| matches!(e, SpatialPathElement::Site { .. }))
                     .count();
                 if branch_sites < 2 {
                     tracing::warn!(
-                        "Spatial tendon '{}': branch {} (elements {}..) \
+                        "Spatial tendon '{}': branch {} (elements {}..{}) \
                          has fewer than 2 sites",
                         tendon.name,
                         branch_idx,
-                        branch_start
+                        branch_start,
+                        i
                     );
                 }
-            }
-
-            // Rule 4: all referenced names must resolve
-            for elem in &tendon.path_elements {
-                match elem {
-                    SpatialPathElement::Site { site } => {
-                        if !site_names.contains(site.as_str()) {
-                            return Err(MjcfError::invalid_option(
-                                "tendon",
-                                format!(
-                                    "Tendon '{}' references unknown site '{}'",
-                                    tendon.name, site
-                                ),
-                            ));
-                        }
-                    }
-                    SpatialPathElement::Geom { geom, sidesite } => {
-                        if !geom_names.contains(geom.as_str()) {
-                            return Err(MjcfError::invalid_option(
-                                "tendon",
-                                format!(
-                                    "Tendon '{}' references unknown geom '{}'",
-                                    tendon.name, geom
-                                ),
-                            ));
-                        }
-                        if let Some(ss) = sidesite {
-                            if !site_names.contains(ss.as_str()) {
-                                return Err(MjcfError::invalid_option(
-                                    "tendon",
-                                    format!(
-                                        "Tendon '{}' references unknown sidesite '{}'",
-                                        tendon.name, ss
-                                    ),
-                                ));
-                            }
-                        }
-                    }
-                    SpatialPathElement::Pulley { .. } => {}
-                }
+                branch_start = i + 1;
+                branch_idx += 1;
             }
         }
+        // Final branch (after last pulley or entire path if no pulleys)
+        let branch_sites = tendon.path_elements[branch_start..]
+            .iter()
+            .filter(|e| matches!(e, SpatialPathElement::Site { .. }))
+            .count();
+        if branch_sites < 2 {
+            tracing::warn!(
+                "Spatial tendon '{}': branch {} (elements {}..) \
+                 has fewer than 2 sites",
+                tendon.name,
+                branch_idx,
+                branch_start
+            );
+        }
+    }
 
-        // Parameter validation
-        let stiffness = tendon.stiffness.unwrap_or(0.0);
-        if stiffness < 0.0 {
-            return Err(MjcfError::invalid_option(
-                "tendon",
-                format!(
-                    "Tendon '{}' has negative stiffness {stiffness}",
-                    tendon.name
-                ),
-            ));
-        }
-        let damping = tendon.damping.unwrap_or(0.0);
-        if damping < 0.0 {
-            return Err(MjcfError::invalid_option(
-                "tendon",
-                format!("Tendon '{}' has negative damping {damping}", tendon.name),
-            ));
-        }
-        let frictionloss = tendon.frictionloss.unwrap_or(0.0);
-        if frictionloss < 0.0 {
-            return Err(MjcfError::invalid_option(
-                "tendon",
-                format!(
-                    "Tendon '{}' has negative frictionloss {frictionloss}",
-                    tendon.name
-                ),
-            ));
-        }
-        if tendon.limited.unwrap_or(false) {
-            if let Some((min, max)) = tendon.range {
-                if min >= max {
+    // Rule 4: all referenced names must resolve
+    for elem in &tendon.path_elements {
+        match elem {
+            SpatialPathElement::Site { site } => {
+                if !site_names.contains(site.as_str()) {
                     return Err(MjcfError::invalid_option(
                         "tendon",
                         format!(
-                            "Tendon '{}' has invalid range [{}, {}]",
-                            tendon.name, min, max
+                            "Tendon '{}' references unknown site '{}'",
+                            tendon.name, site
                         ),
                     ));
                 }
-            } else {
+            }
+            SpatialPathElement::Geom { geom, sidesite } => {
+                if !geom_names.contains(geom.as_str()) {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' references unknown geom '{}'",
+                            tendon.name, geom
+                        ),
+                    ));
+                }
+                if let Some(ss) = sidesite {
+                    if !site_names.contains(ss.as_str()) {
+                        return Err(MjcfError::invalid_option(
+                            "tendon",
+                            format!(
+                                "Tendon '{}' references unknown sidesite '{}'",
+                                tendon.name, ss
+                            ),
+                        ));
+                    }
+                }
+            }
+            SpatialPathElement::Pulley { .. } => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate tendon physical parameters: stiffness, damping, frictionloss, range.
+fn validate_tendon_params(tendon: &MjcfTendon) -> Result<()> {
+    let stiffness = tendon.stiffness.unwrap_or(0.0);
+    if stiffness < 0.0 {
+        return Err(MjcfError::invalid_option(
+            "tendon",
+            format!(
+                "Tendon '{}' has negative stiffness {stiffness}",
+                tendon.name
+            ),
+        ));
+    }
+    let damping = tendon.damping.unwrap_or(0.0);
+    if damping < 0.0 {
+        return Err(MjcfError::invalid_option(
+            "tendon",
+            format!("Tendon '{}' has negative damping {damping}", tendon.name),
+        ));
+    }
+    let frictionloss = tendon.frictionloss.unwrap_or(0.0);
+    if frictionloss < 0.0 {
+        return Err(MjcfError::invalid_option(
+            "tendon",
+            format!(
+                "Tendon '{}' has negative frictionloss {frictionloss}",
+                tendon.name
+            ),
+        ));
+    }
+    if tendon.limited.unwrap_or(false) {
+        if let Some((min, max)) = tendon.range {
+            if min >= max {
                 return Err(MjcfError::invalid_option(
                     "tendon",
-                    format!("Tendon '{}' is limited but has no range", tendon.name),
+                    format!(
+                        "Tendon '{}' has invalid range [{}, {}]",
+                        tendon.name, min, max
+                    ),
                 ));
             }
+        } else {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!("Tendon '{}' is limited but has no range", tendon.name),
+            ));
         }
     }
     Ok(())

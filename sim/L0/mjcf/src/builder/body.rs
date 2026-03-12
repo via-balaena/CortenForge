@@ -172,43 +172,7 @@ impl ModelBuilder {
             })
             .collect();
 
-        // Process inertial properties with full MuJoCo semantics.
-        // Gated by compiler.inertiafromgeom:
-        //   True  — always compute from geoms (overrides explicit <inertial>)
-        //   Auto  — compute from geoms only when no explicit <inertial>
-        //   False — use explicit <inertial> or zero
-        let (mass, inertia, ipos, iquat) = match self.compiler.inertiafromgeom {
-            InertiaFromGeom::True => compute_inertia_from_geoms(
-                &resolved_geoms,
-                &self.mesh_name_to_id,
-                &self.mesh_data,
-                &self.mesh_inertia_modes,
-            ),
-            InertiaFromGeom::Auto => {
-                if let Some(ref inertial) = body.inertial {
-                    extract_inertial_properties(inertial)
-                } else {
-                    compute_inertia_from_geoms(
-                        &resolved_geoms,
-                        &self.mesh_name_to_id,
-                        &self.mesh_data,
-                        &self.mesh_inertia_modes,
-                    )
-                }
-            }
-            InertiaFromGeom::False => {
-                if let Some(ref inertial) = body.inertial {
-                    extract_inertial_properties(inertial)
-                } else {
-                    (
-                        0.0,
-                        Vector3::zeros(),
-                        Vector3::zeros(),
-                        UnitQuaternion::identity(),
-                    )
-                }
-            }
-        };
+        let (mass, inertia, ipos, iquat) = self.resolve_body_inertia(body, &resolved_geoms);
 
         // Track joint/DOF addresses for this body
         let jnt_adr = self.jnt_type.len();
@@ -312,6 +276,51 @@ impl ModelBuilder {
         }
 
         Ok(body_id)
+    }
+
+    /// Resolve inertial properties with full MuJoCo semantics.
+    ///
+    /// Dispatches based on `compiler.inertiafromgeom`:
+    /// - `True`  — always compute from geoms (overrides explicit `<inertial>`)
+    /// - `Auto`  — compute from geoms only when no explicit `<inertial>`
+    /// - `False` — use explicit `<inertial>` or zero
+    fn resolve_body_inertia(
+        &self,
+        body: &MjcfBody,
+        resolved_geoms: &[MjcfGeom],
+    ) -> (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>) {
+        match self.compiler.inertiafromgeom {
+            InertiaFromGeom::True => compute_inertia_from_geoms(
+                resolved_geoms,
+                &self.mesh_name_to_id,
+                &self.mesh_data,
+                &self.mesh_inertia_modes,
+            ),
+            InertiaFromGeom::Auto => {
+                if let Some(ref inertial) = body.inertial {
+                    extract_inertial_properties(inertial)
+                } else {
+                    compute_inertia_from_geoms(
+                        resolved_geoms,
+                        &self.mesh_name_to_id,
+                        &self.mesh_data,
+                        &self.mesh_inertia_modes,
+                    )
+                }
+            }
+            InertiaFromGeom::False => {
+                if let Some(ref inertial) = body.inertial {
+                    extract_inertial_properties(inertial)
+                } else {
+                    (
+                        0.0,
+                        Vector3::zeros(),
+                        Vector3::zeros(),
+                        UnitQuaternion::identity(),
+                    )
+                }
+            }
+        }
     }
 }
 
