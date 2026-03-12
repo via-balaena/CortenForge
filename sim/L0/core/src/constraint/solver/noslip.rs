@@ -3,8 +3,6 @@
 //! Runs a modified PGS pass on friction force rows only, without
 //! regularization, using the current normal forces as fixed cone limits.
 //! This matches MuJoCo's `mj_solNoSlip`.
-//!
-//! Also contains the elliptic cone projector used by both PGS and noslip.
 
 use nalgebra::{DMatrix, DVector};
 
@@ -12,53 +10,6 @@ use crate::constraint::impedance::MJ_MINVAL;
 use crate::constraint::solver::qcqp;
 use crate::linalg::mj_solve_sparse;
 use crate::types::{ConstraintType, Data, Model};
-
-/// Project contact forces onto the elliptic friction cone (§32.4).
-///
-/// Enforces the dual cone constraint: normal force ≥ 0 and weighted friction
-/// norm ≤ normal force.
-///
-/// Cone shape: ||(λ₁/μ₁, λ₂/μ₂, ...)|| ≤ λ_n
-///
-/// Note: PGS now uses two-phase ray+QCQP projection (Spec B). This function
-/// is retained for potential future use but is currently unused.
-#[allow(dead_code)]
-pub fn project_elliptic_cone(lambda: &mut [f64], mu: &[f64; 5], dim: usize) {
-    // Step 1: Enforce unilateral constraint (normal force must be non-negative)
-    // Negative normal force = separating contact = release completely
-    if lambda[0] < 0.0 {
-        for l in lambda.iter_mut().take(dim) {
-            *l = 0.0;
-        }
-        return;
-    }
-
-    // Step 2: Clamp friction components where mu ≈ 0 (infinite resistance = no sliding)
-    for i in 1..dim {
-        if mu[i - 1] <= 1e-12 {
-            lambda[i] = 0.0;
-        }
-    }
-
-    // Step 3: Compute weighted friction norm (elliptic cone radius)
-    // s = sqrt( Σ (λ_i / μ_i)² ) for i = 1..dim-1
-    let mut s_sq = 0.0;
-    for i in 1..dim {
-        if mu[i - 1] > 1e-12 {
-            s_sq += (lambda[i] / mu[i - 1]).powi(2);
-        }
-    }
-    let s = s_sq.sqrt();
-
-    // Step 4: If friction exceeds cone boundary, scale to boundary
-    // Cone constraint: s ≤ λ_n, i.e., ||(λ_i/μ_i)|| ≤ λ_n
-    if s > lambda[0] && s > 1e-10 {
-        let scale = lambda[0] / s;
-        for l in lambda.iter_mut().take(dim).skip(1) {
-            *l *= scale;
-        }
-    }
-}
 
 /// Tag for each noslip row, used to select the correct projection.
 #[derive(Clone, Copy)]
