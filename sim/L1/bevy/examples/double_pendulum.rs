@@ -87,7 +87,7 @@ fn setup_physics_and_scene(
     let mut model = Model::double_pendulum(LINK_LENGTH, LINK_MASS);
     model.enableflags |= ENABLE_ENERGY;
 
-    // Implicit integrator for stability (Euler has ~75% energy drift)
+    // RK4 for better energy conservation on chaotic systems
     model.integrator = Integrator::RungeKutta4;
 
     let mut data = model.make_data();

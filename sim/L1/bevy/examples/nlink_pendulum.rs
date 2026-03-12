@@ -37,11 +37,11 @@ use std::f64::consts::PI;
 // ============================================================================
 
 /// Number of links in the pendulum chain.
-const N_LINKS: usize = 5;
+const N_LINKS: usize = 3;
 /// Link length in meters.
-const LINK_LENGTH: f64 = 0.4;
+const LINK_LENGTH: f64 = 0.5;
 /// Link mass in kg.
-const LINK_MASS: f64 = 1.0;
+const LINK_MASS: f64 = 0.5;
 /// Bob visual radius.
 const BOB_RADIUS: f32 = 0.06;
 
@@ -80,15 +80,21 @@ fn setup_physics_and_scene(
     let mut model = Model::n_link_pendulum(N_LINKS, LINK_LENGTH, LINK_MASS);
     model.enableflags |= ENABLE_ENERGY;
 
-    // RK4 + smaller timestep for stability on long chains
+    // RK4 + minimal damping for long-term stability on multi-link chains.
+    // Without damping, RK4 energy drift eventually causes runaway (~16s).
     model.integrator = Integrator::RungeKutta4;
-    model.timestep = 1.0 / 480.0;
+    for d in model.jnt_damping.iter_mut() {
+        *d = 0.03;
+    }
+    for d in model.dof_damping.iter_mut() {
+        *d = 0.03;
+    }
 
     let mut data = model.make_data();
 
-    // Set initial angles - moderate for interesting but stable motion
+    // Set initial angles - moderate for stable but interesting motion
     for i in 0..N_LINKS {
-        data.qpos[i] = PI / 4.0 - (i as f64) * PI / 20.0;
+        data.qpos[i] = PI / 4.0 * (-1.0_f64).powi(i as i32);
     }
 
     // Compute initial body poses via forward kinematics

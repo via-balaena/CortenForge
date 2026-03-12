@@ -84,8 +84,13 @@ impl Model {
             model.body_ipos.push(Vector3::new(0.0, 0.0, -link_length)); // COM at end of link
             model.body_iquat.push(UnitQuaternion::identity());
             model.body_mass.push(link_mass);
-            // Point mass approximation (small moment of inertia)
-            model.body_inertia.push(Vector3::new(0.001, 0.001, 0.001));
+            // Thin rod inertia about COM: I_xx = I_yy = m*L²/12, I_zz ≈ small
+            // (rod along Z-axis, COM at end of link via body_ipos offset)
+            let i_transverse = link_mass * link_length * link_length / 12.0;
+            let i_axial = 0.01 * i_transverse; // Thin rod approximation
+            model
+                .body_inertia
+                .push(Vector3::new(i_transverse, i_transverse, i_axial));
             model.body_name.push(Some(format!("link_{i}")));
             model.body_subtreemass.push(0.0); // Will be computed after model is built
             model.body_mocapid.push(None);
@@ -188,7 +193,12 @@ impl Model {
         model.body_ipos.push(Vector3::new(0.0, 0.0, -length)); // COM at end of pendulum
         model.body_iquat.push(UnitQuaternion::identity());
         model.body_mass.push(mass);
-        model.body_inertia.push(Vector3::new(0.001, 0.001, 0.001));
+        // Thin rod inertia about COM
+        let i_transverse = mass * length * length / 12.0;
+        let i_axial = 0.01 * i_transverse;
+        model
+            .body_inertia
+            .push(Vector3::new(i_transverse, i_transverse, i_axial));
         model.body_name.push(Some("bob".to_string()));
         model.body_subtreemass.push(0.0); // Will be computed after model is built
         model.body_mocapid.push(None);

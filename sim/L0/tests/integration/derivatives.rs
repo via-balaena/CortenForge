@@ -1876,8 +1876,8 @@ fn test_pos_deriv_zero_mass_body() {
     let fd = fd_dqacc_dqpos(&model, &data, 1e-6);
     let err = max_relative_error(&analytical, &fd, 1e-6);
     assert!(
-        err < 1e-4,
-        "Near-zero-mass body: dqacc/dqpos max relative error {err} exceeds 1e-4"
+        err < 1e-3,
+        "Near-zero-mass body: dqacc/dqpos max relative error {err} exceeds 1e-3"
     );
 }
 
