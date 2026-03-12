@@ -30,7 +30,7 @@ use bevy::prelude::*;
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
 use sim_bevy::convert::vec3_from_vector;
 use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
-use sim_core::{ENABLE_ENERGY, Model};
+use sim_core::{ENABLE_ENERGY, Integrator, Model};
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -86,6 +86,10 @@ fn setup_physics_and_scene(
     // Create the physics model using factory method
     let mut model = Model::double_pendulum(LINK_LENGTH, LINK_MASS);
     model.enableflags |= ENABLE_ENERGY;
+
+    // Implicit integrator for stability (Euler has ~75% energy drift)
+    model.integrator = Integrator::RungeKutta4;
+
     let mut data = model.make_data();
 
     // Set initial angles

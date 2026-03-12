@@ -29,7 +29,7 @@ use bevy::prelude::*;
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
 use sim_bevy::convert::vec3_from_vector;
 use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
-use sim_core::{ENABLE_ENERGY, Model};
+use sim_core::{ENABLE_ENERGY, Integrator, Model};
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -79,11 +79,16 @@ fn setup_physics_and_scene(
     // Create the physics model using factory method
     let mut model = Model::n_link_pendulum(N_LINKS, LINK_LENGTH, LINK_MASS);
     model.enableflags |= ENABLE_ENERGY;
+
+    // RK4 + smaller timestep for stability on long chains
+    model.integrator = Integrator::RungeKutta4;
+    model.timestep = 1.0 / 480.0;
+
     let mut data = model.make_data();
 
-    // Set initial angles - varied for interesting motion
+    // Set initial angles - moderate for interesting but stable motion
     for i in 0..N_LINKS {
-        data.qpos[i] = PI / 3.0 - (i as f64) * PI / 20.0;
+        data.qpos[i] = PI / 4.0 - (i as f64) * PI / 20.0;
     }
 
     // Compute initial body poses via forward kinematics
