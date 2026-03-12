@@ -54,10 +54,10 @@ Replace `<N>` with the batch number (e.g., `B1`, `B5`, `B9`).
 
 ### B3 — `#[allow]` audit (T12–T15)
 **Checkpoint**: `cargo test -p sim-core -p sim-mjcf -p sim-gpu -p sim-conformance-tests` + `cargo clippy -p sim-core -p sim-mjcf -- -D warnings`
-- [ ] **T12** — Audit all `#[allow(dead_code)]` / `#[allow(unused_*)]` in sim-core (~20 annotations)
-- [ ] **T13** — Audit all `#[allow(dead_code)]` / `#[allow(unused_*)]` in sim-mjcf (~5 annotations)
-- [ ] **T14** — Audit all `#[allow(dead_code)]` in sim-gpu (2 annotations)
-- [ ] **T15** — Audit conformance test helpers in common.rs (23 annotations)
+- [x] **T12** — Audit all `#[allow(dead_code)]` / `#[allow(unused_*)]` in sim-core (~20 annotations)
+- [x] **T13** — Audit all `#[allow(dead_code)]` / `#[allow(unused_*)]` in sim-mjcf (~5 annotations)
+- [x] **T14** — Audit all `#[allow(dead_code)]` in sim-gpu (2 annotations)
+- [x] **T15** — Audit conformance test helpers in common.rs (23 annotations)
 
 ### B4 — Housekeeping: TODOs, workspace, feature flag (T16, T37–T40)
 **Checkpoint**: `cargo build` + `cargo test -p sim-mjcf --features mjb`

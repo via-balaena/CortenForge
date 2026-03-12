@@ -45,11 +45,13 @@ pub struct GpuBatchSim {
     /// Compiled integration compute pipeline.
     integrate_pipeline: wgpu::ComputePipeline,
     /// Bind group layout for the integration shader.
+    /// Retained for wgpu ownership: bind groups borrow from their layout.
     #[allow(dead_code)]
     integrate_bind_group_layout: wgpu::BindGroupLayout,
     /// Bind group binding params, qvel, and qacc to the integration shader.
     integrate_bind_group: wgpu::BindGroup,
     /// Uniform buffer for shader parameters.
+    /// Retained for wgpu ownership: bind group references this buffer.
     #[allow(dead_code)]
     params_buffer: wgpu::Buffer,
 }

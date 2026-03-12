@@ -278,7 +278,6 @@ mod tests {
             self
         }
 
-        #[allow(dead_code)]
         fn with_stage(mut self, stage: PluginStage) -> Self {
             self.stage = stage;
             self
