@@ -1298,11 +1298,21 @@ fn test_pos_deriv_ball_spring() {
     data.forward(&model).unwrap();
 
     mjd_smooth_pos(&model, &mut data);
-    let fd = fd_qderiv_pos(&model, &data, 1e-6);
 
-    let analytical = data.qDeriv_pos.view((0, 0), (3, 3));
+    // With body_ipos ≠ 0 (MuJoCo convention: COM offset from body frame),
+    // M(q) varies with q due to parallel-axis rotation. qDeriv_pos includes
+    // -(∂M/∂q)·qacc, so validate via ∂qacc/∂q = M⁻¹·qDeriv_pos.
+    let analytical = analytical_dqacc_dqpos(&model, &data);
+    let fd = fd_dqacc_dqpos(&model, &data, 1e-6);
+
+    let analytical_block = analytical.view((0, 0), (3, 3));
     let fd_block = fd.view((0, 0), (3, 3));
-    let err = max_relative_error(&analytical.clone_owned(), &fd_block.clone_owned(), 1e-6);
+
+    let err = max_relative_error(
+        &analytical_block.clone_owned(),
+        &fd_block.clone_owned(),
+        1e-6,
+    );
     assert!(
         err < 1e-5,
         "Ball spring pos deriv: max relative error {err} exceeds 1e-5"

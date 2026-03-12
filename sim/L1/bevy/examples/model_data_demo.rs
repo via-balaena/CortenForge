@@ -6,18 +6,16 @@
 //! - Model (static) contains the kinematic tree, joint definitions, masses
 //! - Data (dynamic) contains qpos/qvel as the source of truth
 //! - Body poses (xpos/xquat) are COMPUTED from qpos via forward kinematics
+//! - xipos (COM position) shows where the mass is — use this for visualization
 //!
-//! Run with: `cargo run -p sim-bevy --example model_data_demo --features x11`
+//! Run with: `cargo run -p sim-bevy --example model_data_demo --release`
 
 #![allow(clippy::needless_pass_by_value)]
 
 use bevy::prelude::*;
-use nalgebra::{UnitQuaternion, Vector3};
 use sim_bevy::convert::vec3_from_vector;
-use sim_bevy::model_data::{
-    ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data, sync_model_data_to_bevy,
-};
-use sim_core::{MjJointType, Model};
+use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
+use sim_core::{ENABLE_ENERGY, Model};
 
 /// Pendulum length in meters
 const PENDULUM_LENGTH: f64 = 1.0;
@@ -26,87 +24,53 @@ const PENDULUM_MASS: f64 = 1.0;
 /// Initial angle in radians
 const INITIAL_ANGLE: f64 = std::f64::consts::PI / 3.0;
 
+/// Marker for the rod visual connecting pivot to bob.
+#[derive(Component)]
+struct Rod;
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .init_resource::<DebugPrintState>()
         .add_systems(Startup, setup_physics_and_scene)
         .add_systems(Update, step_model_data)
-        .add_systems(PostUpdate, (sync_model_data_to_bevy, debug_info))
+        .add_systems(PostUpdate, (sync_bob_and_rod, debug_info))
         .run();
 }
 
-/// Create a simple pendulum Model programmatically.
+/// Sync bob position from xipos (COM) and update rod visual.
 ///
-/// This demonstrates how Model contains the static physics definition:
-/// - Body tree structure (world → pendulum body)
-/// - Joint definition (hinge at origin)
-/// - Mass properties
-fn create_pendulum_model() -> Model {
-    let mut model = Model::empty();
+/// MuJoCo convention: xpos is the body frame (at the joint), xipos is the
+/// center of mass. For pendulum visualization, xipos is the bob position.
+fn sync_bob_and_rod(
+    data: Res<PhysicsData>,
+    mut bobs: Query<(&ModelBodyIndex, &mut Transform), Without<Rod>>,
+    mut rods: Query<&mut Transform, With<Rod>>,
+) {
+    for (body_idx, mut transform) in &mut bobs {
+        let idx = body_idx.0;
+        if idx < data.xipos.len() {
+            // Use xipos (COM position), not xpos (joint position)
+            transform.translation = vec3_from_vector(&data.xipos[idx]);
+        }
+    }
 
-    // Add pendulum body (child of world body 0)
-    model.nbody = 2; // world + pendulum
+    // Update rod to connect pivot (origin) to bob
+    if let Some(bob_pos) = data.xipos.get(1).map(vec3_from_vector) {
+        let pivot = Vec3::ZERO;
+        for mut transform in rods.iter_mut() {
+            let midpoint = (pivot + bob_pos) / 2.0;
+            let direction = (bob_pos - pivot).normalize_or_zero();
+            let length = (bob_pos - pivot).length();
 
-    // Body tree - pendulum is child of world
-    model.body_parent.push(0); // Pendulum's parent is world (body 0)
-    model.body_rootid.push(1);
-    model.body_jnt_adr.push(0); // First joint for pendulum
-    model.body_jnt_num.push(1); // Pendulum has 1 joint
-    model.body_dof_adr.push(0); // First DOF
-    model.body_dof_num.push(1); // 1 DOF for hinge
-    model.body_geom_adr.push(0);
-    model.body_geom_num.push(0);
+            transform.translation = midpoint;
+            transform.scale = Vec3::new(1.0, length, 1.0);
 
-    // Body properties - pendulum body frame is at the bob position
-    model
-        .body_pos
-        .push(Vector3::new(0.0, 0.0, -PENDULUM_LENGTH));
-    model.body_quat.push(UnitQuaternion::identity());
-    model.body_ipos.push(Vector3::zeros()); // COM at body origin
-    model.body_iquat.push(UnitQuaternion::identity());
-    model.body_mass.push(PENDULUM_MASS);
-    // Point mass has zero principal inertia (simplified)
-    model.body_inertia.push(Vector3::new(0.001, 0.001, 0.001));
-    model.body_name.push(Some("pendulum".to_string()));
-
-    // Joint definition (hinge at world origin, rotating around Y axis)
-    model.njnt = 1;
-    model.nq = 1; // 1 position coordinate for hinge
-    model.nv = 1; // 1 velocity coordinate for hinge
-
-    model.jnt_type.push(MjJointType::Hinge);
-    model.jnt_body.push(1); // Joint belongs to pendulum body
-    model.jnt_qpos_adr.push(0);
-    model.jnt_dof_adr.push(0);
-    model.jnt_pos.push(Vector3::zeros()); // Joint at body origin
-    model.jnt_axis.push(Vector3::new(0.0, 1.0, 0.0)); // Rotate around Y
-    model.jnt_limited.push(false);
-    model
-        .jnt_range
-        .push((-std::f64::consts::PI, std::f64::consts::PI));
-    model.jnt_stiffness.push(0.0);
-    model.jnt_damping.push(0.0);
-    model.jnt_armature.push(0.0);
-    model.jnt_name.push(Some("hinge".to_string()));
-
-    // DOF definition
-    model.dof_body.push(1);
-    model.dof_jnt.push(0);
-    model.dof_parent.push(None);
-    model.dof_armature.push(0.0);
-    model.dof_damping.push(0.0);
-
-    // Default qpos (hanging down)
-    model.qpos0 = nalgebra::DVector::zeros(1);
-
-    // Physics options
-    model.timestep = 1.0 / 240.0;
-    model.gravity = Vector3::new(0.0, 0.0, -9.81);
-    model.solver_iterations = 10;
-    model.solver_tolerance = 1e-8;
-
-    model
+            if direction.length_squared() > 0.0001 {
+                transform.rotation = Quat::from_rotation_arc(Vec3::Y, direction);
+            }
+        }
+    }
 }
 
 /// Setup both physics (Model/Data) and visual scene.
@@ -115,8 +79,9 @@ fn setup_physics_and_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Create physics model and data
-    let model = create_pendulum_model();
+    // Create physics model using factory and enable energy tracking
+    let mut model = Model::n_link_pendulum(1, PENDULUM_LENGTH, PENDULUM_MASS);
+    model.enableflags |= ENABLE_ENERGY;
     let mut data = model.make_data();
 
     // Set initial angle
@@ -140,19 +105,22 @@ fn setup_physics_and_scene(
         data.qpos[0],
         data.qpos[0].to_degrees()
     );
-    println!("  qvel[0]: {:.3} rad/s", data.qvel[0]);
     println!(
-        "  xpos[1]: [{:.3}, {:.3}, {:.3}]",
+        "  xpos[1]  (joint): [{:.3}, {:.3}, {:.3}]",
         data.xpos[1].x, data.xpos[1].y, data.xpos[1].z
+    );
+    println!(
+        "  xipos[1] (COM):   [{:.3}, {:.3}, {:.3}]",
+        data.xipos[1].x, data.xipos[1].y, data.xipos[1].z
     );
     println!("========================================");
 
-    // Spawn pendulum body entity linked to Model/Data
-    // Use canonical coordinate conversion (Z-up physics → Y-up Bevy)
-    let bob_pos = vec3_from_vector(&data.xpos[1]);
+    // Spawn bob at COM position (xipos), not body frame (xpos)
+    let bob_pos = vec3_from_vector(&data.xipos[1]);
 
+    // Bob (red sphere)
     commands.spawn((
-        ModelBodyIndex(1), // Link to body 1 (pendulum)
+        ModelBodyIndex(1),
         Mesh3d(meshes.add(Sphere::new(0.1))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.9, 0.2, 0.2),
@@ -163,7 +131,20 @@ fn setup_physics_and_scene(
         Transform::from_translation(bob_pos),
     ));
 
-    // Pivot point visual
+    // Rod (connects pivot to bob)
+    commands.spawn((
+        Rod,
+        Mesh3d(meshes.add(Cylinder::new(0.02, 1.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.6, 0.6, 0.6),
+            metallic: 0.8,
+            perceptual_roughness: 0.2,
+            ..default()
+        })),
+        Transform::default(),
+    ));
+
+    // Pivot point (gray sphere at origin)
     commands.spawn((
         Mesh3d(meshes.add(Sphere::new(0.08))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -176,7 +157,7 @@ fn setup_physics_and_scene(
     // Camera
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(3.0, 1.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(3.0, 1.0, 3.0).looking_at(Vec3::new(0.0, -0.5, 0.0), Vec3::Y),
     ));
 
     // Lighting
@@ -189,15 +170,15 @@ fn setup_physics_and_scene(
         Transform::from_xyz(5.0, 10.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    // Ground plane for reference
+    // Ground reference plane
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(2.0)))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.5, 0.5, 0.5, 0.5),
+            base_color: Color::srgba(0.5, 0.5, 0.5, 0.3),
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
-        Transform::from_xyz(0.0, -PENDULUM_LENGTH as f32, 0.0),
+        Transform::from_xyz(0.0, -(PENDULUM_LENGTH as f32), 0.0),
     ));
 
     // Insert physics resources
@@ -213,23 +194,20 @@ struct DebugPrintState {
 
 /// Print debug information periodically
 fn debug_info(data: Res<PhysicsData>, mut state: ResMut<DebugPrintState>) {
-    // Print every 2 seconds of simulation time
     if data.time - state.last_print_sim_time > 2.0 {
         state.last_print_sim_time = data.time;
 
         let qpos = data.qpos[0];
         let qvel = data.qvel[0];
-        let kinetic = data.energy_kinetic;
-        let potential = data.energy_potential;
+        let energy = data.energy_kinetic + data.energy_potential;
 
         println!(
-            "t={:.1}s  θ={:+.2}rad ({:+.0}°)  ω={:+.2}rad/s  KE={:.4}J  PE={:.4}J",
+            "t={:.1}s  θ={:+.2}rad ({:+.0}°)  ω={:+.2}rad/s  E={:.4}J",
             data.time,
             qpos,
             qpos.to_degrees(),
             qvel,
-            kinetic,
-            potential,
+            energy,
         );
     }
 }

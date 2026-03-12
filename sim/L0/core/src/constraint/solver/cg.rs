@@ -27,8 +27,11 @@ use crate::types::{ConstraintState, Data, Model, SolverStat};
 ///
 /// After convergence, `data.efc_force` and `data.efc_jar` are populated.
 /// The caller must then compute `qfrc_constraint = J^T · efc_force`.
+///
+/// Returns `true` if the solver converged, `false` otherwise (caller should
+/// fall back to PGS).
 #[allow(clippy::cast_precision_loss)]
-pub fn cg_solve_unified(model: &Model, data: &mut Data) {
+pub fn cg_solve_unified(model: &Model, data: &mut Data) -> bool {
     let nv = model.nv;
 
     // qacc_smooth, qfrc_smooth, and efc_* arrays are already populated by
@@ -43,7 +46,7 @@ pub fn cg_solve_unified(model: &Model, data: &mut Data) {
         data.qfrc_constraint.fill(0.0);
         data.solver_niter = 0;
         data.solver_stat.clear();
-        return;
+        return true;
     }
 
     let scale = 1.0 / (meaninertia * (1.0_f64).max(nv as f64));
@@ -127,7 +130,7 @@ pub fn cg_solve_unified(model: &Model, data: &mut Data) {
         data.solver_niter = 0;
         data.solver_stat.clear();
         recover_newton(model, data, &qacc, &qfrc_smooth);
-        return;
+        return true;
     }
 
     // === ITERATE ===
@@ -305,6 +308,5 @@ pub fn cg_solve_unified(model: &Model, data: &mut Data) {
     data.solver_stat = solver_stats;
     recover_newton(model, data, &qacc, &qfrc_smooth);
 
-    // If not converged, we still use the best result we have
-    let _ = converged;
+    converged
 }

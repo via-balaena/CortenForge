@@ -63,11 +63,25 @@ impl Model {
             model.body_geom_adr.push(0);
             model.body_geom_num.push(0);
 
-            // Body properties
-            // Body frame is at the END of the link (where the mass is)
-            model.body_pos.push(Vector3::new(0.0, 0.0, -link_length));
+            // Body properties — MuJoCo convention:
+            //
+            // Body 1: body_pos = (0,0,0) — body frame at parent (world) origin,
+            //          coinciding with the joint. Only orientation changes with qpos.
+            // Body 2+: body_pos = (0,0,-L) — body frame at end of parent link,
+            //           which is where this body's joint is.
+            //
+            // For all bodies: body_ipos = (0,0,-L) — COM (point mass) at end of
+            // the link, below the body frame. xipos swings; xpos stays at the joint.
+            //
+            // Visualization should use xipos (COM position), not xpos (joint position).
+            let body_offset = if i == 0 {
+                Vector3::zeros() // Body 1: frame at parent origin (joint location)
+            } else {
+                Vector3::new(0.0, 0.0, -link_length) // Body 2+: frame at parent's link end
+            };
+            model.body_pos.push(body_offset);
             model.body_quat.push(UnitQuaternion::identity());
-            model.body_ipos.push(Vector3::zeros()); // COM at body origin
+            model.body_ipos.push(Vector3::new(0.0, 0.0, -link_length)); // COM at end of link
             model.body_iquat.push(UnitQuaternion::identity());
             model.body_mass.push(link_mass);
             // Point mass approximation (small moment of inertia)
@@ -76,12 +90,13 @@ impl Model {
             model.body_subtreemass.push(0.0); // Will be computed after model is built
             model.body_mocapid.push(None);
 
-            // Joint definition (hinge at parent's frame, rotating around Y)
+            // Joint definition (hinge rotating around Y axis).
+            // jnt_pos = (0,0,0) — joint at body frame origin (MuJoCo convention).
             model.jnt_type.push(MjJointType::Hinge);
             model.jnt_body.push(body_id);
             model.jnt_qpos_adr.push(i);
             model.jnt_dof_adr.push(i);
-            model.jnt_pos.push(Vector3::zeros()); // Joint at body origin
+            model.jnt_pos.push(Vector3::zeros()); // Joint at body frame origin
             model.jnt_axis.push(Vector3::new(0.0, 1.0, 0.0)); // Rotate around Y
             model.jnt_limited.push(false);
             model.jnt_range.push((-PI, PI));
@@ -167,10 +182,10 @@ impl Model {
         model.body_geom_adr.push(0);
         model.body_geom_num.push(0);
 
-        // Body frame is at the mass location (below joint by length)
-        model.body_pos.push(Vector3::new(0.0, 0.0, -length));
+        // MuJoCo convention: body frame at joint (parent origin), COM offset below.
+        model.body_pos.push(Vector3::zeros()); // Body frame at parent = joint location
         model.body_quat.push(UnitQuaternion::identity());
-        model.body_ipos.push(Vector3::zeros());
+        model.body_ipos.push(Vector3::new(0.0, 0.0, -length)); // COM at end of pendulum
         model.body_iquat.push(UnitQuaternion::identity());
         model.body_mass.push(mass);
         model.body_inertia.push(Vector3::new(0.001, 0.001, 0.001));

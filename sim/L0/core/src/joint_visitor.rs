@@ -170,22 +170,31 @@ pub(crate) fn joint_motion_subspace(
             s[(5, 0)] = axis_world.z;
         }
         MjJointType::Ball => {
-            // Ball joint: 3 angular DOFs
-            // S = [I_3x3; 0_3x3] (angular velocity in world frame)
+            // Ball joint: 3 angular DOFs in body-local frame.
+            // qvel is body-frame angular velocity; S maps body-frame → world-frame.
+            // S = [R; 0] where R = xquat rotation matrix.
+            // Matches MuJoCo's cdof: axis rotated to world frame.
+            let rot = data.xquat[body_id].to_rotation_matrix().into_inner();
             for i in 0..3 {
-                s[(i, i)] = 1.0;
+                for j in 0..3 {
+                    s[(j, i)] = rot[(j, i)];
+                }
             }
         }
         MjJointType::Free => {
             // Free joint: 6 DOFs (3 linear + 3 angular)
             // DOF order in qvel: [vx, vy, vz, ωx, ωy, ωz]
-            // Linear DOFs map to linear velocity
+            // Linear DOFs (0-2): world-frame velocity → world-frame spatial linear
             for i in 0..3 {
-                s[(3 + i, i)] = 1.0; // Linear velocity
+                s[(3 + i, i)] = 1.0;
             }
-            // Angular DOFs map to angular velocity
+            // Angular DOFs (3-5): body-local angular velocity → world-frame spatial angular
+            // S = [R; 0] for the angular block, matching MuJoCo's cdof convention.
+            let rot = data.xquat[body_id].to_rotation_matrix().into_inner();
             for i in 0..3 {
-                s[(i, 3 + i)] = 1.0; // Angular velocity
+                for j in 0..3 {
+                    s[(j, 3 + i)] = rot[(j, i)];
+                }
             }
         }
     }
