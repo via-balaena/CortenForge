@@ -15,14 +15,13 @@ Run each with `cargo run -p sim-bevy --example <name> --release`.
 - [x] **model_data_demo** — `Model::n_link_pendulum(1)` factory.
   Single red bob on rod, xipos-based sync, orbit camera. Energy ~0.2% drift.
 
-- [~] **double_pendulum** — `Model::double_pendulum()` factory.
-  Red + blue bobs with connecting rods, orbit camera. Links stay constant
-  (L₁=L₂=1.0). Energy drift ~75% (pre-existing Euler integrator limitation
-  for high-energy chaotic motion — not a regression).
+- [x] **double_pendulum** — `Model::double_pendulum()` factory.
+  Red + blue bobs with connecting rods, orbit camera, RK4 integrator.
+  Links stay constant (L₁=L₂=1.0). Chaotic motion looks physically correct.
 
-- [~] **nlink_pendulum** — `Model::n_link_pendulum(5)` factory.
-  5 color-gradient bobs on a chain, orbit camera. Initially chaotic then
-  goes stiff — Euler integrator instability with 5 links at this timestep.
+- [x] **nlink_pendulum** — `Model::n_link_pendulum(3)` factory.
+  3 color-gradient bobs on a chain, orbit camera, RK4 + light damping.
+  Smooth oscillation, stable 30s+. Proper rod inertia (m*L²/12).
 
 - [~] **spherical_pendulum** — `Model::spherical_pendulum()` with ball joint.
   Golden bob with red trail, orbit camera. 3D motion looks correct.
