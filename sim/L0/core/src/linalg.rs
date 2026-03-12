@@ -4,6 +4,7 @@
 //! forward dynamics pipeline (dense Cholesky for implicit integration,
 //! sparse solve for explicit/Newton paths) and analytical derivatives.
 
+use crate::constraint::impedance::MJ_MINVAL;
 use crate::types::StepError;
 use nalgebra::{DMatrix, DVector};
 
@@ -57,10 +58,6 @@ impl UnionFind {
 // ============================================================================
 // Dense Cholesky
 // ============================================================================
-
-/// Minimum value threshold for numerical stability (shared with monolith).
-#[allow(dead_code)]
-const MJ_MINVAL: f64 = 1e-15;
 
 /// In-place Cholesky (LL^T) factorization. Overwrites the lower triangle of `m` with L.
 /// The upper triangle is left unchanged. Returns `Err(StepError::CholeskyFailed)` if
