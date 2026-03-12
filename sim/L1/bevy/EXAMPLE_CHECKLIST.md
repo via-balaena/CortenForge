@@ -29,14 +29,15 @@ Run each with `cargo run -p sim-bevy --example <name> --release`.
 
 ## Tier 3: MJCF loading + SimViewerPlugin
 
-- [~] **falling_sphere** — `SimViewerPlugin` + MJCF sphere + ground plane.
-  Launches but needs collision/contact work.
+- [x] **falling_sphere** — `SimViewerPlugin` + MJCF sphere + ground plane.
+  Sphere falls from Z=5, bounces, settles on ground. Contact physics correct.
 
-- [~] **collision_shapes** — `SimViewerPlugin` + MJCF shapes in grid.
-  Launches but needs collision/contact work.
+- [x] **collision_shapes** — `SimViewerPlugin` + MJCF shapes in grid.
+  All 8 shapes (sphere, box, capsule, cylinder, ellipsoid, tall box, small sphere,
+  wide cylinder) fall and settle on ground plane. Capsule tilted 15° to topple.
 
-- [~] **contact_debug** — `SimViewerPlugin` + debug gizmo overlay.
-  Launches, keyboard toggles work. Needs collision/contact work.
+- [x] **contact_debug** — `SimViewerPlugin` + debug gizmo overlay.
+  4 spheres + 1 box fall and settle correctly. No floating bodies.
 
 ## Tier 4: Complex articulated systems
 

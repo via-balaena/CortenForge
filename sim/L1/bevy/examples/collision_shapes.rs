@@ -46,7 +46,7 @@ fn setup_shapes(
                     <geom name="box_geom" type="box" size="0.6 0.8 0.5" mass="1.0" rgba="0.3 0.9 0.3 1"/>
                 </body>
 
-                <body name="capsule" pos="1.5 1.5 1.5">
+                <body name="capsule" pos="1.5 1.5 1.5" euler="15 0 0">
                     <freejoint name="capsule_joint"/>
                     <geom name="capsule_geom" type="capsule" size="0.3 0.5" mass="1.0" rgba="0.3 0.3 0.9 1"/>
                 </body>
