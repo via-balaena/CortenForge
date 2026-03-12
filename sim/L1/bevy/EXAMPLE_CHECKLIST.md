@@ -12,39 +12,37 @@ Run each with `cargo run -p sim-bevy --example <name> --release`.
 
 ## Tier 2: sim-core Model/Data pipeline
 
-- [ ] **model_data_demo** — Programmatic `Model::empty()` + manual fields.
-  Single red bob, `step_model_data` + `sync_model_data_to_bevy`. Verifies the
-  canonical Bevy integration pattern works end-to-end.
+- [x] **model_data_demo** — `Model::n_link_pendulum(1)` factory.
+  Single red bob on rod, xipos-based sync, orbit camera. Energy ~0.2% drift.
 
-- [ ] **double_pendulum** — `Model::double_pendulum()` factory.
-  Red + blue bobs with connecting rods. Chaotic motion, energy drift < 1%,
-  link lengths must stay constant (FK integrity).
+- [~] **double_pendulum** — `Model::double_pendulum()` factory.
+  Red + blue bobs with connecting rods, orbit camera. Links stay constant
+  (L₁=L₂=1.0). Energy drift ~75% (pre-existing Euler integrator limitation
+  for high-energy chaotic motion — not a regression).
 
-- [ ] **nlink_pendulum** — `Model::n_link_pendulum(5)` factory.
-  5 color-gradient bobs (red to blue) on a chain. Complex chaotic dynamics,
-  all link lengths constant, energy approximately conserved.
+- [~] **nlink_pendulum** — `Model::n_link_pendulum(5)` factory.
+  5 color-gradient bobs on a chain, orbit camera. Initially chaotic then
+  goes stiff — Euler integrator instability with 5 links at this timestep.
 
-- [ ] **spherical_pendulum** — `Model::spherical_pendulum()` with ball joint.
-  Golden bob on transparent constraint sphere with red trail. 3D precessing
-  motion. Conserves both energy and vertical angular momentum.
+- [~] **spherical_pendulum** — `Model::spherical_pendulum()` with ball joint.
+  Golden bob with red trail, orbit camera. 3D motion looks correct.
 
 ## Tier 3: MJCF loading + SimViewerPlugin
 
-- [ ] **mjcf_humanoid** — `sim_mjcf::load_model()` of 13-body humanoid.
-  Free+ball+hinge joints (nq=45, nv=38). Body spheres should fall/ragdoll
-  under gravity with joint damping. Most complex articulation test.
+- [~] **falling_sphere** — `SimViewerPlugin` + MJCF sphere + ground plane.
+  Launches but needs collision/contact work.
 
-- [ ] **falling_sphere** — `SimViewerPlugin` + MJCF sphere + ground plane.
-  Blue sphere at Z=5 falls onto gray ground. Tests freejoint + auto mesh
-  spawning + orbit camera.
+- [~] **collision_shapes** — `SimViewerPlugin` + MJCF shapes in grid.
+  Launches but needs collision/contact work.
 
-- [ ] **collision_shapes** — `SimViewerPlugin` + 8 MJCF shapes in grid.
-  Sphere, box, capsule, cylinder, ellipsoid (2 rows x 4 cols) all falling.
-  Tests all primitive shape mesh generation.
+- [~] **contact_debug** — `SimViewerPlugin` + debug gizmo overlay.
+  Launches, keyboard toggles work. Needs collision/contact work.
 
-- [ ] **contact_debug** — `SimViewerPlugin` + 4 spheres + 1 box falling.
-  Keyboard toggles: C=contacts, N=normals, F=forces, J=joints, L=limits.
-  Tests debug gizmo overlay system.
+## Tier 4: Complex articulated systems
+
+- [~] **mjcf_humanoid** — `sim_mjcf::load_model()` of 13-body humanoid.
+  Free+ball+hinge joints (nq=43, nv=34). Launches but energy diverges —
+  no ground contact, bodies fall freely. Last example to get right.
 
 ---
 

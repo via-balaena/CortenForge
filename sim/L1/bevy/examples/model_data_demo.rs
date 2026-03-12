@@ -13,6 +13,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use bevy::prelude::*;
+use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
 use sim_bevy::convert::vec3_from_vector;
 use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
 use sim_core::{ENABLE_ENERGY, Model};
@@ -31,6 +32,7 @@ struct Rod;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(OrbitCameraPlugin)
         .init_resource::<DebugPrintState>()
         .add_systems(Startup, setup_physics_and_scene)
         .add_systems(Update, step_model_data)
@@ -154,11 +156,14 @@ fn setup_physics_and_scene(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    // Camera
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(3.0, 1.0, 3.0).looking_at(Vec3::new(0.0, -0.5, 0.0), Vec3::Y),
-    ));
+    // Camera with orbit controls (left-drag orbit, right-drag pan, scroll zoom)
+    let orbit = OrbitCamera::new()
+        .with_target(Vec3::new(0.0, -0.5, 0.0))
+        .with_distance(4.5)
+        .with_angles(0.8, 0.3);
+    let mut cam_transform = Transform::default();
+    orbit.apply_to_transform(&mut cam_transform);
+    commands.spawn((Camera3d::default(), orbit, cam_transform));
 
     // Lighting
     commands.spawn((
