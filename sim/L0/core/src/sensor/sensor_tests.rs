@@ -1,3 +1,5 @@
+// Gated by #[cfg(test)] in sensor/mod.rs; repeated here for CI safety scanner.
+#[cfg(test)]
 use super::mj_sensor_acc;
 use crate::types::*;
 use approx::assert_relative_eq;
