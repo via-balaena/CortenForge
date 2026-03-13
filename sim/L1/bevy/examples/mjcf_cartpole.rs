@@ -1,20 +1,20 @@
-//! Cart-pole control example: slide + hinge joints, motor actuator, keyboard control.
+//! Cart-pole balancing minigame: keep the pole upright as long as you can!
 //!
-//! Classic control benchmark demonstrating:
+//! Classic inverted-pendulum control benchmark with:
 //! - Mixed joint types: slide (cart) + hinge (pole)
 //! - Motor actuator with gear ratio and ctrl input
 //! - Joint limits (cart ±3.6m)
-//! - Keyboard → physics control loop (Left/Right arrows)
-//! - Joint axis and limit gizmos (toggle with `J` and `L`)
-//!
-//! The pole starts slightly tilted. Push the cart with arrow keys to
-//! balance the pole upright — the classic inverted-pendulum challenge.
+//! - Keyboard control (Left/Right arrows)
+//! - Balance timer + session high score
+//! - Restart with `R`
 //!
 //! Run with: `cargo run -p sim-bevy --example mjcf_cartpole --release`
 
 #![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::expect_used)]
 #![allow(clippy::cast_precision_loss)]
+
+use std::f64::consts::PI;
 
 use bevy::prelude::*;
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
@@ -31,7 +31,7 @@ use sim_core::{ENABLE_ENERGY, MjJointType};
 ///
 /// Classic inverted pendulum on a cart. The cart slides along X on a rail,
 /// constrained to ±3.6m. The pole hinges at the cart (axis Y), pointing
-/// upward at qpos=0. A motor actuator (gear=50) drives the cart; the user
+/// upward at qpos=0. A motor actuator (gear=40) drives the cart; the user
 /// controls it via keyboard (ctrl ∈ [-1, 1]).
 ///
 /// Tuned for human playability: the pole is long (1.0m) and heavy (0.5kg)
@@ -63,7 +63,7 @@ const CARTPOLE_MJCF: &str = r#"
 
             <body name="pole" pos="0 0 0">
                 <joint name="hinge" type="hinge" axis="0 1 0"
-                       damping="1.0"/>
+                       damping="0.4"/>
                 <geom name="pole_geom" type="capsule"
                       fromto="0 0 0 0 0 1.0" size="0.04"
                       mass="0.5" rgba="0 0.7 0.7 1"/>
@@ -81,6 +81,12 @@ const CARTPOLE_MJCF: &str = r#"
 /// Maximum physics steps per frame (safety cap).
 const MAX_STEPS_PER_FRAME: usize = 32;
 
+/// Initial pole tilt in radians (~2°). Barely visible but unstable.
+const INITIAL_TILT: f64 = 0.03;
+
+/// Pole angle threshold for "balanced" (±30° from vertical).
+const BALANCE_THRESHOLD: f64 = 30.0 * PI / 180.0;
+
 // ============================================================================
 // Resources
 // ============================================================================
@@ -97,10 +103,28 @@ struct ShowJointAxes(bool);
 #[derive(Resource)]
 struct ShowJointLimits(bool);
 
-/// Timer for periodic HUD printing.
+/// Game state: balance timer + high score.
 #[derive(Resource)]
-struct HudTimer {
-    last_print_time: f64,
+struct GameState {
+    /// Sim time when the current balance streak started, or None if fallen.
+    balance_start: Option<f64>,
+    /// Best balance duration this session.
+    high_score: f64,
+    /// Last game HUD print time.
+    last_print: f64,
+    /// Whether we already printed the "fell" message for this streak.
+    fell_printed: bool,
+}
+
+impl Default for GameState {
+    fn default() -> Self {
+        Self {
+            balance_start: Some(0.0), // pole starts balanced
+            high_score: 0.0,
+            last_print: -1.0,
+            fell_printed: false,
+        }
+    }
 }
 
 // ============================================================================
@@ -114,9 +138,13 @@ fn main() {
         .add_plugins(ModelDataPlugin::new()) // no auto_step — wall-clock stepping
         .insert_resource(ShowJointAxes(false))
         .insert_resource(ShowJointLimits(false))
+        .init_resource::<GameState>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (keyboard_control, step_realtime, toggle_gizmos))
-        .add_systems(PostUpdate, (draw_joint_axes, draw_joint_limits, hud_info))
+        .add_systems(
+            Update,
+            (keyboard_control, restart, step_realtime, game_hud, toggle_gizmos),
+        )
+        .add_systems(PostUpdate, (draw_joint_axes, draw_joint_limits))
         .run();
 }
 
@@ -135,8 +163,8 @@ fn setup(
 
     let mut data = model.make_data();
 
-    // Start with pole slightly tilted (0.1 rad ≈ 6°) — unstable, will fall
-    data.qpos[1] = 0.1;
+    // Start with pole slightly tilted — unstable, will fall
+    data.qpos[1] = INITIAL_TILT;
     let _ = data.forward(&model);
 
     // Initial energy
@@ -166,23 +194,21 @@ fn setup(
     ));
 
     println!("=============================================");
-    println!("MJCF Cart-Pole — Slide + Hinge + Motor");
+    println!("  CART-POLE BALANCING CHALLENGE");
     println!("=============================================");
-    println!("Joints: slide (±3.6m, damping=8.0) + hinge (Y axis, damping=1.0)");
-    println!("Motor: gear=40, ctrl in [-1, 1]");
+    println!("Keep the pole upright as long as you can!");
     println!("---------------------------------------------");
-    println!("Left/Right arrows: push cart");
-    println!("Release: stop motor");
-    println!("Press 'J' to toggle joint axis gizmos");
-    println!("Press 'L' to toggle joint limit gizmos");
+    println!("Left/Right arrows : push cart");
+    println!("R                 : restart");
+    println!("J                 : toggle joint axis gizmos");
+    println!("L                 : toggle joint limit gizmos");
+    println!("---------------------------------------------");
+    println!("Balanced = pole within 30 deg of vertical");
     println!("=============================================");
 
     commands.insert_resource(PhysicsModel::new(model));
     commands.insert_resource(PhysicsData::new(data));
     commands.insert_resource(InitialEnergy(e0));
-    commands.insert_resource(HudTimer {
-        last_print_time: -1.0,
-    });
 }
 
 // ============================================================================
@@ -201,9 +227,41 @@ fn keyboard_control(keyboard: Res<ButtonInput<KeyCode>>, mut data: ResMut<Physic
     data.ctrl[0] = ctrl;
 }
 
+/// Reset physics and game state on R key.
+fn restart(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    model: Res<PhysicsModel>,
+    mut data: ResMut<PhysicsData>,
+    mut game: ResMut<GameState>,
+    mut initial: ResMut<InitialEnergy>,
+) {
+    if !keyboard.just_pressed(KeyCode::KeyR) {
+        return;
+    }
+
+    // Reset physics
+    data.qpos.fill(0.0);
+    data.qvel.fill(0.0);
+    data.ctrl.fill(0.0);
+    data.time = 0.0;
+    data.qpos[1] = INITIAL_TILT;
+    let _ = data.forward(&model);
+
+    // Reset energy baseline
+    initial.0 = data.energy_kinetic + data.energy_potential;
+
+    // Reset game timer (keep high score)
+    game.balance_start = Some(0.0);
+    game.last_print = -1.0;
+    game.fell_printed = false;
+
+    println!("---------------------------------------------");
+    println!("  RESTART — balance the pole!");
+    println!("  Best so far: {:.1}s", game.high_score);
+    println!("---------------------------------------------");
+}
+
 /// Step physics in sync with wall-clock time.
-/// Computes how many dt=0.002 steps fit in the frame's real elapsed time,
-/// so the simulation runs at 1:1 real-time regardless of frame rate.
 fn step_realtime(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>, time: Res<Time>) {
     let frame_dt = time.delta_secs_f64();
     let steps = ((frame_dt / model.timestep).round() as usize).clamp(1, MAX_STEPS_PER_FRAME);
@@ -344,30 +402,65 @@ fn draw_joint_limits(
     }
 }
 
-/// HUD: cart pos, pole angle, ctrl, energy — printed every 2s of sim time.
-fn hud_info(data: Res<PhysicsData>, initial: Res<InitialEnergy>, mut timer: ResMut<HudTimer>) {
-    if data.time - timer.last_print_time < 2.0 {
-        return;
-    }
-    timer.last_print_time = data.time;
-
-    let cart_pos = data.qpos[0];
-    let pole_angle = data.qpos[1];
-    let ctrl = data.ctrl[0];
-    let energy = data.energy_kinetic + data.energy_potential;
-    let energy_drift = if initial.0.abs() > 1e-10 {
-        (energy - initial.0) / initial.0.abs() * 100.0
+/// Normalize angle to [-π, π].
+fn normalize_angle(angle: f64) -> f64 {
+    let a = angle % (2.0 * PI);
+    if a > PI {
+        a - 2.0 * PI
+    } else if a < -PI {
+        a + 2.0 * PI
     } else {
-        0.0
-    };
+        a
+    }
+}
 
-    println!(
-        "t={:.1}s  cart={:+.3}m  pole={:+.1}deg  ctrl={:+.1}  E={:.4}J  drift={:+.1}%",
-        data.time,
-        cart_pos,
-        pole_angle.to_degrees(),
-        ctrl,
-        energy,
-        energy_drift,
-    );
+/// Game HUD: updates the window title with balance timer, high score, and status.
+fn game_hud(data: Res<PhysicsData>, mut game: ResMut<GameState>, mut windows: Query<&mut Window>) {
+    let pole_angle = normalize_angle(data.qpos[1]);
+    let is_balanced = pole_angle.abs() < BALANCE_THRESHOLD;
+
+    if is_balanced {
+        // Start or continue balance streak
+        let start = *game.balance_start.get_or_insert(data.time);
+        let duration = data.time - start;
+        game.fell_printed = false;
+
+        if duration > game.high_score {
+            game.high_score = duration;
+        }
+
+        let best_tag = if duration >= game.high_score - 0.01 && duration > 1.0 {
+            "  NEW BEST!"
+        } else {
+            ""
+        };
+
+        if let Ok(mut window) = windows.single_mut() {
+            window.title = format!(
+                "Cart-Pole | Balancing: {:.1}s | Best: {:.1}s | pole={:+.0}deg{}",
+                duration,
+                game.high_score,
+                pole_angle.to_degrees(),
+                best_tag,
+            );
+        }
+    } else {
+        // Just fell
+        if !game.fell_printed {
+            let duration = if let Some(start) = game.balance_start.take() {
+                data.time - start
+            } else {
+                0.0
+            };
+            game.fell_printed = true;
+
+            if let Ok(mut window) = windows.single_mut() {
+                window.title = format!(
+                    "Cart-Pole | FELL! Lasted {:.1}s | Best: {:.1}s | Press R to restart",
+                    duration, game.high_score,
+                );
+            }
+        }
+        game.balance_start = None;
+    }
 }
