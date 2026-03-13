@@ -44,22 +44,22 @@ Run each with `cargo run -p sim-bevy --example <name> --release`.
 Bridge from free-floating shapes to MJCF models with constrained joints and
 motors. No ground contact — focus on articulated kinematics and control.
 
-- [ ] **mjcf_pendulum** — Simplest articulated MJCF model. First example where
+- [x] **mjcf_pendulum** — Simplest articulated MJCF model. First example where
   a joint is *not* a freejoint.
 
-  *MJCF (inline):* 1 body, 1 hinge (axis Y), spring (stiffness=10,
-  springref=0.3) + damper (0.5). Based on conformance `pendulum.xml` with
-  visual-friendly sizes.
+  *MJCF (inline):* 1 body, 1 hinge (axis Y), spring (stiffness=2,
+  springref=0) + damper (0.3). Based on conformance `pendulum.xml` with
+  visual-friendly sizes (0.8m downward-hanging link, scaled spring params).
 
   *Physics:* Hinge from MJCF, passive spring + damping, energy tracking.
 
-  *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` auto-step. Capsule link +
+  *Bevy:* `ModelDataPlugin` + wall-clock stepping. Capsule link +
   small sphere at pivot. Orbit camera. HUD: angle (deg), velocity, energy.
 
   *Acceptance:*
-  - [ ] Oscillates about springref, amplitude decays
-  - [ ] Energy monotonically decreases (damped system)
-  - [ ] `J` shows joint axis gizmo (yellow line along Y)
+  - [x] Oscillates about equilibrium, amplitude decays
+  - [x] Energy monotonically decreases (damped system)
+  - [x] `J` shows joint axis gizmo (yellow line along Y)
 
   *New concepts:* hinge from MJCF, spring/damper passive forces, angle HUD.
 
