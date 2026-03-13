@@ -2,7 +2,7 @@
 //!
 //! Provides the body/site/point Jacobian infrastructure (`mj_jac`, `mj_jac_site`,
 //! etc.) and force projection (`mj_apply_ft`). SO(3)-aware position
-//! differentiation/integration lives in the [`position`] submodule.
+//! differentiation/integration lives in the `position` submodule.
 //!
 //! Corresponds to the Jacobian sections of MuJoCo's `engine_core_smooth.c`
 //! and `engine_util_spatial.c`.

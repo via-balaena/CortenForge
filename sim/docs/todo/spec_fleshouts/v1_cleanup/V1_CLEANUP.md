@@ -101,7 +101,7 @@ Replace `<N>` with the batch number (e.g., `B1`, `B5`, `B9`).
 
 ### B9 — Final verification (T41)
 **Checkpoint**: Full suite (see T41 details)
-- [ ] **T41** — Full verification pass (build, test, clippy, fmt, test count regression check)
+- [x] **T41** — Full verification pass (build, test, clippy, fmt, test count regression check)
 
 ---
 
