@@ -170,7 +170,7 @@ expected behavior — no subjective "does this look right?" judgments.
   *New concepts:* multi-actuator control, FK verification against
   analytical formula, end-effector tracking, workspace visualization.
 
-- [ ] **gyroscope** — Spinning disk on a pivot, free to precess under gravity.
+- [x] **gyroscope** — Spinning disk on a pivot, free to precess under gravity.
   Precession rate is analytically exact.
 
   *MJCF (inline):* 2 bodies. Base (fixed or heavy). Disk body on a short
@@ -188,11 +188,11 @@ expected behavior — no subjective "does this look right?" judgments.
   ~conserved).
 
   *Acceptance:*
-  - [ ] Disk precesses around vertical axis (visible circular motion)
-  - [ ] Measured precession period matches τ/(I_spin · ω_spin) within 5%
-  - [ ] Angular momentum magnitude conserved within 1%
-  - [ ] Higher spin speed → slower precession (inverse relationship)
-  - [ ] `R` resets with initial spin
+  - [x] Disk precesses around vertical axis (visible circular motion)
+  - [x] Measured precession period matches τ/(I_spin · ω_spin) within 5%
+  - [x] Angular momentum magnitude conserved within 1%
+  - [x] Higher spin speed → slower precession (inverse relationship)
+  - [x] `R` resets with initial spin
 
   *New concepts:* 3D rotational dynamics, angular momentum conservation,
   gyroscopic precession, analytical precession rate verification.
