@@ -114,7 +114,7 @@ motors. No ground contact — focus on articulated kinematics and control.
 Analytically verifiable mechanical systems. Every example has a closed-form
 expected behavior — no subjective "does this look right?" judgments.
 
-- [ ] **spring_mass_damper** — Mass on slide joint with spring, damper, and
+- [x] **spring_mass_damper** — Mass on slide joint with spring, damper, and
   ground contact. The simplest articulated + contact example with an exact
   analytical answer.
 
@@ -131,12 +131,12 @@ expected behavior — no subjective "does this look right?" judgments.
   predicted frequency, error %. Trail showing oscillation envelope.
 
   *Acceptance:*
-  - [ ] Mass oscillates vertically on spring
-  - [ ] Measured frequency matches ω_d = ω_n√(1−ζ²) within 1%
-  - [ ] Amplitude decay envelope matches e^(−ζω_n·t) within 2%
-  - [ ] If dropped from above rest, bounces off ground then oscillates
-  - [ ] Energy monotonically decreases
-  - [ ] `R` resets to initial height
+  - [x] Mass oscillates vertically on spring
+  - [x] Measured frequency matches ω_d = ω_n√(1−ζ²) within 1%
+  - [x] Amplitude decay envelope matches e^(−ζω_n·t) within 2%
+  - [x] If dropped from above rest, bounces off ground then oscillates
+  - [x] Energy monotonically decreases
+  - [x] `R` resets to initial height
 
   *New concepts:* slide joint + spring + contact, analytical verification
   in HUD, measurable frequency/decay comparison.
