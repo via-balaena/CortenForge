@@ -230,7 +230,7 @@ solver handles coupling between distinct kinematic chains.
   *New concepts:* manual coupling forces via qfrc_applied, energy exchange
   between coupled systems, normal mode analysis, beat frequency verification.
 
-- [ ] **crank_slider** — Motor-driven crank converts rotary motion to linear
+- [x] **crank_slider** — Motor-driven crank converts rotary motion to linear
   sliding. Classic mechanism with analytically exact piston position.
 
   *MJCF (inline):* 3 bodies. Crank arm (hinge joint, motor-driven).
@@ -248,12 +248,12 @@ solver handles coupling between distinct kinematic chains.
   |error|, crank RPM.
 
   *Acceptance:*
-  - [ ] Crank rotates continuously under motor drive
-  - [ ] Piston slides back and forth in sync with crank
-  - [ ] Measured piston position matches analytical formula within 1e-4
-  - [ ] Rod stays connected at both ends (no constraint drift)
-  - [ ] Smooth periodic motion at steady state
-  - [ ] HUD error stays below threshold
+  - [x] Crank rotates continuously under motor drive
+  - [x] Piston slides back and forth in sync with crank
+  - [x] Measured piston position matches analytical formula within 1e-4
+  - [x] Rod stays connected at both ends (no constraint drift)
+  - [x] Smooth periodic motion at steady state
+  - [x] HUD error stays below threshold
 
   *New concepts:* equality connect constraints, closed-loop mechanism,
   motor-driven periodic motion, analytical position curve verification.
