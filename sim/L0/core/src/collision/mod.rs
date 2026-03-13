@@ -9,6 +9,8 @@
 //! and parameter combination from `engine_collision_primitive.c`.
 
 pub(crate) mod flex_collide;
+pub(crate) mod flex_narrow;
+pub(crate) mod flex_self;
 pub(crate) mod hfield;
 pub(crate) mod mesh_collide;
 pub(crate) mod narrow;
@@ -18,8 +20,9 @@ pub(crate) mod plane;
 pub(crate) mod sdf_collide;
 
 // Note: collide_geoms, geom_to_collision_shape, make_contact_flex_rigid, and
-// narrowphase_sphere_geom are accessed internally via self::narrow:: and
-// self::flex_collide:: within this module. No pub(crate) re-export needed.
+// narrowphase_sphere_geom are accessed internally via self::narrow::,
+// self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this
+// module. No pub(crate) re-export needed.
 
 use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};

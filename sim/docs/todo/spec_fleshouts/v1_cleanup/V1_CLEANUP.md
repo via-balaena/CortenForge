@@ -79,10 +79,10 @@ Replace `<N>` with the batch number (e.g., `B1`, `B5`, `B9`).
 
 ### B6 — sim-core file splits, part 1 (T24–T27)
 **Checkpoint**: `cargo test -p sim-core -p sim-conformance-tests`
-- [ ] **T24** — Split `derivatives.rs` (5,998 lines → fd_perturbations, hybrid_path, integration_derivs)
-- [ ] **T25** — Split `sdf.rs` (2,896 lines → primitive_sdf, operations, interpolation)
-- [ ] **T26** — Split `collision/flex_collide.rs` (2,753 lines → narrowphase_flex, flex_self_collision)
-- [ ] **T27** — Split `forward/muscle.rs` (2,497 lines → hill_dynamics, fiber_length)
+- [x] **T24** — Split `derivatives.rs` (5,998 lines → fd_perturbations, hybrid_path, integration_derivs)
+- [x] **T25** — Split `sdf.rs` (2,896 lines → primitive_sdf, operations, interpolation)
+- [x] **T26** — Split `collision/flex_collide.rs` (2,753 lines → narrowphase_flex, flex_self_collision)
+- [x] **T27** — Split `forward/muscle.rs` (2,497 lines → hill_dynamics, fiber_length)
 
 ### B7 — sim-core file splits, part 2 (T28–T31)
 **Checkpoint**: `cargo test -p sim-core -p sim-conformance-tests`
