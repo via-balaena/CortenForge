@@ -250,7 +250,8 @@ fn sync_tree_fk(model: &Model, data: &mut Data, tree: usize) {
                     pos += quat * (axis * displacement);
                 }
                 MjJointType::Ball => {
-                    let q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    // Must normalize — integration can drift from unit norm.
+                    let q = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
                         data.qpos[qpos_adr],
                         data.qpos[qpos_adr + 1],
                         data.qpos[qpos_adr + 2],
@@ -264,7 +265,8 @@ fn sync_tree_fk(model: &Model, data: &mut Data, tree: usize) {
                         data.qpos[qpos_adr + 1],
                         data.qpos[qpos_adr + 2],
                     );
-                    quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    // Must normalize — integration can drift from unit norm.
+                    quat = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
                         data.qpos[qpos_adr + 3],
                         data.qpos[qpos_adr + 4],
                         data.qpos[qpos_adr + 5],
