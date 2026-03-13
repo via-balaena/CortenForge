@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     println!("  1. Design chamber geometry (mesh-lattice)");
     println!("  2. Generate mold halves (mesh-shell, mesh-boolean)");
     println!("  3. Analyze parting lines (mesh-slice)");
-    println!("  4. Simulate inflation/deflection with XPBD (sim-deformable)");
+    println!("  4. Simulate inflation/deflection with flex pipeline (sim-core)");
     println!("  5. Validate mold printability (mesh-printability)");
     println!("  6. Export mold STL (mesh-io)");
     println!("  7. Cast silicone + test physical deflection");

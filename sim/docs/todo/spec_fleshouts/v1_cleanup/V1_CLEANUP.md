@@ -93,11 +93,11 @@ Replace `<N>` with the batch number (e.g., `B1`, `B5`, `B9`).
 
 ### B8 — Documentation refresh (T32–T36)
 **Checkpoint**: Visual review
-- [ ] **T32** — Update MUJOCO_CONFORMANCE.md (stale status markers, CI section)
-- [ ] **T33** — Update ARCHITECTURE.md (module counts, accuracy review)
-- [ ] **T34** — Clean stale references in phase spec docs (deleted crate names in test commands)
-- [ ] **T35** — Update example crate help text (references to deleted crates)
-- [ ] **T36** — Consolidate future_work_10b–10j.md into themed post-v1.0 roadmap
+- [x] **T32** — Update MUJOCO_CONFORMANCE.md (stale status markers, CI section)
+- [x] **T33** — Update ARCHITECTURE.md (module counts, accuracy review)
+- [x] **T34** — Clean stale references in phase spec docs (deleted crate names in test commands)
+- [x] **T35** — Update example crate help text (references to deleted crates)
+- [x] **T36** — Consolidate future_work_10b–10j.md into themed post-v1.0 roadmap
 
 ### B9 — Final verification (T41)
 **Checkpoint**: Full suite (see T41 details)

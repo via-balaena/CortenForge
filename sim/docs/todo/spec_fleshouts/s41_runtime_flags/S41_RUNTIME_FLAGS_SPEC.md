@@ -1,3 +1,5 @@
+> Historical — §41 Runtime Flags completed 2026-02-24.
+
 # §41 — Runtime Flag Wiring (+ DT-61)
 
 **Status:** ✅ Complete
@@ -3327,8 +3329,7 @@ in `mj_passive()` (it relies on `mju_zero(ptr, 0)` being a no-op).
 After implementation, run sim domain tests:
 
 ```
-cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics \
-  -p sim-constraint -p sim-muscle -p sim-tendon -p sim-sensor -p sim-urdf \
+cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-urdf \
   -p sim-types -p sim-simd
 ```
 

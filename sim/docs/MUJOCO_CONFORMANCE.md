@@ -26,9 +26,9 @@ Run MuJoCo's own test suite against CortenForge implementations.
 |----------|---------------|-------------------|
 | Forward dynamics | `test/engine_forward_test.cc` | sim-core |
 | Contact physics | `test/engine_collision_test.cc` | sim-core |
-| Constraint solver | `test/engine_core_smooth_test.cc` | sim-core (PGS + CG + Newton contact solvers) + sim-constraint (CGSolver, joints) |
+| Constraint solver | `test/engine_core_smooth_test.cc` | sim-core (PGS + CG + Newton contact solvers) |
 | MJCF parsing | `test/xml_test.cc` | sim-mjcf |
-| Sensor readings | `test/sensor_test.cc` | sim-core (pipeline sensors) + sim-sensor (standalone) |
+| Sensor readings | `test/sensor_test.cc` | sim-core (pipeline sensors) |
 
 **Implementation:**
 ```rust
@@ -56,7 +56,11 @@ fn test_free_fall_matches_mujoco() {
 }
 ```
 
-**Status:** `[ ] Not started`
+**Status:** ✅ Complete — Phase 12 conformance suite (79/79 tests passing).
+Conformance tests run via `cargo test -p sim-conformance-tests` in `quality-gate.yml`.
+Covers model loading (Menagerie + DM Control), integration tests (forward dynamics,
+collision, constraints, sensors, tendons, derivatives, sleeping, flex), and golden
+flag tests (26 flag permutations validated against MuJoCo 3.5.0 reference data).
 
 ---
 
@@ -135,10 +139,11 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 - [x] Implement `<compiler>` element (Phase 3 item #18 — `angle`, `meshdir`, `texturedir`) — Done: all A1–A12 attributes
 - [ ] Implement `body/@xyaxes` and `body/@zaxis` orientation parsing
 - [ ] Resolve remaining ⚠️ items: `<size>`, `<asset>` (mesh/texture refs)
-- [ ] Document intentional ❌ omissions (`<visual>`, `<custom>`, `<extension>`) in `sim/docs/ARCHITECTURE.md`
-- [ ] Add parsing tests for each ✓ attribute
+- [x] Document intentional ❌ omissions (`<visual>`, `<custom>`, `<extension>`) in `sim/docs/ARCHITECTURE.md`
+- [x] Add parsing tests for each ✓ attribute — Phase 7 comprehensive parsing tests
 
-**Status:** `[ ] Not started`
+**Status:** ✅ Substantially complete — comparison matrix actively maintained through
+Phases 5–13. Remaining gaps tracked as DT items in POST_V1_ROADMAP.md.
 
 ---
 
@@ -307,7 +312,9 @@ fn test_pendulum_trajectory_matches_mujoco() {
 | Velocity error (per step) | < 1e-5 | 1e-5 - 1e-3 | > 1e-3 |
 | Contact force error | < 5% | 5% - 20% | > 20% |
 
-**Status:** `[ ] Not started`
+**Status:** ✅ Complete — Phase 12 conformance suite includes trajectory comparison
+infrastructure. Golden flag tests compare per-timestep `qacc` against MuJoCo 3.5.0
+reference data with tolerance-based assertions. 79/79 conformance tests passing.
 
 ---
 
@@ -365,51 +372,29 @@ sim/L0/tests/
     └── dm_control/        (git submodule)
 ```
 
-> **Note:** The `mujoco_conformance/` directory is a stub — conformance tests are being
-> migrated to `integration/` using the Model/Data API. Forward dynamics, contact physics,
-> and trajectory comparison tests are planned but not yet implemented.
+> **Note:** The `mujoco_conformance/` directory is a stub — conformance tests live in
+> `integration/` using the Model/Data API.
 
-### CI integration (planned — not yet created)
+### CI integration
 
-> **Note:** This workflow does not exist yet. The file `.github/workflows/mujoco_conformance.yml`
-> and script `scripts/generate_mujoco_references.py` have not been created. The correct package
-> for conformance tests is `sim-conformance-tests`, not `sim-core`. Current conformance tests
-> run via `cargo test -p sim-conformance-tests` in the existing `quality-gate.yml` workflow.
+Conformance tests run in the existing `quality-gate.yml` workflow via
+`cargo test -p sim-conformance-tests`. No separate workflow is needed —
+the conformance test crate is a first-class member of the CI pipeline.
 
-```yaml
-# .github/workflows/mujoco_conformance.yml (PLANNED)
-name: MuJoCo Conformance
-
-on: [push, pull_request]
-
-jobs:
-  conformance:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install MuJoCo (for reference generation)
-        run: pip install mujoco
-
-      - name: Generate reference trajectories
-        run: python scripts/generate_mujoco_references.py
-
-      - name: Run conformance tests
-        run: cargo test -p sim-conformance-tests
-```
+MuJoCo reference data is pre-generated and committed as `.npy` files in
+`sim/L0/tests/assets/`. Reference generation uses `gen_conformance_reference.py`
+with MuJoCo 3.5.0.
 
 ---
 
 ## Progress Tracking
 
-| Approach | Priority | Status | Owner | Notes |
-|----------|----------|--------|-------|-------|
-| Conformance tests | High | Not started | - | Foundation for validation |
-| Doc comparison | Medium | Not started | - | Guides implementation gaps |
-| Model loading | High | ✅ Complete | - | Menagerie + DM Control models load (2026-01-24) |
-| Trajectory comparison | High | Not started | - | Numerical correctness |
+| Approach | Priority | Status | Notes |
+|----------|----------|--------|-------|
+| Conformance tests | High | ✅ Complete | Phase 12 — 79/79 tests, 26 golden flag permutations |
+| Doc comparison | Medium | ✅ Substantially complete | Maintained through Phases 5–13 |
+| Model loading | High | ✅ Complete | Menagerie + DM Control models load (2026-01-24) |
+| Trajectory comparison | High | ✅ Complete | Golden flag tests with MuJoCo 3.5.0 reference data |
 
 ### §5 — Site-Transmission Actuator Conformance
 

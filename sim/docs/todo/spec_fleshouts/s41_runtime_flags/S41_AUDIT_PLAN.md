@@ -1,3 +1,5 @@
+> Historical — §41 Runtime Flags completed 2026-02-24.
+
 # S41 Runtime Flags — Implementation Audit Plan
 
 **Spec:** `sim/docs/todo/spec_fleshouts/s41_runtime_flags/S41_RUNTIME_FLAGS_SPEC.md`
@@ -24,7 +26,7 @@ the exact condition/value/pattern stated. The auditor records one of:
 
 - **File reads:** `Read` tool on the specific file/line cited
 - **Grep:** for cross-cutting checks (re-exports, StepError variant removal, etc.)
-- **Test run:** `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-constraint -p sim-muscle -p sim-tendon -p sim-sensor -p sim-urdf -p sim-types -p sim-simd`
+- **Test run:** `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-urdf -p sim-types -p sim-simd`
 
 ### Execution Order
 
@@ -1095,8 +1097,7 @@ Dedicated checks for every spec-identified edge case:
 ### 6e. Full test suite — PASS
 
 ```
-cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics \
-  -p sim-constraint -p sim-muscle -p sim-tendon -p sim-sensor -p sim-urdf \
+cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-urdf \
   -p sim-types -p sim-simd
 ```
 

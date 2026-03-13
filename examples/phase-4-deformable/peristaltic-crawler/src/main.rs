@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     println!("  1. Define segment geometry (mesh-shell)");
     println!("  2. Generate mold halves (mesh-boolean)");
     println!("  3. Analyze parting lines (mesh-slice)");
-    println!("  4. Simulate peristaltic locomotion with XPBD (sim-deformable)");
+    println!("  4. Simulate peristaltic locomotion with flex pipeline (sim-core)");
     println!("  5. Export mold STL (mesh-io)");
     println!("  6. Cast silicone + attach pneumatic tubing + test locomotion");
 
