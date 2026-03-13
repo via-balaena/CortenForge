@@ -3,24 +3,24 @@
 //! Populates the unified `efc_*` arrays on [`Data`] with constraint Jacobians,
 //! parameters, and metadata for equality, friction, limit, and contact
 //! constraints. Corresponds to MuJoCo's `engine_core_constraint.c`.
+//!
+//! Equality and contact row assembly are delegated to
+//! [`super::equality_assembly`] and [`super::contact_assembly`] respectively.
 
 use nalgebra::{DMatrix, DVector};
 
-use crate::constraint::equality::{
-    extract_connect_jacobian, extract_distance_jacobian, extract_joint_equality_jacobian,
-    extract_tendon_equality_jacobian, extract_weld_jacobian,
-};
 use crate::constraint::impedance::{
-    MJ_MINVAL, ball_limit_axis_angle, compute_aref, compute_diag_approx_bodyweight,
-    compute_diag_approx_exact, compute_impedance, compute_kbip, compute_regularization,
-    normalize_quat4,
+    MJ_MINVAL, ball_limit_axis_angle, compute_aref, compute_diag_approx_exact, compute_impedance,
+    compute_kbip, compute_regularization, normalize_quat4,
 };
-use crate::constraint::jacobian::compute_contact_jacobian;
 use crate::types::flags::disabled;
 use crate::types::{
     ConstraintState, ConstraintType, DISABLE_CONTACT, DISABLE_EQUALITY, DISABLE_FRICTIONLOSS,
     DISABLE_LIMIT, Data, EqualityType, MjJointType, Model,
 };
+
+use super::contact_assembly::{assemble_contact_rows, postprocess_pyramidal_r_scaling};
+use super::equality_assembly::assemble_equality_rows;
 
 /// Compute the deadband displacement for a tendon (DT-35).
 ///
@@ -38,6 +38,77 @@ pub fn tendon_deadband_displacement(length: f64, range: [f64; 2]) -> f64 {
     } else {
         0.0
     }
+}
+
+/// Populate per-row metadata and compute impedance, KBIP, aref, diagApprox, R, D.
+///
+/// This is the shared finalizer called for every constraint row after the
+/// Jacobian, position error, and velocity error have been written into the
+/// `efc_*` arrays. It pushes type/pos/margin/vel/solref/solimp/floss/mu/dim/id,
+/// computes impedance and regularization, then writes `efc_aref` and `efc_b`.
+///
+/// Increments `*row` by 1 on completion.
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_constraint_row(
+    model: &Model,
+    data: &mut Data,
+    nv: usize,
+    row: &mut usize,
+    qacc_smooth: &DVector<f64>,
+    solref: [f64; 2],
+    solimp: [f64; 5],
+    pos: f64,
+    margin: f64,
+    vel: f64,
+    floss: f64,
+    ctype: ConstraintType,
+    dim_val: usize,
+    id_val: usize,
+    mu_val: [f64; 5],
+    bw_diag: f64,
+) {
+    data.efc_type.push(ctype);
+    data.efc_pos.push(pos);
+    data.efc_margin.push(margin);
+    data.efc_vel[*row] = vel;
+    data.efc_solref.push(solref);
+    data.efc_solimp.push(solimp);
+    data.efc_floss.push(floss);
+    data.efc_mu.push(mu_val);
+    data.efc_dim.push(dim_val);
+    data.efc_id.push(id_val);
+
+    // Impedance
+    let violation = (pos - margin).abs();
+    let imp = compute_impedance(solimp, violation);
+    data.efc_imp.push(imp);
+
+    // diagApprox: exact M⁻¹ solve or O(1) bodyweight approximation (DT-39)
+    let diag = if model.diagapprox_bodyweight {
+        bw_diag.max(MJ_MINVAL)
+    } else {
+        let j_row_slice: Vec<f64> = (0..nv).map(|col| data.efc_J[(*row, col)]).collect();
+        compute_diag_approx_exact(&j_row_slice, nv, model, data)
+    };
+    data.efc_diagApprox.push(diag);
+
+    // Regularization
+    let (r_val, d_val) = compute_regularization(imp, diag);
+    data.efc_R.push(r_val);
+    data.efc_D.push(d_val);
+
+    // KBIP + aref
+    let (k, b) = compute_kbip(model, solref, solimp);
+    data.efc_aref[*row] = compute_aref(k, b, imp, pos, margin, vel);
+
+    // efc_b = J_row · qacc_smooth - aref
+    let mut j_dot_qacc = 0.0;
+    for col in 0..nv {
+        j_dot_qacc += data.efc_J[(*row, col)] * qacc_smooth[col];
+    }
+    data.efc_b[*row] = j_dot_qacc - data.efc_aref[*row];
+
+    *row += 1;
 }
 
 /// Assemble the unified constraint Jacobian and metadata for all solver types.
@@ -201,159 +272,12 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
 
     let mut row = 0usize;
 
-    // Helper: populate per-row metadata and compute impedance, KBIP, aref, diagApprox, R, D.
-    // Must be called for each row after J row and pos/vel/margin are set.
-    macro_rules! finalize_row {
-        ($solref:expr, $solimp:expr, $pos:expr, $margin:expr, $vel:expr, $floss:expr,
-         $ctype:expr, $dim_val:expr, $id_val:expr, $mu_val:expr, $bw_diag:expr) => {{
-            let sr: [f64; 2] = $solref;
-            let si: [f64; 5] = $solimp;
-            let pos_val: f64 = $pos;
-            let margin_val: f64 = $margin;
-            let vel_val: f64 = $vel;
-            let floss_val: f64 = $floss;
-
-            data.efc_type.push($ctype);
-            data.efc_pos.push(pos_val);
-            data.efc_margin.push(margin_val);
-            data.efc_vel[row] = vel_val;
-            data.efc_solref.push(sr);
-            data.efc_solimp.push(si);
-            data.efc_floss.push(floss_val);
-            data.efc_mu.push($mu_val);
-            data.efc_dim.push($dim_val);
-            data.efc_id.push($id_val);
-
-            // Impedance
-            let violation = (pos_val - margin_val).abs();
-            let imp = compute_impedance(si, violation);
-            data.efc_imp.push(imp);
-
-            // diagApprox: exact M⁻¹ solve or O(1) bodyweight approximation (DT-39)
-            let diag = if model.diagapprox_bodyweight {
-                ($bw_diag as f64).max(MJ_MINVAL)
-            } else {
-                let j_row_slice: Vec<f64> = (0..nv).map(|col| data.efc_J[(row, col)]).collect();
-                compute_diag_approx_exact(&j_row_slice, nv, model, data)
-            };
-            data.efc_diagApprox.push(diag);
-
-            // Regularization
-            let (r_val, d_val) = compute_regularization(imp, diag);
-            data.efc_R.push(r_val);
-            data.efc_D.push(d_val);
-
-            // KBIP + aref
-            let (k, b) = compute_kbip(model, sr, si);
-            data.efc_aref[row] = compute_aref(k, b, imp, pos_val, margin_val, vel_val);
-
-            // efc_b = J_row · qacc_smooth - aref
-            let mut j_dot_qacc = 0.0;
-            for col in 0..nv {
-                j_dot_qacc += data.efc_J[(row, col)] * qacc_smooth[col];
-            }
-            data.efc_b[row] = j_dot_qacc - data.efc_aref[row];
-
-            row += 1;
-        }};
-    }
-
     // === Phase 3: Populate rows ===
 
-    // --- 3a: Equality constraints (S4.4: gated on DISABLE_EQUALITY) ---
+    // --- 3a: Equality constraints + flex edges (S4.4: gated on DISABLE_EQUALITY) ---
     if !equality_disabled {
-        for eq_id in 0..model.neq {
-            if !model.eq_active[eq_id] {
-                continue;
-            }
-
-            let rows = match model.eq_type[eq_id] {
-                EqualityType::Connect => extract_connect_jacobian(model, data, eq_id),
-                EqualityType::Weld => extract_weld_jacobian(model, data, eq_id),
-                EqualityType::Joint => extract_joint_equality_jacobian(model, data, eq_id),
-                EqualityType::Distance => extract_distance_jacobian(model, data, eq_id),
-                EqualityType::Tendon => extract_tendon_equality_jacobian(model, data, eq_id),
-            };
-
-            let sr = model.eq_solref[eq_id];
-            let si = model.eq_solimp[eq_id];
-            let nrows = rows.j_rows.nrows();
-
-            for r in 0..nrows {
-                // Copy J row
-                for col in 0..nv {
-                    data.efc_J[(row, col)] = rows.j_rows[(r, col)];
-                }
-                let bw =
-                    compute_diag_approx_bodyweight(model, data, ConstraintType::Equality, eq_id, r);
-                finalize_row!(
-                    sr,
-                    si,
-                    rows.pos[r],
-                    0.0,
-                    rows.vel[r],
-                    0.0,
-                    ConstraintType::Equality,
-                    1,
-                    eq_id,
-                    [0.0; 5],
-                    bw
-                );
-            }
-        }
-
-        // --- 3a': Flex edge-length constraints (equality block) ---
-        for e in 0..model.nflexedge {
-            let rest_len = model.flexedge_length0[e];
-            let flex_id = model.flexedge_flexid[e];
-            let dist = data.flexedge_length[e];
-
-            if dist < 1e-10 {
-                // Degenerate: zero-length edge, skip (fill zeros, finalize_row! handles it)
-                finalize_row!(
-                    model.flex_edge_solref[flex_id],
-                    model.flex_edge_solimp[flex_id],
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    ConstraintType::FlexEdge,
-                    1,
-                    e,
-                    [0.0; 5],
-                    MJ_MINVAL
-                );
-                continue;
-            }
-
-            let pos_error = dist - rest_len; // positive = stretched, negative = compressed
-
-            // §42A-i: Scatter pre-computed edge Jacobian into dense efc_J row.
-            let rowadr = model.flexedge_J_rowadr[e];
-            let rownnz = model.flexedge_J_rownnz[e];
-            for j in 0..rownnz {
-                let col = model.flexedge_J_colind[rowadr + j];
-                data.efc_J[(row, col)] = data.flexedge_J[rowadr + j];
-            }
-
-            // Velocity error: read from pre-computed Data field
-            let vel_error = data.flexedge_velocity[e];
-
-            finalize_row!(
-                model.flex_edge_solref[flex_id],
-                model.flex_edge_solimp[flex_id],
-                pos_error,
-                0.0, // margin
-                vel_error,
-                0.0, // friction loss
-                ConstraintType::FlexEdge,
-                1,        // dim
-                e,        // id (edge index)
-                [0.0; 5], // mu (no friction on edge constraints)
-                MJ_MINVAL
-            );
-        }
-    } // end if !equality_disabled (3a)
+        assemble_equality_rows(model, data, nv, &mut row, qacc_smooth);
+    }
 
     // --- 3b: DOF friction loss (S4.5: gated on DISABLE_FRICTIONLOSS) ---
     if !frictionloss_disabled {
@@ -366,7 +290,12 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             data.efc_J[(row, dof_idx)] = 1.0;
             let vel = data.qvel[dof_idx];
             let bw = model.dof_invweight0.get(dof_idx).copied().unwrap_or(0.0);
-            finalize_row!(
+            finalize_constraint_row(
+                model,
+                data,
+                nv,
+                &mut row,
+                qacc_smooth,
                 model.dof_solref[dof_idx],
                 model.dof_solimp[dof_idx],
                 0.0,
@@ -377,7 +306,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 1,
                 dof_idx,
                 [0.0; 5],
-                bw
+                bw,
             );
         }
 
@@ -393,7 +322,12 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             }
             let vel = data.ten_velocity[t];
             let bw = model.tendon_invweight0.get(t).copied().unwrap_or(0.0);
-            finalize_row!(
+            finalize_constraint_row(
+                model,
+                data,
+                nv,
+                &mut row,
+                qacc_smooth,
                 model.tendon_solref_fri[t],
                 model.tendon_solimp_fri[t],
                 0.0,
@@ -404,7 +338,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                 1,
                 t,
                 [0.0; 5],
-                bw
+                bw,
             );
         }
     } // end if !frictionloss_disabled (3b+3c)
@@ -425,19 +359,18 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     let si = model.jnt_solimp[jnt_id];
                     let margin = model.jnt_margin[jnt_id];
 
-                    // MuJoCo convention: dist > 0 = satisfied, dist < 0 = violated.
-                    // Constraint is instantiated when dist < margin.
-
                     let bw = model.dof_invweight0.get(dof_adr).copied().unwrap_or(0.0);
 
                     // Lower limit: dist = q - limit_min (negative when q < limit_min)
                     let dist_lower = q - limit_min;
                     if dist_lower < margin {
-                        // J = +1 (MuJoCo: jac = -side, side=-1 → jac=+1)
                         data.efc_J[(row, dof_adr)] = 1.0;
-                        // pos = dist (negative = violated, MuJoCo convention)
-                        // vel = J*qdot = qdot
-                        finalize_row!(
+                        finalize_constraint_row(
+                            model,
+                            data,
+                            nv,
+                            &mut row,
+                            qacc_smooth,
                             sr,
                             si,
                             dist_lower,
@@ -448,18 +381,20 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             1,
                             jnt_id,
                             [0.0; 5],
-                            bw
+                            bw,
                         );
                     }
 
                     // Upper limit: dist = limit_max - q (negative when q > limit_max)
                     let dist_upper = limit_max - q;
                     if dist_upper < margin {
-                        // J = -1 (MuJoCo: jac = -side, side=+1 → jac=-1)
                         data.efc_J[(row, dof_adr)] = -1.0;
-                        // pos = dist (negative = violated, MuJoCo convention)
-                        // vel = J*qdot = -qdot
-                        finalize_row!(
+                        finalize_constraint_row(
+                            model,
+                            data,
+                            nv,
+                            &mut row,
+                            qacc_smooth,
                             sr,
                             si,
                             dist_upper,
@@ -470,7 +405,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             1,
                             jnt_id,
                             [0.0; 5],
-                            bw
+                            bw,
                         );
                     }
                 }
@@ -489,18 +424,21 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     let margin = model.jnt_margin[jnt_id];
 
                     if dist < margin {
-                        // Jacobian: -unit_dir on 3 angular DOFs
                         data.efc_J[(row, dof_adr)] = -unit_dir.x;
                         data.efc_J[(row, dof_adr + 1)] = -unit_dir.y;
                         data.efc_J[(row, dof_adr + 2)] = -unit_dir.z;
 
-                        // Constraint-space velocity: J · qvel
                         let vel = -(unit_dir.x * data.qvel[dof_adr]
                             + unit_dir.y * data.qvel[dof_adr + 1]
                             + unit_dir.z * data.qvel[dof_adr + 2]);
 
                         let bw = model.dof_invweight0.get(dof_adr).copied().unwrap_or(0.0);
-                        finalize_row!(
+                        finalize_constraint_row(
+                            model,
+                            data,
+                            nv,
+                            &mut row,
+                            qacc_smooth,
                             model.jnt_solref[jnt_id],
                             model.jnt_solimp[jnt_id],
                             dist,
@@ -511,7 +449,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                             1,
                             jnt_id,
                             [0.0; 5],
-                            bw
+                            bw,
                         );
                     }
                 }
@@ -537,11 +475,15 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
             // Lower tendon limit: dist = length - limit_min
             let dist_lower = length - limit_min;
             if dist_lower < margin {
-                // J = +ten_J (MuJoCo convention: pushes length up)
                 for col in 0..nv {
                     data.efc_J[(row, col)] = data.ten_J[t][col];
                 }
-                finalize_row!(
+                finalize_constraint_row(
+                    model,
+                    data,
+                    nv,
+                    &mut row,
+                    qacc_smooth,
                     sr,
                     si,
                     dist_lower,
@@ -552,18 +494,22 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     1,
                     t,
                     [0.0; 5],
-                    bw
+                    bw,
                 );
             }
 
             // Upper tendon limit: dist = limit_max - length
             let dist_upper = limit_max - length;
             if dist_upper < margin {
-                // J = -ten_J (MuJoCo convention: pushes length down)
                 for col in 0..nv {
                     data.efc_J[(row, col)] = -data.ten_J[t][col];
                 }
-                finalize_row!(
+                finalize_constraint_row(
+                    model,
+                    data,
+                    nv,
+                    &mut row,
+                    qacc_smooth,
                     sr,
                     si,
                     dist_upper,
@@ -574,7 +520,7 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
                     1,
                     t,
                     [0.0; 5],
-                    bw
+                    bw,
                 );
             }
         }
@@ -582,221 +528,14 @@ pub fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth:
 
     // --- 3f: Contacts (S4.1 Site 2: defense-in-depth guard on DISABLE_CONTACT) ---
     let contacts = data.contacts.clone(); // Clone to avoid borrow conflict
-    // §32: Track pyramidal contact ranges for R-scaling post-processing.
-    let mut pyramidal_ranges: Vec<(usize, usize, usize)> = Vec::new(); // (start_row, n_facets, contact_idx)
-    if !contact_disabled {
-        for (ci, contact) in contacts.iter().enumerate() {
-            let dim = contact.dim;
-            let cj = compute_contact_jacobian(model, data, contact);
-
-            let sr_normal = contact.solref;
-            let si = contact.solimp;
-            // includemargin = margin - gap, computed at contact creation.
-            // Flows into compute_impedance (violation threshold) and compute_aref
-            // (reference acceleration offset).
-            let margin = contact.includemargin;
-            let is_elliptic = dim >= 3 && model.cone == 1 && contact.mu[0] >= 1e-10;
-            let is_pyramidal = dim >= 3 && model.cone == 0 && contact.mu[0] >= 1e-10;
-
-            // Precompute contact bodyweight for DT-39
-            let bw_contact =
-                if let (Some(vi1), Some(vi2)) = (contact.flex_vertex, contact.flex_vertex2) {
-                    // Self-collision: both sides are flex vertices — use vertex bodies
-                    let b1 = model.flexvert_bodyid[vi1];
-                    let b2 = model.flexvert_bodyid[vi2];
-                    let w1t = if b1 < model.body_invweight0.len() {
-                        model.body_invweight0[b1][0]
-                    } else {
-                        0.0
-                    };
-                    let w2t = if b2 < model.body_invweight0.len() {
-                        model.body_invweight0[b2][0]
-                    } else {
-                        0.0
-                    };
-                    let w1r = if b1 < model.body_invweight0.len() {
-                        model.body_invweight0[b1][1]
-                    } else {
-                        0.0
-                    };
-                    let w2r = if b2 < model.body_invweight0.len() {
-                        model.body_invweight0[b2][1]
-                    } else {
-                        0.0
-                    };
-                    [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
-                } else {
-                    let b1 = if contact.geom1 < model.geom_body.len() {
-                        model.geom_body[contact.geom1]
-                    } else {
-                        0
-                    };
-                    let b2 = if contact.geom2 < model.geom_body.len() {
-                        model.geom_body[contact.geom2]
-                    } else {
-                        0
-                    };
-                    let w1t = if b1 < model.body_invweight0.len() {
-                        model.body_invweight0[b1][0]
-                    } else {
-                        0.0
-                    };
-                    let w2t = if b2 < model.body_invweight0.len() {
-                        model.body_invweight0[b2][0]
-                    } else {
-                        0.0
-                    };
-                    let w1r = if b1 < model.body_invweight0.len() {
-                        model.body_invweight0[b1][1]
-                    } else {
-                        0.0
-                    };
-                    let w2r = if b2 < model.body_invweight0.len() {
-                        model.body_invweight0[b2][1]
-                    } else {
-                        0.0
-                    };
-                    // [translational, rotational]
-                    [(w1t + w2t).max(MJ_MINVAL), (w1r + w2r).max(MJ_MINVAL)]
-                };
-
-            if is_pyramidal {
-                // §32: Pyramidal friction cone — emit 2*(dim-1) facet rows.
-                // Each friction direction d produces two facets:
-                //   J_pos = J_normal + μ_d · J_friction_d
-                //   J_neg = J_normal - μ_d · J_friction_d
-                // All facets share pos, margin, solref (NOT solreffriction).
-                let n_facets = 2 * (dim - 1);
-                let start_row = row;
-
-                // MuJoCo: cpos[0] = cpos[1] = con->dist; cmargin[0] = cmargin[1] = con->includemargin;
-                // These are set ONCE before the loop, reused for ALL facet pairs.
-                let pos = -contact.depth;
-
-                // Pyramidal facets combine normal + mu·friction → invweight includes
-                // both normal (1²) and friction (mu²) components, using translational
-                // body weight. After R-scaling (Rpy = 2·mu²·R_base), the effective
-                // diagApprox becomes 2·mu²·(1+mu²)·w_tran, matching MuJoCo.
-                //
-                // NOTE(DT-161): This produces (1+μ²)·w_tran; MuJoCo stores
-                // 2·(1+μ²)·w_tran (factor-of-2 mismatch). No downstream effect —
-                // Rpy post-processing overwrites R/D for all pyramidal facet rows.
-                let mu0 = contact.mu[0];
-                let bw_py = (1.0 + mu0 * mu0) * bw_contact[0];
-
-                for d in 1..dim {
-                    let mu_d = contact.mu[d - 1]; // friction coefficient for direction d
-
-                    // Positive facet: J_normal + μ_d · J_friction_d
-                    for col in 0..nv {
-                        data.efc_J[(row, col)] = cj[(0, col)] + mu_d * cj[(d, col)];
-                    }
-                    let mut vel = 0.0;
-                    for col in 0..nv {
-                        vel += data.efc_J[(row, col)] * data.qvel[col];
-                    }
-                    finalize_row!(
-                        sr_normal,
-                        si,
-                        pos,
-                        margin,
-                        vel,
-                        0.0,
-                        ConstraintType::ContactPyramidal,
-                        n_facets,
-                        ci,
-                        contact.mu,
-                        bw_py
-                    );
-
-                    // Negative facet: J_normal - μ_d · J_friction_d
-                    for col in 0..nv {
-                        data.efc_J[(row, col)] = cj[(0, col)] - mu_d * cj[(d, col)];
-                    }
-                    let mut vel = 0.0;
-                    for col in 0..nv {
-                        vel += data.efc_J[(row, col)] * data.qvel[col];
-                    }
-                    finalize_row!(
-                        sr_normal,
-                        si,
-                        pos,
-                        margin,
-                        vel,
-                        0.0,
-                        ConstraintType::ContactPyramidal,
-                        n_facets,
-                        ci,
-                        contact.mu,
-                        bw_py
-                    );
-                }
-
-                pyramidal_ranges.push((start_row, n_facets, ci));
-            } else {
-                // Elliptic or frictionless: emit dim rows (existing path).
-                let ctype = if is_elliptic {
-                    ConstraintType::ContactElliptic
-                } else {
-                    ConstraintType::ContactFrictionless
-                };
-
-                // §31: solreffriction selection for elliptic friction rows.
-                let has_solreffriction = is_elliptic
-                    && (contact.solreffriction[0] != 0.0 || contact.solreffriction[1] != 0.0);
-
-                for r in 0..dim {
-                    for col in 0..nv {
-                        data.efc_J[(row, col)] = cj[(r, col)];
-                    }
-
-                    // pos: row 0 = signed distance, rows 1+ = 0.
-                    let pos = if r == 0 { -contact.depth } else { 0.0 };
-                    let margin_r = if r == 0 { margin } else { 0.0 };
-
-                    // §31: select solref for this row.
-                    let sr = if r > 0 && has_solreffriction {
-                        contact.solreffriction
-                    } else {
-                        sr_normal
-                    };
-
-                    // vel: J_row · qvel
-                    let mut vel = 0.0;
-                    for col in 0..nv {
-                        vel += cj[(r, col)] * data.qvel[col];
-                    }
-
-                    // row 0 = normal (translational), rows 1+ = friction (rotational)
-                    let bw_c = if r == 0 { bw_contact[0] } else { bw_contact[1] };
-                    finalize_row!(
-                        sr, si, pos, margin_r, vel, 0.0, ctype, dim, ci, contact.mu, bw_c
-                    );
-                }
-            }
-        }
-
-        // §32: Post-process R scaling for pyramidal contacts.
-        // MuJoCo's mj_makeImpedance computes R per-row from each row's own diagApprox,
-        // then overrides all facet rows with Rpy = 2 · μ_reg² · R[first_facet].
-        // R[first_facet] was already computed by finalize_row! using the first facet's
-        // actual Jacobian (J_normal + μ[0]·J_friction_0), NOT the pure normal Jacobian.
-        for &(start_row, n_facets, ci) in &pyramidal_ranges {
-            let contact = &contacts[ci];
-
-            // Use R already computed by finalize_row! for the first facet row.
-            let r_first_facet = data.efc_R[start_row];
-
-            // μ_reg = friction[0] · √(1/impratio)
-            let mu_reg = contact.mu[0] * (1.0 / model.impratio).sqrt();
-            let rpy = (2.0 * mu_reg * mu_reg * r_first_facet).max(MJ_MINVAL);
-
-            for row_idx in start_row..start_row + n_facets {
-                data.efc_R[row_idx] = rpy;
-                data.efc_D[row_idx] = 1.0 / rpy;
-            }
-        }
-    } // end if !contact_disabled (3f)
+    let pyramidal_ranges = if contact_disabled {
+        Vec::new()
+    } else {
+        let ranges = assemble_contact_rows(model, data, nv, &mut row, qacc_smooth, &contacts);
+        postprocess_pyramidal_r_scaling(model, data, &contacts, &ranges);
+        ranges
+    };
+    let _ = pyramidal_ranges; // suppress unused warning when contacts disabled
 
     debug_assert_eq!(row, nefc, "Row count mismatch in constraint assembly");
 

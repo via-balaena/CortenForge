@@ -9,7 +9,9 @@
 //! dispatch in `engine_forward.c`.
 
 pub(crate) mod assembly;
+pub(crate) mod contact_assembly;
 pub(crate) mod equality;
+pub(crate) mod equality_assembly;
 pub(crate) mod impedance;
 pub(crate) mod jacobian;
 pub(crate) mod solver;
