@@ -86,10 +86,10 @@ Replace `<N>` with the batch number (e.g., `B1`, `B5`, `B9`).
 
 ### B7 — sim-core file splits, part 2 (T28–T31)
 **Checkpoint**: `cargo test -p sim-core -p sim-conformance-tests`
-- [ ] **T28** — Split `constraint/assembly.rs` (1,903 lines → contact_assembly, equality_assembly)
-- [ ] **T29** — Split `collision/mod.rs` (1,539 lines → collision_pairs)
-- [ ] **T30** — Split `jacobian.rs` (1,532 lines → per-constraint-type builders)
-- [ ] **T31** — Split `sensor/mod.rs` (1,430 lines → per-sensor-type submodules)
+- [x] **T28** — Split `constraint/assembly.rs` (1,903 lines → contact_assembly, equality_assembly)
+- [x] **T29** — Split `collision/mod.rs` (1,539 lines → collision_pairs)
+- [x] **T30** — Split `jacobian.rs` (1,532 lines → per-constraint-type builders)
+- [x] **T31** — Split `sensor/mod.rs` (1,430 lines → per-sensor-type submodules)
 
 ### B8 — Documentation refresh (T32–T36)
 **Checkpoint**: Visual review
