@@ -88,7 +88,8 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
                     }
                     MjJointType::Ball => {
                         // qpos stores quaternion [w, x, y, z]
-                        let q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        // Must normalize — integration can drift from unit norm.
+                        let q = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
                             data.qpos[qpos_adr],
                             data.qpos[qpos_adr + 1],
                             data.qpos[qpos_adr + 2],
@@ -103,7 +104,8 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
                             data.qpos[qpos_adr + 1],
                             data.qpos[qpos_adr + 2],
                         );
-                        quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        // Must normalize — integration can drift from unit norm.
+                        quat = UnitQuaternion::new_normalize(nalgebra::Quaternion::new(
                             data.qpos[qpos_adr + 3],
                             data.qpos[qpos_adr + 4],
                             data.qpos[qpos_adr + 5],

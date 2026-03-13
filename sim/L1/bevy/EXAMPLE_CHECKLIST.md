@@ -88,7 +88,7 @@ motors. No ground contact — focus on articulated kinematics and control.
   *New concepts:* slide joint, motor actuator + `data.ctrl`, keyboard →
   physics control loop, joint limits.
 
-- [ ] **mjcf_double_pendulum** — Serial chain from MJCF with coupling dynamics.
+- [x] **mjcf_double_pendulum** — Serial chain from MJCF with coupling dynamics.
 
   *MJCF (inline):* 2 bodies, 2 hinges (axis Y). Upper: stiffness=5,
   damping=0.3, springref=0.2. Lower: damping=0.2. Based on conformance
@@ -102,88 +102,161 @@ motors. No ground contact — focus on articulated kinematics and control.
   HUD: θ₁, θ₂, energy, time.
 
   *Acceptance:*
-  - [ ] Chaotic double-pendulum motion (qualitatively correct)
-  - [ ] Links stay connected (no constraint drift)
-  - [ ] Energy decreases monotonically (damped)
+  - [x] Chaotic double-pendulum motion (qualitatively correct)
+  - [x] Links stay connected (no constraint drift)
+  - [x] Energy decreases monotonically (damped)
 
   *New concepts:* serial chain from MJCF (vs factory in Tier 2), validates
   MJCF → chain topology → FK end-to-end.
 
-## Tier 5: Multi-body kinematic trees + ground contact
+## Tier 5: Precision Mechanisms
 
-The critical bridge: articulated bodies interacting with the ground plane.
-This is what the humanoid needs and what no prior tier proves.
+Analytically verifiable mechanical systems. Every example has a closed-form
+expected behavior — no subjective "does this look right?" judgments.
 
-- [ ] **ragdoll** — Branching kinematic tree with free base + articulated limbs
-  + ground contact. Passive (no actuators). The exact failure mode of the
-  current humanoid — if this works, the humanoid's core physics work.
+- [x] **spring_mass_damper** — Mass on slide joint with spring, damper, and
+  ground contact. The simplest articulated + contact example with an exact
+  analytical answer.
 
-  *MJCF (inline):* 9 bodies. Torso with freejoint (nq=7/nv=6). Ball joints
-  at shoulders and hips (4×3-DOF). Hinge joints at elbows and knees (4×1-DOF,
-  limited). Ground plane with contact enabled. Damping throughout, friction
-  on all geoms.
+  *MJCF (inline):* 1 body (mass block), 1 slide joint (Z axis), spring
+  (stiffness=50) + damper (damping=2.0). Ground plane with contact enabled.
+  Initial position above equilibrium (Z=1.5). RK4 integrator, dt=0.001.
 
-  *Physics:* Free + ball + hinge joints, ground contact (capsule-plane),
-  joint limits, passive damping. No actuators.
+  *Physics:* Slide joint, passive spring + damper, ground contact
+  (box-plane), gravity. Analytically: ω_n = √(k/m), ζ = c/(2√(km)),
+  ω_d = ω_n√(1−ζ²), x(t) = A·e^(−ζω_n·t)·cos(ω_d·t + φ).
 
-  *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` auto-step + 4 substeps.
-  Orbit camera at (0, 0, 1). Debug keys: C/N/F/J/L. HUD: body count,
-  contact count, energy, time.
-
-  *Acceptance:*
-  - [ ] Falls from Z=2, limbs flop realistically
-  - [ ] Lands on ground — no interpenetration, no bouncing forever
-  - [ ] Settles to rest within ~5s (damping dissipates energy)
-  - [ ] Elbows/knees respect limits (no hyperextension)
-  - [ ] `C` shows contact points at ground
-  - [ ] No energy divergence
-
-  *Why critical:* Simplified humanoid (9 bodies vs 13) with same joint mix
-  (free + ball + hinge) and same failure mode (articulated tree + contact).
-  Debug here, not on the full humanoid.
-
-  *New concepts:* branching tree from MJCF, ground contact with articulated
-  bodies, joint limits in dynamic context, substeps for contact stability.
-
-- [ ] **planar_walker** — Actuated locomotion platform. Ground contact, joint
-  limits, motor control. Last stepping stone before the humanoid.
-
-  *MJCF (inline):* 7 bodies. Planar root (2 slides X/Z + 1 hinge Y — no
-  freejoint). Symmetric legs: thigh → shin → foot, each with hinge (Y axis)
-  + range limits. 6 motor actuators with gear ratios (hip=100, knee=50,
-  ankle=20). Based on dm_control walker topology.
-
-  *Physics:* Planar root (slide+slide+hinge), 6 actuated hinges with limits,
-  6 motors with gear ratios, ground contact (capsule-plane), armature.
-
-  *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` auto-step + 4 substeps.
-  Side view camera tracking torso X. Keyboard: Q/A W/S E/D (right hip/knee/
-  ankle), U/J I/K O/L (left), Space (zero all), R (reset pose). HUD: 6 joint
-  angles, torso height, contact count, ctrl values.
+  *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` wall-clock stepping.
+  Side view camera. HUD: position, velocity, measured frequency,
+  predicted frequency, error %. Trail showing oscillation envelope.
 
   *Acceptance:*
-  - [ ] Stands on ground at initial pose
-  - [ ] Motor torques move joints within limits
-  - [ ] Falls realistically when unbalanced
-  - [ ] Feet-ground contact is stable (no jitter, no sinking)
-  - [ ] `R` resets to standing pose
-  - [ ] Energy bounded even with active control
+  - [x] Mass oscillates vertically on spring
+  - [x] Measured frequency matches ω_d = ω_n√(1−ζ²) within 1%
+  - [x] Amplitude decay envelope matches e^(−ζω_n·t) within 2%
+  - [x] If dropped from above rest, bounces off ground then oscillates
+  - [x] Energy monotonically decreases
+  - [x] `R` resets to initial height
 
-  *New concepts:* planar root (slide+slide+hinge), multi-actuator control
-  with gear ratios, per-joint keyboard input, pose reset, locomotion platform.
+  *New concepts:* slide joint + spring + contact, analytical verification
+  in HUD, measurable frequency/decay comparison.
 
-## Tier 6: Complex articulated systems
+- [x] **2dof_arm** — 2-link planar robot arm with 2 motor actuators and
+  keyboard control. FK is exact trigonometry.
 
-- [~] **mjcf_humanoid** — `sim_mjcf::load_model()` of 13-body humanoid.
-  Free+ball+hinge joints (nq=43, nv=34). Launches but energy diverges —
-  ground plane has `contype="0" conaffinity="0"` (contact disabled), bodies
-  fall freely.
+  *MJCF (inline):* 2 bodies (upper arm L₁=1.0m, forearm L₂=0.8m). 2 hinge
+  joints (axis -Y for standard robotics convention). 2 motor actuators
+  with gear ratios (50/25). Joint limits: shoulder ±π, elbow ±2.6 rad.
+  Damping (2.0/1.0) for stability. Gravity enabled (vertical plane). RK4.
 
-  *Required fixes (after ragdoll works):*
-  1. Enable ground contact: remove `contype="0" conaffinity="0"` from ground
-  2. Add 4 substeps for contact stability
-  3. Tune damping if needed
-  4. Verify energy is bounded
+  *Physics:* 2 hinge joints, 2 motors, joint limits, CRBA mass matrix
+  with off-diagonal coupling. FK: x = L₁cos(θ₁) + L₂cos(θ₁+θ₂),
+  z = L₁sin(θ₁) + L₂sin(θ₁+θ₂). Workspace is annulus with
+  r_inner = |L₁−L₂| = 0.2, r_outer = L₁+L₂ = 1.8.
+
+  *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` wall-clock stepping.
+  Side view camera. Q/A = joint 1 ±, W/S = joint 2 ±. End-effector
+  trail (gizmo line) + marker sphere. HUD: θ₁, θ₂, end-effector (x,z)
+  measured vs FK predicted, |error|, workspace radius.
+
+  *Acceptance:*
+  - [x] Keyboard drives both joints smoothly
+  - [x] End-effector position matches FK formula within 1e-6
+  - [x] Trail traces correct workspace region
+  - [x] Joint limits prevent self-intersection
+  - [x] Mass matrix coupling visible (moving joint 1 affects joint 2)
+  - [x] `R` resets to home pose
+
+  *New concepts:* multi-actuator control, FK verification against
+  analytical formula, end-effector tracking, workspace visualization.
+
+- [x] **gyroscope** — Spinning disk on a pivot, free to precess under gravity.
+  Precession rate is analytically exact.
+
+  *MJCF (inline):* 2 bodies. Base (fixed or heavy). Disk body on a short
+  rod with ball joint at pivot. Disk has high moment of inertia about spin
+  axis. Initial angular velocity ω_spin about spin axis via qvel. Gravity
+  enabled. RK4, dt=0.001.
+
+  *Physics:* Ball joint (or free joint on rod), gravity torque, gyroscopic
+  precession. Precession rate: ω_p = mgh/(I_spin · ω_spin). Nutation
+  visible at lower spin speeds.
+
+  *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` wall-clock stepping.
+  Orbit camera. HUD: spin rate, measured precession rate, predicted
+  precession rate, error %, angular momentum magnitude (should be
+  ~conserved).
+
+  *Acceptance:*
+  - [x] Disk precesses around vertical axis (visible circular motion)
+  - [x] Measured precession period matches τ/(I_spin · ω_spin) within 5%
+  - [x] Angular momentum magnitude conserved within 1%
+  - [x] Higher spin speed → slower precession (inverse relationship)
+  - [x] `R` resets with initial spin
+
+  *New concepts:* 3D rotational dynamics, angular momentum conservation,
+  gyroscopic precession, analytical precession rate verification.
+
+## Tier 6: Coupled & Constrained Systems
+
+Equality constraints, tendons, and multi-body coupling. Proves the constraint
+solver handles coupling between distinct kinematic chains.
+
+- [x] **coupled_pendulums** — Two pendulums coupled by torsional spring.
+  Energy transfers between them in a measurable beating pattern.
+
+  *MJCF (inline):* 2 independent pendulum bodies (L₁=0.6m, L₂=0.8m),
+  each with hinge joint (axis Y). Different lengths give different natural
+  frequencies. Coupled by manual torsional spring (κ=2.0 N·m/rad) via
+  `qfrc_applied`. Light damping (0.02). RK4, dt=0.001.
+
+  *Physics:* 2 hinge joints, manual spring coupling, energy exchange.
+  Normal mode frequencies computed exactly from coupled equations.
+  Beat frequency: f_beat = |f₊ − f₋| / 2 where f₊, f₋ are normal modes.
+  Energy sloshes between pendulums — analytically exact.
+
+  *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` wall-clock stepping.
+  Front view camera. HUD: θ₁, θ₂, E₁, E₂, measured beat frequency,
+  predicted beat frequency, error %. Gizmo-drawn rods, bobs, and
+  zigzag coupling spring.
+
+  *Acceptance:*
+  - [x] Both pendulums oscillate
+  - [x] Energy visibly transfers between them (one slows as other speeds up)
+  - [x] Measured beat frequency matches |f₊ − f₋|/2 within 5% (err ≈ −1.25%)
+  - [x] Total energy conserved (minus damping losses)
+  - [x] Coupling strength affects beat amplitude
+
+  *New concepts:* manual coupling forces via qfrc_applied, energy exchange
+  between coupled systems, normal mode analysis, beat frequency verification.
+
+- [x] **crank_slider** — Motor-driven crank converts rotary motion to linear
+  sliding. Classic mechanism with analytically exact piston position.
+
+  *MJCF (inline):* 3 bodies. Crank arm (hinge joint, motor-driven).
+  Connecting rod (body with equality connect constraints at both ends).
+  Slider (slide joint, X axis). Motor on crank hinge with constant
+  velocity or torque.
+
+  *Physics:* Hinge joint (crank), slide joint (piston), equality connect
+  constraints (rod endpoints), motor actuator. Piston position:
+  x(θ) = r·cos(θ) + √(L² − r²·sin²(θ)) where r = crank radius,
+  L = rod length, θ = crank angle.
+
+  *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` wall-clock stepping.
+  Side view camera. HUD: crank angle θ, piston x measured vs x predicted,
+  |error|, crank RPM.
+
+  *Acceptance:*
+  - [x] Crank rotates continuously under motor drive
+  - [x] Piston slides back and forth in sync with crank
+  - [x] Measured piston position matches analytical formula within 1e-4
+  - [x] Rod stays connected at both ends (no constraint drift)
+  - [x] Smooth periodic motion at steady state
+  - [x] HUD error stays below threshold
+
+  *New concepts:* equality connect constraints, closed-loop mechanism,
+  motor-driven periodic motion, analytical position curve verification.
 
 ---
 
@@ -191,27 +264,31 @@ This is what the humanoid needs and what no prior tier proves.
 
 Each validates infrastructure for the next:
 
-1. **mjcf_pendulum** — fast win, proves articulated MJCF works
-2. **mjcf_cartpole** — proves actuators + control + limits
-3. **mjcf_double_pendulum** — proves chain from MJCF
-4. **ragdoll** — proves contact + articulated (critical gate)
-5. **planar_walker** — proves actuated locomotion
-6. **mjcf_humanoid fix** — enable ground contact, done
+1. ~~**mjcf_pendulum**~~ — articulated MJCF works ✓
+2. ~~**mjcf_cartpole**~~ — actuators + control + limits ✓
+3. ~~**mjcf_double_pendulum**~~ — chain from MJCF ✓
+4. **spring_mass_damper** — slide + spring + contact, analytical verification
+5. **2dof_arm** — multi-actuator + FK verification
+6. **gyroscope** — 3D rotational dynamics + angular momentum
+7. **coupled_pendulums** — equality constraints / tendons
+8. **crank_slider** — closed-loop mechanism + connect constraints
 
-Steps 1–3 are straightforward (no new physics, just new examples). Step 4 is
-the hard one — if contact + articulated breaks, debug here on 9 bodies rather
-than 13. Steps 5–6 build on 4.
+Steps 4–5 are straightforward (existing joint types + motors, just new
+examples with analytical checks). Step 6 tests 3D rotation more deeply.
+Steps 7–8 are the hard ones — first use of equality constraints in examples.
 
 ## Feature progression
 
-| Example | Bodies | Joints | Actuators | Contact | Interactive |
-|---------|--------|--------|-----------|---------|-------------|
-| mjcf_pendulum | 1 | hinge | — | — | — |
-| mjcf_cartpole | 2 | slide+hinge | 1 motor | — | keyboard |
-| mjcf_double_pend | 2 | 2×hinge | — | — | — |
-| ragdoll | 9 | free+4×ball+4×hinge | — | capsule-plane | debug viz |
-| planar_walker | 7 | 2×slide+7×hinge | 6 motors | capsule-plane | 12-key |
-| mjcf_humanoid | 13 | free+8×ball+4×hinge | — | (needs fix) | debug viz |
+| Example | Bodies | Joints | Actuators | Contact | Verification |
+|---------|--------|--------|-----------|---------|--------------|
+| mjcf_pendulum | 1 | hinge | — | — | energy decay |
+| mjcf_cartpole | 2 | slide+hinge | 1 motor | — | balance ctrl |
+| mjcf_double_pend | 2 | 2×hinge | — | — | energy decay |
+| spring_mass_damper | 1 | slide | — | box-plane | ω_d, ζ exact |
+| 2dof_arm | 2 | 2×hinge | 2 motors | — | FK formula |
+| gyroscope | 2 | ball | — | — | ω_p = τ/(Iω) |
+| coupled_pendulums | 2 | 2×hinge | — | — | f_beat exact |
+| crank_slider | 3 | hinge+slide | 1 motor | — | x(θ) exact |
 
 ---
 
