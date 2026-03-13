@@ -63,24 +63,27 @@ motors. No ground contact — focus on articulated kinematics and control.
 
   *New concepts:* hinge from MJCF, spring/damper passive forces, angle HUD.
 
-- [ ] **mjcf_cartpole** — Mixed joint types (slide + hinge), motor actuator,
+- [x] **mjcf_cartpole** — Mixed joint types (slide + hinge), motor actuator,
   keyboard control. Classic control benchmark.
 
-  *MJCF (inline):* Cart body with slide joint (limited ±1.8m, damping=0.5).
-  Pole body with hinge (axis Y, damping=0.002). Motor on slider (gear=10,
-  ctrl ∈ [-1, 1]). RK4 integrator, contact disabled. Visual rail geom.
+  *MJCF (inline):* Cart body with slide joint (limited ±3.6m, damping=8.0).
+  Pole body with hinge (axis Y, damping=1.0). Motor on slider (gear=40,
+  ctrl ∈ [-1, 1]). Pole is 1.0m, 0.5kg — tuned for human playability
+  (high slider damping for snappy direction changes, moderate hinge damping
+  so pole falls slowly but swings naturally). RK4 integrator, contact
+  disabled. Visual rail geom.
 
   *Physics:* Slide joint, hinge joint, motor actuator, joint limits.
 
-  *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` auto-step. Side view camera
+  *Bevy:* `ModelDataPlugin` + wall-clock stepping. Side view camera
   along -Y. Left/Right arrows → `data.ctrl[0] = ±1.0`, release → 0.0.
   HUD: cart pos, pole angle (deg), ctrl input, energy.
 
   *Acceptance:*
-  - [ ] Cart slides with arrow keys, stops at ±1.8m limits
-  - [ ] Pole swings freely, responds to cart acceleration
-  - [ ] Pole can be balanced manually with quick left/right taps
-  - [ ] `L` shows limit gizmos, `J` shows joint axes
+  - [x] Cart slides with arrow keys, stops at ±3.6m limits
+  - [x] Pole swings freely, responds to cart acceleration
+  - [x] Pole can be balanced manually with quick left/right taps
+  - [x] `L` shows limit gizmos, `J` shows joint axes
 
   *New concepts:* slide joint, motor actuator + `data.ctrl`, keyboard →
   physics control loop, joint limits.
