@@ -141,13 +141,13 @@ expected behavior — no subjective "does this look right?" judgments.
   *New concepts:* slide joint + spring + contact, analytical verification
   in HUD, measurable frequency/decay comparison.
 
-- [ ] **2dof_arm** — 2-link planar robot arm with 2 motor actuators and
+- [x] **2dof_arm** — 2-link planar robot arm with 2 motor actuators and
   keyboard control. FK is exact trigonometry.
 
   *MJCF (inline):* 2 bodies (upper arm L₁=1.0m, forearm L₂=0.8m). 2 hinge
-  joints (axis Y). 2 motor actuators with gear ratios. Joint limits to
-  prevent self-collision. Damping for stability. No gravity (horizontal
-  plane) or with gravity (vertical plane — more interesting). RK4.
+  joints (axis -Y for standard robotics convention). 2 motor actuators
+  with gear ratios (50/25). Joint limits: shoulder ±π, elbow ±2.6 rad.
+  Damping (2.0/1.0) for stability. Gravity enabled (vertical plane). RK4.
 
   *Physics:* 2 hinge joints, 2 motors, joint limits, CRBA mass matrix
   with off-diagonal coupling. FK: x = L₁cos(θ₁) + L₂cos(θ₁+θ₂),
@@ -156,16 +156,16 @@ expected behavior — no subjective "does this look right?" judgments.
 
   *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` wall-clock stepping.
   Side view camera. Q/A = joint 1 ±, W/S = joint 2 ±. End-effector
-  trail (gizmo line). HUD: θ₁, θ₂, end-effector (x,z) measured vs FK
-  predicted, |error|, workspace radius.
+  trail (gizmo line) + marker sphere. HUD: θ₁, θ₂, end-effector (x,z)
+  measured vs FK predicted, |error|, workspace radius.
 
   *Acceptance:*
-  - [ ] Keyboard drives both joints smoothly
-  - [ ] End-effector position matches FK formula within 1e-6
-  - [ ] Trail traces correct workspace region
-  - [ ] Joint limits prevent self-intersection
-  - [ ] Mass matrix coupling visible (moving joint 1 affects joint 2)
-  - [ ] `R` resets to home pose
+  - [x] Keyboard drives both joints smoothly
+  - [x] End-effector position matches FK formula within 1e-6
+  - [x] Trail traces correct workspace region
+  - [x] Joint limits prevent self-intersection
+  - [x] Mass matrix coupling visible (moving joint 1 affects joint 2)
+  - [x] `R` resets to home pose
 
   *New concepts:* multi-actuator control, FK verification against
   analytical formula, end-effector tracking, workspace visualization.
