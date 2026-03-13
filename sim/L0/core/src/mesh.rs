@@ -231,18 +231,6 @@ impl TriangleMeshData {
         Bvh::build(primitives)
     }
 
-    /// Ensure the BVH is built (for deserialized meshes).
-    ///
-    /// The BVH is always built in constructors, but may be `None` after
-    /// deserialization (since it's marked `#[serde(skip)]`). Call this
-    /// to rebuild if needed.
-    #[allow(dead_code)] // Kept for future deserialization support
-    fn ensure_bvh(&mut self) {
-        if self.bvh.is_none() {
-            self.bvh = Some(Self::build_bvh(&self.vertices, &self.triangles));
-        }
-    }
-
     /// Get the vertices.
     #[must_use]
     pub fn vertices(&self) -> &[Point3<f64>] {

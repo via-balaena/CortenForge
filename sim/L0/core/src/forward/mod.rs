@@ -21,6 +21,8 @@
 pub(crate) mod acceleration;
 mod actuation;
 pub(crate) mod check;
+mod fiber;
+mod hill;
 mod muscle;
 mod passive;
 mod position;

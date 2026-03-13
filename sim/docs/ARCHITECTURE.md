@@ -48,7 +48,9 @@ sim/
     │   ├── future_work_14.md          # Phase 3C: Data Fields + Derivatives + API #56–59
     │   ├── future_work_15.md          # Phase 3D: Edge-Case Features #60–64
     │   ├── future_work_16.md          # Phase 3D: Mesh + Plugin Infrastructure #65–66
-    │   └── future_work_17.md          # Phase 3E: GPU Pipeline #67–71
+    │   ├── future_work_17.md          # Phase 3E: GPU Pipeline #67–71
+    │   ├── POST_V1_ROADMAP.md         # Consolidated post-v1.0 deferred tasks (DT items)
+    │   └── archived/                   # Historical future_work_10b–10j files
     ├── TRAIT_ARCHITECTURE.md            # Trait boundary vision (modeling choices vs solver variants vs core math)
     ├── MUJOCO_CONFORMANCE.md          # MuJoCo conformance testing plan
     ├── MUJOCO_GAP_ANALYSIS.md         # Feature-by-feature gap analysis
@@ -60,20 +62,26 @@ sim/
 
 The simulation engine lives in `sim-core/src/`, organized as a module tree that
 mirrors MuJoCo's C file boundaries. The former monolith (`mujoco_pipeline.rs`,
-26,722 lines) has been decomposed into ~40 focused modules across these
+26,722 lines) has been decomposed into ~98 focused modules across these
 pipeline-stage directories:
 
 ```
 sim-core/src/
-├── types/           # Model, Data, enums, contacts, keyframes
+├── types/           # Model, Data, enums, contacts, keyframes, flags
+│   ├── mod.rs             # Type re-exports
 │   ├── model.rs           # Model struct (static configuration)
 │   ├── data.rs            # Data struct (mutable state)
 │   ├── enums.rs           # MjJointType, GeomType, SolverType, etc.
 │   ├── contact_types.rs   # Contact, ContactPair
 │   ├── keyframe.rs        # Keyframe snapshots
 │   ├── model_init.rs      # Model construction helpers
-│   └── model_factories.rs # n_link_pendulum, test factories
+│   ├── model_factories.rs # n_link_pendulum, test factories
+│   ├── flags.rs           # Runtime enable/disable flags
+│   ├── callbacks.rs       # User callback types
+│   ├── validation.rs      # Model validation
+│   └── warning.rs         # Warning types
 ├── dynamics/        # CRBA, RNE, factorization, spatial algebra
+│   ├── mod.rs             # Re-exports
 │   ├── crba.rs            # Composite Rigid Body Algorithm
 │   ├── rne.rs             # Recursive Newton-Euler
 │   ├── factor.rs          # Sparse LDL factorization
@@ -86,21 +94,27 @@ sim-core/src/
 │   ├── passive.rs         # mj_fwd_passive (springs, dampers, friction)
 │   ├── actuation.rs       # mj_fwd_actuation (gain/bias/act_dot)
 │   ├── muscle.rs          # Muscle actuator computation
+│   ├── hill.rs            # Hill-type muscle dynamics, force-velocity curves
+│   ├── fiber.rs           # Fiber length computation, gain functions
 │   ├── acceleration.rs    # mj_fwd_acceleration (qacc = M⁻¹·f)
 │   └── check.rs           # Position/velocity limit checking
 ├── constraint/      # Constraint assembly + solver dispatch
 │   ├── mod.rs             # mj_fwd_constraint, island dispatch
-│   ├── assembly.rs        # assemble_unified_constraints()
+│   ├── assembly.rs        # assemble_unified_constraints() orchestrator
+│   ├── contact_assembly.rs # Contact constraint row assembly
+│   ├── equality_assembly.rs # Equality constraint row assembly
 │   ├── equality.rs        # Equality constraint Jacobians
 │   ├── impedance.rs       # Solver impedance (solref/solimp)
 │   ├── jacobian.rs        # Constraint Jacobian computation
-│   └── solver/            # PGS, CG, Newton, Noslip, Hessian
+│   └── solver/            # PGS, CG, Newton, Noslip, Hessian, QCQP
+│       ├── mod.rs         # Solver dispatch
 │       ├── pgs.rs         # Projected Gauss-Seidel
 │       ├── cg.rs          # Conjugate Gradient
 │       ├── newton.rs      # Newton (H⁻¹ preconditioner)
 │       ├── primal.rs      # Shared primal infrastructure
 │       ├── noslip.rs      # Noslip post-processing
-│       └── hessian.rs     # Analytical second-order derivatives
+│       ├── hessian.rs     # Analytical second-order derivatives
+│       └── qcqp.rs        # QCQP cone projection
 ├── integrate/       # Time integration
 │   ├── mod.rs             # integrate() dispatch
 │   ├── euler.rs           # Semi-implicit Euler
@@ -111,44 +125,63 @@ sim-core/src/
 │   └── sleep.rs           # Sleep state machine, wake detection
 ├── collision/       # Collision detection pipeline
 │   ├── mod.rs             # mj_collision (broad + narrow dispatch)
+│   ├── pairs.rs           # Collision pair enumeration
 │   ├── narrow.rs          # Narrow-phase dispatch table
 │   ├── plane.rs           # Plane-vs-geom algorithms
 │   ├── pair_convex.rs     # Convex pair algorithms
 │   ├── pair_cylinder.rs   # Cylinder pair algorithms
 │   ├── mesh_collide.rs    # Mesh collision
 │   ├── hfield.rs          # Height field collision
-│   ├── flex_collide.rs    # Flex vertex-vs-geom
+│   ├── flex_collide.rs    # Flex collision dispatcher
+│   ├── flex_narrow.rs     # Flex sphere-geom narrowphase
+│   ├── flex_self.rs       # Flex self-collision (narrow, BVH, SAP)
 │   └── sdf_collide.rs     # SDF collision
 ├── sensor/          # Sensor pipeline
 │   ├── mod.rs             # Sensor dispatch + computed sensors
 │   ├── position.rs        # Position-stage sensors
 │   ├── velocity.rs        # Velocity-stage sensors
 │   ├── acceleration.rs    # Acceleration-stage sensors
-│   ├── derived.rs         # Derived quantities
-│   └── postprocess.rs     # Sensor post-processing
+│   ├── postprocess.rs     # Sensor post-processing
+│   └── geom_distance.rs   # Geom distance sensor
 ├── tendon/          # Tendon kinematics
 │   ├── mod.rs             # mj_fwd_tendon dispatch
 │   ├── fixed.rs           # Fixed-path tendons
 │   ├── spatial.rs         # Spatial-path tendons
 │   └── wrap_math.rs       # Wrapping geometry math
-├── jacobian.rs      # Jacobian computation + position diff/integration
+├── derivatives/     # Simulation transition derivatives
+│   ├── mod.rs             # Public API, struct definitions
+│   ├── fd.rs              # Finite-difference perturbation methods
+│   ├── hybrid.rs          # Hybrid analytical/FD path
+│   └── integration.rs     # Integration-specific derivative logic
+├── jacobian/        # Jacobian computation
+│   ├── mod.rs             # Dispatch + position diff/integration
+│   └── position.rs        # Position Jacobians
+├── sdf/             # Signed distance fields
+│   ├── mod.rs             # Public types, API
+│   ├── primitives.rs      # Sphere, box, capsule, ellipsoid distance queries
+│   ├── operations.rs      # Union, intersection, transform
+│   └── interpolation.rs   # Trilinear/tricubic grid interpolation
 ├── joint_visitor.rs # Joint visitor pattern + motion subspace
 ├── energy.rs        # Energy queries (potential + kinetic)
 ├── linalg.rs        # Cholesky, LU, sparse solve, union-find
-├── derivatives.rs   # Simulation transition derivatives
 ├── contact.rs       # ContactPoint, ContactManifold, ContactForce
 ├── batch.rs         # BatchSim (N environments, one Model)
 ├── collision_shape.rs # CollisionShape enum, Aabb
+├── convex_hull.rs   # Convex hull computation
 ├── gjk_epa.rs       # GJK/EPA for convex shapes
 ├── mid_phase.rs     # BVH tree (median-split, traversal)
 ├── mesh.rs          # Triangle mesh collision functions
 ├── heightfield.rs   # Terrain collision
-├── sdf.rs           # Signed distance field collision
-└── raycast.rs       # Ray-shape intersection
+├── raycast.rs       # Ray-shape intersection
+├── inverse.rs       # Inverse dynamics
+├── reset.rs         # Data reset logic
+└── plugin.rs        # Plugin trait + registry
 ```
 
-Each directory corresponds to a MuJoCo pipeline stage, with no module exceeding
-~800 lines of production code. The pipeline flows:
+Each directory corresponds to a MuJoCo pipeline stage. Most modules are under
+1,000 lines; about 20 algorithm-heavy modules (derivatives, GJK/EPA, mesh,
+collision, contact types, model/data structs) range from 1,000–4,000 lines.
+The pipeline flows:
 **types -> dynamics -> forward -> constraint -> integrate -> island**.
 
 ### Model (static)
@@ -389,24 +422,28 @@ The physics engine. Depends on sim-types and sim-simd. Organized as a module
 tree mirroring MuJoCo's pipeline stages (see directory listing above). Key
 modules:
 
-- `types/` — `Model` (static), `Data` (mutable), enums, contact types, keyframes
+- `types/` — `Model` (static), `Data` (mutable), enums, contact types, keyframes, flags, callbacks
 - `dynamics/` — CRBA, RNE, sparse LDL factorization, spatial algebra
-- `forward/` — Pipeline orchestration (`step`, `forward`), per-stage functions (position, velocity, passive, actuation, acceleration, muscle)
-- `constraint/` — Unified constraint assembly + solver dispatch (PGS, CG, Newton, Noslip)
+- `forward/` — Pipeline orchestration (`step`, `forward`), per-stage functions (position, velocity, passive, actuation, acceleration, muscle/hill/fiber)
+- `constraint/` — Unified constraint assembly (contact + equality sub-modules) + solver dispatch (PGS, CG, Newton, Noslip, QCQP)
 - `integrate/` — Euler, implicit, RK4 integration
 - `island/` — Constraint island discovery (DFS flood-fill) + sleep/wake state machine
-- `collision/` — Broad + narrow phase collision pipeline, flex collision
-- `sensor/` — Position/velocity/acceleration/derived sensor stages
+- `collision/` — Broad + narrow phase collision pipeline, flex collision (narrow, self-collision), pair enumeration
+- `sensor/` — Position/velocity/acceleration sensor stages, geom distance, post-processing
 - `tendon/` — Fixed-path and spatial-path tendon kinematics
-- `jacobian.rs` — Jacobian computation, position differentiation/integration
+- `derivatives/` — Simulation transition derivatives (FD, analytical qDeriv, hybrid FD+analytical, SO(3) Jacobians)
+- `jacobian/` — Jacobian computation, position differentiation/integration
+- `sdf/` — Signed distance fields (primitives, operations, interpolation)
 - `energy.rs` — Potential and kinetic energy queries
-- `derivatives.rs` — Simulation transition derivatives (FD, analytical qDeriv, hybrid FD+analytical, SO(3) Jacobians, validation utilities)
 - `collision_shape.rs` — `CollisionShape` enum, `Aabb`
+- `convex_hull.rs` — Convex hull computation
 - `mid_phase.rs` — BVH tree (median-split construction, traversal, ray queries)
 - `gjk_epa.rs` — GJK/EPA for convex shapes
 - `mesh.rs` — Triangle mesh collision functions
-- `heightfield.rs`, `sdf.rs` — Terrain and implicit surface collision
+- `heightfield.rs` — Terrain collision
 - `raycast.rs` — Ray-shape intersection
+- `inverse.rs` — Inverse dynamics
+- `plugin.rs` — Plugin trait + registry (actuator, sensor, passive, SDF)
 - `batch.rs` — `BatchSim`: N independent `Data` environments sharing one `Arc<Model>`, parallel stepping via rayon (`parallel` feature)
 
 ### Contact Types (in sim-core)
@@ -459,7 +496,7 @@ elasticity models are being refactored into trait boundaries — see
 ### sim-mjcf
 
 MuJoCo XML format parser. The former monolith (`model_builder.rs`, 10,184
-lines) has been decomposed into ~19 modules under `builder/`:
+lines) has been decomposed into ~20 modules under `builder/`:
 
 ```
 sim-mjcf/src/builder/
@@ -480,6 +517,7 @@ sim-mjcf/src/builder/
 ├── compiler.rs     # <compiler> element processing
 ├── contact.rs      # Contact pair/exclude processing
 ├── equality.rs     # Equality constraint processing
+├── composite.rs    # Composite body expansion (cable)
 ├── fluid.rs        # Fluid model parameters
 └── orientation.rs  # Orientation/quaternion utilities
 ```
@@ -494,7 +532,9 @@ with four-stage pipeline: types → parser → merge → apply; 91+ defaultable
 fields across 8 element types), `childclass` attribute (body/frame recursive
 propagation with undefined-class validation), `<frame>` element (pose
 composition, childclass inheritance, recursive nesting),
-`<include>` file support, `<compiler>` element, and MJB binary format.
+`<include>` file support, `<compiler>` element, `<composite>` procedural body
+generation (cable type; grid/rope/cloth/loop/particle deprecated per MuJoCo 3.4.0),
+plugin/extension system (`<extension>`/`<plugin>` parsing + trait dispatch), and MJB binary format.
 `<include>` resolves file references as a pre-parse XML expansion step with
 recursive nested includes, duplicate file detection, and path resolution
 relative to the main model file. Works inside any MJCF section (`<worldbody>`,

@@ -351,8 +351,7 @@ impl<'a> Converter<'a> {
             }
             UrdfGeometry::Sphere { radius } => ("sphere", format!("{radius}")),
             UrdfGeometry::Mesh { filename, scale } => {
-                // Mesh requires asset declaration - skip for now
-                // TODO: Add mesh asset support
+                // DT-177: Add mesh asset support for URDF converter
                 let _ = (filename, scale);
                 return Ok(());
             }

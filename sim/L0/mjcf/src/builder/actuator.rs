@@ -24,132 +24,7 @@ impl ModelBuilder {
                 .insert(actuator.name.clone(), act_id);
         }
 
-        // Determine transmission type and target (2-slot: [primary, secondary])
-        // Secondary slot is usize::MAX when unused (Joint, Tendon, Site without refsite).
-        let (trntype, trnid) = if let Some(ref joint_name) = actuator.joint {
-            let jnt_id =
-                self.joint_name_to_id
-                    .get(joint_name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("Actuator references unknown joint: {joint_name}"),
-                    })?;
-            if actuator.refsite.is_some() {
-                warn!(
-                    "Actuator '{}' has refsite but uses joint transmission — \
-                     refsite is only meaningful for site transmissions; ignoring",
-                    actuator.name
-                );
-            }
-            (ActuatorTransmission::Joint, [*jnt_id, usize::MAX])
-        } else if let Some(ref tendon_name) = actuator.tendon {
-            let tendon_idx = *self
-                .tendon_name_to_id
-                .get(tendon_name.as_str())
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}' references unknown tendon '{}'",
-                        actuator.name, tendon_name
-                    ),
-                })?;
-            if actuator.refsite.is_some() {
-                warn!(
-                    "Actuator '{}' has refsite but uses tendon transmission — \
-                     refsite is only meaningful for site transmissions; ignoring",
-                    actuator.name
-                );
-            }
-            (ActuatorTransmission::Tendon, [tendon_idx, usize::MAX])
-        } else if let Some(ref site_name) = actuator.site {
-            let site_id =
-                *self
-                    .site_name_to_id
-                    .get(site_name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!("Actuator references unknown site: {site_name}"),
-                    })?;
-            let refsite_id = if let Some(ref refsite_name) = actuator.refsite {
-                *self
-                    .site_name_to_id
-                    .get(refsite_name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!(
-                            "Actuator '{}' references unknown refsite: {refsite_name}",
-                            actuator.name
-                        ),
-                    })?
-            } else {
-                usize::MAX
-            };
-            (ActuatorTransmission::Site, [site_id, refsite_id])
-        } else if let Some(ref body_name) = actuator.body {
-            let body_id = *self
-                .body_name_to_id
-                .get(body_name.as_str())
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': body '{}' not found",
-                        actuator.name, body_name
-                    ),
-                })?;
-            (ActuatorTransmission::Body, [body_id, usize::MAX])
-        } else if let Some(ref joint_name) = actuator.jointinparent {
-            let jnt_id =
-                self.joint_name_to_id
-                    .get(joint_name)
-                    .ok_or_else(|| ModelConversionError {
-                        message: format!(
-                            "Actuator '{}' references unknown joint: {joint_name}",
-                            actuator.name
-                        ),
-                    })?;
-            (ActuatorTransmission::JointInParent, [*jnt_id, usize::MAX])
-        } else if let Some(ref crank_name) = actuator.cranksite {
-            let slider_name = actuator
-                .slidersite
-                .as_ref()
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': cranksite specified without slidersite",
-                        actuator.name
-                    ),
-                })?;
-            let crank_id = *self
-                .site_name_to_id
-                .get(crank_name.as_str())
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': cranksite '{}' not found",
-                        actuator.name, crank_name
-                    ),
-                })?;
-            let slider_id = *self
-                .site_name_to_id
-                .get(slider_name.as_str())
-                .ok_or_else(|| ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': slidersite '{}' not found",
-                        actuator.name, slider_name
-                    ),
-                })?;
-            let rod = actuator.cranklength.unwrap_or(0.0);
-            if rod <= 0.0 {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "Actuator '{}': cranklength must be positive, got {}",
-                        actuator.name, rod
-                    ),
-                });
-            }
-            (ActuatorTransmission::SliderCrank, [crank_id, slider_id])
-        } else {
-            return Err(ModelConversionError {
-                message: format!(
-                    "Actuator '{}' has no transmission target \
-                     (joint, tendon, site, body, jointinparent, or cranksite)",
-                    actuator.name
-                ),
-            });
-        };
+        let (trntype, trnid) = self.resolve_transmission(actuator)?;
 
         // Resolve per-type defaults for Option fields.
         // These must be resolved before dyntype/gain/bias decisions that depend on them.
@@ -317,194 +192,8 @@ impl ModelBuilder {
         self.actuator_act_num.push(act_num);
         self.na += act_num;
 
-        // Gain/Bias/Dynamics parameters — expand shortcut type to general actuator.
-        // Reference: MuJoCo src/user/user_api.cc (mjs_setToMotor, mjs_setToPosition, etc.)
-        let (gaintype, biastype, gainprm, biasprm, dynprm) = match actuator.actuator_type {
-            MjcfActuatorType::Motor => (
-                GainType::Fixed,
-                BiasType::None,
-                {
-                    let mut p = [0.0; 9];
-                    p[0] = 1.0; // unit gain
-                    p
-                },
-                [0.0; 9],
-                [0.0; 10],
-            ),
-
-            MjcfActuatorType::Position => {
-                let kp = actuator.kp; // default 1.0
-                // kv resolved above from Option<f64> (default 0.0 for position)
-                let tc = timeconst; // resolved above (default 0.0 for position)
-                let mut gp = [0.0; 9];
-                gp[0] = kp;
-                let mut bp = [0.0; 9];
-                bp[1] = -kp;
-                // dampratio vs explicit kv:
-                // If dampratio is specified, store as positive biasprm[2].
-                // compute_actuator_params() will convert it to -damping at compile time.
-                // If kv is specified (or default 0), store as -kv (explicit damping).
-                if let Some(dr) = actuator.dampratio {
-                    bp[2] = dr; // positive → dampratio (converted by compute_actuator_params)
-                } else {
-                    bp[2] = -kv; // negative or zero → explicit kv
-                }
-                (GainType::Fixed, BiasType::Affine, gp, bp, {
-                    let mut d = [0.0; 10];
-                    d[0] = tc;
-                    d
-                })
-            }
-
-            MjcfActuatorType::Velocity => {
-                // kv resolved above from Option<f64> (default 1.0 for velocity)
-                let mut gp = [0.0; 9];
-                gp[0] = kv;
-                let mut bp = [0.0; 9];
-                bp[2] = -kv;
-                (GainType::Fixed, BiasType::Affine, gp, bp, [0.0; 10])
-            }
-
-            MjcfActuatorType::Damper => {
-                // kv resolved above from Option<f64> (default 0.0 for damper)
-                let mut gp = [0.0; 9];
-                gp[2] = -kv; // gain = -kv * velocity
-                (GainType::Affine, BiasType::None, gp, [0.0; 9], [0.0; 10])
-            }
-
-            MjcfActuatorType::Cylinder => {
-                let area = if let Some(d) = actuator.diameter {
-                    std::f64::consts::PI / 4.0 * d * d
-                } else {
-                    actuator.area
-                };
-                let tc = timeconst; // resolved above (default 1.0 for cylinder)
-                let mut gp = [0.0; 9];
-                gp[0] = area;
-                let mut bp = [0.0; 9];
-                bp[0] = actuator.bias[0];
-                bp[1] = actuator.bias[1];
-                bp[2] = actuator.bias[2];
-                (GainType::Fixed, BiasType::Affine, gp, bp, {
-                    let mut d = [0.0; 10];
-                    d[0] = tc;
-                    d
-                })
-            }
-
-            MjcfActuatorType::Adhesion => {
-                let mut gp = [0.0; 9];
-                gp[0] = actuator.gain;
-                (GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 10])
-            }
-
-            MjcfActuatorType::Muscle => {
-                // Muscle: unchanged from #5 implementation.
-                let gp = [
-                    actuator.range.0,
-                    actuator.range.1,
-                    actuator.force,
-                    actuator.scale,
-                    actuator.lmin,
-                    actuator.lmax,
-                    actuator.vmax,
-                    actuator.fpmax,
-                    actuator.fvmax.max(1.0), // fvmax < 1.0 is physically nonsensical
-                ];
-                (
-                    GainType::Muscle,
-                    BiasType::Muscle,
-                    gp,
-                    gp, // biasprm = gainprm (shared layout, MuJoCo convention)
-                    {
-                        let mut d = [0.0; 10];
-                        d[0] = actuator.muscle_timeconst.0;
-                        d[1] = actuator.muscle_timeconst.1;
-                        d
-                    },
-                )
-            }
-
-            MjcfActuatorType::General => {
-                // <general> uses explicit attributes; defaults match MuJoCo's
-                // mjs_defaultActuator: gaintype=fixed, biastype=none,
-                // gainprm=[1,0,...], biasprm=[0,...], dynprm=[1,0,0].
-                if dyntype == ActuatorDynamics::HillMuscle {
-                    // HillMuscle auto-sets: gaintype/biastype default to HillMuscle
-                    // unless explicitly overridden by the user.
-                    let gt = match &actuator.gaintype {
-                        Some(s) => parse_gaintype(s)?,
-                        None => GainType::HillMuscle,
-                    };
-                    let bt = match &actuator.biastype {
-                        Some(s) => parse_biastype(s)?,
-                        None => BiasType::HillMuscle,
-                    };
-                    // HillMuscle gainprm defaults:
-                    // [range_lo, range_hi, F0(-1=auto), scale, L_opt, L_slack, vmax, penn, stiff, 0]
-                    let hill_gainprm_default =
-                        [0.75, 1.05, -1.0, 200.0, 0.10, 0.20, 10.0, 0.0, 35.0];
-                    let gp = if let Some(v) = &actuator.gainprm {
-                        floats_to_array(v, hill_gainprm_default)
-                    } else {
-                        hill_gainprm_default
-                    };
-                    let bp = if let Some(v) = &actuator.biasprm {
-                        floats_to_array(v, [0.0; 9])
-                    } else {
-                        [0.0; 9]
-                    };
-                    // HillMuscle dynprm defaults: same as Muscle [tau_act, tau_deact, tausmooth]
-                    let hill_dynprm_default = {
-                        let mut d = [0.0; 10];
-                        d[0] = 0.01; // tau_act
-                        d[1] = 0.04; // tau_deact
-                        d
-                    };
-                    let dp = if let Some(v) = &actuator.dynprm {
-                        floats_to_array(v, hill_dynprm_default)
-                    } else {
-                        hill_dynprm_default
-                    };
-                    (gt, bt, gp, bp, dp)
-                } else {
-                    let gt = match &actuator.gaintype {
-                        Some(s) => parse_gaintype(s)?,
-                        None => GainType::Fixed,
-                    };
-                    let bt = match &actuator.biastype {
-                        Some(s) => parse_biastype(s)?,
-                        None => BiasType::None,
-                    };
-                    let gainprm_default = {
-                        let mut d = [0.0; 9];
-                        d[0] = 1.0; // MuJoCo default
-                        d
-                    };
-                    let gp = if let Some(v) = &actuator.gainprm {
-                        floats_to_array(v, gainprm_default)
-                    } else {
-                        gainprm_default
-                    };
-                    let bp = if let Some(v) = &actuator.biasprm {
-                        floats_to_array(v, [0.0; 9])
-                    } else {
-                        [0.0; 9]
-                    };
-                    let dynprm_default = {
-                        let mut d = [0.0; 10];
-                        d[0] = 1.0; // MuJoCo: dynprm[0]=1
-                        d
-                    };
-                    let dp = if let Some(v) = &actuator.dynprm {
-                        floats_to_array(v, dynprm_default)
-                    } else {
-                        dynprm_default
-                    };
-                    (gt, bt, gp, bp, dp)
-                }
-            }
-        };
+        let (gaintype, biastype, gainprm, biasprm, dynprm) =
+            compute_gain_bias_params(actuator, dyntype, timeconst, kv)?;
 
         // HillMuscle parameter validation (CortenForge extension).
         if dyntype == ActuatorDynamics::HillMuscle {
@@ -558,6 +247,352 @@ impl ModelBuilder {
 
         Ok(act_id)
     }
+
+    /// Resolve the transmission target from the actuator's joint/tendon/site/body/
+    /// jointinparent/cranksite attributes.
+    ///
+    /// Returns `(ActuatorTransmission, [primary_id, secondary_id])`.
+    /// Secondary slot is `usize::MAX` when unused.
+    fn resolve_transmission(
+        &self,
+        actuator: &MjcfActuator,
+    ) -> std::result::Result<(ActuatorTransmission, [usize; 2]), ModelConversionError> {
+        if let Some(ref joint_name) = actuator.joint {
+            let jnt_id =
+                self.joint_name_to_id
+                    .get(joint_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("Actuator references unknown joint: {joint_name}"),
+                    })?;
+            if actuator.refsite.is_some() {
+                warn!(
+                    "Actuator '{}' has refsite but uses joint transmission — \
+                     refsite is only meaningful for site transmissions; ignoring",
+                    actuator.name
+                );
+            }
+            Ok((ActuatorTransmission::Joint, [*jnt_id, usize::MAX]))
+        } else if let Some(ref tendon_name) = actuator.tendon {
+            let tendon_idx = *self
+                .tendon_name_to_id
+                .get(tendon_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}' references unknown tendon '{}'",
+                        actuator.name, tendon_name
+                    ),
+                })?;
+            if actuator.refsite.is_some() {
+                warn!(
+                    "Actuator '{}' has refsite but uses tendon transmission — \
+                     refsite is only meaningful for site transmissions; ignoring",
+                    actuator.name
+                );
+            }
+            Ok((ActuatorTransmission::Tendon, [tendon_idx, usize::MAX]))
+        } else if let Some(ref site_name) = actuator.site {
+            let site_id =
+                *self
+                    .site_name_to_id
+                    .get(site_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("Actuator references unknown site: {site_name}"),
+                    })?;
+            let refsite_id = if let Some(ref refsite_name) = actuator.refsite {
+                *self
+                    .site_name_to_id
+                    .get(refsite_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Actuator '{}' references unknown refsite: {refsite_name}",
+                            actuator.name
+                        ),
+                    })?
+            } else {
+                usize::MAX
+            };
+            Ok((ActuatorTransmission::Site, [site_id, refsite_id]))
+        } else if let Some(ref body_name) = actuator.body {
+            let body_id = *self
+                .body_name_to_id
+                .get(body_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': body '{}' not found",
+                        actuator.name, body_name
+                    ),
+                })?;
+            Ok((ActuatorTransmission::Body, [body_id, usize::MAX]))
+        } else if let Some(ref joint_name) = actuator.jointinparent {
+            let jnt_id =
+                self.joint_name_to_id
+                    .get(joint_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Actuator '{}' references unknown joint: {joint_name}",
+                            actuator.name
+                        ),
+                    })?;
+            Ok((ActuatorTransmission::JointInParent, [*jnt_id, usize::MAX]))
+        } else if let Some(ref crank_name) = actuator.cranksite {
+            let slider_name = actuator
+                .slidersite
+                .as_ref()
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': cranksite specified without slidersite",
+                        actuator.name
+                    ),
+                })?;
+            let crank_id = *self
+                .site_name_to_id
+                .get(crank_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': cranksite '{}' not found",
+                        actuator.name, crank_name
+                    ),
+                })?;
+            let slider_id = *self
+                .site_name_to_id
+                .get(slider_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': slidersite '{}' not found",
+                        actuator.name, slider_name
+                    ),
+                })?;
+            let rod = actuator.cranklength.unwrap_or(0.0);
+            if rod <= 0.0 {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': cranklength must be positive, got {}",
+                        actuator.name, rod
+                    ),
+                });
+            }
+            Ok((ActuatorTransmission::SliderCrank, [crank_id, slider_id]))
+        } else {
+            Err(ModelConversionError {
+                message: format!(
+                    "Actuator '{}' has no transmission target \
+                     (joint, tendon, site, body, jointinparent, or cranksite)",
+                    actuator.name
+                ),
+            })
+        }
+    }
+}
+
+/// Expand the actuator shortcut type into the canonical gain/bias/dynamics parameter
+/// representation.
+///
+/// Returns `(GainType, BiasType, gainprm[9], biasprm[9], dynprm[10])`.
+/// Reference: MuJoCo `src/user/user_api.cc` (`mjs_setToMotor`, `mjs_setToPosition`, etc.)
+fn compute_gain_bias_params(
+    actuator: &MjcfActuator,
+    dyntype: ActuatorDynamics,
+    timeconst: f64,
+    kv: f64,
+) -> std::result::Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10]), ModelConversionError>
+{
+    match actuator.actuator_type {
+        MjcfActuatorType::Motor => Ok((
+            GainType::Fixed,
+            BiasType::None,
+            {
+                let mut p = [0.0; 9];
+                p[0] = 1.0; // unit gain
+                p
+            },
+            [0.0; 9],
+            [0.0; 10],
+        )),
+
+        MjcfActuatorType::Position => {
+            let kp = actuator.kp; // default 1.0
+            let tc = timeconst;
+            let mut gp = [0.0; 9];
+            gp[0] = kp;
+            let mut bp = [0.0; 9];
+            bp[1] = -kp;
+            // dampratio vs explicit kv:
+            // If dampratio is specified, store as positive biasprm[2].
+            // compute_actuator_params() will convert it to -damping at compile time.
+            // If kv is specified (or default 0), store as -kv (explicit damping).
+            if let Some(dr) = actuator.dampratio {
+                bp[2] = dr; // positive -> dampratio (converted by compute_actuator_params)
+            } else {
+                bp[2] = -kv; // negative or zero -> explicit kv
+            }
+            Ok((GainType::Fixed, BiasType::Affine, gp, bp, {
+                let mut d = [0.0; 10];
+                d[0] = tc;
+                d
+            }))
+        }
+
+        MjcfActuatorType::Velocity => {
+            let mut gp = [0.0; 9];
+            gp[0] = kv;
+            let mut bp = [0.0; 9];
+            bp[2] = -kv;
+            Ok((GainType::Fixed, BiasType::Affine, gp, bp, [0.0; 10]))
+        }
+
+        MjcfActuatorType::Damper => {
+            let mut gp = [0.0; 9];
+            gp[2] = -kv; // gain = -kv * velocity
+            Ok((GainType::Affine, BiasType::None, gp, [0.0; 9], [0.0; 10]))
+        }
+
+        MjcfActuatorType::Cylinder => {
+            let area = if let Some(d) = actuator.diameter {
+                std::f64::consts::PI / 4.0 * d * d
+            } else {
+                actuator.area
+            };
+            let tc = timeconst;
+            let mut gp = [0.0; 9];
+            gp[0] = area;
+            let mut bp = [0.0; 9];
+            bp[0] = actuator.bias[0];
+            bp[1] = actuator.bias[1];
+            bp[2] = actuator.bias[2];
+            Ok((GainType::Fixed, BiasType::Affine, gp, bp, {
+                let mut d = [0.0; 10];
+                d[0] = tc;
+                d
+            }))
+        }
+
+        MjcfActuatorType::Adhesion => {
+            let mut gp = [0.0; 9];
+            gp[0] = actuator.gain;
+            Ok((GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 10]))
+        }
+
+        MjcfActuatorType::Muscle => {
+            let gp = [
+                actuator.range.0,
+                actuator.range.1,
+                actuator.force,
+                actuator.scale,
+                actuator.lmin,
+                actuator.lmax,
+                actuator.vmax,
+                actuator.fpmax,
+                actuator.fvmax.max(1.0), // fvmax < 1.0 is physically nonsensical
+            ];
+            Ok((
+                GainType::Muscle,
+                BiasType::Muscle,
+                gp,
+                gp, // biasprm = gainprm (shared layout, MuJoCo convention)
+                {
+                    let mut d = [0.0; 10];
+                    d[0] = actuator.muscle_timeconst.0;
+                    d[1] = actuator.muscle_timeconst.1;
+                    d
+                },
+            ))
+        }
+
+        MjcfActuatorType::General => {
+            // <general> uses explicit attributes; defaults match MuJoCo's
+            // mjs_defaultActuator: gaintype=fixed, biastype=none,
+            // gainprm=[1,0,...], biasprm=[0,...], dynprm=[1,0,0].
+            if dyntype == ActuatorDynamics::HillMuscle {
+                compute_general_hillmuscle(actuator)
+            } else {
+                compute_general_standard(actuator)
+            }
+        }
+    }
+}
+
+/// Gain/bias/dynprm for `<general dyntype="hillmuscle">`.
+fn compute_general_hillmuscle(
+    actuator: &MjcfActuator,
+) -> std::result::Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10]), ModelConversionError>
+{
+    // HillMuscle auto-sets: gaintype/biastype default to HillMuscle
+    // unless explicitly overridden by the user.
+    let gt = match &actuator.gaintype {
+        Some(s) => parse_gaintype(s)?,
+        None => GainType::HillMuscle,
+    };
+    let bt = match &actuator.biastype {
+        Some(s) => parse_biastype(s)?,
+        None => BiasType::HillMuscle,
+    };
+    // HillMuscle gainprm defaults:
+    // [range_lo, range_hi, F0(-1=auto), scale, L_opt, L_slack, vmax, penn, stiff, 0]
+    let hill_gainprm_default = [0.75, 1.05, -1.0, 200.0, 0.10, 0.20, 10.0, 0.0, 35.0];
+    let gp = if let Some(v) = &actuator.gainprm {
+        floats_to_array(v, hill_gainprm_default)
+    } else {
+        hill_gainprm_default
+    };
+    let bp = if let Some(v) = &actuator.biasprm {
+        floats_to_array(v, [0.0; 9])
+    } else {
+        [0.0; 9]
+    };
+    // HillMuscle dynprm defaults: same as Muscle [tau_act, tau_deact, tausmooth]
+    let hill_dynprm_default = {
+        let mut d = [0.0; 10];
+        d[0] = 0.01; // tau_act
+        d[1] = 0.04; // tau_deact
+        d
+    };
+    let dp = if let Some(v) = &actuator.dynprm {
+        floats_to_array(v, hill_dynprm_default)
+    } else {
+        hill_dynprm_default
+    };
+    Ok((gt, bt, gp, bp, dp))
+}
+
+/// Gain/bias/dynprm for standard `<general>` (non-HillMuscle).
+fn compute_general_standard(
+    actuator: &MjcfActuator,
+) -> std::result::Result<(GainType, BiasType, [f64; 9], [f64; 9], [f64; 10]), ModelConversionError>
+{
+    let gt = match &actuator.gaintype {
+        Some(s) => parse_gaintype(s)?,
+        None => GainType::Fixed,
+    };
+    let bt = match &actuator.biastype {
+        Some(s) => parse_biastype(s)?,
+        None => BiasType::None,
+    };
+    let gainprm_default = {
+        let mut d = [0.0; 9];
+        d[0] = 1.0; // MuJoCo default
+        d
+    };
+    let gp = if let Some(v) = &actuator.gainprm {
+        floats_to_array(v, gainprm_default)
+    } else {
+        gainprm_default
+    };
+    let bp = if let Some(v) = &actuator.biasprm {
+        floats_to_array(v, [0.0; 9])
+    } else {
+        [0.0; 9]
+    };
+    let dynprm_default = {
+        let mut d = [0.0; 10];
+        d[0] = 1.0; // MuJoCo: dynprm[0]=1
+        d
+    };
+    let dp = if let Some(v) = &actuator.dynprm {
+        floats_to_array(v, dynprm_default)
+    } else {
+        dynprm_default
+    };
+    Ok((gt, bt, gp, bp, dp))
 }
 
 fn parse_gaintype(s: &str) -> std::result::Result<GainType, ModelConversionError> {

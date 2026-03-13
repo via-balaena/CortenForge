@@ -1,3 +1,5 @@
+> Historical — Phase 13 completed 2026-03-11.
+
 # Phase 13 — Remaining Core: Session Plan
 
 18 sessions, each self-contained. The umbrella spec
@@ -499,7 +501,7 @@ FILTERPARENT) to specs — if something still fails, it's either a
 missed root cause or an implementation bug. Fix before declaring gate.
 
 Run full domain check:
-  cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-constraint
+  cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-urdf -p sim-types -p sim-simd
 
 Expected outcome: 79 conformance + 24–26 golden flag = 103–105 tests passing.
 Update GATE_ASSESSMENT.md with final results.

@@ -10,11 +10,12 @@ use super::ModelConversionError;
 use crate::types::MjcfCompiler;
 
 /// Asset type for path resolution.
-#[allow(dead_code)] // Texture used when texture loading lands
 pub enum AssetKind {
     /// Mesh or hfield file (uses `meshdir`).
     Mesh,
     /// Texture file (uses `texturedir`).
+    /// Constructed only in tests; production texture loading is post-v1.0.
+    #[allow(dead_code)]
     Texture,
 }
 

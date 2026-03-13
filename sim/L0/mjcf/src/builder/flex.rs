@@ -14,6 +14,14 @@ use super::{DEFAULT_SOLIMP, DEFAULT_SOLREF, ModelBuilder, ModelConversionError};
 use crate::types::MjcfFlex;
 use sim_core::{FlexSelfCollide, MjJointType};
 
+/// Number of coefficients per bending element in the discrete thin-shell model.
+/// Each edge hinge stores a 4×4 symmetric matrix (16 entries) + 1 rest-angle scalar = 17 values.
+const BENDING_COEFFS: usize = 17;
+
+/// Minimum vertex mass (kg) applied when computed mass is near-zero.
+/// Prevents singular mass matrices in the deformable body integrator.
+const MIN_VERTEX_MASS: f64 = 0.001;
+
 impl ModelBuilder {
     /// Process flex deformable bodies: create a real body (+ 3 slide joints for unpinned
     /// vertices) per flex vertex, extract edges/hinges, populate Model flex_* arrays.
@@ -24,10 +32,6 @@ impl ModelBuilder {
         &mut self,
         flex_list: &[MjcfFlex],
     ) -> std::result::Result<(), ModelConversionError> {
-        use std::collections::HashMap;
-
-        let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
-
         for flex_orig in flex_list {
             // Resolve `node` attribute: if `node` names are present and no vertices
             // exist, use the named bodies as flex vertices (MuJoCo semantics).
@@ -83,277 +87,21 @@ impl ModelBuilder {
             for (i, pos) in flex.vertices.iter().enumerate() {
                 let mass = vertex_masses[i];
                 let pinned = flex.pinned.contains(&i);
-                let inv_mass = if pinned || mass <= 0.0 {
-                    0.0
-                } else {
-                    1.0 / mass
-                };
-
-                self.nflexvert += 1;
-
-                // --- Create body for this vertex ---
-                let body_id = self.body_parent.len();
-
-                // Resolve parent body: for bare <flex> use the named body attr;
-                // for <flexcomp> (no body attr), parent is worldbody (0).
-                let parent_id = if i < flex.body.len() {
-                    if let Some(&bid) = self.body_name_to_id.get(&flex.body[i]) {
-                        bid
-                    } else {
-                        eprintln!(
-                            "Warning: flex '{}' vertex {} references unknown body '{}', \
-                             parenting to worldbody",
-                            flex.name, i, flex.body[i]
-                        );
-                        0
-                    }
-                } else {
-                    0 // <flexcomp> → parent is worldbody
-                };
-
-                // Each flex vertex body parented to worldbody is its own kinematic tree root.
-                // For bodies parented to a non-world body, inherit the root.
-                let root_id = if parent_id == 0 {
-                    body_id
-                } else {
-                    self.body_rootid[parent_id]
-                };
-
-                let jnt_adr = self.jnt_type.len();
-                let dof_adr = self.nv;
-                let geom_adr = self.geom_type.len();
-
-                // Push body arrays (mirrors process_body_with_world_frame pattern)
-                self.body_parent.push(parent_id);
-                self.body_rootid.push(root_id);
-                self.body_jnt_adr.push(jnt_adr);
-                self.body_dof_adr.push(dof_adr);
-                self.body_geom_adr.push(geom_adr);
-                // For node-derived vertices, body_pos = zeros (vertex is at the node
-                // body's origin; the slide joints provide displacement from there).
-                // For flexcomp/bare-flex, body_pos = vertex world position (parent is
-                // worldbody, so local offset == world position).
-                let body_pos_val = if is_node_flex { Vector3::zeros() } else { *pos };
-                self.body_pos.push(body_pos_val);
-                self.body_quat.push(UnitQuaternion::identity());
-                self.body_ipos.push(Vector3::zeros()); // point mass: CoM at body origin
-                self.body_iquat.push(UnitQuaternion::identity());
-                self.body_mass.push(mass);
-                self.body_inertia.push(Vector3::zeros()); // point mass: zero inertia
-                self.body_mocapid.push(None);
-                self.body_name.push(None);
-                self.body_sleep_policy.push(None);
-                // *pos is the vertex world position from node resolution or flexcomp.
-                // For flexcomp (parent=world), local offset == world position.
-                // For node-flex, *pos is the node body's world position.
-                self.body_world_pos.push(*pos);
-                self.body_world_quat.push(UnitQuaternion::identity());
-
-                if pinned {
-                    // Pinned vertex: body exists but has no joints/DOFs.
-                    // Body is fixed at its initial position (like a welded body).
-                    self.body_jnt_num.push(0);
-                    self.body_dof_num.push(0);
-                    self.body_geom_num.push(0);
-
-                    self.flexvert_qposadr.push(usize::MAX); // sentinel: no qpos
-                    self.flexvert_dofadr.push(usize::MAX); // sentinel: no dof
-                } else {
-                    // Unpinned vertex: 3 slide joints (X, Y, Z)
-                    // dof_parent chain: first DOF has no parent (worldbody has no DOFs),
-                    // subsequent DOFs chain to previous within this vertex.
-                    let mut last_dof: Option<usize> = None;
-                    // Determine parent's last DOF for kinematic tree linkage.
-                    // Worldbody (parent_id=0) has no DOFs → None.
-                    // Non-world parent: use their last DOF.
-                    let parent_last_dof = if parent_id == 0 {
-                        None
-                    } else {
-                        let pdof_adr = self.body_dof_adr[parent_id];
-                        let pdof_num = self.body_dof_num[parent_id];
-                        if pdof_num > 0 {
-                            Some(pdof_adr + pdof_num - 1)
-                        } else {
-                            None
-                        }
-                    };
-
-                    for (axis_idx, axis) in axes.iter().enumerate() {
-                        let jnt_id = self.jnt_type.len();
-                        let qpos_adr = self.nq;
-                        let dof_idx = self.nv;
-
-                        // Joint arrays
-                        self.jnt_type.push(MjJointType::Slide);
-                        self.jnt_body.push(body_id);
-                        self.jnt_qpos_adr.push(qpos_adr);
-                        self.jnt_dof_adr.push(dof_idx);
-                        self.jnt_pos.push(Vector3::zeros());
-                        self.jnt_axis.push(*axis);
-                        self.jnt_limited.push(false);
-                        self.jnt_range
-                            .push((-std::f64::consts::PI, std::f64::consts::PI));
-                        self.jnt_stiffness.push(0.0);
-                        self.jnt_springref.push(0.0);
-                        self.jnt_damping.push(0.0);
-                        self.jnt_armature.push(0.0);
-
-                        // DOF arrays
-                        let dof_parent_val = if axis_idx == 0 {
-                            parent_last_dof // first DOF links to parent body's last DOF
-                        } else {
-                            last_dof // subsequent DOFs chain within this vertex
-                        };
-                        self.dof_parent.push(dof_parent_val);
-                        self.dof_body.push(body_id);
-                        self.dof_jnt.push(jnt_id);
-                        self.dof_armature.push(0.0);
-                        self.dof_damping.push(0.0);
-                        self.dof_frictionloss.push(0.0);
-                        self.dof_solref.push(DEFAULT_SOLREF);
-                        self.dof_solimp.push(DEFAULT_SOLIMP);
-
-                        // qpos0 = 0 for each slide DOF (body_pos encodes initial position)
-                        self.qpos0_values.push(0.0);
-                        // qpos_spring = 0 for flex vertex slide joints (springref = 0)
-                        self.qpos_spring_values.push(0.0);
-
-                        self.nq += 1;
-                        self.nv += 1;
-                        last_dof = Some(dof_idx);
-                    }
-
-                    self.body_jnt_num.push(3);
-                    self.body_dof_num.push(3);
-                    self.body_geom_num.push(0);
-
-                    self.flexvert_qposadr.push(dof_adr); // first of 3 slide joint qpos addresses
-                    self.flexvert_dofadr.push(dof_adr); // first of 3 DOF addresses
-                }
-
-                // Convenience mirrors for edge/element force code
-                self.flexvert_mass.push(mass);
-                self.flexvert_invmass.push(inv_mass);
-                self.flexvert_radius.push(flex.radius);
-                self.flexvert_flexid.push(flex_id);
-                self.flexvert_bodyid.push(body_id);
-                self.flexvert_initial_pos.push(*pos);
+                self.create_flex_vertex_body(flex, i, pos, mass, pinned, is_node_flex, flex_id);
             }
 
             // Extract edges from element connectivity
-            let edge_start = self.nflexedge;
-            let mut edge_set: HashMap<(usize, usize), bool> = HashMap::new();
-            let mut edge_key_to_global: HashMap<(usize, usize), usize> = HashMap::new();
-            for elem in &flex.elements {
-                let n = elem.len();
-                for i_v in 0..n {
-                    for j_v in (i_v + 1)..n {
-                        let (a, b) = if elem[i_v] < elem[j_v] {
-                            (elem[i_v], elem[j_v])
-                        } else {
-                            (elem[j_v], elem[i_v])
-                        };
-                        edge_set.entry((a, b)).or_insert(true);
-                    }
-                }
-            }
-            for &(a, b) in edge_set.keys() {
-                let rest_len = (flex.vertices[b] - flex.vertices[a]).norm();
-                self.flexedge_vert.push([vert_start + a, vert_start + b]);
-                self.flexedge_length0.push(rest_len);
-                self.flexedge_flexid.push(flex_id);
-                // §42A-ii: flexedge_rigid — both endpoints pinned (invmass == 0).
-                let va = vert_start + a;
-                let vb = vert_start + b;
-                self.flexedge_rigid
-                    .push(self.flexvert_invmass[va] == 0.0 && self.flexvert_invmass[vb] == 0.0);
-                // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
-                self.flexedge_flap.push([-1, -1]);
-                // §42B S2+S3: Initialize flex_bending to 17 zeros per edge.
-                self.flex_bending.extend_from_slice(&[0.0; 17]);
-                // Track edge key → global index for flap topology.
-                edge_key_to_global.insert((a, b), self.nflexedge);
-                self.nflexedge += 1;
-            }
+            let (edge_start, edge_key_to_global) =
+                self.extract_flex_edges(flex, vert_start, flex_id);
 
-            // Extract bending hinges from adjacent elements
-            let mut edge_elements: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-            for (elem_idx, verts) in flex.elements.iter().enumerate() {
-                let n = verts.len();
-                for i_v in 0..n {
-                    for j_v in (i_v + 1)..n {
-                        let (a, b) = if verts[i_v] < verts[j_v] {
-                            (verts[i_v], verts[j_v])
-                        } else {
-                            (verts[j_v], verts[i_v])
-                        };
-                        edge_elements.entry((a, b)).or_default().push(elem_idx);
-                    }
-                }
-            }
-            for ((ve0, ve1), elems) in &edge_elements {
-                if elems.len() != 2 {
-                    continue; // boundary edge
-                }
-                let opp_a = flex.elements[elems[0]]
-                    .iter()
-                    .find(|&&v| v != *ve0 && v != *ve1)
-                    .copied();
-                let opp_b = flex.elements[elems[1]]
-                    .iter()
-                    .find(|&&v| v != *ve0 && v != *ve1)
-                    .copied();
-                if let (Some(va), Some(vb)) = (opp_a, opp_b) {
-                    let rest_angle = compute_dihedral_angle(
-                        flex.vertices[*ve0],
-                        flex.vertices[*ve1],
-                        flex.vertices[va],
-                        flex.vertices[vb],
-                    );
-                    self.flexhinge_vert.push([
-                        vert_start + *ve0,
-                        vert_start + *ve1,
-                        vert_start + va,
-                        vert_start + vb,
-                    ]);
-                    self.flexhinge_angle0.push(rest_angle);
-                    self.flexhinge_flexid.push(flex_id);
-                    self.nflexhinge += 1;
-
-                    // §42B S1: Populate flexedge_flap for this interior edge.
-                    if let Some(&global_e) = edge_key_to_global.get(&(*ve0, *ve1)) {
-                        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-                        {
-                            self.flexedge_flap[global_e] =
-                                [(vert_start + va) as i32, (vert_start + vb) as i32];
-                        }
-                    }
-                }
-            }
-
-            // §42B S2+S3: Compute cotangent bending coefficients for dim==2
-            // flex with valid material (young > 0, thickness > 0).
-            if flex.dim == 2 && flex.young > 0.0 && flex.thickness > 0.0 {
-                let mu = flex.young / (2.0 * (1.0 + flex.poisson));
-                let num_edges = self.nflexedge - edge_start;
-                for local_e in 0..num_edges {
-                    let global_e = edge_start + local_e;
-                    let flap = self.flexedge_flap[global_e];
-                    if flap[1] == -1 {
-                        continue; // boundary edge: coefficients stay zero
-                    }
-                    let ev = self.flexedge_vert[global_e];
-                    let v = [
-                        flex.vertices[ev[0] - vert_start],
-                        flex.vertices[ev[1] - vert_start],
-                        flex.vertices[(flap[0] as usize) - vert_start],
-                        flex.vertices[(flap[1] as usize) - vert_start],
-                    ];
-                    let coeffs = compute_bending_coefficients(v, mu, flex.thickness);
-                    let base = 17 * global_e;
-                    self.flex_bending[base..base + 17].copy_from_slice(&coeffs);
-                }
-            }
+            // Extract bending hinges from adjacent elements + compute bending coefficients
+            self.extract_flex_bending_hinges(
+                flex,
+                vert_start,
+                flex_id,
+                edge_start,
+                &edge_key_to_global,
+            );
 
             // Process elements
             for elem in &flex.elements {
@@ -474,6 +222,325 @@ impl ModelBuilder {
         }
 
         Ok(())
+    }
+
+    /// Create a body (+ 3 slide joints for unpinned vertices) for one flex vertex.
+    ///
+    /// Pushes body, joint, DOF, qpos, and flexvert arrays for vertex `vert_idx`.
+    /// Pinned vertices get a body with no joints/DOFs; unpinned get 3 slide joints (X, Y, Z).
+    fn create_flex_vertex_body(
+        &mut self,
+        flex: &MjcfFlex,
+        vert_idx: usize,
+        pos: &Vector3<f64>,
+        mass: f64,
+        pinned: bool,
+        is_node_flex: bool,
+        flex_id: usize,
+    ) {
+        let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
+
+        let inv_mass = if pinned || mass <= 0.0 {
+            0.0
+        } else {
+            1.0 / mass
+        };
+
+        self.nflexvert += 1;
+
+        // --- Create body for this vertex ---
+        let body_id = self.body_parent.len();
+
+        // Resolve parent body: for bare <flex> use the named body attr;
+        // for <flexcomp> (no body attr), parent is worldbody (0).
+        let parent_id = if vert_idx < flex.body.len() {
+            if let Some(&bid) = self.body_name_to_id.get(&flex.body[vert_idx]) {
+                bid
+            } else {
+                eprintln!(
+                    "Warning: flex '{}' vertex {} references unknown body '{}', \
+                     parenting to worldbody",
+                    flex.name, vert_idx, flex.body[vert_idx]
+                );
+                0
+            }
+        } else {
+            0 // <flexcomp> → parent is worldbody
+        };
+
+        // Each flex vertex body parented to worldbody is its own kinematic tree root.
+        // For bodies parented to a non-world body, inherit the root.
+        let root_id = if parent_id == 0 {
+            body_id
+        } else {
+            self.body_rootid[parent_id]
+        };
+
+        let jnt_adr = self.jnt_type.len();
+        let dof_adr = self.nv;
+        let geom_adr = self.geom_type.len();
+
+        // Push body arrays (mirrors process_body_with_world_frame pattern)
+        self.body_parent.push(parent_id);
+        self.body_rootid.push(root_id);
+        self.body_jnt_adr.push(jnt_adr);
+        self.body_dof_adr.push(dof_adr);
+        self.body_geom_adr.push(geom_adr);
+        // For node-derived vertices, body_pos = zeros (vertex is at the node
+        // body's origin; the slide joints provide displacement from there).
+        // For flexcomp/bare-flex, body_pos = vertex world position (parent is
+        // worldbody, so local offset == world position).
+        let body_pos_val = if is_node_flex { Vector3::zeros() } else { *pos };
+        self.body_pos.push(body_pos_val);
+        self.body_quat.push(UnitQuaternion::identity());
+        self.body_ipos.push(Vector3::zeros()); // point mass: CoM at body origin
+        self.body_iquat.push(UnitQuaternion::identity());
+        self.body_mass.push(mass);
+        self.body_inertia.push(Vector3::zeros()); // point mass: zero inertia
+        self.body_mocapid.push(None);
+        self.body_name.push(None);
+        self.body_sleep_policy.push(None);
+        // *pos is the vertex world position from node resolution or flexcomp.
+        // For flexcomp (parent=world), local offset == world position.
+        // For node-flex, *pos is the node body's world position.
+        self.body_world_pos.push(*pos);
+        self.body_world_quat.push(UnitQuaternion::identity());
+
+        if pinned {
+            // Pinned vertex: body exists but has no joints/DOFs.
+            // Body is fixed at its initial position (like a welded body).
+            self.body_jnt_num.push(0);
+            self.body_dof_num.push(0);
+            self.body_geom_num.push(0);
+
+            self.flexvert_qposadr.push(usize::MAX); // sentinel: no qpos
+            self.flexvert_dofadr.push(usize::MAX); // sentinel: no dof
+        } else {
+            // Unpinned vertex: 3 slide joints (X, Y, Z)
+            // dof_parent chain: first DOF has no parent (worldbody has no DOFs),
+            // subsequent DOFs chain to previous within this vertex.
+            let mut last_dof: Option<usize> = None;
+            // Determine parent's last DOF for kinematic tree linkage.
+            // Worldbody (parent_id=0) has no DOFs → None.
+            // Non-world parent: use their last DOF.
+            let parent_last_dof = if parent_id == 0 {
+                None
+            } else {
+                let pdof_adr = self.body_dof_adr[parent_id];
+                let pdof_num = self.body_dof_num[parent_id];
+                if pdof_num > 0 {
+                    Some(pdof_adr + pdof_num - 1)
+                } else {
+                    None
+                }
+            };
+
+            for (axis_idx, axis) in axes.iter().enumerate() {
+                let jnt_id = self.jnt_type.len();
+                let qpos_adr = self.nq;
+                let dof_idx = self.nv;
+
+                // Joint arrays
+                self.jnt_type.push(MjJointType::Slide);
+                self.jnt_body.push(body_id);
+                self.jnt_qpos_adr.push(qpos_adr);
+                self.jnt_dof_adr.push(dof_idx);
+                self.jnt_pos.push(Vector3::zeros());
+                self.jnt_axis.push(*axis);
+                self.jnt_limited.push(false);
+                self.jnt_range
+                    .push((-std::f64::consts::PI, std::f64::consts::PI));
+                self.jnt_stiffness.push(0.0);
+                self.jnt_springref.push(0.0);
+                self.jnt_damping.push(0.0);
+                self.jnt_armature.push(0.0);
+
+                // DOF arrays
+                let dof_parent_val = if axis_idx == 0 {
+                    parent_last_dof // first DOF links to parent body's last DOF
+                } else {
+                    last_dof // subsequent DOFs chain within this vertex
+                };
+                self.dof_parent.push(dof_parent_val);
+                self.dof_body.push(body_id);
+                self.dof_jnt.push(jnt_id);
+                self.dof_armature.push(0.0);
+                self.dof_damping.push(0.0);
+                self.dof_frictionloss.push(0.0);
+                self.dof_solref.push(DEFAULT_SOLREF);
+                self.dof_solimp.push(DEFAULT_SOLIMP);
+
+                // qpos0 = 0 for each slide DOF (body_pos encodes initial position)
+                self.qpos0_values.push(0.0);
+                // qpos_spring = 0 for flex vertex slide joints (springref = 0)
+                self.qpos_spring_values.push(0.0);
+
+                self.nq += 1;
+                self.nv += 1;
+                last_dof = Some(dof_idx);
+            }
+
+            self.body_jnt_num.push(3);
+            self.body_dof_num.push(3);
+            self.body_geom_num.push(0);
+
+            self.flexvert_qposadr.push(dof_adr); // first of 3 slide joint qpos addresses
+            self.flexvert_dofadr.push(dof_adr); // first of 3 DOF addresses
+        }
+
+        // Convenience mirrors for edge/element force code
+        self.flexvert_mass.push(mass);
+        self.flexvert_invmass.push(inv_mass);
+        self.flexvert_radius.push(flex.radius);
+        self.flexvert_flexid.push(flex_id);
+        self.flexvert_bodyid.push(body_id);
+        self.flexvert_initial_pos.push(*pos);
+    }
+
+    /// Extract edges from element connectivity for one flex.
+    ///
+    /// Iterates over all element pairs, deduplicates directed edges, and pushes
+    /// `flexedge_*` arrays. Returns `(edge_start, edge_key_to_global)` for use
+    /// by bending hinge extraction.
+    fn extract_flex_edges(
+        &mut self,
+        flex: &MjcfFlex,
+        vert_start: usize,
+        flex_id: usize,
+    ) -> (usize, std::collections::HashMap<(usize, usize), usize>) {
+        use std::collections::HashMap;
+
+        let edge_start = self.nflexedge;
+        let mut edge_set: HashMap<(usize, usize), bool> = HashMap::new();
+        let mut edge_key_to_global: HashMap<(usize, usize), usize> = HashMap::new();
+        for elem in &flex.elements {
+            let n = elem.len();
+            for i_v in 0..n {
+                for j_v in (i_v + 1)..n {
+                    let (a, b) = if elem[i_v] < elem[j_v] {
+                        (elem[i_v], elem[j_v])
+                    } else {
+                        (elem[j_v], elem[i_v])
+                    };
+                    edge_set.entry((a, b)).or_insert(true);
+                }
+            }
+        }
+        for &(a, b) in edge_set.keys() {
+            let rest_len = (flex.vertices[b] - flex.vertices[a]).norm();
+            self.flexedge_vert.push([vert_start + a, vert_start + b]);
+            self.flexedge_length0.push(rest_len);
+            self.flexedge_flexid.push(flex_id);
+            // §42A-ii: flexedge_rigid — both endpoints pinned (invmass == 0).
+            let va = vert_start + a;
+            let vb = vert_start + b;
+            self.flexedge_rigid
+                .push(self.flexvert_invmass[va] == 0.0 && self.flexvert_invmass[vb] == 0.0);
+            // §42B S1: Initialize flexedge_flap to [-1, -1] (boundary default).
+            self.flexedge_flap.push([-1, -1]);
+            // §42B S2+S3: Initialize flex_bending to zeros per edge.
+            self.flex_bending.extend_from_slice(&[0.0; BENDING_COEFFS]);
+            // Track edge key → global index for flap topology.
+            edge_key_to_global.insert((a, b), self.nflexedge);
+            self.nflexedge += 1;
+        }
+
+        (edge_start, edge_key_to_global)
+    }
+
+    /// Extract bending hinges from adjacent elements and compute bending coefficients.
+    ///
+    /// For each interior edge (shared by exactly 2 elements), finds the opposite
+    /// vertices, computes the rest dihedral angle, populates `flexhinge_*` arrays,
+    /// and fills `flexedge_flap`. Then computes cotangent bending coefficients for
+    /// dim==2 shells with valid material properties.
+    fn extract_flex_bending_hinges(
+        &mut self,
+        flex: &MjcfFlex,
+        vert_start: usize,
+        flex_id: usize,
+        edge_start: usize,
+        edge_key_to_global: &std::collections::HashMap<(usize, usize), usize>,
+    ) {
+        use std::collections::HashMap;
+
+        let mut edge_elements: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        for (elem_idx, verts) in flex.elements.iter().enumerate() {
+            let n = verts.len();
+            for i_v in 0..n {
+                for j_v in (i_v + 1)..n {
+                    let (a, b) = if verts[i_v] < verts[j_v] {
+                        (verts[i_v], verts[j_v])
+                    } else {
+                        (verts[j_v], verts[i_v])
+                    };
+                    edge_elements.entry((a, b)).or_default().push(elem_idx);
+                }
+            }
+        }
+        for ((ve0, ve1), elems) in &edge_elements {
+            if elems.len() != 2 {
+                continue; // boundary edge
+            }
+            let opp_a = flex.elements[elems[0]]
+                .iter()
+                .find(|&&v| v != *ve0 && v != *ve1)
+                .copied();
+            let opp_b = flex.elements[elems[1]]
+                .iter()
+                .find(|&&v| v != *ve0 && v != *ve1)
+                .copied();
+            if let (Some(va), Some(vb)) = (opp_a, opp_b) {
+                let rest_angle = compute_dihedral_angle(
+                    flex.vertices[*ve0],
+                    flex.vertices[*ve1],
+                    flex.vertices[va],
+                    flex.vertices[vb],
+                );
+                self.flexhinge_vert.push([
+                    vert_start + *ve0,
+                    vert_start + *ve1,
+                    vert_start + va,
+                    vert_start + vb,
+                ]);
+                self.flexhinge_angle0.push(rest_angle);
+                self.flexhinge_flexid.push(flex_id);
+                self.nflexhinge += 1;
+
+                // §42B S1: Populate flexedge_flap for this interior edge.
+                if let Some(&global_e) = edge_key_to_global.get(&(*ve0, *ve1)) {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    {
+                        self.flexedge_flap[global_e] =
+                            [(vert_start + va) as i32, (vert_start + vb) as i32];
+                    }
+                }
+            }
+        }
+
+        // §42B S2+S3: Compute cotangent bending coefficients for dim==2
+        // flex with valid material (young > 0, thickness > 0).
+        if flex.dim == 2 && flex.young > 0.0 && flex.thickness > 0.0 {
+            let mu = flex.young / (2.0 * (1.0 + flex.poisson));
+            let num_edges = self.nflexedge - edge_start;
+            for local_e in 0..num_edges {
+                let global_e = edge_start + local_e;
+                let flap = self.flexedge_flap[global_e];
+                if flap[1] == -1 {
+                    continue; // boundary edge: coefficients stay zero
+                }
+                let ev = self.flexedge_vert[global_e];
+                let v = [
+                    flex.vertices[ev[0] - vert_start],
+                    flex.vertices[ev[1] - vert_start],
+                    flex.vertices[(flap[0] as usize) - vert_start],
+                    flex.vertices[(flap[1] as usize) - vert_start],
+                ];
+                let coeffs = compute_bending_coefficients(v, mu, flex.thickness);
+                let base = BENDING_COEFFS * global_e;
+                self.flex_bending[base..base + BENDING_COEFFS].copy_from_slice(&coeffs);
+            }
+        }
     }
 }
 
@@ -633,7 +700,7 @@ pub fn compute_vertex_masses(flex: &MjcfFlex) -> Vec<f64> {
     // Ensure minimum mass
     for m in &mut masses {
         if *m < 1e-10 {
-            *m = 0.001;
+            *m = MIN_VERTEX_MASS;
         }
     }
 
@@ -740,7 +807,7 @@ fn triangle_area(v0: Vector3<f64>, v1: Vector3<f64>, v2: Vector3<f64>) -> f64 {
     e1.cross(&e2).norm() / 2.0
 }
 
-/// Compute 17 bending coefficients for one edge per MuJoCo's `ComputeBending()`.
+/// Compute bending coefficients for one edge per MuJoCo's `ComputeBending()`.
 ///
 /// `v[0]`, `v[1]`: edge endpoints (rest positions)
 /// `v[2]`: opposite vertex in triangle 1
@@ -748,11 +815,15 @@ fn triangle_area(v0: Vector3<f64>, v1: Vector3<f64>, v2: Vector3<f64>) -> f64 {
 /// `mu`: shear modulus = young / (2 * (1 + poisson))
 /// `thickness`: shell thickness
 ///
-/// Returns `[f64; 17]`: `b[0..16]` = 4x4 stiffness matrix, `b[16]` = Garg curved ref.
+/// Returns `[f64; BENDING_COEFFS]`: `b[0..16]` = 4x4 stiffness matrix, `b[16]` = Garg curved ref.
 ///
 /// MuJoCo equivalent: `ComputeBending()` in `user_mesh.cc:3666–3712`.
-fn compute_bending_coefficients(v: [Vector3<f64>; 4], mu: f64, thickness: f64) -> [f64; 17] {
-    let mut b = [0.0f64; 17];
+fn compute_bending_coefficients(
+    v: [Vector3<f64>; 4],
+    mu: f64,
+    thickness: f64,
+) -> [f64; BENDING_COEFFS] {
+    let mut b = [0.0f64; BENDING_COEFFS];
 
     // Step 1: cotangent weights
     let a01 = cot_angle(v[0], v[1], v[2]); // angle at v[0] in tri 1
@@ -871,7 +942,7 @@ pub fn compute_element_adjacency(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use super::compute_vertex_masses;
+    use super::{MIN_VERTEX_MASS, compute_vertex_masses};
     use crate::types::MjcfFlex;
     use nalgebra::Vector3;
 
@@ -968,11 +1039,11 @@ mod tests {
         let masses = compute_vertex_masses(&flex);
 
         assert_eq!(masses.len(), 3);
-        // Density=0 -> element mass=0 -> min-mass floor kicks in -> 0.001
+        // Density=0 -> element mass=0 -> min-mass floor kicks in -> MIN_VERTEX_MASS
         for &m in &masses {
             assert!(
-                (m - 0.001).abs() < 1e-15,
-                "density path should apply min-mass floor 0.001, got {m}"
+                (m - MIN_VERTEX_MASS).abs() < 1e-15,
+                "density path should apply min-mass floor {MIN_VERTEX_MASS}, got {m}"
             );
         }
     }

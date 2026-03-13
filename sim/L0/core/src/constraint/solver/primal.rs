@@ -136,9 +136,6 @@ pub struct PrimalPoint {
     pub alpha: f64,
     /// [dcost/dalpha, d²cost/dalpha²]
     pub deriv: [f64; 2],
-    /// Total cost at this alpha (used for diagnostics / future cost monitoring).
-    #[allow(dead_code)]
-    pub cost: f64,
 }
 
 /// Precompute quadratic polynomial coefficients for the 1D line search (§15.5).
@@ -256,7 +253,6 @@ pub fn primal_prepare(
 #[allow(clippy::many_single_char_names)]
 pub fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> PrimalPoint {
     let nefc = data.efc_type.len();
-    let mut cost = 0.0;
     let mut deriv = [0.0_f64; 2];
 
     // Batch quadratic accumulator for simple constraints and bottom-zone cones
@@ -283,12 +279,10 @@ pub fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> Prim
 
                 if jar_trial >= threshold {
                     // LinearPos
-                    cost += floss * jar_trial - 0.5 * r_i * floss * floss;
                     deriv[0] += floss * jv[i];
                     // deriv[1] += 0 (linear)
                 } else if jar_trial <= -threshold {
                     // LinearNeg
-                    cost += -floss * jar_trial - 0.5 * r_i * floss * floss;
                     deriv[0] += -floss * jv[i];
                     // deriv[1] += 0
                 } else {
@@ -343,7 +337,6 @@ pub fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> Prim
                 } else {
                     // Middle zone: cone cost
                     let nmt = n_alpha - mu * t_alpha;
-                    cost += 0.5 * dm * nmt * nmt;
 
                     // First derivative: d(cost)/d(alpha)
                     // d(N)/d(alpha) = V0
@@ -373,19 +366,16 @@ pub fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> Prim
     }
 
     // Evaluate batched quadratic total
-    let q_cost = quad_total[0] + alpha * quad_total[1] + alpha * alpha * quad_total[2];
     let q_d1 = quad_total[1] + 2.0 * alpha * quad_total[2];
     let q_d2 = 2.0 * quad_total[2];
-    cost += q_cost;
     deriv[0] += q_d1;
     deriv[1] += q_d2;
 
     // Add Gauss term (exactly quadratic in alpha)
-    cost += pq.quad_gauss[0] + alpha * pq.quad_gauss[1] + alpha * alpha * pq.quad_gauss[2];
     deriv[0] += pq.quad_gauss[1] + 2.0 * alpha * pq.quad_gauss[2];
     deriv[1] += 2.0 * pq.quad_gauss[2];
 
-    PrimalPoint { alpha, deriv, cost }
+    PrimalPoint { alpha, deriv }
 }
 
 /// Three-phase exact Newton line search (§15.5 PrimalSearch).

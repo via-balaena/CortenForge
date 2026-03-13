@@ -27,7 +27,9 @@ tempfile = { workspace = true }
 
 [features]
 default = []
-serde = ["dep:serde", "sim-types/serde"]
+serde = ["dep:serde", "sim-types/serde", "sim-core/serde"]
+# mjb: opt-in MuJoCo binary format support (serialize/deserialize via bincode).
+# Unit-tested (15 tests in mjb.rs). Run: cargo test -p sim-mjcf --features mjb
 mjb = ["serde", "dep:bincode"]
 
 [lints]

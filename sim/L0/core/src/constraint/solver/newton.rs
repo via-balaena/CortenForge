@@ -237,7 +237,9 @@ pub fn newton_solve(
         // 4-5. HESSIAN + GRADIENT (dense vs sparse)
         let (g, s) = if use_sparse {
             // Sparse path: full refactorization each iteration
-            let sh = sparse_h.as_mut().unwrap_or_else(|| unreachable!());
+            let sh = sparse_h
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("sparse_h initialized when use_sparse is true"));
             if sh.refactor(model, data, implicit_sd).is_err() {
                 // Refactorization failed — try full reassembly
                 if let Ok(new_sh) = SparseHessian::assemble(model, data, nv, implicit_sd) {
@@ -251,7 +253,9 @@ pub fn newton_solve(
             compute_gradient_and_search_sparse(data, nv, &ma, &qfrc_smooth, sh)
         } else {
             // Dense path: incremental rank-1 updates + cone Hessian
-            let chol_l = chol_l_dense.as_mut().unwrap_or_else(|| unreachable!());
+            let chol_l = chol_l_dense.as_mut().unwrap_or_else(|| {
+                unreachable!("chol_l_dense initialized when use_sparse is false")
+            });
             if hessian_incremental(data, nv, chol_l, &old_states, m_eff).is_err() {
                 // Incremental update failed — fall back to full reassembly
                 if let Ok(l) = assemble_hessian(data, nv, m_eff) {

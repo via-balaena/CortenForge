@@ -40,7 +40,7 @@ pub fn mesh_from_collision_shape(shape: &CollisionShape) -> Option<Mesh> {
         CollisionShape::ConvexMesh { vertices, .. } => Some(convex_mesh_from_vertices(vertices)),
         CollisionShape::TriangleMesh { data } => Some(triangle_mesh(data)),
         CollisionShape::HeightField { .. } => {
-            // TODO: Implement height field visualization
+            // DT-178: Implement height field visualization
             None
         }
         CollisionShape::Sdf { .. } => {

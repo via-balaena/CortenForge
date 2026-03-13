@@ -29,7 +29,7 @@ pub fn collide_with_mesh(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
-    margin: f64, // TODO: thread margin into mesh helpers
+    margin: f64, // DT-175: thread margin into mesh collision helpers
 ) -> Vec<Contact> {
     let type1 = model.geom_type[geom1];
     let type2 = model.geom_type[geom2];

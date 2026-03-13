@@ -225,7 +225,6 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
 /// * `size` - MuJoCo-style size parameters (interpretation depends on geom_type)
 /// * `pos` - World-space position of the geometry
 /// * `mat` - World-space rotation matrix (3x3)
-#[allow(dead_code)] // consumers still import from monolith; live after Phase 8b
 #[inline]
 pub fn aabb_from_geom(
     geom_type: GeomType,
@@ -416,7 +415,6 @@ pub fn aabb_from_geom(
 /// (e.g., a pile of boxes). SAP's worst case is the same O(n²), but it occurs
 /// less frequently in practice (requires all X-intervals to overlap, not just
 /// spatial proximity).
-#[allow(dead_code)] // consumers still import from monolith; live after Phase 8b
 pub struct SweepAndPrune {
     /// AABBs indexed by geom ID
     aabbs: Vec<Aabb>,
@@ -424,7 +422,6 @@ pub struct SweepAndPrune {
     sorted_x: Vec<usize>,
 }
 
-#[allow(dead_code)] // consumers still import from monolith; live after Phase 8b
 impl SweepAndPrune {
     /// Create a new sweep-and-prune structure from AABBs.
     ///
@@ -514,7 +511,6 @@ impl SweepAndPrune {
 }
 
 /// Find closest point on line segment AB to point P.
-#[allow(dead_code)] // consumers still import from monolith; live after Phase 8b
 #[inline]
 pub fn closest_point_segment(a: Vector3<f64>, b: Vector3<f64>, p: Vector3<f64>) -> Vector3<f64> {
     let ab = b - a;
@@ -535,7 +531,6 @@ pub fn closest_point_segment(a: Vector3<f64>, b: Vector3<f64>, p: Vector3<f64>) 
 ///
 /// Uses standard segment-segment distance algorithm with single-letter variables
 /// matching the mathematical notation from computational geometry literature.
-#[allow(dead_code)] // consumers still import from monolith; live after Phase 8b
 #[allow(clippy::many_single_char_names)]
 pub fn closest_points_segments(
     p1: Vector3<f64>,

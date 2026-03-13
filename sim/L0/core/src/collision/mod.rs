@@ -9,33 +9,33 @@
 //! and parameter combination from `engine_collision_primitive.c`.
 
 pub(crate) mod flex_collide;
+pub(crate) mod flex_narrow;
+pub(crate) mod flex_self;
 pub(crate) mod hfield;
 pub(crate) mod mesh_collide;
 pub(crate) mod narrow;
 pub(crate) mod pair_convex;
 pub(crate) mod pair_cylinder;
+mod pairs;
 pub(crate) mod plane;
 pub(crate) mod sdf_collide;
 
 // Note: collide_geoms, geom_to_collision_shape, make_contact_flex_rigid, and
-// narrowphase_sphere_geom are accessed internally via self::narrow:: and
-// self::flex_collide:: within this module. No pub(crate) re-export needed.
+// narrowphase_sphere_geom are accessed internally via self::narrow::,
+// self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this
+// module. No pub(crate) re-export needed.
 
 use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
 use crate::types::{
     DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
-    FlexSelfCollide, GeomType, Model, SleepState, disabled, enabled,
+    GeomType, Model, SleepState, disabled, enabled,
 };
 use nalgebra::{Point3, Vector3};
 
-use self::flex_collide::{
-    make_contact_flex_rigid, mj_collide_flex_internal, mj_collide_flex_pair,
-    mj_collide_flex_self_bvh, mj_collide_flex_self_narrow, mj_collide_flex_self_sap,
-    narrowphase_sphere_geom,
-};
 use self::hfield::collide_hfield_multi;
 use self::narrow::{apply_global_override, apply_pair_overrides, collide_geoms};
+use self::pairs::{mj_collide_flex_flex, mj_collision_flex, mj_collision_flex_self};
 
 // ============================================================================
 // Collision affinity filtering
@@ -641,159 +641,6 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // order (relevant for multi-contact geom pairs like heightfields).
     data.contacts
         .sort_by(|a, b| (a.geom1, a.geom2).cmp(&(b.geom1, b.geom2)));
-}
-
-/// Detect contacts between flex vertices and rigid geoms.
-///
-/// Each flex vertex is treated as a sphere of radius `flexvert_radius[vi]`.
-/// Uses brute-force broadphase (O(V*G)) for simplicity — SAP integration
-/// deferred to when nflexvert is large enough to warrant it.
-/// No-op when nflexvert == 0.
-fn mj_collision_flex(model: &Model, data: &mut Data) {
-    if model.nflexvert == 0 {
-        return;
-    }
-
-    for vi in 0..model.nflexvert {
-        let vpos = data.flexvert_xpos[vi];
-        let flex_id = model.flexvert_flexid[vi];
-        let radius = model.flexvert_radius[vi];
-
-        // Skip pinned vertices (infinite mass = immovable)
-        if model.flexvert_invmass[vi] <= 0.0 {
-            continue;
-        }
-
-        // Per-flex bitmask values (invariant across the inner geom loop)
-        let fcontype = model.flex_contype[flex_id];
-        let fconaffinity = model.flex_conaffinity[flex_id];
-
-        for gi in 0..model.ngeom {
-            // Proper contype/conaffinity bitmask filtering (MuJoCo filterBitmask protocol).
-            // Collision proceeds iff: (flex_contype & geom_conaffinity) != 0
-            //                      || (geom_contype & flex_conaffinity) != 0
-            let gcontype = model.geom_contype[gi];
-            let gconaffinity = model.geom_conaffinity[gi];
-            if (fcontype & gconaffinity) == 0 && (gcontype & fconaffinity) == 0 {
-                continue;
-            }
-
-            // Skip geoms belonging to the same body as this vertex
-            let vertex_body = model.flexvert_bodyid[vi];
-            let geom_body = model.geom_body[gi];
-            if geom_body == vertex_body {
-                continue;
-            }
-            // Skip geoms on the vertex's parent body (node body for node-flex)
-            if geom_body < model.nbody && model.body_parent[vertex_body] == geom_body {
-                continue;
-            }
-
-            // S10: When override active, use full o_margin for narrowphase detection.
-            // Non-override path uses flex_margin + geom_margin, matching the
-            // includemargin calculation in make_contact_flex_rigid.
-            let effective_margin = if enabled(model, ENABLE_OVERRIDE) {
-                model.o_margin
-            } else {
-                model.flex_margin[flex_id] + model.geom_margin[gi]
-            };
-
-            // Narrowphase: vertex sphere vs rigid geom
-            let geom_pos = data.geom_xpos[gi];
-            let geom_mat = data.geom_xmat[gi];
-
-            if let Some((depth, normal, contact_pos)) = narrowphase_sphere_geom(
-                vpos,
-                radius + effective_margin,
-                gi,
-                model,
-                geom_pos,
-                geom_mat,
-            ) {
-                let contact = make_contact_flex_rigid(model, vi, gi, contact_pos, normal, depth);
-                data.contacts.push(contact);
-                data.ncon += 1;
-            }
-        }
-    }
-}
-
-/// Dispatch flex self-collision: internal (adjacent) + self (non-adjacent).
-///
-/// Called after `mj_collision_flex()` in the collision pipeline. Iterates all
-/// flex objects, applies three conjunctive gate conditions, dispatches to
-/// internal and self-collision paths independently.
-fn mj_collision_flex_self(model: &Model, data: &mut Data) {
-    if model.nflex == 0 {
-        return;
-    }
-
-    for f in 0..model.nflex {
-        // Gate condition 1: skip rigid flexes (all vertices invmass == 0)
-        if model.flex_rigid[f] {
-            continue;
-        }
-
-        // Gate condition 2: self-bitmask check
-        // contype & conaffinity against ITSELF (not cross-object)
-        if (model.flex_contype[f] & model.flex_conaffinity[f]) == 0 {
-            continue;
-        }
-
-        // Path 1: internal collision (adjacent elements)
-        if model.flex_internal[f] {
-            mj_collide_flex_internal(model, data, f);
-        }
-
-        // Path 2: self-collision (non-adjacent elements)
-        match model.flex_selfcollide[f] {
-            FlexSelfCollide::None => {}
-            FlexSelfCollide::Narrow => {
-                mj_collide_flex_self_narrow(model, data, f);
-            }
-            FlexSelfCollide::Bvh => {
-                mj_collide_flex_self_bvh(model, data, f);
-            }
-            FlexSelfCollide::Sap => {
-                mj_collide_flex_self_sap(model, data, f);
-            }
-            FlexSelfCollide::Auto => {
-                if model.flex_dim[f] == 3 {
-                    mj_collide_flex_self_bvh(model, data, f);
-                } else {
-                    mj_collide_flex_self_sap(model, data, f);
-                }
-            }
-        }
-    }
-}
-
-/// Dispatch flex-flex cross-object collision.
-///
-/// Iterates all flex pair combinations (f1 < f2), applies bitmask filter,
-/// dispatches to element-element narrowphase with BVH midphase. No
-/// `flex_rigid` check — rigid flexes still participate in cross-object
-/// collision (MuJoCo behavior, EGT-4 verified).
-fn mj_collide_flex_flex(model: &Model, data: &mut Data) {
-    if model.nflex < 2 {
-        return;
-    }
-
-    for f1 in 0..model.nflex {
-        let ct1 = model.flex_contype[f1];
-        let ca1 = model.flex_conaffinity[f1];
-
-        for f2 in (f1 + 1)..model.nflex {
-            // filterBitmask: (ct1 & ca2) != 0 || (ct2 & ca1) != 0
-            let ct2 = model.flex_contype[f2];
-            let ca2 = model.flex_conaffinity[f2];
-            if (ct1 & ca2) == 0 && (ct2 & ca1) == 0 {
-                continue;
-            }
-
-            mj_collide_flex_pair(model, data, f1, f2);
-        }
-    }
 }
 
 // =============================================================================
