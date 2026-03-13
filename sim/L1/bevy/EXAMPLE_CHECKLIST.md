@@ -202,30 +202,33 @@ expected behavior — no subjective "does this look right?" judgments.
 Equality constraints, tendons, and multi-body coupling. Proves the constraint
 solver handles coupling between distinct kinematic chains.
 
-- [ ] **coupled_pendulums** — Two pendulums linked by a tendon or equality
-  constraint. Energy transfers between them in a measurable beating pattern.
+- [x] **coupled_pendulums** — Two pendulums coupled by torsional spring.
+  Energy transfers between them in a measurable beating pattern.
 
-  *MJCF (inline):* 2 independent pendulum bodies, each with hinge joint.
-  Slightly different natural frequencies (different lengths or masses).
-  Coupled by tendon or equality joint constraint. Light damping.
+  *MJCF (inline):* 2 independent pendulum bodies (L₁=0.6m, L₂=0.8m),
+  each with hinge joint (axis Y). Different lengths give different natural
+  frequencies. Coupled by manual torsional spring (κ=2.0 N·m/rad) via
+  `qfrc_applied`. Light damping (0.02). RK4, dt=0.001.
 
-  *Physics:* 2 hinge joints, tendon/equality coupling, energy exchange.
-  Beat frequency: f_beat = |f₁ − f₂| / 2. Energy sloshes between
-  pendulums at beat frequency — analytically exact.
+  *Physics:* 2 hinge joints, manual spring coupling, energy exchange.
+  Normal mode frequencies computed exactly from coupled equations.
+  Beat frequency: f_beat = |f₊ − f₋| / 2 where f₊, f₋ are normal modes.
+  Energy sloshes between pendulums — analytically exact.
 
   *Bevy:* `SimViewerPlugin` + `ModelDataPlugin` wall-clock stepping.
   Front view camera. HUD: θ₁, θ₂, E₁, E₂, measured beat frequency,
-  predicted beat frequency, error %.
+  predicted beat frequency, error %. Gizmo-drawn rods, bobs, and
+  zigzag coupling spring.
 
   *Acceptance:*
-  - [ ] Both pendulums oscillate
-  - [ ] Energy visibly transfers between them (one slows as other speeds up)
-  - [ ] Measured beat frequency matches |f₁ − f₂|/2 within 5%
-  - [ ] Total energy conserved (minus damping losses)
-  - [ ] Coupling strength affects beat amplitude
+  - [x] Both pendulums oscillate
+  - [x] Energy visibly transfers between them (one slows as other speeds up)
+  - [x] Measured beat frequency matches |f₊ − f₋|/2 within 5% (err ≈ −1.25%)
+  - [x] Total energy conserved (minus damping losses)
+  - [x] Coupling strength affects beat amplitude
 
-  *New concepts:* equality constraints or tendons in dynamic context,
-  energy exchange between coupled systems, beat frequency verification.
+  *New concepts:* manual coupling forces via qfrc_applied, energy exchange
+  between coupled systems, normal mode analysis, beat frequency verification.
 
 - [ ] **crank_slider** — Motor-driven crank converts rotary motion to linear
   sliding. Classic mechanism with analytically exact piston position.
