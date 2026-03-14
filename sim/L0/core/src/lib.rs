@@ -147,7 +147,7 @@ pub use convex_hull::{ConvexHull, convex_hull, quickhull};
 pub use contact::{ContactForce, ContactManifold, ContactPoint};
 pub use heightfield::{HeightFieldContact, HeightFieldData};
 pub use mesh::{
-    MeshContact, Triangle, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,
+    MeshContact, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,
     mesh_capsule_contact, mesh_mesh_contact, mesh_mesh_deepest_contact, mesh_sphere_contact,
     triangle_box_contact, triangle_capsule_contact, triangle_sphere_contact,
 };

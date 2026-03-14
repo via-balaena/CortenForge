@@ -814,8 +814,7 @@ fn raycast_triangle_mesh(
 
         // Use query_ray_closest with a callback that tests triangles and updates cutoff
         let result = bvh.query_ray_closest(&local_origin, &ray_dir_inv, max_distance, |tri_idx| {
-            let tri = data.get_triangle(tri_idx)?;
-            let (v0, v1, v2) = data.triangle_vertices(tri);
+            let (v0, v1, v2) = data.triangle_vertices(tri_idx)?;
 
             if let Some((t, pt, normal)) =
                 ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, cutoff)
@@ -832,8 +831,7 @@ fn raycast_triangle_mesh(
         // Use either the callback result or our tracked closest_hit
         let hit = closest_hit.or_else(|| {
             result.and_then(|(tri_idx, _)| {
-                let tri = data.get_triangle(tri_idx)?;
-                let (v0, v1, v2) = data.triangle_vertices(tri);
+                let (v0, v1, v2) = data.triangle_vertices(tri_idx)?;
                 ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, max_distance)
             })
         });
@@ -847,8 +845,11 @@ fn raycast_triangle_mesh(
         // Fallback: brute force test all triangles
         let mut closest_hit: Option<(f64, Point3<f64>, Vector3<f64>)> = None;
 
-        for tri in data.triangles() {
-            let (v0, v1, v2) = data.triangle_vertices(tri);
+        for (face_idx, face) in data.triangles().iter().enumerate() {
+            let v0 = data.vertices()[face[0] as usize];
+            let v1 = data.vertices()[face[1] as usize];
+            let v2 = data.vertices()[face[2] as usize];
+            let _ = face_idx; // Index available if needed
             let cutoff = closest_hit.as_ref().map_or(max_distance, |h| h.0);
 
             if let Some((t, pt, normal)) =

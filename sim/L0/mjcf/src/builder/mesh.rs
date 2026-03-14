@@ -457,10 +457,10 @@ pub fn compute_mesh_inertia(mesh: &TriangleMeshData) -> (f64, Vector3<f64>, Matr
     let mut xz = 0.0;
     let mut yz = 0.0;
 
-    for tri in triangles {
-        let a = vertices[tri.v0].coords;
-        let b = vertices[tri.v1].coords;
-        let c = vertices[tri.v2].coords;
+    for face in triangles {
+        let a = vertices[face[0] as usize].coords;
+        let b = vertices[face[1] as usize].coords;
+        let c = vertices[face[2] as usize].coords;
 
         // Signed volume of tetrahedron formed with origin: V = (a × b) · c / 6
         let det = a.cross(&b).dot(&c);
@@ -579,10 +579,10 @@ pub fn compute_mesh_inertia_shell(mesh: &TriangleMeshData) -> MeshProps {
     let mut xz = 0.0;
     let mut yz = 0.0;
 
-    for tri in triangles {
-        let a = vertices[tri.v0].coords;
-        let b = vertices[tri.v1].coords;
-        let c = vertices[tri.v2].coords;
+    for face in triangles {
+        let a = vertices[face[0] as usize].coords;
+        let b = vertices[face[1] as usize].coords;
+        let c = vertices[face[2] as usize].coords;
 
         let cross = (b - a).cross(&(c - a));
         let area = cross.norm() * 0.5;
@@ -679,10 +679,10 @@ pub fn compute_mesh_inertia_legacy(mesh: &TriangleMeshData) -> MeshProps {
     let mut xz = 0.0;
     let mut yz = 0.0;
 
-    for tri in triangles {
-        let a = vertices[tri.v0].coords;
-        let b = vertices[tri.v1].coords;
-        let c = vertices[tri.v2].coords;
+    for face in triangles {
+        let a = vertices[face[0] as usize].coords;
+        let b = vertices[face[1] as usize].coords;
+        let c = vertices[face[2] as usize].coords;
 
         let det = a.cross(&b).dot(&c);
         let det_abs = det.abs(); // KEY DIFFERENCE from exact mode

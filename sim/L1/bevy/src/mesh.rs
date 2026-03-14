@@ -222,26 +222,26 @@ pub fn triangle_mesh(mesh_data: &std::sync::Arc<sim_core::mesh::TriangleMeshData
     // Convert vertices from physics (Z-up) to Bevy (Y-up) coordinates
     let positions = vertex_positions_from_points(vertices);
 
-    // Convert triangle indices
+    // Convert triangle indices (already u32 from cf-geometry)
     let indices: Vec<u32> = triangles
         .iter()
-        .flat_map(|tri| [tri.v0 as u32, tri.v1 as u32, tri.v2 as u32])
+        .flat_map(|face| [face[0], face[1], face[2]])
         .collect();
 
     // Compute normals per vertex (average of adjacent face normals) in physics space,
     // then convert to Bevy space
     let mut physics_normals = vec![nalgebra::Vector3::zeros(); vertices.len()];
-    for tri in triangles {
-        let v0 = vertices[tri.v0];
-        let v1 = vertices[tri.v1];
-        let v2 = vertices[tri.v2];
+    for face in triangles {
+        let v0 = vertices[face[0] as usize];
+        let v1 = vertices[face[1] as usize];
+        let v2 = vertices[face[2] as usize];
 
         let e1 = v1 - v0;
         let e2 = v2 - v0;
         let face_normal = e1.cross(&e2);
 
         // Add face normal to each vertex's accumulated normal (in physics space)
-        for &idx in &[tri.v0, tri.v1, tri.v2] {
+        for &idx in &[face[0] as usize, face[1] as usize, face[2] as usize] {
             physics_normals[idx] += face_normal;
         }
     }

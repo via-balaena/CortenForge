@@ -574,8 +574,10 @@ pub fn sdf_triangle_mesh_contact(
     }
 
     // Also sample edge midpoints for better accuracy on large triangles
-    for tri in mesh.triangles() {
-        let (v0, v1, v2) = mesh.triangle_vertices(tri);
+    for face in mesh.triangles() {
+        let v0 = mesh.vertices()[face[0] as usize];
+        let v1 = mesh.vertices()[face[1] as usize];
+        let v2 = mesh.vertices()[face[2] as usize];
 
         // Edge midpoints
         let midpoints = [
