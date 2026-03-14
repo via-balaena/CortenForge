@@ -12,6 +12,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+cf-geometry = { workspace = true }
 cf-spatial = { workspace = true }
 nalgebra = { workspace = true }
 thiserror = { workspace = true }
@@ -23,4 +24,4 @@ proptest = { workspace = true }
 
 [features]
 default = []
-serde = ["dep:serde", "cf-spatial/serde", "nalgebra/serde-serialize"]
+serde = ["dep:serde", "cf-geometry/serde", "cf-spatial/serde", "nalgebra/serde-serialize"]

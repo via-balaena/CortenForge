@@ -21,7 +21,7 @@
 use cf_spatial::VoxelCoord;
 use nalgebra::Point3;
 
-use crate::constraint::Aabb;
+use cf_geometry::Aabb;
 
 /// A single goal point specification.
 ///
@@ -45,7 +45,7 @@ use crate::constraint::Aabb;
 ///
 /// // Any point in a region
 /// use route_types::Aabb;
-/// let region = GoalPoint::Region(Aabb::new(
+/// let region = GoalPoint::Region(Aabb::from_corners(
 ///     Point3::new(0.0, 0.0, 0.0),
 ///     Point3::new(1.0, 1.0, 1.0),
 /// ));
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn test_goal_point_region() {
-        let aabb = Aabb::new(Point3::origin(), Point3::new(1.0, 1.0, 1.0));
+        let aabb = Aabb::from_corners(Point3::origin(), Point3::new(1.0, 1.0, 1.0));
         let goal = GoalPoint::Region(aabb);
         assert!(!goal.is_voxel());
         assert!(!goal.is_world());
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn test_goal_point_satisfied_by_voxel_region() {
-        let goal = GoalPoint::Region(Aabb::new(
+        let goal = GoalPoint::Region(Aabb::from_corners(
             Point3::new(4.0, 4.0, 4.0),
             Point3::new(6.0, 6.0, 6.0),
         ));
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn test_goal_point_from_aabb() {
-        let aabb = Aabb::new(Point3::origin(), Point3::new(1.0, 1.0, 1.0));
+        let aabb = Aabb::from_corners(Point3::origin(), Point3::new(1.0, 1.0, 1.0));
         let goal: GoalPoint = aabb.into();
         assert!(goal.is_region());
     }

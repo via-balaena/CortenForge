@@ -59,6 +59,27 @@ impl Sphere {
     pub fn surface_area(&self) -> f64 {
         4.0 * std::f64::consts::PI * self.radius * self.radius
     }
+
+    /// Returns `true` if this sphere intersects another sphere.
+    #[must_use]
+    pub fn intersects(&self, other: &Self) -> bool {
+        let dist_sq = (other.center - self.center).norm_squared();
+        let radius_sum = self.radius + other.radius;
+        dist_sq <= radius_sum * radius_sum
+    }
+
+    /// Returns `true` if this sphere intersects an AABB.
+    ///
+    /// Uses the closest point on the AABB to the sphere center.
+    #[must_use]
+    pub fn intersects_aabb(&self, aabb: &Aabb) -> bool {
+        let closest = Point3::new(
+            self.center.x.clamp(aabb.min.x, aabb.max.x),
+            self.center.y.clamp(aabb.min.y, aabb.max.y),
+            self.center.z.clamp(aabb.min.z, aabb.max.z),
+        );
+        self.contains(&closest)
+    }
 }
 
 impl Default for Sphere {
