@@ -24,10 +24,14 @@
 
 mod aabb;
 mod bounded;
+mod mesh;
 mod ray;
 mod sphere;
+mod triangle;
 
 pub use aabb::{Aabb, Axis};
 pub use bounded::Bounded;
+pub use mesh::IndexedMesh;
 pub use ray::{Ray, RayHit};
 pub use sphere::Sphere;
+pub use triangle::Triangle;
