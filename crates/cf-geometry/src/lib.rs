@@ -30,6 +30,7 @@ mod heightfield;
 mod mesh;
 mod ray;
 mod sdf;
+mod shape;
 mod sphere;
 mod triangle;
 
@@ -41,5 +42,6 @@ pub use heightfield::HeightFieldData;
 pub use mesh::IndexedMesh;
 pub use ray::{Ray, RayHit};
 pub use sdf::SdfGrid;
+pub use shape::Shape;
 pub use sphere::Sphere;
 pub use triangle::Triangle;
