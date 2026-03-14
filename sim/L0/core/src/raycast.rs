@@ -722,7 +722,7 @@ fn raycast_heightfield(
 /// Ray-SDF intersection using sphere tracing.
 fn raycast_sdf(
     pose: &Pose,
-    data: &crate::sdf::SdfCollisionData,
+    data: &crate::sdf::SdfGrid,
     ray_origin: Point3<f64>,
     ray_direction: UnitVector3<f64>,
     max_distance: f64,

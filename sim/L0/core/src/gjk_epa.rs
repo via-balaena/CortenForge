@@ -242,7 +242,8 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
         CollisionShape::HeightField { data } => {
             // Height fields are not convex, so GJK/EPA is not ideal.
             // Return an extreme point from the AABB as a fallback.
-            let (local_min, local_max) = data.aabb();
+            let local_aabb = cf_geometry::Bounded::aabb(data.as_ref());
+            let (local_min, local_max) = (local_aabb.min, local_aabb.max);
             let local_dir = pose.rotation.inverse() * direction;
 
             let local_support = Point3::new(
@@ -269,7 +270,8 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
             // SDFs are not convex, so GJK/EPA is not ideal.
             // Return an extreme point from the AABB as a fallback.
             // Dedicated SDF collision is handled separately in collision/sdf_collide.rs.
-            let (local_min, local_max) = data.aabb();
+            let local_aabb = cf_geometry::Bounded::aabb(data.as_ref());
+            let (local_min, local_max) = (local_aabb.min, local_aabb.max);
             let local_dir = pose.rotation.inverse() * direction;
 
             let local_support = Point3::new(

@@ -156,7 +156,7 @@ impl GeomType {
             Self::Sdf => {
                 // Conservative: treat as axis-aligned box with half-extents from geom_size.
                 // True bounding radius is overwritten by post-build pass using
-                // SdfCollisionData::aabb().
+                // SdfGrid::aabb().
                 size.norm()
             }
         }

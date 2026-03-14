@@ -140,7 +140,7 @@ pub mod plugin;
 pub mod batch;
 
 pub use batch::BatchSim;
-pub use cf_geometry::{Aabb, Axis};
+pub use cf_geometry::{Aabb, Axis, Bounded};
 pub use collision_shape::CollisionShape;
 pub use convex_hull::{ConvexHull, convex_hull, quickhull};
 
@@ -154,7 +154,7 @@ pub use mesh::{
 pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_mesh, bvh_from_triangle_mesh, query_bvh_pair};
 pub use raycast::{RaycastHit, raycast_shape};
 pub use sdf::{
-    SdfCollisionData, SdfContact, sdf_box_contact, sdf_capsule_contact, sdf_point_contact,
+    SdfContact, SdfGrid, sdf_box_contact, sdf_capsule_contact, sdf_point_contact,
     sdf_sphere_contact,
 };
 

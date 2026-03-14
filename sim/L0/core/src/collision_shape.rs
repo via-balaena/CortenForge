@@ -47,14 +47,14 @@
 //! | [`HeightField`](CollisionShape::HeightField) | Terrain grid | No |
 //! | [`Sdf`](CollisionShape::Sdf) | Signed distance field | No |
 
-use cf_geometry::Aabb;
+use cf_geometry::{Aabb, Bounded};
 use nalgebra::{Point3, Vector3};
 use std::cell::Cell;
 use std::sync::Arc;
 
 use crate::heightfield::HeightFieldData;
 use crate::mesh::TriangleMeshData;
-use crate::sdf::SdfCollisionData;
+use crate::sdf::SdfGrid;
 use cf_geometry::ConvexHull;
 use sim_types::Pose;
 
@@ -126,7 +126,7 @@ pub enum CollisionShape {
     /// Signed Distance Field for collision with complex geometry.
     Sdf {
         /// The SDF collision data.
-        data: Arc<SdfCollisionData>,
+        data: Arc<SdfGrid>,
     },
     /// Non-convex triangle mesh.
     TriangleMesh {
@@ -355,7 +355,7 @@ impl CollisionShape {
 
     /// Create an SDF shape.
     #[must_use]
-    pub fn sdf(data: Arc<SdfCollisionData>) -> Self {
+    pub fn sdf(data: Arc<SdfGrid>) -> Self {
         Self::Sdf { data }
     }
 
@@ -546,13 +546,8 @@ impl CollisionShape {
             }
             Self::Sdf { data } => {
                 // Bounding radius from origin to furthest corner of the SDF grid
-                let origin = data.origin();
-                let max_corner = Point3::new(
-                    origin.x + data.width() as f64 * data.cell_size(),
-                    origin.y + data.height() as f64 * data.cell_size(),
-                    origin.z + data.depth() as f64 * data.cell_size(),
-                );
-                origin.coords.norm().max(max_corner.coords.norm())
+                let aabb = data.aabb();
+                aabb.min.coords.norm().max(aabb.max.coords.norm())
             }
             Self::TriangleMesh { data } => data
                 .vertices()
@@ -628,19 +623,8 @@ impl CollisionShape {
                 let (min, max) = data.aabb();
                 Aabb::new(min, max)
             }
-            Self::HeightField { data } => {
-                let (min, max) = data.aabb();
-                Aabb::new(min, max)
-            }
-            Self::Sdf { data } => {
-                let origin = data.origin();
-                let max = Point3::new(
-                    origin.x + (data.width() as f64) * data.cell_size(),
-                    origin.y + (data.height() as f64) * data.cell_size(),
-                    origin.z + (data.depth() as f64) * data.cell_size(),
-                );
-                Aabb::new(origin, max)
-            }
+            Self::HeightField { data } => data.aabb(),
+            Self::Sdf { data } => data.aabb(),
         }
     }
 }
@@ -842,12 +826,12 @@ mod tests {
 
     #[test]
     fn test_sdf_creation() {
-        use crate::sdf::SdfCollisionData;
+        use crate::sdf::SdfGrid;
         use std::sync::Arc;
 
         // Create a simple 2x2x2 SDF representing a sphere-ish shape
         let sphere_radius = 1.0;
-        let data = Arc::new(SdfCollisionData::from_fn(
+        let data = Arc::new(SdfGrid::from_fn(
             4,
             4,
             4,
@@ -876,7 +860,7 @@ mod tests {
     fn test_bounding_radius_all_types() {
         use crate::heightfield::HeightFieldData;
         use crate::mesh::TriangleMeshData;
-        use crate::sdf::SdfCollisionData;
+        use crate::sdf::SdfGrid;
         use std::sync::Arc;
 
         // Sphere: radius = r
@@ -935,14 +919,7 @@ mod tests {
         assert!(hf.bounding_radius() > 0.0);
 
         // SDF: computed from grid corners
-        let sdf_data = Arc::new(SdfCollisionData::from_fn(
-            2,
-            2,
-            2,
-            1.0,
-            Point3::origin(),
-            |_| 0.0,
-        ));
+        let sdf_data = Arc::new(SdfGrid::from_fn(2, 2, 2, 1.0, Point3::origin(), |_| 0.0));
         let sdf = CollisionShape::sdf(sdf_data);
         assert!(sdf.bounding_radius().is_finite());
         assert!(sdf.bounding_radius() > 0.0);
@@ -1104,7 +1081,7 @@ mod tests {
     #[test]
     fn test_is_mesh_based() {
         use crate::mesh::TriangleMeshData;
-        use crate::sdf::SdfCollisionData;
+        use crate::sdf::SdfGrid;
         use std::sync::Arc;
 
         // Mesh-based shapes
@@ -1128,14 +1105,7 @@ mod tests {
         let tri_mesh = CollisionShape::triangle_mesh(tri_data);
         assert!(tri_mesh.is_mesh_based());
 
-        let sdf_data = Arc::new(SdfCollisionData::from_fn(
-            2,
-            2,
-            2,
-            1.0,
-            Point3::origin(),
-            |_| 0.0,
-        ));
+        let sdf_data = Arc::new(SdfGrid::from_fn(2, 2, 2, 1.0, Point3::origin(), |_| 0.0));
         let sdf = CollisionShape::sdf(sdf_data);
         assert!(sdf.is_mesh_based());
 
@@ -1297,12 +1267,13 @@ mod tests {
 
     #[test]
     fn test_local_aabb_sdf() {
-        use crate::sdf::SdfCollisionData;
+        use crate::sdf::SdfGrid;
         use std::sync::Arc;
 
         // 3x3x3 SDF grid with cell_size=0.5, origin at (-1, -1, -1)
-        // Grid extends from (-1,-1,-1) to (-1 + 3*0.5, -1 + 3*0.5, -1 + 3*0.5) = (0.5, 0.5, 0.5)
-        let data = Arc::new(SdfCollisionData::from_fn(
+        // Grid extends from (-1,-1,-1) to (-1 + (3-1)*0.5, ...) = (0.0, 0.0, 0.0)
+        // 3 samples = 2 cells = 2 * 0.5 = 1.0 extent per axis
+        let data = Arc::new(SdfGrid::from_fn(
             3,
             3,
             3,
@@ -1317,8 +1288,8 @@ mod tests {
         assert_relative_eq!(aabb.min.x, -1.0, epsilon = 1e-10);
         assert_relative_eq!(aabb.min.y, -1.0, epsilon = 1e-10);
         assert_relative_eq!(aabb.min.z, -1.0, epsilon = 1e-10);
-        assert_relative_eq!(aabb.max.x, 0.5, epsilon = 1e-10);
-        assert_relative_eq!(aabb.max.y, 0.5, epsilon = 1e-10);
-        assert_relative_eq!(aabb.max.z, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.z, 0.0, epsilon = 1e-10);
     }
 }

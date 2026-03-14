@@ -11,7 +11,9 @@
 use nalgebra::Point3;
 use sim_types::Pose;
 
-use super::{SdfCollisionData, SdfContact};
+use cf_geometry::Bounded;
+
+use super::{SdfContact, SdfGrid};
 
 /// Transform an AABB to world space, accounting for rotation.
 pub fn transform_aabb_to_world(
@@ -84,16 +86,16 @@ pub fn compute_aabb_overlap(
 /// - `penetration`: Depth of the deepest overlap (min of `|dist_a|`, `|dist_b|`)
 #[must_use]
 pub fn sdf_sdf_contact(
-    sdf_a: &SdfCollisionData,
+    sdf_a: &SdfGrid,
     pose_a: &Pose,
-    sdf_b: &SdfCollisionData,
+    sdf_b: &SdfGrid,
     pose_b: &Pose,
 ) -> Option<SdfContact> {
     // Compute world-space AABBs for both SDFs
-    let (a_aabb_min, a_aabb_max) = sdf_a.aabb();
-    let (b_aabb_min, b_aabb_max) = sdf_b.aabb();
-    let (a_world_min, a_world_max) = transform_aabb_to_world(&a_aabb_min, &a_aabb_max, pose_a);
-    let (b_world_min, b_world_max) = transform_aabb_to_world(&b_aabb_min, &b_aabb_max, pose_b);
+    let a_aabb = sdf_a.aabb();
+    let b_aabb = sdf_b.aabb();
+    let (a_world_min, a_world_max) = transform_aabb_to_world(&a_aabb.min, &a_aabb.max, pose_a);
+    let (b_world_min, b_world_max) = transform_aabb_to_world(&b_aabb.min, &b_aabb.max, pose_b);
 
     // Compute AABB overlap region
     let (overlap_min, overlap_max) =
@@ -198,8 +200,8 @@ mod tests {
     use super::*;
     use nalgebra::Vector3;
 
-    fn sphere_sdf(resolution: usize) -> SdfCollisionData {
-        SdfCollisionData::sphere(Point3::origin(), 1.0, resolution, 1.0)
+    fn sphere_sdf(resolution: usize) -> SdfGrid {
+        SdfGrid::sphere(Point3::origin(), 1.0, resolution, 1.0)
     }
 
     #[test]
@@ -292,8 +294,7 @@ mod tests {
     #[test]
     fn test_sdf_sdf_contact_sphere_box() {
         let sdf_sphere = sphere_sdf(32);
-        let sdf_box =
-            SdfCollisionData::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let sdf_box = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
 
         // Place box at edge of sphere
         let pose_sphere = Pose::identity();
@@ -311,10 +312,8 @@ mod tests {
 
     #[test]
     fn test_sdf_sdf_contact_box_box() {
-        let sdf_a =
-            SdfCollisionData::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
-        let sdf_b =
-            SdfCollisionData::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let sdf_a = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let sdf_b = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
 
         // Place boxes overlapping
         let pose_a = Pose::identity();
@@ -333,8 +332,8 @@ mod tests {
     #[test]
     fn test_sdf_sdf_contact_different_resolutions() {
         // SDFs with different resolutions
-        let sdf_a = SdfCollisionData::sphere(Point3::origin(), 1.0, 16, 0.5);
-        let sdf_b = SdfCollisionData::sphere(Point3::origin(), 1.0, 32, 0.5);
+        let sdf_a = SdfGrid::sphere(Point3::origin(), 1.0, 16, 0.5);
+        let sdf_b = SdfGrid::sphere(Point3::origin(), 1.0, 32, 0.5);
 
         // Place overlapping
         let pose_a = Pose::identity();
