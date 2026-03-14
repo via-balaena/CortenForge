@@ -772,7 +772,7 @@ pub fn compute_mesh_inertia_on_hull(mesh: &TriangleMeshData) -> MeshProps {
 /// Same signed-tetrahedron algorithm as `compute_mesh_inertia()` but
 /// operates on raw arrays instead of `TriangleMeshData`.
 #[allow(clippy::suspicious_operation_groupings)]
-fn compute_inertia_from_verts_faces(vertices: &[Point3<f64>], faces: &[[usize; 3]]) -> MeshProps {
+fn compute_inertia_from_verts_faces(vertices: &[Point3<f64>], faces: &[[u32; 3]]) -> MeshProps {
     let mut total_volume = 0.0;
     let mut com_accum = Vector3::zeros();
     let mut xx = 0.0;
@@ -783,9 +783,9 @@ fn compute_inertia_from_verts_faces(vertices: &[Point3<f64>], faces: &[[usize; 3
     let mut yz = 0.0;
 
     for face in faces {
-        let a = vertices[face[0]].coords;
-        let b = vertices[face[1]].coords;
-        let c = vertices[face[2]].coords;
+        let a = vertices[face[0] as usize].coords;
+        let b = vertices[face[1] as usize].coords;
+        let c = vertices[face[2] as usize].coords;
 
         let det = a.cross(&b).dot(&c);
         let vol = det / 6.0;

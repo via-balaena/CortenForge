@@ -51,8 +51,7 @@
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
-use crate::convex_hull::{ConvexHull, quickhull};
-use crate::mid_phase::{Bvh, BvhPrimitive};
+use cf_geometry::{Bvh, BvhPrimitive, ConvexHull, convex_hull};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -271,7 +270,7 @@ impl TriangleMeshData {
     /// If the mesh has fewer than 4 vertices or all points are degenerate,
     /// `convex_hull` remains `None`.
     pub fn compute_convex_hull(&mut self, max_vertices: Option<usize>) {
-        self.convex_hull = quickhull(self.vertices(), max_vertices);
+        self.convex_hull = convex_hull(self.vertices(), max_vertices);
     }
 
     /// Returns the convex hull if computed.

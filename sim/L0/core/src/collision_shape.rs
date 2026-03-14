@@ -52,10 +52,10 @@ use nalgebra::{Point3, Vector3};
 use std::cell::Cell;
 use std::sync::Arc;
 
-use crate::convex_hull::{ConvexHull, HullGraph};
 use crate::heightfield::HeightFieldData;
 use crate::mesh::TriangleMeshData;
 use crate::sdf::SdfCollisionData;
+use cf_geometry::ConvexHull;
 use sim_types::Pose;
 
 /// Minimum vertex count for hill-climbing support.
@@ -99,9 +99,9 @@ pub enum CollisionShape {
     ConvexMesh {
         /// Vertices of the convex hull in local coordinates. Must have at least 4 vertices.
         vertices: Vec<Point3<f64>>,
-        /// Adjacency graph for hill-climbing support queries.
+        /// Vertex adjacency for hill-climbing support queries (from cf-geometry ConvexHull).
         /// `None` for manually constructed shapes or hulls with <10 vertices.
-        graph: Option<HullGraph>,
+        adjacency: Option<Vec<Vec<u32>>>,
         /// Warm-start cache: last support vertex index for hill-climbing.
         /// `Cell` allows mutation through `&self` (interior mutability).
         warm_start: Cell<usize>,
@@ -296,21 +296,21 @@ impl CollisionShape {
         );
         Self::ConvexMesh {
             vertices,
-            graph: None,
+            adjacency: None,
             warm_start: Cell::new(0),
         }
     }
 
     /// Construct a `ConvexMesh` from a precomputed `ConvexHull`.
     ///
-    /// Hill-climbing graph is included only for hulls with ≥ `HILL_CLIMB_MIN`
+    /// Hill-climbing adjacency is included only for hulls with ≥ `HILL_CLIMB_MIN`
     /// vertices (matching MuJoCo's `mjMESH_HILLCLIMB_MIN = 10`).
     #[must_use]
     pub fn convex_mesh_from_hull(hull: &ConvexHull) -> Self {
         Self::ConvexMesh {
             vertices: hull.vertices.clone(),
-            graph: if hull.vertices.len() >= HILL_CLIMB_MIN {
-                Some(hull.graph.clone())
+            adjacency: if hull.vertices.len() >= HILL_CLIMB_MIN {
+                Some(hull.adjacency.clone())
             } else {
                 None
             },
@@ -342,7 +342,7 @@ impl CollisionShape {
         ];
         Self::ConvexMesh {
             vertices,
-            graph: None,
+            adjacency: None,
             warm_start: Cell::new(0),
         }
     }

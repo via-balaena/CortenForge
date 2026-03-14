@@ -58,7 +58,6 @@ use sim_types::Pose;
 use std::cell::Cell;
 
 use crate::CollisionShape;
-use crate::convex_hull::HullGraph;
 
 /// Tolerance for numerical comparisons in GJK/EPA.
 const EPSILON: f64 = 1e-8;
@@ -229,9 +228,9 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
         } => support_capsule(pose, *half_length, *radius, direction),
         CollisionShape::ConvexMesh {
             vertices,
-            graph,
+            adjacency,
             warm_start,
-        } => support_convex_mesh(pose, vertices, graph.as_ref(), warm_start, direction),
+        } => support_convex_mesh(pose, vertices, adjacency.as_deref(), warm_start, direction),
         CollisionShape::Plane { normal, distance } => {
             support_plane(pose, normal, *distance, direction)
         }
@@ -370,7 +369,7 @@ pub fn support_face_points(
         }
         CollisionShape::ConvexMesh {
             vertices,
-            graph: _,
+            adjacency: _,
             warm_start: _,
         } => {
             if vertices.is_empty() {
@@ -450,7 +449,7 @@ fn support_capsule(
 
 /// Support function for a convex mesh.
 ///
-/// Selects between hill-climbing (O(√n), when graph is available) and
+/// Selects between hill-climbing (O(√n), when adjacency is available) and
 /// exhaustive scan (O(n)). Both strategies warm-start from the cached
 /// vertex index.
 ///
@@ -459,7 +458,7 @@ fn support_capsule(
 fn support_convex_mesh(
     pose: &Pose,
     vertices: &[Point3<f64>],
-    graph: Option<&HullGraph>,
+    adjacency: Option<&[Vec<u32>]>,
     warm_start: &Cell<usize>,
     direction: &Vector3<f64>,
 ) -> Point3<f64> {
@@ -469,10 +468,10 @@ fn support_convex_mesh(
 
     let local_dir = pose.rotation.inverse() * direction;
 
-    let best_idx = if let Some(g) = graph {
+    let best_idx = if let Some(adj) = adjacency {
         // Hill-climbing (steepest-ascent): warm-start from cached vertex
         let start = warm_start.get().min(vertices.len() - 1);
-        let idx = hill_climb_support(vertices, g, &local_dir, start);
+        let idx = hill_climb_support(vertices, adj, &local_dir, start);
         warm_start.set(idx);
         idx
     } else {
@@ -494,7 +493,7 @@ fn support_convex_mesh(
     pose.transform_point(&vertices[best_idx])
 }
 
-/// Steepest-ascent hill-climbing support on convex hull graph.
+/// Steepest-ascent hill-climbing support on convex hull adjacency graph.
 ///
 /// Matches MuJoCo's `mjc_hillclimbSupport()`: at each step, examine ALL
 /// neighbors of the current vertex, move to the neighbor with the highest
@@ -504,7 +503,7 @@ fn support_convex_mesh(
 /// is a linear (unimodal) function on a convex surface.
 pub(crate) fn hill_climb_support(
     vertices: &[Point3<f64>],
-    graph: &HullGraph,
+    adjacency: &[Vec<u32>],
     direction: &Vector3<f64>,
     start: usize,
 ) -> usize {
@@ -514,11 +513,12 @@ pub(crate) fn hill_climb_support(
     loop {
         let prev = current;
         // Scan ALL neighbors of current vertex (steepest-ascent)
-        for &neighbor in &graph.adjacency[current] {
-            let dot = vertices[neighbor].coords.dot(direction);
+        for &neighbor in &adjacency[current] {
+            let ni = neighbor as usize;
+            let dot = vertices[ni].coords.dot(direction);
             if dot > max_dot {
                 max_dot = dot;
-                current = neighbor;
+                current = ni;
             }
         }
         // Converged: no neighbor improved
