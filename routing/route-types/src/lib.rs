@@ -97,7 +97,7 @@ mod integration_tests {
         // Create constraints
         let constraints = RouteConstraints::new()
             .with_physical(PhysicalConstraints::new(0.05).with_min_bend_radius(0.1))
-            .with_keep_out_zone(KeepOutZone::Aabb(Aabb::new(
+            .with_keep_out_zone(KeepOutZone::Aabb(Aabb::from_corners(
                 Point3::new(2.0, 2.0, 0.0),
                 Point3::new(3.0, 3.0, 1.0),
             )))

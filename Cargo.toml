@@ -77,6 +77,7 @@ members = [
     # "geometry/lumen-geometry",  # Archived, pull when needed
 
     # Foundation (active development)
+    "crates/cf-geometry",
     "crates/cf-spatial",
 
     # Routing domain (active development)
@@ -293,6 +294,9 @@ mesh = { path = "mesh/mesh" }
 
 # Geometry domain
 curve-types = { path = "geometry/curve-types" }
+
+# Geometric kernel
+cf-geometry = { path = "crates/cf-geometry" }
 
 # Spatial foundation
 cf-spatial = { path = "crates/cf-spatial" }

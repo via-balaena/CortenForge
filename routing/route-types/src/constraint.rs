@@ -20,162 +20,8 @@
 use cf_spatial::VoxelCoord;
 use nalgebra::Point3;
 
-/// An axis-aligned bounding box for constraint specification.
-///
-/// Represents a rectangular region in 3D world space.
-///
-/// # Example
-///
-/// ```
-/// use route_types::Aabb;
-/// use nalgebra::Point3;
-///
-/// let aabb = Aabb::new(Point3::origin(), Point3::new(1.0, 1.0, 1.0));
-/// assert!(aabb.contains(&Point3::new(0.5, 0.5, 0.5)));
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Aabb {
-    /// Minimum corner.
-    pub min: Point3<f64>,
-    /// Maximum corner.
-    pub max: Point3<f64>,
-}
-
-impl Aabb {
-    /// Creates a new AABB from min and max corners.
-    ///
-    /// The corners are automatically ordered.
-    #[must_use]
-    pub fn new(a: Point3<f64>, b: Point3<f64>) -> Self {
-        Self {
-            min: Point3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z)),
-            max: Point3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z)),
-        }
-    }
-
-    /// Creates an AABB centered at a point with the given half-extents.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use route_types::Aabb;
-    /// use nalgebra::{Point3, Vector3};
-    ///
-    /// let aabb = Aabb::from_center_extents(
-    ///     Point3::new(5.0, 5.0, 5.0),
-    ///     Vector3::new(1.0, 1.0, 1.0),
-    /// );
-    /// assert!(aabb.contains(&Point3::new(5.0, 5.0, 5.0)));
-    /// ```
-    #[must_use]
-    pub fn from_center_extents(center: Point3<f64>, half_extents: nalgebra::Vector3<f64>) -> Self {
-        Self {
-            min: center - half_extents,
-            max: center + half_extents,
-        }
-    }
-
-    /// Checks if a point is inside the AABB.
-    #[must_use]
-    pub fn contains(&self, point: &Point3<f64>) -> bool {
-        point.x >= self.min.x
-            && point.x <= self.max.x
-            && point.y >= self.min.y
-            && point.y <= self.max.y
-            && point.z >= self.min.z
-            && point.z <= self.max.z
-    }
-
-    /// Returns the center of the AABB.
-    #[must_use]
-    pub fn center(&self) -> Point3<f64> {
-        Point3::new(
-            (self.min.x + self.max.x) * 0.5,
-            (self.min.y + self.max.y) * 0.5,
-            (self.min.z + self.max.z) * 0.5,
-        )
-    }
-
-    /// Returns the size (extents) of the AABB.
-    #[must_use]
-    pub fn size(&self) -> nalgebra::Vector3<f64> {
-        self.max - self.min
-    }
-
-    /// Returns the volume of the AABB.
-    #[must_use]
-    pub fn volume(&self) -> f64 {
-        let s = self.size();
-        s.x * s.y * s.z
-    }
-
-    /// Expands the AABB by a margin in all directions.
-    #[must_use]
-    pub fn expanded(&self, margin: f64) -> Self {
-        let m = nalgebra::Vector3::new(margin, margin, margin);
-        Self {
-            min: self.min - m,
-            max: self.max + m,
-        }
-    }
-}
-
-impl Default for Aabb {
-    fn default() -> Self {
-        Self::new(Point3::origin(), Point3::origin())
-    }
-}
-
-/// A sphere for constraint specification.
-///
-/// Represents a spherical region in 3D world space.
-///
-/// # Example
-///
-/// ```
-/// use route_types::Sphere;
-/// use nalgebra::Point3;
-///
-/// let sphere = Sphere::new(Point3::new(5.0, 5.0, 5.0), 1.0);
-/// assert!(sphere.contains(&Point3::new(5.5, 5.0, 5.0)));
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Sphere {
-    /// Center of the sphere.
-    pub center: Point3<f64>,
-    /// Radius of the sphere.
-    pub radius: f64,
-}
-
-impl Sphere {
-    /// Creates a new sphere with the given center and radius.
-    #[must_use]
-    pub const fn new(center: Point3<f64>, radius: f64) -> Self {
-        Self { center, radius }
-    }
-
-    /// Checks if a point is inside the sphere.
-    #[must_use]
-    pub fn contains(&self, point: &Point3<f64>) -> bool {
-        (point - self.center).norm_squared() <= self.radius * self.radius
-    }
-
-    /// Returns the distance from a point to the sphere surface.
-    ///
-    /// Negative if inside, positive if outside.
-    #[must_use]
-    pub fn signed_distance(&self, point: &Point3<f64>) -> f64 {
-        (point - self.center).norm() - self.radius
-    }
-}
-
-impl Default for Sphere {
-    fn default() -> Self {
-        Self::new(Point3::origin(), 1.0)
-    }
-}
+// Re-export canonical types from cf-geometry.
+pub use cf_geometry::{Aabb, Sphere};
 
 /// Physical constraints for routing (e.g., wire/pipe properties).
 ///
@@ -279,7 +125,7 @@ impl Default for PhysicalConstraints {
 /// use route_types::{KeepOutZone, Aabb, Sphere};
 /// use nalgebra::Point3;
 ///
-/// let box_zone = KeepOutZone::Aabb(Aabb::new(
+/// let box_zone = KeepOutZone::Aabb(Aabb::from_corners(
 ///     Point3::new(0.0, 0.0, 0.0),
 ///     Point3::new(1.0, 1.0, 1.0),
 /// ));
@@ -312,7 +158,7 @@ impl KeepOutZone {
     /// use route_types::{KeepOutZone, Aabb};
     /// use nalgebra::Point3;
     ///
-    /// let zone = KeepOutZone::Aabb(Aabb::new(
+    /// let zone = KeepOutZone::Aabb(Aabb::from_corners(
     ///     Point3::origin(),
     ///     Point3::new(1.0, 1.0, 1.0),
     /// ));
@@ -353,7 +199,7 @@ impl KeepOutZone {
 ///
 /// let constraints = RouteConstraints::default()
 ///     .with_physical(PhysicalConstraints::new(0.05))
-///     .with_keep_out_zone(KeepOutZone::Aabb(Aabb::new(
+///     .with_keep_out_zone(KeepOutZone::Aabb(Aabb::from_corners(
 ///         Point3::new(1.0, 1.0, 1.0),
 ///         Point3::new(2.0, 2.0, 2.0),
 ///     )))
@@ -497,30 +343,29 @@ mod tests {
     // ==================== Aabb Tests ====================
 
     #[test]
-    fn test_aabb_new() {
-        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
+    fn test_aabb_from_corners() {
+        let aabb = Aabb::from_corners(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
         assert_eq!(aabb.min, Point3::new(0.0, 0.0, 0.0));
         assert_eq!(aabb.max, Point3::new(1.0, 1.0, 1.0));
     }
 
     #[test]
-    fn test_aabb_new_auto_order() {
-        let aabb = Aabb::new(Point3::new(1.0, 1.0, 1.0), Point3::new(0.0, 0.0, 0.0));
+    fn test_aabb_from_corners_auto_order() {
+        let aabb = Aabb::from_corners(Point3::new(1.0, 1.0, 1.0), Point3::new(0.0, 0.0, 0.0));
         assert_eq!(aabb.min, Point3::new(0.0, 0.0, 0.0));
         assert_eq!(aabb.max, Point3::new(1.0, 1.0, 1.0));
     }
 
     #[test]
-    fn test_aabb_from_center_extents() {
-        let aabb =
-            Aabb::from_center_extents(Point3::new(5.0, 5.0, 5.0), Vector3::new(1.0, 1.0, 1.0));
+    fn test_aabb_from_center() {
+        let aabb = Aabb::from_center(Point3::new(5.0, 5.0, 5.0), Vector3::new(1.0, 1.0, 1.0));
         assert_eq!(aabb.min, Point3::new(4.0, 4.0, 4.0));
         assert_eq!(aabb.max, Point3::new(6.0, 6.0, 6.0));
     }
 
     #[test]
     fn test_aabb_contains() {
-        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
+        let aabb = Aabb::from_corners(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
         assert!(aabb.contains(&Point3::new(0.5, 0.5, 0.5)));
         assert!(aabb.contains(&Point3::new(0.0, 0.0, 0.0)));
         assert!(aabb.contains(&Point3::new(1.0, 1.0, 1.0)));
@@ -529,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_aabb_center() {
-        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 4.0, 6.0));
+        let aabb = Aabb::from_corners(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 4.0, 6.0));
         let center = aabb.center();
         assert_relative_eq!(center.x, 1.0, epsilon = 1e-10);
         assert_relative_eq!(center.y, 2.0, epsilon = 1e-10);
@@ -538,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_aabb_size() {
-        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 3.0, 4.0));
+        let aabb = Aabb::from_corners(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 3.0, 4.0));
         let size = aabb.size();
         assert_relative_eq!(size.x, 2.0, epsilon = 1e-10);
         assert_relative_eq!(size.y, 3.0, epsilon = 1e-10);
@@ -547,13 +392,13 @@ mod tests {
 
     #[test]
     fn test_aabb_volume() {
-        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 3.0, 4.0));
+        let aabb = Aabb::from_corners(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 3.0, 4.0));
         assert_relative_eq!(aabb.volume(), 24.0, epsilon = 1e-10);
     }
 
     #[test]
     fn test_aabb_expanded() {
-        let aabb = Aabb::new(Point3::new(1.0, 1.0, 1.0), Point3::new(2.0, 2.0, 2.0));
+        let aabb = Aabb::from_corners(Point3::new(1.0, 1.0, 1.0), Point3::new(2.0, 2.0, 2.0));
         let expanded = aabb.expanded(0.5);
         assert_eq!(expanded.min, Point3::new(0.5, 0.5, 0.5));
         assert_eq!(expanded.max, Point3::new(2.5, 2.5, 2.5));
@@ -630,7 +475,10 @@ mod tests {
 
     #[test]
     fn test_keep_out_zone_aabb() {
-        let zone = KeepOutZone::Aabb(Aabb::new(Point3::origin(), Point3::new(1.0, 1.0, 1.0)));
+        let zone = KeepOutZone::Aabb(Aabb::from_corners(
+            Point3::origin(),
+            Point3::new(1.0, 1.0, 1.0),
+        ));
         assert!(zone.contains_point(&Point3::new(0.5, 0.5, 0.5)));
         assert!(!zone.contains_point(&Point3::new(2.0, 0.5, 0.5)));
     }
@@ -678,7 +526,7 @@ mod tests {
 
     #[test]
     fn test_route_constraints_with_keep_out() {
-        let rc = RouteConstraints::new().with_keep_out_zone(KeepOutZone::Aabb(Aabb::new(
+        let rc = RouteConstraints::new().with_keep_out_zone(KeepOutZone::Aabb(Aabb::from_corners(
             Point3::origin(),
             Point3::new(1.0, 1.0, 1.0),
         )));
@@ -687,8 +535,10 @@ mod tests {
 
     #[test]
     fn test_route_constraints_with_corridor() {
-        let rc = RouteConstraints::new()
-            .with_preferred_corridor(Aabb::new(Point3::origin(), Point3::new(10.0, 10.0, 10.0)));
+        let rc = RouteConstraints::new().with_preferred_corridor(Aabb::from_corners(
+            Point3::origin(),
+            Point3::new(10.0, 10.0, 10.0),
+        ));
         assert_eq!(rc.preferred_corridors().len(), 1);
     }
 
@@ -706,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_route_constraints_is_in_keep_out() {
-        let rc = RouteConstraints::new().with_keep_out_zone(KeepOutZone::Aabb(Aabb::new(
+        let rc = RouteConstraints::new().with_keep_out_zone(KeepOutZone::Aabb(Aabb::from_corners(
             Point3::new(1.0, 1.0, 1.0),
             Point3::new(2.0, 2.0, 2.0),
         )));
@@ -717,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_route_constraints_is_in_corridor() {
-        let rc = RouteConstraints::new().with_preferred_corridor(Aabb::new(
+        let rc = RouteConstraints::new().with_preferred_corridor(Aabb::from_corners(
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(5.0, 5.0, 5.0),
         ));
@@ -744,7 +594,10 @@ mod tests {
         let rc = RouteConstraints::new()
             .with_physical(PhysicalConstraints::new(0.05))
             .with_keep_out_zone(KeepOutZone::Sphere(Sphere::new(Point3::origin(), 1.0)))
-            .with_preferred_corridor(Aabb::new(Point3::origin(), Point3::new(10.0, 10.0, 10.0)))
+            .with_preferred_corridor(Aabb::from_corners(
+                Point3::origin(),
+                Point3::new(10.0, 10.0, 10.0),
+            ))
             .with_max_length(100.0)
             .with_max_bends(20);
 

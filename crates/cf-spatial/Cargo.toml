@@ -14,6 +14,9 @@ categories = ["graphics", "mathematics", "data-structures", "algorithms"]
 workspace = true
 
 [dependencies]
+# Shared geometric kernel — canonical Aabb, Sphere, Ray
+cf-geometry = { workspace = true }
+
 # Core math library - matches parry3d and avian for compatibility
 nalgebra = { workspace = true }
 
@@ -32,4 +35,4 @@ proptest = { workspace = true }
 
 [features]
 default = []
-serde = ["dep:serde", "nalgebra/serde-serialize"]
+serde = ["dep:serde", "cf-geometry/serde", "nalgebra/serde-serialize"]

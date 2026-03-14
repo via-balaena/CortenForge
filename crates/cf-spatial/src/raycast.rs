@@ -12,13 +12,14 @@
 //! # Example
 //!
 //! ```
-//! use cf_spatial::{Ray, VoxelGrid, VoxelCoord};
+//! use cf_spatial::{VoxelGrid, VoxelCoord, RayTraverse};
+//! use cf_geometry::Ray;
 //! use nalgebra::{Point3, Vector3};
 //!
 //! let mut grid: VoxelGrid<bool> = VoxelGrid::new(1.0);
 //! grid.set(VoxelCoord::new(5, 0, 0), true);
 //!
-//! let ray = Ray::new(Point3::origin(), Vector3::x());
+//! let ray = Ray::new(Point3::new(0.5, 0.5, 0.5), Vector3::x());
 //! for (coord, t) in ray.traverse_grid(&grid).take(10) {
 //!     if grid.get(coord).copied().unwrap_or(false) {
 //!         println!("Hit obstacle at {:?}, t={}", coord, t);
@@ -29,107 +30,22 @@
 
 use nalgebra::{Point3, Vector3};
 
+// Re-export canonical Ray type from cf-geometry.
+pub use cf_geometry::Ray;
+
 use crate::grid::VoxelGrid;
 use crate::voxel::VoxelCoord;
 
-/// A ray defined by an origin point and a direction vector.
+/// Extension trait providing voxel grid traversal methods on [`Ray`].
 ///
-/// The direction does not need to be normalized, but must be non-zero.
-///
-/// # Example
-///
-/// ```
-/// use cf_spatial::Ray;
-/// use nalgebra::{Point3, Vector3};
-///
-/// let ray = Ray::new(
-///     Point3::new(0.0, 0.0, 0.0),
-///     Vector3::new(1.0, 0.0, 0.0),
-/// );
-///
-/// let point = ray.point_at(5.0);
-/// assert!((point.x - 5.0).abs() < 1e-10);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Ray {
-    /// The origin of the ray.
-    pub origin: Point3<f64>,
-    /// The direction of the ray (not necessarily normalized).
-    pub direction: Vector3<f64>,
-}
-
-impl Ray {
-    /// Creates a new ray with the given origin and direction.
-    ///
-    /// # Arguments
-    ///
-    /// * `origin` - The starting point of the ray
-    /// * `direction` - The direction vector (not necessarily normalized)
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cf_spatial::Ray;
-    /// use nalgebra::{Point3, Vector3};
-    ///
-    /// let ray = Ray::new(Point3::origin(), Vector3::x());
-    /// assert_eq!(ray.origin, Point3::origin());
-    /// ```
-    #[must_use]
-    pub const fn new(origin: Point3<f64>, direction: Vector3<f64>) -> Self {
-        Self { origin, direction }
-    }
-
-    /// Returns the point along the ray at parameter `t`.
-    ///
-    /// The point is computed as `origin + t * direction`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cf_spatial::Ray;
-    /// use nalgebra::{Point3, Vector3};
-    ///
-    /// let ray = Ray::new(Point3::origin(), Vector3::new(2.0, 0.0, 0.0));
-    /// let p = ray.point_at(3.0);
-    /// assert!((p.x - 6.0).abs() < 1e-10);
-    /// ```
-    #[must_use]
-    pub fn point_at(&self, t: f64) -> Point3<f64> {
-        self.origin + self.direction * t
-    }
-
-    /// Returns a normalized version of this ray.
-    ///
-    /// The direction is normalized to unit length. If the direction is zero,
-    /// returns the ray unchanged.
-    #[must_use]
-    pub fn normalized(&self) -> Self {
-        let norm = self.direction.norm();
-        if norm < f64::EPSILON {
-            return *self;
-        }
-        Self {
-            origin: self.origin,
-            direction: self.direction / norm,
-        }
-    }
-
-    /// Returns the direction normalized to unit length.
-    ///
-    /// If the direction is zero, returns the zero vector.
-    #[must_use]
-    pub fn direction_normalized(&self) -> Vector3<f64> {
-        let norm = self.direction.norm();
-        if norm < f64::EPSILON {
-            return Vector3::zeros();
-        }
-        self.direction / norm
-    }
-
+/// Since [`Ray`] is defined in `cf-geometry`, voxel-specific traversal methods
+/// are provided via this trait.
+pub trait RayTraverse {
     /// Creates an iterator that traverses voxels along this ray.
     ///
-    /// Uses the DDA algorithm for efficient voxel traversal.
+    /// Uses the DDA algorithm for efficient voxel traversal. Because [`Ray`]
+    /// has a unit-length direction, the returned `t` values represent actual
+    /// world-space distance from the ray origin.
     ///
     /// # Arguments
     ///
@@ -138,12 +54,13 @@ impl Ray {
     /// # Returns
     ///
     /// An iterator yielding `(VoxelCoord, f64)` tuples where the second value
-    /// is the parametric distance `t` at which the ray enters the voxel.
+    /// is the distance at which the ray enters the voxel.
     ///
     /// # Example
     ///
     /// ```
-    /// use cf_spatial::{Ray, VoxelGrid, VoxelCoord};
+    /// use cf_spatial::{VoxelGrid, VoxelCoord, RayTraverse};
+    /// use cf_geometry::Ray;
     /// use nalgebra::{Point3, Vector3};
     ///
     /// let grid: VoxelGrid<()> = VoxelGrid::new(1.0);
@@ -153,10 +70,7 @@ impl Ray {
     /// assert_eq!(voxels.len(), 5);
     /// assert_eq!(voxels[0].0, VoxelCoord::new(0, 0, 0));
     /// ```
-    #[must_use]
-    pub fn traverse_grid<T>(&self, grid: &VoxelGrid<T>) -> VoxelTraversal {
-        VoxelTraversal::new(*self, grid.voxel_size(), grid.origin())
-    }
+    fn traverse_grid<T>(&self, grid: &VoxelGrid<T>) -> VoxelTraversal;
 
     /// Creates an iterator that traverses voxels along this ray with custom parameters.
     ///
@@ -164,31 +78,38 @@ impl Ray {
     ///
     /// * `voxel_size` - The size of each voxel
     /// * `origin` - The world-space origin of the grid
-    #[must_use]
-    pub fn traverse(&self, voxel_size: f64, origin: &Point3<f64>) -> VoxelTraversal {
-        VoxelTraversal::new(*self, voxel_size, origin)
-    }
+    fn traverse(&self, voxel_size: f64, origin: &Point3<f64>) -> VoxelTraversal;
 }
 
-impl Default for Ray {
-    fn default() -> Self {
-        Self::new(Point3::origin(), Vector3::x())
+impl RayTraverse for Ray {
+    fn traverse_grid<T>(&self, grid: &VoxelGrid<T>) -> VoxelTraversal {
+        VoxelTraversal::new(
+            self.origin,
+            self.direction,
+            grid.voxel_size(),
+            grid.origin(),
+        )
+    }
+
+    fn traverse(&self, voxel_size: f64, origin: &Point3<f64>) -> VoxelTraversal {
+        VoxelTraversal::new(self.origin, self.direction, voxel_size, origin)
     }
 }
 
 /// An iterator that traverses voxels along a ray using the DDA algorithm.
 ///
 /// The iterator yields `(VoxelCoord, f64)` tuples where the second value
-/// is the parametric distance `t` at which the ray enters the voxel.
+/// is the distance at which the ray enters the voxel.
 ///
 /// # Example
 ///
 /// ```
-/// use cf_spatial::{Ray, VoxelGrid};
+/// use cf_spatial::{VoxelGrid, RayTraverse};
+/// use cf_geometry::Ray;
 /// use nalgebra::{Point3, Vector3};
 ///
 /// let grid: VoxelGrid<()> = VoxelGrid::new(0.5);
-/// let ray = Ray::new(Point3::origin(), Vector3::new(1.0, 1.0, 0.0));
+/// let ray = Ray::new(Point3::origin(), Vector3::new(1.0, 1.0, 0.0).normalize());
 ///
 /// for (coord, t) in ray.traverse_grid(&grid).take(10) {
 ///     println!("Voxel {:?} at t={}", coord, t);
@@ -212,12 +133,17 @@ pub struct VoxelTraversal {
 
 impl VoxelTraversal {
     /// Creates a new voxel traversal iterator.
-    fn new(ray: Ray, voxel_size: f64, grid_origin: &Point3<f64>) -> Self {
+    fn new(
+        origin: Point3<f64>,
+        direction: Vector3<f64>,
+        voxel_size: f64,
+        grid_origin: &Point3<f64>,
+    ) -> Self {
         let voxel_size = voxel_size.abs().max(f64::EPSILON);
         let inv_voxel_size = 1.0 / voxel_size;
 
         // Convert ray origin to grid-relative coordinates
-        let relative = ray.origin - grid_origin;
+        let relative = origin - grid_origin;
 
         // Find the starting voxel
         #[allow(clippy::cast_possible_truncation)]
@@ -232,7 +158,7 @@ impl VoxelTraversal {
         let mut t_max = [f64::INFINITY; 3];
         let mut t_delta = [f64::INFINITY; 3];
 
-        let dir = [ray.direction.x, ray.direction.y, ray.direction.z];
+        let dir = [direction.x, direction.y, direction.z];
         let pos = [relative.x, relative.y, relative.z];
         let coord = [current.x, current.y, current.z];
 
@@ -298,12 +224,15 @@ impl Iterator for VoxelTraversal {
     }
 }
 
-/// Result of a raycast operation.
+/// Result of a raycast operation against a voxel grid.
+///
+/// This is distinct from [`cf_geometry::RayHit`] — this type includes the
+/// voxel coordinate that was hit, which is specific to voxel grid raycasting.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RaycastHit {
     /// The voxel coordinate that was hit.
     pub coord: VoxelCoord,
-    /// The parametric distance along the ray where the hit occurred.
+    /// The distance along the ray where the hit occurred.
     pub t: f64,
     /// The world-space point where the hit occurred.
     pub point: Point3<f64>,
@@ -315,7 +244,7 @@ pub struct RaycastHit {
 ///
 /// # Arguments
 ///
-/// * `ray` - The ray to cast
+/// * `ray` - The ray to cast (must have unit-length direction)
 /// * `grid` - The voxel grid to test against
 /// * `max_distance` - Maximum distance to search
 /// * `is_solid` - Function to determine if a voxel blocks the ray
@@ -327,7 +256,8 @@ pub struct RaycastHit {
 /// # Example
 ///
 /// ```
-/// use cf_spatial::{raycast, Ray, VoxelGrid, VoxelCoord};
+/// use cf_spatial::{raycast, VoxelGrid, VoxelCoord, RayTraverse};
+/// use cf_geometry::Ray;
 /// use nalgebra::{Point3, Vector3};
 ///
 /// let mut grid: VoxelGrid<bool> = VoxelGrid::new(1.0);
@@ -350,7 +280,6 @@ pub fn raycast<T, F>(
 where
     F: Fn(&T) -> bool,
 {
-    let normalized = ray.normalized();
     let mut prev_coord: Option<VoxelCoord> = None;
 
     for (coord, t) in ray.traverse_grid(grid) {
@@ -360,12 +289,11 @@ where
 
         if let Some(value) = grid.get(coord) {
             if is_solid(value) {
-                // Compute the hit point
-                let point = normalized.point_at(t);
+                let point = ray.point_at(t);
 
                 // Compute the normal from the face we entered
                 let normal = prev_coord.map_or_else(
-                    || -normalized.direction_normalized(),
+                    || -ray.direction,
                     |prev| {
                         let diff = coord - prev;
                         Vector3::new(-f64::from(diff.x), -f64::from(diff.y), -f64::from(diff.z))
@@ -391,7 +319,7 @@ where
 ///
 /// # Arguments
 ///
-/// * `ray` - The ray to cast
+/// * `ray` - The ray to cast (must have unit-length direction)
 /// * `grid` - The voxel grid to test against
 /// * `max_distance` - Maximum distance to search
 /// * `is_solid` - Function to determine if a voxel blocks the ray
@@ -411,7 +339,6 @@ pub fn raycast_all<T, F>(
 where
     F: Fn(&T) -> bool,
 {
-    let normalized = ray.normalized();
     let mut hits = Vec::new();
     let mut prev_coord: Option<VoxelCoord> = None;
 
@@ -422,9 +349,9 @@ where
 
         if let Some(value) = grid.get(coord) {
             if is_solid(value) {
-                let point = normalized.point_at(t);
+                let point = ray.point_at(t);
                 let normal = prev_coord.map_or_else(
-                    || -normalized.direction_normalized(),
+                    || -ray.direction,
                     |prev| {
                         let diff = coord - prev;
                         Vector3::new(-f64::from(diff.x), -f64::from(diff.y), -f64::from(diff.z))
@@ -494,7 +421,9 @@ where
         return true;
     }
 
-    let ray = Ray::new(*from, direction);
+    let Some(ray) = Ray::new_normalize(*from, direction) else {
+        return true;
+    };
     raycast(&ray, grid, distance, is_solid).is_none()
 }
 
@@ -520,17 +449,11 @@ mod tests {
     }
 
     #[test]
-    fn test_ray_normalized() {
-        let ray = Ray::new(Point3::origin(), Vector3::new(3.0, 4.0, 0.0));
-        let normalized = ray.normalized();
-        assert!((normalized.direction.norm() - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_ray_default() {
-        let ray = Ray::default();
-        assert_eq!(ray.origin, Point3::origin());
-        assert_eq!(ray.direction, Vector3::x());
+    fn test_ray_new_normalize() {
+        let ray = Ray::new_normalize(Point3::origin(), Vector3::new(3.0, 4.0, 0.0));
+        assert!(ray.is_some());
+        let ray = ray.unwrap();
+        assert!((ray.direction.norm() - 1.0).abs() < 1e-10);
     }
 
     #[test]
@@ -551,7 +474,8 @@ mod tests {
     #[test]
     fn test_traverse_grid_diagonal() {
         let grid: VoxelGrid<()> = VoxelGrid::new(1.0);
-        let ray = Ray::new(Point3::new(0.5, 0.5, 0.5), Vector3::new(1.0, 1.0, 0.0));
+        let dir = Vector3::new(1.0, 1.0, 0.0).normalize();
+        let ray = Ray::new(Point3::new(0.5, 0.5, 0.5), dir);
 
         let voxels: Vec<_> = ray.traverse_grid(&grid).take(10).collect();
 

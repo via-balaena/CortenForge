@@ -20,6 +20,12 @@
 //! - Other game engines
 //! - Python bindings
 //!
+//! # Geometric Primitives
+//!
+//! [`Aabb`], [`Sphere`], and [`Ray`] are re-exported from [`cf_geometry`], the
+//! shared geometric kernel. This crate previously defined its own versions;
+//! they have been unified into `cf-geometry` to eliminate duplication.
+//!
 //! # Use Cases
 //!
 //! - **Pathfinding**: A* and other algorithms on voxelized space
@@ -83,7 +89,7 @@
 //! Cast rays through voxel grids for visibility and collision queries:
 //!
 //! ```
-//! use cf_spatial::{VoxelGrid, VoxelCoord, Ray, raycast, line_of_sight};
+//! use cf_spatial::{VoxelGrid, VoxelCoord, Ray, raycast, line_of_sight, RayTraverse};
 //! use nalgebra::{Point3, Vector3};
 //!
 //! let mut grid: VoxelGrid<bool> = VoxelGrid::new(1.0);
@@ -117,7 +123,7 @@
 //! grid.set(VoxelCoord::new(5, 5, 5), 42);
 //!
 //! // Query by AABB
-//! let aabb = Aabb::new(Point3::new(4.0, 4.0, 4.0), Point3::new(6.0, 6.0, 6.0));
+//! let aabb = Aabb::from_corners(Point3::new(4.0, 4.0, 4.0), Point3::new(6.0, 6.0, 6.0));
 //! let results: Vec<_> = query_aabb(&grid, &aabb).collect();
 //! assert_eq!(results.len(), 1);
 //!
@@ -156,7 +162,9 @@ pub use overlap::{
     Aabb, Sphere, any_in_aabb, any_in_sphere, count_in_aabb, count_in_sphere, query_aabb,
     query_aabb_filter, query_sphere, query_sphere_filter,
 };
-pub use raycast::{Ray, RaycastHit, VoxelTraversal, line_of_sight, raycast, raycast_all};
+pub use raycast::{
+    Ray, RayTraverse, RaycastHit, VoxelTraversal, line_of_sight, raycast, raycast_all,
+};
 pub use voxel::VoxelCoord;
 
 // Re-export nalgebra types for convenience
