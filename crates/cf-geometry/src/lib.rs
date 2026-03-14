@@ -24,6 +24,7 @@
 
 mod aabb;
 mod bounded;
+mod convex_hull;
 mod mesh;
 mod ray;
 mod sphere;
@@ -31,6 +32,7 @@ mod triangle;
 
 pub use aabb::{Aabb, Axis};
 pub use bounded::Bounded;
+pub use convex_hull::{ConvexHull, convex_hull};
 pub use mesh::IndexedMesh;
 pub use ray::{Ray, RayHit};
 pub use sphere::Sphere;
