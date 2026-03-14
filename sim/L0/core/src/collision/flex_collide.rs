@@ -6,9 +6,9 @@
 
 use super::flex_narrow::{make_contact_flex_flex, make_contact_flex_self, sphere_triangle_contact};
 use super::flex_self::collide_element_pair;
-use crate::collision_shape::Aabb;
 use crate::mid_phase::{Bvh, BvhPrimitive};
 use crate::types::{Data, Model};
+use cf_geometry::Aabb;
 use nalgebra::{Point3, Vector3};
 
 // Re-export public items so existing import paths in collision/mod.rs continue

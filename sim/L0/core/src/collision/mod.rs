@@ -25,12 +25,12 @@ pub(crate) mod sdf_collide;
 // self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this
 // module. No pub(crate) re-export needed.
 
-use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
 use crate::types::{
     DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
     GeomType, Model, SleepState, disabled, enabled,
 };
+use cf_geometry::Aabb;
 use nalgebra::{Point3, Vector3};
 
 use self::hfield::collide_hfield_multi;

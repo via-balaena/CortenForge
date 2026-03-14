@@ -31,6 +31,12 @@ pub enum Axis {
 }
 
 impl Axis {
+    /// Returns all three axes.
+    #[must_use]
+    pub const fn all() -> [Self; 3] {
+        [Self::X, Self::Y, Self::Z]
+    }
+
     /// Returns the axis index (0, 1, 2).
     #[must_use]
     pub const fn index(self) -> usize {
@@ -49,6 +55,16 @@ impl Axis {
             1 => Some(Self::Y),
             2 => Some(Self::Z),
             _ => None,
+        }
+    }
+
+    /// Returns a unit vector along this axis.
+    #[must_use]
+    pub const fn unit_vector(self) -> Vector3<f64> {
+        match self {
+            Self::X => Vector3::new(1.0, 0.0, 0.0),
+            Self::Y => Vector3::new(0.0, 1.0, 0.0),
+            Self::Z => Vector3::new(0.0, 0.0, 1.0),
         }
     }
 }

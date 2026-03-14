@@ -140,7 +140,8 @@ pub mod plugin;
 pub mod batch;
 
 pub use batch::BatchSim;
-pub use collision_shape::{Aabb, Axis, CollisionShape};
+pub use cf_geometry::{Aabb, Axis};
+pub use collision_shape::CollisionShape;
 pub use convex_hull::{ConvexHull, HullGraph, quickhull};
 
 pub use contact::{ContactForce, ContactManifold, ContactPoint};

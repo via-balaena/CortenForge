@@ -17,7 +17,8 @@
 //! # Usage
 //!
 //! ```ignore
-//! use sim_core::mid_phase::{Bvh, BvhPrimitive, Aabb};
+//! use sim_core::mid_phase::{Bvh, BvhPrimitive};
+//! use sim_core::Aabb;
 //! use nalgebra::Point3;
 //!
 //! // Create primitives (e.g., triangles from a mesh)
@@ -33,7 +34,7 @@
 //! }
 //! ```
 
-use crate::collision_shape::{Aabb, Axis};
+use cf_geometry::{Aabb, Axis};
 use nalgebra::{Isometry3, Point3};
 
 /// A primitive that can be stored in the BVH.

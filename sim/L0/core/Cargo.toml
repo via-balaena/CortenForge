@@ -9,6 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+cf-geometry = { workspace = true }
 sim-types = { workspace = true }
 sim-simd = { workspace = true }
 nalgebra = { workspace = true }
@@ -35,7 +36,7 @@ harness = false
 [features]
 default = []
 parallel = ["dep:rayon"]
-serde = ["dep:serde", "serde/rc", "sim-types/serde", "nalgebra/serde-serialize"]
+serde = ["dep:serde", "serde/rc", "cf-geometry/serde", "sim-types/serde", "nalgebra/serde-serialize"]
 gpu-internals = []  # Exposes internal helpers for sim-gpu. No deps.
 
 [lints]

@@ -1073,7 +1073,7 @@ pub fn mesh_sphere_contact(
 
     // Get candidate triangles via BVH or brute-force
     let candidates = if use_bvh {
-        let query_aabb = crate::collision_shape::Aabb::from_center(
+        let query_aabb = cf_geometry::Aabb::from_center(
             local_center,
             Vector3::new(sphere_radius, sphere_radius, sphere_radius),
         );
@@ -1136,7 +1136,7 @@ pub fn mesh_capsule_contact(
         let max_y = local_start.y.max(local_end.y) + capsule_radius;
         let max_z = local_start.z.max(local_end.z) + capsule_radius;
 
-        let query_aabb = crate::collision_shape::Aabb::new(
+        let query_aabb = cf_geometry::Aabb::new(
             Point3::new(min_x, min_y, min_z),
             Point3::new(max_x, max_y, max_z),
         );
@@ -1203,7 +1203,7 @@ pub fn mesh_box_contact(
             + (rot_mat[(2, 1)] * half_extents.y).abs()
             + (rot_mat[(2, 2)] * half_extents.z).abs();
 
-        let query_aabb = crate::collision_shape::Aabb::from_center(
+        let query_aabb = cf_geometry::Aabb::from_center(
             local_box_center,
             Vector3::new(extent_x, extent_y, extent_z),
         );
@@ -1572,10 +1572,8 @@ mod tests {
         let bvh = mesh.bvh().unwrap();
 
         // Query that overlaps the top face of the cube (at z=0.5)
-        let query = crate::collision_shape::Aabb::from_center(
-            Point3::new(0.0, 0.0, 0.5),
-            Vector3::new(0.2, 0.2, 0.1),
-        );
+        let query =
+            cf_geometry::Aabb::from_center(Point3::new(0.0, 0.0, 0.5), Vector3::new(0.2, 0.2, 0.1));
         let results = bvh.query(&query);
         assert!(
             !results.is_empty(),
