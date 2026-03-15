@@ -25,8 +25,8 @@ fn safe_normalize(v: &Vector3<f64>, fallback: Vector3<f64>) -> Vector3<f64> {
 ///
 /// # Notes
 ///
-/// - For `ConvexMesh`, this uses a bounding-sphere approximation until GJK
-///   is available (Session 17).
+/// - For `ConvexMesh`, this uses GJK distance to compute the exact closest
+///   point on the convex hull.
 /// - For `TriangleMesh`, this performs a brute-force search over all triangles
 ///   (no BVH acceleration for closest-point yet).
 #[must_use]
@@ -45,7 +45,7 @@ pub fn closest_point(shape: &Shape, point: &Point3<f64>) -> Point3<f64> {
             radius,
         } => closest_point_cylinder(*half_length, *radius, point),
         Shape::Ellipsoid { radii } => closest_point_ellipsoid(*radii, point),
-        Shape::ConvexMesh { hull } => closest_point_convex_mesh(&hull.vertices, point),
+        Shape::ConvexMesh { hull } => closest_point_convex_mesh(hull, point),
         Shape::TriangleMesh { mesh, .. } => closest_point_triangle_mesh(mesh, point),
         Shape::HeightField { data } => closest_point_heightfield(data, point),
         Shape::Sdf { data } => closest_point_sdf(data, point),
@@ -235,22 +235,62 @@ fn closest_point_ellipsoid(radii: Vector3<f64>, point: &Point3<f64>) -> Point3<f
 
 /// Closest point on convex mesh surface to query point.
 ///
-/// Uses bounding-sphere approximation. Will be replaced with GJK in Session 17.
-fn closest_point_convex_mesh(vertices: &[Point3<f64>], point: &Point3<f64>) -> Point3<f64> {
-    if vertices.is_empty() {
+/// Uses GJK distance algorithm: represents the query point as a degenerate
+/// support map and computes the witness point on the convex hull.
+fn closest_point_convex_mesh(hull: &crate::ConvexHull, point: &Point3<f64>) -> Point3<f64> {
+    if hull.vertices.is_empty() {
         return *point;
     }
 
-    // Brute-force: find nearest vertex, then check adjacent faces
-    // For now, find the closest vertex as a reasonable approximation
-    let mut best = vertices[0];
-    let mut best_dist_sq = (vertices[0] - point).norm_squared();
+    // Represent the query point as a translated origin support map
+    let point_shape = PointShape { point: *point };
 
-    for v in &vertices[1..] {
-        let d = (v - point).norm_squared();
+    // GJK distance gives us the witness point on the hull
+    super::gjk::gjk_distance(hull, &point_shape, 35, 1e-8).map_or_else(
+        // Point is inside the convex hull — find closest surface point
+        || closest_point_convex_mesh_interior(hull, point),
+        |result| result.point_a,
+    )
+}
+
+/// A degenerate support map representing a single point.
+struct PointShape {
+    point: Point3<f64>,
+}
+
+impl crate::Bounded for PointShape {
+    fn aabb(&self) -> crate::Aabb {
+        crate::Aabb::from_point(self.point)
+    }
+}
+
+impl crate::SupportMap for PointShape {
+    fn support(&self, _direction: &Vector3<f64>) -> Point3<f64> {
+        self.point
+    }
+}
+
+/// Fallback for points inside the convex hull: project onto nearest face.
+fn closest_point_convex_mesh_interior(
+    hull: &crate::ConvexHull,
+    point: &Point3<f64>,
+) -> Point3<f64> {
+    let mut best = *point;
+    let mut best_dist_sq = f64::MAX;
+
+    for (face, normal) in hull.faces.iter().zip(hull.normals.iter()) {
+        let v0 = hull.vertices[face[0] as usize];
+        let v1 = hull.vertices[face[1] as usize];
+        let v2 = hull.vertices[face[2] as usize];
+
+        let cp = closest_point_on_triangle(v0, v1, v2, *point);
+        let d = (cp - point).norm_squared();
         if d < best_dist_sq {
             best_dist_sq = d;
-            best = *v;
+            best = cp;
+
+            // If the point projects exactly onto a face, we've found the answer
+            let _ = normal; // normal available for future orientation checks
         }
     }
 

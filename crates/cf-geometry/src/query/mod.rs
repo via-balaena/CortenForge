@@ -16,11 +16,23 @@
 //! implementations. [`closest_point_on_triangle`], [`closest_point_segment`],
 //! and [`closest_points_segments`] are standalone free functions for common
 //! proximity queries.
+//!
+//! # GJK / EPA
+//!
+//! [`gjk_distance`] computes the minimum separating distance between two
+//! convex shapes (any [`SupportMap`](crate::SupportMap) implementors).
+//! [`gjk_intersection`] is a fast boolean overlap test.
+//! [`epa_penetration`] computes penetration depth and contact information
+//! for overlapping convex shapes.
 
 mod closest_point;
+mod epa;
+mod gjk;
 mod ray_cast;
 
 pub use closest_point::{
     closest_point, closest_point_on_triangle, closest_point_segment, closest_points_segments,
 };
+pub use epa::{Penetration, epa_penetration};
+pub use gjk::{GjkDistance, gjk_distance, gjk_intersection};
 pub use ray_cast::{ray_cast, ray_triangle};
