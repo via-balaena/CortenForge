@@ -14,6 +14,7 @@ categories = ["algorithms", "mathematics", "graphics"]
 workspace = true
 
 [dependencies]
+cf-geometry = { path = "../../crates/cf-geometry" }
 mesh-types = { workspace = true }
 mesh-repair = { workspace = true }
 nalgebra = { workspace = true }

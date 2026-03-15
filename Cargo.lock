@@ -5221,6 +5221,7 @@ version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "bytemuck",
+ "cf-geometry",
  "criterion",
  "hashbrown 0.15.5",
  "mesh-io",
@@ -5400,6 +5401,7 @@ name = "mesh-repair"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "cf-geometry",
  "criterion",
  "hashbrown 0.15.5",
  "mesh-types",
@@ -5491,6 +5493,7 @@ name = "mesh-thickness"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "cf-geometry",
  "mesh-types",
  "nalgebra",
  "rayon",

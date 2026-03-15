@@ -7,6 +7,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::cast_possible_truncation)]
 
+use cf_geometry::Aabb;
 use mesh_types::{IndexedMesh, Point3, Triangle, Vector3};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -253,62 +254,29 @@ pub fn analyze_thickness(mesh: &IndexedMesh, params: &ThicknessParams) -> Analys
 // Internal: BVH and ray tracing
 // ============================================================================
 
-/// Axis-aligned bounding box for spatial acceleration.
-#[derive(Debug, Clone, Copy)]
-struct Aabb {
-    min: Point3<f64>,
-    max: Point3<f64>,
-}
+/// Slab-based ray-AABB intersection test.
+///
+/// Takes precomputed inverse direction for efficiency in BVH traversal.
+/// Returns `(t_near, t_far)` if the ray intersects the box.
+fn ray_intersect_aabb(
+    aabb: &Aabb,
+    origin: &Point3<f64>,
+    dir_inv: &Vector3<f64>,
+) -> Option<(f64, f64)> {
+    let t1 = (aabb.min.x - origin.x) * dir_inv.x;
+    let t2 = (aabb.max.x - origin.x) * dir_inv.x;
+    let t3 = (aabb.min.y - origin.y) * dir_inv.y;
+    let t4 = (aabb.max.y - origin.y) * dir_inv.y;
+    let t5 = (aabb.min.z - origin.z) * dir_inv.z;
+    let t6 = (aabb.max.z - origin.z) * dir_inv.z;
 
-impl Aabb {
-    /// Create AABB from a triangle.
-    fn from_triangle(tri: &Triangle) -> Self {
-        let min = Point3::new(
-            tri.v0.x.min(tri.v1.x).min(tri.v2.x),
-            tri.v0.y.min(tri.v1.y).min(tri.v2.y),
-            tri.v0.z.min(tri.v1.z).min(tri.v2.z),
-        );
-        let max = Point3::new(
-            tri.v0.x.max(tri.v1.x).max(tri.v2.x),
-            tri.v0.y.max(tri.v1.y).max(tri.v2.y),
-            tri.v0.z.max(tri.v1.z).max(tri.v2.z),
-        );
-        Self { min, max }
-    }
+    let t_min = t1.min(t2).max(t3.min(t4)).max(t5.min(t6));
+    let t_max = t1.max(t2).min(t3.max(t4)).min(t5.max(t6));
 
-    /// Expand AABB by epsilon for numerical robustness.
-    fn expand(&self, epsilon: f64) -> Self {
-        Self {
-            min: Point3::new(
-                self.min.x - epsilon,
-                self.min.y - epsilon,
-                self.min.z - epsilon,
-            ),
-            max: Point3::new(
-                self.max.x + epsilon,
-                self.max.y + epsilon,
-                self.max.z + epsilon,
-            ),
-        }
-    }
-
-    /// Ray-AABB intersection test.
-    fn ray_intersect(&self, origin: &Point3<f64>, dir_inv: &Vector3<f64>) -> Option<(f64, f64)> {
-        let t1 = (self.min.x - origin.x) * dir_inv.x;
-        let t2 = (self.max.x - origin.x) * dir_inv.x;
-        let t3 = (self.min.y - origin.y) * dir_inv.y;
-        let t4 = (self.max.y - origin.y) * dir_inv.y;
-        let t5 = (self.min.z - origin.z) * dir_inv.z;
-        let t6 = (self.max.z - origin.z) * dir_inv.z;
-
-        let t_min = t1.min(t2).max(t3.min(t4)).max(t5.min(t6));
-        let t_max = t1.max(t2).min(t3.max(t4)).min(t5.max(t6));
-
-        if t_max >= t_min && t_max >= 0.0 {
-            Some((t_min.max(0.0), t_max))
-        } else {
-            None
-        }
+    if t_max >= t_min && t_max >= 0.0 {
+        Some((t_min.max(0.0), t_max))
+    } else {
+        None
     }
 }
 
@@ -335,24 +303,22 @@ impl BvhNode {
 
         if indices.len() == 1 {
             let idx = indices[0];
+            let tri = &triangles[idx];
             return Some(Self::Leaf {
-                aabb: Aabb::from_triangle(&triangles[idx]).expand(epsilon),
+                aabb: Aabb::from_triangle(&tri.v0, &tri.v1, &tri.v2).expanded(epsilon),
                 face_idx: idx,
             });
         }
 
         // Compute bounding box of all triangles
-        let mut combined_aabb = Aabb::from_triangle(&triangles[indices[0]]);
+        let tri0 = &triangles[indices[0]];
+        let mut combined_aabb = Aabb::from_triangle(&tri0.v0, &tri0.v1, &tri0.v2);
         for &idx in indices.iter().skip(1) {
-            let tri_aabb = Aabb::from_triangle(&triangles[idx]);
-            combined_aabb.min.x = combined_aabb.min.x.min(tri_aabb.min.x);
-            combined_aabb.min.y = combined_aabb.min.y.min(tri_aabb.min.y);
-            combined_aabb.min.z = combined_aabb.min.z.min(tri_aabb.min.z);
-            combined_aabb.max.x = combined_aabb.max.x.max(tri_aabb.max.x);
-            combined_aabb.max.y = combined_aabb.max.y.max(tri_aabb.max.y);
-            combined_aabb.max.z = combined_aabb.max.z.max(tri_aabb.max.z);
+            let tri = &triangles[idx];
+            let tri_aabb = Aabb::from_triangle(&tri.v0, &tri.v1, &tri.v2);
+            combined_aabb.merge(&tri_aabb);
         }
-        let combined_aabb = combined_aabb.expand(epsilon);
+        let combined_aabb = combined_aabb.expanded(epsilon);
 
         // Choose split axis (longest extent)
         let extent = combined_aabb.max - combined_aabb.min;
@@ -460,7 +426,7 @@ fn trace_ray(
 ) -> Option<(f64, usize)> {
     // Check AABB intersection first
     let aabb = node.aabb();
-    if let Some((t_near, _)) = aabb.ray_intersect(origin, dir_inv) {
+    if let Some((t_near, _)) = ray_intersect_aabb(aabb, origin, dir_inv) {
         if t_near > max_dist {
             return None;
         }
@@ -722,21 +688,18 @@ mod tests {
 
     #[test]
     fn test_aabb_ray_intersect() {
-        let aabb = Aabb {
-            min: Point3::new(0.0, 0.0, 0.0),
-            max: Point3::new(1.0, 1.0, 1.0),
-        };
+        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
 
         // Ray hitting the box
         let origin = Point3::new(0.5, 0.5, -1.0);
         let dir_inv = Vector3::new(f64::MAX, f64::MAX, 1.0);
 
-        let result = aabb.ray_intersect(&origin, &dir_inv);
+        let result = ray_intersect_aabb(&aabb, &origin, &dir_inv);
         assert!(result.is_some());
 
         // Ray missing the box
         let origin2 = Point3::new(5.0, 5.0, -1.0);
-        let result2 = aabb.ray_intersect(&origin2, &dir_inv);
+        let result2 = ray_intersect_aabb(&aabb, &origin2, &dir_inv);
         assert!(result2.is_none());
     }
 }

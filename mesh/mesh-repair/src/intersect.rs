@@ -19,8 +19,9 @@
 //! assert!(result.is_clean());
 //! ```
 
+use cf_geometry::Aabb;
 use hashbrown::HashSet;
-use mesh_types::{IndexedMesh, Point3, Triangle, Vector3};
+use mesh_types::{IndexedMesh, Triangle, Vector3};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tracing::{debug, info, warn};
@@ -109,56 +110,6 @@ impl IntersectionParams {
     }
 }
 
-/// Axis-aligned bounding box for spatial acceleration.
-#[derive(Debug, Clone, Copy)]
-struct Aabb {
-    min: Point3<f64>,
-    max: Point3<f64>,
-}
-
-impl Aabb {
-    /// Create AABB from a triangle.
-    fn from_triangle(tri: &Triangle) -> Self {
-        let min = Point3::new(
-            tri.v0.x.min(tri.v1.x).min(tri.v2.x),
-            tri.v0.y.min(tri.v1.y).min(tri.v2.y),
-            tri.v0.z.min(tri.v1.z).min(tri.v2.z),
-        );
-        let max = Point3::new(
-            tri.v0.x.max(tri.v1.x).max(tri.v2.x),
-            tri.v0.y.max(tri.v1.y).max(tri.v2.y),
-            tri.v0.z.max(tri.v1.z).max(tri.v2.z),
-        );
-        Self { min, max }
-    }
-
-    /// Expand AABB by epsilon for numerical robustness.
-    fn expand(&self, epsilon: f64) -> Self {
-        Self {
-            min: Point3::new(
-                self.min.x - epsilon,
-                self.min.y - epsilon,
-                self.min.z - epsilon,
-            ),
-            max: Point3::new(
-                self.max.x + epsilon,
-                self.max.y + epsilon,
-                self.max.z + epsilon,
-            ),
-        }
-    }
-
-    /// Check if two AABBs overlap.
-    fn overlaps(&self, other: &Aabb) -> bool {
-        self.min.x <= other.max.x
-            && self.max.x >= other.min.x
-            && self.min.y <= other.max.y
-            && self.max.y >= other.min.y
-            && self.min.z <= other.max.z
-            && self.max.z >= other.min.z
-    }
-}
-
 /// Detect self-intersections in a mesh.
 ///
 /// Uses bounding box culling to avoid O(n²) triangle-triangle tests where possible.
@@ -211,7 +162,7 @@ pub fn detect_self_intersections(
     let triangles: Vec<Triangle> = mesh.triangles().collect();
     let aabbs: Vec<Aabb> = triangles
         .iter()
-        .map(|t| Aabb::from_triangle(t).expand(params.epsilon))
+        .map(|t| Aabb::from_triangle(&t.v0, &t.v1, &t.v2).expanded(params.epsilon))
         .collect();
 
     // Build adjacency info if we need to skip adjacent triangles
@@ -449,6 +400,7 @@ pub fn has_self_intersections(mesh: &IndexedMesh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mesh_types::Point3;
 
     fn create_xy_triangle(x: f64, y: f64, size: f64) -> Triangle {
         Triangle::new(
@@ -460,18 +412,9 @@ mod tests {
 
     #[test]
     fn test_aabb_overlap() {
-        let aabb1 = Aabb {
-            min: Point3::new(0.0, 0.0, 0.0),
-            max: Point3::new(1.0, 1.0, 1.0),
-        };
-        let aabb2 = Aabb {
-            min: Point3::new(0.5, 0.5, 0.5),
-            max: Point3::new(1.5, 1.5, 1.5),
-        };
-        let aabb3 = Aabb {
-            min: Point3::new(2.0, 2.0, 2.0),
-            max: Point3::new(3.0, 3.0, 3.0),
-        };
+        let aabb1 = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
+        let aabb2 = Aabb::new(Point3::new(0.5, 0.5, 0.5), Point3::new(1.5, 1.5, 1.5));
+        let aabb3 = Aabb::new(Point3::new(2.0, 2.0, 2.0), Point3::new(3.0, 3.0, 3.0));
 
         assert!(aabb1.overlaps(&aabb2));
         assert!(aabb2.overlaps(&aabb1));

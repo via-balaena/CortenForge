@@ -321,6 +321,16 @@ impl Aabb {
         }
     }
 
+    /// Expands this AABB in-place to include another AABB.
+    pub fn merge(&mut self, other: &Self) {
+        self.min.x = self.min.x.min(other.min.x);
+        self.min.y = self.min.y.min(other.min.y);
+        self.min.z = self.min.z.min(other.min.z);
+        self.max.x = self.max.x.max(other.max.x);
+        self.max.y = self.max.y.max(other.max.y);
+        self.max.z = self.max.z.max(other.max.z);
+    }
+
     /// Expands this AABB to include the given point.
     pub fn expand_to_include(&mut self, point: &Point3<f64>) {
         self.min.x = self.min.x.min(point.x);

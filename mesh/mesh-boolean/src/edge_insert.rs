@@ -10,8 +10,9 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use crate::bvh::{Aabb, Bvh};
+use crate::bvh::Bvh;
 use crate::intersect::compute_triangle_intersection;
+use cf_geometry::Aabb;
 use hashbrown::HashMap;
 use mesh_types::{IndexedMesh, Point3};
 use smallvec::SmallVec;

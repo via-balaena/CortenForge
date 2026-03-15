@@ -6,8 +6,9 @@
 #![allow(clippy::option_if_let_else)]
 #![allow(clippy::manual_let_else)]
 
-use crate::bvh::{Aabb, Bvh};
+use crate::bvh::Bvh;
 use crate::intersect::ray_triangle_intersect;
+use cf_geometry::Aabb;
 use mesh_types::{IndexedMesh, Point3, Vector3};
 use rayon::prelude::*;
 
@@ -150,7 +151,7 @@ fn count_ray_intersections_bvh(
 
     let ray_end = Point3::from(origin.coords + direction * ray_extent);
 
-    let ray_bbox = Aabb::from_min_max(
+    let ray_bbox = Aabb::new(
         Point3::new(
             origin.x.min(ray_end.x),
             origin.y.min(ray_end.y),

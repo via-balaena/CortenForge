@@ -268,7 +268,7 @@ fn find_intersecting_pairs(
         let a1 = mesh_a.vertices[face_a[1] as usize];
         let a2 = mesh_a.vertices[face_a[2] as usize];
 
-        let bbox_a = crate::bvh::Aabb::from_triangle(&a0, &a1, &a2);
+        let bbox_a = cf_geometry::Aabb::from_triangle(&a0, &a1, &a2);
         let candidates = bvh_b.query(&bbox_a, epsilon);
 
         for bi in candidates {
