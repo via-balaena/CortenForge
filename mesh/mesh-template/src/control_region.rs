@@ -129,7 +129,7 @@ impl ControlRegion {
     ///
     /// ```
     /// use mesh_template::ControlRegion;
-    /// use nalgebra::Point3;
+    /// use mesh_types::Point3;
     ///
     /// let landmark = ControlRegion::point("apex", Point3::new(0.0, 0.0, 10.0));
     /// assert_eq!(landmark.name, "apex");
@@ -188,7 +188,7 @@ impl ControlRegion {
     ///
     /// ```
     /// use mesh_template::ControlRegion;
-    /// use nalgebra::Point3;
+    /// use mesh_types::Point3;
     ///
     /// let region = ControlRegion::bounds(
     ///     "front_half",
@@ -212,7 +212,7 @@ impl ControlRegion {
     ///
     /// ```
     /// use mesh_template::ControlRegion;
-    /// use nalgebra::Point3;
+    /// use mesh_types::Point3;
     ///
     /// let region = ControlRegion::sphere("head", Point3::new(0.0, 0.0, 100.0), 15.0);
     /// ```
@@ -234,7 +234,7 @@ impl ControlRegion {
     ///
     /// ```
     /// use mesh_template::ControlRegion;
-    /// use nalgebra::Point3;
+    /// use mesh_types::Point3;
     ///
     /// // Cylinder along the Z axis
     /// let region = ControlRegion::cylinder(
@@ -303,7 +303,7 @@ impl ControlRegion {
     ///
     /// ```
     /// use mesh_template::ControlRegion;
-    /// use nalgebra::Point3;
+    /// use mesh_types::Point3;
     ///
     /// let region = ControlRegion::point("important", Point3::origin())
     ///     .with_weight(2.0);
@@ -321,7 +321,7 @@ impl ControlRegion {
     ///
     /// ```
     /// use mesh_template::ControlRegion;
-    /// use nalgebra::Point3;
+    /// use mesh_types::Point3;
     ///
     /// let region = ControlRegion::point("anchor", Point3::origin())
     ///     .preserved();
@@ -343,7 +343,6 @@ impl ControlRegion {
     /// ```
     /// use mesh_template::ControlRegion;
     /// use mesh_types::{IndexedMesh, Point3};
-    /// use nalgebra::Point3;
     ///
     /// let mut mesh = IndexedMesh::new();
     /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));

@@ -21,7 +21,6 @@
 //! ```
 //! use mesh_template::{FitTemplate, ControlRegion};
 //! use mesh_types::{IndexedMesh, Point3};
-//! use nalgebra::Point3;
 //!
 //! // Create template mesh
 //! let mut template_mesh = IndexedMesh::new();
@@ -53,7 +52,6 @@
 //! ```
 //! use mesh_template::{FitTemplate, FitParams, ControlRegion};
 //! use mesh_types::{IndexedMesh, Point3};
-//! use nalgebra::Point3;
 //!
 //! let mut mesh = IndexedMesh::new();
 //! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
@@ -76,8 +74,7 @@
 //!
 //! ```
 //! use mesh_template::{FitTemplate, FitParams, ControlRegion, Measurement, MeasurementType};
-//! use mesh_types::{IndexedMesh, Point3};
-//! use nalgebra::{Point3, Vector3};
+//! use mesh_types::{IndexedMesh, Point3, Vector3};
 //!
 //! let mut mesh = IndexedMesh::new();
 //! // Create a simple mesh...

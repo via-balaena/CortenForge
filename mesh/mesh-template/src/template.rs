@@ -18,7 +18,6 @@ use std::collections::HashMap;
 /// ```
 /// use mesh_template::{FitTemplate, ControlRegion};
 /// use mesh_types::{IndexedMesh, Point3};
-/// use nalgebra::Point3;
 ///
 /// let mut mesh = IndexedMesh::new();
 /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
@@ -38,7 +37,6 @@ use std::collections::HashMap;
 /// ```
 /// use mesh_template::{FitTemplate, ControlRegion};
 /// use mesh_types::{IndexedMesh, Point3};
-/// use nalgebra::Point3;
 ///
 /// let mut mesh = IndexedMesh::new();
 /// mesh.vertices.push(Point3::new(0.0, 0.0, 10.0));
@@ -93,7 +91,6 @@ impl FitTemplate {
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
     /// use mesh_types::{IndexedMesh, Point3};
-    /// use nalgebra::Point3;
     ///
     /// let mut mesh = IndexedMesh::new();
     /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
@@ -116,7 +113,6 @@ impl FitTemplate {
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
     /// use mesh_types::{IndexedMesh, Point3};
-    /// use nalgebra::Point3;
     ///
     /// let mut mesh = IndexedMesh::new();
     /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
@@ -167,7 +163,6 @@ impl FitTemplate {
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
     /// use mesh_types::{IndexedMesh, Point3};
-    /// use nalgebra::Point3;
     ///
     /// let mut mesh = IndexedMesh::new();
     /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
@@ -192,7 +187,6 @@ impl FitTemplate {
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
     /// use mesh_types::{IndexedMesh, Point3};
-    /// use nalgebra::Point3;
     ///
     /// let mut mesh = IndexedMesh::new();
     /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
@@ -219,7 +213,6 @@ impl FitTemplate {
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
     /// use mesh_types::{IndexedMesh, Point3};
-    /// use nalgebra::Point3;
     ///
     /// let mut mesh = IndexedMesh::new();
     /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
@@ -262,7 +255,6 @@ impl FitTemplate {
     /// ```
     /// use mesh_template::{FitTemplate, FitParams, ControlRegion};
     /// use mesh_types::{IndexedMesh, Point3};
-    /// use nalgebra::Point3;
     ///
     /// let mut mesh = IndexedMesh::new();
     /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
