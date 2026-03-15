@@ -26,6 +26,7 @@ mod aabb;
 mod bounded;
 mod bvh;
 mod convex_hull;
+mod geometric;
 mod heightfield;
 mod mesh;
 pub mod query;
@@ -40,6 +41,7 @@ pub use aabb::{Aabb, Axis};
 pub use bounded::Bounded;
 pub use bvh::{Bvh, BvhPrimitive, bvh_from_mesh, bvh_from_triangle_mesh, query_bvh_pair};
 pub use convex_hull::{ConvexHull, convex_hull};
+pub use geometric::Geometric;
 pub use heightfield::HeightFieldData;
 pub use mesh::IndexedMesh;
 pub use query::{
