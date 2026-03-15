@@ -10,7 +10,7 @@ use crate::{
     rbf::RbfInterpolator,
     result::{compute_edge_stats, compute_signed_volume},
 };
-use mesh_types::{IndexedMesh, MeshBounds};
+use mesh_types::{Bounded, IndexedMesh};
 use rayon::prelude::*;
 
 /// Morphs a mesh according to the specified parameters.
@@ -218,7 +218,7 @@ fn apply_ffd_morph(
     config: crate::FfdConfig,
 ) -> IndexedMesh {
     // Compute mesh bounds
-    let bounds = mesh.bounds();
+    let bounds = mesh.aabb();
 
     // Create the FFD lattice
     let mut lattice = FfdLattice::new(&bounds, config);

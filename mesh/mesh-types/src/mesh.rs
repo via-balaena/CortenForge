@@ -1,6 +1,6 @@
 //! Indexed triangle mesh.
 
-use crate::{Aabb, MeshBounds, MeshTopology, Triangle, Vertex};
+use crate::{Aabb, Bounded, MeshTopology, Triangle, Vertex};
 use nalgebra::Vector3;
 
 #[cfg(feature = "serde")]
@@ -183,7 +183,7 @@ impl IndexedMesh {
     ///
     /// Useful for placing meshes on a build plate.
     pub fn place_on_z_zero(&mut self) {
-        let bounds = self.bounds();
+        let bounds = self.aabb();
         if !bounds.is_empty() {
             let offset = -bounds.min.z;
             for vertex in &mut self.vertices {
@@ -208,7 +208,7 @@ impl IndexedMesh {
 
     /// Scale mesh uniformly around its center.
     pub fn scale_centered(&mut self, factor: f64) {
-        let center = self.bounds().center();
+        let center = self.aabb().center();
         for vertex in &mut self.vertices {
             vertex.position = center + (vertex.position - center) * factor;
         }
@@ -374,8 +374,8 @@ impl MeshTopology for IndexedMesh {
     }
 }
 
-impl MeshBounds for IndexedMesh {
-    fn bounds(&self) -> Aabb {
+impl Bounded for IndexedMesh {
+    fn aabb(&self) -> Aabb {
         if self.vertices.is_empty() {
             return Aabb::empty();
         }
@@ -475,7 +475,7 @@ mod tests {
         mesh.vertices.push(Vertex::from_coords(10.0, 5.0, 3.0));
         mesh.vertices.push(Vertex::from_coords(-2.0, 8.0, 1.0));
 
-        let bounds = mesh.bounds();
+        let bounds = mesh.aabb();
         assert!((bounds.min.x - (-2.0)).abs() < f64::EPSILON);
         assert!((bounds.min.y - 0.0).abs() < f64::EPSILON);
         assert!((bounds.min.z - 0.0).abs() < f64::EPSILON);
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn empty_mesh_bounds() {
         let mesh = IndexedMesh::new();
-        assert!(mesh.bounds().is_empty());
+        assert!(mesh.aabb().is_empty());
     }
 
     #[test]

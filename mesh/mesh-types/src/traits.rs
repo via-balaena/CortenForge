@@ -1,7 +1,6 @@
 //! Traits for mesh types.
 
-use crate::{Aabb, Triangle, Vertex};
-use nalgebra::Point3;
+use crate::{Triangle, Vertex};
 
 /// Trait for types that provide mesh topology information.
 ///
@@ -43,23 +42,4 @@ pub trait MeshTopology {
 
     /// Iterate over all triangles with resolved vertex positions.
     fn triangles(&self) -> impl Iterator<Item = Triangle>;
-}
-
-/// Trait for types that can compute a bounding box.
-pub trait MeshBounds {
-    /// Compute the axis-aligned bounding box.
-    ///
-    /// Returns an empty AABB if the mesh has no vertices.
-    fn bounds(&self) -> Aabb;
-
-    /// Compute the bounding box, returning `None` if empty.
-    fn bounds_opt(&self) -> Option<Aabb> {
-        let b = self.bounds();
-        if b.is_empty() { None } else { Some(b) }
-    }
-
-    /// Get the center of the bounding box.
-    fn center(&self) -> Point3<f64> {
-        self.bounds().center()
-    }
 }

@@ -72,7 +72,7 @@ mod tier1_foundation {
     #[test]
     fn mesh_bounds_calculation() {
         let cube = types::unit_cube();
-        let bounds = cube.bounds();
+        let bounds = cube.aabb();
 
         // Unit cube spans 0,0,0 to 1,1,1
         assert!((bounds.min.x - 0.0).abs() < f64::EPSILON);
@@ -342,8 +342,8 @@ mod tier3_advanced_processing {
         assert!(result.is_ok());
         let offset_result = result.unwrap();
         // Offset mesh should be larger
-        let original_bounds = cube.bounds();
-        let offset_bounds = offset_result.bounds();
+        let original_bounds = cube.aabb();
+        let offset_bounds = offset_result.aabb();
         assert!(offset_bounds.max.x > original_bounds.max.x);
     }
 }

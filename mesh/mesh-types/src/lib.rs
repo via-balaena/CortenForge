@@ -4,8 +4,9 @@
 //!
 //! - [`Vertex`] - A point in 3D space with optional attributes
 //! - [`IndexedMesh`] - A triangle mesh with indexed vertices
-//! - [`Triangle`] - A concrete triangle with vertex positions
-//! - [`Aabb`] - Axis-aligned bounding box
+//! - [`Triangle`] - A concrete triangle with vertex positions (from cf-geometry)
+//! - [`Aabb`] - Axis-aligned bounding box (from cf-geometry)
+//! - [`Bounded`] - Trait for types that have a bounding box (from cf-geometry)
 //!
 //! # Layer 0 Crate
 //!
@@ -60,17 +61,16 @@
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 
-mod bounds;
 mod mesh;
 mod traits;
-mod triangle;
 mod vertex;
 
-// Re-export core types
-pub use bounds::Aabb;
+// Re-export geometric primitives from cf-geometry (canonical source)
+pub use cf_geometry::{Aabb, Bounded, Triangle};
+
+// Re-export mesh types
 pub use mesh::{IndexedMesh, unit_cube};
-pub use traits::{MeshBounds, MeshTopology};
-pub use triangle::Triangle;
+pub use traits::MeshTopology;
 pub use vertex::{Vertex, VertexAttributes, VertexColor};
 
 // Re-export nalgebra types for convenience

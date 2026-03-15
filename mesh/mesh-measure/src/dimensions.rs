@@ -2,7 +2,7 @@
 //!
 //! Provides axis-aligned bounding box dimensions and basic mesh statistics.
 
-use mesh_types::{IndexedMesh, MeshBounds, Point3};
+use mesh_types::{Bounded, IndexedMesh, Point3};
 
 /// Result of dimension extraction.
 ///
@@ -130,7 +130,7 @@ pub fn dimensions(mesh: &IndexedMesh) -> Dimensions {
         return Dimensions::default();
     }
 
-    let bounds = mesh.bounds();
+    let bounds = mesh.aabb();
     let min = bounds.min;
     let max = bounds.max;
 

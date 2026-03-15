@@ -69,7 +69,7 @@ Faces: 1
 
 **Steps:**
 ```rust
-use mesh::types::{unit_cube, MeshBounds};
+use mesh::types::{unit_cube, Bounded};
 
 fn main() {
     let cube = unit_cube();
@@ -78,7 +78,7 @@ fn main() {
     println!("Cube has {} faces", cube.face_count());
 
     // Get bounding box
-    let bounds = cube.bounds();
+    let bounds = cube.aabb();
     println!("Min corner: ({:.1}, {:.1}, {:.1})",
              bounds.min.x, bounds.min.y, bounds.min.z);
     println!("Max corner: ({:.1}, {:.1}, {:.1})",

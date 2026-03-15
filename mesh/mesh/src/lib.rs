@@ -185,7 +185,7 @@ pub use mesh_gpu as gpu;
 /// ```
 pub mod prelude {
     // Core types
-    pub use mesh_types::{Aabb, IndexedMesh, MeshBounds, MeshTopology, Triangle, Vertex};
+    pub use mesh_types::{Aabb, Bounded, IndexedMesh, MeshTopology, Triangle, Vertex};
 
     // I/O
     pub use mesh_io::{MeshFormat, load_mesh, save_mesh};
