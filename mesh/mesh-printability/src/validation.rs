@@ -3,7 +3,7 @@
 //! Provides the primary validation functionality to check meshes
 //! against printer constraints.
 
-use mesh_types::{IndexedMesh, MeshTopology, Point3, Vector3};
+use mesh_types::{IndexedMesh, Point3, Vector3};
 
 use crate::config::PrinterConfig;
 use crate::error::{PrintabilityError, PrintabilityResult};
@@ -119,14 +119,14 @@ impl PrintValidation {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_printability::{validate_for_printing, PrinterConfig};
 ///
 /// let mesh = IndexedMesh::from_parts(
 ///     vec![
-///         Vertex::from_coords(0.0, 0.0, 0.0),
-///         Vertex::from_coords(10.0, 0.0, 0.0),
-///         Vertex::from_coords(5.0, 10.0, 0.0),
+///         Point3::new(0.0, 0.0, 0.0),
+///         Point3::new(10.0, 0.0, 0.0),
+///         Point3::new(5.0, 10.0, 0.0),
 ///     ],
 ///     vec![[0, 1, 2]],
 /// );
@@ -215,9 +215,9 @@ fn check_overhangs(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut 
             continue;
         }
 
-        let v0 = mesh.vertices[idx0].position;
-        let v1 = mesh.vertices[idx1].position;
-        let v2 = mesh.vertices[idx2].position;
+        let v0 = mesh.vertices[idx0];
+        let v1 = mesh.vertices[idx1];
+        let v2 = mesh.vertices[idx2];
 
         // Compute face normal
         let edge1 = Vector3::new(v1.x - v0.x, v1.y - v0.y, v1.z - v0.z);
@@ -347,12 +347,12 @@ fn compute_bounds(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
     let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
 
     for v in &mesh.vertices {
-        min.x = min.x.min(v.position.x);
-        min.y = min.y.min(v.position.y);
-        min.z = min.z.min(v.position.z);
-        max.x = max.x.max(v.position.x);
-        max.y = max.y.max(v.position.y);
-        max.z = max.z.max(v.position.z);
+        min.x = min.x.min(v.x);
+        min.y = min.y.min(v.y);
+        min.z = min.z.min(v.z);
+        max.x = max.x.max(v.x);
+        max.y = max.y.max(v.y);
+        max.z = max.z.max(v.z);
     }
 
     (min, max)
@@ -365,9 +365,9 @@ fn compute_face_centroid(mesh: &IndexedMesh, face_idx: usize) -> Point3<f64> {
     let idx1 = face[1] as usize;
     let idx2 = face[2] as usize;
 
-    let v0 = &mesh.vertices[idx0].position;
-    let v1 = &mesh.vertices[idx1].position;
-    let v2 = &mesh.vertices[idx2].position;
+    let v0 = &mesh.vertices[idx0];
+    let v1 = &mesh.vertices[idx1];
+    let v2 = &mesh.vertices[idx2];
 
     Point3::new(
         (v0.x + v1.x + v2.x) / 3.0,
@@ -379,19 +379,19 @@ fn compute_face_centroid(mesh: &IndexedMesh, face_idx: usize) -> Point3<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_cube_mesh() -> IndexedMesh {
         // Simple cube mesh (not watertight for testing)
         let vertices = vec![
-            Vertex::from_coords(0.0, 0.0, 0.0),
-            Vertex::from_coords(10.0, 0.0, 0.0),
-            Vertex::from_coords(10.0, 10.0, 0.0),
-            Vertex::from_coords(0.0, 10.0, 0.0),
-            Vertex::from_coords(0.0, 0.0, 10.0),
-            Vertex::from_coords(10.0, 0.0, 10.0),
-            Vertex::from_coords(10.0, 10.0, 10.0),
-            Vertex::from_coords(0.0, 10.0, 10.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(10.0, 10.0, 0.0),
+            Point3::new(0.0, 10.0, 0.0),
+            Point3::new(0.0, 0.0, 10.0),
+            Point3::new(10.0, 0.0, 10.0),
+            Point3::new(10.0, 10.0, 10.0),
+            Point3::new(0.0, 10.0, 10.0),
         ];
 
         // Bottom and top faces only (not complete cube)
@@ -407,14 +407,14 @@ mod tests {
 
     fn create_watertight_cube() -> IndexedMesh {
         let vertices = vec![
-            Vertex::from_coords(0.0, 0.0, 0.0),
-            Vertex::from_coords(10.0, 0.0, 0.0),
-            Vertex::from_coords(10.0, 10.0, 0.0),
-            Vertex::from_coords(0.0, 10.0, 0.0),
-            Vertex::from_coords(0.0, 0.0, 10.0),
-            Vertex::from_coords(10.0, 0.0, 10.0),
-            Vertex::from_coords(10.0, 10.0, 10.0),
-            Vertex::from_coords(0.0, 10.0, 10.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(10.0, 10.0, 0.0),
+            Point3::new(0.0, 10.0, 0.0),
+            Point3::new(0.0, 0.0, 10.0),
+            Point3::new(10.0, 0.0, 10.0),
+            Point3::new(10.0, 10.0, 10.0),
+            Point3::new(0.0, 10.0, 10.0),
         ];
 
         // All 6 faces (12 triangles)
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn test_no_faces_error() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
         let config = PrinterConfig::fdm_default();
         let result = validate_for_printing(&mesh, &config);
         assert!(matches!(result, Err(PrintabilityError::NoFaces)));

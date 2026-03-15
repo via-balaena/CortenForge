@@ -175,7 +175,7 @@ fn find_boundary_edges(faces: &[[u32; 3]]) -> Vec<(u32, u32)> {
 }
 
 /// Find boundary loops (ordered sequences of boundary vertices).
-fn find_boundary_loops(faces: &[[u32; 3]], vertices: &[mesh_types::Vertex]) -> Vec<Vec<u32>> {
+fn find_boundary_loops(faces: &[[u32; 3]], vertices: &[nalgebra::Point3<f64>]) -> Vec<Vec<u32>> {
     let boundary_edges = find_boundary_edges(faces);
 
     if boundary_edges.is_empty() {
@@ -248,12 +248,12 @@ fn find_boundary_loops(faces: &[[u32; 3]], vertices: &[mesh_types::Vertex]) -> V
 /// Compute the centroid of a boundary loop.
 fn compute_loop_centroid(
     loop_vertices: &[u32],
-    vertices: &[mesh_types::Vertex],
+    vertices: &[nalgebra::Point3<f64>],
 ) -> nalgebra::Point3<f64> {
     let mut sum = nalgebra::Point3::new(0.0, 0.0, 0.0);
 
     for &v_idx in loop_vertices {
-        let pos = &vertices[v_idx as usize].position;
+        let pos = &vertices[v_idx as usize];
         sum.x += pos.x;
         sum.y += pos.y;
         sum.z += pos.z;
@@ -344,20 +344,20 @@ pub fn analyze_boundary(mesh: &IndexedMesh) -> BoundaryAnalysis {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_open_box() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices of a cube
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 10.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 10.0));
 
         // 5 faces (open top)
         // Bottom

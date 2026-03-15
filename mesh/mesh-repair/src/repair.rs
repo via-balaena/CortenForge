@@ -180,13 +180,13 @@ impl RepairParams {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::remove_degenerate_triangles;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(5.0, 0.0, 0.0)); // Collinear - degenerate
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(5.0, 0.0, 0.0)); // Collinear — degenerate
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let removed = remove_degenerate_triangles(&mut mesh, 0.001);
@@ -196,9 +196,9 @@ pub fn remove_degenerate_triangles(mesh: &mut IndexedMesh, area_threshold: f64) 
     let original_count = mesh.faces.len();
 
     mesh.faces.retain(|face| {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         let e1 = *v1 - *v0;
         let e2 = *v2 - *v0;
@@ -227,9 +227,9 @@ pub fn remove_degenerate_triangles_enhanced(
     let original_count = mesh.faces.len();
 
     mesh.faces.retain(|face| {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         let e0 = *v1 - *v0;
         let e1 = *v2 - *v1;
@@ -282,14 +282,14 @@ pub fn remove_degenerate_triangles_enhanced(
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::weld_vertices;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0001, 0.0, 0.0)); // Near-duplicate of vertex 1
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0001, 0.0, 0.0)); // Near-duplicate of vertex 1
 /// mesh.faces.push([0, 1, 2]);
 /// mesh.faces.push([0, 3, 2]);
 ///
@@ -308,7 +308,7 @@ pub fn weld_vertices(mesh: &mut IndexedMesh, epsilon: f64) -> usize {
     let mut spatial_hash: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
 
     for (idx, vertex) in mesh.vertices.iter().enumerate() {
-        let cell = pos_to_cell(&vertex.position, cell_size);
+        let cell = pos_to_cell(vertex, cell_size);
         spatial_hash.entry(cell).or_default().push(idx as u32);
     }
 
@@ -322,7 +322,7 @@ pub fn weld_vertices(mesh: &mut IndexedMesh, epsilon: f64) -> usize {
             continue;
         }
 
-        let cell = pos_to_cell(&vertex.position, cell_size);
+        let cell = pos_to_cell(vertex, cell_size);
 
         // Check 3x3x3 neighborhood
         for dx in -1..=1 {
@@ -339,8 +339,8 @@ pub fn weld_vertices(mesh: &mut IndexedMesh, epsilon: f64) -> usize {
                                 continue;
                             }
 
-                            let other_pos = &mesh.vertices[other_idx as usize].position;
-                            let dist = (vertex.position - other_pos).norm();
+                            let other_pos = &mesh.vertices[other_idx as usize];
+                            let dist = (vertex - other_pos).norm();
 
                             if dist < epsilon {
                                 vertex_remap[other_idx as usize] = idx;
@@ -396,14 +396,14 @@ fn pos_to_cell(pos: &Point3<f64>, cell_size: f64) -> (i64, i64, i64) {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::remove_unreferenced_vertices;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(100.0, 100.0, 100.0)); // Unreferenced
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(100.0, 100.0, 100.0)); // Unreferenced
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let removed = remove_unreferenced_vertices(&mut mesh);
@@ -433,7 +433,7 @@ pub fn remove_unreferenced_vertices(mesh: &mut IndexedMesh) -> usize {
         if referenced.contains(&(old_idx as u32)) {
             let new_idx = new_vertices.len() as u32;
             remap.insert(old_idx as u32, new_idx);
-            new_vertices.push(vertex.clone());
+            new_vertices.push(*vertex);
         }
     }
 
@@ -460,13 +460,13 @@ pub fn remove_unreferenced_vertices(mesh: &mut IndexedMesh) -> usize {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::remove_duplicate_faces;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 /// mesh.faces.push([0, 1, 2]); // Duplicate
 ///
@@ -541,13 +541,13 @@ fn normalize_face(face: [u32; 3]) -> [u32; 3] {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::{repair_mesh, RepairParams};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let result = repair_mesh(&mut mesh, &RepairParams::default());
@@ -640,13 +640,13 @@ impl std::fmt::Display for RepairSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn simple_mesh() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -654,9 +654,9 @@ mod tests {
     #[test]
     fn remove_degenerate_collinear() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(5.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(5.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
         mesh.faces.push([0, 1, 2]); // Collinear = zero area
 
         let removed = remove_degenerate_triangles(&mut mesh, 0.001);
@@ -676,10 +676,10 @@ mod tests {
     #[test]
     fn weld_near_vertices() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.001, 0.0, 0.0)); // Near vertex 1
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(10.001, 0.0, 0.0)); // Near vertex 1
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 3, 2]);
 
@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn remove_unreferenced() {
         let mut mesh = simple_mesh();
-        mesh.vertices.push(Vertex::from_coords(100.0, 100.0, 100.0)); // Unreferenced
+        mesh.vertices.push(Point3::new(100.0, 100.0, 100.0)); // Unreferenced
 
         let removed = remove_unreferenced_vertices(&mut mesh);
         assert_eq!(removed, 1);
@@ -766,11 +766,11 @@ mod tests {
     #[test]
     fn repair_full_pipeline() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0001, 0.0, 0.0)); // Near-duplicate
-        mesh.vertices.push(Vertex::from_coords(999.0, 999.0, 999.0)); // Unreferenced
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0001, 0.0, 0.0)); // Near-duplicate
+        mesh.vertices.push(Point3::new(999.0, 999.0, 999.0)); // Unreferenced
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 3, 2]); // Uses near-duplicate
 
@@ -845,9 +845,9 @@ mod tests {
     fn remove_degenerate_enhanced_by_aspect_ratio() {
         let mut mesh = IndexedMesh::new();
         // Create a very thin, elongated triangle (high aspect ratio)
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(100.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(50.0, 0.01, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(100.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(50.0, 0.01, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         // Remove with strict aspect ratio threshold
@@ -859,9 +859,9 @@ mod tests {
     fn remove_degenerate_enhanced_by_min_edge() {
         let mut mesh = IndexedMesh::new();
         // Create triangle with one very short edge
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.001, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.001, 10.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         // Remove triangles with edge shorter than 0.01
@@ -871,9 +871,9 @@ mod tests {
 
         // Create triangle with truly short edge
         let mut mesh2 = IndexedMesh::new();
-        mesh2.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh2.vertices.push(Vertex::from_coords(0.001, 0.0, 0.0)); // Very short edge
-        mesh2.vertices.push(Vertex::from_coords(0.5, 10.0, 0.0));
+        mesh2.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh2.vertices.push(Point3::new(0.001, 0.0, 0.0)); // Very short edge
+        mesh2.vertices.push(Point3::new(0.5, 10.0, 0.0));
         mesh2.faces.push([0, 1, 2]);
 
         let removed2 = remove_degenerate_triangles_enhanced(&mut mesh2, 1e-12, f64::INFINITY, 0.01);

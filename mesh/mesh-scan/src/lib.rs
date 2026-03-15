@@ -36,12 +36,13 @@
 //!
 //! ```
 //! use mesh_scan::cleanup::{cleanup_scan, CleanupParams};
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::IndexedMesh;
+//! use nalgebra::Point3;
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! let params = CleanupParams::for_object_scan();
@@ -53,12 +54,13 @@
 //!
 //! ```
 //! use mesh_scan::denoise::{denoise_mesh, DenoiseParams};
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::IndexedMesh;
+//! use nalgebra::Point3;
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! let params = DenoiseParams::for_scans();
@@ -70,17 +72,18 @@
 //!
 //! ```
 //! use mesh_scan::multiscan::{align_multiple_scans, merge_scans, MultiAlignmentParams, MergeParams};
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::IndexedMesh;
+//! use nalgebra::Point3;
 //!
 //! // Create two overlapping scans
 //! let mut scan1 = IndexedMesh::new();
 //! for i in 0..5 {
-//!     scan1.vertices.push(Vertex::from_coords(f64::from(i), 0.0, 0.0));
+//!     scan1.vertices.push(Point3::new(f64::from(i), 0.0, 0.0));
 //! }
 //!
 //! let mut scan2 = IndexedMesh::new();
 //! for i in 0..5 {
-//!     scan2.vertices.push(Vertex::from_coords(f64::from(i) + 0.1, 0.0, 0.0));
+//!     scan2.vertices.push(Point3::new(f64::from(i) + 0.1, 0.0, 0.0));
 //! }
 //!
 //! let scans = vec![scan1, scan2];
@@ -184,7 +187,7 @@ pub use reconstruct::{
 )]
 mod tests {
     use super::*;
-    use mesh_types::{IndexedMesh, Vertex};
+    use mesh_types::IndexedMesh;
     use nalgebra::{Point3, Vector3};
 
     #[test]
@@ -202,9 +205,9 @@ mod tests {
     #[test]
     fn test_cleanup_workflow() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let params = CleanupParams::minimal();
@@ -216,9 +219,9 @@ mod tests {
     #[test]
     fn test_denoise_workflow() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let params = DenoiseParams::for_scans();
@@ -231,16 +234,14 @@ mod tests {
     fn test_multiscan_workflow() {
         let mut scan1 = IndexedMesh::new();
         for i in 0..5 {
-            scan1
-                .vertices
-                .push(Vertex::from_coords(f64::from(i), 0.0, 0.0));
+            scan1.vertices.push(Point3::new(f64::from(i), 0.0, 0.0));
         }
 
         let mut scan2 = IndexedMesh::new();
         for i in 0..5 {
             scan2
                 .vertices
-                .push(Vertex::from_coords(f64::from(i) + 0.1, 0.0, 0.0));
+                .push(Point3::new(f64::from(i) + 0.1, 0.0, 0.0));
         }
 
         let scans = vec![scan1, scan2];

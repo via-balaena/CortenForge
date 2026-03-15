@@ -154,13 +154,7 @@ pub fn load_mesh_file(
     let vertices: Vec<Point3<f64>> = indexed_mesh
         .vertices
         .iter()
-        .map(|v| {
-            Point3::new(
-                v.position.x * scale.x,
-                v.position.y * scale.y,
-                v.position.z * scale.z,
-            )
-        })
+        .map(|v| Point3::new(v.x * scale.x, v.y * scale.y, v.z * scale.z))
         .collect();
 
     // 5. Convert faces to flat indices
@@ -883,14 +877,14 @@ mod tests {
 
     /// Helper to create a simple STL file for testing.
     fn create_test_stl(path: &std::path::Path) {
-        use mesh_types::{IndexedMesh, Vertex};
+        use mesh_types::{IndexedMesh, Point3};
 
         let mut mesh = IndexedMesh::new();
         // Simple tetrahedron (4 vertices, 4 faces)
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
         mesh.faces.push([0, 1, 2]); // base
         mesh.faces.push([0, 1, 3]); // front
         mesh.faces.push([1, 2, 3]); // right

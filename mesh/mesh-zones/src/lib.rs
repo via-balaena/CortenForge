@@ -17,14 +17,14 @@
 //! # Quick Start
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_zones::{segment_mesh, SegmentConfig, ZoneMap};
 //!
 //! // Create a simple mesh
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! // Automatically segment the mesh
@@ -37,13 +37,13 @@
 //! For more control, use region growing from seed faces:
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_zones::{FaceAdjacency, ZoneMap, grow_region, GrowConfig};
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! let adjacency = FaceAdjacency::from_mesh(&mesh);

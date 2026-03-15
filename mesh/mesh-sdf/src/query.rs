@@ -160,9 +160,9 @@ pub fn point_in_mesh(point: Point3<f64>, mesh: &IndexedMesh) -> bool {
     let mut count = 0;
 
     for face in &mesh.faces {
-        let v0 = mesh.vertices[face[0] as usize].position;
-        let v1 = mesh.vertices[face[1] as usize].position;
-        let v2 = mesh.vertices[face[2] as usize].position;
+        let v0 = mesh.vertices[face[0] as usize];
+        let v1 = mesh.vertices[face[1] as usize];
+        let v2 = mesh.vertices[face[2] as usize];
 
         if ray_triangle_intersect(point, ray_dir, v0, v1, v2).is_some() {
             count += 1;
@@ -199,7 +199,7 @@ pub fn point_segment_distance_squared(point: Point3<f64>, a: Point3<f64>, b: Poi
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn simple_triangle() -> (Point3<f64>, Point3<f64>, Point3<f64>) {
         (
@@ -285,10 +285,10 @@ mod tests {
     #[test]
     fn point_inside_tetrahedron() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.866, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.289, 0.816));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.289, 0.816));
 
         mesh.faces.push([0, 2, 1]);
         mesh.faces.push([0, 1, 3]);
@@ -303,10 +303,10 @@ mod tests {
     #[test]
     fn point_outside_tetrahedron() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.866, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.289, 0.816));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.289, 0.816));
 
         mesh.faces.push([0, 2, 1]);
         mesh.faces.push([0, 1, 3]);

@@ -7,7 +7,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::cast_possible_truncation)]
 
-use mesh_types::{IndexedMesh, MeshTopology, Point3, Triangle, Vector3};
+use mesh_types::{IndexedMesh, Point3, Triangle, Vector3};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tracing::{debug, info, warn};
@@ -127,7 +127,7 @@ pub fn analyze_thickness(mesh: &IndexedMesh, params: &ThicknessParams) -> Analys
 
             // Cast ray inward (opposite to normal)
             let ray_dir = -normal;
-            let ray_origin = vertex.position;
+            let ray_origin = *vertex;
 
             // Compute inverse direction for AABB tests
             let dir_inv = Vector3::new(
@@ -192,7 +192,7 @@ pub fn analyze_thickness(mesh: &IndexedMesh, params: &ThicknessParams) -> Analys
             if is_thin && thin_regions.len() < params.max_regions {
                 thin_regions.push(ThinRegion {
                     vertex_index: vertex_idx,
-                    position: mesh.vertices[vertex_idx].position,
+                    position: mesh.vertices[vertex_idx],
                     thickness,
                     hit_face,
                 });
@@ -560,7 +560,7 @@ fn compute_vertex_normals(mesh: &IndexedMesh, triangles: &[Triangle]) -> Vec<Vec
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use mesh_types::{Vertex, unit_cube};
+    use mesh_types::{Point3, unit_cube};
 
     fn make_thin_box() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -592,12 +592,12 @@ mod tests {
 
         // Add outer vertices (0-7)
         for (x, y, z) in outer {
-            mesh.vertices.push(Vertex::from_coords(x, y, z));
+            mesh.vertices.push(Point3::new(x, y, z));
         }
 
         // Add inner vertices (8-15)
         for (x, y, z) in inner {
-            mesh.vertices.push(Vertex::from_coords(x, y, z));
+            mesh.vertices.push(Point3::new(x, y, z));
         }
 
         // Outer faces (CCW from outside)
@@ -676,9 +676,9 @@ mod tests {
     #[test]
     fn test_analyze_single_triangle() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let result = analyze_thickness(&mesh, &ThicknessParams::default());

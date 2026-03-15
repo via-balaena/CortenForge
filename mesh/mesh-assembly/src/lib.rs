@@ -34,7 +34,7 @@
 //! ## Creating an Assembly
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex, Point3};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_assembly::{Assembly, Part, Connection};
 //!
 //! // Create a new assembly
@@ -42,9 +42,9 @@
 //!
 //! // Create a simple boot mesh
 //! let mut boot = IndexedMesh::new();
-//! boot.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-//! boot.vertices.push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
-//! boot.vertices.push(Vertex::new(Point3::new(5.0, 10.0, 5.0)));
+//! boot.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! boot.vertices.push(Point3::new(10.0, 0.0, 0.0));
+//! boot.vertices.push(Point3::new(5.0, 10.0, 5.0));
 //! boot.faces.push([0, 1, 2]);
 //!
 //! // Add the boot as the main shell
@@ -88,16 +88,16 @@
 //! ## Exporting to 3MF
 //!
 //! ```no_run
-//! use mesh_types::{IndexedMesh, Vertex, Point3};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_assembly::{Assembly, Part, save_assembly, AssemblyExportFormat};
 //! use std::path::Path;
 //!
 //! let mut assembly = Assembly::new("my_product");
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-//! mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-//! mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! assembly.add_part(Part::new("part1", mesh)).unwrap();
@@ -140,5 +140,5 @@ pub use part::Part;
 pub use validation::{AssemblyValidation, ClearanceResult, InterferenceResult};
 
 // Re-export commonly used types for convenience
-pub use mesh_types::{IndexedMesh, Point3, Vector3, Vertex};
+pub use mesh_types::{IndexedMesh, Point3, Vector3};
 pub use nalgebra::Isometry3;

@@ -7,7 +7,7 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_precision_loss)]
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Vector3};
 
 /// Number of segments around the circumference of a strut.
@@ -32,7 +32,7 @@ const STRUT_SEGMENTS: usize = 6;
 ///
 /// ```
 /// use mesh_lattice::generate_strut;
-/// use mesh_types::MeshTopology;
+///
 /// use nalgebra::Point3;
 ///
 /// let strut = generate_strut(
@@ -88,8 +88,8 @@ pub fn generate_strut_tapered(
     // Add cap center vertices
     let start_center_idx = 0u32;
     let end_center_idx = 1u32;
-    vertices.push(Vertex::new(start));
-    vertices.push(Vertex::new(end));
+    vertices.push(start);
+    vertices.push(end);
 
     // Generate ring vertices at start and end
     for i in 0..STRUT_SEGMENTS {
@@ -100,12 +100,12 @@ pub fn generate_strut_tapered(
         // Start ring
         let offset_start = (perp1 * cos_a + perp2 * sin_a) * start_radius;
         let start_pos = start + offset_start;
-        vertices.push(Vertex::new(start_pos));
+        vertices.push(start_pos);
 
         // End ring
         let offset_end = (perp1 * cos_a + perp2 * sin_a) * end_radius;
         let end_pos = end + offset_end;
-        vertices.push(Vertex::new(end_pos));
+        vertices.push(end_pos);
     }
 
     // Generate triangles for the side surface
@@ -177,7 +177,7 @@ fn compute_perpendicular_vectors(axis: Vector3<f64>) -> (Vector3<f64>, Vector3<f
 ///
 /// ```
 /// use mesh_lattice::{generate_strut, combine_struts};
-/// use mesh_types::MeshTopology;
+///
 /// use nalgebra::Point3;
 ///
 /// let struts = vec![
@@ -196,7 +196,7 @@ pub fn combine_struts(struts: impl Iterator<Item = IndexedMesh>) -> IndexedMesh 
         let base_index = all_vertices.len() as u32;
 
         // Add vertices
-        all_vertices.extend(strut.vertices.iter().cloned());
+        all_vertices.extend(strut.vertices.iter().copied());
 
         // Add faces with offset
         for face in &strut.faces {
@@ -238,7 +238,6 @@ pub fn estimate_strut_volume(length: f64, start_radius: f64, end_radius: f64) ->
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::MeshTopology;
 
     #[test]
     fn test_generate_strut_basic() {

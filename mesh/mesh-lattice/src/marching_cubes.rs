@@ -8,7 +8,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::cast_sign_loss)]
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::IndexedMesh;
 use nalgebra::Point3;
 
 /// Edge table for marching cubes.
@@ -349,7 +349,7 @@ const EDGE_VERTICES: [[usize; 2]; 12] = [
 ///
 /// ```
 /// use mesh_lattice::marching_cubes_algorithm::extract_isosurface;
-/// use mesh_types::MeshTopology;
+///
 /// use nalgebra::Point3;
 ///
 /// // Sphere SDF
@@ -461,9 +461,9 @@ where
                     // Skip degenerate triangles
                     if !is_degenerate(v0, v1, v2) {
                         let idx = vertices.len() as u32;
-                        vertices.push(Vertex::new(v0));
-                        vertices.push(Vertex::new(v1));
-                        vertices.push(Vertex::new(v2));
+                        vertices.push(v0);
+                        vertices.push(v1);
+                        vertices.push(v2);
                         faces.push([idx, idx + 1, idx + 2]);
                     }
 
@@ -510,7 +510,6 @@ fn is_degenerate(v0: Point3<f64>, v1: Point3<f64>, v2: Point3<f64>) -> bool {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::MeshTopology;
 
     #[test]
     fn test_sphere_isosurface() {
@@ -528,7 +527,7 @@ mod tests {
 
         // Vertices should be approximately on the sphere surface
         for v in &mesh.vertices {
-            let dist = v.position.coords.norm();
+            let dist = v.coords.norm();
             assert_relative_eq!(dist, 5.0, epsilon = 1.0); // Within one cell
         }
     }
@@ -545,7 +544,7 @@ mod tests {
 
         // Vertices should be approximately on z=0
         for v in &mesh.vertices {
-            assert_relative_eq!(v.position.z, 0.0, epsilon = 0.6);
+            assert_relative_eq!(v.z, 0.0, epsilon = 0.6);
         }
     }
 

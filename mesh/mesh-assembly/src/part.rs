@@ -15,13 +15,13 @@ use nalgebra::{Isometry3, UnitQuaternion, Vector3};
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex, Point3};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_assembly::Part;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-/// mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-/// mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let part = Part::new("shell", mesh)
@@ -231,17 +231,17 @@ pub(crate) fn compute_bbox(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
         return (Point3::origin(), Point3::origin());
     }
 
-    let first = mesh.vertices[0].position;
+    let first = mesh.vertices[0];
     let mut min = first;
     let mut max = first;
 
     for v in &mesh.vertices {
-        min.x = min.x.min(v.position.x);
-        min.y = min.y.min(v.position.y);
-        min.z = min.z.min(v.position.z);
-        max.x = max.x.max(v.position.x);
-        max.y = max.y.max(v.position.y);
-        max.z = max.z.max(v.position.z);
+        min.x = min.x.min(v.x);
+        min.y = min.y.min(v.y);
+        min.z = min.z.min(v.z);
+        max.x = max.x.max(v.x);
+        max.y = max.y.max(v.y);
+        max.z = max.z.max(v.z);
     }
 
     (min, max)
@@ -250,13 +250,11 @@ pub(crate) fn compute_bbox(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
-
     fn create_test_mesh() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }

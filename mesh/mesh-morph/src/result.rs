@@ -13,14 +13,13 @@ use mesh_types::IndexedMesh;
 ///
 /// ```
 /// use mesh_morph::{morph_mesh, MorphParams, Constraint, MorphOutput};
-/// use mesh_types::{IndexedMesh, Vertex};
-/// use nalgebra::Point3;
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// // Create a simple mesh
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let params = MorphParams::rbf()
@@ -166,9 +165,9 @@ pub fn compute_signed_volume(mesh: &IndexedMesh) -> f64 {
     let mut volume = 0.0;
 
     for tri in &mesh.faces {
-        let v0 = &mesh.vertices[tri[0] as usize].position;
-        let v1 = &mesh.vertices[tri[1] as usize].position;
-        let v2 = &mesh.vertices[tri[2] as usize].position;
+        let v0 = &mesh.vertices[tri[0] as usize];
+        let v1 = &mesh.vertices[tri[1] as usize];
+        let v2 = &mesh.vertices[tri[2] as usize];
 
         // Signed volume of tetrahedron with origin
         volume += v0.coords.dot(&v1.coords.cross(&v2.coords));
@@ -204,7 +203,7 @@ pub fn compute_edge_stats(mesh: &IndexedMesh) -> (f64, f64, f64, usize) {
     let mut total_len: f64 = 0.0;
 
     for (i, j) in &edges {
-        let len = (mesh.vertices[*i].position - mesh.vertices[*j].position).norm();
+        let len = (mesh.vertices[*i] - mesh.vertices[*j]).norm();
         min_len = min_len.min(len);
         max_len = max_len.max(len);
         total_len += len;
@@ -217,16 +216,16 @@ pub fn compute_edge_stats(mesh: &IndexedMesh) -> (f64, f64, f64, usize) {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn make_tetrahedron() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
         // Regular tetrahedron
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, -1.0, -1.0));
-        mesh.vertices.push(Vertex::from_coords(-1.0, 1.0, -1.0));
-        mesh.vertices.push(Vertex::from_coords(-1.0, -1.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, -1.0, -1.0));
+        mesh.vertices.push(Point3::new(-1.0, 1.0, -1.0));
+        mesh.vertices.push(Point3::new(-1.0, -1.0, 1.0));
 
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 2, 3]);
@@ -297,9 +296,9 @@ mod tests {
     #[test]
     fn test_compute_edge_stats() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let (min_len, max_len, total_len, edge_count) = compute_edge_stats(&mesh);

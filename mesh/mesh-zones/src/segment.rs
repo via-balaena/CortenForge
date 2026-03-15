@@ -68,13 +68,13 @@ impl SegmentConfig {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_zones::{segment_mesh, SegmentConfig};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let zone_map = segment_mesh(&mesh, &SegmentConfig::default());
@@ -182,9 +182,9 @@ pub fn segment_by_normal_direction(mesh: &IndexedMesh) -> ZoneResult<ZoneMap> {
     let mut zone_map = ZoneMap::new(mesh.faces.len());
 
     for (face_idx, face) in mesh.faces.iter().enumerate() {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         let e1 = *v1 - *v0;
         let e2 = *v2 - *v0;
@@ -215,27 +215,27 @@ pub fn segment_by_normal_direction(mesh: &IndexedMesh) -> ZoneResult<ZoneMap> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn simple_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
 
     fn cube_faces() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(-0.5, -0.5, -0.5));
-        mesh.vertices.push(Vertex::from_coords(0.5, -0.5, -0.5));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, -0.5));
-        mesh.vertices.push(Vertex::from_coords(-0.5, 0.5, -0.5));
-        mesh.vertices.push(Vertex::from_coords(-0.5, -0.5, 0.5));
-        mesh.vertices.push(Vertex::from_coords(0.5, -0.5, 0.5));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 0.5));
-        mesh.vertices.push(Vertex::from_coords(-0.5, 0.5, 0.5));
+        mesh.vertices.push(Point3::new(-0.5, -0.5, -0.5));
+        mesh.vertices.push(Point3::new(0.5, -0.5, -0.5));
+        mesh.vertices.push(Point3::new(0.5, 0.5, -0.5));
+        mesh.vertices.push(Point3::new(-0.5, 0.5, -0.5));
+        mesh.vertices.push(Point3::new(-0.5, -0.5, 0.5));
+        mesh.vertices.push(Point3::new(0.5, -0.5, 0.5));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 0.5));
+        mesh.vertices.push(Point3::new(-0.5, 0.5, 0.5));
 
         // Bottom (z = -0.5, normal -Z)
         mesh.faces.push([0, 2, 1]);

@@ -228,14 +228,14 @@ pub fn find_coplanar_pairs(
 
     for &(tri_a, tri_b) in intersecting_pairs {
         let face_a = &mesh_a.faces[tri_a as usize];
-        let a0 = mesh_a.vertices[face_a[0] as usize].position;
-        let a1 = mesh_a.vertices[face_a[1] as usize].position;
-        let a2 = mesh_a.vertices[face_a[2] as usize].position;
+        let a0 = mesh_a.vertices[face_a[0] as usize];
+        let a1 = mesh_a.vertices[face_a[1] as usize];
+        let a2 = mesh_a.vertices[face_a[2] as usize];
 
         let face_b = &mesh_b.faces[tri_b as usize];
-        let b0 = mesh_b.vertices[face_b[0] as usize].position;
-        let b1 = mesh_b.vertices[face_b[1] as usize].position;
-        let b2 = mesh_b.vertices[face_b[2] as usize].position;
+        let b0 = mesh_b.vertices[face_b[0] as usize];
+        let b1 = mesh_b.vertices[face_b[1] as usize];
+        let b2 = mesh_b.vertices[face_b[2] as usize];
 
         let result = check_coplanarity(&a0, &a1, &a2, &b0, &b1, &b2, tolerance);
 

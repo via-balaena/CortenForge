@@ -9,7 +9,7 @@
 #![allow(clippy::tuple_array_conversions)]
 
 use hashbrown::{HashMap, HashSet};
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 use tracing::debug;
 
 use crate::error::{RemeshError, RemeshResult};
@@ -34,14 +34,14 @@ use crate::result::{EdgeStatistics, RemeshResult as RemeshOutput};
 /// # Examples
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_remesh::{remesh, RemeshParams};
 ///
 /// // Create a simple triangle mesh
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 0.866, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// // Remesh with target edge length
@@ -78,11 +78,7 @@ pub fn remesh(mesh: &IndexedMesh, params: &RemeshParams) -> RemeshResult<RemeshO
     );
 
     // Convert to working representation
-    let mut vertices: Vec<[f64; 3]> = mesh
-        .vertices
-        .iter()
-        .map(|v| [v.position.x, v.position.y, v.position.z])
-        .collect();
+    let mut vertices: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
     let mut faces: Vec<[u32; 3]> = mesh.faces.clone();
 
     let mut total_splits = 0;
@@ -157,7 +153,7 @@ pub fn remesh(mesh: &IndexedMesh, params: &RemeshParams) -> RemeshResult<RemeshO
     let result_mesh = IndexedMesh {
         vertices: vertices
             .into_iter()
-            .map(|v| Vertex::from_coords(v[0], v[1], v[2]))
+            .map(|v| Point3::new(v[0], v[1], v[2]))
             .collect(),
         faces,
     };
@@ -191,8 +187,8 @@ fn compute_edge_statistics(mesh: &IndexedMesh) -> EdgeStatistics {
             let edge = if v0 <= v1 { (v0, v1) } else { (v1, v0) };
 
             if seen_edges.insert(edge) {
-                let p0 = &mesh.vertices[v0 as usize].position;
-                let p1 = &mesh.vertices[v1 as usize].position;
+                let p0 = &mesh.vertices[v0 as usize];
+                let p1 = &mesh.vertices[v1 as usize];
                 let length =
                     ((p1.x - p0.x).powi(2) + (p1.y - p0.y).powi(2) + (p1.z - p0.z).powi(2)).sqrt();
                 edge_lengths.push(length);
@@ -604,19 +600,19 @@ mod tests {
 
     fn make_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.866, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
 
     fn make_quad() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 2, 3]);
         mesh
@@ -633,7 +629,7 @@ mod tests {
     #[test]
     fn test_remesh_no_faces() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
         let params = RemeshParams::default();
         let result = remesh(&mesh, &params);
         assert!(matches!(result, Err(RemeshError::NoFaces)));

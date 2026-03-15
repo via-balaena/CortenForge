@@ -133,13 +133,13 @@ pub struct BilateralResult {
 ///
 /// ```
 /// use mesh_scan::denoise::bilateral::{filter_bilateral, BilateralParams};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut mesh = IndexedMesh::new();
 /// // ... create or load mesh ...
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let result = filter_bilateral(&mesh, &BilateralParams::default(), false);
@@ -209,7 +209,7 @@ pub fn filter_bilateral(
                             vertex_normals.get(&n).copied().unwrap_or(Vector3::z());
 
                         // Spatial weight
-                        let dist = (neighbor.position - vertex.position).norm();
+                        let dist = (*neighbor - *vertex).norm();
                         let w_s = (-dist * dist / (2.0 * sigma_s_scaled * sigma_s_scaled)).exp();
 
                         // Normal weight
@@ -219,8 +219,7 @@ pub fn filter_bilateral(
                             .exp();
 
                         let weight = w_s * w_n;
-                        weighted_sum +=
-                            (neighbor.position.coords - vertex.position.coords) * weight;
+                        weighted_sum += (neighbor.coords - vertex.coords) * weight;
                         weight_sum += weight;
                     }
 
@@ -249,7 +248,7 @@ pub fn filter_bilateral(
                 max_disp = max_disp.max(dist);
                 total_disp += dist;
                 moved_count += 1;
-                vertex.position.coords += displacement;
+                vertex.coords += displacement;
             }
         }
 
@@ -283,9 +282,9 @@ fn compute_vertex_normals(mesh: &IndexedMesh) -> HashMap<u32, Vector3<f64>> {
     let mut vertex_counts: HashMap<u32, usize> = HashMap::new();
 
     for face in &mesh.faces {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         let e1 = v1 - v0;
         let e2 = v2 - v0;
@@ -328,8 +327,8 @@ fn compute_average_edge_length(mesh: &IndexedMesh) -> f64 {
 
     for face in &mesh.faces {
         for i in 0..3 {
-            let v0 = &mesh.vertices[face[i] as usize].position;
-            let v1 = &mesh.vertices[face[(i + 1) % 3] as usize].position;
+            let v0 = &mesh.vertices[face[i] as usize];
+            let v1 = &mesh.vertices[face[(i + 1) % 3] as usize];
             total_length += (v1 - v0).norm();
             edge_count += 1;
         }
@@ -406,18 +405,15 @@ fn find_boundary_vertices(mesh: &IndexedMesh) -> HashSet<u32> {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use nalgebra::Point3;
 
     fn make_plane_mesh(n: usize) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
         for i in 0..n {
             for j in 0..n {
-                mesh.vertices.push(Vertex::from_coords(
-                    f64::from(i as u32),
-                    f64::from(j as u32),
-                    0.0,
-                ));
+                mesh.vertices
+                    .push(Point3::new(f64::from(i as u32), f64::from(j as u32), 0.0));
             }
         }
 
@@ -442,7 +438,7 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         for vertex in &mut mesh.vertices {
-            vertex.position.z += rng.gen_range(-noise..noise);
+            vertex.z += rng.gen_range(-noise..noise);
         }
 
         mesh
@@ -499,12 +495,8 @@ mod tests {
         let mesh = make_noisy_plane_mesh(10, 0.3);
 
         // Compute initial z variance
-        let initial_z_variance: f64 = mesh
-            .vertices
-            .iter()
-            .map(|v| v.position.z.powi(2))
-            .sum::<f64>()
-            / mesh.vertices.len() as f64;
+        let initial_z_variance: f64 =
+            mesh.vertices.iter().map(|v| v.z.powi(2)).sum::<f64>() / mesh.vertices.len() as f64;
 
         let params = BilateralParams::new().with_iterations(3);
         let result = filter_bilateral(&mesh, &params, false);
@@ -514,7 +506,7 @@ mod tests {
             .mesh
             .vertices
             .iter()
-            .map(|v| v.position.z.powi(2))
+            .map(|v| v.z.powi(2))
             .sum::<f64>()
             / result.mesh.vertices.len() as f64;
 
@@ -530,8 +522,8 @@ mod tests {
         let result = filter_bilateral(&mesh, &BilateralParams::default(), true);
 
         for &v in &boundary {
-            let original = &mesh.vertices[v as usize].position;
-            let filtered = &result.mesh.vertices[v as usize].position;
+            let original = &mesh.vertices[v as usize];
+            let filtered = &result.mesh.vertices[v as usize];
             assert_relative_eq!(original.x, filtered.x, epsilon = 1e-10);
             assert_relative_eq!(original.y, filtered.y, epsilon = 1e-10);
             assert_relative_eq!(original.z, filtered.z, epsilon = 1e-10);
@@ -553,9 +545,9 @@ mod tests {
     #[test]
     fn test_compute_average_edge_length() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let avg_len = compute_average_edge_length(&mesh);

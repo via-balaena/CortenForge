@@ -7,17 +7,17 @@
 //! # Example
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_repair::components::{find_connected_components, split_into_components};
 //!
 //! let mut mesh = IndexedMesh::new();
 //! // Add two disconnected triangles
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(11.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(10.0, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(10.0, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //! mesh.faces.push([3, 4, 5]);
 //!
@@ -102,17 +102,17 @@ impl std::fmt::Display for ComponentAnalysis {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex, MeshTopology};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::components::find_connected_components;
 ///
 /// let mut mesh = IndexedMesh::new();
 /// // Add two disconnected triangles
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(11.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 /// mesh.faces.push([3, 4, 5]);
 ///
@@ -221,17 +221,17 @@ pub fn find_connected_components(mesh: &IndexedMesh) -> ComponentAnalysis {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex, MeshTopology};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::components::split_into_components;
 ///
 /// let mut mesh = IndexedMesh::new();
 /// // Add two disconnected triangles
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(11.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 /// mesh.faces.push([3, 4, 5]);
 ///
@@ -273,7 +273,7 @@ pub fn split_into_components(mesh: &IndexedMesh) -> Vec<IndexedMesh> {
         for old_idx in used_vertices {
             let new_idx = new_vertices.len() as u32;
             old_to_new.insert(old_idx, new_idx);
-            new_vertices.push(mesh.vertices[old_idx as usize].clone());
+            new_vertices.push(mesh.vertices[old_idx as usize]);
         }
 
         // Remap face indices
@@ -318,17 +318,17 @@ pub fn split_into_components(mesh: &IndexedMesh) -> Vec<IndexedMesh> {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex, MeshTopology};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::components::keep_largest_component;
 ///
 /// let mut mesh = IndexedMesh::new();
 /// // Add two disconnected triangles
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(11.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 /// mesh.faces.push([3, 4, 5]);
 ///
@@ -378,7 +378,7 @@ pub fn keep_largest_component(mesh: &mut IndexedMesh) -> usize {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex, MeshTopology};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::components::remove_small_components;
 ///
 /// let mut mesh = IndexedMesh::new();
@@ -448,7 +448,7 @@ pub fn remove_small_components(mesh: &mut IndexedMesh, min_faces: usize) -> usiz
         if used_vertices.contains(&old_idx) {
             let new_idx = new_vertices.len() as u32;
             old_to_new.insert(old_idx, new_idx);
-            new_vertices.push(mesh.vertices[old_idx as usize].clone());
+            new_vertices.push(mesh.vertices[old_idx as usize]);
         }
     }
 
@@ -474,13 +474,13 @@ pub fn remove_small_components(mesh: &mut IndexedMesh, min_faces: usize) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{MeshTopology, Vertex};
+    use mesh_types::Point3;
 
     fn create_single_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -488,13 +488,13 @@ mod tests {
     fn create_two_disconnected_triangles() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
         // First triangle
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         // Second triangle (disconnected)
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(11.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([3, 4, 5]);
         mesh
@@ -502,10 +502,10 @@ mod tests {
 
     fn create_two_connected_triangles() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(1.5, 1.0, 0.0));
         // Two triangles sharing edge (1, 2)
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([1, 3, 2]);
@@ -516,23 +516,23 @@ mod tests {
         let mut mesh = IndexedMesh::new();
 
         // Component 1: 2 triangles
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(1.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([1, 3, 2]);
 
         // Component 2: 1 triangle
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(11.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 1.0, 0.0));
         mesh.faces.push([4, 5, 6]);
 
         // Component 3: 1 triangle
-        mesh.vertices.push(Vertex::from_coords(20.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(21.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(20.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(20.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(21.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(20.0, 1.0, 0.0));
         mesh.faces.push([7, 8, 9]);
 
         mesh

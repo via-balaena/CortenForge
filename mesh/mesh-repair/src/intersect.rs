@@ -6,13 +6,13 @@
 //! # Example
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_repair::intersect::{detect_self_intersections, IntersectionParams};
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! let result = detect_self_intersections(&mesh, &IntersectionParams::default());
@@ -20,7 +20,7 @@
 //! ```
 
 use hashbrown::HashSet;
-use mesh_types::{IndexedMesh, MeshTopology, Point3, Triangle, Vector3};
+use mesh_types::{IndexedMesh, Point3, Triangle, Vector3};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tracing::{debug, info, warn};
@@ -176,13 +176,13 @@ impl Aabb {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::intersect::{detect_self_intersections, IntersectionParams};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let result = detect_self_intersections(&mesh, &IntersectionParams::default());
@@ -449,7 +449,6 @@ pub fn has_self_intersections(mesh: &IndexedMesh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
 
     fn create_xy_triangle(x: f64, y: f64, size: f64) -> Triangle {
         Triangle::new(
@@ -547,10 +546,10 @@ mod tests {
     fn test_detect_clean_mesh() {
         // Simple tetrahedron - no self-intersections
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 1, 3]);
         mesh.faces.push([1, 2, 3]);
@@ -567,14 +566,14 @@ mod tests {
         let mut mesh = IndexedMesh::new();
 
         // Triangle 1 in XY plane
-        mesh.vertices.push(Vertex::from_coords(-1.0, -1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, -1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(-1.0, -1.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, -1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 
         // Triangle 2 in XZ plane, passing through triangle 1
-        mesh.vertices.push(Vertex::from_coords(-1.0, 0.0, -1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, -1.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(-1.0, 0.0, -1.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, -1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
 
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([3, 4, 5]);
@@ -590,10 +589,10 @@ mod tests {
     fn test_skip_adjacent_triangles() {
         // Two triangles sharing an edge - should not be flagged as intersecting
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, -1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, -1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 3, 1]); // Shares edge 0-1
 
@@ -616,9 +615,9 @@ mod tests {
     #[test]
     fn test_single_triangle() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let result = detect_self_intersections(&mesh, &IntersectionParams::default());
@@ -653,21 +652,21 @@ mod tests {
     fn test_has_self_intersections() {
         // Clean mesh
         let mut clean_mesh = IndexedMesh::new();
-        clean_mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        clean_mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        clean_mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        clean_mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        clean_mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        clean_mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         clean_mesh.faces.push([0, 1, 2]);
 
         assert!(!has_self_intersections(&clean_mesh));
 
         // Intersecting mesh
         let mut bad_mesh = IndexedMesh::new();
-        bad_mesh.vertices.push(Vertex::from_coords(-1.0, -1.0, 0.0));
-        bad_mesh.vertices.push(Vertex::from_coords(1.0, -1.0, 0.0));
-        bad_mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        bad_mesh.vertices.push(Vertex::from_coords(-1.0, 0.0, -1.0));
-        bad_mesh.vertices.push(Vertex::from_coords(1.0, 0.0, -1.0));
-        bad_mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
+        bad_mesh.vertices.push(Point3::new(-1.0, -1.0, 0.0));
+        bad_mesh.vertices.push(Point3::new(1.0, -1.0, 0.0));
+        bad_mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        bad_mesh.vertices.push(Point3::new(-1.0, 0.0, -1.0));
+        bad_mesh.vertices.push(Point3::new(1.0, 0.0, -1.0));
+        bad_mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
         bad_mesh.faces.push([0, 1, 2]);
         bad_mesh.faces.push([3, 4, 5]);
 

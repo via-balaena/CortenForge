@@ -17,19 +17,19 @@
 //! # Example
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_offset::{offset_mesh, OffsetConfig};
 //!
 //! // Create a unit cube
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(-0.5, -0.5, -0.5));
-//! mesh.vertices.push(Vertex::from_coords(0.5, -0.5, -0.5));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 0.5, -0.5));
-//! mesh.vertices.push(Vertex::from_coords(-0.5, 0.5, -0.5));
-//! mesh.vertices.push(Vertex::from_coords(-0.5, -0.5, 0.5));
-//! mesh.vertices.push(Vertex::from_coords(0.5, -0.5, 0.5));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 0.5));
-//! mesh.vertices.push(Vertex::from_coords(-0.5, 0.5, 0.5));
+//! mesh.vertices.push(Point3::new(-0.5, -0.5, -0.5));
+//! mesh.vertices.push(Point3::new(0.5, -0.5, -0.5));
+//! mesh.vertices.push(Point3::new(0.5, 0.5, -0.5));
+//! mesh.vertices.push(Point3::new(-0.5, 0.5, -0.5));
+//! mesh.vertices.push(Point3::new(-0.5, -0.5, 0.5));
+//! mesh.vertices.push(Point3::new(0.5, -0.5, 0.5));
+//! mesh.vertices.push(Point3::new(0.5, 0.5, 0.5));
+//! mesh.vertices.push(Point3::new(-0.5, 0.5, 0.5));
 //!
 //! // Bottom face
 //! mesh.faces.push([0, 1, 2]);

@@ -20,7 +20,7 @@
 //! Run with: cargo test -p mesh-repair visual_regression
 
 use mesh_repair::{RepairParams, remove_unreferenced_vertices, weld_vertices};
-use mesh_types::{Aabb, Bounded, IndexedMesh, MeshTopology, Vertex};
+use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 
 // =============================================================================
 // Test Mesh Generation
@@ -43,7 +43,7 @@ fn create_cube() -> IndexedMesh {
     ];
 
     for v in &verts {
-        mesh.vertices.push(Vertex::from_coords(v[0], v[1], v[2]));
+        mesh.vertices.push(Point3::new(v[0], v[1], v[2]));
     }
 
     let faces: [[u32; 3]; 12] = [
@@ -97,8 +97,7 @@ fn create_cube_with_duplicates() -> IndexedMesh {
     for (i, face_positions) in faces_with_positions.iter().enumerate() {
         let base_idx = (i * 3) as u32;
         for pos in face_positions {
-            mesh.vertices
-                .push(Vertex::from_coords(pos[0], pos[1], pos[2]));
+            mesh.vertices.push(Point3::new(pos[0], pos[1], pos[2]));
         }
         mesh.faces.push([base_idx, base_idx + 1, base_idx + 2]);
     }
@@ -137,9 +136,9 @@ fn mesh_centroid(mesh: &IndexedMesh) -> [f64; 3] {
 
     let mut sum = [0.0, 0.0, 0.0];
     for v in &mesh.vertices {
-        sum[0] += v.position.x;
-        sum[1] += v.position.y;
-        sum[2] += v.position.z;
+        sum[0] += v.x;
+        sum[1] += v.y;
+        sum[2] += v.z;
     }
 
     let n = mesh.vertices.len() as f64;

@@ -273,24 +273,15 @@ impl Transform3D {
 
     /// Apply this transformation to all vertices of a mesh.
     ///
-    /// Creates a new mesh with transformed positions and normals.
+    /// Creates a new mesh with transformed positions.
     #[must_use]
     pub fn apply_to_mesh(&self, mesh: &IndexedMesh) -> IndexedMesh {
         let mut result = mesh.clone();
 
         for vertex in &mut result.vertices {
-            let pos = Vector3::new(vertex.position.x, vertex.position.y, vertex.position.z);
+            let pos = Vector3::new(vertex.x, vertex.y, vertex.z);
             let transformed = self.transform_point(pos);
-            vertex.position.x = transformed.x;
-            vertex.position.y = transformed.y;
-            vertex.position.z = transformed.z;
-
-            if let Some(norm) = vertex.attributes.normal {
-                let transformed_normal = self.transform_normal(norm);
-                if let Some(normalized) = transformed_normal.try_normalize(f64::EPSILON) {
-                    vertex.attributes.normal = Some(normalized);
-                }
-            }
+            *vertex = nalgebra::Point3::new(transformed.x, transformed.y, transformed.z);
         }
 
         result
@@ -416,20 +407,17 @@ mod tests {
     #[test]
     fn apply_to_mesh() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices
-            .push(mesh_types::Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices
-            .push(mesh_types::Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices
-            .push(mesh_types::Vertex::from_coords(0.0, 0.0, 1.0));
+        mesh.vertices.push(nalgebra::Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(nalgebra::Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(nalgebra::Point3::new(0.0, 0.0, 1.0));
         mesh.faces.push([0, 1, 2]);
 
         let t = Transform3D::translation(10.0, 20.0, 30.0);
         let transformed = t.apply_to_mesh(&mesh);
 
-        assert_relative_eq!(transformed.vertices[0].position.x, 11.0, epsilon = 1e-10);
-        assert_relative_eq!(transformed.vertices[1].position.y, 21.0, epsilon = 1e-10);
-        assert_relative_eq!(transformed.vertices[2].position.z, 31.0, epsilon = 1e-10);
+        assert_relative_eq!(transformed.vertices[0].x, 11.0, epsilon = 1e-10);
+        assert_relative_eq!(transformed.vertices[1].y, 21.0, epsilon = 1e-10);
+        assert_relative_eq!(transformed.vertices[2].z, 31.0, epsilon = 1e-10);
     }
 
     #[test]
@@ -555,26 +543,16 @@ mod tests {
     }
 
     #[test]
-    fn apply_to_mesh_with_normals() {
+    fn apply_to_mesh_with_rotation() {
         let mut mesh = IndexedMesh::new();
-        let mut v = mesh_types::Vertex::from_coords(1.0, 0.0, 0.0);
-        v.attributes.normal = Some(Vector3::new(1.0, 0.0, 0.0));
-        mesh.vertices.push(v);
+        mesh.vertices.push(nalgebra::Point3::new(1.0, 0.0, 0.0));
         mesh.faces.push([0, 0, 0]); // Degenerate but valid for testing
 
         let t = Transform3D::rotation_z(PI / 2.0);
         let transformed = t.apply_to_mesh(&mesh);
 
         // Position rotates
-        assert_relative_eq!(transformed.vertices[0].position.x, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(transformed.vertices[0].position.y, 1.0, epsilon = 1e-10);
-
-        // Normal should also rotate
-        let norm = transformed.vertices[0]
-            .attributes
-            .normal
-            .unwrap_or_else(Vector3::zeros);
-        assert_relative_eq!(norm.x, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(norm.y, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(transformed.vertices[0].x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(transformed.vertices[0].y, 1.0, epsilon = 1e-10);
     }
 }

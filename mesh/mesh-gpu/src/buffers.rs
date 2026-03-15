@@ -203,9 +203,9 @@ impl MeshBuffers {
             .faces
             .iter()
             .map(|face| {
-                let v0 = &mesh.vertices[face[0] as usize].position;
-                let v1 = &mesh.vertices[face[1] as usize].position;
-                let v2 = &mesh.vertices[face[2] as usize].position;
+                let v0 = &mesh.vertices[face[0] as usize];
+                let v1 = &mesh.vertices[face[1] as usize];
+                let v2 = &mesh.vertices[face[2] as usize];
                 GpuTriangle::new(
                     [v0.x as f32, v0.y as f32, v0.z as f32],
                     [v1.x as f32, v1.y as f32, v1.z as f32],
@@ -218,19 +218,7 @@ impl MeshBuffers {
         let gpu_vertices: Vec<GpuVertex> = mesh
             .vertices
             .iter()
-            .map(|v| {
-                let offset = v.attributes.offset.unwrap_or(0.0);
-                let tag = v.attributes.zone_id.unwrap_or(0);
-                GpuVertex::with_offset(
-                    [
-                        v.position.x as f32,
-                        v.position.y as f32,
-                        v.position.z as f32,
-                    ],
-                    offset,
-                    tag,
-                )
-            })
+            .map(|v| GpuVertex::with_offset([v.x as f32, v.y as f32, v.z as f32], 0.0_f32, 0_u32))
             .collect();
 
         // Create GPU buffers

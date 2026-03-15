@@ -9,13 +9,13 @@
 //!
 //! ```
 //! use mesh_scan::cleanup::{cleanup_scan, CleanupParams};
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //!
 //! let mut mesh = IndexedMesh::new();
 //! // ... load or create mesh ...
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! let params = CleanupParams::for_body_scan();
@@ -333,12 +333,12 @@ impl std::fmt::Display for CleanupResult {
 ///
 /// ```
 /// use mesh_scan::cleanup::{cleanup_scan, CleanupParams};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let result = cleanup_scan(&mesh, &CleanupParams::default()).unwrap();
@@ -429,13 +429,13 @@ pub fn cleanup_scan(mesh: &IndexedMesh, params: &CleanupParams) -> ScanResult<Cl
 )]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use nalgebra::Point3;
 
     fn make_simple_mesh() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -444,15 +444,15 @@ mod tests {
         let mut mesh = IndexedMesh::new();
 
         // Component 1
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         // Component 2 (disconnected)
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(11.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.5, 1.0, 0.0));
         mesh.faces.push([3, 4, 5]);
 
         mesh
@@ -590,7 +590,7 @@ mod tests {
     #[test]
     fn test_cleanup_result_vertices_removed() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
 
         let result = CleanupResult {
             mesh,

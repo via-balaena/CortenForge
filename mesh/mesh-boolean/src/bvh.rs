@@ -207,13 +207,13 @@ impl Bvh {
     /// # Example
     ///
     /// ```
-    /// use mesh_types::{IndexedMesh, Vertex, Point3};
+    /// use mesh_types::{IndexedMesh, Point3};
     /// use mesh_boolean::bvh::Bvh;
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-    /// mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-    /// mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
     /// mesh.faces.push([0, 1, 2]);
     ///
     /// let bvh = Bvh::build(&mesh, 8);
@@ -234,9 +234,9 @@ impl Bvh {
             .iter()
             .enumerate()
             .map(|(i, face)| {
-                let v0 = mesh.vertices[face[0] as usize].position;
-                let v1 = mesh.vertices[face[1] as usize].position;
-                let v2 = mesh.vertices[face[2] as usize].position;
+                let v0 = mesh.vertices[face[0] as usize];
+                let v1 = mesh.vertices[face[1] as usize];
+                let v2 = mesh.vertices[face[2] as usize];
                 (i as u32, Aabb::from_triangle(&v0, &v1, &v2))
             })
             .collect();
@@ -274,9 +274,9 @@ impl Bvh {
             .par_iter()
             .enumerate()
             .map(|(i, face)| {
-                let v0 = mesh.vertices[face[0] as usize].position;
-                let v1 = mesh.vertices[face[1] as usize].position;
-                let v2 = mesh.vertices[face[2] as usize].position;
+                let v0 = mesh.vertices[face[0] as usize];
+                let v1 = mesh.vertices[face[1] as usize];
+                let v2 = mesh.vertices[face[2] as usize];
                 (i as u32, Aabb::from_triangle(&v0, &v1, &v2))
             })
             .collect();
@@ -549,7 +549,7 @@ pub struct BvhStats {
 )]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_test_mesh() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -567,7 +567,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            mesh.vertices.push(Vertex::new(*v));
+            mesh.vertices.push(*v);
         }
 
         // Bottom face
@@ -656,9 +656,9 @@ mod tests {
     #[test]
     fn test_bvh_build_single_triangle() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let bvh = Bvh::build(&mesh, 8);

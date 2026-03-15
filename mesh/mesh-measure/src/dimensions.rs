@@ -111,13 +111,13 @@ impl Dimensions {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex, MeshTopology};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_measure::dimensions;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(5.0, 5.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(5.0, 5.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let dims = dimensions(&mesh);
@@ -159,7 +159,7 @@ pub fn dimensions(mesh: &IndexedMesh) -> Dimensions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{Vertex, unit_cube};
+    use mesh_types::{Point3, unit_cube};
 
     fn create_test_cube(size: f64) -> IndexedMesh {
         let mut cube = unit_cube();
@@ -230,14 +230,14 @@ mod tests {
     fn test_non_cubic_mesh() {
         // Create a 10x2x1 box shape with vertices
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 2.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 2.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 2.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 2.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 2.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 2.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(10.0, 2.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 2.0, 1.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 2, 3]);
 
@@ -250,9 +250,9 @@ mod tests {
     #[test]
     fn test_min_max_extent() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 5.0, 2.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 5.0, 2.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 5.0, 2.0));
+        mesh.vertices.push(Point3::new(0.0, 5.0, 2.0));
         mesh.faces.push([0, 1, 2]);
 
         let dims = dimensions(&mesh);

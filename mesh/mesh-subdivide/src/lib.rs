@@ -11,14 +11,14 @@
 //! Basic midpoint subdivision:
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_subdivide::{subdivide_mesh, SubdivideParams};
 //!
 //! // Create a simple triangle mesh
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! // Subdivide once (each triangle becomes 4)
@@ -33,13 +33,13 @@
 //! Loop subdivision for smooth surfaces:
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_subdivide::{subdivide_mesh, SubdivideParams};
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! // Use Loop subdivision for smoothing

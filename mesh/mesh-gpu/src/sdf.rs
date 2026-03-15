@@ -594,7 +594,7 @@ pub fn try_compute_sdf_gpu(mesh: &IndexedMesh, params: &GpuSdfParams) -> Option<
 )]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_test_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -612,7 +612,7 @@ mod tests {
         ];
 
         for c in &coords {
-            mesh.vertices.push(Vertex::from_coords(c[0], c[1], c[2]));
+            mesh.vertices.push(Point3::new(c[0], c[1], c[2]));
         }
 
         // Cube faces (2 triangles per face)

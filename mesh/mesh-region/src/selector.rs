@@ -15,13 +15,13 @@ use std::collections::VecDeque;
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex, Point3};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_region::RegionSelector;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-/// mesh.vertices.push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
-/// mesh.vertices.push(Vertex::new(Point3::new(5.0, 10.0, 5.0)));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(5.0, 10.0, 5.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// // Select vertices in upper half
@@ -385,12 +385,12 @@ fn select_bounds(mesh: &IndexedMesh, min: &Point3<f64>, max: &Point3<f64>) -> Ha
         .iter()
         .enumerate()
         .filter(|(_, v)| {
-            v.position.x >= min.x
-                && v.position.x <= max.x
-                && v.position.y >= min.y
-                && v.position.y <= max.y
-                && v.position.z >= min.z
-                && v.position.z <= max.z
+            v.x >= min.x
+                && v.x <= max.x
+                && v.y >= min.y
+                && v.y <= max.y
+                && v.z >= min.z
+                && v.z <= max.z
         })
         .filter_map(|(i, _)| u32::try_from(i).ok())
         .collect()
@@ -400,7 +400,7 @@ fn select_sphere(mesh: &IndexedMesh, center: &Point3<f64>, radius: f64) -> HashS
     mesh.vertices
         .iter()
         .enumerate()
-        .filter(|(_, v)| (v.position - center).norm() <= radius)
+        .filter(|(_, v)| (*v - center).norm() <= radius)
         .filter_map(|(i, _)| u32::try_from(i).ok())
         .collect()
 }
@@ -421,13 +421,13 @@ fn select_cylinder(
         .iter()
         .enumerate()
         .filter(|(_, v)| {
-            let to_point = v.position - axis_start;
+            let to_point = *v - axis_start;
             let t = to_point.dot(&axis) / axis_len_sq;
             if !(0.0..=1.0).contains(&t) {
                 return false;
             }
             let projection = axis_start + axis * t;
-            (v.position - projection).norm() <= radius
+            (*v - projection).norm() <= radius
         })
         .filter_map(|(i, _)| u32::try_from(i).ok())
         .collect()
@@ -442,7 +442,7 @@ fn select_plane(
     mesh.vertices
         .iter()
         .enumerate()
-        .filter(|(_, v)| (v.position - point).dot(normal).abs() <= tolerance)
+        .filter(|(_, v)| (*v - point).dot(normal).abs() <= tolerance)
         .filter_map(|(i, _)| u32::try_from(i).ok())
         .collect()
 }
@@ -455,7 +455,7 @@ fn select_half_space(
     mesh.vertices
         .iter()
         .enumerate()
-        .filter(|(_, v)| (v.position - point).dot(normal) >= 0.0)
+        .filter(|(_, v)| (*v - point).dot(normal) >= 0.0)
         .filter_map(|(i, _)| u32::try_from(i).ok())
         .collect()
 }
@@ -491,9 +491,9 @@ fn flood_fill_faces(
         .faces
         .iter()
         .map(|face| {
-            let v0 = mesh.vertices.get(face[0] as usize)?.position;
-            let v1 = mesh.vertices.get(face[1] as usize)?.position;
-            let v2 = mesh.vertices.get(face[2] as usize)?.position;
+            let v0 = *mesh.vertices.get(face[0] as usize)?;
+            let v1 = *mesh.vertices.get(face[1] as usize)?;
+            let v2 = *mesh.vertices.get(face[2] as usize)?;
             let e1 = v1 - v0;
             let e2 = v2 - v0;
             let normal = e1.cross(&e2);
@@ -510,9 +510,9 @@ fn flood_fill_faces(
         .faces
         .iter()
         .map(|face| {
-            let v0 = mesh.vertices.get(face[0] as usize)?.position;
-            let v1 = mesh.vertices.get(face[1] as usize)?.position;
-            let v2 = mesh.vertices.get(face[2] as usize)?.position;
+            let v0 = *mesh.vertices.get(face[0] as usize)?;
+            let v1 = *mesh.vertices.get(face[1] as usize)?;
+            let v2 = *mesh.vertices.get(face[2] as usize)?;
             Some(Point3::from((v0.coords + v1.coords + v2.coords) / 3.0))
         })
         .collect();
@@ -673,24 +673,18 @@ fn normalize_edge(v0: u32, v1: u32) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
-
     fn create_test_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices of a 10x10x10 cube
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(10.0, 10.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 10.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 10.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(10.0, 0.0, 10.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(10.0, 10.0, 10.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(0.0, 10.0, 10.0)));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 10.0));
 
         // 12 triangular faces (2 per cube face)
         mesh.faces.push([0, 2, 1]);

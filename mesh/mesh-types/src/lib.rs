@@ -2,11 +2,12 @@
 //!
 //! This crate provides the foundational types for mesh processing:
 //!
-//! - [`Vertex`] - A point in 3D space with optional attributes
-//! - [`IndexedMesh`] - A triangle mesh with indexed vertices
+//! - [`IndexedMesh`] - Indexed triangle mesh from cf-geometry (positions + faces)
+//! - [`AttributedMesh`] - Mesh with per-vertex attributes (normals, colors, zones)
 //! - [`Triangle`] - A concrete triangle with vertex positions (from cf-geometry)
 //! - [`Aabb`] - Axis-aligned bounding box (from cf-geometry)
 //! - [`Bounded`] - Trait for types that have a bounding box (from cf-geometry)
+//! - [`VertexColor`] - RGB color with 8-bit components
 //!
 //! # Layer 0 Crate
 //!
@@ -35,13 +36,13 @@
 //! # Example
 //!
 //! ```
-//! use mesh_types::{Vertex, IndexedMesh, Point3, MeshTopology};
+//! use mesh_types::{IndexedMesh, Point3};
 //!
 //! // Create a simple triangle mesh
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-//! mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-//! mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! assert_eq!(mesh.face_count(), 1);
@@ -51,7 +52,6 @@
 //! # Quality Standards
 //!
 //! This crate maintains A-grade standards per [STANDARDS.md](../../STANDARDS.md):
-//! - ≥90% test coverage
 //! - Zero clippy/doc warnings
 //! - Zero `unwrap`/`expect` in library code
 
@@ -61,17 +61,17 @@
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 
+mod attributed;
 mod mesh;
-mod traits;
 mod vertex;
 
 // Re-export geometric primitives from cf-geometry (canonical source)
-pub use cf_geometry::{Aabb, Bounded, Triangle};
+pub use cf_geometry::{Aabb, Bounded, IndexedMesh, Triangle};
 
-// Re-export mesh types
-pub use mesh::{IndexedMesh, unit_cube};
-pub use traits::MeshTopology;
-pub use vertex::{Vertex, VertexAttributes, VertexColor};
+// Re-export mesh-types domain types
+pub use attributed::AttributedMesh;
+pub use mesh::{place_on_z_zero, unit_cube};
+pub use vertex::VertexColor;
 
 // Re-export nalgebra types for convenience
 pub use nalgebra::{Point3, Vector3};

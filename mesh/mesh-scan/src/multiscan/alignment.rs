@@ -293,19 +293,20 @@ fn chain_transforms(pairwise: &[PairwiseAlignment], num_scans: usize) -> Vec<Rig
 ///
 /// ```
 /// use mesh_scan::multiscan::{refine_global_alignment, GlobalAlignmentParams};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
+/// use nalgebra::Point3;
 ///
 /// let mut scan1 = IndexedMesh::new();
-/// scan1.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// scan1.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// scan1.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-/// scan1.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
+/// scan1.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// scan1.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// scan1.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// scan1.vertices.push(Point3::new(0.0, 0.0, 1.0));
 ///
 /// let mut scan2 = IndexedMesh::new();
-/// scan2.vertices.push(Vertex::from_coords(0.1, 0.0, 0.0));
-/// scan2.vertices.push(Vertex::from_coords(1.1, 0.0, 0.0));
-/// scan2.vertices.push(Vertex::from_coords(0.1, 1.0, 0.0));
-/// scan2.vertices.push(Vertex::from_coords(0.1, 0.0, 1.0));
+/// scan2.vertices.push(Point3::new(0.1, 0.0, 0.0));
+/// scan2.vertices.push(Point3::new(1.1, 0.0, 0.0));
+/// scan2.vertices.push(Point3::new(0.1, 1.0, 0.0));
+/// scan2.vertices.push(Point3::new(0.1, 0.0, 1.0));
 ///
 /// let scans = vec![scan1, scan2];
 /// let result = refine_global_alignment(&scans, &GlobalAlignmentParams::default()).unwrap();
@@ -386,10 +387,7 @@ pub fn refine_global_alignment(
 fn transform_mesh(mesh: &IndexedMesh, transform: &RigidTransform) -> IndexedMesh {
     let mut result = mesh.clone();
     for v in &mut result.vertices {
-        v.position = transform.transform_point(&v.position);
-        if let Some(normal) = v.attributes.normal {
-            v.attributes.normal = Some(transform.rotation * normal);
-        }
+        *v = transform.transform_point(v);
     }
     result
 }
@@ -439,18 +437,14 @@ fn compute_error_summary(pairwise: &[PairwiseAlignment]) -> (f64, f64) {
 )]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
-    use nalgebra::Vector3;
+    use nalgebra::{Point3, Vector3};
 
     fn make_test_mesh(offset: f64) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
         for i in 0..5 {
             for j in 0..5 {
-                mesh.vertices.push(Vertex::from_coords(
-                    f64::from(i) + offset,
-                    f64::from(j),
-                    0.0,
-                ));
+                mesh.vertices
+                    .push(Point3::new(f64::from(i) + offset, f64::from(j), 0.0));
             }
         }
         mesh

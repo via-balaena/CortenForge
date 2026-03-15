@@ -15,15 +15,15 @@
 //! # Example
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_printability::{validate_for_printing, PrinterConfig};
 //!
 //! // Create a simple triangle mesh
 //! let mesh = IndexedMesh::from_parts(
 //!     vec![
-//!         Vertex::from_coords(0.0, 0.0, 0.0),
-//!         Vertex::from_coords(10.0, 0.0, 0.0),
-//!         Vertex::from_coords(5.0, 10.0, 0.0),
+//!         Point3::new(0.0, 0.0, 0.0),
+//!         Point3::new(10.0, 0.0, 0.0),
+//!         Point3::new(5.0, 10.0, 0.0),
 //!     ],
 //!     vec![[0, 1, 2]],
 //! );

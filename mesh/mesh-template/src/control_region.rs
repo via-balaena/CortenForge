@@ -342,13 +342,13 @@ impl ControlRegion {
     ///
     /// ```
     /// use mesh_template::ControlRegion;
-    /// use mesh_types::{IndexedMesh, Vertex};
+    /// use mesh_types::{IndexedMesh, Point3};
     /// use nalgebra::Point3;
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(2.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(2.0, 0.0, 0.0));
     ///
     /// let region = ControlRegion::sphere("near_origin", Point3::origin(), 1.5);
     /// let indices = region.get_vertex_indices(&mesh);
@@ -367,7 +367,7 @@ impl ControlRegion {
                 let mut closest_dist = f64::MAX;
 
                 for (i, v) in mesh.vertices.iter().enumerate() {
-                    let dist = (v.position - pos).norm();
+                    let dist = (v - pos).norm();
                     if dist < closest_dist {
                         closest_dist = dist;
                         #[allow(clippy::cast_possible_truncation)]
@@ -401,13 +401,12 @@ impl ControlRegion {
             RegionDefinition::Bounds { min, max } => {
                 let mut vertices = HashSet::new();
                 for (i, v) in mesh.vertices.iter().enumerate() {
-                    let p = &v.position;
-                    if p.x >= min.x
-                        && p.x <= max.x
-                        && p.y >= min.y
-                        && p.y <= max.y
-                        && p.z >= min.z
-                        && p.z <= max.z
+                    if v.x >= min.x
+                        && v.x <= max.x
+                        && v.y >= min.y
+                        && v.y <= max.y
+                        && v.z >= min.z
+                        && v.z <= max.z
                     {
                         #[allow(clippy::cast_possible_truncation)]
                         vertices.insert(i as u32);
@@ -420,7 +419,7 @@ impl ControlRegion {
                 let radius_sq = radius * radius;
                 let mut vertices = HashSet::new();
                 for (i, v) in mesh.vertices.iter().enumerate() {
-                    let dist_sq = (v.position - center).norm_squared();
+                    let dist_sq = (v - center).norm_squared();
                     if dist_sq <= radius_sq {
                         #[allow(clippy::cast_possible_truncation)]
                         vertices.insert(i as u32);
@@ -446,14 +445,14 @@ impl ControlRegion {
                 let mut vertices = HashSet::new();
 
                 for (i, v) in mesh.vertices.iter().enumerate() {
-                    let to_point = v.position - axis_start;
+                    let to_point = v - axis_start;
                     let t = to_point.dot(&axis) / axis_len_sq;
 
                     // Check if projection is within cylinder extent
                     if (0.0..=1.0).contains(&t) {
                         // Compute distance from axis
                         let projection = axis_start + axis * t;
-                        let dist_sq = (v.position - projection).norm_squared();
+                        let dist_sq = (v - projection).norm_squared();
 
                         if dist_sq <= radius_sq {
                             #[allow(clippy::cast_possible_truncation)]
@@ -470,7 +469,7 @@ impl ControlRegion {
 
                 let mut vertices = HashSet::new();
                 for (i, v) in mesh.vertices.iter().enumerate() {
-                    let to_point = v.position - origin;
+                    let to_point = v - origin;
                     let dist = to_point.dot(normal).abs();
 
                     if dist <= tolerance {
@@ -519,7 +518,7 @@ impl ControlRegion {
         let mut sum = Vector3::zeros();
         for &idx in &indices {
             if let Some(v) = mesh.vertices.get(idx as usize) {
-                sum += v.position.coords;
+                sum += v.coords;
             }
         }
 
@@ -534,19 +533,19 @@ impl ControlRegion {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn make_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0));
 
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 2, 3]);

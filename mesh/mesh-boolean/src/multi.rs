@@ -351,7 +351,7 @@ pub fn concatenate_meshes(meshes: &[IndexedMesh]) -> IndexedMesh {
 
     for mesh in meshes {
         // Add vertices
-        result.vertices.extend(mesh.vertices.iter().cloned());
+        result.vertices.extend(mesh.vertices.iter().copied());
 
         // Add faces with offset
         for face in &mesh.faces {
@@ -380,7 +380,7 @@ pub fn concatenate_meshes(meshes: &[IndexedMesh]) -> IndexedMesh {
 )]
 mod tests {
     use super::*;
-    use mesh_types::{Point3, Vertex};
+    use mesh_types::Point3;
 
     fn create_small_cube(offset_x: f64) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -398,7 +398,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            mesh.vertices.push(Vertex::new(*v));
+            mesh.vertices.push(*v);
         }
 
         mesh.faces.push([0, 2, 1]);

@@ -85,13 +85,13 @@ impl PcaResult {
 ///
 /// ```
 /// use mesh_transform::pca_axes;
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let pca = pca_axes(&mesh);
@@ -112,9 +112,9 @@ pub fn pca_axes(mesh: &IndexedMesh) -> Option<PcaResult> {
     // Compute centroid
     let mut centroid = Vector3::zeros();
     for v in &mesh.vertices {
-        centroid.x += v.position.x;
-        centroid.y += v.position.y;
-        centroid.z += v.position.z;
+        centroid.x += v.x;
+        centroid.y += v.y;
+        centroid.z += v.z;
     }
     let count = mesh.vertices.len() as f64;
     centroid /= count;
@@ -122,11 +122,7 @@ pub fn pca_axes(mesh: &IndexedMesh) -> Option<PcaResult> {
     // Build covariance matrix
     let mut covariance = Matrix3::zeros();
     for v in &mesh.vertices {
-        let point = Vector3::new(
-            v.position.x - centroid.x,
-            v.position.y - centroid.y,
-            v.position.z - centroid.z,
-        );
+        let point = Vector3::new(v.x - centroid.x, v.y - centroid.y, v.z - centroid.z);
         covariance += point * point.transpose();
     }
     covariance /= count;
@@ -261,17 +257,17 @@ fn default_pca_result() -> PcaResult {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_elongated_mesh() -> IndexedMesh {
         // Create a mesh elongated along X axis
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.5));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.5));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.5));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.5));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([1, 3, 2]);
         mesh
@@ -300,8 +296,8 @@ mod tests {
     #[test]
     fn pca_too_few_vertices() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
         // Only 2 vertices
 
         let result = pca_axes(&mesh);
@@ -311,7 +307,7 @@ mod tests {
     #[test]
     fn pca_checked_error() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
 
         let result = pca_axes_checked(&mesh);
         assert!(result.is_err());
@@ -325,10 +321,10 @@ mod tests {
     fn pca_flat_detection() {
         // Create a flat mesh (all vertices in XY plane)
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let result = pca_axes(&mesh);
@@ -346,9 +342,9 @@ mod tests {
     #[test]
     fn pca_centroid() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(2.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 2.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(2.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 2.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let result = pca_axes(&mesh);

@@ -13,7 +13,7 @@
 use crate::bvh::{Aabb, Bvh};
 use crate::intersect::compute_triangle_intersection;
 use hashbrown::HashMap;
-use mesh_types::{IndexedMesh, Point3, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 use smallvec::SmallVec;
 
 /// Information about where a triangle is split.
@@ -54,9 +54,9 @@ pub fn find_intersection_points(
     let mut intersections: HashMap<u32, SmallVec<[Point3<f64>; 8]>> = HashMap::new();
 
     for (ai, face_a) in mesh_a.faces.iter().enumerate() {
-        let a0 = mesh_a.vertices[face_a[0] as usize].position;
-        let a1 = mesh_a.vertices[face_a[1] as usize].position;
-        let a2 = mesh_a.vertices[face_a[2] as usize].position;
+        let a0 = mesh_a.vertices[face_a[0] as usize];
+        let a1 = mesh_a.vertices[face_a[1] as usize];
+        let a2 = mesh_a.vertices[face_a[2] as usize];
 
         // Query BVH for potential intersections
         let bbox_a = Aabb::from_triangle(&a0, &a1, &a2);
@@ -66,9 +66,9 @@ pub fn find_intersection_points(
 
         for bi in candidates {
             let face_b = &mesh_b.faces[bi as usize];
-            let b0 = mesh_b.vertices[face_b[0] as usize].position;
-            let b1 = mesh_b.vertices[face_b[1] as usize].position;
-            let b2 = mesh_b.vertices[face_b[2] as usize].position;
+            let b0 = mesh_b.vertices[face_b[0] as usize];
+            let b1 = mesh_b.vertices[face_b[1] as usize];
+            let b2 = mesh_b.vertices[face_b[2] as usize];
 
             // Get intersection segment
             if let Some(intersection) =
@@ -108,7 +108,7 @@ fn add_unique_point(points: &mut SmallVec<[Point3<f64>; 8]>, point: Point3<f64>,
 /// # Arguments
 ///
 /// * `v0`, `v1`, `v2` - Original triangle vertices (indices into vertex array)
-/// * `vertices` - Vertex array to add new vertices to
+/// * `vertices` - Point3 array to add new vertices to
 /// * `intersection_points` - Points where the triangle is intersected
 /// * `epsilon` - Tolerance for point comparisons
 ///
@@ -120,7 +120,7 @@ pub fn split_triangle(
     v0: u32,
     v1: u32,
     v2: u32,
-    vertices: &mut Vec<Vertex>,
+    vertices: &mut Vec<Point3<f64>>,
     intersection_points: &[Point3<f64>],
     epsilon: f64,
 ) -> SmallVec<[[u32; 3]; 4]> {
@@ -135,9 +135,9 @@ pub fn split_triangle(
     }
 
     // Get original vertex positions
-    let p0 = vertices[v0 as usize].position;
-    let p1 = vertices[v1 as usize].position;
-    let p2 = vertices[v2 as usize].position;
+    let p0 = vertices[v0 as usize];
+    let p1 = vertices[v1 as usize];
+    let p2 = vertices[v2 as usize];
 
     // For 2 intersection points (the common case), we split the triangle
     // into 3-4 triangles depending on which edges the points lie on
@@ -222,7 +222,7 @@ fn split_triangle_two_points(
     v0: u32,
     v1: u32,
     v2: u32,
-    vertices: &mut Vec<Vertex>,
+    vertices: &mut Vec<Point3<f64>>,
     int0: &Point3<f64>,
     int1: &Point3<f64>,
     edge0: u8,
@@ -231,9 +231,9 @@ fn split_triangle_two_points(
 ) -> SmallVec<[[u32; 3]; 4]> {
     // Add new vertices for intersection points
     let i0 = vertices.len() as u32;
-    vertices.push(Vertex::new(*int0));
+    vertices.push(*int0);
     let i1 = vertices.len() as u32;
-    vertices.push(Vertex::new(*int1));
+    vertices.push(*int1);
 
     // Create triangles based on which edges are cut
     // Edge 0: v0-v1, Edge 1: v1-v2, Edge 2: v2-v0
@@ -290,14 +290,14 @@ fn split_triangle_complex(
     v0: u32,
     v1: u32,
     v2: u32,
-    vertices: &mut Vec<Vertex>,
+    vertices: &mut Vec<Point3<f64>>,
     intersection_points: &[Point3<f64>],
     epsilon: f64,
 ) -> SmallVec<[[u32; 3]; 4]> {
     // Get original positions
-    let p0 = vertices[v0 as usize].position;
-    let p1 = vertices[v1 as usize].position;
-    let p2 = vertices[v2 as usize].position;
+    let p0 = vertices[v0 as usize];
+    let p1 = vertices[v1 as usize];
+    let p2 = vertices[v2 as usize];
 
     // Compute centroid of all points (original vertices + intersections)
     let mut centroid = p0.coords + p1.coords + p2.coords;
@@ -310,7 +310,7 @@ fn split_triangle_complex(
 
     // Add centroid as new vertex
     let center_idx = vertices.len() as u32;
-    vertices.push(Vertex::new(centroid));
+    vertices.push(centroid);
 
     // Collect all boundary points (original + intersection) and sort by angle
     let mut boundary: Vec<(u32, f64)> = Vec::with_capacity(total_points);
@@ -323,7 +323,7 @@ fn split_triangle_complex(
     // Add intersection points
     for ip in intersection_points {
         let idx = vertices.len() as u32;
-        vertices.push(Vertex::new(*ip));
+        vertices.push(*ip);
         boundary.push((idx, angle_around_center(ip, &centroid)));
     }
 
@@ -337,8 +337,8 @@ fn split_triangle_complex(
             deduped.push(*idx);
         } else {
             let last_idx = *deduped.last().unwrap_or(&0);
-            let last_pos = vertices[last_idx as usize].position;
-            let this_pos = vertices[*idx as usize].position;
+            let last_pos = vertices[last_idx as usize];
+            let this_pos = vertices[*idx as usize];
             if (this_pos - last_pos).norm_squared() > epsilon * epsilon {
                 deduped.push(*idx);
             }
@@ -460,9 +460,9 @@ mod tests {
 
     fn create_triangle_mesh(v0: Point3<f64>, v1: Point3<f64>, v2: Point3<f64>) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::new(v0));
-        mesh.vertices.push(Vertex::new(v1));
-        mesh.vertices.push(Vertex::new(v2));
+        mesh.vertices.push(v0);
+        mesh.vertices.push(v1);
+        mesh.vertices.push(v2);
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -499,9 +499,9 @@ mod tests {
     #[test]
     fn test_split_triangle_no_intersection() {
         let mut vertices = vec![
-            Vertex::new(Point3::new(0.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(1.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(0.5, 1.0, 0.0)),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
         ];
 
         let result = split_triangle(0, 1, 2, &mut vertices, &[], 1e-10);
@@ -513,9 +513,9 @@ mod tests {
     #[test]
     fn test_split_triangle_single_point() {
         let mut vertices = vec![
-            Vertex::new(Point3::new(0.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(1.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(0.5, 1.0, 0.0)),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
         ];
 
         let int_points = [Point3::new(0.5, 0.5, 0.0)];
@@ -528,9 +528,9 @@ mod tests {
     #[test]
     fn test_split_triangle_two_points() {
         let mut vertices = vec![
-            Vertex::new(Point3::new(0.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(1.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(0.5, 1.0, 0.0)),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
         ];
 
         // Two points on different edges

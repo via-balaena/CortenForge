@@ -206,14 +206,14 @@ fn apply_laplacian_step(
                 // Compute centroid of neighbors
                 let sum: Vector3<f64> = neighbor_indices
                     .iter()
-                    .map(|&n| mesh.vertices[n as usize].position.coords)
+                    .map(|&n| mesh.vertices[n as usize].coords)
                     .sum();
 
                 #[allow(clippy::cast_precision_loss)]
                 let centroid = sum / neighbor_indices.len() as f64;
 
                 // Displacement toward/away from centroid
-                let displacement = (centroid - vertex.position.coords) * factor;
+                let displacement = (centroid - vertex.coords) * factor;
                 (displacement, true)
             } else {
                 (Vector3::zeros(), false)
@@ -229,7 +229,7 @@ fn apply_laplacian_step(
         if *applied {
             let dist = displacement.norm();
             max_displacement = max_displacement.max(dist);
-            vertex.position.coords += displacement;
+            vertex.coords += displacement;
         }
     }
 
@@ -297,18 +297,15 @@ fn find_boundary_vertices(mesh: &IndexedMesh) -> HashSet<u32> {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use nalgebra::Point3;
 
     fn make_plane_mesh(n: usize) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
         for i in 0..n {
             for j in 0..n {
-                mesh.vertices.push(Vertex::from_coords(
-                    f64::from(i as u32),
-                    f64::from(j as u32),
-                    0.0,
-                ));
+                mesh.vertices
+                    .push(Point3::new(f64::from(i as u32), f64::from(j as u32), 0.0));
             }
         }
 
@@ -333,7 +330,7 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         for vertex in &mut mesh.vertices {
-            vertex.position.z += rng.gen_range(-noise..noise);
+            vertex.z += rng.gen_range(-noise..noise);
         }
 
         mesh
@@ -345,16 +342,16 @@ mod tests {
             return 0.0;
         }
 
-        let mut min = mesh.vertices[0].position;
-        let mut max = mesh.vertices[0].position;
+        let mut min = mesh.vertices[0];
+        let mut max = mesh.vertices[0];
 
         for v in &mesh.vertices[1..] {
-            min.x = min.x.min(v.position.x);
-            min.y = min.y.min(v.position.y);
-            min.z = min.z.min(v.position.z);
-            max.x = max.x.max(v.position.x);
-            max.y = max.y.max(v.position.y);
-            max.z = max.z.max(v.position.z);
+            min.x = min.x.min(v.x);
+            min.y = min.y.min(v.y);
+            min.z = min.z.min(v.z);
+            max.x = max.x.max(v.x);
+            max.y = max.y.max(v.y);
+            max.z = max.z.max(v.z);
         }
 
         (max.x - min.x) * (max.y - min.y) * (max.z - min.z).max(0.001)
@@ -384,12 +381,8 @@ mod tests {
         let params = TaubinParams::default();
 
         // Compute initial z variance
-        let initial_z_variance: f64 = mesh
-            .vertices
-            .iter()
-            .map(|v| v.position.z.powi(2))
-            .sum::<f64>()
-            / mesh.vertices.len() as f64;
+        let initial_z_variance: f64 =
+            mesh.vertices.iter().map(|v| v.z.powi(2)).sum::<f64>() / mesh.vertices.len() as f64;
 
         let result = smooth_taubin_iterations(&mesh, 10, params.lambda, params.mu, false);
 
@@ -398,7 +391,7 @@ mod tests {
             .mesh
             .vertices
             .iter()
-            .map(|v| v.position.z.powi(2))
+            .map(|v| v.z.powi(2))
             .sum::<f64>()
             / result.mesh.vertices.len() as f64;
 
@@ -429,8 +422,8 @@ mod tests {
         let (result, _) = smooth_taubin(&mesh, params.lambda, params.mu, true);
 
         for &v in &boundary {
-            let original = &mesh.vertices[v as usize].position;
-            let smoothed = &result.vertices[v as usize].position;
+            let original = &mesh.vertices[v as usize];
+            let smoothed = &result.vertices[v as usize];
             assert_relative_eq!(original.x, smoothed.x, epsilon = 1e-10);
             assert_relative_eq!(original.y, smoothed.y, epsilon = 1e-10);
             assert_relative_eq!(original.z, smoothed.z, epsilon = 1e-10);

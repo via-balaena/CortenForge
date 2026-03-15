@@ -2,7 +2,7 @@
 //!
 //! Creates cylindrical tubes around polyline curves.
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::IndexedMesh;
 use nalgebra::Point3;
 
 use crate::error::{CurveError, CurveResult};
@@ -132,12 +132,7 @@ pub fn tube_from_polyline(points: &[Point3<f64>], config: &TubeConfig) -> CurveR
                 frame.normal * cos_a * config.radius + frame.binormal * sin_a * config.radius;
             let pos = Point3::from(point.coords + offset);
 
-            // Normal points outward
-            let normal = (frame.normal * cos_a + frame.binormal * sin_a)
-                .try_normalize(f64::EPSILON)
-                .unwrap_or(frame.normal);
-
-            mesh.vertices.push(Vertex::with_normal(pos, normal));
+            mesh.vertices.push(pos);
 
             // Create faces (except for last ring)
             if ring_idx < n_rings - 1 {
@@ -173,20 +168,15 @@ pub fn tube_from_polyline(points: &[Point3<f64>], config: &TubeConfig) -> CurveR
 /// Add an end cap to the tube.
 fn add_cap(
     mesh: &mut IndexedMesh,
-    frame: &crate::frame::Frame,
+    _frame: &crate::frame::Frame,
     center: Point3<f64>,
     n_segs: usize,
     ring_start: usize,
     is_start: bool,
 ) {
     // Add center vertex
-    let normal = if is_start {
-        -frame.tangent
-    } else {
-        frame.tangent
-    };
     let center_idx = mesh.vertices.len() as u32;
-    mesh.vertices.push(Vertex::with_normal(center, normal));
+    mesh.vertices.push(center);
 
     // Create fan triangles
     for seg_idx in 0..n_segs {
@@ -286,11 +276,7 @@ pub fn tube_variable_radius(
             let offset = frame.normal * cos_a * radius + frame.binormal * sin_a * radius;
             let pos = Point3::from(point.coords + offset);
 
-            let normal = (frame.normal * cos_a + frame.binormal * sin_a)
-                .try_normalize(f64::EPSILON)
-                .unwrap_or(frame.normal);
-
-            mesh.vertices.push(Vertex::with_normal(pos, normal));
+            mesh.vertices.push(pos);
 
             if ring_idx < n_rings - 1 {
                 let curr = (ring_idx * n_segs + seg_idx) as u32;

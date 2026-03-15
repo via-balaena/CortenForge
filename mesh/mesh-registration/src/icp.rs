@@ -147,23 +147,24 @@ pub struct IcpResult {
 ///
 /// ```
 /// use mesh_registration::{icp_align, IcpParams};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
+/// use nalgebra::Point3;
 ///
 /// // Create 3D point cloud (avoid coplanar points for KD-tree)
 /// let mut source = IndexedMesh::new();
-/// source.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// source.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// source.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-/// source.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
-/// source.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0));
+/// source.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// source.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// source.vertices.push(Point3::new(0.0, 1.0, 0.0));
+/// source.vertices.push(Point3::new(0.0, 0.0, 1.0));
+/// source.vertices.push(Point3::new(1.0, 1.0, 1.0));
 ///
 /// // Target is source shifted by a small amount
 /// let mut target = IndexedMesh::new();
-/// target.vertices.push(Vertex::from_coords(0.5, 0.3, 0.0));
-/// target.vertices.push(Vertex::from_coords(1.5, 0.3, 0.0));
-/// target.vertices.push(Vertex::from_coords(0.5, 1.3, 0.0));
-/// target.vertices.push(Vertex::from_coords(0.5, 0.3, 1.0));
-/// target.vertices.push(Vertex::from_coords(1.5, 1.3, 1.0));
+/// target.vertices.push(Point3::new(0.5, 0.3, 0.0));
+/// target.vertices.push(Point3::new(1.5, 0.3, 0.0));
+/// target.vertices.push(Point3::new(0.5, 1.3, 0.0));
+/// target.vertices.push(Point3::new(0.5, 0.3, 1.0));
+/// target.vertices.push(Point3::new(1.5, 1.3, 1.0));
 ///
 /// let result = icp_align(&source, &target, &IcpParams::default()).unwrap();
 /// assert!(result.converged);
@@ -372,7 +373,7 @@ struct Correspondence {
 fn build_kdtree(mesh: &IndexedMesh) -> KdTree<f64, 3> {
     let mut tree: KdTree<f64, 3> = KdTree::new();
     for (i, v) in mesh.vertices.iter().enumerate() {
-        tree.add(&[v.position.x, v.position.y, v.position.z], i as u64);
+        tree.add(&[v.x, v.y, v.z], i as u64);
     }
     tree
 }
@@ -380,15 +381,11 @@ fn build_kdtree(mesh: &IndexedMesh) -> KdTree<f64, 3> {
 /// Gets source points, optionally subsampled.
 fn get_source_points(mesh: &IndexedMesh, subsample_ratio: f64) -> Vec<Point3<f64>> {
     if subsample_ratio >= 1.0 {
-        mesh.vertices.iter().map(|v| v.position).collect()
+        mesh.vertices.clone()
     } else {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let step = (1.0 / subsample_ratio).ceil() as usize;
-        mesh.vertices
-            .iter()
-            .step_by(step.max(1))
-            .map(|v| v.position)
-            .collect()
+        mesh.vertices.iter().step_by(step.max(1)).copied().collect()
     }
 }
 
@@ -408,10 +405,10 @@ fn find_correspondences(
             if dist_sq <= max_dist_sq {
                 #[allow(clippy::cast_possible_truncation)]
                 let target_idx = nearest.item as usize;
-                let tv = &target.vertices[target_idx];
+                let tv = target.vertices[target_idx];
                 Some(Correspondence {
                     source_idx: idx,
-                    target_point: tv.position,
+                    target_point: tv,
                     distance_sq: dist_sq,
                 })
             } else {
@@ -479,7 +476,7 @@ fn compute_error_metrics(correspondences: &[Correspondence]) -> (f64, f64) {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use nalgebra::Point3;
     use nalgebra::{UnitQuaternion, Vector3};
     use rand::Rng;
     use std::f64::consts::PI;
@@ -490,7 +487,7 @@ mod tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let mut mesh = IndexedMesh::new();
         for _ in 0..count {
-            mesh.vertices.push(Vertex::from_coords(
+            mesh.vertices.push(Point3::new(
                 rng.gen_range(0.0..10.0),
                 rng.gen_range(0.0..10.0),
                 rng.gen_range(0.0..10.0),
@@ -502,8 +499,7 @@ mod tests {
     fn transform_mesh(mesh: &IndexedMesh, transform: &RigidTransform) -> IndexedMesh {
         let mut result = mesh.clone();
         for v in &mut result.vertices {
-            let transformed = transform.transform_point(&v.position);
-            v.position = transformed;
+            *v = transform.transform_point(v);
         }
         result
     }
@@ -556,8 +552,8 @@ mod tests {
 
         // Verify the transform by applying it
         for (sv, tv) in source.vertices.iter().zip(target.vertices.iter()) {
-            let aligned = result.transform.transform_point(&sv.position);
-            assert!((aligned.coords - tv.position.coords).norm() < 1e-3);
+            let aligned = result.transform.transform_point(sv);
+            assert!((aligned.coords - tv.coords).norm() < 1e-3);
         }
     }
 

@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_repair::winding::fix_winding_order;
 //!
 //! let mut mesh = IndexedMesh::new();
@@ -47,14 +47,14 @@ use crate::error::RepairResult;
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::winding::fix_winding_order;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, -1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, -1.0, 0.0));
 ///
 /// // Two triangles with inconsistent winding
 /// mesh.faces.push([0, 1, 2]); // CCW
@@ -270,16 +270,16 @@ pub fn count_inconsistent_faces(mesh: &IndexedMesh) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     #[test]
     fn test_already_consistent() {
         // Tetrahedron with consistent winding
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
 
         // All faces with outward normals (CCW when viewed from outside)
         mesh.faces.push([0, 1, 2]); // Bottom
@@ -296,10 +296,10 @@ mod tests {
     fn test_fix_inconsistent() {
         // Two triangles sharing an edge, one with wrong winding
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, -1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, -1.0, 0.0));
 
         mesh.faces.push([0, 1, 2]); // CCW
         mesh.faces.push([0, 1, 3]); // Wrong: should be [1, 0, 3] for consistent winding
@@ -326,18 +326,18 @@ mod tests {
         let mut mesh = IndexedMesh::new();
 
         // Component 1: Two triangles sharing edge (0,1)
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, -1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, -1.0, 0.0));
         mesh.faces.push([0, 1, 2]); // CCW
         mesh.faces.push([0, 1, 3]); // Wrong winding
 
         // Component 2: Two triangles sharing edge (4,5), disconnected from component 1
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(11.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.5, -1.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(10.5, -1.0, 0.0));
         mesh.faces.push([4, 5, 6]); // CCW
         mesh.faces.push([4, 5, 7]); // Wrong winding
 
@@ -375,9 +375,9 @@ mod tests {
     #[test]
     fn test_single_face() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let result = fix_winding_order(&mut mesh);
@@ -388,10 +388,10 @@ mod tests {
     #[test]
     fn test_count_inconsistent() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, -1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, -1.0, 0.0));
 
         mesh.faces.push([0, 1, 2]); // CCW
         mesh.faces.push([0, 1, 3]); // Wrong winding

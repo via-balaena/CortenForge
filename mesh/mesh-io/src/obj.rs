@@ -32,7 +32,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 
 use crate::error::{IoError, IoResult};
 
@@ -97,7 +97,7 @@ fn load_obj_from_reader<R: BufRead>(reader: R) -> IoResult<IndexedMesh> {
                     let x: f64 = parts[1].parse()?;
                     let y: f64 = parts[2].parse()?;
                     let z: f64 = parts[3].parse()?;
-                    mesh.vertices.push(Vertex::from_coords(x, y, z));
+                    mesh.vertices.push(Point3::new(x, y, z));
                 }
             }
             "f" => {
@@ -177,11 +177,7 @@ pub fn save_obj<P: AsRef<Path>>(mesh: &IndexedMesh, path: P) -> IoResult<()> {
 
     // Write vertices
     for vertex in &mesh.vertices {
-        writeln!(
-            writer,
-            "v {:.6} {:.6} {:.6}",
-            vertex.position.x, vertex.position.y, vertex.position.z
-        )?;
+        writeln!(writer, "v {:.6} {:.6} {:.6}", vertex.x, vertex.y, vertex.z)?;
     }
 
     writeln!(writer)?;
@@ -197,13 +193,12 @@ pub fn save_obj<P: AsRef<Path>>(mesh: &IndexedMesh, path: P) -> IoResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::MeshTopology;
 
     fn create_test_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -225,7 +220,7 @@ mod tests {
 
                 // Check vertex positions
                 if loaded.vertex_count() >= 3 {
-                    let v1 = &loaded.vertices[1].position;
+                    let v1 = &loaded.vertices[1];
                     assert!((v1.x - 1.0).abs() < 1e-5);
                 }
             }

@@ -67,14 +67,14 @@ pub fn smooth_laplacian(
                 // Compute centroid of neighbors
                 let sum: Vector3<f64> = neighbor_indices
                     .iter()
-                    .map(|&n| mesh.vertices[n as usize].position.coords)
+                    .map(|&n| mesh.vertices[n as usize].coords)
                     .sum();
 
                 #[allow(clippy::cast_precision_loss)]
                 let centroid = sum / neighbor_indices.len() as f64;
 
                 // Displacement toward centroid
-                let displacement = (centroid - vertex.position.coords) * lambda;
+                let displacement = (centroid - vertex.coords) * lambda;
                 (displacement, true)
             } else {
                 (Vector3::zeros(), false)
@@ -90,7 +90,7 @@ pub fn smooth_laplacian(
         if *applied {
             let dist = displacement.norm();
             max_displacement = max_displacement.max(dist);
-            vertex.position.coords += displacement;
+            vertex.coords += displacement;
         }
     }
 
@@ -214,7 +214,7 @@ fn find_boundary_vertices(mesh: &IndexedMesh) -> HashSet<u32> {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use nalgebra::Point3;
 
     fn make_plane_mesh(n: usize) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -222,11 +222,8 @@ mod tests {
         // Create n x n grid of vertices
         for i in 0..n {
             for j in 0..n {
-                mesh.vertices.push(Vertex::from_coords(
-                    f64::from(i as u32),
-                    f64::from(j as u32),
-                    0.0,
-                ));
+                mesh.vertices
+                    .push(Point3::new(f64::from(i as u32), f64::from(j as u32), 0.0));
             }
         }
 
@@ -252,7 +249,7 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         for vertex in &mut mesh.vertices {
-            vertex.position.z += rng.gen_range(-noise..noise);
+            vertex.z += rng.gen_range(-noise..noise);
         }
 
         mesh
@@ -269,9 +266,9 @@ mod tests {
     #[test]
     fn test_smooth_laplacian_single_triangle() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let (result, _) = smooth_laplacian(&mesh, 0.5, false);
@@ -295,12 +292,8 @@ mod tests {
         let mesh = make_noisy_plane_mesh(10, 0.5);
 
         // Compute initial z variance
-        let initial_z_variance: f64 = mesh
-            .vertices
-            .iter()
-            .map(|v| v.position.z.powi(2))
-            .sum::<f64>()
-            / mesh.vertices.len() as f64;
+        let initial_z_variance: f64 =
+            mesh.vertices.iter().map(|v| v.z.powi(2)).sum::<f64>() / mesh.vertices.len() as f64;
 
         let result = smooth_laplacian_iterations(&mesh, 10, 0.5, false);
 
@@ -309,7 +302,7 @@ mod tests {
             .mesh
             .vertices
             .iter()
-            .map(|v| v.position.z.powi(2))
+            .map(|v| v.z.powi(2))
             .sum::<f64>()
             / result.mesh.vertices.len() as f64;
 
@@ -328,8 +321,8 @@ mod tests {
 
         // Boundary vertices should not have moved
         for &v in &boundary {
-            let original = &mesh.vertices[v as usize].position;
-            let smoothed = &result.vertices[v as usize].position;
+            let original = &mesh.vertices[v as usize];
+            let smoothed = &result.vertices[v as usize];
             assert_relative_eq!(original.x, smoothed.x, epsilon = 1e-10);
             assert_relative_eq!(original.y, smoothed.y, epsilon = 1e-10);
             assert_relative_eq!(original.z, smoothed.z, epsilon = 1e-10);
@@ -355,9 +348,9 @@ mod tests {
         // With lambda=0, mesh should not change
         assert_relative_eq!(max_disp, 0.0);
         for (orig, smoothed) in mesh.vertices.iter().zip(result.vertices.iter()) {
-            assert_relative_eq!(orig.position.x, smoothed.position.x, epsilon = 1e-10);
-            assert_relative_eq!(orig.position.y, smoothed.position.y, epsilon = 1e-10);
-            assert_relative_eq!(orig.position.z, smoothed.position.z, epsilon = 1e-10);
+            assert_relative_eq!(orig.x, smoothed.x, epsilon = 1e-10);
+            assert_relative_eq!(orig.y, smoothed.y, epsilon = 1e-10);
+            assert_relative_eq!(orig.z, smoothed.z, epsilon = 1e-10);
         }
     }
 
@@ -375,9 +368,9 @@ mod tests {
     #[test]
     fn test_build_vertex_neighbors() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let neighbors = build_vertex_neighbors(&mesh);

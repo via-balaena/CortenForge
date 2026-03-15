@@ -167,7 +167,7 @@ fn find_z_bounds(mesh: &IndexedMesh, direction: &mesh_types::Vector3<f64>) -> (f
     let mut max_z = f64::NEG_INFINITY;
 
     for v in &mesh.vertices {
-        let z = v.position.coords.dot(&dir);
+        let z = v.coords.dot(&dir);
         min_z = min_z.min(z);
         max_z = max_z.max(z);
     }
@@ -321,7 +321,7 @@ fn estimate_filament_usage(contours: &[Contour], layer_height: f64, params: &Sli
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{Vertex, unit_cube};
+    use mesh_types::{Point3, unit_cube};
 
     fn create_test_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -338,7 +338,7 @@ mod tests {
         ];
 
         for (x, y, z) in vertices {
-            mesh.vertices.push(Vertex::from_coords(x, y, z));
+            mesh.vertices.push(Point3::new(x, y, z));
         }
 
         // 12 triangles for 6 faces

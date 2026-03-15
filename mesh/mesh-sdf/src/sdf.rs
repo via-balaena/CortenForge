@@ -33,13 +33,13 @@ impl SignedDistanceField {
     /// # Example
     ///
     /// ```
-    /// use mesh_types::{IndexedMesh, Vertex};
+    /// use mesh_types::{IndexedMesh, Point3};
     /// use mesh_sdf::SignedDistanceField;
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
     /// mesh.faces.push([0, 1, 2]);
     ///
     /// let sdf = SignedDistanceField::new(mesh);
@@ -67,15 +67,15 @@ impl SignedDistanceField {
     /// # Example
     ///
     /// ```
-    /// use mesh_types::{IndexedMesh, Vertex};
+    /// use mesh_types::IndexedMesh;
     /// use mesh_sdf::SignedDistanceField;
     /// use nalgebra::Point3;
     ///
     /// // Create a simple triangle
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
     /// mesh.faces.push([0, 1, 2]);
     ///
     /// let sdf = SignedDistanceField::new(mesh).unwrap();
@@ -117,9 +117,9 @@ impl SignedDistanceField {
         let mut closest = point;
 
         for face in &self.mesh.faces {
-            let v0 = &self.mesh.vertices[face[0] as usize].position;
-            let v1 = &self.mesh.vertices[face[1] as usize].position;
-            let v2 = &self.mesh.vertices[face[2] as usize].position;
+            let v0 = &self.mesh.vertices[face[0] as usize];
+            let v1 = &self.mesh.vertices[face[1] as usize];
+            let v2 = &self.mesh.vertices[face[2] as usize];
 
             let candidate = closest_point_on_triangle(point, *v0, *v1, *v2);
             let dist_sq = (candidate - point).norm_squared();
@@ -153,9 +153,9 @@ impl SignedDistanceField {
         let mut closest_face = 0;
 
         for (face_idx, face) in self.mesh.faces.iter().enumerate() {
-            let v0 = &self.mesh.vertices[face[0] as usize].position;
-            let v1 = &self.mesh.vertices[face[1] as usize].position;
-            let v2 = &self.mesh.vertices[face[2] as usize].position;
+            let v0 = &self.mesh.vertices[face[0] as usize];
+            let v1 = &self.mesh.vertices[face[1] as usize];
+            let v2 = &self.mesh.vertices[face[2] as usize];
 
             let closest = closest_point_on_triangle(point, *v0, *v1, *v2);
             let dist_sq = (closest - point).norm_squared();
@@ -173,7 +173,7 @@ impl SignedDistanceField {
     fn compute_sign(&self, point: Point3<f64>, closest_face: usize) -> f64 {
         // Use face normal to determine sign
         let face = &self.mesh.faces[closest_face];
-        let v0 = &self.mesh.vertices[face[0] as usize].position;
+        let v0 = &self.mesh.vertices[face[0] as usize];
         let normal = &self.face_normals[closest_face];
 
         let to_point = point - v0;
@@ -190,9 +190,9 @@ fn compute_face_normals(mesh: &IndexedMesh) -> Vec<Vector3<f64>> {
     mesh.faces
         .iter()
         .map(|face| {
-            let v0 = &mesh.vertices[face[0] as usize].position;
-            let v1 = &mesh.vertices[face[1] as usize].position;
-            let v2 = &mesh.vertices[face[2] as usize].position;
+            let v0 = &mesh.vertices[face[0] as usize];
+            let v1 = &mesh.vertices[face[1] as usize];
+            let v2 = &mesh.vertices[face[2] as usize];
 
             let e1 = *v1 - *v0;
             let e2 = *v2 - *v0;
@@ -220,14 +220,14 @@ fn compute_face_normals(mesh: &IndexedMesh) -> Vec<Vector3<f64>> {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
 /// use mesh_sdf::signed_distance;
 /// use nalgebra::Point3;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let dist = signed_distance(Point3::new(5.0, 5.0, 5.0), &mesh);
@@ -243,9 +243,9 @@ pub fn signed_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
     let mut closest_face = 0;
 
     for (face_idx, face) in mesh.faces.iter().enumerate() {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         let closest = closest_point_on_triangle(point, *v0, *v1, *v2);
         let dist_sq = (closest - point).norm_squared();
@@ -260,7 +260,7 @@ pub fn signed_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
 
     // Determine sign
     let face = &mesh.faces[closest_face];
-    let v0 = &mesh.vertices[face[0] as usize].position;
+    let v0 = &mesh.vertices[face[0] as usize];
     let normal = &normals[closest_face];
     let to_point = point - v0;
 
@@ -290,9 +290,9 @@ pub fn unsigned_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
     let mut min_dist_sq = f64::MAX;
 
     for face in &mesh.faces {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         let closest = closest_point_on_triangle(point, *v0, *v1, *v2);
         let dist_sq = (closest - point).norm_squared();
@@ -309,23 +309,23 @@ pub fn unsigned_distance(point: Point3<f64>, mesh: &IndexedMesh) -> f64 {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn simple_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
 
     fn unit_tetrahedron() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.866, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.289, 0.816));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.289, 0.816));
 
         // CCW winding when viewed from outside
         mesh.faces.push([0, 2, 1]); // bottom

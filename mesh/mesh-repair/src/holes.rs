@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_repair::holes::{detect_holes, fill_holes};
 //!
 //! // Create a box missing its top face (has a square hole)
@@ -68,13 +68,13 @@ impl BoundaryLoop {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::{MeshAdjacency, holes::detect_holes};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let adjacency = MeshAdjacency::build(&mesh.faces);
@@ -195,7 +195,7 @@ pub fn fill_hole_ear_clipping(mesh: &IndexedMesh, boundary: &BoundaryLoop) -> Ve
     let positions: Vec<Point3<f64>> = boundary
         .vertices
         .iter()
-        .map(|&idx| mesh.vertices[idx as usize].position)
+        .map(|&idx| mesh.vertices[idx as usize])
         .collect();
 
     // Compute average normal of the hole (for consistent winding)
@@ -389,7 +389,7 @@ fn point_in_triangle_2d_impl(p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f6
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::holes::fill_holes;
 ///
 /// // Create a box missing its top face
@@ -448,21 +448,20 @@ pub fn fill_holes(mesh: &mut IndexedMesh, max_hole_edges: usize) -> RepairResult
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
 
     fn open_box_mesh() -> IndexedMesh {
         // A box missing its top face (has a square hole)
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices of a unit cube
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0)); // 0
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0)); // 1
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0)); // 2
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0)); // 3
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0)); // 4
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 1.0)); // 5
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0)); // 6
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 1.0)); // 7
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0)); // 0
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0)); // 1
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0)); // 2
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0)); // 3
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0)); // 4
+        mesh.vertices.push(Point3::new(1.0, 0.0, 1.0)); // 5
+        mesh.vertices.push(Point3::new(1.0, 1.0, 1.0)); // 6
+        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0)); // 7
 
         // Bottom face
         mesh.faces.push([0, 2, 1]);
@@ -538,9 +537,9 @@ mod tests {
     #[test]
     fn test_single_triangle_has_boundary() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let adjacency = MeshAdjacency::build(&mesh.faces);

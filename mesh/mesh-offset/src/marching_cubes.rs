@@ -2,7 +2,7 @@
 //!
 //! Extracts a triangle mesh from a 3D scalar field at a given iso-value.
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::IndexedMesh;
 use nalgebra::Point3;
 
 use crate::grid::ScalarGrid;
@@ -130,9 +130,9 @@ fn process_cell(
 
         let base_idx = mesh.vertices.len() as u32;
 
-        mesh.vertices.push(Vertex::new(edge_vertices[e0]));
-        mesh.vertices.push(Vertex::new(edge_vertices[e1]));
-        mesh.vertices.push(Vertex::new(edge_vertices[e2]));
+        mesh.vertices.push(edge_vertices[e0]);
+        mesh.vertices.push(edge_vertices[e1]);
+        mesh.vertices.push(edge_vertices[e2]);
 
         mesh.faces.push([base_idx, base_idx + 1, base_idx + 2]);
 

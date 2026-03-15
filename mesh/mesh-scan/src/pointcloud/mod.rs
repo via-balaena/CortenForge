@@ -24,7 +24,7 @@
 pub mod io;
 pub mod normals;
 
-use mesh_types::{Aabb, IndexedMesh, Vertex, VertexColor};
+use mesh_types::{Aabb, IndexedMesh, VertexColor};
 use nalgebra::{Point3, Vector3};
 
 use crate::error::ScanResult;
@@ -165,7 +165,7 @@ impl CloudPoint {
         }
     }
 
-    /// Converts this cloud point to a mesh vertex.
+    /// Returns the 3D position of this cloud point.
     ///
     /// # Example
     ///
@@ -177,19 +177,12 @@ impl CloudPoint {
     ///     Point3::new(1.0, 2.0, 3.0),
     ///     Vector3::new(0.0, 0.0, 1.0),
     /// );
-    /// let vertex = point.to_vertex();
-    /// assert_eq!(vertex.position.x, 1.0);
+    /// let p = point.to_point();
+    /// assert_eq!(p.x, 1.0);
     /// ```
     #[must_use]
-    pub const fn to_vertex(&self) -> Vertex {
-        let mut vertex = Vertex::new(self.position);
-        if let Some(normal) = self.normal {
-            vertex.attributes.normal = Some(normal);
-        }
-        if let Some(color) = self.color {
-            vertex.attributes.color = Some(color);
-        }
-        vertex
+    pub const fn to_point(&self) -> Point3<f64> {
+        self.position
     }
 
     /// Returns true if this point has a normal.
@@ -296,27 +289,19 @@ impl PointCloud {
     ///
     /// ```
     /// use mesh_scan::pointcloud::PointCloud;
-    /// use mesh_types::{IndexedMesh, Vertex};
+    /// use mesh_types::IndexedMesh;
+    /// use nalgebra::Point3;
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
     ///
     /// let cloud = PointCloud::from_mesh(&mesh);
     /// assert_eq!(cloud.len(), 2);
     /// ```
     #[must_use]
     pub fn from_mesh(mesh: &IndexedMesh) -> Self {
-        let points = mesh
-            .vertices
-            .iter()
-            .map(|v| {
-                let mut point = CloudPoint::new(v.position);
-                point.normal = v.attributes.normal;
-                point.color = v.attributes.color;
-                point
-            })
-            .collect();
+        let points = mesh.vertices.iter().map(|v| CloudPoint::new(*v)).collect();
         Self { points }
     }
 
@@ -699,12 +684,11 @@ mod tests {
     }
 
     #[test]
-    fn test_cloud_point_to_vertex() {
+    fn test_cloud_point_to_point() {
         let normal = Vector3::new(0.0, 0.0, 1.0);
         let point = CloudPoint::with_normal(Point3::new(1.0, 2.0, 3.0), normal);
-        let vertex = point.to_vertex();
-        assert_relative_eq!(vertex.position.x, 1.0);
-        assert!(vertex.attributes.normal.is_some());
+        let p = point.to_point();
+        assert_relative_eq!(p.x, 1.0);
     }
 
     #[test]
@@ -735,8 +719,8 @@ mod tests {
     #[test]
     fn test_point_cloud_from_mesh() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
 
         let cloud = PointCloud::from_mesh(&mesh);
         assert_eq!(cloud.len(), 2);

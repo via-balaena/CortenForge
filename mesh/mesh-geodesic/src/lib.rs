@@ -28,13 +28,13 @@
 //!
 //! ```
 //! use mesh_geodesic::{GeodesicSolver, DistanceField};
-//! use mesh_types::{IndexedMesh, Vertex, MeshTopology};
+//! use mesh_types::{IndexedMesh, Point3};
 //!
 //! // Create a simple mesh (triangle)
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! // Compute distances from vertex 0
@@ -71,16 +71,16 @@ pub use error::{GeodesicError, GeodesicResult};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{IndexedMesh, Vertex};
+    use mesh_types::{IndexedMesh, Point3};
 
     fn create_line_mesh() -> IndexedMesh {
         // Three vertices in a line: 0 -- 1 -- 2
         // Two triangles sharing edge 0-1 and 1-2
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(2.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 0.0)); // Top vertex
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(2.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 0.0)); // Top vertex
         mesh.faces.push([0, 1, 3]);
         mesh.faces.push([1, 2, 3]);
         mesh
@@ -119,9 +119,9 @@ mod tests {
     #[test]
     fn single_triangle_mesh() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let solver = GeodesicSolver::new(&mesh);

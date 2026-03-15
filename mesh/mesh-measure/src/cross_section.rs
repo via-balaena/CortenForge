@@ -6,7 +6,7 @@
 // which exceeds practical limits.
 #![allow(clippy::cast_precision_loss)]
 
-use mesh_types::{IndexedMesh, MeshTopology, Point3, Vector3};
+use mesh_types::{IndexedMesh, Point3, Vector3};
 
 /// Result of cross-section extraction.
 ///
@@ -95,16 +95,16 @@ impl CrossSection {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_measure::cross_section;
-/// use nalgebra::{Point3, Vector3};
+/// use nalgebra::Vector3;
 ///
 /// // Create a simple tetrahedron
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(5.0, 5.0, 10.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
+/// mesh.vertices.push(Point3::new(5.0, 5.0, 10.0));
 /// mesh.faces.push([0, 1, 3]);
 /// mesh.faces.push([1, 2, 3]);
 /// mesh.faces.push([2, 0, 3]);
@@ -438,7 +438,7 @@ fn compute_points_bounds(points: &[Point3<f64>]) -> (Point3<f64>, Point3<f64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{Vertex, unit_cube};
+    use mesh_types::unit_cube;
 
     fn create_test_cube(size: f64) -> IndexedMesh {
         let mut cube = unit_cube();
@@ -506,10 +506,10 @@ mod tests {
     #[test]
     fn test_cross_section_tetrahedron() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(5.0, 5.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(5.0, 5.0, 10.0));
         mesh.faces.push([0, 1, 3]);
         mesh.faces.push([1, 2, 3]);
         mesh.faces.push([2, 0, 3]);

@@ -32,9 +32,9 @@ impl AdjacencyList {
 
         // Process each face
         for &[i0, i1, i2] in &mesh.faces {
-            let v0 = &mesh.vertices[i0 as usize].position;
-            let v1 = &mesh.vertices[i1 as usize].position;
-            let v2 = &mesh.vertices[i2 as usize].position;
+            let v0 = &mesh.vertices[i0 as usize];
+            let v1 = &mesh.vertices[i1 as usize];
+            let v2 = &mesh.vertices[i2 as usize];
 
             // Compute edge lengths
             let len01 = (v1 - v0).norm();
@@ -103,14 +103,14 @@ impl AdjacencyList {
 )]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     #[test]
     fn adjacency_from_triangle() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let adj = AdjacencyList::from_mesh(&mesh);
@@ -127,9 +127,9 @@ mod tests {
     #[test]
     fn adjacency_edge_lengths() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(3.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 4.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(3.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 4.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let adj = AdjacencyList::from_mesh(&mesh);
@@ -162,10 +162,10 @@ mod tests {
     fn adjacency_shared_edge() {
         // Two triangles sharing an edge
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, -1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, -1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 3, 1]);
 

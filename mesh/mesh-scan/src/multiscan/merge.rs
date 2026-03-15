@@ -5,7 +5,7 @@
 
 use kiddo::{KdTree, SquaredEuclidean};
 use mesh_registration::RigidTransform;
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::IndexedMesh;
 use nalgebra::Point3;
 use std::collections::HashSet;
 
@@ -171,18 +171,19 @@ impl std::fmt::Display for MergeResult {
 /// ```
 /// use mesh_scan::multiscan::{merge_scans, MergeParams};
 /// use mesh_registration::RigidTransform;
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
+/// use nalgebra::Point3;
 ///
 /// let mut scan1 = IndexedMesh::new();
-/// scan1.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// scan1.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// scan1.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+/// scan1.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// scan1.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// scan1.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// scan1.faces.push([0, 1, 2]);
 ///
 /// let mut scan2 = IndexedMesh::new();
-/// scan2.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// scan2.vertices.push(Vertex::from_coords(2.0, 0.0, 0.0));
-/// scan2.vertices.push(Vertex::from_coords(1.5, 1.0, 0.0));
+/// scan2.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// scan2.vertices.push(Point3::new(2.0, 0.0, 0.0));
+/// scan2.vertices.push(Point3::new(1.5, 1.0, 0.0));
 /// scan2.faces.push([0, 1, 2]);
 ///
 /// let scans = vec![scan1, scan2];
@@ -257,10 +258,7 @@ pub fn merge_scans(
 fn transform_mesh(mesh: &IndexedMesh, transform: &RigidTransform) -> IndexedMesh {
     let mut result = mesh.clone();
     for v in &mut result.vertices {
-        v.position = transform.transform_point(&v.position);
-        if let Some(normal) = v.attributes.normal {
-            v.attributes.normal = Some(transform.rotation * normal);
-        }
+        *v = transform.transform_point(v);
     }
     result
 }
@@ -272,7 +270,7 @@ fn merge_keep_all(scans: &[IndexedMesh]) -> IndexedMesh {
 
     for scan in scans {
         // Add vertices
-        merged.vertices.extend(scan.vertices.iter().cloned());
+        merged.vertices.extend(scan.vertices.iter().copied());
 
         // Add faces with offset indices
         for face in &scan.faces {
@@ -300,7 +298,7 @@ fn merge_weld(scans: &[IndexedMesh], threshold: f64) -> IndexedMesh {
     let mut all_vertices: Vec<(Point3<f64>, usize, usize)> = Vec::new();
     for (scan_idx, scan) in scans.iter().enumerate() {
         for (v_idx, v) in scan.vertices.iter().enumerate() {
-            all_vertices.push((v.position, scan_idx, v_idx));
+            all_vertices.push((*v, scan_idx, v_idx));
         }
     }
 
@@ -318,7 +316,7 @@ fn merge_weld(scans: &[IndexedMesh], threshold: f64) -> IndexedMesh {
     let mut vertex_map: Vec<Option<u32>> = vec![None; all_vertices.len()];
     let mut merged = IndexedMesh::new();
 
-    for (i, (pos, scan_idx, v_idx)) in all_vertices.iter().enumerate() {
+    for (i, (pos, _scan_idx, _v_idx)) in all_vertices.iter().enumerate() {
         if vertex_map[i].is_some() {
             continue; // Already mapped
         }
@@ -326,13 +324,10 @@ fn merge_weld(scans: &[IndexedMesh], threshold: f64) -> IndexedMesh {
         // Find all nearby vertices
         let nearby = tree.within::<SquaredEuclidean>(&[pos.x, pos.y, pos.z], threshold_sq);
 
-        // Get the original vertex attributes
-        let original_vertex = &scans[*scan_idx].vertices[*v_idx];
-
         // Add this vertex to merged mesh
         #[allow(clippy::cast_possible_truncation)]
         let new_idx = merged.vertices.len() as u32;
-        merged.vertices.push(original_vertex.clone());
+        merged.vertices.push(*pos);
 
         // Map all nearby vertices to this one
         for neighbor in nearby {
@@ -379,11 +374,11 @@ fn merge_average(scans: &[IndexedMesh], threshold: f64) -> IndexedMesh {
     let threshold_sq = threshold * threshold;
 
     // Collect all vertices
-    let mut all_vertices: Vec<Vertex> = Vec::new();
+    let mut all_vertices: Vec<Point3<f64>> = Vec::new();
     let mut scan_offsets: Vec<usize> = vec![0];
 
     for scan in scans {
-        all_vertices.extend(scan.vertices.iter().cloned());
+        all_vertices.extend(scan.vertices.iter().copied());
         scan_offsets.push(all_vertices.len());
     }
 
@@ -394,7 +389,7 @@ fn merge_average(scans: &[IndexedMesh], threshold: f64) -> IndexedMesh {
     // Build KD-tree
     let mut tree: KdTree<f64, 3> = KdTree::new();
     for (i, v) in all_vertices.iter().enumerate() {
-        tree.add(&[v.position.x, v.position.y, v.position.z], i as u64);
+        tree.add(&[v.x, v.y, v.z], i as u64);
     }
 
     // Find vertex clusters and compute averages
@@ -407,7 +402,7 @@ fn merge_average(scans: &[IndexedMesh], threshold: f64) -> IndexedMesh {
             continue;
         }
 
-        let pos = all_vertices[i].position;
+        let pos = all_vertices[i];
         let nearby = tree.within::<SquaredEuclidean>(&[pos.x, pos.y, pos.z], threshold_sq);
 
         // Compute average position
@@ -417,7 +412,7 @@ fn merge_average(scans: &[IndexedMesh], threshold: f64) -> IndexedMesh {
         for neighbor in &nearby {
             #[allow(clippy::cast_possible_truncation)]
             let idx = neighbor.item as usize;
-            sum += all_vertices[idx].position.coords;
+            sum += all_vertices[idx].coords;
             count += 1;
             visited[idx] = true;
         }
@@ -425,13 +420,9 @@ fn merge_average(scans: &[IndexedMesh], threshold: f64) -> IndexedMesh {
         #[allow(clippy::cast_precision_loss)]
         let avg_pos = Point3::from(sum / count as f64);
 
-        // Create averaged vertex (keep first vertex's attributes)
-        let mut new_vertex = all_vertices[i].clone();
-        new_vertex.position = avg_pos;
-
         #[allow(clippy::cast_possible_truncation)]
         let new_idx = merged.vertices.len() as u32;
-        merged.vertices.push(new_vertex);
+        merged.vertices.push(avg_pos);
 
         // Map all nearby vertices
         for neighbor in nearby {
@@ -493,11 +484,7 @@ fn merge_with_priority(scans: &[IndexedMesh], threshold: f64, first_wins: bool) 
 
         for v in &scan.vertices {
             // Check if there's already a nearby vertex
-            let nearest = merged_tree.nearest_one::<SquaredEuclidean>(&[
-                v.position.x,
-                v.position.y,
-                v.position.z,
-            ]);
+            let nearest = merged_tree.nearest_one::<SquaredEuclidean>(&[v.x, v.y, v.z]);
 
             #[allow(clippy::cast_possible_truncation)]
             if nearest.distance <= threshold_sq && !merged.vertices.is_empty() {
@@ -506,11 +493,8 @@ fn merge_with_priority(scans: &[IndexedMesh], threshold: f64, first_wins: bool) 
             } else {
                 // Add new vertex
                 let new_idx = merged.vertices.len() as u32;
-                merged_tree.add(
-                    &[v.position.x, v.position.y, v.position.z],
-                    u64::from(new_idx),
-                );
-                merged.vertices.push(v.clone());
+                merged_tree.add(&[v.x, v.y, v.z], u64::from(new_idx));
+                merged.vertices.push(*v);
                 vertex_map.push(new_idx);
             }
         }
@@ -556,33 +540,10 @@ fn remove_duplicate_faces(mesh: &mut IndexedMesh) -> usize {
     original_count - mesh.faces.len()
 }
 
-/// Computes vertex normals from face normals.
-fn compute_vertex_normals(mesh: &mut IndexedMesh) {
-    // Initialize normals to zero
-    let mut normals = vec![nalgebra::Vector3::zeros(); mesh.vertices.len()];
-
-    // Accumulate face normals
-    for face in &mesh.faces {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
-
-        let e1 = v1 - v0;
-        let e2 = v2 - v0;
-        let face_normal = e1.cross(&e2);
-
-        for &idx in face {
-            normals[idx as usize] += face_normal;
-        }
-    }
-
-    // Normalize and assign
-    for (i, normal) in normals.iter().enumerate() {
-        let len = normal.norm();
-        if len > 1e-10 {
-            mesh.vertices[i].attributes.normal = Some(normal / len);
-        }
-    }
+/// Computes vertex normals from face normals (no-op since `IndexedMesh` has no normal storage).
+fn compute_vertex_normals(_mesh: &mut IndexedMesh) {
+    // IndexedMesh stores only positions; normals are not stored per-vertex.
+    // This is intentionally a no-op. Use AttributedMesh for normal storage.
 }
 
 #[cfg(test)]
@@ -604,12 +565,9 @@ mod tests {
 
     fn make_simple_mesh(offset_x: f64) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices
-            .push(Vertex::from_coords(0.0 + offset_x, 0.0, 0.0));
-        mesh.vertices
-            .push(Vertex::from_coords(1.0 + offset_x, 0.0, 0.0));
-        mesh.vertices
-            .push(Vertex::from_coords(0.5 + offset_x, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0 + offset_x, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0 + offset_x, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5 + offset_x, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -677,15 +635,15 @@ mod tests {
     fn test_merge_weld_overlapping() {
         // Two meshes that share a vertex
         let mut mesh1 = IndexedMesh::new();
-        mesh1.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh1.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh1.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh1.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh1.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh1.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh1.faces.push([0, 1, 2]);
 
         let mut mesh2 = IndexedMesh::new();
-        mesh2.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0)); // Same as mesh1 vertex 1
-        mesh2.vertices.push(Vertex::from_coords(2.0, 0.0, 0.0));
-        mesh2.vertices.push(Vertex::from_coords(1.5, 1.0, 0.0));
+        mesh2.vertices.push(Point3::new(1.0, 0.0, 0.0)); // Same as mesh1 vertex 1
+        mesh2.vertices.push(Point3::new(2.0, 0.0, 0.0));
+        mesh2.vertices.push(Point3::new(1.5, 1.0, 0.0));
         mesh2.faces.push([0, 1, 2]);
 
         let scans = vec![mesh1, mesh2];
@@ -705,10 +663,10 @@ mod tests {
     #[test]
     fn test_merge_average() {
         let mut mesh1 = IndexedMesh::new();
-        mesh1.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh1.vertices.push(Point3::new(0.0, 0.0, 0.0));
 
         let mut mesh2 = IndexedMesh::new();
-        mesh2.vertices.push(Vertex::from_coords(0.002, 0.0, 0.0));
+        mesh2.vertices.push(Point3::new(0.002, 0.0, 0.0));
 
         let scans = vec![mesh1, mesh2];
         let transforms = vec![RigidTransform::identity(), RigidTransform::identity()];
@@ -721,7 +679,7 @@ mod tests {
 
         // Should have 1 vertex at averaged position
         assert_eq!(result.merged_vertex_count, 1);
-        assert_relative_eq!(result.mesh.vertices[0].position.x, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(result.mesh.vertices[0].x, 0.001, epsilon = 1e-10);
     }
 
     #[test]
@@ -745,15 +703,15 @@ mod tests {
 
         // Check second mesh is transformed
         let last_vertex = &result.mesh.vertices[5];
-        assert_relative_eq!(last_vertex.position.x, 10.5, epsilon = 1e-10);
+        assert_relative_eq!(last_vertex.x, 10.5, epsilon = 1e-10);
     }
 
     #[test]
     fn test_remove_duplicate_faces() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 1, 2]); // Duplicate
         mesh.faces.push([2, 1, 0]); // Same face, different order (will be normalized)

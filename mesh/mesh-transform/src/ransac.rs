@@ -119,13 +119,13 @@ impl RansacResult {
 ///
 /// ```
 /// use mesh_transform::{ransac_plane, RansacConfig};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// // Create a mesh with points roughly on a plane
 /// let mut mesh = IndexedMesh::new();
 /// for i in 0..10 {
 ///     for j in 0..10 {
-///         mesh.vertices.push(Vertex::from_coords(
+///         mesh.vertices.push(Point3::new(
 ///             i as f64,
 ///             j as f64,
 ///             0.0, // All on z=0 plane
@@ -159,7 +159,7 @@ pub fn ransac_plane(mesh: &IndexedMesh, config: &RansacConfig) -> TransformResul
     let points: Vec<Vector3<f64>> = mesh
         .vertices
         .iter()
-        .map(|v| Vector3::new(v.position.x, v.position.y, v.position.z))
+        .map(|v| Vector3::new(v.x, v.y, v.z))
         .collect();
 
     ransac_plane_from_points(&points, config)
@@ -347,7 +347,7 @@ fn default_ransac_result() -> RansacResult {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_planar_mesh() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -355,7 +355,7 @@ mod tests {
         for i in 0u32..5 {
             for j in 0u32..5 {
                 mesh.vertices
-                    .push(Vertex::from_coords(f64::from(i), f64::from(j), 0.0));
+                    .push(Point3::new(f64::from(i), f64::from(j), 0.0));
             }
         }
         mesh.faces.push([0, 1, 5]);
@@ -368,7 +368,7 @@ mod tests {
         let noise = [0.001, -0.002, 0.001, 0.0, -0.001];
         for i in 0u32..5 {
             for j in 0u32..5 {
-                mesh.vertices.push(Vertex::from_coords(
+                mesh.vertices.push(Point3::new(
                     f64::from(i),
                     f64::from(j),
                     noise[(i + j) as usize % 5],
@@ -376,7 +376,7 @@ mod tests {
             }
         }
         // Add one outlier
-        mesh.vertices.push(Vertex::from_coords(2.0, 2.0, 5.0));
+        mesh.vertices.push(Point3::new(2.0, 2.0, 5.0));
         mesh.faces.push([0, 1, 5]);
         mesh
     }
@@ -424,8 +424,8 @@ mod tests {
     #[test]
     fn ransac_insufficient_points() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
 
         let config = RansacConfig::default();
         let result = ransac_plane(&mesh, &config);

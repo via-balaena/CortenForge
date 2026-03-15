@@ -169,19 +169,15 @@ fn generate_shell_normal(
 
     // Step 2: Copy inner vertices
     for vertex in &inner_mesh.vertices {
-        shell.vertices.push(vertex.clone());
+        shell.vertices.push(*vertex);
     }
 
     // Step 3: Generate outer vertices by offsetting along normals
     for (i, vertex) in inner_mesh.vertices.iter().enumerate() {
         let normal = normals.get(i).copied().unwrap_or_else(Vector3::z);
-        let outer_pos = vertex.position + normal * params.wall_thickness_mm;
+        let outer_pos = vertex + normal * params.wall_thickness_mm;
 
-        let mut outer_vertex = vertex.clone();
-        outer_vertex.position = outer_pos;
-        outer_vertex.attributes.normal = Some(normal);
-
-        shell.vertices.push(outer_vertex);
+        shell.vertices.push(outer_pos);
     }
 
     debug!("Generated {} inner + {} outer vertices", n, n);
@@ -276,13 +272,13 @@ fn generate_shell_sdf(
 
     // Add inner vertices (with reversed normals conceptually - handled by face winding)
     for vertex in &inner_mesh.vertices {
-        shell.vertices.push(vertex.clone());
+        shell.vertices.push(*vertex);
     }
 
     // Add outer vertices (offset by inner count)
     let inner_count = inner_mesh.vertices.len() as u32;
     for vertex in &outer_mesh.vertices {
-        shell.vertices.push(vertex.clone());
+        shell.vertices.push(*vertex);
     }
 
     // Add inner faces (reversed winding so normal points inward)
@@ -369,9 +365,9 @@ fn compute_vertex_normals(mesh: &IndexedMesh) -> Vec<Vector3<f64>> {
 
     // For each face, compute face normal and add to each vertex
     for face in &mesh.faces {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         let edge1 = v1 - v0;
         let edge2 = v2 - v0;
@@ -415,20 +411,20 @@ fn compute_vertex_normals(mesh: &IndexedMesh) -> Vec<Vector3<f64>> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_open_box() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 10.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 10.0));
 
         // Bottom
         mesh.faces.push([0, 2, 1]);
