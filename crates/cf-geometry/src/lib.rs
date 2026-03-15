@@ -42,8 +42,8 @@ pub use convex_hull::{ConvexHull, convex_hull};
 pub use heightfield::HeightFieldData;
 pub use mesh::IndexedMesh;
 pub use query::{
-    closest_point_on_triangle, closest_point_segment, closest_points_segments, ray_cast,
-    ray_triangle,
+    closest_point, closest_point_on_triangle, closest_point_segment, closest_points_segments,
+    ray_cast, ray_triangle,
 };
 pub use ray::{Ray, RayHit};
 pub use sdf::SdfGrid;

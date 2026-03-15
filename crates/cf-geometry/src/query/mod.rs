@@ -12,13 +12,15 @@
 //!
 //! # Closest point
 //!
-//! [`closest_point_on_triangle`], [`closest_point_segment`], and
-//! [`closest_points_segments`] are free functions for common proximity queries.
+//! [`closest_point`] dispatches on [`Shape`](crate::Shape) to per-shape
+//! implementations. [`closest_point_on_triangle`], [`closest_point_segment`],
+//! and [`closest_points_segments`] are standalone free functions for common
+//! proximity queries.
 
 mod closest_point;
 mod ray_cast;
 
 pub use closest_point::{
-    closest_point_on_triangle, closest_point_segment, closest_points_segments,
+    closest_point, closest_point_on_triangle, closest_point_segment, closest_points_segments,
 };
 pub use ray_cast::{ray_cast, ray_triangle};
