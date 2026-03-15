@@ -122,7 +122,7 @@ impl GeomType {
     ///
     /// This is the canonical implementation used by both:
     /// - Model compilation (pre-computing `geom_rbound`)
-    /// - `CollisionShape::bounding_radius()` for runtime shapes
+    /// - `Shape::bounding_radius()` for runtime shapes
     ///
     /// # Arguments
     /// * `size` - Type-specific size parameters from `geom_size`:

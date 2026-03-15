@@ -33,7 +33,7 @@
 use nalgebra::{Point3, UnitVector3, Vector3};
 use sim_types::Pose;
 
-use crate::CollisionShape;
+use cf_geometry::Shape;
 
 /// Result of a ray cast against a shape.
 #[derive(Debug, Clone, Copy)]
@@ -81,21 +81,21 @@ fn safe_normalize(v: &Vector3<f64>, fallback: Vector3<f64>) -> Vector3<f64> {
 /// The closest ray hit, or `None` if the ray doesn't intersect within `max_distance`.
 #[must_use]
 pub fn raycast_shape(
-    shape: &CollisionShape,
+    shape: &Shape,
     shape_pose: &Pose,
     ray_origin: Point3<f64>,
     ray_direction: UnitVector3<f64>,
     max_distance: f64,
 ) -> Option<RaycastHit> {
     match shape {
-        CollisionShape::Sphere { radius } => raycast_sphere(
+        Shape::Sphere { radius } => raycast_sphere(
             shape_pose.position,
             *radius,
             ray_origin,
             ray_direction,
             max_distance,
         ),
-        CollisionShape::Plane { normal, distance } => {
+        Shape::Plane { normal, distance } => {
             // Transform plane to world space
             let world_normal = safe_normalize(&shape_pose.transform_vector(normal), *normal);
             let world_point = shape_pose.position + world_normal * *distance;
@@ -107,14 +107,14 @@ pub fn raycast_shape(
                 max_distance,
             )
         }
-        CollisionShape::Box { half_extents } => raycast_box(
+        Shape::Box { half_extents } => raycast_box(
             shape_pose,
             *half_extents,
             ray_origin,
             ray_direction,
             max_distance,
         ),
-        CollisionShape::Capsule {
+        Shape::Capsule {
             half_length,
             radius,
         } => raycast_capsule(
@@ -125,7 +125,7 @@ pub fn raycast_shape(
             ray_direction,
             max_distance,
         ),
-        CollisionShape::Cylinder {
+        Shape::Cylinder {
             half_length,
             radius,
         } => raycast_cylinder(
@@ -136,33 +136,34 @@ pub fn raycast_shape(
             ray_direction,
             max_distance,
         ),
-        CollisionShape::Ellipsoid { radii } => {
+        Shape::Ellipsoid { radii } => {
             raycast_ellipsoid(shape_pose, *radii, ray_origin, ray_direction, max_distance)
         }
-        CollisionShape::ConvexMesh { vertices, .. } => raycast_convex_mesh(
+        Shape::ConvexMesh { hull } => raycast_convex_mesh(
             shape_pose,
-            vertices,
+            &hull.vertices,
             ray_origin,
             ray_direction,
             max_distance,
         ),
-        CollisionShape::HeightField { data } => raycast_heightfield(
+        Shape::HeightField { data } => raycast_heightfield(
             shape_pose,
             data.as_ref(),
             ray_origin,
             ray_direction,
             max_distance,
         ),
-        CollisionShape::Sdf { data } => raycast_sdf(
+        Shape::Sdf { data } => raycast_sdf(
             shape_pose,
             data.as_ref(),
             ray_origin,
             ray_direction,
             max_distance,
         ),
-        CollisionShape::TriangleMesh { data } => raycast_triangle_mesh(
+        Shape::TriangleMesh { mesh, bvh } => raycast_indexed_mesh(
             shape_pose,
-            data.as_ref(),
+            mesh,
+            bvh,
             ray_origin,
             ray_direction,
             max_distance,
@@ -779,7 +780,8 @@ fn raycast_sdf(
 ///
 /// Uses `query_ray_closest` for optimal pruning: as closer hits are found,
 /// distant BVH nodes are automatically culled. This is O(log n) average case.
-fn raycast_triangle_mesh(
+#[must_use]
+pub fn raycast_triangle_mesh_data(
     pose: &Pose,
     data: &crate::mesh::TriangleMeshData,
     ray_origin: Point3<f64>,
@@ -867,6 +869,84 @@ fn raycast_triangle_mesh(
             RaycastHit::new(t, world_pt, world_normal)
         })
     }
+}
+
+/// Ray–indexed-mesh intersection using BVH with early termination.
+///
+/// This is the [`cf_geometry::IndexedMesh`] + [`cf_geometry::Bvh`] counterpart
+/// of [`raycast_triangle_mesh`]. It performs BVH-accelerated ray casting
+/// directly against the geometry types from `cf-geometry`.
+fn raycast_indexed_mesh(
+    pose: &Pose,
+    mesh: &cf_geometry::IndexedMesh,
+    bvh: &cf_geometry::Bvh,
+    ray_origin: Point3<f64>,
+    ray_direction: UnitVector3<f64>,
+    max_distance: f64,
+) -> Option<RaycastHit> {
+    // Validate max_distance
+    if !max_distance.is_finite() || max_distance <= 0.0 {
+        return None;
+    }
+
+    // Transform ray to local space
+    let inv_pose = pose.inverse();
+    let local_origin = inv_pose.transform_point(&ray_origin);
+    let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
+
+    // Check for degenerate ray (zero direction after transform)
+    let dir_norm = local_dir.norm();
+    if dir_norm < 1e-10 {
+        return None;
+    }
+
+    // Helper: look up triangle vertices from mesh by face index
+    let tri_verts = |face_idx: usize| -> Option<(Point3<f64>, Point3<f64>, Point3<f64>)> {
+        let face = mesh.faces.get(face_idx)?;
+        Some((
+            mesh.vertices[face[0] as usize],
+            mesh.vertices[face[1] as usize],
+            mesh.vertices[face[2] as usize],
+        ))
+    };
+
+    // Precompute inverse direction for slab test
+    // IEEE 754: 1.0/0.0 = ±∞, which the slab test handles correctly for axis-aligned rays
+    let ray_dir_inv = Vector3::new(1.0 / local_dir.x, 1.0 / local_dir.y, 1.0 / local_dir.z);
+
+    // Track the closest hit for both result and early termination
+    let mut closest_hit: Option<(f64, Point3<f64>, Vector3<f64>)> = None;
+    let mut cutoff = max_distance;
+
+    // Use query_ray_closest with a callback that tests triangles and updates cutoff
+    let result = bvh.query_ray_closest(&local_origin, &ray_dir_inv, max_distance, |tri_idx| {
+        let (v0, v1, v2) = tri_verts(tri_idx)?;
+
+        if let Some((t, pt, normal)) =
+            ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, cutoff)
+        {
+            if t < cutoff {
+                cutoff = t;
+                closest_hit = Some((t, pt, normal));
+                return Some(t);
+            }
+        }
+        None
+    });
+
+    // Use either the callback result or our tracked closest_hit
+    let hit = closest_hit.or_else(|| {
+        result.and_then(|(tri_idx, _)| {
+            let (v0, v1, v2) = tri_verts(tri_idx)?;
+            ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, max_distance)
+        })
+    });
+
+    hit.map(|(t, local_pt, local_normal)| {
+        let world_pt = pose.transform_point(&local_pt);
+        let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
+        RaycastHit::new(t, world_pt, world_normal)
+    })
 }
 
 /// Möller–Trumbore ray-triangle intersection.
@@ -1058,7 +1138,7 @@ mod tests {
 
     #[test]
     fn test_raycast_shape_dispatch() {
-        let sphere = CollisionShape::sphere(1.0);
+        let sphere = Shape::sphere(1.0);
         let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());

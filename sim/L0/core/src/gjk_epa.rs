@@ -28,11 +28,11 @@
 //!
 //! ```ignore
 //! use sim_core::gjk_epa::{gjk_intersection, gjk_epa_contact};
-//! use sim_core::CollisionShape;
+//! use cf_geometry::Shape;
 //! use sim_types::Pose;
 //!
-//! let shape_a = CollisionShape::sphere(1.0);
-//! let shape_b = CollisionShape::box_shape(Vector3::new(0.5, 0.5, 0.5));
+//! let shape_a = Shape::sphere(1.0);
+//! let shape_b = Shape::box_shape(Vector3::new(0.5, 0.5, 0.5));
 //! let pose_a = Pose::identity();
 //! let pose_b = Pose::from_position(Point3::new(1.0, 0.0, 0.0));
 //!
@@ -57,7 +57,11 @@ use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 use std::cell::Cell;
 
-use crate::CollisionShape;
+use cf_geometry::{Bounded, Shape};
+
+/// Minimum vertex count for hill-climbing support.
+/// Matches MuJoCo's `mjMESH_HILLCLIMB_MIN = 10`.
+const HILL_CLIMB_MIN: usize = 10;
 
 /// Tolerance for numerical comparisons in GJK/EPA.
 const EPSILON: f64 = 1e-8;
@@ -218,110 +222,64 @@ impl Simplex {
 ///
 /// The support point in world space.
 #[must_use]
-pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) -> Point3<f64> {
+pub fn support(
+    shape: &Shape,
+    pose: &Pose,
+    direction: &Vector3<f64>,
+    warm_start: &Cell<usize>,
+) -> Point3<f64> {
     match shape {
-        CollisionShape::Sphere { radius } => support_sphere(pose, *radius, direction),
-        CollisionShape::Box { half_extents } => support_box(pose, half_extents, direction),
-        CollisionShape::Capsule {
+        Shape::Sphere { radius } => support_sphere(pose, *radius, direction),
+        Shape::Box { half_extents } => support_box(pose, half_extents, direction),
+        Shape::Capsule {
             half_length,
             radius,
         } => support_capsule(pose, *half_length, *radius, direction),
-        CollisionShape::ConvexMesh {
-            vertices,
-            adjacency,
-            warm_start,
-        } => support_convex_mesh(pose, vertices, adjacency.as_deref(), warm_start, direction),
-        CollisionShape::Plane { normal, distance } => {
-            support_plane(pose, normal, *distance, direction)
+        Shape::ConvexMesh { hull } => {
+            let adjacency = if hull.vertices.len() >= HILL_CLIMB_MIN {
+                Some(hull.adjacency.as_slice())
+            } else {
+                None
+            };
+            support_convex_mesh(pose, &hull.vertices, adjacency, warm_start, direction)
         }
-        CollisionShape::Cylinder {
+        Shape::Plane { normal, distance } => support_plane(pose, normal, *distance, direction),
+        Shape::Cylinder {
             half_length,
             radius,
         } => support_cylinder(pose, *half_length, *radius, direction),
-        CollisionShape::Ellipsoid { radii } => support_ellipsoid(pose, radii, direction),
-        CollisionShape::HeightField { data } => {
-            // Height fields are not convex, so GJK/EPA is not ideal.
-            // Return an extreme point from the AABB as a fallback.
-            let local_aabb = cf_geometry::Bounded::aabb(data.as_ref());
-            let (local_min, local_max) = (local_aabb.min, local_aabb.max);
-            let local_dir = pose.rotation.inverse() * direction;
-
-            let local_support = Point3::new(
-                if local_dir.x >= 0.0 {
-                    local_max.x
-                } else {
-                    local_min.x
-                },
-                if local_dir.y >= 0.0 {
-                    local_max.y
-                } else {
-                    local_min.y
-                },
-                if local_dir.z >= 0.0 {
-                    local_max.z
-                } else {
-                    local_min.z
-                },
-            );
-
-            pose.transform_point(&local_support)
-        }
-        CollisionShape::Sdf { data } => {
-            // SDFs are not convex, so GJK/EPA is not ideal.
-            // Return an extreme point from the AABB as a fallback.
-            // Dedicated SDF collision is handled separately in collision/sdf_collide.rs.
-            let local_aabb = cf_geometry::Bounded::aabb(data.as_ref());
-            let (local_min, local_max) = (local_aabb.min, local_aabb.max);
-            let local_dir = pose.rotation.inverse() * direction;
-
-            let local_support = Point3::new(
-                if local_dir.x >= 0.0 {
-                    local_max.x
-                } else {
-                    local_min.x
-                },
-                if local_dir.y >= 0.0 {
-                    local_max.y
-                } else {
-                    local_min.y
-                },
-                if local_dir.z >= 0.0 {
-                    local_max.z
-                } else {
-                    local_min.z
-                },
-            );
-
-            pose.transform_point(&local_support)
-        }
-        CollisionShape::TriangleMesh { data } => {
-            // Triangle meshes are not convex, so GJK/EPA is not ideal.
-            // Return an extreme point from the AABB as a fallback.
-            // Dedicated triangle mesh collision is handled separately in collision/mesh_collide.rs.
-            let (local_min, local_max) = data.aabb();
-            let local_dir = pose.rotation.inverse() * direction;
-
-            let local_support = Point3::new(
-                if local_dir.x >= 0.0 {
-                    local_max.x
-                } else {
-                    local_min.x
-                },
-                if local_dir.y >= 0.0 {
-                    local_max.y
-                } else {
-                    local_min.y
-                },
-                if local_dir.z >= 0.0 {
-                    local_max.z
-                } else {
-                    local_min.z
-                },
-            );
-
-            pose.transform_point(&local_support)
-        }
+        Shape::Ellipsoid { radii } => support_ellipsoid(pose, radii, direction),
+        Shape::HeightField { data } => support_aabb_fallback(pose, &data.aabb(), direction),
+        Shape::Sdf { data } => support_aabb_fallback(pose, &data.aabb(), direction),
+        Shape::TriangleMesh { mesh, .. } => support_aabb_fallback(pose, &mesh.aabb(), direction),
     }
+}
+
+/// AABB-extremes fallback support for non-convex shapes.
+fn support_aabb_fallback(
+    pose: &Pose,
+    local_aabb: &cf_geometry::Aabb,
+    direction: &Vector3<f64>,
+) -> Point3<f64> {
+    let local_dir = pose.rotation.inverse() * direction;
+    let local_support = Point3::new(
+        if local_dir.x >= 0.0 {
+            local_aabb.max.x
+        } else {
+            local_aabb.min.x
+        },
+        if local_dir.y >= 0.0 {
+            local_aabb.max.y
+        } else {
+            local_aabb.min.y
+        },
+        if local_dir.z >= 0.0 {
+            local_aabb.max.z
+        } else {
+            local_aabb.min.z
+        },
+    );
+    pose.transform_point(&local_support)
 }
 
 /// Return all support points on a convex shape's contact face in a given direction.
@@ -333,12 +291,12 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
 ///
 /// Used by MULTICCD to enumerate flat-face contact vertices.
 pub fn support_face_points(
-    shape: &CollisionShape,
+    shape: &Shape,
     pose: &Pose,
     direction: &Vector3<f64>,
 ) -> Vec<Point3<f64>> {
     match shape {
-        CollisionShape::Box { half_extents } => {
+        Shape::Box { half_extents } => {
             // A box face perpendicular to direction has 4 vertices
             let local_dir = pose.rotation.inverse() * direction;
             // For each axis, determine if the face is on the + or - side,
@@ -369,29 +327,29 @@ pub fn support_face_points(
             }
             points
         }
-        CollisionShape::ConvexMesh {
-            vertices,
-            adjacency: _,
-            warm_start: _,
-        } => {
-            if vertices.is_empty() {
+        Shape::ConvexMesh { hull } => {
+            if hull.vertices.is_empty() {
                 return vec![pose.position];
             }
             let local_dir = pose.rotation.inverse() * direction;
             // Find max dot product
-            let max_dot = vertices
+            let max_dot = hull
+                .vertices
                 .iter()
                 .map(|v| v.coords.dot(&local_dir))
                 .fold(f64::NEG_INFINITY, f64::max);
             // Return all vertices within EPSILON of max_dot
-            vertices
+            hull.vertices
                 .iter()
                 .filter(|v| (v.coords.dot(&local_dir) - max_dot).abs() < EPSILON * 10.0)
                 .map(|v| pose.transform_point(v))
                 .collect()
         }
         // Smooth shapes: single support point
-        _ => vec![support(shape, pose, direction)],
+        _ => {
+            let warm_start = Cell::new(0);
+            vec![support(shape, pose, direction, &warm_start)]
+        }
     }
 }
 
@@ -641,14 +599,16 @@ fn support_ellipsoid(pose: &Pose, radii: &Vector3<f64>, direction: &Vector3<f64>
 
 /// Compute the support point on the Minkowski difference A - B.
 fn support_minkowski(
-    shape_a: &CollisionShape,
+    shape_a: &Shape,
     pose_a: &Pose,
-    shape_b: &CollisionShape,
+    warm_start_a: &Cell<usize>,
+    shape_b: &Shape,
     pose_b: &Pose,
+    warm_start_b: &Cell<usize>,
     direction: &Vector3<f64>,
 ) -> MinkowskiPoint {
-    let support_a = support(shape_a, pose_a, direction);
-    let support_b = support(shape_b, pose_b, &-direction);
+    let support_a = support(shape_a, pose_a, direction, warm_start_a);
+    let support_b = support(shape_b, pose_b, &-direction, warm_start_b);
     MinkowskiPoint::new(support_a, support_b)
 }
 
@@ -658,9 +618,9 @@ fn support_minkowski(
 /// For penetration information, use [`gjk_epa_contact`].
 #[must_use]
 pub fn gjk_intersection(
-    shape_a: &CollisionShape,
+    shape_a: &Shape,
     pose_a: &Pose,
-    shape_b: &CollisionShape,
+    shape_b: &Shape,
     pose_b: &Pose,
     max_iterations: usize,
 ) -> bool {
@@ -670,9 +630,9 @@ pub fn gjk_intersection(
 /// Run the full GJK algorithm and return detailed results.
 #[must_use]
 pub fn gjk_query(
-    shape_a: &CollisionShape,
+    shape_a: &Shape,
     pose_a: &Pose,
-    shape_b: &CollisionShape,
+    shape_b: &Shape,
     pose_b: &Pose,
     max_iterations: usize,
 ) -> GjkResult {
@@ -691,9 +651,19 @@ pub fn gjk_query(
     };
 
     let mut simplex = Simplex::new();
+    let warm_start_a = Cell::new(0);
+    let warm_start_b = Cell::new(0);
 
     // Get first support point
-    let first = support_minkowski(shape_a, pose_a, shape_b, pose_b, &direction);
+    let first = support_minkowski(
+        shape_a,
+        pose_a,
+        &warm_start_a,
+        shape_b,
+        pose_b,
+        &warm_start_b,
+        &direction,
+    );
     simplex.push(first);
 
     // New search direction: toward origin from first point
@@ -713,7 +683,15 @@ pub fn gjk_query(
         direction = direction.normalize();
 
         // Get new support point
-        let new_point = support_minkowski(shape_a, pose_a, shape_b, pose_b, &direction);
+        let new_point = support_minkowski(
+            shape_a,
+            pose_a,
+            &warm_start_a,
+            shape_b,
+            pose_b,
+            &warm_start_b,
+            &direction,
+        );
 
         // Check if we passed the origin
         // If new_point · direction < 0, origin is not in that direction
@@ -906,14 +884,17 @@ struct EpaFace {
 /// The simplex from GJK is used to initialize the polytope.
 #[must_use]
 pub fn epa_query(
-    shape_a: &CollisionShape,
+    shape_a: &Shape,
     pose_a: &Pose,
-    shape_b: &CollisionShape,
+    shape_b: &Shape,
     pose_b: &Pose,
     simplex: &Simplex,
     max_iterations: usize,
     tolerance: f64,
 ) -> Option<EpaResult> {
+    let warm_start_a = Cell::new(0);
+    let warm_start_b = Cell::new(0);
+
     // We need at least a tetrahedron to start EPA
     if simplex.len() < 4 {
         // Try to build a tetrahedron from the simplex
@@ -950,7 +931,15 @@ pub fn epa_query(
         let closest = &faces[closest_idx];
 
         // Get a new support point in the direction of the closest face's normal
-        let new_point = support_minkowski(shape_a, pose_a, shape_b, pose_b, &closest.normal);
+        let new_point = support_minkowski(
+            shape_a,
+            pose_a,
+            &warm_start_a,
+            shape_b,
+            pose_b,
+            &warm_start_b,
+            &closest.normal,
+        );
 
         // Check convergence: if new point is not significantly further than the face
         let new_distance = new_point.point.coords.dot(&closest.normal);
@@ -1015,15 +1004,17 @@ pub fn epa_query(
 
 /// Expand a simplex with fewer than 4 points into a tetrahedron for EPA.
 fn epa_with_expanded_simplex(
-    shape_a: &CollisionShape,
+    shape_a: &Shape,
     pose_a: &Pose,
-    shape_b: &CollisionShape,
+    shape_b: &Shape,
     pose_b: &Pose,
     simplex: &Simplex,
     max_iterations: usize,
     tolerance: f64,
 ) -> Option<EpaResult> {
     let mut vertices: Vec<MinkowskiPoint> = simplex.points().to_vec();
+    let warm_start_a = Cell::new(0);
+    let warm_start_b = Cell::new(0);
 
     // Expand to a tetrahedron by adding support points in different directions
     let search_dirs = [
@@ -1040,7 +1031,15 @@ fn epa_with_expanded_simplex(
             break;
         }
 
-        let new_point = support_minkowski(shape_a, pose_a, shape_b, pose_b, dir);
+        let new_point = support_minkowski(
+            shape_a,
+            pose_a,
+            &warm_start_a,
+            shape_b,
+            pose_b,
+            &warm_start_b,
+            dir,
+        );
 
         // Check if this point is actually new (not too close to existing points)
         let is_new = vertices
@@ -1174,9 +1173,9 @@ fn add_edge(edges: &mut Vec<(usize, usize)>, v1: usize, v2: usize) {
 /// Returns `None` if the shapes don't intersect or if contact computation fails.
 #[must_use]
 pub fn gjk_epa_contact(
-    shape_a: &CollisionShape,
+    shape_a: &Shape,
     pose_a: &Pose,
-    shape_b: &CollisionShape,
+    shape_b: &Shape,
     pose_b: &Pose,
     max_iterations: usize,
     tolerance: f64,
@@ -1200,7 +1199,8 @@ pub fn gjk_epa_contact(
     )?;
 
     // Contact point: support vertex on shape A in the -normal direction.
-    let contact_point = support(shape_a, pose_a, &(-epa_result.normal));
+    let ws = Cell::new(0);
+    let contact_point = support(shape_a, pose_a, &(-epa_result.normal), &ws);
 
     Some(GjkContact {
         point: contact_point,
@@ -1236,9 +1236,9 @@ pub struct GjkDistanceResult {
 /// `model.ccd_tolerance` respectively.
 #[must_use]
 pub fn gjk_distance(
-    shape_a: &CollisionShape,
+    shape_a: &Shape,
     pose_a: &Pose,
-    shape_b: &CollisionShape,
+    shape_b: &Shape,
     pose_b: &Pose,
     max_iterations: usize,
     tolerance: f64,
@@ -1255,9 +1255,19 @@ pub fn gjk_distance(
     };
 
     let mut simplex = Simplex::new();
+    let warm_start_a = Cell::new(0);
+    let warm_start_b = Cell::new(0);
 
     // Get first support point
-    let first = support_minkowski(shape_a, pose_a, shape_b, pose_b, &direction);
+    let first = support_minkowski(
+        shape_a,
+        pose_a,
+        &warm_start_a,
+        shape_b,
+        pose_b,
+        &warm_start_b,
+        &direction,
+    );
     simplex.push(first);
 
     // Track closest distance to detect convergence
@@ -1273,7 +1283,15 @@ pub fn gjk_distance(
         }
 
         let dir_normalized = direction / dir_norm_sq.sqrt();
-        let new_point = support_minkowski(shape_a, pose_a, shape_b, pose_b, &dir_normalized);
+        let new_point = support_minkowski(
+            shape_a,
+            pose_a,
+            &warm_start_a,
+            shape_b,
+            pose_b,
+            &warm_start_b,
+            &dir_normalized,
+        );
 
         // Check if we made progress toward the origin.
         // If the new support point doesn't pass the current closest point
@@ -1479,6 +1497,19 @@ mod tests {
         Pose::from_position(Point3::new(x, y, z))
     }
 
+    /// Test helper: create a regular tetrahedron Shape from half-edge length.
+    fn test_tetrahedron(edge_half_length: f64) -> Shape {
+        let h = edge_half_length;
+        let vertices = vec![
+            Point3::new(h, h, h),
+            Point3::new(h, -h, -h),
+            Point3::new(-h, h, -h),
+            Point3::new(-h, -h, h),
+        ];
+        let hull = cf_geometry::convex_hull(&vertices, None).unwrap();
+        Shape::convex_mesh(hull)
+    }
+
     #[test]
     fn test_support_sphere() {
         let pose = pose_at(1.0, 2.0, 3.0);
@@ -1510,8 +1541,8 @@ mod tests {
 
     #[test]
     fn test_gjk_spheres_intersecting() {
-        let shape_a = CollisionShape::sphere(1.0);
-        let shape_b = CollisionShape::sphere(1.0);
+        let shape_a = Shape::sphere(1.0);
+        let shape_b = Shape::sphere(1.0);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.5, 0.0, 0.0); // Centers 1.5 apart, radii sum to 2
@@ -1527,8 +1558,8 @@ mod tests {
 
     #[test]
     fn test_gjk_spheres_separated() {
-        let shape_a = CollisionShape::sphere(1.0);
-        let shape_b = CollisionShape::sphere(1.0);
+        let shape_a = Shape::sphere(1.0);
+        let shape_b = Shape::sphere(1.0);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(3.0, 0.0, 0.0); // Centers 3 apart, radii sum to 2
@@ -1544,8 +1575,8 @@ mod tests {
 
     #[test]
     fn test_gjk_sphere_box_intersecting() {
-        let shape_a = CollisionShape::sphere(1.0);
-        let shape_b = CollisionShape::box_shape(Vector3::new(0.5, 0.5, 0.5));
+        let shape_a = Shape::sphere(1.0);
+        let shape_b = Shape::box_shape(Vector3::new(0.5, 0.5, 0.5));
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.0, 0.0, 0.0); // Should overlap
@@ -1572,8 +1603,9 @@ mod tests {
             Point3::new(0.5, 0.5, 0.5),
             Point3::new(-0.5, 0.5, 0.5),
         ];
-        let shape_a = CollisionShape::convex_mesh(vertices);
-        let shape_b = CollisionShape::sphere(0.5);
+        let hull = cf_geometry::convex_hull(&vertices, None).unwrap();
+        let shape_a = Shape::convex_mesh(hull);
+        let shape_b = Shape::sphere(0.5);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(0.8, 0.0, 0.0); // Should overlap
@@ -1589,8 +1621,8 @@ mod tests {
 
     #[test]
     fn test_gjk_epa_contact_spheres() {
-        let shape_a = CollisionShape::sphere(1.0);
-        let shape_b = CollisionShape::sphere(1.0);
+        let shape_a = Shape::sphere(1.0);
+        let shape_b = Shape::sphere(1.0);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.5, 0.0, 0.0);
@@ -1615,8 +1647,8 @@ mod tests {
 
     #[test]
     fn test_gjk_tetrahedra() {
-        let shape_a = CollisionShape::tetrahedron(0.5);
-        let shape_b = CollisionShape::tetrahedron(0.5);
+        let shape_a = test_tetrahedron(0.5);
+        let shape_b = test_tetrahedron(0.5);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(0.3, 0.0, 0.0); // Should overlap
@@ -1681,8 +1713,8 @@ mod tests {
 
     #[test]
     fn test_gjk_cylinder_sphere_intersecting() {
-        let shape_a = CollisionShape::cylinder(1.0, 0.5);
-        let shape_b = CollisionShape::sphere(0.5);
+        let shape_a = Shape::cylinder(1.0, 0.5);
+        let shape_b = Shape::sphere(0.5);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(0.8, 0.0, 0.0); // Should overlap
@@ -1698,8 +1730,8 @@ mod tests {
 
     #[test]
     fn test_gjk_cylinder_sphere_separated() {
-        let shape_a = CollisionShape::cylinder(1.0, 0.5);
-        let shape_b = CollisionShape::sphere(0.5);
+        let shape_a = Shape::cylinder(1.0, 0.5);
+        let shape_b = Shape::sphere(0.5);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(2.0, 0.0, 0.0); // Far away
@@ -1715,8 +1747,8 @@ mod tests {
 
     #[test]
     fn test_gjk_cylinder_plane_contact() {
-        let shape_a = CollisionShape::cylinder(1.0, 0.5);
-        let shape_b = CollisionShape::plane(Vector3::z(), 0.0);
+        let shape_a = Shape::cylinder(1.0, 0.5);
+        let shape_b = Shape::plane(Vector3::z(), 0.0);
 
         // Cylinder centered at z=0.5, so bottom cap touches ground at z=-0.5
         let pose_a = pose_at(0.0, 0.0, 0.5);
@@ -1739,8 +1771,8 @@ mod tests {
 
     #[test]
     fn test_gjk_cylinder_cylinder_intersecting() {
-        let shape_a = CollisionShape::cylinder(1.0, 0.5);
-        let shape_b = CollisionShape::cylinder(1.0, 0.5);
+        let shape_a = Shape::cylinder(1.0, 0.5);
+        let shape_b = Shape::cylinder(1.0, 0.5);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(0.8, 0.0, 0.0); // Should overlap
@@ -1799,8 +1831,8 @@ mod tests {
 
     #[test]
     fn test_gjk_ellipsoid_sphere_intersecting() {
-        let shape_a = CollisionShape::ellipsoid_xyz(2.0, 1.0, 0.5);
-        let shape_b = CollisionShape::sphere(0.5);
+        let shape_a = Shape::ellipsoid_xyz(2.0, 1.0, 0.5);
+        let shape_b = Shape::sphere(0.5);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(2.0, 0.0, 0.0); // Just touching at ellipsoid's long axis
@@ -1816,8 +1848,8 @@ mod tests {
 
     #[test]
     fn test_gjk_ellipsoid_sphere_separated() {
-        let shape_a = CollisionShape::ellipsoid_xyz(2.0, 1.0, 0.5);
-        let shape_b = CollisionShape::sphere(0.5);
+        let shape_a = Shape::ellipsoid_xyz(2.0, 1.0, 0.5);
+        let shape_b = Shape::sphere(0.5);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(3.0, 0.0, 0.0); // Far away
@@ -1833,8 +1865,8 @@ mod tests {
 
     #[test]
     fn test_gjk_ellipsoid_plane_contact() {
-        let shape_a = CollisionShape::ellipsoid_xyz(2.0, 1.0, 0.5);
-        let shape_b = CollisionShape::plane(Vector3::z(), 0.0);
+        let shape_a = Shape::ellipsoid_xyz(2.0, 1.0, 0.5);
+        let shape_b = Shape::plane(Vector3::z(), 0.0);
 
         // Ellipsoid centered at z=0.3, so bottom (z-radius = 0.5) penetrates
         let pose_a = pose_at(0.0, 0.0, 0.3);
@@ -1857,8 +1889,8 @@ mod tests {
 
     #[test]
     fn test_gjk_ellipsoid_ellipsoid_intersecting() {
-        let shape_a = CollisionShape::ellipsoid_xyz(1.0, 0.5, 0.5);
-        let shape_b = CollisionShape::ellipsoid_xyz(1.0, 0.5, 0.5);
+        let shape_a = Shape::ellipsoid_xyz(1.0, 0.5, 0.5);
+        let shape_b = Shape::ellipsoid_xyz(1.0, 0.5, 0.5);
 
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.5, 0.0, 0.0); // Should overlap along X
@@ -1879,8 +1911,8 @@ mod tests {
     /// T1: AC1 — separated spheres, analytically derived
     #[test]
     fn test_gjk_distance_separated_spheres() {
-        let shape_a = CollisionShape::sphere(1.0);
-        let shape_b = CollisionShape::sphere(1.0);
+        let shape_a = Shape::sphere(1.0);
+        let shape_b = Shape::sphere(1.0);
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(4.0, 0.0, 0.0);
 
@@ -1906,8 +1938,8 @@ mod tests {
     /// T2: AC2 — overlapping spheres return None
     #[test]
     fn test_gjk_distance_overlapping_spheres_return_none() {
-        let shape_a = CollisionShape::sphere(1.0);
-        let shape_b = CollisionShape::sphere(1.0);
+        let shape_a = Shape::sphere(1.0);
+        let shape_b = Shape::sphere(1.0);
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.0, 0.0, 0.0); // Overlapping: center dist < sum of radii
 
@@ -1925,8 +1957,8 @@ mod tests {
     /// T12: Edge case — spheres just touching (distance ≈ 0)
     #[test]
     fn test_gjk_distance_just_touching_spheres() {
-        let shape_a = CollisionShape::sphere(1.0);
-        let shape_b = CollisionShape::sphere(1.0);
+        let shape_a = Shape::sphere(1.0);
+        let shape_b = Shape::sphere(1.0);
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(2.0, 0.0, 0.0); // Exactly touching
 
@@ -1952,8 +1984,8 @@ mod tests {
     /// T16: AC1 variant — separated boxes, exercises triangle simplex case
     #[test]
     fn test_gjk_distance_separated_boxes() {
-        let shape_a = CollisionShape::box_shape(Vector3::new(0.5, 0.5, 0.5));
-        let shape_b = CollisionShape::box_shape(Vector3::new(0.5, 0.5, 0.5));
+        let shape_a = Shape::box_shape(Vector3::new(0.5, 0.5, 0.5));
+        let shape_b = Shape::box_shape(Vector3::new(0.5, 0.5, 0.5));
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(3.0, 0.0, 0.0); // Separation = 3.0 - 0.5 - 0.5 = 2.0
 
@@ -1974,8 +2006,8 @@ mod tests {
     /// T14: Edge case — ccd_iterations=0 → graceful handling
     #[test]
     fn test_gjk_epa_contact_zero_iterations() {
-        let shape_a = CollisionShape::sphere(1.0);
-        let shape_b = CollisionShape::sphere(1.0);
+        let shape_a = Shape::sphere(1.0);
+        let shape_b = Shape::sphere(1.0);
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.5, 0.0, 0.0);
 
@@ -1988,8 +2020,8 @@ mod tests {
     /// T18: Edge case — ccd_tolerance=0 → solver runs to max iterations
     #[test]
     fn test_gjk_epa_contact_zero_tolerance() {
-        let shape_a = CollisionShape::sphere(1.0);
-        let shape_b = CollisionShape::sphere(1.0);
+        let shape_a = Shape::sphere(1.0);
+        let shape_b = Shape::sphere(1.0);
         let pose_a = pose_at(0.0, 0.0, 0.0);
         let pose_b = pose_at(1.5, 0.0, 0.0);
 

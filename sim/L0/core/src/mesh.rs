@@ -22,9 +22,8 @@
 //! # Usage
 //!
 //! ```ignore
-//! use sim_core::{CollisionShape, TriangleMeshData};
+//! use sim_core::TriangleMeshData;
 //! use nalgebra::Point3;
-//! use std::sync::Arc;
 //!
 //! // Create vertices and triangle indices
 //! let vertices = vec![
@@ -37,9 +36,6 @@
 //!
 //! // Build the mesh with BVH
 //! let mesh_data = TriangleMeshData::new(vertices, indices);
-//!
-//! // Create collision shape
-//! let shape = CollisionShape::triangle_mesh(Arc::new(mesh_data));
 //! ```
 //!
 //! # Performance

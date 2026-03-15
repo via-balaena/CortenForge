@@ -7805,6 +7805,7 @@ name = "sim-bevy"
 version = "0.7.0"
 dependencies = [
  "bevy",
+ "cf-geometry",
  "nalgebra",
  "sim-core",
  "sim-mjcf",

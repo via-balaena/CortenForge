@@ -112,9 +112,6 @@ pub mod island;
 // Collision detection pipeline (dispatch, narrow-phase, contact params)
 pub mod collision;
 
-// Collision shape primitives (canonical source)
-pub mod collision_shape;
-
 // Core simulation algorithms
 pub mod convex_hull;
 pub mod gjk_epa;
@@ -140,8 +137,7 @@ pub mod plugin;
 pub mod batch;
 
 pub use batch::BatchSim;
-pub use cf_geometry::{Aabb, Axis, Bounded};
-pub use collision_shape::CollisionShape;
+pub use cf_geometry::{Aabb, Axis, Bounded, Shape};
 pub use convex_hull::{ConvexHull, convex_hull, quickhull};
 
 pub use contact::{ContactForce, ContactManifold, ContactPoint};

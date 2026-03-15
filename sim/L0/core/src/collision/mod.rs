@@ -20,7 +20,7 @@ mod pairs;
 pub(crate) mod plane;
 pub(crate) mod sdf_collide;
 
-// Note: collide_geoms, geom_to_collision_shape, make_contact_flex_rigid, and
+// Note: collide_geoms, geom_to_shape, make_contact_flex_rigid, and
 // narrowphase_sphere_geom are accessed internally via self::narrow::,
 // self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this
 // module. No pub(crate) re-export needed.

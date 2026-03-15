@@ -23,9 +23,8 @@
 //! # Example
 //!
 //! ```
-//! use sim_core::{SdfGrid, SdfContact, CollisionShape};
+//! use sim_core::{SdfGrid, SdfContact};
 //! use nalgebra::{Point3, Vector3};
-//! use std::sync::Arc;
 //!
 //! // Create an SDF for a sphere (for demonstration)
 //! let resolution = 32;
@@ -42,9 +41,6 @@
 //! // Query distance at a point within the grid
 //! let dist = sdf.distance(Point3::new(1.0, 0.0, 0.0));
 //! assert!(dist.is_some());
-//!
-//! // Create collision shape
-//! let shape = CollisionShape::sdf(Arc::new(sdf));
 //! ```
 
 mod operations;
