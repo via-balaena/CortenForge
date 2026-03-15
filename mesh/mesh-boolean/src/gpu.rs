@@ -146,9 +146,9 @@ impl GpuContext {
             .faces
             .iter()
             .map(|face| {
-                let v0 = mesh.vertices[face[0] as usize].position;
-                let v1 = mesh.vertices[face[1] as usize].position;
-                let v2 = mesh.vertices[face[2] as usize].position;
+                let v0 = mesh.vertices[face[0] as usize];
+                let v1 = mesh.vertices[face[1] as usize];
+                let v2 = mesh.vertices[face[2] as usize];
                 let centroid = (v0.coords + v1.coords + v2.coords) / 3.0;
                 GpuPoint {
                     x: centroid.x as f32,
@@ -164,9 +164,9 @@ impl GpuContext {
             .faces
             .iter()
             .map(|face| {
-                let v0 = other.vertices[face[0] as usize].position;
-                let v1 = other.vertices[face[1] as usize].position;
-                let v2 = other.vertices[face[2] as usize].position;
+                let v0 = other.vertices[face[0] as usize];
+                let v1 = other.vertices[face[1] as usize];
+                let v2 = other.vertices[face[2] as usize];
                 GpuTriangle {
                     v0: [v0.x as f32, v0.y as f32, v0.z as f32, 0.0],
                     v1: [v1.x as f32, v1.y as f32, v1.z as f32, 0.0],
@@ -471,7 +471,7 @@ pub fn is_gpu_available() -> bool {
 )]
 mod tests {
     use super::*;
-    use mesh_types::{Point3, Vertex};
+    use mesh_types::Point3;
 
     fn create_unit_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -488,7 +488,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            mesh.vertices.push(Vertex::new(*v));
+            mesh.vertices.push(*v);
         }
 
         mesh.faces.push([0, 2, 1]);
@@ -522,9 +522,9 @@ mod tests {
 
         // Create small inner mesh
         let mut inner = IndexedMesh::new();
-        inner.vertices.push(Vertex::new(Point3::new(0.4, 0.4, 0.4)));
-        inner.vertices.push(Vertex::new(Point3::new(0.6, 0.4, 0.4)));
-        inner.vertices.push(Vertex::new(Point3::new(0.5, 0.6, 0.4)));
+        inner.vertices.push(Point3::new(0.4, 0.4, 0.4));
+        inner.vertices.push(Point3::new(0.6, 0.4, 0.4));
+        inner.vertices.push(Point3::new(0.5, 0.6, 0.4));
         inner.faces.push([0, 1, 2]);
 
         let classifications = gpu.classify_faces(&inner, &outer_cube, 1e-6).unwrap();

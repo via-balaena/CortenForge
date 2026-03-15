@@ -31,16 +31,16 @@ Each tier builds on the previous. For each exercise:
 
 **Steps:**
 ```rust
-use mesh::types::{IndexedMesh, Vertex};
+use mesh::types::{IndexedMesh, Point3};
 
 fn main() {
     // Create an empty mesh
     let mut mesh = IndexedMesh::new();
 
-    // Add three vertices forming a triangle
-    mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-    mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-    mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+    // Add three vertices (Point3<f64>) forming a triangle
+    mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+    mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 
     // Add one face connecting the vertices
     mesh.faces.push([0, 1, 2]);
@@ -69,7 +69,7 @@ Faces: 1
 
 **Steps:**
 ```rust
-use mesh::types::{unit_cube, MeshBounds};
+use mesh::types::{unit_cube, Bounded};
 
 fn main() {
     let cube = unit_cube();
@@ -78,7 +78,7 @@ fn main() {
     println!("Cube has {} faces", cube.face_count());
 
     // Get bounding box
-    let bounds = cube.bounds();
+    let bounds = cube.aabb();
     println!("Min corner: ({:.1}, {:.1}, {:.1})",
              bounds.min.x, bounds.min.y, bounds.min.z);
     println!("Max corner: ({:.1}, {:.1}, {:.1})",
@@ -101,16 +101,18 @@ Max corner: (1.0, 1.0, 1.0)
 
 ---
 
-### Exercise 1.3: Explore the Mesh Topology Trait
+### Exercise 1.3: Explore IndexedMesh Methods
 
-**Objective:** Understand trait-based polymorphism in the mesh API.
+**Objective:** Understand the inherent methods available on `IndexedMesh`.
 
 **Steps:**
 ```rust
-use mesh::types::{unit_cube, MeshTopology};
+use mesh::types::{unit_cube, IndexedMesh};
 
-fn print_mesh_info<M: MeshTopology>(mesh: &M) {
+fn print_mesh_info(mesh: &IndexedMesh) {
+    println!("This mesh has {} vertices", mesh.vertex_count());
     println!("This mesh has {} faces", mesh.face_count());
+    println!("Is empty: {}", mesh.is_empty());
 }
 
 fn main() {
@@ -120,8 +122,8 @@ fn main() {
 ```
 
 **Your task:**
-- [ ] What other methods are available on `MeshTopology`?
-- [ ] Create a function that accepts any `MeshTopology` and prints vertex count
+- [ ] What other methods are available on `IndexedMesh`? (Try `cargo doc --open`)
+- [ ] Create a function that prints the bounding box of an `IndexedMesh`
 
 ---
 
@@ -234,7 +236,7 @@ fn main() {
 
 **Steps:**
 ```rust
-use mesh::types::{IndexedMesh, Point3, Vertex, unit_cube};
+use mesh::types::{IndexedMesh, Point3, unit_cube};
 use mesh::boolean::union;
 
 fn create_offset_cube(offset_x: f64) -> IndexedMesh {
@@ -243,7 +245,7 @@ fn create_offset_cube(offset_x: f64) -> IndexedMesh {
         (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0),
         (0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0),
     ] {
-        mesh.vertices.push(Vertex::new(Point3::new(x + offset_x, y, z)));
+        mesh.vertices.push(Point3::new(x + offset_x, y, z));
     }
     mesh.faces = vec![
         [0,2,1], [0,3,2], [4,5,6], [4,6,7],
@@ -287,7 +289,7 @@ Stats: faces from A = 12, from B = 12
 
 **Steps:**
 ```rust
-use mesh::types::{IndexedMesh, Point3, Vertex};
+use mesh::types::{IndexedMesh, Point3};
 use mesh::boolean::{multi_union, BooleanConfig};
 
 fn main() {
@@ -300,7 +302,7 @@ fn main() {
                 (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0),
                 (0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0),
             ] {
-                mesh.vertices.push(Vertex::new(Point3::new(x + offset, y, z)));
+                mesh.vertices.push(Point3::new(x + offset, y, z));
             }
             mesh.faces = vec![
                 [0,2,1], [0,3,2], [4,5,6], [4,6,7],
@@ -540,7 +542,7 @@ Track your progress through the learning path:
 ### Tier 1: Foundation
 - [ ] Exercise 1.1: Create Your First Mesh
 - [ ] Exercise 1.2: Use Primitive Generators
-- [ ] Exercise 1.3: Explore the Mesh Topology Trait
+- [ ] Exercise 1.3: Explore IndexedMesh Methods
 
 ### Tier 2: Core Operations
 - [ ] Exercise 2.1: Validate a Mesh

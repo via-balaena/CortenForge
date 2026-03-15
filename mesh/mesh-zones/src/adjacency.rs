@@ -23,14 +23,14 @@ impl FaceAdjacency {
     /// # Example
     ///
     /// ```
-    /// use mesh_types::{IndexedMesh, Vertex};
+    /// use mesh_types::{IndexedMesh, Point3};
     /// use mesh_zones::FaceAdjacency;
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(1.5, 1.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+    /// mesh.vertices.push(Point3::new(1.5, 1.0, 0.0));
     /// mesh.faces.push([0, 1, 2]);
     /// mesh.faces.push([1, 3, 2]);
     ///
@@ -153,14 +153,14 @@ impl FaceAdjacency {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn two_triangles() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(1.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([1, 3, 2]);
         mesh
@@ -169,13 +169,13 @@ mod tests {
     fn disconnected_triangles() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
         // Triangle 1
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         // Triangle 2 (not connected)
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(11.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(11.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([3, 4, 5]);
         mesh

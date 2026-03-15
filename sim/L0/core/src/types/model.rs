@@ -25,7 +25,7 @@ use super::keyframe::Keyframe;
 // External crate types used by Model fields
 use crate::heightfield::HeightFieldData;
 use crate::mesh::TriangleMeshData;
-use crate::sdf::SdfCollisionData;
+use crate::sdf::SdfGrid;
 
 /// Static model definition (like mjModel).
 ///
@@ -541,7 +541,7 @@ pub struct Model {
     pub nsdf: usize,
     /// SDF collision data.
     /// `Arc` for cheap cloning (multiple geoms can reference the same SDF asset).
-    pub sdf_data: Vec<Arc<SdfCollisionData>>,
+    pub sdf_data: Vec<Arc<SdfGrid>>,
 
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.

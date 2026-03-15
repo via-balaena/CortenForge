@@ -21,16 +21,16 @@ use crate::validation::{AssemblyValidation, ClearanceResult, InterferenceResult}
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex, Point3};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_assembly::{Assembly, Part, Connection};
 ///
 /// let mut assembly = Assembly::new("skate_boot");
 ///
 /// // Create a boot mesh
 /// let mut boot = IndexedMesh::new();
-/// boot.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-/// boot.vertices.push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
-/// boot.vertices.push(Vertex::new(Point3::new(5.0, 10.0, 0.0)));
+/// boot.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// boot.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// boot.vertices.push(Point3::new(5.0, 10.0, 0.0));
 /// boot.faces.push([0, 1, 2]);
 ///
 /// // Add the boot as a part
@@ -276,7 +276,7 @@ impl Assembly {
 
         let mut mesh = part.mesh().clone();
         for vertex in &mut mesh.vertices {
-            vertex.position = world_transform * vertex.position;
+            *vertex = world_transform * *vertex;
         }
 
         Some(mesh)
@@ -564,13 +564,11 @@ fn bbox_distance(a: &(Point3<f64>, Point3<f64>), b: &(Point3<f64>, Point3<f64>))
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
-
     fn create_test_mesh() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }

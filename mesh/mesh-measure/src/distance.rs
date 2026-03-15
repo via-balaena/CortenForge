@@ -2,7 +2,7 @@
 //!
 //! Provides point-to-point and point-to-mesh distance calculations.
 
-use mesh_types::{IndexedMesh, MeshTopology, Point3};
+use mesh_types::{IndexedMesh, Point3};
 
 /// Distance measurement result between two points.
 ///

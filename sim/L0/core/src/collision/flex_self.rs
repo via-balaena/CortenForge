@@ -3,9 +3,9 @@
 
 use super::flex_collide::{elem_vertices, nearest_vertex, test_vertex_against_element_faces};
 use super::flex_narrow::{make_contact_flex_flex, make_contact_flex_self};
-use crate::collision_shape::Aabb;
 use crate::mid_phase::{Bvh, BvhPrimitive};
 use crate::types::{Data, Model};
+use cf_geometry::Aabb;
 use nalgebra::{Point3, Vector3};
 
 // =============================================================================

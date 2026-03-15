@@ -85,7 +85,7 @@ impl Landmark {
         self.source_point.or_else(|| {
             self.source_index
                 .zip(mesh)
-                .and_then(|(idx, m)| m.vertices.get(idx).map(|v| v.position))
+                .and_then(|(idx, m)| m.vertices.get(idx).copied())
         })
     }
 
@@ -94,7 +94,7 @@ impl Landmark {
         self.target_point.or_else(|| {
             self.target_index
                 .zip(mesh)
-                .and_then(|(idx, m)| m.vertices.get(idx).map(|v| v.position))
+                .and_then(|(idx, m)| m.vertices.get(idx).copied())
         })
     }
 }
@@ -148,17 +148,18 @@ impl LandmarkParams {
 ///
 /// ```
 /// use mesh_registration::{align_by_landmarks, Landmark, LandmarkParams};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
+/// use nalgebra::Point3;
 ///
 /// let mut source = IndexedMesh::new();
-/// source.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// source.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// source.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+/// source.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// source.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// source.vertices.push(Point3::new(0.0, 1.0, 0.0));
 ///
 /// let mut target = IndexedMesh::new();
-/// target.vertices.push(Vertex::from_coords(5.0, 5.0, 0.0));
-/// target.vertices.push(Vertex::from_coords(6.0, 5.0, 0.0));
-/// target.vertices.push(Vertex::from_coords(5.0, 6.0, 0.0));
+/// target.vertices.push(Point3::new(5.0, 5.0, 0.0));
+/// target.vertices.push(Point3::new(6.0, 5.0, 0.0));
+/// target.vertices.push(Point3::new(5.0, 6.0, 0.0));
 ///
 /// let landmarks = vec![
 ///     Landmark::from_indices(0, 0),
@@ -302,13 +303,12 @@ pub fn align_points_to_points(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
-    use nalgebra::Vector3;
+    use nalgebra::{Point3, Vector3};
 
     fn make_test_mesh(points: &[(f64, f64, f64)]) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
         for (x, y, z) in points {
-            mesh.vertices.push(Vertex::from_coords(*x, *y, *z));
+            mesh.vertices.push(Point3::new(*x, *y, *z));
         }
         mesh
     }
@@ -329,8 +329,8 @@ mod tests {
 
         // Verify alignment
         for (s, t) in source.vertices.iter().zip(target.vertices.iter()) {
-            let aligned = transform.transform_point(&s.position);
-            assert_relative_eq!(aligned.coords, t.position.coords, epsilon = 1e-6);
+            let aligned = transform.transform_point(s);
+            assert_relative_eq!(aligned.coords, t.coords, epsilon = 1e-6);
         }
     }
 
@@ -386,8 +386,8 @@ mod tests {
         // Note: with weighted fitting, the first 3 points won't be perfect
         // but should be much closer than the outlier
         for i in 0..3 {
-            let source_pt = source.vertices[i].position;
-            let target_pt = target.vertices[i].position;
+            let source_pt = source.vertices[i];
+            let target_pt = target.vertices[i];
             let aligned = transform.transform_point(&source_pt);
             let dist = (aligned.coords - target_pt.coords).norm();
             // Should be within 0.5 mm (not perfect due to outlier influence)

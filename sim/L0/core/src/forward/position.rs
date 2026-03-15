@@ -5,10 +5,10 @@
 //! MuJoCo's `engine_core_smooth.c`.
 
 use crate::collision::narrow::GEOM_EPSILON;
-use crate::collision_shape::Aabb;
 use crate::dynamics::compute_body_spatial_inertia;
 use crate::tendon::mj_fwd_tendon;
 use crate::types::{Data, ENABLE_SLEEP, GeomType, MjJointType, Model, SleepState};
+use cf_geometry::Aabb;
 use nalgebra::{Matrix3, Matrix6, Point3, UnitQuaternion, Vector3};
 
 /// Forward kinematics: compute body poses from qpos.

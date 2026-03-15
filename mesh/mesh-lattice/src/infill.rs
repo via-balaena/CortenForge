@@ -7,7 +7,7 @@ use crate::error::LatticeError;
 use crate::generate::generate_lattice;
 use crate::params::LatticeParams;
 use crate::types::LatticeType;
-use mesh_types::{IndexedMesh, MeshTopology};
+use mesh_types::IndexedMesh;
 use nalgebra::Point3;
 
 /// Parameters for infill generation.
@@ -379,13 +379,12 @@ fn compute_bounds(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
     let mut max = Point3::new(f64::MIN, f64::MIN, f64::MIN);
 
     for v in &mesh.vertices {
-        let p = &v.position;
-        min.x = min.x.min(p.x);
-        min.y = min.y.min(p.y);
-        min.z = min.z.min(p.z);
-        max.x = max.x.max(p.x);
-        max.y = max.y.max(p.y);
-        max.z = max.z.max(p.z);
+        min.x = min.x.min(v.x);
+        min.y = min.y.min(v.y);
+        min.z = min.z.min(v.z);
+        max.x = max.x.max(v.x);
+        max.y = max.y.max(v.y);
+        max.z = max.z.max(v.z);
     }
 
     (min, max)
@@ -398,7 +397,7 @@ fn combine_meshes(a: &IndexedMesh, b: &IndexedMesh) -> IndexedMesh {
 
     let base_index = vertices.len() as u32;
 
-    vertices.extend(b.vertices.iter().cloned());
+    vertices.extend(b.vertices.iter().copied());
 
     for face in &b.faces {
         faces.push([
@@ -415,19 +414,19 @@ fn combine_meshes(a: &IndexedMesh, b: &IndexedMesh) -> IndexedMesh {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use nalgebra::Point3;
 
     fn create_test_cube() -> IndexedMesh {
         // Simple unit cube
         let vertices = vec![
-            Vertex::new(Point3::new(0.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(50.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(50.0, 50.0, 0.0)),
-            Vertex::new(Point3::new(0.0, 50.0, 0.0)),
-            Vertex::new(Point3::new(0.0, 0.0, 50.0)),
-            Vertex::new(Point3::new(50.0, 0.0, 50.0)),
-            Vertex::new(Point3::new(50.0, 50.0, 50.0)),
-            Vertex::new(Point3::new(0.0, 50.0, 50.0)),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(50.0, 0.0, 0.0),
+            Point3::new(50.0, 50.0, 0.0),
+            Point3::new(0.0, 50.0, 0.0),
+            Point3::new(0.0, 0.0, 50.0),
+            Point3::new(50.0, 0.0, 50.0),
+            Point3::new(50.0, 50.0, 50.0),
+            Point3::new(0.0, 50.0, 50.0),
         ];
 
         // 12 triangles for the cube

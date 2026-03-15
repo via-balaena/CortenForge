@@ -16,7 +16,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 use mesh_gpu::{GpuContext, GpuSdfParams, try_compute_sdf_gpu};
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 
 /// Create a cube mesh with specified size.
 fn create_cube(half_size: f64) -> IndexedMesh {
@@ -35,7 +35,7 @@ fn create_cube(half_size: f64) -> IndexedMesh {
     ];
 
     for c in &coords {
-        mesh.vertices.push(Vertex::from_coords(c[0], c[1], c[2]));
+        mesh.vertices.push(Point3::new(c[0], c[1], c[2]));
     }
 
     let faces: [[u32; 3]; 12] = [
@@ -88,7 +88,7 @@ fn create_icosphere(subdivisions: u32) -> IndexedMesh {
     ];
 
     for v in &initial_verts {
-        mesh.vertices.push(Vertex::from_coords(v[0], v[1], v[2]));
+        mesh.vertices.push(Point3::new(v[0], v[1], v[2]));
     }
 
     // Initial icosahedron faces
@@ -170,13 +170,13 @@ fn get_midpoint(
         return idx;
     }
 
-    let p0 = &mesh.vertices[i0 as usize].position;
-    let p1 = &mesh.vertices[i1 as usize].position;
+    let p0 = &mesh.vertices[i0 as usize];
+    let p1 = &mesh.vertices[i1 as usize];
     let mid = (p0.coords + p1.coords) / 2.0;
     let mid_normalized = mid.normalize();
 
     let idx = mesh.vertices.len() as u32;
-    mesh.vertices.push(Vertex::from_coords(
+    mesh.vertices.push(Point3::new(
         mid_normalized.x,
         mid_normalized.y,
         mid_normalized.z,

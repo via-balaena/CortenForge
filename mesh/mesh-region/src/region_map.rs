@@ -182,12 +182,12 @@ impl RegionMap {
     /// # Example
     ///
     /// ```
-    /// use mesh_types::{IndexedMesh, Vertex, Point3};
+    /// use mesh_types::{IndexedMesh, Point3};
     /// use mesh_region::{RegionMap, MeshRegion};
     ///
     /// let mut mesh = IndexedMesh::new();
     /// for i in 0..5 {
-    ///     mesh.vertices.push(Vertex::new(Point3::new(i as f64, 0.0, 0.0)));
+    ///     mesh.vertices.push(Point3::new(i as f64, 0.0, 0.0));
     /// }
     ///
     /// let mut regions = RegionMap::new();

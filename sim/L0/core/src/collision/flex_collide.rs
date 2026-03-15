@@ -6,9 +6,9 @@
 
 use super::flex_narrow::{make_contact_flex_flex, make_contact_flex_self, sphere_triangle_contact};
 use super::flex_self::collide_element_pair;
-use crate::collision_shape::Aabb;
 use crate::mid_phase::{Bvh, BvhPrimitive};
 use crate::types::{Data, Model};
+use cf_geometry::Aabb;
 use nalgebra::{Point3, Vector3};
 
 // Re-export public items so existing import paths in collision/mod.rs continue
@@ -288,7 +288,7 @@ mod spec_e_tests {
     use super::super::flex_narrow::narrowphase_sphere_geom;
     use crate::heightfield::HeightFieldData;
     use crate::mesh::TriangleMeshData;
-    use crate::sdf::SdfCollisionData;
+    use crate::sdf::SdfGrid;
     use crate::types::{GeomType, Model};
     use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
     use std::sync::Arc;
@@ -429,7 +429,7 @@ mod spec_e_tests {
         let mut model = make_single_geom_model(GeomType::Sdf);
 
         // Sphere SDF, radius 1.0, centered at origin, 32 resolution
-        let sdf = SdfCollisionData::sphere(Point3::origin(), 1.0, 32, 1.0);
+        let sdf = SdfGrid::sphere(Point3::origin(), 1.0, 32, 1.0);
         model.sdf_data = vec![Arc::new(sdf)];
         model.geom_sdf = vec![Some(0)];
 
@@ -536,7 +536,7 @@ mod spec_e_tests {
 
         // SDF: vertex well above
         let mut model = make_single_geom_model(GeomType::Sdf);
-        let sdf = SdfCollisionData::sphere(Point3::origin(), 1.0, 32, 1.0);
+        let sdf = SdfGrid::sphere(Point3::origin(), 1.0, 32, 1.0);
         model.sdf_data = vec![Arc::new(sdf)];
         model.geom_sdf = vec![Some(0)];
         let result = narrowphase_sphere_geom(
@@ -632,7 +632,7 @@ mod spec_e_tests {
     #[test]
     fn ts3_sdf_vertex_outside_bbox() {
         let mut model = make_single_geom_model(GeomType::Sdf);
-        let sdf = SdfCollisionData::sphere(Point3::origin(), 1.0, 32, 1.0);
+        let sdf = SdfGrid::sphere(Point3::origin(), 1.0, 32, 1.0);
         model.sdf_data = vec![Arc::new(sdf)];
         model.geom_sdf = vec![Some(0)];
 

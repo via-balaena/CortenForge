@@ -25,12 +25,12 @@ use crate::distance::DistanceField;
 ///
 /// ```
 /// use mesh_geodesic::GeodesicSolver;
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let solver = GeodesicSolver::new(&mesh);
@@ -321,15 +321,15 @@ impl GeodesicSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_square_mesh() -> IndexedMesh {
         // Square with vertices at corners, two triangles
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0)); // 0
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0)); // 1
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0)); // 2
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0)); // 3
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0)); // 0
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0)); // 1
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0)); // 2
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0)); // 3
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 2, 3]);
         mesh

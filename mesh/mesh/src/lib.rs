@@ -32,7 +32,7 @@
 //! # Module Organization
 //!
 //! ## Foundation
-//! - [`types`] - Core data structures: `IndexedMesh`, `Vertex`, `Triangle`, `Aabb`
+//! - [`types`] - Core data structures: `IndexedMesh`, `Triangle`, `Aabb`, `AttributedMesh`
 //! - [`io`] - File I/O for STL, OBJ, PLY, 3MF, STEP formats
 //! - [`transform`] - Transformations, PCA, RANSAC plane fitting
 //!
@@ -91,7 +91,7 @@
 // Re-exports
 // =============================================================================
 
-/// Core data structures: `IndexedMesh`, `Vertex`, `Triangle`, `Aabb`.
+/// Core data structures: `IndexedMesh`, `Triangle`, `Aabb`, `AttributedMesh`.
 pub use mesh_types as types;
 
 /// File I/O for STL, OBJ, PLY, 3MF, STEP formats.
@@ -185,7 +185,9 @@ pub use mesh_gpu as gpu;
 /// ```
 pub mod prelude {
     // Core types
-    pub use mesh_types::{Aabb, IndexedMesh, MeshBounds, MeshTopology, Triangle, Vertex};
+    pub use mesh_types::{
+        Aabb, AttributedMesh, Bounded, IndexedMesh, Point3, Triangle, VertexColor,
+    };
 
     // I/O
     pub use mesh_io::{MeshFormat, load_mesh, save_mesh};

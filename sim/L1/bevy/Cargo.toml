@@ -11,6 +11,9 @@ keywords = ["physics", "simulation", "visualization", "bevy", "robotics"]
 categories = ["simulation", "visualization", "game-development"]
 
 [dependencies]
+# Shared geometry kernel
+cf-geometry = { path = "../../../crates/cf-geometry" }
+
 # Layer 0 simulation crates
 sim-types = { path = "../../L0/types" }
 sim-core = { path = "../../L0/core" }

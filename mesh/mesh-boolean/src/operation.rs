@@ -16,7 +16,7 @@ use crate::edge_insert::insert_edges;
 use crate::error::{BooleanError, BooleanResult};
 use crate::intersect::triangles_intersect;
 use hashbrown::{HashMap, HashSet};
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 
 /// Statistics from a boolean operation.
 #[derive(Debug, Clone, Default)]
@@ -264,18 +264,18 @@ fn find_intersecting_pairs(
     let mut pairs = Vec::new();
 
     for (ai, face_a) in mesh_a.faces.iter().enumerate() {
-        let a0 = mesh_a.vertices[face_a[0] as usize].position;
-        let a1 = mesh_a.vertices[face_a[1] as usize].position;
-        let a2 = mesh_a.vertices[face_a[2] as usize].position;
+        let a0 = mesh_a.vertices[face_a[0] as usize];
+        let a1 = mesh_a.vertices[face_a[1] as usize];
+        let a2 = mesh_a.vertices[face_a[2] as usize];
 
-        let bbox_a = crate::bvh::Aabb::from_triangle(&a0, &a1, &a2);
+        let bbox_a = cf_geometry::Aabb::from_triangle(&a0, &a1, &a2);
         let candidates = bvh_b.query(&bbox_a, epsilon);
 
         for bi in candidates {
             let face_b = &mesh_b.faces[bi as usize];
-            let b0 = mesh_b.vertices[face_b[0] as usize].position;
-            let b1 = mesh_b.vertices[face_b[1] as usize].position;
-            let b2 = mesh_b.vertices[face_b[2] as usize].position;
+            let b0 = mesh_b.vertices[face_b[0] as usize];
+            let b1 = mesh_b.vertices[face_b[1] as usize];
+            let b2 = mesh_b.vertices[face_b[2] as usize];
 
             if triangles_intersect(&a0, &a1, &a2, &b0, &b1, &b2, epsilon) {
                 pairs.push((ai as u32, bi));
@@ -318,7 +318,7 @@ fn handle_non_overlapping(
             // Combine both meshes
             let mut result = mesh_a.clone();
             let offset = result.vertices.len() as u32;
-            result.vertices.extend(mesh_b.vertices.iter().cloned());
+            result.vertices.extend(mesh_b.vertices.iter().copied());
             for face in &mesh_b.faces {
                 result
                     .faces
@@ -358,8 +358,8 @@ fn handle_non_intersecting(
     use crate::classify::point_in_mesh_robust;
 
     // Check if A is inside B or vice versa
-    let a_sample = mesh_a.vertices.first().map(|v| v.position);
-    let b_sample = mesh_b.vertices.first().map(|v| v.position);
+    let a_sample = mesh_a.vertices.first().copied();
+    let b_sample = mesh_b.vertices.first().copied();
 
     let a_inside_b = a_sample.is_some_and(|p| {
         point_in_mesh_robust(&p, mesh_b, Some(bvh_b), config.classification_tolerance)
@@ -377,7 +377,7 @@ fn handle_non_intersecting(
         (BooleanOp::Union, false, false) => {
             let mut result = mesh_a.clone();
             let offset = result.vertices.len() as u32;
-            result.vertices.extend(mesh_b.vertices.iter().cloned());
+            result.vertices.extend(mesh_b.vertices.iter().copied());
             for face in &mesh_b.faces {
                 result
                     .faces
@@ -475,23 +475,17 @@ fn add_face_to_result(
     let new_face: [u32; 3] = [
         *vertex_map.entry(face[0]).or_insert_with(|| {
             let idx = result.vertices.len() as u32;
-            result
-                .vertices
-                .push(source.vertices[face[0] as usize].clone());
+            result.vertices.push(source.vertices[face[0] as usize]);
             idx
         }),
         *vertex_map.entry(face[1]).or_insert_with(|| {
             let idx = result.vertices.len() as u32;
-            result
-                .vertices
-                .push(source.vertices[face[1] as usize].clone());
+            result.vertices.push(source.vertices[face[1] as usize]);
             idx
         }),
         *vertex_map.entry(face[2]).or_insert_with(|| {
             let idx = result.vertices.len() as u32;
-            result
-                .vertices
-                .push(source.vertices[face[2] as usize].clone());
+            result.vertices.push(source.vertices[face[2] as usize]);
             idx
         }),
     ];
@@ -526,12 +520,12 @@ fn weld_vertices(mesh: &mut IndexedMesh, tolerance: f64) {
 
     let tol_sq = tolerance * tolerance;
     let mut vertex_map: Vec<u32> = (0..mesh.vertices.len() as u32).collect();
-    let mut kept_vertices: Vec<Vertex> = Vec::new();
+    let mut kept_vertices: Vec<Point3<f64>> = Vec::new();
 
     for (i, v) in mesh.vertices.iter().enumerate() {
         let mut found = None;
         for (j, kv) in kept_vertices.iter().enumerate() {
-            let dist_sq = (v.position - kv.position).norm_squared();
+            let dist_sq = (v - kv).norm_squared();
             if dist_sq < tol_sq {
                 found = Some(j);
                 break;
@@ -542,7 +536,7 @@ fn weld_vertices(mesh: &mut IndexedMesh, tolerance: f64) {
             vertex_map[i] = j as u32;
         } else {
             vertex_map[i] = kept_vertices.len() as u32;
-            kept_vertices.push(v.clone());
+            kept_vertices.push(*v);
         }
     }
 
@@ -584,7 +578,7 @@ fn remove_unreferenced_vertices(mesh: &mut IndexedMesh) {
     for (old_idx, (is_ref, vertex)) in referenced.iter().zip(mesh.vertices.iter()).enumerate() {
         if *is_ref {
             new_indices[old_idx] = new_vertices.len() as u32;
-            new_vertices.push(vertex.clone());
+            new_vertices.push(*vertex);
         }
     }
 
@@ -765,8 +759,6 @@ pub fn intersection_with_config(
 )]
 mod tests {
     use super::*;
-    use mesh_types::Point3;
-
     fn create_unit_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
@@ -782,7 +774,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            mesh.vertices.push(Vertex::new(*v));
+            mesh.vertices.push(*v);
         }
 
         // 12 triangles
@@ -817,7 +809,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            mesh.vertices.push(Vertex::new(*v));
+            mesh.vertices.push(*v);
         }
 
         mesh.faces.push([0, 2, 1]);
@@ -884,9 +876,9 @@ mod tests {
     #[test]
     fn test_weld_vertices() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(1e-8, 0.0, 0.0))); // Very close
-        mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1e-8, 0.0, 0.0)); // Very close
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         weld_vertices(&mut mesh, 1e-6);
@@ -898,9 +890,9 @@ mod tests {
     #[test]
     fn test_remove_degenerate_faces() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]); // Valid
         mesh.faces.push([0, 0, 1]); // Degenerate
         mesh.faces.push([1, 2, 2]); // Degenerate
@@ -913,10 +905,10 @@ mod tests {
     #[test]
     fn test_remove_unreferenced_vertices() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(5.0, 5.0, 5.0))); // Unreferenced
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(5.0, 5.0, 5.0)); // Unreferenced
         mesh.faces.push([0, 1, 2]);
 
         remove_unreferenced_vertices(&mut mesh);

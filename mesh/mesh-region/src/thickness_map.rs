@@ -214,13 +214,13 @@ impl ThicknessMap {
     /// # Example
     ///
     /// ```
-    /// use mesh_types::{IndexedMesh, Vertex, Point3};
+    /// use mesh_types::{IndexedMesh, Point3};
     /// use mesh_region::{ThicknessMap, MeshRegion};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-    /// mesh.vertices.push(Vertex::new(Point3::new(5.0, 0.0, 0.0)));
-    /// mesh.vertices.push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(5.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
     ///
     /// let from = MeshRegion::from_vertices("from", [0]);
     /// let to = MeshRegion::from_vertices("to", [2]);
@@ -268,7 +268,7 @@ impl ThicknessMap {
                     }
 
                     // Project onto axis
-                    let to_vertex = vertex.position - fc;
+                    let to_vertex = *vertex - fc;
                     let t = to_vertex.dot(&axis_normalized) / axis_len;
                     let t_clamped = t.clamp(0.0, 1.0);
 
@@ -358,7 +358,7 @@ fn compute_centroid(mesh: &IndexedMesh, vertices: &HashSet<u32>) -> Option<Point
     let sum: Vector3<f64> = vertices
         .iter()
         .filter_map(|&vi| mesh.vertices.get(vi as usize))
-        .map(|v| v.position.coords)
+        .map(|v| v.coords)
         .sum();
 
     #[allow(clippy::cast_precision_loss)]
@@ -368,7 +368,7 @@ fn compute_centroid(mesh: &IndexedMesh, vertices: &HashSet<u32>) -> Option<Point
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     #[test]
     fn test_new_map() {
@@ -413,9 +413,9 @@ mod tests {
     #[test]
     fn test_face_thickness_averaged() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         let mut map = ThicknessMap::new(2.0);
@@ -466,9 +466,9 @@ mod tests {
     #[test]
     fn test_gradient() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(5.0, 0.0, 0.0)));
-        mesh.vertices.push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(5.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
 
         let from = MeshRegion::from_vertices("from", [0]);
         let to = MeshRegion::from_vertices("to", [2]);

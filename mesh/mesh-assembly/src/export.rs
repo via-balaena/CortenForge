@@ -240,7 +240,7 @@ fn generate_3mf_model_xml(assembly: &Assembly) -> String {
             for v in &part.mesh().vertices {
                 xml.push_str(&format!(
                     "          <vertex x=\"{:.6}\" y=\"{:.6}\" z=\"{:.6}\"/>\n",
-                    v.position.x, v.position.y, v.position.z
+                    v.x, v.y, v.z
                 ));
             }
 

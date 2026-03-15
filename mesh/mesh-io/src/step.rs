@@ -38,7 +38,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 use truck_meshalgo::prelude::*;
 use truck_polymesh::PolygonMesh;
 use truck_stepio::r#in::Table;
@@ -133,7 +133,7 @@ fn append_polymesh_to_indexed(poly: &PolygonMesh, mesh: &mut IndexedMesh) {
 
     // Add vertices from positions
     for pos in poly.positions() {
-        mesh.vertices.push(Vertex::from_coords(pos.x, pos.y, pos.z));
+        mesh.vertices.push(Point3::new(pos.x, pos.y, pos.z));
     }
 
     // Add faces - handle both tri and quad faces
@@ -202,9 +202,9 @@ pub fn save_step<P: AsRef<Path>>(mesh: &IndexedMesh, path: P) -> IoResult<()> {
     let mut faces = Vec::with_capacity(mesh.faces.len());
 
     for &[i0, i1, i2] in &mesh.faces {
-        let v0 = &mesh.vertices[i0 as usize].position;
-        let v1 = &mesh.vertices[i1 as usize].position;
-        let v2 = &mesh.vertices[i2 as usize].position;
+        let v0 = &mesh.vertices[i0 as usize];
+        let v1 = &mesh.vertices[i1 as usize];
+        let v2 = &mesh.vertices[i2 as usize];
 
         let p0 = Point3::new(v0.x, v0.y, v0.z);
         let p1 = Point3::new(v1.x, v1.y, v1.z);
@@ -296,9 +296,9 @@ mod tests {
 
     fn create_test_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }

@@ -1,7 +1,6 @@
 //! Mesh collision dispatch — routes mesh-geom pairs to the standalone mesh library.
 
 use super::narrow::{GEOM_EPSILON, make_contact_from_geoms, multiccd_contacts};
-use crate::collision_shape::CollisionShape;
 use crate::gjk_epa::{gjk_distance, gjk_epa_contact};
 use crate::mesh::{
     MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact,
@@ -10,6 +9,7 @@ use crate::mesh::{
 use crate::types::{
     Contact, DISABLE_MIDPHASE, ENABLE_MULTICCD, GeomType, Model, disabled, enabled,
 };
+use cf_geometry::Shape;
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
 
@@ -61,8 +61,8 @@ pub fn collide_with_mesh(
             // (MuJoCo-conformant path). Early return: hull path produces
             // Contact directly, bypassing the MeshContact→Contact conversion.
             if let (Some(hull1), Some(hull2)) = (mesh1.convex_hull(), mesh2.convex_hull()) {
-                let shape1 = CollisionShape::convex_mesh_from_hull(hull1);
-                let shape2 = CollisionShape::convex_mesh_from_hull(hull2);
+                let shape1 = Shape::convex_mesh(hull1.clone());
+                let shape2 = Shape::convex_mesh(hull2.clone());
 
                 if let Some(gjk) = gjk_epa_contact(
                     &shape1,

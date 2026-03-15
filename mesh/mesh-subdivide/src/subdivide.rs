@@ -5,7 +5,7 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use hashbrown::{HashMap, HashSet};
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 use tracing::debug;
 
 use crate::error::{SubdivideError, SubdivideResult};
@@ -24,14 +24,14 @@ use crate::result::SubdivisionResult;
 /// # Examples
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_subdivide::{subdivide_mesh, SubdivideParams, SubdivisionMethod};
 ///
 /// // Create a simple triangle mesh
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// // Subdivide with Loop subdivision
@@ -161,8 +161,8 @@ fn subdivide_midpoint(mesh: &IndexedMesh) -> IndexedMesh {
 fn get_or_create_midpoint(
     v0: u32,
     v1: u32,
-    original_vertices: &[Vertex],
-    new_vertices: &mut Vec<Vertex>,
+    original_vertices: &[Point3<f64>],
+    new_vertices: &mut Vec<Point3<f64>>,
     edge_midpoints: &mut HashMap<(u32, u32), u32>,
 ) -> u32 {
     let edge = normalize_edge(v0, v1);
@@ -172,9 +172,9 @@ fn get_or_create_midpoint(
     }
 
     // Calculate midpoint
-    let p0 = &original_vertices[v0 as usize].position;
-    let p1 = &original_vertices[v1 as usize].position;
-    let midpoint = Vertex::from_coords(
+    let p0 = &original_vertices[v0 as usize];
+    let p1 = &original_vertices[v1 as usize];
+    let midpoint = Point3::new(
         (p0.x + p1.x) * 0.5,
         (p0.y + p1.y) * 0.5,
         (p0.z + p1.z) * 0.5,
@@ -209,13 +209,13 @@ fn subdivide_loop(mesh: &IndexedMesh, params: &SubdivideParams) -> IndexedMesh {
             // Keep boundary vertices in place or use boundary rules
             boundary_vertex_position(vi as u32, &mesh.vertices, &boundary_edges)
         } else if neighbors.is_empty() {
-            vertex.position
+            *vertex
         } else {
             // Interior vertex - apply Loop's smoothing rule
-            interior_vertex_position(&vertex.position, neighbors, &mesh.vertices)
+            interior_vertex_position(vertex, neighbors, &mesh.vertices)
         };
 
-        new_vertices.push(Vertex::from_coords(new_pos.x, new_pos.y, new_pos.z));
+        new_vertices.push(new_pos);
     }
 
     // Create edge midpoints (even vertices) with Loop's edge rule
@@ -339,7 +339,7 @@ type Pos = nalgebra::Point3<f64>;
 /// Calculate new position for boundary vertex using Loop's boundary rule.
 fn boundary_vertex_position(
     v: u32,
-    vertices: &[Vertex],
+    vertices: &[Point3<f64>],
     boundary_edges: &HashSet<(u32, u32)>,
 ) -> Pos {
     // Find the two boundary neighbors
@@ -352,12 +352,12 @@ fn boundary_vertex_position(
         }
     }
 
-    let p = &vertices[v as usize].position;
+    let p = &vertices[v as usize];
 
     if neighbors.len() == 2 {
         // Apply boundary rule: 3/4 * v + 1/8 * (n1 + n2)
-        let n1 = &vertices[neighbors[0] as usize].position;
-        let n2 = &vertices[neighbors[1] as usize].position;
+        let n1 = &vertices[neighbors[0] as usize];
+        let n2 = &vertices[neighbors[1] as usize];
 
         Pos::new(
             0.75_f64.mul_add(p.x, 0.125 * (n1.x + n2.x)),
@@ -371,7 +371,7 @@ fn boundary_vertex_position(
 }
 
 /// Calculate new position for interior vertex using Loop's interior rule.
-fn interior_vertex_position(vertex: &Pos, neighbors: &[u32], vertices: &[Vertex]) -> Pos {
+fn interior_vertex_position(vertex: &Pos, neighbors: &[u32], vertices: &[Point3<f64>]) -> Pos {
     let n = neighbors.len();
     if n == 0 {
         return *vertex;
@@ -391,7 +391,7 @@ fn interior_vertex_position(vertex: &Pos, neighbors: &[u32], vertices: &[Vertex]
     let mut sum_y = 0.0;
     let mut sum_z = 0.0;
     for &ni in neighbors {
-        let np = &vertices[ni as usize].position;
+        let np = &vertices[ni as usize];
         sum_x += np.x;
         sum_y += np.y;
         sum_z += np.z;
@@ -413,8 +413,8 @@ fn interior_vertex_position(vertex: &Pos, neighbors: &[u32], vertices: &[Vertex]
 fn get_or_create_loop_edge_vertex(
     v0: u32,
     v1: u32,
-    vertices: &[Vertex],
-    new_vertices: &mut Vec<Vertex>,
+    vertices: &[Point3<f64>],
+    new_vertices: &mut Vec<Point3<f64>>,
     edge_midpoints: &mut HashMap<(u32, u32), u32>,
     _boundary_edges: &HashSet<(u32, u32)>,
     _edge_faces: &HashMap<(u32, u32), Vec<usize>>,
@@ -426,11 +426,11 @@ fn get_or_create_loop_edge_vertex(
         return idx;
     }
 
-    let p0 = &vertices[v0 as usize].position;
-    let p1 = &vertices[v1 as usize].position;
+    let p0 = &vertices[v0 as usize];
+    let p1 = &vertices[v1 as usize];
 
     // Use simple midpoint for all edges
-    let new_pos = Vertex::from_coords(
+    let new_pos = Point3::new(
         (p0.x + p1.x) * 0.5,
         (p0.y + p1.y) * 0.5,
         (p0.z + p1.z) * 0.5,
@@ -455,19 +455,19 @@ mod tests {
 
     fn make_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
 
     fn make_two_triangles() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(1.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([1, 3, 2]);
         mesh
@@ -484,7 +484,7 @@ mod tests {
     #[test]
     fn test_subdivide_no_faces() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
         let params = SubdivideParams::default();
         let result = subdivide_mesh(&mesh, &params);
         assert!(matches!(result, Err(SubdivideError::NoFaces)));

@@ -20,17 +20,17 @@ mod pairs;
 pub(crate) mod plane;
 pub(crate) mod sdf_collide;
 
-// Note: collide_geoms, geom_to_collision_shape, make_contact_flex_rigid, and
+// Note: collide_geoms, geom_to_shape, make_contact_flex_rigid, and
 // narrowphase_sphere_geom are accessed internally via self::narrow::,
 // self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this
 // module. No pub(crate) re-export needed.
 
-use crate::collision_shape::Aabb;
 use crate::forward::{SweepAndPrune, aabb_from_geom};
 use crate::types::{
     DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
     GeomType, Model, SleepState, disabled, enabled,
 };
+use cf_geometry::Aabb;
 use nalgebra::{Point3, Vector3};
 
 use self::hfield::collide_hfield_multi;

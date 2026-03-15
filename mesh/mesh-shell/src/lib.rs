@@ -13,14 +13,14 @@
 //! The recommended way to generate shells is using the [`ShellBuilder`]:
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_shell::ShellBuilder;
 //!
 //! // Create a mesh (in practice, load from file)
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! // Generate shell with defaults
@@ -33,13 +33,13 @@
 //! # Advanced Configuration
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_shell::ShellBuilder;
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! let result = ShellBuilder::new(&mesh)
@@ -55,13 +55,13 @@
 //! For more control, use the low-level functions directly:
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_shell::{generate_shell, ShellParams, validate_shell};
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! // Generate shell with custom params

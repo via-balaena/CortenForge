@@ -1,6 +1,6 @@
 //! Narrow-phase collision dispatch — selects analytical or GJK/EPA path for a geom pair.
 //!
-//! Contains the top-level `collide_geoms` dispatcher, the `geom_to_collision_shape` converter,
+//! Contains the top-level `collide_geoms` dispatcher, the `geom_to_shape` converter,
 //! `make_contact_from_geoms` contact constructor, `apply_pair_overrides` for mechanism-2
 //! contacts, and shared collision constants.
 
@@ -16,12 +16,12 @@ use super::sdf_collide::collide_with_sdf;
 
 use super::hfield::MAX_CONTACTS_PER_PAIR;
 use super::{assign_friction, assign_imp, assign_ref, contact_param};
-use crate::collision_shape::CollisionShape;
 use crate::gjk_epa::{GjkContact, gjk_distance, gjk_epa_contact, support_face_points};
 use crate::types::{
     Contact, ContactPair, ENABLE_MULTICCD, ENABLE_OVERRIDE, GeomType, Model, compute_tangent_frame,
     enabled,
 };
+use cf_geometry::Shape;
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
 
@@ -190,8 +190,8 @@ pub fn collide_geoms(
     }
 
     // Slow path: Build shapes and poses for GJK/EPA (cylinder-cylinder, cylinder-box, ellipsoid-*, and fallback cases)
-    let shape1 = geom_to_collision_shape(type1, size1);
-    let shape2 = geom_to_collision_shape(type2, size2);
+    let shape1 = geom_to_shape(type1, size1);
+    let shape2 = geom_to_shape(type2, size2);
 
     // Build poses for GJK/EPA - expensive quaternion conversion
     let quat1 = UnitQuaternion::from_matrix(&mat1);
@@ -200,17 +200,17 @@ pub fn collide_geoms(
     let pose2 = Pose::from_position_rotation(Point3::from(pos2), quat2);
 
     // Use GJK/EPA for general convex collision
-    let Some(collision_shape1) = shape1 else {
+    let Some(shape1) = shape1 else {
         return vec![];
     };
-    let Some(collision_shape2) = shape2 else {
+    let Some(shape2) = shape2 else {
         return vec![];
     };
 
     if let Some(result) = gjk_epa_contact(
-        &collision_shape1,
+        &shape1,
         &pose1,
-        &collision_shape2,
+        &shape2,
         &pose2,
         model.ccd_iterations,
         model.ccd_tolerance,
@@ -219,9 +219,9 @@ pub fn collide_geoms(
             // MULTICCD: generate multiple contacts for flat contact surfaces
             if enabled(model, ENABLE_MULTICCD) {
                 let multi = multiccd_contacts(
-                    &collision_shape1,
+                    &shape1,
                     &pose1,
-                    &collision_shape2,
+                    &shape2,
                     &pose2,
                     &result,
                     model.ccd_iterations,
@@ -258,9 +258,9 @@ pub fn collide_geoms(
         // MuJoCo's convex solver returns separation distance for non-overlapping shapes;
         // CortenForge uses gjk_distance() as the equivalent.
         if let Some(dist_result) = gjk_distance(
-            &collision_shape1,
+            &shape1,
             &pose1,
-            &collision_shape2,
+            &shape2,
             &pose2,
             model.ccd_iterations,
             model.ccd_tolerance,
@@ -305,9 +305,9 @@ const MULTICCD_DEDUP_DIST: f64 = 1e-4;
 /// contact points on flat surfaces. Returns 1-4 contacts.
 /// Only called when `ENABLE_MULTICCD` is set.
 pub fn multiccd_contacts(
-    shape_a: &CollisionShape,
+    shape_a: &Shape,
     pose_a: &Pose,
-    _shape_b: &CollisionShape,
+    _shape_b: &Shape,
     _pose_b: &Pose,
     primary: &GjkContact,
     _max_iterations: usize,
@@ -351,21 +351,21 @@ pub fn multiccd_contacts(
 // Shape conversion
 // ============================================================================
 
-/// Convert `MuJoCo` `GeomType` to `CollisionShape`.
+/// Convert `MuJoCo` `GeomType` to `cf_geometry::Shape`.
 #[allow(clippy::match_same_arms)] // Plane and Mesh both return None but for different reasons
-pub fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<CollisionShape> {
+pub fn geom_to_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Shape> {
     match geom_type {
-        GeomType::Sphere => Some(CollisionShape::Sphere { radius: size.x }),
-        GeomType::Box => Some(CollisionShape::Box { half_extents: size }),
-        GeomType::Capsule => Some(CollisionShape::Capsule {
+        GeomType::Sphere => Some(Shape::Sphere { radius: size.x }),
+        GeomType::Box => Some(Shape::Box { half_extents: size }),
+        GeomType::Capsule => Some(Shape::Capsule {
             half_length: size.y, // MuJoCo: size[0]=radius, size[1]=half_length
             radius: size.x,
         }),
-        GeomType::Cylinder => Some(CollisionShape::Cylinder {
+        GeomType::Cylinder => Some(Shape::Cylinder {
             half_length: size.y,
             radius: size.x,
         }),
-        GeomType::Ellipsoid => Some(CollisionShape::Ellipsoid { radii: size }),
+        GeomType::Ellipsoid => Some(Shape::Ellipsoid { radii: size }),
         GeomType::Plane => None,  // Handled via collide_with_plane()
         GeomType::Mesh => None,   // Handled via collide_with_mesh()
         GeomType::Hfield => None, // Handled via collide_hfield_multi at broadphase level

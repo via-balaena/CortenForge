@@ -13,20 +13,21 @@
 //!     align_multiple_scans, merge_scans,
 //!     MultiAlignmentParams, MergeParams,
 //! };
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::IndexedMesh;
+//! use nalgebra::Point3;
 //!
 //! // Create two overlapping scans
 //! let mut scan1 = IndexedMesh::new();
-//! scan1.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! scan1.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! scan1.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-//! scan1.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
+//! scan1.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! scan1.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! scan1.vertices.push(Point3::new(0.0, 1.0, 0.0));
+//! scan1.vertices.push(Point3::new(0.0, 0.0, 1.0));
 //!
 //! let mut scan2 = IndexedMesh::new();
-//! scan2.vertices.push(Vertex::from_coords(0.1, 0.0, 0.0));
-//! scan2.vertices.push(Vertex::from_coords(1.1, 0.0, 0.0));
-//! scan2.vertices.push(Vertex::from_coords(0.1, 1.0, 0.0));
-//! scan2.vertices.push(Vertex::from_coords(0.1, 0.0, 1.0));
+//! scan2.vertices.push(Point3::new(0.1, 0.0, 0.0));
+//! scan2.vertices.push(Point3::new(1.1, 0.0, 0.0));
+//! scan2.vertices.push(Point3::new(0.1, 1.0, 0.0));
+//! scan2.vertices.push(Point3::new(0.1, 0.0, 1.0));
 //!
 //! let scans = vec![scan1, scan2];
 //!
@@ -184,16 +185,17 @@ impl std::fmt::Display for MultiAlignmentResult {
 ///
 /// ```
 /// use mesh_scan::multiscan::{align_multiple_scans, MultiAlignmentParams};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
+/// use nalgebra::Point3;
 ///
 /// let mut scan1 = IndexedMesh::new();
 /// for i in 0..10 {
-///     scan1.vertices.push(Vertex::from_coords(f64::from(i), 0.0, 0.0));
+///     scan1.vertices.push(Point3::new(f64::from(i), 0.0, 0.0));
 /// }
 ///
 /// let mut scan2 = IndexedMesh::new();
 /// for i in 0..10 {
-///     scan2.vertices.push(Vertex::from_coords(f64::from(i) + 0.1, 0.0, 0.0));
+///     scan2.vertices.push(Point3::new(f64::from(i) + 0.1, 0.0, 0.0));
 /// }
 ///
 /// let scans = vec![scan1, scan2];
@@ -307,16 +309,17 @@ pub fn align_multiple_scans(
 /// use mesh_scan::multiscan::{
 ///     align_and_merge, MultiAlignmentParams, MergeParams,
 /// };
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
+/// use nalgebra::Point3;
 ///
 /// let mut scan1 = IndexedMesh::new();
 /// for i in 0..5 {
-///     scan1.vertices.push(Vertex::from_coords(f64::from(i), 0.0, 0.0));
+///     scan1.vertices.push(Point3::new(f64::from(i), 0.0, 0.0));
 /// }
 ///
 /// let mut scan2 = IndexedMesh::new();
 /// for i in 0..5 {
-///     scan2.vertices.push(Vertex::from_coords(f64::from(i) + 0.05, 0.0, 0.0));
+///     scan2.vertices.push(Point3::new(f64::from(i) + 0.05, 0.0, 0.0));
 /// }
 ///
 /// let scans = vec![scan1, scan2];
@@ -354,17 +357,14 @@ pub fn align_and_merge(
 )]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use nalgebra::Point3;
 
     fn make_test_scan(offset: f64) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
         for i in 0..5 {
             for j in 0..5 {
-                mesh.vertices.push(Vertex::from_coords(
-                    f64::from(i) + offset,
-                    f64::from(j),
-                    0.0,
-                ));
+                mesh.vertices
+                    .push(Point3::new(f64::from(i) + offset, f64::from(j), 0.0));
             }
         }
         mesh

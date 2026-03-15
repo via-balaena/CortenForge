@@ -11,13 +11,13 @@
 //!
 //! ```
 //! use mesh_scan::denoise::{denoise_mesh, DenoiseParams, DenoiseMethod};
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //!
 //! let mut mesh = IndexedMesh::new();
 //! // ... create or load noisy mesh ...
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.1)); // Slightly noisy
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.1)); // Slightly noisy
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! let params = DenoiseParams::for_scans();
@@ -267,12 +267,12 @@ impl std::fmt::Display for DenoiseResult {
 ///
 /// ```
 /// use mesh_scan::denoise::{denoise_mesh, DenoiseParams};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let result = denoise_mesh(&mesh, &DenoiseParams::for_scans()).unwrap();
@@ -365,7 +365,7 @@ pub fn denoise_mesh(mesh: &IndexedMesh, params: &DenoiseParams) -> ScanResult<De
 )]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use nalgebra::Point3;
 
     fn make_noisy_mesh() -> IndexedMesh {
         use rand::Rng;
@@ -378,7 +378,7 @@ mod tests {
             for j in 0..5 {
                 let noise: f64 = rng.gen_range(-0.1..0.1);
                 mesh.vertices
-                    .push(Vertex::from_coords(f64::from(i), f64::from(j), noise));
+                    .push(Point3::new(f64::from(i), f64::from(j), noise));
             }
         }
 
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn test_denoise_mesh_no_faces() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
 
         let result = denoise_mesh(&mesh, &DenoiseParams::default()).unwrap();
         assert_eq!(result.iterations_performed, 0);

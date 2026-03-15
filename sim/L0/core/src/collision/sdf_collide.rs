@@ -36,8 +36,8 @@ pub fn collide_with_sdf(
     let sdf_id = model.geom_sdf[sdf_geom]?;
     let sdf = &model.sdf_data[sdf_id];
 
-    // Build SDF pose (no centering offset needed — SdfCollisionData uses
-    // an arbitrary origin stored internally, unlike HeightFieldData which
+    // Build SDF pose (no centering offset needed — SdfGrid uses an
+    // arbitrary origin stored internally, unlike HeightFieldData which
     // uses corner-origin requiring a centering offset)
     let sdf_quat = UnitQuaternion::from_matrix(&sdf_mat);
     let sdf_pose = Pose::from_position_rotation(Point3::from(sdf_pos), sdf_quat);

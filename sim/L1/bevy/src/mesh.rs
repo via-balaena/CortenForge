@@ -1,6 +1,6 @@
-//! Mesh generation for collision shape visualization.
+//! Mesh generation for shape visualization.
 //!
-//! Converts sim-core collision shapes to Bevy meshes.
+//! Converts cf-geometry shapes to Bevy meshes.
 //!
 //! ## Coordinate System
 //!
@@ -10,40 +10,42 @@
 
 #![allow(clippy::cast_possible_truncation)] // f64 -> f32 is intentional for Bevy meshes
 
+use std::sync::Arc;
+
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
-use sim_core::CollisionShape;
+use cf_geometry::{IndexedMesh, Shape};
 
 use crate::convert::{
     dimensions_to_bevy, normal_to_bevy, vec3_from_point, vertex_positions_from_points,
 };
 
-/// Generate a Bevy mesh from a sim-core collision shape.
+/// Generate a Bevy mesh from a cf-geometry [`Shape`].
 ///
 /// Returns `None` for shapes that cannot be easily visualized (e.g., SDF).
 #[must_use]
-pub fn mesh_from_collision_shape(shape: &CollisionShape) -> Option<Mesh> {
+pub fn mesh_from_shape(shape: &Shape) -> Option<Mesh> {
     match shape {
-        CollisionShape::Sphere { radius } => Some(sphere_mesh(*radius)),
-        CollisionShape::Box { half_extents } => Some(box_mesh(half_extents)),
-        CollisionShape::Capsule {
+        Shape::Sphere { radius } => Some(sphere_mesh(*radius)),
+        Shape::Box { half_extents } => Some(box_mesh(half_extents)),
+        Shape::Capsule {
             half_length,
             radius,
         } => Some(capsule_mesh(*half_length, *radius)),
-        CollisionShape::Cylinder {
+        Shape::Cylinder {
             half_length,
             radius,
         } => Some(cylinder_mesh(*half_length, *radius)),
-        CollisionShape::Ellipsoid { radii } => Some(ellipsoid_mesh(radii)),
-        CollisionShape::Plane { .. } => Some(plane_mesh()),
-        CollisionShape::ConvexMesh { vertices, .. } => Some(convex_mesh_from_vertices(vertices)),
-        CollisionShape::TriangleMesh { data } => Some(triangle_mesh(data)),
-        CollisionShape::HeightField { .. } => {
+        Shape::Ellipsoid { radii } => Some(ellipsoid_mesh(radii)),
+        Shape::Plane { .. } => Some(plane_mesh()),
+        Shape::ConvexMesh { hull } => Some(convex_mesh_from_vertices(&hull.vertices)),
+        Shape::TriangleMesh { mesh, .. } => Some(triangle_mesh_from_indexed(mesh)),
+        Shape::HeightField { .. } => {
             // DT-178: Implement height field visualization
             None
         }
-        CollisionShape::Sdf { .. } => {
+        Shape::Sdf { .. } => {
             // SDFs don't have a simple mesh representation
             None
         }
@@ -200,17 +202,17 @@ pub fn convex_mesh_from_vertices(vertices: &[nalgebra::Point3<f64>]) -> Mesh {
     mesh
 }
 
-/// Create a mesh from triangle mesh data.
+/// Create a mesh from a cf-geometry [`IndexedMesh`].
 ///
-/// Converts the sim-core `TriangleMeshData` to a Bevy mesh with proper
-/// vertices, indices, and normals.
+/// Converts the `IndexedMesh` to a Bevy mesh with proper vertices, indices,
+/// and normals.
 ///
 /// Coordinates are converted from physics Z-up to Bevy Y-up using
 /// [`vertex_positions_from_points`] and [`normal_to_bevy`].
 #[must_use]
-pub fn triangle_mesh(mesh_data: &std::sync::Arc<sim_core::mesh::TriangleMeshData>) -> Mesh {
-    let vertices = mesh_data.vertices();
-    let triangles = mesh_data.triangles();
+pub fn triangle_mesh_from_indexed(mesh_data: &Arc<IndexedMesh>) -> Mesh {
+    let vertices = &mesh_data.vertices;
+    let triangles = &mesh_data.faces;
 
     if vertices.is_empty() || triangles.is_empty() {
         return Mesh::new(
@@ -222,26 +224,26 @@ pub fn triangle_mesh(mesh_data: &std::sync::Arc<sim_core::mesh::TriangleMeshData
     // Convert vertices from physics (Z-up) to Bevy (Y-up) coordinates
     let positions = vertex_positions_from_points(vertices);
 
-    // Convert triangle indices
+    // Convert triangle indices (already u32 from cf-geometry)
     let indices: Vec<u32> = triangles
         .iter()
-        .flat_map(|tri| [tri.v0 as u32, tri.v1 as u32, tri.v2 as u32])
+        .flat_map(|face| [face[0], face[1], face[2]])
         .collect();
 
     // Compute normals per vertex (average of adjacent face normals) in physics space,
     // then convert to Bevy space
     let mut physics_normals = vec![nalgebra::Vector3::zeros(); vertices.len()];
-    for tri in triangles {
-        let v0 = vertices[tri.v0];
-        let v1 = vertices[tri.v1];
-        let v2 = vertices[tri.v2];
+    for face in triangles {
+        let v0 = vertices[face[0] as usize];
+        let v1 = vertices[face[1] as usize];
+        let v2 = vertices[face[2] as usize];
 
         let e1 = v1 - v0;
         let e2 = v2 - v0;
         let face_normal = e1.cross(&e2);
 
         // Add face normal to each vertex's accumulated normal (in physics space)
-        for &idx in &[tri.v0, tri.v1, tri.v2] {
+        for &idx in &[face[0] as usize, face[1] as usize, face[2] as usize] {
             physics_normals[idx] += face_normal;
         }
     }

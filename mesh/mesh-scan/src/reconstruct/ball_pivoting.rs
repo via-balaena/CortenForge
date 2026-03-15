@@ -18,7 +18,7 @@
 //! - Ball radius should be chosen based on point density
 
 use kiddo::{KdTree, SquaredEuclidean};
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Vector3};
 use std::collections::{HashMap, HashSet};
 
@@ -272,9 +272,7 @@ pub fn ball_pivoting(
 
     // Add all points as vertices
     for point in &cloud.points {
-        let mut vertex = Vertex::new(point.position);
-        vertex.attributes.normal = point.normal;
-        mesh.vertices.push(vertex);
+        mesh.vertices.push(point.position);
     }
 
     // Track used vertices and front edges
@@ -804,9 +802,9 @@ mod tests {
     #[test]
     fn test_count_boundary_edges() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
 
         // Single triangle has 3 boundary edges
@@ -817,10 +815,10 @@ mod tests {
     #[test]
     fn test_count_boundary_edges_two_triangles() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(1.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([1, 3, 2]); // Shares edge 1-2
 

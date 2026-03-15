@@ -17,13 +17,12 @@ use std::collections::HashMap;
 ///
 /// ```
 /// use mesh_template::{FitTemplate, ControlRegion};
-/// use mesh_types::{IndexedMesh, Vertex};
-/// use nalgebra::Point3;
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let template = FitTemplate::new(mesh)
@@ -37,11 +36,10 @@ use std::collections::HashMap;
 ///
 /// ```
 /// use mesh_template::{FitTemplate, ControlRegion};
-/// use mesh_types::{IndexedMesh, Vertex};
-/// use nalgebra::Point3;
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 10.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 10.0));
 /// mesh.faces.push([0, 0, 0]); // Degenerate but valid for testing
 ///
 /// let template = FitTemplate::new(mesh)
@@ -69,10 +67,10 @@ impl FitTemplate {
     ///
     /// ```
     /// use mesh_template::FitTemplate;
-    /// use mesh_types::{IndexedMesh, Vertex};
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
     ///
     /// let template = FitTemplate::new(mesh);
     /// assert!(template.region_names().is_empty());
@@ -92,11 +90,10 @@ impl FitTemplate {
     ///
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
-    /// use mesh_types::{IndexedMesh, Vertex};
-    /// use nalgebra::Point3;
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
     ///
     /// let template = FitTemplate::new(mesh)
     ///     .with_control_region(ControlRegion::point("center", Point3::origin()));
@@ -115,11 +112,10 @@ impl FitTemplate {
     ///
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
-    /// use mesh_types::{IndexedMesh, Vertex};
-    /// use nalgebra::Point3;
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
     ///
     /// let regions = vec![
     ///     ControlRegion::point("a", Point3::new(0.0, 0.0, 0.0)),
@@ -146,10 +142,10 @@ impl FitTemplate {
     ///
     /// ```
     /// use mesh_template::{FitTemplate, FitParams};
-    /// use mesh_types::{IndexedMesh, Vertex};
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
     ///
     /// let template = FitTemplate::new(mesh)
     ///     .with_default_params(FitParams::new().with_smoothness(0.5));
@@ -166,11 +162,10 @@ impl FitTemplate {
     ///
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
-    /// use mesh_types::{IndexedMesh, Vertex};
-    /// use nalgebra::Point3;
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
     ///
     /// let template = FitTemplate::new(mesh)
     ///     .with_control_region(ControlRegion::point("test", Point3::origin()));
@@ -191,11 +186,10 @@ impl FitTemplate {
     ///
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
-    /// use mesh_types::{IndexedMesh, Vertex};
-    /// use nalgebra::Point3;
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
     ///
     /// let template = FitTemplate::new(mesh)
     ///     .with_control_region(ControlRegion::point("tip", Point3::new(1.0, 2.0, 3.0)));
@@ -218,11 +212,10 @@ impl FitTemplate {
     ///
     /// ```
     /// use mesh_template::{FitTemplate, ControlRegion};
-    /// use mesh_types::{IndexedMesh, Vertex};
-    /// use nalgebra::Point3;
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
     ///
     /// let template = FitTemplate::new(mesh)
     ///     .with_control_region(ControlRegion::point("a", Point3::origin()))
@@ -261,13 +254,12 @@ impl FitTemplate {
     ///
     /// ```
     /// use mesh_template::{FitTemplate, FitParams, ControlRegion};
-    /// use mesh_types::{IndexedMesh, Vertex};
-    /// use nalgebra::Point3;
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-    /// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
     /// mesh.faces.push([0, 1, 2]);
     ///
     /// let template = FitTemplate::new(mesh)
@@ -295,12 +287,12 @@ impl FitTemplate {
     ///
     /// ```
     /// use mesh_template::FitTemplate;
-    /// use mesh_types::{IndexedMesh, Vertex};
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut template_mesh = IndexedMesh::new();
-    /// template_mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-    /// template_mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-    /// template_mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+    /// template_mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// template_mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+    /// template_mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
     /// template_mesh.faces.push([0, 1, 2]);
     ///
     /// let mut scan_mesh = template_mesh.clone();
@@ -339,13 +331,13 @@ mod tests {
     use super::*;
     use crate::Measurement;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn make_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }

@@ -2018,6 +2018,7 @@ checksum = "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
 name = "cf-geometry"
 version = "0.7.0"
 dependencies = [
+ "approx 0.5.1",
  "nalgebra",
  "serde",
  "thiserror 2.0.18",
@@ -5220,6 +5221,7 @@ version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "bytemuck",
+ "cf-geometry",
  "criterion",
  "hashbrown 0.15.5",
  "mesh-io",
@@ -5399,6 +5401,7 @@ name = "mesh-repair"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "cf-geometry",
  "criterion",
  "hashbrown 0.15.5",
  "mesh-types",
@@ -5490,6 +5493,7 @@ name = "mesh-thickness"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "cf-geometry",
  "mesh-types",
  "nalgebra",
  "rayon",
@@ -5513,6 +5517,7 @@ name = "mesh-types"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "cf-geometry",
  "nalgebra",
  "serde",
 ]
@@ -7804,6 +7809,7 @@ name = "sim-bevy"
 version = "0.7.0"
 dependencies = [
  "bevy",
+ "cf-geometry",
  "nalgebra",
  "sim-core",
  "sim-mjcf",
@@ -7828,6 +7834,7 @@ name = "sim-core"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "cf-geometry",
  "criterion",
  "nalgebra",
  "rand 0.8.5",

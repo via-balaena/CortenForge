@@ -30,10 +30,10 @@ use std::collections::HashMap;
 ///
 /// ```
 /// use mesh_template::FitParams;
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut scan = IndexedMesh::new();
-/// scan.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+/// scan.vertices.push(Point3::new(0.0, 0.0, 0.0));
 /// // ... add more vertices and faces
 ///
 /// let params = FitParams::new()
@@ -115,10 +115,10 @@ impl FitParams {
     ///
     /// ```
     /// use mesh_template::FitParams;
-    /// use mesh_types::{IndexedMesh, Vertex};
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut scan = IndexedMesh::new();
-    /// scan.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+    /// scan.vertices.push(Point3::new(0.0, 0.0, 0.0));
     ///
     /// let params = FitParams::new().with_target_scan(scan);
     /// assert!(params.target_scan.is_some());
@@ -292,7 +292,7 @@ impl Default for FitParams {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     #[test]
     fn test_default() {
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn test_with_target_scan() {
         let mut scan = IndexedMesh::new();
-        scan.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        scan.vertices.push(Point3::new(0.0, 0.0, 0.0));
 
         let params = FitParams::new().with_target_scan(scan);
         assert!(params.target_scan.is_some());
@@ -394,7 +394,7 @@ mod tests {
         assert!(params.has_constraints());
 
         let mut scan = IndexedMesh::new();
-        scan.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        scan.vertices.push(Point3::new(0.0, 0.0, 0.0));
         let params = FitParams::new().with_target_scan(scan);
         assert!(params.has_constraints());
     }
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn test_builder_chaining() {
         let mut scan = IndexedMesh::new();
-        scan.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        scan.vertices.push(Point3::new(0.0, 0.0, 0.0));
 
         let params = FitParams::new()
             .with_target_scan(scan)

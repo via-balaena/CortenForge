@@ -17,20 +17,21 @@
 //!
 //! ```
 //! use mesh_registration::{icp_align, IcpParams};
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::IndexedMesh;
+//! use nalgebra::Point3;
 //!
 //! // Create source and target meshes
 //! let mut source = IndexedMesh::new();
-//! source.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! source.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! source.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-//! source.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
+//! source.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! source.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! source.vertices.push(Point3::new(0.0, 1.0, 0.0));
+//! source.vertices.push(Point3::new(1.0, 1.0, 0.0));
 //!
 //! let mut target = IndexedMesh::new();
-//! target.vertices.push(Vertex::from_coords(5.0, 5.0, 0.0));
-//! target.vertices.push(Vertex::from_coords(6.0, 5.0, 0.0));
-//! target.vertices.push(Vertex::from_coords(5.0, 6.0, 0.0));
-//! target.vertices.push(Vertex::from_coords(6.0, 6.0, 0.0));
+//! target.vertices.push(Point3::new(5.0, 5.0, 0.0));
+//! target.vertices.push(Point3::new(6.0, 5.0, 0.0));
+//! target.vertices.push(Point3::new(5.0, 6.0, 0.0));
+//! target.vertices.push(Point3::new(6.0, 6.0, 0.0));
 //!
 //! // Align source to target
 //! let result = icp_align(&source, &target, &IcpParams::default()).unwrap();
@@ -46,17 +47,18 @@
 //!
 //! ```
 //! use mesh_registration::{align_by_landmarks, Landmark, LandmarkParams};
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::IndexedMesh;
+//! use nalgebra::Point3;
 //!
 //! let mut source = IndexedMesh::new();
-//! source.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! source.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! source.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+//! source.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! source.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! source.vertices.push(Point3::new(0.0, 1.0, 0.0));
 //!
 //! let mut target = IndexedMesh::new();
-//! target.vertices.push(Vertex::from_coords(10.0, 10.0, 0.0));
-//! target.vertices.push(Vertex::from_coords(11.0, 10.0, 0.0));
-//! target.vertices.push(Vertex::from_coords(10.0, 11.0, 0.0));
+//! target.vertices.push(Point3::new(10.0, 10.0, 0.0));
+//! target.vertices.push(Point3::new(11.0, 10.0, 0.0));
+//! target.vertices.push(Point3::new(10.0, 11.0, 0.0));
 //!
 //! // Define correspondences: source vertex i -> target vertex i
 //! let landmarks = vec![
@@ -130,17 +132,18 @@ pub use transform::RigidTransform;
 ///
 /// ```
 /// use mesh_registration::{transform_mesh, RigidTransform};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
+/// use nalgebra::Point3;
 /// use nalgebra::Vector3;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
 ///
 /// let transform = RigidTransform::from_translation(Vector3::new(5.0, 0.0, 0.0));
 /// let transformed = transform_mesh(&mesh, &transform);
 ///
-/// assert!((transformed.vertices[0].position.x - 5.0).abs() < 1e-10);
+/// assert!((transformed.vertices[0].x - 5.0).abs() < 1e-10);
 /// ```
 #[must_use]
 pub fn transform_mesh(
@@ -149,14 +152,7 @@ pub fn transform_mesh(
 ) -> mesh_types::IndexedMesh {
     let mut result = mesh.clone();
     for v in &mut result.vertices {
-        let transformed = transform.transform_point(&v.position);
-        v.position = transformed;
-
-        // Transform normals if present
-        if let Some(normal) = v.attributes.normal {
-            let transformed_n = transform.rotation * normal;
-            v.attributes.normal = Some(transformed_n);
-        }
+        *v = transform.transform_point(v);
     }
     result
 }
@@ -174,16 +170,17 @@ pub fn transform_mesh(
 ///
 /// ```
 /// use mesh_registration::{compute_alignment_error, RigidTransform};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
+/// use nalgebra::Point3;
 /// use nalgebra::Vector3;
 ///
 /// let mut source = IndexedMesh::new();
-/// source.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// source.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+/// source.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// source.vertices.push(Point3::new(1.0, 0.0, 0.0));
 ///
 /// let mut target = IndexedMesh::new();
-/// target.vertices.push(Vertex::from_coords(5.0, 0.0, 0.0));
-/// target.vertices.push(Vertex::from_coords(6.0, 0.0, 0.0));
+/// target.vertices.push(Point3::new(5.0, 0.0, 0.0));
+/// target.vertices.push(Point3::new(6.0, 0.0, 0.0));
 ///
 /// let transform = RigidTransform::from_translation(Vector3::new(5.0, 0.0, 0.0));
 /// let (rms, max) = compute_alignment_error(&source, &target, &transform);
@@ -211,8 +208,8 @@ pub fn compute_alignment_error(
     let mut max_sq = 0.0;
 
     for (sv, tv) in source.vertices.iter().zip(target.vertices.iter()) {
-        let aligned = transform.transform_point(&sv.position);
-        let dist_sq = (aligned.coords - tv.position.coords).norm_squared();
+        let aligned = transform.transform_point(sv);
+        let dist_sq = (aligned.coords - tv.coords).norm_squared();
         sum_sq += dist_sq;
         if dist_sq > max_sq {
             max_sq = dist_sq;
@@ -237,16 +234,15 @@ pub fn compute_alignment_error(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
-    use nalgebra::{UnitQuaternion, Vector3};
+    use nalgebra::{Point3, UnitQuaternion, Vector3};
     use std::f64::consts::PI;
 
     fn make_test_mesh() -> mesh_types::IndexedMesh {
         let mut mesh = mesh_types::IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
         mesh
     }
 
@@ -258,30 +254,25 @@ mod tests {
 
         let transformed = transform_mesh(&mesh, &transform);
 
-        assert_relative_eq!(transformed.vertices[0].position.x, 5.0, epsilon = 1e-10);
-        assert_relative_eq!(transformed.vertices[0].position.y, 3.0, epsilon = 1e-10);
-        assert_relative_eq!(transformed.vertices[0].position.z, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(transformed.vertices[0].x, 5.0, epsilon = 1e-10);
+        assert_relative_eq!(transformed.vertices[0].y, 3.0, epsilon = 1e-10);
+        assert_relative_eq!(transformed.vertices[0].z, 1.0, epsilon = 1e-10);
     }
 
     #[test]
-    fn test_transform_mesh_with_normals() {
+    fn test_transform_mesh_rotation() {
         let mut mesh = mesh_types::IndexedMesh::new();
-        let v = Vertex::with_normal(
-            nalgebra::Point3::new(0.0, 0.0, 0.0),
-            Vector3::new(0.0, 0.0, 1.0),
-        );
-        mesh.vertices.push(v);
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
 
-        let rotation = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI / 2.0);
+        let rotation = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI / 2.0);
         let transform = RigidTransform::from_rotation(rotation);
 
         let transformed = transform_mesh(&mesh, &transform);
 
-        // Normal (0,0,1) rotated 90 degrees around X -> (0,-1,0)
-        let normal = transformed.vertices[0].attributes.normal.unwrap();
-        assert_relative_eq!(normal.x, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(normal.y, -1.0, epsilon = 1e-10);
-        assert!(normal.z.abs() < 1e-10);
+        // (1,0,0) rotated 90 degrees around Z -> (0,1,0)
+        assert_relative_eq!(transformed.vertices[0].x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(transformed.vertices[0].y, 1.0, epsilon = 1e-10);
+        assert!(transformed.vertices[0].z.abs() < 1e-10);
     }
 
     #[test]
@@ -300,10 +291,10 @@ mod tests {
     #[test]
     fn test_compute_alignment_error_with_error() {
         let mut source = mesh_types::IndexedMesh::new();
-        source.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        source.vertices.push(Point3::new(0.0, 0.0, 0.0));
 
         let mut target = mesh_types::IndexedMesh::new();
-        target.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+        target.vertices.push(Point3::new(1.0, 0.0, 0.0));
 
         let transform = RigidTransform::identity();
         let (rms, max) = compute_alignment_error(&source, &target, &transform);
@@ -319,7 +310,7 @@ mod tests {
         for i in 0..5 {
             for j in 0..5 {
                 for k in 0..2 {
-                    source.vertices.push(Vertex::from_coords(
+                    source.vertices.push(Point3::new(
                         i as f64 * 2.0,
                         j as f64 * 2.0,
                         k as f64 * 2.0,

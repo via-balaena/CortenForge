@@ -228,10 +228,10 @@ fn get_region_centroid(region: &ControlRegion, mesh: &IndexedMesh) -> Point3<f64
             let mut closest = *pos;
             let mut min_dist = f64::MAX;
             for v in &mesh.vertices {
-                let dist = (v.position - pos).norm();
+                let dist = (v - pos).norm();
                 if dist < min_dist {
                     min_dist = dist;
-                    closest = v.position;
+                    closest = *v;
                 }
             }
             closest
@@ -257,7 +257,7 @@ fn compute_measurement(
     // Collect vertices
     let vertices: Vec<Point3<f64>> = vertex_indices
         .iter()
-        .filter_map(|&idx| mesh.vertices.get(idx as usize).map(|v| v.position))
+        .filter_map(|&idx| mesh.vertices.get(idx as usize).copied())
         .collect();
 
     if vertices.is_empty() {
@@ -404,7 +404,7 @@ fn apply_measurement_scale(
 
     for &idx in vertex_indices {
         if let Some(vertex) = result.vertices.get_mut(idx as usize) {
-            let to_point = vertex.position - origin;
+            let to_point = *vertex - origin;
 
             // Decompose into components
             let along_normal = to_point.dot(&normal);
@@ -434,7 +434,7 @@ fn apply_measurement_scale(
                 }
             };
 
-            vertex.position = new_pos;
+            *vertex = new_pos;
         }
     }
 
@@ -468,19 +468,19 @@ fn calculate_fit_error(mesh: &IndexedMesh, template: &FitTemplate, params: &FitP
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn make_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0));
 
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 2, 3]);
@@ -642,8 +642,8 @@ mod tests {
     #[test]
     fn test_apply_measurement_scale() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 
         let indices: std::collections::HashSet<u32> = [0, 1].into_iter().collect();
 
@@ -657,8 +657,8 @@ mod tests {
         );
 
         // Vertices should be scaled radially by 2x
-        assert!(scaled.vertices[0].position.x > 1.5);
-        assert!(scaled.vertices[1].position.y > 1.5);
+        assert!(scaled.vertices[0].x > 1.5);
+        assert!(scaled.vertices[1].y > 1.5);
     }
 
     #[test]

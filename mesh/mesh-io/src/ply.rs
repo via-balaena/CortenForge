@@ -27,7 +27,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 use ply_rs::parser::Parser;
 use ply_rs::ply::{
     Addable, DefaultElement, ElementDef, Encoding, Ply, Property, PropertyDef, PropertyType,
@@ -95,11 +95,8 @@ pub fn load_ply<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
             let x = get_float_property(element, "x").unwrap_or(0.0);
             let y = get_float_property(element, "y").unwrap_or(0.0);
             let z = get_float_property(element, "z").unwrap_or(0.0);
-            mesh.vertices.push(Vertex::from_coords(
-                f64::from(x),
-                f64::from(y),
-                f64::from(z),
-            ));
+            mesh.vertices
+                .push(Point3::new(f64::from(x), f64::from(y), f64::from(z)));
         }
     }
 
@@ -219,9 +216,9 @@ fn save_ply_binary<W: std::io::Write>(mesh: &IndexedMesh, writer: &mut W) -> IoR
     for v in &mesh.vertices {
         #[allow(clippy::cast_possible_truncation)]
         {
-            writer.write_all(&(v.position.x as f32).to_le_bytes())?;
-            writer.write_all(&(v.position.y as f32).to_le_bytes())?;
-            writer.write_all(&(v.position.z as f32).to_le_bytes())?;
+            writer.write_all(&(v.x as f32).to_le_bytes())?;
+            writer.write_all(&(v.y as f32).to_le_bytes())?;
+            writer.write_all(&(v.z as f32).to_le_bytes())?;
         }
     }
 
@@ -282,9 +279,9 @@ fn save_ply_ascii<W: std::io::Write>(mesh: &IndexedMesh, writer: &mut W) -> IoRe
         let mut element = DefaultElement::new();
         #[allow(clippy::cast_possible_truncation)]
         {
-            element.insert("x".to_string(), Property::Float(v.position.x as f32));
-            element.insert("y".to_string(), Property::Float(v.position.y as f32));
-            element.insert("z".to_string(), Property::Float(v.position.z as f32));
+            element.insert("x".to_string(), Property::Float(v.x as f32));
+            element.insert("y".to_string(), Property::Float(v.y as f32));
+            element.insert("z".to_string(), Property::Float(v.z as f32));
         }
         vertex_elements.push(element);
     }
@@ -313,13 +310,12 @@ fn save_ply_ascii<W: std::io::Write>(mesh: &IndexedMesh, writer: &mut W) -> IoRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::MeshTopology;
 
     fn create_test_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -328,14 +324,14 @@ mod tests {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices of a unit cube
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0));
 
         // 12 triangles (2 per face)
         // Bottom
@@ -377,9 +373,9 @@ mod tests {
 
                 // Check vertex positions
                 for (orig, load) in original.vertices.iter().zip(loaded.vertices.iter()) {
-                    assert!((orig.position.x - load.position.x).abs() < 1e-5);
-                    assert!((orig.position.y - load.position.y).abs() < 1e-5);
-                    assert!((orig.position.z - load.position.z).abs() < 1e-5);
+                    assert!((orig.x - load.x).abs() < 1e-5);
+                    assert!((orig.y - load.y).abs() < 1e-5);
+                    assert!((orig.z - load.z).abs() < 1e-5);
                 }
             }
         }

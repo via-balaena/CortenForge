@@ -34,7 +34,7 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Write};
 use std::path::Path;
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use quick_xml::{Reader, Writer};
 use zip::write::SimpleFileOptions;
@@ -203,7 +203,7 @@ fn parse_3mf_model(content: &str) -> IoResult<IndexedMesh> {
 }
 
 /// Parse a vertex element from XML attributes.
-fn parse_vertex_element(element: &BytesStart<'_>) -> IoResult<Vertex> {
+fn parse_vertex_element(element: &BytesStart<'_>) -> IoResult<Point3<f64>> {
     let mut x = 0.0_f64;
     let mut y = 0.0_f64;
     let mut z = 0.0_f64;
@@ -233,7 +233,7 @@ fn parse_vertex_element(element: &BytesStart<'_>) -> IoResult<Vertex> {
         }
     }
 
-    Ok(Vertex::from_coords(x, y, z))
+    Ok(Point3::new(x, y, z))
 }
 
 /// Parse a triangle element from XML attributes.
@@ -378,9 +378,9 @@ fn generate_model_xml(mesh: &IndexedMesh) -> IoResult<String> {
 
     for v in &mesh.vertices {
         let mut vertex = BytesStart::new("vertex");
-        vertex.push_attribute(("x", format!("{:.6}", v.position.x).as_str()));
-        vertex.push_attribute(("y", format!("{:.6}", v.position.y).as_str()));
-        vertex.push_attribute(("z", format!("{:.6}", v.position.z).as_str()));
+        vertex.push_attribute(("x", format!("{:.6}", v.x).as_str()));
+        vertex.push_attribute(("y", format!("{:.6}", v.y).as_str()));
+        vertex.push_attribute(("z", format!("{:.6}", v.z).as_str()));
         writer
             .write_event(Event::Empty(vertex))
             .map_err(|e| IoError::invalid_content(format!("failed to write vertex: {e}")))?;
@@ -454,13 +454,12 @@ fn generate_model_xml(mesh: &IndexedMesh) -> IoResult<String> {
 )]
 mod tests {
     use super::*;
-    use mesh_types::MeshTopology;
 
     fn create_test_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -469,14 +468,14 @@ mod tests {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices of a unit cube
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0));
 
         // 12 triangles (2 per face)
         mesh.faces.push([0, 2, 1]);
@@ -512,9 +511,9 @@ mod tests {
 
                 // Check vertex positions
                 for (orig, load) in original.vertices.iter().zip(loaded.vertices.iter()) {
-                    assert!((orig.position.x - load.position.x).abs() < 1e-5);
-                    assert!((orig.position.y - load.position.y).abs() < 1e-5);
-                    assert!((orig.position.z - load.position.z).abs() < 1e-5);
+                    assert!((orig.x - load.x).abs() < 1e-5);
+                    assert!((orig.y - load.y).abs() < 1e-5);
+                    assert!((orig.z - load.z).abs() < 1e-5);
                 }
             }
         }

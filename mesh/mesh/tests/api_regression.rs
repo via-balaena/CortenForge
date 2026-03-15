@@ -30,17 +30,12 @@ mod tier1_foundation {
     use super::*;
 
     #[test]
-    fn vertex_creation_and_access() {
-        // Primary constructor
-        let v = types::Vertex::from_coords(1.0, 2.0, 3.0);
-        assert!((v.position.x - 1.0).abs() < f64::EPSILON);
-        assert!((v.position.y - 2.0).abs() < f64::EPSILON);
-        assert!((v.position.z - 3.0).abs() < f64::EPSILON);
-
-        // From point
-        let point = types::Point3::new(4.0, 5.0, 6.0);
-        let v2 = types::Vertex::new(point);
-        assert!((v2.position.x - 4.0).abs() < f64::EPSILON);
+    fn point3_creation_and_access() {
+        // Direct construction
+        let v: types::Point3<f64> = types::Point3::new(1.0, 2.0, 3.0);
+        assert!((v.x - 1.0).abs() < f64::EPSILON);
+        assert!((v.y - 2.0).abs() < f64::EPSILON);
+        assert!((v.z - 3.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -52,9 +47,9 @@ mod tier1_foundation {
 
         // From parts
         let vertices = vec![
-            types::Vertex::from_coords(0.0, 0.0, 0.0),
-            types::Vertex::from_coords(1.0, 0.0, 0.0),
-            types::Vertex::from_coords(0.0, 1.0, 0.0),
+            types::Point3::new(0.0, 0.0, 0.0),
+            types::Point3::new(1.0, 0.0, 0.0),
+            types::Point3::new(0.0, 1.0, 0.0),
         ];
         let faces = vec![[0, 1, 2]];
         let mesh = types::IndexedMesh::from_parts(vertices, faces);
@@ -72,7 +67,7 @@ mod tier1_foundation {
     #[test]
     fn mesh_bounds_calculation() {
         let cube = types::unit_cube();
-        let bounds = cube.bounds();
+        let bounds = cube.aabb();
 
         // Unit cube spans 0,0,0 to 1,1,1
         assert!((bounds.min.x - 0.0).abs() < f64::EPSILON);
@@ -82,11 +77,11 @@ mod tier1_foundation {
     }
 
     #[test]
-    fn mesh_topology_traits() {
+    fn mesh_inherent_methods() {
         let cube = types::unit_cube();
-        // IndexedMesh implements MeshTopology trait
-        let count = <types::IndexedMesh as types::MeshTopology>::face_count(&cube);
-        assert_eq!(count, 12);
+        // face_count and vertex_count are inherent methods on IndexedMesh
+        assert_eq!(cube.face_count(), 12);
+        assert_eq!(cube.vertex_count(), 8);
     }
 }
 
@@ -246,7 +241,7 @@ mod tier3_advanced_processing {
             types::Point3::new(6.0, 1.0, 1.0),
             types::Point3::new(5.0, 1.0, 1.0),
         ] {
-            cube_b.vertices.push(types::Vertex::new(*v));
+            cube_b.vertices.push(*v);
         }
         cube_b.faces = vec![
             [0, 2, 1],
@@ -296,7 +291,7 @@ mod tier3_advanced_processing {
                     types::Point3::new(offset + 1.0, 1.0, 1.0),
                     types::Point3::new(offset, 1.0, 1.0),
                 ] {
-                    mesh.vertices.push(types::Vertex::new(*v));
+                    mesh.vertices.push(*v);
                 }
                 mesh.faces = vec![
                     [0, 2, 1],
@@ -342,8 +337,8 @@ mod tier3_advanced_processing {
         assert!(result.is_ok());
         let offset_result = result.unwrap();
         // Offset mesh should be larger
-        let original_bounds = cube.bounds();
-        let offset_bounds = offset_result.bounds();
+        let original_bounds = cube.aabb();
+        let offset_bounds = offset_result.aabb();
         assert!(offset_bounds.max.x > original_bounds.max.x);
     }
 }

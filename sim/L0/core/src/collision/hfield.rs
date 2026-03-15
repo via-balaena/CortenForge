@@ -5,13 +5,14 @@
 //! each prism against the geom using GJK/EPA penetration. Returns 0..50
 //! contacts per geom pair.
 
-use super::narrow::{geom_to_collision_shape, make_contact_from_geoms};
-use crate::collision_shape::CollisionShape;
+use super::narrow::{geom_to_shape, make_contact_from_geoms};
 use crate::gjk_epa::{gjk_epa_contact, support};
 use crate::heightfield::HeightFieldData;
 use crate::types::{Contact, GeomType, Model};
+use cf_geometry::Shape;
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
+use std::cell::Cell;
 
 /// Maximum contacts per heightfield-geom pair (MuJoCo `mjMAXCONPAIR`).
 pub const MAX_CONTACTS_PER_PAIR: usize = 50;
@@ -67,9 +68,9 @@ pub fn collide_hfield_multi(
             let Some(hull) = model.mesh_data[mesh_id].convex_hull() else {
                 return contacts;
             };
-            CollisionShape::convex_mesh_from_hull(hull)
+            Shape::convex_mesh(hull.clone())
         }
-        _ => match geom_to_collision_shape(conv_type, conv_size) {
+        _ => match geom_to_shape(conv_type, conv_size) {
             Some(s) => s,
             None => return contacts,
         },
@@ -153,9 +154,12 @@ pub fn collide_hfield_multi(
                 }
 
                 // Build prism as ConvexMesh (6 vertices)
-                let prism_shape = CollisionShape::convex_mesh(
-                    prism_verts.iter().map(|v| Point3::from(*v)).collect(),
-                );
+                let prism_points: Vec<Point3<f64>> =
+                    prism_verts.iter().map(|v| Point3::from(*v)).collect();
+                let Some(hull) = cf_geometry::convex_hull(&prism_points, None) else {
+                    continue;
+                };
+                let prism_shape = Shape::convex_mesh(hull);
 
                 // Test prism vs convex geom using GJK/EPA.
                 // Prism is in hfield-local coords → use hfield world pose.
@@ -259,11 +263,11 @@ fn build_prism(
     ]
 }
 
-/// Compute tight AABB of a collision shape at a given pose.
+/// Compute tight AABB of a shape at a given pose.
 ///
 /// Queries the GJK support function along ±X, ±Y, ±Z to get exact
 /// extremes of the convex shape.
-fn compute_local_aabb(shape: &CollisionShape, pose: &Pose) -> (Vector3<f64>, Vector3<f64>) {
+fn compute_local_aabb(shape: &Shape, pose: &Pose) -> (Vector3<f64>, Vector3<f64>) {
     let dirs = [
         Vector3::x(),
         -Vector3::x(),
@@ -273,11 +277,12 @@ fn compute_local_aabb(shape: &CollisionShape, pose: &Pose) -> (Vector3<f64>, Vec
         -Vector3::z(),
     ];
 
+    let warm_start = Cell::new(0);
     let mut min = Vector3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
     let mut max = Vector3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
 
     for dir in &dirs {
-        let pt = support(shape, pose, dir);
+        let pt = support(shape, pose, dir, &warm_start);
         min.x = min.x.min(pt.x);
         min.y = min.y.min(pt.y);
         min.z = min.z.min(pt.z);
@@ -689,7 +694,7 @@ mod tests {
     // ========================================================================
     #[test]
     fn t11_hfield_plane_no_contact() {
-        // Plane has no CollisionShape → geom_to_collision_shape returns None → 0 contacts
+        // Plane has no Shape → geom_to_shape returns None → 0 contacts
         let model = flat_hfield_model(
             5,
             2.0,
@@ -871,7 +876,7 @@ mod tests {
     // ========================================================================
     #[test]
     fn ts6_hfield_hfield_no_crash() {
-        // Two hfield geoms — should return 0 contacts (Hfield has no CollisionShape)
+        // Two hfield geoms — should return 0 contacts (Hfield has no convex Shape)
         let heights = vec![0.5; 25];
         let cell_size = 1.0;
         let hfield = HeightFieldData::new(heights, 5, 5, cell_size);
@@ -932,7 +937,7 @@ mod tests {
         let pos2 = Vector3::new(0.0, 0.0, 0.0);
         let mat2 = Matrix3::identity();
 
-        // Hfield-hfield: the "convex" geom is also Hfield → geom_to_collision_shape returns None → 0 contacts
+        // Hfield-hfield: the "convex" geom is also Hfield → geom_to_shape returns None → 0 contacts
         let contacts = collide_hfield_multi(&model, 0, 1, pos1, mat1, pos2, mat2, 0.0);
         assert!(
             contacts.is_empty(),

@@ -14,7 +14,9 @@
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
-use super::{SdfCollisionData, SdfContact};
+use cf_geometry::Bounded;
+
+use super::{SdfContact, SdfGrid};
 
 /// Query an SDF for contact with a sphere.
 ///
@@ -28,7 +30,7 @@ use super::{SdfCollisionData, SdfContact};
 /// * `sphere_radius` - Radius of the sphere
 #[must_use]
 pub fn sdf_sphere_contact(
-    sdf: &SdfCollisionData,
+    sdf: &SdfGrid,
     sdf_pose: &Pose,
     sphere_center: Point3<f64>,
     sphere_radius: f64,
@@ -74,11 +76,7 @@ pub fn sdf_sphere_contact(
 /// * `sdf_pose` - The pose of the SDF in world space
 /// * `point` - The point to test in world space
 #[must_use]
-pub fn sdf_point_contact(
-    sdf: &SdfCollisionData,
-    sdf_pose: &Pose,
-    point: Point3<f64>,
-) -> Option<SdfContact> {
+pub fn sdf_point_contact(sdf: &SdfGrid, sdf_pose: &Pose, point: Point3<f64>) -> Option<SdfContact> {
     // Transform point to SDF local space
     let local_point = sdf_pose.inverse_transform_point(&point);
 
@@ -127,7 +125,7 @@ pub fn sdf_point_contact(
 /// * `sdf_initpoints` - Number of initial sample points (from `mjOption.sdf_initpoints`)
 #[must_use]
 pub fn sdf_capsule_contact(
-    sdf: &SdfCollisionData,
+    sdf: &SdfGrid,
     sdf_pose: &Pose,
     capsule_start: Point3<f64>,
     capsule_end: Point3<f64>,
@@ -197,7 +195,7 @@ pub fn sdf_capsule_contact(
 /// * `half_extents` - Half-extents of the box
 #[must_use]
 pub fn sdf_box_contact(
-    sdf: &SdfCollisionData,
+    sdf: &SdfGrid,
     sdf_pose: &Pose,
     box_pose: &Pose,
     half_extents: &Vector3<f64>,
@@ -264,7 +262,7 @@ pub fn sdf_box_contact(
 /// * `sdf_initpoints` - Number of initial sample points (from `mjOption.sdf_initpoints`)
 #[must_use]
 pub fn sdf_cylinder_contact(
-    sdf: &SdfCollisionData,
+    sdf: &SdfGrid,
     sdf_pose: &Pose,
     cylinder_pose: &Pose,
     half_height: f64,
@@ -350,7 +348,7 @@ pub fn sdf_cylinder_contact(
 /// * `sdf_initpoints` - Number of initial sample points (from `mjOption.sdf_initpoints`)
 #[must_use]
 pub fn sdf_ellipsoid_contact(
-    sdf: &SdfCollisionData,
+    sdf: &SdfGrid,
     sdf_pose: &Pose,
     ellipsoid_pose: &Pose,
     radii: &Vector3<f64>,
@@ -436,7 +434,7 @@ pub fn sdf_ellipsoid_contact(
 /// * `vertices` - Vertices of the convex mesh in local coordinates
 #[must_use]
 pub fn sdf_convex_mesh_contact(
-    sdf: &SdfCollisionData,
+    sdf: &SdfGrid,
     sdf_pose: &Pose,
     mesh_pose: &Pose,
     vertices: &[Point3<f64>],
@@ -494,13 +492,14 @@ pub fn sdf_convex_mesh_contact(
 /// - `penetration`: Depth of the deepest vertex penetration
 #[must_use]
 pub fn sdf_triangle_mesh_contact(
-    sdf: &SdfCollisionData,
+    sdf: &SdfGrid,
     sdf_pose: &Pose,
     mesh: &crate::mesh::TriangleMeshData,
     mesh_pose: &Pose,
 ) -> Option<SdfContact> {
     // Early out: Check if mesh AABB overlaps with SDF AABB
-    let (sdf_aabb_min, sdf_aabb_max) = sdf.aabb();
+    let sdf_aabb = sdf.aabb();
+    let (sdf_aabb_min, sdf_aabb_max) = (sdf_aabb.min, sdf_aabb.max);
     let (mesh_aabb_min, mesh_aabb_max) = mesh.aabb();
 
     // Transform SDF AABB corners to world space and compute world-space AABB
@@ -574,8 +573,10 @@ pub fn sdf_triangle_mesh_contact(
     }
 
     // Also sample edge midpoints for better accuracy on large triangles
-    for tri in mesh.triangles() {
-        let (v0, v1, v2) = mesh.triangle_vertices(tri);
+    for face in mesh.triangles() {
+        let v0 = mesh.vertices()[face[0] as usize];
+        let v1 = mesh.vertices()[face[1] as usize];
+        let v2 = mesh.vertices()[face[2] as usize];
 
         // Edge midpoints
         let midpoints = [
@@ -635,7 +636,7 @@ pub fn sdf_triangle_mesh_contact(
 /// - `penetration`: Distance the deepest SDF surface point extends below the plane
 #[must_use]
 pub fn sdf_plane_contact(
-    sdf: &SdfCollisionData,
+    sdf: &SdfGrid,
     sdf_pose: &Pose,
     plane_normal: &Vector3<f64>,
     plane_offset: f64,
@@ -727,14 +728,16 @@ pub fn sdf_plane_contact(
 /// - `penetration`: Depth of the deepest height field point penetration
 #[must_use]
 pub fn sdf_heightfield_contact(
-    sdf: &SdfCollisionData,
+    sdf: &SdfGrid,
     sdf_pose: &Pose,
     heightfield: &crate::heightfield::HeightFieldData,
     heightfield_pose: &Pose,
 ) -> Option<SdfContact> {
     // Compute AABB overlap between SDF and height field in world space
-    let (sdf_aabb_min, sdf_aabb_max) = sdf.aabb();
-    let (hf_aabb_min, hf_aabb_max) = heightfield.aabb();
+    let sdf_aabb = sdf.aabb();
+    let (sdf_aabb_min, sdf_aabb_max) = (sdf_aabb.min, sdf_aabb.max);
+    let hf_aabb = heightfield.aabb();
+    let (hf_aabb_min, hf_aabb_max) = (hf_aabb.min, hf_aabb.max);
 
     // Transform SDF AABB corners to world space
     let sdf_world_min = sdf_pose.transform_point(&sdf_aabb_min);
@@ -866,8 +869,8 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
-    fn sphere_sdf(resolution: usize) -> SdfCollisionData {
-        SdfCollisionData::sphere(Point3::origin(), 1.0, resolution, 1.0)
+    fn sphere_sdf(resolution: usize) -> SdfGrid {
+        SdfGrid::sphere(Point3::origin(), 1.0, resolution, 1.0)
     }
 
     #[test]
@@ -1516,8 +1519,7 @@ mod tests {
     #[test]
     fn test_sdf_plane_contact_box_sdf() {
         // Test with a box SDF instead of sphere
-        let sdf =
-            SdfCollisionData::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let sdf = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
         let sdf_pose = Pose::identity();
 
         // Plane at z = 0 (should intersect the box which extends from -0.5 to 0.5)
@@ -1704,8 +1706,7 @@ mod tests {
     #[test]
     fn test_sdf_triangle_mesh_contact_box_sdf() {
         // Test with a box SDF instead of sphere
-        let sdf =
-            SdfCollisionData::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let sdf = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
         let sdf_pose = Pose::identity();
 
         // Tetrahedron intersecting the box
@@ -1846,8 +1847,7 @@ mod tests {
     #[test]
     fn test_sdf_heightfield_contact_box_sdf() {
         // Test with a box SDF instead of sphere
-        let sdf =
-            SdfCollisionData::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let sdf = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
         let sdf_pose = Pose::identity();
 
         // Height field at z=0.3, should intersect the box (extends from -0.5 to 0.5 in Z)

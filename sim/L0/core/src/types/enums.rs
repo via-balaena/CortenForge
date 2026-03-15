@@ -122,7 +122,7 @@ impl GeomType {
     ///
     /// This is the canonical implementation used by both:
     /// - Model compilation (pre-computing `geom_rbound`)
-    /// - `CollisionShape::bounding_radius()` for runtime shapes
+    /// - `Shape::bounding_radius()` for runtime shapes
     ///
     /// # Arguments
     /// * `size` - Type-specific size parameters from `geom_size`:
@@ -156,7 +156,7 @@ impl GeomType {
             Self::Sdf => {
                 // Conservative: treat as axis-aligned box with half-extents from geom_size.
                 // True bounding radius is overwritten by post-build pass using
-                // SdfCollisionData::aabb().
+                // SdfGrid::aabb().
                 size.norm()
             }
         }

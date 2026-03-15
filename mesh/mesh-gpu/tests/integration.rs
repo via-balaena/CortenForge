@@ -10,7 +10,7 @@
 use mesh_gpu::{
     GpuContext, GpuSdfParams, GpuSdfResult, TileConfig, compute_sdf_gpu, try_compute_sdf_gpu,
 };
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 
 /// Create a unit cube mesh centered at origin.
 fn create_unit_cube() -> IndexedMesh {
@@ -29,7 +29,7 @@ fn create_unit_cube() -> IndexedMesh {
     ];
 
     for c in &coords {
-        mesh.vertices.push(Vertex::from_coords(c[0], c[1], c[2]));
+        mesh.vertices.push(Point3::new(c[0], c[1], c[2]));
     }
 
     // 12 triangles, 2 per face
@@ -64,9 +64,9 @@ fn create_unit_cube() -> IndexedMesh {
 /// Create a simple triangle mesh.
 fn create_single_triangle() -> IndexedMesh {
     let mut mesh = IndexedMesh::new();
-    mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-    mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-    mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+    mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+    mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
     mesh.faces.push([0, 1, 2]);
     mesh
 }

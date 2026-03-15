@@ -112,9 +112,6 @@ pub mod island;
 // Collision detection pipeline (dispatch, narrow-phase, contact params)
 pub mod collision;
 
-// Collision shape primitives (canonical source)
-pub mod collision_shape;
-
 // Core simulation algorithms
 pub mod convex_hull;
 pub mod gjk_epa;
@@ -140,20 +137,20 @@ pub mod plugin;
 pub mod batch;
 
 pub use batch::BatchSim;
-pub use collision_shape::{Aabb, Axis, CollisionShape};
-pub use convex_hull::{ConvexHull, HullGraph, quickhull};
+pub use cf_geometry::{Aabb, Axis, Bounded, Shape};
+pub use convex_hull::{ConvexHull, convex_hull, quickhull};
 
 pub use contact::{ContactForce, ContactManifold, ContactPoint};
 pub use heightfield::{HeightFieldContact, HeightFieldData};
 pub use mesh::{
-    MeshContact, Triangle, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,
+    MeshContact, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,
     mesh_capsule_contact, mesh_mesh_contact, mesh_mesh_deepest_contact, mesh_sphere_contact,
     triangle_box_contact, triangle_capsule_contact, triangle_sphere_contact,
 };
-pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_triangle_mesh};
+pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_mesh, bvh_from_triangle_mesh, query_bvh_pair};
 pub use raycast::{RaycastHit, raycast_shape};
 pub use sdf::{
-    SdfCollisionData, SdfContact, sdf_box_contact, sdf_capsule_contact, sdf_point_contact,
+    SdfContact, SdfGrid, sdf_box_contact, sdf_capsule_contact, sdf_point_contact,
     sdf_sphere_contact,
 };
 

@@ -7,8 +7,8 @@
 
 use nalgebra::DVector;
 use sim_core::{
-    ActuatorTransmission, ENABLE_SLEEP, Integrator, Model, SleepPolicy, TendonType, WrapType,
-    compute_dof_lengths,
+    ActuatorTransmission, Bounded, ENABLE_SLEEP, Integrator, Model, SleepPolicy, TendonType,
+    WrapType, compute_dof_lengths,
 };
 use tracing::warn;
 
@@ -564,13 +564,13 @@ fn compute_geom_bounding_radii(model: &mut Model) {
             half_diagonal.norm()
         } else if let Some(hfield_id) = model.geom_hfield[geom_id] {
             // Hfield geom: half-diagonal of AABB (same pattern as mesh).
-            let (aabb_min, aabb_max) = model.hfield_data[hfield_id].aabb();
-            let half_diagonal = (aabb_max.coords - aabb_min.coords) / 2.0;
+            let aabb = model.hfield_data[hfield_id].aabb();
+            let half_diagonal = (aabb.max.coords - aabb.min.coords) / 2.0;
             half_diagonal.norm()
         } else if let Some(sdf_id) = model.geom_sdf[geom_id] {
             // SDF geom: half-diagonal of AABB (same pattern as mesh/hfield).
-            let (aabb_min, aabb_max) = model.sdf_data[sdf_id].aabb();
-            let half_diagonal = (aabb_max.coords - aabb_min.coords) / 2.0;
+            let aabb = model.sdf_data[sdf_id].aabb();
+            let half_diagonal = (aabb.max.coords - aabb.min.coords) / 2.0;
             half_diagonal.norm()
         } else {
             // Primitive geom: use GeomType::bounding_radius() — the single source of truth

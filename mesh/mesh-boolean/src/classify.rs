@@ -6,8 +6,9 @@
 #![allow(clippy::option_if_let_else)]
 #![allow(clippy::manual_let_else)]
 
-use crate::bvh::{Aabb, Bvh};
+use crate::bvh::Bvh;
 use crate::intersect::ray_triangle_intersect;
+use cf_geometry::Aabb;
 use mesh_types::{IndexedMesh, Point3, Vector3};
 use rayon::prelude::*;
 
@@ -124,9 +125,9 @@ fn count_ray_intersections_naive(
     let mut count = 0;
 
     for face in &mesh.faces {
-        let v0 = mesh.vertices[face[0] as usize].position;
-        let v1 = mesh.vertices[face[1] as usize].position;
-        let v2 = mesh.vertices[face[2] as usize].position;
+        let v0 = mesh.vertices[face[0] as usize];
+        let v1 = mesh.vertices[face[1] as usize];
+        let v2 = mesh.vertices[face[2] as usize];
 
         if ray_triangle_intersect(origin, direction, &v0, &v1, &v2, epsilon).is_some() {
             count += 1;
@@ -150,7 +151,7 @@ fn count_ray_intersections_bvh(
 
     let ray_end = Point3::from(origin.coords + direction * ray_extent);
 
-    let ray_bbox = Aabb::from_min_max(
+    let ray_bbox = Aabb::new(
         Point3::new(
             origin.x.min(ray_end.x),
             origin.y.min(ray_end.y),
@@ -170,9 +171,9 @@ fn count_ray_intersections_bvh(
 
     for tri_idx in candidates {
         let face = &mesh.faces[tri_idx as usize];
-        let v0 = mesh.vertices[face[0] as usize].position;
-        let v1 = mesh.vertices[face[1] as usize].position;
-        let v2 = mesh.vertices[face[2] as usize].position;
+        let v0 = mesh.vertices[face[0] as usize];
+        let v1 = mesh.vertices[face[1] as usize];
+        let v2 = mesh.vertices[face[2] as usize];
 
         if ray_triangle_intersect(origin, direction, &v0, &v1, &v2, epsilon).is_some() {
             count += 1;
@@ -207,9 +208,9 @@ pub fn classify_faces(
     mesh.faces
         .iter()
         .map(|face| {
-            let v0 = mesh.vertices[face[0] as usize].position;
-            let v1 = mesh.vertices[face[1] as usize].position;
-            let v2 = mesh.vertices[face[2] as usize].position;
+            let v0 = mesh.vertices[face[0] as usize];
+            let v1 = mesh.vertices[face[1] as usize];
+            let v2 = mesh.vertices[face[2] as usize];
 
             // Use face centroid for classification
             let centroid = Point3::from((v0.coords + v1.coords + v2.coords) / 3.0);
@@ -247,9 +248,9 @@ pub fn classify_faces_parallel(
     mesh.faces
         .par_iter()
         .map(|face| {
-            let v0 = mesh.vertices[face[0] as usize].position;
-            let v1 = mesh.vertices[face[1] as usize].position;
-            let v2 = mesh.vertices[face[2] as usize].position;
+            let v0 = mesh.vertices[face[0] as usize];
+            let v1 = mesh.vertices[face[1] as usize];
+            let v2 = mesh.vertices[face[2] as usize];
 
             // Use face centroid for classification
             let centroid = Point3::from((v0.coords + v1.coords + v2.coords) / 3.0);
@@ -309,17 +310,17 @@ pub fn compute_mesh_bounds(mesh: &IndexedMesh) -> Option<(Point3<f64>, Point3<f6
         return None;
     }
 
-    let first = mesh.vertices[0].position;
+    let first = mesh.vertices[0];
     let mut min = first;
     let mut max = first;
 
     for v in &mesh.vertices {
-        min.x = min.x.min(v.position.x);
-        min.y = min.y.min(v.position.y);
-        min.z = min.z.min(v.position.z);
-        max.x = max.x.max(v.position.x);
-        max.y = max.y.max(v.position.y);
-        max.z = max.z.max(v.position.z);
+        min.x = min.x.min(v.x);
+        min.y = min.y.min(v.y);
+        min.z = min.z.min(v.z);
+        max.x = max.x.max(v.x);
+        max.y = max.y.max(v.y);
+        max.z = max.z.max(v.z);
     }
 
     Some((min, max))
@@ -367,7 +368,7 @@ pub fn meshes_overlap(mesh_a: &IndexedMesh, mesh_b: &IndexedMesh) -> bool {
 )]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_unit_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
@@ -385,7 +386,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            mesh.vertices.push(Vertex::new(*v));
+            mesh.vertices.push(*v);
         }
 
         // 12 triangles (2 per face)
@@ -479,7 +480,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            inner_cube.vertices.push(Vertex::new(*v));
+            inner_cube.vertices.push(*v);
         }
 
         // Same face structure as outer cube
@@ -546,7 +547,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            cube2.vertices.push(Vertex::new(*v));
+            cube2.vertices.push(*v);
         }
 
         cube2.faces.push([0, 1, 2]);
@@ -572,7 +573,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            cube2.vertices.push(Vertex::new(*v));
+            cube2.vertices.push(*v);
         }
 
         cube2.faces.push([0, 1, 2]);
@@ -587,9 +588,9 @@ mod tests {
 
         // Create a simple inner mesh
         let mut inner = IndexedMesh::new();
-        inner.vertices.push(Vertex::new(Point3::new(0.4, 0.4, 0.4)));
-        inner.vertices.push(Vertex::new(Point3::new(0.6, 0.4, 0.4)));
-        inner.vertices.push(Vertex::new(Point3::new(0.5, 0.6, 0.4)));
+        inner.vertices.push(Point3::new(0.4, 0.4, 0.4));
+        inner.vertices.push(Point3::new(0.6, 0.4, 0.4));
+        inner.vertices.push(Point3::new(0.5, 0.6, 0.4));
         inner.faces.push([0, 1, 2]);
 
         let classifications = classify_faces_parallel(&inner, &outer_cube, &bvh, 1e-10);

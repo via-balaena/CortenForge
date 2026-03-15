@@ -5,7 +5,7 @@
 //! Run with: cargo test -p mesh-repair -- proptest
 
 use mesh_repair::{RepairParams, validate_mesh, weld_vertices};
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 use proptest::prelude::*;
 
 // =============================================================================
@@ -17,9 +17,9 @@ fn arb_position() -> impl Strategy<Value = [f64; 3]> {
     prop::array::uniform3(-100.0..100.0f64)
 }
 
-/// Generate a random vertex with position only.
-fn arb_vertex() -> impl Strategy<Value = Vertex> {
-    arb_position().prop_map(|[x, y, z]| Vertex::from_coords(x, y, z))
+/// Generate a random vertex position.
+fn arb_vertex() -> impl Strategy<Value = Point3<f64>> {
+    arb_position().prop_map(|[x, y, z]| Point3::new(x, y, z))
 }
 
 /// Generate a valid mesh with the specified number of vertices and faces.
@@ -73,7 +73,7 @@ fn cube_mesh() -> IndexedMesh {
     ];
 
     for v in &verts {
-        mesh.vertices.push(Vertex::from_coords(v[0], v[1], v[2]));
+        mesh.vertices.push(Point3::new(v[0], v[1], v[2]));
     }
 
     let faces = [

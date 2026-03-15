@@ -4,8 +4,10 @@
 //! position: joint position, frame pose, subtree COM, rangefinder, magnetometer,
 //! actuator/tendon position.
 
-use crate::collision::narrow::geom_to_collision_shape;
-use crate::collision_shape::CollisionShape;
+use super::geom_distance::geom_distance;
+use super::postprocess::{sensor_write, sensor_write3, sensor_write4, sensor_write6};
+use super::sensor_body_id;
+use crate::collision::narrow::geom_to_shape;
 use crate::raycast::raycast_shape;
 use crate::types::flags::disabled;
 use crate::types::{
@@ -14,11 +16,6 @@ use crate::types::{
 };
 use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
 use sim_types::Pose;
-use std::sync::Arc;
-
-use super::geom_distance::geom_distance;
-use super::postprocess::{sensor_write, sensor_write3, sensor_write4, sensor_write6};
-use super::sensor_body_id;
 
 /// Resolve position and rotation matrix for a reference object.
 /// Mirrors MuJoCo's `get_xpos_xmat()` dispatch.
@@ -300,10 +297,9 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                                 Pose::from_position_rotation(Point3::from(geom_pos), geom_quat);
 
                             // Convert geom to collision shape for ray testing
-                            if let Some(shape) = geom_to_collision_shape(
-                                model.geom_type[geom_id],
-                                model.geom_size[geom_id],
-                            ) {
+                            if let Some(shape) =
+                                geom_to_shape(model.geom_type[geom_id], model.geom_size[geom_id])
+                            {
                                 if let Some(hit) = raycast_shape(
                                     &shape,
                                     &shape_pose,
@@ -320,16 +316,14 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                             // Also handle mesh geoms
                             if model.geom_type[geom_id] == GeomType::Mesh {
                                 if let Some(mesh_id) = model.geom_mesh[geom_id] {
-                                    let mesh_shape = CollisionShape::TriangleMesh {
-                                        data: Arc::clone(&model.mesh_data[mesh_id]),
-                                    };
+                                    let mesh_data = &model.mesh_data[mesh_id];
                                     let shape_pose = Pose::from_position_rotation(
                                         Point3::from(geom_pos),
                                         geom_quat,
                                     );
-                                    if let Some(hit) = raycast_shape(
-                                        &mesh_shape,
+                                    if let Some(hit) = crate::raycast::raycast_triangle_mesh_data(
                                         &shape_pose,
+                                        mesh_data.as_ref(),
                                         ray_origin,
                                         ray_direction,
                                         max_range,

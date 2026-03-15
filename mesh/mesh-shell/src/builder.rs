@@ -6,14 +6,14 @@
 //! # Example
 //!
 //! ```
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::{IndexedMesh, Point3};
 //! use mesh_shell::ShellBuilder;
 //!
 //! // Create a simple mesh (in practice, load from file)
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! // Generate shell with fluent API
@@ -48,13 +48,13 @@ pub struct ShellBuildResult {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_shell::ShellBuilder;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// // Simple usage with defaults
@@ -310,20 +310,20 @@ impl<'a> ShellBuilder<'a> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_open_box() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 10.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 10.0));
 
         // 5 faces (open top)
         mesh.faces.push([0, 2, 1]);

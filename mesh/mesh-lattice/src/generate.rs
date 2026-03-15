@@ -18,7 +18,7 @@ use crate::strut::{combine_struts, generate_strut};
 use crate::tpms::{density_to_threshold, diamond, gyroid, schwarz_p};
 use crate::types::{LatticeResult, LatticeType};
 use hashbrown::HashMap;
-use mesh_types::{IndexedMesh, MeshTopology};
+use mesh_types::IndexedMesh;
 use nalgebra::Point3;
 
 /// Generates a lattice structure within a bounding box.
@@ -514,13 +514,12 @@ fn estimate_strut_volume(mesh: &IndexedMesh, radius: f64) -> f64 {
     let mut max = Point3::new(f64::MIN, f64::MIN, f64::MIN);
 
     for v in &mesh.vertices {
-        let p = &v.position;
-        min.x = min.x.min(p.x);
-        min.y = min.y.min(p.y);
-        min.z = min.z.min(p.z);
-        max.x = max.x.max(p.x);
-        max.y = max.y.max(p.y);
-        max.z = max.z.max(p.z);
+        min.x = min.x.min(v.x);
+        min.y = min.y.min(v.y);
+        min.z = min.z.min(v.z);
+        max.x = max.x.max(v.x);
+        max.y = max.y.max(v.y);
+        max.z = max.z.max(v.z);
     }
 
     let diagonal = (max - min).norm();
@@ -546,9 +545,9 @@ fn estimate_mesh_volume(mesh: &IndexedMesh) -> f64 {
             continue;
         }
 
-        let v0 = &vertices[i0].position;
-        let v1 = &vertices[i1].position;
-        let v2 = &vertices[i2].position;
+        let v0 = &vertices[i0];
+        let v1 = &vertices[i1];
+        let v2 = &vertices[i2];
 
         // Signed volume of tetrahedron from origin
         volume += v0.coords.dot(&v1.coords.cross(&v2.coords));
@@ -561,7 +560,7 @@ fn estimate_mesh_volume(mesh: &IndexedMesh) -> f64 {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use nalgebra::Point3;
 
     #[test]
     fn test_generate_cubic_lattice() {
@@ -649,10 +648,10 @@ mod tests {
     fn test_estimate_mesh_volume() {
         // Create a simple tetrahedron
         let vertices = vec![
-            Vertex::new(Point3::new(0.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(1.0, 0.0, 0.0)),
-            Vertex::new(Point3::new(0.0, 1.0, 0.0)),
-            Vertex::new(Point3::new(0.0, 0.0, 1.0)),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.0, 1.0),
         ];
         let faces = vec![
             [0, 1, 2], // Base

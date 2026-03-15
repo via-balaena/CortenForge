@@ -1,7 +1,7 @@
 //! Core types for lattice generation.
 
 use crate::beam::BeamLatticeData;
-use mesh_types::{IndexedMesh, MeshTopology};
+use mesh_types::IndexedMesh;
 
 /// Types of lattice structures that can be generated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

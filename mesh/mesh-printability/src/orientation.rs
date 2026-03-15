@@ -3,7 +3,7 @@
 //! Provides functionality to find the best orientation for printing
 //! a mesh, minimizing supports and improving print quality.
 
-use mesh_types::{IndexedMesh, MeshTopology, Vector3};
+use mesh_types::{IndexedMesh, Vector3};
 use nalgebra::{Unit, UnitQuaternion};
 
 use crate::config::PrinterConfig;
@@ -206,9 +206,9 @@ fn evaluate_orientation(
             continue;
         }
 
-        let v0 = mesh.vertices[idx0].position;
-        let v1 = mesh.vertices[idx1].position;
-        let v2 = mesh.vertices[idx2].position;
+        let v0 = mesh.vertices[idx0];
+        let v1 = mesh.vertices[idx1];
+        let v2 = mesh.vertices[idx2];
 
         // Compute face normal
         let edge1 = Vector3::new(v1.x - v0.x, v1.y - v0.y, v1.z - v0.z);
@@ -253,20 +253,11 @@ pub fn apply_orientation(mesh: &IndexedMesh, orientation: &OrientationResult) ->
     let mut result = mesh.clone();
 
     for vertex in &mut result.vertices {
-        let v = Vector3::new(vertex.position.x, vertex.position.y, vertex.position.z);
+        let v = Vector3::new(vertex.x, vertex.y, vertex.z);
         let rotated = rotation * v;
-        vertex.position.x = rotated.x;
-        vertex.position.y = rotated.y;
-        vertex.position.z = rotated.z;
-
-        // Also rotate vertex normals if present
-        if let Some(ref mut normal) = vertex.attributes.normal {
-            let n = Vector3::new(normal.x, normal.y, normal.z);
-            let rotated_n = rotation * n;
-            normal.x = rotated_n.x;
-            normal.y = rotated_n.y;
-            normal.z = rotated_n.z;
-        }
+        vertex.x = rotated.x;
+        vertex.y = rotated.y;
+        vertex.z = rotated.z;
     }
 
     result
@@ -282,12 +273,12 @@ pub fn place_on_build_plate(mesh: &IndexedMesh) -> IndexedMesh {
     let min_z = mesh
         .vertices
         .iter()
-        .map(|v| v.position.z)
+        .map(|v| v.z)
         .fold(f64::INFINITY, f64::min);
 
     let mut result = mesh.clone();
     for vertex in &mut result.vertices {
-        vertex.position.z -= min_z;
+        vertex.z -= min_z;
     }
 
     result
@@ -296,14 +287,14 @@ pub fn place_on_build_plate(mesh: &IndexedMesh) -> IndexedMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_simple_mesh() -> IndexedMesh {
         let vertices = vec![
-            Vertex::from_coords(0.0, 0.0, 0.0),
-            Vertex::from_coords(10.0, 0.0, 0.0),
-            Vertex::from_coords(5.0, 10.0, 0.0),
-            Vertex::from_coords(5.0, 5.0, 10.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(5.0, 10.0, 0.0),
+            Point3::new(5.0, 5.0, 10.0),
         ];
 
         // Tetrahedron
@@ -362,9 +353,9 @@ mod tests {
     #[test]
     fn test_place_on_build_plate() {
         let vertices = vec![
-            Vertex::from_coords(0.0, 0.0, 5.0),
-            Vertex::from_coords(10.0, 0.0, 10.0),
-            Vertex::from_coords(5.0, 10.0, 15.0),
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(10.0, 0.0, 10.0),
+            Point3::new(5.0, 10.0, 15.0),
         ];
         let faces = vec![[0, 1, 2]];
         let mesh = IndexedMesh::from_parts(vertices, faces);
@@ -374,7 +365,7 @@ mod tests {
         let min_z = placed
             .vertices
             .iter()
-            .map(|v| v.position.z)
+            .map(|v| v.z)
             .fold(f64::INFINITY, f64::min);
 
         assert!(min_z.abs() < 1e-10);

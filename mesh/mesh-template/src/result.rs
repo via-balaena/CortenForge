@@ -46,7 +46,7 @@ pub enum FitStage {
 ///
 /// ```
 /// use mesh_template::FitResult;
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::IndexedMesh;
 /// use mesh_registration::RigidTransform;
 ///
 /// let mesh = IndexedMesh::new();

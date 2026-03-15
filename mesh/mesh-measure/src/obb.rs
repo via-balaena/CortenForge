@@ -138,7 +138,7 @@ pub fn oriented_bounding_box(mesh: &IndexedMesh) -> OrientedBoundingBox {
     let mut local_max = Vector3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
 
     for v in &mesh.vertices {
-        let local = rotation.inverse() * (v.position - centroid);
+        let local = rotation.inverse() * (*v - centroid);
         local_min.x = local_min.x.min(local.x);
         local_min.y = local_min.y.min(local.y);
         local_min.z = local_min.z.min(local.z);
@@ -181,7 +181,7 @@ fn compute_centroid(mesh: &IndexedMesh) -> Point3<f64> {
         return Point3::origin();
     }
 
-    let sum: Vector3<f64> = mesh.vertices.iter().map(|v| v.position.coords).sum();
+    let sum: Vector3<f64> = mesh.vertices.iter().map(|v| v.coords).sum();
     Point3::from(sum / mesh.vertices.len() as f64)
 }
 
@@ -189,7 +189,7 @@ fn compute_covariance_matrix(mesh: &IndexedMesh, centroid: &Point3<f64>) -> Matr
     let mut cov = Matrix3::zeros();
 
     for v in &mesh.vertices {
-        let d = v.position - centroid;
+        let d = *v - centroid;
         cov[(0, 0)] += d.x * d.x;
         cov[(0, 1)] += d.x * d.y;
         cov[(0, 2)] += d.x * d.z;
@@ -212,7 +212,7 @@ fn symmetric_eigen_decomposition(m: &Matrix3<f64>) -> Matrix3<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{Vertex, unit_cube};
+    use mesh_types::{Point3, unit_cube};
 
     fn create_test_cube(size: f64) -> IndexedMesh {
         let mut cube = unit_cube();
@@ -260,7 +260,7 @@ mod tests {
         let obb = oriented_bounding_box(&cube);
 
         for v in &cube.vertices {
-            assert!(obb.contains(v.position));
+            assert!(obb.contains(*v));
         }
     }
 
@@ -291,10 +291,10 @@ mod tests {
     #[test]
     fn test_obb_extents() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(4.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(4.0, 2.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 2.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(4.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(4.0, 2.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 2.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 2, 3]);
 

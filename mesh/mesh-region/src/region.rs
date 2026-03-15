@@ -112,13 +112,13 @@ impl MeshRegion {
     /// # Example
     ///
     /// ```
-    /// use mesh_types::{IndexedMesh, Vertex, Point3};
+    /// use mesh_types::{IndexedMesh, Point3};
     /// use mesh_region::{MeshRegion, RegionSelector};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-    /// mesh.vertices.push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
-    /// mesh.vertices.push(Vertex::new(Point3::new(5.0, 10.0, 0.0)));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
     /// mesh.faces.push([0, 1, 2]);
     ///
     /// let selector = RegionSelector::sphere(Point3::new(5.0, 5.0, 0.0), 10.0);

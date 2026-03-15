@@ -252,12 +252,12 @@ fn compute_face_normals(mesh: &IndexedMesh) -> Vec<Vector3<f64>> {
     mesh.faces
         .iter()
         .map(|face| {
-            let v0 = &mesh.vertices[face[0] as usize].position;
-            let v1 = &mesh.vertices[face[1] as usize].position;
-            let v2 = &mesh.vertices[face[2] as usize].position;
+            let v0 = &mesh.vertices[face[0] as usize];
+            let v1 = &mesh.vertices[face[1] as usize];
+            let v2 = &mesh.vertices[face[2] as usize];
 
-            let e1 = *v1 - *v0;
-            let e2 = *v2 - *v0;
+            let e1 = v1 - v0;
+            let e2 = v2 - v0;
             let normal = e1.cross(&e2);
 
             normal.try_normalize(f64::EPSILON).unwrap_or(Vector3::z())
@@ -268,14 +268,14 @@ fn compute_face_normals(mesh: &IndexedMesh) -> Vec<Vector3<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn simple_strip() -> IndexedMesh {
         // 4 triangles in a strip
         let mut mesh = IndexedMesh::new();
         for i in 0..5 {
-            mesh.vertices.push(Vertex::from_coords(i as f64, 0.0, 0.0));
-            mesh.vertices.push(Vertex::from_coords(i as f64, 1.0, 0.0));
+            mesh.vertices.push(Point3::new(i as f64, 0.0, 0.0));
+            mesh.vertices.push(Point3::new(i as f64, 1.0, 0.0));
         }
         mesh.faces.push([0, 2, 1]);
         mesh.faces.push([2, 3, 1]);
@@ -287,13 +287,13 @@ mod tests {
     fn bent_strip() -> IndexedMesh {
         // 4 triangles, last two are rotated 90 degrees
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
         // Bent part
-        mesh.vertices.push(Vertex::from_coords(2.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(2.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(2.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(2.0, 1.0, 1.0));
 
         mesh.faces.push([0, 2, 1]);
         mesh.faces.push([2, 3, 1]);

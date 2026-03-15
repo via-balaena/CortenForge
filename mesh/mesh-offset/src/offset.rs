@@ -92,15 +92,15 @@ impl OffsetConfig {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_offset::{offset_mesh, OffsetConfig};
 ///
 /// // Create a simple tetrahedron
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 0.866, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 0.289, 0.816));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 0.289, 0.816));
 /// mesh.faces.push([0, 2, 1]);
 /// mesh.faces.push([0, 1, 3]);
 /// mesh.faces.push([1, 2, 3]);
@@ -186,14 +186,13 @@ fn compute_bounds(mesh: &IndexedMesh) -> (Point3<f64>, Point3<f64>) {
     let mut min = Point3::new(f64::MAX, f64::MAX, f64::MAX);
     let mut max = Point3::new(f64::MIN, f64::MIN, f64::MIN);
 
-    for vertex in &mesh.vertices {
-        let p = &vertex.position;
-        min.x = min.x.min(p.x);
-        min.y = min.y.min(p.y);
-        min.z = min.z.min(p.z);
-        max.x = max.x.max(p.x);
-        max.y = max.y.max(p.y);
-        max.z = max.z.max(p.z);
+    for v in &mesh.vertices {
+        min.x = min.x.min(v.x);
+        min.y = min.y.min(v.y);
+        min.z = min.z.min(v.z);
+        max.x = max.x.max(v.x);
+        max.y = max.y.max(v.y);
+        max.z = max.z.max(v.z);
     }
 
     (min, max)
@@ -223,20 +222,20 @@ fn sample_sdf_to_grid(sdf: &SignedDistanceField, grid: &mut ScalarGrid, offset: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn unit_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices of a unit cube centered at origin
-        mesh.vertices.push(Vertex::from_coords(-0.5, -0.5, -0.5));
-        mesh.vertices.push(Vertex::from_coords(0.5, -0.5, -0.5));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, -0.5));
-        mesh.vertices.push(Vertex::from_coords(-0.5, 0.5, -0.5));
-        mesh.vertices.push(Vertex::from_coords(-0.5, -0.5, 0.5));
-        mesh.vertices.push(Vertex::from_coords(0.5, -0.5, 0.5));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 0.5));
-        mesh.vertices.push(Vertex::from_coords(-0.5, 0.5, 0.5));
+        mesh.vertices.push(Point3::new(-0.5, -0.5, -0.5));
+        mesh.vertices.push(Point3::new(0.5, -0.5, -0.5));
+        mesh.vertices.push(Point3::new(0.5, 0.5, -0.5));
+        mesh.vertices.push(Point3::new(-0.5, 0.5, -0.5));
+        mesh.vertices.push(Point3::new(-0.5, -0.5, 0.5));
+        mesh.vertices.push(Point3::new(0.5, -0.5, 0.5));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 0.5));
+        mesh.vertices.push(Point3::new(-0.5, 0.5, 0.5));
 
         // 12 triangles (2 per face, CCW winding from outside)
         // Bottom face (z = -0.5)
@@ -263,10 +262,10 @@ mod tests {
 
     fn simple_tetrahedron() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.866, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.289, 0.816));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.289, 0.816));
 
         mesh.faces.push([0, 2, 1]);
         mesh.faces.push([0, 1, 3]);

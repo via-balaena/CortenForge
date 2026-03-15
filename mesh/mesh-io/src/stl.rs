@@ -41,7 +41,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 
 use crate::error::{IoError, IoResult};
 
@@ -173,11 +173,11 @@ fn load_stl_binary_from_header<R: Read>(header: &[u8], mut reader: R) -> IoResul
 }
 
 /// Read a vertex from 12 bytes (3 f32s).
-fn read_vertex(buf: &[u8]) -> Vertex {
+fn read_vertex(buf: &[u8]) -> Point3<f64> {
     let x = f32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
     let y = f32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
     let z = f32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-    Vertex::from_coords(f64::from(x), f64::from(y), f64::from(z))
+    Point3::new(f64::from(x), f64::from(y), f64::from(z))
 }
 
 /// Load an ASCII STL file.
@@ -185,7 +185,7 @@ fn load_stl_ascii<R: BufRead>(reader: R) -> IoResult<IndexedMesh> {
     let mut mesh = IndexedMesh::new();
     let mut in_facet = false;
     let mut in_loop = false;
-    let mut vertices_in_face: Vec<Vertex> = Vec::with_capacity(3);
+    let mut vertices_in_face: Vec<Point3<f64>> = Vec::with_capacity(3);
 
     for line in reader.lines() {
         let line = line?;
@@ -216,7 +216,7 @@ fn load_stl_ascii<R: BufRead>(reader: R) -> IoResult<IndexedMesh> {
                     let x: f64 = parts[1].parse()?;
                     let y: f64 = parts[2].parse()?;
                     let z: f64 = parts[3].parse()?;
-                    vertices_in_face.push(Vertex::from_coords(x, y, z));
+                    vertices_in_face.push(Point3::new(x, y, z));
                 }
             }
             "endloop" => {
@@ -293,9 +293,9 @@ fn save_stl_binary<W: Write>(mesh: &IndexedMesh, mut writer: W) -> IoResult<()> 
 
     // Write triangles
     for &[i0, i1, i2] in &mesh.faces {
-        let v0 = &mesh.vertices[i0 as usize].position;
-        let v1 = &mesh.vertices[i1 as usize].position;
-        let v2 = &mesh.vertices[i2 as usize].position;
+        let v0 = &mesh.vertices[i0 as usize];
+        let v1 = &mesh.vertices[i1 as usize];
+        let v2 = &mesh.vertices[i2 as usize];
 
         // Compute normal
         let e1 = v1 - v0;
@@ -348,9 +348,9 @@ fn save_stl_ascii<W: Write>(mesh: &IndexedMesh, mut writer: W) -> IoResult<()> {
     writeln!(writer, "solid mesh")?;
 
     for &[i0, i1, i2] in &mesh.faces {
-        let v0 = &mesh.vertices[i0 as usize].position;
-        let v1 = &mesh.vertices[i1 as usize].position;
-        let v2 = &mesh.vertices[i2 as usize].position;
+        let v0 = &mesh.vertices[i0 as usize];
+        let v1 = &mesh.vertices[i1 as usize];
+        let v2 = &mesh.vertices[i2 as usize];
 
         // Compute normal
         let e1 = v1 - v0;
@@ -399,13 +399,12 @@ fn save_stl_ascii<W: Write>(mesh: &IndexedMesh, mut writer: W) -> IoResult<()> {
 )]
 mod tests {
     use super::*;
-    use mesh_types::MeshTopology;
 
     fn create_test_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -444,7 +443,7 @@ mod tests {
 
                 // Check vertex positions (with tolerance for ASCII precision)
                 if loaded.vertex_count() >= 3 {
-                    let v0 = &loaded.vertices[0].position;
+                    let v0 = &loaded.vertices[0];
                     assert!((v0.x - 0.0).abs() < 1e-5);
                     assert!((v0.y - 0.0).abs() < 1e-5);
                     assert!((v0.z - 0.0).abs() < 1e-5);

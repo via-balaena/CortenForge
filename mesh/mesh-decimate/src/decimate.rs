@@ -12,7 +12,7 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use mesh_types::{IndexedMesh, Point3, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 use tracing::{debug, info};
 
 use crate::params::DecimateParams;
@@ -115,7 +115,7 @@ pub fn decimate_mesh(mesh: &IndexedMesh, params: &DecimateParams) -> DecimationR
     );
 
     // Create working copy of mesh data
-    let mut vertices: Vec<Option<Vertex>> = mesh.vertices.iter().cloned().map(Some).collect();
+    let mut vertices: Vec<Option<Point3<f64>>> = mesh.vertices.iter().copied().map(Some).collect();
     let mut faces: Vec<Option<[u32; 3]>> = mesh.faces.iter().copied().map(Some).collect();
     let mut active_faces = original_triangles;
 
@@ -193,7 +193,7 @@ pub fn decimate_mesh(mesh: &IndexedMesh, params: &DecimateParams) -> DecimationR
 
         // Perform the collapse: merge v2 into v1
         if let Some(ref mut v) = vertices[v1 as usize] {
-            v.position = Point3::new(
+            *v = Point3::new(
                 collapse.optimal_pos[0],
                 collapse.optimal_pos[1],
                 collapse.optimal_pos[2],
@@ -327,9 +327,9 @@ fn find_sharp_edges(
 }
 
 fn compute_face_normal(mesh: &IndexedMesh, face: &[u32; 3]) -> Option<[f64; 3]> {
-    let v0 = &mesh.vertices[face[0] as usize].position;
-    let v1 = &mesh.vertices[face[1] as usize].position;
-    let v2 = &mesh.vertices[face[2] as usize].position;
+    let v0 = &mesh.vertices[face[0] as usize];
+    let v1 = &mesh.vertices[face[1] as usize];
+    let v2 = &mesh.vertices[face[2] as usize];
 
     let e1 = [v1.x - v0.x, v1.y - v0.y, v1.z - v0.z];
     let e2 = [v2.x - v0.x, v2.y - v0.y, v2.z - v0.z];
@@ -357,9 +357,9 @@ fn compute_vertex_quadrics(mesh: &IndexedMesh) -> Vec<Quadric> {
     let mut quadrics = vec![Quadric::default(); mesh.vertices.len()];
 
     for face in &mesh.faces {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         let e1 = [v1.x - v0.x, v1.y - v0.y, v1.z - v0.z];
         let e2 = [v2.x - v0.x, v2.y - v0.y, v2.z - v0.z];
@@ -456,8 +456,8 @@ fn compute_edge_collapse(
     combined.add(q2);
 
     // Find optimal position
-    let pos1 = &mesh.vertices[v1 as usize].position;
-    let pos2 = &mesh.vertices[v2 as usize].position;
+    let pos1 = &mesh.vertices[v1 as usize];
+    let pos2 = &mesh.vertices[v2 as usize];
     let midpoint = [
         f64::midpoint(pos1.x, pos2.x),
         f64::midpoint(pos1.y, pos2.y),
@@ -483,7 +483,7 @@ fn compute_edge_collapse(
 }
 
 fn is_collapse_valid(
-    vertices: &[Option<Vertex>],
+    vertices: &[Option<Point3<f64>>],
     faces: &[Option<[u32; 3]>],
     v1: u32,
     v2: u32,
@@ -522,7 +522,7 @@ fn is_collapse_valid(
 #[allow(clippy::too_many_arguments)]
 fn requeue_vertex_edges(
     v1: u32,
-    vertices: &[Option<Vertex>],
+    vertices: &[Option<Point3<f64>>],
     faces: &[Option<[u32; 3]>],
     quadrics: &[Quadric],
     boundary_edges: &HashSet<(u32, u32)>,
@@ -569,9 +569,9 @@ fn requeue_vertex_edges(
         combined.add(q2);
 
         let midpoint = [
-            f64::midpoint(v1_vertex.position.x, v2_vertex.position.x),
-            f64::midpoint(v1_vertex.position.y, v2_vertex.position.y),
-            f64::midpoint(v1_vertex.position.z, v2_vertex.position.z),
+            f64::midpoint(v1_vertex.x, v2_vertex.x),
+            f64::midpoint(v1_vertex.y, v2_vertex.y),
+            f64::midpoint(v1_vertex.z, v2_vertex.z),
         ];
 
         let optimal_pos = combined.optimal_point().unwrap_or(midpoint);
@@ -590,7 +590,7 @@ fn requeue_vertex_edges(
     }
 }
 
-fn build_final_mesh(vertices: &[Option<Vertex>], faces: &[Option<[u32; 3]>]) -> IndexedMesh {
+fn build_final_mesh(vertices: &[Option<Point3<f64>>], faces: &[Option<[u32; 3]>]) -> IndexedMesh {
     // Create vertex remap from old indices to new indices
     let mut vertex_remap: HashMap<u32, u32> = HashMap::new();
     let mut new_vertices = Vec::new();
@@ -598,7 +598,7 @@ fn build_final_mesh(vertices: &[Option<Vertex>], faces: &[Option<[u32; 3]>]) -> 
     for (old_idx, vertex_opt) in vertices.iter().enumerate() {
         if let Some(vertex) = vertex_opt {
             vertex_remap.insert(old_idx as u32, new_vertices.len() as u32);
-            new_vertices.push(vertex.clone());
+            new_vertices.push(*vertex);
         }
     }
 

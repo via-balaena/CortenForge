@@ -18,14 +18,14 @@
 //!
 //! ```
 //! use mesh_scan::cleanup::spike::{remove_spikes, SpikeParams};
-//! use mesh_types::{IndexedMesh, Vertex};
+//! use mesh_types::IndexedMesh;
 //!
 //! let mesh = IndexedMesh::new(); // Would be loaded from file
 //! let params = SpikeParams::default();
 //! let result = remove_spikes(&mesh, &params);
 //! ```
 
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Vector3};
 use std::collections::{HashMap, HashSet};
 
@@ -185,13 +185,12 @@ impl std::fmt::Display for SpikeRemovalResult {
 ///
 /// ```
 /// use mesh_scan::cleanup::spike::{remove_spikes, SpikeParams};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut mesh = IndexedMesh::new();
-/// // Add vertices...
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let result = remove_spikes(&mesh, &SpikeParams::default()).unwrap();
@@ -239,7 +238,7 @@ pub fn remove_spikes(mesh: &IndexedMesh, params: &SpikeParams) -> ScanResult<Spi
             if let Some(neighbors) = vertex_neighbors.get(&spike_idx) {
                 if !neighbors.is_empty() {
                     let avg_pos = compute_neighbor_average(&result_mesh.vertices, neighbors);
-                    result_mesh.vertices[spike_idx as usize].position = avg_pos;
+                    result_mesh.vertices[spike_idx as usize] = avg_pos;
                 }
             }
         }
@@ -275,7 +274,7 @@ pub fn remove_spikes(mesh: &IndexedMesh, params: &SpikeParams) -> ScanResult<Spi
                 {
                     new_index[old_idx] = Some(new_vertices.len() as u32);
                 }
-                new_vertices.push(vertex.clone());
+                new_vertices.push(*vertex);
             }
         }
 
@@ -373,12 +372,11 @@ fn detect_spikes(
         // Check protrusion
         let neighbor_positions: Vec<Point3<f64>> = neighbors
             .iter()
-            .map(|&n| mesh.vertices[n as usize].position)
+            .map(|&n| mesh.vertices[n as usize])
             .collect();
 
-        if let Some(protrusion) = compute_protrusion(&vertex.position, &neighbor_positions) {
-            let avg_edge_length =
-                compute_average_edge_length(&vertex.position, &neighbor_positions);
+        if let Some(protrusion) = compute_protrusion(vertex, &neighbor_positions) {
+            let avg_edge_length = compute_average_edge_length(vertex, &neighbor_positions);
 
             if avg_edge_length > 0.0 && protrusion / avg_edge_length > params.max_protrusion_ratio {
                 spikes.push(*vertex_idx);
@@ -395,9 +393,9 @@ fn compute_vertex_normals(mesh: &IndexedMesh) -> HashMap<u32, Vector3<f64>> {
     let mut vertex_counts: HashMap<u32, usize> = HashMap::new();
 
     for face in &mesh.faces {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         let e1 = v1 - v0;
         let e2 = v2 - v0;
@@ -445,15 +443,12 @@ fn compute_average_normal(
 }
 
 /// Computes the average position of neighbors.
-fn compute_neighbor_average(vertices: &[Vertex], neighbors: &[u32]) -> Point3<f64> {
+fn compute_neighbor_average(vertices: &[Point3<f64>], neighbors: &[u32]) -> Point3<f64> {
     if neighbors.is_empty() {
         return Point3::origin();
     }
 
-    let sum: Vector3<f64> = neighbors
-        .iter()
-        .map(|&n| vertices[n as usize].position.coords)
-        .sum();
+    let sum: Vector3<f64> = neighbors.iter().map(|&n| vertices[n as usize].coords).sum();
 
     #[allow(clippy::cast_precision_loss)]
     Point3::from(sum / neighbors.len() as f64)
@@ -525,9 +520,9 @@ mod tests {
 
     fn make_flat_triangle_mesh() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -542,7 +537,7 @@ mod tests {
                 let x = f64::from(i);
                 let y = f64::from(j);
                 let z = if i == 1 && j == 1 { 10.0 } else { 0.0 }; // Spike at center
-                mesh.vertices.push(Vertex::from_coords(x, y, z));
+                mesh.vertices.push(Point3::new(x, y, z));
             }
         }
 
@@ -601,7 +596,7 @@ mod tests {
     #[test]
     fn test_remove_spikes_no_faces() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
 
         let result = remove_spikes(&mesh, &SpikeParams::default()).unwrap();
         assert_eq!(result.spikes_detected, 0);
@@ -629,7 +624,7 @@ mod tests {
             assert_eq!(result.vertices_removed, 0);
 
             // The spike vertex (center at index 4) should now be closer to z=0
-            let center_z = result.mesh.vertices[4].position.z;
+            let center_z = result.mesh.vertices[4].z;
             assert!(center_z < 5.0); // Should be pulled down significantly
         }
     }
@@ -725,9 +720,9 @@ mod tests {
     #[test]
     fn test_compute_neighbor_average() {
         let vertices = vec![
-            Vertex::from_coords(0.0, 0.0, 0.0),
-            Vertex::from_coords(2.0, 0.0, 0.0),
-            Vertex::from_coords(0.0, 2.0, 0.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
         ];
         let neighbors = vec![0, 1, 2];
         let avg = compute_neighbor_average(&vertices, &neighbors);

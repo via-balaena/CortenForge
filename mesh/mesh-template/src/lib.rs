@@ -20,21 +20,20 @@
 //!
 //! ```
 //! use mesh_template::{FitTemplate, ControlRegion};
-//! use mesh_types::{IndexedMesh, Vertex};
-//! use nalgebra::Point3;
+//! use mesh_types::{IndexedMesh, Point3};
 //!
 //! // Create template mesh
 //! let mut template_mesh = IndexedMesh::new();
-//! template_mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! template_mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! template_mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! template_mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! template_mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! template_mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! template_mesh.faces.push([0, 1, 2]);
 //!
 //! // Create scan mesh (slightly offset)
 //! let mut scan_mesh = IndexedMesh::new();
-//! scan_mesh.vertices.push(Vertex::from_coords(0.1, 0.1, 0.0));
-//! scan_mesh.vertices.push(Vertex::from_coords(1.1, 0.1, 0.0));
-//! scan_mesh.vertices.push(Vertex::from_coords(0.6, 1.1, 0.0));
+//! scan_mesh.vertices.push(Point3::new(0.1, 0.1, 0.0));
+//! scan_mesh.vertices.push(Point3::new(1.1, 0.1, 0.0));
+//! scan_mesh.vertices.push(Point3::new(0.6, 1.1, 0.0));
 //! scan_mesh.faces.push([0, 1, 2]);
 //!
 //! // Create template with control regions
@@ -52,13 +51,12 @@
 //!
 //! ```
 //! use mesh_template::{FitTemplate, FitParams, ControlRegion};
-//! use mesh_types::{IndexedMesh, Vertex};
-//! use nalgebra::Point3;
+//! use mesh_types::{IndexedMesh, Point3};
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! let template = FitTemplate::new(mesh)
@@ -76,14 +74,13 @@
 //!
 //! ```
 //! use mesh_template::{FitTemplate, FitParams, ControlRegion, Measurement, MeasurementType};
-//! use mesh_types::{IndexedMesh, Vertex};
-//! use nalgebra::{Point3, Vector3};
+//! use mesh_types::{IndexedMesh, Point3, Vector3};
 //!
 //! let mut mesh = IndexedMesh::new();
 //! // Create a simple mesh...
 //! for i in 0..8 {
 //!     let angle = std::f64::consts::PI * 2.0 * (i as f64) / 8.0;
-//!     mesh.vertices.push(Vertex::from_coords(angle.cos(), angle.sin(), 0.0));
+//!     mesh.vertices.push(Point3::new(angle.cos(), angle.sin(), 0.0));
 //! }
 //! // Add faces...
 //! for i in 0..6 {
@@ -157,24 +154,24 @@ pub use template::FitTemplate;
 mod integration_tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::{IndexedMesh, Vertex};
+    use mesh_types::IndexedMesh;
     use nalgebra::{Point3, Vector3};
 
     fn make_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
 
     fn make_square() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 2, 3]);
         mesh
@@ -184,14 +181,14 @@ mod integration_tests {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices of a unit cube
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0));
 
         // 12 triangles (2 per face)
         mesh.faces.push([0, 1, 2]);
@@ -281,11 +278,7 @@ mod integration_tests {
 
         // Vertices should be translated
         for v in &result.mesh.vertices {
-            assert!(
-                v.position.z > 0.4,
-                "Vertex should be translated up: {:?}",
-                v.position
-            );
+            assert!(v.z > 0.4, "Vertex should be translated up: {v:?}");
         }
     }
 

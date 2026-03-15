@@ -46,10 +46,11 @@
 //! ```
 
 use bevy::prelude::*;
-use sim_core::{CollisionShape, Data, GeomType, Model};
+use cf_geometry::Shape;
+use sim_core::{Data, GeomType, Model};
 
 use crate::convert::{quat_from_unit_quaternion, vec3_from_vector};
-use crate::mesh::mesh_from_collision_shape;
+use crate::mesh::mesh_from_shape;
 
 // ============================================================================
 // Resources
@@ -482,7 +483,7 @@ pub fn spawn_model_bodies(commands: &mut Commands, model: &Model, data: &Data) -
 ///
 /// Creates entities with `ModelGeomIndex`, `Mesh3d`, `MeshMaterial3d`, and
 /// `Transform` components. Materials are derived from `geom_rgba`. Meshes
-/// are generated from geom type + size via `mesh_from_collision_shape`.
+/// are generated from geom type + size via [`mesh_from_shape`].
 ///
 /// Planes get a large flat quad. Geom types without mesh support (`Sdf`,
 /// `Hfield`) are skipped.
@@ -499,28 +500,28 @@ pub fn spawn_model_geoms(
         let size = model.geom_size[geom_id];
         let rgba = model.geom_rgba[geom_id];
 
-        // Convert GeomType + size to CollisionShape for mesh generation
+        // Convert GeomType + size to Shape for mesh generation
         let shape = match geom_type {
-            GeomType::Plane => Some(CollisionShape::Plane {
+            GeomType::Plane => Some(Shape::Plane {
                 normal: nalgebra::Vector3::z(),
                 distance: 0.0,
             }),
-            GeomType::Sphere => Some(CollisionShape::Sphere { radius: size.x }),
-            GeomType::Box => Some(CollisionShape::Box { half_extents: size }),
-            GeomType::Capsule => Some(CollisionShape::Capsule {
+            GeomType::Sphere => Some(Shape::Sphere { radius: size.x }),
+            GeomType::Box => Some(Shape::Box { half_extents: size }),
+            GeomType::Capsule => Some(Shape::Capsule {
                 radius: size.x,
                 half_length: size.y,
             }),
-            GeomType::Cylinder => Some(CollisionShape::Cylinder {
+            GeomType::Cylinder => Some(Shape::Cylinder {
                 radius: size.x,
                 half_length: size.y,
             }),
-            GeomType::Ellipsoid => Some(CollisionShape::Ellipsoid { radii: size }),
+            GeomType::Ellipsoid => Some(Shape::Ellipsoid { radii: size }),
             // Mesh, Hfield, Sdf need asset data — skip for now
             _ => None,
         };
 
-        let mesh = shape.and_then(|s| mesh_from_collision_shape(&s));
+        let mesh = shape.and_then(|s| mesh_from_shape(&s));
 
         let Some(mesh) = mesh else { continue };
 

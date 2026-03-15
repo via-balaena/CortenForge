@@ -964,13 +964,13 @@ mod tests {
 
     /// Helper to create a simple STL file for testing.
     fn create_test_stl(path: &std::path::Path) {
-        use mesh_types::{IndexedMesh, Vertex};
+        use mesh_types::{IndexedMesh, Point3};
 
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 1, 3]);
         mesh.faces.push([1, 2, 3]);

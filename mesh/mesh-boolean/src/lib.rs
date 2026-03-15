@@ -143,7 +143,7 @@ pub use multi::{
 };
 
 // Re-export mesh types for convenience
-pub use mesh_types::{IndexedMesh, Point3, Vector3, Vertex};
+pub use mesh_types::{IndexedMesh, Point3, Vector3};
 
 /// Prelude module for convenient imports.
 ///
@@ -194,7 +194,7 @@ mod tests {
         ];
 
         for v in &vertices {
-            mesh.vertices.push(Vertex::new(*v));
+            mesh.vertices.push(*v);
         }
 
         mesh.faces.push([0, 2, 1]);
@@ -228,7 +228,7 @@ mod tests {
             Point3::new(6.0, 1.0, 1.0),
             Point3::new(5.0, 1.0, 1.0),
         ] {
-            cube_b.vertices.push(Vertex::new(*v));
+            cube_b.vertices.push(*v);
         }
         cube_b.faces.push([0, 2, 1]);
         cube_b.faces.push([0, 3, 2]);
@@ -295,7 +295,7 @@ mod tests {
                     Point3::new(offset + 1.0, 1.0, 1.0),
                     Point3::new(offset, 1.0, 1.0),
                 ] {
-                    mesh.vertices.push(Vertex::new(*v));
+                    mesh.vertices.push(*v);
                 }
                 mesh.faces.push([0, 2, 1]);
                 mesh.faces.push([0, 3, 2]);

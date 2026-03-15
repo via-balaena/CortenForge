@@ -17,14 +17,13 @@
 //!
 //! ```
 //! use mesh_morph::{morph_mesh, MorphParams, Constraint};
-//! use mesh_types::{IndexedMesh, Vertex};
-//! use nalgebra::Point3;
+//! use mesh_types::{IndexedMesh, Point3};
 //!
 //! // Create a simple mesh
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! // Define constraints
@@ -52,13 +51,13 @@
 //!
 //! ```
 //! use mesh_morph::{morph_mesh, MorphParams, Constraint};
-//! use mesh_types::{IndexedMesh, Vertex};
-//! use nalgebra::{Point3, Vector3};
+//! use mesh_types::{IndexedMesh, Point3};
+//! use nalgebra::Vector3;
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.5, 0.5, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! let params = MorphParams::ffd()
@@ -87,14 +86,13 @@
 //!
 //! ```
 //! use mesh_morph::{morph_mesh, MorphParams, Constraint};
-//! use mesh_types::{IndexedMesh, Vertex};
-//! use nalgebra::Point3;
+//! use mesh_types::{IndexedMesh, Point3};
 //! use std::collections::HashSet;
 //!
 //! let mut mesh = IndexedMesh::new();
-//! mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-//! mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+//! mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 //! mesh.faces.push([0, 1, 2]);
 //!
 //! // Only deform vertex 0
@@ -148,21 +146,20 @@ pub use result::MorphOutput;
 mod integration_tests {
     use super::*;
     use approx::assert_relative_eq;
-    use mesh_types::{IndexedMesh, Vertex};
-    use nalgebra::{Point3, Vector3};
+    use mesh_types::{IndexedMesh, Point3, Vector3};
 
     fn make_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices of a unit cube
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 1.0));
+        mesh.vertices.push(Point3::new(1.0, 1.0, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 1.0));
 
         // 12 triangles (2 per face)
         mesh.faces.push([0, 1, 2]);
@@ -189,15 +186,15 @@ mod integration_tests {
         // Translate all corners
         let mut params = MorphParams::rbf();
         for v in &mesh.vertices {
-            params = params.with_constraint(Constraint::point(v.position, v.position + offset));
+            params = params.with_constraint(Constraint::point(*v, *v + offset));
         }
 
         let result = morph_mesh(&mesh, &params).unwrap();
 
         // All vertices should be translated
         for (orig, deformed) in mesh.vertices.iter().zip(result.mesh.vertices.iter()) {
-            let expected = orig.position + offset;
-            let dist = (expected - deformed.position).norm();
+            let expected = *orig + offset;
+            let dist = (expected - deformed).norm();
             assert!(dist < 0.1, "Translation error: {}", dist);
         }
     }
@@ -231,12 +228,12 @@ mod integration_tests {
         // Create constraints
         let mut constraints = Vec::new();
         for v in &mesh.vertices {
-            constraints.push(Constraint::point(v.position, v.position));
+            constraints.push(Constraint::point(*v, *v));
         }
         // Add one deformation
         constraints[0] = Constraint::point(
-            mesh.vertices[0].position,
-            mesh.vertices[0].position + Vector3::new(0.0, 0.0, 0.2),
+            mesh.vertices[0],
+            mesh.vertices[0] + Vector3::new(0.0, 0.0, 0.2),
         );
 
         // Test all kernels
@@ -260,7 +257,7 @@ mod integration_tests {
 
         let mut constraints = Vec::new();
         for v in &mesh.vertices {
-            constraints.push(Constraint::point(v.position, v.position));
+            constraints.push(Constraint::point(*v, *v));
         }
 
         let params = MorphParams::rbf().with_constraints(constraints);

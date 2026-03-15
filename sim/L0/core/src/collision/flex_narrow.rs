@@ -5,13 +5,13 @@ use super::{
     assign_friction, assign_imp, assign_margin, assign_ref, contact_param_flex_flex,
     contact_param_flex_rigid, contact_param_flex_self,
 };
-use crate::collision_shape::CollisionShape;
 use crate::forward::closest_point_segment;
 use crate::gjk_epa::gjk_epa_contact;
 use crate::heightfield::heightfield_sphere_contact;
 use crate::mesh::mesh_sphere_contact;
 use crate::sdf::sdf_sphere_contact;
 use crate::types::{Contact, DISABLE_MIDPHASE, GeomType, Model, compute_tangent_frame, disabled};
+use cf_geometry::Shape;
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector2, Vector3};
 use sim_types::Pose;
 
@@ -167,8 +167,8 @@ pub fn narrowphase_sphere_geom(
 
             // Primary path: convex hull GJK (MuJoCo-conformant)
             if let Some(hull) = mesh.convex_hull() {
-                let hull_shape = CollisionShape::convex_mesh_from_hull(hull);
-                let sphere_shape = CollisionShape::Sphere {
+                let hull_shape = Shape::convex_mesh(hull.clone());
+                let sphere_shape = Shape::Sphere {
                     radius: sphere_radius,
                 };
                 let sphere_pose =

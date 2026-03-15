@@ -24,14 +24,24 @@
 
 mod aabb;
 mod bounded;
+mod bvh;
+mod convex_hull;
+mod heightfield;
 mod mesh;
 mod ray;
+mod sdf;
+mod shape;
 mod sphere;
 mod triangle;
 
 pub use aabb::{Aabb, Axis};
 pub use bounded::Bounded;
+pub use bvh::{Bvh, BvhPrimitive, bvh_from_mesh, bvh_from_triangle_mesh, query_bvh_pair};
+pub use convex_hull::{ConvexHull, convex_hull};
+pub use heightfield::HeightFieldData;
 pub use mesh::IndexedMesh;
 pub use ray::{Ray, RayHit};
+pub use sdf::SdfGrid;
+pub use shape::Shape;
 pub use sphere::Sphere;
 pub use triangle::Triangle;

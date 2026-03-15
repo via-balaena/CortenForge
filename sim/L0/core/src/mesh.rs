@@ -22,9 +22,8 @@
 //! # Usage
 //!
 //! ```ignore
-//! use sim_core::{CollisionShape, TriangleMeshData};
+//! use sim_core::TriangleMeshData;
 //! use nalgebra::Point3;
-//! use std::sync::Arc;
 //!
 //! // Create vertices and triangle indices
 //! let vertices = vec![
@@ -37,9 +36,6 @@
 //!
 //! // Build the mesh with BVH
 //! let mesh_data = TriangleMeshData::new(vertices, indices);
-//!
-//! // Create collision shape
-//! let shape = CollisionShape::triangle_mesh(Arc::new(mesh_data));
 //! ```
 //!
 //! # Performance
@@ -51,8 +47,7 @@
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
-use crate::convex_hull::{ConvexHull, quickhull};
-use crate::mid_phase::{Bvh, BvhPrimitive};
+use cf_geometry::{Aabb, Bounded, Bvh, ConvexHull, IndexedMesh, bvh_from_mesh, convex_hull};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -60,41 +55,19 @@ use serde::{Deserialize, Serialize};
 /// Small epsilon for numerical comparisons.
 const EPSILON: f64 = 1e-10;
 
-/// A single triangle defined by three vertex indices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Triangle {
-    /// Index of first vertex.
-    pub v0: usize,
-    /// Index of second vertex.
-    pub v1: usize,
-    /// Index of third vertex.
-    pub v2: usize,
-}
-
-impl Triangle {
-    /// Create a new triangle from vertex indices.
-    #[must_use]
-    pub const fn new(v0: usize, v1: usize, v2: usize) -> Self {
-        Self { v0, v1, v2 }
-    }
-}
-
 /// Triangle mesh collision data.
 ///
-/// Stores vertices, triangle indices, and a BVH for efficient collision queries.
-/// The mesh is defined in local coordinates and will be transformed using the
-/// body's pose during collision detection.
+/// Stores an [`IndexedMesh`] (from cf-geometry) with vertices and `[u32; 3]` face
+/// indices, plus a BVH for efficient collision queries. The mesh is defined in
+/// local coordinates and will be transformed using the body's pose during
+/// collision detection.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TriangleMeshData {
-    /// Vertices of the mesh in local coordinates.
-    vertices: Vec<Point3<f64>>,
-    /// Triangle definitions (groups of 3 vertex indices).
-    triangles: Vec<Triangle>,
+    /// The underlying indexed mesh (vertices + face indices).
+    mesh: IndexedMesh,
     /// Cached AABB for the entire mesh (local coordinates).
-    aabb_min: Point3<f64>,
-    aabb_max: Point3<f64>,
+    aabb: Aabb,
     /// BVH for efficient collision queries.
     /// Skipped during serialization, rebuilt on demand.
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -106,12 +79,12 @@ pub struct TriangleMeshData {
 
 impl PartialEq for TriangleMeshData {
     fn eq(&self, other: &Self) -> bool {
-        self.vertices == other.vertices && self.triangles == other.triangles
+        self.mesh.vertices == other.mesh.vertices && self.mesh.faces == other.mesh.faces
     }
 }
 
 impl TriangleMeshData {
-    /// Create a new triangle mesh from vertices and indices.
+    /// Create a new triangle mesh from vertices and flat indices.
     ///
     /// # Arguments
     ///
@@ -122,14 +95,13 @@ impl TriangleMeshData {
     ///
     /// Panics if `indices.len()` is not a multiple of 3 or if any index is out of bounds.
     #[must_use]
-    #[allow(clippy::needless_pass_by_value)] // Taking Vec for API consistency with other constructors
+    #[allow(clippy::needless_pass_by_value, clippy::cast_possible_truncation)]
     pub fn new(vertices: Vec<Point3<f64>>, indices: Vec<usize>) -> Self {
         assert!(
             indices.len() % 3 == 0,
             "Triangle indices must be a multiple of 3"
         );
 
-        // Validate indices
         let max_vertex = vertices.len();
         for &idx in &indices {
             assert!(
@@ -140,138 +112,95 @@ impl TriangleMeshData {
             );
         }
 
-        // Build triangles
-        let triangles: Vec<Triangle> = indices
+        let faces: Vec<[u32; 3]> = indices
             .chunks(3)
-            .map(|chunk| Triangle::new(chunk[0], chunk[1], chunk[2]))
+            .map(|c| [c[0] as u32, c[1] as u32, c[2] as u32])
             .collect();
 
-        // Compute AABB
-        let (aabb_min, aabb_max) = Self::compute_aabb(&vertices);
-
-        // Build BVH
-        let bvh = Self::build_bvh(&vertices, &triangles);
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let aabb = Bounded::aabb(&mesh);
+        let bvh = Some(bvh_from_mesh(&mesh));
 
         Self {
-            vertices,
-            triangles,
-            aabb_min,
-            aabb_max,
-            bvh: Some(bvh),
+            mesh,
+            aabb,
+            bvh,
             convex_hull: None,
         }
     }
 
-    /// Create a triangle mesh from separate vertex and triangle arrays.
+    /// Create a triangle mesh from vertices and `[u32; 3]` face arrays.
     ///
     /// # Panics
     ///
-    /// Panics if any triangle index is out of bounds.
+    /// Panics if any face index is out of bounds.
     #[must_use]
-    pub fn from_triangles(vertices: Vec<Point3<f64>>, triangles: Vec<Triangle>) -> Self {
-        // Validate indices
+    pub fn from_faces(vertices: Vec<Point3<f64>>, faces: Vec<[u32; 3]>) -> Self {
         let max_vertex = vertices.len();
-        for tri in &triangles {
-            assert!(
-                tri.v0 < max_vertex && tri.v1 < max_vertex && tri.v2 < max_vertex,
-                "Triangle index out of bounds"
-            );
+        for face in &faces {
+            for &idx in face {
+                assert!(
+                    (idx as usize) < max_vertex,
+                    "Face index {} out of bounds (max: {})",
+                    idx,
+                    max_vertex - 1
+                );
+            }
         }
 
-        // Compute AABB
-        let (aabb_min, aabb_max) = Self::compute_aabb(&vertices);
-
-        // Build BVH
-        let bvh = Self::build_bvh(&vertices, &triangles);
+        let mesh = IndexedMesh::from_parts(vertices, faces);
+        let aabb = Bounded::aabb(&mesh);
+        let bvh = Some(bvh_from_mesh(&mesh));
 
         Self {
-            vertices,
-            triangles,
-            aabb_min,
-            aabb_max,
-            bvh: Some(bvh),
+            mesh,
+            aabb,
+            bvh,
             convex_hull: None,
         }
-    }
-
-    /// Compute the AABB for a set of vertices.
-    fn compute_aabb(vertices: &[Point3<f64>]) -> (Point3<f64>, Point3<f64>) {
-        if vertices.is_empty() {
-            return (Point3::origin(), Point3::origin());
-        }
-
-        let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-        let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-
-        for v in vertices {
-            min.x = min.x.min(v.x);
-            min.y = min.y.min(v.y);
-            min.z = min.z.min(v.z);
-            max.x = max.x.max(v.x);
-            max.y = max.y.max(v.y);
-            max.z = max.z.max(v.z);
-        }
-
-        (min, max)
-    }
-
-    /// Build a BVH from the triangles.
-    fn build_bvh(vertices: &[Point3<f64>], triangles: &[Triangle]) -> Bvh {
-        let primitives: Vec<BvhPrimitive> = triangles
-            .iter()
-            .enumerate()
-            .map(|(idx, tri)| {
-                let v0 = vertices[tri.v0];
-                let v1 = vertices[tri.v1];
-                let v2 = vertices[tri.v2];
-                BvhPrimitive::from_triangle(v0, v1, v2, idx)
-            })
-            .collect();
-
-        Bvh::build(primitives)
     }
 
     /// Get the vertices.
     #[must_use]
     pub fn vertices(&self) -> &[Point3<f64>] {
-        &self.vertices
+        &self.mesh.vertices
     }
 
-    /// Get the triangles.
+    /// Get the face index arrays (`[u32; 3]` per triangle).
     #[must_use]
-    pub fn triangles(&self) -> &[Triangle] {
-        &self.triangles
+    pub fn triangles(&self) -> &[[u32; 3]] {
+        &self.mesh.faces
     }
 
     /// Get the number of triangles.
     #[must_use]
     pub fn triangle_count(&self) -> usize {
-        self.triangles.len()
+        self.mesh.face_count()
     }
 
     /// Get the number of vertices.
     #[must_use]
     pub fn vertex_count(&self) -> usize {
-        self.vertices.len()
+        self.mesh.vertex_count()
     }
 
-    /// Get the local-space AABB.
+    /// Get the local-space AABB as `(min, max)`.
     #[must_use]
     pub fn aabb(&self) -> (Point3<f64>, Point3<f64>) {
-        (self.aabb_min, self.aabb_max)
+        (self.aabb.min, self.aabb.max)
     }
 
     /// Get the center of the AABB.
     #[must_use]
     pub fn center(&self) -> Point3<f64> {
-        Point3::from((self.aabb_min.coords + self.aabb_max.coords) * 0.5)
+        self.aabb.center()
     }
 
     /// Compute and store the convex hull of this mesh's vertices.
     /// If the mesh has fewer than 4 vertices or all points are degenerate,
     /// `convex_hull` remains `None`.
     pub fn compute_convex_hull(&mut self, max_vertices: Option<usize>) {
-        self.convex_hull = quickhull(self.vertices(), max_vertices);
+        self.convex_hull = convex_hull(self.vertices(), max_vertices);
     }
 
     /// Returns the convex hull if computed.
@@ -280,34 +209,43 @@ impl TriangleMeshData {
         self.convex_hull.as_ref()
     }
 
-    /// Get a triangle's vertices.
+    /// Get a triangle's three vertex positions by face index.
+    ///
+    /// Returns `None` if `face_idx` is out of bounds.
     #[must_use]
-    pub fn triangle_vertices(&self, tri: &Triangle) -> (Point3<f64>, Point3<f64>, Point3<f64>) {
-        (
-            self.vertices[tri.v0],
-            self.vertices[tri.v1],
-            self.vertices[tri.v2],
-        )
+    pub fn triangle_vertices(
+        &self,
+        face_idx: usize,
+    ) -> Option<(Point3<f64>, Point3<f64>, Point3<f64>)> {
+        let face = self.mesh.faces.get(face_idx)?;
+        Some((
+            self.mesh.vertices[face[0] as usize],
+            self.mesh.vertices[face[1] as usize],
+            self.mesh.vertices[face[2] as usize],
+        ))
     }
 
-    /// Get a triangle by index.
+    /// Get a face's index triple by index.
     #[must_use]
-    pub fn get_triangle(&self, index: usize) -> Option<&Triangle> {
-        self.triangles.get(index)
+    pub fn get_triangle(&self, index: usize) -> Option<[u32; 3]> {
+        self.mesh.faces.get(index).copied()
     }
 
-    /// Compute the normal of a triangle.
+    /// Compute the normal of a triangle by face index.
     #[must_use]
-    pub fn triangle_normal(&self, tri: &Triangle) -> Vector3<f64> {
-        let (v0, v1, v2) = self.triangle_vertices(tri);
-        let e1 = v1 - v0;
-        let e2 = v2 - v0;
-        let normal = e1.cross(&e2);
-        let norm = normal.norm();
-        if norm > EPSILON {
-            normal / norm
+    pub fn triangle_normal(&self, face_idx: usize) -> Vector3<f64> {
+        if let Some((v0, v1, v2)) = self.triangle_vertices(face_idx) {
+            let e1 = v1 - v0;
+            let e2 = v2 - v0;
+            let normal = e1.cross(&e2);
+            let norm = normal.norm();
+            if norm > EPSILON {
+                normal / norm
+            } else {
+                Vector3::z()
+            }
         } else {
-            Vector3::z() // Degenerate triangle
+            Vector3::z()
         }
     }
 
@@ -320,7 +258,13 @@ impl TriangleMeshData {
     /// Return indices `0..triangle_count()` for brute-force iteration.
     #[must_use]
     pub fn all_triangle_indices(&self) -> Vec<usize> {
-        (0..self.triangles.len()).collect()
+        (0..self.mesh.face_count()).collect()
+    }
+
+    /// Access the underlying [`IndexedMesh`].
+    #[must_use]
+    pub fn indexed_mesh(&self) -> &IndexedMesh {
+        &self.mesh
     }
 }
 
@@ -1073,11 +1017,11 @@ pub fn mesh_sphere_contact(
 
     // Get candidate triangles via BVH or brute-force
     let candidates = if use_bvh {
-        let query_aabb = crate::collision_shape::Aabb::from_center(
+        let query_aabb = cf_geometry::Aabb::from_center(
             local_center,
             Vector3::new(sphere_radius, sphere_radius, sphere_radius),
         );
-        let bvh = mesh.bvh.as_ref()?;
+        let bvh = mesh.bvh()?;
         bvh.query(&query_aabb)
     } else {
         mesh.all_triangle_indices()
@@ -1088,8 +1032,7 @@ pub fn mesh_sphere_contact(
     let mut max_penetration = 0.0;
 
     for tri_idx in candidates {
-        let tri = mesh.triangles.get(tri_idx)?;
-        let (v0, v1, v2) = mesh.triangle_vertices(tri);
+        let (v0, v1, v2) = mesh.triangle_vertices(tri_idx)?;
 
         if let Some((local_point, local_normal, penetration)) =
             triangle_sphere_contact(v0, v1, v2, local_center, sphere_radius)
@@ -1136,12 +1079,12 @@ pub fn mesh_capsule_contact(
         let max_y = local_start.y.max(local_end.y) + capsule_radius;
         let max_z = local_start.z.max(local_end.z) + capsule_radius;
 
-        let query_aabb = crate::collision_shape::Aabb::new(
+        let query_aabb = cf_geometry::Aabb::new(
             Point3::new(min_x, min_y, min_z),
             Point3::new(max_x, max_y, max_z),
         );
 
-        let bvh = mesh.bvh.as_ref()?;
+        let bvh = mesh.bvh()?;
         bvh.query(&query_aabb)
     } else {
         mesh.all_triangle_indices()
@@ -1152,8 +1095,7 @@ pub fn mesh_capsule_contact(
     let mut max_penetration = 0.0;
 
     for tri_idx in candidates {
-        let tri = mesh.triangles.get(tri_idx)?;
-        let (v0, v1, v2) = mesh.triangle_vertices(tri);
+        let (v0, v1, v2) = mesh.triangle_vertices(tri_idx)?;
 
         if let Some((local_point, local_normal, penetration)) =
             triangle_capsule_contact(v0, v1, v2, local_start, local_end, capsule_radius)
@@ -1203,12 +1145,12 @@ pub fn mesh_box_contact(
             + (rot_mat[(2, 1)] * half_extents.y).abs()
             + (rot_mat[(2, 2)] * half_extents.z).abs();
 
-        let query_aabb = crate::collision_shape::Aabb::from_center(
+        let query_aabb = cf_geometry::Aabb::from_center(
             local_box_center,
             Vector3::new(extent_x, extent_y, extent_z),
         );
 
-        let bvh = mesh.bvh.as_ref()?;
+        let bvh = mesh.bvh()?;
         bvh.query(&query_aabb)
     } else {
         mesh.all_triangle_indices()
@@ -1219,8 +1161,7 @@ pub fn mesh_box_contact(
     let mut max_penetration = 0.0;
 
     for tri_idx in candidates {
-        let tri = mesh.triangles.get(tri_idx)?;
-        let (v0, v1, v2) = mesh.triangle_vertices(tri);
+        let (v0, v1, v2) = mesh.triangle_vertices(tri_idx)?;
 
         if let Some((local_point, local_normal, penetration)) = triangle_box_contact(
             v0,
@@ -1319,16 +1260,14 @@ pub fn mesh_mesh_contact(
     // Test each candidate pair with narrow-phase triangle-triangle intersection
     for (tri_idx_a, tri_idx_b) in candidate_pairs {
         // Get triangle A
-        let Some(tri_a) = mesh_a.get_triangle(tri_idx_a) else {
+        let Some((a0, a1, a2)) = mesh_a.triangle_vertices(tri_idx_a) else {
             continue;
         };
-        let (a0, a1, a2) = mesh_a.triangle_vertices(tri_a);
 
         // Get triangle B
-        let Some(tri_b) = mesh_b.get_triangle(tri_idx_b) else {
+        let Some((b0, b1, b2)) = mesh_b.triangle_vertices(tri_idx_b) else {
             continue;
         };
-        let (b0, b1, b2) = mesh_b.triangle_vertices(tri_b);
 
         // Transform triangles to world space
         let world_a = [
@@ -1572,10 +1511,8 @@ mod tests {
         let bvh = mesh.bvh().unwrap();
 
         // Query that overlaps the top face of the cube (at z=0.5)
-        let query = crate::collision_shape::Aabb::from_center(
-            Point3::new(0.0, 0.0, 0.5),
-            Vector3::new(0.2, 0.2, 0.1),
-        );
+        let query =
+            cf_geometry::Aabb::from_center(Point3::new(0.0, 0.0, 0.5), Vector3::new(0.2, 0.2, 0.1));
         let results = bvh.query(&query);
         assert!(
             !results.is_empty(),
@@ -1586,8 +1523,7 @@ mod tests {
     #[test]
     fn test_triangle_normal() {
         let mesh = create_tetrahedron();
-        let tri = mesh.get_triangle(0).unwrap();
-        let normal = mesh.triangle_normal(tri);
+        let normal = mesh.triangle_normal(0);
 
         // Triangle 0 is the bottom face (XY plane), normal should be -Z
         assert!(normal.z.abs() > 0.9);

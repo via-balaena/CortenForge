@@ -20,7 +20,7 @@
 //! Run with: cargo test -p mesh-repair visual_regression
 
 use mesh_repair::{RepairParams, remove_unreferenced_vertices, weld_vertices};
-use mesh_types::{Aabb, IndexedMesh, MeshBounds, MeshTopology, Vertex};
+use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
 
 // =============================================================================
 // Test Mesh Generation
@@ -43,7 +43,7 @@ fn create_cube() -> IndexedMesh {
     ];
 
     for v in &verts {
-        mesh.vertices.push(Vertex::from_coords(v[0], v[1], v[2]));
+        mesh.vertices.push(Point3::new(v[0], v[1], v[2]));
     }
 
     let faces: [[u32; 3]; 12] = [
@@ -97,8 +97,7 @@ fn create_cube_with_duplicates() -> IndexedMesh {
     for (i, face_positions) in faces_with_positions.iter().enumerate() {
         let base_idx = (i * 3) as u32;
         for pos in face_positions {
-            mesh.vertices
-                .push(Vertex::from_coords(pos[0], pos[1], pos[2]));
+            mesh.vertices.push(Point3::new(pos[0], pos[1], pos[2]));
         }
         mesh.faces.push([base_idx, base_idx + 1, base_idx + 2]);
     }
@@ -137,9 +136,9 @@ fn mesh_centroid(mesh: &IndexedMesh) -> [f64; 3] {
 
     let mut sum = [0.0, 0.0, 0.0];
     for v in &mesh.vertices {
-        sum[0] += v.position.x;
-        sum[1] += v.position.y;
-        sum[2] += v.position.z;
+        sum[0] += v.x;
+        sum[1] += v.y;
+        sum[2] += v.z;
     }
 
     let n = mesh.vertices.len() as f64;
@@ -159,7 +158,7 @@ fn cube_has_expected_properties() {
     assert_eq!(cube.face_count(), 12, "Cube should have 12 faces");
 
     // Bounding box should be exactly -0.5 to 0.5 in all dimensions
-    let aabb = cube.bounds();
+    let aabb = cube.aabb();
     let expected_aabb = Aabb::new(
         nalgebra::Point3::new(-0.5, -0.5, -0.5),
         nalgebra::Point3::new(0.5, 0.5, 0.5),
@@ -199,7 +198,7 @@ fn weld_cube_with_duplicates_produces_8_vertices() {
     assert_eq!(mesh.face_count(), 12, "Face count should be preserved");
 
     // Bounding box should be preserved
-    let aabb = mesh.bounds();
+    let aabb = mesh.aabb();
     let expected_aabb = Aabb::new(
         nalgebra::Point3::new(-0.5, -0.5, -0.5),
         nalgebra::Point3::new(0.5, 0.5, 0.5),
@@ -232,7 +231,7 @@ fn repair_preserves_clean_cube() {
 
     // Bounding box should be identical
     assert!(
-        aabb_approx_equal(&repaired.bounds(), &cube.bounds(), 1e-10),
+        aabb_approx_equal(&repaired.aabb(), &cube.aabb(), 1e-10),
         "Bounding box should be preserved"
     );
 }
@@ -246,7 +245,7 @@ fn open_cube_has_expected_properties() {
     assert_eq!(open_cube.face_count(), 10, "Should have 10 faces");
 
     // Bounding box should still be full cube size
-    let aabb = open_cube.bounds();
+    let aabb = open_cube.aabb();
     let expected_aabb = Aabb::new(
         nalgebra::Point3::new(-0.5, -0.5, -0.5),
         nalgebra::Point3::new(0.5, 0.5, 0.5),

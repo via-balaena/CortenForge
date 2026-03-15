@@ -162,11 +162,10 @@ impl Constraint {
     ///
     /// ```
     /// use mesh_morph::Constraint;
-    /// use mesh_types::{IndexedMesh, Vertex};
-    /// use nalgebra::Point3;
+    /// use mesh_types::{IndexedMesh, Point3};
     ///
     /// let mut mesh = IndexedMesh::new();
-    /// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+    /// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
     ///
     /// let constraint = Constraint::from_vertex_index(
     ///     &mesh,
@@ -183,7 +182,7 @@ impl Constraint {
         target: Point3<f64>,
     ) -> Option<Self> {
         mesh.vertices.get(source_index).map(|v| Self {
-            source: v.position,
+            source: *v,
             target,
             weight: 1.0,
         })
@@ -313,8 +312,7 @@ mod tests {
     #[test]
     fn test_from_vertex_index() {
         let mut mesh = mesh_types::IndexedMesh::new();
-        mesh.vertices
-            .push(mesh_types::Vertex::from_coords(1.0, 2.0, 3.0));
+        mesh.vertices.push(nalgebra::Point3::new(1.0, 2.0, 3.0));
 
         let c = Constraint::from_vertex_index(&mesh, 0, Point3::new(4.0, 5.0, 6.0));
         assert!(c.is_some());

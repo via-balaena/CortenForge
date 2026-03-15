@@ -144,13 +144,13 @@ impl Default for ValidationOptions {
 /// # Example
 ///
 /// ```
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 /// use mesh_repair::validate_mesh;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let report = validate_mesh(&mesh);
@@ -199,9 +199,9 @@ fn count_degenerate_faces(mesh: &IndexedMesh, area_threshold: f64) -> usize {
     mesh.faces
         .iter()
         .filter(|face| {
-            let v0 = &mesh.vertices[face[0] as usize].position;
-            let v1 = &mesh.vertices[face[1] as usize].position;
-            let v2 = &mesh.vertices[face[2] as usize].position;
+            let v0 = &mesh.vertices[face[0] as usize];
+            let v1 = &mesh.vertices[face[1] as usize];
+            let v2 = &mesh.vertices[face[2] as usize];
 
             let e1 = *v1 - *v0;
             let e2 = *v2 - *v0;
@@ -261,9 +261,9 @@ fn check_inside_out(mesh: &IndexedMesh) -> bool {
     let mut volume = 0.0;
 
     for face in &mesh.faces {
-        let v0 = &mesh.vertices[face[0] as usize].position;
-        let v1 = &mesh.vertices[face[1] as usize].position;
-        let v2 = &mesh.vertices[face[2] as usize].position;
+        let v0 = &mesh.vertices[face[0] as usize];
+        let v1 = &mesh.vertices[face[1] as usize];
+        let v2 = &mesh.vertices[face[2] as usize];
 
         // Signed volume of tetrahedron formed with origin
         volume += v0.x * (v1.y * v2.z - v2.y * v1.z)
@@ -277,13 +277,13 @@ fn check_inside_out(mesh: &IndexedMesh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn simple_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
@@ -291,10 +291,10 @@ mod tests {
     fn unit_tetrahedron() -> IndexedMesh {
         // A closed tetrahedron with correct winding
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.866, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.289, 0.816));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.866, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.289, 0.816));
 
         // CCW winding when viewed from outside
         mesh.faces.push([0, 2, 1]); // bottom
@@ -330,9 +330,9 @@ mod tests {
     #[test]
     fn detect_degenerate_faces() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(2.0, 0.0, 0.0)); // Collinear!
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(2.0, 0.0, 0.0)); // Collinear!
         mesh.faces.push([0, 1, 2]);
 
         let report = validate_mesh(&mesh);

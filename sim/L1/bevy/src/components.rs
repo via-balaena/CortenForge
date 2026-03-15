@@ -69,20 +69,20 @@ pub enum ShapeType {
 }
 
 impl ShapeType {
-    /// Convert from a sim-core [`CollisionShape`](sim_core::CollisionShape) to `ShapeType`.
+    /// Convert from a cf-geometry [`Shape`](cf_geometry::Shape) to `ShapeType`.
     #[must_use]
-    pub fn from_collision_shape(shape: &sim_core::CollisionShape) -> Self {
+    pub fn from_shape(shape: &cf_geometry::Shape) -> Self {
         match shape {
-            sim_core::CollisionShape::Sphere { .. } => Self::Sphere,
-            sim_core::CollisionShape::Box { .. } => Self::Box,
-            sim_core::CollisionShape::Capsule { .. } => Self::Capsule,
-            sim_core::CollisionShape::Cylinder { .. } => Self::Cylinder,
-            sim_core::CollisionShape::Ellipsoid { .. } => Self::Ellipsoid,
-            sim_core::CollisionShape::Plane { .. } => Self::Plane,
-            sim_core::CollisionShape::ConvexMesh { .. } => Self::ConvexMesh,
-            sim_core::CollisionShape::TriangleMesh { .. } => Self::TriangleMesh,
-            sim_core::CollisionShape::HeightField { .. } => Self::HeightField,
-            sim_core::CollisionShape::Sdf { .. } => Self::Sdf,
+            cf_geometry::Shape::Sphere { .. } => Self::Sphere,
+            cf_geometry::Shape::Box { .. } => Self::Box,
+            cf_geometry::Shape::Capsule { .. } => Self::Capsule,
+            cf_geometry::Shape::Cylinder { .. } => Self::Cylinder,
+            cf_geometry::Shape::Ellipsoid { .. } => Self::Ellipsoid,
+            cf_geometry::Shape::Plane { .. } => Self::Plane,
+            cf_geometry::Shape::ConvexMesh { .. } => Self::ConvexMesh,
+            cf_geometry::Shape::TriangleMesh { .. } => Self::TriangleMesh,
+            cf_geometry::Shape::HeightField { .. } => Self::HeightField,
+            cf_geometry::Shape::Sdf { .. } => Self::Sdf,
         }
     }
 }

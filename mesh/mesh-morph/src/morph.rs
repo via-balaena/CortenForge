@@ -10,7 +10,7 @@ use crate::{
     rbf::RbfInterpolator,
     result::{compute_edge_stats, compute_signed_volume},
 };
-use mesh_types::{IndexedMesh, MeshBounds};
+use mesh_types::{Bounded, IndexedMesh};
 use rayon::prelude::*;
 
 /// Morphs a mesh according to the specified parameters.
@@ -40,14 +40,13 @@ use rayon::prelude::*;
 ///
 /// ```
 /// use mesh_morph::{morph_mesh, MorphParams, Constraint};
-/// use mesh_types::{IndexedMesh, Vertex};
-/// use nalgebra::Point3;
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// // Create a simple triangle mesh
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// // Define constraints - move one vertex up
@@ -68,20 +67,20 @@ use rayon::prelude::*;
 /// let result = morph_mesh(&mesh, &params).unwrap();
 ///
 /// // First vertex should be moved up
-/// assert!((result.mesh.vertices[0].position.z - 0.5).abs() < 0.1);
+/// assert!((result.mesh.vertices[0].z - 0.5).abs() < 0.1);
 /// ```
 ///
 /// ## FFD Morphing
 ///
 /// ```
 /// use mesh_morph::{morph_mesh, MorphParams, Constraint};
-/// use mesh_types::{IndexedMesh, Vertex};
-/// use nalgebra::{Point3, Vector3};
+/// use mesh_types::{IndexedMesh, Point3};
+/// use nalgebra::Vector3;
 ///
 /// let mut mesh = IndexedMesh::new();
-/// mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-/// mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 0.0));
+/// mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+/// mesh.vertices.push(Point3::new(0.5, 0.5, 0.0));
 /// mesh.faces.push([0, 1, 2]);
 ///
 /// let params = MorphParams::ffd()
@@ -124,7 +123,7 @@ pub fn morph_mesh(mesh: &IndexedMesh, params: &MorphParams) -> MorphResult<Morph
         .zip(deformed.vertices.iter())
         .enumerate()
     {
-        let disp = (deformed_v.position - orig.position).norm();
+        let disp = (*deformed_v - orig).norm();
         if disp > 1e-10 && params.should_deform_vertex(i) {
             vertices_modified += 1;
             if disp > max_displacement {
@@ -193,18 +192,18 @@ fn apply_rbf_morph(
         let new_positions: Vec<_> = indices_to_process
             .par_iter()
             .map(|&i| {
-                let pos = &mesh.vertices[i].position;
+                let pos = &mesh.vertices[i];
                 (i, interpolator.transform(pos))
             })
             .collect();
 
         for (i, new_pos) in new_positions {
-            result.vertices[i].position = new_pos;
+            result.vertices[i] = new_pos;
         }
     } else {
         for &i in &indices_to_process {
-            let pos = &mesh.vertices[i].position;
-            result.vertices[i].position = interpolator.transform(pos);
+            let pos = &mesh.vertices[i];
+            result.vertices[i] = interpolator.transform(pos);
         }
     }
 
@@ -218,7 +217,7 @@ fn apply_ffd_morph(
     config: crate::FfdConfig,
 ) -> IndexedMesh {
     // Compute mesh bounds
-    let bounds = mesh.bounds();
+    let bounds = mesh.aabb();
 
     // Create the FFD lattice
     let mut lattice = FfdLattice::new(&bounds, config);
@@ -238,18 +237,18 @@ fn apply_ffd_morph(
         let new_positions: Vec<_> = indices_to_process
             .par_iter()
             .map(|&i| {
-                let pos = &mesh.vertices[i].position;
+                let pos = &mesh.vertices[i];
                 (i, lattice.transform(pos))
             })
             .collect();
 
         for (i, new_pos) in new_positions {
-            result.vertices[i].position = new_pos;
+            result.vertices[i] = new_pos;
         }
     } else {
         for &i in &indices_to_process {
-            let pos = &mesh.vertices[i].position;
-            result.vertices[i].position = lattice.transform(pos);
+            let pos = &mesh.vertices[i];
+            result.vertices[i] = lattice.transform(pos);
         }
     }
 
@@ -269,25 +268,24 @@ fn apply_ffd_morph(
 mod tests {
     use super::*;
     use crate::Constraint;
-    use mesh_types::Vertex;
     use nalgebra::{Point3, Vector3};
     use std::collections::HashSet;
 
     fn make_test_triangle() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }
 
     fn make_test_tetrahedron() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 1, 3]);
         mesh.faces.push([1, 2, 3]);
@@ -339,7 +337,7 @@ mod tests {
 
         // Vertices should stay in place (or very close)
         for (orig, deformed) in mesh.vertices.iter().zip(result.mesh.vertices.iter()) {
-            let dist = (orig.position - deformed.position).norm();
+            let dist = (orig - deformed).norm();
             assert!(dist < 0.01, "Expected small displacement, got {}", dist);
         }
     }
@@ -368,8 +366,8 @@ mod tests {
 
         // Check all vertices are translated
         for (orig, deformed) in mesh.vertices.iter().zip(result.mesh.vertices.iter()) {
-            let expected = orig.position + offset;
-            let dist = (expected - deformed.position).norm();
+            let expected = orig + offset;
+            let dist = (expected - deformed).norm();
             assert!(dist < 0.1, "Expected translation, error = {}", dist);
         }
     }
@@ -479,12 +477,12 @@ mod tests {
         let result = morph_mesh(&mesh, &params).unwrap();
 
         // Vertex 0 should be moved
-        let disp0 = (result.mesh.vertices[0].position - mesh.vertices[0].position).norm();
+        let disp0 = (result.mesh.vertices[0] - mesh.vertices[0]).norm();
         assert!(disp0 > 0.1, "Vertex 0 should be moved");
 
         // Vertices 1 and 2 should stay in place
-        let disp1 = (result.mesh.vertices[1].position - mesh.vertices[1].position).norm();
-        let disp2 = (result.mesh.vertices[2].position - mesh.vertices[2].position).norm();
+        let disp1 = (result.mesh.vertices[1] - mesh.vertices[1]).norm();
+        let disp2 = (result.mesh.vertices[2] - mesh.vertices[2]).norm();
         assert!(disp1 < 1e-10, "Vertex 1 should not move");
         assert!(disp2 < 1e-10, "Vertex 2 should not move");
     }
@@ -543,7 +541,7 @@ mod tests {
         let result = morph_mesh(&mesh, &params).unwrap();
 
         // Vertex 0 should move (even with weighted constraint)
-        let disp = (result.mesh.vertices[0].position - mesh.vertices[0].position).norm();
+        let disp = (result.mesh.vertices[0] - mesh.vertices[0]).norm();
         assert!(disp > 0.1, "Vertex 0 should be moved");
     }
 }

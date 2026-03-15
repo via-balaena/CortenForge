@@ -324,9 +324,9 @@ fn count_degenerate_triangles(mesh: &IndexedMesh) -> usize {
     mesh.faces
         .iter()
         .filter(|face| {
-            let v0 = &mesh.vertices[face[0] as usize].position;
-            let v1 = &mesh.vertices[face[1] as usize].position;
-            let v2 = &mesh.vertices[face[2] as usize].position;
+            let v0 = &mesh.vertices[face[0] as usize];
+            let v1 = &mesh.vertices[face[1] as usize];
+            let v2 = &mesh.vertices[face[2] as usize];
 
             let edge1 = v1 - v0;
             let edge2 = v2 - v0;
@@ -346,14 +346,14 @@ fn count_degenerate_triangles(mesh: &IndexedMesh) -> usize {
 )]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::Point3;
 
     fn create_watertight_tetrahedron() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(5.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(5.0, 5.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(5.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(5.0, 5.0, 10.0));
 
         // Faces with consistent outward winding
         mesh.faces.push([0, 2, 1]); // Bottom
@@ -368,14 +368,14 @@ mod tests {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(10.0, 10.0, 10.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 0.0, 10.0));
+        mesh.vertices.push(Point3::new(10.0, 10.0, 10.0));
+        mesh.vertices.push(Point3::new(0.0, 10.0, 10.0));
 
         // 5 faces (open top)
         mesh.faces.push([0, 2, 1]);
@@ -485,9 +485,9 @@ mod tests {
 
         // Add a degenerate triangle (all vertices at same position)
         let idx = mesh.vertices.len() as u32;
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
         mesh.faces.push([idx, idx + 1, idx + 2]);
 
         let count = count_degenerate_triangles(&mesh);

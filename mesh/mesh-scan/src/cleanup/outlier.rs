@@ -331,14 +331,14 @@ fn compute_outlier_mask(cloud: &PointCloud, params: &OutlierParams) -> (Vec<bool
 ///
 /// ```
 /// use mesh_scan::cleanup::outlier::{remove_mesh_outliers, OutlierParams};
-/// use mesh_types::{IndexedMesh, Vertex};
+/// use mesh_types::{IndexedMesh, Point3};
 ///
 /// let mut mesh = IndexedMesh::new();
 /// for i in 0..10 {
-///     mesh.vertices.push(Vertex::from_coords(i as f64, 0.0, 0.0));
+///     mesh.vertices.push(Point3::new(i as f64, 0.0, 0.0));
 /// }
 /// // Add outlier
-/// mesh.vertices.push(Vertex::from_coords(5.0, 100.0, 0.0));
+/// mesh.vertices.push(Point3::new(5.0, 100.0, 0.0));
 ///
 /// let result = remove_mesh_outliers(&mesh, &OutlierParams::default()).unwrap();
 /// ```
@@ -367,7 +367,7 @@ pub fn remove_mesh_outliers(mesh: &IndexedMesh, params: &OutlierParams) -> ScanR
             {
                 new_index[old_idx] = Some(new_vertices.len() as u32);
             }
-            new_vertices.push(vertex.clone());
+            new_vertices.push(*vertex);
         }
     }
 
@@ -555,19 +555,19 @@ mod tests {
 
     #[test]
     fn test_remove_mesh_outliers() {
-        use mesh_types::Vertex;
+        use nalgebra::Point3;
 
         let mut mesh = IndexedMesh::new();
         // Add small variations to avoid kiddo KD-tree axis collision
         for i in 0..50 {
-            mesh.vertices.push(Vertex::from_coords(
+            mesh.vertices.push(Point3::new(
                 f64::from(i) * 0.1,
                 f64::from(i) * 0.001,
                 f64::from(i) * 0.002,
             ));
         }
         // Add outlier
-        mesh.vertices.push(Vertex::from_coords(5.0, 100.0, 0.0));
+        mesh.vertices.push(Point3::new(5.0, 100.0, 0.0));
 
         let params = OutlierParams::default();
         let result = remove_mesh_outliers(&mesh, &params).unwrap();
@@ -586,12 +586,11 @@ mod tests {
 
     #[test]
     fn test_remove_mesh_outliers_small() {
-        use mesh_types::Vertex;
+        use nalgebra::Point3;
 
         let mut mesh = IndexedMesh::new();
         for i in 0..5 {
-            mesh.vertices
-                .push(Vertex::from_coords(f64::from(i), 0.0, 0.0));
+            mesh.vertices.push(Point3::new(f64::from(i), 0.0, 0.0));
         }
 
         let params = OutlierParams::new().with_k_neighbors(10);
@@ -603,13 +602,13 @@ mod tests {
 
     #[test]
     fn test_remove_mesh_outliers_with_faces() {
-        use mesh_types::Vertex;
+        use nalgebra::Point3;
 
         let mut mesh = IndexedMesh::new();
         // Create a simple triangle grid with small z variation to avoid kiddo axis collision
         for i in 0..10 {
             for j in 0..10 {
-                mesh.vertices.push(Vertex::from_coords(
+                mesh.vertices.push(Point3::new(
                     f64::from(i),
                     f64::from(j),
                     f64::from(i * 10 + j) * 0.001,
@@ -627,7 +626,7 @@ mod tests {
         }
 
         // Add outlier
-        mesh.vertices.push(Vertex::from_coords(5.0, 5.0, 100.0));
+        mesh.vertices.push(Point3::new(5.0, 5.0, 100.0));
 
         let params = OutlierParams::default();
         let result = remove_mesh_outliers(&mesh, &params).unwrap();

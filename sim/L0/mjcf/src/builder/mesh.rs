@@ -154,13 +154,7 @@ pub fn load_mesh_file(
     let vertices: Vec<Point3<f64>> = indexed_mesh
         .vertices
         .iter()
-        .map(|v| {
-            Point3::new(
-                v.position.x * scale.x,
-                v.position.y * scale.y,
-                v.position.z * scale.z,
-            )
-        })
+        .map(|v| Point3::new(v.x * scale.x, v.y * scale.y, v.z * scale.z))
         .collect();
 
     // 5. Convert faces to flat indices
@@ -457,10 +451,10 @@ pub fn compute_mesh_inertia(mesh: &TriangleMeshData) -> (f64, Vector3<f64>, Matr
     let mut xz = 0.0;
     let mut yz = 0.0;
 
-    for tri in triangles {
-        let a = vertices[tri.v0].coords;
-        let b = vertices[tri.v1].coords;
-        let c = vertices[tri.v2].coords;
+    for face in triangles {
+        let a = vertices[face[0] as usize].coords;
+        let b = vertices[face[1] as usize].coords;
+        let c = vertices[face[2] as usize].coords;
 
         // Signed volume of tetrahedron formed with origin: V = (a × b) · c / 6
         let det = a.cross(&b).dot(&c);
@@ -579,10 +573,10 @@ pub fn compute_mesh_inertia_shell(mesh: &TriangleMeshData) -> MeshProps {
     let mut xz = 0.0;
     let mut yz = 0.0;
 
-    for tri in triangles {
-        let a = vertices[tri.v0].coords;
-        let b = vertices[tri.v1].coords;
-        let c = vertices[tri.v2].coords;
+    for face in triangles {
+        let a = vertices[face[0] as usize].coords;
+        let b = vertices[face[1] as usize].coords;
+        let c = vertices[face[2] as usize].coords;
 
         let cross = (b - a).cross(&(c - a));
         let area = cross.norm() * 0.5;
@@ -679,10 +673,10 @@ pub fn compute_mesh_inertia_legacy(mesh: &TriangleMeshData) -> MeshProps {
     let mut xz = 0.0;
     let mut yz = 0.0;
 
-    for tri in triangles {
-        let a = vertices[tri.v0].coords;
-        let b = vertices[tri.v1].coords;
-        let c = vertices[tri.v2].coords;
+    for face in triangles {
+        let a = vertices[face[0] as usize].coords;
+        let b = vertices[face[1] as usize].coords;
+        let c = vertices[face[2] as usize].coords;
 
         let det = a.cross(&b).dot(&c);
         let det_abs = det.abs(); // KEY DIFFERENCE from exact mode
@@ -772,7 +766,7 @@ pub fn compute_mesh_inertia_on_hull(mesh: &TriangleMeshData) -> MeshProps {
 /// Same signed-tetrahedron algorithm as `compute_mesh_inertia()` but
 /// operates on raw arrays instead of `TriangleMeshData`.
 #[allow(clippy::suspicious_operation_groupings)]
-fn compute_inertia_from_verts_faces(vertices: &[Point3<f64>], faces: &[[usize; 3]]) -> MeshProps {
+fn compute_inertia_from_verts_faces(vertices: &[Point3<f64>], faces: &[[u32; 3]]) -> MeshProps {
     let mut total_volume = 0.0;
     let mut com_accum = Vector3::zeros();
     let mut xx = 0.0;
@@ -783,9 +777,9 @@ fn compute_inertia_from_verts_faces(vertices: &[Point3<f64>], faces: &[[usize; 3
     let mut yz = 0.0;
 
     for face in faces {
-        let a = vertices[face[0]].coords;
-        let b = vertices[face[1]].coords;
-        let c = vertices[face[2]].coords;
+        let a = vertices[face[0] as usize].coords;
+        let b = vertices[face[1] as usize].coords;
+        let c = vertices[face[2] as usize].coords;
 
         let det = a.cross(&b).dot(&c);
         let vol = det / 6.0;
@@ -883,14 +877,14 @@ mod tests {
 
     /// Helper to create a simple STL file for testing.
     fn create_test_stl(path: &std::path::Path) {
-        use mesh_types::{IndexedMesh, Vertex};
+        use mesh_types::{IndexedMesh, Point3};
 
         let mut mesh = IndexedMesh::new();
         // Simple tetrahedron (4 vertices, 4 faces)
-        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 1.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(1.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 1.0, 0.0));
+        mesh.vertices.push(Point3::new(0.5, 0.5, 1.0));
         mesh.faces.push([0, 1, 2]); // base
         mesh.faces.push([0, 1, 3]); // front
         mesh.faces.push([1, 2, 3]); // right

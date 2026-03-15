@@ -4,7 +4,7 @@
 //! `mj_geomDistance()` in `engine_support.c`. Returns the signed distance
 //! and nearest surface points between two geoms.
 
-use crate::collision::narrow::geom_to_collision_shape;
+use crate::collision::narrow::geom_to_shape;
 use crate::gjk_epa::{gjk_epa_contact, gjk_query};
 use crate::types::{Data, GeomType, Model};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
@@ -58,12 +58,12 @@ pub fn geom_distance(
         return sphere_sphere_distance(pos1, size1.x, pos2, size2.x, cutoff);
     }
 
-    // 5. Convert to CollisionShape (convex primitives only)
-    let Some(shape1) = geom_to_collision_shape(gtype1, size1) else {
+    // 5. Convert to Shape (convex primitives only)
+    let Some(shape1) = geom_to_shape(gtype1, size1) else {
         // Non-convex or plane — deferred (DT-122)
         return (cutoff, zero_fromto);
     };
-    let Some(shape2) = geom_to_collision_shape(gtype2, size2) else {
+    let Some(shape2) = geom_to_shape(gtype2, size2) else {
         return (cutoff, zero_fromto);
     };
 

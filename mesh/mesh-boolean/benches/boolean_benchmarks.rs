@@ -15,7 +15,7 @@
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use mesh_boolean::{difference, intersection, union};
-use mesh_types::{IndexedMesh, Vertex};
+use mesh_types::{IndexedMesh, Point3};
 use std::collections::HashMap;
 
 // =============================================================================
@@ -39,7 +39,7 @@ fn create_cube_at(x: f64, y: f64, z: f64) -> IndexedMesh {
     ];
 
     for v in &verts {
-        mesh.vertices.push(Vertex::from_coords(v[0], v[1], v[2]));
+        mesh.vertices.push(Point3::new(v[0], v[1], v[2]));
     }
 
     let faces: [[u32; 3]; 12] = [
@@ -90,7 +90,7 @@ fn create_sphere(subdivisions: u32) -> IndexedMesh {
     for v in &ico_verts {
         let len = v[2].mul_add(v[2], v[0].mul_add(v[0], v[1] * v[1])).sqrt();
         mesh.vertices
-            .push(Vertex::from_coords(v[0] / len, v[1] / len, v[2] / len));
+            .push(Point3::new(v[0] / len, v[1] / len, v[2] / len));
     }
 
     let ico_faces: [[u32; 3]; 20] = [
@@ -154,7 +154,7 @@ fn subdivide_sphere(mesh: &IndexedMesh) -> IndexedMesh {
 fn get_midpoint(
     v1: u32,
     v2: u32,
-    vertices: &mut Vec<Vertex>,
+    vertices: &mut Vec<Point3<f64>>,
     edge_midpoints: &mut HashMap<(u32, u32), u32>,
 ) -> u32 {
     let key = if v1 < v2 { (v1, v2) } else { (v2, v1) };
@@ -163,16 +163,16 @@ fn get_midpoint(
         return idx;
     }
 
-    let p1 = &vertices[v1 as usize];
-    let p2 = &vertices[v2 as usize];
+    let p1 = vertices[v1 as usize];
+    let p2 = vertices[v2 as usize];
 
-    let mx = f64::midpoint(p1.position.x, p2.position.x);
-    let my = f64::midpoint(p1.position.y, p2.position.y);
-    let mz = f64::midpoint(p1.position.z, p2.position.z);
+    let mx = f64::midpoint(p1.x, p2.x);
+    let my = f64::midpoint(p1.y, p2.y);
+    let mz = f64::midpoint(p1.z, p2.z);
     let len = mz.mul_add(mz, mx.mul_add(mx, my * my)).sqrt();
 
     let idx = vertices.len() as u32;
-    vertices.push(Vertex::from_coords(mx / len, my / len, mz / len));
+    vertices.push(Point3::new(mx / len, my / len, mz / len));
     edge_midpoints.insert(key, idx);
     idx
 }
@@ -215,7 +215,7 @@ fn bench_boolean_ops(c: &mut Criterion) {
     let mut sphere_b = create_sphere(2);
     // Offset sphere B slightly
     for v in &mut sphere_b.vertices {
-        v.position.x += 0.5;
+        v.x += 0.5;
     }
 
     group.throughput(Throughput::Elements(
