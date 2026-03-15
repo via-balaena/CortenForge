@@ -1,69 +1,37 @@
-//! GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm) implementation.
+//! GJK/EPA bridge — delegates geometric queries to cf-geometry.
 //!
-//! This module provides narrow-phase collision detection for convex shapes using
-//! the GJK algorithm to determine intersection, and EPA to compute penetration
-//! depth and contact normal when shapes overlap.
+//! This module bridges sim-core's physics collision pipeline and cf-geometry's
+//! pure geometric algorithms. It provides:
 //!
-//! # Algorithm Overview
+//! - **`PosedShape`**: Wraps `(Shape, Pose)` to implement `cf_geometry::SupportMap`
+//!   in world space, with warm-start caching for convex mesh hill-climbing.
+//! - **`support()`**: World-space support function with warm-start, used by
+//!   heightfield collision and MULTICCD.
+//! - **`support_face_points()`**: Flat-face vertex enumeration for MULTICCD.
+//! - **`gjk_epa_contact()`**: GJK+EPA penetration → `GjkContact`.
+//! - **`gjk_distance()`**: GJK distance → `GjkDistanceResult`.
 //!
-//! ## GJK (Gilbert-Johnson-Keerthi)
-//!
-//! GJK works in Minkowski space (the "Minkowski difference" of two shapes).
-//! If two convex shapes overlap, their Minkowski difference contains the origin.
-//! GJK iteratively builds a simplex (point, line, triangle, tetrahedron) that
-//! tries to enclose the origin.
-//!
-//! **Complexity**: O(n) where n is the number of vertices, typically converges
-//! in 20-30 iterations for complex shapes.
-//!
-//! ## EPA (Expanding Polytope Algorithm)
-//!
-//! When GJK determines that shapes overlap (origin is inside the Minkowski difference),
-//! EPA finds the closest point on the boundary of the Minkowski difference to the origin.
-//! This gives us the penetration depth and contact normal.
-//!
-//! **Complexity**: O(n²) in the worst case, but typically much faster.
-//!
-//! # Usage
-//!
-//! ```ignore
-//! use sim_core::gjk_epa::{gjk_intersection, gjk_epa_contact};
-//! use cf_geometry::Shape;
-//! use sim_types::Pose;
-//!
-//! let shape_a = Shape::sphere(1.0);
-//! let shape_b = Shape::box_shape(Vector3::new(0.5, 0.5, 0.5));
-//! let pose_a = Pose::identity();
-//! let pose_b = Pose::from_position(Point3::new(1.0, 0.0, 0.0));
-//!
-//! // Check for intersection
-//! if gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b, 35) {
-//!     // Get contact information
-//!     if let Some(contact) = gjk_epa_contact(&shape_a, &pose_a, &shape_b, &pose_b, 35, 1e-6) {
-//!         println!("Penetration: {}", contact.penetration);
-//!         println!("Normal: {:?}", contact.normal);
-//!     }
-//! }
-//! ```
+//! All GJK simplex processing, EPA expansion, and distance query algorithms
+//! live in `cf-geometry`. This module contains only the physics-aware wrapping
+//! layer (pose transforms, warm-start, non-convex fallbacks).
 //!
 //! # References
 //!
 //! - Gilbert, Johnson, Keerthi: "A Fast Procedure for Computing the Distance
 //!   Between Complex Objects in Three-Dimensional Space" (1988)
 //! - van den Bergen: "Collision Detection in Interactive 3D Environments" (2003)
-//! - Casey Muratori's GJK video series
 
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 use std::cell::Cell;
 
-use cf_geometry::{Bounded, Shape};
+use cf_geometry::{Aabb, Bounded, Shape, SupportMap};
 
 /// Minimum vertex count for hill-climbing support.
 /// Matches MuJoCo's `mjMESH_HILLCLIMB_MIN = 10`.
 const HILL_CLIMB_MIN: usize = 10;
 
-/// Tolerance for numerical comparisons in GJK/EPA.
+/// Tolerance for numerical comparisons in support functions.
 const EPSILON: f64 = 1e-8;
 
 /// Default GJK max iterations (used when no Model context available).
@@ -74,36 +42,12 @@ pub const GJK_MAX_ITERATIONS: usize = 35;
 /// MuJoCo default: 35. Historical CortenForge value: 64.
 pub const EPA_MAX_ITERATIONS: usize = 35;
 
-/// Maximum faces in EPA polytope.
-const EPA_MAX_FACES: usize = 128;
-
 /// Default EPA convergence tolerance.
-/// MuJoCo default: 1e-6.
 pub const EPA_TOLERANCE: f64 = 1e-6;
 
-/// Result of a GJK query.
-#[derive(Debug, Clone)]
-pub struct GjkResult {
-    /// Whether the shapes intersect.
-    pub intersecting: bool,
-    /// The final simplex (for EPA if intersecting).
-    pub simplex: Simplex,
-    /// Number of iterations used.
-    pub iterations: usize,
-}
-
-/// Result of EPA (penetration information).
-#[derive(Debug, Clone)]
-pub struct EpaResult {
-    /// Penetration depth (positive when overlapping).
-    pub depth: f64,
-    /// Contact normal (points from B toward A).
-    pub normal: Vector3<f64>,
-    /// Contact point on the Minkowski difference boundary.
-    pub point: Point3<f64>,
-    /// Number of iterations used.
-    pub iterations: usize,
-}
+// =============================================================================
+// Contact result type
+// =============================================================================
 
 /// Contact information from GJK+EPA.
 #[derive(Debug, Clone)]
@@ -116,107 +60,86 @@ pub struct GjkContact {
     pub penetration: f64,
 }
 
-/// A simplex used in GJK iteration.
+// =============================================================================
+// PosedShape — world-space SupportMap adapter
+// =============================================================================
+
+/// World-space support map adapter.
 ///
-/// Can be a point (1), line segment (2), triangle (3), or tetrahedron (4).
-#[derive(Debug, Clone, Default)]
-pub struct Simplex {
-    /// Points in the simplex.
-    points: [MinkowskiPoint; 4],
-    /// Number of points in the simplex (1-4).
-    size: usize,
+/// Wraps a `(Shape, Pose)` pair to implement `cf_geometry::SupportMap` in world
+/// coordinates. Each `PosedShape` carries its own warm-start cache for GJK
+/// hill-climbing on convex meshes.
+///
+/// This is the bridge between sim-core's `(Shape, Pose)` collision pipeline
+/// and cf-geometry's local-space `SupportMap` trait.
+pub struct PosedShape<'a> {
+    shape: &'a Shape,
+    pose: &'a Pose,
+    warm_start: Cell<usize>,
 }
 
-/// A point in Minkowski space, with support points from both shapes.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MinkowskiPoint {
-    /// The point in Minkowski space (`support_a` - `support_b`).
-    pub point: Point3<f64>,
-    /// Support point from shape A in world space.
-    pub support_a: Point3<f64>,
-    /// Support point from shape B in world space.
-    pub support_b: Point3<f64>,
-}
-
-impl MinkowskiPoint {
-    /// Create a new Minkowski point.
-    fn new(support_a: Point3<f64>, support_b: Point3<f64>) -> Self {
+impl<'a> PosedShape<'a> {
+    /// Create a new world-space support map for a shape at a given pose.
+    #[must_use]
+    pub fn new(shape: &'a Shape, pose: &'a Pose) -> Self {
         Self {
-            point: Point3::from(support_a - support_b),
-            support_a,
-            support_b,
+            shape,
+            pose,
+            warm_start: Cell::new(0),
         }
     }
 }
 
-impl Simplex {
-    /// Create a new empty simplex.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+impl Bounded for PosedShape<'_> {
+    fn aabb(&self) -> Aabb {
+        // Compute tight world-space AABB via support queries along ±axes.
+        let dirs = [
+            Vector3::x(),
+            -Vector3::x(),
+            Vector3::y(),
+            -Vector3::y(),
+            Vector3::z(),
+            -Vector3::z(),
+        ];
 
-    /// Push a point onto the simplex.
-    pub fn push(&mut self, point: MinkowskiPoint) {
-        // Shift existing points
-        for i in (1..=self.size.min(3)).rev() {
-            self.points[i] = self.points[i - 1];
+        let mut min = Vector3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut max = Vector3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+
+        for dir in &dirs {
+            let pt = support(self.shape, self.pose, dir, &self.warm_start);
+            min.x = min.x.min(pt.x);
+            min.y = min.y.min(pt.y);
+            min.z = min.z.min(pt.z);
+            max.x = max.x.max(pt.x);
+            max.y = max.y.max(pt.y);
+            max.z = max.z.max(pt.z);
         }
-        self.points[0] = point;
-        self.size = (self.size + 1).min(4);
-    }
 
-    /// Get the number of points.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.size
+        Aabb::new(Point3::from(min), Point3::from(max))
     }
+}
 
-    /// Check if the simplex is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.size == 0
-    }
-
-    /// Get points as a slice.
-    #[must_use]
-    pub fn points(&self) -> &[MinkowskiPoint] {
-        &self.points[..self.size]
-    }
-
-    /// Get a point by index.
-    #[must_use]
-    pub fn get(&self, index: usize) -> Option<&MinkowskiPoint> {
-        if index < self.size {
-            Some(&self.points[index])
-        } else {
-            None
-        }
-    }
-
-    /// Set the simplex to contain only specific points.
-    fn set(&mut self, points: &[MinkowskiPoint]) {
-        self.size = points.len().min(4);
-        for (i, p) in points.iter().take(4).enumerate() {
-            self.points[i] = *p;
-        }
+impl SupportMap for PosedShape<'_> {
+    fn support(&self, direction: &Vector3<f64>) -> Point3<f64> {
+        support(self.shape, self.pose, direction, &self.warm_start)
     }
 }
 
 // =============================================================================
-// Support Functions
+// World-space support functions (physics-aware)
 // =============================================================================
 
-/// Compute the support point for a collision shape in a given direction.
+/// Compute the support point of a shape at a given pose in a given direction.
 ///
-/// The support function returns the point on the shape's surface that is
-/// furthest in the given direction. This is the key operation for GJK.
+/// The support point is the point on the shape's surface that is furthest
+/// in the given direction. This is the fundamental operation for GJK/EPA.
 ///
 /// # Arguments
 ///
 /// * `shape` - The collision shape
-/// * `pose` - The pose (position and rotation) of the shape
-/// * `direction` - The direction to find the support point (world space)
+/// * `pose` - The shape's world-space pose (position + orientation)
+/// * `direction` - The direction to search in (world-space, need not be unit)
+/// * `warm_start` - Cache for convex mesh hill-climbing (pass `Cell::new(0)` if unused)
 ///
 /// # Returns
 ///
@@ -352,6 +275,10 @@ pub fn support_face_points(
         }
     }
 }
+
+// =============================================================================
+// Per-shape support functions (local → world)
+// =============================================================================
 
 /// Support function for a sphere.
 fn support_sphere(pose: &Pose, radius: f64, direction: &Vector3<f64>) -> Point3<f64> {
@@ -594,22 +521,32 @@ fn support_ellipsoid(pose: &Pose, radii: &Vector3<f64>, direction: &Vector3<f64>
 }
 
 // =============================================================================
-// GJK Algorithm
+// GJK/EPA bridge functions — delegate to cf-geometry
 // =============================================================================
 
-/// Compute the support point on the Minkowski difference A - B.
-fn support_minkowski(
+/// Compute contact information between two shapes using GJK+EPA.
+///
+/// Returns `None` if the shapes don't intersect or if contact computation fails.
+/// Delegates to `cf_geometry::epa_penetration` via `PosedShape` adapters.
+#[must_use]
+pub fn gjk_epa_contact(
     shape_a: &Shape,
     pose_a: &Pose,
-    warm_start_a: &Cell<usize>,
     shape_b: &Shape,
     pose_b: &Pose,
-    warm_start_b: &Cell<usize>,
-    direction: &Vector3<f64>,
-) -> MinkowskiPoint {
-    let support_a = support(shape_a, pose_a, direction, warm_start_a);
-    let support_b = support(shape_b, pose_b, &-direction, warm_start_b);
-    MinkowskiPoint::new(support_a, support_b)
+    max_iterations: usize,
+    tolerance: f64,
+) -> Option<GjkContact> {
+    let a = PosedShape::new(shape_a, pose_a);
+    let b = PosedShape::new(shape_b, pose_b);
+
+    let pen = cf_geometry::epa_penetration(&a, &b, max_iterations, tolerance)?;
+
+    Some(GjkContact {
+        point: pen.point_a,
+        normal: pen.normal,
+        penetration: pen.depth.max(0.0),
+    })
 }
 
 /// Check if two shapes intersect using GJK.
@@ -624,589 +561,10 @@ pub fn gjk_intersection(
     pose_b: &Pose,
     max_iterations: usize,
 ) -> bool {
-    gjk_query(shape_a, pose_a, shape_b, pose_b, max_iterations).intersecting
-}
-
-/// Run the full GJK algorithm and return detailed results.
-#[must_use]
-pub fn gjk_query(
-    shape_a: &Shape,
-    pose_a: &Pose,
-    shape_b: &Shape,
-    pose_b: &Pose,
-    max_iterations: usize,
-) -> GjkResult {
-    // Initial direction: from center of A to center of B
-    let center_a = pose_a.position;
-    let center_b = pose_b.position;
-    let dir_vec = center_b - center_a;
-    let dir_norm = dir_vec.norm();
-
-    // Handle degenerate case where centers coincide (or nearly coincide)
-    // Must check BEFORE normalize() to avoid NaN
-    let mut direction = if dir_norm > EPSILON {
-        dir_vec / dir_norm
-    } else {
-        Vector3::x()
-    };
-
-    let mut simplex = Simplex::new();
-    let warm_start_a = Cell::new(0);
-    let warm_start_b = Cell::new(0);
-
-    // Get first support point
-    let first = support_minkowski(
-        shape_a,
-        pose_a,
-        &warm_start_a,
-        shape_b,
-        pose_b,
-        &warm_start_b,
-        &direction,
-    );
-    simplex.push(first);
-
-    // New search direction: toward origin from first point
-    direction = -first.point.coords;
-
-    for iteration in 0..max_iterations {
-        // Check for degenerate direction
-        if direction.norm_squared() < EPSILON * EPSILON {
-            // Origin is on the simplex - shapes are touching/intersecting
-            return GjkResult {
-                intersecting: true,
-                simplex,
-                iterations: iteration,
-            };
-        }
-
-        direction = direction.normalize();
-
-        // Get new support point
-        let new_point = support_minkowski(
-            shape_a,
-            pose_a,
-            &warm_start_a,
-            shape_b,
-            pose_b,
-            &warm_start_b,
-            &direction,
-        );
-
-        // Check if we passed the origin
-        // If new_point · direction < 0, origin is not in that direction
-        if new_point.point.coords.dot(&direction) < -EPSILON {
-            // We couldn't pass the origin, shapes don't intersect
-            return GjkResult {
-                intersecting: false,
-                simplex,
-                iterations: iteration,
-            };
-        }
-
-        // Add to simplex and update
-        simplex.push(new_point);
-
-        // Handle simplex: find the closest feature to the origin
-        // and potentially detect if the origin is enclosed
-        if do_simplex(&mut simplex, &mut direction) {
-            // Origin is enclosed - shapes intersect
-            return GjkResult {
-                intersecting: true,
-                simplex,
-                iterations: iteration,
-            };
-        }
-    }
-
-    // Max iterations reached - assume no intersection
-    GjkResult {
-        intersecting: false,
-        simplex,
-        iterations: max_iterations,
-    }
-}
-
-/// Process the simplex and update the search direction.
-///
-/// Returns true if the origin is enclosed by the simplex (intersection).
-fn do_simplex(simplex: &mut Simplex, direction: &mut Vector3<f64>) -> bool {
-    match simplex.len() {
-        2 => do_simplex_line(simplex, direction),
-        3 => do_simplex_triangle(simplex, direction),
-        4 => do_simplex_tetrahedron(simplex, direction),
-        _ => false,
-    }
-}
-
-/// Handle line simplex (2 points).
-fn do_simplex_line(simplex: &mut Simplex, direction: &mut Vector3<f64>) -> bool {
-    let a = simplex.points[0].point;
-    let b = simplex.points[1].point;
-
-    let ab = b - a;
-    let ao = -a.coords; // Vector from A to origin
-
-    if ab.dot(&ao) > 0.0 {
-        // Origin is in the region of the line segment
-        // Direction perpendicular to AB, toward origin
-        *direction = triple_product(&ab, &ao, &ab);
-    } else {
-        // Origin is beyond A, keep only A
-        simplex.set(&[simplex.points[0]]);
-        *direction = ao;
-    }
-
-    false
-}
-
-/// Handle triangle simplex (3 points).
-fn do_simplex_triangle(simplex: &mut Simplex, direction: &mut Vector3<f64>) -> bool {
-    let a = simplex.points[0].point;
-    let b = simplex.points[1].point;
-    let c = simplex.points[2].point;
-
-    let ab = b - a;
-    let ac = c - a;
-    let ao = -a.coords;
-
-    let abc = ab.cross(&ac); // Normal of the triangle
-
-    // Check if origin is above or below the triangle
-    if abc.cross(&ac).dot(&ao) > 0.0 {
-        // Origin is outside edge AC
-        if ac.dot(&ao) > 0.0 {
-            simplex.set(&[simplex.points[0], simplex.points[2]]);
-            *direction = triple_product(&ac, &ao, &ac);
-        } else {
-            return simplex_line_case(simplex, direction, &ab, &ao);
-        }
-    } else if ab.cross(&abc).dot(&ao) > 0.0 {
-        // Origin is outside edge AB
-        return simplex_line_case(simplex, direction, &ab, &ao);
-    } else {
-        // Origin is inside the triangle region (above or below)
-        if abc.dot(&ao) > 0.0 {
-            // Above the triangle
-            *direction = abc;
-        } else {
-            // Below the triangle - reverse winding
-            simplex.set(&[simplex.points[0], simplex.points[2], simplex.points[1]]);
-            *direction = -abc;
-        }
-    }
-
-    false
-}
-
-/// Helper for triangle simplex - handle the AB edge case.
-fn simplex_line_case(
-    simplex: &mut Simplex,
-    direction: &mut Vector3<f64>,
-    ab: &Vector3<f64>,
-    ao: &Vector3<f64>,
-) -> bool {
-    if ab.dot(ao) > 0.0 {
-        simplex.set(&[simplex.points[0], simplex.points[1]]);
-        *direction = triple_product(ab, ao, ab);
-    } else {
-        simplex.set(&[simplex.points[0]]);
-        *direction = *ao;
-    }
-    false
-}
-
-/// Handle tetrahedron simplex (4 points).
-fn do_simplex_tetrahedron(simplex: &mut Simplex, direction: &mut Vector3<f64>) -> bool {
-    let a = simplex.points[0].point;
-    let b = simplex.points[1].point;
-    let c = simplex.points[2].point;
-    let d = simplex.points[3].point;
-
-    let ab = b - a;
-    let ac = c - a;
-    let ad = d - a;
-    let ao = -a.coords;
-
-    let abc = ab.cross(&ac);
-    let acd = ac.cross(&ad);
-    let adb = ad.cross(&ab);
-
-    // Check each face
-    if abc.dot(&ao) > 0.0 {
-        // Origin is in front of face ABC
-        simplex.set(&[simplex.points[0], simplex.points[1], simplex.points[2]]);
-        return do_simplex_triangle(simplex, direction);
-    }
-
-    if acd.dot(&ao) > 0.0 {
-        // Origin is in front of face ACD
-        simplex.set(&[simplex.points[0], simplex.points[2], simplex.points[3]]);
-        return do_simplex_triangle(simplex, direction);
-    }
-
-    if adb.dot(&ao) > 0.0 {
-        // Origin is in front of face ADB
-        simplex.set(&[simplex.points[0], simplex.points[3], simplex.points[1]]);
-        return do_simplex_triangle(simplex, direction);
-    }
-
-    // Origin is inside the tetrahedron
-    true
-}
-
-/// Triple product: (A × B) × C = B(A·C) - A(B·C).
-///
-/// Useful for computing a vector perpendicular to A and pointing toward C.
-#[inline]
-fn triple_product(a: &Vector3<f64>, b: &Vector3<f64>, c: &Vector3<f64>) -> Vector3<f64> {
-    b * a.dot(c) - a * b.dot(c)
-}
-
-// =============================================================================
-// EPA Algorithm
-// =============================================================================
-
-/// A face in the EPA polytope.
-#[derive(Debug, Clone)]
-struct EpaFace {
-    /// Indices of the three vertices forming this face.
-    vertices: [usize; 3],
-    /// Outward-facing normal of the face.
-    normal: Vector3<f64>,
-    /// Distance from origin to the face (along normal).
-    distance: f64,
-}
-
-/// Run EPA to find penetration depth and contact normal.
-///
-/// Should only be called after GJK has determined that shapes intersect.
-/// The simplex from GJK is used to initialize the polytope.
-#[must_use]
-pub fn epa_query(
-    shape_a: &Shape,
-    pose_a: &Pose,
-    shape_b: &Shape,
-    pose_b: &Pose,
-    simplex: &Simplex,
-    max_iterations: usize,
-    tolerance: f64,
-) -> Option<EpaResult> {
-    let warm_start_a = Cell::new(0);
-    let warm_start_b = Cell::new(0);
-
-    // We need at least a tetrahedron to start EPA
-    if simplex.len() < 4 {
-        // Try to build a tetrahedron from the simplex
-        return epa_with_expanded_simplex(
-            shape_a,
-            pose_a,
-            shape_b,
-            pose_b,
-            simplex,
-            max_iterations,
-            tolerance,
-        );
-    }
-
-    // Initialize polytope with the tetrahedron
-    let mut vertices: Vec<MinkowskiPoint> = simplex.points().to_vec();
-    let mut faces: Vec<EpaFace> = Vec::with_capacity(EPA_MAX_FACES);
-
-    // Create initial tetrahedron faces (ensure correct winding)
-    let initial_faces = [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]];
-
-    for indices in initial_faces {
-        if let Some(face) = create_face(&vertices, indices) {
-            faces.push(face);
-        }
-    }
-
-    // Fix face orientations (all normals should point outward)
-    fix_face_orientations(&vertices, &mut faces);
-
-    for iteration in 0..max_iterations {
-        // Find the closest face to the origin
-        let closest_idx = find_closest_face(&faces)?;
-        let closest = &faces[closest_idx];
-
-        // Get a new support point in the direction of the closest face's normal
-        let new_point = support_minkowski(
-            shape_a,
-            pose_a,
-            &warm_start_a,
-            shape_b,
-            pose_b,
-            &warm_start_b,
-            &closest.normal,
-        );
-
-        // Check convergence: if new point is not significantly further than the face
-        let new_distance = new_point.point.coords.dot(&closest.normal);
-        if new_distance - closest.distance < tolerance {
-            // Converged
-            return Some(EpaResult {
-                depth: closest.distance,
-                normal: closest.normal,
-                point: Point3::from(closest.normal * closest.distance),
-                iterations: iteration,
-            });
-        }
-
-        // Add new vertex
-        let new_vertex_idx = vertices.len();
-        vertices.push(new_point);
-
-        // Remove faces that can "see" the new point and collect the edges
-        let mut edges: Vec<(usize, usize)> = Vec::new();
-        let mut i = 0;
-        while i < faces.len() {
-            let face = &faces[i];
-            let face_point = vertices[face.vertices[0]].point;
-            let to_new = new_point.point - face_point;
-
-            if face.normal.dot(&to_new) > 0.0 {
-                // This face can see the new point, remove it
-                // Add its edges to the edge list (for later retriangulation)
-                let v = face.vertices;
-                add_edge(&mut edges, v[0], v[1]);
-                add_edge(&mut edges, v[1], v[2]);
-                add_edge(&mut edges, v[2], v[0]);
-                faces.swap_remove(i);
-            } else {
-                i += 1;
-            }
-        }
-
-        // Create new faces from the unique edges and the new vertex
-        for (v1, v2) in edges {
-            if let Some(face) = create_face(&vertices, [new_vertex_idx, v1, v2]) {
-                faces.push(face);
-            }
-        }
-
-        // Sanity check
-        if faces.len() > EPA_MAX_FACES {
-            break;
-        }
-    }
-
-    // Return best result found
-    let closest_idx = find_closest_face(&faces)?;
-    let closest = &faces[closest_idx];
-    Some(EpaResult {
-        depth: closest.distance,
-        normal: closest.normal,
-        point: Point3::from(closest.normal * closest.distance),
-        iterations: max_iterations,
-    })
-}
-
-/// Expand a simplex with fewer than 4 points into a tetrahedron for EPA.
-fn epa_with_expanded_simplex(
-    shape_a: &Shape,
-    pose_a: &Pose,
-    shape_b: &Shape,
-    pose_b: &Pose,
-    simplex: &Simplex,
-    max_iterations: usize,
-    tolerance: f64,
-) -> Option<EpaResult> {
-    let mut vertices: Vec<MinkowskiPoint> = simplex.points().to_vec();
-    let warm_start_a = Cell::new(0);
-    let warm_start_b = Cell::new(0);
-
-    // Expand to a tetrahedron by adding support points in different directions
-    let search_dirs = [
-        Vector3::x(),
-        Vector3::y(),
-        Vector3::z(),
-        -Vector3::x(),
-        -Vector3::y(),
-        -Vector3::z(),
-    ];
-
-    for dir in &search_dirs {
-        if vertices.len() >= 4 {
-            break;
-        }
-
-        let new_point = support_minkowski(
-            shape_a,
-            pose_a,
-            &warm_start_a,
-            shape_b,
-            pose_b,
-            &warm_start_b,
-            dir,
-        );
-
-        // Check if this point is actually new (not too close to existing points)
-        let is_new = vertices
-            .iter()
-            .all(|v| (v.point - new_point.point).norm() > EPSILON);
-
-        if is_new {
-            vertices.push(new_point);
-        }
-    }
-
-    if vertices.len() < 4 {
-        // Degenerate case - shapes might be very thin
-        return None;
-    }
-
-    // Create a new simplex and recurse
-    let mut new_simplex = Simplex::new();
-    for v in vertices.iter().take(4) {
-        new_simplex.push(*v);
-    }
-
-    epa_query(
-        shape_a,
-        pose_a,
-        shape_b,
-        pose_b,
-        &new_simplex,
-        max_iterations,
-        tolerance,
-    )
-}
-
-/// Create a face from three vertex indices.
-fn create_face(vertices: &[MinkowskiPoint], indices: [usize; 3]) -> Option<EpaFace> {
-    let a = vertices[indices[0]].point;
-    let b = vertices[indices[1]].point;
-    let c = vertices[indices[2]].point;
-
-    let ab = b - a;
-    let ac = c - a;
-    let normal = ab.cross(&ac);
-
-    let norm = normal.norm();
-    if norm < EPSILON {
-        // Degenerate face
-        return None;
-    }
-
-    let normal = normal / norm;
-    let distance = a.coords.dot(&normal);
-
-    Some(EpaFace {
-        vertices: indices,
-        normal,
-        distance,
-    })
-}
-
-/// Fix face orientations so all normals point outward (away from origin).
-fn fix_face_orientations(vertices: &[MinkowskiPoint], faces: &mut [EpaFace]) {
-    // Validate vertices before computing centroid
-    if vertices.is_empty() {
-        return;
-    }
-
-    // Compute centroid
-    #[allow(clippy::cast_precision_loss)]
-    let centroid: Vector3<f64> = vertices
-        .iter()
-        .map(|v| v.point.coords)
-        .sum::<Vector3<f64>>()
-        / vertices.len() as f64;
-
-    for face in faces.iter_mut() {
-        let face_point = vertices[face.vertices[0]].point;
-        let to_centroid = centroid - face_point.coords;
-
-        // If normal points toward centroid, flip it
-        if face.normal.dot(&to_centroid) > 0.0 {
-            face.normal = -face.normal;
-            face.distance = -face.distance;
-            face.vertices.swap(1, 2);
-        }
-    }
-}
-
-/// Find the face closest to the origin.
-fn find_closest_face(faces: &[EpaFace]) -> Option<usize> {
-    if faces.is_empty() {
-        return None;
-    }
-
-    // Filter out faces with NaN distances, then find minimum
-    faces
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| f.distance.is_finite())
-        .min_by(|(_, a), (_, b)| {
-            // Safe: we filtered NaN above, so partial_cmp will never return None
-            a.distance
-                .abs()
-                .partial_cmp(&b.distance.abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(i, _)| i)
-}
-
-/// Add an edge to the edge list, removing it if it already exists (shared edge).
-fn add_edge(edges: &mut Vec<(usize, usize)>, v1: usize, v2: usize) {
-    // Check if this edge already exists (in either order)
-    let existing = edges
-        .iter()
-        .position(|&(a, b)| (a == v2 && b == v1) || (a == v1 && b == v2));
-
-    if let Some(idx) = existing {
-        // Shared edge - remove it
-        edges.swap_remove(idx);
-    } else {
-        // New edge
-        edges.push((v1, v2));
-    }
-}
-
-// =============================================================================
-// High-Level API
-// =============================================================================
-
-/// Compute contact information between two shapes using GJK+EPA.
-///
-/// Returns `None` if the shapes don't intersect or if contact computation fails.
-#[must_use]
-pub fn gjk_epa_contact(
-    shape_a: &Shape,
-    pose_a: &Pose,
-    shape_b: &Shape,
-    pose_b: &Pose,
-    max_iterations: usize,
-    tolerance: f64,
-) -> Option<GjkContact> {
-    // Run GJK
-    let gjk_result = gjk_query(shape_a, pose_a, shape_b, pose_b, max_iterations);
-
-    if !gjk_result.intersecting {
-        return None;
-    }
-
-    // Run EPA to get penetration info
-    let epa_result = epa_query(
-        shape_a,
-        pose_a,
-        shape_b,
-        pose_b,
-        &gjk_result.simplex,
-        max_iterations,
-        tolerance,
-    )?;
-
-    // Contact point: support vertex on shape A in the -normal direction.
-    let ws = Cell::new(0);
-    let contact_point = support(shape_a, pose_a, &(-epa_result.normal), &ws);
-
-    Some(GjkContact {
-        point: contact_point,
-        normal: epa_result.normal,
-        penetration: epa_result.depth.max(0.0),
-    })
+    let _ = max_iterations; // cf-geometry uses its own default
+    let a = PosedShape::new(shape_a, pose_a);
+    let b = PosedShape::new(shape_b, pose_b);
+    cf_geometry::gjk_intersection(&a, &b)
 }
 
 // =============================================================================
@@ -1222,15 +580,12 @@ pub struct GjkDistanceResult {
     pub witness_a: Point3<f64>,
     /// Closest point on shape B (in world frame).
     pub witness_b: Point3<f64>,
-    /// Number of iterations used.
-    pub iterations: usize,
 }
 
 /// Compute minimum separating distance between two non-overlapping convex shapes.
 ///
 /// Returns `None` if shapes are overlapping (use `gjk_epa_contact` instead).
-/// Uses GJK distance algorithm (van den Bergen, 2003): iteratively refine the
-/// closest point on the Minkowski difference to the origin.
+/// Delegates to `cf_geometry::gjk_distance` via `PosedShape` adapters.
 ///
 /// `max_iterations` and `tolerance` come from `model.ccd_iterations` and
 /// `model.ccd_tolerance` respectively.
@@ -1243,238 +598,16 @@ pub fn gjk_distance(
     max_iterations: usize,
     tolerance: f64,
 ) -> Option<GjkDistanceResult> {
-    let center_a = pose_a.position;
-    let center_b = pose_b.position;
-    let dir_vec = center_b - center_a;
-    let dir_norm = dir_vec.norm();
+    let a = PosedShape::new(shape_a, pose_a);
+    let b = PosedShape::new(shape_b, pose_b);
 
-    let mut direction = if dir_norm > EPSILON {
-        dir_vec / dir_norm
-    } else {
-        Vector3::x()
-    };
+    let d = cf_geometry::gjk_distance(&a, &b, max_iterations, tolerance)?;
 
-    let mut simplex = Simplex::new();
-    let warm_start_a = Cell::new(0);
-    let warm_start_b = Cell::new(0);
-
-    // Get first support point
-    let first = support_minkowski(
-        shape_a,
-        pose_a,
-        &warm_start_a,
-        shape_b,
-        pose_b,
-        &warm_start_b,
-        &direction,
-    );
-    simplex.push(first);
-
-    // Track closest distance to detect convergence
-    let mut closest_dist_sq = first.point.coords.norm_squared();
-    direction = -first.point.coords;
-
-    for iteration in 0..max_iterations {
-        let dir_norm_sq = direction.norm_squared();
-        if dir_norm_sq < EPSILON * EPSILON {
-            // Origin is on the simplex — shapes are touching (distance = 0)
-            // Transition to EPA for penetration
-            return None;
-        }
-
-        let dir_normalized = direction / dir_norm_sq.sqrt();
-        let new_point = support_minkowski(
-            shape_a,
-            pose_a,
-            &warm_start_a,
-            shape_b,
-            pose_b,
-            &warm_start_b,
-            &dir_normalized,
-        );
-
-        // Check if we made progress toward the origin.
-        // If the new support point doesn't pass the current closest point
-        // in the search direction, the shapes may overlap.
-        let dot = new_point.point.coords.dot(&dir_normalized);
-        if dot < EPSILON {
-            // Cannot get closer to origin — shapes don't overlap.
-            // Current simplex contains the closest feature.
-            break;
-        }
-
-        simplex.push(new_point);
-
-        // Find closest point on simplex to origin and reduce simplex
-        let (closest_point, bary) = closest_point_on_simplex_to_origin(&simplex);
-        let new_dist_sq = closest_point.norm_squared();
-
-        // Convergence check: relative distance improvement < tolerance.
-        let improvement = closest_dist_sq - new_dist_sq;
-        if improvement < tolerance * tolerance
-            || (closest_dist_sq > EPSILON && improvement / closest_dist_sq < tolerance)
-        {
-            // Converged — compute witness points from barycentric coords
-            let (wa, wb) = recover_witness_points(&simplex, &bary);
-            return Some(GjkDistanceResult {
-                distance: new_dist_sq.sqrt(),
-                witness_a: wa,
-                witness_b: wb,
-                iterations: iteration,
-            });
-        }
-
-        closest_dist_sq = new_dist_sq;
-
-        // Reduce simplex to closest sub-feature
-        reduce_simplex_to_closest(&mut simplex, &bary);
-
-        // New search direction: from closest point toward origin
-        direction = -closest_point;
-    }
-
-    // Max iterations or early break — compute final result
-    let (closest_point, bary) = closest_point_on_simplex_to_origin(&simplex);
-    let dist = closest_point.norm();
-    if dist < EPSILON {
-        return None; // Touching — use EPA
-    }
-    let (wa, wb) = recover_witness_points(&simplex, &bary);
     Some(GjkDistanceResult {
-        distance: dist,
-        witness_a: wa,
-        witness_b: wb,
-        iterations: max_iterations,
+        distance: d.distance,
+        witness_a: d.point_a,
+        witness_b: d.point_b,
     })
-}
-
-/// Compute the closest point on the simplex to the origin.
-///
-/// Returns (closest_point_vector, barycentric_coordinates).
-/// Barycentric coordinates are used to recover witness points from
-/// the `MinkowskiPoint`'s `support_a`/`support_b` fields.
-fn closest_point_on_simplex_to_origin(simplex: &Simplex) -> (Vector3<f64>, Vec<(usize, f64)>) {
-    match simplex.len() {
-        1 => {
-            // Point: closest point is the point itself
-            let p = simplex.points[0].point.coords;
-            (p, vec![(0, 1.0)])
-        }
-        2 => {
-            // Line segment: project origin onto segment [A, B]
-            let a = simplex.points[0].point.coords;
-            let b = simplex.points[1].point.coords;
-            let ab = b - a;
-            let ao = -a;
-            let ab_sq = ab.norm_squared();
-            if ab_sq < EPSILON * EPSILON {
-                return (a, vec![(0, 1.0)]);
-            }
-            let t = (ao.dot(&ab) / ab_sq).clamp(0.0, 1.0);
-            let closest = a + t * ab;
-            (closest, vec![(0, 1.0 - t), (1, t)])
-        }
-        3 => {
-            // Triangle: project origin onto triangle plane, check Voronoi regions
-            closest_point_on_triangle_to_origin(simplex)
-        }
-        _ => {
-            // Should not happen in distance mode (simplex reduced before size 4)
-            let p = simplex.points[0].point.coords;
-            (p, vec![(0, 1.0)])
-        }
-    }
-}
-
-/// Full Voronoi region analysis for the triangle case.
-/// Projects origin onto the triangle ABC and checks all 7 Voronoi regions.
-#[allow(clippy::many_single_char_names)] // standard geometric notation (a, b, c, v, w)
-fn closest_point_on_triangle_to_origin(simplex: &Simplex) -> (Vector3<f64>, Vec<(usize, f64)>) {
-    let a = simplex.points[0].point.coords;
-    let b = simplex.points[1].point.coords;
-    let c = simplex.points[2].point.coords;
-
-    let ab = b - a;
-    let ac = c - a;
-    let ao = -a;
-
-    let d1 = ab.dot(&ao);
-    let d2 = ac.dot(&ao);
-
-    // Vertex A region
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return (a, vec![(0, 1.0)]);
-    }
-
-    let bo = -b;
-    let d3 = ab.dot(&bo);
-    let d4 = ac.dot(&bo);
-
-    // Vertex B region
-    if d3 >= 0.0 && d4 <= d3 {
-        return (b, vec![(1, 1.0)]);
-    }
-
-    // Edge AB region
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
-        let closest = a + v * ab;
-        return (closest, vec![(0, 1.0 - v), (1, v)]);
-    }
-
-    let co = -c;
-    let d5 = ab.dot(&co);
-    let d6 = ac.dot(&co);
-
-    // Vertex C region
-    if d6 >= 0.0 && d5 <= d6 {
-        return (c, vec![(2, 1.0)]);
-    }
-
-    // Edge AC region
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
-        let closest = a + w * ac;
-        return (closest, vec![(0, 1.0 - w), (2, w)]);
-    }
-
-    // Edge BC region
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        let closest = b + w * (c - b);
-        return (closest, vec![(1, 1.0 - w), (2, w)]);
-    }
-
-    // Interior of triangle
-    let denom = 1.0 / (va + vb + vc);
-    let v = vb * denom;
-    let w = vc * denom;
-    let closest = a + v * ab + w * ac;
-    (closest, vec![(0, 1.0 - v - w), (1, v), (2, w)])
-}
-
-/// Recover world-space witness points from barycentric coordinates.
-fn recover_witness_points(simplex: &Simplex, bary: &[(usize, f64)]) -> (Point3<f64>, Point3<f64>) {
-    let mut wa = Vector3::zeros();
-    let mut wb = Vector3::zeros();
-    for &(idx, weight) in bary {
-        wa += simplex.points[idx].support_a.coords * weight;
-        wb += simplex.points[idx].support_b.coords * weight;
-    }
-    (Point3::from(wa), Point3::from(wb))
-}
-
-/// Reduce simplex to only the vertices that contribute to the closest point.
-fn reduce_simplex_to_closest(simplex: &mut Simplex, bary: &[(usize, f64)]) {
-    let active: Vec<MinkowskiPoint> = bary
-        .iter()
-        .filter(|(_, w)| *w > EPSILON)
-        .map(|&(idx, _)| simplex.points[idx])
-        .collect();
-    simplex.set(&active);
 }
 
 // =============================================================================
@@ -1670,20 +803,6 @@ mod tests {
             &pose_b_far,
             GJK_MAX_ITERATIONS
         ));
-    }
-
-    #[test]
-    fn test_simplex_operations() {
-        let mut simplex = Simplex::new();
-        assert!(simplex.is_empty());
-
-        let p1 = MinkowskiPoint::new(Point3::new(1.0, 0.0, 0.0), Point3::origin());
-        simplex.push(p1);
-        assert_eq!(simplex.len(), 1);
-
-        let p2 = MinkowskiPoint::new(Point3::new(0.0, 1.0, 0.0), Point3::origin());
-        simplex.push(p2);
-        assert_eq!(simplex.len(), 2);
     }
 
     // =========================================================================
@@ -2039,5 +1158,32 @@ mod tests {
             contact.is_some(),
             "should produce contact even with zero tolerance"
         );
+    }
+
+    // =========================================================================
+    // PosedShape tests
+    // =========================================================================
+
+    #[test]
+    fn test_posed_shape_aabb() {
+        let shape = Shape::sphere(1.0);
+        let pose = pose_at(2.0, 3.0, 4.0);
+        let posed = PosedShape::new(&shape, &pose);
+
+        let aabb = posed.aabb();
+        assert_relative_eq!(aabb.center().x, 2.0, epsilon = 1e-6);
+        assert_relative_eq!(aabb.center().y, 3.0, epsilon = 1e-6);
+        assert_relative_eq!(aabb.center().z, 4.0, epsilon = 1e-6);
+        assert_relative_eq!(aabb.half_extents().x, 1.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_posed_shape_support() {
+        let shape = Shape::sphere(1.0);
+        let pose = pose_at(5.0, 0.0, 0.0);
+        let posed = PosedShape::new(&shape, &pose);
+
+        let pt = SupportMap::support(&posed, &Vector3::x());
+        assert_relative_eq!(pt.x, 6.0, epsilon = 1e-6);
     }
 }

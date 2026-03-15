@@ -26,6 +26,7 @@ mod aabb;
 mod bounded;
 mod bvh;
 mod convex_hull;
+mod geometric;
 mod heightfield;
 mod mesh;
 pub mod query;
@@ -33,20 +34,26 @@ mod ray;
 mod sdf;
 mod shape;
 mod sphere;
+pub mod support_map;
 mod triangle;
 
 pub use aabb::{Aabb, Axis};
 pub use bounded::Bounded;
 pub use bvh::{Bvh, BvhPrimitive, bvh_from_mesh, bvh_from_triangle_mesh, query_bvh_pair};
 pub use convex_hull::{ConvexHull, convex_hull};
+pub use geometric::Geometric;
 pub use heightfield::HeightFieldData;
 pub use mesh::IndexedMesh;
 pub use query::{
-    closest_point, closest_point_on_triangle, closest_point_segment, closest_points_segments,
-    ray_cast, ray_triangle,
+    GjkDistance, Penetration, closest_point, closest_point_on_triangle, closest_point_segment,
+    closest_points_segments, epa_penetration, gjk_distance, gjk_intersection, ray_cast,
+    ray_triangle,
 };
 pub use ray::{Ray, RayHit};
 pub use sdf::SdfGrid;
 pub use shape::Shape;
 pub use sphere::Sphere;
+pub use support_map::{
+    SupportBox, SupportCapsule, SupportCylinder, SupportEllipsoid, SupportMap, SupportSphere,
+};
 pub use triangle::Triangle;
