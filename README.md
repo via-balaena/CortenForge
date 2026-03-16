@@ -9,16 +9,32 @@
 
 ## What is CortenForge?
 
-CortenForge is a pure-Rust SDK for the full lifecycle of bio-inspired robotics: from mesh design and parametric geometry, through physics simulation and reinforcement learning, to sensor fusion and hardware deployment. Every crate is written in Rust with zero C/C++ bindings in the core, proving that Rust alone can power industrial-grade robotics toolchains.
+CortenForge is a pure-Rust platform where AI (or humans) write code that
+defines mechanisms — and that code produces geometry that is simultaneously
+a physics collider, a 3D-printable artifact, and a simulation model. No
+export steps, no approximation gaps.
 
-- **Mesh Processing** — 27 crates: load, repair, transform, boolean ops, lattices, scanning
+```
+Code → geometry IS the collider → simulate → 3D print
+```
+
+The same types flow through every layer. An `Arc<IndexedMesh>` loaded from
+STL is the same mesh that sim-core collides against, that sim-bevy renders,
+and that mesh-io exports back to STL. One truth.
+
+**What's built:**
+
+- **Geometric Kernel** — cf-geometry: unified shapes, GJK/EPA, BVH, ray casting, SDF grids — used by all domains
+- **Physics Simulation** — MuJoCo-aligned rigid body dynamics: Newton/PGS/CG contact solvers, implicit integration, Hill-type muscles, tendons, GPU batching. 79/79 conformance tests pass.
+- **Mesh Processing** — 27 crates: load, repair, transform, boolean ops, lattices, SDF, scanning
 - **Parametric Geometry** — Bezier, B-spline, NURBS curves, arcs, helices
 - **3D Routing** — A* pathfinding on voxel grids, multi-objective optimization
-- **Physics Simulation** — 14 crates: MuJoCo-aligned rigid body dynamics, Newton/PGS/CG contact solvers, implicit integration, MJCF/URDF loading, Hill-type muscles, XPBD deformables, GPU batching
 - **Machine Learning** — Model training, inference, and dataset management (Burn)
 - **Sensor Fusion** — Hardware-agnostic sensor types, stream synchronization
 
-The same code runs in simulation and on hardware. Our code must be as reliable as the things built with it.
+**What's next:**
+
+- **cf-design** — Implicit surface design kernel: define parts as math functions, compose with smooth booleans, assemble into mechanisms that map 1:1 to MJCF. See [CF_DESIGN_SPEC.md](./CF_DESIGN_SPEC.md).
 
 ---
 
@@ -26,99 +42,87 @@ The same code runs in simulation and on hardware. Our code must be as reliable a
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              LAYER 1: Bevy SDK                               │
+│                              LAYER 1: Bevy SDK                              │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │                           cortenforge                                    ││
-│  │  CfMeshPlugin · CfRoutingPlugin · CfSensorPlugin · CfSimPlugin · CfUi  ││
+│  │  sim-bevy: Model/Data sync, debug gizmos, coordinate conversion        ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         LAYER 0: Pure Rust Foundation                        │
-│                           (Zero Bevy Dependencies)                           │
-├──────────────┬──────────────┬──────────────┬──────────────┬─────────────────┤
-│   mesh/*     │  geometry/*  │   routing/*  │     sim/*    │ ml/* sensor/* + │
-│   27 crates  │              │              │   14 crates  │                 │
-├──────────────┼──────────────┼──────────────┼──────────────┼─────────────────┤
-│ mesh-types   │ curve-types  │ route-types  │ sim-types    │ ml-types        │
-│ mesh-io      │              │ route-       │ sim-core     │ ml-models       │
-│ mesh-repair  │              │  pathfind    │ sim-sensor   │ ml-dataset      │
-│ mesh-boolean │              │ route-       │ sim-constraint│ ml-training     │
-│ mesh-lattice │              │  optimize    │ sim-mjcf     │ sensor-types    │
-│ mesh-scan    │              │              │ sim-physics  │ sensor-fusion   │
-│ ...          │              │              │ ...          │                 │
-├──────────────┴──────────────┴──────────────┴──────────────┴─────────────────┤
-│                              crates/cf-spatial                               │
-│                  Voxel grids, occupancy maps, raycasting                     │
-└─────────────────────────────────────────────────────────────────────────────┘
+│                         LAYER 0: Pure Rust Foundation                       │
+│                           (Zero Bevy Dependencies)                          │
+├──────────┬────────────┬──────────┬──────────────┬──────────┬────────────────┤
+│  mesh/*  │ cf-geometry │routing/* │    sim/*     │   ml/*   │   sensor/*     │
+│ 27 crates│ cf-spatial  │ 3 crates │   8 crates   │ 4 crates │   2 crates     │
+│          │ curve-types │          │              │          │                │
+├──────────┼────────────┼──────────┼──────────────┼──────────┼────────────────┤
+│ mesh-io  │ Aabb       │route-    │ sim-core     │ ml-types │ sensor-types   │
+│ mesh-    │ IndexedMesh│ types    │ sim-mjcf     │ ml-models│ sensor-fusion  │
+│  repair  │ Shape(10)  │route-    │ sim-urdf     │ ml-      │                │
+│ mesh-    │ GJK/EPA    │ pathfind │ sim-types    │  dataset │                │
+│  boolean │ BVH        │route-    │ sim-simd     │ ml-      │                │
+│ mesh-    │ ConvexHull │ optimize │ sim-gpu      │  training│                │
+│  lattice │ SdfGrid    │          │ sim-bevy(L1) │          │                │
+│ ...      │ Ray/RayHit │          │ sim-tests¹   │          │                │
+└──────────┴────────────┴──────────┴──────────────┴──────────┴────────────────┘
 ```
 
 ### Layer 0: Pure Rust
 
-All foundation crates have **zero Bevy dependencies**. They can be used in:
-- CLI tools
-- Web applications (WASM)
-- Servers
-- Embedded systems
-- Other game engines
-- Python bindings
+All foundation crates have **zero Bevy dependencies**. They compile to native
+binaries, WASM, Python modules (via PyO3), embedded targets, and other engines.
 
-### Layer 1: Bevy SDK
+### Layer 1: Bevy Integration
 
-The `cortenforge` crate provides Bevy plugins that wrap Layer 0 functionality. This is the only place Bevy appears.
-
----
-
-## Quick Start
-
-### Pure Rust (Layer 0)
-
-```rust
-use mesh_types::IndexedMesh;
-use mesh_io::load_stl;
-use mesh_repair::{repair_mesh, RepairParams};
-
-// Load and repair a mesh
-let mesh = load_stl("model.stl")?;
-let repaired = repair_mesh(&mesh, &RepairParams::default())?;
-```
-
-### Bevy SDK (Layer 1)
-
-```rust
-use bevy::prelude::*;
-use cortenforge::prelude::*;
-
-fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(CfMeshPlugin)
-        .add_plugins(CfRoutingPlugin)
-        .run();
-}
-```
+sim-bevy provides Bevy visualization with debug gizmos and coordinate
+conversion. This is the only place Bevy appears.
 
 ---
 
 ## Crate Overview
 
-**52+ crates** across 7 domains, all Layer 0 (zero Bevy dependencies) except sim-bevy.
+**47 library crates** across 7 domains.
+
+### Foundation (`crates/`)
+
+| Crate | Description |
+|-------|-------------|
+| `cf-geometry` | Shared geometric kernel: Aabb, IndexedMesh, Shape (10 variants), ConvexHull, BVH, SdfGrid, GJK/EPA, ray casting, closest point queries. The canonical source of geometric types for all domains. |
+| `cf-spatial` | Voxel grids, occupancy maps, raycasting, DDA traversal |
+
+### Simulation Domain (`sim/`) — 8 crates
+
+| Crate | Layer | Description |
+|-------|-------|-------------|
+| `sim-core` | L0 | MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, Newton/PGS/CG solvers, implicit integration, sleeping, Hill-type muscles, tendons, constraints. 79/79 conformance. |
+| `sim-mjcf` | L0 | MuJoCo XML parser and model builder |
+| `sim-urdf` | L0 | URDF parser, kinematic tree validation |
+| `sim-types` | L0 | RigidBodyState, Pose, Twist, JointState, MassProperties |
+| `sim-simd` | L0 | SIMD batch operations (Vec3x4/Vec3x8) |
+| `sim-gpu` | L0 | GPU-accelerated batched simulation (wgpu) |
+| `sim-conformance-tests` | L0 | MuJoCo conformance and integration tests |
+| `sim-bevy` | L1 | Bevy visualization, debug gizmos, coordinate conversion |
+
+See [sim/docs/ARCHITECTURE.md](./sim/docs/ARCHITECTURE.md) for pipeline details and [sim/docs/ROADMAP_V1.md](./sim/docs/ROADMAP_V1.md) for the completed v1.0 roadmap.
 
 ### Mesh Domain (`mesh/`) — 27 crates
 
 | Crate | Description |
 |-------|-------------|
-| `mesh-types` | Core types: `Vertex`, `IndexedMesh`, `Triangle`, `AABB` |
+| `mesh-types` | Core mesh types, attribute storage (re-exports cf-geometry primitives) |
 | `mesh-io` | File I/O: STL, OBJ, PLY, 3MF, STEP |
 | `mesh-repair` | Weld vertices, remove degenerates, fill holes |
+| `mesh-boolean` | CSG boolean operations on triangle meshes |
 | `mesh-transform` | RANSAC, PCA, alignment, orientation |
-| `mesh-geodesic` | Geodesic distance computation |
+| `mesh-lattice` | Lattice structure generation |
 | `mesh-sdf` | Signed distance field computation |
 | `mesh-offset` | Mesh offset via SDF |
 | `mesh-shell` | Shell generation for 3D printing |
-| `mesh-zones` | Anatomical zone assignment |
+| `mesh-geodesic` | Geodesic distance computation |
 | `mesh-from-curves` | Generate meshes from parametric curves |
+| `mesh-scan` | Point cloud to mesh reconstruction |
+| ... | 15 more: decimate, gpu, measure, morph, printability, region, registration, remesh, slice, subdivide, template, thickness, zones, assembly, mesh (umbrella) |
 
 ### Geometry Domain (`geometry/`)
 
@@ -126,7 +130,7 @@ fn main() {
 |-------|-------------|
 | `curve-types` | Bezier, B-spline, NURBS, arcs, circles, helices with Frenet frames |
 
-### Routing Domain (`routing/`)
+### Routing Domain (`routing/`) — 3 crates
 
 | Crate | Description |
 |-------|-------------|
@@ -134,28 +138,7 @@ fn main() {
 | `route-pathfind` | A* on voxel grids (6/26 connectivity), path smoothing |
 | `route-optimize` | Clearance, curvature, shortening, Pareto optimization |
 
-### Simulation Domain (`sim/`) — 14 crates
-
-| Crate | Description |
-|-------|-------------|
-| `sim-types` | RigidBodyState, Pose, Twist, JointState, MassProperties |
-| `sim-simd` | SIMD batch operations (Vec3x4/Vec3x8) |
-| `sim-core` | MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, Newton/PGS/CG solvers, implicit integration, sleeping |
-| `sim-constraint` | Joint types, motors, limits, equality constraints, CGSolver |
-| `sim-sensor` | IMU, F/T, touch, rangefinder, magnetometer |
-| `sim-deformable` | XPBD soft bodies (ropes, cloth, volumes) |
-| `sim-muscle` | Hill-type muscle model |
-| `sim-tendon` | Cable/tendon routing and actuation |
-| `sim-gpu` | GPU-accelerated batched simulation (wgpu) |
-| `sim-mjcf` | MuJoCo XML/MJB format parser |
-| `sim-urdf` | URDF parser, kinematic tree validation |
-| `sim-physics` | Unified L0 API re-exporting all sim crates |
-| `sim-conformance-tests` | MuJoCo conformance and integration tests |
-| `sim-bevy` | Layer 1: Bevy visualization and debug gizmos |
-
-See [sim/docs/ARCHITECTURE.md](./sim/docs/ARCHITECTURE.md) for pipeline details.
-
-### ML Domain (`ml/`)
+### ML Domain (`ml/`) — 4 crates
 
 | Crate | Description |
 |-------|-------------|
@@ -164,24 +147,18 @@ See [sim/docs/ARCHITECTURE.md](./sim/docs/ARCHITECTURE.md) for pipeline details.
 | `ml-dataset` | Dataset loading, splitting, augmentation, warehousing |
 | `ml-training` | Training loops, loss functions, box matching |
 
-### Sensor Domain (`sensor/`)
+### Sensor Domain (`sensor/`) — 2 crates
 
 | Crate | Description |
 |-------|-------------|
 | `sensor-types` | Hardware-agnostic sensor data: IMU, camera, LiDAR, F/T, GPS |
 | `sensor-fusion` | Stream synchronization, temporal alignment, spatial transforms |
 
-### Foundation (`crates/`)
-
-| Crate | Description |
-|-------|-------------|
-| `cf-spatial` | Voxel grids, occupancy maps, raycasting, DDA traversal |
-
 ---
 
 ## Quality Standards
 
-We maintain **A-grade standards** for all code, enforced by CI.
+**A-grade or it doesn't ship.**
 
 | Criterion | Standard |
 |-----------|----------|
@@ -194,14 +171,13 @@ We maintain **A-grade standards** for all code, enforced by CI.
 | Commits | Signed + conventional format |
 
 See [STANDARDS.md](./STANDARDS.md) for full details.
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the workflow.
 
 ```bash
-# Check your work
+# Grade a crate
 cargo xtask grade <crate-name>
 
-# Record completion
-cargo xtask complete <crate-name>
+# Run quality gate
+cargo xtask check
 ```
 
 ---
@@ -213,20 +189,31 @@ cargo xtask complete <crate-name>
 git clone https://github.com/cortenforge/forge.git
 cd forge
 
-# Build (auto-installs git hooks on first build)
+# Build
 cargo build --workspace
 
-# Run tests
-cargo test --workspace
+# Test a domain (prefer domain-scoped over full workspace)
+cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests
+cargo test -p mesh -p mesh-types -p mesh-io
 
-# Run quality checks
+# Full quality check
 cargo xtask check
-
-# Grade a specific crate
-cargo xtask grade mesh-types
 ```
 
 Git hooks enforce formatting, clippy, and conventional commits automatically.
+
+---
+
+## Key Documents
+
+| Document | Purpose |
+|----------|---------|
+| [VISION.md](./VISION.md) | North star — architecture philosophy, domain coverage, milestones |
+| [CF_GEOMETRY_SPEC.md](./CF_GEOMETRY_SPEC.md) | Shared geometric kernel spec (implemented) |
+| [CF_DESIGN_SPEC.md](./CF_DESIGN_SPEC.md) | Implicit surface design kernel spec (planned) |
+| [STANDARDS.md](./STANDARDS.md) | Quality criteria and grading rubric |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | Development workflow |
+| [sim/docs/ARCHITECTURE.md](./sim/docs/ARCHITECTURE.md) | Physics simulation pipeline details |
 
 ---
 
@@ -235,9 +222,5 @@ Git hooks enforce formatting, clippy, and conventional commits automatically.
 Apache-2.0. See [LICENSE](./LICENSE).
 
 ---
-
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 **A-grade or it doesn't ship. No exceptions.**
