@@ -77,8 +77,17 @@ impl FieldNode {
                 if control_points.is_empty() {
                     return Some(Aabb::from_point(Point3::origin()));
                 }
-                // Conservative: Catmull-Rom stays within convex hull of control points.
-                Some(Aabb::from_points(control_points.iter()).expanded(*radius))
+                // Catmull-Rom splines can overshoot the control point convex
+                // hull. The maximum overshoot is bounded by max_segment_length/4
+                // (from the second-difference bound on the basis functions).
+                let mut max_seg = 0.0_f64;
+                for pair in control_points.windows(2) {
+                    let d = (pair[1] - pair[0]).norm();
+                    if d > max_seg {
+                        max_seg = d;
+                    }
+                }
+                Some(Aabb::from_points(control_points.iter()).expanded(radius + max_seg / 4.0))
             }
 
             // ── Booleans ─────────────────────────────────────────────

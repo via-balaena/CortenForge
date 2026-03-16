@@ -677,6 +677,42 @@ mod tests {
         assert!((result.x - 2.5).abs() < 1e-10);
     }
 
+    /// Kill signal #4: path-based SDF must produce manifold meshes at
+    /// `cell_size` < `radius/2`.
+    #[test]
+    fn pipe_mesh_valid() {
+        let node = FieldNode::Pipe {
+            vertices: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+                Point3::new(5.0, 5.0, 0.0),
+            ],
+            radius: 1.0,
+        };
+        let bounds = node.bounds().map(|b| b.expanded(0.4));
+        // cell_size 0.4 < radius/2 = 0.5
+        let (mesh, _) = mesh_field(&node, &bounds.unwrap_or(Aabb::empty()), 0.4);
+        assert_mesh_valid(&mesh, "pipe");
+    }
+
+    /// Kill signal #4: spline path-based SDF must produce manifold meshes.
+    #[test]
+    fn pipe_spline_mesh_valid() {
+        let node = FieldNode::PipeSpline {
+            control_points: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+                Point3::new(5.0, 5.0, 0.0),
+                Point3::new(0.0, 5.0, 0.0),
+            ],
+            radius: 1.0,
+        };
+        let bounds = node.bounds().map(|b| b.expanded(0.4));
+        // cell_size 0.4 < radius/2 = 0.5
+        let (mesh, _) = mesh_field(&node, &bounds.unwrap_or(Aabb::empty()), 0.4);
+        assert_mesh_valid(&mesh, "pipe_spline");
+    }
+
     #[test]
     fn empty_bounds_returns_empty_mesh() {
         let node = FieldNode::Sphere { radius: 1.0 };
