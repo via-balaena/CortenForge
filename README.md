@@ -1,6 +1,6 @@
 # CortenForge
 
-> **An open-source SDK written in pure Rust for designing, engineering, and manufacturing bio-inspired mechanisms and robotics** — demonstrating the capabilities of the Rust programming language across simulation, geometry, perception, and fabrication.
+> **An AI-native, simulation-first, manufacturing-ready platform for bio-inspired mechatronics.** Open-source, pure Rust, from design through physics simulation to 3D printing.
 
 [![Quality Gate](https://github.com/cortenforge/forge/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/cortenforge/forge/actions/workflows/quality-gate.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
