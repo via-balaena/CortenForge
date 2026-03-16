@@ -7,7 +7,32 @@
 //!
 //! This type is `pub(crate)` — consumers interact through [`super::Solid`].
 
-use nalgebra::{UnitQuaternion, Vector3};
+use std::sync::Arc;
+
+use cf_geometry::Aabb;
+use nalgebra::{Point3, UnitQuaternion, Vector3};
+
+/// Wrapper for user-provided evaluation closure.
+///
+/// Supports `Clone` (via `Arc`) and `Debug` (prints opaque marker).
+#[derive(Clone)]
+pub struct UserEvalFn(pub Arc<dyn Fn(Point3<f64>) -> f64 + Send + Sync>);
+
+impl std::fmt::Debug for UserEvalFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<user_eval_fn>")
+    }
+}
+
+/// Wrapper for user-provided interval bound closure.
+#[derive(Clone)]
+pub struct UserIntervalFn(pub Arc<dyn Fn(&Aabb) -> (f64, f64) + Send + Sync>);
+
+impl std::fmt::Debug for UserIntervalFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<user_interval_fn>")
+    }
+}
 
 /// Internal expression tree node for implicit surface fields.
 ///
@@ -81,4 +106,36 @@ pub enum FieldNode {
     /// Mirror across a plane through origin with the given unit normal.
     /// `f(p - 2·min(0, dot(p, n))·n)` — reflects the negative half-space.
     Mirror(Box<Self>, Vector3<f64>),
+
+    // ── Domain operations ─────────────────────────────────────────────
+    /// Shell: `|f(p)| - thickness`. Hollows a solid to the given wall
+    /// thickness. Requires exact SDF child for uniform wall thickness.
+    Shell(Box<Self>, f64),
+
+    /// Round: `f(p) - radius`. Adds rounding to all edges by shifting the
+    /// isosurface inward. Requires exact SDF child for uniform rounding.
+    Round(Box<Self>, f64),
+
+    /// Offset: `f(p) - distance`. Grows (positive distance) or shrinks
+    /// (negative distance) the shape uniformly. Requires exact SDF child.
+    Offset(Box<Self>, f64),
+
+    /// Elongate: stretches a shape along axes by inserting flat sections.
+    /// `q = p - clamp(p, -h, h)`, then `f(q)`. Preserves SDF property.
+    Elongate(Box<Self>, Vector3<f64>),
+
+    // ── User escape hatch ─────────────────────────────────────────────
+    /// User-provided function leaf node. Allows custom implicit surface
+    /// functions that the expression tree does not natively support.
+    ///
+    /// If `interval` is `None`, interval evaluation returns `(-∞, +∞)`,
+    /// disabling octree pruning for this subtree.
+    UserFn {
+        eval: UserEvalFn,
+        interval: Option<UserIntervalFn>,
+        /// Bounding box of the geometry — used by the mesher (Session 5+)
+        /// to define the evaluation domain.
+        #[allow(dead_code)]
+        bounds: Aabb,
+    },
 }

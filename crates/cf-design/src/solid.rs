@@ -7,10 +7,12 @@
 //! The internal representation can change without breaking downstream code
 //! (expression tree today, B-Rep in the future — see `CF_DESIGN_SPEC` §8).
 
+use std::sync::Arc;
+
 use cf_geometry::Aabb;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
-use crate::field_node::FieldNode;
+use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn};
 
 /// Opaque solid defined by an implicit surface field.
 ///
@@ -392,6 +394,148 @@ impl Solid {
         }
     }
 
+    // ── Domain operations ─────────────────────────────────────────────
+
+    /// Shell — hollow out the solid to the given wall thickness.
+    ///
+    /// `|f(p)| - thickness`. The resulting solid is a thin shell around the
+    /// original surface.
+    ///
+    /// **Requires exact SDF input** for uniform wall thickness. Applied to
+    /// an f-rep or post-boolean field, wall thickness will be non-uniform.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `thickness` is not positive and finite.
+    #[must_use]
+    pub fn shell(self, thickness: f64) -> Self {
+        assert!(
+            thickness > 0.0 && thickness.is_finite(),
+            "shell thickness must be positive and finite, got {thickness}"
+        );
+        Self {
+            node: FieldNode::Shell(Box::new(self.node), thickness),
+        }
+    }
+
+    /// Round — add rounding to all edges.
+    ///
+    /// `f(p) - radius`. Shifts the isosurface outward, rounding all edges
+    /// and corners. The solid grows by `radius` in all directions.
+    ///
+    /// **Requires exact SDF input** for uniform rounding.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `radius` is not positive and finite.
+    #[must_use]
+    pub fn round(self, radius: f64) -> Self {
+        assert!(
+            radius > 0.0 && radius.is_finite(),
+            "round radius must be positive and finite, got {radius}"
+        );
+        Self {
+            node: FieldNode::Round(Box::new(self.node), radius),
+        }
+    }
+
+    /// Offset — grow or shrink the shape uniformly.
+    ///
+    /// `f(p) - distance`. Positive distance grows (adds material), negative
+    /// distance shrinks (removes material).
+    ///
+    /// Common use: manufacturing clearance adjustment:
+    /// `pin.offset(-clearance / 2.0)` shrinks a pin by half the clearance.
+    ///
+    /// **Requires exact SDF input** for uniform offset.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `distance` is not finite.
+    #[must_use]
+    pub fn offset(self, distance: f64) -> Self {
+        assert!(
+            distance.is_finite(),
+            "offset distance must be finite, got {distance}"
+        );
+        Self {
+            node: FieldNode::Offset(Box::new(self.node), distance),
+        }
+    }
+
+    /// Elongate — stretch the shape along axes by inserting flat sections.
+    ///
+    /// `q = p - clamp(p, -h, h)`, then `f(q)`. Each axis is stretched by
+    /// `2 * half_extents[axis]`. Preserves the SDF property.
+    ///
+    /// Example: `Solid::sphere(1.0).elongate(Vector3::new(2.0, 0.0, 0.0))`
+    /// produces a capsule-like shape extending from x=-3 to x=3.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any half-extent is negative or non-finite.
+    #[must_use]
+    pub fn elongate(self, half_extents: Vector3<f64>) -> Self {
+        assert!(
+            half_extents.iter().all(|&v| v >= 0.0 && v.is_finite()),
+            "elongate half_extents must be non-negative and finite, got {half_extents:?}"
+        );
+        Self {
+            node: FieldNode::Elongate(Box::new(self.node), half_extents),
+        }
+    }
+
+    /// User-defined function leaf node.
+    ///
+    /// Escape hatch for custom implicit surface functions that the expression
+    /// tree does not natively support (e.g., gyroids, superellipsoids,
+    /// logarithmic spirals).
+    ///
+    /// - `eval` — closure mapping a point to a scalar field value.
+    ///   Convention: negative inside, positive outside, zero on surface.
+    /// - `bounds` — bounding box of the geometry (used by the mesher to
+    ///   define the evaluation domain).
+    ///
+    /// For octree pruning, provide an interval function via
+    /// [`Self::user_fn_with_interval`]. Without one, interval evaluation
+    /// returns `(-∞, +∞)` and pruning is disabled for this subtree.
+    #[must_use]
+    pub fn user_fn(
+        eval: impl Fn(Point3<f64>) -> f64 + Send + Sync + 'static,
+        bounds: Aabb,
+    ) -> Self {
+        Self {
+            node: FieldNode::UserFn {
+                eval: UserEvalFn(Arc::new(eval)),
+                interval: None,
+                bounds,
+            },
+        }
+    }
+
+    /// User-defined function with interval bounds for octree pruning.
+    ///
+    /// Like [`Self::user_fn`], but with an additional closure that computes
+    /// conservative `(min, max)` bounds of the field over a bounding box.
+    ///
+    /// The interval function must satisfy: for all points `p` in the `Aabb`,
+    /// `lo <= eval(p) <= hi`. Loose bounds are safe (just reduce pruning
+    /// efficiency); tight bounds improve meshing performance.
+    #[must_use]
+    pub fn user_fn_with_interval(
+        eval: impl Fn(Point3<f64>) -> f64 + Send + Sync + 'static,
+        interval: impl Fn(&Aabb) -> (f64, f64) + Send + Sync + 'static,
+        bounds: Aabb,
+    ) -> Self {
+        Self {
+            node: FieldNode::UserFn {
+                eval: UserEvalFn(Arc::new(eval)),
+                interval: Some(UserIntervalFn(Arc::new(interval))),
+                bounds,
+            },
+        }
+    }
+
     // ── Queries ──────────────────────────────────────────────────────
 
     /// Evaluate the field at a point.
@@ -744,5 +888,198 @@ mod tests {
         let aabb = Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5));
         let (_lo, hi) = s.evaluate_interval(&aabb);
         assert!(hi < 0.0, "Box at origin should be fully inside sphere(r=5)");
+    }
+
+    // ── Domain operation builder methods ────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn shell_rejects_zero_thickness() {
+        drop(Solid::sphere(1.0).shell(0.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn shell_rejects_negative_thickness() {
+        drop(Solid::sphere(1.0).shell(-1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn round_rejects_zero_radius() {
+        drop(Solid::sphere(1.0).round(0.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "must be finite")]
+    fn offset_rejects_nan() {
+        drop(Solid::sphere(1.0).offset(f64::NAN));
+    }
+
+    #[test]
+    #[should_panic(expected = "non-negative and finite")]
+    fn elongate_rejects_negative() {
+        drop(Solid::sphere(1.0).elongate(Vector3::new(-1.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn solid_shell_method() {
+        let s = Solid::sphere(5.0).shell(1.0);
+        // Inner surface at r=4
+        assert!((s.evaluate(&Point3::new(4.0, 0.0, 0.0))).abs() < 1e-10);
+        // Outer surface at r=6
+        assert!((s.evaluate(&Point3::new(6.0, 0.0, 0.0))).abs() < 1e-10);
+        // Origin: outside the wall
+        assert!(s.evaluate(&Point3::origin()) > 0.0);
+        // Shell region: inside the wall
+        assert!(s.evaluate(&Point3::new(5.0, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn solid_round_method() {
+        let c = Solid::cuboid(Vector3::new(1.0, 1.0, 1.0)).round(0.5);
+        // New surface at (1.5, 0, 0) — face moved out by radius
+        assert!((c.evaluate(&Point3::new(1.5, 0.0, 0.0))).abs() < 1e-10);
+        // Inside at (1.0, 0, 0)
+        assert!(c.evaluate(&Point3::new(1.0, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn solid_offset_method() {
+        // Grow sphere(3) by 2 → effective radius 5
+        let s = Solid::sphere(3.0).offset(2.0);
+        assert!((s.evaluate(&Point3::new(5.0, 0.0, 0.0))).abs() < 1e-10);
+        assert!((s.evaluate(&Point3::origin()) - (-5.0)).abs() < 1e-10);
+
+        // Shrink sphere(3) by 1 → effective radius 2
+        let s = Solid::sphere(3.0).offset(-1.0);
+        assert!((s.evaluate(&Point3::new(2.0, 0.0, 0.0))).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solid_elongate_method() {
+        // Elongate sphere(1) by (2,0,0) → capsule from x=-3 to x=3
+        let s = Solid::sphere(1.0).elongate(Vector3::new(2.0, 0.0, 0.0));
+        // Surface at x = ±3
+        assert!((s.evaluate(&Point3::new(3.0, 0.0, 0.0))).abs() < 1e-10);
+        assert!((s.evaluate(&Point3::new(-3.0, 0.0, 0.0))).abs() < 1e-10);
+        // Inside at x = 0
+        assert!(s.evaluate(&Point3::origin()) < 0.0);
+        // Y extent unchanged: surface at y = 1
+        assert!((s.evaluate(&Point3::new(0.0, 1.0, 0.0))).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solid_elongate_zero_is_identity() {
+        let s = Solid::sphere(2.0);
+        let e = Solid::sphere(2.0).elongate(Vector3::new(0.0, 0.0, 0.0));
+        let test_points = [
+            Point3::origin(),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(5.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 1.0),
+        ];
+        for p in &test_points {
+            assert!(
+                (s.evaluate(p) - e.evaluate(p)).abs() < 1e-10,
+                "Elongate(0,0,0) should be identity at {p:?}"
+            );
+        }
+    }
+
+    // ── UserFn builder methods ──────────────────────────────────────
+
+    #[test]
+    fn solid_user_fn_method() {
+        let s = Solid::user_fn(
+            |p| p.coords.norm() - 3.0,
+            Aabb::new(Point3::new(-4.0, -4.0, -4.0), Point3::new(4.0, 4.0, 4.0)),
+        );
+        assert!((s.evaluate(&Point3::origin()) - (-3.0)).abs() < 1e-10);
+        assert!((s.evaluate(&Point3::new(3.0, 0.0, 0.0))).abs() < 1e-10);
+        assert!(s.evaluate(&Point3::new(5.0, 0.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn solid_user_fn_with_interval_method() {
+        let s = Solid::user_fn_with_interval(
+            |p| p.coords.norm() - 3.0,
+            |aabb| {
+                let closest = Point3::new(
+                    0.0_f64.clamp(aabb.min.x, aabb.max.x),
+                    0.0_f64.clamp(aabb.min.y, aabb.max.y),
+                    0.0_f64.clamp(aabb.min.z, aabb.max.z),
+                );
+                let min_dist = closest.coords.norm();
+                let max_dist = aabb
+                    .corners()
+                    .iter()
+                    .map(|c| c.coords.norm())
+                    .fold(0.0_f64, f64::max);
+                (min_dist - 3.0, max_dist - 3.0)
+            },
+            Aabb::new(Point3::new(-4.0, -4.0, -4.0), Point3::new(4.0, 4.0, 4.0)),
+        );
+        // Interval should prune box fully outside
+        let far_box = Aabb::new(Point3::new(5.0, 5.0, 5.0), Point3::new(6.0, 6.0, 6.0));
+        let (lo, _) = s.evaluate_interval(&far_box);
+        assert!(lo > 0.0, "Far box should be fully outside user sphere");
+    }
+
+    #[test]
+    fn solid_user_fn_composes_with_booleans() {
+        // UserFn sphere unioned with a regular sphere
+        let custom = Solid::user_fn(
+            |p| p.coords.norm() - 2.0,
+            Aabb::new(Point3::new(-3.0, -3.0, -3.0), Point3::new(3.0, 3.0, 3.0)),
+        );
+        let regular = Solid::sphere(2.0).translate(Vector3::new(3.0, 0.0, 0.0));
+        let u = custom.union(regular);
+        assert!(u.evaluate(&Point3::origin()) < 0.0);
+        assert!(u.evaluate(&Point3::new(3.0, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn solid_user_fn_is_cloneable() {
+        let s = Solid::user_fn(
+            |p| p.coords.norm() - 1.0,
+            Aabb::new(Point3::new(-2.0, -2.0, -2.0), Point3::new(2.0, 2.0, 2.0)),
+        );
+        let s2 = s.clone();
+        assert!((s.evaluate(&Point3::origin()) - s2.evaluate(&Point3::origin())).abs() < 1e-10);
+    }
+
+    // ── Domain ops chaining ─────────────────────────────────────────
+
+    #[test]
+    fn shell_then_translate() {
+        let s = Solid::sphere(5.0)
+            .shell(1.0)
+            .translate(Vector3::new(10.0, 0.0, 0.0));
+        // Shell inner surface at x = 10+4 = 14, outer at x = 10+6 = 16
+        assert!(s.evaluate(&Point3::new(10.0, 0.0, 0.0)) > 0.0); // center of shell (hollow)
+        assert!(s.evaluate(&Point3::new(15.0, 0.0, 0.0)) < 0.0); // in the wall
+        assert!((s.evaluate(&Point3::new(14.0, 0.0, 0.0))).abs() < 1e-10); // inner surface
+        assert!((s.evaluate(&Point3::new(16.0, 0.0, 0.0))).abs() < 1e-10); // outer surface
+    }
+
+    #[test]
+    fn offset_for_clearance() {
+        // Pin-in-hole clearance test: pin shrinks, hole grows
+        let pin = Solid::cylinder(2.0, 5.0).offset(-0.15);
+        let hole = Solid::cylinder(2.0, 5.0).offset(0.15);
+        // Pin surface at r = 1.85
+        assert!((pin.evaluate(&Point3::new(1.85, 0.0, 0.0))).abs() < 1e-10);
+        // Hole surface at r = 2.15
+        assert!((hole.evaluate(&Point3::new(2.15, 0.0, 0.0))).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solid_interval_for_shell() {
+        let s = Solid::sphere(10.0).shell(1.0);
+        // Box at origin: deep inside sphere, so shell field is large positive
+        let aabb = Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5));
+        let (lo, _) = s.evaluate_interval(&aabb);
+        assert!(lo > 0.0, "Box at origin should be outside shell wall");
     }
 }

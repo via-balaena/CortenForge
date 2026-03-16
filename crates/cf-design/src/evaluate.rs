@@ -73,6 +73,22 @@ impl FieldNode {
                 );
                 child.evaluate(&p_mirrored)
             }
+
+            // Domain operations
+            Self::Shell(child, thickness) => child.evaluate(p).abs() - thickness,
+            Self::Round(child, radius) => child.evaluate(p) - radius,
+            Self::Offset(child, distance) => child.evaluate(p) - distance,
+            Self::Elongate(child, half) => {
+                let q = Point3::new(
+                    p.x - p.x.clamp(-half.x, half.x),
+                    p.y - p.y.clamp(-half.y, half.y),
+                    p.z - p.z.clamp(-half.z, half.z),
+                );
+                child.evaluate(&q)
+            }
+
+            // User function
+            Self::UserFn { eval, .. } => (eval.0)(*p),
         }
     }
 }
@@ -917,5 +933,138 @@ mod tests {
         assert!(scaled.evaluate(&Point3::new(4.5, 0.0, 0.0)) > 0.0);
         assert!(scaled.evaluate(&Point3::new(0.0, 1.5, 0.0)) < 0.0);
         assert!(scaled.evaluate(&Point3::new(0.0, 2.5, 0.0)) > 0.0);
+    }
+
+    // ── Shell ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn shell_sphere_wall_thickness() {
+        // Shell a sphere of radius 5 with thickness 1.
+        // Field = |dist| - thickness = ||p|-5| - 1.
+        // At origin: ||0|-5|-1 = |5|-1 = 4 (inside the wall? No, 4 > 0 = outside wall)
+        // Wait: origin is deep inside the sphere: dist = -5.
+        // |dist| = 5, shell = 5 - 1 = 4. Positive = outside the shell wall. Correct.
+        let s = FieldNode::Shell(Box::new(FieldNode::Sphere { radius: 5.0 }), 1.0);
+        assert!(
+            s.evaluate(&Point3::origin()) > 0.0,
+            "origin should be outside shell"
+        );
+
+        // On the original surface (r=5): |0| - 1 = -1 (inside wall)
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(5.0, 0.0, 0.0)), -1.0, epsilon = EPS);
+
+        // At r=4 (inner surface): |(-1)| - 1 = 0
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(4.0, 0.0, 0.0)), 0.0, epsilon = EPS);
+
+        // At r=6 (outer surface): |1| - 1 = 0
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(6.0, 0.0, 0.0)), 0.0, epsilon = EPS);
+
+        // At r=4.5 (inside wall, inner side): |(-0.5)| - 1 = -0.5
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(4.5, 0.0, 0.0)), -0.5, epsilon = EPS);
+
+        // At r=5.5 (inside wall, outer side): |0.5| - 1 = -0.5
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(5.5, 0.0, 0.0)), -0.5, epsilon = EPS);
+    }
+
+    // ── Round ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn round_cuboid_shifts_surface() {
+        // Round a unit cube by 0.2 — surface moves inward by 0.2.
+        let c = FieldNode::Cuboid {
+            half_extents: Vector3::new(1.0, 1.0, 1.0),
+        };
+        let r = FieldNode::Round(Box::new(c), 0.2);
+
+        // Origin: cuboid SDF = -1.0, rounded = -1.0 - 0.2 = -1.2
+        assert_abs_diff_eq!(r.evaluate(&Point3::origin()), -1.2, epsilon = EPS);
+
+        // On the original face (1,0,0): cuboid SDF = 0, rounded = -0.2 (now inside)
+        assert_abs_diff_eq!(r.evaluate(&Point3::new(1.0, 0.0, 0.0)), -0.2, epsilon = EPS);
+
+        // At (1.2, 0, 0): cuboid SDF = 0.2, rounded = 0 (new surface)
+        assert_abs_diff_eq!(r.evaluate(&Point3::new(1.2, 0.0, 0.0)), 0.0, epsilon = EPS);
+    }
+
+    // ── Offset ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn offset_grow_sphere() {
+        // Offset sphere(3) by +1 → effective radius 4.
+        let s = FieldNode::Offset(Box::new(FieldNode::Sphere { radius: 3.0 }), 1.0);
+        assert_abs_diff_eq!(s.evaluate(&Point3::origin()), -4.0, epsilon = EPS);
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(4.0, 0.0, 0.0)), 0.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn offset_shrink_sphere() {
+        // Offset sphere(3) by -1 → effective radius 2.
+        let s = FieldNode::Offset(Box::new(FieldNode::Sphere { radius: 3.0 }), -1.0);
+        assert_abs_diff_eq!(s.evaluate(&Point3::origin()), -2.0, epsilon = EPS);
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(2.0, 0.0, 0.0)), 0.0, epsilon = EPS);
+    }
+
+    // ── Elongate ──────────────────────────────────────────────────────
+
+    #[test]
+    fn elongate_sphere_becomes_capsule_like() {
+        // Elongate a sphere(1) by (2, 0, 0) → stretches along X.
+        // At (0,0,0): q = (0,0,0) - clamp(0, -2, 2) = 0, sphere(0) = -1
+        let s = FieldNode::Elongate(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(2.0, 0.0, 0.0),
+        );
+        assert_abs_diff_eq!(s.evaluate(&Point3::origin()), -1.0, epsilon = EPS);
+
+        // At (2,0,0): q = (2-2,0,0) = (0,0,0), sphere(0) = -1
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(2.0, 0.0, 0.0)), -1.0, epsilon = EPS);
+
+        // At (3,0,0): q = (3-2,0,0) = (1,0,0), sphere = |1|-1 = 0 (surface)
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(3.0, 0.0, 0.0)), 0.0, epsilon = EPS);
+
+        // At (-3,0,0): q = (-3-(-2),0,0) = (-1,0,0), sphere = 0 (surface)
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(-3.0, 0.0, 0.0)), 0.0, epsilon = EPS);
+
+        // Y direction not elongated: at (0,1,0) → surface
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(0.0, 1.0, 0.0)), 0.0, epsilon = EPS);
+
+        // At (0,2,0): q = (0,2,0) → sphere = 2-1 = 1 (outside)
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(0.0, 2.0, 0.0)), 1.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn elongate_preserves_sdf() {
+        // Elongated sphere: surface at x=±(h+r), y/z=±r
+        let s = FieldNode::Elongate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        // Surface at x = ±5 (elongation 3 + radius 2)
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(5.0, 0.0, 0.0)), 0.0, epsilon = EPS);
+        assert_abs_diff_eq!(s.evaluate(&Point3::new(-5.0, 0.0, 0.0)), 0.0, epsilon = EPS);
+    }
+
+    // ── UserFn ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn user_fn_evaluates_closure() {
+        use crate::field_node::UserEvalFn;
+        use cf_geometry::Aabb;
+        use std::sync::Arc;
+
+        // Custom sphere of radius 4 via UserFn
+        let node = FieldNode::UserFn {
+            eval: UserEvalFn(Arc::new(|p: Point3<f64>| p.coords.norm() - 4.0)),
+            interval: None,
+            bounds: Aabb::new(Point3::new(-5.0, -5.0, -5.0), Point3::new(5.0, 5.0, 5.0)),
+        };
+
+        assert_abs_diff_eq!(node.evaluate(&Point3::origin()), -4.0, epsilon = EPS);
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(4.0, 0.0, 0.0)),
+            0.0,
+            epsilon = EPS
+        );
+        assert!(node.evaluate(&Point3::new(6.0, 0.0, 0.0)) > 0.0);
     }
 }

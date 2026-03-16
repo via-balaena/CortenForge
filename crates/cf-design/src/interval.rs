@@ -51,6 +51,17 @@ impl FieldNode {
             Self::Rotate(child, q) => interval_rotate(child, q, aabb),
             Self::ScaleUniform(child, s) => interval_scale_uniform(child, *s, aabb),
             Self::Mirror(child, normal) => interval_mirror(child, normal, aabb),
+
+            // Domain operations
+            Self::Shell(child, thickness) => interval_shell(child, *thickness, aabb),
+            Self::Round(child, radius) => interval_round(child, *radius, aabb),
+            Self::Offset(child, distance) => interval_offset(child, *distance, aabb),
+            Self::Elongate(child, half) => interval_elongate(child, half, aabb),
+
+            // User function
+            Self::UserFn { interval, .. } => interval
+                .as_ref()
+                .map_or((f64::NEG_INFINITY, f64::INFINITY), |f| (f.0)(aabb)),
         }
     }
 }
@@ -397,6 +408,41 @@ fn interval_scale_uniform(child: &FieldNode, s: f64, aabb: &Aabb) -> (f64, f64) 
     );
     let (lo, hi) = child.evaluate_interval(&scaled);
     (lo * s, hi * s)
+}
+
+// ── Domain operation interval implementations ────────────────────────────
+
+fn interval_shell(child: &FieldNode, thickness: f64, aabb: &Aabb) -> (f64, f64) {
+    let (lo, hi) = child.evaluate_interval(aabb);
+    let (abs_lo, abs_hi) = abs_interval(lo, hi);
+    (abs_lo - thickness, abs_hi - thickness)
+}
+
+fn interval_round(child: &FieldNode, radius: f64, aabb: &Aabb) -> (f64, f64) {
+    let (lo, hi) = child.evaluate_interval(aabb);
+    (lo - radius, hi - radius)
+}
+
+fn interval_offset(child: &FieldNode, distance: f64, aabb: &Aabb) -> (f64, f64) {
+    let (lo, hi) = child.evaluate_interval(aabb);
+    (lo - distance, hi - distance)
+}
+
+fn interval_elongate(child: &FieldNode, half: &Vector3<f64>, aabb: &Aabb) -> (f64, f64) {
+    // g(p) = p - clamp(p, -h, h) is monotonically non-decreasing per axis,
+    // so the range of g over [lo, hi] is [g(lo), g(hi)].
+    let q_min = Point3::new(
+        aabb.min.x - aabb.min.x.clamp(-half.x, half.x),
+        aabb.min.y - aabb.min.y.clamp(-half.y, half.y),
+        aabb.min.z - aabb.min.z.clamp(-half.z, half.z),
+    );
+    let q_max = Point3::new(
+        aabb.max.x - aabb.max.x.clamp(-half.x, half.x),
+        aabb.max.y - aabb.max.y.clamp(-half.y, half.y),
+        aabb.max.z - aabb.max.z.clamp(-half.z, half.z),
+    );
+    let q_aabb = Aabb::new(q_min, q_max);
+    child.evaluate_interval(&q_aabb)
 }
 
 fn interval_mirror(child: &FieldNode, normal: &Vector3<f64>, aabb: &Aabb) -> (f64, f64) {
@@ -784,5 +830,132 @@ mod tests {
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&scaled, aabb, 5);
         }
+    }
+
+    // ── Domain operation interval tests ────────────────────────────────
+
+    #[test]
+    fn shell_interval_contains_points() {
+        let node = FieldNode::Shell(Box::new(FieldNode::Sphere { radius: 5.0 }), 1.0);
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn shell_interval_prunes_interior() {
+        // Small box deep inside the sphere — shell should be fully outside (positive)
+        let node = FieldNode::Shell(Box::new(FieldNode::Sphere { radius: 10.0 }), 1.0);
+        let aabb = Aabb::new(Point3::new(-0.1, -0.1, -0.1), Point3::new(0.1, 0.1, 0.1));
+        let (lo, _hi) = node.evaluate_interval(&aabb);
+        assert!(
+            lo > 0.0,
+            "Shell interval should be positive for box deep inside sphere"
+        );
+    }
+
+    #[test]
+    fn round_interval_contains_points() {
+        let node = FieldNode::Round(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(2.0, 2.0, 2.0),
+            }),
+            0.5,
+        );
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn offset_interval_contains_points() {
+        let node = FieldNode::Offset(Box::new(FieldNode::Sphere { radius: 3.0 }), 1.0);
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn offset_shrink_interval_contains_points() {
+        let node = FieldNode::Offset(Box::new(FieldNode::Sphere { radius: 3.0 }), -1.0);
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn elongate_interval_contains_points() {
+        let node = FieldNode::Elongate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn elongate_3axis_interval_contains_points() {
+        let node = FieldNode::Elongate(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(1.0, 2.0, 3.0),
+        );
+        let aabbs = vec![
+            Aabb::new(Point3::new(-3.0, -3.0, -5.0), Point3::new(3.0, 3.0, 5.0)),
+            Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5)),
+            Aabb::new(Point3::new(2.0, 3.0, 4.0), Point3::new(3.0, 4.0, 5.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── UserFn interval tests ──────────────────────────────────────────
+
+    #[test]
+    fn user_fn_with_interval_contains_points() {
+        use crate::field_node::{UserEvalFn, UserIntervalFn};
+        use std::sync::Arc;
+
+        // Custom sphere r=4 with a user-provided interval function
+        let node = FieldNode::UserFn {
+            eval: UserEvalFn(Arc::new(|p: Point3<f64>| p.coords.norm() - 4.0)),
+            interval: Some(UserIntervalFn(Arc::new(|aabb: &Aabb| {
+                // Reuse norm_interval logic inline
+                let closest = Point3::new(
+                    0.0_f64.clamp(aabb.min.x, aabb.max.x),
+                    0.0_f64.clamp(aabb.min.y, aabb.max.y),
+                    0.0_f64.clamp(aabb.min.z, aabb.max.z),
+                );
+                let min_dist = closest.coords.norm();
+                let max_dist = aabb
+                    .corners()
+                    .iter()
+                    .map(|c| c.coords.norm())
+                    .fold(0.0_f64, f64::max);
+                (min_dist - 4.0, max_dist - 4.0)
+            }))),
+            bounds: Aabb::new(Point3::new(-5.0, -5.0, -5.0), Point3::new(5.0, 5.0, 5.0)),
+        };
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn user_fn_without_interval_returns_full_range() {
+        use crate::field_node::UserEvalFn;
+        use std::sync::Arc;
+
+        let node = FieldNode::UserFn {
+            eval: UserEvalFn(Arc::new(|p: Point3<f64>| p.coords.norm() - 4.0)),
+            interval: None,
+            bounds: Aabb::new(Point3::new(-5.0, -5.0, -5.0), Point3::new(5.0, 5.0, 5.0)),
+        };
+        let aabb = Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0));
+        let (lo, hi) = node.evaluate_interval(&aabb);
+        assert!(lo == f64::NEG_INFINITY);
+        assert!(hi == f64::INFINITY);
     }
 }
