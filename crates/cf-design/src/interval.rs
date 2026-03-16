@@ -36,6 +36,7 @@ impl FieldNode {
             Self::Torus { major, minor } => interval_torus(*major, *minor, aabb),
             Self::Cone { radius, height } => interval_cone(*radius, *height, aabb),
             Self::Plane { normal, offset } => interval_plane(normal, *offset, aabb),
+            Self::Pipe { .. } | Self::PipeSpline { .. } => lipschitz_bound(self, aabb, 1.0),
 
             // Booleans
             Self::Union(a, b) => interval_union(a, b, aabb),
@@ -957,5 +958,49 @@ mod tests {
         let (lo, hi) = node.evaluate_interval(&aabb);
         assert!(lo == f64::NEG_INFINITY);
         assert!(hi == f64::INFINITY);
+    }
+
+    // ── Pipe interval tests ──────────────────────────────────────────
+
+    #[test]
+    fn pipe_interval_contains_points() {
+        let node = FieldNode::Pipe {
+            vertices: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+                Point3::new(5.0, 5.0, 0.0),
+            ],
+            radius: 1.0,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(2.0, -1.0, -1.0), Point3::new(4.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(4.0, 2.0, -1.0), Point3::new(6.0, 4.0, 1.0)),
+            Aabb::new(Point3::new(8.0, 8.0, 0.0), Point3::new(10.0, 10.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn pipe_spline_interval_contains_points() {
+        let node = FieldNode::PipeSpline {
+            control_points: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+                Point3::new(5.0, 5.0, 0.0),
+            ],
+            radius: 1.0,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(2.0, -1.0, -1.0), Point3::new(4.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(4.0, 2.0, -1.0), Point3::new(6.0, 4.0, 1.0)),
+            Aabb::new(Point3::new(8.0, 8.0, 0.0), Point3::new(10.0, 10.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
     }
 }

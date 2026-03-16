@@ -214,6 +214,75 @@ impl Solid {
         }
     }
 
+    // ── Path-based primitives ────────────────────────────────────────
+
+    /// Pipe along a polyline path with spherical cross-section.
+    ///
+    /// Exact SDF. The pipe follows the straight-line segments connecting the
+    /// vertices with the given radius. Corners are naturally rounded via the
+    /// min-of-segments formulation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if fewer than 2 vertices, if `radius` is not positive and finite,
+    /// or if any vertex coordinate is non-finite.
+    #[must_use]
+    pub fn pipe(vertices: Vec<Point3<f64>>, radius: f64) -> Self {
+        assert!(
+            vertices.len() >= 2,
+            "pipe requires at least 2 vertices, got {}",
+            vertices.len()
+        );
+        assert!(
+            radius > 0.0 && radius.is_finite(),
+            "pipe radius must be positive and finite, got {radius}"
+        );
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.x.is_finite() && v.y.is_finite() && v.z.is_finite()),
+            "pipe vertices must have finite coordinates"
+        );
+        Self {
+            node: FieldNode::Pipe { vertices, radius },
+        }
+    }
+
+    /// Pipe along a Catmull-Rom spline with spherical cross-section.
+    ///
+    /// Near-exact SDF. The spline smoothly interpolates through the control
+    /// points. Uses Catmull-Rom interpolation with open-curve endpoint
+    /// handling.
+    ///
+    /// # Panics
+    ///
+    /// Panics if fewer than 2 control points, if `radius` is not positive and
+    /// finite, or if any control point coordinate is non-finite.
+    #[must_use]
+    pub fn pipe_spline(control_points: Vec<Point3<f64>>, radius: f64) -> Self {
+        assert!(
+            control_points.len() >= 2,
+            "pipe_spline requires at least 2 control points, got {}",
+            control_points.len()
+        );
+        assert!(
+            radius > 0.0 && radius.is_finite(),
+            "pipe_spline radius must be positive and finite, got {radius}"
+        );
+        assert!(
+            control_points
+                .iter()
+                .all(|v| v.x.is_finite() && v.y.is_finite() && v.z.is_finite()),
+            "pipe_spline control points must have finite coordinates"
+        );
+        Self {
+            node: FieldNode::PipeSpline {
+                control_points,
+                radius,
+            },
+        }
+    }
+
     // ── Boolean operations ────────────────────────────────────────────
 
     /// Union of two solids: material where either solid exists.
@@ -1081,5 +1150,102 @@ mod tests {
         let aabb = Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5));
         let (lo, _) = s.evaluate_interval(&aabb);
         assert!(lo > 0.0, "Box at origin should be outside shell wall");
+    }
+
+    // ── Pipe builder validation ──────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "at least 2 vertices")]
+    fn pipe_rejects_single_vertex() {
+        drop(Solid::pipe(vec![Point3::origin()], 1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "at least 2 vertices")]
+    fn pipe_rejects_empty() {
+        drop(Solid::pipe(vec![], 1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn pipe_rejects_zero_radius() {
+        drop(Solid::pipe(
+            vec![Point3::origin(), Point3::new(1.0, 0.0, 0.0)],
+            0.0,
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn pipe_rejects_negative_radius() {
+        drop(Solid::pipe(
+            vec![Point3::origin(), Point3::new(1.0, 0.0, 0.0)],
+            -1.0,
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "finite coordinates")]
+    fn pipe_rejects_nan_vertex() {
+        drop(Solid::pipe(
+            vec![Point3::new(f64::NAN, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)],
+            1.0,
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "at least 2 control points")]
+    fn pipe_spline_rejects_single_point() {
+        drop(Solid::pipe_spline(vec![Point3::origin()], 1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn pipe_spline_rejects_inf_radius() {
+        drop(Solid::pipe_spline(
+            vec![Point3::origin(), Point3::new(1.0, 0.0, 0.0)],
+            f64::INFINITY,
+        ));
+    }
+
+    // ── Pipe builder methods ────────────────────────────────────────
+
+    #[test]
+    fn solid_pipe_evaluate() {
+        let s = Solid::pipe(
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 0.0, 0.0)],
+            1.0,
+        );
+        // Midpoint on axis: should be -radius
+        assert!((s.evaluate(&Point3::new(5.0, 0.0, 0.0)) - (-1.0)).abs() < 1e-10);
+        // On surface
+        assert!((s.evaluate(&Point3::new(5.0, 1.0, 0.0))).abs() < 1e-10);
+        // Outside
+        assert!(s.evaluate(&Point3::new(5.0, 3.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn solid_pipe_spline_evaluate() {
+        let s = Solid::pipe_spline(
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 0.0, 0.0)],
+            1.0,
+        );
+        // Start and end should be inside
+        assert!(s.evaluate(&Point3::new(0.0, 0.0, 0.0)) < 0.0);
+        assert!(s.evaluate(&Point3::new(10.0, 0.0, 0.0)) < 0.0);
+        // Midpoint on surface
+        assert!((s.evaluate(&Point3::new(5.0, 1.0, 0.0))).abs() < 1e-6);
+    }
+
+    #[test]
+    fn solid_pipe_composes_with_translate() {
+        let s = Solid::pipe(
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(5.0, 0.0, 0.0)],
+            0.5,
+        )
+        .translate(Vector3::new(0.0, 0.0, 10.0));
+        // Pipe should be at z=10 now
+        assert!(s.evaluate(&Point3::new(2.5, 0.0, 10.0)) < 0.0);
+        assert!(s.evaluate(&Point3::new(2.5, 0.0, 0.0)) > 0.0);
     }
 }

@@ -67,6 +67,22 @@ pub enum FieldNode {
     /// Half-space. `dot(normal, p) - offset`. Normal must be unit length.
     Plane { normal: Vector3<f64>, offset: f64 },
 
+    // ── Path-based primitives ────────────────────────────────────────
+    /// Pipe along a polyline path with spherical cross-section.
+    /// SDF: `min(distance_to_segment(p, seg_i)) - radius` over all segments.
+    /// Exact SDF. Natural rounding at corners via min-of-segments.
+    Pipe {
+        vertices: Vec<Point3<f64>>,
+        radius: f64,
+    },
+
+    /// Pipe along a Catmull-Rom spline with spherical cross-section.
+    /// Near-exact SDF via dense subdivision + Newton refinement per span.
+    PipeSpline {
+        control_points: Vec<Point3<f64>>,
+        radius: f64,
+    },
+
     // ── Boolean operations ────────────────────────────────────────────
     /// Union: `min(a, b)`. Preserves SDF lower-bound property.
     Union(Box<Self>, Box<Self>),

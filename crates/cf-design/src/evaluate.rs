@@ -30,6 +30,11 @@ impl FieldNode {
             Self::Torus { major, minor } => eval_torus(*major, *minor, p),
             Self::Cone { radius, height } => eval_cone(*radius, *height, p),
             Self::Plane { normal, offset } => eval_plane(normal, *offset, p),
+            Self::Pipe { vertices, radius } => eval_pipe(vertices, *radius, p),
+            Self::PipeSpline {
+                control_points,
+                radius,
+            } => eval_pipe_spline(control_points, *radius, p),
 
             // Booleans
             Self::Union(a, b) => a.evaluate(p).min(b.evaluate(p)),
@@ -244,6 +249,139 @@ fn eval_cone(radius: f64, height: f64, p: &Point3<f64>) -> f64 {
 /// Half-space: `dot(normal, p) - offset`. Exact SDF when normal is unit length.
 fn eval_plane(normal: &nalgebra::Vector3<f64>, offset: f64, p: &Point3<f64>) -> f64 {
     normal.dot(&p.coords) - offset
+}
+
+/// Pipe along a polyline: min distance to any segment minus radius. Exact SDF.
+fn eval_pipe(vertices: &[Point3<f64>], radius: f64, p: &Point3<f64>) -> f64 {
+    let mut min_dist_sq = f64::INFINITY;
+    for seg in vertices.windows(2) {
+        let closest = cf_geometry::closest_point_segment(seg[0], seg[1], *p);
+        let d_sq = nalgebra::distance_squared(p, &closest);
+        if d_sq < min_dist_sq {
+            min_dist_sq = d_sq;
+        }
+    }
+    min_dist_sq.sqrt() - radius
+}
+
+/// Pipe along a Catmull-Rom spline: distance to closest point on spline minus
+/// radius. Near-exact SDF via subdivision + Newton refinement.
+fn eval_pipe_spline(control_points: &[Point3<f64>], radius: f64, p: &Point3<f64>) -> f64 {
+    let n = control_points.len();
+    let mut min_dist_sq = f64::INFINITY;
+
+    // For 2 control points: degenerate to single line segment
+    if n == 2 {
+        let closest = cf_geometry::closest_point_segment(control_points[0], control_points[1], *p);
+        return nalgebra::distance_squared(p, &closest).sqrt() - radius;
+    }
+
+    // Catmull-Rom: each span uses 4 control points (p0, p1, p2, p3).
+    // We iterate spans from index 0..n-3 (span i uses points i, i+1, i+2, i+3).
+    // For open curves: first span repeats the first point, last span repeats the last.
+    let num_spans = n - 1;
+    for span in 0..num_spans {
+        let p0 = control_points[if span == 0 { 0 } else { span - 1 }];
+        let p1 = control_points[span];
+        let p2 = control_points[span + 1];
+        let p3 = control_points[if span + 2 < n { span + 2 } else { n - 1 }];
+
+        // Coarse search: subdivide span into 16 linear segments
+        let subdivs: u32 = 16;
+        let mut best_t = 0.0_f64;
+        let mut best_d_sq = f64::INFINITY;
+
+        for i in 0..=subdivs {
+            let t = f64::from(i) / f64::from(subdivs);
+            let q = catmull_rom_point(p0, p1, p2, p3, t);
+            let d_sq = nalgebra::distance_squared(p, &q);
+            if d_sq < best_d_sq {
+                best_d_sq = d_sq;
+                best_t = t;
+            }
+        }
+
+        // Newton refinement on distance²(t): minimize f(t) = |C(t) - p|²
+        // f'(t) = 2 * dot(C(t) - p, C'(t))
+        // f''(t) = 2 * (dot(C'(t), C'(t)) + dot(C(t) - p, C''(t)))
+        // Newton step: t -= f'(t) / f''(t)
+        let mut t = best_t;
+        for _ in 0..4 {
+            let c = catmull_rom_point(p0, p1, p2, p3, t);
+            let c_d = catmull_rom_deriv(p0, p1, p2, p3, t);
+            let c_dd = catmull_rom_deriv2(p0, p1, p2, p3, t);
+            let diff = c - p;
+            let fp = 2.0 * diff.dot(&c_d);
+            let fpp = 2.0 * (c_d.dot(&c_d) + diff.dot(&c_dd));
+            if fpp.abs() < 1e-20 {
+                break;
+            }
+            t -= fp / fpp;
+            t = t.clamp(0.0, 1.0);
+        }
+
+        let c = catmull_rom_point(p0, p1, p2, p3, t);
+        let d_sq = nalgebra::distance_squared(p, &c);
+        if d_sq < min_dist_sq {
+            min_dist_sq = d_sq;
+        }
+    }
+
+    min_dist_sq.sqrt() - radius
+}
+
+// ── Catmull-Rom helpers ──────────────────────────────────────────────────
+
+/// Catmull-Rom spline evaluation at parameter t ∈ [0, 1].
+///
+/// Uses the standard matrix form with α = 0.5 (centripetal is typical, but
+/// uniform α=0.5 is the standard Catmull-Rom used in graphics).
+fn catmull_rom_point(
+    p0: Point3<f64>,
+    p1: Point3<f64>,
+    p2: Point3<f64>,
+    p3: Point3<f64>,
+    t: f64,
+) -> Point3<f64> {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    // C(t) = 0.5 * ((2*P1) + (-P0 + P2)*t + (2*P0 - 5*P1 + 4*P2 - P3)*t² + (-P0 + 3*P1 - 3*P2 + P3)*t³)
+    let c = (p1.coords * 2.0
+        + (-p0.coords + p2.coords) * t
+        + (p0.coords * 2.0 - p1.coords * 5.0 + p2.coords * 4.0 - p3.coords) * t2
+        + (-p0.coords + p1.coords * 3.0 - p2.coords * 3.0 + p3.coords) * t3)
+        * 0.5;
+    Point3::from(c)
+}
+
+/// First derivative of Catmull-Rom spline at parameter t.
+fn catmull_rom_deriv(
+    p0: Point3<f64>,
+    p1: Point3<f64>,
+    p2: Point3<f64>,
+    p3: Point3<f64>,
+    t: f64,
+) -> nalgebra::Vector3<f64> {
+    let t2 = t * t;
+    // C'(t) = 0.5 * ((-P0 + P2) + (4*P0 - 10*P1 + 8*P2 - 2*P3)*t + (-3*P0 + 9*P1 - 9*P2 + 3*P3)*t²)
+    ((-p0.coords + p2.coords)
+        + (p0.coords * 4.0 - p1.coords * 10.0 + p2.coords * 8.0 - p3.coords * 2.0) * t
+        + (-p0.coords * 3.0 + p1.coords * 9.0 - p2.coords * 9.0 + p3.coords * 3.0) * t2)
+        * 0.5
+}
+
+/// Second derivative of Catmull-Rom spline at parameter t.
+fn catmull_rom_deriv2(
+    p0: Point3<f64>,
+    p1: Point3<f64>,
+    p2: Point3<f64>,
+    p3: Point3<f64>,
+    t: f64,
+) -> nalgebra::Vector3<f64> {
+    // C''(t) = 0.5 * ((4*P0 - 10*P1 + 8*P2 - 2*P3) + (-6*P0 + 18*P1 - 18*P2 + 6*P3)*t)
+    ((p0.coords * 4.0 - p1.coords * 10.0 + p2.coords * 8.0 - p3.coords * 2.0)
+        + (-p0.coords * 6.0 + p1.coords * 18.0 - p2.coords * 18.0 + p3.coords * 6.0) * t)
+        * 0.5
 }
 
 #[cfg(test)]
@@ -1066,5 +1204,162 @@ mod tests {
             epsilon = EPS
         );
         assert!(node.evaluate(&Point3::new(6.0, 0.0, 0.0)) > 0.0);
+    }
+
+    // ── Pipe ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn pipe_straight_matches_capsule() {
+        // Straight pipe from (0,0,-2) to (0,0,2) with radius 1 should match
+        // a capsule with half_height=2, radius=1.
+        let pipe = FieldNode::Pipe {
+            vertices: vec![Point3::new(0.0, 0.0, -2.0), Point3::new(0.0, 0.0, 2.0)],
+            radius: 1.0,
+        };
+        let capsule = FieldNode::Capsule {
+            radius: 1.0,
+            half_height: 2.0,
+        };
+        let test_points = [
+            Point3::origin(),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 3.0),
+            Point3::new(0.0, 0.0, -3.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 1.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(pipe.evaluate(p), capsule.evaluate(p), epsilon = 1e-10);
+        }
+    }
+
+    #[test]
+    fn pipe_l_shaped_inside_outside() {
+        // L-shaped pipe: (0,0,0) → (5,0,0) → (5,5,0), radius 1
+        let pipe = FieldNode::Pipe {
+            vertices: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+                Point3::new(5.0, 5.0, 0.0),
+            ],
+            radius: 1.0,
+        };
+        // Center of first segment
+        assert!(pipe.evaluate(&Point3::new(2.5, 0.0, 0.0)) < 0.0);
+        // Center of second segment
+        assert!(pipe.evaluate(&Point3::new(5.0, 2.5, 0.0)) < 0.0);
+        // Corner vertex — exactly at radius distance from corner
+        assert_abs_diff_eq!(
+            pipe.evaluate(&Point3::new(5.0, 0.0, 0.0)),
+            -1.0,
+            epsilon = 1e-10
+        );
+        // Far outside
+        assert!(pipe.evaluate(&Point3::new(2.5, 5.0, 0.0)) > 0.0);
+        // On surface of first segment
+        assert_abs_diff_eq!(
+            pipe.evaluate(&Point3::new(2.5, 1.0, 0.0)),
+            0.0,
+            epsilon = 1e-10
+        );
+    }
+
+    #[test]
+    fn pipe_multi_segment_continuity() {
+        // 4-vertex pipe: zigzag pattern
+        let pipe = FieldNode::Pipe {
+            vertices: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(3.0, 0.0, 0.0),
+                Point3::new(3.0, 3.0, 0.0),
+                Point3::new(6.0, 3.0, 0.0),
+            ],
+            radius: 0.5,
+        };
+        // Each segment center should be inside
+        assert!(pipe.evaluate(&Point3::new(1.5, 0.0, 0.0)) < 0.0);
+        assert!(pipe.evaluate(&Point3::new(3.0, 1.5, 0.0)) < 0.0);
+        assert!(pipe.evaluate(&Point3::new(4.5, 3.0, 0.0)) < 0.0);
+        // At vertices (joints) — should be inside (negative radius)
+        assert_abs_diff_eq!(
+            pipe.evaluate(&Point3::new(3.0, 0.0, 0.0)),
+            -0.5,
+            epsilon = 1e-10
+        );
+        assert_abs_diff_eq!(
+            pipe.evaluate(&Point3::new(3.0, 3.0, 0.0)),
+            -0.5,
+            epsilon = 1e-10
+        );
+    }
+
+    // ── PipeSpline ────────────────────────────────────────────────────
+
+    #[test]
+    fn pipe_spline_two_points_matches_capsule() {
+        // 2-point spline degenerates to a line segment (capsule)
+        let spline = FieldNode::PipeSpline {
+            control_points: vec![Point3::new(0.0, 0.0, -2.0), Point3::new(0.0, 0.0, 2.0)],
+            radius: 1.0,
+        };
+        let capsule = FieldNode::Capsule {
+            radius: 1.0,
+            half_height: 2.0,
+        };
+        let test_points = [
+            Point3::origin(),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 3.0),
+            Point3::new(2.0, 0.0, 0.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(spline.evaluate(p), capsule.evaluate(p), epsilon = 1e-10);
+        }
+    }
+
+    #[test]
+    fn pipe_spline_smooth_curvature() {
+        // Curved spline: quarter-circle-ish path
+        let spline = FieldNode::PipeSpline {
+            control_points: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+                Point3::new(5.0, 5.0, 0.0),
+            ],
+            radius: 0.5,
+        };
+        // Start point should be inside
+        assert!(spline.evaluate(&Point3::new(0.0, 0.0, 0.0)) < 0.0);
+        // End point should be inside
+        assert!(spline.evaluate(&Point3::new(5.0, 5.0, 0.0)) < 0.0);
+        // Midpoint of spline — somewhere near (5, 0) to (5, 5) curve
+        // The spline passes through control points, so point near the
+        // curve should be inside
+        assert!(spline.evaluate(&Point3::new(5.0, 2.5, 0.0)) < 0.0);
+        // Far away should be outside
+        assert!(spline.evaluate(&Point3::new(0.0, 5.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn pipe_spline_inner_outer_radii() {
+        // Straight-ish spline, check surface at radius distance
+        let spline = FieldNode::PipeSpline {
+            control_points: vec![Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 0.0, 0.0)],
+            radius: 1.0,
+        };
+        // On the axis at midpoint: should be -radius
+        assert_abs_diff_eq!(
+            spline.evaluate(&Point3::new(5.0, 0.0, 0.0)),
+            -1.0,
+            epsilon = 1e-6
+        );
+        // At radius distance from axis: should be ~0
+        assert_abs_diff_eq!(
+            spline.evaluate(&Point3::new(5.0, 1.0, 0.0)),
+            0.0,
+            epsilon = 1e-6
+        );
+        // Outside
+        assert!(spline.evaluate(&Point3::new(5.0, 2.0, 0.0)) > 0.0);
     }
 }
