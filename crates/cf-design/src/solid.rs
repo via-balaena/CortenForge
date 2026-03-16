@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use cf_geometry::{Aabb, IndexedMesh};
+use cf_geometry::{Aabb, IndexedMesh, SdfGrid};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn};
@@ -662,6 +662,55 @@ impl Solid {
     pub fn evaluate_interval(&self, aabb: &Aabb) -> (f64, f64) {
         self.node.evaluate_interval(aabb)
     }
+
+    /// Evaluate the field on a uniform 3D grid, returning an
+    /// [`SdfGrid`](cf_geometry::SdfGrid).
+    ///
+    /// `resolution` is the number of samples along the longest bounding-box
+    /// axis (minimum 2). Other axes are scaled proportionally. The grid
+    /// includes one cell of padding beyond the geometry bounds to capture
+    /// the surface boundary cleanly.
+    ///
+    /// Returns `None` for infinite geometry (e.g., a bare `Plane`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `resolution < 2`.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn sdf_grid(&self, resolution: usize) -> Option<SdfGrid> {
+        assert!(
+            resolution >= 2,
+            "sdf_grid resolution must be at least 2, got {resolution}"
+        );
+        let bounds = self.node.bounds()?;
+        let size = bounds.size();
+        let longest = size.x.max(size.y).max(size.z);
+        if longest <= 0.0 {
+            return None;
+        }
+        let cell_size = longest / (resolution as f64 - 1.0);
+
+        // Expand by one cell on each side for surface padding
+        let expanded = bounds.expanded(cell_size);
+        let exp_size = expanded.size();
+
+        // +1 because N samples span N-1 intervals
+        let nx = ((exp_size.x / cell_size).ceil() as usize + 1).max(2);
+        let ny = ((exp_size.y / cell_size).ceil() as usize + 1).max(2);
+        let nz = ((exp_size.z / cell_size).ceil() as usize + 1).max(2);
+
+        let origin = expanded.min;
+        let node = &self.node;
+
+        Some(SdfGrid::from_fn(nx, ny, nz, cell_size, origin, |p| {
+            node.evaluate(&p)
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -1281,5 +1330,225 @@ mod tests {
         // Pipe should be at z=10 now
         assert!(s.evaluate(&Point3::new(2.5, 0.0, 10.0)) < 0.0);
         assert!(s.evaluate(&Point3::new(2.5, 0.0, 0.0)) > 0.0);
+    }
+
+    // ── Mesh validation helpers ────────────────────────────────────
+
+    fn check_topology(mesh: &IndexedMesh) -> (bool, bool) {
+        use std::collections::HashMap;
+        let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
+        for face in &mesh.faces {
+            for i in 0..3 {
+                *directed.entry((face[i], face[(i + 1) % 3])).or_insert(0) += 1;
+            }
+        }
+        let mut boundary = 0_usize;
+        let mut non_manifold = 0_usize;
+        for (&(a, b), &count) in &directed {
+            if count > 1 {
+                non_manifold += 1;
+            }
+            if directed.get(&(b, a)).copied().unwrap_or(0) == 0 {
+                boundary += 1;
+            }
+        }
+        (boundary == 0, non_manifold == 0)
+    }
+
+    fn assert_mesh_valid(mesh: &IndexedMesh, label: &str) {
+        assert!(!mesh.is_empty(), "{label}: mesh should not be empty");
+        let (watertight, manifold) = check_topology(mesh);
+        assert!(watertight, "{label}: mesh should be watertight");
+        assert!(manifold, "{label}: mesh should be manifold");
+        assert!(
+            mesh.signed_volume() > 0.0,
+            "{label}: mesh should have positive signed volume (CCW winding), got {}",
+            mesh.signed_volume()
+        );
+    }
+
+    // ── Integration tests: composed trees → mesh → valid ───────
+
+    #[test]
+    fn integration_smooth_union_translated_spheres() {
+        let a = Solid::sphere(3.0).translate(Vector3::new(-2.0, 0.0, 0.0));
+        let b = Solid::sphere(3.0).translate(Vector3::new(2.0, 0.0, 0.0));
+        let s = a.smooth_union(b, 1.0);
+        let mesh = s.mesh(0.5);
+        assert_mesh_valid(&mesh, "smooth_union_translated_spheres");
+    }
+
+    #[test]
+    fn integration_subtract_rotated_cuboid_sphere() {
+        let cuboid = Solid::cuboid(Vector3::new(3.0, 3.0, 3.0));
+        let hole = Solid::sphere(2.0);
+        let s = cuboid
+            .subtract(hole)
+            .rotate(UnitQuaternion::from_axis_angle(
+                &Vector3::z_axis(),
+                PI / 4.0,
+            ));
+        let mesh = s.mesh(0.4);
+        assert_mesh_valid(&mesh, "subtract_rotated");
+    }
+
+    #[test]
+    fn integration_shell_mirror() {
+        let s = Solid::sphere(5.0)
+            .shell(0.5)
+            .translate(Vector3::new(3.0, 0.0, 0.0))
+            .mirror(Vector3::x());
+        let mesh = s.mesh(0.5);
+        assert_mesh_valid(&mesh, "shell_mirror");
+    }
+
+    #[test]
+    fn integration_elongate_smooth_intersect_cuboid() {
+        let elongated = Solid::sphere(2.0).elongate(Vector3::new(3.0, 0.0, 0.0));
+        let cuboid = Solid::cuboid(Vector3::new(4.0, 1.5, 1.5));
+        let s = elongated.smooth_intersect(cuboid, 0.5);
+        let mesh = s.mesh(0.3);
+        assert_mesh_valid(&mesh, "elongate_smooth_intersect");
+    }
+
+    #[test]
+    fn integration_pipe_union_sphere() {
+        let pipe = Solid::pipe(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+                Point3::new(5.0, 5.0, 0.0),
+            ],
+            0.8,
+        );
+        let ball = Solid::sphere(1.5).translate(Vector3::new(5.0, 5.0, 0.0));
+        let s = pipe.union(ball);
+        let mesh = s.mesh(0.3);
+        assert_mesh_valid(&mesh, "pipe_union_sphere");
+    }
+
+    #[test]
+    fn integration_multi_op_chain() {
+        let s = Solid::sphere(3.0)
+            .shell(0.5)
+            .round(0.2)
+            .translate(Vector3::new(5.0, 0.0, 0.0))
+            .scale_uniform(2.0);
+        let mesh = s.mesh(0.5);
+        assert_mesh_valid(&mesh, "multi_op_chain");
+    }
+
+    // ── Interval pruning on composed trees ─────────────────────
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn pruning_ratio_union_translated_spheres() {
+        let a = Solid::sphere(3.0).translate(Vector3::new(-3.0, 0.0, 0.0));
+        let b = Solid::sphere(3.0).translate(Vector3::new(3.0, 0.0, 0.0));
+        let s = a.union(b);
+        let bounds = s.bounds().map(|b| b.expanded(0.5));
+        let (_, stats) = crate::mesher::mesh_field(&s.node, &bounds.unwrap_or(Aabb::empty()), 0.5);
+        let ratio = stats.cells_pruned as f64 / stats.cells_total as f64;
+        assert!(
+            ratio > 0.70,
+            "union pruning should be >70%, got {:.1}%",
+            ratio * 100.0
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn pruning_ratio_subtract_spheres() {
+        let big = Solid::sphere(5.0);
+        let small = Solid::sphere(2.0);
+        let s = big.subtract(small);
+        let bounds = s.bounds().map(|b| b.expanded(0.5));
+        let (_, stats) = crate::mesher::mesh_field(&s.node, &bounds.unwrap_or(Aabb::empty()), 0.5);
+        let ratio = stats.cells_pruned as f64 / stats.cells_total as f64;
+        assert!(
+            ratio > 0.60,
+            "subtract pruning should be >60%, got {:.1}%",
+            ratio * 100.0
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn pruning_ratio_smooth_union_all_3_spheres() {
+        let solids = vec![
+            Solid::sphere(2.0),
+            Solid::sphere(2.0).translate(Vector3::new(4.0, 0.0, 0.0)),
+            Solid::sphere(2.0).translate(Vector3::new(0.0, 4.0, 0.0)),
+        ];
+        let s = Solid::smooth_union_all(solids, 1.0);
+        let bounds = s.bounds().map(|b| b.expanded(0.5));
+        let (_, stats) = crate::mesher::mesh_field(&s.node, &bounds.unwrap_or(Aabb::empty()), 0.5);
+        let ratio = stats.cells_pruned as f64 / stats.cells_total as f64;
+        assert!(
+            ratio > 0.60,
+            "smooth_union_all pruning should be >60%, got {:.1}%",
+            ratio * 100.0
+        );
+    }
+
+    // ── SdfGrid tests ─────────────────────────────────────────
+
+    #[test]
+    #[allow(clippy::cast_precision_loss, clippy::unwrap_used)]
+    fn sdf_grid_matches_evaluate() {
+        let s = Solid::sphere(3.0);
+        let grid = s.sdf_grid(16).unwrap();
+        let origin = grid.origin();
+        let cs = grid.cell_size();
+        // Spot-check grid values against point evaluation
+        for &xi in &[0_usize, 5, 10] {
+            for &yi in &[0_usize, 5, 10] {
+                for &zi in &[0_usize, 5, 10] {
+                    if xi < grid.width() && yi < grid.height() && zi < grid.depth() {
+                        let p = Point3::new(
+                            (xi as f64).mul_add(cs, origin.x),
+                            (yi as f64).mul_add(cs, origin.y),
+                            (zi as f64).mul_add(cs, origin.z),
+                        );
+                        let grid_val = grid.get(xi, yi, zi).unwrap();
+                        let eval_val = s.evaluate(&p);
+                        assert!(
+                            (grid_val - eval_val).abs() < 1e-10,
+                            "sdf_grid mismatch at ({xi},{yi},{zi}): grid={grid_val}, eval={eval_val}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn sdf_grid_resolution_dimensions() {
+        // Cuboid half-extents (5,3,2) → full size (10,6,4). Longest axis = 10.
+        let s = Solid::cuboid(Vector3::new(5.0, 3.0, 2.0));
+        let grid = s.sdf_grid(20).unwrap();
+        // Longest axis (x=10) gets 20 samples → cell_size = 10/19 ≈ 0.526
+        // With 1-cell padding each side, width >= 20 + 2 = 22
+        assert!(
+            grid.width() >= 22,
+            "expected width >= 22, got {}",
+            grid.width()
+        );
+        assert!(grid.height() >= 2);
+        assert!(grid.depth() >= 2);
+    }
+
+    #[test]
+    fn sdf_grid_infinite_returns_none() {
+        let s = Solid::plane(Vector3::z(), 0.0);
+        assert!(s.sdf_grid(16).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "at least 2")]
+    fn sdf_grid_rejects_resolution_1() {
+        let s = Solid::sphere(1.0);
+        drop(s.sdf_grid(1));
     }
 }
