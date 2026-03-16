@@ -80,6 +80,9 @@ members = [
     "crates/cf-geometry",
     "crates/cf-spatial",
 
+    # Design kernel (active development)
+    "crates/cf-design",
+
     # Routing domain (active development)
     "routing/route-types",
     "routing/route-pathfind",
@@ -300,6 +303,9 @@ cf-geometry = { path = "crates/cf-geometry" }
 
 # Spatial foundation
 cf-spatial = { path = "crates/cf-spatial" }
+
+# Design kernel
+cf-design = { path = "crates/cf-design" }
 
 # Routing domain
 route-types = { path = "routing/route-types" }
