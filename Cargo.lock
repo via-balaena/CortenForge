@@ -2015,6 +2015,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
 
 [[package]]
+name = "cf-design"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "cf-geometry",
+ "nalgebra",
+]
+
+[[package]]
 name = "cf-geometry"
 version = "0.7.0"
 dependencies = [
