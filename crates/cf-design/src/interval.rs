@@ -21,6 +21,7 @@ impl FieldNode {
     /// `lo <= self.evaluate(p) <= hi` for all `p` in the box.
     pub(crate) fn evaluate_interval(&self, aabb: &Aabb) -> (f64, f64) {
         match self {
+            // Primitives
             Self::Sphere { radius } => interval_sphere(*radius, aabb),
             Self::Cuboid { half_extents } => interval_cuboid(half_extents, aabb),
             Self::Cylinder {
@@ -35,6 +36,21 @@ impl FieldNode {
             Self::Torus { major, minor } => interval_torus(*major, *minor, aabb),
             Self::Cone { radius, height } => interval_cone(*radius, *height, aabb),
             Self::Plane { normal, offset } => interval_plane(normal, *offset, aabb),
+
+            // Booleans
+            Self::Union(a, b) => interval_union(a, b, aabb),
+            Self::Subtract(a, b) => interval_subtract(a, b, aabb),
+            Self::Intersect(a, b) => interval_intersect(a, b, aabb),
+            Self::SmoothUnion(a, b, k) => interval_smooth_union(a, b, *k, aabb),
+            Self::SmoothSubtract(a, b, k) => interval_smooth_subtract(a, b, *k, aabb),
+            Self::SmoothIntersect(a, b, k) => interval_smooth_intersect(a, b, *k, aabb),
+            Self::SmoothUnionAll(children, k) => interval_smooth_union_all(children, *k, aabb),
+
+            // Transforms
+            Self::Translate(child, offset) => interval_translate(child, offset, aabb),
+            Self::Rotate(child, q) => interval_rotate(child, q, aabb),
+            Self::ScaleUniform(child, s) => interval_scale_uniform(child, *s, aabb),
+            Self::Mirror(child, normal) => interval_mirror(child, normal, aabb),
         }
     }
 }
@@ -283,6 +299,148 @@ fn lipschitz_bound(node: &FieldNode, aabb: &Aabb, lipschitz: f64) -> (f64, f64) 
     (lo - correction, hi + correction)
 }
 
+// ── Boolean interval implementations ────────────────────────────────────
+
+fn interval_union(a: &FieldNode, b: &FieldNode, aabb: &Aabb) -> (f64, f64) {
+    let (a_lo, a_hi) = a.evaluate_interval(aabb);
+    let (b_lo, b_hi) = b.evaluate_interval(aabb);
+    (a_lo.min(b_lo), a_hi.min(b_hi))
+}
+
+fn interval_subtract(a: &FieldNode, b: &FieldNode, aabb: &Aabb) -> (f64, f64) {
+    // max(a, -b): negate b's interval, then take max
+    let (a_lo, a_hi) = a.evaluate_interval(aabb);
+    let (b_lo, b_hi) = b.evaluate_interval(aabb);
+    (a_lo.max(-b_hi), a_hi.max(-b_lo))
+}
+
+fn interval_intersect(a: &FieldNode, b: &FieldNode, aabb: &Aabb) -> (f64, f64) {
+    let (a_lo, a_hi) = a.evaluate_interval(aabb);
+    let (b_lo, b_hi) = b.evaluate_interval(aabb);
+    (a_lo.max(b_lo), a_hi.max(b_hi))
+}
+
+fn interval_smooth_union(a: &FieldNode, b: &FieldNode, k: f64, aabb: &Aabb) -> (f64, f64) {
+    let (a_lo, a_hi) = a.evaluate_interval(aabb);
+    let (b_lo, b_hi) = b.evaluate_interval(aabb);
+    // smooth_union ≤ min(a, b); max correction is k/4
+    (a_lo.min(b_lo) - k / 4.0, a_hi.min(b_hi))
+}
+
+fn interval_smooth_subtract(a: &FieldNode, b: &FieldNode, k: f64, aabb: &Aabb) -> (f64, f64) {
+    // -smooth_union(-a, b, k)
+    // -a ∈ [-a_hi, -a_lo], b ∈ [b_lo, b_hi]
+    // smooth_union(-a, b) ∈ [min(-a_hi, b_lo) - k/4, min(-a_lo, b_hi)]
+    // negate: [max(a_lo, -b_hi), max(a_hi, -b_lo) + k/4]
+    let (a_lo, a_hi) = a.evaluate_interval(aabb);
+    let (b_lo, b_hi) = b.evaluate_interval(aabb);
+    (a_lo.max(-b_hi), a_hi.max(-b_lo) + k / 4.0)
+}
+
+fn interval_smooth_intersect(a: &FieldNode, b: &FieldNode, k: f64, aabb: &Aabb) -> (f64, f64) {
+    // -smooth_union(-a, -b, k)
+    // negate: [max(a_lo, b_lo), max(a_hi, b_hi) + k/4]
+    let (a_lo, a_hi) = a.evaluate_interval(aabb);
+    let (b_lo, b_hi) = b.evaluate_interval(aabb);
+    (a_lo.max(b_lo), a_hi.max(b_hi) + k / 4.0)
+}
+
+#[allow(clippy::cast_precision_loss)] // n-ary child count is never > 2^52
+fn interval_smooth_union_all(children: &[FieldNode], k: f64, aabb: &Aabb) -> (f64, f64) {
+    if children.is_empty() {
+        return (f64::INFINITY, f64::INFINITY);
+    }
+    let intervals: Vec<(f64, f64)> = children.iter().map(|c| c.evaluate_interval(aabb)).collect();
+    let min_lo = intervals.iter().map(|i| i.0).fold(f64::INFINITY, f64::min);
+    let min_hi = intervals.iter().map(|i| i.1).fold(f64::INFINITY, f64::min);
+    let n = children.len() as f64;
+    // smooth_union_all ≤ min(all); max correction is k*ln(n)
+    (k.mul_add(-n.ln(), min_lo), min_hi)
+}
+
+// ── Transform interval implementations ──────────────────────────────────
+
+fn interval_translate(child: &FieldNode, offset: &Vector3<f64>, aabb: &Aabb) -> (f64, f64) {
+    // Shift AABB into child's local space
+    let shifted = Aabb::new(
+        Point3::new(
+            aabb.min.x - offset.x,
+            aabb.min.y - offset.y,
+            aabb.min.z - offset.z,
+        ),
+        Point3::new(
+            aabb.max.x - offset.x,
+            aabb.max.y - offset.y,
+            aabb.max.z - offset.z,
+        ),
+    );
+    child.evaluate_interval(&shifted)
+}
+
+fn interval_rotate(
+    child: &FieldNode,
+    q: &nalgebra::UnitQuaternion<f64>,
+    aabb: &Aabb,
+) -> (f64, f64) {
+    let inv = q.inverse();
+    let corners = aabb.corners();
+    let rotated: Vec<Point3<f64>> = corners.iter().map(|c| inv.transform_point(c)).collect();
+    let rotated_aabb = Aabb::from_points(rotated.iter());
+    child.evaluate_interval(&rotated_aabb)
+}
+
+fn interval_scale_uniform(child: &FieldNode, s: f64, aabb: &Aabb) -> (f64, f64) {
+    let inv_s = 1.0 / s;
+    let scaled = Aabb::new(
+        Point3::new(aabb.min.x * inv_s, aabb.min.y * inv_s, aabb.min.z * inv_s),
+        Point3::new(aabb.max.x * inv_s, aabb.max.y * inv_s, aabb.max.z * inv_s),
+    );
+    let (lo, hi) = child.evaluate_interval(&scaled);
+    (lo * s, hi * s)
+}
+
+fn interval_mirror(child: &FieldNode, normal: &Vector3<f64>, aabb: &Aabb) -> (f64, f64) {
+    // Mirror maps p → p' where dot(p', n) = |dot(p, n)|.
+    // When the AABB straddles the mirror plane, we include corner projections
+    // onto the plane to cover the near-plane gap.
+    let corners = aabb.corners();
+    let mut has_positive = false;
+    let mut has_negative = false;
+    let mut points: Vec<Point3<f64>> = Vec::with_capacity(16);
+
+    for c in &corners {
+        let d = c.coords.dot(normal);
+        if d >= 0.0 {
+            has_positive = true;
+        }
+        if d < 0.0 {
+            has_negative = true;
+        }
+        let two_d_neg = 2.0 * d.min(0.0);
+        points.push(Point3::new(
+            two_d_neg.mul_add(-normal.x, c.x),
+            two_d_neg.mul_add(-normal.y, c.y),
+            two_d_neg.mul_add(-normal.z, c.z),
+        ));
+    }
+
+    if has_positive && has_negative {
+        // AABB straddles the mirror plane — include projections of
+        // corners onto the plane to cover the near-plane gap.
+        for c in &corners {
+            let d = c.coords.dot(normal);
+            points.push(Point3::new(
+                d.mul_add(-normal.x, c.x),
+                d.mul_add(-normal.y, c.y),
+                d.mul_add(-normal.z, c.z),
+            ));
+        }
+    }
+
+    let child_aabb = Aabb::from_points(points.iter());
+    child.evaluate_interval(&child_aabb)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,5 +614,175 @@ mod tests {
         let (lo, hi) = node.evaluate_interval(&aabb);
         assert!((lo - 2.0).abs() < 1e-10);
         assert!((hi - 5.0).abs() < 1e-10);
+    }
+
+    // ── Boolean interval tests ──────────────────────────────────────
+
+    #[test]
+    fn union_interval_contains_points() {
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let u = FieldNode::Union(Box::new(a), Box::new(b));
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&u, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn subtract_interval_contains_points() {
+        let a = FieldNode::Sphere { radius: 5.0 };
+        let b = FieldNode::Sphere { radius: 2.0 };
+        let sub = FieldNode::Subtract(Box::new(a), Box::new(b));
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&sub, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn intersect_interval_contains_points() {
+        let a = FieldNode::Sphere { radius: 5.0 };
+        let b = FieldNode::Cuboid {
+            half_extents: Vector3::new(3.0, 3.0, 3.0),
+        };
+        let inter = FieldNode::Intersect(Box::new(a), Box::new(b));
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&inter, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn smooth_union_interval_contains_points() {
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let su = FieldNode::SmoothUnion(Box::new(a), Box::new(b), 1.0);
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&su, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn smooth_subtract_interval_contains_points() {
+        let a = FieldNode::Sphere { radius: 5.0 };
+        let b = FieldNode::Sphere { radius: 2.0 };
+        let ss = FieldNode::SmoothSubtract(Box::new(a), Box::new(b), 1.0);
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&ss, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn smooth_intersect_interval_contains_points() {
+        let a = FieldNode::Sphere { radius: 5.0 };
+        let b = FieldNode::Cuboid {
+            half_extents: Vector3::new(3.0, 3.0, 3.0),
+        };
+        let si = FieldNode::SmoothIntersect(Box::new(a), Box::new(b), 1.0);
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&si, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn smooth_union_all_interval_contains_points() {
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let c = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(0.0, 3.0, 0.0),
+        );
+        let sua = FieldNode::SmoothUnionAll(vec![a, b, c], 1.0);
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&sua, aabb, 5);
+        }
+    }
+
+    // ── Transform interval tests ────────────────────────────────────
+
+    #[test]
+    fn translate_interval_contains_points() {
+        let node = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 3.0 }),
+            Vector3::new(5.0, 0.0, 0.0),
+        );
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn rotate_interval_contains_points() {
+        let rot = nalgebra::UnitQuaternion::from_axis_angle(
+            &Vector3::z_axis(),
+            std::f64::consts::FRAC_PI_4,
+        );
+        let node = FieldNode::Rotate(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 2.0, 3.0),
+            }),
+            rot,
+        );
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn scale_uniform_interval_contains_points() {
+        let node = FieldNode::ScaleUniform(Box::new(FieldNode::Sphere { radius: 1.0 }), 3.0);
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn mirror_interval_contains_points() {
+        let node = FieldNode::Mirror(
+            Box::new(FieldNode::Translate(
+                Box::new(FieldNode::Sphere { radius: 1.0 }),
+                Vector3::new(3.0, 0.0, 0.0),
+            )),
+            Vector3::new(1.0, 0.0, 0.0),
+        );
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Composed tree interval tests ────────────────────────────────
+
+    #[test]
+    fn union_translated_spheres_interval() {
+        let a = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(-3.0, 0.0, 0.0),
+        );
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let u = FieldNode::Union(Box::new(a), Box::new(b));
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&u, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn subtract_then_scale_interval() {
+        let big = FieldNode::Sphere { radius: 5.0 };
+        let small = FieldNode::Sphere { radius: 2.0 };
+        let sub = FieldNode::Subtract(Box::new(big), Box::new(small));
+        let scaled = FieldNode::ScaleUniform(Box::new(sub), 2.0);
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&scaled, aabb, 5);
+        }
     }
 }

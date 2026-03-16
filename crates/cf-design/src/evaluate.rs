@@ -15,6 +15,7 @@ impl FieldNode {
     /// primitive). Negative = inside, positive = outside, zero = on surface.
     pub(crate) fn evaluate(&self, p: &Point3<f64>) -> f64 {
         match self {
+            // Primitives
             Self::Sphere { radius } => eval_sphere(*radius, p),
             Self::Cuboid { half_extents } => eval_cuboid(half_extents, p),
             Self::Cylinder {
@@ -29,8 +30,85 @@ impl FieldNode {
             Self::Torus { major, minor } => eval_torus(*major, *minor, p),
             Self::Cone { radius, height } => eval_cone(*radius, *height, p),
             Self::Plane { normal, offset } => eval_plane(normal, *offset, p),
+
+            // Booleans
+            Self::Union(a, b) => a.evaluate(p).min(b.evaluate(p)),
+            Self::Subtract(a, b) => a.evaluate(p).max(-b.evaluate(p)),
+            Self::Intersect(a, b) => a.evaluate(p).max(b.evaluate(p)),
+            Self::SmoothUnion(a, b, k) => eval_smooth_union(a.evaluate(p), b.evaluate(p), *k),
+            Self::SmoothSubtract(a, b, k) => {
+                // smooth_subtract(a, b, k) = -smooth_union(-a, b, k)
+                -eval_smooth_union(-a.evaluate(p), b.evaluate(p), *k)
+            }
+            Self::SmoothIntersect(a, b, k) => {
+                // smooth_intersect(a, b, k) = -smooth_union(-a, -b, k)
+                -eval_smooth_union(-a.evaluate(p), -b.evaluate(p), *k)
+            }
+            Self::SmoothUnionAll(children, k) => {
+                let values: Vec<f64> = children.iter().map(|c| c.evaluate(p)).collect();
+                eval_smooth_union_all(&values, *k)
+            }
+
+            // Transforms
+            Self::Translate(child, offset) => {
+                let p_local = Point3::new(p.x - offset.x, p.y - offset.y, p.z - offset.z);
+                child.evaluate(&p_local)
+            }
+            Self::Rotate(child, q) => {
+                let p_local = q.inverse_transform_point(p);
+                child.evaluate(&p_local)
+            }
+            Self::ScaleUniform(child, s) => {
+                let inv_s = 1.0 / *s;
+                let p_local = Point3::new(p.x * inv_s, p.y * inv_s, p.z * inv_s);
+                child.evaluate(&p_local) * *s
+            }
+            Self::Mirror(child, normal) => {
+                let d = p.coords.dot(normal).min(0.0);
+                let two_d = 2.0 * d;
+                let p_mirrored = Point3::new(
+                    two_d.mul_add(-normal.x, p.x),
+                    two_d.mul_add(-normal.y, p.y),
+                    two_d.mul_add(-normal.z, p.z),
+                );
+                child.evaluate(&p_mirrored)
+            }
         }
     }
+}
+
+// ── Smooth boolean helpers ──────────────────────────────────────────────
+
+/// Polynomial smooth minimum (IQ). Blend radius `k`.
+///
+/// `h = clamp(0.5 + 0.5*(b-a)/k, 0, 1)`
+/// `result = mix(b, a, h) - k*h*(1-h)`
+///
+/// Always ≤ min(a, b). Maximum correction is k/4 at h=0.5.
+fn eval_smooth_union(a: f64, b: f64, k: f64) -> f64 {
+    let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
+    let one_minus_h = 1.0 - h;
+    let mix = a.mul_add(h, b * one_minus_h);
+    (k * h).mul_add(-one_minus_h, mix)
+}
+
+/// Symmetric n-ary smooth union via log-sum-exp.
+///
+/// `f = m - k * ln(Σ exp(-(xᵢ - m) / k))`
+/// where `m = min(xᵢ)` for numerical stability.
+///
+/// Order-independent. Approaches `min()` as k→0.
+fn eval_smooth_union_all(values: &[f64], k: f64) -> f64 {
+    if values.is_empty() {
+        return f64::INFINITY;
+    }
+    if values.len() == 1 {
+        return values[0];
+    }
+    // Log-sum-exp with shift for numerical stability
+    let m = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let sum: f64 = values.iter().map(|&v| (-(v - m) / k).exp()).sum();
+    k.mul_add(-sum.ln(), m)
 }
 
 // ── Primitive SDF implementations ────────────────────────────────────────
@@ -156,6 +234,8 @@ fn eval_plane(normal: &nalgebra::Vector3<f64>, offset: f64, p: &Point3<f64>) -> 
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+    use nalgebra::{UnitQuaternion, Vector3};
+    use std::f64::consts::PI;
 
     const EPS: f64 = 1e-10;
 
@@ -424,5 +504,418 @@ mod tests {
         };
         assert_abs_diff_eq!(pl.evaluate(&Point3::new(0.0, 0.0, 3.0)), 0.0, epsilon = EPS);
         assert_abs_diff_eq!(pl.evaluate(&Point3::new(0.0, 0.0, 5.0)), 2.0, epsilon = EPS);
+    }
+
+    // ── Union ───────────────────────────────────────────────────────
+
+    #[test]
+    fn union_picks_smaller_value() {
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Sphere { radius: 3.0 };
+        let u = FieldNode::Union(Box::new(a), Box::new(b));
+        // At origin: min(-2, -3) = -3
+        assert_abs_diff_eq!(u.evaluate(&Point3::origin()), -3.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn union_is_commutative() {
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Sphere { radius: 3.0 };
+        let u1 = FieldNode::Union(Box::new(a.clone()), Box::new(b.clone()));
+        let u2 = FieldNode::Union(Box::new(b), Box::new(a));
+        let p = Point3::new(2.5, 0.0, 0.0);
+        assert_abs_diff_eq!(u1.evaluate(&p), u2.evaluate(&p), epsilon = EPS);
+    }
+
+    #[test]
+    fn union_inside_either_is_inside() {
+        // Two non-overlapping spheres
+        let a = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(-3.0, 0.0, 0.0),
+        );
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let u = FieldNode::Union(Box::new(a), Box::new(b));
+        assert!(u.evaluate(&Point3::new(-3.0, 0.0, 0.0)) < 0.0); // inside a
+        assert!(u.evaluate(&Point3::new(3.0, 0.0, 0.0)) < 0.0); // inside b
+        assert!(u.evaluate(&Point3::new(0.0, 0.0, 0.0)) > 0.0); // outside both
+    }
+
+    // ── Subtract ────────────────────────────────────────────────────
+
+    #[test]
+    fn subtract_removes_second() {
+        // Big sphere minus small sphere at origin
+        let big = FieldNode::Sphere { radius: 5.0 };
+        let small = FieldNode::Sphere { radius: 2.0 };
+        let sub = FieldNode::Subtract(Box::new(big), Box::new(small));
+        // Origin: inside big (-5) but inside small (-2), so max(-5, 2) = 2 > 0 (outside)
+        assert!(sub.evaluate(&Point3::origin()) > 0.0);
+        // On surface of small sphere (just outside): inside big, outside small
+        assert!(sub.evaluate(&Point3::new(2.5, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn subtract_is_not_commutative() {
+        let a = FieldNode::Sphere { radius: 5.0 };
+        let b = FieldNode::Sphere { radius: 2.0 };
+        let sub_ab = FieldNode::Subtract(Box::new(a.clone()), Box::new(b.clone()));
+        let sub_ba = FieldNode::Subtract(Box::new(b), Box::new(a));
+        let p = Point3::new(3.0, 0.0, 0.0);
+        // a-b at (3,0,0): max(-2, 2) = 2... wait let me recalculate.
+        // a = sphere(5): eval at (3,0,0) = 3-5 = -2
+        // b = sphere(2): eval at (3,0,0) = 3-2 = 1
+        // a-b: max(-2, -1) = -1 (inside)
+        // b-a: max(1, 2) = 2 (outside)
+        assert!(sub_ab.evaluate(&p) < 0.0);
+        assert!(sub_ba.evaluate(&p) > 0.0);
+    }
+
+    // ── Intersect ───────────────────────────────────────────────────
+
+    #[test]
+    fn intersect_requires_both_inside() {
+        let a = FieldNode::Sphere { radius: 5.0 };
+        let b = FieldNode::Sphere { radius: 2.0 };
+        let inter = FieldNode::Intersect(Box::new(a), Box::new(b));
+        // At origin: max(-5, -2) = -2 (inside both)
+        assert_abs_diff_eq!(inter.evaluate(&Point3::origin()), -2.0, epsilon = EPS);
+        // At (3,0,0): max(-2, 1) = 1 (outside small sphere)
+        assert!(inter.evaluate(&Point3::new(3.0, 0.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn intersect_is_commutative() {
+        let a = FieldNode::Sphere { radius: 5.0 };
+        let b = FieldNode::Sphere { radius: 2.0 };
+        let i1 = FieldNode::Intersect(Box::new(a.clone()), Box::new(b.clone()));
+        let i2 = FieldNode::Intersect(Box::new(b), Box::new(a));
+        let p = Point3::new(1.0, 1.0, 0.0);
+        assert_abs_diff_eq!(i1.evaluate(&p), i2.evaluate(&p), epsilon = EPS);
+    }
+
+    // ── Smooth Union ────────────────────────────────────────────────
+
+    #[test]
+    fn smooth_union_adds_material_in_blend_region() {
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let k = 1.0;
+        let su = FieldNode::SmoothUnion(Box::new(a.clone()), Box::new(b.clone()), k);
+        let sharp = FieldNode::Union(Box::new(a), Box::new(b));
+        // In the blend region between the two spheres, smooth union should
+        // produce a smaller (more negative or less positive) value than sharp
+        let p = Point3::new(1.5, 0.0, 0.0);
+        assert!(su.evaluate(&p) <= sharp.evaluate(&p) + EPS);
+    }
+
+    #[test]
+    fn smooth_union_far_from_blend_matches_sharp() {
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(10.0, 0.0, 0.0),
+        );
+        let su = FieldNode::SmoothUnion(Box::new(a.clone()), Box::new(b.clone()), 0.5);
+        let sharp = FieldNode::Union(Box::new(a), Box::new(b));
+        // Far from blend region: should be nearly identical
+        let p = Point3::origin();
+        assert_abs_diff_eq!(su.evaluate(&p), sharp.evaluate(&p), epsilon = 1e-6);
+    }
+
+    #[test]
+    fn smooth_union_max_correction_is_k_over_4() {
+        // When a ≈ b, correction is at most k/4
+        let a = FieldNode::Sphere { radius: 3.0 };
+        let b = FieldNode::Sphere { radius: 3.0 }; // identical
+        let k = 2.0;
+        let su = FieldNode::SmoothUnion(Box::new(a.clone()), Box::new(b.clone()), k);
+        let sharp = FieldNode::Union(Box::new(a), Box::new(b));
+        let p = Point3::origin();
+        // sharp = -3, smooth should be -3 - k/4 = -3.5
+        let diff = sharp.evaluate(&p) - su.evaluate(&p);
+        assert!(diff >= -EPS, "smooth union should not exceed sharp union");
+        assert!(diff <= k / 4.0 + EPS, "correction should be at most k/4");
+    }
+
+    // ── Smooth Subtract ─────────────────────────────────────────────
+
+    #[test]
+    fn smooth_subtract_removes_with_blend() {
+        let big = FieldNode::Sphere { radius: 5.0 };
+        let small = FieldNode::Sphere { radius: 2.0 };
+        let ss = FieldNode::SmoothSubtract(Box::new(big), Box::new(small), 1.0);
+        // Origin: big is deep inside (-5), small is deep inside (-2).
+        // Sharp subtract: max(-5, 2) = 2. Smooth should be close.
+        assert!(ss.evaluate(&Point3::origin()) > 0.0);
+        // Far from subtraction zone: should still be inside
+        assert!(ss.evaluate(&Point3::new(4.0, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn smooth_subtract_degenerates_to_sharp_when_far() {
+        let big = FieldNode::Sphere { radius: 5.0 };
+        let small = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(0.0, 0.0, 0.0),
+        );
+        let k = 0.1;
+        let ss = FieldNode::SmoothSubtract(Box::new(big.clone()), Box::new(small.clone()), k);
+        let sharp = FieldNode::Subtract(Box::new(big), Box::new(small));
+        // Far from blend region
+        let p = Point3::new(4.0, 0.0, 0.0);
+        assert_abs_diff_eq!(ss.evaluate(&p), sharp.evaluate(&p), epsilon = 1e-3);
+    }
+
+    // ── Smooth Intersect ────────────────────────────────────────────
+
+    #[test]
+    fn smooth_intersect_removes_material_in_blend() {
+        let a = FieldNode::Sphere { radius: 3.0 };
+        let b = FieldNode::Sphere { radius: 3.0 };
+        let k = 2.0;
+        let si = FieldNode::SmoothIntersect(Box::new(a.clone()), Box::new(b.clone()), k);
+        let sharp = FieldNode::Intersect(Box::new(a), Box::new(b));
+        // Smooth intersect removes material: field value should be ≥ sharp
+        let p = Point3::origin();
+        assert!(si.evaluate(&p) >= sharp.evaluate(&p) - EPS);
+    }
+
+    #[test]
+    fn smooth_intersect_matches_sharp_when_far() {
+        let a = FieldNode::Sphere { radius: 5.0 };
+        let b = FieldNode::Cuboid {
+            half_extents: Vector3::new(2.0, 2.0, 2.0),
+        };
+        let k = 0.1;
+        let si = FieldNode::SmoothIntersect(Box::new(a.clone()), Box::new(b.clone()), k);
+        let sharp = FieldNode::Intersect(Box::new(a), Box::new(b));
+        // Deep inside intersection
+        let p = Point3::origin();
+        assert_abs_diff_eq!(si.evaluate(&p), sharp.evaluate(&p), epsilon = 0.1);
+    }
+
+    // ── Smooth Union All ────────────────────────────────────────────
+
+    #[test]
+    fn smooth_union_all_single_element() {
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let sua = FieldNode::SmoothUnionAll(vec![a.clone()], 1.0);
+        let p = Point3::origin();
+        assert_abs_diff_eq!(sua.evaluate(&p), a.evaluate(&p), epsilon = EPS);
+    }
+
+    #[test]
+    fn smooth_union_all_is_order_independent() {
+        let sa = FieldNode::Sphere { radius: 2.0 };
+        let sb = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let sc = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(0.0, 3.0, 0.0),
+        );
+        let blend = 1.0;
+        let abc = FieldNode::SmoothUnionAll(vec![sa.clone(), sb.clone(), sc.clone()], blend);
+        let bca = FieldNode::SmoothUnionAll(vec![sb.clone(), sc.clone(), sa.clone()], blend);
+        let cab = FieldNode::SmoothUnionAll(vec![sc, sa, sb], blend);
+        let pt = Point3::new(1.0, 1.0, 0.0);
+        assert_abs_diff_eq!(abc.evaluate(&pt), bca.evaluate(&pt), epsilon = EPS);
+        assert_abs_diff_eq!(abc.evaluate(&pt), cab.evaluate(&pt), epsilon = EPS);
+    }
+
+    #[test]
+    fn smooth_union_all_adds_material() {
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let k = 1.0;
+        let sua = FieldNode::SmoothUnionAll(vec![a.clone(), b.clone()], k);
+        let sharp = FieldNode::Union(Box::new(a), Box::new(b));
+        let p = Point3::new(1.5, 0.0, 0.0);
+        assert!(sua.evaluate(&p) <= sharp.evaluate(&p) + EPS);
+    }
+
+    // ── Translate ───────────────────────────────────────────────────
+
+    #[test]
+    fn translate_moves_shape() {
+        let s = FieldNode::Sphere { radius: 1.0 };
+        let t = FieldNode::Translate(Box::new(s), Vector3::new(5.0, 0.0, 0.0));
+        // Center of translated sphere is at (5, 0, 0)
+        assert_abs_diff_eq!(t.evaluate(&Point3::new(5.0, 0.0, 0.0)), -1.0, epsilon = EPS);
+        // Origin should be 4 units from surface
+        assert_abs_diff_eq!(t.evaluate(&Point3::origin()), 4.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn translate_preserves_sdf() {
+        let s = FieldNode::Sphere { radius: 2.0 };
+        let t = FieldNode::Translate(Box::new(s), Vector3::new(3.0, 4.0, 0.0));
+        // Distance from origin to center (3,4,0) is 5. SDF = 5 - 2 = 3.
+        assert_abs_diff_eq!(t.evaluate(&Point3::origin()), 3.0, epsilon = EPS);
+    }
+
+    // ── Rotate ──────────────────────────────────────────────────────
+
+    #[test]
+    fn rotate_90_degrees_around_z() {
+        // Cuboid at origin, 1x2x1 half-extents. Rotate 90° around Z.
+        let c = FieldNode::Cuboid {
+            half_extents: Vector3::new(1.0, 2.0, 1.0),
+        };
+        let rot = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI / 2.0);
+        let r = FieldNode::Rotate(Box::new(c), rot);
+        // After 90° rotation: half_extents become (2, 1, 1) in world space.
+        // Point (1.5, 0, 0): was outside x-extent (1.0), now inside rotated x-extent (2.0)
+        assert!(r.evaluate(&Point3::new(1.5, 0.0, 0.0)) < 0.0);
+        // Point (0, 1.5, 0): was inside y-extent (2.0), now outside rotated y-extent (1.0)
+        assert!(r.evaluate(&Point3::new(0.0, 1.5, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn rotate_preserves_sphere() {
+        // Sphere is rotationally symmetric
+        let s = FieldNode::Sphere { radius: 3.0 };
+        let rot = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 1.234);
+        let r = FieldNode::Rotate(Box::new(s.clone()), rot);
+        let test_points = [
+            Point3::origin(),
+            Point3::new(3.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 1.0),
+            Point3::new(5.0, 0.0, 0.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(r.evaluate(p), s.evaluate(p), epsilon = EPS);
+        }
+    }
+
+    // ── Scale Uniform ───────────────────────────────────────────────
+
+    #[test]
+    fn scale_doubles_size() {
+        let s = FieldNode::Sphere { radius: 1.0 };
+        let scaled = FieldNode::ScaleUniform(Box::new(s), 2.0);
+        // Effective radius is 2.0
+        assert_abs_diff_eq!(scaled.evaluate(&Point3::origin()), -2.0, epsilon = EPS);
+        assert_abs_diff_eq!(
+            scaled.evaluate(&Point3::new(2.0, 0.0, 0.0)),
+            0.0,
+            epsilon = EPS
+        );
+        assert_abs_diff_eq!(
+            scaled.evaluate(&Point3::new(3.0, 0.0, 0.0)),
+            1.0,
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn scale_preserves_sdf_property() {
+        let c = FieldNode::Cuboid {
+            half_extents: Vector3::new(1.0, 1.0, 1.0),
+        };
+        let scaled = FieldNode::ScaleUniform(Box::new(c), 3.0);
+        // Effective half-extents are (3, 3, 3)
+        assert_abs_diff_eq!(scaled.evaluate(&Point3::origin()), -3.0, epsilon = EPS);
+        assert_abs_diff_eq!(
+            scaled.evaluate(&Point3::new(3.0, 0.0, 0.0)),
+            0.0,
+            epsilon = EPS
+        );
+    }
+
+    // ── Mirror ──────────────────────────────────────────────────────
+
+    #[test]
+    fn mirror_x_reflects_across_yz_plane() {
+        // Sphere at (3, 0, 0), mirrored across YZ plane
+        let s = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let m = FieldNode::Mirror(Box::new(s), Vector3::new(1.0, 0.0, 0.0));
+        // Point at (3, 0, 0): positive side, should be inside sphere center
+        assert_abs_diff_eq!(m.evaluate(&Point3::new(3.0, 0.0, 0.0)), -1.0, epsilon = EPS);
+        // Point at (-3, 0, 0): reflected to (3, 0, 0), should also be inside
+        assert_abs_diff_eq!(
+            m.evaluate(&Point3::new(-3.0, 0.0, 0.0)),
+            -1.0,
+            epsilon = EPS
+        );
+        // Origin: reflected to origin, which is 2 units from sphere center
+        assert_abs_diff_eq!(m.evaluate(&Point3::origin()), 2.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn mirror_positive_side_unchanged() {
+        let s = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let m = FieldNode::Mirror(Box::new(s.clone()), Vector3::new(1.0, 0.0, 0.0));
+        // Points on the positive x side should evaluate identically to the original
+        let positive_points = [
+            Point3::new(3.0, 0.0, 0.0),
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(2.0, 1.0, 0.0),
+        ];
+        for p in &positive_points {
+            assert_abs_diff_eq!(m.evaluate(p), s.evaluate(p), epsilon = EPS);
+        }
+    }
+
+    // ── Composed trees ──────────────────────────────────────────────
+
+    #[test]
+    fn union_of_translated_spheres() {
+        let a = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(-2.0, 0.0, 0.0),
+        );
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(2.0, 0.0, 0.0),
+        );
+        let u = FieldNode::Union(Box::new(a), Box::new(b));
+        assert!(u.evaluate(&Point3::new(-2.0, 0.0, 0.0)) < 0.0);
+        assert!(u.evaluate(&Point3::new(2.0, 0.0, 0.0)) < 0.0);
+        assert!(u.evaluate(&Point3::origin()) > 0.0);
+    }
+
+    #[test]
+    fn subtract_then_translate() {
+        let big = FieldNode::Sphere { radius: 5.0 };
+        let hole = FieldNode::Sphere { radius: 2.0 };
+        let hollowed = FieldNode::Subtract(Box::new(big), Box::new(hole));
+        let moved = FieldNode::Translate(Box::new(hollowed), Vector3::new(10.0, 0.0, 0.0));
+        // Center of moved hollow sphere is at (10, 0, 0) — hole is there
+        assert!(moved.evaluate(&Point3::new(10.0, 0.0, 0.0)) > 0.0);
+        // Shell region
+        assert!(moved.evaluate(&Point3::new(13.0, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn rotate_then_scale() {
+        let c = FieldNode::Cuboid {
+            half_extents: Vector3::new(1.0, 2.0, 1.0),
+        };
+        let rot = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI / 2.0);
+        let rotated = FieldNode::Rotate(Box::new(c), rot);
+        let scaled = FieldNode::ScaleUniform(Box::new(rotated), 2.0);
+        // Original: 1x2x1. After 90° Z rotation: 2x1x1. After 2x scale: 4x2x2.
+        assert!(scaled.evaluate(&Point3::new(3.5, 0.0, 0.0)) < 0.0);
+        assert!(scaled.evaluate(&Point3::new(4.5, 0.0, 0.0)) > 0.0);
+        assert!(scaled.evaluate(&Point3::new(0.0, 1.5, 0.0)) < 0.0);
+        assert!(scaled.evaluate(&Point3::new(0.0, 2.5, 0.0)) > 0.0);
     }
 }

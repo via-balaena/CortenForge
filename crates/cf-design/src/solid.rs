@@ -8,7 +8,7 @@
 //! (expression tree today, B-Rep in the future — see `CF_DESIGN_SPEC` §8).
 
 use cf_geometry::Aabb;
-use nalgebra::{Point3, Vector3};
+use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 use crate::field_node::FieldNode;
 
@@ -212,6 +212,186 @@ impl Solid {
         }
     }
 
+    // ── Boolean operations ────────────────────────────────────────────
+
+    /// Union of two solids: material where either solid exists.
+    ///
+    /// `min(self, other)`. Preserves SDF lower-bound property.
+    #[must_use]
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            node: FieldNode::Union(Box::new(self.node), Box::new(other.node)),
+        }
+    }
+
+    /// Subtract `other` from `self`: material where `self` exists but `other`
+    /// does not.
+    ///
+    /// `max(self, -other)`.
+    #[must_use]
+    pub fn subtract(self, other: Self) -> Self {
+        Self {
+            node: FieldNode::Subtract(Box::new(self.node), Box::new(other.node)),
+        }
+    }
+
+    /// Intersection of two solids: material where both solids exist.
+    ///
+    /// `max(self, other)`. Preserves SDF lower-bound property.
+    #[must_use]
+    pub fn intersect(self, other: Self) -> Self {
+        Self {
+            node: FieldNode::Intersect(Box::new(self.node), Box::new(other.node)),
+        }
+    }
+
+    /// Smooth union — blends two solids with blend radius `k`.
+    ///
+    /// `k = 0` approaches sharp union. Larger `k` produces a wider organic
+    /// fillet. The blend region adds material (field value decreases).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` is not positive and finite.
+    #[must_use]
+    pub fn smooth_union(self, other: Self, k: f64) -> Self {
+        assert!(
+            k > 0.0 && k.is_finite(),
+            "smooth_union blend radius k must be positive and finite, got {k}"
+        );
+        Self {
+            node: FieldNode::SmoothUnion(Box::new(self.node), Box::new(other.node), k),
+        }
+    }
+
+    /// Smooth subtraction — smoothly removes `other` from `self` with blend
+    /// radius `k`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` is not positive and finite.
+    #[must_use]
+    pub fn smooth_subtract(self, other: Self, k: f64) -> Self {
+        assert!(
+            k > 0.0 && k.is_finite(),
+            "smooth_subtract blend radius k must be positive and finite, got {k}"
+        );
+        Self {
+            node: FieldNode::SmoothSubtract(Box::new(self.node), Box::new(other.node), k),
+        }
+    }
+
+    /// Smooth intersection — smoothly intersects two solids with blend
+    /// radius `k`. Removes material in the blend region.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` is not positive and finite.
+    #[must_use]
+    pub fn smooth_intersect(self, other: Self, k: f64) -> Self {
+        assert!(
+            k > 0.0 && k.is_finite(),
+            "smooth_intersect blend radius k must be positive and finite, got {k}"
+        );
+        Self {
+            node: FieldNode::SmoothIntersect(Box::new(self.node), Box::new(other.node), k),
+        }
+    }
+
+    /// Symmetric n-ary smooth union — blends multiple solids with blend
+    /// radius `k`. Order-independent (unlike chaining binary `smooth_union`).
+    ///
+    /// Uses log-sum-exp internally for symmetric blending.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `solids` is empty or `k` is not positive and finite.
+    #[must_use]
+    pub fn smooth_union_all(solids: Vec<Self>, k: f64) -> Self {
+        assert!(
+            !solids.is_empty(),
+            "smooth_union_all requires at least one solid"
+        );
+        assert!(
+            k > 0.0 && k.is_finite(),
+            "smooth_union_all blend radius k must be positive and finite, got {k}"
+        );
+        let nodes: Vec<FieldNode> = solids.into_iter().map(|s| s.node).collect();
+        Self {
+            node: FieldNode::SmoothUnionAll(nodes, k),
+        }
+    }
+
+    // ── Transforms ───────────────────────────────────────────────────
+
+    /// Translate (move) the solid by the given offset.
+    ///
+    /// Preserves SDF property.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any component of `offset` is non-finite.
+    #[must_use]
+    pub fn translate(self, offset: Vector3<f64>) -> Self {
+        assert!(
+            offset.iter().all(|v| v.is_finite()),
+            "translate offset must be finite, got {offset:?}"
+        );
+        Self {
+            node: FieldNode::Translate(Box::new(self.node), offset),
+        }
+    }
+
+    /// Rotate the solid by the given unit quaternion.
+    ///
+    /// Preserves SDF property.
+    #[must_use]
+    pub fn rotate(self, rotation: UnitQuaternion<f64>) -> Self {
+        Self {
+            node: FieldNode::Rotate(Box::new(self.node), rotation),
+        }
+    }
+
+    /// Uniformly scale the solid by the given factor.
+    ///
+    /// Preserves SDF property. Factor must be positive.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `factor` is not positive and finite.
+    #[must_use]
+    pub fn scale_uniform(self, factor: f64) -> Self {
+        assert!(
+            factor > 0.0 && factor.is_finite(),
+            "scale_uniform factor must be positive and finite, got {factor}"
+        );
+        Self {
+            node: FieldNode::ScaleUniform(Box::new(self.node), factor),
+        }
+    }
+
+    /// Mirror the solid across a plane through the origin with the given
+    /// normal.
+    ///
+    /// The geometry on the positive side of the plane is reflected to the
+    /// negative side.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `normal` is zero-length or non-finite.
+    #[must_use]
+    pub fn mirror(self, normal: Vector3<f64>) -> Self {
+        let len = normal.norm();
+        assert!(
+            len > 1e-12 && normal.iter().all(|v| v.is_finite()),
+            "mirror normal must be non-zero and finite, got {normal:?}"
+        );
+        let unit_normal = normal / len;
+        Self {
+            node: FieldNode::Mirror(Box::new(self.node), unit_normal),
+        }
+    }
+
     // ── Queries ──────────────────────────────────────────────────────
 
     /// Evaluate the field at a point.
@@ -240,6 +420,7 @@ impl Solid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
 
     // ── Constructor validation ───────────────────────────────────────
 
@@ -309,6 +490,58 @@ mod tests {
         drop(Solid::plane(Vector3::zeros(), 0.0));
     }
 
+    // ── Boolean validation ──────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn smooth_union_rejects_zero_k() {
+        let a = Solid::sphere(1.0);
+        let b = Solid::sphere(1.0);
+        drop(a.smooth_union(b, 0.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn smooth_subtract_rejects_negative_k() {
+        let a = Solid::sphere(1.0);
+        let b = Solid::sphere(1.0);
+        drop(a.smooth_subtract(b, -1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn smooth_intersect_rejects_nan_k() {
+        let a = Solid::sphere(1.0);
+        let b = Solid::sphere(1.0);
+        drop(a.smooth_intersect(b, f64::NAN));
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one solid")]
+    fn smooth_union_all_rejects_empty() {
+        drop(Solid::smooth_union_all(vec![], 1.0));
+    }
+
+    // ── Transform validation ────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn scale_uniform_rejects_zero() {
+        drop(Solid::sphere(1.0).scale_uniform(0.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn scale_uniform_rejects_negative() {
+        drop(Solid::sphere(1.0).scale_uniform(-1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "non-zero and finite")]
+    fn mirror_rejects_zero_normal() {
+        drop(Solid::sphere(1.0).mirror(Vector3::zeros()));
+    }
+
     // ── Evaluation through Solid ─────────────────────────────────────
 
     #[test]
@@ -362,5 +595,154 @@ mod tests {
                 "Capsule(r=2, h=0) should match Sphere(r=2) at {p:?}"
             );
         }
+    }
+
+    // ── Boolean builder methods ──────────────────────────────────────
+
+    #[test]
+    fn solid_union_method() {
+        let a = Solid::sphere(2.0);
+        let b = Solid::sphere(3.0);
+        let u = a.union(b);
+        assert!((u.evaluate(&Point3::origin()) - (-3.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solid_subtract_method() {
+        let big = Solid::sphere(5.0);
+        let small = Solid::sphere(2.0);
+        let sub = big.subtract(small);
+        // Origin: max(-5, 2) = 2
+        assert!(sub.evaluate(&Point3::origin()) > 0.0);
+        // Shell region: max(3-5, -(3-2)) = max(-2, -1) = -1
+        assert!(sub.evaluate(&Point3::new(3.0, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn solid_intersect_method() {
+        let a = Solid::sphere(5.0);
+        let b = Solid::sphere(2.0);
+        let inter = a.intersect(b);
+        assert!((inter.evaluate(&Point3::origin()) - (-2.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solid_smooth_union_method() {
+        let a = Solid::sphere(2.0);
+        let b = Solid::sphere(2.0).translate(Vector3::new(3.0, 0.0, 0.0));
+        let k = 1.0;
+        let su = a.smooth_union(b, k);
+        // In the blend region, smooth union adds material
+        let p = Point3::new(1.5, 0.0, 0.0);
+        // Should be more negative (more inside) than the sharper of the two
+        assert!(su.evaluate(&p) < 1.0);
+    }
+
+    #[test]
+    fn solid_smooth_union_all_method() {
+        let solids = vec![
+            Solid::sphere(2.0),
+            Solid::sphere(2.0).translate(Vector3::new(3.0, 0.0, 0.0)),
+            Solid::sphere(2.0).translate(Vector3::new(0.0, 3.0, 0.0)),
+        ];
+        let sua = Solid::smooth_union_all(solids, 1.0);
+        // Should be inside near each sphere center
+        assert!(sua.evaluate(&Point3::origin()) < 0.0);
+        assert!(sua.evaluate(&Point3::new(3.0, 0.0, 0.0)) < 0.0);
+        assert!(sua.evaluate(&Point3::new(0.0, 3.0, 0.0)) < 0.0);
+    }
+
+    // ── Transform builder methods ────────────────────────────────────
+
+    #[test]
+    fn solid_translate_method() {
+        let s = Solid::sphere(1.0).translate(Vector3::new(5.0, 0.0, 0.0));
+        assert!((s.evaluate(&Point3::new(5.0, 0.0, 0.0)) - (-1.0)).abs() < 1e-10);
+        assert!((s.evaluate(&Point3::origin()) - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solid_rotate_method() {
+        let c = Solid::cuboid(Vector3::new(1.0, 2.0, 1.0));
+        let rot = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI / 2.0);
+        let r = c.rotate(rot);
+        // After 90° Z rotation: x-extent becomes 2, y-extent becomes 1
+        assert!(r.evaluate(&Point3::new(1.5, 0.0, 0.0)) < 0.0);
+        assert!(r.evaluate(&Point3::new(0.0, 1.5, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn solid_scale_uniform_method() {
+        let s = Solid::sphere(1.0).scale_uniform(3.0);
+        assert!((s.evaluate(&Point3::origin()) - (-3.0)).abs() < 1e-10);
+        assert!((s.evaluate(&Point3::new(3.0, 0.0, 0.0))).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solid_mirror_method() {
+        let s = Solid::sphere(1.0).translate(Vector3::new(3.0, 0.0, 0.0));
+        let m = s.mirror(Vector3::x());
+        // Mirrored: sphere at both (3,0,0) and (-3,0,0)
+        assert!(m.evaluate(&Point3::new(3.0, 0.0, 0.0)) < 0.0);
+        assert!(m.evaluate(&Point3::new(-3.0, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn solid_mirror_normalizes() {
+        // Non-unit normal should still work correctly
+        let s = Solid::sphere(1.0).translate(Vector3::new(3.0, 0.0, 0.0));
+        let m = s.mirror(Vector3::new(5.0, 0.0, 0.0)); // unnormalized
+        assert!(m.evaluate(&Point3::new(-3.0, 0.0, 0.0)) < 0.0);
+    }
+
+    // ── Method chaining ──────────────────────────────────────────────
+
+    #[test]
+    fn solid_method_chaining() {
+        // Build a hollowed, translated, scaled sphere.
+        // Evaluation chain: scale(translate(subtract(sphere(5), sphere(3)), (10,0,0)), 2)
+        // scale_uniform(2) evaluates f(p/2)*2, so effective center is (20,0,0),
+        // effective outer radius = 10, effective inner radius = 6.
+        let part = Solid::sphere(5.0)
+            .subtract(Solid::sphere(3.0))
+            .translate(Vector3::new(10.0, 0.0, 0.0))
+            .scale_uniform(2.0);
+        // Center at (20, 0, 0) — inside the hole (inner radius 6)
+        assert!(part.evaluate(&Point3::new(20.0, 0.0, 0.0)) > 0.0);
+        // On outer surface at x = 30 (center 20 + outer radius 10)
+        assert!((part.evaluate(&Point3::new(30.0, 0.0, 0.0))).abs() < 1e-6);
+        // Inside the shell at x = 28 (8 from center, between inner 6 and outer 10)
+        assert!(part.evaluate(&Point3::new(28.0, 0.0, 0.0)) < 0.0);
+    }
+
+    #[test]
+    fn solid_interval_for_union() {
+        let u = Solid::sphere(2.0).union(Solid::sphere(3.0));
+        let aabb = Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5));
+        let (lo, hi) = u.evaluate_interval(&aabb);
+        // Both spheres fully contain the box, interval should be negative
+        assert!(hi < 0.0);
+        assert!(lo < hi);
+    }
+
+    #[test]
+    fn solid_interval_for_translate() {
+        let s = Solid::sphere(2.0).translate(Vector3::new(5.0, 0.0, 0.0));
+        // Box at origin: fully outside the translated sphere
+        let aabb = Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5));
+        let (lo, _hi) = s.evaluate_interval(&aabb);
+        assert!(
+            lo > 0.0,
+            "Box at origin should be fully outside sphere at x=5"
+        );
+    }
+
+    #[test]
+    fn solid_interval_for_scale() {
+        let s = Solid::sphere(1.0).scale_uniform(5.0);
+        // Small box at origin: fully inside the scaled sphere
+        let aabb = Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5));
+        let (_lo, hi) = s.evaluate_interval(&aabb);
+        assert!(hi < 0.0, "Box at origin should be fully inside sphere(r=5)");
     }
 }
