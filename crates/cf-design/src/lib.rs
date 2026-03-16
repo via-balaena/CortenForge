@@ -27,9 +27,11 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod bounds;
 mod evaluate;
 pub(crate) mod field_node;
 mod interval;
+mod mesher;
 mod solid;
 
 pub use solid::Solid;

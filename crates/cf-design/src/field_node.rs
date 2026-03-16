@@ -149,9 +149,8 @@ pub enum FieldNode {
     UserFn {
         eval: UserEvalFn,
         interval: Option<UserIntervalFn>,
-        /// Bounding box of the geometry — used by the mesher (Session 5+)
-        /// to define the evaluation domain.
-        #[allow(dead_code)]
+        /// Bounding box of the geometry — used by the mesher to define
+        /// the evaluation domain.
         bounds: Aabb,
     },
 }

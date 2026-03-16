@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use cf_geometry::Aabb;
+use cf_geometry::{Aabb, IndexedMesh};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn};
@@ -606,6 +606,40 @@ impl Solid {
     }
 
     // ── Queries ──────────────────────────────────────────────────────
+
+    /// Compute the axis-aligned bounding box of the geometry.
+    ///
+    /// Returns `None` for infinite geometry (e.g., a bare `Plane`).
+    #[must_use]
+    pub fn bounds(&self) -> Option<Aabb> {
+        self.node.bounds()
+    }
+
+    /// Extract a triangle mesh at the given tolerance (voxel size).
+    ///
+    /// Smaller tolerance produces a finer mesh with more triangles.
+    /// Returns an empty mesh for infinite geometry (bare `Plane`).
+    ///
+    /// The mesh is watertight, manifold, and uses CCW winding (outward
+    /// normals) for all finite primitives and their compositions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tolerance` is not positive and finite.
+    #[must_use]
+    pub fn mesh(&self, tolerance: f64) -> IndexedMesh {
+        assert!(
+            tolerance > 0.0 && tolerance.is_finite(),
+            "mesh tolerance must be positive and finite, got {tolerance}"
+        );
+        let Some(bounds) = self.node.bounds() else {
+            return IndexedMesh::new();
+        };
+        // Expand bounds by one cell to avoid surface clipping at edges
+        let expanded = bounds.expanded(tolerance);
+        let (mesh, _stats) = crate::mesher::mesh_field(&self.node, &expanded, tolerance);
+        mesh
+    }
 
     /// Evaluate the field at a point.
     ///
