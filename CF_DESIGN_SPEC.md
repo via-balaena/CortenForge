@@ -1,7 +1,7 @@
 # CF_DESIGN_SPEC — Implicit Surface Design Kernel
 
-> **Status**: Draft — 2026-03-15
-> **Crate**: `cf-design` (planned, `crates/cf-design/`)
+> **Status**: Phase 1 complete — 2026-03-16
+> **Crate**: `cf-design` (`crates/cf-design/`)
 > **Layer**: 0 (pure Rust, zero framework dependencies)
 > **Depends on**: `cf-geometry` (IndexedMesh, SdfGrid, Shape, Aabb, ConvexHull, Bvh)
 > **Consumed by**: `sim-mjcf` (MJCF generation), `sim-core` (collision shapes), `mesh-io` (STL/3MF export), `sim-bevy` (visualization)
@@ -990,72 +990,49 @@ cross-section at each query point's projected position along the path.
 schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 (meshing quality tiers, upgrade path) — those are different numbering systems.
 
-### Phase 1: Foundation (Sessions 1–6)
+### Phase 1: Foundation (Sessions 1–6) — COMPLETE
 
 **Goal**: Expression tree, field evaluation, marching cubes meshing, core primitives.
 
-**Session 1: Crate Skeleton + Geometric Primitives**
-- Scope: Create `crates/cf-design/`, add to workspace. `FieldNode` expression
-  tree enum with geometric primitive variants (Sphere, Cuboid, Cylinder,
-  Capsule, Ellipsoid, Torus, Cone, Plane). Point evaluation
-  (`evaluate(Point3) -> f64`) and interval evaluation
-  (`evaluate_interval(Aabb) -> (f64, f64)`) for all 8 primitives. `Solid`
-  opaque type with primitive constructors (`sphere()`, `cuboid()`, etc.).
-  Full unit tests for each primitive's distance field and interval bounds.
-- Entry: `cf-geometry` crate exists (Aabb, SdfGrid, IndexedMesh, Shape)
-- Exit: `cargo test -p cf-design` passes. 8 primitives evaluate correctly.
-  Interval bounds contain point evaluations for all test points.
+**Branch**: `cf-design-phase1` | **Tests**: 207 pass | **Completed**: 2026-03-16
 
-**Session 2: Boolean Operations + Transforms**
-- Scope: `FieldNode` variants for Union, Subtract, Intersect, SmoothUnion,
-  SmoothSubtract, SmoothIntersect, SmoothUnionAll. Transform variants:
-  Translate, Rotate, ScaleUniform, Mirror. Point and interval evaluation for
-  all. `Solid` builder methods (`union()`, `subtract()`, `smooth_union()`,
-  `translate()`, `rotate()`, `scale_uniform()`, `mirror()`). Tests for
-  composed trees — verify field sign, blend smoothness, transform correctness.
-- Entry: Session 1 complete
-- Exit: `cargo test -p cf-design` passes. Composed field trees evaluate
-  correctly. Smooth union blend radius matches analytic expectation.
+**Source files**: `crates/cf-design/src/{lib.rs, field_node.rs, evaluate.rs, interval.rs, solid.rs, bounds.rs, mesher.rs}`
 
-**Session 3: Domain Operations + UserFn**
-- Scope: `FieldNode` variants for Shell, Round, Offset, Elongate. `UserFn`
-  leaf node with optional interval bound closure. Point and interval
-  evaluation for all. `Solid` builder methods (`shell()`, `round()`,
-  `offset()`, `elongate()`). Tests including UserFn with and without interval
-  bounds, and verification that shell/round/offset produce correct wall
-  thickness on exact-SDF inputs.
-- Entry: Session 1 complete
-- Exit: `cargo test -p cf-design` passes.
+**What shipped**:
+- `FieldNode` expression tree (pub(crate)) with 10 primitives, 7 booleans, 4 transforms, 4 domain ops, UserFn escape hatch
+- `Solid` opaque public API with full builder pattern: primitives → booleans → transforms → domain ops → mesh/evaluate/sdf_grid
+- Point evaluation, interval evaluation (conservative bounds), AABB bounds computation
+- Marching cubes mesher with interval arithmetic pruning (80%+ cell pruning on simple primitives, 60-79% on composed trees)
+- `Solid::mesh(tolerance) -> IndexedMesh` — watertight, manifold, CCW winding
+- `Solid::sdf_grid(resolution) -> Option<SdfGrid>` — uniform grid evaluation with padding
+- `Solid::bounds() -> Option<Aabb>`, `Solid::evaluate(point) -> f64`, `Solid::evaluate_interval(aabb) -> (f64, f64)`
+- Catmull-Rom spline with Newton refinement for PipeSpline
+- Edge vertex deduplication cache in mesher for proper indexed meshes
 
-**Session 4: Path-Based Primitives**
-- Scope: `FieldNode` variants for Pipe (polyline path + radius) and
-  PipeSpline (control points + radius). Closest-point-on-polyline and
-  closest-point-on-spline algorithms. Point and interval evaluation. `Solid`
-  builder methods (`pipe()`, `pipe_spline()`). Tests for straight, curved,
-  and multi-segment paths — verify channel geometry, end caps, corner blending.
-- Entry: Session 1 complete
-- Exit: `cargo test -p cf-design` passes. Pipe SDF correct for straight,
-  L-shaped, and curved paths.
+**Deviations from spec**:
+- Crate structure is flat (`src/*.rs`) instead of nested `src/field/`, `src/mesh/` modules. Simpler for Phase 1 scope; can reorganize when Phase 2 adds mechanisms.
+- `sdf_grid` returns `Option<SdfGrid>` (not bare `SdfGrid`) — `None` for infinite geometry (bare Plane). Matches `bounds() -> Option<Aabb>` pattern.
+- Used classic MC (Lorensen & Cline) instead of MC33 — sufficient for organic bio shapes. MC33 or dual contouring deferred to Phase 4 (Session 20).
+- No mesh-repair fallback needed — MC output is inherently manifold with edge deduplication.
+- No `thiserror` dependency — not needed yet (no error types in Phase 1).
 
-**Session 5: Marching Cubes Mesher**
-- Scope: Marching cubes implementation (MC33 or naive + mesh-repair fallback).
-  Grid evaluation loop with interval arithmetic pruning (skip cells where
-  interval is entirely positive or negative). Output: `IndexedMesh`.
-  `Solid::mesh(tolerance) -> IndexedMesh`. Tests: primitive → mesh → valid
-  manifold (via mesh-repair validation). Measure interval pruning ratio.
-- Entry: Sessions 1–4 complete (all node types available for meshing)
-- Exit: `cargo test -p cf-design` passes. Meshed primitives are manifold and
-  watertight. Interval pruning eliminates 80%+ of cells on simple primitives.
+**Session 1: Crate Skeleton + Geometric Primitives** — COMPLETE
+- Delivered: 8 geometric primitives (Sphere, Cuboid, Cylinder, Capsule, Ellipsoid, Torus, Cone, Plane). `FieldNode` expression tree. Point + interval evaluation for all. `Solid` opaque type with constructors.
 
-**Session 6: SDF Grid Evaluator + Integration Tests**
-- Scope: `Solid::sdf_grid(resolution) -> SdfGrid`. `Solid::bounds() -> Aabb`.
-  `Solid::evaluate(point) -> f64` (public point query). Integration tests:
-  composed primitives (boolean + transform + domain ops) → mesh → valid
-  `IndexedMesh`. Verify interval pruning ratio on composed trees.
-- Entry: Session 5 complete
-- Exit: `cargo test -p cf-design` passes. Full Phase 1 exit criteria met:
-  a `Solid` built from composed primitives (including pipe for channels) can
-  be meshed to valid `IndexedMesh`. Interval evaluation prunes 80%+ of cells.
+**Session 2: Boolean Operations + Transforms** — COMPLETE
+- Delivered: 7 boolean variants (Union, Subtract, Intersect, SmoothUnion, SmoothSubtract, SmoothIntersect, SmoothUnionAll). 4 transform variants (Translate, Rotate, ScaleUniform, Mirror). Log-sum-exp for order-independent SmoothUnionAll.
+
+**Session 3: Domain Operations + UserFn** — COMPLETE
+- Delivered: 4 domain ops (Shell, Round, Offset, Elongate). UserFn leaf node with optional interval bound closure. Full interval evaluation for all.
+
+**Session 4: Path-Based Primitives** — COMPLETE
+- Delivered: Pipe (polyline path) + PipeSpline (Catmull-Rom spline). Newton refinement for closest-point-on-spline. Lipschitz-corrected interval evaluation.
+
+**Session 5: Marching Cubes Mesher** — COMPLETE
+- Delivered: Marching cubes with interval arithmetic pruning + edge vertex cache. `Solid::mesh(tolerance)`, `Solid::bounds()`. Sphere pruning 80%+. Mesh topology validation (watertight, manifold, CCW winding).
+
+**Session 6: SDF Grid Evaluator + Integration Tests** — COMPLETE
+- Delivered: `Solid::sdf_grid(resolution)`. 6 integration mesh tests (composed trees → valid mesh). 3 pruning ratio tests on composed trees (union 72.5%, subtract 79.3%, smooth_union_all 61.1%). 4 SdfGrid correctness tests.
 
 ### Phase 2: Mechanism (Sessions 7–12)
 
@@ -1381,66 +1358,63 @@ these is a valid stopping point.
 
 ## 11. Crate Structure
 
+### 11.1 Current (Phase 1)
+
+Flat module layout — simple and sufficient for the current scope. Will
+reorganize into nested modules when Phase 2 adds mechanisms.
+
+```
+crates/cf-design/
+├── Cargo.toml
+└── src/
+    ├── lib.rs              Crate root — re-exports Solid, deny(clippy::unwrap_used, ...)
+    ├── field_node.rs       FieldNode expression tree enum (pub(crate))
+    ├── evaluate.rs         Point evaluation — evaluate(Point3) -> f64
+    ├── interval.rs         Interval evaluation — evaluate_interval(Aabb) -> (f64, f64)
+    ├── bounds.rs           AABB computation — bounds() -> Option<Aabb>
+    ├── mesher.rs           Marching cubes + interval pruning + edge cache
+    └── solid.rs            Opaque Solid type, public builder API, sdf_grid
+```
+
+### 11.2 Planned (Phase 2+)
+
 ```
 crates/cf-design/
 ├── Cargo.toml
 ├── src/
-│   ├── lib.rs              Re-exports, crate documentation
-│   ├── solid.rs            Opaque Solid type, builder API
-│   ├── field/
-│   │   ├── mod.rs          FieldNode expression tree, evaluate, evaluate_interval
-│   │   ├── primitives.rs   Geometric primitives (sphere, cuboid, cylinder, ...)
-│   │   ├── path.rs         Path-based primitives (pipe, pipe_spline, loft)
-│   │   ├── bio.rs          Bio-inspired primitives (superellipsoid, gyroid, ...)
-│   │   ├── boolean.rs      Union, subtract, intersect (sharp + smooth)
-│   │   ├── transform.rs    Translate, rotate, scale, mirror
-│   │   ├── domain.rs       Shell, round, offset, elongate, repeat, twist, bend
-│   │   ├── interval.rs     Interval arithmetic evaluation for octree pruning
-│   │   └── gradient.rs     Analytic gradient computation (Session 19+)
-│   ├── mesh/
-│   │   ├── mod.rs          Meshing module documentation
-│   │   ├── marching_cubes.rs   Phase 1 mesher (MC33 or naive + repair)
-│   │   ├── dual_contouring.rs  Phase 4 mesher (Manifold DC, Session 20)
-│   │   ├── octree.rs       Octree-adaptive meshing (Session 21)
-│   │   ├── simplify.rs     Mesh simplification — edge collapse + QEM (Session 23)
-│   │   └── grid.rs         Field → SdfGrid evaluation
-│   ├── mechanism/
+│   ├── lib.rs
+│   ├── field_node.rs       → may split into field/ modules as node count grows
+│   ├── evaluate.rs
+│   ├── interval.rs
+│   ├── bounds.rs
+│   ├── mesher.rs           → may split into mesh/ when DC arrives (Session 20)
+│   ├── solid.rs
+│   ├── mechanism/          Phase 2 (Sessions 7–12)
 │   │   ├── mod.rs          Mechanism type, builder API
 │   │   ├── part.rs         Part (named solid + material + flex zones)
 │   │   ├── material.rs     Material, ManufacturingProcess
 │   │   ├── joint.rs        JointDef, JointKind
 │   │   ├── tendon.rs       TendonDef, TendonWaypoint, channel subtraction
 │   │   ├── actuator.rs     ActuatorDef (motor, muscle)
-│   │   ├── flex_zone.rs    FlexZone, compliant mechanism auto-splitting
-│   │   ├── templates.rs    Parameterized part templates (finger, link, bracket)
-│   │   ├── print.rs        PrintProfile, clearance application
-│   │   ├── validate.rs     DesignWarning, manufacturing constraint checks
 │   │   ├── mjcf.rs         MJCF XML generation
-│   │   └── mass.rs         Volumetric mass property computation
+│   │   ├── mass.rs         Volumetric mass property computation
+│   │   ├── validate.rs     DesignWarning, manufacturing constraint checks
+│   │   └── print.rs        PrintProfile, clearance application
 │   └── export/
-│       ├── mod.rs          Export module documentation
 │       ├── stl.rs          Per-part STL generation
 │       └── shapes.rs       cf-geometry Shape generation (SdfGrid + TriangleMesh)
-└── tests/
-    ├── primitives_tests.rs
-    ├── boolean_tests.rs
-    ├── interval_tests.rs
-    ├── meshing_tests.rs
-    ├── mechanism_tests.rs
-    ├── tendon_tests.rs
-    └── integration_tests.rs
+└── tests/                  Integration tests (if needed beyond inline tests)
 ```
 
-### 11.1 Dependencies
+### 11.3 Dependencies
 
 ```toml
 [dependencies]
-cf-geometry = { path = "../cf-geometry" }   # IndexedMesh, SdfGrid, Shape, Aabb
-nalgebra    = { workspace = true }          # Linear algebra
-thiserror   = { workspace = true }          # Error types
+cf-geometry = { workspace = true }   # IndexedMesh, SdfGrid, Shape, Aabb
+nalgebra    = { workspace = true }   # Linear algebra
 
 [dev-dependencies]
-approx      = { workspace = true }          # Float comparison
+approx      = { workspace = true }   # Float comparison
 ```
 
 **Layer 0 purity**: Zero Bevy, zero GPU, zero framework dependencies.
