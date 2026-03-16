@@ -140,7 +140,8 @@ A headless training run uses `sim-core` directly. A visualization demo uses `CfS
 | Domain | Strategy | Rationale |
 |--------|----------|-----------|
 | **Mesh Processing** | Build | Core competency. 27 crates, A-grade. |
-| **Geometry** | Build + Truck | Curves/surfaces ourselves, BREP via truck |
+| **Design** | Build (cf-design) | Implicit surface kernel — code-first, AI-native mechanism design |
+| **Geometry** | Build (cf-geometry) | Shared geometric kernel — shapes, queries, acceleration structures |
 | **Sensors** | Build | Must own for sim/real parity |
 | **ML Pipeline** | Build + Burn | Types ourselves, Burn for tensors |
 | **Routing** | Build + pathfinding | Core algorithms ourselves, graph utils from crate |
@@ -165,14 +166,16 @@ COMPLETE (52+ crates):
 └── Simulation Domain (14 crates: 13 L0 + 1 L1)
 
 NEXT PHASE:
-├── surface-types      NURBS surfaces, patches
+├── cf-design          Implicit surface design kernel (AI-native mechanism design)
+│                      See CF_DESIGN_SPEC.md
 ├── PyO3 bindings      Python access to Layer 0
 └── cortenforge        Bevy SDK umbrella (CfSimPlugin, etc.)
 
 FUTURE:
-├── solid-types        BREP solids via truck
-├── constraint-solver  Assembly constraints
-└── Hardware bridges   ROS2, custom drivers
+├── B-Rep upgrade      Ship of Theseus swap of cf-design internals (if Fornjot matures)
+├── Differentiable     Gradient-based design optimization through simulation
+├── Hardware bridges   ROS2, custom drivers
+└── surface-types      NURBS surfaces, patches (if needed beyond implicit)
 ```
 
 ---
@@ -204,14 +207,14 @@ What we have: `ml-types`, `ml-dataset`, `ml-models`, `ml-training`. The primitiv
 
 What we need: Pipeline orchestration, model registry, A/B deployment infrastructure.
 
-### Siemens NX / Solid Edge
-What they have: Full parametric CAD, assembly constraints, simulation integration, 40 years of development.
+### Siemens NX / Solid Edge (+ Parasolid)
+What they have: Full parametric CAD, B-Rep kernel (Parasolid), assembly constraints, simulation integration, 40 years of development.
 
-What we have: Mesh processing, curves, basic BREP via truck.
+What we have: Shared geometric kernel (cf-geometry), implicit surface design kernel (cf-design), MuJoCo-aligned physics, mesh processing.
 
-What we need: Parametric history, constraint solver, assembly management.
+What we're building differently: Not B-Rep-first. Implicit surfaces for AI-native design of bio-inspired mechanisms. The design geometry IS the simulation collider IS the 3D-printable artifact. No export/import gap. See `CF_DESIGN_SPEC.md`.
 
-We're not trying to replace Siemens. We're building the foundation that could *interoperate* with it. Import STEP, manipulate, export. The industrial pipeline.
+B-Rep upgradability preserved via Ship of Theseus architecture — cf-design's `Solid` type is opaque, internals can be swapped to Fornjot B-Rep if/when needed.
 
 ### MuJoCo
 What they have: 15 years of physics research, soft contacts, implicit integration, GPU acceleration, massive adoption in RL research.
@@ -334,9 +337,11 @@ But there are milestones:
 - Same code runs in sim and on hardware
 
 ### Milestone 3: Full Pipeline
-- Design in CAD (external) → import STEP
-- Simulate in CortenForge
+- Design in CortenForge (cf-design) — AI or human writes mechanism code
+- Design geometry IS the simulation collider (zero export step)
+- Simulate in sim-core
 - Train policies in simulation
+- Export to STL/3MF for 3D printing / manufacturing
 - Deploy to hardware
 - Iterate
 
@@ -385,4 +390,4 @@ We're building something that will run on robots, in vehicles, in medical device
 
 *This document is the north star. When in doubt, check here.*
 
-*Last updated: 2026-02-12*
+*Last updated: 2026-03-15*
