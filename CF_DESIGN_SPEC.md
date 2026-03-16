@@ -982,103 +982,400 @@ cross-section at each query point's projected position along the path.
 
 ---
 
-## 10. Phased Roadmap
+## 10. Implementation Sessions
 
-### Phase 1: Foundation
+26 sessions across 5 phases. Each session is scoped to one conversation.
+
+**Terminology note**: "Phase" in this section refers to the implementation
+schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
+(meshing quality tiers, upgrade path) — those are different numbering systems.
+
+### Phase 1: Foundation (Sessions 1–6)
 
 **Goal**: Expression tree, field evaluation, marching cubes meshing, core primitives.
 
-- [ ] Crate skeleton (`crates/cf-design/`)
-- [ ] `FieldNode` expression tree (Section 8.3)
-- [ ] Point evaluation: `FieldNode::evaluate(Point3) -> f64`
-- [ ] Interval evaluation: `FieldNode::evaluate_interval(Aabb) -> (f64, f64)`
-- [ ] Geometric primitives (Section 9.1 — sphere, cuboid, cylinder, capsule, torus, cone, plane)
-- [ ] Path-based primitives (Section 9.2 — pipe, pipe_spline)
-- [ ] Boolean operations (union, subtract, intersect)
-- [ ] Smooth boolean operations (smooth_union, smooth_subtract, smooth_intersect, smooth_union_all)
-- [ ] Transform operations (translate, rotate, scale_uniform, mirror)
-- [ ] Domain operations (shell, round, offset, elongate)
-- [ ] `UserFn` leaf node for custom functions
-- [ ] Marching cubes mesher (MC33 or naive + repair) → `IndexedMesh`
-- [ ] SDF grid evaluator → `SdfGrid` (via `SdfGrid::from_fn`)
-- [ ] `Solid` opaque type with builder API wrapping `FieldNode`
-- [ ] `Material` type (density, Young's modulus, color, process)
-- [ ] Integration tests: primitive → mesh → valid IndexedMesh (manifold, watertight)
+**Session 1: Crate Skeleton + Geometric Primitives**
+- Scope: Create `crates/cf-design/`, add to workspace. `FieldNode` expression
+  tree enum with geometric primitive variants (Sphere, Cuboid, Cylinder,
+  Capsule, Ellipsoid, Torus, Cone, Plane). Point evaluation
+  (`evaluate(Point3) -> f64`) and interval evaluation
+  (`evaluate_interval(Aabb) -> (f64, f64)`) for all 8 primitives. `Solid`
+  opaque type with primitive constructors (`sphere()`, `cuboid()`, etc.).
+  Full unit tests for each primitive's distance field and interval bounds.
+- Entry: `cf-geometry` crate exists (Aabb, SdfGrid, IndexedMesh, Shape)
+- Exit: `cargo test -p cf-design` passes. 8 primitives evaluate correctly.
+  Interval bounds contain point evaluations for all test points.
 
-**Exit criteria**: A `Solid` can be built from composed primitives (including
-pipe for channels), meshed to `IndexedMesh`, and the mesh passes mesh-repair
-validation. Interval evaluation prunes 80%+ of grid cells during meshing.
+**Session 2: Boolean Operations + Transforms**
+- Scope: `FieldNode` variants for Union, Subtract, Intersect, SmoothUnion,
+  SmoothSubtract, SmoothIntersect, SmoothUnionAll. Transform variants:
+  Translate, Rotate, ScaleUniform, Mirror. Point and interval evaluation for
+  all. `Solid` builder methods (`union()`, `subtract()`, `smooth_union()`,
+  `translate()`, `rotate()`, `scale_uniform()`, `mirror()`). Tests for
+  composed trees — verify field sign, blend smoothness, transform correctness.
+- Entry: Session 1 complete
+- Exit: `cargo test -p cf-design` passes. Composed field trees evaluate
+  correctly. Smooth union blend radius matches analytic expectation.
 
-### Phase 2: Mechanism
+**Session 3: Domain Operations + UserFn**
+- Scope: `FieldNode` variants for Shell, Round, Offset, Elongate. `UserFn`
+  leaf node with optional interval bound closure. Point and interval
+  evaluation for all. `Solid` builder methods (`shell()`, `round()`,
+  `offset()`, `elongate()`). Tests including UserFn with and without interval
+  bounds, and verification that shell/round/offset produce correct wall
+  thickness on exact-SDF inputs.
+- Entry: Session 1 complete
+- Exit: `cargo test -p cf-design` passes.
+
+**Session 4: Path-Based Primitives**
+- Scope: `FieldNode` variants for Pipe (polyline path + radius) and
+  PipeSpline (control points + radius). Closest-point-on-polyline and
+  closest-point-on-spline algorithms. Point and interval evaluation. `Solid`
+  builder methods (`pipe()`, `pipe_spline()`). Tests for straight, curved,
+  and multi-segment paths — verify channel geometry, end caps, corner blending.
+- Entry: Session 1 complete
+- Exit: `cargo test -p cf-design` passes. Pipe SDF correct for straight,
+  L-shaped, and curved paths.
+
+**Session 5: Marching Cubes Mesher**
+- Scope: Marching cubes implementation (MC33 or naive + mesh-repair fallback).
+  Grid evaluation loop with interval arithmetic pruning (skip cells where
+  interval is entirely positive or negative). Output: `IndexedMesh`.
+  `Solid::mesh(tolerance) -> IndexedMesh`. Tests: primitive → mesh → valid
+  manifold (via mesh-repair validation). Measure interval pruning ratio.
+- Entry: Sessions 1–4 complete (all node types available for meshing)
+- Exit: `cargo test -p cf-design` passes. Meshed primitives are manifold and
+  watertight. Interval pruning eliminates 80%+ of cells on simple primitives.
+
+**Session 6: SDF Grid Evaluator + Integration Tests**
+- Scope: `Solid::sdf_grid(resolution) -> SdfGrid`. `Solid::bounds() -> Aabb`.
+  `Solid::evaluate(point) -> f64` (public point query). Integration tests:
+  composed primitives (boolean + transform + domain ops) → mesh → valid
+  `IndexedMesh`. Verify interval pruning ratio on composed trees.
+- Entry: Session 5 complete
+- Exit: `cargo test -p cf-design` passes. Full Phase 1 exit criteria met:
+  a `Solid` built from composed primitives (including pipe for channels) can
+  be meshed to valid `IndexedMesh`. Interval evaluation prunes 80%+ of cells.
+
+### Phase 2: Mechanism (Sessions 7–12)
 
 **Goal**: Multi-part assemblies with joints and tendons, MJCF generation.
 
-- [ ] `Part` type (named solid + material + optional flex zones)
-- [ ] `JointDef` type (revolute, prismatic, ball, free)
-- [ ] `TendonDef` type (waypoints + channel_radius + stiffness/damping)
-- [ ] `ActuatorDef` type (motor, muscle, general)
-- [ ] `PrintProfile` type (clearance, min_wall, min_hole)
-- [ ] `Mechanism` type (parts + joints + tendons + actuators + print_profile)
-- [ ] Tendon channel subtraction: auto-carve pipe channels from parts along tendon paths
-- [ ] `to_mjcf()` — generate valid MJCF XML (bodies, joints, tendons, geoms)
-- [ ] `to_shapes()` — generate cf-geometry `Shape` values (SdfGrid or TriangleMesh)
-- [ ] `to_stl_kit()` — generate per-part IndexedMesh with clearances applied
-- [ ] `validate()` — check min wall, min hole, clearances, feature resolution
-- [ ] Volumetric mass property computation from implicit fields
-- [ ] Direct Model injection path (SDF geoms, bypassing MJCF)
-- [ ] Integration test: Mechanism → MJCF → sim-mjcf parses → sim-core simulates
+**Session 7: Part + Joint + Material + Print Types**
+- Scope: `Material` type (density, Young's modulus, color, manufacturing
+  process). `Part` struct (name, solid, material, flex_zones). `JointDef`,
+  `JointKind` (Revolute, Prismatic, Ball, Free). `PrintProfile` (clearance,
+  min_wall, min_hole). `DesignWarning` enum. Unit tests for type construction
+  and field validation (e.g., range min < max, positive clearance).
+- Entry: Session 1 complete (Solid type exists)
+- Exit: `cargo test -p cf-design` passes. All types constructible with valid
+  and invalid inputs handled.
 
-**Exit criteria**: A multi-part mechanism (e.g., 2-finger gripper with tendon
-channels) can be defined in code, simulated in sim-core, exported as printable
-STLs with manufacturing clearances, and validated against print constraints.
+**Session 8: Tendon + Actuator + Channel Subtraction**
+- Scope: `TendonDef`, `TendonWaypoint`. `ActuatorDef`. Tendon channel
+  subtraction algorithm — given a tendon's waypoint path through a part,
+  subtract a pipe channel from the part's solid. Tests: part with tendon
+  channel has correct void geometry; channel follows waypoint path; multiple
+  tendons through same part produce independent channels.
+- Entry: Sessions 4, 7 complete (pipe primitives + Part type)
+- Exit: `cargo test -p cf-design` passes. Channel subtraction produces
+  correct geometry verified by field evaluation along channel centerline.
 
-### Phase 3: Bio-Inspired Library
+**Session 9: Mechanism Builder API**
+- Scope: `Mechanism` struct. Builder pattern: `.part()`, `.joint()`,
+  `.tendon()`, `.actuator()`, `.print_profile()`. Validation: joint references
+  valid parts, tendon waypoints reference valid parts, no orphan parts, joint
+  anchor within part bounds. Tests for builder ergonomics and validation error
+  messages. The bio-gripper example from Section 4.4 should compile.
+- Entry: Sessions 7, 8 complete
+- Exit: `cargo test -p cf-design` passes. Bio-gripper example compiles and
+  validates. Invalid mechanisms produce clear errors.
+
+**Session 10: MJCF Generation**
+- Scope: `Mechanism::to_mjcf(resolution) -> String`. Each Part → `<body>` +
+  `<geom type="mesh">`. Each JointDef → `<joint>`. Each TendonDef →
+  `<tendon>` + `<site>` waypoints. Each ActuatorDef → `<actuator>`. Mesh
+  parts via `Solid::mesh()`, embed as MJCF `<mesh>` asset elements.
+  Integration test: generated XML is well-formed and `sim-mjcf` can parse it.
+- Entry: Sessions 5, 9 complete (mesher + Mechanism)
+- Exit: `cargo test -p cf-design` passes. Generated MJCF parseable by
+  sim-mjcf. Round-trip: build Mechanism → to_mjcf → parse → inspect model
+  structure matches expectation.
+
+**Session 11: Shape + STL Generation + Mass Properties**
+- Scope: `Mechanism::to_shapes(ShapeMode) -> Vec<(String, Shape)>`. SDF mode:
+  evaluate field on grid → `SdfGrid` → `Shape::Sdf`. Mesh mode: mesh →
+  `IndexedMesh` + `Bvh` → `Shape::TriangleMesh`.
+  `Mechanism::to_stl_kit(tolerance) -> Vec<(String, IndexedMesh)>` with
+  clearance offsets applied via `Solid::offset()`. Volumetric mass computation
+  from implicit field (mass, center of mass, inertia tensor via grid
+  integration). Tests for each output path.
+- Entry: Sessions 5, 6, 9 complete (mesher + SdfGrid + Mechanism)
+- Exit: `cargo test -p cf-design` passes. Shapes usable by sim-core. STLs
+  reflect clearance offsets. Mass properties within 2% of analytic values for
+  simple primitives.
+
+**Session 12: Validation + Model Injection + Integration**
+- Scope: `Mechanism::validate() -> Vec<DesignWarning>`. Checks: wall thickness
+  (via medial axis sampling), hole diameter, inter-part clearances,
+  feature-below-resolution. Direct `Model` injection path (`Model::empty()` +
+  push geoms/bodies/joints, bypassing MJCF). Full integration test:
+  `Mechanism` → `to_mjcf()` → sim-mjcf parse → sim-core `step()`.
+- Entry: Sessions 10, 11 complete
+- Exit: `cargo test -p cf-design` passes. Full Phase 2 exit criteria met:
+  a multi-part mechanism (2-finger gripper with tendon channels) can be
+  defined in code, simulated in sim-core, exported as printable STLs with
+  manufacturing clearances, and validated against print constraints.
+
+### Phase 3: Bio-Inspired Library (Sessions 13–18)
 
 **Goal**: Rich primitive library for organic shapes, advanced operations.
 
-- [ ] Bio-inspired primitives (Section 9.3 — superellipsoid, log_spiral, gyroid, schwarz_p, helix)
-- [ ] Loft primitive (variable cross-section along a path)
-- [ ] Advanced domain operations (twist, bend, repeat, repeat_bounded)
-- [ ] Lipschitz-aware resolution scaling for twist/bend
-- [ ] Lattice infill operations (gyroid/schwarz_p intersected with solid)
-- [ ] Variable-radius smooth blending
-- [ ] `FlexZone` support (compliant mechanisms — auto-split to sub-bodies)
-- [ ] Parameterized part templates (finger, link, bracket, etc.)
+**Session 13: Bio-Inspired Primitives**
+- Scope: `FieldNode` variants for Superellipsoid, LogSpiral, Gyroid, SchwarzP,
+  Helix. Point and interval evaluation for each. Analytic gradient formulas
+  for each new node type (wired into traversal in Session 19). `Solid` builder
+  methods (`superellipsoid()`, `log_spiral()`, `gyroid()`, `schwarz_p()`,
+  `helix()`). Tests for each primitive's field correctness and meshability.
+- Entry: Session 5 complete (mesher needed to verify meshability)
+- Exit: `cargo test -p cf-design` passes. All bio primitives mesh to valid
+  manifold geometry.
 
-**Exit criteria**: A bio-inspired gripper with organic blends, gyroid-infilled
-bones, smooth tendon channels, and compliant finger joints can be defined,
-simulated, and exported for printing.
+**Session 14: Loft + Twist + Bend**
+- Scope: Loft primitive — variable cross-section along a path via cubic
+  interpolation of cross-section parameters. `FieldNode` variants for Twist
+  and Bend domain operations. Point and interval evaluation with Lipschitz
+  constant computation for twist/bend. Analytic gradient formulas for each
+  new node type (wired into traversal in Session 19). `Solid` builder methods
+  (`loft()`, `twist()`, `bend()`). Tests including Lipschitz-aware resolution
+  warnings.
+- Entry: Sessions 4, 5 complete (path infrastructure + mesher for testing)
+- Exit: `cargo test -p cf-design` passes. Lofted shapes mesh correctly.
+  Twist/bend produce correct deformations. Lipschitz constants computed.
 
-### Phase 4: Mesh Quality + Performance
+**Session 15: Repeat + Lipschitz-Aware Resolution**
+- Scope: `FieldNode` variants for Repeat (infinite) and RepeatBounded (finite
+  count). Lipschitz constant propagation through expression tree (each node
+  type reports its Lipschitz factor). Resolution scaling recommendations
+  based on accumulated Lipschitz constant. Integration with mesher for
+  adaptive cell sizing near high-Lipschitz regions. Analytic gradient formulas
+  for Repeat/RepeatBounded (wired into traversal in Session 19). Tests for
+  repeated patterns and resolution adaptation.
+- Entry: Sessions 5, 14 complete (mesher + deformation ops)
+- Exit: `cargo test -p cf-design` passes. Repeated patterns mesh correctly.
+  Thin features in high-Lipschitz regions are not silently lost.
+
+**Session 16: Lattice Infill + Variable-Radius Blending**
+- Scope: Lattice infill operations — gyroid/schwarz_p intersected with solid
+  envelope for lightweight internal structure. Variable-radius smooth blending
+  (blend radius varies spatially via a scalar field). `Solid` builder methods
+  (`infill()`, `smooth_union_variable()`). Tests for infilled parts
+  (correct internal structure, watertight exterior) and variable blending.
+- Entry: Session 13 complete (gyroid/schwarz_p primitives)
+- Exit: `cargo test -p cf-design` passes. Infilled parts mesh correctly with
+  connected internal lattice and intact outer shell.
+
+**Session 17: FlexZone Auto-Splitting**
+- Scope: `FlexZone` auto-splitting — identify thin cross-sections in a
+  monolithic Part, split into sub-bodies, generate joints with spring-damper
+  properties derived from material Young's modulus and cross-section geometry.
+  Tests: verify split geometry via field evaluation (sub-bodies have correct
+  bounds, thin section correctly identified, spring-damper stiffness matches
+  analytic expectation for simple beam geometries).
+- Entry: Sessions 9, 14 complete (Mechanism + deformation ops)
+- Exit: `cargo test -p cf-design` passes. FlexZone splitting produces correct
+  sub-body geometry with physically plausible joint stiffness. Full MJCF
+  integration deferred to Session 18.
+
+**Session 18: Parameterized Part Templates**
+- Scope: Parameterized part templates (`finger()`, `link()`, `bracket()`) —
+  helper functions returning pre-composed `Solid` + `Part` configurations
+  with sensible defaults. Templates compose primitives, booleans, organic
+  blends, and optionally FlexZones/lattice infill. Full Phase 3 integration
+  test: bio-inspired gripper with organic blends, gyroid-infilled bones,
+  smooth tendon channels, and compliant finger joints — defined, simulated,
+  and exported for printing.
+- Entry: Sessions 12, 16, 17 complete (Phase 2 pipeline + lattice + FlexZone)
+- Exit: `cargo test -p cf-design` passes. Full Phase 3 exit criteria met:
+  a bio-inspired gripper with organic blends, gyroid-infilled bones, smooth
+  tendon channels, and compliant finger joints can be defined, simulated,
+  and exported for printing.
+
+### Phase 4: Mesh Quality + Performance (Sessions 19–23)
 
 **Goal**: Production-quality meshing for manufacturing, performance at scale.
 
-- [ ] Manifold Dual Contouring mesher (Schaefer/Ju/Warren)
-- [ ] SVD-based QEF solver with cell-clamping and centroid bias
-- [ ] Analytic gradient computation via reverse-mode AD on expression tree
-- [ ] Octree-adaptive meshing with interval arithmetic pruning
-- [ ] SIMD batched evaluation (4-8 points per tree walk)
-- [ ] Multithreaded grid evaluation
-- [ ] Mesh simplification pass (reduce triangle count without losing accuracy)
-- [ ] Tolerance-driven meshing (user specifies max deviation, mesher adapts)
-- [ ] 3MF export support (via mesh-io — supports multi-material natively)
+**Session 19: Analytic Gradient Computation**
+- Scope: Reverse-mode AD traversal infrastructure on `FieldNode` expression
+  tree. `Solid::gradient(point) -> Vector3<f64>`. Implement gradient (∇f) for
+  all Phase 1 node types (primitives, booleans, transforms, domain ops,
+  path-based). Wire in gradient formulas from Phase 3 sessions (S13–S15) if
+  those sessions have completed. Tests: analytic gradient vs finite
+  differences for all covered node types.
+  **Note**: Phase 3 sessions (S13–S15) prepare gradient formulas for their
+  node types. If those sessions have not yet run when S19 executes, their
+  gradients are added when they run, following the pattern established here.
+- Entry: Session 6 complete
+- Exit: `cargo test -p cf-design` passes. Gradients match finite differences
+  within 1e-6 tolerance for all Phase 1 node types.
 
-**Exit criteria**: Meshed parts meet 3D printing requirements (manifold,
-watertight, reasonable triangle count) and preserve pin holes, mating surfaces,
-and flat faces at specified tolerance. Meshing a 50mm part at 0.1mm resolution
-completes in under 5 seconds.
+**Session 20: Manifold Dual Contouring + QEF**
+- Scope: Manifold DC algorithm (Schaefer, Ju, Warren — not classical DC).
+  SVD-based QEF solver with cell-clamping and centroid bias to prevent vertex
+  placement at infinity. Uses analytic gradients from Session 19. Tests:
+  sharp feature preservation on cuboids (edges, corners), pin holes (circular
+  features), flat faces.
+- Entry: Session 19 complete
+- Exit: `cargo test -p cf-design` passes. DC meshes preserve sharp features
+  that marching cubes rounds off. Meshes are manifold.
 
-### Phase 5: Differentiable Design (Future)
+**Session 21: Octree-Adaptive Meshing**
+- Scope: Octree construction with interval arithmetic cell pruning. Adaptive
+  refinement — fine cells near the surface and thin features, coarse cells in
+  bulk interior/exterior. Integration with DC mesher (Session 20). Tests:
+  resolution adaptation correctness, cell count reduction vs uniform grid.
+- Entry: Session 20 complete
+- Exit: `cargo test -p cf-design` passes. Adaptive meshing reduces cell count
+  by 10x+ vs uniform grid while preserving surface accuracy within tolerance.
+
+**Session 22: SIMD + Multithreaded Evaluation**
+- Scope: Batch 4–8 point evaluations per expression tree walk (SIMD lanes).
+  Rayon-based multithreaded grid/octree evaluation. Performance benchmarks:
+  naive single-thread vs SIMD vs multithreaded on reference parts.
+- Entry: Session 5 complete (applicable to any mesher)
+- Exit: `cargo test -p cf-design` passes. Measurable speedup on benchmark
+  parts (target: 4x+ from SIMD, near-linear thread scaling).
+
+**Session 23: Simplification + Tolerance Meshing + 3MF**
+- Scope: Mesh simplification pass (edge collapse with quadric error metric).
+  Tolerance-driven meshing — user specifies max surface deviation, mesher
+  adapts resolution automatically. Integration test with mesh-io's 3MF export
+  (multi-material support). Tests: simplified meshes within tolerance, 3MF
+  round-trip.
+- Entry: Sessions 20, 21 complete
+- Exit: `cargo test -p cf-design` passes. Full Phase 4 exit criteria met:
+  meshed parts are manifold, watertight, preserve sharp features at specified
+  tolerance. 50mm part at 0.1mm resolution meshes in under 5 seconds.
+
+### Phase 5: Differentiable Design (Sessions 24–26)
 
 **Goal**: Gradient-based design optimization through simulation.
 
-- [ ] Parameterized `Solid` (design variables with partial derivatives)
-- [ ] Gradient of field with respect to design parameters
-- [ ] Integration with sim-core's `mj_derivatives` for end-to-end gradients
-- [ ] Design optimization loop: objective → simulate → gradient → update params
+**Session 24: Parameterized Solid**
+- Scope: Design variables with named parameters. Parameterized `FieldNode`
+  variants (parameters by name instead of literal constants).
+  `Solid::with_param(name, value)` for declaring parameters.
+  `Solid::set_param(name, value)` for re-evaluation without rebuilding the
+  tree. Tests: parameterized sphere radius, parameterized blend radius —
+  verify re-evaluation produces correct field after parameter change.
+- Entry: Session 6 complete
+- Exit: `cargo test -p cf-design` passes. Parameterized solids re-evaluate
+  correctly after parameter changes.
 
-**Exit criteria**: A parameterized gripper finger can be optimized to maximize
-grasp force by backpropagating through the simulation.
+**Session 25: Field Gradient w.r.t. Design Parameters**
+- Scope: ∂f/∂params via chain rule through expression tree. Extends Session
+  19's spatial gradient (∇f w.r.t. x,y,z) to parameter-space gradient
+  (∂f/∂param_i). Tests: parameter gradients match finite differences for
+  parameterized primitives, booleans, and transforms.
+- Entry: Sessions 19, 24 complete
+- Exit: `cargo test -p cf-design` passes. Parameter gradients within 1e-6 of
+  finite differences.
+
+**Session 26: sim-core Integration + Optimization Loop**
+- Scope: Connect parameter gradients to sim-core's `mj_derivatives` for
+  end-to-end design-through-physics gradient. Design optimization loop:
+  objective → simulate → gradient → update params → re-mesh → repeat.
+  Integration test: parameterized gripper finger optimized for grasp force.
+- Entry: Sessions 12, 25 complete (Mechanism integration + param gradients)
+- Exit: `cargo test -p cf-design` passes. Full Phase 5 exit criteria met:
+  a parameterized gripper finger can be optimized to maximize grasp force
+  by backpropagating through the simulation.
+
+### Session Dependencies
+
+Each session's prerequisites (verified against entry criteria):
+
+```
+S1:  (none)              — cf-geometry exists
+S2:  S1                  — booleans compose primitives
+S3:  S1                  — domain ops modify primitives
+S4:  S1                  — path primitives independent of booleans/domain
+S5:  S1, S2, S3, S4      — mesher needs all node types + interval eval
+S6:  S5                  — SDF grid + integration tests need mesher
+S7:  S1                  — Part wraps Solid; Material defined here
+S8:  S4, S7              — tendon channels use pipe primitives + Part
+S9:  S7, S8              — Mechanism assembles Parts + Joints + Tendons
+S10: S5, S9              — MJCF generation meshes parts
+S11: S5, S6, S9          — shape/STL gen needs mesher + SdfGrid + Mechanism
+S12: S10, S11            — validation + integration needs all outputs
+S13: S5                  — bio primitives need mesher to verify meshability
+S14: S4, S5              — loft reuses path infra; mesher needed for testing
+S15: S5, S14             — repeat needs mesher; Lipschitz needs deformation ops
+S16: S13                 — lattice intersects gyroid/schwarz_p with solid
+S17: S9, S14             — FlexZone needs Mechanism + deformation ops
+S18: S12, S16, S17       — templates + integration test needs Phase 2 pipeline
+S19: S6                  — gradient infra + Phase 1 node gradients
+S20: S19                 — DC uses analytic gradients
+S21: S20                 — octree adaptive DC
+S22: S5                  — SIMD/threading applicable to any mesher
+S23: S20, S21            — simplification on DC output
+S24: S6                  — parameterized Solid extends evaluation
+S25: S19, S24            — param gradients need AD + parameterized Solid
+S26: S12, S25            — sim-core integration needs mechanism + param gradients
+```
+
+**Parallelism opportunities:**
+- S2, S3, S4 can all start after S1 (three independent workstreams)
+- S7 can start after S1 (Phase 2 types overlap with Phase 1 meshing)
+- S13, S14 can start after S5 (Phase 3 primitives overlap with Phase 2)
+- S19, S22, S24 can start after S5/S6 (Phases 4–5 foundations overlap with Phase 2)
+- Phase 3 (S13–S18) and Phase 4 (S19–S23) can significantly overlap
+
+### Kill Signals
+
+Conditions that mean the spec needs fundamental rework:
+
+1. **Interval pruning failure.** If interval evaluation prunes <50% of cells
+   on simple primitives (sphere, cuboid), the expression tree architecture is
+   not delivering its key advantage over opaque closures. **Test**: Session 5.
+
+2. **MC mesh quality collapse.** If marching cubes output requires >50% of
+   triangles to be repaired by mesh-repair, the mesher is fundamentally broken
+   and needs a different algorithm or approach. **Test**: Session 5.
+
+3. **MJCF round-trip failure.** If generated MJCF cannot be parsed by sim-mjcf
+   without changes to sim-mjcf's parser, the MJCF generation approach is wrong
+   and needs to be redesigned. **Test**: Session 10.
+
+4. **Path-based SDF non-manifold.** If pipe/pipe_spline SDFs produce
+   non-manifold meshes at reasonable resolution (cell_size < radius/2), the
+   closest-point-on-path algorithm needs fundamental rework. **Test**: Session 5.
+
+5. **Session 5 exceeds 2 conversations.** Marching cubes is the hardest
+   algorithm in Phase 1. If it cannot be completed in one session (with one
+   continuation allowed), the session scoping is wrong — split further or
+   reduce scope.
+
+**Threshold**: If Phase 1 takes more than 8 sessions (2 over budget), stop and
+reassess session scoping for all subsequent phases.
+
+### Incremental Value
+
+Each phase is independently positive. No valley of despair.
+
+| Stop after | State | Value |
+|------------|-------|-------|
+| Phase 1 | `Solid` with composed primitives, meshing, SdfGrid. | **Positive**: AI can code-generate geometry. Meshes flow into cf-geometry. |
+| Phase 2 | Mechanisms with joints, tendons, MJCF. | **Strongly positive**: design → simulate → print pipeline exists. |
+| Phase 3 | Bio-inspired primitives, lattice infill, compliant mechanisms. | **Very positive**: organic shapes, gyroid infill, flex zones. |
+| Phase 4 | Production meshing, sharp features, performance. | **Maximum for manufacturing**: print-ready output at scale. |
+| Phase 5 | Differentiable design optimization. | **Maximum**: gradient-based design through simulation. |
+
+**Stopping points within Phase 2**: Sessions 10, 11, and 12 are each
+independently valuable once Session 9 is complete. Session 10 alone provides
+design → simulate (via MJCF). Session 11 adds direct shape generation + STL
+export. Session 12 adds validation + a faster Model injection path. Any of
+these is a valid stopping point.
 
 ---
 
@@ -1099,11 +1396,13 @@ crates/cf-design/
 │   │   ├── transform.rs    Translate, rotate, scale, mirror
 │   │   ├── domain.rs       Shell, round, offset, elongate, repeat, twist, bend
 │   │   ├── interval.rs     Interval arithmetic evaluation for octree pruning
-│   │   └── gradient.rs     Analytic gradient computation (Phase 2+)
+│   │   └── gradient.rs     Analytic gradient computation (Session 19+)
 │   ├── mesh/
 │   │   ├── mod.rs          Meshing module documentation
 │   │   ├── marching_cubes.rs   Phase 1 mesher (MC33 or naive + repair)
-│   │   ├── dual_contouring.rs  Phase 4 mesher (Manifold DC)
+│   │   ├── dual_contouring.rs  Phase 4 mesher (Manifold DC, Session 20)
+│   │   ├── octree.rs       Octree-adaptive meshing (Session 21)
+│   │   ├── simplify.rs     Mesh simplification — edge collapse + QEM (Session 23)
 │   │   └── grid.rs         Field → SdfGrid evaluation
 │   ├── mechanism/
 │   │   ├── mod.rs          Mechanism type, builder API
@@ -1113,6 +1412,7 @@ crates/cf-design/
 │   │   ├── tendon.rs       TendonDef, TendonWaypoint, channel subtraction
 │   │   ├── actuator.rs     ActuatorDef (motor, muscle)
 │   │   ├── flex_zone.rs    FlexZone, compliant mechanism auto-splitting
+│   │   ├── templates.rs    Parameterized part templates (finger, link, bracket)
 │   │   ├── print.rs        PrintProfile, clearance application
 │   │   ├── validate.rs     DesignWarning, manufacturing constraint checks
 │   │   ├── mjcf.rs         MJCF XML generation
@@ -1208,15 +1508,14 @@ creep and set correct expectations:
    (not exact distance), and `shell`/`round`/`offset` must be disallowed after
    non-uniform scale.
 
-2. **Gradient computation**: Expression tree enables analytic gradients via
-   reverse-mode AD. This is preferred over finite differences for dual
-   contouring (Phase 2). Should analytic gradient support be part of Phase 1
-   (extra work but enables better meshing from the start) or deferred to
-   Phase 2?
+2. ~~**Gradient computation**~~: **Resolved** — deferred to Phase 4 (Session
+   19). Phase 1 uses marching cubes which doesn't need gradients. Dual
+   contouring (Session 20) uses analytic gradients from Session 19.
 
-3. **Lattice structures for infill**: Should gyroid/schwarz_p be first-class
-   operations in cf-design, or a separate `cf-lattice` crate? Given that
-   lattice infill is a primary bio-inspired use case, first-class seems right.
+3. ~~**Lattice structures for infill**~~: **Resolved** — first-class in
+   cf-design (Session 13 for gyroid/schwarz_p primitives, Session 16 for
+   lattice infill operations). Primary bio-inspired use case warrants
+   first-class support.
 
 4. **Assembly constraints**: Beyond joints, should cf-design support
    geometric constraints (coaxial, tangent, coincident) for defining how
@@ -1229,11 +1528,11 @@ creep and set correct expectations:
    parts? The former is more elegant but requires material-aware meshing and
    3MF export. The latter is simpler but loses single-part semantics.
 
-6. **Compliant mechanism auto-splitting**: The `FlexZone` concept (Section 4.2)
-   requires auto-splitting a monolithic part into sub-bodies for MJCF. How
-   should the splitting algorithm work? Simple planar cuts? Or does the flex
-   zone geometry need to be analyzed to determine the effective hinge axis and
-   stiffness?
+6. ~~**Compliant mechanism auto-splitting**~~: **Resolved** — planar cuts at
+   the `FlexZone` plane, with geometry analysis to compute effective hinge
+   stiffness from Young's modulus and cross-section geometry (Session 17).
+   Spring-damper properties are derived analytically for simple beam
+   geometries.
 
 ---
 
@@ -1247,10 +1546,13 @@ creep and set correct expectations:
 | 2026-03-15 | Ship of Theseus upgradeability | `Solid` is opaque. Internals can be swapped to Fornjot B-Rep without API breaks. |
 | 2026-03-15 | Uniform scale only (Phase 1) | Non-uniform breaks distance property. Defer to later phase. |
 | 2026-03-15 | Rigid bodies only (Phase 1-5) | Soft/deformable requires FEM. Geometry is expressible; simulation is not. |
+| 2026-03-15 | Analytic gradients deferred to Phase 4 (Session 19) | Phase 1 uses marching cubes (no gradients needed). Dual contouring (Phase 4) needs them. |
+| 2026-03-15 | Gyroid/schwarz_p first-class in cf-design | Primary bio-inspired use case. Lattice infill is a core workflow, not an add-on. |
+| 2026-03-15 | FlexZone uses planar cuts + beam stiffness analysis | Planar cuts at flex zone plane. Spring-damper stiffness derived from Young's modulus + cross-section geometry. |
 
 ---
 
 *This document is the guiding spec for cf-design. All implementation work
 should reference it. Update it as design decisions are made.*
 
-*Last updated: 2026-03-15 (stress-tested, v2)*
+*Last updated: 2026-03-15 (stress-tested, v3 — session plan added)*
