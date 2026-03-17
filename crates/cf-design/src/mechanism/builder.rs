@@ -386,6 +386,20 @@ impl Mechanism {
     pub const fn print_profile(&self) -> Option<&PrintProfile> {
         self.print_profile.as_ref()
     }
+
+    /// Generate MJCF XML for simulation.
+    ///
+    /// Each part is meshed at the given `resolution` (passed to
+    /// [`Solid::mesh`](crate::Solid::mesh)). The generated XML embeds
+    /// vertex/face data inline in `<mesh>` asset elements.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `resolution` is not positive and finite.
+    #[must_use]
+    pub fn to_mjcf(&self, resolution: f64) -> String {
+        super::mjcf::generate(self, resolution)
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────

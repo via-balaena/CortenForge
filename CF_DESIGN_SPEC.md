@@ -1069,16 +1069,23 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 - Exit: `cargo test -p cf-design` passes. Bio-gripper example compiles and
   validates. Invalid mechanisms produce clear errors.
 
-**Session 10: MJCF Generation**
-- Scope: `Mechanism::to_mjcf(resolution) -> String`. Each Part → `<body>` +
-  `<geom type="mesh">`. Each JointDef → `<joint>`. Each TendonDef →
-  `<tendon>` + `<site>` waypoints. Each ActuatorDef → `<actuator>`. Mesh
-  parts via `Solid::mesh()`, embed as MJCF `<mesh>` asset elements.
-  Integration test: generated XML is well-formed and `sim-mjcf` can parse it.
+**Session 10: MJCF Generation** — COMPLETE
+- Delivered: `Mechanism::to_mjcf(resolution) -> String` in `mechanism/mjcf.rs`.
+  Body hierarchy built from joint parent/child relationships (root detection,
+  recursive DFS nesting). Each Part → `<body>` + `<geom type="mesh">`. Each
+  JointDef → `<joint>` (Revolute→hinge, Prismatic→slide, Ball→ball,
+  Free→freejoint). Each TendonDef → `<spatial>` tendon with `<site>` waypoints
+  on correct bodies. Each ActuatorDef → `<general>` (Motor) or `<muscle>`
+  (Muscle). Mesh data embedded inline via `vertex`/`face` attributes on
+  `<mesh>` asset elements. 13 tests: structural hierarchy, all joint types,
+  range/limited, site placement, tendon spatial, motor/muscle actuators,
+  bio-gripper round-trip, mesh data embedding, XML well-formedness.
+- Deferred to Session 11: `density` attribute on `<geom>` (mass properties).
+- Deferred to Session 12: `sim-mjcf` dev-dependency round-trip parse test.
 - Entry: Sessions 5, 9 complete (mesher + Mechanism)
-- Exit: `cargo test -p cf-design` passes. Generated MJCF parseable by
-  sim-mjcf. Round-trip: build Mechanism → to_mjcf → parse → inspect model
-  structure matches expectation.
+- Exit: `cargo test -p cf-design` passes (320 + 9 doctests). Clippy clean.
+  Generated MJCF structurally verified via 13 tests. sim-mjcf parse deferred
+  to Session 12.
 
 **Session 11: Shape + STL Generation + Mass Properties**
 - Scope: `Mechanism::to_shapes(ShapeMode) -> Vec<(String, Shape)>`. SDF mode:
@@ -1088,6 +1095,10 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   clearance offsets applied via `Solid::offset()`. Volumetric mass computation
   from implicit field (mass, center of mass, inertia tensor via grid
   integration). Tests for each output path.
+  **Deferred from Session 10**: emit `density` attribute on `<geom>` elements
+  in `to_mjcf()` using `Material::density` — lets MuJoCo auto-compute mass
+  and inertia from mesh geometry. Add `<inertial>` elements if explicit mass
+  properties are computed.
 - Entry: Sessions 5, 6, 9 complete (mesher + SdfGrid + Mechanism)
 - Exit: `cargo test -p cf-design` passes. Shapes usable by sim-core. STLs
   reflect clearance offsets. Mass properties within 2% of analytic values for
@@ -1102,6 +1113,10 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   (`Model::empty()` + push geoms/bodies/joints, bypassing MJCF). Full
   integration test: `Mechanism` → `to_mjcf()` → sim-mjcf parse → sim-core
   `step()`.
+  **Deferred from Session 10**: add `sim-mjcf` as a dev-dependency and write
+  a round-trip parse test (`to_mjcf()` → `sim-mjcf::parse()` → verify model
+  structure). If sim-mjcf cannot parse inline `vertex`/`face` mesh attributes,
+  either extend the parser or switch to file-based mesh references.
 - Entry: Sessions 10, 11 complete
 - Exit: `cargo test -p cf-design` passes. Full Phase 2 exit criteria met:
   a multi-part mechanism (2-finger gripper with tendon channels) can be

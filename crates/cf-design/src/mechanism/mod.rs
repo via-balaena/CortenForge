@@ -19,6 +19,7 @@ pub mod actuator;
 pub mod builder;
 pub mod joint;
 pub mod material;
+mod mjcf;
 pub mod part;
 pub mod print;
 pub mod tendon;
