@@ -31,7 +31,12 @@ mod bounds;
 mod evaluate;
 pub(crate) mod field_node;
 mod interval;
+pub mod mechanism;
 mod mesher;
 mod solid;
 
+pub use mechanism::{
+    DesignWarning, FlexZone, JointDef, JointKind, ManufacturingProcess, Material, Part, Plane,
+    PrintProfile,
+};
 pub use solid::Solid;
