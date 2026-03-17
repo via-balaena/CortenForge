@@ -8,8 +8,8 @@
 use nalgebra::{Point3, Vector3};
 
 use crate::{
-    ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, Part, Solid, TendonDef,
-    TendonWaypoint,
+    ActuatorDef, ActuatorKind, InfillKind, JointDef, JointKind, Material, Mechanism, Part, Solid,
+    TendonDef, TendonWaypoint, templates,
 };
 
 fn pla() -> Material {
@@ -163,4 +163,162 @@ fn mjcf_simulation_step() {
         "simulation time should have advanced, got {}",
         data.time
     );
+}
+
+// ── Phase 3: Full bio-gripper integration ─────────────────────────────
+
+/// Phase 3 exit criteria integration test.
+///
+/// Bio-inspired gripper with:
+/// - Organic blends (`smooth_union` on palm)
+/// - Gyroid-infilled bone
+/// - Smooth tendon channels
+/// - Compliant finger joints (`FlexZone` auto-splitting with spring-damper)
+///
+/// Pipeline: define → build → MJCF → sim-mjcf parse → sim-core step → STL export.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn phase3_bio_gripper_full_integration() {
+    let pla_e = Material::new("PLA", 1250.0).with_youngs_modulus(3.5e9);
+
+    // ── Palm: organic blend of two cuboids with rounded edges ────
+    let palm_base = Solid::cuboid(Vector3::new(20.0, 15.0, 5.0));
+    let palm_grip =
+        Solid::cuboid(Vector3::new(15.0, 8.0, 5.0)).translate(Vector3::new(0.0, 15.0, 0.0));
+    let palm_solid = palm_base.smooth_union(palm_grip, 3.0).round(0.5);
+    let palm = Part::new("palm", palm_solid, pla_e.clone());
+
+    // ── Finger: 3 phalanges with flex joints (Session 18 template) ──
+    let (finger_parts, finger_joints) = templates::finger("finger", 25.0, 3.0, 3, pla_e.clone());
+
+    // ── Bone: gyroid-infilled structural link (Session 18 template) ──
+    let bone = templates::link_infilled("bone", 15.0, 4.0, pla_e, InfillKind::Gyroid);
+
+    // ── Assemble mechanism ──────────────────────────────────────────
+    let mut builder = Mechanism::builder("bio_gripper_p3").part(palm);
+
+    for p in finger_parts {
+        builder = builder.part(p);
+    }
+    builder = builder.part(bone);
+
+    // Connect palm → finger proximal phalanx.
+    builder = builder.joint(
+        JointDef::new(
+            "knuckle",
+            "palm",
+            "finger_0",
+            JointKind::Revolute,
+            Point3::new(10.0, 20.0, 0.0),
+            Vector3::x(),
+        )
+        .with_range(-0.1, 1.8),
+    );
+
+    // Connect palm → bone.
+    builder = builder.joint(JointDef::new(
+        "palm_bone",
+        "palm",
+        "bone",
+        JointKind::Revolute,
+        Point3::new(0.0, -15.0, 0.0),
+        Vector3::x(),
+    ));
+
+    // Add finger flex joints (with spring-damper from FlexZone splitting).
+    for j in finger_joints {
+        builder = builder.joint(j);
+    }
+
+    // Tendon: routes through palm (2 waypoints → channel subtraction).
+    builder = builder.tendon(
+        TendonDef::new(
+            "flexor",
+            vec![
+                TendonWaypoint::new("palm", Point3::new(8.0, -5.0, 0.0)),
+                TendonWaypoint::new("palm", Point3::new(8.0, 18.0, 0.0)),
+                TendonWaypoint::new("finger_0", Point3::new(0.0, 0.0, 4.0)),
+                TendonWaypoint::new("finger_2", Point3::new(0.0, 0.0, 22.0)),
+            ],
+            1.0,
+        )
+        .with_stiffness(100.0)
+        .with_damping(5.0),
+    );
+
+    // Actuator: motor driving the tendon.
+    builder = builder.actuator(
+        ActuatorDef::new("motor", "flexor", ActuatorKind::Motor, (-50.0, 50.0))
+            .with_ctrl_range(-1.0, 1.0),
+    );
+
+    let mechanism = builder.build();
+
+    // ── Verify structure ────────────────────────────────────────────
+    // 1 palm + 3 finger phalanges + 1 bone = 5 parts.
+    assert_eq!(mechanism.parts().len(), 5, "expected 5 parts");
+    // 1 knuckle + 1 palm-bone + 2 flex joints = 4 joints.
+    assert_eq!(mechanism.joints().len(), 4, "expected 4 joints");
+    assert_eq!(mechanism.tendons().len(), 1, "expected 1 tendon");
+    assert_eq!(mechanism.actuators().len(), 1, "expected 1 actuator");
+
+    // Tendon channel should be subtracted from palm.
+    let palm_part = &mechanism.parts()[0];
+    assert_eq!(palm_part.name(), "palm");
+    let channel_pt = Point3::new(8.0, 5.0, 0.0);
+    let val = palm_part.solid().evaluate(&channel_pt);
+    assert!(
+        val > 0.0,
+        "tendon channel at (8,5,0) in palm should be void, got {val}"
+    );
+
+    // ── MJCF generation ─────────────────────────────────────────────
+    let xml = mechanism.to_mjcf(2.0);
+
+    // Verify spring-damper attributes from flex zone splitting.
+    assert!(
+        xml.contains("stiffness="),
+        "MJCF should contain stiffness attribute from flex joints"
+    );
+    assert!(
+        xml.contains("damping="),
+        "MJCF should contain damping attribute from flex joints"
+    );
+
+    // ── sim-mjcf parse ──────────────────────────────────────────────
+    let model = sim_mjcf::load_model(&xml)
+        .unwrap_or_else(|e| panic!("sim-mjcf failed to parse Phase 3 gripper: {e}"));
+
+    // 1 (world) + 5 parts = 6 bodies.
+    assert_eq!(model.nbody, 6, "expected 6 bodies (world + 5 parts)");
+    assert_eq!(model.njnt, 4, "expected 4 joints");
+    assert_eq!(model.ngeom, 5, "expected 5 geoms (one per part)");
+    assert_eq!(model.ntendon, 1, "expected 1 tendon");
+    assert_eq!(model.nu, 1, "expected 1 actuator");
+
+    // ── Simulate ────────────────────────────────────────────────────
+    let mut data = model.make_data();
+    for _ in 0..100 {
+        data.step(&model)
+            .unwrap_or_else(|e| panic!("step failed: {e}"));
+    }
+    assert!(
+        data.time > 0.0,
+        "simulation time should have advanced, got {}",
+        data.time
+    );
+
+    // ── STL export ──────────────────────────────────────────────────
+    let stl_kit = mechanism.to_stl_kit(1.0);
+    assert_eq!(stl_kit.len(), 5, "should export one mesh per part");
+    for (name, mesh) in &stl_kit {
+        assert!(
+            !mesh.vertices.is_empty(),
+            "part \"{name}\" mesh should have vertices"
+        );
+        assert!(
+            !mesh.faces.is_empty(),
+            "part \"{name}\" mesh should have faces"
+        );
+    }
 }

@@ -56,6 +56,8 @@ pub struct JointDef {
     anchor: Point3<f64>,
     axis: Vector3<f64>,
     range: Option<(f64, f64)>,
+    stiffness: Option<f64>,
+    damping: Option<f64>,
 }
 
 impl JointDef {
@@ -101,7 +103,41 @@ impl JointDef {
             anchor,
             axis: axis.normalize(),
             range: None,
+            stiffness: None,
+            damping: None,
         }
+    }
+
+    /// Set joint spring stiffness (N·mm/rad for revolute/ball, N/mm for prismatic).
+    ///
+    /// Used to model compliant/flexure joints derived from `FlexZone` splitting.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `k` is negative or non-finite.
+    #[must_use]
+    pub fn with_stiffness(mut self, k: f64) -> Self {
+        assert!(
+            k >= 0.0 && k.is_finite(),
+            "joint stiffness must be non-negative and finite, got {k}"
+        );
+        self.stiffness = Some(k);
+        self
+    }
+
+    /// Set joint damping coefficient.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `c` is negative or non-finite.
+    #[must_use]
+    pub fn with_damping(mut self, c: f64) -> Self {
+        assert!(
+            c >= 0.0 && c.is_finite(),
+            "joint damping must be non-negative and finite, got {c}"
+        );
+        self.damping = Some(c);
+        self
     }
 
     /// Constrain the joint's range of motion.
@@ -166,6 +202,18 @@ impl JointDef {
     #[must_use]
     pub const fn range(&self) -> Option<(f64, f64)> {
         self.range
+    }
+
+    /// Spring stiffness, if set.
+    #[must_use]
+    pub const fn stiffness(&self) -> Option<f64> {
+        self.stiffness
+    }
+
+    /// Damping coefficient, if set.
+    #[must_use]
+    pub const fn damping(&self) -> Option<f64> {
+        self.damping
     }
 }
 
@@ -301,6 +349,44 @@ mod tests {
                 assert_eq!(i == j, a == b);
             }
         }
+    }
+
+    #[test]
+    fn joint_def_stiffness_damping() {
+        let j = make_joint().with_stiffness(1000.0).with_damping(10.0);
+        assert_eq!(j.stiffness(), Some(1000.0));
+        assert_eq!(j.damping(), Some(10.0));
+    }
+
+    #[test]
+    fn joint_def_stiffness_damping_default_none() {
+        let j = make_joint();
+        assert!(j.stiffness().is_none());
+        assert!(j.damping().is_none());
+    }
+
+    #[test]
+    fn joint_def_zero_stiffness_allowed() {
+        let j = make_joint().with_stiffness(0.0);
+        assert_eq!(j.stiffness(), Some(0.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "non-negative and finite")]
+    fn joint_def_rejects_negative_stiffness() {
+        let _j = make_joint().with_stiffness(-1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "non-negative and finite")]
+    fn joint_def_rejects_negative_damping() {
+        let _j = make_joint().with_damping(-1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "non-negative and finite")]
+    fn joint_def_rejects_nan_stiffness() {
+        let _j = make_joint().with_stiffness(f64::NAN);
     }
 
     #[test]

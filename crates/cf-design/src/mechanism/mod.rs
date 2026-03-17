@@ -26,6 +26,7 @@ pub mod part;
 pub mod print;
 mod shapes;
 mod stl;
+pub mod templates;
 pub mod tendon;
 pub mod validate;
 

@@ -35,6 +35,7 @@ pub mod mechanism;
 mod mesher;
 mod solid;
 
+pub use mechanism::templates;
 pub use mechanism::{
     ActuatorDef, ActuatorKind, CrossSection, DesignWarning, FlexJoint, FlexZone, JointDef,
     JointKind, ManufacturingProcess, MassProperties, Material, Mechanism, MechanismBuilder,
