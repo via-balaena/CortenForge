@@ -296,10 +296,9 @@ jobs:
   security:
     name: Security
     runs-on: ubuntu-latest
-    # Non-blocking: upstream advisories are outside our control.
-    # The job always runs and surfaces findings visibly on every PR.
+    # Non-blocking: not in quality-gate's `needs` list, so a red ❌ here
+    # is visible on the PR but does not prevent merging.
     # Action items for contributing fixes upstream are tracked in UPSTREAM.md.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
@@ -466,7 +465,7 @@ jobs:
   # ============================================================================
   quality-gate:
     name: Quality Gate
-    needs: [format, clippy, test, test-arm64, docs, safety, security, dependencies, bevy-free]
+    needs: [format, clippy, test, test-arm64, docs, safety, dependencies, bevy-free]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed
