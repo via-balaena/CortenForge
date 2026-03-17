@@ -196,6 +196,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -217,7 +218,18 @@ jobs:
         run: |
           # Run tarpaulin with 75% threshold - fails if coverage below threshold
           # TODO: Increase to 90% as test coverage improves
-          cargo tarpaulin --all-features --workspace --fail-under 75
+          #
+          # --timeout 300: per-test timeout (5 min) prevents hangs from heavy
+          #   simulation loops (e.g. 50k-step stability tests)
+          # --release: sim step loops are 3-10× faster in release mode
+          # --exclude: sim-conformance-tests has 60k+ lines of integration tests
+          #   with 500k+ simulation steps — not useful for line-coverage measurement
+          #   and the primary source of tarpaulin timeouts
+          cargo tarpaulin --all-features --workspace \
+            --timeout 300 \
+            --release \
+            --exclude sim-conformance-tests \
+            --fail-under 75
 
   # ============================================================================
   # SAFETY - Zero unwrap/expect in library code

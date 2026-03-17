@@ -16,7 +16,7 @@ thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-approx = "0.5"
+approx = { workspace = true }
 
 [features]
 default = []

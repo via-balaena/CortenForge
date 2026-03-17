@@ -105,8 +105,10 @@ deny = [
 
 # Skip checking specific versions (for version conflicts we accept)
 skip = [
-    # Example:
-    # { name = "syn", version = "1.0" },
+    # truck ecosystem → cgmath 0.18 → approx 0.4; we use approx 0.5 everywhere else.
+    # Can't unify because cgmath 0.18 hard-pins approx 0.4. Harmless: the two versions
+    # live in separate dependency subtrees with no public API conflict.
+    { name = "approx", version = "=0.4.0" },
 ]
 
 # Skip checking entire crate trees
