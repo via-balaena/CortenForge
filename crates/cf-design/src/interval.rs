@@ -36,7 +36,30 @@ impl FieldNode {
             Self::Torus { major, minor } => interval_torus(*major, *minor, aabb),
             Self::Cone { radius, height } => interval_cone(*radius, *height, aabb),
             Self::Plane { normal, offset } => interval_plane(normal, *offset, aabb),
-            Self::Pipe { .. } | Self::PipeSpline { .. } => lipschitz_bound(self, aabb, 1.0),
+            Self::Superellipsoid { radii, n1, n2 } => {
+                // For the raw implicit function f-1, the gradient magnitude is
+                // bounded by ≈ sqrt(3) * max(1/rx, 1/ry, 1/rz) for n1,n2 ≥ 1.
+                // For n < 1 (star shapes), gradients can be steeper, so we scale
+                // by max(n1,n2)/min(n1,n2) as a safety factor.
+                let min_r = radii.x.min(radii.y).min(radii.z);
+                let exponent_factor = (n1.max(*n2) / n1.min(*n2)).max(1.0);
+                let lipschitz = 2.0 * 3.0_f64.sqrt() / min_r * exponent_factor;
+                lipschitz_bound(self, aabb, lipschitz)
+            }
+            Self::Gyroid { scale, .. } => {
+                // |∇g| ≤ 2·scale·√3 for the raw trig field; shell (abs) preserves this.
+                let lipschitz = 2.0 * scale * 3.0_f64.sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
+            Self::SchwarzP { scale, .. } => {
+                // |∇g| ≤ scale·√3 for cos(sx)+cos(sy)+cos(sz); shell preserves this.
+                let lipschitz = scale * 3.0_f64.sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
+            Self::LogSpiral { .. }
+            | Self::Helix { .. }
+            | Self::Pipe { .. }
+            | Self::PipeSpline { .. } => lipschitz_bound(self, aabb, 1.0),
 
             // Booleans
             Self::Union(a, b) => interval_union(a, b, aabb),
@@ -998,6 +1021,104 @@ mod tests {
             Aabb::new(Point3::new(2.0, -1.0, -1.0), Point3::new(4.0, 1.0, 1.0)),
             Aabb::new(Point3::new(4.0, 2.0, -1.0), Point3::new(6.0, 4.0, 1.0)),
             Aabb::new(Point3::new(8.0, 8.0, 0.0), Point3::new(10.0, 10.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Bio-inspired primitive interval tests ──────────────────────────
+
+    #[test]
+    fn superellipsoid_interval_contains_points() {
+        let node = FieldNode::Superellipsoid {
+            radii: Vector3::new(2.0, 3.0, 4.0),
+            n1: 2.0,
+            n2: 2.0,
+        };
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn superellipsoid_octahedron_interval_contains_points() {
+        let node = FieldNode::Superellipsoid {
+            radii: Vector3::new(2.0, 2.0, 2.0),
+            n1: 1.0,
+            n2: 1.0,
+        };
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn log_spiral_interval_contains_points() {
+        let node = FieldNode::LogSpiral {
+            a: 2.0,
+            b: 0.15,
+            thickness: 0.5,
+            turns: 1.5,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(1.0, -1.0, -0.5), Point3::new(3.0, 1.0, 0.5)),
+            Aabb::new(Point3::new(-3.0, -3.0, -0.5), Point3::new(3.0, 3.0, 0.5)),
+            Aabb::new(Point3::new(5.0, 5.0, -0.5), Point3::new(6.0, 6.0, 0.5)),
+            Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn gyroid_interval_contains_points() {
+        let node = FieldNode::Gyroid {
+            scale: 1.0,
+            thickness: 0.5,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 2.0, 2.0)),
+            Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5)),
+            Aabb::new(Point3::new(3.0, 3.0, 3.0), Point3::new(4.0, 4.0, 4.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn schwarz_p_interval_contains_points() {
+        let node = FieldNode::SchwarzP {
+            scale: 1.0,
+            thickness: 0.5,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 2.0, 2.0)),
+            Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5)),
+            Aabb::new(Point3::new(3.0, 3.0, 3.0), Point3::new(4.0, 4.0, 4.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn helix_interval_contains_points() {
+        let node = FieldNode::Helix {
+            radius: 3.0,
+            pitch: 2.0,
+            thickness: 0.5,
+            turns: 2.0,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(2.0, -1.0, -0.5), Point3::new(4.0, 1.0, 0.5)),
+            Aabb::new(Point3::new(-4.0, -4.0, 0.0), Point3::new(4.0, 4.0, 4.0)),
+            Aabb::new(Point3::new(-1.0, -1.0, 1.0), Point3::new(1.0, 1.0, 3.0)),
+            Aabb::new(Point3::new(5.0, 5.0, 0.0), Point3::new(6.0, 6.0, 1.0)),
         ];
         for aabb in &aabbs {
             verify_interval_contains_points(&node, aabb, 5);

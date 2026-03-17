@@ -67,6 +67,59 @@ pub enum FieldNode {
     /// Half-space. `dot(normal, p) - offset`. Normal must be unit length.
     Plane { normal: Vector3<f64>, offset: f64 },
 
+    // ── Bio-inspired primitives ──────────────────────────────────────
+    /// Superellipsoid centered at origin. Approximate SDF (like Ellipsoid).
+    ///
+    /// Field: `((|x/rx|^(2/n2) + |y/ry|^(2/n2))^(n2/n1) + |z/rz|^(2/n1))^(n1/2) - 1`
+    ///
+    /// `n1` controls Z-roundness, `n2` controls XY-roundness.
+    /// `n1=n2=2` → ellipsoid. Large values → cuboid. `n1=n2=1` → octahedron.
+    Superellipsoid {
+        radii: Vector3<f64>,
+        n1: f64,
+        n2: f64,
+    },
+
+    /// Logarithmic spiral tube in the XY plane.
+    ///
+    /// The spiral curve: `r(θ) = a · exp(b · θ)` for `θ ∈ [0, turns·2π]`.
+    /// Field is distance to spiral curve minus thickness (shell around curve).
+    /// Approximate SDF.
+    LogSpiral {
+        a: f64,
+        b: f64,
+        thickness: f64,
+        turns: f64,
+    },
+
+    /// Gyroid triply-periodic minimal surface.
+    ///
+    /// Field: `|sin(sx)·cos(sy) + sin(sy)·cos(sz) + sin(sz)·cos(sx)| - thickness`
+    ///
+    /// Infinite geometry (bounds = `None`). Intersect with a finite solid for
+    /// meshing — follows the same pattern as `Plane`.
+    Gyroid { scale: f64, thickness: f64 },
+
+    /// Schwarz P triply-periodic minimal surface.
+    ///
+    /// Field: `|cos(sx) + cos(sy) + cos(sz)| - thickness`
+    ///
+    /// Infinite geometry (bounds = `None`). Intersect with a finite solid for
+    /// meshing — follows the same pattern as `Plane`.
+    SchwarzP { scale: f64, thickness: f64 },
+
+    /// Helix tube along the Z axis.
+    ///
+    /// The helix curve: `H(t) = (R·cos(2πt), R·sin(2πt), P·t)` for
+    /// `t ∈ [0, turns]`. Field is distance to helix curve minus thickness.
+    /// Near-exact SDF via Newton refinement (like `PipeSpline`).
+    Helix {
+        radius: f64,
+        pitch: f64,
+        thickness: f64,
+        turns: f64,
+    },
+
     // ── Path-based primitives ────────────────────────────────────────
     /// Pipe along a polyline path with spherical cross-section.
     /// SDF: `min(distance_to_segment(p, seg_i)) - radius` over all segments.

@@ -30,6 +30,21 @@ impl FieldNode {
             Self::Torus { major, minor } => eval_torus(*major, *minor, p),
             Self::Cone { radius, height } => eval_cone(*radius, *height, p),
             Self::Plane { normal, offset } => eval_plane(normal, *offset, p),
+            Self::Superellipsoid { radii, n1, n2 } => eval_superellipsoid(radii, *n1, *n2, p),
+            Self::LogSpiral {
+                a,
+                b,
+                thickness,
+                turns,
+            } => eval_log_spiral(*a, *b, *thickness, *turns, p),
+            Self::Gyroid { scale, thickness } => eval_gyroid(*scale, *thickness, p),
+            Self::SchwarzP { scale, thickness } => eval_schwarz_p(*scale, *thickness, p),
+            Self::Helix {
+                radius,
+                pitch,
+                thickness,
+                turns,
+            } => eval_helix(*radius, *pitch, *thickness, *turns, p),
             Self::Pipe { vertices, radius } => eval_pipe(vertices, *radius, p),
             Self::PipeSpline {
                 control_points,
@@ -249,6 +264,198 @@ fn eval_cone(radius: f64, height: f64, p: &Point3<f64>) -> f64 {
 /// Half-space: `dot(normal, p) - offset`. Exact SDF when normal is unit length.
 fn eval_plane(normal: &nalgebra::Vector3<f64>, offset: f64, p: &Point3<f64>) -> f64 {
     normal.dot(&p.coords) - offset
+}
+
+// ── Bio-inspired primitive implementations ──────────────────────────────
+
+/// Superellipsoid: tunable between box, cylinder, sphere, diamond.
+/// Raw implicit function — zero-isosurface is correct but field magnitude is
+/// NOT a signed distance. Safe for meshing (sign correctness + bounded gradient).
+///
+/// Gradient (for Session 19):
+///   Let `G = |x/rx|^e2 + |y/ry|^e2`, `F = G^(n2/n1) + |z/rz|^e1`.
+///   `f = F^(n1/2)`. Then:
+///   `df/dx = (n1/2)·F^(n1/2-1)·(n2/n1)·G^(n2/n1-1)·e2·|x/rx|^(e2-1)·sign(x)/rx`
+///   `df/dy = (n1/2)·F^(n1/2-1)·(n2/n1)·G^(n2/n1-1)·e2·|y/ry|^(e2-1)·sign(y)/ry`
+///   `df/dz = (n1/2)·F^(n1/2-1)·e1·|z/rz|^(e1-1)·sign(z)/rz`
+fn eval_superellipsoid(radii: &nalgebra::Vector3<f64>, n1: f64, n2: f64, p: &Point3<f64>) -> f64 {
+    let e2 = 2.0 / n2;
+    let e1 = 2.0 / n1;
+    let xy = (p.x / radii.x).abs().powf(e2) + (p.y / radii.y).abs().powf(e2);
+    let f = (xy.powf(n2 / n1) + (p.z / radii.z).abs().powf(e1)).powf(n1 / 2.0);
+    f - 1.0
+}
+
+/// Logarithmic spiral tube: distance to spiral curve `r(θ) = a·exp(b·θ)` minus
+/// thickness. Multi-turn search finds the nearest spiral arm.
+///
+/// Gradient (for Session 19):
+///   The gradient is the unit direction from the nearest point on the spiral
+///   curve to the query point (Lipschitz = 1 for the distance part).
+#[allow(clippy::many_single_char_names, clippy::cast_possible_truncation)]
+fn eval_log_spiral(
+    init_radius: f64,
+    growth: f64,
+    thickness: f64,
+    turns: f64,
+    p: &Point3<f64>,
+) -> f64 {
+    use std::f64::consts::TAU;
+
+    let r_xy = p.x.hypot(p.y);
+    let theta = p.y.atan2(p.x); // [-π, π]
+    let z_sq = p.z * p.z;
+
+    let theta_max = turns * TAU;
+
+    // Find the turn whose spiral radius is closest to r_xy at this angle.
+    // The spiral at angle φ has radius init_radius·exp(growth·φ).
+    // At our query angle θ, the spiral passes at φ = θ + 2πk.
+    // Solve for k: init_radius·exp(growth·(θ+2πk)) = r_xy
+    //   → k = (ln(r_xy/init_radius)/growth - θ) / 2π
+    let k_continuous = if r_xy > 1e-15 && growth.abs() > 1e-15 {
+        ((r_xy / init_radius).ln() / growth - theta) / TAU
+    } else {
+        0.0
+    };
+    let k_base = k_continuous.round() as i64;
+
+    let mut min_dist_sq = f64::INFINITY;
+
+    let check_angle = |phi: f64, best: &mut f64| {
+        let r_spiral = init_radius * (growth * phi).exp();
+        let dx = r_spiral.mul_add(phi.cos(), -p.x);
+        let dy = r_spiral.mul_add(phi.sin(), -p.y);
+        let d_sq = dy.mul_add(dy, dx.mul_add(dx, z_sq));
+        *best = best.min(d_sq);
+    };
+
+    // Check 5 nearest turns for robustness
+    #[allow(clippy::cast_precision_loss)]
+    for dk in -2..=2_i64 {
+        let ki = k_base + dk;
+        let phi = TAU.mul_add(ki as f64, theta).clamp(0.0, theta_max);
+        check_angle(phi, &mut min_dist_sq);
+    }
+
+    // Also check endpoints explicitly
+    check_angle(0.0, &mut min_dist_sq);
+    check_angle(theta_max, &mut min_dist_sq);
+
+    min_dist_sq.sqrt() - thickness
+}
+
+/// Gyroid triply-periodic minimal surface.
+/// Field: `|sin(sx)·cos(sy) + sin(sy)·cos(sz) + sin(sz)·cos(sx)| - thickness`
+///
+/// Gradient (for Session 19):
+///   Let `g = sin(sx)cos(sy) + sin(sy)cos(sz) + sin(sz)cos(sx)`.
+///   `dg/dx = s·cos(sx)·cos(sy) - s·sin(sz)·sin(sx)`
+///   `dg/dy = -s·sin(sx)·sin(sy) + s·cos(sy)·cos(sz)`
+///   `dg/dz = -s·sin(sy)·sin(sz) + s·cos(sz)·cos(sx)`
+///   Gradient of field = `sign(g) · ∇g`
+fn eval_gyroid(scale: f64, thickness: f64, p: &Point3<f64>) -> f64 {
+    let sx = (scale * p.x).sin();
+    let sy = (scale * p.y).sin();
+    let sz = (scale * p.z).sin();
+    let cx = (scale * p.x).cos();
+    let cy = (scale * p.y).cos();
+    let cz = (scale * p.z).cos();
+    let g = sz.mul_add(cx, sx.mul_add(cy, sy * cz));
+    g.abs() - thickness
+}
+
+/// Schwarz P triply-periodic minimal surface.
+/// Field: `|cos(sx) + cos(sy) + cos(sz)| - thickness`
+///
+/// Gradient (for Session 19):
+///   Let `g = cos(sx) + cos(sy) + cos(sz)`.
+///   `dg/dx = -s·sin(sx)`, `dg/dy = -s·sin(sy)`, `dg/dz = -s·sin(sz)`.
+///   Gradient of field = `sign(g) · ∇g`
+fn eval_schwarz_p(scale: f64, thickness: f64, p: &Point3<f64>) -> f64 {
+    let g = (scale * p.x).cos() + (scale * p.y).cos() + (scale * p.z).cos();
+    g.abs() - thickness
+}
+
+/// Helix tube: distance to helix curve `H(t) = (R·cos(2πt), R·sin(2πt), P·t)`
+/// minus thickness. Uses cylindrical nearest-turn lookup + Newton refinement.
+///
+/// Gradient (for Session 19):
+///   `∇field = (p - H(t*)) / |p - H(t*)|` where `t*` is the closest parameter.
+///   This is the unit direction from nearest helix point to the query point.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn eval_helix(radius: f64, pitch: f64, thickness: f64, turns: f64, p: &Point3<f64>) -> f64 {
+    use std::f64::consts::TAU;
+
+    let theta = p.y.atan2(p.x); // [-π, π]
+
+    // The helix at angle (θ + 2πk) has z = pitch·(θ/(2π) + k).
+    // Find k such that the helix z is closest to p.z.
+    let k_continuous = if pitch.abs() > 1e-15 {
+        (p.z / pitch) - theta / TAU
+    } else {
+        0.0
+    };
+    let k_base = k_continuous.round() as i64;
+
+    let tau_sq = TAU * TAU;
+    let mut min_d_sq = f64::INFINITY;
+
+    // Check 3 nearest turns, Newton-refine each
+    for dk in -1..=1_i64 {
+        let ki = k_base + dk;
+        let t_initial = (theta / TAU + ki as f64).clamp(0.0, turns);
+
+        // Newton refinement: minimize |H(t) - p|²
+        // H(t) = (R·cos(τt), R·sin(τt), P·t)
+        // H'(t) = (-Rτ·sin(τt), Rτ·cos(τt), P)
+        // H''(t) = (-Rτ²·cos(τt), -Rτ²·sin(τt), 0)
+        let mut t = t_initial;
+        for _ in 0..4 {
+            let alpha = TAU * t;
+            let ca = alpha.cos();
+            let sa = alpha.sin();
+
+            let hx = radius * ca;
+            let hy = radius * sa;
+            let hz = pitch * t;
+
+            // First derivative of helix
+            let vel_x = -radius * TAU * sa;
+            let vel_y = radius * TAU * ca;
+            let vel_z = pitch;
+
+            // Second derivative of helix
+            let acc_x = -radius * tau_sq * ca;
+            let acc_y = -radius * tau_sq * sa;
+            // acc_z = 0
+
+            let ex = hx - p.x;
+            let ey = hy - p.y;
+            let ez = hz - p.z;
+
+            let fp = 2.0 * ez.mul_add(vel_z, ex.mul_add(vel_x, ey * vel_y));
+            // f''(t) = 2·(|H'|² + (H-p)·H'')
+            let vel_sq = vel_z.mul_add(vel_z, vel_x.mul_add(vel_x, vel_y * vel_y));
+            let diff_dot_acc = ex.mul_add(acc_x, ey * acc_y);
+            let fpp = 2.0 * (vel_sq + diff_dot_acc);
+
+            if fpp.abs() < 1e-20 {
+                break;
+            }
+            t -= fp / fpp;
+            t = t.clamp(0.0, turns);
+        }
+
+        let alpha = TAU * t;
+        let ex = radius.mul_add(-alpha.cos(), p.x);
+        let ey = radius.mul_add(-alpha.sin(), p.y);
+        let ez = pitch.mul_add(-t, p.z);
+        let d_sq = ez.mul_add(ez, ex.mul_add(ex, ey * ey));
+        min_d_sq = min_d_sq.min(d_sq);
+    }
+
+    min_d_sq.sqrt() - thickness
 }
 
 /// Pipe along a polyline: min distance to any segment minus radius. Exact SDF.

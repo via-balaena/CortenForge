@@ -46,7 +46,7 @@ impl FieldNode {
                     Point3::new(r, r, h + r),
                 ))
             }
-            Self::Ellipsoid { radii } => Some(Aabb::new(
+            Self::Ellipsoid { radii } | Self::Superellipsoid { radii, .. } => Some(Aabb::new(
                 Point3::new(-radii.x, -radii.y, -radii.z),
                 Point3::new(radii.x, radii.y, radii.z),
             )),
@@ -63,7 +63,36 @@ impl FieldNode {
                 let h = *height;
                 Some(Aabb::new(Point3::new(-r, -r, -h), Point3::new(r, r, 0.0)))
             }
-            Self::Plane { .. } => None,
+            Self::LogSpiral {
+                a,
+                b,
+                thickness,
+                turns,
+            } => {
+                // The spiral extends from θ=0 to θ=turns·2π.
+                // Max radius = max(a, a·exp(b·turns·2π)) + thickness.
+                let r_start = *a;
+                let r_end = a * (b * turns * std::f64::consts::TAU).exp();
+                let r_max = r_start.max(r_end) + thickness;
+                Some(Aabb::new(
+                    Point3::new(-r_max, -r_max, -thickness),
+                    Point3::new(r_max, r_max, *thickness),
+                ))
+            }
+            Self::Gyroid { .. } | Self::SchwarzP { .. } | Self::Plane { .. } => None,
+            Self::Helix {
+                radius,
+                pitch,
+                thickness,
+                turns,
+            } => {
+                let r = radius + thickness;
+                let z_max = pitch * turns + thickness;
+                Some(Aabb::new(
+                    Point3::new(-r, -r, -thickness),
+                    Point3::new(r, r, z_max),
+                ))
+            }
             Self::Pipe { vertices, radius } => {
                 if vertices.is_empty() {
                     return Some(Aabb::from_point(Point3::origin()));
@@ -379,6 +408,74 @@ mod tests {
                 Point3::new(-10.0, -10.0, -10.0),
                 Point3::new(10.0, 10.0, 10.0)
             ))
+        );
+    }
+
+    // ── Bio-inspired primitive bounds tests ──────────────────────────
+
+    #[test]
+    fn superellipsoid_bounds() {
+        let node = FieldNode::Superellipsoid {
+            radii: Vector3::new(2.0, 3.0, 4.0),
+            n1: 2.0,
+            n2: 2.0,
+        };
+        let bb = node.bounds().map(|b| (b.min, b.max));
+        assert_eq!(
+            bb,
+            Some((Point3::new(-2.0, -3.0, -4.0), Point3::new(2.0, 3.0, 4.0)))
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn log_spiral_bounds_contains_endpoints() {
+        let node = FieldNode::LogSpiral {
+            a: 1.0,
+            b: 0.1,
+            thickness: 0.3,
+            turns: 2.0,
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // Start: r=1 at θ=0. End: r=1*exp(0.1*2*2π) ≈ 3.51 at θ=4π.
+        // Max radius should be ≥ 3.51 + 0.3 ≈ 3.81
+        assert!(
+            bb.max.x > 3.5,
+            "bounds should contain spiral endpoint, got x_max={}",
+            bb.max.x
+        );
+    }
+
+    #[test]
+    fn gyroid_bounds_is_none() {
+        let node = FieldNode::Gyroid {
+            scale: 1.0,
+            thickness: 0.5,
+        };
+        assert!(node.bounds().is_none());
+    }
+
+    #[test]
+    fn schwarz_p_bounds_is_none() {
+        let node = FieldNode::SchwarzP {
+            scale: 1.0,
+            thickness: 0.5,
+        };
+        assert!(node.bounds().is_none());
+    }
+
+    #[test]
+    fn helix_bounds() {
+        let node = FieldNode::Helix {
+            radius: 3.0,
+            pitch: 2.0,
+            thickness: 0.5,
+            turns: 2.0,
+        };
+        let bb = node.bounds().map(|b| (b.min, b.max));
+        assert_eq!(
+            bb,
+            Some((Point3::new(-3.5, -3.5, -0.5), Point3::new(3.5, 3.5, 4.5)))
         );
     }
 }

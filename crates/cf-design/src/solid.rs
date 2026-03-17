@@ -283,6 +283,187 @@ impl Solid {
         }
     }
 
+    // ── Bio-inspired primitives ────────────────────────────────────────
+
+    /// Superellipsoid centered at origin — tunable between box, cylinder,
+    /// sphere, and diamond.
+    ///
+    /// **Approximate SDF** (like `ellipsoid`). The zero-isosurface is correct
+    /// but distance magnitude is approximate. Safe for meshing; `shell()` and
+    /// `round()` will produce non-uniform results.
+    ///
+    /// - `n1 = n2 = 2` → ellipsoid
+    /// - `n1 = n2 → ∞` → cuboid
+    /// - `n1 = n2 = 1` → octahedron
+    /// - `n1 = 2, n2 → ∞` → cylinder
+    ///
+    /// # Panics
+    ///
+    /// Panics if any radius is not positive and finite, or if `n1`/`n2` are
+    /// not positive and finite.
+    #[must_use]
+    pub fn superellipsoid(radii: Vector3<f64>, n1: f64, n2: f64) -> Self {
+        assert!(
+            radii.iter().all(|&v| v > 0.0 && v.is_finite()),
+            "superellipsoid radii must be positive and finite, got {radii:?}"
+        );
+        assert!(
+            n1 > 0.0 && n1.is_finite(),
+            "superellipsoid n1 must be positive and finite, got {n1}"
+        );
+        assert!(
+            n2 > 0.0 && n2.is_finite(),
+            "superellipsoid n2 must be positive and finite, got {n2}"
+        );
+        Self {
+            node: FieldNode::Superellipsoid { radii, n1, n2 },
+        }
+    }
+
+    /// Logarithmic spiral tube in the XY plane.
+    ///
+    /// The spiral curve `r(θ) = a · exp(b · θ)` is traced from `θ = 0` to
+    /// `θ = turns · 2π`, producing a tube of the given thickness.
+    ///
+    /// - `a` — initial radius (at θ=0)
+    /// - `b` — growth rate (positive = expanding outward, negative = shrinking)
+    /// - `thickness` — tube radius around the spiral curve
+    /// - `turns` — number of full turns
+    ///
+    /// # Panics
+    ///
+    /// Panics if `a` or `thickness` is not positive and finite, if `b` is
+    /// not finite, or if `turns` is not positive and finite.
+    #[must_use]
+    pub fn log_spiral(a: f64, b: f64, thickness: f64, turns: f64) -> Self {
+        assert!(
+            a > 0.0 && a.is_finite(),
+            "log_spiral initial radius a must be positive and finite, got {a}"
+        );
+        assert!(
+            b.is_finite(),
+            "log_spiral growth rate b must be finite, got {b}"
+        );
+        assert!(
+            thickness > 0.0 && thickness.is_finite(),
+            "log_spiral thickness must be positive and finite, got {thickness}"
+        );
+        assert!(
+            turns > 0.0 && turns.is_finite(),
+            "log_spiral turns must be positive and finite, got {turns}"
+        );
+        Self {
+            node: FieldNode::LogSpiral {
+                a,
+                b,
+                thickness,
+                turns,
+            },
+        }
+    }
+
+    /// Gyroid triply-periodic minimal surface — lightweight lattice infill.
+    ///
+    /// Infinite geometry (like `Plane`). Must be intersected with a finite
+    /// solid for meshing:
+    /// ```ignore
+    /// Solid::cuboid(half).intersect(Solid::gyroid(scale, thickness))
+    /// ```
+    ///
+    /// - `scale` — spatial frequency (higher = denser lattice).
+    ///   Period = `2π / scale` along each axis.
+    /// - `thickness` — wall thickness of the lattice sheets.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `scale` or `thickness` is not positive and finite.
+    #[must_use]
+    pub fn gyroid(scale: f64, thickness: f64) -> Self {
+        assert!(
+            scale > 0.0 && scale.is_finite(),
+            "gyroid scale must be positive and finite, got {scale}"
+        );
+        assert!(
+            thickness > 0.0 && thickness.is_finite(),
+            "gyroid thickness must be positive and finite, got {thickness}"
+        );
+        Self {
+            node: FieldNode::Gyroid { scale, thickness },
+        }
+    }
+
+    /// Schwarz P triply-periodic minimal surface — alternative lattice infill.
+    ///
+    /// Infinite geometry (like `Plane`). Must be intersected with a finite
+    /// solid for meshing:
+    /// ```ignore
+    /// Solid::cuboid(half).intersect(Solid::schwarz_p(scale, thickness))
+    /// ```
+    ///
+    /// - `scale` — spatial frequency (higher = denser lattice).
+    ///   Period = `2π / scale` along each axis.
+    /// - `thickness` — wall thickness of the lattice sheets.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `scale` or `thickness` is not positive and finite.
+    #[must_use]
+    pub fn schwarz_p(scale: f64, thickness: f64) -> Self {
+        assert!(
+            scale > 0.0 && scale.is_finite(),
+            "schwarz_p scale must be positive and finite, got {scale}"
+        );
+        assert!(
+            thickness > 0.0 && thickness.is_finite(),
+            "schwarz_p thickness must be positive and finite, got {thickness}"
+        );
+        Self {
+            node: FieldNode::SchwarzP { scale, thickness },
+        }
+    }
+
+    /// Helix tube along the Z axis — springs, coils, DNA-like structures.
+    ///
+    /// The helix curve spirals from `z = 0` to `z = pitch * turns`.
+    ///
+    /// - `radius` — distance from Z axis to the helix center
+    /// - `pitch` — vertical distance per full turn
+    /// - `thickness` — tube radius around the helix curve
+    /// - `turns` — number of full turns
+    ///
+    /// Near-exact SDF via Newton refinement (like `pipe_spline`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any parameter is not positive and finite.
+    #[must_use]
+    pub fn helix(radius: f64, pitch: f64, thickness: f64, turns: f64) -> Self {
+        assert!(
+            radius > 0.0 && radius.is_finite(),
+            "helix radius must be positive and finite, got {radius}"
+        );
+        assert!(
+            pitch > 0.0 && pitch.is_finite(),
+            "helix pitch must be positive and finite, got {pitch}"
+        );
+        assert!(
+            thickness > 0.0 && thickness.is_finite(),
+            "helix thickness must be positive and finite, got {thickness}"
+        );
+        assert!(
+            turns > 0.0 && turns.is_finite(),
+            "helix turns must be positive and finite, got {turns}"
+        );
+        Self {
+            node: FieldNode::Helix {
+                radius,
+                pitch,
+                thickness,
+                turns,
+            },
+        }
+    }
+
     // ── Boolean operations ────────────────────────────────────────────
 
     /// Union of two solids: material where either solid exists.
@@ -557,8 +738,7 @@ impl Solid {
     /// User-defined function leaf node.
     ///
     /// Escape hatch for custom implicit surface functions that the expression
-    /// tree does not natively support (e.g., gyroids, superellipsoids,
-    /// logarithmic spirals).
+    /// tree does not natively support.
     ///
     /// - `eval` — closure mapping a point to a scalar field value.
     ///   Convention: negative inside, positive outside, zero on surface.
@@ -1550,5 +1730,316 @@ mod tests {
     fn sdf_grid_rejects_resolution_1() {
         let s = Solid::sphere(1.0);
         drop(s.sdf_grid(1));
+    }
+
+    // ── Bio-inspired primitive tests ──────────────────────────────────
+
+    // -- Superellipsoid --
+
+    #[test]
+    fn superellipsoid_sign_correctness() {
+        // n1=n2=2 approximates an ellipsoid
+        let s = Solid::superellipsoid(Vector3::new(2.0, 3.0, 4.0), 2.0, 2.0);
+        assert!(
+            s.evaluate(&Point3::origin()) < 0.0,
+            "center should be inside"
+        );
+        assert!(
+            s.evaluate(&Point3::new(10.0, 0.0, 0.0)) > 0.0,
+            "far point should be outside"
+        );
+    }
+
+    #[test]
+    fn superellipsoid_on_surface() {
+        // Uniform radii, n1=n2=2 → sphere of radius 3
+        let s = Solid::superellipsoid(Vector3::new(3.0, 3.0, 3.0), 2.0, 2.0);
+        // On-axis surface point: f = |3/3| = 1, f-1 = 0
+        let val = s.evaluate(&Point3::new(3.0, 0.0, 0.0));
+        assert!(
+            val.abs() < 1e-10,
+            "on-surface point should be zero, got {val}"
+        );
+    }
+
+    #[test]
+    fn superellipsoid_octahedron_sign() {
+        // n1=n2=1 → octahedron-like shape
+        let s = Solid::superellipsoid(Vector3::new(1.0, 1.0, 1.0), 1.0, 1.0);
+        assert!(
+            s.evaluate(&Point3::origin()) < 0.0,
+            "center should be inside"
+        );
+        assert!(
+            s.evaluate(&Point3::new(2.0, 0.0, 0.0)) > 0.0,
+            "outside point should be positive"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn superellipsoid_bounds() {
+        let s = Solid::superellipsoid(Vector3::new(2.0, 3.0, 4.0), 2.0, 2.0);
+        let bb = s.bounds().expect("finite bounds");
+        assert!((bb.min.x - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.z - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn superellipsoid_rejects_zero_radii() {
+        drop(Solid::superellipsoid(Vector3::new(0.0, 1.0, 1.0), 2.0, 2.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn superellipsoid_rejects_zero_n1() {
+        drop(Solid::superellipsoid(Vector3::new(1.0, 1.0, 1.0), 0.0, 2.0));
+    }
+
+    #[test]
+    fn superellipsoid_meshes_to_valid_geometry() {
+        let s = Solid::superellipsoid(Vector3::new(2.0, 2.0, 2.0), 2.0, 2.0);
+        let mesh = s.mesh(0.2);
+        assert!(
+            mesh.vertices.len() > 10,
+            "mesh should have substantial geometry"
+        );
+        assert!(mesh.faces.len() > 10, "mesh should have triangles");
+    }
+
+    // -- LogSpiral --
+
+    #[test]
+    fn log_spiral_sign_correctness() {
+        let s = Solid::log_spiral(2.0, 0.2, 0.5, 2.0);
+        // Point on the spiral at θ=0: (2, 0, 0). Should be on-surface.
+        let val = s.evaluate(&Point3::new(2.0, 0.0, 0.0));
+        assert!(
+            val.abs() < 0.6,
+            "point on spiral start should be near surface, got {val}"
+        );
+        // Far outside
+        assert!(
+            s.evaluate(&Point3::new(50.0, 0.0, 0.0)) > 0.0,
+            "far point should be outside"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn log_spiral_bounds() {
+        let s = Solid::log_spiral(1.0, 0.1, 0.3, 1.0);
+        let bb = s.bounds().expect("finite bounds");
+        // Should contain the spiral extent
+        assert!(bb.max.x > 1.0, "bounds should extend past initial radius");
+        assert!(
+            (bb.min.z - (-0.3)).abs() < 1e-10,
+            "z bounds should be ±thickness"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn log_spiral_rejects_zero_a() {
+        drop(Solid::log_spiral(0.0, 0.1, 0.5, 1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn log_spiral_rejects_zero_turns() {
+        drop(Solid::log_spiral(1.0, 0.1, 0.5, 0.0));
+    }
+
+    #[test]
+    fn log_spiral_meshes_to_valid_geometry() {
+        let s = Solid::log_spiral(2.0, 0.15, 0.5, 1.5);
+        let mesh = s.mesh(0.25);
+        assert!(
+            mesh.vertices.len() > 10,
+            "mesh should have substantial geometry"
+        );
+    }
+
+    // -- Gyroid --
+
+    #[test]
+    fn gyroid_sign_correctness() {
+        let s = Solid::gyroid(1.0, 0.5);
+        // The gyroid passes through zero at many points. Check that it has
+        // both positive and negative regions in a unit cube.
+        let inside = s.evaluate(&Point3::new(0.0, 0.0, 0.0));
+        let outside = s.evaluate(&Point3::new(PI / 2.0, 0.0, 0.0));
+        // At least one should be positive, one negative (or near-zero)
+        assert!(
+            inside * outside < 0.5,
+            "gyroid should have sign changes, got {inside} and {outside}"
+        );
+    }
+
+    #[test]
+    fn gyroid_known_zero_crossing() {
+        // At p=(π/2, 0, 0) with scale=1:
+        // sin(π/2)cos(0) + sin(0)cos(0) + sin(0)cos(π/2) = 1 + 0 + 0 = 1
+        // |1| - thickness. For thickness=1.0, the field should be ~0.
+        let s = Solid::gyroid(1.0, 1.0);
+        let val = s.evaluate(&Point3::new(PI / 2.0, 0.0, 0.0));
+        assert!(
+            val.abs() < 0.1,
+            "gyroid at known zero-crossing should be near zero, got {val}"
+        );
+    }
+
+    #[test]
+    fn gyroid_is_infinite() {
+        let s = Solid::gyroid(1.0, 0.5);
+        assert!(s.bounds().is_none(), "gyroid should have no finite bounds");
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn gyroid_rejects_zero_scale() {
+        drop(Solid::gyroid(0.0, 0.5));
+    }
+
+    #[test]
+    fn gyroid_intersected_with_cuboid_meshes() {
+        // Gyroid must be intersected with a finite solid to mesh
+        let envelope = Solid::cuboid(Vector3::new(4.0, 4.0, 4.0));
+        let lattice = Solid::gyroid(1.0, 0.4);
+        let part = envelope.intersect(lattice);
+        let mesh = part.mesh(0.3);
+        assert!(
+            mesh.vertices.len() > 50,
+            "gyroid lattice should produce substantial mesh, got {} verts",
+            mesh.vertices.len()
+        );
+    }
+
+    // -- SchwarzP --
+
+    #[test]
+    fn schwarz_p_sign_correctness() {
+        let s = Solid::schwarz_p(1.0, 0.5);
+        // At origin: cos(0)+cos(0)+cos(0) = 3, |3|-0.5 = 2.5 → outside
+        assert!(
+            s.evaluate(&Point3::origin()) > 0.0,
+            "origin should be outside the schwarz_p shell"
+        );
+    }
+
+    #[test]
+    fn schwarz_p_known_zero_crossing() {
+        // At p = (π/2, 0, 0) with scale=1:
+        // cos(π/2) + cos(0) + cos(0) = 0 + 1 + 1 = 2.
+        // |2| - thickness. For thickness=2.0, field ≈ 0.
+        let s = Solid::schwarz_p(1.0, 2.0);
+        let val = s.evaluate(&Point3::new(PI / 2.0, 0.0, 0.0));
+        assert!(
+            val.abs() < 0.1,
+            "schwarz_p at known zero-crossing should be near zero, got {val}"
+        );
+    }
+
+    #[test]
+    fn schwarz_p_is_infinite() {
+        let s = Solid::schwarz_p(1.0, 0.5);
+        assert!(
+            s.bounds().is_none(),
+            "schwarz_p should have no finite bounds"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn schwarz_p_rejects_zero_thickness() {
+        drop(Solid::schwarz_p(1.0, 0.0));
+    }
+
+    #[test]
+    fn schwarz_p_intersected_with_cuboid_meshes() {
+        let envelope = Solid::cuboid(Vector3::new(4.0, 4.0, 4.0));
+        let lattice = Solid::schwarz_p(1.0, 0.4);
+        let part = envelope.intersect(lattice);
+        let mesh = part.mesh(0.3);
+        assert!(
+            mesh.vertices.len() > 50,
+            "schwarz_p lattice should produce substantial mesh, got {} verts",
+            mesh.vertices.len()
+        );
+    }
+
+    // -- Helix --
+
+    #[test]
+    fn helix_sign_correctness() {
+        let s = Solid::helix(3.0, 2.0, 0.5, 2.0);
+        // The tube surface at t=0 along +X is at (3.5, 0, 0): distance 0.5 to
+        // helix curve at (3, 0, 0), minus thickness 0.5 → field ≈ 0.
+        let val = s.evaluate(&Point3::new(3.5, 0.0, 0.0));
+        assert!(
+            val.abs() < 0.1,
+            "point on tube surface should be near zero, got {val}"
+        );
+        // Point ON the helix curve at t=0: (3, 0, 0). Distance to curve = 0,
+        // field = 0 - 0.5 = -0.5 → inside the tube.
+        let val_inside = s.evaluate(&Point3::new(3.0, 0.0, 0.0));
+        assert!(
+            val_inside < -0.4,
+            "point on helix curve should be inside tube, got {val_inside}"
+        );
+        // Origin is far from the helix coil (distance ≈ 3.0, field ≈ 2.5)
+        assert!(
+            s.evaluate(&Point3::origin()) > 0.0,
+            "origin should be outside helix tube"
+        );
+    }
+
+    #[test]
+    fn helix_known_interior_point() {
+        let s = Solid::helix(3.0, 2.0, 0.5, 2.0);
+        // Slightly inside the tube at t=0: (2.8, 0, 0) → distance to (3,0,0) = 0.2
+        // field = 0.2 - 0.5 = -0.3
+        let val = s.evaluate(&Point3::new(2.8, 0.0, 0.0));
+        assert!(
+            val < 0.0,
+            "point inside helix tube should be negative, got {val}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn helix_bounds() {
+        let s = Solid::helix(3.0, 2.0, 0.5, 2.0);
+        let bb = s.bounds().expect("finite bounds");
+        assert!((bb.min.x - (-3.5)).abs() < 1e-10, "x min should be -(R+th)");
+        assert!((bb.max.x - 3.5).abs() < 1e-10, "x max should be R+th");
+        assert!(
+            (bb.max.z - 4.5).abs() < 1e-10,
+            "z max should be turns*pitch+th"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn helix_rejects_zero_radius() {
+        drop(Solid::helix(0.0, 2.0, 0.5, 2.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn helix_rejects_zero_turns() {
+        drop(Solid::helix(3.0, 2.0, 0.5, 0.0));
+    }
+
+    #[test]
+    fn helix_meshes_to_valid_geometry() {
+        let s = Solid::helix(3.0, 2.0, 0.5, 1.5);
+        let mesh = s.mesh(0.25);
+        assert!(
+            mesh.vertices.len() > 50,
+            "helix mesh should have substantial geometry, got {} verts",
+            mesh.vertices.len()
+        );
     }
 }
