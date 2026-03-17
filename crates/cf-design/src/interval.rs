@@ -36,7 +36,49 @@ impl FieldNode {
             Self::Torus { major, minor } => interval_torus(*major, *minor, aabb),
             Self::Cone { radius, height } => interval_cone(*radius, *height, aabb),
             Self::Plane { normal, offset } => interval_plane(normal, *offset, aabb),
-            Self::Pipe { .. } | Self::PipeSpline { .. } => lipschitz_bound(self, aabb, 1.0),
+            Self::Superellipsoid { radii, n1, n2 } => {
+                // For the raw implicit function f-1, the gradient magnitude is
+                // bounded by ≈ sqrt(3) * max(1/rx, 1/ry, 1/rz) for n1,n2 ≥ 1.
+                // For n < 1 (star shapes), gradients can be steeper, so we scale
+                // by max(n1,n2)/min(n1,n2) as a safety factor.
+                let min_r = radii.x.min(radii.y).min(radii.z);
+                let exponent_factor = (n1.max(*n2) / n1.min(*n2)).max(1.0);
+                let lipschitz = 2.0 * 3.0_f64.sqrt() / min_r * exponent_factor;
+                lipschitz_bound(self, aabb, lipschitz)
+            }
+            Self::Gyroid { scale, .. } => {
+                // |∇g| ≤ 2·scale·√3 for the raw trig field; shell (abs) preserves this.
+                let lipschitz = 2.0 * scale * 3.0_f64.sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
+            Self::SchwarzP { scale, .. } => {
+                // |∇g| ≤ scale·√3 for cos(sx)+cos(sy)+cos(sz); shell preserves this.
+                let lipschitz = scale * 3.0_f64.sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
+            Self::LogSpiral { .. }
+            | Self::Helix { .. }
+            | Self::Pipe { .. }
+            | Self::PipeSpline { .. } => lipschitz_bound(self, aabb, 1.0),
+            Self::Loft { stations } => {
+                // Lipschitz ≈ sqrt(1 + max_taper_slope²). For gentle tapers, ≈ 1.
+                // Conservative estimate: piecewise station differences × 2 safety
+                // factor for cubic interpolation overshoot.
+                let max_slope = stations
+                    .windows(2)
+                    .map(|w| {
+                        let dz = w[1][0] - w[0][0];
+                        if dz.abs() < 1e-15 {
+                            0.0
+                        } else {
+                            ((w[1][1] - w[0][1]) / dz).abs()
+                        }
+                    })
+                    .fold(0.0_f64, f64::max)
+                    * 2.0;
+                let lipschitz = (1.0 + max_slope * max_slope).sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
 
             // Booleans
             Self::Union(a, b) => interval_union(a, b, aabb),
@@ -46,6 +88,10 @@ impl FieldNode {
             Self::SmoothSubtract(a, b, k) => interval_smooth_subtract(a, b, *k, aabb),
             Self::SmoothIntersect(a, b, k) => interval_smooth_intersect(a, b, *k, aabb),
             Self::SmoothUnionAll(children, k) => interval_smooth_union_all(children, *k, aabb),
+            Self::SmoothUnionVariable { a, b, max_k, .. } => {
+                // Conservative: use max_k as the blend radius upper bound
+                interval_smooth_union(a, b, *max_k, aabb)
+            }
 
             // Transforms
             Self::Translate(child, offset) => interval_translate(child, offset, aabb),
@@ -58,11 +104,139 @@ impl FieldNode {
             Self::Round(child, radius) => interval_round(child, *radius, aabb),
             Self::Offset(child, distance) => interval_offset(child, *distance, aabb),
             Self::Elongate(child, half) => interval_elongate(child, half, aabb),
+            Self::Twist(_, rate) => {
+                // Lipschitz ≈ sqrt(1 + (rate · r_xy_max)²) where r_xy_max is
+                // the maximum distance from Z axis within the AABB.
+                let x_max = aabb.min.x.abs().max(aabb.max.x.abs());
+                let y_max = aabb.min.y.abs().max(aabb.max.y.abs());
+                let r_xy_max = x_max.hypot(y_max);
+                let kr = rate * r_xy_max;
+                let lipschitz = kr.mul_add(kr, 1.0).sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
+            Self::Bend(_, rate) => {
+                // Same distortion analysis as Twist but in the XZ plane.
+                let x_max = aabb.min.x.abs().max(aabb.max.x.abs());
+                let z_max = aabb.min.z.abs().max(aabb.max.z.abs());
+                let r_xz_max = x_max.hypot(z_max);
+                let kr = rate * r_xz_max;
+                let lipschitz = kr.mul_add(kr, 1.0).sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
+            Self::Repeat(_, _) | Self::RepeatBounded { .. } => {
+                // The repeat fold is distance-preserving (Lipschitz = 1).
+                lipschitz_bound(self, aabb, 1.0)
+            }
 
             // User function
             Self::UserFn { interval, .. } => interval
                 .as_ref()
                 .map_or((f64::NEG_INFINITY, f64::INFINITY), |f| (f.0)(aabb)),
+        }
+    }
+
+    /// Compute the Lipschitz distortion factor for this expression tree.
+    ///
+    /// Returns the factor by which domain distortion operations (Twist, Bend,
+    /// Loft taper) amplify the field gradient relative to an exact SDF.
+    /// For undistorted fields, returns 1.0.
+    ///
+    /// The mesher divides cell size by this factor to ensure thin features
+    /// in high-distortion regions are not silently lost.
+    ///
+    /// Only accounts for geometric distortion — not primitive-level non-SDF
+    /// effects (which the mesher handles via interval arithmetic).
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn lipschitz_factor(&self) -> f64 {
+        match self {
+            // ── Loft: distortion from taper ──────────────────────────
+            Self::Loft { stations } => {
+                let max_slope = stations
+                    .windows(2)
+                    .map(|w| {
+                        let dz = w[1][0] - w[0][0];
+                        if dz.abs() < 1e-15 {
+                            0.0
+                        } else {
+                            ((w[1][1] - w[0][1]) / dz).abs()
+                        }
+                    })
+                    .fold(0.0_f64, f64::max)
+                    * 2.0; // Safety factor for cubic interpolation overshoot
+                (1.0 + max_slope * max_slope).sqrt()
+            }
+
+            // ── Booleans: max of children ────────────────────────────
+            Self::Union(a, b)
+            | Self::Subtract(a, b)
+            | Self::Intersect(a, b)
+            | Self::SmoothUnion(a, b, _)
+            | Self::SmoothSubtract(a, b, _)
+            | Self::SmoothIntersect(a, b, _) => a.lipschitz_factor().max(b.lipschitz_factor()),
+
+            Self::SmoothUnionVariable { a, b, .. } => {
+                a.lipschitz_factor().max(b.lipschitz_factor())
+            }
+
+            Self::SmoothUnionAll(children, _) => children
+                .iter()
+                .map(Self::lipschitz_factor)
+                .fold(1.0_f64, f64::max),
+
+            // ── Transforms, domain ops, repeat (preserve child L) ────
+            Self::Translate(child, _)
+            | Self::Rotate(child, _)
+            | Self::Mirror(child, _)
+            | Self::ScaleUniform(child, _)
+            | Self::Shell(child, _)
+            | Self::Round(child, _)
+            | Self::Offset(child, _)
+            | Self::Elongate(child, _)
+            | Self::Repeat(child, _)
+            | Self::RepeatBounded { child, .. } => child.lipschitz_factor(),
+
+            // ── Distortion ops (multiply by distortion factor) ───────
+            Self::Twist(child, rate) => {
+                // Lipschitz: √(1 + (rate · r_xy_max)²)
+                // r_xy_max from child's bounding box.
+                let r_xy_max = child.bounds().map_or(10.0, |bb| {
+                    let x = bb.min.x.abs().max(bb.max.x.abs());
+                    let y = bb.min.y.abs().max(bb.max.y.abs());
+                    x.hypot(y)
+                });
+                let kr = rate * r_xy_max;
+                let twist_l = kr.mul_add(kr, 1.0).sqrt();
+                child.lipschitz_factor() * twist_l
+            }
+            Self::Bend(child, rate) => {
+                // Same analysis as Twist but in XZ plane.
+                let r_xz_max = child.bounds().map_or(10.0, |bb| {
+                    let x = bb.min.x.abs().max(bb.max.x.abs());
+                    let z = bb.min.z.abs().max(bb.max.z.abs());
+                    x.hypot(z)
+                });
+                let kr = rate * r_xz_max;
+                let bend_l = kr.mul_add(kr, 1.0).sqrt();
+                child.lipschitz_factor() * bend_l
+            }
+
+            // ── Leaf primitives + user function (no distortion) ──────
+            Self::Sphere { .. }
+            | Self::Cuboid { .. }
+            | Self::Cylinder { .. }
+            | Self::Capsule { .. }
+            | Self::Ellipsoid { .. }
+            | Self::Torus { .. }
+            | Self::Cone { .. }
+            | Self::Plane { .. }
+            | Self::Superellipsoid { .. }
+            | Self::LogSpiral { .. }
+            | Self::Gyroid { .. }
+            | Self::SchwarzP { .. }
+            | Self::Helix { .. }
+            | Self::Pipe { .. }
+            | Self::PipeSpline { .. }
+            | Self::UserFn { .. } => 1.0,
         }
     }
 }
@@ -752,6 +926,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn smooth_union_variable_interval_contains_points() {
+        use crate::field_node::UserEvalFn;
+        use std::sync::Arc;
+
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let suv = FieldNode::SmoothUnionVariable {
+            a: Box::new(a),
+            b: Box::new(b),
+            radius_fn: UserEvalFn(Arc::new(|_: Point3<f64>| 1.0)),
+            max_k: 1.0,
+        };
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&suv, aabb, 5);
+        }
+    }
+
     // ── Transform interval tests ────────────────────────────────────
 
     #[test]
@@ -1002,5 +1197,431 @@ mod tests {
         for aabb in &aabbs {
             verify_interval_contains_points(&node, aabb, 5);
         }
+    }
+
+    // ── Bio-inspired primitive interval tests ──────────────────────────
+
+    #[test]
+    fn superellipsoid_interval_contains_points() {
+        let node = FieldNode::Superellipsoid {
+            radii: Vector3::new(2.0, 3.0, 4.0),
+            n1: 2.0,
+            n2: 2.0,
+        };
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn superellipsoid_octahedron_interval_contains_points() {
+        let node = FieldNode::Superellipsoid {
+            radii: Vector3::new(2.0, 2.0, 2.0),
+            n1: 1.0,
+            n2: 1.0,
+        };
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn log_spiral_interval_contains_points() {
+        let node = FieldNode::LogSpiral {
+            a: 2.0,
+            b: 0.15,
+            thickness: 0.5,
+            turns: 1.5,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(1.0, -1.0, -0.5), Point3::new(3.0, 1.0, 0.5)),
+            Aabb::new(Point3::new(-3.0, -3.0, -0.5), Point3::new(3.0, 3.0, 0.5)),
+            Aabb::new(Point3::new(5.0, 5.0, -0.5), Point3::new(6.0, 6.0, 0.5)),
+            Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn gyroid_interval_contains_points() {
+        let node = FieldNode::Gyroid {
+            scale: 1.0,
+            thickness: 0.5,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 2.0, 2.0)),
+            Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5)),
+            Aabb::new(Point3::new(3.0, 3.0, 3.0), Point3::new(4.0, 4.0, 4.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn schwarz_p_interval_contains_points() {
+        let node = FieldNode::SchwarzP {
+            scale: 1.0,
+            thickness: 0.5,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 2.0, 2.0)),
+            Aabb::new(Point3::new(-0.5, -0.5, -0.5), Point3::new(0.5, 0.5, 0.5)),
+            Aabb::new(Point3::new(3.0, 3.0, 3.0), Point3::new(4.0, 4.0, 4.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn helix_interval_contains_points() {
+        let node = FieldNode::Helix {
+            radius: 3.0,
+            pitch: 2.0,
+            thickness: 0.5,
+            turns: 2.0,
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(2.0, -1.0, -0.5), Point3::new(4.0, 1.0, 0.5)),
+            Aabb::new(Point3::new(-4.0, -4.0, 0.0), Point3::new(4.0, 4.0, 4.0)),
+            Aabb::new(Point3::new(-1.0, -1.0, 1.0), Point3::new(1.0, 1.0, 3.0)),
+            Aabb::new(Point3::new(5.0, 5.0, 0.0), Point3::new(6.0, 6.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Loft interval tests ──────────────────────────────────────────
+
+    #[test]
+    fn loft_constant_radius_interval_contains_points() {
+        let node = FieldNode::Loft {
+            stations: vec![[-5.0, 2.0], [5.0, 2.0]],
+        };
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn loft_tapered_interval_contains_points() {
+        let node = FieldNode::Loft {
+            stations: vec![[-3.0, 3.0], [3.0, 1.0]],
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-1.0, -1.0, -3.0), Point3::new(1.0, 1.0, 3.0)),
+            Aabb::new(Point3::new(-3.0, -3.0, -3.0), Point3::new(3.0, 3.0, 3.0)),
+            Aabb::new(Point3::new(0.0, 0.0, -1.0), Point3::new(2.0, 2.0, 1.0)),
+            Aabb::new(Point3::new(5.0, 5.0, 0.0), Point3::new(6.0, 6.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn loft_multi_station_interval_contains_points() {
+        let node = FieldNode::Loft {
+            stations: vec![[-4.0, 1.0], [-1.0, 3.0], [1.0, 2.0], [4.0, 1.0]],
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-3.0, -3.0, -4.0), Point3::new(3.0, 3.0, 4.0)),
+            Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 2.0, 2.0)),
+            Aabb::new(Point3::new(5.0, 5.0, 0.0), Point3::new(6.0, 6.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Twist interval tests ────────────────────────────────────────
+
+    #[test]
+    fn twist_interval_contains_points() {
+        let node = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 2.0, 3.0),
+            }),
+            0.5,
+        );
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn twist_high_rate_interval_contains_points() {
+        let node = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 1.0, 5.0),
+            }),
+            2.0,
+        );
+        let aabbs = vec![
+            Aabb::new(Point3::new(-2.0, -2.0, -5.0), Point3::new(2.0, 2.0, 5.0)),
+            Aabb::new(Point3::new(-0.5, -0.5, 0.0), Point3::new(0.5, 0.5, 1.0)),
+            Aabb::new(Point3::new(2.0, 0.0, 0.0), Point3::new(3.0, 1.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Bend interval tests ─────────────────────────────────────────
+
+    #[test]
+    fn bend_interval_contains_points() {
+        let node = FieldNode::Bend(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 1.0, 5.0),
+            }),
+            0.2,
+        );
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn bend_moderate_rate_interval_contains_points() {
+        let node = FieldNode::Bend(
+            Box::new(FieldNode::Cylinder {
+                radius: 1.0,
+                half_height: 4.0,
+            }),
+            0.3,
+        );
+        let aabbs = vec![
+            Aabb::new(Point3::new(-2.0, -2.0, -5.0), Point3::new(2.0, 2.0, 5.0)),
+            Aabb::new(Point3::new(-0.5, -0.5, 0.0), Point3::new(0.5, 0.5, 1.0)),
+            Aabb::new(Point3::new(3.0, 0.0, 0.0), Point3::new(4.0, 1.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Repeat interval tests ────────────────────────────────────────
+
+    #[test]
+    fn repeat_interval_contains_points() {
+        let node = FieldNode::Repeat(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(5.0, 5.0, 5.0),
+        );
+        let aabbs = vec![
+            // Inside one cell
+            Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
+            // Offset copy
+            Aabb::new(Point3::new(4.0, -1.0, -1.0), Point3::new(6.0, 1.0, 1.0)),
+            // Spanning multiple cells
+            Aabb::new(Point3::new(-3.0, -1.0, -1.0), Point3::new(8.0, 1.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn repeat_bounded_interval_contains_points() {
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(FieldNode::Sphere { radius: 1.0 }),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [3, 1, 1],
+        };
+        let aabbs = vec![
+            // Center copy
+            Aabb::new(Point3::new(-2.0, -2.0, -2.0), Point3::new(2.0, 2.0, 2.0)),
+            // Near right copy
+            Aabb::new(Point3::new(3.0, -2.0, -2.0), Point3::new(7.0, 2.0, 2.0)),
+            // Beyond array (clamped region)
+            Aabb::new(Point3::new(8.0, -1.0, -1.0), Point3::new(12.0, 1.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Lipschitz factor tests ───────────────────────────────────────
+
+    #[test]
+    fn lipschitz_factor_exact_sdf_primitives_are_1() {
+        let cases: Vec<FieldNode> = vec![
+            FieldNode::Sphere { radius: 5.0 },
+            FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 2.0, 3.0),
+            },
+            FieldNode::Cylinder {
+                radius: 2.0,
+                half_height: 3.0,
+            },
+            FieldNode::Capsule {
+                radius: 1.0,
+                half_height: 2.0,
+            },
+            FieldNode::Torus {
+                major: 5.0,
+                minor: 1.0,
+            },
+            FieldNode::Cone {
+                radius: 2.0,
+                height: 3.0,
+            },
+            FieldNode::Plane {
+                normal: Vector3::new(0.0, 0.0, 1.0),
+                offset: 0.0,
+            },
+            FieldNode::Pipe {
+                vertices: vec![Point3::origin(), Point3::new(5.0, 0.0, 0.0)],
+                radius: 0.5,
+            },
+        ];
+        for node in &cases {
+            assert!(
+                (node.lipschitz_factor() - 1.0).abs() < 1e-10,
+                "Expected L=1 for {node:?}, got {}",
+                node.lipschitz_factor()
+            );
+        }
+    }
+
+    #[test]
+    fn lipschitz_factor_loft_constant_radius_is_1() {
+        let node = FieldNode::Loft {
+            stations: vec![[-5.0, 2.0], [5.0, 2.0]],
+        };
+        assert!(
+            (node.lipschitz_factor() - 1.0).abs() < 1e-10,
+            "Constant-radius loft should have L=1, got {}",
+            node.lipschitz_factor()
+        );
+    }
+
+    #[test]
+    fn lipschitz_factor_loft_tapered_is_gt_1() {
+        let node = FieldNode::Loft {
+            stations: vec![[-5.0, 3.0], [5.0, 1.0]],
+        };
+        let lip = node.lipschitz_factor();
+        assert!(lip > 1.0, "Tapered loft should have L > 1, got {lip}");
+    }
+
+    #[test]
+    fn lipschitz_factor_twist_is_gt_1() {
+        let node = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(3.0, 3.0, 10.0),
+            }),
+            1.0,
+        );
+        let lip = node.lipschitz_factor();
+        // Expected: sqrt(1 + (1.0 * sqrt(3^2+3^2))^2) = sqrt(1 + 18) ≈ 4.36
+        let r_xy = 3.0_f64.hypot(3.0);
+        let expected = (1.0 + r_xy * r_xy).sqrt();
+        assert!(
+            (lip - expected).abs() < 1e-10,
+            "Twist L should be {expected}, got {lip}"
+        );
+    }
+
+    #[test]
+    fn lipschitz_factor_bend_is_gt_1() {
+        let node = FieldNode::Bend(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(2.0, 1.0, 8.0),
+            }),
+            0.5,
+        );
+        let lip = node.lipschitz_factor();
+        // Expected: sqrt(1 + (0.5 * sqrt(2^2+8^2))^2)
+        let r_xz = 2.0_f64.hypot(8.0);
+        let kr = 0.5 * r_xz;
+        let expected = (1.0 + kr * kr).sqrt();
+        assert!(
+            (lip - expected).abs() < 1e-10,
+            "Bend L should be {expected}, got {lip}"
+        );
+    }
+
+    #[test]
+    fn lipschitz_factor_propagates_through_booleans() {
+        let twisted = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(3.0, 3.0, 10.0),
+            }),
+            1.0,
+        );
+        let twist_l = twisted.lipschitz_factor();
+
+        let sphere = FieldNode::Sphere { radius: 2.0 };
+        let union = FieldNode::Union(Box::new(twisted), Box::new(sphere));
+
+        // Union should propagate max L
+        assert!(
+            (union.lipschitz_factor() - twist_l).abs() < 1e-10,
+            "Union should propagate twist's L={twist_l}, got {}",
+            union.lipschitz_factor()
+        );
+    }
+
+    #[test]
+    fn lipschitz_factor_propagates_through_transforms() {
+        let twisted = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(3.0, 3.0, 10.0),
+            }),
+            1.0,
+        );
+        let twist_l = twisted.lipschitz_factor();
+
+        let translated = FieldNode::Translate(Box::new(twisted), Vector3::new(10.0, 0.0, 0.0));
+        assert!(
+            (translated.lipschitz_factor() - twist_l).abs() < 1e-10,
+            "Translate should preserve L={twist_l}, got {}",
+            translated.lipschitz_factor()
+        );
+    }
+
+    #[test]
+    fn lipschitz_factor_repeat_preserves_child() {
+        let twisted = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(2.0, 2.0, 5.0),
+            }),
+            0.5,
+        );
+        let twist_l = twisted.lipschitz_factor();
+
+        let repeated = FieldNode::Repeat(Box::new(twisted), Vector3::new(10.0, 10.0, 10.0));
+        assert!(
+            (repeated.lipschitz_factor() - twist_l).abs() < 1e-10,
+            "Repeat should preserve child's L={twist_l}, got {}",
+            repeated.lipschitz_factor()
+        );
+    }
+
+    #[test]
+    fn lipschitz_factor_undistorted_tree_is_1() {
+        // A complex tree with no distortion should have L=1
+        let a = FieldNode::Sphere { radius: 3.0 };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 1.0, 1.0),
+            }),
+            Vector3::new(5.0, 0.0, 0.0),
+        );
+        let node = FieldNode::SmoothUnion(Box::new(a), Box::new(b), 0.5);
+        assert!(
+            (node.lipschitz_factor() - 1.0).abs() < 1e-10,
+            "Undistorted tree should have L=1, got {}",
+            node.lipschitz_factor()
+        );
     }
 }

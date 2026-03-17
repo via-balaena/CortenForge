@@ -46,7 +46,7 @@ impl FieldNode {
                     Point3::new(r, r, h + r),
                 ))
             }
-            Self::Ellipsoid { radii } => Some(Aabb::new(
+            Self::Ellipsoid { radii } | Self::Superellipsoid { radii, .. } => Some(Aabb::new(
                 Point3::new(-radii.x, -radii.y, -radii.z),
                 Point3::new(radii.x, radii.y, radii.z),
             )),
@@ -63,7 +63,58 @@ impl FieldNode {
                 let h = *height;
                 Some(Aabb::new(Point3::new(-r, -r, -h), Point3::new(r, r, 0.0)))
             }
-            Self::Plane { .. } => None,
+            Self::LogSpiral {
+                a,
+                b,
+                thickness,
+                turns,
+            } => {
+                // The spiral extends from θ=0 to θ=turns·2π.
+                // Max radius = max(a, a·exp(b·turns·2π)) + thickness.
+                let r_start = *a;
+                let r_end = a * (b * turns * std::f64::consts::TAU).exp();
+                let r_max = r_start.max(r_end) + thickness;
+                Some(Aabb::new(
+                    Point3::new(-r_max, -r_max, -thickness),
+                    Point3::new(r_max, r_max, *thickness),
+                ))
+            }
+            Self::Gyroid { .. }
+            | Self::SchwarzP { .. }
+            | Self::Plane { .. }
+            | Self::Repeat(_, _) => None,
+            Self::Helix {
+                radius,
+                pitch,
+                thickness,
+                turns,
+            } => {
+                let r = radius + thickness;
+                let z_max = pitch * turns + thickness;
+                Some(Aabb::new(
+                    Point3::new(-r, -r, -thickness),
+                    Point3::new(r, r, z_max),
+                ))
+            }
+            Self::Loft { stations } => {
+                if stations.len() < 2 {
+                    return Some(Aabb::from_point(Point3::origin()));
+                }
+                let z_min = stations[0][0];
+                let z_max = stations[stations.len() - 1][0];
+                // Conservative max radius: max station radius + overshoot bound.
+                // Catmull-Rom can overshoot by up to max(|Δr|)/2 (conservative).
+                let r_max = stations.iter().map(|s| s[1]).fold(0.0_f64, f64::max);
+                let max_diff = stations
+                    .windows(2)
+                    .map(|w| (w[1][1] - w[0][1]).abs())
+                    .fold(0.0_f64, f64::max);
+                let r_safe = r_max + max_diff * 0.5;
+                Some(Aabb::new(
+                    Point3::new(-r_safe, -r_safe, z_min),
+                    Point3::new(r_safe, r_safe, z_max),
+                ))
+            }
             Self::Pipe { vertices, radius } => {
                 if vertices.is_empty() {
                     return Some(Aabb::from_point(Point3::origin()));
@@ -110,6 +161,10 @@ impl FieldNode {
                 (Some(a_bb), Some(b_bb)) => Some(a_bb.intersection(&b_bb).expanded(k / 4.0)),
                 (Some(bb), None) | (None, Some(bb)) => Some(bb.expanded(k / 4.0)),
                 (None, None) => None,
+            },
+            Self::SmoothUnionVariable { a, b, max_k, .. } => match (a.bounds(), b.bounds()) {
+                (Some(a_bb), Some(b_bb)) => Some(a_bb.union(&b_bb).expanded(max_k / 4.0)),
+                _ => None,
             },
             Self::SmoothUnionAll(children, k) => {
                 let mut result: Option<Aabb> = None;
@@ -163,6 +218,34 @@ impl FieldNode {
                 Aabb::new(
                     Point3::new(bb.min.x - half.x, bb.min.y - half.y, bb.min.z - half.z),
                     Point3::new(bb.max.x + half.x, bb.max.y + half.y, bb.max.z + half.z),
+                )
+            }),
+            Self::Twist(child, _) => child.bounds().map(|bb| {
+                // Twist rotates XY — bounds expand to circumscribed circle in XY.
+                let x_ext = bb.min.x.abs().max(bb.max.x.abs());
+                let y_ext = bb.min.y.abs().max(bb.max.y.abs());
+                let r = x_ext.hypot(y_ext);
+                Aabb::new(Point3::new(-r, -r, bb.min.z), Point3::new(r, r, bb.max.z))
+            }),
+            Self::Bend(child, _) => child.bounds().map(|bb| {
+                // Bend rotates XZ — bounds expand to circumscribed circle in XZ.
+                let x_ext = bb.min.x.abs().max(bb.max.x.abs());
+                let z_ext = bb.min.z.abs().max(bb.max.z.abs());
+                let r = x_ext.hypot(z_ext);
+                Aabb::new(Point3::new(-r, bb.min.y, -r), Point3::new(r, bb.max.y, r))
+            }),
+            Self::RepeatBounded {
+                child,
+                spacing,
+                count,
+            } => child.bounds().map(|bb| {
+                // Total array extent: (count - 1) * spacing, centered at origin.
+                let ext_x = (f64::from(count[0]) - 1.0) * spacing.x * 0.5;
+                let ext_y = (f64::from(count[1]) - 1.0) * spacing.y * 0.5;
+                let ext_z = (f64::from(count[2]) - 1.0) * spacing.z * 0.5;
+                Aabb::new(
+                    Point3::new(bb.min.x - ext_x, bb.min.y - ext_y, bb.min.z - ext_z),
+                    Point3::new(bb.max.x + ext_x, bb.max.y + ext_y, bb.max.z + ext_z),
                 )
             }),
 
@@ -380,5 +463,215 @@ mod tests {
                 Point3::new(10.0, 10.0, 10.0)
             ))
         );
+    }
+
+    // ── Bio-inspired primitive bounds tests ──────────────────────────
+
+    #[test]
+    fn superellipsoid_bounds() {
+        let node = FieldNode::Superellipsoid {
+            radii: Vector3::new(2.0, 3.0, 4.0),
+            n1: 2.0,
+            n2: 2.0,
+        };
+        let bb = node.bounds().map(|b| (b.min, b.max));
+        assert_eq!(
+            bb,
+            Some((Point3::new(-2.0, -3.0, -4.0), Point3::new(2.0, 3.0, 4.0)))
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn log_spiral_bounds_contains_endpoints() {
+        let node = FieldNode::LogSpiral {
+            a: 1.0,
+            b: 0.1,
+            thickness: 0.3,
+            turns: 2.0,
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // Start: r=1 at θ=0. End: r=1*exp(0.1*2*2π) ≈ 3.51 at θ=4π.
+        // Max radius should be ≥ 3.51 + 0.3 ≈ 3.81
+        assert!(
+            bb.max.x > 3.5,
+            "bounds should contain spiral endpoint, got x_max={}",
+            bb.max.x
+        );
+    }
+
+    #[test]
+    fn gyroid_bounds_is_none() {
+        let node = FieldNode::Gyroid {
+            scale: 1.0,
+            thickness: 0.5,
+        };
+        assert!(node.bounds().is_none());
+    }
+
+    #[test]
+    fn schwarz_p_bounds_is_none() {
+        let node = FieldNode::SchwarzP {
+            scale: 1.0,
+            thickness: 0.5,
+        };
+        assert!(node.bounds().is_none());
+    }
+
+    #[test]
+    fn helix_bounds() {
+        let node = FieldNode::Helix {
+            radius: 3.0,
+            pitch: 2.0,
+            thickness: 0.5,
+            turns: 2.0,
+        };
+        let bb = node.bounds().map(|b| (b.min, b.max));
+        assert_eq!(
+            bb,
+            Some((Point3::new(-3.5, -3.5, -0.5), Point3::new(3.5, 3.5, 4.5)))
+        );
+    }
+
+    // ── Loft bounds tests ───────────────────────────────────────────
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn loft_constant_radius_bounds() {
+        let node = FieldNode::Loft {
+            stations: vec![[-5.0, 2.0], [5.0, 2.0]],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        assert!((bb.min.x - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.x - 2.0).abs() < 1e-10);
+        assert!((bb.min.z - (-5.0)).abs() < 1e-10);
+        assert!((bb.max.z - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn loft_tapered_bounds_contains_max_radius() {
+        let node = FieldNode::Loft {
+            stations: vec![[-3.0, 3.0], [3.0, 1.0]],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // Max radius is 3.0 (at z=-3), with overshoot bound
+        assert!(
+            bb.max.x >= 3.0,
+            "bounds should contain max radius 3.0, got x_max={}",
+            bb.max.x
+        );
+        assert!((bb.min.z - (-3.0)).abs() < 1e-10);
+        assert!((bb.max.z - 3.0).abs() < 1e-10);
+    }
+
+    // ── Twist bounds tests ──────────────────────────────────────────
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn twist_bounds_expands_xy() {
+        let node = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 2.0, 5.0),
+            }),
+            1.0,
+        );
+        let bb = node.bounds().expect("finite bounds");
+        // XY should expand to circumscribed circle: r = sqrt(1² + 2²) ≈ 2.236
+        let r = 1.0_f64.hypot(2.0);
+        assert!((bb.min.x - (-r)).abs() < 1e-10);
+        assert!((bb.max.x - r).abs() < 1e-10);
+        assert!((bb.min.y - (-r)).abs() < 1e-10);
+        assert!((bb.max.y - r).abs() < 1e-10);
+        // Z should be unchanged
+        assert!((bb.min.z - (-5.0)).abs() < 1e-10);
+        assert!((bb.max.z - 5.0).abs() < 1e-10);
+    }
+
+    // ── Bend bounds tests ───────────────────────────────────────────
+
+    // ── Repeat bounds tests ───────────────────────────────────────────
+
+    #[test]
+    fn repeat_bounds_is_none() {
+        let node = FieldNode::Repeat(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(5.0, 5.0, 5.0),
+        );
+        assert!(node.bounds().is_none());
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn repeat_bounded_bounds_single_copy() {
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(FieldNode::Sphere { radius: 1.0 }),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [1, 1, 1],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // Single copy → same as child bounds
+        assert!((bb.min.x - (-1.0)).abs() < 1e-10);
+        assert!((bb.max.x - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn repeat_bounded_bounds_3x1x1() {
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(FieldNode::Sphere { radius: 1.0 }),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [3, 1, 1],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // 3 copies along X: extent = (3-1)*5/2 = 5. Child bounds ±1.
+        // Total: [-1-5, 1+5] = [-6, 6] along X.
+        assert!((bb.min.x - (-6.0)).abs() < 1e-10);
+        assert!((bb.max.x - 6.0).abs() < 1e-10);
+        // Y and Z: single copy → child bounds
+        assert!((bb.min.y - (-1.0)).abs() < 1e-10);
+        assert!((bb.max.y - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn repeat_bounded_bounds_2x2x1() {
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(FieldNode::Sphere { radius: 0.5 }),
+            spacing: Vector3::new(3.0, 3.0, 3.0),
+            count: [2, 2, 1],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // X: (2-1)*3/2 = 1.5. Total: [-0.5-1.5, 0.5+1.5] = [-2, 2]
+        assert!((bb.min.x - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.x - 2.0).abs() < 1e-10);
+        // Y: same as X
+        assert!((bb.min.y - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.y - 2.0).abs() < 1e-10);
+        // Z: single copy
+        assert!((bb.min.z - (-0.5)).abs() < 1e-10);
+        assert!((bb.max.z - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn bend_bounds_expands_xz() {
+        let node = FieldNode::Bend(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 2.0, 5.0),
+            }),
+            0.5,
+        );
+        let bb = node.bounds().expect("finite bounds");
+        // XZ should expand to circumscribed circle: r = sqrt(1² + 5²) ≈ 5.1
+        let r = 1.0_f64.hypot(5.0);
+        assert!((bb.min.x - (-r)).abs() < 1e-10);
+        assert!((bb.max.x - r).abs() < 1e-10);
+        // Y should be unchanged
+        assert!((bb.min.y - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.y - 2.0).abs() < 1e-10);
+        // Z should expand
+        assert!((bb.min.z - (-r)).abs() < 1e-10);
+        assert!((bb.max.z - r).abs() < 1e-10);
     }
 }

@@ -67,6 +67,59 @@ pub enum FieldNode {
     /// Half-space. `dot(normal, p) - offset`. Normal must be unit length.
     Plane { normal: Vector3<f64>, offset: f64 },
 
+    // ── Bio-inspired primitives ──────────────────────────────────────
+    /// Superellipsoid centered at origin. Approximate SDF (like Ellipsoid).
+    ///
+    /// Field: `((|x/rx|^(2/n2) + |y/ry|^(2/n2))^(n2/n1) + |z/rz|^(2/n1))^(n1/2) - 1`
+    ///
+    /// `n1` controls Z-roundness, `n2` controls XY-roundness.
+    /// `n1=n2=2` → ellipsoid. Large values → cuboid. `n1=n2=1` → octahedron.
+    Superellipsoid {
+        radii: Vector3<f64>,
+        n1: f64,
+        n2: f64,
+    },
+
+    /// Logarithmic spiral tube in the XY plane.
+    ///
+    /// The spiral curve: `r(θ) = a · exp(b · θ)` for `θ ∈ [0, turns·2π]`.
+    /// Field is distance to spiral curve minus thickness (shell around curve).
+    /// Approximate SDF.
+    LogSpiral {
+        a: f64,
+        b: f64,
+        thickness: f64,
+        turns: f64,
+    },
+
+    /// Gyroid triply-periodic minimal surface.
+    ///
+    /// Field: `|sin(sx)·cos(sy) + sin(sy)·cos(sz) + sin(sz)·cos(sx)| - thickness`
+    ///
+    /// Infinite geometry (bounds = `None`). Intersect with a finite solid for
+    /// meshing — follows the same pattern as `Plane`.
+    Gyroid { scale: f64, thickness: f64 },
+
+    /// Schwarz P triply-periodic minimal surface.
+    ///
+    /// Field: `|cos(sx) + cos(sy) + cos(sz)| - thickness`
+    ///
+    /// Infinite geometry (bounds = `None`). Intersect with a finite solid for
+    /// meshing — follows the same pattern as `Plane`.
+    SchwarzP { scale: f64, thickness: f64 },
+
+    /// Helix tube along the Z axis.
+    ///
+    /// The helix curve: `H(t) = (R·cos(2πt), R·sin(2πt), P·t)` for
+    /// `t ∈ [0, turns]`. Field is distance to helix curve minus thickness.
+    /// Near-exact SDF via Newton refinement (like `PipeSpline`).
+    Helix {
+        radius: f64,
+        pitch: f64,
+        thickness: f64,
+        turns: f64,
+    },
+
     // ── Path-based primitives ────────────────────────────────────────
     /// Pipe along a polyline path with spherical cross-section.
     /// SDF: `min(distance_to_segment(p, seg_i)) - radius` over all segments.
@@ -82,6 +135,20 @@ pub enum FieldNode {
         control_points: Vec<Point3<f64>>,
         radius: f64,
     },
+
+    /// Loft along Z axis with variable circular cross-section.
+    ///
+    /// Each station is `[z_position, radius]`. Stations must be sorted by Z
+    /// with at least 2 entries. Radius is cubic-interpolated (Catmull-Rom)
+    /// between stations. Capped at both ends.
+    ///
+    /// Approximate SDF: exact on the barrel for non-tapered sections,
+    /// approximate in tapered regions (Lipschitz > 1 when |dR/dz| > 0).
+    ///
+    /// Gradient (for Session 19):
+    ///   Barrel: `∇f ≈ (x/r_xy, y/r_xy, −R'(z))` normalized.
+    ///   Caps: (0, 0, ±1) for cap face, radial at cap edge.
+    Loft { stations: Vec<[f64; 2]> },
 
     // ── Boolean operations ────────────────────────────────────────────
     /// Union: `min(a, b)`. Preserves SDF lower-bound property.
@@ -139,6 +206,78 @@ pub enum FieldNode {
     /// Elongate: stretches a shape along axes by inserting flat sections.
     /// `q = p - clamp(p, -h, h)`, then `f(q)`. Preserves SDF property.
     Elongate(Box<Self>, Vector3<f64>),
+
+    /// Twist: rotate XY cross-section proportionally to Z position.
+    /// `rate` is radians per unit Z.
+    ///
+    /// Distorts the distance field — not an exact SDF even if the child is.
+    /// Lipschitz constant ≈ √(1 + `(rate·r_xy)²`) where `r_xy` is distance
+    /// from the Z axis. Thin features far from the axis may be lost during
+    /// meshing.
+    ///
+    /// Gradient (for Session 19):
+    ///   Let q(p) = `R_z(rate·z)·p` be the deformation. The Jacobian J has
+    ///   spectral norm √(1 + rate²·(x²+y²)). Chain rule:
+    ///   `∇f_twist = Jᵀ · ∇f_child(q(p))`.
+    Twist(Box<Self>, f64),
+
+    /// Bend: curve a Z-extended shape in the XZ plane.
+    /// `rate` is the curvature (radians per unit Z).
+    ///
+    /// Same distance field distortion as Twist. Works best for moderate
+    /// curvatures (rate · `z_extent` < π/2). For large bends, increase
+    /// mesh resolution.
+    ///
+    /// Gradient (for Session 19):
+    ///   Same Jacobian analysis as Twist but in the XZ plane.
+    ///   `∇f_bend = Jᵀ · ∇f_child(q(p))`.
+    Bend(Box<Self>, f64),
+
+    /// Infinite repetition with spacing vector.
+    ///
+    /// `q = p - spacing · round(p / spacing)`, then `f(q)`.
+    /// Exact SDF only when child geometry fits within one cell
+    /// (`[-spacing/2, spacing/2]` per axis). Overlapping geometry is
+    /// clipped at cell boundaries.
+    ///
+    /// Produces infinite geometry (bounds = `None`). Intersect with a
+    /// finite solid for meshing — same pattern as `Plane` and `Gyroid`.
+    ///
+    /// Gradient (for Session 19):
+    ///   The fold is piecewise-identity, so `∇f_repeat(p) = ∇f_child(q(p))`
+    ///   at non-boundary points.
+    Repeat(Box<Self>, Vector3<f64>),
+
+    /// Finite repetition with count per axis.
+    ///
+    /// Creates `count[i]` copies along each axis, centered at origin.
+    /// For count `[3, 1, 1]` with spacing `(5, 1, 1)`, copies are at
+    /// x ∈ {−5, 0, 5}.
+    ///
+    /// Unlike [`Repeat`], has finite bounds and can be meshed directly.
+    /// Uses clamped repetition index — outermost cells extend to infinity
+    /// (no wrapping at boundaries).
+    ///
+    /// Gradient (for Session 19):
+    ///   Same as child gradient at folded point (same reasoning as Repeat).
+    RepeatBounded {
+        child: Box<Self>,
+        spacing: Vector3<f64>,
+        count: [u32; 3],
+    },
+
+    /// Smooth union with spatially varying blend radius.
+    ///
+    /// Like [`SmoothUnion`] but the blend radius `k` is determined by a
+    /// user-provided closure evaluated at each point. `max_k` is the upper
+    /// bound on the radius function, used for conservative interval
+    /// evaluation.
+    SmoothUnionVariable {
+        a: Box<Self>,
+        b: Box<Self>,
+        radius_fn: UserEvalFn,
+        max_k: f64,
+    },
 
     // ── User escape hatch ─────────────────────────────────────────────
     /// User-provided function leaf node. Allows custom implicit surface

@@ -13,6 +13,7 @@ impl FieldNode {
     ///
     /// Returns the signed distance (exact or approximate depending on the
     /// primitive). Negative = inside, positive = outside, zero = on surface.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn evaluate(&self, p: &Point3<f64>) -> f64 {
         match self {
             // Primitives
@@ -30,11 +31,27 @@ impl FieldNode {
             Self::Torus { major, minor } => eval_torus(*major, *minor, p),
             Self::Cone { radius, height } => eval_cone(*radius, *height, p),
             Self::Plane { normal, offset } => eval_plane(normal, *offset, p),
+            Self::Superellipsoid { radii, n1, n2 } => eval_superellipsoid(radii, *n1, *n2, p),
+            Self::LogSpiral {
+                a,
+                b,
+                thickness,
+                turns,
+            } => eval_log_spiral(*a, *b, *thickness, *turns, p),
+            Self::Gyroid { scale, thickness } => eval_gyroid(*scale, *thickness, p),
+            Self::SchwarzP { scale, thickness } => eval_schwarz_p(*scale, *thickness, p),
+            Self::Helix {
+                radius,
+                pitch,
+                thickness,
+                turns,
+            } => eval_helix(*radius, *pitch, *thickness, *turns, p),
             Self::Pipe { vertices, radius } => eval_pipe(vertices, *radius, p),
             Self::PipeSpline {
                 control_points,
                 radius,
             } => eval_pipe_spline(control_points, *radius, p),
+            Self::Loft { stations } => eval_loft(stations, p),
 
             // Booleans
             Self::Union(a, b) => a.evaluate(p).min(b.evaluate(p)),
@@ -52,6 +69,12 @@ impl FieldNode {
             Self::SmoothUnionAll(children, k) => {
                 let values: Vec<f64> = children.iter().map(|c| c.evaluate(p)).collect();
                 eval_smooth_union_all(&values, *k)
+            }
+            Self::SmoothUnionVariable {
+                a, b, radius_fn, ..
+            } => {
+                let k = (radius_fn.0)(*p).max(1e-15);
+                eval_smooth_union(a.evaluate(p), b.evaluate(p), k)
             }
 
             // Transforms
@@ -88,6 +111,38 @@ impl FieldNode {
                     p.x - p.x.clamp(-half.x, half.x),
                     p.y - p.y.clamp(-half.y, half.y),
                     p.z - p.z.clamp(-half.z, half.z),
+                );
+                child.evaluate(&q)
+            }
+            Self::Twist(child, rate) => {
+                let angle = rate * p.z;
+                let (s, c) = angle.sin_cos();
+                let q = Point3::new(c.mul_add(p.x, -(s * p.y)), s.mul_add(p.x, c * p.y), p.z);
+                child.evaluate(&q)
+            }
+            Self::Bend(child, rate) => {
+                let angle = rate * p.z;
+                let (s, c) = angle.sin_cos();
+                let q = Point3::new(c.mul_add(p.x, -(s * p.z)), p.y, s.mul_add(p.x, c * p.z));
+                child.evaluate(&q)
+            }
+            Self::Repeat(child, spacing) => {
+                let q = Point3::new(
+                    fold_repeat(p.x, spacing.x),
+                    fold_repeat(p.y, spacing.y),
+                    fold_repeat(p.z, spacing.z),
+                );
+                child.evaluate(&q)
+            }
+            Self::RepeatBounded {
+                child,
+                spacing,
+                count,
+            } => {
+                let q = Point3::new(
+                    fold_repeat_bounded(p.x, spacing.x, count[0]),
+                    fold_repeat_bounded(p.y, spacing.y, count[1]),
+                    fold_repeat_bounded(p.z, spacing.z, count[2]),
                 );
                 child.evaluate(&q)
             }
@@ -130,6 +185,27 @@ fn eval_smooth_union_all(values: &[f64], k: f64) -> f64 {
     let m = values.iter().copied().fold(f64::INFINITY, f64::min);
     let sum: f64 = values.iter().map(|&v| (-(v - m) / k).exp()).sum();
     k.mul_add(-sum.ln(), m)
+}
+
+// ── Repeat fold helpers ─────────────────────────────────────────────────
+
+/// Fold coordinate into fundamental domain for infinite repetition.
+/// Maps coord into `[-spacing/2, spacing/2]`.
+fn fold_repeat(coord: f64, spacing: f64) -> f64 {
+    spacing.mul_add(-(coord / spacing).round(), coord)
+}
+
+/// Fold coordinate for bounded repetition with N copies centered at origin.
+/// Copy positions: `(i - (N-1)/2) · spacing` for `i` in `0..N`.
+/// Returns the coordinate relative to the nearest copy center.
+fn fold_repeat_bounded(coord: f64, spacing: f64, count: u32) -> f64 {
+    if count <= 1 {
+        return coord;
+    }
+    let n = f64::from(count);
+    let half = (n - 1.0) * spacing * 0.5;
+    let id = ((coord + half) / spacing).round().clamp(0.0, n - 1.0);
+    coord - id.mul_add(spacing, -half)
 }
 
 // ── Primitive SDF implementations ────────────────────────────────────────
@@ -251,6 +327,198 @@ fn eval_plane(normal: &nalgebra::Vector3<f64>, offset: f64, p: &Point3<f64>) -> 
     normal.dot(&p.coords) - offset
 }
 
+// ── Bio-inspired primitive implementations ──────────────────────────────
+
+/// Superellipsoid: tunable between box, cylinder, sphere, diamond.
+/// Raw implicit function — zero-isosurface is correct but field magnitude is
+/// NOT a signed distance. Safe for meshing (sign correctness + bounded gradient).
+///
+/// Gradient (for Session 19):
+///   Let `G = |x/rx|^e2 + |y/ry|^e2`, `F = G^(n2/n1) + |z/rz|^e1`.
+///   `f = F^(n1/2)`. Then:
+///   `df/dx = (n1/2)·F^(n1/2-1)·(n2/n1)·G^(n2/n1-1)·e2·|x/rx|^(e2-1)·sign(x)/rx`
+///   `df/dy = (n1/2)·F^(n1/2-1)·(n2/n1)·G^(n2/n1-1)·e2·|y/ry|^(e2-1)·sign(y)/ry`
+///   `df/dz = (n1/2)·F^(n1/2-1)·e1·|z/rz|^(e1-1)·sign(z)/rz`
+fn eval_superellipsoid(radii: &nalgebra::Vector3<f64>, n1: f64, n2: f64, p: &Point3<f64>) -> f64 {
+    let e2 = 2.0 / n2;
+    let e1 = 2.0 / n1;
+    let xy = (p.x / radii.x).abs().powf(e2) + (p.y / radii.y).abs().powf(e2);
+    let f = (xy.powf(n2 / n1) + (p.z / radii.z).abs().powf(e1)).powf(n1 / 2.0);
+    f - 1.0
+}
+
+/// Logarithmic spiral tube: distance to spiral curve `r(θ) = a·exp(b·θ)` minus
+/// thickness. Multi-turn search finds the nearest spiral arm.
+///
+/// Gradient (for Session 19):
+///   The gradient is the unit direction from the nearest point on the spiral
+///   curve to the query point (Lipschitz = 1 for the distance part).
+#[allow(clippy::many_single_char_names, clippy::cast_possible_truncation)]
+fn eval_log_spiral(
+    init_radius: f64,
+    growth: f64,
+    thickness: f64,
+    turns: f64,
+    p: &Point3<f64>,
+) -> f64 {
+    use std::f64::consts::TAU;
+
+    let r_xy = p.x.hypot(p.y);
+    let theta = p.y.atan2(p.x); // [-π, π]
+    let z_sq = p.z * p.z;
+
+    let theta_max = turns * TAU;
+
+    // Find the turn whose spiral radius is closest to r_xy at this angle.
+    // The spiral at angle φ has radius init_radius·exp(growth·φ).
+    // At our query angle θ, the spiral passes at φ = θ + 2πk.
+    // Solve for k: init_radius·exp(growth·(θ+2πk)) = r_xy
+    //   → k = (ln(r_xy/init_radius)/growth - θ) / 2π
+    let k_continuous = if r_xy > 1e-15 && growth.abs() > 1e-15 {
+        ((r_xy / init_radius).ln() / growth - theta) / TAU
+    } else {
+        0.0
+    };
+    let k_base = k_continuous.round() as i64;
+
+    let mut min_dist_sq = f64::INFINITY;
+
+    let check_angle = |phi: f64, best: &mut f64| {
+        let r_spiral = init_radius * (growth * phi).exp();
+        let dx = r_spiral.mul_add(phi.cos(), -p.x);
+        let dy = r_spiral.mul_add(phi.sin(), -p.y);
+        let d_sq = dy.mul_add(dy, dx.mul_add(dx, z_sq));
+        *best = best.min(d_sq);
+    };
+
+    // Check 5 nearest turns for robustness
+    #[allow(clippy::cast_precision_loss)]
+    for dk in -2..=2_i64 {
+        let ki = k_base + dk;
+        let phi = TAU.mul_add(ki as f64, theta).clamp(0.0, theta_max);
+        check_angle(phi, &mut min_dist_sq);
+    }
+
+    // Also check endpoints explicitly
+    check_angle(0.0, &mut min_dist_sq);
+    check_angle(theta_max, &mut min_dist_sq);
+
+    min_dist_sq.sqrt() - thickness
+}
+
+/// Gyroid triply-periodic minimal surface.
+/// Field: `|sin(sx)·cos(sy) + sin(sy)·cos(sz) + sin(sz)·cos(sx)| - thickness`
+///
+/// Gradient (for Session 19):
+///   Let `g = sin(sx)cos(sy) + sin(sy)cos(sz) + sin(sz)cos(sx)`.
+///   `dg/dx = s·cos(sx)·cos(sy) - s·sin(sz)·sin(sx)`
+///   `dg/dy = -s·sin(sx)·sin(sy) + s·cos(sy)·cos(sz)`
+///   `dg/dz = -s·sin(sy)·sin(sz) + s·cos(sz)·cos(sx)`
+///   Gradient of field = `sign(g) · ∇g`
+fn eval_gyroid(scale: f64, thickness: f64, p: &Point3<f64>) -> f64 {
+    let sx = (scale * p.x).sin();
+    let sy = (scale * p.y).sin();
+    let sz = (scale * p.z).sin();
+    let cx = (scale * p.x).cos();
+    let cy = (scale * p.y).cos();
+    let cz = (scale * p.z).cos();
+    let g = sz.mul_add(cx, sx.mul_add(cy, sy * cz));
+    g.abs() - thickness
+}
+
+/// Schwarz P triply-periodic minimal surface.
+/// Field: `|cos(sx) + cos(sy) + cos(sz)| - thickness`
+///
+/// Gradient (for Session 19):
+///   Let `g = cos(sx) + cos(sy) + cos(sz)`.
+///   `dg/dx = -s·sin(sx)`, `dg/dy = -s·sin(sy)`, `dg/dz = -s·sin(sz)`.
+///   Gradient of field = `sign(g) · ∇g`
+fn eval_schwarz_p(scale: f64, thickness: f64, p: &Point3<f64>) -> f64 {
+    let g = (scale * p.x).cos() + (scale * p.y).cos() + (scale * p.z).cos();
+    g.abs() - thickness
+}
+
+/// Helix tube: distance to helix curve `H(t) = (R·cos(2πt), R·sin(2πt), P·t)`
+/// minus thickness. Uses cylindrical nearest-turn lookup + Newton refinement.
+///
+/// Gradient (for Session 19):
+///   `∇field = (p - H(t*)) / |p - H(t*)|` where `t*` is the closest parameter.
+///   This is the unit direction from nearest helix point to the query point.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn eval_helix(radius: f64, pitch: f64, thickness: f64, turns: f64, p: &Point3<f64>) -> f64 {
+    use std::f64::consts::TAU;
+
+    let theta = p.y.atan2(p.x); // [-π, π]
+
+    // The helix at angle (θ + 2πk) has z = pitch·(θ/(2π) + k).
+    // Find k such that the helix z is closest to p.z.
+    let k_continuous = if pitch.abs() > 1e-15 {
+        (p.z / pitch) - theta / TAU
+    } else {
+        0.0
+    };
+    let k_base = k_continuous.round() as i64;
+
+    let tau_sq = TAU * TAU;
+    let mut min_d_sq = f64::INFINITY;
+
+    // Check 3 nearest turns, Newton-refine each
+    for dk in -1..=1_i64 {
+        let ki = k_base + dk;
+        let t_initial = (theta / TAU + ki as f64).clamp(0.0, turns);
+
+        // Newton refinement: minimize |H(t) - p|²
+        // H(t) = (R·cos(τt), R·sin(τt), P·t)
+        // H'(t) = (-Rτ·sin(τt), Rτ·cos(τt), P)
+        // H''(t) = (-Rτ²·cos(τt), -Rτ²·sin(τt), 0)
+        let mut t = t_initial;
+        for _ in 0..4 {
+            let alpha = TAU * t;
+            let ca = alpha.cos();
+            let sa = alpha.sin();
+
+            let hx = radius * ca;
+            let hy = radius * sa;
+            let hz = pitch * t;
+
+            // First derivative of helix
+            let vel_x = -radius * TAU * sa;
+            let vel_y = radius * TAU * ca;
+            let vel_z = pitch;
+
+            // Second derivative of helix
+            let acc_x = -radius * tau_sq * ca;
+            let acc_y = -radius * tau_sq * sa;
+            // acc_z = 0
+
+            let ex = hx - p.x;
+            let ey = hy - p.y;
+            let ez = hz - p.z;
+
+            let fp = 2.0 * ez.mul_add(vel_z, ex.mul_add(vel_x, ey * vel_y));
+            // f''(t) = 2·(|H'|² + (H-p)·H'')
+            let vel_sq = vel_z.mul_add(vel_z, vel_x.mul_add(vel_x, vel_y * vel_y));
+            let diff_dot_acc = ex.mul_add(acc_x, ey * acc_y);
+            let fpp = 2.0 * (vel_sq + diff_dot_acc);
+
+            if fpp.abs() < 1e-20 {
+                break;
+            }
+            t -= fp / fpp;
+            t = t.clamp(0.0, turns);
+        }
+
+        let alpha = TAU * t;
+        let ex = radius.mul_add(-alpha.cos(), p.x);
+        let ey = radius.mul_add(-alpha.sin(), p.y);
+        let ez = pitch.mul_add(-t, p.z);
+        let d_sq = ez.mul_add(ez, ex.mul_add(ex, ey * ey));
+        min_d_sq = min_d_sq.min(d_sq);
+    }
+
+    min_d_sq.sqrt() - thickness
+}
+
 /// Pipe along a polyline: min distance to any segment minus radius. Exact SDF.
 fn eval_pipe(vertices: &[Point3<f64>], radius: f64, p: &Point3<f64>) -> f64 {
     let mut min_dist_sq = f64::INFINITY;
@@ -328,6 +596,74 @@ fn eval_pipe_spline(control_points: &[Point3<f64>], radius: f64, p: &Point3<f64>
     }
 
     min_dist_sq.sqrt() - radius
+}
+
+// ── Loft helpers ──────────────────────────────────────────────────────────
+
+/// Loft along Z: cylinder-like SDF with cubic-interpolated radius.
+fn eval_loft(stations: &[[f64; 2]], p: &Point3<f64>) -> f64 {
+    let z_min = stations[0][0];
+    let z_max = stations[stations.len() - 1][0];
+    let r_xy = p.x.hypot(p.y);
+
+    let z_clamped = p.z.clamp(z_min, z_max);
+    let r_at_z = loft_radius_at(stations, z_clamped);
+
+    let d_radial = r_xy - r_at_z;
+    let d_axial = (z_min - p.z).max(p.z - z_max);
+
+    // Cylinder-like exact SDF formula
+    let outside = d_radial.max(0.0).hypot(d_axial.max(0.0));
+    let inside = d_radial.max(d_axial).min(0.0);
+    outside + inside
+}
+
+/// Catmull-Rom cubic interpolation of radius along a loft profile.
+///
+/// `stations` is `[[z, radius], ...]` sorted by z, with at least 2 entries.
+/// Returns the interpolated radius at the given z (clamped to station range).
+fn loft_radius_at(stations: &[[f64; 2]], z: f64) -> f64 {
+    let n = stations.len();
+    debug_assert!(n >= 2);
+
+    let z_clamped = z.clamp(stations[0][0], stations[n - 1][0]);
+
+    // Find span: last station where z_clamped >= station z
+    let mut span = 0;
+    for (i, station) in stations[..n - 1].iter().enumerate() {
+        if z_clamped >= station[0] {
+            span = i;
+        }
+    }
+    span = span.min(n - 2);
+
+    let z0 = stations[span][0];
+    let z1 = stations[span + 1][0];
+    let dz = z1 - z0;
+    if dz < 1e-15 {
+        return stations[span][1];
+    }
+    let t = ((z_clamped - z0) / dz).clamp(0.0, 1.0);
+
+    // Catmull-Rom 4-point stencil (endpoint repetition for boundaries)
+    let r_m1 = stations[span.saturating_sub(1)][1];
+    let r0 = stations[span][1];
+    let r1 = stations[span + 1][1];
+    let r2 = stations[(span + 2).min(n - 1)][1];
+
+    catmull_rom_1d(r_m1, r0, r1, r2, t)
+}
+
+/// 1D Catmull-Rom interpolation. Same basis as `catmull_rom_point`.
+#[allow(clippy::many_single_char_names)]
+fn catmull_rom_1d(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    // C(t) = 0.5 * (2P1 + (-P0+P2)t + (2P0-5P1+4P2-P3)t² + (-P0+3P1-3P2+P3)t³)
+    let linear = 2.0f64.mul_add(p1, (-p0 + p2) * t);
+    let quad = 2.0f64.mul_add(p0, 4.0f64.mul_add(p2, -(5.0 * p1) - p3)) * t2;
+    let cubic = 3.0f64.mul_add(p1, 3.0f64.mul_add(-p2, -p0 + p3)) * t3;
+    0.5 * (linear + quad + cubic)
 }
 
 // ── Catmull-Rom helpers ──────────────────────────────────────────────────
@@ -1361,5 +1697,377 @@ mod tests {
         );
         // Outside
         assert!(spline.evaluate(&Point3::new(5.0, 2.0, 0.0)) > 0.0);
+    }
+
+    // ── Loft ────────────────────────────────────────────────────────
+
+    #[test]
+    fn loft_constant_radius_matches_cylinder() {
+        // Constant radius loft should behave like a cylinder
+        let loft = FieldNode::Loft {
+            stations: vec![[-5.0, 2.0], [5.0, 2.0]],
+        };
+        let cyl = FieldNode::Cylinder {
+            radius: 2.0,
+            half_height: 5.0,
+        };
+        let test_points = [
+            Point3::origin(),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(3.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 7.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(loft.evaluate(p), cyl.evaluate(p), epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn loft_tapered_sign_correctness() {
+        // Taper from radius 3 at z=-2 to radius 1 at z=2
+        let loft = FieldNode::Loft {
+            stations: vec![[-2.0, 3.0], [2.0, 1.0]],
+        };
+        // Origin: z=0, R(0) = catmull_rom(3,3,1,1, 0.5) = 2.0
+        // r_xy=0, d_radial = -2.0, d_axial = -2.0, field = -2.0
+        assert!(loft.evaluate(&Point3::origin()) < 0.0, "center inside");
+
+        // On barrel at z=-2 (bottom): R=3, point at (3, 0, -2) → on surface
+        assert_abs_diff_eq!(
+            loft.evaluate(&Point3::new(3.0, 0.0, -2.0)),
+            0.0,
+            epsilon = 1e-6
+        );
+
+        // On barrel at z=2 (top): R=1, point at (1, 0, 2) → on surface
+        assert_abs_diff_eq!(
+            loft.evaluate(&Point3::new(1.0, 0.0, 2.0)),
+            0.0,
+            epsilon = 1e-6
+        );
+
+        // Outside far away
+        assert!(loft.evaluate(&Point3::new(10.0, 0.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn loft_midpoint_radius_interpolation() {
+        // 3 stations: [-3, r=1], [0, r=2], [3, r=1]
+        let loft = FieldNode::Loft {
+            stations: vec![[-3.0, 1.0], [0.0, 2.0], [3.0, 1.0]],
+        };
+        // At z=0, radius = 2.0 (exact station)
+        assert_abs_diff_eq!(
+            loft.evaluate(&Point3::new(2.0, 0.0, 0.0)),
+            0.0,
+            epsilon = 1e-6,
+        );
+        // At z=-3, radius = 1.0
+        assert_abs_diff_eq!(
+            loft.evaluate(&Point3::new(1.0, 0.0, -3.0)),
+            0.0,
+            epsilon = 1e-6,
+        );
+    }
+
+    #[test]
+    fn loft_cap_distance() {
+        // Constant-radius loft: point above the top cap
+        let loft = FieldNode::Loft {
+            stations: vec![[-5.0, 2.0], [5.0, 2.0]],
+        };
+        // Point on Z axis above top cap: d = distance beyond cap
+        let val = loft.evaluate(&Point3::new(0.0, 0.0, 7.0));
+        assert_abs_diff_eq!(val, 2.0, epsilon = 1e-6);
+    }
+
+    // ── Twist ───────────────────────────────────────────────────────
+
+    #[test]
+    fn twist_zero_rate_is_identity() {
+        let child = FieldNode::Cuboid {
+            half_extents: Vector3::new(1.0, 2.0, 3.0),
+        };
+        let twisted = FieldNode::Twist(Box::new(child.clone()), 0.0);
+        let test_points = [
+            Point3::origin(),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 2.0),
+            Point3::new(3.0, 3.0, 3.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(twisted.evaluate(p), child.evaluate(p), epsilon = EPS);
+        }
+    }
+
+    #[test]
+    fn twist_cylinder_is_unchanged() {
+        // A Z-aligned cylinder is rotationally symmetric about Z, so twisting
+        // doesn't change the field.
+        let cyl = FieldNode::Cylinder {
+            radius: 2.0,
+            half_height: 5.0,
+        };
+        let twisted = FieldNode::Twist(Box::new(cyl.clone()), 1.0);
+        let test_points = [
+            Point3::origin(),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 2.0, 3.0),
+            Point3::new(3.0, 0.0, -4.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(twisted.evaluate(p), cyl.evaluate(p), epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn twist_cuboid_rotates_cross_section() {
+        // Twist a cuboid (hx=2, hy=1, hz=5) with rate=PI/2 per unit Z.
+        // At z=1, the cross-section should be rotated by PI/2.
+        let child = FieldNode::Cuboid {
+            half_extents: Vector3::new(2.0, 1.0, 5.0),
+        };
+        let rate = std::f64::consts::FRAC_PI_2;
+        let twisted = FieldNode::Twist(Box::new(child), rate);
+
+        // At z=0, no rotation: point (2, 0, 0) is on surface → field ≈ 0
+        assert_abs_diff_eq!(
+            twisted.evaluate(&Point3::new(2.0, 0.0, 0.0)),
+            0.0,
+            epsilon = EPS
+        );
+
+        // At z=1, rotated by PI/2: the x-axis of child maps from y-axis.
+        // Point (0, 2, 1) in world → query child at (c*0-s*2, s*0+c*2, 1)
+        //   angle = PI/2*1 = PI/2, c=0, s=1 → child at (-2, 0, 1)
+        //   cuboid at (-2, 0, 1): |x|-2=0, |y|-1=-1, |z|-5=-4 → on surface
+        assert_abs_diff_eq!(
+            twisted.evaluate(&Point3::new(0.0, 2.0, 1.0)),
+            0.0,
+            epsilon = 1e-6,
+        );
+    }
+
+    // ── Bend ────────────────────────────────────────────────────────
+
+    #[test]
+    fn bend_zero_rate_is_identity() {
+        let child = FieldNode::Cuboid {
+            half_extents: Vector3::new(1.0, 2.0, 3.0),
+        };
+        let bent = FieldNode::Bend(Box::new(child.clone()), 0.0);
+        let test_points = [
+            Point3::origin(),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 2.0),
+            Point3::new(3.0, 3.0, 3.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(bent.evaluate(p), child.evaluate(p), epsilon = EPS);
+        }
+    }
+
+    #[test]
+    fn bend_at_origin_is_unchanged() {
+        // At z=0, bend angle=0, so field should match child regardless of rate
+        let child = FieldNode::Cuboid {
+            half_extents: Vector3::new(2.0, 2.0, 5.0),
+        };
+        let bent = FieldNode::Bend(Box::new(child.clone()), 0.5);
+        let p = Point3::new(1.0, 1.0, 0.0);
+        assert_abs_diff_eq!(bent.evaluate(&p), child.evaluate(&p), epsilon = EPS);
+    }
+
+    #[test]
+    fn bend_curves_z_into_x() {
+        // Bend a cylinder along Z. At z=0, unchanged. At z>0, the shape
+        // should curve in the XZ plane.
+        let child = FieldNode::Cylinder {
+            radius: 1.0,
+            half_height: 5.0,
+        };
+        let bent = FieldNode::Bend(Box::new(child.clone()), 0.1);
+
+        // At origin: unchanged (z=0 → angle=0)
+        assert_abs_diff_eq!(
+            bent.evaluate(&Point3::origin()),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS,
+        );
+
+        // At z=3 on axis: the deformation maps to a different child location.
+        // The center should still be inside the cylinder for moderate bend.
+        let val = bent.evaluate(&Point3::new(0.0, 0.0, 3.0));
+        assert!(
+            val < 0.0,
+            "center of bent cylinder at z=3 should be inside, got {val}"
+        );
+    }
+
+    // ── 1D Catmull-Rom ──────────────────────────────────────────────
+
+    #[test]
+    fn catmull_rom_1d_endpoints() {
+        // At t=0, result should be p1; at t=1, result should be p2
+        let r = catmull_rom_1d(0.0, 1.0, 3.0, 4.0, 0.0);
+        assert_abs_diff_eq!(r, 1.0, epsilon = EPS);
+        let r = catmull_rom_1d(0.0, 1.0, 3.0, 4.0, 1.0);
+        assert_abs_diff_eq!(r, 3.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn catmull_rom_1d_linear_for_uniform_spacing() {
+        // For equally spaced values (0, 1, 2, 3), midpoint should be 1.5
+        let r = catmull_rom_1d(0.0, 1.0, 2.0, 3.0, 0.5);
+        assert_abs_diff_eq!(r, 1.5, epsilon = EPS);
+    }
+
+    // ── Repeat ───────────────────────────────────────────────────────
+
+    #[test]
+    fn repeat_sphere_at_origin_matches_child() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::Repeat(Box::new(child.clone()), Vector3::new(5.0, 5.0, 5.0));
+        // At origin, fold is identity → should match child
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::origin()),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn repeat_sphere_at_offset_copy() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::Repeat(Box::new(child.clone()), Vector3::new(5.0, 5.0, 5.0));
+        // At (5, 0, 0), should fold to (0, 0, 0) → same as child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(5.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+        // At (10, 0, 0), should fold to (0, 0, 0)
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(10.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn repeat_sphere_midpoint_between_copies() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::Repeat(Box::new(child), Vector3::new(5.0, 5.0, 5.0));
+        // At (2.5, 0, 0) — midpoint between two X copies.
+        // Folds to (2.5, 0, 0) relative to nearest copy. Child = sphere → distance = 2.5 - 1.0 = 1.5
+        let val = node.evaluate(&Point3::new(2.5, 0.0, 0.0));
+        assert_abs_diff_eq!(val, 1.5, epsilon = EPS);
+    }
+
+    #[test]
+    fn repeat_bounded_count_1_is_identity() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(child.clone()),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [1, 1, 1],
+        };
+        // Count 1 on all axes → no repetition, should equal child
+        let p = Point3::new(2.0, 0.0, 0.0);
+        assert_abs_diff_eq!(node.evaluate(&p), child.evaluate(&p), epsilon = EPS);
+    }
+
+    #[test]
+    fn repeat_bounded_3_copies_along_x() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(child.clone()),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [3, 1, 1],
+        };
+        // 3 copies at x = -5, 0, 5
+        // At origin → near center copy → should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::origin()),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+        // At x=5 → near right copy → should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(5.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+        // At x=-5 → near left copy → should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(-5.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn repeat_bounded_beyond_array_uses_nearest_copy() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(child.clone()),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [3, 1, 1],
+        };
+        // At x=12 → beyond rightmost copy at x=5.
+        // Should evaluate child at (12 - 5, 0, 0) = (7, 0, 0)
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(12.0, 0.0, 0.0)),
+            child.evaluate(&Point3::new(7.0, 0.0, 0.0)),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn repeat_bounded_2_copies_straddle_origin() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(child.clone()),
+            spacing: Vector3::new(4.0, 4.0, 4.0),
+            count: [2, 1, 1],
+        };
+        // 2 copies at x = -2 and x = 2
+        // At x=-2: should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(-2.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+        // At x=2: should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(2.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn fold_repeat_maps_to_fundamental_domain() {
+        assert_abs_diff_eq!(fold_repeat(0.0, 5.0), 0.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat(5.0, 5.0), 0.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat(2.0, 5.0), 2.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat(7.0, 5.0), 2.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat(-3.0, 5.0), 2.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn fold_repeat_bounded_count_1_is_identity() {
+        assert_abs_diff_eq!(fold_repeat_bounded(7.0, 5.0, 1), 7.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat_bounded(-3.0, 5.0, 1), -3.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn fold_repeat_bounded_clamps_at_edges() {
+        // count=3, spacing=5 → copies at -5, 0, 5
+        // At x=12: nearest copy is at 5, so fold = 12 - 5 = 7
+        assert_abs_diff_eq!(fold_repeat_bounded(12.0, 5.0, 3), 7.0, epsilon = EPS);
+        // At x=-12: nearest copy is at -5, so fold = -12 - (-5) = -7
+        assert_abs_diff_eq!(fold_repeat_bounded(-12.0, 5.0, 3), -7.0, epsilon = EPS);
     }
 }

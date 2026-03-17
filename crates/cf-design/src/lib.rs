@@ -35,9 +35,11 @@ pub mod mechanism;
 mod mesher;
 mod solid;
 
+pub use mechanism::templates;
 pub use mechanism::{
-    ActuatorDef, ActuatorKind, DesignWarning, FlexZone, JointDef, JointKind, ManufacturingProcess,
-    MassProperties, Material, Mechanism, MechanismBuilder, MechanismError, Part, Plane,
-    PrintProfile, ShapeMode, TendonDef, TendonWaypoint,
+    ActuatorDef, ActuatorKind, CrossSection, DesignWarning, FlexJoint, FlexZone, JointDef,
+    JointKind, ManufacturingProcess, MassProperties, Material, Mechanism, MechanismBuilder,
+    MechanismError, Part, Plane, PrintProfile, ShapeMode, SplitResult, TendonDef, TendonWaypoint,
+    split_part,
 };
-pub use solid::Solid;
+pub use solid::{InfillKind, Solid};

@@ -292,6 +292,14 @@ fn write_joint(xml: &mut String, joint: &JointDef, indent: usize) {
         let _ = write!(xml, " range=\"{lo} {hi}\" limited=\"true\"");
     }
 
+    // Spring-damper properties (from FlexZone splitting or manual override).
+    if let Some(k) = joint.stiffness() {
+        let _ = write!(xml, " stiffness=\"{k}\"");
+    }
+    if let Some(c) = joint.damping() {
+        let _ = write!(xml, " damping=\"{c}\"");
+    }
+
     let _ = writeln!(xml, "/>");
 }
 
@@ -789,6 +797,54 @@ mod tests {
         let f2_pos = xml.find("<body name=\"finger_2\">").unwrap();
         assert!(palm_pos < f1_pos);
         assert!(palm_pos < f2_pos);
+    }
+
+    // ── 9b. Stiffness/damping on joints ─────────────────────────────
+
+    #[test]
+    fn joint_stiffness_damping_emitted() {
+        let m = Mechanism::builder("sd")
+            .part(sphere_part("a"))
+            .part(sphere_part("b"))
+            .joint(
+                JointDef::new(
+                    "j",
+                    "a",
+                    "b",
+                    JointKind::Revolute,
+                    Point3::origin(),
+                    Vector3::z(),
+                )
+                .with_stiffness(1000.0)
+                .with_damping(10.0),
+            )
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        assert!(
+            xml.contains("stiffness=\"1000\""),
+            "missing stiffness attr in:\n{xml}"
+        );
+        assert!(
+            xml.contains("damping=\"10\""),
+            "missing damping attr in:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn joint_without_stiffness_damping_omits_attrs() {
+        let xml = two_part_mechanism().to_mjcf(RES);
+        // No joints have stiffness/damping set → attributes absent.
+        assert!(
+            !xml.contains("stiffness="),
+            "unexpected stiffness attr in:\n{xml}"
+        );
+        // Note: "damping=" could appear in tendon elements, but two_part_mechanism
+        // has no tendons.
+        assert!(
+            !xml.contains("damping="),
+            "unexpected damping attr in:\n{xml}"
+        );
     }
 
     // ── 10. Mesh data embedded ──────────────────────────────────────
