@@ -52,7 +52,8 @@ pub enum DesignWarning {
     },
     /// Two parts are closer together than the required clearance.
     ///
-    /// Not currently populated — requires world-frame part positions.
+    /// TODO(clearance): populate when Parts gain world-frame positions.
+    /// Currently all parts are at the origin — pairwise distance is meaningless.
     InsufficientClearance {
         /// First part name.
         part_a: String,
@@ -104,6 +105,8 @@ pub(super) fn validate_mechanism(
     if let Some(profile) = profile {
         check_wall_thickness(parts, profile, &mut warnings);
         check_hole_diameter(parts, tendons, profile, &mut warnings);
+        // TODO(clearance): add check_clearance(parts, profile, &mut warnings)
+        // when Parts gain world-frame positions.
     }
 
     warnings
