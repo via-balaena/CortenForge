@@ -21,16 +21,19 @@ use owo_colors::OwoColorize;
 use std::fs;
 use std::path::Path;
 
-/// Pre-commit hook content
+/// Pre-commit hook content (must match build.rs)
 ///
 /// This runs before every commit to catch issues early.
 /// Faster than CI, provides immediate feedback.
+/// Only lints crates with staged Rust changes (not the full workspace).
 const PRE_COMMIT_HOOK: &str = r#"#!/bin/sh
 # CortenForge Pre-Commit Hook
 # Installed by: cargo xtask setup
 #
 # This hook enforces quality standards before commits reach CI.
 # See INFRASTRUCTURE.md for the full constraint specification.
+#
+# Performance: only lints crates with staged changes (not the full workspace).
 
 set -e
 
@@ -38,7 +41,7 @@ echo "╔═══════════════════════�
 echo "║                  CortenForge Pre-Commit Check                  ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 
-# Format check (fast)
+# Format check (fast — only checks already-formatted files, <1s)
 echo "→ Checking formatting..."
 if ! cargo fmt --all -- --check 2>/dev/null; then
     echo "✗ Formatting check failed. Run: cargo fmt --all"
@@ -46,16 +49,47 @@ if ! cargo fmt --all -- --check 2>/dev/null; then
 fi
 echo "✓ Formatting OK"
 
-# Clippy check (library code only - tests are checked in CI)
-# Note: We use -W clippy::all instead of -D warnings because the workspace
-# has pedantic/nursery lints enabled which produce many warnings.
-# CI will catch all warnings; pre-commit just blocks obvious errors.
-echo "→ Running clippy..."
-if ! cargo clippy --all-features 2>/dev/null; then
-    echo "✗ Clippy check failed. Fix errors before committing."
-    exit 1
+# Determine which crates have staged Rust changes
+staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' 'Cargo.toml')
+
+if [ -z "$staged_rs_files" ]; then
+    echo "→ No Rust/Cargo files staged — skipping clippy."
+else
+    # Extract crate names from staged file paths.
+    # Walk up from each file to find nearest Cargo.toml, read [package] name.
+    crates=""
+    for file in $staged_rs_files; do
+        dir=$(dirname "$file")
+        while [ "$dir" != "." ]; do
+            if [ -f "$dir/Cargo.toml" ] && grep -q '^\[package\]' "$dir/Cargo.toml"; then
+                name=$(sed -n '/^\[package\]/,/^\[/{s/^name *= *"\(.*\)"/\1/p;}' "$dir/Cargo.toml")
+                if [ -n "$name" ]; then
+                    crates="$crates $name"
+                fi
+                break
+            fi
+            dir=$(dirname "$dir")
+        done
+    done
+
+    # Deduplicate
+    crates=$(echo "$crates" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+
+    if [ -z "$crates" ]; then
+        echo "→ Staged Rust files don't belong to a workspace crate — skipping clippy."
+    else
+        echo "→ Running clippy on changed crates: $crates"
+        clippy_args=""
+        for crate in $crates; do
+            clippy_args="$clippy_args -p $crate"
+        done
+        if ! cargo clippy $clippy_args --all-targets --all-features -- -D warnings 2>/dev/null; then
+            echo "✗ Clippy check failed. Fix errors before committing."
+            exit 1
+        fi
+        echo "✓ Clippy OK"
+    fi
 fi
-echo "✓ Clippy OK"
 
 # Note: unwrap/expect enforcement is handled by clippy via workspace lints
 # (clippy::unwrap_used = "deny" in Cargo.toml)
