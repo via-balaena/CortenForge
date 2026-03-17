@@ -31,7 +31,13 @@ mod bounds;
 mod evaluate;
 pub(crate) mod field_node;
 mod interval;
+pub mod mechanism;
 mod mesher;
 mod solid;
 
+pub use mechanism::{
+    ActuatorDef, ActuatorKind, DesignWarning, FlexZone, JointDef, JointKind, ManufacturingProcess,
+    MassProperties, Material, Mechanism, MechanismBuilder, MechanismError, Part, Plane,
+    PrintProfile, ShapeMode, TendonDef, TendonWaypoint,
+};
 pub use solid::Solid;

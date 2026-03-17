@@ -40,6 +40,7 @@
 > DT-170 (SDF collision dispatch), DT-171 (resource providers/decoders),
 > DT-172 (plugin copy/destroy callbacks), DT-173 (Data clone plugin_data),
 > DT-174 (sensor cutoff stage check) added during Phase 13 Spec D review.
+> DT-179 (programmatic Model builder) added during cf-design Phase 2 Session 12.
 > ~~§66~~ done (Phase 13 Spec D). DT-110 dependency on §66 satisfied.
 >
 > **Current position**: All 13 phases complete. v1.0 shipped. Conformance gate: 79/79.
@@ -339,6 +340,7 @@ foundation isn't right.
 | §42D | 10 | — | `ActuatorGainModel` trait — Series Elastic Actuator model |
 | §42E | 10 | — | Contact Solver trait — XPBD, impulse-based formulations |
 | §42F | 10 | — | `SimBuilder` generic composition API |
+| DT-179 | cf-design | T2 | Programmatic `Model` builder — construct `Model` from bodies/geoms/joints without MJCF string round-trip. Enables cf-design direct injection (`Mechanism → Model` bypassing XML serialize/parse). Currently cf-design uses `sim_mjcf::load_model(to_mjcf())` which works but is indirect. Deferred from cf-design Phase 2 Session 12. |
 
 ### GPU Pipeline (future_work_17)
 | Task | Source | Tier | Description |
