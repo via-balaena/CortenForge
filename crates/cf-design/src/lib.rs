@@ -36,7 +36,7 @@ mod mesher;
 mod solid;
 
 pub use mechanism::{
-    DesignWarning, FlexZone, JointDef, JointKind, ManufacturingProcess, Material, Part, Plane,
-    PrintProfile,
+    ActuatorDef, ActuatorKind, DesignWarning, FlexZone, JointDef, JointKind, ManufacturingProcess,
+    Material, Part, Plane, PrintProfile, TendonDef, TendonWaypoint,
 };
 pub use solid::Solid;

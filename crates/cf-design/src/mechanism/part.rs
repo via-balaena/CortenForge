@@ -11,6 +11,7 @@ use nalgebra::Vector3;
 
 use super::joint::JointKind;
 use super::material::Material;
+use super::tendon::TendonDef;
 use crate::Solid;
 
 /// A geometric plane defined by a unit normal and signed offset.
@@ -194,6 +195,22 @@ impl Part {
     #[must_use]
     pub fn with_flex_zone(mut self, zone: FlexZone) -> Self {
         self.flex_zones.push(zone);
+        self
+    }
+
+    /// Subtract tendon channels from this part's solid.
+    ///
+    /// For each tendon that has ≥2 waypoints in this part, subtracts a
+    /// [`Solid::pipe`] channel from the solid geometry. Tendons with no
+    /// waypoints in this part, fewer than 2 waypoints, or zero channel
+    /// radius are skipped.
+    #[must_use]
+    pub fn with_tendon_channels(mut self, tendons: &[TendonDef]) -> Self {
+        for tendon in tendons {
+            if let Some(channel) = tendon.channel_solid(self.name()) {
+                self.solid = self.solid.subtract(channel);
+            }
+        }
         self
     }
 
