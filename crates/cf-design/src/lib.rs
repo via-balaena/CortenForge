@@ -37,6 +37,7 @@ mod solid;
 
 pub use mechanism::{
     ActuatorDef, ActuatorKind, DesignWarning, FlexZone, JointDef, JointKind, ManufacturingProcess,
-    Material, Part, Plane, PrintProfile, TendonDef, TendonWaypoint,
+    Material, Mechanism, MechanismBuilder, MechanismError, Part, Plane, PrintProfile, TendonDef,
+    TendonWaypoint,
 };
 pub use solid::Solid;
