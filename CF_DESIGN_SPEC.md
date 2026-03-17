@@ -1,6 +1,6 @@
 # CF_DESIGN_SPEC — Implicit Surface Design Kernel
 
-> **Status**: Phase 1 complete — 2026-03-16
+> **Status**: Phase 2 complete — 2026-03-16
 > **Crate**: `cf-design` (`crates/cf-design/`)
 > **Layer**: 0 (pure Rust, zero framework dependencies)
 > **Depends on**: `cf-geometry` (IndexedMesh, SdfGrid, Shape, Aabb, ConvexHull, Bvh)
@@ -465,6 +465,7 @@ pub enum DesignWarning {
     HoleTooSmall { part: String, location: Point3<f64>, diameter: f64, min: f64 },
     InsufficientClearance { part_a: String, part_b: String, gap: f64, min: f64 },
     FeatureBelowResolution { part: String, feature_size: f64, resolution: f64 },
+    JointAnchorOutOfBounds { joint: String, part: String, anchor: Point3<f64>, distance: f64 },
 }
 ```
 
@@ -493,50 +494,42 @@ let finger = Solid::capsule(3.0, 12.0)
 
 let pla = Material::new("PLA", 1250.0);  // 1250 kg/m³
 
-let gripper = Mechanism::new("bio_gripper")
-    .part("palm", palm, pla.clone())
-    .part("finger_1", finger.clone(), pla.clone())
-    .part("finger_2", finger.clone().mirror(Axis::X), pla.clone())
+let gripper = Mechanism::builder("bio_gripper")
+    .part(Part::new("palm", palm, pla.clone()))
+    .part(Part::new("finger_1", finger.clone(), pla.clone()))
+    .part(Part::new("finger_2", finger.clone(), pla.clone()))
 
     // Knuckle joints — fingers rotate relative to palm
-    .joint("knuckle_1", JointDef {
-        parent: "palm".into(),
-        child: "finger_1".into(),
-        kind: JointKind::Revolute,
-        anchor: point![10., 20., 0.],
-        axis: Vector3::x(),
-        range: Some((-0.1, 1.8)),
-        ..Default::default()
-    })
-    .joint("knuckle_2", JointDef {
-        parent: "palm".into(),
-        child: "finger_2".into(),
-        kind: JointKind::Revolute,
-        anchor: point![-10., 20., 0.],
-        axis: Vector3::x(),
-        range: Some((-0.1, 1.8)),
-        ..Default::default()
-    })
+    .joint(JointDef::new(
+        "knuckle_1", "palm", "finger_1",
+        JointKind::Revolute,
+        point![10., 20., 0.],
+        Vector3::x(),
+    ).with_range(-0.1, 1.8))
+    .joint(JointDef::new(
+        "knuckle_2", "palm", "finger_2",
+        JointKind::Revolute,
+        point![-10., 20., 0.],
+        Vector3::x(),
+    ).with_range(-0.1, 1.8))
 
     // Tendon — routes through palm and finger, carves channel automatically
-    .tendon("flexor_1", TendonDef {
-        waypoints: vec![
-            TendonWaypoint { part: "palm".into(), position: point![8., -10., 0.] },
-            TendonWaypoint { part: "palm".into(), position: point![8., 18., 0.] },
-            TendonWaypoint { part: "finger_1".into(), position: point![0., 5., 0.] },
-            TendonWaypoint { part: "finger_1".into(), position: point![0., 20., 0.] },
-        ],
-        channel_radius: 1.5,
-        stiffness: Some(100.0),
-        damping: Some(5.0),
-    })
+    .tendon(TendonDef::new("flexor_1", vec![
+        TendonWaypoint::new("palm", point![8., -10., 0.]),
+        TendonWaypoint::new("palm", point![8., 18., 0.]),
+        TendonWaypoint::new("finger_1", point![0., 5., 0.]),
+        TendonWaypoint::new("finger_1", point![0., 20., 0.]),
+    ], 1.5).with_stiffness(100.0).with_damping(5.0))
+
+    // Actuator driving the tendon
+    .actuator(ActuatorDef::new(
+        "motor_1", "flexor_1", ActuatorKind::Motor, (-100.0, 100.0),
+    ))
 
     // Manufacturing constraints
-    .print_profile(PrintProfile {
-        clearance: 0.3,   // FDM clearance
-        min_wall: 1.0,    // mm
-        min_hole: 2.0,    // mm
-    });
+    .print_profile(PrintProfile::new(0.3, 1.0, 2.0))
+
+    .build();
 
 // --- Three outputs from one definition ---
 
@@ -762,10 +755,11 @@ This is evaluated numerically on the same grid used for SdfGrid construction.
 No separate mass property computation needed — it falls out of the field
 evaluation.
 
-**Note**: sim-core currently has no automatic mass computation for SDF geoms
-(falls through to default mass `0.001`). cf-design must compute mass properties
-from the implicit field and inject them via explicit `<inertial>` elements in
-MJCF or direct `Model` field population.
+**Implementation note (Session 11)**: `to_mjcf()` emits `density` on `<geom>`
+elements rather than explicit `<inertial>` elements — MuJoCo auto-computes
+mass/inertia from the actual collision mesh, which is more accurate than grid
+approximation. `MassProperties` is exposed as a public API for user inspection
+and manufacturing planning.
 
 ---
 
@@ -1040,36 +1034,48 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 
 **Branch**: `cf-design-phase2` | **Tests**: 354 pass + 10 doctests | **Completed**: 2026-03-16
 
-**Session 7: Part + Joint + Material + Print Types**
-- Scope: `Material` type (density, Young's modulus, color, manufacturing
-  process). `Part` struct (name, solid, material, flex_zones). `JointDef`,
-  `JointKind` (Revolute, Prismatic, Ball, Free). `PrintProfile` (clearance,
-  min_wall, min_hole). `DesignWarning` enum. Unit tests for type construction
-  and field validation (e.g., range min < max, positive clearance).
-- Entry: Session 1 complete (Solid type exists)
-- Exit: `cargo test -p cf-design` passes. All types constructible with valid
-  and invalid inputs handled.
+**Source files**: `crates/cf-design/src/mechanism/{mod.rs, part.rs, material.rs, joint.rs, tendon.rs, actuator.rs, builder.rs, mjcf.rs, shapes.rs, stl.rs, mass.rs, validate.rs, print.rs, integration.rs}`
 
-**Session 8: Tendon + Actuator + Channel Subtraction**
-- Scope: `TendonDef`, `TendonWaypoint`. `ActuatorDef`. Tendon channel
-  subtraction algorithm — given a tendon's waypoint path through a part,
-  subtract a pipe channel from the part's solid. Tests: part with tendon
-  channel has correct void geometry; channel follows waypoint path; multiple
-  tendons through same part produce independent channels.
-- Entry: Sessions 4, 7 complete (pipe primitives + Part type)
-- Exit: `cargo test -p cf-design` passes. Channel subtraction produces
-  correct geometry verified by field evaluation along channel centerline.
+**What shipped**:
+- `MechanismBuilder` → `Mechanism` with structural validation (8 error variants)
+- `Part`, `Material`, `ManufacturingProcess`, `FlexZone`, `Plane`, `PrintProfile`
+- `JointDef`/`JointKind`, `TendonDef`/`TendonWaypoint`, `ActuatorDef`/`ActuatorKind`
+- Tendon channel subtraction via `Solid::pipe` at build time
+- `to_mjcf(resolution)` — full MJCF generation with body hierarchy, inline mesh embedding, density on geoms
+- `to_shapes(ShapeMode)` — SDF grid or triangle mesh collision shapes
+- `to_stl_kit(tolerance)` — per-part STL meshes with clearance offset
+- `mass_properties(solid, density, cell_size)` — volumetric grid integration (O(h²) convergence)
+- `validate()` — 5 manufacturing/geometric checks (wall thickness, hole diameter, feature resolution, joint anchor bounds, inter-part clearance)
+- sim-mjcf integration tested: `to_mjcf() → load_model() → make_data() → step()`
 
-**Session 9: Mechanism Builder API**
-- Scope: `Mechanism` struct. Builder pattern: `.part()`, `.joint()`,
-  `.tendon()`, `.actuator()`, `.print_profile()`. Validation: joint references
-  valid parts, tendon waypoints reference valid parts, no orphan parts,
-  duplicate name detection. Tests for builder ergonomics and validation error
-  messages. The bio-gripper example from Section 4.4 should compile. Joint
-  anchor within part bounds deferred to Session 12 (requires spatial placement).
-- Entry: Sessions 7, 8 complete
-- Exit: `cargo test -p cf-design` passes. Bio-gripper example compiles and
-  validates. Invalid mechanisms produce clear errors.
+**Deviations from spec**:
+- STL/shapes live in `mechanism/stl.rs` and `mechanism/shapes.rs` (not a separate `export/` module) — simpler, keeps all mechanism logic co-located.
+- Builder uses `Mechanism::builder(name)` → `MechanismBuilder` pattern (not `Mechanism::new()` as in original example). More idiomatic for Rust validated-construction pattern.
+- `DesignWarning::JointAnchorOutOfBounds` added (not in original spec enum). Required for Session 12's anchor validation.
+- Direct `Model` injection deferred — sim-core has no `Model::empty()` builder API. MJCF string path is sufficient.
+
+**Session 7: Part + Joint + Material + Print Types** — COMPLETE
+- Delivered: `Part` (name, solid, material, flex_zones), `FlexZone`, `Plane`.
+  `Material` (density, Young's modulus, color, process) + `ManufacturingProcess`
+  enum (Fdm, Sla, Sls, Machined). `JointDef` + `JointKind` (Revolute,
+  Prismatic, Ball, Free). `PrintProfile` (clearance, min_wall, min_hole) with
+  validation. `DesignWarning` enum. All types use constructor + builder pattern
+  with normalized axes/normals.
+
+**Session 8: Tendon + Actuator + Channel Subtraction** — COMPLETE
+- Delivered: `TendonDef`, `TendonWaypoint` with `channel_solid()` method
+  returning cylindrical void via `Solid::pipe`. `ActuatorDef` + `ActuatorKind`
+  (Motor, Muscle). `Part::with_tendon_channels()` subtracts pipe channels from
+  part solid. Surface-routed tendons (channel_radius=0) produce no void.
+
+**Session 9: Mechanism Builder API** — COMPLETE
+- Delivered: `MechanismBuilder` (chainable `.part()`, `.joint()`, `.tendon()`,
+  `.actuator()`, `.print_profile()`). `Mechanism` (immutable, validated).
+  `MechanismError` enum with 8 variants: DuplicatePart/Joint/Tendon/Actuator,
+  JointRefersToUnknownPart, TendonRefersToUnknownPart,
+  ActuatorRefersToUnknownTendon, OrphanPart. `build()` validates and applies
+  tendon channel subtraction atomically. `validate()` returns errors without
+  panicking.
 
 **Session 10: MJCF Generation** — COMPLETE
 - Delivered: `Mechanism::to_mjcf(resolution) -> String` in `mechanism/mjcf.rs`.
@@ -1390,52 +1396,51 @@ these is a valid stopping point.
 
 ## 11. Crate Structure
 
-### 11.1 Current (Phase 1)
-
-Flat module layout — simple and sufficient for the current scope. Will
-reorganize into nested modules when Phase 2 adds mechanisms.
+### 11.1 Current (Phase 2)
 
 ```
 crates/cf-design/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs              Crate root — re-exports Solid, deny(clippy::unwrap_used, ...)
+    ├── lib.rs              Crate root — re-exports Solid + mechanism types
     ├── field_node.rs       FieldNode expression tree enum (pub(crate))
     ├── evaluate.rs         Point evaluation — evaluate(Point3) -> f64
     ├── interval.rs         Interval evaluation — evaluate_interval(Aabb) -> (f64, f64)
     ├── bounds.rs           AABB computation — bounds() -> Option<Aabb>
     ├── mesher.rs           Marching cubes + interval pruning + edge cache
-    └── solid.rs            Opaque Solid type, public builder API, sdf_grid
+    ├── solid.rs            Opaque Solid type, public builder API, sdf_grid
+    └── mechanism/          Phase 2 (Sessions 7–12)
+        ├── mod.rs          Re-exports all mechanism types
+        ├── part.rs         Part, FlexZone, Plane
+        ├── material.rs     Material, ManufacturingProcess
+        ├── joint.rs        JointDef, JointKind
+        ├── tendon.rs       TendonDef, TendonWaypoint, channel subtraction
+        ├── actuator.rs     ActuatorDef, ActuatorKind
+        ├── builder.rs      MechanismBuilder, Mechanism, MechanismError
+        ├── mjcf.rs         MJCF XML generation
+        ├── shapes.rs       cf-geometry Shape generation (SdfGrid + TriangleMesh)
+        ├── stl.rs          Per-part STL generation with clearance offset
+        ├── mass.rs         MassProperties, volumetric grid integration
+        ├── validate.rs     DesignWarning, 5 manufacturing/geometric checks
+        ├── print.rs        PrintProfile
+        └── integration.rs  sim-mjcf round-trip integration tests
 ```
 
-### 11.2 Planned (Phase 2+)
+### 11.2 Planned (Phase 3+)
 
 ```
 crates/cf-design/
 ├── Cargo.toml
-├── src/
-│   ├── lib.rs
-│   ├── field_node.rs       → may split into field/ modules as node count grows
-│   ├── evaluate.rs
-│   ├── interval.rs
-│   ├── bounds.rs
-│   ├── mesher.rs           → may split into mesh/ when DC arrives (Session 20)
-│   ├── solid.rs
-│   ├── mechanism/          Phase 2 (Sessions 7–12)
-│   │   ├── mod.rs          Mechanism type, builder API
-│   │   ├── part.rs         Part (named solid + material + flex zones)
-│   │   ├── material.rs     Material, ManufacturingProcess
-│   │   ├── joint.rs        JointDef, JointKind
-│   │   ├── tendon.rs       TendonDef, TendonWaypoint, channel subtraction
-│   │   ├── actuator.rs     ActuatorDef (motor, muscle)
-│   │   ├── mjcf.rs         MJCF XML generation
-│   │   ├── mass.rs         Volumetric mass property computation
-│   │   ├── validate.rs     DesignWarning, manufacturing constraint checks
-│   │   └── print.rs        PrintProfile, clearance application
-│   └── export/
-│       ├── stl.rs          Per-part STL generation
-│       └── shapes.rs       cf-geometry Shape generation (SdfGrid + TriangleMesh)
-└── tests/                  Integration tests (if needed beyond inline tests)
+└── src/
+    ├── lib.rs
+    ├── field_node.rs       → may split into field/ modules as node count grows
+    ├── evaluate.rs
+    ├── interval.rs
+    ├── bounds.rs
+    ├── mesher.rs           → may split into mesh/ when DC arrives (Session 20)
+    ├── solid.rs
+    ├── mechanism/          (as above)
+    └── bio/                Phase 3 (Sessions 13–18) — bio-inspired primitives + templates
 ```
 
 ### 11.3 Dependencies
@@ -1447,6 +1452,7 @@ nalgebra    = { workspace = true }   # Linear algebra
 
 [dev-dependencies]
 approx      = { workspace = true }   # Float comparison
+sim-mjcf    = { workspace = true }   # MJCF round-trip integration tests
 ```
 
 **Layer 0 purity**: Zero Bevy, zero GPU, zero framework dependencies.
