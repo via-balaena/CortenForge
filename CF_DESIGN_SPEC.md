@@ -1034,9 +1034,11 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 **Session 6: SDF Grid Evaluator + Integration Tests** — COMPLETE
 - Delivered: `Solid::sdf_grid(resolution)`. 6 integration mesh tests (composed trees → valid mesh). 3 pruning ratio tests on composed trees (union 72.5%, subtract 79.3%, smooth_union_all 61.1%). 4 SdfGrid correctness tests.
 
-### Phase 2: Mechanism (Sessions 7–12)
+### Phase 2: Mechanism (Sessions 7–12) — COMPLETE
 
 **Goal**: Multi-part assemblies with joints and tendons, MJCF generation.
+
+**Branch**: `cf-design-phase2` | **Tests**: 354 pass + 10 doctests | **Completed**: 2026-03-16
 
 **Session 7: Part + Joint + Material + Print Types**
 - Scope: `Material` type (density, Young's modulus, color, manufacturing
@@ -1108,24 +1110,32 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   by sim-core. STLs reflect clearance offsets. Mass properties within 2% of
   analytic values for sphere and cuboid. Clippy clean (--all-targets).
 
-**Session 12: Validation + Model Injection + Integration**
-- Scope: `Mechanism::validate() -> Vec<DesignWarning>`. Checks: wall thickness
-  (via medial axis sampling), hole diameter, inter-part clearances,
-  feature-below-resolution, joint anchor within part bounds (deferred from
-  Session 9 — requires spatial placement from Session 10 to compare world-frame
-  anchors against part geometry). Direct `Model` injection path
-  (`Model::empty()` + push geoms/bodies/joints, bypassing MJCF). Full
-  integration test: `Mechanism` → `to_mjcf()` → sim-mjcf parse → sim-core
-  `step()`.
-  **Deferred from Session 10**: add `sim-mjcf` as a dev-dependency and write
-  a round-trip parse test (`to_mjcf()` → `sim-mjcf::parse()` → verify model
-  structure). If sim-mjcf cannot parse inline `vertex`/`face` mesh attributes,
-  either extend the parser or switch to file-based mesh references.
+**Session 12: Validation + sim-mjcf Integration** ✅
+- Delivered: `Mechanism::validate() -> Vec<DesignWarning>` in
+  `mechanism/validate.rs`. New `JointAnchorOutOfBounds` variant added.
+  Four active checks: (1) wall thickness via medial-axis grid sampling — field
+  is evaluated on a full grid at `cell_size = min_wall`, then only local maxima
+  of `|field|` (medial-axis points) are checked, correctly ignoring convex
+  surface regions; (2) hole diameter — exact comparison of `2 × channel_radius`
+  vs `min_hole`; (3) feature-below-resolution — medial-axis points where
+  `2 × |field| < min_wall / 2`; (4) joint anchor bounds — SDF evaluation of
+  parent part at anchor point, flags positive values.
+  `InsufficientClearance` variant preserved but not populated (requires
+  world-frame part positions — deferred).
+  `sim-mjcf` added as dev-dependency. Full pipeline integration tested:
+  `Mechanism → to_mjcf() → sim_mjcf::load_model() → model.make_data() →
+  data.step()`. sim-mjcf already parsed inline `vertex`/`face` mesh attributes
+  — no parser extension needed. 12 new tests (8 validation, 1 variant, 3
+  integration).
+  **Deferred**: Direct `Model` injection path — sim-core has no `Model::empty()`
+  builder API. The MJCF string path via `load_model()` is sufficient for Phase 2.
+  Inter-part clearance checking deferred until cf-design assigns world-frame
+  part positions.
 - Entry: Sessions 10, 11 complete
-- Exit: `cargo test -p cf-design` passes. Full Phase 2 exit criteria met:
-  a multi-part mechanism (2-finger gripper with tendon channels) can be
-  defined in code, simulated in sim-core, exported as printable STLs with
-  manufacturing clearances, and validated against print constraints.
+- Exit: `cargo test -p cf-design` passes (354 + 10 doctests). Clippy clean
+  (--all-targets). Full Phase 2 exit criteria met: multi-part mechanism defined
+  in code, validated against print constraints, simulated in sim-core via MJCF,
+  exported as printable STLs with manufacturing clearances.
 
 ### Phase 3: Bio-Inspired Library (Sessions 13–18)
 

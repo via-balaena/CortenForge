@@ -38,3 +38,6 @@ pub use print::PrintProfile;
 pub use shapes::ShapeMode;
 pub use tendon::{TendonDef, TendonWaypoint};
 pub use validate::DesignWarning;
+
+#[cfg(test)]
+mod integration;

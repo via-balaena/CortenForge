@@ -387,6 +387,24 @@ impl Mechanism {
         self.print_profile.as_ref()
     }
 
+    /// Validate the mechanism against manufacturing constraints and geometric checks.
+    ///
+    /// Manufacturing checks (wall thickness, hole diameter, feature resolution)
+    /// require a [`PrintProfile`](super::PrintProfile) and are skipped without one.
+    /// Geometric checks (joint anchor bounds) always run.
+    ///
+    /// Returns all warnings found. An empty vector means the mechanism passes
+    /// all checks.
+    #[must_use]
+    pub fn validate(&self) -> Vec<super::DesignWarning> {
+        super::validate::validate_mechanism(
+            &self.parts,
+            &self.joints,
+            &self.tendons,
+            self.print_profile.as_ref(),
+        )
+    }
+
     /// Generate MJCF XML for simulation.
     ///
     /// Each part is meshed at the given `resolution` (passed to
