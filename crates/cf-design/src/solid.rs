@@ -2757,6 +2757,21 @@ mod tests {
     }
 
     #[test]
+    fn gyroid_infill_mesh_watertight() {
+        let infilled =
+            Solid::cuboid(Vector3::new(4.0, 4.0, 4.0)).infill(InfillKind::Gyroid, 1.0, 0.4, 0.5);
+        let mesh = infilled.mesh(0.4);
+        assert_mesh_valid(&mesh, "gyroid_infill");
+    }
+
+    #[test]
+    fn schwarz_p_infill_mesh_watertight() {
+        let infilled = Solid::sphere(4.0).infill(InfillKind::SchwarzP, 1.0, 0.4, 0.5);
+        let mesh = infilled.mesh(0.4);
+        assert_mesh_valid(&mesh, "schwarz_p_infill");
+    }
+
+    #[test]
     #[should_panic(expected = "positive and finite")]
     fn infill_rejects_zero_scale() {
         drop(Solid::sphere(5.0).infill(InfillKind::Gyroid, 0.0, 0.4, 0.5));
