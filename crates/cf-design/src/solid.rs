@@ -819,6 +819,71 @@ impl Solid {
         }
     }
 
+    /// Infinite repetition with the given spacing along each axis.
+    ///
+    /// Creates an infinite array of copies. The child is evaluated in
+    /// the fundamental domain `[-spacing/2, spacing/2]` per axis.
+    ///
+    /// **Produces infinite geometry.** Must be intersected with a finite
+    /// solid for meshing (same pattern as `Plane`, `Gyroid`):
+    /// ```ignore
+    /// let holes = Solid::cylinder(0.5, 1.0).repeat(Vector3::new(3.0, 3.0, 0.0));
+    /// let plate = Solid::cuboid(Vector3::new(10.0, 10.0, 1.0));
+    /// let result = plate.subtract(holes);
+    /// ```
+    ///
+    /// **Exact SDF** only when child geometry fits within one cell
+    /// (`[-spacing/2, spacing/2]` per axis). Overlapping geometry is
+    /// clipped at cell boundaries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any spacing component is not positive and finite.
+    #[must_use]
+    pub fn repeat(self, spacing: Vector3<f64>) -> Self {
+        assert!(
+            spacing.iter().all(|&v| v > 0.0 && v.is_finite()),
+            "repeat spacing must be positive and finite per axis, got {spacing:?}"
+        );
+        Self {
+            node: FieldNode::Repeat(Box::new(self.node), spacing),
+        }
+    }
+
+    /// Finite repetition with the given spacing and count per axis.
+    ///
+    /// Creates `count[i]` copies along each axis, centered at origin.
+    /// For `count = [3, 1, 1]` with `spacing = (5, 5, 5)`, copies are at
+    /// x ∈ {−5, 0, 5}, single copy on Y and Z.
+    ///
+    /// Unlike [`repeat`](Self::repeat), the result is finite geometry with
+    /// bounded AABB. Can be meshed directly.
+    ///
+    /// **Exact SDF** only when child geometry fits within one cell.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any spacing component is not positive and finite, or
+    /// any count is zero.
+    #[must_use]
+    pub fn repeat_bounded(self, spacing: Vector3<f64>, count: [u32; 3]) -> Self {
+        assert!(
+            spacing.iter().all(|&v| v > 0.0 && v.is_finite()),
+            "repeat_bounded spacing must be positive and finite, got {spacing:?}"
+        );
+        assert!(
+            count.iter().all(|&c| c >= 1),
+            "repeat_bounded count must be >= 1 per axis, got {count:?}"
+        );
+        Self {
+            node: FieldNode::RepeatBounded {
+                child: Box::new(self.node),
+                spacing,
+                count,
+            },
+        }
+    }
+
     /// User-defined function leaf node.
     ///
     /// Escape hatch for custom implicit surface functions that the expression
@@ -879,6 +944,21 @@ impl Solid {
         self.node.bounds()
     }
 
+    /// Compute the Lipschitz distortion factor of this solid's field.
+    ///
+    /// Returns the factor by which domain distortion operations (Twist, Bend,
+    /// Loft taper) amplify the field gradient. For undistorted fields, returns
+    /// 1.0.
+    ///
+    /// The mesher automatically divides cell size by this factor when calling
+    /// [`mesh()`](Self::mesh), ensuring thin features in high-distortion
+    /// regions are not silently lost. Use this value for manual resolution
+    /// planning.
+    #[must_use]
+    pub fn lipschitz_factor(&self) -> f64 {
+        self.node.lipschitz_factor()
+    }
+
     /// Extract a triangle mesh at the given tolerance (voxel size).
     ///
     /// Smaller tolerance produces a finer mesh with more triangles.
@@ -899,9 +979,13 @@ impl Solid {
         let Some(bounds) = self.node.bounds() else {
             return IndexedMesh::new();
         };
+        // Scale cell size by Lipschitz distortion factor to ensure thin
+        // features in high-distortion regions (Twist, Bend) are captured.
+        let lip = self.node.lipschitz_factor();
+        let cell_size = tolerance / lip;
         // Expand bounds by one cell to avoid surface clipping at edges
-        let expanded = bounds.expanded(tolerance);
-        let (mesh, _stats) = crate::mesher::mesh_field(&self.node, &expanded, tolerance);
+        let expanded = bounds.expanded(cell_size);
+        let (mesh, _stats) = crate::mesher::mesh_field(&self.node, &expanded, cell_size);
         mesh
     }
 
@@ -2327,6 +2411,176 @@ mod tests {
             mesh.vertices.len() > 50,
             "bent cuboid mesh should have substantial geometry, got {} verts",
             mesh.vertices.len()
+        );
+    }
+
+    // ── Repeat ───────────────────────────────────────────────────────
+
+    #[test]
+    fn repeat_is_infinite() {
+        let s = Solid::sphere(1.0).repeat(Vector3::new(5.0, 5.0, 5.0));
+        assert!(s.bounds().is_none());
+    }
+
+    #[test]
+    fn repeat_evaluates_at_copy() {
+        let s = Solid::sphere(1.0).repeat(Vector3::new(5.0, 5.0, 5.0));
+        // At origin → inside
+        assert!(s.evaluate(&Point3::origin()) < 0.0);
+        // At (5, 0, 0) → inside a copy
+        assert!(s.evaluate(&Point3::new(5.0, 0.0, 0.0)) < 0.0);
+        // At (2.5, 0, 0) → midpoint between copies, outside (radius 1 < spacing/2)
+        assert!(s.evaluate(&Point3::new(2.5, 0.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn repeat_intersected_with_cuboid_meshes() {
+        let holes = Solid::cylinder(0.3, 2.0).repeat(Vector3::new(2.0, 2.0, 100.0));
+        let plate = Solid::cuboid(Vector3::new(3.0, 3.0, 1.0));
+        let result = plate.subtract(holes);
+        let mesh = result.mesh(0.2);
+        assert!(
+            !mesh.is_empty(),
+            "repeated-hole plate should produce non-empty mesh"
+        );
+        assert!(
+            mesh.vertices.len() > 100,
+            "should have substantial geometry, got {} verts",
+            mesh.vertices.len()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn repeat_rejects_zero_spacing() {
+        drop(Solid::sphere(1.0).repeat(Vector3::new(0.0, 5.0, 5.0)));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn repeat_rejects_negative_spacing() {
+        drop(Solid::sphere(1.0).repeat(Vector3::new(-1.0, 5.0, 5.0)));
+    }
+
+    // ── RepeatBounded ────────────────────────────────────────────────
+
+    #[test]
+    fn repeat_bounded_has_finite_bounds() {
+        let s = Solid::sphere(1.0).repeat_bounded(Vector3::new(5.0, 5.0, 5.0), [3, 1, 1]);
+        let bb = s.bounds();
+        assert!(bb.is_some(), "bounded repeat should have finite bounds");
+    }
+
+    #[test]
+    fn repeat_bounded_evaluates_all_copies() {
+        let s = Solid::sphere(1.0).repeat_bounded(Vector3::new(5.0, 5.0, 5.0), [3, 1, 1]);
+        // 3 copies at x = -5, 0, 5
+        assert!(s.evaluate(&Point3::origin()) < 0.0);
+        assert!(s.evaluate(&Point3::new(5.0, 0.0, 0.0)) < 0.0);
+        assert!(s.evaluate(&Point3::new(-5.0, 0.0, 0.0)) < 0.0);
+        // Between copies → outside
+        assert!(s.evaluate(&Point3::new(2.5, 0.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn repeat_bounded_meshes_to_valid_geometry() {
+        let s = Solid::sphere(0.8).repeat_bounded(Vector3::new(3.0, 3.0, 3.0), [3, 2, 1]);
+        let mesh = s.mesh(0.3);
+        assert!(
+            !mesh.is_empty(),
+            "bounded repeat should produce non-empty mesh"
+        );
+        assert!(
+            mesh.vertices.len() > 200,
+            "3x2 array of spheres should have many vertices, got {}",
+            mesh.vertices.len()
+        );
+        // Volume check: 6 spheres of radius 0.8, expected ≈ 6 * 4/3 π 0.8³ ≈ 12.87
+        let vol = mesh.volume();
+        let expected = 6.0 * 4.0 / 3.0 * PI * 0.8_f64.powi(3);
+        let error = (vol - expected).abs() / expected;
+        assert!(
+            error < 0.2,
+            "volume error {:.1}% exceeds 20% (expected {expected:.1}, got {vol:.1})",
+            error * 100.0,
+        );
+    }
+
+    #[test]
+    fn repeat_bounded_count_1_is_identity() {
+        let base = Solid::sphere(2.0);
+        let repeated = Solid::sphere(2.0).repeat_bounded(Vector3::new(10.0, 10.0, 10.0), [1, 1, 1]);
+        let p = Point3::new(1.0, 0.5, 0.3);
+        assert!(
+            (base.evaluate(&p) - repeated.evaluate(&p)).abs() < 1e-10,
+            "count=[1,1,1] should be identity"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn repeat_bounded_rejects_zero_spacing() {
+        drop(Solid::sphere(1.0).repeat_bounded(Vector3::new(0.0, 5.0, 5.0), [3, 1, 1]));
+    }
+
+    #[test]
+    #[should_panic(expected = ">= 1")]
+    fn repeat_bounded_rejects_zero_count() {
+        drop(Solid::sphere(1.0).repeat_bounded(Vector3::new(5.0, 5.0, 5.0), [0, 1, 1]));
+    }
+
+    // ── Lipschitz factor ─────────────────────────────────────────────
+
+    #[test]
+    fn lipschitz_factor_sphere_is_1() {
+        let s = Solid::sphere(5.0);
+        assert!(
+            (s.lipschitz_factor() - 1.0).abs() < 1e-10,
+            "Sphere L should be 1.0, got {}",
+            s.lipschitz_factor()
+        );
+    }
+
+    #[test]
+    fn lipschitz_factor_twisted_is_gt_1() {
+        let s = Solid::cuboid(Vector3::new(3.0, 3.0, 10.0)).twist(1.0);
+        let lip = s.lipschitz_factor();
+        assert!(lip > 1.0, "Twisted solid should have L > 1, got {lip}");
+    }
+
+    #[test]
+    fn lipschitz_factor_used_in_mesh_resolution() {
+        // Verify that mesh() uses a finer cell size for distorted fields.
+        // A twisted cuboid should produce more vertices than an untwisted one
+        // at the same tolerance, because the Lipschitz factor refines the grid.
+        let base = Solid::cuboid(Vector3::new(2.0, 2.0, 5.0));
+        let twisted = Solid::cuboid(Vector3::new(2.0, 2.0, 5.0)).twist(0.5);
+        let mesh_base = base.mesh(0.5);
+        let mesh_twisted = twisted.mesh(0.5);
+        assert!(
+            mesh_twisted.vertices.len() > mesh_base.vertices.len(),
+            "Twisted mesh ({} verts) should have more vertices than base ({} verts) due to Lipschitz scaling",
+            mesh_twisted.vertices.len(),
+            mesh_base.vertices.len()
+        );
+    }
+
+    #[test]
+    fn lipschitz_factor_mesh_captures_twisted_features() {
+        // A twisted thin shell: without Lipschitz scaling, thin features could
+        // be lost. With scaling, they should be captured.
+        let s = Solid::cuboid(Vector3::new(2.0, 2.0, 5.0))
+            .shell(0.3)
+            .twist(0.3);
+        let mesh = s.mesh(0.4);
+        assert!(
+            !mesh.is_empty(),
+            "Twisted shell should produce non-empty mesh with Lipschitz scaling"
+        );
+        // Volume should be positive (features captured, not lost)
+        assert!(
+            mesh.volume() > 0.0,
+            "Twisted shell mesh volume should be positive"
         );
     }
 }

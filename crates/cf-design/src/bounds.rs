@@ -79,7 +79,10 @@ impl FieldNode {
                     Point3::new(r_max, r_max, *thickness),
                 ))
             }
-            Self::Gyroid { .. } | Self::SchwarzP { .. } | Self::Plane { .. } => None,
+            Self::Gyroid { .. }
+            | Self::SchwarzP { .. }
+            | Self::Plane { .. }
+            | Self::Repeat(_, _) => None,
             Self::Helix {
                 radius,
                 pitch,
@@ -226,6 +229,20 @@ impl FieldNode {
                 let z_ext = bb.min.z.abs().max(bb.max.z.abs());
                 let r = x_ext.hypot(z_ext);
                 Aabb::new(Point3::new(-r, bb.min.y, -r), Point3::new(r, bb.max.y, r))
+            }),
+            Self::RepeatBounded {
+                child,
+                spacing,
+                count,
+            } => child.bounds().map(|bb| {
+                // Total array extent: (count - 1) * spacing, centered at origin.
+                let ext_x = (f64::from(count[0]) - 1.0) * spacing.x * 0.5;
+                let ext_y = (f64::from(count[1]) - 1.0) * spacing.y * 0.5;
+                let ext_z = (f64::from(count[2]) - 1.0) * spacing.z * 0.5;
+                Aabb::new(
+                    Point3::new(bb.min.x - ext_x, bb.min.y - ext_y, bb.min.z - ext_z),
+                    Point3::new(bb.max.x + ext_x, bb.max.y + ext_y, bb.max.z + ext_z),
+                )
             }),
 
             // ── User function ────────────────────────────────────────
@@ -568,6 +585,69 @@ mod tests {
     }
 
     // ── Bend bounds tests ───────────────────────────────────────────
+
+    // ── Repeat bounds tests ───────────────────────────────────────────
+
+    #[test]
+    fn repeat_bounds_is_none() {
+        let node = FieldNode::Repeat(
+            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Vector3::new(5.0, 5.0, 5.0),
+        );
+        assert!(node.bounds().is_none());
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn repeat_bounded_bounds_single_copy() {
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(FieldNode::Sphere { radius: 1.0 }),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [1, 1, 1],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // Single copy → same as child bounds
+        assert!((bb.min.x - (-1.0)).abs() < 1e-10);
+        assert!((bb.max.x - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn repeat_bounded_bounds_3x1x1() {
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(FieldNode::Sphere { radius: 1.0 }),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [3, 1, 1],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // 3 copies along X: extent = (3-1)*5/2 = 5. Child bounds ±1.
+        // Total: [-1-5, 1+5] = [-6, 6] along X.
+        assert!((bb.min.x - (-6.0)).abs() < 1e-10);
+        assert!((bb.max.x - 6.0).abs() < 1e-10);
+        // Y and Z: single copy → child bounds
+        assert!((bb.min.y - (-1.0)).abs() < 1e-10);
+        assert!((bb.max.y - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn repeat_bounded_bounds_2x2x1() {
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(FieldNode::Sphere { radius: 0.5 }),
+            spacing: Vector3::new(3.0, 3.0, 3.0),
+            count: [2, 2, 1],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // X: (2-1)*3/2 = 1.5. Total: [-0.5-1.5, 0.5+1.5] = [-2, 2]
+        assert!((bb.min.x - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.x - 2.0).abs() < 1e-10);
+        // Y: same as X
+        assert!((bb.min.y - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.y - 2.0).abs() < 1e-10);
+        // Z: single copy
+        assert!((bb.min.z - (-0.5)).abs() < 1e-10);
+        assert!((bb.max.z - 0.5).abs() < 1e-10);
+    }
 
     #[test]
     #[allow(clippy::expect_used)]

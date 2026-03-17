@@ -233,6 +233,39 @@ pub enum FieldNode {
     ///   `∇f_bend = Jᵀ · ∇f_child(q(p))`.
     Bend(Box<Self>, f64),
 
+    /// Infinite repetition with spacing vector.
+    ///
+    /// `q = p - spacing · round(p / spacing)`, then `f(q)`.
+    /// Exact SDF only when child geometry fits within one cell
+    /// (`[-spacing/2, spacing/2]` per axis). Overlapping geometry is
+    /// clipped at cell boundaries.
+    ///
+    /// Produces infinite geometry (bounds = `None`). Intersect with a
+    /// finite solid for meshing — same pattern as `Plane` and `Gyroid`.
+    ///
+    /// Gradient (for Session 19):
+    ///   The fold is piecewise-identity, so `∇f_repeat(p) = ∇f_child(q(p))`
+    ///   at non-boundary points.
+    Repeat(Box<Self>, Vector3<f64>),
+
+    /// Finite repetition with count per axis.
+    ///
+    /// Creates `count[i]` copies along each axis, centered at origin.
+    /// For count `[3, 1, 1]` with spacing `(5, 1, 1)`, copies are at
+    /// x ∈ {−5, 0, 5}.
+    ///
+    /// Unlike [`Repeat`], has finite bounds and can be meshed directly.
+    /// Uses clamped repetition index — outermost cells extend to infinity
+    /// (no wrapping at boundaries).
+    ///
+    /// Gradient (for Session 19):
+    ///   Same as child gradient at folded point (same reasoning as Repeat).
+    RepeatBounded {
+        child: Box<Self>,
+        spacing: Vector3<f64>,
+        count: [u32; 3],
+    },
+
     // ── User escape hatch ─────────────────────────────────────────────
     /// User-provided function leaf node. Allows custom implicit surface
     /// functions that the expression tree does not natively support.

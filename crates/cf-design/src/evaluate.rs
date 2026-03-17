@@ -120,6 +120,26 @@ impl FieldNode {
                 let q = Point3::new(c.mul_add(p.x, -(s * p.z)), p.y, s.mul_add(p.x, c * p.z));
                 child.evaluate(&q)
             }
+            Self::Repeat(child, spacing) => {
+                let q = Point3::new(
+                    fold_repeat(p.x, spacing.x),
+                    fold_repeat(p.y, spacing.y),
+                    fold_repeat(p.z, spacing.z),
+                );
+                child.evaluate(&q)
+            }
+            Self::RepeatBounded {
+                child,
+                spacing,
+                count,
+            } => {
+                let q = Point3::new(
+                    fold_repeat_bounded(p.x, spacing.x, count[0]),
+                    fold_repeat_bounded(p.y, spacing.y, count[1]),
+                    fold_repeat_bounded(p.z, spacing.z, count[2]),
+                );
+                child.evaluate(&q)
+            }
 
             // User function
             Self::UserFn { eval, .. } => (eval.0)(*p),
@@ -159,6 +179,27 @@ fn eval_smooth_union_all(values: &[f64], k: f64) -> f64 {
     let m = values.iter().copied().fold(f64::INFINITY, f64::min);
     let sum: f64 = values.iter().map(|&v| (-(v - m) / k).exp()).sum();
     k.mul_add(-sum.ln(), m)
+}
+
+// ── Repeat fold helpers ─────────────────────────────────────────────────
+
+/// Fold coordinate into fundamental domain for infinite repetition.
+/// Maps coord into `[-spacing/2, spacing/2]`.
+fn fold_repeat(coord: f64, spacing: f64) -> f64 {
+    spacing.mul_add(-(coord / spacing).round(), coord)
+}
+
+/// Fold coordinate for bounded repetition with N copies centered at origin.
+/// Copy positions: `(i - (N-1)/2) · spacing` for `i` in `0..N`.
+/// Returns the coordinate relative to the nearest copy center.
+fn fold_repeat_bounded(coord: f64, spacing: f64, count: u32) -> f64 {
+    if count <= 1 {
+        return coord;
+    }
+    let n = f64::from(count);
+    let half = (n - 1.0) * spacing * 0.5;
+    let id = ((coord + half) / spacing).round().clamp(0.0, n - 1.0);
+    coord - id.mul_add(spacing, -half)
 }
 
 // ── Primitive SDF implementations ────────────────────────────────────────
@@ -1874,5 +1915,153 @@ mod tests {
         // For equally spaced values (0, 1, 2, 3), midpoint should be 1.5
         let r = catmull_rom_1d(0.0, 1.0, 2.0, 3.0, 0.5);
         assert_abs_diff_eq!(r, 1.5, epsilon = EPS);
+    }
+
+    // ── Repeat ───────────────────────────────────────────────────────
+
+    #[test]
+    fn repeat_sphere_at_origin_matches_child() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::Repeat(Box::new(child.clone()), Vector3::new(5.0, 5.0, 5.0));
+        // At origin, fold is identity → should match child
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::origin()),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn repeat_sphere_at_offset_copy() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::Repeat(Box::new(child.clone()), Vector3::new(5.0, 5.0, 5.0));
+        // At (5, 0, 0), should fold to (0, 0, 0) → same as child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(5.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+        // At (10, 0, 0), should fold to (0, 0, 0)
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(10.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn repeat_sphere_midpoint_between_copies() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::Repeat(Box::new(child), Vector3::new(5.0, 5.0, 5.0));
+        // At (2.5, 0, 0) — midpoint between two X copies.
+        // Folds to (2.5, 0, 0) relative to nearest copy. Child = sphere → distance = 2.5 - 1.0 = 1.5
+        let val = node.evaluate(&Point3::new(2.5, 0.0, 0.0));
+        assert_abs_diff_eq!(val, 1.5, epsilon = EPS);
+    }
+
+    #[test]
+    fn repeat_bounded_count_1_is_identity() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(child.clone()),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [1, 1, 1],
+        };
+        // Count 1 on all axes → no repetition, should equal child
+        let p = Point3::new(2.0, 0.0, 0.0);
+        assert_abs_diff_eq!(node.evaluate(&p), child.evaluate(&p), epsilon = EPS);
+    }
+
+    #[test]
+    fn repeat_bounded_3_copies_along_x() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(child.clone()),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [3, 1, 1],
+        };
+        // 3 copies at x = -5, 0, 5
+        // At origin → near center copy → should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::origin()),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+        // At x=5 → near right copy → should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(5.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+        // At x=-5 → near left copy → should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(-5.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn repeat_bounded_beyond_array_uses_nearest_copy() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(child.clone()),
+            spacing: Vector3::new(5.0, 5.0, 5.0),
+            count: [3, 1, 1],
+        };
+        // At x=12 → beyond rightmost copy at x=5.
+        // Should evaluate child at (12 - 5, 0, 0) = (7, 0, 0)
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(12.0, 0.0, 0.0)),
+            child.evaluate(&Point3::new(7.0, 0.0, 0.0)),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn repeat_bounded_2_copies_straddle_origin() {
+        let child = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::RepeatBounded {
+            child: Box::new(child.clone()),
+            spacing: Vector3::new(4.0, 4.0, 4.0),
+            count: [2, 1, 1],
+        };
+        // 2 copies at x = -2 and x = 2
+        // At x=-2: should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(-2.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+        // At x=2: should match child at origin
+        assert_abs_diff_eq!(
+            node.evaluate(&Point3::new(2.0, 0.0, 0.0)),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS
+        );
+    }
+
+    #[test]
+    fn fold_repeat_maps_to_fundamental_domain() {
+        assert_abs_diff_eq!(fold_repeat(0.0, 5.0), 0.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat(5.0, 5.0), 0.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat(2.0, 5.0), 2.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat(7.0, 5.0), 2.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat(-3.0, 5.0), 2.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn fold_repeat_bounded_count_1_is_identity() {
+        assert_abs_diff_eq!(fold_repeat_bounded(7.0, 5.0, 1), 7.0, epsilon = EPS);
+        assert_abs_diff_eq!(fold_repeat_bounded(-3.0, 5.0, 1), -3.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn fold_repeat_bounded_clamps_at_edges() {
+        // count=3, spacing=5 → copies at -5, 0, 5
+        // At x=12: nearest copy is at 5, so fold = 12 - 5 = 7
+        assert_abs_diff_eq!(fold_repeat_bounded(12.0, 5.0, 3), 7.0, epsilon = EPS);
+        // At x=-12: nearest copy is at -5, so fold = -12 - (-5) = -7
+        assert_abs_diff_eq!(fold_repeat_bounded(-12.0, 5.0, 3), -7.0, epsilon = EPS);
     }
 }
