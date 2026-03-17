@@ -18,7 +18,7 @@ use super::tendon::TendonDef;
 ///
 /// Manufacturing checks ([`WallTooThin`](Self::WallTooThin),
 /// [`HoleTooSmall`](Self::HoleTooSmall), [`FeatureBelowResolution`](Self::FeatureBelowResolution))
-/// require a [`PrintProfile`](super::PrintProfile) and are skipped without one.
+/// require a [`PrintProfile`] and are skipped without one.
 /// Geometric checks ([`JointAnchorOutOfBounds`](Self::JointAnchorOutOfBounds))
 /// always run.
 ///

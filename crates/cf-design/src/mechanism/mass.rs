@@ -1,7 +1,7 @@
 //! Volumetric mass property computation from implicit fields.
 //!
 //! Computes mass, center of mass, and inertia tensor by integrating over the
-//! interior of a [`Solid`](crate::Solid) on a regular grid. Interior is defined
+//! interior of a [`Solid`] on a regular grid. Interior is defined
 //! as the region where the field evaluates to ≤ 0.
 //!
 //! # Units

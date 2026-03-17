@@ -390,7 +390,7 @@ impl Mechanism {
     /// Validate the mechanism against manufacturing constraints and geometric checks.
     ///
     /// Manufacturing checks (wall thickness, hole diameter, feature resolution)
-    /// require a [`PrintProfile`](super::PrintProfile) and are skipped without one.
+    /// require a [`PrintProfile`] and are skipped without one.
     /// Geometric checks (joint anchor bounds) always run.
     ///
     /// Returns all warnings found. An empty vector means the mechanism passes
@@ -439,7 +439,7 @@ impl Mechanism {
     /// Generate per-part meshes for 3D printing.
     ///
     /// Returns `(part_name, IndexedMesh)` pairs in part declaration order.
-    /// If a [`PrintProfile`](super::PrintProfile) is set, each part is shrunk
+    /// If a [`PrintProfile`] is set, each part is shrunk
     /// by half the clearance so that mating surfaces have the required gap.
     ///
     /// # Panics
