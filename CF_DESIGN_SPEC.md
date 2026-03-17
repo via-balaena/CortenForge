@@ -1061,9 +1061,10 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 **Session 9: Mechanism Builder API**
 - Scope: `Mechanism` struct. Builder pattern: `.part()`, `.joint()`,
   `.tendon()`, `.actuator()`, `.print_profile()`. Validation: joint references
-  valid parts, tendon waypoints reference valid parts, no orphan parts, joint
-  anchor within part bounds. Tests for builder ergonomics and validation error
-  messages. The bio-gripper example from Section 4.4 should compile.
+  valid parts, tendon waypoints reference valid parts, no orphan parts,
+  duplicate name detection. Tests for builder ergonomics and validation error
+  messages. The bio-gripper example from Section 4.4 should compile. Joint
+  anchor within part bounds deferred to Session 12 (requires spatial placement).
 - Entry: Sessions 7, 8 complete
 - Exit: `cargo test -p cf-design` passes. Bio-gripper example compiles and
   validates. Invalid mechanisms produce clear errors.
@@ -1095,9 +1096,12 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 **Session 12: Validation + Model Injection + Integration**
 - Scope: `Mechanism::validate() -> Vec<DesignWarning>`. Checks: wall thickness
   (via medial axis sampling), hole diameter, inter-part clearances,
-  feature-below-resolution. Direct `Model` injection path (`Model::empty()` +
-  push geoms/bodies/joints, bypassing MJCF). Full integration test:
-  `Mechanism` → `to_mjcf()` → sim-mjcf parse → sim-core `step()`.
+  feature-below-resolution, joint anchor within part bounds (deferred from
+  Session 9 — requires spatial placement from Session 10 to compare world-frame
+  anchors against part geometry). Direct `Model` injection path
+  (`Model::empty()` + push geoms/bodies/joints, bypassing MJCF). Full
+  integration test: `Mechanism` → `to_mjcf()` → sim-mjcf parse → sim-core
+  `step()`.
 - Entry: Sessions 10, 11 complete
 - Exit: `cargo test -p cf-design` passes. Full Phase 2 exit criteria met:
   a multi-part mechanism (2-finger gripper with tendon channels) can be
