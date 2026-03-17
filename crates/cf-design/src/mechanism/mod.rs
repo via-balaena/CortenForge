@@ -18,18 +18,23 @@
 pub mod actuator;
 pub mod builder;
 pub mod joint;
+pub mod mass;
 pub mod material;
 mod mjcf;
 pub mod part;
 pub mod print;
+mod shapes;
+mod stl;
 pub mod tendon;
 pub mod validate;
 
 pub use actuator::{ActuatorDef, ActuatorKind};
 pub use builder::{Mechanism, MechanismBuilder, MechanismError};
 pub use joint::{JointDef, JointKind};
+pub use mass::MassProperties;
 pub use material::{ManufacturingProcess, Material};
 pub use part::{FlexZone, Part, Plane};
 pub use print::PrintProfile;
+pub use shapes::ShapeMode;
 pub use tendon::{TendonDef, TendonWaypoint};
 pub use validate::DesignWarning;

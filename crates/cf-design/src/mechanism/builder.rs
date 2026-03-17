@@ -400,6 +400,37 @@ impl Mechanism {
     pub fn to_mjcf(&self, resolution: f64) -> String {
         super::mjcf::generate(self, resolution)
     }
+
+    /// Generate collision shapes for cf-geometry.
+    ///
+    /// Returns `(part_name, Shape)` pairs in part declaration order.
+    ///
+    /// - [`ShapeMode::Sdf`](super::ShapeMode::Sdf): evaluates the implicit
+    ///   field on a grid → `Shape::Sdf`. Fast, best for design iteration.
+    /// - [`ShapeMode::Mesh`](super::ShapeMode::Mesh): meshes the field →
+    ///   `Shape::TriangleMesh` with BVH. Accurate, best for final simulation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resolution/tolerance in `mode` is not positive and finite.
+    #[must_use]
+    pub fn to_shapes(&self, mode: &super::ShapeMode) -> Vec<(String, cf_geometry::Shape)> {
+        super::shapes::generate(self, mode)
+    }
+
+    /// Generate per-part meshes for 3D printing.
+    ///
+    /// Returns `(part_name, IndexedMesh)` pairs in part declaration order.
+    /// If a [`PrintProfile`](super::PrintProfile) is set, each part is shrunk
+    /// by half the clearance so that mating surfaces have the required gap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tolerance` is not positive and finite.
+    #[must_use]
+    pub fn to_stl_kit(&self, tolerance: f64) -> Vec<(String, cf_geometry::IndexedMesh)> {
+        super::stl::generate(self, tolerance)
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────

@@ -197,6 +197,7 @@ fn build_site_map(tendons: &[TendonDef]) -> HashMap<&str, Vec<(String, [f64; 3])
 }
 
 /// Recursively write a `<body>` element and its child subtree.
+#[allow(clippy::too_many_arguments)]
 fn write_body(
     xml: &mut String,
     part: &Part,
@@ -217,10 +218,11 @@ fn write_body(
         }
     }
 
-    // Geom referencing the mesh asset.
+    // Geom referencing the mesh asset, with material density for mass computation.
+    let density = part.material().density;
     let _ = writeln!(
         xml,
-        "{pad}  <geom type=\"mesh\" mesh=\"{}_mesh\"/>",
+        "{pad}  <geom type=\"mesh\" mesh=\"{}_mesh\" density=\"{density}\"/>",
         esc(part.name())
     );
 
@@ -415,7 +417,7 @@ mod tests {
         assert!(xml.contains("</asset>"));
         assert!(xml.contains("<worldbody>"));
         assert!(xml.contains("<body name=\"ball\">"));
-        assert!(xml.contains("<geom type=\"mesh\" mesh=\"ball_mesh\"/>"));
+        assert!(xml.contains("<geom type=\"mesh\" mesh=\"ball_mesh\" density=\"1250\"/>"));
         assert!(xml.contains("</body>"));
         assert!(xml.contains("</worldbody>"));
         assert!(xml.contains("</mujoco>"));
