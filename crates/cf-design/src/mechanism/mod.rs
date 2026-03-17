@@ -17,6 +17,7 @@
 
 pub mod actuator;
 pub mod builder;
+pub mod flex_split;
 pub mod joint;
 pub mod mass;
 pub mod material;
@@ -30,6 +31,7 @@ pub mod validate;
 
 pub use actuator::{ActuatorDef, ActuatorKind};
 pub use builder::{Mechanism, MechanismBuilder, MechanismError};
+pub use flex_split::{CrossSection, FlexJoint, SplitResult, measure_cross_section, split_part};
 pub use joint::{JointDef, JointKind};
 pub use mass::MassProperties;
 pub use material::{ManufacturingProcess, Material};
