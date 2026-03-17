@@ -70,6 +70,12 @@ impl FieldNode {
                 let values: Vec<f64> = children.iter().map(|c| c.evaluate(p)).collect();
                 eval_smooth_union_all(&values, *k)
             }
+            Self::SmoothUnionVariable {
+                a, b, radius_fn, ..
+            } => {
+                let k = (radius_fn.0)(*p).max(1e-15);
+                eval_smooth_union(a.evaluate(p), b.evaluate(p), k)
+            }
 
             // Transforms
             Self::Translate(child, offset) => {

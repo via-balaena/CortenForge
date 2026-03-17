@@ -88,6 +88,10 @@ impl FieldNode {
             Self::SmoothSubtract(a, b, k) => interval_smooth_subtract(a, b, *k, aabb),
             Self::SmoothIntersect(a, b, k) => interval_smooth_intersect(a, b, *k, aabb),
             Self::SmoothUnionAll(children, k) => interval_smooth_union_all(children, *k, aabb),
+            Self::SmoothUnionVariable { a, b, max_k, .. } => {
+                // Conservative: use max_k as the blend radius upper bound
+                interval_smooth_union(a, b, *max_k, aabb)
+            }
 
             // Transforms
             Self::Translate(child, offset) => interval_translate(child, offset, aabb),
@@ -169,6 +173,10 @@ impl FieldNode {
             | Self::SmoothUnion(a, b, _)
             | Self::SmoothSubtract(a, b, _)
             | Self::SmoothIntersect(a, b, _) => a.lipschitz_factor().max(b.lipschitz_factor()),
+
+            Self::SmoothUnionVariable { a, b, .. } => {
+                a.lipschitz_factor().max(b.lipschitz_factor())
+            }
 
             Self::SmoothUnionAll(children, _) => children
                 .iter()
@@ -915,6 +923,27 @@ mod tests {
         let sua = FieldNode::SmoothUnionAll(vec![a, b, c], 1.0);
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&sua, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn smooth_union_variable_interval_contains_points() {
+        use crate::field_node::UserEvalFn;
+        use std::sync::Arc;
+
+        let a = FieldNode::Sphere { radius: 2.0 };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Vector3::new(3.0, 0.0, 0.0),
+        );
+        let suv = FieldNode::SmoothUnionVariable {
+            a: Box::new(a),
+            b: Box::new(b),
+            radius_fn: UserEvalFn(Arc::new(|_: Point3<f64>| 1.0)),
+            max_k: 1.0,
+        };
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&suv, aabb, 5);
         }
     }
 

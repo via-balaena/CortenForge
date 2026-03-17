@@ -162,6 +162,10 @@ impl FieldNode {
                 (Some(bb), None) | (None, Some(bb)) => Some(bb.expanded(k / 4.0)),
                 (None, None) => None,
             },
+            Self::SmoothUnionVariable { a, b, max_k, .. } => match (a.bounds(), b.bounds()) {
+                (Some(a_bb), Some(b_bb)) => Some(a_bb.union(&b_bb).expanded(max_k / 4.0)),
+                _ => None,
+            },
             Self::SmoothUnionAll(children, k) => {
                 let mut result: Option<Aabb> = None;
                 for child in children {

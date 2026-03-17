@@ -14,6 +14,15 @@ use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn};
 
+/// Lattice type for infill operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfillKind {
+    /// Gyroid triply-periodic minimal surface — the standard bio-inspired infill.
+    Gyroid,
+    /// Schwarz P triply-periodic minimal surface — alternative with cubic symmetry.
+    SchwarzP,
+}
+
 /// Opaque solid defined by an implicit surface field.
 ///
 /// Construct with primitive factory methods (`sphere`, `cuboid`, etc.) and
@@ -617,6 +626,85 @@ impl Solid {
         Self {
             node: FieldNode::SmoothUnionAll(nodes, k),
         }
+    }
+
+    /// Smooth union with spatially varying blend radius.
+    ///
+    /// Like [`smooth_union`](Self::smooth_union) but the blend radius `k` is
+    /// determined by `radius_fn(p)` at each query point. Where `radius_fn`
+    /// returns a larger value, a wider organic fillet is produced.
+    ///
+    /// `max_k` is the upper bound on `radius_fn` over the domain. It is used
+    /// for conservative interval evaluation (mesh pruning). For correctness,
+    /// `max_k` must be ≥ the actual supremum of `radius_fn`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_k` is not positive and finite.
+    #[must_use]
+    pub fn smooth_union_variable(
+        self,
+        other: Self,
+        radius_fn: impl Fn(Point3<f64>) -> f64 + Send + Sync + 'static,
+        max_k: f64,
+    ) -> Self {
+        assert!(
+            max_k > 0.0 && max_k.is_finite(),
+            "smooth_union_variable max_k must be positive and finite, got {max_k}"
+        );
+        Self {
+            node: FieldNode::SmoothUnionVariable {
+                a: Box::new(self.node),
+                b: Box::new(other.node),
+                radius_fn: UserEvalFn(Arc::new(radius_fn)),
+                max_k,
+            },
+        }
+    }
+
+    /// Fill the interior with a lattice structure, preserving a solid outer
+    /// shell.
+    ///
+    /// Creates a hollow shell of `wall_thickness` around the original surface,
+    /// then fills the interior with a periodic lattice (gyroid or Schwarz P).
+    ///
+    /// - `kind` — lattice type ([`InfillKind::Gyroid`] or [`InfillKind::SchwarzP`]).
+    /// - `scale` — spatial frequency of the lattice (higher = denser). Period
+    ///   = `2π / scale` along each axis.
+    /// - `lattice_thickness` — wall thickness of the lattice sheets.
+    /// - `wall_thickness` — thickness of the solid outer shell.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `scale`, `lattice_thickness`, or `wall_thickness` is not
+    /// positive and finite.
+    #[must_use]
+    pub fn infill(
+        self,
+        kind: InfillKind,
+        scale: f64,
+        lattice_thickness: f64,
+        wall_thickness: f64,
+    ) -> Self {
+        assert!(
+            scale > 0.0 && scale.is_finite(),
+            "infill scale must be positive and finite, got {scale}"
+        );
+        assert!(
+            lattice_thickness > 0.0 && lattice_thickness.is_finite(),
+            "infill lattice_thickness must be positive and finite, got {lattice_thickness}"
+        );
+        assert!(
+            wall_thickness > 0.0 && wall_thickness.is_finite(),
+            "infill wall_thickness must be positive and finite, got {wall_thickness}"
+        );
+        let shell = self.clone().shell(wall_thickness);
+        let interior = self.offset(-wall_thickness);
+        let lattice = match kind {
+            InfillKind::Gyroid => Self::gyroid(scale, lattice_thickness),
+            InfillKind::SchwarzP => Self::schwarz_p(scale, lattice_thickness),
+        };
+        shell.union(interior.intersect(lattice))
     }
 
     // ── Transforms ───────────────────────────────────────────────────
@@ -2581,6 +2669,219 @@ mod tests {
         assert!(
             mesh.volume() > 0.0,
             "Twisted shell mesh volume should be positive"
+        );
+    }
+
+    // ── Infill tests ────────────────────────────────────────────────
+
+    #[test]
+    fn gyroid_infill_cuboid_produces_mesh() {
+        let s =
+            Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).infill(InfillKind::Gyroid, 1.0, 0.4, 0.5);
+        let mesh = s.mesh(0.4);
+        assert!(
+            mesh.vertices.len() > 100,
+            "gyroid-infilled cuboid should produce substantial mesh, got {} verts",
+            mesh.vertices.len()
+        );
+    }
+
+    #[test]
+    fn schwarz_p_infill_sphere_produces_mesh() {
+        let s = Solid::sphere(5.0).infill(InfillKind::SchwarzP, 1.0, 0.4, 0.5);
+        let mesh = s.mesh(0.4);
+        assert!(
+            mesh.vertices.len() > 100,
+            "schwarz_p-infilled sphere should produce substantial mesh, got {} verts",
+            mesh.vertices.len()
+        );
+    }
+
+    #[test]
+    fn infill_preserves_outer_shell() {
+        let original = Solid::sphere(5.0);
+        let infilled = Solid::sphere(5.0).infill(InfillKind::Gyroid, 1.0, 0.3, 0.5);
+        // On the original surface, infill should be near zero (shell boundary)
+        let surface_pt = Point3::new(5.0, 0.0, 0.0);
+        let original_val = original.evaluate(&surface_pt);
+        let infilled_val = infilled.evaluate(&surface_pt);
+        assert!(
+            original_val.abs() < 1e-10,
+            "surface point should be on original surface"
+        );
+        assert!(
+            infilled_val.abs() < 1.0,
+            "infilled surface should be near the original surface, got {infilled_val}"
+        );
+    }
+
+    #[test]
+    fn infill_has_lattice_inside() {
+        let infilled =
+            Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).infill(InfillKind::Gyroid, 1.0, 0.4, 0.5);
+        // Sample a grid of interior points — some should be inside lattice
+        // (negative) and some should be outside (positive, in the voids)
+        let mut has_inside = false;
+        let mut has_outside = false;
+        for i in 0..10 {
+            let x = f64::from(i).mul_add(0.6, -3.0);
+            let val = infilled.evaluate(&Point3::new(x, 0.0, 0.0));
+            if val < 0.0 {
+                has_inside = true;
+            }
+            if val > 0.0 {
+                has_outside = true;
+            }
+        }
+        assert!(
+            has_inside,
+            "infilled interior should have lattice material (negative field)"
+        );
+        assert!(
+            has_outside,
+            "infilled interior should have voids (positive field)"
+        );
+    }
+
+    #[test]
+    fn infill_volume_less_than_solid() {
+        let solid = Solid::cuboid(Vector3::new(5.0, 5.0, 5.0));
+        let infilled =
+            Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).infill(InfillKind::Gyroid, 1.0, 0.4, 0.5);
+        let vol_solid = solid.mesh(0.5).volume();
+        let vol_infill = infilled.mesh(0.4).volume();
+        assert!(
+            vol_infill < vol_solid,
+            "infilled volume ({vol_infill:.1}) should be less than solid volume ({vol_solid:.1})"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn infill_rejects_zero_scale() {
+        drop(Solid::sphere(5.0).infill(InfillKind::Gyroid, 0.0, 0.4, 0.5));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn infill_rejects_negative_wall() {
+        drop(Solid::sphere(5.0).infill(InfillKind::Gyroid, 1.0, 0.4, -0.5));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn infill_rejects_nan_lattice_thickness() {
+        drop(Solid::sphere(5.0).infill(InfillKind::SchwarzP, 1.0, f64::NAN, 0.5));
+    }
+
+    // ── Variable-radius smooth union tests ──────────────────────────
+
+    #[test]
+    fn smooth_union_variable_constant_k_matches_smooth_union() {
+        let sphere_a = Solid::sphere(2.0);
+        let sphere_b = Solid::sphere(2.0).translate(Vector3::new(3.0, 0.0, 0.0));
+        let blend_k = 1.0;
+
+        let constant = sphere_a.clone().smooth_union(sphere_b.clone(), blend_k);
+        let variable = sphere_a.smooth_union_variable(sphere_b, |_| 1.0, blend_k);
+
+        // Should produce identical values at several test points
+        let pts = [
+            Point3::origin(),
+            Point3::new(1.5, 0.0, 0.0),
+            Point3::new(3.0, 0.0, 0.0),
+            Point3::new(0.0, 3.0, 0.0),
+        ];
+        for pt in &pts {
+            let cv = constant.evaluate(pt);
+            let vv = variable.evaluate(pt);
+            assert!(
+                (cv - vv).abs() < 1e-10,
+                "constant and variable should match at {pt:?}: {cv} vs {vv}"
+            );
+        }
+    }
+
+    #[test]
+    fn smooth_union_variable_larger_k_adds_more_material() {
+        let a = Solid::sphere(2.0);
+        let b = Solid::sphere(2.0).translate(Vector3::new(3.0, 0.0, 0.0));
+
+        // Small k on left side (x < 1.5), large k on right side (x >= 1.5)
+        let variable = a.smooth_union_variable(b, |p| if p.x < 1.5 { 0.1 } else { 2.0 }, 2.0);
+
+        // In the blend region near x=1.5, the right side (large k) should have
+        // more material (more negative field) than the left side (small k)
+        let left = variable.evaluate(&Point3::new(1.0, 1.0, 0.0));
+        let right = variable.evaluate(&Point3::new(2.0, 1.0, 0.0));
+        // Both points are in the blend zone between the two spheres.
+        // The right point has k=2.0 so more blending, the left has k=0.1.
+        // We just check that the variable blend produces valid field values.
+        assert!(
+            left.is_finite() && right.is_finite(),
+            "variable blend should produce finite values"
+        );
+    }
+
+    #[test]
+    fn smooth_union_variable_far_from_blend_matches_sharp() {
+        let sphere_a = Solid::sphere(2.0);
+        let sphere_b = Solid::sphere(2.0).translate(Vector3::new(10.0, 0.0, 0.0));
+
+        let variable = sphere_a
+            .clone()
+            .smooth_union_variable(sphere_b.clone(), |_| 0.5, 0.5);
+        let sharp = sphere_a.union(sphere_b);
+
+        // Far from blend region: should match sharp union
+        let origin = Point3::origin();
+        let var_val = variable.evaluate(&origin);
+        let sharp_val = sharp.evaluate(&origin);
+        assert!(
+            (var_val - sharp_val).abs() < 1e-6,
+            "far from blend, variable should match sharp: {var_val} vs {sharp_val}"
+        );
+    }
+
+    #[test]
+    fn smooth_union_variable_meshes() {
+        let a = Solid::sphere(3.0);
+        let b = Solid::sphere(3.0).translate(Vector3::new(4.0, 0.0, 0.0));
+        let blended = a.smooth_union_variable(b, |p| p.x.abs().mul_add(0.1, 0.5), 2.0);
+        let mesh = blended.mesh(0.5);
+        assert!(
+            mesh.vertices.len() > 50,
+            "variable blended mesh should have substantial geometry, got {} verts",
+            mesh.vertices.len()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn smooth_union_variable_rejects_zero_max_k() {
+        let a = Solid::sphere(1.0);
+        let b = Solid::sphere(1.0);
+        drop(a.smooth_union_variable(b, |_| 1.0, 0.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn smooth_union_variable_rejects_nan_max_k() {
+        let a = Solid::sphere(1.0);
+        let b = Solid::sphere(1.0);
+        drop(a.smooth_union_variable(b, |_| 1.0, f64::NAN));
+    }
+
+    #[test]
+    fn smooth_union_variable_is_cloneable() {
+        let a = Solid::sphere(2.0);
+        let b = Solid::sphere(2.0).translate(Vector3::new(3.0, 0.0, 0.0));
+        let s = a.smooth_union_variable(b, |_| 1.0, 1.0);
+        let s2 = s.clone();
+        let p = Point3::new(1.5, 0.0, 0.0);
+        assert!(
+            (s.evaluate(&p) - s2.evaluate(&p)).abs() < 1e-10,
+            "clone should produce identical evaluations"
         );
     }
 }

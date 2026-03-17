@@ -40,4 +40,4 @@ pub use mechanism::{
     MassProperties, Material, Mechanism, MechanismBuilder, MechanismError, Part, Plane,
     PrintProfile, ShapeMode, TendonDef, TendonWaypoint,
 };
-pub use solid::Solid;
+pub use solid::{InfillKind, Solid};

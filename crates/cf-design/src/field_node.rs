@@ -266,6 +266,19 @@ pub enum FieldNode {
         count: [u32; 3],
     },
 
+    /// Smooth union with spatially varying blend radius.
+    ///
+    /// Like [`SmoothUnion`] but the blend radius `k` is determined by a
+    /// user-provided closure evaluated at each point. `max_k` is the upper
+    /// bound on the radius function, used for conservative interval
+    /// evaluation.
+    SmoothUnionVariable {
+        a: Box<Self>,
+        b: Box<Self>,
+        radius_fn: UserEvalFn,
+        max_k: f64,
+    },
+
     // ── User escape hatch ─────────────────────────────────────────────
     /// User-provided function leaf node. Allows custom implicit surface
     /// functions that the expression tree does not natively support.
