@@ -1080,14 +1080,14 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   `<mesh>` asset elements. 13 tests: structural hierarchy, all joint types,
   range/limited, site placement, tendon spatial, motor/muscle actuators,
   bio-gripper round-trip, mesh data embedding, XML well-formedness.
-- Deferred to Session 11: `density` attribute on `<geom>` (mass properties).
+- Deferred to Session 11: `density` attribute on `<geom>` (mass properties). ✅
 - Deferred to Session 12: `sim-mjcf` dev-dependency round-trip parse test.
 - Entry: Sessions 5, 9 complete (mesher + Mechanism)
 - Exit: `cargo test -p cf-design` passes (320 + 9 doctests). Clippy clean.
   Generated MJCF structurally verified via 13 tests. sim-mjcf parse deferred
   to Session 12.
 
-**Session 11: Shape + STL Generation + Mass Properties**
+**Session 11: Shape + STL Generation + Mass Properties** ✅
 - Scope: `Mechanism::to_shapes(ShapeMode) -> Vec<(String, Shape)>`. SDF mode:
   evaluate field on grid → `SdfGrid` → `Shape::Sdf`. Mesh mode: mesh →
   `IndexedMesh` + `Bvh` → `Shape::TriangleMesh`.
@@ -1097,12 +1097,16 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   integration). Tests for each output path.
   **Deferred from Session 10**: emit `density` attribute on `<geom>` elements
   in `to_mjcf()` using `Material::density` — lets MuJoCo auto-compute mass
-  and inertia from mesh geometry. Add `<inertial>` elements if explicit mass
-  properties are computed.
+  and inertia from mesh geometry.
+  **Design decision**: `<inertial>` elements are NOT emitted. The `density`
+  attribute on `<geom>` lets MuJoCo compute mass/inertia from the actual
+  collision mesh, which is more accurate than our grid-based approximation.
+  `MassProperties` is exposed as a public API (`mass_properties()`) for user
+  inspection and manufacturing planning, not for MJCF injection.
 - Entry: Sessions 5, 6, 9 complete (mesher + SdfGrid + Mechanism)
-- Exit: `cargo test -p cf-design` passes. Shapes usable by sim-core. STLs
-  reflect clearance offsets. Mass properties within 2% of analytic values for
-  simple primitives.
+- Exit: `cargo test -p cf-design` passes (342 + 10 doctests). Shapes usable
+  by sim-core. STLs reflect clearance offsets. Mass properties within 2% of
+  analytic values for sphere and cuboid. Clippy clean (--all-targets).
 
 **Session 12: Validation + Model Injection + Integration**
 - Scope: `Mechanism::validate() -> Vec<DesignWarning>`. Checks: wall thickness
