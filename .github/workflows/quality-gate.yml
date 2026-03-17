@@ -310,7 +310,8 @@ jobs:
 
       - name: Run security audit
         run: |
-          if cargo audit 2>&1 | tee audit-output.txt; then
+          set -o pipefail
+          if cargo audit --deny warnings 2>&1 | tee audit-output.txt; then
             echo '### :lock: Security Audit — Clean' >> "$GITHUB_STEP_SUMMARY"
             echo 'No known vulnerabilities found.' >> "$GITHUB_STEP_SUMMARY"
           else
@@ -322,6 +323,7 @@ jobs:
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             cat audit-output.txt >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
   # ============================================================================
