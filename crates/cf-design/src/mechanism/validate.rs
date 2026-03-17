@@ -50,10 +50,14 @@ pub enum DesignWarning {
         /// Minimum required by print profile (mm).
         min: f64,
     },
-    /// Two parts are closer together than the required clearance.
+    /// Two non-adjacent parts are closer together than the required clearance
+    /// at the assembled default pose.
     ///
-    /// TODO(clearance): populate when Parts gain world-frame positions.
-    /// Currently all parts are at the origin — pairwise distance is meaningless.
+    /// Positions are inferred from the kinematic tree: root parts are at the
+    /// origin, child parts are centered at their joint anchor. This models
+    /// the physical assembly (parts on the print bed, snapped together at
+    /// joints), not the simulation state (where all bodies start at the
+    /// origin). Adjacent pairs (connected by a joint) are skipped.
     InsufficientClearance {
         /// First part name.
         part_a: String,
@@ -105,8 +109,7 @@ pub(super) fn validate_mechanism(
     if let Some(profile) = profile {
         check_wall_thickness(parts, profile, &mut warnings);
         check_hole_diameter(parts, tendons, profile, &mut warnings);
-        // TODO(clearance): add check_clearance(parts, profile, &mut warnings)
-        // when Parts gain world-frame positions.
+        check_clearance(parts, joints, profile, &mut warnings);
     }
 
     warnings
@@ -367,6 +370,193 @@ fn check_hole_diameter(
     }
 }
 
+// ── Inter-part clearance ─────────────────────────────────────────────────
+
+/// Check clearance between non-adjacent parts at the default pose.
+///
+/// Models the physical assembly at the default pose: root parts sit at the
+/// origin, child parts are centered at their joint anchor (world frame).
+/// This matches how printed parts are assembled — each child's local origin
+/// aligns with the joint pivot. Adjacent pairs (connected by a joint) are
+/// skipped since they are expected to be in contact.
+///
+/// Uses AABB fast-rejection followed by grid sampling in the overlap region.
+fn check_clearance(
+    parts: &[Part],
+    joints: &[JointDef],
+    profile: &PrintProfile,
+    warnings: &mut Vec<DesignWarning>,
+) {
+    if parts.len() < 2 {
+        return;
+    }
+
+    let positions = build_position_map(parts, joints);
+
+    // Adjacency: parts connected by a joint.
+    let mut adjacent: HashSet<(&str, &str)> = HashSet::new();
+    for joint in joints {
+        adjacent.insert((joint.parent(), joint.child()));
+        adjacent.insert((joint.child(), joint.parent()));
+    }
+
+    let clearance = profile.clearance;
+
+    for i in 0..parts.len() {
+        for j in (i + 1)..parts.len() {
+            let a = &parts[i];
+            let b = &parts[j];
+
+            if adjacent.contains(&(a.name(), b.name())) {
+                continue;
+            }
+
+            let pos_a = positions
+                .get(a.name())
+                .copied()
+                .unwrap_or_else(Point3::origin);
+            let pos_b = positions
+                .get(b.name())
+                .copied()
+                .unwrap_or_else(Point3::origin);
+
+            let (Some(bounds_a), Some(bounds_b)) = (a.solid().bounds(), b.solid().bounds()) else {
+                continue;
+            };
+
+            // World-frame AABBs.
+            let a_min = bounds_a.min + pos_a.coords;
+            let a_max = bounds_a.max + pos_a.coords;
+            let b_min = bounds_b.min + pos_b.coords;
+            let b_max = bounds_b.max + pos_b.coords;
+
+            // AABB separation distance (Euclidean gap between boxes).
+            let gap_x = (a_min.x - b_max.x).max(b_min.x - a_max.x).max(0.0);
+            let gap_y = (a_min.y - b_max.y).max(b_min.y - a_max.y).max(0.0);
+            let gap_z = (a_min.z - b_max.z).max(b_min.z - a_max.z).max(0.0);
+            let aabb_gap = (gap_x * gap_x + gap_y * gap_y + gap_z * gap_z).sqrt();
+
+            if aabb_gap > clearance {
+                continue;
+            }
+
+            // Sample the overlap region (intersection of expanded AABBs).
+            let min_gap = sample_clearance(
+                a, b, &pos_a, &pos_b, &a_min, &a_max, &b_min, &b_max, clearance,
+            );
+
+            if min_gap < clearance {
+                warnings.push(DesignWarning::InsufficientClearance {
+                    part_a: a.name().to_owned(),
+                    part_b: b.name().to_owned(),
+                    gap: min_gap,
+                    min: clearance,
+                });
+            }
+        }
+    }
+}
+
+/// Build a map of part names to world-frame positions.
+///
+/// Root parts (not a child in any joint) are at the origin. Child parts are
+/// positioned at their joint anchor (which is specified in world frame).
+fn build_position_map<'a>(parts: &'a [Part], joints: &[JointDef]) -> HashMap<&'a str, Point3<f64>> {
+    let mut child_to_anchor: HashMap<&str, Point3<f64>> = HashMap::new();
+    for joint in joints {
+        child_to_anchor
+            .entry(joint.child())
+            .or_insert_with(|| *joint.anchor());
+    }
+
+    let mut positions: HashMap<&str, Point3<f64>> = HashMap::new();
+    for part in parts {
+        let pos = child_to_anchor
+            .get(part.name())
+            .copied()
+            .unwrap_or_else(Point3::origin);
+        positions.insert(part.name(), pos);
+    }
+    positions
+}
+
+/// Sample the overlap region between two parts and return the minimum gap.
+#[allow(clippy::too_many_arguments)]
+fn sample_clearance(
+    a: &Part,
+    b: &Part,
+    pos_a: &Point3<f64>,
+    pos_b: &Point3<f64>,
+    a_min: &Point3<f64>,
+    a_max: &Point3<f64>,
+    b_min: &Point3<f64>,
+    b_max: &Point3<f64>,
+    clearance: f64,
+) -> f64 {
+    // Overlap region: intersection of both AABBs expanded by clearance.
+    let o_min = Point3::new(
+        (a_min.x - clearance).max(b_min.x - clearance),
+        (a_min.y - clearance).max(b_min.y - clearance),
+        (a_min.z - clearance).max(b_min.z - clearance),
+    );
+    let o_max = Point3::new(
+        (a_max.x + clearance).min(b_max.x + clearance),
+        (a_max.y + clearance).min(b_max.y + clearance),
+        (a_max.z + clearance).min(b_max.z + clearance),
+    );
+
+    if o_min.x >= o_max.x || o_min.y >= o_max.y || o_min.z >= o_max.z {
+        return f64::MAX; // no overlap
+    }
+
+    let cell_size = clearance.max(0.1); // floor to avoid extremely fine grids
+    let size = o_max - o_min;
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let nx = (size.x / cell_size).ceil().max(1.0) as usize;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let ny = (size.y / cell_size).ceil().max(1.0) as usize;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let nz = (size.z / cell_size).ceil().max(1.0) as usize;
+
+    let half = cell_size * 0.5;
+    let mut min_gap = f64::MAX;
+
+    for iz in 0..nz {
+        #[allow(clippy::cast_precision_loss)]
+        let pz = o_min.z + (iz as f64).mul_add(cell_size, half);
+        for iy in 0..ny {
+            #[allow(clippy::cast_precision_loss)]
+            let py = o_min.y + (iy as f64).mul_add(cell_size, half);
+            for ix in 0..nx {
+                #[allow(clippy::cast_precision_loss)]
+                let px = o_min.x + (ix as f64).mul_add(cell_size, half);
+
+                let local_a = Point3::new(px - pos_a.x, py - pos_a.y, pz - pos_a.z);
+                let local_b = Point3::new(px - pos_b.x, py - pos_b.y, pz - pos_b.z);
+
+                let va = a.solid().evaluate(&local_a);
+                let vb = b.solid().evaluate(&local_b);
+
+                // Inside A → distance to B's surface is the gap.
+                if va < 0.0 && vb >= 0.0 {
+                    min_gap = min_gap.min(vb);
+                }
+                // Inside B → distance to A's surface is the gap.
+                if vb < 0.0 && va >= 0.0 {
+                    min_gap = min_gap.min(va);
+                }
+                // Inside both → overlap (zero gap).
+                if va < 0.0 && vb < 0.0 {
+                    min_gap = 0.0;
+                }
+            }
+        }
+    }
+
+    min_gap
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -564,6 +754,113 @@ mod tests {
             .iter()
             .any(|w| matches!(w, DesignWarning::HoleTooSmall { .. }));
         assert!(!has_hole, "adequate hole should pass: {warnings:?}");
+    }
+
+    // ── Inter-part clearance ────────────────────────────────────────
+
+    #[test]
+    fn clearance_violation_detected() {
+        // Three parts: root A at origin, B at (12,0,0), C at (18,0,0).
+        // B and C are non-adjacent. B sphere(5) extends 7..17,
+        // C sphere(5) extends 13..23. Gap = 13-17 = -4 (overlap!).
+        let m = Mechanism::builder("close_parts")
+            .part(crate::Part::new("root", Solid::sphere(3.0), pla()))
+            .part(crate::Part::new("left", Solid::sphere(5.0), pla()))
+            .part(crate::Part::new("right", Solid::sphere(5.0), pla()))
+            .joint(crate::JointDef::new(
+                "j1",
+                "root",
+                "left",
+                JointKind::Revolute,
+                Point3::new(12.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .joint(crate::JointDef::new(
+                "j2",
+                "root",
+                "right",
+                JointKind::Revolute,
+                Point3::new(18.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .print_profile(PrintProfile::new(0.3, 0.5, 1.5))
+            .build();
+
+        let warnings = m.validate();
+        let has_clearance = warnings.iter().any(|w| {
+            matches!(w, DesignWarning::InsufficientClearance { part_a, part_b, .. }
+                if (part_a == "left" && part_b == "right")
+                    || (part_a == "right" && part_b == "left"))
+        });
+        assert!(
+            has_clearance,
+            "overlapping non-adjacent parts should trigger InsufficientClearance: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn clearance_sufficient_passes() {
+        // B at (20,0,0) and C at (40,0,0), both sphere(5).
+        // B extends 15..25, C extends 35..45. Gap = 35-25 = 10 >> clearance 0.3.
+        let m = Mechanism::builder("far_parts")
+            .part(crate::Part::new("root", Solid::sphere(3.0), pla()))
+            .part(crate::Part::new("left", Solid::sphere(5.0), pla()))
+            .part(crate::Part::new("right", Solid::sphere(5.0), pla()))
+            .joint(crate::JointDef::new(
+                "j1",
+                "root",
+                "left",
+                JointKind::Revolute,
+                Point3::new(20.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .joint(crate::JointDef::new(
+                "j2",
+                "root",
+                "right",
+                JointKind::Revolute,
+                Point3::new(40.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .print_profile(PrintProfile::new(0.3, 0.5, 1.5))
+            .build();
+
+        let warnings = m.validate();
+        let has_clearance = warnings
+            .iter()
+            .any(|w| matches!(w, DesignWarning::InsufficientClearance { .. }));
+        assert!(
+            !has_clearance,
+            "well-separated parts should pass clearance: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn adjacent_parts_skip_clearance() {
+        // Two parts connected by a joint — their geometry overlaps at origin,
+        // but they should NOT trigger InsufficientClearance.
+        let m = Mechanism::builder("adjacent")
+            .part(crate::Part::new("a", Solid::sphere(5.0), pla()))
+            .part(crate::Part::new("b", Solid::sphere(5.0), pla()))
+            .joint(crate::JointDef::new(
+                "j",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .print_profile(PrintProfile::new(0.3, 0.5, 1.5))
+            .build();
+
+        let warnings = m.validate();
+        let has_clearance = warnings
+            .iter()
+            .any(|w| matches!(w, DesignWarning::InsufficientClearance { .. }));
+        assert!(
+            !has_clearance,
+            "adjacent parts should not trigger clearance: {warnings:?}"
+        );
     }
 
     // ── Joint anchor bounds ─────────────────────────────────────────

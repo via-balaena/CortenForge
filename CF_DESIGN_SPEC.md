@@ -1120,8 +1120,9 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   vs `min_hole`; (3) feature-below-resolution — medial-axis points where
   `2 × |field| < min_wall / 2`; (4) joint anchor bounds — SDF evaluation of
   parent part at anchor point, flags positive values.
-  `InsufficientClearance` variant preserved but not populated (requires
-  world-frame part positions — deferred).
+  Inter-part clearance checking: infers world-frame positions from the
+  kinematic tree (root at origin, children at joint anchor), skips adjacent
+  pairs, uses AABB fast-rejection + grid sampling in the overlap region.
   `sim-mjcf` added as dev-dependency. Full pipeline integration tested:
   `Mechanism → to_mjcf() → sim_mjcf::load_model() → model.make_data() →
   data.step()`. sim-mjcf already parsed inline `vertex`/`face` mesh attributes
@@ -1129,10 +1130,8 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   integration).
   **Deferred**: Direct `Model` injection path — sim-core has no `Model::empty()`
   builder API. The MJCF string path via `load_model()` is sufficient for Phase 2.
-  Inter-part clearance checking deferred until cf-design assigns world-frame
-  part positions.
 - Entry: Sessions 10, 11 complete
-- Exit: `cargo test -p cf-design` passes (354 + 10 doctests). Clippy clean
+- Exit: `cargo test -p cf-design` passes (357 + 10 doctests). Clippy clean
   (--all-targets). Full Phase 2 exit criteria met: multi-part mechanism defined
   in code, validated against print constraints, simulated in sim-core via MJCF,
   exported as printable STLs with manufacturing clearances.
