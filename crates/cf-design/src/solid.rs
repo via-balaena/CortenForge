@@ -283,6 +283,51 @@ impl Solid {
         }
     }
 
+    /// Loft along Z axis with variable circular cross-section.
+    ///
+    /// Each `(z, radius)` pair defines a cross-section station. The radius
+    /// is cubic-interpolated (Catmull-Rom) between stations, producing smooth
+    /// transitions. The shape is capped at both ends.
+    ///
+    /// **Approximate SDF**: exact for constant-radius sections (equivalent to
+    /// a cylinder), approximate in tapered regions where |dR/dz| > 0.
+    ///
+    /// # Panics
+    ///
+    /// Panics if fewer than 2 stations, if stations are not strictly sorted
+    /// by Z, or if any radius is not positive and finite.
+    #[must_use]
+    pub fn loft(stations: &[(f64, f64)]) -> Self {
+        assert!(
+            stations.len() >= 2,
+            "loft requires at least 2 stations, got {}",
+            stations.len()
+        );
+        for (i, &(z, r)) in stations.iter().enumerate() {
+            assert!(z.is_finite(), "loft station {i} z must be finite, got {z}");
+            assert!(
+                r > 0.0 && r.is_finite(),
+                "loft station {i} radius must be positive and finite, got {r}"
+            );
+            if i > 0 {
+                assert!(
+                    z > stations[i - 1].0,
+                    "loft stations must be strictly sorted by z: station {i} z={z} \
+                     <= station {} z={}",
+                    i - 1,
+                    stations[i - 1].0
+                );
+            }
+        }
+        let internal: Vec<[f64; 2]> = stations
+            .iter()
+            .map(|&(z, r)| <[f64; 2]>::from((z, r)))
+            .collect();
+        Self {
+            node: FieldNode::Loft { stations: internal },
+        }
+    }
+
     // ── Bio-inspired primitives ────────────────────────────────────────
 
     /// Superellipsoid centered at origin — tunable between box, cylinder,
@@ -732,6 +777,45 @@ impl Solid {
         );
         Self {
             node: FieldNode::Elongate(Box::new(self.node), half_extents),
+        }
+    }
+
+    /// Twist the shape: rotate XY cross-section proportionally to Z position.
+    ///
+    /// `rate` is the twist rate in radians per unit length along Z.
+    /// Positive rate twists counterclockwise (right-hand rule about +Z).
+    ///
+    /// **⚠ Distorts the distance field.** Lipschitz constant ≈ √(1 + (rate·r)²)
+    /// where r is distance from Z axis. Increase mesh resolution for large
+    /// `rate` values or shapes far from the Z axis.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rate` is not finite.
+    #[must_use]
+    pub fn twist(self, rate: f64) -> Self {
+        assert!(rate.is_finite(), "twist rate must be finite, got {rate}");
+        Self {
+            node: FieldNode::Twist(Box::new(self.node), rate),
+        }
+    }
+
+    /// Bend the shape: curve a Z-extended shape in the XZ plane.
+    ///
+    /// `rate` is the curvature in radians per unit length along Z. Positive
+    /// rate bends toward −X (the shape curves leftward), negative toward +X.
+    ///
+    /// **Same distance field distortion as [`twist`](Self::twist).** Works
+    /// best for moderate curvatures (|rate| · `z_extent` < π/2).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rate` is not finite.
+    #[must_use]
+    pub fn bend(self, rate: f64) -> Self {
+        assert!(rate.is_finite(), "bend rate must be finite, got {rate}");
+        Self {
+            node: FieldNode::Bend(Box::new(self.node), rate),
         }
     }
 
@@ -2039,6 +2123,209 @@ mod tests {
         assert!(
             mesh.vertices.len() > 50,
             "helix mesh should have substantial geometry, got {} verts",
+            mesh.vertices.len()
+        );
+    }
+
+    // ── Loft tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn loft_constant_radius_sign() {
+        let s = Solid::loft(&[(-5.0, 2.0), (5.0, 2.0)]);
+        assert!(
+            s.evaluate(&Point3::origin()) < 0.0,
+            "center should be inside"
+        );
+        assert!(
+            s.evaluate(&Point3::new(10.0, 0.0, 0.0)) > 0.0,
+            "far point should be outside"
+        );
+    }
+
+    #[test]
+    fn loft_constant_radius_on_surface() {
+        let s = Solid::loft(&[(-5.0, 2.0), (5.0, 2.0)]);
+        assert!(
+            s.evaluate(&Point3::new(2.0, 0.0, 0.0)).abs() < 1e-6,
+            "barrel surface should be zero"
+        );
+    }
+
+    #[test]
+    fn loft_tapered_sign() {
+        // Radius from 3 at bottom to 1 at top
+        let s = Solid::loft(&[(-3.0, 3.0), (3.0, 1.0)]);
+        assert!(s.evaluate(&Point3::origin()) < 0.0, "center inside");
+        // On surface at bottom end
+        assert!(
+            s.evaluate(&Point3::new(3.0, 0.0, -3.0)).abs() < 1e-6,
+            "bottom surface should be zero"
+        );
+        // On surface at top end
+        assert!(
+            s.evaluate(&Point3::new(1.0, 0.0, 3.0)).abs() < 1e-6,
+            "top surface should be zero"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn loft_bounds() {
+        let s = Solid::loft(&[(-5.0, 2.0), (5.0, 2.0)]);
+        let bb = s.bounds().expect("finite bounds");
+        assert!((bb.min.z - (-5.0)).abs() < 1e-10);
+        assert!((bb.max.z - 5.0).abs() < 1e-10);
+        assert!(bb.max.x >= 2.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least 2 stations")]
+    fn loft_rejects_single_station() {
+        drop(Solid::loft(&[(0.0, 1.0)]));
+    }
+
+    #[test]
+    #[should_panic(expected = "positive and finite")]
+    fn loft_rejects_zero_radius() {
+        drop(Solid::loft(&[(-1.0, 0.0), (1.0, 1.0)]));
+    }
+
+    #[test]
+    #[should_panic(expected = "strictly sorted")]
+    fn loft_rejects_unsorted_stations() {
+        drop(Solid::loft(&[(3.0, 1.0), (1.0, 2.0)]));
+    }
+
+    #[test]
+    fn loft_meshes_to_valid_geometry() {
+        let s = Solid::loft(&[(-3.0, 2.0), (0.0, 3.0), (3.0, 1.0)]);
+        let mesh = s.mesh(0.25);
+        assert!(
+            mesh.vertices.len() > 50,
+            "loft mesh should have substantial geometry, got {} verts",
+            mesh.vertices.len()
+        );
+    }
+
+    // ── Twist tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn twist_zero_rate_identity() {
+        let s = Solid::cuboid(Vector3::new(1.0, 2.0, 3.0)).twist(0.0);
+        let orig = Solid::cuboid(Vector3::new(1.0, 2.0, 3.0));
+        let p = Point3::new(0.5, 0.5, 1.0);
+        assert!(
+            (s.evaluate(&p) - orig.evaluate(&p)).abs() < 1e-10,
+            "zero twist should be identity"
+        );
+    }
+
+    #[test]
+    fn twist_preserves_cylinder_symmetry() {
+        let s = Solid::cylinder(2.0, 5.0).twist(1.0);
+        let orig = Solid::cylinder(2.0, 5.0);
+        let test_points = [
+            Point3::origin(),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 2.0, 3.0),
+        ];
+        for p in &test_points {
+            assert!(
+                (s.evaluate(p) - orig.evaluate(p)).abs() < 1e-6,
+                "twist should not change cylindrically symmetric field"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn twist_bounds() {
+        let s = Solid::cuboid(Vector3::new(1.0, 2.0, 5.0)).twist(1.0);
+        let bb = s.bounds().expect("finite bounds");
+        let r = 1.0_f64.hypot(2.0);
+        assert!((bb.min.x - (-r)).abs() < 1e-10);
+        assert!((bb.max.x - r).abs() < 1e-10);
+        assert!((bb.min.z - (-5.0)).abs() < 1e-10);
+        assert!((bb.max.z - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    #[should_panic(expected = "finite")]
+    fn twist_rejects_infinity() {
+        drop(Solid::sphere(1.0).twist(f64::INFINITY));
+    }
+
+    #[test]
+    fn twist_meshes_to_valid_geometry() {
+        let s = Solid::cuboid(Vector3::new(1.0, 0.5, 4.0)).twist(0.5);
+        let mesh = s.mesh(0.2);
+        assert!(
+            mesh.vertices.len() > 50,
+            "twisted cuboid mesh should have substantial geometry, got {} verts",
+            mesh.vertices.len()
+        );
+    }
+
+    // ── Bend tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn bend_zero_rate_identity() {
+        let s = Solid::cuboid(Vector3::new(1.0, 2.0, 3.0)).bend(0.0);
+        let orig = Solid::cuboid(Vector3::new(1.0, 2.0, 3.0));
+        let p = Point3::new(0.5, 0.5, 1.0);
+        assert!(
+            (s.evaluate(&p) - orig.evaluate(&p)).abs() < 1e-10,
+            "zero bend should be identity"
+        );
+    }
+
+    #[test]
+    fn bend_at_z_zero_matches_child() {
+        let s = Solid::cuboid(Vector3::new(2.0, 2.0, 5.0)).bend(0.3);
+        let orig = Solid::cuboid(Vector3::new(2.0, 2.0, 5.0));
+        // At z=0, bend angle=0, so field should match child
+        let p = Point3::new(1.0, 1.0, 0.0);
+        assert!(
+            (s.evaluate(&p) - orig.evaluate(&p)).abs() < 1e-10,
+            "bend at z=0 should match child"
+        );
+    }
+
+    #[test]
+    fn bend_center_stays_inside() {
+        // Moderate bend: center of a cylinder should still be inside
+        let s = Solid::cylinder(1.0, 5.0).bend(0.1);
+        let val = s.evaluate(&Point3::new(0.0, 0.0, 3.0));
+        assert!(
+            val < 0.0,
+            "center of bent cylinder should be inside, got {val}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn bend_bounds() {
+        let s = Solid::cuboid(Vector3::new(1.0, 2.0, 5.0)).bend(0.5);
+        let bb = s.bounds().expect("finite bounds");
+        let r = 1.0_f64.hypot(5.0);
+        assert!((bb.min.x - (-r)).abs() < 1e-10);
+        assert!((bb.min.y - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.y - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    #[should_panic(expected = "finite")]
+    fn bend_rejects_infinity() {
+        drop(Solid::sphere(1.0).bend(f64::INFINITY));
+    }
+
+    #[test]
+    fn bend_meshes_to_valid_geometry() {
+        let s = Solid::cuboid(Vector3::new(1.0, 1.0, 5.0)).bend(0.15);
+        let mesh = s.mesh(0.2);
+        assert!(
+            mesh.vertices.len() > 50,
+            "bent cuboid mesh should have substantial geometry, got {} verts",
             mesh.vertices.len()
         );
     }

@@ -93,6 +93,25 @@ impl FieldNode {
                     Point3::new(r, r, z_max),
                 ))
             }
+            Self::Loft { stations } => {
+                if stations.len() < 2 {
+                    return Some(Aabb::from_point(Point3::origin()));
+                }
+                let z_min = stations[0][0];
+                let z_max = stations[stations.len() - 1][0];
+                // Conservative max radius: max station radius + overshoot bound.
+                // Catmull-Rom can overshoot by up to max(|Δr|)/2 (conservative).
+                let r_max = stations.iter().map(|s| s[1]).fold(0.0_f64, f64::max);
+                let max_diff = stations
+                    .windows(2)
+                    .map(|w| (w[1][1] - w[0][1]).abs())
+                    .fold(0.0_f64, f64::max);
+                let r_safe = r_max + max_diff * 0.5;
+                Some(Aabb::new(
+                    Point3::new(-r_safe, -r_safe, z_min),
+                    Point3::new(r_safe, r_safe, z_max),
+                ))
+            }
             Self::Pipe { vertices, radius } => {
                 if vertices.is_empty() {
                     return Some(Aabb::from_point(Point3::origin()));
@@ -193,6 +212,20 @@ impl FieldNode {
                     Point3::new(bb.min.x - half.x, bb.min.y - half.y, bb.min.z - half.z),
                     Point3::new(bb.max.x + half.x, bb.max.y + half.y, bb.max.z + half.z),
                 )
+            }),
+            Self::Twist(child, _) => child.bounds().map(|bb| {
+                // Twist rotates XY — bounds expand to circumscribed circle in XY.
+                let x_ext = bb.min.x.abs().max(bb.max.x.abs());
+                let y_ext = bb.min.y.abs().max(bb.max.y.abs());
+                let r = x_ext.hypot(y_ext);
+                Aabb::new(Point3::new(-r, -r, bb.min.z), Point3::new(r, r, bb.max.z))
+            }),
+            Self::Bend(child, _) => child.bounds().map(|bb| {
+                // Bend rotates XZ — bounds expand to circumscribed circle in XZ.
+                let x_ext = bb.min.x.abs().max(bb.max.x.abs());
+                let z_ext = bb.min.z.abs().max(bb.max.z.abs());
+                let r = x_ext.hypot(z_ext);
+                Aabb::new(Point3::new(-r, bb.min.y, -r), Point3::new(r, bb.max.y, r))
             }),
 
             // ── User function ────────────────────────────────────────
@@ -477,5 +510,84 @@ mod tests {
             bb,
             Some((Point3::new(-3.5, -3.5, -0.5), Point3::new(3.5, 3.5, 4.5)))
         );
+    }
+
+    // ── Loft bounds tests ───────────────────────────────────────────
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn loft_constant_radius_bounds() {
+        let node = FieldNode::Loft {
+            stations: vec![[-5.0, 2.0], [5.0, 2.0]],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        assert!((bb.min.x - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.x - 2.0).abs() < 1e-10);
+        assert!((bb.min.z - (-5.0)).abs() < 1e-10);
+        assert!((bb.max.z - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn loft_tapered_bounds_contains_max_radius() {
+        let node = FieldNode::Loft {
+            stations: vec![[-3.0, 3.0], [3.0, 1.0]],
+        };
+        let bb = node.bounds().expect("finite bounds");
+        // Max radius is 3.0 (at z=-3), with overshoot bound
+        assert!(
+            bb.max.x >= 3.0,
+            "bounds should contain max radius 3.0, got x_max={}",
+            bb.max.x
+        );
+        assert!((bb.min.z - (-3.0)).abs() < 1e-10);
+        assert!((bb.max.z - 3.0).abs() < 1e-10);
+    }
+
+    // ── Twist bounds tests ──────────────────────────────────────────
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn twist_bounds_expands_xy() {
+        let node = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 2.0, 5.0),
+            }),
+            1.0,
+        );
+        let bb = node.bounds().expect("finite bounds");
+        // XY should expand to circumscribed circle: r = sqrt(1² + 2²) ≈ 2.236
+        let r = 1.0_f64.hypot(2.0);
+        assert!((bb.min.x - (-r)).abs() < 1e-10);
+        assert!((bb.max.x - r).abs() < 1e-10);
+        assert!((bb.min.y - (-r)).abs() < 1e-10);
+        assert!((bb.max.y - r).abs() < 1e-10);
+        // Z should be unchanged
+        assert!((bb.min.z - (-5.0)).abs() < 1e-10);
+        assert!((bb.max.z - 5.0).abs() < 1e-10);
+    }
+
+    // ── Bend bounds tests ───────────────────────────────────────────
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn bend_bounds_expands_xz() {
+        let node = FieldNode::Bend(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 2.0, 5.0),
+            }),
+            0.5,
+        );
+        let bb = node.bounds().expect("finite bounds");
+        // XZ should expand to circumscribed circle: r = sqrt(1² + 5²) ≈ 5.1
+        let r = 1.0_f64.hypot(5.0);
+        assert!((bb.min.x - (-r)).abs() < 1e-10);
+        assert!((bb.max.x - r).abs() < 1e-10);
+        // Y should be unchanged
+        assert!((bb.min.y - (-2.0)).abs() < 1e-10);
+        assert!((bb.max.y - 2.0).abs() < 1e-10);
+        // Z should expand
+        assert!((bb.min.z - (-r)).abs() < 1e-10);
+        assert!((bb.max.z - r).abs() < 1e-10);
     }
 }

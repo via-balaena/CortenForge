@@ -13,6 +13,7 @@ impl FieldNode {
     ///
     /// Returns the signed distance (exact or approximate depending on the
     /// primitive). Negative = inside, positive = outside, zero = on surface.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn evaluate(&self, p: &Point3<f64>) -> f64 {
         match self {
             // Primitives
@@ -50,6 +51,7 @@ impl FieldNode {
                 control_points,
                 radius,
             } => eval_pipe_spline(control_points, *radius, p),
+            Self::Loft { stations } => eval_loft(stations, p),
 
             // Booleans
             Self::Union(a, b) => a.evaluate(p).min(b.evaluate(p)),
@@ -104,6 +106,18 @@ impl FieldNode {
                     p.y - p.y.clamp(-half.y, half.y),
                     p.z - p.z.clamp(-half.z, half.z),
                 );
+                child.evaluate(&q)
+            }
+            Self::Twist(child, rate) => {
+                let angle = rate * p.z;
+                let (s, c) = angle.sin_cos();
+                let q = Point3::new(c.mul_add(p.x, -(s * p.y)), s.mul_add(p.x, c * p.y), p.z);
+                child.evaluate(&q)
+            }
+            Self::Bend(child, rate) => {
+                let angle = rate * p.z;
+                let (s, c) = angle.sin_cos();
+                let q = Point3::new(c.mul_add(p.x, -(s * p.z)), p.y, s.mul_add(p.x, c * p.z));
                 child.evaluate(&q)
             }
 
@@ -535,6 +549,74 @@ fn eval_pipe_spline(control_points: &[Point3<f64>], radius: f64, p: &Point3<f64>
     }
 
     min_dist_sq.sqrt() - radius
+}
+
+// ── Loft helpers ──────────────────────────────────────────────────────────
+
+/// Loft along Z: cylinder-like SDF with cubic-interpolated radius.
+fn eval_loft(stations: &[[f64; 2]], p: &Point3<f64>) -> f64 {
+    let z_min = stations[0][0];
+    let z_max = stations[stations.len() - 1][0];
+    let r_xy = p.x.hypot(p.y);
+
+    let z_clamped = p.z.clamp(z_min, z_max);
+    let r_at_z = loft_radius_at(stations, z_clamped);
+
+    let d_radial = r_xy - r_at_z;
+    let d_axial = (z_min - p.z).max(p.z - z_max);
+
+    // Cylinder-like exact SDF formula
+    let outside = d_radial.max(0.0).hypot(d_axial.max(0.0));
+    let inside = d_radial.max(d_axial).min(0.0);
+    outside + inside
+}
+
+/// Catmull-Rom cubic interpolation of radius along a loft profile.
+///
+/// `stations` is `[[z, radius], ...]` sorted by z, with at least 2 entries.
+/// Returns the interpolated radius at the given z (clamped to station range).
+fn loft_radius_at(stations: &[[f64; 2]], z: f64) -> f64 {
+    let n = stations.len();
+    debug_assert!(n >= 2);
+
+    let z_clamped = z.clamp(stations[0][0], stations[n - 1][0]);
+
+    // Find span: last station where z_clamped >= station z
+    let mut span = 0;
+    for (i, station) in stations[..n - 1].iter().enumerate() {
+        if z_clamped >= station[0] {
+            span = i;
+        }
+    }
+    span = span.min(n - 2);
+
+    let z0 = stations[span][0];
+    let z1 = stations[span + 1][0];
+    let dz = z1 - z0;
+    if dz < 1e-15 {
+        return stations[span][1];
+    }
+    let t = ((z_clamped - z0) / dz).clamp(0.0, 1.0);
+
+    // Catmull-Rom 4-point stencil (endpoint repetition for boundaries)
+    let r_m1 = stations[span.saturating_sub(1)][1];
+    let r0 = stations[span][1];
+    let r1 = stations[span + 1][1];
+    let r2 = stations[(span + 2).min(n - 1)][1];
+
+    catmull_rom_1d(r_m1, r0, r1, r2, t)
+}
+
+/// 1D Catmull-Rom interpolation. Same basis as `catmull_rom_point`.
+#[allow(clippy::many_single_char_names)]
+fn catmull_rom_1d(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    // C(t) = 0.5 * (2P1 + (-P0+P2)t + (2P0-5P1+4P2-P3)t² + (-P0+3P1-3P2+P3)t³)
+    let linear = 2.0f64.mul_add(p1, (-p0 + p2) * t);
+    let quad = 2.0f64.mul_add(p0, 4.0f64.mul_add(p2, -(5.0 * p1) - p3)) * t2;
+    let cubic = 3.0f64.mul_add(p1, 3.0f64.mul_add(-p2, -p0 + p3)) * t3;
+    0.5 * (linear + quad + cubic)
 }
 
 // ── Catmull-Rom helpers ──────────────────────────────────────────────────
@@ -1568,5 +1650,229 @@ mod tests {
         );
         // Outside
         assert!(spline.evaluate(&Point3::new(5.0, 2.0, 0.0)) > 0.0);
+    }
+
+    // ── Loft ────────────────────────────────────────────────────────
+
+    #[test]
+    fn loft_constant_radius_matches_cylinder() {
+        // Constant radius loft should behave like a cylinder
+        let loft = FieldNode::Loft {
+            stations: vec![[-5.0, 2.0], [5.0, 2.0]],
+        };
+        let cyl = FieldNode::Cylinder {
+            radius: 2.0,
+            half_height: 5.0,
+        };
+        let test_points = [
+            Point3::origin(),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(3.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 7.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(loft.evaluate(p), cyl.evaluate(p), epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn loft_tapered_sign_correctness() {
+        // Taper from radius 3 at z=-2 to radius 1 at z=2
+        let loft = FieldNode::Loft {
+            stations: vec![[-2.0, 3.0], [2.0, 1.0]],
+        };
+        // Origin: z=0, R(0) = catmull_rom(3,3,1,1, 0.5) = 2.0
+        // r_xy=0, d_radial = -2.0, d_axial = -2.0, field = -2.0
+        assert!(loft.evaluate(&Point3::origin()) < 0.0, "center inside");
+
+        // On barrel at z=-2 (bottom): R=3, point at (3, 0, -2) → on surface
+        assert_abs_diff_eq!(
+            loft.evaluate(&Point3::new(3.0, 0.0, -2.0)),
+            0.0,
+            epsilon = 1e-6
+        );
+
+        // On barrel at z=2 (top): R=1, point at (1, 0, 2) → on surface
+        assert_abs_diff_eq!(
+            loft.evaluate(&Point3::new(1.0, 0.0, 2.0)),
+            0.0,
+            epsilon = 1e-6
+        );
+
+        // Outside far away
+        assert!(loft.evaluate(&Point3::new(10.0, 0.0, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn loft_midpoint_radius_interpolation() {
+        // 3 stations: [-3, r=1], [0, r=2], [3, r=1]
+        let loft = FieldNode::Loft {
+            stations: vec![[-3.0, 1.0], [0.0, 2.0], [3.0, 1.0]],
+        };
+        // At z=0, radius = 2.0 (exact station)
+        assert_abs_diff_eq!(
+            loft.evaluate(&Point3::new(2.0, 0.0, 0.0)),
+            0.0,
+            epsilon = 1e-6,
+        );
+        // At z=-3, radius = 1.0
+        assert_abs_diff_eq!(
+            loft.evaluate(&Point3::new(1.0, 0.0, -3.0)),
+            0.0,
+            epsilon = 1e-6,
+        );
+    }
+
+    #[test]
+    fn loft_cap_distance() {
+        // Constant-radius loft: point above the top cap
+        let loft = FieldNode::Loft {
+            stations: vec![[-5.0, 2.0], [5.0, 2.0]],
+        };
+        // Point on Z axis above top cap: d = distance beyond cap
+        let val = loft.evaluate(&Point3::new(0.0, 0.0, 7.0));
+        assert_abs_diff_eq!(val, 2.0, epsilon = 1e-6);
+    }
+
+    // ── Twist ───────────────────────────────────────────────────────
+
+    #[test]
+    fn twist_zero_rate_is_identity() {
+        let child = FieldNode::Cuboid {
+            half_extents: Vector3::new(1.0, 2.0, 3.0),
+        };
+        let twisted = FieldNode::Twist(Box::new(child.clone()), 0.0);
+        let test_points = [
+            Point3::origin(),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 2.0),
+            Point3::new(3.0, 3.0, 3.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(twisted.evaluate(p), child.evaluate(p), epsilon = EPS);
+        }
+    }
+
+    #[test]
+    fn twist_cylinder_is_unchanged() {
+        // A Z-aligned cylinder is rotationally symmetric about Z, so twisting
+        // doesn't change the field.
+        let cyl = FieldNode::Cylinder {
+            radius: 2.0,
+            half_height: 5.0,
+        };
+        let twisted = FieldNode::Twist(Box::new(cyl.clone()), 1.0);
+        let test_points = [
+            Point3::origin(),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 2.0, 3.0),
+            Point3::new(3.0, 0.0, -4.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(twisted.evaluate(p), cyl.evaluate(p), epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn twist_cuboid_rotates_cross_section() {
+        // Twist a cuboid (hx=2, hy=1, hz=5) with rate=PI/2 per unit Z.
+        // At z=1, the cross-section should be rotated by PI/2.
+        let child = FieldNode::Cuboid {
+            half_extents: Vector3::new(2.0, 1.0, 5.0),
+        };
+        let rate = std::f64::consts::FRAC_PI_2;
+        let twisted = FieldNode::Twist(Box::new(child), rate);
+
+        // At z=0, no rotation: point (2, 0, 0) is on surface → field ≈ 0
+        assert_abs_diff_eq!(
+            twisted.evaluate(&Point3::new(2.0, 0.0, 0.0)),
+            0.0,
+            epsilon = EPS
+        );
+
+        // At z=1, rotated by PI/2: the x-axis of child maps from y-axis.
+        // Point (0, 2, 1) in world → query child at (c*0-s*2, s*0+c*2, 1)
+        //   angle = PI/2*1 = PI/2, c=0, s=1 → child at (-2, 0, 1)
+        //   cuboid at (-2, 0, 1): |x|-2=0, |y|-1=-1, |z|-5=-4 → on surface
+        assert_abs_diff_eq!(
+            twisted.evaluate(&Point3::new(0.0, 2.0, 1.0)),
+            0.0,
+            epsilon = 1e-6,
+        );
+    }
+
+    // ── Bend ────────────────────────────────────────────────────────
+
+    #[test]
+    fn bend_zero_rate_is_identity() {
+        let child = FieldNode::Cuboid {
+            half_extents: Vector3::new(1.0, 2.0, 3.0),
+        };
+        let bent = FieldNode::Bend(Box::new(child.clone()), 0.0);
+        let test_points = [
+            Point3::origin(),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 2.0),
+            Point3::new(3.0, 3.0, 3.0),
+        ];
+        for p in &test_points {
+            assert_abs_diff_eq!(bent.evaluate(p), child.evaluate(p), epsilon = EPS);
+        }
+    }
+
+    #[test]
+    fn bend_at_origin_is_unchanged() {
+        // At z=0, bend angle=0, so field should match child regardless of rate
+        let child = FieldNode::Cuboid {
+            half_extents: Vector3::new(2.0, 2.0, 5.0),
+        };
+        let bent = FieldNode::Bend(Box::new(child.clone()), 0.5);
+        let p = Point3::new(1.0, 1.0, 0.0);
+        assert_abs_diff_eq!(bent.evaluate(&p), child.evaluate(&p), epsilon = EPS);
+    }
+
+    #[test]
+    fn bend_curves_z_into_x() {
+        // Bend a cylinder along Z. At z=0, unchanged. At z>0, the shape
+        // should curve in the XZ plane.
+        let child = FieldNode::Cylinder {
+            radius: 1.0,
+            half_height: 5.0,
+        };
+        let bent = FieldNode::Bend(Box::new(child.clone()), 0.1);
+
+        // At origin: unchanged (z=0 → angle=0)
+        assert_abs_diff_eq!(
+            bent.evaluate(&Point3::origin()),
+            child.evaluate(&Point3::origin()),
+            epsilon = EPS,
+        );
+
+        // At z=3 on axis: the deformation maps to a different child location.
+        // The center should still be inside the cylinder for moderate bend.
+        let val = bent.evaluate(&Point3::new(0.0, 0.0, 3.0));
+        assert!(
+            val < 0.0,
+            "center of bent cylinder at z=3 should be inside, got {val}"
+        );
+    }
+
+    // ── 1D Catmull-Rom ──────────────────────────────────────────────
+
+    #[test]
+    fn catmull_rom_1d_endpoints() {
+        // At t=0, result should be p1; at t=1, result should be p2
+        let r = catmull_rom_1d(0.0, 1.0, 3.0, 4.0, 0.0);
+        assert_abs_diff_eq!(r, 1.0, epsilon = EPS);
+        let r = catmull_rom_1d(0.0, 1.0, 3.0, 4.0, 1.0);
+        assert_abs_diff_eq!(r, 3.0, epsilon = EPS);
+    }
+
+    #[test]
+    fn catmull_rom_1d_linear_for_uniform_spacing() {
+        // For equally spaced values (0, 1, 2, 3), midpoint should be 1.5
+        let r = catmull_rom_1d(0.0, 1.0, 2.0, 3.0, 0.5);
+        assert_abs_diff_eq!(r, 1.5, epsilon = EPS);
     }
 }

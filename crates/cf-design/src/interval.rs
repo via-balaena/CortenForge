@@ -60,6 +60,25 @@ impl FieldNode {
             | Self::Helix { .. }
             | Self::Pipe { .. }
             | Self::PipeSpline { .. } => lipschitz_bound(self, aabb, 1.0),
+            Self::Loft { stations } => {
+                // Lipschitz ≈ sqrt(1 + max_taper_slope²). For gentle tapers, ≈ 1.
+                // Conservative estimate: piecewise station differences × 2 safety
+                // factor for cubic interpolation overshoot.
+                let max_slope = stations
+                    .windows(2)
+                    .map(|w| {
+                        let dz = w[1][0] - w[0][0];
+                        if dz.abs() < 1e-15 {
+                            0.0
+                        } else {
+                            ((w[1][1] - w[0][1]) / dz).abs()
+                        }
+                    })
+                    .fold(0.0_f64, f64::max)
+                    * 2.0;
+                let lipschitz = (1.0 + max_slope * max_slope).sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
 
             // Booleans
             Self::Union(a, b) => interval_union(a, b, aabb),
@@ -81,6 +100,25 @@ impl FieldNode {
             Self::Round(child, radius) => interval_round(child, *radius, aabb),
             Self::Offset(child, distance) => interval_offset(child, *distance, aabb),
             Self::Elongate(child, half) => interval_elongate(child, half, aabb),
+            Self::Twist(_, rate) => {
+                // Lipschitz ≈ sqrt(1 + (rate · r_xy_max)²) where r_xy_max is
+                // the maximum distance from Z axis within the AABB.
+                let x_max = aabb.min.x.abs().max(aabb.max.x.abs());
+                let y_max = aabb.min.y.abs().max(aabb.max.y.abs());
+                let r_xy_max = x_max.hypot(y_max);
+                let kr = rate * r_xy_max;
+                let lipschitz = kr.mul_add(kr, 1.0).sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
+            Self::Bend(_, rate) => {
+                // Same distortion analysis as Twist but in the XZ plane.
+                let x_max = aabb.min.x.abs().max(aabb.max.x.abs());
+                let z_max = aabb.min.z.abs().max(aabb.max.z.abs());
+                let r_xz_max = x_max.hypot(z_max);
+                let kr = rate * r_xz_max;
+                let lipschitz = kr.mul_add(kr, 1.0).sqrt();
+                lipschitz_bound(self, aabb, lipschitz)
+            }
 
             // User function
             Self::UserFn { interval, .. } => interval
@@ -1119,6 +1157,117 @@ mod tests {
             Aabb::new(Point3::new(-4.0, -4.0, 0.0), Point3::new(4.0, 4.0, 4.0)),
             Aabb::new(Point3::new(-1.0, -1.0, 1.0), Point3::new(1.0, 1.0, 3.0)),
             Aabb::new(Point3::new(5.0, 5.0, 0.0), Point3::new(6.0, 6.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Loft interval tests ──────────────────────────────────────────
+
+    #[test]
+    fn loft_constant_radius_interval_contains_points() {
+        let node = FieldNode::Loft {
+            stations: vec![[-5.0, 2.0], [5.0, 2.0]],
+        };
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn loft_tapered_interval_contains_points() {
+        let node = FieldNode::Loft {
+            stations: vec![[-3.0, 3.0], [3.0, 1.0]],
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-1.0, -1.0, -3.0), Point3::new(1.0, 1.0, 3.0)),
+            Aabb::new(Point3::new(-3.0, -3.0, -3.0), Point3::new(3.0, 3.0, 3.0)),
+            Aabb::new(Point3::new(0.0, 0.0, -1.0), Point3::new(2.0, 2.0, 1.0)),
+            Aabb::new(Point3::new(5.0, 5.0, 0.0), Point3::new(6.0, 6.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn loft_multi_station_interval_contains_points() {
+        let node = FieldNode::Loft {
+            stations: vec![[-4.0, 1.0], [-1.0, 3.0], [1.0, 2.0], [4.0, 1.0]],
+        };
+        let aabbs = vec![
+            Aabb::new(Point3::new(-3.0, -3.0, -4.0), Point3::new(3.0, 3.0, 4.0)),
+            Aabb::new(Point3::new(-1.0, -1.0, -1.0), Point3::new(1.0, 1.0, 1.0)),
+            Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 2.0, 2.0)),
+            Aabb::new(Point3::new(5.0, 5.0, 0.0), Point3::new(6.0, 6.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Twist interval tests ────────────────────────────────────────
+
+    #[test]
+    fn twist_interval_contains_points() {
+        let node = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 2.0, 3.0),
+            }),
+            0.5,
+        );
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn twist_high_rate_interval_contains_points() {
+        let node = FieldNode::Twist(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 1.0, 5.0),
+            }),
+            2.0,
+        );
+        let aabbs = vec![
+            Aabb::new(Point3::new(-2.0, -2.0, -5.0), Point3::new(2.0, 2.0, 5.0)),
+            Aabb::new(Point3::new(-0.5, -0.5, 0.0), Point3::new(0.5, 0.5, 1.0)),
+            Aabb::new(Point3::new(2.0, 0.0, 0.0), Point3::new(3.0, 1.0, 1.0)),
+        ];
+        for aabb in &aabbs {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    // ── Bend interval tests ─────────────────────────────────────────
+
+    #[test]
+    fn bend_interval_contains_points() {
+        let node = FieldNode::Bend(
+            Box::new(FieldNode::Cuboid {
+                half_extents: Vector3::new(1.0, 1.0, 5.0),
+            }),
+            0.2,
+        );
+        for aabb in &test_aabbs() {
+            verify_interval_contains_points(&node, aabb, 5);
+        }
+    }
+
+    #[test]
+    fn bend_moderate_rate_interval_contains_points() {
+        let node = FieldNode::Bend(
+            Box::new(FieldNode::Cylinder {
+                radius: 1.0,
+                half_height: 4.0,
+            }),
+            0.3,
+        );
+        let aabbs = vec![
+            Aabb::new(Point3::new(-2.0, -2.0, -5.0), Point3::new(2.0, 2.0, 5.0)),
+            Aabb::new(Point3::new(-0.5, -0.5, 0.0), Point3::new(0.5, 0.5, 1.0)),
+            Aabb::new(Point3::new(3.0, 0.0, 0.0), Point3::new(4.0, 1.0, 1.0)),
         ];
         for aabb in &aabbs {
             verify_interval_contains_points(&node, aabb, 5);

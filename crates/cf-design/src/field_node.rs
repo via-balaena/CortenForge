@@ -136,6 +136,20 @@ pub enum FieldNode {
         radius: f64,
     },
 
+    /// Loft along Z axis with variable circular cross-section.
+    ///
+    /// Each station is `[z_position, radius]`. Stations must be sorted by Z
+    /// with at least 2 entries. Radius is cubic-interpolated (Catmull-Rom)
+    /// between stations. Capped at both ends.
+    ///
+    /// Approximate SDF: exact on the barrel for non-tapered sections,
+    /// approximate in tapered regions (Lipschitz > 1 when |dR/dz| > 0).
+    ///
+    /// Gradient (for Session 19):
+    ///   Barrel: `∇f ≈ (x/r_xy, y/r_xy, −R'(z))` normalized.
+    ///   Caps: (0, 0, ±1) for cap face, radial at cap edge.
+    Loft { stations: Vec<[f64; 2]> },
+
     // ── Boolean operations ────────────────────────────────────────────
     /// Union: `min(a, b)`. Preserves SDF lower-bound property.
     Union(Box<Self>, Box<Self>),
@@ -192,6 +206,32 @@ pub enum FieldNode {
     /// Elongate: stretches a shape along axes by inserting flat sections.
     /// `q = p - clamp(p, -h, h)`, then `f(q)`. Preserves SDF property.
     Elongate(Box<Self>, Vector3<f64>),
+
+    /// Twist: rotate XY cross-section proportionally to Z position.
+    /// `rate` is radians per unit Z.
+    ///
+    /// Distorts the distance field — not an exact SDF even if the child is.
+    /// Lipschitz constant ≈ √(1 + `(rate·r_xy)²`) where `r_xy` is distance
+    /// from the Z axis. Thin features far from the axis may be lost during
+    /// meshing.
+    ///
+    /// Gradient (for Session 19):
+    ///   Let q(p) = `R_z(rate·z)·p` be the deformation. The Jacobian J has
+    ///   spectral norm √(1 + rate²·(x²+y²)). Chain rule:
+    ///   `∇f_twist = Jᵀ · ∇f_child(q(p))`.
+    Twist(Box<Self>, f64),
+
+    /// Bend: curve a Z-extended shape in the XZ plane.
+    /// `rate` is the curvature (radians per unit Z).
+    ///
+    /// Same distance field distortion as Twist. Works best for moderate
+    /// curvatures (rate · `z_extent` < π/2). For large bends, increase
+    /// mesh resolution.
+    ///
+    /// Gradient (for Session 19):
+    ///   Same Jacobian analysis as Twist but in the XZ plane.
+    ///   `∇f_bend = Jᵀ · ∇f_child(q(p))`.
+    Bend(Box<Self>, f64),
 
     // ── User escape hatch ─────────────────────────────────────────────
     /// User-provided function leaf node. Allows custom implicit surface
