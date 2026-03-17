@@ -1,14 +1,14 @@
 # CortenForge Dependency Policy
 #
-# This file configures cargo-deny for dependency auditing.
-# Run: cargo deny check
+# Scoped to publishing concerns: license compliance and source provenance.
+# Security advisories are handled by cargo-audit in the CI security job.
+#
+# Run: cargo deny check licenses sources
 # Install: cargo install cargo-deny
 #
 # See: https://embarkstudios.github.io/cargo-deny/
 
 [graph]
-# Minimum Supported Rust Version
-# We track stable, typically N-2
 targets = [
     "x86_64-unknown-linux-gnu",
     "x86_64-apple-darwin",
@@ -19,34 +19,16 @@ targets = [
 all-features = true
 
 # ============================================================================
-# ADVISORIES - Security vulnerability detection
-# ============================================================================
-
-[advisories]
-db-path = "~/.cargo/advisory-db"
-db-urls = ["https://github.com/rustsec/advisory-db"]
-# Check all crates for vulnerabilities
-version = 2
-# Temporarily ignore specific advisories (with justification)
-ignore = [
-    # Unmaintained crates - transitive dependencies we don't directly control
-    { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained but we're using stable features only" },
-    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but used transitively by derive macros" },
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained but used transitively" },
-]
-
-# ============================================================================
 # LICENSES - Ensure all dependencies are appropriately licensed
 # ============================================================================
 
 [licenses]
 version = 2
-# We're Apache-2.0, so we accept permissive licenses
-# In v2 format, all unlicensed and copyleft crates are denied by default
-# unless explicitly allowed
+# We're Apache-2.0, so we accept permissive licenses.
+# In v2 format, all unlicensed and copyleft crates are denied by default.
 allow = [
     "MIT",
-    "MIT-0",  # MIT No Attribution, more permissive than MIT (used by Bevy dependencies)
+    "MIT-0",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
@@ -54,21 +36,13 @@ allow = [
     "ISC",
     "Zlib",
     "0BSD",
-    "Unicode-DFS-2016",
-    "Unicode-3.0",  # Used by unicode-ident
+    "Unicode-3.0",
     "CC0-1.0",
-    "MPL-2.0",  # Weak copyleft, acceptable for libraries
-    "Unlicense",  # Public domain equivalent
+    "MPL-2.0",
+    "Unlicense",
 ]
 confidence-threshold = 0.8
 
-# Handle exceptions for specific crates
-exceptions = [
-    # Example:
-    # { name = "some-crate", allow = ["GPL-3.0"] }
-]
-
-# Some crates don't have license files but are clearly licensed
 [[licenses.clarify]]
 name = "ring"
 expression = "MIT AND ISC AND OpenSSL"
@@ -80,56 +54,16 @@ expression = "ISC"
 license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 
 # ============================================================================
-# BANS - Prevent unwanted dependencies
-# ============================================================================
-
-[bans]
-# Deny multiple versions of the same crate
-multiple-versions = "warn"
-# Wildcards are messy
-wildcards = "warn"
-
-# Highlight/warn on these crates if they appear
-highlight = "all"
-
-# Crates we explicitly allow
-allow = [
-    # List of explicitly allowed crates (optional)
-]
-
-# Crates that must not appear in the dependency tree
-deny = [
-    # Example: block specific crates
-    # { name = "openssl", wrappers = [] },
-]
-
-# Skip checking specific versions (for version conflicts we accept)
-skip = [
-    # Example:
-    # { name = "syn", version = "1.0" },
-]
-
-# Skip checking entire crate trees
-skip-tree = [
-    # Example:
-    # { name = "windows-sys", version = "*" },
-]
-
-# ============================================================================
 # SOURCES - Control where dependencies can come from
 # ============================================================================
 
 [sources]
-# Only allow crates from crates.io
 unknown-registry = "deny"
-# Allow git sources during development (CI may be stricter)
 unknown-git = "warn"
-# Allow local path dependencies (for workspace members)
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
 
 [sources.allow-org]
-# Allow crates from specific GitHub orgs
 github = [
     "cortenforge",
 ]
