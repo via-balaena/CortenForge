@@ -366,6 +366,7 @@ const EDGE_CORNERS: [(usize, usize); 12] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field_node::Val;
     use std::f64::consts::PI;
 
     /// Validate mesh topology: check watertight + manifold.
@@ -405,7 +406,9 @@ mod tests {
 
     #[test]
     fn dc_sphere_valid() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = node.bounds().map(|b| b.expanded(0.5));
         let (mesh, _) = mesh_field_dc(&node, &bounds.unwrap_or(Aabb::empty()), 0.5);
         assert_mesh_valid(&mesh, "dc_sphere");
@@ -413,7 +416,9 @@ mod tests {
 
     #[test]
     fn dc_sphere_volume() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = node.bounds().map(|b| b.expanded(0.5));
         let (mesh, _) = mesh_field_dc(&node, &bounds.unwrap_or(Aabb::empty()), 0.5);
         let expected = 4.0 / 3.0 * PI * 125.0;
@@ -532,7 +537,9 @@ mod tests {
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn dc_sphere_regression() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let cell = 0.5;
         let bounds = node.bounds().map(|b| b.expanded(cell));
         let aabb = bounds.unwrap_or(Aabb::empty());
@@ -562,7 +569,9 @@ mod tests {
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn dc_pruning_ratio() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = node.bounds().map(|b| b.expanded(0.5));
         let (_, stats) = mesh_field_dc(&node, &bounds.unwrap_or(Aabb::empty()), 0.5);
         let pruned_ratio = stats.cells_pruned as f64 / stats.cells_total as f64;

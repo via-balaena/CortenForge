@@ -22,7 +22,7 @@ impl FieldNode {
     pub(crate) fn evaluate_interval(&self, aabb: &Aabb) -> (f64, f64) {
         match self {
             // Primitives
-            Self::Sphere { radius } => interval_sphere(*radius, aabb),
+            Self::Sphere { radius } => interval_sphere(radius.eval(), aabb),
             Self::Cuboid { half_extents } => interval_cuboid(half_extents, aabb),
             Self::Cylinder {
                 radius,
@@ -84,10 +84,12 @@ impl FieldNode {
             Self::Union(a, b) => interval_union(a, b, aabb),
             Self::Subtract(a, b) => interval_subtract(a, b, aabb),
             Self::Intersect(a, b) => interval_intersect(a, b, aabb),
-            Self::SmoothUnion(a, b, k) => interval_smooth_union(a, b, *k, aabb),
-            Self::SmoothSubtract(a, b, k) => interval_smooth_subtract(a, b, *k, aabb),
-            Self::SmoothIntersect(a, b, k) => interval_smooth_intersect(a, b, *k, aabb),
-            Self::SmoothUnionAll(children, k) => interval_smooth_union_all(children, *k, aabb),
+            Self::SmoothUnion(a, b, k) => interval_smooth_union(a, b, k.eval(), aabb),
+            Self::SmoothSubtract(a, b, k) => interval_smooth_subtract(a, b, k.eval(), aabb),
+            Self::SmoothIntersect(a, b, k) => interval_smooth_intersect(a, b, k.eval(), aabb),
+            Self::SmoothUnionAll(children, k) => {
+                interval_smooth_union_all(children, k.eval(), aabb)
+            }
             Self::SmoothUnionVariable { a, b, max_k, .. } => {
                 // Conservative: use max_k as the blend radius upper bound
                 interval_smooth_union(a, b, *max_k, aabb)
@@ -100,9 +102,9 @@ impl FieldNode {
             Self::Mirror(child, normal) => interval_mirror(child, normal, aabb),
 
             // Domain operations
-            Self::Shell(child, thickness) => interval_shell(child, *thickness, aabb),
-            Self::Round(child, radius) => interval_round(child, *radius, aabb),
-            Self::Offset(child, distance) => interval_offset(child, *distance, aabb),
+            Self::Shell(child, thickness) => interval_shell(child, thickness.eval(), aabb),
+            Self::Round(child, radius) => interval_round(child, radius.eval(), aabb),
+            Self::Offset(child, distance) => interval_offset(child, distance.eval(), aabb),
             Self::Elongate(child, half) => interval_elongate(child, half, aabb),
             Self::Twist(_, rate) => {
                 // Lipschitz ≈ sqrt(1 + (rate · r_xy_max)²) where r_xy_max is
@@ -665,6 +667,7 @@ fn interval_mirror(child: &FieldNode, normal: &Vector3<f64>, aabb: &Aabb) -> (f6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field_node::Val;
     use nalgebra::Point3;
 
     /// Helper: verify that interval bounds contain the point evaluation
@@ -713,7 +716,9 @@ mod tests {
 
     #[test]
     fn sphere_interval_contains_points() {
-        let node = FieldNode::Sphere { radius: 3.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(3.0),
+        };
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&node, aabb, 5);
         }
@@ -721,7 +726,9 @@ mod tests {
 
     #[test]
     fn sphere_interval_tight_outside() {
-        let node = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(1.0),
+        };
         // Box fully outside the sphere
         let aabb = Aabb::new(Point3::new(3.0, 0.0, 0.0), Point3::new(4.0, 1.0, 1.0));
         let (lo, _hi) = node.evaluate_interval(&aabb);
@@ -733,7 +740,9 @@ mod tests {
 
     #[test]
     fn sphere_interval_tight_inside() {
-        let node = FieldNode::Sphere { radius: 10.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(10.0),
+        };
         // Small box fully inside the sphere
         let aabb = Aabb::new(Point3::new(-0.1, -0.1, -0.1), Point3::new(0.1, 0.1, 0.1));
         let (_lo, hi) = node.evaluate_interval(&aabb);
@@ -841,9 +850,13 @@ mod tests {
 
     #[test]
     fn union_interval_contains_points() {
-        let a = FieldNode::Sphere { radius: 2.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(2.0),
+        };
         let b = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(3.0, 0.0, 0.0),
         );
         let u = FieldNode::Union(Box::new(a), Box::new(b));
@@ -854,8 +867,12 @@ mod tests {
 
     #[test]
     fn subtract_interval_contains_points() {
-        let a = FieldNode::Sphere { radius: 5.0 };
-        let b = FieldNode::Sphere { radius: 2.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
+        let b = FieldNode::Sphere {
+            radius: Val::from(2.0),
+        };
         let sub = FieldNode::Subtract(Box::new(a), Box::new(b));
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&sub, aabb, 5);
@@ -864,7 +881,9 @@ mod tests {
 
     #[test]
     fn intersect_interval_contains_points() {
-        let a = FieldNode::Sphere { radius: 5.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let b = FieldNode::Cuboid {
             half_extents: Vector3::new(3.0, 3.0, 3.0),
         };
@@ -876,12 +895,16 @@ mod tests {
 
     #[test]
     fn smooth_union_interval_contains_points() {
-        let a = FieldNode::Sphere { radius: 2.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(2.0),
+        };
         let b = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(3.0, 0.0, 0.0),
         );
-        let su = FieldNode::SmoothUnion(Box::new(a), Box::new(b), 1.0);
+        let su = FieldNode::SmoothUnion(Box::new(a), Box::new(b), Val::from(1.0));
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&su, aabb, 5);
         }
@@ -889,9 +912,13 @@ mod tests {
 
     #[test]
     fn smooth_subtract_interval_contains_points() {
-        let a = FieldNode::Sphere { radius: 5.0 };
-        let b = FieldNode::Sphere { radius: 2.0 };
-        let ss = FieldNode::SmoothSubtract(Box::new(a), Box::new(b), 1.0);
+        let a = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
+        let b = FieldNode::Sphere {
+            radius: Val::from(2.0),
+        };
+        let ss = FieldNode::SmoothSubtract(Box::new(a), Box::new(b), Val::from(1.0));
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&ss, aabb, 5);
         }
@@ -899,11 +926,13 @@ mod tests {
 
     #[test]
     fn smooth_intersect_interval_contains_points() {
-        let a = FieldNode::Sphere { radius: 5.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let b = FieldNode::Cuboid {
             half_extents: Vector3::new(3.0, 3.0, 3.0),
         };
-        let si = FieldNode::SmoothIntersect(Box::new(a), Box::new(b), 1.0);
+        let si = FieldNode::SmoothIntersect(Box::new(a), Box::new(b), Val::from(1.0));
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&si, aabb, 5);
         }
@@ -911,16 +940,22 @@ mod tests {
 
     #[test]
     fn smooth_union_all_interval_contains_points() {
-        let a = FieldNode::Sphere { radius: 2.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(2.0),
+        };
         let b = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(3.0, 0.0, 0.0),
         );
         let c = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(0.0, 3.0, 0.0),
         );
-        let sua = FieldNode::SmoothUnionAll(vec![a, b, c], 1.0);
+        let sua = FieldNode::SmoothUnionAll(vec![a, b, c], Val::from(1.0));
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&sua, aabb, 5);
         }
@@ -931,9 +966,13 @@ mod tests {
         use crate::field_node::UserEvalFn;
         use std::sync::Arc;
 
-        let a = FieldNode::Sphere { radius: 2.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(2.0),
+        };
         let b = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(3.0, 0.0, 0.0),
         );
         let suv = FieldNode::SmoothUnionVariable {
@@ -952,7 +991,9 @@ mod tests {
     #[test]
     fn translate_interval_contains_points() {
         let node = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
             Vector3::new(5.0, 0.0, 0.0),
         );
         for aabb in &test_aabbs() {
@@ -979,7 +1020,12 @@ mod tests {
 
     #[test]
     fn scale_uniform_interval_contains_points() {
-        let node = FieldNode::ScaleUniform(Box::new(FieldNode::Sphere { radius: 1.0 }), 3.0);
+        let node = FieldNode::ScaleUniform(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
+            3.0,
+        );
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&node, aabb, 5);
         }
@@ -989,7 +1035,9 @@ mod tests {
     fn mirror_interval_contains_points() {
         let node = FieldNode::Mirror(
             Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 1.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(1.0),
+                }),
                 Vector3::new(3.0, 0.0, 0.0),
             )),
             Vector3::new(1.0, 0.0, 0.0),
@@ -1004,11 +1052,15 @@ mod tests {
     #[test]
     fn union_translated_spheres_interval() {
         let a = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(-3.0, 0.0, 0.0),
         );
         let b = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(3.0, 0.0, 0.0),
         );
         let u = FieldNode::Union(Box::new(a), Box::new(b));
@@ -1019,8 +1071,12 @@ mod tests {
 
     #[test]
     fn subtract_then_scale_interval() {
-        let big = FieldNode::Sphere { radius: 5.0 };
-        let small = FieldNode::Sphere { radius: 2.0 };
+        let big = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
+        let small = FieldNode::Sphere {
+            radius: Val::from(2.0),
+        };
         let sub = FieldNode::Subtract(Box::new(big), Box::new(small));
         let scaled = FieldNode::ScaleUniform(Box::new(sub), 2.0);
         for aabb in &test_aabbs() {
@@ -1032,7 +1088,12 @@ mod tests {
 
     #[test]
     fn shell_interval_contains_points() {
-        let node = FieldNode::Shell(Box::new(FieldNode::Sphere { radius: 5.0 }), 1.0);
+        let node = FieldNode::Shell(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(5.0),
+            }),
+            Val::from(1.0),
+        );
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&node, aabb, 5);
         }
@@ -1041,7 +1102,12 @@ mod tests {
     #[test]
     fn shell_interval_prunes_interior() {
         // Small box deep inside the sphere — shell should be fully outside (positive)
-        let node = FieldNode::Shell(Box::new(FieldNode::Sphere { radius: 10.0 }), 1.0);
+        let node = FieldNode::Shell(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(10.0),
+            }),
+            Val::from(1.0),
+        );
         let aabb = Aabb::new(Point3::new(-0.1, -0.1, -0.1), Point3::new(0.1, 0.1, 0.1));
         let (lo, _hi) = node.evaluate_interval(&aabb);
         assert!(
@@ -1056,7 +1122,7 @@ mod tests {
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(2.0, 2.0, 2.0),
             }),
-            0.5,
+            Val::from(0.5),
         );
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&node, aabb, 5);
@@ -1065,7 +1131,12 @@ mod tests {
 
     #[test]
     fn offset_interval_contains_points() {
-        let node = FieldNode::Offset(Box::new(FieldNode::Sphere { radius: 3.0 }), 1.0);
+        let node = FieldNode::Offset(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Val::from(1.0),
+        );
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&node, aabb, 5);
         }
@@ -1073,7 +1144,12 @@ mod tests {
 
     #[test]
     fn offset_shrink_interval_contains_points() {
-        let node = FieldNode::Offset(Box::new(FieldNode::Sphere { radius: 3.0 }), -1.0);
+        let node = FieldNode::Offset(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Val::from(-1.0),
+        );
         for aabb in &test_aabbs() {
             verify_interval_contains_points(&node, aabb, 5);
         }
@@ -1082,7 +1158,9 @@ mod tests {
     #[test]
     fn elongate_interval_contains_points() {
         let node = FieldNode::Elongate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(3.0, 0.0, 0.0),
         );
         for aabb in &test_aabbs() {
@@ -1093,7 +1171,9 @@ mod tests {
     #[test]
     fn elongate_3axis_interval_contains_points() {
         let node = FieldNode::Elongate(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(1.0, 2.0, 3.0),
         );
         let aabbs = vec![
@@ -1413,7 +1493,9 @@ mod tests {
     #[test]
     fn repeat_interval_contains_points() {
         let node = FieldNode::Repeat(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(5.0, 5.0, 5.0),
         );
         let aabbs = vec![
@@ -1432,7 +1514,9 @@ mod tests {
     #[test]
     fn repeat_bounded_interval_contains_points() {
         let node = FieldNode::RepeatBounded {
-            child: Box::new(FieldNode::Sphere { radius: 1.0 }),
+            child: Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             spacing: Vector3::new(5.0, 5.0, 5.0),
             count: [3, 1, 1],
         };
@@ -1454,7 +1538,9 @@ mod tests {
     #[test]
     fn lipschitz_factor_exact_sdf_primitives_are_1() {
         let cases: Vec<FieldNode> = vec![
-            FieldNode::Sphere { radius: 5.0 },
+            FieldNode::Sphere {
+                radius: Val::from(5.0),
+            },
             FieldNode::Cuboid {
                 half_extents: Vector3::new(1.0, 2.0, 3.0),
             },
@@ -1560,7 +1646,9 @@ mod tests {
         );
         let twist_l = twisted.lipschitz_factor();
 
-        let sphere = FieldNode::Sphere { radius: 2.0 };
+        let sphere = FieldNode::Sphere {
+            radius: Val::from(2.0),
+        };
         let union = FieldNode::Union(Box::new(twisted), Box::new(sphere));
 
         // Union should propagate max L
@@ -1610,14 +1698,16 @@ mod tests {
     #[test]
     fn lipschitz_factor_undistorted_tree_is_1() {
         // A complex tree with no distortion should have L=1
-        let a = FieldNode::Sphere { radius: 3.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(3.0),
+        };
         let b = FieldNode::Translate(
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(1.0, 1.0, 1.0),
             }),
             Vector3::new(5.0, 0.0, 0.0),
         );
-        let node = FieldNode::SmoothUnion(Box::new(a), Box::new(b), 0.5);
+        let node = FieldNode::SmoothUnion(Box::new(a), Box::new(b), Val::from(0.5));
         assert!(
             (node.lipschitz_factor() - 1.0).abs() < 1e-10,
             "Undistorted tree should have L=1, got {}",

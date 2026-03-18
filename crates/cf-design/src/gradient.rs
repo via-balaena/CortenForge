@@ -86,7 +86,8 @@ impl FieldNode {
             Self::SmoothUnion(a, b, k) => {
                 let va = a.evaluate(p);
                 let vb = b.evaluate(p);
-                let h = (0.5 + 0.5 * (vb - va) / k).clamp(0.0, 1.0);
+                let kv = k.eval();
+                let h = (0.5 + 0.5 * (vb - va) / kv).clamp(0.0, 1.0);
                 a.gradient(p) * h + b.gradient(p) * (1.0 - h)
             }
             Self::SmoothSubtract(a, b, k) => {
@@ -94,7 +95,8 @@ impl FieldNode {
                 // h for smooth_union(-a, b): clamp(0.5 + 0.5*(b+a)/k, 0, 1)
                 let va = a.evaluate(p);
                 let vb = b.evaluate(p);
-                let h = (0.5 + 0.5 * (vb + va) / k).clamp(0.0, 1.0);
+                let kv = k.eval();
+                let h = (0.5 + 0.5 * (vb + va) / kv).clamp(0.0, 1.0);
                 a.gradient(p) * h - b.gradient(p) * (1.0 - h)
             }
             Self::SmoothIntersect(a, b, k) => {
@@ -102,7 +104,8 @@ impl FieldNode {
                 // h for smooth_union(-a, -b): clamp(0.5 + 0.5*(a-b)/k, 0, 1)
                 let va = a.evaluate(p);
                 let vb = b.evaluate(p);
-                let h = (0.5 + 0.5 * (va - vb) / k).clamp(0.0, 1.0);
+                let kv = k.eval();
+                let h = (0.5 + 0.5 * (va - vb) / kv).clamp(0.0, 1.0);
                 a.gradient(p) * h + b.gradient(p) * (1.0 - h)
             }
             Self::SmoothUnionAll(children, k) => {
@@ -113,9 +116,10 @@ impl FieldNode {
                     return children[0].gradient(p);
                 }
                 // Log-sum-exp: weights are softmax(-x_i / k)
+                let kv = k.eval();
                 let values: Vec<f64> = children.iter().map(|c| c.evaluate(p)).collect();
                 let m = values.iter().copied().fold(f64::INFINITY, f64::min);
-                let weights: Vec<f64> = values.iter().map(|&v| (-(v - m) / k).exp()).collect();
+                let weights: Vec<f64> = values.iter().map(|&v| (-(v - m) / kv).exp()).collect();
                 let sum: f64 = weights.iter().sum();
                 let mut grad = Vector3::zeros();
                 for (child, &w) in children.iter().zip(weights.iter()) {
@@ -963,7 +967,7 @@ fn loft_radius_deriv(stations: &[[f64; 2]], z: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field_node::{UserEvalFn, UserIntervalFn};
+    use crate::field_node::{UserEvalFn, UserIntervalFn, Val};
     use std::sync::Arc;
 
     const EPS: f64 = 1e-7;
@@ -1001,7 +1005,9 @@ mod tests {
 
     #[test]
     fn gradient_sphere() {
-        let n = FieldNode::Sphere { radius: 3.0 };
+        let n = FieldNode::Sphere {
+            radius: Val::from(3.0),
+        };
         check(&n, Point3::new(1.0, 2.0, 3.0), 1e-6);
         check(&n, Point3::new(0.5, -0.3, 0.1), 1e-6);
         check(&n, Point3::new(5.0, 0.0, 0.0), 1e-6);
@@ -1202,9 +1208,13 @@ mod tests {
     #[test]
     fn gradient_union() {
         let n = FieldNode::Union(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 2.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(2.0),
+                }),
                 Vector3::new(3.0, 0.0, 0.0),
             )),
         );
@@ -1215,8 +1225,12 @@ mod tests {
     #[test]
     fn gradient_subtract() {
         let n = FieldNode::Subtract(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
         );
         check(&n, Point3::new(2.0, 0.3, 0.2), 1e-5);
         check(&n, Point3::new(4.0, 0.3, 0.2), 1e-5);
@@ -1225,7 +1239,9 @@ mod tests {
     #[test]
     fn gradient_intersect() {
         let n = FieldNode::Intersect(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(2.0, 2.0, 2.0),
             }),
@@ -1236,12 +1252,16 @@ mod tests {
     #[test]
     fn gradient_smooth_union() {
         let n = FieldNode::SmoothUnion(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 2.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(2.0),
+                }),
                 Vector3::new(3.0, 0.0, 0.0),
             )),
-            1.0,
+            Val::from(1.0),
         );
         check(&n, Point3::new(1.5, 0.5, 0.3), 1e-4);
         check(&n, Point3::new(-1.0, 0.5, 0.3), 1e-4);
@@ -1250,9 +1270,13 @@ mod tests {
     #[test]
     fn gradient_smooth_subtract() {
         let n = FieldNode::SmoothSubtract(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
-            Box::new(FieldNode::Sphere { radius: 1.5 }),
-            0.5,
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.5),
+            }),
+            Val::from(0.5),
         );
         check(&n, Point3::new(2.0, 0.3, 0.2), 1e-4);
     }
@@ -1260,11 +1284,13 @@ mod tests {
     #[test]
     fn gradient_smooth_intersect() {
         let n = FieldNode::SmoothIntersect(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(2.0, 2.0, 2.0),
             }),
-            0.5,
+            Val::from(0.5),
         );
         check(&n, Point3::new(1.5, 1.0, 0.5), 1e-4);
     }
@@ -1273,17 +1299,23 @@ mod tests {
     fn gradient_smooth_union_all() {
         let n = FieldNode::SmoothUnionAll(
             vec![
-                FieldNode::Sphere { radius: 2.0 },
+                FieldNode::Sphere {
+                    radius: Val::from(2.0),
+                },
                 FieldNode::Translate(
-                    Box::new(FieldNode::Sphere { radius: 2.0 }),
+                    Box::new(FieldNode::Sphere {
+                        radius: Val::from(2.0),
+                    }),
                     Vector3::new(3.0, 0.0, 0.0),
                 ),
                 FieldNode::Translate(
-                    Box::new(FieldNode::Sphere { radius: 2.0 }),
+                    Box::new(FieldNode::Sphere {
+                        radius: Val::from(2.0),
+                    }),
                     Vector3::new(0.0, 3.0, 0.0),
                 ),
             ],
-            1.0,
+            Val::from(1.0),
         );
         check(&n, Point3::new(1.0, 1.0, 0.5), 1e-4);
     }
@@ -1292,9 +1324,13 @@ mod tests {
     fn gradient_smooth_union_variable() {
         // Constant radius_fn → same as SmoothUnion
         let n = FieldNode::SmoothUnionVariable {
-            a: Box::new(FieldNode::Sphere { radius: 2.0 }),
+            a: Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             b: Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 2.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(2.0),
+                }),
                 Vector3::new(3.0, 0.0, 0.0),
             )),
             radius_fn: UserEvalFn(Arc::new(|_| 1.0)),
@@ -1308,7 +1344,9 @@ mod tests {
     #[test]
     fn gradient_translate() {
         let n = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(1.0, 2.0, 3.0),
         );
         check(&n, Point3::new(2.0, 3.0, 4.0), 1e-6);
@@ -1328,7 +1366,12 @@ mod tests {
 
     #[test]
     fn gradient_scale_uniform() {
-        let n = FieldNode::ScaleUniform(Box::new(FieldNode::Sphere { radius: 1.0 }), 3.0);
+        let n = FieldNode::ScaleUniform(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
+            3.0,
+        );
         check(&n, Point3::new(2.0, 1.0, 0.5), 1e-6);
     }
 
@@ -1336,7 +1379,9 @@ mod tests {
     fn gradient_mirror() {
         let n = FieldNode::Mirror(
             Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 1.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(1.0),
+                }),
                 Vector3::new(2.0, 0.0, 0.0),
             )),
             Vector3::new(1.0, 0.0, 0.0),
@@ -1351,7 +1396,12 @@ mod tests {
 
     #[test]
     fn gradient_shell() {
-        let n = FieldNode::Shell(Box::new(FieldNode::Sphere { radius: 3.0 }), 0.2);
+        let n = FieldNode::Shell(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Val::from(0.2),
+        );
         // Outside shell
         check(&n, Point3::new(4.0, 0.3, 0.2), 1e-5);
         // Inside shell (between inner and outer surface)
@@ -1364,21 +1414,28 @@ mod tests {
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(2.0, 2.0, 2.0),
             }),
-            0.3,
+            Val::from(0.3),
         );
         check(&n, Point3::new(1.5, 0.5, 0.3), 1e-5);
     }
 
     #[test]
     fn gradient_offset() {
-        let n = FieldNode::Offset(Box::new(FieldNode::Sphere { radius: 2.0 }), 0.5);
+        let n = FieldNode::Offset(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
+            Val::from(0.5),
+        );
         check(&n, Point3::new(3.0, 0.5, 0.3), 1e-5);
     }
 
     #[test]
     fn gradient_elongate() {
         let n = FieldNode::Elongate(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(2.0, 0.0, 0.0),
         );
         // Outside elongation region
@@ -1412,7 +1469,9 @@ mod tests {
     #[test]
     fn gradient_repeat() {
         let n = FieldNode::Repeat(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(4.0, 4.0, 4.0),
         );
         // Well inside a cell
@@ -1422,7 +1481,9 @@ mod tests {
     #[test]
     fn gradient_repeat_bounded() {
         let n = FieldNode::RepeatBounded {
-            child: Box::new(FieldNode::Sphere { radius: 0.5 }),
+            child: Box::new(FieldNode::Sphere {
+                radius: Val::from(0.5),
+            }),
             spacing: Vector3::new(3.0, 3.0, 3.0),
             count: [3, 1, 1],
         };

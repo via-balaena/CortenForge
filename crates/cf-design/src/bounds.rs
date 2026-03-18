@@ -20,7 +20,7 @@ impl FieldNode {
         match self {
             // ── Primitives ───────────────────────────────────────────
             Self::Sphere { radius } => {
-                let r = *radius;
+                let r = radius.eval();
                 Some(Aabb::new(Point3::new(-r, -r, -r), Point3::new(r, r, r)))
             }
             Self::Cuboid { half_extents: h } => Some(Aabb::new(
@@ -153,13 +153,13 @@ impl FieldNode {
                 (None, None) => None,
             },
             Self::SmoothUnion(a, b, k) => match (a.bounds(), b.bounds()) {
-                (Some(a_bb), Some(b_bb)) => Some(a_bb.union(&b_bb).expanded(k / 4.0)),
+                (Some(a_bb), Some(b_bb)) => Some(a_bb.union(&b_bb).expanded(k.eval() / 4.0)),
                 _ => None,
             },
-            Self::SmoothSubtract(a, _b, k) => a.bounds().map(|bb| bb.expanded(k / 4.0)),
+            Self::SmoothSubtract(a, _b, k) => a.bounds().map(|bb| bb.expanded(k.eval() / 4.0)),
             Self::SmoothIntersect(a, b, k) => match (a.bounds(), b.bounds()) {
-                (Some(a_bb), Some(b_bb)) => Some(a_bb.intersection(&b_bb).expanded(k / 4.0)),
-                (Some(bb), None) | (None, Some(bb)) => Some(bb.expanded(k / 4.0)),
+                (Some(a_bb), Some(b_bb)) => Some(a_bb.intersection(&b_bb).expanded(k.eval() / 4.0)),
+                (Some(bb), None) | (None, Some(bb)) => Some(bb.expanded(k.eval() / 4.0)),
                 (None, None) => None,
             },
             Self::SmoothUnionVariable { a, b, max_k, .. } => match (a.bounds(), b.bounds()) {
@@ -176,7 +176,7 @@ impl FieldNode {
                     }
                 }
                 let n = children.len() as f64;
-                let expansion = k * n.ln().max(0.0);
+                let expansion = k.eval() * n.ln().max(0.0);
                 result.map(|bb| bb.expanded(expansion))
             }
 
@@ -211,9 +211,11 @@ impl FieldNode {
             }),
 
             // ── Domain operations ────────────────────────────────────
-            Self::Shell(child, thickness) => child.bounds().map(|bb| bb.expanded(*thickness)),
-            Self::Round(child, radius) => child.bounds().map(|bb| bb.expanded(*radius)),
-            Self::Offset(child, distance) => child.bounds().map(|bb| bb.expanded(distance.abs())),
+            Self::Shell(child, thickness) => child.bounds().map(|bb| bb.expanded(thickness.eval())),
+            Self::Round(child, radius) => child.bounds().map(|bb| bb.expanded(radius.eval())),
+            Self::Offset(child, distance) => {
+                child.bounds().map(|bb| bb.expanded(distance.eval().abs()))
+            }
             Self::Elongate(child, half) => child.bounds().map(|bb| {
                 Aabb::new(
                     Point3::new(bb.min.x - half.x, bb.min.y - half.y, bb.min.z - half.z),
@@ -258,11 +260,14 @@ impl FieldNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field_node::Val;
     use nalgebra::Vector3;
 
     #[test]
     fn sphere_bounds() {
-        let node = FieldNode::Sphere { radius: 3.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(3.0),
+        };
         let bb = node.bounds().map(|b| (b.min, b.max));
         assert_eq!(
             bb,
@@ -294,7 +299,9 @@ mod tests {
     #[test]
     fn translate_shifts_bounds() {
         let node = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(5.0, 0.0, 0.0),
         );
         let bb = node.bounds();
@@ -308,9 +315,13 @@ mod tests {
 
     #[test]
     fn union_merges_bounds() {
-        let a = FieldNode::Sphere { radius: 1.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(1.0),
+        };
         let b = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(5.0, 0.0, 0.0),
         );
         let node = FieldNode::Union(Box::new(a), Box::new(b));
@@ -323,7 +334,9 @@ mod tests {
 
     #[test]
     fn intersect_clips_bounds() {
-        let a = FieldNode::Sphere { radius: 5.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let b = FieldNode::Cuboid {
             half_extents: Vector3::new(2.0, 2.0, 2.0),
         };
@@ -339,7 +352,9 @@ mod tests {
 
     #[test]
     fn intersect_with_plane_uses_finite_child() {
-        let sphere = FieldNode::Sphere { radius: 3.0 };
+        let sphere = FieldNode::Sphere {
+            radius: Val::from(3.0),
+        };
         let plane = FieldNode::Plane {
             normal: Vector3::new(0.0, 0.0, 1.0),
             offset: 0.0,
@@ -356,9 +371,13 @@ mod tests {
 
     #[test]
     fn subtract_uses_first_child_bounds() {
-        let big = FieldNode::Sphere { radius: 5.0 };
+        let big = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let small = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 100.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(100.0),
+            }),
             Vector3::new(200.0, 0.0, 0.0),
         );
         let node = FieldNode::Subtract(Box::new(big), Box::new(small));
@@ -373,7 +392,9 @@ mod tests {
 
     #[test]
     fn union_with_plane_is_none() {
-        let sphere = FieldNode::Sphere { radius: 1.0 };
+        let sphere = FieldNode::Sphere {
+            radius: Val::from(1.0),
+        };
         let plane = FieldNode::Plane {
             normal: Vector3::new(0.0, 0.0, 1.0),
             offset: 0.0,
@@ -410,7 +431,12 @@ mod tests {
 
     #[test]
     fn scale_uniform_bounds() {
-        let node = FieldNode::ScaleUniform(Box::new(FieldNode::Sphere { radius: 1.0 }), 3.0);
+        let node = FieldNode::ScaleUniform(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
+            3.0,
+        );
         let bb = node.bounds().map(|b| (b.min, b.max));
         assert_eq!(
             bb,
@@ -420,7 +446,12 @@ mod tests {
 
     #[test]
     fn shell_expands_bounds() {
-        let node = FieldNode::Shell(Box::new(FieldNode::Sphere { radius: 5.0 }), 1.0);
+        let node = FieldNode::Shell(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(5.0),
+            }),
+            Val::from(1.0),
+        );
         let bb = node.bounds().map(|b| (b.min, b.max));
         assert_eq!(
             bb,
@@ -431,7 +462,9 @@ mod tests {
     #[test]
     fn elongate_expands_bounds() {
         let node = FieldNode::Elongate(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(2.0, 0.0, 0.0),
         );
         let bb = node.bounds().map(|b| (b.min, b.max));
@@ -595,7 +628,9 @@ mod tests {
     #[test]
     fn repeat_bounds_is_none() {
         let node = FieldNode::Repeat(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(5.0, 5.0, 5.0),
         );
         assert!(node.bounds().is_none());
@@ -605,7 +640,9 @@ mod tests {
     #[allow(clippy::expect_used)]
     fn repeat_bounded_bounds_single_copy() {
         let node = FieldNode::RepeatBounded {
-            child: Box::new(FieldNode::Sphere { radius: 1.0 }),
+            child: Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             spacing: Vector3::new(5.0, 5.0, 5.0),
             count: [1, 1, 1],
         };
@@ -619,7 +656,9 @@ mod tests {
     #[allow(clippy::expect_used)]
     fn repeat_bounded_bounds_3x1x1() {
         let node = FieldNode::RepeatBounded {
-            child: Box::new(FieldNode::Sphere { radius: 1.0 }),
+            child: Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             spacing: Vector3::new(5.0, 5.0, 5.0),
             count: [3, 1, 1],
         };
@@ -637,7 +676,9 @@ mod tests {
     #[allow(clippy::expect_used)]
     fn repeat_bounded_bounds_2x2x1() {
         let node = FieldNode::RepeatBounded {
-            child: Box::new(FieldNode::Sphere { radius: 0.5 }),
+            child: Box::new(FieldNode::Sphere {
+                radius: Val::from(0.5),
+            }),
             spacing: Vector3::new(3.0, 3.0, 3.0),
             count: [2, 2, 1],
         };

@@ -857,6 +857,7 @@ fn build_octree_par(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field_node::Val;
     use std::f64::consts::PI;
 
     fn check_topology(mesh: &IndexedMesh) -> (bool, bool) {
@@ -902,7 +903,9 @@ mod tests {
 
     #[test]
     fn adaptive_sphere_valid() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = sphere_bounds(5.0, 0.5);
         let (mesh, stats) = mesh_field_adaptive(&node, &bounds, 0.5);
 
@@ -919,7 +922,9 @@ mod tests {
         // Use a finer resolution where the octree advantage is clear.
         // At cell_size=0.25, the sphere surface shell is thin relative
         // to the grid, so most interior/exterior is pruned hierarchically.
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let cell = 0.25;
         let bounds = sphere_bounds(5.0, cell);
 
@@ -943,7 +948,9 @@ mod tests {
 
     #[test]
     fn adaptive_sphere_volume() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = sphere_bounds(5.0, 0.5);
         let (mesh, _) = mesh_field_adaptive(&node, &bounds, 0.5);
         let expected = 4.0 / 3.0 * PI * 125.0;
@@ -1013,7 +1020,9 @@ mod tests {
 
     #[test]
     fn adaptive_topology_manifold() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = sphere_bounds(5.0, 0.5);
         let (mesh, _) = mesh_field_adaptive(&node, &bounds, 0.5);
         let (watertight, manifold) = check_topology(&mesh);
@@ -1024,7 +1033,9 @@ mod tests {
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn adaptive_vs_uniform_dc_regression() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let cell = 0.5;
         let bounds = sphere_bounds(5.0, cell);
 
@@ -1069,7 +1080,9 @@ mod tests {
 
     #[test]
     fn par_sphere_valid() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = sphere_bounds(5.0, 0.5);
         let (mesh, stats) = mesh_field_adaptive_par(&node, &bounds, 0.5);
         assert_mesh_valid(&mesh, "par_sphere");
@@ -1081,7 +1094,9 @@ mod tests {
 
     #[test]
     fn par_sphere_volume() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = sphere_bounds(5.0, 0.5);
         let (mesh, _) = mesh_field_adaptive_par(&node, &bounds, 0.5);
         let expected = 4.0 / 3.0 * PI * 125.0;
@@ -1096,7 +1111,9 @@ mod tests {
 
     #[test]
     fn par_vs_seq_volume_match() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let cell = 0.5;
         let bounds = sphere_bounds(5.0, cell);
 
@@ -1141,7 +1158,9 @@ mod tests {
 
     #[test]
     fn par_topology_manifold() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = sphere_bounds(5.0, 0.5);
         let (mesh, _) = mesh_field_adaptive_par(&node, &bounds, 0.5);
         let (watertight, manifold) = check_topology(&mesh);
@@ -1157,7 +1176,9 @@ mod tests {
     fn bench_adaptive_sphere() {
         use std::time::Instant;
 
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let cell = 0.1;
         let bounds = sphere_bounds(5.0, cell);
 

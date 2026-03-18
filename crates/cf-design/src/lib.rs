@@ -37,6 +37,7 @@ mod gradient;
 mod interval;
 pub mod mechanism;
 mod mesher;
+mod param;
 mod simplify;
 mod solid;
 
@@ -47,4 +48,5 @@ pub use mechanism::{
     MechanismError, Part, Plane, PrintProfile, ShapeMode, SplitResult, TendonDef, TendonWaypoint,
     split_part,
 };
+pub use param::{ParamRef, ParamStore};
 pub use solid::{InfillKind, Solid};

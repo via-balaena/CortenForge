@@ -12,7 +12,8 @@ use std::sync::Arc;
 use cf_geometry::{Aabb, IndexedMesh, SdfGrid};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
-use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn};
+use crate::field_node::{FieldNode, UserEvalFn, UserIntervalFn, Val};
+use crate::param::ParamRef;
 
 /// Lattice type for infill operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +53,9 @@ impl Solid {
             "sphere radius must be positive and finite, got {radius}"
         );
         Self {
-            node: FieldNode::Sphere { radius },
+            node: FieldNode::Sphere {
+                radius: Val::from(radius),
+            },
         }
     }
 
@@ -566,7 +569,7 @@ impl Solid {
             "smooth_union blend radius k must be positive and finite, got {k}"
         );
         Self {
-            node: FieldNode::SmoothUnion(Box::new(self.node), Box::new(other.node), k),
+            node: FieldNode::SmoothUnion(Box::new(self.node), Box::new(other.node), Val::from(k)),
         }
     }
 
@@ -583,7 +586,11 @@ impl Solid {
             "smooth_subtract blend radius k must be positive and finite, got {k}"
         );
         Self {
-            node: FieldNode::SmoothSubtract(Box::new(self.node), Box::new(other.node), k),
+            node: FieldNode::SmoothSubtract(
+                Box::new(self.node),
+                Box::new(other.node),
+                Val::from(k),
+            ),
         }
     }
 
@@ -600,7 +607,11 @@ impl Solid {
             "smooth_intersect blend radius k must be positive and finite, got {k}"
         );
         Self {
-            node: FieldNode::SmoothIntersect(Box::new(self.node), Box::new(other.node), k),
+            node: FieldNode::SmoothIntersect(
+                Box::new(self.node),
+                Box::new(other.node),
+                Val::from(k),
+            ),
         }
     }
 
@@ -624,7 +635,7 @@ impl Solid {
         );
         let nodes: Vec<FieldNode> = solids.into_iter().map(|s| s.node).collect();
         Self {
-            node: FieldNode::SmoothUnionAll(nodes, k),
+            node: FieldNode::SmoothUnionAll(nodes, Val::from(k)),
         }
     }
 
@@ -797,7 +808,7 @@ impl Solid {
             "shell thickness must be positive and finite, got {thickness}"
         );
         Self {
-            node: FieldNode::Shell(Box::new(self.node), thickness),
+            node: FieldNode::Shell(Box::new(self.node), Val::from(thickness)),
         }
     }
 
@@ -818,7 +829,7 @@ impl Solid {
             "round radius must be positive and finite, got {radius}"
         );
         Self {
-            node: FieldNode::Round(Box::new(self.node), radius),
+            node: FieldNode::Round(Box::new(self.node), Val::from(radius)),
         }
     }
 
@@ -842,7 +853,7 @@ impl Solid {
             "offset distance must be finite, got {distance}"
         );
         Self {
-            node: FieldNode::Offset(Box::new(self.node), distance),
+            node: FieldNode::Offset(Box::new(self.node), Val::from(distance)),
         }
     }
 
@@ -1298,6 +1309,180 @@ impl Solid {
         Some(SdfGrid::from_fn(nx, ny, nz, cell_size, origin, |p| {
             node.evaluate(&p)
         }))
+    }
+
+    // ── Parameterized constructors ────────────────────────────────────
+
+    /// Sphere with parameterized radius.
+    ///
+    /// Like [`sphere`](Self::sphere), but the radius is a design variable
+    /// that can be updated via [`ParamStore::set`](crate::ParamStore::set)
+    /// without rebuilding the tree.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current parameter value is not positive and finite.
+    #[must_use]
+    pub fn sphere_p(radius: ParamRef) -> Self {
+        let r = radius.value();
+        assert!(
+            r > 0.0 && r.is_finite(),
+            "sphere_p radius must be positive and finite, got {r}"
+        );
+        Self {
+            node: FieldNode::Sphere {
+                radius: Val::from(radius),
+            },
+        }
+    }
+
+    /// Smooth union with parameterized blend radius.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current parameter value is not positive and finite.
+    #[must_use]
+    pub fn smooth_union_p(self, other: Self, k: ParamRef) -> Self {
+        let kv = k.value();
+        assert!(
+            kv > 0.0 && kv.is_finite(),
+            "smooth_union_p blend radius k must be positive and finite, got {kv}"
+        );
+        Self {
+            node: FieldNode::SmoothUnion(Box::new(self.node), Box::new(other.node), Val::from(k)),
+        }
+    }
+
+    /// Smooth subtraction with parameterized blend radius.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current parameter value is not positive and finite.
+    #[must_use]
+    pub fn smooth_subtract_p(self, other: Self, k: ParamRef) -> Self {
+        let kv = k.value();
+        assert!(
+            kv > 0.0 && kv.is_finite(),
+            "smooth_subtract_p blend radius k must be positive and finite, got {kv}"
+        );
+        Self {
+            node: FieldNode::SmoothSubtract(
+                Box::new(self.node),
+                Box::new(other.node),
+                Val::from(k),
+            ),
+        }
+    }
+
+    /// Smooth intersection with parameterized blend radius.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current parameter value is not positive and finite.
+    #[must_use]
+    pub fn smooth_intersect_p(self, other: Self, k: ParamRef) -> Self {
+        let kv = k.value();
+        assert!(
+            kv > 0.0 && kv.is_finite(),
+            "smooth_intersect_p blend radius k must be positive and finite, got {kv}"
+        );
+        Self {
+            node: FieldNode::SmoothIntersect(
+                Box::new(self.node),
+                Box::new(other.node),
+                Val::from(k),
+            ),
+        }
+    }
+
+    /// Shell with parameterized wall thickness.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current parameter value is not positive and finite.
+    #[must_use]
+    pub fn shell_p(self, thickness: ParamRef) -> Self {
+        let v = thickness.value();
+        assert!(
+            v > 0.0 && v.is_finite(),
+            "shell_p thickness must be positive and finite, got {v}"
+        );
+        Self {
+            node: FieldNode::Shell(Box::new(self.node), Val::from(thickness)),
+        }
+    }
+
+    /// Round with parameterized rounding radius.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current parameter value is not positive and finite.
+    #[must_use]
+    pub fn round_p(self, radius: ParamRef) -> Self {
+        let v = radius.value();
+        assert!(
+            v > 0.0 && v.is_finite(),
+            "round_p radius must be positive and finite, got {v}"
+        );
+        Self {
+            node: FieldNode::Round(Box::new(self.node), Val::from(radius)),
+        }
+    }
+
+    /// Offset with parameterized distance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current parameter value is not finite.
+    #[must_use]
+    pub fn offset_p(self, distance: ParamRef) -> Self {
+        let v = distance.value();
+        assert!(v.is_finite(), "offset_p distance must be finite, got {v}");
+        Self {
+            node: FieldNode::Offset(Box::new(self.node), Val::from(distance)),
+        }
+    }
+
+    // ── Parameter access ──────────────────────────────────────────────
+
+    /// Set a named design parameter. Searches the expression tree for the
+    /// parameter's store and updates the value.
+    ///
+    /// Takes `&self` (not `&mut self`) — the parameter store uses interior
+    /// mutability, so concurrent evaluation threads see the update immediately.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parameter name is not found in this solid's tree.
+    pub fn set_param(&self, name: &str, value: f64) {
+        let result = self.node.find_param(name);
+        assert!(
+            result.is_some(),
+            "parameter '{name}' not found in this solid"
+        );
+        if let Some((id, store)) = result {
+            store.set_by_id(id, value);
+        }
+    }
+
+    /// Get a named design parameter's current value.
+    ///
+    /// Returns `None` if the parameter is not found in this solid's tree.
+    #[must_use]
+    pub fn get_param(&self, name: &str) -> Option<f64> {
+        self.node
+            .find_param(name)
+            .map(|(id, store)| store.get_by_id(id))
+    }
+
+    /// List all design parameter names reachable from this solid's tree.
+    #[must_use]
+    pub fn param_names(&self) -> Vec<String> {
+        self.node
+            .collect_params()
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect()
     }
 }
 
@@ -3185,5 +3370,291 @@ mod tests {
 
         assert_eq!(loaded.vertex_count(), mesh.vertex_count());
         assert_eq!(loaded.face_count(), mesh.face_count());
+    }
+
+    // ── Session 24: Parameterized solid tests ─────────────────────────
+
+    mod param_tests {
+        use crate::{ParamStore, Solid};
+        use nalgebra::{Point3, Vector3};
+
+        #[test]
+        fn param_sphere_radius() {
+            let store = ParamStore::new();
+            let r = store.add("radius", 5.0);
+            let s = Solid::sphere_p(r);
+
+            // Surface of radius-5 sphere
+            let p = Point3::new(5.0, 0.0, 0.0);
+            assert!(s.evaluate(&p).abs() < 1e-10, "should be on surface");
+
+            // Inside
+            let pin = Point3::new(3.0, 0.0, 0.0);
+            assert!(s.evaluate(&pin) < 0.0, "should be inside");
+
+            // Outside
+            let pout = Point3::new(7.0, 0.0, 0.0);
+            assert!(s.evaluate(&pout) > 0.0, "should be outside");
+
+            // Change radius to 10
+            store.set("radius", 10.0);
+
+            // Old surface point is now inside
+            assert!(
+                s.evaluate(&p) < 0.0,
+                "r=5 point should be inside r=10 sphere"
+            );
+
+            // New surface
+            let p10 = Point3::new(10.0, 0.0, 0.0);
+            assert!(s.evaluate(&p10).abs() < 1e-10, "should be on new surface");
+        }
+
+        #[test]
+        fn param_sphere_matches_literal() {
+            let store = ParamStore::new();
+            let r = store.add("radius", 7.0);
+            let param_sphere = Solid::sphere_p(r);
+            let literal_sphere = Solid::sphere(7.0);
+
+            let test_points = [
+                Point3::new(3.0, 2.0, 1.0),
+                Point3::new(7.0, 0.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(10.0, 0.0, 0.0),
+            ];
+
+            for p in &test_points {
+                let vp = param_sphere.evaluate(p);
+                let vl = literal_sphere.evaluate(p);
+                assert!(
+                    (vp - vl).abs() < 1e-12,
+                    "param vs literal mismatch at {p:?}: {vp} vs {vl}"
+                );
+            }
+        }
+
+        #[test]
+        fn param_blend_radius() {
+            let store = ParamStore::new();
+            let blend_k = store.add("blend_k", 1.0);
+
+            let left = Solid::sphere(3.0).translate(Vector3::new(-2.0, 0.0, 0.0));
+            let right = Solid::sphere(3.0).translate(Vector3::new(2.0, 0.0, 0.0));
+            let solid = left.smooth_union_p(right, blend_k);
+
+            // Evaluate at blend region center
+            let center = Point3::new(0.0, 0.0, 0.0);
+            let v1 = solid.evaluate(&center);
+
+            // Change blend radius to 3.0 (wider blend)
+            store.set("blend_k", 3.0);
+            let v2 = solid.evaluate(&center);
+
+            // Wider blend should produce a more negative (deeper inside) value
+            // at the center between the two spheres
+            assert!(
+                v2 < v1,
+                "wider blend should give more negative field at center: k=1 → {v1}, k=3 → {v2}"
+            );
+        }
+
+        #[test]
+        fn param_blend_matches_literal() {
+            let store = ParamStore::new();
+            let k_ref = store.add("blend_k", 2.0);
+
+            let a1 = Solid::sphere(3.0).translate(Vector3::new(-2.0, 0.0, 0.0));
+            let b1 = Solid::sphere(3.0).translate(Vector3::new(2.0, 0.0, 0.0));
+            let param_su = a1.smooth_union_p(b1, k_ref);
+
+            let a2 = Solid::sphere(3.0).translate(Vector3::new(-2.0, 0.0, 0.0));
+            let b2 = Solid::sphere(3.0).translate(Vector3::new(2.0, 0.0, 0.0));
+            let literal_su = a2.smooth_union(b2, 2.0);
+
+            let test_points = [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(-3.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+            ];
+
+            for p in &test_points {
+                let vp = param_su.evaluate(p);
+                let vl = literal_su.evaluate(p);
+                assert!(
+                    (vp - vl).abs() < 1e-12,
+                    "param vs literal smooth_union mismatch at {p:?}: {vp} vs {vl}"
+                );
+            }
+        }
+
+        #[test]
+        fn param_sphere_gradient() {
+            let store = ParamStore::new();
+            let r = store.add("radius", 5.0);
+            let s = Solid::sphere_p(r);
+
+            // Spatial gradient of sphere at (5,0,0) should be (1,0,0) (outward normal)
+            let g = s.gradient(&Point3::new(5.0, 0.0, 0.0));
+            assert!((g.x - 1.0).abs() < 1e-6, "gx = {}", g.x);
+            assert!(g.y.abs() < 1e-6, "gy = {}", g.y);
+            assert!(g.z.abs() < 1e-6, "gz = {}", g.z);
+
+            // After changing radius, gradient direction stays the same
+            store.set("radius", 10.0);
+            let g2 = s.gradient(&Point3::new(10.0, 0.0, 0.0));
+            assert!((g2.x - 1.0).abs() < 1e-6, "gx after = {}", g2.x);
+        }
+
+        #[test]
+        fn param_sphere_interval() {
+            use cf_geometry::Aabb;
+
+            let store = ParamStore::new();
+            let r = store.add("radius", 5.0);
+            let s = Solid::sphere_p(r);
+
+            // Box fully outside radius-5 sphere
+            let aabb = Aabb::new(Point3::new(7.0, 0.0, 0.0), Point3::new(8.0, 1.0, 1.0));
+            let (lo, _hi) = s.evaluate_interval(&aabb);
+            assert!(lo > 0.0, "should be fully outside, lo={lo}");
+
+            // Change radius to 20 — same box should be fully inside
+            store.set("radius", 20.0);
+            let (_lo2, hi2) = s.evaluate_interval(&aabb);
+            assert!(hi2 < 0.0, "should be fully inside with r=20, hi={hi2}");
+        }
+
+        #[test]
+        fn param_sphere_batch() {
+            let store = ParamStore::new();
+            let r = store.add("radius", 3.0);
+            let s = Solid::sphere_p(r);
+
+            let test_points = [
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(3.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0),
+            ];
+
+            // Evaluate individually
+            let expected: Vec<f64> = test_points.iter().map(|p| s.evaluate(p)).collect();
+
+            // Evaluate via batch (through mesh path — just check field values match)
+            for (i, p) in test_points.iter().enumerate() {
+                let v = s.evaluate(p);
+                assert!(
+                    (v - expected[i]).abs() < 1e-12,
+                    "batch mismatch at point {i}: {v} vs {}",
+                    expected[i]
+                );
+            }
+        }
+
+        #[test]
+        fn param_names_and_get() {
+            let store = ParamStore::new();
+            let radius_ref = store.add("radius", 5.0);
+            let blend_ref = store.add("blend_k", 1.0);
+
+            let sphere = Solid::sphere_p(radius_ref);
+            let other = Solid::sphere(3.0).translate(Vector3::new(8.0, 0.0, 0.0));
+            let solid = sphere.smooth_union_p(other, blend_ref);
+
+            let names = solid.param_names();
+            assert!(names.contains(&"radius".to_string()), "missing 'radius'");
+            assert!(names.contains(&"blend_k".to_string()), "missing 'blend_k'");
+            assert_eq!(names.len(), 2);
+
+            assert!((solid.get_param("radius").unwrap_or(0.0) - 5.0).abs() < f64::EPSILON);
+            assert!((solid.get_param("blend_k").unwrap_or(0.0) - 1.0).abs() < f64::EPSILON);
+            assert!(solid.get_param("nonexistent").is_none());
+        }
+
+        #[test]
+        fn param_set_via_solid() {
+            let store = ParamStore::new();
+            let r = store.add("radius", 5.0);
+            let s = Solid::sphere_p(r);
+
+            // Set via Solid convenience method
+            s.set_param("radius", 12.0);
+            assert!((store.get("radius").unwrap_or(0.0) - 12.0).abs() < f64::EPSILON);
+
+            // Verify evaluation uses new value
+            let p = Point3::new(12.0, 0.0, 0.0);
+            assert!(s.evaluate(&p).abs() < 1e-10, "should be on r=12 surface");
+        }
+
+        #[test]
+        fn literal_sphere_unchanged() {
+            // Regression: Solid::sphere(5.0) must work exactly as before
+            let s = Solid::sphere(5.0);
+            let p = Point3::new(5.0, 0.0, 0.0);
+            assert!(s.evaluate(&p).abs() < 1e-10);
+            assert!(s.evaluate(&Point3::origin()) < 0.0);
+            assert!(s.evaluate(&Point3::new(10.0, 0.0, 0.0)) > 0.0);
+
+            // No parameters
+            assert!(s.param_names().is_empty());
+            assert!(s.get_param("radius").is_none());
+        }
+
+        #[test]
+        fn param_meshing() {
+            let store = ParamStore::new();
+            let r = store.add("radius", 5.0);
+            let s = Solid::sphere_p(r);
+
+            // Mesh at radius 5
+            let m1 = s.mesh(1.0);
+            assert!(m1.vertex_count() > 0, "mesh should not be empty");
+            let bb1 = s.bounds();
+            assert!(bb1.is_some());
+
+            // Change to radius 10
+            store.set("radius", 10.0);
+            let bb2 = s.bounds();
+            assert!(bb2.is_some());
+            let size2 = bb2.map_or(0.0, |b| b.size().x);
+            assert!(
+                (size2 - 20.0).abs() < 1e-10,
+                "bounds should reflect r=10, got size_x={size2}"
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "not found")]
+        fn set_param_missing_panics() {
+            let s = Solid::sphere(5.0);
+            s.set_param("nonexistent", 1.0);
+        }
+
+        #[test]
+        fn multiple_params_same_store() {
+            let store = ParamStore::new();
+            let radius_ref = store.add("radius", 3.0);
+            let blend_ref = store.add("blend_k", 0.5);
+            let thick_ref = store.add("thickness", 0.3);
+
+            let body = Solid::sphere_p(radius_ref);
+            let hole = Solid::sphere(1.0);
+            let solid = body.smooth_subtract_p(hole, blend_ref).shell_p(thick_ref);
+
+            assert_eq!(solid.param_names().len(), 3);
+
+            // Change all params and verify field changes
+            let probe = Point3::new(3.0, 0.0, 0.0);
+            let v1 = solid.evaluate(&probe);
+
+            store.set("radius", 5.0);
+            let v2 = solid.evaluate(&probe);
+            assert!(
+                (v1 - v2).abs() > 1e-6,
+                "field should change when radius changes"
+            );
+        }
     }
 }

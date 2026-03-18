@@ -12,6 +12,83 @@ use std::sync::Arc;
 use cf_geometry::Aabb;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
+use crate::param::ParamStoreData;
+
+/// A scalar value that is either a compile-time literal or a runtime design parameter.
+///
+/// Used in [`FieldNode`] variants where a constant (radius, blend k, thickness, etc.)
+/// may optionally be a design variable. `eval()` resolves the current value at near-zero
+/// cost for literals and one `RwLock` read for parameters.
+///
+/// Session 25 extends this with `param_deriv()` for chain-rule gradient computation.
+#[derive(Clone)]
+pub enum Val {
+    /// Compile-time constant.
+    Literal(f64),
+    /// Runtime parameter resolved from a shared store.
+    Param {
+        id: usize,
+        store: Arc<ParamStoreData>,
+    },
+}
+
+impl Val {
+    /// Resolve the current scalar value.
+    #[inline]
+    pub(crate) fn eval(&self) -> f64 {
+        match self {
+            Self::Literal(v) => *v,
+            Self::Param { id, store } => store.get_by_id(*id),
+        }
+    }
+
+    /// For Session 25: `∂(this value)/∂param[target_id]`.
+    /// Returns 1.0 if this `Val` IS the target parameter, 0.0 otherwise.
+    #[allow(dead_code)] // Used in Session 25
+    pub(crate) const fn param_deriv(&self, target_id: usize) -> f64 {
+        match self {
+            Self::Literal(_) => 0.0,
+            Self::Param { id, .. } => {
+                if *id == target_id {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+
+    /// Whether this value is a design parameter (vs a literal).
+    #[allow(dead_code)] // Used in Session 25
+    pub(crate) const fn is_param(&self) -> bool {
+        matches!(self, Self::Param { .. })
+    }
+}
+
+impl std::fmt::Debug for Val {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Literal(v) => write!(f, "{v}"),
+            Self::Param { id, store } => write!(f, "Param({}, {:?})", id, store.name_of(*id)),
+        }
+    }
+}
+
+impl From<f64> for Val {
+    fn from(v: f64) -> Self {
+        Self::Literal(v)
+    }
+}
+
+impl From<crate::param::ParamRef> for Val {
+    fn from(p: crate::param::ParamRef) -> Self {
+        Self::Param {
+            id: p.id,
+            store: p.store,
+        }
+    }
+}
+
 /// Wrapper for user-provided evaluation closure.
 ///
 /// Supports `Clone` (via `Arc`) and `Debug` (prints opaque marker).
@@ -41,7 +118,7 @@ impl std::fmt::Debug for UserIntervalFn {
 pub enum FieldNode {
     // ── Geometric primitives ──────────────────────────────────────────
     /// Sphere centered at origin. Exact SDF: `|p| - radius`.
-    Sphere { radius: f64 },
+    Sphere { radius: Val },
 
     /// Axis-aligned box centered at origin. Exact SDF.
     Cuboid { half_extents: Vector3<f64> },
@@ -162,19 +239,19 @@ pub enum FieldNode {
 
     /// Smooth union with blend radius `k`. Adds material in blend region.
     /// Polynomial smooth min (IQ). Produces a lower-bound field.
-    SmoothUnion(Box<Self>, Box<Self>, f64),
+    SmoothUnion(Box<Self>, Box<Self>, Val),
 
     /// Smooth subtraction with blend radius `k`.
     /// `smooth_intersect(a, -b, k)` = `-smooth_union(-a, b, k)`.
-    SmoothSubtract(Box<Self>, Box<Self>, f64),
+    SmoothSubtract(Box<Self>, Box<Self>, Val),
 
     /// Smooth intersection with blend radius `k`. Removes material in blend
     /// region. `-smooth_union(-a, -b, k)` (De Morgan).
-    SmoothIntersect(Box<Self>, Box<Self>, f64),
+    SmoothIntersect(Box<Self>, Box<Self>, Val),
 
     /// N-ary smooth union (order-independent / symmetric blend).
     /// Uses log-sum-exp for truly symmetric results regardless of input order.
-    SmoothUnionAll(Vec<Self>, f64),
+    SmoothUnionAll(Vec<Self>, Val),
 
     // ── Transforms ────────────────────────────────────────────────────
     /// Translation: `f(p - offset)`.
@@ -193,15 +270,15 @@ pub enum FieldNode {
     // ── Domain operations ─────────────────────────────────────────────
     /// Shell: `|f(p)| - thickness`. Hollows a solid to the given wall
     /// thickness. Requires exact SDF child for uniform wall thickness.
-    Shell(Box<Self>, f64),
+    Shell(Box<Self>, Val),
 
     /// Round: `f(p) - radius`. Adds rounding to all edges by shifting the
     /// isosurface inward. Requires exact SDF child for uniform rounding.
-    Round(Box<Self>, f64),
+    Round(Box<Self>, Val),
 
     /// Offset: `f(p) - distance`. Grows (positive distance) or shrinks
     /// (negative distance) the shape uniformly. Requires exact SDF child.
-    Offset(Box<Self>, f64),
+    Offset(Box<Self>, Val),
 
     /// Elongate: stretches a shape along axes by inserting flat sections.
     /// `q = p - clamp(p, -h, h)`, then `f(q)`. Preserves SDF property.
@@ -292,4 +369,90 @@ pub enum FieldNode {
         /// the evaluation domain.
         bounds: Aabb,
     },
+}
+
+// ── Parameter tree-walk helpers ────────────────────────────────────────
+
+impl FieldNode {
+    /// Collect all `Val` references in this node (not recursing into children).
+    fn local_vals(&self) -> Vec<&Val> {
+        match self {
+            Self::Sphere { radius } => vec![radius],
+            Self::SmoothUnion(_, _, k)
+            | Self::SmoothSubtract(_, _, k)
+            | Self::SmoothIntersect(_, _, k)
+            | Self::SmoothUnionAll(_, k) => vec![k],
+            Self::Shell(_, v) | Self::Round(_, v) | Self::Offset(_, v) => vec![v],
+            _ => vec![],
+        }
+    }
+
+    /// Iterate over all child `FieldNode` references.
+    fn children(&self) -> Vec<&Self> {
+        match self {
+            Self::Union(a, b)
+            | Self::Subtract(a, b)
+            | Self::Intersect(a, b)
+            | Self::SmoothUnion(a, b, _)
+            | Self::SmoothSubtract(a, b, _)
+            | Self::SmoothIntersect(a, b, _)
+            | Self::SmoothUnionVariable { a, b, .. } => vec![a.as_ref(), b.as_ref()],
+            Self::SmoothUnionAll(children, _) => children.iter().collect(),
+            Self::Translate(c, _)
+            | Self::Rotate(c, _)
+            | Self::ScaleUniform(c, _)
+            | Self::Mirror(c, _)
+            | Self::Shell(c, _)
+            | Self::Round(c, _)
+            | Self::Offset(c, _)
+            | Self::Elongate(c, _)
+            | Self::Twist(c, _)
+            | Self::Bend(c, _)
+            | Self::Repeat(c, _) => vec![c.as_ref()],
+            Self::RepeatBounded { child, .. } => vec![child.as_ref()],
+            // Leaf nodes
+            _ => vec![],
+        }
+    }
+
+    /// Find the store and id for a parameter by name. Searches the entire subtree.
+    pub(crate) fn find_param(&self, name: &str) -> Option<(usize, Arc<ParamStoreData>)> {
+        // Check local vals
+        for val in self.local_vals() {
+            if let Val::Param { id, store } = val {
+                if store.find_name(name) == Some(*id) {
+                    return Some((*id, Arc::clone(store)));
+                }
+            }
+        }
+        // Recurse into children
+        for child in self.children() {
+            if let Some(result) = child.find_param(name) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    /// Collect all parameter (name, id, store) triples from the entire subtree.
+    pub(crate) fn collect_params(&self) -> Vec<(String, usize, Arc<ParamStoreData>)> {
+        let mut result = Vec::new();
+        self.collect_params_inner(&mut result);
+        result
+    }
+
+    fn collect_params_inner(&self, out: &mut Vec<(String, usize, Arc<ParamStoreData>)>) {
+        for val in self.local_vals() {
+            if let Val::Param { id, store } = val {
+                let name = store.name_of(*id);
+                // Avoid duplicates (same param referenced multiple times)
+                if !out.iter().any(|(n, i, _)| n == &name && *i == *id) {
+                    out.push((name, *id, Arc::clone(store)));
+                }
+            }
+        }
+        for child in self.children() {
+            child.collect_params_inner(out);
+        }
+    }
 }
