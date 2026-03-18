@@ -168,10 +168,10 @@ diagApprox → forces blow up proportionally.
 | Session | Scope | Entry | Exit |
 |---------|-------|-------|------|
 | 1 | Profile DT-179: bracket broadphase/narrow/assembly/solver, verify AABB bloat hypothesis | This spec | Hot path identified with timing data; mesh AABB behavior documented |
-| 2 | Diagnose DT-180: compare mesh vs primitive mass/inertia, trace inertia computation | Session 1 findings | Root cause identified; `model.body_mass` comparison for mesh vs primitive sphere documented |
+| 2 | Diagnose DT-180: compare mesh vs primitive mass/inertia, trace inertia computation | This spec (independent of Session 1) | Root cause identified; `model.body_mass` comparison for mesh vs primitive sphere documented |
 | 3 | Fix DT-179 | Session 1 | Mesh-plane step <1ms (release); broadphase pair count matches primitives |
 | 4 | Fix DT-180 | Session 2 | Mesh contact force within 5% of weight at steady state |
-| 5 | cf-design integration | Sessions 3+4 | Phase 5 test upgraded to contact-force objective; `cargo test -p cf-design` passes |
+| 5 | cf-design integration + spec completion | Sessions 3+4 | Phase 5 test upgraded to contact-force objective; `cargo test -p cf-design` passes; `CF_DESIGN_SPEC.md` Session 26 updated (blocked status removed, full exit criteria met) |
 
 ---
 
