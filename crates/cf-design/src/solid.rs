@@ -1163,6 +1163,59 @@ impl Solid {
         mesh
     }
 
+    /// Mesh the solid to a guaranteed maximum surface deviation.
+    ///
+    /// The output mesh surface is within `max_deviation` of the true implicit
+    /// surface everywhere. Uses the parallel adaptive octree DC mesher with
+    /// cell size derived from the requested deviation. For meshes under 50K
+    /// faces, applies QEM simplification to reduce flat regions while staying
+    /// within tolerance.
+    ///
+    /// Returns an empty mesh for infinite geometry (bare `Plane`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_deviation` is not positive and finite.
+    #[must_use]
+    pub fn mesh_to_tolerance(&self, max_deviation: f64) -> IndexedMesh {
+        assert!(
+            max_deviation > 0.0 && max_deviation.is_finite(),
+            "max_deviation must be positive and finite, got {max_deviation}"
+        );
+        let Some(bounds) = self.node.bounds() else {
+            return IndexedMesh::new();
+        };
+
+        let lip = self.node.lipschitz_factor();
+        let cell_size = max_deviation / lip;
+        let expanded = bounds.expanded(cell_size);
+        let (mesh, _stats) =
+            crate::adaptive_dc::mesh_field_adaptive_par(&self.node, &expanded, cell_size);
+
+        // Only simplify when the mesh is small enough that QEM is fast.
+        // Large meshes from fine tolerances are already well-resolved by DC.
+        if mesh.face_count() <= 50_000 {
+            crate::simplify::simplify_mesh_tolerance(&mesh, &self.node, max_deviation)
+        } else {
+            mesh
+        }
+    }
+
+    /// Simplify this solid's mesh to a target face count using QEM edge collapse.
+    ///
+    /// Produces a lower-resolution mesh while preserving manifold topology
+    /// and sharp features. The simplification uses Garland-Heckbert quadric
+    /// error metrics.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tolerance` is not positive and finite, or if `target_faces` is zero.
+    #[must_use]
+    pub fn mesh_simplified(&self, tolerance: f64, target_faces: usize) -> IndexedMesh {
+        let mesh = self.mesh_adaptive_par(tolerance);
+        crate::simplify::simplify_mesh(&mesh, target_faces)
+    }
+
     /// Evaluate the field at a point.
     ///
     /// Returns the signed distance (exact or approximate depending on the
@@ -2997,5 +3050,140 @@ mod tests {
             (s.evaluate(&p) - s2.evaluate(&p)).abs() < 1e-10,
             "clone should produce identical evaluations"
         );
+    }
+
+    // ── Session 23: Tolerance meshing + simplification + 3MF ─────────
+
+    #[test]
+    fn mesh_to_tolerance_within_deviation() {
+        let sphere = Solid::sphere(5.0);
+        let max_dev = 0.3;
+        let mesh = sphere.mesh_to_tolerance(max_dev);
+
+        assert!(!mesh.is_empty(), "mesh_to_tolerance should produce a mesh");
+
+        // All vertices should be within max_deviation of the true surface
+        for v in &mesh.vertices {
+            let field_val = sphere.evaluate(v).abs();
+            assert!(
+                field_val <= max_dev + 1e-10,
+                "Vertex {v:?} deviates {field_val:.6} from surface (max={max_dev})"
+            );
+        }
+    }
+
+    #[test]
+    fn mesh_to_tolerance_is_watertight() {
+        let sphere = Solid::sphere(5.0);
+        let mesh = sphere.mesh_to_tolerance(0.3);
+        assert_mesh_valid(&mesh, "mesh_to_tolerance");
+    }
+
+    #[test]
+    fn mesh_to_tolerance_preserves_volume() {
+        let sphere = Solid::sphere(5.0);
+        let mesh = sphere.mesh_to_tolerance(0.3);
+        let expected = 4.0 / 3.0 * std::f64::consts::PI * 125.0;
+        let actual = mesh.volume();
+        let error = (actual - expected).abs() / expected;
+        assert!(
+            error < 0.10,
+            "Volume error {:.1}% exceeds 10% (expected {expected:.1}, got {actual:.1})",
+            error * 100.0
+        );
+    }
+
+    #[test]
+    fn mesh_simplified_reduces_faces() {
+        let sphere = Solid::sphere(5.0);
+        let full = sphere.mesh_adaptive_par(0.5);
+        let target = full.face_count() / 2;
+        let simplified = sphere.mesh_simplified(0.5, target);
+
+        // Should be close to target
+        let lo = target * 8 / 10;
+        let hi = target * 12 / 10;
+        assert!(
+            simplified.face_count() >= lo && simplified.face_count() <= hi,
+            "Expected ~{target} faces (±20%), got {}",
+            simplified.face_count()
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn threemf_round_trip() {
+        let sphere = Solid::sphere(5.0);
+        let mesh = sphere.mesh_adaptive_par(0.5);
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("sphere.3mf");
+
+        mesh_io::save_3mf(&mesh, &path).expect("save 3mf");
+        let loaded = mesh_io::load_3mf(&path).expect("load 3mf");
+
+        assert_eq!(
+            loaded.vertex_count(),
+            mesh.vertex_count(),
+            "Vertex count mismatch after 3MF round-trip"
+        );
+        assert_eq!(
+            loaded.face_count(),
+            mesh.face_count(),
+            "Face count mismatch after 3MF round-trip"
+        );
+
+        // Volume should be very close (only f64→string→f64 precision loss)
+        let vol_error = (loaded.volume() - mesh.volume()).abs() / mesh.volume();
+        assert!(
+            vol_error < 0.001,
+            "Volume error {:.4}% after 3MF round-trip (expected < 0.1%)",
+            vol_error * 100.0
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark — run with --ignored in release mode"]
+    fn mesh_to_tolerance_perf_50mm_sphere() {
+        use std::time::Instant;
+
+        let sphere = Solid::sphere(25.0); // 50mm diameter
+        let tolerance = 0.1; // 0.1mm
+
+        // Warmup
+        drop(sphere.mesh_to_tolerance(1.0));
+
+        let start = Instant::now();
+        let mesh = sphere.mesh_to_tolerance(tolerance);
+        let elapsed = start.elapsed().as_secs_f64();
+
+        println!(
+            "50mm sphere at 0.1mm: {:.2}s, {} verts, {} faces",
+            elapsed,
+            mesh.vertex_count(),
+            mesh.face_count()
+        );
+        assert!(
+            elapsed < 5.0,
+            "Performance: 50mm sphere at 0.1mm tolerance took {elapsed:.2}s (limit: 5s)"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn threemf_round_trip_composed_shape() {
+        let body = Solid::cuboid(Vector3::new(3.0, 3.0, 3.0));
+        let hole = Solid::cylinder(1.0, 4.0);
+        let shape = body.subtract(hole);
+        let mesh = shape.mesh_adaptive_par(0.4);
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("composed.3mf");
+
+        mesh_io::save_3mf(&mesh, &path).expect("save 3mf");
+        let loaded = mesh_io::load_3mf(&path).expect("load 3mf");
+
+        assert_eq!(loaded.vertex_count(), mesh.vertex_count());
+        assert_eq!(loaded.face_count(), mesh.face_count());
     }
 }

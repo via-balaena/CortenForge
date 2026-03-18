@@ -37,6 +37,7 @@ mod gradient;
 mod interval;
 pub mod mechanism;
 mod mesher;
+mod simplify;
 mod solid;
 
 pub use mechanism::templates;

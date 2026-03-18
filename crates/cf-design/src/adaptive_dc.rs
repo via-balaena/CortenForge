@@ -642,16 +642,17 @@ pub fn mesh_field_adaptive_par(
         }
     }
 
-    // ── Phase 2: Face generation (sequential) ─────────────────────────
-    let (nx, ny, nz) = grid_extent_from_cache(&corner_cache);
-
-    // X-axis edges
-    for gz in 1..=nz {
-        for gy in 1..=ny {
-            for gx in 0..=nx {
-                if let Some(lo_inside) =
-                    edge_sign_change(&corner_cache, (gx, gy, gz), (gx + 1, gy, gz))
-                {
+    // ── Phase 2: Sparse face generation ──────────────────────────────
+    // Iterate over corner cache entries (sparse) instead of the full grid
+    // (dense). For each corner, check its 3 forward edges (+x, +y, +z).
+    // This is O(surface_corners) instead of O(grid_volume) — critical for
+    // fine resolutions where grid_volume >> surface_corners.
+    for (&(gx, gy, gz), &v0) in &corner_cache {
+        // X-edge: (gx,gy,gz) → (gx+1,gy,gz)
+        if gy >= 1 && gz >= 1 {
+            if let Some(&v1) = corner_cache.get(&(gx + 1, gy, gz)) {
+                if (v0 < 0.0) != (v1 < 0.0) {
+                    let lo_inside = v0 < 0.0;
                     let cells = [
                         (gx, gy, gz),
                         (gx, gy - 1, gz),
@@ -662,15 +663,12 @@ pub fn mesh_field_adaptive_par(
                 }
             }
         }
-    }
 
-    // Y-axis edges
-    for gz in 1..=nz {
-        for gy in 0..=ny {
-            for gx in 1..=nx {
-                if let Some(lo_inside) =
-                    edge_sign_change(&corner_cache, (gx, gy, gz), (gx, gy + 1, gz))
-                {
+        // Y-edge: (gx,gy,gz) → (gx,gy+1,gz)
+        if gx >= 1 && gz >= 1 {
+            if let Some(&v1) = corner_cache.get(&(gx, gy + 1, gz)) {
+                if (v0 < 0.0) != (v1 < 0.0) {
+                    let lo_inside = v0 < 0.0;
                     let cells = [
                         (gx, gy, gz - 1),
                         (gx - 1, gy, gz - 1),
@@ -681,15 +679,12 @@ pub fn mesh_field_adaptive_par(
                 }
             }
         }
-    }
 
-    // Z-axis edges
-    for gz in 0..=nz {
-        for gy in 1..=ny {
-            for gx in 1..=nx {
-                if let Some(lo_inside) =
-                    edge_sign_change(&corner_cache, (gx, gy, gz), (gx, gy, gz + 1))
-                {
+        // Z-edge: (gx,gy,gz) → (gx,gy,gz+1)
+        if gx >= 1 && gy >= 1 {
+            if let Some(&v1) = corner_cache.get(&(gx, gy, gz + 1)) {
+                if (v0 < 0.0) != (v1 < 0.0) {
+                    let lo_inside = v0 < 0.0;
                     let cells = [
                         (gx, gy, gz),
                         (gx - 1, gy, gz),
@@ -855,19 +850,6 @@ fn build_octree_par(
 
         surface_cells
     }
-}
-
-/// Grid extent from corner cache (for parallel version).
-fn grid_extent_from_cache(cache: &HashMap<(usize, usize, usize), f64>) -> (usize, usize, usize) {
-    let mut nx = 0_usize;
-    let mut ny = 0_usize;
-    let mut nz = 0_usize;
-    for &(gx, gy, gz) in cache.keys() {
-        nx = nx.max(gx);
-        ny = ny.max(gy);
-        nz = nz.max(gz);
-    }
-    (nx, ny, nz)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
