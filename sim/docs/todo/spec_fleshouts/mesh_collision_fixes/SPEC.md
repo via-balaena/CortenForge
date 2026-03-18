@@ -166,7 +166,7 @@ Diagnostic test upgraded to assertion tests:
 | 1 | Profile + fix DT-179: identify AABB bloat, pre-compute `model.geom_aabb` | This spec | ✅ Mesh collision step1 within 1.5× of primitives; `MESH_DEFAULT_EXTENT` deleted |
 | 2 | Diagnose DT-180: compare mesh vs primitive mass/inertia, identify root cause | This spec (independent of Session 1) | ✅ Root cause: inverted contact normal in `collide_mesh_plane`; `model.body_mass` comparison documented |
 | 3 | Fix DT-180: flip `collide_mesh_plane` normal, upgrade diagnostic to assertion test | Session 2 | ✅ Mesh force/weight = 1.0000 for both (Plane,Mesh) and (Mesh,Plane); 2,221 tests pass |
-| 4 | cf-design integration + spec completion | Sessions 1+3 | Phase 5 test upgraded to contact-force objective; `cargo test -p cf-design` passes; `CF_DESIGN_SPEC.md` Session 26 updated (blocked status removed, full exit criteria met) |
+| 4 | cf-design integration + spec completion | Sessions 1+3 | ✅ Phase 5 test upgraded to contact-force objective; `cargo test -p cf-design` passes; `CF_DESIGN_SPEC.md` Session 26 updated (blocked status removed, full exit criteria met) |
 
 ---
 
