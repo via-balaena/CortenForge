@@ -13,19 +13,19 @@ gate 79/79. This document tracks post-v1.0 work only.
 
 | Metric | Count |
 |--------|------:|
-| Total DT items (DT-1 through DT-178) | 176 |
+| Total DT items (DT-1 through DT-180) | 178 |
 | Completed | 56 |
 | Retired | 1 |
-| Remaining (open) | 119 |
+| Remaining (open) | 121 |
 
-Numbers DT-145 and DT-149 were never assigned.
+Numbers DT-145 and DT-149 were never assigned. DT-179/180 added by cf-design Phase 5.
 
 ### Open items by tier
 
 | Tier | Count | Description |
 |------|------:|-------------|
 | T1 | 60 | Plan + implement (mechanical, parent spec defines the "what") |
-| T2 | 43 | Grouped spec (related items share one spec) |
+| T2 | 45 | Grouped spec (related items share one spec) |
 | T3 | 16 | Individual spec (algorithmic complexity, dedicated design needed) |
 
 ---
@@ -55,6 +55,7 @@ Numbers DT-145 and DT-149 were never assigned.
 | DT-105 | T3 | Sparse `actuator_moment` compression (CSR) -- numerically equivalent to current dense storage | 10g |
 | DT-130 | T3 | Dense AR matrix optimization -- PGS currently computes full nefc x nefc `efc_AR`; MuJoCo uses sparse row-level `ARblock` | 10e |
 | DT-134 | T2 | Mesh-primitive dispatch to GJK/EPA on convex hulls -- mesh-sphere, mesh-capsule, mesh-box pairs currently use per-triangle BVH | 10j |
+| DT-179 | T2 | Mesh-plane collision per-step cost ~120ms vs ~3µs without -- adding a ground plane to a mesh-body scene makes `step()` ~40,000× slower. Blocks cf-design contact-force optimization loop. Profile broadphase rejection, narrowphase vertex iteration, and constraint assembly for mesh-plane pairs. | cf-design Phase 5 |
 | DT-140 | T2 | Prism BVH acceleration for heightfield collision -- `collide_hfield_multi` iterates sub-grid cells linearly | 10i |
 | DT-141 | T2 | GJK/EPA cross-frame simplex warm-starting -- cache previous frame's GJK simplex per geom pair | 10j |
 | DT-146 | T2 | Sparse constraint assembly -- scatter `flexedge_J` into sparse `efc_J` instead of dense DMatrix | 10i |
@@ -109,6 +110,7 @@ Numbers DT-145 and DT-149 were never assigned.
 | DT-131 | T1 | Flex condim=6 silently downgrades to condim=3 -- `make_contact_flex_rigid()` maps `_ => 3`. Conformant with MuJoCo C but should emit warning. | 10c |
 | DT-132 | T2 | Bodyweight diagApprox double-counts rigid body for flex contacts -- `make_contact_flex_rigid()` sets both geoms to rigid, ignoring flex vertex mass | 10c |
 | DT-133 | T2 | Bodyweight diagApprox uses rotational weight for flex friction rows -- should use translational component | 10c |
+| DT-180 | T2 | Mesh-plane contact forces ~10^16× too large vs primitive-plane -- sphere(0.05) mesh geom on plane produces 2.5e17 N (expected ~6 N from weight). Primitive sphere of same size produces correct ~5100 N. `collide_mesh_plane` vertex projection + `make_contact_from_geoms` uses same path as primitive; likely mass/inertia computation from mesh or constraint impedance scaling issue. | cf-design Phase 5 |
 | DT-161 | T1 | Pyramidal `efc_diagApprox` bodyweight factor-of-2 -- CF stores `(1+mu^2)*w_tran`, MuJoCo stores `2*(1+mu^2)*w_tran` for pyramidal facet rows. No downstream effect (R_py post-processing overwrites). | ROADMAP_V1 |
 | DT-162 | T1 | PGS `solver_stat` `nactive`/`nchange` per-iteration counting -- MuJoCo calls `dualState()` per sweep; CF uses placeholder 0. Diagnostic only. | Phase 13 |
 | DT-163 | T1 | PGS warmstart primal cost gate -- CF uses dual cost (`< 0`), MuJoCo uses primal cost (`> 0`). Equivalent at optimum; no measurable divergence. | Phase 13 |

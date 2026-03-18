@@ -209,7 +209,27 @@ fn write_body(
 ) {
     let pad = " ".repeat(indent);
 
-    let _ = writeln!(xml, "{pad}<body name=\"{}\">", esc(part.name()));
+    // Child bodies get their position from the first joint's anchor.
+    // In MuJoCo, <body pos="x y z"> sets the body's position relative
+    // to its parent when qpos=0. The joint anchor IS this position.
+    if let Some(jlist) = joints_on.get(part.name()) {
+        if let Some(first_joint) = jlist.first() {
+            let a = first_joint.anchor();
+            let _ = writeln!(
+                xml,
+                "{pad}<body name=\"{}\" pos=\"{} {} {}\">",
+                esc(part.name()),
+                a.x,
+                a.y,
+                a.z,
+            );
+        } else {
+            let _ = writeln!(xml, "{pad}<body name=\"{}\">", esc(part.name()));
+        }
+    } else {
+        // Root body: no joint, positioned at parent origin.
+        let _ = writeln!(xml, "{pad}<body name=\"{}\">", esc(part.name()));
+    }
 
     // Joints (present only when this part is a child body).
     if let Some(jlist) = joints_on.get(part.name()) {
@@ -443,13 +463,13 @@ mod tests {
         // Palm is root (never a child).
         assert!(xml.contains("<body name=\"palm\">"));
         // Finger is nested inside palm.
-        assert!(xml.contains("<body name=\"finger\">"));
+        assert!(xml.contains("<body name=\"finger\""));
         // Joint is on the child body (finger), not on palm.
         assert!(xml.contains("<joint name=\"knuckle\" type=\"hinge\""));
 
         // Verify nesting: palm opens before finger, finger closes before palm.
         let palm_open = xml.find("<body name=\"palm\">").unwrap();
-        let finger_open = xml.find("<body name=\"finger\">").unwrap();
+        let finger_open = xml.find("<body name=\"finger\"").unwrap();
         let finger_close = xml[finger_open..].find("</body>").unwrap() + finger_open;
         let palm_close = xml[finger_close + 1..].find("</body>").unwrap() + finger_close + 1;
         assert!(palm_open < finger_open);
@@ -581,7 +601,7 @@ mod tests {
 
         // Palm sites should appear inside the palm body (before finger body opens).
         let palm_open = xml.find("<body name=\"palm\">").unwrap();
-        let finger_open = xml.find("<body name=\"finger\">").unwrap();
+        let finger_open = xml.find("<body name=\"finger\"").unwrap();
         let s0_pos = xml.find("flex_s0").unwrap();
         let s2_pos = xml.find("flex_s2").unwrap();
         assert!(
@@ -765,8 +785,8 @@ mod tests {
         // ── Structural checks ───────────────────────────────────────
         // 3 bodies.
         assert!(xml.contains("<body name=\"palm\">"));
-        assert!(xml.contains("<body name=\"finger_1\">"));
-        assert!(xml.contains("<body name=\"finger_2\">"));
+        assert!(xml.contains("<body name=\"finger_1\""));
+        assert!(xml.contains("<body name=\"finger_2\""));
 
         // 3 mesh assets.
         assert!(xml.contains("<mesh name=\"palm_mesh\""));
@@ -793,8 +813,8 @@ mod tests {
 
         // Palm is root → finger bodies nested inside.
         let palm_pos = xml.find("<body name=\"palm\">").unwrap();
-        let f1_pos = xml.find("<body name=\"finger_1\">").unwrap();
-        let f2_pos = xml.find("<body name=\"finger_2\">").unwrap();
+        let f1_pos = xml.find("<body name=\"finger_1\"").unwrap();
+        let f2_pos = xml.find("<body name=\"finger_2\"").unwrap();
         assert!(palm_pos < f1_pos);
         assert!(palm_pos < f2_pos);
     }
