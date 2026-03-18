@@ -105,61 +105,57 @@ primitive-plane contacts of equivalent geometry.
 ```
 
 Both paths use the same `make_contact_from_geoms` → `Contact` struct →
-constraint solver pipeline. The `collide_mesh_plane` function computes
-penetration depth correctly (vertex projection onto plane). The divergence
-must be in how the solver uses mesh-derived properties.
+constraint solver pipeline. The constraint assembly is completely uniform —
+no mesh-specific logic in Jacobian computation, diagApprox, or impedance.
 
-Note: `solref`/`solimp` are applied identically for mesh and primitive
-contacts (confirmed in `contact_assembly.rs`), so solver impedance parameters
-are not the differentiator. The root cause is almost certainly in **mesh
-mass/inertia computation**.
+### Root cause (Session 2 finding)
 
-### Primary suspect: mesh inertia computation
+**Inverted contact normal in the mesh-plane collision path.** Not mass/inertia.
 
-Body mass and inertia are computed during model building in
-`sim/L0/mjcf/src/builder/mass.rs` (`compute_inertia_from_geoms()`), NOT at
-runtime. Mesh inertia has **4 computation modes** dispatched by
-`compute_mesh_inertia_by_mode()`:
+Mesh mass is 87.3% of analytic sphere mass (expected icosphere approximation
+error for 42 vertices). The original hypothesis (mesh inertia computation) was
+ruled out — `body_mass` and `body_inertia` are correct to within geometric
+approximation tolerance.
 
-- **Exact** — signed tetrahedron decomposition (Mirtich 1996)
-- **Legacy** — absolute volume computation
-- **Shell** — surface-area-weighted
-- **ConvexHull** — inertia of convex hull
+The bug is in `sim/L0/core/src/collision/mesh_collide.rs`, function
+`collide_with_mesh()`. The `(prim_type, GeomType::Mesh)` branch (lines
+189-229) negates the `MeshContact.normal` returned by all mesh collision
+functions, assuming the convention "normal points FROM the mesh surface
+outward." This is correct for `mesh_sphere_contact`, `mesh_capsule_contact`,
+`mesh_box_contact`, and `mesh_mesh_deepest_contact`. But `collide_mesh_plane()`
+returns `normal = plane_normal` (+Z for a Z=0 plane), which points AWAY FROM
+THE PLANE, not from the mesh. The negation flips it to -Z, causing the
+constraint force to push the ball downward into the plane instead of
+supporting it.
 
-If the wrong mode is selected, or if mesh vertex scaling is not correctly
-propagated to volume integrals (mass ∝ scale³, not scale), the computed mass
-could be wildly wrong. Since the constraint solver uses the effective mass at
-the contact point (via `diagApprox = J · M⁻¹ · Jᵀ`), wrong mass → wrong
-diagApprox → forces blow up proportionally.
+**Effect (observed in diagnostic test):**
+1. Contact normal = -Z → solver can't produce upward force (unilateral)
+2. Ball free-falls through the plane (efc_force = 0 for first ~40 steps)
+3. Increasing penetration depth eventually triggers non-zero force in -Z
+4. Force in wrong direction accelerates the fall → exponential divergence
+5. Step 100: 7.6e4 N → step 200: 5.4e6 N → step 400: 2.4e10 N
 
-### Investigation plan
+### Fix plan
 
-1. **Compare mass/inertia** — print `model.body_mass[i]` and
-   `model.body_inertia[i]` for a mesh sphere vs a primitive sphere of
-   equivalent size and density. If mass is wrong, this is the root cause.
-2. **Trace mesh inertia computation** — follow the path from
-   `compute_mesh_inertia_by_mode()` through the selected mode (Exact/Legacy/
-   Shell/ConvexHull). Check:
-   - Is mesh scale applied as scale³ for volume/mass (not linear)?
-   - Is the volume integral correct for the mesh topology?
-   - Does the selected mode match expectations for the mesh type?
-3. **Compare Contact structs** (secondary) — dump `Contact` produced by
-   primitive-plane vs mesh-plane. Check `depth`, `dim`, `mu`,
-   `includemargin`. Useful for ruling out contact-generation bugs, but likely
-   not the root cause given identical `solref`/`solimp` handling.
-4. **Fix** the root cause. If mass is wrong, fix the inertia computation.
-   `diagApprox` and forces will correct automatically.
-5. **Validate**: mesh sphere on plane produces contact force ≈ weight
-   (within 5% at steady state, averaged over last 100 of 500 steps).
+Change `collide_mesh_plane()` to return `normal = -plane_normal` ("from mesh
+outward," consistent with all other mesh collision functions). This is a
+one-line change.
+
+- `(Plane, Mesh)` branch: negation of `-plane_normal` → `+plane_normal` ✓
+- `(Mesh, Plane)` branch: no negation → `-plane_normal` ✓
+
+Both match the `Contact.normal` convention: "from geom1 toward geom2."
+
+Then upgrade the diagnostic test to assert:
+- Mesh contact force within 5% of weight at steady state
+- Contact normal matches primitive normal direction
+- Both geom orderings (Mesh,Plane) and (Plane,Mesh) produce correct normals
 
 ### Key files
 
-- `sim/L0/mjcf/src/builder/mass.rs` — `compute_inertia_from_geoms()`, mesh inertia modes
-- `sim/L0/mjcf/src/builder/mesh.rs` — mesh loading, vertex scale application, `compute_mesh_inertia_by_mode()`
-- `sim/L0/core/src/collision/mesh_collide.rs:258-296` — `collide_mesh_plane`
+- `sim/L0/core/src/collision/mesh_collide.rs:258-296` — `collide_mesh_plane` (the fix)
+- `sim/L0/core/src/collision/mesh_collide.rs:189-229` — `(prim_type, Mesh)` branch (normal negation)
 - `sim/L0/core/src/collision/narrow.rs:445-487` — `make_contact_from_geoms`
-- `sim/L0/core/src/constraint/impedance.rs` — `compute_diag_approx_exact` (downstream of mass)
-- `sim/L0/core/src/constraint/contact_assembly.rs` — contact constraint row assembly
 
 ---
 
@@ -168,8 +164,8 @@ diagApprox → forces blow up proportionally.
 | Session | Scope | Entry | Exit |
 |---------|-------|-------|------|
 | 1 | Profile + fix DT-179: identify AABB bloat, pre-compute `model.geom_aabb` | This spec | ✅ Mesh collision step1 within 1.5× of primitives; `MESH_DEFAULT_EXTENT` deleted |
-| 2 | Diagnose DT-180: compare mesh vs primitive mass/inertia, trace inertia computation | This spec (independent of Session 1) | Root cause identified; `model.body_mass` comparison for mesh vs primitive sphere documented |
-| 3 | Fix DT-180 | Session 2 | Mesh contact force within 5% of weight at steady state |
+| 2 | Diagnose DT-180: compare mesh vs primitive mass/inertia, identify root cause | This spec (independent of Session 1) | ✅ Root cause: inverted contact normal in `collide_mesh_plane`; `model.body_mass` comparison documented |
+| 3 | Fix DT-180: flip `collide_mesh_plane` normal, upgrade diagnostic to assertion test | Session 2 | Mesh contact force within 5% of weight at steady state; both geom orderings tested |
 | 4 | cf-design integration + spec completion | Sessions 1+3 | Phase 5 test upgraded to contact-force objective; `cargo test -p cf-design` passes; `CF_DESIGN_SPEC.md` Session 26 updated (blocked status removed, full exit criteria met) |
 
 ---

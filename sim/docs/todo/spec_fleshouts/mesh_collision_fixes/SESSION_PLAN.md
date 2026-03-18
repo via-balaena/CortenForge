@@ -88,9 +88,33 @@ and the `(Mesh, Plane)` path (no negation) gets `-plane_normal` ✓.
 
 ---
 
-## Session 3: Fix DT-180
+## Session 3: Fix DT-180 — Flip `collide_mesh_plane` Normal
 
 **Status:** Not started
+
+### Scope
+
+1. **Fix:** Change `collide_mesh_plane()` in `mesh_collide.rs:258-296` to
+   return `normal = -plane_normal` (from mesh outward). One-line change.
+
+2. **Upgrade diagnostic test** (`mesh_contact_force_diagnostic.rs`):
+   - Convert `dt180_mesh_vs_primitive_contact_force` from diagnostic (eprintln)
+     to assertion test: mesh contact force within 5% of weight at steady state
+   - Assert contact normal direction matches primitive (+Z for Z=0 plane)
+   - Test both geom orderings: (Plane, Mesh) and (Mesh, Plane) — the negation
+     logic differs between branches, both must produce correct normals
+   - Can remove or reduce the verbose eprintln diagnostics
+
+3. **Verify no regression** on existing mesh collision tests:
+   - `mesh_collision_profile.rs` (DT-179)
+   - `collision_primitives.rs`, `collision_plane.rs`
+   - `mesh_inertia_modes.rs`, `exactmeshinertia.rs`
+
+### Exit criteria
+
+- `dt180_mesh_vs_primitive_contact_force` asserts force/weight within 5%
+- Both geom orderings produce correct contact normals
+- `cargo test -p sim-conformance-tests` passes (no regression)
 
 ---
 
