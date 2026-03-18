@@ -330,6 +330,126 @@ fn dt179_mesh_aabb_scaling() {
 }
 
 // ============================================================================
+// Broadphase pair count verification
+// ============================================================================
+
+/// DT-179 exit criterion: broadphase pair count matches primitives.
+///
+/// Computes world-space AABBs from `model.geom_aabb` and counts overlapping
+/// pairs with a brute-force O(n²) check. Asserts mesh and primitive scenes
+/// produce identical broadphase pair counts for equivalent geometry.
+#[test]
+fn dt179_broadphase_pair_count_matches_primitives() {
+    let (verts, faces) = icosphere_mjcf_strings(0.5, 1);
+
+    // 5 geoms spaced 5m apart + plane — no mesh-mesh overlap with tight AABBs
+    let n = 5;
+    let spacing = 5.0;
+
+    let mut mesh_bodies = String::new();
+    let mut prim_bodies = String::new();
+    for i in 0..n {
+        #[allow(clippy::cast_precision_loss)]
+        let x = i as f64 * spacing;
+        mesh_bodies.push_str(&format!(
+            r#"    <body name="b{i}" pos="{x} 0 0.5">
+      <joint type="free"/>
+      <geom type="mesh" mesh="s" density="1000"/>
+    </body>
+"#
+        ));
+        prim_bodies.push_str(&format!(
+            r#"    <body name="b{i}" pos="{x} 0 0.5">
+      <joint type="free"/>
+      <geom type="sphere" size="0.5" density="1000"/>
+    </body>
+"#
+        ));
+    }
+
+    let m_mesh = load_model(&format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <asset><mesh name="s" vertex="{verts}" face="{faces}"/></asset>
+  <worldbody>
+    <geom name="floor" type="plane" size="50 50 0.1"/>
+{mesh_bodies}  </worldbody>
+</mujoco>"#
+    ))
+    .unwrap();
+
+    let m_prim = load_model(&format!(
+        r#"<mujoco>
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="50 50 0.1"/>
+{prim_bodies}  </worldbody>
+</mujoco>"#
+    ))
+    .unwrap();
+
+    let d_mesh = m_mesh.make_data();
+    let d_prim = m_prim.make_data();
+
+    let pairs_mesh = count_broadphase_pairs(&m_mesh, &d_mesh);
+    let pairs_prim = count_broadphase_pairs(&m_prim, &d_prim);
+
+    eprintln!("\n=== DT-179: Broadphase Pair Count ===");
+    eprintln!("  mesh scene: {pairs_mesh} pairs ({} geoms)", m_mesh.ngeom);
+    eprintln!("  prim scene: {pairs_prim} pairs ({} geoms)", m_prim.ngeom);
+
+    assert_eq!(
+        pairs_mesh, pairs_prim,
+        "mesh broadphase pairs ({pairs_mesh}) should match primitive ({pairs_prim})"
+    );
+}
+
+/// Count broadphase AABB-overlapping pairs using model.geom_aabb.
+fn count_broadphase_pairs(model: &sim_core::Model, data: &sim_core::Data) -> usize {
+    // Compute world-space AABBs from pre-computed local bounds
+    let world_aabbs: Vec<([f64; 3], [f64; 3])> = (0..model.ngeom)
+        .map(|g| {
+            let la = model.geom_aabb[g];
+            let pos = data.geom_xpos[g];
+            let mat = data.geom_xmat[g];
+
+            // world_center = pos + mat * local_center
+            let lc = nalgebra::Vector3::new(la[0], la[1], la[2]);
+            let lh = nalgebra::Vector3::new(la[3], la[4], la[5]);
+            let wc = pos + mat * lc;
+
+            // world_half = abs(mat) * local_half
+            let abs_mat = mat.abs();
+            let wh = abs_mat * lh;
+
+            (
+                [wc.x - wh.x, wc.y - wh.y, wc.z - wh.z],
+                [wc.x + wh.x, wc.y + wh.y, wc.z + wh.z],
+            )
+        })
+        .collect();
+
+    // Brute-force overlap count
+    let mut pairs = 0;
+    for i in 0..model.ngeom {
+        for j in (i + 1)..model.ngeom {
+            let (min_i, max_i) = &world_aabbs[i];
+            let (min_j, max_j) = &world_aabbs[j];
+            let overlaps = max_i[0] >= min_j[0]
+                && max_j[0] >= min_i[0]
+                && max_i[1] >= min_j[1]
+                && max_j[1] >= min_i[1]
+                && max_i[2] >= min_j[2]
+                && max_j[2] >= min_i[2];
+            if overlaps {
+                pairs += 1;
+            }
+        }
+    }
+    pairs
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 

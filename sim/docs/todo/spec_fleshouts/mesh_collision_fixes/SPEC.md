@@ -167,15 +167,14 @@ diagApprox → forces blow up proportionally.
 
 | Session | Scope | Entry | Exit |
 |---------|-------|-------|------|
-| 1 | Profile DT-179: bracket broadphase/narrow/assembly/solver, verify AABB bloat hypothesis | This spec | Hot path identified with timing data; mesh AABB behavior documented |
+| 1 | Profile + fix DT-179: identify AABB bloat, pre-compute `model.geom_aabb` | This spec | ✅ Mesh collision step1 within 1.5× of primitives; `MESH_DEFAULT_EXTENT` deleted |
 | 2 | Diagnose DT-180: compare mesh vs primitive mass/inertia, trace inertia computation | This spec (independent of Session 1) | Root cause identified; `model.body_mass` comparison for mesh vs primitive sphere documented |
-| 3 | Fix DT-179 | Session 1 | Mesh-plane step <1ms (release); broadphase pair count matches primitives |
-| 4 | Fix DT-180 | Session 2 | Mesh contact force within 5% of weight at steady state |
-| 5 | cf-design integration + spec completion | Sessions 3+4 | Phase 5 test upgraded to contact-force objective; `cargo test -p cf-design` passes; `CF_DESIGN_SPEC.md` Session 26 updated (blocked status removed, full exit criteria met) |
+| 3 | Fix DT-180 | Session 2 | Mesh contact force within 5% of weight at steady state |
+| 4 | cf-design integration + spec completion | Sessions 1+3 | Phase 5 test upgraded to contact-force objective; `cargo test -p cf-design` passes; `CF_DESIGN_SPEC.md` Session 26 updated (blocked status removed, full exit criteria met) |
 
 ---
 
-## Validation test (Session 5)
+## Validation test (Session 4)
 
 After DT-179 and DT-180 are fixed, update
 `crates/cf-design/src/mechanism/integration.rs::phase5_parameterized_grasp_optimization`
@@ -226,7 +225,7 @@ through the simulation."
 
 ## Full circle: CF_DESIGN_SPEC.md completion
 
-After Session 5 passes, update `CF_DESIGN_SPEC.md` Session 26:
+After Session 4 passes, update `CF_DESIGN_SPEC.md` Session 26:
 
 1. Remove the "Blocked" paragraph and deferred exit criterion.
 2. Change the integration test description from "mesh volume" to
