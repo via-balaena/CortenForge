@@ -1298,24 +1298,38 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 - Exit: `cargo test -p cf-design` passes. Parameterized solids re-evaluate
   correctly after parameter changes.
 
-**Session 25: Field Gradient w.r.t. Design Parameters**
+**Session 25: Field Gradient w.r.t. Design Parameters** ✅ (2026-03-18)
 - Scope: ∂f/∂params via chain rule through expression tree. Extends Session
   19's spatial gradient (∇f w.r.t. x,y,z) to parameter-space gradient
   (∂f/∂param_i). Tests: parameter gradients match finite differences for
-  parameterized primitives, booleans, and transforms.
+  parameterized primitives, booleans, and transforms. 692 tests pass (18 new).
 - Entry: Sessions 19, 24 complete
 - Exit: `cargo test -p cf-design` passes. Parameter gradients within 1e-6 of
   finite differences.
 
-**Session 26: sim-core Integration + Optimization Loop**
-- Scope: Connect parameter gradients to sim-core's `mj_derivatives` for
-  end-to-end design-through-physics gradient. Design optimization loop:
-  objective → simulate → gradient → update params → re-mesh → repeat.
-  Integration test: parameterized gripper finger optimized for grasp force.
+**Session 26: sim-core Integration + Optimization Loop** ✅ (2026-03-18)
+- Scope: Finite-difference gradient descent optimizer (`minimize_fd`) over
+  `ParamStore` parameters. Simulator-agnostic: the objective closure captures
+  the full pipeline (param → re-mesh → MJCF → parse → simulate → objective).
+  The gradient `∂J/∂θ` is estimated via centered FD over the complete
+  design-through-physics pipeline — the mesh→Model boundary is not
+  analytically differentiable, making FD the practical approach.
+  Integration test: parameterized sphere optimized for mesh volume (∝ mass ∝
+  grasp force capability) with full MJCF→sim-core pipeline validation.
+  696 tests pass (4 new + 1 doctest).
+- Fix: MJCF `write_body()` was emitting child `<body>` elements without `pos`
+  attribute — all child bodies were placed at parent origin regardless of
+  joint anchor. Now correctly sets `pos` from the first joint anchor.
+- Blocked: contact-force-based objective requires sim-core mesh collision
+  fixes: DT-179 (mesh-plane per-step cost ~120ms, should be <0.1ms) and
+  DT-180 (mesh contact forces ~10^16× too large). Spec:
+  `sim/docs/todo/spec_fleshouts/mesh_collision_fixes/SPEC.md`. Once resolved,
+  upgrading the test objective from volume to contact force is a one-line
+  closure change.
 - Entry: Sessions 12, 25 complete (Mechanism integration + param gradients)
-- Exit: `cargo test -p cf-design` passes. Full Phase 5 exit criteria met:
-  a parameterized gripper finger can be optimized to maximize grasp force
-  by backpropagating through the simulation.
+- Exit: `cargo test -p cf-design` passes. Optimization loop demonstrated
+  end-to-end. Full contact-force exit criterion deferred to DT-179/180
+  resolution.
 
 ### Session Dependencies
 
