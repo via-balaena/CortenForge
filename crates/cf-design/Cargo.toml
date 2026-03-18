@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 cf-geometry = { workspace = true }
 nalgebra = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }

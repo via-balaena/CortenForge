@@ -31,6 +31,7 @@ mod adaptive_dc;
 mod bounds;
 mod dual_contouring;
 mod evaluate;
+mod evaluate_batch;
 pub(crate) mod field_node;
 mod gradient;
 mod interval;

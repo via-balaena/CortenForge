@@ -476,6 +476,400 @@ const EDGE_CORNERS: [(usize, usize); 12] = [
     (3, 7),
 ];
 
+// ── Parallel adaptive DC ──────────────────────────────────────────────────
+
+/// Depth threshold below which octree construction spawns rayon tasks.
+/// Above this depth, falls back to sequential to avoid task overhead.
+const PAR_DEPTH_THRESHOLD: u32 = 3;
+
+/// Parallel version of [`mesh_field_adaptive`].
+///
+/// Uses rayon for:
+/// 1. Octree construction (parallel at top levels)
+/// 2. Phase 1 cell processing (parallel corner eval + gradient)
+///
+/// Phase 2 (face generation) remains sequential (pure bookkeeping).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::too_many_lines
+)]
+pub fn mesh_field_adaptive_par(
+    node: &FieldNode,
+    bounds: &Aabb,
+    cell_size: f64,
+) -> (IndexedMesh, AdaptiveStats) {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // ── Align the root AABB to a power-of-2 grid ─────────────────────
+    let size = bounds.size();
+    let max_extent = size.x.max(size.y).max(size.z);
+    let depth_needed = (max_extent / cell_size).log2().ceil() as u32;
+    let target_depth = depth_needed.min(MAX_DEPTH);
+    let root_size = cell_size * f64::from(1_u32 << target_depth);
+
+    let center = bounds.center();
+    let half = root_size * 0.5;
+    let root_aabb = Aabb::new(
+        Point3::new(center.x - half, center.y - half, center.z - half),
+        Point3::new(center.x + half, center.y + half, center.z + half),
+    );
+    let origin = root_aabb.min;
+
+    // ── Build octree in parallel and collect surface-crossing leaves ──
+    let total_leaves = AtomicUsize::new(0);
+    let pruned_leaves = AtomicUsize::new(0);
+    let interval_evals = AtomicUsize::new(0);
+
+    let surface_cells = build_octree_par(
+        node,
+        &root_aabb,
+        0,
+        target_depth,
+        cell_size,
+        origin,
+        &total_leaves,
+        &pruned_leaves,
+        &interval_evals,
+    );
+
+    let total_leaves = total_leaves.load(Ordering::Relaxed);
+    let pruned_leaves = pruned_leaves.load(Ordering::Relaxed);
+    let interval_evals = interval_evals.load(Ordering::Relaxed);
+    let surface_count = surface_cells.len();
+
+    // ── Phase 1: Parallel cell processing ─────────────────────────────
+    // Each cell independently evaluates its 8 corners + gradients.
+    // No shared corner cache — accepts ~2x redundant evals for full parallelism.
+    let cell_list: Vec<(usize, usize, usize)> = surface_cells.into_iter().collect();
+
+    // Process cells in parallel, collecting (cell_coord, vertex, corner_values)
+    let cell_results: Vec<_> = cell_list
+        .par_iter()
+        .filter_map(|&(cx, cy, cz)| {
+            let cell_min = Point3::new(
+                (cx as f64).mul_add(cell_size, origin.x),
+                (cy as f64).mul_add(cell_size, origin.y),
+                (cz as f64).mul_add(cell_size, origin.z),
+            );
+            let cell_max = Point3::new(
+                ((cx + 1) as f64).mul_add(cell_size, origin.x),
+                ((cy + 1) as f64).mul_add(cell_size, origin.y),
+                ((cz + 1) as f64).mul_add(cell_size, origin.z),
+            );
+            let cell_aabb = Aabb::new(cell_min, cell_max);
+
+            // Evaluate 8 corners (in batches of 4 using batch evaluator)
+            let mut corners = [Point3::origin(); 8];
+            for (i, &(dx, dy, dz)) in CORNER_OFFSETS.iter().enumerate() {
+                let gx = cx + dx;
+                let gy = cy + dy;
+                let gz = cz + dz;
+                corners[i] = Point3::new(
+                    (gx as f64).mul_add(cell_size, origin.x),
+                    (gy as f64).mul_add(cell_size, origin.y),
+                    (gz as f64).mul_add(cell_size, origin.z),
+                );
+            }
+
+            let batch0 = [corners[0], corners[1], corners[2], corners[3]];
+            let batch1 = [corners[4], corners[5], corners[6], corners[7]];
+            let vals0 = node.evaluate_batch(&batch0);
+            let vals1 = node.evaluate_batch(&batch1);
+            let values = [
+                vals0[0], vals0[1], vals0[2], vals0[3], vals1[0], vals1[1], vals1[2], vals1[3],
+            ];
+
+            let has_inside = values.iter().any(|&v| v < 0.0);
+            let has_outside = values.iter().any(|&v| v >= 0.0);
+            if !has_inside || !has_outside {
+                // Still need corner values for face generation, store them
+                let corner_vals: Vec<((usize, usize, usize), f64)> = CORNER_OFFSETS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(dx, dy, dz))| ((cx + dx, cy + dy, cz + dz), values[i]))
+                    .collect();
+                return Some(((cx, cy, cz), None, corner_vals));
+            }
+
+            let mut hermite_points = Vec::new();
+            let mut hermite_normals = Vec::new();
+
+            for &(c0, c1) in &EDGE_CORNERS {
+                if (values[c0] < 0.0) != (values[c1] < 0.0) {
+                    let crossing =
+                        interpolate_edge(corners[c0], corners[c1], values[c0], values[c1]);
+                    let normal = node.gradient(&crossing);
+                    hermite_points.push(crossing);
+                    hermite_normals.push(normal);
+                }
+            }
+
+            if hermite_points.is_empty() {
+                let corner_vals: Vec<((usize, usize, usize), f64)> = CORNER_OFFSETS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(dx, dy, dz))| ((cx + dx, cy + dy, cz + dz), values[i]))
+                    .collect();
+                return Some(((cx, cy, cz), None, corner_vals));
+            }
+
+            let vertex = solve_qef(&hermite_points, &hermite_normals, &cell_aabb);
+            let corner_vals: Vec<((usize, usize, usize), f64)> = CORNER_OFFSETS
+                .iter()
+                .enumerate()
+                .map(|(i, &(dx, dy, dz))| ((cx + dx, cy + dy, cz + dz), values[i]))
+                .collect();
+            Some(((cx, cy, cz), Some(vertex), corner_vals))
+        })
+        .collect();
+
+    // ── Merge results sequentially ────────────────────────────────────
+    let mut mesh = IndexedMesh::new();
+    let mut corner_cache: HashMap<(usize, usize, usize), f64> = HashMap::new();
+    let mut cell_vertices: HashMap<(usize, usize, usize), u32> = HashMap::new();
+
+    for (cell_coord, vertex_opt, corner_vals) in &cell_results {
+        for &(key, val) in corner_vals {
+            corner_cache.entry(key).or_insert(val);
+        }
+        if let Some(vertex) = vertex_opt {
+            let idx = mesh.vertices.len() as u32;
+            mesh.vertices.push(*vertex);
+            cell_vertices.insert(*cell_coord, idx);
+        }
+    }
+
+    // ── Phase 2: Face generation (sequential) ─────────────────────────
+    let (nx, ny, nz) = grid_extent_from_cache(&corner_cache);
+
+    // X-axis edges
+    for gz in 1..=nz {
+        for gy in 1..=ny {
+            for gx in 0..=nx {
+                if let Some(lo_inside) =
+                    edge_sign_change(&corner_cache, (gx, gy, gz), (gx + 1, gy, gz))
+                {
+                    let cells = [
+                        (gx, gy, gz),
+                        (gx, gy - 1, gz),
+                        (gx, gy - 1, gz - 1),
+                        (gx, gy, gz - 1),
+                    ];
+                    emit_quad(&cell_vertices, &mut mesh, &cells, lo_inside);
+                }
+            }
+        }
+    }
+
+    // Y-axis edges
+    for gz in 1..=nz {
+        for gy in 0..=ny {
+            for gx in 1..=nx {
+                if let Some(lo_inside) =
+                    edge_sign_change(&corner_cache, (gx, gy, gz), (gx, gy + 1, gz))
+                {
+                    let cells = [
+                        (gx, gy, gz - 1),
+                        (gx - 1, gy, gz - 1),
+                        (gx - 1, gy, gz),
+                        (gx, gy, gz),
+                    ];
+                    emit_quad(&cell_vertices, &mut mesh, &cells, lo_inside);
+                }
+            }
+        }
+    }
+
+    // Z-axis edges
+    for gz in 0..=nz {
+        for gy in 1..=ny {
+            for gx in 1..=nx {
+                if let Some(lo_inside) =
+                    edge_sign_change(&corner_cache, (gx, gy, gz), (gx, gy, gz + 1))
+                {
+                    let cells = [
+                        (gx, gy, gz),
+                        (gx - 1, gy, gz),
+                        (gx - 1, gy - 1, gz),
+                        (gx, gy - 1, gz),
+                    ];
+                    emit_quad(&cell_vertices, &mut mesh, &cells, lo_inside);
+                }
+            }
+        }
+    }
+
+    let stats = AdaptiveStats {
+        mesh_stats: MeshStats {
+            cells_total: total_leaves,
+            cells_pruned: pruned_leaves,
+        },
+        max_depth: target_depth,
+        leaf_count: total_leaves,
+        surface_leaf_count: surface_count,
+        interval_evals,
+    };
+
+    (mesh, stats)
+}
+
+/// Build octree in parallel at top levels, sequential below threshold.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn build_octree_par(
+    node: &FieldNode,
+    aabb: &Aabb,
+    depth: u32,
+    target_depth: u32,
+    cell_size: f64,
+    origin: Point3<f64>,
+    total_leaves: &std::sync::atomic::AtomicUsize,
+    pruned_leaves: &std::sync::atomic::AtomicUsize,
+    interval_evals: &std::sync::atomic::AtomicUsize,
+) -> HashSet<(usize, usize, usize)> {
+    use rayon::prelude::*;
+    use std::sync::atomic::Ordering;
+
+    interval_evals.fetch_add(1, Ordering::Relaxed);
+    let (lo, hi) = node.evaluate_interval(aabb);
+
+    if lo > 0.0 || hi < 0.0 {
+        let levels_remaining = target_depth - depth;
+        let cells_per_axis = 1_usize << levels_remaining;
+        let cells_in_subtree = cells_per_axis * cells_per_axis * cells_per_axis;
+        total_leaves.fetch_add(cells_in_subtree, Ordering::Relaxed);
+        pruned_leaves.fetch_add(cells_in_subtree, Ordering::Relaxed);
+        return HashSet::new();
+    }
+
+    if depth >= target_depth {
+        total_leaves.fetch_add(1, Ordering::Relaxed);
+
+        let ix = ((aabb.min.x - origin.x) / cell_size).round() as usize;
+        let iy = ((aabb.min.y - origin.y) / cell_size).round() as usize;
+        let iz = ((aabb.min.z - origin.z) / cell_size).round() as usize;
+
+        let mut set = HashSet::new();
+        set.insert((ix, iy, iz));
+        return set;
+    }
+
+    let mid = aabb.center();
+    let min = aabb.min;
+    let max = aabb.max;
+
+    let children = [
+        Aabb::new(
+            Point3::new(min.x, min.y, min.z),
+            Point3::new(mid.x, mid.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, min.y, min.z),
+            Point3::new(max.x, mid.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(min.x, mid.y, min.z),
+            Point3::new(mid.x, max.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, mid.y, min.z),
+            Point3::new(max.x, max.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(min.x, min.y, mid.z),
+            Point3::new(mid.x, mid.y, max.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, min.y, mid.z),
+            Point3::new(max.x, mid.y, max.z),
+        ),
+        Aabb::new(
+            Point3::new(min.x, mid.y, mid.z),
+            Point3::new(mid.x, max.y, max.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, mid.y, mid.z),
+            Point3::new(max.x, max.y, max.z),
+        ),
+    ];
+
+    if depth < PAR_DEPTH_THRESHOLD {
+        // Parallel: spawn rayon tasks for each child
+        let child_sets: Vec<HashSet<(usize, usize, usize)>> = children
+            .par_iter()
+            .map(|child_aabb| {
+                build_octree_par(
+                    node,
+                    child_aabb,
+                    depth + 1,
+                    target_depth,
+                    cell_size,
+                    origin,
+                    total_leaves,
+                    pruned_leaves,
+                    interval_evals,
+                )
+            })
+            .collect();
+
+        let mut merged = HashSet::new();
+        for set in child_sets {
+            merged.extend(set);
+        }
+        merged
+    } else {
+        // Sequential below threshold
+        let mut surface_cells = HashSet::new();
+        let mut tl = 0_usize;
+        let mut pl = 0_usize;
+        let mut md = 0_u32;
+        let mut ie = 0_usize;
+
+        for child_aabb in &children {
+            build_octree_recursive(
+                node,
+                child_aabb,
+                depth + 1,
+                target_depth,
+                cell_size,
+                origin,
+                &mut surface_cells,
+                &mut tl,
+                &mut pl,
+                &mut md,
+                &mut ie,
+            );
+        }
+
+        total_leaves.fetch_add(tl, Ordering::Relaxed);
+        pruned_leaves.fetch_add(pl, Ordering::Relaxed);
+        interval_evals.fetch_add(ie, Ordering::Relaxed);
+
+        surface_cells
+    }
+}
+
+/// Grid extent from corner cache (for parallel version).
+fn grid_extent_from_cache(cache: &HashMap<(usize, usize, usize), f64>) -> (usize, usize, usize) {
+    let mut nx = 0_usize;
+    let mut ny = 0_usize;
+    let mut nz = 0_usize;
+    for &(gx, gy, gz) in cache.keys() {
+        nx = nx.max(gx);
+        ny = ny.max(gy);
+        nz = nz.max(gz);
+    }
+    (nx, ny, nz)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -687,5 +1081,129 @@ mod tests {
         let bounds = Aabb::new(Point3::new(-3.4, -3.4, -4.4), Point3::new(3.4, 3.4, 4.4));
         let (mesh, _) = mesh_field_adaptive(&node, &bounds, cell);
         assert_mesh_valid(&mesh, "adaptive_pin_hole");
+    }
+
+    // ── Parallel adaptive DC tests ────────────────────────────────────
+
+    #[test]
+    fn par_sphere_valid() {
+        let node = FieldNode::Sphere { radius: 5.0 };
+        let bounds = sphere_bounds(5.0, 0.5);
+        let (mesh, stats) = mesh_field_adaptive_par(&node, &bounds, 0.5);
+        assert_mesh_valid(&mesh, "par_sphere");
+        assert!(
+            stats.surface_leaf_count > 0,
+            "Should have surface-crossing leaves"
+        );
+    }
+
+    #[test]
+    fn par_sphere_volume() {
+        let node = FieldNode::Sphere { radius: 5.0 };
+        let bounds = sphere_bounds(5.0, 0.5);
+        let (mesh, _) = mesh_field_adaptive_par(&node, &bounds, 0.5);
+        let expected = 4.0 / 3.0 * PI * 125.0;
+        let actual = mesh.volume();
+        let error = (actual - expected).abs() / expected;
+        assert!(
+            error < 0.15,
+            "Par sphere volume error {:.1}% exceeds 15% (expected {expected:.1}, got {actual:.1})",
+            error * 100.0
+        );
+    }
+
+    #[test]
+    fn par_vs_seq_volume_match() {
+        let node = FieldNode::Sphere { radius: 5.0 };
+        let cell = 0.5;
+        let bounds = sphere_bounds(5.0, cell);
+
+        let (seq_mesh, _) = mesh_field_adaptive(&node, &bounds, cell);
+        let (par_mesh, _) = mesh_field_adaptive_par(&node, &bounds, cell);
+
+        let seq_vol = seq_mesh.volume();
+        let par_vol = par_mesh.volume();
+        let rel_err = (par_vol - seq_vol).abs() / seq_vol;
+        assert!(
+            rel_err < 0.01,
+            "Par volume should be within 1% of seq: seq={seq_vol:.2}, par={par_vol:.2}, err={:.2}%",
+            rel_err * 100.0
+        );
+    }
+
+    #[test]
+    fn par_cuboid_valid() {
+        let node = FieldNode::Cuboid {
+            half_extents: Vector3::new(2.0, 3.0, 4.0),
+        };
+        let bounds = Aabb::new(Point3::new(-2.5, -3.5, -4.5), Point3::new(2.5, 3.5, 4.5));
+        let (mesh, _) = mesh_field_adaptive_par(&node, &bounds, 0.5);
+        assert_mesh_valid(&mesh, "par_cuboid");
+    }
+
+    #[test]
+    fn par_pin_hole_valid() {
+        let cuboid = FieldNode::Cuboid {
+            half_extents: Vector3::new(3.0, 3.0, 3.0),
+        };
+        let cylinder = FieldNode::Cylinder {
+            radius: 1.0,
+            half_height: 4.0,
+        };
+        let node = FieldNode::Subtract(Box::new(cuboid), Box::new(cylinder));
+        let cell = 0.4;
+        let bounds = Aabb::new(Point3::new(-3.4, -3.4, -4.4), Point3::new(3.4, 3.4, 4.4));
+        let (mesh, _) = mesh_field_adaptive_par(&node, &bounds, cell);
+        assert_mesh_valid(&mesh, "par_pin_hole");
+    }
+
+    #[test]
+    fn par_topology_manifold() {
+        let node = FieldNode::Sphere { radius: 5.0 };
+        let bounds = sphere_bounds(5.0, 0.5);
+        let (mesh, _) = mesh_field_adaptive_par(&node, &bounds, 0.5);
+        let (watertight, manifold) = check_topology(&mesh);
+        assert!(watertight, "Parallel sphere mesh should be watertight");
+        assert!(manifold, "Parallel sphere mesh should be manifold");
+    }
+
+    // ── Benchmarks (ignored by default, run with --ignored) ───────────
+
+    #[test]
+    #[ignore = "benchmark — run with --ignored"]
+    #[allow(clippy::similar_names)]
+    fn bench_adaptive_sphere() {
+        use std::time::Instant;
+
+        let node = FieldNode::Sphere { radius: 5.0 };
+        let cell = 0.1;
+        let bounds = sphere_bounds(5.0, cell);
+
+        // Warmup
+        let _ = mesh_field_adaptive(&node, &bounds, cell);
+
+        // (a) Sequential adaptive DC
+        let t0 = Instant::now();
+        let (seq_mesh, _) = mesh_field_adaptive(&node, &bounds, cell);
+        let seq_secs = t0.elapsed().as_secs_f64();
+
+        // (b) Parallel adaptive DC (batch + rayon)
+        let t1 = Instant::now();
+        let (par_mesh, _) = mesh_field_adaptive_par(&node, &bounds, cell);
+        let par_secs = t1.elapsed().as_secs_f64();
+
+        println!(
+            "Sequential: {:.1}ms, verts={}",
+            seq_secs * 1000.0,
+            seq_mesh.vertex_count()
+        );
+        println!(
+            "Parallel:   {:.1}ms, verts={}",
+            par_secs * 1000.0,
+            par_mesh.vertex_count()
+        );
+        if par_secs > 0.0 {
+            println!("Speedup:    {:.1}x", seq_secs / par_secs);
+        }
     }
 }
