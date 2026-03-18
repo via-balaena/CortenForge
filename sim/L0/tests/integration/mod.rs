@@ -397,3 +397,10 @@ pub mod composite;
 
 /// Diagnostic: multi-body contact solver behavior.
 pub mod contact_debug_diagnostic;
+
+// ============================================================================
+// DT-179: Mesh Collision Performance Profiling
+// ============================================================================
+
+/// DT-179 profiling: mesh-plane collision timing breakdown.
+pub mod mesh_collision_profile;
