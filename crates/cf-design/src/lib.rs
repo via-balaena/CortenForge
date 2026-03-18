@@ -27,6 +27,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod adaptive_dc;
 mod bounds;
 mod dual_contouring;
 mod evaluate;

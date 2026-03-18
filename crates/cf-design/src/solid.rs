@@ -1106,6 +1106,34 @@ impl Solid {
         mesh
     }
 
+    /// Extract a triangle mesh using adaptive octree dual contouring.
+    ///
+    /// Like [`mesh_dc`](Self::mesh_dc), but uses an octree to subdivide only
+    /// near the surface. Interior/exterior regions stop early, giving 10x+
+    /// cell reduction vs the uniform grid while preserving QEF sharp features.
+    ///
+    /// Returns an empty mesh for infinite geometry (bare `Plane`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tolerance` is not positive and finite.
+    #[must_use]
+    pub fn mesh_adaptive(&self, tolerance: f64) -> IndexedMesh {
+        assert!(
+            tolerance > 0.0 && tolerance.is_finite(),
+            "mesh tolerance must be positive and finite, got {tolerance}"
+        );
+        let Some(bounds) = self.node.bounds() else {
+            return IndexedMesh::new();
+        };
+        let lip = self.node.lipschitz_factor();
+        let cell_size = tolerance / lip;
+        let expanded = bounds.expanded(cell_size);
+        let (mesh, _stats) =
+            crate::adaptive_dc::mesh_field_adaptive(&self.node, &expanded, cell_size);
+        mesh
+    }
+
     /// Evaluate the field at a point.
     ///
     /// Returns the signed distance (exact or approximate depending on the
