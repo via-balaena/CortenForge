@@ -404,3 +404,10 @@ pub mod contact_debug_diagnostic;
 
 /// DT-179 profiling: mesh-plane collision timing breakdown.
 pub mod mesh_collision_profile;
+
+// ============================================================================
+// DT-180: Mesh Contact Force Magnitude Diagnostic
+// ============================================================================
+
+/// DT-180 diagnostic: mesh vs primitive sphere mass/inertia/contact force comparison.
+pub mod mesh_contact_force_diagnostic;
