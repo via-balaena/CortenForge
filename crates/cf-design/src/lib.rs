@@ -27,12 +27,17 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod adaptive_dc;
 mod bounds;
+mod dual_contouring;
 mod evaluate;
+mod evaluate_batch;
 pub(crate) mod field_node;
+mod gradient;
 mod interval;
 pub mod mechanism;
 mod mesher;
+mod simplify;
 mod solid;
 
 pub use mechanism::templates;
