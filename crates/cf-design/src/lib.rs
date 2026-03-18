@@ -30,6 +30,7 @@
 mod bounds;
 mod evaluate;
 pub(crate) mod field_node;
+mod gradient;
 mod interval;
 pub mod mechanism;
 mod mesher;

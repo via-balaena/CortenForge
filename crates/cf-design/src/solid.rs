@@ -1087,6 +1087,19 @@ impl Solid {
         self.node.evaluate(point)
     }
 
+    /// Compute the analytic gradient of the field at a point.
+    ///
+    /// Returns `∇f(p)` — the direction of steepest ascent. For exact SDFs,
+    /// this is the outward unit normal on the surface. For approximate SDFs,
+    /// the direction is correct but magnitude may differ from 1.
+    ///
+    /// Uses analytic derivatives for all built-in primitives and operations.
+    /// Falls back to finite differences only for [`user_fn`](Self::user_fn).
+    #[must_use]
+    pub fn gradient(&self, point: &Point3<f64>) -> Vector3<f64> {
+        self.node.gradient(point)
+    }
+
     /// Compute conservative (min, max) bounds of the field over an `Aabb`.
     ///
     /// The returned interval `(lo, hi)` satisfies:
