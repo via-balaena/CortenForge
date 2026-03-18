@@ -639,6 +639,29 @@ impl Solid {
         }
     }
 
+    /// N-ary smooth union with parameterized blend radius.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current parameter value is not positive and finite, or
+    /// if `solids` is empty.
+    #[must_use]
+    pub fn smooth_union_all_p(solids: Vec<Self>, k: ParamRef) -> Self {
+        let kv = k.value();
+        assert!(
+            !solids.is_empty(),
+            "smooth_union_all_p requires at least one solid"
+        );
+        assert!(
+            kv > 0.0 && kv.is_finite(),
+            "smooth_union_all_p blend radius k must be positive and finite, got {kv}"
+        );
+        let nodes: Vec<FieldNode> = solids.into_iter().map(|s| s.node).collect();
+        Self {
+            node: FieldNode::SmoothUnionAll(nodes, Val::from(k)),
+        }
+    }
+
     /// Smooth union with spatially varying blend radius.
     ///
     /// Like [`smooth_union`](Self::smooth_union) but the blend radius `k` is
@@ -1482,6 +1505,47 @@ impl Solid {
             .collect_params()
             .into_iter()
             .map(|(name, _, _)| name)
+            .collect()
+    }
+
+    // ── Parameter gradients ──────────────────────────────────────────
+
+    /// Compute `∂f/∂θ` at a point for a named design parameter.
+    ///
+    /// Returns the derivative of the scalar field with respect to the named
+    /// parameter, computed analytically via chain rule through the expression
+    /// tree.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parameter name is not found in this solid's tree.
+    #[must_use]
+    pub fn param_gradient(&self, p: &Point3<f64>, param_name: &str) -> f64 {
+        let result = self.node.find_param(param_name);
+        assert!(
+            result.is_some(),
+            "parameter '{param_name}' not found in this solid"
+        );
+        if let Some((id, _)) = result {
+            self.node.param_gradient(p, id)
+        } else {
+            0.0
+        }
+    }
+
+    /// Compute `∂f/∂θ_i` for all design parameters at a point.
+    ///
+    /// Returns a vector of `(name, gradient)` pairs — one per parameter
+    /// reachable from this solid's expression tree.
+    #[must_use]
+    pub fn param_gradients(&self, p: &Point3<f64>) -> Vec<(String, f64)> {
+        self.node
+            .collect_params()
+            .into_iter()
+            .map(|(name, id, _)| {
+                let grad = self.node.param_gradient(p, id);
+                (name, grad)
+            })
             .collect()
     }
 }

@@ -38,6 +38,7 @@ mod interval;
 pub mod mechanism;
 mod mesher;
 mod param;
+mod param_gradient;
 mod simplify;
 mod solid;
 
