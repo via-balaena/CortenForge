@@ -1,6 +1,6 @@
 # CF_DESIGN_SPEC — Implicit Surface Design Kernel
 
-> **Status**: Phase 3 complete — 2026-03-17
+> **Status**: Phase 4 complete — 2026-03-17
 > **Crate**: `cf-design` (`crates/cf-design/`)
 > **Layer**: 0 (pure Rust, zero framework dependencies)
 > **Depends on**: `cf-geometry` (IndexedMesh, SdfGrid, Shape, Aabb, ConvexHull, Bvh)
@@ -1142,7 +1142,7 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   in code, validated against print constraints, simulated in sim-core via MJCF,
   exported as printable STLs with manufacturing clearances.
 
-### Phase 3: Bio-Inspired Library (Sessions 13–18)
+### Phase 3: Bio-Inspired Library (Sessions 13–18) — COMPLETE
 
 **Goal**: Rich primitive library for organic shapes, advanced operations.
 
@@ -1216,11 +1216,11 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   tendon channels, and compliant finger joints can be defined, simulated,
   and exported for printing.
 
-### Phase 4: Mesh Quality + Performance (Sessions 19–23)
+### Phase 4: Mesh Quality + Performance (Sessions 19–23) — COMPLETE
 
 **Goal**: Production-quality meshing for manufacturing, performance at scale.
 
-**Session 19: Analytic Gradient Computation**
+**Session 19: Analytic Gradient Computation** — COMPLETE
 - Scope: Reverse-mode AD traversal infrastructure on `FieldNode` expression
   tree. `Solid::gradient(point) -> Vector3<f64>`. Implement gradient (∇f) for
   all Phase 1 node types (primitives, booleans, transforms, domain ops,
@@ -1234,7 +1234,7 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 - Exit: `cargo test -p cf-design` passes. Gradients match finite differences
   within 1e-6 tolerance for all Phase 1 node types.
 
-**Session 20: Manifold Dual Contouring + QEF**
+**Session 20: Manifold Dual Contouring + QEF** — COMPLETE
 - Scope: Manifold DC algorithm (Schaefer, Ju, Warren — not classical DC).
   SVD-based QEF solver with cell-clamping and centroid bias to prevent vertex
   placement at infinity. Uses analytic gradients from Session 19. Tests:
@@ -1244,7 +1244,7 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 - Exit: `cargo test -p cf-design` passes. DC meshes preserve sharp features
   that marching cubes rounds off. Meshes are manifold.
 
-**Session 21: Octree-Adaptive Meshing**
+**Session 21: Octree-Adaptive Meshing** — COMPLETE
 - Scope: Octree construction with interval arithmetic cell pruning. Adaptive
   refinement — fine cells near the surface and thin features, coarse cells in
   bulk interior/exterior. Integration with DC mesher (Session 20). Tests:
@@ -1253,7 +1253,7 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 - Exit: `cargo test -p cf-design` passes. Adaptive meshing reduces cell count
   by 10x+ vs uniform grid while preserving surface accuracy within tolerance.
 
-**Session 22: SIMD + Multithreaded Evaluation**
+**Session 22: SIMD + Multithreaded Evaluation** — COMPLETE
 - Scope: Batch 4–8 point evaluations per expression tree walk (SIMD lanes).
   Rayon-based multithreaded grid/octree evaluation. Performance benchmarks:
   naive single-thread vs SIMD vs multithreaded on reference parts.
@@ -1261,7 +1261,7 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 - Exit: `cargo test -p cf-design` passes. Measurable speedup on benchmark
   parts (target: 4x+ from SIMD, near-linear thread scaling).
 
-**Session 23: Simplification + Tolerance Meshing + 3MF**
+**Session 23: Simplification + Tolerance Meshing + 3MF** — COMPLETE
 - Scope: Mesh simplification pass (edge collapse with quadric error metric).
   Tolerance-driven meshing — user specifies max surface deviation, mesher
   adapts resolution automatically. Integration test with mesh-io's 3MF export
@@ -1271,6 +1271,11 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 - Exit: `cargo test -p cf-design` passes. Full Phase 4 exit criteria met:
   meshed parts are manifold, watertight, preserve sharp features at specified
   tolerance. 50mm part at 0.1mm resolution meshes in under 5 seconds.
+- Result: Garland-Heckbert QEM edge collapse with link condition manifold
+  preservation. `Solid::mesh_to_tolerance(max_deviation)` for tolerance-driven
+  meshing. 3MF round-trip via mesh-io (dev-dep). Sparse Phase 2 face
+  generation optimization (O(surface) instead of O(grid_volume)) — 50mm
+  sphere at 0.1mm meshes in 1.4s (release). 656 tests pass.
 
 ### Phase 5: Differentiable Design (Sessions 24–26)
 
