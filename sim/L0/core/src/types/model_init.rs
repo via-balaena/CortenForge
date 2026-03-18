@@ -139,6 +139,7 @@ impl Model {
             geom_solref: vec![],
             geom_name: vec![],
             geom_rbound: vec![],
+            geom_aabb: vec![],
             geom_mesh: vec![],
             geom_hfield: vec![],
             geom_sdf: vec![],

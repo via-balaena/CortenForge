@@ -1,49 +1,8 @@
-//! DT-179 Session 1: Mesh-plane collision performance profiling.
+//! DT-179: Mesh collision performance regression tests.
 //!
-//! Reproduces the scenario: mesh sphere geoms + ground plane + free joint.
-//! Uses `std::time::Instant` bracketing and step1/step2 split to identify
-//! the hot path.
-//!
-//! ## Hypothesis
-//!
-//! Mesh AABBs use fixed ±10m extent (`MESH_DEFAULT_EXTENT` in
-//! `forward/position.rs:343`) instead of tight-fitting bounds, inflating
-//! broadphase candidate pairs and triggering unnecessary narrowphase work
-//! (GJK/EPA on convex hulls for false-positive mesh-mesh pairs).
-//!
-//! ## Findings (release mode, Apple M-series)
-//!
-//! 1. **AABB bloat confirmed**: `MESH_DEFAULT_EXTENT = 10.0` → 20m³ bounding
-//!    box per mesh geom. `geom_size` is [0.1, 0.1, 0.1] for all mesh geoms
-//!    (default from `geom_size_to_vec3` catch-all). AABB ignores geom_size
-//!    entirely.
-//!
-//! 2. **step1 (FK+collision) dominates** for mesh scenes: 51-94% of step time
-//!    vs 7-19% for primitive scenes. The hot path is in collision detection.
-//!
-//! 3. **Mesh/primitive ratio is ~2-3×** (not 40,000× as spec claims). For
-//!    42-vertex icosphere meshes, GJK/EPA on convex hulls is fast enough that
-//!    false broadphase pairs don't cause catastrophic slowdown.
-//!
-//! 4. **O(N²) broadphase pairs confirmed**: With N well-separated mesh geoms
-//!    (5m apart, r=0.5), 10m AABBs cause ALL mesh-mesh pairs to overlap.
-//!    Expected tight pairs: N (plane-mesh only). Actual bloat pairs: N + C(N,2).
-//!
-//! 5. **Fix needed**: Compute tight AABBs from transformed mesh vertex AABB
-//!    (stored on `TriangleMeshData` at build time). This eliminates false
-//!    mesh-mesh pairs when geoms are well-separated.
-//!
-//! ## For Session 3 (fix)
-//!
-//! Replace `MESH_DEFAULT_EXTENT` with tight AABB from mesh vertex positions:
-//! ```ignore
-//! GeomType::Mesh => {
-//!     let mesh_id = model.geom_mesh[geom_id]?;
-//!     let mesh_aabb = model.mesh_data[mesh_id].aabb();
-//!     // Transform local AABB by geom pose (pos + mat)
-//!     transform_aabb(mesh_aabb, pos, mat)
-//! }
-//! ```
+//! Validates that pre-computed `model.geom_aabb` produces tight mesh bounding
+//! boxes, eliminating the O(N²) false broadphase pairs caused by the old
+//! `MESH_DEFAULT_EXTENT = 10.0` fallback.
 //!
 //! Run in release mode for meaningful numbers:
 //! ```sh

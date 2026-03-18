@@ -56,7 +56,7 @@ pub(crate) use velocity::mj_subtree_vel;
 pub(crate) use actuation::mj_next_activation;
 pub(crate) use passive::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
 pub(crate) use position::SweepAndPrune;
-pub(crate) use position::{aabb_from_geom, closest_point_segment, closest_points_segments};
+pub(crate) use position::{aabb_from_geom_aabb, closest_point_segment, closest_points_segments};
 
 use crate::types::flags::{disabled, enabled};
 use crate::types::{

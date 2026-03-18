@@ -2,61 +2,42 @@
 
 Source spec: `SPEC.md` (DT-179 + DT-180)
 
-## Session 1: Profile DT-179 — Mesh-Plane Collision Performance ✅
+## Session 1: Profile + Fix DT-179 — Mesh AABB Bloat ✅
 
 **Status:** Complete
 **Test:** `sim/L0/tests/integration/mesh_collision_profile.rs`
 
-### Findings
+### Root cause
 
-1. **AABB bloat confirmed.** `MESH_DEFAULT_EXTENT = 10.0` in
-   `forward/position.rs:343` creates 20m × 20m × 20m bounding boxes for every
-   mesh geom, regardless of actual mesh size. `geom_size` for mesh geoms is
-   [0.1, 0.1, 0.1] (default from `geom_size_to_vec3` catch-all) and is unused
-   by `aabb_from_geom`.
+`aabb_from_geom()` was a runtime type-dispatch function that reconstructed
+bounding boxes from `(geom_type, size, pos, mat)`. For meshes, `size` doesn't
+encode mesh geometry, so it used `MESH_DEFAULT_EXTENT = 10.0` — a 20m³
+bounding box for every mesh geom regardless of actual size.
 
-2. **step1 (FK+collision) is the hot path.** For mesh scenes, step1 accounts
-   for 51-94% of step time. For primitive scenes, step1 is only 6-19% (step2
-   dominates with constraint assembly + solver).
+### Fix
 
-3. **O(N²) broadphase pairs confirmed.** With N mesh geoms spaced 5m apart
-   (far beyond any physical overlap), 10m AABBs cause ALL C(N,2) mesh-mesh
-   pairs to pass broadphase:
+Pre-computed local-frame AABBs for all geoms at build time, stored as
+`model.geom_aabb: Vec<[f64; 6]>` (center offset + half-extents). At runtime,
+`mj_collision` transforms these to world space via the standard rotated-box
+formula — no type dispatch, no mesh vertex iteration.
 
-   | N geoms | Tight pairs | Bloat pairs | Mesh step1 | Prim step1 |
-   |---------|-------------|-------------|------------|------------|
-   | 2       | 2           | 3           | 7.7µs      | 1.6µs      |
-   | 5       | 5           | 15          | 34.5µs     | 2.5µs      |
-   | 10      | 10          | 55          | 77.8µs     | 5.0µs      |
-   | 15      | 15          | 120         | 124.6µs    | 9.4µs      |
+- `model.geom_aabb` populated in `compute_geom_bounding_radii()` alongside
+  `geom_rbound`, using the same mesh/hfield/sdf/primitive dispatch
+- `aabb_from_geom_aabb()` replaces `aabb_from_geom()` — uniform for all types
+- `MESH_DEFAULT_EXTENT` deleted
+- Matches MuJoCo's `mjModel.geom_aabb` architecture
 
-   Mesh step1 grows quadratically; primitive step1 grows linearly.
+### Results (release, Apple M-series)
 
-4. **Mesh/prim ratio is ~2-3× per step** (not 40,000× as spec claims). Each
-   false mesh-mesh narrowphase call costs ~3-5µs (GJK/EPA on 42-vertex convex
-   hull + `UnitQuaternion::from_matrix` conversion). The per-pair cost is
-   modest, but it compounds quadratically with geom count.
+Collision phase (step1) with N well-separated mesh geoms + plane:
 
-5. **The 40,000× from the spec is not reproducible** with 42-162 vertex meshes.
-   The original measurement likely used much denser meshes from cf-design's
-   adaptive DC mesher, or measured a different scenario.
+| N | Before (mesh step1) | After (mesh step1) | Before ratio | After ratio |
+|---|---|---|---|---|
+| 5 | 28.9µs | 4.3µs | 13.8× prim | 1.5× prim |
+| 10 | 77.8µs | 6.9µs | 15.6× prim | 1.3× prim |
+| 15 | 124.6µs | 12.5µs | 13.3× prim | 1.2× prim |
 
-### Fix for Session 3
-
-Replace `MESH_DEFAULT_EXTENT` with tight AABB computed from transformed mesh
-vertices. The mesh `TriangleMeshData` already stores a local-space AABB. The
-fix needs to transform it by the geom's world-space pose (pos + rotation
-matrix). This requires access to `model.mesh_data` inside `aabb_from_geom`,
-which currently only takes `(geom_type, size, pos, mat)`. Options:
-
-- **Option A:** Pass `Option<&Aabb>` for mesh local AABB into `aabb_from_geom`
-- **Option B:** Pre-compute mesh geom AABBs in `mj_collision` using mesh_data,
-  before building the SAP structure
-- **Option C:** Store pre-computed mesh AABBs (in geom-local space) on Model
-  at build time, accessible via `model.geom_aabb[geom_id]`
-
-Option B is simplest (localized change in `mj_collision`). Option C is cleanest
-(separates build-time and runtime concerns). Session 3 should decide.
+False broadphase pairs eliminated. Mesh collision cost now matches primitives.
 
 ---
 
@@ -67,19 +48,13 @@ Option B is simplest (localized change in `mj_collision`). Option C is cleanest
 
 ---
 
-## Session 3: Fix DT-179
+## Session 3: Fix DT-180
 
-**Status:** Not started
-**Entry:** Session 1 findings (above)
-
----
-
-## Session 4: Fix DT-180
-
-**Status:** Not started
+**Status:** Not started (was originally the DT-179 fix session — DT-179 fix
+landed in Session 1 instead)
 
 ---
 
-## Session 5: cf-design Integration + Spec Completion
+## Session 4: cf-design Integration + Spec Completion
 
 **Status:** Not started

@@ -306,6 +306,19 @@ pub struct Model {
     /// Used for fast distance culling in collision broad-phase.
     /// For primitives, computed from geom_size. For meshes, computed from mesh AABB.
     pub geom_rbound: Vec<f64>,
+    /// Pre-computed local-frame AABB for each geom: `(center_offset, half_extents)`.
+    ///
+    /// `center_offset` is the AABB center relative to the geom frame origin.
+    /// For primitives centered at their origin, this is `(0,0,0)`.
+    /// For meshes, this is the mesh AABB center (may be non-zero).
+    ///
+    /// At runtime, the world-space AABB is computed by transforming these
+    /// local bounds by `(geom_xpos, geom_xmat)`. This replaces the per-type
+    /// dispatch in `aabb_from_geom` and eliminates the `MESH_DEFAULT_EXTENT`
+    /// fallback.
+    ///
+    /// Matches MuJoCo's `mjModel.geom_aabb`.
+    pub geom_aabb: Vec<[f64; 6]>,
     /// Mesh index for each geom (`None` if not a mesh geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Mesh` have `Some(mesh_id)`.
     pub geom_mesh: Vec<Option<usize>>,

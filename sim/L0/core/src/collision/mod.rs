@@ -25,7 +25,7 @@ pub(crate) mod sdf_collide;
 // self::flex_collide::, self::flex_narrow::, and self::flex_self:: within this
 // module. No pub(crate) re-export needed.
 
-use crate::forward::{SweepAndPrune, aabb_from_geom};
+use crate::forward::{SweepAndPrune, aabb_from_geom_aabb};
 use crate::types::{
     DISABLE_CONSTRAINT, DISABLE_CONTACT, DISABLE_FILTERPARENT, Data, ENABLE_OVERRIDE, ENABLE_SLEEP,
     GeomType, Model, SleepState, disabled, enabled,
@@ -454,16 +454,20 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // Rigid-rigid collision requires at least 2 geoms for a pair.
     // Even with 0 or 1 geoms, flex-vertex-vs-rigid contacts are still possible.
     if model.ngeom >= 2 {
-        // Build AABBs for all geoms
-        // This is O(n) and cache-friendly (linear memory access)
+        // Build AABBs for all geoms from pre-computed local bounds.
+        // O(n) and cache-friendly — no per-type dispatch, no mesh vertex iteration.
+        let has_precomputed = model.geom_aabb.len() == model.ngeom;
         let aabbs: Vec<Aabb> = (0..model.ngeom)
             .map(|geom_id| {
-                let mut aabb = aabb_from_geom(
-                    model.geom_type[geom_id],
-                    model.geom_size[geom_id],
-                    data.geom_xpos[geom_id],
-                    data.geom_xmat[geom_id],
-                );
+                let local = if has_precomputed {
+                    model.geom_aabb[geom_id]
+                } else {
+                    // Fallback for programmatic models that skip the builder.
+                    // Primitives get correct bounds; mesh/hfield/sdf get conservative ones.
+                    geom_type_to_local_aabb(model.geom_type[geom_id], model.geom_size[geom_id])
+                };
+                let mut aabb =
+                    aabb_from_geom_aabb(local, data.geom_xpos[geom_id], data.geom_xmat[geom_id]);
                 // Expand AABB by geom margin so SAP doesn't reject pairs
                 // that are within margin distance but not overlapping.
                 // S10: When ENABLE_OVERRIDE is active, use half the global override
@@ -641,6 +645,29 @@ pub(crate) fn mj_collision(model: &Model, data: &mut Data) {
     // order (relevant for multi-contact geom pairs like heightfields).
     data.contacts
         .sort_by(|a, b| (a.geom1, a.geom2).cmp(&(b.geom1, b.geom2)));
+}
+
+/// Compute local-frame AABB from geom type and size (fallback for programmatic models).
+///
+/// Used when `model.geom_aabb` is not populated (models created via `Model::empty()`
+/// without the MJCF builder). For mesh/hfield/sdf, returns a conservative fallback.
+fn geom_type_to_local_aabb(geom_type: GeomType, size: nalgebra::Vector3<f64>) -> [f64; 6] {
+    match geom_type {
+        GeomType::Sphere => {
+            let r = size.x;
+            [0.0, 0.0, 0.0, r, r, r]
+        }
+        GeomType::Capsule | GeomType::Cylinder => {
+            let r = size.x;
+            let h = size.y;
+            [0.0, 0.0, 0.0, r, r, r + h]
+        }
+        GeomType::Plane => [0.0, 0.0, 0.0, 1e6, 1e6, 1e6],
+        GeomType::Mesh => [0.0, 0.0, 0.0, 10.0, 10.0, 10.0],
+        GeomType::Box | GeomType::Ellipsoid | GeomType::Hfield | GeomType::Sdf => {
+            [0.0, 0.0, 0.0, size.x, size.y, size.z]
+        }
+    }
 }
 
 // =============================================================================
