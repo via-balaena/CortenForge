@@ -1,12 +1,12 @@
 # DT-179 + DT-180: Mesh Collision Fixes
 
-**Status:** Open
+**Status:** Complete (all 4 sessions done).
 **Source:** cf-design Phase 5 (Session 26) — discovered while building the
 design-through-physics optimization loop.
 **Tier:** T2 (grouped spec — two bugs in the same subsystem)
-**Blocking:** cf-design contact-force-based design optimization. Once fixed,
-the Phase 5 integration test can be upgraded from volume objective to actual
-contact force with a one-line closure change.
+**Resolved:** DT-179 (mesh AABB bloat) and DT-180 (inverted mesh-plane normal)
+fixed. Phase 5 integration test upgraded from volume proxy to contact-force
+objective. `CF_DESIGN_SPEC.md` Session 26 fully complete.
 
 ---
 
@@ -135,21 +135,21 @@ supporting it.
 4. Force in wrong direction accelerates the fall → exponential divergence
 5. Step 100: 7.6e4 N → step 200: 5.4e6 N → step 400: 2.4e10 N
 
-### Fix plan
+### Fix (Session 3 — complete)
 
-Change `collide_mesh_plane()` to return `normal = -plane_normal` ("from mesh
-outward," consistent with all other mesh collision functions). This is a
-one-line change.
+Changed `collide_mesh_plane()` to return `normal = -plane_normal` ("from mesh
+outward," consistent with all other mesh collision functions). Two-line change
+(both assignment sites in the function).
 
 - `(Plane, Mesh)` branch: negation of `-plane_normal` → `+plane_normal` ✓
 - `(Mesh, Plane)` branch: no negation → `-plane_normal` ✓
 
 Both match the `Contact.normal` convention: "from geom1 toward geom2."
 
-Then upgrade the diagnostic test to assert:
-- Mesh contact force within 5% of weight at steady state
-- Contact normal matches primitive normal direction
-- Both geom orderings (Mesh,Plane) and (Plane,Mesh) produce correct normals
+Diagnostic test upgraded to assertion tests:
+- `dt180_mesh_contact_force_plane_mesh_order`: force/weight = 1.0000, normal = +Z
+- `dt180_mesh_contact_force_mesh_plane_order`: force/weight = 1.0000
+- `dt180_mesh_mass_comparison`: mesh/analytic mass = 0.8735 (expected icosphere error)
 
 ### Key files
 

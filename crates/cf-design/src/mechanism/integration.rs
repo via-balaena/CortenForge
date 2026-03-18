@@ -334,7 +334,7 @@ fn phase3_bio_gripper_full_integration() {
 ///   force → FD gradient → parameter update → repeat.
 ///
 /// A parameterized sphere (adjustable radius) on a free joint falls onto
-/// a ground plane. The optimizer maximizes accumulated contact impulse
+/// a ground plane. The optimizer maximizes steady-state contact force
 /// by increasing the sphere's radius — larger sphere = more mass = more
 /// weight = more contact force. Contact force ∝ mass × g ∝ R³.
 ///
@@ -345,50 +345,90 @@ fn phase3_bio_gripper_full_integration() {
 fn phase5_parameterized_grasp_optimization() {
     use crate::ParamStore;
     use crate::optim::{OptimConfig, minimize_fd};
+    use sim_core::ConstraintType;
 
     let store = ParamStore::new();
-    let radius = store.add("ball_radius", 3.0);
+    let _radius = store.add("ball_radius", 15.0);
 
     let mat = Material::new("PLA", 1250.0);
 
-    // Frame (static anchor) + ball (parameterized sphere, free joint).
-    let mechanism = Mechanism::builder("grasp_opt")
-        .part(Part::new("frame", Solid::sphere(5.0), mat.clone()))
-        .part(Part::new("ball", Solid::sphere_p(radius), mat))
-        .joint(JointDef::new(
-            "drop",
-            "frame",
-            "ball",
-            JointKind::Free,
-            Point3::new(0.0, 0.0, 10.0),
-            Vector3::z(),
-        ))
-        .build();
-
     let config = OptimConfig {
         max_iters: 3,
-        learning_rate: 0.001, // gradient magnitude ~4πr² ≈ 113
-        fd_eps: 0.1,
+        // Contact force = mg = (4/3)πR³ρg. At R=15 (sim-core meters), ρ=1250:
+        //   ∂F/∂R = 4πR²ρg ≈ 3.5e7 → lr=1e-9 gives ΔR≈0.035 per step.
+        learning_rate: 1e-9,
+        fd_eps: 0.5,
         grad_tol: 1e-10,
     };
 
     let result = minimize_fd(
         &store,
         || {
+            // Read current parameter value and rebuild geometry.
+            // The mechanism is reconstructed each eval so the joint anchor
+            // tracks the ball radius — keeping consistent ground clearance.
+            let r = store.get("ball_radius").unwrap_or(15.0);
+
+            let mechanism = Mechanism::builder("grasp_opt")
+                .part(Part::new(
+                    "frame",
+                    Solid::cuboid(Vector3::new(10.0, 10.0, 10.0)),
+                    mat.clone(),
+                ))
+                .part(Part::new("ball", Solid::sphere(r), mat.clone()))
+                .joint(JointDef::new(
+                    "drop",
+                    "frame",
+                    "ball",
+                    JointKind::Free,
+                    Point3::new(0.0, 0.0, r + 0.5), // ball bottom 0.5mm above plane
+                    Vector3::z(),
+                ))
+                .build();
+
             // Full pipeline: parameterized geometry → mesh → MJCF → parse → simulate.
-            let xml = mechanism.to_mjcf(2.0);
+            let mut xml = mechanism.to_mjcf(2.0);
+
+            // Inject a ground plane for the ball to land on.
+            let insert_pos = xml.find("<body").unwrap_or(0);
+            xml.insert_str(
+                insert_pos,
+                "<geom type=\"plane\" size=\"50 50 0.1\"/>\n    ",
+            );
+
             let model =
                 sim_mjcf::load_model(&xml).unwrap_or_else(|e| panic!("load_model failed: {e}"));
             let mut data = model.make_data();
 
-            // Prove simulation runs with the parameterized geometry.
-            data.step(&model)
-                .unwrap_or_else(|e| panic!("step failed: {e}"));
+            // Settle: let initial impact transients dissipate.
+            let settle_steps = 200;
+            let measure_steps = 300;
+            for _ in 0..settle_steps {
+                data.step(&model)
+                    .unwrap_or_else(|e| panic!("step failed: {e}"));
+            }
 
-            // Objective: maximize ball mesh volume (∝ mass ∝ grasp force).
-            // Volume depends on radius through the mesh: param → SDF → mesh → volume.
-            let ball_mesh = mechanism.parts()[1].solid().mesh(2.0);
-            -ball_mesh.volume()
+            // Measure: average steady-state contact force.
+            let mut contact_force = 0.0_f64;
+            for _ in 0..measure_steps {
+                data.step(&model)
+                    .unwrap_or_else(|e| panic!("step failed: {e}"));
+                // Sum only contact constraint forces — excludes joint limits,
+                // equality constraints, friction loss, etc.
+                for (i, ct) in data.efc_type.iter().enumerate() {
+                    if matches!(
+                        ct,
+                        ConstraintType::ContactFrictionless
+                            | ConstraintType::ContactPyramidal
+                            | ConstraintType::ContactElliptic
+                    ) {
+                        contact_force += data.efc_force[i].abs();
+                    }
+                }
+            }
+
+            // Objective: maximize contact force (negate for minimization).
+            -(contact_force / f64::from(measure_steps))
         },
         &config,
     );
@@ -400,7 +440,7 @@ fn phase5_parameterized_grasp_optimization() {
         result.iterations
     );
 
-    // Objective improved (volume increased).
+    // Objective improved (contact force increased).
     assert!(
         result.objective < result.history[0],
         "expected improvement: final={:.6} vs initial={:.6}",
@@ -408,10 +448,10 @@ fn phase5_parameterized_grasp_optimization() {
         result.history[0],
     );
 
-    // Radius should have increased (larger = more volume = more mass = more force).
+    // Radius should have increased (larger = more mass = more contact force).
     let final_radius = store.get("ball_radius").unwrap_or(0.0);
     assert!(
-        final_radius > 3.0,
-        "expected ball_radius to increase from 3.0, got {final_radius:.4}"
+        final_radius > 15.0,
+        "expected ball_radius to increase from 15.0, got {final_radius:.4}"
     );
 }

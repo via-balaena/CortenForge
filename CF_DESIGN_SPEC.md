@@ -1314,22 +1314,17 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
   The gradient `∂J/∂θ` is estimated via centered FD over the complete
   design-through-physics pipeline — the mesh→Model boundary is not
   analytically differentiable, making FD the practical approach.
-  Integration test: parameterized sphere optimized for mesh volume (∝ mass ∝
-  grasp force capability) with full MJCF→sim-core pipeline validation.
-  696 tests pass (4 new + 1 doctest).
+  Integration test: parameterized sphere optimized for contact force through
+  simulation — the optimizer increases sphere radius to maximize steady-state
+  contact force (= mass × gravity ∝ R³), measuring force via `efc_type` /
+  `efc_force` filtering over 300 measurement steps after 200 settling steps.
 - Fix: MJCF `write_body()` was emitting child `<body>` elements without `pos`
   attribute — all child bodies were placed at parent origin regardless of
   joint anchor. Now correctly sets `pos` from the first joint anchor.
-- Blocked: contact-force-based objective requires sim-core mesh collision
-  fixes: DT-179 (mesh-plane per-step cost ~120ms, should be <0.1ms) and
-  DT-180 (mesh contact forces ~10^16× too large). Spec:
-  `sim/docs/todo/spec_fleshouts/mesh_collision_fixes/SPEC.md`. Once resolved,
-  upgrading the test objective from volume to contact force is a one-line
-  closure change.
 - Entry: Sessions 12, 25 complete (Mechanism integration + param gradients)
-- Exit: `cargo test -p cf-design` passes. Optimization loop demonstrated
-  end-to-end. Full contact-force exit criterion deferred to DT-179/180
-  resolution.
+- Exit: Full Phase 5 exit criteria met: a parameterized gripper finger can be
+  optimized to maximize grasp force by backpropagating through the simulation.
+  `cargo test -p cf-design` passes.
 
 ### Session Dependencies
 

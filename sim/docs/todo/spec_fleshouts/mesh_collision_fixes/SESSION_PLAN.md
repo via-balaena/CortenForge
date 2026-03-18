@@ -117,6 +117,18 @@ Full regression: 2,221 tests pass (sim-core + sim-mjcf + sim-conformance-tests).
 
 ---
 
-## Session 4: cf-design Integration + Spec Completion
+## Session 4: cf-design Integration + Spec Completion ✅
 
-**Status:** Not started
+**Status:** Complete
+
+### Changes
+
+- `phase5_parameterized_grasp_optimization` test rewritten: objective changed
+  from `-ball_mesh.volume()` to steady-state contact force measured via
+  `efc_type`/`efc_force` filtering (200 settle + 300 measurement steps).
+  Mechanism rebuilt per evaluation with anchor Z tracking ball radius for
+  consistent ground clearance.
+- `sim-core` added as dev-dependency to `cf-design` (for `ConstraintType`).
+- `CF_DESIGN_SPEC.md` Session 26 updated: removed "Blocked" paragraph,
+  replaced volume proxy with contact force description, updated exit criterion.
+- 696 cf-design tests pass, 2,221 sim tests pass.
