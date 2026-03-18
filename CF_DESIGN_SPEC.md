@@ -1281,13 +1281,19 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 
 **Goal**: Gradient-based design optimization through simulation.
 
-**Session 24: Parameterized Solid**
-- Scope: Design variables with named parameters. Parameterized `FieldNode`
-  variants (parameters by name instead of literal constants).
-  `Solid::with_param(name, value)` for declaring parameters.
-  `Solid::set_param(name, value)` for re-evaluation without rebuilding the
-  tree. Tests: parameterized sphere radius, parameterized blend radius —
+**Session 24: Parameterized Solid** ✅ (2026-03-18)
+- Scope: Design variables with named parameters. `ParamStore` holds named
+  scalar design variables; `ParamStore::add(name, default)` returns a
+  `ParamRef` passed to `_p` constructors (`Solid::sphere_p`,
+  `smooth_union_p`, etc.) that build parameterized `FieldNode` variants.
+  `Val` enum (`Literal(f64)` | `Param { id, store }`) replaces `f64` in 8
+  FieldNode variants (Sphere, SmoothUnion/Subtract/Intersect/All, Shell,
+  Round, Offset). `Solid::set_param(name, value)` for re-evaluation without
+  rebuilding the tree (interior mutability via `RwLock`).
+  `Val::param_deriv()` stubbed for Session 25 chain rule.
+  Tests: parameterized sphere radius, parameterized blend radius —
   verify re-evaluation produces correct field after parameter change.
+  674 tests pass (18 new).
 - Entry: Session 6 complete
 - Exit: `cargo test -p cf-design` passes. Parameterized solids re-evaluate
   correctly after parameter changes.
@@ -1408,12 +1414,13 @@ crates/cf-design/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              Crate root — re-exports Solid + mechanism types
-    ├── field_node.rs       FieldNode expression tree enum (pub(crate))
+    ├── field_node.rs       FieldNode expression tree enum + Val (pub(crate))
+    ├── param.rs            ParamStore, ParamRef — design variable storage
     ├── evaluate.rs         Point evaluation — evaluate(Point3) -> f64
     ├── interval.rs         Interval evaluation — evaluate_interval(Aabb) -> (f64, f64)
     ├── bounds.rs           AABB computation — bounds() -> Option<Aabb>
     ├── mesher.rs           Marching cubes + interval pruning + edge cache
-    ├── solid.rs            Opaque Solid type, public builder API, sdf_grid
+    ├── solid.rs            Opaque Solid type, public builder API, _p constructors
     └── mechanism/          Phase 2 (Sessions 7–12)
         ├── mod.rs          Re-exports all mechanism types
         ├── part.rs         Part, FlexZone, Plane
