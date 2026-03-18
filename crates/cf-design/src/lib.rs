@@ -28,6 +28,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod bounds;
+mod dual_contouring;
 mod evaluate;
 pub(crate) mod field_node;
 mod gradient;

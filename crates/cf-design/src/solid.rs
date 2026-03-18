@@ -1077,6 +1077,35 @@ impl Solid {
         mesh
     }
 
+    /// Extract a triangle mesh using dual contouring at the given tolerance.
+    ///
+    /// Like [`mesh`](Self::mesh), but uses dual contouring instead of
+    /// marching cubes. DC places one vertex per sign-changing cell via QEF
+    /// minimization, preserving sharp features (edges, corners) that MC
+    /// rounds off.
+    ///
+    /// Returns an empty mesh for infinite geometry (bare `Plane`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tolerance` is not positive and finite.
+    #[must_use]
+    pub fn mesh_dc(&self, tolerance: f64) -> IndexedMesh {
+        assert!(
+            tolerance > 0.0 && tolerance.is_finite(),
+            "mesh tolerance must be positive and finite, got {tolerance}"
+        );
+        let Some(bounds) = self.node.bounds() else {
+            return IndexedMesh::new();
+        };
+        let lip = self.node.lipschitz_factor();
+        let cell_size = tolerance / lip;
+        let expanded = bounds.expanded(cell_size);
+        let (mesh, _stats) =
+            crate::dual_contouring::mesh_field_dc(&self.node, &expanded, cell_size);
+        mesh
+    }
+
     /// Evaluate the field at a point.
     ///
     /// Returns the signed distance (exact or approximate depending on the
