@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-19
 **Branch:** chore/workspace-trim-tier1
-**Status:** Session 1 complete — Sessions 2–3 pending
+**Status:** Sessions 1–2 complete — Session 3 pending
 
 ## Motivation
 
@@ -242,65 +242,47 @@ compile.
    ```
    Build clean. 1283 tests passed (cf-design 698, cf-geometry 441, cf-spatial 144).
 
-### Session 2: Documentation Restructure
+### Session 2: Documentation Restructure ✅
 
-Move markdown files, fix all cross-references. Split into two commits for
-safe rollback — the moves and the fixups are independently reversible.
+**Completed:** 2026-03-19 — commits `ef21de0`, `7ddbc18`, `0c46724`
 
-**Commit A — Moves only (`git mv`):**
+Move markdown files, fix all cross-references. Three commits:
 
-1. Create `docs/` and `docs/archive/`
-2. `git mv` 8 files to `docs/`, 3 to `docs/archive/`
+**Commit A** (`ef21de0`) — Moves only (`git mv`):
+1. ✅ Create `docs/` and `docs/archive/`
+2. ✅ `git mv` 8 files to `docs/`, 3 to `docs/archive/`
 
-After this commit, all cross-references are stale but the list is known and
-finite. The repo still compiles. If anything goes wrong in Commit B, revert
-this single commit to restore a fully-linked repo.
+**Commit B** (`7ddbc18`) — Reference fixups (33 files, ~50 edits):
+- ✅ `README.md` — substantial rewrite: remove Routing/ML/Sensor sections,
+  update architecture diagram, crate count 28→21, `crates/`→`design/`,
+  update all doc links
+- ✅ `CONTRIBUTING.md` — update STANDARDS.md links (6), COMPLETION_LOG.md
+  links (2), replace `scripts/` usage with xtask, rewrite project structure
+- ✅ `.github/CODEOWNERS` — update 3 doc path entries
+- ✅ `.github/workflows/` — update doc refs in 3 files
+- ✅ `xtask/src/complete.rs` — STANDARDS.md refs (3), COMPLETION_LOG.md
+  path (runtime-breaking), COMPLETION.md + COMPLETION_LOG template paths
+- ✅ `xtask/src/grade.rs` (2), `check.rs` (1), `main.rs` (1) — STANDARDS.md
+- ✅ `xtask/build.rs` (2), `setup.rs` (2) — INFRASTRUCTURE.md
+- ✅ `.rs` doc comments — cf-spatial, mesh-io, mesh-types (3 files)
+- ✅ 7 mesh `COMPLETION.md` files — STANDARDS.md relative path
+- ✅ `Cargo.toml` (root) — INFRASTRUCTURE.md comment
+- ✅ `sim/docs/` — CF_DESIGN_SPEC.md (5), WORKSPACE_TRIM_SPEC.md (3),
+  STANDARDS.md (1 link in SIM_BEVY_IMPLEMENTATION_PLAN.md)
+- ✅ `docs/INFRASTRUCTURE.md` — remove 4 stale `requirements/` references
+- ✅ `LEGACY_CRATE_CLEANUP.md` — remove `scripts/` reference
+- ✅ `design/cf-geometry/` — aabb.rs, mesh.rs, sphere.rs: remove route-types
+  and route-pathfind refs
 
-**Commit B — Reference fixups (~50 edits):**
+**Commit C** (`0c46724`) — Follow-up: remaining stale refs in spec docs:
+- ✅ `docs/CF_DESIGN_SPEC.md` — 5× `crates/cf-design/` → `design/cf-design/`
+- ✅ `docs/CF_GEOMETRY_SPEC.md` — 2× `crates/cf-geometry/` → `design/cf-geometry/`
+- ✅ `sim/docs/` — STRUCTURAL_REFACTOR_RUBRIC.md (2), future_work_3.md (1),
+  future_work_4.md (1): STANDARDS.md text mentions updated
 
-Fix all cross-references (see tables above for complete inventory):
-   - `README.md` — **substantial rewrite**: update doc links (6), remove
-     Routing/ML/Sensor domain sections (lines 122–144), update architecture
-     diagram (remove routing/ml/sensor crates, lines 54–67), update crate
-     count ("28 library crates" → 21), change "Foundation (`crates/`)" →
-     "Foundation (`design/`)", remove "3D Routing"/"Machine Learning"/
-     "Sensor Fusion" from "What's built" (lines 30–32)
-   - `CONTRIBUTING.md` — update STANDARDS.md links (6), COMPLETION_LOG.md
-     links (2), replace `scripts/` usage block (11 lines) with xtask
-     guidance, rewrite project structure section (lines 178–191)
-   - `.github/CODEOWNERS` — update 3 doc path entries
-   - `.github/workflows/` — update doc references in 3 files
-   - `xtask/src/complete.rs` — update STANDARDS.md refs (3) + COMPLETION_LOG.md
-     path (line 195, **runtime-breaking**) + COMPLETION.md template STANDARDS.md
-     relative path (line 147) + COMPLETION_LOG template path (lines 219–225)
-   - `xtask/src/grade.rs` — update STANDARDS.md refs (2)
-   - `xtask/src/check.rs` — update STANDARDS.md ref (1)
-   - `xtask/src/main.rs` — update STANDARDS.md ref (1)
-   - `xtask/build.rs` — update INFRASTRUCTURE.md refs (2)
-   - `xtask/src/setup.rs` — update INFRASTRUCTURE.md refs (2)
-   - Surviving .rs doc comments — update STANDARDS.md links in cf-spatial,
-     mesh-io, mesh-types (3 files)
-   - 7 mesh `COMPLETION.md` files — update STANDARDS.md relative path
-   - `Cargo.toml` (root) — update INFRASTRUCTURE.md comment (1)
-   - `docs/VISION.md` — update internal refs to STANDARDS.md, INFRASTRUCTURE.md,
-     CF_DESIGN_SPEC.md (now sibling paths)
-   - `sim/docs/` — update CF_DESIGN_SPEC.md refs (4), WORKSPACE_TRIM_SPEC.md
-     refs (3), STANDARDS.md refs (5: SIM_BEVY_IMPLEMENTATION_PLAN.md,
-     STRUCTURAL_REFACTOR_RUBRIC.md ×2, future_work_3.md, future_work_4.md)
-   - `docs/INFRASTRUCTURE.md` — remove 4 stale `requirements/` references
-     (directory deleted in Session 1)
-   - `sim/docs/todo/spec_fleshouts/v1_cleanup/LEGACY_CRATE_CLEANUP.md` —
-     remove `scripts/local-quality-check.sh` reference
-   - `design/cf-geometry/src/aabb.rs`, `design/cf-geometry/src/mesh.rs` —
-     update doc comments referencing `route-types` and `route-pathfind`
-     (deleted crates)
-
-**Verify:** grep for each moved filename, confirm zero stale references in
-active files (archive files may cross-reference each other — acceptable).
-
-**Rollback property:** Commit A is trivially reversible (`git revert`).
-Commit B is independently verifiable (grep for stale filenames). Neither
-can break compilation — they're all docs, comments, and one xtask string.
+**Verified:** grep for each moved filename confirms zero stale references
+in active (non-archive) files. xtask builds clean, clippy passes on all
+5 affected crates.
 
 ### Session 3: CI + Final Verification
 
