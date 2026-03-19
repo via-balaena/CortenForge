@@ -79,8 +79,6 @@ jobs:
         crate:
           - mesh-types
           - mesh-repair
-          - sensor-types
-          - ml-types
     steps:
       - uses: actions/checkout@v6
 

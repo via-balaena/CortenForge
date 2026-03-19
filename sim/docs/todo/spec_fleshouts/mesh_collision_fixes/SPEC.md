@@ -173,7 +173,7 @@ Diagnostic test upgraded to assertion tests:
 ## Validation test (Session 4)
 
 After DT-179 and DT-180 are fixed, update
-`crates/cf-design/src/mechanism/integration.rs::phase5_parameterized_grasp_optimization`
+`design/cf-design/src/mechanism/integration.rs::phase5_parameterized_grasp_optimization`
 to use actual contact force instead of mesh volume:
 
 ```rust
