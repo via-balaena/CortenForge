@@ -1,8 +1,8 @@
 # Repo Cleanup — v1.0 Shape-Up
 
 **Date:** 2026-03-19
-**Branch:** TBD
-**Status:** Draft — stress-tested ×2, awaiting approval
+**Branch:** chore/workspace-trim-tier1
+**Status:** Session 1 complete — Sessions 2–3 pending
 
 ## Motivation
 
@@ -210,34 +210,37 @@ subdirectory for historical documents.
 
 ## Session Plan
 
-### Session 1: Tier 2 Removal + Directory Restructure
+### Session 1: Tier 2 Removal + Directory Restructure ✅
+
+**Completed:** 2026-03-19 — commit `e51322b`
 
 All Cargo.toml + file moves that must land together for the workspace to
 compile.
 
-1. Delete `ml/`, `routing/`, `sensor/` (9 crate directories)
-2. Rename `crates/` → `design/`
-3. Edit root `Cargo.toml`:
+1. ✅ Delete `ml/`, `routing/`, `sensor/` (9 crate directories)
+2. ✅ Rename `crates/` → `design/`
+3. ✅ Edit root `Cargo.toml`:
    - Remove 9 members + 9 path deps
    - Remove 7 orphaned workspace deps (burn, burn-ndarray, burn-wgpu,
      pathfinding, glam, tracing-subscriber, cortenforge)
    - Update 3 member paths + 3 dep paths (`crates/` → `design/`)
-4. Edit 3 crate Cargo.toml files for cf-geometry path change:
+4. ✅ Edit 3 crate Cargo.toml files for cf-geometry path change:
    - `sim/L1/bevy/Cargo.toml`
    - `mesh/mesh-types/Cargo.toml`
    - `mesh/mesh-repair/Cargo.toml`
-5. Update xtask hardcoded path lists:
+5. ✅ Update xtask hardcoded path lists:
    - `xtask/src/complete.rs:117` — `"crates"` → `"design"`, remove `"routing"`, `"ml"`
    - `xtask/src/grade.rs:289` — same fix
-6. Delete `scripts/`, `templates/`, `requirements/`
-7. Remove `.github/CODEOWNERS` Tier 2 entries:
+6. ✅ Delete `scripts/`, `templates/`, `requirements/`
+7. ✅ Remove `.github/CODEOWNERS` Tier 2 entries:
    - `/sensor/sensor-types/` and `/ml/ml-types/` ownership lines
-8. Delete `MUJOCO_LOG.TXT` (MuJoCo test output file, not project artifact)
-9. Verify:
+8. ✅ Delete `MUJOCO_LOG.TXT` (MuJoCo test output file, not project artifact)
+9. ✅ Verify:
    ```
    cargo build -p cf-design -p cf-geometry -p cf-spatial -p mesh -p sim-core
    cargo test -p cf-design -p cf-geometry -p cf-spatial
    ```
+   Build clean. 1283 tests passed (cf-design 698, cf-geometry 441, cf-spatial 144).
 
 ### Session 2: Documentation Restructure
 
@@ -356,8 +359,9 @@ All assumptions verified against the codebase:
   `/ml/ml-types/`) + 3 doc path entries to update.
 - **Root artifacts**: `MUJOCO_LOG.TXT` is a test output file, not a
   project artifact — delete in Session 1.
-- **Cargo.toml exclude**: `exclude = ["templates", "docs"]` — `templates`
-  becomes no-op (harmless), `docs` exclude is intentional for the new dir.
+- **Cargo.toml exclude**: `exclude = ["docs"]` — `templates` entry removed
+  in Session 1 (directory deleted). `docs` exclude is intentional for the
+  new dir.
 
 ## Final State
 
