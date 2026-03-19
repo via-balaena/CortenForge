@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-19
 **Branch:** `chore/workspace-trim-tier1`
-**Status:** Spec — awaiting implementation
+**Status:** Session 1 complete (745777d) — Session 2 next
 
 ## Motivation
 
