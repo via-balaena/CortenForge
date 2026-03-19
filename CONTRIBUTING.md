@@ -184,7 +184,6 @@ forge/
 │
 ├── crates/              ← Foundation algorithms
 ├── mesh/                ← Mesh domain
-├── geometry/            ← Curves and surfaces
 ├── routing/             ← 3D pathfinding
 ├── ml/                  ← Machine learning
 ├── sensor/              ← Sensor types and fusion
@@ -215,12 +214,11 @@ mesh-types/
 These crates have **zero** game engine dependencies:
 
 - `mesh-*` crates
-- `curve-types`
 - `cf-spatial`
 - `route-*` crates
 - `sensor-*` crates
 - `ml-*` crates
-- `sim-*` crates (Layer 0, excluding sim-gpu which uses wgpu)
+- `sim-*` crates (Layer 0)
 
 **Enforcement:** `cargo tree -p <crate> | grep bevy` must return nothing.
 
@@ -307,7 +305,7 @@ Examples:
 feat(mesh-types): add VertexAttributes struct
 fix(mesh-io): handle empty STL files gracefully
 refactor(mesh-repair): extract weld_vertices to module
-test(mesh-geodesic): add edge case tests for disconnected meshes
+test(mesh-repair): add edge case tests for non-manifold edges
 docs(mesh-types): add examples to all public functions
 ```
 

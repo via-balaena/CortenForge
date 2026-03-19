@@ -383,7 +383,6 @@ Bevy is an implementation detail of the cortenforge SDK, not the foundation.
 
 **Layer 0 Crates:**
 - `mesh-*`
-- `curve-types`
 - `cf-spatial`
 - `route-*`
 - `sensor-*`

@@ -25,9 +25,8 @@ and that mesh-io exports back to STL. One truth.
 **What's built:**
 
 - **Geometric Kernel** — cf-geometry: unified shapes, GJK/EPA, BVH, ray casting, SDF grids — used by all domains
-- **Physics Simulation** — MuJoCo-aligned rigid body dynamics: Newton/PGS/CG contact solvers, implicit integration, Hill-type muscles, tendons, GPU batching. 79/79 conformance tests pass.
-- **Mesh Processing** — 27 crates: load, repair, transform, boolean ops, lattices, SDF, scanning
-- **Parametric Geometry** — Bezier, B-spline, NURBS curves, arcs, helices
+- **Physics Simulation** — MuJoCo-aligned rigid body dynamics: Newton/PGS/CG contact solvers, implicit integration, Hill-type muscles, tendons, constraints. 79/79 conformance tests pass.
+- **Mesh Processing** — 10 crates: load, repair, SDF, offset, shell, lattices, print validation
 - **3D Routing** — A* pathfinding on voxel grids, multi-objective optimization
 - **Machine Learning** — Model training, inference, and dataset management (Burn)
 - **Sensor Fusion** — Hardware-agnostic sensor types, stream synchronization
@@ -54,17 +53,17 @@ and that mesh-io exports back to STL. One truth.
 │                           (Zero Bevy Dependencies)                          │
 ├──────────┬────────────┬──────────┬──────────────┬──────────┬────────────────┤
 │  mesh/*  │ cf-geometry │routing/* │    sim/*     │   ml/*   │   sensor/*     │
-│ 27 crates│ cf-spatial  │ 3 crates │   8 crates   │ 4 crates │   2 crates     │
-│          │ curve-types │          │              │          │                │
+│ 10 crates│ cf-spatial  │ 3 crates │   7 crates   │ 4 crates │   2 crates     │
+│          │             │          │              │          │                │
 ├──────────┼────────────┼──────────┼──────────────┼──────────┼────────────────┤
 │ mesh-io  │ Aabb       │route-    │ sim-core     │ ml-types │ sensor-types   │
 │ mesh-    │ IndexedMesh│ types    │ sim-mjcf     │ ml-models│ sensor-fusion  │
 │  repair  │ Shape(10)  │route-    │ sim-urdf     │ ml-      │                │
-│ mesh-    │ GJK/EPA    │ pathfind │ sim-types    │  dataset │                │
-│  boolean │ BVH        │route-    │ sim-simd     │ ml-      │                │
-│ mesh-    │ ConvexHull │ optimize │ sim-gpu      │  training│                │
-│  lattice │ SdfGrid    │          │ sim-bevy(L1) │          │                │
-│ ...      │ Ray/RayHit │          │ sim-tests¹   │          │                │
+│ mesh-sdf │ GJK/EPA    │ pathfind │ sim-types    │  dataset │                │
+│ mesh-    │ BVH        │route-    │ sim-simd     │ ml-      │                │
+│  lattice │ ConvexHull │ optimize │ sim-bevy(L1) │  training│                │
+│ mesh-    │ SdfGrid    │          │ sim-tests¹   │          │                │
+│  shell   │ Ray/RayHit │          │              │          │                │
 └──────────┴────────────┴──────────┴──────────────┴──────────┴────────────────┘
 ```
 
@@ -82,7 +81,7 @@ conversion. This is the only place Bevy appears.
 
 ## Crate Overview
 
-**47 library crates** across 7 domains.
+**28 library crates** across 6 domains.
 
 ### Foundation (`crates/`)
 
@@ -91,7 +90,7 @@ conversion. This is the only place Bevy appears.
 | `cf-geometry` | Shared geometric kernel: Aabb, IndexedMesh, Shape (10 variants), ConvexHull, BVH, SdfGrid, GJK/EPA, ray casting, closest point queries. The canonical source of geometric types for all domains. |
 | `cf-spatial` | Voxel grids, occupancy maps, raycasting, DDA traversal |
 
-### Simulation Domain (`sim/`) — 8 crates
+### Simulation Domain (`sim/`) — 7 crates
 
 | Crate | Layer | Description |
 |-------|-------|-------------|
@@ -100,35 +99,25 @@ conversion. This is the only place Bevy appears.
 | `sim-urdf` | L0 | URDF parser, kinematic tree validation |
 | `sim-types` | L0 | RigidBodyState, Pose, Twist, JointState, MassProperties |
 | `sim-simd` | L0 | SIMD batch operations (Vec3x4/Vec3x8) |
-| `sim-gpu` | L0 | GPU-accelerated batched simulation (wgpu) |
 | `sim-conformance-tests` | L0 | MuJoCo conformance and integration tests |
 | `sim-bevy` | L1 | Bevy visualization, debug gizmos, coordinate conversion |
 
 See [sim/docs/ARCHITECTURE.md](./sim/docs/ARCHITECTURE.md) for pipeline details and [sim/docs/ROADMAP_V1.md](./sim/docs/ROADMAP_V1.md) for the completed v1.0 roadmap.
 
-### Mesh Domain (`mesh/`) — 27 crates
+### Mesh Domain (`mesh/`) — 10 crates
 
 | Crate | Description |
 |-------|-------------|
 | `mesh-types` | Core mesh types, attribute storage (re-exports cf-geometry primitives) |
 | `mesh-io` | File I/O: STL, OBJ, PLY, 3MF, STEP |
 | `mesh-repair` | Weld vertices, remove degenerates, fill holes |
-| `mesh-boolean` | CSG boolean operations on triangle meshes |
-| `mesh-transform` | RANSAC, PCA, alignment, orientation |
-| `mesh-lattice` | Lattice structure generation |
 | `mesh-sdf` | Signed distance field computation |
 | `mesh-offset` | Mesh offset via SDF |
 | `mesh-shell` | Shell generation for 3D printing |
-| `mesh-geodesic` | Geodesic distance computation |
-| `mesh-from-curves` | Generate meshes from parametric curves |
-| `mesh-scan` | Point cloud to mesh reconstruction |
-| ... | 15 more: decimate, gpu, measure, morph, printability, region, registration, remesh, slice, subdivide, template, thickness, zones, assembly, mesh (umbrella) |
-
-### Geometry Domain (`geometry/`)
-
-| Crate | Description |
-|-------|-------------|
-| `curve-types` | Bezier, B-spline, NURBS, arcs, circles, helices with Frenet frames |
+| `mesh-measure` | Dimensions, volume, surface area |
+| `mesh-printability` | Print validation |
+| `mesh-lattice` | Lattice structure generation |
+| `mesh` | Umbrella re-export |
 
 ### Routing Domain (`routing/`) — 3 crates
 

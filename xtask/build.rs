@@ -119,7 +119,7 @@ if ! echo "$commit_msg" | head -1 | grep -qE "$pattern"; then
     echo "Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style"
     echo ""
     echo "Examples:"
-    echo "  feat(mesh-boolean): add GPU-accelerated union operation"
+    echo "  feat(mesh-repair): add hole-filling edge case detection"
     echo "  fix(mesh-io): handle malformed STL headers gracefully"
     echo "  docs: update README with new examples"
     echo "  refactor(mesh-repair): extract hole-filling into separate module"

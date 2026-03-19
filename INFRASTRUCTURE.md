@@ -187,9 +187,9 @@ let _ = write!(string, "...");
 **Enforcement**: commit-msg hook (auto-installed)
 
 ```
-feat(mesh-boolean): add GPU-accelerated union operation
+feat(mesh-repair): add hole-filling edge case detection
 fix(mesh-io): handle malformed STL headers gracefully
-refactor(mesh-repair): extract hole-filling into separate module
+refactor(mesh-sdf): extract grid interpolation into separate module
 ```
 
 **Why**:
@@ -373,7 +373,6 @@ if a && b {  // Need tests where:
 - **Prusti**: Verification framework (ETH Zurich)
 
 **Targets**: Critical algorithms only
-- mesh-boolean intersection detection
 - mesh-repair topology operations
 - sensor-fusion transforms
 

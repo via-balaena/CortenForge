@@ -26,8 +26,8 @@ independently:
 | Mesh trait | `MeshTopology` | — | — | — |
 
 **Seven independent `Aabb` implementations** — 4 public (mesh-types, sim-core,
-cf-spatial, route-types) plus 3 private (mesh-boolean, mesh-thickness,
-mesh-repair each define their own for local BVH/query code). Two independent
+cf-spatial, route-types) plus 1 private (mesh-repair defines its own for local
+BVH/query code). Two independent
 triangle types. Two independent triangle mesh representations. Zero shared
 geometric queries.
 
@@ -58,7 +58,7 @@ every product reinvents geometry and they can never interoperate cleanly.
 
 **Key constraint**: `cf-geometry` is **Layer 0** — zero Bevy, zero GPU, zero
 framework dependencies. Pure `nalgebra` + `thiserror` + optional `serde`.
-Same dependency profile as `cf-spatial` and `curve-types`.
+Same dependency profile as `cf-spatial`.
 
 ### Dependency Rules
 
@@ -70,7 +70,7 @@ Same dependency profile as `cf-spatial` and `curve-types`.
 | **sim-bevy** | Via sim-core | Renders `cf-geometry` shapes as Bevy meshes |
 | **cf-spatial** | Yes | `Aabb`, `Sphere`, `Ray` (replaces local definitions) |
 | **route-types** | Yes | `Aabb`, `Sphere` (replaces local definitions) |
-| **curve-types** | No (initially) | Curves are parametric, not discrete — separate concern |
+| ~~curve-types~~ | Removed | Removed in workspace trim (2026-03-19); will be rebuilt when needed |
 
 ### Dependency Validation
 
@@ -170,8 +170,7 @@ These types are so fundamental that all domains need them. They replace the
 /// Axis-aligned bounding box.
 ///
 /// Replaces: mesh_types::Aabb, sim_core::Aabb, cf_spatial::Aabb,
-///           route_types::Aabb, plus 3 private Aabbs in mesh-boolean/
-///           mesh-thickness/mesh-repair
+///           route_types::Aabb, plus 1 private Aabb in mesh-repair
 ///
 /// Derives: Debug, Clone, Copy, PartialEq + optional Serialize/Deserialize
 ///
@@ -522,7 +521,8 @@ pub struct Penetration {
    remeshing. Those stay in mesh-* crates, operating on `cf-geometry::IndexedMesh`.
 
 4. **Not curve/surface geometry.** Parametric curves (Bezier, NURBS) and
-   surfaces stay in `curve-types` / future `surface-types`.
+   surfaces will be rebuilt when needed (curve-types removed in workspace
+   trim, 2026-03-19).
 
 5. **Not a voxel system.** Voxel grids and occupancy maps stay in `cf-spatial`.
    cf-spatial uses `cf-geometry::Ray` as input but owns the voxel structures.
@@ -909,14 +909,13 @@ extreme. Once started, each must finish.
   trait (inherent methods on IndexedMesh). Verify all 47+ downstream crates.
   Dry-run grep first (**kill signal #2**).
 - Entry: Session 13 complete
-- Exit: `cargo test -p mesh-types -p mesh -p mesh-io -p mesh-repair -p mesh-boolean`
+- Exit: `cargo test -p mesh-types -p mesh -p mesh-io -p mesh-repair`
   (+ spot-check 5+ more) passes.
 
 **Session 15: Private AABB Cleanup**
-- Scope: mesh-boolean, mesh-thickness, mesh-repair: delete private Aabb
-  definitions, use cf-geometry::Aabb.
+- Scope: mesh-repair: delete private Aabb definition, use cf-geometry::Aabb.
 - Entry: Session 14 complete
-- Exit: `cargo test -p mesh-boolean -p mesh-thickness -p mesh-repair` passes.
+- Exit: `cargo test -p mesh-repair` passes.
 
 ### Phase 5: Geometric Queries (Sessions 16-18)
 

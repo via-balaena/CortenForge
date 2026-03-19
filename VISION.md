@@ -115,7 +115,6 @@ sim/ (Layer 0 - Pure Rust)
 ├── sim-deformable   XPBD soft bodies (ropes, cloth, volumes)
 ├── sim-muscle       Hill-type muscle model
 ├── sim-tendon       Cable/tendon routing and actuation
-├── sim-gpu          GPU-accelerated batched simulation (wgpu)
 ├── sim-mjcf         MuJoCo XML/MJB format parser
 ├── sim-urdf         URDF parser, kinematic tree validation
 ├── sim-physics      Unified L0 API re-exporting all sim crates
@@ -149,7 +148,7 @@ A headless training run uses `sim-core` directly. A visualization demo uses `CfS
 | **Collision** | Build | MuJoCo-aligned: analytical + GJK/EPA + BVH mesh |
 | **Rigid Physics** | Build | MuJoCo-aligned: Model/Data, CRBA, RNE, Newton/PGS/CG solvers, implicit integration, sleeping |
 | **Soft Physics** | Build | XPBD (sim-deformable), Hill-type muscles (sim-muscle) |
-| **GPU Simulation** | Build | Batched sim via wgpu (sim-gpu) |
+| **GPU Simulation** | Build (future) | Batched sim via wgpu (rebuild when needed) |
 | **Rendering** | Use Bevy | Not our domain |
 | **UI** | Use bevy_egui | Not our domain |
 
@@ -327,7 +326,6 @@ But there are milestones:
 - 14 sim crates implemented (MuJoCo-aligned pipeline)
 - Model/Data architecture with forward kinematics, dynamics, Newton/PGS/CG contact solvers
 - Implicit integration, sleeping system with sparse LDL factorization
-- GPU-batched simulation via sim-gpu (wgpu)
 - sim-bevy provides Bevy visualization with debug gizmos
 - Headless training loop works via sim-core directly
 

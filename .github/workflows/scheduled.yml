@@ -79,7 +79,6 @@ jobs:
         crate:
           - mesh-types
           - mesh-repair
-          - mesh-boolean
           - sensor-types
           - ml-types
     steps:

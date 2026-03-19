@@ -43,7 +43,6 @@ Automatically detect performance regressions in PRs.
 Use Kani or Prusti for proving absence of bugs in critical algorithms.
 
 **Targets:**
-- mesh-boolean intersection detection
 - mesh-repair topology operations
 - sensor-fusion transforms
 

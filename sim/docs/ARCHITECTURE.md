@@ -21,7 +21,6 @@ sim/
 │   ├── types/             # sim-types — Foundation types (BodyId, Pose, config)
 │   ├── simd/              # sim-simd — SIMD batch operations
 │   ├── core/              # sim-core — Pipeline, collision, integration
-│   ├── gpu/               # sim-gpu — GPU-accelerated batched sim (wgpu)
 │   ├── mjcf/              # sim-mjcf — MuJoCo format parser
 │   ├── urdf/              # sim-urdf — URDF parser
 │   └── tests/             # sim-conformance-tests — Model loading tests
@@ -570,21 +569,11 @@ geometry (box, sphere, cylinder; mesh parsed but not converted), dynamics
 (damping; friction parsed but not converted), limits. **Planar joints are
 lossy** — approximated as a single hinge (loses 2 of 3 DOF).
 
-### sim-gpu
+### GPU Acceleration (Removed)
 
-GPU-accelerated batched simulation via wgpu compute shaders. Drop-in
-replacement for `BatchSim` that offloads the integration step to GPU.
-Dependencies: sim-core (with `gpu-internals` feature), wgpu, bytemuck,
-pollster, thiserror, tracing. Optional rayon (behind `parallel` feature).
-
-- `GpuBatchSim` — wraps `BatchSim` with GPU Euler velocity integration
-- `GpuSimContext` — `OnceLock<Option<>>` singleton for device/queue init
-- `GpuEnvBuffers` — Structure-of-Arrays f32 GPU buffers with size validation
-- `GpuParams` — `#[repr(C)]` uniform buffer matching WGSL struct layout
-- `euler_integrate.wgsl` — compute shader: `qvel += qacc * h` per DOF per env
-
-**Phase 10a scope:** Only Euler velocity integration on GPU. FK, collision,
-constraints, dynamics remain on CPU. Transparent fallback via `try_new()`.
+The `sim-gpu` crate was removed in workspace trim (2026-03-19) — zero
+consumers outside the workspace. GPU acceleration will be rebuilt against
+the architecture as it exists when needed. See `WORKSPACE_TRIM_SPEC.md`.
 See [future_work_3 #10](./todo/future_work_3.md) for remaining phases.
 
 ### sim-bevy (Layer 1)
@@ -757,8 +746,8 @@ is Layer 1 only.
 
 | Flag | Crates | Description |
 |------|--------|-------------|
-| `parallel` | sim-core, sim-gpu | Rayon-based parallelization for `BatchSim::step_all()` and `GpuBatchSim::step_all()` CPU forward pass. Sequential fallback when disabled. See [future_work_3 #9](./todo/future_work_3.md) |
-| `gpu-internals` | sim-core | Exposes internal helpers (`integrate_without_velocity`, `envs_as_mut_slice`, `model_arc`) for sim-gpu. No additional deps. |
+| `parallel` | sim-core | Rayon-based parallelization for `BatchSim::step_all()` CPU forward pass. Sequential fallback when disabled. See [future_work_3 #9](./todo/future_work_3.md) |
+| `gpu-internals` | sim-core | Exposes internal helpers (`integrate_without_velocity`, `envs_as_mut_slice`, `model_arc`) for GPU backends. No additional deps. |
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 
