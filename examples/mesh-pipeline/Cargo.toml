@@ -1,0 +1,21 @@
+[package]
+name = "example-mesh-pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+cf-design = { workspace = true }
+mesh-types = { workspace = true }
+mesh-io = { workspace = true }
+mesh-repair = { workspace = true }
+mesh-shell = { workspace = true }
+mesh-lattice = { workspace = true }
+mesh-printability = { workspace = true }
+mesh-measure = { workspace = true }
+nalgebra = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
