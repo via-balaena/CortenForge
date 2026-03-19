@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-19
 **Branch:** `chore/workspace-trim-tier1`
-**Status:** Session 2 complete (a43267c) — Session 3 next
+**Status:** Complete — all 3 sessions done (final crate count: 36, down from 55)
 
 ## Motivation
 
@@ -225,8 +225,10 @@ cargo clippy -p mesh -- -D warnings
 ```
 
 **Update this spec:**
-- Mark status as complete
-- Record final crate count (was 59, now 40)
+- ✅ Status marked complete
+- ✅ Final crate count: 36 (was 55 pre-trim; spec originally said 59 but
+  the examples consolidation PR #121 had already removed 4 crates before
+  this branch)
 
 **Archive or delete `WORKSPACE_TRIM_SPEC.md`** after merge.
 
