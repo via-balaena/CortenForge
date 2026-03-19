@@ -6,7 +6,7 @@ design-through-physics optimization loop.
 **Tier:** T2 (grouped spec — two bugs in the same subsystem)
 **Resolved:** DT-179 (mesh AABB bloat) and DT-180 (inverted mesh-plane normal)
 fixed. Phase 5 integration test upgraded from volume proxy to contact-force
-objective. `CF_DESIGN_SPEC.md` Session 26 fully complete.
+objective. `docs/CF_DESIGN_SPEC.md` Session 26 fully complete.
 
 ---
 
@@ -166,14 +166,14 @@ Diagnostic test upgraded to assertion tests:
 | 1 | Profile + fix DT-179: identify AABB bloat, pre-compute `model.geom_aabb` | This spec | ✅ Mesh collision step1 within 1.5× of primitives; `MESH_DEFAULT_EXTENT` deleted |
 | 2 | Diagnose DT-180: compare mesh vs primitive mass/inertia, identify root cause | This spec (independent of Session 1) | ✅ Root cause: inverted contact normal in `collide_mesh_plane`; `model.body_mass` comparison documented |
 | 3 | Fix DT-180: flip `collide_mesh_plane` normal, upgrade diagnostic to assertion test | Session 2 | ✅ Mesh force/weight = 1.0000 for both (Plane,Mesh) and (Mesh,Plane); 2,221 tests pass |
-| 4 | cf-design integration + spec completion | Sessions 1+3 | ✅ Phase 5 test upgraded to contact-force objective; `cargo test -p cf-design` passes; `CF_DESIGN_SPEC.md` Session 26 updated (blocked status removed, full exit criteria met) |
+| 4 | cf-design integration + spec completion | Sessions 1+3 | ✅ Phase 5 test upgraded to contact-force objective; `cargo test -p cf-design` passes; `docs/CF_DESIGN_SPEC.md` Session 26 updated (blocked status removed, full exit criteria met) |
 
 ---
 
 ## Validation test (Session 4)
 
 After DT-179 and DT-180 are fixed, update
-`crates/cf-design/src/mechanism/integration.rs::phase5_parameterized_grasp_optimization`
+`design/cf-design/src/mechanism/integration.rs::phase5_parameterized_grasp_optimization`
 to use actual contact force instead of mesh volume:
 
 ```rust
@@ -219,9 +219,9 @@ through the simulation."
 
 ---
 
-## Full circle: CF_DESIGN_SPEC.md completion
+## Full circle: docs/CF_DESIGN_SPEC.md completion
 
-After Session 4 passes, update `CF_DESIGN_SPEC.md` Session 26:
+After Session 4 passes, update `docs/CF_DESIGN_SPEC.md` Session 26:
 
 1. Remove the "Blocked" paragraph and deferred exit criterion.
 2. Change the integration test description from "mesh volume" to

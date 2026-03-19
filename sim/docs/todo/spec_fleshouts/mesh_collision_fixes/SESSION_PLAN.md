@@ -129,6 +129,6 @@ Full regression: 2,221 tests pass (sim-core + sim-mjcf + sim-conformance-tests).
   Mechanism rebuilt per evaluation with anchor Z tracking ball radius for
   consistent ground clearance.
 - `sim-core` added as dev-dependency to `cf-design` (for `ConstraintType`).
-- `CF_DESIGN_SPEC.md` Session 26 updated: removed "Blocked" paragraph,
+- `docs/CF_DESIGN_SPEC.md` Session 26 updated: removed "Blocked" paragraph,
   replaced volume proxy with contact force description, updated exit criterion.
 - 696 cf-design tests pass, 2,221 sim tests pass.

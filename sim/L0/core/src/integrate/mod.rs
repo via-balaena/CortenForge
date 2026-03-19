@@ -220,13 +220,13 @@ impl Data {
     /// normalization, and time advance. Skips `qvel += qacc * h` (assumed
     /// to have been done externally, e.g., on GPU).
     ///
-    /// Used by the GPU backend (`sim-gpu`) where velocity integration
+    /// Designed for GPU backends where velocity integration
     /// is performed on GPU via compute shader.
     ///
     /// # Visibility
     ///
     /// This method is public but feature-gated behind `gpu-internals`.
-    /// It is not part of the stable `sim-core` API — only `sim-gpu`
+    /// It is not part of the stable `sim-core` API — only GPU backends
     /// should depend on this feature.
     #[cfg(feature = "gpu-internals")]
     #[doc(hidden)]

@@ -40,22 +40,14 @@ cargo xtask ci
 **Always run local checks before pushing.** Don't wait for GitHub CI to catch issues.
 
 ```bash
-# Quick check (format + clippy + tests) - run this before every push
-./scripts/local-quality-check.sh quick
+# Quick check (format + clippy + tests)
+cargo xtask check
 
-# Full quality gate (mirrors GitHub CI)
-./scripts/local-quality-check.sh
+# Full CI suite (same as GitHub Actions)
+cargo xtask ci
 
-# Individual checks
-./scripts/local-quality-check.sh fmt      # Format only
-./scripts/local-quality-check.sh clippy   # Clippy only
-./scripts/local-quality-check.sh test     # Tests only
-./scripts/local-quality-check.sh docs     # Documentation only
-./scripts/local-quality-check.sh safety   # unwrap/expect check
-./scripts/local-quality-check.sh deps     # Dependency policy
-./scripts/local-quality-check.sh bevy     # Bevy-free (Layer 0)
-./scripts/local-quality-check.sh wasm     # WASM compatibility
-./scripts/local-quality-check.sh coverage # Coverage threshold
+# Grade a specific crate
+cargo xtask grade <crate-name>
 ```
 
 ### Using `act` for Full GitHub Actions Emulation
@@ -128,7 +120,7 @@ If your grade is below A on any criterion, fix it. This is not optional. The ref
 cargo xtask complete <crate-name>
 ```
 
-This records completion in the crate's `COMPLETION.md` and updates the project-wide `COMPLETION_LOG.md`. Requires human review for API criterion.
+This records completion in the crate's `COMPLETION.md` and updates the project-wide `docs/archive/COMPLETION_LOG.md`. Requires human review for API criterion.
 
 ---
 
@@ -145,7 +137,7 @@ This records completion in the crate's `COMPLETION.md` and updates the project-w
 | **API Design** | Intuitive, idiomatic, follows Rust guidelines | Manual |
 | **Performance** | Hot paths benchmarked | Manual |
 
-**See [STANDARDS.md](./STANDARDS.md) for full details on each criterion.**
+**See [STANDARDS.md](./docs/STANDARDS.md) for full details on each criterion.**
 
 ---
 
@@ -178,18 +170,15 @@ Every push and PR runs:
 ```
 forge/
 ├── CONTRIBUTING.md      ← You are here
-├── STANDARDS.md         ← Full quality criteria
-├── COMPLETION_LOG.md    ← All completed crates
+├── docs/                ← Project documentation
+│   ├── STANDARDS.md     ← Full quality criteria
+│   └── archive/         ← Historical docs
 ├── xtask/               ← Quality enforcement tool
 │
-├── crates/              ← Foundation algorithms
-├── mesh/                ← Mesh domain
-├── geometry/            ← Curves and surfaces
-├── routing/             ← 3D pathfinding
-├── ml/                  ← Machine learning
-├── sensor/              ← Sensor types and fusion
-├── sim/                 ← Simulation (14 crates)
-└── cortenforge/         ← Bevy SDK umbrella
+├── design/              ← Foundation & design kernel (3 crates)
+├── mesh/                ← Mesh pipeline (10 crates + umbrella)
+├── sim/                 ← Physics simulation (7 crates)
+└── examples/            ← Working showcases (6 examples)
 ```
 
 ### Per-Crate Structure
@@ -199,7 +188,7 @@ Every crate has:
 ```
 mesh-types/
 ├── Cargo.toml
-├── README.md            ← Links to STANDARDS.md
+├── README.md            ← Links to docs/STANDARDS.md
 ├── COMPLETION.md        ← This crate's A-grade record
 ├── benches/             ← Criterion benchmarks
 └── src/
@@ -215,18 +204,14 @@ mesh-types/
 These crates have **zero** game engine dependencies:
 
 - `mesh-*` crates
-- `curve-types`
 - `cf-spatial`
-- `route-*` crates
-- `sensor-*` crates
-- `ml-*` crates
-- `sim-*` crates (Layer 0, excluding sim-gpu which uses wgpu)
+- `sim-*` crates (Layer 0)
 
 **Enforcement:** `cargo tree -p <crate> | grep bevy` must return nothing.
 
 ### Layer 1: Bevy SDK
 
-The `cortenforge` crate wraps Layer 0 with Bevy plugins. This is the only place Bevy appears.
+`sim-bevy` wraps Layer 0 with Bevy plugins. This is the only place Bevy appears.
 
 ---
 
@@ -237,7 +222,7 @@ If you are an AI agent contributing to this project:
 1. **Always run `cargo xtask check` before proposing changes**
 2. **Grade your work with `cargo xtask grade <crate>`**
 3. **Do not mark anything complete without human review**
-4. **Reference STANDARDS.md for all quality decisions**
+4. **Reference docs/STANDARDS.md for all quality decisions**
 5. **When in doubt, choose the more rigorous option**
 6. **Follow the established patterns in existing crates**
 7. **Maintain the A-grade standard—no shortcuts**
@@ -253,7 +238,7 @@ This project maintains A-grade academic standards. All code must:
 - Have zero unwrap/expect in library code
 - Be reviewed via `cargo xtask grade <crate>`
 
-See CONTRIBUTING.md and STANDARDS.md for full requirements.
+See CONTRIBUTING.md and docs/STANDARDS.md for full requirements.
 ```
 
 ---
@@ -264,7 +249,7 @@ See CONTRIBUTING.md and STANDARDS.md for full requirements.
 
 1. Run `cargo xtask grade <crate>` before requesting review
 2. Ensure all automated criteria are A
-3. Self-review against the API checklist in STANDARDS.md
+3. Self-review against the API checklist in docs/STANDARDS.md
 4. Create PR with grade output in description
 
 ### For Reviewers
@@ -307,7 +292,7 @@ Examples:
 feat(mesh-types): add VertexAttributes struct
 fix(mesh-io): handle empty STL files gracefully
 refactor(mesh-repair): extract weld_vertices to module
-test(mesh-geodesic): add edge case tests for disconnected meshes
+test(mesh-repair): add edge case tests for non-manifold edges
 docs(mesh-types): add examples to all public functions
 ```
 

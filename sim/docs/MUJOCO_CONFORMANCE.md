@@ -326,7 +326,7 @@ Some differences from MuJoCo are by design:
 |------|--------|-------------|-----------|
 | Memory model | Pre-allocated pools | Dynamic allocation | Rust idioms, safety |
 | Threading | OpenMP | Rayon | Rust ecosystem |
-| GPU | Custom CUDA / MJX (JAX) | `sim-gpu` crate (wgpu, Phase 10a active) | Cross-platform |
+| GPU | Custom CUDA / MJX (JAX) | Removed (rebuild when needed) | — |
 | Contact solver | Custom sparse | PGS + CG/PGD + Newton (reduced primal, §15) with variable condim (1/3/4/6), elliptic friction cones | Maintainability |
 | Visualization | Built-in | Separate L1 crate | Headless training |
 

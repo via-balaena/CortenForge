@@ -3118,7 +3118,7 @@ integration using the full velocity-derivative Jacobian `qDeriv`. Implement both
 
 Add `ImplicitFast` and `Implicit` variants alongside existing
 `ImplicitSpringDamper`. Both `Integrator` and `StepError` should carry
-`#[non_exhaustive]` per STANDARDS.md (enums that may grow):
+`#[non_exhaustive]` per docs/STANDARDS.md (enums that may grow):
 
 ```rust
 #[non_exhaustive]

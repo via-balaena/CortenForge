@@ -11,10 +11,10 @@
 
 # Critical infrastructure - requires owner review
 /.github/ @jonhillesheim
-/STANDARDS.md @jonhillesheim
-/INFRASTRUCTURE.md @jonhillesheim
+/docs/STANDARDS.md @jonhillesheim
+/docs/INFRASTRUCTURE.md @jonhillesheim
 /CONTRIBUTING.md @jonhillesheim
-/SECURITY.md @jonhillesheim
+/docs/SECURITY.md @jonhillesheim
 /Cargo.toml @jonhillesheim
 /deny.toml @jonhillesheim
 /rustfmt.toml @jonhillesheim
@@ -27,5 +27,3 @@
 /mesh/mesh-types/ @jonhillesheim
 /mesh/mesh-io/ @jonhillesheim
 /mesh/mesh-repair/ @jonhillesheim
-/sensor/sensor-types/ @jonhillesheim
-/ml/ml-types/ @jonhillesheim

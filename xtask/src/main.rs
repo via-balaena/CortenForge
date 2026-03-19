@@ -22,7 +22,7 @@
 //! 6. Bevy-free (Layer 0) - No bevy in dependency tree
 //! 7. API Design - Idiomatic, intuitive (manual review)
 //!
-//! See STANDARDS.md for full details.
+//! See docs/STANDARDS.md for full details.
 
 mod check;
 mod complete;

@@ -6,7 +6,7 @@
 # - Dependency update check
 # - Benchmark regression monitoring
 #
-# See INFRASTRUCTURE.md for the full constraint specification.
+# See docs/INFRASTRUCTURE.md for the full constraint specification.
 
 name: Scheduled Maintenance
 
@@ -79,9 +79,6 @@ jobs:
         crate:
           - mesh-types
           - mesh-repair
-          - mesh-boolean
-          - sensor-types
-          - ml-types
     steps:
       - uses: actions/checkout@v6
 

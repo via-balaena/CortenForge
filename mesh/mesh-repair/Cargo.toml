@@ -9,7 +9,7 @@ keywords = ["mesh", "repair", "3d", "geometry", "manifold"]
 categories = ["algorithms", "graphics", "game-development"]
 
 [dependencies]
-cf-geometry = { path = "../../crates/cf-geometry" }
+cf-geometry = { path = "../../design/cf-geometry" }
 mesh-types = { workspace = true }
 nalgebra = { workspace = true }
 thiserror = { workspace = true }

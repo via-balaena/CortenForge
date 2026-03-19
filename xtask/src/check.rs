@@ -239,7 +239,7 @@ fn run_safety_scan(sh: &Shell) -> Result<()> {
 
     if violations > 0 {
         anyhow::bail!(
-            "Found {} unwrap/expect calls in library code. See STANDARDS.md criterion 4.",
+            "Found {} unwrap/expect calls in library code. See docs/STANDARDS.md criterion 4.",
             violations
         );
     }

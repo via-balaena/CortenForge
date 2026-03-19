@@ -13,7 +13,7 @@ const PRE_COMMIT_HOOK: &str = r#"#!/bin/sh
 # Auto-installed by: xtask build.rs
 #
 # This hook enforces quality standards before commits reach CI.
-# See INFRASTRUCTURE.md for the full constraint specification.
+# See docs/INFRASTRUCTURE.md for the full constraint specification.
 #
 # Performance: only lints crates with staged changes (not the full workspace).
 
@@ -89,7 +89,7 @@ const COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # Auto-installed by: xtask build.rs
 #
 # Enforces conventional commit format for automated changelog generation.
-# See INFRASTRUCTURE.md for details.
+# See docs/INFRASTRUCTURE.md for details.
 
 commit_msg=$(cat "$1")
 
@@ -119,7 +119,7 @@ if ! echo "$commit_msg" | head -1 | grep -qE "$pattern"; then
     echo "Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style"
     echo ""
     echo "Examples:"
-    echo "  feat(mesh-boolean): add GPU-accelerated union operation"
+    echo "  feat(mesh-repair): add hole-filling edge case detection"
     echo "  fix(mesh-io): handle malformed STL headers gracefully"
     echo "  docs: update README with new examples"
     echo "  refactor(mesh-repair): extract hole-filling into separate module"

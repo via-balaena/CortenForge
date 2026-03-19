@@ -2207,7 +2207,7 @@ integration (`qvel += qacc * h`) runs on GPU; all other pipeline stages remain
 on CPU. `GpuBatchSim` is a drop-in replacement for `BatchSim` with same API
 surface (step_all, reset, env access) plus transparent CPU fallback via
 `try_new()`. 17 integration tests (5 always-run + 12 GPU-required), criterion
-benchmarks, A-grade across all 7 STANDARDS.md criteria. Phases 10b–10f
+benchmarks, A-grade across all 7 docs/STANDARDS.md criteria. Phases 10b–10f
 (FK, collision, constraint solver, full GPU step) remain as future work.
 
 #### Current State
