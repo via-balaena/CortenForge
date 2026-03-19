@@ -1,6 +1,6 @@
 # mesh-measure - A-Grade Completion
 
-> This crate meets all seven A-grade criteria as defined in [STANDARDS.md](../../STANDARDS.md).
+> This crate meets all seven A-grade criteria as defined in [STANDARDS.md](../../docs/STANDARDS.md).
 
 ## Completion Record
 

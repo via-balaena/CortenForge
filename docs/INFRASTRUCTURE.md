@@ -66,7 +66,7 @@ TIER 2: Scale Enablers                   [PARTIAL]
 ├── Benchmark regression gates           [ ]
 ├── Mutation testing                     [x] In scheduled.yml (weekly)
 ├── API stability tracking               [x] Via cargo-semver-checks
-└── Traceability infrastructure          [x] requirements/ directory exists
+└── Traceability infrastructure          [ ] (requirements/ removed — rebuild when needed)
 
 TIER 3: Safety-Critical Ready            [FUTURE]
 ├── MC/DC coverage tooling               [ ]
@@ -305,41 +305,8 @@ cargo mutants --package mesh-repair -- --release
 
 ### 2.4 Traceability Infrastructure
 
-**Structure**:
-```
-requirements/
-├── REQ-MESH-001.yaml    # Mesh topology requirements
-├── REQ-MESH-002.yaml    # Mesh I/O requirements
-├── REQ-SAFETY-001.yaml  # Safety requirements
-└── traceability.toml    # Links to tests
-```
-
-**Requirement Format**:
-```yaml
-# requirements/REQ-MESH-001.yaml
-id: REQ-MESH-001
-title: Mesh Validation
-description: |
-  The system shall detect non-manifold meshes with:
-  - Open edges
-  - Self-intersections
-  - Degenerate triangles
-priority: HIGH
-verification:
-  - test: mesh-repair::tests::test_detect_non_manifold
-  - test: mesh-repair::tests::test_detect_self_intersection
-traces_to:
-  - RISK-001  # Non-manifold mesh causes print failure
-```
-
-**Test Annotation**:
-```rust
-/// Verifies: REQ-MESH-001
-#[test]
-fn test_detect_non_manifold() {
-    // ...
-}
-```
+**Status**: The `requirements/` directory was removed (single file, no code consumers).
+Traceability infrastructure will be rebuilt when the project scales to need it.
 
 **Why**:
 - ISO 26262 / IEC 62304 / DO-178C all require bidirectional traceability
@@ -477,7 +444,7 @@ Track these metrics for health visibility:
 - [x] ARM64 CI target (macOS)
 - [x] WASM CI target (Layer 0 crates)
 - [x] Mutation testing (weekly scheduled)
-- [x] Traceability infrastructure (requirements/ directory)
+- [ ] Traceability infrastructure (requirements/ removed — rebuild when needed)
 - [x] Pre-commit hooks (auto-installed via xtask/build.rs)
 - [x] Conventional commit enforcement (commit-msg hook)
 

@@ -2,7 +2,7 @@
 //!
 //! [`Aabb`] is the canonical bounding box type for all CortenForge domains.
 //! It replaces the 7 independent implementations that existed across
-//! mesh-types, sim-core, cf-spatial, route-types, and 3 private crates.
+//! mesh-types, sim-core, cf-spatial, and 3 private crates.
 //!
 //! # Constructors
 //!

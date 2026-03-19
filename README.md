@@ -27,13 +27,9 @@ and that mesh-io exports back to STL. One truth.
 - **Geometric Kernel** — cf-geometry: unified shapes, GJK/EPA, BVH, ray casting, SDF grids — used by all domains
 - **Physics Simulation** — MuJoCo-aligned rigid body dynamics: Newton/PGS/CG contact solvers, implicit integration, Hill-type muscles, tendons, constraints. 79/79 conformance tests pass.
 - **Mesh Processing** — 10 crates: load, repair, SDF, offset, shell, lattices, print validation
-- **3D Routing** — A* pathfinding on voxel grids, multi-objective optimization
-- **Machine Learning** — Model training, inference, and dataset management (Burn)
-- **Sensor Fusion** — Hardware-agnostic sensor types, stream synchronization
-
 **What's next:**
 
-- **cf-design** — Implicit surface design kernel: define parts as math functions, compose with smooth booleans, assemble into mechanisms that map 1:1 to MJCF. See [CF_DESIGN_SPEC.md](./CF_DESIGN_SPEC.md).
+- **cf-design** — Implicit surface design kernel: define parts as math functions, compose with smooth booleans, assemble into mechanisms that map 1:1 to MJCF. See [CF_DESIGN_SPEC.md](./docs/CF_DESIGN_SPEC.md).
 
 ---
 
@@ -51,20 +47,20 @@ and that mesh-io exports back to STL. One truth.
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         LAYER 0: Pure Rust Foundation                       │
 │                           (Zero Bevy Dependencies)                          │
-├──────────┬────────────┬──────────┬──────────────┬──────────┬────────────────┤
-│  mesh/*  │ cf-geometry │routing/* │    sim/*     │   ml/*   │   sensor/*     │
-│ 10 crates│ cf-spatial  │ 3 crates │   7 crates   │ 4 crates │   2 crates     │
-│          │             │          │              │          │                │
-├──────────┼────────────┼──────────┼──────────────┼──────────┼────────────────┤
-│ mesh-io  │ Aabb       │route-    │ sim-core     │ ml-types │ sensor-types   │
-│ mesh-    │ IndexedMesh│ types    │ sim-mjcf     │ ml-models│ sensor-fusion  │
-│  repair  │ Shape(10)  │route-    │ sim-urdf     │ ml-      │                │
-│ mesh-sdf │ GJK/EPA    │ pathfind │ sim-types    │  dataset │                │
-│ mesh-    │ BVH        │route-    │ sim-simd     │ ml-      │                │
-│  lattice │ ConvexHull │ optimize │ sim-bevy(L1) │  training│                │
-│ mesh-    │ SdfGrid    │          │ sim-tests¹   │          │                │
-│  shell   │ Ray/RayHit │          │              │          │                │
-└──────────┴────────────┴──────────┴──────────────┴──────────┴────────────────┘
+├──────────┬────────────┬──────────────┤
+│  mesh/*  │ cf-geometry │    sim/*     │
+│ 10 crates│ cf-spatial  │   7 crates   │
+│          │ cf-design   │              │
+├──────────┼────────────┼──────────────┤
+│ mesh-io  │ Aabb       │ sim-core     │
+│ mesh-    │ IndexedMesh│ sim-mjcf     │
+│  repair  │ Shape(10)  │ sim-urdf     │
+│ mesh-sdf │ GJK/EPA    │ sim-types    │
+│ mesh-    │ BVH        │ sim-simd     │
+│  lattice │ ConvexHull │ sim-bevy(L1) │
+│ mesh-    │ SdfGrid    │ sim-tests¹   │
+│  shell   │ Ray/RayHit │              │
+└──────────┴────────────┴──────────────┘
 ```
 
 ### Layer 0: Pure Rust
@@ -81,9 +77,9 @@ conversion. This is the only place Bevy appears.
 
 ## Crate Overview
 
-**28 library crates** across 6 domains.
+**21 library crates** across 3 domains.
 
-### Foundation (`crates/`)
+### Foundation (`design/`)
 
 | Crate | Description |
 |-------|-------------|
@@ -119,30 +115,6 @@ See [sim/docs/ARCHITECTURE.md](./sim/docs/ARCHITECTURE.md) for pipeline details 
 | `mesh-lattice` | Lattice structure generation |
 | `mesh` | Umbrella re-export |
 
-### Routing Domain (`routing/`) — 3 crates
-
-| Crate | Description |
-|-------|-------------|
-| `route-types` | Paths, routes, constraints, cost weights |
-| `route-pathfind` | A* on voxel grids (6/26 connectivity), path smoothing |
-| `route-optimize` | Clearance, curvature, shortening, Pareto optimization |
-
-### ML Domain (`ml/`) — 4 crates
-
-| Crate | Description |
-|-------|-------------|
-| `ml-types` | Inference types, dataset schemas, labels, metadata |
-| `ml-models` | Neural network architectures + checkpoint persistence (Burn) |
-| `ml-dataset` | Dataset loading, splitting, augmentation, warehousing |
-| `ml-training` | Training loops, loss functions, box matching |
-
-### Sensor Domain (`sensor/`) — 2 crates
-
-| Crate | Description |
-|-------|-------------|
-| `sensor-types` | Hardware-agnostic sensor data: IMU, camera, LiDAR, F/T, GPS |
-| `sensor-fusion` | Stream synchronization, temporal alignment, spatial transforms |
-
 ---
 
 ## Quality Standards
@@ -159,7 +131,7 @@ See [sim/docs/ARCHITECTURE.md](./sim/docs/ARCHITECTURE.md) for pipeline details 
 | Bevy-free (Layer 0) | No bevy in dependency tree |
 | Commits | Signed + conventional format |
 
-See [STANDARDS.md](./STANDARDS.md) for full details.
+See [STANDARDS.md](./docs/STANDARDS.md) for full details.
 
 ```bash
 # Grade a crate
@@ -197,10 +169,10 @@ Git hooks enforce formatting, clippy, and conventional commits automatically.
 
 | Document | Purpose |
 |----------|---------|
-| [VISION.md](./VISION.md) | North star — architecture philosophy, domain coverage, milestones |
-| [CF_GEOMETRY_SPEC.md](./CF_GEOMETRY_SPEC.md) | Shared geometric kernel spec (implemented) |
-| [CF_DESIGN_SPEC.md](./CF_DESIGN_SPEC.md) | Implicit surface design kernel spec (planned) |
-| [STANDARDS.md](./STANDARDS.md) | Quality criteria and grading rubric |
+| [VISION.md](./docs/VISION.md) | North star — architecture philosophy, domain coverage, milestones |
+| [CF_GEOMETRY_SPEC.md](./docs/CF_GEOMETRY_SPEC.md) | Shared geometric kernel spec (implemented) |
+| [CF_DESIGN_SPEC.md](./docs/CF_DESIGN_SPEC.md) | Implicit surface design kernel spec (planned) |
+| [STANDARDS.md](./docs/STANDARDS.md) | Quality criteria and grading rubric |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Development workflow |
 | [sim/docs/ARCHITECTURE.md](./sim/docs/ARCHITECTURE.md) | Physics simulation pipeline details |
 

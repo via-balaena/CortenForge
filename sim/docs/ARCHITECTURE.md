@@ -573,7 +573,7 @@ lossy** — approximated as a single hinge (loses 2 of 3 DOF).
 
 The `sim-gpu` crate was removed in workspace trim (2026-03-19) — zero
 consumers outside the workspace. GPU acceleration will be rebuilt against
-the architecture as it exists when needed. See `WORKSPACE_TRIM_SPEC.md`.
+the architecture as it exists when needed. See `docs/archive/WORKSPACE_TRIM_SPEC.md`.
 See [future_work_3 #10](./todo/future_work_3.md) for remaining phases.
 
 ### sim-bevy (Layer 1)

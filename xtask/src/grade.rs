@@ -1,6 +1,6 @@
 //! Crate grading against the A-grade standard.
 //!
-//! This module implements the seven-criterion grading system defined in STANDARDS.md.
+//! This module implements the seven-criterion grading system defined in docs/STANDARDS.md.
 
 use anyhow::{bail, Context, Result};
 use owo_colors::OwoColorize;
@@ -221,7 +221,7 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
                 "✓ All automated criteria pass. Ready for API review.".green()
             );
             println!();
-            println!("Next step: Review against API checklist in STANDARDS.md");
+            println!("Next step: Review against API checklist in docs/STANDARDS.md");
             println!("Then run: cargo xtask complete {}", crate_name);
         }
         _ => {

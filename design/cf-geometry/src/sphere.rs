@@ -1,6 +1,6 @@
 //! Sphere defined by center and radius.
 //!
-//! Replaces `cf_spatial::Sphere` and `route_types::Sphere`.
+//! Replaces `cf_spatial::Sphere`.
 
 use nalgebra::{Point3, Vector3};
 

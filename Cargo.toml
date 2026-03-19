@@ -74,7 +74,7 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 # unwrap/expect: warn at workspace level (for tests), deny in lib.rs (for library code)
-# See INFRASTRUCTURE.md "Safety Lint Policy" for the rationale.
+# See docs/INFRASTRUCTURE.md "Safety Lint Policy" for the rationale.
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"

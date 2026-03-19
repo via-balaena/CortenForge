@@ -50,7 +50,7 @@ pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
             "The API Design criterion requires manual review.".yellow()
         );
         println!();
-        println!("Review checklist (from STANDARDS.md):");
+        println!("Review checklist (from docs/STANDARDS.md):");
         println!("  □ Follows Rust API Guidelines");
         println!("  □ Naming consistent with stdlib and CortenForge");
         println!("  □ Types appropriately generic or concrete");
@@ -142,7 +142,7 @@ fn write_completion(crate_path: &str, crate_name: &str, reviewer: &str) -> Resul
     let content = format!(
         r#"# {crate_name} - A-Grade Completion
 
-> This crate meets all seven A-grade criteria as defined in [STANDARDS.md](../../STANDARDS.md).
+> This crate meets all seven A-grade criteria as defined in [STANDARDS.md](../../docs/STANDARDS.md).
 
 ## Completion Record
 
@@ -190,7 +190,7 @@ cargo xtask grade {crate_name}
 }
 
 fn update_completion_log(crate_name: &str, reviewer: &str) -> Result<()> {
-    let log_path = "COMPLETION_LOG.md";
+    let log_path = "docs/archive/COMPLETION_LOG.md";
     let now = Utc::now();
     let date = now.format("%Y-%m-%d").to_string();
 
@@ -219,8 +219,8 @@ fn update_completion_log(crate_name: &str, reviewer: &str) -> Result<()> {
 
 > Record of all crates that have achieved A-grade status.
 
-See [STANDARDS.md](./STANDARDS.md) for the seven criteria.
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the workflow.
+See [STANDARDS.md](../STANDARDS.md) for the seven criteria.
+See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the workflow.
 
 ## A-Grade Crates
 

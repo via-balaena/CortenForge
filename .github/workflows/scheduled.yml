@@ -6,7 +6,7 @@
 # - Dependency update check
 # - Benchmark regression monitoring
 #
-# See INFRASTRUCTURE.md for the full constraint specification.
+# See docs/INFRASTRUCTURE.md for the full constraint specification.
 
 name: Scheduled Maintenance
 

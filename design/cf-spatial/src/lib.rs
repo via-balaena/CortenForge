@@ -136,7 +136,7 @@
 //!
 //! # Quality Standards
 //!
-//! This crate maintains A-grade standards per [STANDARDS.md](../../STANDARDS.md):
+//! This crate maintains A-grade standards per [STANDARDS.md](../../docs/STANDARDS.md):
 //! - ≥90% test coverage
 //! - Zero clippy/doc warnings
 //! - Zero `unwrap`/`expect` in library code

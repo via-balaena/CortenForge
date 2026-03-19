@@ -20,7 +20,7 @@ use crate::{Aabb, Triangle};
 ///
 /// ```text
 /// mesh-io loads (owned) → mesh-repair fixes (owned, mutated)
-///   → Arc::new() → sim-core, sim-bevy, route-pathfind share (zero-copy)
+///   → Arc::new() → sim-core, sim-bevy share (zero-copy)
 /// ```
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

@@ -401,9 +401,7 @@ sim-muscle are confirmed absent from both files.
 - `.github/workflows/quality-gate.yml` — remove `sim-constraint` and `sim-physics` from:
   - WASM check crate array (lines 156, 158)
   - Bevy-free / Layer 0 crate array (lines 398, 400)
-- `scripts/local-quality-check.sh` — remove `sim-constraint` and `sim-physics` from:
-  - `check_wasm()` WASM_CRATES array (lines 187, 189)
-  - `check_bevy_free()` LAYER0_CRATES array (lines 239, 241)
+- `scripts/local-quality-check.sh` — **deleted** (subsumed by `cargo xtask check`)
 
 ### Phase F — Verify
 

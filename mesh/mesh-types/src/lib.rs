@@ -51,7 +51,7 @@
 //!
 //! # Quality Standards
 //!
-//! This crate maintains A-grade standards per [STANDARDS.md](../../STANDARDS.md):
+//! This crate maintains A-grade standards per [STANDARDS.md](../../docs/STANDARDS.md):
 //! - Zero clippy/doc warnings
 //! - Zero `unwrap`/`expect` in library code
 

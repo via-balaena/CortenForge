@@ -13,7 +13,7 @@ const PRE_COMMIT_HOOK: &str = r#"#!/bin/sh
 # Auto-installed by: xtask build.rs
 #
 # This hook enforces quality standards before commits reach CI.
-# See INFRASTRUCTURE.md for the full constraint specification.
+# See docs/INFRASTRUCTURE.md for the full constraint specification.
 #
 # Performance: only lints crates with staged changes (not the full workspace).
 
@@ -89,7 +89,7 @@ const COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # Auto-installed by: xtask build.rs
 #
 # Enforces conventional commit format for automated changelog generation.
-# See INFRASTRUCTURE.md for details.
+# See docs/INFRASTRUCTURE.md for details.
 
 commit_msg=$(cat "$1")
 

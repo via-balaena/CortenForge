@@ -1,8 +1,8 @@
 # CortenForge Quality Gate
 #
 # This workflow enforces the A-grade standard on every push and PR.
-# See STANDARDS.md for the seven criteria.
-# See INFRASTRUCTURE.md for the full constraint specification.
+# See docs/STANDARDS.md for the seven criteria.
+# See docs/INFRASTRUCTURE.md for the full constraint specification.
 #
 # "A-grade or it doesn't ship. No exceptions."
 
@@ -295,7 +295,7 @@ jobs:
     runs-on: ubuntu-latest
     # Non-blocking: not in quality-gate's `needs` list, so a red ❌ here
     # is visible on the PR but does not prevent merging.
-    # Action items for contributing fixes upstream are tracked in UPSTREAM.md.
+    # Action items for contributing fixes upstream are tracked in docs/UPSTREAM.md.
     steps:
       - uses: actions/checkout@v6
 
@@ -315,7 +315,7 @@ jobs:
             echo '### :warning: Security Audit — Advisories Found' >> "$GITHUB_STEP_SUMMARY"
             echo '' >> "$GITHUB_STEP_SUMMARY"
             echo 'The following upstream advisories affect our dependency tree.' >> "$GITHUB_STEP_SUMMARY"
-            echo 'These are **non-blocking** — see `UPSTREAM.md` for action items.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'These are **non-blocking** — see `docs/UPSTREAM.md` for action items.' >> "$GITHUB_STEP_SUMMARY"
             echo '' >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             cat audit-output.txt >> "$GITHUB_STEP_SUMMARY"
