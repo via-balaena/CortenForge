@@ -531,6 +531,7 @@ const TRI_TABLE: [[i8; 16]; 256] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field_node::Val;
     use nalgebra::Vector3;
     use std::f64::consts::PI;
 
@@ -574,7 +575,9 @@ mod tests {
 
     #[test]
     fn sphere_mesh_valid() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = node.bounds().map(|b| b.expanded(0.5));
         let (mesh, _) = mesh_field(&node, &bounds.unwrap_or(Aabb::empty()), 0.5);
         assert_mesh_valid(&mesh, "sphere");
@@ -582,7 +585,9 @@ mod tests {
 
     #[test]
     fn sphere_volume_approximation() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = node.bounds().map(|b| b.expanded(0.5));
         let (mesh, _) = mesh_field(&node, &bounds.unwrap_or(Aabb::empty()), 0.5);
         let expected = 4.0 / 3.0 * PI * 125.0;
@@ -635,9 +640,13 @@ mod tests {
 
     #[test]
     fn union_mesh_valid() {
-        let a = FieldNode::Sphere { radius: 3.0 };
+        let a = FieldNode::Sphere {
+            radius: Val::from(3.0),
+        };
         let b = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
             Vector3::new(4.0, 0.0, 0.0),
         );
         let node = FieldNode::Union(Box::new(a), Box::new(b));
@@ -649,7 +658,9 @@ mod tests {
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn sphere_pruning_ratio() {
-        let node = FieldNode::Sphere { radius: 5.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
         let bounds = node.bounds().map(|b| b.expanded(0.5));
         let (_, stats) = mesh_field(&node, &bounds.unwrap_or(Aabb::empty()), 0.5);
         let pruned_ratio = stats.cells_pruned as f64 / stats.cells_total as f64;
@@ -715,7 +726,9 @@ mod tests {
 
     #[test]
     fn empty_bounds_returns_empty_mesh() {
-        let node = FieldNode::Sphere { radius: 1.0 };
+        let node = FieldNode::Sphere {
+            radius: Val::from(1.0),
+        };
         let (mesh, stats) = mesh_field(
             &node,
             &Aabb::new(

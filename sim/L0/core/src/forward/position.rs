@@ -7,7 +7,7 @@
 use crate::collision::narrow::GEOM_EPSILON;
 use crate::dynamics::compute_body_spatial_inertia;
 use crate::tendon::mj_fwd_tendon;
-use crate::types::{Data, ENABLE_SLEEP, GeomType, MjJointType, Model, SleepState};
+use crate::types::{Data, ENABLE_SLEEP, MjJointType, Model, SleepState};
 use cf_geometry::Aabb;
 use nalgebra::{Matrix3, Matrix6, Point3, UnitQuaternion, Vector3};
 
@@ -217,174 +217,36 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
 // Broad-Phase Collision Detection (Spatial Hashing)
 // ============================================================================
 
-/// Compute AABB for a geometry given its world-space pose and type/size.
+/// Transform a pre-computed local-frame AABB to world space.
 ///
-/// This function creates an axis-aligned bounding box for MuJoCo-style geometry
-/// specifications, using the canonical `Aabb` type from `collision_shape`.
+/// `geom_aabb` is `[cx, cy, cz, hx, hy, hz]` — center offset and half-extents
+/// in geom-local frame (from `model.geom_aabb`, pre-computed at build time).
 ///
-/// # Arguments
-/// * `geom_type` - The geometry type (sphere, box, capsule, etc.)
-/// * `size` - MuJoCo-style size parameters (interpretation depends on geom_type)
-/// * `pos` - World-space position of the geometry
-/// * `mat` - World-space rotation matrix (3x3)
+/// The world-space AABB is computed by rotating the local OBB (oriented bounding
+/// box) into world frame and taking its axis-aligned envelope. This is the
+/// standard rotated-box AABB formula:
+///
+///   world_center = pos + mat * local_center
+///   world_half[i] = Σ_j |mat[i,j]| * local_half[j]
+///
+/// Works for all geom types uniformly — no type dispatch needed at runtime.
 #[inline]
-pub fn aabb_from_geom(
-    geom_type: GeomType,
-    size: Vector3<f64>,
-    pos: Vector3<f64>,
-    mat: Matrix3<f64>,
-) -> Aabb {
-    match geom_type {
-        GeomType::Sphere => {
-            let r = size.x;
-            Aabb::new(
-                Point3::new(pos.x - r, pos.y - r, pos.z - r),
-                Point3::new(pos.x + r, pos.y + r, pos.z + r),
-            )
-        }
-        GeomType::Box => {
-            // For a rotated box, compute the world-space extents
-            let half = size;
-            let mut min = pos;
-            let mut max = pos;
-            for i in 0..3 {
-                let axis = mat.column(i).into_owned();
-                let extent = half[i] * axis.abs();
-                min -= extent;
-                max += extent;
-            }
-            Aabb::new(Point3::from(min), Point3::from(max))
-        }
-        GeomType::Capsule => {
-            // Capsule: radius + half_length along Z axis
-            let r = size.x;
-            let half_len = size.y;
-            let axis = mat.column(2).into_owned();
-            let end1 = pos + axis * half_len;
-            let end2 = pos - axis * half_len;
-            Aabb::new(
-                Point3::new(
-                    end1.x.min(end2.x) - r,
-                    end1.y.min(end2.y) - r,
-                    end1.z.min(end2.z) - r,
-                ),
-                Point3::new(
-                    end1.x.max(end2.x) + r,
-                    end1.y.max(end2.y) + r,
-                    end1.z.max(end2.z) + r,
-                ),
-            )
-        }
-        GeomType::Cylinder => {
-            // Cylinder AABB: endpoints ± radius in all directions.
-            // Same formula as capsule — the flat caps still extend radius `r`
-            // perpendicular to the axis, so the bounding box is identical.
-            let r = size.x;
-            let half_len = size.y;
-            let axis = mat.column(2).into_owned();
-            let end1 = pos + axis * half_len;
-            let end2 = pos - axis * half_len;
-            Aabb::new(
-                Point3::new(
-                    end1.x.min(end2.x) - r,
-                    end1.y.min(end2.y) - r,
-                    end1.z.min(end2.z) - r,
-                ),
-                Point3::new(
-                    end1.x.max(end2.x) + r,
-                    end1.y.max(end2.y) + r,
-                    end1.z.max(end2.z) + r,
-                ),
-            )
-        }
-        GeomType::Ellipsoid => {
-            // Conservative AABB: use sphere with largest semi-axis radius.
-            // A tight AABB would require transforming each axis by the rotation
-            // matrix, but this simple approach is correct and fast for broad-phase.
-            let max_r = size.x.max(size.y).max(size.z);
-            Aabb::new(
-                Point3::new(pos.x - max_r, pos.y - max_r, pos.z - max_r),
-                Point3::new(pos.x + max_r, pos.y + max_r, pos.z + max_r),
-            )
-        }
-        GeomType::Plane => {
-            // Planes are infinite — use large bounds in perpendicular directions
-            // and thin bounds along the normal to allow proper AABB overlap tests.
-            const PLANE_EXTENT: f64 = 1e6; // Effectively infinite for simulation scale
-            const PLANE_THICKNESS: f64 = 0.001; // Thin slab for AABB overlap detection
+pub fn aabb_from_geom_aabb(geom_aabb: [f64; 6], pos: Vector3<f64>, mat: Matrix3<f64>) -> Aabb {
+    let local_center = Vector3::new(geom_aabb[0], geom_aabb[1], geom_aabb[2]);
+    let local_half = Vector3::new(geom_aabb[3], geom_aabb[4], geom_aabb[5]);
 
-            // Plane normal is Z axis of the rotation matrix
-            let normal = mat.column(2).into_owned();
+    // Transform center to world space
+    let world_center = pos + mat * local_center;
 
-            // Create thin slab AABB based on dominant normal direction
-            if normal.z.abs() > 0.9 {
-                // Near-horizontal plane (normal ≈ ±Z)
-                Aabb::new(
-                    Point3::new(-PLANE_EXTENT, -PLANE_EXTENT, pos.z - PLANE_THICKNESS),
-                    Point3::new(PLANE_EXTENT, PLANE_EXTENT, pos.z + PLANE_THICKNESS),
-                )
-            } else if normal.y.abs() > 0.9 {
-                // Near-vertical plane (normal ≈ ±Y)
-                Aabb::new(
-                    Point3::new(-PLANE_EXTENT, pos.y - PLANE_THICKNESS, -PLANE_EXTENT),
-                    Point3::new(PLANE_EXTENT, pos.y + PLANE_THICKNESS, PLANE_EXTENT),
-                )
-            } else {
-                // Near-vertical plane (normal ≈ ±X)
-                Aabb::new(
-                    Point3::new(pos.x - PLANE_THICKNESS, -PLANE_EXTENT, -PLANE_EXTENT),
-                    Point3::new(pos.x + PLANE_THICKNESS, PLANE_EXTENT, PLANE_EXTENT),
-                )
-            }
-        }
-        GeomType::Mesh => {
-            // For mesh, use a conservative large bounding box.
-            // In a full implementation, mesh AABBs would be pre-computed from vertices.
-            const MESH_DEFAULT_EXTENT: f64 = 10.0; // Conservative fallback for unprocessed meshes
-            Aabb::new(
-                Point3::new(
-                    pos.x - MESH_DEFAULT_EXTENT,
-                    pos.y - MESH_DEFAULT_EXTENT,
-                    pos.z - MESH_DEFAULT_EXTENT,
-                ),
-                Point3::new(
-                    pos.x + MESH_DEFAULT_EXTENT,
-                    pos.y + MESH_DEFAULT_EXTENT,
-                    pos.z + MESH_DEFAULT_EXTENT,
-                ),
-            )
-        }
-        GeomType::Hfield => {
-            // Conservative: treat as a rotated box with half-extents from geom_size
-            // [x_half_extent, y_half_extent, z_top]. Same formula as GeomType::Box.
-            let half = size;
-            let mut min = pos;
-            let mut max = pos;
-            for i in 0..3 {
-                let axis = mat.column(i).into_owned();
-                let extent = half[i] * axis.abs();
-                min -= extent;
-                max += extent;
-            }
-            Aabb::new(Point3::from(min), Point3::from(max))
-        }
-        GeomType::Sdf => {
-            // Conservative: rotated box with half-extents from geom_size.
-            // For programmatic SDF geoms, geom_size should store meaningful
-            // half-extents. For MJCF placeholders, defaults to 0.1 —
-            // small AABB is acceptable since the geom has no sdf_data.
-            let half = size;
-            let mut min = pos;
-            let mut max = pos;
-            for i in 0..3 {
-                let axis = mat.column(i).into_owned();
-                let extent = half[i] * axis.abs();
-                min -= extent;
-                max += extent;
-            }
-            Aabb::new(Point3::from(min), Point3::from(max))
-        }
-    }
+    // Compute world-space half-extents from the rotated OBB.
+    // For each world axis i, the half-extent is the sum of |mat[i,j]| * local_half[j].
+    let abs_mat = mat.abs();
+    let world_half = abs_mat * local_half;
+
+    Aabb::new(
+        Point3::from(world_center - world_half),
+        Point3::from(world_center + world_half),
+    )
 }
 
 /// Sweep-and-prune broad-phase collision detection.

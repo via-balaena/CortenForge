@@ -251,7 +251,8 @@ pub fn collide_with_mesh(
 /// Mesh vs infinite plane collision.
 ///
 /// Tests all mesh vertices against the plane and returns the deepest penetrating vertex.
-/// This is a simple but effective approach for mesh-plane collision:
+/// Returns normal pointing FROM mesh outward (i.e. `-plane_normal`), consistent with
+/// all other mesh collision functions. This is a simple but effective approach:
 /// - O(n) in number of vertices
 /// - Handles any mesh topology
 /// - Returns single deepest contact point
@@ -275,14 +276,14 @@ pub fn collide_mesh_plane(
             match &mut deepest {
                 Some(d) if depth > d.penetration => {
                     d.point = world_v;
-                    d.normal = plane_normal;
+                    d.normal = -plane_normal;
                     d.penetration = depth;
                     d.triangle_index = i; // Store vertex index (not triangle, but useful for debug)
                 }
                 None => {
                     deepest = Some(MeshContact {
                         point: world_v,
-                        normal: plane_normal,
+                        normal: -plane_normal,
                         penetration: depth,
                         triangle_index: i,
                     });

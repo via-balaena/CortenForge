@@ -2023,6 +2023,7 @@ dependencies = [
  "mesh-io",
  "nalgebra",
  "rayon",
+ "sim-core",
  "sim-mjcf",
  "tempfile",
 ]

@@ -91,7 +91,7 @@ impl FieldNode {
         match self {
             // ── Primitives ────────────────────────────────────────────
             Self::Sphere { radius } => {
-                let r = *radius;
+                let r = radius.eval();
                 [
                     ps[0].coords.norm() - r,
                     ps[1].coords.norm() - r,
@@ -265,17 +265,17 @@ impl FieldNode {
             Self::SmoothUnion(a, b, k) => {
                 let va = a.evaluate_batch(ps);
                 let vb = b.evaluate_batch(ps);
-                f4_smooth_union(va, vb, *k)
+                f4_smooth_union(va, vb, k.eval())
             }
             Self::SmoothSubtract(a, b, k) => {
                 let va = a.evaluate_batch(ps);
                 let vb = b.evaluate_batch(ps);
-                f4_neg(f4_smooth_union(f4_neg(va), vb, *k))
+                f4_neg(f4_smooth_union(f4_neg(va), vb, k.eval()))
             }
             Self::SmoothIntersect(a, b, k) => {
                 let va = a.evaluate_batch(ps);
                 let vb = b.evaluate_batch(ps);
-                f4_neg(f4_smooth_union(f4_neg(va), f4_neg(vb), *k))
+                f4_neg(f4_smooth_union(f4_neg(va), f4_neg(vb), k.eval()))
             }
             Self::SmoothUnionAll(children, k) => {
                 if children.is_empty() {
@@ -284,7 +284,7 @@ impl FieldNode {
                 if children.len() == 1 {
                     return children[0].evaluate_batch(ps);
                 }
-                let k_val = *k;
+                let k_val = k.eval();
                 // Evaluate all children batch-wise
                 let child_vals: Vec<F4> = children.iter().map(|c| c.evaluate_batch(ps)).collect();
                 let mut out = [0.0; 4];
@@ -351,15 +351,15 @@ impl FieldNode {
             // ── Domain operations ─────────────────────────────────────
             Self::Shell(child, thickness) => {
                 let vals = child.evaluate_batch(ps);
-                f4_sub_scalar(f4_abs(vals), *thickness)
+                f4_sub_scalar(f4_abs(vals), thickness.eval())
             }
             Self::Round(child, radius) => {
                 let vals = child.evaluate_batch(ps);
-                f4_sub_scalar(vals, *radius)
+                f4_sub_scalar(vals, radius.eval())
             }
             Self::Offset(child, distance) => {
                 let vals = child.evaluate_batch(ps);
-                f4_sub_scalar(vals, *distance)
+                f4_sub_scalar(vals, distance.eval())
             }
             Self::Elongate(child, half) => {
                 let local = [
@@ -541,7 +541,7 @@ impl FieldNode {
                 let vb = b.evaluate_batch(ps);
                 let ga = a.gradient_batch(ps);
                 let gb = b.gradient_batch(ps);
-                let k_val = *k;
+                let k_val = k.eval();
                 let mut out = [Vector3::zeros(); 4];
                 for i in 0..4 {
                     let h = (0.5 + 0.5 * (vb[i] - va[i]) / k_val).clamp(0.0, 1.0);
@@ -554,7 +554,7 @@ impl FieldNode {
                 let vb = b.evaluate_batch(ps);
                 let ga = a.gradient_batch(ps);
                 let gb = b.gradient_batch(ps);
-                let k_val = *k;
+                let k_val = k.eval();
                 let mut out = [Vector3::zeros(); 4];
                 for i in 0..4 {
                     let h = (0.5 + 0.5 * (vb[i] + va[i]) / k_val).clamp(0.0, 1.0);
@@ -567,7 +567,7 @@ impl FieldNode {
                 let vb = b.evaluate_batch(ps);
                 let ga = a.gradient_batch(ps);
                 let gb = b.gradient_batch(ps);
-                let k_val = *k;
+                let k_val = k.eval();
                 let mut out = [Vector3::zeros(); 4];
                 for i in 0..4 {
                     let h = (0.5 + 0.5 * (va[i] - vb[i]) / k_val).clamp(0.0, 1.0);
@@ -582,7 +582,7 @@ impl FieldNode {
                 if children.len() == 1 {
                     return children[0].gradient_batch(ps);
                 }
-                let k_val = *k;
+                let k_val = k.eval();
                 let child_vals: Vec<F4> = children.iter().map(|c| c.evaluate_batch(ps)).collect();
                 let child_grads: Vec<[Vector3<f64>; 4]> =
                     children.iter().map(|c| c.gradient_batch(ps)).collect();
@@ -840,6 +840,8 @@ mod tests {
     use approx::assert_relative_eq;
     use nalgebra::UnitQuaternion;
 
+    use crate::field_node::Val;
+
     /// Helper: check `evaluate_batch` matches scalar evaluate for 4 test points.
     fn check_eval_batch(node: &FieldNode, label: &str) {
         let test_points: P4 = [
@@ -893,7 +895,12 @@ mod tests {
 
     #[test]
     fn batch_eval_sphere() {
-        check_eval_batch(&FieldNode::Sphere { radius: 3.0 }, "sphere");
+        check_eval_batch(
+            &FieldNode::Sphere {
+                radius: Val::from(3.0),
+            },
+            "sphere",
+        );
     }
 
     #[test]
@@ -1077,7 +1084,9 @@ mod tests {
     #[test]
     fn batch_eval_union() {
         let node = FieldNode::Union(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(1.5, 1.5, 1.5),
             }),
@@ -1088,7 +1097,9 @@ mod tests {
     #[test]
     fn batch_eval_subtract() {
         let node = FieldNode::Subtract(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
             Box::new(FieldNode::Cylinder {
                 radius: 1.0,
                 half_height: 4.0,
@@ -1100,7 +1111,9 @@ mod tests {
     #[test]
     fn batch_eval_intersect() {
         let node = FieldNode::Intersect(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(2.0, 2.0, 2.0),
             }),
@@ -1111,12 +1124,16 @@ mod tests {
     #[test]
     fn batch_eval_smooth_union() {
         let node = FieldNode::SmoothUnion(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 2.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(2.0),
+                }),
                 Vector3::new(3.0, 0.0, 0.0),
             )),
-            0.5,
+            Val::from(0.5),
         );
         check_eval_batch(&node, "smooth_union");
     }
@@ -1124,9 +1141,13 @@ mod tests {
     #[test]
     fn batch_eval_smooth_subtract() {
         let node = FieldNode::SmoothSubtract(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
-            Box::new(FieldNode::Sphere { radius: 1.5 }),
-            0.3,
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.5),
+            }),
+            Val::from(0.3),
         );
         check_eval_batch(&node, "smooth_subtract");
     }
@@ -1134,11 +1155,13 @@ mod tests {
     #[test]
     fn batch_eval_smooth_intersect() {
         let node = FieldNode::SmoothIntersect(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(2.0, 2.0, 2.0),
             }),
-            0.3,
+            Val::from(0.3),
         );
         check_eval_batch(&node, "smooth_intersect");
     }
@@ -1147,17 +1170,23 @@ mod tests {
     fn batch_eval_smooth_union_all() {
         let node = FieldNode::SmoothUnionAll(
             vec![
-                FieldNode::Sphere { radius: 1.5 },
+                FieldNode::Sphere {
+                    radius: Val::from(1.5),
+                },
                 FieldNode::Translate(
-                    Box::new(FieldNode::Sphere { radius: 1.5 }),
+                    Box::new(FieldNode::Sphere {
+                        radius: Val::from(1.5),
+                    }),
                     Vector3::new(2.0, 0.0, 0.0),
                 ),
                 FieldNode::Translate(
-                    Box::new(FieldNode::Sphere { radius: 1.5 }),
+                    Box::new(FieldNode::Sphere {
+                        radius: Val::from(1.5),
+                    }),
                     Vector3::new(0.0, 2.0, 0.0),
                 ),
             ],
-            0.5,
+            Val::from(0.5),
         );
         check_eval_batch(&node, "smooth_union_all");
     }
@@ -1167,7 +1196,9 @@ mod tests {
     #[test]
     fn batch_eval_translate() {
         let node = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(1.0, 2.0, 3.0),
         );
         check_eval_batch(&node, "translate");
@@ -1186,7 +1217,12 @@ mod tests {
 
     #[test]
     fn batch_eval_scale_uniform() {
-        let node = FieldNode::ScaleUniform(Box::new(FieldNode::Sphere { radius: 1.0 }), 2.5);
+        let node = FieldNode::ScaleUniform(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
+            2.5,
+        );
         check_eval_batch(&node, "scale_uniform");
     }
 
@@ -1194,7 +1230,9 @@ mod tests {
     fn batch_eval_mirror() {
         let node = FieldNode::Mirror(
             Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 1.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(1.0),
+                }),
                 Vector3::new(2.0, 0.0, 0.0),
             )),
             Vector3::new(1.0, 0.0, 0.0),
@@ -1206,7 +1244,12 @@ mod tests {
 
     #[test]
     fn batch_eval_shell() {
-        let node = FieldNode::Shell(Box::new(FieldNode::Sphere { radius: 3.0 }), 0.2);
+        let node = FieldNode::Shell(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Val::from(0.2),
+        );
         check_eval_batch(&node, "shell");
     }
 
@@ -1216,21 +1259,28 @@ mod tests {
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(2.0, 2.0, 2.0),
             }),
-            0.3,
+            Val::from(0.3),
         );
         check_eval_batch(&node, "round");
     }
 
     #[test]
     fn batch_eval_offset() {
-        let node = FieldNode::Offset(Box::new(FieldNode::Sphere { radius: 2.0 }), 0.5);
+        let node = FieldNode::Offset(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
+            Val::from(0.5),
+        );
         check_eval_batch(&node, "offset");
     }
 
     #[test]
     fn batch_eval_elongate() {
         let node = FieldNode::Elongate(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(2.0, 0.5, 1.0),
         );
         check_eval_batch(&node, "elongate");
@@ -1261,7 +1311,9 @@ mod tests {
     #[test]
     fn batch_eval_repeat() {
         let node = FieldNode::Repeat(
-            Box::new(FieldNode::Sphere { radius: 0.5 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(0.5),
+            }),
             Vector3::new(2.0, 2.0, 2.0),
         );
         check_eval_batch(&node, "repeat");
@@ -1270,7 +1322,9 @@ mod tests {
     #[test]
     fn batch_eval_repeat_bounded() {
         let node = FieldNode::RepeatBounded {
-            child: Box::new(FieldNode::Sphere { radius: 0.5 }),
+            child: Box::new(FieldNode::Sphere {
+                radius: Val::from(0.5),
+            }),
             spacing: Vector3::new(2.0, 2.0, 2.0),
             count: [3, 3, 3],
         };
@@ -1293,9 +1347,13 @@ mod tests {
     #[test]
     fn batch_eval_smooth_union_variable() {
         let node = FieldNode::SmoothUnionVariable {
-            a: Box::new(FieldNode::Sphere { radius: 2.0 }),
+            a: Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             b: Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 2.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(2.0),
+                }),
                 Vector3::new(3.0, 0.0, 0.0),
             )),
             radius_fn: crate::field_node::UserEvalFn(Arc::new(|_: Point3<f64>| 0.5)),
@@ -1308,7 +1366,12 @@ mod tests {
 
     #[test]
     fn batch_grad_sphere() {
-        check_grad_batch(&FieldNode::Sphere { radius: 3.0 }, "sphere");
+        check_grad_batch(
+            &FieldNode::Sphere {
+                radius: Val::from(3.0),
+            },
+            "sphere",
+        );
     }
 
     #[test]
@@ -1324,7 +1387,9 @@ mod tests {
     #[test]
     fn batch_grad_union() {
         let node = FieldNode::Union(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Box::new(FieldNode::Cuboid {
                 half_extents: Vector3::new(1.5, 1.5, 1.5),
             }),
@@ -1335,12 +1400,16 @@ mod tests {
     #[test]
     fn batch_grad_smooth_union() {
         let node = FieldNode::SmoothUnion(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 2.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(2.0),
+                }),
                 Vector3::new(3.0, 0.0, 0.0),
             )),
-            0.5,
+            Val::from(0.5),
         );
         check_grad_batch(&node, "smooth_union");
     }
@@ -1348,7 +1417,9 @@ mod tests {
     #[test]
     fn batch_grad_translate() {
         let node = FieldNode::Translate(
-            Box::new(FieldNode::Sphere { radius: 2.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(2.0),
+            }),
             Vector3::new(1.0, 2.0, 3.0),
         );
         check_grad_batch(&node, "translate");
@@ -1367,7 +1438,12 @@ mod tests {
 
     #[test]
     fn batch_grad_shell() {
-        let node = FieldNode::Shell(Box::new(FieldNode::Sphere { radius: 3.0 }), 0.2);
+        let node = FieldNode::Shell(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Val::from(0.2),
+        );
         check_grad_batch(&node, "shell");
     }
 
@@ -1397,7 +1473,9 @@ mod tests {
     fn batch_grad_mirror() {
         let node = FieldNode::Mirror(
             Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 1.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(1.0),
+                }),
                 Vector3::new(2.0, 0.0, 0.0),
             )),
             Vector3::new(1.0, 0.0, 0.0),
@@ -1408,7 +1486,9 @@ mod tests {
     #[test]
     fn batch_grad_subtract() {
         let node = FieldNode::Subtract(
-            Box::new(FieldNode::Sphere { radius: 3.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
             Box::new(FieldNode::Cylinder {
                 radius: 1.0,
                 half_height: 4.0,
@@ -1420,7 +1500,9 @@ mod tests {
     #[test]
     fn batch_grad_elongate() {
         let node = FieldNode::Elongate(
-            Box::new(FieldNode::Sphere { radius: 1.0 }),
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(1.0),
+            }),
             Vector3::new(2.0, 0.5, 1.0),
         );
         check_grad_batch(&node, "elongate");
@@ -1429,7 +1511,9 @@ mod tests {
     #[test]
     fn batch_grad_repeat_bounded() {
         let node = FieldNode::RepeatBounded {
-            child: Box::new(FieldNode::Sphere { radius: 0.5 }),
+            child: Box::new(FieldNode::Sphere {
+                radius: Val::from(0.5),
+            }),
             spacing: Vector3::new(2.0, 2.0, 2.0),
             count: [3, 3, 3],
         };
@@ -1456,7 +1540,9 @@ mod tests {
         // SmoothUnion(Translate(Sphere), Rotate(Cuboid)) — tests deep recursion
         let node = FieldNode::SmoothUnion(
             Box::new(FieldNode::Translate(
-                Box::new(FieldNode::Sphere { radius: 1.5 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(1.5),
+                }),
                 Vector3::new(1.0, 0.0, 0.0),
             )),
             Box::new(FieldNode::Rotate(
@@ -1465,7 +1551,7 @@ mod tests {
                 }),
                 UnitQuaternion::from_euler_angles(0.0, 0.0, 0.7),
             )),
-            0.3,
+            Val::from(0.3),
         );
         check_eval_batch(&node, "composed_tree");
         check_grad_batch(&node, "composed_tree");
@@ -1476,7 +1562,9 @@ mod tests {
         // Subtract(Union(Sphere, Cuboid), Cylinder) — multi-level booleans
         let node = FieldNode::Subtract(
             Box::new(FieldNode::Union(
-                Box::new(FieldNode::Sphere { radius: 3.0 }),
+                Box::new(FieldNode::Sphere {
+                    radius: Val::from(3.0),
+                }),
                 Box::new(FieldNode::Cuboid {
                     half_extents: Vector3::new(2.0, 2.0, 2.0),
                 }),

@@ -5,10 +5,10 @@
 //! tendon length computation, bounding sphere pre-computation, and all other
 //! post-processing that requires the complete builder state.
 
-use nalgebra::DVector;
+use nalgebra::{DVector, Vector3};
 use sim_core::{
-    ActuatorTransmission, Bounded, ENABLE_SLEEP, Integrator, Model, SleepPolicy, TendonType,
-    WrapType, compute_dof_lengths,
+    ActuatorTransmission, Bounded, ENABLE_SLEEP, GeomType, Integrator, Model, SleepPolicy,
+    TendonType, WrapType, compute_dof_lengths,
 };
 use tracing::warn;
 
@@ -204,8 +204,9 @@ impl ModelBuilder {
             geom_solimp: self.geom_solimp,
             geom_solref: self.geom_solref,
             geom_name: self.geom_name,
-            // Pre-computed bounding radii (computed below after we have geom_type and geom_size)
+            // Pre-computed bounding volumes (computed below after we have geom_type and geom_size)
             geom_rbound: vec![0.0; ngeom],
+            geom_aabb: vec![[0.0; 6]; ngeom],
             // Mesh index for each geom (populated by process_geom)
             geom_mesh: self.geom_mesh,
             // Hfield index for each geom (populated by process_geom)
@@ -553,29 +554,86 @@ fn compute_history_addresses(model: &mut Model) {
     }
 }
 
-/// Pre-compute bounding sphere radii for all geoms (collision broad-phase).
+/// Pre-compute bounding volumes for all geoms (collision broad-phase).
+///
+/// Populates both `geom_rbound` (bounding sphere radius) and `geom_aabb`
+/// (local-frame AABB as `[cx, cy, cz, hx, hy, hz]` — center offset +
+/// half-extents). For meshes/hfield/sdf, bounds come from actual geometry
+/// data. For primitives, bounds come from `geom_size`.
+///
+/// `geom_aabb` is transformed to world-space at runtime by `mj_collision`,
+/// replacing the per-type dispatch in `aabb_from_geom`. This eliminates the
+/// `MESH_DEFAULT_EXTENT` fallback and matches MuJoCo's `mjModel.geom_aabb`.
 fn compute_geom_bounding_radii(model: &mut Model) {
     for geom_id in 0..model.ngeom {
-        model.geom_rbound[geom_id] = if let Some(mesh_id) = model.geom_mesh[geom_id] {
-            // Mesh geom: bounding sphere radius = distance from AABB center to corner.
-            // Half-diagonal of the AABB guarantees all vertices are inside.
+        let (rbound, aabb) = if let Some(mesh_id) = model.geom_mesh[geom_id] {
+            // Mesh geom: bounds from actual vertex positions.
             let (aabb_min, aabb_max) = model.mesh_data[mesh_id].aabb();
-            let half_diagonal = (aabb_max - aabb_min) / 2.0;
-            half_diagonal.norm()
+            let center = (aabb_min.coords + aabb_max.coords) * 0.5;
+            let half = (aabb_max.coords - aabb_min.coords) * 0.5;
+            let rbound = half.norm();
+            (
+                rbound,
+                [center.x, center.y, center.z, half.x, half.y, half.z],
+            )
         } else if let Some(hfield_id) = model.geom_hfield[geom_id] {
-            // Hfield geom: half-diagonal of AABB (same pattern as mesh).
+            // Hfield geom: bounds from heightfield data.
             let aabb = model.hfield_data[hfield_id].aabb();
-            let half_diagonal = (aabb.max.coords - aabb.min.coords) / 2.0;
-            half_diagonal.norm()
+            let center = (aabb.min.coords + aabb.max.coords) * 0.5;
+            let half = (aabb.max.coords - aabb.min.coords) * 0.5;
+            let rbound = half.norm();
+            (
+                rbound,
+                [center.x, center.y, center.z, half.x, half.y, half.z],
+            )
         } else if let Some(sdf_id) = model.geom_sdf[geom_id] {
-            // SDF geom: half-diagonal of AABB (same pattern as mesh/hfield).
+            // SDF geom: bounds from SDF grid data.
             let aabb = model.sdf_data[sdf_id].aabb();
-            let half_diagonal = (aabb.max.coords - aabb.min.coords) / 2.0;
-            half_diagonal.norm()
+            let center = (aabb.min.coords + aabb.max.coords) * 0.5;
+            let half = (aabb.max.coords - aabb.min.coords) * 0.5;
+            let rbound = half.norm();
+            (
+                rbound,
+                [center.x, center.y, center.z, half.x, half.y, half.z],
+            )
         } else {
-            // Primitive geom: use GeomType::bounding_radius() — the single source of truth
-            model.geom_type[geom_id].bounding_radius(model.geom_size[geom_id])
+            // Primitive geom: local AABB from size parameters.
+            let rbound = model.geom_type[geom_id].bounding_radius(model.geom_size[geom_id]);
+            let aabb =
+                local_aabb_from_primitive(model.geom_type[geom_id], model.geom_size[geom_id]);
+            (rbound, aabb)
         };
+        model.geom_rbound[geom_id] = rbound;
+        model.geom_aabb[geom_id] = aabb;
+    }
+}
+
+/// Compute local-frame AABB `[cx, cy, cz, hx, hy, hz]` for a primitive geom.
+///
+/// Center offset is `(0,0,0)` for all primitives (symmetric about their origin).
+/// Half-extents come from the MuJoCo size convention for each type.
+fn local_aabb_from_primitive(geom_type: GeomType, size: Vector3<f64>) -> [f64; 6] {
+    match geom_type {
+        GeomType::Sphere => {
+            let r = size.x;
+            [0.0, 0.0, 0.0, r, r, r]
+        }
+        GeomType::Box | GeomType::Ellipsoid => [0.0, 0.0, 0.0, size.x, size.y, size.z],
+        GeomType::Capsule | GeomType::Cylinder => {
+            // Local Z is the axis. Half-extents: radius in XY, radius+half_length in Z.
+            let r = size.x;
+            let h = size.y;
+            [0.0, 0.0, 0.0, r, r, r + h]
+        }
+        GeomType::Plane => {
+            // Infinite extent. The PLANE_EXTENT constant is applied at runtime
+            // in aabb_from_geom_aabb since it depends on world-frame orientation.
+            const INF: f64 = 1e6;
+            [0.0, 0.0, 0.0, INF, INF, INF]
+        }
+        // Mesh/Hfield/Sdf are handled by the caller using actual geometry data.
+        // This arm is a fallback for programmatic geoms that bypass the builder.
+        GeomType::Mesh | GeomType::Hfield | GeomType::Sdf => [0.0, 0.0, 0.0, 0.1, 0.1, 0.1],
     }
 }
 

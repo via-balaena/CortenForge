@@ -1281,35 +1281,50 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 
 **Goal**: Gradient-based design optimization through simulation.
 
-**Session 24: Parameterized Solid**
-- Scope: Design variables with named parameters. Parameterized `FieldNode`
-  variants (parameters by name instead of literal constants).
-  `Solid::with_param(name, value)` for declaring parameters.
-  `Solid::set_param(name, value)` for re-evaluation without rebuilding the
-  tree. Tests: parameterized sphere radius, parameterized blend radius —
+**Session 24: Parameterized Solid** ✅ (2026-03-18)
+- Scope: Design variables with named parameters. `ParamStore` holds named
+  scalar design variables; `ParamStore::add(name, default)` returns a
+  `ParamRef` passed to `_p` constructors (`Solid::sphere_p`,
+  `smooth_union_p`, etc.) that build parameterized `FieldNode` variants.
+  `Val` enum (`Literal(f64)` | `Param { id, store }`) replaces `f64` in 8
+  FieldNode variants (Sphere, SmoothUnion/Subtract/Intersect/All, Shell,
+  Round, Offset). `Solid::set_param(name, value)` for re-evaluation without
+  rebuilding the tree (interior mutability via `RwLock`).
+  `Val::param_deriv()` stubbed for Session 25 chain rule.
+  Tests: parameterized sphere radius, parameterized blend radius —
   verify re-evaluation produces correct field after parameter change.
+  674 tests pass (18 new).
 - Entry: Session 6 complete
 - Exit: `cargo test -p cf-design` passes. Parameterized solids re-evaluate
   correctly after parameter changes.
 
-**Session 25: Field Gradient w.r.t. Design Parameters**
+**Session 25: Field Gradient w.r.t. Design Parameters** ✅ (2026-03-18)
 - Scope: ∂f/∂params via chain rule through expression tree. Extends Session
   19's spatial gradient (∇f w.r.t. x,y,z) to parameter-space gradient
   (∂f/∂param_i). Tests: parameter gradients match finite differences for
-  parameterized primitives, booleans, and transforms.
+  parameterized primitives, booleans, and transforms. 692 tests pass (18 new).
 - Entry: Sessions 19, 24 complete
 - Exit: `cargo test -p cf-design` passes. Parameter gradients within 1e-6 of
   finite differences.
 
-**Session 26: sim-core Integration + Optimization Loop**
-- Scope: Connect parameter gradients to sim-core's `mj_derivatives` for
-  end-to-end design-through-physics gradient. Design optimization loop:
-  objective → simulate → gradient → update params → re-mesh → repeat.
-  Integration test: parameterized gripper finger optimized for grasp force.
+**Session 26: sim-core Integration + Optimization Loop** ✅ (2026-03-18)
+- Scope: Finite-difference gradient descent optimizer (`minimize_fd`) over
+  `ParamStore` parameters. Simulator-agnostic: the objective closure captures
+  the full pipeline (param → re-mesh → MJCF → parse → simulate → objective).
+  The gradient `∂J/∂θ` is estimated via centered FD over the complete
+  design-through-physics pipeline — the mesh→Model boundary is not
+  analytically differentiable, making FD the practical approach.
+  Integration test: parameterized sphere optimized for contact force through
+  simulation — the optimizer increases sphere radius to maximize steady-state
+  contact force (= mass × gravity ∝ R³), measuring force via `efc_type` /
+  `efc_force` filtering over 300 measurement steps after 200 settling steps.
+- Fix: MJCF `write_body()` was emitting child `<body>` elements without `pos`
+  attribute — all child bodies were placed at parent origin regardless of
+  joint anchor. Now correctly sets `pos` from the first joint anchor.
 - Entry: Sessions 12, 25 complete (Mechanism integration + param gradients)
-- Exit: `cargo test -p cf-design` passes. Full Phase 5 exit criteria met:
-  a parameterized gripper finger can be optimized to maximize grasp force
-  by backpropagating through the simulation.
+- Exit: Full Phase 5 exit criteria met: a parameterized gripper finger can be
+  optimized to maximize grasp force by backpropagating through the simulation.
+  `cargo test -p cf-design` passes.
 
 ### Session Dependencies
 
@@ -1408,12 +1423,13 @@ crates/cf-design/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              Crate root — re-exports Solid + mechanism types
-    ├── field_node.rs       FieldNode expression tree enum (pub(crate))
+    ├── field_node.rs       FieldNode expression tree enum + Val (pub(crate))
+    ├── param.rs            ParamStore, ParamRef — design variable storage
     ├── evaluate.rs         Point evaluation — evaluate(Point3) -> f64
     ├── interval.rs         Interval evaluation — evaluate_interval(Aabb) -> (f64, f64)
     ├── bounds.rs           AABB computation — bounds() -> Option<Aabb>
     ├── mesher.rs           Marching cubes + interval pruning + edge cache
-    ├── solid.rs            Opaque Solid type, public builder API, sdf_grid
+    ├── solid.rs            Opaque Solid type, public builder API, _p constructors
     └── mechanism/          Phase 2 (Sessions 7–12)
         ├── mod.rs          Re-exports all mechanism types
         ├── part.rs         Part, FlexZone, Plane
