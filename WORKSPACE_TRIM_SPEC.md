@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-19
 **Branch:** `chore/workspace-trim-tier1`
-**Status:** Session 1 complete (745777d) — Session 2 next
+**Status:** Session 2 complete (a43267c) — Session 3 next
 
 ## Motivation
 
@@ -102,7 +102,7 @@ All assumptions verified against the codebase:
 - **indexmap** — confirmed zero consumers in entire workspace
 - **thiserror in cf-geometry** — confirmed: declared in Cargo.toml, zero
   usage in source (no `#[derive(Error)]`, no `#[error]`, no `use thiserror`)
-- **58 references** in 9 non-Cargo files need updating (see Session 2)
+- **58+ references** in 16 non-Cargo files needed updating (see Session 2)
 
 ## Session Plan
 
@@ -170,59 +170,44 @@ cargo build -p example-hello-solid -p example-bio-shapes \
 
 ---
 
-### Session 2: CI, Tooling, and Documentation
+### Session 2: CI, Tooling, and Documentation ✅ (a43267c)
 
-Update all non-Cargo references to deleted crates (58 references in 9 files).
+Updated all non-Cargo references to deleted crates. The pre-session audit
+found 58 references in 9 files; the actual sweep found additional references
+in 7 more files (16 total).
 
-**CI Workflows:**
+**Files edited (16):**
 
-**Edit `.github/workflows/quality-gate.yml`:**
-- Remove 3 entries from WASM_CRATES array (~lines 148-150):
-  `mesh-geodesic`, `mesh-transform`, `mesh-slice`
-- Remove 16 entries from LAYER0_CRATES array (~lines 392-413):
-  `mesh-geodesic`, `mesh-transform`, `mesh-zones`, `mesh-from-curves`,
-  `mesh-thickness`, `mesh-slice`, `mesh-decimate`, `mesh-subdivide`,
-  `mesh-remesh`, `mesh-region`, `mesh-assembly`, `mesh-boolean`,
-  `mesh-registration`, `mesh-morph`, `mesh-scan`, `mesh-template`
+| File | Changes |
+|------|---------|
+| `.github/workflows/quality-gate.yml` | Removed 3 WASM_CRATES + 16 LAYER0_CRATES entries |
+| `.github/workflows/scheduled.yml` | Removed mesh-boolean from mutation testing matrix |
+| `xtask/src/setup.rs` | Updated example commit message |
+| `xtask/build.rs` | Updated example commit message (same pattern) |
+| `README.md` | Updated counts (28 crates/6 domains), architecture table, mesh/sim listings, removed Geometry Domain section |
+| `INFRASTRUCTURE.md` | Updated 2 mesh-boolean references (example commit, formal verification) |
+| `CONTRIBUTING.md` | Removed curve-types, sim-gpu exception, mesh-geodesic example, geometry/ directory |
+| `STANDARDS.md` | Removed curve-types from Layer 0 list |
+| `CF_GEOMETRY_SPEC.md` | Updated 8 locations: Aabb counts, dependency profile, session exits, curve-types removal notes |
+| `FUTURE.md` | Removed mesh-boolean from formal verification targets |
+| `VISION.md` | Removed sim-gpu from crate listing, roadmap, milestone |
+| `sim/docs/ARCHITECTURE.md` | Replaced sim-gpu section with removal note, updated feature flags |
+| `sim/docs/MUJOCO_CONFORMANCE.md` | Updated GPU comparison row |
+| `sim/docs/MUJOCO_REFERENCE.md` | Replaced GPU path section with removal note |
+| `sim/docs/MUJOCO_GAP_ANALYSIS.md` | Updated GPU rows, replaced implementation notes section |
+| `sim/L0/core/src/integrate/mod.rs` | Updated doc comments (sim-gpu → GPU backends) |
 
-**Edit `.github/workflows/scheduled.yml`:**
-- Remove `mesh-boolean` from mutation testing matrix (~line 82)
+**Preserved as historical (not edited):**
+- `MIGRATION_CHECKLIST.md` — mesh monolith decomposition record
+- `COMPLETION_LOG.md` — A-grade completion dates
+- `sim/docs/todo/` — archived specs (future_work_3.md, V1_CLEANUP.md, etc.)
 
-**Edit `xtask/src/setup.rs`:**
-- Update example commit message (~line 143)
-
-**Documentation:**
-
-**Edit `README.md`** (10 references):
-- Update architecture table (~lines 58, 65)
-- Update crate list (~lines 103, 116-124, 131)
-
-**Edit `INFRASTRUCTURE.md`** (4 references):
-- Update example commit messages (~line 190)
-- Update sim-gpu Layer 0 exception note (~line 223)
-- Update critical algorithms section (~line 376)
-- Update geodesic example (~line 310)
-
-**Edit `CONTRIBUTING.md`** (2 references):
-- Update Layer 0 crate list (~line 218)
-- Update sim-gpu exception note (~line 223)
-
-**Edit `STANDARDS.md`** (1 reference):
-- Remove curve-types from Layer 0 list (~line 386)
-
-**Edit `CF_GEOMETRY_SPEC.md`** (7 references):
-- Update private Aabb references (~lines 29-30, 173-174)
-- Update dependency profile comparison (~lines 61, 73)
-- Update session exit conditions (~lines 912, 916, 919)
-- Add note: "curve-types removed in workspace trim (2026-03-19)"
-
-**Verify:**
-- YAML syntax valid (parse check)
-- `cargo build -p xtask`
-- Dangling reference sweep:
-  `grep -r 'mesh-boolean\|mesh-geodesic\|mesh-thickness\|mesh-transform\|mesh-slice\|mesh-scan\|mesh-template\|mesh-remesh\|mesh-decimate\|mesh-subdivide\|mesh-from-curves\|mesh-zones\|mesh-region\|mesh-assembly\|mesh-morph\|mesh-registration\|mesh-gpu\|curve-types\|sim-gpu' --include='*.md' --include='*.yml' --include='*.rs'`
-- Only hits should be in this spec file and historical notes in
-  `CF_GEOMETRY_SPEC.md`
+**Verification results:**
+- YAML syntax: valid (both files)
+- `cargo build -p xtask`: compiles clean
+- Dangling reference sweep: 0 hits in active files. Only hits are in
+  this spec, CF_GEOMETRY_SPEC.md removal notes, historical docs, and
+  3 removal notes in sim/docs/ that say "sim-gpu was removed"
 
 ---
 
