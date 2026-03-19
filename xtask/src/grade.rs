@@ -285,9 +285,7 @@ fn find_workspace_root(sh: &Shell) -> Result<String> {
 /// Find the path to a crate within the workspace
 fn find_crate_path(_sh: &Shell, crate_name: &str) -> Result<String> {
     // Try common locations
-    let locations = [
-        "crates", "mesh", "geometry", "routing", "ml", "sensor", "sim",
-    ];
+    let locations = ["design", "mesh", "geometry", "sim"];
 
     for loc in &locations {
         let path = format!("{}/{}", loc, crate_name);
@@ -627,9 +625,7 @@ pub fn status() -> Result<()> {
 
     // Parse JSON output to get package names
     // For now, just list directories
-    let locations = [
-        "crates", "mesh", "geometry", "routing", "ml", "sensor", "sim",
-    ];
+    let locations = ["design", "mesh", "geometry", "sim"];
 
     for loc in &locations {
         if Path::new(loc).exists() {

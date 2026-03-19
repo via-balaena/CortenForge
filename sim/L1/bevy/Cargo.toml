@@ -12,7 +12,7 @@ categories = ["simulation", "visualization", "game-development"]
 
 [dependencies]
 # Shared geometry kernel
-cf-geometry = { path = "../../../crates/cf-geometry" }
+cf-geometry = { path = "../../../design/cf-geometry" }
 
 # Layer 0 simulation crates
 sim-types = { path = "../../L0/types" }

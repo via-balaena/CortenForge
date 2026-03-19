@@ -113,9 +113,7 @@ pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
 }
 
 fn find_crate_path(crate_name: &str) -> Result<String> {
-    let locations = [
-        "crates", "mesh", "geometry", "routing", "ml", "vision", "sim",
-    ];
+    let locations = ["design", "mesh", "geometry", "sim"];
 
     for loc in &locations {
         let path = format!("{}/{}", loc, crate_name);

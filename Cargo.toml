@@ -34,26 +34,11 @@ members = [
     "examples/mesh-pipeline",
 
     # Foundation (active development)
-    "crates/cf-geometry",
-    "crates/cf-spatial",
+    "design/cf-geometry",
+    "design/cf-spatial",
 
     # Design kernel (active development)
-    "crates/cf-design",
-
-    # Routing domain (active development)
-    "routing/route-types",
-    "routing/route-pathfind",
-    "routing/route-optimize",
-
-    # Sensor domain (active development)
-    "sensor/sensor-types",
-    "sensor/sensor-fusion",
-
-    # Machine learning domain (active development)
-    "ml/ml-types",
-    "ml/ml-models",
-    "ml/ml-dataset",
-    "ml/ml-training",
+    "design/cf-design",
 
     # Simulation domain - Layer 0 (Bevy-free)
     "sim/L0/types",
@@ -69,7 +54,6 @@ members = [
 
 # Exclude directories that aren't workspace members
 exclude = [
-    "templates",
     "docs",
 ]
 
@@ -111,8 +95,7 @@ let_underscore_must_use = "deny"
 # ---------------------------------------------------------------------------
 # nalgebra: Linear algebra, matches parry3d and avian for compatibility
 nalgebra = "0.33"
-# glam: Fast, simple math for games/graphics
-glam = "0.30"
+# (glam removed — was only used by routing crates)
 
 # ---------------------------------------------------------------------------
 # Error Handling
@@ -137,11 +120,6 @@ toml = "0.8"
 parry3d = "0.17"
 
 # ---------------------------------------------------------------------------
-# Pathfinding (Community crate - 1.7M downloads)
-# ---------------------------------------------------------------------------
-pathfinding = "4.0"
-
-# ---------------------------------------------------------------------------
 # Randomness
 # ---------------------------------------------------------------------------
 rand = "0.8"
@@ -158,13 +136,6 @@ rayon = "1.10"
 hashbrown = "0.15"
 
 # ---------------------------------------------------------------------------
-# Machine Learning (Burn)
-# ---------------------------------------------------------------------------
-burn = "0.16"
-burn-ndarray = "0.16"
-burn-wgpu = "0.16"
-
-# ---------------------------------------------------------------------------
 # Image Processing
 # ---------------------------------------------------------------------------
 image = "0.25"
@@ -173,7 +144,7 @@ image = "0.25"
 # Logging & Tracing
 # ---------------------------------------------------------------------------
 tracing = "0.1"
-tracing-subscriber = "0.3"
+# (tracing-subscriber removed — was only used by removed crates)
 
 # ---------------------------------------------------------------------------
 # Bevy Ecosystem (Layer 1 only - not used by Layer 0 crates)
@@ -229,28 +200,13 @@ mesh-lattice = { path = "mesh/mesh-lattice" }
 mesh = { path = "mesh/mesh" }
 
 # Geometric kernel
-cf-geometry = { path = "crates/cf-geometry" }
+cf-geometry = { path = "design/cf-geometry" }
 
 # Spatial foundation
-cf-spatial = { path = "crates/cf-spatial" }
+cf-spatial = { path = "design/cf-spatial" }
 
 # Design kernel
-cf-design = { path = "crates/cf-design" }
-
-# Routing domain
-route-types = { path = "routing/route-types" }
-route-pathfind = { path = "routing/route-pathfind" }
-route-optimize = { path = "routing/route-optimize" }
-
-# Sensor domain
-sensor-types = { path = "sensor/sensor-types" }
-sensor-fusion = { path = "sensor/sensor-fusion" }
-
-# ML domain
-ml-types = { path = "ml/ml-types" }
-ml-models = { path = "ml/ml-models" }
-ml-dataset = { path = "ml/ml-dataset" }
-ml-training = { path = "ml/ml-training" }
+cf-design = { path = "design/cf-design" }
 
 # Sim domain - Layer 0 (Bevy-free)
 sim-types = { path = "sim/L0/types" }
@@ -261,5 +217,3 @@ sim-urdf = { path = "sim/L0/urdf" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
 
-# SDK
-cortenforge = { path = "cortenforge" }
