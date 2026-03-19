@@ -2,13 +2,13 @@
 //!
 //! These tests serve as a regression suite to ensure the public API remains
 //! stable and consistent across the mesh crate ecosystem. They are organized
-//! in 5 tiers of increasing complexity:
+//! in tiers of increasing complexity:
 //!
 //! - Tier 1: Foundation (mesh-types, basic primitives)
-//! - Tier 2: Core Operations (mesh-repair, mesh-decimate, mesh-io)
-//! - Tier 3: Advanced Processing (mesh-boolean, mesh-slice, mesh-offset)
-//! - Tier 4: Analysis & Validation (mesh-printability, mesh-sdf, mesh-region)
-//! - Tier 5: Specialized (mesh-scan, mesh-morph, mesh-lattice)
+//! - Tier 2: Core Operations (mesh-repair, mesh-io)
+//! - Tier 3: Advanced Processing (mesh-offset)
+//! - Tier 4: Analysis & Validation (mesh-printability, mesh-sdf, mesh-repair)
+//! - Tier 5: Specialized (mesh-lattice)
 //!
 //! If any of these tests fail after API changes, it indicates a breaking change
 //! that needs documentation in CHANGELOG.md and a version bump.
@@ -86,7 +86,7 @@ mod tier1_foundation {
 }
 
 // =============================================================================
-// TIER 2: Core Operations - Repair, Decimation, I/O
+// TIER 2: Core Operations - Repair, I/O
 // =============================================================================
 
 mod tier2_core_operations {
@@ -142,38 +142,6 @@ mod tier2_core_operations {
     }
 
     #[test]
-    fn decimate_params_presets() {
-        use mesh::decimate::DecimateParams;
-
-        // Target ratio
-        let params = DecimateParams::with_target_ratio(0.5);
-        assert!((params.target_ratio - 0.5).abs() < f64::EPSILON);
-
-        // Aggressive preset
-        let aggressive = DecimateParams::aggressive();
-        assert!(aggressive.target_ratio < 0.5);
-
-        // Builder pattern
-        let params = DecimateParams::default()
-            .with_preserve_boundary(true)
-            .with_preserve_sharp_features(true);
-        assert!(params.preserve_boundary);
-    }
-
-    #[test]
-    fn decimate_mesh_operation() {
-        use mesh::decimate::{DecimateParams, decimate_mesh};
-
-        let cube = types::unit_cube();
-        let result = decimate_mesh(&cube, &DecimateParams::default());
-
-        // Result provides stats
-        assert!(result.final_triangles <= cube.face_count());
-        let display = format!("{}", result);
-        assert!(display.contains("→")); // Shows before → after
-    }
-
-    #[test]
     fn io_format_detection() {
         use mesh::io::MeshFormat;
 
@@ -193,139 +161,11 @@ mod tier2_core_operations {
 }
 
 // =============================================================================
-// TIER 3: Advanced Processing - Boolean, Slicing, Offset
+// TIER 3: Advanced Processing - Offset
 // =============================================================================
 
 mod tier3_advanced_processing {
     use super::*;
-
-    #[test]
-    fn boolean_config_presets() {
-        use mesh::boolean::{BooleanConfig, CleanupLevel, CoplanarStrategy};
-
-        // Presets
-        let default = BooleanConfig::default();
-        let scans = BooleanConfig::for_scans();
-        let cad = BooleanConfig::for_cad();
-        let strict = BooleanConfig::strict();
-
-        // Tolerance ordering
-        assert!(scans.vertex_weld_tolerance > default.vertex_weld_tolerance);
-        assert!(cad.vertex_weld_tolerance < default.vertex_weld_tolerance);
-        assert!(strict.vertex_weld_tolerance < cad.vertex_weld_tolerance);
-
-        // Builder pattern
-        let config = BooleanConfig::default()
-            .with_cleanup(CleanupLevel::Full)
-            .with_coplanar_strategy(CoplanarStrategy::Exclude)
-            .with_parallel(false);
-
-        assert_eq!(config.cleanup, CleanupLevel::Full);
-    }
-
-    #[test]
-    fn boolean_operations_return_result() {
-        use mesh::boolean::{difference, intersection, union};
-
-        let cube_a = types::unit_cube();
-
-        // Create offset cube
-        let mut cube_b = types::IndexedMesh::new();
-        for v in &[
-            types::Point3::new(5.0, 0.0, 0.0),
-            types::Point3::new(6.0, 0.0, 0.0),
-            types::Point3::new(6.0, 1.0, 0.0),
-            types::Point3::new(5.0, 1.0, 0.0),
-            types::Point3::new(5.0, 0.0, 1.0),
-            types::Point3::new(6.0, 0.0, 1.0),
-            types::Point3::new(6.0, 1.0, 1.0),
-            types::Point3::new(5.0, 1.0, 1.0),
-        ] {
-            cube_b.vertices.push(*v);
-        }
-        cube_b.faces = vec![
-            [0, 2, 1],
-            [0, 3, 2],
-            [4, 5, 6],
-            [4, 6, 7],
-            [0, 1, 5],
-            [0, 5, 4],
-            [2, 3, 7],
-            [2, 7, 6],
-            [0, 4, 7],
-            [0, 7, 3],
-            [1, 2, 6],
-            [1, 6, 5],
-        ];
-
-        // All operations now return BooleanOperationResult consistently
-        let union_result = union(&cube_a, &cube_b).unwrap();
-        assert_eq!(union_result.mesh.faces.len(), 24); // Two disjoint cubes
-
-        let diff_result = difference(&cube_a, &cube_b).unwrap();
-        assert_eq!(diff_result.mesh.faces.len(), 12); // Just cube A
-
-        let inter_result = intersection(&cube_a, &cube_b).unwrap();
-        assert_eq!(inter_result.mesh.faces.len(), 0); // No overlap
-
-        // Stats available on all operations
-        assert!(!union_result.stats.meshes_intersected);
-    }
-
-    #[test]
-    fn multi_boolean_operations() {
-        use mesh::boolean::{BooleanConfig, multi_union};
-
-        // Create 3 non-overlapping cubes
-        let cubes: Vec<types::IndexedMesh> = (0..3)
-            .map(|i| {
-                let offset = i as f64 * 3.0;
-                let mut mesh = types::IndexedMesh::new();
-                for v in &[
-                    types::Point3::new(offset, 0.0, 0.0),
-                    types::Point3::new(offset + 1.0, 0.0, 0.0),
-                    types::Point3::new(offset + 1.0, 1.0, 0.0),
-                    types::Point3::new(offset, 1.0, 0.0),
-                    types::Point3::new(offset, 0.0, 1.0),
-                    types::Point3::new(offset + 1.0, 0.0, 1.0),
-                    types::Point3::new(offset + 1.0, 1.0, 1.0),
-                    types::Point3::new(offset, 1.0, 1.0),
-                ] {
-                    mesh.vertices.push(*v);
-                }
-                mesh.faces = vec![
-                    [0, 2, 1],
-                    [0, 3, 2],
-                    [4, 5, 6],
-                    [4, 6, 7],
-                    [0, 1, 5],
-                    [0, 5, 4],
-                    [2, 3, 7],
-                    [2, 7, 6],
-                    [0, 4, 7],
-                    [0, 7, 3],
-                    [1, 2, 6],
-                    [1, 6, 5],
-                ];
-                mesh
-            })
-            .collect();
-
-        let result = multi_union(&cubes, &BooleanConfig::default()).unwrap();
-        assert_eq!(result.mesh.faces.len(), 36); // 3 cubes × 12 faces
-        assert_eq!(result.stats.input_count, 3);
-    }
-
-    #[test]
-    fn slice_mesh_operation() {
-        use mesh::slice::{SliceParams, slice_mesh};
-
-        let cube = types::unit_cube();
-        let result = slice_mesh(&cube, &SliceParams::default());
-
-        assert!(result.layer_count > 0);
-        assert!(result.estimated_print_time >= 0.0);
-    }
 
     #[test]
     fn offset_mesh_operation() {
@@ -432,34 +272,6 @@ mod tier4_analysis {
 // =============================================================================
 
 mod tier5_specialized {
-    use super::*;
-
-    #[test]
-    fn point_cloud_operations() {
-        use mesh::scan::PointCloud;
-
-        let points = vec![
-            types::Point3::new(0.0, 0.0, 0.0),
-            types::Point3::new(1.0, 0.0, 0.0),
-            types::Point3::new(0.0, 1.0, 0.0),
-        ];
-
-        let cloud = PointCloud::from_positions(&points);
-        assert_eq!(cloud.len(), 3);
-    }
-
-    #[test]
-    fn morph_params() {
-        use mesh::morph::MorphParams;
-
-        // MorphParams uses factory methods
-        let params = MorphParams::rbf();
-        assert!(params.constraints.is_empty());
-
-        let params_gaussian = MorphParams::rbf_gaussian(1.0);
-        assert!(params_gaussian.vertex_mask.is_none());
-    }
-
     #[test]
     fn lattice_structure() {
         use mesh::lattice::LatticeParams;
@@ -467,37 +279,6 @@ mod tier5_specialized {
         let params = LatticeParams::default().with_cell_size(5.0);
 
         assert!((params.cell_size - 5.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn remesh_operation() {
-        use mesh::remesh::{RemeshParams, remesh};
-
-        let cube = types::unit_cube();
-        let params = RemeshParams::with_edge_length(0.5).with_iterations(3);
-        let result = remesh(&cube, &params);
-
-        assert!(result.is_ok());
-        // Remeshing should produce stats about the operation
-        let remeshed = result.unwrap();
-        assert!(remeshed.final_faces > 0);
-        assert!(remeshed.original_faces == cube.face_count());
-    }
-
-    #[test]
-    fn registration_icp() {
-        use mesh::registration::{IcpParams, icp_align};
-
-        let source = types::unit_cube();
-        let target = types::unit_cube(); // Same mesh for test
-
-        let params = IcpParams::default();
-        let result = icp_align(&source, &target, &params);
-
-        assert!(result.is_ok());
-        let alignment = result.unwrap();
-        // Should converge quickly for identical meshes
-        assert!(alignment.iterations < 50);
     }
 }
 
@@ -507,18 +288,6 @@ mod tier5_specialized {
 
 mod error_handling {
     use super::*;
-
-    #[test]
-    fn boolean_empty_mesh_error() {
-        use mesh::boolean::union;
-
-        let cube = types::unit_cube();
-        let empty = types::IndexedMesh::new();
-
-        // Operations on empty meshes should return errors
-        let result = union(&cube, &empty);
-        assert!(result.is_err());
-    }
 
     #[test]
     fn printability_empty_mesh_error() {

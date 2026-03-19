@@ -14,30 +14,13 @@ members = [
     # Mesh domain (active development)
     "mesh/mesh-types",
     "mesh/mesh-io",
-    "mesh/mesh-geodesic",
-    "mesh/mesh-transform",
     "mesh/mesh-repair",
     "mesh/mesh-sdf",
     "mesh/mesh-offset",
-    "mesh/mesh-zones",
-    "mesh/mesh-from-curves",
     "mesh/mesh-shell",
     "mesh/mesh-measure",
-    "mesh/mesh-thickness",
-    "mesh/mesh-slice",
-    "mesh/mesh-decimate",
-    "mesh/mesh-subdivide",
-    "mesh/mesh-remesh",
-    "mesh/mesh-region",
-    "mesh/mesh-assembly",
     "mesh/mesh-printability",
-    "mesh/mesh-boolean",
-    "mesh/mesh-registration",
-    "mesh/mesh-morph",
-    "mesh/mesh-scan",
     "mesh/mesh-lattice",
-    "mesh/mesh-template",
-    "mesh/mesh-gpu",
 
     # Umbrella crate (re-exports all mesh-* crates)
     "mesh/mesh",
@@ -49,10 +32,6 @@ members = [
     "examples/pendulum-sim",
     "examples/design-to-sim",
     "examples/mesh-pipeline",
-
-    # Geometry domain (active development)
-    "geometry/curve-types",
-    # "geometry/lumen-geometry",  # Archived, pull when needed
 
     # Foundation (active development)
     "crates/cf-geometry",
@@ -83,9 +62,6 @@ members = [
     "sim/L0/mjcf",
     "sim/L0/urdf",
     "sim/L0/tests",
-
-    # Simulation domain - Layer 0 GPU (Bevy-free)
-    "sim/L0/gpu",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
@@ -159,8 +135,6 @@ toml = "0.8"
 # ---------------------------------------------------------------------------
 # parry3d: Collision detection, BVH, convex hulls
 parry3d = "0.17"
-# kiddo: High-performance KD-trees
-kiddo = "4.0"
 
 # ---------------------------------------------------------------------------
 # Pathfinding (Community crate - 1.7M downloads)
@@ -182,8 +156,6 @@ rayon = "1.10"
 # Data Structures
 # ---------------------------------------------------------------------------
 hashbrown = "0.15"
-indexmap = "2.0"
-smallvec = "1.13"
 
 # ---------------------------------------------------------------------------
 # Machine Learning (Burn)
@@ -246,35 +218,15 @@ tempfile = "3.10"
 mesh-types = { path = "mesh/mesh-types" }
 mesh-io = { path = "mesh/mesh-io" }
 mesh-repair = { path = "mesh/mesh-repair" }
-mesh-transform = { path = "mesh/mesh-transform" }
-mesh-geodesic = { path = "mesh/mesh-geodesic" }
 mesh-sdf = { path = "mesh/mesh-sdf" }
 mesh-offset = { path = "mesh/mesh-offset" }
 mesh-shell = { path = "mesh/mesh-shell" }
-mesh-zones = { path = "mesh/mesh-zones" }
-mesh-from-curves = { path = "mesh/mesh-from-curves" }
 mesh-measure = { path = "mesh/mesh-measure" }
-mesh-thickness = { path = "mesh/mesh-thickness" }
-mesh-slice = { path = "mesh/mesh-slice" }
-mesh-decimate = { path = "mesh/mesh-decimate" }
-mesh-subdivide = { path = "mesh/mesh-subdivide" }
-mesh-remesh = { path = "mesh/mesh-remesh" }
-mesh-region = { path = "mesh/mesh-region" }
-mesh-assembly = { path = "mesh/mesh-assembly" }
 mesh-printability = { path = "mesh/mesh-printability" }
-mesh-boolean = { path = "mesh/mesh-boolean" }
-mesh-registration = { path = "mesh/mesh-registration" }
-mesh-morph = { path = "mesh/mesh-morph" }
-mesh-scan = { path = "mesh/mesh-scan" }
 mesh-lattice = { path = "mesh/mesh-lattice" }
-mesh-template = { path = "mesh/mesh-template" }
-mesh-gpu = { path = "mesh/mesh-gpu" }
 
 # Umbrella crate
 mesh = { path = "mesh/mesh" }
-
-# Geometry domain
-curve-types = { path = "geometry/curve-types" }
 
 # Geometric kernel
 cf-geometry = { path = "crates/cf-geometry" }
@@ -306,8 +258,6 @@ sim-simd = { path = "sim/L0/simd" }
 sim-core = { path = "sim/L0/core" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
-sim-gpu = { path = "sim/L0/gpu" }
-
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
 

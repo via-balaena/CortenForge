@@ -22,7 +22,6 @@ workspace = true
 # Foundation
 mesh-types = { workspace = true }
 mesh-io = { workspace = true }
-mesh-transform = { workspace = true }
 
 # Core operations
 mesh-repair = { workspace = true }
@@ -30,46 +29,12 @@ mesh-sdf = { workspace = true }
 mesh-offset = { workspace = true }
 mesh-shell = { workspace = true }
 
-# Topology operations
-mesh-decimate = { workspace = true }
-mesh-subdivide = { workspace = true }
-mesh-remesh = { workspace = true }
-
 # Analysis & measurement
 mesh-measure = { workspace = true }
-mesh-thickness = { workspace = true }
-mesh-slice = { workspace = true }
-mesh-geodesic = { workspace = true }
-mesh-zones = { workspace = true }
-
-# Deformation & registration
-mesh-morph = { workspace = true }
-mesh-registration = { workspace = true }
-mesh-template = { workspace = true }
-
-# Boolean operations
-mesh-boolean = { workspace = true }
 
 # 3D printing
 mesh-printability = { workspace = true }
 mesh-lattice = { workspace = true }
-
-# Scan processing
-mesh-scan = { workspace = true }
-
-# Assembly & regions
-mesh-assembly = { workspace = true }
-mesh-region = { workspace = true }
-
-# Curve-based mesh generation
-mesh-from-curves = { workspace = true }
-
-# GPU acceleration (optional)
-mesh-gpu = { workspace = true, optional = true }
-
-[features]
-default = []
-gpu = ["dep:mesh-gpu"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

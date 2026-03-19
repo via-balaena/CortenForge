@@ -13,7 +13,6 @@ workspace = true
 
 [dependencies]
 nalgebra = { workspace = true }
-thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
