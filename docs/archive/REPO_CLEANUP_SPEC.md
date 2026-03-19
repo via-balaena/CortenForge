@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-19
 **Branch:** chore/workspace-trim-tier1
-**Status:** Sessions 1–2 complete — Session 3 pending
+**Status:** Complete
 
 ## Motivation
 
@@ -284,27 +284,31 @@ Move markdown files, fix all cross-references. Three commits:
 in active (non-archive) files. xtask builds clean, clippy passes on all
 5 affected crates.
 
-### Session 3: CI + Final Verification
+### Session 3: CI + Final Verification ✅
 
-1. Update CI workflows:
-   - `quality-gate.yml` — remove 8 Tier 2 crate entries (WASM + LAYER0)
-   - `scheduled.yml` — remove 2 Tier 2 entries (mutation testing)
-   - Update any doc path comments
-2. Full build + test of key crates:
-   ```
-   cargo build -p mesh -p cf-design -p cf-geometry -p cf-spatial -p sim-core
-   cargo test -p mesh -p mesh-io -p mesh-repair -p mesh-sdf -p mesh-offset \
-     -p mesh-shell -p mesh-measure -p mesh-printability -p mesh-lattice
-   cargo test -p cf-design -p cf-geometry -p cf-spatial
-   cargo build -p example-hello-solid -p example-bio-shapes \
-     -p example-tendon-finger -p example-pendulum-sim \
-     -p example-design-to-sim -p example-mesh-pipeline
-   cargo clippy -p mesh -p cf-design -- -D warnings
-   ```
-3. Dangling reference sweep: grep all deleted/moved filenames, confirm zero
-   stale hits in active files
-4. Move `REPO_CLEANUP_SPEC.md` → `docs/archive/REPO_CLEANUP_SPEC.md`
-5. Update this spec: mark complete, record final state
+**Completed:** 2026-03-19 — commits `70e5c5c`, (close-out)
+
+**Commit A** (`70e5c5c`) — CI cleanup + last stale ref:
+1. ✅ `quality-gate.yml` — removed `sensor-types`, `ml-types` from WASM_CRATES;
+   removed `sensor-types`, `sensor-fusion`, `ml-types`, `ml-models`,
+   `ml-dataset`, `ml-training` from LAYER0_CRATES
+2. ✅ `scheduled.yml` — removed `sensor-types`, `ml-types` from mutation
+   testing matrix
+3. ✅ Doc path comments already correct (fixed in Session 2)
+4. ✅ Fixed last stale `crates/` → `design/` ref in
+   `sim/docs/todo/spec_fleshouts/mesh_collision_fixes/SPEC.md:176`
+
+**Verification:**
+5. ✅ Build: `mesh`, `cf-design`, `cf-geometry`, `cf-spatial`, `sim-core` — clean
+6. ✅ Build: all 6 example crates — clean
+7. ✅ Test: 9 mesh crates — all pass
+8. ✅ Test: 3 design crates (1283 tests) — all pass
+9. ✅ Clippy: `mesh`, `cf-design` — zero warnings
+10. ✅ Dangling reference sweep: zero stale hits in active files
+
+**Commit B** — Close-out:
+11. ✅ `git mv REPO_CLEANUP_SPEC.md docs/archive/REPO_CLEANUP_SPEC.md`
+12. ✅ Updated spec: marked complete, recorded final state
 
 ## Stress Test Results (2026-03-19)
 
