@@ -685,7 +685,7 @@ mutate the mesh while it's owned, but once shared it's immutable.
 ## Crate Structure
 
 ```
-crates/cf-geometry/
+design/cf-geometry/
 +-- Cargo.toml
 +-- src/
 |   +-- lib.rs              // Re-exports, crate docs
@@ -807,7 +807,7 @@ extreme. Once started, each must finish.
 ### Phase 1: Foundation Types (Sessions 1-3)
 
 **Session 1: Crate Skeleton + Tier 1 Primitives**
-- Scope: Create `crates/cf-geometry/`, add to workspace. Implement `Aabb`
+- Scope: Create `design/cf-geometry/`, add to workspace. Implement `Aabb`
   (superset API, dual constructors, all methods), `Axis`, `Sphere`, `Ray`,
   `RayHit`. Full unit tests.
 - Entry: none

@@ -8,10 +8,10 @@
 >
 > **Status**: COMPLETE. All 13 phases passed all 8 criteria at A-grade.
 >
-> **Relationship to STANDARDS.md**: The project-wide 7-criterion system
+> **Relationship to docs/STANDARDS.md**: The project-wide 7-criterion system
 > (coverage, docs, clippy, safety, deps, bevy-free, API design) continues to
 > apply. This rubric adds **8 structural criteria** specific to the refactor
-> that STANDARDS.md doesn't cover — module size, naming, dependency flow,
+> that docs/STANDARDS.md doesn't cover — module size, naming, dependency flow,
 > discoverability, etc. Both must pass.
 
 ---

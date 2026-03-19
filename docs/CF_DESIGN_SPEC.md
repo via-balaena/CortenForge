@@ -1,7 +1,7 @@
 # CF_DESIGN_SPEC — Implicit Surface Design Kernel
 
 > **Status**: Phase 4 complete — 2026-03-17
-> **Crate**: `cf-design` (`crates/cf-design/`)
+> **Crate**: `cf-design` (`design/cf-design/`)
 > **Layer**: 0 (pure Rust, zero framework dependencies)
 > **Depends on**: `cf-geometry` (IndexedMesh, SdfGrid, Shape, Aabb, ConvexHull, Bvh)
 > **Consumed by**: `sim-mjcf` (MJCF generation), `sim-core` (collision shapes), `mesh-io` (STL/3MF export), `sim-bevy` (visualization)
@@ -990,7 +990,7 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 
 **Branch**: `cf-design-phase1` | **Tests**: 207 pass | **Completed**: 2026-03-16
 
-**Source files**: `crates/cf-design/src/{lib.rs, field_node.rs, evaluate.rs, interval.rs, solid.rs, bounds.rs, mesher.rs}`
+**Source files**: `design/cf-design/src/{lib.rs, field_node.rs, evaluate.rs, interval.rs, solid.rs, bounds.rs, mesher.rs}`
 
 **What shipped**:
 - `FieldNode` expression tree (pub(crate)) with 10 primitives, 7 booleans, 4 transforms, 4 domain ops, UserFn escape hatch
@@ -1034,7 +1034,7 @@ schedule. Sections 5.3 and 8.1 use "Phase" for subsystem evolution roadmaps
 
 **Branch**: `cf-design-phase2` | **Tests**: 354 pass + 10 doctests | **Completed**: 2026-03-16
 
-**Source files**: `crates/cf-design/src/mechanism/{mod.rs, part.rs, material.rs, joint.rs, tendon.rs, actuator.rs, builder.rs, mjcf.rs, shapes.rs, stl.rs, mass.rs, validate.rs, print.rs, integration.rs}`
+**Source files**: `design/cf-design/src/mechanism/{mod.rs, part.rs, material.rs, joint.rs, tendon.rs, actuator.rs, builder.rs, mjcf.rs, shapes.rs, stl.rs, mass.rs, validate.rs, print.rs, integration.rs}`
 
 **What shipped**:
 - `MechanismBuilder` → `Mechanism` with structural validation (8 error variants)
@@ -1419,7 +1419,7 @@ these is a valid stopping point.
 ### 11.1 Current (Phase 2)
 
 ```
-crates/cf-design/
+design/cf-design/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              Crate root — re-exports Solid + mechanism types
@@ -1450,7 +1450,7 @@ crates/cf-design/
 ### 11.2 Planned (Phase 3+)
 
 ```
-crates/cf-design/
+design/cf-design/
 ├── Cargo.toml
 └── src/
     ├── lib.rs
