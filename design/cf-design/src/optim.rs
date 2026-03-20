@@ -225,6 +225,76 @@ mod tests {
     }
 
     #[test]
+    fn minimize_two_params() {
+        let store = ParamStore::new();
+        let _a = store.add("a", 1.0);
+        let _b = store.add("b", 2.0);
+
+        // Minimize f(a,b) = (a - 3)^2 + (b - 5)^2.
+        // Minimum at a=3, b=5.
+        let result = minimize_fd(
+            &store,
+            || {
+                let a = store.get("a").unwrap_or(0.0);
+                let b = store.get("b").unwrap_or(0.0);
+                (a - 3.0).mul_add(a - 3.0, (b - 5.0) * (b - 5.0))
+            },
+            &OptimConfig {
+                max_iters: 200,
+                learning_rate: 0.1,
+                fd_eps: 1e-4,
+                grad_tol: 1e-6,
+            },
+        );
+
+        assert!(
+            result.converged,
+            "should converge for simple quadratic, iterations={}",
+            result.iterations,
+        );
+        let final_a = store.get("a").unwrap_or(0.0);
+        let final_b = store.get("b").unwrap_or(0.0);
+        assert!(
+            (final_a - 3.0).abs() < 0.1,
+            "a should converge to 3.0, got {final_a:.4}"
+        );
+        assert!(
+            (final_b - 5.0).abs() < 0.1,
+            "b should converge to 5.0, got {final_b:.4}"
+        );
+    }
+
+    #[test]
+    fn respects_grad_tol() {
+        let store = ParamStore::new();
+        let _x = store.add("x", 0.5);
+
+        // f(x) = x^2 with tight grad_tol — should converge before max_iters.
+        let result = minimize_fd(
+            &store,
+            || store.get("x").unwrap_or(0.0).powi(2),
+            &OptimConfig {
+                max_iters: 1000,
+                learning_rate: 0.1,
+                fd_eps: 1e-6,
+                grad_tol: 1e-4,
+            },
+        );
+
+        assert!(result.converged, "should converge for x^2");
+        assert!(
+            result.iterations < 1000,
+            "should converge before max_iters, took {} iterations",
+            result.iterations
+        );
+        let final_x = store.get("x").unwrap_or(1.0);
+        assert!(
+            final_x.abs() < 0.1,
+            "x should converge near 0.0, got {final_x:.4}"
+        );
+    }
+
+    #[test]
     fn converges_on_flat_objective() {
         let store = ParamStore::new();
         let _r = store.add("x", 1.0);
