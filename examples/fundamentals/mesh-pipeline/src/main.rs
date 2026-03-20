@@ -42,8 +42,8 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // ── 1. Generate source mesh ───────────────────────────────────────
-    let shape = Solid::superellipsoid(Vector3::new(15.0, 10.0, 20.0), 0.7, 0.7).round(0.5);
-    let mut mesh = shape.mesh(0.8);
+    let shape = Solid::cuboid(Vector3::new(15.0, 10.0, 20.0)).round(2.0);
+    let mut mesh = shape.mesh(0.3);
 
     println!("=== CortenForge: Mesh Pipeline ===\n");
     println!(
@@ -119,7 +119,7 @@ fn setup(
         ),
     ];
 
-    let spacing = 40.0;
+    let spacing = 50.0;
     let offset = (stages.len() as f32 - 1.0) * spacing / 2.0;
 
     for (i, (name, indexed, color)) in stages.into_iter().enumerate() {
@@ -139,10 +139,15 @@ fn setup(
     }
 
     // ── Camera ────────────────────────────────────────────────────────
-    let orbit = OrbitCamera::new()
+    let mut orbit = OrbitCamera::new()
         .with_target(Vec3::ZERO)
-        .with_distance(80.0)
-        .with_angles(0.5, 0.4);
+        .with_angles(0.5, 0.6);
+    orbit.max_distance = 500.0;
+    orbit.min_distance = 5.0;
+    orbit.orbit_speed = 0.008;
+    orbit.pan_speed = 0.015;
+    orbit.zoom_speed = 0.15;
+    orbit.distance = 100.0;
     let mut cam_transform = Transform::default();
     orbit.apply_to_transform(&mut cam_transform);
     commands.spawn((Camera3d::default(), orbit, cam_transform));
@@ -150,11 +155,20 @@ fn setup(
     // ── Lighting ──────────────────────────────────────────────────────
     commands.spawn((
         DirectionalLight {
-            illuminance: 15000.0,
+            illuminance: 12000.0,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_xyz(30.0, 50.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(40.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 5000.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(-30.0, 30.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
     commands.spawn((

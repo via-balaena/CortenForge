@@ -1,5 +1,5 @@
 [package]
-name = "example-tendon-finger"
+name = "example-design-to-sim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,8 @@ publish = false
 
 [dependencies]
 cf-design = { workspace = true }
-cf-geometry = { workspace = true }
+sim-core = { workspace = true }
+sim-mjcf = { workspace = true }
 sim-bevy = { workspace = true }
 bevy = { workspace = true, features = [
     "bevy_asset",
@@ -20,6 +21,7 @@ bevy = { workspace = true, features = [
     "tonemapping_luts",
     "zstd_rust",
 ] }
+cf-geometry = { workspace = true }
 nalgebra = { workspace = true }
 
 [lints]

@@ -39,7 +39,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let tolerance = 0.5;
+    let tolerance = 0.3;
 
     // ── Primitives ────────────────────────────────────────────────────
     let sphere = Solid::sphere(10.0);
@@ -79,7 +79,7 @@ fn setup(
     ];
 
     // ── Spawn meshes side-by-side ─────────────────────────────────────
-    let spacing = 25.0;
+    let spacing = 35.0;
     let offset = (solids.len() as f32 - 1.0) * spacing / 2.0;
 
     for (i, (name, solid, color)) in solids.into_iter().enumerate() {
@@ -105,22 +105,38 @@ fn setup(
     }
 
     // ── Camera ────────────────────────────────────────────────────────
-    let orbit = OrbitCamera::new()
+    let mut orbit = OrbitCamera::new()
         .with_target(Vec3::ZERO)
-        .with_distance(80.0)
-        .with_angles(0.5, 0.4);
+        .with_angles(0.5, 0.6);
+    orbit.max_distance = 500.0;
+    orbit.min_distance = 5.0;
+    orbit.orbit_speed = 0.008;
+    orbit.pan_speed = 0.015;
+    orbit.zoom_speed = 0.15;
+    orbit.distance = 110.0;
     let mut cam_transform = Transform::default();
     orbit.apply_to_transform(&mut cam_transform);
     commands.spawn((Camera3d::default(), orbit, cam_transform));
 
     // ── Lighting ──────────────────────────────────────────────────────
+    // Key light — from front-right, above
     commands.spawn((
         DirectionalLight {
-            illuminance: 15000.0,
+            illuminance: 12000.0,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_xyz(30.0, 50.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(40.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    // Fill light — softer, from the left to reduce harsh shadows
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 5000.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(-30.0, 30.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
     // Ground plane
