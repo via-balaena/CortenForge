@@ -500,6 +500,104 @@ cargo clippy -p sim-bevy -p mesh-lattice -- -D warnings
 
 ---
 
+## Session Plan
+
+### Session 1 — `design-to-sim` library fix + example rewrite
+
+**Scope:**
+- Add `GeomType::Mesh` handling in `spawn_model_geoms` (~15 lines)
+- Add imports (`Arc`, `triangle_mesh_from_indexed`) to `model_data.rs`
+- Write unit test for mesh geom spawning in sim-bevy
+- Rewrite `examples/integration/design-to-sim/` to use `spawn_model_geoms` +
+  `sync_geom_transforms` (net deletion — example gets ~100 lines shorter)
+
+**Entry:** Branch is clean, existing design-to-sim example runs.
+**Exit:** `cargo test -p sim-bevy` passes, `cargo run -p example-design-to-sim --release`
+shows animated gripper with engine-rendered meshes, no `to_stl_kit` in example code.
+
+---
+
+### Session 2a — `shape_sdf` library change in mesh-lattice
+
+**Scope:**
+- Add `shape_sdf` field to `LatticeParams` in `params.rs`
+- Replace `#[derive(Debug)]` with manual `Debug` impl
+- Add `with_shape_sdf()` builder + `is_outside_shape()` helper
+- Add boundary checks in all 4 generators in `generate.rs`
+  (cubic, octet-truss, voronoi: skip outside nodes; TPMS: `max()` intersection)
+- Write unit tests: builder round-trip, sphere boundary conformance, TPMS
+  trimming, backward compat (no sdf = same as before)
+
+**Entry:** Session 1 committed (or independent — no dependency).
+**Exit:** `cargo test -p mesh-lattice` passes, `cargo clippy -p mesh-lattice -- -D warnings` clean.
+
+---
+
+### Session 2b — `design-to-print` example
+
+**Scope:**
+- Create `examples/integration/design-to-print/` (Cargo.toml + main.rs)
+- Register in workspace `Cargo.toml`
+- Pipeline: design solid → mesh → repair → shell → lattice with `shape_sdf` →
+  printability → 3-stage Bevy visualization
+
+**Entry:** Session 2a committed (needs `shape_sdf` API).
+**Exit:** `cargo run -p example-design-to-print --release` shows lattice
+conforming to shape boundary. Console prints printability report.
+
+---
+
+### Session 3 — `sim-informed-design` example
+
+**Scope:**
+- Create `examples/integration/sim-informed-design/` (Cargo.toml + main.rs)
+- Register in workspace `Cargo.toml`
+- Implement `build_stress_field()` using `cfrc_ext` + contact positions
+- Pipeline: design bracket → simulate N steps → extract stress → density map →
+  stress-graded lattice with `shape_sdf` → 2-panel Bevy visualization
+
+**Entry:** Sessions 1 + 2a committed (needs mesh geom rendering + `shape_sdf`).
+**Exit:** `cargo run -p example-sim-informed-design --release` shows visible
+density gradient. Console prints stress field statistics.
+
+---
+
+### Session 4 — `full-pipeline` capstone example
+
+**Scope:**
+- Create `examples/integration/full-pipeline/` (Cargo.toml + main.rs)
+- Register in workspace `Cargo.toml`
+- Compose patterns from Sessions 1–3: mechanism → simulate → stress → per-part
+  lattice → shell → printability
+- 5-stage Bevy visualization with Space-bar state machine
+- Final `cargo clippy` pass on all modified crates
+
+**Entry:** Sessions 1–3 committed.
+**Exit:** `cargo run -p example-full-pipeline --release` renders all 5 stages,
+Space advances stages, console prints per-part printability. All quality
+criteria met.
+
+---
+
+### Session dependency graph
+
+```
+Session 1 (design-to-sim) ───────────┐
+                                      ├── Session 3 (sim-informed-design) ──┐
+Session 2a (shape_sdf lib) ──┐       │                                      │
+                              ├───────┘                                      ├── Session 4 (capstone)
+Session 2b (design-to-print) ┘                                              │
+                                                                             │
+                              (2b needs 2a; 3 needs 1+2a; 4 needs all) ─────┘
+```
+
+Sessions 1 and 2a are independent — can run in parallel.
+Session 2b depends only on 2a.
+Session 3 depends on 1 + 2a.
+Session 4 depends on all.
+
+---
+
 ## Non-Goals
 
 - **No new crate dependencies.** The entire spec is achievable with existing
