@@ -12,7 +12,7 @@ then tag the release.
 
 ---
 
-## Session 1 — Mechanical cleanup
+## Session 1 — Mechanical cleanup ✅
 
 Fast, low-risk, zero ambiguity. Gets the codebase clean so later work
 references reality, not ghosts.
@@ -94,7 +94,7 @@ The README says "21 library crates" — actual count is 20 (10 mesh + 3 design +
 
 ---
 
-## Session 2 — VISION.md rewrite
+## Session 2 — VISION.md rewrite ✅
 
 The creative task. Done after Session 1 so every reference, diagram, and count
 is written against a codebase with no stale noise.
