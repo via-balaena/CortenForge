@@ -2413,6 +2413,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-design-to-print"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "cf-geometry",
+ "mesh-lattice",
+ "mesh-measure",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-shell",
+ "nalgebra",
+ "sim-bevy",
+]
+
+[[package]]
 name = "example-design-to-sim"
 version = "0.7.0"
 dependencies = [
