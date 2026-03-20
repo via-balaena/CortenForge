@@ -318,9 +318,6 @@ fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -
         return Vector3::zeros();
     }
 
-    // "Away from parent" direction in child-local frame = normalized anchor vector
-    let away = anchor_vec / anchor_norm;
-
     // Compute bounding box from a coarse mesh (just for extents)
     let mesh = part.solid().mesh(1.0);
     if mesh.vertices.is_empty() {
@@ -333,19 +330,29 @@ fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -
         min = min.inf(&v.coords);
         max = max.sup(&v.coords);
     }
-    let half_extents = (max - min) * 0.5;
+    let extents = max - min;
+    let half_extents = extents * 0.5;
     let center = (max + min) * 0.5;
 
-    // Project bbox half-extents onto the away direction
-    let extent = half_extents.x.mul_add(
-        away.x.abs(),
-        half_extents
-            .y
-            .mul_add(away.y.abs(), half_extents.z * away.z.abs()),
-    );
+    // Find the bbox's longest axis — that's the part's primary extension direction
+    let (longest_axis, longest_half) = if extents.x >= extents.y && extents.x >= extents.z {
+        (0, half_extents.x)
+    } else if extents.y >= extents.z {
+        (1, half_extents.y)
+    } else {
+        (2, half_extents.z)
+    };
 
-    // Offset = shift mesh center outward so the parent-facing face is at body origin
-    center + away * extent
+    // Offset along the longest axis, in the direction matching the anchor vector's
+    // sign on that axis (so the part extends away from the parent body)
+    let sign = if anchor_vec[longest_axis] >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let mut offset = center;
+    offset[longest_axis] += sign * longest_half;
+    offset
 }
 
 /// Write a single `<joint>` or `<freejoint>` element.
