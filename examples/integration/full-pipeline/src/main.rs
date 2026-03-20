@@ -33,7 +33,7 @@ use mesh_repair::{RepairParams, repair_mesh};
 use mesh_shell::ShellBuilder;
 use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
-use sim_bevy::convert::vec3_from_vector;
+use sim_bevy::convert::{quat_from_unit_quaternion, vec3_from_vector};
 use sim_bevy::mesh::triangle_mesh_from_indexed;
 use sim_bevy::model_data::{PhysicsData, PhysicsModel, spawn_model_geoms, sync_geom_transforms};
 use sim_core::{Data, Model};
@@ -357,6 +357,31 @@ fn spawn_mesh_entity(
         .id()
 }
 
+/// Spawn named meshes positioned at their body transforms.
+fn spawn_part_meshes(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    parts: &[(String, IndexedMesh)],
+    body_transforms: &[Transform],
+    colors: &[Color],
+    stage: PipelineStage,
+) {
+    for (i, (_name, mesh)) in parts.iter().enumerate() {
+        let body_id = i + 1; // skip world body
+        let body_transform = body_transforms.get(body_id).copied().unwrap_or_default();
+        spawn_mesh_entity(
+            commands,
+            meshes,
+            materials,
+            mesh,
+            colors[i % colors.len()],
+            body_transform,
+            stage,
+        );
+    }
+}
+
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -375,30 +400,37 @@ fn setup(
     // ── Run the full pipeline (offline) ──────────────────────────────
     let pipeline = run_pipeline(&mechanism);
 
-    // ── Stage 1: Design (visible initially) ──────────────────────────
-    let part_colors = [
-        Color::srgb(0.7, 0.75, 0.85),
-        Color::srgb(0.9, 0.4, 0.3),
-        Color::srgb(0.3, 0.6, 0.9),
-    ];
-    for (i, (name, mesh)) in pipeline.design_meshes.iter().enumerate() {
-        spawn_mesh_entity(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            mesh,
-            part_colors[i % part_colors.len()],
-            Transform::IDENTITY,
-            PipelineStage::Design,
-        );
-        println!("  Spawned design '{name}'");
-    }
-
-    // ── Stage 2: Simulate (spawned via spawn_model_geoms) ────────────
+    // ── Load physics model for initial poses ───────────────────────
     let mjcf_xml = mechanism.to_mjcf(1.5);
     let model = sim_mjcf::load_model(&mjcf_xml).expect("MJCF should load");
     let mut data = model.make_data();
     let _ = data.forward(&model);
+
+    // Cache initial body transforms before data is moved into resources
+    let initial_body_transforms: Vec<Transform> = (0..model.nbody)
+        .map(|body_id| Transform {
+            translation: vec3_from_vector(&data.xpos[body_id]),
+            rotation: quat_from_unit_quaternion(&data.xquat[body_id]),
+            scale: Vec3::ONE,
+        })
+        .collect();
+
+    // ── Stage 1: Design (visible initially) ──────────────────────────
+    spawn_part_meshes(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &pipeline.design_meshes,
+        &initial_body_transforms,
+        &[
+            Color::srgb(0.7, 0.75, 0.85),
+            Color::srgb(0.9, 0.4, 0.3),
+            Color::srgb(0.3, 0.6, 0.9),
+        ],
+        PipelineStage::Design,
+    );
+
+    // ── Stage 2: Simulate (spawned via spawn_model_geoms) ────────────
 
     // Spawn sim geoms (initially hidden)
     spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
@@ -431,30 +463,26 @@ fn setup(
     }
 
     // ── Stage 4: Lattice (initially hidden) ──────────────────────────
-    for (_name, mesh) in &pipeline.lattice_meshes {
-        spawn_mesh_entity(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            mesh,
-            Color::srgb(0.3, 0.8, 0.4),
-            Transform::IDENTITY,
-            PipelineStage::Lattice,
-        );
-    }
+    spawn_part_meshes(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &pipeline.lattice_meshes,
+        &initial_body_transforms,
+        &[Color::srgb(0.3, 0.8, 0.4)],
+        PipelineStage::Lattice,
+    );
 
     // ── Stage 5: Print-ready shell + lattice (initially hidden) ──────
-    for (_name, mesh) in &pipeline.shell_meshes {
-        spawn_mesh_entity(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            mesh,
-            Color::srgb(0.9, 0.75, 0.5),
-            Transform::IDENTITY,
-            PipelineStage::PrintReady,
-        );
-    }
+    spawn_part_meshes(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &pipeline.shell_meshes,
+        &initial_body_transforms,
+        &[Color::srgb(0.9, 0.75, 0.5)],
+        PipelineStage::PrintReady,
+    );
 
     // Scene setup (camera, lights, ground)
     spawn_scene(&mut commands, &mut meshes, &mut materials);
