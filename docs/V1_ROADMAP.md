@@ -17,7 +17,7 @@ then tag the release.
 Fast, low-risk, zero ambiguity. Gets the codebase clean so later work
 references reality, not ghosts.
 
-### 1. Sweep stale references across all docs
+### 1. ~~Sweep stale references across all docs~~ ✅
 
 The cleanup removed 9 crates but stale references survive in many active files
 beyond VISION.md. This is a codebase-wide sweep.
@@ -45,7 +45,7 @@ beyond VISION.md. This is a codebase-wide sweep.
 
 **Size:** ~1 hour
 
-### 2. Clean up stale source comments
+### 2. ~~Clean up stale source comments~~ ✅
 
 Three sim source files have comments referencing removed crate names. The code
 is correct — only the comments are stale.
@@ -64,7 +64,7 @@ is correct — only the comments are stale.
 
 **Size:** ~15 min
 
-### 3. Clean up sim/docs/todo/
+### 3. ~~Clean up sim/docs/todo/~~ ✅
 
 18 `future_work_*.md` files + 14 spec fleshout directories + 1 loose spec file
 (`DT16_DT90_SPEC.md`) + `POST_V1_ROADMAP.md` + `index.md`. A newcomer opening
@@ -80,7 +80,7 @@ this directory sees planning artifacts that signal "in progress," not "finished.
 
 **Size:** ~2 hours
 
-### 4. README polish
+### 4. ~~README polish~~ ✅
 
 The README says "21 library crates" — actual count is 20 (10 mesh + 3 design +
 7 sim). cf-design is listed under "What's next" but Phases 1–4 are implemented.
