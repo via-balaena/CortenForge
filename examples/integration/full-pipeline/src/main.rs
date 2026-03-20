@@ -33,7 +33,7 @@ use mesh_repair::{RepairParams, repair_mesh};
 use mesh_shell::ShellBuilder;
 use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::convert::{quat_from_unit_quaternion, transform_from_physics, vec3_from_vector};
+use sim_bevy::convert::{transform_from_physics, transform_from_physics_pose};
 use sim_bevy::mesh::triangle_mesh_from_indexed;
 use sim_bevy::model_data::{
     PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data, sync_geom_transforms,
@@ -431,11 +431,7 @@ fn setup(
                     let mat = &data.geom_xmat[gid];
                     let rotation = nalgebra::Rotation3::from_matrix_unchecked(*mat);
                     let quat = nalgebra::UnitQuaternion::from_rotation_matrix(&rotation);
-                    Transform {
-                        translation: vec3_from_vector(pos),
-                        rotation: quat_from_unit_quaternion(&quat),
-                        scale: Vec3::ONE,
-                    }
+                    transform_from_physics_pose(pos, &quat)
                 })
                 .unwrap_or_default()
         })

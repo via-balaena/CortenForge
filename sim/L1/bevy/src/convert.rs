@@ -76,6 +76,24 @@ pub fn transform_from_physics(position: &Point3<f64>) -> Transform {
     Transform::from_translation(vec3_from_point(position))
 }
 
+/// Create a Bevy [`Transform`] from a physics-space position and orientation.
+///
+/// Converts both translation (`Vector3<f64>`) and rotation (`UnitQuaternion<f64>`)
+/// from physics Z-up to Bevy Y-up. Use this when positioning entities that have
+/// both position and orientation from simulation data (e.g., geom transforms).
+#[inline]
+#[must_use]
+pub fn transform_from_physics_pose(
+    position: &Vector3<f64>,
+    orientation: &UnitQuaternion<f64>,
+) -> Transform {
+    Transform {
+        translation: vec3_from_vector(position),
+        rotation: quat_from_unit_quaternion(orientation),
+        scale: Vec3::ONE,
+    }
+}
+
 /// Convert a Bevy Vec3 (Y-up) to nalgebra Point3 (Z-up).
 ///
 /// Swaps Y and Z: `(x, y, z) -> (x, z, y)`

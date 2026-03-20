@@ -82,7 +82,7 @@ pub mod systems;
 pub mod prelude {
     pub use crate::camera::OrbitCamera;
     pub use crate::components::{CollisionShapeVisual, ShapeType, VisGroup};
-    pub use crate::convert::transform_from_physics;
+    pub use crate::convert::{transform_from_physics, transform_from_physics_pose};
     pub use crate::gizmos::DebugGizmosSet;
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
     pub use crate::mesh::{spawn_design_mesh, triangle_mesh_from_indexed};
