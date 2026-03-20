@@ -35,7 +35,9 @@ use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
 use sim_bevy::convert::{quat_from_unit_quaternion, vec3_from_vector};
 use sim_bevy::mesh::triangle_mesh_from_indexed;
-use sim_bevy::model_data::{PhysicsData, PhysicsModel, spawn_model_geoms, sync_geom_transforms};
+use sim_bevy::model_data::{
+    PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data, sync_geom_transforms,
+};
 use sim_core::{Data, Model};
 
 // ============================================================================
@@ -552,17 +554,6 @@ fn actuate_gripper(stage: Res<CurrentStage>, mut data: ResMut<PhysicsData>) {
     }
 }
 
-/// Only step physics during Simulate stage.
-fn conditional_step(
-    stage: Res<CurrentStage>,
-    model: Res<PhysicsModel>,
-    mut data: ResMut<PhysicsData>,
-) {
-    if stage.0 == PipelineStage::Simulate {
-        let _ = data.step(&model);
-    }
-}
-
 /// Show/hide entities based on current stage.
 fn update_visibility(
     stage: Res<CurrentStage>,
@@ -612,7 +603,7 @@ fn main() {
         }))
         .add_plugins(OrbitCameraPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, (advance_stage, actuate_gripper, conditional_step))
+        .add_systems(Update, (advance_stage, actuate_gripper, step_model_data))
         .add_systems(PostUpdate, (sync_geom_transforms, update_visibility))
         .run();
 }
