@@ -25,13 +25,14 @@ members = [
     # Umbrella crate (re-exports all mesh-* crates)
     "mesh/mesh",
 
-    # Examples (progressive showcase)
-    "examples/hello-solid",
-    "examples/bio-shapes",
-    "examples/tendon-finger",
-    "examples/pendulum-sim",
-    "examples/design-to-sim",
-    "examples/mesh-pipeline",
+    # Examples — fundamentals (one domain each)
+    "examples/fundamentals/hello-solid",
+    "examples/fundamentals/bio-shapes",
+    "examples/fundamentals/mesh-pipeline",
+    "examples/fundamentals/pendulum-sim",
+
+    # Examples — integration (cross-domain pipelines)
+    "examples/integration/design-to-sim",
 
     # Foundation (active development)
     "design/cf-geometry",

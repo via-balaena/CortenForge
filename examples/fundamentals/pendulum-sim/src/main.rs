@@ -16,8 +16,9 @@
 
 use bevy::prelude::*;
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
-use sim_bevy::convert::vec3_from_vector;
-use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
+use sim_bevy::model_data::{
+    PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data, sync_geom_transforms,
+};
 use sim_core::ENABLE_ENERGY;
 
 /// Double pendulum MJCF definition.
@@ -44,32 +45,19 @@ const DOUBLE_PENDULUM_MJCF: &str = r#"
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "CortenForge — Double Pendulum".into(),
+                ..default()
+            }),
+            ..default()
+        }))
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<InfoTimer>()
         .add_systems(Startup, setup)
         .add_systems(Update, step_model_data)
-        .add_systems(PostUpdate, (sync_bodies, print_info))
+        .add_systems(PostUpdate, (sync_geom_transforms, print_info))
         .run();
-}
-
-/// Sync body visuals from physics state.
-fn sync_bodies(data: Res<PhysicsData>, mut query: Query<(&ModelBodyIndex, &mut Transform)>) {
-    for (body_idx, mut transform) in &mut query {
-        let i = body_idx.0;
-        if i < data.xipos.len() {
-            transform.translation = vec3_from_vector(&data.xipos[i]);
-        }
-        if i < data.xquat.len() {
-            let q = &data.xquat[i];
-            transform.rotation = Quat::from_xyzw(
-                q.coords[1] as f32,
-                q.coords[2] as f32,
-                q.coords[3] as f32,
-                q.coords[0] as f32,
-            );
-        }
-    }
 }
 
 fn setup(
@@ -99,32 +87,8 @@ fn setup(
     );
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
-    // ── Visuals ─────────────────────────────────────────────────────────
-    // Link 1 (body index 1)
-    commands.spawn((
-        ModelBodyIndex(1),
-        Mesh3d(meshes.add(Capsule3d::new(0.04, 1.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.9, 0.3, 0.2),
-            metallic: 0.6,
-            perceptual_roughness: 0.3,
-            ..default()
-        })),
-        Transform::default(),
-    ));
-
-    // Link 2 (body index 2)
-    commands.spawn((
-        ModelBodyIndex(2),
-        Mesh3d(meshes.add(Capsule3d::new(0.03, 0.7))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.2, 0.5, 0.9),
-            metallic: 0.6,
-            perceptual_roughness: 0.3,
-            ..default()
-        })),
-        Transform::default(),
-    ));
+    // ── Visuals from MJCF geoms ──────────────────────────────────────
+    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
 
     // Pivot marker
     commands.spawn((
@@ -136,23 +100,37 @@ fn setup(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    // Camera
-    let orbit = OrbitCamera::new()
-        .with_target(Vec3::new(0.0, 0.0, -0.8))
-        .with_distance(5.0)
+    // ── Camera ────────────────────────────────────────────────────────
+    let mut orbit = OrbitCamera::new()
+        .with_target(Vec3::new(0.0, -0.5, 0.0))
         .with_angles(0.5, 0.3);
+    orbit.max_distance = 20.0;
+    orbit.min_distance = 1.0;
+    orbit.orbit_speed = 0.008;
+    orbit.pan_speed = 0.015;
+    orbit.zoom_speed = 0.15;
+    orbit.distance = 5.0;
     let mut cam_transform = Transform::default();
     orbit.apply_to_transform(&mut cam_transform);
     commands.spawn((Camera3d::default(), orbit, cam_transform));
 
-    // Lighting
+    // ── Lighting ──────────────────────────────────────────────────────
     commands.spawn((
         DirectionalLight {
             illuminance: 12000.0,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_xyz(5.0, 10.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(5.0, 10.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 4000.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(-5.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
     // Ground
@@ -163,7 +141,7 @@ fn setup(
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
-        Transform::from_xyz(0.0, -1.8, 0.0),
+        Transform::from_xyz(0.0, -2.0, 0.0),
     ));
 
     commands.insert_resource(PhysicsModel(model));
