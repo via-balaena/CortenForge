@@ -44,7 +44,7 @@ Use Kani or Prusti for proving absence of bugs in critical algorithms.
 
 **Targets:**
 - mesh-repair topology operations
-- sensor-fusion transforms
+- sim-core critical algorithms
 
 **Status:** Future consideration for safety-critical deployments.
 

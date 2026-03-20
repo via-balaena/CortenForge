@@ -341,7 +341,7 @@ if a && b {  // Need tests where:
 
 **Targets**: Critical algorithms only
 - mesh-repair topology operations
-- sensor-fusion transforms
+- sim-core critical algorithms
 
 **Why**: Proves absence of bugs, not just presence of tests.
 
@@ -429,7 +429,7 @@ Track these metrics for health visibility:
 | Doc Warnings | 0 | 0 | → |
 | Security Advisories | 0 | ? | - |
 | Mutation Survival | <30% | ? | - |
-| A-Grade Crates | 52+ | 52+ | ↑ |
+| A-Grade Crates | 20 | 20 | → |
 | Build Time (clean) | <10min | ? | - |
 | Build Time (cached) | <2min | ? | - |
 
@@ -468,5 +468,5 @@ Track these metrics for health visibility:
 
 ---
 
-*Last updated: 2026-02-12*
-*Version: 1.3.0 - Updated vision to bio-inspired robotics SDK, refreshed crate counts (52+)*
+*Last updated: 2026-03-19*
+*Version: 1.4.0 - Post-cleanup: 20 library crates (10 mesh + 3 design + 7 sim)*
