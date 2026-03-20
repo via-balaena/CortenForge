@@ -11,13 +11,11 @@
     clippy::cast_possible_truncation
 )]
 
-use std::sync::Arc;
-
 use bevy::prelude::*;
 use cf_design::Solid;
-use nalgebra::Vector3;
+use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
-use sim_bevy::mesh::triangle_mesh_from_indexed;
+use sim_bevy::mesh::spawn_design_mesh;
 
 fn main() {
     App::new()
@@ -88,7 +86,7 @@ fn spawn_solid(
     materials: &mut Assets<StandardMaterial>,
     solid: &Solid,
     color: Color,
-    offset: Vec3,
+    position: Point3<f64>,
     label: &str,
 ) {
     let mesh_data = solid.mesh(0.3);
@@ -97,20 +95,7 @@ fn spawn_solid(
         mesh_data.vertex_count(),
         mesh_data.face_count()
     );
-    let indexed = Arc::new(mesh_data);
-    let bevy_mesh = triangle_mesh_from_indexed(&indexed);
-    commands.spawn((
-        Mesh3d(meshes.add(bevy_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: color,
-            metallic: 0.15,
-            perceptual_roughness: 0.7,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        })),
-        Transform::from_translation(offset),
-    ));
+    spawn_design_mesh(commands, meshes, materials, &mesh_data, position, color);
 }
 
 fn setup(
@@ -129,14 +114,14 @@ fn setup(
     let tip_color = Color::srgb(0.8, 0.75, 0.68);
     let pin_color = Color::srgb(0.5, 0.5, 0.55);
 
-    // Left: all 3 parts separated
+    // Left: all 3 parts separated (positions in physics Z-up space)
     spawn_solid(
         &mut commands,
         &mut meshes,
         &mut materials,
         &proximal,
         bone_color,
-        Vec3::new(-spacing, 0.0, 0.0),
+        Point3::new(-spacing, 0.0, 0.0),
         "Proximal",
     );
     spawn_solid(
@@ -145,7 +130,7 @@ fn setup(
         &mut materials,
         &joint,
         pin_color,
-        Vec3::new(-spacing, 20.0, 0.0),
+        Point3::new(-spacing, 0.0, 20.0),
         "Joint pin",
     );
     spawn_solid(
@@ -154,21 +139,21 @@ fn setup(
         &mut materials,
         &distal,
         tip_color,
-        Vec3::new(-spacing, 35.0, 0.0),
+        Point3::new(-spacing, 0.0, 35.0),
         "Distal",
     );
 
-    // Right: assembled — knuckle at Z≈13 → Bevy Y≈13
+    // Right: assembled — knuckle at Z≈13
     // Small gap between them for the joint space
-    let joint_y = 13.0 + 11.0 + 1.0; // knuckle + distal base + gap
-    let knuckle_y = 13.0; // where the knuckle center is (Z→Y)
+    let joint_z = 13.0 + 11.0 + 1.0; // knuckle + distal base + gap
+    let knuckle_z = 13.0; // where the knuckle center is
     spawn_solid(
         &mut commands,
         &mut meshes,
         &mut materials,
         &proximal,
         bone_color,
-        Vec3::new(spacing, 0.0, 0.0),
+        Point3::new(spacing, 0.0, 0.0),
         "Proximal (asm)",
     );
     spawn_solid(
@@ -177,7 +162,7 @@ fn setup(
         &mut materials,
         &joint,
         pin_color,
-        Vec3::new(spacing, knuckle_y, 0.0),
+        Point3::new(spacing, 0.0, knuckle_z),
         "Joint (asm)",
     );
     spawn_solid(
@@ -186,7 +171,7 @@ fn setup(
         &mut materials,
         &distal,
         tip_color,
-        Vec3::new(spacing, joint_y, 0.0),
+        Point3::new(spacing, 0.0, joint_z),
         "Distal (asm)",
     );
 

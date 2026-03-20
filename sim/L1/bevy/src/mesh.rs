@@ -21,6 +21,41 @@ use crate::convert::{
     dimensions_to_bevy, normal_to_bevy, vec3_from_point, vertex_positions_from_points,
 };
 
+/// Spawn a design mesh entity from an [`IndexedMesh`] positioned in physics space.
+///
+/// Takes a **physics-space** position (`Point3<f64>`, Z-up) and handles the
+/// coordinate conversion to Bevy (Y-up) automatically. This eliminates manual
+/// Y↔Z swapping in example/application code.
+///
+/// Returns the spawned [`Entity`] so callers can attach additional components.
+pub fn spawn_design_mesh(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    mesh_data: &IndexedMesh,
+    position: nalgebra::Point3<f64>,
+    color: Color,
+) -> Entity {
+    let indexed = Arc::new(mesh_data.clone());
+    let bevy_mesh = triangle_mesh_from_indexed(&indexed);
+    let bevy_pos = vec3_from_point(&position);
+
+    commands
+        .spawn((
+            Mesh3d(meshes.add(bevy_mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: color,
+                metallic: 0.15,
+                perceptual_roughness: 0.7,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            })),
+            Transform::from_translation(bevy_pos),
+        ))
+        .id()
+}
+
 /// Generate a Bevy mesh from a cf-geometry [`Shape`].
 ///
 /// Returns `None` for shapes that cannot be easily visualized (e.g., SDF).
@@ -277,6 +312,56 @@ pub fn triangle_mesh_from_indexed(mesh_data: &Arc<IndexedMesh>) -> Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::world::CommandQueue;
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn spawn_design_mesh_converts_z_up_to_y_up() {
+        // Minimal triangle mesh (single triangle)
+        let mesh_data = IndexedMesh {
+            vertices: vec![
+                nalgebra::Point3::new(0.0, 0.0, 0.0),
+                nalgebra::Point3::new(1.0, 0.0, 0.0),
+                nalgebra::Point3::new(0.0, 1.0, 0.0),
+            ],
+            faces: vec![[0, 1, 2]],
+        };
+
+        let mut world = bevy::prelude::World::new();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<StandardMaterial>::default();
+
+        // Physics position: X=1, Y=2, Z=3 (Z is up)
+        let position = nalgebra::Point3::new(1.0, 2.0, 3.0);
+
+        let mut queue = CommandQueue::default();
+        let entity;
+        {
+            let mut commands = Commands::new(&mut queue, &world);
+            entity = spawn_design_mesh(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &mesh_data,
+                position,
+                Color::WHITE,
+            );
+        }
+        queue.apply(&mut world);
+
+        // Verify: physics (1, 2, 3) → Bevy (1, 3, 2) (Y↔Z swap)
+        let transform = world
+            .get::<Transform>(entity)
+            .expect("entity should have Transform");
+        let t = transform.translation;
+        assert!(
+            (t.x - 1.0).abs() < 1e-6 && (t.y - 3.0).abs() < 1e-6 && (t.z - 2.0).abs() < 1e-6,
+            "Expected Bevy translation (1, 3, 2), got ({}, {}, {})",
+            t.x,
+            t.y,
+            t.z
+        );
+    }
 
     #[test]
     fn sphere_mesh_has_vertices() {

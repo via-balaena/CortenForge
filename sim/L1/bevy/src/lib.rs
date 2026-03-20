@@ -83,6 +83,7 @@ pub mod prelude {
     pub use crate::components::{CollisionShapeVisual, ShapeType, VisGroup};
     pub use crate::gizmos::DebugGizmosSet;
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
+    pub use crate::mesh::{spawn_design_mesh, triangle_mesh_from_indexed};
     pub use crate::model_data::{
         ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
         ModelSiteIndex, PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data,

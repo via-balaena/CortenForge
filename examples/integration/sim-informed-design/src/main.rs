@@ -26,6 +26,7 @@ use mesh_measure::dimensions;
 use mesh_repair::{RepairParams, repair_mesh};
 use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::convert::vec3_from_vector;
 use sim_bevy::mesh::triangle_mesh_from_indexed;
 use sim_core::{Data, Model};
 
@@ -224,11 +225,7 @@ fn run_pipeline() -> (IndexedMesh, IndexedMesh, Vec<(Vec3, f32)>, f32) {
         let linear_mag = Vector3::new(force[3], force[4], force[5]).norm();
         if linear_mag > 1e-6 {
             let pos = &data.xpos[body_id];
-            // Convert Z-up to Y-up for Bevy
-            force_indicators.push((
-                Vec3::new(pos.x as f32, pos.z as f32, -pos.y as f32),
-                linear_mag as f32,
-            ));
+            force_indicators.push((vec3_from_vector(pos), linear_mag as f32));
         }
     }
 
