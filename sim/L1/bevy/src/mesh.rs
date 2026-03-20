@@ -18,7 +18,8 @@ use bevy::prelude::*;
 use cf_geometry::{IndexedMesh, Shape};
 
 use crate::convert::{
-    dimensions_to_bevy, normal_to_bevy, vec3_from_point, vertex_positions_from_points,
+    dimensions_to_bevy, normal_to_bevy, transform_from_physics, vec3_from_point,
+    vertex_positions_from_points,
 };
 
 /// Spawn a design mesh entity from an [`IndexedMesh`] positioned in physics space.
@@ -38,7 +39,6 @@ pub fn spawn_design_mesh(
 ) -> Entity {
     let indexed = Arc::new(mesh_data.clone());
     let bevy_mesh = triangle_mesh_from_indexed(&indexed);
-    let bevy_pos = vec3_from_point(&position);
 
     commands
         .spawn((
@@ -51,7 +51,7 @@ pub fn spawn_design_mesh(
                 cull_mode: None,
                 ..default()
             })),
-            Transform::from_translation(bevy_pos),
+            transform_from_physics(&position),
         ))
         .id()
 }

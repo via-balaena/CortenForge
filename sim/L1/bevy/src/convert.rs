@@ -20,6 +20,7 @@
 #![allow(clippy::cast_possible_truncation)] // f64 -> f32 is intentional for Bevy
 
 use bevy::math::{Quat, Vec3};
+use bevy::transform::components::Transform;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 /// Rotation that converts from Z-up to Y-up coordinate system.
@@ -63,6 +64,16 @@ pub fn quat_from_unit_quaternion(q: &UnitQuaternion<f64>) -> Quat {
     let converted = coord_rotation * q * coord_rotation.inverse();
     let q = converted.quaternion();
     Quat::from_xyzw(q.i as f32, q.j as f32, q.k as f32, q.w as f32)
+}
+
+/// Create a Bevy [`Transform`] from a physics-space position (`Point3<f64>`, Z-up).
+///
+/// This is the recommended way to position any entity using physics coordinates.
+/// Handles the Z-up → Y-up conversion automatically.
+#[inline]
+#[must_use]
+pub fn transform_from_physics(position: &Point3<f64>) -> Transform {
+    Transform::from_translation(vec3_from_point(position))
 }
 
 /// Convert a Bevy Vec3 (Y-up) to nalgebra Point3 (Z-up).

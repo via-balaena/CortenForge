@@ -26,8 +26,8 @@ use mesh_measure::dimensions;
 use mesh_repair::{RepairParams, repair_mesh};
 use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
-use sim_bevy::convert::vec3_from_vector;
-use sim_bevy::mesh::triangle_mesh_from_indexed;
+use sim_bevy::convert::transform_from_physics;
+use sim_bevy::mesh::spawn_design_mesh;
 use sim_core::{Data, Model};
 
 fn main() {
@@ -127,7 +127,7 @@ fn build_stress_field(
 }
 
 /// Run the simulation and build the lattice pipeline.
-fn run_pipeline() -> (IndexedMesh, IndexedMesh, Vec<(Vec3, f32)>, f32) {
+fn run_pipeline() -> (IndexedMesh, IndexedMesh, Vec<(Vector3<f64>, f32)>, f64) {
     // ── Design ───────────────────────────────────────────────────────
     println!("Stage 1: Design bracket");
     let (mechanism, solid) = build_bracket();
@@ -225,45 +225,30 @@ fn run_pipeline() -> (IndexedMesh, IndexedMesh, Vec<(Vec3, f32)>, f32) {
         let linear_mag = Vector3::new(force[3], force[4], force[5]).norm();
         if linear_mag > 1e-6 {
             let pos = &data.xpos[body_id];
-            force_indicators.push((vec3_from_vector(pos), linear_mag as f32));
+            force_indicators.push((*pos, linear_mag as f32));
         }
     }
 
-    let spacing = dims.width as f32 + 15.0;
+    let spacing = dims.width + 15.0;
     (bracket_mesh, lattice.mesh, force_indicators, spacing)
 }
 
-/// Spawn a mesh entity at a given X offset with the given color.
+/// Spawn a mesh entity at a physics-space position with the given color.
 fn spawn_mesh(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     mesh_data: &IndexedMesh,
     color: Color,
-    x_offset: f32,
+    position: Point3<f64>,
     label: &str,
 ) {
-    let indexed = Arc::new(mesh_data.clone());
-    let bevy_mesh = triangle_mesh_from_indexed(&indexed);
-
     println!(
         "  {label}: {} vertices, {} faces",
-        indexed.vertices.len(),
-        indexed.faces.len()
+        mesh_data.vertices.len(),
+        mesh_data.faces.len()
     );
-
-    commands.spawn((
-        Mesh3d(meshes.add(bevy_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: color,
-            metallic: 0.3,
-            perceptual_roughness: 0.5,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        })),
-        Transform::from_xyz(x_offset, 0.0, 0.0),
-    ));
+    spawn_design_mesh(commands, meshes, materials, mesh_data, position, color);
 }
 
 fn setup(
@@ -284,7 +269,7 @@ fn setup(
         &mut materials,
         &bracket_mesh,
         Color::srgb(0.6, 0.7, 0.85),
-        -spacing / 2.0,
+        Point3::new(-spacing / 2.0, 0.0, 0.0),
         "Bracket (simulated)",
     );
 
@@ -298,6 +283,7 @@ fn setup(
     for (pos, mag) in &force_indicators {
         let intensity = *mag / max_force;
         let radius = 1.0 + intensity * 3.0;
+        let indicator_pos = Point3::new(pos.x - spacing / 2.0, pos.y, pos.z);
         commands.spawn((
             Mesh3d(meshes.add(Sphere::new(radius))),
             MeshMaterial3d(materials.add(StandardMaterial {
@@ -305,7 +291,7 @@ fn setup(
                 emissive: LinearRgba::new(intensity * 2.0, 0.0, 0.0, 1.0),
                 ..default()
             })),
-            Transform::from_translation(*pos + Vec3::new(-spacing / 2.0, 0.0, 0.0)),
+            transform_from_physics(&indicator_pos),
         ));
     }
 
@@ -316,7 +302,7 @@ fn setup(
         &mut materials,
         &lattice_mesh,
         Color::srgb(0.3, 0.8, 0.4),
-        spacing / 2.0,
+        Point3::new(spacing / 2.0, 0.0, 0.0),
         "Stress-graded lattice",
     );
 
