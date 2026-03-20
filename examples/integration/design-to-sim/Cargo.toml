@@ -21,7 +21,6 @@ bevy = { workspace = true, features = [
     "tonemapping_luts",
     "zstd_rust",
 ] }
-cf-geometry = { workspace = true }
 nalgebra = { workspace = true }
 
 [lints]

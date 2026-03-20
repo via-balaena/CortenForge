@@ -86,7 +86,7 @@ pub mod prelude {
     pub use crate::model_data::{
         ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
         ModelSiteIndex, PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data,
-        sync_model_data_to_bevy,
+        sync_geom_transforms, sync_model_data_to_bevy,
     };
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{

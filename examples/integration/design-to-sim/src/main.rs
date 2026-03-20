@@ -1,8 +1,9 @@
-//! Design-to-Sim — Full Pipeline Capstone
+//! Design-to-Sim — Zero Export Steps
 //!
 //! Design a simple gripper in cf-design, export to MJCF, load it into
-//! sim-core, actuate it, and visualize with Bevy. This is the CortenForge
-//! value proposition in one example: design in code, simulate immediately.
+//! sim-core, and visualize with Bevy. The design meshes are rendered
+//! directly by the engine via `spawn_model_geoms` — no manual mesh
+//! export or body-sync code needed.
 //!
 //! Run with: `cargo run -p example-design-to-sim --release`
 
@@ -13,8 +14,6 @@
     clippy::let_underscore_must_use
 )]
 
-use std::sync::Arc;
-
 use bevy::prelude::*;
 use cf_design::{
     ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, Part, Solid, TendonDef,
@@ -22,9 +21,9 @@ use cf_design::{
 };
 use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
-use sim_bevy::convert::{quat_from_unit_quaternion, vec3_from_vector};
-use sim_bevy::mesh::triangle_mesh_from_indexed;
-use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data};
+use sim_bevy::model_data::{
+    PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data, sync_geom_transforms,
+};
 
 fn main() {
     App::new()
@@ -38,7 +37,7 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .add_systems(Startup, setup)
         .add_systems(Update, (step_model_data, actuate_gripper))
-        .add_systems(PostUpdate, sync_bodies)
+        .add_systems(PostUpdate, sync_geom_transforms)
         .run();
 }
 
@@ -133,19 +132,6 @@ fn actuate_gripper(mut data: ResMut<PhysicsData>) {
     }
 }
 
-/// Sync body transforms from physics — using body xpos/xquat (world frame).
-fn sync_bodies(data: Res<PhysicsData>, mut query: Query<(&ModelBodyIndex, &mut Transform)>) {
-    for (body_idx, mut transform) in &mut query {
-        let i = body_idx.0;
-        if i < data.xpos.len() {
-            transform.translation = vec3_from_vector(&data.xpos[i]);
-        }
-        if i < data.xquat.len() {
-            transform.rotation = quat_from_unit_quaternion(&data.xquat[i]);
-        }
-    }
-}
-
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -162,64 +148,21 @@ fn setup(
         mechanism.tendons().len(),
     );
 
-    // ── Design meshes for visualization ──────────────────────────────
-    let stl_kit = mechanism.to_stl_kit(0.3);
-
     // ── MJCF → physics engine ────────────────────────────────────────
     let mjcf_xml = mechanism.to_mjcf(1.5);
     let model = sim_mjcf::load_model(&mjcf_xml).expect("generated MJCF should load");
 
     println!(
-        "  Physics model: {} bodies, {} joints, {} DOFs",
-        model.nbody, model.njnt, model.nv
+        "  Physics model: {} bodies, {} joints, {} DOFs, {} geoms, {} meshes",
+        model.nbody, model.njnt, model.nv, model.ngeom, model.nmesh
     );
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     let mut data = model.make_data();
     let _ = data.forward(&model);
 
-    // ── Spawn design meshes, tagged with body indices ────────────────
-    // Parts map 1:1 to bodies (body 0 is world, body 1+ are parts)
-    let colors = [
-        Color::srgb(0.7, 0.75, 0.8), // palm
-        Color::srgb(0.9, 0.4, 0.3),  // finger_l
-        Color::srgb(0.3, 0.6, 0.9),  // finger_r
-    ];
-
-    for (i, (name, mesh_data)) in stl_kit.iter().enumerate() {
-        let indexed = Arc::new(mesh_data.clone());
-        let bevy_mesh = triangle_mesh_from_indexed(&indexed);
-        let body_id = i + 1; // skip world body
-
-        println!(
-            "  {name} (body {body_id}): {} vertices, {} faces",
-            indexed.vertices.len(),
-            indexed.faces.len()
-        );
-
-        // Initial transform from physics
-        let initial_transform = if body_id < data.xpos.len() {
-            Transform {
-                translation: vec3_from_vector(&data.xpos[body_id]),
-                rotation: quat_from_unit_quaternion(&data.xquat[body_id]),
-                scale: Vec3::ONE,
-            }
-        } else {
-            Transform::IDENTITY
-        };
-
-        commands.spawn((
-            ModelBodyIndex(body_id),
-            Mesh3d(meshes.add(bevy_mesh)),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: colors[i % colors.len()],
-                metallic: 0.4,
-                perceptual_roughness: 0.4,
-                ..default()
-            })),
-            initial_transform,
-        ));
-    }
+    // ── Spawn ALL geoms (including mesh geoms) via the engine ────────
+    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
 
     // ── Camera ────────────────────────────────────────────────────────
     let mut orbit = OrbitCamera::new()

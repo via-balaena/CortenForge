@@ -45,12 +45,14 @@
 //! }
 //! ```
 
+use std::sync::Arc;
+
 use bevy::prelude::*;
 use cf_geometry::Shape;
 use sim_core::{Data, GeomType, Model};
 
 use crate::convert::{quat_from_unit_quaternion, vec3_from_vector};
-use crate::mesh::mesh_from_shape;
+use crate::mesh::{mesh_from_shape, triangle_mesh_from_indexed};
 
 // ============================================================================
 // Resources
@@ -500,28 +502,36 @@ pub fn spawn_model_geoms(
         let size = model.geom_size[geom_id];
         let rgba = model.geom_rgba[geom_id];
 
-        // Convert GeomType + size to Shape for mesh generation
-        let shape = match geom_type {
-            GeomType::Plane => Some(Shape::Plane {
-                normal: nalgebra::Vector3::z(),
-                distance: 0.0,
-            }),
-            GeomType::Sphere => Some(Shape::Sphere { radius: size.x }),
-            GeomType::Box => Some(Shape::Box { half_extents: size }),
-            GeomType::Capsule => Some(Shape::Capsule {
-                radius: size.x,
-                half_length: size.y,
-            }),
-            GeomType::Cylinder => Some(Shape::Cylinder {
-                radius: size.x,
-                half_length: size.y,
-            }),
-            GeomType::Ellipsoid => Some(Shape::Ellipsoid { radii: size }),
-            // Mesh, Hfield, Sdf need asset data — skip for now
-            _ => None,
+        // Produce a Bevy mesh for this geom
+        let mesh: Option<Mesh> = if geom_type == GeomType::Mesh {
+            // Look up mesh asset: geom_mesh[geom_id] → mesh_data[mesh_id]
+            model.geom_mesh[geom_id].map(|mesh_id| {
+                let tri_data = &model.mesh_data[mesh_id];
+                let indexed = Arc::new(tri_data.indexed_mesh().clone());
+                triangle_mesh_from_indexed(&indexed)
+            })
+        } else {
+            // Primitive shapes go through Shape → mesh_from_shape
+            let shape = match geom_type {
+                GeomType::Plane => Some(Shape::Plane {
+                    normal: nalgebra::Vector3::z(),
+                    distance: 0.0,
+                }),
+                GeomType::Sphere => Some(Shape::Sphere { radius: size.x }),
+                GeomType::Box => Some(Shape::Box { half_extents: size }),
+                GeomType::Capsule => Some(Shape::Capsule {
+                    radius: size.x,
+                    half_length: size.y,
+                }),
+                GeomType::Cylinder => Some(Shape::Cylinder {
+                    radius: size.x,
+                    half_length: size.y,
+                }),
+                GeomType::Ellipsoid => Some(Shape::Ellipsoid { radii: size }),
+                _ => None,
+            };
+            shape.and_then(|s| mesh_from_shape(&s))
         };
-
-        let mesh = shape.and_then(|s| mesh_from_shape(&s));
 
         let Some(mesh) = mesh else { continue };
 
