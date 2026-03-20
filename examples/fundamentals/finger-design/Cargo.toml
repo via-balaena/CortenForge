@@ -8,6 +8,9 @@ publish = false
 [dependencies]
 cf-design = { workspace = true }
 cf-geometry = { workspace = true }
+sim-core = { workspace = true }
+sim-mjcf = { workspace = true }
+sim-bevy = { workspace = true }
 bevy = { workspace = true, features = [
     "bevy_asset",
     "bevy_core_pipeline",
@@ -19,7 +22,6 @@ bevy = { workspace = true, features = [
     "tonemapping_luts",
     "zstd_rust",
 ] }
-sim-bevy = { workspace = true }
 nalgebra = { workspace = true }
 
 [lints]

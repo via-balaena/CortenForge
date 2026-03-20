@@ -301,15 +301,21 @@ fn write_body(
 
 /// Compute a geom position offset so child parts extend outward from the joint.
 ///
-/// For root bodies (no joints), returns zero. For child bodies, computes the
-/// solid's bounding box and shifts the geom in the direction away from the
-/// parent body, by the half-extent of the bbox in that direction. This ensures
-/// the part geometry starts at the joint instead of being centered on it.
+/// For root bodies (no joints), returns zero. For child bodies with an explicit
+/// `joint_origin`, returns `-origin` (the mesh point that should coincide with
+/// the joint). Otherwise falls back to bbox-based alignment: the near edge of
+/// the bounding box (on the longest axis) is placed at the body origin so the
+/// part extends outward from the joint.
 fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -> Vector3<f64> {
     let jlist = match joints_on.get(part.name()) {
         Some(jl) if !jl.is_empty() => jl,
         _ => return Vector3::zeros(), // root body — no offset needed
     };
+
+    // Explicit joint origin — the user declared exactly where the part attaches.
+    if let Some(origin) = part.joint_origin() {
+        return -origin;
+    }
 
     let anchor = jlist[0].anchor();
     let anchor_vec = anchor.coords;
@@ -318,7 +324,7 @@ fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -
         return Vector3::zeros();
     }
 
-    // Compute bounding box from a coarse mesh (just for extents)
+    // Compute bounding box from a coarse mesh (just for extents).
     let mesh = part.solid().mesh(1.0);
     if mesh.vertices.is_empty() {
         return Vector3::zeros();
@@ -331,27 +337,27 @@ fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -
         max = max.sup(&v.coords);
     }
     let extents = max - min;
-    let half_extents = extents * 0.5;
     let center = (max + min) * 0.5;
 
-    // Find the bbox's longest axis — that's the part's primary extension direction
-    let (longest_axis, longest_half) = if extents.x >= extents.y && extents.x >= extents.z {
-        (0, half_extents.x)
+    // Find the bbox's longest axis — that's the part's primary extension direction.
+    let longest_axis = if extents.x >= extents.y && extents.x >= extents.z {
+        0
     } else if extents.y >= extents.z {
-        (1, half_extents.y)
+        1
     } else {
-        (2, half_extents.z)
+        2
     };
 
-    // Offset along the longest axis, in the direction matching the anchor vector's
-    // sign on that axis (so the part extends away from the parent body)
-    let sign = if anchor_vec[longest_axis] >= 0.0 {
-        1.0
+    // Near edge: the bbox edge closest to the parent (toward the joint).
+    // If the anchor points in the +Z direction, the near edge is min[Z].
+    // Offset = -near_edge so the near edge sits at the body origin (the joint).
+    let near_edge = if anchor_vec[longest_axis] >= 0.0 {
+        min[longest_axis]
     } else {
-        -1.0
+        max[longest_axis]
     };
     let mut offset = center;
-    offset[longest_axis] += sign * longest_half;
+    offset[longest_axis] = -near_edge;
     offset
 }
 
@@ -467,6 +473,17 @@ fn write_actuators(xml: &mut String, mechanism: &Mechanism) {
 
         if let Some((clo, chi)) = act.ctrl_range() {
             let _ = write!(xml, " ctrlrange=\"{clo} {chi}\"");
+
+            // Compute gear so that ctrl maps to the full force range.
+            // Without gear, default gain=1 means force=ctrl (tiny).
+            let max_ctrl = chi.abs().max(clo.abs());
+            if max_ctrl > 1e-10 {
+                let max_force = fhi.abs().max(flo.abs());
+                let gear = max_force / max_ctrl;
+                if (gear - 1.0).abs() > 1e-10 {
+                    let _ = write!(xml, " gear=\"{gear}\"");
+                }
+            }
         }
 
         let _ = writeln!(xml, "/>");
@@ -774,6 +791,7 @@ mod tests {
         assert!(xml.contains("<general name=\"motor_1\" tendon=\"t\""));
         assert!(xml.contains("forcerange=\"-50 50\""));
         assert!(xml.contains("ctrlrange=\"-1 1\""));
+        assert!(xml.contains("gear=\"50\""), "expected gear=50 in:\n{xml}");
         assert!(xml.contains("</actuator>"));
     }
 

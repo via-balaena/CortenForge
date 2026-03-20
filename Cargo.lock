@@ -2449,6 +2449,8 @@ dependencies = [
  "cf-geometry",
  "nalgebra",
  "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
 ]
 
 [[package]]

@@ -1,21 +1,30 @@
-//! Finger Design — Boolean Heuristic Baseline
+//! Finger Design — Printable Articulated Mechanism with Simulation
 //!
-//! Two-segment articulated finger built from composed SDF primitives.
-//! This is the baseline to beat with a custom SDF.
+//! Two-segment finger with print-in-place knuckle joint and tendon channel.
+//! Left side shows the separated parts (socket, pin bore, tendon channels
+//! visible); right side shows the sim-driven animated finger.
 //!
 //! Run with: `cargo run -p example-finger-design --release`
 
 #![allow(
     clippy::needless_pass_by_value,
     clippy::expect_used,
-    clippy::cast_possible_truncation
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::let_underscore_must_use
 )]
 
 use bevy::prelude::*;
-use cf_design::Solid;
+use cf_design::{
+    ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, Part, Solid, TendonDef,
+    TendonWaypoint,
+};
 use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::mesh::spawn_design_mesh;
+use sim_bevy::model_data::{
+    PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data, sync_geom_transforms,
+};
 use sim_bevy::scene::ExampleScene;
 
 fn main() {
@@ -29,74 +38,136 @@ fn main() {
         }))
         .add_plugins(OrbitCameraPlugin)
         .add_systems(Startup, setup)
+        .add_systems(Update, (step_model_data, actuate_finger))
+        .add_systems(PostUpdate, sync_geom_transforms)
         .run();
 }
 
 // ============================================================================
-// Finger geometry — boolean heuristic v2
+// Finger geometry
 // ============================================================================
 
-/// Proximal phalange — base segment.
+/// Proximal phalange with knuckle condyle and hinge pin.
 ///
-/// Wider-than-deep ellipsoidal cross-section (like a real finger bone).
-/// Knuckle condyle protruding at the distal end.
-/// Z-axis is the finger length (up in Bevy after coordinate conversion).
+/// The pin is `smooth_union`'d into the bone (anatomically correct — the pin
+/// is part of the proximal, not a separate part). Z-axis is finger length.
 fn proximal_phalange() -> Solid {
-    // Ellipsoid body: wider (X=5) than deep (Y=3.5), elongated along Z (=14)
     let body = Solid::ellipsoid(Vector3::new(5.0, 3.5, 14.0)).round(0.5);
 
-    // Knuckle condyle — wide bulge at the tip (+Z end)
     let knuckle =
         Solid::ellipsoid(Vector3::new(5.5, 4.0, 4.0)).translate(Vector3::new(0.0, 0.0, 13.0));
 
-    body.smooth_union(knuckle, 2.5)
+    // Pin through the knuckle along X (the hinge axis)
+    let pin = Solid::capsule(1.5, 5.0)
+        .rotate(nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::z_axis(),
+            std::f64::consts::FRAC_PI_2,
+        ))
+        .translate(Vector3::new(0.0, 0.0, 13.0));
+
+    body.smooth_union(knuckle, 2.5).smooth_union(pin, 1.0)
 }
 
-/// Knuckle joint — visible hinge pin connecting the two phalanges.
+/// Distal phalange with socket at origin, body extending upward.
 ///
-/// Cylinder pin along X (the hinge axis) with rounded ends.
-fn knuckle_joint() -> Solid {
-    // Pin through the knuckle — extends wider than the finger
-    Solid::capsule(1.5, 5.0).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+/// The socket housing is centered at z=0 (mesh origin) so that
+/// `Part::with_joint_origin(0,0,0)` aligns the socket directly with the
+/// knuckle joint. The body extends in +Z from the socket to the fingertip.
+///
+/// Socket sizing: condyle(5.5/4.0/4.0) + 0.3mm clearance + 0.3mm wall.
+fn distal_phalange() -> Solid {
+    // Body centered at z=11 — extends from roughly z=0 to z=22
+    let body = Solid::ellipsoid(Vector3::new(4.5, 3.0, 11.0))
+        .round(0.5)
+        .translate(Vector3::new(0.0, 0.0, 11.0));
+
+    let tip = Solid::ellipsoid(Vector3::new(3.0, 2.5, 4.0)).translate(Vector3::new(0.0, 0.0, 21.0));
+
+    // Socket housing at z=0 — condyle(5.5,4.0,4.0) + 0.3mm gap + 0.3mm wall
+    let socket_housing = Solid::ellipsoid(Vector3::new(6.4, 4.9, 4.9));
+
+    // Condyle void: condyle dims + 0.3mm clearance per side
+    let condyle_void = Solid::ellipsoid(Vector3::new(5.8, 4.3, 4.3));
+
+    // Pin bore: pin r=1.5 + 0.3mm clearance = r=1.8
+    let pin_bore = Solid::capsule(1.8, 6.0).rotate(nalgebra::UnitQuaternion::from_axis_angle(
         &nalgebra::Vector3::z_axis(),
         std::f64::consts::FRAC_PI_2,
-    ))
-}
-
-/// Distal phalange — fingertip segment.
-///
-/// Tapers from a wide base to a narrow, rounded fingertip.
-/// Z-axis is the finger length.
-fn distal_phalange() -> Solid {
-    // Body: slightly narrower, shorter
-    let body = Solid::ellipsoid(Vector3::new(4.5, 3.0, 11.0)).round(0.5);
-
-    // Fingertip taper
-    let tip = Solid::ellipsoid(Vector3::new(3.0, 2.5, 4.0)).translate(Vector3::new(0.0, 0.0, 10.0));
+    ));
 
     body.smooth_union(tip, 3.0)
+        .smooth_union(socket_housing, 2.0)
+        .smooth_subtract(condyle_void, 0.5)
+        .subtract(pin_bore)
 }
 
 // ============================================================================
-// Bevy visualization
+// Mechanism
 // ============================================================================
 
-fn spawn_solid(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-    solid: &Solid,
-    color: Color,
-    position: Point3<f64>,
-    label: &str,
-) {
-    let mesh_data = solid.mesh(0.3);
-    println!(
-        "  {label}: {} verts, {} faces",
-        mesh_data.vertex_count(),
-        mesh_data.face_count()
-    );
-    spawn_design_mesh(commands, meshes, materials, &mesh_data, position, color);
+/// Build the articulated finger: 2 parts, 1 revolute joint, 1 tendon, 1 motor.
+///
+/// Tendon channels are carved through both phalanges for the flexor tendon.
+fn build_finger() -> Mechanism {
+    let material = Material::new("PLA", 1250.0)
+        .with_youngs_modulus(3.5e9)
+        .with_color([0.9, 0.85, 0.75, 1.0]);
+
+    // Define the tendon first so we can carve channels through parts.
+    // Distal waypoints are in the new mesh space (socket at z=0, body extends +Z).
+    let flexor = TendonDef::new(
+        "flexor",
+        vec![
+            TendonWaypoint::new("proximal", Point3::new(0.0, -3.0, 0.0)),
+            TendonWaypoint::new("proximal", Point3::new(0.0, -3.0, 12.0)),
+            TendonWaypoint::new("distal", Point3::new(0.0, -2.5, 2.0)),
+            TendonWaypoint::new("distal", Point3::new(0.0, -2.5, 15.0)),
+        ],
+        0.8,
+    )
+    .with_stiffness(50.0)
+    .with_damping(15.0);
+
+    let proximal = Part::new("proximal", proximal_phalange(), material.clone())
+        .with_tendon_channels(std::slice::from_ref(&flexor));
+
+    let distal = Part::new("distal", distal_phalange(), material)
+        .with_joint_origin(Vector3::new(0.0, 0.0, 0.0))
+        .with_tendon_channels(std::slice::from_ref(&flexor));
+
+    Mechanism::builder("finger")
+        .part(proximal)
+        .part(distal)
+        .joint(
+            JointDef::new(
+                "knuckle",
+                "proximal",
+                "distal",
+                JointKind::Revolute,
+                Point3::new(0.0, 0.0, 13.0),
+                Vector3::x(),
+            )
+            .with_range(-0.1, 2.0),
+        )
+        .tendon(flexor)
+        .actuator(
+            ActuatorDef::new("motor", "flexor", ActuatorKind::Motor, (-10.0, 10.0))
+                .with_ctrl_range(-1.0, 1.0),
+        )
+        .build()
+}
+
+// ============================================================================
+// Bevy systems
+// ============================================================================
+
+/// Oscillate finger flexion/extension with a sine wave.
+fn actuate_finger(mut data: ResMut<PhysicsData>) {
+    let t = data.time;
+    let signal = (t * 1.5).sin();
+    if !data.ctrl.is_empty() {
+        data.ctrl[0] = signal;
+    }
 }
 
 fn setup(
@@ -104,91 +175,63 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    println!("=== Finger Design v2 (Boolean Heuristic) ===\n");
+    let mechanism = build_finger();
 
-    let proximal = proximal_phalange();
-    let distal = distal_phalange();
-    let joint = knuckle_joint();
+    println!("=== Finger Design — Articulated Mechanism ===");
+    println!(
+        "  Mechanism '{}': {} parts, {} joints, {} tendons",
+        mechanism.name(),
+        mechanism.parts().len(),
+        mechanism.joints().len(),
+        mechanism.tendons().len(),
+    );
 
-    let spacing = 25.0;
+    // ── Left: separated static parts ────────────────────────────────────
     let bone_color = Color::srgb(0.9, 0.85, 0.75);
     let tip_color = Color::srgb(0.8, 0.75, 0.68);
-    let pin_color = Color::srgb(0.5, 0.5, 0.55);
 
-    // Left: all 3 parts separated (positions in physics Z-up space)
-    spawn_solid(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &proximal,
-        bone_color,
-        Point3::new(-spacing, 0.0, 0.0),
-        "Proximal",
-    );
-    spawn_solid(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &joint,
-        pin_color,
-        Point3::new(-spacing, 0.0, 20.0),
-        "Joint pin",
-    );
-    spawn_solid(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &distal,
-        tip_color,
-        Point3::new(-spacing, 0.0, 35.0),
-        "Distal",
-    );
+    for (i, part) in mechanism.parts().iter().enumerate() {
+        let mesh_data = part.solid().mesh(0.3);
+        let color = if i == 0 { bone_color } else { tip_color };
+        let z_offset = i as f64 * 35.0;
+        println!(
+            "  {}: {} verts, {} faces",
+            part.name(),
+            mesh_data.vertex_count(),
+            mesh_data.face_count()
+        );
+        spawn_design_mesh(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &mesh_data,
+            Point3::new(-25.0, 0.0, z_offset),
+            color,
+        );
+    }
 
-    // Right: assembled — knuckle at Z≈13
-    // Small gap between them for the joint space
-    let joint_z = 13.0 + 11.0 + 1.0; // knuckle + distal base + gap
-    let knuckle_z = 13.0; // where the knuckle center is
-    spawn_solid(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &proximal,
-        bone_color,
-        Point3::new(spacing, 0.0, 0.0),
-        "Proximal (asm)",
-    );
-    spawn_solid(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &joint,
-        pin_color,
-        Point3::new(spacing, 0.0, knuckle_z),
-        "Joint (asm)",
-    );
-    spawn_solid(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &distal,
-        tip_color,
-        Point3::new(spacing, 0.0, joint_z),
-        "Distal (asm)",
-    );
+    // ── Right: sim-driven animated finger ───────────────────────────────
+    let mjcf_xml = mechanism.to_mjcf(1.5);
+    let model = sim_mjcf::load_model(&mjcf_xml).expect("generated MJCF should load");
 
-    spawn_scene(&mut commands, &mut meshes, &mut materials);
-    println!("\n  Left: separated | Right: assembled");
-    println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll");
-}
+    println!(
+        "  Physics: {} bodies, {} joints, {} DOFs, {} geoms, {} actuators",
+        model.nbody, model.njnt, model.nv, model.ngeom, model.nu
+    );
+    println!("  Left: separated parts | Right: animated finger");
+    println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
-fn spawn_scene(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) {
+    let mut data = model.make_data();
+    let _ = data.forward(&model);
+
+    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+
     ExampleScene::new(80.0, 60.0)
         .with_target(Vec3::new(0.0, 12.0, 0.0))
         .with_angles(0.3, 0.4)
         .with_ground_y(-20.0)
-        .spawn(commands, meshes, materials);
+        .spawn(&mut commands, &mut meshes, &mut materials);
+
+    commands.insert_resource(PhysicsModel(model));
+    commands.insert_resource(PhysicsData(data));
 }
