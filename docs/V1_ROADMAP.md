@@ -99,7 +99,7 @@ The README says "21 library crates" — actual count is 20 (10 mesh + 3 design +
 The creative task. Done after Session 1 so every reference, diagram, and count
 is written against a codebase with no stale noise.
 
-### 5. Refresh VISION.md
+### 5. ~~Refresh VISION.md~~ ✅
 
 VISION.md is heavily stale after the repo cleanup. It references removed
 domains, non-existent crates, and wrong counts throughout.
