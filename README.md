@@ -27,9 +27,7 @@ and that mesh-io exports back to STL. One truth.
 - **Geometric Kernel** — cf-geometry: unified shapes, GJK/EPA, BVH, ray casting, SDF grids — used by all domains
 - **Physics Simulation** — MuJoCo-aligned rigid body dynamics: Newton/PGS/CG contact solvers, implicit integration, Hill-type muscles, tendons, constraints. 79/79 conformance tests pass.
 - **Mesh Processing** — 10 crates: load, repair, SDF, offset, shell, lattices, print validation
-**What's next:**
-
-- **cf-design** — Implicit surface design kernel: define parts as math functions, compose with smooth booleans, assemble into mechanisms that map 1:1 to MJCF. See [CF_DESIGN_SPEC.md](./docs/CF_DESIGN_SPEC.md).
+- **cf-design** — Implicit surface design kernel (Phases 1–4): define parts as math functions, compose with smooth booleans, assemble into mechanisms that map 1:1 to MJCF. 656 tests. See [CF_DESIGN_SPEC.md](./docs/CF_DESIGN_SPEC.md).
 
 ---
 
@@ -77,14 +75,15 @@ conversion. This is the only place Bevy appears.
 
 ## Crate Overview
 
-**21 library crates** across 3 domains.
+**20 library crates** across 3 domains.
 
-### Foundation (`design/`)
+### Foundation (`design/`) — 3 crates
 
 | Crate | Description |
 |-------|-------------|
 | `cf-geometry` | Shared geometric kernel: Aabb, IndexedMesh, Shape (10 variants), ConvexHull, BVH, SdfGrid, GJK/EPA, ray casting, closest point queries. The canonical source of geometric types for all domains. |
 | `cf-spatial` | Voxel grids, occupancy maps, raycasting, DDA traversal |
+| `cf-design` | Implicit surface design kernel: SDF primitives, smooth booleans, mechanism assembly, MJCF export, STL export. Phases 1–4 complete (656 tests). |
 
 ### Simulation Domain (`sim/`) — 7 crates
 
