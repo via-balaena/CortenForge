@@ -34,6 +34,7 @@ members = [
     # Examples — integration (cross-domain pipelines)
     "examples/integration/design-to-sim",
     "examples/integration/design-to-print",
+    "examples/integration/sim-informed-design",
 
     # Foundation (active development)
     "design/cf-geometry",
