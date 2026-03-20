@@ -408,12 +408,26 @@ fn setup(
     let mut data = model.make_data();
     let _ = data.forward(&model);
 
-    // Cache body transforms for lattice/shell stages before data is moved
-    let body_transforms: Vec<Transform> = (0..model.nbody)
-        .map(|body_id| Transform {
-            translation: vec3_from_vector(&data.xpos[body_id]),
-            rotation: quat_from_unit_quaternion(&data.xquat[body_id]),
-            scale: Vec3::ONE,
+    // Cache per-part geom transforms for lattice/shell stages.
+    // Use geom_xpos/geom_xmat (not body xpos) because these include the
+    // geom offset that makes parts extend outward from joints.
+    let part_transforms: Vec<Transform> = (0..pipeline.lattice_meshes.len())
+        .map(|part_idx| {
+            let body_id = part_idx + 1; // skip world body
+            (0..model.ngeom)
+                .find(|&g| model.geom_body[g] == body_id)
+                .map(|gid| {
+                    let pos = &data.geom_xpos[gid];
+                    let mat = &data.geom_xmat[gid];
+                    let rotation = nalgebra::Rotation3::from_matrix_unchecked(*mat);
+                    let quat = nalgebra::UnitQuaternion::from_rotation_matrix(&rotation);
+                    Transform {
+                        translation: vec3_from_vector(pos),
+                        rotation: quat_from_unit_quaternion(&quat),
+                        scale: Vec3::ONE,
+                    }
+                })
+                .unwrap_or_default()
         })
         .collect();
 
@@ -455,7 +469,7 @@ fn setup(
         &mut meshes,
         &mut materials,
         &pipeline.lattice_meshes,
-        &body_transforms,
+        &part_transforms,
         &[Color::srgb(0.3, 0.8, 0.4)],
         PipelineStage::Lattice,
     );
@@ -466,7 +480,7 @@ fn setup(
         &mut meshes,
         &mut materials,
         &pipeline.shell_meshes,
-        &body_transforms,
+        &part_transforms,
         &[Color::srgb(0.9, 0.75, 0.5)],
         PipelineStage::PrintReady,
     );
