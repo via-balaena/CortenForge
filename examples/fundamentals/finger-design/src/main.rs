@@ -14,8 +14,9 @@
 use bevy::prelude::*;
 use cf_design::Solid;
 use nalgebra::{Point3, Vector3};
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::mesh::spawn_design_mesh;
+use sim_bevy::scene::ExampleScene;
 
 fn main() {
     App::new()
@@ -185,40 +186,9 @@ fn spawn_scene(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
-    let mut orbit = OrbitCamera::new()
+    ExampleScene::new(80.0, 60.0)
         .with_target(Vec3::new(0.0, 12.0, 0.0))
-        .with_angles(0.3, 0.4);
-    orbit.distance = 80.0;
-    orbit.orbit_speed = 0.008;
-    orbit.pan_speed = 0.015;
-    orbit.zoom_speed = 0.15;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 15000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(30.0, 50.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 5000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-20.0, 30.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(60.0)))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.4, 0.4, 0.4, 0.3),
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, -20.0, 0.0),
-    ));
+        .with_angles(0.3, 0.4)
+        .with_ground_y(-20.0)
+        .spawn(commands, meshes, materials);
 }

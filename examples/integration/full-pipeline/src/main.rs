@@ -32,12 +32,13 @@ use mesh_printability::{PrinterConfig, validate_for_printing};
 use mesh_repair::{RepairParams, repair_mesh};
 use mesh_shell::ShellBuilder;
 use nalgebra::{Point3, Vector3};
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
-use sim_bevy::convert::{quat_from_unit_quaternion, vec3_from_vector};
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::{quat_from_unit_quaternion, transform_from_physics, vec3_from_vector};
 use sim_bevy::mesh::triangle_mesh_from_indexed;
 use sim_bevy::model_data::{
     PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data, sync_geom_transforms,
 };
+use sim_bevy::scene::ExampleScene;
 use sim_core::{Data, Model};
 
 // ============================================================================
@@ -210,8 +211,8 @@ fn build_stress_field(
 /// All pre-computed data for non-interactive stages (3, 4, 5).
 #[derive(Resource)]
 struct PipelineData {
-    /// Stage 3: force indicator positions + magnitudes (in Bevy coords)
-    force_indicators: Vec<(Vec3, f32)>,
+    /// Stage 3: force indicator positions + magnitudes (in physics Z-up coords)
+    force_indicators: Vec<(Vector3<f64>, f32)>,
     /// Stage 4: per-part lattice meshes
     lattice_meshes: Vec<(String, IndexedMesh)>,
     /// Stage 5: per-part shell meshes
@@ -273,7 +274,7 @@ fn run_pipeline(mechanism: &Mechanism) -> PipelineData {
         let linear_mag = Vector3::new(force[3], force[4], force[5]).norm();
         if linear_mag > 1e-6 {
             let pos = &data.xpos[body_id];
-            force_indicators.push((vec3_from_vector(pos), linear_mag as f32));
+            force_indicators.push((*pos, linear_mag as f32));
         }
     }
 
@@ -459,6 +460,7 @@ fn setup(
     for (pos, mag) in &pipeline.force_indicators {
         let intensity = *mag / max_force;
         let radius = 1.5 + intensity * 4.0;
+        let indicator_pos = Point3::new(pos.x, pos.y, pos.z);
         commands.spawn((
             StageEntity(PipelineStage::Stress),
             Mesh3d(meshes.add(Sphere::new(radius))),
@@ -467,7 +469,7 @@ fn setup(
                 emissive: LinearRgba::new(intensity * 2.0, 0.0, 0.0, 1.0),
                 ..default()
             })),
-            Transform::from_translation(*pos),
+            transform_from_physics(&indicator_pos),
             Visibility::Hidden,
         ));
     }
@@ -519,45 +521,7 @@ fn spawn_scene(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
-    let mut orbit = OrbitCamera::new()
-        .with_target(Vec3::ZERO)
-        .with_angles(0.5, 0.5);
-    orbit.max_distance = 500.0;
-    orbit.min_distance = 0.5;
-    orbit.orbit_speed = 0.008;
-    orbit.pan_speed = 0.015;
-    orbit.zoom_speed = 0.15;
-    orbit.distance = 80.0;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(30.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 4000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-20.0, 30.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(50.0)))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.5, 0.5, 0.5, 0.3),
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, -15.0, 0.0),
-    ));
+    ExampleScene::new(80.0, 50.0).spawn(commands, meshes, materials);
 }
 
 /// Advance stage on Space press.

@@ -15,10 +15,11 @@
 )]
 
 use bevy::prelude::*;
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::model_data::{
     PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data, sync_geom_transforms,
 };
+use sim_bevy::scene::ExampleScene;
 use sim_core::ENABLE_ENERGY;
 
 /// Double pendulum MJCF definition.
@@ -100,49 +101,12 @@ fn setup(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    // ── Camera ────────────────────────────────────────────────────────
-    let mut orbit = OrbitCamera::new()
+    ExampleScene::new(5.0, 3.0)
         .with_target(Vec3::new(0.0, -0.5, 0.0))
-        .with_angles(0.5, 0.3);
-    orbit.max_distance = 20.0;
-    orbit.min_distance = 1.0;
-    orbit.orbit_speed = 0.008;
-    orbit.pan_speed = 0.015;
-    orbit.zoom_speed = 0.15;
-    orbit.distance = 5.0;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    // ── Lighting ──────────────────────────────────────────────────────
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(5.0, 10.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 4000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-5.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    // Ground
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(3.0)))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.5, 0.5, 0.5, 0.3),
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, -2.0, 0.0),
-    ));
+        .with_angles(0.5, 0.3)
+        .with_max_distance(20.0)
+        .with_ground_y(-2.0)
+        .spawn(&mut commands, &mut meshes, &mut materials);
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));

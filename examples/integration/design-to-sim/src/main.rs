@@ -20,10 +20,11 @@ use cf_design::{
     TendonWaypoint,
 };
 use nalgebra::{Point3, Vector3};
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::model_data::{
     PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data, sync_geom_transforms,
 };
+use sim_bevy::scene::ExampleScene;
 
 fn main() {
     App::new()
@@ -164,49 +165,7 @@ fn setup(
     // ── Spawn ALL geoms (including mesh geoms) via the engine ────────
     spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
 
-    // ── Camera ────────────────────────────────────────────────────────
-    let mut orbit = OrbitCamera::new()
-        .with_target(Vec3::ZERO)
-        .with_angles(0.5, 0.5);
-    orbit.max_distance = 500.0;
-    orbit.min_distance = 0.5;
-    orbit.orbit_speed = 0.008;
-    orbit.pan_speed = 0.015;
-    orbit.zoom_speed = 0.15;
-    orbit.distance = 80.0;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    // ── Lighting ──────────────────────────────────────────────────────
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(30.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 4000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-20.0, 30.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    // Ground
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(50.0)))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.5, 0.5, 0.5, 0.3),
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, -15.0, 0.0),
-    ));
+    ExampleScene::new(80.0, 50.0).spawn(&mut commands, &mut meshes, &mut materials);
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));

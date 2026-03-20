@@ -75,6 +75,7 @@ pub mod mesh;
 pub mod model_data;
 pub mod plugin;
 pub mod resources;
+pub mod scene;
 pub mod systems;
 
 /// Prelude module for convenient imports.
@@ -96,6 +97,7 @@ pub mod prelude {
         SensorVisualData, SensorVisualType, SensorVisualization, TendonVisualData,
         TendonVisualization, ViewerConfig,
     };
+    pub use crate::scene::ExampleScene;
     pub use crate::systems::update_cached_contacts;
 
     // Re-export Model/Data types from sim-core for convenience

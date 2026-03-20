@@ -26,9 +26,10 @@ use mesh_measure::dimensions;
 use mesh_printability::{PrinterConfig, validate_for_printing};
 use mesh_repair::{RepairParams, repair_mesh};
 use mesh_shell::ShellBuilder;
-use nalgebra::Vector3;
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
-use sim_bevy::mesh::triangle_mesh_from_indexed;
+use nalgebra::{Point3, Vector3};
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::mesh::spawn_design_mesh;
+use sim_bevy::scene::ExampleScene;
 
 fn main() {
     App::new()
@@ -47,7 +48,7 @@ fn main() {
 /// Run the design → shell → lattice → printability pipeline.
 ///
 /// Returns `(design_mesh, shell_mesh, lattice_mesh, spacing)` for visualization.
-fn run_pipeline() -> (IndexedMesh, IndexedMesh, IndexedMesh, f32) {
+fn run_pipeline() -> (IndexedMesh, IndexedMesh, IndexedMesh, f64) {
     // ── Stage 1: Design a solid ──────────────────────────────────────
     println!("Stage 1: Design solid");
     let solid = Solid::cuboid(Vector3::new(30.0, 20.0, 15.0))
@@ -100,41 +101,26 @@ fn run_pipeline() -> (IndexedMesh, IndexedMesh, IndexedMesh, f32) {
         report.summary()
     );
 
-    let spacing = dims.width as f32 + 10.0;
+    let spacing = dims.width + 10.0;
     (design_mesh, shell_result.mesh, lattice.mesh, spacing)
 }
 
-/// Spawn a mesh entity at a given X offset with the given color.
+/// Spawn a mesh entity at a physics-space position with the given color.
 fn spawn_stage(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     mesh_data: &IndexedMesh,
     color: Color,
-    x_offset: f32,
+    position: Point3<f64>,
     label: &str,
 ) {
-    let indexed = Arc::new(mesh_data.clone());
-    let bevy_mesh = triangle_mesh_from_indexed(&indexed);
-
     println!(
         "  {label}: {} vertices, {} faces",
-        indexed.vertices.len(),
-        indexed.faces.len()
+        mesh_data.vertices.len(),
+        mesh_data.faces.len()
     );
-
-    commands.spawn((
-        Mesh3d(meshes.add(bevy_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: color,
-            metallic: 0.3,
-            perceptual_roughness: 0.5,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        })),
-        Transform::from_xyz(x_offset, 0.0, 0.0),
-    ));
+    spawn_design_mesh(commands, meshes, materials, mesh_data, position, color);
 }
 
 fn setup(
@@ -155,7 +141,7 @@ fn setup(
         &mut materials,
         &design_mesh,
         Color::srgb(0.7, 0.75, 0.85),
-        -spacing,
+        Point3::new(-spacing, 0.0, 0.0),
         "Design solid",
     );
 
@@ -165,7 +151,7 @@ fn setup(
         &mut materials,
         &shell_mesh,
         Color::srgb(0.9, 0.6, 0.3),
-        0.0,
+        Point3::origin(),
         "Shell",
     );
 
@@ -175,53 +161,15 @@ fn setup(
         &mut materials,
         &lattice_mesh,
         Color::srgb(0.3, 0.8, 0.4),
-        spacing,
+        Point3::new(spacing, 0.0, 0.0),
         "Lattice infill",
     );
 
-    // ── Camera ───────────────────────────────────────────────────────
-    let mut orbit = OrbitCamera::new()
-        .with_target(Vec3::ZERO)
-        .with_angles(0.5, 0.5);
-    orbit.max_distance = 500.0;
-    orbit.min_distance = 1.0;
-    orbit.orbit_speed = 0.008;
-    orbit.pan_speed = 0.015;
-    orbit.zoom_speed = 0.15;
-    orbit.distance = 150.0;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    // ── Lighting ─────────────────────────────────────────────────────
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(30.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 4000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-20.0, 30.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    // Ground
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(100.0)))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.5, 0.5, 0.5, 0.3),
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, -25.0, 0.0),
-    ));
+    ExampleScene::new(150.0, 100.0).with_ground_y(-25.0).spawn(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+    );
 
     println!("\n  Orbit: left-drag | Pan: right-drag | Zoom: scroll");
 }

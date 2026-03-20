@@ -25,9 +25,10 @@ use mesh_lattice::{DensityMap, LatticeParams, generate_lattice};
 use mesh_measure::dimensions;
 use mesh_repair::{RepairParams, repair_mesh};
 use nalgebra::{Point3, Vector3};
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::transform_from_physics;
 use sim_bevy::mesh::spawn_design_mesh;
+use sim_bevy::scene::ExampleScene;
 use sim_core::{Data, Model};
 
 fn main() {
@@ -306,49 +307,11 @@ fn setup(
         "Stress-graded lattice",
     );
 
-    // ── Camera ───────────────────────────────────────────────────────
-    let mut orbit = OrbitCamera::new()
-        .with_target(Vec3::ZERO)
-        .with_angles(0.5, 0.5);
-    orbit.max_distance = 500.0;
-    orbit.min_distance = 1.0;
-    orbit.orbit_speed = 0.008;
-    orbit.pan_speed = 0.015;
-    orbit.zoom_speed = 0.15;
-    orbit.distance = 120.0;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    // ── Lighting ─────────────────────────────────────────────────────
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(30.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 4000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-20.0, 30.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    // Ground
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(80.0)))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.5, 0.5, 0.5, 0.3),
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, -20.0, 0.0),
-    ));
+    ExampleScene::new(120.0, 80.0).with_ground_y(-20.0).spawn(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+    );
 
     println!("\n  Orbit: left-drag | Pan: right-drag | Zoom: scroll");
 }

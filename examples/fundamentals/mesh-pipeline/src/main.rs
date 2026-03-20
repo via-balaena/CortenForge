@@ -14,13 +14,12 @@
     clippy::too_many_lines
 )]
 
-use std::sync::Arc;
-
 use bevy::prelude::*;
 use cf_design::Solid;
-use nalgebra::Vector3;
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
-use sim_bevy::mesh::triangle_mesh_from_indexed;
+use nalgebra::{Point3, Vector3};
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::mesh::spawn_design_mesh;
+use sim_bevy::scene::ExampleScene;
 
 fn main() {
     App::new()
@@ -109,77 +108,32 @@ fn setup(
     println!("\n7. Printability (FDM): {}", validation.summary());
 
     // ── Spawn stages side-by-side ─────────────────────────────────────
-    let stages: Vec<(&str, Arc<cf_geometry::IndexedMesh>, Color)> = vec![
-        ("Original", Arc::new(mesh), Color::srgb(0.7, 0.75, 0.8)),
-        ("Shell", Arc::new(shell_mesh), Color::srgb(0.3, 0.7, 0.5)),
-        (
-            "Lattice",
-            Arc::new(lattice.mesh),
-            Color::srgb(0.9, 0.6, 0.3),
-        ),
+    let stages: Vec<(&str, cf_geometry::IndexedMesh, Color)> = vec![
+        ("Original", mesh, Color::srgb(0.7, 0.75, 0.8)),
+        ("Shell", shell_mesh, Color::srgb(0.3, 0.7, 0.5)),
+        ("Lattice", lattice.mesh, Color::srgb(0.9, 0.6, 0.3)),
     ];
 
     let spacing = 50.0;
     let offset = (stages.len() as f32 - 1.0) * spacing / 2.0;
 
-    for (i, (name, indexed, color)) in stages.into_iter().enumerate() {
-        let bevy_mesh = triangle_mesh_from_indexed(&indexed);
+    for (i, (name, mesh_data, color)) in stages.iter().enumerate() {
         println!("  Spawned: {name}");
-
-        commands.spawn((
-            Mesh3d(meshes.add(bevy_mesh)),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: color,
-                metallic: 0.3,
-                perceptual_roughness: 0.5,
-                ..default()
-            })),
-            Transform::from_xyz((i as f32).mul_add(spacing, -offset), 0.0, 0.0),
-        ));
+        let x = f64::from((i as f32).mul_add(spacing, -offset));
+        spawn_design_mesh(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            mesh_data,
+            Point3::new(x, 0.0, 0.0),
+            *color,
+        );
     }
 
-    // ── Camera ────────────────────────────────────────────────────────
-    let mut orbit = OrbitCamera::new()
-        .with_target(Vec3::ZERO)
-        .with_angles(0.5, 0.6);
-    orbit.max_distance = 500.0;
-    orbit.min_distance = 5.0;
-    orbit.orbit_speed = 0.008;
-    orbit.pan_speed = 0.015;
-    orbit.zoom_speed = 0.15;
-    orbit.distance = 100.0;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    // ── Lighting ──────────────────────────────────────────────────────
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(40.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 5000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-30.0, 30.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(80.0)))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.4, 0.4, 0.4, 0.2),
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, -25.0, 0.0),
-    ));
+    ExampleScene::new(100.0, 80.0)
+        .with_angles(0.5, 0.6)
+        .with_ground_y(-25.0)
+        .spawn(&mut commands, &mut meshes, &mut materials);
 
     println!("\n  Orbit: left-drag | Pan: right-drag | Zoom: scroll");
 }
