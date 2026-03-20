@@ -18,7 +18,7 @@ undemonstrated:
 2. **Sim → Design feedback** — simulation force data should drive
    variable-density lattice generation.
 
-These four examples close those gaps with minimal library changes (~50 lines)
+These four examples close those gaps with minimal library changes (~60 lines)
 and serve as ongoing acceptance tests for cross-domain integration.
 
 ---
@@ -38,32 +38,42 @@ reads `data.xpos`/`data.xquat`. This duplicates what `spawn_model_geoms` +
 
 **Library fix (~15 lines in `sim/L1/bevy/src/model_data.rs`):**
 
-In `spawn_model_geoms`, replace the catch-all arm:
+In `spawn_model_geoms`, the existing match (lines 504–522) builds an
+`Option<Shape>` then calls `mesh_from_shape()`. Since `GeomType::Mesh` produces
+a `Mesh` directly (bypassing the `Shape` intermediary), the code needs minor
+restructuring. Refactor the mesh-production logic so that the `GeomType::Mesh`
+case merges into the same `Option<Mesh>` binding:
 
 ```rust
-// BEFORE (line 520-521):
-// Mesh, Hfield, Sdf need asset data — skip for now
-_ => None,
+// Produce a Bevy mesh for this geom
+let mesh: Option<Mesh> = match geom_type {
+    GeomType::Mesh => {
+        // Look up mesh asset: geom_mesh[geom_id] → mesh_data[mesh_id]
+        model.geom_mesh[geom_id].and_then(|mesh_id| {
+            let tri_data = &model.mesh_data[mesh_id];
+            let indexed = Arc::new(tri_data.indexed_mesh().clone());
+            Some(triangle_mesh_from_indexed(&indexed))
+        })
+    }
+    _ => {
+        // Primitive shapes go through Shape → mesh_from_shape
+        let shape = match geom_type {
+            GeomType::Plane => Some(Shape::Plane { ... }),
+            // ... existing arms ...
+            _ => None,
+        };
+        shape.and_then(|s| mesh_from_shape(&s))
+    }
+};
 
-// AFTER:
-GeomType::Mesh => {
-    model.geom_mesh[geom_id].and_then(|mesh_id| {
-        let tri_data = &model.mesh_data[mesh_id];
-        let indexed = Arc::new(tri_data.indexed_mesh().clone());
-        Some(triangle_mesh_from_indexed(&indexed))
-    })
-},
-// Hfield, Sdf need specialized rendering — skip for now
-_ => None,
+let Some(mesh) = mesh else { continue };
 ```
 
-This looks up the mesh asset via `geom_mesh[geom_id]` → `mesh_data[mesh_id]`,
-extracts the `IndexedMesh`, and feeds it to the existing
-`triangle_mesh_from_indexed()`. The world-frame transform from
-`data.geom_xpos`/`data.geom_xmat` already applies to all geom types.
+The world-frame transform from `data.geom_xpos`/`data.geom_xmat` already
+applies to all geom types — no changes needed downstream.
 
-**Imports needed:** `Arc` (from `std::sync`) and `triangle_mesh_from_indexed`
-(from `crate::mesh`).
+**Imports needed:** `std::sync::Arc` and `crate::mesh::triangle_mesh_from_indexed`
+(neither is currently imported in `model_data.rs`).
 
 **Example rewrite:** Remove manual `to_stl_kit` + custom `sync_bodies`. Use
 `spawn_model_geoms` for spawning + `sync_geom_transforms` for animation.
@@ -162,6 +172,12 @@ pub fn is_outside_shape(&self, point: Point3<f64>) -> bool {
 
 Default: `shape_sdf: None` (existing behavior preserved).
 
+**Note:** `LatticeParams` currently derives `Debug`. Since `dyn Fn` does not
+implement `Debug`, the derive must be replaced with a manual `impl Debug` that
+prints `"<shape_sdf>"` for the closure field. This matches the existing
+precedent in `DensityMap` (`density.rs` lines 91–145) which faces the same
+issue with its `StressField` and `Function` variants.
+
 #### `src/generate.rs` — boundary checks in generators (~20 lines)
 
 **Strut-based generators** (cubic, octet-truss, voronoi): Before generating
@@ -205,9 +221,14 @@ let solid = Solid::cuboid(Vector3::new(30.0, 20.0, 15.0))
     .round(3.0)
     .subtract(Solid::cylinder(4.0, 20.0).translate(Vector3::new(10.0, 0.0, 0.0)));
 
-let mesh = solid.mesh(0.5);
-let repaired = mesh_repair::repair(&mesh);
-let shell = mesh_shell::shell(&repaired, 1.2);
+let mut mesh = solid.mesh(0.5);
+mesh_repair::repair_mesh(&mut mesh, &mesh_repair::RepairParams::default());
+
+let shell = mesh_shell::ShellBuilder::new(&mesh)
+    .wall_thickness(1.2)
+    .fast()
+    .build()
+    .expect("shell generation");
 
 // Shape-conforming lattice
 let sdf = {
@@ -217,11 +238,14 @@ let sdf = {
 let lattice_params = LatticeParams::gyroid(6.0)
     .with_density(0.25)
     .with_shape_sdf(sdf);
-let bounds = mesh_bounds(&repaired);
+let dims = mesh_measure::dimensions(&mesh);
+let bounds = (dims.min, dims.max);
 let lattice = generate_lattice(&lattice_params, bounds)?;
 
 // Printability check
-let report = mesh_printability::check(&lattice.mesh());
+let report = mesh_printability::validate_for_printing(
+    &lattice.mesh, &mesh_printability::PrinterConfig::fdm_default(),
+)?;
 ```
 
 **Bevy visualization:** 3 stages side-by-side (original design, shell, lattice
@@ -251,31 +275,44 @@ build stress field → stress-graded lattice inside shape → visualize
 
 **Stress field construction (example code):**
 
+Contact forces are not stored per-contact in sim-core. The Data struct stores
+contacts as `data.contacts: Vec<Contact>` (each with `.pos`, `.normal`,
+`.depth`, `.geom1`, `.geom2`) and constraint forces in the unified
+`data.efc_force: DVector<f64>` indexed by constraint row. For a demonstration
+stress field, we use body-level `cfrc_ext` (accumulated contact + external
+forces per body) which is simpler and sufficient:
+
 ```rust
-/// Build a gaussian-weighted stress field from simulation contact data.
+/// Build a gaussian-weighted stress field from body-level force data.
+///
+/// Uses `data.cfrc_ext` (spatial force on each body from contacts + external)
+/// and contact positions as stress sources. This is a simplified stress
+/// proxy — not FEA — but sufficient for density-grading lattice infill.
 fn build_stress_field(
     data: &Data,
     model: &Model,
     sigma: f64,
 ) -> Arc<dyn Fn(Point3<f64>) -> f64 + Send + Sync> {
-    // Collect contact positions and force magnitudes
     let mut stress_sources: Vec<(Point3<f64>, f64)> = Vec::new();
 
-    for i in 0..data.ncon {
-        let pos = data.contact_pos[i];
-        let force_mag = data.contact_force[i].norm();
-        if force_mag > 1e-6 {
-            stress_sources.push((pos, force_mag));
+    // Body-level forces from cfrc_ext [torque(3), force(3)]
+    for body_id in 1..model.nbody {
+        let force = &data.cfrc_ext[body_id];
+        let linear_mag = Vector3::new(force[3], force[4], force[5]).norm();
+        if linear_mag > 1e-6 {
+            let pos = &data.xpos[body_id];
+            stress_sources.push((Point3::new(pos.x, pos.y, pos.z), linear_mag));
         }
     }
 
-    // Also use cfrc_ext (external + contact forces on bodies)
-    for body_id in 1..model.nbody {
-        let force = data.cfrc_ext[body_id];
-        let linear_mag = Vector3::new(force[3], force[4], force[5]).norm();
-        if linear_mag > 1e-6 {
-            let body_pos = data.xpos[body_id];
-            stress_sources.push((body_pos, linear_mag));
+    // Contact positions (with penetration depth as magnitude proxy)
+    for contact in &data.contacts {
+        if contact.depth > 1e-8 {
+            let pos = contact.pos;
+            stress_sources.push((
+                Point3::new(pos.x, pos.y, pos.z),
+                contact.depth * 1000.0, // scale depth to force-like magnitude
+            ));
         }
     }
 
@@ -289,6 +326,10 @@ fn build_stress_field(
     })
 }
 ```
+
+**Note on `cfrc_ext`:** This field is populated by `mj_body_accumulators()`
+during `forward()` / constraint solving. Ensure the simulation has run enough
+steps for meaningful contact data before extracting the stress field.
 
 **Density map from stress field:**
 
@@ -346,25 +387,40 @@ shell → validate printability → 5-stage Bevy visualization
 **Per-part processing:**
 
 ```rust
-for (name, mesh) in mechanism.to_stl_kit(0.3) {
-    let repaired = mesh_repair::repair(&mesh);
-    let shell = mesh_shell::shell(&repaired, 1.0);
+let stl_kit = mechanism.to_stl_kit(0.3);
+
+for (name, mut part_mesh) in stl_kit {
+    mesh_repair::repair_mesh(&mut part_mesh, &mesh_repair::RepairParams::default());
+
+    let shell = mesh_shell::ShellBuilder::new(&part_mesh)
+        .wall_thickness(1.0)
+        .fast()
+        .build()
+        .expect("shell");
 
     // Per-part stress field from simulation
     let part_stress = extract_part_stress(&data, &model, &name);
     let density_map = DensityMap::from_stress_field(part_stress, 0.15, 0.55);
 
-    // Shape-conforming lattice
-    let solid = mechanism.part_solid(&name);
-    let sdf = Arc::new(move |p| solid.evaluate(&p));
+    // Shape-conforming lattice — look up the part's Solid
+    let solid = mechanism.parts().iter()
+        .find(|p| p.name() == name)
+        .expect("part exists")
+        .solid()
+        .clone();
+    let sdf = Arc::new(move |p: Point3<f64>| solid.evaluate(&p));
+
+    let dims = mesh_measure::dimensions(&part_mesh);
     let params = LatticeParams::gyroid(4.0)
         .with_density_map(density_map)
         .with_shape_sdf(sdf);
-    let lattice = generate_lattice(&params, mesh_bounds(&repaired))?;
+    let lattice = generate_lattice(&params, (dims.min, dims.max))?;
 
     // Printability
-    let report = mesh_printability::check(&lattice.mesh());
-    println!("  {name}: {} — {}", report.grade(), report.summary());
+    let report = mesh_printability::validate_for_printing(
+        &lattice.mesh, &mesh_printability::PrinterConfig::fdm_default(),
+    )?;
+    println!("  {name}: printable={} — {}", report.is_printable(), report.summary());
 }
 ```
 
@@ -399,11 +455,11 @@ Phase 2: design-to-print ────────┘                            
 
 | File | Change | Lines | Tests |
 |------|--------|-------|-------|
-| `sim/L1/bevy/src/model_data.rs` | `GeomType::Mesh` arm in `spawn_model_geoms` | ~10 | spawn mesh geom test |
-| `mesh/mesh-lattice/src/params.rs` | `shape_sdf` field + `with_shape_sdf()` + `is_outside_shape()` | ~20 | builder + boundary tests |
+| `sim/L1/bevy/src/model_data.rs` | `GeomType::Mesh` arm + refactored mesh dispatch | ~15 | spawn mesh geom test |
+| `mesh/mesh-lattice/src/params.rs` | `shape_sdf` field + `with_shape_sdf()` + `is_outside_shape()` + manual `Debug` impl | ~30 | builder + boundary tests |
 | `mesh/mesh-lattice/src/generate.rs` | SDF boundary checks in 4 generators | ~15 | shape-conforming lattice tests |
 
-**Total library code: ~45 lines across 3 files.** Everything else is example code.
+**Total library code: ~60 lines across 3 files.** Everything else is example code.
 
 No new crate dependencies. No changes to Layer 0 sim crates. The mesh-lattice
 changes are Layer 0 (Bevy-free). The sim-bevy change is Layer 1.
