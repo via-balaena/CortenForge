@@ -39,36 +39,43 @@ fn main() {
 
 /// Proximal phalange — base segment.
 ///
-/// Capsule-like body with a spherical knuckle head protruding at the tip.
-/// No aggressive boolean ops — just `smooth_union` for the knuckle blend.
+/// Wider-than-deep ellipsoidal cross-section (like a real finger bone).
+/// Knuckle condyle protruding at the distal end.
+/// Z-axis is the finger length (up in Bevy after coordinate conversion).
 fn proximal_phalange() -> Solid {
-    // Capsule gives us the rounded ends for free
-    let body = Solid::capsule(4.0, 12.0); // radius 4, half-height 12 → 24mm + caps
+    // Ellipsoid body: wider (X=5) than deep (Y=3.5), elongated along Z (=14)
+    let body = Solid::ellipsoid(Vector3::new(5.0, 3.5, 14.0)).round(0.5);
 
-    // Knuckle head — sphere protruding at the tip
-    let knuckle = Solid::sphere(4.5).translate(Vector3::new(0.0, 14.0, 0.0));
+    // Knuckle condyle — wide bulge at the tip (+Z end)
+    let knuckle =
+        Solid::ellipsoid(Vector3::new(5.5, 4.0, 4.0)).translate(Vector3::new(0.0, 0.0, 13.0));
 
-    // Smooth blend — high k for very organic transition
-    body.smooth_union(knuckle, 3.0)
+    body.smooth_union(knuckle, 2.5)
+}
+
+/// Knuckle joint — visible hinge pin connecting the two phalanges.
+///
+/// Cylinder pin along X (the hinge axis) with rounded ends.
+fn knuckle_joint() -> Solid {
+    // Pin through the knuckle — extends wider than the finger
+    Solid::capsule(1.5, 5.0).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+        &nalgebra::Vector3::z_axis(),
+        std::f64::consts::FRAC_PI_2,
+    ))
 }
 
 /// Distal phalange — fingertip segment.
 ///
-/// Capsule body tapering to a rounded tip. Shallow concave socket at
-/// the base to cup the proximal knuckle head.
+/// Tapers from a wide base to a narrow, rounded fingertip.
+/// Z-axis is the finger length.
 fn distal_phalange() -> Solid {
-    // Slightly smaller capsule
-    let body = Solid::capsule(3.5, 10.0); // radius 3.5, half-height 10
+    // Body: slightly narrower, shorter
+    let body = Solid::ellipsoid(Vector3::new(4.5, 3.0, 11.0)).round(0.5);
 
-    // Fingertip — elongated ellipsoid for taper
-    let tip = Solid::ellipsoid(Vector3::new(3.0, 5.0, 3.0)).translate(Vector3::new(0.0, 12.0, 0.0));
-    let shape = body.smooth_union(tip, 4.0);
+    // Fingertip taper
+    let tip = Solid::ellipsoid(Vector3::new(3.0, 2.5, 4.0)).translate(Vector3::new(0.0, 0.0, 10.0));
 
-    // Socket — sphere centered WELL BELOW the base so only a shallow
-    // scoop is cut from the bottom face. The further below, the shallower.
-    let socket = Solid::sphere(5.0).translate(Vector3::new(0.0, -13.0, 0.0));
-
-    shape.subtract(socket)
+    body.smooth_union(tip, 3.0)
 }
 
 // ============================================================================
@@ -84,8 +91,7 @@ fn spawn_solid(
     offset: Vec3,
     label: &str,
 ) {
-    // Use mesh_adaptive for better quality at boolean boundaries
-    let mesh_data = solid.mesh_adaptive(0.3);
+    let mesh_data = solid.mesh(0.3);
     println!(
         "  {label}: {} verts, {} faces",
         mesh_data.vertex_count(),
@@ -116,12 +122,14 @@ fn setup(
 
     let proximal = proximal_phalange();
     let distal = distal_phalange();
+    let joint = knuckle_joint();
 
     let spacing = 25.0;
     let bone_color = Color::srgb(0.9, 0.85, 0.75);
     let tip_color = Color::srgb(0.8, 0.75, 0.68);
+    let pin_color = Color::srgb(0.5, 0.5, 0.55);
 
-    // Left: parts separated
+    // Left: all 3 parts separated
     spawn_solid(
         &mut commands,
         &mut meshes,
@@ -135,15 +143,25 @@ fn setup(
         &mut commands,
         &mut meshes,
         &mut materials,
+        &joint,
+        pin_color,
+        Vec3::new(-spacing, 20.0, 0.0),
+        "Joint pin",
+    );
+    spawn_solid(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
         &distal,
         tip_color,
-        Vec3::new(-spacing, 40.0, 0.0),
+        Vec3::new(-spacing, 35.0, 0.0),
         "Distal",
     );
 
-    // Right: assembled — knuckle head at y≈14, socket at y≈-13
-    // Position distal so socket cups the knuckle
-    let joint_y = 14.0 + 12.0; // knuckle center + distal half-length offset
+    // Right: assembled — knuckle at Z≈13 → Bevy Y≈13
+    // Small gap between them for the joint space
+    let joint_y = 13.0 + 11.0 + 1.0; // knuckle + distal base + gap
+    let knuckle_y = 13.0; // where the knuckle center is (Z→Y)
     spawn_solid(
         &mut commands,
         &mut meshes,
@@ -157,13 +175,31 @@ fn setup(
         &mut commands,
         &mut meshes,
         &mut materials,
+        &joint,
+        pin_color,
+        Vec3::new(spacing, knuckle_y, 0.0),
+        "Joint (asm)",
+    );
+    spawn_solid(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
         &distal,
         tip_color,
         Vec3::new(spacing, joint_y, 0.0),
         "Distal (asm)",
     );
 
-    // Camera
+    spawn_scene(&mut commands, &mut meshes, &mut materials);
+    println!("\n  Left: separated | Right: assembled");
+    println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll");
+}
+
+fn spawn_scene(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
     let mut orbit = OrbitCamera::new()
         .with_target(Vec3::new(0.0, 12.0, 0.0))
         .with_angles(0.3, 0.4);
@@ -191,7 +227,6 @@ fn setup(
         },
         Transform::from_xyz(-20.0, 30.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(60.0)))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -201,7 +236,4 @@ fn setup(
         })),
         Transform::from_xyz(0.0, -20.0, 0.0),
     ));
-
-    println!("\n  Left: separated | Right: assembled");
-    println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll");
 }
