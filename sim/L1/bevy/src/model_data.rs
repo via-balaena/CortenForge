@@ -635,4 +635,60 @@ mod tests {
         physics_data.time = 1.0;
         assert!((physics_data.time - 1.0).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn spawn_model_geoms_handles_mesh_geom_type() {
+        use bevy::ecs::world::CommandQueue;
+        use sim_core::mesh::TriangleMeshData;
+
+        // Build a Model with 2 geoms: one Sphere, one Mesh
+        let mut model = Model::empty();
+        model.ngeom = 2;
+        model.geom_type = vec![GeomType::Sphere, GeomType::Mesh];
+        model.geom_size = vec![
+            nalgebra::Vector3::new(1.0, 0.0, 0.0),
+            nalgebra::Vector3::zeros(),
+        ];
+        model.geom_rgba = vec![[0.8, 0.2, 0.2, 1.0], [0.2, 0.8, 0.2, 1.0]];
+        model.geom_body = vec![0, 0];
+        model.geom_pos = vec![nalgebra::Vector3::zeros(); 2];
+        model.geom_quat = vec![nalgebra::UnitQuaternion::identity(); 2];
+        model.geom_mesh = vec![None, Some(0)];
+        model.geom_hfield = vec![None, None];
+        model.geom_sdf = vec![None, None];
+
+        // Provide a simple triangle mesh asset
+        let vertices = vec![
+            nalgebra::Point3::new(0.0, 0.0, 0.0),
+            nalgebra::Point3::new(1.0, 0.0, 0.0),
+            nalgebra::Point3::new(0.0, 1.0, 0.0),
+            nalgebra::Point3::new(0.0, 0.0, 1.0),
+        ];
+        let indices = vec![0, 1, 2, 0, 1, 3, 1, 2, 3, 2, 0, 3];
+        let tri_data = TriangleMeshData::new(vertices, indices);
+        model.nmesh = 1;
+        model.mesh_name = vec!["test_mesh".to_string()];
+        model.mesh_data = vec![Arc::new(tri_data)];
+
+        let data = model.make_data();
+
+        // Spawn into a Bevy world
+        let mut world = World::new();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<StandardMaterial>::default();
+
+        let mut queue = CommandQueue::default();
+        {
+            let mut commands = Commands::new(&mut queue, &world);
+            spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+        }
+        queue.apply(&mut world);
+
+        // Both geoms (sphere + mesh) should have spawned
+        let mut query = world.query::<&ModelGeomIndex>();
+        let spawned: Vec<usize> = query.iter(&world).map(|idx| idx.0).collect();
+        assert_eq!(spawned.len(), 2, "expected 2 geoms, got {}", spawned.len());
+        assert!(spawned.contains(&0), "sphere geom (id 0) should be spawned");
+        assert!(spawned.contains(&1), "mesh geom (id 1) should be spawned");
+    }
 }
