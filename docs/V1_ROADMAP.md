@@ -129,12 +129,12 @@ domains, non-existent crates, and wrong counts throughout.
 
 ---
 
-## Session 3 — Test hardening
+## Session 3 — Test hardening ✅
 
 The only real engineering work on the list. Separate session because it's code,
 not docs.
 
-### 6. cf-design test hardening
+### 6. ~~cf-design test hardening~~ ✅
 
 cf-design has ~23K lines across 31 files. It has inline `#[cfg(test)]` modules
 in many files, which is a start. But for a crate that is the differentiating
@@ -147,6 +147,11 @@ technology, test coverage should match the sim domain's standard.
 - Add integration tests for the design-to-mesh pipeline (solid → mesh → validate)
 - Add integration tests for mechanism-to-MJCF pipeline
 - Target: ≥75% line coverage (matching the A-grade standard)
+
+**Result:** 716 tests (was 698). Tarpaulin: 91.3% line coverage. 18 new tests
+across meshing pipeline (DC/adaptive DC on composed shapes), manufacturing
+output (STL clearance, mass properties), parameter gradients (domain op
+passthrough), simplification robustness, and optimizer convergence.
 
 **Size:** ~1–2 sessions
 
