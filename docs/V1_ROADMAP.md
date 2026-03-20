@@ -6,9 +6,100 @@
 task. The code architecture and scope are already v1.0-quality. This list is
 about making the packaging match.
 
+**Execution order:** Bottom-up. Clean the debris first (Session 1), then write
+the vision against clean ground (Session 2), then harden tests (Session 3),
+then tag the release.
+
 ---
 
-## 1. Refresh VISION.md
+## Session 1 — Mechanical cleanup
+
+Fast, low-risk, zero ambiguity. Gets the codebase clean so later work
+references reality, not ghosts.
+
+### 1. Sweep stale references across all docs
+
+The cleanup removed 9 crates but stale references survive in many active files
+beyond VISION.md. This is a codebase-wide sweep.
+
+**Files with confirmed stale references:**
+
+| File | Stale content |
+|------|---------------|
+| `CLAUDE.md` lines 20–21 | `cargo test` commands for ml-types, ml-dataset, ml-training, route-types, route-pathfind, route-optimize |
+| `docs/FUTURE.md` line 47 | `sensor-fusion transforms` |
+| `docs/INFRASTRUCTURE.md` line 344 | `sensor-fusion transforms` |
+| `docs/CF_GEOMETRY_SPEC.md` (~15 occurrences) | Migration plans referencing `route-types`, `route-pathfind`, `route-optimize` |
+| `docs/archive/COMPLETION_LOG.md` | Lists 52 crates; 11 no longer exist |
+| `.github/settings.yml` line 19 | `sensor-fusion` |
+| `Cargo.toml` lines 153–154 | TODO comments for `avian3d` / `bevy_egui` Bevy 0.18 compat |
+
+**Work:**
+- Remove ml/route/sensor test commands from CLAUDE.md
+- Remove `sensor-fusion` from FUTURE.md and INFRASTRUCTURE.md
+- Update or archive CF_GEOMETRY_SPEC.md route-* references (either strip the
+  migration plans for deleted crates, or add a header noting they were removed)
+- Add a cleanup-delta note at top of COMPLETION_LOG.md
+- Remove stale entry from .github/settings.yml
+- Resolve or remove Cargo.toml TODO comments
+
+**Size:** ~1 hour
+
+### 2. Clean up stale source comments
+
+Three sim source files have comments referencing removed crate names. The code
+is correct — only the comments are stale.
+
+| File | Stale comment |
+|------|---------------|
+| `sim/L0/tests/integration/flex_unified.rs` | References `sim-deformable` crate |
+| `sim/L0/core/src/forward/actuation.rs` | "Inlined from sim-muscle" |
+| `sim/L0/tests/integration/mjcf_sensors.rs` | References `sim-sensor` crate |
+
+**Work:**
+- Update comments to reference current location (e.g., "muscle model inlined
+  in sim-core" instead of "inlined from sim-muscle")
+- Quick grep for any other `sim-constraint`, `sim-deformable`, `sim-muscle`,
+  `sim-tendon`, `sim-physics`, `sim-sensor` references in .rs files
+
+**Size:** ~15 min
+
+### 3. Clean up sim/docs/todo/
+
+18 `future_work_*.md` files + 14 spec fleshout directories + 1 loose spec file
+(`DT16_DT90_SPEC.md`) + `POST_V1_ROADMAP.md` + `index.md`. A newcomer opening
+this directory sees planning artifacts that signal "in progress," not "finished."
+
+**Work:**
+- Consolidate the 18 `future_work_*.md` files into `POST_V1_ROADMAP.md` (or a
+  single `FUTURE_WORK.md`). One file, organized by theme, not chronologically
+- Move completed spec fleshouts (phases 3–6) into `sim/docs/todo/archived/`
+- Keep active/future phases (7–13) as-is
+- File the loose `DT16_DT90_SPEC.md` into a directory or archived/
+- Update `index.md` to reflect the new structure
+
+**Size:** ~2 hours
+
+### 4. README polish
+
+The README says "21 library crates" — actual count is 20 (10 mesh + 3 design +
+7 sim). cf-design is listed under "What's next" but Phases 1–4 are implemented.
+
+**Work:**
+- Fix crate count to 20
+- Move cf-design from "What's next" to "What's built" (Phases 1–4 are done)
+- Update cf-design description to reflect current state vs. planned Phase 5
+
+**Size:** ~15 min
+
+---
+
+## Session 2 — VISION.md rewrite
+
+The creative task. Done after Session 1 so every reference, diagram, and count
+is written against a codebase with no stale noise.
+
+### 5. Refresh VISION.md
 
 VISION.md is heavily stale after the repo cleanup. It references removed
 domains, non-existent crates, and wrong counts throughout.
@@ -38,76 +129,12 @@ domains, non-existent crates, and wrong counts throughout.
 
 ---
 
-## 2. Clean up sim/docs/todo/
+## Session 3 — Test hardening
 
-18 `future_work_*.md` files + 14 spec fleshout directories + 1 loose spec file
-(`DT16_DT90_SPEC.md`) + `POST_V1_ROADMAP.md` + `index.md`. A newcomer opening
-this directory sees planning artifacts that signal "in progress," not "finished."
+The only real engineering work on the list. Separate session because it's code,
+not docs.
 
-**Work:**
-- Consolidate the 18 `future_work_*.md` files into `POST_V1_ROADMAP.md` (or a
-  single `FUTURE_WORK.md`). One file, organized by theme, not chronologically
-- Move completed spec fleshouts (phases 3–6) into `sim/docs/todo/archived/`
-- Keep active/future phases (7–13) as-is
-- File the loose `DT16_DT90_SPEC.md` into a directory or archived/
-- Update `index.md` to reflect the new structure
-
-**Size:** ~2 hours
-
----
-
-## 3. Sweep stale references across all docs
-
-The cleanup removed 9 crates but stale references survive in many active files
-beyond VISION.md. This is a codebase-wide sweep.
-
-**Files with confirmed stale references:**
-
-| File | Stale content |
-|------|---------------|
-| `CLAUDE.md` lines 20–21 | `cargo test` commands for ml-types, ml-dataset, ml-training, route-types, route-pathfind, route-optimize |
-| `docs/FUTURE.md` line 47 | `sensor-fusion transforms` |
-| `docs/INFRASTRUCTURE.md` line 344 | `sensor-fusion transforms` |
-| `docs/CF_GEOMETRY_SPEC.md` (~15 occurrences) | Migration plans referencing `route-types`, `route-pathfind`, `route-optimize` |
-| `docs/archive/COMPLETION_LOG.md` | Lists 52 crates; 11 no longer exist |
-| `.github/settings.yml` line 19 | `sensor-fusion` |
-| `Cargo.toml` lines 153–154 | TODO comments for `avian3d` / `bevy_egui` Bevy 0.18 compat |
-
-**Work:**
-- Remove ml/route/sensor test commands from CLAUDE.md
-- Remove `sensor-fusion` from FUTURE.md and INFRASTRUCTURE.md
-- Update or archive CF_GEOMETRY_SPEC.md route-* references (either strip the
-  migration plans for deleted crates, or add a header noting they were removed)
-- Add a cleanup-delta note at top of COMPLETION_LOG.md
-- Remove stale entry from .github/settings.yml
-- Resolve or remove Cargo.toml TODO comments
-
-**Size:** ~1 hour
-
----
-
-## 4. Clean up stale source comments
-
-Three sim source files have comments referencing removed crate names. The code
-is correct — only the comments are stale.
-
-| File | Stale comment |
-|------|---------------|
-| `sim/L0/tests/integration/flex_unified.rs` | References `sim-deformable` crate |
-| `sim/L0/core/src/forward/actuation.rs` | "Inlined from sim-muscle" |
-| `sim/L0/tests/integration/mjcf_sensors.rs` | References `sim-sensor` crate |
-
-**Work:**
-- Update comments to reference current location (e.g., "muscle model inlined
-  in sim-core" instead of "inlined from sim-muscle")
-- Quick grep for any other `sim-constraint`, `sim-deformable`, `sim-muscle`,
-  `sim-tendon`, `sim-physics`, `sim-sensor` references in .rs files
-
-**Size:** ~15 min
-
----
-
-## 5. cf-design test hardening
+### 6. cf-design test hardening
 
 cf-design has ~23K lines across 31 files. It has inline `#[cfg(test)]` modules
 in many files, which is a start. But for a crate that is the differentiating
@@ -125,21 +152,9 @@ technology, test coverage should match the sim domain's standard.
 
 ---
 
-## 6. README polish
+## Final — Version bump
 
-The README says "21 library crates" — actual count is 20 (10 mesh + 3 design +
-7 sim). cf-design is listed under "What's next" but Phases 1–4 are implemented.
-
-**Work:**
-- Fix crate count to 20
-- Move cf-design from "What's next" to "What's built" (Phases 1–4 are done)
-- Update cf-design description to reflect current state vs. planned Phase 5
-
-**Size:** ~15 min
-
----
-
-## 7. Version bump to 1.0.0
+### 7. Version bump to 1.0.0
 
 Once items 1–6 are done, bump the workspace version.
 
