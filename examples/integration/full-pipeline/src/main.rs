@@ -248,9 +248,18 @@ fn run_pipeline(mechanism: &Mechanism) -> PipelineData {
         if data.ctrl.len() > 1 {
             data.ctrl[1] = 0.8;
         }
+        // Apply load on fingers
+        for body_id in 2..model.nbody {
+            data.xfrc_applied[body_id] = nalgebra::Vector6::new(0.0, 5.0, 0.0, 0.0, 0.0, -15.0);
+        }
         let _ = data.step(&model);
     }
+    // Re-apply forces and call inverse() to populate cfrc_ext
     let _ = data.forward(&model);
+    for body_id in 1..model.nbody {
+        data.xfrc_applied[body_id] = nalgebra::Vector6::new(0.0, 5.0, 0.0, 0.0, 0.0, -15.0);
+    }
+    data.inverse(&model);
     println!("  Simulation complete");
 
     // ── Stress field ─────────────────────────────────────────────────
@@ -262,11 +271,16 @@ fn run_pipeline(mechanism: &Mechanism) -> PipelineData {
     for body_id in 1..model.nbody {
         let force = &data.cfrc_ext[body_id];
         let linear_mag = Vector3::new(force[3], force[4], force[5]).norm();
+        println!(
+            "  body {body_id}: cfrc_ext linear_mag={linear_mag:.3}, pos=({:.1}, {:.1}, {:.1})",
+            data.xpos[body_id].x, data.xpos[body_id].y, data.xpos[body_id].z
+        );
         if linear_mag > 1e-6 {
             let pos = &data.xpos[body_id];
             force_indicators.push((vec3_from_vector(pos), linear_mag as f32));
         }
     }
+    println!("  Force indicators: {}", force_indicators.len());
 
     // ── Per-part lattice + shell ─────────────────────────────────────
     println!("\nPer-part processing:");
@@ -617,7 +631,15 @@ fn main() {
         }))
         .add_plugins(OrbitCameraPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, (advance_stage, actuate_gripper, step_model_data))
+        .add_systems(
+            Update,
+            (
+                advance_stage,
+                actuate_gripper,
+                step_model_data
+                    .run_if(|stage: Res<CurrentStage>| stage.0 == PipelineStage::Simulate),
+            ),
+        )
         .add_systems(PostUpdate, (sync_geom_transforms, update_visibility))
         .run();
 }
