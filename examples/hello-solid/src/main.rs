@@ -1,65 +1,138 @@
 //! Hello Solid — The "Hello World" of Code-First Design
 //!
 //! Create shapes using implicit surfaces, combine them with boolean operations,
-//! and export the result to STL. This is the fundamental paradigm: geometry as code.
+//! and view the results in 3D. This is the fundamental paradigm: geometry as code.
 //!
 //! Run with: `cargo run -p example-hello-solid`
 
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::expect_used,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+)]
+
+use std::sync::Arc;
+
+use bevy::prelude::*;
 use cf_design::Solid;
 use nalgebra::Vector3;
+use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::mesh::triangle_mesh_from_indexed;
 
-fn main() -> anyhow::Result<()> {
-    println!("=== CortenForge: Hello Solid ===\n");
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "CortenForge — Hello Solid".into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_plugins(OrbitCameraPlugin)
+        .add_systems(Startup, setup)
+        .run();
+}
 
-    // ── 1. Primitives ───────────────────────────────────────────────────
-    // Every shape starts as an implicit surface (negative inside, positive outside).
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let tolerance = 0.5;
+
+    // ── Primitives ────────────────────────────────────────────────────
     let sphere = Solid::sphere(10.0);
     let cube = Solid::cuboid(Vector3::new(8.0, 8.0, 8.0));
 
-    // ── 2. Sharp booleans ───────────────────────────────────────────────
-    // Union: merge two shapes.
-    let sharp_union = sphere.clone().union(cube.clone());
-    // Subtract: carve one shape from another.
-    let sharp_subtract = sphere.clone().subtract(cube.clone());
-    // Intersect: keep only the overlap.
-    let sharp_intersect = sphere.clone().intersect(cube.clone());
-
-    // ── 3. Smooth booleans ──────────────────────────────────────────────
-    // Organic blends — the blend radius (k) controls how much material
-    // fills the transition. This is what makes code-first design shine:
-    // smooth, organic shapes that are trivial in code but hard in CAD.
-    let smooth = sphere.smooth_union(cube, 3.0);
-
-    // ── 4. Transforms + composition ─────────────────────────────────────
-    // Build something more interesting: a rounded bracket with a hole.
-    let body = Solid::cuboid(Vector3::new(20.0, 10.0, 5.0)).round(1.5);
-    let hole = Solid::cylinder(4.0, 6.0).translate(Vector3::new(10.0, 0.0, 0.0));
-    let bracket = body.subtract(hole);
-
-    // ── 5. Mesh and export ──────────────────────────────────────────────
-    // Convert implicit surfaces to triangle meshes at a given tolerance
-    // (smaller = more triangles = smoother surface).
-    let tolerance = 0.5;
-
-    let meshes = [
-        ("sharp_union", sharp_union),
-        ("sharp_subtract", sharp_subtract),
-        ("sharp_intersect", sharp_intersect),
-        ("smooth_blend", smooth),
-        ("bracket", bracket),
+    // ── Booleans ──────────────────────────────────────────────────────
+    let solids: Vec<(&str, Solid, Color)> = vec![
+        (
+            "Union",
+            sphere.clone().union(cube.clone()),
+            Color::srgb(0.9, 0.4, 0.3),
+        ),
+        (
+            "Subtract",
+            sphere.clone().subtract(cube.clone()),
+            Color::srgb(0.3, 0.7, 0.4),
+        ),
+        (
+            "Intersect",
+            sphere.clone().intersect(cube.clone()),
+            Color::srgb(0.3, 0.5, 0.9),
+        ),
+        (
+            "Smooth blend",
+            sphere.smooth_union(cube, 3.0),
+            Color::srgb(0.9, 0.7, 0.2),
+        ),
+        (
+            "Bracket",
+            {
+                let body = Solid::cuboid(Vector3::new(20.0, 10.0, 5.0)).round(1.5);
+                let hole = Solid::cylinder(4.0, 6.0).translate(Vector3::new(10.0, 0.0, 0.0));
+                body.subtract(hole)
+            },
+            Color::srgb(0.7, 0.5, 0.8),
+        ),
     ];
 
-    for (name, solid) in &meshes {
-        let mesh = solid.mesh(tolerance);
-        let path = format!("{name}.stl");
-        mesh_io::save_stl(&mesh, &path, true)?;
+    // ── Spawn meshes side-by-side ─────────────────────────────────────
+    let spacing = 25.0;
+    let offset = (solids.len() as f32 - 1.0) * spacing / 2.0;
+
+    for (i, (name, solid, color)) in solids.into_iter().enumerate() {
+        let indexed = Arc::new(solid.mesh(tolerance));
+        let bevy_mesh = triangle_mesh_from_indexed(&indexed);
+
         println!(
-            "  {name}.stl — {} vertices, {} faces",
-            mesh.vertices.len(),
-            mesh.faces.len()
+            "  {name}: {} vertices, {} faces",
+            indexed.vertices.len(),
+            indexed.faces.len()
         );
+
+        commands.spawn((
+            Mesh3d(meshes.add(bevy_mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: color,
+                metallic: 0.3,
+                perceptual_roughness: 0.5,
+                ..default()
+            })),
+            Transform::from_xyz((i as f32).mul_add(spacing, -offset), 0.0, 0.0),
+        ));
     }
 
-    println!("\nAll shapes exported. Open in any 3D viewer (e.g. PrusaSlicer, MeshLab).");
-    Ok(())
+    // ── Camera ────────────────────────────────────────────────────────
+    let orbit = OrbitCamera::new()
+        .with_target(Vec3::ZERO)
+        .with_distance(80.0)
+        .with_angles(0.5, 0.4);
+    let mut cam_transform = Transform::default();
+    orbit.apply_to_transform(&mut cam_transform);
+    commands.spawn((Camera3d::default(), orbit, cam_transform));
+
+    // ── Lighting ──────────────────────────────────────────────────────
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 15000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(30.0, 50.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    // Ground plane
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(80.0)))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgba(0.4, 0.4, 0.4, 0.2),
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, -15.0, 0.0),
+    ));
+
+    println!("\n  Orbit: left-drag | Pan: right-drag | Zoom: scroll");
 }

@@ -7,10 +7,20 @@ publish = false
 
 [dependencies]
 cf-design = { workspace = true }
-mesh-io = { workspace = true }
-mesh-types = { workspace = true }
+cf-geometry = { workspace = true }
+sim-bevy = { workspace = true }
+bevy = { workspace = true, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
 nalgebra = { workspace = true }
-anyhow = { workspace = true }
 
 [lints]
 workspace = true

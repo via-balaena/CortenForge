@@ -2405,11 +2405,11 @@ dependencies = [
 name = "example-bio-shapes"
 version = "0.7.0"
 dependencies = [
- "anyhow",
+ "bevy",
  "cf-design",
- "mesh-io",
- "mesh-types",
+ "cf-geometry",
  "nalgebra",
+ "sim-bevy",
 ]
 
 [[package]]
@@ -2431,11 +2431,11 @@ dependencies = [
 name = "example-hello-solid"
 version = "0.7.0"
 dependencies = [
- "anyhow",
+ "bevy",
  "cf-design",
- "mesh-io",
- "mesh-types",
+ "cf-geometry",
  "nalgebra",
+ "sim-bevy",
 ]
 
 [[package]]
@@ -2443,15 +2443,16 @@ name = "example-mesh-pipeline"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "bevy",
  "cf-design",
- "mesh-io",
+ "cf-geometry",
  "mesh-lattice",
  "mesh-measure",
  "mesh-printability",
  "mesh-repair",
  "mesh-shell",
- "mesh-types",
  "nalgebra",
+ "sim-bevy",
 ]
 
 [[package]]
@@ -2469,11 +2470,11 @@ dependencies = [
 name = "example-tendon-finger"
 version = "0.7.0"
 dependencies = [
- "anyhow",
+ "bevy",
  "cf-design",
- "mesh-io",
- "mesh-types",
+ "cf-geometry",
  "nalgebra",
+ "sim-bevy",
 ]
 
 [[package]]

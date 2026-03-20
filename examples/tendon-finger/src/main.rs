@@ -1,32 +1,50 @@
-//! Tendon-Driven Finger — Mechanism Assembly + Export
+//! Tendon-Driven Finger — Mechanism Assembly + Visualization
 //!
 //! Build a 3-phalanx finger using cf-design's template system, route a flexor
-//! tendon through it, attach a motor actuator, and export to both STL (for 3D
-//! printing) and MJCF (for physics simulation).
+//! tendon through it, attach a motor actuator, and view the assembled mechanism
+//! in Bevy.
 //!
 //! This demonstrates the "design IS the simulation model" philosophy:
 //! tendon channels are automatically subtracted from the geometry at build time.
 //!
 //! Run with: `cargo run -p example-tendon-finger`
 
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::expect_used,
+    clippy::cast_possible_truncation
+)]
+
+use std::sync::Arc;
+
+use bevy::prelude::*;
 use cf_design::{
     ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, TendonDef, TendonWaypoint,
     templates,
 };
 use nalgebra::{Point3, Vector3};
+use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::mesh::triangle_mesh_from_indexed;
 
-fn main() -> anyhow::Result<()> {
-    println!("=== CortenForge: Tendon-Driven Finger ===\n");
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "CortenForge — Tendon-Driven Finger".into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_plugins(OrbitCameraPlugin)
+        .add_systems(Startup, setup)
+        .run();
+}
 
-    // ── Material ────────────────────────────────────────────────────────
+fn build_finger() -> Mechanism {
     let pla = Material::new("PLA", 1250.0)
         .with_youngs_modulus(3.5e9)
         .with_color([0.9, 0.85, 0.7, 1.0]);
 
-    // ── Finger from template ────────────────────────────────────────────
-    // Creates 3 phalanges with flex zones at the knuckles.
-    // Returns (parts, joints) — joints have spring-damper properties derived
-    // from the material's Young's modulus.
     let (finger_parts, finger_joints) = templates::finger("finger", 30.0, 3.5, 3, pla.clone());
 
     println!("Finger template:");
@@ -42,14 +60,13 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    // ── Palm (mount point) ──────────────────────────────────────────────
+    // Palm (mount point)
     let palm = cf_design::Part::new(
         "palm",
         cf_design::Solid::cuboid(Vector3::new(8.0, 12.0, 4.0)).round(1.0),
         pla,
     );
 
-    // ── Assemble mechanism ──────────────────────────────────────────────
     let mut builder = Mechanism::builder("tendon_finger").part(palm);
 
     for part in finger_parts {
@@ -69,15 +86,11 @@ fn main() -> anyhow::Result<()> {
         .with_range(-0.1, 1.8),
     );
 
-    // Add inter-phalanx joints from the template
     for j in finger_joints {
         builder = builder.joint(j);
     }
 
-    // ── Tendon routing ──────────────────────────────────────────────────
-    // Route a flexor tendon from the palm base, through the palm, and into
-    // the finger. Channel radius > 0 means the builder will automatically
-    // subtract a cylindrical channel from each part the tendon passes through.
+    // Flexor tendon
     builder = builder.tendon(
         TendonDef::new(
             "flexor",
@@ -88,43 +101,94 @@ fn main() -> anyhow::Result<()> {
                 TendonWaypoint::new("finger_1", Point3::new(0.0, 0.0, 2.0)),
                 TendonWaypoint::new("finger_2", Point3::new(0.0, 0.0, 1.0)),
             ],
-            1.0, // channel radius (mm)
+            1.0,
         )
         .with_stiffness(200.0)
         .with_damping(10.0),
     );
 
-    // ── Actuator ────────────────────────────────────────────────────────
     builder = builder.actuator(
         ActuatorDef::new("motor", "flexor", ActuatorKind::Motor, (-50.0, 50.0))
             .with_ctrl_range(-1.0, 1.0),
     );
 
-    // ── Build (validates + subtracts tendon channels) ────────────────────
-    let mechanism = builder.build();
+    builder.build()
+}
+
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let mechanism = build_finger();
+
     println!("\nMechanism '{}' built successfully.", mechanism.name());
     println!("  {} parts", mechanism.parts().len());
     println!("  {} joints", mechanism.joints().len());
     println!("  {} tendons", mechanism.tendons().len());
     println!("  {} actuators", mechanism.actuators().len());
 
-    // ── Export MJCF (for simulation) ────────────────────────────────────
-    let mjcf = mechanism.to_mjcf(1.0);
-    std::fs::write("tendon_finger.mjcf", &mjcf)?;
-    println!("\n  tendon_finger.mjcf — {} bytes", mjcf.len());
-
-    // ── Export STL kit (for 3D printing) ────────────────────────────────
+    // Mesh and display each part
     let stl_kit = mechanism.to_stl_kit(0.5);
-    for (name, mesh) in &stl_kit {
-        let path = format!("{name}.stl");
-        mesh_io::save_stl(mesh, &path, true)?;
+
+    let colors = [
+        Color::srgb(0.7, 0.75, 0.8), // palm
+        Color::srgb(0.9, 0.5, 0.3),  // finger_0
+        Color::srgb(0.3, 0.7, 0.5),  // finger_1
+        Color::srgb(0.3, 0.5, 0.9),  // finger_2
+    ];
+
+    for (i, (name, mesh_data)) in stl_kit.iter().enumerate() {
+        let indexed = Arc::new(mesh_data.clone());
+        let bevy_mesh = triangle_mesh_from_indexed(&indexed);
+
         println!(
-            "  {name}.stl — {} vertices, {} faces",
-            mesh.vertices.len(),
-            mesh.faces.len()
+            "  {name}: {} vertices, {} faces",
+            indexed.vertices.len(),
+            indexed.faces.len()
         );
+
+        let color = colors[i % colors.len()];
+        commands.spawn((
+            Mesh3d(meshes.add(bevy_mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: color,
+                metallic: 0.4,
+                perceptual_roughness: 0.4,
+                ..default()
+            })),
+            Transform::IDENTITY,
+        ));
     }
 
-    println!("\nFinger exported for both simulation and printing.");
-    Ok(())
+    // ── Camera ────────────────────────────────────────────────────────
+    let orbit = OrbitCamera::new()
+        .with_target(Vec3::new(0.0, 15.0, 0.0))
+        .with_distance(60.0)
+        .with_angles(0.5, 0.3);
+    let mut cam_transform = Transform::default();
+    orbit.apply_to_transform(&mut cam_transform);
+    commands.spawn((Camera3d::default(), orbit, cam_transform));
+
+    // ── Lighting ──────────────────────────────────────────────────────
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 15000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(20.0, 40.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(50.0)))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgba(0.4, 0.4, 0.4, 0.2),
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, -5.0, 0.0),
+    ));
+
+    println!("\n  Orbit: left-drag | Pan: right-drag | Zoom: scroll");
 }
