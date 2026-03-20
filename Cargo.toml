@@ -30,6 +30,7 @@ members = [
     "examples/fundamentals/bio-shapes",
     "examples/fundamentals/mesh-pipeline",
     "examples/fundamentals/pendulum-sim",
+    "examples/fundamentals/finger-design",
 
     # Examples — integration (cross-domain pipelines)
     "examples/integration/design-to-sim",

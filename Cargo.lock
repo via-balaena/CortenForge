@@ -2441,6 +2441,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-finger-design"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "cf-geometry",
+ "nalgebra",
+ "sim-bevy",
+]
+
+[[package]]
 name = "example-full-pipeline"
 version = "0.7.0"
 dependencies = [
