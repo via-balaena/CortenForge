@@ -1168,6 +1168,80 @@ mod tests {
         assert!(manifold, "Parallel sphere mesh should be manifold");
     }
 
+    // ── Composed shape tests (V1 hardening) ─────────────────────────
+
+    #[test]
+    fn adaptive_smooth_union_manifold() {
+        let a = FieldNode::Sphere {
+            radius: Val::from(3.0),
+        };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Vector3::new(4.0, 0.0, 0.0),
+        );
+        let node = FieldNode::SmoothUnion(Box::new(a), Box::new(b), Val::from(2.0));
+        let cell = 0.4;
+        let bounds = Aabb::new(Point3::new(-3.4, -3.4, -3.4), Point3::new(7.4, 3.4, 3.4));
+        let (mesh, _) = mesh_field_adaptive(&node, &bounds, cell);
+        assert_mesh_valid(&mesh, "adaptive_smooth_union");
+    }
+
+    #[test]
+    fn adaptive_helix_manifold() {
+        let node = FieldNode::Helix {
+            radius: 3.0,
+            pitch: 4.0,
+            thickness: 0.8,
+            turns: 3.0,
+        };
+        let cell = 0.4;
+        let bounds = node.bounds().map(|b| b.expanded(cell));
+        let (mesh, _) = mesh_field_adaptive(&node, &bounds.unwrap_or(Aabb::empty()), cell);
+        assert_mesh_valid(&mesh, "adaptive_helix");
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn adaptive_smooth_union_cell_reduction() {
+        let a = FieldNode::Sphere {
+            radius: Val::from(5.0),
+        };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(5.0),
+            }),
+            Vector3::new(6.0, 0.0, 0.0),
+        );
+        let node = FieldNode::SmoothUnion(Box::new(a), Box::new(b), Val::from(2.0));
+        let cell = 0.25;
+        let bounds = Aabb::new(
+            Point3::new(-5.25, -5.25, -5.25),
+            Point3::new(11.25, 5.25, 5.25),
+        );
+
+        let (_, stats) = mesh_field_adaptive(&node, &bounds, cell);
+
+        // Uniform grid: ~66 × 42 × 42 ≈ 116k cells
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let nx = ((bounds.max.x - bounds.min.x) / cell).ceil() as usize;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ny = ((bounds.max.y - bounds.min.y) / cell).ceil() as usize;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let nz = ((bounds.max.z - bounds.min.z) / cell).ceil() as usize;
+        let uniform_total = nx * ny * nz;
+
+        let ratio = uniform_total as f64 / stats.surface_leaf_count.max(1) as f64;
+        assert!(
+            ratio > 3.0,
+            "Adaptive should process 3x+ fewer cells than uniform ({}): got {} surface leaves, ratio {:.1}x",
+            uniform_total,
+            stats.surface_leaf_count,
+            ratio
+        );
+    }
+
     // ── Benchmarks (ignored by default, run with --ignored) ───────────
 
     #[test]

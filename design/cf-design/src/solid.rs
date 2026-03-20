@@ -3419,6 +3419,49 @@ mod tests {
     }
 
     #[test]
+    fn mesh_to_tolerance_smooth_union() {
+        let shape = Solid::sphere(4.0).smooth_union(
+            Solid::sphere(4.0).translate(Vector3::new(5.0, 0.0, 0.0)),
+            2.0,
+        );
+        let max_dev = 0.3;
+        let mesh = shape.mesh_to_tolerance(max_dev);
+
+        assert_mesh_valid(&mesh, "mesh_to_tolerance_smooth_union");
+
+        // Verify vertex deviation bound: every vertex should be within
+        // max_deviation of the true surface (field value ≈ 0).
+        for v in &mesh.vertices {
+            let field = shape.evaluate(v).abs();
+            assert!(
+                field <= max_dev + 0.05, // small epsilon for meshing discretization
+                "vertex {v:?} has field deviation {field:.4} > max_deviation {max_dev}"
+            );
+        }
+    }
+
+    #[test]
+    fn mesh_to_tolerance_subtract() {
+        // Cuboid with cylindrical hole — a common manufacturing shape.
+        let shape = Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).subtract(Solid::cylinder(2.0, 6.0));
+        let max_dev = 0.2;
+        let mesh = shape.mesh_to_tolerance(max_dev);
+
+        assert_mesh_valid(&mesh, "mesh_to_tolerance_subtract");
+        assert!(
+            !mesh.is_empty(),
+            "cuboid-with-hole mesh should have geometry"
+        );
+        // Verify the hole exists: volume should be less than full cuboid.
+        let full_cuboid_vol = 10.0 * 10.0 * 10.0; // 1000 mm³
+        assert!(
+            mesh.volume() < full_cuboid_vol,
+            "mesh volume ({:.1}) should be less than full cuboid ({full_cuboid_vol})",
+            mesh.volume()
+        );
+    }
+
+    #[test]
     #[allow(clippy::expect_used)]
     fn threemf_round_trip_composed_shape() {
         let body = Solid::cuboid(Vector3::new(3.0, 3.0, 3.0));

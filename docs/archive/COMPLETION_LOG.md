@@ -2,6 +2,13 @@
 
 > Record of all crates that have achieved A-grade status.
 
+> **⚠ Cleanup delta (2026-03-19):** The repo cleanup (#122) removed 34 of the
+> 52 crates listed below. The workspace now has **20 library crates** (10 mesh
+> + 3 design + 7 sim). Removed domains: sensor (2), ML (4), routing (3),
+> curves (1). Removed mesh crates: 17 (consolidated into 10). Removed sim
+> crates: 7 (inlined into sim-core). This log is retained as a historical
+> record — the table below reflects peak crate count, not current state.
+
 See [STANDARDS.md](./STANDARDS.md) for the seven criteria.
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the workflow.
 
@@ -84,16 +91,13 @@ Every crate in this log has passed:
 
 ## Summary
 
-- **Total A-Grade Crates:** 52+ (26 mesh + 1 umbrella + 1 geometry + 2 sensor + 4 ML + 1 foundation + 3 routing + 14 sim)
-- **Last Updated:** 2026-02-12
+- **Historical peak:** 52+ crates (see table above)
+- **Current workspace:** 20 library crates (10 mesh + 3 design + 7 sim)
+- **Last Updated:** 2026-03-19
 - **Note:** mesh-io includes all I/O formats (STL, OBJ, PLY, 3MF, STEP)
 - **Note:** mesh (umbrella) re-exports all mesh-* crates with unified prelude
-- **Note:** sensor-types and sensor-fusion form the sensor domain foundation
-- **Note:** ml-types, ml-models, ml-dataset, ml-training form the ML domain (Burn-native)
-- **Note:** cf-spatial provides voxel grids, spatial queries, line-of-sight checks
-- **Note:** curve-types provides Bezier, B-spline, NURBS, arcs, helices with Frenet frames
-- **Note:** route-types, route-pathfind, route-optimize form the routing domain (A* pathfinding, multi-objective optimization)
-- **Note:** sim-* crates form the MuJoCo-aligned simulation domain (14 crates: Newton/PGS/CG solvers, implicit integration, sleeping, GPU batching)
+- **Note:** cf-geometry, cf-spatial, cf-design form the design domain
+- **Note:** sim-* crates form the MuJoCo-aligned simulation domain (7 crates: Newton/PGS/CG solvers, implicit integration, sleeping)
 
 ---
 

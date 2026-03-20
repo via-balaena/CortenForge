@@ -11,14 +11,13 @@
 
 ## Testing scope
 When verifying changes, only run tests for the affected domain — not the
-full workspace. The workspace has distinct domains (`sim-*`, `mesh-*`, `ml-*`,
-`route-*`, `sensor-*`) and cross-domain regressions are near-zero. Use
-domain-scoped test commands:
+full workspace. The workspace has distinct domains (`sim-*`, `mesh-*`,
+`cf-design`, `cf-geometry`, `cf-spatial`) and cross-domain regressions are
+near-zero. Use domain-scoped test commands:
 
 - sim changes: `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-urdf -p sim-types -p sim-simd`
 - mesh changes: `cargo test -p mesh -p mesh-types -p mesh-io` (plus any affected mesh-* crates)
-- ml changes: `cargo test -p ml-types -p ml-dataset -p ml-models -p ml-training`
-- route changes: `cargo test -p route-types -p route-pathfind -p route-optimize`
+- design changes: `cargo test -p cf-design -p cf-geometry -p cf-spatial`
 
 Only use `cargo test` (full workspace) for cross-domain changes or pre-merge
 final checks.

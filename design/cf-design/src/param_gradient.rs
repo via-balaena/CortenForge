@@ -650,7 +650,77 @@ mod tests {
         );
     }
 
-    // ── 18. Subtract ────────────────────────────────────────────────────
+    // ── 18. Twist passthrough ─────────────────────────────────────────
+
+    #[test]
+    fn param_grad_twist_passthrough() {
+        let store = ParamStore::new();
+        let r = store.add("radius", 5.0);
+        let s = Solid::sphere_p(r).twist(0.1);
+
+        // Point away from twist axis where coordinate transform matters.
+        for p in &[
+            Point3::new(3.0, 2.0, 5.0),
+            Point3::new(0.0, 4.0, 3.0),
+            Point3::new(-2.0, 1.0, -4.0),
+        ] {
+            assert_grad(&s, p, "radius", 1e-5);
+        }
+    }
+
+    // ── 19. Elongate passthrough ──────────────────────────────────────
+
+    #[test]
+    fn param_grad_elongate_passthrough() {
+        let store = ParamStore::new();
+        let r = store.add("radius", 3.0);
+        let s = Solid::sphere_p(r).elongate(Vector3::new(2.0, 1.0, 0.0));
+
+        for p in &[
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(0.0, 3.0, 0.0),
+            Point3::new(2.0, 1.0, 2.0),
+        ] {
+            assert_grad(&s, p, "radius", 1e-5);
+        }
+    }
+
+    // ── 20. Bend passthrough ──────────────────────────────────────────
+
+    #[test]
+    fn param_grad_bend_passthrough() {
+        let store = ParamStore::new();
+        let r = store.add("radius", 5.0);
+        let s = Solid::sphere_p(r).bend(0.05);
+
+        for p in &[
+            Point3::new(3.0, 0.0, 4.0),
+            Point3::new(0.0, 3.0, -2.0),
+            Point3::new(-2.0, 1.0, 5.0),
+        ] {
+            assert_grad(&s, p, "radius", 1e-5);
+        }
+    }
+
+    // ── 21. Repeat passthrough ────────────────────────────────────────
+
+    #[test]
+    fn param_grad_repeat_passthrough() {
+        let store = ParamStore::new();
+        let r = store.add("radius", 2.0);
+        let s = Solid::sphere_p(r).repeat(Vector3::new(8.0, 8.0, 8.0));
+
+        // Evaluate near the central copy (within one period).
+        for p in &[
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 1.0),
+            Point3::new(-1.5, 0.5, 0.0),
+        ] {
+            assert_grad(&s, p, "radius", 1e-5);
+        }
+    }
+
+    // ── 22. Subtract ────────────────────────────────────────────────────
 
     #[test]
     fn param_grad_subtract() {

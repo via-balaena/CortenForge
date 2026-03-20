@@ -566,6 +566,63 @@ mod tests {
         );
     }
 
+    // ── Composed shape tests (V1 hardening) ─────────────────────────
+
+    #[test]
+    fn dc_smooth_union_manifold() {
+        let a = FieldNode::Sphere {
+            radius: Val::from(3.0),
+        };
+        let b = FieldNode::Translate(
+            Box::new(FieldNode::Sphere {
+                radius: Val::from(3.0),
+            }),
+            Vector3::new(4.0, 0.0, 0.0),
+        );
+        let node = FieldNode::SmoothUnion(Box::new(a), Box::new(b), Val::from(2.0));
+        let cell = 0.4;
+        let bounds = node.bounds().map(|b| b.expanded(cell));
+        let (mesh, _) = mesh_field_dc(&node, &bounds.unwrap_or(Aabb::empty()), cell);
+        assert_mesh_valid(&mesh, "dc_smooth_union");
+        // Volume should be more than one sphere, less than two
+        let one_sphere = 4.0 / 3.0 * PI * 27.0;
+        assert!(
+            mesh.volume() > one_sphere,
+            "smooth union volume should exceed single sphere"
+        );
+        assert!(
+            mesh.volume() < 2.0 * one_sphere,
+            "smooth union volume should be less than two spheres"
+        );
+    }
+
+    #[test]
+    fn dc_helix_manifold() {
+        let node = FieldNode::Helix {
+            radius: 3.0,
+            pitch: 4.0,
+            thickness: 0.8,
+            turns: 3.0,
+        };
+        let cell = 0.4;
+        let bounds = node.bounds().map(|b| b.expanded(cell));
+        let (mesh, _) = mesh_field_dc(&node, &bounds.unwrap_or(Aabb::empty()), cell);
+        assert_mesh_valid(&mesh, "dc_helix");
+    }
+
+    #[test]
+    fn dc_superellipsoid_manifold() {
+        let node = FieldNode::Superellipsoid {
+            radii: Vector3::new(3.0, 4.0, 2.0),
+            n1: 0.5,
+            n2: 0.5,
+        };
+        let cell = 0.4;
+        let bounds = node.bounds().map(|b| b.expanded(cell));
+        let (mesh, _) = mesh_field_dc(&node, &bounds.unwrap_or(Aabb::empty()), cell);
+        assert_mesh_valid(&mesh, "dc_superellipsoid");
+    }
+
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn dc_pruning_ratio() {

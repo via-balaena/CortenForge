@@ -8,7 +8,7 @@
 
 repository:
   name: cortenforge
-  description: "Industrial-grade mesh processing, sensor fusion, and ML foundation. A-grade or it doesn't ship."
+  description: "Industrial-grade mesh processing, simulation, and bio-inspired design. A-grade or it doesn't ship."
   homepage: https://cortenforge.dev
   topics:
     - rust
@@ -16,8 +16,8 @@ repository:
     - cad
     - robotics
     - 3d-printing
-    - sensor-fusion
-    - machine-learning
+    - simulation
+    - bio-inspired-design
   private: true  # Change to false when ready to open source
   has_issues: true
   has_projects: false

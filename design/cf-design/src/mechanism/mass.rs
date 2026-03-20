@@ -428,7 +428,75 @@ mod tests {
         );
     }
 
-    // ── 8. Panics on bad inputs ────────────────────────────────────────
+    // ── 8. Shell mass less than solid ───────────────────────────────────
+
+    #[test]
+    fn shell_mass_less_than_solid() {
+        let solid_sphere = Solid::sphere(5.0);
+        let hollow_sphere = Solid::sphere(5.0).shell(0.5);
+
+        let props_solid = mass_properties(&solid_sphere, PLA_DENSITY, 0.4).unwrap();
+        let props_hollow = mass_properties(&hollow_sphere, PLA_DENSITY, 0.4).unwrap();
+
+        assert!(
+            props_hollow.mass < props_solid.mass,
+            "hollow sphere mass ({}) should be less than solid ({})",
+            props_hollow.mass,
+            props_solid.mass
+        );
+        // Shell should be a fraction of solid mass.
+        // shell(0.5) on r=5 sphere → wall from r=4.5 to r=5.5 → ~60% of solid volume.
+        assert!(
+            props_hollow.mass < props_solid.mass * 0.8,
+            "shell(0.5) of r=5 sphere should be well below solid mass"
+        );
+    }
+
+    // ── 9. Asymmetric shape has offset COM ───────────────────────────
+
+    #[test]
+    fn asymmetric_com_offset() {
+        // Union of sphere at origin + sphere at x=10 → COM should be near x=5
+        let shape =
+            Solid::sphere(3.0).union(Solid::sphere(3.0).translate(Vector3::new(10.0, 0.0, 0.0)));
+        let props = mass_properties(&shape, PLA_DENSITY, 0.5).unwrap();
+
+        assert!(
+            (props.center_of_mass.x - 5.0).abs() < 1.0,
+            "COM x should be near 5.0 (midpoint), got {:.2}",
+            props.center_of_mass.x
+        );
+        assert!(
+            props.center_of_mass.y.abs() < 1.0,
+            "COM y should be near 0.0, got {:.2}",
+            props.center_of_mass.y
+        );
+    }
+
+    // ── 10. Composed shape mass (smooth union) ──────────────────────
+
+    #[test]
+    fn smooth_union_mass_between_one_and_two_spheres() {
+        let r = 4.0;
+        let single = Solid::sphere(r);
+        let composed = Solid::sphere(r)
+            .smooth_union(Solid::sphere(r).translate(Vector3::new(5.0, 0.0, 0.0)), 2.0);
+
+        let mass_one = mass_properties(&single, PLA_DENSITY, 0.4).unwrap().mass;
+        let mass_composed = mass_properties(&composed, PLA_DENSITY, 0.4).unwrap().mass;
+
+        assert!(
+            mass_composed > mass_one,
+            "smooth union mass ({mass_composed}) should exceed single sphere ({mass_one})"
+        );
+        assert!(
+            mass_composed < 2.0 * mass_one,
+            "smooth union mass ({mass_composed}) should be less than two spheres ({})",
+            2.0 * mass_one
+        );
+    }
+
+    // ── 11. Panics on bad inputs ────────────────────────────────────────
 
     #[test]
     #[should_panic(expected = "density must be positive")]

@@ -725,6 +725,68 @@ mod tests {
     }
 
     #[test]
+    fn simplify_aggressive_90_percent() {
+        let sphere = Solid::sphere(5.0);
+        let mesh = sphere.mesh_adaptive_par(0.5);
+        let target = mesh.face_count() / 10; // 90% reduction
+
+        let simplified = simplify_mesh(&mesh, target);
+
+        let (watertight, manifold) = check_topology(&simplified);
+        assert!(
+            watertight,
+            "Aggressively simplified mesh should be watertight"
+        );
+        assert!(manifold, "Aggressively simplified mesh should be manifold");
+        assert!(
+            simplified.face_count() > 4,
+            "Even at 90% reduction, should keep more than a tetrahedron"
+        );
+    }
+
+    #[test]
+    fn simplify_dc_cuboid_preserves_corners() {
+        // Use DC output (not MC) — DC should have sharper corners.
+        use crate::dual_contouring::mesh_field_dc;
+        use crate::field_node::FieldNode;
+
+        let node = FieldNode::Cuboid {
+            half_extents: nalgebra::Vector3::new(2.0, 2.0, 2.0),
+        };
+        let bounds = node.bounds().map(|b| b.expanded(0.5));
+        let (mesh, _) = mesh_field_dc(&node, &bounds.unwrap_or(cf_geometry::Aabb::empty()), 0.5);
+        let target = mesh.face_count() * 2 / 3;
+
+        let simplified = simplify_mesh(&mesh, target);
+
+        let true_corners: Vec<Point3<f64>> = [
+            (-2.0, -2.0, -2.0),
+            (-2.0, -2.0, 2.0),
+            (-2.0, 2.0, -2.0),
+            (-2.0, 2.0, 2.0),
+            (2.0, -2.0, -2.0),
+            (2.0, -2.0, 2.0),
+            (2.0, 2.0, -2.0),
+            (2.0, 2.0, 2.0),
+        ]
+        .iter()
+        .map(|&(x, y, z)| Point3::new(x, y, z))
+        .collect();
+
+        for tc in &true_corners {
+            let min_dist = simplified
+                .vertices
+                .iter()
+                .map(|v| (v - tc).norm())
+                .fold(f64::MAX, f64::min);
+            assert!(
+                min_dist < 0.5,
+                "DC corner {tc:?} is {min_dist:.3} from nearest simplified vertex (expected < 0.5)"
+            );
+        }
+    }
+
+    #[test]
     fn simplify_composed_shape() {
         let body = Solid::cuboid(nalgebra::Vector3::new(3.0, 3.0, 3.0));
         let hole = Solid::cylinder(1.0, 4.0);

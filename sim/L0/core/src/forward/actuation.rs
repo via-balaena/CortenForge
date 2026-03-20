@@ -20,8 +20,7 @@ use crate::types::{DISABLE_ACTUATION, DISABLE_CLAMPCTRL, DISABLE_GRAVITY};
 use super::muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_force};
 
 // ── Hill-type muscle curve functions (CortenForge extension) ──
-// Inlined from sim-muscle to avoid cross-crate dependency.
-// These are simple mathematical functions with stable formulations.
+// Native to sim-core. Simple mathematical functions with stable formulations.
 
 /// Gaussian active force-length curve (Hill-type muscle).
 /// Peak FL=1.0 at normalized length L=1.0. Returns 0 outside [0.5, 1.6].

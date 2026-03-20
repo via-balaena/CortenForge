@@ -177,7 +177,59 @@ mod tests {
         assert!(!stls[0].1.is_empty());
     }
 
-    // ── 6. Panic on invalid tolerance ──────────────────────────────────
+    // ── 6. Clearance offset dimensional accuracy ─────────────────────
+
+    #[test]
+    fn clearance_offset_shrinks_bounding_box() {
+        let clearance = 0.6; // total gap between mating surfaces
+        let half = Vector3::new(10.0, 10.0, 10.0);
+
+        let m_no_clear = Mechanism::builder("no_clear")
+            .part(Part::new("box", Solid::cuboid(half), pla()))
+            .build();
+        let m_with_clear = Mechanism::builder("with_clear")
+            .part(Part::new("box", Solid::cuboid(half), pla()))
+            .print_profile(PrintProfile::new(clearance, 1.0, 2.0))
+            .build();
+
+        let stl_no = generate(&m_no_clear, 0.5);
+        let stl_yes = generate(&m_with_clear, 0.5);
+
+        // Compute bounding box extents.
+        let extent = |mesh: &cf_geometry::IndexedMesh| -> [f64; 3] {
+            let (mut mn, mut mx) = ([f64::MAX; 3], [f64::MIN; 3]);
+            for v in &mesh.vertices {
+                mn[0] = mn[0].min(v.x);
+                mn[1] = mn[1].min(v.y);
+                mn[2] = mn[2].min(v.z);
+                mx[0] = mx[0].max(v.x);
+                mx[1] = mx[1].max(v.y);
+                mx[2] = mx[2].max(v.z);
+            }
+            [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]]
+        };
+
+        let ext_no = extent(&stl_no[0].1);
+        let ext_yes = extent(&stl_yes[0].1);
+
+        // Each axis should shrink by approximately clearance (half from each side).
+        for axis in 0..3 {
+            let shrinkage = ext_no[axis] - ext_yes[axis];
+            assert!(
+                shrinkage > 0.0,
+                "axis {axis}: clearance should shrink extent, got no={:.3}, yes={:.3}",
+                ext_no[axis],
+                ext_yes[axis]
+            );
+            // Expect shrinkage ≈ clearance (±50% tolerance due to meshing discretization).
+            assert!(
+                shrinkage < clearance * 2.0,
+                "axis {axis}: shrinkage {shrinkage:.3} is unreasonably large vs clearance {clearance}"
+            );
+        }
+    }
+
+    // ── 7. Panic on invalid tolerance ──────────────────────────────────
 
     #[test]
     #[should_panic(expected = "STL tolerance must be positive")]

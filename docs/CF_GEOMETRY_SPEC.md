@@ -4,12 +4,20 @@
 > **Author**: Jon Hillesheim + Claude
 > **Date**: 2026-03-13
 
+> **⚠ Cleanup note (2026-03-19):** The `route-*`, `sensor-*`, `ml-*`, and
+> `curve-types` crates were removed in the repo cleanup (#122). This spec
+> references them as migration targets in several places (architecture diagram,
+> dependency table, "What Moves Where" section, migration risk matrix, session
+> plan). Those migrations are now N/A — the remaining scope is mesh, sim, and
+> cf-spatial. The spec is otherwise accurate and retained as the architectural
+> reference for cf-geometry.
+
 ---
 
 ## Motivation
 
-CortenForge has 52+ crates across 7 domains. Three of those domains — **mesh**,
-**sim**, and **routing** — all represent geometry, and today they each do it
+CortenForge has 20 library crates across 3 domains. Two of those domains —
+**mesh** and **sim** — both represent geometry, and today they each do it
 independently:
 
 | Concept | mesh-types | sim-core | cf-spatial | route-types |
