@@ -35,6 +35,7 @@ members = [
     "examples/integration/design-to-sim",
     "examples/integration/design-to-print",
     "examples/integration/sim-informed-design",
+    "examples/integration/full-pipeline",
 
     # Foundation (active development)
     "design/cf-geometry",

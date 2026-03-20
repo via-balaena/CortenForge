@@ -2441,6 +2441,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-full-pipeline"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "cf-geometry",
+ "mesh-lattice",
+ "mesh-measure",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-shell",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-hello-solid"
 version = "0.7.0"
 dependencies = [
