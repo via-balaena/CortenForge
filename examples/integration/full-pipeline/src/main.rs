@@ -205,11 +205,9 @@ fn build_stress_field(
 // Pre-computed pipeline data
 // ============================================================================
 
-/// All pre-computed data for non-interactive stages (1, 3, 4, 5).
+/// All pre-computed data for non-interactive stages (3, 4, 5).
 #[derive(Resource)]
 struct PipelineData {
-    /// Stage 1: per-part design meshes
-    design_meshes: Vec<(String, IndexedMesh)>,
     /// Stage 3: force indicator positions + magnitudes (in Bevy coords)
     force_indicators: Vec<(Vec3, f32)>,
     /// Stage 4: per-part lattice meshes
@@ -316,7 +314,6 @@ fn run_pipeline(mechanism: &Mechanism) -> PipelineData {
     }
 
     PipelineData {
-        design_meshes,
         force_indicators,
         lattice_meshes,
         shell_meshes,
@@ -357,26 +354,29 @@ fn spawn_mesh_entity(
         .id()
 }
 
-/// Spawn named meshes positioned at their body transforms.
+/// Spawn named meshes positioned at their geom transforms.
+///
+/// Uses geom transforms (not body transforms) because design meshes are
+/// centered on the solid origin, and the MJCF generator may offset geoms
+/// within their parent body.
 fn spawn_part_meshes(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     parts: &[(String, IndexedMesh)],
-    body_transforms: &[Transform],
+    geom_transforms: &[Transform],
     colors: &[Color],
     stage: PipelineStage,
 ) {
     for (i, (_name, mesh)) in parts.iter().enumerate() {
-        let body_id = i + 1; // skip world body
-        let body_transform = body_transforms.get(body_id).copied().unwrap_or_default();
+        let transform = geom_transforms.get(i).copied().unwrap_or_default();
         spawn_mesh_entity(
             commands,
             meshes,
             materials,
             mesh,
             colors[i % colors.len()],
-            body_transform,
+            transform,
             stage,
         );
     }
@@ -406,8 +406,8 @@ fn setup(
     let mut data = model.make_data();
     let _ = data.forward(&model);
 
-    // Cache initial body transforms before data is moved into resources
-    let initial_body_transforms: Vec<Transform> = (0..model.nbody)
+    // Cache body transforms for lattice/shell stages before data is moved
+    let body_transforms: Vec<Transform> = (0..model.nbody)
         .map(|body_id| Transform {
             translation: vec3_from_vector(&data.xpos[body_id]),
             rotation: quat_from_unit_quaternion(&data.xquat[body_id]),
@@ -415,24 +415,9 @@ fn setup(
         })
         .collect();
 
-    // ── Stage 1: Design (visible initially) ──────────────────────────
-    spawn_part_meshes(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &pipeline.design_meshes,
-        &initial_body_transforms,
-        &[
-            Color::srgb(0.7, 0.75, 0.85),
-            Color::srgb(0.9, 0.4, 0.3),
-            Color::srgb(0.3, 0.6, 0.9),
-        ],
-        PipelineStage::Design,
-    );
-
-    // ── Stage 2: Simulate (spawned via spawn_model_geoms) ────────────
-
-    // Spawn sim geoms (initially hidden)
+    // ── Stages 1 & 2: Design + Simulate (same geoms, different behavior)
+    // spawn_model_geoms positions meshes correctly via geom transforms.
+    // Stage 1 shows them static, Stage 2 animates them.
     spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
 
     commands.insert_resource(PhysicsModel(model));
@@ -468,7 +453,7 @@ fn setup(
         &mut meshes,
         &mut materials,
         &pipeline.lattice_meshes,
-        &initial_body_transforms,
+        &body_transforms,
         &[Color::srgb(0.3, 0.8, 0.4)],
         PipelineStage::Lattice,
     );
@@ -479,7 +464,7 @@ fn setup(
         &mut meshes,
         &mut materials,
         &pipeline.shell_meshes,
-        &initial_body_transforms,
+        &body_transforms,
         &[Color::srgb(0.9, 0.75, 0.5)],
         PipelineStage::PrintReady,
     );
@@ -595,7 +580,6 @@ fn update_visibility(
     // Stage-tagged entities
     for (tag, mut vis) in &mut stage_entities {
         *vis = if tag.0 == current
-            || (current == PipelineStage::Stress && tag.0 == PipelineStage::Design)
             || (current == PipelineStage::PrintReady && tag.0 == PipelineStage::Lattice)
         {
             Visibility::Inherited
@@ -604,8 +588,10 @@ fn update_visibility(
         };
     }
 
-    // Sim geoms (from spawn_model_geoms) — only visible during Simulate
-    let sim_visible = current == PipelineStage::Simulate;
+    // Sim geoms (from spawn_model_geoms) — visible during Design, Simulate, Stress
+    let sim_visible = current == PipelineStage::Design
+        || current == PipelineStage::Simulate
+        || current == PipelineStage::Stress;
     for mut vis in &mut sim_geoms {
         *vis = if sim_visible {
             Visibility::Inherited
