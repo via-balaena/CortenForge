@@ -2,7 +2,7 @@
 //!
 //! These tests verify AC1–AC15 from `sim/docs/todo/future_work_6b_precursor_to_7.md`.
 //! All flex vertex DOFs are unified into `qpos`/`qvel`, constraints are assembled
-//! in the unified Jacobian, and the `sim-deformable` crate is fully removed.
+//! in the unified Jacobian — flex support is native to sim-core.
 
 use approx::assert_relative_eq;
 use sim_core::Model;
@@ -975,7 +975,7 @@ fn ac14_newton_solver_convergence() {
 
 #[test]
 fn ac15_feature_flag_removed() {
-    // This test validates that the sim-deformable crate no longer exists
+    // This test validates that deformable support is native to sim-core
     // and the "deformable" feature flag is removed.
     //
     // Evidence: this crate (sim-conformance-tests) compiles without

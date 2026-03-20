@@ -4,7 +4,7 @@
 //! through `builder/` wiring to `sensor/` evaluation.
 //! They exercise `load_model()` → `make_data()` → `forward()` → check `sensordata`.
 //!
-//! Note: `sensors.rs` in this directory tests the standalone `sim-sensor` crate.
+//! Note: `sensors.rs` in this directory tests standalone sensor evaluation.
 //! This file tests the MuJoCo pipeline's MJCF→sensor wiring specifically.
 
 use approx::assert_relative_eq;
