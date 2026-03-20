@@ -271,16 +271,11 @@ fn run_pipeline(mechanism: &Mechanism) -> PipelineData {
     for body_id in 1..model.nbody {
         let force = &data.cfrc_ext[body_id];
         let linear_mag = Vector3::new(force[3], force[4], force[5]).norm();
-        println!(
-            "  body {body_id}: cfrc_ext linear_mag={linear_mag:.3}, pos=({:.1}, {:.1}, {:.1})",
-            data.xpos[body_id].x, data.xpos[body_id].y, data.xpos[body_id].z
-        );
         if linear_mag > 1e-6 {
             let pos = &data.xpos[body_id];
             force_indicators.push((vec3_from_vector(pos), linear_mag as f32));
         }
     }
-    println!("  Force indicators: {}", force_indicators.len());
 
     // ── Per-part lattice + shell ─────────────────────────────────────
     println!("\nPer-part processing:");
@@ -310,7 +305,7 @@ fn run_pipeline(mechanism: &Mechanism) -> PipelineData {
         let sdf = Arc::new(move |p: Point3<f64>| solid.evaluate(&p));
 
         let dims = dimensions(part_mesh);
-        let params = LatticeParams::gyroid(4.0)
+        let params = LatticeParams::gyroid(8.0)
             .with_density_map(density_map)
             .with_shape_sdf(sdf);
         let lattice = generate_lattice(&params, (dims.min, dims.max)).expect("lattice generation");
@@ -477,27 +472,36 @@ fn setup(
         ));
     }
 
-    // ── Stage 4: Lattice (initially hidden) ──────────────────────────
-    spawn_part_meshes(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &pipeline.lattice_meshes,
-        &part_transforms,
-        &[Color::srgb(0.3, 0.8, 0.4)],
-        PipelineStage::Lattice,
-    );
-
-    // ── Stage 5: Print-ready shell + lattice (initially hidden) ──────
-    spawn_part_meshes(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &pipeline.shell_meshes,
-        &part_transforms,
-        &[Color::srgb(0.9, 0.75, 0.5)],
-        PipelineStage::PrintReady,
-    );
+    // ── Stages 4 & 5: Lattice + Print-ready (spawned only if meshes are small enough)
+    let total_lattice_verts: usize = pipeline
+        .lattice_meshes
+        .iter()
+        .map(|(_, m)| m.vertex_count())
+        .sum();
+    if total_lattice_verts < 500_000 {
+        spawn_part_meshes(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &pipeline.lattice_meshes,
+            &part_transforms,
+            &[Color::srgb(0.3, 0.8, 0.4)],
+            PipelineStage::Lattice,
+        );
+        spawn_part_meshes(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &pipeline.shell_meshes,
+            &part_transforms,
+            &[Color::srgb(0.9, 0.75, 0.5)],
+            PipelineStage::PrintReady,
+        );
+    } else {
+        println!(
+            "  Skipping lattice/shell visualization ({total_lattice_verts} vertices too heavy for GPU)"
+        );
+    }
 
     // Scene setup (camera, lights, ground)
     spawn_scene(&mut commands, &mut meshes, &mut materials);
@@ -568,10 +572,7 @@ fn advance_stage(keyboard: Res<ButtonInput<KeyCode>>, mut stage: ResMut<CurrentS
 }
 
 /// Oscillate gripper in simulate stage.
-fn actuate_gripper(stage: Res<CurrentStage>, mut data: ResMut<PhysicsData>) {
-    if stage.0 != PipelineStage::Simulate {
-        return;
-    }
+fn actuate_gripper(mut data: ResMut<PhysicsData>) {
     let t = data.time;
     let signal = (t * 2.0).sin();
     if !data.ctrl.is_empty() {
@@ -631,15 +632,7 @@ fn main() {
         }))
         .add_plugins(OrbitCameraPlugin)
         .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            (
-                advance_stage,
-                actuate_gripper,
-                step_model_data
-                    .run_if(|stage: Res<CurrentStage>| stage.0 == PipelineStage::Simulate),
-            ),
-        )
+        .add_systems(Update, (advance_stage, actuate_gripper, step_model_data))
         .add_systems(PostUpdate, (sync_geom_transforms, update_visibility))
         .run();
 }
