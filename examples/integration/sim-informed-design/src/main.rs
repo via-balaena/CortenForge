@@ -2,7 +2,7 @@
 //!
 //! Demonstrates the feedback loop: simulate → analyze → redesign.
 //! 1. Design a bracket
-//! 2. Convert to MJCF and simulate under load
+//! 2. Build SDF-native physics model and simulate under load
 //! 3. Extract body forces + contact data → build stress field
 //! 4. Generate stress-graded, shape-conforming lattice
 //! 5. Visualize: bracket with force indicators + graded lattice side-by-side
@@ -144,8 +144,7 @@ fn run_pipeline() -> (IndexedMesh, IndexedMesh, Vec<(Vector3<f64>, f32)>, f64) {
 
     // ── Simulate ─────────────────────────────────────────────────────
     println!("\nStage 2: Simulate under load");
-    let mjcf_xml = mechanism.to_mjcf(1.5);
-    let model = sim_mjcf::load_model(&mjcf_xml).expect("MJCF should load");
+    let model = mechanism.to_model(1.0, 0.8);
 
     println!("  Model: {} bodies, {} geoms", model.nbody, model.ngeom);
 

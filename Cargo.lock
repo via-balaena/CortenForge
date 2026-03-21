@@ -2437,7 +2437,6 @@ dependencies = [
  "nalgebra",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -2467,7 +2466,6 @@ dependencies = [
  "nalgebra",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
@@ -2522,7 +2520,6 @@ dependencies = [
  "nalgebra",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]

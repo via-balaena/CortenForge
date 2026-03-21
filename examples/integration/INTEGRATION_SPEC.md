@@ -82,8 +82,7 @@ The example becomes ~100 lines shorter and proves the zero-export-step claim.
 ```rust
 // setup() — simplified
 let mechanism = build_gripper();
-let mjcf_xml = mechanism.to_mjcf(1.5);
-let model = sim_mjcf::load_model(&mjcf_xml).expect("MJCF should load");
+let model = mechanism.to_model(1.0, 0.8);  // SDF collision + visual mesh
 let mut data = model.make_data();
 let _ = data.forward(&model);
 

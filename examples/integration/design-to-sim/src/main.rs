@@ -1,9 +1,9 @@
 //! Design-to-Sim — Zero Export Steps
 //!
-//! Design a simple gripper in cf-design, export to MJCF, load it into
-//! sim-core, and visualize with Bevy. The design meshes are rendered
-//! directly by the engine via `spawn_model_geoms` — no manual mesh
-//! export or body-sync code needed.
+//! Design a simple gripper in cf-design, build a sim-core Model directly
+//! (SDF-native physics), and visualize with Bevy. Each part uses an SDF
+//! grid for collision and a triangle mesh for rendering — both derived
+//! from the same implicit surface.
 //!
 //! Run with: `cargo run -p example-design-to-sim --release`
 
@@ -149,9 +149,8 @@ fn setup(
         mechanism.tendons().len(),
     );
 
-    // ── MJCF → physics engine ────────────────────────────────────────
-    let mjcf_xml = mechanism.to_mjcf(1.5);
-    let model = sim_mjcf::load_model(&mjcf_xml).expect("generated MJCF should load");
+    // ── SDF-native physics model ────────────────────────────────────
+    let model = mechanism.to_model(1.0, 0.8);
 
     println!(
         "  Physics model: {} bodies, {} joints, {} DOFs, {} geoms, {} meshes",
