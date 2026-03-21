@@ -683,22 +683,26 @@ pub fn sdf_plane_contact(
                 // Penetration is positive when the point is below the plane
                 let penetration = -dist_to_plane;
 
-                if penetration > max_penetration {
-                    max_penetration = penetration;
-
-                    // The contact point is on the SDF surface. Project the grid point
-                    // along the SDF gradient to find the actual surface point.
+                if penetration > 0.0 {
+                    // Project grid point to the SDF surface for the actual contact point.
                     let surface_point = sdf.gradient(local_point).map_or(world_point, |grad| {
-                        // Move from current point toward surface by sdf_value
                         let surface_local = local_point - grad * sdf_value;
                         sdf_pose.transform_point(&surface_local)
                     });
 
-                    deepest_contact = Some(SdfContact {
-                        point: surface_point,
-                        normal: *plane_normal, // Normal points from plane toward SDF
-                        penetration,
-                    });
+                    // Recompute penetration from the projected surface point
+                    // (grid point penetration overestimates for off-surface samples).
+                    let surface_dist = plane_normal.dot(&surface_point.coords) - plane_offset;
+                    let surface_penetration = -surface_dist;
+
+                    if surface_penetration > max_penetration {
+                        max_penetration = surface_penetration;
+                        deepest_contact = Some(SdfContact {
+                            point: surface_point,
+                            normal: *plane_normal,
+                            penetration: surface_penetration,
+                        });
+                    }
                 }
             }
         }

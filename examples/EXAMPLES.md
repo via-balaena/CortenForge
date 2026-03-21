@@ -43,8 +43,8 @@ step working. If a step breaks, you know exactly what broke.
 
 | Step | Example | What it proves | New concept | Status |
 |------|---------|---------------|-------------|--------|
-| 01 | `01-sdf-grid` | `Solid → SdfGrid` produces valid data. Grid dims, cell count, min/max distances are sane. No sim. | SdfGrid construction | Stub |
-| 02 | `02-freefall` | `to_model()` produces a body with correct mass/inertia. Body free-falls (no ground). `y(t) ≈ y₀ − ½gt²`. | to_model() + gravity | Stub |
+| 01 | `01-sdf-grid` | `Solid → SdfGrid` produces valid data. Grid dims, cell count, min/max distances are sane. No sim. | SdfGrid construction | Working |
+| 02 | `02-freefall` | `to_model()` produces a body with correct mass/inertia. Body free-falls (no ground). `z(t) ≈ z₀ − ½gt²`. | to_model() + gravity | Stub |
 | 03 | `03-rest` | Body settles onto ground plane and rests. Near-zero velocity, no penetration. | sdf_plane_contact | Stub |
 | 04 | `04-drop` | Drop from height → impact → bounce → settle. No tunneling. | Dynamic contact + restitution | Stub |
 | 05 | `05-slide` | Body slides on ground with initial lateral velocity. Friction decelerates it. | Friction / tangential forces | Stub |

@@ -2513,7 +2513,9 @@ version = "0.7.0"
 dependencies = [
  "bevy",
  "cf-design",
+ "cf-geometry",
  "nalgebra",
+ "sim-bevy",
 ]
 
 [[package]]

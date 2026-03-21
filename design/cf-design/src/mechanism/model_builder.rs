@@ -121,11 +121,11 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
         }
     }
 
-    // Roots: parts that are never a child
+    // Roots: parts that are never a child, or whose parent is "world".
     let roots: Vec<&str> = parts
         .iter()
         .map(Part::name)
-        .filter(|n| !child_parent.contains_key(n))
+        .filter(|n| matches!(child_parent.get(n), None | Some(&"world")))
         .collect();
 
     // ── Assign body IDs (BFS from roots) ────────────────────────────
@@ -203,11 +203,10 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
         let body_id = order_idx + 1;
         let (_, part) = part_by_name[part_name];
 
-        // Parent body
-        let parent_body = if let Some(&parent_name) = child_parent.get(part_name) {
-            part_to_body[parent_name]
-        } else {
-            0 // root part → parent is world
+        // Parent body ("world" or absent → world body 0)
+        let parent_body = match child_parent.get(part_name) {
+            Some(&"world") | None => 0,
+            Some(&parent_name) => part_to_body[parent_name],
         };
 
         // Body position relative to parent (from first joint anchor)
@@ -390,6 +389,11 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
             }
             MjJointType::Free => {
                 let adr = model.jnt_qpos_adr[jnt_id];
+                let body_id = model.jnt_body[jnt_id];
+                let pos = model.body_pos[body_id];
+                model.qpos0[adr] = pos.x;
+                model.qpos0[adr + 1] = pos.y;
+                model.qpos0[adr + 2] = pos.z;
                 model.qpos0[adr + 3] = 1.0; // w=1 for identity quaternion
             }
             _ => {}
@@ -713,6 +717,11 @@ fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -
         Some(jl) if !jl.is_empty() => jl,
         _ => return Vector3::zeros(), // root body
     };
+
+    // Free joints: geometry centered at body frame (no alignment needed)
+    if jlist[0].kind() == JointKind::Free {
+        return Vector3::zeros();
+    }
 
     // Explicit joint origin
     if let Some(origin) = part.joint_origin() {
@@ -1106,5 +1115,31 @@ mod tests {
         assert_eq!(model.nbody, 2); // world + body
         assert_eq!(model.njnt, 0);
         assert_eq!(model.ngeom, 2); // SDF + mesh
+    }
+
+    // ── 9. Free joint to world ──────────────────────────────────────
+
+    #[test]
+    fn free_joint_to_world() {
+        let m = Mechanism::builder("floating")
+            .part(Part::new("body", Solid::sphere(5.0), pla()))
+            .joint(JointDef::new(
+                "free",
+                "world",
+                "body",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 50.0),
+                Vector3::z(),
+            ))
+            .build();
+
+        let model = m.to_model(2.0, 2.0);
+
+        assert_eq!(model.nbody, 2); // world + body
+        assert_eq!(model.njnt, 1); // free joint
+        assert_eq!(model.nq, 7); // 3 pos + 4 quat
+        assert_eq!(model.nv, 6); // 3 linear + 3 angular
+        assert_eq!(model.ngeom, 2); // SDF + mesh
+        assert_eq!(model.body_parent[1], 0); // parent is world
     }
 }

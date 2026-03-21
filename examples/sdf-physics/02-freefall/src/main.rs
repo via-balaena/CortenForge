@@ -2,11 +2,12 @@
 //!
 //! A cf-design Solid converted to a physics body via `to_model()`. No ground
 //! plane — the body free-falls under gravity. Prints position each frame and
-//! verifies y(t) ≈ y₀ − ½gt² (analytical solution).
+//! verifies z(t) matches the analytical solution.
+//!
+//! Uses a free joint to "world" so the body is unconstrained.
 //!
 //! Isolates: does `to_model()` produce a body with correct mass/inertia?
-//! Does gravity work at mm scale? (Known issue — gravity is 9.81 m/s² but
-//! cf-design geometry is in mm.)
+//! Does gravity work at mm scale?
 //!
 //! Pass criteria:
 //! - Body appears with non-zero mass and reasonable inertia
