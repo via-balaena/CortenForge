@@ -1036,3 +1036,61 @@ fn sphere_stack_contacts() {
         );
     }
 }
+
+/// Two free-body spheres stacking under gravity — tests dynamic contact stability.
+/// KNOWN ISSUE: analytical spheres also fail to stack. The constraint solver
+/// doesn't maintain sphere-on-sphere separation with free joints.
+/// This is NOT an SDF-specific problem — it affects all geom types.
+#[test]
+#[ignore] // Known issue: free-body stacking doesn't work yet
+fn sphere_stack_dynamic() {
+    let mjcf = r#"
+        <mujoco model="dynamic_stack">
+            <option gravity="0 0 -9810" timestep="0.002"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="40 40 0.1" solref="0.005 1"/>
+                <body name="lower" pos="0 0 5.5">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="5" solref="0.005 1"/>
+                </body>
+                <body name="upper" pos="0 0 15.5">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="5" solref="0.005 1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Run 2500 steps (5 seconds of sim)
+    for _ in 0..2500 {
+        data.step(&model).expect("step failed");
+    }
+
+    let z_lo = data.qpos[2];
+    let z_up = data.qpos[9];
+
+    eprintln!(
+        "dynamic_stack: z_lo={:.3} z_up={:.3} ncon={}",
+        z_lo, z_up, data.ncon
+    );
+
+    // Lower sphere should rest near z=5 (radius on ground)
+    assert!(
+        (z_lo - 5.0).abs() < 1.0,
+        "lower sphere should rest at z≈5, got {z_lo:.3}"
+    );
+    // Upper sphere should rest near z=15 (on top of lower)
+    assert!(
+        (z_up - 15.0).abs() < 2.0,
+        "upper sphere should rest at z≈15, got {z_up:.3}"
+    );
+    // Gap should be ~10 (2 radii)
+    let gap = z_up - z_lo;
+    assert!((gap - 10.0).abs() < 2.0, "gap should be ~10, got {gap:.3}");
+}
