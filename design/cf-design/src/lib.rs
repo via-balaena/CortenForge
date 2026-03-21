@@ -52,3 +52,7 @@ pub use mechanism::{
 };
 pub use param::{ParamRef, ParamStore};
 pub use solid::{InfillKind, Solid};
+
+// Re-export geometry types that appear in our public API
+// (Solid::bounds() → Aabb, Solid::sdf_grid_at() → SdfGrid, Solid::mesh() → IndexedMesh)
+pub use cf_geometry::{Aabb, IndexedMesh, SdfGrid};

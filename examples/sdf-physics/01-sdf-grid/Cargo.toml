@@ -7,7 +7,6 @@ publish = false
 
 [dependencies]
 cf-design = { workspace = true }
-cf-geometry = { workspace = true }
 sim-bevy = { workspace = true }
 bevy = { workspace = true, features = [
     "bevy_asset",

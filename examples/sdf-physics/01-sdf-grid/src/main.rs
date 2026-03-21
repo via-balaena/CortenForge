@@ -26,8 +26,7 @@
 )]
 
 use bevy::prelude::*;
-use cf_design::Solid;
-use cf_geometry::SdfGrid;
+use cf_design::{Aabb, SdfGrid, Solid};
 use nalgebra::Point3;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::mesh::spawn_design_mesh;
@@ -91,7 +90,7 @@ fn main() {
 
 // ── Diagnostics ─────────────────────────────────────────────────────────
 
-fn print_grid_info(bounds: &cf_geometry::Aabb, sdf: &SdfGrid) {
+fn print_grid_info(bounds: &Aabb, sdf: &SdfGrid) {
     let size = bounds.size();
     let cell_count = sdf.width() * sdf.height() * sdf.depth();
     let memory_kb = (cell_count * 8) as f64 / 1024.0;
@@ -124,7 +123,7 @@ fn print_grid_info(bounds: &cf_geometry::Aabb, sdf: &SdfGrid) {
 
 // ── Checks ──────────────────────────────────────────────────────────────
 
-fn run_checks(solid: &Solid, sdf: &SdfGrid, bounds: &cf_geometry::Aabb) -> bool {
+fn run_checks(solid: &Solid, sdf: &SdfGrid, bounds: &Aabb) -> bool {
     let mut pass = true;
 
     // 1. Interior/exterior existence
@@ -185,7 +184,7 @@ struct Accuracy {
 
 /// Sample a 10×10×10 uniform grid inside the bounds, evaluate both
 /// `solid.evaluate()` and `sdf.distance()`, compute error statistics.
-fn measure_accuracy(solid: &Solid, sdf: &SdfGrid, bounds: &cf_geometry::Aabb) -> Accuracy {
+fn measure_accuracy(solid: &Solid, sdf: &SdfGrid, bounds: &Aabb) -> Accuracy {
     let n = 10;
     let mut total_err = 0.0;
     let mut max_err: f64 = 0.0;
@@ -235,7 +234,7 @@ fn check(label: &str, ok: bool) -> bool {
 // ── Bevy visualization ──────────────────────────────────────────────────
 
 #[derive(Resource)]
-struct MeshDataRes(cf_geometry::IndexedMesh);
+struct MeshDataRes(cf_design::IndexedMesh);
 
 fn setup(
     mut commands: Commands,
