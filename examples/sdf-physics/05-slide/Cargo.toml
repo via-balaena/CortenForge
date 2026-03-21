@@ -1,5 +1,5 @@
 [package]
-name = "example-sdf-01-drop"
+name = "example-sdf-05-slide"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

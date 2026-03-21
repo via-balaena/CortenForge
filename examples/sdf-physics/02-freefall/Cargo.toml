@@ -1,5 +1,5 @@
 [package]
-name = "example-sdf-02-pair"
+name = "example-sdf-02-freefall"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

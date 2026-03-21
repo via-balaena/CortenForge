@@ -37,15 +37,22 @@ All three use `Mechanism::to_model()` (SDF collision + visual mesh, no MJCF roun
 
 ### sdf-physics/ (stubs — implementation is the next milestone)
 
-Baby-step ladder proving the SDF === collision thesis. Each step has a
-clear pass/fail and depends on the previous step working.
+Baby-step ladder proving the SDF === collision thesis. **One new variable
+per step.** Each step has a clear pass/fail and depends on every previous
+step working. If a step breaks, you know exactly what broke.
 
-| Step | Example | What it proves | Engine status |
-|------|---------|---------------|---------------|
-| 01 | `01-drop` | Solid falls onto ground plane. SDF vs plane collision. | Should work (sdf_plane_contact exists) |
-| 02 | `02-pair` | Two Solids collide. SDF vs SDF, non-parent-child. | Should work (sdf_sdf_contact exists) |
-| 03 | `03-hinge` | Parent-child SDF collision. Arm hits base on a hinge. | Blocked — `sdf_sdf_contact` returns 1 contact, needs multi-contact for stability |
-| 04 | `04-socket` | Concave constraint. Condyle rotates inside socket. | Blocked on 03 + concave multi-contact |
+| Step | Example | What it proves | New concept | Status |
+|------|---------|---------------|-------------|--------|
+| 01 | `01-sdf-grid` | `Solid → SdfGrid` produces valid data. Grid dims, cell count, min/max distances are sane. No sim. | SdfGrid construction | Stub |
+| 02 | `02-freefall` | `to_model()` produces a body with correct mass/inertia. Body free-falls (no ground). `y(t) ≈ y₀ − ½gt²`. | to_model() + gravity | Stub |
+| 03 | `03-rest` | Body settles onto ground plane and rests. Near-zero velocity, no penetration. | sdf_plane_contact | Stub |
+| 04 | `04-drop` | Drop from height → impact → bounce → settle. No tunneling. | Dynamic contact + restitution | Stub |
+| 05 | `05-slide` | Body slides on ground with initial lateral velocity. Friction decelerates it. | Friction / tangential forces | Stub |
+| 06 | `06-pair` | One SDF body dropped onto another. SDF-vs-SDF, non-parent-child. | sdf_sdf_contact | Stub |
+| 07 | `07-hinge-free` | Two SDF bodies on a revolute joint, free-swinging. No collision between them. | Joints with SDF bodies | Stub |
+| 08 | `08-hinge-wall` | Hinged arm swings into a separate wall body. Articulated contact, non-parent-child. | Articulated external contact | Stub |
+| 09 | `09-hinge-stop` | Hinged arm hits parent body's SDF. `DISABLE_FILTERPARENT`. Flat stop surface. | Parent-child SDF-SDF contact | Stub |
+| 10 | `10-socket` | Condyle rotates inside concave socket. Multi-contact needed. | Concave multi-contact | Blocked |
 
 ## Key Architecture: `Mechanism::to_model()`
 
@@ -72,7 +79,8 @@ physics simulates.
 - **Parent-child SDF collision** (`DISABLE_FILTERPARENT`): `sdf_sdf_contact`
   generates only 1 contact point. Concave constraints (socket/condyle) need
   multiple simultaneous contacts to prevent penetration from all directions.
-  This is the primary blocker for sdf-physics steps 03–04.
+  Single contact may suffice for step 09 (flat stop surface) but step 10
+  (socket) requires multi-contact.
 - **Gravity at mm scale**: cf-design geometry is in mm, but `Model::empty()`
   sets gravity to 9.81 (m/s²). In a mm-world this is ~1000× too weak.
-  Needs either unit-aware gravity or a scaling convention.
+  Step 02 (freefall) will expose this directly.
