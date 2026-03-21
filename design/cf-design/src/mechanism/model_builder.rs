@@ -181,6 +181,9 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     let mut model = Model::empty();
     model.name = mechanism.name().to_string();
 
+    // cf-design geometry is in mm. Scale gravity from m/s² to mm/s².
+    model.gravity = nalgebra::Vector3::new(0.0, 0.0, -9810.0);
+
     // Parent-child collision filtering stays ON (MuJoCo default).
     // SDF-SDF parent-child collision (socket/condyle) needs multi-contact
     // support in sdf_sdf_contact before it can constrain concave geometry.

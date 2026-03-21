@@ -45,7 +45,7 @@ step working. If a step breaks, you know exactly what broke.
 |------|---------|---------------|-------------|--------|
 | 01 | `01-sdf-grid` | `SdfGrid` from solid sphere at 1.0 mm cells. Accuracy < cell size. | SdfGrid construction | Working |
 | 02 | `02-thin-grid` | `SdfGrid` on thin walls (0.6 mm shell at 0.5 mm cells). Void preserved, wall resolved. | Thin-wall grid fidelity | Working |
-| 03 | `03-freefall` | `to_model()` mass/inertia. Free-fall matches `z₀ − ½gt²`. | to_model() + gravity | Stub |
+| 03 | `03-freefall` | `to_model()` mass/inertia. Free-fall matches semi-implicit Euler analytical. | to_model() + gravity | Working |
 | 04 | `04-rest` | Body settles on ground plane. Near-zero velocity, no penetration. | sdf_plane_contact | Stub |
 | 05 | `05-drop` | Drop from height → impact → bounce → settle. No tunneling. | Dynamic contact + restitution | Stub |
 | 06 | `06-slide` | Lateral velocity on ground. Friction decelerates to rest. | Friction / tangential forces | Stub |
@@ -86,6 +86,6 @@ physics simulates.
   Single contact may suffice for step 11 (flat stop surface). Step 13
   (concave half-socket) is a designed failure point that will reveal
   whether multi-contact is needed. Step 14 (full socket) requires it.
-- **Gravity at mm scale**: cf-design geometry is in mm, but `Model::empty()`
-  sets gravity to 9.81 (m/s²). In a mm-world this is ~1000× too weak.
-  Step 03 (freefall) will expose this directly.
+- **Gravity at mm scale**: ~~cf-design geometry is in mm, but `Model::empty()`
+  sets gravity to 9.81 (m/s²)~~ — **fixed**: `to_model()` now sets gravity
+  to −9810 mm/s² automatically.
