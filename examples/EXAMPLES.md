@@ -43,16 +43,20 @@ step working. If a step breaks, you know exactly what broke.
 
 | Step | Example | What it proves | New concept | Status |
 |------|---------|---------------|-------------|--------|
-| 01 | `01-sdf-grid` | `Solid → SdfGrid` produces valid data. Grid dims, cell count, min/max distances are sane. No sim. | SdfGrid construction | Working |
-| 02 | `02-freefall` | `to_model()` produces a body with correct mass/inertia. Body free-falls (no ground). `z(t) ≈ z₀ − ½gt²`. | to_model() + gravity | Stub |
-| 03 | `03-rest` | Body settles onto ground plane and rests. Near-zero velocity, no penetration. | sdf_plane_contact | Stub |
-| 04 | `04-drop` | Drop from height → impact → bounce → settle. No tunneling. | Dynamic contact + restitution | Stub |
-| 05 | `05-slide` | Body slides on ground with initial lateral velocity. Friction decelerates it. | Friction / tangential forces | Stub |
-| 06 | `06-pair` | One SDF body dropped onto another. SDF-vs-SDF, non-parent-child. | sdf_sdf_contact | Stub |
-| 07 | `07-hinge-free` | Two SDF bodies on a revolute joint, free-swinging. No collision between them. | Joints with SDF bodies | Stub |
-| 08 | `08-hinge-wall` | Hinged arm swings into a separate wall body. Articulated contact, non-parent-child. | Articulated external contact | Stub |
-| 09 | `09-hinge-stop` | Hinged arm hits parent body's SDF. `DISABLE_FILTERPARENT`. Flat stop surface. | Parent-child SDF-SDF contact | Stub |
-| 10 | `10-socket` | Condyle rotates inside concave socket. Multi-contact needed. | Concave multi-contact | Blocked |
+| 01 | `01-sdf-grid` | `SdfGrid` from solid sphere at 1.0 mm cells. Accuracy < cell size. | SdfGrid construction | Working |
+| 02 | `02-thin-grid` | `SdfGrid` on thin walls (0.6 mm shell at 0.5 mm cells). Void preserved, wall resolved. | Thin-wall grid fidelity | Stub |
+| 03 | `03-freefall` | `to_model()` mass/inertia. Free-fall matches `z₀ − ½gt²`. | to_model() + gravity | Stub |
+| 04 | `04-rest` | Body settles on ground plane. Near-zero velocity, no penetration. | sdf_plane_contact | Stub |
+| 05 | `05-drop` | Drop from height → impact → bounce → settle. No tunneling. | Dynamic contact + restitution | Stub |
+| 06 | `06-slide` | Lateral velocity on ground. Friction decelerates to rest. | Friction / tangential forces | Stub |
+| 07 | `07-pair` | One SDF body dropped onto another. SDF-vs-SDF, non-parent-child. | sdf_sdf_contact | Stub |
+| 08 | `08-stack` | Three cubes stacked on ground. Stable multi-body contact. | Multi-body stacking | Stub |
+| 09 | `09-hinge-free` | Revolute joint + SDF bodies, free-swinging. No collision. | Joints with SDF bodies | Stub |
+| 10 | `10-hinge-wall` | Hinged arm swings into separate wall body. Non-parent-child. | Articulated external contact | Stub |
+| 11 | `11-hinge-stop` | Arm hits parent body's flat stop. `DISABLE_FILTERPARENT`. | Parent-child SDF contact (convex) | Stub |
+| 12 | `12-damped-hinge` | Three damping/solref configs on step 11 geometry. Tuning knobs. | Damping + parameter sensitivity | Stub |
+| 13 | `13-concave-stop` | Arm tip enters concave pocket on parent. Designed failure point. | Concave parent-child contact | Stub |
+| 14 | `14-socket` | Condyle rotates inside concave socket. Multi-contact needed. | Full socket/condyle | Blocked |
 
 ## Key Architecture: `Mechanism::to_model()`
 
@@ -79,8 +83,9 @@ physics simulates.
 - **Parent-child SDF collision** (`DISABLE_FILTERPARENT`): `sdf_sdf_contact`
   generates only 1 contact point. Concave constraints (socket/condyle) need
   multiple simultaneous contacts to prevent penetration from all directions.
-  Single contact may suffice for step 09 (flat stop surface) but step 10
-  (socket) requires multi-contact.
+  Single contact may suffice for step 11 (flat stop surface). Step 13
+  (concave half-socket) is a designed failure point that will reveal
+  whether multi-contact is needed. Step 14 (full socket) requires it.
 - **Gravity at mm scale**: cf-design geometry is in mm, but `Model::empty()`
   sets gravity to 9.81 (m/s²). In a mm-world this is ~1000× too weak.
-  Step 02 (freefall) will expose this directly.
+  Step 03 (freefall) will expose this directly.
