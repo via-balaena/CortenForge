@@ -97,8 +97,8 @@ pub fn collide_with_sdf(
             return vec![];
         };
         let other_sdf = &model.sdf_data[other_sdf_id];
-        // Margin: use the smaller cell size as the contact lookahead distance
-        let contact_margin = sdf.cell_size().min(other_sdf.cell_size());
+        // Margin: small fraction of cell size for lookahead without inflating penetration.
+        let contact_margin = sdf.cell_size().min(other_sdf.cell_size()) * 0.25;
         let sdf_contacts = sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose, contact_margin);
         return sdf_contacts.iter().map(&convert).collect();
     }

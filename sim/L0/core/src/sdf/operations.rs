@@ -8,7 +8,7 @@
     clippy::cast_possible_wrap
 )]
 
-use nalgebra::Point3;
+use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
 use super::{SdfContact, SdfGrid};
@@ -41,17 +41,50 @@ pub fn sdf_sdf_contact(
     // Trace from B's surface into A
     trace_surface_into_other(sdf_b, pose_b, sdf_a, pose_a, margin, &mut contacts, true);
 
-    contacts.sort_by(|a, b| {
-        b.penetration
-            .partial_cmp(&a.penetration)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Normal-weighted filtering: prefer contacts whose normals align with the
+    // separation direction. At coarse resolution, equatorial contacts (normals
+    // perpendicular to separation) dominate but produce zero separation force.
+    // Drop them so the polar contacts (which actually push bodies apart) win.
+    let sep_dir = separation_direction(pose_a, pose_b);
+    if let Some(dir) = sep_dir {
+        // Score = penetration × |normal · separation_dir|
+        // This weights contacts by both depth AND alignment with separation.
+        contacts.retain(|c| c.normal.dot(&dir).abs() > MIN_NORMAL_ALIGNMENT);
+        contacts.sort_by(|a, b| {
+            let score_a = a.penetration * a.normal.dot(&dir).abs();
+            let score_b = b.penetration * b.normal.dot(&dir).abs();
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    } else {
+        // Coincident poses — no separation direction. Sort by penetration only.
+        contacts.sort_by(|a, b| {
+            b.penetration
+                .partial_cmp(&a.penetration)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
     contacts.truncate(MAX_SDF_SDF_CONTACTS);
     contacts
 }
 
 /// Maximum number of contacts returned by `sdf_sdf_contact`.
 const MAX_SDF_SDF_CONTACTS: usize = 20;
+
+/// Minimum |normal · separation_dir| to keep a contact. Contacts below this
+/// threshold have normals nearly perpendicular to the separation axis and
+/// contribute negligible separation force.
+const MIN_NORMAL_ALIGNMENT: f64 = 0.1;
+
+/// Compute the unit separation direction between two poses (A → B).
+/// Returns None if the poses are coincident.
+fn separation_direction(pose_a: &Pose, pose_b: &Pose) -> Option<Vector3<f64>> {
+    let delta = pose_b.position - pose_a.position;
+    let len = delta.norm();
+    if len < 1e-10 { None } else { Some(delta / len) }
+}
 
 /// One pass of surface-tracing: iterate surface points of `src_sdf`,
 /// check their penetration into `dst_sdf`.
@@ -93,10 +126,12 @@ fn trace_surface_into_other(
                     continue;
                 };
 
-                let penetration = margin - dst_dist;
-                if penetration <= 0.0 {
+                // Detect contact if dst_dist < margin (pre-penetration lookahead).
+                // But report only the actual geometric penetration (how far inside).
+                if dst_dist >= margin {
                     continue;
                 }
+                let penetration = (-dst_dist).max(0.0);
 
                 let world_normal = if flip_normal {
                     -(src_pose.rotation * grad)
@@ -288,9 +323,11 @@ mod tests {
         let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
         // At borderline cases, contact detection might be slightly inaccurate
         // due to grid sampling, so we don't strictly require contacts to exist
+        // With geometric-only penetration, barely-touching contacts may have
+        // penetration = 0 (detected via margin, but no actual overlap).
         for c in &contacts {
             assert!(
-                c.penetration > 0.0 && c.penetration < 0.2,
+                c.penetration < 0.2,
                 "barely touching SDFs should have small penetration (got {})",
                 c.penetration
             );
@@ -445,5 +482,60 @@ mod tests {
             "net force z should be small relative to x, got z={:.4}",
             net_force.z
         );
+    }
+
+    #[test]
+    fn v2_stacking_coarse_resolution() {
+        // THE critical test that was failing: two 5mm-radius spheres at 1mm
+        // cell size. Previously, equatorial contacts dominated and net force
+        // was horizontal. With normal-weighted filtering, polar contacts win.
+        let sdf_a = SdfGrid::sphere(Point3::origin(), 5.0, 14, 2.0);
+        let sdf_b = SdfGrid::sphere(Point3::origin(), 5.0, 14, 2.0);
+        assert!(
+            (sdf_a.cell_size() - 1.0).abs() < 0.2,
+            "cell size should be ~1mm (got {})",
+            sdf_a.cell_size()
+        );
+
+        // Stacked vertically with slight overlap (same as example 07)
+        let pose_a = Pose::from_position(Point3::new(0.0, 0.0, 5.5));
+        let pose_b = Pose::from_position(Point3::new(0.0, 0.0, 14.5));
+        let margin = sdf_a.cell_size();
+
+        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, margin);
+
+        assert!(
+            !contacts.is_empty(),
+            "coarse-resolution stacking should produce contacts"
+        );
+
+        // Net force must point upward (+Z) for stacking to work
+        let net_force: Vector3<f64> = contacts.iter().map(|c| c.normal * c.penetration).sum();
+        assert!(
+            net_force.z > 0.0,
+            "net force must point upward for stacking, got z={:.4}",
+            net_force.z
+        );
+
+        // Vertical component should dominate horizontal
+        let horizontal = net_force.x.hypot(net_force.y);
+        assert!(
+            net_force.z > horizontal,
+            "vertical force ({:.4}) should dominate horizontal ({:.4})",
+            net_force.z,
+            horizontal
+        );
+
+        eprintln!("  coarse stacking: {} contacts", contacts.len());
+        eprintln!(
+            "  net force: ({:.4}, {:.4}, {:.4})",
+            net_force.x, net_force.y, net_force.z
+        );
+        for (i, c) in contacts.iter().enumerate() {
+            eprintln!(
+                "    [{i}] n=({:.3},{:.3},{:.3}) pen={:.4}",
+                c.normal.x, c.normal.y, c.normal.z, c.penetration
+            );
+        }
     }
 }
