@@ -14,9 +14,15 @@
 //! New concept: `sdf_sdf_contact`
 //! Depends on: 06-slide
 //!
+//! Blocked: surface-tracing algorithm produces equatorial contacts (horizontal
+//! normals) instead of polar contacts (vertical normals) at 1 mm grid resolution.
+//! See `sim/docs/SDF_SDF_CONTACT_SPEC.md` for details.
+//!
 //! Run with: `cargo run -p example-sdf-07-pair --release`
 
 fn main() {
-    eprintln!("TODO: not yet implemented — blocked on SDF-SDF contact algorithm redesign");
-    eprintln!("See sim/docs/SDF_SDF_CONTACT_SPEC.md for the redesign plan.");
+    eprintln!("BLOCKED: SDF-SDF contact at 1mm resolution produces horizontal normals");
+    eprintln!("The surface-tracing algorithm finds contacts around the equatorial ring");
+    eprintln!("of the overlap region, not at the vertical stacking point.");
+    eprintln!("See sim/docs/SDF_SDF_CONTACT_SPEC.md");
 }

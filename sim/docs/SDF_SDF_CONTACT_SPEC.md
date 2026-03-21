@@ -1,35 +1,43 @@
 # SDF-SDF Contact Algorithm Redesign
 
-## Status: SPEC — not yet implemented
+## Status: PARTIALLY IMPLEMENTED — surface-tracing in place, resolution issue remains
 
 ## Problem
 
-The current `sdf_sdf_contact` algorithm cannot support stacking or stable
-SDF-vs-SDF contact. Two spheres placed on top of each other collapse into
-the same position instead of stacking. Discovered during sdf-physics
-example 07 (pair).
+`sdf_sdf_contact` cannot support stacking at 1mm grid resolution.
+Two spheres placed vertically collapse into each other instead of stacking.
 
-### Root causes
+### What was fixed
 
-1. **No contact margin.** Contact is only detected when both SDF distances
-   are strictly negative (full penetration). Bodies must already be
-   interpenetrating before any force is generated. With high-velocity
-   impacts or gravity, this means the bodies overlap significantly before
-   the solver can react.
+- **Surface-tracing algorithm** replaces the old volume-sampling approach.
+  Traces from each SDF's surface into the other with a configurable margin.
+  Stress tests pass: correct upward net force for stacking configuration.
 
-2. **Volume sampling, not surface intersection.** The algorithm samples
-   a 3D grid in the AABB overlap region and collects points where both
-   SDFs are negative. These points are scattered throughout the overlap
-   volume — deep inside both bodies. Even with surface projection (added
-   in this session), the projected contact points land ON one surface
-   where the OTHER surface has near-zero penetration (because the surfaces
-   are nearly coincident at the contact region). This produces tiny
-   penetration depths that generate insufficient contact force.
+- **Contact margin** implemented — detects contacts before full penetration.
 
-3. **No focused contact patch.** For two spheres touching at one point,
-   the contact should be a single well-defined point with a clear normal
-   (line between centers). Instead, the algorithm produces 20+ scattered
-   contacts with varying normals, whose forces partially cancel.
+### What still fails
+
+**Equatorial contact dominance at coarse resolution.** At 1mm cell size
+on 5mm-radius spheres, the surface-tracing finds contacts around the
+equatorial intersection ring (where both sphere surfaces cross at the
+same Z level). These contacts have horizontal normals that push the
+spheres apart laterally but not vertically. The polar contacts (which
+would have vertical normals for stacking) either don't exist as grid
+points or are overwhelmed by the equatorial contacts.
+
+At fine resolution (0.065mm cells in stress tests), enough polar grid
+points exist and the algorithm works. At 1mm cells, the grid is too
+coarse to resolve the contact geometry.
+
+### Root cause (updated)
+
+The surface-tracing algorithm iterates grid points of the SRC SDF that
+are near its surface. For a sphere with 1mm cells, the surface is
+sampled at ~100 grid points. Near the pole (top/bottom), the number of
+grid points on the exact contact cap is small (maybe 1-3), while the
+equatorial ring has many more points (the ring has larger circumference).
+The equatorial contacts dominate the contact set even though they have
+the wrong (horizontal) normals for vertical stacking.
 
 ### What works (for reference)
 
@@ -91,11 +99,23 @@ normal is the line direction, penetration is the overlap along the line.
 **Cons:** Only works for convex shapes, gives only 1 contact, doesn't
 generalize to concave geometry (sockets).
 
+### Option C: Normal-weighted contact selection (new)
+
+Keep the surface-tracing algorithm but weight contacts by how well their
+normal aligns with the separation direction (line between centers of mass).
+This would prefer polar contacts over equatorial ones for stacking.
+
+**Pros:** Small change to existing algorithm, preserves multi-contact.
+**Cons:** Requires computing separation direction, may not generalize
+to concave geometry.
+
 ### Recommendation
 
-**Option A** — it generalizes to concave geometry (needed for steps 13-14)
-and produces multiple contacts naturally. Option B could be a fast-path
-for convex-convex cases but isn't worth implementing separately.
+**Option A with Option C filtering.** Surface-trace to get candidates,
+then weight by normal alignment with separation direction. Drop contacts
+whose normals are nearly perpendicular to the separation axis. This
+combines the generality of surface-tracing with the focus of line-of-
+centers, and should work at any resolution.
 
 ## Scope
 
