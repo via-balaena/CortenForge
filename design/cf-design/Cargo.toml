@@ -15,10 +15,10 @@ workspace = true
 cf-geometry = { workspace = true }
 nalgebra = { workspace = true }
 rayon = { workspace = true }
+sim-core = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 mesh-io = { workspace = true }
-sim-core = { workspace = true }
 sim-mjcf = { workspace = true }
 tempfile = { workspace = true }

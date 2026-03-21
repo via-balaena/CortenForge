@@ -138,6 +138,11 @@ fn generate_cubic_lattice(
                     continue;
                 }
 
+                // Skip nodes outside the shape boundary
+                if params.is_outside_shape(node) {
+                    continue;
+                }
+
                 // Scale radius by density
                 let local_radius = radius * density.sqrt();
 
@@ -290,6 +295,11 @@ fn generate_octet_truss_lattice(
                     continue;
                 }
 
+                // Skip cells whose center is outside the shape boundary
+                if params.is_outside_shape(center) {
+                    continue;
+                }
+
                 let local_radius = radius * density.sqrt();
 
                 // Connect all corners to center (8 struts)
@@ -362,14 +372,18 @@ fn generate_tpms_lattice(
     // Calculate threshold from density
     let threshold = density_to_threshold(params.density, tpms_type);
 
-    // Create shell SDF (thickened surface)
+    // Create shell SDF (thickened surface), optionally intersected with shape boundary
     let wall_thickness = params.wall_thickness;
     let half_thickness = wall_thickness / 2.0;
+    let shape_sdf_clone = params.shape_sdf.clone();
     let shell_sdf = move |p: Point3<f64>| -> f64 {
         let value = tpms_fn(p);
         // Shell: |f(x)| - half_thickness = 0 means on surface
         // We want negative inside the shell
-        (value - threshold).abs() - half_thickness
+        let tpms_value = (value - threshold).abs() - half_thickness;
+        shape_sdf_clone
+            .as_ref()
+            .map_or(tpms_value, |sdf| tpms_value.max(sdf(p)))
     };
 
     // Calculate resolution based on bounds
@@ -451,6 +465,11 @@ fn generate_voronoi_lattice(
 
                 let density = params.density_at(node);
                 if density < 0.05 {
+                    continue;
+                }
+
+                // Skip nodes outside the shape boundary
+                if params.is_outside_shape(node) {
                     continue;
                 }
 
@@ -642,6 +661,77 @@ mod tests {
 
         // Should still work, just with fewer cells
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_cubic_lattice_with_shape_sdf() {
+        use std::sync::Arc;
+
+        // Sphere of radius 15, centered at (12.5, 12.5, 12.5)
+        let center = Point3::new(12.5, 12.5, 12.5);
+        let radius = 15.0;
+        let sdf = Arc::new(move |p: Point3<f64>| (p - center).norm() - radius);
+
+        let params = LatticeParams::cubic(5.0).with_shape_sdf(sdf);
+        let bounds = (Point3::new(0.0, 0.0, 0.0), Point3::new(25.0, 25.0, 25.0));
+        let result = generate_lattice(&params, bounds).unwrap();
+
+        // All vertices should be within the sphere (with tolerance for strut extent)
+        let tolerance = 6.0; // strut radius + cell_size margin
+        for v in &result.mesh.vertices {
+            let dist = (v - center).norm();
+            assert!(
+                dist < radius + tolerance,
+                "vertex at ({}, {}, {}) is {:.1} from center, radius is {radius}",
+                v.x,
+                v.y,
+                v.z,
+                dist
+            );
+        }
+    }
+
+    #[test]
+    fn test_gyroid_lattice_with_shape_sdf() {
+        use std::sync::Arc;
+
+        // Sphere of radius 12, centered at origin
+        let radius = 12.0;
+        let sdf = Arc::new(move |p: Point3<f64>| p.coords.norm() - radius);
+
+        let params = LatticeParams::gyroid(8.0)
+            .with_density(0.3)
+            .with_resolution(8)
+            .with_shape_sdf(sdf);
+        let bounds = (
+            Point3::new(-15.0, -15.0, -15.0),
+            Point3::new(15.0, 15.0, 15.0),
+        );
+        let result_with_sdf = generate_lattice(&params, bounds).unwrap();
+
+        // Without SDF (same bounds)
+        let params_no_sdf = LatticeParams::gyroid(8.0)
+            .with_density(0.3)
+            .with_resolution(8);
+        let result_without_sdf = generate_lattice(&params_no_sdf, bounds).unwrap();
+
+        // With SDF should have fewer vertices (trimmed to sphere)
+        assert!(
+            result_with_sdf.vertex_count() < result_without_sdf.vertex_count(),
+            "SDF-trimmed lattice ({}) should have fewer vertices than full ({})  ",
+            result_with_sdf.vertex_count(),
+            result_without_sdf.vertex_count()
+        );
+    }
+
+    #[test]
+    fn test_no_shape_sdf_backward_compat() {
+        // Without shape_sdf, behavior should be identical to before
+        let params = LatticeParams::cubic(5.0);
+        let bounds = (Point3::new(0.0, 0.0, 0.0), Point3::new(25.0, 25.0, 25.0));
+        let result = generate_lattice(&params, bounds);
+        assert!(result.is_ok());
+        assert!(result.unwrap().vertex_count() > 0);
     }
 
     #[test]

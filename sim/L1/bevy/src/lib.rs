@@ -75,18 +75,21 @@ pub mod mesh;
 pub mod model_data;
 pub mod plugin;
 pub mod resources;
+pub mod scene;
 pub mod systems;
 
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use crate::camera::OrbitCamera;
     pub use crate::components::{CollisionShapeVisual, ShapeType, VisGroup};
+    pub use crate::convert::{transform_from_physics, transform_from_physics_pose};
     pub use crate::gizmos::DebugGizmosSet;
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
+    pub use crate::mesh::{spawn_design_mesh, triangle_mesh_from_indexed};
     pub use crate::model_data::{
         ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
         ModelSiteIndex, PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data,
-        sync_model_data_to_bevy,
+        sync_geom_transforms, sync_model_data_to_bevy,
     };
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{
@@ -94,6 +97,7 @@ pub mod prelude {
         SensorVisualData, SensorVisualType, SensorVisualization, TendonVisualData,
         TendonVisualization, ViewerConfig,
     };
+    pub use crate::scene::ExampleScene;
     pub use crate::systems::update_cached_contacts;
 
     // Re-export Model/Data types from sim-core for convenience

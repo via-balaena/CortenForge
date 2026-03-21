@@ -2413,7 +2413,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-design-to-print"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "cf-geometry",
+ "mesh-lattice",
+ "mesh-measure",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-shell",
+ "nalgebra",
+ "sim-bevy",
+]
+
+[[package]]
 name = "example-design-to-sim"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-finger-design"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2422,7 +2449,23 @@ dependencies = [
  "nalgebra",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
+]
+
+[[package]]
+name = "example-full-pipeline"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "cf-geometry",
+ "mesh-lattice",
+ "mesh-measure",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-shell",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
 ]
 
 [[package]]
@@ -2462,6 +2505,65 @@ dependencies = [
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
+]
+
+[[package]]
+name = "example-sdf-01-drop"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-02-pair"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-03-hinge"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-04-socket"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sim-informed-design"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "cf-geometry",
+ "mesh-lattice",
+ "mesh-measure",
+ "mesh-repair",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
 ]
 
 [[package]]

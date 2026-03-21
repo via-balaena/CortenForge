@@ -1,5 +1,5 @@
 [package]
-name = "example-design-to-sim"
+name = "example-sdf-03-hinge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

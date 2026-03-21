@@ -1,5 +1,5 @@
 [package]
-name = "example-design-to-sim"
+name = "example-sim-informed-design"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +7,10 @@ publish = false
 
 [dependencies]
 cf-design = { workspace = true }
+cf-geometry = { workspace = true }
+mesh-lattice = { workspace = true }
+mesh-measure = { workspace = true }
+mesh-repair = { workspace = true }
 sim-core = { workspace = true }
 sim-bevy = { workspace = true }
 bevy = { workspace = true, features = [

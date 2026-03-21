@@ -1,5 +1,9 @@
 //! Lattice generation parameters.
 
+use std::sync::Arc;
+
+use nalgebra::Point3;
+
 use crate::density::DensityMap;
 use crate::types::LatticeType;
 
@@ -21,7 +25,7 @@ use crate::types::LatticeType;
 ///     .with_density(0.25)
 ///     .with_wall_thickness(0.6);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LatticeParams {
     /// Type of lattice structure to generate.
     pub lattice_type: LatticeType,
@@ -73,6 +77,40 @@ pub struct LatticeParams {
     /// When enabled, the raw beam definitions are stored in
     /// [`LatticeResult::beam_data`](crate::LatticeResult::beam_data).
     pub preserve_beam_data: bool,
+
+    /// Optional shape SDF for boundary-conforming lattice generation.
+    ///
+    /// When set, lattice geometry outside the shape boundary (where
+    /// `sdf(point) > 0`) is excluded. The SDF convention is:
+    /// - Negative = inside the shape
+    /// - Positive = outside the shape
+    /// - Zero = on the surface
+    pub shape_sdf: Option<Arc<dyn Fn(Point3<f64>) -> f64 + Send + Sync>>,
+}
+
+impl std::fmt::Debug for LatticeParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LatticeParams")
+            .field("lattice_type", &self.lattice_type)
+            .field("cell_size", &self.cell_size)
+            .field("strut_thickness", &self.strut_thickness)
+            .field("wall_thickness", &self.wall_thickness)
+            .field("density", &self.density)
+            .field("density_map", &self.density_map)
+            .field("min_feature_size", &self.min_feature_size)
+            .field("resolution", &self.resolution)
+            .field("trim_to_bounds", &self.trim_to_bounds)
+            .field("preserve_beam_data", &self.preserve_beam_data)
+            .field(
+                "shape_sdf",
+                if self.shape_sdf.is_some() {
+                    &"<shape_sdf>"
+                } else {
+                    &"None"
+                },
+            )
+            .finish()
+    }
 }
 
 impl Default for LatticeParams {
@@ -88,6 +126,7 @@ impl Default for LatticeParams {
             resolution: 10,
             trim_to_bounds: true,
             preserve_beam_data: false,
+            shape_sdf: None,
         }
     }
 }
@@ -344,6 +383,39 @@ impl LatticeParams {
         self
     }
 
+    /// Sets a shape SDF for boundary-conforming lattice generation.
+    ///
+    /// Only lattice geometry inside the shape (where `sdf(point) <= 0`)
+    /// is generated. This allows lattice infill to conform to arbitrary
+    /// shapes rather than filling an axis-aligned bounding box.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mesh_lattice::LatticeParams;
+    /// use std::sync::Arc;
+    ///
+    /// // Sphere boundary: only generate lattice inside radius 25
+    /// let params = LatticeParams::gyroid(8.0)
+    ///     .with_shape_sdf(Arc::new(|p| {
+    ///         (p.x * p.x + p.y * p.y + p.z * p.z).sqrt() - 25.0
+    ///     }));
+    /// assert!(params.shape_sdf.is_some());
+    /// ```
+    #[must_use]
+    pub fn with_shape_sdf(mut self, sdf: Arc<dyn Fn(Point3<f64>) -> f64 + Send + Sync>) -> Self {
+        self.shape_sdf = Some(sdf);
+        self
+    }
+
+    /// Returns true if the point is outside the shape boundary.
+    ///
+    /// When no shape SDF is set, all points are considered inside.
+    #[must_use]
+    pub fn is_outside_shape(&self, point: Point3<f64>) -> bool {
+        self.shape_sdf.as_ref().is_some_and(|sdf| sdf(point) > 0.0)
+    }
+
     /// Returns the effective density at a given point.
     ///
     /// If a density map is set, evaluates it at the point.
@@ -476,5 +548,53 @@ mod tests {
             params.validate(),
             Err(crate::LatticeError::InvalidStrutThickness { .. })
         ));
+    }
+
+    #[test]
+    fn test_shape_sdf_builder() {
+        use std::sync::Arc;
+
+        let sdf = Arc::new(|p: nalgebra::Point3<f64>| p.coords.norm() - 25.0);
+        let params = LatticeParams::gyroid(8.0).with_shape_sdf(sdf);
+        assert!(params.shape_sdf.is_some());
+    }
+
+    #[test]
+    fn test_is_outside_shape_no_sdf() {
+        let params = LatticeParams::cubic(5.0);
+        // Without SDF, nothing is outside
+        assert!(!params.is_outside_shape(nalgebra::Point3::new(100.0, 100.0, 100.0)));
+    }
+
+    #[test]
+    fn test_is_outside_shape_sphere() {
+        use std::sync::Arc;
+
+        let params = LatticeParams::cubic(5.0)
+            .with_shape_sdf(Arc::new(|p: nalgebra::Point3<f64>| p.coords.norm() - 10.0));
+
+        // Inside the sphere
+        assert!(!params.is_outside_shape(nalgebra::Point3::new(0.0, 0.0, 0.0)));
+        assert!(!params.is_outside_shape(nalgebra::Point3::new(5.0, 0.0, 0.0)));
+
+        // Outside the sphere
+        assert!(params.is_outside_shape(nalgebra::Point3::new(15.0, 0.0, 0.0)));
+        assert!(params.is_outside_shape(nalgebra::Point3::new(0.0, 11.0, 0.0)));
+    }
+
+    #[test]
+    fn test_shape_sdf_debug() {
+        use std::sync::Arc;
+
+        let params =
+            LatticeParams::cubic(5.0).with_shape_sdf(Arc::new(|_: nalgebra::Point3<f64>| 0.0));
+        let debug = format!("{params:?}");
+        assert!(debug.contains("shape_sdf"));
+    }
+
+    #[test]
+    fn test_default_has_no_shape_sdf() {
+        let params = LatticeParams::default();
+        assert!(params.shape_sdf.is_none());
     }
 }

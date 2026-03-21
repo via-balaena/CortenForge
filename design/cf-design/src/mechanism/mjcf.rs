@@ -31,6 +31,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use nalgebra::Vector3;
+
 use super::actuator::ActuatorKind;
 use super::builder::Mechanism;
 use super::joint::{JointDef, JointKind};
@@ -232,19 +234,39 @@ fn write_body(
     }
 
     // Joints (present only when this part is a child body).
+    // body_anchor is the first joint's anchor (used for body pos and joint pos offset).
+    let body_anchor = joints_on
+        .get(part.name())
+        .and_then(|jlist| jlist.first())
+        .map_or_else(nalgebra::Point3::origin, |j| *j.anchor());
+
     if let Some(jlist) = joints_on.get(part.name()) {
         for joint in jlist {
-            write_joint(xml, joint, indent + 2);
+            write_joint(xml, joint, &body_anchor, indent + 2);
         }
     }
 
     // Geom referencing the mesh asset, with material density for mass computation.
+    // For child bodies, offset the geom so the part extends outward from the joint
+    // (away from parent body) rather than being centered on it.
     let density = part.material().density;
-    let _ = writeln!(
-        xml,
-        "{pad}  <geom type=\"mesh\" mesh=\"{}_mesh\" density=\"{density}\"/>",
-        esc(part.name())
-    );
+    let geom_offset = compute_geom_offset(part, joints_on);
+    if geom_offset.norm() > 1e-10 {
+        let _ = writeln!(
+            xml,
+            "{pad}  <geom type=\"mesh\" mesh=\"{}_mesh\" density=\"{density}\" pos=\"{} {} {}\"/>",
+            esc(part.name()),
+            geom_offset.x,
+            geom_offset.y,
+            geom_offset.z,
+        );
+    } else {
+        let _ = writeln!(
+            xml,
+            "{pad}  <geom type=\"mesh\" mesh=\"{}_mesh\" density=\"{density}\"/>",
+            esc(part.name())
+        );
+    }
 
     // Tendon waypoint sites on this body.
     if let Some(slist) = sites.get(part.name()) {
@@ -277,8 +299,78 @@ fn write_body(
     let _ = writeln!(xml, "{pad}</body>");
 }
 
+/// Compute a geom position offset so child parts extend outward from the joint.
+///
+/// For root bodies (no joints), returns zero. For child bodies with an explicit
+/// `joint_origin`, returns `-origin` (the mesh point that should coincide with
+/// the joint). Otherwise falls back to bbox-based alignment: the near edge of
+/// the bounding box (on the longest axis) is placed at the body origin so the
+/// part extends outward from the joint.
+fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -> Vector3<f64> {
+    let jlist = match joints_on.get(part.name()) {
+        Some(jl) if !jl.is_empty() => jl,
+        _ => return Vector3::zeros(), // root body — no offset needed
+    };
+
+    // Explicit joint origin — the user declared exactly where the part attaches.
+    if let Some(origin) = part.joint_origin() {
+        return -origin;
+    }
+
+    let anchor = jlist[0].anchor();
+    let anchor_vec = anchor.coords;
+    let anchor_norm = anchor_vec.norm();
+    if anchor_norm < 1e-10 {
+        return Vector3::zeros();
+    }
+
+    // Compute bounding box from a coarse mesh (just for extents).
+    let mesh = part.solid().mesh(1.0);
+    if mesh.vertices.is_empty() {
+        return Vector3::zeros();
+    }
+
+    let mut min = mesh.vertices[0].coords;
+    let mut max = mesh.vertices[0].coords;
+    for v in &mesh.vertices {
+        min = min.inf(&v.coords);
+        max = max.sup(&v.coords);
+    }
+    let extents = max - min;
+    let center = (max + min) * 0.5;
+
+    // Find the bbox's longest axis — that's the part's primary extension direction.
+    let longest_axis = if extents.x >= extents.y && extents.x >= extents.z {
+        0
+    } else if extents.y >= extents.z {
+        1
+    } else {
+        2
+    };
+
+    // Near edge: the bbox edge closest to the parent (toward the joint).
+    // If the anchor points in the +Z direction, the near edge is min[Z].
+    // Offset = -near_edge so the near edge sits at the body origin (the joint).
+    let near_edge = if anchor_vec[longest_axis] >= 0.0 {
+        min[longest_axis]
+    } else {
+        max[longest_axis]
+    };
+    let mut offset = center;
+    offset[longest_axis] = -near_edge;
+    offset
+}
+
 /// Write a single `<joint>` or `<freejoint>` element.
-fn write_joint(xml: &mut String, joint: &JointDef, indent: usize) {
+///
+/// `body_anchor` is the body's position in parent frame (from the first joint).
+/// Joint `pos` is emitted in body-local coordinates: `joint.anchor() - body_anchor`.
+fn write_joint(
+    xml: &mut String,
+    joint: &JointDef,
+    body_anchor: &nalgebra::Point3<f64>,
+    indent: usize,
+) {
     let pad = " ".repeat(indent);
 
     let type_str = match joint.kind() {
@@ -297,9 +389,12 @@ fn write_joint(xml: &mut String, joint: &JointDef, indent: usize) {
         esc(joint.name())
     );
 
-    // Anchor position.
+    // Joint position in body-local frame (body is already at the first joint's anchor).
     let p = joint.anchor();
-    let _ = write!(xml, " pos=\"{} {} {}\"", p.x, p.y, p.z);
+    let local = p - body_anchor;
+    if local.norm() > 1e-10 {
+        let _ = write!(xml, " pos=\"{} {} {}\"", local.x, local.y, local.z);
+    }
 
     // Axis (hinge and slide only — ball joints have no axis in MJCF).
     if matches!(joint.kind(), JointKind::Revolute | JointKind::Prismatic) {
@@ -378,6 +473,17 @@ fn write_actuators(xml: &mut String, mechanism: &Mechanism) {
 
         if let Some((clo, chi)) = act.ctrl_range() {
             let _ = write!(xml, " ctrlrange=\"{clo} {chi}\"");
+
+            // Compute gear so that ctrl maps to the full force range.
+            // Without gear, default gain=1 means force=ctrl (tiny).
+            let max_ctrl = chi.abs().max(clo.abs());
+            if max_ctrl > 1e-10 {
+                let max_force = fhi.abs().max(flo.abs());
+                let gear = max_force / max_ctrl;
+                if (gear - 1.0).abs() > 1e-10 {
+                    let _ = write!(xml, " gear=\"{gear}\"");
+                }
+            }
         }
 
         let _ = writeln!(xml, "/>");
@@ -685,6 +791,7 @@ mod tests {
         assert!(xml.contains("<general name=\"motor_1\" tendon=\"t\""));
         assert!(xml.contains("forcerange=\"-50 50\""));
         assert!(xml.contains("ctrlrange=\"-1 1\""));
+        assert!(xml.contains("gear=\"50\""), "expected gear=50 in:\n{xml}");
         assert!(xml.contains("</actuator>"));
     }
 

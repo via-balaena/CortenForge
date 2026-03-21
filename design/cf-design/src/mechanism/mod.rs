@@ -22,6 +22,7 @@ pub mod joint;
 pub mod mass;
 pub mod material;
 mod mjcf;
+mod model_builder;
 pub mod part;
 pub mod print;
 mod shapes;

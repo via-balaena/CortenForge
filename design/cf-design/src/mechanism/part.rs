@@ -169,6 +169,7 @@ pub struct Part {
     solid: Solid,
     material: Material,
     flex_zones: Vec<FlexZone>,
+    joint_origin: Option<Vector3<f64>>,
 }
 
 impl Part {
@@ -188,6 +189,7 @@ impl Part {
             solid,
             material,
             flex_zones: Vec::new(),
+            joint_origin: None,
         }
     }
 
@@ -212,6 +214,31 @@ impl Part {
             }
         }
         self
+    }
+
+    /// Set an explicit joint attachment origin in mesh-local coordinates.
+    ///
+    /// When set, the MJCF geom offset is `-origin` so that this point in the
+    /// mesh aligns with the parent joint. Use this when the attachment feature
+    /// (e.g. a socket) is not at the bbox edge.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any component of `origin` is non-finite.
+    #[must_use]
+    pub fn with_joint_origin(mut self, origin: Vector3<f64>) -> Self {
+        assert!(
+            origin.iter().all(|c| c.is_finite()),
+            "joint origin must have finite components"
+        );
+        self.joint_origin = Some(origin);
+        self
+    }
+
+    /// Explicit joint attachment origin, if set.
+    #[must_use]
+    pub const fn joint_origin(&self) -> Option<&Vector3<f64>> {
+        self.joint_origin.as_ref()
     }
 
     /// Part name.
@@ -282,6 +309,21 @@ mod tests {
     #[should_panic(expected = "part name must not be empty")]
     fn part_rejects_empty_name() {
         let _p = Part::new("", Solid::sphere(1.0), Material::new("PLA", 1250.0));
+    }
+
+    #[test]
+    fn part_joint_origin() {
+        let p = Part::new("socket", Solid::sphere(5.0), Material::new("PLA", 1250.0))
+            .with_joint_origin(Vector3::new(0.0, 0.0, -10.0));
+        let o = p.joint_origin();
+        assert!(o.is_some(), "joint_origin should be set");
+        assert!((o.map_or(0.0, |v| v.z) - (-10.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn part_joint_origin_default_none() {
+        let p = Part::new("plain", Solid::sphere(5.0), Material::new("PLA", 1250.0));
+        assert!(p.joint_origin().is_none());
     }
 
     #[test]

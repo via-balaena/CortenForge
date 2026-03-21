@@ -1,5 +1,5 @@
 [package]
-name = "example-design-to-sim"
+name = "example-sdf-04-socket"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
