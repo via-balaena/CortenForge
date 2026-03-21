@@ -184,6 +184,12 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     // cf-design geometry is in mm. Scale gravity from m/s² to mm/s².
     model.gravity = nalgebra::Vector3::new(0.0, 0.0, -9810.0);
 
+    // mm-scale bodies have tiny masses (O(10⁻⁴) kg), making the contact
+    // natural frequency ~1000× higher than at m-scale. The default timestep
+    // (0.002s) can't resolve these dynamics. Use 0.0005s (2 kHz) which
+    // keeps the contact frequency within the integrator's stability range.
+    model.timestep = 0.0005;
+
     // Parent-child collision filtering stays ON (MuJoCo default).
     // SDF-SDF parent-child collision (socket/condyle) needs multi-contact
     // support in sdf_sdf_contact before it can constrain concave geometry.
@@ -451,6 +457,17 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     model.sdf_data = sdf_data;
     model.nsdf = model.sdf_data.len();
 
+    // Set geom_margin for SDF geoms now that sdf_data is populated.
+    // The margin tells the solver to provide position correction at the
+    // margin boundary (before full geometric penetration).
+    for geom_id in 0..model.ngeom {
+        if model.geom_type[geom_id] == GeomType::Sdf {
+            if let Some(sdf_id) = model.geom_sdf[geom_id] {
+                model.geom_margin[geom_id] = model.sdf_data[sdf_id].cell_size() * 0.25;
+            }
+        }
+    }
+
     // ── Sites (tendon waypoints) ────────────────────────────────────
     let site_map = build_site_map(tendons);
     for &part_name in &body_order {
@@ -694,8 +711,9 @@ fn push_geom(
     model.geom_plugin.push(None);
     model.geom_user.push(vec![]);
 
-    // Visual-only geoms (Mesh) should not participate in collision.
     let geom_idx = model.geom_type.len() - 1;
+
+    // Visual-only geoms (Mesh) should not participate in collision.
     if geom_type == GeomType::Mesh {
         model.geom_contype[geom_idx] = 0;
         model.geom_conaffinity[geom_idx] = 0;

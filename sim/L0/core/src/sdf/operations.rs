@@ -126,12 +126,13 @@ fn trace_surface_into_other(
                     continue;
                 };
 
-                // Detect contact if dst_dist < margin (pre-penetration lookahead).
-                // But report only the actual geometric penetration (how far inside).
-                if dst_dist >= margin {
+                // Contact if surface point is within margin of dst's interior.
+                // Report margin-inclusive depth so the solver's position correction
+                // is non-zero even before full geometric penetration.
+                let penetration = margin - dst_dist;
+                if penetration <= 0.0 {
                     continue;
                 }
-                let penetration = (-dst_dist).max(0.0);
 
                 let world_normal = if flip_normal {
                     -(src_pose.rotation * grad)

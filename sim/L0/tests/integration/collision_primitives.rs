@@ -1094,3 +1094,174 @@ fn sphere_stack_dynamic() {
     let gap = z_up - z_lo;
     assert!((gap - 10.0).abs() < 2.0, "gap should be ~10, got {gap:.3}");
 }
+
+/// Same stacking test but at meter-scale (MuJoCo standard units).
+/// Tests whether the stacking failure is mm-scale-specific.
+#[test]
+#[ignore] // Diagnostic test for scale investigation
+fn sphere_stack_dynamic_meter_scale() {
+    let mjcf = r#"
+        <mujoco model="dynamic_stack_m">
+            <option gravity="0 0 -9.81" timestep="0.002"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="lower" pos="0 0 0.55">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="0.5"/>
+                </body>
+                <body name="upper" pos="0 0 1.55">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    for _ in 0..2500 {
+        data.step(&model).expect("step failed");
+    }
+
+    let z_lo = data.qpos[2];
+    let z_up = data.qpos[9];
+
+    eprintln!(
+        "meter_scale_stack: z_lo={:.4} z_up={:.4} ncon={}",
+        z_lo, z_up, data.ncon
+    );
+    eprintln!("  gap={:.4} (expected 1.0)", z_up - z_lo);
+}
+
+/// MM-scale with DEFAULT solref (not tightened). Tests whether solref=0.005
+/// specifically causes the failure.
+#[test]
+#[ignore]
+fn sphere_stack_dynamic_mm_default_solref() {
+    let mjcf = r#"
+        <mujoco model="dynamic_stack_mm_default">
+            <option gravity="0 0 -9810" timestep="0.002"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="40 40 0.1"/>
+                <body name="lower" pos="0 0 5.5">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="5"/>
+                </body>
+                <body name="upper" pos="0 0 15.5">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    for _ in 0..2500 {
+        data.step(&model).expect("step failed");
+    }
+
+    let z_lo = data.qpos[2];
+    let z_up = data.qpos[9];
+
+    eprintln!(
+        "mm_default_solref: z_lo={:.3} z_up={:.3} gap={:.3} ncon={}",
+        z_lo,
+        z_up,
+        z_up - z_lo,
+        data.ncon
+    );
+}
+
+/// MM-scale with smaller timestep. Tests whether the issue is Nyquist-related.
+#[test]
+#[ignore]
+fn sphere_stack_dynamic_mm_small_timestep() {
+    let mjcf = r#"
+        <mujoco model="dynamic_stack_mm_small_dt">
+            <option gravity="0 0 -9810" timestep="0.0001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="40 40 0.1"/>
+                <body name="lower" pos="0 0 5.5">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="5"/>
+                </body>
+                <body name="upper" pos="0 0 15.5">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // 50000 steps at 0.0001s = 5 seconds
+    for _ in 0..50000 {
+        data.step(&model).expect("step failed");
+    }
+
+    let z_lo = data.qpos[2];
+    let z_up = data.qpos[9];
+    eprintln!(
+        "mm_small_dt: z_lo={:.3} z_up={:.3} gap={:.3} ncon={}",
+        z_lo,
+        z_up,
+        z_up - z_lo,
+        data.ncon
+    );
+}
+
+/// MM-scale with 0.0005s timestep — compromise between speed and stability.
+#[test]
+#[ignore]
+fn sphere_stack_dynamic_mm_mid_timestep() {
+    let mjcf = r#"
+        <mujoco model="dynamic_stack_mm_mid_dt">
+            <option gravity="0 0 -9810" timestep="0.0005"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="40 40 0.1"/>
+                <body name="lower" pos="0 0 5.5">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="5"/>
+                </body>
+                <body name="upper" pos="0 0 15.5">
+                    <joint type="free"/>
+                    <inertial pos="0 0 0" mass="0.000655" diaginertia="0.00655 0.00655 0.00655"/>
+                    <geom type="sphere" size="5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    for _ in 0..10000 {
+        data.step(&model).expect("step failed");
+    }
+
+    let z_lo = data.qpos[2];
+    let z_up = data.qpos[9];
+    eprintln!(
+        "mm_mid_dt: z_lo={:.3} z_up={:.3} gap={:.3} ncon={}",
+        z_lo,
+        z_up,
+        z_up - z_lo,
+        data.ncon
+    );
+}
