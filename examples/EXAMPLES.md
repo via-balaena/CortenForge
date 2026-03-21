@@ -44,7 +44,7 @@ step working. If a step breaks, you know exactly what broke.
 | Step | Example | What it proves | New concept | Status |
 |------|---------|---------------|-------------|--------|
 | 01 | `01-sdf-grid` | `SdfGrid` from solid sphere at 1.0 mm cells. Accuracy < cell size. | SdfGrid construction | Working |
-| 02 | `02-thin-grid` | `SdfGrid` on thin walls (0.6 mm shell at 0.5 mm cells). Void preserved, wall resolved. | Thin-wall grid fidelity | Stub |
+| 02 | `02-thin-grid` | `SdfGrid` on thin walls (0.6 mm shell at 0.5 mm cells). Void preserved, wall resolved. | Thin-wall grid fidelity | Working |
 | 03 | `03-freefall` | `to_model()` mass/inertia. Free-fall matches `z₀ − ½gt²`. | to_model() + gravity | Stub |
 | 04 | `04-rest` | Body settles on ground plane. Near-zero velocity, no penetration. | sdf_plane_contact | Stub |
 | 05 | `05-drop` | Drop from height → impact → bounce → settle. No tunneling. | Dynamic contact + restitution | Stub |
