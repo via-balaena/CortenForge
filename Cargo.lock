@@ -2450,7 +2450,6 @@ dependencies = [
  "nalgebra",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]

@@ -9,7 +9,6 @@ publish = false
 cf-design = { workspace = true }
 cf-geometry = { workspace = true }
 sim-core = { workspace = true }
-sim-mjcf = { workspace = true }
 sim-bevy = { workspace = true }
 bevy = { workspace = true, features = [
     "bevy_asset",

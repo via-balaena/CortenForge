@@ -210,15 +210,16 @@ fn setup(
         );
     }
 
-    // ── Right: sim-driven animated finger ───────────────────────────────
-    let mjcf_xml = mechanism.to_mjcf(1.5);
-    let model = sim_mjcf::load_model(&mjcf_xml).expect("generated MJCF should load");
+    // ── Right: sim-driven animated finger (SDF-native physics) ─────────
+    // SDF resolution must be finer than the thinnest wall (socket wall = 0.6mm).
+    // Visual resolution matches the static mesh for visual consistency.
+    let model = mechanism.to_model(0.5, 0.3);
 
     println!(
         "  Physics: {} bodies, {} joints, {} DOFs, {} geoms, {} actuators",
         model.nbody, model.njnt, model.nv, model.ngeom, model.nu
     );
-    println!("  Left: separated parts | Right: animated finger");
+    println!("  Left: separated parts | Right: SDF-native animated finger");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     let mut data = model.make_data();
