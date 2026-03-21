@@ -17,5 +17,6 @@
 //! Run with: `cargo run -p example-sdf-07-pair --release`
 
 fn main() {
-    eprintln!("TODO: not yet implemented — see examples/EXAMPLES.md for roadmap");
+    eprintln!("TODO: not yet implemented — blocked on SDF-SDF contact algorithm redesign");
+    eprintln!("See sim/docs/SDF_SDF_CONTACT_SPEC.md for the redesign plan.");
 }
