@@ -7,8 +7,10 @@
 //!   [`SdfGrid`] for O(1) collision queries with exact distance semantics.
 //! - **High-res visual meshes**: the same [`Solid`] produces a separate triangle
 //!   mesh for Bevy rendering, ensuring visual/physics alignment.
-//! - **Parent-child collision**: `DISABLE_FILTERPARENT` is set so socket/condyle
-//!   contacts work correctly for knuckle-style joints.
+//! - **Standard collision filtering**: parent-child bodies are filtered
+//!   (default). SDF collision works for non-parent-child geom pairs. Parent-child
+//!   SDF collision (socket/condyle) requires multi-contact `sdf_sdf_contact` —
+//!   future work.
 //!
 //! # Architecture
 //!
@@ -39,8 +41,8 @@ use std::sync::Arc;
 
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_FILTERPARENT, GainType, GeomType,
-    MjJointType, Model, SdfGrid, TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, GainType, GeomType, MjJointType, Model,
+    SdfGrid, TendonType, WrapType,
 };
 
 use super::actuator::ActuatorKind;
@@ -191,8 +193,9 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     let mut model = Model::empty();
     model.name = mechanism.name().to_string();
 
-    // Enable parent-child collision (knuckle socket/condyle contacts)
-    model.disableflags |= DISABLE_FILTERPARENT;
+    // Parent-child collision filtering stays ON (MuJoCo default).
+    // SDF-SDF parent-child collision (socket/condyle) needs multi-contact
+    // support in sdf_sdf_contact before it can constrain concave geometry.
 
     // ── Bodies ───────────────────────────────────────────────────────
     // World body (index 0) is already in empty model. Add part bodies.
@@ -1024,14 +1027,15 @@ mod tests {
         }
     }
 
-    // ── 5. DISABLE_FILTERPARENT enabled ────────────────────────────
+    // ── 5. Parent-child filtered (default) ──────────────────────────
 
     #[test]
-    fn parent_child_collision_enabled() {
+    fn parent_child_collision_filtered() {
         let model = two_part_mechanism().to_model(2.0, 2.0);
-        assert!(
-            model.disableflags & sim_core::DISABLE_FILTERPARENT != 0,
-            "DISABLE_FILTERPARENT should be set"
+        assert_eq!(
+            model.disableflags & sim_core::DISABLE_FILTERPARENT,
+            0,
+            "DISABLE_FILTERPARENT should NOT be set by default"
         );
     }
 
