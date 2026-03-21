@@ -85,11 +85,19 @@ pub fn collide_with_sdf(
         )
     };
 
-    // Plane dispatch: multi-contact (returns Vec<SdfContact>)
+    // Multi-contact dispatch: Plane and SDF-SDF both return Vec<SdfContact>.
     if model.geom_type[other_geom] == GeomType::Plane {
         let plane_normal = other_mat.column(2).into_owned();
         let plane_offset = plane_normal.dot(&other_pos);
         let sdf_contacts = sdf_plane_contact(sdf, &sdf_pose, &plane_normal, plane_offset);
+        return sdf_contacts.iter().map(&convert).collect();
+    }
+    if model.geom_type[other_geom] == GeomType::Sdf {
+        let Some(other_sdf_id) = model.geom_sdf[other_geom] else {
+            return vec![];
+        };
+        let other_sdf = &model.sdf_data[other_sdf_id];
+        let sdf_contacts = sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose);
         return sdf_contacts.iter().map(&convert).collect();
     }
 
@@ -132,14 +140,7 @@ pub fn collide_with_sdf(
                 Pose::from_position_rotation(Point3::from(other_pos + hf_offset), other_quat);
             sdf_heightfield_contact(sdf, &sdf_pose, hfield, &hf_pose)
         }
-        GeomType::Sdf => {
-            let Some(other_sdf_id) = model.geom_sdf[other_geom] else {
-                return vec![];
-            };
-            let other_sdf = &model.sdf_data[other_sdf_id];
-            sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose)
-        }
-        GeomType::Plane => unreachable!(), // handled above
+        GeomType::Sdf | GeomType::Plane => unreachable!(), // handled above
     };
 
     contact.map(|c| convert(&c)).into_iter().collect()

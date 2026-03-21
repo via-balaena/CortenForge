@@ -83,59 +83,54 @@ pub fn compute_aabb_overlap(
 /// Contact information if the SDFs overlap, with:
 /// - `point`: Contact point in the overlap region (world space)
 /// - `normal`: Surface normal from the SDF with smaller absolute distance at contact
-/// - `penetration`: Depth of the deepest overlap (min of `|dist_a|`, `|dist_b|`)
+/// - `penetration`: Depth of overlap (min of `|dist_a|`, `|dist_b|`)
+///
+/// Returns multiple contacts (up to `MAX_SDF_SDF_CONTACTS`) to distribute
+/// constraint forces across the contact patch, preventing single-point jitter.
 #[must_use]
 pub fn sdf_sdf_contact(
     sdf_a: &SdfGrid,
     pose_a: &Pose,
     sdf_b: &SdfGrid,
     pose_b: &Pose,
-) -> Option<SdfContact> {
-    // Compute world-space AABBs for both SDFs
+) -> Vec<SdfContact> {
     let a_aabb = sdf_a.aabb();
     let b_aabb = sdf_b.aabb();
     let (a_world_min, a_world_max) = transform_aabb_to_world(&a_aabb.min, &a_aabb.max, pose_a);
     let (b_world_min, b_world_max) = transform_aabb_to_world(&b_aabb.min, &b_aabb.max, pose_b);
 
-    // Compute AABB overlap region
-    let (overlap_min, overlap_max) =
-        compute_aabb_overlap(a_world_min, a_world_max, b_world_min, b_world_max)?;
+    let Some((overlap_min, overlap_max)) =
+        compute_aabb_overlap(a_world_min, a_world_max, b_world_min, b_world_max)
+    else {
+        return vec![];
+    };
 
-    // Determine sampling resolution based on the smaller cell size of the two SDFs
     let sample_cell = sdf_a.cell_size().min(sdf_b.cell_size());
-
-    // Compute overlap dimensions
     let overlap_size = overlap_max - overlap_min;
 
-    // Number of samples along each axis (at least 2 per dimension for interpolation)
     let nx = ((overlap_size.x / sample_cell).ceil() as usize).clamp(2, 32);
     let ny = ((overlap_size.y / sample_cell).ceil() as usize).clamp(2, 32);
     let nz = ((overlap_size.z / sample_cell).ceil() as usize).clamp(2, 32);
 
-    // Step size for sampling
     let step_x = overlap_size.x / (nx - 1).max(1) as f64;
     let step_y = overlap_size.y / (ny - 1).max(1) as f64;
     let step_z = overlap_size.z / (nz - 1).max(1) as f64;
 
-    let mut deepest_contact: Option<SdfContact> = None;
-    let mut max_penetration = 0.0;
+    let mut contacts: Vec<SdfContact> = Vec::new();
+    let dedup_dist_sq = (sample_cell * 0.5) * (sample_cell * 0.5);
 
-    // Sample the overlap region
     for iz in 0..nz {
         for iy in 0..ny {
             for ix in 0..nx {
-                // Compute world-space sample point
                 let world_point = Point3::new(
                     overlap_min.x + ix as f64 * step_x,
                     overlap_min.y + iy as f64 * step_y,
                     overlap_min.z + iz as f64 * step_z,
                 );
 
-                // Transform to each SDF's local space
                 let local_a = pose_a.inverse_transform_point(&world_point);
                 let local_b = pose_b.inverse_transform_point(&world_point);
 
-                // Query both SDFs
                 let Some(dist_a) = sdf_a.distance(local_a) else {
                     continue;
                 };
@@ -143,33 +138,31 @@ pub fn sdf_sdf_contact(
                     continue;
                 };
 
-                // Check if point is inside both surfaces (both distances negative)
                 if dist_a >= 0.0 || dist_b >= 0.0 {
                     continue;
                 }
 
-                // Penetration depth is the minimum of the two absolute distances
-                // (the shallowest penetration determines how deep we are in the overlap)
                 let abs_dist_a = dist_a.abs();
                 let abs_dist_b = dist_b.abs();
                 let penetration = abs_dist_a.min(abs_dist_b);
 
-                if penetration > max_penetration {
-                    max_penetration = penetration;
+                // Get normal from the SDF with smaller absolute distance
+                let (normal, contact_sdf_pose) = if abs_dist_a <= abs_dist_b {
+                    (sdf_a.gradient(local_a), pose_a)
+                } else {
+                    (sdf_b.gradient(local_b), pose_b)
+                };
 
-                    // Get normal from the SDF with smaller absolute distance
-                    // (the surface we're closer to breaking out of)
-                    let (normal, contact_sdf_pose) = if abs_dist_a <= abs_dist_b {
-                        (sdf_a.gradient(local_a), pose_a)
-                    } else {
-                        (sdf_b.gradient(local_b), pose_b)
-                    };
+                if let Some(local_normal) = normal {
+                    let world_normal = contact_sdf_pose.rotation * local_normal;
 
-                    if let Some(local_normal) = normal {
-                        // Transform normal to world space
-                        let world_normal = contact_sdf_pose.rotation * local_normal;
+                    // Deduplicate nearby contacts
+                    let dominated = contacts
+                        .iter()
+                        .any(|c| (c.point - world_point).norm_squared() < dedup_dist_sq);
 
-                        deepest_contact = Some(SdfContact {
+                    if !dominated {
+                        contacts.push(SdfContact {
                             point: world_point,
                             normal: world_normal,
                             penetration,
@@ -180,8 +173,17 @@ pub fn sdf_sdf_contact(
         }
     }
 
-    deepest_contact
+    contacts.sort_by(|a, b| {
+        b.penetration
+            .partial_cmp(&a.penetration)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    contacts.truncate(MAX_SDF_SDF_CONTACTS);
+    contacts
 }
+
+/// Maximum number of contacts returned by `sdf_sdf_contact`.
+const MAX_SDF_SDF_CONTACTS: usize = 20;
 
 // =============================================================================
 // Tests
@@ -209,13 +211,12 @@ mod tests {
         let sdf_a = sphere_sdf(32);
         let sdf_b = sphere_sdf(32);
 
-        // Place SDFs far apart - no contact
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
 
-        let contact = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
+        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
         assert!(
-            contact.is_none(),
+            contacts.is_empty(),
             "SDFs clearly separated should have no contact"
         );
     }
@@ -225,20 +226,23 @@ mod tests {
         let sdf_a = sphere_sdf(32);
         let sdf_b = sphere_sdf(32);
 
-        // Place SDFs overlapping (both are unit spheres at origin)
-        // Place B at x=1.5 so they overlap significantly
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(1.5, 0.0, 0.0));
 
-        let contact = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
-        assert!(contact.is_some(), "Overlapping SDFs should have contact");
+        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
+        assert!(!contacts.is_empty(), "Overlapping SDFs should have contact");
 
-        let c = contact.unwrap();
+        let c = &contacts[0];
         assert!(c.penetration > 0.0, "should have positive penetration");
-        // Contact point should be in the overlap region (between x=0.5 and x=1.0)
         assert!(
             c.point.x > 0.0 && c.point.x < 2.0,
             "contact point should be in overlap region"
+        );
+        // Multi-contact: overlapping spheres should produce multiple contacts
+        assert!(
+            contacts.len() > 1,
+            "overlapping spheres should produce multiple contacts (got {})",
+            contacts.len()
         );
     }
 
@@ -247,19 +251,16 @@ mod tests {
         let sdf_a = sphere_sdf(32);
         let sdf_b = sphere_sdf(32);
 
-        // Place SDFs at the same position for maximum penetration
         let pose_a = Pose::identity();
         let pose_b = Pose::identity();
 
-        let contact = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
+        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
         assert!(
-            contact.is_some(),
+            !contacts.is_empty(),
             "Coincident SDFs should have deep penetration"
         );
 
-        let c = contact.unwrap();
-        // When two unit spheres perfectly overlap, any interior point
-        // is inside both, with penetration up to 1.0 (the radius)
+        let c = &contacts[0];
         assert!(
             c.penetration > 0.5,
             "should have deep penetration (got {})",
@@ -272,19 +273,17 @@ mod tests {
         let sdf_a = sphere_sdf(32);
         let sdf_b = sphere_sdf(32);
 
-        // Translate both SDFs and have them overlap
         let pose_a = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
         let pose_b = Pose::from_position(Point3::new(6.5, 0.0, 0.0));
 
-        let contact = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
+        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
         assert!(
-            contact.is_some(),
+            !contacts.is_empty(),
             "Translated overlapping SDFs should have contact"
         );
 
-        let c = contact.unwrap();
+        let c = &contacts[0];
         assert!(c.penetration > 0.0);
-        // Contact point should be near x=5.75 (midpoint of overlap)
         assert!(
             c.point.x > 4.5 && c.point.x < 7.0,
             "contact point should be in overlap region"
@@ -296,18 +295,15 @@ mod tests {
         let sdf_sphere = sphere_sdf(32);
         let sdf_box = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
 
-        // Place box at edge of sphere
         let pose_sphere = Pose::identity();
         let pose_box = Pose::from_position(Point3::new(1.0, 0.0, 0.0));
 
-        let contact = sdf_sdf_contact(&sdf_sphere, &pose_sphere, &sdf_box, &pose_box);
+        let contacts = sdf_sdf_contact(&sdf_sphere, &pose_sphere, &sdf_box, &pose_box);
         assert!(
-            contact.is_some(),
+            !contacts.is_empty(),
             "Overlapping sphere and box SDFs should have contact"
         );
-
-        let c = contact.unwrap();
-        assert!(c.penetration > 0.0, "should have positive penetration");
+        assert!(contacts[0].penetration > 0.0);
     }
 
     #[test]
@@ -315,38 +311,31 @@ mod tests {
         let sdf_a = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
         let sdf_b = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
 
-        // Place boxes overlapping
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(0.7, 0.0, 0.0));
 
-        let contact = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
+        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
         assert!(
-            contact.is_some(),
+            !contacts.is_empty(),
             "Overlapping box SDFs should have contact"
         );
-
-        let c = contact.unwrap();
-        assert!(c.penetration > 0.0, "should have positive penetration");
+        assert!(contacts[0].penetration > 0.0);
     }
 
     #[test]
     fn test_sdf_sdf_contact_different_resolutions() {
-        // SDFs with different resolutions
         let sdf_a = SdfGrid::sphere(Point3::origin(), 1.0, 16, 0.5);
         let sdf_b = SdfGrid::sphere(Point3::origin(), 1.0, 32, 0.5);
 
-        // Place overlapping
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(1.5, 0.0, 0.0));
 
-        let contact = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
+        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
         assert!(
-            contact.is_some(),
+            !contacts.is_empty(),
             "SDFs with different resolutions should still detect contact"
         );
-
-        let c = contact.unwrap();
-        assert!(c.penetration > 0.0);
+        assert!(contacts[0].penetration > 0.0);
     }
 
     #[test]
@@ -354,21 +343,18 @@ mod tests {
         let sdf_a = sphere_sdf(32);
         let sdf_b = sphere_sdf(32);
 
-        // Place SDFs just barely touching (distance = 2.0 for two unit spheres)
-        // At exactly 2.0 they're tangent, so at 1.95 they should have slight overlap
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(1.95, 0.0, 0.0));
 
-        let contact = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
-        // Should have a very small contact
-        if let Some(c) = contact {
+        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b);
+        // At borderline cases, contact detection might be slightly inaccurate
+        // due to grid sampling, so we don't strictly require contacts to exist
+        for c in &contacts {
             assert!(
                 c.penetration > 0.0 && c.penetration < 0.2,
                 "barely touching SDFs should have small penetration (got {})",
                 c.penetration
             );
         }
-        // Note: At borderline cases, contact detection might be slightly inaccurate
-        // due to grid sampling, so we don't strictly require contact to exist
     }
 }
