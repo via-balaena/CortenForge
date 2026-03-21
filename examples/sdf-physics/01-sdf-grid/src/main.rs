@@ -47,9 +47,11 @@ fn main() {
         return;
     };
 
-    // Build SdfGrid the same way to_model() does:
-    // expand bounds by 2×resolution, then sample with from_fn.
-    let sdf = build_sdf_grid(&solid, &bounds, SDF_RESOLUTION);
+    // Build SdfGrid using the same method to_model() calls.
+    let Some(sdf) = solid.sdf_grid_at(SDF_RESOLUTION) else {
+        eprintln!("FAIL: sdf_grid_at returned None");
+        return;
+    };
 
     eprintln!();
     print_grid_info(&bounds, &sdf);
@@ -85,19 +87,6 @@ fn main() {
         .insert_resource(MeshDataRes(mesh_data))
         .add_systems(Startup, setup)
         .run();
-}
-
-// ── SDF grid construction (mirrors to_model logic) ──────────────────────
-
-fn build_sdf_grid(solid: &Solid, bounds: &cf_geometry::Aabb, resolution: f64) -> SdfGrid {
-    let expanded = bounds.expanded(resolution * 2.0);
-    let size = expanded.size();
-
-    let nx = ((size.x / resolution).ceil() as usize).max(2);
-    let ny = ((size.y / resolution).ceil() as usize).max(2);
-    let nz = ((size.z / resolution).ceil() as usize).max(2);
-
-    SdfGrid::from_fn(nx, ny, nz, resolution, expanded.min, |p| solid.evaluate(&p))
 }
 
 // ── Diagnostics ─────────────────────────────────────────────────────────

@@ -1334,6 +1334,46 @@ impl Solid {
         }))
     }
 
+    /// Evaluate the field on a uniform 3D grid with a specific cell size,
+    /// returning an [`SdfGrid`](cf_geometry::SdfGrid).
+    ///
+    /// This uses the same expansion and sizing logic that
+    /// [`Mechanism::to_model()`](crate::Mechanism::to_model) uses, so the
+    /// grid produced here is identical to the one physics will simulate.
+    ///
+    /// `cell_size` is in mm (e.g., 1.0 for 1 mm cells). The grid is padded
+    /// by 2× `cell_size` on each side to capture the surface cleanly.
+    ///
+    /// Returns `None` for infinite geometry (e.g., a bare `Plane`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `cell_size` is not positive and finite.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn sdf_grid_at(&self, cell_size: f64) -> Option<SdfGrid> {
+        assert!(
+            cell_size > 0.0 && cell_size.is_finite(),
+            "cell_size must be positive and finite, got {cell_size}"
+        );
+        let bounds = self.node.bounds()?;
+        let expanded = bounds.expanded(cell_size * 2.0);
+        let size = expanded.size();
+
+        let nx = ((size.x / cell_size).ceil() as usize).max(2);
+        let ny = ((size.y / cell_size).ceil() as usize).max(2);
+        let nz = ((size.z / cell_size).ceil() as usize).max(2);
+
+        let node = &self.node;
+        Some(SdfGrid::from_fn(nx, ny, nz, cell_size, expanded.min, |p| {
+            node.evaluate(&p)
+        }))
+    }
+
     // ── Parameterized constructors ────────────────────────────────────
 
     /// Sphere with parameterized radius.

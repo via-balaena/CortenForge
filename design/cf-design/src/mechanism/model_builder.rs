@@ -160,21 +160,9 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
             .bounds()
             .unwrap_or_else(|| panic!("part '{}' has no finite bounds", part.name()));
 
-        // SDF grid: expand bounds by one cell to capture the surface
-        let expanded = bounds.expanded(sdf_resolution * 2.0);
-        let size = expanded.size();
-
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let width = ((size.x / sdf_resolution).ceil() as usize).max(2);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let height = ((size.y / sdf_resolution).ceil() as usize).max(2);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let depth = ((size.z / sdf_resolution).ceil() as usize).max(2);
-
-        let origin = expanded.min;
-        let sdf = SdfGrid::from_fn(width, height, depth, sdf_resolution, origin, |p| {
-            solid.evaluate(&p)
-        });
+        let sdf = solid
+            .sdf_grid_at(sdf_resolution)
+            .unwrap_or_else(|| panic!("part '{}' has no finite bounds", part.name()));
 
         let sdf_id = sdf_data.len();
         sdf_data.push(Arc::new(sdf));
