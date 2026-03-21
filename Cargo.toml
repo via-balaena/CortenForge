@@ -32,6 +32,12 @@ members = [
     "examples/fundamentals/pendulum-sim",
     "examples/fundamentals/finger-design",
 
+    # Examples — sdf-physics (SDF === collision proof ladder)
+    "examples/sdf-physics/01-drop",
+    "examples/sdf-physics/02-pair",
+    "examples/sdf-physics/03-hinge",
+    "examples/sdf-physics/04-socket",
+
     # Examples — integration (cross-domain pipelines)
     "examples/integration/design-to-sim",
     "examples/integration/design-to-print",

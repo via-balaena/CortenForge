@@ -2508,6 +2508,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sdf-01-drop"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-02-pair"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-03-hinge"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-04-socket"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
 name = "example-sim-informed-design"
 version = "0.7.0"
 dependencies = [

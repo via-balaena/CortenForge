@@ -6,7 +6,7 @@
 examples/
   fundamentals/       Domain-isolated demos (one domain each)
   integration/        Pipeline composition demos (design → sim → mesh → print)
-  sdf-physics/        SDF === collision proof ladder (planned)
+  sdf-physics/        SDF === collision proof ladder (stub implementations)
 ```
 
 ## Status
@@ -35,7 +35,7 @@ All three use `Mechanism::to_model()` (SDF collision + visual mesh, no MJCF roun
 | `full-pipeline` | design → simulate → stress → lattice → print | Working |
 | `design-to-print` | design → mesh → print | Working |
 
-### sdf-physics/ (planned — not yet created)
+### sdf-physics/ (stubs — implementation is the next milestone)
 
 Baby-step ladder proving the SDF === collision thesis. Each step has a
 clear pass/fail and depends on the previous step working.
