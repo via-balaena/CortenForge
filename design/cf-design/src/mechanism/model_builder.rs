@@ -713,7 +713,11 @@ fn push_geom(
     model.geom_priority.push(0);
     model.geom_solmix.push(1.0);
     model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
-    model.geom_solref.push([0.02, 1.0]);
+    // MuJoCo default solref[0]=0.02 is tuned for m-scale. At mm-scale
+    // (gravity=9810), that gives ~0.46 mm equilibrium penetration and
+    // spongy contacts. 0.005 (must be > 2×timestep) gives stiff,
+    // visually correct contact at mm-scale.
+    model.geom_solref.push([0.005, 1.0]);
     model.geom_name.push(name);
     model.geom_rbound.push(0.0); // computed in post-build
     model.geom_aabb.push([0.0; 6]); // computed in post-build

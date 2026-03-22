@@ -27,7 +27,10 @@ use bevy::prelude::*;
 use cf_design::{JointDef, JointKind, Material, Mechanism, Part, Solid};
 use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::model_data::{PhysicsData, PhysicsModel, spawn_model_geoms, sync_geom_transforms};
+use sim_bevy::model_data::{
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    sync_geom_transforms,
+};
 use sim_bevy::scene::ExampleScene;
 
 const RADIUS: f64 = 5.0;
@@ -62,13 +65,6 @@ fn main() {
     let mut model = mechanism.to_model(1.0, 0.3);
     model.add_ground_plane();
 
-    // Default solref=[0.02, 1.0] is tuned for m-scale. At mm-scale gravity
-    // (9810), equilibrium penetration ≈ 0.46 mm — visible floor clipping.
-    // Tighten to 0.005 (must be > 2×timestep = 0.001).
-    for solref in &mut model.geom_solref {
-        solref[0] = 0.005;
-    }
-
     eprintln!();
     eprintln!("  Pair Diagnostics");
     eprintln!("  ----------------");
@@ -100,39 +96,6 @@ fn main() {
         .add_systems(Update, (step_physics_realtime, track_pair))
         .add_systems(PostUpdate, sync_geom_transforms)
         .run();
-}
-
-/// Accumulator for real-time physics sub-stepping.
-#[derive(Resource)]
-struct PhysicsAccumulator(f64);
-
-impl Default for PhysicsAccumulator {
-    fn default() -> Self {
-        Self(0.0)
-    }
-}
-
-/// Sub-step physics to keep up with wall-clock time.
-///
-/// Uses a time accumulator so fractional steps carry over between frames.
-/// Cap at 200 steps/frame to avoid spiral-of-death if a frame stalls.
-fn step_physics_realtime(
-    model: Res<PhysicsModel>,
-    mut data: ResMut<PhysicsData>,
-    time: Res<Time>,
-    mut acc: ResMut<PhysicsAccumulator>,
-) {
-    acc.0 += time.delta_secs_f64();
-    let dt_sim = model.0.timestep;
-    let mut steps = 0;
-    while acc.0 >= dt_sim && steps < 200 {
-        if let Err(e) = data.0.step(&model.0) {
-            eprintln!("Physics step failed: {e}");
-            break;
-        }
-        acc.0 -= dt_sim;
-        steps += 1;
-    }
 }
 
 fn setup(

@@ -28,7 +28,8 @@ use cf_design::{JointDef, JointKind, Material, Mechanism, Part, Solid};
 use nalgebra::{Point3, Vector3};
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::model_data::{
-    PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data, sync_geom_transforms,
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    sync_geom_transforms,
 };
 use sim_bevy::scene::ExampleScene;
 
@@ -52,13 +53,6 @@ fn main() {
 
     let mut model = mechanism.to_model(1.0, 0.3);
     model.add_ground_plane();
-
-    // Default solref=[0.02, 1.0] is tuned for m-scale. At mm-scale gravity
-    // (9810), equilibrium penetration ≈ 0.46 mm — visible floor clipping.
-    // Tighten to 0.005 (must be > 2×timestep = 0.004).
-    for solref in &mut model.geom_solref {
-        solref[0] = 0.005;
-    }
 
     eprintln!();
     eprintln!("  Rest Diagnostics");
@@ -86,8 +80,9 @@ fn main() {
         .insert_resource(PhysicsModel(model))
         .insert_resource(PhysicsData(data))
         .insert_resource(RestTracker::default())
+        .insert_resource(PhysicsAccumulator::default())
         .add_systems(Startup, setup)
-        .add_systems(Update, (step_model_data, track_rest))
+        .add_systems(Update, (step_physics_realtime, track_rest))
         .add_systems(PostUpdate, sync_geom_transforms)
         .run();
 }
