@@ -1,6 +1,6 @@
 # SDF–Physics Bridge Spec
 
-## Status: DRAFT — findings from the stacking investigation, next steps
+## Status: Sphere stacking RESOLVED — generalization to non-sphere shapes is next
 
 ## Context
 
@@ -8,18 +8,19 @@ The SDF-SDF stacking blocker (two spheres falling through each other)
 revealed that SDF collision and the constraint solver are not properly
 unified. The SDF grid provides **detection** (are surfaces close?) but
 the solver needs **analytical precision** (exact depth, normal, contact
-point) to produce stable forces. Three independent bugs were identified
-and fixed, but the fix is sphere-centric and a cf-design model builder
-integration gap remains.
+point) to produce stable forces. Six independent bugs were identified
+and fixed across sim-core and cf-design. SDF sphere stacking now works
+end-to-end: both the conformance test and the cf-design model builder
+produce stable 2000+ step simulations.
 
-This spec captures what we learned and defines the architecture for a
-general solution.
+This spec captures what we learned and defines the architecture for
+generalizing beyond spheres.
 
 ---
 
 ## Part 1 — Root cause analysis (completed)
 
-Three independent issues broke SDF-SDF stacking:
+Six independent issues broke SDF-SDF stacking:
 
 ### 1.1 Grid discretization in depth
 
@@ -67,6 +68,35 @@ contacts polluted the contact list with redundant constraint rows.
 
 **Fix:** set `contype=0, conaffinity=0` for visual-only mesh geoms.
 
+### 1.5 Missing `diagapprox_bodyweight` (cf-design)
+
+`Model::empty()` defaults `diagapprox_bodyweight = false`, which uses
+exact M⁻¹ to compute impedance. MuJoCo defaults to `true` (bodyweight
+approximation). For mm-scale bodies with tiny masses (O(10⁻⁴) kg), the
+exact solve produces impedance values that destabilize contact stacking.
+
+**Fix:** set `diagapprox_bodyweight = true` in the cf-design model
+builder to match MuJoCo defaults.
+
+### 1.6 Wrong constraint solver (cf-design)
+
+`Model::empty()` defaults `solver_type = PGS`. MuJoCo defaults to
+Newton. PGS accumulates constraint drift over hundreds of steps; for
+vertically stacked spheres this manifests as late instability around
+step 1400 where the upper sphere sinks through. Newton's quadratic
+convergence with line search keeps the stack rock-solid.
+
+**Diagnosis:** an exhaustive 329-field serialization-based Model diff
+(HashMap<String, Vec<f64>> extraction + auto-diff) between the stable
+MJCF model and the unstable cf-design model revealed `solver_type` as
+the only unexplained physics-affecting difference. All other diffs were
+either known (mass/inertia ~1-3% from SDF integration vs analytical) or
+non-physics (rgba, geom_group, geom layout ordering).
+
+**Fix:** set `solver_type = SolverType::Newton` in the cf-design model
+builder. The `sdf_sphere_stacking` test now passes (gap=9.608, stable
+through 2000 steps).
+
 ---
 
 ## Part 2 — The fundamental problem
@@ -104,41 +134,15 @@ detection. This works but has problems:
 
 ## Part 3 — Remaining work
 
-### 3.1 cf-design model builder integration gap
+### 3.1 cf-design model builder integration gap — RESOLVED
 
-**Status:** blocking example 07 (SDF sphere pair stacking)
+Root causes were `diagapprox_bodyweight` (1.5) and `solver_type` (1.6).
+Both were `Model::empty()` defaults that diverged from MuJoCo defaults.
+Found via exhaustive 329-field serialization diff in the
+`diagnose_sdf_sphere_gap` test (model_builder.rs).
 
-The conformance test (MJCF model with geoms swapped to SDF) stacks
-perfectly at gap=9.608 (matching analytical sphere-sphere). The cf-design
-model builder produces a model with identical parameters (same mass,
-timestep, gravity, radius) where the sphere falls through.
-
-**Diagnosis approach (fastest first):**
-
-1. **Compare SDF grids** (5 min). The conformance test uses
-   `SdfGrid::sphere(origin, 5.0, 20, 2.0)` (cell_size ≈ 0.7mm).
-   cf-design uses `solid.sdf_grid_at(1.0)` (cell_size = 1.0mm).
-   Compare `sdf_ray_radius` output for both grids along the Z axis.
-   If they differ by > 0.01mm, the grid is the problem.
-
-2. **Diff Model fields** (10 min). After building both models, compare
-   `body_invweight0`, `body_subtreemass`, `body_ipos`, `body_inertia`
-   for each body. The conformance test inherits these from MJCF's
-   `load_model()` pipeline; cf-design computes them via separate
-   post-build functions. Any divergence in computation order or a field
-   left at default would silently break the solver's force balance.
-
-3. **Instrument constraint assembly** (30 min, only if 1 and 2 match).
-   Log `efc_aref`, `efc_b`, `efc_R`, `efc_D`, `pos`, `margin`, `vel`
-   from `finalize_constraint_row` for both models at the same sim time.
-   The divergence must be in a Model field that affects the Jacobian,
-   mass matrix, or regularization.
-
-**Key files:**
-- `sim/L0/core/src/constraint/assembly.rs` — finalize_constraint_row
-- `sim/L0/core/src/constraint/contact_assembly.rs` — contact row setup
-- `design/cf-design/src/mechanism/model_builder.rs` — model construction
-- `sim/L0/tests/integration/collision_primitives.rs` — passing test
+The `sdf_sphere_stacking` test now passes: gap=9.608, stable through
+2000 steps, matching the conformance test exactly.
 
 ### 3.2 Non-sphere SDF shapes
 
@@ -182,7 +186,8 @@ contact first appears), not force computation.
 
 ### 3.5 Bugs fixed during spec review
 
-Two bugs found and fixed during the stress-test review of this spec:
+Two additional bugs found and fixed during the stress-test review of
+this spec (the other four are in Part 1):
 
 **3.5a: World-frame ray-march in `operations.rs` (rotation bug)**
 
@@ -205,7 +210,12 @@ Fix: replaced `.normalize()` with `.try_normalize(1e-10).unwrap_or(Vector3::z())
 
 ---
 
-## Part 4 — Proposed architecture: `PhysicsShape` trait + free-function dispatch
+## Part 4 — `PhysicsShape` trait architecture
+
+**Full spec:** [`PHYSICS_SHAPE_SPEC.md`](PHYSICS_SHAPE_SPEC.md)
+
+Summary of the proposed architecture (see dedicated spec for
+implementation plan, file changes, and testing strategy):
 
 ### 4.1 Why not `contact_with` on the trait
 
