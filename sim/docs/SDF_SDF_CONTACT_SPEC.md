@@ -1,6 +1,11 @@
 # SDF-SDF Contact Algorithm Redesign
 
-## Status: PARTIALLY IMPLEMENTED — surface-tracing in place, resolution issue remains
+## Status: SUPERSEDED — see `SDF_PHYSICS_BRIDGE_SPEC.md` for the full picture
+
+The surface-tracing algorithm described below is implemented and works
+for detection. The depth/normal/contact-point issues discovered during
+the stacking investigation are documented in the bridge spec, along with
+the `PhysicsShape` trait proposal that unifies SDF and analytical geometry.
 
 ## Problem
 
