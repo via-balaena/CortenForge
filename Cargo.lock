@@ -2508,7 +2508,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-01-drop"
+name = "example-sdf-01-sdf-grid"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+]
+
+[[package]]
+name = "example-sdf-02-thin-grid"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+]
+
+[[package]]
+name = "example-sdf-03-freefall"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2519,7 +2539,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-02-pair"
+name = "example-sdf-04-rest"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2530,7 +2550,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-03-hinge"
+name = "example-sdf-05-drop"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2541,7 +2561,95 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-04-socket"
+name = "example-sdf-06-slide"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-07-pair"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-08-stack"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-09-hinge-free"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-10-hinge-wall"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-11-hinge-stop"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-12-damped-hinge"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-13-concave-stop"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-14-socket"
 version = "0.7.0"
 dependencies = [
  "bevy",

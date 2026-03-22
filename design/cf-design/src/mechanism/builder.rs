@@ -190,8 +190,9 @@ impl MechanismBuilder {
         let tendon_names: HashSet<&str> = self.tendons.iter().map(TendonDef::name).collect();
 
         // Joint parent/child must reference existing parts.
+        // "world" is a special parent name (attaches to the world body).
         for joint in &self.joints {
-            if !part_names.contains(joint.parent()) {
+            if joint.parent() != "world" && !part_names.contains(joint.parent()) {
                 errors.push(MechanismError::JointRefersToUnknownPart {
                     joint: joint.name().to_owned(),
                     part: joint.parent().to_owned(),

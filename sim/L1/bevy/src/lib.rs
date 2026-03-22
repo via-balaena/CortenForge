@@ -88,8 +88,8 @@ pub mod prelude {
     pub use crate::mesh::{spawn_design_mesh, triangle_mesh_from_indexed};
     pub use crate::model_data::{
         ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
-        ModelSiteIndex, PhysicsData, PhysicsModel, spawn_model_geoms, step_model_data,
-        sync_geom_transforms, sync_model_data_to_bevy,
+        ModelSiteIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
+        step_model_data, step_physics_realtime, sync_geom_transforms, sync_model_data_to_bevy,
     };
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{

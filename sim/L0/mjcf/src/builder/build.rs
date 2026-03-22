@@ -212,7 +212,7 @@ impl ModelBuilder {
             // Hfield index for each geom (populated by process_geom)
             geom_hfield: self.geom_hfield,
             // SDF index for each geom (always None from MJCF — programmatic only)
-            geom_sdf: self.geom_sdf,
+            geom_shape: self.geom_sdf,
             geom_group: self.geom_group,
             geom_rgba: self.geom_rgba,
             geom_fluid: self.geom_fluid,
@@ -299,9 +299,9 @@ impl ModelBuilder {
             hfield_data: self.hfield_data,
             hfield_size: self.hfield_size,
 
-            // SDF assets (programmatic — always empty from MJCF)
-            nsdf: 0,
-            sdf_data: vec![],
+            // Shape assets (programmatic — always empty from MJCF)
+            nshape: 0,
+            shape_data: vec![],
 
             site_body: self.site_body,
             site_type: self.site_type,
@@ -586,9 +586,9 @@ fn compute_geom_bounding_radii(model: &mut Model) {
                 rbound,
                 [center.x, center.y, center.z, half.x, half.y, half.z],
             )
-        } else if let Some(sdf_id) = model.geom_sdf[geom_id] {
+        } else if let Some(sdf_id) = model.geom_shape[geom_id] {
             // SDF geom: bounds from SDF grid data.
-            let aabb = model.sdf_data[sdf_id].aabb();
+            let aabb = model.shape_data[sdf_id].sdf_grid().aabb();
             let center = (aabb.min.coords + aabb.max.coords) * 0.5;
             let half = (aabb.max.coords - aabb.min.coords) * 0.5;
             let rbound = half.norm();

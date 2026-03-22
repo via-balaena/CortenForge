@@ -7,7 +7,7 @@
 use nalgebra::{DVector, UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
-use super::enums::MjJointType;
+use super::enums::{GeomType, MjJointType};
 use super::model::Model;
 use crate::constraint::impedance::{DEFAULT_SOLIMP, DEFAULT_SOLREF};
 
@@ -343,5 +343,47 @@ impl Model {
         model.compute_qld_csr_metadata();
 
         model
+    }
+
+    /// Add a ground plane geom at z = 0 (attached to the world body).
+    ///
+    /// The plane is infinite, collides with all other geoms, and uses
+    /// contact parameters appropriate for mm-scale geometry.
+    pub fn add_ground_plane(&mut self) {
+        let geom_id = self.ngeom;
+        self.ngeom += 1;
+
+        self.geom_type.push(GeomType::Plane);
+        self.geom_body.push(0);
+        self.geom_pos.push(Vector3::zeros());
+        self.geom_quat.push(UnitQuaternion::identity());
+        self.geom_size.push(Vector3::new(40.0, 40.0, 0.1));
+        self.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        self.geom_condim.push(3);
+        self.geom_contype.push(1);
+        self.geom_conaffinity.push(1);
+        self.geom_margin.push(0.0);
+        self.geom_gap.push(0.0);
+        self.geom_priority.push(0);
+        self.geom_solmix.push(1.0);
+        self.geom_solimp.push(DEFAULT_SOLIMP);
+        self.geom_solref.push(DEFAULT_SOLREF);
+        self.geom_fluid.push([0.0; 12]);
+        self.geom_name.push(Some("ground".into()));
+        self.geom_rbound.push(0.0);
+        self.geom_aabb.push([0.0, 0.0, 0.0, 1e6, 1e6, 1e6]);
+        self.geom_mesh.push(None);
+        self.geom_hfield.push(None);
+        self.geom_shape.push(None);
+        self.geom_group.push(0);
+        self.geom_rgba.push([0.5, 0.5, 0.5, 0.3]);
+        self.geom_user.push(vec![]);
+        self.geom_plugin.push(None);
+
+        // Update world body's geom tracking
+        self.body_geom_num[0] += 1;
+        if self.body_geom_num[0] == 1 {
+            self.body_geom_adr[0] = geom_id;
+        }
     }
 }

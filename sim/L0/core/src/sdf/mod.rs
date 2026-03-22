@@ -45,6 +45,8 @@
 
 mod operations;
 mod primitives;
+pub mod shape;
+pub mod shapes;
 
 pub use cf_geometry::SdfGrid;
 pub use operations::sdf_sdf_contact;
@@ -53,6 +55,8 @@ pub use primitives::{
     sdf_ellipsoid_contact, sdf_heightfield_contact, sdf_plane_contact, sdf_point_contact,
     sdf_sphere_contact, sdf_triangle_mesh_contact,
 };
+pub use shape::{PhysicsShape, compute_shape_contact, compute_shape_plane_contact};
+pub use shapes::{ShapeConcave, ShapeConvex, ShapeSphere};
 
 use nalgebra::{Point3, Vector3};
 

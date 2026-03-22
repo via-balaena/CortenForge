@@ -260,6 +260,55 @@ pub fn step_model_data(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) 
     }
 }
 
+/// Time accumulator for real-time physics sub-stepping.
+///
+/// Insert this as a Bevy resource alongside [`step_physics_realtime`] to
+/// run physics at wall-clock rate. Fractional timesteps carry over between
+/// frames so no simulation time is lost.
+///
+/// # Example
+///
+/// ```ignore
+/// app.insert_resource(PhysicsAccumulator::default())
+///    .add_systems(Update, step_physics_realtime);
+/// ```
+#[derive(Resource)]
+pub struct PhysicsAccumulator(f64);
+
+impl Default for PhysicsAccumulator {
+    fn default() -> Self {
+        Self(0.0)
+    }
+}
+
+/// Step physics enough times to keep up with wall-clock time.
+///
+/// Each render frame, accumulates the elapsed wall time and runs as many
+/// physics steps as needed. Capped at 200 steps/frame to prevent a
+/// spiral-of-death if a frame stalls.
+///
+/// Requires [`PhysicsAccumulator`] as a resource. Use this instead of
+/// [`step_model_data`] for real-time playback.
+#[allow(clippy::needless_pass_by_value)] // Bevy system parameters
+pub fn step_physics_realtime(
+    model: Res<PhysicsModel>,
+    mut data: ResMut<PhysicsData>,
+    time: Res<Time>,
+    mut acc: ResMut<PhysicsAccumulator>,
+) {
+    acc.0 += time.delta_secs_f64();
+    let dt_sim = model.0.timestep;
+    let mut steps = 0;
+    while acc.0 >= dt_sim && steps < 200 {
+        if let Err(e) = data.0.step(&model.0) {
+            eprintln!("Physics step failed: {e}");
+            break;
+        }
+        acc.0 -= dt_sim;
+        steps += 1;
+    }
+}
+
 /// Synchronize body transforms from physics Data to Bevy entities.
 ///
 /// This system reads `xpos` and `xquat` from the physics data (computed
@@ -655,7 +704,7 @@ mod tests {
         model.geom_quat = vec![nalgebra::UnitQuaternion::identity(); 2];
         model.geom_mesh = vec![None, Some(0)];
         model.geom_hfield = vec![None, None];
-        model.geom_sdf = vec![None, None];
+        model.geom_shape = vec![None, None];
 
         // Provide a simple triangle mesh asset
         let vertices = vec![

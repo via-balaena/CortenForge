@@ -2,8 +2,8 @@
 
 use super::narrow::make_contact_from_geoms;
 use crate::sdf::{
-    sdf_box_contact, sdf_capsule_contact, sdf_cylinder_contact, sdf_ellipsoid_contact,
-    sdf_heightfield_contact, sdf_plane_contact, sdf_sdf_contact, sdf_sphere_contact,
+    compute_shape_contact, compute_shape_plane_contact, sdf_box_contact, sdf_capsule_contact,
+    sdf_cylinder_contact, sdf_ellipsoid_contact, sdf_heightfield_contact, sdf_sphere_contact,
     sdf_triangle_mesh_contact,
 };
 use crate::types::{Contact, GeomType, Model};
@@ -23,8 +23,8 @@ pub fn collide_with_sdf(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
-    margin: f64, // DT-176: thread margin into SDF collision helpers
-) -> Option<Contact> {
+    margin: f64,
+) -> Vec<Contact> {
     // Identify which geom is the SDF, which is the other
     let (sdf_geom, other_geom, sdf_pos, sdf_mat, other_pos, other_mat) =
         if model.geom_type[geom1] == GeomType::Sdf {
@@ -33,8 +33,10 @@ pub fn collide_with_sdf(
             (geom2, geom1, pos2, mat2, pos1, mat1)
         };
 
-    let sdf_id = model.geom_sdf[sdf_geom]?;
-    let sdf = &model.sdf_data[sdf_id];
+    let Some(sdf_id) = model.geom_shape[sdf_geom] else {
+        return vec![];
+    };
+    let sdf = model.shape_data[sdf_id].sdf_grid();
 
     // Build SDF pose (no centering offset needed — SdfGrid uses an
     // arbitrary origin stored internally, unlike HeightFieldData which
@@ -50,62 +52,8 @@ pub fn collide_with_sdf(
     // SDF option parameters from model (§57).
     let initpoints = model.sdf_initpoints;
 
-    // Dispatch on the other geom's type
-    let contact = match model.geom_type[other_geom] {
-        GeomType::Sphere => sdf_sphere_contact(sdf, &sdf_pose, other_pose.position, other_size.x),
-        GeomType::Capsule => {
-            let axis = other_pose.rotation * Vector3::z();
-            let start = other_pose.position - axis * other_size.y;
-            let end = other_pose.position + axis * other_size.y;
-            sdf_capsule_contact(sdf, &sdf_pose, start, end, other_size.x, initpoints)
-        }
-        GeomType::Box => sdf_box_contact(sdf, &sdf_pose, &other_pose, &other_size),
-        GeomType::Cylinder => {
-            // sdf_cylinder_contact takes (pose, half_height, radius)
-            // geom_size for Cylinder: x = radius, y = half_length
-            sdf_cylinder_contact(
-                sdf,
-                &sdf_pose,
-                &other_pose,
-                other_size.y,
-                other_size.x,
-                initpoints,
-            )
-        }
-        GeomType::Ellipsoid => {
-            sdf_ellipsoid_contact(sdf, &sdf_pose, &other_pose, &other_size, initpoints)
-        }
-        GeomType::Mesh => {
-            let mesh_id = model.geom_mesh[other_geom]?;
-            let mesh_data = &model.mesh_data[mesh_id];
-            sdf_triangle_mesh_contact(sdf, &sdf_pose, mesh_data, &other_pose)
-        }
-        GeomType::Hfield => {
-            let hfield_id = model.geom_hfield[other_geom]?;
-            let hfield = &model.hfield_data[hfield_id];
-            let hf_size = &model.hfield_size[hfield_id];
-            // Apply centering offset for hfield-local frame
-            let hf_offset = other_mat * Vector3::new(-hf_size[0], -hf_size[1], 0.0);
-            let hf_pose =
-                Pose::from_position_rotation(Point3::from(other_pos + hf_offset), other_quat);
-            sdf_heightfield_contact(sdf, &sdf_pose, hfield, &hf_pose)
-        }
-        GeomType::Plane => {
-            // Plane normal = Z-axis of plane's frame; offset = normal · position
-            let plane_normal = other_mat.column(2).into_owned();
-            let plane_offset = plane_normal.dot(&other_pos);
-            sdf_plane_contact(sdf, &sdf_pose, &plane_normal, plane_offset)
-        }
-        GeomType::Sdf => {
-            let other_sdf_id = model.geom_sdf[other_geom]?;
-            let other_sdf = &model.sdf_data[other_sdf_id];
-            sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose)
-        }
-    };
-
-    // Convert SdfContact → pipeline Contact.
-    //
     // Normal direction conventions:
+    //
     // - Most sdf_*_contact: normal points outward from SDF surface
     // - sdf_plane_contact: normal is the plane normal (from plane toward SDF)
     // - sdf_sdf_contact: normal from whichever SDF the contact is closer to
@@ -121,15 +69,11 @@ pub fn collide_with_sdf(
     // geom1→geom2 (correct) — keep. So for plane, swap logic is inverted.
     let swapped = sdf_geom != geom1;
     let is_plane = model.geom_type[other_geom] == GeomType::Plane;
+    let negate = swapped ^ is_plane;
 
-    contact.map(|c| {
-        // Negate when exactly one of swapped/is_plane is true (XOR).
-        // See comments above for the full derivation.
-        let normal = if swapped ^ is_plane {
-            -c.normal
-        } else {
-            c.normal
-        };
+    // Helper: convert SdfContact → pipeline Contact with normal fixup.
+    let convert = |c: &crate::sdf::SdfContact| -> Contact {
+        let normal = if negate { -c.normal } else { c.normal };
         make_contact_from_geoms(
             model,
             c.point.coords,
@@ -139,5 +83,83 @@ pub fn collide_with_sdf(
             geom2,
             margin,
         )
-    })
+    };
+
+    // SDF-Plane: dispatch through PhysicsShape trait for analytical depth
+    // (or fallback to grid-based multi-contact plane tracing).
+    if model.geom_type[other_geom] == GeomType::Plane {
+        let plane_normal = other_mat.column(2).into_owned();
+        let sdf_contacts = compute_shape_plane_contact(
+            &*model.shape_data[sdf_id],
+            &sdf_pose,
+            &other_pos,
+            &plane_normal,
+            margin,
+        );
+        return sdf_contacts.iter().map(&convert).collect();
+    }
+    // SDF-SDF: dispatch through PhysicsShape trait. Analytical single-contact
+    // for convex pairs, grid-based multi-contact for concave.
+    if model.geom_type[other_geom] == GeomType::Sdf {
+        let Some(other_sdf_id) = model.geom_shape[other_geom] else {
+            return vec![];
+        };
+        // Floor margin at half a cell to tolerate grid discretization.
+        let cell_size_min = sdf
+            .cell_size()
+            .min(model.shape_data[other_sdf_id].sdf_grid().cell_size());
+        let contact_margin = margin.max(cell_size_min * 0.5);
+        let sdf_contacts = compute_shape_contact(
+            &*model.shape_data[sdf_id],
+            &sdf_pose,
+            &*model.shape_data[other_sdf_id],
+            &other_pose,
+            contact_margin,
+        );
+        return sdf_contacts.iter().map(&convert).collect();
+    }
+
+    // All other types: single-contact (returns Option<SdfContact>)
+    let contact = match model.geom_type[other_geom] {
+        GeomType::Sphere => sdf_sphere_contact(sdf, &sdf_pose, other_pose.position, other_size.x),
+        GeomType::Capsule => {
+            let axis = other_pose.rotation * Vector3::z();
+            let start = other_pose.position - axis * other_size.y;
+            let end = other_pose.position + axis * other_size.y;
+            sdf_capsule_contact(sdf, &sdf_pose, start, end, other_size.x, initpoints)
+        }
+        GeomType::Box => sdf_box_contact(sdf, &sdf_pose, &other_pose, &other_size),
+        GeomType::Cylinder => sdf_cylinder_contact(
+            sdf,
+            &sdf_pose,
+            &other_pose,
+            other_size.y,
+            other_size.x,
+            initpoints,
+        ),
+        GeomType::Ellipsoid => {
+            sdf_ellipsoid_contact(sdf, &sdf_pose, &other_pose, &other_size, initpoints)
+        }
+        GeomType::Mesh => {
+            let Some(mesh_id) = model.geom_mesh[other_geom] else {
+                return vec![];
+            };
+            let mesh_data = &model.mesh_data[mesh_id];
+            sdf_triangle_mesh_contact(sdf, &sdf_pose, mesh_data, &other_pose)
+        }
+        GeomType::Hfield => {
+            let Some(hfield_id) = model.geom_hfield[other_geom] else {
+                return vec![];
+            };
+            let hfield = &model.hfield_data[hfield_id];
+            let hf_size = &model.hfield_size[hfield_id];
+            let hf_offset = other_mat * Vector3::new(-hf_size[0], -hf_size[1], 0.0);
+            let hf_pose =
+                Pose::from_position_rotation(Point3::from(other_pos + hf_offset), other_quat);
+            sdf_heightfield_contact(sdf, &sdf_pose, hfield, &hf_pose)
+        }
+        GeomType::Sdf | GeomType::Plane => unreachable!(), // handled above
+    };
+
+    contact.map(|c| convert(&c)).into_iter().collect()
 }

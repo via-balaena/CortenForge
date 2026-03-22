@@ -81,9 +81,7 @@ pub fn collide_geoms(
     // Special case: SDF collision (before mesh/hfield/plane — SDF has its own
     // contact functions for all shapes including Mesh, Hfield, and Plane)
     if type1 == GeomType::Sdf || type2 == GeomType::Sdf {
-        return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
-            .into_iter()
-            .collect();
+        return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
     // Height field collision handled via collide_hfield_multi at the
