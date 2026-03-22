@@ -420,9 +420,20 @@ multi-contact surface tracing is tested.
 
 ## Part 5 — Implementation plan
 
-Each phase is independently testable and committable.
+Three sessions. Each phase is independently testable and committable.
 
-### Phase A: Trait + `ShapeSphere` + `ShapeConvex` + Model cutover
+- **Session 1** (Phase A): Trait definition, `ShapeSphere` + `ShapeConvex`
+  implementations, full Model cutover (`sdf_data` → `shape_data`),
+  all builders updated. Mechanical — no design decisions, no collision
+  logic changes.
+- **Session 2** (Phases B+C+D): Wire dispatch functions into collision
+  pipeline, delete dead code. Tightly coupled — changing the SDF-SDF
+  path without the SDF-Plane path would leave inconsistent code paths.
+- **Session 3** (Phases E+F): `ShapeConcave` + multi-contact, cf-design
+  `shape_hint()` integration. New capability — requires testing with
+  non-sphere geometry.
+
+### Phase A: Trait + `ShapeSphere` + `ShapeConvex` + Model cutover (Session 1)
 
 The big-bang phase. All model changes happen here so there is no
 dual-field period and no fallback guards.
@@ -449,7 +460,7 @@ dual-field period and no fallback guards.
 `sdf_ray_radius()` / `sdf_radius_along_axis()` — it just gets the
 grid via `.sdf_grid()` instead of directly.
 
-### Phase B: Wire `compute_shape_contact` into SDF-SDF path
+### Phase B: Wire `compute_shape_contact` into SDF-SDF path (Session 2)
 
 1. Create `compute_shape_contact()` in `sdf/shape.rs`
 2. Extract raw surface tracing from `sdf_sdf_contact()` into
@@ -464,7 +475,7 @@ grid via `.sdf_grid()` instead of directly.
 5. Tests: conformance test + cf-design stacking test still pass.
    Numerical equivalence test: old path vs new path on identical inputs.
 
-### Phase C: Wire `compute_shape_plane_contact` into SDF-Plane path
+### Phase C: Wire `compute_shape_plane_contact` into SDF-Plane path (Session 2)
 
 1. Create `compute_shape_plane_contact()` in `sdf/shape.rs`
 2. In `sdf_collide.rs`, replace the SDF-Plane block (lines 107-135)
@@ -472,7 +483,7 @@ grid via `.sdf_grid()` instead of directly.
 3. Tests: stacking test still passes (sphere on floor + sphere on
    sphere). Numerical equivalence vs old path.
 
-### Phase D: Delete dead code
+### Phase D: Delete dead code (Session 2)
 
 1. Delete `sdf_ray_radius()` from `sdf_collide.rs`
 2. Delete `sdf_radius_along_axis()` from `operations.rs`
@@ -481,7 +492,7 @@ grid via `.sdf_grid()` instead of directly.
 4. Tests: all sim + design tests pass. No references to deleted
    functions remain.
 
-### Phase E: `ShapeConcave` + multi-contact
+### Phase E: `ShapeConcave` + multi-contact (Session 3)
 
 1. Create `sdf/shapes/concave.rs` with `ShapeConcave` (returns `None`
    from `effective_radius` — forces multi-contact surface tracing)
@@ -490,7 +501,7 @@ grid via `.sdf_grid()` instead of directly.
 3. Tests: concave socket contacts produce distributed multi-contact.
    Box on floor (via ShapeConcave) produces corner contacts.
 
-### Phase F: cf-design `shape_hint()` integration
+### Phase F: cf-design `shape_hint()` integration (Session 3)
 
 1. Add `shape_hint()` to `Solid` that inspects the expression tree
 2. Sphere → `ShapeHint::Sphere(radius)`
