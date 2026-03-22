@@ -229,10 +229,13 @@ pub fn compute_shape_plane_contact(
 
     if let Some(radius) = shape.effective_radius(&local_dir) {
         // Analytical: depth = radius - distance_to_plane
-        let center_to_plane = (shape_pose.position - plane_pos).dot(plane_normal);
-        let depth = radius - center_to_plane;
+        let dist_to_plane = (shape_pose.position - plane_pos).dot(plane_normal);
+        let depth = radius - dist_to_plane;
         if depth > -margin {
-            let contact_point = shape_pose.position - plane_normal * center_to_plane;
+            // Contact at the midpoint of the overlap region
+            // (matches sdf_collide.rs convention)
+            let contact_point =
+                shape_pose.position - plane_normal * (radius - depth * 0.5);
             return vec![SdfContact {
                 point: contact_point,
                 normal: *plane_normal,
@@ -247,7 +250,24 @@ pub fn compute_shape_plane_contact(
 }
 ```
 
-### 3.5 Implementations
+### 3.5 Caller responsibilities
+
+`compute_shape_contact` and `compute_shape_plane_contact` return
+`Vec<SdfContact>` (point, normal, penetration). The caller
+(`collide_with_sdf` in `sdf_collide.rs`) is responsible for:
+
+1. **Margin floor**: floor margin at `cell_size * 0.5` before calling,
+   to tolerate SDF grid discretization (currently `sdf_collide.rs:143`)
+2. **Normal convention**: negate normal based on geom swap/plane
+   direction (currently `sdf_collide.rs:74-91`)
+3. **Pipeline conversion**: convert `SdfContact` → pipeline `Contact`
+   via `make_contact_from_geoms` (currently `sdf_collide.rs:93-105`)
+
+These responsibilities stay in `sdf_collide.rs`. The dispatch functions
+are pure geometry — they don't know about geom IDs, solver params, or
+pipeline conventions.
+
+### 3.6 Implementations
 
 All implementations live in `sim/L0/core/src/sdf/shapes/`.
 
@@ -315,7 +335,7 @@ surface-tracing path. Used for sockets, gear teeth, hollow bodies.
   axis.
 - `ShapeCylinder { grid, radius, half_height }` — direction-dependent.
 
-### 3.6 Model storage
+### 3.7 Model storage
 
 Replace `sdf_data` with `shape_data`:
 
@@ -327,11 +347,11 @@ pub sdf_data: Vec<Arc<SdfGrid>>,
 pub shape_data: Vec<Arc<dyn PhysicsShape>>,
 ```
 
-The field `geom_sdf` and `nsdf` rename to `geom_shape` and `nshape`
-for consistency, though the old names work too. The `SdfGrid` is still
-accessible via `model.shape_data[id].sdf_grid()`.
+The fields `geom_sdf` and `nsdf` rename to `geom_shape` and `nshape`.
+The `SdfGrid` is still accessible via
+`model.shape_data[id].sdf_grid()`.
 
-### 3.7 cf-design integration
+### 3.8 cf-design integration
 
 The `Solid` type knows its shape kind. The model builder uses this to
 pick the right `PhysicsShape` implementation:
@@ -402,64 +422,79 @@ multi-contact surface tracing is tested.
 
 Each phase is independently testable and committable.
 
-### Phase A: Define trait + `ShapeSphere` (smallest possible change)
+### Phase A: Trait + `ShapeSphere` + `ShapeConvex` + Model cutover
+
+The big-bang phase. All model changes happen here so there is no
+dual-field period and no fallback guards.
 
 1. Create `sdf/shape.rs` with `PhysicsShape` trait
 2. Create `sdf/shapes/sphere.rs` with `ShapeSphere`
-3. Add `shape_data: Vec<Arc<dyn PhysicsShape>>` to Model **alongside**
-   `sdf_data` (both exist temporarily)
-4. Tests: `ShapeSphere::effective_radius()` returns constant radius for
-   any direction
+3. Create `sdf/shapes/convex.rs` with `ShapeConvex` (wraps
+   `sdf_radius_along_axis` — identical to current ray-march behavior)
+4. **Replace** `sdf_data: Vec<Arc<SdfGrid>>` with
+   `shape_data: Vec<Arc<dyn PhysicsShape>>` in Model
+5. Update `Model::empty()`, `model_factories`, MJCF builder init
+6. MJCF builder: wrap all SDF grids in `ShapeConvex::new(grid)`
+7. cf-design builder: wrap sphere SDFs in
+   `ShapeSphere::new(grid, radius)`, everything else in `ShapeConvex`
+8. Update all `model.sdf_data[id]` callers to
+   `model.shape_data[id].sdf_grid()` (~6 call sites in production)
+9. Conformance test: use `ShapeSphere` instead of raw `SdfGrid`
+10. Tests: `ShapeSphere::effective_radius()` is constant for any
+    direction. `ShapeConvex::effective_radius()` matches old
+    `sdf_ray_radius()`. All existing tests pass unchanged (behavior
+    is identical).
 
-**No collision behavior changes yet.** The trait exists but isn't wired
-into the collision pipeline.
+**No collision logic changes yet.** `sdf_collide.rs` still calls
+`sdf_ray_radius()` / `sdf_radius_along_axis()` — it just gets the
+grid via `.sdf_grid()` instead of directly.
 
 ### Phase B: Wire `compute_shape_contact` into SDF-SDF path
 
 1. Create `compute_shape_contact()` in `sdf/shape.rs`
 2. Extract raw surface tracing from `sdf_sdf_contact()` into
-   `sdf_sdf_contact_raw()` (the multi-contact path without
-   consolidation)
+   `sdf_sdf_contact_raw()` (multi-contact, no consolidation)
 3. In `sdf_collide.rs`, replace the SDF-SDF block (lines 136-165)
-   with a call to `compute_shape_contact()` using shape from
+   with a call to `compute_shape_contact()` using
    `model.shape_data[sdf_id]`
-4. Guard: if `shape_data` is empty (MJCF model without shapes), fall
-   back to existing `sdf_ray_radius()` code
-5. Tests: conformance test still passes with `ShapeSphere`
+4. This eliminates the dual ray-march: currently both `operations.rs`
+   and `sdf_collide.rs` ray-march the same SDFs — the old
+   `sdf_sdf_contact()` consolidates, then `sdf_collide.rs` overrides
+   depth again. The new path does it once.
+5. Tests: conformance test + cf-design stacking test still pass.
+   Numerical equivalence test: old path vs new path on identical inputs.
 
 ### Phase C: Wire `compute_shape_plane_contact` into SDF-Plane path
 
 1. Create `compute_shape_plane_contact()` in `sdf/shape.rs`
 2. In `sdf_collide.rs`, replace the SDF-Plane block (lines 107-135)
    with a call to `compute_shape_plane_contact()`
-3. Same fallback guard as Phase B
-4. Tests: stacking test still passes (sphere on floor + sphere on
-   sphere)
+3. Tests: stacking test still passes (sphere on floor + sphere on
+   sphere). Numerical equivalence vs old path.
 
-### Phase D: Remove `sdf_data`, rename to `shape_data`
+### Phase D: Delete dead code
 
-1. Remove `sdf_data` from Model — `shape_data` is now the sole source
-2. Rename `geom_sdf` → `geom_shape`, `nsdf` → `nshape`
-3. Update all callers: `model.sdf_data[id]` → `model.shape_data[id].sdf_grid()`
-4. Delete `sdf_ray_radius()` and `sdf_radius_along_axis()`
-5. Delete the fallback guards from Phases B and C
-6. Update MJCF builder: wrap SDF grids in `ShapeConvex::new(grid)`
-7. Update cf-design builder: wrap sphere SDFs in `ShapeSphere::new(grid, radius)`
-8. Tests: all sim + design tests pass
+1. Delete `sdf_ray_radius()` from `sdf_collide.rs`
+2. Delete `sdf_radius_along_axis()` from `operations.rs`
+3. Delete consolidation block from old `sdf_sdf_contact()` (now
+   `sdf_sdf_contact_raw`)
+4. Tests: all sim + design tests pass. No references to deleted
+   functions remain.
 
-### Phase E: Add `ShapeConvex` + `ShapeConcave`
+### Phase E: `ShapeConcave` + multi-contact
 
-1. Create `ShapeConvex` (ray-march effective_radius — same as today)
-2. Create `ShapeConcave` (returns None — multi-contact)
-3. cf-design: non-sphere primitives use `ShapeConvex`, CSG subtractions
-   use `ShapeConcave`
-4. Tests: box stacking, cylinder on floor, concave socket contacts
+1. Create `sdf/shapes/concave.rs` with `ShapeConcave` (returns `None`
+   from `effective_radius` — forces multi-contact surface tracing)
+2. cf-design: CSG subtractions and known-concave shapes use
+   `ShapeConcave`
+3. Tests: concave socket contacts produce distributed multi-contact.
+   Box on floor (via ShapeConcave) produces corner contacts.
 
 ### Phase F: cf-design `shape_hint()` integration
 
 1. Add `shape_hint()` to `Solid` that inspects the expression tree
 2. Sphere → `ShapeHint::Sphere(radius)`
-3. Box, cylinder → `ShapeHint::Convex`
+3. Box, cylinder, smooth_union of convex → `ShapeHint::Convex`
 4. Smooth subtraction → `ShapeHint::Concave`
 5. Model builder uses hint to select implementation
 6. Tests: various `Solid` types produce correct shape hints
@@ -480,11 +515,13 @@ into the collision pipeline.
 | Phase | Test |
 |-------|------|
 | A | `ShapeSphere::effective_radius` is constant for any direction |
+| A | `ShapeConvex::effective_radius` matches old `sdf_ray_radius()` |
 | A | `ShapeSphere::sdf_grid()` returns the underlying grid |
+| A | All callers compile and pass with `shape_data` instead of `sdf_data` |
 | B | SDF-SDF contact via `compute_shape_contact` matches existing results for sphere pairs |
+| B | Numerical equivalence: old path vs new path on identical inputs |
 | C | SDF-Plane contact via `compute_shape_plane_contact` matches existing results |
-| D | No `sdf_data` references remain; all callers use `shape_data` |
-| E | `ShapeConvex` ray-march matches `sdf_ray_radius()` output |
+| D | No references to `sdf_ray_radius` or `sdf_radius_along_axis` remain |
 | E | `ShapeConcave` always returns multi-contact (no consolidation) |
 | F | `Solid::sphere().shape_hint()` returns `Sphere(radius)` |
 
