@@ -42,7 +42,7 @@ use std::sync::Arc;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, GainType, GeomType, MjJointType, Model,
-    SdfGrid, TendonType, WrapType,
+    SdfGrid, SolverType, TendonType, WrapType,
 };
 
 use super::actuator::ActuatorKind;
@@ -194,6 +194,10 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     // The exact M⁻¹ solve (default in Model::empty()) produces different
     // impedance values that can destabilize mm-scale contact stacking.
     model.diagapprox_bodyweight = true;
+
+    // MuJoCo defaults to Newton solver, which has superior convergence for
+    // contact stacking vs PGS. Model::empty() defaults to PGS.
+    model.solver_type = SolverType::Newton;
 
     // Parent-child collision filtering stays ON (MuJoCo default).
     // SDF-SDF parent-child collision (socket/condyle) needs multi-contact
@@ -1916,10 +1920,704 @@ mod tests {
                 eprintln!("  dof[{}].body: {} vs {}", d, db1, db2);
             }
         }
+
+        // ── EXHAUSTIVE SERIALIZATION-BASED DIFF ──────────────────────────
+        {
+            use std::collections::{BTreeMap, BTreeSet, HashSet};
+
+            eprintln!("\n╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("║  EXHAUSTIVE DIFF: cfd_patched (STABLE) vs cfd_model (UNSTABLE)  ║");
+            eprintln!("╚══════════════════════════════════════════════════════════════╝");
+
+            let pa = &cfd_patched;
+            let pb = &cfd_model;
+
+            let mut fa: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+            let mut fb: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+
+            macro_rules! ins {
+                ($key:expr, $va:expr, $vb:expr) => {
+                    fa.insert($key.to_string(), $va);
+                    fb.insert($key.to_string(), $vb);
+                };
+            }
+
+            // === GLOBAL SCALARS ===
+            ins!("timestep", vec![pa.timestep], vec![pb.timestep]);
+            ins!(
+                "gravity",
+                vec![pa.gravity.x, pa.gravity.y, pa.gravity.z],
+                vec![pb.gravity.x, pb.gravity.y, pb.gravity.z]
+            );
+            ins!(
+                "wind",
+                vec![pa.wind.x, pa.wind.y, pa.wind.z],
+                vec![pb.wind.x, pb.wind.y, pb.wind.z]
+            );
+            ins!(
+                "magnetic",
+                vec![pa.magnetic.x, pa.magnetic.y, pa.magnetic.z],
+                vec![pb.magnetic.x, pb.magnetic.y, pb.magnetic.z]
+            );
+            ins!("density", vec![pa.density], vec![pb.density]);
+            ins!("viscosity", vec![pa.viscosity], vec![pb.viscosity]);
+            ins!("impratio", vec![pa.impratio], vec![pb.impratio]);
+            ins!("o_margin", vec![pa.o_margin], vec![pb.o_margin]);
+            ins!("o_solref", pa.o_solref.to_vec(), pb.o_solref.to_vec());
+            ins!("o_solimp", pa.o_solimp.to_vec(), pb.o_solimp.to_vec());
+            ins!("o_friction", pa.o_friction.to_vec(), pb.o_friction.to_vec());
+            ins!(
+                "solver_iterations",
+                vec![pa.solver_iterations as f64],
+                vec![pb.solver_iterations as f64]
+            );
+            ins!(
+                "solver_tolerance",
+                vec![pa.solver_tolerance],
+                vec![pb.solver_tolerance]
+            );
+            ins!(
+                "regularization",
+                vec![pa.regularization],
+                vec![pb.regularization]
+            );
+            ins!(
+                "friction_smoothing",
+                vec![pa.friction_smoothing],
+                vec![pb.friction_smoothing]
+            );
+            ins!("cone", vec![pa.cone as f64], vec![pb.cone as f64]);
+            ins!(
+                "stat_meaninertia",
+                vec![pa.stat_meaninertia],
+                vec![pb.stat_meaninertia]
+            );
+            ins!(
+                "ls_iterations",
+                vec![pa.ls_iterations as f64],
+                vec![pb.ls_iterations as f64]
+            );
+            ins!("ls_tolerance", vec![pa.ls_tolerance], vec![pb.ls_tolerance]);
+            ins!(
+                "noslip_iterations",
+                vec![pa.noslip_iterations as f64],
+                vec![pb.noslip_iterations as f64]
+            );
+            ins!(
+                "noslip_tolerance",
+                vec![pa.noslip_tolerance],
+                vec![pb.noslip_tolerance]
+            );
+            ins!(
+                "diagapprox_bodyweight",
+                vec![pa.diagapprox_bodyweight as u8 as f64],
+                vec![pb.diagapprox_bodyweight as u8 as f64]
+            );
+            ins!(
+                "disableflags",
+                vec![pa.disableflags as f64],
+                vec![pb.disableflags as f64]
+            );
+            ins!(
+                "enableflags",
+                vec![pa.enableflags as f64],
+                vec![pb.enableflags as f64]
+            );
+            ins!(
+                "disableactuator",
+                vec![pa.disableactuator as f64],
+                vec![pb.disableactuator as f64]
+            );
+            ins!(
+                "ccd_iterations",
+                vec![pa.ccd_iterations as f64],
+                vec![pb.ccd_iterations as f64]
+            );
+            ins!(
+                "ccd_tolerance",
+                vec![pa.ccd_tolerance],
+                vec![pb.ccd_tolerance]
+            );
+            ins!(
+                "sdf_iterations",
+                vec![pa.sdf_iterations as f64],
+                vec![pb.sdf_iterations as f64]
+            );
+            ins!(
+                "sdf_initpoints",
+                vec![pa.sdf_initpoints as f64],
+                vec![pb.sdf_initpoints as f64]
+            );
+            ins!(
+                "sleep_tolerance",
+                vec![pa.sleep_tolerance],
+                vec![pb.sleep_tolerance]
+            );
+            ins!(
+                "ngravcomp",
+                vec![pa.ngravcomp as f64],
+                vec![pb.ngravcomp as f64]
+            );
+
+            // Dimensions (informational)
+            ins!("nq", vec![pa.nq as f64], vec![pb.nq as f64]);
+            ins!("nv", vec![pa.nv as f64], vec![pb.nv as f64]);
+            ins!("nbody", vec![pa.nbody as f64], vec![pb.nbody as f64]);
+            ins!("njnt", vec![pa.njnt as f64], vec![pb.njnt as f64]);
+            ins!("ngeom", vec![pa.ngeom as f64], vec![pb.ngeom as f64]);
+            ins!("ntree", vec![pa.ntree as f64], vec![pb.ntree as f64]);
+
+            // Sparse LDL
+            ins!("qLD_nnz", vec![pa.qLD_nnz as f64], vec![pb.qLD_nnz as f64]);
+            ins!(
+                "qLD_rowadr",
+                pa.qLD_rowadr.iter().map(|&x| x as f64).collect(),
+                pb.qLD_rowadr.iter().map(|&x| x as f64).collect()
+            );
+            ins!(
+                "qLD_rownnz",
+                pa.qLD_rownnz.iter().map(|&x| x as f64).collect(),
+                pb.qLD_rownnz.iter().map(|&x| x as f64).collect()
+            );
+            ins!(
+                "qLD_colind",
+                pa.qLD_colind.iter().map(|&x| x as f64).collect(),
+                pb.qLD_colind.iter().map(|&x| x as f64).collect()
+            );
+
+            // Vectors
+            ins!(
+                "qpos0",
+                pa.qpos0.as_slice().to_vec(),
+                pb.qpos0.as_slice().to_vec()
+            );
+            ins!(
+                "qpos_spring",
+                pa.qpos_spring.clone(),
+                pb.qpos_spring.clone()
+            );
+            ins!(
+                "implicit_stiffness",
+                pa.implicit_stiffness.as_slice().to_vec(),
+                pb.implicit_stiffness.as_slice().to_vec()
+            );
+            ins!(
+                "implicit_damping",
+                pa.implicit_damping.as_slice().to_vec(),
+                pb.implicit_damping.as_slice().to_vec()
+            );
+            ins!(
+                "implicit_springref",
+                pa.implicit_springref.as_slice().to_vec(),
+                pb.implicit_springref.as_slice().to_vec()
+            );
+
+            // === PER-BODY ===
+            let nb = pa.nbody.min(pb.nbody);
+            for b in 0..nb {
+                let p = format!("body[{}]", b);
+                ins!(
+                    format!("{p}.parent"),
+                    vec![pa.body_parent[b] as f64],
+                    vec![pb.body_parent[b] as f64]
+                );
+                ins!(
+                    format!("{p}.rootid"),
+                    vec![pa.body_rootid[b] as f64],
+                    vec![pb.body_rootid[b] as f64]
+                );
+                ins!(
+                    format!("{p}.jnt_adr"),
+                    vec![pa.body_jnt_adr[b] as f64],
+                    vec![pb.body_jnt_adr[b] as f64]
+                );
+                ins!(
+                    format!("{p}.jnt_num"),
+                    vec![pa.body_jnt_num[b] as f64],
+                    vec![pb.body_jnt_num[b] as f64]
+                );
+                ins!(
+                    format!("{p}.dof_adr"),
+                    vec![pa.body_dof_adr[b] as f64],
+                    vec![pb.body_dof_adr[b] as f64]
+                );
+                ins!(
+                    format!("{p}.dof_num"),
+                    vec![pa.body_dof_num[b] as f64],
+                    vec![pb.body_dof_num[b] as f64]
+                );
+                ins!(
+                    format!("{p}.geom_adr"),
+                    vec![pa.body_geom_adr[b] as f64],
+                    vec![pb.body_geom_adr[b] as f64]
+                );
+                ins!(
+                    format!("{p}.geom_num"),
+                    vec![pa.body_geom_num[b] as f64],
+                    vec![pb.body_geom_num[b] as f64]
+                );
+                ins!(
+                    format!("{p}.mass"),
+                    vec![pa.body_mass[b]],
+                    vec![pb.body_mass[b]]
+                );
+                ins!(
+                    format!("{p}.inertia"),
+                    vec![
+                        pa.body_inertia[b].x,
+                        pa.body_inertia[b].y,
+                        pa.body_inertia[b].z
+                    ],
+                    vec![
+                        pb.body_inertia[b].x,
+                        pb.body_inertia[b].y,
+                        pb.body_inertia[b].z
+                    ]
+                );
+                ins!(
+                    format!("{p}.pos"),
+                    vec![pa.body_pos[b].x, pa.body_pos[b].y, pa.body_pos[b].z],
+                    vec![pb.body_pos[b].x, pb.body_pos[b].y, pb.body_pos[b].z]
+                );
+                let qa = pa.body_quat[b].as_vector();
+                let qb_ = pb.body_quat[b].as_vector();
+                ins!(
+                    format!("{p}.quat"),
+                    vec![qa[0], qa[1], qa[2], qa[3]],
+                    vec![qb_[0], qb_[1], qb_[2], qb_[3]]
+                );
+                ins!(
+                    format!("{p}.ipos"),
+                    vec![pa.body_ipos[b].x, pa.body_ipos[b].y, pa.body_ipos[b].z],
+                    vec![pb.body_ipos[b].x, pb.body_ipos[b].y, pb.body_ipos[b].z]
+                );
+                let iqa = pa.body_iquat[b].as_vector();
+                let iqb = pb.body_iquat[b].as_vector();
+                ins!(
+                    format!("{p}.iquat"),
+                    vec![iqa[0], iqa[1], iqa[2], iqa[3]],
+                    vec![iqb[0], iqb[1], iqb[2], iqb[3]]
+                );
+                ins!(
+                    format!("{p}.subtreemass"),
+                    vec![pa.body_subtreemass[b]],
+                    vec![pb.body_subtreemass[b]]
+                );
+                ins!(
+                    format!("{p}.gravcomp"),
+                    vec![pa.body_gravcomp[b]],
+                    vec![pb.body_gravcomp[b]]
+                );
+                ins!(
+                    format!("{p}.invweight0"),
+                    vec![pa.body_invweight0[b][0], pa.body_invweight0[b][1]],
+                    vec![pb.body_invweight0[b][0], pb.body_invweight0[b][1]]
+                );
+                ins!(
+                    format!("{p}.treeid"),
+                    vec![pa.body_treeid[b] as f64],
+                    vec![pb.body_treeid[b] as f64]
+                );
+            }
+
+            // === PER-JOINT ===
+            let nj = pa.njnt.min(pb.njnt);
+            for j in 0..nj {
+                let p = format!("jnt[{}]", j);
+                ins!(
+                    format!("{p}.body"),
+                    vec![pa.jnt_body[j] as f64],
+                    vec![pb.jnt_body[j] as f64]
+                );
+                ins!(
+                    format!("{p}.qpos_adr"),
+                    vec![pa.jnt_qpos_adr[j] as f64],
+                    vec![pb.jnt_qpos_adr[j] as f64]
+                );
+                ins!(
+                    format!("{p}.dof_adr"),
+                    vec![pa.jnt_dof_adr[j] as f64],
+                    vec![pb.jnt_dof_adr[j] as f64]
+                );
+                ins!(
+                    format!("{p}.pos"),
+                    vec![pa.jnt_pos[j].x, pa.jnt_pos[j].y, pa.jnt_pos[j].z],
+                    vec![pb.jnt_pos[j].x, pb.jnt_pos[j].y, pb.jnt_pos[j].z]
+                );
+                ins!(
+                    format!("{p}.axis"),
+                    vec![pa.jnt_axis[j].x, pa.jnt_axis[j].y, pa.jnt_axis[j].z],
+                    vec![pb.jnt_axis[j].x, pb.jnt_axis[j].y, pb.jnt_axis[j].z]
+                );
+                ins!(
+                    format!("{p}.limited"),
+                    vec![pa.jnt_limited[j] as u8 as f64],
+                    vec![pb.jnt_limited[j] as u8 as f64]
+                );
+                ins!(
+                    format!("{p}.range"),
+                    vec![pa.jnt_range[j].0, pa.jnt_range[j].1],
+                    vec![pb.jnt_range[j].0, pb.jnt_range[j].1]
+                );
+                ins!(
+                    format!("{p}.stiffness"),
+                    vec![pa.jnt_stiffness[j]],
+                    vec![pb.jnt_stiffness[j]]
+                );
+                ins!(
+                    format!("{p}.springref"),
+                    vec![pa.jnt_springref[j]],
+                    vec![pb.jnt_springref[j]]
+                );
+                ins!(
+                    format!("{p}.damping"),
+                    vec![pa.jnt_damping[j]],
+                    vec![pb.jnt_damping[j]]
+                );
+                ins!(
+                    format!("{p}.armature"),
+                    vec![pa.jnt_armature[j]],
+                    vec![pb.jnt_armature[j]]
+                );
+                ins!(
+                    format!("{p}.solref"),
+                    pa.jnt_solref[j].to_vec(),
+                    pb.jnt_solref[j].to_vec()
+                );
+                ins!(
+                    format!("{p}.solimp"),
+                    pa.jnt_solimp[j].to_vec(),
+                    pb.jnt_solimp[j].to_vec()
+                );
+                ins!(
+                    format!("{p}.margin"),
+                    vec![pa.jnt_margin[j]],
+                    vec![pb.jnt_margin[j]]
+                );
+                ins!(
+                    format!("{p}.group"),
+                    vec![pa.jnt_group[j] as f64],
+                    vec![pb.jnt_group[j] as f64]
+                );
+                ins!(
+                    format!("{p}.actgravcomp"),
+                    vec![pa.jnt_actgravcomp[j] as u8 as f64],
+                    vec![pb.jnt_actgravcomp[j] as u8 as f64]
+                );
+            }
+
+            // === PER-DOF ===
+            let ndof = pa.nv.min(pb.nv);
+            for d in 0..ndof {
+                let p = format!("dof[{}]", d);
+                ins!(
+                    format!("{p}.body"),
+                    vec![pa.dof_body[d] as f64],
+                    vec![pb.dof_body[d] as f64]
+                );
+                ins!(
+                    format!("{p}.jnt"),
+                    vec![pa.dof_jnt[d] as f64],
+                    vec![pb.dof_jnt[d] as f64]
+                );
+                ins!(
+                    format!("{p}.parent"),
+                    vec![pa.dof_parent[d].map_or(-1.0, |x| x as f64)],
+                    vec![pb.dof_parent[d].map_or(-1.0, |x| x as f64)]
+                );
+                ins!(
+                    format!("{p}.armature"),
+                    vec![pa.dof_armature[d]],
+                    vec![pb.dof_armature[d]]
+                );
+                ins!(
+                    format!("{p}.damping"),
+                    vec![pa.dof_damping[d]],
+                    vec![pb.dof_damping[d]]
+                );
+                ins!(
+                    format!("{p}.frictionloss"),
+                    vec![pa.dof_frictionloss[d]],
+                    vec![pb.dof_frictionloss[d]]
+                );
+                ins!(
+                    format!("{p}.solref"),
+                    pa.dof_solref[d].to_vec(),
+                    pb.dof_solref[d].to_vec()
+                );
+                ins!(
+                    format!("{p}.solimp"),
+                    pa.dof_solimp[d].to_vec(),
+                    pb.dof_solimp[d].to_vec()
+                );
+                ins!(
+                    format!("{p}.invweight0"),
+                    vec![pa.dof_invweight0[d]],
+                    vec![pb.dof_invweight0[d]]
+                );
+                ins!(
+                    format!("{p}.treeid"),
+                    vec![pa.dof_treeid[d] as f64],
+                    vec![pb.dof_treeid[d] as f64]
+                );
+                ins!(
+                    format!("{p}.length"),
+                    vec![pa.dof_length[d]],
+                    vec![pb.dof_length[d]]
+                );
+            }
+
+            // === MATCHED GEOMS (by type + body) ===
+            let mut used_b = HashSet::new();
+            let mut geom_pairs: Vec<(usize, usize, String)> = Vec::new();
+            for ga in 0..pa.ngeom {
+                for gb in 0..pb.ngeom {
+                    if used_b.contains(&gb) {
+                        continue;
+                    }
+                    if pb.geom_type[gb] == pa.geom_type[ga] && pb.geom_body[gb] == pa.geom_body[ga]
+                    {
+                        geom_pairs.push((
+                            ga,
+                            gb,
+                            format!("{:?}_body{}", pa.geom_type[ga], pa.geom_body[ga]),
+                        ));
+                        used_b.insert(gb);
+                        break;
+                    }
+                }
+            }
+
+            for (ga, gb, label) in &geom_pairs {
+                let p = format!("geom[{}]", label);
+                ins!(
+                    format!("{p}.pos"),
+                    vec![pa.geom_pos[*ga].x, pa.geom_pos[*ga].y, pa.geom_pos[*ga].z],
+                    vec![pb.geom_pos[*gb].x, pb.geom_pos[*gb].y, pb.geom_pos[*gb].z]
+                );
+                let gqa = pa.geom_quat[*ga].as_vector();
+                let gqb = pb.geom_quat[*gb].as_vector();
+                ins!(
+                    format!("{p}.quat"),
+                    vec![gqa[0], gqa[1], gqa[2], gqa[3]],
+                    vec![gqb[0], gqb[1], gqb[2], gqb[3]]
+                );
+                ins!(
+                    format!("{p}.size"),
+                    vec![
+                        pa.geom_size[*ga].x,
+                        pa.geom_size[*ga].y,
+                        pa.geom_size[*ga].z
+                    ],
+                    vec![
+                        pb.geom_size[*gb].x,
+                        pb.geom_size[*gb].y,
+                        pb.geom_size[*gb].z
+                    ]
+                );
+                ins!(
+                    format!("{p}.friction"),
+                    vec![
+                        pa.geom_friction[*ga].x,
+                        pa.geom_friction[*ga].y,
+                        pa.geom_friction[*ga].z
+                    ],
+                    vec![
+                        pb.geom_friction[*gb].x,
+                        pb.geom_friction[*gb].y,
+                        pb.geom_friction[*gb].z
+                    ]
+                );
+                ins!(
+                    format!("{p}.condim"),
+                    vec![pa.geom_condim[*ga] as f64],
+                    vec![pb.geom_condim[*gb] as f64]
+                );
+                ins!(
+                    format!("{p}.contype"),
+                    vec![pa.geom_contype[*ga] as f64],
+                    vec![pb.geom_contype[*gb] as f64]
+                );
+                ins!(
+                    format!("{p}.conaffinity"),
+                    vec![pa.geom_conaffinity[*ga] as f64],
+                    vec![pb.geom_conaffinity[*gb] as f64]
+                );
+                ins!(
+                    format!("{p}.margin"),
+                    vec![pa.geom_margin[*ga]],
+                    vec![pb.geom_margin[*gb]]
+                );
+                ins!(
+                    format!("{p}.gap"),
+                    vec![pa.geom_gap[*ga]],
+                    vec![pb.geom_gap[*gb]]
+                );
+                ins!(
+                    format!("{p}.priority"),
+                    vec![pa.geom_priority[*ga] as f64],
+                    vec![pb.geom_priority[*gb] as f64]
+                );
+                ins!(
+                    format!("{p}.solmix"),
+                    vec![pa.geom_solmix[*ga]],
+                    vec![pb.geom_solmix[*gb]]
+                );
+                ins!(
+                    format!("{p}.solimp"),
+                    pa.geom_solimp[*ga].to_vec(),
+                    pb.geom_solimp[*gb].to_vec()
+                );
+                ins!(
+                    format!("{p}.solref"),
+                    pa.geom_solref[*ga].to_vec(),
+                    pb.geom_solref[*gb].to_vec()
+                );
+                ins!(
+                    format!("{p}.rbound"),
+                    vec![pa.geom_rbound[*ga]],
+                    vec![pb.geom_rbound[*gb]]
+                );
+                ins!(
+                    format!("{p}.aabb"),
+                    pa.geom_aabb[*ga].to_vec(),
+                    pb.geom_aabb[*gb].to_vec()
+                );
+                ins!(
+                    format!("{p}.group"),
+                    vec![pa.geom_group[*ga] as f64],
+                    vec![pb.geom_group[*gb] as f64]
+                );
+                ins!(
+                    format!("{p}.rgba"),
+                    pa.geom_rgba[*ga].to_vec(),
+                    pb.geom_rgba[*gb].to_vec()
+                );
+                ins!(
+                    format!("{p}.fluid"),
+                    pa.geom_fluid[*ga].to_vec(),
+                    pb.geom_fluid[*gb].to_vec()
+                );
+            }
+
+            // === TREE ===
+            let nt = pa.ntree.min(pb.ntree);
+            for t in 0..nt {
+                let p = format!("tree[{}]", t);
+                ins!(
+                    format!("{p}.body_adr"),
+                    vec![pa.tree_body_adr[t] as f64],
+                    vec![pb.tree_body_adr[t] as f64]
+                );
+                ins!(
+                    format!("{p}.body_num"),
+                    vec![pa.tree_body_num[t] as f64],
+                    vec![pb.tree_body_num[t] as f64]
+                );
+                ins!(
+                    format!("{p}.dof_adr"),
+                    vec![pa.tree_dof_adr[t] as f64],
+                    vec![pb.tree_dof_adr[t] as f64]
+                );
+                ins!(
+                    format!("{p}.dof_num"),
+                    vec![pa.tree_dof_num[t] as f64],
+                    vec![pb.tree_dof_num[t] as f64]
+                );
+            }
+
+            // === AUTO-DIFF ===
+            let all_keys: BTreeSet<String> = fa.keys().chain(fb.keys()).cloned().collect();
+            let mut diff_count = 0usize;
+            let mut diff_fields: Vec<String> = Vec::new();
+
+            for key in &all_keys {
+                match (fa.get(key), fb.get(key)) {
+                    (Some(va), Some(vb)) => {
+                        if va.len() == vb.len() {
+                            for (i, (a, b)) in va.iter().zip(vb.iter()).enumerate() {
+                                if (a - b).abs() > 1e-12 {
+                                    if va.len() == 1 {
+                                        eprintln!(
+                                            "  DIFF {}: {:.10} vs {:.10} (Δ={:.2e})",
+                                            key,
+                                            a,
+                                            b,
+                                            (a - b).abs()
+                                        );
+                                    } else {
+                                        eprintln!(
+                                            "  DIFF {}[{}]: {:.10} vs {:.10} (Δ={:.2e})",
+                                            key,
+                                            i,
+                                            a,
+                                            b,
+                                            (a - b).abs()
+                                        );
+                                    }
+                                    diff_count += 1;
+                                    if !diff_fields.contains(key) {
+                                        diff_fields.push(key.clone());
+                                    }
+                                }
+                            }
+                        } else {
+                            eprintln!("  DIFF {}: len {} vs {}", key, va.len(), vb.len());
+                            diff_count += 1;
+                            diff_fields.push(key.clone());
+                        }
+                    }
+                    (Some(_), None) => {
+                        eprintln!("  DIFF {}: in patched only", key);
+                        diff_count += 1;
+                        diff_fields.push(key.clone());
+                    }
+                    (None, Some(_)) => {
+                        eprintln!("  DIFF {}: in cfd only", key);
+                        diff_count += 1;
+                        diff_fields.push(key.clone());
+                    }
+                    (None, None) => unreachable!(),
+                }
+            }
+
+            // Enum fields (non-numeric comparison)
+            if format!("{:?}", pa.integrator) != format!("{:?}", pb.integrator) {
+                eprintln!(
+                    "  DIFF integrator: {:?} vs {:?}",
+                    pa.integrator, pb.integrator
+                );
+                diff_count += 1;
+                diff_fields.push("integrator".into());
+            }
+            if format!("{:?}", pa.solver_type) != format!("{:?}", pb.solver_type) {
+                eprintln!(
+                    "  DIFF solver_type: {:?} vs {:?}",
+                    pa.solver_type, pb.solver_type
+                );
+                diff_count += 1;
+                diff_fields.push("solver_type".into());
+            }
+            for j in 0..nj {
+                if format!("{:?}", pa.jnt_type[j]) != format!("{:?}", pb.jnt_type[j]) {
+                    eprintln!(
+                        "  DIFF jnt[{}].type: {:?} vs {:?}",
+                        j, pa.jnt_type[j], pb.jnt_type[j]
+                    );
+                    diff_count += 1;
+                    diff_fields.push(format!("jnt[{}].type", j));
+                }
+            }
+
+            eprintln!("\n  ══════════════════════════════════════════");
+            eprintln!("  Total fields checked: {}", all_keys.len() + 3); // +3 for enum fields
+            eprintln!("  Total diff entries: {}", diff_count);
+            eprintln!("  Diff fields: {:?}", diff_fields);
+            eprintln!("  ══════════════════════════════════════════");
+        }
     }
 
     #[test]
-    #[ignore = "WIP: cf-design model builder integration gap — algorithm proven in sim-conformance-tests"]
     fn sdf_sphere_stacking() {
         let material = Material::new("PLA", 1250.0);
         let m = Mechanism::builder("pair")
