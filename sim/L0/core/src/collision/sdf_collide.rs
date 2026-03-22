@@ -9,6 +9,26 @@ use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
 
+use super::super::sdf::SdfGrid;
+
+/// Sphere-trace from the SDF origin along `local_dir` to find the surface
+/// distance (effective radius along that axis).  Works for any convex SDF.
+fn sdf_ray_radius(sdf: &SdfGrid, local_dir: Vector3<f64>) -> f64 {
+    let dir = local_dir.try_normalize(1e-10).unwrap_or_else(Vector3::z);
+    let mut t = 0.0;
+    for _ in 0..200 {
+        let point = Point3::from(dir * t);
+        let Some(dist) = sdf.distance(point) else {
+            return t;
+        };
+        if dist >= 0.0 {
+            return t;
+        }
+        t += (-dist).max(sdf.cell_size() * 0.01);
+    }
+    t
+}
+
 /// Collision detection involving at least one SDF geometry.
 ///
 /// Dispatches to the appropriate `sdf_*_contact()` function from `sdf.rs`.
@@ -86,15 +106,16 @@ pub fn collide_with_sdf(
 
     // SDF-Plane: use analytical sphere-plane formula for depth (grid-based
     // surface tracing has discretization errors that destabilize stacking).
-    // The SDF effective radius comes from geom_size.x, matching the
-    // analytical convention: depth = radius - distance_to_plane.
+    // The effective radius is found by sphere-tracing the SDF along the
+    // plane normal from the geom center.
     if model.geom_type[other_geom] == GeomType::Plane {
         let plane_normal = other_mat.column(2).into_owned();
         let plane_offset = plane_normal.dot(&other_pos);
 
-        // Analytical depth: distance from SDF center to plane minus radius
+        // Effective radius: ray-march from SDF center toward the plane
+        let local_dir = sdf_mat.transpose() * (-plane_normal);
+        let sdf_radius = sdf_ray_radius(sdf, local_dir);
         let dist_to_plane = plane_normal.dot(&sdf_pos) - plane_offset;
-        let sdf_radius = model.geom_size[sdf_geom].x;
         let depth = sdf_radius - dist_to_plane;
 
         if depth > -margin {
@@ -124,12 +145,14 @@ pub fn collide_with_sdf(
         let mut sdf_contacts =
             sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose, contact_margin);
 
-        // Override SDF contact depth with the analytical overlap computed from
-        // geom_size.  The SDF ray-march radius fluctuates with grid orientation
-        // (grids aren't rotationally invariant), causing depth instability that
-        // breaks stacking.  geom_size.x = analytical radius (constant).
-        let r_a = model.geom_size[sdf_geom].x;
-        let r_b = model.geom_size[other_geom].x;
+        // Override depth with analytical overlap via SDF ray-marching.
+        // Each SDF's effective radius is found by sphere-tracing from the
+        // center along the separation axis (in local frame).
+        let sep = (other_pos - sdf_pos).normalize();
+        let local_dir_a = sdf_mat.transpose() * sep;
+        let local_dir_b = other_mat.transpose() * (-sep);
+        let r_a = sdf_ray_radius(sdf, local_dir_a);
+        let r_b = sdf_ray_radius(other_sdf, local_dir_b);
         let center_dist = (sdf_pos - other_pos).norm();
         let analytical_depth = (r_a + r_b - center_dist).max(0.0);
         for c in &mut sdf_contacts {

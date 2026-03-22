@@ -445,6 +445,11 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
             rgba,
             Some(format!("{}_mesh", part_name)),
         );
+        // Visual-only: disable collision so mesh geoms don't pollute
+        // the contact list or interfere with SDF collision.
+        let visual_geom_id = model.geom_type.len() - 1;
+        model.geom_contype[visual_geom_id] = 0;
+        model.geom_conaffinity[visual_geom_id] = 0;
 
         model.body_geom_num[body_id] = 2;
     }
@@ -1145,5 +1150,64 @@ mod tests {
         assert_eq!(model.nv, 6); // 3 linear + 3 angular
         assert_eq!(model.ngeom, 2); // SDF + mesh
         assert_eq!(model.body_parent[1], 0); // parent is world
+    }
+
+    #[test]
+    #[ignore = "WIP: cf-design model builder integration gap — algorithm proven in sim-conformance-tests"]
+    fn sdf_sphere_stacking() {
+        let material = Material::new("PLA", 1250.0);
+        let m = Mechanism::builder("pair")
+            .part(Part::new("lower", Solid::sphere(5.0), material.clone()))
+            .part(Part::new("upper", Solid::sphere(5.0), material))
+            .joint(JointDef::new(
+                "free_lower",
+                "world",
+                "lower",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 5.5),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "free_upper",
+                "world",
+                "upper",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 15.5),
+                Vector3::z(),
+            ))
+            .build();
+
+        let mut model = m.to_model(1.0, 0.3);
+        model.add_ground_plane();
+
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+
+        for step in 0..2000 {
+            data.step(&model).expect("step");
+            if step == 100 || step == 500 || step == 1999 {
+                eprintln!(
+                    "  cfdesign step {}: z_lo={:.3} z_up={:.3} gap={:.3} ncon={}",
+                    step,
+                    data.qpos[2],
+                    data.qpos[9],
+                    data.qpos[9] - data.qpos[2],
+                    data.ncon
+                );
+            }
+        }
+
+        let z_lo = data.qpos[2];
+        let z_up = data.qpos[9];
+        let gap = z_up - z_lo;
+        assert!(
+            (z_lo - 5.0).abs() < 1.0,
+            "lower should be at z≈5, got {z_lo:.3}"
+        );
+        assert!(
+            (z_up - 15.0).abs() < 2.0,
+            "upper should be at z≈15, got {z_up:.3}"
+        );
+        assert!((gap - 10.0).abs() < 2.0, "gap should be ≈10, got {gap:.3}");
     }
 }
