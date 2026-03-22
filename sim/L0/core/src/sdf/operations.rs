@@ -51,10 +51,16 @@ pub fn sdf_sdf_contact(
     // the center isn't a grid point.  Instead, ray-march from the center along
     // the separation axis to find where the SDF crosses zero — this gives the
     // exact effective radius along the contact direction.
+    //
+    // The ray-march direction must be in each SDF's local frame (the grid is
+    // stored in local coordinates).  Using world-frame direction produces wrong
+    // radii when the SDF body is rotated.
     let sep = separation_direction(pose_a, pose_b);
     let dir = sep.unwrap_or_else(Vector3::z);
-    let r_a = sdf_radius_along_axis(sdf_a, dir);
-    let r_b = sdf_radius_along_axis(sdf_b, -dir);
+    let local_dir_a = pose_a.rotation.inverse() * dir;
+    let local_dir_b = pose_b.rotation.inverse() * (-dir);
+    let r_a = sdf_radius_along_axis(sdf_a, local_dir_a);
+    let r_b = sdf_radius_along_axis(sdf_b, local_dir_b);
     let center_dist = (pose_b.position - pose_a.position).norm();
     let analytical_depth = (r_a + r_b - center_dist).max(0.0);
 
@@ -67,15 +73,12 @@ pub fn sdf_sdf_contact(
     // Placing the contact ON the center axis (not at an off-center centroid)
     // is critical: off-center contacts create torque that diverts force from
     // translational support, making the constraint too weak to hold stacking.
-    let sep_dir = separation_direction(pose_a, pose_b);
-    let normal = sep_dir.unwrap_or_else(Vector3::z);
-    // Contact point on center axis, offset from A's center by (r_a - depth/2)
-    let contact_point = pose_a.position + normal * (r_a - analytical_depth * 0.5);
+    let contact_point = pose_a.position + dir * (r_a - analytical_depth * 0.5);
 
     contacts.clear();
     contacts.push(SdfContact {
         point: Point3::from(contact_point),
-        normal,
+        normal: dir,
         penetration: analytical_depth,
     });
 

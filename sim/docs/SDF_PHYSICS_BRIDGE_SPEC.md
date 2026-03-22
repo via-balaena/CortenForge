@@ -113,22 +113,32 @@ perfectly at gap=9.608 (matching analytical sphere-sphere). The cf-design
 model builder produces a model with identical parameters (same mass,
 timestep, gravity, radius) where the sphere falls through.
 
-**Diagnosis approach:**
-- Instrument `finalize_constraint_row` to log `efc_aref`, `efc_b`,
-  `efc_R`, `efc_D`, `pos`, `margin`, `vel` for both models at the same
-  sim time
-- Compare the constraint system state step-by-step
-- The divergence must be in a Model struct field that affects the
-  Jacobian, mass matrix, or regularization
-- Suspect: `body_ipos` (inertia frame offset), `body_iquat`, or
-  `geom_pos` differences between MJCF and cf-design model construction
+**Diagnosis approach (fastest first):**
+
+1. **Compare SDF grids** (5 min). The conformance test uses
+   `SdfGrid::sphere(origin, 5.0, 20, 2.0)` (cell_size ≈ 0.7mm).
+   cf-design uses `solid.sdf_grid_at(1.0)` (cell_size = 1.0mm).
+   Compare `sdf_ray_radius` output for both grids along the Z axis.
+   If they differ by > 0.01mm, the grid is the problem.
+
+2. **Diff Model fields** (10 min). After building both models, compare
+   `body_invweight0`, `body_subtreemass`, `body_ipos`, `body_inertia`
+   for each body. The conformance test inherits these from MJCF's
+   `load_model()` pipeline; cf-design computes them via separate
+   post-build functions. Any divergence in computation order or a field
+   left at default would silently break the solver's force balance.
+
+3. **Instrument constraint assembly** (30 min, only if 1 and 2 match).
+   Log `efc_aref`, `efc_b`, `efc_R`, `efc_D`, `pos`, `margin`, `vel`
+   from `finalize_constraint_row` for both models at the same sim time.
+   The divergence must be in a Model field that affects the Jacobian,
+   mass matrix, or regularization.
 
 **Key files:**
 - `sim/L0/core/src/constraint/assembly.rs` — finalize_constraint_row
 - `sim/L0/core/src/constraint/contact_assembly.rs` — contact row setup
 - `design/cf-design/src/mechanism/model_builder.rs` — model construction
 - `sim/L0/tests/integration/collision_primitives.rs` — passing test
-- `design/cf-design/src/mechanism/model_builder.rs` — failing test
 
 ### 3.2 Non-sphere SDF shapes
 
@@ -151,12 +161,10 @@ but flat surfaces need distributed contacts for stability:
 - **Cylinder on floor:** needs a contact ring
 - **Concave socket:** needs contacts on both sides of the cavity
 
-The consolidation step should be conditional: consolidate for convex-
-convex pairs (where a single contact is correct), keep multi-contact
-for flat or concave surfaces.
-
-**Detection heuristic:** if the contact patch spans more than ~30 degrees
-of the surface curvature, keep multi-contact. Otherwise consolidate.
+The consolidation decision is made by the `PhysicsShape` implementation:
+shapes that return `Some` from `effective_radius` get single-contact
+consolidation (convex-convex). Shapes that return `None` get multi-contact
+surface tracing (flat/concave). See Part 4.5.
 
 ### 3.4 Grid rotation invariance
 
@@ -172,67 +180,186 @@ Long-term fix: use analytical shape metadata for depth/normal (the
 discretization noise then only affects detection timing (which step the
 contact first appears), not force computation.
 
+### 3.5 Bugs fixed during spec review
+
+Two bugs found and fixed during the stress-test review of this spec:
+
+**3.5a: World-frame ray-march in `operations.rs` (rotation bug)**
+
+`sdf_sdf_contact()` passed the world-frame separation direction directly
+to `sdf_radius_along_axis()`, but the SDF grid works in local coordinates.
+For unrotated SDFs this happened to work; any rotation would produce wrong
+effective radii and wrong contact points.
+
+Fix: transform direction to each SDF's local frame via
+`pose.rotation.inverse() * dir` before ray-marching.
+
+**3.5b: Coincident-center panic in `sdf_collide.rs`**
+
+`(other_pos - sdf_pos).normalize()` panics when both SDFs are at the
+same position (deep penetration). The `operations.rs` version handled
+this with `separation_direction()` returning `None` + fallback, but
+`sdf_collide.rs` didn't have the safety check.
+
+Fix: replaced `.normalize()` with `.try_normalize(1e-10).unwrap_or(Vector3::z())`.
+
 ---
 
-## Part 4 — Proposed architecture: `PhysicsShape` trait
+## Part 4 — Proposed architecture: `PhysicsShape` trait + free-function dispatch
 
-Unify SDF and analytical geometry behind a single interface:
+### 4.1 Why not `contact_with` on the trait
+
+The original design had `contact_with(&self, other: &dyn PhysicsShape, ...)`
+on the trait. This breaks for pair-specific algorithms: a sphere contacting
+a box needs the `r_a + half_extent_b` formula, but `contact_with` dispatches
+on `self` only — it can't specialize on `other`. Double dispatch in Rust
+requires `as_any()` downcasting or an enum, both of which are worse than a
+simple free function.
+
+### 4.2 Why `effective_radius` returns `Option`
+
+Non-convex shapes (torus, socket, L-bracket) have no meaningful "radius from
+center" — the center may be outside the surface entirely. Returning `Option`
+lets the dispatch function detect this and fall back to grid-based multi-
+contact instead of producing garbage depth values.
+
+### 4.3 The trait
 
 ```rust
-pub trait PhysicsShape {
-    /// Distance from the shape center to the surface along a direction.
-    /// For a sphere: always returns the radius.
-    /// For a box: returns the half-extent projected onto the direction.
-    fn effective_radius(&self, local_dir: Vector3<f64>) -> f64;
+pub trait PhysicsShape: Send + Sync {
+    /// Distance from the shape center to the surface along a local-frame
+    /// direction, found by ray-marching or analytical formula.
+    ///
+    /// Returns `Some(radius)` for convex shapes where a ray from the center
+    /// always crosses the surface exactly once.
+    /// Returns `None` for non-convex shapes (torus, socket, hollow body)
+    /// where the center-to-surface concept is undefined.
+    ///
+    /// - Sphere: always `Some(radius)` (constant, rotation-invariant)
+    /// - Box: `Some(half_extents projected onto dir)` (direction-dependent)
+    /// - Convex SDF: `Some(ray-march result)` (approximate but stable)
+    /// - Concave SDF: `None`
+    fn effective_radius(&self, local_dir: Vector3<f64>) -> Option<f64>;
 
-    /// Contact between two physics shapes at given poses.
-    /// Returns: (depth, normal, contact_point) or None.
-    /// Depth follows the analytical convention:
-    ///   positive = overlap, zero = touching, negative = separated.
-    fn contact_with(
-        &self,
-        self_pose: &Pose,
-        other: &dyn PhysicsShape,
-        other_pose: &Pose,
-        margin: f64,
-    ) -> Option<ShapeContact>;
-
-    /// SDF distance query (for detection/broadphase).
-    /// Returns None if point is outside the grid bounds.
-    fn sdf_distance(&self, local_point: Point3<f64>) -> Option<f64>;
+    /// The underlying SDF grid for broadphase detection and surface tracing.
+    fn sdf_grid(&self) -> &SdfGrid;
 }
 ```
 
-**Implementations:**
+### 4.4 Free-function contact dispatch
 
-- `SdfSphere { grid: SdfGrid, radius: f64 }` — uses radius for depth,
-  grid for detection
-- `SdfBox { grid: SdfGrid, half_extents: Vector3<f64> }` — uses
-  half-extents for depth, grid for detection
-- `SdfArbitrary { grid: SdfGrid }` — uses ray-march for depth (fallback)
+Contact computation is a **free function**, not a method. This solves
+double dispatch cleanly — the function sees both shapes and picks the
+best algorithm:
 
-**How this helps:**
+```rust
+pub struct ShapeContact {
+    pub point: Point3<f64>,
+    pub normal: Vector3<f64>,
+    pub depth: f64,
+}
+
+/// Compute contact between two physics shapes.
+///
+/// Algorithm selection:
+/// 1. Both shapes have `effective_radius` → analytical depth, single
+///    consolidated contact (convex-convex path, proven for stacking)
+/// 2. Either shape returns `None` → grid-based surface tracing with
+///    multi-contact (concave/flat path, needed for boxes on floor, etc.)
+pub fn compute_shape_contact(
+    a: &dyn PhysicsShape,
+    pose_a: &Pose,
+    b: &dyn PhysicsShape,
+    pose_b: &Pose,
+    margin: f64,
+) -> Vec<ShapeContact> {
+    let sep = separation_direction(pose_a, pose_b);
+    let dir = sep.unwrap_or(Vector3::z());
+
+    // Transform separation direction to each SDF's local frame
+    let local_dir_a = pose_a.rotation.inverse() * dir;
+    let local_dir_b = pose_b.rotation.inverse() * (-dir);
+
+    // Try analytical path (both convex)
+    if let (Some(r_a), Some(r_b)) = (
+        a.effective_radius(local_dir_a),
+        b.effective_radius(local_dir_b),
+    ) {
+        let center_dist = (pose_b.position - pose_a.position).norm();
+        let depth = (r_a + r_b - center_dist).max(0.0);
+        if depth > 0.0 || center_dist < r_a + r_b + margin {
+            let contact_point = pose_a.position + dir * (r_a - depth * 0.5);
+            return vec![ShapeContact {
+                point: Point3::from(contact_point),
+                normal: dir,
+                depth,
+            }];
+        }
+        return vec![];
+    }
+
+    // Fallback: grid-based surface tracing (keeps multi-contact)
+    surface_trace_contact(
+        a.sdf_grid(), pose_a,
+        b.sdf_grid(), pose_b,
+        margin,
+    )
+}
+```
+
+### 4.5 Multi-contact consolidation rule
+
+No magic numbers. The rule falls out of the type system:
+
+- If both shapes return `Some` from `effective_radius` → **single contact**
+  (convex-convex, consolidation is physically correct)
+- If either returns `None` → **multi-contact from surface tracing**
+  (flat/concave surfaces need distributed contacts for torque balance)
+
+This replaces the previous "30-degree curvature heuristic" with a decision
+the shape author makes once at implementation time.
+
+### 4.6 Implementations
+
+- `SdfSphere { grid: SdfGrid, radius: f64 }` — `effective_radius` always
+  returns `Some(radius)`. Grid for detection only.
+- `SdfBox { grid: SdfGrid, half_extents: Vector3<f64> }` — `effective_radius`
+  returns `Some(half_extents projected onto dir)`. Grid for detection.
+- `SdfConvex { grid: SdfGrid }` — `effective_radius` returns
+  `Some(ray_march_result)`. General convex fallback.
+- `SdfConcave { grid: SdfGrid }` — `effective_radius` returns `None`.
+  Always uses multi-contact surface tracing.
+
+### 4.7 How this helps
 
 1. **Single source of truth.** The `PhysicsShape` carries both the SDF
    grid AND the analytical parameters. No more scattered overrides.
 
-2. **Generalizes naturally.** New shapes implement the trait. The
-   collision pipeline doesn't need per-type dispatch.
+2. **Pair dispatch without double dispatch.** The free function sees both
+   shapes. Specialized pair algorithms (sphere-sphere, sphere-box) can be
+   added as match arms without changing the trait.
 
 3. **Testable bridge.** Each implementation can be tested independently:
    "does `effective_radius` match the analytical formula?"
 
-4. **Rotation-invariant depth.** The `effective_radius` method uses
-   analytical parameters (constant), not grid queries (rotation-dependent).
+4. **Rotation-invariant depth.** Analytical implementations (`SdfSphere`)
+   use constants. Ray-march implementations use local-frame directions
+   (transformation handled by `compute_shape_contact`, not the shape).
 
-**Migration path:**
+5. **Correct concave handling.** Non-convex shapes opt out of consolidation
+   by returning `None`, getting multi-contact automatically.
 
-1. Define the trait in `sim-core/src/sdf/mod.rs`
+### 4.8 Migration path
+
+1. Define the trait + `compute_shape_contact` in `sim-core/src/sdf/mod.rs`
 2. Implement `SdfSphere` first (proven by conformance test)
-3. Migrate `sdf_collide.rs` to use `PhysicsShape` instead of raw
-   `SdfGrid` + ad-hoc overrides
-4. Implement `SdfBox`, `SdfCapsule`, `SdfArbitrary`
-5. cf-design model builder stores `PhysicsShape` instead of bare `SdfGrid`
+3. Wire `compute_shape_contact` into `sdf_collide.rs`, replacing the raw
+   `SdfGrid` + ad-hoc override logic (eliminates the duplicate ray-march
+   in `operations.rs` and `sdf_collide.rs`)
+4. Implement `SdfBox`, `SdfConvex`, `SdfConcave`
+5. cf-design model builder stores `Arc<dyn PhysicsShape>` instead of
+   bare `Arc<SdfGrid>` — the `Solid` knows its own shape kind and picks
+   the right implementation at build time
 
 ---
 

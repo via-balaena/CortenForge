@@ -148,7 +148,9 @@ pub fn collide_with_sdf(
         // Override depth with analytical overlap via SDF ray-marching.
         // Each SDF's effective radius is found by sphere-tracing from the
         // center along the separation axis (in local frame).
-        let sep = (other_pos - sdf_pos).normalize();
+        let sep = (other_pos - sdf_pos)
+            .try_normalize(1e-10)
+            .unwrap_or_else(Vector3::z);
         let local_dir_a = sdf_mat.transpose() * sep;
         let local_dir_b = other_mat.transpose() * (-sep);
         let r_a = sdf_ray_radius(sdf, local_dir_a);
