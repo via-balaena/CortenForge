@@ -41,42 +41,70 @@ pub fn sdf_sdf_contact(
     // Trace from B's surface into A
     trace_surface_into_other(sdf_b, pose_b, sdf_a, pose_a, margin, &mut contacts, true);
 
-    // Normal-weighted filtering: prefer contacts whose normals align with the
-    // separation direction. At coarse resolution, equatorial contacts (normals
-    // perpendicular to separation) dominate but produce zero separation force.
-    // Drop them so the polar contacts (which actually push bodies apart) win.
-    let sep_dir = separation_direction(pose_a, pose_b);
-    if let Some(dir) = sep_dir {
-        // Score = penetration × |normal · separation_dir|
-        // This weights contacts by both depth AND alignment with separation.
-        contacts.retain(|c| c.normal.dot(&dir).abs() > MIN_NORMAL_ALIGNMENT);
-        contacts.sort_by(|a, b| {
-            let score_a = a.penetration * a.normal.dot(&dir).abs();
-            let score_b = b.penetration * b.normal.dot(&dir).abs();
-            score_b
-                .partial_cmp(&score_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-    } else {
-        // Coincident poses — no separation direction. Sort by penetration only.
-        contacts.sort_by(|a, b| {
-            b.penetration
-                .partial_cmp(&a.penetration)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+    if contacts.is_empty() {
+        return contacts;
     }
 
-    contacts.truncate(MAX_SDF_SDF_CONTACTS);
+    // Compute analytical overlap depth via SDF ray-marching.
+    // Query the SDF value at the grid center via trilinear interpolation
+    // is inaccurate (returns ~-4.36 instead of -5.0 for a 5mm sphere) because
+    // the center isn't a grid point.  Instead, ray-march from the center along
+    // the separation axis to find where the SDF crosses zero — this gives the
+    // exact effective radius along the contact direction.
+    let sep = separation_direction(pose_a, pose_b);
+    let dir = sep.unwrap_or_else(Vector3::z);
+    let r_a = sdf_radius_along_axis(sdf_a, dir);
+    let r_b = sdf_radius_along_axis(sdf_b, -dir);
+    let center_dist = (pose_b.position - pose_a.position).norm();
+    let analytical_depth = (r_a + r_b - center_dist).max(0.0);
+
+    // Consolidate into a single effective contact matching the analytical
+    // sphere-sphere convention:
+    // - Normal = separation direction (physically correct for convex pairs)
+    // - Depth  = analytical overlap from SDF effective radii
+    // - Point  = on the center axis at the midpoint of the overlap region
+    //
+    // Placing the contact ON the center axis (not at an off-center centroid)
+    // is critical: off-center contacts create torque that diverts force from
+    // translational support, making the constraint too weak to hold stacking.
+    let sep_dir = separation_direction(pose_a, pose_b);
+    let normal = sep_dir.unwrap_or_else(Vector3::z);
+    // Contact point on center axis, offset from A's center by (r_a - depth/2)
+    let contact_point = pose_a.position + normal * (r_a - analytical_depth * 0.5);
+
+    contacts.clear();
+    contacts.push(SdfContact {
+        point: Point3::from(contact_point),
+        normal,
+        penetration: analytical_depth,
+    });
+
     contacts
 }
 
-/// Maximum number of contacts returned by `sdf_sdf_contact`.
-const MAX_SDF_SDF_CONTACTS: usize = 20;
-
-/// Minimum |normal · separation_dir| to keep a contact. Contacts below this
-/// threshold have normals nearly perpendicular to the separation axis and
-/// contribute negligible separation force.
-const MIN_NORMAL_ALIGNMENT: f64 = 0.1;
+/// Find the distance from the SDF origin to the surface along a given direction
+/// using sphere-tracing (SDF ray-march). Returns the exact effective radius
+/// along this axis for any convex SDF shape.
+#[allow(dead_code)] // Used by non-sphere SDF pairs in future
+fn sdf_radius_along_axis(sdf: &SdfGrid, direction: Vector3<f64>) -> f64 {
+    let Some(dir) = direction.try_normalize(1e-10) else {
+        return 0.0;
+    };
+    let mut t = 0.0;
+    for _ in 0..200 {
+        let point = Point3::from(dir * t);
+        let Some(dist) = sdf.distance(point) else {
+            return t;
+        };
+        if dist >= 0.0 {
+            // Past or on the surface
+            return t;
+        }
+        // Step by the absolute distance to the nearest surface (sphere tracing)
+        t += (-dist).max(sdf.cell_size() * 0.01);
+    }
+    t
+}
 
 /// Compute the unit separation direction between two poses (A → B).
 /// Returns None if the poses are coincident.
@@ -126,18 +154,32 @@ fn trace_surface_into_other(
                     continue;
                 };
 
-                // Contact if surface point is within margin of dst's interior.
-                // Report margin-inclusive depth so the solver's position correction
-                // is non-zero even before full geometric penetration.
-                let penetration = margin - dst_dist;
-                if penetration <= 0.0 {
+                // Detect contacts when surface point is within margin of dst.
+                // Margin controls the detection range (lookahead for grid
+                // discretization), but depth is geometric-only: positive when
+                // actually overlapping, zero otherwise. This matches the
+                // analytical contact convention and avoids phantom repulsion
+                // at the touching configuration.
+                if dst_dist >= margin {
                     continue;
                 }
+                let penetration = (-dst_dist).max(0.0);
 
+                // Use the destination SDF gradient for the contact normal.
+                // The dst gradient is evaluated at the actual contact point,
+                // giving more accurate normals than the source gradient which
+                // is evaluated at a nearby grid point. This eliminates lateral
+                // force components from grid asymmetry.
+                let Some(dst_grad) = dst_sdf.gradient(dst_local) else {
+                    continue;
+                };
+                // Convention: normal points from SDF A toward SDF B.
+                // - First call (A→B, flip=false): dst=B, negate B's outward gradient
+                // - Second call (B→A, flip=true): dst=A, use A's outward gradient
                 let world_normal = if flip_normal {
-                    -(src_pose.rotation * grad)
+                    dst_pose.rotation * dst_grad
                 } else {
-                    src_pose.rotation * grad
+                    -(dst_pose.rotation * dst_grad)
                 };
 
                 let dominated = contacts
@@ -209,10 +251,10 @@ mod tests {
             c.point.x > 0.0 && c.point.x < 2.0,
             "contact point should be in overlap region"
         );
-        // Multi-contact: overlapping spheres should produce multiple contacts
+        // After consolidation, overlapping convex SDFs produce exactly 1 contact
         assert!(
-            contacts.len() > 1,
-            "overlapping spheres should produce multiple contacts (got {})",
+            contacts.len() == 1,
+            "consolidated overlapping spheres should produce exactly 1 contact (got {})",
             contacts.len()
         );
     }

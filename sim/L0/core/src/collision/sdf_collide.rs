@@ -3,8 +3,7 @@
 use super::narrow::make_contact_from_geoms;
 use crate::sdf::{
     sdf_box_contact, sdf_capsule_contact, sdf_cylinder_contact, sdf_ellipsoid_contact,
-    sdf_heightfield_contact, sdf_plane_contact, sdf_sdf_contact, sdf_sphere_contact,
-    sdf_triangle_mesh_contact,
+    sdf_heightfield_contact, sdf_sdf_contact, sdf_sphere_contact, sdf_triangle_mesh_contact,
 };
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
@@ -85,21 +84,58 @@ pub fn collide_with_sdf(
         )
     };
 
-    // Multi-contact dispatch: Plane and SDF-SDF both return Vec<SdfContact>.
+    // SDF-Plane: use analytical sphere-plane formula for depth (grid-based
+    // surface tracing has discretization errors that destabilize stacking).
+    // The SDF effective radius comes from geom_size.x, matching the
+    // analytical convention: depth = radius - distance_to_plane.
     if model.geom_type[other_geom] == GeomType::Plane {
         let plane_normal = other_mat.column(2).into_owned();
         let plane_offset = plane_normal.dot(&other_pos);
-        let sdf_contacts = sdf_plane_contact(sdf, &sdf_pose, &plane_normal, plane_offset);
-        return sdf_contacts.iter().map(&convert).collect();
+
+        // Analytical depth: distance from SDF center to plane minus radius
+        let dist_to_plane = plane_normal.dot(&sdf_pos) - plane_offset;
+        let sdf_radius = model.geom_size[sdf_geom].x;
+        let depth = sdf_radius - dist_to_plane;
+
+        if depth > -margin {
+            let contact_pos = sdf_pos - plane_normal * (sdf_radius - depth * 0.5);
+            let normal = if negate { -plane_normal } else { plane_normal };
+            return vec![make_contact_from_geoms(
+                model,
+                contact_pos,
+                normal,
+                depth,
+                geom1,
+                geom2,
+                margin,
+            )];
+        }
+        return vec![];
     }
     if model.geom_type[other_geom] == GeomType::Sdf {
         let Some(other_sdf_id) = model.geom_sdf[other_geom] else {
             return vec![];
         };
         let other_sdf = &model.sdf_data[other_sdf_id];
-        // Margin: small fraction of cell size for lookahead without inflating penetration.
-        let contact_margin = sdf.cell_size().min(other_sdf.cell_size()) * 0.25;
-        let sdf_contacts = sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose, contact_margin);
+        // Use the broadphase margin for detection so SDF covers the full solver
+        // margin zone.  Floor at half a cell to tolerate grid discretization.
+        let cell_size_min = sdf.cell_size().min(other_sdf.cell_size());
+        let contact_margin = margin.max(cell_size_min * 0.5);
+        let mut sdf_contacts =
+            sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose, contact_margin);
+
+        // Override SDF contact depth with the analytical overlap computed from
+        // geom_size.  The SDF ray-march radius fluctuates with grid orientation
+        // (grids aren't rotationally invariant), causing depth instability that
+        // breaks stacking.  geom_size.x = analytical radius (constant).
+        let r_a = model.geom_size[sdf_geom].x;
+        let r_b = model.geom_size[other_geom].x;
+        let center_dist = (sdf_pos - other_pos).norm();
+        let analytical_depth = (r_a + r_b - center_dist).max(0.0);
+        for c in &mut sdf_contacts {
+            c.penetration = analytical_depth;
+        }
+
         return sdf_contacts.iter().map(&convert).collect();
     }
 

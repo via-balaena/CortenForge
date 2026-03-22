@@ -457,16 +457,11 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     model.sdf_data = sdf_data;
     model.nsdf = model.sdf_data.len();
 
-    // Set geom_margin for SDF geoms now that sdf_data is populated.
-    // The margin tells the solver to provide position correction at the
-    // margin boundary (before full geometric penetration).
-    for geom_id in 0..model.ngeom {
-        if model.geom_type[geom_id] == GeomType::Sdf {
-            if let Some(sdf_id) = model.geom_sdf[geom_id] {
-                model.geom_margin[geom_id] = model.sdf_data[sdf_id].cell_size() * 0.25;
-            }
-        }
-    }
+    // SDF geom_margin = 0: matches the analytical contact convention where
+    // depth = 0 at touching and the solver provides force only from actual
+    // geometric overlap.  Non-zero margin caused phantom repulsion at the
+    // touching configuration that broke stacking.
+    // (Margin was previously cell_size * 0.25 — removed in the SDF stacking fix.)
 
     // ── Sites (tendon waypoints) ────────────────────────────────────
     let site_map = build_site_map(tendons);

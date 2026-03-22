@@ -711,7 +711,9 @@ pub fn sdf_plane_contact(
 }
 
 /// Maximum number of contacts returned by `sdf_plane_contact`.
-const MAX_SDF_PLANE_CONTACTS: usize = 20;
+/// A single contact matches the analytical sphere-plane convention and
+/// avoids flooding the PGS solver with redundant floor constraint rows.
+const MAX_SDF_PLANE_CONTACTS: usize = 1;
 
 /// Query an SDF for contact with a height field.
 ///
@@ -1416,10 +1418,10 @@ mod tests {
             c.point.z < 0.5,
             "contact point should be in lower hemisphere"
         );
-        // Multi-contact: should have more than 1 contact for a sphere intersecting a plane
+        // Single contact (consolidated for solver efficiency)
         assert!(
-            contacts.len() > 1,
-            "sphere/plane should produce multiple contacts (got {})",
+            contacts.len() == 1,
+            "sphere/plane should produce 1 consolidated contact (got {})",
             contacts.len()
         );
     }
