@@ -374,7 +374,7 @@ impl Model {
         self.geom_aabb.push([0.0, 0.0, 0.0, 1e6, 1e6, 1e6]);
         self.geom_mesh.push(None);
         self.geom_hfield.push(None);
-        self.geom_sdf.push(None);
+        self.geom_shape.push(None);
         self.geom_group.push(0);
         self.geom_rgba.push([0.5, 0.5, 0.5, 0.3]);
         self.geom_user.push(vec![]);

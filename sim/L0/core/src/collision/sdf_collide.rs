@@ -2,32 +2,13 @@
 
 use super::narrow::make_contact_from_geoms;
 use crate::sdf::{
-    sdf_box_contact, sdf_capsule_contact, sdf_cylinder_contact, sdf_ellipsoid_contact,
-    sdf_heightfield_contact, sdf_sdf_contact, sdf_sphere_contact, sdf_triangle_mesh_contact,
+    compute_shape_contact, compute_shape_plane_contact, sdf_box_contact, sdf_capsule_contact,
+    sdf_cylinder_contact, sdf_ellipsoid_contact, sdf_heightfield_contact, sdf_sphere_contact,
+    sdf_triangle_mesh_contact,
 };
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
-
-use super::super::sdf::SdfGrid;
-
-/// Sphere-trace from the SDF origin along `local_dir` to find the surface
-/// distance (effective radius along that axis).  Works for any convex SDF.
-fn sdf_ray_radius(sdf: &SdfGrid, local_dir: Vector3<f64>) -> f64 {
-    let dir = local_dir.try_normalize(1e-10).unwrap_or_else(Vector3::z);
-    let mut t = 0.0;
-    for _ in 0..200 {
-        let point = Point3::from(dir * t);
-        let Some(dist) = sdf.distance(point) else {
-            return t;
-        };
-        if dist >= 0.0 {
-            return t;
-        }
-        t += (-dist).max(sdf.cell_size() * 0.01);
-    }
-    t
-}
 
 /// Collision detection involving at least one SDF geometry.
 ///
@@ -52,10 +33,10 @@ pub fn collide_with_sdf(
             (geom2, geom1, pos2, mat2, pos1, mat1)
         };
 
-    let Some(sdf_id) = model.geom_sdf[sdf_geom] else {
+    let Some(sdf_id) = model.geom_shape[sdf_geom] else {
         return vec![];
     };
-    let sdf = &model.sdf_data[sdf_id];
+    let sdf = model.shape_data[sdf_id].sdf_grid();
 
     // Build SDF pose (no centering offset needed — SdfGrid uses an
     // arbitrary origin stored internally, unlike HeightFieldData which
@@ -104,63 +85,37 @@ pub fn collide_with_sdf(
         )
     };
 
-    // SDF-Plane: use analytical sphere-plane formula for depth (grid-based
-    // surface tracing has discretization errors that destabilize stacking).
-    // The effective radius is found by sphere-tracing the SDF along the
-    // plane normal from the geom center.
+    // SDF-Plane: dispatch through PhysicsShape trait for analytical depth
+    // (or fallback to grid-based multi-contact plane tracing).
     if model.geom_type[other_geom] == GeomType::Plane {
         let plane_normal = other_mat.column(2).into_owned();
-        let plane_offset = plane_normal.dot(&other_pos);
-
-        // Effective radius: ray-march from SDF center toward the plane
-        let local_dir = sdf_mat.transpose() * (-plane_normal);
-        let sdf_radius = sdf_ray_radius(sdf, local_dir);
-        let dist_to_plane = plane_normal.dot(&sdf_pos) - plane_offset;
-        let depth = sdf_radius - dist_to_plane;
-
-        if depth > -margin {
-            let contact_pos = sdf_pos - plane_normal * (sdf_radius - depth * 0.5);
-            let normal = if negate { -plane_normal } else { plane_normal };
-            return vec![make_contact_from_geoms(
-                model,
-                contact_pos,
-                normal,
-                depth,
-                geom1,
-                geom2,
-                margin,
-            )];
-        }
-        return vec![];
+        let sdf_contacts = compute_shape_plane_contact(
+            &*model.shape_data[sdf_id],
+            &sdf_pose,
+            &other_pos,
+            &plane_normal,
+            margin,
+        );
+        return sdf_contacts.iter().map(&convert).collect();
     }
+    // SDF-SDF: dispatch through PhysicsShape trait. Analytical single-contact
+    // for convex pairs, grid-based multi-contact for concave.
     if model.geom_type[other_geom] == GeomType::Sdf {
-        let Some(other_sdf_id) = model.geom_sdf[other_geom] else {
+        let Some(other_sdf_id) = model.geom_shape[other_geom] else {
             return vec![];
         };
-        let other_sdf = &model.sdf_data[other_sdf_id];
-        // Use the broadphase margin for detection so SDF covers the full solver
-        // margin zone.  Floor at half a cell to tolerate grid discretization.
-        let cell_size_min = sdf.cell_size().min(other_sdf.cell_size());
+        // Floor margin at half a cell to tolerate grid discretization.
+        let cell_size_min = sdf
+            .cell_size()
+            .min(model.shape_data[other_sdf_id].sdf_grid().cell_size());
         let contact_margin = margin.max(cell_size_min * 0.5);
-        let mut sdf_contacts =
-            sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose, contact_margin);
-
-        // Override depth with analytical overlap via SDF ray-marching.
-        // Each SDF's effective radius is found by sphere-tracing from the
-        // center along the separation axis (in local frame).
-        let sep = (other_pos - sdf_pos)
-            .try_normalize(1e-10)
-            .unwrap_or_else(Vector3::z);
-        let local_dir_a = sdf_mat.transpose() * sep;
-        let local_dir_b = other_mat.transpose() * (-sep);
-        let r_a = sdf_ray_radius(sdf, local_dir_a);
-        let r_b = sdf_ray_radius(other_sdf, local_dir_b);
-        let center_dist = (sdf_pos - other_pos).norm();
-        let analytical_depth = (r_a + r_b - center_dist).max(0.0);
-        for c in &mut sdf_contacts {
-            c.penetration = analytical_depth;
-        }
-
+        let sdf_contacts = compute_shape_contact(
+            &*model.shape_data[sdf_id],
+            &sdf_pose,
+            &*model.shape_data[other_sdf_id],
+            &other_pose,
+            contact_margin,
+        );
         return sdf_contacts.iter().map(&convert).collect();
     }
 

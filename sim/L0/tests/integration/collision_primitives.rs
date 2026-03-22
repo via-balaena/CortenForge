@@ -24,7 +24,7 @@
 //! | Cylinder-Sphere | Side/cap/rim | Analytical |
 //! | Cylinder-Capsule | Axis-axis distance | Analytical |
 
-use sim_core::{GeomType, SdfGrid};
+use sim_core::{GeomType, SdfGrid, ShapeSphere};
 use sim_mjcf::load_model;
 use std::sync::Arc;
 
@@ -1299,16 +1299,18 @@ fn sphere_stack_dynamic_sdf() {
     let mut model = load_model(mjcf).expect("Failed to load model");
 
     // Create SDF sphere (radius=5mm, resolution=20, padding=2mm)
-    let sdf = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 20, 2.0));
+    let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 20, 2.0));
 
     // Replace sphere geoms (indices 1, 2 — index 0 is the floor plane) with SDF
-    model.sdf_data.push(sdf.clone());
-    model.sdf_data.push(sdf);
-    model.nsdf = 2;
+    model
+        .shape_data
+        .push(Arc::new(ShapeSphere::new(grid.clone(), 5.0)));
+    model.shape_data.push(Arc::new(ShapeSphere::new(grid, 5.0)));
+    model.nshape = 2;
 
     for geom_id in 1..=2 {
         model.geom_type[geom_id] = GeomType::Sdf;
-        model.geom_sdf[geom_id] = Some(geom_id - 1);
+        model.geom_shape[geom_id] = Some(geom_id - 1);
     }
 
     let mut data = model.make_data();

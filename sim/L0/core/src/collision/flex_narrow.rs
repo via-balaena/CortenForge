@@ -219,8 +219,8 @@ pub fn narrowphase_sphere_geom(
             return None;
         }
         GeomType::Sdf => {
-            let sdf_id = model.geom_sdf[geom_idx]?;
-            let sdf = &model.sdf_data[sdf_id];
+            let sdf_id = model.geom_shape[geom_idx]?;
+            let sdf = model.shape_data[sdf_id].sdf_grid();
             let geom_quat = UnitQuaternion::from_matrix(&geom_mat);
             let sdf_pose = Pose::from_position_rotation(Point3::from(geom_pos), geom_quat);
 

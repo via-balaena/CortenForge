@@ -1,6 +1,6 @@
 # PhysicsShape Trait Spec
 
-## Status: DRAFT — ready for review
+## Status: IN PROGRESS — Session 1 complete, Sessions 2–3 pending
 
 ## Context
 
@@ -422,10 +422,10 @@ multi-contact surface tracing is tested.
 
 Three sessions. Each phase is independently testable and committable.
 
-- **Session 1** (Phase A): Trait definition, `ShapeSphere` + `ShapeConvex`
-  implementations, full Model cutover (`sdf_data` → `shape_data`),
-  all builders updated. Mechanical — no design decisions, no collision
-  logic changes.
+- **Session 1** (Phase A): **DONE** — Trait definition, `ShapeSphere` +
+  `ShapeConvex` implementations, full Model cutover (`sdf_data` →
+  `shape_data`), all builders updated. 2,977 tests pass, 0 failures.
+  Also added `Solid::sphere_radius()` for cf-design sphere detection.
 - **Session 2** (Phases B+C+D): Wire dispatch functions into collision
   pipeline, delete dead code. Tightly coupled — changing the SDF-SDF
   path without the SDF-Plane path would leave inconsistent code paths.
@@ -433,28 +433,30 @@ Three sessions. Each phase is independently testable and committable.
   `shape_hint()` integration. New capability — requires testing with
   non-sphere geometry.
 
-### Phase A: Trait + `ShapeSphere` + `ShapeConvex` + Model cutover (Session 1)
+### Phase A: Trait + `ShapeSphere` + `ShapeConvex` + Model cutover (Session 1) — DONE
 
 The big-bang phase. All model changes happen here so there is no
 dual-field period and no fallback guards.
 
-1. Create `sdf/shape.rs` with `PhysicsShape` trait
-2. Create `sdf/shapes/sphere.rs` with `ShapeSphere`
-3. Create `sdf/shapes/convex.rs` with `ShapeConvex` (wraps
-   `sdf_radius_along_axis` — identical to current ray-march behavior)
-4. **Replace** `sdf_data: Vec<Arc<SdfGrid>>` with
-   `shape_data: Vec<Arc<dyn PhysicsShape>>` in Model
-5. Update `Model::empty()`, `model_factories`, MJCF builder init
-6. MJCF builder: wrap all SDF grids in `ShapeConvex::new(grid)`
-7. cf-design builder: wrap sphere SDFs in
-   `ShapeSphere::new(grid, radius)`, everything else in `ShapeConvex`
-8. Update all `model.sdf_data[id]` callers to
-   `model.shape_data[id].sdf_grid()` (~6 call sites in production)
-9. Conformance test: use `ShapeSphere` instead of raw `SdfGrid`
-10. Tests: `ShapeSphere::effective_radius()` is constant for any
+1. ~~Create `sdf/shape.rs` with `PhysicsShape` trait~~
+2. ~~Create `sdf/shapes/sphere.rs` with `ShapeSphere`~~
+3. ~~Create `sdf/shapes/convex.rs` with `ShapeConvex` (wraps
+   `sdf_radius_along_axis` — identical to current ray-march behavior)~~
+4. ~~**Replace** `sdf_data: Vec<Arc<SdfGrid>>` with
+   `shape_data: Vec<Arc<dyn PhysicsShape>>` in Model~~
+5. ~~Update `Model::empty()`, `model_factories`, MJCF builder init~~
+6. ~~MJCF builder: wrap all SDF grids in `ShapeConvex::new(grid)`~~
+   (MJCF always has empty `shape_data` — no grids to wrap)
+7. ~~cf-design builder: wrap sphere SDFs in
+   `ShapeSphere::new(grid, radius)`, everything else in `ShapeConvex`~~
+   (Added `Solid::sphere_radius()` for detection)
+8. ~~Update all `model.sdf_data[id]` callers to
+   `model.shape_data[id].sdf_grid()` (~6 call sites in production)~~
+9. ~~Conformance test: use `ShapeSphere` instead of raw `SdfGrid`~~
+10. ~~Tests: `ShapeSphere::effective_radius()` is constant for any
     direction. `ShapeConvex::effective_radius()` matches old
     `sdf_ray_radius()`. All existing tests pass unchanged (behavior
-    is identical).
+    is identical).~~
 
 **No collision logic changes yet.** `sdf_collide.rs` still calls
 `sdf_ray_radius()` / `sdf_radius_along_axis()` — it just gets the

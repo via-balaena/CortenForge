@@ -142,7 +142,7 @@ impl Model {
             geom_aabb: vec![],
             geom_mesh: vec![],
             geom_hfield: vec![],
-            geom_sdf: vec![],
+            geom_shape: vec![],
             geom_group: vec![],
             geom_rgba: vec![],
             geom_fluid: vec![],
@@ -224,9 +224,9 @@ impl Model {
             hfield_data: vec![],
             hfield_size: vec![],
 
-            // SDFs (empty)
-            nsdf: 0,
-            sdf_data: vec![],
+            // Shapes (empty)
+            nshape: 0,
+            shape_data: vec![],
 
             // Sites (empty)
             site_body: vec![],

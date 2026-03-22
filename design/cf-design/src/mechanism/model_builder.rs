@@ -16,7 +16,7 @@
 //!
 //! ```text
 //! Solid (exact SDF)
-//!   ├──→ SdfGrid (collision)  ──→ Model.sdf_data / GeomType::Sdf
+//!   ├──→ SdfGrid (collision)  ──→ Model.shape_data / GeomType::Sdf
 //!   └──→ mesh (visual)        ──→ Model.mesh_data / GeomType::Mesh
 //! ```
 //!
@@ -42,7 +42,7 @@ use std::sync::Arc;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, GainType, GeomType, MjJointType, Model,
-    SdfGrid, SolverType, TendonType, WrapType,
+    PhysicsShape, ShapeConvex, ShapeSphere, SolverType, TendonType, WrapType,
 };
 
 use super::actuator::ActuatorKind;
@@ -148,10 +148,10 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     let nbody = body_order.len() + 1; // +1 for world body
 
     // ── Generate SDF grids and visual meshes per part ────────────────
-    let mut sdf_data: Vec<Arc<SdfGrid>> = Vec::new();
+    let mut shape_data: Vec<Arc<dyn PhysicsShape>> = Vec::new();
     let mut mesh_data: Vec<Arc<sim_core::TriangleMeshData>> = Vec::new();
 
-    // part_name → (sdf_id, mesh_id, aabb)
+    // part_name → (shape_id, mesh_id, aabb)
     let mut part_assets: HashMap<&str, (usize, usize, cf_geometry::Aabb)> = HashMap::new();
 
     for part in parts {
@@ -164,8 +164,14 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
             .sdf_grid_at(sdf_resolution)
             .unwrap_or_else(|| panic!("part '{}' has no finite bounds", part.name()));
 
-        let sdf_id = sdf_data.len();
-        sdf_data.push(Arc::new(sdf));
+        let sdf_id = shape_data.len();
+        let grid = Arc::new(sdf);
+        let shape: Arc<dyn PhysicsShape> = if let Some(radius) = solid.sphere_radius() {
+            Arc::new(ShapeSphere::new(grid, radius))
+        } else {
+            Arc::new(ShapeConvex::new(grid))
+        };
+        shape_data.push(shape);
 
         // Visual mesh: Solid::mesh → IndexedMesh → TriangleMeshData
         let indexed = solid.mesh(visual_resolution);
@@ -422,8 +428,8 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
         model.body_geom_adr[body_id] = model.geom_type.len();
 
         // --- SDF geom (collision only, group 2) ---
-        let sdf_grid = &sdf_data[sdf_id];
-        let sdf_aabb = cf_geometry::Bounded::aabb(sdf_grid.as_ref());
+        let sdf_grid = shape_data[sdf_id].sdf_grid();
+        let sdf_aabb = cf_geometry::Bounded::aabb(sdf_grid);
         let sdf_half = (sdf_aabb.max - sdf_aabb.min) * 0.5;
 
         push_geom(
@@ -432,7 +438,7 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
             body_id,
             geom_offset,
             Vector3::new(sdf_half.x, sdf_half.y, sdf_half.z),
-            Some(sdf_id), // geom_sdf
+            Some(sdf_id), // geom_shape
             None,         // geom_mesh
             None,         // geom_hfield
             2,            // group 2 = collision only (not rendered)
@@ -447,7 +453,7 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
             body_id,
             geom_offset,
             Vector3::new(1.0, 1.0, 1.0), // scale
-            None,                        // geom_sdf
+            None,                        // geom_shape
             Some(mesh_id),               // geom_mesh
             None,                        // geom_hfield
             0,                           // group 0 = visual (rendered)
@@ -468,8 +474,8 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
     model.mesh_data = mesh_data;
     model.nmesh = model.mesh_data.len();
     model.mesh_name = parts.iter().map(|p| format!("{}_mesh", p.name())).collect();
-    model.sdf_data = sdf_data;
-    model.nsdf = model.sdf_data.len();
+    model.shape_data = shape_data;
+    model.nshape = model.shape_data.len();
 
     // SDF geom_margin = 0: matches the analytical contact convention where
     // depth = 0 at touching and the solver provides force only from actual
@@ -712,7 +718,7 @@ fn push_geom(
     model.geom_aabb.push([0.0; 6]); // computed in post-build
     model.geom_mesh.push(mesh_id);
     model.geom_hfield.push(hfield_id);
-    model.geom_sdf.push(sdf_id);
+    model.geom_shape.push(sdf_id);
     model.geom_group.push(group);
     model.geom_rgba.push(rgba);
     model.geom_fluid.push([0.0; 12]);
@@ -807,9 +813,9 @@ fn compute_geom_bounding(model: &mut Model) {
         // Bounding radius
         model.geom_rbound[geom_id] = match geom_type {
             GeomType::Sdf => {
-                if let Some(sdf_id) = model.geom_sdf[geom_id] {
-                    let sdf = &model.sdf_data[sdf_id];
-                    let aabb = cf_geometry::Bounded::aabb(sdf.as_ref());
+                if let Some(sdf_id) = model.geom_shape[geom_id] {
+                    let sdf = model.shape_data[sdf_id].sdf_grid();
+                    let aabb = cf_geometry::Bounded::aabb(sdf);
                     let half = (aabb.max - aabb.min) * 0.5;
                     half.norm()
                 } else {
@@ -839,9 +845,9 @@ fn compute_geom_bounding(model: &mut Model) {
         // AABB: [cx, cy, cz, hx, hy, hz]
         model.geom_aabb[geom_id] = match geom_type {
             GeomType::Sdf => {
-                if let Some(sdf_id) = model.geom_sdf[geom_id] {
-                    let sdf = &model.sdf_data[sdf_id];
-                    let aabb = cf_geometry::Bounded::aabb(sdf.as_ref());
+                if let Some(sdf_id) = model.geom_shape[geom_id] {
+                    let sdf = model.shape_data[sdf_id].sdf_grid();
+                    let aabb = cf_geometry::Bounded::aabb(sdf);
                     let center = (aabb.max.coords + aabb.min.coords) * 0.5;
                     let half = (aabb.max.coords - aabb.min.coords) * 0.5;
                     [center.x, center.y, center.z, half.x, half.y, half.z]
@@ -951,7 +957,7 @@ mod tests {
         ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, Part, Solid,
         TendonDef, TendonWaypoint,
     };
-    use sim_core::GeomType;
+    use sim_core::{GeomType, ShapeSphere};
 
     fn pla() -> Material {
         Material::new("PLA", 1250.0)
@@ -1010,8 +1016,8 @@ mod tests {
         for (i, &gt) in model.geom_type.iter().enumerate() {
             if gt == GeomType::Sdf {
                 assert!(
-                    model.geom_sdf[i].is_some(),
-                    "SDF geom {i} should have geom_sdf set"
+                    model.geom_shape[i].is_some(),
+                    "SDF geom {i} should have geom_shape set"
                 );
             }
         }
@@ -1041,11 +1047,12 @@ mod tests {
     // ── 4. SDF data populated ──────────────────────────────────────
 
     #[test]
-    fn sdf_data_populated() {
+    fn shape_data_populated() {
         let model = two_part_mechanism().to_model(2.0, 2.0);
 
-        assert_eq!(model.sdf_data.len(), 2, "expected 2 SDF grids");
-        for (i, sdf) in model.sdf_data.iter().enumerate() {
+        assert_eq!(model.shape_data.len(), 2, "expected 2 shape assets");
+        for (i, shape) in model.shape_data.iter().enumerate() {
+            let sdf = shape.sdf_grid();
             assert!(sdf.width() > 1, "SDF {i} width too small");
             assert!(sdf.height() > 1, "SDF {i} height too small");
             assert!(sdf.depth() > 1, "SDF {i} depth too small");
@@ -1260,13 +1267,17 @@ mod tests {
         "#;
         let mut mjcf_model = sim_mjcf::load_model(mjcf).expect("load MJCF");
         // Swap sphere geoms to SDF (same as conformance test)
-        let sdf = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 20, 2.0));
-        mjcf_model.sdf_data.push(sdf.clone());
-        mjcf_model.sdf_data.push(sdf);
-        mjcf_model.nsdf = 2;
+        let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 20, 2.0));
+        mjcf_model
+            .shape_data
+            .push(Arc::new(ShapeSphere::new(grid.clone(), 5.0)));
+        mjcf_model
+            .shape_data
+            .push(Arc::new(ShapeSphere::new(grid, 5.0)));
+        mjcf_model.nshape = 2;
         for geom_id in 1..=2 {
             mjcf_model.geom_type[geom_id] = GeomType::Sdf;
-            mjcf_model.geom_sdf[geom_id] = Some(geom_id - 1);
+            mjcf_model.geom_shape[geom_id] = Some(geom_id - 1);
         }
 
         // cf-design model
@@ -1482,7 +1493,10 @@ mod tests {
 
         // Only difference: use cf-design's SDF grids instead of conformance
         let cfd_sdf_grid = Arc::new(Solid::sphere(5.0).sdf_grid_at(1.0).unwrap());
-        cfd_patched.sdf_data = vec![cfd_sdf_grid.clone(), cfd_sdf_grid];
+        cfd_patched.shape_data = vec![
+            Arc::new(ShapeSphere::new(cfd_sdf_grid.clone(), 5.0)),
+            Arc::new(ShapeSphere::new(cfd_sdf_grid, 5.0)),
+        ];
 
         // Test: add dummy mesh geoms to MJCF model (same structure as cf-design)
         // If this breaks stability, the mesh geoms interfere despite contype=0.
@@ -1516,7 +1530,7 @@ mod tests {
             mjcf_with_mesh.geom_aabb.push([0.0; 6]);
             mjcf_with_mesh.geom_mesh.push(None);
             mjcf_with_mesh.geom_hfield.push(None);
-            mjcf_with_mesh.geom_sdf.push(None);
+            mjcf_with_mesh.geom_shape.push(None);
             mjcf_with_mesh.geom_group.push(0);
             mjcf_with_mesh.geom_rgba.push([0.9, 0.9, 0.9, 1.0]);
             mjcf_with_mesh.geom_fluid.push([0.0; 12]);
@@ -1549,7 +1563,10 @@ mod tests {
         cfd_full.add_ground_plane();
         // Patch to match MJCF exactly (mass, inertia, SDF)
         let cfd_sdf2 = Arc::new(Solid::sphere(5.0).sdf_grid_at(1.0).unwrap());
-        cfd_full.sdf_data = vec![cfd_sdf2.clone(), cfd_sdf2];
+        cfd_full.shape_data = vec![
+            Arc::new(ShapeSphere::new(cfd_sdf2.clone(), 5.0)),
+            Arc::new(ShapeSphere::new(cfd_sdf2, 5.0)),
+        ];
         for body_id in 1..cfd_full.nbody {
             cfd_full.body_mass[body_id] = 0.000655;
             cfd_full.body_inertia[body_id] = Vector3::new(0.00655, 0.00655, 0.00655);
@@ -1682,7 +1699,7 @@ mod tests {
             m.geom_aabb.swap(a, b);
             m.geom_mesh.swap(a, b);
             m.geom_hfield.swap(a, b);
-            m.geom_sdf.swap(a, b);
+            m.geom_shape.swap(a, b);
             m.geom_group.swap(a, b);
             m.geom_rgba.swap(a, b);
             m.geom_fluid.swap(a, b);

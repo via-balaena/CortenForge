@@ -25,7 +25,7 @@ use super::keyframe::Keyframe;
 // External crate types used by Model fields
 use crate::heightfield::HeightFieldData;
 use crate::mesh::TriangleMeshData;
-use crate::sdf::SdfGrid;
+use crate::sdf::shape::PhysicsShape;
 
 /// Static model definition (like mjModel).
 ///
@@ -325,9 +325,9 @@ pub struct Model {
     /// Hfield index for each geom (`None` if not an hfield geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Hfield` have `Some(hfield_id)`.
     pub geom_hfield: Vec<Option<usize>>,
-    /// SDF index for each geom (`None` if not an SDF geom).
-    /// Length: ngeom. Only geoms with `geom_type == GeomType::Sdf` have `Some(sdf_id)`.
-    pub geom_sdf: Vec<Option<usize>>,
+    /// Shape index for each geom (`None` if not an SDF geom).
+    /// Length: ngeom. Only geoms with `geom_type == GeomType::Sdf` have `Some(shape_id)`.
+    pub geom_shape: Vec<Option<usize>>,
     /// Visualization group (0–5) for each geom. Used by renderers for group-based filtering.
     pub geom_group: Vec<i32>,
     /// RGBA color per geom [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
@@ -549,12 +549,12 @@ pub struct Model {
     /// Original MuJoCo size `[x, y, z_top, z_bottom]` for centering offset at collision time.
     pub hfield_size: Vec<[f64; 4]>,
 
-    // ==================== SDFs (indexed by sdf_id) ====================
-    /// Number of SDF assets.
-    pub nsdf: usize,
-    /// SDF collision data.
-    /// `Arc` for cheap cloning (multiple geoms can reference the same SDF asset).
-    pub sdf_data: Vec<Arc<SdfGrid>>,
+    // ==================== Shapes (indexed by shape_id) ====================
+    /// Number of physics shape assets.
+    pub nshape: usize,
+    /// Physics shape data (trait objects wrapping SDF grids with shape-specific metadata).
+    /// `Arc` for cheap cloning (multiple geoms can reference the same shape asset).
+    pub shape_data: Vec<Arc<dyn PhysicsShape>>,
 
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.

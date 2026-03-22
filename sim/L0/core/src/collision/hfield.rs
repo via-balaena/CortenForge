@@ -359,7 +359,7 @@ mod tests {
         model.geom_rbound = vec![f64::INFINITY, conv_rbound];
         model.geom_mesh = vec![None; 2];
         model.geom_hfield = vec![Some(0), None];
-        model.geom_sdf = vec![None; 2];
+        model.geom_shape = vec![None; 2];
         model.geom_contype = vec![1; 2];
         model.geom_conaffinity = vec![1; 2];
         model.geom_friction = vec![Vector3::new(1.0, 0.005, 0.0001); 2];
@@ -914,7 +914,7 @@ mod tests {
         model.geom_rbound = vec![f64::INFINITY; 2];
         model.geom_mesh = vec![None; 2];
         model.geom_hfield = vec![Some(0), Some(0)];
-        model.geom_sdf = vec![None; 2];
+        model.geom_shape = vec![None; 2];
         model.geom_contype = vec![1; 2];
         model.geom_conaffinity = vec![1; 2];
         model.geom_friction = vec![Vector3::new(1.0, 0.005, 0.0001); 2];

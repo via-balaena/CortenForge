@@ -288,7 +288,7 @@ mod spec_e_tests {
     use super::super::flex_narrow::narrowphase_sphere_geom;
     use crate::heightfield::HeightFieldData;
     use crate::mesh::TriangleMeshData;
-    use crate::sdf::SdfGrid;
+    use crate::sdf::{SdfGrid, ShapeConvex};
     use crate::types::{GeomType, Model};
     use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
     use std::sync::Arc;
@@ -304,7 +304,7 @@ mod spec_e_tests {
         model.geom_size = vec![Vector3::new(0.5, 0.5, 0.5)];
         model.geom_mesh = vec![None];
         model.geom_hfield = vec![None];
-        model.geom_sdf = vec![None];
+        model.geom_shape = vec![None];
         model.geom_contype = vec![1];
         model.geom_conaffinity = vec![1];
         model.geom_friction = vec![Vector3::new(1.0, 0.005, 0.0001)];
@@ -430,8 +430,8 @@ mod spec_e_tests {
 
         // Sphere SDF, radius 1.0, centered at origin, 32 resolution
         let sdf = SdfGrid::sphere(Point3::origin(), 1.0, 32, 1.0);
-        model.sdf_data = vec![Arc::new(sdf)];
-        model.geom_sdf = vec![Some(0)];
+        model.shape_data = vec![Arc::new(ShapeConvex::new(Arc::new(sdf)))];
+        model.geom_shape = vec![Some(0)];
 
         // Vertex at z=0.95, radius=0.1. Distance to SDF surface = 0.05.
         // Penetration = 0.1 - 0.05 = 0.05.
@@ -484,7 +484,7 @@ mod spec_e_tests {
 
         // SDF with no data
         let model_sdf = make_single_geom_model(GeomType::Sdf);
-        assert!(model_sdf.geom_sdf[0].is_none());
+        assert!(model_sdf.geom_shape[0].is_none());
         let result = narrowphase_sphere_geom(
             Vector3::new(0.0, 0.0, 0.0),
             0.1,
@@ -537,8 +537,8 @@ mod spec_e_tests {
         // SDF: vertex well above
         let mut model = make_single_geom_model(GeomType::Sdf);
         let sdf = SdfGrid::sphere(Point3::origin(), 1.0, 32, 1.0);
-        model.sdf_data = vec![Arc::new(sdf)];
-        model.geom_sdf = vec![Some(0)];
+        model.shape_data = vec![Arc::new(ShapeConvex::new(Arc::new(sdf)))];
+        model.geom_shape = vec![Some(0)];
         let result = narrowphase_sphere_geom(
             Vector3::new(0.0, 0.0, 10.0),
             0.1,
@@ -633,8 +633,8 @@ mod spec_e_tests {
     fn ts3_sdf_vertex_outside_bbox() {
         let mut model = make_single_geom_model(GeomType::Sdf);
         let sdf = SdfGrid::sphere(Point3::origin(), 1.0, 32, 1.0);
-        model.sdf_data = vec![Arc::new(sdf)];
-        model.geom_sdf = vec![Some(0)];
+        model.shape_data = vec![Arc::new(ShapeConvex::new(Arc::new(sdf)))];
+        model.geom_shape = vec![Some(0)];
 
         // Vertex far outside SDF bounding box
         let result = narrowphase_sphere_geom(

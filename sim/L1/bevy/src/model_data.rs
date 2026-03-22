@@ -655,7 +655,7 @@ mod tests {
         model.geom_quat = vec![nalgebra::UnitQuaternion::identity(); 2];
         model.geom_mesh = vec![None, Some(0)];
         model.geom_hfield = vec![None, None];
-        model.geom_sdf = vec![None, None];
+        model.geom_shape = vec![None, None];
 
         // Provide a simple triangle mesh asset
         let vertices = vec![

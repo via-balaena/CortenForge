@@ -1066,6 +1066,21 @@ impl Solid {
         self.node.bounds()
     }
 
+    /// Returns the sphere radius if this is a bare sphere primitive with a
+    /// literal (non-parametric) radius, `None` otherwise.
+    ///
+    /// Used by the model builder to select `ShapeSphere` (analytical,
+    /// rotation-invariant) over `ShapeConvex` (ray-marched).
+    #[must_use]
+    pub const fn sphere_radius(&self) -> Option<f64> {
+        match &self.node {
+            FieldNode::Sphere {
+                radius: Val::Literal(r),
+            } => Some(*r),
+            _ => None,
+        }
+    }
+
     /// Compute the Lipschitz distortion factor of this solid's field.
     ///
     /// Returns the factor by which domain distortion operations (Twist, Bend,
