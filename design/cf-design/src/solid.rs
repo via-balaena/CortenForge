@@ -24,6 +24,23 @@ pub enum InfillKind {
     SchwarzP,
 }
 
+/// Hint for selecting the appropriate [`sim_core::PhysicsShape`] implementation
+/// when building a simulation model from a [`Solid`].
+///
+/// The model builder uses this to wrap SDF grids in the right shape type:
+/// - `Sphere(radius)` → `ShapeSphere` (analytical, rotation-invariant)
+/// - `Convex` → `ShapeConvex` (ray-marched effective radius)
+/// - `Concave` → `ShapeConcave` (multi-contact surface tracing)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShapeHint {
+    /// Bare sphere primitive with known analytical radius.
+    Sphere(f64),
+    /// Convex shape — effective radius via ray-march.
+    Convex,
+    /// Concave shape — forces multi-contact fallback.
+    Concave,
+}
+
 /// Opaque solid defined by an implicit surface field.
 ///
 /// Construct with primitive factory methods (`sphere`, `cuboid`, etc.) and
@@ -1081,6 +1098,25 @@ impl Solid {
         }
     }
 
+    /// Inspect the expression tree to determine the physics shape category.
+    ///
+    /// Used by the model builder to select the appropriate `PhysicsShape`
+    /// implementation:
+    /// - `Sphere(radius)` → `ShapeSphere` (analytical, rotation-invariant)
+    /// - `Convex` → `ShapeConvex` (ray-marched effective radius)
+    /// - `Concave` → `ShapeConcave` (multi-contact surface tracing)
+    ///
+    /// Rules:
+    /// - Bare sphere with literal radius → `Sphere(radius)`
+    /// - Subtraction / smooth subtraction / shell → `Concave`
+    /// - Transforms propagate the child's hint (translated sphere is still a sphere)
+    /// - Unions / intersections: concave if any child is concave, else convex
+    /// - All other primitives → `Convex`
+    #[must_use]
+    pub fn shape_hint(&self) -> ShapeHint {
+        node_shape_hint(&self.node)
+    }
+
     /// Compute the Lipschitz distortion factor of this solid's field.
     ///
     /// Returns the factor by which domain distortion operations (Twist, Bend,
@@ -1602,6 +1638,61 @@ impl Solid {
                 (name, grad)
             })
             .collect()
+    }
+}
+
+/// Recursively inspect a `FieldNode` tree to determine the physics shape category.
+fn node_shape_hint(node: &FieldNode) -> ShapeHint {
+    match node {
+        // ── Sphere primitive ─────────────────────────────────────────
+        FieldNode::Sphere {
+            radius: Val::Literal(r),
+        } => ShapeHint::Sphere(*r),
+
+        // ── Concave-producing operations ─────────────────────────────
+        FieldNode::Subtract(..) | FieldNode::SmoothSubtract(..) | FieldNode::Shell(..) => {
+            ShapeHint::Concave
+        }
+
+        // ── Transforms: propagate child's hint ───────────────────────
+        FieldNode::Translate(child, _)
+        | FieldNode::Rotate(child, _)
+        | FieldNode::ScaleUniform(child, _)
+        | FieldNode::Mirror(child, _)
+        | FieldNode::Round(child, _)
+        | FieldNode::Offset(child, _)
+        | FieldNode::Elongate(child, _)
+        | FieldNode::Twist(child, _)
+        | FieldNode::Bend(child, _)
+        | FieldNode::Repeat(child, _)
+        | FieldNode::RepeatBounded { child, .. } => node_shape_hint(child),
+
+        // ── Binary combinations: merge child hints ───────────────────
+        FieldNode::Union(a, b)
+        | FieldNode::SmoothUnion(a, b, _)
+        | FieldNode::Intersect(a, b)
+        | FieldNode::SmoothIntersect(a, b, _)
+        | FieldNode::SmoothUnionVariable { a, b, .. } => {
+            merge_hints(node_shape_hint(a), node_shape_hint(b))
+        }
+
+        // ── N-ary smooth union ───────────────────────────────────────
+        FieldNode::SmoothUnionAll(children, _) => children
+            .iter()
+            .map(node_shape_hint)
+            .fold(ShapeHint::Convex, merge_hints),
+
+        // ── All other primitives/nodes: convex ───────────────────────
+        _ => ShapeHint::Convex,
+    }
+}
+
+/// Merge two shape hints. Concave wins over everything; Sphere is lost
+/// when combined with anything else (union of sphere + box is not a sphere).
+const fn merge_hints(a: ShapeHint, b: ShapeHint) -> ShapeHint {
+    match (a, b) {
+        (ShapeHint::Concave, _) | (_, ShapeHint::Concave) => ShapeHint::Concave,
+        _ => ShapeHint::Convex,
     }
 }
 
@@ -3532,6 +3623,113 @@ mod tests {
 
         assert_eq!(loaded.vertex_count(), mesh.vertex_count());
         assert_eq!(loaded.face_count(), mesh.face_count());
+    }
+
+    // ── Shape hint tests ──────────────────────────────────────────────
+
+    mod shape_hint_tests {
+        use crate::{ShapeHint, Solid};
+        use nalgebra::Vector3;
+
+        #[test]
+        fn sphere_returns_sphere_hint() {
+            let s = Solid::sphere(5.0);
+            assert_eq!(s.shape_hint(), ShapeHint::Sphere(5.0));
+        }
+
+        #[test]
+        fn cuboid_returns_convex() {
+            let s = Solid::cuboid(Vector3::new(1.0, 2.0, 3.0));
+            assert_eq!(s.shape_hint(), ShapeHint::Convex);
+        }
+
+        #[test]
+        fn cylinder_returns_convex() {
+            let s = Solid::cylinder(2.0, 5.0);
+            assert_eq!(s.shape_hint(), ShapeHint::Convex);
+        }
+
+        #[test]
+        fn capsule_returns_convex() {
+            let s = Solid::capsule(1.0, 3.0);
+            assert_eq!(s.shape_hint(), ShapeHint::Convex);
+        }
+
+        #[test]
+        fn smooth_union_of_convex_returns_convex() {
+            let a = Solid::cuboid(Vector3::new(1.0, 1.0, 1.0));
+            let b = Solid::cylinder(1.0, 2.0);
+            let u = a.smooth_union(b, 0.5);
+            assert_eq!(u.shape_hint(), ShapeHint::Convex);
+        }
+
+        #[test]
+        fn smooth_union_of_spheres_returns_convex() {
+            // Union of two spheres is convex but not a single sphere
+            let a = Solid::sphere(3.0);
+            let b = Solid::sphere(2.0);
+            let u = a.smooth_union(b, 0.5);
+            assert_eq!(u.shape_hint(), ShapeHint::Convex);
+        }
+
+        #[test]
+        fn subtract_returns_concave() {
+            let a = Solid::cuboid(Vector3::new(5.0, 5.0, 5.0));
+            let b = Solid::sphere(3.0);
+            let s = a.subtract(b);
+            assert_eq!(s.shape_hint(), ShapeHint::Concave);
+        }
+
+        #[test]
+        fn smooth_subtract_returns_concave() {
+            let a = Solid::sphere(5.0);
+            let b = Solid::sphere(3.0);
+            let s = a.smooth_subtract(b, 0.5);
+            assert_eq!(s.shape_hint(), ShapeHint::Concave);
+        }
+
+        #[test]
+        fn shell_returns_concave() {
+            let s = Solid::sphere(5.0).shell(0.5);
+            assert_eq!(s.shape_hint(), ShapeHint::Concave);
+        }
+
+        #[test]
+        fn translated_sphere_stays_sphere() {
+            let s = Solid::sphere(5.0).translate(Vector3::new(1.0, 2.0, 3.0));
+            assert_eq!(s.shape_hint(), ShapeHint::Sphere(5.0));
+        }
+
+        #[test]
+        fn rotated_sphere_stays_sphere() {
+            use nalgebra::UnitQuaternion;
+            let s = Solid::sphere(5.0).rotate(UnitQuaternion::from_euler_angles(0.0, 0.0, 0.5));
+            assert_eq!(s.shape_hint(), ShapeHint::Sphere(5.0));
+        }
+
+        #[test]
+        fn translated_subtract_stays_concave() {
+            let s = Solid::cuboid(Vector3::new(5.0, 5.0, 5.0))
+                .subtract(Solid::sphere(3.0))
+                .translate(Vector3::new(1.0, 0.0, 0.0));
+            assert_eq!(s.shape_hint(), ShapeHint::Concave);
+        }
+
+        #[test]
+        fn union_with_concave_child_returns_concave() {
+            let concave = Solid::cuboid(Vector3::new(5.0, 5.0, 5.0)).subtract(Solid::sphere(3.0));
+            let convex = Solid::sphere(2.0);
+            let u = concave.smooth_union(convex, 0.5);
+            assert_eq!(u.shape_hint(), ShapeHint::Concave);
+        }
+
+        #[test]
+        fn intersect_of_convex_returns_convex() {
+            let a = Solid::cuboid(Vector3::new(5.0, 5.0, 5.0));
+            let b = Solid::sphere(3.0);
+            let i = a.intersect(b);
+            assert_eq!(i.shape_hint(), ShapeHint::Convex);
+        }
     }
 
     // ── Session 24: Parameterized solid tests ─────────────────────────

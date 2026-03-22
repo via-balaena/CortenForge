@@ -51,7 +51,7 @@ pub use mechanism::{
     split_part,
 };
 pub use param::{ParamRef, ParamStore};
-pub use solid::{InfillKind, Solid};
+pub use solid::{InfillKind, ShapeHint, Solid};
 
 // Re-export geometry types that appear in our public API
 // (Solid::bounds() → Aabb, Solid::sdf_grid_at() → SdfGrid, Solid::mesh() → IndexedMesh)

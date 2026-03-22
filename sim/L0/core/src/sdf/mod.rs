@@ -56,7 +56,7 @@ pub use primitives::{
     sdf_sphere_contact, sdf_triangle_mesh_contact,
 };
 pub use shape::{PhysicsShape, compute_shape_contact, compute_shape_plane_contact};
-pub use shapes::{ShapeConvex, ShapeSphere};
+pub use shapes::{ShapeConcave, ShapeConvex, ShapeSphere};
 
 use nalgebra::{Point3, Vector3};
 

@@ -150,7 +150,7 @@ pub use mesh::{
 pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_mesh, bvh_from_triangle_mesh, query_bvh_pair};
 pub use raycast::{RaycastHit, raycast_shape};
 pub use sdf::{
-    PhysicsShape, SdfContact, SdfGrid, ShapeConvex, ShapeSphere, sdf_box_contact,
+    PhysicsShape, SdfContact, SdfGrid, ShapeConcave, ShapeConvex, ShapeSphere, sdf_box_contact,
     sdf_capsule_contact, sdf_point_contact, sdf_sphere_contact,
 };
 
