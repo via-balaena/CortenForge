@@ -1,6 +1,6 @@
 # PhysicsShape Trait Spec
 
-## Status: IN PROGRESS — Session 1 complete, Sessions 2–3 pending
+## Status: COMPLETE — All 3 sessions done (Phases A–F)
 
 ## Context
 
@@ -426,12 +426,15 @@ Three sessions. Each phase is independently testable and committable.
   `ShapeConvex` implementations, full Model cutover (`sdf_data` →
   `shape_data`), all builders updated. 2,977 tests pass, 0 failures.
   Also added `Solid::sphere_radius()` for cf-design sphere detection.
-- **Session 2** (Phases B+C+D): Wire dispatch functions into collision
-  pipeline, delete dead code. Tightly coupled — changing the SDF-SDF
-  path without the SDF-Plane path would leave inconsistent code paths.
-- **Session 3** (Phases E+F): `ShapeConcave` + multi-contact, cf-design
-  `shape_hint()` integration. New capability — requires testing with
-  non-sphere geometry.
+- **Session 2** (Phases B+C+D): **DONE** — `compute_shape_contact` and
+  `compute_shape_plane_contact` wired into collision pipeline. Dead code
+  deleted (`sdf_ray_radius`, `sdf_radius_along_axis`, consolidation
+  block). 2,978 tests pass, 0 failures.
+- **Session 3** (Phases E+F): **DONE** — `ShapeConcave` implementation
+  (returns `None` → multi-contact fallback). `ShapeHint` enum +
+  `Solid::shape_hint()` expression tree inspector. Model builder uses
+  `shape_hint()` to dispatch `ShapeSphere`/`ShapeConvex`/`ShapeConcave`.
+  2,999 tests pass, 0 failures.
 
 ### Phase A: Trait + `ShapeSphere` + `ShapeConvex` + Model cutover (Session 1) — DONE
 
@@ -462,55 +465,55 @@ dual-field period and no fallback guards.
 `sdf_ray_radius()` / `sdf_radius_along_axis()` — it just gets the
 grid via `.sdf_grid()` instead of directly.
 
-### Phase B: Wire `compute_shape_contact` into SDF-SDF path (Session 2)
+### Phase B: Wire `compute_shape_contact` into SDF-SDF path (Session 2) — DONE
 
-1. Create `compute_shape_contact()` in `sdf/shape.rs`
-2. Extract raw surface tracing from `sdf_sdf_contact()` into
-   `sdf_sdf_contact_raw()` (multi-contact, no consolidation)
-3. In `sdf_collide.rs`, replace the SDF-SDF block (lines 136-165)
+1. ~~Create `compute_shape_contact()` in `sdf/shape.rs`~~
+2. ~~Extract raw surface tracing from `sdf_sdf_contact()` into
+   `sdf_sdf_contact_raw()` (multi-contact, no consolidation)~~
+3. ~~In `sdf_collide.rs`, replace the SDF-SDF block (lines 136-165)
    with a call to `compute_shape_contact()` using
-   `model.shape_data[sdf_id]`
-4. This eliminates the dual ray-march: currently both `operations.rs`
+   `model.shape_data[sdf_id]`~~
+4. ~~This eliminates the dual ray-march: currently both `operations.rs`
    and `sdf_collide.rs` ray-march the same SDFs — the old
    `sdf_sdf_contact()` consolidates, then `sdf_collide.rs` overrides
-   depth again. The new path does it once.
-5. Tests: conformance test + cf-design stacking test still pass.
-   Numerical equivalence test: old path vs new path on identical inputs.
+   depth again. The new path does it once.~~
+5. ~~Tests: conformance test + cf-design stacking test still pass.
+   Numerical equivalence test: old path vs new path on identical inputs.~~
 
-### Phase C: Wire `compute_shape_plane_contact` into SDF-Plane path (Session 2)
+### Phase C: Wire `compute_shape_plane_contact` into SDF-Plane path (Session 2) — DONE
 
-1. Create `compute_shape_plane_contact()` in `sdf/shape.rs`
-2. In `sdf_collide.rs`, replace the SDF-Plane block (lines 107-135)
-   with a call to `compute_shape_plane_contact()`
-3. Tests: stacking test still passes (sphere on floor + sphere on
-   sphere). Numerical equivalence vs old path.
+1. ~~Create `compute_shape_plane_contact()` in `sdf/shape.rs`~~
+2. ~~In `sdf_collide.rs`, replace the SDF-Plane block (lines 107-135)
+   with a call to `compute_shape_plane_contact()`~~
+3. ~~Tests: stacking test still passes (sphere on floor + sphere on
+   sphere). Numerical equivalence vs old path.~~
 
-### Phase D: Delete dead code (Session 2)
+### Phase D: Delete dead code (Session 2) — DONE
 
-1. Delete `sdf_ray_radius()` from `sdf_collide.rs`
-2. Delete `sdf_radius_along_axis()` from `operations.rs`
-3. Delete consolidation block from old `sdf_sdf_contact()` (now
-   `sdf_sdf_contact_raw`)
-4. Tests: all sim + design tests pass. No references to deleted
-   functions remain.
+1. ~~Delete `sdf_ray_radius()` from `sdf_collide.rs`~~
+2. ~~Delete `sdf_radius_along_axis()` from `operations.rs`~~
+3. ~~Delete consolidation block from old `sdf_sdf_contact()` (now
+   `sdf_sdf_contact_raw`)~~
+4. ~~Tests: all sim + design tests pass. No references to deleted
+   functions remain.~~
 
-### Phase E: `ShapeConcave` + multi-contact (Session 3)
+### Phase E: `ShapeConcave` + multi-contact (Session 3) — DONE
 
-1. Create `sdf/shapes/concave.rs` with `ShapeConcave` (returns `None`
-   from `effective_radius` — forces multi-contact surface tracing)
-2. cf-design: CSG subtractions and known-concave shapes use
-   `ShapeConcave`
-3. Tests: concave socket contacts produce distributed multi-contact.
-   Box on floor (via ShapeConcave) produces corner contacts.
+1. ~~Create `sdf/shapes/concave.rs` with `ShapeConcave` (returns `None`
+   from `effective_radius` — forces multi-contact surface tracing)~~
+2. ~~cf-design: CSG subtractions and known-concave shapes use
+   `ShapeConcave`~~
+3. ~~Tests: concave socket contacts produce distributed multi-contact.
+   Box on floor (via ShapeConcave) produces corner contacts.~~
 
-### Phase F: cf-design `shape_hint()` integration (Session 3)
+### Phase F: cf-design `shape_hint()` integration (Session 3) — DONE
 
-1. Add `shape_hint()` to `Solid` that inspects the expression tree
-2. Sphere → `ShapeHint::Sphere(radius)`
-3. Box, cylinder, smooth_union of convex → `ShapeHint::Convex`
-4. Smooth subtraction → `ShapeHint::Concave`
-5. Model builder uses hint to select implementation
-6. Tests: various `Solid` types produce correct shape hints
+1. ~~Add `shape_hint()` to `Solid` that inspects the expression tree~~
+2. ~~Sphere → `ShapeHint::Sphere(radius)`~~
+3. ~~Box, cylinder, smooth_union of convex → `ShapeHint::Convex`~~
+4. ~~Smooth subtraction → `ShapeHint::Concave`~~
+5. ~~Model builder uses hint to select implementation~~
+6. ~~Tests: various `Solid` types produce correct shape hints~~
 
 ---
 
