@@ -83,7 +83,8 @@ fn main() {
         ))
         .build();
 
-    let mut model = mechanism.to_model(1.0, 0.5);
+    // SDF: 1.0mm for collision. Visual: 0.2mm for smooth concave mesh.
+    let mut model = mechanism.to_model(1.0, 0.2);
     model.add_ground_plane();
 
     // qpos layout: socket [0..7], pin [7..14]
