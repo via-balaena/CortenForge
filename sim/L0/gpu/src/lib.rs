@@ -11,5 +11,5 @@ pub mod collision;
 pub mod context;
 
 pub use buffers::{GpuSdfGrid, GridMeta};
-pub use collision::GpuTracer;
+pub use collision::{GpuSdfCollider, GpuTracer, enable_gpu_collision};
 pub use context::{GpuContext, GpuError};

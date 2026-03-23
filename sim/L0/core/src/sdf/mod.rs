@@ -43,6 +43,7 @@
 //! assert!(dist.is_some());
 //! ```
 
+pub mod gpu;
 mod operations;
 mod primitives;
 pub mod shape;
@@ -52,6 +53,7 @@ pub mod shapes;
 mod concave_collision_tests;
 
 pub use cf_geometry::SdfGrid;
+pub use gpu::GpuSdfCollision;
 pub use operations::sdf_sdf_contact;
 pub use primitives::{
     sdf_box_contact, sdf_capsule_contact, sdf_convex_mesh_contact, sdf_cylinder_contact,

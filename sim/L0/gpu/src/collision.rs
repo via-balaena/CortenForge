@@ -430,6 +430,107 @@ fn bg_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     }
 }
 
+// ── GpuSdfCollider (trait implementation) ──────────────────────────────
+
+use std::sync::Arc;
+
+use sim_core::sdf::{GpuSdfCollision, PhysicsShape};
+use sim_core::types::Model;
+
+use crate::context::GpuError;
+
+/// GPU-accelerated SDF collision backend.
+///
+/// Owns a GPU context, compute pipeline, and pre-uploaded SDF grids.
+/// Implements [`GpuSdfCollision`] so it can be stored on `Model::gpu_collider`.
+pub struct GpuSdfCollider {
+    ctx: GpuContext,
+    tracer: GpuTracer,
+    grids: Vec<GpuSdfGrid>,
+}
+
+impl std::fmt::Debug for GpuSdfCollider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuSdfCollider")
+            .field("adapter", &self.ctx.adapter_info.name)
+            .field("num_grids", &self.grids.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl GpuSdfCollider {
+    /// Create a GPU collider from a model's shape data.
+    ///
+    /// Uploads all SDF grids to GPU memory and creates the compute pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuError`] if no GPU is available or device creation fails.
+    pub fn new(shape_data: &[Arc<dyn PhysicsShape>]) -> Result<Self, GpuError> {
+        let ctx = GpuContext::new()?;
+        let tracer = GpuTracer::new(&ctx);
+        let grids = shape_data
+            .iter()
+            .map(|shape| GpuSdfGrid::upload(&ctx, shape.sdf_grid()))
+            .collect();
+        Ok(Self { ctx, tracer, grids })
+    }
+}
+
+impl GpuSdfCollision for GpuSdfCollider {
+    fn sdf_sdf_contacts(
+        &self,
+        grid_a: usize,
+        pose_a: &Pose,
+        grid_b: usize,
+        pose_b: &Pose,
+        margin: f64,
+    ) -> Vec<SdfContact> {
+        self.tracer.trace_contacts(
+            &self.ctx,
+            &self.grids[grid_a],
+            pose_a,
+            &self.grids[grid_b],
+            pose_b,
+            margin,
+        )
+    }
+
+    fn sdf_plane_contacts(
+        &self,
+        _grid: usize,
+        _pose: &Pose,
+        _plane_normal: &Vector3<f64>,
+        _plane_offset: f64,
+    ) -> Vec<SdfContact> {
+        // Phase 5: SDF-plane GPU shader (not yet implemented)
+        vec![]
+    }
+}
+
+/// Enable GPU-accelerated SDF collision on a model.
+///
+/// Uploads all SDF grids from `model.shape_data` to GPU memory and
+/// sets `model.gpu_collider`. If no GPU is available, returns an error
+/// and the model continues using CPU collision.
+///
+/// # Errors
+///
+/// Returns [`GpuError`] if no GPU is available or device creation fails.
+pub fn enable_gpu_collision(model: &mut Model) -> Result<(), GpuError> {
+    if model.shape_data.is_empty() {
+        return Ok(()); // No SDF shapes to accelerate
+    }
+    let collider = GpuSdfCollider::new(&model.shape_data)?;
+    log::info!(
+        "GPU collision enabled: {} on {} grids",
+        collider.ctx.adapter_info.name,
+        collider.grids.len()
+    );
+    model.gpu_collider = Some(Arc::new(collider));
+    Ok(())
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]

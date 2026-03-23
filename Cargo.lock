@@ -2602,6 +2602,7 @@ dependencies = [
  "nalgebra",
  "sim-bevy",
  "sim-core",
+ "sim-gpu",
 ]
 
 [[package]]

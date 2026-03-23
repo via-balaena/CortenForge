@@ -302,6 +302,7 @@ impl ModelBuilder {
             // Shape assets (programmatic — always empty from MJCF)
             nshape: 0,
             shape_data: vec![],
+            gpu_collider: None,
 
             site_body: self.site_body,
             site_type: self.site_type,

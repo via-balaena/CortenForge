@@ -99,6 +99,12 @@ fn main() {
     let mut model = mechanism.to_model(2.0, 0.5);
     model.add_ground_plane();
 
+    // Enable GPU-accelerated SDF collision (falls back to CPU if unavailable)
+    match sim_gpu::enable_gpu_collision(&mut model) {
+        Ok(()) => eprintln!("  GPU collision enabled"),
+        Err(e) => eprintln!("  GPU collision unavailable: {e}"),
+    }
+
     // qpos layout: socket [0..7], pin [7..14]
     // qvel layout: socket [0..6], pin [6..12]
     let pin_q = 7;

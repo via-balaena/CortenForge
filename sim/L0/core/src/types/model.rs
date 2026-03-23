@@ -556,6 +556,10 @@ pub struct Model {
     /// `Arc` for cheap cloning (multiple geoms can reference the same shape asset).
     pub shape_data: Vec<Arc<dyn PhysicsShape>>,
 
+    /// GPU-accelerated SDF collision backend (`None` = CPU fallback).
+    /// Set via `sim_gpu::enable_gpu_collision()` after model construction.
+    pub gpu_collider: Option<Arc<dyn crate::sdf::GpuSdfCollision>>,
+
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.
     pub site_body: Vec<usize>,

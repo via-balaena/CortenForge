@@ -9,6 +9,7 @@ publish = false
 cf-design = { workspace = true }
 sim-core = { workspace = true }
 sim-bevy = { workspace = true }
+sim-gpu = { workspace = true }
 bevy = { workspace = true, features = [
     "bevy_asset",
     "bevy_core_pipeline",

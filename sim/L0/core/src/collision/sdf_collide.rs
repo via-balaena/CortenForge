@@ -100,6 +100,7 @@ pub fn collide_with_sdf(
     }
     // SDF-SDF: dispatch through PhysicsShape trait. Analytical single-contact
     // for convex pairs, grid-based multi-contact for concave.
+    // When GPU collision is available, non-convex pairs use GPU grid tracing.
     if model.geom_type[other_geom] == GeomType::Sdf {
         let Some(other_sdf_id) = model.geom_shape[other_geom] else {
             return vec![];
@@ -109,13 +110,37 @@ pub fn collide_with_sdf(
             .cell_size()
             .min(model.shape_data[other_sdf_id].sdf_grid().cell_size());
         let contact_margin = margin.max(cell_size_min * 0.5);
-        let sdf_contacts = compute_shape_contact(
-            &*model.shape_data[sdf_id],
-            &sdf_pose,
-            &*model.shape_data[other_sdf_id],
-            &other_pose,
-            contact_margin,
-        );
+
+        let shape_a = &*model.shape_data[sdf_id];
+        let shape_b = &*model.shape_data[other_sdf_id];
+
+        let sdf_contacts = if let Some(gpu) = &model.gpu_collider {
+            // GPU available: check if both shapes are convex
+            let delta = other_pose.position - sdf_pose.position;
+            let dist = delta.norm();
+            let dir = if dist > 1e-10 {
+                delta / dist
+            } else {
+                Vector3::z()
+            };
+            let both_convex = shape_a
+                .effective_radius(&(sdf_pose.rotation.inverse() * dir))
+                .is_some()
+                && shape_b
+                    .effective_radius(&(other_pose.rotation.inverse() * (-dir)))
+                    .is_some();
+
+            if both_convex {
+                // Analytical convex: CPU (cheap, exact 1 contact)
+                compute_shape_contact(shape_a, &sdf_pose, shape_b, &other_pose, contact_margin)
+            } else {
+                // Grid-based multi-contact: GPU
+                gpu.sdf_sdf_contacts(sdf_id, &sdf_pose, other_sdf_id, &other_pose, contact_margin)
+            }
+        } else {
+            // No GPU: existing CPU path
+            compute_shape_contact(shape_a, &sdf_pose, shape_b, &other_pose, contact_margin)
+        };
 
         return sdf_contacts.iter().map(&convert).collect();
     }
