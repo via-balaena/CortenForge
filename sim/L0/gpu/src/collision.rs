@@ -524,4 +524,95 @@ mod tests {
             gpu_net.x
         );
     }
+
+    /// Cylinder SDF: `max(r - radius, |z| - half_h)`
+    fn cylinder_sdf(p: Point3<f64>, radius: f64, half_h: f64) -> f64 {
+        let r = p.x.hypot(p.y);
+        (r - radius).max(p.z.abs() - half_h)
+    }
+
+    #[test]
+    fn hinge_contacts_match_cpu() {
+        let ctx = GpuContext::new().expect("need GPU");
+
+        // Concave socket: outer cylinder - bore - cap openings
+        // Same dimensions as Phase 3d test in model_builder.rs
+        let socket_grid = SdfGrid::from_fn(16, 16, 24, 1.0, Point3::new(-8.0, -8.0, -12.0), |p| {
+            let outer = cylinder_sdf(p, 5.5, 10.0);
+            let bore = cylinder_sdf(p, 3.5, 8.0);
+            let caps = cylinder_sdf(p, 2.5, 11.0);
+            outer.max((-bore).max(-caps)) // CSG: outer - bore - caps
+        });
+
+        // Convex pin: shaft + flanges
+        let pin_grid = SdfGrid::from_fn(12, 12, 20, 1.0, Point3::new(-6.0, -6.0, -10.0), |p| {
+            let shaft = cylinder_sdf(p, 3.0, 6.0);
+            let top = cylinder_sdf(Point3::new(p.x, p.y, p.z - 6.0), 3.2, 1.0);
+            let bot = cylinder_sdf(Point3::new(p.x, p.y, p.z + 6.0), 3.2, 1.0);
+            shaft.min(top).min(bot) // CSG union
+        });
+
+        // Pin offset 0.9mm below socket center (bottom flange near cap)
+        let pose_socket = Pose::from_position(Point3::new(0.0, 0.0, 15.0));
+        let pose_pin = Pose::from_position(Point3::new(0.0, 0.0, 14.1)); // 15.0 - 0.9
+        let margin = 0.5; // half cell size
+
+        // GPU path
+        let gpu_socket = GpuSdfGrid::upload(&ctx, &socket_grid);
+        let gpu_pin = GpuSdfGrid::upload(&ctx, &pin_grid);
+        let tracer = GpuTracer::new(&ctx);
+        let gpu_contacts =
+            tracer.trace_contacts(&ctx, &gpu_socket, &pose_socket, &gpu_pin, &pose_pin, margin);
+
+        // CPU path
+        let cpu_contacts = sim_core::sdf::sdf_sdf_contact(
+            &socket_grid,
+            &pose_socket,
+            &pin_grid,
+            &pose_pin,
+            margin,
+        );
+
+        eprintln!("  Hinge — CPU contacts: {}", cpu_contacts.len());
+        eprintln!("  Hinge — GPU contacts: {}", gpu_contacts.len());
+
+        assert!(!cpu_contacts.is_empty(), "CPU should find hinge contacts");
+        assert!(!gpu_contacts.is_empty(), "GPU should find hinge contacts");
+
+        // Match rate ≥ 90%
+        let mut matched = 0usize;
+        for cpu_c in &cpu_contacts {
+            let nearest = gpu_contacts
+                .iter()
+                .map(|g| (g.point - cpu_c.point).norm())
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(f64::MAX);
+            if nearest < 1.5 {
+                matched += 1;
+            }
+        }
+        let match_rate = matched as f64 / cpu_contacts.len() as f64;
+        eprintln!(
+            "  Hinge match rate: {matched}/{} = {:.1}%",
+            cpu_contacts.len(),
+            match_rate * 100.0
+        );
+        assert!(
+            match_rate > 0.9,
+            "GPU should match ≥90% of CPU hinge contacts (got {:.1}%)",
+            match_rate * 100.0,
+        );
+
+        // Net force should have a -Z component (pin pushed up by cap)
+        let gpu_net: Vector3<f64> = gpu_contacts.iter().map(|c| c.normal * c.penetration).sum();
+        let cpu_net: Vector3<f64> = cpu_contacts.iter().map(|c| c.normal * c.penetration).sum();
+        eprintln!(
+            "  Hinge CPU net: ({:.3},{:.3},{:.3})",
+            cpu_net.x, cpu_net.y, cpu_net.z
+        );
+        eprintln!(
+            "  Hinge GPU net: ({:.3},{:.3},{:.3})",
+            gpu_net.x, gpu_net.y, gpu_net.z
+        );
+    }
 }
