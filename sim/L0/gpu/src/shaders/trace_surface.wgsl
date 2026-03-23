@@ -95,7 +95,7 @@ fn src_trilinear_clamped(point: vec3<f32>) -> f32 {
     return src_trilinear(clamped);
 }
 
-// Source gradient: forward differences, normalized.
+// Source gradient: centered differences, normalized.
 // Matches CPU: SdfGrid::gradient() in cf-geometry/src/sdf.rs
 fn src_gradient(point: vec3<f32>) -> vec3<f32> {
     let d = src_trilinear(point);
@@ -104,11 +104,15 @@ fn src_gradient(point: vec3<f32>) -> vec3<f32> {
     }
 
     let eps = src_meta.cell_size * 0.5;
-    let dx = src_trilinear_clamped(point + vec3(eps, 0.0, 0.0));
-    let dy = src_trilinear_clamped(point + vec3(0.0, eps, 0.0));
-    let dz = src_trilinear_clamped(point + vec3(0.0, 0.0, eps));
+    let two_eps = 2.0 * eps;
+    let dx = src_trilinear_clamped(point + vec3(eps, 0.0, 0.0))
+           - src_trilinear_clamped(point - vec3(eps, 0.0, 0.0));
+    let dy = src_trilinear_clamped(point + vec3(0.0, eps, 0.0))
+           - src_trilinear_clamped(point - vec3(0.0, eps, 0.0));
+    let dz = src_trilinear_clamped(point + vec3(0.0, 0.0, eps))
+           - src_trilinear_clamped(point - vec3(0.0, 0.0, eps));
 
-    let grad = vec3((dx - d) / eps, (dy - d) / eps, (dz - d) / eps);
+    let grad = vec3(dx / two_eps, dy / two_eps, dz / two_eps);
     let norm = length(grad);
 
     if norm > 1e-5 {
@@ -163,7 +167,7 @@ fn dst_trilinear_clamped(point: vec3<f32>) -> f32 {
     return dst_trilinear(clamped);
 }
 
-// Destination gradient: forward differences, normalized.
+// Destination gradient: centered differences, normalized.
 fn dst_gradient(point: vec3<f32>) -> vec3<f32> {
     let d = dst_trilinear(point);
     if d > 1e5 {
@@ -171,11 +175,15 @@ fn dst_gradient(point: vec3<f32>) -> vec3<f32> {
     }
 
     let eps = dst_meta.cell_size * 0.5;
-    let dx = dst_trilinear_clamped(point + vec3(eps, 0.0, 0.0));
-    let dy = dst_trilinear_clamped(point + vec3(0.0, eps, 0.0));
-    let dz = dst_trilinear_clamped(point + vec3(0.0, 0.0, eps));
+    let two_eps = 2.0 * eps;
+    let dx = dst_trilinear_clamped(point + vec3(eps, 0.0, 0.0))
+           - dst_trilinear_clamped(point - vec3(eps, 0.0, 0.0));
+    let dy = dst_trilinear_clamped(point + vec3(0.0, eps, 0.0))
+           - dst_trilinear_clamped(point - vec3(0.0, eps, 0.0));
+    let dz = dst_trilinear_clamped(point + vec3(0.0, 0.0, eps))
+           - dst_trilinear_clamped(point - vec3(0.0, 0.0, eps));
 
-    let grad = vec3((dx - d) / eps, (dy - d) / eps, (dz - d) / eps);
+    let grad = vec3(dx / two_eps, dy / two_eps, dz / two_eps);
     let norm = length(grad);
 
     if norm > 1e-5 {

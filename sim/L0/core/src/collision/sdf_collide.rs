@@ -2,13 +2,61 @@
 
 use super::narrow::make_contact_from_geoms;
 use crate::sdf::{
-    compute_shape_contact, compute_shape_plane_contact, sdf_box_contact, sdf_capsule_contact,
-    sdf_cylinder_contact, sdf_ellipsoid_contact, sdf_heightfield_contact, sdf_sphere_contact,
-    sdf_triangle_mesh_contact,
+    SdfContact, compute_shape_contact, compute_shape_plane_contact, sdf_box_contact,
+    sdf_capsule_contact, sdf_cylinder_contact, sdf_ellipsoid_contact, sdf_heightfield_contact,
+    sdf_sphere_contact, sdf_triangle_mesh_contact,
 };
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
+
+/// Cap SDF-SDF contacts per pair with greedy spatial selection.
+///
+/// Grid-based tracing generates contacts for every near-surface cell.
+/// Instead of just keeping the deepest (which cluster spatially), this
+/// sorts by depth then greedily skips contacts too close to already-kept
+/// ones. This ensures the capped set has good spatial coverage for
+/// constraining all DOF.
+fn cap_sdf_contacts(contacts: &mut Vec<SdfContact>, max: usize) {
+    if contacts.len() <= max {
+        return;
+    }
+
+    // Sort by penetration depth (deepest first)
+    contacts.sort_by(|a, b| {
+        b.penetration
+            .partial_cmp(&a.penetration)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Estimate spacing from contact extent to hit the cap
+    let extent_sq = contacts
+        .iter()
+        .flat_map(|a| {
+            contacts
+                .iter()
+                .map(move |b| (a.point - b.point).norm_squared())
+        })
+        .fold(0.0_f64, f64::max);
+    let extent = extent_sq.sqrt();
+    #[allow(clippy::cast_precision_loss)]
+    let min_dist = extent / (max as f64).sqrt();
+    let min_dist_sq = min_dist * min_dist;
+
+    let mut kept: Vec<SdfContact> = Vec::with_capacity(max);
+    for c in contacts.drain(..) {
+        let too_close = kept
+            .iter()
+            .any(|k| (k.point - c.point).norm_squared() < min_dist_sq);
+        if !too_close {
+            kept.push(c);
+            if kept.len() >= max {
+                break;
+            }
+        }
+    }
+    *contacts = kept;
+}
 
 /// Collision detection involving at least one SDF geometry.
 ///
@@ -105,16 +153,15 @@ pub fn collide_with_sdf(
         let Some(other_sdf_id) = model.geom_shape[other_geom] else {
             return vec![];
         };
-        // Floor margin at half a cell to tolerate grid discretization.
-        let cell_size_min = sdf
-            .cell_size()
-            .min(model.shape_data[other_sdf_id].sdf_grid().cell_size());
-        let contact_margin = margin.max(cell_size_min * 0.5);
+        // Use the pair's combined margin directly. The old cell_size*0.5 floor
+        // filled tight clearances (like bore/shaft gaps) with contacts, locking
+        // joints. The grid handles contacts fine at any margin.
+        let contact_margin = margin;
 
         let shape_a = &*model.shape_data[sdf_id];
         let shape_b = &*model.shape_data[other_sdf_id];
 
-        let sdf_contacts = if let Some(gpu) = &model.gpu_collider {
+        let mut sdf_contacts = if let Some(gpu) = &model.gpu_collider {
             // GPU available: check if both shapes are convex
             let delta = other_pose.position - sdf_pose.position;
             let dist = delta.norm();
@@ -141,6 +188,13 @@ pub fn collide_with_sdf(
             // No GPU: existing CPU path
             compute_shape_contact(shape_a, &sdf_pose, shape_b, &other_pose, contact_margin)
         };
+
+        // Cap SDF-SDF contacts per pair. Grid-based multi-contact tracing
+        // generates contacts for every near-surface cell, producing hundreds
+        // for concave geometry. The constraint solver is O(nefc²) per PGS
+        // iteration, so capping at 50 keeps the solver tractable while still
+        // providing enough contacts to constrain all DOF.
+        cap_sdf_contacts(&mut sdf_contacts, model.sdf_maxcontact);
 
         return sdf_contacts.iter().map(&convert).collect();
     }

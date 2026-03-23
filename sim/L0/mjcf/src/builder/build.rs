@@ -460,6 +460,7 @@ impl ModelBuilder {
             ccd_tolerance: self.ccd_tolerance,
             sdf_iterations: self.sdf_iterations,
             sdf_initpoints: self.sdf_initpoints,
+            sdf_maxcontact: self.sdf_maxcontact,
             integrator: self.integrator,
             solver_type: self.solver_type,
 

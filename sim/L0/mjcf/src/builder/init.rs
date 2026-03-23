@@ -172,6 +172,7 @@ impl ModelBuilder {
             ccd_tolerance: 1e-6,
             sdf_iterations: 10,
             sdf_initpoints: 40,
+            sdf_maxcontact: 50,
 
             qpos0_values: vec![],
             qpos_spring_values: vec![],

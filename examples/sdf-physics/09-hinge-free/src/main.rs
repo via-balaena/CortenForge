@@ -95,19 +95,23 @@ fn main() {
         ))
         .build();
 
-    // SDF: 2.0mm collision, 0.5mm visual (coarser to keep interactive)
-    let mut model = mechanism.to_model(2.0, 0.5);
+    // SDF: 1.0mm collision (accurate normals for 5mm bore), 0.5mm visual
+    let mut model = mechanism.to_model(1.0, 0.5);
     model.add_ground_plane();
 
-    // Lower physics rate: GPU dispatch has per-step overhead (~200μs for
-    // buffer creation + submit + poll). At 500Hz default that's 100ms/sec
-    // just for synchronization. 200Hz keeps it interactive.
-    model.timestep = 0.005; // 200 Hz
+    // 500Hz — REFSAFE auto-clamps solref[0] to max(0.005, 2×0.002) = 0.005,
+    // preserving cf-design's intended impedance. 2kHz is too many steps/frame.
+    model.timestep = 0.002;
 
-    // Enable GPU-accelerated SDF collision (falls back to CPU if unavailable)
-    match sim_gpu::enable_gpu_collision(&mut model) {
-        Ok(()) => eprintln!("  GPU collision enabled"),
-        Err(e) => eprintln!("  GPU collision unavailable: {e}"),
+    // PGS solver — Newton fails for SDF friction contacts; sparse PGS is fast.
+    model.solver_type = sim_core::SolverType::PGS;
+
+    // Frictionless bore contacts so the pendulum can swing freely.
+    // Ground plane keeps friction (condim=3) to hold the socket in place.
+    for i in 0..model.ngeom {
+        if model.geom_type[i] == sim_core::GeomType::Sdf {
+            model.geom_condim[i] = 1;
+        }
     }
 
     // qpos layout: socket [0..7], pin [7..14]

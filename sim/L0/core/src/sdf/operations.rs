@@ -13,12 +13,18 @@ use sim_types::Pose;
 
 use super::{SdfContact, SdfGrid};
 
-/// Raw surface tracing — returns all detected contacts without consolidation.
+/// Raw surface tracing with depth-sorted spatial deduplication.
 ///
 /// Traces from the **surface** of each SDF into the other. A surface point on
 /// SDF A is a contact if it lies within `margin` of SDF B's interior.
 /// Used by [`compute_shape_contact`](super::shape::compute_shape_contact)
 /// as the grid-based fallback for non-convex shapes.
+///
+/// After both trace passes, contacts are deduplicated: sorted by penetration
+/// depth (deepest first), then greedily filtered to keep only contacts that
+/// are spatially separated by at least `cell_size * 0.5`. This matches the
+/// GPU dedup path and ensures the deepest, best-separated contacts survive
+/// regardless of grid traversal order.
 pub fn sdf_sdf_contact_raw(
     sdf_a: &SdfGrid,
     pose_a: &Pose,
@@ -29,7 +35,38 @@ pub fn sdf_sdf_contact_raw(
     let mut contacts: Vec<SdfContact> = Vec::new();
     trace_surface_into_other(sdf_a, pose_a, sdf_b, pose_b, margin, &mut contacts, false);
     trace_surface_into_other(sdf_b, pose_b, sdf_a, pose_a, margin, &mut contacts, true);
+
+    // Post-hoc spatial dedup: deepest contacts win, skip nearby duplicates.
+    let cell_size = sdf_a.cell_size().min(sdf_b.cell_size());
+    dedup_contacts(&mut contacts, cell_size);
+
     contacts
+}
+
+/// Deduplicate contacts by spatial proximity, keeping deepest first.
+///
+/// Sorts by penetration depth (deepest first), then greedily keeps contacts
+/// that are at least `cell_size * 0.5` apart from all already-kept contacts.
+/// Matches the GPU path's `dedup_contacts` in `sim-gpu/src/collision.rs`.
+fn dedup_contacts(contacts: &mut Vec<SdfContact>, cell_size: f64) {
+    let min_dist_sq = (cell_size * 0.5) * (cell_size * 0.5);
+
+    contacts.sort_by(|a, b| {
+        b.penetration
+            .partial_cmp(&a.penetration)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut kept = Vec::with_capacity(contacts.len());
+    for c in contacts.drain(..) {
+        let dominated = kept
+            .iter()
+            .any(|k: &SdfContact| (k.point - c.point).norm_squared() < min_dist_sq);
+        if !dominated {
+            kept.push(c);
+        }
+    }
+    *contacts = kept;
 }
 
 /// Query two SDFs for contact using surface-tracing.
@@ -103,7 +140,6 @@ fn trace_surface_into_other(
     flip_normal: bool,
 ) {
     let surface_threshold = src_sdf.cell_size() * 2.0;
-    let dedup_dist_sq = (src_sdf.cell_size() * 0.5) * (src_sdf.cell_size() * 0.5);
 
     for z in 0..src_sdf.depth() {
         for y in 0..src_sdf.height() {
@@ -159,17 +195,11 @@ fn trace_surface_into_other(
                     -(dst_pose.rotation * dst_grad)
                 };
 
-                let dominated = contacts
-                    .iter()
-                    .any(|c| (c.point - surface_world).norm_squared() < dedup_dist_sq);
-
-                if !dominated {
-                    contacts.push(SdfContact {
-                        point: surface_world,
-                        normal: world_normal,
-                        penetration,
-                    });
-                }
+                contacts.push(SdfContact {
+                    point: surface_world,
+                    normal: world_normal,
+                    penetration,
+                });
             }
         }
     }

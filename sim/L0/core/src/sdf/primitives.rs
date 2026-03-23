@@ -651,7 +651,6 @@ pub fn sdf_plane_contact(
 
     let mut contacts: Vec<SdfContact> = Vec::new();
     let surface_threshold = sdf.cell_size() * 2.0;
-    let dedup_dist_sq = (sdf.cell_size() * 0.5) * (sdf.cell_size() * 0.5);
 
     for z in 0..sdf.depth() {
         for y in 0..sdf.height() {
@@ -682,38 +681,46 @@ pub fn sdf_plane_contact(
                     let surface_penetration = -surface_dist;
 
                     if surface_penetration > 0.0 {
-                        // Deduplicate: skip if too close to an existing contact
-                        let dominated = contacts
-                            .iter()
-                            .any(|c| (c.point - surface_point).norm_squared() < dedup_dist_sq);
-
-                        if !dominated {
-                            contacts.push(SdfContact {
-                                point: surface_point,
-                                normal: *plane_normal,
-                                penetration: surface_penetration,
-                            });
-                        }
+                        contacts.push(SdfContact {
+                            point: surface_point,
+                            normal: *plane_normal,
+                            penetration: surface_penetration,
+                        });
                     }
                 }
             }
         }
     }
 
-    // Sort deepest-first, cap at limit
+    // Depth-sorted spatial dedup: deepest first, skip contacts too close to
+    // already-kept ones. This ensures well-separated ground contacts for
+    // rotational stability (instead of clustering at the deepest point).
     contacts.sort_by(|a, b| {
         b.penetration
             .partial_cmp(&a.penetration)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    contacts.truncate(MAX_SDF_PLANE_CONTACTS);
-    contacts
+    let min_dist_sq = (sdf.cell_size() * 2.0) * (sdf.cell_size() * 2.0);
+    let mut kept = Vec::with_capacity(MAX_SDF_PLANE_CONTACTS);
+    for c in &contacts {
+        let too_close = kept
+            .iter()
+            .any(|k: &&SdfContact| (k.point - c.point).norm_squared() < min_dist_sq);
+        if !too_close {
+            kept.push(c);
+            if kept.len() >= MAX_SDF_PLANE_CONTACTS {
+                break;
+            }
+        }
+    }
+    kept.into_iter().cloned().collect()
 }
 
 /// Maximum number of contacts returned by `sdf_plane_contact`.
-/// A single contact matches the analytical sphere-plane convention and
-/// avoids flooding the PGS solver with redundant floor constraint rows.
-const MAX_SDF_PLANE_CONTACTS: usize = 1;
+/// Non-convex shapes (e.g., a bearing block) need multiple ground contacts
+/// to resist rotation. 4 contacts provide a stable base. The sparse PGS
+/// solver handles this efficiently.
+const MAX_SDF_PLANE_CONTACTS: usize = 4;
 
 /// Query an SDF for contact with a height field.
 ///
@@ -1418,10 +1425,11 @@ mod tests {
             c.point.z < 0.5,
             "contact point should be in lower hemisphere"
         );
-        // Single contact (consolidated for solver efficiency)
+        // Sphere-plane should produce few contacts (bottom cluster)
         assert!(
-            contacts.len() == 1,
-            "sphere/plane should produce 1 consolidated contact (got {})",
+            contacts.len() <= MAX_SDF_PLANE_CONTACTS,
+            "sphere/plane should produce at most {} contacts (got {})",
+            MAX_SDF_PLANE_CONTACTS,
             contacts.len()
         );
     }

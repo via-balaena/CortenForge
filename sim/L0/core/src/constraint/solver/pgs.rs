@@ -1,11 +1,18 @@
 //! PGS (Projected Gauss-Seidel) solver and constraint state classification.
 //!
 //! Contains the dual-space PGS solver (`pgs_solve_unified`), the primal-space
-//! constraint classifier (`classify_constraint_states`), and the per-row
-//! Delassus matrix computation (`compute_delassus_regularized`).
+//! constraint classifier (`classify_constraint_states`), and sparse Delassus
+//! computation via incremental qacc tracking.
 //!
 //! Corresponds to MuJoCo's `mj_solPGS` (§29.3) and `PrimalUpdateConstraint`
 //! (§15.1).
+//!
+//! ## Performance
+//!
+//! The solver uses incremental qacc tracking instead of the dense nefc×nefc
+//! Delassus matrix. This reduces per-iteration cost from O(nefc²) to
+//! O(nefc × nv), which is critical for SDF collision scenes with hundreds
+//! of contacts (nefc > 1000, nv ~ 12).
 
 use nalgebra::{DMatrix, DVector};
 
@@ -13,24 +20,40 @@ use crate::constraint::impedance::MJ_MINVAL;
 use crate::linalg::mj_solve_sparse;
 use crate::types::{ConstraintState, ConstraintType, Data, Model, SolverStat};
 
-/// Compute the regularized Delassus matrix AR = J·M⁻¹·J^T + diag(R).
+/// Precomputed data for sparse PGS iteration.
 ///
-/// This is the full `nefc × nefc` dense matrix used by the PGS solver.
-/// Each column of M⁻¹·J^T is computed via a sparse LDL solve.
-fn compute_delassus_regularized(model: &Model, data: &Data) -> DMatrix<f64> {
+/// Instead of the full nefc×nefc Delassus matrix, stores the nv×nefc
+/// matrix M⁻¹·J^T and derived quantities. Per-iteration residuals are
+/// computed as O(nv) dot products against the tracked qacc vector.
+struct SparsePgsData {
+    /// M⁻¹ · J^T (nv × nefc) — precomputed via sparse LDL solves.
+    minv_jt: DMatrix<f64>,
+    /// Diagonal of AR: AR_ii = J_row_i · minv_jt_col_i + R_i.
+    ar_diag: Vec<f64>,
+    /// Inverse diagonal: 1/AR_ii (0 if AR_ii ≈ 0).
+    ar_diag_inv: Vec<f64>,
+    /// Effective bias: b_eff_i = efc_b_i - J_row_i · qacc_smooth.
+    /// Residual = b_eff_i + J_row_i · qacc + R_i * f_i.
+    b_eff: Vec<f64>,
+}
+
+/// Prepare sparse PGS data structures.
+///
+/// Cost: O(nefc × nv²) for the sparse LDL solves + O(nefc × nv) for
+/// diagonal and bias precomputation. Avoids the O(nefc² × nv) cost of
+/// building the full Delassus matrix.
+fn prepare_sparse_pgs(model: &Model, data: &Data, qacc_smooth: &DVector<f64>) -> SparsePgsData {
     let nefc = data.efc_type.len();
     let nv = model.nv;
 
-    // Step 1: Compute M⁻¹ · J^T column by column
+    // Compute M⁻¹ · J^T column by column via sparse LDL
     let (rowadr, rownnz, colind) = model.qld_csr();
     let mut minv_jt = DMatrix::zeros(nv, nefc);
     for col in 0..nefc {
-        // Copy J row (transposed = column of J^T) into a DVector for the solver
         let mut buf = DVector::zeros(nv);
         for r in 0..nv {
             buf[r] = data.efc_J[(col, r)];
         }
-        // Solve M · x = J[col,:]^T → x = M⁻¹ · J[col,:]^T
         mj_solve_sparse(
             rowadr,
             rownnz,
@@ -44,59 +67,142 @@ fn compute_delassus_regularized(model: &Model, data: &Data) -> DMatrix<f64> {
         }
     }
 
-    // Step 2: AR = J · (M⁻¹ · J^T) + diag(R)
-    let mut ar = &data.efc_J * &minv_jt;
+    // Precompute AR diagonal and inverse diagonal
+    let mut ar_diag = vec![0.0_f64; nefc];
+    let mut ar_diag_inv = vec![0.0_f64; nefc];
     for i in 0..nefc {
-        ar[(i, i)] += data.efc_R[i];
+        let mut d = data.efc_R[i];
+        for k in 0..nv {
+            d += data.efc_J[(i, k)] * minv_jt[(k, i)];
+        }
+        ar_diag[i] = d;
+        ar_diag_inv[i] = if d.abs() < MJ_MINVAL { 0.0 } else { 1.0 / d };
     }
 
-    ar
+    // Precompute effective bias: b_eff_i = efc_b_i - J_row_i · qacc_smooth
+    let b_eff: Vec<f64> = (0..nefc)
+        .map(|i| {
+            let mut j_qacc = 0.0;
+            for k in 0..nv {
+                j_qacc += data.efc_J[(i, k)] * qacc_smooth[k];
+            }
+            data.efc_b[i] - j_qacc
+        })
+        .collect();
+
+    SparsePgsData {
+        minv_jt,
+        ar_diag,
+        ar_diag_inv,
+        b_eff,
+    }
 }
 
-/// Unified PGS solver operating on all constraint types in dual (force) space.
+/// Compute residual for a single constraint row using qacc.
 ///
-/// Implements MuJoCo's `mj_solPGS` (§29.3):
-/// - Builds AR = J·M⁻¹·J^T + diag(R) (regularized Delassus matrix)
-/// - Gauss-Seidel iteration with per-type projection
-/// - Cost guard: reverts updates that increase dual cost
-/// - Elliptic contacts: two-phase ray update + QCQP cone projection
+/// `res_i = b_eff_i + J_row_i · qacc + R_i * f_i`
 ///
-/// After convergence, `data.efc_force` contains the constraint forces.
-/// The caller must then compute `qfrc_constraint = J^T · efc_force`.
+/// Cost: O(nv) — dot product of J row with qacc.
+#[inline]
+fn row_residual(
+    efc_j: &DMatrix<f64>,
+    qacc: &DVector<f64>,
+    b_eff: &[f64],
+    efc_r: &[f64],
+    efc_force: &DVector<f64>,
+    row: usize,
+    nv: usize,
+) -> f64 {
+    let mut j_qacc = 0.0;
+    for k in 0..nv {
+        j_qacc += efc_j[(row, k)] * qacc[k];
+    }
+    b_eff[row] + j_qacc + efc_r[row] * efc_force[row]
+}
+
+/// Update qacc after changing force on row `i` by `delta_f`.
+///
+/// `qacc += delta_f * minv_jt_col_i`
+///
+/// Cost: O(nv).
+#[inline]
+fn update_qacc(
+    qacc: &mut DVector<f64>,
+    minv_jt: &DMatrix<f64>,
+    row: usize,
+    delta_f: f64,
+    nv: usize,
+) {
+    for k in 0..nv {
+        qacc[k] += delta_f * minv_jt[(k, row)];
+    }
+}
+
+/// Compute a dim×dim AR subblock on the fly.
+///
+/// `AR_block[j][k] = J_row_(base+j) · minv_jt_col_(base+k) + (j==k)*R[base+j]`
+///
+/// Cost: O(dim² × nv). For dim=4, nv=12: 192 flops.
+fn compute_ar_block(
+    efc_j: &DMatrix<f64>,
+    minv_jt: &DMatrix<f64>,
+    efc_r: &[f64],
+    base: usize,
+    dim: usize,
+    nv: usize,
+) -> Vec<Vec<f64>> {
+    let mut block = vec![vec![0.0_f64; dim]; dim];
+    for j in 0..dim {
+        for k in 0..dim {
+            let mut val = 0.0;
+            for r in 0..nv {
+                val += efc_j[(base + j, r)] * minv_jt[(r, base + k)];
+            }
+            if j == k {
+                val += efc_r[base + j];
+            }
+            block[j][k] = val;
+        }
+    }
+    block
+}
+
+/// Unified PGS solver with sparse qacc tracking.
+///
+/// Implements MuJoCo's `mj_solPGS` (§29.3) with O(nefc × nv) per-iteration
+/// cost instead of O(nefc²). Uses incremental qacc tracking:
+///
+/// - Track `qacc = qacc_smooth + M⁻¹ · J^T · f`
+/// - Residual: `res_i = b_eff_i + J_row_i · qacc + R_i · f_i` (O(nv))
+/// - Update: `qacc += delta_f · minv_jt_col_i` (O(nv))
+///
+/// AR subblocks for elliptic contacts are computed on-the-fly from
+/// `J_block × minv_jt_block` (O(dim² × nv) per block).
 #[allow(
     clippy::many_single_char_names,
     clippy::needless_range_loop,
-    clippy::suspicious_operation_groupings
+    clippy::suspicious_operation_groupings,
+    clippy::too_many_lines
 )]
 pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
     let nefc = data.efc_type.len();
     if nefc == 0 {
         return;
     }
+    let nv = model.nv;
 
-    // Build regularized Delassus matrix
-    let ar = compute_delassus_regularized(model, data);
-
-    // Precompute inverse diagonal for scalar GS updates
-    let ar_diag_inv: Vec<f64> = (0..nefc)
-        .map(|i| {
-            let d = ar[(i, i)];
-            if d.abs() < MJ_MINVAL { 0.0 } else { 1.0 / d }
-        })
-        .collect();
-
-    // Warmstart: use classify_constraint_states to map qacc_warmstart → efc_force,
-    // then compare dual cost vs cold start (zero forces).
-    // This matches MuJoCo's universal warmstart (§29.11).
     let qacc_smooth = data.qacc_smooth.clone();
     let qfrc_smooth = data.qfrc_smooth.clone();
+
+    // Prepare sparse data structures (O(nefc × nv²) — no nefc×nefc matrix)
+    let sp = prepare_sparse_pgs(model, data, &qacc_smooth);
 
     // Initialize efc arrays for classification
     data.efc_state.resize(nefc, ConstraintState::Quadratic);
     data.efc_force = DVector::zeros(nefc);
     data.efc_jar = DVector::zeros(nefc);
 
-    // Classify at qacc_warmstart to get warmstart forces
+    // Warmstart: classify at qacc_warmstart to get warmstart forces
     classify_constraint_states(
         model,
         data,
@@ -106,27 +212,39 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
     );
     let warm_forces = data.efc_force.clone();
 
-    // Evaluate dual cost: ½·f^T·AR·f + f^T·b
+    // Evaluate warmstart dual cost using qacc: O(nefc × nv) instead of O(nefc²)
+    // qacc_warm = qacc_smooth + minv_jt · warm_forces
+    let mut qacc_warm = qacc_smooth.clone();
+    for i in 0..nefc {
+        if warm_forces[i] != 0.0 {
+            for k in 0..nv {
+                qacc_warm[k] += warm_forces[i] * sp.minv_jt[(k, i)];
+            }
+        }
+    }
     let mut dual_cost_warm = 0.0;
     for i in 0..nefc {
-        let mut ar_f_i = 0.0;
-        for j in 0..nefc {
-            ar_f_i += ar[(i, j)] * warm_forces[j];
+        // AR · f_i = J_i · (qacc_warm - qacc_smooth) + R_i · f_i
+        let mut j_delta = 0.0;
+        for k in 0..nv {
+            j_delta += data.efc_J[(i, k)] * (qacc_warm[k] - qacc_smooth[k]);
         }
+        let ar_f_i = j_delta + data.efc_R[i] * warm_forces[i];
         dual_cost_warm += 0.5 * warm_forces[i] * ar_f_i + warm_forces[i] * data.efc_b[i];
     }
 
-    // Cold start cost is zero (f=0 → cost=0)
-    // Use warmstart only if it produces lower dual cost
-    if dual_cost_warm < 0.0 {
+    // Initialize qacc and forces from warmstart or cold start
+    let mut qacc = if dual_cost_warm < 0.0 {
         data.efc_force.copy_from(&warm_forces);
+        qacc_warm
     } else {
         data.efc_force.fill(0.0);
-    }
+        qacc_smooth.clone()
+    };
 
     let max_iters = model.solver_iterations;
     #[allow(clippy::cast_precision_loss)]
-    let scale = 1.0 / (data.stat_meaninertia * 1.0_f64.max(model.nv as f64));
+    let scale = 1.0 / (data.stat_meaninertia * 1.0_f64.max(nv as f64));
     let tolerance = model.solver_tolerance;
 
     let mut iter = 0;
@@ -144,22 +262,29 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
             if matches!(ctype, ConstraintType::ContactElliptic) && dim > 1 {
                 let mu = data.efc_mu[i];
 
-                // Save old forces (before any update)
+                // Save old forces
                 let old_force: Vec<f64> = data.efc_force.as_slice()[i..i + dim].to_vec();
 
-                // Compute full residual for the block
+                // Compute residual for the block: O(dim × nv)
                 let mut res = vec![0.0_f64; dim];
                 for j in 0..dim {
-                    res[j] = data.efc_b[i + j];
-                    for c in 0..nefc {
-                        res[j] += ar[(i + j, c)] * data.efc_force[c];
-                    }
+                    res[j] = row_residual(
+                        &data.efc_J,
+                        &qacc,
+                        &sp.b_eff,
+                        &data.efc_R,
+                        &data.efc_force,
+                        i + j,
+                        nv,
+                    );
                 }
+
+                // Compute AR subblock on the fly: O(dim² × nv)
+                let ar_block = compute_ar_block(&data.efc_J, &sp.minv_jt, &data.efc_R, i, dim, nv);
 
                 // ---- Phase 1: Ray update ----
                 if data.efc_force[i] < MJ_MINVAL {
-                    // Normal force too small: scalar normal update + clear friction
-                    data.efc_force[i] -= res[0] * ar_diag_inv[i];
+                    data.efc_force[i] -= res[0] * sp.ar_diag_inv[i];
                     if data.efc_force[i] < 0.0 {
                         data.efc_force[i] = 0.0;
                     }
@@ -167,14 +292,13 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
                         data.efc_force[i + j] = 0.0;
                     }
                 } else {
-                    // Ray update: scale along current force direction
                     let v: Vec<f64> = data.efc_force.as_slice()[i..i + dim].to_vec();
 
-                    // v1 = AR_block * v (dim×dim subblock)
+                    // v1 = AR_block * v
                     let mut v1 = vec![0.0_f64; dim];
                     for j in 0..dim {
                         for k in 0..dim {
-                            v1[j] += ar[(i + j, i + k)] * v[k];
+                            v1[j] += ar_block[j][k] * v[k];
                         }
                     }
 
@@ -182,7 +306,6 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
                     if denom >= MJ_MINVAL {
                         let x_step =
                             -v.iter().zip(res.iter()).map(|(a, b)| a * b).sum::<f64>() / denom;
-                        // Guard: normal force stays non-negative
                         let x_clamped = if data.efc_force[i] + x_step * v[0] < 0.0 {
                             -data.efc_force[i] / v[0]
                         } else {
@@ -196,30 +319,27 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
 
                 // ---- Phase 2: Friction QCQP (normal fixed) ----
                 let fn_current = data.efc_force[i];
-                let fdim = dim - 1; // number of friction DOFs
+                let fdim = dim - 1;
 
                 if fn_current < MJ_MINVAL {
-                    // Zero normal: clear all friction
                     for j in 1..dim {
                         data.efc_force[i + j] = 0.0;
                     }
                 } else {
-                    // Build friction-friction subblock Ac from AR and adjusted bias bc
+                    // Build friction-friction subblock from ar_block
                     let mut ac_flat = vec![0.0_f64; fdim * fdim];
                     let mut bc = vec![0.0_f64; fdim];
                     for j in 0..fdim {
                         for k in 0..fdim {
-                            ac_flat[j * fdim + k] = ar[(i + 1 + j, i + 1 + k)];
+                            ac_flat[j * fdim + k] = ar_block[1 + j][1 + k];
                         }
-                        // bc[j] = res[j+1] - Σ Ac[j,k]*old_friction[k] + AR[i+1+j,i]*Δnormal
                         bc[j] = res[j + 1];
                         for k in 0..fdim {
                             bc[j] -= ac_flat[j * fdim + k] * old_force[1 + k];
                         }
-                        bc[j] += ar[(i + 1 + j, i)] * (fn_current - old_force[0]);
+                        bc[j] += ar_block[1 + j][0] * (fn_current - old_force[0]);
                     }
 
-                    // QCQP dispatch by dimension
                     let (fric_result, active) = if fdim == 2 {
                         let ac2 = [[ac_flat[0], ac_flat[1]], [ac_flat[2], ac_flat[3]]];
                         let (r, a) = crate::constraint::solver::qcqp::qcqp2(
@@ -252,7 +372,6 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
                         )
                     };
 
-                    // Ellipsoidal rescale if constraint was projected to boundary
                     if active {
                         let mut ssq = 0.0_f64;
                         for j in 0..fdim {
@@ -272,7 +391,6 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
                 }
 
                 // ---- Cost guard using AR subblock ----
-                // Returns cost_change for improvement accumulation (matches MuJoCo costChange)
                 let cost_change = {
                     let mut cc = 0.0_f64;
                     for j in 0..dim {
@@ -280,45 +398,53 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
                         cc += delta_j * res[j];
                         for k in 0..dim {
                             let delta_k = data.efc_force[i + k] - old_force[k];
-                            cc += 0.5 * delta_j * ar[(i + j, i + k)] * delta_k;
+                            cc += 0.5 * delta_j * ar_block[j][k] * delta_k;
                         }
                     }
                     if cc > 1e-10 {
-                        // Revert to old forces
+                        // Revert
                         data.efc_force.as_mut_slice()[i..i + dim].copy_from_slice(&old_force);
                         0.0
                     } else {
                         cc
                     }
                 };
-                improvement -= cost_change;
 
+                // Update qacc for force changes in this block
+                for j in 0..dim {
+                    let delta = data.efc_force[i + j] - old_force[j];
+                    if delta != 0.0 {
+                        update_qacc(&mut qacc, &sp.minv_jt, i + j, delta, nv);
+                    }
+                }
+
+                improvement -= cost_change;
                 i += dim;
             } else {
                 // Scalar constraint: single-row GS update + projection
                 let old_force = data.efc_force[i];
 
-                // Compute residual: res = b[i] + Σ AR[i,c] * force[c]
-                let mut res = data.efc_b[i];
-                for c in 0..nefc {
-                    res += ar[(i, c)] * data.efc_force[c];
-                }
+                // Compute residual: O(nv) instead of O(nefc)
+                let res = row_residual(
+                    &data.efc_J,
+                    &qacc,
+                    &sp.b_eff,
+                    &data.efc_R,
+                    &data.efc_force,
+                    i,
+                    nv,
+                );
 
                 // GS update
-                data.efc_force[i] -= res * ar_diag_inv[i];
+                data.efc_force[i] -= res * sp.ar_diag_inv[i];
 
                 // Project per constraint type
                 match ctype {
-                    // Equality: bilateral (unclamped)
                     ConstraintType::Equality | ConstraintType::FlexEdge => {}
-
-                    // Friction loss: box clamp [-floss, +floss]
                     ConstraintType::FrictionLoss => {
                         let fl = data.efc_floss[i];
                         data.efc_force[i] = data.efc_force[i].clamp(-fl, fl);
                     }
-
-                    // Limits, frictionless/pyramidal contacts, and elliptic dim=1: unilateral (force >= 0)
                     ConstraintType::LimitJoint
                     | ConstraintType::LimitTendon
                     | ConstraintType::ContactFrictionless
@@ -328,14 +454,16 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
                     }
                 }
 
-                // Cost guard — returns cost_change for improvement accumulation
+                // Cost guard using AR diagonal
                 let delta_f = data.efc_force[i] - old_force;
                 let cost_change = if delta_f.abs() > 0.0 {
-                    let cc = 0.5 * delta_f * delta_f * ar[(i, i)] + delta_f * res;
+                    let cc = 0.5 * delta_f * delta_f * sp.ar_diag[i] + delta_f * res;
                     if cc > 1e-10 {
                         data.efc_force[i] = old_force;
                         0.0
                     } else {
+                        // Update qacc incrementally
+                        update_qacc(&mut qacc, &sp.minv_jt, i, delta_f, nv);
                         cc
                     }
                 } else {
@@ -347,22 +475,19 @@ pub fn pgs_solve_unified(model: &Model, data: &mut Data) {
             }
         }
 
-        // Scale improvement (matches MuJoCo: improvement *= scale)
         improvement *= scale;
 
-        // Record per-iteration stats (MuJoCo saveStats)
         solver_stats.push(SolverStat {
             improvement,
-            gradient: 0.0,  // PGS has no gradient
-            lineslope: 0.0, // PGS has no line search
-            nactive: 0,     // Diagnostic only — placeholder
-            nchange: 0,     // Diagnostic only — placeholder
-            nline: 0,       // PGS has no line search
+            gradient: 0.0,
+            lineslope: 0.0,
+            nactive: 0,
+            nchange: 0,
+            nline: 0,
         });
 
         iter += 1;
 
-        // Early termination (matches MuJoCo: if improvement < tolerance break)
         if improvement < tolerance {
             break;
         }
@@ -431,7 +556,6 @@ pub fn classify_constraint_states(
 
         match ctype {
             ConstraintType::Equality | ConstraintType::FlexEdge => {
-                // Always Quadratic (two-sided soft equality)
                 data.efc_state[i] = ConstraintState::Quadratic;
                 data.efc_force[i] = -d * jar;
                 constraint_cost += 0.5 * d * jar * jar;
@@ -439,21 +563,17 @@ pub fn classify_constraint_states(
             }
 
             ConstraintType::FrictionLoss => {
-                // Huber threshold at ±R·floss
                 let floss = data.efc_floss[i];
                 let threshold = r * floss;
                 if jar >= threshold {
-                    // LinearPos
                     data.efc_state[i] = ConstraintState::LinearPos;
                     data.efc_force[i] = -floss;
                     constraint_cost += floss * jar - 0.5 * r * floss * floss;
                 } else if jar <= -threshold {
-                    // LinearNeg
                     data.efc_state[i] = ConstraintState::LinearNeg;
                     data.efc_force[i] = floss;
                     constraint_cost += -floss * jar - 0.5 * r * floss * floss;
                 } else {
-                    // Quadratic
                     data.efc_state[i] = ConstraintState::Quadratic;
                     data.efc_force[i] = -d * jar;
                     constraint_cost += 0.5 * d * jar * jar;
@@ -465,7 +585,6 @@ pub fn classify_constraint_states(
             | ConstraintType::LimitTendon
             | ConstraintType::ContactFrictionless
             | ConstraintType::ContactPyramidal => {
-                // jar < 0 → Quadratic; jar >= 0 → Satisfied
                 if jar < 0.0 {
                     data.efc_state[i] = ConstraintState::Quadratic;
                     data.efc_force[i] = -d * jar;
@@ -478,36 +597,27 @@ pub fn classify_constraint_states(
             }
 
             ConstraintType::ContactElliptic => {
-                // Three-zone classification over all dim rows
                 let dim = data.efc_dim[i];
-                let mu = data.efc_mu[i][0]; // Primary friction coefficient
+                let mu = data.efc_mu[i][0];
 
-                // Compute U vector and N, T
-                // U[0] = jar[i] · μ (normal, scaled)
-                // U[j] = jar[i+j] · friction[j-1]  for j = 1..dim-1
-                // friction[j-1] = mu[j-1] from the 5-element mu array
                 let u0 = data.efc_jar[i] * mu;
                 let n = u0;
 
                 let mut t_sq = 0.0;
                 for j in 1..dim {
-                    let friction_j = data.efc_mu[i][j - 1]; // mu[j-1]
+                    let friction_j = data.efc_mu[i][j - 1];
                     let uj = data.efc_jar[i + j] * friction_j;
                     t_sq += uj * uj;
                 }
                 let t = t_sq.sqrt();
+                let t_min = MJ_MINVAL;
 
-                let t_min = MJ_MINVAL; // 1e-15
-
-                // Three-zone classification
                 if n >= mu * t || (t < t_min && n >= 0.0) {
-                    // Top (separated) → Satisfied
                     for j in 0..dim {
                         data.efc_state[i + j] = ConstraintState::Satisfied;
                         data.efc_force[i + j] = 0.0;
                     }
                 } else if mu * n + t <= 0.0 || (t < t_min && n < 0.0) {
-                    // Bottom (fully active) → Quadratic, per-row
                     for j in 0..dim {
                         let jar_j = data.efc_jar[i + j];
                         let d_j = data.efc_D[i + j];
@@ -516,17 +626,12 @@ pub fn classify_constraint_states(
                         constraint_cost += 0.5 * d_j * jar_j * jar_j;
                     }
                 } else {
-                    // Middle (cone surface) → Cone state
                     let d_normal = data.efc_D[i];
                     let dm = d_normal / (mu * mu * (1.0 + mu * mu));
                     let n_minus_mu_t = n - mu * t;
 
-                    // Cost: ½·Dm·(N − μ·T)²
                     constraint_cost += 0.5 * dm * n_minus_mu_t * n_minus_mu_t;
 
-                    // Forces:
-                    // f[i]   = −Dm · NmT · μ  (normal force)
-                    // f[i+j] = (Dm · NmT · μ / T) · U[j] · friction[j−1]  for j = 1..dim-1
                     let f_normal = -dm * n_minus_mu_t * mu;
                     data.efc_force[i] = f_normal;
 
@@ -536,38 +641,29 @@ pub fn classify_constraint_states(
                         data.efc_force[i + j] = (dm * n_minus_mu_t * mu / t) * uj * friction_j;
                     }
 
-                    // Replicate Cone state to all dim rows
                     for j in 0..dim {
                         data.efc_state[i + j] = ConstraintState::Cone;
                     }
 
-                    // Build per-contact cone Hessian H_c (dim × dim)
-                    // MuJoCo formula: H_raw then scale by diag(mu, friction) · Dm
-                    let ci = data.efc_id[i]; // contact index
+                    let ci = data.efc_id[i];
                     let t_safe = t.max(MJ_MINVAL);
                     let mut hc = DMatrix::<f64>::zeros(dim, dim);
 
-                    // H_raw[0,0] = 1
                     hc[(0, 0)] = 1.0;
 
-                    // Compute U vector (scaled jar)
                     let mut u_vec = vec![0.0_f64; dim];
-                    u_vec[0] = u0; // jar[i] * mu
+                    u_vec[0] = u0;
                     for (j, u_j) in u_vec.iter_mut().enumerate().skip(1) {
                         let friction_j = data.efc_mu[i][j - 1];
                         *u_j = data.efc_jar[i + j] * friction_j;
                     }
 
-                    // H_raw[0,j] = -mu * U[j] / T  for j >= 1
-                    // H_raw[j,0] = H_raw[0,j]  (symmetric)
                     for j in 1..dim {
                         let val = -mu * u_vec[j] / t_safe;
                         hc[(0, j)] = val;
                         hc[(j, 0)] = val;
                     }
 
-                    // H_raw[k,j] = mu * N / T³ * U[k] * U[j]  for k,j >= 1
-                    // diagonal: += mu² - mu * N / T
                     for k in 1..dim {
                         for j in 1..dim {
                             hc[(k, j)] = mu * n / (t_safe * t_safe * t_safe) * u_vec[k] * u_vec[j];
@@ -575,15 +671,12 @@ pub fn classify_constraint_states(
                         hc[(k, k)] += mu * mu - mu * n / t_safe;
                     }
 
-                    // Scale: H = diag(mu, friction[0..]) · H_raw · diag(mu, friction[0..]) · Dm
-                    // Build scale vector
-                    let mut scale = vec![0.0_f64; dim];
-                    scale[0] = mu;
-                    scale[1..dim].copy_from_slice(&data.efc_mu[i][..(dim - 1)]);
-                    // Apply: H[k,j] *= scale[k] * scale[j] * dm
+                    let mut scale_vec = vec![0.0_f64; dim];
+                    scale_vec[0] = mu;
+                    scale_vec[1..dim].copy_from_slice(&data.efc_mu[i][..(dim - 1)]);
                     for k in 0..dim {
                         for j in 0..dim {
-                            hc[(k, j)] *= scale[k] * scale[j] * dm;
+                            hc[(k, j)] *= scale_vec[k] * scale_vec[j] * dm;
                         }
                     }
 
