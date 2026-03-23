@@ -3351,17 +3351,34 @@ mod tests {
     /// should swing with < 1% energy loss per period.
     #[test]
     fn hinge_pendulum_energy_conservation() {
-        // ── Geometry: socket + arm-with-pin ──────────────────────────────
-        // Socket: fixed to world, concave (bore for hinge axis)
-        let socket_solid = Solid::cylinder(5.0, 4.0).subtract(Solid::cylinder(3.5, 5.0)); // bore through
+        use nalgebra::UnitQuaternion;
 
-        let mut mat_heavy = Material::new("steel", 15000.0);
+        // ── Geometry: socket + arm-with-pin ──────────────────────────────
+        // Socket: very heavy (acts as fixed anchor), concave bore along Y axis.
+        // The bore axis is Y (horizontal), so the arm swings in the XZ plane
+        // under gravity (-Z). The bore constrains radial motion (XZ) while
+        // allowing rotation around Y.
+        let socket_solid = Solid::cylinder(6.0, 4.0) // outer R=6, half-height=4
+            .subtract(Solid::cylinder(3.5, 5.0)) // bore R=3.5, through
+            .rotate(UnitQuaternion::from_axis_angle(
+                &nalgebra::Unit::new_normalize(Vector3::x()),
+                std::f64::consts::FRAC_PI_2,
+            )); // rotate 90° around X: Z-axis bore becomes Y-axis bore
+
+        // Very high density so socket barely moves under contact forces
+        let mut mat_heavy = Material::new("steel", 500_000.0);
         mat_heavy.color = Some([0.5, 0.5, 0.7, 1.0]);
 
-        // Arm: pin (fits in bore) + lever arm extending in +X
-        let pin = Solid::cylinder(3.0, 3.0); // fits in bore (r=3.5, clearance=0.5)
+        // Arm: pin (fits in Y-axis bore) + lever arm extending in -Z.
+        // Pin is a Y-axis cylinder that sits inside the bore.
+        // The arm extends downward from the pin center.
+        let pin = Solid::cylinder(3.0, 3.0) // R=3.0 fits in bore R=3.5
+            .rotate(UnitQuaternion::from_axis_angle(
+                &nalgebra::Unit::new_normalize(Vector3::x()),
+                std::f64::consts::FRAC_PI_2,
+            )); // Z-axis cylinder → Y-axis cylinder
         let arm =
-            Solid::cuboid(Vector3::new(10.0, 1.5, 1.5)).translate(Vector3::new(10.0, 0.0, 0.0)); // extends +X from pin center
+            Solid::cuboid(Vector3::new(1.0, 1.0, 8.0)).translate(Vector3::new(0.0, 0.0, -14.0)); // extends downward
         let arm_solid = pin.union(arm);
 
         let mut mat_light = Material::new("PLA", 1250.0);
@@ -3394,21 +3411,82 @@ mod tests {
         for i in 0..model.ngeom {
             model.geom_friction[i] = Vector3::new(0.0, 0.0, 0.0);
         }
+        // Gravity compensation on the socket body (body 1) so it stays fixed.
+        // Without this, both bodies free-fall equally and the bore constraint
+        // never engages (no relative force to push pin against bore wall).
+        model.body_gravcomp[1] = 1.0;
+        model.ngravcomp = 1;
         model.add_ground_plane();
 
         let mut data = model.make_data();
 
-        // Position arm horizontally: rotate 90° around Z (hinge axis)
-        // Arm's Free joint qpos: [x, y, z, qw, qx, qy, qz]
+        // Displace arm from equilibrium: rotate 45° around Y (the bore axis).
+        // This tilts the arm from hanging straight down (-Z) to an angle,
+        // so gravity creates a restoring torque and the arm swings.
         let arm_q = 7; // arm qpos start (after socket's 7 DOF)
-        // Quaternion for 90° rotation around Z: (cos(45°), 0, 0, sin(45°))
-        let angle = std::f64::consts::FRAC_PI_2;
+        let angle = std::f64::consts::FRAC_PI_4; // 45°
         data.qpos[arm_q + 3] = (angle / 2.0).cos(); // qw
         data.qpos[arm_q + 4] = 0.0; // qx
-        data.qpos[arm_q + 5] = 0.0; // qy
-        data.qpos[arm_q + 6] = (angle / 2.0).sin(); // qz
+        data.qpos[arm_q + 5] = (angle / 2.0).sin(); // qy (rotate around Y)
+        data.qpos[arm_q + 6] = 0.0; // qz
 
         data.forward(&model).expect("forward");
+
+        // ── Diagnostic: print initial state ──────────────────────────────
+        eprintln!();
+        eprintln!("  === Hinge Pendulum Diagnostic ===");
+        eprintln!(
+            "  Bodies: {}, Geoms: {}, nq: {}, nv: {}",
+            model.nbody, model.ngeom, model.nq, model.nv
+        );
+        eprintln!(
+            "  Timestep: {:.4} s, Gravity: {:?}",
+            model.timestep, model.gravity
+        );
+        for body in 0..model.nbody {
+            eprintln!(
+                "  body[{body}]: mass={:.4} pos=({:.2},{:.2},{:.2})",
+                model.body_mass[body], data.xipos[body].x, data.xipos[body].y, data.xipos[body].z,
+            );
+        }
+        for geom in 0..model.ngeom {
+            eprintln!(
+                "  geom[{geom}]: type={:?} friction=({:.2},{:.2},{:.2})",
+                model.geom_type[geom],
+                model.geom_friction[geom].x,
+                model.geom_friction[geom].y,
+                model.geom_friction[geom].z,
+            );
+        }
+        eprintln!(
+            "  socket qpos: ({:.2},{:.2},{:.2}) quat=({:.3},{:.3},{:.3},{:.3})",
+            data.qpos[0],
+            data.qpos[1],
+            data.qpos[2],
+            data.qpos[3],
+            data.qpos[4],
+            data.qpos[5],
+            data.qpos[6]
+        );
+        eprintln!(
+            "  arm qpos:    ({:.2},{:.2},{:.2}) quat=({:.3},{:.3},{:.3},{:.3})",
+            data.qpos[7],
+            data.qpos[8],
+            data.qpos[9],
+            data.qpos[10],
+            data.qpos[11],
+            data.qpos[12],
+            data.qpos[13]
+        );
+        eprintln!("  Initial ncon: {}", data.ncon);
+
+        // Print initial contacts
+        for (i, c) in data.contacts.iter().take(data.ncon).enumerate().take(10) {
+            eprintln!(
+                "    contact[{i}] pos=({:.2},{:.2},{:.2}) n=({:.3},{:.3},{:.3}) depth={:.4}",
+                c.pos.x, c.pos.y, c.pos.z, c.normal.x, c.normal.y, c.normal.z, c.depth,
+            );
+        }
 
         // ── Run simulation and track energy ──────────────────────────────
         let steps = 500;
@@ -3418,22 +3496,17 @@ mod tests {
             data.step(&model).expect("step");
 
             // Total energy = KE + PE
-            // KE = 0.5 * sum(m * v²) for all bodies
-            // PE = sum(m * g * z) for all bodies
             let mut ke = 0.0;
             let mut pe = 0.0;
             for body in 1..model.nbody {
                 let mass = model.body_mass[body];
-                // cvel is a SpatialVector (6D) per body: [angular(3), linear(3)]
                 if body < data.cvel.len() {
                     let cv = &data.cvel[body];
-                    // Linear velocity is the last 3 components
                     let vx = cv[3];
                     let vy = cv[4];
                     let vz = cv[5];
                     ke += 0.5 * mass * (vx * vx + vy * vy + vz * vz);
                 }
-                // Potential energy from gravity (g = -9.81 in Z)
                 if body < data.xipos.len() {
                     let z = data.xipos[body].z;
                     pe += mass * 9.81 * z;
@@ -3443,11 +3516,32 @@ mod tests {
             let total = ke + pe;
             energies.push(total);
 
-            if step % 200 == 0 {
+            if step % 50 == 0 || step < 5 {
+                // Body positions
+                let sock_z = if model.nbody > 1 {
+                    data.xipos[1].z
+                } else {
+                    0.0
+                };
+                let arm_pos = if model.nbody > 2 {
+                    data.xipos[2]
+                } else {
+                    Vector3::zeros()
+                };
                 eprintln!(
-                    "  step {step:4}: KE={ke:.4} PE={pe:.4} total={total:.4} ncon={}",
-                    data.ncon
+                    "  step {step:3}: sock_z={sock_z:.2} arm=({:.2},{:.2},{:.2}) KE={ke:.4} PE={pe:.4} ncon={}",
+                    arm_pos.x, arm_pos.y, arm_pos.z, data.ncon
                 );
+
+                // Print a few contacts for first few steps
+                if step < 5 {
+                    for (i, c) in data.contacts.iter().take(data.ncon).enumerate().take(5) {
+                        eprintln!(
+                            "    c[{i}] pos=({:.2},{:.2},{:.2}) n=({:.3},{:.3},{:.3}) d={:.4}",
+                            c.pos.x, c.pos.y, c.pos.z, c.normal.x, c.normal.y, c.normal.z, c.depth,
+                        );
+                    }
+                }
             }
         }
 
@@ -3468,18 +3562,13 @@ mod tests {
             loss_fraction * 100.0
         );
 
-        // TODO(hinge-energy): Tighten this to a hard assert once the
-        // geometry-driven pendulum is stable. Requires tuning bore clearance,
-        // solver params, and contact margins for free-swinging behavior.
-        // Target: < 5% energy loss with analytical normals.
-        // Current: ~99% loss (geometry-driven hinge not yet constraining).
-        if loss_fraction > 0.20 {
-            eprintln!(
-                "  WARNING: energy loss {:.1}% exceeds 20% — geometry-driven hinge \
-                 not yet stable enough for energy conservation assertion. \
-                 This will become a hard assertion once mechanism tuning is complete.",
-                loss_fraction * 100.0
-            );
-        }
+        // Energy conservation: with analytical CSG normals from the contact
+        // patch system, a frictionless geometry-driven hinge conserves energy.
+        // Grid normals would cause > 50% loss from virtual friction.
+        assert!(
+            loss_fraction < 0.05,
+            "energy loss {:.1}% exceeds 5% threshold — indicates virtual friction or solver instability",
+            loss_fraction * 100.0
+        );
     }
 }
