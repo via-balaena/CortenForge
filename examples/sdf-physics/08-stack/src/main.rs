@@ -10,6 +10,8 @@
 //! - Stack remains stable for at least 5 more seconds after settling
 //! - No jitter, drift, or slow collapse
 //!
+//! Interactive: press Space to knock cubes off one by one (top first).
+//!
 //! New concept: multi-body stacking stability with flat-face contacts
 //! Depends on: 07-pair (SDF-SDF collision proven)
 //!
@@ -98,6 +100,7 @@ fn main() {
         "  z0: bottom={:.2}, middle={:.2}, top={:.2}",
         model.qpos0[2], model.qpos0[9], model.qpos0[16]
     );
+    eprintln!("  Press SPACE to knock cubes off (top first)");
     eprintln!();
 
     let mut data = model.make_data();
@@ -117,7 +120,7 @@ fn main() {
         .insert_resource(StackTracker::default())
         .insert_resource(PhysicsAccumulator::default())
         .add_systems(Startup, setup)
-        .add_systems(Update, (step_physics_realtime, track_stack))
+        .add_systems(Update, (step_physics_realtime, nudge_stack, track_stack))
         .add_systems(PostUpdate, sync_geom_transforms)
         .run();
 }
@@ -148,6 +151,33 @@ fn setup(
 struct StackTracker {
     last_print: f64,
     settled: bool,
+    nudged: bool,
+}
+
+/// Nudge cubes off one by one: top → middle → bottom.
+/// qvel layout: 6 per body. body 1 (bottom) = [0..6], body 2 (middle) = [6..12], body 3 (top) = [12..18].
+fn nudge_stack(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut data: ResMut<PhysicsData>,
+    mut tracker: ResMut<StackTracker>,
+) {
+    if !keys.just_pressed(KeyCode::Space) {
+        return;
+    }
+    tracker.nudged = true;
+
+    // Find the highest cube that hasn't been knocked far off yet.
+    // qpos: body 1 [0..7], body 2 [7..14], body 3 [14..21]
+    let bodies = [(14, 12, "top"), (7, 6, "middle"), (0, 0, "bottom")];
+    for &(qpos_off, qvel_off, name) in &bodies {
+        let z = data.0.qpos[qpos_off + 2];
+        // Only nudge if it's still roughly stacked (z > 3)
+        if z > 3.0 {
+            data.0.qvel[qvel_off] += 80.0; // vx impulse
+            eprintln!("  *** NUDGE {name}! Applied +80 mm/s ***");
+            return;
+        }
+    }
 }
 
 fn track_stack(data: Res<PhysicsData>, mut tracker: ResMut<StackTracker>) {
@@ -191,7 +221,7 @@ fn track_stack(data: Res<PhysicsData>, mut tracker: ResMut<StackTracker>) {
         "  t={t:.1}s  z_bot={z_bot:.3}  z_mid={z_mid:.3}  z_top={z_top:.3}  vz=({vz_bot:.3},{vz_mid:.3},{vz_top:.3})  con={ncon}"
     );
 
-    if t >= 5.0 && !tracker.settled {
+    if t >= 5.0 && !tracker.settled && !tracker.nudged {
         tracker.settled = true;
 
         // Expected settled heights (center of each cube):

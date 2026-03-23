@@ -62,6 +62,10 @@ impl PhysicsShape for AnalyticalShape {
         }
     }
 
+    fn prefers_single_contact(&self) -> bool {
+        matches!(self.hint, ShapeHint::Sphere(_))
+    }
+
     fn sdf_grid(&self) -> &SdfGrid {
         &self.grid
     }

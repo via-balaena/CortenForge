@@ -75,6 +75,10 @@ impl PhysicsShape for ShapeSphere {
         Some(self.radius)
     }
 
+    fn prefers_single_contact(&self) -> bool {
+        true
+    }
+
     fn sdf_grid(&self) -> &SdfGrid {
         &self.grid
     }
