@@ -35,16 +35,18 @@ Two mechanisms prevent the instability:
    relative). This prevents the contact force from acquiring a lateral
    component due to floating-point position drift.
 
-2. **Frictionless analytical contact.** For convex-on-convex contacts (both
-   shapes provide an analytical `effective_radius`), the contact dimension is
-   set to 1 (frictionless). Pyramidal friction facets on such contacts produce
-   force asymmetry proportional to the lateral offset through the angular
-   Jacobian's lever-arm dependence — even with a perfectly stabilized normal.
-   Eliminating friction removes this channel entirely.
+2. **Lever arm stabilization.** The angular Jacobian's lever arm (contact
+   point to body COM) is projected onto the contact normal axis when its
+   perpendicular component is sub-physical. Pyramidal friction facets have a
+   Delassus matrix cross-term `(r x normal) . (r x tangent)` that differs
+   between pos/neg facets by an amount proportional to the lever arm's lateral
+   drift. Projecting the lever arm onto the normal makes `r x normal = 0`,
+   eliminating this cross-term entirely. The solver then produces exactly
+   equal forces for both facets — zero net friction force.
 
-With both fixes, the net lateral force on the upper sphere is exactly zero:
-the normal Jacobian for the lateral DOF is `normal.y = 0` (exact), and no
-friction rows exist to produce asymmetric forces.
+With both fixes, the net lateral force on the upper sphere is exactly zero.
+Friction is preserved (condim=3) — the fix works at the Jacobian level, not
+by removing friction.
 
 ## Key concept
 

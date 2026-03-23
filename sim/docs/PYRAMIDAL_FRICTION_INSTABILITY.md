@@ -1,6 +1,6 @@
 # Pyramidal Friction Instability on Convex-Convex Contacts
 
-**Status:** RESOLVED (2026-03-22). Two-part fix: normal stabilization + condim=1.
+**Status:** RESOLVED (2026-03-22). Two-part fix: normal stabilization + lever arm stabilization.
 **Date:** 2026-03-22
 **Example:** `examples/sdf-physics/07-pair` (two SDF spheres stacked)
 **Branch:** `examples-continued`
@@ -113,49 +113,49 @@ This prevents the contact normal from tilting due to sub-physical lateral
 drift, which would give the constraint force a lateral component.
 
 **Necessary but not sufficient.** Testing showed that normal stabilization
-alone still produces 26/s exponential drift. The root cause: the angular
-Jacobian's lever arm (`r = contact_point - body_COM`) has lateral components
-from the actual body positions. The cross-term `(r × tangent) · (r × normal)`
-is proportional to the lateral offset, creating a Delassus matrix asymmetry
-between pyramidal pos/neg facets that grows linearly with offset → exponential
-instability.
+alone still produces 26/s exponential drift from a deeper mechanism (Part 2).
 
-### Part 2: Frictionless contact for analytical convex-convex
+### Part 2: Lever arm stabilization
 
-`collide_with_sdf()` in `sim/L0/core/src/collision/sdf_collide.rs` overrides
-`contact.dim = 1` when both shapes provide `effective_radius` (the criterion
-for the analytical path). This eliminates the tangential force channel
-entirely — no friction facets, no Delassus asymmetry, no net lateral force.
+`stabilize_lever_arm()` in `sim/L0/core/src/constraint/jacobian.rs` projects
+the lever arm (`r = contact_point - body_COM`) onto the contact normal axis
+when its perpendicular component is sub-physical (< 1e-6 relative).
 
-With dim=1 and stabilized normal=(0,0,1):
-- The only constraint row is the normal row
-- `J_normal[y_linear] = normal.y = 0` (exact)
-- Angular DOFs don't couple to linear motion for a free body
-- **Net lateral force = 0 exactly**
+**The deep mechanism:** The Delassus matrix diagonal for pyramidal facet
+pairs has a cross-term `(r × normal) · (r × tangent)` that differs between
+pos and neg facets by an amount proportional to the lever arm's lateral
+component. This is a mathematical asymmetry (not floating-point rounding).
+When the lateral component grows from position drift, the Delassus asymmetry
+grows, producing force asymmetry proportional to offset → exponential drift.
 
-### Physical justification
+Projecting `r` onto the normal axis makes `r × normal = 0` (parallel
+vectors), eliminating the cross-term entirely. The Delassus diagonal becomes
+exactly equal for pos/neg facets: both are `μ²h²/I`. The solver produces
+`f_pos = f_neg` exactly → zero net friction force → zero lateral acceleration.
 
-For convex-on-convex contacts, the equilibrium is inherently unstable (the
-support surface has positive curvature). Static friction cannot create a
-restoring force — it only opposes sliding. Any perturbation causes the upper
-body to slide off regardless of friction. Setting condim=1 removes a force
-channel that provides no physical benefit while seeding the instability.
+**Key properties:**
+- Works at the Jacobian level (the right abstraction layer)
+- Preserves friction (no condim override needed)
+- Applies to ALL contacts via threshold (not geometry-specific)
+- For aligned contacts (sphere-on-flat, cube-on-cube): no-op (already aligned)
+- For physically-offset contacts (inclined plane): threshold prevents activation
+- Approximation error is negligible (proportional to drift / lever arm ≈ 1e-16)
 
 ### Result
 
 Spheres stack stably for 15+ seconds with zero lateral drift (< 1e-9 at 9
-decimal places). Previously failed at ~1.2 seconds.
+decimal places). Friction is preserved (condim=3). Previously failed at
+~1.2 seconds.
 
 ## Key Files
 
 | File | Role |
 |------|------|
+| `sim/L0/core/src/constraint/jacobian.rs` | `stabilize_lever_arm()` + `compute_contact_jacobian()` — **the core fix** |
 | `sim/L0/core/src/sdf/shape.rs` | `compute_shape_contact()` — analytical contact path, applies `stabilize_direction` |
 | `sim/L0/core/src/sdf/operations.rs` | `stabilize_direction()` — zeroes sub-physical direction components |
-| `sim/L0/core/src/collision/sdf_collide.rs` | `collide_with_sdf()` — condim=1 override for analytical convex-convex |
 | `sim/L0/core/src/types/contact_types.rs` | `compute_tangent_frame()` — tangent vectors |
 | `sim/L0/core/src/constraint/contact_assembly.rs` | `assemble_pyramidal_contact()` — facet Jacobians |
-| `sim/L0/core/src/constraint/jacobian.rs` | `compute_contact_jacobian()` — lever arm / angular Jacobian |
 
 ## Diagnostic Data
 

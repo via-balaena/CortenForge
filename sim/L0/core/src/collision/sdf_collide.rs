@@ -117,36 +117,7 @@ pub fn collide_with_sdf(
             contact_margin,
         );
 
-        // Analytical convex-convex contacts (both shapes return effective_radius)
-        // are inherently unstable: the support surface is convex, so any lateral
-        // perturbation causes the upper body to slide off. Pyramidal friction
-        // facets on such contacts produce force asymmetry proportional to the
-        // lateral offset (through the angular Jacobian's lever-arm dependence),
-        // seeding exponential lateral drift at ~26/s even with a stabilized
-        // contact normal. Friction serves no physical restoring purpose here.
-        //
-        // Override to condim=1 (frictionless) to eliminate the tangential force
-        // channel entirely. Combined with the stabilized normal from
-        // compute_shape_contact(), this ensures zero net lateral force.
-        //
-        // See sim/docs/PYRAMIDAL_FRICTION_INSTABILITY.md for the full analysis.
-        let both_convex = model.shape_data[sdf_id]
-            .effective_radius(&Vector3::z())
-            .is_some()
-            && model.shape_data[other_sdf_id]
-                .effective_radius(&Vector3::z())
-                .is_some();
-
-        return sdf_contacts
-            .iter()
-            .map(|c| {
-                let mut contact = convert(c);
-                if both_convex {
-                    contact.dim = 1;
-                }
-                contact
-            })
-            .collect();
+        return sdf_contacts.iter().map(&convert).collect();
     }
 
     // All other types: single-contact (returns Option<SdfContact>)
