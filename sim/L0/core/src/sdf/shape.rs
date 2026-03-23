@@ -13,7 +13,7 @@
 use nalgebra::Vector3;
 use sim_types::Pose;
 
-use super::operations::{sdf_sdf_contact_raw, separation_direction};
+use super::operations::{sdf_sdf_contact_raw, separation_direction, stabilize_direction};
 use super::primitives::sdf_plane_contact;
 use super::{SdfContact, SdfGrid};
 
@@ -70,10 +70,15 @@ pub fn compute_shape_contact(
         let center_dist = (pose_b.position - pose_a.position).norm();
         let depth = (r_a + r_b - center_dist).max(0.0);
         if depth > 0.0 || center_dist < r_a + r_b + margin {
+            // Use the raw direction for the contact point to preserve
+            // midpoint placement (symmetric lever arms for equal-radius
+            // bodies), but stabilize the normal to prevent sub-physical
+            // tangent-frame tilt from seeding pyramidal friction asymmetry.
             let contact_point = pose_a.position + dir * (r_a - depth * 0.5);
+            let stable_normal = stabilize_direction(dir);
             return vec![SdfContact {
                 point: contact_point,
-                normal: dir,
+                normal: stable_normal,
                 penetration: depth,
             }];
         }

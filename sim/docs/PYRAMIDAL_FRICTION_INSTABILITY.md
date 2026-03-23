@@ -1,6 +1,6 @@
 # Pyramidal Friction Instability on Convex-Convex Contacts
 
-**Status:** Investigation complete. Fix not yet implemented.
+**Status:** RESOLVED (2026-03-22). Two-part fix: normal stabilization + condim=1.
 **Date:** 2026-03-22
 **Example:** `examples/sdf-physics/07-pair` (two SDF spheres stacked)
 **Branch:** `examples-continued`
@@ -101,56 +101,61 @@ Tried thresholds of 1e-6, 0.01, and 0.1. Higher thresholds delay failure
 (more aggressive averaging catches the growing asymmetry) but eventually
 the geometric instability overcomes the threshold and enforcement stops.
 
-## Correct Fix: Contact Normal Stabilization
+## Implemented Fix (two parts, both required)
 
-The fix must happen at the **contact model level**, before the solver runs.
+### Part 1: Contact normal stabilization
 
-### The insight
+`stabilize_direction()` in `sim/L0/core/src/sdf/operations.rs` zeros
+direction-vector components below `1e-6 * max_component`, then re-normalizes.
+Applied in the analytical path of `compute_shape_contact()` (shape.rs).
 
-The instability is geometric: the contact normal tilts as the sphere drifts,
-creating a positive feedback loop. For analytical convex-convex contacts
-(sphere-sphere), the contact normal is `(B_center - A_center) / |B - A|`.
-This is correct but UNSTABLE — any lateral offset immediately changes the
-normal direction.
+This prevents the contact normal from tilting due to sub-physical lateral
+drift, which would give the constraint force a lateral component.
 
-### The fix
+**Necessary but not sufficient.** Testing showed that normal stabilization
+alone still produces 26/s exponential drift. The root cause: the angular
+Jacobian's lever arm (`r = contact_point - body_COM`) has lateral components
+from the actual body positions. The cross-term `(r × tangent) · (r × normal)`
+is proportional to the lateral offset, creating a Delassus matrix asymmetry
+between pyramidal pos/neg facets that grows linearly with offset → exponential
+instability.
 
-For the analytical path in `compute_shape_contact()` (file:
-`sim/L0/core/src/sdf/shape.rs`), when both shapes return `effective_radius`,
-the contact normal should be **projected to remove tangential drift**:
+### Part 2: Frictionless contact for analytical convex-convex
 
-1. Compute the nominal separation axis (e.g., from initial contact geometry
-   or from the gravity direction for stacking scenarios)
-2. Project the computed normal onto this axis
-3. Use the projected normal for the contact Jacobian
+`collide_with_sdf()` in `sim/L0/core/src/collision/sdf_collide.rs` overrides
+`contact.dim = 1` when both shapes provide `effective_radius` (the criterion
+for the analytical path). This eliminates the tangential force channel
+entirely — no friction facets, no Delassus asymmetry, no net lateral force.
 
-More concretely: the contact Jacobian's tangent frame should be constructed
-to be **orthogonal to the true center-to-center direction**, not to a
-potentially drifted direction. If the center-to-center direction has
-accumulated floating-point lateral drift, the tangent frame should be
-stabilized.
+With dim=1 and stabilized normal=(0,0,1):
+- The only constraint row is the normal row
+- `J_normal[y_linear] = normal.y = 0` (exact)
+- Angular DOFs don't couple to linear motion for a free body
+- **Net lateral force = 0 exactly**
 
-### Alternative approach: condim=1 for apex contacts
+### Physical justification
 
-For sphere-on-sphere contacts where the contact is at the apex (top of lower
-sphere), friction serves no physical purpose — there's no sliding to resist
-at an unstable equilibrium. Setting condim=1 (frictionless) for such contacts
-eliminates the tangential force channel entirely.
+For convex-on-convex contacts, the equilibrium is inherently unstable (the
+support surface has positive curvature). Static friction cannot create a
+restoring force — it only opposes sliding. Any perturbation causes the upper
+body to slide off regardless of friction. Setting condim=1 removes a force
+channel that provides no physical benefit while seeding the instability.
 
-This is simpler but less general. The normal stabilization approach handles
-all convex-convex stacking (including non-spherical shapes).
+### Result
+
+Spheres stack stably for 15+ seconds with zero lateral drift (< 1e-9 at 9
+decimal places). Previously failed at ~1.2 seconds.
 
 ## Key Files
 
 | File | Role |
 |------|------|
-| `sim/L0/core/src/sdf/shape.rs:52-85` | `compute_shape_contact()` — analytical contact path |
-| `sim/L0/core/src/sdf/operations.rs:54-57` | `separation_direction()` — normal computation |
-| `sim/L0/core/src/types/contact_types.rs:334-366` | `compute_tangent_frame()` — tangent vectors |
-| `sim/L0/core/src/constraint/contact_assembly.rs:221-313` | `assemble_pyramidal_contact()` — facet Jacobians |
-| `sim/L0/core/src/constraint/solver/pgs.rs:467-478` | Pyramidal facet classification |
-| `sim/L0/core/src/constraint/solver/newton.rs` | Newton solver (produces qacc + efc_force) |
-| `sim/L0/core/src/constraint/mod.rs:409-449` | Solver dispatch in mj_fwd_constraint |
+| `sim/L0/core/src/sdf/shape.rs` | `compute_shape_contact()` — analytical contact path, applies `stabilize_direction` |
+| `sim/L0/core/src/sdf/operations.rs` | `stabilize_direction()` — zeroes sub-physical direction components |
+| `sim/L0/core/src/collision/sdf_collide.rs` | `collide_with_sdf()` — condim=1 override for analytical convex-convex |
+| `sim/L0/core/src/types/contact_types.rs` | `compute_tangent_frame()` — tangent vectors |
+| `sim/L0/core/src/constraint/contact_assembly.rs` | `assemble_pyramidal_contact()` — facet Jacobians |
+| `sim/L0/core/src/constraint/jacobian.rs` | `compute_contact_jacobian()` — lever arm / angular Jacobian |
 
 ## Diagnostic Data
 

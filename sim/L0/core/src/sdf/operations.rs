@@ -57,6 +57,40 @@ pub fn separation_direction(pose_a: &Pose, pose_b: &Pose) -> Option<Vector3<f64>
     if len < 1e-10 { None } else { Some(delta / len) }
 }
 
+/// Stabilize a unit direction vector by zeroing negligibly small components.
+///
+/// For analytical convex-convex contacts (e.g. sphere-sphere stacking), the
+/// separation direction determines the contact normal and tangent frame. IEEE
+/// 754 rounding in position integration can accumulate sub-physical lateral
+/// components (e.g. `(0, 1e-15, 1)` instead of `(0, 0, 1)`). These tilt the
+/// tangent frame, causing pyramidal friction facets to produce asymmetric
+/// forces that seed exponential lateral drift on unstable equilibria.
+///
+/// Zeroing components below `1e-6 * max_component` ensures the tangent frame
+/// remains symmetric. The threshold is far above machine epsilon (2.2e-16)
+/// but far below any physical significance (~0.00006° of tilt).
+///
+/// See `sim/docs/PYRAMIDAL_FRICTION_INSTABILITY.md` for the full analysis.
+pub fn stabilize_direction(dir: Vector3<f64>) -> Vector3<f64> {
+    let max_abs = dir.x.abs().max(dir.y.abs()).max(dir.z.abs());
+    if max_abs < 1e-15 {
+        return dir;
+    }
+
+    let threshold = max_abs * 1e-6;
+    let x = if dir.x.abs() < threshold { 0.0 } else { dir.x };
+    let y = if dir.y.abs() < threshold { 0.0 } else { dir.y };
+    let z = if dir.z.abs() < threshold { 0.0 } else { dir.z };
+
+    let stabilized = Vector3::new(x, y, z);
+    let len = stabilized.norm();
+    if len < 1e-15 {
+        dir // all components below threshold — keep original
+    } else {
+        stabilized / len
+    }
+}
+
 /// One pass of surface-tracing: iterate surface points of `src_sdf`,
 /// check their penetration into `dst_sdf`.
 fn trace_surface_into_other(
@@ -538,5 +572,45 @@ mod tests {
                 c.normal.x, c.normal.y, c.normal.z, c.penetration
             );
         }
+    }
+
+    // =========================================================================
+    // stabilize_direction tests
+    // =========================================================================
+
+    #[test]
+    fn stabilize_zeroes_sub_threshold_components() {
+        // Nearly-vertical direction with tiny lateral drift
+        let dir = Vector3::new(1e-15, -2e-14, 1.0).normalize();
+        let stable = stabilize_direction(dir);
+        assert_eq!(stable.x, 0.0, "x should be zeroed");
+        assert_eq!(stable.y, 0.0, "y should be zeroed");
+        assert!((stable.z - 1.0).abs() < 1e-15, "z should be ~1.0");
+    }
+
+    #[test]
+    fn stabilize_preserves_significant_components() {
+        // 45-degree direction — no components should be zeroed
+        let dir = Vector3::new(0.707, 0.0, 0.707).normalize();
+        let stable = stabilize_direction(dir);
+        assert!((stable.x - dir.x).abs() < 1e-15);
+        assert_eq!(stable.y, 0.0); // already zero
+        assert!((stable.z - dir.z).abs() < 1e-15);
+    }
+
+    #[test]
+    fn stabilize_preserves_large_lateral() {
+        // Tilted direction with physically significant lateral component
+        let dir = Vector3::new(0.0, 0.01, 1.0).normalize();
+        let stable = stabilize_direction(dir);
+        // 0.01 > 1e-6 * 1.0, so y should NOT be zeroed
+        assert!(stable.y > 0.009, "y should be preserved (got {})", stable.y);
+    }
+
+    #[test]
+    fn stabilize_identity_on_cardinal() {
+        let dir = Vector3::z();
+        let stable = stabilize_direction(dir);
+        assert!((stable - dir).norm() < 1e-15);
     }
 }
