@@ -67,7 +67,19 @@ impl PhysicsShape for AnalyticalShape {
     }
 
     fn evaluate_interval(&self, local_aabb: &Aabb) -> Option<(f64, f64)> {
-        Some(self.solid.evaluate_interval(local_aabb))
+        let (lo, hi) = self.solid.evaluate_interval(local_aabb);
+
+        // Loose-interval fallback (spec §5.7): if the interval span is much
+        // wider than the AABB diagonal, the bounds are too conservative for
+        // effective octree pruning (common for concave Subtract shapes with
+        // high Lipschitz constants). Return None to force Tier 3 grid path.
+        let span = hi - lo;
+        let diagonal = local_aabb.diagonal();
+        if span > diagonal * 10.0 {
+            return None;
+        }
+
+        Some((lo, hi))
     }
 }
 

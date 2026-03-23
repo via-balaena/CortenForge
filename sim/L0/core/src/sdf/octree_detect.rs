@@ -309,6 +309,167 @@ fn newton_contact(
     })
 }
 
+// ── Diagnostics variant ─────────────────────────────────────────────────
+
+/// Octree detection statistics.
+#[derive(Debug, Clone, Default)]
+pub struct OctreeStats {
+    /// Number of `evaluate_interval` calls (2 per octree node visited).
+    pub interval_evals: usize,
+    /// Number of leaf cells that attempted contact extraction.
+    pub leaf_cells: usize,
+}
+
+/// Like [`octree_contact_detect`] but also returns performance statistics.
+pub fn octree_contact_detect_with_stats(
+    a: &dyn PhysicsShape,
+    pose_a: &Pose,
+    b: &dyn PhysicsShape,
+    pose_b: &Pose,
+    margin: f64,
+    max_contacts: usize,
+) -> (Vec<SdfContact>, OctreeStats) {
+    let world_a = world_aabb(&a.bounds(), pose_a);
+    let world_b = world_aabb(&b.bounds(), pose_b);
+    let root = world_a.intersection(&world_b).expanded(margin);
+    if root.is_empty() {
+        return (vec![], OctreeStats::default());
+    }
+
+    let cell_size = a.sdf_grid().cell_size().min(b.sdf_grid().cell_size());
+    let ratio = root.max_extent() / cell_size;
+    let max_depth = if ratio > 1.0 {
+        ratio.log2().ceil() as u32
+    } else {
+        0
+    };
+
+    let mut leaf_contacts = Vec::new();
+    let mut stats = OctreeStats::default();
+    octree_recurse_stats(
+        &root,
+        0,
+        max_depth,
+        a,
+        pose_a,
+        b,
+        pose_b,
+        margin,
+        cell_size,
+        &mut leaf_contacts,
+        &mut stats,
+    );
+
+    dedup_contacts(&mut leaf_contacts, cell_size);
+    if leaf_contacts.len() > max_contacts {
+        select_representatives(&mut leaf_contacts, max_contacts);
+    }
+
+    (leaf_contacts, stats)
+}
+
+/// Recursive octree with statistics collection.
+#[allow(clippy::too_many_arguments)]
+fn octree_recurse_stats(
+    cell: &Aabb,
+    depth: u32,
+    max_depth: u32,
+    a: &dyn PhysicsShape,
+    pose_a: &Pose,
+    b: &dyn PhysicsShape,
+    pose_b: &Pose,
+    margin: f64,
+    target_cell_size: f64,
+    contacts: &mut Vec<SdfContact>,
+    stats: &mut OctreeStats,
+) {
+    let local_a = conservative_local_aabb(cell, pose_a);
+    let local_b = conservative_local_aabb(cell, pose_b);
+
+    let Some((lo_a, hi_a)) = a.evaluate_interval(&local_a) else {
+        return;
+    };
+    let Some((lo_b, hi_b)) = b.evaluate_interval(&local_b) else {
+        return;
+    };
+    stats.interval_evals += 2; // one per shape
+
+    let cell_extent = cell.max_extent();
+    let depth_threshold = -cell_extent;
+
+    if lo_a > margin {
+        return;
+    }
+    if lo_b > margin {
+        return;
+    }
+    if hi_a < depth_threshold {
+        return;
+    }
+    if hi_b < depth_threshold {
+        return;
+    }
+
+    if cell_extent <= target_cell_size || depth >= max_depth {
+        stats.leaf_cells += 1;
+        extract_leaf_contacts(cell, a, pose_a, b, pose_b, margin, contacts);
+        return;
+    }
+
+    let mid = cell.center();
+    let min = cell.min;
+    let max = cell.max;
+    let children = [
+        Aabb::new(
+            Point3::new(min.x, min.y, min.z),
+            Point3::new(mid.x, mid.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, min.y, min.z),
+            Point3::new(max.x, mid.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(min.x, mid.y, min.z),
+            Point3::new(mid.x, max.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, mid.y, min.z),
+            Point3::new(max.x, max.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(min.x, min.y, mid.z),
+            Point3::new(mid.x, mid.y, max.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, min.y, mid.z),
+            Point3::new(max.x, mid.y, max.z),
+        ),
+        Aabb::new(
+            Point3::new(min.x, mid.y, mid.z),
+            Point3::new(mid.x, max.y, max.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, mid.y, mid.z),
+            Point3::new(max.x, max.y, max.z),
+        ),
+    ];
+    for child in &children {
+        octree_recurse_stats(
+            child,
+            depth + 1,
+            max_depth,
+            a,
+            pose_a,
+            b,
+            pose_b,
+            margin,
+            target_cell_size,
+            contacts,
+            stats,
+        );
+    }
+}
+
 // ── Geometry utilities ──────────────────────────────────────────────────
 
 /// Compute the world-space AABB of a local-space AABB under a pose transform.
