@@ -962,11 +962,25 @@ to Tier 3 grid fallback contacts (after capping).
 
 ### Phase 6 — Dynamics validation
 
-**Files:** `sim/L0/tests/integration/` (new tests)
+**Files:** `sim/L0/tests/integration/` (new tests),
+`cf-design/src/mechanism/` (integration tests with AnalyticalShape)
 **Effort:** Medium
 **Risk:** None (tests only)
 
 Implement hinge pendulum energy conservation test and performance benchmarks.
+
+Also implement the octree integration tests that require cf-design shapes
+(deferred from Phase 3 because they need AnalyticalShape, which lives in
+cf-design and is unavailable to sim-core unit tests):
+
+| Test | Setup | Pass criteria |
+|------|-------|---------------|
+| `octree_sphere_bore` | AnalyticalShape sphere in cylindrical bore | Contacts on both bore sides, radial normals |
+| `octree_pin_in_socket` | AnalyticalShape pin in socket (concave CSG) | ≥ 2 patches, radial normals, no axial leak |
+| `octree_pruning_count` | Pin in socket, instrument interval eval count | < 5% of equivalent grid cell count |
+| `octree_matches_grid` | Various AnalyticalShape geometries | Octree contacts within cell_size of grid-path results |
+| `newton_cylinder_radial` | AnalyticalShape cylinder bore contact | Axial normal component < 1e-8 |
+| `newton_csg_subtract` | AnalyticalShape bore (cyl - inner_cyl) | Normal matches Solid::gradient() exactly |
 
 ---
 
