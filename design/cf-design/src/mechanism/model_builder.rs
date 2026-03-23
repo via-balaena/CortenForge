@@ -238,6 +238,12 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
         model.body_quat.push(UnitQuaternion::identity());
         model.body_name.push(Some(part_name.to_string()));
 
+        // Geom offset: how the solid's mesh is shifted in the body frame.
+        // For articulated joints (non-free), with_joint_origin or bbox-based
+        // alignment shifts the mesh away from the body frame origin. The COM
+        // must account for this offset so the physics sees the correct lever arm.
+        let geom_offset = compute_geom_offset(part, &joints_on);
+
         // Mass properties (computed from implicit field)
         let mass_props = super::mass::mass_properties(part.solid(), part.material().density, 1.0);
         if let Some(mp) = mass_props {
@@ -247,12 +253,15 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
             model
                 .body_inertia
                 .push(Vector3::new(mp.inertia[0], mp.inertia[1], mp.inertia[2]));
-            // Center of mass offset in body frame (mm — same units as geometry)
-            model.body_ipos.push(mp.center_of_mass.coords);
+            // Center of mass in body frame = geom_offset + COM_in_solid_frame.
+            // mass_properties returns COM in the solid's local frame (centered
+            // at origin for symmetric shapes). The geom_offset translates the
+            // solid into the body frame, so we must apply it here.
+            model.body_ipos.push(geom_offset + mp.center_of_mass.coords);
         } else {
             model.body_mass.push(0.01); // fallback
             model.body_inertia.push(Vector3::new(1e-6, 1e-6, 1e-6));
-            model.body_ipos.push(Vector3::zeros());
+            model.body_ipos.push(geom_offset);
         }
         model.body_iquat.push(UnitQuaternion::identity());
 

@@ -48,6 +48,9 @@ mod primitives;
 pub mod shape;
 pub mod shapes;
 
+#[cfg(test)]
+mod concave_collision_tests;
+
 pub use cf_geometry::SdfGrid;
 pub use operations::sdf_sdf_contact;
 pub use primitives::{
