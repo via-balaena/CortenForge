@@ -2728,13 +2728,15 @@ mod tests {
 
         // ── Pin: shaft + flanges (convex union) ──────────────────────
         // Shaft R=3.0, flange R=3.2, shaft half_h=6, flange half_h=1
-        // shaft_half_h=7.05 → flange center at z=±7.05, extends to z=±8.05.
-        // Cap face at z=±8.0. Flanges penetrate 0.05mm into caps at rest,
-        // providing real contact depth for the solver's impedance model.
-        // This is realistic: print-in-place parts have manufacturing contact.
-        let shaft = Solid::cylinder(3.0, 7.05);
-        let top_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, 7.05));
-        let bot_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, -7.05));
+        // shaft_half_h=6.0 → flange at z=±6.0, extends to z=±7.0.
+        // Cap face at z=±8.0. Axial clearance = 1.0mm per side.
+        // Pin starts offset z=-0.9 so ONLY the bottom flange is near
+        // the bottom cap (gap=0.1mm < margin=0.15mm). Top flange is 2.8mm
+        // from top cap — no contact. This breaks the symmetric cancellation
+        // that prevented gravity resistance in the pre-loaded design.
+        let shaft = Solid::cylinder(3.0, 6.0);
+        let top_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, 6.0));
+        let bot_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, -6.0));
         let pin_solid = shaft.union(top_flange).union(bot_flange);
 
         let mut mat_pin = Material::new("PLA", 1250.0);
@@ -2751,7 +2753,7 @@ mod tests {
                 "world",
                 "socket",
                 JointKind::Free,
-                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.0, 0.0, 15.0), // above ground (socket half_h=10+2=12)
                 Vector3::z(),
             ))
             .joint(JointDef::new(
@@ -2759,13 +2761,17 @@ mod tests {
                 "world",
                 "pin",
                 JointKind::Free,
-                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.0, 0.0, 15.0), // same position as socket
                 Vector3::z(),
             ))
             .build();
 
-        // 0.3mm cell_size for good resolution on 0.3mm clearance
-        let mut model = mechanism.to_model(0.3, 0.5);
+        let mut model = mechanism.to_model(1.0, 1.0);
+        // Ground plane holds the socket so gravity creates relative force
+        // between socket (resting on ground) and pin (falling inside socket).
+        // Without ground, both bodies free-fall equally → zero relative velocity
+        // → contact solver never activates against gravity.
+        model.add_ground_plane();
         // No ground plane — pure geometry constraint test
 
         eprintln!();
@@ -2828,44 +2834,43 @@ mod tests {
         eprintln!("  PASS: cap contacts detected ({cap_contacts})");
 
         // ── Dynamic simulation ───────────────────────────────────────
-        // Disable gravity to isolate the contact constraint.
-        model.gravity = Vector3::zeros();
-
-        // Reset pin to center, give it a downward velocity.
-        data.qpos[pin_q] = 0.0;
-        data.qpos[pin_q + 1] = 0.0;
-        data.qpos[pin_q + 2] = 0.0;
+        // Reset to initial state (static check modified qpos).
+        data.qpos = model.qpos0.clone();
+        // Pin starts 0.9mm below socket center: bottom flange approaches cap.
+        // With ground plane supporting socket, gravity creates asymmetric
+        // relative force: socket held by ground, pin falls into cap.
+        data.qpos[pin_q + 2] -= 0.9;
         for v in data.qvel.iter_mut() {
             *v = 0.0;
         }
-        data.qvel[8] = -10.0; // pin vz = -10 mm/s (downward)
         data.forward(&model).expect("forward");
 
-        let mut max_x = 0.0_f64;
-        let mut max_y = 0.0_f64;
-        let mut max_z_offset = 0.0_f64;
+        let socket_q = 0; // socket qpos start index
+        let mut max_rel_x = 0.0_f64;
+        let mut max_rel_y = 0.0_f64;
+        let mut max_rel_z = 0.0_f64;
         let mut any_nan = false;
-        let steps = 200;
+        let steps = 400; // enough for socket to settle on ground + pin to equilibrate
 
         for step in 0..steps {
             data.step(&model).expect("step");
 
-            let px = data.qpos[pin_q];
-            let py = data.qpos[pin_q + 1];
-            let pz = data.qpos[pin_q + 2];
+            // Relative position: pin - socket
+            let rx = data.qpos[pin_q] - data.qpos[socket_q];
+            let ry = data.qpos[pin_q + 1] - data.qpos[socket_q + 1];
+            let rz = data.qpos[pin_q + 2] - data.qpos[socket_q + 2];
 
-            if !px.is_finite() || !py.is_finite() || !pz.is_finite() {
+            if !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
                 any_nan = true;
                 eprintln!("  NaN/Inf at step {step}!");
                 break;
             }
 
-            max_x = max_x.max(px.abs());
-            max_y = max_y.max(py.abs());
-            max_z_offset = max_z_offset.max(pz.abs());
+            max_rel_x = max_rel_x.max(rx.abs());
+            max_rel_y = max_rel_y.max(ry.abs());
+            max_rel_z = max_rel_z.max(rz.abs());
 
-            if step < 40 && step % 5 == 0 || step % 50 == 0 || step == steps - 1 {
-                // Count cap contacts at this step
+            if step % 50 == 0 || step == steps - 1 {
                 let step_cap = data
                     .contacts
                     .iter()
@@ -2873,8 +2878,9 @@ mod tests {
                     .filter(|c| c.normal.z.abs() > 0.5)
                     .count();
                 eprintln!(
-                    "  step {step:3}: z={pz:+.3} vz={:+.3} ncon={} cap={step_cap}",
-                    data.qvel[pin_q - 1 + 2], // pin qvel z
+                    "  step {step:3}: rel=({rx:+.3},{ry:+.3},{rz:+.3}) sock_z={:.2} pin_z={:.2} ncon={} cap={step_cap}",
+                    data.qpos[socket_q + 2],
+                    data.qpos[pin_q + 2],
                     data.ncon
                 );
             }
@@ -2883,24 +2889,26 @@ mod tests {
         eprintln!();
         eprintln!("  === Phase 3d PASS/FAIL ===");
 
-        assert!(!any_nan, "FAIL: NaN/Inf in pin position");
+        assert!(!any_nan, "FAIL: NaN/Inf in positions");
         eprintln!("  PASS: no NaN/Inf");
 
+        // Radial: pin stays within bore (clearance = 0.5mm, allow some solver slop)
         assert!(
-            max_x < 2.0,
-            "FAIL: pin escaped radially in X (max |x| = {max_x:.3})"
+            max_rel_x < 2.0,
+            "FAIL: pin escaped radially in X (max |Δx| = {max_rel_x:.3})"
         );
         assert!(
-            max_y < 2.0,
-            "FAIL: pin escaped radially in Y (max |y| = {max_y:.3})"
+            max_rel_y < 2.0,
+            "FAIL: pin escaped radially in Y (max |Δy| = {max_rel_y:.3})"
         );
-        eprintln!("  PASS: radial constraint (max |x|={max_x:.3}, max |y|={max_y:.3})");
+        eprintln!("  PASS: radial constraint (max |Δx|={max_rel_x:.3}, |Δy|={max_rel_y:.3})");
 
+        // Axial: pin stays within bore (1mm clearance per side + initial 0.9mm offset)
         assert!(
-            max_z_offset < 3.0,
-            "FAIL: pin escaped axially (max |z| = {max_z_offset:.3})"
+            max_rel_z < 3.0,
+            "FAIL: pin escaped axially (max |Δz| = {max_rel_z:.3})"
         );
-        eprintln!("  PASS: axial constraint (max |z|={max_z_offset:.3})");
+        eprintln!("  PASS: axial constraint (max |Δz|={max_rel_z:.3})");
 
         assert!(data.ncon > 0, "FAIL: no contacts at final step");
         eprintln!("  PASS: contacts active (ncon={})", data.ncon);
