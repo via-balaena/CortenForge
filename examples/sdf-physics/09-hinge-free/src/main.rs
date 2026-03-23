@@ -62,11 +62,12 @@ fn main() {
     // Pendulum weight: offset from bore axis in -Y (becomes -Z after rotation)
     let weight = Solid::sphere(3.0).translate(Vector3::new(0.0, -6.0, 26.0));
 
+    let blend = 0.3; // small blend radius smooths CSG seams without affecting clearances
     let pin_solid = shaft
-        .union(top_flange)
-        .union(bot_flange)
-        .union(arm)
-        .union(weight)
+        .smooth_union(top_flange, blend)
+        .smooth_union(bot_flange, blend)
+        .smooth_union(arm, blend)
+        .smooth_union(weight, blend)
         .rotate(rot);
 
     let mut mat_pin = Material::new("PLA", 1250.0);
@@ -95,8 +96,8 @@ fn main() {
         ))
         .build();
 
-    // SDF: 1.0mm collision (accurate normals for 5mm bore), 0.5mm visual
-    let mut model = mechanism.to_model(1.0, 0.5);
+    // SDF: 1.0mm collision grid, 0.3mm visual mesh (smooth enough for CSG seams)
+    let mut model = mechanism.to_model(1.0, 0.3);
     model.add_ground_plane();
 
     // 500Hz — REFSAFE auto-clamps solref[0] to max(0.005, 2×0.002) = 0.005,
