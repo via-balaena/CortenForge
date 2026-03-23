@@ -20,8 +20,8 @@ use cf_geometry::Aabb;
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
-use super::octree_detect::{octree_contact_detect, octree_plane_detect};
-use super::operations::{sdf_sdf_contact_raw, separation_direction, stabilize_direction};
+use super::octree_detect::{octree_contact_detect, octree_plane_detect, refine_contact_normal};
+use super::operations::{sdf_sdf_contact_raw_split, separation_direction, stabilize_direction};
 use super::primitives::sdf_plane_contact;
 use super::{SdfContact, SdfGrid};
 
@@ -143,8 +143,23 @@ pub fn compute_shape_contact(
         return octree_contact_detect(a, pose_a, b, pose_b, margin, max_contacts);
     }
 
-    // Tier 3: Grid fallback → surface tracing
-    sdf_sdf_contact_raw(a.sdf_grid(), pose_a, b.sdf_grid(), pose_b, margin)
+    // Tier 3: Grid fallback → surface tracing with per-shape normal refinement.
+    // Split by source pass so each contact is refined against the correct shape.
+    let cell_size = a.sdf_grid().cell_size().min(b.sdf_grid().cell_size());
+    let (mut from_a, mut from_b) =
+        sdf_sdf_contact_raw_split(a.sdf_grid(), pose_a, b.sdf_grid(), pose_b, margin);
+
+    // Refine A→B contacts against shape A's surface
+    for c in &mut from_a {
+        refine_contact_normal(c, a, pose_a, cell_size);
+    }
+    // Refine B→A contacts against shape B's surface
+    for c in &mut from_b {
+        refine_contact_normal(c, b, pose_b, cell_size);
+    }
+
+    from_a.extend(from_b);
+    from_a
 }
 
 /// Compute contacts between an SDF-backed shape and an infinite plane.

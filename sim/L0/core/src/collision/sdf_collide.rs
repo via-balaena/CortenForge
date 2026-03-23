@@ -170,6 +170,7 @@ pub fn collide_with_sdf(
         //
         // compute_shape_contact handles tiers 1-3. GPU is tried only when
         // compute_shape_contact would fall through to Tier 3 (grid fallback).
+        let mut used_gpu = false;
         let mut sdf_contacts = if let Some(gpu) = &model.gpu_collider {
             // Check if octree path is available (both shapes have intervals)
             let both_have_intervals = shape_a.evaluate_interval(&shape_a.bounds()).is_some()
@@ -213,6 +214,7 @@ pub fn collide_with_sdf(
                     )
                 } else {
                     // Tier 3 via GPU: grid-based multi-contact
+                    used_gpu = true;
                     gpu.sdf_sdf_contacts(
                         sdf_id,
                         &sdf_pose,
@@ -223,7 +225,7 @@ pub fn collide_with_sdf(
                 }
             }
         } else {
-            // No GPU: CPU tiers 1-3
+            // No GPU: CPU tiers 1-3 (includes per-shape refinement)
             compute_shape_contact(
                 shape_a,
                 &sdf_pose,
@@ -244,18 +246,18 @@ pub fn collide_with_sdf(
         // already sparse. It applies to Tier 3 (grid) and GPU contacts.
         cap_sdf_contacts(&mut sdf_contacts, model.sdf_maxcontact);
 
-        // Normal refinement: improve normals of grid/GPU contacts via Newton
-        // iteration on the shape's distance()/gradient() methods. Applied
-        // AFTER capping to avoid rank-deficient Jacobians from many contacts
-        // with identical refined normals. For Tier 2 contacts this is a no-op
-        // (already Newton-refined). For grid contacts, this improves normals
-        // from O(cell_size) to O(cell_size²) error.
-        let cell_size = shape_a
-            .sdf_grid()
-            .cell_size()
-            .min(shape_b.sdf_grid().cell_size());
-        for c in &mut sdf_contacts {
-            refine_contact_normal(c, shape_a, &sdf_pose, cell_size);
+        // Normal refinement for GPU contacts only. CPU paths (Tiers 1-3)
+        // already refine per-shape in compute_shape_contact. GPU contacts
+        // are refined against shape_a (imperfect for B→A contacts, but still
+        // improves grid normals vs no refinement).
+        if used_gpu {
+            let cell_size = shape_a
+                .sdf_grid()
+                .cell_size()
+                .min(shape_b.sdf_grid().cell_size());
+            for c in &mut sdf_contacts {
+                refine_contact_normal(c, shape_a, &sdf_pose, cell_size);
+            }
         }
 
         return sdf_contacts.iter().map(&convert).collect();

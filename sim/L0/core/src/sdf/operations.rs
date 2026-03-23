@@ -43,6 +43,29 @@ pub fn sdf_sdf_contact_raw(
     contacts
 }
 
+/// Like [`sdf_sdf_contact_raw`] but returns two separate vectors:
+/// contacts from A's surface (A→B pass) and contacts from B's surface
+/// (B→A pass). Used by the normal refinement pipeline to refine each
+/// contact against the correct source shape.
+pub fn sdf_sdf_contact_raw_split(
+    sdf_a: &SdfGrid,
+    pose_a: &Pose,
+    sdf_b: &SdfGrid,
+    pose_b: &Pose,
+    margin: f64,
+) -> (Vec<SdfContact>, Vec<SdfContact>) {
+    let mut from_a: Vec<SdfContact> = Vec::new();
+    let mut from_b: Vec<SdfContact> = Vec::new();
+    trace_surface_into_other(sdf_a, pose_a, sdf_b, pose_b, margin, &mut from_a, false);
+    trace_surface_into_other(sdf_b, pose_b, sdf_a, pose_a, margin, &mut from_b, true);
+
+    let cell_size = sdf_a.cell_size().min(sdf_b.cell_size());
+    dedup_contacts(&mut from_a, cell_size);
+    dedup_contacts(&mut from_b, cell_size);
+
+    (from_a, from_b)
+}
+
 /// Deduplicate contacts by spatial proximity, keeping deepest first.
 ///
 /// Sorts by penetration depth (deepest first), then greedily keeps contacts
