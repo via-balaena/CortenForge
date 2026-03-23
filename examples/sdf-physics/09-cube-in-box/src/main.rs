@@ -72,10 +72,10 @@ fn main() {
         ))
         .build();
 
-    let mut model = mechanism.to_model(1.0, 0.3);
+    let mut model = mechanism.to_model(1.0, 1.0);
     model.add_ground_plane();
 
-    // PGS solver for SDF contacts
+    model.timestep = 0.002;
     model.solver_type = sim_core::SolverType::PGS;
 
     eprintln!();
