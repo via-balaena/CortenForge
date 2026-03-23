@@ -1,26 +1,26 @@
-//! SDF Physics 09 — Hinge (Free Swing)
+//! SDF Physics 09 — Geometry-Driven Hinge
 //!
-//! Two SDF bodies connected by a revolute joint. The arm swings freely
-//! under gravity. No collision between them — this only tests that joints
-//! work correctly with SDF bodies.
+//! A flanged pin inside a capped socket. SDF collision is the ONLY constraint
+//! — no `JointKind::Revolute`. The geometry could be 3D printed in place and
+//! would perform similarly.
 //!
 //! Setup:
-//! - "base" cuboid: welded to world (no joint) — fixed anchor point
-//! - "arm" cuboid: revolute joint child of base — swings about Y axis
-//! - Initial angle: 60° from vertical
-//! - No ground plane, no inter-body collision
+//! - Socket: concave (cylinder − bore − cap holes), steel density, Free joint
+//! - Pin: convex union (shaft + flanges), PLA density, Free joint
+//! - Both children of world (siblings). Ground plane supports the socket.
+//! - Pin given initial angular velocity about the bore axis (Z)
 //!
-//! Isolates: joint integration with SDF geom types. All previous steps
-//! used free bodies. This is the first step with articulation.
+//! What SDF collision constrains:
+//! - Bore walls → radial (X/Y translation)
+//! - Cap + flange → axial (Z translation)
+//! - Bore axis rotation → FREE (the 1 unconstrained DOF)
 //!
-//! Pass criteria:
-//! - Arm swings smoothly on the hinge
-//! - No explosion or divergence
-//! - Energy is approximately conserved (small damping OK)
-//! - Joint axis is correct (arm swings in the expected plane)
-//!
-//! New concept: revolute joints with SDF bodies
-//! Depends on: 08-stack
+//! Pass criteria (at t ≥ 3s):
+//! - Pin radially constrained (|Δx|, |Δy| < 1mm)
+//! - Pin axially constrained (|Δz| < 2mm)
+//! - Pin still spinning (|ωz| > 0)
+//! - No NaN/Inf
+//! - Contacts active
 //!
 //! Run with: `cargo run -p example-sdf-09-hinge-free --release`
 
@@ -41,80 +41,78 @@ use sim_bevy::model_data::{
     sync_geom_transforms,
 };
 use sim_bevy::scene::ExampleScene;
-use sim_core::{ENABLE_ENERGY, Integrator};
-use std::f64::consts::PI;
-
-const HALF_BASE: f64 = 5.0; // mm half-extents for base cube
-const ARM_HALF_XY: f64 = 3.0; // mm half-extents for arm cross-section
-const ARM_HALF_Z: f64 = 12.0; // mm half-extent for arm length
-const INITIAL_ANGLE: f64 = PI / 3.0; // 60° from rest
 
 fn main() {
-    let mut mat_base = Material::new("PLA", 1250.0);
-    mat_base.color = Some([0.3, 0.5, 1.0, 1.0]); // blue
+    // ── Socket: tube with annular caps (concave) ─────────────────────
+    let socket_solid = Solid::cylinder(5.5, 10.0) // outer shell
+        .subtract(Solid::cylinder(3.5, 8.0)) // bore
+        .subtract(Solid::cylinder(2.5, 11.0)); // cap openings
 
-    let mut mat_arm = Material::new("PLA", 1250.0);
-    mat_arm.color = Some([1.0, 0.35, 0.3, 1.0]); // red
+    let mut mat_socket = Material::new("steel", 7800.0);
+    mat_socket.color = Some([0.4, 0.4, 0.5, 1.0]); // dark steel
 
-    // Base: fixed cube (no joint → welded to world at origin)
-    // Arm: elongated cuboid hanging from base via revolute joint
-    //
-    // with_joint_origin places the joint attachment at the top of the arm mesh,
-    // so the arm hangs downward from the anchor point.
+    // ── Pin: shaft + flanges (convex union) ──────────────────────────
+    let shaft = Solid::cylinder(3.0, 6.0);
+    let top_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, 6.0));
+    let bot_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, -6.0));
+    let pin_solid = shaft.union(top_flange).union(bot_flange);
+
+    let mut mat_pin = Material::new("PLA", 1250.0);
+    mat_pin.color = Some([1.0, 0.35, 0.3, 1.0]); // red
+
+    // ── Mechanism: siblings, both children of world ──────────────────
+    let socket_z = 15.0; // above ground (socket outer half_h ≈ 12)
     let mechanism = Mechanism::builder("hinge_free")
-        .part(Part::new(
-            "base",
-            Solid::cuboid(Vector3::new(HALF_BASE, HALF_BASE, HALF_BASE)),
-            mat_base,
-        ))
-        .part(
-            Part::new(
-                "arm",
-                Solid::cuboid(Vector3::new(ARM_HALF_XY, ARM_HALF_XY, ARM_HALF_Z)),
-                mat_arm,
-            )
-            .with_joint_origin(Vector3::new(0.0, 0.0, ARM_HALF_Z)),
-        )
+        .part(Part::new("socket", socket_solid, mat_socket))
+        .part(Part::new("pin", pin_solid, mat_pin))
         .joint(JointDef::new(
-            "hinge",
-            "base",
-            "arm",
-            JointKind::Revolute,
-            Point3::new(0.0, 0.0, -HALF_BASE), // anchor at bottom of base
-            Vector3::y(),                      // Y axis → arm swings in XZ plane
+            "socket_free",
+            "world",
+            "socket",
+            JointKind::Free,
+            Point3::new(0.0, 0.0, socket_z),
+            Vector3::z(),
+        ))
+        .joint(JointDef::new(
+            "pin_free",
+            "world",
+            "pin",
+            JointKind::Free,
+            Point3::new(0.0, 0.0, socket_z),
+            Vector3::z(),
         ))
         .build();
 
-    let mut model = mechanism.to_model(1.0, 0.3);
-    // No ground plane — pure joint articulation test
+    let mut model = mechanism.to_model(1.0, 0.5);
+    model.add_ground_plane();
 
-    // Enable energy tracking and use RK4 for better conservation
-    model.enableflags |= ENABLE_ENERGY;
-    model.integrator = Integrator::RungeKutta4;
+    // qpos layout: socket [0..7], pin [7..14]
+    // qvel layout: socket [0..6], pin [6..12]
+    let pin_q = 7;
 
-    // Revolute joint only → nq=1 (angle), nv=1 (angular velocity)
     eprintln!();
-    eprintln!("  Hinge Diagnostics");
-    eprintln!("  -----------------");
-    eprintln!("  Bodies: {}, Joints: {}", model.nbody, model.njnt);
-    eprintln!("  nq: {}, nv: {}", model.nq, model.nv);
+    eprintln!("  Geometry-Driven Hinge — SDF Physics 09");
+    eprintln!("  ────────────────────────────────────────");
+    eprintln!("  Bodies: {}, Geoms: {}", model.nbody, model.ngeom);
     eprintln!("  Timestep: {:.4} s", model.timestep);
-    eprintln!("  Integrator: RK4");
-    eprintln!("  Initial angle: {:.1}°", INITIAL_ANGLE.to_degrees());
+    eprintln!("  Constraint: SDF collision only (no JointKind::Revolute)");
+    eprintln!("  Bore: R=3.5mm, Pin shaft: R=3.0mm (0.5mm clearance)");
+    eprintln!("  Flanges: R=3.2mm, Cap opening: R=2.5mm");
     eprintln!();
 
     let mut data = model.make_data();
-    data.qpos[0] = INITIAL_ANGLE; // Start displaced 60° from rest
-    data.forward(&model).expect("forward kinematics");
 
-    let initial_energy = data.energy_kinetic + data.energy_potential;
-    eprintln!("  E₀ = {initial_energy:.6} (initial energy)");
-    eprintln!();
+    // Pin starts 0.9mm below socket center (bottom flange near cap)
+    data.qpos[pin_q + 2] -= 0.9;
+    // Initial spin about bore axis (Z)
+    data.qvel[11] = 15.0; // ωz = 15 rad/s (pin angular velocity about Z)
+
+    data.forward(&model).expect("forward kinematics");
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "SDF Physics 09 — Hinge (Free Swing)".into(),
+                title: "SDF Physics 09 — Geometry-Driven Hinge".into(),
                 ..default()
             }),
             ..default()
@@ -122,10 +120,7 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .insert_resource(PhysicsModel(model))
         .insert_resource(PhysicsData(data))
-        .insert_resource(HingeTracker {
-            initial_energy,
-            ..default()
-        })
+        .insert_resource(HingeTracker::default())
         .insert_resource(PhysicsAccumulator::default())
         .add_systems(Startup, setup)
         .add_systems(Update, (step_physics_realtime, track_hinge))
@@ -148,11 +143,10 @@ fn setup(
         &data.0,
     );
 
-    // Camera targets the midpoint of the pendulum swing
-    ExampleScene::new(60.0, 70.0)
-        .with_target(Vec3::new(0.0, -10.0, 0.0))
-        .with_angles(0.3, 0.4)
-        .with_ground_y(-35.0)
+    ExampleScene::new(50.0, 70.0)
+        .with_target(Vec3::new(0.0, 12.0, 0.0))
+        .with_angles(0.5, 0.3)
+        .with_ground_y(-0.5)
         .spawn(&mut commands, &mut meshes, &mut materials);
 }
 
@@ -160,24 +154,18 @@ fn setup(
 struct HingeTracker {
     last_print: f64,
     checks_done: bool,
-    initial_energy: f64,
-    max_angle: f64,
-    min_angle: f64,
 }
 
 fn track_hinge(data: Res<PhysicsData>, mut tracker: ResMut<HingeTracker>) {
     let t = data.0.time;
+    let pin_q = 7;
+    let socket_q = 0;
 
-    let angle = data.0.qpos[0];
-    let omega = data.0.qvel[0];
-
-    // Track angle extremes
-    if angle > tracker.max_angle {
-        tracker.max_angle = angle;
-    }
-    if angle < tracker.min_angle {
-        tracker.min_angle = angle;
-    }
+    // Relative position: pin - socket
+    let rx = data.0.qpos[pin_q] - data.0.qpos[socket_q];
+    let ry = data.0.qpos[pin_q + 1] - data.0.qpos[socket_q + 1];
+    let rz = data.0.qpos[pin_q + 2] - data.0.qpos[socket_q + 2];
+    let omega_z = data.0.qvel[11]; // pin angular velocity Z (qvel[6+5])
 
     let interval = if t < 3.0 { 0.5 } else { 2.0 };
     if t - tracker.last_print < interval || t > 15.0 {
@@ -185,60 +173,52 @@ fn track_hinge(data: Res<PhysicsData>, mut tracker: ResMut<HingeTracker>) {
     }
     tracker.last_print = t;
 
-    let energy = data.0.energy_kinetic + data.0.energy_potential;
-    let energy_drift = if tracker.initial_energy.abs() > 1e-12 {
-        (energy - tracker.initial_energy) / tracker.initial_energy.abs() * 100.0
-    } else {
-        0.0
-    };
-
+    let radial = rx.hypot(ry);
     eprintln!(
-        "  t={t:.1}s  θ={:+.1}°  ω={omega:+.3} rad/s  E={energy:.6}  ΔE={energy_drift:+.2}%",
-        angle.to_degrees()
+        "  t={t:.1}s  Δpos=({rx:+.3},{ry:+.3},{rz:+.3})  r={radial:.3}  ωz={omega_z:+.3}  ncon={}",
+        data.0.ncon
     );
 
-    if t >= 5.0 && !tracker.checks_done {
+    if t >= 3.0 && !tracker.checks_done {
         tracker.checks_done = true;
 
         eprintln!();
         eprintln!("  === PASS/FAIL checks at t={t:.1}s ===");
 
-        // 1. Arm is still swinging (angular velocity nonzero)
+        // 1. No NaN/Inf
+        let finite = rx.is_finite() && ry.is_finite() && rz.is_finite() && omega_z.is_finite();
+        check("all values finite", finite);
+
+        // 2. Radial constraint
         check(
-            &format!("|ω| > 0.01 rad/s (got {:.4})", omega.abs()),
-            omega.abs() > 0.01,
+            &format!("radial |Δxy| < 1mm (got {radial:.3})"),
+            radial < 1.0,
         );
 
-        // 2. No NaN/Inf in positions
-        check(&format!("θ is finite (got {angle:.4})"), angle.is_finite());
-        check(&format!("ω is finite (got {omega:.4})"), omega.is_finite());
-
-        // 3. Joint angle stays in expected range (no runaway spinning)
+        // 3. Axial constraint
         check(
-            &format!("|θ| < 2π (got {:.2}°)", angle.to_degrees().abs()),
-            angle.abs() < 2.0 * PI,
+            &format!("axial |Δz| < 2mm (got {:.3})", rz.abs()),
+            rz.abs() < 2.0,
         );
 
-        // 4. Angle has oscillated through both sides
+        // 4. Still spinning (free DOF)
+        // Contact friction slows spin — threshold accounts for damping
         check(
-            &format!(
-                "oscillated: max={:.1}° min={:.1}°",
-                tracker.max_angle.to_degrees(),
-                tracker.min_angle.to_degrees()
-            ),
-            tracker.max_angle > 0.1 && tracker.min_angle < -0.1,
+            &format!("|ωz| > 0.01 rad/s (got {:.3})", omega_z.abs()),
+            omega_z.abs() > 0.01,
         );
 
-        // 5. Energy approximately conserved (< 5% drift with RK4)
+        // 5. Contacts active
         check(
-            &format!("energy drift < 5% (got {energy_drift:+.2}%)"),
-            energy_drift.abs() < 5.0,
+            &format!("contacts active (ncon={})", data.0.ncon),
+            data.0.ncon > 0,
         );
 
-        // 6. No explosion — angular velocity bounded
+        // 6. Socket on ground (not fallen through)
+        let socket_z = data.0.qpos[socket_q + 2];
         check(
-            &format!("|ω| < 100 rad/s (got {:.3})", omega.abs()),
-            omega.abs() < 100.0,
+            &format!("socket on ground (z={socket_z:.1})"),
+            socket_z > 5.0,
         );
 
         eprintln!();

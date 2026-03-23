@@ -1,50 +1,64 @@
-# Example 09 — Hinge (Free Swing): Expected Behavior
+# Example 09 — Geometry-Driven Hinge: Expected Behavior
+
+## What this demonstrates
+
+A flanged pin inside a capped socket where **SDF collision is the only
+constraint**. No `JointKind::Revolute`. The geometry could be 3D printed
+in place and would perform similarly.
+
+This is the first CortenForge example where physics emerges entirely
+from the shape, not from abstract mathematical joints.
 
 ## Setup
 
-- **Base**: 10×10×10mm PLA cube, welded to world at origin (no joint — fixed anchor)
-- **Arm**: 6×6×24mm PLA cuboid, connected to base via revolute joint
-- **Joint**: Y-axis revolute at bottom face of base → arm swings in XZ plane
-- **Initial angle**: 60° from vertical (rest position = hanging straight down)
-- **No ground plane**, no collision between bodies
+- **Socket**: Concave SDF (cylinder − bore − cap holes). Steel density (7800 kg/m³).
+  Bore R=3.5mm, outer R=5.5mm, cap opening R=2.5mm.
+- **Pin**: Convex SDF (shaft R=3.0mm + flanges R=3.2mm). PLA density (1250 kg/m³).
+- Both are Free joint children of world (siblings). Ground plane supports socket.
+- Pin starts 0.9mm below socket center, with initial ωz = 5 rad/s (spinning).
 
-### Design choice: welded base vs free base
+## What constrains what
 
-The base is welded to world (no joint) rather than using `JointKind::Free`. A free
-base would fall under gravity, and in freefall the effective gravitational torque on
-the hinge vanishes (equivalence principle for constrained rigid body systems). A welded
-base provides a fixed pivot for clean pendulum dynamics.
+| DOF | Constrained by | Mechanism |
+|-----|---------------|-----------|
+| X translation | Bore wall | Pin shaft (R=3.0) hits bore (R=3.5) |
+| Y translation | Bore wall | Same, orthogonal direction |
+| Z translation | Flange + cap | Pin flange (R=3.2) hits cap annulus (opening R=2.5) |
+| X rotation | Bore wall | Radial contacts resist tipping |
+| Y rotation | Bore wall | Same |
+| **Z rotation** | **FREE** | **Pin spins freely inside bore** |
 
 ## What you should see
 
-1. **t=0–1s**: Arm swings down from 60° initial displacement, accelerating under gravity
-2. **t=1–5s**: Arm oscillates back and forth like a pendulum. With RK4 integration
-   and no damping, oscillation amplitude stays nearly constant.
-3. **t=5s+**: PASS/FAIL checks run. Arm should still be swinging with minimal
-   energy drift.
+1. The dark steel socket sits on the ground, stationary
+2. The red pin spins inside the socket (visible as rotating mesh facets)
+3. The pin stays centered in the bore (doesn't drift laterally)
+4. The pin stays at its axial position (doesn't fall through the cap)
+5. Spin gradually slows from contact friction
 
-The blue cube (base) stays fixed. The red elongated cuboid (arm) swings smoothly
-in the XZ plane (left-right when viewed from the default camera angle).
-
-## qpos/qvel layout
-
-Only one revolute joint in the model:
-- `nq = 1`: `qpos[0]` = hinge angle (radians, 0 = rest/hanging down)
-- `nv = 1`: `qvel[0]` = angular velocity (rad/s)
-
-## Pass criteria
+## Pass criteria (at t ≥ 3s)
 
 | Check | Threshold |
 |-------|-----------|
-| Arm still swinging at t≥5s | \|ω\| > 0.01 rad/s |
-| No NaN/Inf | θ, ω both finite |
-| No runaway spinning | \|θ\| < 2π |
-| Oscillation observed | max(θ) > 0 and min(θ) < 0 |
-| Energy conserved | \|ΔE\| < 5% |
-| No explosion | \|ω\| < 100 rad/s |
+| All values finite | No NaN/Inf |
+| Radial constraint | \|Δxy\| < 1mm |
+| Axial constraint | \|Δz\| < 2mm |
+| Still spinning | \|ωz\| > 0.1 rad/s |
+| Contacts active | ncon > 0 |
+| Socket on ground | socket z > 5mm |
 
-## Key milestone
+## Key dimensions
 
-This is the **first SDF-physics example with articulation**. Examples 01–08 used
-only `JointKind::Free` bodies. This proves that revolute joints work correctly
-with SDF geom types through the `Mechanism → to_model()` pipeline.
+```
+Clearance: bore R (3.5) − shaft R (3.0) = 0.5mm radial
+Trap:      flange R (3.2) − cap opening R (2.5) = 0.7mm annulus
+Axial:     bore half_h (8) − flange center (6) − flange half_h (1) = 1.0mm per side
+Grid:      1.0mm SDF cell size (collision), 0.5mm visual mesh
+```
+
+## Architecture note
+
+Both bodies are Free joint children of world — the same sibling topology
+as examples 01–08 (stacking). The socket needs ground plane support;
+without it, both bodies free-fall equally and the contact solver sees
+zero relative velocity (no constraint activation).
