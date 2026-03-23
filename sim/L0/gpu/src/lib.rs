@@ -7,7 +7,9 @@
 //! See `sim/docs/GPU_SDF_COLLISION_SPEC.md` for the full design.
 
 pub mod buffers;
+pub mod collision;
 pub mod context;
 
 pub use buffers::{GpuSdfGrid, GridMeta};
+pub use collision::GpuTracer;
 pub use context::{GpuContext, GpuError};

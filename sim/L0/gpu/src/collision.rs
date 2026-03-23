@@ -1,0 +1,527 @@
+//! GPU-accelerated SDF-SDF collision detection.
+//!
+//! Dispatches the `trace_surface.wgsl` compute shader to find contacts
+//! between two SDF grids, replacing the CPU triple-nested loop in
+//! `trace_surface_into_other()`.
+
+#![allow(
+    clippy::cast_possible_truncation, // f64→f32 intentional
+    clippy::cast_precision_loss
+)]
+
+use bytemuck::{Pod, Zeroable};
+use nalgebra::{Isometry3, Point3, Translation3, Vector3};
+use sim_core::sdf::SdfContact;
+use sim_types::Pose;
+use wgpu::util::DeviceExt;
+
+use crate::buffers::GpuSdfGrid;
+use crate::context::GpuContext;
+
+// ── GPU-side types (must match WGSL layout exactly) ────────────────────
+
+/// Trace dispatch parameters matching the WGSL `TraceParams` struct.
+///
+/// 208 bytes: 3 × mat4x4 (192) + 4 × f32/u32 (16).
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct TraceParams {
+    /// Source body pose: local → world (column-major mat4x4).
+    pub src_pose: [f32; 16],
+    /// Destination body pose: local → world (for normal rotation).
+    pub dst_pose: [f32; 16],
+    /// Inverse destination pose: world → local.
+    pub dst_pose_inv: [f32; 16],
+    /// Surface band filter: `src_cell_size * 2.0`.
+    pub surface_threshold: f32,
+    /// Contact detection range.
+    pub contact_margin: f32,
+    /// Normal convention: 0 = A→B (negate), 1 = B→A (keep).
+    pub flip_normal: u32,
+    /// Padding for 16-byte alignment.
+    #[allow(clippy::pub_underscore_fields)]
+    pub _pad: f32,
+}
+
+/// Contact output matching the WGSL `GpuContact` struct.
+///
+/// 32 bytes.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct GpuContact {
+    /// World-space contact position.
+    pub point: [f32; 3],
+    /// Penetration depth (>= 0).
+    pub penetration: f32,
+    /// World-space surface normal.
+    pub normal: [f32; 3],
+    /// Padding.
+    #[allow(clippy::pub_underscore_fields)]
+    pub _pad: f32,
+}
+
+/// Maximum contacts per dispatch (sized for worst case: `grid_size`^3).
+const MAX_CONTACTS: u32 = 32768;
+
+// ── Pose conversion ────────────────────────────────────────────────────
+
+/// Convert a `Pose` to a column-major 4×4 f32 matrix for WGSL.
+///
+/// Uses `nalgebra::Isometry3::to_homogeneous()` which produces column-major
+/// layout matching WGSL `mat4x4<f32>`.
+#[must_use]
+pub fn pose_to_mat4(pose: &Pose) -> [f32; 16] {
+    let iso = Isometry3::from_parts(Translation3::from(pose.position.coords), pose.rotation);
+    let mat = iso.to_homogeneous();
+    let mut result = [0.0f32; 16];
+    for (i, &v) in mat.as_slice().iter().enumerate() {
+        result[i] = v as f32;
+    }
+    result
+}
+
+/// Convert a `Pose` to its inverse as a column-major 4×4 f32 matrix.
+#[must_use]
+pub fn pose_to_mat4_inv(pose: &Pose) -> [f32; 16] {
+    let iso = Isometry3::from_parts(Translation3::from(pose.position.coords), pose.rotation);
+    let inv = iso.inverse();
+    let mat = inv.to_homogeneous();
+    let mut result = [0.0f32; 16];
+    for (i, &v) in mat.as_slice().iter().enumerate() {
+        result[i] = v as f32;
+    }
+    result
+}
+
+// ── GPU tracer ─────────────────────────────────────────────────────────
+
+/// GPU compute pipeline for SDF-SDF surface tracing.
+pub struct GpuTracer {
+    pipeline: wgpu::ComputePipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl GpuTracer {
+    /// Create the compute pipeline from the embedded WGSL shader.
+    #[must_use]
+    pub fn new(ctx: &GpuContext) -> Self {
+        let shader_source = include_str!("shaders/trace_surface.wgsl");
+        let shader_module = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("trace_surface"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
+
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("trace_surface_layout"),
+                    entries: &[
+                        // @binding(0): src_grid
+                        bgl_entry(0, wgpu::BufferBindingType::Storage { read_only: true }),
+                        // @binding(1): dst_grid
+                        bgl_entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
+                        // @binding(2): src_meta
+                        bgl_entry(2, wgpu::BufferBindingType::Uniform),
+                        // @binding(3): dst_meta
+                        bgl_entry(3, wgpu::BufferBindingType::Uniform),
+                        // @binding(4): params
+                        bgl_entry(4, wgpu::BufferBindingType::Uniform),
+                        // @binding(5): contacts
+                        bgl_entry(5, wgpu::BufferBindingType::Storage { read_only: false }),
+                        // @binding(6): contact_count
+                        bgl_entry(6, wgpu::BufferBindingType::Storage { read_only: false }),
+                    ],
+                });
+
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("trace_surface_pipeline_layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let pipeline = ctx
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("trace_surface_pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader_module,
+                entry_point: Some("trace_surface"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+        }
+    }
+
+    /// Trace contacts between two SDF grids (symmetric: A→B and B→A).
+    ///
+    /// Returns deduplicated contacts in world space.
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // sequential GPU dispatch pipeline
+    pub fn trace_contacts(
+        &self,
+        ctx: &GpuContext,
+        src_grid: &GpuSdfGrid,
+        src_pose: &Pose,
+        dst_grid: &GpuSdfGrid,
+        dst_pose: &Pose,
+        margin: f64,
+    ) -> Vec<SdfContact> {
+        let contact_buf_size = (MAX_CONTACTS as usize * std::mem::size_of::<GpuContact>()) as u64;
+        let count_buf_size = 4u64; // atomic<u32>
+
+        // Create output buffers (shared across both dispatches)
+        let contact_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("contacts"),
+            size: contact_buf_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let count_buffer = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("contact_count"),
+                contents: &0u32.to_le_bytes(),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+            });
+
+        // Common params
+        let src_mat = pose_to_mat4(src_pose);
+        let dst_mat = pose_to_mat4(dst_pose);
+        let src_mat_inv = pose_to_mat4_inv(src_pose);
+        let dst_mat_inv = pose_to_mat4_inv(dst_pose);
+        let margin_f32 = margin as f32;
+
+        // ── Dispatch 1: trace A→B (flip_normal = 0) ────────────────────
+        let params_ab = TraceParams {
+            src_pose: src_mat,
+            dst_pose: dst_mat,
+            dst_pose_inv: dst_mat_inv,
+            surface_threshold: src_grid.meta.cell_size * 2.0,
+            contact_margin: margin_f32,
+            flip_normal: 0,
+            _pad: 0.0,
+        };
+
+        let params_ab_buf = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("params_ab"),
+                contents: bytemuck::bytes_of(&params_ab),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        let bind_group_ab = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("trace_ab"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                bg_entry(0, &src_grid.values_buffer),
+                bg_entry(1, &dst_grid.values_buffer),
+                bg_entry(2, &src_grid.meta_buffer),
+                bg_entry(3, &dst_grid.meta_buffer),
+                bg_entry(4, &params_ab_buf),
+                bg_entry(5, &contact_buffer),
+                bg_entry(6, &count_buffer),
+            ],
+        });
+
+        // ── Dispatch 2: trace B→A (flip_normal = 1) ────────────────────
+        let params_ba = TraceParams {
+            src_pose: dst_mat,
+            dst_pose: src_mat,
+            dst_pose_inv: src_mat_inv,
+            surface_threshold: dst_grid.meta.cell_size * 2.0,
+            contact_margin: margin_f32,
+            flip_normal: 1,
+            _pad: 0.0,
+        };
+
+        let params_ba_buf = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("params_ba"),
+                contents: bytemuck::bytes_of(&params_ba),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        let bind_group_ba = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("trace_ba"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                bg_entry(0, &dst_grid.values_buffer), // swapped: dst is now src
+                bg_entry(1, &src_grid.values_buffer), // swapped: src is now dst
+                bg_entry(2, &dst_grid.meta_buffer),
+                bg_entry(3, &src_grid.meta_buffer),
+                bg_entry(4, &params_ba_buf),
+                bg_entry(5, &contact_buffer),
+                bg_entry(6, &count_buffer),
+            ],
+        });
+
+        // ── Encode both dispatches ─────────────────────────────────────
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("trace_surface"),
+            });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("trace_ab"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group_ab, &[]);
+            pass.dispatch_workgroups(
+                src_grid.meta.width.div_ceil(8),
+                src_grid.meta.height.div_ceil(8),
+                src_grid.meta.depth.div_ceil(4),
+            );
+        }
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("trace_ba"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group_ba, &[]);
+            pass.dispatch_workgroups(
+                dst_grid.meta.width.div_ceil(8),
+                dst_grid.meta.height.div_ceil(8),
+                dst_grid.meta.depth.div_ceil(4),
+            );
+        }
+
+        // ── Readback ───────────────────────────────────────────────────
+        let count_staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("count_staging"),
+            size: count_buf_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(&count_buffer, 0, &count_staging, 0, count_buf_size);
+
+        let contact_staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("contact_staging"),
+            size: contact_buf_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(&contact_buffer, 0, &contact_staging, 0, contact_buf_size);
+
+        ctx.queue.submit([encoder.finish()]);
+
+        // Read contact count
+        let count_slice = count_staging.slice(..);
+        count_slice.map_async(wgpu::MapMode::Read, |_| {});
+        poll_wait(ctx);
+        let count = {
+            let data = count_slice.get_mapped_range();
+            u32::from_le_bytes([data[0], data[1], data[2], data[3]])
+        };
+        drop(count_staging);
+
+        let count = count.min(MAX_CONTACTS) as usize;
+        if count == 0 {
+            return vec![];
+        }
+
+        // Read contacts
+        let contact_slice = contact_staging.slice(..);
+        contact_slice.map_async(wgpu::MapMode::Read, |_| {});
+        poll_wait(ctx);
+        let gpu_contacts: Vec<GpuContact> = {
+            let data = contact_slice.get_mapped_range();
+            let all: &[GpuContact] = bytemuck::cast_slice(&data);
+            all[..count].to_vec()
+        };
+
+        // Promote f32 → f64 and build SdfContact
+        let cell_size = f64::from(src_grid.meta.cell_size).min(f64::from(dst_grid.meta.cell_size));
+        let mut contacts: Vec<SdfContact> = gpu_contacts
+            .iter()
+            .map(|c| SdfContact {
+                point: Point3::new(
+                    f64::from(c.point[0]),
+                    f64::from(c.point[1]),
+                    f64::from(c.point[2]),
+                ),
+                normal: Vector3::new(
+                    f64::from(c.normal[0]),
+                    f64::from(c.normal[1]),
+                    f64::from(c.normal[2]),
+                ),
+                penetration: f64::from(c.penetration),
+            })
+            .collect();
+
+        dedup_contacts(&mut contacts, cell_size);
+        contacts
+    }
+}
+
+// ── Deduplication ──────────────────────────────────────────────────────
+
+/// Deduplicate contacts by spatial proximity.
+///
+/// Sorts by penetration depth (deepest first), then greedily keeps
+/// contacts that are at least `cell_size * 0.5` apart.
+fn dedup_contacts(contacts: &mut Vec<SdfContact>, cell_size: f64) {
+    let min_dist_sq = (cell_size * 0.5) * (cell_size * 0.5);
+
+    contacts.sort_by(|a, b| {
+        b.penetration
+            .partial_cmp(&a.penetration)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut kept = Vec::with_capacity(contacts.len());
+    for c in contacts.drain(..) {
+        let dominated = kept
+            .iter()
+            .any(|k: &SdfContact| (k.point - c.point).norm_squared() < min_dist_sq);
+        if !dominated {
+            kept.push(c);
+        }
+    }
+    *contacts = kept;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────
+
+fn poll_wait(ctx: &GpuContext) {
+    match ctx.device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(std::time::Duration::from_secs(5)),
+    }) {
+        Ok(_) => {}
+        Err(e) => log::warn!("GPU poll timeout: {e:?}"),
+    }
+}
+
+const fn bgl_entry(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+fn bg_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+    wgpu::BindGroupEntry {
+        binding,
+        resource: buffer.as_entire_binding(),
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::cast_possible_truncation,
+    clippy::unwrap_used
+)]
+mod tests {
+    use super::*;
+    use crate::{GpuContext, GpuSdfGrid};
+    use cf_geometry::SdfGrid;
+    use nalgebra::Point3;
+
+    #[test]
+    fn trace_contacts_match_cpu() {
+        let ctx = GpuContext::new().expect("need GPU");
+
+        // Two overlapping spheres (radius 5, centers 8 apart → 2mm overlap)
+        let sdf_a = SdfGrid::sphere(Point3::origin(), 5.0, 16, 1.0);
+        let sdf_b = SdfGrid::sphere(Point3::origin(), 5.0, 16, 1.0);
+        let pose_a = Pose::identity();
+        let pose_b = Pose::from_position(Point3::new(8.0, 0.0, 0.0));
+        let margin = 1.0;
+
+        // GPU path
+        let gpu_grid_a = GpuSdfGrid::upload(&ctx, &sdf_a);
+        let gpu_grid_b = GpuSdfGrid::upload(&ctx, &sdf_b);
+        let tracer = GpuTracer::new(&ctx);
+        let gpu_contacts =
+            tracer.trace_contacts(&ctx, &gpu_grid_a, &pose_a, &gpu_grid_b, &pose_b, margin);
+
+        // CPU path
+        let cpu_contacts = sim_core::sdf::sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, margin);
+
+        eprintln!("  CPU contacts: {}", cpu_contacts.len());
+        eprintln!("  GPU contacts: {}", gpu_contacts.len());
+        for (i, c) in gpu_contacts.iter().enumerate() {
+            eprintln!(
+                "    GPU[{i}] pos=({:.2},{:.2},{:.2}) pen={:.4} n=({:.2},{:.2},{:.2})",
+                c.point.x, c.point.y, c.point.z, c.penetration, c.normal.x, c.normal.y, c.normal.z
+            );
+        }
+        for (i, c) in cpu_contacts.iter().enumerate() {
+            eprintln!(
+                "    CPU[{i}] pos=({:.2},{:.2},{:.2}) pen={:.4} n=({:.2},{:.2},{:.2})",
+                c.point.x, c.point.y, c.point.z, c.penetration, c.normal.x, c.normal.y, c.normal.z
+            );
+        }
+
+        // Both should find contacts
+        assert!(!cpu_contacts.is_empty(), "CPU should find contacts");
+        assert!(!gpu_contacts.is_empty(), "GPU should find contacts");
+
+        // Most CPU contacts should have a GPU contact within 1.5mm (1.5× cell size).
+        // f32 precision in surface reconstruction can shift contacts by ~1 cell.
+        // Require ≥90% match rate (boundary contacts may differ).
+        let mut matched = 0usize;
+        for cpu_c in &cpu_contacts {
+            let nearest = gpu_contacts
+                .iter()
+                .map(|g| (g.point - cpu_c.point).norm())
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(f64::MAX);
+            if nearest < 1.5 {
+                matched += 1;
+            }
+        }
+        let match_rate = matched as f64 / cpu_contacts.len() as f64;
+        eprintln!(
+            "  Match rate: {matched}/{} = {:.1}%",
+            cpu_contacts.len(),
+            match_rate * 100.0
+        );
+        assert!(
+            match_rate > 0.9,
+            "GPU should match ≥90% of CPU contacts (got {:.1}%)",
+            match_rate * 100.0,
+        );
+
+        // Net force direction should agree (both should push B away from A → +X)
+        let cpu_net: Vector3<f64> = cpu_contacts.iter().map(|c| c.normal * c.penetration).sum();
+        let gpu_net: Vector3<f64> = gpu_contacts.iter().map(|c| c.normal * c.penetration).sum();
+        assert!(
+            cpu_net.x > 0.0,
+            "CPU net force should be +X, got {:.4}",
+            cpu_net.x
+        );
+        assert!(
+            gpu_net.x > 0.0,
+            "GPU net force should be +X, got {:.4}",
+            gpu_net.x
+        );
+    }
+}
