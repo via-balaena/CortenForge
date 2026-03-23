@@ -596,7 +596,13 @@ mod tests {
 
     #[test]
     fn trace_contacts_match_cpu() {
-        let ctx = GpuContext::new().expect("need GPU");
+        let ctx = match GpuContext::new() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("  Skipping (no GPU): {e}");
+                return;
+            }
+        };
 
         // Two overlapping spheres (radius 5, centers 8 apart → 2mm overlap)
         let sdf_a = SdfGrid::sphere(Point3::origin(), 5.0, 16, 1.0);
@@ -683,7 +689,13 @@ mod tests {
 
     #[test]
     fn hinge_contacts_match_cpu() {
-        let ctx = GpuContext::new().expect("need GPU");
+        let ctx = match GpuContext::new() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("  Skipping (no GPU): {e}");
+                return;
+            }
+        };
 
         // Concave socket: outer cylinder - bore - cap openings
         // Same dimensions as Phase 3d test in model_builder.rs

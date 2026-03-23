@@ -137,7 +137,13 @@ mod tests {
 
     #[test]
     fn grid_upload_roundtrip() {
-        let ctx = GpuContext::new().expect("need GPU");
+        let ctx = match GpuContext::new() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("  Skipping (no GPU): {e}");
+                return;
+            }
+        };
         let grid = SdfGrid::sphere(Point3::origin(), 5.0, 16, 1.0);
 
         let gpu_grid = GpuSdfGrid::upload(&ctx, &grid);

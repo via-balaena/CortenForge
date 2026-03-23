@@ -113,7 +113,7 @@ pub trait PhysicsShape: Send + Sync + std::fmt::Debug {
 ///    with adaptive spatial pruning.
 ///
 /// 3. **Tier 3 — Grid fallback**: grid-based multi-contact surface tracing
-///    via [`sdf_sdf_contact_raw`]. Used for MJCF shapes without
+///    via `sdf_sdf_contact_raw`. Used for MJCF shapes without
 ///    `evaluate_interval`.
 pub fn compute_shape_contact(
     a: &dyn PhysicsShape,
