@@ -1,4 +1,4 @@
-//! SDF Physics 11 — Hinge Stop (Parent-Child Collision)
+//! SDF Physics 13 — Hinge Stop (Parent-Child Collision)
 //!
 //! A hinged arm swings and hits the parent body's SDF geometry. This
 //! requires `DISABLE_FILTERPARENT` so that parent-child geom pairs can
@@ -17,7 +17,7 @@
 //! New concept: parent-child SDF-SDF contact (`DISABLE_FILTERPARENT`)
 //! Depends on: 10-hinge-wall
 //!
-//! Run with: `cargo run -p example-sdf-11-hinge-stop --release`
+//! Run with: `cargo run -p example-sdf-13-hinge-stop --release`
 
 fn main() {
     eprintln!("TODO: not yet implemented — see examples/EXAMPLES.md for roadmap");

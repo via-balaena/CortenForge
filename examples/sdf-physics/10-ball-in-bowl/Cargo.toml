@@ -1,5 +1,5 @@
 [package]
-name = "example-sdf-13-concave-stop"
+name = "example-sdf-10-ball-in-bowl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

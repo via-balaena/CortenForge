@@ -32,7 +32,7 @@ members = [
     "examples/fundamentals/pendulum-sim",
     "examples/fundamentals/finger-design",
 
-    # Examples — sdf-physics (SDF === collision proof ladder, 14 baby steps)
+    # Examples — sdf-physics (SDF === collision proof ladder, 16 baby steps)
     "examples/sdf-physics/01-sdf-grid",
     "examples/sdf-physics/02-thin-grid",
     "examples/sdf-physics/03-freefall",
@@ -41,12 +41,14 @@ members = [
     "examples/sdf-physics/06-slide",
     "examples/sdf-physics/07-pair",
     "examples/sdf-physics/08-stack",
-    "examples/sdf-physics/09-hinge-free",
-    "examples/sdf-physics/10-hinge-wall",
-    "examples/sdf-physics/11-hinge-stop",
-    "examples/sdf-physics/12-damped-hinge",
-    "examples/sdf-physics/13-concave-stop",
-    "examples/sdf-physics/14-socket",
+    "examples/sdf-physics/09-cube-in-box",
+    "examples/sdf-physics/10-ball-in-bowl",
+    "examples/sdf-physics/11-hinge-free",
+    "examples/sdf-physics/12-hinge-wall",
+    "examples/sdf-physics/13-hinge-stop",
+    "examples/sdf-physics/14-damped-hinge",
+    "examples/sdf-physics/15-concave-stop",
+    "examples/sdf-physics/16-socket",
 
     # Examples — integration (cross-domain pipelines)
     "examples/integration/design-to-sim",

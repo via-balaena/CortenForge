@@ -1,4 +1,4 @@
-//! SDF Physics 09 — Geometry-Driven Hinge (Pendulum)
+//! SDF Physics 11 — Geometry-Driven Hinge (Pendulum)
 //!
 //! A flanged pin inside a capped bearing block. SDF collision is the ONLY
 //! constraint — no `JointKind::Revolute`. The geometry could be 3D printed
@@ -16,7 +16,7 @@
 //! - Cap + flange → axial (Y translation)
 //! - Bore axis rotation (Y) → FREE (the 1 unconstrained DOF)
 //!
-//! Run with: `cargo run -p example-sdf-09-hinge-free --release`
+//! Run with: `cargo run -p example-sdf-11-hinge-free --release`
 
 #![allow(
     clippy::needless_pass_by_value,
@@ -120,7 +120,7 @@ fn main() {
     let pin_q = 7;
 
     eprintln!();
-    eprintln!("  Geometry-Driven Hinge — SDF Physics 09");
+    eprintln!("  Geometry-Driven Hinge — SDF Physics 11");
     eprintln!("  ────────────────────────────────────────");
     eprintln!("  Bodies: {}, Geoms: {}", model.nbody, model.ngeom);
     eprintln!("  Timestep: {:.4} s", model.timestep);
@@ -143,7 +143,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "SDF Physics 09 — Geometry-Driven Hinge".into(),
+                title: "SDF Physics 11 — Geometry-Driven Hinge".into(),
                 ..default()
             }),
             ..default()

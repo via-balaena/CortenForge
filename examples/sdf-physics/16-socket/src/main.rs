@@ -1,4 +1,4 @@
-//! SDF Physics 14 — Socket (Full Condyle Articulation)
+//! SDF Physics 16 — Socket (Full Condyle Articulation)
 //!
 //! Condyle-in-socket: a convex knob rotates inside a concave housing. The
 //! socket walls physically constrain the range of motion — no joint limits
@@ -22,7 +22,7 @@
 //! Depends on: 13-concave-stop
 //! Blocked by: multi-contact `sdf_sdf_contact` (if step 13 reveals it's needed)
 //!
-//! Run with: `cargo run -p example-sdf-14-socket --release`
+//! Run with: `cargo run -p example-sdf-16-socket --release`
 
 fn main() {
     eprintln!("BLOCKED: needs multi-contact sdf_sdf_contact — see examples/EXAMPLES.md");

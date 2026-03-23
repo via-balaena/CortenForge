@@ -1,4 +1,4 @@
-//! SDF Physics 12 — Damped Hinge (Parameter Sensitivity)
+//! SDF Physics 14 — Damped Hinge (Parameter Sensitivity)
 //!
 //! Same geometry as step 11, run with three different damping/contact
 //! parameter sets. Proves we understand the tuning knobs before attempting
@@ -21,7 +21,7 @@
 //! New concept: damping + contact parameter tuning
 //! Depends on: 11-hinge-stop
 //!
-//! Run with: `cargo run -p example-sdf-12-damped-hinge --release`
+//! Run with: `cargo run -p example-sdf-14-damped-hinge --release`
 
 fn main() {
     eprintln!("TODO: not yet implemented — see examples/EXAMPLES.md for roadmap");

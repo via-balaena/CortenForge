@@ -1,5 +1,5 @@
 [package]
-name = "example-sdf-11-hinge-stop"
+name = "example-sdf-14-damped-hinge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

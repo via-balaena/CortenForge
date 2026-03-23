@@ -2594,7 +2594,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-09-hinge-free"
+name = "example-sdf-09-cube-in-box"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-10-ball-in-bowl"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-11-hinge-free"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2606,7 +2628,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-10-hinge-wall"
+name = "example-sdf-12-hinge-wall"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2617,7 +2639,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-11-hinge-stop"
+name = "example-sdf-13-hinge-stop"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2628,7 +2650,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-12-damped-hinge"
+name = "example-sdf-14-damped-hinge"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2639,7 +2661,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-13-concave-stop"
+name = "example-sdf-15-concave-stop"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2650,7 +2672,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-14-socket"
+name = "example-sdf-16-socket"
 version = "0.7.0"
 dependencies = [
  "bevy",

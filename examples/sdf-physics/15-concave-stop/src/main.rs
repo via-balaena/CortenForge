@@ -1,4 +1,4 @@
-//! SDF Physics 13 — Concave Stop (Half-Socket)
+//! SDF Physics 15 — Concave Stop (Half-Socket)
 //!
 //! A concave pocket on the parent body. The arm tip enters the curved pocket.
 //! This is a **designed failure point**: if single-contact `sdf_sdf_contact`
@@ -17,7 +17,7 @@
 //! New concept: concave parent-child SDF contact
 //! Depends on: 12-damped-hinge
 //!
-//! Run with: `cargo run -p example-sdf-13-concave-stop --release`
+//! Run with: `cargo run -p example-sdf-15-concave-stop --release`
 
 fn main() {
     eprintln!("TODO: not yet implemented — see examples/EXAMPLES.md for roadmap");

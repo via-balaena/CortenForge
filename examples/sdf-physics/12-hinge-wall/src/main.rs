@@ -1,4 +1,4 @@
-//! SDF Physics 10 — Hinge + Wall
+//! SDF Physics 12 — Hinge + Wall
 //!
 //! A hinged arm swings and hits a separate wall body. The wall is NOT the
 //! parent — it's an independent SDF body. This tests articulated contact
@@ -16,7 +16,7 @@
 //! New concept: articulated contact with external geometry
 //! Depends on: 09-hinge-free
 //!
-//! Run with: `cargo run -p example-sdf-10-hinge-wall --release`
+//! Run with: `cargo run -p example-sdf-12-hinge-wall --release`
 
 fn main() {
     eprintln!("TODO: not yet implemented — see examples/EXAMPLES.md for roadmap");
