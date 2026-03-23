@@ -2705,4 +2705,206 @@ mod tests {
         );
         assert!((gap - 10.0).abs() < 2.0, "gap should be ≈10, got {gap:.3}");
     }
+
+    // ── Phase 3d: Geometry-driven hinge simulation ───────────────────
+
+    /// Full simulation of a geometry-driven hinge: socket (concave) +
+    /// flanged pin (convex, `Free` joint). Both children of world. SDF
+    /// collision is the ONLY constraint — no `JointKind::Revolute`.
+    ///
+    /// Verifies that the solver + integrator + FK can handle concave SDF
+    /// multi-contact (1000+ contacts per step) and maintain the constraint.
+    #[test]
+    fn sdf_geometry_hinge_simulation() {
+        // ── Socket: tube with annular caps (concave) ─────────────────
+        // Bore R=3.5, outer R=5.5, half_h=8, cap opening R=2.5
+        let socket_solid = Solid::cylinder(5.5, 10.0) // outer cylinder
+            .subtract(Solid::cylinder(3.5, 8.0)) // bore
+            .subtract(Solid::cylinder(2.5, 11.0)); // cap openings
+
+        // Socket: very dense so it barely moves under contact forces
+        let mut mat_socket = Material::new("steel", 7800.0);
+        mat_socket.color = Some([0.3, 0.5, 1.0, 1.0]);
+
+        // ── Pin: shaft + flanges (convex union) ──────────────────────
+        // Shaft R=3.0, flange R=3.2, shaft half_h=6, flange half_h=1
+        // shaft_half_h=7.05 → flange center at z=±7.05, extends to z=±8.05.
+        // Cap face at z=±8.0. Flanges penetrate 0.05mm into caps at rest,
+        // providing real contact depth for the solver's impedance model.
+        // This is realistic: print-in-place parts have manufacturing contact.
+        let shaft = Solid::cylinder(3.0, 7.05);
+        let top_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, 7.05));
+        let bot_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, -7.05));
+        let pin_solid = shaft.union(top_flange).union(bot_flange);
+
+        let mut mat_pin = Material::new("PLA", 1250.0);
+        mat_pin.color = Some([1.0, 0.35, 0.3, 1.0]);
+
+        // ── Build mechanism: siblings, both children of world ────────
+        // Mechanism builder requires all parts to have joints (no orphans).
+        // Socket gets a Free joint at origin; heavy density keeps it still.
+        let mechanism = Mechanism::builder("hinge_test")
+            .part(Part::new("socket", socket_solid, mat_socket))
+            .part(Part::new("pin", pin_solid, mat_pin))
+            .joint(JointDef::new(
+                "socket_free",
+                "world",
+                "socket",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "pin_free",
+                "world",
+                "pin",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .build();
+
+        // 0.3mm cell_size for good resolution on 0.3mm clearance
+        let mut model = mechanism.to_model(0.3, 0.5);
+        // No ground plane — pure geometry constraint test
+
+        eprintln!();
+        eprintln!("  Phase 3d: Geometry-Driven Hinge Simulation");
+        eprintln!("  -------------------------------------------");
+        eprintln!("  Bodies: {}, Geoms: {}", model.nbody, model.ngeom);
+        eprintln!("  nq: {}, nv: {}", model.nq, model.nv);
+        eprintln!("  Timestep: {:.4} s", model.timestep);
+
+        let mut data = model.make_data();
+
+        // Two Free joints: socket qpos[0..7], pin qpos[7..14]
+        let pin_q = 7; // pin qpos start index
+
+        // ── Diagnostic: static contact check ─────────────────────────
+        // Place pin 1.5mm below center so flange overlaps cap, verify contacts.
+        data.qpos[pin_q + 2] = -1.5; // z = -1.5mm
+        data.forward(&model).expect("forward");
+
+        eprintln!();
+        eprintln!("  Phase 3d: Geometry-Driven Hinge Simulation");
+        eprintln!("  -------------------------------------------");
+        eprintln!("  Bodies: {}, Geoms: {}", model.nbody, model.ngeom);
+        eprintln!("  nq: {}, nv: {}", model.nq, model.nv);
+
+        // Count contacts with +Z and -Z normals to see cap contacts
+        let mut cap_contacts = 0;
+        let mut bore_contacts = 0;
+        for c in data.contacts.iter().take(data.ncon) {
+            if c.normal.z.abs() > 0.5 {
+                cap_contacts += 1;
+            } else {
+                bore_contacts += 1;
+            }
+        }
+        eprintln!(
+            "  Static check (z=-1.5): ncon={}, bore={bore_contacts}, cap={cap_contacts}",
+            data.ncon
+        );
+
+        // Print a few cap contact details
+        for (i, c) in data
+            .contacts
+            .iter()
+            .take(data.ncon)
+            .enumerate()
+            .filter(|(_, c)| c.normal.z.abs() > 0.5)
+            .take(5)
+        {
+            eprintln!(
+                "    cap[{i}] n=({:.3},{:.3},{:.3}) depth={:.4} pos=({:.2},{:.2},{:.2})",
+                c.normal.x, c.normal.y, c.normal.z, c.depth, c.pos.x, c.pos.y, c.pos.z
+            );
+        }
+
+        assert!(
+            cap_contacts > 0,
+            "FAIL: no cap contacts when pin is 1.5mm below center"
+        );
+        eprintln!("  PASS: cap contacts detected ({cap_contacts})");
+
+        // ── Dynamic simulation ───────────────────────────────────────
+        // Disable gravity to isolate the contact constraint.
+        model.gravity = Vector3::zeros();
+
+        // Reset pin to center, give it a downward velocity.
+        data.qpos[pin_q] = 0.0;
+        data.qpos[pin_q + 1] = 0.0;
+        data.qpos[pin_q + 2] = 0.0;
+        for v in data.qvel.iter_mut() {
+            *v = 0.0;
+        }
+        data.qvel[8] = -10.0; // pin vz = -10 mm/s (downward)
+        data.forward(&model).expect("forward");
+
+        let mut max_x = 0.0_f64;
+        let mut max_y = 0.0_f64;
+        let mut max_z_offset = 0.0_f64;
+        let mut any_nan = false;
+        let steps = 200;
+
+        for step in 0..steps {
+            data.step(&model).expect("step");
+
+            let px = data.qpos[pin_q];
+            let py = data.qpos[pin_q + 1];
+            let pz = data.qpos[pin_q + 2];
+
+            if !px.is_finite() || !py.is_finite() || !pz.is_finite() {
+                any_nan = true;
+                eprintln!("  NaN/Inf at step {step}!");
+                break;
+            }
+
+            max_x = max_x.max(px.abs());
+            max_y = max_y.max(py.abs());
+            max_z_offset = max_z_offset.max(pz.abs());
+
+            if step < 40 && step % 5 == 0 || step % 50 == 0 || step == steps - 1 {
+                // Count cap contacts at this step
+                let step_cap = data
+                    .contacts
+                    .iter()
+                    .take(data.ncon)
+                    .filter(|c| c.normal.z.abs() > 0.5)
+                    .count();
+                eprintln!(
+                    "  step {step:3}: z={pz:+.3} vz={:+.3} ncon={} cap={step_cap}",
+                    data.qvel[pin_q - 1 + 2], // pin qvel z
+                    data.ncon
+                );
+            }
+        }
+
+        eprintln!();
+        eprintln!("  === Phase 3d PASS/FAIL ===");
+
+        assert!(!any_nan, "FAIL: NaN/Inf in pin position");
+        eprintln!("  PASS: no NaN/Inf");
+
+        assert!(
+            max_x < 2.0,
+            "FAIL: pin escaped radially in X (max |x| = {max_x:.3})"
+        );
+        assert!(
+            max_y < 2.0,
+            "FAIL: pin escaped radially in Y (max |y| = {max_y:.3})"
+        );
+        eprintln!("  PASS: radial constraint (max |x|={max_x:.3}, max |y|={max_y:.3})");
+
+        assert!(
+            max_z_offset < 3.0,
+            "FAIL: pin escaped axially (max |z| = {max_z_offset:.3})"
+        );
+        eprintln!("  PASS: axial constraint (max |z|={max_z_offset:.3})");
+
+        assert!(data.ncon > 0, "FAIL: no contacts at final step");
+        eprintln!("  PASS: contacts active (ncon={})", data.ncon);
+
+        eprintln!();
+    }
 }
