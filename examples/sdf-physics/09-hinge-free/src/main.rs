@@ -99,6 +99,11 @@ fn main() {
     let mut model = mechanism.to_model(2.0, 0.5);
     model.add_ground_plane();
 
+    // Lower physics rate: GPU dispatch has per-step overhead (~200μs for
+    // buffer creation + submit + poll). At 500Hz default that's 100ms/sec
+    // just for synchronization. 200Hz keeps it interactive.
+    model.timestep = 0.005; // 200 Hz
+
     // Enable GPU-accelerated SDF collision (falls back to CPU if unavailable)
     match sim_gpu::enable_gpu_collision(&mut model) {
         Ok(()) => eprintln!("  GPU collision enabled"),

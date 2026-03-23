@@ -13,7 +13,6 @@ use bytemuck::{Pod, Zeroable};
 use nalgebra::{Isometry3, Point3, Translation3, Vector3};
 use sim_core::sdf::SdfContact;
 use sim_types::Pose;
-use wgpu::util::DeviceExt;
 
 use crate::buffers::GpuSdfGrid;
 use crate::context::GpuContext;
@@ -96,13 +95,24 @@ pub fn pose_to_mat4_inv(pose: &Pose) -> [f32; 16] {
 // ── GPU tracer ─────────────────────────────────────────────────────────
 
 /// GPU compute pipeline for SDF-SDF surface tracing.
+///
+/// Owns persistent GPU buffers for output contacts, atomic counter,
+/// staging readback, and per-dispatch params. Buffers are allocated
+/// once and reused each step to avoid per-step allocation overhead.
 pub struct GpuTracer {
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    // Persistent buffers (allocated once, reused each step)
+    contact_buffer: wgpu::Buffer,
+    count_buffer: wgpu::Buffer,
+    contact_staging: wgpu::Buffer,
+    count_staging: wgpu::Buffer,
+    params_ab_buf: wgpu::Buffer,
+    params_ba_buf: wgpu::Buffer,
 }
 
 impl GpuTracer {
-    /// Create the compute pipeline from the embedded WGSL shader.
+    /// Create the compute pipeline and persistent buffers.
     #[must_use]
     pub fn new(ctx: &GpuContext) -> Self {
         let shader_source = include_str!("shaders/trace_surface.wgsl");
@@ -118,19 +128,12 @@ impl GpuTracer {
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("trace_surface_layout"),
                     entries: &[
-                        // @binding(0): src_grid
                         bgl_entry(0, wgpu::BufferBindingType::Storage { read_only: true }),
-                        // @binding(1): dst_grid
                         bgl_entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
-                        // @binding(2): src_meta
                         bgl_entry(2, wgpu::BufferBindingType::Uniform),
-                        // @binding(3): dst_meta
                         bgl_entry(3, wgpu::BufferBindingType::Uniform),
-                        // @binding(4): params
                         bgl_entry(4, wgpu::BufferBindingType::Uniform),
-                        // @binding(5): contacts
                         bgl_entry(5, wgpu::BufferBindingType::Storage { read_only: false }),
-                        // @binding(6): contact_count
                         bgl_entry(6, wgpu::BufferBindingType::Storage { read_only: false }),
                     ],
                 });
@@ -154,17 +157,71 @@ impl GpuTracer {
                 cache: None,
             });
 
+        let contact_buf_size = (MAX_CONTACTS as usize * std::mem::size_of::<GpuContact>()) as u64;
+        let params_size = std::mem::size_of::<TraceParams>() as u64;
+
+        let contact_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("contacts"),
+            size: contact_buf_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let count_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("contact_count"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let contact_staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("contact_staging"),
+            size: contact_buf_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let count_staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("count_staging"),
+            size: 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let params_ab_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("params_ab"),
+            size: params_size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let params_ba_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("params_ba"),
+            size: params_size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             pipeline,
             bind_group_layout,
+            contact_buffer,
+            count_buffer,
+            contact_staging,
+            count_staging,
+            params_ab_buf,
+            params_ba_buf,
         }
     }
 
     /// Trace contacts between two SDF grids (symmetric: A→B and B→A).
     ///
-    /// Returns deduplicated contacts in world space.
+    /// Returns deduplicated contacts in world space. Uses persistent
+    /// buffers — no per-step GPU allocation.
     #[must_use]
-    #[allow(clippy::too_many_lines)] // sequential GPU dispatch pipeline
+    #[allow(clippy::too_many_lines)]
     pub fn trace_contacts(
         &self,
         ctx: &GpuContext,
@@ -174,35 +231,22 @@ impl GpuTracer {
         dst_pose: &Pose,
         margin: f64,
     ) -> Vec<SdfContact> {
-        let contact_buf_size = (MAX_CONTACTS as usize * std::mem::size_of::<GpuContact>()) as u64;
-        let count_buf_size = 4u64; // atomic<u32>
+        let t_total = std::time::Instant::now();
 
-        // Create output buffers (shared across both dispatches)
-        let contact_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("contacts"),
-            size: contact_buf_size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let contact_buf_size =
+            (MAX_CONTACTS as usize * std::mem::size_of::<GpuContact>()) as wgpu::BufferAddress;
 
-        let count_buffer = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("contact_count"),
-                contents: &0u32.to_le_bytes(),
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::COPY_DST,
-            });
+        // Reset atomic counter to 0
+        ctx.queue
+            .write_buffer(&self.count_buffer, 0, &0u32.to_le_bytes());
 
-        // Common params
+        // Write params for A→B dispatch
         let src_mat = pose_to_mat4(src_pose);
         let dst_mat = pose_to_mat4(dst_pose);
         let src_mat_inv = pose_to_mat4_inv(src_pose);
         let dst_mat_inv = pose_to_mat4_inv(dst_pose);
         let margin_f32 = margin as f32;
 
-        // ── Dispatch 1: trace A→B (flip_normal = 0) ────────────────────
         let params_ab = TraceParams {
             src_pose: src_mat,
             dst_pose: dst_mat,
@@ -212,30 +256,10 @@ impl GpuTracer {
             flip_normal: 0,
             _pad: 0.0,
         };
+        ctx.queue
+            .write_buffer(&self.params_ab_buf, 0, bytemuck::bytes_of(&params_ab));
 
-        let params_ab_buf = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("params_ab"),
-                contents: bytemuck::bytes_of(&params_ab),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-
-        let bind_group_ab = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("trace_ab"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                bg_entry(0, &src_grid.values_buffer),
-                bg_entry(1, &dst_grid.values_buffer),
-                bg_entry(2, &src_grid.meta_buffer),
-                bg_entry(3, &dst_grid.meta_buffer),
-                bg_entry(4, &params_ab_buf),
-                bg_entry(5, &contact_buffer),
-                bg_entry(6, &count_buffer),
-            ],
-        });
-
-        // ── Dispatch 2: trace B→A (flip_normal = 1) ────────────────────
+        // Write params for B→A dispatch
         let params_ba = TraceParams {
             src_pose: dst_mat,
             dst_pose: src_mat,
@@ -245,30 +269,41 @@ impl GpuTracer {
             flip_normal: 1,
             _pad: 0.0,
         };
+        ctx.queue
+            .write_buffer(&self.params_ba_buf, 0, bytemuck::bytes_of(&params_ba));
 
-        let params_ba_buf = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("params_ba"),
-                contents: bytemuck::bytes_of(&params_ba),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+        // Create bind groups (lightweight — just references to existing buffers)
+        let bind_group_ab = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("trace_ab"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                bg_entry(0, &src_grid.values_buffer),
+                bg_entry(1, &dst_grid.values_buffer),
+                bg_entry(2, &src_grid.meta_buffer),
+                bg_entry(3, &dst_grid.meta_buffer),
+                bg_entry(4, &self.params_ab_buf),
+                bg_entry(5, &self.contact_buffer),
+                bg_entry(6, &self.count_buffer),
+            ],
+        });
 
         let bind_group_ba = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("trace_ba"),
             layout: &self.bind_group_layout,
             entries: &[
-                bg_entry(0, &dst_grid.values_buffer), // swapped: dst is now src
-                bg_entry(1, &src_grid.values_buffer), // swapped: src is now dst
+                bg_entry(0, &dst_grid.values_buffer),
+                bg_entry(1, &src_grid.values_buffer),
                 bg_entry(2, &dst_grid.meta_buffer),
                 bg_entry(3, &src_grid.meta_buffer),
-                bg_entry(4, &params_ba_buf),
-                bg_entry(5, &contact_buffer),
-                bg_entry(6, &count_buffer),
+                bg_entry(4, &self.params_ba_buf),
+                bg_entry(5, &self.contact_buffer),
+                bg_entry(6, &self.count_buffer),
             ],
         });
 
-        // ── Encode both dispatches ─────────────────────────────────────
+        let t_setup = t_total.elapsed();
+
+        // ── Encode both dispatches + readback copy ─────────────────────
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -303,49 +338,43 @@ impl GpuTracer {
             );
         }
 
-        // ── Readback ───────────────────────────────────────────────────
-        let count_staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("count_staging"),
-            size: count_buf_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        encoder.copy_buffer_to_buffer(&count_buffer, 0, &count_staging, 0, count_buf_size);
-
-        let contact_staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("contact_staging"),
-            size: contact_buf_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        encoder.copy_buffer_to_buffer(&contact_buffer, 0, &contact_staging, 0, contact_buf_size);
+        encoder.copy_buffer_to_buffer(&self.count_buffer, 0, &self.count_staging, 0, 4);
+        encoder.copy_buffer_to_buffer(
+            &self.contact_buffer,
+            0,
+            &self.contact_staging,
+            0,
+            contact_buf_size,
+        );
 
         ctx.queue.submit([encoder.finish()]);
 
-        // Read contact count
-        let count_slice = count_staging.slice(..);
+        // ── Single readback (one poll for everything) ──────────────────
+        let count_slice = self.count_staging.slice(..);
+        let contact_slice = self.contact_staging.slice(..);
         count_slice.map_async(wgpu::MapMode::Read, |_| {});
+        contact_slice.map_async(wgpu::MapMode::Read, |_| {});
         poll_wait(ctx);
+
         let count = {
             let data = count_slice.get_mapped_range();
             u32::from_le_bytes([data[0], data[1], data[2], data[3]])
         };
-        drop(count_staging);
 
         let count = count.min(MAX_CONTACTS) as usize;
-        if count == 0 {
-            return vec![];
-        }
-
-        // Read contacts
-        let contact_slice = contact_staging.slice(..);
-        contact_slice.map_async(wgpu::MapMode::Read, |_| {});
-        poll_wait(ctx);
-        let gpu_contacts: Vec<GpuContact> = {
+        let gpu_contacts: Vec<GpuContact> = if count > 0 {
             let data = contact_slice.get_mapped_range();
             let all: &[GpuContact] = bytemuck::cast_slice(&data);
             all[..count].to_vec()
+        } else {
+            vec![]
         };
+
+        // Unmap staging buffers for next use
+        self.count_staging.unmap();
+        self.contact_staging.unmap();
+
+        let t_readback = t_total.elapsed().saturating_sub(t_setup);
 
         // Promote f32 → f64 and build SdfContact
         let cell_size = f64::from(src_grid.meta.cell_size).min(f64::from(dst_grid.meta.cell_size));
@@ -367,7 +396,27 @@ impl GpuTracer {
             .collect();
 
         dedup_contacts(&mut contacts, cell_size);
+        let t_dedup = t_total.elapsed().saturating_sub(t_setup + t_readback);
+        log_timing(t_setup, t_readback, t_dedup, contacts.len());
         contacts
+    }
+}
+
+/// Log GPU dispatch timing (sampled: every 200th call to avoid spam).
+fn log_timing(
+    setup: std::time::Duration,
+    readback: std::time::Duration,
+    dedup: std::time::Duration,
+    n_contacts: usize,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+    let n = CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if n % 200 == 0 {
+        let total = setup + readback + dedup;
+        eprintln!(
+            "  GPU trace #{n}: total={total:.1?}  setup={setup:.1?}  readback={readback:.1?}  dedup={dedup:.1?}  contacts={n_contacts}"
+        );
     }
 }
 
