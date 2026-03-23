@@ -266,6 +266,40 @@ pub fn triangle_mesh_from_indexed(mesh_data: &Arc<IndexedMesh>) -> Mesh {
     // Pre-convert all positions to Bevy coordinates
     let bevy_positions = vertex_positions_from_points(vertices);
 
+    // Fast path: SDF gradient normals — use directly, no crease-angle splitting.
+    // The SDF gradient gives analytically smooth normals on curved surfaces and
+    // naturally sharp normals at edges (gradient is well-defined on each face).
+    if let Some(ref sdf_normals) = mesh_data.normals {
+        let positions: Vec<[f32; 3]> = bevy_positions;
+        let normals: Vec<[f32; 3]> = sdf_normals
+            .iter()
+            .map(|n| {
+                let len = n.norm();
+                if len > 1e-10 {
+                    normal_to_bevy(&(n / len))
+                } else {
+                    [0.0, 1.0, 0.0]
+                }
+            })
+            .collect();
+        // Winding fix: Y↔Z swap reverses handedness → emit (v0, v2, v1)
+        let indices: Vec<u32> = triangles
+            .iter()
+            .flat_map(|face| [face[0], face[2], face[1]])
+            .collect();
+
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        mesh.insert_indices(bevy::mesh::Indices::U32(indices));
+        return mesh;
+    }
+
+    // Slow path: no SDF normals — compute from triangle geometry with crease-angle splitting.
+
     // Compute unit face normals in physics space
     let face_normals: Vec<nalgebra::Vector3<f64>> = triangles
         .iter()
@@ -357,6 +391,7 @@ mod tests {
                 nalgebra::Point3::new(0.0, 1.0, 0.0),
             ],
             faces: vec![[0, 1, 2]],
+            normals: None,
         };
 
         let mut world = bevy::prelude::World::new();
