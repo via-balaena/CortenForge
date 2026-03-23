@@ -37,8 +37,16 @@ const HALF: f64 = 5.0; // mm half-extents for each cube
 const GAP: f64 = 0.5; // mm gap between surfaces
 
 fn main() {
-    let material = Material::new("PLA", 1250.0);
     let half_extents = Vector3::new(HALF, HALF, HALF);
+
+    let mut mat_bot = Material::new("PLA", 1250.0);
+    mat_bot.color = Some([0.3, 0.5, 1.0, 1.0]); // blue
+
+    let mut mat_mid = Material::new("PLA", 1250.0);
+    mat_mid.color = Some([0.3, 0.85, 0.35, 1.0]); // green
+
+    let mut mat_top = Material::new("PLA", 1250.0);
+    mat_top.color = Some([1.0, 0.35, 0.3, 1.0]); // red
 
     // Stack positions: each cube center is at z = HALF + (2*HALF + GAP) * index + GAP
     // Bottom: just above ground  →  z = HALF + GAP = 5.5
@@ -49,17 +57,9 @@ fn main() {
     let z_top = 5.0f64.mul_add(HALF, 3.0 * GAP);
 
     let mechanism = Mechanism::builder("stack")
-        .part(Part::new(
-            "bottom",
-            Solid::cuboid(half_extents),
-            material.clone(),
-        ))
-        .part(Part::new(
-            "middle",
-            Solid::cuboid(half_extents),
-            material.clone(),
-        ))
-        .part(Part::new("top", Solid::cuboid(half_extents), material))
+        .part(Part::new("bottom", Solid::cuboid(half_extents), mat_bot))
+        .part(Part::new("middle", Solid::cuboid(half_extents), mat_mid))
+        .part(Part::new("top", Solid::cuboid(half_extents), mat_top))
         .joint(JointDef::new(
             "free_bottom",
             "world",

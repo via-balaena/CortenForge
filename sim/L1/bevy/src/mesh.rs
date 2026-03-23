@@ -246,6 +246,13 @@ pub fn convex_mesh_from_vertices(vertices: &[nalgebra::Point3<f64>]) -> Mesh {
 /// [`vertex_positions_from_points`] and [`normal_to_bevy`].
 #[must_use]
 pub fn triangle_mesh_from_indexed(mesh_data: &Arc<IndexedMesh>) -> Mesh {
+    // Crease-angle vertex splitting: sharp edges (> 30°) get split vertices
+    // with per-face normals, gentle edges share vertices with smooth averaged
+    // normals. This gives flat shading on cuboid faces and smooth shading on
+    // curved SDF surfaces. 30° matches the industry standard auto-smooth
+    // threshold (Blender, Maya).
+    const CREASE_COS: f64 = 0.866; // cos(30°)
+
     let vertices = &mesh_data.vertices;
     let triangles = &mesh_data.faces;
 
@@ -256,43 +263,68 @@ pub fn triangle_mesh_from_indexed(mesh_data: &Arc<IndexedMesh>) -> Mesh {
         );
     }
 
-    // Convert vertices from physics (Z-up) to Bevy (Y-up) coordinates
-    let positions = vertex_positions_from_points(vertices);
+    // Pre-convert all positions to Bevy coordinates
+    let bevy_positions = vertex_positions_from_points(vertices);
 
-    // Convert triangle indices (already u32 from cf-geometry)
-    let indices: Vec<u32> = triangles
+    // Compute unit face normals in physics space
+    let face_normals: Vec<nalgebra::Vector3<f64>> = triangles
         .iter()
-        .flat_map(|face| [face[0], face[1], face[2]])
+        .map(|face| {
+            let v0 = vertices[face[0] as usize];
+            let v1 = vertices[face[1] as usize];
+            let v2 = vertices[face[2] as usize];
+            let n = (v1 - v0).cross(&(v2 - v0));
+            let len = n.norm();
+            if len > 1e-10 {
+                n / len
+            } else {
+                nalgebra::Vector3::z()
+            }
+        })
         .collect();
 
-    // Compute normals per vertex (average of adjacent face normals) in physics space,
-    // then convert to Bevy space
-    let mut physics_normals = vec![nalgebra::Vector3::zeros(); vertices.len()];
-    for face in triangles {
-        let v0 = vertices[face[0] as usize];
-        let v1 = vertices[face[1] as usize];
-        let v2 = vertices[face[2] as usize];
+    // For each original vertex, track output splits: (output_index, representative_normal).
+    // A face joins an existing split if its normal is within the crease angle of the
+    // representative (first face that created the split). Otherwise a new split is created.
+    //
+    // Winding fix: the Y↔Z coordinate swap (Z-up → Y-up) reverses handedness,
+    // flipping triangle winding. We emit vertices as (v0, v2, v1) instead of
+    // (v0, v1, v2) to restore correct front-face orientation in Bevy.
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normal_sums: Vec<nalgebra::Vector3<f64>> = Vec::new();
+    let mut indices: Vec<u32> = Vec::with_capacity(triangles.len() * 3);
+    let mut splits: Vec<Vec<(u32, nalgebra::Vector3<f64>)>> = vec![Vec::new(); vertices.len()];
 
-        let e1 = v1 - v0;
-        let e2 = v2 - v0;
-        let face_normal = e1.cross(&e2);
+    for (fi, face) in triangles.iter().enumerate() {
+        let fn_ = face_normals[fi];
+        for &vi in &[face[0], face[2], face[1]] {
+            let vi_usize = vi as usize;
+            let found = splits[vi_usize]
+                .iter()
+                .find(|(_, rep)| fn_.dot(rep) >= CREASE_COS)
+                .map(|&(idx, _)| idx);
 
-        // Add face normal to each vertex's accumulated normal (in physics space)
-        for &idx in &[face[0] as usize, face[1] as usize, face[2] as usize] {
-            physics_normals[idx] += face_normal;
+            if let Some(out_idx) = found {
+                normal_sums[out_idx as usize] += fn_;
+                indices.push(out_idx);
+            } else {
+                let out_idx = positions.len() as u32;
+                positions.push(bevy_positions[vi_usize]);
+                normal_sums.push(fn_);
+                splits[vi_usize].push((out_idx, fn_));
+                indices.push(out_idx);
+            }
         }
     }
 
-    // Normalize and convert to Bevy coordinates
-    let normals: Vec<[f32; 3]> = physics_normals
+    // Normalize accumulated normals and convert to Bevy coordinates
+    let normals: Vec<[f32; 3]> = normal_sums
         .iter()
         .map(|n| {
             let len = n.norm();
             if len > 1e-6 {
-                let normalized = n / len;
-                normal_to_bevy(&normalized)
+                normal_to_bevy(&(n / len))
             } else {
-                // Default to up (Y-up in Bevy)
                 [0.0, 1.0, 0.0]
             }
         })
