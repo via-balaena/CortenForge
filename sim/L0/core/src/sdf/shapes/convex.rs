@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use cf_geometry::{Aabb, Bounded};
 use nalgebra::{Point3, Vector3};
 
 use crate::sdf::SdfGrid;
@@ -26,6 +27,18 @@ impl ShapeConvex {
 }
 
 impl PhysicsShape for ShapeConvex {
+    fn distance(&self, local_point: &Point3<f64>) -> Option<f64> {
+        self.grid.distance(*local_point)
+    }
+
+    fn gradient(&self, local_point: &Point3<f64>) -> Option<Vector3<f64>> {
+        self.grid.gradient(*local_point)
+    }
+
+    fn bounds(&self) -> Aabb {
+        self.grid.aabb()
+    }
+
     fn effective_radius(&self, local_dir: &Vector3<f64>) -> Option<f64> {
         // Sphere-trace from the SDF origin along the given direction to find
         // where the SDF value crosses zero — the effective radius along this

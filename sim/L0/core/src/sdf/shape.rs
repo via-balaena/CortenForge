@@ -1,30 +1,61 @@
-//! PhysicsShape trait — shape-specific contact metadata for SDF-backed geoms.
+//! PhysicsShape trait — analytical implicit surface interface for SDF-backed geoms.
 //!
-//! Each SDF geom in the Model carries a `PhysicsShape` implementation that
-//! provides shape-specific effective radius computation. The SDF grid handles
-//! broadphase detection and surface tracing; the PhysicsShape provides the
-//! analytical depth/normal/contact-point computation that the solver needs.
+//! Each SDF geom in the Model carries a `PhysicsShape` implementation.
+//! The trait provides:
+//!
+//! - **Required methods** (`distance`, `gradient`, `bounds`, `effective_radius`,
+//!   `sdf_grid`): every shape implements these. Grid-backed shapes delegate to
+//!   `SdfGrid`; analytical shapes delegate to the CSG tree.
+//!
+//! - **Optional method** (`evaluate_interval`): conservative field bounds over
+//!   a region, enabling octree-based contact detection. Only cf-design shapes
+//!   backed by a `Solid` provide this.
 //!
 //! Two free-function dispatchers solve double dispatch:
 //!
 //! - [`compute_shape_contact`] — SDF-SDF contacts (analytical or grid fallback)
 //! - [`compute_shape_plane_contact`] — SDF-Plane contacts (analytical or grid fallback)
 
-use nalgebra::Vector3;
+use cf_geometry::Aabb;
+use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
 use super::operations::{sdf_sdf_contact_raw, separation_direction, stabilize_direction};
 use super::primitives::sdf_plane_contact;
 use super::{SdfContact, SdfGrid};
 
-/// Physics metadata for an SDF-backed collision shape.
+/// Implicit surface interface for an SDF-backed collision shape.
 ///
-/// Each SDF geom in the Model carries a PhysicsShape implementation
-/// that provides shape-specific contact computation. The SDF grid
-/// handles broadphase detection; the PhysicsShape handles the
-/// analytical depth/normal/contact-point computation that the solver
-/// needs.
+/// The collision pipeline calls `distance()` and `gradient()` for all
+/// point queries — these are the primary evaluation interface. The grid
+/// (`sdf_grid()`) is used by GPU compute shaders, SDF-vs-primitive
+/// contacts, and flex vertex collision.
+///
+/// Shapes that provide `evaluate_interval()` enable octree-based contact
+/// detection (Tier 2), which replaces the O(N³) grid scan with adaptive
+/// spatial pruning.
 pub trait PhysicsShape: Send + Sync + std::fmt::Debug {
+    // === REQUIRED: every shape provides these ===
+
+    /// Signed distance at a local-frame point.
+    ///
+    /// Negative inside, positive outside, zero on surface.
+    /// Grid-backed shapes delegate to `SdfGrid::distance()`.
+    /// Analytical shapes delegate to `Solid::evaluate()`.
+    fn distance(&self, local_point: &Point3<f64>) -> Option<f64>;
+
+    /// Outward unit normal at a local-frame point.
+    ///
+    /// Grid-backed shapes delegate to `SdfGrid::gradient()`.
+    /// Analytical shapes delegate to normalized `Solid::gradient()`.
+    fn gradient(&self, local_point: &Point3<f64>) -> Option<Vector3<f64>>;
+
+    /// Axis-aligned bounding box in local frame.
+    ///
+    /// Used for broadphase collision (overlap AABB computation) and
+    /// as the octree root when both shapes support `evaluate_interval`.
+    fn bounds(&self) -> Aabb;
+
     /// Distance from the shape center to the surface along a
     /// local-frame direction.
     ///
@@ -33,14 +64,30 @@ pub trait PhysicsShape: Send + Sync + std::fmt::Debug {
     /// uses this for analytical depth: `r_a + r_b - center_dist`.
     ///
     /// Returns `None` for non-convex shapes (socket, torus, hollow
-    /// body) where the center may be outside the surface. The
-    /// pipeline falls back to grid-based multi-contact surface
-    /// tracing.
+    /// body) where the center may be outside the surface.
     fn effective_radius(&self, local_dir: &Vector3<f64>) -> Option<f64>;
 
-    /// The underlying SDF grid for broadphase detection and surface
-    /// tracing fallback.
+    /// The underlying SDF grid.
+    ///
+    /// Used by GPU compute shaders, SDF-vs-primitive contacts
+    /// (primitives.rs), and flex vertex collision (flex_narrow.rs).
     fn sdf_grid(&self) -> &SdfGrid;
+
+    // === OPTIONAL: octree acceleration ===
+
+    /// Conservative (min, max) field bounds over a local-frame AABB.
+    ///
+    /// If `lo > 0`: shape is entirely outside this region.
+    /// If `hi < 0`: shape is entirely inside this region.
+    /// If `lo ≤ 0 ≤ hi`: shape surface may cross this region.
+    ///
+    /// Enables octree-based contact detection (Tier 2 in
+    /// `compute_shape_contact`). Returns `None` if interval evaluation
+    /// is unavailable (grid-only shapes), falling back to Tier 3
+    /// grid-based surface tracing.
+    fn evaluate_interval(&self, _local_aabb: &Aabb) -> Option<(f64, f64)> {
+        None
+    }
 }
 
 /// Compute contacts between two SDF-backed shapes.

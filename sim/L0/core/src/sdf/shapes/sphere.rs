@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use nalgebra::Vector3;
+use cf_geometry::Aabb;
+use nalgebra::{Point3, Vector3};
 
 use crate::sdf::SdfGrid;
 use crate::sdf::shape::PhysicsShape;
@@ -32,6 +33,24 @@ impl ShapeSphere {
 }
 
 impl PhysicsShape for ShapeSphere {
+    fn distance(&self, local_point: &Point3<f64>) -> Option<f64> {
+        Some(local_point.coords.norm() - self.radius)
+    }
+
+    fn gradient(&self, local_point: &Point3<f64>) -> Option<Vector3<f64>> {
+        let norm = local_point.coords.norm();
+        if norm > 1e-10 {
+            Some(local_point.coords / norm)
+        } else {
+            None
+        }
+    }
+
+    fn bounds(&self) -> Aabb {
+        let r = self.radius;
+        Aabb::new(Point3::new(-r, -r, -r), Point3::new(r, r, r))
+    }
+
     fn effective_radius(&self, _local_dir: &Vector3<f64>) -> Option<f64> {
         Some(self.radius)
     }
