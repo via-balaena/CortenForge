@@ -1,50 +1,62 @@
-# Example 09 — Polish TODO
+# Example 09 — Rewrite: Door Hinge
 
-Current state: physics works (5 DOF constrained, pendulum swings), but
-the visual product is not acceptable. Issues below, ordered by impact.
+## Decision
 
-## Visual quality
+The spinning-pin-in-a-box mechanism was rejected — it looks like magic.
+You can't see the constraint happening. Replacing with a **door hinge**:
+the most universally understood geometry-driven joint.
 
-- **Socket mesh jaggedness** — internal cuboid-cylinder subtract edges
-  produce sharp mesh artifacts. Smooth_subtract or a rounded cuboid
-  (cuboid with round()) would fix this. The pin got smooth_union already.
-- **Socket transparency hard to read** — semi-transparent steel blends
-  everything together. Consider wireframe, cutaway, or higher opacity
-  with a visible bore opening.
-- **Pendulum weight too small** — the sphere (r=3mm) is tiny relative to
-  the socket (20×20×24mm). Hard to see the rotation. Needs bigger weight,
-  longer arm, more dramatic swing arc.
-- **Flat shading on some faces** — some mesh triangles render flat instead
-  of smooth. May need smooth normals in mesh generation or Bevy material
-  settings.
+## What to build
 
-## Performance
+**Frame** (fixed, heavy, gravcomp):
+- Flat plate (cuboid) with two hinge knuckles
+- Knuckles: half-cylinders with bores, spaced apart along the hinge axis
+- Attached to world, doesn't move
 
-- **FPS drops with smooth_union** — smooth blends increase the Lipschitz
-  constant, making the grid collision path slower per step. Options:
-  GPU path, coarser collision grid, or separate visual-only smooth
-  geometry from collision geometry.
-- **500Hz timestep with grid concave collision** — each physics step does
-  a full grid scan of the concave socket. The octree path can't help
-  (concave intervals too loose — falls back to grid via §5.7 heuristic).
+**Door** (free joint, light):
+- Flat plate (cuboid) with one hinge knuckle
+- The door's knuckle interleaves between the frame's two knuckles
+- Shares the same bore axis — interlocking cylinders constrain rotation
 
-## Physics polish
+**No separate pin part.** The interlocking knuckle geometry IS the
+constraint. The bore walls constrain radially, the knuckle faces
+constrain axially. Exactly 1 free DOF: rotation around the hinge axis.
 
-- **Pendulum motion should be smooth and rhythmic** — currently looks
-  chaotic ("pencil sharpener on meth"). The weight orbits but the motion
-  is jerky, not the smooth sinusoidal swing of a real pendulum.
-- **Damping rate** — the pendulum stops within ~5 seconds. Some damping is
-  expected (condim=1 frictionless, but solver discretization still damps).
-  Should persist longer for a convincing demo.
-- **Pin wobble** — the pin visibly shifts inside the bore (r_xz up to
-  0.5mm). Tighter clearance or stiffer solver settings might help.
+**Gravity** pulls the door to swing. Start it displaced from vertical
+and let it pendulum.
 
-## Design / readability
+## Why this works
 
-- **Doesn't read as "hinge" to a viewer** — needs clearer visual language:
-  visible crank arm extending out of the socket, obvious pendulum weight
-  hanging below, maybe an indicator arrow showing the rotation axis.
-- **Camera angle** — default orbit camera doesn't show the rotation well.
-  A side view perpendicular to the bore axis would make the swing obvious.
-- **Scale reference** — no sense of how big this is. A ruler, grid lines,
-  or comparison object would help.
+- Everyone knows what a door hinge looks like
+- The constraint is VISIBLE — you see knuckles wrapping around each other
+- The geometry is simple CSG: cylinders + cuboids + subtracts
+- It uses only what's proven: bore radial constraint + analytical normals
+- Zero magic — the shape is obviously why it moves that way
+
+## CSG geometry sketch
+
+```
+Frame plate:    cuboid(40, 5, 60)   — tall flat plate
+Frame knuckle1: cylinder(R=4, h=5) at y=-7, subtract bore(R=2.5, h=6)
+Frame knuckle2: cylinder(R=4, h=5) at y=+7, subtract bore(R=2.5, h=6)
+
+Door plate:     cuboid(40, 5, 60)   — same size, offset in X by ~80mm
+Door knuckle:   cylinder(R=4, h=5) at y=0, subtract bore(R=2.5, h=6)
+                (interleaves between frame knuckles)
+
+Hinge axis: Y (horizontal). Gravity: -Z. Door swings in XZ plane.
+```
+
+## What we need from the engine
+
+All proven:
+- Concave SDF collision (Tier 3 grid path + per-shape Newton refinement)
+- Analytical CSG normals via AnalyticalShape
+- PGS solver with frictionless bore contacts (condim=1)
+- body_gravcomp to fix the frame
+- Smooth unions/subtracts for clean mesh seams
+
+## Camera
+
+Side view (looking along Y / bore axis) so the door swing is obvious.
+Orbit camera centered on the hinge point.
