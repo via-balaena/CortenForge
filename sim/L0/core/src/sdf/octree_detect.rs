@@ -408,6 +408,307 @@ fn select_representatives(contacts: &mut Vec<SdfContact>, budget: usize) {
     *contacts = selected;
 }
 
+// ── Plane-specific octree detection ──────────────────────────────────────
+
+/// Detect contacts between an SDF shape and an infinite plane using octree
+/// interval pruning.
+///
+/// The shape must support `evaluate_interval()`. The plane's interval over
+/// any AABB is trivially exact (linear function → extrema at corners).
+/// The octree prunes cells that are entirely above the plane or entirely
+/// deep inside the shape.
+pub fn octree_plane_detect(
+    shape: &dyn PhysicsShape,
+    shape_pose: &Pose,
+    plane_normal: &nalgebra::Vector3<f64>,
+    plane_offset: f64,
+    margin: f64,
+    max_contacts: usize,
+) -> Vec<SdfContact> {
+    // Root: shape's world-space AABB (plane is infinite — no intersection needed)
+    let root = world_aabb(&shape.bounds(), shape_pose).expanded(margin);
+    if root.is_empty() {
+        return vec![];
+    }
+
+    let cell_size = shape.sdf_grid().cell_size();
+    let ratio = root.max_extent() / cell_size;
+    let max_depth = if ratio > 1.0 {
+        ratio.log2().ceil() as u32
+    } else {
+        0
+    };
+
+    let mut leaf_contacts = Vec::new();
+    octree_plane_recurse(
+        &root,
+        0,
+        max_depth,
+        shape,
+        shape_pose,
+        plane_normal,
+        plane_offset,
+        margin,
+        cell_size,
+        &mut leaf_contacts,
+    );
+
+    dedup_contacts(&mut leaf_contacts, cell_size);
+    if leaf_contacts.len() > max_contacts {
+        select_representatives(&mut leaf_contacts, max_contacts);
+    }
+    leaf_contacts
+}
+
+/// Recursive octree for shape-vs-plane contact detection.
+#[allow(clippy::too_many_arguments)]
+fn octree_plane_recurse(
+    cell: &Aabb,
+    depth: u32,
+    max_depth: u32,
+    shape: &dyn PhysicsShape,
+    shape_pose: &Pose,
+    plane_normal: &nalgebra::Vector3<f64>,
+    plane_offset: f64,
+    margin: f64,
+    target_cell_size: f64,
+    contacts: &mut Vec<SdfContact>,
+) {
+    // Shape interval in local frame
+    let local_cell = conservative_local_aabb(cell, shape_pose);
+    let Some((lo_shape, hi_shape)) = shape.evaluate_interval(&local_cell) else {
+        return;
+    };
+
+    // Plane interval over the world-space cell (exact for linear function)
+    let (lo_plane, _hi_plane) = plane_interval(cell, plane_normal, plane_offset);
+
+    let cell_extent = cell.max_extent();
+
+    // Prune: shape surface not in this cell
+    if lo_shape > margin {
+        return; // entirely outside shape
+    }
+    if hi_shape < -cell_extent {
+        return; // entirely deep inside shape
+    }
+
+    // Prune: cell entirely above the plane (positive side, no contact)
+    if lo_plane > margin {
+        return;
+    }
+    // Prune: cell entirely deep below the plane (shape surface would need
+    // to be below the plane too — but we only care about the intersection)
+    // Actually: we need shape surface AND below-plane. If the cell is
+    // entirely far below the plane, and the shape surface is here, that's
+    // still a valid deep-penetration contact. So only prune if the shape
+    // surface is NOT here.
+
+    // Leaf: extract contacts
+    if cell_extent <= target_cell_size || depth >= max_depth {
+        extract_plane_leaf(
+            cell,
+            shape,
+            shape_pose,
+            plane_normal,
+            plane_offset,
+            margin,
+            contacts,
+        );
+        return;
+    }
+
+    // Subdivide
+    let mid = cell.center();
+    let min = cell.min;
+    let max = cell.max;
+    let children = [
+        Aabb::new(
+            Point3::new(min.x, min.y, min.z),
+            Point3::new(mid.x, mid.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, min.y, min.z),
+            Point3::new(max.x, mid.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(min.x, mid.y, min.z),
+            Point3::new(mid.x, max.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, mid.y, min.z),
+            Point3::new(max.x, max.y, mid.z),
+        ),
+        Aabb::new(
+            Point3::new(min.x, min.y, mid.z),
+            Point3::new(mid.x, mid.y, max.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, min.y, mid.z),
+            Point3::new(max.x, mid.y, max.z),
+        ),
+        Aabb::new(
+            Point3::new(min.x, mid.y, mid.z),
+            Point3::new(mid.x, max.y, max.z),
+        ),
+        Aabb::new(
+            Point3::new(mid.x, mid.y, mid.z),
+            Point3::new(max.x, max.y, max.z),
+        ),
+    ];
+    for child in &children {
+        octree_plane_recurse(
+            child,
+            depth + 1,
+            max_depth,
+            shape,
+            shape_pose,
+            plane_normal,
+            plane_offset,
+            margin,
+            target_cell_size,
+            contacts,
+        );
+    }
+}
+
+/// Extract contacts from a leaf cell for shape-vs-plane.
+///
+/// Projects the cell center onto the shape's surface via Newton, then
+/// checks if the refined point is below the plane.
+fn extract_plane_leaf(
+    cell: &Aabb,
+    shape: &dyn PhysicsShape,
+    shape_pose: &Pose,
+    plane_normal: &nalgebra::Vector3<f64>,
+    plane_offset: f64,
+    margin: f64,
+    contacts: &mut Vec<SdfContact>,
+) {
+    let center = cell.center();
+    let max_displacement = cell.max_extent() * 3.0;
+
+    let p_local = shape_pose.inverse_transform_point(&center);
+    let Some(d_shape) = shape.distance(&p_local) else {
+        return;
+    };
+
+    // Shape surface must be near this cell
+    let half_size = cell.max_extent() * 0.5;
+    if d_shape.abs() > half_size * 2.0 {
+        return;
+    }
+
+    // Newton-refine onto shape surface
+    let mut p = p_local;
+    let p_original = p;
+    let Some(baseline_grad) = shape.gradient(&p) else {
+        return;
+    };
+
+    for _ in 0..3 {
+        let Some(d) = shape.distance(&p) else { return };
+        if d.abs() < 1e-10 {
+            break;
+        }
+        let Some(n) = shape.gradient(&p) else { return };
+        p -= n * d;
+        if (p - p_original).norm() > max_displacement {
+            return;
+        }
+    }
+
+    let Some(n_local) = shape.gradient(&p) else {
+        return;
+    };
+    if n_local.dot(&baseline_grad) < 0.0 {
+        return;
+    }
+
+    // Check if refined point is below the plane
+    let world_point = shape_pose.transform_point(&p);
+    let dist_to_plane = world_point.coords.dot(plane_normal) - plane_offset;
+    if dist_to_plane >= margin - 1e-10 {
+        return;
+    }
+
+    contacts.push(SdfContact {
+        point: world_point,
+        normal: *plane_normal, // Plane contact: normal is the plane normal
+        penetration: (-dist_to_plane).max(0.0),
+    });
+}
+
+/// Compute the plane's interval over a world-space AABB.
+///
+/// Exact for a linear function: evaluate dot product at all 8 corners,
+/// return (min, max).
+fn plane_interval(aabb: &Aabb, normal: &nalgebra::Vector3<f64>, offset: f64) -> (f64, f64) {
+    let corners = aabb.corners();
+    let mut lo = f64::MAX;
+    let mut hi = f64::MIN;
+    for c in &corners {
+        let d = c.coords.dot(normal) - offset;
+        lo = lo.min(d);
+        hi = hi.max(d);
+    }
+    (lo, hi)
+}
+
+// ── Normal refinement for grid contacts ─────────────────────────────────
+
+/// Refine the normal of an existing contact using a shape's analytical
+/// distance/gradient.
+///
+/// Projects the contact point onto the shape's zero-level set via Newton
+/// iteration and recomputes the normal. The contact position and depth
+/// are NOT changed — only the normal is improved.
+///
+/// For grid-backed shapes, this improves normals from O(cell_size) to
+/// O(cell_size²) error. For analytical shapes, this gives machine precision.
+///
+/// Falls back to no-op if Newton diverges, normal flips, or queries return
+/// None.
+pub fn refine_contact_normal(
+    contact: &mut SdfContact,
+    shape: &dyn PhysicsShape,
+    shape_pose: &Pose,
+    cell_size: f64,
+) {
+    let max_displacement = cell_size * 3.0;
+
+    let mut p = shape_pose.inverse_transform_point(&contact.point);
+    let p_original = p;
+
+    let Some(baseline_grad) = shape.gradient(&p) else {
+        return;
+    };
+
+    // Newton iteration: project onto zero-level set
+    for _ in 0..3 {
+        let Some(d) = shape.distance(&p) else { return };
+        if d.abs() < 1e-10 {
+            break;
+        }
+        let Some(n) = shape.gradient(&p) else { return };
+        p -= n * d;
+        if (p - p_original).norm() > max_displacement {
+            return; // diverged — keep original
+        }
+    }
+
+    // Normal consistency check
+    let Some(n_local) = shape.gradient(&p) else {
+        return;
+    };
+    if n_local.dot(&baseline_grad) < 0.0 {
+        return; // flipped — keep original
+    }
+
+    // Update only the normal (preserve original point and depth)
+    contact.normal = shape_pose.rotation * n_local;
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]

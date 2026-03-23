@@ -1,6 +1,7 @@
 //! SDF collision dispatch — routes geom-SDF pairs to the standalone SDF library.
 
 use super::narrow::make_contact_from_geoms;
+use crate::sdf::octree_detect::refine_contact_normal;
 use crate::sdf::{
     SdfContact, compute_shape_contact, compute_shape_plane_contact, sdf_box_contact,
     sdf_capsule_contact, sdf_cylinder_contact, sdf_ellipsoid_contact, sdf_heightfield_contact,
@@ -161,32 +162,76 @@ pub fn collide_with_sdf(
         let shape_a = &*model.shape_data[sdf_id];
         let shape_b = &*model.shape_data[other_sdf_id];
 
+        // Three-tier dispatch (+ GPU acceleration for Tier 3):
+        // 1. Both convex → analytical single contact (CPU, cheap)
+        // 2. Both support evaluate_interval → octree detection (CPU, analytical quality)
+        // 3. GPU available → GPU grid tracing (Tier 3 accelerated)
+        // 4. CPU grid fallback → sdf_sdf_contact_raw
+        //
+        // compute_shape_contact handles tiers 1-3. GPU is tried only when
+        // compute_shape_contact would fall through to Tier 3 (grid fallback).
         let mut sdf_contacts = if let Some(gpu) = &model.gpu_collider {
-            // GPU available: check if both shapes are convex
-            let delta = other_pose.position - sdf_pose.position;
-            let dist = delta.norm();
-            let dir = if dist > 1e-10 {
-                delta / dist
-            } else {
-                Vector3::z()
-            };
-            let both_convex = shape_a
-                .effective_radius(&(sdf_pose.rotation.inverse() * dir))
-                .is_some()
-                && shape_b
-                    .effective_radius(&(other_pose.rotation.inverse() * (-dir)))
-                    .is_some();
+            // Check if octree path is available (both shapes have intervals)
+            let both_have_intervals = shape_a.evaluate_interval(&shape_a.bounds()).is_some()
+                && shape_b.evaluate_interval(&shape_b.bounds()).is_some();
 
-            if both_convex {
-                // Analytical convex: CPU (cheap, exact 1 contact)
-                compute_shape_contact(shape_a, &sdf_pose, shape_b, &other_pose, contact_margin)
+            if both_have_intervals {
+                // Tier 1 or 2: CPU analytical or octree (skips GPU)
+                compute_shape_contact(
+                    shape_a,
+                    &sdf_pose,
+                    shape_b,
+                    &other_pose,
+                    contact_margin,
+                    model.sdf_maxcontact,
+                )
             } else {
-                // Grid-based multi-contact: GPU
-                gpu.sdf_sdf_contacts(sdf_id, &sdf_pose, other_sdf_id, &other_pose, contact_margin)
+                // Check convex for Tier 1
+                let delta = other_pose.position - sdf_pose.position;
+                let dist = delta.norm();
+                let dir = if dist > 1e-10 {
+                    delta / dist
+                } else {
+                    Vector3::z()
+                };
+                let both_convex = shape_a
+                    .effective_radius(&(sdf_pose.rotation.inverse() * dir))
+                    .is_some()
+                    && shape_b
+                        .effective_radius(&(other_pose.rotation.inverse() * (-dir)))
+                        .is_some();
+
+                if both_convex {
+                    // Tier 1: analytical convex (CPU, cheap)
+                    compute_shape_contact(
+                        shape_a,
+                        &sdf_pose,
+                        shape_b,
+                        &other_pose,
+                        contact_margin,
+                        model.sdf_maxcontact,
+                    )
+                } else {
+                    // Tier 3 via GPU: grid-based multi-contact
+                    gpu.sdf_sdf_contacts(
+                        sdf_id,
+                        &sdf_pose,
+                        other_sdf_id,
+                        &other_pose,
+                        contact_margin,
+                    )
+                }
             }
         } else {
-            // No GPU: existing CPU path
-            compute_shape_contact(shape_a, &sdf_pose, shape_b, &other_pose, contact_margin)
+            // No GPU: CPU tiers 1-3
+            compute_shape_contact(
+                shape_a,
+                &sdf_pose,
+                shape_b,
+                &other_pose,
+                contact_margin,
+                model.sdf_maxcontact,
+            )
         };
 
         // Cap SDF-SDF contacts per pair. Grid-based multi-contact tracing
@@ -194,7 +239,24 @@ pub fn collide_with_sdf(
         // for concave geometry. The constraint solver is O(nefc²) per PGS
         // iteration, so capping at 50 keeps the solver tractable while still
         // providing enough contacts to constrain all DOF.
+        //
+        // Note: capping is a no-op for Tier 2 (octree) contacts which are
+        // already sparse. It applies to Tier 3 (grid) and GPU contacts.
         cap_sdf_contacts(&mut sdf_contacts, model.sdf_maxcontact);
+
+        // Normal refinement: improve normals of grid/GPU contacts via Newton
+        // iteration on the shape's distance()/gradient() methods. Applied
+        // AFTER capping to avoid rank-deficient Jacobians from many contacts
+        // with identical refined normals. For Tier 2 contacts this is a no-op
+        // (already Newton-refined). For grid contacts, this improves normals
+        // from O(cell_size) to O(cell_size²) error.
+        let cell_size = shape_a
+            .sdf_grid()
+            .cell_size()
+            .min(shape_b.sdf_grid().cell_size());
+        for c in &mut sdf_contacts {
+            refine_contact_normal(c, shape_a, &sdf_pose, cell_size);
+        }
 
         return sdf_contacts.iter().map(&convert).collect();
     }

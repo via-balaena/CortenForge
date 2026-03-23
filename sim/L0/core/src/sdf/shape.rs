@@ -20,6 +20,7 @@ use cf_geometry::Aabb;
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
+use super::octree_detect::{octree_contact_detect, octree_plane_detect};
 use super::operations::{sdf_sdf_contact_raw, separation_direction, stabilize_direction};
 use super::primitives::sdf_plane_contact;
 use super::{SdfContact, SdfGrid};
@@ -92,16 +93,25 @@ pub trait PhysicsShape: Send + Sync + std::fmt::Debug {
 
 /// Compute contacts between two SDF-backed shapes.
 ///
-/// If both shapes provide an analytical effective radius (`effective_radius`
-/// returns `Some`), uses the analytical single-contact path:
-/// depth = r_a + r_b - center_dist. Otherwise falls back to grid-based
-/// multi-contact surface tracing via [`sdf_sdf_contact_raw`].
+/// Three-tier dispatch:
+///
+/// 1. **Tier 1 — Both convex** (`effective_radius` returns `Some` for both):
+///    analytical single-contact, depth = r_a + r_b - center_dist.
+///
+/// 2. **Tier 2 — Both support `evaluate_interval`**: octree bi-surface
+///    detection with Newton-exact contacts. Replaces the O(N³) grid scan
+///    with adaptive spatial pruning.
+///
+/// 3. **Tier 3 — Grid fallback**: grid-based multi-contact surface tracing
+///    via [`sdf_sdf_contact_raw`]. Used for MJCF shapes without
+///    `evaluate_interval`.
 pub fn compute_shape_contact(
     a: &dyn PhysicsShape,
     pose_a: &Pose,
     b: &dyn PhysicsShape,
     pose_b: &Pose,
     margin: f64,
+    max_contacts: usize,
 ) -> Vec<SdfContact> {
     let dir = separation_direction(pose_a, pose_b).unwrap_or_else(Vector3::z);
 
@@ -109,7 +119,7 @@ pub fn compute_shape_contact(
     let local_dir_a = pose_a.rotation.inverse() * dir;
     let local_dir_b = pose_b.rotation.inverse() * (-dir);
 
-    // Analytical path: both convex
+    // Tier 1: Both convex → analytical single contact
     if let (Some(r_a), Some(r_b)) = (
         a.effective_radius(&local_dir_a),
         b.effective_radius(&local_dir_b),
@@ -117,10 +127,6 @@ pub fn compute_shape_contact(
         let center_dist = (pose_b.position - pose_a.position).norm();
         let depth = (r_a + r_b - center_dist).max(0.0);
         if depth > 0.0 || center_dist < r_a + r_b + margin {
-            // Use the raw direction for the contact point to preserve
-            // midpoint placement (symmetric lever arms for equal-radius
-            // bodies), but stabilize the normal to prevent sub-physical
-            // tangent-frame tilt from seeding pyramidal friction asymmetry.
             let contact_point = pose_a.position + dir * (r_a - depth * 0.5);
             let stable_normal = stabilize_direction(dir);
             return vec![SdfContact {
@@ -132,15 +138,27 @@ pub fn compute_shape_contact(
         return vec![];
     }
 
-    // Fallback: grid-based multi-contact surface tracing
+    // Tier 2: Both support interval evaluation → octree detection
+    if a.evaluate_interval(&a.bounds()).is_some() && b.evaluate_interval(&b.bounds()).is_some() {
+        return octree_contact_detect(a, pose_a, b, pose_b, margin, max_contacts);
+    }
+
+    // Tier 3: Grid fallback → surface tracing
     sdf_sdf_contact_raw(a.sdf_grid(), pose_a, b.sdf_grid(), pose_b, margin)
 }
 
 /// Compute contacts between an SDF-backed shape and an infinite plane.
 ///
-/// If the shape provides an analytical effective radius, uses the analytical
-/// single-contact path: depth = radius - distance_to_plane. Otherwise falls
-/// back to grid-based multi-contact plane tracing via [`sdf_plane_contact`].
+/// Three-tier dispatch (matching `compute_shape_contact`):
+///
+/// 1. **Tier 1 — Convex** (`effective_radius` returns `Some`):
+///    analytical single-contact, depth = radius - distance_to_plane.
+///
+/// 2. **Tier 2 — Shape supports `evaluate_interval`**: octree detection
+///    using shape interval + trivially exact plane interval.
+///
+/// 3. **Tier 3 — Grid fallback**: grid-based multi-contact plane tracing
+///    via [`sdf_plane_contact`].
 pub fn compute_shape_plane_contact(
     shape: &dyn PhysicsShape,
     shape_pose: &Pose,
@@ -150,6 +168,7 @@ pub fn compute_shape_plane_contact(
 ) -> Vec<SdfContact> {
     let local_dir = shape_pose.rotation.inverse() * (-*plane_normal);
 
+    // Tier 1: Convex → analytical single contact
     if let Some(radius) = shape.effective_radius(&local_dir) {
         let dist_to_plane = (shape_pose.position.coords - plane_pos).dot(plane_normal);
         let depth = radius - dist_to_plane;
@@ -164,8 +183,13 @@ pub fn compute_shape_plane_contact(
         return vec![];
     }
 
-    // Fallback: grid-based multi-contact plane tracing
+    // Tier 2: Shape supports interval evaluation → octree plane detection
     let plane_offset = plane_normal.dot(plane_pos);
+    if shape.evaluate_interval(&shape.bounds()).is_some() {
+        return octree_plane_detect(shape, shape_pose, plane_normal, plane_offset, margin, 8);
+    }
+
+    // Tier 3: Grid fallback → grid-based multi-contact plane tracing
     sdf_plane_contact(shape.sdf_grid(), shape_pose, plane_normal, plane_offset)
 }
 
@@ -196,7 +220,7 @@ mod tests {
         // Overlapping poses (centers 8 apart, radii 5+5 = 10 > 8)
         let pose_a = sphere_pose(0.0);
         let pose_b = sphere_pose(8.0);
-        let contacts = compute_shape_contact(&a, &pose_a, &b, &pose_b, 0.1);
+        let contacts = compute_shape_contact(&a, &pose_a, &b, &pose_b, 0.1, 50);
 
         // Fallback path uses sdf_sdf_contact_raw which produces surface-traced
         // contacts — typically multiple or could be empty depending on grid
@@ -221,7 +245,7 @@ mod tests {
 
         let pose_a = sphere_pose(0.0);
         let pose_b = sphere_pose(8.0);
-        let contacts = compute_shape_contact(&a, &pose_a, &b, &pose_b, 0.1);
+        let contacts = compute_shape_contact(&a, &pose_a, &b, &pose_b, 0.1, 50);
 
         assert!(
             !contacts.is_empty(),
@@ -239,7 +263,7 @@ mod tests {
 
         let pose_a = sphere_pose(0.0);
         let pose_b = sphere_pose(8.0);
-        let contacts = compute_shape_contact(&a, &pose_a, &b, &pose_b, 0.1);
+        let contacts = compute_shape_contact(&a, &pose_a, &b, &pose_b, 0.1, 50);
 
         assert!(
             !contacts.is_empty(),
@@ -281,7 +305,7 @@ mod tests {
 
         let pose_a = sphere_pose(0.0);
         let pose_b = sphere_pose(8.0);
-        let contacts = compute_shape_contact(&a, &pose_a, &b, &pose_b, 0.1);
+        let contacts = compute_shape_contact(&a, &pose_a, &b, &pose_b, 0.1, 50);
 
         // Analytical path produces exactly 1 contact
         assert_eq!(

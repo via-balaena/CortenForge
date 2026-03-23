@@ -107,7 +107,7 @@ fn phase1a_bowl_captures_sphere() {
     let bowl_pose = identity_pose(Vector3::zeros());
     let sphere_pose = identity_pose(Vector3::new(0.0, 0.0, -5.0));
 
-    let contacts = compute_shape_contact(&bowl, &bowl_pose, &sphere, &sphere_pose, 0.5);
+    let contacts = compute_shape_contact(&bowl, &bowl_pose, &sphere, &sphere_pose, 0.5, 50);
 
     assert!(
         !contacts.is_empty(),
@@ -145,7 +145,7 @@ fn phase1b_bowl_rejects_exterior_sphere() {
     let bowl_pose = identity_pose(Vector3::zeros());
     let sphere_pose = identity_pose(Vector3::new(0.0, 0.0, 20.0));
 
-    let contacts = compute_shape_contact(&bowl, &bowl_pose, &sphere, &sphere_pose, 0.5);
+    let contacts = compute_shape_contact(&bowl, &bowl_pose, &sphere, &sphere_pose, 0.5, 50);
 
     assert!(
         contacts.is_empty(),
@@ -168,7 +168,7 @@ fn phase1c_bowl_wall_contact_count() {
     let bowl_pose = identity_pose(Vector3::zeros());
     let sphere_pose = identity_pose(Vector3::new(5.5, 0.0, -4.0));
 
-    let contacts = compute_shape_contact(&bowl, &bowl_pose, &sphere, &sphere_pose, 0.5);
+    let contacts = compute_shape_contact(&bowl, &bowl_pose, &sphere, &sphere_pose, 0.5, 50);
 
     assert!(
         contacts.len() > 1,
@@ -236,7 +236,7 @@ fn phase2a_tube_radial_constraint() {
     let tube_pose = identity_pose(Vector3::zeros());
     let pin_pose = identity_pose(Vector3::new(0.3, 0.0, 0.0));
 
-    let contacts = compute_shape_contact(&tube, &tube_pose, &pin, &pin_pose, 0.5);
+    let contacts = compute_shape_contact(&tube, &tube_pose, &pin, &pin_pose, 0.5, 50);
 
     assert!(
         !contacts.is_empty(),
@@ -276,7 +276,7 @@ fn phase2b_tube_allows_axial_slide() {
     let tube_pose = identity_pose(Vector3::zeros());
     let pin_pose = identity_pose(Vector3::new(0.0, 0.0, 1.0));
 
-    let contacts = compute_shape_contact(&tube, &tube_pose, &pin, &pin_pose, 0.5);
+    let contacts = compute_shape_contact(&tube, &tube_pose, &pin, &pin_pose, 0.5, 50);
 
     // All contacts should be zero-depth (margin-zone only, no penetration)
     let penetrating = contacts.iter().filter(|c| c.penetration > 0.01).count();
@@ -318,7 +318,7 @@ fn phase2c_tube_captures_pin_at_multiple_azimuths() {
 
     for (offset, expected) in &offsets {
         let pin_pose = identity_pose(*offset);
-        let contacts = compute_shape_contact(&tube, &tube_pose, &pin, &pin_pose, 0.5);
+        let contacts = compute_shape_contact(&tube, &tube_pose, &pin, &pin_pose, 0.5, 50);
 
         assert!(
             !contacts.is_empty(),
@@ -433,7 +433,7 @@ fn phase3a_hinge_radial_constraint() {
     let socket_pose = identity_pose(Vector3::zeros());
     let pin_pose = identity_pose(Vector3::new(0.3, 0.0, 0.0));
 
-    let contacts = compute_shape_contact(&socket, &socket_pose, &pin, &pin_pose, 0.5);
+    let contacts = compute_shape_contact(&socket, &socket_pose, &pin, &pin_pose, 0.5, 50);
 
     assert!(
         !contacts.is_empty(),
@@ -471,7 +471,7 @@ fn phase3b_hinge_axial_constraint() {
     // Clearance at rest = 8-7 = 1mm. Offset 2.0mm → flange top at z=9, penetrating 1mm into cap.
     let pin_pose = identity_pose(Vector3::new(0.0, 0.0, 2.0));
 
-    let contacts = compute_shape_contact(&socket, &socket_pose, &pin, &pin_pose, 0.5);
+    let contacts = compute_shape_contact(&socket, &socket_pose, &pin, &pin_pose, 0.5, 50);
 
     // Should have contacts from flange hitting cap
     let axial_contacts: Vec<_> = contacts.iter().filter(|c| c.penetration > 0.0).collect();
@@ -521,7 +521,7 @@ fn phase3c_hinge_rotation_free() {
         rotation,
     };
 
-    let contacts = compute_shape_contact(&socket, &socket_pose, &pin, &pin_pose, 0.5);
+    let contacts = compute_shape_contact(&socket, &socket_pose, &pin, &pin_pose, 0.5, 50);
 
     // Almost all contacts should be zero-depth. A small number of grid-edge
     // artifacts (≤ 5) with minor penetration are tolerable — the SDF grid isn't
