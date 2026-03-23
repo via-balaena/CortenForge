@@ -39,12 +39,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::solid::ShapeHint;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, GainType, GeomType, MjJointType, Model,
-    PhysicsShape, ShapeConcave, ShapeConvex, ShapeSphere, SolverType, TendonType, WrapType,
+    PhysicsShape, SolverType, TendonType, WrapType,
 };
+
+use super::analytical_shape::AnalyticalShape;
 
 use super::actuator::ActuatorKind;
 use super::builder::Mechanism;
@@ -167,11 +168,11 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
 
         let sdf_id = shape_data.len();
         let grid = Arc::new(sdf);
-        let shape: Arc<dyn PhysicsShape> = match solid.shape_hint() {
-            ShapeHint::Sphere(radius) => Arc::new(ShapeSphere::new(grid, radius)),
-            ShapeHint::Convex => Arc::new(ShapeConvex::new(grid)),
-            ShapeHint::Concave => Arc::new(ShapeConcave::new(grid)),
-        };
+        let shape: Arc<dyn PhysicsShape> = Arc::new(AnalyticalShape::new(
+            grid,
+            Arc::new(solid.clone()),
+            solid.shape_hint(),
+        ));
         shape_data.push(shape);
 
         // Visual mesh: Solid::mesh → IndexedMesh → TriangleMeshData

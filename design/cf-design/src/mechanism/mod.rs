@@ -16,6 +16,7 @@
 //! - [`FlexZone`] / [`Plane`] — compliant mechanism support
 
 pub mod actuator;
+mod analytical_shape;
 pub mod builder;
 pub mod flex_split;
 pub mod joint;
@@ -32,6 +33,7 @@ pub mod tendon;
 pub mod validate;
 
 pub use actuator::{ActuatorDef, ActuatorKind};
+pub use analytical_shape::AnalyticalShape;
 pub use builder::{Mechanism, MechanismBuilder, MechanismError};
 pub use flex_split::{CrossSection, FlexJoint, SplitResult, measure_cross_section, split_part};
 pub use joint::{JointDef, JointKind};
