@@ -194,8 +194,9 @@ fn spawn_default_lighting(mut commands: Commands) {
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.5, 0.5, 0.0)),
     ));
 
-    // Ambient light (Bevy 0.18: spawned as entity, not a resource)
-    commands.spawn(AmbientLight {
+    // Bevy 0.18: GlobalAmbientLight is the world-wide resource.
+    // (AmbientLight is now a per-camera component override.)
+    commands.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
         brightness: 200.0,
         ..default()

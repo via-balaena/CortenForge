@@ -9,6 +9,35 @@ use nalgebra::{DMatrix, Vector3};
 
 use crate::types::{Contact, Data, MjJointType, Model};
 
+/// Stabilize a lever arm by projecting out sub-physical lateral drift.
+///
+/// The lever arm `r = contact_point - body_center` feeds into the angular
+/// Jacobian as `ω × r`. For pyramidal friction, the Delassus matrix has a
+/// cross-term `(r × normal) · (r × tangent)` that differs between pos/neg
+/// facets by an amount proportional to `r`'s component perpendicular to
+/// the contact normal. When this perpendicular component comes from
+/// floating-point position drift (not physical displacement), the
+/// cross-term creates a force asymmetry that seeds exponential lateral
+/// drift on unstable equilibria.
+///
+/// Projecting `r` onto the normal axis when the perpendicular component
+/// is sub-physical (< 1e-6 relative) makes `r × normal = 0`, eliminating
+/// the cross-term and producing exactly symmetric Delassus entries for
+/// pos/neg facet pairs.
+///
+/// See `sim/docs/PYRAMIDAL_FRICTION_INSTABILITY.md`.
+#[inline]
+fn stabilize_lever_arm(r: Vector3<f64>, normal: &Vector3<f64>) -> Vector3<f64> {
+    let r_along_n = *normal * r.dot(normal);
+    let r_perp_sq = (r - r_along_n).norm_squared();
+    let threshold = 1e-6 * r.norm().max(1e-10);
+    if r_perp_sq < threshold * threshold {
+        r_along_n
+    } else {
+        r
+    }
+}
+
 /// Compute the contact Jacobian for a flex-rigid contact.
 ///
 /// The flex vertex side has a trivial Jacobian: the contact frame direction is
@@ -246,7 +275,7 @@ pub fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -
                             let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
                             let jpos =
                                 data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
-                            let r = contact.pos - jpos;
+                            let r = stabilize_lever_arm(contact.pos - jpos, &normal);
                             let j_col = axis.cross(&r);
                             j[(row, dof_adr)] += sign * direction.dot(&j_col);
                         }
@@ -257,7 +286,7 @@ pub fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -
                         MjJointType::Ball => {
                             let jpos =
                                 data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
-                            let r = contact.pos - jpos;
+                            let r = stabilize_lever_arm(contact.pos - jpos, &normal);
                             let rot = data.xquat[jnt_body].to_rotation_matrix();
                             for i in 0..3 {
                                 let omega_world = rot * Vector3::ith(i, 1.0);
@@ -273,7 +302,7 @@ pub fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -
 
                             // Angular DOFs (3–5): body-frame axes R·eᵢ, lever arm from xpos.
                             let jpos = data.xpos[jnt_body];
-                            let r = contact.pos - jpos;
+                            let r = stabilize_lever_arm(contact.pos - jpos, &normal);
                             let rot = data.xquat[jnt_body].to_rotation_matrix();
                             for i in 0..3 {
                                 let omega = rot * Vector3::ith(i, 1.0);

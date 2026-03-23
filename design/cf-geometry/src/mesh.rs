@@ -13,8 +13,16 @@ use crate::{Aabb, Triangle};
 
 /// Indexed triangle mesh.
 ///
-/// Positions only — no normals, colors, or other attributes. Domain-specific
-/// data stays in the consuming layer. Faces use CCW winding.
+/// Positions and optional per-vertex normals. Other domain-specific
+/// attributes stay in the consuming layer. Faces use CCW winding.
+///
+/// # Normals
+///
+/// When generated from an SDF field (marching cubes), `normals` contains
+/// analytical surface normals computed from the SDF gradient. This gives
+/// smooth shading without post-hoc face-normal averaging. When loaded from
+/// a file or built programmatically, normals are typically `None` and the
+/// rendering layer computes them from triangle geometry.
 ///
 /// # Ownership lifecycle
 ///
@@ -31,6 +39,10 @@ pub struct IndexedMesh {
     /// Triangle faces as indices into the vertex array.
     /// Each face is `[v0, v1, v2]` with counter-clockwise winding.
     pub faces: Vec<[u32; 3]>,
+
+    /// Optional per-vertex normals (unit vectors).
+    /// When present, `normals.len() == vertices.len()`.
+    pub normals: Option<Vec<Vector3<f64>>>,
 }
 
 impl IndexedMesh {
@@ -41,6 +53,7 @@ impl IndexedMesh {
         Self {
             vertices: Vec::new(),
             faces: Vec::new(),
+            normals: None,
         }
     }
 
@@ -51,6 +64,7 @@ impl IndexedMesh {
         Self {
             vertices: Vec::with_capacity(vertex_count),
             faces: Vec::with_capacity(face_count),
+            normals: None,
         }
     }
 
@@ -58,7 +72,11 @@ impl IndexedMesh {
     #[inline]
     #[must_use]
     pub const fn from_parts(vertices: Vec<Point3<f64>>, faces: Vec<[u32; 3]>) -> Self {
-        Self { vertices, faces }
+        Self {
+            vertices,
+            faces,
+            normals: None,
+        }
     }
 
     /// Creates a mesh from raw coordinate and index data.
@@ -83,7 +101,11 @@ impl IndexedMesh {
             .map(|c| [c[0], c[1], c[2]])
             .collect();
 
-        Self { vertices, faces }
+        Self {
+            vertices,
+            faces,
+            normals: None,
+        }
     }
 
     // --- Topology (replaces MeshTopology trait — only 1 implementor) ---
@@ -290,6 +312,12 @@ impl IndexedMesh {
                 face[1] + vertex_offset,
                 face[2] + vertex_offset,
             ]);
+        }
+
+        // Merge normals if both meshes have them; drop if either is missing.
+        match (&mut self.normals, &other.normals) {
+            (Some(ours), Some(theirs)) => ours.extend_from_slice(theirs),
+            _ => self.normals = None,
         }
     }
 

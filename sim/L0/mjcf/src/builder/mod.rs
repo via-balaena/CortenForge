@@ -605,6 +605,7 @@ pub struct ModelBuilder {
     pub(crate) ccd_tolerance: f64,
     pub(crate) sdf_iterations: usize,
     pub(crate) sdf_initpoints: usize,
+    pub(crate) sdf_maxcontact: usize,
 
     // qpos0 values (built as we process joints)
     pub(crate) qpos0_values: Vec<f64>,

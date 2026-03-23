@@ -556,6 +556,10 @@ pub struct Model {
     /// `Arc` for cheap cloning (multiple geoms can reference the same shape asset).
     pub shape_data: Vec<Arc<dyn PhysicsShape>>,
 
+    /// GPU-accelerated SDF collision backend (`None` = CPU fallback).
+    /// Set via `sim_gpu::enable_gpu_collision()` after model construction.
+    pub gpu_collider: Option<Arc<dyn crate::sdf::GpuSdfCollision>>,
+
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.
     pub site_body: Vec<usize>,
@@ -919,6 +923,11 @@ pub struct Model {
     /// Number of initial sample points for SDF collision search (default: 40).
     /// MuJoCo ref: `mjOption.sdf_initpoints` in `mjmodel.h`.
     pub sdf_initpoints: usize,
+    /// Maximum contacts per SDF-SDF pair (default: 50).
+    /// Grid-based SDF tracing can produce hundreds of contacts for concave
+    /// geometry. This caps the per-pair count to keep the constraint solver
+    /// tractable — the deepest contacts are retained.
+    pub sdf_maxcontact: usize,
 
     /// Integration method.
     pub integrator: Integrator,

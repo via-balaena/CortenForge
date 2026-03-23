@@ -229,6 +229,13 @@ impl SdfGrid {
         self.origin
     }
 
+    /// Raw distance values for GPU upload. ZYX storage order:
+    /// `values[z * width * height + y * width + x]`
+    #[must_use]
+    pub fn values(&self) -> &[f64] {
+        &self.values
+    }
+
     /// Get the total X extent in meters.
     #[must_use]
     pub fn extent_x(&self) -> f64 {
@@ -388,19 +395,29 @@ impl SdfGrid {
 
     /// Get the gradient (surface normal direction) at a local-space point.
     ///
-    /// Uses finite differences on the interpolated distance field.
+    /// Uses centered finite differences on the interpolated distance field.
+    /// Centered differences `(f(x+eps) - f(x-eps)) / (2*eps)` produce symmetric
+    /// normals with O(eps²) error, eliminating the directional bias of forward
+    /// differences that causes normal flipping at cell boundaries.
+    ///
     /// Returns `None` if the point is outside the grid bounds.
     /// Returns `+Z` if the gradient is degenerate (zero norm).
     #[must_use]
     pub fn gradient(&self, point: Point3<f64>) -> Option<Vector3<f64>> {
         let eps = self.cell_size * 0.5;
+        let two_eps = 2.0 * eps;
 
-        let d = self.distance(point)?;
-        let dx = self.distance_clamped(Point3::new(point.x + eps, point.y, point.z));
-        let dy = self.distance_clamped(Point3::new(point.x, point.y + eps, point.z));
-        let dz = self.distance_clamped(Point3::new(point.x, point.y, point.z + eps));
+        // Verify center point is in-bounds (preserves Option<> contract)
+        let _ = self.distance(point)?;
 
-        let grad = Vector3::new((dx - d) / eps, (dy - d) / eps, (dz - d) / eps);
+        let dx = self.distance_clamped(Point3::new(point.x + eps, point.y, point.z))
+            - self.distance_clamped(Point3::new(point.x - eps, point.y, point.z));
+        let dy = self.distance_clamped(Point3::new(point.x, point.y + eps, point.z))
+            - self.distance_clamped(Point3::new(point.x, point.y - eps, point.z));
+        let dz = self.distance_clamped(Point3::new(point.x, point.y, point.z + eps))
+            - self.distance_clamped(Point3::new(point.x, point.y, point.z - eps));
+
+        let grad = Vector3::new(dx / two_eps, dy / two_eps, dz / two_eps);
 
         let norm = grad.norm();
         if norm > 1e-10 {

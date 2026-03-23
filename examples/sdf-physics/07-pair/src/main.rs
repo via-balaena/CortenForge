@@ -10,6 +10,8 @@
 //! - Lower sphere rests on ground (SDF-plane, proven in step 04)
 //! - Upper sphere rests on lower sphere (SDF-SDF surface-tracing)
 //!
+//! Interactive: press Space to nudge the upper ball sideways.
+//!
 //! New concept: `sdf_sdf_contact` (surface-tracing with margin)
 //! Depends on: 04-rest (SDF-plane works)
 //!
@@ -74,6 +76,7 @@ fn main() {
         "  Lower z0: {:.2}, Upper z0: {:.2}",
         model.qpos0[2], model.qpos0[9]
     );
+    eprintln!("  Press SPACE to nudge the upper ball");
     eprintln!();
 
     let mut data = model.make_data();
@@ -93,7 +96,7 @@ fn main() {
         .insert_resource(PairTracker::default())
         .insert_resource(PhysicsAccumulator::default())
         .add_systems(Startup, setup)
-        .add_systems(Update, (step_physics_realtime, track_pair))
+        .add_systems(Update, (step_physics_realtime, nudge_upper, track_pair))
         .add_systems(PostUpdate, sync_geom_transforms)
         .run();
 }
@@ -124,6 +127,20 @@ fn setup(
 struct PairTracker {
     last_print: f64,
     settled: bool,
+    nudged: bool,
+}
+
+fn nudge_upper(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut data: ResMut<PhysicsData>,
+    mut tracker: ResMut<PairTracker>,
+) {
+    if keys.just_pressed(KeyCode::Space) {
+        // Apply sideways impulse to upper sphere (qvel[6] = vx)
+        data.0.qvel[6] += 50.0;
+        tracker.nudged = true;
+        eprintln!("  *** NUDGE! Applied +50 mm/s to upper ball ***");
+    }
 }
 
 fn track_pair(data: Res<PhysicsData>, mut tracker: ResMut<PairTracker>) {
@@ -163,7 +180,7 @@ fn track_pair(data: Res<PhysicsData>, mut tracker: ResMut<PairTracker>) {
         "  t={t:.1}s  z_lo={z_lower:.3}  z_up={z_upper:.3}  vz_lo={vz_lower:.3}  vz_up={vz_upper:.3}  con={ncon}"
     );
 
-    if t >= 5.0 && !tracker.settled {
+    if t >= 5.0 && !tracker.settled && !tracker.nudged {
         tracker.settled = true;
         let gap = z_upper - z_lower;
 

@@ -40,6 +40,7 @@ fn arb_mesh(
                 return Just(IndexedMesh {
                     vertices: verts,
                     faces: Vec::new(),
+                    normals: None,
                 })
                 .boxed();
             }
@@ -51,6 +52,7 @@ fn arb_mesh(
                 .prop_map(move |f| IndexedMesh {
                     vertices: verts.clone(),
                     faces: f,
+                    normals: None,
                 })
                 .boxed()
         })

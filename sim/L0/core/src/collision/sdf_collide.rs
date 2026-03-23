@@ -1,14 +1,63 @@
 //! SDF collision dispatch — routes geom-SDF pairs to the standalone SDF library.
 
 use super::narrow::make_contact_from_geoms;
+use crate::sdf::octree_detect::refine_contact_normal;
 use crate::sdf::{
-    compute_shape_contact, compute_shape_plane_contact, sdf_box_contact, sdf_capsule_contact,
-    sdf_cylinder_contact, sdf_ellipsoid_contact, sdf_heightfield_contact, sdf_sphere_contact,
-    sdf_triangle_mesh_contact,
+    SdfContact, compute_shape_contact, compute_shape_plane_contact, sdf_box_contact,
+    sdf_capsule_contact, sdf_cylinder_contact, sdf_ellipsoid_contact, sdf_heightfield_contact,
+    sdf_sphere_contact, sdf_triangle_mesh_contact,
 };
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
+
+/// Cap SDF-SDF contacts per pair with greedy spatial selection.
+///
+/// Grid-based tracing generates contacts for every near-surface cell.
+/// Instead of just keeping the deepest (which cluster spatially), this
+/// sorts by depth then greedily skips contacts too close to already-kept
+/// ones. This ensures the capped set has good spatial coverage for
+/// constraining all DOF.
+fn cap_sdf_contacts(contacts: &mut Vec<SdfContact>, max: usize) {
+    if contacts.len() <= max {
+        return;
+    }
+
+    // Sort by penetration depth (deepest first)
+    contacts.sort_by(|a, b| {
+        b.penetration
+            .partial_cmp(&a.penetration)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Estimate spacing from contact extent to hit the cap
+    let extent_sq = contacts
+        .iter()
+        .flat_map(|a| {
+            contacts
+                .iter()
+                .map(move |b| (a.point - b.point).norm_squared())
+        })
+        .fold(0.0_f64, f64::max);
+    let extent = extent_sq.sqrt();
+    #[allow(clippy::cast_precision_loss)]
+    let min_dist = extent / (max as f64).sqrt();
+    let min_dist_sq = min_dist * min_dist;
+
+    let mut kept: Vec<SdfContact> = Vec::with_capacity(max);
+    for c in contacts.drain(..) {
+        let too_close = kept
+            .iter()
+            .any(|k| (k.point - c.point).norm_squared() < min_dist_sq);
+        if !too_close {
+            kept.push(c);
+            if kept.len() >= max {
+                break;
+            }
+        }
+    }
+    *contacts = kept;
+}
 
 /// Collision detection involving at least one SDF geometry.
 ///
@@ -100,22 +149,117 @@ pub fn collide_with_sdf(
     }
     // SDF-SDF: dispatch through PhysicsShape trait. Analytical single-contact
     // for convex pairs, grid-based multi-contact for concave.
+    // When GPU collision is available, non-convex pairs use GPU grid tracing.
     if model.geom_type[other_geom] == GeomType::Sdf {
         let Some(other_sdf_id) = model.geom_shape[other_geom] else {
             return vec![];
         };
-        // Floor margin at half a cell to tolerate grid discretization.
-        let cell_size_min = sdf
-            .cell_size()
-            .min(model.shape_data[other_sdf_id].sdf_grid().cell_size());
-        let contact_margin = margin.max(cell_size_min * 0.5);
-        let sdf_contacts = compute_shape_contact(
-            &*model.shape_data[sdf_id],
-            &sdf_pose,
-            &*model.shape_data[other_sdf_id],
-            &other_pose,
-            contact_margin,
-        );
+        // Use the pair's combined margin directly. The old cell_size*0.5 floor
+        // filled tight clearances (like bore/shaft gaps) with contacts, locking
+        // joints. The grid handles contacts fine at any margin.
+        let contact_margin = margin;
+
+        let shape_a = &*model.shape_data[sdf_id];
+        let shape_b = &*model.shape_data[other_sdf_id];
+
+        // Three-tier dispatch (+ GPU acceleration for Tier 3):
+        // 1. Both convex → analytical single contact (CPU, cheap)
+        // 2. Both support evaluate_interval → octree detection (CPU, analytical quality)
+        // 3. GPU available → GPU grid tracing (Tier 3 accelerated)
+        // 4. CPU grid fallback → sdf_sdf_contact_raw
+        //
+        // compute_shape_contact handles tiers 1-3. GPU is tried only when
+        // compute_shape_contact would fall through to Tier 3 (grid fallback).
+        let mut used_gpu = false;
+        let mut sdf_contacts = if let Some(gpu) = &model.gpu_collider {
+            // Check if octree path is available (both shapes have intervals)
+            let both_have_intervals = shape_a.evaluate_interval(&shape_a.bounds()).is_some()
+                && shape_b.evaluate_interval(&shape_b.bounds()).is_some();
+
+            if both_have_intervals {
+                // Tier 1 or 2: CPU analytical or octree (skips GPU)
+                compute_shape_contact(
+                    shape_a,
+                    &sdf_pose,
+                    shape_b,
+                    &other_pose,
+                    contact_margin,
+                    model.sdf_maxcontact,
+                )
+            } else {
+                // Check convex for Tier 1
+                let delta = other_pose.position - sdf_pose.position;
+                let dist = delta.norm();
+                let dir = if dist > 1e-10 {
+                    delta / dist
+                } else {
+                    Vector3::z()
+                };
+                let both_convex = shape_a
+                    .effective_radius(&(sdf_pose.rotation.inverse() * dir))
+                    .is_some()
+                    && shape_b
+                        .effective_radius(&(other_pose.rotation.inverse() * (-dir)))
+                        .is_some();
+
+                if both_convex {
+                    // Tier 1: analytical convex (CPU, cheap)
+                    compute_shape_contact(
+                        shape_a,
+                        &sdf_pose,
+                        shape_b,
+                        &other_pose,
+                        contact_margin,
+                        model.sdf_maxcontact,
+                    )
+                } else {
+                    // Tier 3 via GPU: grid-based multi-contact
+                    used_gpu = true;
+                    gpu.sdf_sdf_contacts(
+                        sdf_id,
+                        &sdf_pose,
+                        other_sdf_id,
+                        &other_pose,
+                        contact_margin,
+                    )
+                }
+            }
+        } else {
+            // No GPU: CPU tiers 1-3 (includes per-shape refinement)
+            compute_shape_contact(
+                shape_a,
+                &sdf_pose,
+                shape_b,
+                &other_pose,
+                contact_margin,
+                model.sdf_maxcontact,
+            )
+        };
+
+        // Cap SDF-SDF contacts per pair. Grid-based multi-contact tracing
+        // generates contacts for every near-surface cell, producing hundreds
+        // for concave geometry. The constraint solver is O(nefc²) per PGS
+        // iteration, so capping at 50 keeps the solver tractable while still
+        // providing enough contacts to constrain all DOF.
+        //
+        // Note: capping is a no-op for Tier 2 (octree) contacts which are
+        // already sparse. It applies to Tier 3 (grid) and GPU contacts.
+        cap_sdf_contacts(&mut sdf_contacts, model.sdf_maxcontact);
+
+        // Normal refinement for GPU contacts only. CPU paths (Tiers 1-3)
+        // already refine per-shape in compute_shape_contact. GPU contacts
+        // are refined against shape_a (imperfect for B→A contacts, but still
+        // improves grid normals vs no refinement).
+        if used_gpu {
+            let cell_size = shape_a
+                .sdf_grid()
+                .cell_size()
+                .min(shape_b.sdf_grid().cell_size());
+            for c in &mut sdf_contacts {
+                refine_contact_normal(c, shape_a, &sdf_pose, cell_size);
+            }
+        }
+
         return sdf_contacts.iter().map(&convert).collect();
     }
 

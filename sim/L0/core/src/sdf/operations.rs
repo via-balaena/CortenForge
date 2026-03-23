@@ -13,12 +13,18 @@ use sim_types::Pose;
 
 use super::{SdfContact, SdfGrid};
 
-/// Raw surface tracing — returns all detected contacts without consolidation.
+/// Raw surface tracing with depth-sorted spatial deduplication.
 ///
 /// Traces from the **surface** of each SDF into the other. A surface point on
 /// SDF A is a contact if it lies within `margin` of SDF B's interior.
 /// Used by [`compute_shape_contact`](super::shape::compute_shape_contact)
 /// as the grid-based fallback for non-convex shapes.
+///
+/// After both trace passes, contacts are deduplicated: sorted by penetration
+/// depth (deepest first), then greedily filtered to keep only contacts that
+/// are spatially separated by at least `cell_size * 0.5`. This matches the
+/// GPU dedup path and ensures the deepest, best-separated contacts survive
+/// regardless of grid traversal order.
 pub fn sdf_sdf_contact_raw(
     sdf_a: &SdfGrid,
     pose_a: &Pose,
@@ -29,7 +35,61 @@ pub fn sdf_sdf_contact_raw(
     let mut contacts: Vec<SdfContact> = Vec::new();
     trace_surface_into_other(sdf_a, pose_a, sdf_b, pose_b, margin, &mut contacts, false);
     trace_surface_into_other(sdf_b, pose_b, sdf_a, pose_a, margin, &mut contacts, true);
+
+    // Post-hoc spatial dedup: deepest contacts win, skip nearby duplicates.
+    let cell_size = sdf_a.cell_size().min(sdf_b.cell_size());
+    dedup_contacts(&mut contacts, cell_size);
+
     contacts
+}
+
+/// Like [`sdf_sdf_contact_raw`] but returns two separate vectors:
+/// contacts from A's surface (A→B pass) and contacts from B's surface
+/// (B→A pass). Used by the normal refinement pipeline to refine each
+/// contact against the correct source shape.
+pub fn sdf_sdf_contact_raw_split(
+    sdf_a: &SdfGrid,
+    pose_a: &Pose,
+    sdf_b: &SdfGrid,
+    pose_b: &Pose,
+    margin: f64,
+) -> (Vec<SdfContact>, Vec<SdfContact>) {
+    let mut from_a: Vec<SdfContact> = Vec::new();
+    let mut from_b: Vec<SdfContact> = Vec::new();
+    trace_surface_into_other(sdf_a, pose_a, sdf_b, pose_b, margin, &mut from_a, false);
+    trace_surface_into_other(sdf_b, pose_b, sdf_a, pose_a, margin, &mut from_b, true);
+
+    let cell_size = sdf_a.cell_size().min(sdf_b.cell_size());
+    dedup_contacts(&mut from_a, cell_size);
+    dedup_contacts(&mut from_b, cell_size);
+
+    (from_a, from_b)
+}
+
+/// Deduplicate contacts by spatial proximity, keeping deepest first.
+///
+/// Sorts by penetration depth (deepest first), then greedily keeps contacts
+/// that are at least `cell_size * 0.5` apart from all already-kept contacts.
+/// Matches the GPU path's `dedup_contacts` in `sim-gpu/src/collision.rs`.
+fn dedup_contacts(contacts: &mut Vec<SdfContact>, cell_size: f64) {
+    let min_dist_sq = (cell_size * 0.5) * (cell_size * 0.5);
+
+    contacts.sort_by(|a, b| {
+        b.penetration
+            .partial_cmp(&a.penetration)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut kept = Vec::with_capacity(contacts.len());
+    for c in contacts.drain(..) {
+        let dominated = kept
+            .iter()
+            .any(|k: &SdfContact| (k.point - c.point).norm_squared() < min_dist_sq);
+        if !dominated {
+            kept.push(c);
+        }
+    }
+    *contacts = kept;
 }
 
 /// Query two SDFs for contact using surface-tracing.
@@ -57,6 +117,40 @@ pub fn separation_direction(pose_a: &Pose, pose_b: &Pose) -> Option<Vector3<f64>
     if len < 1e-10 { None } else { Some(delta / len) }
 }
 
+/// Stabilize a unit direction vector by zeroing negligibly small components.
+///
+/// For analytical convex-convex contacts (e.g. sphere-sphere stacking), the
+/// separation direction determines the contact normal and tangent frame. IEEE
+/// 754 rounding in position integration can accumulate sub-physical lateral
+/// components (e.g. `(0, 1e-15, 1)` instead of `(0, 0, 1)`). These tilt the
+/// tangent frame, causing pyramidal friction facets to produce asymmetric
+/// forces that seed exponential lateral drift on unstable equilibria.
+///
+/// Zeroing components below `1e-6 * max_component` ensures the tangent frame
+/// remains symmetric. The threshold is far above machine epsilon (2.2e-16)
+/// but far below any physical significance (~0.00006° of tilt).
+///
+/// See `sim/docs/PYRAMIDAL_FRICTION_INSTABILITY.md` for the full analysis.
+pub fn stabilize_direction(dir: Vector3<f64>) -> Vector3<f64> {
+    let max_abs = dir.x.abs().max(dir.y.abs()).max(dir.z.abs());
+    if max_abs < 1e-15 {
+        return dir;
+    }
+
+    let threshold = max_abs * 1e-6;
+    let x = if dir.x.abs() < threshold { 0.0 } else { dir.x };
+    let y = if dir.y.abs() < threshold { 0.0 } else { dir.y };
+    let z = if dir.z.abs() < threshold { 0.0 } else { dir.z };
+
+    let stabilized = Vector3::new(x, y, z);
+    let len = stabilized.norm();
+    if len < 1e-15 {
+        dir // all components below threshold — keep original
+    } else {
+        stabilized / len
+    }
+}
+
 /// One pass of surface-tracing: iterate surface points of `src_sdf`,
 /// check their penetration into `dst_sdf`.
 fn trace_surface_into_other(
@@ -69,7 +163,6 @@ fn trace_surface_into_other(
     flip_normal: bool,
 ) {
     let surface_threshold = src_sdf.cell_size() * 2.0;
-    let dedup_dist_sq = (src_sdf.cell_size() * 0.5) * (src_sdf.cell_size() * 0.5);
 
     for z in 0..src_sdf.depth() {
         for y in 0..src_sdf.height() {
@@ -125,17 +218,11 @@ fn trace_surface_into_other(
                     -(dst_pose.rotation * dst_grad)
                 };
 
-                let dominated = contacts
-                    .iter()
-                    .any(|c| (c.point - surface_world).norm_squared() < dedup_dist_sq);
-
-                if !dominated {
-                    contacts.push(SdfContact {
-                        point: surface_world,
-                        normal: world_normal,
-                        penetration,
-                    });
-                }
+                contacts.push(SdfContact {
+                    point: surface_world,
+                    normal: world_normal,
+                    penetration,
+                });
             }
         }
     }
@@ -538,5 +625,45 @@ mod tests {
                 c.normal.x, c.normal.y, c.normal.z, c.penetration
             );
         }
+    }
+
+    // =========================================================================
+    // stabilize_direction tests
+    // =========================================================================
+
+    #[test]
+    fn stabilize_zeroes_sub_threshold_components() {
+        // Nearly-vertical direction with tiny lateral drift
+        let dir = Vector3::new(1e-15, -2e-14, 1.0).normalize();
+        let stable = stabilize_direction(dir);
+        assert_eq!(stable.x, 0.0, "x should be zeroed");
+        assert_eq!(stable.y, 0.0, "y should be zeroed");
+        assert!((stable.z - 1.0).abs() < 1e-15, "z should be ~1.0");
+    }
+
+    #[test]
+    fn stabilize_preserves_significant_components() {
+        // 45-degree direction — no components should be zeroed
+        let dir = Vector3::new(0.707, 0.0, 0.707).normalize();
+        let stable = stabilize_direction(dir);
+        assert!((stable.x - dir.x).abs() < 1e-15);
+        assert_eq!(stable.y, 0.0); // already zero
+        assert!((stable.z - dir.z).abs() < 1e-15);
+    }
+
+    #[test]
+    fn stabilize_preserves_large_lateral() {
+        // Tilted direction with physically significant lateral component
+        let dir = Vector3::new(0.0, 0.01, 1.0).normalize();
+        let stable = stabilize_direction(dir);
+        // 0.01 > 1e-6 * 1.0, so y should NOT be zeroed
+        assert!(stable.y > 0.009, "y should be preserved (got {})", stable.y);
+    }
+
+    #[test]
+    fn stabilize_identity_on_cardinal() {
+        let dir = Vector3::z();
+        let stable = stabilize_direction(dir);
+        assert!((stable - dir).norm() < 1e-15);
     }
 }

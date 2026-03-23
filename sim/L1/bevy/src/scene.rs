@@ -95,6 +95,15 @@ impl ExampleScene {
         orbit.apply_to_transform(&mut cam_transform);
         commands.spawn((Camera3d::default(), orbit, cam_transform));
 
+        // ── Ambient light ────────────────────────────────────────────
+        // Bevy 0.18: GlobalAmbientLight is the world-wide resource.
+        // (AmbientLight is now a per-camera component override.)
+        commands.insert_resource(GlobalAmbientLight {
+            color: Color::WHITE,
+            brightness: 1_200.0,
+            ..default()
+        });
+
         // ── Key light ───────────────────────────────────────────────
         commands.spawn((
             DirectionalLight {
@@ -112,7 +121,7 @@ impl ExampleScene {
                 shadows_enabled: false,
                 ..default()
             },
-            Transform::from_xyz(-20.0, 30.0, 30.0).looking_at(Vec3::ZERO, Vec3::Y),
+            Transform::from_xyz(-20.0, 30.0, -30.0).looking_at(Vec3::ZERO, Vec3::Y),
         ));
 
         // ── Ground plane ────────────────────────────────────────────

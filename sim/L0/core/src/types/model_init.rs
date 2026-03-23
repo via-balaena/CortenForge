@@ -227,6 +227,7 @@ impl Model {
             // Shapes (empty)
             nshape: 0,
             shape_data: vec![],
+            gpu_collider: None,
 
             // Sites (empty)
             site_body: vec![],
@@ -360,6 +361,7 @@ impl Model {
             ccd_tolerance: 1e-6, // MuJoCo default for convex solver tolerance
             sdf_iterations: 10,  // MuJoCo default for SDF Newton iterations
             sdf_initpoints: 40,  // MuJoCo default for SDF initial sample points
+            sdf_maxcontact: 50,  // Cap SDF-SDF contacts per pair (deepest kept)
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
 

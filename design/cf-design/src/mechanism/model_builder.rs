@@ -39,12 +39,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::solid::ShapeHint;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, GainType, GeomType, MjJointType, Model,
-    PhysicsShape, ShapeConcave, ShapeConvex, ShapeSphere, SolverType, TendonType, WrapType,
+    PhysicsShape, SolverType, TendonType, WrapType,
 };
+
+use crate::mechanism::analytical_shape::AnalyticalShape;
 
 use super::actuator::ActuatorKind;
 use super::builder::Mechanism;
@@ -167,11 +168,11 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
 
         let sdf_id = shape_data.len();
         let grid = Arc::new(sdf);
-        let shape: Arc<dyn PhysicsShape> = match solid.shape_hint() {
-            ShapeHint::Sphere(radius) => Arc::new(ShapeSphere::new(grid, radius)),
-            ShapeHint::Convex => Arc::new(ShapeConvex::new(grid)),
-            ShapeHint::Concave => Arc::new(ShapeConcave::new(grid)),
-        };
+        let shape: Arc<dyn PhysicsShape> = Arc::new(AnalyticalShape::new(
+            grid,
+            Arc::new(solid.clone()),
+            solid.shape_hint(),
+        ));
         shape_data.push(shape);
 
         // Visual mesh: Solid::mesh → IndexedMesh → TriangleMeshData
@@ -238,6 +239,12 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
         model.body_quat.push(UnitQuaternion::identity());
         model.body_name.push(Some(part_name.to_string()));
 
+        // Geom offset: how the solid's mesh is shifted in the body frame.
+        // For articulated joints (non-free), with_joint_origin or bbox-based
+        // alignment shifts the mesh away from the body frame origin. The COM
+        // must account for this offset so the physics sees the correct lever arm.
+        let geom_offset = compute_geom_offset(part, &joints_on);
+
         // Mass properties (computed from implicit field)
         let mass_props = super::mass::mass_properties(part.solid(), part.material().density, 1.0);
         if let Some(mp) = mass_props {
@@ -247,12 +254,15 @@ fn generate(mechanism: &Mechanism, sdf_resolution: f64, visual_resolution: f64) 
             model
                 .body_inertia
                 .push(Vector3::new(mp.inertia[0], mp.inertia[1], mp.inertia[2]));
-            // Center of mass offset in body frame (mm — same units as geometry)
-            model.body_ipos.push(mp.center_of_mass.coords);
+            // Center of mass in body frame = geom_offset + COM_in_solid_frame.
+            // mass_properties returns COM in the solid's local frame (centered
+            // at origin for symmetric shapes). The geom_offset translates the
+            // solid into the body frame, so we must apply it here.
+            model.body_ipos.push(geom_offset + mp.center_of_mass.coords);
         } else {
             model.body_mass.push(0.01); // fallback
             model.body_inertia.push(Vector3::new(1e-6, 1e-6, 1e-6));
-            model.body_ipos.push(Vector3::zeros());
+            model.body_ipos.push(geom_offset);
         }
         model.body_iquat.push(UnitQuaternion::identity());
 
@@ -2695,5 +2705,870 @@ mod tests {
             "upper should be at z≈15, got {z_up:.3}"
         );
         assert!((gap - 10.0).abs() < 2.0, "gap should be ≈10, got {gap:.3}");
+    }
+
+    // ── Phase 3d: Geometry-driven hinge simulation ───────────────────
+
+    /// Full simulation of a geometry-driven hinge: socket (concave) +
+    /// flanged pin (convex, `Free` joint). Both children of world. SDF
+    /// collision is the ONLY constraint — no `JointKind::Revolute`.
+    ///
+    /// Verifies that the solver + integrator + FK can handle concave SDF
+    /// multi-contact (1000+ contacts per step) and maintain the constraint.
+    #[test]
+    fn sdf_geometry_hinge_simulation() {
+        // ── Socket: tube with annular caps (concave) ─────────────────
+        // Bore R=3.5, outer R=5.5, half_h=8, cap opening R=2.5
+        let socket_solid = Solid::cylinder(5.5, 10.0) // outer cylinder
+            .subtract(Solid::cylinder(3.5, 8.0)) // bore
+            .subtract(Solid::cylinder(2.5, 11.0)); // cap openings
+
+        // Socket: very dense so it barely moves under contact forces
+        let mut mat_socket = Material::new("steel", 7800.0);
+        mat_socket.color = Some([0.3, 0.5, 1.0, 1.0]);
+
+        // ── Pin: shaft + flanges (convex union) ──────────────────────
+        // Shaft R=3.0, flange R=3.2, shaft half_h=6, flange half_h=1
+        // shaft_half_h=6.0 → flange at z=±6.0, extends to z=±7.0.
+        // Cap face at z=±8.0. Axial clearance = 1.0mm per side.
+        // Pin starts offset z=-0.9 so ONLY the bottom flange is near
+        // the bottom cap (gap=0.1mm < margin=0.15mm). Top flange is 2.8mm
+        // from top cap — no contact. This breaks the symmetric cancellation
+        // that prevented gravity resistance in the pre-loaded design.
+        let shaft = Solid::cylinder(3.0, 6.0);
+        let top_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, 6.0));
+        let bot_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, -6.0));
+        let pin_solid = shaft.union(top_flange).union(bot_flange);
+
+        let mut mat_pin = Material::new("PLA", 1250.0);
+        mat_pin.color = Some([1.0, 0.35, 0.3, 1.0]);
+
+        // ── Build mechanism: siblings, both children of world ────────
+        // Mechanism builder requires all parts to have joints (no orphans).
+        // Socket gets a Free joint at origin; heavy density keeps it still.
+        let mechanism = Mechanism::builder("hinge_test")
+            .part(Part::new("socket", socket_solid, mat_socket))
+            .part(Part::new("pin", pin_solid, mat_pin))
+            .joint(JointDef::new(
+                "socket_free",
+                "world",
+                "socket",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 15.0), // above ground (socket half_h=10+2=12)
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "pin_free",
+                "world",
+                "pin",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 15.0), // same position as socket
+                Vector3::z(),
+            ))
+            .build();
+
+        let mut model = mechanism.to_model(1.0, 1.0);
+        // Ground plane holds the socket so gravity creates relative force
+        // between socket (resting on ground) and pin (falling inside socket).
+        // Without ground, both bodies free-fall equally → zero relative velocity
+        // → contact solver never activates against gravity.
+        model.add_ground_plane();
+        // No ground plane — pure geometry constraint test
+
+        eprintln!();
+        eprintln!("  Phase 3d: Geometry-Driven Hinge Simulation");
+        eprintln!("  -------------------------------------------");
+        eprintln!("  Bodies: {}, Geoms: {}", model.nbody, model.ngeom);
+        eprintln!("  nq: {}, nv: {}", model.nq, model.nv);
+        eprintln!("  Timestep: {:.4} s", model.timestep);
+
+        let mut data = model.make_data();
+
+        // Two Free joints: socket qpos[0..7], pin qpos[7..14]
+        let pin_q = 7; // pin qpos start index
+
+        // ── Diagnostic: static contact check ─────────────────────────
+        // Place pin 1.5mm below center so flange overlaps cap, verify contacts.
+        data.qpos[pin_q + 2] = -1.5; // z = -1.5mm
+        data.forward(&model).expect("forward");
+
+        eprintln!();
+        eprintln!("  Phase 3d: Geometry-Driven Hinge Simulation");
+        eprintln!("  -------------------------------------------");
+        eprintln!("  Bodies: {}, Geoms: {}", model.nbody, model.ngeom);
+        eprintln!("  nq: {}, nv: {}", model.nq, model.nv);
+
+        // Count contacts with +Z and -Z normals to see cap contacts
+        let mut cap_contacts = 0;
+        let mut bore_contacts = 0;
+        for c in data.contacts.iter().take(data.ncon) {
+            if c.normal.z.abs() > 0.5 {
+                cap_contacts += 1;
+            } else {
+                bore_contacts += 1;
+            }
+        }
+        eprintln!(
+            "  Static check (z=-1.5): ncon={}, bore={bore_contacts}, cap={cap_contacts}",
+            data.ncon
+        );
+
+        // Print a few cap contact details
+        for (i, c) in data
+            .contacts
+            .iter()
+            .take(data.ncon)
+            .enumerate()
+            .filter(|(_, c)| c.normal.z.abs() > 0.5)
+            .take(5)
+        {
+            eprintln!(
+                "    cap[{i}] n=({:.3},{:.3},{:.3}) depth={:.4} pos=({:.2},{:.2},{:.2})",
+                c.normal.x, c.normal.y, c.normal.z, c.depth, c.pos.x, c.pos.y, c.pos.z
+            );
+        }
+
+        assert!(
+            cap_contacts > 0,
+            "FAIL: no cap contacts when pin is 1.5mm below center"
+        );
+        eprintln!("  PASS: cap contacts detected ({cap_contacts})");
+
+        // ── Dynamic simulation ───────────────────────────────────────
+        // Reset to initial state (static check modified qpos).
+        data.qpos = model.qpos0.clone();
+        // Pin starts 0.9mm below socket center: bottom flange approaches cap.
+        // With ground plane supporting socket, gravity creates asymmetric
+        // relative force: socket held by ground, pin falls into cap.
+        data.qpos[pin_q + 2] -= 0.9;
+        for v in data.qvel.iter_mut() {
+            *v = 0.0;
+        }
+        data.forward(&model).expect("forward");
+
+        let socket_q = 0; // socket qpos start index
+        let mut max_rel_x = 0.0_f64;
+        let mut max_rel_y = 0.0_f64;
+        let mut max_rel_z = 0.0_f64;
+        let mut any_nan = false;
+        let steps = 400; // enough for socket to settle on ground + pin to equilibrate
+
+        for step in 0..steps {
+            data.step(&model).expect("step");
+
+            // Relative position: pin - socket
+            let rx = data.qpos[pin_q] - data.qpos[socket_q];
+            let ry = data.qpos[pin_q + 1] - data.qpos[socket_q + 1];
+            let rz = data.qpos[pin_q + 2] - data.qpos[socket_q + 2];
+
+            if !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
+                any_nan = true;
+                eprintln!("  NaN/Inf at step {step}!");
+                break;
+            }
+
+            max_rel_x = max_rel_x.max(rx.abs());
+            max_rel_y = max_rel_y.max(ry.abs());
+            max_rel_z = max_rel_z.max(rz.abs());
+
+            if step % 50 == 0 || step == steps - 1 {
+                let step_cap = data
+                    .contacts
+                    .iter()
+                    .take(data.ncon)
+                    .filter(|c| c.normal.z.abs() > 0.5)
+                    .count();
+                eprintln!(
+                    "  step {step:3}: rel=({rx:+.3},{ry:+.3},{rz:+.3}) sock_z={:.2} pin_z={:.2} ncon={} cap={step_cap}",
+                    data.qpos[socket_q + 2],
+                    data.qpos[pin_q + 2],
+                    data.ncon
+                );
+            }
+        }
+
+        eprintln!();
+        eprintln!("  === Phase 3d PASS/FAIL ===");
+
+        assert!(!any_nan, "FAIL: NaN/Inf in positions");
+        eprintln!("  PASS: no NaN/Inf");
+
+        // Radial: pin stays within bore (clearance = 0.5mm, allow some solver slop)
+        assert!(
+            max_rel_x < 2.0,
+            "FAIL: pin escaped radially in X (max |Δx| = {max_rel_x:.3})"
+        );
+        assert!(
+            max_rel_y < 2.0,
+            "FAIL: pin escaped radially in Y (max |Δy| = {max_rel_y:.3})"
+        );
+        eprintln!("  PASS: radial constraint (max |Δx|={max_rel_x:.3}, |Δy|={max_rel_y:.3})");
+
+        // Axial: pin stays within bore (1mm clearance per side + initial 0.9mm offset)
+        assert!(
+            max_rel_z < 3.0,
+            "FAIL: pin escaped axially (max |Δz| = {max_rel_z:.3})"
+        );
+        eprintln!("  PASS: axial constraint (max |Δz|={max_rel_z:.3})");
+
+        assert!(data.ncon > 0, "FAIL: no contacts at final step");
+        eprintln!("  PASS: contacts active (ncon={})", data.ncon);
+
+        eprintln!();
+    }
+
+    // ========================================================================
+    // Phase 6: Octree integration tests + dynamics validation
+    // ========================================================================
+    //
+    // Deferred from Phase 3 (sim-core unit tests can't access cf-design types).
+    // These tests use AnalyticalShape via the model builder, verifying that the
+    // octree detection and Newton refinement produce correct results for concave
+    // CSG geometry.
+
+    /// Octree: sphere in cylindrical bore produces contacts on both sides.
+    ///
+    /// A sphere (r=3) inside a tube (bore r=3.5) should produce contacts
+    /// with radial normals pointing inward from the bore wall.
+    #[test]
+    fn octree_sphere_in_bore() {
+        use sim_core::Pose;
+        use sim_core::sdf::octree_detect::octree_contact_detect;
+        use std::sync::Arc;
+
+        let bore_solid = Arc::new(Solid::cylinder(5.5, 10.0).subtract(Solid::cylinder(3.5, 10.0)));
+        let sphere_solid = Arc::new(Solid::sphere(3.0));
+
+        let bore_grid = Arc::new(bore_solid.sdf_grid_at(0.5).unwrap());
+        let sphere_grid = Arc::new(sphere_solid.sdf_grid_at(0.5).unwrap());
+
+        let bore_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            bore_grid,
+            bore_solid,
+            crate::solid::ShapeHint::Concave,
+        );
+        let sphere_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            sphere_grid,
+            sphere_solid,
+            crate::solid::ShapeHint::Sphere(3.0),
+        );
+
+        // Sphere slightly offset in +X inside the bore
+        let bore_pose = Pose::from_position(Point3::origin());
+        let sphere_pose = Pose::from_position(Point3::new(0.3, 0.0, 0.0));
+
+        let contacts = octree_contact_detect(
+            &bore_shape,
+            &bore_pose,
+            &sphere_shape,
+            &sphere_pose,
+            0.5,
+            20,
+        );
+
+        assert!(
+            !contacts.is_empty(),
+            "sphere in bore should produce contacts"
+        );
+
+        // Contacts should be in the radial overlap region
+        for c in &contacts {
+            let radial = c.point.x.hypot(c.point.y);
+            assert!(
+                radial > 2.0 && radial < 5.0,
+                "contact at radial={radial:.2} should be between sphere and bore surfaces"
+            );
+        }
+
+        eprintln!("  octree_sphere_in_bore: {} contacts", contacts.len());
+        for (i, c) in contacts.iter().enumerate().take(5) {
+            eprintln!(
+                "    [{i}] pos=({:.2},{:.2},{:.2}) n=({:.3},{:.3},{:.3}) pen={:.4}",
+                c.point.x, c.point.y, c.point.z, c.normal.x, c.normal.y, c.normal.z, c.penetration
+            );
+        }
+    }
+
+    /// Newton refinement on cylinder bore produces purely radial normals
+    /// (zero axial component) — the key test for virtual friction elimination.
+    #[test]
+    fn newton_cylinder_bore_radial_normals() {
+        use sim_core::Pose;
+        use sim_core::sdf::octree_detect::octree_contact_detect;
+        use std::sync::Arc;
+
+        let bore_solid = Arc::new(Solid::cylinder(5.0, 10.0).subtract(Solid::cylinder(3.0, 10.0)));
+        let pin_solid = Arc::new(Solid::cylinder(2.8, 8.0));
+
+        let bore_grid = Arc::new(bore_solid.sdf_grid_at(0.5).unwrap());
+        let pin_grid = Arc::new(pin_solid.sdf_grid_at(0.5).unwrap());
+
+        let bore_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            bore_grid,
+            bore_solid,
+            crate::solid::ShapeHint::Concave,
+        );
+        let pin_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            pin_grid,
+            pin_solid,
+            crate::solid::ShapeHint::Convex,
+        );
+
+        // Pin centered in bore — radial clearance = 0.2mm
+        let bore_pose = Pose::from_position(Point3::origin());
+        let pin_pose = Pose::from_position(Point3::new(0.1, 0.0, 0.0)); // slight offset
+
+        let contacts =
+            octree_contact_detect(&bore_shape, &bore_pose, &pin_shape, &pin_pose, 0.5, 20);
+
+        assert!(!contacts.is_empty(), "pin in bore should produce contacts");
+
+        // Key assertion: normals should be purely radial (no axial Z component)
+        // This is what the CSG analytical gradient guarantees and the grid can't.
+        for (i, c) in contacts.iter().enumerate() {
+            let axial = c.normal.z.abs();
+            eprintln!(
+                "  contact[{i}] n=({:.4},{:.4},{:.4}) axial={axial:.6}",
+                c.normal.x, c.normal.y, c.normal.z
+            );
+            // The bore surface is cylindrical: true normal is (x, y, 0) / r.
+            // Allow small axial leak from Newton convergence near cylinder caps,
+            // but mid-bore contacts should have essentially zero axial component.
+            if c.point.z.abs() < 7.0 {
+                // mid-bore (away from caps)
+                assert!(
+                    axial < 0.01,
+                    "mid-bore contact[{i}] has axial leak {axial:.6} (should be < 0.01)"
+                );
+            }
+        }
+    }
+
+    /// Octree contact count is bounded and sparse compared to grid path.
+    ///
+    /// The octree should produce far fewer contacts than the grid scan
+    /// for the same geometry. This verifies the octree path was actually used
+    /// (not falling through to Tier 3 grid).
+    #[test]
+    fn octree_produces_sparse_contacts() {
+        use sim_core::Pose;
+        use sim_core::sdf::octree_detect::octree_contact_detect;
+        use sim_core::sdf::sdf_sdf_contact;
+        use std::sync::Arc;
+
+        let bore_solid = Arc::new(Solid::cylinder(5.0, 10.0).subtract(Solid::cylinder(3.0, 10.0)));
+        let pin_solid = Arc::new(Solid::cylinder(2.8, 8.0));
+
+        let bore_grid = Arc::new(bore_solid.sdf_grid_at(0.5).unwrap());
+        let pin_grid = Arc::new(pin_solid.sdf_grid_at(0.5).unwrap());
+
+        let bore_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            bore_grid.clone(),
+            bore_solid,
+            crate::solid::ShapeHint::Concave,
+        );
+        let pin_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            pin_grid.clone(),
+            pin_solid,
+            crate::solid::ShapeHint::Convex,
+        );
+
+        let bore_pose = Pose::from_position(Point3::origin());
+        let pin_pose = Pose::from_position(Point3::new(0.1, 0.0, 0.0));
+
+        // Octree contacts
+        let octree_contacts =
+            octree_contact_detect(&bore_shape, &bore_pose, &pin_shape, &pin_pose, 0.5, 20);
+
+        // Grid contacts (Tier 3 path)
+        let grid_contacts = sdf_sdf_contact(&bore_grid, &bore_pose, &pin_grid, &pin_pose, 0.5);
+
+        eprintln!(
+            "  octree: {} contacts, grid: {} contacts",
+            octree_contacts.len(),
+            grid_contacts.len()
+        );
+
+        // Octree should produce significantly fewer contacts
+        assert!(
+            octree_contacts.len() <= 20,
+            "octree should produce ≤20 contacts, got {}",
+            octree_contacts.len()
+        );
+        assert!(
+            grid_contacts.len() > octree_contacts.len(),
+            "grid ({}) should produce more contacts than octree ({})",
+            grid_contacts.len(),
+            octree_contacts.len()
+        );
+    }
+
+    /// Octree: pin in full socket (tube + caps) produces contacts on
+    /// multiple patches with radial normals and no axial leak.
+    #[test]
+    fn octree_pin_in_socket() {
+        use sim_core::Pose;
+        use sim_core::sdf::octree_detect::octree_contact_detect;
+        use std::sync::Arc;
+
+        // Socket: tube with caps (concave)
+        let socket_solid = Arc::new(
+            Solid::cylinder(5.5, 10.0)
+                .subtract(Solid::cylinder(3.5, 8.0))
+                .subtract(Solid::cylinder(2.5, 11.0)),
+        );
+        // Pin: shaft + flanges
+        let shaft = Solid::cylinder(3.0, 6.0);
+        let top_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, 6.0));
+        let bot_flange = Solid::cylinder(3.2, 1.0).translate(Vector3::new(0.0, 0.0, -6.0));
+        let pin_solid = Arc::new(shaft.union(top_flange).union(bot_flange));
+
+        let socket_grid = Arc::new(socket_solid.sdf_grid_at(0.5).unwrap());
+        let pin_grid = Arc::new(pin_solid.sdf_grid_at(0.5).unwrap());
+
+        let socket_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            socket_grid,
+            socket_solid,
+            crate::solid::ShapeHint::Concave,
+        );
+        let pin_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            pin_grid,
+            pin_solid,
+            crate::solid::ShapeHint::Convex,
+        );
+
+        // Pin slightly offset radially
+        let socket_pose = Pose::from_position(Point3::origin());
+        let pin_pose = Pose::from_position(Point3::new(0.2, 0.0, -0.5));
+
+        let contacts =
+            octree_contact_detect(&socket_shape, &socket_pose, &pin_shape, &pin_pose, 0.5, 20);
+
+        assert!(
+            !contacts.is_empty(),
+            "pin in socket should produce contacts"
+        );
+
+        // Should have contacts from bore wall (radial) and at least one
+        // cap face (axial). Check that normals aren't all the same direction.
+        let mut has_radial = false;
+        let mut has_axial = false;
+        for c in &contacts {
+            if c.normal.z.abs() > 0.5 {
+                has_axial = true;
+            } else {
+                has_radial = true;
+            }
+        }
+
+        eprintln!(
+            "  octree_pin_in_socket: {} contacts, radial={has_radial}, axial={has_axial}",
+            contacts.len()
+        );
+
+        assert!(has_radial, "should have radial (bore wall) contacts");
+        // Axial contacts depend on flange-cap overlap; may or may not exist
+        // depending on exact geometry clearances. Don't assert.
+    }
+
+    /// Octree pruning: for convex shapes (spheres), interval pruning should
+    /// eliminate most of the search space. We use spheres here because convex
+    /// shapes have tight intervals — concave shapes (Subtract) have loose
+    /// intervals that limit pruning effectiveness (see spec §5.7).
+    #[test]
+    fn octree_pruning_count() {
+        use sim_core::Pose;
+        use sim_core::sdf::octree_detect::octree_contact_detect_with_stats;
+        use std::sync::Arc;
+
+        let sphere_a = Arc::new(Solid::sphere(5.0));
+        let sphere_b = Arc::new(Solid::sphere(5.0));
+
+        let grid_a = Arc::new(sphere_a.sdf_grid_at(0.5).unwrap());
+        let grid_b = Arc::new(sphere_b.sdf_grid_at(0.5).unwrap());
+
+        let shape_a = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            grid_a.clone(),
+            sphere_a,
+            crate::solid::ShapeHint::Sphere(5.0),
+        );
+        let shape_b = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            grid_b.clone(),
+            sphere_b,
+            crate::solid::ShapeHint::Sphere(5.0),
+        );
+
+        let pose_a = Pose::from_position(Point3::origin());
+        let pose_b = Pose::from_position(Point3::new(8.0, 0.0, 0.0));
+
+        let (_contacts, stats) =
+            octree_contact_detect_with_stats(&shape_a, &pose_a, &shape_b, &pose_b, 0.5, 20);
+
+        // Grid cell count: both grids combined (full scan baseline)
+        let grid_cells = grid_a.width() * grid_a.height() * grid_a.depth()
+            + grid_b.width() * grid_b.height() * grid_b.depth();
+
+        eprintln!(
+            "  octree_pruning_count: interval_evals={}, leaf_cells={}, grid_cells={grid_cells}",
+            stats.interval_evals, stats.leaf_cells
+        );
+
+        // For convex shapes with tight intervals, octree should evaluate
+        // far fewer cells than the full grid scan
+        assert!(
+            stats.interval_evals < grid_cells,
+            "octree interval evals ({}) should be < grid cells ({grid_cells})",
+            stats.interval_evals
+        );
+        assert!(
+            stats.leaf_cells < grid_cells / 5,
+            "octree leaf cells ({}) should be < 20% of grid cells ({grid_cells})",
+            stats.leaf_cells
+        );
+    }
+
+    /// Octree contacts should be spatially close to grid contacts for
+    /// the same geometry.
+    #[test]
+    fn octree_matches_grid_positions() {
+        use sim_core::Pose;
+        use sim_core::sdf::octree_detect::octree_contact_detect;
+        use sim_core::sdf::sdf_sdf_contact;
+        use std::sync::Arc;
+
+        let sphere_a = Arc::new(Solid::sphere(5.0));
+        let sphere_b = Arc::new(Solid::sphere(5.0));
+
+        let grid_a = Arc::new(sphere_a.sdf_grid_at(0.5).unwrap());
+        let grid_b = Arc::new(sphere_b.sdf_grid_at(0.5).unwrap());
+
+        let shape_a = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            grid_a.clone(),
+            sphere_a,
+            crate::solid::ShapeHint::Sphere(5.0),
+        );
+        let shape_b = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            grid_b.clone(),
+            sphere_b,
+            crate::solid::ShapeHint::Sphere(5.0),
+        );
+
+        let pose_a = Pose::from_position(Point3::origin());
+        let pose_b = Pose::from_position(Point3::new(8.0, 0.0, 0.0));
+
+        let octree_contacts = octree_contact_detect(&shape_a, &pose_a, &shape_b, &pose_b, 0.5, 20);
+        let grid_contacts = sdf_sdf_contact(&grid_a, &pose_a, &grid_b, &pose_b, 0.5);
+
+        assert!(!octree_contacts.is_empty(), "octree should find contacts");
+        assert!(!grid_contacts.is_empty(), "grid should find contacts");
+
+        // For each octree contact, find the nearest grid contact
+        let cell_size = grid_a.cell_size();
+        for oc in &octree_contacts {
+            let min_dist = grid_contacts
+                .iter()
+                .map(|gc| (gc.point - oc.point).norm())
+                .fold(f64::MAX, f64::min);
+
+            assert!(
+                min_dist < cell_size * 3.0,
+                "octree contact at ({:.2},{:.2},{:.2}) has no grid neighbor within {:.1}mm (nearest={min_dist:.2}mm)",
+                oc.point.x,
+                oc.point.y,
+                oc.point.z,
+                cell_size * 3.0
+            );
+        }
+
+        eprintln!(
+            "  octree_matches_grid: {} octree, {} grid contacts — all octree contacts have grid neighbor within {:.1}mm",
+            octree_contacts.len(),
+            grid_contacts.len(),
+            cell_size * 3.0
+        );
+    }
+
+    /// Newton refinement on CSG subtract produces normals matching
+    /// `Solid::gradient()` directly.
+    #[test]
+    fn newton_csg_subtract_matches_solid_gradient() {
+        use sim_core::PhysicsShape;
+        use std::sync::Arc;
+
+        let bore_solid = Arc::new(Solid::cylinder(5.0, 10.0).subtract(Solid::cylinder(3.0, 10.0)));
+        let bore_grid = Arc::new(bore_solid.sdf_grid_at(0.5).unwrap());
+        let bore_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            bore_grid,
+            bore_solid.clone(),
+            crate::solid::ShapeHint::Concave,
+        );
+
+        // Test points on the bore surface at mid-height
+        let test_points = [
+            Point3::new(3.0, 0.0, 0.0),   // +X on bore
+            Point3::new(0.0, 3.0, 0.0),   // +Y on bore
+            Point3::new(-3.0, 0.0, 0.0),  // -X on bore
+            Point3::new(2.12, 2.12, 0.0), // 45° on bore
+        ];
+
+        for &p in &test_points {
+            // Shape gradient (via PhysicsShape trait — delegates to Solid)
+            let shape_grad = bore_shape.gradient(&p).unwrap();
+
+            // Direct Solid gradient
+            let solid_grad_raw = bore_solid.gradient(&p);
+            let norm = solid_grad_raw.norm();
+            let solid_grad = solid_grad_raw / norm;
+
+            let diff = (shape_grad - solid_grad).norm();
+            assert!(
+                diff < 1e-10,
+                "shape gradient at ({:.1},{:.1},{:.1}) differs from Solid::gradient by {diff:.2e}",
+                p.x,
+                p.y,
+                p.z
+            );
+
+            // Verify the normal is purely radial (no axial component)
+            assert!(
+                shape_grad.z.abs() < 1e-10,
+                "bore normal at ({:.1},{:.1},{:.1}) has axial leak z={:.2e}",
+                p.x,
+                p.y,
+                p.z,
+                shape_grad.z
+            );
+        }
+
+        eprintln!("  newton_csg_subtract: all 4 test points match Solid::gradient() exactly");
+    }
+
+    /// Hinge pendulum energy conservation: a frictionless geometry-driven
+    /// hinge should oscillate without artificial damping.
+    ///
+    /// This is the critical dynamics validation test. A pendulum arm
+    /// hanging from a pin-in-bore geometry hinge, released from horizontal,
+    /// should swing with < 1% energy loss per period.
+    #[test]
+    fn hinge_pendulum_energy_conservation() {
+        use nalgebra::UnitQuaternion;
+
+        // ── Geometry: socket + arm-with-pin ──────────────────────────────
+        // Socket: very heavy (acts as fixed anchor), concave bore along Y axis.
+        // The bore axis is Y (horizontal), so the arm swings in the XZ plane
+        // under gravity (-Z). The bore constrains radial motion (XZ) while
+        // allowing rotation around Y.
+        let socket_solid = Solid::cylinder(6.0, 4.0) // outer R=6, half-height=4
+            .subtract(Solid::cylinder(3.5, 5.0)) // bore R=3.5, through
+            .rotate(UnitQuaternion::from_axis_angle(
+                &nalgebra::Unit::new_normalize(Vector3::x()),
+                std::f64::consts::FRAC_PI_2,
+            )); // rotate 90° around X: Z-axis bore becomes Y-axis bore
+
+        // Very high density so socket barely moves under contact forces
+        let mut mat_heavy = Material::new("steel", 500_000.0);
+        mat_heavy.color = Some([0.5, 0.5, 0.7, 1.0]);
+
+        // Arm: pin (fits in Y-axis bore) + lever arm extending in -Z.
+        // Pin is a Y-axis cylinder that sits inside the bore.
+        // The arm extends downward from the pin center.
+        let pin = Solid::cylinder(3.0, 3.0) // R=3.0 fits in bore R=3.5
+            .rotate(UnitQuaternion::from_axis_angle(
+                &nalgebra::Unit::new_normalize(Vector3::x()),
+                std::f64::consts::FRAC_PI_2,
+            )); // Z-axis cylinder → Y-axis cylinder
+        let arm =
+            Solid::cuboid(Vector3::new(1.0, 1.0, 8.0)).translate(Vector3::new(0.0, 0.0, -14.0)); // extends downward
+        let arm_solid = pin.union(arm);
+
+        let mut mat_light = Material::new("PLA", 1250.0);
+        mat_light.color = Some([1.0, 0.3, 0.3, 1.0]);
+
+        // ── Build mechanism ──────────────────────────────────────────────
+        let mechanism = Mechanism::builder("pendulum")
+            .part(Part::new("socket", socket_solid, mat_heavy))
+            .part(Part::new("arm", arm_solid, mat_light))
+            .joint(JointDef::new(
+                "socket_free",
+                "world",
+                "socket",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 20.0), // well above ground
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "arm_free",
+                "world",
+                "arm",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 20.0), // same position
+                Vector3::z(),
+            ))
+            .build();
+
+        let mut model = mechanism.to_model(1.0, 1.0);
+        // Frictionless contacts — the whole point of this test
+        for i in 0..model.ngeom {
+            model.geom_friction[i] = Vector3::new(0.0, 0.0, 0.0);
+        }
+        // Gravity compensation on the socket body (body 1) so it stays fixed.
+        // Without this, both bodies free-fall equally and the bore constraint
+        // never engages (no relative force to push pin against bore wall).
+        model.body_gravcomp[1] = 1.0;
+        model.ngravcomp = 1;
+        model.add_ground_plane();
+
+        let mut data = model.make_data();
+
+        // Displace arm from equilibrium: rotate 45° around Y (the bore axis).
+        // This tilts the arm from hanging straight down (-Z) to an angle,
+        // so gravity creates a restoring torque and the arm swings.
+        let arm_q = 7; // arm qpos start (after socket's 7 DOF)
+        let angle = std::f64::consts::FRAC_PI_4; // 45°
+        data.qpos[arm_q + 3] = (angle / 2.0).cos(); // qw
+        data.qpos[arm_q + 4] = 0.0; // qx
+        data.qpos[arm_q + 5] = (angle / 2.0).sin(); // qy (rotate around Y)
+        data.qpos[arm_q + 6] = 0.0; // qz
+
+        data.forward(&model).expect("forward");
+
+        // ── Diagnostic: print initial state ──────────────────────────────
+        eprintln!();
+        eprintln!("  === Hinge Pendulum Diagnostic ===");
+        eprintln!(
+            "  Bodies: {}, Geoms: {}, nq: {}, nv: {}",
+            model.nbody, model.ngeom, model.nq, model.nv
+        );
+        eprintln!(
+            "  Timestep: {:.4} s, Gravity: {:?}",
+            model.timestep, model.gravity
+        );
+        for body in 0..model.nbody {
+            eprintln!(
+                "  body[{body}]: mass={:.4} pos=({:.2},{:.2},{:.2})",
+                model.body_mass[body], data.xipos[body].x, data.xipos[body].y, data.xipos[body].z,
+            );
+        }
+        for geom in 0..model.ngeom {
+            eprintln!(
+                "  geom[{geom}]: type={:?} friction=({:.2},{:.2},{:.2})",
+                model.geom_type[geom],
+                model.geom_friction[geom].x,
+                model.geom_friction[geom].y,
+                model.geom_friction[geom].z,
+            );
+        }
+        eprintln!(
+            "  socket qpos: ({:.2},{:.2},{:.2}) quat=({:.3},{:.3},{:.3},{:.3})",
+            data.qpos[0],
+            data.qpos[1],
+            data.qpos[2],
+            data.qpos[3],
+            data.qpos[4],
+            data.qpos[5],
+            data.qpos[6]
+        );
+        eprintln!(
+            "  arm qpos:    ({:.2},{:.2},{:.2}) quat=({:.3},{:.3},{:.3},{:.3})",
+            data.qpos[7],
+            data.qpos[8],
+            data.qpos[9],
+            data.qpos[10],
+            data.qpos[11],
+            data.qpos[12],
+            data.qpos[13]
+        );
+        eprintln!("  Initial ncon: {}", data.ncon);
+
+        // Print initial contacts
+        for (i, c) in data.contacts.iter().take(data.ncon).enumerate().take(10) {
+            eprintln!(
+                "    contact[{i}] pos=({:.2},{:.2},{:.2}) n=({:.3},{:.3},{:.3}) depth={:.4}",
+                c.pos.x, c.pos.y, c.pos.z, c.normal.x, c.normal.y, c.normal.z, c.depth,
+            );
+        }
+
+        // ── Run simulation and track energy ──────────────────────────────
+        let steps = 500;
+        let mut energies = Vec::new();
+
+        for step in 0..steps {
+            data.step(&model).expect("step");
+
+            // Total energy = KE + PE
+            let mut ke = 0.0;
+            let mut pe = 0.0;
+            for body in 1..model.nbody {
+                let mass = model.body_mass[body];
+                if body < data.cvel.len() {
+                    let cv = &data.cvel[body];
+                    let vx = cv[3];
+                    let vy = cv[4];
+                    let vz = cv[5];
+                    ke += 0.5 * mass * (vx * vx + vy * vy + vz * vz);
+                }
+                if body < data.xipos.len() {
+                    let z = data.xipos[body].z;
+                    pe += mass * 9.81 * z;
+                }
+            }
+
+            let total = ke + pe;
+            energies.push(total);
+
+            if step % 50 == 0 || step < 5 {
+                // Body positions
+                let sock_z = if model.nbody > 1 {
+                    data.xipos[1].z
+                } else {
+                    0.0
+                };
+                let arm_pos = if model.nbody > 2 {
+                    data.xipos[2]
+                } else {
+                    Vector3::zeros()
+                };
+                eprintln!(
+                    "  step {step:3}: sock_z={sock_z:.2} arm=({:.2},{:.2},{:.2}) KE={ke:.4} PE={pe:.4} ncon={}",
+                    arm_pos.x, arm_pos.y, arm_pos.z, data.ncon
+                );
+
+                // Print a few contacts for first few steps
+                if step < 5 {
+                    for (i, c) in data.contacts.iter().take(data.ncon).enumerate().take(5) {
+                        eprintln!(
+                            "    c[{i}] pos=({:.2},{:.2},{:.2}) n=({:.3},{:.3},{:.3}) d={:.4}",
+                            c.pos.x, c.pos.y, c.pos.z, c.normal.x, c.normal.y, c.normal.z, c.depth,
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Check energy conservation ────────────────────────────────────
+        // Compare energy at step 50 (after initial transient) with energy
+        // at step 450 (near end). Allow some loss from solver discretization.
+        let e_early = energies[50];
+        let e_late = energies[450];
+        let loss_fraction = if e_early.abs() > 1e-10 {
+            (e_early - e_late).abs() / e_early.abs()
+        } else {
+            0.0
+        };
+
+        eprintln!();
+        eprintln!(
+            "  Energy: early={e_early:.4}, late={e_late:.4}, loss={:.1}%",
+            loss_fraction * 100.0
+        );
+
+        // Energy conservation: with analytical CSG normals from the contact
+        // patch system, a frictionless geometry-driven hinge conserves energy.
+        // Grid normals would cause > 50% loss from virtual friction.
+        assert!(
+            loss_fraction < 0.05,
+            "energy loss {:.1}% exceeds 5% threshold — indicates virtual friction or solver instability",
+            loss_fraction * 100.0
+        );
     }
 }

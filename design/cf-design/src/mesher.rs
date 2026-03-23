@@ -44,6 +44,7 @@ pub fn mesh_field(node: &FieldNode, bounds: &Aabb, cell_size: f64) -> (IndexedMe
     let origin = bounds.min;
 
     let mut mesh = IndexedMesh::new();
+    let mut normals: Vec<nalgebra::Vector3<f64>> = Vec::new();
     let mut corner_cache: HashMap<(usize, usize, usize), f64> = HashMap::new();
     let mut edge_cache: HashMap<(usize, usize, usize, u8), u32> = HashMap::new();
 
@@ -134,6 +135,7 @@ pub fn mesh_field(node: &FieldNode, bounds: &Aabb, cell_size: f64) -> (IndexedMe
                             );
                             let idx = mesh.vertices.len() as u32;
                             mesh.vertices.push(p);
+                            normals.push(node.gradient(&p));
                             edge_cache.insert(key, idx);
                             idx
                         };
@@ -154,6 +156,8 @@ pub fn mesh_field(node: &FieldNode, bounds: &Aabb, cell_size: f64) -> (IndexedMe
             }
         }
     }
+
+    mesh.normals = Some(normals);
 
     (
         mesh,

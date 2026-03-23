@@ -2594,7 +2594,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-09-hinge-free"
+name = "example-sdf-09-cube-in-box"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2605,7 +2605,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-10-hinge-wall"
+name = "example-sdf-10-ball-in-bowl"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2616,7 +2616,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-11-hinge-stop"
+name = "example-sdf-11-hinge-free"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-gpu",
+]
+
+[[package]]
+name = "example-sdf-12-hinge-wall"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2627,7 +2639,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-12-damped-hinge"
+name = "example-sdf-13-hinge-stop"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2638,7 +2650,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-13-concave-stop"
+name = "example-sdf-14-damped-hinge"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2649,7 +2661,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-14-socket"
+name = "example-sdf-15-concave-stop"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+]
+
+[[package]]
+name = "example-sdf-16-socket"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2914,6 +2937,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gl_generator"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d"
+dependencies = [
+ "khronos_api",
+ "log",
+ "xml-rs",
+]
+
+[[package]]
 name = "glam"
 version = "0.30.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2931,6 +2965,27 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "glow"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5e5ea60d70410161c8bf5da3fdfeaa1c72ed2c15f8bbb9d19fe3a4fad085f08"
+dependencies = [
+ "js-sys",
+ "slotmap",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "glutin_wgl_sys"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c4ee00b289aba7a9e5306d57c2d05499b2e5dc427f84ac708bd2c090212cf3e"
+dependencies = [
+ "gl_generator",
+]
 
 [[package]]
 name = "gpu-alloc"
@@ -3291,6 +3346,23 @@ dependencies = [
  "quote",
  "syn 2.0.114",
 ]
+
+[[package]]
+name = "khronos-egl"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
+dependencies = [
+ "libc",
+ "libloading",
+ "pkg-config",
+]
+
+[[package]]
+name = "khronos_api"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "ktx2"
@@ -4428,6 +4500,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pollster"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
+
+[[package]]
 name = "portable-atomic"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5204,6 +5282,21 @@ dependencies = [
  "sim-types",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "sim-gpu"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "bytemuck",
+ "cf-geometry",
+ "log",
+ "nalgebra",
+ "pollster",
+ "sim-core",
+ "sim-types",
+ "wgpu",
 ]
 
 [[package]]
@@ -6297,13 +6390,18 @@ dependencies = [
  "cfg_aliases",
  "document-features",
  "hashbrown 0.16.1",
+ "js-sys",
  "log",
  "naga",
+ "parking_lot",
  "portable-atomic",
  "profiling",
  "raw-window-handle",
  "smallvec",
  "static_assertions",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wgpu-core",
  "wgpu-hal",
  "wgpu-types",
@@ -6335,6 +6433,7 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "wgpu-core-deps-apple",
+ "wgpu-core-deps-emscripten",
  "wgpu-core-deps-windows-linux-android",
  "wgpu-hal",
  "wgpu-types",
@@ -6345,6 +6444,15 @@ name = "wgpu-core-deps-apple"
 version = "27.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0772ae958e9be0c729561d5e3fd9a19679bcdfb945b8b1a1969d9bfe8056d233"
+dependencies = [
+ "wgpu-hal",
+]
+
+[[package]]
+name = "wgpu-core-deps-emscripten"
+version = "27.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b06ac3444a95b0813ecfd81ddb2774b66220b264b3e2031152a4a29fda4da6b5"
 dependencies = [
  "wgpu-hal",
 ]
@@ -6374,15 +6482,20 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "core-graphics-types 0.2.0",
+ "glow",
+ "glutin_wgl_sys",
  "gpu-alloc",
  "gpu-allocator",
  "gpu-descriptor",
  "hashbrown 0.16.1",
+ "js-sys",
+ "khronos-egl",
  "libc",
  "libloading",
  "log",
  "metal",
  "naga",
+ "ndk-sys",
  "objc",
  "once_cell",
  "ordered-float",
@@ -6395,6 +6508,8 @@ dependencies = [
  "renderdoc-sys",
  "smallvec",
  "thiserror 2.0.18",
+ "wasm-bindgen",
+ "web-sys",
  "wgpu-types",
  "windows 0.58.0",
  "windows-core 0.58.0",
@@ -6953,6 +7068,12 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+
+[[package]]
+name = "xml-rs"
+version = "0.8.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xshell"

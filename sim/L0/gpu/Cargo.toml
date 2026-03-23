@@ -1,0 +1,25 @@
+[package]
+name = "sim-gpu"
+description = "GPU-accelerated SDF collision for CortenForge physics simulation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+pollster = { workspace = true }
+cf-geometry = { workspace = true }
+sim-types = { workspace = true }
+sim-core = { workspace = true, features = ["gpu-internals"] }
+nalgebra = { workspace = true }
+log = "0.4"
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[lints]
+workspace = true

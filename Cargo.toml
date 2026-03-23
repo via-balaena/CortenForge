@@ -32,7 +32,7 @@ members = [
     "examples/fundamentals/pendulum-sim",
     "examples/fundamentals/finger-design",
 
-    # Examples — sdf-physics (SDF === collision proof ladder, 14 baby steps)
+    # Examples — sdf-physics (SDF === collision proof ladder, 16 baby steps)
     "examples/sdf-physics/01-sdf-grid",
     "examples/sdf-physics/02-thin-grid",
     "examples/sdf-physics/03-freefall",
@@ -41,12 +41,14 @@ members = [
     "examples/sdf-physics/06-slide",
     "examples/sdf-physics/07-pair",
     "examples/sdf-physics/08-stack",
-    "examples/sdf-physics/09-hinge-free",
-    "examples/sdf-physics/10-hinge-wall",
-    "examples/sdf-physics/11-hinge-stop",
-    "examples/sdf-physics/12-damped-hinge",
-    "examples/sdf-physics/13-concave-stop",
-    "examples/sdf-physics/14-socket",
+    "examples/sdf-physics/09-cube-in-box",
+    "examples/sdf-physics/10-ball-in-bowl",
+    "examples/sdf-physics/11-hinge-free",
+    "examples/sdf-physics/12-hinge-wall",
+    "examples/sdf-physics/13-hinge-stop",
+    "examples/sdf-physics/14-damped-hinge",
+    "examples/sdf-physics/15-concave-stop",
+    "examples/sdf-physics/16-socket",
 
     # Examples — integration (cross-domain pipelines)
     "examples/integration/design-to-sim",
@@ -68,6 +70,7 @@ members = [
     "sim/L0/mjcf",
     "sim/L0/urdf",
     "sim/L0/tests",
+    "sim/L0/gpu",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
@@ -192,6 +195,13 @@ truck-polymesh = "0.6"
 truck-meshalgo = "0.4"
 
 # ---------------------------------------------------------------------------
+# GPU Compute
+# ---------------------------------------------------------------------------
+wgpu = "27"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+
+# ---------------------------------------------------------------------------
 # Testing
 # ---------------------------------------------------------------------------
 criterion = "0.5"
@@ -233,6 +243,7 @@ sim-simd = { path = "sim/L0/simd" }
 sim-core = { path = "sim/L0/core" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
+sim-gpu = { path = "sim/L0/gpu" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
 

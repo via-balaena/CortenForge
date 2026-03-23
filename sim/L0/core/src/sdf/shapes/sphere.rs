@@ -2,10 +2,31 @@
 
 use std::sync::Arc;
 
-use nalgebra::Vector3;
+use cf_geometry::Aabb;
+use nalgebra::{Point3, Vector3};
 
 use crate::sdf::SdfGrid;
 use crate::sdf::shape::PhysicsShape;
+
+/// Compute the min/max distance from the origin over an AABB.
+///
+/// Returns (min_distance, max_distance) where distance = |p|.
+/// Used for sphere interval evaluation.
+fn norm_interval(aabb: &Aabb) -> (f64, f64) {
+    // Closest point to origin (clamped)
+    let cx = 0.0_f64.clamp(aabb.min.x, aabb.max.x);
+    let cy = 0.0_f64.clamp(aabb.min.y, aabb.max.y);
+    let cz = 0.0_f64.clamp(aabb.min.z, aabb.max.z);
+    let min_norm = (cx * cx + cy * cy + cz * cz).sqrt();
+
+    // Farthest corner from origin
+    let fx = aabb.min.x.abs().max(aabb.max.x.abs());
+    let fy = aabb.min.y.abs().max(aabb.max.y.abs());
+    let fz = aabb.min.z.abs().max(aabb.max.z.abs());
+    let max_norm = (fx * fx + fy * fy + fz * fz).sqrt();
+
+    (min_norm, max_norm)
+}
 
 /// Sphere shape with analytical (rotation-invariant) effective radius.
 ///
@@ -32,12 +53,39 @@ impl ShapeSphere {
 }
 
 impl PhysicsShape for ShapeSphere {
+    fn distance(&self, local_point: &Point3<f64>) -> Option<f64> {
+        Some(local_point.coords.norm() - self.radius)
+    }
+
+    fn gradient(&self, local_point: &Point3<f64>) -> Option<Vector3<f64>> {
+        let norm = local_point.coords.norm();
+        if norm > 1e-10 {
+            Some(local_point.coords / norm)
+        } else {
+            None
+        }
+    }
+
+    fn bounds(&self) -> Aabb {
+        let r = self.radius;
+        Aabb::new(Point3::new(-r, -r, -r), Point3::new(r, r, r))
+    }
+
     fn effective_radius(&self, _local_dir: &Vector3<f64>) -> Option<f64> {
         Some(self.radius)
     }
 
+    fn prefers_single_contact(&self) -> bool {
+        true
+    }
+
     fn sdf_grid(&self) -> &SdfGrid {
         &self.grid
+    }
+
+    fn evaluate_interval(&self, local_aabb: &Aabb) -> Option<(f64, f64)> {
+        let (min_norm, max_norm) = norm_interval(local_aabb);
+        Some((min_norm - self.radius, max_norm - self.radius))
     }
 }
 
