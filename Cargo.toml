@@ -68,6 +68,7 @@ members = [
     "sim/L0/mjcf",
     "sim/L0/urdf",
     "sim/L0/tests",
+    "sim/L0/gpu",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
@@ -192,6 +193,13 @@ truck-polymesh = "0.6"
 truck-meshalgo = "0.4"
 
 # ---------------------------------------------------------------------------
+# GPU Compute
+# ---------------------------------------------------------------------------
+wgpu = "27"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+
+# ---------------------------------------------------------------------------
 # Testing
 # ---------------------------------------------------------------------------
 criterion = "0.5"
@@ -233,6 +241,7 @@ sim-simd = { path = "sim/L0/simd" }
 sim-core = { path = "sim/L0/core" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
+sim-gpu = { path = "sim/L0/gpu" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
 

@@ -229,6 +229,13 @@ impl SdfGrid {
         self.origin
     }
 
+    /// Raw distance values for GPU upload. ZYX storage order:
+    /// `values[z * width * height + y * width + x]`
+    #[must_use]
+    pub fn values(&self) -> &[f64] {
+        &self.values
+    }
+
     /// Get the total X extent in meters.
     #[must_use]
     pub fn extent_x(&self) -> f64 {
