@@ -45,7 +45,7 @@ use sim_core::{
     PhysicsShape, SolverType, TendonType, WrapType,
 };
 
-use super::analytical_shape::AnalyticalShape;
+use crate::mechanism::analytical_shape::AnalyticalShape;
 
 use super::actuator::ActuatorKind;
 use super::builder::Mechanism;
@@ -2915,5 +2915,191 @@ mod tests {
         eprintln!("  PASS: contacts active (ncon={})", data.ncon);
 
         eprintln!();
+    }
+
+    // ========================================================================
+    // Phase 6: Octree integration tests + dynamics validation
+    // ========================================================================
+    //
+    // Deferred from Phase 3 (sim-core unit tests can't access cf-design types).
+    // These tests use AnalyticalShape via the model builder, verifying that the
+    // octree detection and Newton refinement produce correct results for concave
+    // CSG geometry.
+
+    /// Octree: sphere in cylindrical bore produces contacts on both sides.
+    ///
+    /// A sphere (r=3) inside a tube (bore r=3.5) should produce contacts
+    /// with radial normals pointing inward from the bore wall.
+    #[test]
+    fn octree_sphere_in_bore() {
+        use sim_core::Pose;
+        use sim_core::sdf::octree_detect::octree_contact_detect;
+        use std::sync::Arc;
+
+        let bore_solid = Arc::new(Solid::cylinder(5.5, 10.0).subtract(Solid::cylinder(3.5, 10.0)));
+        let sphere_solid = Arc::new(Solid::sphere(3.0));
+
+        let bore_grid = Arc::new(bore_solid.sdf_grid_at(0.5).unwrap());
+        let sphere_grid = Arc::new(sphere_solid.sdf_grid_at(0.5).unwrap());
+
+        let bore_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            bore_grid,
+            bore_solid,
+            crate::solid::ShapeHint::Concave,
+        );
+        let sphere_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            sphere_grid,
+            sphere_solid,
+            crate::solid::ShapeHint::Sphere(3.0),
+        );
+
+        // Sphere slightly offset in +X inside the bore
+        let bore_pose = Pose::from_position(Point3::origin());
+        let sphere_pose = Pose::from_position(Point3::new(0.3, 0.0, 0.0));
+
+        let contacts = octree_contact_detect(
+            &bore_shape,
+            &bore_pose,
+            &sphere_shape,
+            &sphere_pose,
+            0.5,
+            20,
+        );
+
+        assert!(
+            !contacts.is_empty(),
+            "sphere in bore should produce contacts"
+        );
+
+        // Contacts should be in the radial overlap region
+        for c in &contacts {
+            let radial = c.point.x.hypot(c.point.y);
+            assert!(
+                radial > 2.0 && radial < 5.0,
+                "contact at radial={radial:.2} should be between sphere and bore surfaces"
+            );
+        }
+
+        eprintln!("  octree_sphere_in_bore: {} contacts", contacts.len());
+        for (i, c) in contacts.iter().enumerate().take(5) {
+            eprintln!(
+                "    [{i}] pos=({:.2},{:.2},{:.2}) n=({:.3},{:.3},{:.3}) pen={:.4}",
+                c.point.x, c.point.y, c.point.z, c.normal.x, c.normal.y, c.normal.z, c.penetration
+            );
+        }
+    }
+
+    /// Newton refinement on cylinder bore produces purely radial normals
+    /// (zero axial component) — the key test for virtual friction elimination.
+    #[test]
+    fn newton_cylinder_bore_radial_normals() {
+        use sim_core::Pose;
+        use sim_core::sdf::octree_detect::octree_contact_detect;
+        use std::sync::Arc;
+
+        let bore_solid = Arc::new(Solid::cylinder(5.0, 10.0).subtract(Solid::cylinder(3.0, 10.0)));
+        let pin_solid = Arc::new(Solid::cylinder(2.8, 8.0));
+
+        let bore_grid = Arc::new(bore_solid.sdf_grid_at(0.5).unwrap());
+        let pin_grid = Arc::new(pin_solid.sdf_grid_at(0.5).unwrap());
+
+        let bore_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            bore_grid,
+            bore_solid,
+            crate::solid::ShapeHint::Concave,
+        );
+        let pin_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            pin_grid,
+            pin_solid,
+            crate::solid::ShapeHint::Convex,
+        );
+
+        // Pin centered in bore — radial clearance = 0.2mm
+        let bore_pose = Pose::from_position(Point3::origin());
+        let pin_pose = Pose::from_position(Point3::new(0.1, 0.0, 0.0)); // slight offset
+
+        let contacts =
+            octree_contact_detect(&bore_shape, &bore_pose, &pin_shape, &pin_pose, 0.5, 20);
+
+        assert!(!contacts.is_empty(), "pin in bore should produce contacts");
+
+        // Key assertion: normals should be purely radial (no axial Z component)
+        // This is what the CSG analytical gradient guarantees and the grid can't.
+        for (i, c) in contacts.iter().enumerate() {
+            let axial = c.normal.z.abs();
+            eprintln!(
+                "  contact[{i}] n=({:.4},{:.4},{:.4}) axial={axial:.6}",
+                c.normal.x, c.normal.y, c.normal.z
+            );
+            // The bore surface is cylindrical: true normal is (x, y, 0) / r.
+            // Allow small axial leak from Newton convergence near cylinder caps,
+            // but mid-bore contacts should have essentially zero axial component.
+            if c.point.z.abs() < 7.0 {
+                // mid-bore (away from caps)
+                assert!(
+                    axial < 0.01,
+                    "mid-bore contact[{i}] has axial leak {axial:.6} (should be < 0.01)"
+                );
+            }
+        }
+    }
+
+    /// Octree contact count is bounded and sparse compared to grid path.
+    ///
+    /// The octree should produce far fewer contacts than the grid scan
+    /// for the same geometry. This verifies the octree path was actually used
+    /// (not falling through to Tier 3 grid).
+    #[test]
+    fn octree_produces_sparse_contacts() {
+        use sim_core::Pose;
+        use sim_core::sdf::octree_detect::octree_contact_detect;
+        use sim_core::sdf::sdf_sdf_contact;
+        use std::sync::Arc;
+
+        let bore_solid = Arc::new(Solid::cylinder(5.0, 10.0).subtract(Solid::cylinder(3.0, 10.0)));
+        let pin_solid = Arc::new(Solid::cylinder(2.8, 8.0));
+
+        let bore_grid = Arc::new(bore_solid.sdf_grid_at(0.5).unwrap());
+        let pin_grid = Arc::new(pin_solid.sdf_grid_at(0.5).unwrap());
+
+        let bore_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            bore_grid.clone(),
+            bore_solid,
+            crate::solid::ShapeHint::Concave,
+        );
+        let pin_shape = crate::mechanism::analytical_shape::AnalyticalShape::new(
+            pin_grid.clone(),
+            pin_solid,
+            crate::solid::ShapeHint::Convex,
+        );
+
+        let bore_pose = Pose::from_position(Point3::origin());
+        let pin_pose = Pose::from_position(Point3::new(0.1, 0.0, 0.0));
+
+        // Octree contacts
+        let octree_contacts =
+            octree_contact_detect(&bore_shape, &bore_pose, &pin_shape, &pin_pose, 0.5, 20);
+
+        // Grid contacts (Tier 3 path)
+        let grid_contacts = sdf_sdf_contact(&bore_grid, &bore_pose, &pin_grid, &pin_pose, 0.5);
+
+        eprintln!(
+            "  octree: {} contacts, grid: {} contacts",
+            octree_contacts.len(),
+            grid_contacts.len()
+        );
+
+        // Octree should produce significantly fewer contacts
+        assert!(
+            octree_contacts.len() <= 20,
+            "octree should produce ≤20 contacts, got {}",
+            octree_contacts.len()
+        );
+        assert!(
+            grid_contacts.len() > octree_contacts.len(),
+            "grid ({}) should produce more contacts than octree ({})",
+            grid_contacts.len(),
+            octree_contacts.len()
+        );
     }
 }
