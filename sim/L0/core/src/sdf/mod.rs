@@ -44,6 +44,7 @@
 //! ```
 
 pub mod gpu;
+pub mod octree_detect;
 mod operations;
 mod primitives;
 pub mod shape;
