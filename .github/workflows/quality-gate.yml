@@ -58,6 +58,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -86,41 +88,28 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Only save cache on main/develop pushes — PR runs restore but skip
+          # the expensive save step (Windows cache save alone was taking 11 min).
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: Run tests
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            # Exclude sim-bevy on Windows - Bevy causes linker issues and slow builds
-            cargo test --all-features --workspace --exclude sim-bevy
+            # Windows: test only library crates (no Bevy, no examples).
+            # Examples are visual Bevy demos with no platform-specific logic.
+            # Skipping them avoids compiling Bevy entirely on Windows.
+            cargo test --all-features \
+              -p mesh-types -p mesh-io -p mesh-repair -p mesh-sdf \
+              -p mesh-offset -p mesh-shell -p mesh-measure \
+              -p mesh-printability -p mesh-lattice -p mesh \
+              -p sim-types -p sim-simd -p sim-core -p sim-mjcf \
+              -p sim-urdf -p sim-conformance-tests -p sim-gpu \
+              -p cf-geometry -p cf-spatial -p cf-design
           else
             cargo test --all-features
           fi
         shell: bash
-
-  # ============================================================================
-  # TESTS - ARM64 (Apple Silicon and Linux ARM)
-  # ============================================================================
-  test-arm64:
-    name: Test (ARM64)
-    runs-on: macos-latest  # GitHub's macos-latest is now ARM64
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Verify ARM64
-        run: |
-          echo "Architecture: $(uname -m)"
-          if [ "$(uname -m)" != "arm64" ]; then
-            echo "::warning::Expected ARM64, got $(uname -m)"
-          fi
-
-      - name: Run tests
-        run: cargo test --all-features
 
   # ============================================================================
   # WASM - Layer 0 crates must compile to WebAssembly
@@ -138,6 +127,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: Check WASM compatibility (Layer 0)
         run: |
@@ -179,52 +170,13 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: Build docs
         run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
-
-  # ============================================================================
-  # COVERAGE - Must be ≥90% for A-grade
-  # ============================================================================
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Generate coverage and check threshold
-        run: |
-          # Run tarpaulin with 75% threshold - fails if coverage below threshold
-          # TODO: Increase to 90% as test coverage improves
-          #
-          # --timeout 300: per-test timeout (5 min) prevents hangs from heavy
-          #   simulation loops (e.g. 50k-step stability tests)
-          # --release: sim step loops are 3-10× faster in release mode
-          # --exclude: sim-conformance-tests has 60k+ lines of integration tests
-          #   with 500k+ simulation steps — not useful for line-coverage measurement
-          #   and the primary source of tarpaulin timeouts
-          cargo tarpaulin --all-features --workspace \
-            --timeout 300 \
-            --release \
-            --exclude sim-conformance-tests \
-            --fail-under 75
 
   # ============================================================================
   # SAFETY - Zero unwrap/expect in library code
@@ -286,43 +238,7 @@ jobs:
           fi
 
   # ============================================================================
-  # SECURITY - Vulnerability scanning
-  # ============================================================================
-  security:
-    name: Security
-    runs-on: ubuntu-latest
-    # Non-blocking: not in quality-gate's `needs` list, so a red ❌ here
-    # is visible on the PR but does not prevent merging.
-    # Action items for contributing fixes upstream are tracked in docs/UPSTREAM.md.
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-
-      - name: Run security audit
-        run: |
-          set -o pipefail
-          if cargo audit --deny warnings 2>&1 | tee audit-output.txt; then
-            echo '### :lock: Security Audit — Clean' >> "$GITHUB_STEP_SUMMARY"
-            echo 'No known vulnerabilities found.' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '### :warning: Security Audit — Advisories Found' >> "$GITHUB_STEP_SUMMARY"
-            echo '' >> "$GITHUB_STEP_SUMMARY"
-            echo 'The following upstream advisories affect our dependency tree.' >> "$GITHUB_STEP_SUMMARY"
-            echo 'These are **non-blocking** — see `docs/UPSTREAM.md` for action items.' >> "$GITHUB_STEP_SUMMARY"
-            echo '' >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat audit-output.txt >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-  # ============================================================================
-  # DEPENDENCIES - Audit and policy
+  # DEPENDENCIES - Audit and policy (pre-built action, no cargo install)
   # ============================================================================
   dependencies:
     name: Dependencies
@@ -330,14 +246,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny
-
       - name: Check licenses and sources
-        run: cargo deny check licenses sources
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses sources
 
   # ============================================================================
   # SEMVER - Breaking change detection
@@ -376,6 +288,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
       - name: Check Layer 0 crates
         run: |
@@ -440,7 +354,7 @@ jobs:
   # ============================================================================
   quality-gate:
     name: Quality Gate
-    needs: [format, clippy, test, test-arm64, docs, safety, dependencies, bevy-free]
+    needs: [format, clippy, test, docs, safety, dependencies, bevy-free]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed

@@ -32,14 +32,54 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-
       - name: Run security audit
-        run: cargo audit --deny warnings
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check for yanked dependencies
         run: cargo audit --deny yanked
+
+  # ============================================================================
+  # COVERAGE - Moved from quality-gate (too expensive for every PR)
+  # ============================================================================
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Generate coverage and check threshold
+        run: |
+          # Run tarpaulin with 75% threshold - fails if coverage below threshold
+          # TODO: Increase to 90% as test coverage improves
+          #
+          # --timeout 300: per-test timeout (5 min) prevents hangs from heavy
+          #   simulation loops (e.g. 50k-step stability tests)
+          # --release: sim step loops are 3-10× faster in release mode
+          # --exclude: sim-conformance-tests has 60k+ lines of integration tests
+          #   with 500k+ simulation steps — not useful for line-coverage measurement
+          #   and the primary source of tarpaulin timeouts
+          cargo tarpaulin --all-features --workspace \
+            --timeout 300 \
+            --release \
+            --exclude sim-conformance-tests \
+            --fail-under 75
 
   # ============================================================================
   # DEPENDENCY FRESHNESS
@@ -188,7 +228,7 @@ jobs:
   # ============================================================================
   summary:
     name: Weekly Summary
-    needs: [security-audit, dependencies, mutation-testing, benchmark-baseline, supply-chain, msrv]
+    needs: [security-audit, coverage, dependencies, mutation-testing, benchmark-baseline, supply-chain, msrv]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -199,6 +239,7 @@ jobs:
           echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Security Audit | ${{ needs.security-audit.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Coverage | ${{ needs.coverage.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Dependencies | ${{ needs.dependencies.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Mutation Testing | ${{ needs.mutation-testing.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Benchmarks | ${{ needs.benchmark-baseline.result }} |" >> $GITHUB_STEP_SUMMARY
