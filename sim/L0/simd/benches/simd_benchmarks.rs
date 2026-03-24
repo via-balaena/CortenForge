@@ -4,9 +4,10 @@
 
 #![allow(missing_docs, clippy::wildcard_imports)]
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nalgebra::Vector3;
 use rand::Rng;
+use std::hint::black_box;
 
 use sim_simd::*;
 

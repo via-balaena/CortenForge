@@ -15,9 +15,10 @@
     clippy::unnecessary_cast
 )]
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use rand::Rng;
+use std::hint::black_box;
 
 use sim_core::Aabb;
 use sim_core::Pose;
