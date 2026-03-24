@@ -11,6 +11,7 @@
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
+use super::shape::PhysicsShape;
 use super::{SdfContact, SdfGrid};
 
 /// Raw surface tracing with depth-sorted spatial deduplication.
@@ -26,18 +27,40 @@ use super::{SdfContact, SdfGrid};
 /// GPU dedup path and ensures the deepest, best-separated contacts survive
 /// regardless of grid traversal order.
 pub fn sdf_sdf_contact_raw(
-    sdf_a: &SdfGrid,
+    a: &dyn PhysicsShape,
     pose_a: &Pose,
-    sdf_b: &SdfGrid,
+    b: &dyn PhysicsShape,
     pose_b: &Pose,
     margin: f64,
 ) -> Vec<SdfContact> {
+    let grid_a = a.sdf_grid();
+    let grid_b = b.sdf_grid();
     let mut contacts: Vec<SdfContact> = Vec::new();
-    trace_surface_into_other(sdf_a, pose_a, sdf_b, pose_b, margin, &mut contacts, false);
-    trace_surface_into_other(sdf_b, pose_b, sdf_a, pose_a, margin, &mut contacts, true);
+    trace_surface_into_other(
+        grid_a,
+        a,
+        pose_a,
+        grid_b,
+        b,
+        pose_b,
+        margin,
+        &mut contacts,
+        false,
+    );
+    trace_surface_into_other(
+        grid_b,
+        b,
+        pose_b,
+        grid_a,
+        a,
+        pose_a,
+        margin,
+        &mut contacts,
+        true,
+    );
 
     // Post-hoc spatial dedup: deepest contacts win, skip nearby duplicates.
-    let cell_size = sdf_a.cell_size().min(sdf_b.cell_size());
+    let cell_size = grid_a.cell_size().min(grid_b.cell_size());
     dedup_contacts(&mut contacts, cell_size);
 
     contacts
@@ -48,18 +71,40 @@ pub fn sdf_sdf_contact_raw(
 /// (B→A pass). Used by the normal refinement pipeline to refine each
 /// contact against the correct source shape.
 pub fn sdf_sdf_contact_raw_split(
-    sdf_a: &SdfGrid,
+    a: &dyn PhysicsShape,
     pose_a: &Pose,
-    sdf_b: &SdfGrid,
+    b: &dyn PhysicsShape,
     pose_b: &Pose,
     margin: f64,
 ) -> (Vec<SdfContact>, Vec<SdfContact>) {
+    let grid_a = a.sdf_grid();
+    let grid_b = b.sdf_grid();
     let mut from_a: Vec<SdfContact> = Vec::new();
     let mut from_b: Vec<SdfContact> = Vec::new();
-    trace_surface_into_other(sdf_a, pose_a, sdf_b, pose_b, margin, &mut from_a, false);
-    trace_surface_into_other(sdf_b, pose_b, sdf_a, pose_a, margin, &mut from_b, true);
+    trace_surface_into_other(
+        grid_a,
+        a,
+        pose_a,
+        grid_b,
+        b,
+        pose_b,
+        margin,
+        &mut from_a,
+        false,
+    );
+    trace_surface_into_other(
+        grid_b,
+        b,
+        pose_b,
+        grid_a,
+        a,
+        pose_a,
+        margin,
+        &mut from_b,
+        true,
+    );
 
-    let cell_size = sdf_a.cell_size().min(sdf_b.cell_size());
+    let cell_size = grid_a.cell_size().min(grid_b.cell_size());
     dedup_contacts(&mut from_a, cell_size);
     dedup_contacts(&mut from_b, cell_size);
 
@@ -100,13 +145,13 @@ fn dedup_contacts(contacts: &mut Vec<SdfContact>, cell_size: f64) {
 /// instead.
 #[must_use]
 pub fn sdf_sdf_contact(
-    sdf_a: &SdfGrid,
+    a: &dyn PhysicsShape,
     pose_a: &Pose,
-    sdf_b: &SdfGrid,
+    b: &dyn PhysicsShape,
     pose_b: &Pose,
     margin: f64,
 ) -> Vec<SdfContact> {
-    sdf_sdf_contact_raw(sdf_a, pose_a, sdf_b, pose_b, margin)
+    sdf_sdf_contact_raw(a, pose_a, b, pose_b, margin)
 }
 
 /// Compute the unit separation direction between two poses (A → B).
@@ -151,42 +196,55 @@ pub fn stabilize_direction(dir: Vector3<f64>) -> Vector3<f64> {
     }
 }
 
-/// One pass of surface-tracing: iterate surface points of `src_sdf`,
-/// check their penetration into `dst_sdf`.
+/// One pass of surface-tracing: iterate near-surface cells of `src_grid`,
+/// project to the surface using `src_shape`, check penetration into `dst_shape`.
+///
+/// The grid is used only for spatial indexing (cell iteration + surface
+/// threshold filter). All distance and gradient queries go through the
+/// `PhysicsShape` trait — giving exact evaluation for analytical shapes
+/// and grid delegation for grid-only shapes.
+#[allow(clippy::too_many_arguments)]
 fn trace_surface_into_other(
-    src_sdf: &SdfGrid,
+    src_grid: &SdfGrid,
+    src_shape: &dyn PhysicsShape,
     src_pose: &Pose,
-    dst_sdf: &SdfGrid,
+    _dst_grid: &SdfGrid,
+    dst_shape: &dyn PhysicsShape,
     dst_pose: &Pose,
     margin: f64,
     contacts: &mut Vec<SdfContact>,
     flip_normal: bool,
 ) {
-    let surface_threshold = src_sdf.cell_size() * 2.0;
+    let surface_threshold = src_grid.cell_size() * 2.0;
 
-    for z in 0..src_sdf.depth() {
-        for y in 0..src_sdf.height() {
-            for x in 0..src_sdf.width() {
-                let src_value = src_sdf.get(x, y, z).unwrap_or(f64::MAX);
-
-                if src_value > surface_threshold {
+    for z in 0..src_grid.depth() {
+        for y in 0..src_grid.height() {
+            for x in 0..src_grid.width() {
+                // Grid broadphase: skip cells far from surface.
+                let src_grid_value = src_grid.get(x, y, z).unwrap_or(f64::MAX);
+                if src_grid_value > surface_threshold {
                     continue;
                 }
 
                 let local_point = Point3::new(
-                    src_sdf.origin().x + x as f64 * src_sdf.cell_size(),
-                    src_sdf.origin().y + y as f64 * src_sdf.cell_size(),
-                    src_sdf.origin().z + z as f64 * src_sdf.cell_size(),
+                    src_grid.origin().x + x as f64 * src_grid.cell_size(),
+                    src_grid.origin().y + y as f64 * src_grid.cell_size(),
+                    src_grid.origin().z + z as f64 * src_grid.cell_size(),
                 );
 
-                let Some(grad) = src_sdf.gradient(local_point) else {
+                // Use shape for gradient (exact for analytical shapes).
+                let Some(grad) = src_shape.gradient(&local_point) else {
                     continue;
                 };
-                let surface_local = local_point - grad * src_value;
+                // Use shape distance for Newton correction (exact when available,
+                // consistent with the gradient source). Falls back to grid value
+                // if shape returns None (defensive).
+                let src_dist = src_shape.distance(&local_point).unwrap_or(src_grid_value);
+                let surface_local = local_point - grad * src_dist;
                 let surface_world = src_pose.transform_point(&surface_local);
 
                 let dst_local = dst_pose.inverse_transform_point(&surface_world);
-                let Some(dst_dist) = dst_sdf.distance(dst_local) else {
+                let Some(dst_dist) = dst_shape.distance(&dst_local) else {
                     continue;
                 };
 
@@ -201,12 +259,12 @@ fn trace_surface_into_other(
                 }
                 let penetration = (-dst_dist).max(0.0);
 
-                // Use the destination SDF gradient for the contact normal.
+                // Use the destination shape gradient for the contact normal.
                 // The dst gradient is evaluated at the actual contact point,
                 // giving more accurate normals than the source gradient which
                 // is evaluated at a nearby grid point. This eliminates lateral
                 // force components from grid asymmetry.
-                let Some(dst_grad) = dst_sdf.gradient(dst_local) else {
+                let Some(dst_grad) = dst_shape.gradient(&dst_local) else {
                     continue;
                 };
                 // Convention: normal points from SDF A toward SDF B.
@@ -243,21 +301,28 @@ fn trace_surface_into_other(
 )]
 mod tests {
     use super::*;
+    use crate::sdf::shapes::ShapeConvex;
     use nalgebra::Vector3;
+    use std::sync::Arc;
 
-    fn sphere_sdf(resolution: usize) -> SdfGrid {
-        SdfGrid::sphere(Point3::origin(), 1.0, resolution, 1.0)
+    fn sphere_shape(resolution: usize) -> ShapeConvex {
+        ShapeConvex::new(Arc::new(SdfGrid::sphere(
+            Point3::origin(),
+            1.0,
+            resolution,
+            1.0,
+        )))
     }
 
     #[test]
     fn test_sdf_sdf_contact_no_collision() {
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
 
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             contacts.is_empty(),
             "SDFs clearly separated should have no contact"
@@ -266,13 +331,13 @@ mod tests {
 
     #[test]
     fn test_sdf_sdf_contact_collision() {
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
 
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(1.5, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(!contacts.is_empty(), "Overlapping SDFs should have contact");
 
         // Raw surface tracing: some contacts may have pen = 0 (detected via
@@ -289,13 +354,13 @@ mod tests {
 
     #[test]
     fn test_sdf_sdf_contact_deep_penetration() {
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
 
         let pose_a = Pose::identity();
         let pose_b = Pose::identity();
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             !contacts.is_empty(),
             "Coincident SDFs should produce contacts"
@@ -318,13 +383,13 @@ mod tests {
 
     #[test]
     fn test_sdf_sdf_contact_transformed_poses() {
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
 
         let pose_a = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
         let pose_b = Pose::from_position(Point3::new(6.5, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             !contacts.is_empty(),
             "Translated overlapping SDFs should have contact"
@@ -342,13 +407,18 @@ mod tests {
 
     #[test]
     fn test_sdf_sdf_contact_sphere_box() {
-        let sdf_sphere = sphere_sdf(32);
-        let sdf_box = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let a = sphere_shape(32);
+        let b = ShapeConvex::new(Arc::new(SdfGrid::box_shape(
+            Point3::origin(),
+            Vector3::new(0.5, 0.5, 0.5),
+            32,
+            0.5,
+        )));
 
-        let pose_sphere = Pose::identity();
-        let pose_box = Pose::from_position(Point3::new(1.0, 0.0, 0.0));
+        let pose_a = Pose::identity();
+        let pose_b = Pose::from_position(Point3::new(1.0, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_sphere, &pose_sphere, &sdf_box, &pose_box, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             !contacts.is_empty(),
             "Overlapping sphere and box SDFs should have contact"
@@ -361,13 +431,23 @@ mod tests {
 
     #[test]
     fn test_sdf_sdf_contact_box_box() {
-        let sdf_a = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
-        let sdf_b = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let a = ShapeConvex::new(Arc::new(SdfGrid::box_shape(
+            Point3::origin(),
+            Vector3::new(0.5, 0.5, 0.5),
+            32,
+            0.5,
+        )));
+        let b = ShapeConvex::new(Arc::new(SdfGrid::box_shape(
+            Point3::origin(),
+            Vector3::new(0.5, 0.5, 0.5),
+            32,
+            0.5,
+        )));
 
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(0.7, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             !contacts.is_empty(),
             "Overlapping box SDFs should have contact"
@@ -380,13 +460,13 @@ mod tests {
 
     #[test]
     fn test_sdf_sdf_contact_different_resolutions() {
-        let sdf_a = SdfGrid::sphere(Point3::origin(), 1.0, 16, 0.5);
-        let sdf_b = SdfGrid::sphere(Point3::origin(), 1.0, 32, 0.5);
+        let a = ShapeConvex::new(Arc::new(SdfGrid::sphere(Point3::origin(), 1.0, 16, 0.5)));
+        let b = ShapeConvex::new(Arc::new(SdfGrid::sphere(Point3::origin(), 1.0, 32, 0.5)));
 
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(1.5, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             !contacts.is_empty(),
             "SDFs with different resolutions should still detect contact"
@@ -399,13 +479,13 @@ mod tests {
 
     #[test]
     fn test_sdf_sdf_contact_barely_touching() {
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
 
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(1.95, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         // At borderline cases, contact detection might be slightly inaccurate
         // due to grid sampling, so we don't strictly require contacts to exist
         // With geometric-only penetration, barely-touching contacts may have
@@ -425,12 +505,12 @@ mod tests {
 
     #[test]
     fn v2_no_collision_when_separated() {
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             contacts.is_empty(),
             "separated spheres should have no contact"
@@ -439,12 +519,12 @@ mod tests {
 
     #[test]
     fn v2_contact_when_overlapping() {
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(1.5, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             !contacts.is_empty(),
             "overlapping spheres should produce contacts (got 0)"
@@ -460,12 +540,12 @@ mod tests {
         // THE critical test: two spheres stacked vertically.
         // Sphere A at origin (radius 1), sphere B at z=1.95 (slight overlap).
         // The contact should produce upward force on B.
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(0.0, 0.0, 1.95));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
 
         assert!(
             !contacts.is_empty(),
@@ -507,12 +587,12 @@ mod tests {
     fn v2_margin_detects_near_contact() {
         // Two spheres NOT touching: distance between surfaces = 0.05.
         // With margin = 0.1, contacts should still be detected.
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(0.0, 0.0, 2.05));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             !contacts.is_empty(),
             "margin should detect near-contacts (gap=0.05, margin=0.1)"
@@ -530,12 +610,12 @@ mod tests {
     #[test]
     fn v2_no_contact_beyond_margin() {
         // Gap = 0.3 > margin = 0.1
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(0.0, 0.0, 2.3));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(
             contacts.is_empty(),
             "gap (0.3) > margin (0.1) should produce no contacts"
@@ -545,12 +625,12 @@ mod tests {
     #[test]
     fn v2_symmetric_net_force() {
         // Two spheres overlapping along X. Net force should point along +X.
-        let sdf_a = sphere_sdf(32);
-        let sdf_b = sphere_sdf(32);
+        let a = sphere_shape(32);
+        let b = sphere_shape(32);
         let pose_a = Pose::identity();
         let pose_b = Pose::from_position(Point3::new(1.8, 0.0, 0.0));
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, 0.1);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, 0.1);
         assert!(!contacts.is_empty());
 
         let net_force: Vector3<f64> = contacts.iter().map(|c| c.normal * c.penetration).sum();
@@ -577,20 +657,20 @@ mod tests {
         // THE critical test that was failing: two 5mm-radius spheres at 1mm
         // cell size. Previously, equatorial contacts dominated and net force
         // was horizontal. With normal-weighted filtering, polar contacts win.
-        let sdf_a = SdfGrid::sphere(Point3::origin(), 5.0, 14, 2.0);
-        let sdf_b = SdfGrid::sphere(Point3::origin(), 5.0, 14, 2.0);
+        let a = ShapeConvex::new(Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 14, 2.0)));
+        let b = ShapeConvex::new(Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 14, 2.0)));
         assert!(
-            (sdf_a.cell_size() - 1.0).abs() < 0.2,
+            (a.sdf_grid().cell_size() - 1.0).abs() < 0.2,
             "cell size should be ~1mm (got {})",
-            sdf_a.cell_size()
+            a.sdf_grid().cell_size()
         );
 
         // Stacked vertically with slight overlap (same as example 07)
         let pose_a = Pose::from_position(Point3::new(0.0, 0.0, 5.5));
         let pose_b = Pose::from_position(Point3::new(0.0, 0.0, 14.5));
-        let margin = sdf_a.cell_size();
+        let margin = a.sdf_grid().cell_size();
 
-        let contacts = sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, margin);
+        let contacts = sdf_sdf_contact(&a, &pose_a, &b, &pose_b, margin);
 
         assert!(
             !contacts.is_empty(),
