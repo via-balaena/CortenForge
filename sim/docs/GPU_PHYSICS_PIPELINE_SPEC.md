@@ -35,17 +35,19 @@ Per frame:
   CPU → GPU:  ctrl, qfrc_applied, xfrc_applied       (~100 bytes)
 
 Per substep (all on GPU, no readback):
-  fk.wgsl             → body_xpos, body_xquat, geom_xpos
+  fk.wgsl             → body_xpos, body_xquat, body_cinert, geom_xpos, cdof
   crba.wgsl           → M (mass matrix)
-  rne.wgsl            → qfrc_bias
+  velocity_fk.wgsl    → body_cvel (spatial velocities from qvel)
+  rne.wgsl            → qfrc_bias (gravity + Coriolis + gyroscopic)
   actuation.wgsl      → qfrc_actuator
-  passive.wgsl        → qfrc_passive
+  passive.wgsl        → qfrc_passive (springs, dampers — NOT gravity)
   smooth.wgsl         → qfrc_smooth, qacc_smooth
   aabb.wgsl           → geom_aabb
   broadphase.wgsl     → pair_buffer
   narrowphase.wgsl    → contact_buffer
   assemble.wgsl       → efc_J, efc_D, efc_aref
-  newton_solve.wgsl   → qacc
+  newton_solve.wgsl   → qacc, efc_force
+  map_forces.wgsl     → qfrc_constraint
   integrate.wgsl      → qpos, qvel
 
 After final substep:
@@ -100,8 +102,8 @@ operations. The GPU pipeline implements each as a WGSL pattern:
 
 | Operation | WGSL pattern | Used by |
 |-----------|-------------|---------|
-| **Tree scan (forward)** | One compute pass per depth level. All bodies at depth d in parallel. | FK, RNE forward |
-| **Tree scan (backward)** | One compute pass per depth level (reverse). Atomic accumulate into parent. | CRBA, RNE backward |
+| **Tree scan (forward)** | One compute pass per depth level. All bodies at depth d in parallel. | FK, velocity FK, RNE forward |
+| **Tree scan (backward)** | One compute pass per depth level (reverse). Accumulate into parent via workgroup reduction (not raw f32 atomics — see §7.3 note). | CRBA, RNE backward, subtree COM |
 | **Per-element map** | One thread per element. No dependencies. | AABB, integration, force map, actuation, passive |
 | **Sparse MV product** | Per-row parallel. | J^T·D·J·x, force mapping |
 | **Dense factorization** | Single workgroup, shared memory. | Newton Cholesky (nv ≤ 60), qacc_smooth solve |
@@ -154,6 +156,7 @@ These encode the model structure. Shared across all environments.
 | `body_iquat` | nbody × 16 | Inertial frame orientation (vec4<f32>). |
 | `body_mass` | nbody × 4 | Body mass (f32). |
 | `body_inertia` | nbody × 12 | Diagonal inertia in body frame (vec3<f32>). |
+| `body_mocap_id` | nbody × 4 | Mocap index (u32, 0xFFFFFFFF = not mocap). |
 | `max_depth` | 4 | Maximum tree depth (u32). Controls dispatch count. |
 
 **Joint structure:**
@@ -168,7 +171,8 @@ These encode the model structure. Shared across all environments.
 | `jnt_dof_adr` | njnt × 4 | Index into qvel/qacc (u32). |
 | `dof_body` | nv × 4 | Body index per DOF (u32). |
 | `dof_parent` | nv × 4 | Parent DOF index for LDL sparsity (u32, 0xFFFFFFFF = none). |
-| `jnt_armature` | njnt × 4 | Armature inertia per joint (f32). |
+| `jnt_armature` | njnt × 4 | Armature inertia per joint (f32). Applied to all DOFs of the joint. |
+| `dof_armature` | nv × 4 | Per-DOF armature inertia (f32). Added on top of jnt_armature. |
 
 **Geometry:**
 
@@ -213,6 +217,8 @@ These hold the simulation state. Each environment has its own copy.
 | `qacc` | nv × 4 | Generalized accelerations (f32). |
 | `qacc_smooth` | nv × 4 | Unconstrained acceleration M⁻¹·qfrc_smooth (f32). |
 | `ctrl` | nu × 4 | Control inputs (f32). Uploaded from CPU per frame. |
+| `mocap_pos` | nmocap × 12 | Mocap body positions (vec3<f32>). Uploaded per frame. |
+| `mocap_quat` | nmocap × 16 | Mocap body orientations (vec4<f32>). Uploaded per frame. |
 
 **Per-body computed state:**
 
@@ -222,9 +228,9 @@ These hold the simulation state. Each environment has its own copy.
 | `body_xquat` | nbody × 16 | World-frame quaternion (vec4<f32>). |
 | `body_xmat` | nbody × 36 | World-frame rotation matrix (mat3x3<f32>). |
 | `body_xipos` | nbody × 12 | COM position in world frame (vec3<f32>). |
-| `body_cinert` | nbody × 40 | Spatial inertia in world frame (10 unique f32). |
-| `body_crb` | nbody × 40 | Composite rigid body inertia (10 unique f32). |
-| `body_cvel` | nbody × 24 | Body spatial velocity (6 × f32). |
+| `body_cinert` | nbody × 40 | Spatial inertia in world frame (10 f32: mass, COM offset h[3], symmetric I_rot[6]). Written by FK. See §8.1 for reconstruction. |
+| `body_crb` | nbody × 40 | Composite rigid body inertia (same 10-float format). Written by CRBA. |
+| `body_cvel` | nbody × 24 | Body spatial velocity (6 × f32: [ω; v]). Written by velocity_fk. |
 | `body_cacc` | nbody × 24 | Body bias acceleration (6 × f32). |
 | `body_cfrc` | nbody × 24 | Body bias force (6 × f32). |
 | `subtree_mass` | nbody × 4 | Subtree total mass (f32). |
@@ -336,11 +342,41 @@ Forward scan (root → leaves):
 Backward scan (leaves → root):
   for d in max_depth..=0:
     dispatch: process all bodies where body_depth[body] == d
-    each thread: compute own result → atomicAdd into parent
+    each thread: compute own result → accumulate into parent
 ```
 
 Each depth level is one compute pass. wgpu guarantees a storage buffer
 barrier between passes. No explicit synchronization needed.
+
+### 7.3 Backward scan accumulation (no f32 atomics)
+
+WGSL only supports `atomicAdd` on `atomic<u32>` and `atomic<i32>` —
+**not f32**. The backward tree scan must accumulate floating-point
+values (inertias, forces) into parent bodies without f32 atomics.
+
+**Strategy: workgroup-local reduction, not raw atomics.**
+
+At each depth level, all children at that depth accumulate into their
+parents (at depth d−1). Multiple children may share a parent. Instead
+of per-element atomicAdd:
+
+1. Each workgroup covers a tile of bodies at depth d.
+2. Each thread computes its contribution (shifted inertia, bias force).
+3. Threads with the same `body_parent` cooperate via shared memory:
+   use `parent_id` as a key, accumulate partial sums in shared memory
+   using workgroup-local `atomicAdd` on `atomic<u32>` (bitcast f32→u32
+   for the CAS loop pattern), or sort-by-parent + sequential accumulation.
+4. After workgroup barrier, one thread per unique parent writes the
+   accumulated result to global memory.
+
+**For flat trees (hockey):** All children are at depth 1, all share
+parent 0. One workgroup handles all children. Accumulate in shared
+memory → single write to `crb[0]` / `cfrc[0]`. No contention.
+
+**For deeper trees:** Multiple workgroups may target the same parent.
+Use a global CAS loop (`atomicCompareExchangeWeak` on `u32` with
+`bitcast<f32>`) for the final global write. Contention is low because
+few children share a parent at any given depth.
 
 ### 7.2 WGSL implementation pattern
 
@@ -417,40 +453,134 @@ parallelism at every level. GPU is fully saturated.
 
 ### 8.1 `fk.wgsl` — Forward kinematics (NEW)
 
-**Estimated:** ~250 lines WGSL.
+**Estimated:** ~350 lines WGSL.
 **Pattern:** Tree scan (forward), one pass per depth level.
-**Reference:** MJX `kinematics.py:fwd_position()`, `scan.py:body_tree()`
+**Reference:** MJX `kinematics.py:fwd_position()`, CPU `position.rs`
 
 **Per body (at its depth level):**
-1. Read parent world pose: `(parent_xpos, parent_xquat)`
-2. Apply body offset: `pos = parent_xpos + rotate(parent_xquat, body_pos[i])`
-3. Apply body orientation: `quat = parent_xquat × body_quat[i]`
-4. Apply joint transformation (depends on joint type):
-   - **Free:** pos = qpos[0..3], quat = qpos[3..7] (absolute, not relative)
-   - **Hinge:** quat = quat × axis_angle(jnt_axis, qpos[jnt_qpos_adr])
-   - **Ball:** quat = quat × qpos[jnt_qpos_adr..+4]
-   - **Slide:** pos += rotate(quat, jnt_axis) × qpos[jnt_qpos_adr]
-5. Compute rotation matrix: `xmat = quat_to_mat3(quat)`
-6. Compute inertial frame: `xipos, ximat` from body offsets
-7. Compute geom poses: `geom_xpos, geom_xmat` for all geoms on this body
-8. Compute motion subspace `cdof` for each DOF on this body
 
-**World body (depth 0):** Identity pose, no joints. Written as
-initialization before the scan starts (or hardcoded).
+**Step 0 — Mocap check:**
+If `body_mocap_id[body] != 0xFFFFFFFF`: read pose directly from
+`mocap_pos[mocap_id]` / `mocap_quat[mocap_id]`, skip steps 1–4.
+VR controllers use this path.
 
-**Subtree COM (backward pass after FK):** A separate backward tree scan
-accumulates `subtree_mass` and `subtree_com` from leaves to root.
-Used by RNE gravity computation.
+**Step 1 — Parent frame:**
+```
+pos  = body_xpos[parent]
+quat = body_xquat[parent]
+```
+
+**Step 2 — Body offset:**
+```
+pos  += rotate(quat, body_pos[body])
+quat  = quat × body_quat[body]
+```
+
+**Step 3 — Joint loop** (a body may have multiple joints):
+```
+for j in body_jnt_adr[body] .. body_jnt_adr[body] + body_jnt_num[body]:
+    match jnt_type[j]:
+        Free:
+            // Absolute — overwrites pos/quat, body offset is ignored
+            pos  = vec3(qpos[adr], qpos[adr+1], qpos[adr+2])
+            quat = normalize(vec4(qpos[adr+3..adr+7]))  // w,x,y,z
+        Hinge:
+            // Rotate around joint anchor in world frame
+            world_axis   = rotate(quat, jnt_axis[j])
+            world_anchor = pos + rotate(quat, jnt_pos[j])
+            rot          = axis_angle_to_quat(world_axis, qpos[adr])
+            quat         = rot × quat              // LEFT multiply (world frame)
+            pos          = world_anchor + rotate(rot, pos - world_anchor)
+        Ball:
+            world_anchor = pos + rotate(quat, jnt_pos[j])
+            dq           = normalize(vec4(qpos[adr..adr+4]))
+            rot          = body_xquat[body] × dq × conjugate(body_xquat[body])
+            quat         = rot × quat              // LEFT multiply
+            pos          = world_anchor + rotate(rot, pos - world_anchor)
+        Slide:
+            pos += rotate(quat, jnt_axis[j]) × qpos[adr]
+```
+
+**Critical hinge details (verified against CPU `position.rs:61-82`):**
+- `jnt_axis` is in local frame → must be rotated to world.
+- Rotation is LEFT-multiplied (`rot × quat`), not right-multiplied.
+  The rotation is in world frame (axis was rotated to world).
+- Position is rotated around the joint **anchor point** (`jnt_pos`),
+  not around the body origin. The pivot-point formula is:
+  `pos = anchor + rot × (pos - anchor)`.
+
+**Step 4 — Normalize quaternion:**
+```
+quat = normalize(quat)   // Prevent f32 drift. Critical for Free/Ball.
+```
+
+**Step 5 — Derived quantities:**
+```
+xmat  = quat_to_mat3(quat)
+xipos = pos + rotate(quat, body_ipos[body])
+ximat = quat_to_mat3(quat × body_iquat[body])
+```
+
+**Step 6 — Spatial inertia (cinert):**
+Compute the 6×6 spatial inertia in world frame, stored as 10 floats:
+```
+h = xipos - pos                    // COM offset from body origin (world frame)
+I_COM = ximat × diag(body_inertia[body]) × ximat^T   // rotated inertia
+cinert = [body_mass[body], h.x, h.y, h.z,
+          I_COM[0,0], I_COM[0,1], I_COM[0,2],
+          I_COM[1,1], I_COM[1,2], I_COM[2,2]]
+```
+
+**Reconstructing the 6×6 from 10 floats** (needed by CRBA and RNE):
+```
+m = cinert[0]; h = cinert[1..4]; I_COM = symmetric3(cinert[4..10])
+I_rot = I_COM + m × (dot(h,h) × I₃ - outer(h,h))   // parallel axis
+coupling = m × skew(h)
+I_spatial = [[I_rot, coupling], [coupling^T, m × I₃]]
+```
+
+**Step 7 — Geom poses:**
+For each geom on this body:
+```
+geom_xpos[g] = pos + rotate(quat, geom_pos[g])
+geom_xmat[g] = quat_to_mat3(quat × geom_quat[g])
+```
+Alternatively: emit geom poses in a separate per-geom dispatch after
+FK completes (better load balance when bodies have unequal geom counts).
+
+**Step 8 — Motion subspace (cdof):**
+Per DOF on this body, compute the 6-vector spatial motion subspace
+in world frame (GPU optimization — CPU computes this inside CRBA/RNE):
+```
+Hinge DOF: cdof = [world_axis; cross(world_axis, pos - world_anchor)]
+Slide DOF: cdof = [0; world_axis]
+Ball DOFs: cdof = [R[:,k]; 0]  for k=0,1,2  (columns of xmat)
+Free linear DOFs: cdof = [0; e_k]  for k=0,1,2  (world basis)
+Free angular DOFs: cdof = [R[:,k]; 0]  for k=0,1,2
+```
+
+**World body (depth 0):** Identity pose, zero cinert. Written as
+initialization before the scan starts.
+
+**Subtree COM (backward pass after FK):**
+A separate backward tree scan accumulates weighted COM:
+```
+Phase 1 (per-body): subtree_mass[b] = mass[b];
+                     weighted_com[b] = mass[b] × xipos[b]
+Phase 2 (backward): accumulate into parent (see §7.3 for f32 workaround)
+Phase 3 (per-body): subtree_com[b] = weighted_com[b] / subtree_mass[b]
+                     Guard: if subtree_mass < 1e-10, use xipos[b]
+```
 
 ### 8.2 `crba.wgsl` — Composite Rigid Body Algorithm (NEW)
 
-**Estimated:** ~300 lines WGSL.
+**Estimated:** ~400 lines WGSL.
 **Pattern:** Backward tree scan + per-DOF parallel M assembly.
-**Reference:** MJX `smooth.py:crb()`, `support.py:make_m()`
+**Reference:** MJX `smooth.py:crb()`, `support.py:make_m()`, CPU `crba.rs`
 
 **Phase 1: Initialize composite inertias (per-body parallel)**
 ```
-crb[body_id] = cinert[body_id]   // copy from FK
+crb[body_id] = cinert[body_id]   // copy from FK (10-float format)
 ```
 
 **Phase 2: Backward tree scan (leaves → root)**
@@ -458,27 +588,60 @@ crb[body_id] = cinert[body_id]   // copy from FK
 for d in max_depth..=1:
   per body at depth d:
     parent = body_parent[body_id]
-    atomicAdd(crb[parent], shift_inertia(crb[body_id], xpos[body_id] - xpos[parent]))
+    d = body_xpos[body_id] - body_xpos[parent]
+    shifted = shift_inertia_10(crb[body_id], d)  // parallel axis on 10 floats
+    accumulate shifted into crb[parent]           // see §7.3 for f32 workaround
 ```
 
-The `shift_inertia` applies the parallel axis theorem to transport
-the child's composite inertia to the parent's origin.
+The `shift_inertia_10` operates directly on the 10-float representation:
+```
+m = crb[0]; h = crb[1..4]; I_COM = symmetric3(crb[4..10])
+h_new = h + d                                    // shift COM offset
+I_rot_new = I_COM + m × (dot(h_new,h_new) × I₃ - outer(h_new,h_new))
+          - (I_COM + m × (dot(h,h) × I₃ - outer(h,h)))   // remove old, add new
+// Simplifies to: I_rot_new = I_rot_old + m × (cross terms from d)
+result = [m, h_new, upper_triangle(I_rot_new)]
+```
 
 **Phase 3: Build mass matrix (per-DOF parallel)**
+
+Each DOF i independently computes its column of M. The key subtlety:
+when the `dof_parent` chain crosses body boundaries, a **spatial force
+transport** must be applied to the intermediate result.
+
 ```
 for each DOF i:
   body_i = dof_body[i]
-  // Diagonal: M[i,i] = cdof[i]^T · crb[body_i] · cdof[i] + armature[i]
-  // Off-diagonal: walk dof_parent chain
+  ic = reconstruct_6x6(crb[body_i])     // 10 floats → 6×6 spatial inertia
+  buf = ic × cdof[i]                     // 6×6 × 6×1 → spatial force vector
+
+  // Diagonal
+  M[i,i] = dot(cdof[i], buf) + jnt_armature[jnt_of_dof[i]] + dof_armature[i]
+
+  // Off-diagonal: walk dof_parent chain with spatial force transport
+  current_body = body_i
   j = dof_parent[i]
   while j != NONE:
-    M[j,i] = cdof[j]^T · crb[body_i] · cdof[i]
-    M[i,j] = M[j,i]  // symmetric
+    body_j = dof_body[j]
+    if body_j != current_body:
+      // Transport buf from current_body origin to body_j origin
+      r = body_xpos[current_body] - body_xpos[body_j]
+      buf.angular += cross(r, buf.linear)   // spatial force shift
+      current_body = body_j
+    M[j,i] = dot(cdof[j], buf)
+    M[i,j] = M[j,i]                        // symmetric
     j = dof_parent[j]
 ```
 
-For flat trees (hockey), dof_parent depth is 1. M assembly is
-embarrassingly parallel — each DOF's column is independent.
+**The spatial force transport** (verified against CPU `crba.rs:196-225`)
+shifts the force reference point when crossing body boundaries. For
+flat trees (hockey), all DOFs of a free joint share the same body, so
+no cross-body transport occurs and this reduces to the simpler formula
+`M[j,i] = cdof[j]^T · crb[body_i] · cdof[i]`. For articulated chains,
+the transport is essential for correct off-diagonal entries.
+
+For flat trees, dof_parent depth is 1. M assembly is embarrassingly
+parallel — each DOF's column is independent.
 
 **Phase 4: Cholesky factorization (single workgroup, shared memory)**
 ```
@@ -487,32 +650,79 @@ M_factor = cholesky(M)   // nv×nv in shared memory
 For nv=13: ~366 flops. For nv=60: ~36K flops. Single thread within
 the workgroup. Needed by `smooth.wgsl` for qacc_smooth.
 
-### 8.3 `rne.wgsl` — Recursive Newton-Euler (NEW)
+### 8.3 `velocity_fk.wgsl` — Velocity forward kinematics (NEW)
+
+**Estimated:** ~200 lines WGSL.
+**Pattern:** Tree scan (forward), one pass per depth level.
+**Reference:** CPU `velocity.rs:mj_fwd_velocity()`
+
+Computes body spatial velocities (`cvel`) by propagating `qvel` from
+root to leaves. **Must run after CRBA (needs cdof) and before RNE
+(which reads cvel for Coriolis/centrifugal/gyroscopic forces).**
+
+**Per body (at its depth level):**
+```
+// Transport parent velocity to this body's frame
+parent_vel = cvel[parent]               // [ω_parent; v_parent]
+r = body_xpos[body] - body_xpos[parent] // lever arm
+cvel[body].angular = parent_vel.angular
+cvel[body].linear  = parent_vel.linear + cross(parent_vel.angular, r)
+
+// Add joint velocity contributions
+for each DOF d on this body:
+    cvel[body] += cdof[d] × qvel[d]     // 6-vector × scalar
+```
+
+**World body (depth 0):** `cvel[0] = [0; 0; 0; 0; 0; 0]`.
+
+**Why this stage is critical:** Without cvel, RNE produces zero
+Coriolis, centrifugal, and gyroscopic forces. At the hockey stick's
+swing speed (~25 rad/s), the missing centrifugal term visibly affects
+dynamics.
+
+### 8.4 `rne.wgsl` — Recursive Newton-Euler (NEW)
 
 **Estimated:** ~300 lines WGSL.
 **Pattern:** Forward tree scan + backward tree scan.
-**Reference:** MJX `smooth.py:rne()`
+**Reference:** MJX `smooth.py:rne()`, CPU `rne.rs`
+**Prerequisite:** `velocity_fk.wgsl` must have written `body_cvel`.
 
 **Phase 1: Gravity (per-joint parallel, no tree dependency)**
 ```
 for each joint:
-  qfrc_bias[dof] += gravity_torque(subtree_mass, subtree_com, jnt_axis)
+  qfrc_bias[dof] = gravity_torque(subtree_mass, subtree_com, jnt_axis)
 ```
+Note: gravity is computed ONLY here, not in passive forces.
 
 **Phase 2a: Forward scan — bias accelerations (root → leaves)**
 ```
 for d in 0..=max_depth:
   per body at depth d:
-    cacc[body] = transport(cacc[parent]) + velocity_product(cvel[body])
+    // Transport parent bias acceleration + add velocity-product term
+    r = body_xpos[body] - body_xpos[parent]
+    cacc[body].angular = cacc[parent].angular
+    cacc[body].linear  = cacc[parent].linear + cross(cacc[parent].angular, r)
+    // Velocity-product acceleration (Coriolis): ω × v
+    cacc[body] += spatial_cross_motion(cvel[parent], joint_vel_contribution)
 ```
+`spatial_cross_motion(v, s)` = `[ω×s_ang; ω×s_lin + v_lin×s_ang]`
 
 **Phase 2b: Backward scan — bias forces (leaves → root)**
 ```
 for d in max_depth..=0:
   per body at depth d:
-    cfrc[body] = cinert[body] · cacc[body] + gyroscopic(cvel[body], cinert[body])
-    atomicAdd(cfrc[parent], transport(cfrc[body]))
+    I = reconstruct_6x6(cinert[body])
+    cfrc[body] = I × cacc[body] + cvel[body] ×* (I × cvel[body])
+    // Accumulate into parent — plain addition, no spatial transport
+    // (everything is already in world frame)
+    accumulate cfrc[body] into cfrc[parent]   // see §7.3
 ```
+The gyroscopic term is `v ×* (I·v)` where `×*` is the spatial force
+cross product: `[ω×f_ang + v_lin×f_lin; ω×f_lin]`.
+
+**No spatial transport in backward pass:** The CPU (`rne.rs:271-278`)
+does plain `cfrc[parent] += cfrc[child]` — no frame change — because
+all quantities are in world frame.
 
 **Phase 2c: Project to joint space (per-DOF parallel)**
 ```
@@ -520,7 +730,7 @@ for each DOF:
   qfrc_bias[dof] += dot(cdof[dof], cfrc[dof_body])
 ```
 
-### 8.4 `actuation.wgsl` — Actuator forces (NEW)
+### 8.5 `actuation.wgsl` — Actuator forces (NEW)
 
 **Estimated:** ~150 lines WGSL.
 **Pattern:** Per-actuator parallel map.
@@ -534,20 +744,25 @@ for each DOF:
 Complex actuators (muscle, cylinder) remain CPU-only — the GPU path
 asserts supported actuator types at pipeline creation.
 
-### 8.5 `passive.wgsl` — Passive forces (NEW)
+### 8.6 `passive.wgsl` — Passive forces (NEW)
 
 **Estimated:** ~100 lines WGSL.
 **Pattern:** Per-DOF parallel map.
 
 **Per DOF:**
-1. Gravity: `qfrc_passive[dof] = gravity_force(dof)` (from subtree COM)
-2. Joint damping: `qfrc_passive[dof] -= damping[dof] × qvel[dof]`
-3. Joint stiffness: `qfrc_passive[dof] -= stiffness[dof] × (qpos - qpos_spring)`
+1. Joint damping: `qfrc_passive[dof] = -damping[dof] × qvel[dof]`
+2. Joint stiffness: `qfrc_passive[dof] -= stiffness[dof] × (qpos - qpos_spring)`
+
+**Gravity is NOT computed here.** Gravity is computed exclusively in
+`rne.wgsl` Phase 1 (via subtree COM). The CPU passive force function
+(`mj_fwd_passive`) also does not compute gravity — it handles springs,
+dampers, fluid forces, and gravity compensation. Computing gravity in
+both RNE and passive would double-count it.
 
 **Scope:** Covers joint-level springs/dampers. Fluid forces and tendon
 passive forces remain CPU-only for the initial implementation.
 
-### 8.6 `smooth.wgsl` — Smooth forces + qacc_smooth (NEW)
+### 8.7 `smooth.wgsl` — Smooth forces + qacc_smooth (NEW)
 
 **Estimated:** ~120 lines WGSL.
 **Pattern:** Per-DOF parallel + single-workgroup Cholesky solve.
@@ -558,8 +773,19 @@ qfrc_smooth[dof] = qfrc_applied[dof] + qfrc_actuator[dof]
                  + qfrc_passive[dof] - qfrc_bias[dof]
 ```
 
-Plus xfrc_applied projection: for each body with non-zero xfrc,
-project body-frame [torque, force] into joint space via cdof.
+Plus xfrc_applied projection: for each body B with non-zero
+`xfrc_applied[B]`, project the body-frame [torque, force] into joint
+space. The force is applied at `xipos[B]` (body COM, not frame origin).
+For each ancestor DOF in the chain from B to root:
+```
+lever = xipos[B] - body_xpos[dof_body[d]]
+qfrc_smooth[d] += dot(cdof[d], [torque; force])
+                + dot(cdof[d].angular, cross(lever, force))
+```
+For flat trees (body parented to world), only the body's own DOFs
+are ancestors, so this reduces to `cdof^T × spatial_force`. For deeper
+trees, the projection must walk ALL ancestor DOFs (matching CPU
+`mj_apply_ft` chain walk).
 
 **Phase 2: Solve qacc_smooth = M⁻¹ · qfrc_smooth (single workgroup)**
 
@@ -569,7 +795,7 @@ qacc_smooth = cholesky_solve(M_factor, qfrc_smooth)
 ```
 Forward + backward substitution in shared memory. For nv=13: ~338 flops.
 
-### 8.7 `aabb.wgsl` — Bounding box computation (NEW)
+### 8.8 `aabb.wgsl` — Bounding box computation (NEW)
 
 **Estimated:** ~80 lines WGSL.
 **Pattern:** Per-geom parallel map.
@@ -578,7 +804,7 @@ Per geom: read `geom_xpos`, `geom_xmat`, `geom_size` → compute world
 AABB with margin → write `geom_aabb`. Uses fresh body poses from FK
 (no stale data).
 
-### 8.8 `broadphase.wgsl` — Spatial hash broadphase (NEW)
+### 8.9 `broadphase.wgsl` — Spatial hash broadphase (NEW)
 
 **Estimated:** ~300 lines WGSL (3 passes).
 **Reference:** GPU Gems 3, Chapter 32.
@@ -586,19 +812,19 @@ AABB with margin → write `geom_aabb`. Uses fresh body poses from FK
 Pass 1: Hash + count. Pass 2: Blelloch prefix sum. Pass 3: Scatter +
 AABB overlap test → emit pairs via atomic.
 
-### 8.9 `trace_surface.wgsl` — SDF-SDF narrowphase (EXISTS)
+### 8.10 `trace_surface.wgsl` — SDF-SDF narrowphase (EXISTS)
 
 **Status:** Done, tested, 267 lines. Workgroup 8×8×4.
 **Change:** Output feeds into assemble.wgsl instead of CPU readback.
 Contact struct extended to 48 bytes.
 
-### 8.10 `sdf_plane.wgsl` — SDF-plane narrowphase (NEW)
+### 8.11 `sdf_plane.wgsl` — SDF-plane narrowphase (NEW)
 
 **Estimated:** ~150 lines WGSL. Workgroup 8×8×4.
 Per grid cell: surface filter → world transform → plane distance →
 emit contact. Simpler than SDF-SDF (no second grid).
 
-### 8.11 `assemble.wgsl` — Constraint assembly (NEW)
+### 8.12 `assemble.wgsl` — Constraint assembly (NEW)
 
 **Estimated:** ~350 lines WGSL.
 **Pattern:** Per-contact parallel map.
@@ -613,30 +839,59 @@ Uses fresh body poses from FK for correct contact-to-COM offsets.
 **diagApprox:** `J · M⁻¹ · J^T` computed per-body from `body_mass` and
 `body_inertia` — no full M⁻¹ needed for the diagonal approximation.
 
-### 8.12 `newton_solve.wgsl` — Primal Newton solver (NEW)
+### 8.13 `newton_solve.wgsl` — Primal Newton solver (NEW)
 
-**Estimated:** ~500 lines WGSL.
-**Pattern:** Single workgroup, shared memory.
-**Reference:** MJX `solver.py:_newton()`
+**Estimated:** ~600 lines WGSL.
+**Pattern:** Single workgroup (256 threads), shared memory.
+**Reference:** MJX `solver.py:_newton()`, CPU `primal.rs:PrimalSearch`
 
 Primal formulation: minimize cost(qacc) = Gauss term + constraint
-penalties. Newton iterations: evaluate cost + gradient + Hessian →
-Cholesky solve → line search → update qacc. 1–3 iterations.
+penalties. Per Newton iteration: evaluate cost + gradient + Hessian →
+Cholesky solve → line search → update qacc. 1–3 outer iterations.
 
-H = M + J^T · diag(D · active) · J (nv × nv, in shared memory).
+**H = M + J^T · diag(D · active) · J** (nv × nv, in shared memory).
 256 threads cooperate on constraint evaluation and H accumulation.
 Thread 0 does Cholesky. Fits in shared memory for nv ≤ 60.
 
-**For nv > 60:** Switch to CG solver (see §12).
+**Constraint iteration pattern:** Each thread processes a stripe of
+constraint rows: thread `t` handles rows `t, t+256, t+512, ...` up to
+`actual_nefc` (read from `constraint_count` atomic). Rows beyond
+`actual_nefc` are skipped. Inactive rows (efc_state == Satisfied)
+contribute zero to H and gradient. For hockey (~300 constraint rows),
+each thread handles ~1-2 rows. For large scenes (196K rows), each
+thread handles ~768 rows — acceptable since per-row work is ~20 flops.
 
-### 8.13 `map_forces.wgsl` — Force mapping (NEW)
+**Line search (bracket-narrowing Newton, not simple backtracking):**
+MJX and CPU both use an exact Newton 1D line search, not α = {1, 0.5, 0.25}.
+The algorithm:
+1. Compute descent direction: `Δqacc = -H⁻¹ · grad`
+2. Evaluate `cost'(0)` = `dot(grad, Δqacc)` (should be negative)
+3. Try α₁ = `-cost'(0) / cost''(0)` (Newton step on 1D cost)
+4. If cost decreased, accept. Otherwise bracket and refine.
+
+Each line search trial evaluates `cost(qacc + α·Δqacc)` by
+re-classifying all constraints (parallel over 256 threads) and
+reducing partial costs into shared memory. Thread 0 computes the
+next trial α. Typically 1–3 trials per Newton iteration.
+
+**Warmstart:** Substep N+1 uses substep N's `qacc` as initial guess
+(already on GPU — zero overhead). This is better than CPU's step-level
+warmstart because the temporal gap is smaller.
+
+**First substep of each frame:** Uses `qacc_smooth` (computed by
+smooth.wgsl) as cold start. Optionally, upload previous frame's final
+`qacc` to GPU before the first substep for warm initialization.
+
+**For nv > 60:** Switch to CG solver (see §16).
+
+### 8.14 `map_forces.wgsl` — Force mapping (NEW)
 
 **Estimated:** ~60 lines WGSL.
 **Pattern:** Per-DOF parallel reduction.
 
 `qfrc_constraint[dof] = Σ_row efc_force[row] × efc_J[row][dof]`
 
-### 8.14 `integrate.wgsl` — Semi-implicit Euler (NEW)
+### 8.15 `integrate.wgsl` — Semi-implicit Euler (NEW)
 
 **Estimated:** ~120 lines WGSL.
 **Pattern:** Per-body parallel map.
@@ -681,7 +936,14 @@ for _substep in 0..num_substeps {
     compute_pass(&encoder, &crba_build_m_pipeline, ceil(nv, 64), n_env);
     compute_pass(&encoder, &crba_factor_pipeline, 1, n_env);  // Cholesky
 
+    // Velocity FK: forward scan (needs cdof from FK, writes cvel)
+    for depth in 0..=max_depth {
+        update_uniform(&encoder, depth);
+        compute_pass(&encoder, &velocity_fk_pipeline, ceil(nbody, 64), n_env);
+    }
+
     // RNE: gravity (parallel) + forward scan + backward scan + project
+    // (reads cvel from velocity_fk for Coriolis/gyroscopic terms)
     compute_pass(&encoder, &rne_gravity_pipeline, ceil(njnt, 64), n_env);
     for depth in 0..=max_depth {
         update_uniform(&encoder, depth);
@@ -727,14 +989,15 @@ device.poll(Maintain::Wait);
 |---|---|
 | FK (2 levels + subtree COM 2 levels) | 4 |
 | CRBA (init + 2 levels + build M + Cholesky) | 5 |
+| Velocity FK (2 levels) | 2 |
 | RNE (gravity + 2 forward + 2 backward + project) | 6 |
 | Actuation + passive + smooth | 3 |
 | AABB + broadphase (3) + narrowphase | 5 |
 | Assemble + Newton (×2 iter) + map_forces | 4 |
 | Integration | 1 |
-| **Total** | **~28** |
+| **Total** | **~30** |
 
-At ~5μs per dispatch: ~140μs overhead. Well within the 1ms/substep
+At ~5μs per dispatch: ~150μs overhead. Well within the 1ms/substep
 budget. The compute work per dispatch is small for 4 bodies but grows
 with scene complexity.
 
@@ -823,9 +1086,10 @@ Each shader group is validated independently:
 
 | Shader group | Validation method |
 |---|---|
-| FK (fk.wgsl) | Compare GPU body_xpos/xquat vs CPU mj_fwd_position() |
-| CRBA (crba.wgsl) | Compare GPU qM vs CPU mj_crba() |
-| RNE (rne.wgsl) | Compare GPU qfrc_bias vs CPU mj_rne() |
+| FK (fk.wgsl) | Compare GPU body_xpos/xquat/cinert vs CPU mj_fwd_position(). Test hinge pivot-point rotation with non-zero jnt_pos. |
+| CRBA (crba.wgsl) | Compare GPU qM vs CPU mj_crba(). Test off-diagonal entries on a 3-body chain (depth 2+) to verify spatial force transport. |
+| Velocity FK (velocity_fk.wgsl) | Compare GPU body_cvel vs CPU mj_fwd_velocity(). Verify Coriolis terms at high angular velocity. |
+| RNE (rne.wgsl) | Compare GPU qfrc_bias vs CPU mj_rne(). Verify gyroscopic terms are non-zero when cvel is non-zero. |
 | Smooth (smooth.wgsl) | Compare GPU qacc_smooth vs CPU compute_qacc_smooth() |
 | Collision (aabb + broadphase + narrowphase) | Compare GPU contacts vs CPU mj_collision() |
 | Assembly (assemble.wgsl) | Compare GPU efc_J/D/aref vs CPU (pyramidal mode) |
@@ -856,54 +1120,62 @@ scan is correct for non-flat trees.
 ## 14. Implementation order
 
 1. **`fk.wgsl` + tree scan primitive** — Foundation. Validates
-   level-order dispatch, body pose computation, n_env dimension.
+   level-order dispatch, body pose computation, cinert, cdof, n_env
+   dimension. Test hinge pivot-point rotation with non-zero jnt_pos.
    Test against CPU FK for flat tree (hockey) and chain (7-DOF arm).
 
 2. **`crba.wgsl`** — Backward tree scan + M assembly + Cholesky.
-   Validates backward scan with atomic accumulation. Compare M against
-   CPU CRBA.
+   Validates backward scan with workgroup reduction (§7.3). Compare M
+   against CPU CRBA. Test off-diagonal entries with spatial force
+   transport on a multi-body chain.
 
-3. **`rne.wgsl`** — Forward + backward scan (reuses tree scan).
-   Compare qfrc_bias against CPU RNE.
+3. **`velocity_fk.wgsl`** — Forward tree scan for body velocities.
+   Compare cvel against CPU mj_fwd_velocity(). Critical prerequisite
+   for correct RNE (Coriolis/gyroscopic forces).
 
-4. **`actuation.wgsl` + `passive.wgsl` + `smooth.wgsl`** — Per-element
-   maps + Cholesky solve. Validates qacc_smooth against CPU.
+4. **`rne.wgsl`** — Forward + backward scan (reuses tree scan).
+   Compare qfrc_bias against CPU RNE. Verify gyroscopic terms are
+   non-zero at high angular velocity (stick swing test).
 
-5. **`integrate.wgsl`** — Per-body map. Validates qpos/qvel update.
-   At this point: full FK→CRBA→RNE→smooth→integrate loop works on GPU.
+5. **`actuation.wgsl` + `passive.wgsl` + `smooth.wgsl`** — Per-element
+   maps + Cholesky solve. Validates qacc_smooth against CPU. Verify
+   gravity is NOT double-counted (only in RNE, not passive).
+
+6. **`integrate.wgsl`** — Per-body map. Validates qpos/qvel update.
+   At this point: full FK→CRBA→vel_FK→RNE→smooth→integrate loop on GPU.
    Can run gravity-only simulation (no contacts).
 
-6. **`sdf_plane.wgsl`** — Completes narrowphase. Builds on existing
+7. **`sdf_plane.wgsl`** — Completes narrowphase. Builds on existing
    trace_surface.wgsl patterns.
 
-7. **`aabb.wgsl` + `broadphase.wgsl`** — Collision detection pipeline.
+8. **`aabb.wgsl` + `broadphase.wgsl`** — Collision detection pipeline.
    Validates spatial hashing + pair emission.
 
-8. **`assemble.wgsl`** — Constraint assembly. Validates pyramidal
+9. **`assemble.wgsl`** — Constraint assembly. Validates pyramidal
    Jacobian computation on GPU.
 
-9. **`newton_solve.wgsl`** — Primal solver. The hardest shader.
-   Validates against CPU Newton.
+10. **`newton_solve.wgsl`** — Primal solver. The hardest shader.
+    Validates against CPU Newton. Test line search convergence.
 
-10. **`map_forces.wgsl`** — Force mapping. Simple J^T·f reduction.
+11. **`map_forces.wgsl`** — Force mapping. Simple J^T·f reduction.
 
-11. **Pipeline orchestration** — Chain all shaders in single command
+12. **Pipeline orchestration** — Chain all shaders in single command
     buffer. Implement `GpuPhysicsPipeline` trait. End-to-end validation.
 
-12. **Cleanup** — Deprecate half-GPU dispatch.
+13. **Cleanup** — Deprecate half-GPU dispatch.
 
 ## 15. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Tree scan dispatch overhead dominates | Hockey has depth 1 (2 passes). Overhead is ~10μs. Profile early. |
-| Atomic accumulation contention in backward scan | At depth 1 (flat tree), all children atomicAdd into world body. Use f32 atomics (supported by wgpu). For deep trees, contention is low (few children per parent). |
+| Tree scan dispatch overhead dominates | Hockey has depth 1 (~30 dispatches/substep × ~5μs = ~150μs). Profile early on 5070 Ti. |
+| Backward scan f32 accumulation (no WGSL f32 atomics) | WGSL only supports `atomic<u32/i32>`. Use workgroup-local shared memory reduction for flat trees. For deep trees, use CAS loop: `atomicCompareExchangeWeak` on `u32` with `bitcast<f32>`. See §7.3. |
 | Newton Cholesky fails (non-SPD H) | Regularize: H += ε·I. Fall back to CPU PGS for that frame. |
 | f32 precision | MJX proves f32 Newton works. Regularization in H diagonal. Kahan summation in reductions. |
-| nv > 60 exceeds shared memory for H | CG solver (iterative, no dense H). Not needed for hockey. |
+| nv > 60 exceeds shared memory for H | CG solver (iterative, no dense H). nv=60 uses ~15KB of 16KB minimum. Query device limit; NVIDIA 5070 Ti likely supports 48KB+. |
 | Complex actuators not supported on GPU | Assert supported types at pipeline creation. Unsupported → CPU fallback. |
 | n_env > 1 memory pressure | Tune max_contacts/max_constraints per use case. 13 MB/env is baseline. |
-| wgpu atomicAdd f32 not available | Use atomicAdd u32 with float reinterpretation, or per-thread local accumulation + workgroup reduction. |
+| Hinge FK correctness | Three critical details: left-multiply rotation (world frame), pivot-point position adjustment around jnt_pos, axis rotation to world frame. All verified against CPU position.rs. |
 
 ## 16. Future extensions
 
