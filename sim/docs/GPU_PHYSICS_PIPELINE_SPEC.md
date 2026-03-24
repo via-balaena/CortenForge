@@ -1677,12 +1677,33 @@ All substeps encoded in one command buffer per frame.
 - T32: Sustained multi-substep stress test — 2 seconds (48 batches × 10 substeps)
 
 **Deviations from original spec:**
-- GPU-compatible hockey example deferred to separate PR (requires Bevy integration, all-free-joint variant)
-- Bevy plugin integration (`step_physics_realtime` GPU path) deferred
-- Collision per-pair bug fix was not in original spec — discovered during implementation. The `queue.write_buffer` per-pair pattern appeared to work on Metal (writes may be sequenced on this backend) but was architecturally incorrect.
-- Buffer lifetime: wgpu bind groups may not reliably prevent premature buffer drop — explicitly stored buffer references in `NarrowphaseDispatch` and `GpuCollisionPipeline`.
+- Original spec §10.1 proposed a `GpuPhysicsPipeline` trait. Implemented as a
+  concrete struct instead — trait abstraction adds no value with one implementation.
+- Original spec §10.2 proposed `enable_gpu_pipeline(model)` mutating `Model` to store
+  an `Arc<pipeline>`. Implemented as standalone `GpuPhysicsPipeline::new(&model, &data)`
+  returning an owned struct — avoids modifying `Model`'s type signature.
+- Original spec §10.3 proposed the GPU path inside `Data::step()` via
+  `model.gpu_pipeline`. Deferred — the GPU pipeline is a standalone struct, not
+  integrated into the CPU step dispatch. Bevy systems call it directly.
+- GPU-compatible hockey example deferred to a VR session (stick becomes mocap body
+  driven by Quest 3 controller, not a hinge joint). Skeleton and architecture
+  documented in `examples/sdf-physics/10b-hockey/EXPECTED_BEHAVIOR.md`.
+- Bevy plugin integration (`step_physics_realtime` GPU path) deferred to VR session.
+- `step()` does not yet upload mocap poses — only qpos/qvel. Mocap upload needed
+  for VR (stick as mocap body). See `state_bufs.upload_mocap()`.
+- Collision per-pair bug fix was not in original spec — discovered during
+  implementation. `queue.write_buffer` per-pair in `encode()` produced "last write
+  wins" because all writes batch to the start of `queue.submit()`. Fixed by
+  pre-allocating one uniform buffer per dispatch at creation time.
+- Buffer lifetime: wgpu bind groups may not reliably prevent premature buffer drop.
+  Explicitly stored buffer references in `NarrowphaseDispatch` and
+  `GpuCollisionPipeline` to prevent drop. See LIMITATIONS.md §15–§16.
 
-**Milestone:** `cargo test -p sim-gpu` — 35/35 tests pass (30 existing + 5 new). Full GPU physics pipeline available via `GpuPhysicsPipeline::new()` + `step()`.
+**Constraints documented:** `LIMITATIONS.md` §15 (queue.write_buffer sequencing),
+§16 (buffer lifetime / bind group references).
+
+**Milestone:** `cargo test -p sim-gpu` — 35/35 tests pass (30 existing + 5 new).
+Full GPU physics pipeline available via `GpuPhysicsPipeline::new()` + `step()`.
 
 ## 15. Risks
 
