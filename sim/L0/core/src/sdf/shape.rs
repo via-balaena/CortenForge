@@ -160,8 +160,7 @@ pub fn compute_shape_contact(
     // Tier 3: Grid fallback → surface tracing with per-shape normal refinement.
     // Split by source pass so each contact is refined against the correct shape.
     let cell_size = a.sdf_grid().cell_size().min(b.sdf_grid().cell_size());
-    let (mut from_a, mut from_b) =
-        sdf_sdf_contact_raw_split(a.sdf_grid(), pose_a, b.sdf_grid(), pose_b, margin);
+    let (mut from_a, mut from_b) = sdf_sdf_contact_raw_split(a, pose_a, b, pose_b, margin);
 
     // Refine A→B contacts against shape A's surface
     for c in &mut from_a {
@@ -180,8 +179,10 @@ pub fn compute_shape_contact(
 ///
 /// Three-tier dispatch (matching `compute_shape_contact`):
 ///
-/// 1. **Tier 1 — Convex** (`effective_radius` returns `Some`):
-///    analytical single-contact, depth = radius - distance_to_plane.
+/// 1. **Tier 1 — Sphere-like** (`prefers_single_contact` AND `effective_radius`
+///    returns `Some`): analytical single-contact, depth = radius - distance_to_plane.
+///    Non-spherical convex shapes skip this — they need distributed multi-contact
+///    against planes for rotational stability.
 ///
 /// 2. **Tier 2 — Shape supports `evaluate_interval`**: octree detection
 ///    using shape interval + trivially exact plane interval.
@@ -197,19 +198,25 @@ pub fn compute_shape_plane_contact(
 ) -> Vec<SdfContact> {
     let local_dir = shape_pose.rotation.inverse() * (-*plane_normal);
 
-    // Tier 1: Convex → analytical single contact
-    if let Some(radius) = shape.effective_radius(&local_dir) {
-        let dist_to_plane = (shape_pose.position.coords - plane_pos).dot(plane_normal);
-        let depth = radius - dist_to_plane;
-        if depth > -margin {
-            let contact_point = shape_pose.position - plane_normal * (radius - depth * 0.5);
-            return vec![SdfContact {
-                point: contact_point,
-                normal: *plane_normal,
-                penetration: depth.max(0.0),
-            }];
+    // Tier 1: Sphere-like → analytical single contact.
+    // Only shapes that explicitly prefer single contact (spheres) take this
+    // path. Non-spherical convex shapes (cuboids, cylinders) need distributed
+    // multi-contact against planes for rotational stability — they fall
+    // through to Tier 2 (octree) or Tier 3 (grid).
+    if shape.prefers_single_contact() {
+        if let Some(radius) = shape.effective_radius(&local_dir) {
+            let dist_to_plane = (shape_pose.position.coords - plane_pos).dot(plane_normal);
+            let depth = radius - dist_to_plane;
+            if depth > -margin {
+                let contact_point = shape_pose.position - plane_normal * (radius - depth * 0.5);
+                return vec![SdfContact {
+                    point: contact_point,
+                    normal: *plane_normal,
+                    penetration: depth.max(0.0),
+                }];
+            }
+            return vec![];
         }
-        return vec![];
     }
 
     // Tier 2: Shape supports interval evaluation → octree plane detection
@@ -219,7 +226,7 @@ pub fn compute_shape_plane_contact(
     }
 
     // Tier 3: Grid fallback → grid-based multi-contact plane tracing
-    sdf_plane_contact(shape.sdf_grid(), shape_pose, plane_normal, plane_offset)
+    sdf_plane_contact(shape, shape_pose, plane_normal, plane_offset)
 }
 
 #[cfg(test)]
@@ -345,5 +352,91 @@ mod tests {
         let c = &contacts[0];
         // depth = r_a + r_b - dist = 5 + 5 - 8 = 2
         assert!((c.penetration - 2.0).abs() < 1e-10, "depth should be 2.0");
+    }
+
+    // =========================================================================
+    // Plane dispatch routing tests
+    // =========================================================================
+
+    /// ShapeSphere-Plane takes Tier 1: exactly 1 analytical contact.
+    #[test]
+    fn sphere_plane_takes_analytical_single_contact() {
+        let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 16, 2.0));
+        let shape = ShapeSphere::new(grid, 5.0);
+
+        // Sphere center at y=4.0 — penetrating the y=0 plane by 1.0
+        let pose = Pose {
+            position: Point3::new(0.0, 4.0, 0.0),
+            rotation: UnitQuaternion::identity(),
+        };
+        let plane_pos = Vector3::new(0.0, 0.0, 0.0);
+        let plane_normal = Vector3::y();
+
+        let contacts = compute_shape_plane_contact(&shape, &pose, &plane_pos, &plane_normal, 0.1);
+
+        assert_eq!(
+            contacts.len(),
+            1,
+            "sphere-plane should produce exactly 1 analytical contact"
+        );
+        assert!(
+            (contacts[0].penetration - 1.0).abs() < 0.1,
+            "depth should be ~1.0 (got {})",
+            contacts[0].penetration
+        );
+    }
+
+    /// ShapeConvex box-Plane takes Tier 3 (grid multi-contact), NOT Tier 1.
+    /// Before the dispatch fix, this would produce 1 contact (Tier 1).
+    /// After the fix, it should produce multiple contacts distributed across
+    /// the face for rotational stability.
+    #[test]
+    fn convex_box_plane_takes_multi_contact() {
+        // Box: 5mm half-extents, fine grid for reliable surface sampling
+        let grid = Arc::new(SdfGrid::box_shape(
+            Point3::origin(),
+            Vector3::new(5.0, 5.0, 5.0),
+            24,
+            1.0,
+        ));
+        let shape = ShapeConvex::new(grid);
+
+        // Box center at y=4.5 — bottom face at y=-0.5 (0.5mm into the y=0 plane)
+        let pose = Pose {
+            position: Point3::new(0.0, 4.5, 0.0),
+            rotation: UnitQuaternion::identity(),
+        };
+        let plane_pos = Vector3::new(0.0, 0.0, 0.0);
+        let plane_normal = Vector3::y();
+
+        let contacts = compute_shape_plane_contact(&shape, &pose, &plane_pos, &plane_normal, 0.1);
+
+        // Must be multi-contact (Tier 3 grid), NOT single contact (old Tier 1)
+        assert!(
+            contacts.len() >= 2,
+            "convex box on plane should produce multiple contacts (got {})",
+            contacts.len()
+        );
+    }
+
+    /// ShapeConcave-Plane still takes multi-contact (unchanged by dispatch fix).
+    #[test]
+    fn concave_plane_still_multi_contact() {
+        let grid = Arc::new(SdfGrid::sphere(Point3::origin(), 5.0, 24, 0.5));
+        let shape = ShapeConcave::new(grid);
+
+        let pose = Pose {
+            position: Point3::new(0.0, 4.0, 0.0),
+            rotation: UnitQuaternion::identity(),
+        };
+        let plane_pos = Vector3::new(0.0, 0.0, 0.0);
+        let plane_normal = Vector3::y();
+
+        let contacts = compute_shape_plane_contact(&shape, &pose, &plane_pos, &plane_normal, 0.1);
+
+        assert!(
+            !contacts.is_empty(),
+            "concave shape on plane should still produce contacts"
+        );
     }
 }

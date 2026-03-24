@@ -32,10 +32,11 @@ Initial positions (center z):
 ## Contact structure
 
 This example exercises:
-- **Ground–cube**: SDF-plane contact (proven in step 04)
-- **Cube–cube** (×2): SDF-SDF grid-based multi-contact with face-face
-  interface. Unlike sphere-sphere (step 07), cube faces need multiple
-  contact points for stability — the grid sampler provides these.
+- **Ground–cube**: Octree plane detection (Tier 2) — distributed
+  multi-contact across the bottom face for rotational stability.
+- **Cube–cube** (×2): Octree bi-surface detection (Tier 2) with exact
+  SDF evaluation. Unlike sphere-sphere (step 07), cube faces need
+  multiple contact points for stability — the octree provides these.
 
 The lever arm stabilization fix in `jacobian.rs` ensures that the wide
 contact patches on flat faces don't cause solver instability.

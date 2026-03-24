@@ -618,8 +618,11 @@ mod tests {
         let gpu_contacts =
             tracer.trace_contacts(&ctx, &gpu_grid_a, &pose_a, &gpu_grid_b, &pose_b, margin);
 
-        // CPU path
-        let cpu_contacts = sim_core::sdf::sdf_sdf_contact(&sdf_a, &pose_a, &sdf_b, &pose_b, margin);
+        // CPU path (wrap grids in ShapeConvex for the new signature)
+        let shape_a = sim_core::ShapeConvex::new(std::sync::Arc::new(sdf_a));
+        let shape_b = sim_core::ShapeConvex::new(std::sync::Arc::new(sdf_b));
+        let cpu_contacts =
+            sim_core::sdf::sdf_sdf_contact(&shape_a, &pose_a, &shape_b, &pose_b, margin);
 
         eprintln!("  CPU contacts: {}", cpu_contacts.len());
         eprintln!("  GPU contacts: {}", gpu_contacts.len());
@@ -726,11 +729,13 @@ mod tests {
         let gpu_contacts =
             tracer.trace_contacts(&ctx, &gpu_socket, &pose_socket, &gpu_pin, &pose_pin, margin);
 
-        // CPU path
+        // CPU path (wrap grids in ShapeConvex for the new signature)
+        let socket_shape = sim_core::ShapeConvex::new(std::sync::Arc::new(socket_grid));
+        let pin_shape = sim_core::ShapeConvex::new(std::sync::Arc::new(pin_grid));
         let cpu_contacts = sim_core::sdf::sdf_sdf_contact(
-            &socket_grid,
+            &socket_shape,
             &pose_socket,
-            &pin_grid,
+            &pin_shape,
             &pose_pin,
             margin,
         );

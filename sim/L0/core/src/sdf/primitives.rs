@@ -16,6 +16,7 @@ use sim_types::Pose;
 
 use cf_geometry::Bounded;
 
+use super::shape::PhysicsShape;
 use super::{SdfContact, SdfGrid};
 
 /// Query an SDF for contact with a sphere.
@@ -639,16 +640,17 @@ pub fn sdf_triangle_mesh_contact(
 /// constraint forces across the contact patch, preventing single-point jitter.
 #[must_use]
 pub fn sdf_plane_contact(
-    sdf: &SdfGrid,
+    shape: &dyn PhysicsShape,
     sdf_pose: &Pose,
     plane_normal: &Vector3<f64>,
     plane_offset: f64,
 ) -> Vec<SdfContact> {
-    // Sample SDF grid points near the surface, project to the actual surface,
-    // and collect all penetrating contacts. Deduplicating nearby contacts avoids
-    // redundant forces from adjacent grid points that project to nearly the same
-    // surface location.
+    // Sample grid points near the surface, project to the actual surface
+    // using the shape's gradient (exact for analytical shapes), and collect
+    // all penetrating contacts. The grid is used only for cell iteration
+    // (spatial indexing).
 
+    let sdf = shape.sdf_grid();
     let mut contacts: Vec<SdfContact> = Vec::new();
     let surface_threshold = sdf.cell_size() * 2.0;
 
@@ -672,8 +674,9 @@ pub fn sdf_plane_contact(
                 let penetration = -dist_to_plane;
 
                 if penetration > 0.0 {
-                    let surface_point = sdf.gradient(local_point).map_or(world_point, |grad| {
-                        let surface_local = local_point - grad * sdf_value;
+                    let surface_point = shape.gradient(&local_point).map_or(world_point, |grad| {
+                        let src_dist = shape.distance(&local_point).unwrap_or(sdf_value);
+                        let surface_local = local_point - grad * src_dist;
                         sdf_pose.transform_point(&surface_local)
                     });
 
@@ -882,10 +885,16 @@ pub fn sdf_heightfield_contact(
 )]
 mod tests {
     use super::*;
+    use crate::sdf::shapes::ShapeConvex;
     use approx::assert_relative_eq;
+    use std::sync::Arc;
 
     fn sphere_sdf(resolution: usize) -> SdfGrid {
         SdfGrid::sphere(Point3::origin(), 1.0, resolution, 1.0)
+    }
+
+    fn sphere_shape(resolution: usize) -> ShapeConvex {
+        ShapeConvex::new(Arc::new(sphere_sdf(resolution)))
     }
 
     #[test]
@@ -1391,13 +1400,13 @@ mod tests {
 
     #[test]
     fn test_sdf_plane_contact_no_collision() {
-        let sdf = sphere_sdf(32);
+        let shape = sphere_shape(32);
         let sdf_pose = Pose::identity();
 
         let plane_normal = Vector3::z();
         let plane_offset = -5.0;
 
-        let contacts = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        let contacts = sdf_plane_contact(&shape, &sdf_pose, &plane_normal, plane_offset);
         assert!(
             contacts.is_empty(),
             "SDF entirely above plane should have no contact"
@@ -1406,13 +1415,13 @@ mod tests {
 
     #[test]
     fn test_sdf_plane_contact_collision() {
-        let sdf = sphere_sdf(32);
+        let shape = sphere_shape(32);
         let sdf_pose = Pose::identity();
 
         let plane_normal = Vector3::z();
         let plane_offset = 0.0;
 
-        let contacts = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        let contacts = sdf_plane_contact(&shape, &sdf_pose, &plane_normal, plane_offset);
         assert!(
             !contacts.is_empty(),
             "SDF intersecting plane should have contact"
@@ -1436,13 +1445,13 @@ mod tests {
 
     #[test]
     fn test_sdf_plane_contact_deep_penetration() {
-        let sdf = sphere_sdf(32);
+        let shape = sphere_shape(32);
         let sdf_pose = Pose::identity();
 
         let plane_normal = Vector3::z();
         let plane_offset = 0.5;
 
-        let contacts = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        let contacts = sdf_plane_contact(&shape, &sdf_pose, &plane_normal, plane_offset);
         assert!(
             !contacts.is_empty(),
             "SDF mostly below plane should have contact"
@@ -1458,13 +1467,13 @@ mod tests {
 
     #[test]
     fn test_sdf_plane_contact_tilted_plane() {
-        let sdf = sphere_sdf(32);
+        let shape = sphere_shape(32);
         let sdf_pose = Pose::identity();
 
         let plane_normal = Vector3::new(1.0, 0.0, 1.0).normalize();
         let plane_offset = 0.0;
 
-        let contacts = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        let contacts = sdf_plane_contact(&shape, &sdf_pose, &plane_normal, plane_offset);
         assert!(
             !contacts.is_empty(),
             "SDF intersecting tilted plane should have contact"
@@ -1477,20 +1486,20 @@ mod tests {
 
     #[test]
     fn test_sdf_plane_contact_with_translated_sdf() {
-        let sdf = sphere_sdf(32);
+        let shape = sphere_shape(32);
         let sdf_pose = Pose::from_position(Point3::new(0.0, 0.0, 2.0));
 
         let plane_normal = Vector3::z();
         let plane_offset = 0.0;
 
-        let contacts = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        let contacts = sdf_plane_contact(&shape, &sdf_pose, &plane_normal, plane_offset);
         assert!(
             contacts.is_empty(),
             "Translated SDF above plane should have no contact"
         );
 
         let plane_offset = 1.5;
-        let contacts = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        let contacts = sdf_plane_contact(&shape, &sdf_pose, &plane_normal, plane_offset);
         assert!(
             !contacts.is_empty(),
             "Translated SDF intersecting plane should have contact"
@@ -1500,13 +1509,13 @@ mod tests {
 
     #[test]
     fn test_sdf_plane_contact_inverted_normal() {
-        let sdf = sphere_sdf(32);
+        let shape = sphere_shape(32);
         let sdf_pose = Pose::identity();
 
         let plane_normal = -Vector3::z();
         let plane_offset = 0.0;
 
-        let contacts = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        let contacts = sdf_plane_contact(&shape, &sdf_pose, &plane_normal, plane_offset);
         assert!(
             !contacts.is_empty(),
             "SDF intersecting inverted plane should have contact"
@@ -1519,13 +1528,18 @@ mod tests {
 
     #[test]
     fn test_sdf_plane_contact_box_sdf() {
-        let sdf = SdfGrid::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let shape = ShapeConvex::new(Arc::new(SdfGrid::box_shape(
+            Point3::origin(),
+            Vector3::new(0.5, 0.5, 0.5),
+            32,
+            0.5,
+        )));
         let sdf_pose = Pose::identity();
 
         let plane_normal = Vector3::z();
         let plane_offset = 0.0;
 
-        let contacts = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        let contacts = sdf_plane_contact(&shape, &sdf_pose, &plane_normal, plane_offset);
         assert!(
             !contacts.is_empty(),
             "Box SDF intersecting plane should have contact"

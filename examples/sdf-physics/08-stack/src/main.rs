@@ -1,8 +1,8 @@
 //! SDF Physics 08 — Stack
 //!
 //! Three `Solid::cuboid()` bodies stacked on a ground plane. Tests multi-body
-//! simultaneous contact stability — cubes use SDF-SDF grid-based multi-contact
-//! for face-face interfaces.
+//! simultaneous contact stability — cubes use octree-based multi-contact
+//! (Tier 2) for face-face interfaces and octree plane detection for ground.
 //!
 //! Verifies:
 //! - All three cubes settle into a stable stack within 3 seconds
@@ -171,10 +171,13 @@ fn nudge_stack(
     let bodies = [(14, 12, "top"), (7, 6, "middle"), (0, 0, "bottom")];
     for &(qpos_off, qvel_off, name) in &bodies {
         let z = data.0.qpos[qpos_off + 2];
-        // Only nudge if it's still roughly stacked (z > 3)
-        if z > 3.0 {
-            data.0.qvel[qvel_off] += 80.0; // vx impulse
-            eprintln!("  *** NUDGE {name}! Applied +80 mm/s ***");
+        // Only nudge if it's still stacked (z > 10, i.e. above the bottom cube).
+        // Bottom cube at z≈5, middle at z≈15, top at z≈25.
+        // A knocked-off cube lands at z≈5, so threshold 10 skips it.
+        if z > 10.0 {
+            data.0.qvel[qvel_off] += 300.0; // vx impulse
+            data.0.qvel[qvel_off + 2] += 150.0; // vz impulse — lift clear before sliding
+            eprintln!("  *** NUDGE {name}! Applied vx=+300, vz=+150 mm/s ***");
             return;
         }
     }
