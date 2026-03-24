@@ -356,3 +356,41 @@ fn check(label: &str, ok: bool) -> bool {
     }
     ok
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// GPU physics pipeline skeleton
+// ═══════════════════════════════════════════════════════════════════════
+//
+// The full GPU physics pipeline (`GpuPhysicsPipeline`) encodes N substeps
+// in a single command buffer and submits once per frame — no per-substep
+// CPU↔GPU round-trips. To enable it for hockey:
+//
+// 1. All joints must be Free (GPU constraint solver limitation).
+//    The current stick uses a Revolute hinge — replace with Free for GPU mode.
+//
+// 2. Build the pipeline once at startup:
+//    ```
+//    let gpu = sim_gpu::GpuPhysicsPipeline::new(&model, &data)?;
+//    ```
+//
+// 3. Replace `step_physics_realtime` with a GPU stepping system:
+//    ```
+//    fn step_physics_gpu(
+//        model: Res<PhysicsModel>,
+//        mut data: ResMut<PhysicsData>,
+//        gpu: Res<GpuPhysicsResource>,
+//    ) {
+//        gpu.0.step(&model.0, &mut data.0, 4); // 4 substeps per frame
+//        data.0.forward_pos_vel(&model.0, true); // CPU FK for Bevy rendering
+//    }
+//    ```
+//
+// 4. Insert the GPU pipeline as a Bevy resource:
+//    ```
+//    app.insert_resource(GpuPhysicsResource(gpu));
+//    ```
+//
+// The pipeline validates at creation time — if the model has non-free
+// joints or nv > 60, `new()` returns an error. Use CPU fallback in that case.
+//
+// See: sim/docs/gpu-physics-pipeline/SESSION_6_PIPELINE_ORCHESTRATION.md
