@@ -1117,52 +1117,205 @@ scan is correct for non-flat trees.
 | 90 Hz frame budget | < 11ms total | Frame timer |
 | Newton iterations | 1–3 | Solver convergence log |
 
-## 14. Implementation order
+## 14. Implementation sessions
 
-1. **`fk.wgsl` + tree scan primitive** — Foundation. Validates
-   level-order dispatch, body pose computation, cinert, cdof, n_env
-   dimension. Test hinge pivot-point rotation with non-zero jnt_pos.
-   Test against CPU FK for flat tree (hockey) and chain (7-DOF arm).
+Implementation is organized into 6 sessions. Each session is designed
+to be self-contained: start by reading the spec sections listed, read
+the CPU reference files, implement, validate against CPU, commit. Use
+`/clear` between sessions — the spec provides full continuity.
 
-2. **`crba.wgsl`** — Backward tree scan + M assembly + Cholesky.
-   Validates backward scan with workgroup reduction (§7.3). Compare M
-   against CPU CRBA. Test off-diagonal entries with spatial force
-   transport on a multi-body chain.
+### Session 1: FK + tree scan primitive
 
-3. **`velocity_fk.wgsl`** — Forward tree scan for body velocities.
-   Compare cvel against CPU mj_fwd_velocity(). Critical prerequisite
-   for correct RNE (Coriolis/gyroscopic forces).
+**Goal:** Body poses computed on GPU match CPU FK within f32 tolerance.
 
-4. **`rne.wgsl`** — Forward + backward scan (reuses tree scan).
-   Compare qfrc_bias against CPU RNE. Verify gyroscopic terms are
-   non-zero at high angular velocity (stick swing test).
+**Spec sections:** §7 (tree scan primitive), §8.1 (fk.wgsl)
 
-5. **`actuation.wgsl` + `passive.wgsl` + `smooth.wgsl`** — Per-element
-   maps + Cholesky solve. Validates qacc_smooth against CPU. Verify
-   gravity is NOT double-counted (only in RNE, not passive).
+**CPU reference files:**
+- `sim/L0/core/src/forward/position.rs` — FK implementation
+- `sim/L0/core/src/joint_visitor.rs` — motion subspace (cdof)
+- `sim/L0/core/src/dynamics/spatial.rs` — spatial inertia (cinert)
 
-6. **`integrate.wgsl`** — Per-body map. Validates qpos/qvel update.
-   At this point: full FK→CRBA→vel_FK→RNE→smooth→integrate loop on GPU.
-   Can run gravity-only simulation (no contacts).
+**Implement:**
+1. Tree scan dispatch infrastructure (depth-uniform, per-level dispatch)
+2. `fk.wgsl` — body poses, cinert, geom poses, cdof, subtree COM
+3. SoA buffer layout with n_env dimension (§6)
+4. CPU→GPU upload for static model data + initial qpos
+5. GPU→CPU readback for body_xpos/xquat validation
 
-7. **`sdf_plane.wgsl`** — Completes narrowphase. Builds on existing
-   trace_surface.wgsl patterns.
+**Validate:**
+- Compare GPU body_xpos/xquat vs CPU mj_fwd_position() for hockey (flat tree)
+- Compare GPU body_xpos/xquat vs CPU for a 7-body chain (depth 7) — validates
+  level-order scan correctness for non-flat trees
+- Test hinge with non-zero jnt_pos — verifies pivot-point rotation, left-multiply,
+  axis rotation to world frame
+- Compare GPU cinert vs CPU cinert (10-float → 6×6 reconstruction)
+- Compare GPU cdof vs CPU joint_motion_subspace()
 
-8. **`aabb.wgsl` + `broadphase.wgsl`** — Collision detection pipeline.
-   Validates spatial hashing + pair emission.
+**Milestone:** `cargo test -p sim-gpu` passes FK validation tests.
 
-9. **`assemble.wgsl`** — Constraint assembly. Validates pyramidal
-   Jacobian computation on GPU.
+---
 
-10. **`newton_solve.wgsl`** — Primal solver. The hardest shader.
-    Validates against CPU Newton. Test line search convergence.
+### Session 2: CRBA + velocity FK
 
-11. **`map_forces.wgsl`** — Force mapping. Simple J^T·f reduction.
+**Goal:** Mass matrix M and body velocities cvel match CPU within f32 tolerance.
 
-12. **Pipeline orchestration** — Chain all shaders in single command
-    buffer. Implement `GpuPhysicsPipeline` trait. End-to-end validation.
+**Spec sections:** §7.3 (backward scan f32 workaround), §8.2 (crba.wgsl), §8.3 (velocity_fk.wgsl)
 
-13. **Cleanup** — Deprecate half-GPU dispatch.
+**CPU reference files:**
+- `sim/L0/core/src/dynamics/crba.rs` — CRBA implementation
+- `sim/L0/core/src/dynamics/factor.rs` — sparse LDL (reference, not ported)
+- `sim/L0/core/src/forward/velocity.rs` — velocity FK
+
+**Implement:**
+1. `crba.wgsl` — init + backward scan + M assembly + Cholesky
+2. Backward scan with workgroup-local reduction (§7.3, no f32 atomics)
+3. `velocity_fk.wgsl` — forward scan for body spatial velocities
+4. Dense Cholesky factorization in shared memory
+
+**Validate:**
+- Compare GPU qM vs CPU mj_crba() for hockey
+- Compare GPU qM off-diagonal entries vs CPU on a 3-body chain — verifies
+  spatial force transport at body boundaries
+- Compare GPU cvel vs CPU mj_fwd_velocity() at various qvel states
+- Test that cvel is non-zero when qvel is non-zero (catches the original
+  missing-velocity-FK bug)
+
+**Milestone:** M and cvel match CPU. Cholesky factorization works in shared memory.
+
+---
+
+### Session 3: RNE + forces + integration (gravity-only sim)
+
+**Goal:** A complete GPU physics loop (no contacts) that drops objects
+under gravity and matches CPU trajectories.
+
+**Spec sections:** §8.4 (rne.wgsl), §8.5 (actuation.wgsl), §8.6 (passive.wgsl),
+§8.7 (smooth.wgsl), §8.15 (integrate.wgsl)
+
+**CPU reference files:**
+- `sim/L0/core/src/dynamics/rne.rs` — RNE
+- `sim/L0/core/src/forward/actuation.rs` — actuation
+- `sim/L0/core/src/forward/passive.rs` — passive forces
+- `sim/L0/core/src/constraint/mod.rs:62-126` — compute_qacc_smooth
+- `sim/L0/core/src/integrate/euler.rs` — Euler integration + quaternion
+
+**Implement:**
+1. `rne.wgsl` — gravity + forward scan + backward scan + project
+2. `actuation.wgsl` — per-actuator force (motor/position/velocity)
+3. `passive.wgsl` — joint springs + dampers (NOT gravity)
+4. `smooth.wgsl` — qfrc_smooth assembly + Cholesky solve for qacc_smooth
+5. `integrate.wgsl` — semi-implicit Euler + quaternion exponential map
+6. Command buffer chaining: FK→CRBA→vel_FK→RNE→act→pas→smooth→integrate
+
+**Validate:**
+- Compare GPU qfrc_bias vs CPU mj_rne() — verify Coriolis/gyroscopic
+  terms are non-zero at high angular velocity
+- Verify gravity is NOT double-counted (disable RNE gravity, check passive
+  has zero gravity contribution)
+- Compare GPU qacc_smooth vs CPU compute_qacc_smooth()
+- **End-to-end gravity test:** Drop a free body from height. Compare GPU
+  vs CPU trajectories over 2 seconds. Should match within f32 tolerance
+  (bounded drift, not divergence).
+- Test quaternion integration: spin a free body at high ω, verify no
+  quaternion denormalization over 1000 substeps.
+
+**Milestone:** Gravity-only simulation runs entirely on GPU. Objects fall
+correctly. This is the first full GPU physics loop.
+
+---
+
+### Session 4: Collision pipeline
+
+**Goal:** GPU collision detection (broadphase + narrowphase) produces
+contacts that match CPU collision within f32 tolerance.
+
+**Spec sections:** §8.8 (aabb.wgsl), §8.9 (broadphase.wgsl),
+§8.10 (trace_surface.wgsl), §8.11 (sdf_plane.wgsl)
+
+**CPU reference files:**
+- `sim/L0/core/src/collision/mod.rs` — collision dispatch
+- `sim/L0/core/src/collision/sdf_collide.rs` — SDF collision
+- `sim/L0/gpu/src/collision.rs` — existing GPU tracer (reuse)
+- `sim/L0/gpu/src/shaders/trace_surface.wgsl` — existing shader (reuse)
+
+**Implement:**
+1. `aabb.wgsl` — per-geom AABB from FK poses (uses fresh geom_xpos)
+2. `broadphase.wgsl` — 3-pass spatial hash (count, prefix sum, scatter+test)
+3. Integrate existing `trace_surface.wgsl` into pipeline (no CPU readback)
+4. `sdf_plane.wgsl` — SDF-plane narrowphase
+5. Contact buffer → constraint assembly bridge
+
+**Validate:**
+- Compare GPU AABBs vs CPU compute_aabb()
+- Compare GPU broadphase pairs vs CPU (no missed pairs)
+- Compare GPU SDF-SDF contacts vs existing GPU standalone path
+- Compare GPU SDF-plane contacts vs CPU compute_shape_plane_contact()
+
+**Milestone:** Full collision pipeline on GPU. Contacts feed into assembly.
+
+---
+
+### Session 5: Constraint solve
+
+**Goal:** GPU constraint solver (assembly + Newton + force mapping)
+produces qacc that matches CPU Newton solver within f32 tolerance.
+
+**Spec sections:** §8.12 (assemble.wgsl), §8.13 (newton_solve.wgsl),
+§8.14 (map_forces.wgsl)
+
+**CPU reference files:**
+- `sim/L0/core/src/constraint/assembly.rs` — constraint assembly
+- `sim/L0/core/src/constraint/contact_assembly.rs` — contact rows
+- `sim/L0/core/src/constraint/solver/newton.rs` — Newton solver
+- `sim/L0/core/src/constraint/solver/pgs.rs` — PGS (primal cost reference)
+- `sim/L0/core/src/constraint/solver/primal.rs` — line search
+
+**Implement:**
+1. `assemble.wgsl` — pyramidal constraint rows from contacts
+2. `newton_solve.wgsl` — primal Newton with shared-memory Hessian,
+   bracket-narrowing line search, cooperative workgroup evaluation
+3. `map_forces.wgsl` — J^T · efc_force reduction
+
+**Validate:**
+- Compare GPU efc_J/D/aref vs CPU (set CPU to pyramidal cone mode)
+- Compare GPU qacc vs CPU Newton solver output for hockey scene
+- Stability test: hockey scene runs 10s without explosion
+- Newton convergence: verify 1–3 iterations suffice
+- Line search: verify cost decreases monotonically
+
+**Milestone:** Full constraint solve on GPU. Combined with Session 3+4,
+this is complete physics.
+
+---
+
+### Session 6: Pipeline orchestration + end-to-end
+
+**Goal:** Hockey runs entirely on GPU. Single command buffer per frame.
+Bevy renders from GPU-computed poses.
+
+**Spec sections:** §9 (command buffer), §10 (sim-core integration),
+§11 (cleanup), §12 (validation)
+
+**CPU reference files:**
+- `sim/L0/core/src/forward/mod.rs` — step() dispatch
+- `sim/L0/gpu/src/collision.rs` — existing GPU infrastructure
+- `examples/sdf-physics/10b-hockey/` — hockey example
+
+**Implement:**
+1. `GpuPhysicsPipeline` trait + `GpuPipelineImpl`
+2. Command buffer construction (§9) — all substeps in one submit
+3. `enable_gpu_pipeline()` — model validation + pipeline creation
+4. Integration in `Data::step()` — GPU path + CPU fallback
+5. Update hockey example to use `enable_gpu_pipeline()`
+
+**Validate:**
+- End-to-end: hockey scene GPU vs CPU for 5 seconds, compare trajectories
+- Performance: measure per-substep latency on 5070 Ti
+- Verify no CPU stages in the inner loop (all dispatches in one submit)
+- Verify GPU→CPU readback happens only once per frame
+- Stress test: run at 90 Hz with 4 substeps for 60 seconds, no crashes
+
+**Milestone:** Hockey runs on GPU. Branch ready for merge review.
 
 ## 15. Risks
 
