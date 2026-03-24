@@ -195,14 +195,28 @@ These encode the model structure. Shared across all environments.
 | `axis` | vec4\<f32\> | Joint axis in parent frame (w=0). |
 | `pos` | vec4\<f32\> | Joint anchor in parent frame (w=0). |
 
-**GeomModel struct** (48 bytes, 16-byte aligned):
+**GeomModel struct** (96 bytes, 16-byte aligned) — extended in Session 4:
 
 | Field | Type | Notes |
 |---|---|---|
 | `body_id` | u32 | Body index for this geom. |
-| `_pad` | u32[3] | Alignment padding. |
+| `geom_type` | u32 | GeomType enum (Plane=0..Sdf=8). Session 4. |
+| `contype` | u32 | Collision type bitmask. Session 4. |
+| `conaffinity` | u32 | Collision affinity bitmask. Session 4. |
 | `pos` | vec4\<f32\> | Geom offset in body frame (w=0). |
 | `quat` | vec4\<f32\> | Geom orientation in body frame (x,y,z,w). |
+| `size` | vec4\<f32\> | xyz = type-specific dims, w = bounding radius. Session 4. |
+| `friction` | vec4\<f32\> | x=slide, y=torsion, z=roll, w=0. Session 4. |
+| `sdf_meta_idx` | u32 | Index into `sdf_metas` (0xFFFFFFFF = not SDF). Session 4. |
+| `condim` | u32 | Contact dimensionality (1, 3, 4, or 6). Session 4. |
+| `_pad` | u32[2] | Alignment padding. |
+
+**Note (Session 4):** The GeomModel struct was extended from 48 to 96 bytes
+to pack collision-related fields (type, contype, conaffinity, size, friction,
+sdf_meta_idx) into the same struct instead of separate buffers. All shaders
+that reference `array<GeomModel>` (currently `fk.wgsl`, `aabb.wgsl`,
+`sdf_sdf_narrow.wgsl`, `sdf_plane_narrow.wgsl`) must use the 96-byte struct
+definition for correct array stride.
 
 **DofModel struct** (16 bytes, 16-byte aligned) — added in Session 2:
 
@@ -217,16 +231,27 @@ These encode the model structure. Shared across all environments.
 |---|---|---|---|
 | `dofs` | `array<DofModelGpu>` | `array<DofModel>` | CRBA Group 1, binding 1 |
 
-Additional static data not yet packed into structs (used by later sessions):
+**SDF grid data** (Session 4) — unified buffer approach:
 
 | Buffer | Size | Contents |
 |---|---|---|
-| `geom_type` | ngeom × 4 | GeomType enum (u32). |
-| `geom_size` | ngeom × 12 | Geom dimensions for AABB (vec3<f32>). |
-| `geom_shape_id` | ngeom × 4 | SDF grid index (u32). |
-| `geom_friction` | ngeom × 12 | Per-geom friction [slide, torsion, roll] (vec3<f32>). |
-| `sdf_grid[i]` | W×H×D × 4 | SDF distance values per shape (f32). |
-| `sdf_meta[i]` | 32 | Grid dimensions, cell_size, origin. |
+| `sdf_values` | Σ(W×H×D) × 4 | All SDF grids concatenated (f32). |
+| `sdf_metas` | nshape × 32 | Per-shape metadata: `SdfMeta` (width, height, depth, cell_size, origin, values_offset). |
+
+Each narrowphase shader reads `sdf_metas[idx]` to get grid dimensions and
+the offset into `sdf_values` where that shape's data starts. This replaces
+per-grid buffer bindings with dynamic indexing into one large buffer.
+
+**SdfMeta struct** (32 bytes, 16-byte aligned):
+
+| Field | Type | Notes |
+|---|---|---|
+| `width` | u32 | Grid X samples. |
+| `height` | u32 | Grid Y samples. |
+| `depth` | u32 | Grid Z samples. |
+| `cell_size` | f32 | Uniform cell size (meters). |
+| `origin` | vec3\<f32\> | Grid minimum corner (local frame). |
+| `values_offset` | u32 | Element offset into `sdf_values` buffer. |
 
 **Per-dispatch uniform parameters (separate structs for separate concerns):**
 
@@ -234,11 +259,13 @@ Additional static data not yet packed into structs (used by later sessions):
 |---|---|---|---|
 | `FkParams` | 32 | FK, CRBA, velocity FK | current_depth, nbody, njnt, ngeom, nv, n_env, nq, _pad. |
 | `PhysicsParams` | 48 | RNE, smooth, integrate | gravity (vec4), timestep, nbody, njnt, nv, nq, n_env, current_depth, nu. |
+| `AabbParams` | 16 | AABB | ngeom, _pad[3]. Session 4. |
+| `NarrowphaseParams` | 48 | SDF-SDF, SDF-plane narrowphase | geom1, geom2, src/dst sdf_meta_idx, surface_threshold, margin, flip_normal, friction. Session 4. |
 
 `FkParams` (Session 1) serves kinematics shaders. `PhysicsParams` (Session 3)
-adds gravity and timestep for dynamics shaders. Both are written into
-pre-allocated uniform buffers with 256-byte aligned slots and selected via
-dynamic offsets.
+adds gravity and timestep for dynamics shaders. `NarrowphaseParams` (Session 4)
+is written per-pair dispatch — each narrowphase invocation gets its own pair's
+metadata via `queue.write_buffer` before the dispatch.
 
 **Solver parameters (Session 5+):**
 
@@ -320,14 +347,22 @@ These hold the simulation state. Each environment has its own copy.
 |---|---|---|
 | `cdof` | nv × 32 | Joint motion subspace in world frame (2×vec4 = 8 f32 per DOF; 6 used, 2 padding). |
 
-**Constraint working set:**
+**Collision output (Session 4):**
 
 | Buffer | Size per env | Contents |
 |---|---|---|
-| `pair_buffer` | max_pairs × 8 | Broadphase pairs [geom_a, geom_b] (u32 × 2). |
-| `pair_count` | 4 | Active pair count (atomic u32). |
-| `contact_buffer` | max_contacts × 48 | Contacts (see struct below). |
-| `contact_count` | 4 | Active contact count (atomic u32). |
+| `geom_aabb` | ngeom × 32 | World AABB per geom: 2×vec4 [min, max]. Written by `aabb.wgsl`. |
+| `contact_buffer` | max_contacts × 48 | Pipeline contacts (see struct below). Written by narrowphase. |
+| `contact_count` | 4 | Active contact count (atomic u32). Reset to 0 before collision. |
+
+**Note (Session 4):** `pair_buffer` and `pair_count` are NOT allocated.
+The broadphase was replaced by a pre-computed pair plan — pairs are determined
+at model upload time and dispatched directly, not written to a GPU buffer.
+
+**Constraint working set (Session 5):**
+
+| Buffer | Size per env | Contents |
+|---|---|---|
 | `efc_J` | max_constraints × nv × 4 | Constraint Jacobian (f32). |
 | `efc_D` | max_constraints × 4 | Constraint stiffness (f32). |
 | `efc_aref` | max_constraints × 4 | Reference acceleration (f32). |
@@ -335,25 +370,33 @@ These hold the simulation state. Each environment has its own copy.
 | `efc_force` | max_constraints × 4 | Solver output forces (f32). |
 | `constraint_count` | 4 | Active constraint count (atomic u32). |
 
-**Contact struct (48 bytes):**
+**PipelineContact struct (48 bytes) — implemented in Session 4:**
 ```wgsl
-struct GpuContact {
+struct PipelineContact {
     point:    vec3<f32>,   // World-space contact position
     depth:    f32,         // Penetration depth (≥ 0)
-    normal:   vec3<f32>,   // World-space contact normal
+    normal:   vec3<f32>,   // World-space contact normal (geom1 → geom2)
     geom1:    u32,         // Geom index A
-    friction: vec3<f32>,   // Mixed friction [slide, torsion, roll]
+    friction: vec3<f32>,   // Combined friction [slide, torsion, roll]
     geom2:    u32,         // Geom index B
 };
 ```
+
+Friction is combined at pair plan construction time: element-wise max of
+both geoms' friction vectors. Written into `NarrowphaseParams` and copied
+into each contact by the narrowphase shader.
+
+**Note:** The standalone `GpuContact` (32 bytes, in `collision.rs`) used by
+the half-GPU path (`GpuSdfCollision` trait) is a separate type and is
+unchanged. `PipelineContact` (48 bytes) is used only by the pipeline path.
 
 ### 6.4 Pre-allocation sizes
 
 | Buffer | Max size | Rationale |
 |---|---|---|
-| `max_contacts` | 32,768 | ~100 SDF pairs × ~300 contacts. |
-| `max_pairs` | 4,096 | 50 geoms → C(50,2) = 1225 worst case. 3× headroom. |
-| `max_constraints` | 196,608 | 6 × max_contacts (pyramidal condim=4: 6 rows per contact). |
+| `max_contacts` | 32,768 | ~100 SDF pairs × ~300 contacts. Implemented in Session 4. |
+| `max_pairs` | — | Not allocated. Pre-computed pair plan replaces GPU pair buffer. |
+| `max_constraints` | 196,608 | 6 × max_contacts (pyramidal condim=4: 6 rows per contact). Session 5. |
 
 ### 6.5 Memory budget
 
@@ -942,34 +985,93 @@ Uses the Cholesky factor L from `crba.wgsl`:
 Single thread on global memory (same approach as `crba_cholesky`).
 For nv=13: ~338 flops. Trivially fast.
 
-### 8.8 `aabb.wgsl` — Bounding box computation (NEW)
+### 8.8 `aabb.wgsl` — Bounding box computation — COMPLETE (Session 4)
 
-**Estimated:** ~80 lines WGSL.
+**Actual:** ~98 lines WGSL. 1 entry point: `compute_aabb`.
 **Pattern:** Per-geom parallel map.
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_4_COLLISION_PIPELINE.md`
 
-Per geom: read `geom_xpos`, `geom_xmat`, `geom_size` → compute world
-AABB with margin → write `geom_aabb`. Uses fresh body poses from FK
-(no stale data).
+**Bindings (5 total, 3 bind groups):**
+- Group 0: `AabbParams` uniform (ngeom)
+- Group 1: `geoms` (read) — GeomModel array (includes type, size)
+- Group 2: `geom_xpos`, `geom_xmat` (read), `geom_aabb` (write)
 
-### 8.9 `broadphase.wgsl` — Spatial hash broadphase (NEW)
+Per geom: read `geom_xpos`, `geom_xmat`, `GeomModel.size`,
+`GeomModel.geom_type` → compute local half-extents per type → rotate
+OBB to world → write axis-aligned envelope. Uses fresh FK poses (no
+stale data). AABB is NOT margin-inflated — the narrowphase AABB guard
+handles margin.
 
-**Estimated:** ~300 lines WGSL (3 passes).
-**Reference:** GPU Gems 3, Chapter 32.
+### 8.9 `broadphase.wgsl` — DEFERRED (replaced by pre-computed pair plan)
 
-Pass 1: Hash + count. Pass 2: Blelloch prefix sum. Pass 3: Scatter +
-AABB overlap test → emit pairs via atomic.
+**Status:** Not implemented. The original spec called for a 3-pass
+spatial hash (GPU Gems 3). Hockey has 4 collision-active geoms →
+C(4,2) = 6 possible pairs. A spatial hash is untestable at this scale
+and violates "A-grade or it doesn't ship."
 
-### 8.10 `trace_surface.wgsl` — SDF-SDF narrowphase (EXISTS)
+**Replacement (Session 4):** Pre-computed pair plan at model upload time.
+`GpuCollisionPipeline::new()` enumerates all valid collision pairs
+(filtered by contype/conaffinity and same-body exclusion), classifies
+by narrowphase type (SDF-SDF, SDF-plane, or skip), and creates dispatch
+descriptors. Each narrowphase dispatch includes an AABB overlap guard —
+if AABBs don't overlap, all threads return immediately. Fully
+GPU-resident, no CPU readback needed.
 
-**Status:** Done, tested, 267 lines. Workgroup 8×8×4.
-**Change:** Output feeds into assemble.wgsl instead of CPU readback.
-Contact struct extended to 48 bytes.
+**Future upgrade path:** When scenes grow to 1000+ geoms, add a
+`broadphase.wgsl` spatial hash that writes to `pair_buffer`. The
+narrowphase then reads `pair_buffer` instead of using the pre-computed
+plan. The AABB shader and narrowphase shaders are reused as-is.
 
-### 8.11 `sdf_plane.wgsl` — SDF-plane narrowphase (NEW)
+### 8.10 `sdf_sdf_narrow.wgsl` — SDF-SDF narrowphase — COMPLETE (Session 4)
 
-**Estimated:** ~150 lines WGSL. Workgroup 8×8×4.
-Per grid cell: surface filter → world transform → plane distance →
-emit contact. Simpler than SDF-SDF (no second grid).
+**Actual:** ~310 lines WGSL. 1 entry point: `sdf_sdf_narrow`.
+**Pattern:** Per-voxel parallel (workgroup 8×8×4), same as trace_surface.wgsl.
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_4_COLLISION_PIPELINE.md`
+
+**Note:** This is a **new file** adapted from `trace_surface.wgsl`, not a
+modification of it. The standalone `trace_surface.wgsl` (267 lines) is
+preserved unchanged for the existing `GpuSdfCollider` / `GpuSdfCollision`
+trait used by the half-GPU path.
+
+**Key changes from standalone trace_surface.wgsl:**
+1. **AABB guard** — first operation reads `geom_aabb` for the pair, all
+   threads return if no overlap.
+2. **Unified SDF buffer** — reads from `sdf_values[offset + idx]` via
+   `sdf_metas[params.src_sdf_meta_idx]` instead of separate per-grid buffers.
+3. **Poses from FK output** — constructs mat4x4 from `geom_xpos`/`geom_xmat`
+   directly, no CPU-uploaded pose matrices.
+4. **Extended contact output** — writes 48-byte `PipelineContact` with geom
+   indices + combined friction (from `NarrowphaseParams`).
+
+**Bindings (9 total, 4 bind groups):**
+- Group 0: `NarrowphaseParams` uniform (pair metadata, friction, margin)
+- Group 1: `sdf_metas` (read), `sdf_values` (read) — unified SDF data
+- Group 2: `geom_xpos`, `geom_xmat`, `geom_aabb` (read) — FK output
+- Group 3: `contact_buffer` (rw), `contact_count` (atomic)
+
+**Symmetric dispatch:** For each SDF-SDF pair, two dispatches are encoded
+(A→B with `flip_normal=0`, B→A with `flip_normal=1`), matching the
+existing trace_surface.wgsl pattern. Both write to the same contact buffer.
+
+**No GPU-side dedup.** The symmetric dispatch produces ~2× contacts.
+Dedup is deferred to Session 5's constraint assembly (contact capping).
+
+### 8.11 `sdf_plane_narrow.wgsl` — SDF-plane narrowphase — COMPLETE (Session 4)
+
+**Actual:** ~213 lines WGSL. 1 entry point: `sdf_plane_narrow`.
+**Pattern:** Per-voxel parallel (workgroup 8×8×4).
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_4_COLLISION_PIPELINE.md`
+
+**Bindings:** Same bind group layout as `sdf_sdf_narrow.wgsl`.
+
+Per grid cell: surface filter → gradient → surface reconstruction →
+transform to world → compute signed distance to plane → contact test →
+emit `PipelineContact` with plane normal as contact normal.
+
+**Plane equation** extracted from FK output: plane normal = Z-axis of
+`geom_xmat[plane_geom]` (column 2), plane offset = `dot(normal, geom_xpos[plane_geom])`.
+
+**Contact normal** points away from plane (UP), matching CPU convention.
 
 ### 8.12 `assemble.wgsl` — Constraint assembly (NEW)
 
@@ -1120,10 +1222,15 @@ for _substep in 0..num_substeps {
     compute_pass(&encoder, &smooth_assemble_pipeline, ceil(nv, 64), n_env);
     compute_pass(&encoder, &smooth_solve_pipeline, 1, n_env);
 
-    // Collision
+    // Collision (Session 4)
+    encoder.clear_buffer(&contact_count, 0, 4);  // reset atomic counter
     compute_pass(&encoder, &aabb_pipeline, ceil(ngeom, 64), n_env);
-    // broadphase (3 passes) ...
-    // narrowphase (per-pair dispatches) ...
+    // Narrowphase: pre-computed pair plan (no broadphase shader)
+    // For each pair (determined at model upload):
+    //   - Write NarrowphaseParams for this pair
+    //   - Dispatch sdf_sdf_narrow (×2 symmetric) or sdf_plane_narrow (×1)
+    //   - Shader includes AABB overlap guard (returns if no overlap)
+    collision_pipeline.encode(&mut encoder, &ctx, &model_bufs, &state_bufs);
 
     // Constraint solve
     compute_pass(&encoder, &assemble_pipeline, ceil(max_contacts, 256), n_env);
@@ -1156,10 +1263,10 @@ device.poll(Maintain::Wait);
 | Velocity FK (2 levels) | 2 |
 | RNE (gravity + 2 forward + cfrc_init + 1 backward + project) | 6 |
 | Smooth (assemble + solve) | 2 |
-| AABB + broadphase (3) + narrowphase | 5 |
+| AABB (1) + narrowphase (9 = 3 SDF-SDF×2 + 3 SDF-plane) | 10 |
 | Assemble + Newton (×2 iter) + map_forces | 4 |
 | Integration | 1 |
-| **Total** | **~29** |
+| **Total** | **~34** |
 
 At ~5μs per dispatch: ~150μs overhead. Well within the 1ms/substep
 budget. The compute work per dispatch is small for 4 bodies but grows
@@ -1466,6 +1573,14 @@ Collision contacts feed into Session 5's constraint assembly via `contact_buffer
 **Goal:** GPU constraint solver (assembly + Newton + force mapping)
 produces qacc that matches CPU Newton solver within f32 tolerance.
 
+**Input from Session 4:** `contact_buffer` contains `PipelineContact`
+structs (48 bytes each: point, depth, normal, geom1, friction, geom2).
+`contact_count` is an atomic u32 with the active count. SDF-SDF pairs
+produce ~2× contacts (symmetric dispatch, no dedup) — the assembly
+shader should cap contacts per pair or the solver should handle the
+extra rows gracefully. The gravity-only bridge (`qacc = qacc_smooth`)
+will be replaced by Newton solver output.
+
 **Spec sections:** §8.12 (assemble.wgsl), §8.13 (newton_solve.wgsl),
 §8.14 (map_forces.wgsl)
 
@@ -1477,10 +1592,11 @@ produces qacc that matches CPU Newton solver within f32 tolerance.
 - `sim/L0/core/src/constraint/solver/primal.rs` — line search
 
 **Implement:**
-1. `assemble.wgsl` — pyramidal constraint rows from contacts
+1. `assemble.wgsl` — pyramidal constraint rows from `PipelineContact`
 2. `newton_solve.wgsl` — primal Newton with shared-memory Hessian,
    bracket-narrowing line search, cooperative workgroup evaluation
 3. `map_forces.wgsl` — J^T · efc_force reduction
+4. Replace gravity-only bridge with solver output: `qacc = qacc_smooth + M⁻¹ · qfrc_constraint`
 
 **Validate:**
 - Compare GPU efc_J/D/aref vs CPU (set CPU to pyramidal cone mode)
