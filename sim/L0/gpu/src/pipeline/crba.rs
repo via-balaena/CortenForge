@@ -257,7 +257,7 @@ impl GpuCrbaPipeline {
     /// Encode the CRBA compute passes into a command encoder.
     ///
     /// Encodes init, backward, `mass_matrix`, cholesky. The caller must
-    /// ensure params have been written (via [`write_params`]) and qM has been
+    /// ensure params have been written (via [`Self::write_params`]) and qM has been
     /// zeroed before submitting the resulting command buffer.
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
         let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
@@ -328,7 +328,7 @@ impl GpuCrbaPipeline {
 
     /// Dispatch the full CRBA sequence: init → backward → zero qM → mass matrix → Cholesky.
     ///
-    /// Convenience method that calls [`write_params`], zeros qM, then [`encode`].
+    /// Convenience method that calls [`Self::write_params`], zeros qM, then [`Self::encode`].
     /// Kept for backward compatibility.
     pub fn dispatch(
         &self,

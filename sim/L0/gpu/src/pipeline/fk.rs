@@ -286,7 +286,7 @@ impl GpuFkPipeline {
     /// Encode the full FK compute passes into a command encoder.
     ///
     /// Encodes forward FK, geom poses, subtree backward, and subtree
-    /// normalize dispatches. Must be called after [`write_params`].
+    /// normalize dispatches. Must be called after [`Self::write_params`].
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
         let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
         let geom_slot = u64::from(self.max_depth) + 1;

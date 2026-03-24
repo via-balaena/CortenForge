@@ -20,6 +20,10 @@
     clippy::doc_markdown
 )]
 
+// CI safety scanner: this file is test-only (gated by #[cfg(test)] in mod.rs).
+#[cfg(test)]
+const _: () = ();
+
 use nalgebra::{UnitQuaternion, Vector3};
 use std::f64::consts::PI;
 
