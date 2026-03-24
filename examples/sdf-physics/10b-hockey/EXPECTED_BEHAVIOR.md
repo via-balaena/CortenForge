@@ -1,270 +1,208 @@
-# SDF Physics 10b — GPU Hockey → VR Hockey
+# SDF Physics 10b — VR Hockey
 
 ## Vision
 
-A hockey game powered by a near-complete GPU physics pipeline, ultimately
-playable in VR. The physics engine runs broadphase through integration on
-GPU compute shaders, with data staying on-device between stages. CPU
-readback happens only for rendering. VR is layered on top only after the
-GPU pipeline is rock-solid.
+Hold a hockey stick in VR (Quest 3 controllers) and hit a puck across
+ice into a goal. The full physics pipeline runs on GPU — FK through
+integration in a single command buffer per frame. Data stays on-device
+between substeps. CPU readback happens only once per frame for rendering.
 
-## Phases
+## Current status
 
-### Phase 1: GPU physics pipeline
+### GPU physics pipeline — COMPLETE (Sessions 1–6)
 
-Build a complete GPU physics pipeline for this scene. Data stays on GPU
-from broadphase through integration. CPU readback only for rendering.
+The full GPU physics pipeline is implemented and tested in `sim-gpu`:
 
-| Stage | GPU suitability | Current status | Shader |
-|---|---|---|---|
-| **1a. SDF-SDF collision** | Excellent | **Done** | `trace_surface.wgsl` |
-| **1b. SDF-plane collision** | Excellent | Stubbed | New: `sdf_plane.wgsl` |
-| **1c. Integration** | Excellent | CPU only | New: `integrate.wgsl` |
-| **1d. Broadphase** | Excellent | CPU only | New: `broadphase.wgsl` |
-| **1e. Jacobi solver** | Good | CPU PGS only | New: `jacobi_solve.wgsl` |
+| Stage | Shader(s) | Session |
+|-------|-----------|---------|
+| Forward kinematics | `fk.wgsl` | 1 |
+| CRBA (mass matrix + Cholesky) | `crba.wgsl` | 2 |
+| Velocity FK (body spatial velocities) | `velocity_fk.wgsl` | 2 |
+| RNE (bias forces) | `rne.wgsl` | 3 |
+| Smooth dynamics | `smooth.wgsl` | 3 |
+| Integration (semi-implicit Euler) | `integrate.wgsl` | 3 |
+| Collision (AABB + SDF narrowphase) | `aabb.wgsl`, `sdf_*_narrow.wgsl` | 4 |
+| Constraint solve (Newton solver) | `assemble.wgsl`, `newton_solve.wgsl`, `map_forces.wgsl` | 5 |
+| Pipeline orchestration | `GpuPhysicsPipeline` | 6 |
 
-**Not on GPU (keep on CPU):**
-- GJK/EPA narrowphase — too branchy, poor GPU utilization
-- Joint projection — complex, low parallelism
-- Forward kinematics — tree-structured, sequential
+**Key facts:**
+- Newton solver (not Jacobi) — primal, 1–3 iterations, shared-memory Hessian
+- Pre-computed pair plan (not spatial hash broadphase) — pairs known at model creation
+- Single `queue.submit()` per frame, N substeps encoded in one command buffer
+- 35 GPU tests passing
+- Free joints only (constraint solver limitation)
+- nv ≤ 60 (shared memory budget)
 
-**Architecture principle:** The GPU pipeline is a sequence of compute
-dispatches connected by GPU buffers. No CPU readback between stages.
-The full step is: broadphase → narrowphase → solver → integration →
-(optional) readback for rendering.
-
-```
- ┌──────────────────── GPU ─────────────────────┐
- │                                               │
- │  Broadphase    Narrowphase    Solver   Integ  │
- │  (spatial      (SDF-SDF,     (Jacobi  (pos/  │
- │   hashing)      SDF-plane)    + mass   vel   │
- │                                split)  update)│
- │     ↓              ↓            ↓        ↓    │
- │  [pair_buf]   [contact_buf]  [force]  [qpos]  │
- │                                       [qvel]  │
- └───────────────────────────────────┬───────────┘
-                                     │ readback
-                                     ↓
-                              Bevy rendering
+**API:**
+```rust
+let gpu = sim_gpu::GpuPhysicsPipeline::new(&model, &data)?;
+gpu.step(&model, &mut data, num_substeps);   // single submit
+data.forward_pos_vel(&model, true);           // CPU FK for rendering
 ```
 
-**Deliverables for each stage:**
+Spec: `sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md`
 
-**1a. SDF-SDF collision (done)**
-- `trace_surface.wgsl`: one thread per grid cell, atomic contact append
-- Pre-allocated 32,768-contact buffer
-- Tested: sphere-sphere + concave socket-pin
+### What remains
 
-**1b. SDF-plane collision**
-- New shader: `sdf_plane.wgsl`
-- Per-cell: test distance to plane → reconstruct surface → contact test
-- Simpler than SDF-SDF: plane normal is constant, no second grid lookup
-- Estimated: ~150 lines WGSL
+1. **Stick as mocap body** — controller pose drives stick kinematically
+2. **VR integration** — OpenXR, stereo rendering, controller input
+3. **Wire up `GpuPhysicsPipeline`** in the Bevy app
 
-**1c. Integration**
-- New shader: `integrate.wgsl`
-- Per-body: `qvel += dt * qacc`, `qpos += dt * qvel` (semi-implicit Euler)
-- Embarrassingly parallel — one thread per body
-- Gravity applied here
-- Estimated: ~100 lines WGSL
+---
 
-**1d. Broadphase (spatial hashing)**
-- New shader: `broadphase.wgsl`
-- Three-pass counting sort: count via atomics → prefix sum → scatter
-- Input: AABB per geom (from qpos + geom extents)
-- Output: candidate collision pairs (geom_i, geom_j)
-- Reference: GPU Gems 3 Ch. 32 (26x speedup demonstrated)
-- Estimated: ~300 lines WGSL
+## Architecture
 
-**1e. Jacobi solver with mass splitting**
-- New shader: `jacobi_solve.wgsl`
-- Replace CPU PGS with GPU-parallel Jacobi
-- Mass splitting (Tonge 2012): split body mass across contacts so each
-  contact is solved independently. Eliminates Jacobi jitter.
-- Multiple iterations per step (4–8 typical)
-- Input: contact buffer + body state
-- Output: constraint forces → applied to qvel
-- Reference: ComFree-Sim (2026) for linear scaling alternative
-- Estimated: ~400 lines WGSL
-- **This is the hardest stage.** PGS is sequential; Jacobi trades
-  convergence for parallelism. Mass splitting recovers convergence.
+### Stick = mocap body
 
-### Phase 2: Flat-screen validation
+The stick is NOT a dynamic body with a joint. It's a **mocap body** —
+kinematic, driven directly by the VR controller pose. The GPU FK shader
+already handles mocap bodies (`body_mocap_id != 0xFFFFFFFF`): it reads
+the pose from `mocap_pos`/`mocap_quat` buffers and skips joint FK.
 
-The hockey example with spacebar input, full GPU pipeline. Validate:
-- GPU contacts match CPU within f32 tolerance
-- Solver produces stable stacking (goal on ground) and sliding (puck)
-- Performance: measure full-step GPU wall-clock vs CPU
-- 1 kHz stress test for VR readiness (0.001s timestep, stable)
+This is the simplest approach:
+- No PD spring-damper complexity
+- No joint constraint needed
+- Stick has effectively infinite mass (pushes puck, not pushed back)
+- Controller → stick is 1:1 (zero lag, no floatiness)
+- `state_bufs.upload_mocap()` already exists in the GPU pipeline
 
-### Phase 3: VR
+The puck and goal are free bodies with SDF geoms. Contacts between
+stick (mocap) and puck (free) transfer momentum via the constraint solver.
 
-Add `bevy_mod_openxr` (0.5.0, Bevy 0.18). Stick becomes Free joint
-tracked by VR controller via PD spring-damper. GPU pipeline handles all
-physics at 90 Hz × 2–4 substeps = 180–360 physics steps/second.
-
-### Phase 4: Advanced GPU (future)
-
-- Multigrid solver (MGPBD) for faster convergence
-- Dirty-cell optimization (skip unchanged SDF regions)
-- Double-buffered async readback (pipeline step N+1 while reading N)
-- Flex constraints on GPU
-
-## GPU architecture details
-
-### Buffer lifecycle
+### Per-frame data flow
 
 ```
-Model creation (once):
-  - Upload SDF grids to GPU storage buffers (per-shape, immutable)
-  - Allocate contact buffer (32,768 × 32 bytes, reused each step)
-  - Allocate pair buffer (broadphase output)
-  - Allocate body state buffer (qpos, qvel, qacc — per body)
+Controller → CPU:  stick pose (position + orientation)
+CPU → GPU:         mocap_pos, mocap_quat (once per frame, ~32 bytes)
 
-Per physics step:
-  - Write: body poses/AABBs (from qpos, ~few KB)
-  - Dispatch: broadphase → narrowphase → solver → integration
-  - Read: qpos/qvel (for rendering, ~few KB)
+┌─── Substep loop (all on GPU, single command buffer) ──────────┐
+│  FK (mocap bodies get controller pose, free bodies get qpos)  │
+│  CRBA → Velocity FK → RNE → Smooth                           │
+│  Collision (AABB + SDF narrowphase)                           │
+│  Constraint solve (Newton: stick contacts push puck)          │
+│  Integration (puck/goal positions update)                     │
+└───────────────────────────────────────────────────────────────┘
 
-Between substeps (2–4 per frame):
-  - NO re-upload of SDF grids (static)
-  - NO CPU readback (data stays on GPU)
-  - Only final substep triggers readback for rendering
+GPU → CPU:  qpos, qvel (once per frame, ~few KB)
+CPU:        FK for Bevy rendering (body/geom poses)
+Bevy:       stereo render to Quest 3 via OpenXR
 ```
 
-### Device strategy
+### Scene setup
 
-`sim-gpu` owns its own `wgpu::Device`, separate from Bevy's render
-device. This avoids contention between physics compute and rendering.
-Both can submit work concurrently.
-
-### Precision
-
-- GPU shaders use f32 (WebGPU has no f64 support)
-- CPU uses f64 for accumulation and solver
-- Expected tolerance: contact positions within 1.5mm of CPU reference
-- Solver convergence: Jacobi needs more iterations than PGS but each
-  iteration is massively parallel
-
-## Platform
-
-- **Development:** macOS (Metal backend — GPU collision works on Metal)
-- **Target:** Windows + NVIDIA 5070 Ti (Vulkan backend + VR)
-- **CPU fallback:** Always available if GPU init fails
-- **Feature flag:** `vr` for XR deps. Default: flat-screen + GPU.
-
-## Scene setup
-
-### Puck
-
-- `Solid::cylinder(12.0, 2.0)` — 24mm diameter, 4mm thick
-- PLA (1250 kg/m³), black, Free joint at `(0, 0, 2)`
-
-### Stick
-
-- Shaft: `Solid::pipe([(0,0,0), (0,-55,-15)], 2.5)` — ~15° angle
-- Blade: `Solid::cuboid(15, 2, 2.5)` at `(13, -57, -15.5)` — L-shape
-- `shaft.smooth_union(blade, 0.5)`, `with_joint_origin((0,0,0))`
-- Flat-screen: Revolute at `(0, 59, 18)`, spacebar swing
-- VR: Free joint, PD spring-damper
-
-### Goal
-
-- `cuboid(12,25,10) - cuboid(12,23,10).translate(4,0,-2)`
-- Back wall + side walls + crossbar, no floor, open +X face
-- Steel (7800 kg/m³), semi-transparent red, at `(-50, 0, 10)`
+| Body | Type | Joint | Driven by |
+|------|------|-------|-----------|
+| Puck | Dynamic | Free | Physics (gravity + contacts) |
+| Stick | Mocap | — | VR controller pose |
+| Goal | Dynamic | Free | Physics (gravity + contacts) |
+| Ground | Static (geom on world body) | — | — |
 
 ### Contact pairs
 
-| Pair | Type | GPU shader |
-|---|---|---|
-| Blade ↔ puck | SDF-SDF | `trace_surface.wgsl` |
-| Puck ↔ goal | SDF-SDF | `trace_surface.wgsl` |
-| Puck ↔ ice | SDF-plane | `sdf_plane.wgsl` (Phase 1b) |
-| Stick ↔ ice | SDF-plane | `sdf_plane.wgsl` (Phase 1b) |
-| Goal ↔ ice | SDF-plane | `sdf_plane.wgsl` (Phase 1b) |
+| Pair | Type | Notes |
+|------|------|-------|
+| Stick ↔ Puck | SDF-SDF | Blade hits puck — momentum transfer |
+| Puck ↔ Ground | SDF-plane | Puck slides on ice |
+| Puck ↔ Goal | SDF-SDF | Puck enters goal |
+| Stick ↔ Ground | SDF-plane | Blade scrapes ice |
+| Goal ↔ Ground | SDF-plane | Goal sits on ice |
 
-## Model parameters
+### Model parameters
 
-- **Timestep:** 0.002s (500 Hz). Stress test: 0.001s (1 kHz).
-- **Solver:** PGS on CPU (Phase 2), Jacobi on GPU (after Phase 1e).
+- **Timestep:** 0.002s (500 Hz)
+- **Substeps per frame:** 4 (at 90 Hz → 360 physics steps/sec)
+- **Solver:** Newton (GPU, 1–3 iterations)
 - **SDF grid:** 1.0mm collision, 0.3mm visual
-- **Friction:** 0.05 sliding on all geoms
-- **GPU:** `sim_gpu::enable_gpu_collision(&mut model)`
+- **Friction:** 0.05 sliding (ice-like)
+- **Scale:** millimeters (physics) → meters (VR). Factor 1000:1 (tabletop hockey).
 
-## Pass criteria
+---
 
-### Phase 1: GPU pipeline
+## Implementation plan
 
-Each stage (1a–1e) must pass independently before integrating:
+### Step 1: Mocap hockey model
 
-- **1a (done):** GPU SDF-SDF contacts match CPU ≥90% within 1.5mm
-- **1b:** GPU SDF-plane contacts match CPU ≥90% within 1.5mm
-- **1c:** GPU integration matches CPU qpos/qvel within 1e-4 (f32 limit)
-- **1d:** GPU broadphase finds same collision pairs as CPU (no missed pairs)
-- **1e:** GPU Jacobi solver produces stable simulation (no jitter, no
-  explosion) for the hockey scene. Stacking (goal on ground) holds.
-  Puck slides correctly after impact.
+Replace the current hinge-based stick with a mocap body setup:
+- Stick body: `body_mocapid = Some(0)` (mocap index 0)
+- No joint on the stick body (it's kinematic, not dynamic)
+- Puck and goal remain as free-joint bodies
+- All dynamic joints are Free → GPU-compatible
 
-### Phase 2: Flat-screen validation
+This model works with `GpuPhysicsPipeline::new()` (validation passes).
 
-- Puck moves toward goal on spacebar (Δx < -10mm)
-- All positions finite, puck grounded, contacts detected
-- Full GPU step faster than CPU step (measured, printed)
-- Stable at 1 kHz for 10+ seconds
+### Step 2: GPU stepping in Bevy
 
-### Phase 3: VR
+```rust
+#[derive(Resource)]
+struct GpuPhysics(sim_gpu::GpuPhysicsPipeline);
 
-- Stable 90 Hz with GPU physics (no dropped frames)
-- Controller → stick tracking responsive (< 1 frame lag)
-- Haptic feedback on blade↔puck contact
-- Puck enters goal
+fn step_physics_gpu(
+    model: Res<PhysicsModel>,
+    mut data: ResMut<PhysicsData>,
+    gpu: Res<GpuPhysics>,
+) {
+    gpu.0.step(&model.0, &mut data.0, 4);         // 4 substeps, single submit
+    data.0.forward_pos_vel(&model.0, true);         // CPU FK for Bevy rendering
+}
+```
 
-## Failure modes
+### Step 3: VR input (Quest 3 controllers)
 
-- **GPU init fails:** CPU fallback (always works, just slower)
-- **GPU/CPU mismatch:** f32 precision → tolerance checks, not exact match
-- **Jacobi jitter:** Mass splitting not applied → implement Tonge 2012
-- **Broadphase missed pair:** Spatial hash cell too large → tune cell size
-- **Solver divergence:** Too few iterations or too large timestep →
-  increase iterations or decrease dt
-- **Substep readback:** Data bouncing CPU↔GPU between substeps →
-  ensure buffers stay on GPU, readback only after final substep
-- **VR frame drops:** Physics > 11ms → profile each GPU stage individually
-
-## VR details (Phase 3)
-
-### Dependencies (behind `vr` feature flag)
+Add `bevy_mod_openxr` (behind `vr` feature flag):
 
 ```toml
 [features]
-vr = ["dep:bevy_mod_openxr", "dep:bevy_mod_xr", "dep:schminput"]
+vr = ["dep:bevy_mod_openxr", "dep:bevy_mod_xr"]
 ```
 
-### Controller → stick mapping
+Controller → mocap mapping system:
+```rust
+fn controller_to_mocap(
+    controllers: Query<&Transform, With<RightController>>,
+    mut data: ResMut<PhysicsData>,
+) {
+    if let Ok(transform) = controllers.single() {
+        // Bevy transform → physics mocap pose (scale + axis conversion)
+        data.0.mocap_pos[0] = bevy_to_physics_pos(transform.translation);
+        data.0.mocap_quat[0] = bevy_to_physics_quat(transform.rotation);
+    }
+}
+```
 
-PD spring-damper (Half-Life Alyx / Boneworks):
-1. Kinematic anchor tracks controller 1:1
-2. Dynamic stick (Free joint) connected via spring + damper
-3. Velocity buffer (5 frames) for smooth impact transfer
-4. Blade tip velocity: `v = v_linear + cross(ω, blade_pos - grip_pos)`
+The GPU pipeline uploads mocap poses automatically via
+`state_bufs.upload_mocap()` inside `step()`. Currently `step()` only
+uploads qpos/qvel — mocap upload needs to be added.
 
-### Haptics
+### Step 4: Haptics (optional)
 
-OpenXR `XrHapticVibration` via raw `OxrInstance`:
-- 20–50ms pulse, amplitude ∝ impact speed
-- Direct OpenXR API call (not wrapped by bevy_mod_openxr)
+OpenXR haptic pulse on blade↔puck contact:
+- Read back `ncon` from GPU (already part of readback)
+- If contacts involve stick geom: trigger 20–50ms vibration
+- Amplitude proportional to puck velocity change
 
-### Scale
+---
 
-Physics mm → VR meters. Factor 1000:1 (tabletop hockey).
+## Platform
 
-## Future
+- **Development:** macOS (Metal backend)
+- **Target:** Windows + NVIDIA 5070 Ti (Vulkan) + Quest 3 (Link/Air Link)
+- **Fallback:** CPU physics always available if GPU init fails
+- **VR runtime:** Quest 3 via Oculus Link → SteamVR → OpenXR
 
-- **Goal net:** dim=2 flex shell (cloth) on GPU
-- **Curved blade:** `bend()` SDF operator
-- **Multiplayer:** Two sticks, network physics sync
-- **Multigrid solver:** MGPBD for faster Jacobi convergence
-- **ComFree-Sim:** Analytical contact, linear GPU scaling
-- **Async readback:** Double-buffer physics compute + rendering
+## Pass criteria
+
+- Stable 90 Hz with 4 GPU substeps (no dropped frames)
+- Puck slides on ice, enters goal on hit
+- Stick tracks controller with zero visible lag
+- All physics values finite after 60 seconds of play
+- GPU physics step < 2ms per frame (leaves 9ms for rendering)
+
+## Failure modes
+
+- **GPU init fails:** CPU fallback (slower but works)
+- **VR frame drops:** Profile each GPU stage. Single-submit eliminates
+  per-substep CPU↔GPU round-trips.
+- **Stick clips through puck:** SDF grid too coarse or timestep too large.
+  Increase grid resolution or decrease timestep.
+- **Puck jitters on ice:** Newton solver needs more iterations or
+  solref/solimp need tuning.

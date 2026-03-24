@@ -358,39 +358,59 @@ fn check(label: &str, ok: bool) -> bool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// GPU physics pipeline skeleton
+// GPU + VR hockey — implementation skeleton
 // ═══════════════════════════════════════════════════════════════════════
 //
-// The full GPU physics pipeline (`GpuPhysicsPipeline`) encodes N substeps
-// in a single command buffer and submits once per frame — no per-substep
-// CPU↔GPU round-trips. To enable it for hockey:
+// The target: hold a hockey stick via Quest 3 controller and hit the puck.
+// Full physics runs on GPU (single command buffer per frame, N substeps).
 //
-// 1. All joints must be Free (GPU constraint solver limitation).
-//    The current stick uses a Revolute hinge — replace with Free for GPU mode.
+// ## Key change: stick = mocap body
 //
-// 2. Build the pipeline once at startup:
-//    ```
-//    let gpu = sim_gpu::GpuPhysicsPipeline::new(&model, &data)?;
-//    ```
+// The stick is NOT a hinge joint. It's a mocap body — kinematic, driven
+// directly by the VR controller pose. The GPU FK shader already handles
+// mocap bodies (reads from mocap_pos/mocap_quat buffers, skips joint FK).
+// This gives 1:1 controller tracking with zero lag.
 //
-// 3. Replace `step_physics_realtime` with a GPU stepping system:
-//    ```
-//    fn step_physics_gpu(
-//        model: Res<PhysicsModel>,
-//        mut data: ResMut<PhysicsData>,
-//        gpu: Res<GpuPhysicsResource>,
-//    ) {
-//        gpu.0.step(&model.0, &mut data.0, 4); // 4 substeps per frame
-//        data.0.forward_pos_vel(&model.0, true); // CPU FK for Bevy rendering
-//    }
-//    ```
+// To convert: remove the Revolute joint, set body_mocapid on the stick
+// body, and upload controller pose to data.mocap_pos[0]/mocap_quat[0]
+// each frame. The constraint solver handles stick↔puck contacts normally
+// (mocap body has infinite effective mass → pushes puck, not pushed back).
 //
-// 4. Insert the GPU pipeline as a Bevy resource:
-//    ```
-//    app.insert_resource(GpuPhysicsResource(gpu));
-//    ```
+// ## Bevy wiring
 //
-// The pipeline validates at creation time — if the model has non-free
-// joints or nv > 60, `new()` returns an error. Use CPU fallback in that case.
+// ```rust
+// #[derive(Resource)]
+// struct GpuPhysics(sim_gpu::GpuPhysicsPipeline);
 //
-// See: sim/docs/gpu-physics-pipeline/SESSION_6_PIPELINE_ORCHESTRATION.md
+// fn step_physics_gpu(
+//     model: Res<PhysicsModel>,
+//     mut data: ResMut<PhysicsData>,
+//     gpu: Res<GpuPhysics>,
+// ) {
+//     gpu.0.step(&model.0, &mut data.0, 4); // 4 substeps, 1 submit
+//     data.0.forward_pos_vel(&model.0, true); // CPU FK for rendering
+// }
+//
+// fn controller_to_mocap(
+//     controllers: Query<&Transform, With<RightController>>,
+//     mut data: ResMut<PhysicsData>,
+// ) {
+//     if let Ok(tf) = controllers.single() {
+//         data.0.mocap_pos[0] = bevy_to_physics_pos(tf.translation);
+//         data.0.mocap_quat[0] = bevy_to_physics_quat(tf.rotation);
+//     }
+// }
+// ```
+//
+// Note: GpuPhysicsPipeline::step() currently uploads qpos/qvel but not
+// mocap. Mocap upload (state_bufs.upload_mocap) needs to be added to
+// the orchestrator's step() method.
+//
+// ## VR deps (behind feature flag)
+//
+// ```toml
+// [features]
+// vr = ["dep:bevy_mod_openxr", "dep:bevy_mod_xr"]
+// ```
+//
+// See: EXPECTED_BEHAVIOR.md for full architecture and implementation plan.
