@@ -369,3 +369,67 @@ loops so all threads break at the same iteration (use a shared
 convergence flag checked after a barrier, not before).
 
 **Discovered:** Session 5 (Newton solver line search, 2026-03-24).
+
+## 15. queue.write_buffer does not sequence with encoder commands
+
+**Constraint:** `wgpu::Queue::write_buffer()` stages data writes that
+execute at the START of the next `queue.submit()` call — before any
+commands in the submitted command buffer. Multiple writes to the same
+buffer offset result in "last write wins" behavior.
+
+**Impact:** If a loop calls `queue.write_buffer` to update a uniform
+buffer between compute passes encoded in the same `CommandEncoder`, all
+dispatches see only the last-written value. The writes are NOT interleaved
+with the compute passes.
+
+**Example (collision pipeline, pre-Session 6):**
+```rust
+for pair in &pairs {
+    ctx.queue.write_buffer(&params_buf, 0, &pair.params);  // staged
+    encoder.begin_compute_pass(...)  // encoded after all writes
+}
+// At submit: ALL writes execute first, then ALL passes.
+// Every pass sees the LAST pair's params.
+```
+
+**Workaround:** Pre-allocate one uniform buffer per dispatch at pipeline
+creation time. Write params into each buffer once via `create_buffer_init`.
+Each dispatch uses its own bind group pointing to its own buffer. No
+runtime `queue.write_buffer` calls during encoding.
+
+**Also affects:** Per-substep state zeroing. Zeroing state buffers via
+`queue.write_buffer` before encoding only zeros once (before the first
+substep). Use `encoder.clear_buffer()` instead — this inserts a GPU-side
+fill command that sequences correctly between compute passes.
+
+**Discovered:** Session 6 (pipeline orchestration, 2026-03-24). The
+collision pipeline's per-pair `queue.write_buffer` appeared to work in
+tests because test scenes had ≤1 narrowphase pair.
+
+## 16. wgpu buffer lifetime: bind groups may not prevent premature drop
+
+**Constraint:** When a `wgpu::Buffer` is created as a local variable and
+used to create a `BindGroup`, dropping the `Buffer` handle may invalidate
+the bind group's reference on some backends, even though bind groups
+conceptually hold a reference to their buffers.
+
+**Impact:** Uniform buffers created inside helper functions (returned only
+as part of a bind group) may be freed when the function returns. Subsequent
+dispatches using the bind group read zeroed or garbage memory.
+
+**Workaround:** Explicitly store the `Buffer` alongside its `BindGroup`
+in the owning struct. Use `#[allow(dead_code)]` since the buffer is only
+kept alive, never accessed directly.
+
+```rust
+struct NarrowphaseDispatch {
+    bind_group_0: wgpu::BindGroup,
+    #[allow(dead_code)]
+    params_buf: wgpu::Buffer,  // prevent premature drop
+    // ...
+}
+```
+
+**Discovered:** Session 6 (collision pipeline refactor, 2026-03-24).
+Per-dispatch uniform buffers created in a helper function produced zero
+contact depths until the buffers were explicitly stored.
