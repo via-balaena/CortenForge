@@ -33,14 +33,11 @@ pub fn sdf_sdf_contact_raw(
     pose_b: &Pose,
     margin: f64,
 ) -> Vec<SdfContact> {
-    let grid_a = a.sdf_grid();
-    let grid_b = b.sdf_grid();
     let mut contacts: Vec<SdfContact> = Vec::new();
     trace_surface_into_other(
-        grid_a,
+        a.sdf_grid(),
         a,
         pose_a,
-        grid_b,
         b,
         pose_b,
         margin,
@@ -48,10 +45,9 @@ pub fn sdf_sdf_contact_raw(
         false,
     );
     trace_surface_into_other(
-        grid_b,
+        b.sdf_grid(),
         b,
         pose_b,
-        grid_a,
         a,
         pose_a,
         margin,
@@ -60,7 +56,7 @@ pub fn sdf_sdf_contact_raw(
     );
 
     // Post-hoc spatial dedup: deepest contacts win, skip nearby duplicates.
-    let cell_size = grid_a.cell_size().min(grid_b.cell_size());
+    let cell_size = a.sdf_grid().cell_size().min(b.sdf_grid().cell_size());
     dedup_contacts(&mut contacts, cell_size);
 
     contacts
@@ -77,15 +73,12 @@ pub fn sdf_sdf_contact_raw_split(
     pose_b: &Pose,
     margin: f64,
 ) -> (Vec<SdfContact>, Vec<SdfContact>) {
-    let grid_a = a.sdf_grid();
-    let grid_b = b.sdf_grid();
     let mut from_a: Vec<SdfContact> = Vec::new();
     let mut from_b: Vec<SdfContact> = Vec::new();
     trace_surface_into_other(
-        grid_a,
+        a.sdf_grid(),
         a,
         pose_a,
-        grid_b,
         b,
         pose_b,
         margin,
@@ -93,10 +86,9 @@ pub fn sdf_sdf_contact_raw_split(
         false,
     );
     trace_surface_into_other(
-        grid_b,
+        b.sdf_grid(),
         b,
         pose_b,
-        grid_a,
         a,
         pose_a,
         margin,
@@ -104,7 +96,7 @@ pub fn sdf_sdf_contact_raw_split(
         true,
     );
 
-    let cell_size = grid_a.cell_size().min(grid_b.cell_size());
+    let cell_size = a.sdf_grid().cell_size().min(b.sdf_grid().cell_size());
     dedup_contacts(&mut from_a, cell_size);
     dedup_contacts(&mut from_b, cell_size);
 
@@ -208,7 +200,6 @@ fn trace_surface_into_other(
     src_grid: &SdfGrid,
     src_shape: &dyn PhysicsShape,
     src_pose: &Pose,
-    _dst_grid: &SdfGrid,
     dst_shape: &dyn PhysicsShape,
     dst_pose: &Pose,
     margin: f64,

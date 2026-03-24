@@ -1,6 +1,6 @@
 # Convex Multi-Contact for Analytical Shapes
 
-**Status**: DRAFT
+**Status**: COMPLETE
 **Motivation**: examples/sdf-physics/08-stack — cubes are unstable
 
 ## 1. Problem

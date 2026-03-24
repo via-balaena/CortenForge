@@ -147,9 +147,11 @@ pub fn collide_with_sdf(
         );
         return sdf_contacts.iter().map(&convert).collect();
     }
-    // SDF-SDF: dispatch through PhysicsShape trait. Analytical single-contact
-    // for convex pairs, grid-based multi-contact for concave.
-    // When GPU collision is available, non-convex pairs use GPU grid tracing.
+    // SDF-SDF: dispatch through PhysicsShape trait.
+    // Sphere-sphere → analytical single-contact (Tier 1).
+    // Non-spherical convex pairs → octree multi-contact (Tier 2).
+    // Grid fallback for shapes without evaluate_interval (Tier 3).
+    // GPU acceleration available for Tier 3 shapes.
     if model.geom_type[other_geom] == GeomType::Sdf {
         let Some(other_sdf_id) = model.geom_shape[other_geom] else {
             return vec![];
@@ -163,10 +165,10 @@ pub fn collide_with_sdf(
         let shape_b = &*model.shape_data[other_sdf_id];
 
         // Three-tier dispatch (+ GPU acceleration for Tier 3):
-        // 1. Both convex → analytical single contact (CPU, cheap)
-        // 2. Both support evaluate_interval → octree detection (CPU, analytical quality)
+        // 1. Both sphere-like (prefers_single_contact) → analytical single contact
+        // 2. Both support evaluate_interval → octree detection (exact contacts)
         // 3. GPU available → GPU grid tracing (Tier 3 accelerated)
-        // 4. CPU grid fallback → sdf_sdf_contact_raw
+        // 4. CPU grid fallback → sdf_sdf_contact_raw_split
         //
         // compute_shape_contact handles tiers 1-3. GPU is tried only when
         // compute_shape_contact would fall through to Tier 3 (grid fallback).
