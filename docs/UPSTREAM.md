@@ -43,6 +43,36 @@ this file tracks what *we* need to do about them.
 **Action items:**
 - [ ] Evaluate migrating `sim-mjcf` from `bincode 1.x` to `bincode 2.x` (breaking API change)
 
+### paste unmaintained (RUSTSEC-2024-0436)
+
+| Field | Value |
+|---|---|
+| **Advisory** | [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436) |
+| **Affected dep** | `paste 1.0.15` |
+| **Our exposure** | Transitive: `nalgebra → simba → paste` |
+| **Risk to us** | None — proc macro, no runtime risk |
+| **Blocked on** | `simba` dropping `paste` dep, or `nalgebra` moving off `simba` |
+| **Date found** | 2026-03-23 |
+
+**Action items:**
+- [x] Check if `nalgebra 0.34` resolves this — **no**, `simba 0.9` still pulls `paste 1.0.15`
+- [ ] File issue on [dimforge/simba](https://github.com/dimforge/simba) about dropping `paste` dep
+
+### proc-macro-error unmaintained (RUSTSEC-2024-0370)
+
+| Field | Value |
+|---|---|
+| **Advisory** | [RUSTSEC-2024-0370](https://rustsec.org/advisories/RUSTSEC-2024-0370) |
+| **Affected dep** | `proc-macro-error 1.0.4` |
+| **Our exposure** | Transitive: `mesh-io → truck-stepio → truck-derivers → proc-macro-error` |
+| **Risk to us** | None — compile-time only proc macro, no runtime risk |
+| **Blocked on** | `truck-derivers` migrating to `proc-macro-error2` or `manyhow` |
+| **Date found** | 2026-03-23 |
+
+**Action items:**
+- [ ] Check if newer `truck` releases have dropped `proc-macro-error`
+- [ ] If not: PR to [ricosjp/truck](https://github.com/ricosjp/truck) migrating `truck-derivers` to `proc-macro-error2`
+
 ---
 
 ## Resolved
