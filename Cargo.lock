@@ -2562,6 +2562,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sdf-10b-hockey"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "cf-design",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-gpu",
+]
+
+[[package]]
 name = "example-sdf-11-hinge-free"
 version = "0.7.0"
 dependencies = [
