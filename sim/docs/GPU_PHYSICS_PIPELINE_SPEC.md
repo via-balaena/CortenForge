@@ -160,11 +160,15 @@ These encode the model structure. Shared across all environments.
 **Implementation note (Session 1):** Static model data is packed into
 3 GPU struct arrays, not individual buffers:
 
-| GPU buffer | Rust type | WGSL type | Bind group |
+| GPU buffer | Rust type | WGSL type | Added |
 |---|---|---|---|
-| `bodies` | `array<BodyModelGpu>` | `array<BodyModel>` | Group 1, binding 0 |
-| `joints` | `array<JointModelGpu>` | `array<JointModel>` | Group 1, binding 1 |
-| `geoms` | `array<GeomModelGpu>` | `array<GeomModel>` | Group 3, binding 0 |
+| `bodies` | `array<BodyModelGpu>` | `array<BodyModel>` | Session 1 |
+| `joints` | `array<JointModelGpu>` | `array<JointModel>` | Session 1 |
+| `geoms` | `array<GeomModelGpu>` | `array<GeomModel>` | Session 1 (extended Session 4) |
+| `dofs` | `array<DofModelGpu>` | `array<DofModel>` | Session 2 |
+| `sdf_values` | `array<f32>` | `array<f32>` | Session 4 |
+| `sdf_metas` | `array<SdfMetaGpu>` | `array<SdfMeta>` | Session 4 |
+| `body_invweight0` | `array<[f32; 4]>` | `array<vec4<f32>>` | Session 5 |
 
 **BodyModel struct** (112 bytes, 16-byte aligned):
 
@@ -267,11 +271,21 @@ adds gravity and timestep for dynamics shaders. `NarrowphaseParams` (Session 4)
 is written per-pair dispatch — each narrowphase invocation gets its own pair's
 metadata via `queue.write_buffer` before the dispatch.
 
-**Solver parameters (Session 5+):**
+**Per-body inverse weight** (Session 5) — for bodyweight diagonal approximation:
 
 | Buffer | Size | Contents |
 |---|---|---|
-| `solver_params` | 128 | solver_iterations, tolerance, condim, cone_type, etc. To be defined in Session 5. |
+| `body_invweight0` | nbody × 16 | Per-body `vec4<f32>`: x=translational (1/mass), y=rotational (3/trace(I)), z=0, w=0. |
+
+Used by `assemble.wgsl` for O(1) per-row diagApprox: `bw = invweight0[b1].x + invweight0[b2].x`.
+World body (id=0) must have invweight0 = (0, 0, 0, 0).
+
+**Constraint solve parameters** (Session 5) — separate uniforms for assembly and solver:
+
+| Buffer | Rust type | Size | Used by |
+|---|---|---|---|
+| `assembly_params` | `AssemblyParams` | 64 | `assemble.wgsl` — nv, timestep, solref, solimp, impratio, max counts. |
+| `solver_params` | `SolverParams` | 32 | `newton_solve.wgsl`, `map_forces.wgsl` — nv, max_iter, tolerance, meaninertia. |
 
 **Actuator structure (for GPU actuation):**
 
@@ -363,12 +377,16 @@ at model upload time and dispatched directly, not written to a GPU buffer.
 
 | Buffer | Size per env | Contents |
 |---|---|---|
-| `efc_J` | max_constraints × nv × 4 | Constraint Jacobian (f32). |
-| `efc_D` | max_constraints × 4 | Constraint stiffness (f32). |
-| `efc_aref` | max_constraints × 4 | Reference acceleration (f32). |
-| `efc_type` | max_constraints × 4 | Constraint type enum (u32). |
-| `efc_force` | max_constraints × 4 | Solver output forces (f32). |
-| `constraint_count` | 4 | Active constraint count (atomic u32). |
+| `efc_J` | max_constraints × nv × 4 | Constraint Jacobian, row-major (f32). Written by `assemble.wgsl`. |
+| `efc_D` | max_constraints × 4 | Constraint stiffness / regularization (f32). Written by `assemble.wgsl`. |
+| `efc_aref` | max_constraints × 4 | Reference acceleration (f32). Written by `assemble.wgsl`. |
+| `efc_force` | max_constraints × 4 | Solver output forces (f32). Written by `newton_solve.wgsl`. |
+| `constraint_count` | 4 | Active constraint row count (atomic u32). Written by `assemble.wgsl`. |
+| `qfrc_constraint` | nv × 4 | Constraint forces in joint space (f32). Written by `map_forces.wgsl`. |
+
+**Note (Session 5):** `efc_type` is NOT allocated on GPU. The Newton solver
+classifies constraints on-the-fly by checking `jar = J·qacc - aref`: active
+if `jar < 0`, satisfied otherwise. No explicit type enum is needed.
 
 **PipelineContact struct (48 bytes) — implemented in Session 4:**
 ```wgsl
@@ -1073,72 +1091,103 @@ emit `PipelineContact` with plane normal as contact normal.
 
 **Contact normal** points away from plane (UP), matching CPU convention.
 
-### 8.12 `assemble.wgsl` — Constraint assembly (NEW)
+### 8.12 `assemble.wgsl` — Constraint assembly — IMPLEMENTED
 
-**Estimated:** ~350 lines WGSL.
-**Pattern:** Per-contact parallel map.
-**Reference:** MJX `constraint.py:make_constraint()`
+**Actual:** ~490 lines WGSL. Entry point: `assemble_constraints`.
+**Pattern:** Per-contact parallel, `@workgroup_size(256)`.
+**Reference:** CPU `contact_assembly.rs:assemble_pyramidal_contact()`
 
-Per contact: compute contact frame, emit pyramidal rows (6 rows for
-condim=4), compute impedance/stabilization, write efc_J/D/aref.
+**Bindings:** 13 total (1 uniform + 12 storage), 4 bind groups.
+- Group 0: `AssemblyParams` uniform (nv, timestep, solref, solimp)
+- Group 1: geoms, bodies, body_invweight0 (static model, read)
+- Group 2: contact_buffer (raw f32), contact_count (atomic rw), body_xpos, body_xquat, qvel (read)
+- Group 3: efc_J, efc_D, efc_aref, constraint_count (output, rw)
 
-**Jacobian for free bodies:** 12 non-zero entries per row (6 per body).
-Uses fresh body poses from FK for correct contact-to-COM offsets.
+**Algorithm per thread (one contact):**
+1. Read `PipelineContact` as 12 raw f32s (vec3 storage alignment workaround, LIMITATIONS §12)
+2. Look up geom → body mapping, effective condim = min(geom1.condim, geom2.condim)
+3. **Body swap:** If body1 > body2, swap body indices (no normal negate — normal already
+   points from lower body toward higher body). Ensures body2 = moving body (+1 sign).
+4. Compute tangent frame from normal via cross-product with reference axis
+5. Allocate rows via `atomicAdd(constraint_count)`: condim=1→1, condim=3→4, condim=4→6
+6. Per row: zero J row, write Jacobian, compute impedance/diagApprox/D/aref
 
-**diagApprox:** `J · M⁻¹ · J^T` computed per-body from `body_mass` and
-`body_inertia` — no full M⁻¹ needed for the diagonal approximation.
+**Jacobian (free joints only):**
+- Translational DOFs: `J[dof+0..3] = sign × facet_dir`
+- Angular DOFs: `J[dof+3+i] = sign × dot(facet_dir, cross(R·eᵢ, r))`
+- `r = stabilize_lever_arm(contact_point - body_xpos, normal)` — projects out sub-physical perpendicular drift
+- Pyramidal facets: `facet_dir = normal ± mu × tangent_d`
+- Torsional facets: translational = normal; angular adds `± mu_torsion × dot(normal, omega_i)`
 
-### 8.13 `newton_solve.wgsl` — Primal Newton solver (NEW)
+**diagApprox (bodyweight, O(1) per row):**
+`bw = (1 + mu²) × (invweight0[body1].x + invweight0[body2].x)` for pyramidal.
+World body (id=0) contributes 0. No M⁻¹ solve needed.
 
-**Estimated:** ~600 lines WGSL.
-**Pattern:** Single workgroup (256 threads), shared memory.
-**Reference:** MJX `solver.py:_newton()`, CPU `primal.rs:PrimalSearch`
+**Impedance:** Sigmoid from solimp params: `imp = d0 + y × (dwidth - d0)` where `y` is
+power-law interpolation of `violation / width`. Clamped to [0.0001, 0.9999].
+`R = (1-imp)/imp × diag`, `D = 1/R`.
 
-Primal formulation: minimize cost(qacc) = Gauss term + constraint
-penalties. Per Newton iteration: evaluate cost + gradient + Hessian →
-Cholesky solve → line search → update qacc. 1–3 outer iterations.
+**KBIP:** `K = 1/(dmax² × tc² × dr²)`, `B = 2/(dmax × tc)`, `aref = -B×vel - K×imp×pos`.
 
-**H = M + J^T · diag(D · active) · J** (nv × nv, in shared memory).
-256 threads cooperate on constraint evaluation and H accumulation.
-Thread 0 does Cholesky. Fits in shared memory for nv ≤ 60.
+### 8.13 `newton_solve.wgsl` — Primal Newton solver — IMPLEMENTED
 
-**Constraint iteration pattern:** Each thread processes a stripe of
-constraint rows: thread `t` handles rows `t, t+256, t+512, ...` up to
-`actual_nefc` (read from `constraint_count` atomic). Rows beyond
-`actual_nefc` are skipped. Inactive rows (efc_state == Satisfied)
-contribute zero to H and gradient. For hockey (~300 constraint rows),
-each thread handles ~1-2 rows. For large scenes (196K rows), each
-thread handles ~768 rows — acceptable since per-row work is ~20 flops.
+**Actual:** ~390 lines WGSL. Entry point: `newton_solve`.
+**Pattern:** Single workgroup (256 threads), all iterations in one dispatch.
+**Reference:** CPU `newton.rs:newton_solve()`, `primal.rs`
 
-**Line search (bracket-narrowing Newton, not simple backtracking):**
-MJX and CPU both use an exact Newton 1D line search, not α = {1, 0.5, 0.25}.
-The algorithm:
-1. Compute descent direction: `Δqacc = -H⁻¹ · grad`
-2. Evaluate `cost'(0)` = `dot(grad, Δqacc)` (should be negative)
-3. Try α₁ = `-cost'(0) / cost''(0)` (Newton step on 1D cost)
-4. If cost decreased, accept. Otherwise bracket and refine.
+**Bindings:** 10 total (1 uniform + 9 storage), 4 bind groups.
+- Group 0: `SolverParams` uniform (nv, max_iter, tolerance, meaninertia)
+- Group 1: qM, qacc_smooth, qfrc_smooth (read)
+- Group 2: efc_J, efc_D, efc_aref, constraint_count (read, but atomic requires rw — LIMITATIONS §13)
+- Group 3: qacc, efc_force (output, rw)
 
-Each line search trial evaluates `cost(qacc + α·Δqacc)` by
-re-classifying all constraints (parallel over 256 threads) and
-reducing partial costs into shared memory. Thread 0 computes the
-next trial α. Typically 1–3 trials per Newton iteration.
+**Shared memory (exactly 16,384 bytes at MAX_NV=60 — LIMITATIONS §11):**
 
-**Warmstart:** Substep N+1 uses substep N's `qacc` as initial guess
-(already on GPU — zero overhead). This is better than CPU's step-level
-warmstart because the temporal gap is smaller.
+| Array | Size |
+|---|---|
+| `H_atomic` (60×60 atomic u32) | 14,400 B |
+| `qacc_sh`, `qacc_sm_sh`, `grad_sh`, `search_sh` (60 f32 each) | 960 B |
+| `reduction_sh` (256 f32) | 1,024 B |
+| **Total** | **16,384 B** |
 
-**First substep of each frame:** Uses `qacc_smooth` (computed by
-smooth.wgsl) as cold start. Optionally, upload previous frame's final
-`qacc` to GPU before the first substep for warm initialization.
+Ma and qfrc_smooth read from global memory on-the-fly (no shared memory budget).
 
-**For nv > 60:** Switch to CG solver (see §16).
+**Algorithm (per Newton iteration):**
+1. **Init H = M**: 256 threads cooperatively copy `qM → H_atomic`
+2. **Classify + H + J^T·force**: Each thread processes constraint row stripe.
+   Active rows (jar < 0) contribute `D·J^T·J` to H via CAS atomics (LIMITATIONS §4)
+   and accumulate partial J^T·force in per-thread registers (`partial_jtf[MAX_NV]`).
+   Merged single pass — no second iteration over constraints for gradient.
+3. **Cholesky**: Thread 0 factorizes H in shared memory. `sqrt(max(s, 1e-10))` guard.
+4. **Gradient**: Per-DOF parallel reduction of `partial_jtf` across 256 threads.
+   Thread 0 adds `Ma[k] - qfrc_smooth[k]` to complete `grad = Ma - qfrc_smooth - J^T·force`.
+5. **Search**: Thread 0 solves `search = -H⁻¹·grad` via Cholesky forward/backward substitution.
+6. **Line search (backtracking, not bracket-narrowing Newton):**
+   Evaluates cost at 4 alphas {1.0, 0.5, 0.25, 0.125} plus alpha=0 (current).
+   All 256 threads participate in all evaluations (LIMITATIONS §14 — barriers require
+   uniform control flow). Thread 0 picks the alpha minimizing total cost.
+   Cost = Gauss (½·u^T·M·u) + Σ_active ½·D·jar².
+7. **Update**: `qacc += best_alpha × search`. If alpha=0, set convergence flag.
 
-### 8.14 `map_forces.wgsl` — Force mapping (NEW)
+**Cold start:** Every substep initializes `qacc = qacc_smooth`. Warm start (reusing
+previous substep's qacc) is not yet implemented — deferred to Session 6 or later.
 
-**Estimated:** ~60 lines WGSL.
-**Pattern:** Per-DOF parallel reduction.
+**Finalize:** Writes final qacc and efc_force (= -D·jar for active, 0 for satisfied)
+to global memory.
 
-`qfrc_constraint[dof] = Σ_row efc_force[row] × efc_J[row][dof]`
+**For nv > 60:** Shared memory insufficient for dense H. Future: sparse Hessian or tiled approach.
+
+### 8.14 `map_forces.wgsl` — Force mapping — IMPLEMENTED
+
+**Actual:** ~56 lines WGSL. Entry point: `map_forces`.
+**Pattern:** Per-DOF parallel, `@workgroup_size(64)`.
+
+**Bindings:** 5 total (1 uniform + 4 storage), 3 bind groups.
+
+`qfrc_constraint[dof] = Σ_row efc_force[row] × efc_J[row × nv + dof]`
+
+Reads `constraint_count` via `atomicLoad` (requires rw access — LIMITATIONS §13).
+Each thread handles one DOF, iterates over all constraint rows.
 
 ### 8.15 `integrate.wgsl` — Semi-implicit Euler — COMPLETE (Session 3)
 
@@ -1232,16 +1281,14 @@ for _substep in 0..num_substeps {
     //   - Shader includes AABB overlap guard (returns if no overlap)
     collision_pipeline.encode(&mut encoder, &ctx, &model_bufs, &state_bufs);
 
-    // Constraint solve
-    compute_pass(&encoder, &assemble_pipeline, ceil(max_contacts, 256), n_env);
-    for _iter in 0..solver_iterations {
-        compute_pass(&encoder, &newton_pipeline, 1, n_env);  // single workgroup per env
-    }
-    compute_pass(&encoder, &map_forces_pipeline, ceil(nv, 64), n_env);
-
-    // Gravity-only bridge (Session 3): copy qacc_smooth → qacc
-    // Replace with Newton solver output in Session 5+
-    encoder.copy_buffer_to_buffer(&qacc_smooth, &qacc, nv * 4);
+    // Constraint solve (Session 5) — replaces gravity-only bridge
+    // GpuConstraintPipeline::encode() dispatches 3 compute passes:
+    //   1. clear constraint_count atomic
+    //   2. assemble_constraints: per-contact → pyramidal efc_J/D/aref
+    //   3. newton_solve: single workgroup, internal iteration loop (NOT multiple dispatches)
+    //   4. map_forces: per-DOF J^T · efc_force → qfrc_constraint
+    // Newton writes qacc directly — no copy needed.
+    constraint_pipeline.encode(&mut encoder, &state_bufs);
 
     // Integration (per-joint, not per-body)
     compute_pass(&encoder, &integrate_pipeline, ceil(njnt, 64), n_env);
@@ -1264,13 +1311,17 @@ device.poll(Maintain::Wait);
 | RNE (gravity + 2 forward + cfrc_init + 1 backward + project) | 6 |
 | Smooth (assemble + solve) | 2 |
 | AABB (1) + narrowphase (9 = 3 SDF-SDF×2 + 3 SDF-plane) | 10 |
-| Assemble + Newton (×2 iter) + map_forces | 4 |
+| Constraint solve (clear + assemble + newton + map_forces) | 4 |
 | Integration | 1 |
 | **Total** | **~34** |
 
 At ~5μs per dispatch: ~150μs overhead. Well within the 1ms/substep
-budget. The compute work per dispatch is small for 4 bodies but grows
-with scene complexity.
+budget.
+
+**Note (Session 5):** The Newton solver runs ALL iterations in a single
+dispatch with an internal `for` loop — NOT multiple dispatches as
+originally spec'd. This eliminates inter-dispatch overhead and keeps
+shared memory state persistent across iterations.
 
 ## 10. Integration with sim-core
 
@@ -1608,6 +1659,48 @@ produces qacc that matches CPU Newton solver within f32 tolerance.
 **Goal:** Hockey runs entirely on GPU. Single command buffer per frame.
 Bevy renders from GPU-computed poses.
 
+**Input from Session 5:** All physics stages exist as individual GPU pipelines:
+
+| Pipeline | Rust module | Shader(s) | Status |
+|----------|-------------|-----------|--------|
+| `GpuFkPipeline` | `fk.rs` | `fk.wgsl` | Session 1 |
+| `GpuCrbaPipeline` | `crba.rs` | `crba.wgsl` | Session 2 |
+| `GpuVelocityFkPipeline` | `velocity_fk.rs` | `velocity_fk.wgsl` | Session 2 |
+| `GpuRnePipeline` | `rne.rs` | `rne.wgsl` | Session 3 |
+| `GpuSmoothPipeline` | `smooth.rs` | `smooth.wgsl` | Session 3 |
+| `GpuCollisionPipeline` | `collision.rs` | `aabb.wgsl`, `sdf_*.wgsl` | Session 4 |
+| `GpuConstraintPipeline` | `constraint.rs` | `assemble.wgsl`, `newton_solve.wgsl`, `map_forces.wgsl` | Session 5 |
+| `GpuIntegratePipeline` | `integrate.rs` | `integrate.wgsl` | Session 3 |
+
+Each pipeline has its own `new()` + `dispatch()`/`encode()` method. Tests
+(T17, T18, T26) already run multi-substep loops by manually sequencing
+these pipelines. Session 6 wraps this into a single `GpuPhysicsPipeline`.
+
+**Current test loop pattern (from T26):**
+```rust
+for _step in 0..n_steps {
+    let mut encoder = ctx.device.create_command_encoder(...);
+    fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+    crba_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+    vel_fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+    rne_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+    smooth_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+    collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+    constraint_pipeline.encode(&mut encoder, &state_buf);
+    integrate_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+    ctx.queue.submit([encoder.finish()]);
+}
+```
+
+This works but issues one `queue.submit()` per substep. Session 6 encodes
+ALL substeps into a single command buffer, submits once per frame.
+
+**Session 5 limitations that affect Session 6:**
+- Free joints only (no hinge/ball/slide) — hockey must use free bodies
+- Cold start each substep — warm start could improve convergence
+- Default solref/solimp — per-contact params not on GPU
+- condim ≤ 4 — no rolling friction
+
 **Spec sections:** §9 (command buffer), §10 (sim-core integration),
 §11 (cleanup), §12 (validation)
 
@@ -1617,17 +1710,18 @@ Bevy renders from GPU-computed poses.
 - `examples/sdf-physics/10b-hockey/` — hockey example
 
 **Implement:**
-1. `GpuPhysicsPipeline` trait + `GpuPipelineImpl`
-2. Command buffer construction (§9) — all substeps in one submit
-3. `enable_gpu_pipeline()` — model validation + pipeline creation
-4. Integration in `Data::step()` — GPU path + CPU fallback
-5. Update hockey example to use `enable_gpu_pipeline()`
+1. `GpuPhysicsPipeline` — unified struct holding all 8 sub-pipelines
+2. `encode_substep()` — encodes one substep into an existing encoder
+3. `step()` — encodes N substeps + readback in one command buffer, one submit
+4. `GpuPhysicsPipeline::new()` — model validation (free joints only, SDF geoms, nv ≤ 60) + pipeline creation
+5. Integration with sim-bevy — Bevy system that calls `step()` and reads back poses
+6. Update hockey example to use GPU pipeline
 
 **Validate:**
 - End-to-end: hockey scene GPU vs CPU for 5 seconds, compare trajectories
 - Performance: measure per-substep latency on 5070 Ti
-- Verify no CPU stages in the inner loop (all dispatches in one submit)
-- Verify GPU→CPU readback happens only once per frame
+- Verify all substeps in one submit (no per-substep readback)
+- Verify GPU→CPU readback happens only once per frame (final qpos/qvel)
 - Stress test: run at 90 Hz with 4 substeps for 60 seconds, no crashes
 
 **Milestone:** Hockey runs on GPU. Branch ready for merge review.
