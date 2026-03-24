@@ -204,14 +204,23 @@ These encode the model structure. Shared across all environments.
 | `pos` | vec4\<f32\> | Geom offset in body frame (w=0). |
 | `quat` | vec4\<f32\> | Geom orientation in body frame (x,y,z,w). |
 
+**DofModel struct** (16 bytes, 16-byte aligned) — added in Session 2:
+
+| Field | Type | Notes |
+|---|---|---|
+| `body_id` | u32 | Body that owns this DOF (`model.dof_body[i]`). |
+| `parent` | u32 | Parent DOF in kinematic tree (0xFFFFFFFF = none). |
+| `armature` | f32 | Combined `jnt_armature[jnt] + dof_armature[i]`, pre-computed at upload. |
+| `_pad` | u32 | Alignment padding. |
+
+| GPU buffer | Rust type | WGSL type | Bind group |
+|---|---|---|---|
+| `dofs` | `array<DofModelGpu>` | `array<DofModel>` | CRBA Group 1, binding 1 |
+
 Additional static data not yet packed into structs (used by later sessions):
 
 | Buffer | Size | Contents |
 |---|---|---|
-| `dof_body` | nv × 4 | Body index per DOF (u32). |
-| `dof_parent` | nv × 4 | Parent DOF index for LDL sparsity (u32, 0xFFFFFFFF = none). |
-| `jnt_armature` | njnt × 4 | Armature inertia per joint (f32). |
-| `dof_armature` | nv × 4 | Per-DOF armature inertia (f32). |
 | `geom_type` | ngeom × 4 | GeomType enum (u32). |
 | `geom_size` | ngeom × 12 | Geom dimensions for AABB (vec3<f32>). |
 | `geom_shape_id` | ngeom × 4 | SDF grid index (u32). |
@@ -260,7 +269,7 @@ These hold the simulation state. Each environment has its own copy.
 | `body_xipos` | nbody × 16 | COM position in world frame (vec4<f32>, w=0). |
 | `body_cinert` | nbody × 48 | Spatial inertia (12 f32 = 3×vec4). See §8.1 for layout. |
 | `body_crb` | nbody × 48 | Composite rigid body inertia (same 12-float format). Written by CRBA. |
-| `body_cvel` | nbody × 24 | Body spatial velocity (6 × f32: [ω; v]). Written by velocity_fk. |
+| `body_cvel` | nbody × 32 | Body spatial velocity (2×vec4: [ω,0; v,0]). Written by velocity_fk. |
 | `body_cacc` | nbody × 24 | Body bias acceleration (6 × f32). |
 | `body_cfrc` | nbody × 24 | Body bias force (6 × f32). |
 | `subtree_mass` | nbody × 4 | Subtree total mass (f32). |
@@ -384,29 +393,38 @@ WGSL only supports `atomicAdd` on `atomic<u32>` and `atomic<i32>` —
 **not f32**. The backward tree scan must accumulate floating-point
 values (inertias, forces) into parent bodies without f32 atomics.
 
-**Strategy: workgroup-local reduction, not raw atomics.**
+**Strategy (implemented in Session 2): global CAS atomics.**
 
-At each depth level, all children at that depth accumulate into their
-parents (at depth d−1). Multiple children may share a parent. Instead
-of per-element atomicAdd:
+The accumulation buffer (e.g., `body_crb`) is declared as
+`array<atomic<u32>>`. Each child thread shifts its contribution,
+then CAS-atomic-adds each f32 element into the parent's slots:
 
-1. Each workgroup covers a tile of bodies at depth d.
-2. Each thread computes its contribution (shifted inertia, bias force).
-3. Threads with the same `body_parent` cooperate via shared memory:
-   use `parent_id` as a key, accumulate partial sums in shared memory
-   using workgroup-local `atomicAdd` on `atomic<u32>` (bitcast f32→u32
-   for the CAS loop pattern), or sort-by-parent + sequential accumulation.
-4. After workgroup barrier, one thread per unique parent writes the
-   accumulated result to global memory.
+```wgsl
+fn atomic_add_f32_crb(idx: u32, val: f32) {
+    var old = atomicLoad(&body_crb[idx]);
+    loop {
+        let new_val = bitcast<u32>(bitcast<f32>(old) + val);
+        let result = atomicCompareExchangeWeak(&body_crb[idx], old, new_val);
+        if result.exchanged { break; }
+        old = result.old_value;
+    }
+}
+```
 
-**For flat trees (hockey):** All children are at depth 1, all share
-parent 0. One workgroup handles all children. Accumulate in shared
-memory → single write to `crb[0]` / `cfrc[0]`. No contention.
+**WGSL limitation (LIMITATIONS.md §8):** Storage pointers cannot be
+passed as function arguments. Each buffer that needs CAS-atomic f32
+addition requires its own dedicated function accessing the global
+variable by name (e.g., `atomic_add_f32_crb` for `body_crb`).
 
-**For deeper trees:** Multiple workgroups may target the same parent.
-Use a global CAS loop (`atomicCompareExchangeWeak` on `u32` with
-`bitcast<f32>`) for the final global write. Contention is low because
-few children share a parent at any given depth.
+**For flat trees (hockey):** All children have parent 0 (world body).
+Since the world body has no DOFs, the `parent == 0` guard in
+`crba_backward` makes the entire backward scan a no-op. The M matrix
+is block-diagonal — each free body's 6×6 block is independent.
+
+**For deeper trees:** Typically 1–3 children per parent at any depth
+level → near-zero CAS contention. If profiling shows contention is
+a bottleneck, workgroup-local shared memory reduction can be added
+as an optimization layer on top of the CAS pattern.
 
 ### 7.2 WGSL implementation pattern
 
@@ -622,108 +640,122 @@ Phase 3 (per-body): subtree_com[b] = weighted_com[b] / subtree_mass[b]
                      Guard: if subtree_mass < 1e-10, use xipos[b]
 ```
 
-### 8.2 `crba.wgsl` — Composite Rigid Body Algorithm (NEW)
+### 8.2 `crba.wgsl` — Composite Rigid Body Algorithm — COMPLETE (Session 2)
 
-**Estimated:** ~400 lines WGSL.
-**Pattern:** Backward tree scan + per-DOF parallel M assembly.
-**Reference:** MJX `smooth.py:crb()`, `support.py:make_m()`, CPU `crba.rs`
+**Actual:** ~300 lines WGSL. 4 entry points.
+**Pattern:** Format conversion + backward tree scan + per-DOF parallel M assembly + Cholesky.
+**Reference:** CPU `crba.rs`, `spatial.rs:shift_spatial_inertia()`
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_2_CRBA_VELOCITY_FK.md`
 
-**Phase 1: Initialize composite inertias (per-body parallel)**
+**Bindings (9 total, 4 bind groups):**
+- Group 0: `FkParams` uniform (dynamic offset) — reuses FK params struct
+- Group 1: `bodies` (read), `dofs` (read) — static model
+- Group 2: `body_xpos`, `body_cinert`, `cdof` (read) — FK outputs
+- Group 3: `body_crb` (atomic read/write), `qM`, `qM_factor` (read/write)
+
+**Phase 1: `crba_init` — convert cinert to crb format (per-body parallel)**
+
+cinert from FK stores `(m, h, I_COM)` — NOT additive (h doesn't sum
+correctly). CRBA needs an additive format for accumulation.
+
+crb format: `(m, m·h, I_ref)` where `I_ref = I_COM + m·(|h|²·I₃ − h⊗h)`.
+All 10 useful values are element-wise additive when both operands share
+the same reference point.
+
 ```
-crb[body_id] = cinert[body_id]   // copy from FK (10-float format)
+crb[body*3+0] = (m, m·h_x, m·h_y, m·h_z)
+crb[body*3+1] = (I_ref_00, I_ref_01, I_ref_02, I_ref_11)
+crb[body*3+2] = (I_ref_12, I_ref_22, 0, 0)
 ```
 
-**Phase 2: Backward tree scan (leaves → root)**
+Stored in `array<atomic<u32>>` via `atomicStore` + `bitcast<u32>`.
+
+**Phase 2: `crba_backward` — CAS atomic accumulation (per depth, leaves→root)**
 ```
 for d in max_depth..=1:
   per body at depth d:
-    parent = body_parent[body_id]
-    d = body_xpos[body_id] - body_xpos[parent]
-    shifted = shift_inertia_10(crb[body_id], d)  // parallel axis on 10 floats
-    accumulate shifted into crb[parent]           // see §7.3 for f32 workaround
+    if parent == 0: skip     // world body has no DOFs
+    d = body_xpos[body] - body_xpos[parent]
+    shifted = shift_crb(crb[body], d)
+    CAS-atomic-add 10 floats into crb[parent]
 ```
 
-The `shift_inertia_10` operates directly on the 10-float representation:
+The `shift_crb` operates on the crb format directly:
 ```
-m = crb[0]; h = crb[1..4]; I_COM = symmetric3(crb[4..10])
-h_new = h + d                                    // shift COM offset
-I_rot_new = I_COM + m × (dot(h_new,h_new) × I₃ - outer(h_new,h_new))
-          - (I_COM + m × (dot(h,h) × I₃ - outer(h,h)))   // remove old, add new
-// Simplifies to: I_rot_new = I_rot_old + m × (cross terms from d)
-result = [m, h_new, upper_triangle(I_rot_new)]
+h = mh / m; h_new = h + d; mh_new = mh + m·d
+I_ref_new[r,c] = I_ref_old[r,c] + m·((|h_new|²−|h|²)·δ_rc − (h_new[r]·h_new[c] − h[r]·h[c]))
 ```
 
-**Phase 3: Build mass matrix (per-DOF parallel)**
+**Phase 3: `crba_mass_matrix` — per-DOF parallel M assembly**
 
-Each DOF i independently computes its column of M. The key subtlety:
-when the `dof_parent` chain crosses body boundaries, a **spatial force
-transport** must be applied to the intermediate result.
+qM is zeroed via `queue.write_buffer` before this dispatch. Each DOF i
+computes its column independently. The 6×6 multiply uses an **implicit
+formulation** — no matrix materialization:
 
 ```
-for each DOF i:
-  body_i = dof_body[i]
-  ic = reconstruct_6x6(crb[body_i])     // 10 floats → 6×6 spatial inertia
-  buf = ic × cdof[i]                     // 6×6 × 6×1 → spatial force vector
-
-  // Diagonal
-  M[i,i] = dot(cdof[i], buf) + jnt_armature[jnt_of_dof[i]] + dof_armature[i]
-
-  // Off-diagonal: walk dof_parent chain with spatial force transport
-  current_body = body_i
-  j = dof_parent[i]
-  while j != NONE:
-    body_j = dof_body[j]
-    if body_j != current_body:
-      // Transport buf from current_body origin to body_j origin
-      r = body_xpos[current_body] - body_xpos[body_j]
-      buf.angular += cross(r, buf.linear)   // spatial force shift
-      current_body = body_j
-    M[j,i] = dot(cdof[j], buf)
-    M[i,j] = M[j,i]                        // symmetric
-    j = dof_parent[j]
+buf_angular = I_ref · ω + cross(mh, v)
+buf_linear  = cross(ω, mh) + m · v
 ```
 
-**The spatial force transport** (verified against CPU `crba.rs:196-225`)
-shifts the force reference point when crossing body boundaries. For
-flat trees (hockey), all DOFs of a free joint share the same body, so
-no cross-body transport occurs and this reduces to the simpler formula
-`M[j,i] = cdof[j]^T · crb[body_i] · cdof[i]`. For articulated chains,
-the transport is essential for correct off-diagonal entries.
+Off-diagonal entries use the `dof_parent` walk with spatial force
+transport at body boundaries (`buf.angular += cross(r, buf.linear)`).
+Verified against CPU `crba.rs:196-225`.
 
-For flat trees, dof_parent depth is 1. M assembly is embarrassingly
-parallel — each DOF's column is independent.
+For flat trees (hockey), all DOFs share the same body so no cross-body
+transport occurs. For articulated chains, the transport is essential.
 
-**Phase 4: Cholesky factorization (single workgroup, shared memory)**
-```
-M_factor = cholesky(M)   // nv×nv in shared memory
-```
-For nv=13: ~366 flops. For nv=60: ~36K flops. Single thread within
-the workgroup. Needed by `smooth.wgsl` for qacc_smooth.
+Armature is pre-combined at upload: `dofs[i].armature = jnt_armature + dof_armature`.
 
-### 8.3 `velocity_fk.wgsl` — Velocity forward kinematics (NEW)
+**Phase 4: `crba_cholesky` — dense Cholesky (single thread, global memory)**
 
-**Estimated:** ~200 lines WGSL.
-**Pattern:** Tree scan (forward), one pass per depth level.
+Standard Cholesky-Banachiewicz: lower triangular L such that M = L·L^T.
+Single thread within one workgroup. Reads/writes global memory (not
+shared memory — unnecessary optimization for nv ≤ 60).
+
+For nv=13: ~366 flops. For nv=60: ~36K flops. Guard: `sqrt(max(sum, 1e-10))`.
+Needed by `smooth.wgsl` for `qacc_smooth`.
+
+### 8.3 `velocity_fk.wgsl` — Velocity forward kinematics — COMPLETE (Session 2)
+
+**Actual:** ~100 lines WGSL. 1 entry point.
+**Pattern:** Tree scan (forward), one dispatch per depth level.
 **Reference:** CPU `velocity.rs:mj_fwd_velocity()`
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_2_CRBA_VELOCITY_FK.md`
+
+**Bindings (6 total, 3 bind groups):**
+- Group 0: `FkParams` uniform (dynamic offset)
+- Group 1: `bodies` (read) — static model (no joints needed)
+- Group 2: `body_xpos`, `cdof`, `qvel` (read), `body_cvel` (write)
 
 Computes body spatial velocities (`cvel`) by propagating `qvel` from
-root to leaves. **Must run after CRBA (needs cdof) and before RNE
-(which reads cvel for Coriolis/centrifugal/gyroscopic forces).**
+root to leaves. **Must run after FK (needs cdof, body_xpos) and before
+RNE (which reads cvel for Coriolis/centrifugal/gyroscopic forces).**
 
 **Per body (at its depth level):**
 ```
-// Transport parent velocity to this body's frame
-parent_vel = cvel[parent]               // [ω_parent; v_parent]
-r = body_xpos[body] - body_xpos[parent] // lever arm
-cvel[body].angular = parent_vel.angular
-cvel[body].linear  = parent_vel.linear + cross(parent_vel.angular, r)
+// Transport parent velocity to this body's origin
+omega = parent_omega
+v_lin = parent_v_lin + cross(parent_omega, r)   // lever arm
 
-// Add joint velocity contributions
+// Add joint velocity contributions using cdof (no joint-type branching)
 for each DOF d on this body:
-    cvel[body] += cdof[d] × qvel[d]     // 6-vector × scalar
+    omega += cdof[d].angular × qvel[d]
+    v_lin += cdof[d].linear  × qvel[d]
 ```
 
+**Key deviation from CPU:** The CPU `velocity.rs` branches on joint type
+to compute velocity contributions. The GPU uses `cdof[d] × qvel[d]`
+directly, which is mathematically equivalent (cdof encodes the motion
+subspace) and eliminates all branching. For zero-offset joints
+(`jnt_pos = 0`, which includes all current test models), the results
+match exactly. For offset joints, the GPU cdof approach would be more
+correct than the CPU's angular-only hinge addition.
+
 **World body (depth 0):** `cvel[0] = [0; 0; 0; 0; 0; 0]`.
+
+**cvel layout:** 2×vec4 per body (32 bytes):
+- `cvel[body*2+0]` = `(ω_x, ω_y, ω_z, 0)` — angular velocity
+- `cvel[body*2+1]` = `(v_x, v_y, v_z, 0)` — linear velocity at body origin
 
 **Why this stage is critical:** Without cvel, RNE produces zero
 Coriolis, centrifugal, and gyroscopic forces. At the hockey stick's
@@ -1211,41 +1243,43 @@ the CPU reference files, implement, validate against CPU, commit. Use
 
 ---
 
-### Session 2: CRBA + velocity FK
+### Session 2: CRBA + velocity FK — COMPLETE (2026-03-24)
 
 **Goal:** Mass matrix M and body velocities cvel match CPU within f32 tolerance.
 
-**Spec sections:** §7.3 (backward scan f32 workaround), §8.2 (crba.wgsl), §8.3 (velocity_fk.wgsl)
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_2_CRBA_VELOCITY_FK.md`
 
-**Inherits from Session 1:**
-- `GpuFkPipeline` (produces body_xpos, body_xquat, body_cinert, cdof)
-- Packed struct pattern for model data (`BodyModelGpu`, `JointModelGpu`)
-- Dynamic uniform offset dispatch pattern
-- `GpuContext` with `max_storage_buffers_per_shader_stage = 16`
-- Subtree COM backward scan uses plain f32 addition — **Session 2 must add
-  CAS atomics** for the CRBA backward scan (multiple children → same parent,
-  potentially across workgroups). See `LIMITATIONS.md` §4.
+**Implemented:**
+1. `crba.wgsl` — 4 entry points: `crba_init`, `crba_backward`, `crba_mass_matrix`, `crba_cholesky`
+2. `velocity_fk.wgsl` — 1 entry point: `velocity_fk_forward`
+3. `DofModelGpu` packed struct (body_id, parent, armature) — §6.2 updated
+4. `GpuCrbaPipeline` — 4 pipelines, 4 bind groups (9 bindings total), CAS atomics
+5. `GpuVelocityFkPipeline` — 1 pipeline, 3 bind groups (6 bindings total)
+6. New state buffers: `body_crb`, `qM`, `qM_factor`, `qvel`, `body_cvel`
 
-**CPU reference files:**
-- `sim/L0/core/src/dynamics/crba.rs` — CRBA implementation
-- `sim/L0/core/src/dynamics/factor.rs` — sparse LDL (reference, not ported)
-- `sim/L0/core/src/forward/velocity.rs` — velocity FK
+**Validated (5 tests, all passing):**
+- T8:  qM diagonal for free body (1e-4)
+- T9:  Full qM for 3-link pendulum — off-diagonal + spatial force transport (1e-3)
+- T10: qM for flat tree free body (1e-4)
+- T11: cvel for free body with non-zero qvel (1e-5)
+- T12: cvel for 3-link pendulum at various qvel (1e-4)
 
-**Implement:**
-1. `crba.wgsl` — init + backward scan + M assembly + Cholesky
-2. Backward scan with workgroup-local reduction (§7.3, no f32 atomics)
-3. `velocity_fk.wgsl` — forward scan for body spatial velocities
-4. Dense Cholesky factorization in shared memory
+**Deviations from original spec:**
+- crb format: cinert `(m, h, I_COM)` is NOT additive; `crba_init` converts to
+  `(m, m·h, I_ref)` via parallel axis theorem. Original spec showed direct copy.
+- Backward scan: global CAS atomics directly, not workgroup-local shared memory
+  reduction. Simpler and correct for all tree sizes. For hockey (flat tree),
+  the `parent == 0` guard makes the entire backward scan a no-op.
+- Cholesky: single thread on global memory, not shared memory. Trivially fast
+  for nv ≤ 60 (~36K flops max). Shared memory optimization unnecessary.
+- Velocity FK: uses `cdof × qvel` instead of per-joint-type branching.
+  Mathematically equivalent, eliminates all branching, more GPU-friendly.
+- `body_cvel`: 2×vec4 (32 bytes/body) not 6×f32 (24 bytes) — vec4 alignment.
+- Armature pre-combined at upload: `dofs[i].armature = jnt_armature + dof_armature`.
 
-**Validate:**
-- Compare GPU qM vs CPU mj_crba() for hockey
-- Compare GPU qM off-diagonal entries vs CPU on a 3-body chain — verifies
-  spatial force transport at body boundaries
-- Compare GPU cvel vs CPU mj_fwd_velocity() at various qvel states
-- Test that cvel is non-zero when qvel is non-zero (catches the original
-  missing-velocity-FK bug)
+**Constraints documented:** `LIMITATIONS.md` §8 (WGSL storage pointer function args)
 
-**Milestone:** M and cvel match CPU. Cholesky factorization works in shared memory.
+**Milestone:** `cargo test -p sim-gpu` — 16/16 tests pass (11 existing + 5 new).
 
 ---
 
@@ -1256,6 +1290,22 @@ under gravity and matches CPU trajectories.
 
 **Spec sections:** §8.4 (rne.wgsl), §8.5 (actuation.wgsl), §8.6 (passive.wgsl),
 §8.7 (smooth.wgsl), §8.15 (integrate.wgsl)
+
+**Inherits from Session 2:**
+- `GpuFkPipeline` → body_xpos, body_xquat, body_cinert, cdof, subtree_com/mass
+- `GpuCrbaPipeline` → qM, qM_factor (dense Cholesky)
+- `GpuVelocityFkPipeline` → body_cvel (spatial velocities)
+- Packed struct pattern: `BodyModelGpu`, `JointModelGpu`, `DofModelGpu`
+- CAS atomic pattern for backward scans (§7.3, LIMITATIONS.md §4+§8)
+- Dynamic uniform offset dispatch, `FkParams` struct reused across shaders
+- 16 storage buffers per shader stage (LIMITATIONS.md §1)
+- RNE will read `body_cvel` (2×vec4 per body) for Coriolis/gyroscopic forces.
+  cvel layout: `[ω_x, ω_y, ω_z, 0, v_x, v_y, v_z, 0]`.
+- `smooth.wgsl` will read `qM_factor` (dense lower-triangular L) and solve
+  `L·L^T·qacc_smooth = qfrc_smooth` via forward/back substitution.
+- RNE backward scan needs CAS atomics for `cfrc` accumulation — use the
+  same `atomic_add_f32_<buffer>` pattern from CRBA (buffer-specific functions,
+  not generic pointer parameters — LIMITATIONS.md §8).
 
 **CPU reference files:**
 - `sim/L0/core/src/dynamics/rne.rs` — RNE
