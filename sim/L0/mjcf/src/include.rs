@@ -200,7 +200,8 @@ fn extract_root_children(xml: &str, source_path: &Path) -> Result<String> {
                 | Event::PI(_)
                 | Event::DocType(_)
                 | Event::End(_)
-                | Event::CData(_),
+                | Event::CData(_)
+                | Event::GeneralRef(_),
             ) => {
                 // Skip XML declaration, comments, whitespace, processing instructions
             }
