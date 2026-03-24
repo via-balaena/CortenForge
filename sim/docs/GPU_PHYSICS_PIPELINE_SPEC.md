@@ -191,7 +191,7 @@ These encode the model structure. Shared across all environments.
 | `jtype` | u32 | Joint type: Free=0, Ball=1, Hinge=2, Slide=3. |
 | `qpos_adr` | u32 | Index into qpos. |
 | `dof_adr` | u32 | Index into qvel/qacc. |
-| `_pad` | u32 | Alignment padding. |
+| `body_id` | u32 | Body that owns this joint (`model.jnt_body[j]`). Added Session 3 (was `_pad`). |
 | `axis` | vec4\<f32\> | Joint axis in parent frame (w=0). |
 | `pos` | vec4\<f32\> | Joint anchor in parent frame (w=0). |
 
@@ -228,11 +228,23 @@ Additional static data not yet packed into structs (used by later sessions):
 | `sdf_grid[i]` | W×H×D × 4 | SDF distance values per shape (f32). |
 | `sdf_meta[i]` | 32 | Grid dimensions, cell_size, origin. |
 
-**Solver parameters:**
+**Per-dispatch uniform parameters (separate structs for separate concerns):**
+
+| Buffer | Size | Used by | Contents |
+|---|---|---|---|
+| `FkParams` | 32 | FK, CRBA, velocity FK | current_depth, nbody, njnt, ngeom, nv, n_env, nq, _pad. |
+| `PhysicsParams` | 48 | RNE, smooth, integrate | gravity (vec4), timestep, nbody, njnt, nv, nq, n_env, current_depth, nu. |
+
+`FkParams` (Session 1) serves kinematics shaders. `PhysicsParams` (Session 3)
+adds gravity and timestep for dynamics shaders. Both are written into
+pre-allocated uniform buffers with 256-byte aligned slots and selected via
+dynamic offsets.
+
+**Solver parameters (Session 5+):**
 
 | Buffer | Size | Contents |
 |---|---|---|
-| `solver_params` | 128 | dt, gravity, solver_iterations, tolerance, nv, nq, nbody, ngeom, njnt, max_depth, condim, cone_type. |
+| `solver_params` | 128 | solver_iterations, tolerance, condim, cone_type, etc. To be defined in Session 5. |
 
 **Actuator structure (for GPU actuation):**
 
@@ -762,62 +774,102 @@ Coriolis, centrifugal, and gyroscopic forces. At the hockey stick's
 swing speed (~25 rad/s), the missing centrifugal term visibly affects
 dynamics.
 
-### 8.4 `rne.wgsl` — Recursive Newton-Euler (NEW)
+### 8.4 `rne.wgsl` — Recursive Newton-Euler — COMPLETE (Session 3)
 
-**Estimated:** ~300 lines WGSL.
-**Pattern:** Forward tree scan + backward tree scan.
-**Reference:** MJX `smooth.py:rne()`, CPU `rne.rs`
+**Actual:** ~300 lines WGSL. 5 entry points.
+**Pattern:** Per-joint map + forward tree scan + per-body map + backward tree scan + per-DOF map.
+**Reference:** CPU `rne.rs`, MJX `smooth.py:rne()`
 **Prerequisite:** `velocity_fk.wgsl` must have written `body_cvel`.
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_3_RNE_FORCES_INTEGRATION.md`
 
-**Phase 1: Gravity (per-joint parallel, no tree dependency)**
+**Bindings (16 total, max 9 per entry point — under 16-per-stage limit):**
+- Group 0: `PhysicsParams` uniform (dynamic offset)
+- Group 1: `bodies`, `joints`, `dofs` (read) — static model
+- Group 2: `body_xpos`, `body_xquat`, `body_cinert`, `cdof`, `body_cvel`,
+  `subtree_mass`, `subtree_com`, `qvel`, `qpos` (read)
+- Group 3: `body_cacc`, `body_cfrc` (atomic), `qfrc_bias` (read-write)
+
+**Phase 1: `rne_gravity` — per-joint parallel (no tree dependency)**
+
+Uses `subtree_mass[body]` and `subtree_com[body]` from FK. Joint-type
+dependent gravity projection (hinge=axis·torque, slide=axis·force,
+ball=body-local rotation, free=direct force + world-frame torque).
+Requires `JointModelGpu.body_id` (added Session 3).
 ```
 for each joint:
-  qfrc_bias[dof] = gravity_torque(subtree_mass, subtree_com, jnt_axis)
+  gravity_force = -subtree_mass[body] * gravity
+  qfrc_bias[dof] = project(gravity_force, jnt_type, subtree_com, jnt_axis, ...)
 ```
 Note: gravity is computed ONLY here, not in passive forces.
 
-**Phase 2a: Forward scan — bias accelerations (root → leaves)**
+**Phase 2a: `rne_forward` — bias accelerations (root → leaves)**
 ```
 for d in 0..=max_depth:
   per body at depth d:
-    // Transport parent bias acceleration + add velocity-product term
+    // Transport parent bias acceleration
     r = body_xpos[body] - body_xpos[parent]
     cacc[body].angular = cacc[parent].angular
     cacc[body].linear  = cacc[parent].linear + cross(cacc[parent].angular, r)
-    // Velocity-product acceleration (Coriolis): ω × v
-    cacc[body] += spatial_cross_motion(cvel[parent], joint_vel_contribution)
+    // Velocity-product acceleration (Coriolis) using cdof:
+    for each DOF d on body:
+      vj = cdof[d] * qvel[d]
+      cacc += spatial_cross_motion(cvel[parent], vj)
+    // Free joint correction: subtract [0; ω × v_linear]
+    if dof_num == 6: cacc.linear -= cross(omega, v_linear)
 ```
 `spatial_cross_motion(v, s)` = `[ω×s_ang; ω×s_lin + v_lin×s_ang]`
 
-**Phase 2b: Backward scan — bias forces (leaves → root)**
+**Phase 2b: `rne_cfrc_init` — per-body parallel (no depth ordering)**
+
+**CRITICAL: Must be a separate dispatch from the backward accumulation.**
+See LIMITATIONS.md §9. Computes each body's own cfrc, writes via
+`atomicStore` into the pre-zeroed `body_cfrc` buffer.
 ```
-for d in max_depth..=0:
-  per body at depth d:
-    I = reconstruct_6x6(cinert[body])
-    cfrc[body] = I × cacc[body] + cvel[body] ×* (I × cvel[body])
-    // Accumulate into parent — plain addition, no spatial transport
-    // (everything is already in world frame)
-    accumulate cfrc[body] into cfrc[parent]   // see §7.3
+per body (all parallel):
+  I = cinert[body]  (NOT body_crb — needs single-body, not composite)
+  cfrc[body] = I × cacc[body] + cvel[body] ×* (I × cvel[body])
 ```
 The gyroscopic term is `v ×* (I·v)` where `×*` is the spatial force
 cross product: `[ω×f_ang + v_lin×f_lin; ω×f_lin]`.
+
+Uses `cinert_mul_spatial()` — converts cinert `(m, h, I_COM)` to I_ref
+inline via parallel axis theorem, then does implicit 6×6 multiply (same
+math as CRBA's `crb_mul_cdof`).
+
+**Phase 2c: `rne_backward` — accumulate cfrc (leaves → root)**
+
+Only CAS-accumulates into parent — does NOT write own cfrc (that was
+done in `rne_cfrc_init`). Uses buffer-specific `atomic_add_f32_cfrc()`
+(LIMITATIONS.md §8).
+```
+for d in max_depth..=1:
+  per body at depth d:
+    if parent == 0: skip  (world body has no DOFs)
+    CAS-atomic-add cfrc[body] into cfrc[parent]
+```
 
 **No spatial transport in backward pass:** The CPU (`rne.rs:271-278`)
 does plain `cfrc[parent] += cfrc[child]` — no frame change — because
 all quantities are in world frame.
 
-**Phase 2c: Project to joint space (per-DOF parallel)**
+**Phase 2d: `rne_project` — per-DOF parallel**
 ```
-for each DOF:
-  qfrc_bias[dof] += dot(cdof[dof], cfrc[dof_body])
+for each DOF d:
+  qfrc_bias[d] += dot(cdof[d], cfrc[dof_body])
 ```
+Uses `cdof` to avoid joint-type branching — `S^T · f = dot(cdof, cfrc)`.
 
-### 8.5 `actuation.wgsl` — Actuator forces (NEW)
+### 8.5 `actuation.wgsl` — Actuator forces (DEFERRED)
+
+**Status:** Not implemented in Session 3. Hockey has `nu=0` (no actuators).
+Building untestable code violates "A-grade or it doesn't ship."
+`qfrc_actuator` buffer is allocated and zeroed instead. Shader will be
+added when a test model with actuators exists for validation.
 
 **Estimated:** ~150 lines WGSL.
 **Pattern:** Per-actuator parallel map.
 
-**Per actuator:**
+**Per actuator (when implemented):**
 1. Read `ctrl[i]` (uploaded from CPU)
 2. Compute force from gain/bias: `force = gain(ctrl) + bias(qpos, qvel)`
 3. Apply transmission: `qfrc_actuator[dof] += gear × force`
@@ -826,12 +878,16 @@ for each DOF:
 Complex actuators (muscle, cylinder) remain CPU-only — the GPU path
 asserts supported actuator types at pipeline creation.
 
-### 8.6 `passive.wgsl` — Passive forces (NEW)
+### 8.6 `passive.wgsl` — Passive forces (DEFERRED)
+
+**Status:** Not implemented in Session 3. Hockey free bodies have no
+springs or dampers. `qfrc_passive` buffer is allocated and zeroed.
+Shader will be added when a test model with springs/dampers exists.
 
 **Estimated:** ~100 lines WGSL.
 **Pattern:** Per-DOF parallel map.
 
-**Per DOF:**
+**Per DOF (when implemented):**
 1. Joint damping: `qfrc_passive[dof] = -damping[dof] × qvel[dof]`
 2. Joint stiffness: `qfrc_passive[dof] -= stiffness[dof] × (qpos - qpos_spring)`
 
@@ -844,38 +900,47 @@ both RNE and passive would double-count it.
 **Scope:** Covers joint-level springs/dampers. Fluid forces and tendon
 passive forces remain CPU-only for the initial implementation.
 
-### 8.7 `smooth.wgsl` — Smooth forces + qacc_smooth (NEW)
+### 8.7 `smooth.wgsl` — Smooth forces + qacc_smooth — COMPLETE (Session 3)
 
-**Estimated:** ~120 lines WGSL.
-**Pattern:** Per-DOF parallel + single-workgroup Cholesky solve.
+**Actual:** ~98 lines WGSL. 2 entry points.
+**Pattern:** Per-DOF parallel + single-thread Cholesky solve.
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_3_RNE_FORCES_INTEGRATION.md`
 
-**Phase 1: Compute qfrc_smooth (per-DOF parallel)**
+**Bindings (8 total, 4 bind groups):**
+- Group 0: `PhysicsParams` uniform (dynamic offset)
+- Group 1: `qfrc_bias`, `qfrc_applied`, `qfrc_actuator`, `qfrc_passive` (read)
+- Group 2: `qM_factor` (read)
+- Group 3: `qfrc_smooth`, `qacc_smooth` (read-write)
+
+**Phase 1: `smooth_assemble` — per-DOF parallel**
 ```
 qfrc_smooth[dof] = qfrc_applied[dof] + qfrc_actuator[dof]
                  + qfrc_passive[dof] - qfrc_bias[dof]
 ```
 
-Plus xfrc_applied projection: for each body B with non-zero
-`xfrc_applied[B]`, project the body-frame [torque, force] into joint
-space. The force is applied at `xipos[B]` (body COM, not frame origin).
-For each ancestor DOF in the chain from B to root:
+**Note on xfrc_applied projection (DEFERRED):** The CPU
+(`constraint/mod.rs:89-107`) projects body-frame Cartesian forces
+`xfrc_applied[B]` into joint space by walking ancestor DOFs via
+`mj_apply_ft`. For gravity-only (Session 3), `xfrc_applied` is zeroed.
+The projection will be added when external forces are needed. The spec
+below describes the full algorithm for future implementation:
 ```
-lever = xipos[B] - body_xpos[dof_body[d]]
-qfrc_smooth[d] += dot(cdof[d], [torque; force])
-                + dot(cdof[d].angular, cross(lever, force))
+for each body B with non-zero xfrc_applied[B]:
+  lever = xipos[B] - body_xpos[dof_body[d]]
+  qfrc_smooth[d] += dot(cdof[d], [torque; force])
+                  + dot(cdof[d].angular, cross(lever, force))
 ```
-For flat trees (body parented to world), only the body's own DOFs
-are ancestors, so this reduces to `cdof^T × spatial_force`. For deeper
-trees, the projection must walk ALL ancestor DOFs (matching CPU
-`mj_apply_ft` chain walk).
 
-**Phase 2: Solve qacc_smooth = M⁻¹ · qfrc_smooth (single workgroup)**
+**Phase 2: `smooth_solve` — single thread (Cholesky forward/back substitution)**
 
-Uses the Cholesky factor from crba.wgsl:
+Uses the Cholesky factor L from `crba.wgsl`:
 ```
-qacc_smooth = cholesky_solve(M_factor, qfrc_smooth)
+// Forward substitution: L · y = qfrc_smooth
+// Backward substitution: L^T · x = y
+// Result: qacc_smooth = M⁻¹ · qfrc_smooth
 ```
-Forward + backward substitution in shared memory. For nv=13: ~338 flops.
+Single thread on global memory (same approach as `crba_cholesky`).
+For nv=13: ~338 flops. Trivially fast.
 
 ### 8.8 `aabb.wgsl` — Bounding box computation (NEW)
 
@@ -973,14 +1038,22 @@ smooth.wgsl) as cold start. Optionally, upload previous frame's final
 
 `qfrc_constraint[dof] = Σ_row efc_force[row] × efc_J[row][dof]`
 
-### 8.15 `integrate.wgsl` — Semi-implicit Euler (NEW)
+### 8.15 `integrate.wgsl` — Semi-implicit Euler — COMPLETE (Session 3)
 
-**Estimated:** ~120 lines WGSL.
-**Pattern:** Per-body parallel map.
-**Reference:** MJX `math.py:quat_integrate()`
+**Actual:** ~130 lines WGSL. 1 entry point.
+**Pattern:** Per-joint parallel map (one thread per joint).
+**Reference:** CPU `euler.rs`, MJX `math.py:quat_integrate()`
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_3_RNE_FORCES_INTEGRATION.md`
 
-Per body: `qvel += dt × qacc`, then position integration with
-exponential map for quaternions. Matches CPU `integrate_quaternion()`.
+**Bindings (5 total, 3 bind groups):**
+- Group 0: `PhysicsParams` uniform (non-dynamic, single dispatch)
+- Group 1: `joints` (read) — static model
+- Group 2: `qpos` (read-write), `qvel` (read-write), `qacc` (read)
+
+Per joint: semi-implicit Euler (`qvel += dt × qacc`, then `qpos += dt × f(qvel)`).
+Hinge/slide: scalar integration. Ball/free: quaternion exponential map
+(`q_new = q_old × axis_angle(ω/|ω|, |ω|×dt)`) with normalization. Handles
+qpos quaternion layout swizzle `(w,x,y,z) ↔ (x,y,z,w)` (LIMITATIONS.md §6).
 
 ## 9. Command buffer structure
 
@@ -1024,23 +1097,28 @@ for _substep in 0..num_substeps {
         compute_pass(&encoder, &velocity_fk_pipeline, ceil(nbody, 64), n_env);
     }
 
-    // RNE: gravity (parallel) + forward scan + backward scan + project
+    // RNE: gravity + forward scan + cfrc_init + backward accumulation + project
     // (reads cvel from velocity_fk for Coriolis/gyroscopic terms)
+    // NOTE: cfrc_init and backward MUST be separate dispatches (LIMITATIONS.md §9)
     compute_pass(&encoder, &rne_gravity_pipeline, ceil(njnt, 64), n_env);
     for depth in 0..=max_depth {
         update_uniform(&encoder, depth);
         compute_pass(&encoder, &rne_forward_pipeline, ceil(nbody, 64), n_env);
     }
-    for depth in (0..=max_depth).rev() {
+    compute_pass(&encoder, &rne_cfrc_init_pipeline, ceil(nbody, 64), n_env);
+    for depth in (1..=max_depth).rev() {
         update_uniform(&encoder, depth);
         compute_pass(&encoder, &rne_backward_pipeline, ceil(nbody, 64), n_env);
     }
     compute_pass(&encoder, &rne_project_pipeline, ceil(nv, 64), n_env);
 
-    // Actuation + passive + smooth
-    compute_pass(&encoder, &actuation_pipeline, ceil(nu, 64), n_env);
-    compute_pass(&encoder, &passive_pipeline, ceil(nv, 64), n_env);
-    compute_pass(&encoder, &smooth_pipeline, 1, n_env);  // includes Cholesky solve
+    // Actuation + passive (DEFERRED — buffers zeroed for gravity-only)
+    // compute_pass(&encoder, &actuation_pipeline, ceil(nu, 64), n_env);
+    // compute_pass(&encoder, &passive_pipeline, ceil(nv, 64), n_env);
+
+    // Smooth: assemble qfrc_smooth + Cholesky solve for qacc_smooth
+    compute_pass(&encoder, &smooth_assemble_pipeline, ceil(nv, 64), n_env);
+    compute_pass(&encoder, &smooth_solve_pipeline, 1, n_env);
 
     // Collision
     compute_pass(&encoder, &aabb_pipeline, ceil(ngeom, 64), n_env);
@@ -1054,8 +1132,12 @@ for _substep in 0..num_substeps {
     }
     compute_pass(&encoder, &map_forces_pipeline, ceil(nv, 64), n_env);
 
-    // Integration
-    compute_pass(&encoder, &integrate_pipeline, ceil(nbody, 64), n_env);
+    // Gravity-only bridge (Session 3): copy qacc_smooth → qacc
+    // Replace with Newton solver output in Session 5+
+    encoder.copy_buffer_to_buffer(&qacc_smooth, &qacc, nv * 4);
+
+    // Integration (per-joint, not per-body)
+    compute_pass(&encoder, &integrate_pipeline, ceil(njnt, 64), n_env);
 }
 
 // Readback: final qpos, qvel, ncon
@@ -1072,12 +1154,12 @@ device.poll(Maintain::Wait);
 | FK (2 levels + subtree COM 2 levels) | 4 |
 | CRBA (init + 2 levels + build M + Cholesky) | 5 |
 | Velocity FK (2 levels) | 2 |
-| RNE (gravity + 2 forward + 2 backward + project) | 6 |
-| Actuation + passive + smooth | 3 |
+| RNE (gravity + 2 forward + cfrc_init + 1 backward + project) | 6 |
+| Smooth (assemble + solve) | 2 |
 | AABB + broadphase (3) + narrowphase | 5 |
 | Assemble + Newton (×2 iter) + map_forces | 4 |
 | Integration | 1 |
-| **Total** | **~30** |
+| **Total** | **~29** |
 
 At ~5μs per dispatch: ~150μs overhead. Well within the 1ms/substep
 budget. The compute work per dispatch is small for 4 bodies but grows
