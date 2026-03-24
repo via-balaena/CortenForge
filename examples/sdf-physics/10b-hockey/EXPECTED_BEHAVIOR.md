@@ -132,6 +132,10 @@ This model works with `GpuPhysicsPipeline::new()` (validation passes).
 
 ### Step 2: GPU stepping in Bevy
 
+Add `upload_mocap()` to `GpuPhysicsPipeline::step()` (currently only
+uploads qpos/qvel — mocap poses must also be uploaded each frame so the
+FK shader can read the controller-driven stick pose).
+
 ```rust
 #[derive(Resource)]
 struct GpuPhysics(sim_gpu::GpuPhysicsPipeline);
