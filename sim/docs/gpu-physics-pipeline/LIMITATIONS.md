@@ -251,3 +251,121 @@ abbreviations (`gm`, `np`) over plain words (`meta`, `data`, `info`).
 **Discovered:** Session 4 (collision pipeline, 2026-03-24). Caused
 shader compilation failure for `sdf_sdf_narrow.wgsl` and
 `sdf_plane_narrow.wgsl` until parameter names were changed.
+
+## 11. Workgroup shared memory budget: 16 KB minimum
+
+**Constraint:** WebGPU guarantees `maxComputeWorkgroupStorageSize ≥ 16,384`
+bytes (16 KB). Most Metal/Vulkan GPUs offer 32–64 KB, but portable code
+must target the 16 KB floor.
+
+**Impact:** `newton_solve.wgsl` needs a dense Hessian in shared memory
+(`nv × nv × 4` bytes) plus working vectors and a reduction buffer.
+At `MAX_NV = 60`, the layout is:
+
+| Array | Size |
+|-------|------|
+| `H_atomic` (60 × 60 × 4) | 14,400 bytes |
+| `qacc_sh` (60 × 4) | 240 bytes |
+| `qacc_sm_sh` (60 × 4) | 240 bytes |
+| `grad_sh` (60 × 4) | 240 bytes |
+| `search_sh` (60 × 4) | 240 bytes |
+| `reduction_sh` (256 × 4) | 1,024 bytes |
+| **Total** | **16,384 bytes** |
+
+This is exactly the 16 KB minimum — zero headroom. Any additional
+shared memory (e.g., Ma, qfrc_smooth vectors) must be read from global
+memory on-the-fly instead.
+
+**Workaround:** Vectors `Ma` and `qfrc_smooth` are computed from global
+memory reads in the gradient computation phase rather than cached in
+shared memory. For `nv ≤ 13` (hockey) this is negligible; for `nv = 60`
+it adds ~3,600 global memory reads per Newton iteration.
+
+**Future risk:** If `MAX_NV > 60` is needed, either:
+- Use the sparse Hessian path (CSC storage, no dense H in shared memory)
+- Tile the Hessian across multiple dispatches
+- Require devices with 32+ KB shared memory
+
+**Discovered:** Session 5 (constraint solve, 2026-03-24).
+
+## 12. vec3 in storage buffer structs: alignment mismatch
+
+**Constraint:** WGSL `vec3<f32>` has `align(16)` but `size(12)` in
+storage buffers. When used in a struct, the compiler inserts 4 bytes of
+padding after each `vec3`, making the struct layout unpredictable and
+mismatched with Rust's `#[repr(C)]` layout.
+
+**Impact:** `PipelineContact` (48 bytes, Rust side) contains three
+`vec3`-like fields (`point`, `normal`, `friction`) interleaved with
+scalar fields. Declaring this as a WGSL struct with `vec3` members
+would produce incorrect field offsets.
+
+**Workaround:** The assembly shader reads `PipelineContact` as a raw
+`array<f32>` — 12 floats per contact (48 bytes / 4). Geom indices
+(`geom1`, `geom2`) stored as `u32` are read via `bitcast<u32>(f32)`.
+A local `ContactData` struct (non-storage, no alignment issues) is
+populated from the raw values:
+```wgsl
+let base = ci * 12u;
+c.point   = vec3(contact_buf[base + 0u], contact_buf[base + 1u], contact_buf[base + 2u]);
+c.depth   = contact_buf[base + 3u];
+c.normal  = vec3(contact_buf[base + 4u], contact_buf[base + 5u], contact_buf[base + 6u]);
+c.geom1   = bitcast<u32>(contact_buf[base + 7u]);
+```
+
+**General rule:** Never use `vec3` in storage buffer struct definitions.
+Use `vec4` with padding, or read as flat `array<f32>` with manual
+indexing. Function-local structs (address space `function`) don't have
+this restriction.
+
+**Discovered:** Session 5 (constraint assembly, 2026-03-24).
+
+## 13. atomicLoad requires read_write access
+
+**Constraint:** WGSL requires `var<storage, read_write>` for any buffer
+containing `atomic<T>`, even when the shader only performs `atomicLoad`
+(read-only operation). A `var<storage, read>` binding with
+`array<atomic<u32>>` fails validation.
+
+**Impact:** `newton_solve.wgsl` and `map_forces.wgsl` only READ
+`constraint_count` (via `atomicLoad`), but the bind group layout must
+declare the buffer as `read_write`. Similarly, `assemble.wgsl` only
+reads `contact_count` but must bind it as `read_write`.
+
+**Workaround:** All atomic counter buffers (`contact_count`,
+`constraint_count`) are bound as `storage { read_only: false }` in
+every shader that accesses them, regardless of whether the shader
+modifies them. The Rust `BindGroupLayoutEntry` uses `storage_rw()`
+even for semantically read-only access.
+
+**Risk:** A shader that only intends to read could accidentally write
+to the counter. No mitigation other than code review.
+
+**Discovered:** Session 5 (constraint solve, 2026-03-24). All three
+constraint shaders needed this pattern.
+
+## 14. workgroupBarrier requires uniform control flow across all invocations
+
+**Constraint:** All invocations in a workgroup MUST execute the same
+`workgroupBarrier()` calls. If any invocation skips a barrier (e.g.,
+due to an `if` branch or early `return`), the behavior is undefined
+(typically a hang or deadlock).
+
+**Impact:** The Newton solver's line search evaluates cost at 4
+candidate alphas using `eval_cost()`, which contains `workgroupBarrier`
+in its parallel reduction. Even though only thread 0 uses the returned
+cost value, ALL 256 threads must call `eval_cost()` for all 4 alphas.
+This prevents early-exit optimization (e.g., "if alpha=1.0 works, skip
+evaluating 0.5 and 0.25").
+
+**Workaround:** Always evaluate all candidates unconditionally. Thread 0
+picks the best alpha after all evaluations complete. The wasted work is
+minimal (~260 flops/thread per extra evaluation for hockey).
+
+**General rule:** Functions containing `workgroupBarrier()` must be
+called from uniform control flow. Never put barrier-containing calls
+inside `if (tid == 0u)` or other thread-divergent branches. Structure
+loops so all threads break at the same iteration (use a shared
+convergence flag checked after a barrier, not before).
+
+**Discovered:** Session 5 (Newton solver line search, 2026-03-24).
