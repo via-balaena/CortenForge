@@ -118,7 +118,7 @@ let_underscore_must_use = "deny"
 # Math Foundation
 # ---------------------------------------------------------------------------
 # nalgebra: Linear algebra, matches parry3d and avian for compatibility
-nalgebra = "0.33"
+nalgebra = "0.34"
 # (glam removed — was only used by routing crates)
 
 # ---------------------------------------------------------------------------
