@@ -1206,6 +1206,10 @@ under gravity and matches CPU trajectories.
 4. `smooth.wgsl` — qfrc_smooth assembly + Cholesky solve for qacc_smooth
 5. `integrate.wgsl` — semi-implicit Euler + quaternion exponential map
 6. Command buffer chaining: FK→CRBA→vel_FK→RNE→act→pas→smooth→integrate
+7. **Gravity-only bridge:** integrate.wgsl reads `qacc`, but the Newton
+   solver (Session 5) doesn't exist yet. For gravity-only, copy
+   `qacc_smooth → qacc` after smooth.wgsl (no constraints means
+   `qacc = qacc_smooth`). A simple `copy_buffer` or a trivial shader.
 
 **Validate:**
 - Compare GPU qfrc_bias vs CPU mj_rne() — verify Coriolis/gyroscopic
