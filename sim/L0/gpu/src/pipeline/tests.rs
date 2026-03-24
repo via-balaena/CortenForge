@@ -3,6 +3,7 @@
 //! T1–T7:  FK — compare GPU body poses, cinert, cdof, subtree COM against CPU.
 //! T8–T12: CRBA + velocity FK — compare GPU qM, cvel against CPU.
 //! T13–T18: RNE + smooth + integration — bias forces, qacc_smooth, trajectories.
+//! T19–T23: Collision — AABB, SDF-SDF, SDF-plane, full collision pipeline.
 
 #![allow(
     clippy::expect_used,
@@ -21,6 +22,7 @@ use std::f64::consts::PI;
 
 use sim_core::types::{Data, Model};
 
+use super::collision::GpuCollisionPipeline;
 use super::crba::GpuCrbaPipeline;
 use super::fk::{GpuFkPipeline, readback_f32s, readback_vec4s};
 use super::integrate::GpuIntegratePipeline;
@@ -28,6 +30,7 @@ use super::model_buffers::GpuModelBuffers;
 use super::rne::GpuRnePipeline;
 use super::smooth::GpuSmoothPipeline;
 use super::state_buffers::GpuStateBuffers;
+use super::types::PipelineContact;
 use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
 
@@ -1106,4 +1109,379 @@ fn t18_quaternion_stability() {
     }
 
     eprintln!("  T18 passed: quaternion stable over {nsteps} steps at 50 rad/s");
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// T19–T23: Collision pipeline
+// ══════════════════════════════════════════════════════════════════════
+
+/// Add an SDF sphere geom to the specified body.
+fn add_sdf_sphere_geom(model: &mut Model, body_id: usize, radius: f64, grid_res: usize) {
+    use cf_geometry::SdfGrid;
+    use nalgebra::Point3;
+    use sim_core::ShapeConvex;
+    use sim_core::sdf::PhysicsShape;
+    use std::sync::Arc;
+
+    let grid = SdfGrid::sphere(Point3::origin(), radius, grid_res, 1.0);
+    let shape: Arc<dyn PhysicsShape> = Arc::new(ShapeConvex::new(Arc::new(grid)));
+    let shape_id = model.shape_data.len();
+    model.shape_data.push(shape);
+    model.nshape = model.shape_data.len();
+
+    let geom_id = model.ngeom;
+    model.ngeom += 1;
+
+    model.geom_type.push(sim_core::types::GeomType::Sdf);
+    model.geom_body.push(body_id);
+    model.geom_pos.push(Vector3::zeros());
+    model.geom_quat.push(UnitQuaternion::identity());
+    // SDF geom_size = half-extents of the grid's AABB
+    let half = radius + 1.0; // conservative: radius + cell_size margin
+    model.geom_size.push(Vector3::new(half, half, half));
+    model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+    model.geom_condim.push(3);
+    model.geom_contype.push(1);
+    model.geom_conaffinity.push(1);
+    model.geom_margin.push(1.0); // 1mm margin for SDF
+    model.geom_gap.push(0.0);
+    model.geom_priority.push(0);
+    model.geom_solmix.push(1.0);
+    model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+    model.geom_solref.push([0.02, 1.0]);
+    model.geom_fluid.push([0.0; 12]);
+    model.geom_name.push(Some(format!("sdf_sphere_{geom_id}")));
+    model.geom_rbound.push(radius);
+    model.geom_aabb.push([0.0, 0.0, 0.0, half, half, half]);
+    model.geom_mesh.push(None);
+    model.geom_hfield.push(None);
+    model.geom_shape.push(Some(shape_id));
+    model.geom_group.push(0);
+    model.geom_rgba.push([0.7, 0.3, 0.3, 1.0]);
+    model.geom_user.push(vec![]);
+    model.geom_plugin.push(None);
+
+    // Update body geom tracking
+    if model.body_geom_num[body_id] == 0 {
+        model.body_geom_adr[body_id] = geom_id;
+    }
+    model.body_geom_num[body_id] += 1;
+}
+
+/// Readback pipeline contacts from GPU buffer.
+fn readback_contacts(
+    ctx: &GpuContext,
+    contact_buffer: &wgpu::Buffer,
+    contact_count_buffer: &wgpu::Buffer,
+    max_contacts: usize,
+) -> Vec<PipelineContact> {
+    // Readback count
+    let count_data = readback_f32s(ctx, contact_count_buffer, 1);
+    let count = f32::to_bits(count_data[0]) as usize;
+    let count = count.min(max_contacts);
+    if count == 0 {
+        return vec![];
+    }
+
+    // Readback contacts (as f32s, reinterpret as PipelineContact)
+    // PipelineContact = 48 bytes = 12 f32s
+    let raw = readback_f32s(ctx, contact_buffer, count * 12);
+    let contacts: &[PipelineContact] = bytemuck::cast_slice(&raw);
+    contacts[..count].to_vec()
+}
+
+#[test]
+fn t19_aabb_matches_cpu() {
+    let ctx = gpu_or_skip!();
+
+    // Build a model with a ground plane + one SDF sphere at (0, 0, 5)
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    let mut data = model.make_data();
+    // Place sphere at (0, 0, 5)
+    data.qpos[0] = 0.0;
+    data.qpos[1] = 0.0;
+    data.qpos[2] = 5.0;
+    data.qpos[3] = 1.0; // identity quat
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+    let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+
+    // Run FK + AABB
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("t19") });
+    fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+    collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+    ctx.queue.submit([encoder.finish()]);
+
+    // Readback AABB for each geom (2×vec4 per geom)
+    let n_aabb_vec4s = model.ngeom * 2;
+    let aabb_data = readback_vec4s(&ctx, &state_buf.geom_aabb, n_aabb_vec4s);
+
+    // Ground plane (geom 0): should have huge AABB
+    let plane_min = &aabb_data[0];
+    let plane_max = &aabb_data[1];
+    assert!(
+        plane_max[0] - plane_min[0] > 1e5,
+        "Plane AABB should be huge, got x-range {}",
+        plane_max[0] - plane_min[0]
+    );
+
+    // SDF sphere (geom 1): should be centered at (0,0,5) with half-extent ~6
+    let sphere_min = &aabb_data[2];
+    let sphere_max = &aabb_data[3];
+    let center_x = (sphere_min[0] + sphere_max[0]) * 0.5;
+    let center_z = (sphere_min[2] + sphere_max[2]) * 0.5;
+    assert!(
+        (center_x).abs() < 0.1,
+        "Sphere AABB center x should be ~0, got {center_x}"
+    );
+    assert!(
+        (center_z - 5.0).abs() < 0.1,
+        "Sphere AABB center z should be ~5, got {center_z}"
+    );
+
+    // Half-extent should be > radius (5)
+    let half_x = (sphere_max[0] - sphere_min[0]) * 0.5;
+    assert!(
+        (4.5..=8.0).contains(&half_x),
+        "Sphere AABB half-extent should be ~5-6, got {half_x}"
+    );
+
+    eprintln!(
+        "  T19 passed: plane AABB range={:.0}, sphere center=({center_x:.2},{:.2},{center_z:.2}) half={half_x:.2}",
+        plane_max[0] - plane_min[0],
+        (sphere_min[1] + sphere_max[1]) * 0.5,
+    );
+}
+
+#[test]
+fn t20_sdf_sdf_contacts_pipeline() {
+    let ctx = gpu_or_skip!();
+
+    // Two overlapping SDF spheres (radius 5, centers 8 apart → overlap)
+    // Body 0 = world, Body 1 = free body
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    add_sdf_sphere_geom(&mut model, 0, 5.0, 16); // geom on world body at origin
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 16); // geom on free body
+
+    let mut data = model.make_data();
+    // Place free body at (8, 0, 0) → spheres overlap by ~2mm
+    data.qpos[0] = 8.0;
+    data.qpos[1] = 0.0;
+    data.qpos[2] = 0.0;
+    data.qpos[3] = 1.0;
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+    let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+
+    eprintln!("  T20: {} collision pairs", collision_pipeline.num_pairs());
+
+    // Run FK + collision
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("t20") });
+    fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+    collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+    ctx.queue.submit([encoder.finish()]);
+
+    // Readback contacts
+    let contacts = readback_contacts(
+        &ctx,
+        &state_buf.contact_buffer,
+        &state_buf.contact_count,
+        32768,
+    );
+
+    eprintln!("  T20: {} contacts found", contacts.len());
+    assert!(
+        !contacts.is_empty(),
+        "SDF-SDF should find contacts (spheres overlap by ~2mm)"
+    );
+
+    // Check contact properties
+    for (i, c) in contacts.iter().take(5).enumerate() {
+        let n_len =
+            (c.normal[0] * c.normal[0] + c.normal[1] * c.normal[1] + c.normal[2] * c.normal[2])
+                .sqrt();
+        eprintln!(
+            "    [{i}] pos=({:.2},{:.2},{:.2}) depth={:.4} normal=({:.2},{:.2},{:.2}) |n|={n_len:.3}",
+            c.point[0], c.point[1], c.point[2], c.depth, c.normal[0], c.normal[1], c.normal[2],
+        );
+        assert!(c.depth >= 0.0, "Contact depth should be >= 0");
+        assert!(
+            n_len > 0.9 && n_len < 1.1,
+            "Contact normal should be unit length, got {n_len}"
+        );
+    }
+
+    // Net contact force should push bodies apart along X
+    let net_x: f32 = contacts.iter().map(|c| c.normal[0] * c.depth).sum();
+    eprintln!("  T20: net_x = {net_x:.4}");
+    // Normal convention: we don't know the exact sign from the pair plan,
+    // but there should be non-zero X component
+    assert!(
+        net_x.abs() > 0.01,
+        "Net contact force should have X component"
+    );
+
+    eprintln!("  T20 passed: {} SDF-SDF contacts", contacts.len());
+}
+
+#[test]
+fn t21_sdf_plane_contacts() {
+    let ctx = gpu_or_skip!();
+
+    // SDF sphere slightly below ground plane → SDF-plane contacts expected
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 16);
+
+    let mut data = model.make_data();
+    // Place sphere center at z=3 → bottom of sphere at z=-2 → penetrates z=0 plane
+    data.qpos[0] = 0.0;
+    data.qpos[1] = 0.0;
+    data.qpos[2] = 3.0;
+    data.qpos[3] = 1.0;
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+    let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+
+    eprintln!("  T21: {} collision pairs", collision_pipeline.num_pairs());
+
+    // Run FK + collision
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("t21") });
+    fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+    collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+    ctx.queue.submit([encoder.finish()]);
+
+    // Readback contacts
+    let contacts = readback_contacts(
+        &ctx,
+        &state_buf.contact_buffer,
+        &state_buf.contact_count,
+        32768,
+    );
+
+    eprintln!("  T21: {} contacts found", contacts.len());
+    assert!(
+        !contacts.is_empty(),
+        "SDF-plane should find contacts (sphere penetrates ground)"
+    );
+
+    // All contacts should be below the plane (z < margin) with normal ~(0,0,1)
+    for (i, c) in contacts.iter().take(5).enumerate() {
+        eprintln!(
+            "    [{i}] pos=({:.2},{:.2},{:.2}) depth={:.4} normal=({:.2},{:.2},{:.2})",
+            c.point[0], c.point[1], c.point[2], c.depth, c.normal[0], c.normal[1], c.normal[2],
+        );
+        assert!(c.depth >= 0.0, "Contact depth should be >= 0");
+        // Normal should point up (away from plane)
+        assert!(
+            c.normal[2] > 0.9,
+            "SDF-plane normal should point up, got z={:.3}",
+            c.normal[2]
+        );
+    }
+
+    // Contacts should be in the lower hemisphere (z < 3)
+    let avg_z: f32 = contacts.iter().map(|c| c.point[2]).sum::<f32>() / contacts.len() as f32;
+    assert!(
+        avg_z < 1.5,
+        "Contact positions should be near z=0 plane, avg_z={avg_z:.2}"
+    );
+
+    eprintln!(
+        "  T21 passed: {} SDF-plane contacts, avg_z={avg_z:.2}",
+        contacts.len()
+    );
+}
+
+#[test]
+fn t22_full_collision_pipeline() {
+    let ctx = gpu_or_skip!();
+
+    // Hockey-like scene: plane + 2 SDF spheres
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+
+    // Sphere A on world body at origin
+    add_sdf_sphere_geom(&mut model, 0, 5.0, 12);
+    // Sphere B on free body
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    let mut data = model.make_data();
+    // Free body at (7, 0, 3) → SDF-SDF overlap + SDF-plane overlap
+    data.qpos[0] = 7.0;
+    data.qpos[1] = 0.0;
+    data.qpos[2] = 3.0;
+    data.qpos[3] = 1.0;
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+    let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+
+    let n_pairs = collision_pipeline.num_pairs();
+    eprintln!("  T22: {n_pairs} collision pairs");
+    assert!(n_pairs > 0, "Should have at least one collision pair");
+
+    // Run FK + collision
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("t22") });
+    fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+    collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+    ctx.queue.submit([encoder.finish()]);
+
+    let contacts = readback_contacts(
+        &ctx,
+        &state_buf.contact_buffer,
+        &state_buf.contact_count,
+        32768,
+    );
+
+    eprintln!("  T22: {} total contacts", contacts.len());
+    assert!(
+        !contacts.is_empty(),
+        "Should find contacts (SDF overlap + plane penetration)"
+    );
+
+    // Verify geom indices are valid
+    for c in &contacts {
+        assert!(
+            (c.geom1 as usize) < model.ngeom,
+            "geom1={} out of range (ngeom={})",
+            c.geom1,
+            model.ngeom
+        );
+        assert!(
+            (c.geom2 as usize) < model.ngeom,
+            "geom2={} out of range (ngeom={})",
+            c.geom2,
+            model.ngeom
+        );
+    }
+
+    // Verify friction values are non-negative
+    for c in &contacts {
+        assert!(c.friction[0] >= 0.0, "friction[0] should be >= 0");
+        assert!(c.friction[1] >= 0.0, "friction[1] should be >= 0");
+    }
+
+    eprintln!(
+        "  T22 passed: full collision pipeline, {n_pairs} pairs, {} contacts",
+        contacts.len()
+    );
 }

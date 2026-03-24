@@ -223,3 +223,31 @@ this pattern from the start.
 
 **Discovered:** Session 3 (RNE backward scan, 2026-03-24). Caused ~4%
 error in pendulum qfrc_bias due to lost child contributions.
+
+## 10. WGSL reserved keywords include common variable names
+
+**Constraint:** WGSL reserves many common English words as keywords,
+including `meta`, `override`, `enable`, `diagnostic`, and others. Using
+these as variable names, function parameters, or struct field names
+causes a parse error:
+
+```
+Shader parsing error: name `meta` is a reserved keyword
+```
+
+**Impact:** Natural parameter names like `meta: SdfMeta` (for grid
+metadata) fail at shader compilation. This is caught at runtime (when
+`create_shader_module` is called), not at Rust compile time.
+
+**Workaround:** Use abbreviated or prefixed names for WGSL variables.
+Session 4 renamed `meta` → `gm` (grid metadata) in narrowphase shaders.
+Other risky names to avoid: `override`, `enable`, `requires`, `alias`,
+`const_assert`, `diagnostic`.
+
+**General rule:** When writing WGSL, avoid single common English words
+as identifiers. Prefer descriptive prefixes (`src_gm`, `dst_gm`) or
+abbreviations (`gm`, `np`) over plain words (`meta`, `data`, `info`).
+
+**Discovered:** Session 4 (collision pipeline, 2026-03-24). Caused
+shader compilation failure for `sdf_sdf_narrow.wgsl` and
+`sdf_plane_narrow.wgsl` until parameter names were changed.

@@ -14,7 +14,7 @@ use sim_core::types::Data;
 use wgpu::util::DeviceExt;
 
 use super::model_buffers::GpuModelBuffers;
-use super::types::f64s_to_f32s;
+use super::types::{MAX_PIPELINE_CONTACTS, f64s_to_f32s};
 use crate::context::GpuContext;
 
 /// Per-environment mutable state on GPU.
@@ -80,6 +80,14 @@ pub struct GpuStateBuffers {
     pub qacc_smooth: wgpu::Buffer,
     /// Final acceleration: `f32` × nv (= `qacc_smooth` for gravity-only; solver for Session 5+).
     pub qacc: wgpu::Buffer,
+
+    // Collision state (Session 4)
+    /// Per-geom world-frame AABB: 2×vec4 per geom `[min(xyz,0), max(xyz,0)]`.
+    pub geom_aabb: wgpu::Buffer,
+    /// Pipeline contacts: `PipelineContact` × `MAX_PIPELINE_CONTACTS`.
+    pub contact_buffer: wgpu::Buffer,
+    /// Active contact count: `atomic<u32>`.
+    pub contact_count: wgpu::Buffer,
 
     pub n_env: u32,
 }
@@ -165,6 +173,19 @@ impl GpuStateBuffers {
         let qacc_smooth = alloc(ctx, "qacc_smooth", nv_bytes, usage_inout);
         let qacc = alloc(ctx, "qacc", nv_bytes, usage_inout);
 
+        // Collision state (Session 4)
+        // geom_aabb: 2×vec4 per geom = 32 bytes/geom
+        let geom_aabb = alloc(ctx, "geom_aabb", ngeom * 32, usage_inout);
+        // contact_buffer: 48 bytes per PipelineContact × max_contacts
+        let contact_buffer = alloc(
+            ctx,
+            "contact_buffer",
+            u64::from(MAX_PIPELINE_CONTACTS) * 48,
+            usage_inout,
+        );
+        // contact_count: single atomic u32
+        let contact_count = alloc(ctx, "contact_count", 4, usage_inout);
+
         Self {
             qpos,
             body_xpos,
@@ -192,6 +213,9 @@ impl GpuStateBuffers {
             qfrc_smooth,
             qacc_smooth,
             qacc,
+            geom_aabb,
+            contact_buffer,
+            contact_count,
             n_env,
         }
     }

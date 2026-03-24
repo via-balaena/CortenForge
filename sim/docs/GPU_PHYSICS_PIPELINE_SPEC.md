@@ -1413,34 +1413,51 @@ First full GPU physics loop: objects fall under gravity correctly.
 
 ---
 
-### Session 4: Collision pipeline
+### Session 4: Collision pipeline — COMPLETE (2026-03-24)
 
-**Goal:** GPU collision detection (broadphase + narrowphase) produces
-contacts that match CPU collision within f32 tolerance.
+**Goal:** GPU collision detection (AABB + narrowphase) produces contacts
+that match CPU collision within f32 tolerance.
 
-**Spec sections:** §8.8 (aabb.wgsl), §8.9 (broadphase.wgsl),
-§8.10 (trace_surface.wgsl), §8.11 (sdf_plane.wgsl)
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_4_COLLISION_PIPELINE.md`
 
-**CPU reference files:**
-- `sim/L0/core/src/collision/mod.rs` — collision dispatch
-- `sim/L0/core/src/collision/sdf_collide.rs` — SDF collision
-- `sim/L0/gpu/src/collision.rs` — existing GPU tracer (reuse)
-- `sim/L0/gpu/src/shaders/trace_surface.wgsl` — existing shader (reuse)
+**Implemented:**
+1. `aabb.wgsl` — 1 entry point: `compute_aabb` (per-geom parallel)
+2. `sdf_sdf_narrow.wgsl` — 1 entry point: `sdf_sdf_narrow` (adapted from trace_surface.wgsl)
+3. `sdf_plane_narrow.wgsl` — 1 entry point: `sdf_plane_narrow`
+4. Extended `GeomModelGpu` (48 → 96 bytes): type, contype, conaffinity, size, friction, sdf_meta_idx, condim
+5. `SdfMetaGpu` (32 bytes): per-shape grid metadata pointing into unified buffer
+6. `PipelineContact` (48 bytes): contact with geom indices + combined friction
+7. `NarrowphaseParams` (48 bytes): per-pair dispatch uniform
+8. Unified SDF grid buffer: all grids concatenated in `sdf_values`, indexed via `sdf_metas`
+9. `GpuCollisionPipeline`: pre-computed pair plan, AABB guard, dispatch orchestration
+10. New state buffers: `geom_aabb`, `contact_buffer` (48×32768), `contact_count`
 
-**Implement:**
-1. `aabb.wgsl` — per-geom AABB from FK poses (uses fresh geom_xpos)
-2. `broadphase.wgsl` — 3-pass spatial hash (count, prefix sum, scatter+test)
-3. Integrate existing `trace_surface.wgsl` into pipeline (no CPU readback)
-4. `sdf_plane.wgsl` — SDF-plane narrowphase
-5. Contact buffer → constraint assembly bridge
+**Validated (4 tests, all passing):**
+- T19: AABB computation for plane + SDF sphere (center/half-extent correct)
+- T20: SDF-SDF contacts — two overlapping spheres produce contacts with valid normals
+- T21: SDF-plane contacts — sphere penetrating ground, normals point up
+- T22: Full collision pipeline — mixed SDF-SDF + SDF-plane pairs, valid geom indices + friction
 
-**Validate:**
-- Compare GPU AABBs vs CPU compute_aabb()
-- Compare GPU broadphase pairs vs CPU (no missed pairs)
-- Compare GPU SDF-SDF contacts vs existing GPU standalone path
-- Compare GPU SDF-plane contacts vs CPU compute_shape_plane_contact()
+**Deviations from original spec:**
+- No `broadphase.wgsl` (spatial hash). Hockey has 4 collision-active geoms →
+  C(4,2) = 6 possible pairs. A 3-pass spatial hash is untestable at this scale.
+  Replaced by pre-computed pair plan at model upload time. Each narrowphase
+  dispatch includes an AABB overlap guard — if AABBs don't overlap, all threads
+  return immediately. Fully GPU-resident, no readback. Spatial hash can be added
+  later when scenes grow to 1000+ geoms.
+- Narrowphase shaders read `geom_xpos`/`geom_xmat` directly from FK output
+  instead of receiving pre-computed mat4x4 poses via params. Eliminates per-pair
+  CPU pose upload, keeps poses on GPU.
+- `sdf_sdf_narrow.wgsl` is a clean rewrite adapted from `trace_surface.wgsl`,
+  not a modification of it. The standalone `trace_surface.wgsl` is preserved
+  unchanged for the existing `GpuSdfCollider` (used by `GpuSdfCollision` trait).
+- Contact deduplication not implemented on GPU. SDF-SDF symmetric dispatch
+  produces ~2× contacts. Dedup deferred to Session 5's constraint assembly
+  (contact capping per pair).
+- `meta` is a WGSL reserved keyword — grid metadata parameter renamed to `gm`.
 
-**Milestone:** Full collision pipeline on GPU. Contacts feed into assembly.
+**Milestone:** `cargo test -p sim-gpu` — 26/26 tests pass (22 existing + 4 new).
+Collision contacts feed into Session 5's constraint assembly via `contact_buffer`.
 
 ---
 

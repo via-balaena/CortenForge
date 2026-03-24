@@ -103,11 +103,17 @@ struct JointModel {
 
 struct GeomModel {
     body_id: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    geom_type: u32,
+    contype: u32,
+    conaffinity: u32,
     pos: vec4<f32>,
     quat: vec4<f32>,
+    size: vec4<f32>,
+    friction: vec4<f32>,
+    sdf_meta_idx: u32,
+    condim: u32,
+    _pad0: u32,
+    _pad1: u32,
 };
 
 // ── Bindings ──────────────────────────────────────────────────────────

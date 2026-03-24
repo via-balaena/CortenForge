@@ -5,14 +5,18 @@
 //! This reduces static model data from ~18 separate buffers to 2,
 //! staying well within WGSL storage buffer limits.
 
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 
 use sim_core::types::Model;
 use wgpu::util::DeviceExt;
 
 use super::types::{
     BodyModelGpu, DOF_PARENT_NONE, DofModelGpu, GeomModelGpu, JointModelGpu, MOCAP_NONE,
-    jnt_type_to_gpu,
+    SDF_META_NONE, SdfMetaGpu, geom_type_to_gpu, jnt_type_to_gpu,
 };
 use crate::context::GpuContext;
 
@@ -26,6 +30,14 @@ pub struct GpuModelBuffers {
     pub geoms: wgpu::Buffer,
     /// Packed per-DOF data: `array<DofModel>` (storage, read).
     pub dofs: wgpu::Buffer,
+
+    // SDF grid data (Session 4 — collision pipeline)
+    /// Concatenated SDF grid values: `array<f32>` covering all shapes.
+    pub sdf_values: wgpu::Buffer,
+    /// Per-shape metadata: `array<SdfMeta>`.
+    pub sdf_metas: wgpu::Buffer,
+    /// Number of SDF shapes.
+    pub nshape: u32,
 
     /// Maximum tree depth (controls dispatch count).
     pub max_depth: u32,
@@ -130,11 +142,32 @@ impl GpuModelBuffers {
             .map(|g| {
                 let gpos = &model.geom_pos[g];
                 let gqc = model.geom_quat[g].as_ref().coords;
+                let gsize = &model.geom_size[g];
+                let gfric = &model.geom_friction[g];
+                let sdf_meta_idx = model
+                    .geom_shape
+                    .get(g)
+                    .and_then(|o| *o)
+                    .map_or(SDF_META_NONE, |s| s as u32);
+                let rbound = model.geom_rbound.get(g).copied().unwrap_or(0.0);
+
                 GeomModelGpu {
                     body_id: model.geom_body[g] as u32,
-                    _pad: [0; 3],
+                    geom_type: geom_type_to_gpu(model.geom_type[g]),
+                    contype: model.geom_contype[g],
+                    conaffinity: model.geom_conaffinity[g],
                     pos: [gpos.x as f32, gpos.y as f32, gpos.z as f32, 0.0],
                     quat: [gqc.x as f32, gqc.y as f32, gqc.z as f32, gqc.w as f32],
+                    size: [
+                        gsize.x as f32,
+                        gsize.y as f32,
+                        gsize.z as f32,
+                        rbound as f32,
+                    ],
+                    friction: [gfric.x as f32, gfric.y as f32, gfric.z as f32, 0.0],
+                    sdf_meta_idx,
+                    condim: model.geom_condim[g] as u32,
+                    _pad: [0; 2],
                 }
             })
             .collect();
@@ -154,17 +187,45 @@ impl GpuModelBuffers {
             })
             .collect();
 
+        // ── Pack unified SDF grid data ────────────────────────────────
+        let nshape = model.shape_data.len();
+        let mut all_sdf_values: Vec<f32> = Vec::new();
+        let mut sdf_metas_cpu: Vec<SdfMetaGpu> = Vec::new();
+
+        for shape in &model.shape_data {
+            let grid = shape.sdf_grid();
+            let offset = all_sdf_values.len() as u32;
+            all_sdf_values.extend(grid.values().iter().map(|&v| v as f32));
+            sdf_metas_cpu.push(SdfMetaGpu {
+                width: grid.width() as u32,
+                height: grid.height() as u32,
+                depth: grid.depth() as u32,
+                cell_size: grid.cell_size() as f32,
+                origin: [
+                    grid.origin().x as f32,
+                    grid.origin().y as f32,
+                    grid.origin().z as f32,
+                ],
+                values_offset: offset,
+            });
+        }
+
         // ── Upload to GPU ─────────────────────────────────────────────
         let bodies = upload_structs(ctx, "bodies", &bodies_cpu);
         let joints = upload_structs(ctx, "joints", &joints_cpu);
         let geoms = upload_structs(ctx, "geoms", &geoms_cpu);
         let dofs = upload_structs(ctx, "dofs", &dofs_cpu);
+        let sdf_values = upload_structs(ctx, "sdf_values", &all_sdf_values);
+        let sdf_metas = upload_structs(ctx, "sdf_metas", &sdf_metas_cpu);
 
         Self {
             bodies,
             joints,
             geoms,
             dofs,
+            sdf_values,
+            sdf_metas,
+            nshape: nshape as u32,
             max_depth,
             nbody: nbody as u32,
             njnt: njnt as u32,

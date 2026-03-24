@@ -9,6 +9,7 @@
 //! Session 3: RNE (bias forces) + smooth dynamics (`qacc_smooth`) +
 //! semi-implicit Euler integration. First full GPU physics loop.
 
+pub mod collision;
 pub mod crba;
 pub mod fk;
 pub mod integrate;
@@ -21,6 +22,7 @@ mod tests;
 pub mod types;
 pub mod velocity_fk;
 
+pub use collision::GpuCollisionPipeline;
 pub use crba::GpuCrbaPipeline;
 pub use fk::GpuFkPipeline;
 pub use integrate::GpuIntegratePipeline;
