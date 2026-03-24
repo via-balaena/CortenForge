@@ -4,321 +4,282 @@
 
 The current physics step runs entirely on CPU, with one exception:
 `sim-gpu` accelerates SDF-SDF narrowphase collision via a WGSL compute
-shader. But this creates a **half-GPU** pattern that is worse than
-all-CPU for small scenes:
+shader. But this creates a **half-GPU** pattern — upload poses, dispatch
+shader, readback contacts, continue on CPU. At VR rates (90 Hz × 2–4
+substeps = 180–360 steps/sec), the per-step transfer latency dominates.
 
 ```
-CPU: broadphase (find pairs)
-  → CPU→GPU: upload poses (208 bytes per pair)
-     → GPU: trace_surface.wgsl
-        → GPU→CPU: readback contacts
-           → CPU: constraint assembly, solver, integration
+Current (per substep):
+  CPU: FK, CRBA, RNE, actuation, passive, broadphase
+    → CPU→GPU: upload poses
+       → GPU: trace_surface.wgsl
+          → GPU→CPU: readback contacts
+             → CPU: assembly, solver, integration
 ```
 
-Each physics step incurs an upload + dispatch + readback cycle. At VR
-rates (90 Hz × 2–4 substeps = 180–360 steps/sec), the transfer latency
-dominates. The GPU sits idle during the CPU stages, and the CPU waits
-for the GPU readback before it can continue.
-
-**The fix is architectural:** move the entire inner-loop physics step to
-GPU so data stays on-device between stages. CPU readback happens only
-for rendering, and only after the final substep — not between substeps,
-not between stages.
+**The fix is architectural:** move the *entire* physics step to GPU.
+Data stays on-device. CPU uploads control inputs once per frame,
+readback body poses once per frame for rendering. No CPU stages
+in the inner loop. No stale data between substeps.
 
 ## 2. Goal
 
-A GPU physics pipeline where broadphase, narrowphase, constraint solver,
-and integration run as sequential compute dispatches in a single command
-buffer. Data flows through GPU storage buffers between stages. The CPU
-submits one command buffer per physics step (or per batch of substeps)
-and reads back body poses only for rendering.
-
-```
-Per frame (not per substep):
-  CPU → GPU:  M, qfrc_smooth, external forces, control inputs
-
-Per substep (all on GPU, no readback):
-  broadphase.wgsl     → pair_buffer
-  narrowphase.wgsl    → contact_buffer     (trace_surface + sdf_plane)
-  assemble.wgsl       → efc_J, efc_D, efc_aref
-  newton_solve.wgsl   → qacc (primal solver, MJX-style)
-  integrate.wgsl      → qpos_buffer, qvel_buffer
-
-After final substep:
-  GPU → CPU:  qpos, qvel, ncon (~few KB, for Bevy rendering)
-```
-
-## 3. Reference architecture: MJX
-
-MJX (MuJoCo's JAX backend) is the reference implementation for GPU
-physics in the MuJoCo ecosystem. Key design decisions we adopt:
-
-| Aspect | MJX | CortenForge GPU | Rationale |
-|--------|-----|-----------------|-----------|
-| Solver | Newton/CG in primal space | Newton (nv ≤ 60) | Proven, fast convergence (1–3 iterations) |
-| Solver variable | qacc (acceleration) | qacc | Primal = no M⁻¹ needed on GPU |
-| Friction model | Both pyramidal + elliptic | Pyramidal first | Simpler GPU path, no cone Hessian blocks |
-| Constraint Jacobian | Dense (nefc × nv) | Dense (nefc × nv) | MJX stores dense regardless of M format |
-| FK/CRBA/RNE | GPU (level-order tree scan) | CPU (split-step) | Single-env interactive, not batch RL |
-| Mass matrix | GPU Cholesky | CPU LDL → upload M | Small nv, reuse existing CRBA |
-| Batching | vmap over environments | Single environment | VR interactive, not RL training |
-
-**Key MJX insight adopted:** The solver operates in acceleration space
-(primal), not constraint-force space (dual). This avoids the need for
-`M⁻¹` on GPU — only `M` is needed, which CPU already computes via CRBA.
-Newton converges in 1–3 iterations vs 20–100+ for Jacobi.
-
-**Key MJX decision NOT adopted:** MJX runs FK/CRBA/RNE on GPU via
-level-order tree scans (`scan.body_tree`). We keep these on CPU because:
-(a) the hockey scene has 4 bodies — tree scans provide zero speedup,
-(b) our split-step architecture eliminates per-substep CPU round-trips,
-(c) WGSL lacks JAX's `scan`/`vmap` primitives.
-
-**Future:** GPU FK/CRBA/RNE via level-order scans is the path to
-multi-environment batching and full GPU simulation (§17).
-
-## 4. Non-goals
-
-- **Full MuJoCo conformance on GPU.** FK, RNE, CRBA, and tree-structured
-  algorithms remain on CPU for this spec. The GPU pipeline handles the
-  "inner loop" stages that dominate wall-clock at high step rates.
-- **Multi-environment batching.** MJX-style vmap over thousands of
-  environments is a separate effort (requires SoA layout refactor +
-  GPU FK/CRBA/RNE). This spec targets single-environment interactive.
-- **GPU mesh collision / GJK-EPA.** These are branchy algorithms with
-  poor GPU utilization. They remain CPU-only.
-- **Replacing the CPU pipeline.** The GPU pipeline is an alternative code
-  path. The CPU pipeline remains for correctness validation, platforms
-  without GPU, and scenes where GPU dispatch overhead exceeds savings.
-- **Elliptic friction cones on GPU.** The GPU solver uses pyramidal
-  friction (per-row independent, no cone Hessian coupling). Elliptic
-  cones remain CPU-only via the existing PGS/Newton solvers. See §7.6.
-
-## 5. Current physics step (CPU)
-
-The complete `Data::step()` pipeline. The actual call tree is
-`step() → forward_core() → forward_pos_vel() + forward_acc()` then
-`integrate()`. Every stage is listed; **[GPU]** marks candidates for
-the GPU inner loop.
-
-```
-step()
-  forward_pos_vel()
-  │ ├─ Wake detection (user-force)                  [CPU — sleep bookkeeping]
-  │ ├─ mj_fwd_position                              [CPU — FK tree traversal]
-  │ │   ├─ Joint-to-body FK                          [CPU — sequential parent→child]
-  │ │   ├─ Geometry pose computation                 [CPU — per-geom from body]
-  │ │   └─ Subtree COM                               [CPU — tree reduction]
-  │ ├─ mj_flex / mj_flex_edge                        [CPU — flex bending]
-  │ ├─ mj_crba + LDL factorization                  [CPU — tree-structured sparse]
-  │ ├─ Wake detection (qpos change)                  [CPU — sleep bookkeeping]
-  │ ├─ Transmissions (site, slidercrank)             [CPU — per-actuator]
-  │ ├─ Wake detection (tendon)                       [CPU — sleep bookkeeping]
-  │ ├─ mj_collision                                  [GPU — broadphase + narrowphase]
-  │ │   ├─ AABB computation                          [GPU — per-geom, parallel]
-  │ │   ├─ Broadphase (sweep-and-prune)              [GPU — spatial hashing]
-  │ │   ├─ SDF-SDF narrowphase                       [GPU — grid tracing]
-  │ │   ├─ SDF-plane narrowphase                     [GPU — grid tracing]
-  │ │   ├─ SDF-primitive narrowphase                 [CPU — analytical]
-  │ │   └─ GJK/EPA convex narrowphase                [CPU — branchy]
-  │ ├─ Wake detection (collision, equality)          [CPU — sleep bookkeeping]
-  │ ├─ Transmission body dispatch                    [CPU — needs contacts]
-  │ ├─ Sensors (position-dependent)                  [CPU — diverse types]
-  │ ├─ Energy (potential)                             [CPU — diagnostic]
-  │ ├─ mj_fwd_velocity                              [CPU — velocity FK]
-  │ ├─ mj_actuator_length                            [CPU — per-actuator]
-  │ ├─ Sensors (velocity-dependent)                  [CPU — diverse types]
-  │ └─ Energy (kinetic)                               [CPU — diagnostic]
-  │
-  cb_control                                          [CPU — user callback]
-  │
-  forward_acc()
-  │ ├─ mj_fwd_actuation                             [CPU — per-actuator]
-  │ ├─ mj_rne (bias forces)                         [CPU — forward-backward tree]
-  │ ├─ mj_fwd_passive                                [CPU — springs, dampers]
-  │ ├─ mj_gravcomp_to_actuator                       [CPU — gravity compensation]
-  │ ├─ mj_island (island discovery)                  [CPU — union-find]
-  │ ├─ mj_fwd_constraint_islands                     [GPU — assembly + solver]
-  │ │   ├─ compute_qacc_smooth (M⁻¹·f)              [CPU — LDL solve]
-  │ │   ├─ assemble_unified_constraints              [GPU — per-contact, parallel]
-  │ │   ├─ Warmstart                                  [CPU — cost comparison]
-  │ │   ├─ Solver dispatch (Newton/CG/PGS)           [GPU — Newton on GPU]
-  │ │   ├─ compute_qfrc_constraint (J^T·f)           [GPU — per-DOF reduction]
-  │ │   └─ Extract friction/limit forces             [CPU — bookkeeping]
-  │ ├─ mj_fwd_acceleration (M⁻¹·total_force)        [CPU — LDL solve]
-  │ ├─ Sensors (acceleration-dependent)              [CPU — diverse types]
-  │ └─ Forward/inverse comparison (FWDINV)           [CPU — diagnostic]
-  │
-  integrate()                                        [GPU — per-body, parallel]
-  │ ├─ Activation update                              [CPU — per-actuator]
-  │ ├─ Velocity: qvel += dt·qacc                     [GPU — per-DOF]
-  │ ├─ Position: qpos integration (SO(3) manifold)   [GPU — per-body]
-  │ └─ Quaternion normalization                       [GPU — per-body]
-  │
-  Sleep update                                        [CPU — island-aware]
-  Warmstart save                                      [CPU — copy qacc]
-```
-
-## 6. GPU pipeline design
-
-### 6.1 What moves to GPU
-
-| Stage | Shader | Input buffers | Output buffers | Parallelism |
-|---|---|---|---|---|
-| AABB computation | `aabb.wgsl` | qpos, geom_body, geom_size | geom_aabb | Per-geom |
-| Broadphase | `broadphase.wgsl` | geom_aabb | pair_buffer, pair_count | 3-pass spatial hash |
-| SDF-SDF narrowphase | `trace_surface.wgsl` (exists) | SDF grids, poses | contact_buffer | Per-cell |
-| SDF-plane narrowphase | `sdf_plane.wgsl` (new) | SDF grids, poses, plane | contact_buffer | Per-cell |
-| Constraint assembly | `assemble.wgsl` | contacts, body state | efc_J, efc_D, efc_aref | Per-contact |
-| Primal solver | `newton_solve.wgsl` | efc_J, efc_D, M, qacc_smooth | qacc, efc_force | Per-iteration workgroup |
-| Force mapping | `map_forces.wgsl` | efc_force, efc_J | qfrc_constraint | Per-DOF reduction |
-| Integration | `integrate.wgsl` | qacc, qvel, qpos, dt | qvel, qpos (updated) | Per-body |
-
-### 6.2 What stays on CPU
-
-| Stage | Reason |
-|---|---|
-| FK (forward kinematics) | Tree traversal, parent→child dependency |
-| CRBA + LDL factorization | Tree-structured, sparse factorization |
-| RNE (bias forces) | Forward-backward tree traversal |
-| compute_qacc_smooth | Requires M⁻¹ via sparse LDL solve |
-| GJK/EPA narrowphase | Extremely branchy, poor GPU utilization |
-| Transmissions | Per-actuator, few actuators, complex logic |
-| Flex bending | Small, model-dependent, not inner-loop |
-| Island discovery | Union-find, sequential |
-| cb_control callback | User code, runs on CPU |
-| Sensors | Diverse types, callback-heavy |
-| Energy computation | Diagnostic only |
-| Sleep / warmstart | Bookkeeping |
-
-### 6.3 The split-step architecture
-
-The GPU pipeline replaces the **inner loop** — the stages that run
-at substep rate and dominate wall-clock. The CPU handles setup
-(FK, CRBA, RNE, actuation, passive forces) and teardown (sleep,
-sensors) once per frame.
+A GPU physics pipeline where **every stage** of the physics step —
+FK, CRBA, RNE, collision, constraint solve, integration — runs as
+sequential compute dispatches in a single command buffer. The CPU
+submits one command buffer per frame and reads back only what Bevy
+needs for rendering.
 
 ```
 Per frame:
-  CPU:  FK, CRBA, RNE, actuation, passive forces   (once, ~90 Hz)
-  CPU:  compute_qacc_smooth = M⁻¹ · qfrc_smooth    (once)
-  CPU → GPU:  qpos, qvel, M, qacc_smooth,           (once)
-              qfrc_smooth, geom poses
+  CPU → GPU:  ctrl, qfrc_applied, xfrc_applied       (~100 bytes)
 
-  GPU:  for substep in 0..N:                        (N = 2–4, ~180–360 Hz)
-          aabb → broadphase → narrowphase
-          → assemble → newton_solve → map_forces
-          → integrate
+Per substep (all on GPU, no readback):
+  fk.wgsl             → body_xpos, body_xquat, geom_xpos
+  crba.wgsl           → M (mass matrix)
+  rne.wgsl            → qfrc_bias
+  actuation.wgsl      → qfrc_actuator
+  passive.wgsl        → qfrc_passive
+  smooth.wgsl         → qfrc_smooth, qacc_smooth
+  aabb.wgsl           → geom_aabb
+  broadphase.wgsl     → pair_buffer
+  narrowphase.wgsl    → contact_buffer
+  assemble.wgsl       → efc_J, efc_D, efc_aref
+  newton_solve.wgsl   → qacc
+  integrate.wgsl      → qpos, qvel
 
-  GPU → CPU:  final qpos, qvel, ncon                (once)
-  CPU:  re-run FK for rendering                      (once)
-  CPU:  sleep update, sensors, warmstart save        (once)
+After final substep:
+  GPU → CPU:  qpos, qvel, ncon                        (~few KB)
 ```
 
-**What the GPU solver receives from CPU each frame:**
-- `M` (nv × nv, f32): Mass matrix from CRBA. Constant during substeps
-  because qpos changes within a frame don't warrant re-running CRBA.
-  For free bodies, M is block-diagonal (6×6 per body). For the hockey
-  scene (nv=13), M is 676 bytes.
-- `qacc_smooth` (nv, f32): Unconstrained acceleration = M⁻¹·qfrc_smooth.
-  Precomputed on CPU via sparse LDL solve.
-- `qfrc_smooth` (nv, f32): Smooth force = applied + actuator + passive − bias.
+**No split-step. No stale data. Every substep gets fresh FK, fresh M,
+correct body poses.**
 
-### 6.4 Articulated body handling
+## 3. Reference architecture: MJX
 
-**Free joints** (puck, goal): qpos directly encodes world position +
-quaternion. GPU integration updates qpos directly. AABB and narrowphase
-use qpos-derived poses. No FK needed between substeps. **Fully correct.**
+MJX (MuJoCo's JAX backend) is the reference implementation. We adopt
+its proven design and adapt it from JAX to wgpu/WGSL.
 
-**Hinge joints** (stick): qpos is a scalar angle. The body's world-space
-pose depends on `parent_pose × rotation(axis, angle)`, which is FK.
-Within GPU substeps, the body pose becomes stale.
+| Aspect | MJX | CortenForge GPU | Rationale |
+|--------|-----|-----------------|-----------|
+| Solver | Newton/CG (primal) | Newton (nv ≤ 60), CG (nv > 60) | Proven, 1–3 iterations |
+| Solver variable | qacc | qacc | Primal = unconstrained optimization |
+| Friction model | Both pyramidal + elliptic | Pyramidal first | Simpler GPU path |
+| FK/CRBA/RNE | GPU (level-order tree scan) | GPU (level-order tree scan) | Full GPU, no split-step |
+| Mass matrix | GPU Cholesky (dense/sparse) | GPU Cholesky in shared mem (dense) | nv ≤ 60 fits in 16KB |
+| Batching | jax.vmap over environments | n_env dimension on all buffers | Architecture-ready from day 1 |
+| Tree scan | jax.lax.scan + vmap | wgpu compute pass per tree level | Manual but equivalent |
+| Data layout | JAX arrays (SoA by nature) | GPU-side SoA, CPU-side stays AoS | Convert at boundary |
 
-**Impact for hockey:** At 2 substeps per frame, the stick pose is stale
-by 1 substep. At 500 Hz, that's 2ms. At max swing speed (~25 rad/s),
-the hinge angle changes by ~0.05 rad (2.9°). The AABB margin absorbs
-this for broadphase. Narrowphase contacts will have slightly wrong
-positions — acceptable for interactive VR.
+**Key architectural decision:** GPU-side buffers are SoA (struct of
+arrays) with an `n_env` leading dimension from day 1. With `n_env=1`,
+this is single-environment interactive. The same shaders and buffer
+layout support `n_env=1000` for batch RL — just wider buffers, same
+dispatches.
 
-**Mitigation (Phase 2):** Add a lightweight `hinge_fk.wgsl` shader that
-computes `body_pose = parent_pose × rotation(axis, angle)` for hinge
-joints. One mat4 multiply per hinge body per substep. This makes
-substep-accurate collision possible for single-DOF joints without
-full FK.
+## 4. Non-goals
 
-**Limitation:** Multi-body articulated chains (robot arms, fingers)
-require full recursive FK, which is not in scope for this spec. The
-GPU path supports: Free joints (any number), single-DOF hinges
-attached to world body. See §17 for future FK on GPU.
+- **Rewriting the CPU pipeline.** The CPU `Data::step()` pipeline is
+  unchanged. The GPU pipeline is a parallel code path. CPU remains for
+  correctness validation, platforms without GPU, and f64 reference.
+- **GPU mesh collision / GJK-EPA.** Branchy, poor GPU utilization.
+  Remain CPU-only.
+- **Elliptic friction cones on GPU.** Pyramidal first. Elliptic cones
+  require per-contact Hessian blocks and are a follow-up.
+- **Implicit spring/damper on GPU.** The GPU path uses semi-implicit
+  Euler. Implicit integrators (ImplicitSpringDamper, Implicit) that
+  modify M remain CPU-only.
+- **Sensors, energy, sleep on GPU.** These are diagnostic/bookkeeping
+  stages that run once per frame on CPU after readback. Not
+  performance-critical.
 
-### 6.5 Mass matrix assumptions
+## 5. Fundamental operations
 
-The GPU solver uses M in two ways:
-1. **Gauss cost**: `0.5·(qacc − qacc_smooth)^T·M·(qacc − qacc_smooth)`
-2. **Newton Hessian**: `H = M + J^T·diag(D·active)·J`
+Every stage of the physics pipeline decomposes into 7 primitive
+operations. The GPU pipeline implements each as a WGSL pattern:
 
-For the hockey scene, M is 13×13 and fits entirely in workgroup shared
-memory (676 bytes). The GPU receives the full dense M from CPU.
+| Operation | WGSL pattern | Used by |
+|-----------|-------------|---------|
+| **Tree scan (forward)** | One compute pass per depth level. All bodies at depth d in parallel. | FK, RNE forward |
+| **Tree scan (backward)** | One compute pass per depth level (reverse). Atomic accumulate into parent. | CRBA, RNE backward |
+| **Per-element map** | One thread per element. No dependencies. | AABB, integration, force map, actuation, passive |
+| **Sparse MV product** | Per-row parallel. | J^T·D·J·x, force mapping |
+| **Dense factorization** | Single workgroup, shared memory. | Newton Cholesky (nv ≤ 60), qacc_smooth solve |
+| **Reduction** | Workgroup tree reduction + atomic. | Dot products, Hessian accumulation |
+| **Atomic scatter** | atomicAdd to shared or global buffer. | Broadphase, contact emit, backward tree scan |
 
-**Free bodies** have block-diagonal M: a 6×6 block per body containing
-mass (3×3 diagonal) and rotational inertia (3×3, generally full for
-bodies with products of inertia). The blocks are independent.
+The **only fundamentally sequential operation** is the tree scan: O(depth)
+sequential dispatches, each with O(bodies_per_level × n_env) parallelism.
+Everything else is embarrassingly parallel.
 
-**Scaling note:** For nv > 60, M exceeds 16KB shared memory
-(60×60×4 = 14.4KB). At that point, switch to CG solver which needs
-only M·v products (streamable, no shared-memory H). See §17.
+## 6. GPU buffer architecture
 
-## 7. Buffer layout
+### 6.1 Design principles
 
-### 7.1 Static buffers (uploaded once at model creation)
+**SoA (struct of arrays):** All GPU buffers store one field across all
+elements, not one element with all fields. This maximizes memory
+coalescing when threads access the same field across different elements.
+
+**n_env dimension:** Every per-state buffer has a leading `n_env`
+dimension. For `n_env=1` (interactive), this is just an offset of 0.
+For `n_env=1000` (batch), each thread computes
+`env_id * stride + element_id`. Same shader, wider dispatch.
+
+**f32 throughout:** All GPU physics uses f32. Conversion from f64
+happens at the CPU→GPU boundary (upload) and GPU→CPU boundary
+(readback). MJX proves f32 is sufficient for physics.
+
+**Pre-allocated, fixed-size:** All buffers allocated at model creation.
+No dynamic growth on GPU. Atomic counters track active elements
+(contacts, pairs, constraints) within pre-allocated capacity.
+
+### 6.2 Static buffers (uploaded once at model creation)
+
+These encode the model structure. Shared across all environments.
+
+**Tree structure:**
 
 | Buffer | Size | Contents |
 |---|---|---|
-| `sdf_grid[shape_id]` | W×H×D × 4 bytes each | SDF distance values (f32) |
-| `sdf_meta[shape_id]` | 32 bytes each | Width, height, depth, cell_size, origin |
-| `geom_type` | ngeom × 4 bytes | GeomType enum (SDF, Plane, etc.) |
-| `geom_body` | ngeom × 4 bytes | Body index per geom |
-| `geom_size` | ngeom × 12 bytes | Geom dimensions (for AABB) |
-| `geom_shape_id` | ngeom × 4 bytes | SDF grid index (for SDF geoms) |
-| `friction` | ngeom × 12 bytes | Per-geom friction [slide, torsion, roll] |
-| `solver_params` | 64 bytes | dt, gravity, solver iterations, tolerances |
+| `body_parent` | nbody × 4 | Parent body index (u32). body_parent[0] = 0 (world). |
+| `body_depth` | nbody × 4 | Tree depth per body (u32). body_depth[0] = 0. |
+| `body_jnt_adr` | nbody × 4 | Index of first joint for this body (u32). |
+| `body_jnt_num` | nbody × 4 | Number of joints on this body (u32). |
+| `body_dof_adr` | nbody × 4 | Index of first DOF for this body (u32). |
+| `body_dof_num` | nbody × 4 | Number of DOFs on this body (u32). |
+| `body_qpos_adr` | nbody × 4 | Index into qpos for this body (u32). |
+| `body_pos` | nbody × 12 | Body position offset in parent frame (vec3<f32>). |
+| `body_quat` | nbody × 16 | Body orientation offset in parent frame (vec4<f32>). |
+| `body_ipos` | nbody × 12 | Inertial frame offset (vec3<f32>). |
+| `body_iquat` | nbody × 16 | Inertial frame orientation (vec4<f32>). |
+| `body_mass` | nbody × 4 | Body mass (f32). |
+| `body_inertia` | nbody × 12 | Diagonal inertia in body frame (vec3<f32>). |
+| `max_depth` | 4 | Maximum tree depth (u32). Controls dispatch count. |
 
-### 7.2 Per-frame buffers (uploaded once per frame from CPU)
+**Joint structure:**
 
 | Buffer | Size | Contents |
 |---|---|---|
-| `M` | nv × nv × 4 bytes | Mass matrix (dense, from CRBA) |
-| `qacc_smooth` | nv × 4 bytes | Unconstrained acceleration (M⁻¹·qfrc_smooth) |
-| `qfrc_smooth` | nv × 4 bytes | Smooth force (applied + actuator + passive − bias) |
-| `qpos` | nq × 4 bytes | Initial positions (also updated by integrate.wgsl) |
-| `qvel` | nv × 4 bytes | Initial velocities (also updated by integrate.wgsl) |
-| `body_invmass` | nbody × 4 bytes | Inverse mass per body (f32) |
-| `body_invinertia` | nbody × 36 bytes | 3×3 inverse inertia tensor per body (f32) |
+| `jnt_type` | njnt × 4 | Joint type enum: Free=0, Ball=1, Hinge=2, Slide=3 (u32). |
+| `jnt_axis` | njnt × 12 | Joint axis in parent frame (vec3<f32>). |
+| `jnt_pos` | njnt × 12 | Joint anchor in parent frame (vec3<f32>). |
+| `jnt_body` | njnt × 4 | Body index for this joint (u32). |
+| `jnt_qpos_adr` | njnt × 4 | Index into qpos (u32). |
+| `jnt_dof_adr` | njnt × 4 | Index into qvel/qacc (u32). |
+| `dof_body` | nv × 4 | Body index per DOF (u32). |
+| `dof_parent` | nv × 4 | Parent DOF index for LDL sparsity (u32, 0xFFFFFFFF = none). |
+| `jnt_armature` | njnt × 4 | Armature inertia per joint (f32). |
 
-**Note:** `body_invmass` and `body_invinertia` are the full inverse
-inertia per body (not just diagonal), needed for free-body Jacobian
-assembly. For bodies with products of inertia, the off-diagonal terms
-of the 3×3 inverse inertia matter.
+**Geometry:**
 
-### 7.3 Dynamic buffers (written per substep on GPU)
+| Buffer | Size | Contents |
+|---|---|---|
+| `geom_type` | ngeom × 4 | GeomType enum (u32). |
+| `geom_body` | ngeom × 4 | Body index per geom (u32). |
+| `geom_pos` | ngeom × 12 | Geom offset in body frame (vec3<f32>). |
+| `geom_quat` | ngeom × 16 | Geom orientation in body frame (vec4<f32>). |
+| `geom_size` | ngeom × 12 | Geom dimensions for AABB (vec3<f32>). |
+| `geom_shape_id` | ngeom × 4 | SDF grid index (u32). |
+| `geom_friction` | ngeom × 12 | Per-geom friction [slide, torsion, roll] (vec3<f32>). |
+| `sdf_grid[i]` | W×H×D × 4 | SDF distance values per shape (f32). |
+| `sdf_meta[i]` | 32 | Grid dimensions, cell_size, origin. |
 
-| Buffer | Size | Written by | Read by |
-|---|---|---|---|
-| `qacc` | nv × 4 bytes | `newton_solve.wgsl` | `integrate.wgsl` |
-| `geom_aabb` | ngeom × 24 bytes | `aabb.wgsl` | `broadphase.wgsl` |
-| `pair_buffer` | max_pairs × 8 bytes | `broadphase.wgsl` | narrowphase dispatch |
-| `pair_count` | 4 bytes | `broadphase.wgsl` | narrowphase dispatch |
-| `contact_buffer` | max_contacts × 48 bytes | narrowphase shaders | `assemble.wgsl` |
-| `contact_count` | 4 bytes (atomic) | narrowphase shaders | `assemble.wgsl` |
-| `efc_J` | max_constraints × nv × 4 bytes | `assemble.wgsl` | `newton_solve.wgsl` |
-| `efc_D` | max_constraints × 4 bytes | `assemble.wgsl` | `newton_solve.wgsl` |
-| `efc_aref` | max_constraints × 4 bytes | `assemble.wgsl` | `newton_solve.wgsl` |
-| `efc_type` | max_constraints × 4 bytes | `assemble.wgsl` | `newton_solve.wgsl` |
-| `efc_force` | max_constraints × 4 bytes | `newton_solve.wgsl` | `map_forces.wgsl` |
-| `qfrc_constraint` | nv × 4 bytes | `map_forces.wgsl` | `integrate.wgsl` |
+**Solver parameters:**
 
-**Contact buffer layout (48 bytes per contact):**
-```
+| Buffer | Size | Contents |
+|---|---|---|
+| `solver_params` | 128 | dt, gravity, solver_iterations, tolerance, nv, nq, nbody, ngeom, njnt, max_depth, condim, cone_type. |
+
+**Actuator structure (for GPU actuation):**
+
+| Buffer | Size | Contents |
+|---|---|---|
+| `actuator_trntype` | nu × 4 | Transmission type (u32). |
+| `actuator_trnid` | nu × 8 | Transmission target [id0, id1] (u32 × 2). |
+| `actuator_gear` | nu × 24 | Gear ratio (6 × f32). |
+| `actuator_gainprm` | nu × 40 | Gain parameters (10 × f32). |
+| `actuator_biasprm` | nu × 40 | Bias parameters (10 × f32). |
+
+### 6.3 Per-environment state buffers (n_env × size)
+
+These hold the simulation state. Each environment has its own copy.
+
+**Generalized coordinates:**
+
+| Buffer | Size per env | Contents |
+|---|---|---|
+| `qpos` | nq × 4 | Generalized positions (f32). |
+| `qvel` | nv × 4 | Generalized velocities (f32). |
+| `qacc` | nv × 4 | Generalized accelerations (f32). |
+| `qacc_smooth` | nv × 4 | Unconstrained acceleration M⁻¹·qfrc_smooth (f32). |
+| `ctrl` | nu × 4 | Control inputs (f32). Uploaded from CPU per frame. |
+
+**Per-body computed state:**
+
+| Buffer | Size per env | Contents |
+|---|---|---|
+| `body_xpos` | nbody × 12 | World-frame position (vec3<f32>). |
+| `body_xquat` | nbody × 16 | World-frame quaternion (vec4<f32>). |
+| `body_xmat` | nbody × 36 | World-frame rotation matrix (mat3x3<f32>). |
+| `body_xipos` | nbody × 12 | COM position in world frame (vec3<f32>). |
+| `body_cinert` | nbody × 40 | Spatial inertia in world frame (10 unique f32). |
+| `body_crb` | nbody × 40 | Composite rigid body inertia (10 unique f32). |
+| `body_cvel` | nbody × 24 | Body spatial velocity (6 × f32). |
+| `body_cacc` | nbody × 24 | Body bias acceleration (6 × f32). |
+| `body_cfrc` | nbody × 24 | Body bias force (6 × f32). |
+| `subtree_mass` | nbody × 4 | Subtree total mass (f32). |
+| `subtree_com` | nbody × 12 | Subtree COM position (vec3<f32>). |
+
+**Per-geom computed state:**
+
+| Buffer | Size per env | Contents |
+|---|---|---|
+| `geom_xpos` | ngeom × 12 | World-frame position (vec3<f32>). |
+| `geom_xmat` | ngeom × 36 | World-frame rotation (mat3x3<f32>). |
+| `geom_aabb` | ngeom × 24 | World AABB [min, max] (2 × vec3<f32>). |
+
+**Force accumulators:**
+
+| Buffer | Size per env | Contents |
+|---|---|---|
+| `qfrc_applied` | nv × 4 | User-applied forces (f32). Uploaded per frame. |
+| `xfrc_applied` | nbody × 24 | Body-frame Cartesian forces (6 × f32). Uploaded per frame. |
+| `qfrc_bias` | nv × 4 | Coriolis + gravity bias (f32). Written by RNE. |
+| `qfrc_passive` | nv × 4 | Spring + damper forces (f32). Written by passive. |
+| `qfrc_actuator` | nv × 4 | Actuator forces (f32). Written by actuation. |
+| `qfrc_smooth` | nv × 4 | Total smooth force (f32). Written by smooth. |
+| `qfrc_constraint` | nv × 4 | Constraint forces (f32). Written by map_forces. |
+
+**Mass matrix (dense, nv ≤ 60):**
+
+| Buffer | Size per env | Contents |
+|---|---|---|
+| `qM` | nv × nv × 4 | Mass matrix (f32). Written by CRBA. |
+| `qM_factor` | nv × nv × 4 | Cholesky factor of M (f32). Written by smooth (for qacc_smooth). |
+
+**Motion subspace (precomputed per substep by FK):**
+
+| Buffer | Size per env | Contents |
+|---|---|---|
+| `cdof` | nv × 24 | Joint motion subspace in world frame (6 × f32 per DOF). |
+
+**Constraint working set:**
+
+| Buffer | Size per env | Contents |
+|---|---|---|
+| `pair_buffer` | max_pairs × 8 | Broadphase pairs [geom_a, geom_b] (u32 × 2). |
+| `pair_count` | 4 | Active pair count (atomic u32). |
+| `contact_buffer` | max_contacts × 48 | Contacts (see struct below). |
+| `contact_count` | 4 | Active contact count (atomic u32). |
+| `efc_J` | max_constraints × nv × 4 | Constraint Jacobian (f32). |
+| `efc_D` | max_constraints × 4 | Constraint stiffness (f32). |
+| `efc_aref` | max_constraints × 4 | Reference acceleration (f32). |
+| `efc_type` | max_constraints × 4 | Constraint type enum (u32). |
+| `efc_force` | max_constraints × 4 | Solver output forces (f32). |
+| `constraint_count` | 4 | Active constraint count (atomic u32). |
+
+**Contact struct (48 bytes):**
+```wgsl
 struct GpuContact {
     point:    vec3<f32>,   // World-space contact position
     depth:    f32,         // Penetration depth (≥ 0)
@@ -326,266 +287,363 @@ struct GpuContact {
     geom1:    u32,         // Geom index A
     friction: vec3<f32>,   // Mixed friction [slide, torsion, roll]
     geom2:    u32,         // Geom index B
-}
+};
 ```
 
-### 7.4 Pre-allocation sizes
+### 6.4 Pre-allocation sizes
 
 | Buffer | Max size | Rationale |
 |---|---|---|
-| `max_contacts` | 32,768 | Existing sim-gpu constant. ~100 SDF pairs × ~300 contacts. |
+| `max_contacts` | 32,768 | ~100 SDF pairs × ~300 contacts. |
 | `max_pairs` | 4,096 | 50 geoms → C(50,2) = 1225 worst case. 3× headroom. |
-| `max_constraints` | 196,608 | 6 × max_contacts. Pyramidal friction: 2×(condim−1) rows per contact, condim=4 → 6 rows. |
+| `max_constraints` | 196,608 | 6 × max_contacts (pyramidal condim=4: 6 rows per contact). |
 
-**Derivation of max_constraints:** Each contact with condim=4 (normal +
-3 friction axes) produces 6 pyramidal constraint rows: 2 opposing facets
-per friction axis × 3 axes. For condim=3: 4 rows. For condim=1
-(frictionless): 1 row. The 6× multiplier handles the worst case.
+### 6.5 Memory budget
 
-**Memory budget (hockey scene, nv=13):**
-- `efc_J`: 196,608 × 13 × 4 = 10.2 MB
-- `efc_D/aref/type/force`: 196,608 × 4 × 4 = 3.1 MB
-- Total constraint buffers: ~13 MB (well within GPU limits)
+**Per-environment state (hockey scene: nbody=4, ngeom=4, nv=13, nq=16):**
 
-**Note:** For the actual hockey scene (~50-100 contacts, ~300-600
-constraint rows), only a tiny fraction of these buffers is used.
-Pre-allocation avoids dynamic allocation on GPU.
+| Category | Size |
+|---|---|
+| Generalized coords (qpos, qvel, qacc, etc.) | ~500 bytes |
+| Per-body state (poses, inertias, velocities) | ~3 KB |
+| Per-geom state (poses, AABBs) | ~300 bytes |
+| Force accumulators | ~500 bytes |
+| Mass matrix (2 copies) | ~1.4 KB |
+| Constraint working set | ~13 MB (pre-allocated) |
+| **Total per env** | **~13 MB** |
+
+For `n_env=1`: 13 MB. For `n_env=1000`: 13 GB — feasible on 5070 Ti
+(16 GB VRAM), though constraint pre-allocation would need tuning.
+
+**Static buffers (shared across envs):** ~2 MB for SDF grids + model
+structure. Negligible.
+
+## 7. Tree scan primitive
+
+The tree scan is the single most important GPU primitive in this spec.
+FK, CRBA, and RNE all use it. Build it once, parameterize it.
+
+### 7.1 Algorithm
+
+```
+Given: body_parent[nbody], body_depth[nbody], max_depth
+
+Forward scan (root → leaves):
+  for d in 0..=max_depth:
+    dispatch: process all bodies where body_depth[body] == d
+    each thread: read parent result → compute own result → write
+
+Backward scan (leaves → root):
+  for d in max_depth..=0:
+    dispatch: process all bodies where body_depth[body] == d
+    each thread: compute own result → atomicAdd into parent
+```
+
+Each depth level is one compute pass. wgpu guarantees a storage buffer
+barrier between passes. No explicit synchronization needed.
+
+### 7.2 WGSL implementation pattern
+
+```wgsl
+// Uniform: current depth level being processed
+@group(0) @binding(0) var<uniform> params: ScanParams;
+
+struct ScanParams {
+    current_depth: u32,
+    n_env: u32,
+    nbody: u32,
+    // ...
+};
+
+@compute @workgroup_size(64)
+fn fk_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let body_id = gid.x;
+    let env_id  = gid.y;
+    if (body_id >= params.nbody || env_id >= params.n_env) { return; }
+    if (body_depth[body_id] != params.current_depth) { return; }
+
+    let parent = body_parent[body_id];
+    let env_offset = env_id * params.nbody;
+
+    // Read parent's world pose (written in previous depth pass)
+    let parent_xpos = body_xpos[env_offset + parent];
+    let parent_xquat = body_xquat[env_offset + parent];
+
+    // Compute this body's world pose
+    // ... (joint-dependent FK logic)
+
+    // Write result
+    body_xpos[env_offset + body_id] = world_pos;
+    body_xquat[env_offset + body_id] = world_quat;
+}
+```
+
+**Dispatch (Rust side):**
+```rust
+for depth in 0..=max_depth {
+    update_depth_uniform(depth);
+    let mut pass = encoder.begin_compute_pass(&desc);
+    pass.set_pipeline(&fk_pipeline);
+    pass.set_bind_group(0, &fk_bind_group, &[]);
+    // Dispatch enough threads to cover all bodies × all envs
+    pass.dispatch_workgroups(
+        ceil(nbody, 64),   // X: bodies
+        n_env,             // Y: environments
+        1,
+    );
+}
+```
+
+### 7.3 Parallelism analysis
+
+| Tree shape | Depth | Bodies/level | Parallelism (n_env=1) | Parallelism (n_env=1000) |
+|---|---|---|---|---|
+| Flat (hockey) | 1 | all N at level 1 | N (embarrassingly parallel) | 1000×N |
+| Serial chain (7-DOF arm) | 7 | 1 per level | 1 (purely sequential) | 1000 |
+| Humanoid (30 bodies) | 5 | ~6 per level | ~6 | ~6000 |
+| Many free bodies (100) | 1 | 100 at level 1 | 100 | 100,000 |
+
+**Key insight:** For single-environment interactive (n_env=1), tree scan
+parallelism is limited by bodies_per_level. For SDF physics scenes
+(mostly free-floating bodies), this is embarrassingly parallel. For
+articulated robots, it's sequential — but the tree stages are cheap
+(~microseconds of arithmetic), so the sequential dispatches are bounded
+by wgpu dispatch overhead (~5μs each), not compute.
+
+**For n_env > 1 (batch RL):** Even a serial 7-DOF arm has 1000×
+parallelism at every level. GPU is fully saturated.
 
 ## 8. Shader specifications
 
-### 8.1 `trace_surface.wgsl` — SDF-SDF narrowphase (EXISTS)
+### 8.1 `fk.wgsl` — Forward kinematics (NEW)
 
-**Status:** Done, tested, 267 lines.
-**Workgroup:** 8×8×4 = 256 threads.
-**Algorithm:** One thread per grid cell. Surface filter → gradient →
-reconstruct → transform → cross-SDF query → contact emit via atomic.
-**Change for pipeline:** Output feeds into `assemble.wgsl` instead of
-CPU readback. Contact struct extended from 32 to 48 bytes to include
-geom indices and friction (or these are looked up by assembly shader
-from the pair buffer).
+**Estimated:** ~250 lines WGSL.
+**Pattern:** Tree scan (forward), one pass per depth level.
+**Reference:** MJX `kinematics.py:fwd_position()`, `scan.py:body_tree()`
 
-### 8.2 `sdf_plane.wgsl` — SDF-plane narrowphase (NEW)
+**Per body (at its depth level):**
+1. Read parent world pose: `(parent_xpos, parent_xquat)`
+2. Apply body offset: `pos = parent_xpos + rotate(parent_xquat, body_pos[i])`
+3. Apply body orientation: `quat = parent_xquat × body_quat[i]`
+4. Apply joint transformation (depends on joint type):
+   - **Free:** pos = qpos[0..3], quat = qpos[3..7] (absolute, not relative)
+   - **Hinge:** quat = quat × axis_angle(jnt_axis, qpos[jnt_qpos_adr])
+   - **Ball:** quat = quat × qpos[jnt_qpos_adr..+4]
+   - **Slide:** pos += rotate(quat, jnt_axis) × qpos[jnt_qpos_adr]
+5. Compute rotation matrix: `xmat = quat_to_mat3(quat)`
+6. Compute inertial frame: `xipos, ximat` from body offsets
+7. Compute geom poses: `geom_xpos, geom_xmat` for all geoms on this body
+8. Compute motion subspace `cdof` for each DOF on this body
+
+**World body (depth 0):** Identity pose, no joints. Written as
+initialization before the scan starts (or hardcoded).
+
+**Subtree COM (backward pass after FK):** A separate backward tree scan
+accumulates `subtree_mass` and `subtree_com` from leaves to root.
+Used by RNE gravity computation.
+
+### 8.2 `crba.wgsl` — Composite Rigid Body Algorithm (NEW)
+
+**Estimated:** ~300 lines WGSL.
+**Pattern:** Backward tree scan + per-DOF parallel M assembly.
+**Reference:** MJX `smooth.py:crb()`, `support.py:make_m()`
+
+**Phase 1: Initialize composite inertias (per-body parallel)**
+```
+crb[body_id] = cinert[body_id]   // copy from FK
+```
+
+**Phase 2: Backward tree scan (leaves → root)**
+```
+for d in max_depth..=1:
+  per body at depth d:
+    parent = body_parent[body_id]
+    atomicAdd(crb[parent], shift_inertia(crb[body_id], xpos[body_id] - xpos[parent]))
+```
+
+The `shift_inertia` applies the parallel axis theorem to transport
+the child's composite inertia to the parent's origin.
+
+**Phase 3: Build mass matrix (per-DOF parallel)**
+```
+for each DOF i:
+  body_i = dof_body[i]
+  // Diagonal: M[i,i] = cdof[i]^T · crb[body_i] · cdof[i] + armature[i]
+  // Off-diagonal: walk dof_parent chain
+  j = dof_parent[i]
+  while j != NONE:
+    M[j,i] = cdof[j]^T · crb[body_i] · cdof[i]
+    M[i,j] = M[j,i]  // symmetric
+    j = dof_parent[j]
+```
+
+For flat trees (hockey), dof_parent depth is 1. M assembly is
+embarrassingly parallel — each DOF's column is independent.
+
+**Phase 4: Cholesky factorization (single workgroup, shared memory)**
+```
+M_factor = cholesky(M)   // nv×nv in shared memory
+```
+For nv=13: ~366 flops. For nv=60: ~36K flops. Single thread within
+the workgroup. Needed by `smooth.wgsl` for qacc_smooth.
+
+### 8.3 `rne.wgsl` — Recursive Newton-Euler (NEW)
+
+**Estimated:** ~300 lines WGSL.
+**Pattern:** Forward tree scan + backward tree scan.
+**Reference:** MJX `smooth.py:rne()`
+
+**Phase 1: Gravity (per-joint parallel, no tree dependency)**
+```
+for each joint:
+  qfrc_bias[dof] += gravity_torque(subtree_mass, subtree_com, jnt_axis)
+```
+
+**Phase 2a: Forward scan — bias accelerations (root → leaves)**
+```
+for d in 0..=max_depth:
+  per body at depth d:
+    cacc[body] = transport(cacc[parent]) + velocity_product(cvel[body])
+```
+
+**Phase 2b: Backward scan — bias forces (leaves → root)**
+```
+for d in max_depth..=0:
+  per body at depth d:
+    cfrc[body] = cinert[body] · cacc[body] + gyroscopic(cvel[body], cinert[body])
+    atomicAdd(cfrc[parent], transport(cfrc[body]))
+```
+
+**Phase 2c: Project to joint space (per-DOF parallel)**
+```
+for each DOF:
+  qfrc_bias[dof] += dot(cdof[dof], cfrc[dof_body])
+```
+
+### 8.4 `actuation.wgsl` — Actuator forces (NEW)
 
 **Estimated:** ~150 lines WGSL.
-**Workgroup:** 8×8×4 = 256 threads.
-**Algorithm:** One thread per grid cell:
-1. Read SDF value at cell
-2. One-sided surface filter (skip far interior)
-3. Compute gradient → surface point reconstruction
-4. Transform surface point to world space
-5. Compute signed distance to plane: `d = dot(point, plane_normal) - plane_offset`
-6. If `d < margin`: emit contact
-   - Position: the world-space surface point
-   - Normal: plane normal (constant, no gradient needed)
-   - Depth: `max(-d, 0)`
+**Pattern:** Per-actuator parallel map.
 
-**Simpler than SDF-SDF:** No second grid lookup, no destination gradient.
-Plane normal is a uniform, not computed per-thread.
+**Per actuator:**
+1. Read `ctrl[i]` (uploaded from CPU)
+2. Compute force from gain/bias: `force = gain(ctrl) + bias(qpos, qvel)`
+3. Apply transmission: `qfrc_actuator[dof] += gear × force`
 
-### 8.3 `aabb.wgsl` — Bounding box computation (NEW)
+**Scope:** Covers the common actuator types (motor, position, velocity).
+Complex actuators (muscle, cylinder) remain CPU-only — the GPU path
+asserts supported actuator types at pipeline creation.
+
+### 8.5 `passive.wgsl` — Passive forces (NEW)
+
+**Estimated:** ~100 lines WGSL.
+**Pattern:** Per-DOF parallel map.
+
+**Per DOF:**
+1. Gravity: `qfrc_passive[dof] = gravity_force(dof)` (from subtree COM)
+2. Joint damping: `qfrc_passive[dof] -= damping[dof] × qvel[dof]`
+3. Joint stiffness: `qfrc_passive[dof] -= stiffness[dof] × (qpos - qpos_spring)`
+
+**Scope:** Covers joint-level springs/dampers. Fluid forces and tendon
+passive forces remain CPU-only for the initial implementation.
+
+### 8.6 `smooth.wgsl` — Smooth forces + qacc_smooth (NEW)
+
+**Estimated:** ~120 lines WGSL.
+**Pattern:** Per-DOF parallel + single-workgroup Cholesky solve.
+
+**Phase 1: Compute qfrc_smooth (per-DOF parallel)**
+```
+qfrc_smooth[dof] = qfrc_applied[dof] + qfrc_actuator[dof]
+                 + qfrc_passive[dof] - qfrc_bias[dof]
+```
+
+Plus xfrc_applied projection: for each body with non-zero xfrc,
+project body-frame [torque, force] into joint space via cdof.
+
+**Phase 2: Solve qacc_smooth = M⁻¹ · qfrc_smooth (single workgroup)**
+
+Uses the Cholesky factor from crba.wgsl:
+```
+qacc_smooth = cholesky_solve(M_factor, qfrc_smooth)
+```
+Forward + backward substitution in shared memory. For nv=13: ~338 flops.
+
+### 8.7 `aabb.wgsl` — Bounding box computation (NEW)
 
 **Estimated:** ~80 lines WGSL.
-**Workgroup:** 64 threads (one per geom).
-**Algorithm:** Per-geom:
-1. Read body position and orientation from `qpos`
-2. Read geom local AABB (half-extents + offset)
-3. Rotate half-extents by body orientation
-4. Compute world AABB: `center ± rotated_half_extents + margin`
-5. Write to `geom_aabb[geom_id]`
+**Pattern:** Per-geom parallel map.
 
-**For hinge-attached geoms:** Uses the parent body pose from the
-previous substep (stale by 1 substep). Phase 2 adds `hinge_fk.wgsl`
-to update these poses per substep.
+Per geom: read `geom_xpos`, `geom_xmat`, `geom_size` → compute world
+AABB with margin → write `geom_aabb`. Uses fresh body poses from FK
+(no stale data).
 
-### 8.4 `broadphase.wgsl` — Spatial hash broadphase (NEW)
+### 8.8 `broadphase.wgsl` — Spatial hash broadphase (NEW)
 
 **Estimated:** ~300 lines WGSL (3 passes).
 **Reference:** GPU Gems 3, Chapter 32.
 
-**Pass 1 — Count (per-geom):**
-- Compute which hash cells the geom's AABB overlaps
-- Atomically increment `cell_count[hash(cell)]`
+Pass 1: Hash + count. Pass 2: Blelloch prefix sum. Pass 3: Scatter +
+AABB overlap test → emit pairs via atomic.
 
-**Pass 2 — Prefix sum:**
-- Parallel prefix sum over `cell_count` to get `cell_offset`
-- Standard Blelloch scan, workgroup size 256
+### 8.9 `trace_surface.wgsl` — SDF-SDF narrowphase (EXISTS)
 
-**Pass 3 — Scatter + test (per-geom):**
-- Scatter geom IDs into sorted `cell_geom_list` at `cell_offset`
-- For each cell: test all pairs of geoms in the cell
-- AABB overlap test → emit pair to `pair_buffer` via atomic
+**Status:** Done, tested, 267 lines. Workgroup 8×8×4.
+**Change:** Output feeds into assemble.wgsl instead of CPU readback.
+Contact struct extended to 48 bytes.
 
-**Hash cell size:** `max(geom_AABB_extent) × 2` — tunable.
+### 8.10 `sdf_plane.wgsl` — SDF-plane narrowphase (NEW)
 
-### 8.5 `assemble.wgsl` — Constraint assembly (NEW)
+**Estimated:** ~150 lines WGSL. Workgroup 8×8×4.
+Per grid cell: surface filter → world transform → plane distance →
+emit contact. Simpler than SDF-SDF (no second grid).
+
+### 8.11 `assemble.wgsl` — Constraint assembly (NEW)
 
 **Estimated:** ~350 lines WGSL.
-**Workgroup:** 256 threads (one per contact).
+**Pattern:** Per-contact parallel map.
 **Reference:** MJX `constraint.py:make_constraint()`
 
-**Algorithm:** Per-contact, emit pyramidal constraint rows:
-1. Read contact (position, normal, depth, geom pair, friction)
-2. Look up body indices for both geoms
-3. Compute contact frame: normal + 2 tangent vectors (Gram-Schmidt)
-4. **For each friction axis (2 axes for condim=3, 3 for condim=4):**
-   Emit 2 pyramidal facet rows (positive and negative directions):
-   ```
-   J_facet = normal_J ± μ_i · tangent_i_J
-   ```
-   where `normal_J` and `tangent_i_J` are the contact-frame Jacobians
-   projected into joint space.
-5. Also emit 1 normal-only row (frictionless component)
+Per contact: compute contact frame, emit pyramidal rows (6 rows for
+condim=4), compute impedance/stabilization, write efc_J/D/aref.
 
-**Jacobian computation for free bodies:**
-```
-For body A at contact point p:
-  J_linear  = contact_dir              (3 entries at body_A dof_adr)
-  J_angular = cross(p - body_A_pos, contact_dir)  (3 entries at body_A dof_adr + 3)
-For body B: negate.
-```
-Each row has at most 12 non-zero entries (6 per body).
+**Jacobian for free bodies:** 12 non-zero entries per row (6 per body).
+Uses fresh body poses from FK for correct contact-to-COM offsets.
 
-**Impedance and stabilization (matching CPU assembly):**
-- `pos` = penetration depth
-- `vel` = J · qvel (constraint-space velocity)
-- `imp` = impedance from solimp (violation-dependent damping)
-- `(k, b)` = stiffness/damping from solref
-- `aref = -b · vel - k · imp · pos` (reference acceleration)
-- `D = imp / (imp · diagApprox + (1 − imp))` (constraint stiffness)
-- `R = 1/D` (regularization)
+**diagApprox:** `J · M⁻¹ · J^T` computed per-body from `body_mass` and
+`body_inertia` — no full M⁻¹ needed for the diagonal approximation.
 
-**diagApprox for free bodies:** `diagApprox = J · M⁻¹ · J^T` reduces to
-`1/mass + angular_J^T · I⁻¹ · angular_J` per body. Uses the per-body
-`body_invmass` and `body_invinertia` buffers — no full M⁻¹ needed.
-
-### 8.6 `newton_solve.wgsl` — Primal Newton solver (NEW)
+### 8.12 `newton_solve.wgsl` — Primal Newton solver (NEW)
 
 **Estimated:** ~500 lines WGSL.
-**Reference:** MJX `solver.py:_newton()`, `solver.py:_cost()`
+**Pattern:** Single workgroup, shared memory.
+**Reference:** MJX `solver.py:_newton()`
 
-**Design:** Single-workgroup Newton solver operating in acceleration
-space (primal formulation). For the hockey scene (nv=13), the entire
-13×13 Hessian fits in workgroup shared memory (676 bytes).
+Primal formulation: minimize cost(qacc) = Gauss term + constraint
+penalties. Newton iterations: evaluate cost + gradient + Hessian →
+Cholesky solve → line search → update qacc. 1–3 iterations.
 
-**Formulation (MJX primal):**
-```
-cost(qacc) = 0.5·(qacc − qacc_smooth)^T · M · (qacc − qacc_smooth)
-           + Σ_i  s_i(J_i · qacc − aref_i)
-```
-where `s_i()` is the pyramidal constraint penalty:
-- Equality:   `s(x) = 0.5 · D · x²`
-- Inequality: `s(x) = 0.5 · D · x²` if `x < 0`, else `0`
+H = M + J^T · diag(D · active) · J (nv × nv, in shared memory).
+256 threads cooperate on constraint evaluation and H accumulation.
+Thread 0 does Cholesky. Fits in shared memory for nv ≤ 60.
 
-**Gradient:**
-```
-grad = M · (qacc − qacc_smooth) + J^T · efc_force
-```
-where `efc_force_i = D_i · max(0, -(J_i · qacc − aref_i))` for
-inequality constraints (sign depends on type).
+**For nv > 60:** Switch to CG solver (see §12).
 
-**Hessian (pyramidal — block-diagonal, no cone coupling):**
-```
-H = M + J^T · diag(D · active) · J
-```
-where `active_i = 1` if constraint i is in its quadratic zone, else 0.
-H is nv × nv. For pyramidal friction, no coupling between rows — the
-Hessian is a simple diagonal-weighted sum.
-
-**Algorithm (per Newton iteration, 1–3 iterations):**
-
-1. **Evaluate cost + classify constraints** (parallel, 256 threads)
-   - Each thread processes a subset of constraint rows
-   - Compute `Jaref_i = J_i · qacc − aref_i`
-   - Classify: active if `Jaref_i < 0` (inequality) or always (equality)
-   - Compute `efc_force_i = −D_i · Jaref_i · active_i`
-   - Accumulate per-thread contributions to `grad` and `H` in registers
-
-2. **Reduce into shared memory** (workgroup reduction)
-   - Sum all threads' `H` contributions → shared `H[nv][nv]`
-   - Sum all threads' `grad` contributions → shared `grad[nv]`
-   - Add `M` to `H` (loaded from per-frame buffer)
-   - Add `M · (qacc − qacc_smooth)` to `grad`
-
-3. **Cholesky solve** (single thread, thread 0)
-   - Factor `H = L · L^T` in shared memory (~nv³/6 flops = ~366 for nv=13)
-   - Solve `L · L^T · Δqacc = −grad` via forward/backward substitution
-   - Cost: ~nv² flops = ~169 for nv=13
-
-4. **Line search** (parallel evaluation)
-   - Test α = 1.0, 0.5, 0.25 (or bracket-narrowing Newton as in MJX)
-   - Evaluate `cost(qacc + α · Δqacc)` for each α
-   - Pick α with lowest cost
-
-5. **Update** (broadcast)
-   - `qacc += α · Δqacc`
-
-**Workgroup layout:** 256 threads, one workgroup total. Thread 0 does
-Cholesky; all threads cooperate on constraint evaluation and reduction.
-
-**Shared memory budget (nv=13):**
-```
-H:           13 × 13 × 4 = 676 bytes
-grad:        13 × 4       = 52 bytes
-qacc:        13 × 4       = 52 bytes
-qacc_smooth: 13 × 4       = 52 bytes
-M:           13 × 13 × 4 = 676 bytes
-scratch:     ~500 bytes
-Total:       ~2 KB (well under 16 KB limit)
-```
-
-**Warmstart:** The solver initializes `qacc` from the previous substep's
-result (already on GPU — no CPU round-trip). First substep per frame
-uses `qacc_smooth` as cold start, or optionally the CPU warmstart.
-
-**Convergence:** Newton converges quadratically. For the hockey scene,
-1–2 iterations suffice (validated against CPU Newton which also does
-1–3 iterations). Tolerance: `improvement < solver_tolerance` where
-improvement is the relative cost decrease.
-
-**Constraint force output:** After final iteration, `efc_force` is
-written to the storage buffer for `map_forces.wgsl`.
-
-### 8.7 `map_forces.wgsl` — Force mapping (NEW)
+### 8.13 `map_forces.wgsl` — Force mapping (NEW)
 
 **Estimated:** ~60 lines WGSL.
-**Workgroup:** 64 threads (one per DOF).
-**Algorithm:** Per-DOF reduction:
-```
-qfrc_constraint[dof] = Σ_row  efc_force[row] × efc_J[row][dof]
-```
+**Pattern:** Per-DOF parallel reduction.
 
-This is `J^T · efc_force` — a matrix-vector transpose product.
-Sparse: most J entries are zero. For free bodies, at most 2 bodies
-contribute per contact (6 DOFs each).
+`qfrc_constraint[dof] = Σ_row efc_force[row] × efc_J[row][dof]`
 
-### 8.8 `integrate.wgsl` — Semi-implicit Euler (NEW)
+### 8.14 `integrate.wgsl` — Semi-implicit Euler (NEW)
 
 **Estimated:** ~120 lines WGSL.
-**Workgroup:** 64 threads (one per body).
+**Pattern:** Per-body parallel map.
 **Reference:** MJX `math.py:quat_integrate()`
 
-**Algorithm:** Per-body:
-1. Compute acceleration:
-   - For Free joints: `qacc` already computed by solver (per-DOF)
-   - For Hinge joints: `qacc[hinge_dof]` from solver
-2. Update velocity: `qvel += dt × qacc`
-3. Integrate position:
-   - **Free joints (translation):** `qpos[0..3] += dt × qvel[0..3]`
-   - **Free joints (rotation):** Exponential map on SO(3):
-     ```
-     axis = normalize(ω)
-     angle = ‖ω‖ × dt
-     dq = [cos(angle/2), sin(angle/2) × axis]
-     quat_new = quat_old × dq
-     normalize(quat_new)
-     ```
-   - **Hinge joints:** `qpos += dt × qvel` (scalar)
-4. Apply gravity: Included in `qfrc_smooth` (uploaded from CPU), not
-   applied separately in the shader.
-
-**Matching CPU:** Uses the same quaternion integration as
-`integrate/euler.rs:integrate_quaternion()` — exponential map with
-quaternion right-multiplication and renormalization.
+Per body: `qvel += dt × qacc`, then position integration with
+exponential map for quaternions. Matches CPU `integrate_quaternion()`.
 
 ## 9. Command buffer structure
 
@@ -594,104 +652,91 @@ One command buffer per frame, encoding all substeps:
 ```rust
 let mut encoder = device.create_command_encoder();
 
-// Upload per-frame data: M, qacc_smooth, qfrc_smooth, qpos, qvel
-encoder.copy_buffer_to_buffer(&staging_m, &gpu_m, ...);
-encoder.copy_buffer_to_buffer(&staging_qacc_smooth, &gpu_qacc_smooth, ...);
-encoder.copy_buffer_to_buffer(&staging_qfrc_smooth, &gpu_qfrc_smooth, ...);
-encoder.copy_buffer_to_buffer(&staging_qpos, &gpu_qpos, ...);
-encoder.copy_buffer_to_buffer(&staging_qvel, &gpu_qvel, ...);
+// Upload per-frame: ctrl, qfrc_applied, xfrc_applied (~100 bytes)
+upload_controls(&encoder, &staging, &gpu);
 
 for _substep in 0..num_substeps {
     // Reset atomic counters
-    encoder.clear_buffer(&pair_count_buffer, 0, 4);
-    encoder.clear_buffer(&contact_count_buffer, 0, 4);
+    encoder.clear_buffer(&pair_count, 0, 4);
+    encoder.clear_buffer(&contact_count, 0, 4);
+    encoder.clear_buffer(&constraint_count, 0, 4);
 
-    // Stage 1: AABB
-    {
-        let mut pass = encoder.begin_compute_pass(&default_desc());
-        pass.set_pipeline(&aabb_pipeline);
-        pass.dispatch_workgroups(ceil(ngeom, 64), 1, 1);
+    // FK: level-order forward scan (max_depth + 1 passes)
+    for depth in 0..=max_depth {
+        update_uniform(&encoder, depth);
+        compute_pass(&encoder, &fk_pipeline, ceil(nbody, 64), n_env);
     }
-
-    // Stage 2: Broadphase (3 sub-dispatches)
-    {
-        let mut pass = encoder.begin_compute_pass(&default_desc());
-        // Pass 1: count
-        pass.set_pipeline(&broadphase_count_pipeline);
-        pass.dispatch_workgroups(ceil(ngeom, 64), 1, 1);
-    }
-    {
-        let mut pass = encoder.begin_compute_pass(&default_desc());
-        // Pass 2: prefix sum
-        pass.set_pipeline(&broadphase_prefix_pipeline);
-        pass.dispatch_workgroups(ceil(num_cells, 256), 1, 1);
-    }
-    {
-        let mut pass = encoder.begin_compute_pass(&default_desc());
-        // Pass 3: scatter + test
-        pass.set_pipeline(&broadphase_scatter_pipeline);
-        pass.dispatch_workgroups(ceil(ngeom, 64), 1, 1);
+    // Subtree COM: backward scan
+    for depth in (0..=max_depth).rev() {
+        update_uniform(&encoder, depth);
+        compute_pass(&encoder, &subtree_com_pipeline, ceil(nbody, 64), n_env);
     }
 
-    // Stage 3: Narrowphase
-    // One dispatch per SDF-SDF pair (from pair_buffer)
-    // One dispatch per SDF-plane pair
-    {
-        let mut pass = encoder.begin_compute_pass(&default_desc());
-        pass.set_pipeline(&narrowphase_pipeline);
-        // Dispatched per pair — indirect dispatch from pair_count
-        pass.dispatch_workgroups_indirect(&indirect_buffer, 0);
+    // CRBA: init (parallel) + backward scan + M assembly + Cholesky
+    compute_pass(&encoder, &crba_init_pipeline, ceil(nbody, 64), n_env);
+    for depth in (0..=max_depth).rev() {
+        update_uniform(&encoder, depth);
+        compute_pass(&encoder, &crba_accum_pipeline, ceil(nbody, 64), n_env);
     }
+    compute_pass(&encoder, &crba_build_m_pipeline, ceil(nv, 64), n_env);
+    compute_pass(&encoder, &crba_factor_pipeline, 1, n_env);  // Cholesky
 
-    // Stage 4: Constraint assembly
-    {
-        let mut pass = encoder.begin_compute_pass(&default_desc());
-        pass.set_pipeline(&assemble_pipeline);
-        // Dispatch enough for max_contacts (inactive threads early-exit)
-        pass.dispatch_workgroups(ceil(max_contacts, 256), 1, 1);
+    // RNE: gravity (parallel) + forward scan + backward scan + project
+    compute_pass(&encoder, &rne_gravity_pipeline, ceil(njnt, 64), n_env);
+    for depth in 0..=max_depth {
+        update_uniform(&encoder, depth);
+        compute_pass(&encoder, &rne_forward_pipeline, ceil(nbody, 64), n_env);
     }
+    for depth in (0..=max_depth).rev() {
+        update_uniform(&encoder, depth);
+        compute_pass(&encoder, &rne_backward_pipeline, ceil(nbody, 64), n_env);
+    }
+    compute_pass(&encoder, &rne_project_pipeline, ceil(nv, 64), n_env);
 
-    // Stage 5: Newton solver (1–3 iterations, single workgroup)
+    // Actuation + passive + smooth
+    compute_pass(&encoder, &actuation_pipeline, ceil(nu, 64), n_env);
+    compute_pass(&encoder, &passive_pipeline, ceil(nv, 64), n_env);
+    compute_pass(&encoder, &smooth_pipeline, 1, n_env);  // includes Cholesky solve
+
+    // Collision
+    compute_pass(&encoder, &aabb_pipeline, ceil(ngeom, 64), n_env);
+    // broadphase (3 passes) ...
+    // narrowphase (per-pair dispatches) ...
+
+    // Constraint solve
+    compute_pass(&encoder, &assemble_pipeline, ceil(max_contacts, 256), n_env);
     for _iter in 0..solver_iterations {
-        let mut pass = encoder.begin_compute_pass(&default_desc());
-        pass.set_pipeline(&newton_pipeline);
-        pass.dispatch_workgroups(1, 1, 1);  // Single workgroup
+        compute_pass(&encoder, &newton_pipeline, 1, n_env);  // single workgroup per env
     }
+    compute_pass(&encoder, &map_forces_pipeline, ceil(nv, 64), n_env);
 
-    // Stage 6: Force mapping
-    {
-        let mut pass = encoder.begin_compute_pass(&default_desc());
-        pass.set_pipeline(&map_forces_pipeline);
-        pass.dispatch_workgroups(ceil(nv, 64), 1, 1);
-    }
-
-    // Stage 7: Integration
-    {
-        let mut pass = encoder.begin_compute_pass(&default_desc());
-        pass.set_pipeline(&integrate_pipeline);
-        pass.dispatch_workgroups(ceil(nbody, 64), 1, 1);
-    }
+    // Integration
+    compute_pass(&encoder, &integrate_pipeline, ceil(nbody, 64), n_env);
 }
 
-// Readback: final qpos, qvel, contact_count (once per frame)
+// Readback: final qpos, qvel, ncon
 encoder.copy_buffer_to_buffer(&gpu_qpos, &staging_qpos, ...);
-encoder.copy_buffer_to_buffer(&gpu_qvel, &staging_qvel, ...);
-encoder.copy_buffer_to_buffer(&contact_count_buffer, &staging_count, 0, 4);
 queue.submit([encoder.finish()]);
-
-// Async readback
 staging_qpos.slice(..).map_async(MapMode::Read, ...);
 device.poll(Maintain::Wait);
 ```
 
-**Key property:** Between substeps, NO data leaves the GPU. Atomic
-counters are reset via `clear_buffer`, not by CPU write. `qacc` from
-the previous substep serves as warmstart for the next substep's
-Newton solve.
+**Dispatch count per substep (hockey, max_depth=1):**
 
-**Each compute pass** implies a storage buffer barrier (wgpu guarantees
-this between passes in the same command encoder). No explicit barriers
-needed between stages.
+| Stage | Dispatches |
+|---|---|
+| FK (2 levels + subtree COM 2 levels) | 4 |
+| CRBA (init + 2 levels + build M + Cholesky) | 5 |
+| RNE (gravity + 2 forward + 2 backward + project) | 6 |
+| Actuation + passive + smooth | 3 |
+| AABB + broadphase (3) + narrowphase | 5 |
+| Assemble + Newton (×2 iter) + map_forces | 4 |
+| Integration | 1 |
+| **Total** | **~28** |
+
+At ~5μs per dispatch: ~140μs overhead. Well within the 1ms/substep
+budget. The compute work per dispatch is small for 4 bodies but grows
+with scene complexity.
 
 ## 10. Integration with sim-core
 
@@ -699,248 +744,188 @@ needed between stages.
 
 ```rust
 pub trait GpuPhysicsPipeline: Send + Sync {
-    /// Run N substeps on GPU. Returns final body state.
+    /// Run N substeps on GPU. Returns final state for rendering.
     fn step_gpu(
         &self,
         model: &Model,
-        data: &Data,           // Full data — extracts qpos, qvel, M, qfrc_smooth
+        data: &Data,           // Reads: qpos, qvel, ctrl, qfrc_applied, xfrc_applied
         num_substeps: u32,
-        dt: f64,
     ) -> GpuStepResult;
 }
 
 pub struct GpuStepResult {
-    pub qpos: Vec<f64>,     // output: final positions (f32 on GPU, widened to f64)
-    pub qvel: Vec<f64>,     // output: final velocities
-    pub ncon: usize,        // output: contact count (final substep)
+    pub qpos: Vec<f64>,     // f32→f64 widened
+    pub qvel: Vec<f64>,
+    pub ncon: usize,
 }
 ```
 
-### 10.2 Dispatch in `Data::step()`
+### 10.2 Pipeline creation
+
+```rust
+pub fn enable_gpu_pipeline(model: &mut Model) -> Result<(), GpuError> {
+    // Validate: model must be GPU-compatible
+    assert!(model.integrator == Integrator::Euler, "GPU requires Euler");
+    assert!(model.nv <= 60, "GPU Newton requires nv ≤ 60");
+    // Assert supported joint types, actuator types, etc.
+
+    let ctx = GpuContext::new()?;
+    let pipeline = GpuPipelineImpl::new(&ctx, model)?;
+    // Uploads all static buffers, creates all compute pipelines
+    model.gpu_pipeline = Some(Arc::new(pipeline));
+    Ok(())
+}
+```
+
+### 10.3 Dispatch in `Data::step()`
 
 ```rust
 pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
-    if let Some(gpu_pipeline) = &model.gpu_pipeline {
-        // CPU setup: FK, CRBA, RNE, actuation, passive forces
-        self.forward_pos_vel(model, true);
-        if let Some(ref cb) = model.cb_control {
-            (cb.0)(model, self);
-        }
-
-        // CPU: acceleration-stage setup (actuation, RNE, passive, qacc_smooth)
-        // These populate qfrc_smooth, qfrc_bias, qM, qacc_smooth.
-        forward::actuation::mj_fwd_actuation(model, self);
-        dynamics::rne::mj_rne(model, self);
-        forward::passive::mj_fwd_passive(model, self);
-        constraint::compute_qacc_smooth(model, self);
-
-        // GPU inner loop
-        let result = gpu_pipeline.step_gpu(
-            model, self, model.gpu_substeps, model.timestep,
-        );
-
-        // Write back
+    if let Some(gpu) = &model.gpu_pipeline {
+        let result = gpu.step_gpu(model, self, model.gpu_substeps);
         self.qpos.copy_from_slice(&result.qpos);
         self.qvel.copy_from_slice(&result.qvel);
         self.ncon = result.ncon;
         self.time += model.timestep * model.gpu_substeps as f64;
 
-        // Re-run FK for Bevy rendering
-        position::mj_fwd_position(model, self);
-
-        // Sleep + warmstart
-        if model.enableflags & ENABLE_SLEEP != 0 {
-            island::mj_sleep(model, self);
-        }
-        self.qacc_warmstart.copy_from(&self.qacc);
-
+        // Re-run CPU FK for Bevy rendering (sensor/sleep need body poses)
+        self.forward_pos_vel(model, true);
         return Ok(());
     }
-
-    // CPU fallback (existing pipeline, unchanged)
+    // CPU fallback (unchanged)
     // ...
 }
 ```
 
-### 10.3 Existing `integrate_without_velocity`
+### 10.4 Relationship to existing code
 
-The codebase already has `Data::integrate_without_velocity()`
-(`integrate/mod.rs:233`) behind the `gpu-internals` feature gate. This
-performs position integration + quaternion normalization without
-updating velocity (assuming velocity was updated on GPU). The GPU
-pipeline's CPU-side post-readback can use this instead of reimplementing
-position integration.
-
-### 10.4 Relationship to existing `GpuSdfCollision` trait
-
-The existing trait (`sim-gpu/collision.rs`) handles SDF-SDF and SDF-plane
-collision as standalone operations with CPU readback. It remains for:
-- CPU fallback when the full GPU pipeline isn't available
-- Platforms that support GPU compute but not the full pipeline
-- Validation (compare GPU pipeline contacts against standalone GPU contacts)
-
-The new `GpuPhysicsPipeline` trait is a higher-level abstraction that
-encompasses the entire inner loop. It subsumes the collision trait's
-functionality within its narrowphase stage.
-
-**Note:** The existing `GpuSdfCollision::sdf_plane_contacts()` method
-is currently a stub returning `vec![]` (sim-gpu/collision.rs:548–557).
-SDF-plane collision goes through `compute_shape_plane_contact()` on CPU
-(sdf_collide.rs:141), not through the trait. The full GPU pipeline will
-implement SDF-plane in `sdf_plane.wgsl` directly.
-
-## 11. Existing code reuse
-
-| Existing code | Reuse in pipeline |
+| Existing code | Role in GPU pipeline |
 |---|---|
-| `trace_surface.wgsl` (267 lines) | Directly reused as narrowphase SDF-SDF |
-| `GpuContext` (device, queue, adapter) | Shared — single GPU device for all stages |
-| `GpuSdfGrid` (grid upload) | Directly reused — grids are static buffers |
-| `GridMeta` (width, height, depth, cell_size, origin) | Reused as uniform |
-| Contact buffer layout | Extended from 32 to 48 bytes (add geom IDs + friction) |
-| `enable_gpu_collision()` | Extended to `enable_gpu_pipeline()` |
-| `integrate_without_velocity()` | Used for CPU-side post-readback position integration |
+| `trace_surface.wgsl` | Directly reused as narrowphase SDF-SDF |
+| `GpuContext` (device, queue) | Shared across all pipeline stages |
+| `GpuSdfGrid` (grid upload) | Reused for static SDF buffers |
+| CPU `Data::step()` | Unchanged. CPU fallback + validation reference |
+| `integrate_without_velocity()` | Not needed — full GPU handles everything |
+| `GpuSdfCollision` trait | Deprecated by full pipeline. Kept for standalone testing |
 
-**What changes:** The dispatch layer in `collision.rs` that does per-step
-CPU→GPU→CPU round-trips. This is replaced by the command buffer chain
-in §9.
+## 11. Cleanup of current half-GPU path
 
-## 12. Cleanup of current half-GPU path
+1. **Phase 1 (now):** Keep `GpuSdfCollision` trait as-is. Working, tested.
+2. **Phase 2:** Add `GpuPhysicsPipeline` as parallel path. Both coexist.
+3. **Phase 3:** Deprecate `GpuSdfCollision` dispatch in sdf_collide.rs.
+   Move to `gpu_standalone` module for test/validation only.
+4. **Phase 4:** Remove per-step readback path. `GpuSdfCollision` remains
+   for unit tests only.
 
-The current `GpuSdfCollision` trait and its dispatch in
-`sdf_collide.rs:176–227` (three-tier dispatch logic) can be cleaned up
-in phases:
+## 12. Validation strategy
 
-1. **Phase 1 (now):** Keep as-is. It works and is tested.
-2. **Phase 2 (during pipeline build):** Add `GpuPhysicsPipeline` as a
-   parallel code path. Both traits coexist on `Model`.
-3. **Phase 3 (after pipeline validated):** Deprecate `GpuSdfCollision`
-   dispatch in `sdf_collide.rs`. The standalone GPU collision functions
-   move to a `gpu_standalone` module for testing/validation only.
-4. **Phase 4 (cleanup):** Remove the per-step readback path entirely.
-   `GpuSdfCollision` trait remains but is only used for unit tests and
-   CPU fallback validation.
+Each shader group is validated independently:
 
-## 13. Validation strategy
-
-Each shader is validated independently before integration:
-
-| Shader | Validation method |
+| Shader group | Validation method |
 |---|---|
-| `trace_surface.wgsl` | Existing tests (4 passing) |
-| `sdf_plane.wgsl` | Compare GPU contacts vs CPU `compute_shape_plane_contact()` |
-| `aabb.wgsl` | Compare GPU AABBs vs CPU `compute_aabb()` |
-| `broadphase.wgsl` | Compare GPU pairs vs CPU broadphase (no missed pairs) |
-| `assemble.wgsl` | Compare GPU J/D/aref vs CPU `assemble_unified_constraints()`. Note: GPU uses pyramidal, CPU may use elliptic — compare frictionless rows only, or set CPU to pyramidal mode for validation. |
-| `newton_solve.wgsl` | Compare GPU qacc vs CPU Newton solver output (within f32 tolerance). Stability test: hockey scene runs 10s without explosion. |
-| `map_forces.wgsl` | Compare GPU qfrc_constraint vs CPU `compute_qfrc_constraint_from_efc()` |
-| `integrate.wgsl` | Compare GPU qpos/qvel vs CPU integration (within f32 tolerance) |
+| FK (fk.wgsl) | Compare GPU body_xpos/xquat vs CPU mj_fwd_position() |
+| CRBA (crba.wgsl) | Compare GPU qM vs CPU mj_crba() |
+| RNE (rne.wgsl) | Compare GPU qfrc_bias vs CPU mj_rne() |
+| Smooth (smooth.wgsl) | Compare GPU qacc_smooth vs CPU compute_qacc_smooth() |
+| Collision (aabb + broadphase + narrowphase) | Compare GPU contacts vs CPU mj_collision() |
+| Assembly (assemble.wgsl) | Compare GPU efc_J/D/aref vs CPU (pyramidal mode) |
+| Solver (newton_solve.wgsl) | Compare GPU qacc vs CPU Newton output |
+| Integration (integrate.wgsl) | Compare GPU qpos/qvel vs CPU integrate() |
 
-**End-to-end validation:** Run hockey scene with GPU pipeline and CPU
-pipeline in parallel. Compare body trajectories over 5 seconds. Max
-divergence should be bounded (not accumulated — f32 vs f64 drift is
-expected but should not grow without bound). The pyramidal vs elliptic
-friction difference will cause trajectory divergence — this is expected
-and documented, not a bug.
+**End-to-end:** Run hockey scene GPU vs CPU for 5 seconds. Body
+trajectories should remain bounded (f32 drift is expected, divergence
+is not). Pyramidal vs elliptic friction causes expected behavioral
+differences.
 
-## 14. Performance targets
+**Tree scan validation:** Run FK on a 7-body chain (depth 7). Compare
+GPU body poses against CPU FK at each level. Validates the level-order
+scan is correct for non-flat trees.
+
+## 13. Performance targets
 
 | Metric | Target | Measurement |
 |---|---|---|
-| GPU step latency (hockey scene) | < 1ms per substep | `wgpu` timestamp queries |
-| CPU→GPU transfer (per frame) | < 0.1ms | Staging buffer map time |
-| GPU→CPU readback (per frame) | < 0.1ms | Staging buffer map time |
-| Substeps without readback | 2–4 | Verified via buffer inspection |
+| GPU substep (hockey, n_env=1) | < 1ms | wgpu timestamp queries |
+| GPU substep (100 bodies, n_env=1) | < 2ms | wgpu timestamp queries |
+| GPU substep (hockey, n_env=100) | < 2ms | wgpu timestamp queries |
+| CPU→GPU transfer (per frame) | < 0.05ms | Staging buffer map |
+| GPU→CPU readback (per frame) | < 0.05ms | Staging buffer map |
 | 90 Hz frame budget | < 11ms total | Frame timer |
-| Newton iterations per substep | 1–3 | Solver convergence log |
-| GPU utilization during physics | > 50% | Platform profiler |
+| Newton iterations | 1–3 | Solver convergence log |
 
-**Baseline:** Current CPU step for hockey scene (~X ms, to be measured).
-GPU pipeline should be faster for scenes with > 10 SDF geom pairs.
-For the 3-body hockey scene, GPU may not be faster due to dispatch
-overhead — the win comes with more complex scenes. The primary goal
-for hockey is **eliminating per-substep CPU↔GPU latency**, not raw
-compute throughput.
+## 14. Implementation order
 
-## 15. Implementation order
+1. **`fk.wgsl` + tree scan primitive** — Foundation. Validates
+   level-order dispatch, body pose computation, n_env dimension.
+   Test against CPU FK for flat tree (hockey) and chain (7-DOF arm).
 
-Build bottom-up, validating each shader before integrating:
+2. **`crba.wgsl`** — Backward tree scan + M assembly + Cholesky.
+   Validates backward scan with atomic accumulation. Compare M against
+   CPU CRBA.
 
-1. **`sdf_plane.wgsl`** — Completes narrowphase. Smallest new shader,
-   builds directly on existing `trace_surface.wgsl` patterns.
+3. **`rne.wgsl`** — Forward + backward scan (reuses tree scan).
+   Compare qfrc_bias against CPU RNE.
 
-2. **`integrate.wgsl`** — Simplest new stage. Per-body, no dependencies
-   between bodies. Validates the buffer layout and GPU↔CPU data flow.
+4. **`actuation.wgsl` + `passive.wgsl` + `smooth.wgsl`** — Per-element
+   maps + Cholesky solve. Validates qacc_smooth against CPU.
 
-3. **`aabb.wgsl`** — Per-geom, trivial. Needed by broadphase.
+5. **`integrate.wgsl`** — Per-body map. Validates qpos/qvel update.
+   At this point: full FK→CRBA→RNE→smooth→integrate loop works on GPU.
+   Can run gravity-only simulation (no contacts).
 
-4. **`broadphase.wgsl`** — First multi-pass shader. Validates the
-   spatial hashing pattern and atomic pair emission.
+6. **`sdf_plane.wgsl`** — Completes narrowphase. Builds on existing
+   trace_surface.wgsl patterns.
 
-5. **`assemble.wgsl`** — Connects narrowphase contacts to solver.
-   Validates pyramidal Jacobian computation on GPU. Depends on contact
-   buffer format from steps 1–4.
+7. **`aabb.wgsl` + `broadphase.wgsl`** — Collision detection pipeline.
+   Validates spatial hashing + pair emission.
 
-6. **`newton_solve.wgsl`** — The core solver. Single-workgroup Newton
-   in shared memory. Depends on assembly output format from step 5.
-   Build last because it depends on all previous stages' output formats.
+8. **`assemble.wgsl`** — Constraint assembly. Validates pyramidal
+   Jacobian computation on GPU.
 
-7. **`map_forces.wgsl`** — J^T · efc_force reduction. Simple, but
-   depends on solver output format.
+9. **`newton_solve.wgsl`** — Primal solver. The hardest shader.
+   Validates against CPU Newton.
 
-8. **Pipeline orchestration** — Chain all shaders in a single command
-   buffer. Eliminate per-substep readback. Implement `GpuPhysicsPipeline`
-   trait.
+10. **`map_forces.wgsl`** — Force mapping. Simple J^T·f reduction.
 
-9. **Cleanup** — Deprecate half-GPU dispatch. Update `enable_gpu_collision`
-   to `enable_gpu_pipeline`.
+11. **Pipeline orchestration** — Chain all shaders in single command
+    buffer. Implement `GpuPhysicsPipeline` trait. End-to-end validation.
 
-## 16. Risks
+12. **Cleanup** — Deprecate half-GPU dispatch.
+
+## 15. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Newton Cholesky fails on GPU (non-SPD H) | Regularize: H += ε·I. If still fails, fall back to CPU PGS for that frame. |
-| f32 precision causes solver divergence | Kahan summation in Hessian accumulation. Regularization in H diagonal. MJX proves f32 Newton works. |
-| Pyramidal friction differs from elliptic | Document expected behavioral difference. Validate frictionless components match exactly. |
-| Broadphase spatial hash misses pairs | Validate against CPU broadphase. Tune cell size conservatively. |
-| Command buffer too large for single submit | Split into multiple submits with barriers (unlikely for small scenes). |
-| GPU dispatch overhead > compute savings | Only enable GPU pipeline for scenes above a geom-count threshold. |
-| wgpu limitations (no f64, 16KB shared memory) | Already addressed in existing sim-gpu design. f32 throughout. Newton H fits in shared memory for nv ≤ 60. |
-| Stale hinge poses during substeps | Phase 1: accept (margin absorbs). Phase 2: hinge_fk.wgsl. |
-| nv > 60 exceeds shared memory for H | Switch to CG solver (§17). Not needed for hockey (nv=13). |
+| Tree scan dispatch overhead dominates | Hockey has depth 1 (2 passes). Overhead is ~10μs. Profile early. |
+| Atomic accumulation contention in backward scan | At depth 1 (flat tree), all children atomicAdd into world body. Use f32 atomics (supported by wgpu). For deep trees, contention is low (few children per parent). |
+| Newton Cholesky fails (non-SPD H) | Regularize: H += ε·I. Fall back to CPU PGS for that frame. |
+| f32 precision | MJX proves f32 Newton works. Regularization in H diagonal. Kahan summation in reductions. |
+| nv > 60 exceeds shared memory for H | CG solver (iterative, no dense H). Not needed for hockey. |
+| Complex actuators not supported on GPU | Assert supported types at pipeline creation. Unsupported → CPU fallback. |
+| n_env > 1 memory pressure | Tune max_contacts/max_constraints per use case. 13 MB/env is baseline. |
+| wgpu atomicAdd f32 not available | Use atomicAdd u32 with float reinterpretation, or per-thread local accumulation + workgroup reduction. |
 
-## 17. Future extensions
+## 16. Future extensions
 
-- **CG solver for large nv:** When nv > 60, the Newton Hessian exceeds
-  shared memory. Switch to CG (conjugate gradient) which needs only
-  M·v products (streamable) and J^T·D·J·v (sparse). MJX uses CG as
-  its alternative solver. Threshold: nv > 60 (matches MJX's
-  sparse/dense crossover).
+- **CG solver for nv > 60:** Iterative, no dense Hessian. Needs M·v
+  product (streamable) and J^T·D·J·v (sparse). MJX uses CG as
+  alternative solver.
 
-- **GPU FK/CRBA/RNE via level-order scans:** MJX's `scan.body_tree()`
-  processes kinematic trees on GPU by grouping bodies by depth and
-  vmapping within each level. Enables full GPU step (no split-step)
-  and multi-environment batching.
+- **Elliptic friction cones:** Add cone Hessian blocks to Newton H.
+  Per-contact dim×dim blocks via J^T·C_m·J. MJX supports both.
 
-- **Elliptic friction cones on GPU:** Add cone Hessian blocks to the
-  Newton Hessian. MJX supports this — each contact contributes a
-  dim×dim Hessian block to H via `J^T · C_m · J`. Requires block-aware
-  Hessian accumulation.
+- **Multi-environment batching:** Set n_env > 1. Same shaders, wider
+  dispatch. Requires: batch-friendly contact allocation, per-env
+  constraint counts.
 
-- **Multi-environment batching:** `vmap`-style parallel simulation of
-  thousands of environments for RL training. Requires GPU FK/CRBA/RNE
-  + SoA data layout. MJX's primary use case.
+- **SoA refactor of CPU Data struct:** Align CPU and GPU layouts for
+  zero-copy upload. Eliminates f64→f32 conversion at boundary.
 
-- **`hinge_fk.wgsl`:** Lightweight per-substep FK for single-DOF
-  joints attached to world. `body_pose = parent_pose × rot(axis, angle)`.
-  One mat4 multiply per hinge per substep.
+- **Noslip post-processor:** Secondary Jacobi pass on friction rows
+  to eliminate residual slip. Matches CPU noslip_postprocess().
 
-- **Async double-buffer:** Pipeline substep N+1 compute while reading
-  substep N results. Hides readback latency completely.
+- **Implicit integrators on GPU:** Modify M in crba.wgsl to include
+  h·D + h²·K terms. Requires tendon K/D on GPU.
 
-- **ComFree-Sim solver:** Analytical complementarity-free contact.
-  Linear scaling on GPU. Drop-in replacement for Newton in §8.6.
-
-- **Noslip post-processor on GPU:** After the main solver, run a
-  secondary Jacobi pass on friction rows only to eliminate residual
-  slip. Matches CPU's `noslip_postprocess()`.
+- **GPU sensors:** Position/velocity/acceleration sensors on GPU.
+  Eliminates post-readback CPU FK for sensor evaluation.
