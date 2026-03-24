@@ -14,10 +14,11 @@
     clippy::expect_used
 )]
 
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use mesh_io::{load_mesh, save_mesh};
 use mesh_types::{IndexedMesh, Point3};
 use std::collections::HashMap;
+use std::hint::black_box;
 use tempfile::tempdir;
 
 // =============================================================================

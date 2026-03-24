@@ -13,10 +13,11 @@
     clippy::significant_drop_tightening
 )]
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use mesh_shell::{ShellBuilder, ShellParams, generate_shell};
 use mesh_types::{IndexedMesh, Point3};
 use std::collections::HashMap;
+use std::hint::black_box;
 
 // =============================================================================
 // Test Mesh Generation

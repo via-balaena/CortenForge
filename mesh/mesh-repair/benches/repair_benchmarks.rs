@@ -13,11 +13,12 @@
     clippy::significant_drop_tightening
 )]
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use mesh_repair::intersect::IntersectionParams;
 use mesh_repair::{RepairParams, validate_mesh, weld_vertices};
 use mesh_types::{IndexedMesh, Point3};
 use std::collections::HashMap;
+use std::hint::black_box;
 
 // =============================================================================
 // Test Mesh Generation
