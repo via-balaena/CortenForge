@@ -14,3 +14,4 @@ pub mod pipeline;
 pub use buffers::{GpuSdfGrid, GridMeta};
 pub use collision::{GpuSdfCollider, GpuTracer, enable_gpu_collision};
 pub use context::{GpuContext, GpuError};
+pub use pipeline::{GpuPhysicsPipeline, GpuPipelineError};

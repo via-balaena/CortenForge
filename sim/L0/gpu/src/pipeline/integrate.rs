@@ -26,6 +26,7 @@ pub struct GpuIntegratePipeline {
 
     params_buffer: wgpu::Buffer,
     njnt: u32,
+    n_env: u32,
 }
 
 impl GpuIntegratePipeline {
@@ -138,23 +139,21 @@ impl GpuIntegratePipeline {
             state_bind_group,
             params_buffer,
             njnt: model.njnt,
+            n_env: state.n_env,
         }
     }
 
-    /// Dispatch semi-implicit Euler integration.
-    pub fn dispatch(
+    /// Write physics params to the GPU uniform buffer.
+    pub fn write_params(
         &self,
         ctx: &GpuContext,
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
         cpu_model: &Model,
-        encoder: &mut wgpu::CommandEncoder,
     ) {
         if self.njnt == 0 {
             return;
         }
-
-        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
 
         let params = PhysicsParams {
             gravity: [
@@ -175,6 +174,15 @@ impl GpuIntegratePipeline {
 
         ctx.queue
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+    }
+
+    /// Encode the integration compute pass into the command encoder.
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.njnt == 0 {
+            return;
+        }
+
+        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("integrate_euler"),
@@ -184,7 +192,20 @@ impl GpuIntegratePipeline {
         pass.set_bind_group(0, &self.params_bind_group, &[]);
         pass.set_bind_group(1, &self.model_bind_group, &[]);
         pass.set_bind_group(2, &self.state_bind_group, &[]);
-        pass.dispatch_workgroups(ceil64(self.njnt), state.n_env, 1);
+        pass.dispatch_workgroups(ceil64(self.njnt), self.n_env, 1);
+    }
+
+    /// Dispatch semi-implicit Euler integration.
+    pub fn dispatch(
+        &self,
+        ctx: &GpuContext,
+        model: &GpuModelBuffers,
+        state: &GpuStateBuffers,
+        cpu_model: &Model,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        self.write_params(ctx, model, state, cpu_model);
+        self.encode(encoder);
     }
 }
 

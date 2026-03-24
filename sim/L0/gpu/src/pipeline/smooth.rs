@@ -32,6 +32,7 @@ pub struct GpuSmoothPipeline {
 
     params_buffer: wgpu::Buffer,
     nv: u32,
+    n_env: u32,
 }
 
 impl GpuSmoothPipeline {
@@ -174,24 +175,24 @@ impl GpuSmoothPipeline {
             output_bind_group,
             params_buffer,
             nv: model.nv,
+            n_env: state.n_env,
         }
     }
 
-    /// Dispatch smooth dynamics: assemble + Cholesky solve.
-    pub fn dispatch(
+    /// Write `PhysicsParams` uniform slots (slot 0: assemble, slot 1: solve).
+    ///
+    /// This is the pure-params upload — no force accumulator zeroing.
+    /// Call before `encode()` or as part of `dispatch()`.
+    pub fn write_params(
         &self,
         ctx: &GpuContext,
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
         cpu_model: &Model,
-        encoder: &mut wgpu::CommandEncoder,
     ) {
-        let nv = self.nv;
-        if nv == 0 {
+        if self.nv == 0 {
             return;
         }
-
-        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
 
         let base_params = PhysicsParams {
             gravity: [
@@ -219,12 +220,18 @@ impl GpuSmoothPipeline {
             UNIFORM_ALIGN,
             bytemuck::bytes_of(&base_params),
         );
+    }
 
-        // Zero force accumulators (gravity-only: actuator + passive + applied = 0)
-        let zero_bytes = vec![0u8; (nv as usize) * 4];
-        ctx.queue.write_buffer(&state.qfrc_applied, 0, &zero_bytes);
-        ctx.queue.write_buffer(&state.qfrc_actuator, 0, &zero_bytes);
-        ctx.queue.write_buffer(&state.qfrc_passive, 0, &zero_bytes);
+    /// Encode the smooth dynamics compute passes (assemble + solve).
+    ///
+    /// Assumes `write_params()` has already been called this frame.
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+        let nv = self.nv;
+        if nv == 0 {
+            return;
+        }
+
+        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
 
         // ── 1. smooth_assemble ───────────────────────────────────────
         {
@@ -237,7 +244,7 @@ impl GpuSmoothPipeline {
             pass.set_bind_group(1, &self.forces_bind_group, &[]);
             pass.set_bind_group(2, &self.factor_bind_group, &[]);
             pass.set_bind_group(3, &self.output_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(nv), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(nv), self.n_env, 1);
         }
 
         // ── 2. smooth_solve ──────────────────────────────────────────
@@ -252,8 +259,37 @@ impl GpuSmoothPipeline {
             pass.set_bind_group(1, &self.forces_bind_group, &[]);
             pass.set_bind_group(2, &self.factor_bind_group, &[]);
             pass.set_bind_group(3, &self.output_bind_group, &[]);
-            pass.dispatch_workgroups(1, state.n_env, 1);
+            pass.dispatch_workgroups(1, self.n_env, 1);
         }
+    }
+
+    /// Dispatch smooth dynamics: assemble + Cholesky solve.
+    ///
+    /// Legacy entry point — calls `write_params()`, zeros force accumulators,
+    /// then `encode()`. New code should call `write_params()` + `encode()`
+    /// directly with orchestrator-managed force zeroing.
+    pub fn dispatch(
+        &self,
+        ctx: &GpuContext,
+        model: &GpuModelBuffers,
+        state: &GpuStateBuffers,
+        cpu_model: &Model,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let nv = self.nv;
+        if nv == 0 {
+            return;
+        }
+
+        self.write_params(ctx, model, state, cpu_model);
+
+        // Zero force accumulators (gravity-only: actuator + passive + applied = 0)
+        let zero_bytes = vec![0u8; (nv as usize) * 4];
+        ctx.queue.write_buffer(&state.qfrc_applied, 0, &zero_bytes);
+        ctx.queue.write_buffer(&state.qfrc_actuator, 0, &zero_bytes);
+        ctx.queue.write_buffer(&state.qfrc_passive, 0, &zero_bytes);
+
+        self.encode(encoder);
     }
 }
 

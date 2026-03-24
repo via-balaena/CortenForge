@@ -42,6 +42,7 @@ pub struct GpuFkPipeline {
     max_depth: u32,
     nbody: u32,
     ngeom: u32,
+    n_env: u32,
 }
 
 impl GpuFkPipeline {
@@ -212,24 +213,15 @@ impl GpuFkPipeline {
             max_depth: model.max_depth,
             nbody: model.nbody,
             ngeom: model.ngeom,
+            n_env: state.n_env,
         }
     }
 
-    /// Dispatch the full FK sequence: forward scan → geom poses → subtree COM.
+    /// Write all uniform parameter slots to the GPU queue.
     ///
-    /// Writes all depth-level params before encoding, then encodes all
-    /// dispatches into the command encoder. After encoding, call
-    /// `ctx.queue.submit()` to execute.
-    pub fn dispatch(
-        &self,
-        ctx: &GpuContext,
-        model: &GpuModelBuffers,
-        state: &GpuStateBuffers,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
-
-        // ── Write all params slots before encoding ────────────────────
+    /// Uploads depth-level params for forward FK, geom poses, and subtree
+    /// normalize into the shared params uniform buffer.
+    pub fn write_params(&self, ctx: &GpuContext, model: &GpuModelBuffers, state: &GpuStateBuffers) {
         // Slot 0..=max_depth: forward FK (one per depth)
         for depth in 0..=self.max_depth {
             let params = FkParams {
@@ -289,6 +281,16 @@ impl GpuFkPipeline {
                 bytemuck::bytes_of(&params),
             );
         }
+    }
+
+    /// Encode the full FK compute passes into a command encoder.
+    ///
+    /// Encodes forward FK, geom poses, subtree backward, and subtree
+    /// normalize dispatches. Must be called after [`write_params`].
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
+        let geom_slot = u64::from(self.max_depth) + 1;
+        let normalize_slot = geom_slot + 1;
 
         // ── Forward FK: one pass per depth level ──────────────────────
         for depth in 0..=self.max_depth {
@@ -302,7 +304,7 @@ impl GpuFkPipeline {
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.geom_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.nbody), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
 
         // ── Geom poses: one dispatch ──────────────────────────────────
@@ -317,7 +319,7 @@ impl GpuFkPipeline {
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.geom_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.ngeom), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.ngeom), self.n_env, 1);
         }
 
         // ── Subtree COM: backward scan ────────────────────────────────
@@ -333,7 +335,7 @@ impl GpuFkPipeline {
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.geom_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.nbody), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
 
         // ── Subtree COM: normalize ────────────────────────────────────
@@ -348,8 +350,24 @@ impl GpuFkPipeline {
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.geom_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.nbody), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
+    }
+
+    /// Dispatch the full FK sequence: forward scan → geom poses → subtree COM.
+    ///
+    /// Writes all depth-level params before encoding, then encodes all
+    /// dispatches into the command encoder. After encoding, call
+    /// `ctx.queue.submit()` to execute.
+    pub fn dispatch(
+        &self,
+        ctx: &GpuContext,
+        model: &GpuModelBuffers,
+        state: &GpuStateBuffers,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        self.write_params(ctx, model, state);
+        self.encode(encoder);
     }
 }
 

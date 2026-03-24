@@ -9,8 +9,10 @@
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
+    clippy::panic,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
+    clippy::cast_lossless,
     clippy::float_cmp,
     clippy::suboptimal_flops,
     clippy::needless_range_loop,
@@ -1211,14 +1213,14 @@ fn t19_aabb_matches_cpu() {
     let model_buf = GpuModelBuffers::upload(&ctx, &model);
     let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
     let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
-    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf, &state_buf);
 
     // Run FK + AABB
     let mut encoder = ctx
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("t19") });
     fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
-    collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+    collision_pipeline.encode(&mut encoder, &state_buf);
     ctx.queue.submit([encoder.finish()]);
 
     // Readback AABB for each geom (2×vec4 per geom)
@@ -1282,7 +1284,7 @@ fn t20_sdf_sdf_contacts_pipeline() {
     let model_buf = GpuModelBuffers::upload(&ctx, &model);
     let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
     let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
-    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf, &state_buf);
 
     eprintln!("  T20: {} collision pairs", collision_pipeline.num_pairs());
 
@@ -1291,7 +1293,7 @@ fn t20_sdf_sdf_contacts_pipeline() {
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("t20") });
     fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
-    collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+    collision_pipeline.encode(&mut encoder, &state_buf);
     ctx.queue.submit([encoder.finish()]);
 
     // Readback contacts
@@ -1324,15 +1326,17 @@ fn t20_sdf_sdf_contacts_pipeline() {
         );
     }
 
-    // Net contact force should push bodies apart along X
-    let net_x: f32 = contacts.iter().map(|c| c.normal[0] * c.depth).sum();
-    eprintln!("  T20: net_x = {net_x:.4}");
-    // Normal convention: we don't know the exact sign from the pair plan,
-    // but there should be non-zero X component
+    // Some contacts should have nonzero depth and X-normal component.
+    // Note: SDF-SDF symmetric dispatches (A→B, B→A) produce contacts with
+    // opposite normals, so the NET sum cancels. Check individual contacts.
+    let deep_contacts: Vec<_> = contacts.iter().filter(|c| c.depth > 0.01).collect();
+    eprintln!("  T20: {} contacts with depth > 0.01", deep_contacts.len());
     assert!(
-        net_x.abs() > 0.01,
-        "Net contact force should have X component"
+        !deep_contacts.is_empty(),
+        "Should have contacts with nonzero depth"
     );
+    let has_x_normal = deep_contacts.iter().any(|c| c.normal[0].abs() > 0.3);
+    assert!(has_x_normal, "Deep contacts should have X-normal component");
 
     eprintln!("  T20 passed: {} SDF-SDF contacts", contacts.len());
 }
@@ -1356,7 +1360,7 @@ fn t21_sdf_plane_contacts() {
     let model_buf = GpuModelBuffers::upload(&ctx, &model);
     let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
     let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
-    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf, &state_buf);
 
     eprintln!("  T21: {} collision pairs", collision_pipeline.num_pairs());
 
@@ -1365,7 +1369,7 @@ fn t21_sdf_plane_contacts() {
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("t21") });
     fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
-    collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+    collision_pipeline.encode(&mut encoder, &state_buf);
     ctx.queue.submit([encoder.finish()]);
 
     // Readback contacts
@@ -1433,7 +1437,7 @@ fn t22_full_collision_pipeline() {
     let model_buf = GpuModelBuffers::upload(&ctx, &model);
     let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
     let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
-    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf, &state_buf);
 
     let n_pairs = collision_pipeline.num_pairs();
     eprintln!("  T22: {n_pairs} collision pairs");
@@ -1444,7 +1448,7 @@ fn t22_full_collision_pipeline() {
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("t22") });
     fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
-    collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+    collision_pipeline.encode(&mut encoder, &state_buf);
     ctx.queue.submit([encoder.finish()]);
 
     let contacts = readback_contacts(
@@ -1505,7 +1509,7 @@ fn run_full_pipeline_with_constraints(
     let vel_fk_pipeline = GpuVelocityFkPipeline::new(ctx, model_buf, state_buf);
     let rne_pipeline = GpuRnePipeline::new(ctx, model_buf, state_buf, model);
     let smooth_pipeline = GpuSmoothPipeline::new(ctx, model_buf, state_buf);
-    let collision_pipeline = GpuCollisionPipeline::new(ctx, model, model_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(ctx, model, model_buf, state_buf);
     let constraint_pipeline = GpuConstraintPipeline::new(ctx, model_buf, state_buf, model);
 
     let mut encoder = ctx
@@ -1519,7 +1523,7 @@ fn run_full_pipeline_with_constraints(
     vel_fk_pipeline.dispatch(ctx, model_buf, state_buf, &mut encoder);
     rne_pipeline.dispatch(ctx, model_buf, state_buf, model, &mut encoder);
     smooth_pipeline.dispatch(ctx, model_buf, state_buf, model, &mut encoder);
-    collision_pipeline.encode(&mut encoder, ctx, model_buf, state_buf);
+    collision_pipeline.encode(&mut encoder, state_buf);
     constraint_pipeline.encode(&mut encoder, state_buf);
 
     ctx.queue.submit([encoder.finish()]);
@@ -1693,7 +1697,7 @@ fn t26_multi_substep_stability() {
     let vel_fk_pipeline = GpuVelocityFkPipeline::new(&ctx, &model_buf, &state_buf);
     let rne_pipeline = GpuRnePipeline::new(&ctx, &model_buf, &state_buf, &model);
     let smooth_pipeline = GpuSmoothPipeline::new(&ctx, &model_buf, &state_buf);
-    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf, &state_buf);
     let constraint_pipeline = GpuConstraintPipeline::new(&ctx, &model_buf, &state_buf, &model);
     let integrate_pipeline = GpuIntegratePipeline::new(&ctx, &model_buf, &state_buf);
 
@@ -1710,7 +1714,7 @@ fn t26_multi_substep_stability() {
         vel_fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
         rne_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
         smooth_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
-        collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+        collision_pipeline.encode(&mut encoder, &state_buf);
         constraint_pipeline.encode(&mut encoder, &state_buf);
         integrate_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
 
@@ -1738,4 +1742,289 @@ fn t26_multi_substep_stability() {
     assert!(final_z > -10.0, "Sphere fell through ground: z = {final_z}");
 
     eprintln!("  T26 passed: {n_steps} substeps stable, final z = {final_z:.4}");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Session 6: Pipeline orchestration tests
+// ═══════════════════════════════════════════════════════════════════════
+
+use super::orchestrator::{GpuPhysicsPipeline, GpuPipelineError};
+
+// ── T28: Model validation ─────────────────────────────────────────────
+
+#[test]
+fn t28_model_validation() {
+    // Free-body-only model should succeed
+    let model = Model::free_body(1.0, Vector3::new(0.1, 0.1, 0.1));
+    let data = model.make_data();
+    match GpuPhysicsPipeline::new(&model, &data) {
+        Ok(_) => eprintln!("  T28: free-body model accepted"),
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T28: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("Free-body model should be accepted, got: {e}"),
+    }
+
+    // Hinge joint should be rejected
+    let hinge_model = Model::n_link_pendulum(3, 1.0, 1.0);
+    let hinge_data = hinge_model.make_data();
+    match GpuPhysicsPipeline::new(&hinge_model, &hinge_data) {
+        Err(GpuPipelineError::UnsupportedJointType(_, _)) => {
+            eprintln!("  T28: hinge model correctly rejected");
+        }
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T28: skipping nv check (no GPU)");
+            return;
+        }
+        Ok(_) => panic!("Hinge model should be rejected, but was accepted"),
+        Err(e) => panic!("Hinge model should be rejected with UnsupportedJointType, got: {e}"),
+    }
+
+    eprintln!("  T28 passed: model validation works");
+}
+
+// ── T29: Single substep via orchestrator ──────────────────────────────
+
+#[test]
+fn t29_single_substep_orchestrator() {
+    // Setup: SDF sphere dropped from z=10 onto ground
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    let mut data = model.make_data();
+    data.qpos[2] = 10.0;
+    data.qpos[3] = 1.0;
+
+    let pipeline = match GpuPhysicsPipeline::new(&model, &data) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T29: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("Pipeline creation failed: {e}"),
+    };
+
+    // Run 1 substep via orchestrator
+    pipeline.step(&model, &mut data, 1);
+
+    // Verify state is updated (z should have decreased slightly due to gravity)
+    eprintln!("  T29: after 1 step, z = {:.6}", data.qpos[2]);
+    assert!(data.qpos[2] < 10.0, "z should decrease under gravity");
+    assert!(data.qpos[2] > 9.9, "z should not jump too far in 1 step");
+    assert!(data.qpos[0].abs() < 0.01, "x should stay near 0");
+    assert!(data.qpos[1].abs() < 0.01, "y should stay near 0");
+
+    // Verify time advanced
+    assert!(
+        (data.time - model.timestep).abs() < 1e-10,
+        "time should advance by dt"
+    );
+
+    eprintln!("  T29 passed: single substep via orchestrator");
+}
+
+// ── T30: Multi-substep single-submit ──────────────────────────────────
+
+#[test]
+fn t30_multi_substep_single_submit() {
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    // Run 10 substeps in ONE submit
+    let mut data_batch = model.make_data();
+    data_batch.qpos[2] = 10.0;
+    data_batch.qpos[3] = 1.0;
+
+    let pipeline = match GpuPhysicsPipeline::new(&model, &data_batch) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T30: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("Pipeline creation failed: {e}"),
+    };
+
+    pipeline.step(&model, &mut data_batch, 10);
+
+    // Run 10 substeps in 10 separate submits
+    let mut data_serial = model.make_data();
+    data_serial.qpos[2] = 10.0;
+    data_serial.qpos[3] = 1.0;
+
+    let pipeline2 = GpuPhysicsPipeline::new(&model, &data_serial).unwrap();
+    for _ in 0..10 {
+        pipeline2.step(&model, &mut data_serial, 1);
+    }
+
+    // Compare final states
+    eprintln!(
+        "  T30: batch z={:.6}, serial z={:.6}",
+        data_batch.qpos[2], data_serial.qpos[2]
+    );
+
+    for i in 0..model.nq {
+        let diff = (data_batch.qpos[i] - data_serial.qpos[i]).abs();
+        assert!(
+            diff < 1e-4,
+            "qpos[{i}] diverged: batch={:.6} serial={:.6} diff={diff:.2e}",
+            data_batch.qpos[i],
+            data_serial.qpos[i]
+        );
+    }
+    for i in 0..model.nv {
+        let diff = (data_batch.qvel[i] - data_serial.qvel[i]).abs();
+        assert!(
+            diff < 1e-3,
+            "qvel[{i}] diverged: batch={:.6} serial={:.6} diff={diff:.2e}",
+            data_batch.qvel[i],
+            data_serial.qvel[i]
+        );
+    }
+
+    eprintln!("  T30 passed: multi-substep single-submit matches serial");
+}
+
+// ── T31: GPU vs CPU trajectory comparison (5 seconds) ─────────────────
+
+#[test]
+fn t31_gpu_vs_cpu_trajectory() {
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    // GPU trajectory
+    let mut gpu_data = model.make_data();
+    gpu_data.qpos[2] = 10.0;
+    gpu_data.qpos[3] = 1.0;
+
+    let pipeline = match GpuPhysicsPipeline::new(&model, &gpu_data) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T31: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("Pipeline creation failed: {e}"),
+    };
+
+    let dt = model.timestep;
+    let total_time = 5.0;
+    let nsteps = (total_time / dt).round() as usize;
+
+    for _ in 0..nsteps {
+        pipeline.step(&model, &mut gpu_data, 1);
+    }
+
+    // CPU trajectory
+    let mut cpu_data = model.make_data();
+    cpu_data.qpos[2] = 10.0;
+    cpu_data.qpos[3] = 1.0;
+
+    for _ in 0..nsteps {
+        cpu_data.step(&model).expect("CPU step failed");
+    }
+
+    let gpu_z = gpu_data.qpos[2];
+    let cpu_z = cpu_data.qpos[2];
+    let z_diff = (gpu_z - cpu_z).abs();
+
+    eprintln!("  T31: after {nsteps} steps ({total_time}s):");
+    eprintln!("    GPU z = {gpu_z:.4}");
+    eprintln!("    CPU z = {cpu_z:.4}");
+    eprintln!("    diff  = {z_diff:.4}");
+
+    // All values should be finite
+    for i in 0..model.nq {
+        assert!(
+            gpu_data.qpos[i].is_finite(),
+            "GPU qpos[{i}] = {} is not finite",
+            gpu_data.qpos[i]
+        );
+    }
+    for i in 0..model.nv {
+        assert!(
+            gpu_data.qvel[i].is_finite(),
+            "GPU qvel[{i}] = {} is not finite",
+            gpu_data.qvel[i]
+        );
+    }
+
+    // z should not diverge too far (pyramidal vs elliptic friction + f32 drift)
+    assert!(
+        z_diff < 1.0,
+        "GPU/CPU z diverged by {z_diff:.4}m (limit 1.0m)"
+    );
+
+    // Body should not have exploded
+    assert!(gpu_z.abs() < 100.0, "GPU z exploded: {gpu_z}");
+
+    eprintln!("  T31 passed: GPU vs CPU trajectory within tolerance after {total_time}s");
+}
+
+// ── T32: Sustained multi-substep stress test ──────────────────────────
+
+#[test]
+fn t32_sustained_multi_substep() {
+    // Run many batched substeps over 2 seconds — stress tests the
+    // single-submit pattern over a sustained period.
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    let mut data = model.make_data();
+    data.qpos[2] = 10.0;
+    data.qpos[3] = 1.0;
+
+    let pipeline = match GpuPhysicsPipeline::new(&model, &data) {
+        Ok(p) => p,
+        Err(GpuPipelineError::NoGpu(_)) => {
+            eprintln!("  T32: skipping (no GPU)");
+            return;
+        }
+        Err(e) => panic!("Pipeline creation failed: {e}"),
+    };
+
+    let dt = model.timestep;
+    let total_time = 2.0;
+    let substeps_per_batch: u32 = 10;
+    let num_batches = (total_time / (dt * f64::from(substeps_per_batch))).round() as usize;
+
+    for batch in 0..num_batches {
+        pipeline.step(&model, &mut data, substeps_per_batch);
+
+        // Check stability every batch
+        for i in 0..model.nq {
+            assert!(
+                data.qpos[i].is_finite(),
+                "Batch {batch}: qpos[{i}] = {} is not finite",
+                data.qpos[i]
+            );
+            assert!(
+                data.qpos[i].abs() < 1000.0,
+                "Batch {batch}: qpos[{i}] = {} exploded",
+                data.qpos[i]
+            );
+        }
+    }
+
+    let final_z = data.qpos[2];
+    eprintln!(
+        "  T32: after {num_batches} batches of {substeps_per_batch} substeps, z = {final_z:.4}"
+    );
+
+    // Sphere should not have fallen through ground
+    assert!(final_z > -1.0, "Sphere fell through ground: z = {final_z}");
+
+    // Time should have advanced correctly
+    let expected_time = (num_batches as u32 * substeps_per_batch) as f64 * dt;
+    let time_err = (data.time - expected_time).abs();
+    assert!(
+        time_err < 1e-6,
+        "Time error: {time_err:.2e} (expected {expected_time:.4}, got {:.4})",
+        data.time
+    );
+
+    eprintln!("  T32 passed: sustained multi-substep stable over {total_time}s");
 }

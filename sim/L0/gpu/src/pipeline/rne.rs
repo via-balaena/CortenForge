@@ -41,6 +41,7 @@ pub struct GpuRnePipeline {
     nbody: u32,
     njnt: u32,
     nv: u32,
+    n_env: u32,
 }
 
 impl GpuRnePipeline {
@@ -221,21 +222,24 @@ impl GpuRnePipeline {
             nbody: gpu_model.nbody,
             njnt: gpu_model.njnt,
             nv: gpu_model.nv,
+            n_env: state.n_env,
         }
     }
 
-    /// Dispatch the full RNE sequence.
-    pub fn dispatch(
+    /// Write the `PhysicsParams` uniform slots for the RNE sequence.
+    ///
+    /// Slot layout:
+    /// - 0: gravity
+    /// - `1..=max_depth+1`: forward (depth 0 → `max_depth`)
+    /// - `max_depth+2`...: backward (`max_depth` → 1)
+    /// - last: project
+    pub fn write_params(
         &self,
         ctx: &GpuContext,
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
         cpu_model: &Model,
-        encoder: &mut wgpu::CommandEncoder,
     ) {
-        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
-        let nv = self.nv;
-
         // ── Build base PhysicsParams ──────────────────────────────────
         let base_params = PhysicsParams {
             gravity: [
@@ -279,7 +283,6 @@ impl GpuRnePipeline {
         }
 
         // Slots for backward scan (max_depth → 1)
-        let backward_slot_start = slot;
         for depth in (1..=self.max_depth).rev() {
             let params = PhysicsParams {
                 current_depth: depth,
@@ -300,16 +303,17 @@ impl GpuRnePipeline {
             project_slot * UNIFORM_ALIGN,
             bytemuck::bytes_of(&base_params),
         );
+    }
 
-        // ── 0. Zero qfrc_bias and body_cfrc ──────────────────────────
-        if nv > 0 {
-            let zero_bias = vec![0u8; (nv as usize) * 4];
-            ctx.queue.write_buffer(&state.qfrc_bias, 0, &zero_bias);
-        }
-        {
-            let zero_cfrc = vec![0u8; (self.nbody as usize) * 32];
-            ctx.queue.write_buffer(&state.body_cfrc, 0, &zero_cfrc);
-        }
+    /// Encode the RNE compute passes into the given command encoder.
+    ///
+    /// Must be called after [`write_params`](Self::write_params) has been
+    /// invoked for this frame. The slot layout is deterministic from
+    /// `self.max_depth`, so no cached state from `write_params` is needed.
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
+        let backward_slot_start = u64::from(self.max_depth) + 2;
+        let project_slot = backward_slot_start + u64::from(self.max_depth);
 
         // ── 1. rne_gravity — all joints parallel ─────────────────────
         if self.njnt > 0 {
@@ -322,7 +326,7 @@ impl GpuRnePipeline {
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.output_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.njnt), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.njnt), self.n_env, 1);
         }
 
         // ── 2. rne_forward — one dispatch per depth (0 → max_depth) ──
@@ -337,7 +341,7 @@ impl GpuRnePipeline {
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.output_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.nbody), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
 
         // ── 3a. rne_cfrc_init — all bodies parallel ──────────────────
@@ -353,7 +357,7 @@ impl GpuRnePipeline {
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.output_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.nbody), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
 
         // ── 3b. rne_backward — one dispatch per depth (max_depth → 1)
@@ -368,11 +372,11 @@ impl GpuRnePipeline {
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.output_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.nbody), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
 
         // ── 4. rne_project — all DOFs parallel ───────────────────────
-        if nv > 0 {
+        if self.nv > 0 {
             let offset = (project_slot * UNIFORM_ALIGN) as u32;
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("rne_project"),
@@ -383,8 +387,36 @@ impl GpuRnePipeline {
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
             pass.set_bind_group(3, &self.output_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(nv), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.nv), self.n_env, 1);
         }
+    }
+
+    /// Dispatch the full RNE sequence (legacy convenience method).
+    ///
+    /// Calls [`write_params`](Self::write_params), zeros `qfrc_bias` and
+    /// `body_cfrc` for backward compatibility, then calls
+    /// [`encode`](Self::encode).
+    pub fn dispatch(
+        &self,
+        ctx: &GpuContext,
+        model: &GpuModelBuffers,
+        state: &GpuStateBuffers,
+        cpu_model: &Model,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        self.write_params(ctx, model, state, cpu_model);
+
+        // ── Zero qfrc_bias and body_cfrc (legacy) ────────────────────
+        if self.nv > 0 {
+            let zero_bias = vec![0u8; (self.nv as usize) * 4];
+            ctx.queue.write_buffer(&state.qfrc_bias, 0, &zero_bias);
+        }
+        {
+            let zero_cfrc = vec![0u8; (self.nbody as usize) * 32];
+            ctx.queue.write_buffer(&state.body_cfrc, 0, &zero_cfrc);
+        }
+
+        self.encode(encoder);
     }
 }
 

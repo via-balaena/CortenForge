@@ -30,6 +30,7 @@ pub struct GpuVelocityFkPipeline {
     params_buffer: wgpu::Buffer,
     max_depth: u32,
     nbody: u32,
+    n_env: u32,
 }
 
 impl GpuVelocityFkPipeline {
@@ -146,20 +147,12 @@ impl GpuVelocityFkPipeline {
             params_buffer,
             max_depth: model.max_depth,
             nbody: model.nbody,
+            n_env: state.n_env,
         }
     }
 
-    /// Dispatch the velocity FK forward scan: one pass per depth level.
-    pub fn dispatch(
-        &self,
-        ctx: &GpuContext,
-        model: &GpuModelBuffers,
-        state: &GpuStateBuffers,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
-
-        // Write all depth-level param slots
+    /// Write depth-level param slots to the GPU uniform buffer.
+    pub fn write_params(&self, ctx: &GpuContext, model: &GpuModelBuffers, state: &GpuStateBuffers) {
         for depth in 0..=self.max_depth {
             let params = FkParams {
                 current_depth: depth,
@@ -175,8 +168,12 @@ impl GpuVelocityFkPipeline {
             ctx.queue
                 .write_buffer(&self.params_buffer, offset, bytemuck::bytes_of(&params));
         }
+    }
 
-        // Forward scan: one dispatch per depth level (root → leaves)
+    /// Encode the velocity FK forward scan: one compute pass per depth level.
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+        let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
+
         for depth in 0..=self.max_depth {
             let offset = (u64::from(depth) * UNIFORM_ALIGN) as u32;
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -187,8 +184,20 @@ impl GpuVelocityFkPipeline {
             pass.set_bind_group(0, &self.params_bind_group, &[offset]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
             pass.set_bind_group(2, &self.state_bind_group, &[]);
-            pass.dispatch_workgroups(ceil64(self.nbody), state.n_env, 1);
+            pass.dispatch_workgroups(ceil64(self.nbody), self.n_env, 1);
         }
+    }
+
+    /// Dispatch the velocity FK forward scan: one pass per depth level.
+    pub fn dispatch(
+        &self,
+        ctx: &GpuContext,
+        model: &GpuModelBuffers,
+        state: &GpuStateBuffers,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        self.write_params(ctx, model, state);
+        self.encode(encoder);
     }
 }
 
