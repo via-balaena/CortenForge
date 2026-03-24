@@ -592,7 +592,12 @@ pub fn octree_plane_detect(
         return vec![];
     }
 
-    let cell_size = shape.sdf_grid().cell_size();
+    // Use a coarser target cell for plane contacts (4× grid resolution).
+    // Plane contacts need spatial distribution across the face for torque
+    // resistance, not sub-millimeter precision. Coarser cells cut octree
+    // depth by ~2 levels, reducing traversal work ~64× while still producing
+    // well-separated contacts (e.g., 2.5mm spacing on a 10mm face → 4+ contacts).
+    let cell_size = shape.sdf_grid().cell_size() * 4.0;
     let ratio = root.max_extent() / cell_size;
     let max_depth = if ratio > 1.0 {
         ratio.log2().ceil() as u32
