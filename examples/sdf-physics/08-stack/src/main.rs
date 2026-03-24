@@ -88,7 +88,7 @@ fn main() {
         ))
         .build();
 
-    let mut model = mechanism.to_model(2.0, 0.3);
+    let mut model = mechanism.to_model(1.0, 0.3);
     model.add_ground_plane();
 
     eprintln!();
