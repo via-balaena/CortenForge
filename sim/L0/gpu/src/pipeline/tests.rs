@@ -2,6 +2,7 @@
 //!
 //! T1–T7:  FK — compare GPU body poses, cinert, cdof, subtree COM against CPU.
 //! T8–T12: CRBA + velocity FK — compare GPU qM, cvel against CPU.
+//! T13–T18: RNE + smooth + integration — bias forces, qacc_smooth, trajectories.
 
 #![allow(
     clippy::expect_used,
@@ -11,6 +12,7 @@
     clippy::float_cmp,
     clippy::suboptimal_flops,
     clippy::needless_range_loop,
+    clippy::cast_sign_loss,
     clippy::doc_markdown
 )]
 
@@ -21,7 +23,10 @@ use sim_core::types::{Data, Model};
 
 use super::crba::GpuCrbaPipeline;
 use super::fk::{GpuFkPipeline, readback_f32s, readback_vec4s};
+use super::integrate::GpuIntegratePipeline;
 use super::model_buffers::GpuModelBuffers;
+use super::rne::GpuRnePipeline;
+use super::smooth::GpuSmoothPipeline;
 use super::state_buffers::GpuStateBuffers;
 use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
@@ -766,4 +771,339 @@ fn t12_cvel_pendulum() {
     }
 
     eprintln!("  T12 passed: cvel matches CPU for 3-link pendulum");
+}
+
+// ── Session 3 helpers ────────────────────────────────────────────────
+
+/// Run FK + CRBA + velocity FK + RNE on GPU, return (model_buf, state_buf).
+fn run_through_rne(
+    ctx: &GpuContext,
+    model: &Model,
+    data: &Data,
+) -> (GpuModelBuffers, GpuStateBuffers) {
+    let model_buf = GpuModelBuffers::upload(ctx, model);
+    let state_buf = GpuStateBuffers::new(ctx, &model_buf, data);
+    let fk_pipeline = GpuFkPipeline::new(ctx, &model_buf, &state_buf);
+    let crba_pipeline = GpuCrbaPipeline::new(ctx, &model_buf, &state_buf);
+    let vel_fk_pipeline = GpuVelocityFkPipeline::new(ctx, &model_buf, &state_buf);
+    let rne_pipeline = GpuRnePipeline::new(ctx, &model_buf, &state_buf, model);
+
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("fk+crba+vel+rne"),
+        });
+    fk_pipeline.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    crba_pipeline.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    vel_fk_pipeline.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    rne_pipeline.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+    ctx.queue.submit([encoder.finish()]);
+
+    (model_buf, state_buf)
+}
+
+/// Run FK + CRBA + velocity FK + RNE + smooth on GPU.
+fn run_through_smooth(
+    ctx: &GpuContext,
+    model: &Model,
+    data: &Data,
+) -> (GpuModelBuffers, GpuStateBuffers) {
+    let model_buf = GpuModelBuffers::upload(ctx, model);
+    let state_buf = GpuStateBuffers::new(ctx, &model_buf, data);
+    let fk_pipeline = GpuFkPipeline::new(ctx, &model_buf, &state_buf);
+    let crba_pipeline = GpuCrbaPipeline::new(ctx, &model_buf, &state_buf);
+    let vel_fk_pipeline = GpuVelocityFkPipeline::new(ctx, &model_buf, &state_buf);
+    let rne_pipeline = GpuRnePipeline::new(ctx, &model_buf, &state_buf, model);
+    let smooth_pipeline = GpuSmoothPipeline::new(ctx, &model_buf, &state_buf);
+
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("fk+crba+vel+rne+smooth"),
+        });
+    fk_pipeline.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    crba_pipeline.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    vel_fk_pipeline.dispatch(ctx, &model_buf, &state_buf, &mut encoder);
+    rne_pipeline.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+    smooth_pipeline.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
+    ctx.queue.submit([encoder.finish()]);
+
+    (model_buf, state_buf)
+}
+
+// ── T13: qfrc_bias gravity for free body ─────────────────────────────
+
+#[test]
+fn t13_qfrc_bias_gravity_free_body() {
+    let ctx = gpu_or_skip!();
+
+    let model = Model::free_body(2.5, Vector3::new(0.1, 0.2, 0.3));
+    let mut data = model.make_data();
+    data.qpos[0] = 0.0;
+    data.qpos[1] = 0.0;
+    data.qpos[2] = 5.0;
+    // Identity quaternion
+    data.qpos[3] = 1.0;
+
+    // CPU forward (runs FK + RNE etc.)
+    data.forward(&model).expect("CPU forward failed");
+
+    // GPU through RNE
+    let (_, state_buf) = run_through_rne(&ctx, &model, &data);
+
+    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+
+    let tol = 1e-4;
+    for d in 0..model.nv {
+        let g = gpu_bias[d];
+        let c = data.qfrc_bias[d] as f32;
+        assert!(
+            (g - c).abs() < tol,
+            "qfrc_bias[{d}]: GPU={g:.6} CPU={c:.6} err={:.2e}",
+            (g - c).abs()
+        );
+    }
+    eprintln!("  T13 passed: qfrc_bias gravity matches CPU for free body");
+}
+
+// ── T14: qfrc_bias Coriolis for spinning free body ───────────────────
+
+#[test]
+fn t14_qfrc_bias_coriolis_spinning() {
+    let ctx = gpu_or_skip!();
+
+    let model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    let mut data = model.make_data();
+    // Identity pose at origin
+    data.qpos[3] = 1.0;
+    // High angular velocity (non-principal axis → gyroscopic torque)
+    data.qvel[0] = 0.0; // linear x
+    data.qvel[1] = 0.0; // linear y
+    data.qvel[2] = 0.0; // linear z
+    data.qvel[3] = 10.0; // angular x
+    data.qvel[4] = 5.0; // angular y
+    data.qvel[5] = 3.0; // angular z
+
+    data.forward(&model).expect("CPU forward failed");
+
+    let (_, state_buf) = run_through_rne(&ctx, &model, &data);
+    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+
+    let tol = 1e-3;
+    for d in 0..model.nv {
+        let g = gpu_bias[d];
+        let c = data.qfrc_bias[d] as f32;
+        assert!(
+            (g - c).abs() < tol,
+            "qfrc_bias[{d}]: GPU={g:.6} CPU={c:.6} err={:.2e}",
+            (g - c).abs()
+        );
+    }
+
+    // Verify Coriolis is non-zero (angular DOFs should have non-zero bias)
+    let has_coriolis = (3..6).any(|d| gpu_bias[d].abs() > 1e-6);
+    assert!(has_coriolis, "Expected non-zero Coriolis on angular DOFs");
+
+    eprintln!("  T14 passed: qfrc_bias Coriolis matches CPU for spinning body");
+}
+
+// ── T15: qfrc_bias for 3-link pendulum ──────────────────────────────
+
+#[test]
+fn t15_qfrc_bias_pendulum() {
+    let ctx = gpu_or_skip!();
+
+    let model = Model::n_link_pendulum(3, 1.0, 1.0);
+    let mut data = model.make_data();
+    data.qpos[0] = PI / 4.0;
+    data.qpos[1] = -PI / 6.0;
+    data.qpos[2] = PI / 3.0;
+    data.qvel[0] = 2.0;
+    data.qvel[1] = -1.5;
+    data.qvel[2] = 3.0;
+
+    data.forward(&model).expect("CPU forward failed");
+
+    let (_, state_buf) = run_through_rne(&ctx, &model, &data);
+    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+
+    let tol = 1e-3;
+    for d in 0..model.nv {
+        let g = gpu_bias[d];
+        let c = data.qfrc_bias[d] as f32;
+        assert!(
+            (g - c).abs() < tol,
+            "qfrc_bias[{d}]: GPU={g:.6} CPU={c:.6} err={:.2e}",
+            (g - c).abs()
+        );
+    }
+    eprintln!("  T15 passed: qfrc_bias matches CPU for 3-link pendulum");
+}
+
+// ── T16: qacc_smooth for free body under gravity ─────────────────────
+
+#[test]
+fn t16_qacc_smooth_free_body() {
+    let ctx = gpu_or_skip!();
+
+    let model = Model::free_body(2.5, Vector3::new(0.1, 0.2, 0.3));
+    let mut data = model.make_data();
+    data.qpos[2] = 5.0;
+    data.qpos[3] = 1.0;
+
+    data.forward(&model).expect("CPU forward failed");
+
+    let (_, state_buf) = run_through_smooth(&ctx, &model, &data);
+    let gpu_qacc = readback_f32s(&ctx, &state_buf.qacc_smooth, model.nv);
+
+    let tol = 1e-4;
+    for d in 0..model.nv {
+        let g = gpu_qacc[d];
+        let c = data.qacc_smooth[d] as f32;
+        assert!(
+            (g - c).abs() < tol,
+            "qacc_smooth[{d}]: GPU={g:.6} CPU={c:.6} err={:.2e}",
+            (g - c).abs()
+        );
+    }
+    eprintln!("  T16 passed: qacc_smooth matches CPU for free body under gravity");
+}
+
+// ── T17: Gravity drop trajectory (2 seconds) ─────────────────────────
+
+#[test]
+fn t17_gravity_drop_trajectory() {
+    let ctx = gpu_or_skip!();
+
+    let model = Model::free_body(1.0, Vector3::new(0.1, 0.1, 0.1));
+    let mut data = model.make_data();
+    data.qpos[2] = 10.0; // z = 10
+    data.qpos[3] = 1.0; // identity quat
+
+    // Create GPU pipelines
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+    let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let crba_pipeline = GpuCrbaPipeline::new(&ctx, &model_buf, &state_buf);
+    let vel_fk_pipeline = GpuVelocityFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let rne_pipeline = GpuRnePipeline::new(&ctx, &model_buf, &state_buf, &model);
+    let smooth_pipeline = GpuSmoothPipeline::new(&ctx, &model_buf, &state_buf);
+    let integrate_pipeline = GpuIntegratePipeline::new(&ctx, &model_buf, &state_buf);
+
+    let nv = model.nv as u64;
+    let dt = model.timestep;
+    let nsteps = (2.0 / dt).round() as usize; // ~2 seconds
+
+    // Run GPU physics loop
+    for _step in 0..nsteps {
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("step"),
+            });
+
+        fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+        crba_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+        vel_fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+        rne_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+        smooth_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+
+        // Gravity-only bridge: copy qacc_smooth → qacc
+        encoder.copy_buffer_to_buffer(&state_buf.qacc_smooth, 0, &state_buf.qacc, 0, nv * 4);
+
+        integrate_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+
+        ctx.queue.submit([encoder.finish()]);
+    }
+
+    // Run CPU physics loop
+    let mut cpu_data = model.make_data();
+    cpu_data.qpos[2] = 10.0;
+    cpu_data.qpos[3] = 1.0;
+    for _step in 0..nsteps {
+        cpu_data.step(&model).expect("CPU step failed");
+    }
+
+    // Readback GPU qpos
+    let gpu_qpos = readback_f32s(&ctx, &state_buf.qpos, model.nq);
+
+    // Compare z position (should be close to 10 - 0.5*9.81*4 ≈ -9.62)
+    let gpu_z = gpu_qpos[2];
+    let cpu_z = cpu_data.qpos[2] as f32;
+    let z_err = (gpu_z - cpu_z).abs();
+
+    eprintln!("  T17: GPU z={gpu_z:.4} CPU z={cpu_z:.4} err={z_err:.4}");
+    assert!(
+        z_err < 0.05,
+        "Trajectory diverged: GPU z={gpu_z:.4} CPU z={cpu_z:.4} err={z_err:.4}"
+    );
+
+    // x and y should stay near 0
+    assert!(gpu_qpos[0].abs() < 0.01, "x drifted: {}", gpu_qpos[0]);
+    assert!(gpu_qpos[1].abs() < 0.01, "y drifted: {}", gpu_qpos[1]);
+
+    eprintln!("  T17 passed: gravity drop trajectory matches CPU over {nsteps} steps");
+}
+
+// ── T18: Quaternion stability under high angular velocity ────────────
+
+#[test]
+fn t18_quaternion_stability() {
+    let ctx = gpu_or_skip!();
+
+    let model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    let mut data = model.make_data();
+    data.qpos[3] = 1.0; // identity quat
+    // High angular velocity around z (50 rad/s)
+    data.qvel[3] = 0.0;
+    data.qvel[4] = 0.0;
+    data.qvel[5] = 50.0;
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+    let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let crba_pipeline = GpuCrbaPipeline::new(&ctx, &model_buf, &state_buf);
+    let vel_fk_pipeline = GpuVelocityFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let rne_pipeline = GpuRnePipeline::new(&ctx, &model_buf, &state_buf, &model);
+    let smooth_pipeline = GpuSmoothPipeline::new(&ctx, &model_buf, &state_buf);
+    let integrate_pipeline = GpuIntegratePipeline::new(&ctx, &model_buf, &state_buf);
+
+    let nv = model.nv as u64;
+    let nsteps = 1000;
+
+    for step in 0..nsteps {
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("quat_step"),
+            });
+
+        fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+        crba_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+        vel_fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+        rne_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+        smooth_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+        encoder.copy_buffer_to_buffer(&state_buf.qacc_smooth, 0, &state_buf.qacc, 0, nv * 4);
+        integrate_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+
+        ctx.queue.submit([encoder.finish()]);
+
+        // Check quaternion norm every 100 steps
+        if (step + 1) % 100 == 0 {
+            let qpos = readback_f32s(&ctx, &state_buf.qpos, model.nq);
+            // Quaternion at qpos[3..7] (w,x,y,z)
+            let w = qpos[3];
+            let x = qpos[4];
+            let y = qpos[5];
+            let z = qpos[6];
+            let norm = (w * w + x * x + y * y + z * z).sqrt();
+            assert!(
+                (norm - 1.0).abs() < 0.01,
+                "Step {}: quaternion norm {norm:.6} deviated from 1.0",
+                step + 1
+            );
+        }
+    }
+
+    eprintln!("  T18 passed: quaternion stable over {nsteps} steps at 50 rad/s");
 }

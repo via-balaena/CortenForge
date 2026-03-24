@@ -118,7 +118,7 @@ impl GpuModelBuffers {
                     jtype: jnt_type_to_gpu(model.jnt_type[j]),
                     qpos_adr: model.jnt_qpos_adr[j] as u32,
                     dof_adr: model.jnt_dof_adr[j] as u32,
-                    _pad: 0,
+                    body_id: model.jnt_body[j] as u32,
                     axis: [axis.x as f32, axis.y as f32, axis.z as f32, 0.0],
                     pos: [jpos.x as f32, jpos.y as f32, jpos.z as f32, 0.0],
                 }

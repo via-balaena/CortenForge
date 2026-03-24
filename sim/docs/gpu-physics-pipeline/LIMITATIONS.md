@@ -183,3 +183,43 @@ spaces. If a future WGSL revision lifts this restriction, the
 workaround functions can be unified into a single generic helper.
 
 **Discovered:** Session 2 (CRBA backward scan, 2026-03-24).
+
+## 9. Backward tree scan: init and accumulation must be separate dispatches
+
+**Constraint:** When a backward tree scan needs to both COMPUTE a
+per-body value AND ACCUMULATE that value into parents, these two
+operations must be separate dispatches. They cannot be combined in a
+single depth-ordered pass.
+
+**Impact:** If the per-body computation and parent accumulation are in
+the same entry point (dispatched per depth level, leaves → root), the
+`atomicStore` of body d's own value at depth level d **overwrites**
+CAS-atomic additions that children at depth d+1 have already
+accumulated into body d during the previous depth dispatch.
+
+Example (RNE backward scan, 3-link pendulum):
+```
+Depth 3: body 3 computes cfrc[3], CAS-adds into cfrc[2]  ← cfrc[2] now has child contribution
+Depth 2: body 2 computes cfrc[2] via atomicStore          ← OVERWRITES child's CAS addition!
+          body 2 CAS-adds (only own cfrc) into cfrc[1]    ← missing body 3's contribution
+```
+
+**Workaround:** Split into two dispatches:
+1. `rne_cfrc_init` — per-body parallel (no depth ordering), computes and
+   `atomicStore`s each body's own cfrc. Buffer is pre-zeroed.
+2. `rne_backward` — depth-ordered (leaves → root), only CAS-atomic-adds
+   into parent. Reads (not writes) own cfrc.
+
+**Why CRBA didn't hit this:** CRBA already separates these — `crba_init`
+writes all per-body crb values in a single parallel dispatch, then
+`crba_backward` only does CAS accumulation. The separation was for a
+different reason (cinert format conversion), but it accidentally avoided
+this bug.
+
+**General rule:** Any backward tree scan that writes per-body values
+AND accumulates into parents must use the init+accumulate split pattern.
+Future backward scans (e.g., constraint force propagation) should follow
+this pattern from the start.
+
+**Discovered:** Session 3 (RNE backward scan, 2026-03-24). Caused ~4%
+error in pendulum qfrc_bias due to lost child contributions.

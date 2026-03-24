@@ -81,13 +81,19 @@ pub struct BodyModelGpu {
 /// Per-joint static model data. 48 bytes, 16-byte aligned.
 ///
 /// Layout matches WGSL `JointModel` exactly.
+/// ```text
+/// offset  0: jtype, qpos_adr, dof_adr, body_id   (4 × u32 = 16 bytes)
+/// offset 16: axis                                   (vec4<f32> = 16 bytes)
+/// offset 32: pos                                    (vec4<f32> = 16 bytes)
+/// ```
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct JointModelGpu {
     pub jtype: u32,
     pub qpos_adr: u32,
     pub dof_adr: u32,
-    pub _pad: u32,
+    /// Body that owns this joint (`model.jnt_body[j]`).
+    pub body_id: u32,
     pub axis: [f32; 4],
     pub pos: [f32; 4],
 }
@@ -137,6 +143,31 @@ pub struct FkParams {
     pub n_env: u32,
     pub nq: u32,
     pub _pad: u32,
+}
+
+/// Per-dispatch dynamics parameters. 48 bytes, 16-byte aligned.
+///
+/// Used by RNE, smooth, and integrate shaders. Contains gravity and
+/// timestep not present in `FkParams` (which serves kinematics only).
+/// Written into a pre-allocated uniform buffer with 256-byte slots.
+/// ```text
+/// offset  0: gravity                                 (vec4<f32> = 16 bytes)
+/// offset 16: timestep, nbody, njnt, nv               (4 × f32/u32 = 16 bytes)
+/// offset 32: nq, n_env, current_depth, nu             (4 × u32 = 16 bytes)
+/// ```
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct PhysicsParams {
+    /// Gravity vector (xyz, w=0).
+    pub gravity: [f32; 4],
+    pub timestep: f32,
+    pub nbody: u32,
+    pub njnt: u32,
+    pub nv: u32,
+    pub nq: u32,
+    pub n_env: u32,
+    pub current_depth: u32,
+    pub nu: u32,
 }
 
 // ── Conversion helpers ────────────────────────────────────────────────

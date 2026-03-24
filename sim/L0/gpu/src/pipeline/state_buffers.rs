@@ -57,6 +57,30 @@ pub struct GpuStateBuffers {
     /// Body spatial velocities: `vec4<f32>` × 2 per body [angular, linear].
     pub body_cvel: wgpu::Buffer,
 
+    // RNE state (Session 3)
+    /// Body bias accelerations: `vec4<f32>` × 2 per body [angular, linear].
+    pub body_cacc: wgpu::Buffer,
+    /// Body bias forces: `atomic<u32>` × 8 per body (2×vec4 as u32, for CAS backward scan).
+    pub body_cfrc: wgpu::Buffer,
+    /// Bias force vector (gravity + Coriolis + gyroscopic): `f32` × nv.
+    pub qfrc_bias: wgpu::Buffer,
+
+    // Force accumulators (Session 3 — zeroed for gravity-only)
+    /// Applied generalized forces: `f32` × nv (uploaded from CPU, zero for gravity-only).
+    pub qfrc_applied: wgpu::Buffer,
+    /// Actuator forces: `f32` × nv (zero when nu=0).
+    pub qfrc_actuator: wgpu::Buffer,
+    /// Passive forces (springs/dampers): `f32` × nv (zero when no springs/dampers).
+    pub qfrc_passive: wgpu::Buffer,
+
+    // Smooth dynamics (Session 3)
+    /// Total smooth force: `f32` × nv.
+    pub qfrc_smooth: wgpu::Buffer,
+    /// Unconstrained acceleration (M⁻¹ · `qfrc_smooth`): `f32` × nv.
+    pub qacc_smooth: wgpu::Buffer,
+    /// Final acceleration: `f32` × nv (= `qacc_smooth` for gravity-only; solver for Session 5+).
+    pub qacc: wgpu::Buffer,
+
     pub n_env: u32,
 }
 
@@ -126,6 +150,21 @@ impl GpuStateBuffers {
         // body_cvel: 2 × vec4 per body = 32 bytes/body
         let body_cvel = alloc(ctx, "body_cvel", nbody * 32, usage_inout);
 
+        // RNE state (Session 3)
+        // body_cacc: 2 × vec4 per body = 32 bytes/body (matching cvel layout)
+        let body_cacc = alloc(ctx, "body_cacc", nbody * 32, usage_inout);
+        // body_cfrc: atomic<u32> × 8 per body = 32 bytes/body (6 spatial force + 2 padding)
+        let body_cfrc = alloc(ctx, "body_cfrc", nbody * 32, usage_inout);
+        // Generalized force/acceleration vectors: nv f32 each
+        let nv_bytes = nv.max(1) * 4;
+        let qfrc_bias = alloc(ctx, "qfrc_bias", nv_bytes, usage_inout);
+        let qfrc_applied = alloc(ctx, "qfrc_applied", nv_bytes, usage_inout);
+        let qfrc_actuator = alloc(ctx, "qfrc_actuator", nv_bytes, usage_inout);
+        let qfrc_passive = alloc(ctx, "qfrc_passive", nv_bytes, usage_inout);
+        let qfrc_smooth = alloc(ctx, "qfrc_smooth", nv_bytes, usage_inout);
+        let qacc_smooth = alloc(ctx, "qacc_smooth", nv_bytes, usage_inout);
+        let qacc = alloc(ctx, "qacc", nv_bytes, usage_inout);
+
         Self {
             qpos,
             body_xpos,
@@ -144,6 +183,15 @@ impl GpuStateBuffers {
             qm_factor,
             qvel,
             body_cvel,
+            body_cacc,
+            body_cfrc,
+            qfrc_bias,
+            qfrc_applied,
+            qfrc_actuator,
+            qfrc_passive,
+            qfrc_smooth,
+            qacc_smooth,
+            qacc,
             n_env,
         }
     }

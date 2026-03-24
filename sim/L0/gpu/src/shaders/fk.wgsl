@@ -96,7 +96,7 @@ struct JointModel {
     jtype: u32,
     qpos_adr: u32,
     dof_adr: u32,
-    _pad: u32,
+    body_id: u32,
     axis: vec4<f32>,
     pos: vec4<f32>,
 };
