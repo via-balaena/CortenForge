@@ -300,6 +300,59 @@ pub struct NarrowphaseParams {
 /// Maximum pre-allocated pipeline contacts.
 pub const MAX_PIPELINE_CONTACTS: u32 = 32_768;
 
+/// Maximum pre-allocated constraint rows (6 × `MAX_PIPELINE_CONTACTS`).
+///
+/// Worst case: every contact has condim=4 → 6 pyramidal rows each.
+pub const MAX_CONSTRAINTS: u32 = 196_608;
+
+// ── Constraint solve params (Session 5) ─────────────────────────────
+
+/// Constraint assembly parameters. 64 bytes, 16-byte aligned.
+///
+/// Passed as a uniform to `assemble.wgsl`. Contains model-level defaults
+/// for solref/solimp (per-contact overrides are not yet supported on GPU).
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct AssemblyParams {
+    pub nv: u32,
+    pub max_contacts: u32,
+    pub max_constraints: u32,
+    pub nbody: u32,
+    pub timestep: f32,
+    pub impratio: f32,
+    /// Default solref: timeconst (standard mode).
+    pub solref_timeconst: f32,
+    /// Default solref: dampratio (standard mode).
+    pub solref_dampratio: f32,
+    /// Default solimp: impedance at zero violation.
+    pub solimp_d0: f32,
+    /// Default solimp: impedance at full violation.
+    pub solimp_dwidth: f32,
+    /// Default solimp: transition zone width (meters).
+    pub solimp_width: f32,
+    /// Default solimp: sigmoid midpoint.
+    pub solimp_midpoint: f32,
+    /// Default solimp: sigmoid power.
+    pub solimp_power: f32,
+    pub _pad: [f32; 3],
+}
+
+/// Newton solver parameters. 32 bytes, 16-byte aligned.
+///
+/// Passed as a uniform to `newton_solve.wgsl` and `map_forces.wgsl`.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct SolverParams {
+    pub nv: u32,
+    pub max_iter: u32,
+    pub max_ls: u32,
+    pub _pad0: u32,
+    pub tolerance: f32,
+    pub ls_tolerance: f32,
+    pub meaninertia: f32,
+    pub _pad1: f32,
+}
+
 // ── Conversion helpers ────────────────────────────────────────────────
 
 /// Convert `Vec<f64>` to `Vec<f32>`.

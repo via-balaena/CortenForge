@@ -3,7 +3,8 @@
 //! T1–T7:  FK — compare GPU body poses, cinert, cdof, subtree COM against CPU.
 //! T8–T12: CRBA + velocity FK — compare GPU qM, cvel against CPU.
 //! T13–T18: RNE + smooth + integration — bias forces, qacc_smooth, trajectories.
-//! T19–T23: Collision — AABB, SDF-SDF, SDF-plane, full collision pipeline.
+//! T19–T22: Collision — AABB, SDF-SDF, SDF-plane, full collision pipeline.
+//! T23–T27: Constraint solve — assembly, Newton solver, force mapping, stability.
 
 #![allow(
     clippy::expect_used,
@@ -23,6 +24,7 @@ use std::f64::consts::PI;
 use sim_core::types::{Data, Model};
 
 use super::collision::GpuCollisionPipeline;
+use super::constraint::GpuConstraintPipeline;
 use super::crba::GpuCrbaPipeline;
 use super::fk::{GpuFkPipeline, readback_f32s, readback_vec4s};
 use super::integrate::GpuIntegratePipeline;
@@ -1484,4 +1486,256 @@ fn t22_full_collision_pipeline() {
         "  T22 passed: full collision pipeline, {n_pairs} pairs, {} contacts",
         contacts.len()
     );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// T23–T27: Constraint solve
+// ══════════════════════════════════════════════════════════════════════
+
+/// Run full FK → CRBA → vel FK → RNE → smooth → collision → constraint pipeline
+/// and return GPU qacc readback.
+fn run_full_pipeline_with_constraints(
+    ctx: &GpuContext,
+    model: &Model,
+    model_buf: &GpuModelBuffers,
+    state_buf: &GpuStateBuffers,
+) -> Vec<f32> {
+    let fk_pipeline = GpuFkPipeline::new(ctx, model_buf, state_buf);
+    let crba_pipeline = GpuCrbaPipeline::new(ctx, model_buf, state_buf);
+    let vel_fk_pipeline = GpuVelocityFkPipeline::new(ctx, model_buf, state_buf);
+    let rne_pipeline = GpuRnePipeline::new(ctx, model_buf, state_buf, model);
+    let smooth_pipeline = GpuSmoothPipeline::new(ctx, model_buf, state_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(ctx, model, model_buf);
+    let constraint_pipeline = GpuConstraintPipeline::new(ctx, model_buf, state_buf, model);
+
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("full_pipeline"),
+        });
+
+    fk_pipeline.dispatch(ctx, model_buf, state_buf, &mut encoder);
+    crba_pipeline.dispatch(ctx, model_buf, state_buf, &mut encoder);
+    vel_fk_pipeline.dispatch(ctx, model_buf, state_buf, &mut encoder);
+    rne_pipeline.dispatch(ctx, model_buf, state_buf, model, &mut encoder);
+    smooth_pipeline.dispatch(ctx, model_buf, state_buf, model, &mut encoder);
+    collision_pipeline.encode(&mut encoder, ctx, model_buf, state_buf);
+    constraint_pipeline.encode(&mut encoder, state_buf);
+
+    ctx.queue.submit([encoder.finish()]);
+
+    readback_f32s(ctx, &state_buf.qacc, model.nv)
+}
+
+/// Readback constraint count from GPU.
+fn readback_constraint_count(ctx: &GpuContext, state_buf: &GpuStateBuffers) -> u32 {
+    let data = readback_f32s(ctx, &state_buf.constraint_count, 1);
+    f32::to_bits(data[0])
+}
+
+#[test]
+fn t23_constraint_assembly_produces_rows() {
+    let ctx = gpu_or_skip!();
+
+    // SDF sphere partially below ground → should produce contacts → constraint rows
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    let mut data = model.make_data();
+    // Place sphere center at z=3 → bottom of sphere at z=-2 → penetrates ground
+    data.qpos[0] = 0.0;
+    data.qpos[1] = 0.0;
+    data.qpos[2] = 3.0;
+    data.qpos[3] = 1.0;
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+
+    let _qacc = run_full_pipeline_with_constraints(&ctx, &model, &model_buf, &state_buf);
+
+    // Verify constraint rows were produced
+    let n_constraints = readback_constraint_count(&ctx, &state_buf);
+    eprintln!("  T23: constraint_count = {n_constraints}");
+    assert!(
+        n_constraints > 0,
+        "Should produce constraint rows from SDF-plane contacts"
+    );
+
+    // condim=3 → 4 rows per contact
+    assert!(
+        n_constraints % 4 == 0,
+        "Constraint count should be multiple of 4 (condim=3 pyramidal), got {n_constraints}"
+    );
+
+    // Verify efc_D values are positive (regularization)
+    let efc_d = readback_f32s(&ctx, &state_buf.efc_d, n_constraints as usize);
+    for (i, &d) in efc_d.iter().enumerate() {
+        assert!(
+            d > 0.0,
+            "efc_D[{i}] should be positive (regularization), got {d}"
+        );
+    }
+
+    eprintln!("  T23 passed: {n_constraints} constraint rows, all efc_D > 0");
+}
+
+#[test]
+fn t24_newton_solver_sphere_on_ground() {
+    let ctx = gpu_or_skip!();
+
+    // SDF sphere resting on ground — Newton solver should produce upward constraint force
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    let mut data = model.make_data();
+    data.qpos[2] = 3.0; // partially below ground
+    data.qpos[3] = 1.0;
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+
+    let qacc = run_full_pipeline_with_constraints(&ctx, &model, &model_buf, &state_buf);
+
+    // Also get qacc_smooth for comparison
+    let qacc_smooth = readback_f32s(&ctx, &state_buf.qacc_smooth, model.nv);
+
+    eprintln!("  T24: qacc_smooth = {:?}", &qacc_smooth);
+    eprintln!("  T24: qacc        = {:?}", &qacc);
+
+    // qacc_smooth should have negative z (gravity pulling down)
+    assert!(
+        qacc_smooth[2] < -1.0,
+        "qacc_smooth z should be < -1 (gravity), got {}",
+        qacc_smooth[2]
+    );
+
+    // qacc should have z pushed upward relative to qacc_smooth
+    // (constraint force opposes penetration)
+    assert!(
+        qacc[2] > qacc_smooth[2],
+        "Constraint should push qacc z upward: qacc.z={} > qacc_smooth.z={}",
+        qacc[2],
+        qacc_smooth[2]
+    );
+
+    // All values should be finite
+    for (i, &a) in qacc.iter().enumerate() {
+        assert!(a.is_finite(), "qacc[{i}] = {a} is not finite");
+    }
+
+    eprintln!(
+        "  T24 passed: qacc.z={:.4} > qacc_smooth.z={:.4} (constraint pushes up)",
+        qacc[2], qacc_smooth[2]
+    );
+}
+
+#[test]
+fn t25_zero_contacts_qacc_equals_smooth() {
+    let ctx = gpu_or_skip!();
+
+    // Sphere well above ground — no contacts
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    let mut data = model.make_data();
+    data.qpos[2] = 100.0; // far above ground
+    data.qpos[3] = 1.0;
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+
+    let qacc = run_full_pipeline_with_constraints(&ctx, &model, &model_buf, &state_buf);
+    let qacc_smooth = readback_f32s(&ctx, &state_buf.qacc_smooth, model.nv);
+
+    // No contacts → constraint_count should be 0
+    let n_constraints = readback_constraint_count(&ctx, &state_buf);
+    assert_eq!(
+        n_constraints, 0,
+        "Should have 0 constraints far above ground"
+    );
+
+    // qacc should exactly match qacc_smooth (Newton solver cold-starts from qacc_smooth
+    // and with 0 constraints, writes it back unchanged)
+    for i in 0..model.nv {
+        let diff = (qacc[i] - qacc_smooth[i]).abs();
+        assert!(
+            diff < 1e-6,
+            "qacc[{i}]={} should match qacc_smooth[{i}]={}, diff={diff}",
+            qacc[i],
+            qacc_smooth[i]
+        );
+    }
+
+    eprintln!("  T25 passed: zero contacts, qacc == qacc_smooth");
+}
+
+#[test]
+fn t26_multi_substep_stability() {
+    let ctx = gpu_or_skip!();
+
+    // SDF sphere dropped onto ground — run 10 substeps, verify no explosion
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    model.add_ground_plane();
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+
+    let mut data = model.make_data();
+    data.qpos[2] = 4.0; // sphere center at z=4 → slight penetration
+    data.qpos[3] = 1.0;
+
+    let model_buf = GpuModelBuffers::upload(&ctx, &model);
+    let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
+
+    let fk_pipeline = GpuFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let crba_pipeline = GpuCrbaPipeline::new(&ctx, &model_buf, &state_buf);
+    let vel_fk_pipeline = GpuVelocityFkPipeline::new(&ctx, &model_buf, &state_buf);
+    let rne_pipeline = GpuRnePipeline::new(&ctx, &model_buf, &state_buf, &model);
+    let smooth_pipeline = GpuSmoothPipeline::new(&ctx, &model_buf, &state_buf);
+    let collision_pipeline = GpuCollisionPipeline::new(&ctx, &model, &model_buf);
+    let constraint_pipeline = GpuConstraintPipeline::new(&ctx, &model_buf, &state_buf, &model);
+    let integrate_pipeline = GpuIntegratePipeline::new(&ctx, &model_buf, &state_buf);
+
+    let n_steps = 10;
+    for step in 0..n_steps {
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("substep"),
+            });
+
+        fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+        crba_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+        vel_fk_pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
+        rne_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+        smooth_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+        collision_pipeline.encode(&mut encoder, &ctx, &model_buf, &state_buf);
+        constraint_pipeline.encode(&mut encoder, &state_buf);
+        integrate_pipeline.dispatch(&ctx, &model_buf, &state_buf, &model, &mut encoder);
+
+        ctx.queue.submit([encoder.finish()]);
+
+        // Check stability every step
+        let qpos = readback_f32s(&ctx, &state_buf.qpos, model.nq);
+        for (i, &p) in qpos.iter().enumerate() {
+            assert!(
+                p.is_finite(),
+                "Step {step}: qpos[{i}] = {p} is not finite (explosion)"
+            );
+            assert!(
+                p.abs() < 1000.0,
+                "Step {step}: qpos[{i}] = {p} exploded (|val| > 1000)"
+            );
+        }
+    }
+
+    let final_qpos = readback_f32s(&ctx, &state_buf.qpos, model.nq);
+    let final_z = final_qpos[2];
+    eprintln!("  T26: after {n_steps} steps, z = {final_z:.4}");
+
+    // Sphere should not have fallen through the ground (z should be > -10)
+    assert!(final_z > -10.0, "Sphere fell through ground: z = {final_z}");
+
+    eprintln!("  T26 passed: {n_steps} substeps stable, final z = {final_z:.4}");
 }

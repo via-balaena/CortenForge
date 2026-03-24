@@ -53,6 +53,11 @@ pub struct GpuModelBuffers {
     pub nq: u32,
     /// Number of mocap bodies.
     pub nmocap: u32,
+
+    // Constraint solve data (Session 5)
+    /// Per-body inverse weight for diagonal approximation: `array<vec4<f32>>`.
+    /// x = translational (1/mass), y = rotational (3/trace(I)), z = 0, w = 0.
+    pub body_invweight0: wgpu::Buffer,
 }
 
 impl GpuModelBuffers {
@@ -210,6 +215,23 @@ impl GpuModelBuffers {
             });
         }
 
+        // ── Pack per-body inverse weight (Session 5) ────────────────
+        let invweight0_cpu: Vec<[f32; 4]> = (0..nbody)
+            .map(|b| {
+                let trans = if b < model.body_invweight0.len() {
+                    model.body_invweight0[b][0] as f32
+                } else {
+                    0.0
+                };
+                let rot = if b < model.body_invweight0.len() {
+                    model.body_invweight0[b][1] as f32
+                } else {
+                    0.0
+                };
+                [trans, rot, 0.0, 0.0]
+            })
+            .collect();
+
         // ── Upload to GPU ─────────────────────────────────────────────
         let bodies = upload_structs(ctx, "bodies", &bodies_cpu);
         let joints = upload_structs(ctx, "joints", &joints_cpu);
@@ -217,6 +239,7 @@ impl GpuModelBuffers {
         let dofs = upload_structs(ctx, "dofs", &dofs_cpu);
         let sdf_values = upload_structs(ctx, "sdf_values", &all_sdf_values);
         let sdf_metas = upload_structs(ctx, "sdf_metas", &sdf_metas_cpu);
+        let body_invweight0 = upload_structs(ctx, "body_invweight0", &invweight0_cpu);
 
         Self {
             bodies,
@@ -233,6 +256,7 @@ impl GpuModelBuffers {
             nv: nv as u32,
             nq: nq as u32,
             nmocap,
+            body_invweight0,
         }
     }
 }

@@ -7,6 +7,7 @@
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::similar_names, // body_xpos vs body_xipos is intentional (MuJoCo naming)
+    clippy::too_many_lines,
     missing_docs,
 )]
 
@@ -14,7 +15,7 @@ use sim_core::types::Data;
 use wgpu::util::DeviceExt;
 
 use super::model_buffers::GpuModelBuffers;
-use super::types::{MAX_PIPELINE_CONTACTS, f64s_to_f32s};
+use super::types::{MAX_CONSTRAINTS, MAX_PIPELINE_CONTACTS, f64s_to_f32s};
 use crate::context::GpuContext;
 
 /// Per-environment mutable state on GPU.
@@ -88,6 +89,20 @@ pub struct GpuStateBuffers {
     pub contact_buffer: wgpu::Buffer,
     /// Active contact count: `atomic<u32>`.
     pub contact_count: wgpu::Buffer,
+
+    // Constraint solve state (Session 5)
+    /// Constraint Jacobian: `f32` × `max_constraints` × nv (row-major).
+    pub efc_j: wgpu::Buffer,
+    /// Constraint stiffness: `f32` × `max_constraints`.
+    pub efc_d: wgpu::Buffer,
+    /// Reference acceleration: `f32` × `max_constraints`.
+    pub efc_aref: wgpu::Buffer,
+    /// Solver output force: `f32` × `max_constraints`.
+    pub efc_force: wgpu::Buffer,
+    /// Active constraint row count: `atomic<u32>`.
+    pub constraint_count: wgpu::Buffer,
+    /// Constraint force in joint space: `f32` × nv.
+    pub qfrc_constraint: wgpu::Buffer,
 
     pub n_env: u32,
 }
@@ -186,6 +201,15 @@ impl GpuStateBuffers {
         // contact_count: single atomic u32
         let contact_count = alloc(ctx, "contact_count", 4, usage_inout);
 
+        // Constraint solve state (Session 5)
+        let max_c = u64::from(MAX_CONSTRAINTS);
+        let efc_j = alloc(ctx, "efc_J", max_c * nv.max(1) * 4, usage_inout);
+        let efc_d = alloc(ctx, "efc_D", max_c * 4, usage_inout);
+        let efc_aref = alloc(ctx, "efc_aref", max_c * 4, usage_inout);
+        let efc_force = alloc(ctx, "efc_force", max_c * 4, usage_inout);
+        let constraint_count = alloc(ctx, "constraint_count", 4, usage_inout);
+        let qfrc_constraint = alloc(ctx, "qfrc_constraint", nv_bytes, usage_inout);
+
         Self {
             qpos,
             body_xpos,
@@ -216,6 +240,12 @@ impl GpuStateBuffers {
             geom_aabb,
             contact_buffer,
             contact_count,
+            efc_j,
+            efc_d,
+            efc_aref,
+            efc_force,
+            constraint_count,
+            qfrc_constraint,
             n_env,
         }
     }

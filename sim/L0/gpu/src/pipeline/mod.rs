@@ -10,6 +10,7 @@
 //! semi-implicit Euler integration. First full GPU physics loop.
 
 pub mod collision;
+pub mod constraint;
 pub mod crba;
 pub mod fk;
 pub mod integrate;
@@ -23,6 +24,7 @@ pub mod types;
 pub mod velocity_fk;
 
 pub use collision::GpuCollisionPipeline;
+pub use constraint::GpuConstraintPipeline;
 pub use crba::GpuCrbaPipeline;
 pub use fk::GpuFkPipeline;
 pub use integrate::GpuIntegratePipeline;
