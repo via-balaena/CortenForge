@@ -46,9 +46,15 @@ impl GpuContext {
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("sim-gpu-collision"),
+                label: Some("sim-gpu-physics"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                // Raise storage buffer limit for physics pipeline (FK uses
+                // ~12 storage buffers per shader stage). Metal supports 31,
+                // Vulkan/NVIDIA supports many more. WebGPU default is 8.
+                required_limits: wgpu::Limits {
+                    max_storage_buffers_per_shader_stage: 16,
+                    ..wgpu::Limits::default()
+                },
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
                 experimental_features: wgpu::ExperimentalFeatures::default(),

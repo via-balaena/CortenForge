@@ -118,14 +118,27 @@ Everything else is embarrassingly parallel.
 
 ### 6.1 Design principles
 
-**SoA (struct of arrays):** All GPU buffers store one field across all
-elements, not one element with all fields. This maximizes memory
-coalescing when threads access the same field across different elements.
+**Packed structs, not SoA:** The original design called for SoA (struct
+of arrays) — one buffer per field. In practice, WebGPU's
+`maxStorageBuffersPerShaderStage` default of 8 makes SoA infeasible for
+model data (~18 fields). **Session 1 established the actual pattern:**
+pack related per-element fields into struct arrays (AoS on GPU).
+
+This is the standard approach in production GPU physics (MJX uses JAX
+pytrees which are effectively the same). Memory coalescing is preserved
+because all threads at a given depth level access the same struct fields
+in sequence.
+
+See `gpu-physics-pipeline/LIMITATIONS.md` §1 for full rationale.
 
 **n_env dimension:** Every per-state buffer has a leading `n_env`
 dimension. For `n_env=1` (interactive), this is just an offset of 0.
 For `n_env=1000` (batch), each thread computes
 `env_id * stride + element_id`. Same shader, wider dispatch.
+
+**Note:** Session 1 hardcodes `n_env=1`. Batch support (n_env > 1)
+requires adding env-offset math to qpos indexing and CAS atomics for
+backward scans. Deferred to a future session.
 
 **f32 throughout:** All GPU physics uses f32. Conversion from f64
 happens at the CPU→GPU boundary (upload) and GPU→CPU boundary
@@ -135,53 +148,71 @@ happens at the CPU→GPU boundary (upload) and GPU→CPU boundary
 No dynamic growth on GPU. Atomic counters track active elements
 (contacts, pairs, constraints) within pre-allocated capacity.
 
+**vec4 alignment:** All vec3 fields are padded to vec4 (w=0) for
+16-byte alignment. Cinert uses 12 floats (3×vec4) instead of 10, and
+cdof uses 8 floats (2×vec4) instead of 6. The wasted padding is
+negligible and enables clean `array<vec4<f32>>` access in WGSL.
+
 ### 6.2 Static buffers (uploaded once at model creation)
 
 These encode the model structure. Shared across all environments.
 
-**Tree structure:**
+**Implementation note (Session 1):** Static model data is packed into
+3 GPU struct arrays, not individual buffers:
+
+| GPU buffer | Rust type | WGSL type | Bind group |
+|---|---|---|---|
+| `bodies` | `array<BodyModelGpu>` | `array<BodyModel>` | Group 1, binding 0 |
+| `joints` | `array<JointModelGpu>` | `array<JointModel>` | Group 1, binding 1 |
+| `geoms` | `array<GeomModelGpu>` | `array<GeomModel>` | Group 3, binding 0 |
+
+**BodyModel struct** (112 bytes, 16-byte aligned):
+
+| Field | Type | Notes |
+|---|---|---|
+| `parent` | u32 | Parent body index. body 0 → 0 (self-referential world). |
+| `depth` | u32 | Tree depth. Computed at upload from `body_parent`. |
+| `jnt_adr` | u32 | Index of first joint for this body. |
+| `jnt_num` | u32 | Number of joints on this body. |
+| `dof_adr` | u32 | Index of first DOF for this body. |
+| `dof_num` | u32 | Number of DOFs on this body. |
+| `mocap_id` | u32 | Mocap index (0xFFFFFFFF = not mocap). |
+| `_pad` | u32 | Alignment padding. |
+| `pos` | vec4\<f32\> | Body position offset in parent frame (w=0). |
+| `quat` | vec4\<f32\> | Body orientation offset in parent frame (x,y,z,w). |
+| `ipos` | vec4\<f32\> | Inertial frame offset (w=0). |
+| `iquat` | vec4\<f32\> | Inertial frame orientation (x,y,z,w). |
+| `inertia` | vec4\<f32\> | xyz = diagonal inertia in body frame, w = mass. |
+
+**JointModel struct** (48 bytes, 16-byte aligned):
+
+| Field | Type | Notes |
+|---|---|---|
+| `jtype` | u32 | Joint type: Free=0, Ball=1, Hinge=2, Slide=3. |
+| `qpos_adr` | u32 | Index into qpos. |
+| `dof_adr` | u32 | Index into qvel/qacc. |
+| `_pad` | u32 | Alignment padding. |
+| `axis` | vec4\<f32\> | Joint axis in parent frame (w=0). |
+| `pos` | vec4\<f32\> | Joint anchor in parent frame (w=0). |
+
+**GeomModel struct** (48 bytes, 16-byte aligned):
+
+| Field | Type | Notes |
+|---|---|---|
+| `body_id` | u32 | Body index for this geom. |
+| `_pad` | u32[3] | Alignment padding. |
+| `pos` | vec4\<f32\> | Geom offset in body frame (w=0). |
+| `quat` | vec4\<f32\> | Geom orientation in body frame (x,y,z,w). |
+
+Additional static data not yet packed into structs (used by later sessions):
 
 | Buffer | Size | Contents |
 |---|---|---|
-| `body_parent` | nbody × 4 | Parent body index (u32). body_parent[0] = 0 (world). |
-| `body_depth` | nbody × 4 | Tree depth per body (u32). body_depth[0] = 0. |
-| `body_jnt_adr` | nbody × 4 | Index of first joint for this body (u32). |
-| `body_jnt_num` | nbody × 4 | Number of joints on this body (u32). |
-| `body_dof_adr` | nbody × 4 | Index of first DOF for this body (u32). |
-| `body_dof_num` | nbody × 4 | Number of DOFs on this body (u32). |
-| `body_qpos_adr` | nbody × 4 | Index into qpos for this body (u32). |
-| `body_pos` | nbody × 12 | Body position offset in parent frame (vec3<f32>). |
-| `body_quat` | nbody × 16 | Body orientation offset in parent frame (vec4<f32>). |
-| `body_ipos` | nbody × 12 | Inertial frame offset (vec3<f32>). |
-| `body_iquat` | nbody × 16 | Inertial frame orientation (vec4<f32>). |
-| `body_mass` | nbody × 4 | Body mass (f32). |
-| `body_inertia` | nbody × 12 | Diagonal inertia in body frame (vec3<f32>). |
-| `body_mocap_id` | nbody × 4 | Mocap index (u32, 0xFFFFFFFF = not mocap). |
-| `max_depth` | 4 | Maximum tree depth (u32). Controls dispatch count. |
-
-**Joint structure:**
-
-| Buffer | Size | Contents |
-|---|---|---|
-| `jnt_type` | njnt × 4 | Joint type enum: Free=0, Ball=1, Hinge=2, Slide=3 (u32). |
-| `jnt_axis` | njnt × 12 | Joint axis in parent frame (vec3<f32>). |
-| `jnt_pos` | njnt × 12 | Joint anchor in parent frame (vec3<f32>). |
-| `jnt_body` | njnt × 4 | Body index for this joint (u32). |
-| `jnt_qpos_adr` | njnt × 4 | Index into qpos (u32). |
-| `jnt_dof_adr` | njnt × 4 | Index into qvel/qacc (u32). |
 | `dof_body` | nv × 4 | Body index per DOF (u32). |
 | `dof_parent` | nv × 4 | Parent DOF index for LDL sparsity (u32, 0xFFFFFFFF = none). |
-| `jnt_armature` | njnt × 4 | Armature inertia per joint (f32). Applied to all DOFs of the joint. |
-| `dof_armature` | nv × 4 | Per-DOF armature inertia (f32). Added on top of jnt_armature. |
-
-**Geometry:**
-
-| Buffer | Size | Contents |
-|---|---|---|
+| `jnt_armature` | njnt × 4 | Armature inertia per joint (f32). |
+| `dof_armature` | nv × 4 | Per-DOF armature inertia (f32). |
 | `geom_type` | ngeom × 4 | GeomType enum (u32). |
-| `geom_body` | ngeom × 4 | Body index per geom (u32). |
-| `geom_pos` | ngeom × 12 | Geom offset in body frame (vec3<f32>). |
-| `geom_quat` | ngeom × 16 | Geom orientation in body frame (vec4<f32>). |
 | `geom_size` | ngeom × 12 | Geom dimensions for AABB (vec3<f32>). |
 | `geom_shape_id` | ngeom × 4 | SDF grid index (u32). |
 | `geom_friction` | ngeom × 12 | Per-geom friction [slide, torsion, roll] (vec3<f32>). |
@@ -224,24 +255,23 @@ These hold the simulation state. Each environment has its own copy.
 
 | Buffer | Size per env | Contents |
 |---|---|---|
-| `body_xpos` | nbody × 12 | World-frame position (vec3<f32>). |
-| `body_xquat` | nbody × 16 | World-frame quaternion (vec4<f32>). |
-| `body_xmat` | nbody × 36 | World-frame rotation matrix (mat3x3<f32>). |
-| `body_xipos` | nbody × 12 | COM position in world frame (vec3<f32>). |
-| `body_cinert` | nbody × 40 | Spatial inertia in world frame (10 f32: mass, COM offset h[3], symmetric I_rot[6]). Written by FK. See §8.1 for reconstruction. |
-| `body_crb` | nbody × 40 | Composite rigid body inertia (same 10-float format). Written by CRBA. |
+| `body_xpos` | nbody × 16 | World-frame position (vec4<f32>, w=0). |
+| `body_xquat` | nbody × 16 | World-frame quaternion (vec4<f32>, x,y,z,w). |
+| `body_xipos` | nbody × 16 | COM position in world frame (vec4<f32>, w=0). |
+| `body_cinert` | nbody × 48 | Spatial inertia (12 f32 = 3×vec4). See §8.1 for layout. |
+| `body_crb` | nbody × 48 | Composite rigid body inertia (same 12-float format). Written by CRBA. |
 | `body_cvel` | nbody × 24 | Body spatial velocity (6 × f32: [ω; v]). Written by velocity_fk. |
 | `body_cacc` | nbody × 24 | Body bias acceleration (6 × f32). |
 | `body_cfrc` | nbody × 24 | Body bias force (6 × f32). |
 | `subtree_mass` | nbody × 4 | Subtree total mass (f32). |
-| `subtree_com` | nbody × 12 | Subtree COM position (vec3<f32>). |
+| `subtree_com` | nbody × 16 | Subtree COM position (vec4<f32>, w=0). |
 
 **Per-geom computed state:**
 
 | Buffer | Size per env | Contents |
 |---|---|---|
-| `geom_xpos` | ngeom × 12 | World-frame position (vec3<f32>). |
-| `geom_xmat` | ngeom × 36 | World-frame rotation (mat3x3<f32>). |
+| `geom_xpos` | ngeom × 16 | World-frame position (vec4<f32>, w=0). |
+| `geom_xmat` | ngeom × 48 | World-frame rotation (3×vec4<f32>, column-major). |
 | `geom_aabb` | ngeom × 24 | World AABB [min, max] (2 × vec3<f32>). |
 
 **Force accumulators:**
@@ -267,7 +297,7 @@ These hold the simulation state. Each environment has its own copy.
 
 | Buffer | Size per env | Contents |
 |---|---|---|
-| `cdof` | nv × 24 | Joint motion subspace in world frame (6 × f32 per DOF). |
+| `cdof` | nv × 32 | Joint motion subspace in world frame (2×vec4 = 8 f32 per DOF; 6 used, 2 padding). |
 
 **Constraint working set:**
 
@@ -414,17 +444,32 @@ fn fk_forward(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ```
 
-**Dispatch (Rust side):**
+**Dispatch (Rust side) — dynamic uniform offsets:**
+
+The depth-level `FkParams` uniform is NOT re-uploaded between passes.
+Instead, all depth slots are pre-written into a single uniform buffer
+(256-byte aligned slots), and `set_bind_group()` selects the slot via
+a dynamic offset. This avoids multiple `queue.submit()` calls.
+
 ```rust
+// Pre-write all depth slots before encoding
 for depth in 0..=max_depth {
-    update_depth_uniform(depth);
+    let offset = u64::from(depth) * 256;  // minUniformBufferOffsetAlignment
+    queue.write_buffer(&params_buffer, offset, bytemuck::bytes_of(&params));
+}
+
+// Encode all passes in one encoder, one submit
+for depth in 0..=max_depth {
+    let dyn_offset = depth * 256;
     let mut pass = encoder.begin_compute_pass(&desc);
     pass.set_pipeline(&fk_pipeline);
-    pass.set_bind_group(0, &fk_bind_group, &[]);
-    // Dispatch enough threads to cover all bodies × all envs
+    pass.set_bind_group(0, &params_bind_group, &[dyn_offset]);
+    pass.set_bind_group(1, &model_bind_group, &[]);
+    pass.set_bind_group(2, &state_bind_group, &[]);
+    pass.set_bind_group(3, &geom_bind_group, &[]);
     pass.dispatch_workgroups(
-        ceil(nbody, 64),   // X: bodies
-        n_env,             // Y: environments
+        nbody.div_ceil(64), // X: bodies
+        n_env,              // Y: environments
         1,
     );
 }
@@ -492,11 +537,12 @@ for j in body_jnt_adr[body] .. body_jnt_adr[body] + body_jnt_num[body]:
             quat         = rot × quat              // LEFT multiply (world frame)
             pos          = world_anchor + rotate(rot, pos - world_anchor)
         Ball:
-            world_anchor = pos + rotate(quat, jnt_pos[j])
-            dq           = normalize(vec4(qpos[adr..adr+4]))
-            rot          = body_xquat[body] × dq × conjugate(body_xquat[body])
-            quat         = rot × quat              // LEFT multiply
-            pos          = world_anchor + rotate(rot, pos - world_anchor)
+            // qpos is [w,x,y,z] → swizzle to (x,y,z,w) for GPU quaternion layout
+            dq           = normalize(vec4(qpos[adr+1], qpos[adr+2], qpos[adr+3], qpos[adr]))
+            quat         = quat × dq              // RIGHT multiply (local frame)
+            // NOTE: The original spec had MJX-style LEFT multiply with conjugate sandwich.
+            // Session 1 matched the CPU (position.rs:90-98) which uses RIGHT multiply.
+            // This is simpler and correct — Ball joints rotate in the body's local frame.
         Slide:
             pos += rotate(quat, jnt_axis[j]) × qpos[adr]
 ```
@@ -522,18 +568,22 @@ ximat = quat_to_mat3(quat × body_iquat[body])
 ```
 
 **Step 6 — Spatial inertia (cinert):**
-Compute the 6×6 spatial inertia in world frame, stored as 10 floats:
+Compute the 6×6 spatial inertia in world frame, stored as 12 floats
+(3 × vec4, padded from 10 for alignment — see LIMITATIONS.md §3):
 ```
 h = xipos - pos                    // COM offset from body origin (world frame)
 I_COM = ximat × diag(body_inertia[body]) × ximat^T   // rotated inertia
-cinert = [body_mass[body], h.x, h.y, h.z,
-          I_COM[0,0], I_COM[0,1], I_COM[0,2],
-          I_COM[1,1], I_COM[1,2], I_COM[2,2]]
+cinert[body*3 + 0] = vec4(mass, h.x, h.y, h.z)
+cinert[body*3 + 1] = vec4(I_COM[0,0], I_COM[0,1], I_COM[0,2], I_COM[1,1])
+cinert[body*3 + 2] = vec4(I_COM[1,2], I_COM[2,2], 0, 0)  // 2 padding floats
 ```
 
-**Reconstructing the 6×6 from 10 floats** (needed by CRBA and RNE):
+**Reconstructing the 6×6 from 12 floats** (needed by CRBA and RNE):
 ```
-m = cinert[0]; h = cinert[1..4]; I_COM = symmetric3(cinert[4..10])
+v0 = cinert[body*3 + 0]    // (mass, h.x, h.y, h.z)
+v1 = cinert[body*3 + 1]    // (I_00, I_01, I_02, I_11)
+v2 = cinert[body*3 + 2]    // (I_12, I_22, _, _)
+m = v0.x; h = v0.yzw; I_COM = symmetric3(v1.xyzw, v2.xy)
 I_rot = I_COM + m × (dot(h,h) × I₃ - outer(h,h))   // parallel axis
 coupling = m × skew(h)
 I_spatial = [[I_rot, coupling], [coupling^T, m × I₃]]
@@ -1124,34 +1174,40 @@ to be self-contained: start by reading the spec sections listed, read
 the CPU reference files, implement, validate against CPU, commit. Use
 `/clear` between sessions — the spec provides full continuity.
 
-### Session 1: FK + tree scan primitive
+### Session 1: FK + tree scan primitive — COMPLETE (2026-03-24)
 
 **Goal:** Body poses computed on GPU match CPU FK within f32 tolerance.
 
-**Spec sections:** §7 (tree scan primitive), §8.1 (fk.wgsl)
+**Spec:** `sim/docs/gpu-physics-pipeline/SESSION_1_FK_TREE_SCAN.md`
 
-**CPU reference files:**
-- `sim/L0/core/src/forward/position.rs` — FK implementation
-- `sim/L0/core/src/joint_visitor.rs` — motion subspace (cdof)
-- `sim/L0/core/src/dynamics/spatial.rs` — spatial inertia (cinert)
+**Implemented:**
+1. Tree scan dispatch with dynamic uniform offsets (one submit, not one per depth)
+2. `fk.wgsl` — 4 entry points: fk_forward, fk_geom_poses, fk_subtree_backward, fk_subtree_normalize
+3. Packed struct buffers (`BodyModelGpu`, `JointModelGpu`, `GeomModelGpu`) — §6.2 updated
+4. `GpuModelBuffers` — computes `body_depth`/`max_depth` at upload, packs structs
+5. `GpuStateBuffers` — per-env state with n_env=1 (batch support deferred)
+6. `GpuFkPipeline` — 4 pipelines, unified layout (4 bind groups), dispatch loop
+7. Readback utilities (`readback_vec4s`, `readback_f32s`)
 
-**Implement:**
-1. Tree scan dispatch infrastructure (depth-uniform, per-level dispatch)
-2. `fk.wgsl` — body poses, cinert, geom poses, cdof, subtree COM
-3. SoA buffer layout with n_env dimension (§6)
-4. CPU→GPU upload for static model data + initial qpos
-5. GPU→CPU readback for body_xpos/xquat validation
+**Validated (7 tests, all passing):**
+- T1: Free body xpos/xquat (1e-5)
+- T2: 7-body hinge chain xpos/xquat (1e-4)
+- T3: Free body at offset (1e-5)
+- T4: Cinert for free body (1e-4)
+- T5: cdof for 3-link pendulum (1e-4)
+- T6: Subtree COM for 3-link pendulum (1e-4)
+- T7: Cinert mass for hinge chain (1e-3)
 
-**Validate:**
-- Compare GPU body_xpos/xquat vs CPU mj_fwd_position() for hockey (flat tree)
-- Compare GPU body_xpos/xquat vs CPU for a 7-body chain (depth 7) — validates
-  level-order scan correctness for non-flat trees
-- Test hinge with non-zero jnt_pos — verifies pivot-point rotation, left-multiply,
-  axis rotation to world frame
-- Compare GPU cinert vs CPU cinert (10-float → 6×6 reconstruction)
-- Compare GPU cdof vs CPU joint_motion_subspace()
+**Deviations from original spec:**
+- Buffer architecture: packed structs (AoS) instead of SoA individual buffers (wgpu limit)
+- Ball joint: RIGHT multiply matching CPU, not LEFT multiply from MJX (§8.1 updated)
+- Cinert: 12 floats (3×vec4) not 10; cdof: 8 floats (2×vec4) not 6 (alignment)
+- Subtree COM backward: plain f32 addition, not CAS atomics (single-workgroup safe)
+- `max_storage_buffers_per_shader_stage` raised to 16 in `GpuContext`
 
-**Milestone:** `cargo test -p sim-gpu` passes FK validation tests.
+**Constraints documented:** `sim/docs/gpu-physics-pipeline/LIMITATIONS.md`
+
+**Milestone:** `cargo test -p sim-gpu` — 11/11 tests pass (4 existing + 7 new).
 
 ---
 
@@ -1160,6 +1216,15 @@ the CPU reference files, implement, validate against CPU, commit. Use
 **Goal:** Mass matrix M and body velocities cvel match CPU within f32 tolerance.
 
 **Spec sections:** §7.3 (backward scan f32 workaround), §8.2 (crba.wgsl), §8.3 (velocity_fk.wgsl)
+
+**Inherits from Session 1:**
+- `GpuFkPipeline` (produces body_xpos, body_xquat, body_cinert, cdof)
+- Packed struct pattern for model data (`BodyModelGpu`, `JointModelGpu`)
+- Dynamic uniform offset dispatch pattern
+- `GpuContext` with `max_storage_buffers_per_shader_stage = 16`
+- Subtree COM backward scan uses plain f32 addition — **Session 2 must add
+  CAS atomics** for the CRBA backward scan (multiple children → same parent,
+  potentially across workgroups). See `LIMITATIONS.md` §4.
 
 **CPU reference files:**
 - `sim/L0/core/src/dynamics/crba.rs` — CRBA implementation
