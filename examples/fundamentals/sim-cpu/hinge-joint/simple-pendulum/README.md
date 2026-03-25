@@ -4,6 +4,9 @@ A rigid rod with a tip mass, hanging from a hinge joint. Displaced 30° from
 vertical and released, it swings back and forth — the simplest system that
 demonstrates a **hinge (revolute) joint**.
 
+See also: [Double Pendulum](../double-pendulum/) — two-link chaotic chain with
+energy conservation validation.
+
 ## What you see
 
 - **Red tip sphere** — the 1 kg point mass at the end of the rod

@@ -2446,6 +2446,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-hinge-joint-double-pendulum"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-hinge-joint-pendulum"
 version = "0.7.0"
 dependencies = [
