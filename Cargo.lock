@@ -2446,6 +2446,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-hinge-joint-pendulum"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-mesh-pipeline"
 version = "0.7.0"
 dependencies = [
@@ -2460,17 +2470,6 @@ dependencies = [
  "mesh-shell",
  "nalgebra",
  "sim-bevy",
-]
-
-[[package]]
-name = "example-pendulum-sim"
-version = "0.7.0"
-dependencies = [
- "anyhow",
- "bevy",
- "sim-bevy",
- "sim-core",
- "sim-mjcf",
 ]
 
 [[package]]
