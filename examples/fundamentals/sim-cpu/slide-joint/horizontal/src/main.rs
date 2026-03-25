@@ -1,8 +1,8 @@
-//! Slide Joint — Prismatic Spring-Mass Oscillator
+//! Horizontal Slide Joint — Prismatic Spring-Mass Oscillator
 //!
-//! A block on a frictionless rail, held between two springs attached to the
-//! walls at each end. Displaced from center and released, it oscillates as a
-//! damped harmonic oscillator.
+//! A block on a frictionless horizontal rail, held between two springs attached
+//! to the walls at each end. Displaced from center and released, it oscillates
+//! as a damped harmonic oscillator.
 //!
 //! Demonstrates: `type="slide"`, joint axis, stiffness, damping, armature
 //! (reflected inertia), joint limits.
@@ -113,7 +113,7 @@ enum SpringSide {
 
 fn main() {
     let t = analytical_period();
-    println!("=== CortenForge: Slide Joint ===");
+    println!("=== CortenForge: Horizontal Slide Joint ===");
     println!("  Mass between two springs on a frictionless rail");
     println!("  m=1.0kg  armature=0.1  k=20 N/m  c=0.2 Ns/m");
     println!("  Effective mass = {MASS_EFF:.1} kg");
@@ -124,7 +124,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "CortenForge — Slide Joint".into(),
+                title: "CortenForge — Horizontal Slide Joint".into(),
                 ..default()
             }),
             ..default()

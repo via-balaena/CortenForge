@@ -1,9 +1,12 @@
-# Slide Joint — Prismatic Spring-Mass Oscillator
+# Horizontal Slide Joint — Prismatic Spring-Mass Oscillator
 
-A block rides a frictionless rail, held between two springs attached to the
-walls at each end. Displaced from center and released, it oscillates back and
-forth as a damped harmonic oscillator — the simplest system that demonstrates
-a **slide (prismatic) joint**.
+A block rides a frictionless horizontal rail, held between two springs attached
+to the walls at each end. Displaced from center and released, it oscillates
+back and forth as a damped harmonic oscillator — the simplest system that
+demonstrates a **slide (prismatic) joint**.
+
+See also: [Vertical Slide Joint](../vertical/) — the gravitational counterpart,
+where gravity shifts the equilibrium position.
 
 ## What you see
 

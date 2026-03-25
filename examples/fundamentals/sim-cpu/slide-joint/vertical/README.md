@@ -3,7 +3,10 @@
 A block rides a vertical rail, suspended by a spring from an overhead mount.
 Gravity pulls it down; the spring pulls it back up. Released below equilibrium,
 it oscillates as a damped harmonic oscillator around a **gravity-shifted rest
-position** — the key difference from the horizontal sibling example.
+position**.
+
+See also: [Horizontal Slide Joint](../horizontal/) — the zero-gravity baseline,
+where the equilibrium is at qpos=0.
 
 ## What you see
 
