@@ -255,8 +255,14 @@ pub struct ModelDataRoot;
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters
 pub fn step_model_data(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
     if let Err(e) = data.0.step(&model.0) {
-        // Log the error but continue - physics errors are typically recoverable
         eprintln!("Physics step failed: {e}");
+        return;
+    }
+    // Refresh derived quantities (sensors, geom/body poses, energy) so they
+    // match the post-integration qpos/qvel. Without this, these fields lag
+    // by one timestep — the MuJoCo pipeline computes them BEFORE integration.
+    if let Err(e) = data.0.forward(&model.0) {
+        eprintln!("Post-step forward failed: {e}");
     }
 }
 
@@ -306,6 +312,14 @@ pub fn step_physics_realtime(
         }
         acc.0 -= dt_sim;
         steps += 1;
+    }
+    // Refresh derived quantities (sensors, geom/body poses, energy) so they
+    // match the post-integration qpos/qvel. Without this, these fields lag
+    // by one timestep — the MuJoCo pipeline computes them BEFORE integration.
+    if steps > 0 {
+        if let Err(e) = data.0.forward(&model.0) {
+            eprintln!("Post-step forward failed: {e}");
+        }
     }
 }
 
