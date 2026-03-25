@@ -201,7 +201,7 @@ fn setup(
     // ── Camera + lights (no ground plane) ───────────────────────────────
     let mut orbit = OrbitCamera::new()
         .with_target(Vec3::new(0.0, 0.05, 0.0))
-        .with_angles(0.3, 0.35);
+        .with_angles(std::f32::consts::FRAC_PI_2, 0.25);
     orbit.max_distance = 20.0;
     orbit.distance = 4.0;
     let mut cam_transform = Transform::default();
