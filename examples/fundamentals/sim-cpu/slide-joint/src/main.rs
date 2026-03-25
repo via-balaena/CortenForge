@@ -26,12 +26,12 @@ use std::f32::consts::TAU;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
+use sim_bevy::camera::OrbitCamera;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::model_data::{
-    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
-    sync_geom_transforms,
+    ModelGeomIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
+    step_physics_realtime, sync_geom_transforms,
 };
-use sim_bevy::scene::ExampleScene;
 use sim_core::ENABLE_ENERGY;
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
@@ -191,6 +191,14 @@ enum SpringSide {
     Right,
 }
 
+/// Pre-built metallic materials for geom overrides.
+#[derive(Resource)]
+struct MetalMaterials {
+    rail: Handle<StandardMaterial>,
+    wall: Handle<StandardMaterial>,
+    block: Handle<StandardMaterial>,
+}
+
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -216,7 +224,10 @@ fn main() {
         .init_resource::<DiagTimer>()
         .init_resource::<Validation>()
         .add_systems(Startup, setup)
-        .add_systems(Update, step_physics_realtime)
+        .add_systems(
+            Update,
+            (apply_metal_materials, step_physics_realtime).chain(),
+        )
         .add_systems(
             PostUpdate,
             (sync_geom_transforms, update_springs, diagnostics),
@@ -244,7 +255,25 @@ fn setup(
     // ── Spawn MJCF geometry ─────────────────────────────────────────────
     spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
 
-    // ── Spring material (shared) ────────────────────────────────────────
+    // ── Metallic material overrides (by geom name) ──────────────────────
+    let metal_rail = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.52, 0.53, 0.56),
+        metallic: 0.9,
+        perceptual_roughness: 0.25,
+        ..default()
+    });
+    let metal_wall = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.48, 0.48, 0.50),
+        metallic: 0.85,
+        perceptual_roughness: 0.35,
+        ..default()
+    });
+    let metal_block = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.82, 0.22, 0.15),
+        metallic: 0.7,
+        perceptual_roughness: 0.3,
+        ..default()
+    });
     let spring_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.55, 0.58, 0.60),
         metallic: 0.85,
@@ -274,16 +303,70 @@ fn setup(
         Transform::from_xyz(right_start, 0.0, 0.0),
     ));
 
-    // ── Scene ───────────────────────────────────────────────────────────
-    ExampleScene::new(4.0, 8.0)
+    // ── Camera + lights (no ground plane) ───────────────────────────────
+    let mut orbit = OrbitCamera::new()
         .with_target(Vec3::new(0.0, 0.05, 0.0))
-        .with_angles(0.3, 0.35)
-        .with_max_distance(20.0)
-        .with_ground_y(-0.6)
-        .spawn(&mut commands, &mut meshes, &mut materials);
+        .with_angles(0.3, 0.35);
+    orbit.max_distance = 20.0;
+    orbit.distance = 4.0;
+    let mut cam_transform = Transform::default();
+    orbit.apply_to_transform(&mut cam_transform);
+    commands.spawn((Camera3d::default(), orbit, cam_transform));
+
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::WHITE,
+        brightness: 800.0,
+        ..default()
+    });
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 15_000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(30.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 5_000.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(-20.0, 30.0, -30.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
+    commands.insert_resource(MetalMaterials {
+        rail: metal_rail,
+        wall: metal_wall,
+        block: metal_block,
+    });
+}
+
+/// Apply metallic PBR materials to MJCF geoms (runs once, then removes itself).
+fn apply_metal_materials(
+    mut commands: Commands,
+    model: Option<Res<PhysicsModel>>,
+    mats: Option<Res<MetalMaterials>>,
+    mut query: Query<(&ModelGeomIndex, &mut MeshMaterial3d<StandardMaterial>)>,
+) {
+    let (Some(model), Some(mats)) = (model, mats) else {
+        return;
+    };
+
+    for (geom_idx, mut mat_handle) in &mut query {
+        let name = model.geom_name.get(geom_idx.0).and_then(|n| n.as_deref());
+        match name {
+            Some("rail") => mat_handle.0 = mats.rail.clone(),
+            Some("wall_lo" | "wall_hi") => mat_handle.0 = mats.wall.clone(),
+            Some("block") => mat_handle.0 = mats.block.clone(),
+            _ => {}
+        }
+    }
+
+    // Run once then remove
+    commands.remove_resource::<MetalMaterials>();
 }
 
 /// Rebuild both spring coil meshes each frame to match the block position.
