@@ -25,31 +25,33 @@ members = [
     # Umbrella crate (re-exports all mesh-* crates)
     "mesh/mesh",
 
-    # Examples — fundamentals (one domain each)
-    "examples/fundamentals/hello-solid",
-    "examples/fundamentals/bio-shapes",
-    "examples/fundamentals/mesh-pipeline",
-    "examples/fundamentals/pendulum-sim",
-    "examples/fundamentals/finger-design",
+    # Examples — fundamentals
+    "examples/fundamentals/design/hello-solid",
+    "examples/fundamentals/design/bio-shapes",
+    "examples/fundamentals/design/finger-design",
+    "examples/fundamentals/mesh/mesh-pipeline",
+    "examples/fundamentals/sim-cpu/pendulum-sim",
 
-    # Examples — sdf-physics (SDF === collision proof ladder, 16 baby steps)
-    "examples/sdf-physics/01-sdf-grid",
-    "examples/sdf-physics/02-thin-grid",
-    "examples/sdf-physics/03-freefall",
-    "examples/sdf-physics/04-rest",
-    "examples/sdf-physics/05-drop",
-    "examples/sdf-physics/06-slide",
-    "examples/sdf-physics/07-pair",
-    "examples/sdf-physics/08-stack",
-    "examples/sdf-physics/09-cube-in-box",
-    "examples/sdf-physics/10-ball-in-bowl",
-    "examples/sdf-physics/10b-hockey",
-    "examples/sdf-physics/11-hinge-free",
-    "examples/sdf-physics/12-hinge-wall",
-    "examples/sdf-physics/13-hinge-stop",
-    "examples/sdf-physics/14-damped-hinge",
-    "examples/sdf-physics/15-concave-stop",
-    "examples/sdf-physics/16-socket",
+    # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
+    "examples/sdf-physics/cpu/01-sdf-grid",
+    "examples/sdf-physics/cpu/02-thin-grid",
+    "examples/sdf-physics/cpu/03-freefall",
+    "examples/sdf-physics/cpu/04-rest",
+    "examples/sdf-physics/cpu/05-drop",
+    "examples/sdf-physics/cpu/06-slide",
+    "examples/sdf-physics/cpu/07-pair",
+    "examples/sdf-physics/cpu/08-stack",
+    "examples/sdf-physics/cpu/09-cube-in-box",
+    "examples/sdf-physics/cpu/10-ball-in-bowl",
+    "examples/sdf-physics/cpu/11-hinge-free",
+    "examples/sdf-physics/cpu/12-hinge-wall",
+    "examples/sdf-physics/cpu/13-hinge-stop",
+    "examples/sdf-physics/cpu/14-damped-hinge",
+    "examples/sdf-physics/cpu/15-concave-stop",
+    "examples/sdf-physics/cpu/16-socket",
+
+    # Examples — sdf-physics / gpu
+    "examples/sdf-physics/gpu/01-hockey",
 
     # Examples — integration (cross-domain pipelines)
     "examples/integration/design-to-sim",
