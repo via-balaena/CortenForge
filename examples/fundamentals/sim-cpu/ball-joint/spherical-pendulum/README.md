@@ -4,6 +4,10 @@ A heavy sphere on a rigid rod, hanging from a support frame via a ball joint.
 Displaced 30° from vertical in both pitch and roll, then released — it traces
 a precessing elliptical path, the classic **3D spherical pendulum**.
 
+See also: [Conical Pendulum](../conical-pendulum/) — circular orbit with trail,
+[Cone Limit](../cone-limit/) — constraint enforcement,
+[Cone-Limit Orbit](../cone-limit-orbit/) — orbit along constraint surface.
+
 ## What you see
 
 - **Blue sphere** — the 1 kg tip mass on a 0.5 m rod

@@ -86,7 +86,7 @@ pub mod prelude {
     pub use crate::convert::{
         bevy_to_physics, physics_pos, transform_from_physics, transform_from_physics_pose,
     };
-    pub use crate::gizmos::DebugGizmosSet;
+    pub use crate::gizmos::{DebugGizmosSet, TrailGizmo, draw_trails, sample_trails};
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
     pub use crate::materials::{
         MetalPreset, override_geom_material_by_index, override_geom_material_by_name,

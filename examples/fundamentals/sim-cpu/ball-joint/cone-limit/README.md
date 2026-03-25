@@ -4,6 +4,9 @@ A pendulum on a ball joint with a 45° cone limit. Displaced 60° from
 vertical — beyond the limit — and released. The constraint solver pushes
 it back inside the cone, where it oscillates and gradually settles.
 
+See also: [Cone-Limit Orbit](../cone-limit-orbit/) — orbit along the constraint
+surface, [Conical Pendulum](../conical-pendulum/) — free orbit without constraints.
+
 ## What you see
 
 - **Red sphere** — the 1 kg tip mass, swinging within the cone boundary

@@ -310,6 +310,98 @@ pub fn draw_sensors(
     }
 }
 
+// ============================================================================
+// Trail Visualization
+// ============================================================================
+
+/// Ring buffer of world-space positions for trail visualization.
+///
+/// Attach this component to any entity with a `Transform`. The `draw_trails`
+/// system samples the entity's position at a configurable interval and draws
+/// a fading polyline trail using Bevy gizmos.
+///
+/// # Example
+///
+/// ```ignore
+/// commands.spawn((
+///     Mesh3d(mesh),
+///     Transform::default(),
+///     TrailGizmo::new(500, Color::srgb(0.2, 0.7, 0.4), 0.01),
+/// ));
+/// ```
+#[derive(Component)]
+pub struct TrailGizmo {
+    positions: std::collections::VecDeque<Vec3>,
+    max_points: usize,
+    color: Color,
+    sample_interval: f64,
+    last_sample_time: f64,
+}
+
+impl TrailGizmo {
+    /// Create a new trail gizmo.
+    ///
+    /// - `max_points`: ring buffer capacity (e.g. 500 = ~5s at 100Hz)
+    /// - `color`: trail color (alpha fades from 1.0 at head to 0.0 at tail)
+    /// - `sample_interval`: seconds between position samples
+    #[must_use]
+    pub fn new(max_points: usize, color: Color, sample_interval: f64) -> Self {
+        Self {
+            positions: std::collections::VecDeque::with_capacity(max_points),
+            max_points,
+            color,
+            sample_interval,
+            last_sample_time: -1.0,
+        }
+    }
+}
+
+/// Sample trail positions from entities with `TrailGizmo` + `Transform`.
+///
+/// Call this in `PostUpdate` after `sync_geom_transforms` so positions are
+/// up to date. Uses physics time from `PhysicsData` for consistent sampling.
+pub fn sample_trails(
+    data: Res<crate::model_data::PhysicsData>,
+    mut query: Query<(&Transform, &mut TrailGizmo)>,
+) {
+    let time = data.time;
+    for (transform, mut trail) in &mut query {
+        if time - trail.last_sample_time >= trail.sample_interval {
+            trail.last_sample_time = time;
+            if trail.positions.len() >= trail.max_points {
+                trail.positions.pop_front();
+            }
+            trail.positions.push_back(transform.translation);
+        }
+    }
+}
+
+/// Draw trail polylines with alpha fading.
+///
+/// Newest points are fully opaque; oldest points are fully transparent.
+/// Add this system to `PostUpdate` after `sample_trails`.
+pub fn draw_trails(mut gizmos: Gizmos, query: Query<&TrailGizmo>) {
+    for trail in &query {
+        let len = trail.positions.len();
+        if len < 2 {
+            continue;
+        }
+        let base = trail.color.to_linear();
+        for i in 0..len - 1 {
+            #[allow(clippy::cast_precision_loss)]
+            let alpha = (i + 1) as f32 / len as f32;
+            let color = Color::linear_rgba(base.red, base.green, base.blue, alpha);
+            trail
+                .positions
+                .get(i)
+                .zip(trail.positions.get(i + 1))
+                .inspect(|&(a, b)| {
+                    gizmos.line(*a, *b, color);
+                });
+        }
+    }
+}
+
 /// Linearly interpolate between two colors.
 fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let a_linear = a.to_linear();

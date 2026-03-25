@@ -36,6 +36,8 @@ members = [
     "examples/fundamentals/sim-cpu/slide-joint/vertical",
     "examples/fundamentals/sim-cpu/ball-joint/spherical-pendulum",
     "examples/fundamentals/sim-cpu/ball-joint/cone-limit",
+    "examples/fundamentals/sim-cpu/ball-joint/conical-pendulum",
+    "examples/fundamentals/sim-cpu/ball-joint/cone-limit-orbit",
 
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",

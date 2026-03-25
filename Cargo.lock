@@ -2358,6 +2358,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ball-joint-cone-orbit"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-ball-joint-conical"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-ball-joint-pendulum"
 version = "0.7.0"
 dependencies = [
