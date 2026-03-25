@@ -2631,14 +2631,6 @@ dependencies = [
 [[package]]
 name = "example-sdf-gpu-01-hockey"
 version = "0.7.0"
-dependencies = [
- "bevy",
- "cf-design",
- "nalgebra",
- "sim-bevy",
- "sim-core",
- "sim-gpu",
-]
 
 [[package]]
 name = "example-sim-informed-design"
