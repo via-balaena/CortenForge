@@ -31,6 +31,7 @@ members = [
     "examples/fundamentals/design/finger-design",
     "examples/fundamentals/mesh/mesh-pipeline",
     "examples/fundamentals/sim-cpu/pendulum-sim",
+    "examples/fundamentals/sim-cpu/slide-joint",
 
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
