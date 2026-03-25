@@ -271,6 +271,146 @@ impl Default for LimitTracker {
     }
 }
 
+// ── Quaternion Norm Tracker ─────────────────────────────────────────────────
+
+/// Tracks quaternion norm deviation from 1.0 over time.
+///
+/// Ball and free joints use unit quaternions for orientation. Numerical
+/// integration should preserve `‖q‖ = 1` to machine precision. Any
+/// significant drift indicates an integration bug.
+#[derive(Debug, Clone)]
+pub struct QuaternionNormTracker {
+    max_deviation: f64,
+}
+
+impl QuaternionNormTracker {
+    /// Create a new quaternion norm tracker with no recorded samples.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { max_deviation: 0.0 }
+    }
+
+    /// Feed a quaternion sample (w, x, y, z). Call once per frame per joint.
+    pub fn sample(&mut self, w: f64, x: f64, y: f64, z: f64) {
+        let norm = (w * w + x * x + y * y + z * z).sqrt();
+        let deviation = (norm - 1.0).abs();
+        if deviation > self.max_deviation {
+            self.max_deviation = deviation;
+        }
+    }
+
+    /// The largest deviation of `‖q‖` from 1.0 observed.
+    #[must_use]
+    pub fn max_deviation(&self) -> f64 {
+        self.max_deviation
+    }
+
+    /// Check that quaternion norm never deviated by more than `threshold`.
+    ///
+    /// Returns a passing check if no samples were recorded (vacuously true).
+    #[must_use]
+    pub fn check(&self, threshold: f64) -> Check {
+        Check {
+            name: "Quat norm",
+            pass: self.max_deviation < threshold,
+            detail: format!("max deviation={:.2e}", self.max_deviation),
+        }
+    }
+}
+
+impl Default for QuaternionNormTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── Energy Conservation Tracker ────────────────────────────────────────────
+
+/// Tracks energy drift from the initial value (for undamped/low-damped systems).
+///
+/// Unlike [`EnergyMonotonicityTracker`] (which checks that energy never
+/// *increases*), this tracker checks that energy stays *close to its initial
+/// value*. Use this for undamped systems where energy should be conserved,
+/// not just monotonically decreasing.
+#[derive(Debug, Clone)]
+pub struct EnergyConservationTracker {
+    initial: Option<f64>,
+    max_drift: f64,
+}
+
+impl EnergyConservationTracker {
+    /// Create a new energy conservation tracker with no recorded samples.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            initial: None,
+            max_drift: 0.0,
+        }
+    }
+
+    /// Feed a new energy sample. The first sample sets the reference value.
+    pub fn sample(&mut self, energy: f64) {
+        match self.initial {
+            None => self.initial = Some(energy),
+            Some(initial) => {
+                let drift = (energy - initial).abs();
+                if drift > self.max_drift {
+                    self.max_drift = drift;
+                }
+            }
+        }
+    }
+
+    /// The largest absolute drift from the initial energy value.
+    #[must_use]
+    pub fn max_drift(&self) -> f64 {
+        self.max_drift
+    }
+
+    /// The initial energy value (first sample), if any.
+    #[must_use]
+    pub fn initial_energy(&self) -> Option<f64> {
+        self.initial
+    }
+
+    /// Check that energy drift stays below `threshold_pct` of the initial value.
+    ///
+    /// Returns a passing check if no samples were recorded (vacuously true).
+    /// Returns a failing check if initial energy is zero (can't compute percentage).
+    #[must_use]
+    pub fn check(&self, threshold_pct: f64) -> Check {
+        match self.initial {
+            None => Check {
+                name: "Energy conservation",
+                pass: true,
+                detail: "no samples recorded".to_string(),
+            },
+            Some(initial) if initial.abs() < 1e-15 => Check {
+                name: "Energy conservation",
+                pass: false,
+                detail: "initial energy ≈ 0, cannot compute percentage drift".to_string(),
+            },
+            Some(initial) => {
+                let drift_pct = (self.max_drift / initial.abs()) * 100.0;
+                Check {
+                    name: "Energy conservation",
+                    pass: drift_pct < threshold_pct,
+                    detail: format!(
+                        "max drift={:.4}J ({drift_pct:.4}% of E0={initial:.4}J)",
+                        self.max_drift
+                    ),
+                }
+            }
+        }
+    }
+}
+
+impl Default for EnergyConservationTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── Report formatting ───────────────────────────────────────────────────────
 
 /// Print a formatted validation report and return whether all checks passed.
@@ -401,6 +541,74 @@ mod tests {
     fn limit_tracker_no_samples() {
         let l = LimitTracker::new();
         assert!(l.check(0.001).pass); // vacuously true
+    }
+
+    #[test]
+    fn quat_norm_tracker_unit() {
+        let mut q = QuaternionNormTracker::new();
+        q.sample(1.0, 0.0, 0.0, 0.0); // identity
+        q.sample(0.0, 1.0, 0.0, 0.0); // 180° about x
+        q.sample(
+            std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+            0.0,
+            0.0,
+        ); // 90° about x
+        assert!(q.max_deviation() < 1e-15);
+        assert!(q.check(1e-10).pass);
+    }
+
+    #[test]
+    fn quat_norm_tracker_drift() {
+        let mut q = QuaternionNormTracker::new();
+        q.sample(1.0, 0.0, 0.0, 0.0);
+        q.sample(1.001, 0.0, 0.0, 0.0); // norm = 1.001
+        assert!((q.max_deviation() - 0.001).abs() < 1e-10);
+        assert!(!q.check(1e-10).pass);
+        assert!(q.check(0.01).pass);
+    }
+
+    #[test]
+    fn quat_norm_tracker_no_samples() {
+        let q = QuaternionNormTracker::new();
+        assert!(q.check(1e-10).pass); // vacuously true
+    }
+
+    #[test]
+    fn energy_conservation_stable() {
+        let mut e = EnergyConservationTracker::new();
+        for i in 0..100 {
+            // oscillate around 10.0 with ±0.001
+            let energy = 10.0 + 0.001 * (f64::from(i) * 0.1).sin();
+            e.sample(energy);
+        }
+        assert!(e.max_drift() < 0.002);
+        assert!(e.check(0.5).pass); // 0.5% of 10.0 = 0.05 >> 0.001
+    }
+
+    #[test]
+    fn energy_conservation_drift() {
+        let mut e = EnergyConservationTracker::new();
+        e.sample(10.0);
+        e.sample(10.0);
+        e.sample(9.0); // 10% drift
+        assert!((e.max_drift() - 1.0).abs() < 1e-10);
+        assert!(!e.check(0.5).pass); // 10% > 0.5%
+        assert!(e.check(15.0).pass); // 10% < 15%
+    }
+
+    #[test]
+    fn energy_conservation_no_samples() {
+        let e = EnergyConservationTracker::new();
+        assert!(e.check(0.5).pass); // vacuously true
+    }
+
+    #[test]
+    fn energy_conservation_zero_initial() {
+        let mut e = EnergyConservationTracker::new();
+        e.sample(0.0);
+        e.sample(0.1);
+        assert!(!e.check(0.5).pass); // can't compute percentage
     }
 
     #[test]

@@ -23,14 +23,39 @@ use bevy::math::{Quat, Vec3};
 use bevy::transform::components::Transform;
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
-/// Rotation that converts from Z-up to Y-up coordinate system.
-/// This is a -90 degree rotation around the X-axis.
-fn z_up_to_y_up_rotation() -> UnitQuaternion<f64> {
-    // Rotate -90 degrees around X to convert Z-up to Y-up
-    UnitQuaternion::from_axis_angle(
-        &nalgebra::Unit::new_normalize(Vector3::x()),
-        -std::f64::consts::FRAC_PI_2,
+/// Convert a rotation matrix from Z-up to Y-up via axis swap.
+///
+/// The Y/Z swap `(x,y,z) → (x,z,y)` is a *reflection* (det = -1), not a
+/// rotation. A rotation conjugation `C·R·C⁻¹` approximates this but
+/// introduces a sign error on one axis: it maps directions as
+/// `(x,y,z) → (x,z,-y)` instead of `(x,y,z) → (x,z,y)`.
+///
+/// The correct transformation is `R_bevy = S·R_physics·S` where S swaps
+/// rows 1↔2 and columns 1↔2. This preserves `det(R) = +1` (it's still a
+/// proper rotation) and is exactly consistent with the position swap
+/// `vec3_from_vector`.
+fn rotation_z_up_to_y_up(m: &nalgebra::Matrix3<f64>) -> nalgebra::Matrix3<f64> {
+    // S·R·S where S swaps indices 1 and 2:
+    //   new[i][j] = old[σ(i)][σ(j)]  where σ = {0→0, 1→2, 2→1}
+    nalgebra::Matrix3::new(
+        m[(0, 0)],
+        m[(0, 2)],
+        m[(0, 1)],
+        m[(2, 0)],
+        m[(2, 2)],
+        m[(2, 1)],
+        m[(1, 0)],
+        m[(1, 2)],
+        m[(1, 1)],
     )
+}
+
+/// Convert a rotation matrix from Y-up to Z-up via axis swap.
+///
+/// Inverse of [`rotation_z_up_to_y_up`]. Since the swap matrix S is its
+/// own inverse (S² = I), this is the same operation: `S·R·S`.
+fn rotation_y_up_to_z_up(m: &nalgebra::Matrix3<f64>) -> nalgebra::Matrix3<f64> {
+    rotation_z_up_to_y_up(m) // S is self-inverse
 }
 
 /// Convert a nalgebra Point3 (Z-up) to Bevy Vec3 (Y-up).
@@ -55,15 +80,35 @@ pub fn vec3_from_vector(v: &Vector3<f64>) -> Vec3 {
 
 /// Convert a nalgebra `UnitQuaternion` (Z-up) to Bevy `Quat` (Y-up).
 ///
-/// Applies coordinate system rotation to convert from Z-up to Y-up.
+/// Uses the matrix swap `R_bevy = S·R·S` which is exactly consistent with
+/// the position swap `(x,y,z) → (x,z,y)` used by [`vec3_from_vector`].
 #[inline]
 #[must_use]
 pub fn quat_from_unit_quaternion(q: &UnitQuaternion<f64>) -> Quat {
-    // Convert the quaternion to Y-up coordinate system
-    let coord_rotation = z_up_to_y_up_rotation();
-    let converted = coord_rotation * q * coord_rotation.inverse();
-    let q = converted.quaternion();
-    Quat::from_xyzw(q.i as f32, q.j as f32, q.k as f32, q.w as f32)
+    let r = q.to_rotation_matrix();
+    quat_from_physics_matrix(r.matrix())
+}
+
+/// Convert a physics rotation matrix (Z-up, `Matrix3<f64>`) directly to
+/// Bevy `Quat` (Y-up).
+///
+/// This is the preferred entry point when you already have a rotation matrix
+/// (e.g. `data.geom_xmat`). It applies the Y/Z swap and extracts a single
+/// quaternion — avoiding the double-extraction instability that occurs if
+/// you first convert the matrix to a quaternion and then call
+/// [`quat_from_unit_quaternion`].
+#[inline]
+#[must_use]
+pub fn quat_from_physics_matrix(m: &nalgebra::Matrix3<f64>) -> Quat {
+    let bevy_mat = rotation_z_up_to_y_up(m);
+    let bevy_rot = nalgebra::Rotation3::from_matrix_unchecked(bevy_mat);
+    let bevy_q = UnitQuaternion::from_rotation_matrix(&bevy_rot);
+    Quat::from_xyzw(
+        bevy_q.i as f32,
+        bevy_q.j as f32,
+        bevy_q.k as f32,
+        bevy_q.w as f32,
+    )
 }
 
 /// Create a Bevy [`Transform`] from a physics-space position (`Point3<f64>`, Z-up).
@@ -116,19 +161,21 @@ pub fn vector_from_vec3(v: Vec3) -> Vector3<f64> {
 
 /// Convert a Bevy `Quat` (Y-up) to nalgebra `UnitQuaternion` (Z-up).
 ///
-/// Applies coordinate system rotation to convert from Y-up to Z-up.
+/// Inverse of [`quat_from_unit_quaternion`]. Uses the same matrix swap
+/// (S is its own inverse).
 #[inline]
 #[must_use]
 pub fn unit_quaternion_from_quat(q: Quat) -> UnitQuaternion<f64> {
-    let bevy_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+    let bevy_q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
         f64::from(q.w),
         f64::from(q.x),
         f64::from(q.y),
         f64::from(q.z),
     ));
-    // Convert from Y-up to Z-up
-    let coord_rotation = z_up_to_y_up_rotation();
-    coord_rotation.inverse() * bevy_quat * coord_rotation
+    let bevy_rot = bevy_q.to_rotation_matrix();
+    let physics_mat = rotation_y_up_to_z_up(bevy_rot.matrix());
+    let physics_rot = nalgebra::Rotation3::from_matrix_unchecked(physics_mat);
+    UnitQuaternion::from_rotation_matrix(&physics_rot)
 }
 
 // ============================================================================
@@ -253,41 +300,42 @@ mod tests {
     }
 
     #[test]
-    fn rotation_around_physics_z_becomes_rotation_around_bevy_y() {
-        // 90 degrees around Z (physics up) should become 90 degrees around Y (Bevy up)
+    fn rotation_around_physics_z_becomes_negative_rotation_around_bevy_y() {
+        // +90° around Z (physics up) → -90° around Y (Bevy up).
+        // The sign flips because the Y/Z swap is a reflection (det=-1),
+        // which reverses the handedness of the swapped plane.
         let physics_rot = UnitQuaternion::from_axis_angle(
             &nalgebra::Unit::new_normalize(Vector3::z()),
             std::f64::consts::FRAC_PI_2,
         );
         let bevy_rot = quat_from_unit_quaternion(&physics_rot);
 
-        // Expected: rotation around Y axis by 90 degrees
-        let expected = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let expected = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
 
-        // Compare quaternions (allowing for sign flip)
         let dot = bevy_rot.dot(expected).abs();
         assert!(
             dot > 0.999,
-            "Physics Z rotation should map to Bevy Y rotation: got {bevy_rot:?}, expected {expected:?}"
+            "Physics +90° Z → Bevy -90° Y: got {bevy_rot:?}, expected {expected:?}"
         );
     }
 
     #[test]
-    fn rotation_around_physics_x_stays_around_x() {
-        // Rotation around X should stay around X (X axis is the same in both systems)
+    fn rotation_around_physics_x_reverses_sense() {
+        // +90° around X in physics → -90° around X in Bevy.
+        // X axis is the same in both systems, but the rotation sense
+        // reverses because the Y/Z swap flips the handedness of the YZ plane.
         let physics_rot = UnitQuaternion::from_axis_angle(
             &nalgebra::Unit::new_normalize(Vector3::x()),
             std::f64::consts::FRAC_PI_2,
         );
         let bevy_rot = quat_from_unit_quaternion(&physics_rot);
 
-        // Expected: rotation around X axis by 90 degrees
-        let expected = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        let expected = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
 
         let dot = bevy_rot.dot(expected).abs();
         assert!(
             dot > 0.999,
-            "Physics X rotation should stay as Bevy X rotation: got {bevy_rot:?}, expected {expected:?}"
+            "Physics +90° X → Bevy -90° X: got {bevy_rot:?}, expected {expected:?}"
         );
     }
 
@@ -327,5 +375,38 @@ mod tests {
         assert!(bevy_z.x.abs() < 1e-6);
         assert!((bevy_z.y - 1.0).abs() < 1e-6);
         assert!(bevy_z.z.abs() < 1e-6);
+    }
+
+    #[test]
+    fn rotation_and_position_are_consistent() {
+        // THE critical property: if a physics rotation maps direction d
+        // to some world direction, and a position p is at that direction,
+        // then the Bevy rotation applied to the Bevy mesh axis must give
+        // the same Bevy direction as the Bevy-converted position.
+        //
+        // This is the bug that was caught by the ball-joint example:
+        // the old conjugation approach broke this for diagonal rotations.
+
+        // Physics: capsule along +Z, rotated 30° about (1, 1, 0)
+        let axis = nalgebra::Unit::new_normalize(Vector3::new(1.0, 1.0, 0.0));
+        let physics_rot = UnitQuaternion::from_axis_angle(&axis, std::f64::consts::FRAC_PI_6);
+
+        // The capsule default axis in physics is +Z
+        let capsule_tip_physics = physics_rot * Vector3::new(0.0, 0.0, 1.0);
+
+        // Convert position to Bevy
+        let tip_bevy = vec3_from_vector(&capsule_tip_physics);
+
+        // Convert rotation to Bevy, apply to Bevy mesh axis (+Y)
+        let bevy_quat = quat_from_unit_quaternion(&physics_rot);
+        let mesh_axis = Vec3::new(0.0, 1.0, 0.0); // Bevy capsule mesh axis
+        let rotated_axis = bevy_quat * mesh_axis;
+
+        // These must match: position-converted direction == rotation-converted direction
+        let err = (rotated_axis - tip_bevy.normalize()).length();
+        assert!(
+            err < 1e-4,
+            "Position/rotation inconsistency: position says {tip_bevy:?}, rotation says {rotated_axis:?}, error={err}"
+        );
     }
 }

@@ -2348,6 +2348,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ball-joint-cone-limit"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-ball-joint-pendulum"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-bio-shapes"
 version = "0.7.0"
 dependencies = [
