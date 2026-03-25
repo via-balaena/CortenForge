@@ -71,6 +71,7 @@ pub mod camera;
 pub mod components;
 pub mod convert;
 pub mod gizmos;
+pub mod materials;
 pub mod mesh;
 pub mod model_data;
 pub mod plugin;
@@ -85,6 +86,10 @@ pub mod prelude {
     pub use crate::convert::{transform_from_physics, transform_from_physics_pose};
     pub use crate::gizmos::DebugGizmosSet;
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
+    pub use crate::materials::{
+        MetalPreset, override_geom_material_by_index, override_geom_material_by_name,
+        override_geom_materials_by_name,
+    };
     pub use crate::mesh::{
         SpringCoilParams, spawn_design_mesh, spring_coil, triangle_mesh_from_indexed,
     };
