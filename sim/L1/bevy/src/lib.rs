@@ -85,7 +85,9 @@ pub mod prelude {
     pub use crate::convert::{transform_from_physics, transform_from_physics_pose};
     pub use crate::gizmos::DebugGizmosSet;
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
-    pub use crate::mesh::{spawn_design_mesh, triangle_mesh_from_indexed};
+    pub use crate::mesh::{
+        SpringCoilParams, spawn_design_mesh, spring_coil, triangle_mesh_from_indexed,
+    };
     pub use crate::model_data::{
         ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
         ModelSiteIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
