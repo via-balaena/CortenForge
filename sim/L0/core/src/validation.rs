@@ -496,6 +496,21 @@ impl EquilibriumTracker {
     }
 }
 
+// ── Quaternion Utilities ──────────────────────────────────────────────────────
+
+/// Compute the rotation angle (in radians) from quaternion components.
+///
+/// Returns the angle in \[0, π\]. This is the axis-angle representation's
+/// angle component, useful for cone-limit validation and diagnostics.
+///
+/// Handles numerical edge cases: uses `atan2` for stability near 0 and π.
+#[inline]
+#[must_use]
+pub fn quat_rotation_angle(w: f64, x: f64, y: f64, z: f64) -> f64 {
+    let sin_half = (x * x + y * y + z * z).sqrt();
+    2.0 * sin_half.atan2(w.abs())
+}
+
 // ── Report formatting ───────────────────────────────────────────────────────
 
 /// Print a formatted validation report and return whether all checks passed.
@@ -747,6 +762,34 @@ mod tests {
         let check = e.check(0.0, 5.0);
         assert!(!check.pass);
         assert!(check.detail.contains("cannot compute"));
+    }
+
+    #[test]
+    fn quat_rotation_angle_identity() {
+        let angle = quat_rotation_angle(1.0, 0.0, 0.0, 0.0);
+        assert!(
+            angle.abs() < 1e-15,
+            "identity should give angle=0, got {angle}"
+        );
+    }
+
+    #[test]
+    fn quat_rotation_angle_90_about_x() {
+        let half = std::f64::consts::FRAC_PI_4; // 45° = half of 90°
+        let angle = quat_rotation_angle(half.cos(), half.sin(), 0.0, 0.0);
+        assert!(
+            (angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+            "90° about X: expected pi/2, got {angle}"
+        );
+    }
+
+    #[test]
+    fn quat_rotation_angle_180_about_z() {
+        let angle = quat_rotation_angle(0.0, 0.0, 0.0, 1.0);
+        assert!(
+            (angle - std::f64::consts::PI).abs() < 1e-12,
+            "180° about Z: expected pi, got {angle}"
+        );
     }
 
     #[test]

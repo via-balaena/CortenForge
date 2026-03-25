@@ -18,12 +18,14 @@
     clippy::needless_pass_by_value,
     clippy::expect_used,
     clippy::cast_possible_truncation,
-    clippy::let_underscore_must_use
+    clippy::let_underscore_must_use,
+    clippy::suboptimal_flops
 )]
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::examples::{DiagTimer, spawn_example_camera};
 use sim_bevy::materials::{MetalPreset, override_geom_materials_by_name};
 use sim_bevy::mesh::{SpringCoilParams, spring_coil};
 use sim_bevy::model_data::{
@@ -199,36 +201,13 @@ fn setup(
     ));
 
     // ── Camera + lights (no ground plane) ───────────────────────────────
-    let mut orbit = OrbitCamera::new()
-        .with_target(Vec3::new(0.0, 0.05, 0.0))
-        .with_angles(std::f32::consts::FRAC_PI_2, 0.25);
-    orbit.max_distance = 20.0;
-    orbit.distance = 4.0;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 800.0,
-        ..default()
-    });
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 15_000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(30.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 5_000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-20.0, 30.0, -30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+    spawn_example_camera(
+        &mut commands,
+        Vec3::new(0.0, 0.05, 0.0),
+        4.0,
+        std::f32::consts::FRAC_PI_2,
+        0.25,
+    );
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
@@ -303,11 +282,6 @@ fn update_springs(
 }
 
 // ── Diagnostics & Validation ────────────────────────────────────────────────
-
-#[derive(Resource, Default)]
-struct DiagTimer {
-    last: f64,
-}
 
 #[derive(Resource)]
 struct Validation {

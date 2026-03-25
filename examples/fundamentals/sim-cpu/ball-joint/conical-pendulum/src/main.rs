@@ -22,16 +22,19 @@
 )]
 
 use bevy::prelude::*;
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::physics_pos;
+use sim_bevy::examples::{DiagTimer, spawn_example_camera};
 use sim_bevy::gizmos::{TrailGizmo, draw_trails, sample_trails};
-use sim_bevy::materials::MetalPreset;
+use sim_bevy::materials::{MetalPreset, override_geom_materials_by_name_with};
 use sim_bevy::model_data::{
     ModelGeomIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
     step_physics_realtime, sync_geom_transforms,
 };
 use sim_core::ENABLE_ENERGY;
-use sim_core::validation::{EnergyConservationTracker, QuaternionNormTracker, print_report};
+use sim_core::validation::{
+    EnergyConservationTracker, QuaternionNormTracker, print_report, quat_rotation_angle,
+};
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 //
@@ -163,36 +166,13 @@ fn setup(
     let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.2, 0.7, 0.4)));
 
     // ── Camera + lights ─────────────────────────────────────────────────
-    let mut orbit = OrbitCamera::new()
-        .with_target(physics_pos(0.0, 0.0, -0.4))
-        .with_angles(std::f32::consts::FRAC_PI_4, 0.5);
-    orbit.max_distance = 20.0;
-    orbit.distance = 2.5;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 800.0,
-        ..default()
-    });
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 15_000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(30.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 5_000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-20.0, 30.0, -30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+    spawn_example_camera(
+        &mut commands,
+        physics_pos(0.0, 0.0, -0.4),
+        2.5,
+        std::f32::consts::FRAC_PI_4,
+        0.5,
+    );
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
@@ -228,34 +208,30 @@ fn apply_materials(
         return;
     };
 
-    for (entity, geom_idx, mut mat) in &mut query {
-        let name = model.geom_name[geom_idx.0].as_deref().unwrap_or("");
-        match name {
-            "beam" | "post_l" | "post_r" => *mat = MeshMaterial3d(ovr.frame.clone()),
-            "socket" => *mat = MeshMaterial3d(ovr.socket.clone()),
-            "rod" => *mat = MeshMaterial3d(ovr.rod.clone()),
-            "tip" => {
-                *mat = MeshMaterial3d(ovr.tip.clone());
-                // Attach trail to the tip sphere
-                commands.entity(entity).insert(TrailGizmo::new(
-                    500,
-                    Color::srgb(0.2, 0.7, 0.4),
-                    0.01,
-                ));
+    override_geom_materials_by_name_with(
+        &model,
+        &[
+            ("beam", ovr.frame.clone()),
+            ("post_l", ovr.frame.clone()),
+            ("post_r", ovr.frame.clone()),
+            ("socket", ovr.socket.clone()),
+            ("rod", ovr.rod.clone()),
+            ("tip", ovr.tip.clone()),
+        ],
+        &mut query,
+        &mut commands,
+        |entity, name, cmds| {
+            if name == "tip" {
+                cmds.entity(entity)
+                    .insert(TrailGizmo::new(500, Color::srgb(0.2, 0.7, 0.4), 0.01));
             }
-            _ => {}
-        }
-    }
+        },
+    );
 
     commands.remove_resource::<MaterialOverrides>();
 }
 
 // ── Diagnostics & Validation ────────────────────────────────────────────────
-
-#[derive(Resource, Default)]
-struct DiagTimer {
-    last: f64,
-}
 
 #[derive(Resource)]
 struct Validation {
@@ -296,7 +272,7 @@ fn diagnostics(
 
     if time - timer.last > 1.0 {
         timer.last = time;
-        let angle = 2.0 * (x * x + y * y + z * z).sqrt().atan2(w.abs());
+        let angle = quat_rotation_angle(w, x, y, z);
         println!(
             "t={time:5.1}s  tilt={:.1}°  E={energy:.4}J",
             angle.to_degrees(),

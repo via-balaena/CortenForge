@@ -23,7 +23,8 @@
 )]
 
 use bevy::prelude::*;
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::examples::{DiagTimer, spawn_example_camera};
 use sim_bevy::materials::{MetalPreset, override_geom_materials_by_name};
 use sim_bevy::model_data::{
     ModelGeomIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
@@ -32,6 +33,7 @@ use sim_bevy::model_data::{
 use sim_core::ENABLE_ENERGY;
 use sim_core::validation::{
     EnergyMonotonicityTracker, LimitTracker, QuaternionNormTracker, print_report,
+    quat_rotation_angle,
 };
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
@@ -76,13 +78,6 @@ const MJCF: &str = r#"
 // ── Physics constants ───────────────────────────────────────────────────────
 
 const CONE_LIMIT_RAD: f64 = std::f64::consts::FRAC_PI_4; // 45°
-
-/// Compute axis-angle rotation angle from a quaternion [w, x, y, z].
-/// Returns the angle in [0, pi].
-fn quat_angle(w: f64, x: f64, y: f64, z: f64) -> f64 {
-    let sin_half = (x * x + y * y + z * z).sqrt();
-    2.0 * sin_half.atan2(w.abs())
-}
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
@@ -147,36 +142,13 @@ fn setup(
         materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.82, 0.22, 0.15)));
 
     // ── Camera + lights ─────────────────────────────────────────────────
-    let mut orbit = OrbitCamera::new()
-        .with_target(Vec3::new(0.0, -0.2, 0.0))
-        .with_angles(std::f32::consts::FRAC_PI_4, 0.35);
-    orbit.max_distance = 20.0;
-    orbit.distance = 1.8;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 800.0,
-        ..default()
-    });
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 15_000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(30.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 5_000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-20.0, 30.0, -30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+    spawn_example_camera(
+        &mut commands,
+        Vec3::new(0.0, -0.2, 0.0),
+        1.8,
+        std::f32::consts::FRAC_PI_4,
+        0.35,
+    );
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
@@ -225,11 +197,6 @@ fn apply_materials(
 }
 
 // ── Diagnostics & Validation ────────────────────────────────────────────────
-
-#[derive(Resource, Default)]
-struct DiagTimer {
-    last: f64,
-}
 
 #[derive(Resource)]
 struct Validation {
@@ -280,7 +247,7 @@ fn diagnostics(
     // ── Cone limit: rotation angle vs 45° limit ────────────────────────
     // Same 1s settling window for the constraint transient.
     if time > 1.0 {
-        let angle = quat_angle(w, x, y, z);
+        let angle = quat_rotation_angle(w, x, y, z);
         val.cone_limit.sample(angle, 0.0, CONE_LIMIT_RAD);
     }
 
@@ -288,7 +255,7 @@ fn diagnostics(
     if time - timer.last > 1.0 {
         timer.last = time;
 
-        let angle = quat_angle(w, x, y, z);
+        let angle = quat_rotation_angle(w, x, y, z);
         let angle_deg = angle.to_degrees();
         let limit_deg = CONE_LIMIT_RAD.to_degrees();
 

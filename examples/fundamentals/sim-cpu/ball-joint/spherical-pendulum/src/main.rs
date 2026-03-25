@@ -25,14 +25,17 @@
 )]
 
 use bevy::prelude::*;
-use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::examples::{DiagTimer, spawn_example_camera};
 use sim_bevy::materials::{MetalPreset, override_geom_materials_by_name};
 use sim_bevy::model_data::{
     ModelGeomIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
     step_physics_realtime, sync_geom_transforms,
 };
 use sim_core::ENABLE_ENERGY;
-use sim_core::validation::{Check, EnergyConservationTracker, QuaternionNormTracker, print_report};
+use sim_core::validation::{
+    Check, EnergyConservationTracker, QuaternionNormTracker, print_report, quat_rotation_angle,
+};
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 //
@@ -143,36 +146,13 @@ fn setup(
     let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.2, 0.5, 0.85)));
 
     // ── Camera + lights ─────────────────────────────────────────────────
-    let mut orbit = OrbitCamera::new()
-        .with_target(Vec3::new(0.0, -0.2, 0.0))
-        .with_angles(std::f32::consts::FRAC_PI_4, 0.35);
-    orbit.max_distance = 20.0;
-    orbit.distance = 1.8;
-    let mut cam_transform = Transform::default();
-    orbit.apply_to_transform(&mut cam_transform);
-    commands.spawn((Camera3d::default(), orbit, cam_transform));
-
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 800.0,
-        ..default()
-    });
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 15_000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(30.0, 50.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 5_000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(-20.0, 30.0, -30.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+    spawn_example_camera(
+        &mut commands,
+        Vec3::new(0.0, -0.2, 0.0),
+        1.8,
+        std::f32::consts::FRAC_PI_4,
+        0.35,
+    );
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
@@ -221,11 +201,6 @@ fn apply_materials(
 }
 
 // ── Diagnostics & Validation ────────────────────────────────────────────────
-
-#[derive(Resource, Default)]
-struct DiagTimer {
-    last: f64,
-}
 
 #[derive(Resource)]
 struct Validation {
@@ -312,7 +287,7 @@ fn diagnostics(
             (data.qvel[dof].powi(2) + data.qvel[dof + 1].powi(2) + data.qvel[dof + 2].powi(2))
                 .sqrt();
 
-        let angle = 2.0 * (x * x + y * y + z * z).sqrt().atan2(w.abs());
+        let angle = quat_rotation_angle(w, x, y, z);
         let angle_deg = angle.to_degrees();
 
         println!(

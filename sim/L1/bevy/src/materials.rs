@@ -155,3 +155,49 @@ pub fn override_geom_materials_by_name(
     }
     count
 }
+
+/// Override materials for multiple geoms at once (by name), with a per-entity callback.
+///
+/// Works like [`override_geom_materials_by_name`] but accepts an extended query
+/// with [`Entity`] access and calls `callback(entity, geom_name, commands)` for
+/// each matched geom after applying its material.
+///
+/// Use this when you need to attach additional components (e.g.
+/// [`TrailGizmo`](crate::gizmos::TrailGizmo)) to specific geoms by name.
+///
+/// Returns the number of geoms successfully updated.
+pub fn override_geom_materials_by_name_with(
+    model: &Model,
+    overrides: &[(&str, Handle<StandardMaterial>)],
+    query: &mut Query<(
+        Entity,
+        &ModelGeomIndex,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
+    commands: &mut Commands,
+    callback: impl Fn(Entity, &str, &mut Commands),
+) -> usize {
+    // Build index→(material, name) map from name→material pairs
+    let index_map: Vec<(usize, Handle<StandardMaterial>, &str)> = overrides
+        .iter()
+        .filter_map(|(name, mat)| {
+            model
+                .geom_name_to_id
+                .get(*name)
+                .map(|&idx| (idx, mat.clone(), *name))
+        })
+        .collect();
+
+    let mut count = 0;
+    for (entity, geom_idx, mut mat_handle) in query.iter_mut() {
+        for (target_idx, target_mat, name) in &index_map {
+            if geom_idx.0 == *target_idx {
+                mat_handle.0 = target_mat.clone();
+                callback(entity, name, commands);
+                count += 1;
+                break;
+            }
+        }
+    }
+    count
+}
