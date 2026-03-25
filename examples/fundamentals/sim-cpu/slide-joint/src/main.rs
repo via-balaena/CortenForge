@@ -21,18 +21,17 @@
     clippy::let_underscore_must_use
 )]
 
-use std::f32::consts::TAU;
-
 use bevy::asset::RenderAssetUsages;
-use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
-use sim_bevy::camera::OrbitCamera;
-use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::camera::{OrbitCamera, OrbitCameraPlugin};
+use sim_bevy::materials::{MetalPreset, override_geom_materials_by_name};
+use sim_bevy::mesh::{SpringCoilParams, spring_coil};
 use sim_bevy::model_data::{
     ModelGeomIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
     step_physics_realtime, sync_geom_transforms,
 };
 use sim_core::ENABLE_ENERGY;
+use sim_core::validation::{EnergyMonotonicityTracker, LimitTracker, PeriodTracker, print_report};
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 //
@@ -92,111 +91,22 @@ fn analytical_period() -> f64 {
     2.0 * std::f64::consts::PI * (MASS_EFF / STIFFNESS).sqrt()
 }
 
-// ── Spring coil mesh ────────────────────────────────────────────────────────
+// ── Spring visual ───────────────────────────────────────────────────────────
 
-const COIL_TURNS: u32 = 10;
-const COIL_RADIUS: f32 = 0.06;
-const COIL_TUBE_RADIUS: f32 = 0.008;
-const COIL_SEGMENTS_PER_TURN: u32 = 24;
-const COIL_TUBE_SEGMENTS: u32 = 8;
-const COIL_MIN_LENGTH: f32 = 0.05;
-
-/// Generate a helical coil mesh stretching from `x=0` to `x=length` along X.
-#[allow(clippy::suboptimal_flops, clippy::cast_precision_loss)]
-fn make_coil_mesh(length: f32) -> Mesh {
-    let length = length.max(COIL_MIN_LENGTH);
-    let total_segs = COIL_TURNS * COIL_SEGMENTS_PER_TURN;
-    let n_verts = (total_segs + 1) * (COIL_TUBE_SEGMENTS + 1);
-    let mut positions = Vec::with_capacity(n_verts as usize);
-    let mut normals = Vec::with_capacity(n_verts as usize);
-    let mut indices = Vec::new();
-
-    for i in 0..=total_segs {
-        let t = i as f32 / total_segs as f32;
-        let cx = t * length;
-        let helix_angle = t * COIL_TURNS as f32 * TAU;
-        let cy = COIL_RADIUS * helix_angle.cos();
-        let cz = COIL_RADIUS * helix_angle.sin();
-
-        // Radial direction (outward from helix axis)
-        let radial_y = helix_angle.cos();
-        let radial_z = helix_angle.sin();
-
-        // Tangent of the helix (Frenet frame)
-        let tangent_x = length / (total_segs as f32);
-        let tangent_y =
-            -COIL_RADIUS * helix_angle.sin() * COIL_TURNS as f32 * TAU / total_segs as f32;
-        let tangent_z =
-            COIL_RADIUS * helix_angle.cos() * COIL_TURNS as f32 * TAU / total_segs as f32;
-        let tang_len = (tangent_x * tangent_x + tangent_y * tangent_y + tangent_z * tangent_z)
-            .sqrt()
-            .max(1e-6);
-        let tx = tangent_x / tang_len;
-        let ty = tangent_y / tang_len;
-        let tz = tangent_z / tang_len;
-
-        // Binormal = tangent x radial
-        let bx = ty * radial_z - tz * radial_y;
-        let by = tz * 0.0 - tx * radial_z;
-        let bz = tx * radial_y - ty * 0.0;
-        let b_len = (bx * bx + by * by + bz * bz).sqrt().max(1e-6);
-        let bx = bx / b_len;
-        let by = by / b_len;
-        let bz = bz / b_len;
-
-        for j in 0..=COIL_TUBE_SEGMENTS {
-            let tube_angle = j as f32 / COIL_TUBE_SEGMENTS as f32 * TAU;
-            let cos_t = tube_angle.cos();
-            let sin_t = tube_angle.sin();
-
-            let nx = sin_t * bx;
-            let ny = cos_t * radial_y + sin_t * by;
-            let nz = cos_t * radial_z + sin_t * bz;
-
-            let px = cx + COIL_TUBE_RADIUS * (sin_t * bx);
-            let py = cy + COIL_TUBE_RADIUS * (cos_t * radial_y + sin_t * by);
-            let pz = cz + COIL_TUBE_RADIUS * (cos_t * radial_z + sin_t * bz);
-
-            positions.push([px, py, pz]);
-            let n_len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-6);
-            normals.push([nx / n_len, ny / n_len, nz / n_len]);
-        }
-    }
-
-    let ring = COIL_TUBE_SEGMENTS + 1;
-    for i in 0..total_segs {
-        for j in 0..COIL_TUBE_SEGMENTS {
-            let a = i * ring + j;
-            let b = a + ring;
-            let c = b + 1;
-            let d = a + 1;
-            indices.extend_from_slice(&[a, b, d, b, c, d]);
-        }
-    }
-
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
-    mesh
-}
+const COIL_PARAMS: SpringCoilParams = SpringCoilParams {
+    turns: 10,
+    radius: 0.06,
+    tube_radius: 0.008,
+    segments_per_turn: 24,
+    tube_segments: 8,
+    min_length: 0.05,
+};
 
 /// Which side of the block this spring is on.
 #[derive(Component)]
 enum SpringSide {
     Left,
     Right,
-}
-
-/// Pre-built metallic materials for geom overrides.
-#[derive(Resource)]
-struct MetalMaterials {
-    rail: Handle<StandardMaterial>,
-    wall: Handle<StandardMaterial>,
-    block: Handle<StandardMaterial>,
 }
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
@@ -224,10 +134,7 @@ fn main() {
         .init_resource::<DiagTimer>()
         .init_resource::<Validation>()
         .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            (apply_metal_materials, step_physics_realtime).chain(),
-        )
+        .add_systems(Update, (apply_materials, step_physics_realtime).chain())
         .add_systems(
             PostUpdate,
             (sync_geom_transforms, update_springs, diagnostics),
@@ -255,51 +162,39 @@ fn setup(
     // ── Spawn MJCF geometry ─────────────────────────────────────────────
     spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
 
-    // ── Metallic material overrides (by geom name) ──────────────────────
-    let metal_rail = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.52, 0.53, 0.56),
-        metallic: 0.9,
-        perceptual_roughness: 0.25,
-        ..default()
-    });
-    let metal_wall = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.48, 0.48, 0.50),
-        metallic: 0.85,
-        perceptual_roughness: 0.35,
-        ..default()
-    });
-    let metal_block = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.82, 0.22, 0.15),
-        metallic: 0.7,
-        perceptual_roughness: 0.3,
-        ..default()
-    });
-    let spring_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.55, 0.58, 0.60),
-        metallic: 0.85,
-        perceptual_roughness: 0.35,
-        ..default()
-    });
+    // ── Metallic materials (using presets) ───────────────────────────────
+    let mat_rail = materials.add(MetalPreset::PolishedSteel.material());
+    let mat_wall = materials.add(MetalPreset::BrushedMetal.material());
+    let mat_block =
+        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.82, 0.22, 0.15)));
+    let mat_spring = materials.add(MetalPreset::SpringWire.material());
 
-    // ── Left spring: from left wall to left face of block ───────────────
+    // ── Springs: left wall → block, block → right wall ──────────────────
     let block_x = data.qpos[0] as f32;
+
     let left_start = -WALL_X;
-    let left_end = block_x - BLOCK_HALF;
-    let left_len = (left_end - left_start).max(COIL_MIN_LENGTH);
+    let left_len = (block_x - BLOCK_HALF) - left_start;
     commands.spawn((
         SpringSide::Left,
-        Mesh3d(meshes.add(make_coil_mesh(left_len))),
-        MeshMaterial3d(spring_mat.clone()),
+        Mesh3d(meshes.add(spring_coil(
+            &COIL_PARAMS,
+            left_len,
+            RenderAssetUsages::default(),
+        ))),
+        MeshMaterial3d(mat_spring.clone()),
         Transform::from_xyz(left_start, 0.0, 0.0),
     ));
 
-    // ── Right spring: from right face of block to right wall ────────────
     let right_start = block_x + BLOCK_HALF;
-    let right_len = (WALL_X - right_start).max(COIL_MIN_LENGTH);
+    let right_len = WALL_X - right_start;
     commands.spawn((
         SpringSide::Right,
-        Mesh3d(meshes.add(make_coil_mesh(right_len))),
-        MeshMaterial3d(spring_mat),
+        Mesh3d(meshes.add(spring_coil(
+            &COIL_PARAMS,
+            right_len,
+            RenderAssetUsages::default(),
+        ))),
+        MeshMaterial3d(mat_spring),
         Transform::from_xyz(right_start, 0.0, 0.0),
     ));
 
@@ -337,39 +232,48 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(MetalMaterials {
-        rail: metal_rail,
-        wall: metal_wall,
-        block: metal_block,
+    commands.insert_resource(MaterialOverrides {
+        rail: mat_rail,
+        wall: mat_wall,
+        block: mat_block,
     });
 }
 
-/// Apply metallic PBR materials to MJCF geoms (runs once, then removes itself).
-fn apply_metal_materials(
+// ── Material override (runs once) ───────────────────────────────────────────
+
+#[derive(Resource)]
+struct MaterialOverrides {
+    rail: Handle<StandardMaterial>,
+    wall: Handle<StandardMaterial>,
+    block: Handle<StandardMaterial>,
+}
+
+fn apply_materials(
     mut commands: Commands,
     model: Option<Res<PhysicsModel>>,
-    mats: Option<Res<MetalMaterials>>,
+    overrides: Option<Res<MaterialOverrides>>,
     mut query: Query<(&ModelGeomIndex, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
-    let (Some(model), Some(mats)) = (model, mats) else {
+    let (Some(model), Some(ovr)) = (model, overrides) else {
         return;
     };
 
-    for (geom_idx, mut mat_handle) in &mut query {
-        let name = model.geom_name.get(geom_idx.0).and_then(|n| n.as_deref());
-        match name {
-            Some("rail") => mat_handle.0 = mats.rail.clone(),
-            Some("wall_lo" | "wall_hi") => mat_handle.0 = mats.wall.clone(),
-            Some("block") => mat_handle.0 = mats.block.clone(),
-            _ => {}
-        }
-    }
+    override_geom_materials_by_name(
+        &model,
+        &[
+            ("rail", ovr.rail.clone()),
+            ("wall_lo", ovr.wall.clone()),
+            ("wall_hi", ovr.wall.clone()),
+            ("block", ovr.block.clone()),
+        ],
+        &mut query,
+    );
 
-    // Run once then remove
-    commands.remove_resource::<MetalMaterials>();
+    commands.remove_resource::<MaterialOverrides>();
 }
 
-/// Rebuild both spring coil meshes each frame to match the block position.
+// ── Spring update ───────────────────────────────────────────────────────────
+
 fn update_springs(
     data: Res<PhysicsData>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -393,7 +297,7 @@ fn update_springs(
 
         transform.translation.x = start;
         if let Some(mesh) = meshes.get_mut(&mesh_handle.0) {
-            *mesh = make_coil_mesh(length);
+            *mesh = spring_coil(&COIL_PARAMS, length, RenderAssetUsages::default());
         }
     }
 }
@@ -405,15 +309,23 @@ struct DiagTimer {
     last: f64,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct Validation {
-    last_pos: f64,
-    last_time: f64,
-    crossings: Vec<f64>,
-    prev_energy: Option<f64>,
-    max_energy_increase: f64,
-    max_limit_violation: f64,
+    period: PeriodTracker,
+    energy: EnergyMonotonicityTracker,
+    limits: LimitTracker,
     reported: bool,
+}
+
+impl Default for Validation {
+    fn default() -> Self {
+        Self {
+            period: PeriodTracker::new(),
+            energy: EnergyMonotonicityTracker::new(),
+            limits: LimitTracker::new(),
+            reported: false,
+        }
+    }
 }
 
 fn diagnostics(
@@ -426,76 +338,26 @@ fn diagnostics(
     let energy = data.energy_kinetic + data.energy_potential;
     let time = data.time;
 
-    // ── Energy monotonicity ─────────────────────────────────────────────
-    if let Some(prev) = val.prev_energy {
-        let increase = energy - prev;
-        if increase > val.max_energy_increase {
-            val.max_energy_increase = increase;
-        }
-    }
-    val.prev_energy = Some(energy);
+    val.period.sample(pos, time);
+    val.energy.sample(energy);
 
-    // ── Joint limit violation ───────────────────────────────────────────
     if model.jnt_limited[0] {
         let (lo, hi) = model.jnt_range[0];
-        let violation = (pos - hi).max(lo - pos).max(0.0);
-        if violation > val.max_limit_violation {
-            val.max_limit_violation = violation;
-        }
+        val.limits.sample(pos, lo, hi);
     }
 
-    // ── Zero-crossing (positive → negative) with linear interpolation ──
-    if val.last_pos > 0.0 && pos <= 0.0 && time > 0.01 {
-        let frac = val.last_pos / (val.last_pos - pos);
-        let t_cross = frac.mul_add(time - val.last_time, val.last_time);
-        val.crossings.push(t_cross);
-    }
-    val.last_pos = pos;
-    val.last_time = time;
-
-    // ── Periodic printout ───────────────────────────────────────────────
     if time - timer.last > 1.0 {
         timer.last = time;
         println!("t={time:5.1}s  pos={pos:+.4}m  E={energy:.4}J");
     }
 
-    // ── Validation report at t=15s ──────────────────────────────────────
     if time > 15.0 && !val.reported {
         val.reported = true;
-        println!("\n=== Validation Report (t=15s) ===");
-
-        if val.crossings.len() >= 2 {
-            let periods: Vec<f64> = val.crossings.windows(2).map(|w| w[1] - w[0]).collect();
-            #[allow(clippy::cast_precision_loss)]
-            let measured = periods.iter().sum::<f64>() / periods.len() as f64;
-            let expected = analytical_period();
-            let err = ((measured - expected) / expected).abs() * 100.0;
-            println!(
-                "  Period:  measured={measured:.4}s  expected={expected:.4}s  error={err:.2}%  {}",
-                if err < 2.0 { "PASS" } else { "FAIL" },
-            );
-        } else {
-            println!("  Period:  insufficient zero crossings  FAIL");
-        }
-
-        {
-            let pass = val.max_energy_increase < 1e-6;
-            println!(
-                "  Energy:  max increase={:.2e}J  {}",
-                val.max_energy_increase,
-                if pass { "PASS" } else { "FAIL" },
-            );
-        }
-
-        {
-            let pass = val.max_limit_violation < 0.001;
-            println!(
-                "  Limits:  max violation={:.6}m  {}",
-                val.max_limit_violation,
-                if pass { "PASS" } else { "FAIL" },
-            );
-        }
-
-        println!("================================\n");
+        let checks = vec![
+            val.period.check(analytical_period(), 2.0),
+            val.energy.check(1e-6),
+            val.limits.check(0.001),
+        ];
+        let _ = print_report("Validation Report (t=15s)", &checks);
     }
 }
