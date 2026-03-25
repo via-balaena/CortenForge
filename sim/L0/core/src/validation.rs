@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use sim_core::validation::{PeriodTracker, EnergyMonotonicityTracker, LimitTracker, print_report};
+//! use sim_core::validation::{PeriodTracker, EnergyMonotonicityTracker, LimitTracker, EquilibriumTracker, print_report};
 //!
 //! let mut period = PeriodTracker::new();
 //! let mut energy = EnergyMonotonicityTracker::new();
@@ -411,6 +411,91 @@ impl Default for EnergyConservationTracker {
     }
 }
 
+// ── Equilibrium Tracker ───────────────────────────────────────────────────────
+
+/// Tracks whether a scalar signal converges to an expected equilibrium value.
+///
+/// Uses a trailing time window: only samples within the last `window_duration`
+/// seconds are retained. The check computes the mean over that window and
+/// compares it to the expected equilibrium.
+///
+/// Useful for systems where gravity or other constant forces shift the rest
+/// position (e.g. a vertical spring-mass system settles at `x_eq = -mg/k`).
+#[derive(Debug, Clone)]
+pub struct EquilibriumTracker {
+    window_duration: f64,
+    samples: Vec<(f64, f64)>, // (time, value)
+}
+
+impl EquilibriumTracker {
+    /// Create a new equilibrium tracker with the given trailing window duration.
+    ///
+    /// Only samples within the last `window_duration` seconds (relative to the
+    /// most recent sample) are kept.
+    #[must_use]
+    pub fn new(window_duration: f64) -> Self {
+        Self {
+            window_duration,
+            samples: Vec::new(),
+        }
+    }
+
+    /// Feed a new sample. Call once per frame with the current value and time.
+    ///
+    /// Older samples outside the trailing window are pruned automatically.
+    pub fn sample(&mut self, value: f64, time: f64) {
+        self.samples.push((time, value));
+        let cutoff = time - self.window_duration;
+        self.samples.retain(|&(t, _)| t >= cutoff);
+    }
+
+    /// Compute the mean value over the trailing window.
+    /// Returns `None` if no samples are in the window.
+    #[must_use]
+    pub fn mean(&self) -> Option<f64> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let mean = self.samples.iter().map(|&(_, v)| v).sum::<f64>() / self.samples.len() as f64;
+        Some(mean)
+    }
+
+    /// Number of samples currently in the trailing window.
+    #[must_use]
+    pub fn sample_count(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Check that the trailing-window mean is within `tolerance_pct`% of `expected`.
+    ///
+    /// Computes `|mean - expected| / |expected| * 100` and compares to `tolerance_pct`.
+    /// Returns a failing check if no samples are in the window or if `expected` is zero.
+    #[must_use]
+    pub fn check(&self, expected: f64, tolerance_pct: f64) -> Check {
+        match self.mean() {
+            None => Check {
+                name: "Equilibrium",
+                pass: false,
+                detail: "no samples in trailing window".to_string(),
+            },
+            Some(_) if expected.abs() < 1e-15 => Check {
+                name: "Equilibrium",
+                pass: false,
+                detail: "expected equilibrium ≈ 0, cannot compute percentage error".to_string(),
+            },
+            Some(mean) => {
+                let err_pct = ((mean - expected) / expected).abs() * 100.0;
+                Check {
+                    name: "Equilibrium",
+                    pass: err_pct < tolerance_pct,
+                    detail: format!("mean={mean:.4}  expected={expected:.4}  error={err_pct:.2}%"),
+                }
+            }
+        }
+    }
+}
+
 // ── Report formatting ───────────────────────────────────────────────────────
 
 /// Print a formatted validation report and return whether all checks passed.
@@ -609,6 +694,59 @@ mod tests {
         e.sample(0.0);
         e.sample(0.1);
         assert!(!e.check(0.5).pass); // can't compute percentage
+    }
+
+    #[test]
+    fn equilibrium_tracker_converges() {
+        let mut e = EquilibriumTracker::new(5.0);
+        // Simulate damped oscillation converging to -0.245
+        for i in 0..1000 {
+            let t = f64::from(i) * 0.02; // 50 Hz, 20 seconds total
+            let decay = (-0.3 * t).exp();
+            let value = -0.245 + 0.5 * decay * (6.0 * t).sin();
+            e.sample(value, t);
+        }
+        // After 20s with 5s window, mean should be very close to -0.245
+        let check = e.check(-0.245, 5.0);
+        assert!(check.pass, "detail: {}", check.detail);
+    }
+
+    #[test]
+    fn equilibrium_tracker_window_prunes() {
+        let mut e = EquilibriumTracker::new(2.0);
+        // Phase 1: t=0..8, value=10.0
+        for i in 0..80 {
+            let t = f64::from(i) * 0.1;
+            e.sample(10.0, t);
+        }
+        // Phase 2: t=8..12, value=1.0
+        for i in 80..120 {
+            let t = f64::from(i) * 0.1;
+            e.sample(1.0, t);
+        }
+        // Window is [10.0, 12.0], all samples are value=1.0
+        let mean = e.mean().unwrap_or(f64::NAN);
+        assert!(
+            (mean - 1.0).abs() < 0.01,
+            "mean={mean}, expected ~1.0 (window should prune old samples)"
+        );
+    }
+
+    #[test]
+    fn equilibrium_tracker_no_samples() {
+        let e = EquilibriumTracker::new(5.0);
+        let check = e.check(-0.245, 5.0);
+        assert!(!check.pass);
+        assert!(check.detail.contains("no samples"));
+    }
+
+    #[test]
+    fn equilibrium_tracker_zero_expected() {
+        let mut e = EquilibriumTracker::new(5.0);
+        e.sample(0.1, 1.0);
+        let check = e.check(0.0, 5.0);
+        assert!(!check.pass);
+        assert!(check.detail.contains("cannot compute"));
     }
 
     #[test]

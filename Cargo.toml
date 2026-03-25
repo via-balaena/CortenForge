@@ -31,7 +31,8 @@ members = [
     "examples/fundamentals/design/finger-design",
     "examples/fundamentals/mesh/mesh-pipeline",
     "examples/fundamentals/sim-cpu/pendulum-sim",
-    "examples/fundamentals/sim-cpu/slide-joint",
+    "examples/fundamentals/sim-cpu/slide-joint/horizontal",
+    "examples/fundamentals/sim-cpu/slide-joint/vertical",
     "examples/fundamentals/sim-cpu/ball-joint/spherical-pendulum",
     "examples/fundamentals/sim-cpu/ball-joint/cone-limit",
 

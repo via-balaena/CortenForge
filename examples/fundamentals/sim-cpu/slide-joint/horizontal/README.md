@@ -51,7 +51,7 @@ The example runs three automated checks at t=15s:
 ## Run
 
 ```
-cargo run -p example-slide-joint --release
+cargo run -p example-slide-joint-horizontal --release
 ```
 
 Orbit: left-drag | Pan: right-drag | Zoom: scroll

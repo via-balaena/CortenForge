@@ -179,6 +179,39 @@ pub fn unit_quaternion_from_quat(q: Quat) -> UnitQuaternion<f64> {
 }
 
 // ============================================================================
+// Lightweight f32 helpers for example / visual code
+// ============================================================================
+
+/// Convert raw physics coordinates (Z-up) to a Bevy `Vec3` (Y-up).
+///
+/// This is the **recommended entry point for example code** that works with
+/// hardcoded positions from MJCF models. It performs the same Y↔Z swap as
+/// [`vec3_from_point`] but accepts raw `f32` values instead of requiring
+/// nalgebra types.
+///
+/// # Example
+///
+/// ```ignore
+/// // MJCF: pos="0 0 2.0" (Z-up) → Bevy Vec3(0, 2, 0) (Y-up)
+/// let mount = physics_pos(0.0, 0.0, 2.0);
+/// assert_eq!(mount, Vec3::new(0.0, 2.0, 0.0));
+/// ```
+#[inline]
+#[must_use]
+pub fn physics_pos(x: f32, y: f32, z: f32) -> Vec3 {
+    Vec3::new(x, z, y)
+}
+
+/// Convert a Bevy `Vec3` (Y-up) back to raw physics coordinates (Z-up).
+///
+/// Inverse of [`physics_pos`]. Returns `(x, y, z)` in physics (Z-up) order.
+#[inline]
+#[must_use]
+pub fn bevy_to_physics(v: Vec3) -> (f32, f32, f32) {
+    (v.x, v.z, v.y)
+}
+
+// ============================================================================
 // Bulk conversion functions for mesh data
 // ============================================================================
 

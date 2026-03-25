@@ -12,7 +12,7 @@
 //! - Energy monotonically decreases (damping dissipates, never injects)
 //! - Joint limits never exceeded
 //!
-//! Run with: `cargo run -p example-slide-joint --release`
+//! Run with: `cargo run -p example-slide-joint-horizontal --release`
 
 #![allow(
     clippy::needless_pass_by_value,
