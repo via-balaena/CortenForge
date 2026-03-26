@@ -104,17 +104,11 @@ fn setup(
             &mut commands,
             &mut meshes,
             &mut materials,
+            &mut scenes,
             id,
-            scenes.get(id).expect("just added"),
             Vec3::new(x, 0.0, 0.0),
             &[("rod", mat_rod), ("tip", mat_tip)],
         );
-    }
-
-    // Store offsets for sync
-    for (i, _) in LABELS.iter().enumerate() {
-        let x = (i as f32 - 1.0) * SPACING;
-        scenes.get_mut(i).expect("just added").offset = Vec3::new(x, 0.0, 0.0);
     }
 
     commands.insert_resource(scenes);

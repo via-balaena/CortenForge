@@ -206,16 +206,16 @@ pub fn sync_scene_geom_transforms(
 
 /// Spawn geoms for one scene, offset in world space for side-by-side layout.
 ///
-/// Tags each entity with [`PhysicsSceneId`]. The `offset` is added to the
-/// initial transform and stored on the scene for use by
-/// [`sync_scene_geom_transforms`].
+/// Tags each entity with [`PhysicsSceneId`]. The `offset` is stored on the
+/// scene automatically so [`sync_scene_geom_transforms`] applies it every
+/// frame. Does nothing if `scene_id` is out of range.
 #[allow(clippy::needless_range_loop)]
 pub fn spawn_scene_geoms(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    scenes: &mut PhysicsScenes,
     scene_id: usize,
-    scene: &PhysicsScene,
     offset: Vec3,
     overrides: &[GeomMaterialOverride<'_>],
 ) {
@@ -223,8 +223,8 @@ pub fn spawn_scene_geoms(
         commands,
         meshes,
         materials,
+        scenes,
         scene_id,
-        scene,
         offset,
         overrides,
         None::<fn(&mut bevy::ecs::system::EntityCommands, usize, &str)>,
@@ -234,14 +234,15 @@ pub fn spawn_scene_geoms(
 /// Like [`spawn_scene_geoms`], but calls `per_entity` for each spawned geom.
 ///
 /// The callback receives `(entity_commands, geom_id, geom_name)` where
-/// `geom_name` is `""` for unnamed geoms.
+/// `geom_name` is `""` for unnamed geoms. Does nothing if `scene_id` is
+/// out of range.
 #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 pub fn spawn_scene_geoms_with<F>(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    scenes: &mut PhysicsScenes,
     scene_id: usize,
-    scene: &PhysicsScene,
     offset: Vec3,
     overrides: &[GeomMaterialOverride<'_>],
     per_entity: F,
@@ -252,8 +253,8 @@ pub fn spawn_scene_geoms_with<F>(
         commands,
         meshes,
         materials,
+        scenes,
         scene_id,
-        scene,
         offset,
         overrides,
         Some(per_entity),
@@ -262,21 +263,27 @@ pub fn spawn_scene_geoms_with<F>(
 
 /// Shared implementation for scene geom spawning.
 ///
-/// Mirrors [`spawn_model_geoms_inner`](crate::model_data) but adds
-/// [`PhysicsSceneId`] and applies the world-space `offset`.
+/// Stores the offset on the scene, then spawns entities tagged with
+/// [`PhysicsSceneId`].
 #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 fn spawn_scene_geoms_inner<F>(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    scenes: &mut PhysicsScenes,
     scene_id: usize,
-    scene: &PhysicsScene,
     offset: Vec3,
     overrides: &[GeomMaterialOverride<'_>],
     mut per_entity: Option<F>,
 ) where
     F: FnMut(&mut bevy::ecs::system::EntityCommands, usize, &str),
 {
+    // Store offset so sync_scene_geom_transforms applies it every frame.
+    let Some(scene) = scenes.get_mut(scene_id) else {
+        return;
+    };
+    scene.offset = offset;
+
     let model = &scene.model;
     let data = &scene.data;
 
@@ -500,15 +507,14 @@ mod tests {
         {
             let mut commands = Commands::new(&mut queue, &world);
             for id in 0..3 {
-                let scene = scenes.get(id).expect("scene missing");
                 #[allow(clippy::cast_precision_loss)]
                 let offset = Vec3::new(id as f32 * 2.0, 0.0, 0.0);
                 spawn_scene_geoms(
                     &mut commands,
                     &mut meshes,
                     &mut materials,
+                    &mut scenes,
                     id,
-                    scene,
                     offset,
                     &[],
                 );
