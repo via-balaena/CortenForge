@@ -197,7 +197,7 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.scalar("kv (damping)", KV, 3);
     hud.scalar("omega (rad/s)", vel, 2);
     hud.scalar("expected (rad/s)", expected_vel, 2);
-    hud.scalar("brake (N·m)", brake, 4);
+    hud.scalar("brake (Nm)", brake, 4);
     hud.scalar("decay (%)", decay_pct, 1);
     hud.scalar("time (s)", data.time, 2);
 }
