@@ -5,7 +5,7 @@
 //! upper body.
 //!
 //! Validates:
-//! - SubtreeCom sensor == data.subtree_com[body_id] (FK pass-through)
+//! - SubtreeCom sensor == `data.subtree_com[body_id]` (FK pass-through)
 //! - COM X-component range > 0.1m (chain swings, COM moves)
 //! - Analytical cross-check at t=0 against hand-computed COM
 //!
