@@ -70,7 +70,9 @@
 pub mod camera;
 pub mod components;
 pub mod convert;
+pub mod examples;
 pub mod gizmos;
+pub mod materials;
 pub mod mesh;
 pub mod model_data;
 pub mod plugin;
@@ -82,10 +84,19 @@ pub mod systems;
 pub mod prelude {
     pub use crate::camera::OrbitCamera;
     pub use crate::components::{CollisionShapeVisual, ShapeType, VisGroup};
-    pub use crate::convert::{transform_from_physics, transform_from_physics_pose};
-    pub use crate::gizmos::DebugGizmosSet;
+    pub use crate::convert::{
+        bevy_to_physics, physics_pos, transform_from_physics, transform_from_physics_pose,
+    };
+    pub use crate::examples::{DiagTimer, spawn_example_camera};
+    pub use crate::gizmos::{DebugGizmosSet, TrailGizmo, draw_trails, sample_trails};
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
-    pub use crate::mesh::{spawn_design_mesh, triangle_mesh_from_indexed};
+    pub use crate::materials::{
+        MetalPreset, override_geom_material_by_index, override_geom_material_by_name,
+        override_geom_materials_by_name, override_geom_materials_by_name_with,
+    };
+    pub use crate::mesh::{
+        SpringCoilParams, spawn_design_mesh, spring_coil, triangle_mesh_from_indexed,
+    };
     pub use crate::model_data::{
         ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
         ModelSiteIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,

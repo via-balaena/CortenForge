@@ -136,6 +136,9 @@ pub mod plugin;
 // Batched simulation (N independent environments sharing one Model)
 pub mod batch;
 
+// Validation framework for physics examples and integration tests
+pub mod validation;
+
 pub use batch::BatchSim;
 pub use cf_geometry::{Aabb, Axis, Bounded, Shape};
 pub use convex_hull::{ConvexHull, convex_hull, quickhull};

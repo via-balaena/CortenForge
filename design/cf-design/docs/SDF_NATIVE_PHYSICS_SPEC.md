@@ -114,7 +114,7 @@ No changes needed. `GeomType::Mesh` geoms (visual) render normally.
 
 ### 3. Update finger example
 
-**File: `examples/fundamentals/finger-design/src/main.rs`**
+**File: `examples/fundamentals/design/finger-design/src/main.rs`**
 
 Replace:
 ```rust
@@ -136,7 +136,7 @@ let model = mechanism.to_model(0.5, 0.3);
 | `design/cf-design/src/mechanism/model_builder.rs` | NEW — `Mechanism::to_model()` |
 | `design/cf-design/src/mechanism/mod.rs` | Add `mod model_builder`, expose `to_model` on Mechanism |
 | `design/cf-design/Cargo.toml` | Add `sim-core`, `cf-geometry` dependencies |
-| `examples/fundamentals/finger-design/src/main.rs` | Use `to_model()` instead of `to_mjcf()` |
+| `examples/fundamentals/design/finger-design/src/main.rs` | Use `to_model()` instead of `to_mjcf()` |
 
 ## Open Questions
 

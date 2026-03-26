@@ -238,9 +238,6 @@ pub fn mj_crba(model: &Model, data: &mut Data) {
 
         for i in 0..nv {
             data.qM[(dof_adr + i, dof_adr + i)] += armature;
-            if let Some(&dof_arm) = model.dof_armature.get(dof_adr + i) {
-                data.qM[(dof_adr + i, dof_adr + i)] += dof_arm;
-            }
         }
     }
 

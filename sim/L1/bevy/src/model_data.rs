@@ -51,7 +51,7 @@ use bevy::prelude::*;
 use cf_geometry::Shape;
 use sim_core::{Data, GeomType, Model};
 
-use crate::convert::{quat_from_unit_quaternion, vec3_from_vector};
+use crate::convert::{quat_from_physics_matrix, quat_from_unit_quaternion, vec3_from_vector};
 use crate::mesh::{mesh_from_shape, triangle_mesh_from_indexed};
 
 // ============================================================================
@@ -255,8 +255,14 @@ pub struct ModelDataRoot;
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters
 pub fn step_model_data(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
     if let Err(e) = data.0.step(&model.0) {
-        // Log the error but continue - physics errors are typically recoverable
         eprintln!("Physics step failed: {e}");
+        return;
+    }
+    // Refresh derived quantities (sensors, geom/body poses, energy) so they
+    // match the post-integration qpos/qvel. Without this, these fields lag
+    // by one timestep — the MuJoCo pipeline computes them BEFORE integration.
+    if let Err(e) = data.0.forward(&model.0) {
+        eprintln!("Post-step forward failed: {e}");
     }
 }
 
@@ -306,6 +312,14 @@ pub fn step_physics_realtime(
         }
         acc.0 -= dt_sim;
         steps += 1;
+    }
+    // Refresh derived quantities (sensors, geom/body poses, energy) so they
+    // match the post-integration qpos/qvel. Without this, these fields lag
+    // by one timestep — the MuJoCo pipeline computes them BEFORE integration.
+    if steps > 0 {
+        if let Err(e) = data.0.forward(&model.0) {
+            eprintln!("Post-step forward failed: {e}");
+        }
     }
 }
 
@@ -359,10 +373,8 @@ pub fn sync_geom_transforms(
             // Convert position
             transform.translation = vec3_from_vector(pos);
 
-            // Convert rotation matrix to quaternion
-            let rotation = nalgebra::Rotation3::from_matrix_unchecked(*mat);
-            let quat = nalgebra::UnitQuaternion::from_rotation_matrix(&rotation);
-            transform.rotation = quat_from_unit_quaternion(&quat);
+            // Convert rotation matrix directly (avoids double quaternion extraction)
+            transform.rotation = quat_from_physics_matrix(mat);
         }
     }
 }
@@ -382,10 +394,8 @@ pub fn sync_site_transforms(
             // Convert position
             transform.translation = vec3_from_vector(pos);
 
-            // Convert rotation matrix to quaternion
-            let rotation = nalgebra::Rotation3::from_matrix_unchecked(*mat);
-            let quat = nalgebra::UnitQuaternion::from_rotation_matrix(&rotation);
-            transform.rotation = quat_from_unit_quaternion(&quat);
+            // Convert rotation matrix directly (avoids double quaternion extraction)
+            transform.rotation = quat_from_physics_matrix(mat);
         }
     }
 }
@@ -604,12 +614,10 @@ pub fn spawn_model_geoms(
         // Initial transform from computed world-frame geom pose
         let pos = &data.geom_xpos[geom_id];
         let mat = &data.geom_xmat[geom_id];
-        let rotation = nalgebra::Rotation3::from_matrix_unchecked(*mat);
-        let quat = nalgebra::UnitQuaternion::from_rotation_matrix(&rotation);
 
         let transform = Transform {
             translation: vec3_from_vector(pos),
-            rotation: quat_from_unit_quaternion(&quat),
+            rotation: quat_from_physics_matrix(mat),
             scale: Vec3::ONE,
         };
 

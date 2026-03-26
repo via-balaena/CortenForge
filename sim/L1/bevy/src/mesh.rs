@@ -375,6 +375,141 @@ pub fn triangle_mesh_from_indexed(mesh_data: &Arc<IndexedMesh>) -> Mesh {
     mesh
 }
 
+// ── Spring coil mesh ────────────────────────────────────────────────────────
+
+/// Parameters for a helical coil spring mesh.
+///
+/// Used with [`spring_coil`] to generate a tube-swept helix along the +X axis.
+/// The `Default` provides sensible values for meter-scale simulations.
+#[derive(Debug, Clone)]
+pub struct SpringCoilParams {
+    /// Number of coil turns.
+    pub turns: u32,
+    /// Radius of the helix (distance from axis to wire center).
+    pub radius: f32,
+    /// Radius of the wire tube cross-section.
+    pub tube_radius: f32,
+    /// Segments per full turn (controls smoothness). Default: 24.
+    pub segments_per_turn: u32,
+    /// Tube cross-section segments. Default: 8.
+    pub tube_segments: u32,
+    /// Minimum length clamp to avoid degenerate geometry. Default: 0.05.
+    /// Adjust for your simulation scale (e.g. 0.001 for mm-scale sims).
+    pub min_length: f32,
+}
+
+impl Default for SpringCoilParams {
+    fn default() -> Self {
+        Self {
+            turns: 10,
+            radius: 0.06,
+            tube_radius: 0.008,
+            segments_per_turn: 24,
+            tube_segments: 8,
+            min_length: 0.05,
+        }
+    }
+}
+
+/// Generate a helical coil mesh from `x=0` to `x=length`.
+///
+/// The coil axis is along +X (Bevy space). Negative or very small lengths
+/// are clamped to `params.min_length` — never panics, always returns a valid mesh.
+///
+/// Intended for dynamic use: regenerate each frame with a new length to
+/// animate spring compression/extension.
+///
+/// `usage` controls GPU/CPU asset residency (pass `RenderAssetUsages::default()`
+/// for typical use, or `RENDER_WORLD` for GPU-only).
+#[allow(clippy::suboptimal_flops, clippy::cast_precision_loss)]
+#[must_use]
+pub fn spring_coil(params: &SpringCoilParams, length: f32, usage: RenderAssetUsages) -> Mesh {
+    use std::f32::consts::TAU;
+
+    let length = length.max(params.min_length);
+    let total_segs = params.turns * params.segments_per_turn;
+
+    // Handle degenerate case (zero turns)
+    if total_segs == 0 {
+        return Mesh::new(PrimitiveTopology::TriangleList, usage);
+    }
+
+    let n_verts = ((total_segs + 1) * (params.tube_segments + 1)) as usize;
+    let mut positions = Vec::with_capacity(n_verts);
+    let mut normals = Vec::with_capacity(n_verts);
+    let mut indices = Vec::new();
+
+    for i in 0..=total_segs {
+        let t = i as f32 / total_segs as f32;
+        let cx = t * length;
+        let helix_angle = t * params.turns as f32 * TAU;
+        let cy = params.radius * helix_angle.cos();
+        let cz = params.radius * helix_angle.sin();
+
+        // Radial direction (outward from helix axis)
+        let radial_y = helix_angle.cos();
+        let radial_z = helix_angle.sin();
+
+        // Tangent of the helix (Frenet frame)
+        let tangent_x = length / total_segs as f32;
+        let tangent_y =
+            -params.radius * helix_angle.sin() * params.turns as f32 * TAU / total_segs as f32;
+        let tangent_z =
+            params.radius * helix_angle.cos() * params.turns as f32 * TAU / total_segs as f32;
+        let tang_len = (tangent_x * tangent_x + tangent_y * tangent_y + tangent_z * tangent_z)
+            .sqrt()
+            .max(1e-6);
+        let tx = tangent_x / tang_len;
+        let ty = tangent_y / tang_len;
+        let tz = tangent_z / tang_len;
+
+        // Binormal = tangent × radial
+        let bx = ty * radial_z - tz * radial_y;
+        let by = -tx * radial_z;
+        let bz = tx * radial_y;
+        let b_len = (bx * bx + by * by + bz * bz).sqrt().max(1e-6);
+        let bx = bx / b_len;
+        let by = by / b_len;
+        let bz = bz / b_len;
+
+        for j in 0..=params.tube_segments {
+            let tube_angle = j as f32 / params.tube_segments as f32 * TAU;
+            let cos_t = tube_angle.cos();
+            let sin_t = tube_angle.sin();
+
+            let nx = sin_t * bx;
+            let ny = cos_t * radial_y + sin_t * by;
+            let nz = cos_t * radial_z + sin_t * bz;
+
+            let px = cx + params.tube_radius * (sin_t * bx);
+            let py = cy + params.tube_radius * (cos_t * radial_y + sin_t * by);
+            let pz = cz + params.tube_radius * (cos_t * radial_z + sin_t * bz);
+
+            positions.push([px, py, pz]);
+            let n_len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-6);
+            normals.push([nx / n_len, ny / n_len, nz / n_len]);
+        }
+    }
+
+    // Triangle indices: quads between adjacent rings
+    let ring = params.tube_segments + 1;
+    for i in 0..total_segs {
+        for j in 0..params.tube_segments {
+            let a = i * ring + j;
+            let b = a + ring;
+            let c = b + 1;
+            let d = a + 1;
+            indices.extend_from_slice(&[a, b, d, b, c, d]);
+        }
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, usage);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
+    mesh
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +595,33 @@ mod tests {
         let radii = nalgebra::Vector3::new(1.0, 2.0, 0.5);
         let mesh = ellipsoid_mesh(&radii);
         assert!(mesh.attribute(Mesh::ATTRIBUTE_POSITION).is_some());
+    }
+
+    #[test]
+    fn spring_coil_default_params() {
+        let params = SpringCoilParams::default();
+        let mesh = spring_coil(&params, 1.0, RenderAssetUsages::default());
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_POSITION).is_some());
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_some());
+        assert!(mesh.indices().is_some());
+    }
+
+    #[test]
+    fn spring_coil_negative_length_clamps() {
+        let params = SpringCoilParams::default();
+        let mesh = spring_coil(&params, -5.0, RenderAssetUsages::default());
+        // Should not panic, returns valid mesh at min_length
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_POSITION).is_some());
+    }
+
+    #[test]
+    fn spring_coil_zero_turns() {
+        let params = SpringCoilParams {
+            turns: 0,
+            ..Default::default()
+        };
+        let mesh = spring_coil(&params, 1.0, RenderAssetUsages::default());
+        // Should return an empty but valid mesh
+        assert!(mesh.indices().is_none_or(bevy::mesh::Indices::is_empty));
     }
 }

@@ -1687,7 +1687,7 @@ All substeps encoded in one command buffer per frame.
   integrated into the CPU step dispatch. Bevy systems call it directly.
 - GPU-compatible hockey example deferred to a VR session (stick becomes mocap body
   driven by Quest 3 controller, not a hinge joint). Skeleton and architecture
-  documented in `examples/sdf-physics/10b-hockey/EXPECTED_BEHAVIOR.md`.
+  documented in `examples/sdf-physics/gpu/01-hockey/EXPECTED_BEHAVIOR.md`.
 - Bevy plugin integration (`step_physics_realtime` GPU path) deferred to VR session.
 - `step()` does not yet upload mocap poses — only qpos/qvel. Mocap upload needed
   for VR (stick as mocap body). See `state_bufs.upload_mocap()`.

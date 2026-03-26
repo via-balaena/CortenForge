@@ -2,7 +2,7 @@
 
 **Status:** RESOLVED (2026-03-22). Two-part fix: normal stabilization + lever arm stabilization.
 **Date:** 2026-03-22
-**Example:** `examples/sdf-physics/07-pair` (two SDF spheres stacked)
+**Example:** `examples/sdf-physics/cpu/07-pair` (two SDF spheres stacked)
 **Branch:** `examples-continued`
 
 ## Symptom

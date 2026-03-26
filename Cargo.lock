@@ -2348,6 +2348,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ball-joint-cone-limit"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-ball-joint-cone-orbit"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-ball-joint-conical"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-ball-joint-pendulum"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-bio-shapes"
 version = "0.7.0"
 dependencies = [
@@ -2426,6 +2466,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-hinge-joint-double-pendulum"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-hinge-joint-pendulum"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-mesh-pipeline"
 version = "0.7.0"
 dependencies = [
@@ -2443,18 +2503,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-pendulum-sim"
-version = "0.7.0"
-dependencies = [
- "anyhow",
- "bevy",
- "sim-bevy",
- "sim-core",
- "sim-mjcf",
-]
-
-[[package]]
-name = "example-sdf-01-sdf-grid"
+name = "example-sdf-cpu-01-sdf-grid"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2464,7 +2513,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-02-thin-grid"
+name = "example-sdf-cpu-02-thin-grid"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2474,7 +2523,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-03-freefall"
+name = "example-sdf-cpu-03-freefall"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2485,7 +2534,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-04-rest"
+name = "example-sdf-cpu-04-rest"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2496,7 +2545,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-05-drop"
+name = "example-sdf-cpu-05-drop"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2507,7 +2556,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-06-slide"
+name = "example-sdf-cpu-06-slide"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2518,7 +2567,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-07-pair"
+name = "example-sdf-cpu-07-pair"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2529,7 +2578,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-08-stack"
+name = "example-sdf-cpu-08-stack"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2540,7 +2589,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-09-cube-in-box"
+name = "example-sdf-cpu-09-cube-in-box"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2551,7 +2600,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-10-ball-in-bowl"
+name = "example-sdf-cpu-10-ball-in-bowl"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2562,7 +2611,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-10b-hockey"
+name = "example-sdf-cpu-11-hinge-free"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2574,19 +2623,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-11-hinge-free"
-version = "0.7.0"
-dependencies = [
- "bevy",
- "cf-design",
- "nalgebra",
- "sim-bevy",
- "sim-core",
- "sim-gpu",
-]
-
-[[package]]
-name = "example-sdf-12-hinge-wall"
+name = "example-sdf-cpu-12-hinge-wall"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2597,7 +2634,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-13-hinge-stop"
+name = "example-sdf-cpu-13-hinge-stop"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2608,7 +2645,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-14-damped-hinge"
+name = "example-sdf-cpu-14-damped-hinge"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2619,7 +2656,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-15-concave-stop"
+name = "example-sdf-cpu-15-concave-stop"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2630,7 +2667,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-sdf-16-socket"
+name = "example-sdf-cpu-16-socket"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2639,6 +2676,10 @@ dependencies = [
  "sim-bevy",
  "sim-core",
 ]
+
+[[package]]
+name = "example-sdf-gpu-01-hockey"
+version = "0.7.0"
 
 [[package]]
 name = "example-sim-informed-design"
@@ -2653,6 +2694,26 @@ dependencies = [
  "nalgebra",
  "sim-bevy",
  "sim-core",
+]
+
+[[package]]
+name = "example-slide-joint-horizontal"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-slide-joint-vertical"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
 ]
 
 [[package]]
