@@ -1353,4 +1353,55 @@ impl Model {
             false // Joint ID out of range
         }
     }
+
+    // ==================== Convenience Name Lookups ====================
+
+    /// Look up joint ID by name. Returns `None` if not found.
+    #[inline]
+    #[must_use]
+    pub fn joint_id(&self, name: &str) -> Option<usize> {
+        self.jnt_name_to_id.get(name).copied()
+    }
+
+    /// Look up sensor ID by name. Returns `None` if not found.
+    #[inline]
+    #[must_use]
+    pub fn sensor_id(&self, name: &str) -> Option<usize> {
+        self.sensor_name_to_id.get(name).copied()
+    }
+
+    /// Look up actuator ID by name. Returns `None` if not found.
+    #[inline]
+    #[must_use]
+    pub fn actuator_id(&self, name: &str) -> Option<usize> {
+        self.actuator_name_to_id.get(name).copied()
+    }
+
+    /// Look up body ID by name. Returns `None` if not found.
+    #[inline]
+    #[must_use]
+    pub fn body_id(&self, name: &str) -> Option<usize> {
+        self.body_name_to_id.get(name).copied()
+    }
+
+    /// Look up geom ID by name. Returns `None` if not found.
+    #[inline]
+    #[must_use]
+    pub fn geom_id(&self, name: &str) -> Option<usize> {
+        self.geom_name_to_id.get(name).copied()
+    }
+
+    /// Look up site ID by name. Returns `None` if not found.
+    #[inline]
+    #[must_use]
+    pub fn site_id(&self, name: &str) -> Option<usize> {
+        self.site_name_to_id.get(name).copied()
+    }
+
+    /// Look up tendon ID by name. Returns `None` if not found.
+    #[inline]
+    #[must_use]
+    pub fn tendon_id(&self, name: &str) -> Option<usize> {
+        self.tendon_name_to_id.get(name).copied()
+    }
 }

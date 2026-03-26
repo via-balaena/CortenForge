@@ -88,7 +88,14 @@ fn setup_shapes(
     let _ = data.forward(&model);
 
     // Spawn visual entities for all geoms
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     // Insert as Bevy resources
     commands.insert_resource(PhysicsModel::new(model));

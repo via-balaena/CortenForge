@@ -171,7 +171,14 @@ fn setup(
     let e0 = data.energy_kinetic + data.energy_potential;
 
     // Auto-spawn visual entities for all geoms (rail, cart box, pole capsule)
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     // Camera — side view along Bevy -Z so cart slides left/right on screen.
     // azimuth=π/2 puts camera on +Z axis, elevation=0.15 gives slight top-down.

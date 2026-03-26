@@ -902,6 +902,74 @@ impl Data {
             || self.warnings[super::warning::Warning::BadQacc as usize].count > 0
     }
 
+    // ==================== Convenience State Accessors ====================
+
+    /// Joint position slice (length depends on joint type: 1 for hinge/slide,
+    /// 4 for ball, 7 for free).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `joint_id >= model.njnt`.
+    #[inline]
+    #[must_use]
+    pub fn joint_qpos(&self, model: &Model, joint_id: usize) -> &[f64] {
+        let start = model.jnt_qpos_adr[joint_id];
+        let len = model.jnt_type[joint_id].nq();
+        &self.qpos.as_slice()[start..start + len]
+    }
+
+    /// Mutable joint position slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `joint_id >= model.njnt`.
+    #[inline]
+    pub fn joint_qpos_mut(&mut self, model: &Model, joint_id: usize) -> &mut [f64] {
+        let start = model.jnt_qpos_adr[joint_id];
+        let len = model.jnt_type[joint_id].nq();
+        &mut self.qpos.as_mut_slice()[start..start + len]
+    }
+
+    /// Joint velocity slice (length: 1 for hinge/slide, 3 for ball, 6 for free).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `joint_id >= model.njnt`.
+    #[inline]
+    #[must_use]
+    pub fn joint_qvel(&self, model: &Model, joint_id: usize) -> &[f64] {
+        let start = model.jnt_dof_adr[joint_id];
+        let len = model.jnt_type[joint_id].nv();
+        &self.qvel.as_slice()[start..start + len]
+    }
+
+    /// Mutable joint velocity slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `joint_id >= model.njnt`.
+    #[inline]
+    pub fn joint_qvel_mut(&mut self, model: &Model, joint_id: usize) -> &mut [f64] {
+        let start = model.jnt_dof_adr[joint_id];
+        let len = model.jnt_type[joint_id].nv();
+        &mut self.qvel.as_mut_slice()[start..start + len]
+    }
+
+    /// Sensor data slice (length = `model.sensor_dim[sensor_id]`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `sensor_id >= model.nsensor`.
+    #[inline]
+    #[must_use]
+    pub fn sensor_data(&self, model: &Model, sensor_id: usize) -> &[f64] {
+        let start = model.sensor_adr[sensor_id];
+        let len = model.sensor_dim[sensor_id];
+        &self.sensordata.as_slice()[start..start + len]
+    }
+
+    // ====================================================================
+
     /// Reset state to model defaults.
     ///
     /// # Staleness guard

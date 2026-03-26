@@ -137,7 +137,14 @@ fn setup(
     );
 
     // ── Spawn MJCF geometry ─────────────────────────────────────────────
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     // ── Metallic materials ──────────────────────────────────────────────
     let mat_frame = materials.add(MetalPreset::BrushedMetal.material());

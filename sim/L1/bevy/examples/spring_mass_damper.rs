@@ -191,7 +191,14 @@ fn setup(
     let eq = -MASS * 9.81 / STIFFNESS;
 
     // Auto-spawn visual entities for all geoms (ground plane + mass box)
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     // Camera — side view from +X axis, centered on oscillation range
     let orbit = OrbitCamera::new()

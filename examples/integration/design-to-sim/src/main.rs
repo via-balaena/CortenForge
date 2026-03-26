@@ -162,7 +162,14 @@ fn setup(
     let _ = data.forward(&model);
 
     // ── Spawn ALL geoms (including mesh geoms) via the engine ────────
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     ExampleScene::new(80.0, 50.0).spawn(&mut commands, &mut meshes, &mut materials);
 

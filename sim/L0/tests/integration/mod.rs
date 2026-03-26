@@ -411,3 +411,9 @@ pub mod mesh_collision_profile;
 
 /// DT-180 diagnostic: mesh vs primitive sphere mass/inertia/contact force comparison.
 pub mod mesh_contact_force_diagnostic;
+
+// ============================================================================
+// Named Accessors (Model::joint_id, Data::joint_qpos, etc.)
+// ============================================================================
+
+pub mod named_accessors;

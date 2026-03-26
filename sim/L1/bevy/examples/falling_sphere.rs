@@ -47,7 +47,14 @@ fn setup(
     let _ = data.forward(&model);
 
     // Auto-spawn visual entities for all geoms
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     // Camera
     let orbit = OrbitCamera::new()
