@@ -1,6 +1,6 @@
 # sim-bevy Examples API Spec
 
-**Status:** Approved — implementation in progress
+**Status:** Approved — Changes 1–4 DONE, Changes 5–6 pending
 **Date:** 2026-03-25
 **Scope:** sim-bevy API improvements to support all 12 Track 1 example domains
 
@@ -1007,23 +1007,27 @@ These affect every example. Do them first, migrate existing examples.
    - spawn_model_geoms() takes &[GeomMaterialOverride] overrides parameter
    - spawn_model_geoms_with() callback variant added
    - All 27 call sites migrated, 1954 tests pass
-   - MaterialOverrides + apply_materials NOT yet deleted from 8 examples
-     (will remove when migrating examples to ValidationHarness in step 3)
+   - MaterialOverrides + apply_materials deleted from all 8 examples (in Change 3)
 
-3. **Change 3: Validation harness** — NEXT
-   - Build enum-based ValidationHarness in sim-bevy examples module
-   - Migrate 8 existing examples (delete MaterialOverrides, apply_materials,
-     Validation resources, diagnostics systems — use harness + overrides)
+3. **Change 3: Validation harness** — DONE (2026-03-25)
+   - ValidationHarness + validation_system in sim-bevy/src/examples.rs
+   - 6 tracker types (Period, EnergyConservation, EnergyMonotonicity, Limit, QuatNorm, Equilibrium)
+   - Extensions: skip_until(), display(), reported()
+   - All 8 pre-sensor examples migrated, MaterialOverrides + apply_materials deleted
 
 ### Phase B: Visualization (Changes 4–5)
 
 Needed before sensors example.
 
-4. **Change 4: Text HUD** — pending
-   - Add bevy_ui + bevy_text features to sim-bevy Cargo.toml
-   - PhysicsHud resource + render_physics_hud system + spawn_physics_hud
+4. **Change 4: Text HUD** — **DONE** (2026-03-25)
+   - Added bevy_ui + bevy_text features to sim-bevy Cargo.toml
+   - PhysicsHud resource (scalar/vec3/quat/section/raw), HudText component,
+     render_physics_hud system, spawn_physics_hud helper
+   - 8 unit tests (formatting, clear, composition)
+   - All 9 sensor examples updated with per-example update_hud systems
+   - ViewerConfig::show_hud toggle (default true, hides HUD node when false)
 
-5. **Change 5: Sensor viz redesign** — pending
+5. **Change 5: Sensor viz redesign** — NEXT
    - Delete old dead code (SensorVisualType, SensorVisualData)
    - New SensorVisualization with auto-discovery + draw_sensor_gizmos
 

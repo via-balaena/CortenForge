@@ -182,6 +182,8 @@ pub struct ViewerConfig {
     pub show_tendons: bool,
     /// Whether to show sensor visualization.
     pub show_sensors: bool,
+    /// Whether to show the on-screen physics HUD.
+    pub show_hud: bool,
     /// Scale factor for force vectors (units per Newton).
     pub force_scale: f32,
     /// Scale factor for velocity vectors (units per m/s).
@@ -230,6 +232,7 @@ impl Default for ViewerConfig {
             show_muscles: false,
             show_tendons: false,
             show_sensors: false,
+            show_hud: true,
             force_scale: 0.01,
             velocity_scale: 0.1,
             contact_marker_radius: 0.02,

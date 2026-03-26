@@ -34,6 +34,8 @@ bevy = { workspace = true, default-features = false, features = [
     "bevy_pbr",
     "bevy_render",
     "bevy_state",
+    "bevy_text",
+    "bevy_ui",
     "bevy_winit",
     "multi_threaded",
     "tonemapping_luts",

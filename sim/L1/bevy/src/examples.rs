@@ -452,6 +452,155 @@ pub fn validation_system(
     }
 }
 
+// ── Physics HUD ──────────────────────────────────────────────────────────────
+
+/// A single line of HUD text.
+pub struct HudLine {
+    /// Label (left column).
+    pub label: String,
+    /// Formatted value (right column).
+    pub value: String,
+}
+
+/// Resource: list of HUD lines to display this frame.
+///
+/// Clear at the start of your update system, then push lines. The
+/// [`render_physics_hud`] system joins them into the on-screen overlay.
+///
+/// ```ignore
+/// fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
+///     hud.clear();
+///     hud.section("Sensors");
+///     hud.scalar("Clock", data.time, "{:.2}s");
+/// }
+/// ```
+#[derive(Resource, Default)]
+pub struct PhysicsHud {
+    lines: Vec<HudLine>,
+}
+
+impl PhysicsHud {
+    /// Clear all lines (call at start of each frame).
+    pub fn clear(&mut self) {
+        self.lines.clear();
+    }
+
+    /// Add a labeled scalar value.
+    ///
+    /// `fmt` is a format-style hint like `"{:.3}"` or `"{:.2}s"`. The value is
+    /// formatted with the precision extracted from `fmt`, and the suffix (if any)
+    /// is appended.
+    pub fn scalar(&mut self, label: &str, value: f64, precision: usize) {
+        self.lines.push(HudLine {
+            label: label.to_string(),
+            value: format!("{value:.precision$}"),
+        });
+    }
+
+    /// Add a labeled 3D vector.
+    pub fn vec3(&mut self, label: &str, v: &[f64], precision: usize) {
+        let (x, y, z) = (v[0], v[1], v[2]);
+        self.lines.push(HudLine {
+            label: label.to_string(),
+            value: format!("({x:+.precision$}, {y:+.precision$}, {z:+.precision$})"),
+        });
+    }
+
+    /// Add a labeled quaternion `[w, x, y, z]`.
+    pub fn quat(&mut self, label: &str, q: &[f64]) {
+        self.lines.push(HudLine {
+            label: label.to_string(),
+            value: format!("({:+.4}, {:+.4}, {:+.4}, {:+.4})", q[0], q[1], q[2], q[3],),
+        });
+    }
+
+    /// Add a section header.
+    pub fn section(&mut self, title: &str) {
+        self.lines.push(HudLine {
+            label: format!("── {title} ──"),
+            value: String::new(),
+        });
+    }
+
+    /// Add a raw pre-formatted line.
+    pub fn raw(&mut self, text: String) {
+        self.lines.push(HudLine {
+            label: text,
+            value: String::new(),
+        });
+    }
+}
+
+/// Marker component for the HUD text entity.
+#[derive(Component)]
+pub struct HudText;
+
+/// Spawn the HUD overlay: a dark semi-transparent panel with monospace text.
+///
+/// Call once in your `Startup` system. Pair with [`render_physics_hud`] in
+/// `PostUpdate` and init [`PhysicsHud`] as a resource.
+pub fn spawn_physics_hud(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(10.0),
+                left: Val::Px(10.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+            GlobalZIndex(999),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                HudText,
+                Text::new(""),
+                TextFont {
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.0, 1.0, 0.0)),
+            ));
+        });
+}
+
+/// Bevy system: render [`PhysicsHud`] lines as Node-based UI text.
+///
+/// Add to `PostUpdate`:
+///
+/// ```ignore
+/// .add_systems(PostUpdate, (sync_geom_transforms, validation_system, render_physics_hud))
+/// ```
+#[allow(clippy::needless_pass_by_value)]
+pub fn render_physics_hud(
+    hud: Res<PhysicsHud>,
+    config: Option<Res<crate::resources::ViewerConfig>>,
+    mut query: Query<(&mut Text, &mut Visibility), With<HudText>>,
+) {
+    let show = config.as_ref().is_none_or(|c| c.show_hud);
+    for (mut text, mut vis) in &mut query {
+        if !show {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        *vis = Visibility::Inherited;
+        let content: String = hud
+            .lines
+            .iter()
+            .map(|line| {
+                if line.value.is_empty() {
+                    line.label.clone()
+                } else {
+                    format!("{}: {}", line.label, line.value)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        **text = content;
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -544,5 +693,84 @@ mod tests {
         // skip_until on empty harness is a no-op
         let h = ValidationHarness::new().skip_until(1.0);
         assert_eq!(h.entries.len(), 0);
+    }
+
+    // ── PhysicsHud tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn hud_default_empty() {
+        let hud = PhysicsHud::default();
+        assert!(hud.lines.is_empty());
+    }
+
+    #[test]
+    fn hud_scalar_formatting() {
+        let mut hud = PhysicsHud::default();
+        hud.scalar("time", 1.23456, 3);
+        assert_eq!(hud.lines.len(), 1);
+        assert_eq!(hud.lines[0].label, "time");
+        assert_eq!(hud.lines[0].value, "1.235");
+    }
+
+    #[test]
+    fn hud_vec3_formatting() {
+        let mut hud = PhysicsHud::default();
+        hud.vec3("accel", &[1.0, -2.5, 9.81], 2);
+        assert_eq!(hud.lines.len(), 1);
+        assert_eq!(hud.lines[0].label, "accel");
+        assert_eq!(hud.lines[0].value, "(+1.00, -2.50, +9.81)");
+    }
+
+    #[test]
+    fn hud_quat_formatting() {
+        let mut hud = PhysicsHud::default();
+        hud.quat("ori", &[1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(hud.lines.len(), 1);
+        assert_eq!(hud.lines[0].label, "ori");
+        assert_eq!(hud.lines[0].value, "(+1.0000, +0.0000, +0.0000, +0.0000)");
+    }
+
+    #[test]
+    fn hud_section_header() {
+        let mut hud = PhysicsHud::default();
+        hud.section("Sensors");
+        assert_eq!(hud.lines.len(), 1);
+        assert_eq!(hud.lines[0].label, "── Sensors ──");
+        assert!(hud.lines[0].value.is_empty());
+    }
+
+    #[test]
+    fn hud_raw_line() {
+        let mut hud = PhysicsHud::default();
+        hud.raw("contact: yes".to_string());
+        assert_eq!(hud.lines.len(), 1);
+        assert_eq!(hud.lines[0].label, "contact: yes");
+        assert!(hud.lines[0].value.is_empty());
+    }
+
+    #[test]
+    fn hud_clear() {
+        let mut hud = PhysicsHud::default();
+        hud.scalar("a", 1.0, 1);
+        hud.scalar("b", 2.0, 1);
+        assert_eq!(hud.lines.len(), 2);
+        hud.clear();
+        assert!(hud.lines.is_empty());
+    }
+
+    #[test]
+    fn hud_multi_line_composition() {
+        let mut hud = PhysicsHud::default();
+        hud.section("Test");
+        hud.scalar("x", 1.5, 2);
+        hud.raw("done".to_string());
+        assert_eq!(hud.lines.len(), 3);
+        // Section header has empty value
+        assert!(hud.lines[0].value.is_empty());
+        // Scalar has label + value
+        assert_eq!(hud.lines[1].label, "x");
+        assert_eq!(hud.lines[1].value, "1.50");
+        // Raw has label only
+        assert_eq!(hud.lines[2].label, "done");
     }
 }

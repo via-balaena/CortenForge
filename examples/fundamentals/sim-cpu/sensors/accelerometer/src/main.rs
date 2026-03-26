@@ -24,7 +24,10 @@
 
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::examples::{ValidationHarness, spawn_example_camera, validation_system};
+use sim_bevy::examples::{
+    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
+    validation_system,
+};
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
     PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
@@ -77,6 +80,7 @@ fn main() {
         }))
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<PhysicsAccumulator>()
+        .init_resource::<PhysicsHud>()
         .init_resource::<SensorValidation>()
         .insert_resource(
             ValidationHarness::new()
@@ -95,7 +99,14 @@ fn main() {
         .add_systems(Update, step_physics_realtime)
         .add_systems(
             PostUpdate,
-            (sync_geom_transforms, validation_system, sensor_diagnostics).chain(),
+            (
+                sync_geom_transforms,
+                validation_system,
+                sensor_diagnostics,
+                update_hud,
+                render_physics_hud,
+            )
+                .chain(),
         )
         .run();
 }
@@ -136,8 +147,22 @@ fn setup(
         0.4,
     );
 
+    spawn_physics_hud(&mut commands);
+
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
+}
+
+// ── HUD ────────────────────────────────────────────────────────────────────
+
+fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
+    hud.clear();
+    hud.section("Accelerometer");
+    let a = data.sensor_data(&model, 0);
+    hud.vec3("accel", a, 3);
+    let mag = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    hud.scalar("|a|", mag, 3);
+    hud.scalar("expected", G, 2);
 }
 
 // ── Sensor Validation ───────────────────────────────────────────────────────
