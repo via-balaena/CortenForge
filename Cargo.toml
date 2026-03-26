@@ -38,6 +38,15 @@ members = [
     "examples/fundamentals/sim-cpu/ball-joint/cone-limit",
     "examples/fundamentals/sim-cpu/ball-joint/conical-pendulum",
     "examples/fundamentals/sim-cpu/ball-joint/cone-limit-orbit",
+    "examples/fundamentals/sim-cpu/sensors/clock",
+    "examples/fundamentals/sim-cpu/sensors/joint-pos-vel",
+    "examples/fundamentals/sim-cpu/sensors/frame-pos-quat",
+    "examples/fundamentals/sim-cpu/sensors/subtree-com",
+    "examples/fundamentals/sim-cpu/sensors/gyro-velocimeter",
+    "examples/fundamentals/sim-cpu/sensors/accelerometer",
+    "examples/fundamentals/sim-cpu/sensors/touch",
+    "examples/fundamentals/sim-cpu/sensors/actuator-force",
+    "examples/fundamentals/sim-cpu/sensors/geom-distance",
 
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
