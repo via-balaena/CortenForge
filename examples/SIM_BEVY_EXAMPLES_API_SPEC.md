@@ -1,6 +1,6 @@
 # sim-bevy Examples API Spec
 
-**Status:** Draft v2 — stress-tested, awaiting approval
+**Status:** Approved — implementation in progress
 **Date:** 2026-03-25
 **Scope:** sim-bevy API improvements to support all 12 Track 1 example domains
 
@@ -989,32 +989,43 @@ Every domain uses Changes 1–3. This confirms they're foundational.
 
 These affect every example. Do them first, migrate existing examples.
 
-1. **Change 2: Named accessors** — sim-core. Pure additions, no breaking
-   changes. Add `Data::joint_qpos()` etc. + `Model::joint_id()` etc. + tests.
+1. **Change 2: Named accessors** — DONE (commit `00d490a`)
+   - Model: joint_id(), sensor_id(), actuator_id(), body_id(), geom_id(),
+     site_id(), tendon_id()
+   - Data: joint_qpos(), joint_qpos_mut(), joint_qvel(), joint_qvel_mut(),
+     sensor_data()
+   - 13 integration tests, all passing
 
-2. **Change 1: Material overrides at spawn** — sim-bevy. Breaking change to
-   `spawn_model_geoms` signature. Migrate all 27 call sites (add `&[]`).
-   Delete `MaterialOverrides` + `apply_materials` from 8 examples.
+2. **Change 1: Material overrides at spawn** — DONE (commit `00d490a`)
+   - spawn_model_geoms() takes &[GeomMaterialOverride] overrides parameter
+   - spawn_model_geoms_with() callback variant added
+   - All 27 call sites migrated, 1954 tests pass
+   - MaterialOverrides + apply_materials NOT yet deleted from 8 examples
+     (will remove when migrating examples to ValidationHarness in step 3)
 
-3. **Change 3: Validation harness** — sim-bevy `examples` module. New code.
-   Migrate existing 8 examples to use `ValidationHarness`.
+3. **Change 3: Validation harness** — NEXT
+   - Build enum-based ValidationHarness in sim-bevy examples module
+   - Migrate 8 existing examples (delete MaterialOverrides, apply_materials,
+     Validation resources, diagnostics systems — use harness + overrides)
 
 ### Phase B: Visualization (Changes 4–5)
 
 Needed before sensors example.
 
-4. **Change 4: Text HUD** — sim-bevy. Add `bevy_ui` + `bevy_text` features.
-   New `PhysicsHud` resource + `render_physics_hud` system + `spawn_physics_hud`.
+4. **Change 4: Text HUD** — pending
+   - Add bevy_ui + bevy_text features to sim-bevy Cargo.toml
+   - PhysicsHud resource + render_physics_hud system + spawn_physics_hud
 
-5. **Change 5: Sensor viz redesign** — sim-bevy. Delete old dead code.
-   New `SensorVisualization` with auto-discovery + `draw_sensor_gizmos`.
+5. **Change 5: Sensor viz redesign** — pending
+   - Delete old dead code (SensorVisualType, SensorVisualData)
+   - New SensorVisualization with auto-discovery + draw_sensor_gizmos
 
 ### Phase C: Multi-Scene (Change 6)
 
 Needed before solvers/integrators examples.
 
-6. **Change 6: Multi-scene** — sim-bevy. New `MultiScenePlugin` alongside
-   existing single-scene pattern. No migration needed.
+6. **Change 6: Multi-scene** — pending
+   - New MultiScenePlugin alongside existing single-scene pattern
 
 ---
 
