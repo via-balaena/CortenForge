@@ -24,11 +24,8 @@
 
 use bevy::prelude::*;
 
-use crate::convert::{quat_from_unit_quaternion, vec3_from_point, vec3_from_vector};
-use crate::resources::{
-    CachedContacts, MuscleVisualization, SensorVisualType, SensorVisualization,
-    TendonVisualization, ViewerConfig,
-};
+use crate::convert::{vec3_from_point, vec3_from_vector};
+use crate::resources::{CachedContacts, MuscleVisualization, TendonVisualization, ViewerConfig};
 
 /// System set for debug visualization.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -186,126 +183,6 @@ pub fn draw_tendons(
                 config.tendon_line_radius,
                 color,
             );
-        }
-    }
-}
-
-/// Draw sensor visualization.
-///
-/// Different sensor types are visualized differently:
-/// - IMU: Coordinate frame (RGB axes)
-/// - Force/Torque: Force and torque arrows
-/// - Touch: Highlight sphere when active
-/// - Rangefinder: Ray with hit point
-/// - Magnetometer: Field direction arrow
-pub fn draw_sensors(
-    mut gizmos: Gizmos,
-    sensors: Res<SensorVisualization>,
-    config: Res<ViewerConfig>,
-) {
-    if !config.show_sensors {
-        return;
-    }
-
-    for sensor in sensors.sensors() {
-        let pos = vec3_from_point(&sensor.position);
-
-        match sensor.sensor_type {
-            SensorVisualType::Imu => {
-                // Draw coordinate frame (RGB = XYZ)
-                let rot = quat_from_unit_quaternion(&sensor.orientation);
-                let axis_len = config.sensor_axis_length;
-
-                let x_axis = rot * Vec3::X * axis_len;
-                let y_axis = rot * Vec3::Y * axis_len;
-                let z_axis = rot * Vec3::Z * axis_len;
-
-                gizmos.arrow(pos, pos + x_axis, Color::srgb(1.0, 0.0, 0.0)); // X = Red
-                gizmos.arrow(pos, pos + y_axis, Color::srgb(0.0, 1.0, 0.0)); // Y = Green
-                gizmos.arrow(pos, pos + z_axis, Color::srgb(0.0, 0.0, 1.0)); // Z = Blue
-
-                // Small sphere at sensor location
-                gizmos.sphere(
-                    Isometry3d::from_translation(pos),
-                    config.sensor_axis_length * 0.15,
-                    config.colors.sensor_imu,
-                );
-            }
-            SensorVisualType::ForceTorque => {
-                // Draw force arrow
-                if let Some(force) = &sensor.force {
-                    let force_vec = vec3_from_vector(force) * config.sensor_force_scale;
-                    if force_vec.length() > 0.001 {
-                        gizmos.arrow(pos, pos + force_vec, config.colors.sensor_force_torque);
-                    }
-                }
-
-                // Draw torque as a different colored arrow
-                if let Some(torque) = &sensor.torque {
-                    let torque_vec = vec3_from_vector(torque) * config.sensor_force_scale;
-                    if torque_vec.length() > 0.001 {
-                        gizmos.arrow(
-                            pos,
-                            pos + torque_vec,
-                            config.colors.sensor_force_torque.with_alpha(0.7),
-                        );
-                    }
-                }
-
-                // Sensor marker
-                gizmos.sphere(
-                    Isometry3d::from_translation(pos),
-                    config.sensor_axis_length * 0.1,
-                    config.colors.sensor_force_torque,
-                );
-            }
-            SensorVisualType::Touch => {
-                // Draw highlight sphere when active
-                let color = if sensor.is_active {
-                    config.colors.sensor_touch_active
-                } else {
-                    config.colors.sensor_touch_active.with_alpha(0.3)
-                };
-
-                let radius = if sensor.is_active {
-                    config.sensor_axis_length * 0.2
-                } else {
-                    config.sensor_axis_length * 0.1
-                };
-
-                gizmos.sphere(Isometry3d::from_translation(pos), radius, color);
-            }
-            SensorVisualType::Rangefinder => {
-                // Draw ray from sensor
-                if let Some((direction, distance)) = &sensor.ray {
-                    let dir_vec = vec3_from_vector(direction).normalize();
-                    let end = pos + dir_vec * (*distance as f32);
-
-                    // Dashed line effect (multiple short segments)
-                    gizmos.line(pos, end, config.colors.sensor_imu.with_alpha(0.6));
-
-                    // Hit point marker
-                    gizmos.sphere(
-                        Isometry3d::from_translation(end),
-                        config.sensor_axis_length * 0.08,
-                        config.colors.sensor_imu,
-                    );
-                }
-            }
-            SensorVisualType::Magnetometer => {
-                // Draw magnetic field direction
-                if let Some(field) = &sensor.magnetic_field {
-                    let field_vec = vec3_from_vector(field).normalize() * config.sensor_axis_length;
-                    gizmos.arrow(pos, pos + field_vec, Color::srgb(0.8, 0.0, 0.8));
-                    // Magenta for magnetic field
-                }
-
-                gizmos.sphere(
-                    Isometry3d::from_translation(pos),
-                    config.sensor_axis_length * 0.1,
-                    Color::srgb(0.8, 0.0, 0.8),
-                );
-            }
         }
     }
 }

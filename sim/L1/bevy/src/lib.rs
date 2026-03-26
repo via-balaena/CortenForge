@@ -78,6 +78,7 @@ pub mod model_data;
 pub mod plugin;
 pub mod resources;
 pub mod scene;
+pub mod sensor_viz;
 pub mod systems;
 
 /// Prelude module for convenient imports.
@@ -108,10 +109,13 @@ pub mod prelude {
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{
         BodyEntityMap, CachedContacts, DebugColors, MuscleVisualData, MuscleVisualization,
-        SensorVisualData, SensorVisualType, SensorVisualization, TendonVisualData,
-        TendonVisualization, ViewerConfig,
+        TendonVisualData, TendonVisualization, ViewerConfig,
     };
     pub use crate::scene::ExampleScene;
+    pub use crate::sensor_viz::{
+        SensorGizmo, SensorVisualization, SensorVizEntry, draw_sensor_gizmos, sensor_type_to_gizmo,
+        update_sensor_visualization,
+    };
     pub use crate::systems::update_cached_contacts;
 
     // Re-export Model/Data types from sim-core for convenience
