@@ -58,7 +58,7 @@ const MJCF: &str = r#"
               fromto="0.25 0 0  0.25 0 0.30" rgba="0.40 0.40 0.43 1"/>
 
         <body name="arm" pos="0 0 0">
-            <joint name="hinge" type="hinge" axis="0 1 0" damping="0.1"/>
+            <joint name="hinge" type="hinge" axis="1 0 0" damping="0.1"/>
             <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
             <geom name="rod" type="capsule" size="0.02"
                   fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
@@ -228,9 +228,12 @@ fn sensor_diagnostics(
     }
 
     // Analytical check: afrc ≈ CTRL_VALUE (for motor with gain=1, gear=1)
-    let analytical_err = (afrc_sensor - CTRL_VALUE).abs();
-    if analytical_err > val.afrc_analytical_max_err {
-        val.afrc_analytical_max_err = analytical_err;
+    // Skip first frame — ctrl hasn't been applied yet at t=0
+    if data.time > 0.01 {
+        let analytical_err = (afrc_sensor - CTRL_VALUE).abs();
+        if analytical_err > val.afrc_analytical_max_err {
+            val.afrc_analytical_max_err = analytical_err;
+        }
     }
 
     // Cross-path: afrc == jfrc (single motor, gear=1 ⟹ moment=1)

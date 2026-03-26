@@ -1,14 +1,15 @@
-//! FramePos + FrameQuat Sensors
+//! FramePos + FrameQuat Sensors — Conical Pendulum
 //!
-//! A hinge pendulum with a site on the tip body. FramePos reads the site's
-//! world-frame position, FrameQuat reads the site's world-frame orientation.
+//! A ball-joint pendulum in steady conical orbit. The tip traces a circle in
+//! 3D space, exercising all 3 position components and all 4 quaternion
+//! components — a hinge pendulum only moves in a single plane.
 //!
 //! Validates:
-//! - FramePos sensor == data.site_xpos (FK pass-through)
-//! - FrameQuat sensor matches data.site_xquat via rotation-distance metric
-//!   (handles quaternion sign ambiguity: q and -q represent the same rotation)
-//! - FramePos X-component range > 0.2m (tip actually swings)
-//! - Analytical check: tip position at t=0 matches (L*sin(30°), 0, -L*cos(30°))
+//! - FramePos sensor == data.site_xpos (all 3 axes active)
+//! - FrameQuat matches data.site_xquat via rotation-distance metric
+//! - FramePos X and Y ranges > 0.4m (circular orbit spans full diameter)
+//! - Analytical check: tip position at t=0 matches (0, L·sin(θ), -L·cos(θ))
+//! - Energy conservation (undamped ball joint, RK4)
 //!
 //! Run with: `cargo run -p example-sensor-frame-pos-quat --release`
 
@@ -35,9 +36,18 @@ use sim_bevy::model_data::{
 use sim_core::ENABLE_ENERGY;
 use sim_core::validation::{Check, print_report};
 
-// ── MJCF Model ──────────────────────────────────────────────────────────────
+// ── Constants ───────────────────────────────────────────────────────────────
 
-const L: f64 = 0.5; // Rod length
+const L: f64 = 0.5; // Rod length (pivot to tip)
+const GRAVITY: f64 = 9.81;
+const TILT: f64 = std::f64::consts::FRAC_PI_6; // 30° tilt from vertical
+
+/// Angular velocity for steady conical orbit: ω = √(g / (L·cos(θ)))
+fn conical_omega() -> f64 {
+    (GRAVITY / (L * TILT.cos())).sqrt()
+}
+
+// ── MJCF Model ──────────────────────────────────────────────────────────────
 
 const MJCF: &str = r#"
 <mujoco model="frame_pos_quat">
@@ -57,9 +67,9 @@ const MJCF: &str = r#"
         <geom name="post_r" type="capsule" size="0.022"
               fromto="0.25 0 0  0.25 0 0.30" rgba="0.40 0.40 0.43 1"/>
 
-        <body name="arm" pos="0 0 0">
-            <joint name="hinge" type="hinge" axis="0 1 0" damping="0"/>
-            <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+        <body name="pendulum" pos="0 0 0">
+            <joint name="ball" type="ball" damping="0"/>
+            <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.001 0.001 0.001"/>
             <geom name="rod" type="capsule" size="0.02"
                   fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
             <geom name="tip" type="sphere" size="0.05"
@@ -78,8 +88,11 @@ const MJCF: &str = r#"
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
+    let omega = conical_omega();
+    let radius = L * TILT.sin();
     println!("=== CortenForge: FramePos + FrameQuat Sensors ===");
-    println!("  Site on hinge pendulum tip, 30° initial tilt");
+    println!("  Conical pendulum (ball joint), 30° tilt");
+    println!("  ω={omega:.3} rad/s, orbit radius={radius:.3}m");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -100,10 +113,11 @@ fn main() {
                 .print_every(1.0)
                 .display(|m, d| {
                     let pos = d.sensor_data(m, 0);
-                    let quat = d.sensor_data(m, 1);
+                    let r_xy = pos[0].hypot(pos[1]);
+                    let energy = d.energy_kinetic + d.energy_potential;
                     format!(
-                        "pos=({:+.3},{:+.3},{:+.3})  q=({:+.3},{:+.3},{:+.3},{:+.3})",
-                        pos[0], pos[1], pos[2], quat[0], quat[1], quat[2], quat[3],
+                        "pos=({:+.3},{:+.3},{:+.3})  r={r_xy:.3}m  E={energy:.4}J",
+                        pos[0], pos[1], pos[2],
                     )
                 })
                 .track_energy(0.5),
@@ -133,20 +147,33 @@ fn setup(
     model.enableflags |= ENABLE_ENERGY;
     let mut data = model.make_data();
 
-    // Initial displacement: 30°
+    // Initial tilt: 30° about X axis → quaternion [cos(θ/2), sin(θ/2), 0, 0]
+    let half = TILT / 2.0;
     let qpos_adr = model.jnt_qpos_adr[0];
-    data.qpos[qpos_adr] = std::f64::consts::FRAC_PI_6;
+    data.qpos[qpos_adr] = half.cos();
+    data.qpos[qpos_adr + 1] = half.sin();
+    data.qpos[qpos_adr + 2] = 0.0;
+    data.qpos[qpos_adr + 3] = 0.0;
+
+    // Initial angular velocity: Ω about world Z, expressed in body frame.
+    // Body tilted θ about X → world Z in body frame = [0, sin(θ), cos(θ)]
+    let omega = conical_omega();
+    let dof_adr = model.jnt_dof_adr[0];
+    data.qvel[dof_adr] = 0.0;
+    data.qvel[dof_adr + 1] = omega * TILT.sin();
+    data.qvel[dof_adr + 2] = omega * TILT.cos();
+
     let _ = data.forward(&model);
 
-    // Analytical check at t=0: tip should be at (L*sin(30°), 0, -L*cos(30°))
-    let expected_x = L * std::f64::consts::FRAC_PI_6.sin();
-    let expected_z = -L * std::f64::consts::FRAC_PI_6.cos();
+    // Analytical t=0: tilt θ about X maps (0,0,-L) → (0, L·sin(θ), -L·cos(θ))
     let pos = data.sensor_data(&model, 0);
+    let expected_y = L * TILT.sin();
+    let expected_z = -L * TILT.cos();
     println!(
         "  t=0 tip_pos: ({:.4}, {:.4}, {:.4})",
         pos[0], pos[1], pos[2]
     );
-    println!("  t=0 expected: ({expected_x:.4}, 0.0000, {expected_z:.4})");
+    println!("  t=0 expected: (0.0000, {expected_y:.4}, {expected_z:.4})");
     println!(
         "  Model: {} bodies, {} joints, {} sensors\n",
         model.nbody, model.njnt, model.nsensor
@@ -194,8 +221,10 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.section("FramePos + FrameQuat");
     let pos = data.sensor_data(&model, 0);
     let quat = data.sensor_data(&model, 1);
+    let r_xy = pos[0].hypot(pos[1]);
     hud.vec3("pos", pos, 4);
     hud.quat("quat", quat);
+    hud.scalar("r_xy", r_xy, 4);
 }
 
 // ── Sensor Validation ───────────────────────────────────────────────────────
@@ -206,6 +235,8 @@ struct SensorValidation {
     quat_max_rot_err: f64,
     pos_x_min: f64,
     pos_x_max: f64,
+    pos_y_min: f64,
+    pos_y_max: f64,
     t0_pos_err: f64,
     t0_checked: bool,
     reported: bool,
@@ -224,7 +255,7 @@ fn sensor_diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<SensorValidation>,
 ) {
-    let site_id = model.sensor_objid[0]; // site index for framepos
+    let site_id = model.sensor_objid[0];
 
     // FramePos pipeline check
     let pos_sensor = data.sensor_data(&model, 0);
@@ -246,21 +277,27 @@ fn sensor_diagnostics(
         val.quat_max_rot_err = rot_err;
     }
 
-    // Range tracking (X-component in physics frame)
+    // Range tracking — both X and Y should span the orbit diameter
     if pos_sensor[0] < val.pos_x_min {
         val.pos_x_min = pos_sensor[0];
     }
     if pos_sensor[0] > val.pos_x_max {
         val.pos_x_max = pos_sensor[0];
     }
+    if pos_sensor[1] < val.pos_y_min {
+        val.pos_y_min = pos_sensor[1];
+    }
+    if pos_sensor[1] > val.pos_y_max {
+        val.pos_y_max = pos_sensor[1];
+    }
 
-    // Analytical t=0 check (first frame only)
+    // Analytical t=0: tilt θ about X maps (0,0,-L) → (0, L·sin(θ), -L·cos(θ))
     if !val.t0_checked && data.time < 0.01 {
         val.t0_checked = true;
-        let expected_x = L * std::f64::consts::FRAC_PI_6.sin();
-        let expected_z = -L * std::f64::consts::FRAC_PI_6.cos();
-        val.t0_pos_err = ((pos_sensor[0] - expected_x).powi(2)
-            + pos_sensor[1].powi(2)
+        let expected_y = L * TILT.sin();
+        let expected_z = -L * TILT.cos();
+        val.t0_pos_err = (pos_sensor[0].powi(2)
+            + (pos_sensor[1] - expected_y).powi(2)
             + (pos_sensor[2] - expected_z).powi(2))
         .sqrt();
     }
@@ -268,7 +305,8 @@ fn sensor_diagnostics(
     // Report
     if harness.reported() && !val.reported {
         val.reported = true;
-        let pos_x_range = val.pos_x_max - val.pos_x_min;
+        let x_range = val.pos_x_max - val.pos_x_min;
+        let y_range = val.pos_y_max - val.pos_y_min;
         let checks = vec![
             Check {
                 name: "FramePos == site_xpos",
@@ -281,11 +319,19 @@ fn sensor_diagnostics(
                 detail: format!("max 1-|q·q|={:.2e}", val.quat_max_rot_err),
             },
             Check {
-                name: "Pos X range > 0.2m",
-                pass: pos_x_range > 0.2,
+                name: "Pos X range > 0.4m",
+                pass: x_range > 0.4,
                 detail: format!(
-                    "range={pos_x_range:.3}m [{:.3}, {:.3}]",
+                    "range={x_range:.3}m [{:.3}, {:.3}]",
                     val.pos_x_min, val.pos_x_max
+                ),
+            },
+            Check {
+                name: "Pos Y range > 0.4m",
+                pass: y_range > 0.4,
+                detail: format!(
+                    "range={y_range:.3}m [{:.3}, {:.3}]",
+                    val.pos_y_min, val.pos_y_max
                 ),
             },
             Check {

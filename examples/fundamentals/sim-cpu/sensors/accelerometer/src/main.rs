@@ -1,10 +1,14 @@
 //! Accelerometer Sensor
 //!
-//! A box on a free joint drops from z=0.5 onto a ground plane. Two phases:
+//! A box on a free joint hovers at z=4.0 for 1 second, then drops onto a
+//! ground plane. Two phases after the drop:
 //!
-//! 1. Free-fall (t < 0.2s): accelerometer ≈ [0, 0, 0] (weightless)
-//! 2. At-rest (t > 2s): accelerometer ≈ [0, 0, +9.81] (proper acceleration
+//! 1. Free-fall (t < 1.2s): accelerometer ≈ [0, 0, 0] (weightless)
+//! 2. At-rest (t > 5s): accelerometer ≈ [0, 0, +9.81] (proper acceleration
 //!    from ground reaction force — the classic IMU-at-rest test)
+//!
+//! Uses `condim="1"` (frictionless normal-only contact) to avoid pyramidal
+//! friction forces that would produce spurious lateral accelerations.
 //!
 //! Validates:
 //! - Free-fall: |accel_z| < 0.5 m/s² (near-zero)
@@ -44,12 +48,12 @@ const MJCF: &str = r#"
 
     <worldbody>
         <geom name="floor" type="plane" size="5 5 0.1"
-              contype="1" conaffinity="1" rgba="0.3 0.3 0.35 1"/>
-        <body name="box" pos="0 0 0.5">
+              contype="1" conaffinity="1" condim="1" rgba="0.3 0.3 0.35 1"/>
+        <body name="box" pos="0 0 4.0">
             <joint name="free" type="free"/>
             <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
             <geom name="cube" type="box" size="0.1 0.1 0.1"
-                  contype="1" conaffinity="1" rgba="0.82 0.22 0.15 1"/>
+                  contype="1" conaffinity="1" condim="1" rgba="0.82 0.22 0.15 1"/>
             <site name="imu" pos="0 0 0"/>
         </body>
     </worldbody>
@@ -61,12 +65,18 @@ const MJCF: &str = r#"
 "#;
 
 const G: f64 = 9.81;
+const START_DELAY: f32 = 1.0; // seconds before physics starts (visual pause)
+
+/// Run condition: physics starts after a 1-second visual delay.
+fn after_start_delay(time: Res<Time>) -> bool {
+    time.elapsed_secs() > START_DELAY
+}
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: Accelerometer Sensor ===");
-    println!("  Box drops from z=0.5 onto ground plane");
+    println!("  Box hovers at z=4.0 for 1s, then drops onto ground plane");
     println!("  Free-fall: accel ≈ 0  |  At-rest: accel ≈ [0, 0, +9.81]");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
@@ -85,7 +95,7 @@ fn main() {
         .insert_resource(
             ValidationHarness::new()
                 .report_at(15.0)
-                .print_every(1.0)
+                .print_every(0.5)
                 .display(|m, d| {
                     let a = d.sensor_data(m, 0);
                     let mag = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
@@ -96,7 +106,7 @@ fn main() {
                 }),
         )
         .add_systems(Startup, setup)
-        .add_systems(Update, step_physics_realtime)
+        .add_systems(Update, step_physics_realtime.run_if(after_start_delay))
         .add_systems(
             PostUpdate,
             (
@@ -141,10 +151,10 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, 0.3, 0.0),
-        2.0,
+        Vec3::new(0.0, 2.0, 0.0),
+        8.0,
         std::f32::consts::FRAC_PI_4,
-        0.4,
+        0.25,
     );
 
     spawn_physics_hud(&mut commands);
@@ -157,11 +167,15 @@ fn setup(
 
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
-    hud.section("Accelerometer");
     let a = data.sensor_data(&model, 0);
-    hud.vec3("accel", a, 3);
     let mag = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    let phase = if mag < 1.0 { "FREE-FALL" } else { "AT REST" };
+    hud.section(&format!("Accelerometer — {phase}"));
+    hud.raw(String::new());
+    hud.vec3("accel", a, 3);
+    hud.raw(String::new());
     hud.scalar("|a|", mag, 3);
+    hud.raw(String::new());
     hud.scalar("expected", G, 2);
 }
 
@@ -187,8 +201,8 @@ fn sensor_diagnostics(
     let accel = data.sensor_data(&model, 0);
     let t = data.time;
 
-    // Free-fall phase: t < 0.2s (impact at ~0.29s, leave margin)
-    if t > 0.01 && t < 0.2 {
+    // Free-fall phase: t < 0.7s (impact at ~0.89s from z=4.0, leave margin)
+    if t > 0.01 && t < 0.7 {
         val.freefall_sampled = true;
         let az_abs = accel[2].abs();
         if az_abs > val.freefall_max_az {
@@ -196,8 +210,8 @@ fn sensor_diagnostics(
         }
     }
 
-    // At-rest phase: t > 2.0s
-    if t > 2.0 {
+    // At-rest phase: t > 5.0s (plenty of time to settle from z=4.0)
+    if t > 5.0 {
         val.rest_az_sum += accel[2];
         val.rest_samples += 1;
         if accel[0].abs() > val.rest_ax_max {
