@@ -8,12 +8,10 @@ use bevy::prelude::*;
 
 use crate::camera::{OrbitCameraPlugin, spawn_orbit_camera};
 use crate::gizmos::{
-    DebugGizmosSet, draw_contact_normals, draw_contact_points, draw_muscles, draw_sensors,
-    draw_tendons,
+    DebugGizmosSet, draw_contact_normals, draw_contact_points, draw_muscles, draw_tendons,
 };
 use crate::resources::{
-    BodyEntityMap, CachedContacts, MuscleVisualization, SensorVisualization, TendonVisualization,
-    ViewerConfig,
+    BodyEntityMap, CachedContacts, MuscleVisualization, TendonVisualization, ViewerConfig,
 };
 use crate::systems::{SimViewerSet, update_cached_contacts, update_shape_visibility};
 
@@ -114,7 +112,7 @@ impl Plugin for SimViewerPlugin {
             .init_resource::<CachedContacts>()
             .init_resource::<MuscleVisualization>()
             .init_resource::<TendonVisualization>()
-            .init_resource::<SensorVisualization>();
+            .init_resource::<crate::sensor_viz::SensorVisualization>();
 
         // Configure system sets
         app.configure_sets(Update, SimViewerSet::TransformSync);
@@ -139,10 +137,14 @@ impl Plugin for SimViewerPlugin {
                 ),
             );
 
-            // Update contact cache before gizmo drawing
+            // Update contact cache and sensor viz before gizmo drawing
             app.add_systems(
                 PostUpdate,
-                update_cached_contacts.in_set(SimViewerSet::ContactCache),
+                (
+                    update_cached_contacts,
+                    crate::sensor_viz::update_sensor_visualization,
+                )
+                    .in_set(SimViewerSet::ContactCache),
             );
 
             app.add_systems(
@@ -153,7 +155,7 @@ impl Plugin for SimViewerPlugin {
                     // Musculoskeletal visualization
                     draw_muscles,
                     draw_tendons,
-                    draw_sensors,
+                    crate::sensor_viz::draw_sensor_gizmos,
                 )
                     .in_set(DebugGizmosSet),
             );

@@ -225,7 +225,14 @@ fn setup(
     let mut data = model.make_data();
     let _ = data.forward(&model);
 
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     ExampleScene::new(80.0, 60.0)
         .with_target(Vec3::new(0.0, 12.0, 0.0))

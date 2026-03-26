@@ -438,7 +438,14 @@ fn setup(
     // ── Stages 1 & 2: Design + Simulate (same geoms, different behavior)
     // spawn_model_geoms positions meshes correctly via geom transforms.
     // Stage 1 shows them static, Stage 2 animates them.
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));

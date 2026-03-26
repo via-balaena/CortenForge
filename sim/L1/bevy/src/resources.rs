@@ -182,6 +182,8 @@ pub struct ViewerConfig {
     pub show_tendons: bool,
     /// Whether to show sensor visualization.
     pub show_sensors: bool,
+    /// Whether to show the on-screen physics HUD.
+    pub show_hud: bool,
     /// Scale factor for force vectors (units per Newton).
     pub force_scale: f32,
     /// Scale factor for velocity vectors (units per m/s).
@@ -230,6 +232,7 @@ impl Default for ViewerConfig {
             show_muscles: false,
             show_tendons: false,
             show_sensors: false,
+            show_hud: true,
             force_scale: 0.01,
             velocity_scale: 0.1,
             contact_marker_radius: 0.02,
@@ -519,175 +522,5 @@ impl TendonVisualization {
     #[must_use]
     pub fn len(&self) -> usize {
         self.tendons.len()
-    }
-}
-
-/// Type of sensor for visualization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SensorVisualType {
-    /// IMU sensor (shows coordinate frame).
-    Imu,
-    /// Force/torque sensor (shows force/torque arrows).
-    ForceTorque,
-    /// Touch sensor (shows contact highlight).
-    Touch,
-    /// Rangefinder (shows ray).
-    Rangefinder,
-    /// Magnetometer (shows field direction).
-    Magnetometer,
-}
-
-/// A sensor instance for visualization.
-#[derive(Debug, Clone)]
-pub struct SensorVisualData {
-    /// Sensor type.
-    pub sensor_type: SensorVisualType,
-    /// Position in world coordinates.
-    pub position: nalgebra::Point3<f64>,
-    /// Orientation in world coordinates.
-    pub orientation: nalgebra::UnitQuaternion<f64>,
-    /// Measured force (for force/torque sensors).
-    pub force: Option<nalgebra::Vector3<f64>>,
-    /// Measured torque (for force/torque sensors).
-    pub torque: Option<nalgebra::Vector3<f64>>,
-    /// Whether sensor is active/triggered (for touch sensors).
-    pub is_active: bool,
-    /// Ray direction and distance (for rangefinders).
-    pub ray: Option<(nalgebra::Vector3<f64>, f64)>,
-    /// Magnetic field direction (for magnetometers).
-    pub magnetic_field: Option<nalgebra::Vector3<f64>>,
-}
-
-impl SensorVisualData {
-    /// Create an IMU sensor visualization.
-    #[must_use]
-    pub fn imu(
-        position: nalgebra::Point3<f64>,
-        orientation: nalgebra::UnitQuaternion<f64>,
-    ) -> Self {
-        Self {
-            sensor_type: SensorVisualType::Imu,
-            position,
-            orientation,
-            force: None,
-            torque: None,
-            is_active: false,
-            ray: None,
-            magnetic_field: None,
-        }
-    }
-
-    /// Create a force/torque sensor visualization.
-    #[must_use]
-    pub fn force_torque(
-        position: nalgebra::Point3<f64>,
-        orientation: nalgebra::UnitQuaternion<f64>,
-        force: nalgebra::Vector3<f64>,
-        torque: nalgebra::Vector3<f64>,
-    ) -> Self {
-        Self {
-            sensor_type: SensorVisualType::ForceTorque,
-            position,
-            orientation,
-            force: Some(force),
-            torque: Some(torque),
-            is_active: false,
-            ray: None,
-            magnetic_field: None,
-        }
-    }
-
-    /// Create a touch sensor visualization.
-    #[must_use]
-    pub fn touch(position: nalgebra::Point3<f64>, is_active: bool) -> Self {
-        Self {
-            sensor_type: SensorVisualType::Touch,
-            position,
-            orientation: nalgebra::UnitQuaternion::identity(),
-            force: None,
-            torque: None,
-            is_active,
-            ray: None,
-            magnetic_field: None,
-        }
-    }
-
-    /// Create a rangefinder visualization.
-    #[must_use]
-    pub fn rangefinder(
-        position: nalgebra::Point3<f64>,
-        direction: nalgebra::Vector3<f64>,
-        distance: f64,
-    ) -> Self {
-        Self {
-            sensor_type: SensorVisualType::Rangefinder,
-            position,
-            orientation: nalgebra::UnitQuaternion::identity(),
-            force: None,
-            torque: None,
-            is_active: false,
-            ray: Some((direction, distance)),
-            magnetic_field: None,
-        }
-    }
-
-    /// Create a magnetometer visualization.
-    #[must_use]
-    pub fn magnetometer(
-        position: nalgebra::Point3<f64>,
-        magnetic_field: nalgebra::Vector3<f64>,
-    ) -> Self {
-        Self {
-            sensor_type: SensorVisualType::Magnetometer,
-            position,
-            orientation: nalgebra::UnitQuaternion::identity(),
-            force: None,
-            torque: None,
-            is_active: false,
-            ray: None,
-            magnetic_field: Some(magnetic_field),
-        }
-    }
-}
-
-/// Resource containing sensor visualization data.
-#[derive(Resource, Default)]
-pub struct SensorVisualization {
-    sensors: Vec<SensorVisualData>,
-}
-
-impl SensorVisualization {
-    /// Create a new empty sensor visualization.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Add a sensor to visualize.
-    pub fn add(&mut self, sensor: SensorVisualData) {
-        self.sensors.push(sensor);
-    }
-
-    /// Get all sensors for visualization.
-    #[must_use]
-    pub fn sensors(&self) -> &[SensorVisualData] {
-        &self.sensors
-    }
-
-    /// Clear all sensors.
-    pub fn clear(&mut self) {
-        self.sensors.clear();
-    }
-
-    /// Check if empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.sensors.is_empty()
-    }
-
-    /// Get the number of sensors.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.sensors.len()
     }
 }

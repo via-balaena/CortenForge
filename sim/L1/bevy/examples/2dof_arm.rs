@@ -167,7 +167,14 @@ fn setup(
     let _ = data.forward(&model);
 
     // Auto-spawn visual entities for all geoms (upper arm + forearm capsules)
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     // Shoulder pivot marker (small gray sphere)
     // Physics (0, 0, 1.5) → Bevy (0, 1.5, 0)

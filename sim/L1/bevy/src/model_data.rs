@@ -540,14 +540,26 @@ pub fn spawn_model_bodies(commands: &mut Commands, model: &Model, data: &Data) -
     entities
 }
 
+/// Material override: geom name → material handle.
+pub type GeomMaterialOverride<'a> = (&'a str, Handle<StandardMaterial>);
+
 /// Spawn Bevy entities with meshes for all geoms in the physics model.
 ///
 /// Creates entities with `ModelGeomIndex`, `Mesh3d`, `MeshMaterial3d`, and
-/// `Transform` components. Materials are derived from `geom_rgba`. Meshes
-/// are generated from geom type + size via [`mesh_from_shape`].
+/// `Transform` components. Materials default to `geom_rgba` but can be
+/// overridden by name via the `overrides` slice. Meshes are generated from
+/// geom type + size via [`mesh_from_shape`].
 ///
 /// Planes get a large flat quad. Geom types without mesh support (`Sdf`,
 /// `Hfield`) are skipped.
+///
+/// # Example
+///
+/// ```ignore
+/// let steel = materials.add(MetalPreset::PolishedSteel.material());
+/// spawn_model_geoms(&mut commands, &mut meshes, &mut materials,
+///     &model, &data, &[("rod", steel)]);
+/// ```
 #[allow(clippy::needless_range_loop)]
 pub fn spawn_model_geoms(
     commands: &mut Commands,
@@ -555,11 +567,74 @@ pub fn spawn_model_geoms(
     materials: &mut Assets<StandardMaterial>,
     model: &Model,
     data: &Data,
+    overrides: &[GeomMaterialOverride<'_>],
 ) {
+    spawn_model_geoms_inner(
+        commands,
+        meshes,
+        materials,
+        model,
+        data,
+        overrides,
+        None::<fn(&mut bevy::ecs::system::EntityCommands, usize, &str)>,
+    );
+}
+
+/// Like [`spawn_model_geoms`], but calls `per_entity` for each spawned geom.
+///
+/// The callback receives `(entity_commands, geom_id, geom_name)` where
+/// `geom_name` is `""` for unnamed geoms. Use it to attach components like
+/// [`TrailGizmo`](crate::gizmos::TrailGizmo) without a separate system.
+#[allow(clippy::needless_range_loop)]
+pub fn spawn_model_geoms_with<F>(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    model: &Model,
+    data: &Data,
+    overrides: &[GeomMaterialOverride<'_>],
+    per_entity: F,
+) where
+    F: FnMut(&mut bevy::ecs::system::EntityCommands, usize, &str),
+{
+    spawn_model_geoms_inner(
+        commands,
+        meshes,
+        materials,
+        model,
+        data,
+        overrides,
+        Some(per_entity),
+    );
+}
+
+/// Shared implementation for `spawn_model_geoms` and `spawn_model_geoms_with`.
+#[allow(clippy::needless_range_loop)]
+fn spawn_model_geoms_inner<F>(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    model: &Model,
+    data: &Data,
+    overrides: &[GeomMaterialOverride<'_>],
+    mut per_entity: Option<F>,
+) where
+    F: FnMut(&mut bevy::ecs::system::EntityCommands, usize, &str),
+{
+    // Build override map: geom_id → material handle
+    let override_map: std::collections::HashMap<usize, Handle<StandardMaterial>> = overrides
+        .iter()
+        .filter_map(|(name, mat)| {
+            model
+                .geom_name_to_id
+                .get(*name)
+                .map(|&idx| (idx, mat.clone()))
+        })
+        .collect();
+
     for geom_id in 0..model.ngeom {
         let geom_type = model.geom_type[geom_id];
         let size = model.geom_size[geom_id];
-        let rgba = model.geom_rgba[geom_id];
 
         // Produce a Bevy mesh for this geom
         let mesh: Option<Mesh> = if geom_type == GeomType::Mesh {
@@ -594,22 +669,27 @@ pub fn spawn_model_geoms(
 
         let Some(mesh) = mesh else { continue };
 
-        // Material from MJCF rgba
-        #[allow(clippy::cast_possible_truncation)]
-        let material = materials.add(StandardMaterial {
-            base_color: Color::srgba(
-                rgba[0] as f32,
-                rgba[1] as f32,
-                rgba[2] as f32,
-                rgba[3] as f32,
-            ),
-            alpha_mode: if rgba[3] < 1.0 {
-                AlphaMode::Blend
-            } else {
-                AlphaMode::Opaque
-            },
-            ..default()
-        });
+        // Material: override by name, or fall back to MJCF rgba
+        let material = if let Some(ovr) = override_map.get(&geom_id) {
+            ovr.clone()
+        } else {
+            let rgba = model.geom_rgba[geom_id];
+            #[allow(clippy::cast_possible_truncation)]
+            materials.add(StandardMaterial {
+                base_color: Color::srgba(
+                    rgba[0] as f32,
+                    rgba[1] as f32,
+                    rgba[2] as f32,
+                    rgba[3] as f32,
+                ),
+                alpha_mode: if rgba[3] < 1.0 {
+                    AlphaMode::Blend
+                } else {
+                    AlphaMode::Opaque
+                },
+                ..default()
+            })
+        };
 
         // Initial transform from computed world-frame geom pose
         let pos = &data.geom_xpos[geom_id];
@@ -621,12 +701,21 @@ pub fn spawn_model_geoms(
             scale: Vec3::ONE,
         };
 
-        commands.spawn((
+        let mut entity_cmds = commands.spawn((
             ModelGeomIndex(geom_id),
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(material),
             transform,
         ));
+
+        if let Some(ref mut cb) = per_entity {
+            let geom_name = model
+                .geom_name
+                .get(geom_id)
+                .and_then(|n| n.as_deref())
+                .unwrap_or("");
+            cb(&mut entity_cmds, geom_id, geom_name);
+        }
     }
 }
 
@@ -737,7 +826,14 @@ mod tests {
         let mut queue = CommandQueue::default();
         {
             let mut commands = Commands::new(&mut queue, &world);
-            spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+            spawn_model_geoms(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &model,
+                &data,
+                &[],
+            );
         }
         queue.apply(&mut world);
 

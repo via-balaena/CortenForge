@@ -75,9 +75,11 @@ pub mod gizmos;
 pub mod materials;
 pub mod mesh;
 pub mod model_data;
+pub mod multi_scene;
 pub mod plugin;
 pub mod resources;
 pub mod scene;
+pub mod sensor_viz;
 pub mod systems;
 
 /// Prelude module for convenient imports.
@@ -87,7 +89,9 @@ pub mod prelude {
     pub use crate::convert::{
         bevy_to_physics, physics_pos, transform_from_physics, transform_from_physics_pose,
     };
-    pub use crate::examples::{DiagTimer, spawn_example_camera};
+    pub use crate::examples::{
+        DiagTimer, ValidationHarness, spawn_example_camera, validation_system,
+    };
     pub use crate::gizmos::{DebugGizmosSet, TrailGizmo, draw_trails, sample_trails};
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
     pub use crate::materials::{
@@ -98,17 +102,25 @@ pub mod prelude {
         SpringCoilParams, spawn_design_mesh, spring_coil, triangle_mesh_from_indexed,
     };
     pub use crate::model_data::{
-        ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
-        ModelSiteIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
-        step_model_data, step_physics_realtime, sync_geom_transforms, sync_model_data_to_bevy,
+        GeomMaterialOverride, ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet,
+        ModelGeomIndex, ModelSiteIndex, PhysicsAccumulator, PhysicsData, PhysicsModel,
+        spawn_model_geoms, spawn_model_geoms_with, step_model_data, step_physics_realtime,
+        sync_geom_transforms, sync_model_data_to_bevy,
+    };
+    pub use crate::multi_scene::{
+        MultiScenePlugin, PhysicsScene, PhysicsSceneId, PhysicsScenes, spawn_scene_geoms,
+        spawn_scene_geoms_with, step_scenes_lockstep, sync_scene_geom_transforms,
     };
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{
         BodyEntityMap, CachedContacts, DebugColors, MuscleVisualData, MuscleVisualization,
-        SensorVisualData, SensorVisualType, SensorVisualization, TendonVisualData,
-        TendonVisualization, ViewerConfig,
+        TendonVisualData, TendonVisualization, ViewerConfig,
     };
     pub use crate::scene::ExampleScene;
+    pub use crate::sensor_viz::{
+        SensorGizmo, SensorVisualization, SensorVizEntry, draw_sensor_gizmos, sensor_type_to_gizmo,
+        update_sensor_visualization,
+    };
     pub use crate::systems::update_cached_contacts;
 
     // Re-export Model/Data types from sim-core for convenience

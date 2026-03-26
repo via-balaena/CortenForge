@@ -126,7 +126,14 @@ fn setup(
     let e0 = data.energy_kinetic + data.energy_potential;
 
     // Auto-spawn visual entities for all geoms (capsule link + sphere bob)
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
     // Pivot marker (small gray sphere at joint origin)
     // Pivot is at (0, 0, 2) in physics Z-up → (0, 2, 0) in Bevy Y-up

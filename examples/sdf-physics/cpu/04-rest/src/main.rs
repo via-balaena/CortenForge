@@ -100,6 +100,7 @@ fn setup(
         &mut materials,
         &model.0,
         &data.0,
+        &[],
     );
 
     ExampleScene::new(30.0, 40.0)

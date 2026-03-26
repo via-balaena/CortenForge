@@ -24,17 +24,14 @@
 
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::examples::{DiagTimer, spawn_example_camera};
-use sim_bevy::materials::{MetalPreset, override_geom_materials_by_name};
+use sim_bevy::examples::{ValidationHarness, spawn_example_camera, validation_system};
+use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
-    ModelGeomIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
-    step_physics_realtime, sync_geom_transforms,
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    sync_geom_transforms,
 };
 use sim_core::ENABLE_ENERGY;
-use sim_core::validation::{
-    EnergyMonotonicityTracker, LimitTracker, QuaternionNormTracker, print_report,
-    quat_rotation_angle,
-};
+use sim_core::validation::quat_rotation_angle;
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 //
@@ -98,11 +95,53 @@ fn main() {
         }))
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<PhysicsAccumulator>()
-        .init_resource::<DiagTimer>()
-        .init_resource::<Validation>()
+        .insert_resource(
+            ValidationHarness::new()
+                .report_at(15.0)
+                .print_every(1.0)
+                .display(|m, d| {
+                    let q = d.joint_qpos(m, 0);
+                    let angle = quat_rotation_angle(q[0], q[1], q[2], q[3]);
+                    let angle_deg = angle.to_degrees();
+                    let limit_deg = CONE_LIMIT_RAD.to_degrees();
+                    let energy = d.energy_kinetic + d.energy_potential;
+                    let status = if angle > CONE_LIMIT_RAD {
+                        "OVER"
+                    } else {
+                        "ok  "
+                    };
+                    format!(
+                        "angle={angle_deg:5.1}° / {limit_deg:.0}° {status}  E={energy:.4}J"
+                    )
+                })
+                .track_quat_norm(
+                    "Quat norm",
+                    |m, d| {
+                        let q = d.joint_qpos(m, 0);
+                        (q[0], q[1], q[2], q[3])
+                    },
+                    1e-10,
+                )
+                // Constraint solver can inject tiny energy during limit enforcement.
+                // 1e-3 J is well within acceptable solver tolerance.
+                .track_energy_monotonic(1e-3)
+                .skip_until(1.0)
+                // Solver allows slight penetration (controlled by solref/solimp).
+                // 0.02 rad ≈ 1.1° is typical for default solver parameters.
+                .track_limit(
+                    "Limits",
+                    |m, d| {
+                        let q = d.joint_qpos(m, 0);
+                        let angle = quat_rotation_angle(q[0], q[1], q[2], q[3]);
+                        (angle, 0.0, CONE_LIMIT_RAD)
+                    },
+                    0.02,
+                )
+                .skip_until(1.0),
+        )
         .add_systems(Startup, setup)
-        .add_systems(Update, (apply_materials, step_physics_realtime).chain())
-        .add_systems(PostUpdate, (sync_geom_transforms, diagnostics))
+        .add_systems(Update, step_physics_realtime)
+        .add_systems(PostUpdate, (sync_geom_transforms, validation_system))
         .run();
 }
 
@@ -131,15 +170,29 @@ fn setup(
         model.nbody, model.njnt, model.nv
     );
 
-    // ── Spawn MJCF geometry ─────────────────────────────────────────────
-    spawn_model_geoms(&mut commands, &mut meshes, &mut materials, &model, &data);
-
     // ── Metallic materials ──────────────────────────────────────────────
     let mat_frame = materials.add(MetalPreset::BrushedMetal.material());
     let mat_socket = materials.add(MetalPreset::CastIron.material());
     let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
     let mat_tip =
         materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.82, 0.22, 0.15)));
+
+    // ── Spawn MJCF geometry with material overrides ─────────────────────
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[
+            ("beam", mat_frame.clone()),
+            ("post_l", mat_frame.clone()),
+            ("post_r", mat_frame),
+            ("socket", mat_socket),
+            ("rod", mat_rod),
+            ("tip", mat_tip),
+        ],
+    );
 
     // ── Camera + lights ─────────────────────────────────────────────────
     spawn_example_camera(
@@ -152,137 +205,4 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(MaterialOverrides {
-        frame: mat_frame,
-        socket: mat_socket,
-        rod: mat_rod,
-        tip: mat_tip,
-    });
-}
-
-// ── Material override (runs once) ───────────────────────────────────────────
-
-#[derive(Resource)]
-struct MaterialOverrides {
-    frame: Handle<StandardMaterial>,
-    socket: Handle<StandardMaterial>,
-    rod: Handle<StandardMaterial>,
-    tip: Handle<StandardMaterial>,
-}
-
-fn apply_materials(
-    mut commands: Commands,
-    model: Option<Res<PhysicsModel>>,
-    overrides: Option<Res<MaterialOverrides>>,
-    mut query: Query<(&ModelGeomIndex, &mut MeshMaterial3d<StandardMaterial>)>,
-) {
-    let (Some(model), Some(ovr)) = (model, overrides) else {
-        return;
-    };
-
-    override_geom_materials_by_name(
-        &model,
-        &[
-            ("beam", ovr.frame.clone()),
-            ("post_l", ovr.frame.clone()),
-            ("post_r", ovr.frame.clone()),
-            ("socket", ovr.socket.clone()),
-            ("rod", ovr.rod.clone()),
-            ("tip", ovr.tip.clone()),
-        ],
-        &mut query,
-    );
-
-    commands.remove_resource::<MaterialOverrides>();
-}
-
-// ── Diagnostics & Validation ────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct Validation {
-    quat_norm: QuaternionNormTracker,
-    energy: EnergyMonotonicityTracker,
-    cone_limit: LimitTracker,
-    reported: bool,
-}
-
-impl Default for Validation {
-    fn default() -> Self {
-        Self {
-            quat_norm: QuaternionNormTracker::new(),
-            energy: EnergyMonotonicityTracker::new(),
-            cone_limit: LimitTracker::new(),
-            reported: false,
-        }
-    }
-}
-
-fn diagnostics(
-    model: Res<PhysicsModel>,
-    data: Res<PhysicsData>,
-    mut timer: ResMut<DiagTimer>,
-    mut val: ResMut<Validation>,
-) {
-    let time = data.time;
-
-    // ── Quaternion norm ─────────────────────────────────────────────────
-    let adr = model.jnt_qpos_adr[0];
-    let (w, x, y, z) = (
-        data.qpos[adr],
-        data.qpos[adr + 1],
-        data.qpos[adr + 2],
-        data.qpos[adr + 3],
-    );
-    val.quat_norm.sample(w, x, y, z);
-
-    // ── Energy monotonicity (damped + limited — energy should only decrease)
-    // Skip the first 1s: the infeasible initial state (60° > 45° limit)
-    // causes a transient as the constraint solver projects onto the feasible
-    // set. After settling, energy should monotonically decrease.
-    let energy = data.energy_kinetic + data.energy_potential;
-    if time > 1.0 {
-        val.energy.sample(energy);
-    }
-
-    // ── Cone limit: rotation angle vs 45° limit ────────────────────────
-    // Same 1s settling window for the constraint transient.
-    if time > 1.0 {
-        let angle = quat_rotation_angle(w, x, y, z);
-        val.cone_limit.sample(angle, 0.0, CONE_LIMIT_RAD);
-    }
-
-    // ── Per-second diagnostics ──────────────────────────────────────────
-    if time - timer.last > 1.0 {
-        timer.last = time;
-
-        let angle = quat_rotation_angle(w, x, y, z);
-        let angle_deg = angle.to_degrees();
-        let limit_deg = CONE_LIMIT_RAD.to_degrees();
-
-        let status = if angle > CONE_LIMIT_RAD {
-            "OVER"
-        } else {
-            "ok  "
-        };
-
-        println!(
-            "t={time:5.1}s  angle={angle_deg:5.1}° / {limit_deg:.0}° {status}  E={energy:.4}J"
-        );
-    }
-
-    // ── Validation report at t=15s ──────────────────────────────────────
-    if time > 15.0 && !val.reported {
-        val.reported = true;
-
-        let checks = vec![
-            val.quat_norm.check(1e-10),
-            // Constraint solver can inject tiny energy during limit enforcement.
-            // 1e-3 J is well within acceptable solver tolerance.
-            val.energy.check(1e-3),
-            // Solver allows slight penetration (controlled by solref/solimp).
-            // 0.02 rad ≈ 1.1° is typical for default solver parameters.
-            val.cone_limit.check(0.02),
-        ];
-        let _ = print_report("Validation Report (t=15s)", &checks);
-    }
 }
