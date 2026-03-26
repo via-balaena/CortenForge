@@ -75,7 +75,7 @@ const KP: f64 = 100.0;
 const I_EFF: f64 = 0.0825;
 
 // Expected kv from dampratio=1: kv = 2 * sqrt(kp * I_eff) ~ 5.74
-const EXPECTED_KV: f64 = 2.0 * 5.744_562_646_538_03; // 2 * sqrt(100 * 0.0825)
+const EXPECTED_KV: f64 = 5.744_562_646_538_03; // 2 * sqrt(100 * 0.0825)
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
@@ -161,10 +161,10 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, -0.2, 0.0),
-        1.8,
-        std::f32::consts::FRAC_PI_4,
-        0.35,
+        Vec3::new(0.0, -0.25, 0.0),  // arm midpoint in Bevy Y-up coords
+        1.8,                         // distance
+        std::f32::consts::FRAC_PI_2, // azimuth: 90° — match motor convention
+        0.0,                         // elevation: level
     );
 
     spawn_physics_hud(&mut commands);
@@ -175,9 +175,13 @@ fn setup(
 
 // ── Control ─────────────────────────────────────────────────────────────────
 
+/// Hold at 0° for 3 seconds so the viewer sees the arm at rest,
+/// then command the 45° target and watch the critically-damped swing.
+const CTRL_DELAY: f64 = 3.0;
+
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
     if !data.ctrl.is_empty() {
-        data.ctrl[0] = TARGET;
+        data.ctrl[0] = if data.time < CTRL_DELAY { 0.0 } else { TARGET };
     }
 }
 
@@ -189,13 +193,16 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
 
     let force = data.sensor_data(&model, 0)[0];
     let pos = data.sensor_data(&model, 1)[0];
-    let vel = data.sensor_data(&model, 2)[0];
+    let active = data.time >= CTRL_DELAY;
 
-    hud.scalar("ctrl", TARGET, 4);
-    hud.scalar("force", force, 4);
-    hud.scalar("theta", pos, 4);
-    hud.scalar("omega", vel, 4);
-    hud.scalar("time", data.time, 2);
+    let target_deg = if active { TARGET.to_degrees() } else { 0.0 };
+    let theta_deg = pos.to_degrees();
+
+    hud.scalar("target", target_deg, 1);
+    hud.scalar("theta", theta_deg, 1);
+    hud.scalar("error", target_deg - theta_deg, 2);
+    hud.scalar("force", force, 2);
+    hud.scalar("time", data.time, 1);
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
@@ -231,13 +238,18 @@ fn servo_diagnostics(
         val.kv = -model.actuator_biasprm[0][2];
     }
 
+    // Only validate after the control delay fires
+    if time < CTRL_DELAY {
+        return;
+    }
+
     // Track max theta for overshoot check
     if theta > val.max_theta {
         val.max_theta = theta;
     }
 
-    // Check 1: Reaches target after 0.5s
-    if time >= 0.5 && (theta - TARGET).abs() < 0.05 {
+    // Check 1: Reaches target 0.5s after command
+    if time >= CTRL_DELAY + 0.5 && (theta - TARGET).abs() < 0.05 {
         val.reached_target = true;
     }
 
