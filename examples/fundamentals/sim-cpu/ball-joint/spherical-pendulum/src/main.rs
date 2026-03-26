@@ -26,16 +26,14 @@
 
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::examples::{DiagTimer, spawn_example_camera};
-use sim_bevy::materials::{MetalPreset, override_geom_materials_by_name};
+use sim_bevy::examples::{ValidationHarness, spawn_example_camera, validation_system};
+use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
-    ModelGeomIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
-    step_physics_realtime, sync_geom_transforms,
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    sync_geom_transforms,
 };
 use sim_core::ENABLE_ENERGY;
-use sim_core::validation::{
-    Check, EnergyConservationTracker, QuaternionNormTracker, print_report, quat_rotation_angle,
-};
+use sim_core::validation::{Check, print_report, quat_rotation_angle};
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 //
@@ -102,11 +100,40 @@ fn main() {
         }))
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<PhysicsAccumulator>()
-        .init_resource::<DiagTimer>()
-        .init_resource::<Validation>()
+        .init_resource::<SensorValidation>()
+        .insert_resource(
+            ValidationHarness::new()
+                .report_at(15.0)
+                .print_every(1.0)
+                .display(|m, d| {
+                    let qpos = d.joint_qpos(m, 0);
+                    let qvel = d.joint_qvel(m, 0);
+                    let omega_mag =
+                        (qvel[0].powi(2) + qvel[1].powi(2) + qvel[2].powi(2)).sqrt();
+                    let angle_deg =
+                        quat_rotation_angle(qpos[0], qpos[1], qpos[2], qpos[3]).to_degrees();
+                    let energy = d.energy_kinetic + d.energy_potential;
+                    format!(
+                        "q=({:+.3},{:+.3},{:+.3},{:+.3})  |w|={omega_mag:.2}  angle={angle_deg:.1}°  E={energy:.4}J",
+                        qpos[0], qpos[1], qpos[2], qpos[3],
+                    )
+                })
+                .track_quat_norm(
+                    "Quat norm",
+                    |m, d| {
+                        let q = d.joint_qpos(m, 0);
+                        (q[0], q[1], q[2], q[3])
+                    },
+                    1e-10,
+                )
+                .track_energy(0.5),
+        )
         .add_systems(Startup, setup)
-        .add_systems(Update, (apply_materials, step_physics_realtime).chain())
-        .add_systems(PostUpdate, (sync_geom_transforms, diagnostics))
+        .add_systems(Update, step_physics_realtime)
+        .add_systems(
+            PostUpdate,
+            (sync_geom_transforms, validation_system, sensor_diagnostics),
+        )
         .run();
 }
 
@@ -136,21 +163,28 @@ fn setup(
         model.nbody, model.njnt, model.nv, model.nsensor
     );
 
-    // ── Spawn MJCF geometry ─────────────────────────────────────────────
+    // ── Metallic materials ──────────────────────────────────────────────
+    let mat_frame = materials.add(MetalPreset::BrushedMetal.material());
+    let mat_socket = materials.add(MetalPreset::CastIron.material());
+    let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
+    let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.2, 0.5, 0.85)));
+
+    // ── Spawn MJCF geometry with material overrides ─────────────────────
     spawn_model_geoms(
         &mut commands,
         &mut meshes,
         &mut materials,
         &model,
         &data,
-        &[],
+        &[
+            ("beam", mat_frame.clone()),
+            ("post_l", mat_frame.clone()),
+            ("post_r", mat_frame),
+            ("socket", mat_socket),
+            ("rod", mat_rod),
+            ("tip", mat_tip),
+        ],
     );
-
-    // ── Metallic materials ──────────────────────────────────────────────
-    let mat_frame = materials.add(MetalPreset::BrushedMetal.material());
-    let mat_socket = materials.add(MetalPreset::CastIron.material());
-    let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
-    let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.2, 0.5, 0.85)));
 
     // ── Camera + lights ─────────────────────────────────────────────────
     spawn_example_camera(
@@ -163,96 +197,27 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(MaterialOverrides {
-        frame: mat_frame,
-        socket: mat_socket,
-        rod: mat_rod,
-        tip: mat_tip,
-    });
 }
 
-// ── Material override (runs once) ───────────────────────────────────────────
+// ── Sensor Accuracy Validation ──────────────────────────────────────────────
+//
+// Custom resource + system for BallQuat/BallAngVel sensor accuracy checks.
+// These are unique to this example and don't fit the 6 standard tracker types.
 
-#[derive(Resource)]
-struct MaterialOverrides {
-    frame: Handle<StandardMaterial>,
-    socket: Handle<StandardMaterial>,
-    rod: Handle<StandardMaterial>,
-    tip: Handle<StandardMaterial>,
-}
-
-fn apply_materials(
-    mut commands: Commands,
-    model: Option<Res<PhysicsModel>>,
-    overrides: Option<Res<MaterialOverrides>>,
-    mut query: Query<(&ModelGeomIndex, &mut MeshMaterial3d<StandardMaterial>)>,
-) {
-    let (Some(model), Some(ovr)) = (model, overrides) else {
-        return;
-    };
-
-    override_geom_materials_by_name(
-        &model,
-        &[
-            ("beam", ovr.frame.clone()),
-            ("post_l", ovr.frame.clone()),
-            ("post_r", ovr.frame.clone()),
-            ("socket", ovr.socket.clone()),
-            ("rod", ovr.rod.clone()),
-            ("tip", ovr.tip.clone()),
-        ],
-        &mut query,
-    );
-
-    commands.remove_resource::<MaterialOverrides>();
-}
-
-// ── Diagnostics & Validation ────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct Validation {
-    quat_norm: QuaternionNormTracker,
-    energy: EnergyConservationTracker,
+#[derive(Resource, Default)]
+struct SensorValidation {
     sensor_quat_err: f64,
     sensor_angvel_err: f64,
     reported: bool,
 }
 
-impl Default for Validation {
-    fn default() -> Self {
-        Self {
-            quat_norm: QuaternionNormTracker::new(),
-            energy: EnergyConservationTracker::new(),
-            sensor_quat_err: 0.0,
-            sensor_angvel_err: 0.0,
-            reported: false,
-        }
-    }
-}
-
-fn diagnostics(
+fn sensor_diagnostics(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    mut timer: ResMut<DiagTimer>,
-    mut val: ResMut<Validation>,
+    harness: Res<ValidationHarness>,
+    mut val: ResMut<SensorValidation>,
 ) {
-    let time = data.time;
-
-    // ── Quaternion norm ─────────────────────────────────────────────────
-    let adr = model.jnt_qpos_adr[0];
-    let (w, x, y, z) = (
-        data.qpos[adr],
-        data.qpos[adr + 1],
-        data.qpos[adr + 2],
-        data.qpos[adr + 3],
-    );
-    val.quat_norm.sample(w, x, y, z);
-
-    // ── Energy from engine (post-step forward() keeps it in sync) ───────
-    let energy = data.energy_kinetic + data.energy_potential;
-    val.energy.sample(energy);
-
-    // ── Sensor accuracy (post-step forward() keeps sensors in sync) ─────
+    // Accumulate sensor errors every frame
     for sensor_id in 0..model.nsensor {
         let s_adr = model.sensor_adr[sensor_id];
         let s_dim = model.sensor_dim[sensor_id];
@@ -285,45 +250,22 @@ fn diagnostics(
         }
     }
 
-    // ── Per-second diagnostics ──────────────────────────────────────────
-    if time - timer.last > 1.0 {
-        timer.last = time;
-
-        let dof = model.jnt_dof_adr[0];
-        let omega_mag =
-            (data.qvel[dof].powi(2) + data.qvel[dof + 1].powi(2) + data.qvel[dof + 2].powi(2))
-                .sqrt();
-
-        let angle = quat_rotation_angle(w, x, y, z);
-        let angle_deg = angle.to_degrees();
-
-        println!(
-            "t={time:5.1}s  q=({w:+.3},{x:+.3},{y:+.3},{z:+.3})  |w|={omega_mag:.2}  angle={angle_deg:.1}°  E={energy:.4}J"
-        );
-    }
-
-    // ── Validation report at t=15s ──────────────────────────────────────
-    if time > 15.0 && !val.reported {
+    // Print sensor report when the harness prints its report
+    if harness.reported() && !val.reported {
         val.reported = true;
 
-        let sensor_quat_check = Check {
-            name: "BallQuat sensor",
-            pass: val.sensor_quat_err < 1e-10,
-            detail: format!("max error={:.2e}", val.sensor_quat_err),
-        };
-
-        let sensor_angvel_check = Check {
-            name: "BallAngVel sensor",
-            pass: val.sensor_angvel_err < 1e-10,
-            detail: format!("max error={:.2e}", val.sensor_angvel_err),
-        };
-
         let checks = vec![
-            val.quat_norm.check(1e-10),
-            val.energy.check(0.5),
-            sensor_quat_check,
-            sensor_angvel_check,
+            Check {
+                name: "BallQuat sensor",
+                pass: val.sensor_quat_err < 1e-10,
+                detail: format!("max error={:.2e}", val.sensor_quat_err),
+            },
+            Check {
+                name: "BallAngVel sensor",
+                pass: val.sensor_angvel_err < 1e-10,
+                detail: format!("max error={:.2e}", val.sensor_angvel_err),
+            },
         ];
-        let _ = print_report("Validation Report (t=15s)", &checks);
+        let _ = print_report("Sensor Accuracy (t=15s)", &checks);
     }
 }

@@ -240,6 +240,13 @@ let gyro = data.sensor_data(&model, sid); // &[f64] of length 3
 The 6 tracker types have incompatible `sample()` signatures. Use an
 enum-based harness with closures for input extraction.**
 
+**Implementation: DONE — Phase A.3 complete.**
+Harness: `sim-bevy/src/examples.rs` (`ValidationHarness`, `validation_system`).
+All 8 sim-cpu examples migrated. MaterialOverrides + apply_materials deleted.
+Additions beyond spec: `skip_until()` builder for constraint-settling transients,
+harness-level `display()` for consolidated per-second console output,
+`reported()` accessor for sensor-accuracy co-reporting (spherical-pendulum).
+
 ### Current (bad)
 
 Every example defines:

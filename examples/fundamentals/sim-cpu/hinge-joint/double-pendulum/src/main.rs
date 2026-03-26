@@ -23,14 +23,13 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::physics_pos;
-use sim_bevy::examples::{DiagTimer, spawn_example_camera};
-use sim_bevy::materials::{MetalPreset, override_geom_materials_by_name};
+use sim_bevy::examples::{ValidationHarness, spawn_example_camera, validation_system};
+use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
-    ModelGeomIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
-    step_physics_realtime, sync_geom_transforms,
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    sync_geom_transforms,
 };
 use sim_core::ENABLE_ENERGY;
-use sim_core::validation::{EnergyConservationTracker, print_report};
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 //
@@ -102,11 +101,25 @@ fn main() {
         }))
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<PhysicsAccumulator>()
-        .init_resource::<DiagTimer>()
-        .init_resource::<Validation>()
+        .insert_resource(
+            ValidationHarness::new()
+                .report_at(30.0)
+                .print_every(1.0)
+                .display(|m, d| {
+                    let a1 = d.joint_qpos(m, 0)[0];
+                    let a2 = d.joint_qpos(m, 1)[0];
+                    let energy = d.energy_kinetic + d.energy_potential;
+                    format!(
+                        "θ1={:+6.1}°  θ2={:+6.1}°  E={energy:.4}J",
+                        a1.to_degrees(),
+                        a2.to_degrees(),
+                    )
+                })
+                .track_energy(0.5),
+        )
         .add_systems(Startup, setup)
-        .add_systems(Update, (apply_materials, step_physics_realtime).chain())
-        .add_systems(PostUpdate, (sync_geom_transforms, diagnostics))
+        .add_systems(Update, step_physics_realtime)
+        .add_systems(PostUpdate, (sync_geom_transforms, validation_system))
         .run();
 }
 
@@ -128,16 +141,6 @@ fn setup(
         model.nbody, model.njnt, model.nv
     );
 
-    // ── Spawn MJCF geometry ─────────────────────────────────────────────
-    spawn_model_geoms(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &model,
-        &data,
-        &[],
-    );
-
     // ── Metallic materials ──────────────────────────────────────────────
     let mat_bracket = materials.add(MetalPreset::BrushedMetal.material());
     let mat_socket = materials.add(MetalPreset::CastIron.material());
@@ -145,6 +148,23 @@ fn setup(
     let mat_rod2 = materials.add(MetalPreset::BrushedMetal.material());
     let mat_tip =
         materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.15, 0.45, 0.82)));
+
+    // ── Spawn MJCF geometry with material overrides ─────────────────────
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[
+            ("bracket", mat_bracket),
+            ("socket1", mat_socket.clone()),
+            ("joint_ball", mat_socket),
+            ("rod1", mat_rod1),
+            ("rod2", mat_rod2),
+            ("mass2", mat_tip),
+        ],
+    );
 
     // ── Camera + lights ─────────────────────────────────────────────────
     spawn_example_camera(
@@ -157,87 +177,4 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(MaterialOverrides {
-        bracket: mat_bracket,
-        socket: mat_socket,
-        rod1: mat_rod1,
-        rod2: mat_rod2,
-        tip: mat_tip,
-    });
-}
-
-// ── Material override (runs once) ───────────────────────────────────────────
-
-#[derive(Resource)]
-struct MaterialOverrides {
-    bracket: Handle<StandardMaterial>,
-    socket: Handle<StandardMaterial>,
-    rod1: Handle<StandardMaterial>,
-    rod2: Handle<StandardMaterial>,
-    tip: Handle<StandardMaterial>,
-}
-
-fn apply_materials(
-    mut commands: Commands,
-    model: Option<Res<PhysicsModel>>,
-    overrides: Option<Res<MaterialOverrides>>,
-    mut query: Query<(&ModelGeomIndex, &mut MeshMaterial3d<StandardMaterial>)>,
-) {
-    let (Some(model), Some(ovr)) = (model, overrides) else {
-        return;
-    };
-
-    override_geom_materials_by_name(
-        &model,
-        &[
-            ("bracket", ovr.bracket.clone()),
-            ("socket1", ovr.socket.clone()),
-            ("joint_ball", ovr.socket.clone()),
-            ("rod1", ovr.rod1.clone()),
-            ("rod2", ovr.rod2.clone()),
-            ("mass2", ovr.tip.clone()),
-        ],
-        &mut query,
-    );
-
-    commands.remove_resource::<MaterialOverrides>();
-}
-
-// ── Diagnostics & Validation ────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct Validation {
-    energy: EnergyConservationTracker,
-    reported: bool,
-}
-
-impl Default for Validation {
-    fn default() -> Self {
-        Self {
-            energy: EnergyConservationTracker::new(),
-            reported: false,
-        }
-    }
-}
-
-fn diagnostics(data: Res<PhysicsData>, mut timer: ResMut<DiagTimer>, mut val: ResMut<Validation>) {
-    let time = data.time;
-    let energy = data.energy_kinetic + data.energy_potential;
-
-    val.energy.sample(energy);
-
-    if time - timer.last > 1.0 {
-        timer.last = time;
-        println!(
-            "t={time:5.1}s  θ1={:+6.1}°  θ2={:+6.1}°  E={energy:.4}J",
-            data.qpos[0].to_degrees(),
-            data.qpos[1].to_degrees(),
-        );
-    }
-
-    if time > 30.0 && !val.reported {
-        val.reported = true;
-        let checks = vec![val.energy.check(0.5)];
-        let _ = print_report("Validation Report (t=30s)", &checks);
-    }
 }

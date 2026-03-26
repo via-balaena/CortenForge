@@ -87,7 +87,9 @@ pub mod prelude {
     pub use crate::convert::{
         bevy_to_physics, physics_pos, transform_from_physics, transform_from_physics_pose,
     };
-    pub use crate::examples::{DiagTimer, spawn_example_camera};
+    pub use crate::examples::{
+        DiagTimer, ValidationHarness, spawn_example_camera, validation_system,
+    };
     pub use crate::gizmos::{DebugGizmosSet, TrailGizmo, draw_trails, sample_trails};
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
     pub use crate::materials::{

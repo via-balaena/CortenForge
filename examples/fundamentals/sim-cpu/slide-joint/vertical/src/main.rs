@@ -28,17 +28,14 @@ use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::physics_pos;
-use sim_bevy::examples::{DiagTimer, spawn_example_camera};
-use sim_bevy::materials::{MetalPreset, override_geom_materials_by_name};
+use sim_bevy::examples::{ValidationHarness, spawn_example_camera, validation_system};
+use sim_bevy::materials::MetalPreset;
 use sim_bevy::mesh::{SpringCoilParams, spring_coil};
 use sim_bevy::model_data::{
-    ModelGeomIndex, PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms,
-    step_physics_realtime, sync_geom_transforms,
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    sync_geom_transforms,
 };
 use sim_core::ENABLE_ENERGY;
-use sim_core::validation::{
-    EnergyMonotonicityTracker, EquilibriumTracker, LimitTracker, PeriodTracker, print_report,
-};
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 //
@@ -150,13 +147,48 @@ fn main() {
         }))
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<PhysicsAccumulator>()
-        .init_resource::<DiagTimer>()
-        .init_resource::<Validation>()
+        .insert_resource(
+            ValidationHarness::new()
+                .report_at(15.0)
+                .print_every(1.0)
+                .display(|m, d| {
+                    let pos = d.joint_qpos(m, 0)[0];
+                    let x_eq = analytical_equilibrium();
+                    let energy = d.energy_kinetic + d.energy_potential;
+                    format!("pos={pos:+.4}m  x_eq={x_eq:+.4}m  E={energy:.4}J")
+                })
+                .track_period(
+                    "Period",
+                    |m, d| {
+                        let pos = d.joint_qpos(m, 0)[0];
+                        (pos - analytical_equilibrium(), d.time)
+                    },
+                    analytical_period(),
+                    2.0,
+                )
+                .track_energy_monotonic(1e-6)
+                .track_limit(
+                    "Limits",
+                    |m, d| {
+                        let pos = d.joint_qpos(m, 0)[0];
+                        let (lo, hi) = m.jnt_range[0];
+                        (pos, lo, hi)
+                    },
+                    0.001,
+                )
+                .track_equilibrium(
+                    "Equilibrium",
+                    |m, d| (d.joint_qpos(m, 0)[0], d.time),
+                    analytical_equilibrium(),
+                    5.0,
+                    5.0,
+                ),
+        )
         .add_systems(Startup, setup)
-        .add_systems(Update, (apply_materials, step_physics_realtime).chain())
+        .add_systems(Update, step_physics_realtime)
         .add_systems(
             PostUpdate,
-            (sync_geom_transforms, update_spring, diagnostics),
+            (sync_geom_transforms, update_spring, validation_system),
         )
         .run();
 }
@@ -178,22 +210,26 @@ fn setup(
         model.nbody, model.njnt, model.nv
     );
 
-    // ── Spawn MJCF geometry ─────────────────────────────────────────────
-    spawn_model_geoms(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &model,
-        &data,
-        &[],
-    );
-
     // ── Metallic materials ──────────────────────────────────────────────
     let mat_rail = materials.add(MetalPreset::PolishedSteel.material());
     let mat_mount = materials.add(MetalPreset::BrushedMetal.material());
     let mat_block =
         materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.15, 0.45, 0.82)));
     let mat_spring = materials.add(MetalPreset::SpringWire.material());
+
+    // ── Spawn MJCF geometry with material overrides ─────────────────────
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[
+            ("rail", mat_rail),
+            ("mount", mat_mount),
+            ("block", mat_block),
+        ],
+    );
 
     // ── Spring: mount → block top ───────────────────────────────────────
     // All positions in MJCF Z-up; physics_pos() converts to Bevy Y-up.
@@ -229,43 +265,6 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(MaterialOverrides {
-        rail: mat_rail,
-        mount: mat_mount,
-        block: mat_block,
-    });
-}
-
-// ── Material override (runs once) ───────────────────────────────────────────
-
-#[derive(Resource)]
-struct MaterialOverrides {
-    rail: Handle<StandardMaterial>,
-    mount: Handle<StandardMaterial>,
-    block: Handle<StandardMaterial>,
-}
-
-fn apply_materials(
-    mut commands: Commands,
-    model: Option<Res<PhysicsModel>>,
-    overrides: Option<Res<MaterialOverrides>>,
-    mut query: Query<(&ModelGeomIndex, &mut MeshMaterial3d<StandardMaterial>)>,
-) {
-    let (Some(model), Some(ovr)) = (model, overrides) else {
-        return;
-    };
-
-    override_geom_materials_by_name(
-        &model,
-        &[
-            ("rail", ovr.rail.clone()),
-            ("mount", ovr.mount.clone()),
-            ("block", ovr.block.clone()),
-        ],
-        &mut query,
-    );
-
-    commands.remove_resource::<MaterialOverrides>();
 }
 
 // ── Spring update ───────────────────────────────────────────────────────────
@@ -284,67 +283,5 @@ fn update_spring(
         if let Some(mesh) = meshes.get_mut(&mesh_handle.0) {
             *mesh = spring_coil(&COIL_PARAMS, spring_length, RenderAssetUsages::default());
         }
-    }
-}
-
-// ── Diagnostics & Validation ────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct Validation {
-    period: PeriodTracker,
-    energy: EnergyMonotonicityTracker,
-    limits: LimitTracker,
-    equilibrium: EquilibriumTracker,
-    reported: bool,
-}
-
-impl Default for Validation {
-    fn default() -> Self {
-        Self {
-            period: PeriodTracker::new(),
-            energy: EnergyMonotonicityTracker::new(),
-            limits: LimitTracker::new(),
-            equilibrium: EquilibriumTracker::new(5.0), // 5s trailing window
-            reported: false,
-        }
-    }
-}
-
-fn diagnostics(
-    model: Res<PhysicsModel>,
-    data: Res<PhysicsData>,
-    mut timer: ResMut<DiagTimer>,
-    mut val: ResMut<Validation>,
-) {
-    let pos = data.qpos[0];
-    let energy = data.energy_kinetic + data.energy_potential;
-    let time = data.time;
-    let x_eq = analytical_equilibrium();
-
-    // Period tracker: sample displacement relative to equilibrium
-    // (so zero crossings correspond to passing through equilibrium)
-    val.period.sample(pos - x_eq, time);
-    val.energy.sample(energy);
-    val.equilibrium.sample(pos, time);
-
-    if model.jnt_limited[0] {
-        let (lo, hi) = model.jnt_range[0];
-        val.limits.sample(pos, lo, hi);
-    }
-
-    if time - timer.last > 1.0 {
-        timer.last = time;
-        println!("t={time:5.1}s  pos={pos:+.4}m  x_eq={x_eq:+.4}m  E={energy:.4}J");
-    }
-
-    if time > 15.0 && !val.reported {
-        val.reported = true;
-        let checks = vec![
-            val.period.check(analytical_period(), 2.0),
-            val.energy.check(1e-6),
-            val.limits.check(0.001),
-            val.equilibrium.check(x_eq, 5.0),
-        ];
-        let _ = print_report("Validation Report (t=15s)", &checks);
     }
 }
