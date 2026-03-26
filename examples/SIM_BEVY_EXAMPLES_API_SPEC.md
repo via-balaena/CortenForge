@@ -1,7 +1,7 @@
 # sim-bevy Examples API Spec
 
-**Status:** Approved — Changes 1–4 DONE, Changes 5–6 pending
-**Date:** 2026-03-25
+**Status:** Approved — All 6 changes DONE
+**Date:** 2026-03-26
 **Scope:** sim-bevy API improvements to support all 12 Track 1 example domains
 
 ## Problem
@@ -1027,16 +1027,28 @@ Needed before sensors example.
    - All 9 sensor examples updated with per-example update_hud systems
    - ViewerConfig::show_hud toggle (default true, hides HUD node when false)
 
-5. **Change 5: Sensor viz redesign** — NEXT
-   - Delete old dead code (SensorVisualType, SensorVisualData)
-   - New SensorVisualization with auto-discovery + draw_sensor_gizmos
+5. **Change 5: Sensor viz redesign** — **DONE** (2026-03-26)
+   - Deleted old dead code (SensorVisualType, SensorVisualData, draw_sensors)
+   - New sensor_viz.rs module: SensorGizmo enum (6 variants), SensorVizEntry,
+     auto-populated SensorVisualization resource
+   - sensor_type_to_gizmo maps all 38 MjSensorType variants with correct
+     local/world/relative frame rotation handling
+   - update_sensor_visualization + draw_sensor_gizmos systems, gated on
+     ViewerConfig::show_sensors
+   - 5 unit tests (all types mapped, local-frame rotation, world-frame
+     passthrough, relative-frame rotation, 6-sensor auto-population)
 
 ### Phase C: Multi-Scene (Change 6)
 
 Needed before solvers/integrators examples.
 
-6. **Change 6: Multi-scene** — pending
-   - New MultiScenePlugin alongside existing single-scene pattern
+6. **Change 6: Multi-scene** — **DONE** (2026-03-26)
+   - New multi_scene.rs module: PhysicsScene, PhysicsScenes resource,
+     PhysicsSceneId component, MultiScenePlugin
+   - Per-scene accumulator for fair lockstep stepping (200-cap)
+   - spawn_scene_geoms / spawn_scene_geoms_with with offset + PhysicsSceneId tagging
+   - sync_scene_geom_transforms applies per-scene offset for side-by-side layout
+   - 3 unit tests (sequential IDs, lockstep time equality, 3-scene entity tagging)
 
 ---
 
