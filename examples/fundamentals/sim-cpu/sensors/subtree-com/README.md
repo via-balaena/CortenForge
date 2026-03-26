@@ -7,6 +7,8 @@ Center-of-mass tracking for a multi-body subtree.
 - `<subtreecom>` reads the COM of all bodies in the subtree rooted at a given body
 - Position-stage sensor, computed from body masses and FK positions
 - Non-trivial with a 2-link chain (COM depends on both joint angles)
+- No energy tracking — the undamped double pendulum is chaotic and
+  energy drifts with any practical timestep
 
 ## Expected visual behavior
 
@@ -22,8 +24,8 @@ t=  2.0s  com=(-0.XXXX,+0.0000,-0.XXXX)
 ...
 ```
 
-The COM X-component oscillates as both joints swing. Y stays near zero.
-Z stays negative (the chain hangs downward).
+The COM X-component swings widely as both joints move. Y stays at zero
+(both hinges rotate in the XZ plane). Motion becomes chaotic over time.
 
 ## Pass/fail criteria
 
@@ -31,8 +33,7 @@ Z stays negative (the chain hangs downward).
 |-------|-----------|-----------|
 | SubtreeCom == data | sensor matches `data.subtree_com[body_id]` | < 1e-12 |
 | COM X range > 0.1m | chain actually swings (COM moves) | range > 0.1 |
-| t=0 COM displaced | COM has nonzero X at initial config | \|com_x\| > 0.05 |
-| Energy conservation | undamped system (harness tracker) | < 0.5% drift |
+| t=0 analytical COM | COM matches hand-computed FK: `(m1·p1 + m2·p2) / (m1+m2)` | < 1e-6 |
 
 ## Run
 
