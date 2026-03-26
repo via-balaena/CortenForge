@@ -1,9 +1,14 @@
 //! Damper Actuator — Viscous Braking
 //!
-//! A velocity-dependent actuator that applies viscous damping to a spinning
-//! wheel. The damper shortcut maps to `GainType::Affine(0, 0, -kv)`,
-//! `BiasType::None`, `ActuatorDynamics::None`. Force = -kv * velocity * ctrl.
-//! The ctrl signal scales damping (0 = off, 1 = full).
+//! A velocity-dependent actuator that brakes a spinning arm. The damper
+//! shortcut maps to `GainType::Affine(0, 0, -kv)`, `BiasType::None`,
+//! `ActuatorDynamics::None`. Force = -kv * velocity * ctrl. The ctrl signal
+//! scales damping (0 = off, 1 = full).
+//!
+//! The arm starts spinning at 10 rad/s in zero gravity. Unlike a constant-
+//! force brake (linear slowdown), viscous braking pushes proportional to
+//! speed — fast deceleration at high ω, then asymptotically approaching rest.
+//! The result is textbook exponential decay: ω(t) = ω₀ · e^(-t/τ).
 //!
 //! Validates:
 //! - Exponential velocity decay: ω(τ) / ω₀ ≈ e⁻¹ ≈ 0.368
@@ -48,16 +53,18 @@ const MJCF: &str = r#"
   </default>
 
   <worldbody>
-    <body name="wheel" pos="0 0 0">
+    <body name="arm" pos="0 0 0">
       <joint name="spin" type="hinge" axis="0 1 0" armature="0.01"/>
-      <inertial pos="0 0 0" mass="1.0" diaginertia="0.05 0.05 0.05"/>
-      <geom name="disc" type="cylinder" size="0.2 0.02" euler="1.5708 0 0"
-            rgba="0.7 0.5 0.2 1"/>
+      <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom name="rod" type="capsule" size="0.02"
+            fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
+      <geom name="tip" type="sphere" size="0.05"
+            pos="0 0 -0.5" rgba="0.85 0.3 0.2 1"/>
     </body>
   </worldbody>
 
   <actuator>
-    <damper name="brake" joint="spin" kv="0.5" ctrlrange="0 1"/>
+    <damper name="brake" joint="spin" kv="0.03" ctrlrange="0 1"/>
   </actuator>
 
   <sensor>
@@ -69,11 +76,11 @@ const MJCF: &str = r#"
 
 const CTRL_DAMPING: f64 = 1.0; // full damping
 
-// I_eff = diaginertia_Y + armature = 0.05 + 0.01 (CoM at origin, no parallel axis)
-const I_EFF: f64 = 0.06;
-const KV: f64 = 0.5;
+// I_eff = diaginertia_Y + m*d² + armature = 0.01 + 0.0625 + 0.01
+const I_EFF: f64 = 0.0825;
+const KV: f64 = 0.03;
 const OMEGA_0: f64 = 10.0;
-const TAU: f64 = I_EFF / KV; // 0.12 s
+const TAU: f64 = I_EFF / KV; // 2.75 s
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
@@ -81,8 +88,8 @@ fn main() {
     println!("=== CortenForge: Damper Actuator ===");
     println!("  Viscous braking — velocity-dependent damping");
     println!("  ctrl = {CTRL_DAMPING} (full damping), kv = {KV}");
-    println!("  I_eff = {I_EFF} kg·m², ω₀ = {OMEGA_0} rad/s, τ = {TAU} s");
-    println!("  Analytical: ω(t) = {OMEGA_0} · e^(-t/{TAU})");
+    println!("  I_eff = {I_EFF} kg·m², ω₀ = {OMEGA_0} rad/s, τ = {TAU:.2} s");
+    println!("  Analytical: ω(t) = {OMEGA_0} · e^(-t/{TAU:.2})");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -104,7 +111,7 @@ fn main() {
                 .display(|m, d| {
                     let force = d.sensor_data(m, 0)[0];
                     let vel = d.sensor_data(m, 1)[0];
-                    format!("force={force:.3}  ω={vel:.4}")
+                    format!("force={force:.3}  ω={vel:.2}")
                 }),
         )
         .add_systems(Startup, setup)
@@ -142,7 +149,8 @@ fn setup(
     );
     println!("  Initial ω = {} rad/s\n", data.qvel[dof_adr]);
 
-    let mat_disc = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.7, 0.5, 0.2)));
+    let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
+    let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.85, 0.3, 0.2)));
 
     spawn_model_geoms(
         &mut commands,
@@ -150,15 +158,15 @@ fn setup(
         &mut materials,
         &model,
         &data,
-        &[("disc", mat_disc)],
+        &[("rod", mat_rod), ("tip", mat_tip)],
     );
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, 0.0, 0.0),
-        1.2,
-        std::f32::consts::FRAC_PI_4,
-        0.35,
+        Vec3::new(0.0, -0.25, 0.0),  // arm midpoint in Bevy Y-up coords
+        2.5,                         // distance — zoomed out for full rotation
+        std::f32::consts::FRAC_PI_2, // azimuth: 90° — face the rotation plane
+        0.0,                         // elevation: level
     );
 
     spawn_physics_hud(&mut commands);
@@ -181,15 +189,17 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Damper Actuator");
 
-    let force = data.sensor_data(&model, 0)[0];
+    let brake = data.sensor_data(&model, 0)[0];
     let vel = data.sensor_data(&model, 1)[0];
     let expected_vel = OMEGA_0 * (-data.time / TAU).exp();
+    let decay_pct = (1.0 - vel / OMEGA_0) * 100.0;
 
-    hud.scalar("ctrl", CTRL_DAMPING, 3);
-    hud.scalar("force", force, 4);
-    hud.scalar("omega", vel, 4);
-    hud.scalar("expected", expected_vel, 4);
-    hud.scalar("time", data.time, 2);
+    hud.scalar("kv (damping)", KV, 3);
+    hud.scalar("omega (rad/s)", vel, 2);
+    hud.scalar("expected (rad/s)", expected_vel, 2);
+    hud.scalar("brake (N·m)", brake, 4);
+    hud.scalar("decay (%)", decay_pct, 1);
+    hud.scalar("time (s)", data.time, 2);
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
@@ -220,10 +230,10 @@ fn damper_diagnostics(
         return;
     }
 
-    // Collect samples every ~10ms for the first 0.5s (captures several time constants)
-    if time <= 0.5 {
+    // Collect samples every ~50ms for the first 8s (covers ~3 time constants)
+    if time <= 8.0 {
         let last_t = val.samples.last().map_or(0.0, |s| s.0);
-        if time - last_t >= 0.009 {
+        if time - last_t >= 0.049 {
             val.samples.push((time, vel));
             val.force_samples.push((force_sensor, vel));
         }
@@ -275,7 +285,7 @@ fn damper_diagnostics(
                 name: "Time constant τ = I/kv",
                 pass: tc_err_pct < 5.0,
                 detail: format!(
-                    "ω drops to {:.1}% at t={tau_t:.4}s (expect 36.8% at t={TAU}s)",
+                    "ω drops to {:.1}% at t={tau_t:.4}s (expect 36.8% at t={TAU:.2}s)",
                     ratio * 100.0
                 ),
             },
