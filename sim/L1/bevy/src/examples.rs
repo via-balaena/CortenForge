@@ -560,7 +560,7 @@ pub fn spawn_physics_hud(commands: &mut Commands) {
                     font_size: 14.0,
                     ..default()
                 },
-                TextColor(Color::srgb(0.0, 1.0, 0.0)),
+                TextColor(Color::WHITE),
             ));
         });
 }
