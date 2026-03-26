@@ -2654,6 +2654,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-multi-scene-test"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-sdf-cpu-01-sdf-grid"
 version = "0.7.0"
 dependencies = [

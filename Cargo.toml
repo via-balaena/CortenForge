@@ -47,6 +47,7 @@ members = [
     "examples/fundamentals/sim-cpu/sensors/touch",
     "examples/fundamentals/sim-cpu/sensors/actuator-force",
     "examples/fundamentals/sim-cpu/sensors/geom-distance",
+    "examples/fundamentals/sim-cpu/multi-scene-test",
 
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
