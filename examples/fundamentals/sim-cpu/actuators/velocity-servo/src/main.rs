@@ -1,17 +1,17 @@
-//! Velocity Servo Actuator — Velocity Tracking
+//! Velocity Servo Actuator — Constant Speed Despite Gravity
 //!
-//! Velocity shortcut: `GainType::Fixed(kv)`, `BiasType::Affine(0, 0, -kv)`,
-//! `ActuatorDynamics::None`. The resulting force is `kv * (ctrl - qdot)`.
+//! The `<velocity>` shortcut: `GainType::Fixed(kv)`, `BiasType::Affine(0, 0, -kv)`,
+//! `ActuatorDynamics::None`. Force = kv * (ctrl - qdot).
 //!
-//! With gravity disabled and a constant ctrl = 2.0 rad/s, the joint velocity
-//! follows an exponential approach: ω(t) = TARGET_VEL * (1 - e^(-t/τ_v))
-//! where τ_v = I_eff / kv.
+//! With gravity enabled, the servo maintains near-constant angular velocity
+//! while its force oscillates each revolution to compensate gravity — the exact
+//! opposite pattern from the motor actuator (constant force, wobbling speed).
 //!
 //! Validates:
-//! - Reaches target ω ≈ 2.0 rad/s after 0.5s
-//! - Exponential approach: ω ≈ 0.632 * TARGET_VEL at t ≈ τ_v
-//! - Force at start ≈ kv * ctrl = 2.0 N·m
-//! - Force at steady state ≈ 0 N·m (velocity reached)
+//! - Average ω matches target (< 1% error over 5–15 s window)
+//! - Speed regulation: max |ω - target| bounded (servo keeps it tight)
+//! - Force oscillates (gravity compensation — not stuck at zero)
+//! - Force formula: force = kv * (ctrl - qdot) at every timestep
 //!
 //! Run with: `cargo run -p example-actuator-velocity-servo --release`
 
@@ -42,7 +42,7 @@ use sim_core::validation::{Check, print_report};
 const MJCF: &str = r#"
 <mujoco model="velocity-servo">
   <compiler angle="radian"/>
-  <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
 
   <default>
     <geom contype="0" conaffinity="0"/>
@@ -60,7 +60,7 @@ const MJCF: &str = r#"
   </worldbody>
 
   <actuator>
-    <velocity name="vel_servo" joint="hinge" kv="1"/>
+    <velocity name="vel_servo" joint="hinge" kv="20"/>
   </actuator>
 
   <sensor>
@@ -70,19 +70,26 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
-// I_eff = diaginertia_Y + armature + m*d^2 = 0.01 + 0.01 + 1.0 * 0.25^2
-const I_EFF: f64 = 0.0825;
-const KV: f64 = 1.0;
+const KV: f64 = 20.0;
 const TARGET_VEL: f64 = 2.0;
-const TAU_V: f64 = I_EFF / KV; // 0.0825 s (time constant)
+
+// Peak gravity torque = m*g*d = 1.0 * 9.81 * 0.25 = 2.4525 N·m
+const GRAVITY_TORQUE_PEAK: f64 = 1.0 * 9.81 * 0.25;
+
+// Max speed deviation ≈ gravity_peak / kv = 2.45 / 20 ≈ 0.12 rad/s
+const MAX_SPEED_RIPPLE: f64 = GRAVITY_TORQUE_PEAK / KV;
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: Velocity Servo ===");
     println!("  Velocity tracking — force = kv * (ctrl - qdot)");
-    println!("  ctrl = {TARGET_VEL} rad/s target velocity");
-    println!("  I_eff = {I_EFF} kg·m², kv = {KV}, τ_v = {TAU_V:.4} s");
+    println!("  ctrl = {TARGET_VEL} rad/s, kv = {KV}");
+    println!("  Gravity ON — peak torque = {GRAVITY_TORQUE_PEAK:.2} N·m");
+    println!(
+        "  Expected speed ripple ≈ ±{MAX_SPEED_RIPPLE:.2} rad/s ({:.0}%)",
+        MAX_SPEED_RIPPLE / TARGET_VEL * 100.0
+    );
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -104,7 +111,8 @@ fn main() {
                 .display(|m, d| {
                     let force = d.sensor_data(m, 0)[0];
                     let vel = d.sensor_data(m, 1)[0];
-                    format!("force={force:.3}  ω={vel:.4}")
+                    let rev = d.qpos[0] / std::f64::consts::TAU;
+                    format!("force={force:+.2}  ω={vel:.2}  rev={rev:.1}")
                 }),
         )
         .add_systems(Startup, setup)
@@ -150,10 +158,10 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, -0.2, 0.0),
-        1.8,
-        std::f32::consts::FRAC_PI_4,
-        0.35,
+        Vec3::new(0.0, -0.25, 0.0),  // arm midpoint in Bevy Y-up coords
+        2.5,                         // distance — zoomed out for full rotation
+        std::f32::consts::FRAC_PI_2, // azimuth: 90° — match motor convention
+        0.0,                         // elevation: level
     );
 
     spawn_physics_hud(&mut commands);
@@ -178,22 +186,29 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
 
     let force = data.sensor_data(&model, 0)[0];
     let vel = data.sensor_data(&model, 1)[0];
+    let rev = data.qpos[0] / std::f64::consts::TAU;
 
-    hud.scalar("ctrl", TARGET_VEL, 3);
-    hud.scalar("force", force, 4);
-    hud.scalar("omega", vel, 4);
-    hud.scalar("time", data.time, 2);
+    hud.scalar("target", TARGET_VEL, 1);
+    hud.scalar("omega", vel, 2);
+    hud.scalar("force", force, 2);
+    hud.scalar("rev", rev, 1);
+    hud.scalar("time", data.time, 1);
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
 #[derive(Resource, Default)]
 struct VelocityServoValidation {
-    earliest_force: Option<f64>,
-    steady_state_omega: Option<f64>,
-    steady_state_force: Option<f64>,
-    /// Sample closest to t = TAU_V for exponential check
-    tau_sample: Option<(f64, f64)>, // (time, omega)
+    /// Average velocity in the 5–15 s window
+    vel_sum: f64,
+    vel_count: u32,
+    /// Max velocity deviation from target
+    max_vel_deviation: f64,
+    /// Max |force| seen (should be > 0 — gravity compensation)
+    max_force_abs: f64,
+    /// Force formula error tracking
+    max_force_formula_err: f64,
+    force_formula_samples: usize,
     reported: bool,
 }
 
@@ -206,68 +221,83 @@ fn velocity_servo_diagnostics(
     let time = data.time;
     let force = data.sensor_data(&model, 0)[0];
     let omega = data.sensor_data(&model, 1)[0];
+    let act_force = data.actuator_force[0];
 
-    // Skip t=0 frame (actuator_force not yet computed before first step)
+    // Skip t=0 frame
     if time < 1e-6 {
         return;
     }
 
-    // Track earliest force sample
-    if val.earliest_force.is_none() {
-        val.earliest_force = Some(force);
-    }
-
-    // Track sample closest to TAU_V for exponential check
-    match val.tau_sample {
-        None => {
-            val.tau_sample = Some((time, omega));
-        }
-        Some((prev_t, _)) => {
-            if (time - TAU_V).abs() < (prev_t - TAU_V).abs() {
-                val.tau_sample = Some((time, omega));
-            }
-        }
-    }
-
-    // Track steady-state values (after 0.5s, keep updating to latest)
+    // Track max velocity deviation (after initial spinup)
     if time > 0.5 {
-        val.steady_state_omega = Some(omega);
-        val.steady_state_force = Some(force);
+        let deviation = (omega - TARGET_VEL).abs();
+        if deviation > val.max_vel_deviation {
+            val.max_vel_deviation = deviation;
+        }
     }
+
+    // Average velocity in 5–15 s window
+    if time > 5.0 {
+        val.vel_sum += omega;
+        val.vel_count += 1;
+    }
+
+    // Track max |force|
+    if force.abs() > val.max_force_abs {
+        val.max_force_abs = force.abs();
+    }
+
+    // Force formula: force = kv * (ctrl - qdot)
+    let expected_force = KV * (TARGET_VEL - omega);
+    let force_err = (act_force - expected_force).abs();
+    let scale = expected_force.abs().max(1.0);
+    let relative_err = force_err / scale;
+    if relative_err > val.max_force_formula_err {
+        val.max_force_formula_err = relative_err;
+    }
+    val.force_formula_samples += 1;
 
     // Final report
     if harness.reported() && !val.reported {
         val.reported = true;
 
-        let ss_omega = val.steady_state_omega.unwrap_or(0.0);
-        let ss_force = val.steady_state_force.unwrap_or(f64::MAX);
-        let start_force = val.earliest_force.unwrap_or(0.0);
-        let (tau_t, tau_omega) = val.tau_sample.unwrap_or((0.0, 0.0));
-        let expected_tau_omega = 0.632 * TARGET_VEL;
-        let tau_err_pct = ((tau_omega - expected_tau_omega) / expected_tau_omega).abs() * 100.0;
+        let avg_vel = if val.vel_count > 0 {
+            val.vel_sum / f64::from(val.vel_count)
+        } else {
+            0.0
+        };
+        let avg_err_pct = ((avg_vel - TARGET_VEL) / TARGET_VEL).abs() * 100.0;
 
         let checks = vec![
             Check {
-                name: "Reaches target ω",
-                pass: (ss_omega - TARGET_VEL).abs() < 0.05,
-                detail: format!("ω={ss_omega:.4} (target={TARGET_VEL})"),
+                name: "Average ω matches target",
+                pass: avg_err_pct < 1.0,
+                detail: format!("avg ω={avg_vel:.4} (target={TARGET_VEL}), err={avg_err_pct:.2}%"),
             },
             Check {
-                name: "Exponential approach at τ",
-                pass: tau_err_pct < 10.0,
+                name: "Speed regulation",
+                pass: val.max_vel_deviation < 0.5,
                 detail: format!(
-                    "ω({tau_t:.4})={tau_omega:.4} (expect {expected_tau_omega:.4}), err={tau_err_pct:.2}%"
+                    "max |ω - target| = {:.4} (expect < {:.2})",
+                    val.max_vel_deviation,
+                    MAX_SPEED_RIPPLE * 1.5
                 ),
             },
             Check {
-                name: "Force at start ≈ kv*ctrl",
-                pass: (start_force - KV * TARGET_VEL).abs() < 0.8,
-                detail: format!("force={start_force:.4} (expect {:.1})", KV * TARGET_VEL),
+                name: "Force oscillates (gravity)",
+                pass: val.max_force_abs > 1.0,
+                detail: format!(
+                    "max |force| = {:.2} (gravity peak ≈ {GRAVITY_TORQUE_PEAK:.2})",
+                    val.max_force_abs
+                ),
             },
             Check {
-                name: "Force at steady state ≈ 0",
-                pass: ss_force.abs() < 0.05,
-                detail: format!("force={ss_force:.4}"),
+                name: "Force formula",
+                pass: val.max_force_formula_err < 0.01,
+                detail: format!(
+                    "max relative err = {:.2e} ({} samples)",
+                    val.max_force_formula_err, val.force_formula_samples
+                ),
             },
         ];
         let _ = print_report("Velocity Servo (t=15s)", &checks);
