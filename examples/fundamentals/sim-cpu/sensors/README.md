@@ -12,7 +12,7 @@ CPU physics sensor fundamentals — one example per sensor type (or natural pair
 | `accelerometer/` | Accelerometer | Acceleration | Free-joint box drop | Pending |
 | `touch/` | Touch | Acceleration | Free-joint sphere drop | Pending |
 | `actuator-force/` | ActuatorFrc, JointActuatorFrc | Acceleration | Hinge + motor | Pending |
-| `geom-distance/` | GeomDist, GeomNormal, GeomFromTo | Position (GJK) | Slide joint + spring | Pending |
+| `geom-distance/` | GeomDist, GeomNormal, GeomFromTo | Position (GJK) | Slide joint + spring | PASS |
 
 ## Not covered here
 
