@@ -47,7 +47,7 @@ const MJCF: &str = r#"
 
   <worldbody>
     <body name="arm" pos="0 0 0">
-      <joint name="hinge" type="hinge" axis="0 1 0" damping="0" armature="0.01"/>
+      <joint name="hinge" type="hinge" axis="0 1 0" damping="0.5" armature="0.01"/>
       <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
       <geom name="rod" type="capsule" size="0.02"
             fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
@@ -68,19 +68,18 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
-const CTRL_TORQUE: f64 = 2.0;
-
-// I_eff = diaginertia_Y + armature + m*d^2 = 0.01 + 0.01 + 1.0 * 0.25^2
-const I_EFF: f64 = 0.0825;
-const ALPHA_0: f64 = CTRL_TORQUE / I_EFF; // ≈ 24.24 rad/s²
+const CTRL_TORQUE: f64 = 5.0;
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: Motor Actuator ===");
     println!("  Direct torque control — simplest actuator");
-    println!("  ctrl = {CTRL_TORQUE} N·m constant torque");
-    println!("  I_eff = {I_EFF} kg·m², α₀ = {ALPHA_0:.2} rad/s²");
+    println!("  ctrl = {CTRL_TORQUE} N·m, damping = {DAMPING} N·m·s/rad");
+    println!(
+        "  Terminal velocity ≈ {OMEGA_TERMINAL:.1} rad/s ({:.1} rev/s)",
+        OMEGA_TERMINAL / std::f64::consts::TAU
+    );
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -101,9 +100,9 @@ fn main() {
                 .print_every(1.0)
                 .display(|m, d| {
                     let force = d.sensor_data(m, 0)[0];
-                    let pos = d.sensor_data(m, 1)[0];
+                    let rev = d.sensor_data(m, 1)[0] / std::f64::consts::TAU;
                     let vel = d.sensor_data(m, 2)[0];
-                    format!("force={force:.3}  θ={pos:.4}  ω={vel:.4}")
+                    format!("force={force:.3}  rev={rev:.1}  ω={vel:.1}")
                 }),
         )
         .add_systems(Startup, setup)
@@ -150,10 +149,10 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, -0.2, 0.0),
-        1.8,
-        std::f32::consts::FRAC_PI_4,
-        0.35,
+        Vec3::new(0.0, 0.0, -0.25),  // center on arm midpoint
+        1.8,                         // distance
+        std::f32::consts::FRAC_PI_2, // azimuth: 90° — face the X-Z plane
+        0.0,                         // elevation: level
     );
 
     spawn_physics_hud(&mut commands);
@@ -180,22 +179,30 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     let pos = data.sensor_data(&model, 1)[0];
     let vel = data.sensor_data(&model, 2)[0];
 
-    hud.scalar("ctrl", CTRL_TORQUE, 3);
-    hud.scalar("force", force, 4);
-    hud.scalar("theta", pos, 4);
-    hud.scalar("omega", vel, 4);
-    hud.scalar("time", data.time, 2);
+    let rev = pos / std::f64::consts::TAU;
+    hud.scalar("force", force, 1);
+    hud.scalar("rev", rev, 1);
+    hud.scalar("omega", vel, 1);
+    hud.scalar("time", data.time, 1);
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
+
+/// Terminal velocity ≈ τ / damping = 5.0 / 0.5 = 10 rad/s (average, oscillates
+/// due to gravity assist/resist).
+const DAMPING: f64 = 0.5;
+const OMEGA_TERMINAL: f64 = CTRL_TORQUE / DAMPING;
 
 #[derive(Resource, Default)]
 struct MotorValidation {
     max_force_error: f64,
     max_sensor_error: f64,
-    /// Samples collected in the first 0.1s for quadratic check
-    early_samples: Vec<(f64, f64)>, // (time, theta)
-    initial_accel: Option<f64>,
+    /// Average velocity in the 10–15s window (should be near terminal)
+    vel_sum: f64,
+    vel_count: u32,
+    /// Track that theta is monotonically increasing (continuous rotation)
+    prev_theta: f64,
+    theta_reversals: u32,
     reported: bool,
 }
 
@@ -208,7 +215,7 @@ fn motor_diagnostics(
     let time = data.time;
     let force_sensor = data.sensor_data(&model, 0)[0];
     let theta = data.sensor_data(&model, 1)[0];
-    let _vel = data.sensor_data(&model, 2)[0];
+    let vel = data.sensor_data(&model, 2)[0];
     let act_force = data.actuator_force[0];
 
     // Skip t=0 frame (actuator_force not yet computed before first step)
@@ -222,47 +229,34 @@ fn motor_diagnostics(
         val.max_force_error = force_err;
     }
 
-    // Check 4: sensor == data.actuator_force
+    // Check 2: sensor == data.actuator_force
     let sensor_err = (force_sensor - act_force).abs();
     if sensor_err > val.max_sensor_error {
         val.max_sensor_error = sensor_err;
     }
 
-    // Capture initial acceleration: use force / I_eff at the earliest available
-    // time. This avoids needing a specific time window (Bevy startup is variable).
-    if val.initial_accel.is_none() && time < 1.0 {
-        // α = (τ - m*g*d*sin(θ)) / I_eff
-        let gravity_torque = 1.0 * 9.81 * 0.25 * theta.sin();
-        let measured_accel = (act_force - gravity_torque) / I_EFF;
-        val.initial_accel = Some(measured_accel);
+    // Check 3: average velocity near terminal in the 10–15s window
+    if time > 10.0 && time < 15.0 {
+        val.vel_sum += vel;
+        val.vel_count += 1;
     }
 
-    // Collect early samples for quadratic check (first 0.1s)
-    if time <= 0.1 {
-        // Sample every ~10ms
-        let last_t = val.early_samples.last().map_or(0.0, |s| s.0);
-        if time - last_t >= 0.009 {
-            val.early_samples.push((time, theta));
-        }
+    // Check 4: continuous rotation (theta always increasing)
+    if val.prev_theta != 0.0 && theta < val.prev_theta - 0.01 {
+        val.theta_reversals += 1;
     }
+    val.prev_theta = theta;
 
     // Final report
     if harness.reported() && !val.reported {
         val.reported = true;
 
-        // Quadratic check: worst-case error in first 0.1s
-        let mut max_quad_err_pct = 0.0_f64;
-        for &(t, th) in &val.early_samples {
-            let predicted = 0.5 * ALPHA_0 * t * t;
-            if predicted.abs() > 1e-6 {
-                let err_pct = ((th - predicted) / predicted).abs() * 100.0;
-                max_quad_err_pct = max_quad_err_pct.max(err_pct);
-            }
-        }
-
-        let accel_err_pct = val
-            .initial_accel
-            .map_or(100.0, |a| ((a - ALPHA_0) / ALPHA_0).abs() * 100.0);
+        let avg_vel = if val.vel_count > 0 {
+            val.vel_sum / f64::from(val.vel_count)
+        } else {
+            0.0
+        };
+        let vel_err_pct = ((avg_vel - OMEGA_TERMINAL) / OMEGA_TERMINAL).abs() * 100.0;
 
         let checks = vec![
             Check {
@@ -271,22 +265,21 @@ fn motor_diagnostics(
                 detail: format!("max err={:.2e}", val.max_force_error),
             },
             Check {
-                name: "Initial accel ≈ τ/I",
-                pass: accel_err_pct < 3.0,
-                detail: format!(
-                    "α={:.2} (expect {ALPHA_0:.2}), err={accel_err_pct:.2}%",
-                    val.initial_accel.unwrap_or(0.0)
-                ),
-            },
-            Check {
-                name: "Quadratic θ (0–0.1s)",
-                pass: max_quad_err_pct < 3.0,
-                detail: format!("max err={max_quad_err_pct:.2}%"),
-            },
-            Check {
                 name: "Sensor == actuator_force",
                 pass: val.max_sensor_error < 1e-15,
                 detail: format!("max err={:.2e}", val.max_sensor_error),
+            },
+            Check {
+                name: "Terminal velocity",
+                pass: vel_err_pct < 15.0,
+                detail: format!(
+                    "avg ω={avg_vel:.2} (expect ~{OMEGA_TERMINAL:.1}), err={vel_err_pct:.1}%"
+                ),
+            },
+            Check {
+                name: "Continuous rotation",
+                pass: val.theta_reversals == 0,
+                detail: format!("{} reversals", val.theta_reversals),
             },
         ];
         let _ = print_report("Motor Actuator (t=15s)", &checks);
