@@ -2543,6 +2543,106 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-actuator-activation-filter"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-actuator-cylinder"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-actuator-damper"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-actuator-gear-and-limits"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-actuator-integrator"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-actuator-motor"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-actuator-position-servo"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-actuator-site-transmission"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-actuator-slider-crank"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-actuator-velocity-servo"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-ball-joint-cone-limit"
 version = "0.7.0"
 dependencies = [

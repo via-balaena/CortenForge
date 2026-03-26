@@ -47,6 +47,16 @@ members = [
     "examples/fundamentals/sim-cpu/sensors/touch",
     "examples/fundamentals/sim-cpu/sensors/actuator-force",
     "examples/fundamentals/sim-cpu/sensors/geom-distance",
+    "examples/fundamentals/sim-cpu/actuators/motor",
+    "examples/fundamentals/sim-cpu/actuators/position-servo",
+    "examples/fundamentals/sim-cpu/actuators/velocity-servo",
+    "examples/fundamentals/sim-cpu/actuators/damper",
+    "examples/fundamentals/sim-cpu/actuators/cylinder",
+    "examples/fundamentals/sim-cpu/actuators/integrator",
+    "examples/fundamentals/sim-cpu/actuators/activation-filter",
+    "examples/fundamentals/sim-cpu/actuators/site-transmission",
+    "examples/fundamentals/sim-cpu/actuators/gear-and-limits",
+    "examples/fundamentals/sim-cpu/actuators/slider-crank",
     "examples/fundamentals/sim-cpu/multi-scene-test",
 
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
