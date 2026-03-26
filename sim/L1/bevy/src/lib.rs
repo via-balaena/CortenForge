@@ -75,6 +75,7 @@ pub mod gizmos;
 pub mod materials;
 pub mod mesh;
 pub mod model_data;
+pub mod multi_scene;
 pub mod plugin;
 pub mod resources;
 pub mod scene;
@@ -105,6 +106,10 @@ pub mod prelude {
         ModelGeomIndex, ModelSiteIndex, PhysicsAccumulator, PhysicsData, PhysicsModel,
         spawn_model_geoms, spawn_model_geoms_with, step_model_data, step_physics_realtime,
         sync_geom_transforms, sync_model_data_to_bevy,
+    };
+    pub use crate::multi_scene::{
+        MultiScenePlugin, PhysicsScene, PhysicsSceneId, PhysicsScenes, spawn_scene_geoms,
+        spawn_scene_geoms_with, step_scenes_lockstep, sync_scene_geom_transforms,
     };
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{
