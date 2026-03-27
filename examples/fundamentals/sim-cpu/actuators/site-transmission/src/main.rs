@@ -1,19 +1,22 @@
-//! Site Transmission — Configuration-Dependent Moments
+//! Site Transmission — Configuration-Dependent Moment Arms
 //!
-//! A 2-DOF arm (shoulder + elbow) with a site-based wrench actuator applied at
-//! the hand tip. As the elbow bends, the moment arm of the site force on the
-//! shoulder changes, while the elbow moment remains constant.
+//! A 2-DOF arm (shoulder + elbow) with a site-based wrench actuator at the
+//! hand tip. The actuator applies a force in the tip's local X direction.
+//! The effective torque on the shoulder depends on the arm's configuration:
 //!
-//! Analytical moments (site force = 10 N in world X, upper arm L1=0.3, forearm L2=0.2):
-//! - q2=0:    shoulder moment = -0.500, elbow moment = -0.200
-//! - q2=45deg: shoulder moment = -0.412, elbow moment = -0.200
-//! - q2=90deg: shoulder moment = -0.200, elbow moment = -0.200
+//! - Elbow straight (0 deg): full arm is the lever — large shoulder torque
+//! - Elbow bent (90 deg): only the upper arm contributes — smaller shoulder torque
+//! - Elbow torque: always constant at L2 * force, regardless of configuration
+//!
+//! A passive spring on the shoulder converts this varying torque into visible
+//! deflection. The shoulder angle "breathes" as the elbow oscillates — same
+//! force, different lever, different torque.
 //!
 //! Validates:
 //! - Actuator length == 0 (site transmission has no length)
-//! - Shoulder moment varies with configuration (~-0.5 at q2=0, ~-0.2 at q2=pi/2)
-//! - Elbow moment stays constant (~-0.2) regardless of configuration
-//! - Configuration dependence: shoulder moment actually changed between samples
+//! - Shoulder moment arm varies with configuration
+//! - Elbow moment arm stays constant (~0.200)
+//! - Configuration dependence: shoulder moment arm actually changed
 //!
 //! Run with: `cargo run -p example-actuator-site-transmission --release`
 
@@ -44,7 +47,7 @@ use sim_core::validation::{Check, print_report};
 const MJCF: &str = r#"
 <mujoco model="site-transmission">
   <compiler angle="radian"/>
-  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
+  <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
 
   <default>
     <geom contype="0" conaffinity="0"/>
@@ -52,7 +55,8 @@ const MJCF: &str = r#"
 
   <worldbody>
     <body name="upper_arm" pos="0 0 0">
-      <joint name="shoulder" type="hinge" axis="0 1 0" armature="0.01" damping="5"/>
+      <joint name="shoulder" type="hinge" axis="0 1 0"
+             stiffness="10" damping="1.5" armature="0.01"/>
       <inertial pos="0 0 -0.15" mass="1.0" diaginertia="0.01 0.01 0.01"/>
       <geom name="upper_rod" type="capsule" size="0.02"
             fromto="0 0 0  0 0 -0.3" rgba="0.48 0.48 0.50 1"/>
@@ -70,7 +74,7 @@ const MJCF: &str = r#"
 
   <actuator>
     <position name="elbow_servo" joint="elbow" kp="20" dampratio="1"/>
-    <general name="site_force" site="tip_site" gear="1 0 0 0 0 0" gainprm="1"/>
+    <general name="site_force" site="tip_site" gear="1 0 0 0 0 0" gainprm="10"/>
   </actuator>
 
   <sensor>
@@ -84,16 +88,19 @@ const MJCF: &str = r#"
 /// Site force actuator index (elbow servo is 0, site force is 1).
 const SITE_ACT_IDX: usize = 1;
 
-/// Ramp duration: elbow sweeps from 0 to pi/2 over this many seconds, then holds.
-const RAMP_SECONDS: f64 = 5.0;
+/// Elbow oscillation period in seconds.
+const PERIOD: f64 = 10.0;
+
+/// Site force magnitude: gain * ctrl = 10 N.
+const FORCE_N: f64 = 10.0;
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: Site Transmission ===");
     println!("  2-DOF arm with site-based wrench actuator at hand tip");
-    println!("  Elbow sweeps 0 -> pi/2 over {RAMP_SECONDS}s, site force ctrl=1.0 (gain=10)");
-    println!("  Shoulder moment changes with configuration; elbow moment stays constant");
+    println!("  Elbow oscillates 0 <-> 90 deg (period {PERIOD}s), site force = {FORCE_N} N");
+    println!("  Shoulder deflection changes with configuration — same force, different lever");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -110,13 +117,22 @@ fn main() {
         .init_resource::<SiteTransmissionValidation>()
         .insert_resource(
             ValidationHarness::new()
-                .report_at(15.0)
+                .report_at(17.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let site_frc = d.sensor_data(m, 0)[0];
                     let q_shoulder = d.sensor_data(m, 1)[0];
                     let q_elbow = d.sensor_data(m, 2)[0];
-                    format!("site_frc={site_frc:.3}  q_sh={q_shoulder:.4}  q_el={q_elbow:.4}")
+                    let sh_moment =
+                        if d.actuator_moment.len() > 1 && !d.actuator_moment[1].is_empty() {
+                            d.actuator_moment[1][0]
+                        } else {
+                            0.0
+                        };
+                    format!(
+                        "q_sh={:+6.1} deg  q_el={:5.1} deg  arm_sh={sh_moment:.4}",
+                        q_shoulder.to_degrees(),
+                        q_elbow.to_degrees(),
+                    )
                 }),
         )
         .add_systems(Startup, setup)
@@ -165,12 +181,13 @@ fn setup(
         ],
     );
 
+    // Multi-body arm: angled view to see both links
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, -0.2, -0.15),
+        Vec3::new(0.0, -0.2, 0.0),
         1.8,
-        std::f32::consts::FRAC_PI_4,
-        0.35,
+        std::f32::consts::FRAC_PI_3,
+        0.15,
     );
 
     spawn_physics_hud(&mut commands);
@@ -187,12 +204,9 @@ fn apply_ctrl(mut data: ResMut<PhysicsData>) {
         return;
     }
 
-    // Actuator 0: elbow position servo — ramp from 0 to pi/2 over RAMP_SECONDS, then hold
-    let target_elbow = if time < RAMP_SECONDS {
-        std::f64::consts::FRAC_PI_2 * (time / RAMP_SECONDS)
-    } else {
-        std::f64::consts::FRAC_PI_2
-    };
+    // Actuator 0: elbow servo — oscillate 0 to pi/2 with period PERIOD
+    let target_elbow =
+        std::f64::consts::FRAC_PI_4 * (1.0 - (2.0 * std::f64::consts::PI * time / PERIOD).cos());
     data.ctrl[0] = target_elbow;
 
     // Actuator 1: site force — constant ctrl = 1.0
@@ -205,11 +219,9 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Site Transmission");
 
-    let site_frc = data.sensor_data(&model, 0)[0];
     let q_shoulder = data.sensor_data(&model, 1)[0];
     let q_elbow = data.sensor_data(&model, 2)[0];
 
-    // Read moment arms for the site force actuator (index 1)
     let (shoulder_moment, elbow_moment) = if data.actuator_moment.len() > SITE_ACT_IDX
         && data.actuator_moment[SITE_ACT_IDX].len() >= 2
     {
@@ -221,36 +233,28 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
         (0.0, 0.0)
     };
 
-    let target_elbow = if data.time < RAMP_SECONDS {
-        std::f64::consts::FRAC_PI_2 * (data.time / RAMP_SECONDS)
-    } else {
-        std::f64::consts::FRAC_PI_2
-    };
-
-    hud.scalar("ctrl_elbow", target_elbow, 4);
-    hud.scalar("ctrl_site", 1.0, 1);
-    hud.scalar("site_force", site_frc, 4);
-    hud.scalar("shoulder_moment", shoulder_moment, 4);
-    hud.scalar("elbow_moment", elbow_moment, 4);
-    hud.scalar("q_elbow", q_elbow, 4);
-    hud.scalar("q_shoulder", q_shoulder, 4);
-    hud.scalar("time", data.time, 2);
+    hud.scalar("site force (N)", FORCE_N, 1);
+    hud.scalar("moment arm -> shoulder (varies)", shoulder_moment, 4);
+    hud.scalar("moment arm -> elbow (constant)", elbow_moment, 4);
+    hud.scalar("shoulder angle (deg)", q_shoulder.to_degrees(), 1);
+    hud.scalar("elbow angle (deg)", q_elbow.to_degrees(), 1);
+    hud.scalar("time (s)", data.time, 2);
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
 #[derive(Resource, Default)]
 struct SiteTransmissionValidation {
-    /// Max |actuator_length[SITE_ACT_IDX]| observed
+    /// Max |actuator_length[SITE_ACT_IDX]| observed.
     max_length: f64,
-    /// Shoulder moment sampled early (q2 near 0)
-    shoulder_moment_early: Option<f64>,
-    /// Elbow moment sampled early (q2 near 0)
-    elbow_moment_early: Option<f64>,
-    /// Shoulder moment sampled late (q2 near pi/2)
-    shoulder_moment_late: Option<f64>,
-    /// Elbow moment sampled late (q2 near pi/2)
-    elbow_moment_late: Option<f64>,
+    /// Shoulder moment arm sampled when elbow is near straight (q2 ~ 0).
+    shoulder_moment_straight: Option<f64>,
+    /// Elbow moment arm sampled when elbow is near straight.
+    elbow_moment_straight: Option<f64>,
+    /// Shoulder moment arm sampled when elbow is near 90 deg.
+    shoulder_moment_bent: Option<f64>,
+    /// Elbow moment arm sampled when elbow is near 90 deg.
+    elbow_moment_bent: Option<f64>,
     reported: bool,
 }
 
@@ -262,7 +266,6 @@ fn site_diagnostics(
 ) {
     let time = data.time;
 
-    // Skip t=0 frame
     if time < 1e-6 {
         return;
     }
@@ -280,17 +283,16 @@ fn site_diagnostics(
         let sh_moment = data.actuator_moment[SITE_ACT_IDX][0];
         let el_moment = data.actuator_moment[SITE_ACT_IDX][1];
 
-        // Sample early: t in [0.5, 1.5] — elbow near 0
-        // Use wide window for Bevy frame timing variability
-        if val.shoulder_moment_early.is_none() && (0.5..1.5).contains(&time) {
-            val.shoulder_moment_early = Some(sh_moment);
-            val.elbow_moment_early = Some(el_moment);
+        // Sample when elbow is near straight (second cycle, t ~ 10s)
+        if val.shoulder_moment_straight.is_none() && (9.5..10.5).contains(&time) {
+            val.shoulder_moment_straight = Some(sh_moment);
+            val.elbow_moment_straight = Some(el_moment);
         }
 
-        // Sample late: t in [7.0, 9.0] — elbow near pi/2 (ramp finished at t=5)
-        if val.shoulder_moment_late.is_none() && (7.0..9.0).contains(&time) {
-            val.shoulder_moment_late = Some(sh_moment);
-            val.elbow_moment_late = Some(el_moment);
+        // Sample when elbow is near 90 deg (t ~ 15s)
+        if val.shoulder_moment_bent.is_none() && (14.5..15.5).contains(&time) {
+            val.shoulder_moment_bent = Some(sh_moment);
+            val.elbow_moment_bent = Some(el_moment);
         }
     }
 
@@ -298,27 +300,25 @@ fn site_diagnostics(
     if harness.reported() && !val.reported {
         val.reported = true;
 
-        let sh_early = val.shoulder_moment_early.unwrap_or(f64::NAN);
-        let el_early = val.elbow_moment_early.unwrap_or(f64::NAN);
-        let sh_late = val.shoulder_moment_late.unwrap_or(f64::NAN);
-        let el_late = val.elbow_moment_late.unwrap_or(f64::NAN);
+        let sh_straight = val.shoulder_moment_straight.unwrap_or(f64::NAN);
+        let el_straight = val.elbow_moment_straight.unwrap_or(f64::NAN);
+        let sh_bent = val.shoulder_moment_bent.unwrap_or(f64::NAN);
+        let el_bent = val.elbow_moment_bent.unwrap_or(f64::NAN);
 
         // Check 1: actuator_length == 0
         let length_ok = val.max_length < 1e-12;
 
-        // Check 2: shoulder moment varies
-        // At q2~0: expect ~-0.500, at q2~pi/2: expect ~-0.200
-        let sh_early_err = ((sh_early - (-0.5)) / (-0.5)).abs() * 100.0;
-        let sh_late_err = ((sh_late - (-0.2)) / (-0.2)).abs() * 100.0;
-        let shoulder_varies_ok = sh_early_err < 10.0 && sh_late_err < 10.0;
+        // Check 2: shoulder moment arm varies with configuration
+        // At straight: larger magnitude; at bent: smaller magnitude
+        let shoulder_varies_ok = sh_straight.abs() > 0.25 && sh_bent.abs() < sh_straight.abs();
 
-        // Check 3: elbow moment constant ~-0.200
-        let el_early_err = ((el_early - (-0.2)) / (-0.2)).abs() * 100.0;
-        let el_late_err = ((el_late - (-0.2)) / (-0.2)).abs() * 100.0;
-        let elbow_constant_ok = el_early_err < 5.0 && el_late_err < 5.0;
+        // Check 3: elbow moment arm constant (stays near 0.200 in magnitude)
+        let el_straight_err = (el_straight.abs() - 0.2).abs() / 0.2 * 100.0;
+        let el_bent_err = (el_bent.abs() - 0.2).abs() / 0.2 * 100.0;
+        let elbow_constant_ok = el_straight_err < 10.0 && el_bent_err < 10.0;
 
-        // Check 4: config-dependent — shoulder moment actually changed
-        let moment_delta = (sh_early - sh_late).abs();
+        // Check 4: configuration dependence — moment arm changed significantly
+        let moment_delta = (sh_straight - sh_bent).abs();
         let config_dependent_ok = moment_delta > 0.05;
 
         let checks = vec![
@@ -328,29 +328,29 @@ fn site_diagnostics(
                 detail: format!("max |length| = {:.2e}", val.max_length),
             },
             Check {
-                name: "Shoulder moment varies",
+                name: "Shoulder moment arm varies",
                 pass: shoulder_varies_ok,
                 detail: format!(
-                    "early={sh_early:.4} (expect -0.500, err={sh_early_err:.1}%), \
-                     late={sh_late:.4} (expect -0.200, err={sh_late_err:.1}%)"
+                    "straight={sh_straight:.4}, bent={sh_bent:.4} \
+                     (|straight| > 0.25 and > |bent|)"
                 ),
             },
             Check {
-                name: "Elbow moment constant",
+                name: "Elbow moment arm constant",
                 pass: elbow_constant_ok,
                 detail: format!(
-                    "early={el_early:.4} (err={el_early_err:.1}%), \
-                     late={el_late:.4} (err={el_late_err:.1}%)"
+                    "straight={el_straight:.4} (err={el_straight_err:.1}%), \
+                     bent={el_bent:.4} (err={el_bent_err:.1}%)"
                 ),
             },
             Check {
                 name: "Config-dependent",
                 pass: config_dependent_ok,
                 detail: format!(
-                    "|delta| = {moment_delta:.4} (early={sh_early:.4}, late={sh_late:.4})"
+                    "|delta| = {moment_delta:.4} (straight={sh_straight:.4}, bent={sh_bent:.4})"
                 ),
             },
         ];
-        let _ = print_report("Site Transmission (t=15s)", &checks);
+        let _ = print_report("Site Transmission (t=17s)", &checks);
     }
 }
