@@ -577,9 +577,14 @@ the single-support-point contact generation with:
 
 **Post-processing:**
 - Remove contacts outside either box (MuJoCo's `mju_outsideBox` with 1%
-  tolerance)
-- Deduplicate contacts within `1e-6` distance
-- Cap at `mjMAXCONPAIR`
+  tolerance) — **not implemented**: S-H clipping already constrains the
+  polygon to the reference face bounds; float noise is handled by dedup +
+  margin filter. No current test case triggers an out-of-box contact.
+- Deduplicate contacts within `1e-6` distance — **implemented**.
+- Cap at `mjMAXCONPAIR` — **not implemented**: max S-H output for a quad
+  clipped against 4 half-planes is 8 vertices, well below the 50 cap.
+  No multi-contact path in the engine currently produces unbounded contacts.
+  Add if a future path breaks that invariant.
 
 **Algorithm (as implemented):**
 
