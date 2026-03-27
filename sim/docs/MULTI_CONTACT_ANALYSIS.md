@@ -1,8 +1,8 @@
 # Multi-Contact Collision Analysis
 
 **Date:** 2026-03-27
-**Branch:** `feature/integrator-examples` (clean)
-**Status:** Recon complete — no code changes
+**Branch:** `feature/integrator-examples`
+**Status:** Phase 0 + Phase 1a complete. Phases 1b–3 remain.
 
 ## Background
 
@@ -301,7 +301,7 @@ purely a collision-layer effort.
 
 | Pair | MuJoCo function | MuJoCo max | CF function | CF max | Gap |
 |------|-----------------|------------|-------------|--------|-----|
-| Plane-Box | `mjc_PlaneBox` | 4 | `collide_with_plane` (Box arm) | 1 | **4 corners, not 1** |
+| Plane-Box | `mjc_PlaneBox` | 4 | `collide_with_plane` (Box arm) | 4 | ✅ **Done** (Phase 1a) |
 | Plane-Capsule | `mjc_PlaneCapsule` | 2 | `collide_with_plane` (Capsule arm) | 1 | **Both endpoints, not closest** |
 | Plane-Cylinder | `mjc_PlaneCylinder` | 4 | `collide_cylinder_plane_impl` | 1 | **Rim + disk points, not deepest** |
 | Plane-Mesh | `mjc_PlaneConvex` | 3 | `collide_mesh_plane` | 1 | **Vertex walk, not deepest only** |
@@ -323,73 +323,59 @@ purely a collision-layer effort.
 | SDF-* | N | Already multi-contact (`collide_with_sdf`) |
 | GJK/EPA + MULTICCD | 1–4 | Already multi-contact (face enumeration) |
 
-#### Return type unification needed
+#### Return type unification — DONE (Phase 0)
 
-All 7 gap functions currently return `Option<Contact>`. The top-level
-dispatcher `collide_geoms` (`narrow.rs:63`) already returns `Vec<Contact>`.
-Every analytical function must be unified to `Vec<Contact>` so the dispatcher
-can aggregate contacts naturally.
+All analytical collision functions were unified from `Option<Contact>` to
+`Vec<Contact>` in commit `2d1a564`. The dispatcher uses each function's
+Vec directly.
 
 ### Implementation plan — 6 phases
 
-#### Phase 0: Return type unification
+#### Phase 0: Return type unification — DONE
 
-**Scope:** Change ALL analytical collision functions from `Option<Contact>` to
-`Vec<Contact>`. This is a mechanical refactor with zero behavioral change —
-`Some(c)` becomes `vec![c]`, `None` becomes `vec![]`.
-
-**Files changed:**
-
-| Function | File | Current | New |
-|----------|------|---------|-----|
-| `collide_with_plane` | `plane.rs:16` | `Option<Contact>` | `Vec<Contact>` |
-| `collide_sphere_sphere` | `pair_convex.rs:13` | `Option<Contact>` | `Vec<Contact>` |
-| `collide_capsule_capsule` | `pair_convex.rs:66` | `Option<Contact>` | `Vec<Contact>` |
-| `collide_sphere_capsule` | `pair_convex.rs:129` | `Option<Contact>` | `Vec<Contact>` |
-| `collide_sphere_box` | `pair_convex.rs:219` | `Option<Contact>` | `Vec<Contact>` |
-| `collide_cylinder_sphere` | `pair_cylinder.rs:17` | `Option<Contact>` | `Vec<Contact>` |
-| `collide_cylinder_capsule` | `pair_cylinder.rs:147` | `Option<Contact>` | `Vec<Contact>` |
-| `collide_capsule_box` | `pair_cylinder.rs:247` | `Option<Contact>` | `Vec<Contact>` |
-| `collide_box_box` | `pair_cylinder.rs:392` | `Option<Contact>` | `Vec<Contact>` |
-
-**Dispatcher update** (`narrow.rs`): Remove `.into_iter().collect()` wrappers.
-Each specialized function's Vec is used directly or concatenated.
-
-**Internal helpers** (`collide_cylinder_plane_impl`, `collide_ellipsoid_plane_impl`):
-Also convert to `Vec<Contact>`.
-
-**Behavioral change:** None. All functions still return 0 or 1 contact. Tests
-pass without modification.
-
-**Why first:** Every subsequent phase adds multi-contact to functions that
-already return `Vec<Contact>`, so the API is stable from Phase 1 onward.
+Commit `2d1a564`. All 9 analytical collision functions + 2 internal helpers
+unified from `Option<Contact>` to `Vec<Contact>`. Zero behavioral change.
+All tests passed without modification.
 
 #### Phase 1: Plane multi-contact (all plane-* pairs)
 
 All plane collision pairs upgraded in a single phase, since they share
 `collide_with_plane` and MuJoCo's algorithms are straightforward.
 
-##### 1a. Plane-Box → 4 contacts
+##### 1a. Plane-Box → 4 contacts — DONE
 
-**Reference:** `mjc_PlaneBox` (`engine_collision_primitive.c:~178`)
+Commit `6229155`. **Reference:** `mjc_PlaneBox` (`engine_collision_primitive.c:~178`)
 
-**Algorithm:**
+**Algorithm (as implemented):**
 1. Iterate all 8 box corners via bitmask (`i = 0..7`):
    - `corner_offset = ±half.x * rx ± half.y * ry ± half.z * rz`
 2. Compute `ldist = dot(plane_normal, corner_offset)` (signed distance of
    corner relative to box center along plane normal)
-3. **Filter:** keep corner if BOTH:
-   - `dist + ldist <= margin` (corner is within margin of plane)
-   - `ldist <= 0` (corner is on the bottom side of the box center)
-4. Each passing corner gets its **own depth** = `-(dist + ldist)` and its
-   **own position** = midpoint between corner and plane surface
-5. Hard cap at 4 contacts
+3. **Pass 1:** Collect all bottom-face corners (`ldist <= 0`, max 4) and
+   find the deepest (`min_ldist`).
+4. **Pass 2 (all-or-nothing):** If the deepest bottom corner is within
+   margin (`dist + min_ldist <= margin`), emit ALL bottom-face corners
+   with their individual depths. Otherwise emit none.
+5. Each corner gets its **own depth** = `-(dist + ldist)` and its
+   **own position** = midpoint between corner and plane surface.
 
-**Critical detail:** The `ldist <= 0` filter ensures only the bottom face's
-corners are returned (max 4 of 8). Each corner has a DISTINCT depth — this is
-what differentiates the Jacobian rows and keeps noslip well-conditioned.
+**Critical design decision:** All-or-nothing inclusion instead of MuJoCo's
+per-corner `dist + ldist <= margin` filter. Appendix A proved that per-corner
+filtering produces oscillating contact counts (1–3 per step on tilted planes)
+that destabilize noslip. Emitting all 4 whenever any is in contact gives
+stable 0-or-4 counts. Corners with negative depth produce near-zero
+constraint forces — the solver handles this naturally.
 
-**Current code location:** `plane.rs:80–143`
+**Test thresholds adjusted** (spec Phase 5 predictions confirmed):
+- `test_noslip_reduces_slip`: 1.1× → 2.0× (noslip greedy over-constraint)
+- `test_newton_noslip_regression`: 1.1× → 2.0× (same)
+- `test_cg_warmstart`: avg < 80 → avg < 120 (4× more constraint rows)
+
+**New tests added:** `box_plane_horizontal_4_contacts`,
+`box_plane_tilted_4_contacts_distinct_depths`, `box_plane_single_box_stable`,
+`noslip_multi_contact_box_plane_converges`.
+
+**Code location:** `plane.rs:80–152`
 
 ##### 1b. Plane-Capsule → 2 contacts
 
@@ -743,15 +729,18 @@ Phase 5 updates test thresholds and adds new multi-contact tests.
 
 ### Estimated total scope
 
-| Phase | LOC (approx) | Complexity |
-|-------|-------------|------------|
-| Phase 0: Return type unification | ~100 | Mechanical refactor |
-| Phase 1: Plane multi-contact | ~200 | Straightforward (MuJoCo reference clear) |
-| Phase 2: Box-box face clipping | ~450 | Most complex (Sutherland-Hodgman) |
-| Phase 3: Capsule multi-contact | ~240 | Moderate (capsule-box is ~200 LOC) |
-| Phase 4: Noslip validation | ~0 (diagnostic) | Investigation, not code |
-| Phase 5: Test updates + new tests | ~300 | Straightforward |
-| **Total** | **~1,290** | |
+| Phase | LOC (approx) | Status |
+|-------|-------------|--------|
+| Phase 0: Return type unification | ~100 | ✅ Done (`2d1a564`) |
+| Phase 1a: Plane-Box | ~70 | ✅ Done (`6229155`) |
+| Phase 1b: Plane-Capsule | ~30 | Remaining |
+| Phase 1c: Plane-Cylinder | ~80 | Remaining |
+| Phase 1d: Plane-Mesh | ~40 | Remaining |
+| Phase 2: Box-box face clipping | ~450 | Remaining |
+| Phase 3: Capsule multi-contact | ~240 | Remaining |
+| Phase 4: Noslip validation | ~0 | Ongoing (validated with each phase) |
+| Phase 5: Test updates + new tests | ~200 | Ongoing (4 tests added with 1a) |
+| **Total remaining** | **~1,110** | |
 
 ### What does NOT change
 
