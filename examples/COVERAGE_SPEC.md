@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-03-26)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf → 19 examples (8 joint types, 9 sensors, 2 legacy)
+- sim-core + sim-mjcf → 29 examples (8 joint types, 9 sensors, 10 actuators, 2 legacy)
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -33,11 +33,11 @@ integration tests — they find bugs that unit tests miss.
 - **Hfield (height field terrain) → ZERO examples**
 - Sdf → extensively covered
 
-### Actuator System (mostly uncovered)
-- Transmission: Joint ✓, Tendon ✓, **Site ✗, Body ✗, SliderCrank ✗, JointInParent ✗**
-- Dynamics: None ✓, **Filter ✗, FilterExact ✗, Integrator ✗, Muscle ✗, HillMuscle ✗, User ✗**
-- Gain: Fixed ✓, **Affine ✗, Muscle ✗, HillMuscle ✗, User ✗**
-- Bias: None ✓, **Affine ✗, Muscle ✗, HillMuscle ✗, User ✗**
+### Actuator System (10 examples — standard actuators covered, muscles remaining)
+- Transmission: Joint ✓, Tendon ✓, Site ✓, SliderCrank ✓, **Body ✗, JointInParent ✗**
+- Dynamics: None ✓, Filter ✓, Integrator ✓, **Muscle ✗, HillMuscle ✗, User ✗**
+- Gain: Fixed ✓, Affine ✓, **Muscle ✗, HillMuscle ✗, User ✗**
+- Bias: None ✓, Affine ✓, **Muscle ✗, HillMuscle ✗, User ✗**
 
 ### Sensors (40+ types, 15 covered in 9 examples)
 - Position: JointPos ✓, FramePos ✓, FrameQuat ✓, SubtreeCom ✓, Clock ✓
@@ -61,7 +61,7 @@ integration tests — they find bugs that unit tests miss.
 - Newton ✓ (default)
 - **PGS ✗, CG ✗** (zero examples)
 - Euler ✓ (default)
-- **RK4 ✗, Implicit ✗, ImplicitFast ✗, ImplicitSpringDamper ✗**
+- RK4 ✓ (used by all actuator examples), **Implicit ✗, ImplicitFast ✗, ImplicitSpringDamper ✗**
 
 ### Constraint System
 - Contact ✓
@@ -103,7 +103,7 @@ fundamentals/
     slide-joint/            # DONE — horizontal + vertical
     ball-joint/             # DONE — spherical, conical, cone-limit (4 examples)
     sensors/                # DONE — 9 examples, 15+ sensor types, GJK bug fixed
-    actuators/              # TODO — motor types, dynamics, transmission
+    actuators/              # DONE — 10 examples: motor, servos, damper, filter, cylinder, integrator, gear, site, slider-crank
     muscles/                # TODO — Hill muscle model, activation dynamics
     solvers/                # TODO — PGS vs CG vs Newton comparison
     integrators/            # TODO — Euler vs RK4 vs Implicit
