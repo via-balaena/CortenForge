@@ -91,7 +91,8 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let com = d.sensor_data(m, 0);
+                    let com_id = m.sensor_id("com").unwrap_or(0);
+                    let com = d.sensor_data(m, com_id);
                     format!("com=({:+.4},{:+.4},{:+.4})", com[0], com[1], com[2])
                 }),
         )
@@ -124,7 +125,8 @@ fn setup(
     data.qpos[model.jnt_qpos_adr[1]] = std::f64::consts::FRAC_PI_4;
     let _ = data.forward(&model);
 
-    let com = data.sensor_data(&model, 0);
+    let com_id = model.sensor_id("com").unwrap_or(0);
+    let com = data.sensor_data(&model, com_id);
     println!("  t=0 com: ({:.4}, {:.4}, {:.4})", com[0], com[1], com[2]);
     println!(
         "  Model: {} bodies, {} joints, {} sensors\n",
@@ -168,7 +170,8 @@ fn setup(
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("SubtreeCom");
-    let com = data.sensor_data(&model, 0);
+    let com_id = model.sensor_id("com").unwrap_or(0);
+    let com = data.sensor_data(&model, com_id);
     hud.vec3("com", com, 4);
 }
 
@@ -193,7 +196,8 @@ fn sensor_diagnostics(
     let body_id = model.sensor_objid[0];
 
     // Pipeline check: sensor == subtree_com
-    let com_sensor = data.sensor_data(&model, 0);
+    let com_id = model.sensor_id("com").unwrap_or(0);
+    let com_sensor = data.sensor_data(&model, com_id);
     let com_state = &data.subtree_com[body_id];
     let err = ((com_sensor[0] - com_state.x).powi(2)
         + (com_sensor[1] - com_state.y).powi(2)

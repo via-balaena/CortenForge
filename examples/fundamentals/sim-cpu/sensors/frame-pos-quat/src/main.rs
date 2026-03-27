@@ -112,7 +112,8 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let pos = d.sensor_data(m, 0);
+                    let pos_id = m.sensor_id("tip_pos").unwrap_or(0);
+                    let pos = d.sensor_data(m, pos_id);
                     let r_xy = pos[0].hypot(pos[1]);
                     let energy = d.energy_kinetic + d.energy_potential;
                     format!(
@@ -166,7 +167,8 @@ fn setup(
     let _ = data.forward(&model);
 
     // Analytical t=0: tilt θ about X maps (0,0,-L) → (0, L·sin(θ), -L·cos(θ))
-    let pos = data.sensor_data(&model, 0);
+    let pos_id = model.sensor_id("tip_pos").unwrap_or(0);
+    let pos = data.sensor_data(&model, pos_id);
     let expected_y = L * TILT.sin();
     let expected_z = -L * TILT.cos();
     println!(
@@ -219,8 +221,10 @@ fn setup(
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("FramePos + FrameQuat");
-    let pos = data.sensor_data(&model, 0);
-    let quat = data.sensor_data(&model, 1);
+    let pos_id = model.sensor_id("tip_pos").unwrap_or(0);
+    let quat_id = model.sensor_id("tip_quat").unwrap_or(0);
+    let pos = data.sensor_data(&model, pos_id);
+    let quat = data.sensor_data(&model, quat_id);
     let r_xy = pos[0].hypot(pos[1]);
     hud.vec3("pos", pos, 4);
     hud.quat("quat", quat);
@@ -258,7 +262,8 @@ fn sensor_diagnostics(
     let site_id = model.sensor_objid[0];
 
     // FramePos pipeline check
-    let pos_sensor = data.sensor_data(&model, 0);
+    let pos_id = model.sensor_id("tip_pos").unwrap_or(0);
+    let pos_sensor = data.sensor_data(&model, pos_id);
     let pos_state = &data.site_xpos[site_id];
     let pos_err = ((pos_sensor[0] - pos_state.x).powi(2)
         + (pos_sensor[1] - pos_state.y).powi(2)
@@ -269,7 +274,8 @@ fn sensor_diagnostics(
     }
 
     // FrameQuat rotation-distance check
-    let quat_sensor = data.sensor_data(&model, 1);
+    let quat_id = model.sensor_id("tip_quat").unwrap_or(0);
+    let quat_sensor = data.sensor_data(&model, quat_id);
     let q_data = &data.site_xquat[site_id];
     let quat_data = [q_data.w, q_data.i, q_data.j, q_data.k];
     let rot_err = quat_rotation_distance(quat_sensor, &quat_data);

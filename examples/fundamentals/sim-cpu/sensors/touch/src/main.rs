@@ -98,7 +98,7 @@ fn main() {
                 .report_at(15.0)
                 .print_every(0.5)
                 .display(|m, d| {
-                    let touch = d.sensor_data(m, 0)[0];
+                    let touch = d.sensor_scalar(m, "touch").unwrap_or(0.0);
                     let contact = if touch > 0.0 { "yes" } else { "no " };
                     format!(
                         "touch={touch:6.2} N  contact={contact}  expected={EXPECTED_FORCE:.2} N"
@@ -167,7 +167,7 @@ fn setup(
 
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
-    let touch = data.sensor_data(&model, 0)[0];
+    let touch = data.sensor_scalar(&model, "touch").unwrap_or(0.0);
     let phase = if touch > 0.0 { "CONTACT" } else { "FREE-FALL" };
     hud.section(&format!("Touch — {phase}"));
     hud.raw(String::new());
@@ -194,7 +194,7 @@ fn sensor_diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<SensorValidation>,
 ) {
-    let touch = data.sensor_data(&model, 0)[0];
+    let touch = data.sensor_scalar(&model, "touch").unwrap_or(0.0);
     let t = data.time;
 
     // Non-negativity every frame
