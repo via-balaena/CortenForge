@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-27
 **Branch:** `feature/integrator-examples`
-**Status:** Phases 0, 1a–1d, 2 complete. Phase 3 remains.
+**Status:** All phases complete (0, 1a–1d, 2, 3). Multi-contact foundation done.
 
 ## Background
 
@@ -306,8 +306,8 @@ purely a collision-layer effort.
 | Plane-Cylinder | `mjc_PlaneCylinder` | 4 | `collide_cylinder_plane_impl` | 4 | ✅ **Done** (Phase 1c) |
 | Plane-Mesh | `mjc_PlaneConvex` | 3 | `collide_mesh_plane` | 3 | ✅ **Done** (Phase 1d) |
 | Box-Box | `_boxbox` | ~8 | `collide_box_box` | ~8 | ✅ **Done** (Phase 2) |
-| Capsule-Box | `mjraw_CapsuleBox` | 2 | `collide_capsule_box` | 1 | **Both caps, not 5-point sample** |
-| Capsule-Capsule | `mjc_CapsuleCapsule` | 2 | `collide_capsule_capsule` | 1 | **Parallel case returns 2** |
+| Capsule-Box | `mjraw_CapsuleBox` | 2 | `collide_capsule_box` | 2 | ✅ **Done** (Phase 3b) |
+| Capsule-Capsule | `mjc_CapsuleCapsule` | 2 | `collide_capsule_capsule` | 2 | ✅ **Done** (Phase 3a) |
 
 #### Pairs already correct (NO GAP)
 
@@ -610,87 +610,49 @@ SAT phase preserved (15-axis test). Contact generation replaced:
 
 **Code location:** `pair_cylinder.rs:387–600`
 
-#### Phase 3: Capsule multi-contact
+#### Phase 3: Capsule multi-contact — DONE
 
-##### 3a. Capsule-Capsule parallel → 2 contacts
+##### 3a. Capsule-Capsule parallel → 2 contacts — DONE
 
 **Reference:** `mjc_CapsuleCapsule` parallel path
 
-**Algorithm:** When capsule axes are nearly parallel (dot product > threshold):
-1. Compute closest points on the two segments → gives 1 contact
-2. Additionally test all 4 endpoint-to-endpoint pairs (2 endpoints × 2
-   endpoints) and return the deepest penetrating endpoint pair
-3. Return 1–2 contacts
+**Algorithm (as implemented):**
+- If `|dot(axis1, axis2)| > 0.999` (nearly parallel): test both endpoints
+  of capsule 1 against capsule 2's segment as sphere-segment pairs. If
+  neither hits, fallback to capsule 2's endpoints against capsule 1.
+  Returns 0–2 contacts.
+- If not parallel: standard closest-points-on-segments → 1 contact.
 
-**Current code location:** `pair_convex.rs:66`. Currently returns 1 contact
-for all cases.
+**New tests:** `capsule_capsule_parallel_2_contacts`,
+`capsule_capsule_perpendicular_1_contact`.
 
-**Estimated size:** ~40 LOC additional.
+**Code location:** `pair_convex.rs:60–145`
 
-##### 3b. Capsule-Box → 2 contacts
+##### 3b. Capsule-Box → 2 contacts — DONE
 
 **Reference:** `mjraw_CapsuleBox` (`engine_collision_box.c:118–590`)
 
-**Algorithm (implementation-ready detail from MuJoCo source):**
+**MuJoCo's algorithm** uses a complex 4-phase feature classification
+(face test → 12-edge test → second contact search → sphere-box delegation).
 
-MuJoCo finds up to 2 contact points through a 4-phase algorithm:
+**Algorithm (as implemented):** Simplified approach following MuJoCo's key
+insight — delegate to sphere-box at multiple positions along the capsule:
 
-**Phase 1 — Face test (lines 179–208):**
-Transform capsule center and axis to box-local frame. Test whether either
-capsule endpoint projects inside a box face (i.e., at most 1 axis is
-clamped). Record face-type closest feature: `cltype = -3` (cap A on face)
-or `cltype = -1` (cap B on face), `clface` = which face axis (0/1/2).
+1. Test both endpoints (cap_a, cap_b) independently as sphere-box
+   (clamp sphere center to box surface, compute distance vs radius).
+2. Find the closest point on the capsule segment to the box via 5-point
+   sampling + refinement (catches edge/face contacts where neither
+   endpoint is closest).
+3. Emit all penetrating contacts with 1mm dedup.
 
-**Phase 2 — Edge test (lines 212–305):**
-For each of the 12 box edges, compute the closest point pair between the
-capsule segment and the edge segment via a 2×2 linear system (line-line
-closest point). Clamp both parameters to `[-1, 1]`. Track the globally
-closest configuration, encoding the feature type as `cltype = s1*3 + s2`
-where `s1`, `s2` ∈ {0, 1, 2} encode whether each endpoint was clamped
-(0 = min, 1 = interior, 2 = max).
+This covers the main stability case (capsule lying on face → 2 contacts
+at endpoints) while preserving the existing edge-contact behavior.
+MuJoCo's full 4-phase feature classification could be added later if
+more exotic configurations need better second-contact selection.
 
-**Phase 3 — Second contact search (lines 398–566):**
-After finding the primary closest point, determine if a second contact
-exists. Three sub-cases based on `cltype`:
+**New tests:** `capsule_box_face_2_contacts`.
 
-- **Corner closest** (`cltype >= 0, cltype/3 ≠ 1`): The closest feature
-  is a box corner. Walk along the capsule axis or box edge to find a
-  second contact point using `axisdir ^ clcorner` orientation.
-
-- **Edge middle closest** (`cltype >= 0, cltype/3 == 1`): The capsule
-  crosses a box edge in T or X configuration. For X config (capsule
-  crosses perpendicular to edge), find the second contact by walking
-  along the crossing axis.
-
-- **Face closest** (`cltype < 0`): A capsule endpoint is over a box face.
-  Walk toward the other capsule endpoint, clamping to the box face
-  boundary.
-
-**Phase 4 — Sphere-box delegation (lines 569–589):**
-Place a sphere (with capsule radius) at each contact point on the capsule
-segment. Delegate to `mjraw_SphereBox` to compute actual contact geometry
-(normal, depth, position). Returns 0, 1, or 2 contacts.
-
-`mjraw_SphereBox` (lines 40–93) transforms the sphere center to box-local
-frame, clamps to box surface, and computes normal/depth from the clamped
-point. If the sphere center is inside the box, it finds the nearest face.
-
-**Key insight:** The algorithm never constructs contacts directly — it
-finds 1–2 "capsule parameter" values (positions along the capsule segment),
-then delegates to sphere-box collision at those positions. This reuses the
-well-tested sphere-box code.
-
-**Current code location:** `pair_cylinder.rs:247`. Currently uses 5-point
-sampling along capsule axis + refinement → 1 contact.
-
-**Implementation plan:** Replace the 5-point sampling with:
-1. Box-local capsule transform (already partially done)
-2. 12-edge closest-point test (replace the 5-point sampling)
-3. Second contact search (the main new code)
-4. Delegate to sphere-box at 1–2 capsule positions
-
-**Estimated size:** ~200 LOC (the algorithm is more complex than the
-spec originally estimated at 80 LOC).
+**Code location:** `pair_cylinder.rs:247–385`
 
 #### Phase 4: Noslip validation and tuning
 
@@ -763,21 +725,16 @@ Tests affected by multi-contact, organized by expected impact:
 ### Implementation ordering
 
 ```
-Phase 0 (return type unification)          ✅
-  │
-  ▼
-Phase 1 (plane multi-contact: 1a–1d)      ✅
-  │
-  ├──▶ Phase 4 (noslip validation)         ✅ validated with each phase
-  │                                    ▲
-Phase 2 (box-box SAT + face clipping)  ✅
-  │                                    ▲
-Phase 3 (capsule-capsule, capsule-box) ← remaining
+Phase 0 (return type unification)          ✅ 2d1a564
+Phase 1 (plane multi-contact: 1a–1d)      ✅ 6229155–c58fdd2
+Phase 2 (box-box SAT + face clipping)     ✅ 822b0f2
+Phase 3 (capsule-capsule, capsule-box)    ✅
+Phase 4 (noslip validation)               ✅ validated with each phase
+Phase 5 (test updates)                    ✅ 18 tests added
 ```
 
-Phases 0–2 complete. Noslip validated after each phase (all thresholds
-adjusted in Phase 1a, no further changes needed through Phase 2).
-Phase 3 is the final collision-layer work.
+All phases complete. Every analytical collision pair now returns
+multi-contact matching MuJoCo's contact counts.
 
 ### Estimated total scope
 
@@ -789,10 +746,10 @@ Phase 3 is the final collision-layer work.
 | Phase 1c: Plane-Cylinder | ~130 | ✅ Done (`ef81935`) |
 | Phase 1d: Plane-Mesh | ~80 | ✅ Done (`c58fdd2`) |
 | Phase 2: Box-box face clipping | ~250 | ✅ Done (`822b0f2`) |
-| Phase 3: Capsule multi-contact | ~240 | Remaining |
-| Phase 4: Noslip validation | ~0 | Ongoing (validated with each phase) |
-| Phase 5: Test updates + new tests | ~200 | Ongoing (15 tests added with 1a–2) |
-| **Total remaining** | **~440** | |
+| Phase 3: Capsule multi-contact | ~120 | ✅ Done |
+| Phase 4: Noslip validation | ~0 | ✅ Done (validated with each phase) |
+| Phase 5: Test updates + new tests | ~200 | ✅ Done (18 tests added across 1a–3) |
+| **Total remaining** | **0** | **All phases complete** |
 
 ### What does NOT change
 

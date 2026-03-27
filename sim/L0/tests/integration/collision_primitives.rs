@@ -363,16 +363,21 @@ fn capsule_capsule_parallel_side() {
     // Both capsules have radius 0.2, parallel axes along Z
     // Distance between axes = 0.35
     // Penetration = 0.2 + 0.2 - 0.35 = 0.05
-    assert_eq!(data.ncon, 1, "Expected 1 contact");
-
-    let contact = &data.contacts[0];
-    let expected_depth = 0.05;
+    // Multi-contact: parallel capsules emit 2 contacts (both endpoints)
     assert!(
-        (contact.depth - expected_depth).abs() < DEPTH_TOL,
-        "Parallel capsule depth: expected {}, got {}",
-        expected_depth,
-        contact.depth
+        data.ncon >= 1 && data.ncon <= 2,
+        "Parallel capsules should produce 1–2 contacts, got {}",
+        data.ncon
     );
+
+    let expected_depth = 0.05;
+    for (i, c) in data.contacts[..data.ncon].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
 }
 
 /// Two perpendicular capsules (T-bone configuration).
@@ -1110,16 +1115,122 @@ fn capsule_box_face_overlap() {
     // Capsule surface at x = 0.65 - 0.2 = 0.45
     // Box face at x = 0.5
     // Penetration = 0.5 - 0.45 = 0.05
-    assert_eq!(data.ncon, 1, "Expected 1 contact");
-
-    let contact = &data.contacts[0];
-    let expected_depth = 0.05;
+    // Multi-contact: both capsule endpoints produce sphere-box contacts
     assert!(
-        (contact.depth - expected_depth).abs() < DEPTH_TOL,
-        "Capsule-box face depth: expected {}, got {}",
-        expected_depth,
-        contact.depth
+        data.ncon >= 1 && data.ncon <= 2,
+        "Capsule-box face should produce 1–2 contacts, got {}",
+        data.ncon
     );
+
+    let expected_depth = 0.05;
+    for (i, c) in data.contacts[..data.ncon].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+// ============================================================================
+// Phase 3: Capsule Multi-Contact Tests
+// ============================================================================
+
+/// Parallel capsules (same axis) → 2 contacts at both endpoints.
+#[test]
+fn capsule_capsule_parallel_2_contacts() {
+    let mjcf = r#"
+        <mujoco model="cap_cap_parallel_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="cap1" pos="0 0 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+                <body name="cap2" pos="0.35 0 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Parallel capsules: both endpoints of cap1 are equidistant to cap2's segment
+    assert_eq!(
+        data.ncon, 2,
+        "Parallel capsules should produce 2 contacts, got {}",
+        data.ncon
+    );
+}
+
+/// Perpendicular capsules → 1 contact (non-parallel path).
+#[test]
+fn capsule_capsule_perpendicular_1_contact() {
+    let mjcf = r#"
+        <mujoco model="cap_cap_perp_1">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="cap1" pos="0 0 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+                <body name="cap2" pos="0.35 0 0" euler="0 90 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 1,
+        "Perpendicular capsules should produce 1 contact, got {}",
+        data.ncon
+    );
+}
+
+/// Capsule lying on box face → 2 contacts (both endpoints).
+#[test]
+fn capsule_box_face_2_contacts() {
+    let mjcf = r#"
+        <mujoco model="cap_box_face_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box" pos="0 0 0">
+                    <geom type="box" size="1.0 1.0 0.5"/>
+                </body>
+                <body name="cap" pos="0 0 0.65">
+                    <geom type="capsule" size="0.2 0.4" euler="0 90 0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Capsule horizontal on top of box: both endpoints at same height
+    // Box top at z=0.5, capsule bottom at z=0.65-0.2=0.45
+    // Penetration = 0.5 - 0.45 = 0.05
+    assert_eq!(
+        data.ncon, 2,
+        "Capsule on box face should produce 2 contacts, got {}",
+        data.ncon
+    );
+
+    let expected_depth = 0.05;
+    for (i, c) in data.contacts[..2].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
 }
 
 // ============================================================================

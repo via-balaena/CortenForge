@@ -242,7 +242,9 @@ pub fn collide_cylinder_capsule(
 /// Capsule-box collision detection.
 ///
 /// Tests both capsule endpoints and the closest point on the capsule axis
-/// to find the minimum distance configuration.
+/// to find the minimum distance configuration. Returns up to 2 contacts,
+/// matching MuJoCo's `mjraw_CapsuleBox` which delegates to sphere-box
+/// at 1–2 positions along the capsule segment.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_capsule_box(
     model: &Model,
@@ -277,111 +279,119 @@ pub fn collide_capsule_box(
     let capsule_half_len = capsule_size.y;
     let capsule_axis = capsule_mat.column(2).into_owned();
 
-    // Capsule endpoints
     let cap_a = capsule_pos - capsule_axis * capsule_half_len;
     let cap_b = capsule_pos + capsule_axis * capsule_half_len;
 
-    // Find closest point on capsule axis to box
-    // We sample multiple points along the capsule and find the minimum distance
-    let mut min_dist = f64::MAX;
-    let mut best_capsule_point = capsule_pos;
-    let mut best_box_point = box_pos;
-
-    // Transform box to local coordinates once
     let box_mat_t = box_mat.transpose();
 
-    // Sample along capsule axis (including endpoints)
-    let samples = [0.0, 0.25, 0.5, 0.75, 1.0];
-    for &t in &samples {
-        let capsule_point = cap_a + (cap_b - cap_a) * t;
-        let local_point = box_mat_t * (capsule_point - box_pos);
+    let (g1, g2) = if capsule_geom < box_geom {
+        (capsule_geom, box_geom)
+    } else {
+        (box_geom, capsule_geom)
+    };
+    let normal_sign = if capsule_geom < box_geom { 1.0 } else { -1.0 };
 
-        // Closest point on box to this capsule point
-        let closest_local = Vector3::new(
-            local_point.x.clamp(-box_half.x, box_half.x),
-            local_point.y.clamp(-box_half.y, box_half.y),
-            local_point.z.clamp(-box_half.z, box_half.z),
+    // Test a capsule point as a sphere against the box.
+    // Returns Some((contact_pos, normal, penetration)) if penetrating.
+    let sphere_box_test =
+        |sphere_center: Vector3<f64>| -> Option<(Vector3<f64>, Vector3<f64>, f64)> {
+            let local_pt = box_mat_t * (sphere_center - box_pos);
+            let clamped = Vector3::new(
+                local_pt.x.clamp(-box_half.x, box_half.x),
+                local_pt.y.clamp(-box_half.y, box_half.y),
+                local_pt.z.clamp(-box_half.z, box_half.z),
+            );
+            let box_pt = box_pos + box_mat * clamped;
+            let diff = sphere_center - box_pt;
+            let dist = diff.norm();
+            let penetration = capsule_radius - dist;
+
+            if penetration <= -margin {
+                return None;
+            }
+
+            let normal = if dist > GEOM_EPSILON {
+                diff / dist
+            } else {
+                // Sphere center inside box: find nearest face
+                let mut min_face_dist = f64::MAX;
+                let mut normal_local = Vector3::x();
+                for i in 0..3 {
+                    let pen_pos = box_half[i] - local_pt[i];
+                    let pen_neg = box_half[i] + local_pt[i];
+                    if pen_pos < min_face_dist {
+                        min_face_dist = pen_pos;
+                        normal_local = Vector3::zeros();
+                        normal_local[i] = 1.0;
+                    }
+                    if pen_neg < min_face_dist {
+                        min_face_dist = pen_neg;
+                        normal_local = Vector3::zeros();
+                        normal_local[i] = -1.0;
+                    }
+                }
+                box_mat * normal_local
+            };
+
+            let contact_pos = box_pt + normal * (penetration * 0.5);
+            Some((contact_pos, normal, penetration))
+        };
+
+    // Test both endpoints + midpoint refinement, collect all penetrating contacts.
+    let dedup_dist_sq = 1e-6_f64; // merge contacts within 1mm
+    let mut contacts = Vec::with_capacity(2);
+    let mut contact_positions: Vec<Vector3<f64>> = Vec::with_capacity(3);
+
+    let mut try_add = |sphere_center: Vector3<f64>| {
+        if let Some((cpos, normal, pen)) = sphere_box_test(sphere_center) {
+            // Dedup: skip if too close to an existing contact
+            let too_close = contact_positions
+                .iter()
+                .any(|p| (p - cpos).norm_squared() < dedup_dist_sq);
+            if !too_close {
+                contact_positions.push(cpos);
+                contacts.push(make_contact_from_geoms(
+                    model,
+                    cpos,
+                    normal * normal_sign,
+                    pen,
+                    g1,
+                    g2,
+                    margin,
+                ));
+            }
+        }
+    };
+
+    // Endpoint A
+    try_add(cap_a);
+    // Endpoint B
+    try_add(cap_b);
+
+    // Midpoint refinement: find the closest point on the capsule segment to the box,
+    // which catches edge/face contacts where neither endpoint is closest.
+    // Use 5-point sampling to seed, then refine.
+    let mut best_dist = f64::MAX;
+    let mut best_box_pt = box_pos;
+    for &t in &[0.0_f64, 0.25, 0.5, 0.75, 1.0] {
+        let pt = cap_a + (cap_b - cap_a) * t;
+        let local_pt = box_mat_t * (pt - box_pos);
+        let clamped = Vector3::new(
+            local_pt.x.clamp(-box_half.x, box_half.x),
+            local_pt.y.clamp(-box_half.y, box_half.y),
+            local_pt.z.clamp(-box_half.z, box_half.z),
         );
-        let closest_world = box_pos + box_mat * closest_local;
-
-        let dist = (capsule_point - closest_world).norm();
-        if dist < min_dist {
-            min_dist = dist;
-            best_capsule_point = capsule_point;
-            best_box_point = closest_world;
+        let bp = box_pos + box_mat * clamped;
+        let d = (pt - bp).norm();
+        if d < best_dist {
+            best_dist = d;
+            best_box_pt = bp;
         }
     }
+    let refined = closest_point_segment(cap_a, cap_b, best_box_pt);
+    try_add(refined);
 
-    // Refine by finding closest point on capsule axis to best box point
-    let closest_on_capsule = closest_point_segment(cap_a, cap_b, best_box_point);
-    let local_closest = box_mat_t * (closest_on_capsule - box_pos);
-    let box_closest_local = Vector3::new(
-        local_closest.x.clamp(-box_half.x, box_half.x),
-        local_closest.y.clamp(-box_half.y, box_half.y),
-        local_closest.z.clamp(-box_half.z, box_half.z),
-    );
-    let box_closest_world = box_pos + box_mat * box_closest_local;
-    let final_dist = (closest_on_capsule - box_closest_world).norm();
-
-    if final_dist < min_dist {
-        min_dist = final_dist;
-        best_capsule_point = closest_on_capsule;
-        best_box_point = box_closest_world;
-    }
-
-    let penetration = capsule_radius - min_dist;
-
-    if penetration > -margin {
-        let diff = best_capsule_point - best_box_point;
-        let normal = if min_dist > GEOM_EPSILON {
-            diff / min_dist
-        } else {
-            // Edge case: capsule axis passes through box
-            // Find deepest penetration direction
-            let local_cap = box_mat_t * (best_capsule_point - box_pos);
-            let mut min_pen = f64::MAX;
-            let mut normal_local = Vector3::x();
-            for i in 0..3 {
-                let pen_pos = box_half[i] - local_cap[i];
-                let pen_neg = box_half[i] + local_cap[i];
-                if pen_pos < min_pen {
-                    min_pen = pen_pos;
-                    normal_local = Vector3::zeros();
-                    normal_local[i] = 1.0;
-                }
-                if pen_neg < min_pen {
-                    min_pen = pen_neg;
-                    normal_local = Vector3::zeros();
-                    normal_local[i] = -1.0;
-                }
-            }
-            box_mat * normal_local
-        };
-
-        let contact_pos = best_box_point + normal * (penetration * 0.5);
-
-        let (g1, g2) = if capsule_geom < box_geom {
-            (capsule_geom, box_geom)
-        } else {
-            (box_geom, capsule_geom)
-        };
-
-        vec![make_contact_from_geoms(
-            model,
-            contact_pos,
-            if capsule_geom < box_geom {
-                normal
-            } else {
-                -normal
-            },
-            penetration,
-            g1,
-            g2,
-            margin,
-        )]
-    } else {
-        vec![]
-    }
+    contacts
 }
 
 /// Box-box collision detection using SAT + Sutherland-Hodgman face clipping.
