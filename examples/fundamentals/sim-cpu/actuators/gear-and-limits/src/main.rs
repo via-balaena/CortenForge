@@ -53,7 +53,7 @@ const MJCF: &str = r#"
 
   <worldbody>
     <body name="arm_a" pos="0 0.5 0">
-      <joint name="hinge_a" type="hinge" axis="0 1 0" armature="0.01"/>
+      <joint name="hinge_a" type="hinge" axis="0 1 0" armature="0.01" damping="1.0"/>
       <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
       <geom name="rod_a" type="capsule" size="0.02"
             fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
@@ -61,7 +61,7 @@ const MJCF: &str = r#"
             pos="0 0 -0.5" rgba="0.3 0.6 0.9 1"/>
     </body>
     <body name="arm_b" pos="0 -0.5 0">
-      <joint name="hinge_b" type="hinge" axis="0 1 0" armature="0.01"/>
+      <joint name="hinge_b" type="hinge" axis="0 1 0" armature="0.01" damping="1.0"/>
       <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
       <geom name="rod_b" type="capsule" size="0.02"
             fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
@@ -177,10 +177,10 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, 0.0, -0.2),
-        2.5,
-        std::f32::consts::FRAC_PI_4,
-        0.35,
+        Vec3::new(0.0, -0.15, 0.0),  // arm midpoints
+        2.5,                         // distance — see both arms
+        std::f32::consts::FRAC_PI_3, // azimuth: 60 deg — angled to show both arms
+        0.15,                        // slight elevation
     );
 
     spawn_physics_hud(&mut commands);
@@ -211,12 +211,21 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     let vel_b = data.sensor_data(&model, 3)[0];
     let ctrl_val = if data.time < 5.0 { 1.0 } else { 5.0 };
 
-    hud.scalar("ctrl", ctrl_val, 1);
-    hud.scalar("force_a", force_a, 4);
-    hud.scalar("force_b", force_b, 4);
-    hud.scalar("vel_a", vel_a, 4);
-    hud.scalar("vel_b", vel_b, 4);
-    hud.scalar("time", data.time, 2);
+    let torque_a = force_a; // gear=1
+    let torque_b = force_b * GEAR_B; // gear=5
+    let vel_ratio = if vel_a.abs() > 0.01 {
+        vel_b / vel_a
+    } else {
+        0.0
+    };
+
+    hud.scalar("ctrl (both)", ctrl_val, 1);
+    hud.scalar("force A (gear=1)", force_a, 2);
+    hud.scalar("torque A (Nm)", torque_a, 2);
+    hud.scalar("force B (gear=5)", force_b, 2);
+    hud.scalar("torque B (Nm)", torque_b, 2);
+    hud.scalar("vel ratio (B/A)", vel_ratio, 1);
+    hud.scalar("time (s)", data.time, 2);
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
