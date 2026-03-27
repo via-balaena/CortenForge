@@ -968,3 +968,202 @@ fn sphere_plane_far_from_origin() {
         contact.depth
     );
 }
+
+// ============================================================================
+// Multi-contact box-plane tests (Phase 1a)
+// ============================================================================
+
+/// Box resting flat on horizontal plane → exactly 4 contacts.
+///
+/// Configuration:
+/// - Plane at z=0 (horizontal)
+/// - Box half-extents (0.5, 0.5, 0.5), center at z=0.4
+/// - Bottom face at z=-0.1 → all 4 corners penetrate equally
+///
+/// Expected: 4 contacts, all with identical depth (0.1).
+#[test]
+fn box_plane_horizontal_4_contacts() {
+    let mjcf = r#"
+        <mujoco model="box_plane_4contacts">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="box" pos="0 0 0.4">
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 4,
+        "Box flat on horizontal plane should produce 4 contacts, got {}",
+        data.ncon
+    );
+
+    // All 4 corners have the same depth on a horizontal plane
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..4].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Box resting on tilted plane → 4 contacts with distinct depths.
+///
+/// Configuration:
+/// - Plane tilted 10° around X axis
+/// - Box half-extents (0.3, 0.3, 0.3), center placed to penetrate
+/// - Bottom face corners have varying distances to tilted plane
+///
+/// Expected: 4 contacts, depths vary by ~2*0.3*sin(10°) ≈ 0.104 across face.
+#[test]
+fn box_plane_tilted_4_contacts_distinct_depths() {
+    let mjcf = r#"
+        <mujoco model="box_plane_tilted_4">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"
+                      euler="10 0 0"/>
+                <body name="box" pos="0 0 0.2">
+                    <geom type="box" size="0.3 0.3 0.3"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 4,
+        "Box on tilted plane should produce 4 contacts, got {}",
+        data.ncon
+    );
+
+    // Depths should be distinct (not all identical)
+    let depths: Vec<f64> = data.contacts[..4].iter().map(|c| c.depth).collect();
+    let min_depth = depths.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let depth_variation = max_depth - min_depth;
+
+    // On a 10° tilt, the y-extent (0.3) contributes sin(10°)*0.6 ≈ 0.104
+    assert!(
+        depth_variation > 0.05,
+        "Depths should vary significantly on tilted plane, got variation={depth_variation:.4e}, depths={depths:?}"
+    );
+
+    // All contacts should share the same normal (plane normal)
+    let n0 = data.contacts[0].normal;
+    for (i, c) in data.contacts[1..4].iter().enumerate() {
+        let dot = n0.dot(&c.normal);
+        assert!(
+            (dot - 1.0).abs() < 1e-10,
+            "Contact {} normal should match contact 0: dot={dot}",
+            i + 1
+        );
+    }
+}
+
+/// Single box on horizontal plane settles stably with 4-contact support.
+///
+/// Tests that multi-contact plane-box provides stable resting on a flat
+/// surface under gravity. (3-box stack deferred to Phase 2 when box-box
+/// multi-contact is implemented.)
+#[test]
+fn box_plane_single_box_stable() {
+    let mjcf = r#"
+        <mujoco model="box_plane_stable">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"
+                    iterations="100" tolerance="1e-8"/>
+            <worldbody>
+                <geom type="plane" size="5 5 0.1"/>
+                <body name="box" pos="0 0 0.11">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.5 0.5 0.005"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    for _ in 0..500 {
+        data.step(&model).unwrap();
+    }
+
+    assert!(
+        data.qpos.iter().all(|x| x.is_finite()),
+        "Box diverged: qpos contains NaN/Inf"
+    );
+
+    // Box should have settled: very small velocities
+    let max_vel = data.qvel.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    assert!(
+        max_vel < 0.01,
+        "Box should have settled: max velocity = {max_vel:.4e}"
+    );
+
+    // Z position should be approximately the half-extent (resting on plane)
+    let z = data.qpos[2];
+    assert!(z > 0.08 && z < 0.12, "Box z should be ~0.1, got {z:.4}");
+
+    // Should have 4 contacts in steady state
+    assert_eq!(
+        data.ncon, 4,
+        "Settled box on plane should have 4 contacts, got {}",
+        data.ncon
+    );
+}
+
+/// Noslip with multi-contact box-plane produces finite, bounded slip.
+///
+/// Verifies noslip postprocessor convergence with 4 contacts on a tilted
+/// plane — the configuration that broke with the original quick fix.
+#[test]
+fn noslip_multi_contact_box_plane_converges() {
+    let mjcf = r#"
+        <mujoco model="noslip_multi">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"
+                    noslip_iterations="50" noslip_tolerance="1e-12"/>
+            <worldbody>
+                <body pos="0 0 0.11">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.3 0.3 0.005"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"
+                      euler="3 0 0" friction="0.3 0.3 0.005"/>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    for _ in 0..50 {
+        data.step(&model).unwrap();
+    }
+
+    let slip = (data.qvel[0].powi(2) + data.qvel[1].powi(2)).sqrt();
+
+    assert!(slip.is_finite(), "Noslip slip should be finite");
+    assert!(
+        slip < 0.5,
+        "Noslip multi-contact slip should be bounded, got {slip:.4e}"
+    );
+    assert!(
+        data.qpos.iter().all(|x| x.is_finite()),
+        "All positions should be finite"
+    );
+}

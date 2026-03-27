@@ -119,6 +119,11 @@ more contacts per pair.
 
 ## Question 2: Noslip Postprocessor — Why It Broke
 
+> **UPDATE (2026-03-27):** The hypothesis below was tested and **rejected**.
+> See "Key Insight: Why the Quick Fix Failed (Revised)" and Appendix A for
+> the corrected analysis. The architecture analysis is still valid; the
+> "root cause" subsection is superseded.
+
 ### Architecture (`noslip.rs:57–120`)
 
 Noslip scans all constraint rows and tags friction rows as noslip-eligible:
@@ -176,12 +181,17 @@ Delassus and Gauss-Seidel iteration. But:
 
 #### Likely fix path
 
-The noslip breakage is not a structural flaw — it's a conditioning issue that
-will self-resolve if:
-- Each contact has its **own correct depth** (computed per-vertex, not shared)
-- Contact positions are **distinct** (each at its own corner, not averaged)
-- `noslip_iterations` is **sufficient** for the larger subproblem (may need
-  increase from current value)
+~~The noslip breakage is not a structural flaw — it's a conditioning issue that
+will self-resolve if:~~
+- ~~Each contact has its **own correct depth** (computed per-vertex, not shared)~~
+- ~~Contact positions are **distinct** (each at its own corner, not averaged)~~
+- ~~`noslip_iterations` is **sufficient** for the larger subproblem (may need
+  increase from current value)~~
+
+**REVISED (Appendix A):** The fix is to include ALL bottom-face corners as
+contacts (MuJoCo's `ldist <= 0` filter), not just those with positive depth.
+Contact count stability matters more than depth accuracy. Per-corner depths
+are still correct, but the inclusion threshold must use margin, not zero.
 
 ---
 
@@ -400,27 +410,125 @@ independently and return all penetrating endpoints.
 
 **Reference:** `mjc_PlaneCylinder` (`engine_collision_primitive.c`)
 
-**Algorithm:** MuJoCo returns up to 4 contacts:
-1. The deepest rim point (nearest point on the bottom circle to the plane)
-2. Up to 3 triangle-sample points on the lower disk (for near-horizontal
-   cylinders, these stabilize the resting contact)
+**Algorithm (implementation-ready detail from MuJoCo source):**
+
+MuJoCo returns up to 4 contacts using a 2-point rim + 2-point triangle
+approach. The key variables:
+
+1. **Axis orientation:** Flip `axis` to always point toward the plane
+   (`prjaxis = dot(normal, axis)`; if positive, negate axis). This means
+   `axis * half_height` always reaches the cap nearer the plane.
+
+2. **Radial direction `vec`:** The projection of `-normal` onto the plane
+   perpendicular to the cylinder axis, normalized and scaled by `radius`:
+   ```
+   vec = -normal + axis * prjaxis          // remove axial component
+   vec = normalize(vec) * radius            // scale to rim
+   ```
+   If `len(vec) < mjMINVAL` (disk parallel to plane), use cylinder's local
+   X-axis scaled by radius as fallback.
+
+3. **Contact 1 (rim, near cap):** The point on the lower rim deepest into
+   the plane.
+   - Position: `cyl_pos + axis * half_height + vec`
+   - Depth: `dist0 + prjaxis * half_height + dot(vec, normal)`
+   - If `depth > -margin`: emit contact 1. Otherwise: return 0 (early exit).
+
+4. **Contact 2 (rim, far cap):** The corresponding point on the upper rim.
+   - Position: `cyl_pos - axis * half_height + vec`
+   - Depth: `dist0 - prjaxis * half_height + dot(vec, normal)`
+   - Only emitted if `depth > -margin`.
+
+5. **Contacts 3–4 (triangle points on near cap disk):** Two points offset
+   sideways from the rim point by `±cross(vec, axis)`, normalized and scaled
+   by `radius * sqrt(3)/2`, and pulled halfway back from the rim (at
+   `-0.5 * vec`). These form an equilateral triangle inscribed in the lower
+   cap disk, providing 3-point support for near-horizontal cylinders.
+   - Depth: `dist0 + prjaxis * half_height - dot(vec, normal) * 0.5`
+     (half the radial depth, since these points are offset to the side)
+   - Only emitted if `depth > -margin`.
+
+**Contact positions** use MuJoCo's midpoint convention: each contact `pos`
+is adjusted by `normal * (-depth / 2)` (midpoint between surface points).
+
+**Why 4 points stabilize:** For a vertical cylinder on a plane, contacts
+1–2 are on the same rim point (degenerate). Contacts 3–4 provide an
+equilateral triangle of support on the bottom disk. For a tilted cylinder,
+contacts 1–2 give two rim points on opposite caps, and contacts 3–4 add
+lateral support if the tilt is shallow enough.
 
 **Current code location:** `plane.rs:183–196` → `collide_cylinder_plane_impl`
-at `plane.rs:249`. Currently returns 1 contact.
+at `plane.rs:249`. Currently returns 1 contact (deepest point only).
 
 ##### 1d. Plane-Mesh → up to 3 contacts
 
-**Reference:** `mjc_PlaneConvex` mesh path
+**Reference:** `mjc_PlaneConvex` mesh path (`engine_collision_convex.c`)
 
-**Algorithm:** MuJoCo walks neighboring vertices from the support vertex
-(deepest into the plane) and returns up to `maxplanemesh = 3` contacts below
-margin.
+**Algorithm (implementation-ready detail from MuJoCo source):**
+
+MuJoCo's `mjc_PlaneConvex` handles meshes through its convex path with
+mesh-specific extensions. Returns up to `maxplanemesh = 3` contacts.
+
+1. **Primary contact (CCD support point):** Find the vertex deepest into
+   the plane using CCD support function in `-normal` direction. This always
+   produces contact 1.
+
+2. **Additional contacts (neighbor walk or exhaustive search):**
+
+   **Path A — Graph data available (`mesh_graphadr >= 0`):**
+   Walk the 1-ring neighborhood of the support vertex using the mesh
+   adjacency graph:
+   ```
+   graphadr = mesh_graphadr[dataid]
+   numvert = mesh_graph[graphadr]
+   vert_edgeadr = mesh_graph + graphadr + 2
+   vert_globalid = mesh_graph + graphadr + 2 + numvert
+   edge_localid = mesh_graph + graphadr + 2 + 2*numvert
+
+   i = vert_edgeadr[support_vertex]
+   while edge_localid[i] >= 0 && count < maxplanemesh:
+       neighbor = vert_globalid[edge_localid[i]]
+       if dot(locdir, vertex[neighbor]) > threshold:
+           add contact if not too close to first
+       i++
+   ```
+   This is a **single-hop walk** — only direct neighbors, not BFS.
+
+   **Path B — No graph data (`mesh_graphadr < 0`):**
+   Brute-force scan ALL mesh vertices:
+   ```
+   for i in 0..numvert:
+       if dot(locdir, vertex[i]) > threshold && i != support_vertex:
+           add contact if not too close to first
+   ```
+
+3. **Proximity filter:** `tolplanemesh = 0.3` — candidate vertices closer
+   than `0.3 * rbound` to the first contact are rejected (prevents
+   clustering).
+
+4. **Depth threshold:** `threshold = dot(normal, geom_center - plane_pos) - margin`
+   Only vertices deeper than this threshold in the `-normal` direction are
+   included. This uses the local-frame direction for efficiency.
+
+**CortenForge status:** `TriangleMeshData` does **NOT** have vertex
+adjacency data (no neighbor lists, no edge connectivity graph). The struct
+stores vertices, triangle indices, AABB, BVH, and optional convex hull.
+
+**Implementation plan:** Use Path B (brute-force scan). The current
+`collide_mesh_plane` at `mesh_collide.rs:259` already iterates all vertices
+in O(n). Extend it to:
+1. Find the deepest vertex (already done)
+2. Continue scanning, collecting up to 2 more vertices that:
+   - Are deeper than `-margin` from the plane
+   - Are at least `0.3 * rbound` away from the first contact
+3. Return 1–3 contacts with individual depths
+
+**Future work:** Add mesh adjacency graph to `TriangleMeshData` for O(k)
+neighbor walk (where k = vertex degree, typically 5–7). This would make
+Path A viable and improve performance for large meshes.
 
 **Current code location:** `mesh_collide.rs:259` (`collide_mesh_plane`).
 Currently returns 1 (deepest vertex only).
-
-**Note:** Requires access to mesh adjacency data (vertex neighbors). If not
-available, fall back to projecting all vertices and keeping the N deepest.
 
 ##### Phase 1 estimated size: ~200 LOC across plane.rs and mesh_collide.rs
 
@@ -481,16 +589,68 @@ for all cases.
 
 ##### 3b. Capsule-Box → 2 contacts
 
-**Reference:** `mjraw_CapsuleBox` in MuJoCo
+**Reference:** `mjraw_CapsuleBox` (`engine_collision_box.c:118–590`)
 
-**Algorithm:** MuJoCo performs segment-box closest-point analysis, then tests
-2 key points (typically the capsule endpoints projected onto the box). Returns
-up to 2 contacts.
+**Algorithm (implementation-ready detail from MuJoCo source):**
+
+MuJoCo finds up to 2 contact points through a 4-phase algorithm:
+
+**Phase 1 — Face test (lines 179–208):**
+Transform capsule center and axis to box-local frame. Test whether either
+capsule endpoint projects inside a box face (i.e., at most 1 axis is
+clamped). Record face-type closest feature: `cltype = -3` (cap A on face)
+or `cltype = -1` (cap B on face), `clface` = which face axis (0/1/2).
+
+**Phase 2 — Edge test (lines 212–305):**
+For each of the 12 box edges, compute the closest point pair between the
+capsule segment and the edge segment via a 2×2 linear system (line-line
+closest point). Clamp both parameters to `[-1, 1]`. Track the globally
+closest configuration, encoding the feature type as `cltype = s1*3 + s2`
+where `s1`, `s2` ∈ {0, 1, 2} encode whether each endpoint was clamped
+(0 = min, 1 = interior, 2 = max).
+
+**Phase 3 — Second contact search (lines 398–566):**
+After finding the primary closest point, determine if a second contact
+exists. Three sub-cases based on `cltype`:
+
+- **Corner closest** (`cltype >= 0, cltype/3 ≠ 1`): The closest feature
+  is a box corner. Walk along the capsule axis or box edge to find a
+  second contact point using `axisdir ^ clcorner` orientation.
+
+- **Edge middle closest** (`cltype >= 0, cltype/3 == 1`): The capsule
+  crosses a box edge in T or X configuration. For X config (capsule
+  crosses perpendicular to edge), find the second contact by walking
+  along the crossing axis.
+
+- **Face closest** (`cltype < 0`): A capsule endpoint is over a box face.
+  Walk toward the other capsule endpoint, clamping to the box face
+  boundary.
+
+**Phase 4 — Sphere-box delegation (lines 569–589):**
+Place a sphere (with capsule radius) at each contact point on the capsule
+segment. Delegate to `mjraw_SphereBox` to compute actual contact geometry
+(normal, depth, position). Returns 0, 1, or 2 contacts.
+
+`mjraw_SphereBox` (lines 40–93) transforms the sphere center to box-local
+frame, clamps to box surface, and computes normal/depth from the clamped
+point. If the sphere center is inside the box, it finds the nearest face.
+
+**Key insight:** The algorithm never constructs contacts directly — it
+finds 1–2 "capsule parameter" values (positions along the capsule segment),
+then delegates to sphere-box collision at those positions. This reuses the
+well-tested sphere-box code.
 
 **Current code location:** `pair_cylinder.rs:247`. Currently uses 5-point
-sampling + refinement → 1 contact.
+sampling along capsule axis + refinement → 1 contact.
 
-**Estimated size:** ~80 LOC refactor.
+**Implementation plan:** Replace the 5-point sampling with:
+1. Box-local capsule transform (already partially done)
+2. 12-edge closest-point test (replace the 5-point sampling)
+3. Second contact search (the main new code)
+4. Delegate to sphere-box at 1–2 capsule positions
+
+**Estimated size:** ~200 LOC (the algorithm is more complex than the
+spec originally estimated at 80 LOC).
 
 #### Phase 4: Noslip validation and tuning
 
@@ -500,17 +660,19 @@ After Phases 1–3, run the full noslip + solver test suite:
 cargo test -p sim-core -p sim-conformance-tests
 ```
 
-**Expected outcome with correct per-corner depths:** Noslip should converge
-because:
-- Each corner contact has a distinct depth → distinct impedance → distinct
-  Jacobian contributions → well-conditioned Delassus submatrix
-- The Gauss-Seidel iteration has well-separated eigenvalues
+**Expected outcome (informed by Appendix A):** Multi-contact with stable
+4-point support should improve or match single-contact noslip. The critical
+requirement is that **all bottom-face corners are included** (margin-based
+threshold, not depth > 0). Appendix A showed:
+- 4 contacts with identical depths: slip 0.011 (5× better than 1 contact)
+- 4 contacts with correct depths, all 4 included: slip 0.045 (comparable)
+- 4 contacts with correct depths, filtered by depth > 0: slip 0.88 (broken)
 
 **If slip regresses (defense-in-depth):**
 
-1. **Verify per-corner depths** — print contact depths on the tilted-plane
-   test. On a 3° tilt with 0.1m box, depth variation should be ~0.005m.
-   If all 4 are identical → bug in depth computation.
+1. **Verify contact count stability** — print contact count per step. If
+   it oscillates (1-3 instead of stable 4), the margin-based inclusion
+   threshold is too tight. Widen it.
 
 2. **Increase `noslip_iterations`** — with 4× more friction rows, GS needs
    more sweeps. Try 2× the current value. MuJoCo defaults to 0 (disabled)
@@ -586,10 +748,10 @@ Phase 5 updates test thresholds and adds new multi-contact tests.
 | Phase 0: Return type unification | ~100 | Mechanical refactor |
 | Phase 1: Plane multi-contact | ~200 | Straightforward (MuJoCo reference clear) |
 | Phase 2: Box-box face clipping | ~450 | Most complex (Sutherland-Hodgman) |
-| Phase 3: Capsule multi-contact | ~120 | Moderate |
+| Phase 3: Capsule multi-contact | ~240 | Moderate (capsule-box is ~200 LOC) |
 | Phase 4: Noslip validation | ~0 (diagnostic) | Investigation, not code |
 | Phase 5: Test updates + new tests | ~300 | Straightforward |
-| **Total** | **~1,170** | |
+| **Total** | **~1,290** | |
 
 ### What does NOT change
 
@@ -648,17 +810,109 @@ matching across timesteps.
 
 ---
 
-## Key Insight: Why the Quick Fix Failed
+## Key Insight: Why the Quick Fix Failed (Revised)
 
-The quick fix likely produced 4 contacts with **identical or near-identical
-depths** (reusing the single lowest-corner depth for all corners, or computing
-depth from the box center rather than per-corner).
+**Original hypothesis (Q2):** The quick fix produced contacts with identical
+depths, making the Delassus submatrix nearly singular and causing noslip to
+diverge.
 
-On a 3° tilted plane with a 0.1×0.1×0.1 box:
-- Corner depth variation should be ~0.1 × sin(3°) ≈ 0.005m across the face
-- If all 4 get the same depth → same impedance → same Jacobian columns →
-  nearly-singular Delassus → noslip diverges
-- If each gets its correct depth → distinct impedance values → well-conditioned
-  Delassus → noslip converges
+**Actual root cause (verified by Appendix A test):** The quick fix failed
+because **depth-based filtering produced oscillating contact counts**. On a
+3° tilted plane with a 0.1 box, the depth variation across the bottom face
+is ~0.01m. With standard margin values, only 1–2 of the 4 corners are
+penetrating at any given step. The contact count oscillates between 1 and 3,
+causing unstable support patterns and large slip.
+
+### Experimental evidence (see Appendix A)
+
+| Variant | Slip | Contacts/step |
+|---------|------|---------------|
+| No noslip (1 contact, reference) | 5.38e-2 | 1 |
+| Baseline (1 contact, noslip=50) | 5.38e-2 | 1 |
+| 4 contacts, identical depths | 1.10e-2 | 4 (stable) |
+| 4 contacts, correct depths, filtered | 8.80e-1 | 2.1 avg (unstable) |
+| 4 contacts, correct depths, all 4 | 4.51e-2 | 4 (stable) |
+
+### Key observations
+
+1. **Noslip has zero effect with 1 contact.** With only 1 contact (2 friction
+   rows), noslip cannot add more friction than what the single contact
+   provides. Baseline ≈ no-noslip reference.
+
+2. **Identical depths work BEST.** 4 contacts with the same depth give
+   identical impedances → identical normal forces → maximum friction
+   capability per contact. The Delassus submatrix is well-conditioned
+   despite near-identical Jacobians, because the QCQP noslip projection
+   operates per-contact-block (not coupled across contacts from the same
+   pair).
+
+3. **Correct depths with filtering is CATASTROPHIC.** Average 2.1
+   contacts/step, only 15/50 steps have any contacts. The box bounces
+   between contact and separation, producing slip 16× worse than baseline.
+
+4. **Correct depths without filtering is GOOD.** All 4 bottom corners
+   included regardless of individual depth, giving stable 4-point support.
+   Slip is slightly better than single-contact baseline.
+
+### Revised fix path
+
+The Phase 1a (Plane-Box) implementation MUST follow MuJoCo's inclusion
+strategy: return all bottom-face corners (those with `ldist <= 0`) that are
+within margin of the plane, using the MARGIN as the inclusion threshold —
+not requiring positive penetration depth. This ensures stable 4-point support
+even when the box is tilted relative to the plane.
 
 **The fix is in the collision detection, not the constraint pipeline.**
+
+---
+
+## Appendix A: Noslip Root Cause Verification
+
+**Date:** 2026-03-27
+**Test file:** `sim/L0/tests/integration/noslip_depth_verify.rs` (diagnostic, not committed)
+**Branch:** `feature/integrator-examples`
+
+### Setup
+
+Box (0.1×0.1×0.1, mass=1.0) on a 3° tilted plane with Newton solver,
+elliptic cones, noslip_iterations=50, friction=0.3. Simulation run for 50
+steps. Slip measured as `sqrt(qvel[0]² + qvel[1]²)`.
+
+### Method
+
+Uses the `step1()` / `step2()` split to inject contacts between collision
+and constraint solve:
+
+- **step1()** runs FK, collision → produces 1 contact (current behavior)
+- Between steps: replace `data.contacts` with 4 contacts at box bottom corners
+- **step2()** runs constraint assembly + solve + noslip + integration
+
+Five variants tested:
+
+| Variant | Contact injection | Depth strategy |
+|---------|------------------|----------------|
+| No noslip ref | None (step()) | N/A |
+| Baseline | None (step()) | N/A |
+| A: Identical | 4 corners, all with template.depth | Shared |
+| B: Filtered | 4 corners, only depth > -margin kept | Per-corner |
+| C: All 4 | 4 corners, all kept | Per-corner |
+
+### Results
+
+```
+No noslip (1 contact, ref):        slip = 5.379430e-2
+Baseline (1 contact, noslip=50):   slip = 5.379445e-2
+A: Identical depths (4 contacts):  slip = 1.096248e-2  (34/50 steps w/ contacts)
+B: Correct depths, filtered:       slip = 8.795356e-1  (15/50 steps w/ contacts)
+C: Correct depths, all 4:          slip = 4.507957e-2  (32/50 steps w/ contacts)
+B avg contacts/step: 2.1
+```
+
+### Conclusion
+
+The original hypothesis (identical depths → singular Delassus → noslip
+diverges) is **rejected**. The actual failure mode is **contact count
+instability**: depth-based filtering removes some corners, producing
+oscillating 1–3 contacts per step. The fix is to include all bottom-face
+corners (MuJoCo's `ldist <= 0` filter) regardless of individual depth,
+using margin as the inclusion threshold.

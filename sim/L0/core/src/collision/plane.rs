@@ -78,65 +78,74 @@ pub fn collide_with_plane(
             }
         }
         GeomType::Box => {
-            // Optimized box-plane: compute lowest corner directly instead of testing all 8
+            // Multi-contact box-plane: return up to 4 contacts (all bottom-face
+            // corners), matching MuJoCo's mjc_PlaneBox algorithm.
             //
-            // The support point (lowest corner toward plane) uses the formula:
-            //   corner = center + sum_i( -sign(n·r_i) * h_i * r_i )
+            // Algorithm (from engine_collision_primitive.c:~178):
+            //   For each of the 8 box corners (bitmask i = 0..7):
+            //     corner_offset = ±half.x * rx ± half.y * ry ± half.z * rz
+            //     ldist = dot(normal, corner_offset)
+            //   Filter: ldist <= 0 selects the bottom face (max 4 of 8).
+            //   Inclusion: if the DEEPEST bottom corner is within margin, emit
+            //   ALL bottom-face corners with their individual depths.
             //
-            // where r_i are box local axes in world space and h_i are half-extents.
-            // The sign logic: if n·r_i > 0, the axis points "up" relative to the plane,
-            // so we want the negative end (-h_i * r_i) to get the lowest point.
-            //
-            // Implementation: dx = -sign(n·rx), so corner = center + dx*hx*rx + ...
-            // This is equivalent to the formula but avoids explicit negation.
-            //
-            // This is O(1) instead of O(8) per box.
+            // Why all-or-nothing: on a tilted plane, per-corner depth filtering
+            // produces oscillating contact counts (1–3 per step) that destabilize
+            // the noslip postprocessor. Emitting all 4 bottom-face corners
+            // whenever ANY is in contact ensures stable support. Corners with
+            // negative depth (slightly above plane) produce near-zero constraint
+            // forces — the solver handles this naturally.
+            // See MULTI_CONTACT_ANALYSIS.md Appendix A for verification.
             let half = other_size;
             let rx = other_mat.column(0).into_owned();
             let ry = other_mat.column(1).into_owned();
             let rz = other_mat.column(2).into_owned();
 
-            // Compute -sign(n·axis) for each axis. When dot > 0, axis points toward
-            // plane normal, so we pick the negative end (d = -1). When dot <= 0, we pick
-            // the positive end (d = +1). This gives the corner furthest in -n direction.
-            let dx = if plane_normal.dot(&rx) > 0.0 {
-                -1.0
-            } else {
-                1.0
-            };
-            let dy = if plane_normal.dot(&ry) > 0.0 {
-                -1.0
-            } else {
-                1.0
-            };
-            let dz = if plane_normal.dot(&rz) > 0.0 {
-                -1.0
-            } else {
-                1.0
-            };
+            // Signed distance from box center to plane (positive = above plane)
+            let dist = plane_normal.dot(&other_pos) - plane_distance;
 
-            // Lowest corner is the one most toward the plane (-normal direction)
-            let lowest_corner =
-                other_pos + rx * (dx * half.x) + ry * (dy * half.y) + rz * (dz * half.z);
+            // Pass 1: collect bottom-face corners (ldist <= 0) and find deepest
+            let mut bottom_corners: [(Vector3<f64>, f64); 4] = Default::default();
+            let mut n_bottom = 0usize;
+            let mut min_ldist = f64::MAX; // most negative = deepest
 
-            let dist = plane_normal.dot(&lowest_corner) - plane_distance;
-            let depth = -dist;
+            for i in 0u8..8 {
+                let sx = if i & 1 != 0 { 1.0 } else { -1.0 };
+                let sy = if i & 2 != 0 { 1.0 } else { -1.0 };
+                let sz = if i & 4 != 0 { 1.0 } else { -1.0 };
 
-            if depth > -margin {
-                // Contact position: midpoint between box corner and plane surface.
-                // box_surface = lowest_corner (corner IS on the surface)
-                // plane_surface = lowest_corner + normal * depth
-                // midpoint = lowest_corner + normal * depth / 2
-                let contact_pos = lowest_corner + plane_normal * (depth / 2.0);
-                vec![make_contact_from_geoms(
-                    model,
-                    contact_pos,
-                    plane_normal,
-                    depth,
-                    plane_geom,
-                    other_geom,
-                    margin,
-                )]
+                let corner_offset = rx * (sx * half.x) + ry * (sy * half.y) + rz * (sz * half.z);
+                let ldist = plane_normal.dot(&corner_offset);
+
+                if ldist <= 0.0 && n_bottom < 4 {
+                    bottom_corners[n_bottom] = (corner_offset, ldist);
+                    n_bottom += 1;
+                    if ldist < min_ldist {
+                        min_ldist = ldist;
+                    }
+                }
+            }
+
+            // Pass 2: if the deepest bottom corner is within margin, emit all
+            let deepest_corner_dist = dist + min_ldist; // signed dist of deepest
+            if n_bottom > 0 && deepest_corner_dist <= margin {
+                let mut contacts = Vec::with_capacity(n_bottom);
+                for &(corner_offset, ldist) in &bottom_corners[..n_bottom] {
+                    let corner_depth = -(dist + ldist);
+                    let corner_world = other_pos + corner_offset;
+                    let contact_pos = corner_world + plane_normal * (corner_depth / 2.0);
+
+                    contacts.push(make_contact_from_geoms(
+                        model,
+                        contact_pos,
+                        plane_normal,
+                        corner_depth,
+                        plane_geom,
+                        other_geom,
+                        margin,
+                    ));
+                }
+                contacts
             } else {
                 vec![]
             }
