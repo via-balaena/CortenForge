@@ -40,14 +40,6 @@ use sim_types::Pose;
 /// magnitude of safety margin while still detecting near-degenerate cases.
 pub const GEOM_EPSILON: f64 = 1e-10;
 
-/// Threshold for cylinder axis being nearly vertical (perpendicular to plane).
-/// When |cos(theta)| > 0.999 (theta < 2.6 deg), treat cylinder as vertical.
-pub const AXIS_VERTICAL_THRESHOLD: f64 = 0.999;
-
-/// Threshold for cylinder axis being nearly horizontal (parallel to plane).
-/// When |cos(theta)| < 0.001 (theta > 89.9 deg), treat cylinder as horizontal.
-pub const AXIS_HORIZONTAL_THRESHOLD: f64 = 0.001;
-
 /// Threshold for detecting cylinder cap collision in cylinder-capsule.
 /// When normal is within ~45 deg of cylinder axis (cos > 0.7), treat as cap collision.
 pub const CAP_COLLISION_THRESHOLD: f64 = 0.7;

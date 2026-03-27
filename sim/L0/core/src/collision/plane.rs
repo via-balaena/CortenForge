@@ -1,8 +1,6 @@
 //! Collision detection against infinite planes (sphere, box, capsule, cylinder, ellipsoid).
 
-use super::narrow::{
-    AXIS_HORIZONTAL_THRESHOLD, AXIS_VERTICAL_THRESHOLD, GEOM_EPSILON, make_contact_from_geoms,
-};
+use super::narrow::{GEOM_EPSILON, make_contact_from_geoms};
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Vector3};
 
@@ -229,24 +227,24 @@ pub fn collide_with_plane(
 
 /// Cylinder-plane collision detection (internal helper).
 ///
-/// Finds the deepest penetrating point on the cylinder. For tilted/upright
-/// cylinders, this is on the rim edge. For horizontal cylinders (axis parallel
-/// to plane), the curved surface is checked.
+/// Returns up to 4 contacts using MuJoCo's `mjc_PlaneCylinder` algorithm:
+/// 2 rim points (near/far cap) + 2 triangle points on the near-cap disk
+/// forming equilateral support.
 ///
-/// # Algorithm
-/// 1. Compute cylinder axis in world frame
-/// 2. Determine if cylinder is "horizontal" (axis nearly parallel to plane)
-/// 3. For non-horizontal: check rim points on both caps in the deepest direction
-/// 4. For horizontal: check the curved surface point closest to plane
-/// 5. Return the deepest penetrating point as contact
+/// # Algorithm (from `engine_collision_primitive.c`)
+/// 1. Orient axis toward plane (flip if needed)
+/// 2. Compute radial direction `vec` = projection of `-normal` onto radial plane
+/// 3. Contact 1: near-cap rim point (deepest). Early exit if not within margin.
+/// 4. Contact 2: far-cap rim point (same radial direction)
+/// 5. Contacts 3–4: triangle points on near-cap disk at `±cross(vec, axis)`
+///    offset by `sqrt(3)/2 * radius`, pulled back to `-0.5 * vec`
 ///
-/// # Parameters
-/// - `plane_normal`: Unit normal of the plane (points away from solid half-space)
-/// - `plane_d`: Signed distance from origin to plane along normal
-/// - `cyl_size`: [radius, half_height, unused]
+/// Uses all-or-nothing inclusion: if contact 1 (deepest) is within margin,
+/// emit all candidate contacts that individually pass the margin test.
+/// See `MULTI_CONTACT_ANALYSIS.md` Appendix A for rationale.
 ///
 /// # Returns
-/// `Vec` with one contact if cylinder penetrates plane, empty otherwise.
+/// `Vec` with 0–4 contacts.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn collide_cylinder_plane_impl(
@@ -264,88 +262,124 @@ fn collide_cylinder_plane_impl(
     let half_height = cyl_size.y;
 
     // Cylinder axis is local Z transformed to world
-    let cyl_axis = cyl_mat.column(2).into_owned();
+    let mut axis = cyl_mat.column(2).into_owned();
 
-    // How aligned is cylinder axis with plane normal?
-    // axis_dot_signed: positive = axis points away from plane, negative = toward plane
-    // axis_dot (abs): 1 = vertical, 0 = horizontal
-    let axis_dot_signed = plane_normal.dot(&cyl_axis);
-    let axis_dot = axis_dot_signed.abs();
+    // Signed distance from cylinder center to plane
+    let dist0 = plane_normal.dot(&cyl_pos) - plane_d;
 
-    // Pre-compute radial direction (projection of plane normal onto radial plane)
-    // Used in Case 1 (horizontal) and Case 3 (tilted)
-    let radial = plane_normal - cyl_axis * axis_dot_signed;
-    let radial_len = radial.norm();
+    // Projection of axis onto plane normal — flip axis so it points toward
+    // the plane (prjaxis >= 0 means the near cap is at +axis * half_height).
+    let mut prjaxis = plane_normal.dot(&axis);
+    if prjaxis > 0.0 {
+        axis = -axis;
+        prjaxis = -prjaxis;
+    }
+    // Now: near cap = cyl_pos + axis * half_height, far cap = cyl_pos - axis * half_height
+    // prjaxis <= 0 (axis points toward plane)
 
-    // Compute the deepest point on the cylinder
-    let deepest_point = if axis_dot < AXIS_HORIZONTAL_THRESHOLD {
-        // Case 1: Cylinder is horizontal (axis parallel to plane)
-        // The deepest point is on the curved surface, directly below the axis
-        if radial_len > GEOM_EPSILON {
-            // Point on curved surface in the direction opposite to plane normal
-            cyl_pos - (radial / radial_len) * radius
-        } else {
-            // Degenerate: plane normal exactly along axis (contradicts horizontal check)
-            cyl_pos - plane_normal * radius
-        }
-    } else if axis_dot > AXIS_VERTICAL_THRESHOLD {
-        // Case 2: Cylinder is vertical (axis perpendicular to plane)
-        // The deepest point is the entire bottom rim (pick center for stability)
-        // Determine which cap faces the plane
-        let cap_dir = if axis_dot_signed > 0.0 {
-            -cyl_axis // Bottom cap faces plane
-        } else {
-            cyl_axis // Top cap faces plane
-        };
-        cyl_pos + cap_dir * half_height
+    // Radial direction: projection of -normal onto the plane perpendicular to axis,
+    // scaled to radius. This gives the rim offset that pushes deepest into the plane.
+    let raw_vec = -plane_normal - axis * (-prjaxis); // -normal + axis * prjaxis
+    let vec_len = raw_vec.norm();
+
+    let vec = if vec_len > GEOM_EPSILON {
+        raw_vec * (radius / vec_len)
     } else {
-        // Case 3: Cylinder is tilted
-        // The deepest point is on one of the rim edges
-        // Find the rim direction that points most into the plane
-        // Note: radial_len = sqrt(1 - axis_dot²) > 0 since axis_dot < AXIS_VERTICAL_THRESHOLD
-        let rim_dir = -radial / radial_len;
-
-        // Determine which cap is lower (faces the plane more)
-        let top_center = cyl_pos + cyl_axis * half_height;
-        let bottom_center = cyl_pos - cyl_axis * half_height;
-
-        let top_rim_point = top_center + rim_dir * radius;
-        let bottom_rim_point = bottom_center + rim_dir * radius;
-
-        let top_depth = -(plane_normal.dot(&top_rim_point) - plane_d);
-        let bottom_depth = -(plane_normal.dot(&bottom_rim_point) - plane_d);
-
-        if bottom_depth > top_depth {
-            bottom_rim_point
-        } else {
-            top_rim_point
-        }
+        // Axis is parallel to normal (disk is parallel to plane).
+        // Use cylinder's local X-axis as fallback radial direction.
+        cyl_mat.column(0).into_owned() * radius
     };
 
-    // Compute penetration depth
-    let signed_dist = plane_normal.dot(&deepest_point) - plane_d;
-    let depth = -signed_dist;
+    let vec_dot_normal = plane_normal.dot(&vec);
 
-    if depth <= -margin {
+    // --- Contact 1: near-cap rim point (deepest) ---
+    let pos1 = cyl_pos + axis * half_height + vec;
+    let depth1 = -(dist0 + prjaxis * half_height + vec_dot_normal);
+
+    // Early exit: if the deepest point isn't within margin, no contacts.
+    if depth1 <= -margin {
         return vec![];
     }
 
-    // Contact position: midpoint between cylinder surface and plane surface.
-    // cylinder_surface = deepest_point (already on cylinder surface)
-    // plane_surface = deepest_point + normal * depth
-    // midpoint = deepest_point + normal * depth / 2
-    let contact_pos = deepest_point + plane_normal * (depth / 2.0);
-
-    vec![make_contact_from_geoms(
+    let mut contacts = Vec::with_capacity(4);
+    let contact_pos1 = pos1 + plane_normal * (depth1 / 2.0);
+    contacts.push(make_contact_from_geoms(
         model,
-        contact_pos,
+        contact_pos1,
         plane_normal,
-        depth,
+        depth1,
         plane_geom,
         cyl_geom,
         margin,
-    )]
+    ));
+
+    // --- Contact 2: far-cap rim point ---
+    let pos2 = cyl_pos - axis * half_height + vec;
+    let depth2 = -(dist0 - prjaxis * half_height + vec_dot_normal);
+
+    if depth2 > -margin {
+        let contact_pos2 = pos2 + plane_normal * (depth2 / 2.0);
+        contacts.push(make_contact_from_geoms(
+            model,
+            contact_pos2,
+            plane_normal,
+            depth2,
+            plane_geom,
+            cyl_geom,
+            margin,
+        ));
+    }
+
+    // --- Contacts 3–4: triangle points on the near-cap disk ---
+    // Two points offset sideways from the rim point by ±cross(vec, axis),
+    // normalized and scaled by radius * sqrt(3)/2, pulled halfway back
+    // from the rim (at -0.5 * vec). These form an equilateral triangle
+    // inscribed in the near-cap disk with contact 1.
+    let cross = vec.cross(&axis);
+    let cross_len = cross.norm();
+
+    if cross_len > GEOM_EPSILON {
+        let side = cross * (radius * SQRT_3_OVER_2 / cross_len);
+
+        // Triangle depth: near-cap depth with half the radial contribution
+        // (these points are at -0.5*vec instead of +vec, so the radial
+        // component contribution is -0.5 * vec_dot_normal instead of +vec_dot_normal)
+        let depth_tri = -(dist0 + prjaxis * half_height - vec_dot_normal * 0.5);
+
+        if depth_tri > -margin {
+            let base = cyl_pos + axis * half_height - vec * 0.5;
+
+            let pos3 = base + side;
+            let contact_pos3 = pos3 + plane_normal * (depth_tri / 2.0);
+            contacts.push(make_contact_from_geoms(
+                model,
+                contact_pos3,
+                plane_normal,
+                depth_tri,
+                plane_geom,
+                cyl_geom,
+                margin,
+            ));
+
+            let pos4 = base - side;
+            let contact_pos4 = pos4 + plane_normal * (depth_tri / 2.0);
+            contacts.push(make_contact_from_geoms(
+                model,
+                contact_pos4,
+                plane_normal,
+                depth_tri,
+                plane_geom,
+                cyl_geom,
+                margin,
+            ));
+        }
+    }
+
+    contacts
 }
+
+/// sqrt(3) / 2 — used for equilateral triangle inscribed in the cap disk.
+const SQRT_3_OVER_2: f64 = 0.866_025_403_784_438_6;
 
 /// Ellipsoid-plane collision detection (internal helper).
 ///

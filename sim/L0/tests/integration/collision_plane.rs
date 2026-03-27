@@ -1252,3 +1252,175 @@ fn capsule_plane_upright_1_contact() {
         data.ncon
     );
 }
+
+// ============================================================================
+// Phase 1c: Cylinder-Plane Multi-Contact Tests
+// ============================================================================
+
+/// Horizontal cylinder on plane → 2 contacts (both cap rim points).
+///
+/// Configuration: radius=0.3, half_height=0.5, euler="0 90 0" (axis along X),
+/// center at z=0.25. Both cap rims at z = 0.25 - 0.3 = -0.05 (penetration = 0.05).
+/// Triangle points are above the plane (no extra contacts).
+#[test]
+fn cylinder_plane_horizontal_2_contacts() {
+    let mjcf = r#"
+        <mujoco model="cylinder_plane_horiz_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cyl" pos="0 0 0.25" euler="0 90 0">
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 2,
+        "Horizontal cylinder should produce 2 contacts (both cap rims), got {}",
+        data.ncon
+    );
+
+    let expected_depth = 0.05;
+    for (i, c) in data.contacts[..2].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+
+    // Both contacts should share the same upward normal
+    for c in &data.contacts[..2] {
+        assert!(
+            c.normal.z > 0.99,
+            "Contact normal should point up, got {:?}",
+            c.normal
+        );
+    }
+}
+
+/// Upright cylinder on plane → 3 contacts (1 rim + 2 triangle support).
+///
+/// Configuration: radius=0.3, half_height=0.5, upright (axis along Z),
+/// center at z=0.4. Bottom cap at z = -0.1, penetration = 0.1.
+/// Rim point + 2 equilateral triangle points on the bottom disk, all at
+/// the same depth (disk is parallel to plane).
+#[test]
+fn cylinder_plane_upright_3_contacts() {
+    let mjcf = r#"
+        <mujoco model="cylinder_plane_upright_3">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cyl" pos="0 0 0.4">
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Upright: 1 near-cap rim + 2 triangle. Far cap is above plane (no contact).
+    assert_eq!(
+        data.ncon, 3,
+        "Upright cylinder should produce 3 contacts (rim + 2 triangle), got {}",
+        data.ncon
+    );
+
+    // All 3 points are on the bottom disk at z=-0.1, so same depth
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..3].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Tilted cylinder (45°) on plane → 1 contact (near-cap rim only).
+///
+/// At 45° tilt, only the deepest near-cap rim point contacts the plane.
+/// The far-cap rim and triangle points are too far above the plane.
+#[test]
+fn cylinder_plane_tilted_1_contact() {
+    let mjcf = r#"
+        <mujoco model="cylinder_plane_tilted_1">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cyl" pos="0 0 0.5" euler="45 0 0">
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // At 45° tilt, only the near-cap rim contacts
+    assert_eq!(
+        data.ncon, 1,
+        "45° tilted cylinder should produce 1 contact, got {}",
+        data.ncon
+    );
+
+    // Deepest rim at z ≈ 0.5 - 0.5*cos(45°) - 0.3*sin(45°) ≈ -0.066
+    let depth = data.contacts[0].depth;
+    assert!(
+        depth > 0.04 && depth < 0.10,
+        "Tilted cylinder depth should be ~0.066, got {depth}"
+    );
+}
+
+/// Slightly tilted cylinder (10°) on plane → 3 contacts (rim + 2 triangle).
+///
+/// At shallow tilt, the near-cap rim contacts AND the two equilateral
+/// triangle support points on the near-cap disk also contact. The far cap
+/// is too far above to contribute.
+#[test]
+fn cylinder_plane_slight_tilt_3_contacts() {
+    let mjcf = r#"
+        <mujoco model="cylinder_plane_tilt10_3">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cyl" pos="0 0 0.4" euler="10 0 0">
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // At 10° tilt: near rim + 2 triangle (near-cap disk still faces plane)
+    assert_eq!(
+        data.ncon, 3,
+        "10° tilted cylinder should produce 3 contacts, got {}",
+        data.ncon
+    );
+
+    // Depths should vary: rim is deepest, triangles are shallower
+    let depths: Vec<f64> = data.contacts[..3].iter().map(|c| c.depth).collect();
+    let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_depth = depths.iter().cloned().fold(f64::INFINITY, f64::min);
+
+    assert!(
+        max_depth > min_depth + 0.01,
+        "Depths should vary on tilted plane: max={max_depth:.4}, min={min_depth:.4}"
+    );
+}

@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-27
 **Branch:** `feature/integrator-examples`
-**Status:** Phases 0, 1a, 1b complete. Phases 1c, 1d, 2, 3 remain.
+**Status:** Phases 0, 1a, 1b, 1c complete. Phases 1d, 2, 3 remain.
 
 ## Background
 
@@ -303,7 +303,7 @@ purely a collision-layer effort.
 |------|-----------------|------------|-------------|--------|-----|
 | Plane-Box | `mjc_PlaneBox` | 4 | `collide_with_plane` (Box arm) | 4 | ✅ **Done** (Phase 1a) |
 | Plane-Capsule | `mjc_PlaneCapsule` | 2 | `collide_with_plane` (Capsule arm) | 2 | ✅ **Done** (Phase 1b) |
-| Plane-Cylinder | `mjc_PlaneCylinder` | 4 | `collide_cylinder_plane_impl` | 1 | **Rim + disk points, not deepest** |
+| Plane-Cylinder | `mjc_PlaneCylinder` | 4 | `collide_cylinder_plane_impl` | 4 | ✅ **Done** (Phase 1c) |
 | Plane-Mesh | `mjc_PlaneConvex` | 3 | `collide_mesh_plane` | 1 | **Vertex walk, not deepest only** |
 | Box-Box | `_boxbox` | ~8 | `collide_box_box` | 1 | **SAT + face clip, not single support** |
 | Capsule-Box | `mjraw_CapsuleBox` | 2 | `collide_capsule_box` | 1 | **Both caps, not 5-point sample** |
@@ -396,7 +396,7 @@ Fix: test both independently, emit all penetrating endpoints (0, 1, or 2).
 
 **Code location:** `plane.rs:153–184`
 
-##### 1c. Plane-Cylinder → up to 4 contacts
+##### 1c. Plane-Cylinder → up to 4 contacts — DONE
 
 **Reference:** `mjc_PlaneCylinder` (`engine_collision_primitive.c`)
 
@@ -447,8 +447,30 @@ equilateral triangle of support on the bottom disk. For a tilted cylinder,
 contacts 1–2 give two rim points on opposite caps, and contacts 3–4 add
 lateral support if the tilt is shallow enough.
 
-**Current code location:** `plane.rs:183–196` → `collide_cylinder_plane_impl`
-at `plane.rs:249`. Currently returns 1 contact (deepest point only).
+**Algorithm (as implemented):**
+1. Orient axis toward plane (flip if `dot(normal, axis) > 0`), giving
+   `prjaxis <= 0` and near cap at `pos + axis * half_height`.
+2. Compute radial direction `vec`: projection of `-normal` onto the
+   radial plane, normalized and scaled to `radius`. Fallback to
+   cylinder's local X-axis if disk is parallel to plane.
+3. Contact 1 (near-cap rim): `pos + axis*hh + vec`, depth =
+   `-(dist0 + prjaxis*hh + vec·normal)`. Early exit if `depth <= -margin`.
+4. Contact 2 (far-cap rim): `pos - axis*hh + vec`, emitted if in margin.
+5. Contacts 3–4 (triangle): at `pos + axis*hh - 0.5*vec ± side` where
+   `side = cross(vec, axis) * (radius * √3/2 / |cross|)`.
+   Depth = `-(dist0 + prjaxis*hh - vec·normal*0.5)`, emitted if in margin.
+
+**Contact counts by orientation:**
+- Upright (axis ≈ normal): 3 contacts (1 rim + 2 triangle, same depth)
+- Near-upright (tilt < ~25°): 3 contacts (rim deepest, triangles shallower)
+- Tilted (tilt > ~30°): 1 contact (near rim only)
+- Horizontal (axis ⊥ normal): 2 contacts (both cap rims, same depth)
+
+**New tests:** `cylinder_plane_horizontal_2_contacts`,
+`cylinder_plane_upright_3_contacts`, `cylinder_plane_tilted_1_contact`,
+`cylinder_plane_slight_tilt_3_contacts`.
+
+**Code location:** `plane.rs:230–362`
 
 ##### 1d. Plane-Mesh → up to 3 contacts
 
@@ -701,10 +723,10 @@ Tests affected by multi-contact, organized by expected impact:
 
 | New test | Purpose |
 |----------|---------|
-| `test_plane_box_4_contacts` | Verify box on horizontal plane → 4 contacts |
-| `test_plane_box_tilted_4_contacts` | Verify box on tilted plane → 4 contacts with distinct depths |
-| `test_plane_capsule_2_contacts` | Verify horizontal capsule on plane → 2 contacts |
-| `test_plane_cylinder_multi_contacts` | Verify cylinder on plane → up to 4 contacts |
+| `test_plane_box_4_contacts` | Verify box on horizontal plane → 4 contacts | ✅ Done (1a) |
+| `test_plane_box_tilted_4_contacts` | Verify box on tilted plane → 4 contacts with distinct depths | ✅ Done (1a) |
+| `test_plane_capsule_2_contacts` | Verify horizontal capsule on plane → 2 contacts | ✅ Done (1b) |
+| `test_plane_cylinder_multi_contacts` | Verify cylinder on plane → up to 4 contacts | ✅ Done (1c) |
 | `test_box_box_face_face_contacts` | Verify face-face → 4 contacts |
 | `test_box_box_edge_edge_contact` | Verify edge-edge → 1 contact |
 | `test_box_stack_3_stable` | 3-box stack remains stable for 500 steps |
@@ -738,13 +760,13 @@ Phase 5 updates test thresholds and adds new multi-contact tests.
 | Phase 0: Return type unification | ~100 | ✅ Done (`2d1a564`) |
 | Phase 1a: Plane-Box | ~70 | ✅ Done (`6229155`) |
 | Phase 1b: Plane-Capsule | ~20 | ✅ Done |
-| Phase 1c: Plane-Cylinder | ~80 | Remaining |
+| Phase 1c: Plane-Cylinder | ~130 | ✅ Done |
 | Phase 1d: Plane-Mesh | ~40 | Remaining |
 | Phase 2: Box-box face clipping | ~450 | Remaining |
 | Phase 3: Capsule multi-contact | ~240 | Remaining |
 | Phase 4: Noslip validation | ~0 | Ongoing (validated with each phase) |
-| Phase 5: Test updates + new tests | ~200 | Ongoing (4 tests added with 1a) |
-| **Total remaining** | **~1,110** | |
+| Phase 5: Test updates + new tests | ~200 | Ongoing (10 tests added with 1a–1c) |
+| **Total remaining** | **~930** | |
 
 ### What does NOT change
 
