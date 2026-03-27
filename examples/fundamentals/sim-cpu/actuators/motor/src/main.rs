@@ -99,9 +99,9 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let force = d.sensor_data(m, 0)[0];
-                    let rev = d.sensor_data(m, 1)[0] / std::f64::consts::TAU;
-                    let vel = d.sensor_data(m, 2)[0];
+                    let force = d.sensor_scalar(m, "act_force").unwrap_or(0.0);
+                    let rev = d.sensor_scalar(m, "jpos").unwrap_or(0.0) / std::f64::consts::TAU;
+                    let vel = d.sensor_scalar(m, "jvel").unwrap_or(0.0);
                     format!("force={force:.3}  rev={rev:.1}  ω={vel:.1}")
                 }),
         )
@@ -164,9 +164,7 @@ fn setup(
 // ── Control ─────────────────────────────────────────────────────────────────
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
-    if !data.ctrl.is_empty() {
-        data.ctrl[0] = CTRL_TORQUE;
-    }
+    data.set_ctrl(0, CTRL_TORQUE);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -175,9 +173,9 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Motor Actuator");
 
-    let force = data.sensor_data(&model, 0)[0];
-    let pos = data.sensor_data(&model, 1)[0];
-    let vel = data.sensor_data(&model, 2)[0];
+    let force = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
+    let pos = data.sensor_scalar(&model, "jpos").unwrap_or(0.0);
+    let vel = data.sensor_scalar(&model, "jvel").unwrap_or(0.0);
 
     let rev = pos / std::f64::consts::TAU;
     hud.scalar("force", force, 1);
@@ -213,15 +211,10 @@ fn motor_diagnostics(
     mut val: ResMut<MotorValidation>,
 ) {
     let time = data.time;
-    let force_sensor = data.sensor_data(&model, 0)[0];
-    let theta = data.sensor_data(&model, 1)[0];
-    let vel = data.sensor_data(&model, 2)[0];
+    let force_sensor = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
+    let theta = data.sensor_scalar(&model, "jpos").unwrap_or(0.0);
+    let vel = data.sensor_scalar(&model, "jvel").unwrap_or(0.0);
     let act_force = data.actuator_force[0];
-
-    // Skip t=0 frame (actuator_force not yet computed before first step)
-    if time < 1e-6 {
-        return;
-    }
 
     // Check 1: force == ctrl (gain=1, no bias)
     let force_err = (act_force - CTRL_TORQUE).abs();

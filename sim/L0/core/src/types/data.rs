@@ -968,6 +968,42 @@ impl Data {
         &self.sensordata.as_slice()[start..start + len]
     }
 
+    /// Read the first element of a named sensor, returning `None` if the
+    /// sensor name is not found.
+    ///
+    /// Most sensors (`jointpos`, `actuatorfrc`, etc.) are 1D — this covers
+    /// the common case. For multi-dimensional sensors, use
+    /// `model.sensor_id(name)` + `data.sensor_data(model, id)`.
+    ///
+    /// **Performance:** O(hash lookup). Use index-based `sensor_data()`
+    /// in tight loops.
+    #[inline]
+    #[must_use]
+    pub fn sensor_scalar(&self, model: &Model, name: &str) -> Option<f64> {
+        let id = model.sensor_name_to_id.get(name).copied()?;
+        self.sensor_data(model, id).first().copied()
+    }
+
+    /// Set `ctrl[i]`, no-op if `i` is out of range.
+    #[inline]
+    pub fn set_ctrl(&mut self, i: usize, value: f64) {
+        if i < self.ctrl.len() {
+            self.ctrl[i] = value;
+        }
+    }
+
+    /// Read `actuator_moment[actuator_idx][dof_idx]`, returning `0.0` if
+    /// either index is out of range. The nested `Vec<DVector>` makes manual
+    /// bounds checking particularly noisy — this flattens it to one call.
+    #[inline]
+    #[must_use]
+    pub fn actuator_moment_val(&self, actuator_idx: usize, dof_idx: usize) -> f64 {
+        self.actuator_moment
+            .get(actuator_idx)
+            .and_then(|row| row.get(dof_idx).copied())
+            .unwrap_or(0.0)
+    }
+
     // ====================================================================
 
     /// Reset state to model defaults.

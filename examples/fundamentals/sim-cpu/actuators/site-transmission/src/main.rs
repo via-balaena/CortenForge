@@ -120,14 +120,9 @@ fn main() {
                 .report_at(17.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let q_shoulder = d.sensor_data(m, 1)[0];
-                    let q_elbow = d.sensor_data(m, 2)[0];
-                    let sh_moment =
-                        if d.actuator_moment.len() > 1 && !d.actuator_moment[1].is_empty() {
-                            d.actuator_moment[1][0]
-                        } else {
-                            0.0
-                        };
+                    let q_shoulder = d.sensor_scalar(m, "q_shoulder").unwrap_or(0.0);
+                    let q_elbow = d.sensor_scalar(m, "q_elbow").unwrap_or(0.0);
+                    let sh_moment = d.actuator_moment_val(1, 0);
                     format!(
                         "q_sh={:+6.1} deg  q_el={:5.1} deg  arm_sh={sh_moment:.4}",
                         q_shoulder.to_degrees(),
@@ -200,17 +195,14 @@ fn setup(
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
     let time = data.time;
-    if data.ctrl.len() < 2 {
-        return;
-    }
 
     // Actuator 0: elbow servo — oscillate 0 to pi/2 with period PERIOD
     let target_elbow =
         std::f64::consts::FRAC_PI_4 * (1.0 - (2.0 * std::f64::consts::PI * time / PERIOD).cos());
-    data.ctrl[0] = target_elbow;
+    data.set_ctrl(0, target_elbow);
 
     // Actuator 1: site force — constant ctrl = 1.0
-    data.ctrl[1] = 1.0;
+    data.set_ctrl(1, 1.0);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -219,19 +211,11 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Site Transmission");
 
-    let q_shoulder = data.sensor_data(&model, 1)[0];
-    let q_elbow = data.sensor_data(&model, 2)[0];
+    let q_shoulder = data.sensor_scalar(&model, "q_shoulder").unwrap_or(0.0);
+    let q_elbow = data.sensor_scalar(&model, "q_elbow").unwrap_or(0.0);
 
-    let (shoulder_moment, elbow_moment) = if data.actuator_moment.len() > SITE_ACT_IDX
-        && data.actuator_moment[SITE_ACT_IDX].len() >= 2
-    {
-        (
-            data.actuator_moment[SITE_ACT_IDX][0],
-            data.actuator_moment[SITE_ACT_IDX][1],
-        )
-    } else {
-        (0.0, 0.0)
-    };
+    let shoulder_moment = data.actuator_moment_val(SITE_ACT_IDX, 0);
+    let elbow_moment = data.actuator_moment_val(SITE_ACT_IDX, 1);
 
     hud.scalar("site force (N)", FORCE_N, 1);
     hud.scalar("moment arm -> shoulder (varies)", shoulder_moment, 4);
@@ -266,10 +250,6 @@ fn site_diagnostics(
 ) {
     let time = data.time;
 
-    if time < 1e-6 {
-        return;
-    }
-
     // Track actuator length (should always be 0 for site transmission)
     if data.actuator_length.len() > SITE_ACT_IDX {
         let len = data.actuator_length[SITE_ACT_IDX].abs();
@@ -279,21 +259,19 @@ fn site_diagnostics(
     }
 
     // Read moment arms for the site force actuator
-    if data.actuator_moment.len() > SITE_ACT_IDX && data.actuator_moment[SITE_ACT_IDX].len() >= 2 {
-        let sh_moment = data.actuator_moment[SITE_ACT_IDX][0];
-        let el_moment = data.actuator_moment[SITE_ACT_IDX][1];
+    let sh_moment = data.actuator_moment_val(SITE_ACT_IDX, 0);
+    let el_moment = data.actuator_moment_val(SITE_ACT_IDX, 1);
 
-        // Sample when elbow is near straight (second cycle, t ~ 10s)
-        if val.shoulder_moment_straight.is_none() && (9.5..10.5).contains(&time) {
-            val.shoulder_moment_straight = Some(sh_moment);
-            val.elbow_moment_straight = Some(el_moment);
-        }
+    // Sample when elbow is near straight (second cycle, t ~ 10s)
+    if val.shoulder_moment_straight.is_none() && (9.5..10.5).contains(&time) {
+        val.shoulder_moment_straight = Some(sh_moment);
+        val.elbow_moment_straight = Some(el_moment);
+    }
 
-        // Sample when elbow is near 90 deg (t ~ 15s)
-        if val.shoulder_moment_bent.is_none() && (14.5..15.5).contains(&time) {
-            val.shoulder_moment_bent = Some(sh_moment);
-            val.elbow_moment_bent = Some(el_moment);
-        }
+    // Sample when elbow is near 90 deg (t ~ 15s)
+    if val.shoulder_moment_bent.is_none() && (14.5..15.5).contains(&time) {
+        val.shoulder_moment_bent = Some(sh_moment);
+        val.elbow_moment_bent = Some(el_moment);
     }
 
     // Final report

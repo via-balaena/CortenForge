@@ -136,7 +136,7 @@ fn main() {
                 .print_every(1.0)
                 .display(|m, d| {
                     let act_deg = (if d.act.is_empty() { 0.0 } else { d.act[0] }).to_degrees();
-                    let theta_deg = d.sensor_data(m, 1)[0].to_degrees();
+                    let theta_deg = d.sensor_scalar(m, "jpos").unwrap_or(0.0).to_degrees();
                     let lag_deg = act_deg - theta_deg;
                     format!(
                         "act={act_deg:.1}\u{00b0}  \u{03b8}={theta_deg:.1}\u{00b0}  lag={lag_deg:.1}\u{00b0}"
@@ -202,9 +202,8 @@ fn setup(
 // ── Control ─────────────────────────────────────────────────────────────────
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
-    if !data.ctrl.is_empty() {
-        data.ctrl[0] = current_target(data.time);
-    }
+    let target = current_target(data.time);
+    data.set_ctrl(0, target);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -213,7 +212,10 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Activation Filter");
 
-    let theta_deg = data.sensor_data(&model, 1)[0].to_degrees();
+    let theta_deg = data
+        .sensor_scalar(&model, "jpos")
+        .unwrap_or(0.0)
+        .to_degrees();
     let act_deg = read_act(&data).to_degrees();
     let target_deg = current_target(data.time).to_degrees();
     let lag_deg = target_deg - act_deg;

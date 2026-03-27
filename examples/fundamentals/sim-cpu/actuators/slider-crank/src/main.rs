@@ -119,6 +119,9 @@ const ROD_L: f64 = 0.2;
 /// Slider body rest position along X (m).
 const SLIDER_X0: f64 = 0.50;
 
+/// Pin offset from slider body origin along X (m).
+const PIN_OFFSET: f64 = -0.25;
+
 /// Linkage actuator index (spin_motor=0, slider_servo=1, linkage=2).
 const LINKAGE_IDX: usize = 2;
 
@@ -148,19 +151,10 @@ fn main() {
                 .report_at(17.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let crank_angle = d.sensor_data(m, 1)[0];
-                    let slider_pos = d.sensor_data(m, 2)[0];
-                    let moment = if d.actuator_moment.len() > 2
-                        && !d.actuator_moment[2].is_empty()
-                    {
-                        d.actuator_moment[2][0]
-                    } else {
-                        0.0
-                    };
-                    let crank_deg = ((crank_angle.to_degrees() % 360.0) + 360.0) % 360.0;
-                    format!(
-                        "crank={crank_deg:5.1} deg  slider={slider_pos:+.4} m  arm={moment:.4}",
-                    )
+                    let angle = crank_deg(d.sensor_scalar(m, "crank_angle").unwrap_or(0.0));
+                    let slider = d.sensor_scalar(m, "slider_pos").unwrap_or(0.0);
+                    let arm = d.actuator_moment_val(2, 0);
+                    format!("crank={angle:5.1} deg  slider={slider:+.4} m  arm={arm:.4}")
                 }),
         )
         .add_systems(Startup, setup)
@@ -251,14 +245,30 @@ fn setup(
     commands.insert_resource(PhysicsData(data));
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Read the linkage transmission's moment arm on the crank joint.
+fn linkage_moment(data: &PhysicsData) -> f64 {
+    data.actuator_moment_val(LINKAGE_IDX, 0)
+}
+
+/// Read the linkage transmission's actuator length.
+fn linkage_length(data: &PhysicsData) -> f64 {
+    data.actuator_length
+        .get(LINKAGE_IDX)
+        .copied()
+        .unwrap_or(0.0)
+}
+
+/// Normalize crank angle to [0, 360) degrees.
+fn crank_deg(angle_rad: f64) -> f64 {
+    ((angle_rad.to_degrees() % 360.0) + 360.0) % 360.0
+}
+
 // ── Control ─────────────────────────────────────────────────────────────────
 
-/// Pin offset from slider body origin along X (m).
-const PIN_OFFSET: f64 = -0.25;
-
-/// Kinematic slider position for a slider-crank mechanism.
-/// The pin is at body-local (PIN_OFFSET, 0, 0), so its world X = SLIDER_X0 + slider_q + PIN_OFFSET.
-/// Solving: slider_q = sqrt(L^2 - r^2*sin^2(theta)) + r*cos(theta) - SLIDER_X0 - PIN_OFFSET
+/// Kinematic slider position for a slider-crank with offset wrist pin.
+/// pin_world_x = SLIDER_X0 + slider_q + PIN_OFFSET, solve for slider_q.
 fn kinematic_slider_pos(theta: f64) -> f64 {
     let sin_t = theta.sin();
     let cos_t = theta.cos();
@@ -268,11 +278,8 @@ fn kinematic_slider_pos(theta: f64) -> f64 {
 }
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
-    if data.ctrl.len() < 3 {
-        return;
-    }
     // Actuator 0: motor torque to spin the crank
-    data.ctrl[0] = MOTOR_TORQUE;
+    data.set_ctrl(0, MOTOR_TORQUE);
 
     // Actuator 1: servo drives piston along kinematic curve
     let theta = if data.qpos.is_empty() {
@@ -280,10 +287,10 @@ fn apply_ctrl(mut data: ResMut<PhysicsData>) {
     } else {
         data.qpos[0]
     };
-    data.ctrl[1] = kinematic_slider_pos(theta);
+    data.set_ctrl(1, kinematic_slider_pos(theta));
 
     // Actuator 2: linkage force (creates speed wobble on crank)
-    data.ctrl[2] = LINKAGE_CTRL;
+    data.set_ctrl(2, LINKAGE_CTRL);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -292,35 +299,21 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Slider-Crank");
 
-    let crank_angle = data.sensor_data(&model, 1)[0];
-    let slider_pos = data.sensor_data(&model, 2)[0];
-    let act_length = if data.actuator_length.len() > LINKAGE_IDX {
-        data.actuator_length[LINKAGE_IDX]
-    } else {
-        0.0
-    };
-    let moment_crank = if data.actuator_moment.len() > LINKAGE_IDX
-        && !data.actuator_moment[LINKAGE_IDX].is_empty()
-    {
-        data.actuator_moment[LINKAGE_IDX][0]
-    } else {
-        0.0
-    };
+    let crank_angle = data.sensor_scalar(&model, "crank_angle").unwrap_or(0.0);
+    let slider_pos = data.sensor_scalar(&model, "slider_pos").unwrap_or(0.0);
     let crank_speed = if data.qvel.is_empty() {
         0.0
     } else {
         data.qvel[0]
     };
 
-    let crank_deg = ((crank_angle.to_degrees() % 360.0) + 360.0) % 360.0;
-
     hud.scalar("motor torque (Nm)", MOTOR_TORQUE, 1);
     hud.scalar("linkage force (N)", LINKAGE_GAIN, 1);
-    hud.scalar("crank angle (deg)", crank_deg, 1);
+    hud.scalar("crank angle (deg)", crank_deg(crank_angle), 1);
     hud.scalar("crank speed (rad/s)", crank_speed, 2);
-    hud.scalar("moment arm (varies)", moment_crank, 4);
+    hud.scalar("moment arm (varies)", linkage_moment(&data), 4);
     hud.scalar("slider position (m)", slider_pos, 4);
-    hud.scalar("act. length (m)", act_length, 4);
+    hud.scalar("act. length (m)", linkage_length(&data), 4);
     hud.scalar("time (s)", data.time, 2);
 }
 
@@ -372,21 +365,8 @@ fn slider_crank_diagnostics(
     mut val: ResMut<SliderCrankValidation>,
 ) {
     let time = data.time;
-    let crank_angle = data.sensor_data(&model, 1)[0];
-    let slider_q = data.sensor_data(&model, 2)[0];
-    let act_length = if data.actuator_length.len() > LINKAGE_IDX {
-        data.actuator_length[LINKAGE_IDX]
-    } else {
-        0.0
-    };
-    let moment_crank = if data.actuator_moment.len() > LINKAGE_IDX
-        && !data.actuator_moment[LINKAGE_IDX].is_empty()
-    {
-        data.actuator_moment[LINKAGE_IDX][0]
-    } else {
-        0.0
-    };
 
+    // Skip initial transient (first 3 seconds of spin-up)
     if time < 3.0 {
         return;
     }
@@ -397,8 +377,12 @@ fn slider_crank_diagnostics(
         || val.length_samples.len() < (((time - 3.0) / sample_interval) as usize);
 
     if should_sample {
-        val.length_samples.push((crank_angle, slider_q, act_length));
-        val.moment_samples.push((crank_angle, moment_crank.abs()));
+        let crank_angle = data.sensor_scalar(&model, "crank_angle").unwrap_or(0.0);
+        let slider_q = data.sensor_scalar(&model, "slider_pos").unwrap_or(0.0);
+        val.length_samples
+            .push((crank_angle, slider_q, linkage_length(&data)));
+        val.moment_samples
+            .push((crank_angle, linkage_moment(&data).abs()));
     }
 
     // Final report

@@ -118,10 +118,10 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let force_a = d.sensor_data(m, 0)[0];
-                    let force_b = d.sensor_data(m, 1)[0];
-                    let vel_a = d.sensor_data(m, 2)[0];
-                    let vel_b = d.sensor_data(m, 3)[0];
+                    let force_a = d.sensor_scalar(m, "force_a").unwrap_or(0.0);
+                    let force_b = d.sensor_scalar(m, "force_b").unwrap_or(0.0);
+                    let vel_a = d.sensor_scalar(m, "vel_a").unwrap_or(0.0);
+                    let vel_b = d.sensor_scalar(m, "vel_b").unwrap_or(0.0);
                     format!("fA={force_a:.3}  fB={force_b:.3}  vA={vel_a:.3}  vB={vel_b:.3}")
                 }),
         )
@@ -192,11 +192,9 @@ fn setup(
 // ── Control ─────────────────────────────────────────────────────────────────
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
-    if data.ctrl.len() >= 2 {
-        let ctrl_val = if data.time < 5.0 { 1.0 } else { 5.0 };
-        data.ctrl[0] = ctrl_val;
-        data.ctrl[1] = ctrl_val;
-    }
+    let ctrl_val = if data.time < 5.0 { 1.0 } else { 5.0 };
+    data.set_ctrl(0, ctrl_val);
+    data.set_ctrl(1, ctrl_val);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -205,10 +203,10 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Gear & Limits");
 
-    let force_a = data.sensor_data(&model, 0)[0];
-    let force_b = data.sensor_data(&model, 1)[0];
-    let vel_a = data.sensor_data(&model, 2)[0];
-    let vel_b = data.sensor_data(&model, 3)[0];
+    let force_a = data.sensor_scalar(&model, "force_a").unwrap_or(0.0);
+    let force_b = data.sensor_scalar(&model, "force_b").unwrap_or(0.0);
+    let vel_a = data.sensor_scalar(&model, "vel_a").unwrap_or(0.0);
+    let vel_b = data.sensor_scalar(&model, "vel_b").unwrap_or(0.0);
     let ctrl_val = if data.time < 5.0 { 1.0 } else { 5.0 };
 
     let torque_a = force_a; // gear=1
@@ -253,15 +251,10 @@ fn gear_diagnostics(
 ) {
     let time = data.time;
 
-    // Skip t=0 frame (actuator_force not yet computed before first step)
-    if time < 1e-6 {
-        return;
-    }
-
-    let force_a = data.sensor_data(&model, 0)[0];
-    let _force_b = data.sensor_data(&model, 1)[0];
-    let vel_a = data.sensor_data(&model, 2)[0];
-    let vel_b = data.sensor_data(&model, 3)[0];
+    let force_a = data.sensor_scalar(&model, "force_a").unwrap_or(0.0);
+    let _force_b = data.sensor_scalar(&model, "force_b").unwrap_or(0.0);
+    let vel_a = data.sensor_scalar(&model, "vel_a").unwrap_or(0.0);
+    let vel_b = data.sensor_scalar(&model, "vel_b").unwrap_or(0.0);
     let act_force_a = data.actuator_force[0];
     let act_force_b = data.actuator_force[1];
 

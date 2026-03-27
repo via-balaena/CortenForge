@@ -106,9 +106,9 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let force = d.sensor_data(m, 0)[0];
-                    let pos = d.sensor_data(m, 1)[0];
-                    let vel = d.sensor_data(m, 2)[0];
+                    let force = d.sensor_scalar(m, "act_force").unwrap_or(0.0);
+                    let pos = d.sensor_scalar(m, "jpos").unwrap_or(0.0);
+                    let vel = d.sensor_scalar(m, "jvel").unwrap_or(0.0);
                     format!("force={force:.3}  theta={pos:.4}  omega={vel:.4}")
                 }),
         )
@@ -180,9 +180,8 @@ fn setup(
 const CTRL_DELAY: f64 = 3.0;
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
-    if !data.ctrl.is_empty() {
-        data.ctrl[0] = if data.time < CTRL_DELAY { 0.0 } else { TARGET };
-    }
+    let target = if data.time < CTRL_DELAY { 0.0 } else { TARGET };
+    data.set_ctrl(0, target);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -191,8 +190,8 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Position Servo");
 
-    let force = data.sensor_data(&model, 0)[0];
-    let pos = data.sensor_data(&model, 1)[0];
+    let force = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
+    let pos = data.sensor_scalar(&model, "jpos").unwrap_or(0.0);
     let active = data.time >= CTRL_DELAY;
 
     let target_deg = if active { TARGET.to_degrees() } else { 0.0 };
@@ -224,14 +223,9 @@ fn servo_diagnostics(
     mut val: ResMut<ServoValidation>,
 ) {
     let time = data.time;
-    let theta = data.sensor_data(&model, 1)[0];
-    let omega = data.sensor_data(&model, 2)[0];
+    let theta = data.sensor_scalar(&model, "jpos").unwrap_or(0.0);
+    let omega = data.sensor_scalar(&model, "jvel").unwrap_or(0.0);
     let act_force = data.actuator_force[0];
-
-    // Skip t=0 frame (actuator_force not yet computed before first step)
-    if time < 1e-6 {
-        return;
-    }
 
     // Read kv once from model (converted from dampratio by compute_actuator_params)
     if val.kv == 0.0 {

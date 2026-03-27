@@ -109,8 +109,8 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let force = d.sensor_data(m, 0)[0];
-                    let vel = d.sensor_data(m, 1)[0];
+                    let force = d.sensor_scalar(m, "act_force").unwrap_or(0.0);
+                    let vel = d.sensor_scalar(m, "jvel").unwrap_or(0.0);
                     let rev = d.qpos[0] / std::f64::consts::TAU;
                     format!("force={force:+.2}  ω={vel:.2}  rev={rev:.1}")
                 }),
@@ -173,9 +173,7 @@ fn setup(
 // ── Control ─────────────────────────────────────────────────────────────────
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
-    if !data.ctrl.is_empty() {
-        data.ctrl[0] = TARGET_VEL;
-    }
+    data.set_ctrl(0, TARGET_VEL);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -184,8 +182,8 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Velocity Servo");
 
-    let force = data.sensor_data(&model, 0)[0];
-    let vel = data.sensor_data(&model, 1)[0];
+    let force = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
+    let vel = data.sensor_scalar(&model, "jvel").unwrap_or(0.0);
     let rev = data.qpos[0] / std::f64::consts::TAU;
 
     hud.scalar("target", TARGET_VEL, 1);
@@ -219,14 +217,9 @@ fn velocity_servo_diagnostics(
     mut val: ResMut<VelocityServoValidation>,
 ) {
     let time = data.time;
-    let force = data.sensor_data(&model, 0)[0];
-    let omega = data.sensor_data(&model, 1)[0];
+    let force = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
+    let omega = data.sensor_scalar(&model, "jvel").unwrap_or(0.0);
     let act_force = data.actuator_force[0];
-
-    // Skip t=0 frame
-    if time < 1e-6 {
-        return;
-    }
 
     // Track max velocity deviation (after initial spinup)
     if time > 0.5 {

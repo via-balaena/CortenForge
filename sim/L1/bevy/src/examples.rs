@@ -447,8 +447,10 @@ pub fn validation_system(
                 check
             })
             .collect();
-        let title = format!("Validation Report (t={report_time:.0}s)");
-        let _ = print_report(&title, &checks);
+        if !checks.is_empty() {
+            let title = format!("Validation Report (t={report_time:.0}s)");
+            let _ = print_report(&title, &checks);
+        }
     }
 }
 

@@ -127,8 +127,8 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let force = d.sensor_data(m, 0)[0];
-                    let pos = d.sensor_data(m, 1)[0];
+                    let force = d.sensor_scalar(m, "act_force").unwrap_or(0.0);
+                    let pos = d.sensor_scalar(m, "jpos").unwrap_or(0.0);
                     let act = if d.act.is_empty() { 0.0 } else { d.act[0] };
                     format!("act={act:.3}  x={pos:.4}m  F={force:.4}")
                 }),
@@ -231,9 +231,8 @@ fn current_pressure(time: f64) -> f64 {
 }
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
-    if !data.ctrl.is_empty() {
-        data.ctrl[0] = current_pressure(data.time);
-    }
+    let pressure = current_pressure(data.time);
+    data.set_ctrl(0, pressure);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -242,8 +241,8 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Cylinder Actuator");
 
-    let force = data.sensor_data(&model, 0)[0];
-    let pos = data.sensor_data(&model, 1)[0];
+    let force = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
+    let pos = data.sensor_scalar(&model, "jpos").unwrap_or(0.0);
     let act = read_act(&data);
 
     let pressure = current_pressure(data.time);
@@ -270,14 +269,10 @@ fn cylinder_diagnostics(
     mut val: ResMut<CylinderValidation>,
 ) {
     let time = data.time;
-    let force_sensor = data.sensor_data(&model, 0)[0];
-    let pos = data.sensor_data(&model, 1)[0];
-    let vel = data.sensor_data(&model, 2)[0];
+    let force_sensor = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
+    let pos = data.sensor_scalar(&model, "jpos").unwrap_or(0.0);
+    let vel = data.sensor_scalar(&model, "jvel").unwrap_or(0.0);
     let act = read_act(&data);
-
-    if time < 1e-6 {
-        return;
-    }
 
     let dist_to_tau = (time - TAU).abs();
     let current_best = val.tau_sample.map_or(f64::MAX, |(t, _)| (t - TAU).abs());

@@ -109,8 +109,8 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let force = d.sensor_data(m, 0)[0];
-                    let vel = d.sensor_data(m, 1)[0];
+                    let force = d.sensor_scalar(m, "act_force").unwrap_or(0.0);
+                    let vel = d.sensor_scalar(m, "jvel").unwrap_or(0.0);
                     format!("force={force:.3}  ω={vel:.2}")
                 }),
         )
@@ -178,9 +178,7 @@ fn setup(
 // ── Control ─────────────────────────────────────────────────────────────────
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
-    if !data.ctrl.is_empty() {
-        data.ctrl[0] = CTRL_DAMPING;
-    }
+    data.set_ctrl(0, CTRL_DAMPING);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -189,8 +187,8 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Damper Actuator");
 
-    let brake = data.sensor_data(&model, 0)[0];
-    let vel = data.sensor_data(&model, 1)[0];
+    let brake = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
+    let vel = data.sensor_scalar(&model, "jvel").unwrap_or(0.0);
     let expected_vel = OMEGA_0 * (-data.time / TAU).exp();
     let decay_pct = (1.0 - vel / OMEGA_0) * 100.0;
 
@@ -222,13 +220,8 @@ fn damper_diagnostics(
     mut val: ResMut<DamperValidation>,
 ) {
     let time = data.time;
-    let force_sensor = data.sensor_data(&model, 0)[0];
-    let vel = data.sensor_data(&model, 1)[0];
-
-    // Skip t=0 frame (actuator_force not yet computed before first step)
-    if time < 1e-6 {
-        return;
-    }
+    let force_sensor = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
+    let vel = data.sensor_scalar(&model, "jvel").unwrap_or(0.0);
 
     // Collect samples every ~50ms for the first 8s (covers ~3 time constants)
     if time <= 8.0 {

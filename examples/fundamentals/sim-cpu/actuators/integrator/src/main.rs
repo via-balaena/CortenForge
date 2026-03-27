@@ -120,7 +120,7 @@ fn main() {
                 .print_every(1.0)
                 .display(|m, d| {
                     let act_deg = d.act[0].to_degrees();
-                    let theta_deg = d.sensor_data(m, 1)[0].to_degrees();
+                    let theta_deg = d.sensor_scalar(m, "jpos").unwrap_or(0.0).to_degrees();
                     let phase = if d.time < 3.0 {
                         "ramp"
                     } else if d.time < 8.0 {
@@ -195,7 +195,7 @@ fn apply_ctrl(data: ResMut<PhysicsData>) {
     }
     let time = data.time;
     let data = data.into_inner();
-    data.ctrl[0] = current_ctrl(time);
+    data.set_ctrl(0, current_ctrl(time));
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -204,7 +204,10 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Integrator Actuator");
 
-    let theta_deg = data.sensor_data(&model, 1)[0].to_degrees();
+    let theta_deg = data
+        .sensor_scalar(&model, "jpos")
+        .unwrap_or(0.0)
+        .to_degrees();
     let act_deg = data.act[0].to_degrees();
     let ctrl = current_ctrl(data.time);
 
@@ -237,10 +240,6 @@ fn integrator_diagnostics(
     let act = data.act[0];
     let act_dot = data.act_dot[0];
     let ctrl = data.ctrl[0];
-
-    if time < 1e-6 {
-        return;
-    }
 
     // Track min/max activation
     if act < val.act_min {
