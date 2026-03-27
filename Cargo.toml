@@ -59,6 +59,15 @@ members = [
     "examples/fundamentals/sim-cpu/actuators/slider-crank",
     "examples/fundamentals/sim-cpu/multi-scene-test",
 
+    # Examples — fundamentals / sim-cpu / integrators
+    "examples/fundamentals/sim-cpu/integrators/comparison",
+    "examples/fundamentals/sim-cpu/integrators/comparison-visual",
+    "examples/fundamentals/sim-cpu/integrators/standalone/euler",
+    "examples/fundamentals/sim-cpu/integrators/standalone/rk4",
+    "examples/fundamentals/sim-cpu/integrators/standalone/implicit",
+    "examples/fundamentals/sim-cpu/integrators/standalone/implicit-fast",
+    "examples/fundamentals/sim-cpu/integrators/standalone/implicit-spring-damper",
+
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
     "examples/sdf-physics/cpu/02-thin-grid",
