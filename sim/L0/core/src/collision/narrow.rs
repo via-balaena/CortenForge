@@ -100,25 +100,19 @@ pub fn collide_geoms(
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
         return collide_with_plane(
             model, geom1, geom2, type1, type2, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: sphere-sphere collision (analytical, more robust than GJK/EPA)
     if type1 == GeomType::Sphere && type2 == GeomType::Sphere {
-        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2, margin)
-            .into_iter()
-            .collect();
+        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2, margin);
     }
 
     // Special case: capsule-capsule collision (analytical, much faster than GJK/EPA)
     if type1 == GeomType::Capsule && type2 == GeomType::Capsule {
         return collide_capsule_capsule(
             model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: sphere-capsule collision
@@ -127,9 +121,7 @@ pub fn collide_geoms(
     {
         return collide_sphere_capsule(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: sphere-box collision (analytical)
@@ -138,9 +130,7 @@ pub fn collide_geoms(
     {
         return collide_sphere_box(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: capsule-box collision (analytical)
@@ -149,18 +139,14 @@ pub fn collide_geoms(
     {
         return collide_capsule_box(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: box-box collision (SAT)
     if type1 == GeomType::Box && type2 == GeomType::Box {
         return collide_box_box(
             model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: cylinder-sphere collision (analytical)
@@ -169,9 +155,7 @@ pub fn collide_geoms(
     {
         return collide_cylinder_sphere(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: cylinder-capsule collision (analytical with GJK/EPA fallback)
@@ -179,10 +163,11 @@ pub fn collide_geoms(
     if (type1 == GeomType::Cylinder && type2 == GeomType::Capsule)
         || (type1 == GeomType::Capsule && type2 == GeomType::Cylinder)
     {
-        if let Some(contact) = collide_cylinder_capsule(
+        let contacts = collide_cylinder_capsule(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        ) {
-            return vec![contact];
+        );
+        if !contacts.is_empty() {
+            return contacts;
         }
         // Fall through to GJK/EPA for degenerate cases (intersecting/parallel axes, cap collisions)
     }

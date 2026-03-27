@@ -19,7 +19,7 @@ pub fn collide_sphere_sphere(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     let radius1 = size1.x;
     let radius2 = size2.x;
 
@@ -43,7 +43,7 @@ pub fn collide_sphere_sphere(
         // (midpoint of penetration region)
         let contact_pos = pos1 + normal * (radius1 - penetration * 0.5);
 
-        Some(make_contact_from_geoms(
+        vec![make_contact_from_geoms(
             model,
             contact_pos,
             normal,
@@ -51,9 +51,9 @@ pub fn collide_sphere_sphere(
             geom1,
             geom2,
             margin,
-        ))
+        )]
     } else {
-        None
+        vec![]
     }
 }
 
@@ -74,7 +74,7 @@ pub fn collide_capsule_capsule(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Capsule parameters: size.x = radius, size.y = half_length
     let radius1 = size1.x;
     let half_len1 = size1.y;
@@ -110,7 +110,7 @@ pub fn collide_capsule_capsule(
         };
         let contact_pos = closest1 + normal * (radius1 - penetration * 0.5);
 
-        Some(make_contact_from_geoms(
+        vec![make_contact_from_geoms(
             model,
             contact_pos,
             normal,
@@ -118,9 +118,9 @@ pub fn collide_capsule_capsule(
             geom1,
             geom2,
             margin,
-        ))
+        )]
     } else {
-        None
+        vec![]
     }
 }
 
@@ -138,7 +138,7 @@ pub fn collide_sphere_capsule(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Determine which is sphere and which is capsule
     let (
         sphere_geom,
@@ -198,7 +198,7 @@ pub fn collide_sphere_capsule(
             -normal
         };
 
-        Some(make_contact_from_geoms(
+        vec![make_contact_from_geoms(
             model,
             contact_pos,
             final_normal,
@@ -206,9 +206,9 @@ pub fn collide_sphere_capsule(
             g1,
             g2,
             margin,
-        ))
+        )]
     } else {
-        None
+        vec![]
     }
 }
 
@@ -228,7 +228,7 @@ pub fn collide_sphere_box(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Determine which is sphere and which is box
     let (sphere_geom, box_geom, sphere_pos, box_pos, box_mat, sphere_radius, box_half) =
         if type1 == GeomType::Sphere {
@@ -298,7 +298,7 @@ pub fn collide_sphere_box(
             -normal
         };
 
-        Some(make_contact_from_geoms(
+        vec![make_contact_from_geoms(
             model,
             contact_pos,
             final_normal,
@@ -306,8 +306,8 @@ pub fn collide_sphere_box(
             g1,
             g2,
             margin,
-        ))
+        )]
     } else {
-        None
+        vec![]
     }
 }

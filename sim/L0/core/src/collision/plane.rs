@@ -26,7 +26,7 @@ pub fn collide_with_plane(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Determine which is the plane
     let (
         plane_geom,
@@ -64,7 +64,7 @@ pub fn collide_with_plane(
                 // But for force calculation, we want the force to push the ball OUT of the plane,
                 // so we use +plane_normal for the contact force direction.
                 // Store the "push direction" as the normal to simplify force calculation.
-                Some(make_contact_from_geoms(
+                vec![make_contact_from_geoms(
                     model,
                     contact_pos,
                     plane_normal, // Points UP, away from plane (push direction)
@@ -72,9 +72,9 @@ pub fn collide_with_plane(
                     plane_geom,
                     other_geom,
                     margin,
-                ))
+                )]
             } else {
-                None
+                vec![]
             }
         }
         GeomType::Box => {
@@ -128,7 +128,7 @@ pub fn collide_with_plane(
                 // plane_surface = lowest_corner + normal * depth
                 // midpoint = lowest_corner + normal * depth / 2
                 let contact_pos = lowest_corner + plane_normal * (depth / 2.0);
-                Some(make_contact_from_geoms(
+                vec![make_contact_from_geoms(
                     model,
                     contact_pos,
                     plane_normal,
@@ -136,9 +136,9 @@ pub fn collide_with_plane(
                     plane_geom,
                     other_geom,
                     margin,
-                ))
+                )]
             } else {
-                None
+                vec![]
             }
         }
         GeomType::Capsule => {
@@ -167,7 +167,7 @@ pub fn collide_with_plane(
                 // plane_surface   = closest_end - normal * min_dist
                 // midpoint = closest_end - normal * midpoint(radius, min_dist)
                 let contact_pos = closest_end - plane_normal * f64::midpoint(radius, min_dist);
-                Some(make_contact_from_geoms(
+                vec![make_contact_from_geoms(
                     model,
                     contact_pos,
                     plane_normal,
@@ -175,9 +175,9 @@ pub fn collide_with_plane(
                     plane_geom,
                     other_geom,
                     margin,
-                ))
+                )]
             } else {
-                None
+                vec![]
             }
         }
         GeomType::Cylinder => {
@@ -216,7 +216,7 @@ pub fn collide_with_plane(
         ),
         // Plane-plane: two infinite half-spaces. Intersection is either empty, a plane,
         // or a half-space—none of which produce a meaningful contact point.
-        GeomType::Plane => None,
+        GeomType::Plane => vec![],
         // Hfield pairs intercepted at broadphase level (collide_hfield_multi)
         GeomType::Hfield => unreachable!("hfield pairs routed before plane dispatch"),
         // SDF is dispatched before plane in collide_geoms()
@@ -243,7 +243,7 @@ pub fn collide_with_plane(
 /// - `cyl_size`: [radius, half_height, unused]
 ///
 /// # Returns
-/// `Some(Contact)` if cylinder penetrates plane, `None` otherwise.
+/// `Vec` with one contact if cylinder penetrates plane, empty otherwise.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn collide_cylinder_plane_impl(
@@ -256,7 +256,7 @@ fn collide_cylinder_plane_impl(
     cyl_mat: Matrix3<f64>,
     cyl_size: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     let radius = cyl_size.x;
     let half_height = cyl_size.y;
 
@@ -324,7 +324,7 @@ fn collide_cylinder_plane_impl(
     let depth = -signed_dist;
 
     if depth <= -margin {
-        return None;
+        return vec![];
     }
 
     // Contact position: midpoint between cylinder surface and plane surface.
@@ -333,7 +333,7 @@ fn collide_cylinder_plane_impl(
     // midpoint = deepest_point + normal * depth / 2
     let contact_pos = deepest_point + plane_normal * (depth / 2.0);
 
-    Some(make_contact_from_geoms(
+    vec![make_contact_from_geoms(
         model,
         contact_pos,
         plane_normal,
@@ -341,7 +341,7 @@ fn collide_cylinder_plane_impl(
         plane_geom,
         cyl_geom,
         margin,
-    ))
+    )]
 }
 
 /// Ellipsoid-plane collision detection (internal helper).
@@ -371,7 +371,7 @@ fn collide_cylinder_plane_impl(
 /// - `ell_radii`: Ellipsoid radii [rx, ry, rz]
 ///
 /// # Returns
-/// `Some(Contact)` if ellipsoid penetrates plane, `None` otherwise.
+/// `Vec` with one contact if ellipsoid penetrates plane, empty otherwise.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn collide_ellipsoid_plane_impl(
@@ -384,7 +384,7 @@ fn collide_ellipsoid_plane_impl(
     ell_mat: Matrix3<f64>,
     ell_radii: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Transform plane normal to ellipsoid local frame
     let local_normal = ell_mat.transpose() * plane_normal;
 
@@ -400,7 +400,7 @@ fn collide_ellipsoid_plane_impl(
 
     if scale_norm < GEOM_EPSILON {
         // Degenerate case: normal perpendicular to all radii (shouldn't happen)
-        return None;
+        return vec![];
     }
 
     // Support point on ellipsoid surface in direction toward plane (negative normal)
@@ -418,7 +418,7 @@ fn collide_ellipsoid_plane_impl(
     let depth = -signed_dist; // Positive = penetrating
 
     if depth <= -margin {
-        return None;
+        return vec![];
     }
 
     // Contact position: midpoint between ellipsoid surface and plane surface.
@@ -427,7 +427,7 @@ fn collide_ellipsoid_plane_impl(
     // midpoint = world_support + normal * depth / 2
     let contact_pos = world_support + plane_normal * (depth / 2.0);
 
-    Some(make_contact_from_geoms(
+    vec![make_contact_from_geoms(
         model,
         contact_pos,
         plane_normal,
@@ -435,7 +435,7 @@ fn collide_ellipsoid_plane_impl(
         plane_geom,
         ell_geom,
         margin,
-    ))
+    )]
 }
 
 // ============================================================================
@@ -499,7 +499,7 @@ mod primitive_collision_tests {
         let cyl_pos = Vector3::new(0.0, 0.0, 0.4); // Center at z=0.4
         let cyl_mat = Matrix3::identity(); // Axis along +Z (upright)
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -514,8 +514,8 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Cylinder should contact plane");
-        let c = contact.unwrap();
+        assert!(!contacts.is_empty(), "Cylinder should contact plane");
+        let c = &contacts[0];
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
         assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
     }
@@ -534,7 +534,7 @@ mod primitive_collision_tests {
         let cyl_pos = Vector3::new(0.0, 0.0, 1.0); // Center at z=1.0, bottom at z=0.5
         let cyl_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -550,7 +550,7 @@ mod primitive_collision_tests {
         );
 
         assert!(
-            contact.is_none(),
+            contacts.is_empty(),
             "Cylinder should not contact plane when above"
         );
     }
@@ -615,7 +615,7 @@ mod primitive_collision_tests {
         let bottom_rim_z = bottom_center_z + rim_dir_z * radius;
         let expected_depth = -bottom_rim_z;
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -630,8 +630,8 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Tilted cylinder should contact plane");
-        let c = contact.unwrap();
+        assert!(!contacts.is_empty(), "Tilted cylinder should contact plane");
+        let c = &contacts[0];
         assert_relative_eq!(c.depth, expected_depth, epsilon = 1e-10);
         assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
     }
@@ -655,7 +655,7 @@ mod primitive_collision_tests {
         // Position center at z = radius - epsilon for penetration
         let cyl_pos = Vector3::new(0.0, 0.0, 0.2); // Below radius, should penetrate
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -671,10 +671,10 @@ mod primitive_collision_tests {
         );
 
         assert!(
-            contact.is_some(),
+            !contacts.is_empty(),
             "Horizontal cylinder should contact plane"
         );
-        let c = contact.unwrap();
+        let c = &contacts[0];
         // Penetration should be radius - z_center = 0.3 - 0.2 = 0.1
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
     }
@@ -702,7 +702,7 @@ mod primitive_collision_tests {
         let ell_pos = Vector3::new(0.0, 0.0, 0.4); // Center at z=0.4
         let ell_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -717,8 +717,11 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Ellipsoid (sphere) should contact plane");
-        let c = contact.unwrap();
+        assert!(
+            !contacts.is_empty(),
+            "Ellipsoid (sphere) should contact plane"
+        );
+        let c = &contacts[0];
         // Penetration = radius - z = 0.5 - 0.4 = 0.1
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
         assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
@@ -738,7 +741,7 @@ mod primitive_collision_tests {
         let ell_pos = Vector3::new(0.0, 0.0, 0.7); // Bottom at z = -0.1
         let ell_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -753,8 +756,8 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Tall ellipsoid should contact plane");
-        let c = contact.unwrap();
+        assert!(!contacts.is_empty(), "Tall ellipsoid should contact plane");
+        let c = &contacts[0];
         // Penetration = z_radius - z = 0.8 - 0.7 = 0.1
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
     }
@@ -773,7 +776,7 @@ mod primitive_collision_tests {
         let ell_pos = Vector3::new(0.0, 0.0, 0.15); // Bottom at z = -0.05 (penetrating)
         let ell_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -788,8 +791,8 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Wide ellipsoid should contact plane");
-        let c = contact.unwrap();
+        assert!(!contacts.is_empty(), "Wide ellipsoid should contact plane");
+        let c = &contacts[0];
         // Penetration = z_radius - z = 0.2 - 0.15 = 0.05
         assert_relative_eq!(c.depth, 0.05, epsilon = 1e-6);
     }
@@ -841,7 +844,7 @@ mod primitive_collision_tests {
         let world_support_z = ell_pos.z + local_support_y * sin_a + local_support_z * cos_a;
         let expected_depth = -world_support_z;
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -856,8 +859,11 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Rotated ellipsoid should contact plane");
-        let c = contact.unwrap();
+        assert!(
+            !contacts.is_empty(),
+            "Rotated ellipsoid should contact plane"
+        );
+        let c = &contacts[0];
         assert_relative_eq!(c.depth, expected_depth, epsilon = 1e-10);
         assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
     }
@@ -876,7 +882,7 @@ mod primitive_collision_tests {
         let ell_pos = Vector3::new(0.0, 0.0, 1.0); // Far above plane
         let ell_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -892,7 +898,7 @@ mod primitive_collision_tests {
         );
 
         assert!(
-            contact.is_none(),
+            contacts.is_empty(),
             "Ellipsoid should not contact plane when above"
         );
     }
@@ -915,7 +921,7 @@ mod primitive_collision_tests {
         let cyl_pos = Vector3::new(0.0, 0.0, 0.4); // Bottom at z = -0.1
         let cyl_mat = Matrix3::identity(); // Axis along Z (parallel to plane normal)
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -932,10 +938,10 @@ mod primitive_collision_tests {
 
         // Should still detect contact at the bottom rim
         assert!(
-            contact.is_some(),
+            !contacts.is_empty(),
             "Should detect contact even when axis parallel to normal"
         );
-        let c = contact.unwrap();
+        let c = &contacts[0];
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
     }
 
@@ -953,7 +959,7 @@ mod primitive_collision_tests {
         let cyl_pos = Vector3::new(0.0, 0.0, 0.4);
         let cyl_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -966,8 +972,9 @@ mod primitive_collision_tests {
             model.geom_size[0],
             model.geom_size[1],
             0.0, // margin
-        )
-        .expect("should have contact");
+        );
+        assert!(!contacts.is_empty(), "should have contact");
+        let contact = &contacts[0];
 
         // Normal should be unit length
         assert_relative_eq!(contact.normal.norm(), 1.0, epsilon = 1e-10);

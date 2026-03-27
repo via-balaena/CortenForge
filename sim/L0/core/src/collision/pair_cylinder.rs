@@ -26,7 +26,7 @@ pub fn collide_cylinder_sphere(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Determine which is cylinder and which is sphere
     // Note: sphere doesn't use its rotation matrix, but we need mat2 for the cylinder case
     let (cyl_geom, cyl_pos, cyl_mat, cyl_size, sph_geom, sph_pos, sph_radius) =
@@ -106,7 +106,7 @@ pub fn collide_cylinder_sphere(
     let penetration = sph_radius - dist;
 
     if penetration <= -margin {
-        return None;
+        return vec![];
     }
 
     // Contact position is on the surface between the two shapes
@@ -119,7 +119,7 @@ pub fn collide_cylinder_sphere(
         (sph_geom, cyl_geom, -normal)
     };
 
-    Some(make_contact_from_geoms(
+    vec![make_contact_from_geoms(
         model,
         contact_pos,
         final_normal,
@@ -127,7 +127,7 @@ pub fn collide_cylinder_sphere(
         g1,
         g2,
         margin,
-    ))
+    )]
 }
 
 /// Cylinder-capsule collision detection.
@@ -140,7 +140,7 @@ pub fn collide_cylinder_sphere(
 ///
 /// This algorithm treats the cylinder's curved surface correctly but does not
 /// handle collisions with the flat caps. For cap collisions (capsule directly
-/// above/below cylinder), returns `None` to fall through to GJK/EPA.
+/// above/below cylinder), returns empty `Vec` to fall through to GJK/EPA.
 ///
 /// Both shapes have their axis along local Z.
 #[allow(clippy::too_many_arguments)]
@@ -156,7 +156,7 @@ pub fn collide_cylinder_capsule(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Identify cylinder and capsule
     let (cyl_geom, cyl_pos, cyl_mat, cyl_size, cap_geom, cap_pos, cap_mat, cap_size) =
         if type1 == GeomType::Cylinder {
@@ -191,7 +191,7 @@ pub fn collide_cylinder_capsule(
     if dist < GEOM_EPSILON {
         // Axes intersect or nearly intersect - degenerate case where analytical
         // solution is unreliable. Return None to fall through to GJK/EPA.
-        return None;
+        return vec![];
     }
 
     let normal = diff / dist;
@@ -204,7 +204,7 @@ pub fn collide_cylinder_capsule(
     let normal_along_axis = normal.dot(&cyl_axis).abs();
     if cyl_closest_on_cap && normal_along_axis > CAP_COLLISION_THRESHOLD {
         // Cap collision - this algorithm doesn't handle flat caps correctly
-        return None;
+        return vec![];
     }
 
     // Closest point on cylinder surface (in direction of capsule)
@@ -215,7 +215,7 @@ pub fn collide_cylinder_capsule(
     let penetration = cap_radius - surface_to_cap_dist;
 
     if penetration <= -margin {
-        return None;
+        return vec![];
     }
 
     // Contact position is between the two surfaces
@@ -228,7 +228,7 @@ pub fn collide_cylinder_capsule(
         (cap_geom, cyl_geom, -normal)
     };
 
-    Some(make_contact_from_geoms(
+    vec![make_contact_from_geoms(
         model,
         contact_pos,
         final_normal,
@@ -236,7 +236,7 @@ pub fn collide_cylinder_capsule(
         g1,
         g2,
         margin,
-    ))
+    )]
 }
 
 /// Capsule-box collision detection.
@@ -256,7 +256,7 @@ pub fn collide_capsule_box(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Determine which is capsule and which is box
     let (
         capsule_geom,
@@ -366,7 +366,7 @@ pub fn collide_capsule_box(
             (box_geom, capsule_geom)
         };
 
-        Some(make_contact_from_geoms(
+        vec![make_contact_from_geoms(
             model,
             contact_pos,
             if capsule_geom < box_geom {
@@ -378,9 +378,9 @@ pub fn collide_capsule_box(
             g1,
             g2,
             margin,
-        ))
+        )]
     } else {
-        None
+        vec![]
     }
 }
 
@@ -400,7 +400,7 @@ pub fn collide_box_box(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     let half1 = size1;
     let half2 = size2;
 
@@ -428,7 +428,7 @@ pub fn collide_box_box(
         let axis = axes1[i];
         let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
         if pen <= -margin {
-            return None; // Separating axis found (beyond margin zone)
+            return vec![]; // Separating axis found (beyond margin zone)
         }
         if pen < min_pen {
             min_pen = pen;
@@ -442,7 +442,7 @@ pub fn collide_box_box(
         let axis = axes2[i];
         let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
         if pen <= -margin {
-            return None;
+            return vec![];
         }
         if pen < min_pen {
             min_pen = pen;
@@ -463,7 +463,7 @@ pub fn collide_box_box(
 
             let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
             if pen <= -margin {
-                return None;
+                return vec![];
             }
             // Edge-edge contacts have a bias - they're less stable
             // Only use if significantly better than face contact
@@ -509,7 +509,7 @@ pub fn collide_box_box(
         pos1 + center_diff * 0.5
     };
 
-    Some(make_contact_from_geoms(
+    vec![make_contact_from_geoms(
         model,
         contact_pos,
         best_axis,
@@ -517,7 +517,7 @@ pub fn collide_box_box(
         geom1,
         geom2,
         margin,
-    ))
+    )]
 }
 
 /// Test a single SAT axis and return penetration depth (negative = separated).
