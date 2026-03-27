@@ -1167,3 +1167,88 @@ fn noslip_multi_contact_box_plane_converges() {
         "All positions should be finite"
     );
 }
+
+// ============================================================================
+// Multi-contact capsule-plane tests (Phase 1b)
+// ============================================================================
+
+/// Horizontal capsule on plane → 2 contacts (both endpoints penetrate).
+///
+/// Configuration:
+/// - Plane at z=0 (horizontal)
+/// - Capsule radius=0.2, half_length=0.5, axis along X (euler="0 90 0")
+/// - Center at z=0.1 → both endpoint spheres at z=0.1
+/// - Both sphere surfaces at z = 0.1 - 0.2 = -0.1
+///
+/// Expected: 2 contacts, both with depth 0.1.
+#[test]
+fn capsule_plane_horizontal_2_contacts() {
+    let mjcf = r#"
+        <mujoco model="capsule_plane_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cap" pos="0 0 0.1" euler="0 90 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 2,
+        "Horizontal capsule on plane should produce 2 contacts, got {}",
+        data.ncon
+    );
+
+    // Both endpoints at same height → same depth
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..2].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+
+    // Contact positions should be separated by ~capsule length along X
+    let dx = (data.contacts[0].pos.x - data.contacts[1].pos.x).abs();
+    assert!(
+        dx > 0.8,
+        "Contacts should be separated along capsule axis, got dx={dx:.3}"
+    );
+}
+
+/// Upright capsule on plane → 1 contact (only bottom endpoint).
+///
+/// Verifies that a vertical capsule still produces exactly 1 contact
+/// (the top endpoint is far from the plane).
+#[test]
+fn capsule_plane_upright_1_contact() {
+    let mjcf = r#"
+        <mujoco model="capsule_plane_upright_1">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cap" pos="0 0 0.6">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Bottom endpoint at z=0.1, top at z=1.1 — only bottom contacts
+    assert_eq!(
+        data.ncon, 1,
+        "Upright capsule should have exactly 1 contact, got {}",
+        data.ncon
+    );
+}

@@ -151,43 +151,37 @@ pub fn collide_with_plane(
             }
         }
         GeomType::Capsule => {
-            // Check both end spheres of the capsule
+            // Multi-contact capsule-plane: test both endpoint spheres
+            // independently, matching MuJoCo's mjc_PlaneCapsule which
+            // delegates each endpoint to mjraw_PlaneSphere.
             let radius = other_size.x;
             let half_length = other_size.y;
             let axis = other_mat.column(2).into_owned(); // Z is capsule axis
 
-            let end1 = other_pos + axis * half_length;
-            let end2 = other_pos - axis * half_length;
+            let endpoints = [
+                other_pos + axis * half_length,
+                other_pos - axis * half_length,
+            ];
 
-            let dist1 = plane_normal.dot(&end1) - plane_distance;
-            let dist2 = plane_normal.dot(&end2) - plane_distance;
+            let mut contacts = Vec::with_capacity(2);
+            for end in &endpoints {
+                let dist = plane_normal.dot(end) - plane_distance;
+                let penetration = radius - dist;
 
-            let (closest_end, min_dist) = if dist1 < dist2 {
-                (end1, dist1)
-            } else {
-                (end2, dist2)
-            };
-
-            let penetration = radius - min_dist;
-
-            if penetration > -margin {
-                // Contact position: midpoint between capsule surface and plane surface.
-                // capsule_surface = closest_end - normal * radius
-                // plane_surface   = closest_end - normal * min_dist
-                // midpoint = closest_end - normal * midpoint(radius, min_dist)
-                let contact_pos = closest_end - plane_normal * f64::midpoint(radius, min_dist);
-                vec![make_contact_from_geoms(
-                    model,
-                    contact_pos,
-                    plane_normal,
-                    penetration,
-                    plane_geom,
-                    other_geom,
-                    margin,
-                )]
-            } else {
-                vec![]
+                if penetration > -margin {
+                    let contact_pos = end - plane_normal * f64::midpoint(radius, dist);
+                    contacts.push(make_contact_from_geoms(
+                        model,
+                        contact_pos,
+                        plane_normal,
+                        penetration,
+                        plane_geom,
+                        other_geom,
+                        margin,
+                    ));
+                }
             }
+            contacts
         }
         GeomType::Cylinder => {
             // Cylinder-plane collision: find deepest point on cylinder

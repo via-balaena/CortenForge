@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-27
 **Branch:** `feature/integrator-examples`
-**Status:** Phase 0 + Phase 1a complete. Phases 1b–3 remain.
+**Status:** Phases 0, 1a, 1b complete. Phases 1c, 1d, 2, 3 remain.
 
 ## Background
 
@@ -302,7 +302,7 @@ purely a collision-layer effort.
 | Pair | MuJoCo function | MuJoCo max | CF function | CF max | Gap |
 |------|-----------------|------------|-------------|--------|-----|
 | Plane-Box | `mjc_PlaneBox` | 4 | `collide_with_plane` (Box arm) | 4 | ✅ **Done** (Phase 1a) |
-| Plane-Capsule | `mjc_PlaneCapsule` | 2 | `collide_with_plane` (Capsule arm) | 1 | **Both endpoints, not closest** |
+| Plane-Capsule | `mjc_PlaneCapsule` | 2 | `collide_with_plane` (Capsule arm) | 2 | ✅ **Done** (Phase 1b) |
 | Plane-Cylinder | `mjc_PlaneCylinder` | 4 | `collide_cylinder_plane_impl` | 1 | **Rim + disk points, not deepest** |
 | Plane-Mesh | `mjc_PlaneConvex` | 3 | `collide_mesh_plane` | 1 | **Vertex walk, not deepest only** |
 | Box-Box | `_boxbox` | ~8 | `collide_box_box` | 1 | **SAT + face clip, not single support** |
@@ -377,20 +377,24 @@ constraint forces — the solver handles this naturally.
 
 **Code location:** `plane.rs:80–152`
 
-##### 1b. Plane-Capsule → 2 contacts
+##### 1b. Plane-Capsule → 2 contacts — DONE
 
 **Reference:** `mjc_PlaneCapsule` (`engine_collision_primitive.c`)
 
-**Algorithm:**
+**Algorithm (as implemented):**
 1. Compute both endpoint spheres: `end1 = pos + axis * half_length`,
    `end2 = pos - axis * half_length`
-2. For each endpoint, compute `dist = dot(plane_normal, end) - plane_distance`
-3. `depth = radius - dist`
-4. If `depth > -margin`, emit a contact at that endpoint
+2. For each endpoint independently: `dist = dot(normal, end) - plane_d`,
+   `penetration = radius - dist`
+3. If `penetration > -margin`, emit a contact at that endpoint
 
-**Current code location:** `plane.rs:144–182`. Already computes both endpoints
-(lines 150–154) but only keeps the closer one (line 156–160). Fix: test both
-independently and return all penetrating endpoints.
+Previous code computed both endpoints but only kept the closer one.
+Fix: test both independently, emit all penetrating endpoints (0, 1, or 2).
+
+**New tests:** `capsule_plane_horizontal_2_contacts`,
+`capsule_plane_upright_1_contact`.
+
+**Code location:** `plane.rs:153–184`
 
 ##### 1c. Plane-Cylinder → up to 4 contacts
 
@@ -733,7 +737,7 @@ Phase 5 updates test thresholds and adds new multi-contact tests.
 |-------|-------------|--------|
 | Phase 0: Return type unification | ~100 | ✅ Done (`2d1a564`) |
 | Phase 1a: Plane-Box | ~70 | ✅ Done (`6229155`) |
-| Phase 1b: Plane-Capsule | ~30 | Remaining |
+| Phase 1b: Plane-Capsule | ~20 | ✅ Done |
 | Phase 1c: Plane-Cylinder | ~80 | Remaining |
 | Phase 1d: Plane-Mesh | ~40 | Remaining |
 | Phase 2: Box-box face clipping | ~450 | Remaining |
