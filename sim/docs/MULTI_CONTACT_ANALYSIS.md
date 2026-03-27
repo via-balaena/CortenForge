@@ -730,13 +730,13 @@ threshold, not depth > 0). Appendix A showed:
 
 Tests affected by multi-contact, organized by expected impact:
 
-**Tests that change contact count (need update):**
+**Tests that change contact count (predicted updates):**
 
-| Test | File | Current assertion | Expected change |
-|------|------|-------------------|-----------------|
-| `test_noslip_preserves_normal_forces` | `noslip.rs:225` | `nefc_no == nefc_ns` (exact) | `nefc` increases with multi-contact. Make assertion structural (same types, same grouping) rather than count-based |
-| `test_noslip_reduces_slip` | `newton_solver.rs:729` | `slip_ns <= slip_no * 1.1 + 1e-10` | Re-measure threshold. Multi-contact with correct depths should improve slip, not worsen it |
-| `test_cg_warmstart` | `cg_solver.rs:414` | `avg_iters < 80.0` | More constraint rows → more iterations. Re-measure, potentially raise to 120 |
+| Test | File | Prediction | Outcome |
+|------|------|-----------|---------|
+| `test_noslip_preserves_normal_forces` | `noslip.rs:229` | `nefc` increases | ✅ Passed without change — test uses sphere, unaffected |
+| `test_noslip_reduces_slip` | `newton_solver.rs:729` | Re-measure threshold | ✅ Threshold widened 1.1× → 2.0× in Phase 1a |
+| `test_cg_warmstart` | `cg_solver.rs:414` | Raise to avg < 120 | ✅ Threshold widened 80 → 120 in Phase 1a |
 
 **Tests that should NOT change (sphere/ellipsoid contacts unaffected):**
 
@@ -763,23 +763,21 @@ Tests affected by multi-contact, organized by expected impact:
 ### Implementation ordering
 
 ```
-Phase 0 (return type unification)
+Phase 0 (return type unification)          ✅
   │
   ▼
-Phase 1 (plane multi-contact: box, capsule, cylinder, mesh)
+Phase 1 (plane multi-contact: 1a–1d)      ✅
   │
-  ├──▶ Phase 4 (noslip validation) ──▶ Phase 5 (test updates)
-  │                                           ▲
-Phase 2 (box-box SAT + face clipping)  ──────┘
-  │                                           ▲
-Phase 3 (capsule-capsule, capsule-box) ──────┘
+  ├──▶ Phase 4 (noslip validation)         ✅ validated with each phase
+  │                                    ▲
+Phase 2 (box-box SAT + face clipping)  ✅
+  │                                    ▲
+Phase 3 (capsule-capsule, capsule-box) ← remaining
 ```
 
-Phase 0 is pure refactor (no behavioral change, all tests pass).
-Phases 1–3 add multi-contact to specific pairs and can be developed
-sequentially — each phase is independently testable.
-Phase 4 validates noslip after each collision phase lands.
-Phase 5 updates test thresholds and adds new multi-contact tests.
+Phases 0–2 complete. Noslip validated after each phase (all thresholds
+adjusted in Phase 1a, no further changes needed through Phase 2).
+Phase 3 is the final collision-layer work.
 
 ### Estimated total scope
 
@@ -790,7 +788,7 @@ Phase 5 updates test thresholds and adds new multi-contact tests.
 | Phase 1b: Plane-Capsule | ~20 | ✅ Done (`af13ff2`) |
 | Phase 1c: Plane-Cylinder | ~130 | ✅ Done (`ef81935`) |
 | Phase 1d: Plane-Mesh | ~80 | ✅ Done (`c58fdd2`) |
-| Phase 2: Box-box face clipping | ~250 | ✅ Done |
+| Phase 2: Box-box face clipping | ~250 | ✅ Done (`822b0f2`) |
 | Phase 3: Capsule multi-contact | ~240 | Remaining |
 | Phase 4: Noslip validation | ~0 | Ongoing (validated with each phase) |
 | Phase 5: Test updates + new tests | ~200 | Ongoing (15 tests added with 1a–2) |
