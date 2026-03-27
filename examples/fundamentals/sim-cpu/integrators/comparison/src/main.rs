@@ -79,8 +79,8 @@ struct IntegratorResult {
 
 fn run_integrator(name: &'static str, mjcf_integrator: &str) -> IntegratorResult {
     let xml = mjcf(mjcf_integrator);
-    let mut model = sim_mjcf::load_model(&xml).expect("MJCF should parse");
-    model.enableflags |= sim_core::ENABLE_ENERGY;
+    let model = sim_mjcf::load_model(&xml).expect("MJCF should parse");
+    // MJCF <flag energy="enable"/> should set ENABLE_ENERGY automatically
     let mut data = model.make_data();
 
     // Initial condition: horizontal (θ = π/2)

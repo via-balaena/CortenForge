@@ -109,8 +109,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mut model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
-    model.enableflags |= sim_core::ENABLE_ENERGY;
+    let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let mut data = model.make_data();
 
     data.qpos[0] = std::f64::consts::FRAC_PI_2;

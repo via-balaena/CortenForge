@@ -6,7 +6,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-sim-core = { workspace = true }
 sim-mjcf = { workspace = true }
 
 [lints]

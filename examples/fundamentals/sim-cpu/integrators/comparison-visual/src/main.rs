@@ -135,8 +135,7 @@ fn setup(
 
     for (i, def) in INTEGRATORS.iter().enumerate() {
         let xml = mjcf(def.mjcf_name);
-        let mut model = sim_mjcf::load_model(&xml).expect("MJCF should parse");
-        model.enableflags |= sim_core::ENABLE_ENERGY;
+        let model = sim_mjcf::load_model(&xml).expect("MJCF should parse");
         let mut data = model.make_data();
 
         // Same initial angles for all three

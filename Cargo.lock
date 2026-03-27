@@ -2784,7 +2784,6 @@ dependencies = [
 name = "example-integrator-comparison"
 version = "0.7.0"
 dependencies = [
- "sim-core",
  "sim-mjcf",
 ]
 
@@ -2794,7 +2793,6 @@ version = "0.7.0"
 dependencies = [
  "bevy",
  "sim-bevy",
- "sim-core",
  "sim-mjcf",
 ]
 
