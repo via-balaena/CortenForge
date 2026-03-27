@@ -1,14 +1,15 @@
-//! Integrator Actuator — General Actuator with Integrator Dynamics
+//! Integrator Actuator — Position Control from Velocity Input
 //!
-//! A general actuator whose activation integrates the control signal over time:
-//! `act = integral(ctrl) dt`. The activation persists even when ctrl returns to
-//! zero (integrator memory). Force is computed via affine bias:
-//! `force = gain * act + bias_0 + bias_1 * length + bias_2 * velocity`.
+//! A general actuator whose activation integrates the control signal:
+//! `act_dot = ctrl`. The activation persists when ctrl returns to zero
+//! (integrator memory). Combined with a position-servo bias, this gives
+//! position control from a velocity-like input: you steer the arm by
+//! commanding angular rate, and it holds wherever you stop.
 //!
-//! Three phases demonstrate the integrator behavior:
-//! - Phase 1 (0-3s): ctrl=1.0, activation ramps linearly
-//! - Phase 2 (3-8s): ctrl=0.0, activation holds (integrator memory)
-//! - Phase 3 (8-13s): ctrl=-1.0, activation ramps down
+//! Three phases demonstrate the integrator:
+//! - Phase 1 (0-3s): ctrl=+1 — activation ramps up, arm swings to +90 deg
+//! - Phase 2 (3-8s): ctrl=0 — activation holds (memory), arm stays at 90 deg
+//! - Phase 3 (8-13s): ctrl=-1 — activation ramps down, arm swings to -90 deg
 //!
 //! Validates:
 //! - Linear ramp: act at t~1.0 ~ 1.0 (integral of constant 1)
@@ -45,7 +46,7 @@ use sim_core::validation::{Check, print_report};
 const MJCF: &str = r#"
 <mujoco model="integrator">
   <compiler angle="radian" autolimits="true"/>
-  <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
 
   <default>
     <geom contype="0" conaffinity="0"/>
@@ -65,7 +66,7 @@ const MJCF: &str = r#"
   <actuator>
     <general name="int_actuator" joint="hinge"
              dyntype="integrator" gainprm="50"
-             biastype="affine" biasprm="0 0 -5"
+             biastype="affine" biasprm="0 -50 -5"
              actlimited="true" actrange="-1.57 1.57"/>
   </actuator>
 
@@ -76,22 +77,35 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
+/// Compute ctrl for the current time:
+/// Phase 1 (0-3s): +1 (ramp up), Phase 2 (3-8s): 0 (hold), Phase 3 (8-13s): -1 (ramp down)
+fn current_ctrl(time: f64) -> f64 {
+    if time < 3.0 {
+        1.0
+    } else if time < 8.0 {
+        0.0
+    } else if time < 13.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: Integrator Actuator ===");
-    println!("  General actuator with integrator dynamics");
-    println!("  act = integral(ctrl) dt");
-    println!("  Phase 1 (0-3s): ctrl=1.0 -> activation ramps up");
-    println!("  Phase 2 (3-8s): ctrl=0.0 -> activation holds");
-    println!("  Phase 3 (8-13s): ctrl=-1.0 -> activation ramps down");
-    println!("  force = 50*act + 0 + 0*length + (-5)*velocity");
+    println!("  Position control from velocity input: act_dot = ctrl");
+    println!("  Phase 1 (0-3s):  ctrl=+1 -> activation ramps, arm swings to +90 deg");
+    println!("  Phase 2 (3-8s):  ctrl= 0 -> activation holds (integrator memory)");
+    println!("  Phase 3 (8-13s): ctrl=-1 -> activation ramps down, arm swings back");
+    println!("  force = 50*(act - theta) - 5*velocity");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "CortenForge — Integrator Actuator".into(),
+                title: "CortenForge \u{2014} Integrator Actuator".into(),
                 ..default()
             }),
             ..default()
@@ -105,10 +119,16 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let force = d.sensor_data(m, 0)[0];
-                    let pos = d.sensor_data(m, 1)[0];
-                    let act = d.act[0];
-                    format!("force={force:.3}  act={act:.4}  theta={pos:.4}")
+                    let act_deg = d.act[0].to_degrees();
+                    let theta_deg = d.sensor_data(m, 1)[0].to_degrees();
+                    let phase = if d.time < 3.0 {
+                        "ramp"
+                    } else if d.time < 8.0 {
+                        "hold"
+                    } else {
+                        "down"
+                    };
+                    format!("act={act_deg:.1} theta={theta_deg:.1} [{phase}]")
                 }),
         )
         .add_systems(Startup, setup)
@@ -139,7 +159,7 @@ fn setup(
         "  Model: {} bodies, {} joints, {} actuators, {} sensors, na={}",
         model.nbody, model.njnt, model.nu, model.nsensor, model.na
     );
-    println!("  actrange: [-1.57, 1.57]\n");
+    println!("  actrange: [-1.57, 1.57] rad = [-90, 90] deg\n");
 
     let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
     let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.7, 0.3, 0.7)));
@@ -155,10 +175,10 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, -0.2, 0.0),
-        1.8,
-        std::f32::consts::FRAC_PI_4,
-        0.35,
+        Vec3::new(0.0, -0.25, 0.0),  // arm midpoint in Bevy Y-up coords
+        1.8,                         // distance
+        std::f32::consts::FRAC_PI_2, // azimuth: 90 deg — face the rotation plane
+        0.0,                         // elevation: level
     );
 
     spawn_physics_hud(&mut commands);
@@ -174,16 +194,8 @@ fn apply_ctrl(data: ResMut<PhysicsData>) {
         return;
     }
     let time = data.time;
-    let ctrl = if time < 3.0 {
-        1.0
-    } else if time < 8.0 {
-        0.0
-    } else {
-        -1.0
-    };
-    // Must use interior-mutability-safe approach — data is ResMut
     let data = data.into_inner();
-    data.ctrl[0] = ctrl;
+    data.ctrl[0] = current_ctrl(time);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -192,34 +204,26 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Integrator Actuator");
 
-    let force = data.sensor_data(&model, 0)[0];
-    let pos = data.sensor_data(&model, 1)[0];
-    let act = data.act[0];
-    let act_dot = data.act_dot[0];
-    let ctrl = data.ctrl[0];
+    let theta_deg = data.sensor_data(&model, 1)[0].to_degrees();
+    let act_deg = data.act[0].to_degrees();
+    let ctrl = current_ctrl(data.time);
 
-    hud.scalar("ctrl", ctrl, 3);
-    hud.scalar("activation", act, 4);
-    hud.scalar("act_dot", act_dot, 6);
-    hud.scalar("force", force, 4);
-    hud.scalar("theta", pos, 4);
-    hud.scalar("time", data.time, 2);
+    hud.scalar("ctrl (rate cmd)", ctrl, 1);
+    hud.scalar("activation (target deg)", act_deg, 1);
+    hud.scalar("theta (actual deg)", theta_deg, 1);
+    hud.scalar("time (s)", data.time, 2);
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
 #[derive(Resource, Default)]
 struct IntegratorValidation {
-    /// Activation sample closest to t=1.0 for linear ramp check
-    ramp_sample: Option<(f64, f64)>, // (time, act)
-    /// Activation samples at t~4 and t~7 for hold check
-    hold_sample_4: Option<(f64, f64)>, // (time, act)
-    hold_sample_7: Option<(f64, f64)>, // (time, act)
-    /// Track min/max activation for clamping check
+    ramp_sample: Option<(f64, f64)>,
+    hold_sample_4: Option<(f64, f64)>,
+    hold_sample_7: Option<(f64, f64)>,
     act_min: f64,
     act_max: f64,
-    /// Samples of (act_dot, ctrl) for act_dot == ctrl check
-    act_dot_samples: Vec<(f64, f64, f64)>, // (time, act_dot, ctrl)
+    act_dot_samples: Vec<(f64, f64, f64)>,
     reported: bool,
 }
 
@@ -234,12 +238,11 @@ fn integrator_diagnostics(
     let act_dot = data.act_dot[0];
     let ctrl = data.ctrl[0];
 
-    // Skip t=0 frame
     if time < 1e-6 {
         return;
     }
 
-    // Track min/max activation (Check 3: clamping)
+    // Track min/max activation
     if act < val.act_min {
         val.act_min = act;
     }
@@ -247,14 +250,14 @@ fn integrator_diagnostics(
         val.act_max = act;
     }
 
-    // Check 1: Sample activation closest to t=1.0
+    // Check 1: Sample activation closest to t=1.0 (linear ramp: act ~ 1.0)
     let dist_to_1 = (time - 1.0).abs();
     let current_best_1 = val.ramp_sample.map_or(f64::MAX, |(t, _)| (t - 1.0).abs());
     if dist_to_1 < current_best_1 {
         val.ramp_sample = Some((time, act));
     }
 
-    // Check 2: Sample activation closest to t=4.0 and t=7.0
+    // Check 2: Sample activation at t~4 and t~7 (hold: should be equal)
     let dist_to_4 = (time - 4.0).abs();
     let current_best_4 = val.hold_sample_4.map_or(f64::MAX, |(t, _)| (t - 4.0).abs());
     if dist_to_4 < current_best_4 {
@@ -267,19 +270,15 @@ fn integrator_diagnostics(
         val.hold_sample_7 = Some((time, act));
     }
 
-    // Check 4: Collect act_dot samples at representative points in each phase
-    // Phase 1: ~0.5s, ~1.5s, ~2.5s
-    // Phase 2: ~4.0s, ~5.5s, ~7.0s
-    // Phase 3: ~9.0s, ~10.5s, ~12.0s
+    // Check 4: act_dot == ctrl samples
     let sample_times = [0.5, 1.5, 2.5, 4.0, 5.5, 7.0, 9.0, 10.5, 12.0];
     for &st in &sample_times {
         let dist = (time - st).abs();
-        // Check if we already have a sample near this time
         let already_have = val
             .act_dot_samples
             .iter()
             .any(|&(t, _, _)| (t - st).abs() < dist);
-        if !already_have && dist < 0.001 {
+        if !already_have && dist < 0.05 {
             val.act_dot_samples.push((time, act_dot, ctrl));
         }
     }
@@ -288,19 +287,15 @@ fn integrator_diagnostics(
     if harness.reported() && !val.reported {
         val.reported = true;
 
-        // Check 1: Linear ramp — act at t~1.0 should be ~1.0
         let (ramp_t, ramp_act) = val.ramp_sample.unwrap_or((0.0, 0.0));
         let ramp_err_pct = ((ramp_act - 1.0) / 1.0).abs() * 100.0;
 
-        // Check 2: Hold at zero ctrl — activation constant between t~4 and t~7
         let (t4, act_4) = val.hold_sample_4.unwrap_or((0.0, 0.0));
         let (t7, act_7) = val.hold_sample_7.unwrap_or((0.0, 0.0));
         let hold_diff = (act_4 - act_7).abs();
 
-        // Check 3: Activation clamping — never exceeds [-1.57, 1.57]
         let clamp_ok = val.act_min >= -1.57 - 1e-6 && val.act_max <= 1.57 + 1e-6;
 
-        // Check 4: act_dot == ctrl — should be exact for integrator
         let mut max_act_dot_err = 0.0_f64;
         for &(_t, ad, c) in &val.act_dot_samples {
             let err = (ad - c).abs();
