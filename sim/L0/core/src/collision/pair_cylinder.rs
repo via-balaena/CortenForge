@@ -576,6 +576,10 @@ pub fn collide_box_box(
             }
 
             dedup_contacts(&mut contacts);
+            // NOTE: MuJoCo also applies mju_outsideBox (1% tolerance) and caps
+            // at mjMAXCONPAIR=50. Neither is needed here: S-H clipping already
+            // constrains output to the reference face bounds (max 8 vertices),
+            // and no box-box configuration can exceed the cap.
             contacts
         }
 
