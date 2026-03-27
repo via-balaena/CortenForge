@@ -1424,3 +1424,88 @@ fn cylinder_plane_slight_tilt_3_contacts() {
         "Depths should vary on tilted plane: max={max_depth:.4}, min={min_depth:.4}"
     );
 }
+
+// ============================================================================
+// Phase 1d: Mesh-Plane Multi-Contact Tests
+// ============================================================================
+
+/// Box-shaped mesh on horizontal plane → 3 contacts (capped from 4 bottom vertices).
+///
+/// Configuration: 1×1×1 box mesh at z=0.4. Bottom face at z=-0.1 has 4 vertices,
+/// all penetrating with depth=0.1. Proximity filter (0.3 * rbound ≈ 0.26) passes
+/// all 4 since they're 1.0 apart. Capped at maxplanemesh=3.
+#[test]
+fn mesh_plane_box_3_contacts() {
+    let mjcf = r#"
+        <mujoco model="mesh_plane_box_3">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <asset>
+                <mesh name="box1"
+                    vertex="-.5 -.5 -.5  .5 -.5 -.5  .5 .5 -.5  -.5 .5 -.5
+                            -.5 -.5 .5   .5 -.5 .5   .5 .5 .5   -.5 .5 .5"
+                    face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4
+                          2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/>
+            </asset>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="mesh_box" pos="0 0 0.4">
+                    <geom type="mesh" mesh="box1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // 4 bottom vertices penetrate, capped at 3
+    assert_eq!(
+        data.ncon, 3,
+        "Box mesh on plane should produce 3 contacts (capped from 4 bottom vertices), got {}",
+        data.ncon
+    );
+
+    // All contacts on the bottom face at z=-0.1 → depth=0.1
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..3].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Box-shaped mesh separated from plane → 0 contacts.
+#[test]
+fn mesh_plane_box_separated() {
+    let mjcf = r#"
+        <mujoco model="mesh_plane_separated">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <asset>
+                <mesh name="box1"
+                    vertex="-.5 -.5 -.5  .5 -.5 -.5  .5 .5 -.5  -.5 .5 -.5
+                            -.5 -.5 .5   .5 -.5 .5   .5 .5 .5   -.5 .5 .5"
+                    face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4
+                          2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/>
+            </asset>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="mesh_box" pos="0 0 2.0">
+                    <geom type="mesh" mesh="box1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 0,
+        "Separated mesh should have no contacts, got {}",
+        data.ncon
+    );
+}

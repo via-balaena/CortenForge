@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-27
 **Branch:** `feature/integrator-examples`
-**Status:** Phases 0, 1a, 1b, 1c complete. Phases 1d, 2, 3 remain.
+**Status:** Phases 0, 1a–1d complete (all plane pairs done). Phases 2, 3 remain.
 
 ## Background
 
@@ -304,7 +304,7 @@ purely a collision-layer effort.
 | Plane-Box | `mjc_PlaneBox` | 4 | `collide_with_plane` (Box arm) | 4 | ✅ **Done** (Phase 1a) |
 | Plane-Capsule | `mjc_PlaneCapsule` | 2 | `collide_with_plane` (Capsule arm) | 2 | ✅ **Done** (Phase 1b) |
 | Plane-Cylinder | `mjc_PlaneCylinder` | 4 | `collide_cylinder_plane_impl` | 4 | ✅ **Done** (Phase 1c) |
-| Plane-Mesh | `mjc_PlaneConvex` | 3 | `collide_mesh_plane` | 1 | **Vertex walk, not deepest only** |
+| Plane-Mesh | `mjc_PlaneConvex` | 3 | `collide_mesh_plane` | 3 | ✅ **Done** (Phase 1d) |
 | Box-Box | `_boxbox` | ~8 | `collide_box_box` | 1 | **SAT + face clip, not single support** |
 | Capsule-Box | `mjraw_CapsuleBox` | 2 | `collide_capsule_box` | 1 | **Both caps, not 5-point sample** |
 | Capsule-Capsule | `mjc_CapsuleCapsule` | 2 | `collide_capsule_capsule` | 1 | **Parallel case returns 2** |
@@ -472,7 +472,7 @@ lateral support if the tilt is shallow enough.
 
 **Code location:** `plane.rs:230–362`
 
-##### 1d. Plane-Mesh → up to 3 contacts
+##### 1d. Plane-Mesh → up to 3 contacts — DONE
 
 **Reference:** `mjc_PlaneConvex` mesh path (`engine_collision_convex.c`)
 
@@ -526,21 +526,25 @@ mesh-specific extensions. Returns up to `maxplanemesh = 3` contacts.
 adjacency data (no neighbor lists, no edge connectivity graph). The struct
 stores vertices, triangle indices, AABB, BVH, and optional convex hull.
 
-**Implementation plan:** Use Path B (brute-force scan). The current
-`collide_mesh_plane` at `mesh_collide.rs:259` already iterates all vertices
-in O(n). Extend it to:
-1. Find the deepest vertex (already done)
-2. Continue scanning, collecting up to 2 more vertices that:
-   - Are deeper than `-margin` from the plane
-   - Are at least `0.3 * rbound` away from the first contact
-3. Return 1–3 contacts with individual depths
+**Algorithm (as implemented):** Path B (brute-force vertex scan):
+1. Scan all vertices, compute depth for each. Collect all with `depth > -margin`.
+2. Identify the deepest vertex → primary contact.
+3. Sort remaining candidates by depth descending.
+4. Accept up to 2 more that pass the proximity filter
+   (`distance >= 0.3 * rbound` from all existing contacts).
+5. `rbound` approximated as AABB half-diagonal (conservative).
+
+**Return type change:** `Option<MeshContact>` → `Vec<MeshContact>`.
+Callers in `collide_with_mesh` use early returns for plane paths
+(same pattern as mesh-mesh GJK path). Added `margin` parameter.
+
+**New tests:** `mesh_plane_box_3_contacts`, `mesh_plane_box_separated`.
 
 **Future work:** Add mesh adjacency graph to `TriangleMeshData` for O(k)
 neighbor walk (where k = vertex degree, typically 5–7). This would make
 Path A viable and improve performance for large meshes.
 
-**Current code location:** `mesh_collide.rs:259` (`collide_mesh_plane`).
-Currently returns 1 (deepest vertex only).
+**Code location:** `mesh_collide.rs:277` (`collide_mesh_plane`).
 
 ##### Phase 1 estimated size: ~200 LOC across plane.rs and mesh_collide.rs
 
@@ -761,12 +765,12 @@ Phase 5 updates test thresholds and adds new multi-contact tests.
 | Phase 1a: Plane-Box | ~70 | ✅ Done (`6229155`) |
 | Phase 1b: Plane-Capsule | ~20 | ✅ Done |
 | Phase 1c: Plane-Cylinder | ~130 | ✅ Done |
-| Phase 1d: Plane-Mesh | ~40 | Remaining |
+| Phase 1d: Plane-Mesh | ~80 | ✅ Done |
 | Phase 2: Box-box face clipping | ~450 | Remaining |
 | Phase 3: Capsule multi-contact | ~240 | Remaining |
 | Phase 4: Noslip validation | ~0 | Ongoing (validated with each phase) |
-| Phase 5: Test updates + new tests | ~200 | Ongoing (10 tests added with 1a–1c) |
-| **Total remaining** | **~930** | |
+| Phase 5: Test updates + new tests | ~200 | Ongoing (12 tests added with 1a–1d) |
+| **Total remaining** | **~890** | |
 
 ### What does NOT change
 
