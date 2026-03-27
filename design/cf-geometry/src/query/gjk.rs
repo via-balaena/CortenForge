@@ -155,9 +155,15 @@ pub fn gjk_distance(
         let dir_normalized = direction / dir_norm_sq.sqrt();
         let new_point = support_minkowski(a, b, &dir_normalized);
 
-        // If new support doesn't pass origin, shapes don't overlap
+        // Negative dot means no new support point can reduce the distance.
+        // However, we must NOT terminate early when the simplex is small
+        // (size < 3): box support functions return corner vertices, and we
+        // need multiple iterations to build a simplex that spans the closest
+        // face for accurate witness point interpolation. Terminating with a
+        // 1-point simplex gives wildly wrong normals for axis-aligned
+        // box-sphere separation.
         let dot = new_point.point.coords.dot(&dir_normalized);
-        if dot < EPSILON {
+        if dot < EPSILON && simplex.len() >= 3 {
             break;
         }
 

@@ -100,8 +100,9 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let dist = d.sensor_data(m, 0)[0];
-                    let norm = d.sensor_data(m, 1);
+                    let dist = d.sensor_scalar(m, "dist").unwrap_or(0.0);
+                    let norm_id = m.sensor_id("norm").unwrap_or(0);
+                    let norm = d.sensor_data(m, norm_id);
                     format!(
                         "dist={dist:+.4}  normal=({:+.3},{:+.3},{:+.3})",
                         norm[0], norm[1], norm[2],
@@ -138,8 +139,8 @@ fn setup(
     data.qpos[model.jnt_qpos_adr[0]] = SLIDE_INIT;
     let _ = data.forward(&model);
 
-    let dist = data.sensor_data(&model, 0);
-    println!("  t=0 dist: {:.4}", dist[0]);
+    let dist = data.sensor_scalar(&model, "dist").unwrap_or(0.0);
+    println!("  t=0 dist: {dist:.4}");
     println!(
         "  Model: {} bodies, {} geoms, {} sensors\n",
         model.nbody, model.ngeom, model.nsensor
@@ -178,9 +179,11 @@ fn setup(
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("Geom Distance");
-    let dist = data.sensor_data(&model, 0)[0];
-    let norm = data.sensor_data(&model, 1);
-    let ft = data.sensor_data(&model, 2);
+    let dist = data.sensor_scalar(&model, "dist").unwrap_or(0.0);
+    let norm_id = model.sensor_id("norm").unwrap_or(0);
+    let norm = data.sensor_data(&model, norm_id);
+    let ft_id = model.sensor_id("ft").unwrap_or(0);
+    let ft = data.sensor_data(&model, ft_id);
     hud.scalar("dist", dist, 4);
     hud.vec3("normal", norm, 3);
     hud.vec3("from", &ft[0..3], 4);
@@ -218,14 +221,15 @@ fn sensor_diagnostics(
     let expected_dist = analytical_dist(slide_q);
 
     // GeomDist check
-    let dist_sensor = data.sensor_data(&model, 0)[0];
+    let dist_sensor = data.sensor_scalar(&model, "dist").unwrap_or(0.0);
     let dist_err = (dist_sensor - expected_dist).abs();
     if dist_err > val.dist_max_err {
         val.dist_max_err = dist_err;
     }
 
     // GeomNormal check: should be ~[1, 0, 0] (box→sphere along +X)
-    let norm = data.sensor_data(&model, 1);
+    let norm_id = model.sensor_id("norm").unwrap_or(0);
+    let norm = data.sensor_data(&model, norm_id);
     let norm_err = ((norm[0] - 1.0).powi(2) + norm[1].powi(2) + norm[2].powi(2)).sqrt();
     if norm_err > val.normal_max_err {
         val.normal_max_err = norm_err;

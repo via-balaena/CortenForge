@@ -1,13 +1,13 @@
 //! Touch Sensor
 //!
-//! A sphere drops from z=0.5 onto a ground plane. Touch sensor on the sphere's
-//! body reports the sum of normal contact forces. Uses `condim="1"` (frictionless
-//! normal-only contact) to avoid the pyramidal friction approximation which would
-//! read ~75% of the true normal force.
+//! A sphere hovers at z=4.0 for 1 second, then drops onto a ground plane.
+//! Touch sensor on the sphere reports the sum of normal contact forces.
+//! Uses `condim="1"` (frictionless normal-only contact) to avoid the pyramidal
+//! friction approximation which would read ~75% of the true normal force.
 //!
-//! Two phases:
-//! 1. Free-fall (t < 0.2s): touch == 0.0 (no contact)
-//! 2. At-rest (t > 3s): touch ≈ m*g = 9.81 N
+//! Two phases after the drop:
+//! 1. Free-fall (t < 0.7s): touch == 0.0 (no contact)
+//! 2. At-rest (t > 5s): touch ≈ m*g = 9.81 N
 //!
 //! Validates:
 //! - Free-fall: touch == 0.0 exactly
@@ -48,7 +48,7 @@ const MJCF: &str = r#"
     <worldbody>
         <geom name="floor" type="plane" size="5 5 0.1" condim="1"
               contype="1" conaffinity="1" rgba="0.3 0.3 0.35 1"/>
-        <body name="ball_body" pos="0 0 0.5">
+        <body name="ball_body" pos="0 0 4.0">
             <joint name="free" type="free"/>
             <inertial pos="0 0 0" mass="1.0" diaginertia="0.004 0.004 0.004"/>
             <geom name="ball" type="sphere" size="0.1" condim="1"
@@ -66,12 +66,18 @@ const MJCF: &str = r#"
 const MASS: f64 = 1.0;
 const G: f64 = 9.81;
 const EXPECTED_FORCE: f64 = MASS * G;
+const START_DELAY: f32 = 1.0;
+
+/// Run condition: physics starts after a 1-second visual delay.
+fn after_start_delay(time: Res<Time>) -> bool {
+    time.elapsed_secs() > START_DELAY
+}
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: Touch Sensor ===");
-    println!("  Sphere drops onto ground plane (condim=1, frictionless)");
+    println!("  Sphere hovers at z=4.0 for 1s, then drops (condim=1, frictionless)");
     println!("  Free-fall: touch=0  |  At-rest: touch ≈ {EXPECTED_FORCE:.2} N");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
@@ -90,9 +96,9 @@ fn main() {
         .insert_resource(
             ValidationHarness::new()
                 .report_at(15.0)
-                .print_every(1.0)
+                .print_every(0.5)
                 .display(|m, d| {
-                    let touch = d.sensor_data(m, 0)[0];
+                    let touch = d.sensor_scalar(m, "touch").unwrap_or(0.0);
                     let contact = if touch > 0.0 { "yes" } else { "no " };
                     format!(
                         "touch={touch:6.2} N  contact={contact}  expected={EXPECTED_FORCE:.2} N"
@@ -100,7 +106,7 @@ fn main() {
                 }),
         )
         .add_systems(Startup, setup)
-        .add_systems(Update, step_physics_realtime)
+        .add_systems(Update, step_physics_realtime.run_if(after_start_delay))
         .add_systems(
             PostUpdate,
             (
@@ -145,10 +151,10 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, 0.2, 0.0),
-        2.0,
+        Vec3::new(0.0, 2.0, 0.0),
+        8.0,
         std::f32::consts::FRAC_PI_4,
-        0.4,
+        0.25,
     );
 
     spawn_physics_hud(&mut commands);
@@ -161,11 +167,12 @@ fn setup(
 
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
-    hud.section("Touch Sensor");
-    let touch = data.sensor_data(&model, 0)[0];
-    let contact = if touch > 0.0 { "yes" } else { "no" };
+    let touch = data.sensor_scalar(&model, "touch").unwrap_or(0.0);
+    let phase = if touch > 0.0 { "CONTACT" } else { "FREE-FALL" };
+    hud.section(&format!("Touch — {phase}"));
+    hud.raw(String::new());
     hud.scalar("touch", touch, 2);
-    hud.raw(format!("contact: {contact}"));
+    hud.raw(String::new());
     hud.scalar("expected", EXPECTED_FORCE, 2);
 }
 
@@ -187,7 +194,7 @@ fn sensor_diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<SensorValidation>,
 ) {
-    let touch = data.sensor_data(&model, 0)[0];
+    let touch = data.sensor_scalar(&model, "touch").unwrap_or(0.0);
     let t = data.time;
 
     // Non-negativity every frame
@@ -195,16 +202,16 @@ fn sensor_diagnostics(
         val.negative_count += 1;
     }
 
-    // Free-fall phase: t < 0.2s
-    if t > 0.01 && t < 0.2 {
+    // Free-fall phase: t < 0.7s (impact at ~0.89s from z=4.0, leave margin)
+    if t > 0.01 && t < 0.7 {
         val.freefall_sampled = true;
         if touch > val.freefall_max_touch {
             val.freefall_max_touch = touch;
         }
     }
 
-    // At-rest phase: t > 3.0s
-    if t > 3.0 {
+    // At-rest phase: t > 5.0s (plenty of time to settle from z=4.0)
+    if t > 5.0 {
         val.rest_touch_sum += touch;
         val.rest_samples += 1;
     }

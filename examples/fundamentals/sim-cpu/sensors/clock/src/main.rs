@@ -88,8 +88,8 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let clock = d.sensor_data(m, 0);
-                    format!("clock={:.5}  time={:.5}", clock[0], d.time)
+                    let clock = d.sensor_scalar(m, "clock").unwrap_or(0.0);
+                    format!("clock={clock:.5}  time={:.5}", d.time)
                 })
                 .track_energy(0.5),
         )
@@ -160,7 +160,7 @@ fn setup(
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("Clock Sensor");
-    let clock = data.sensor_data(&model, 0)[0];
+    let clock = data.sensor_scalar(&model, "clock").unwrap_or(0.0);
     hud.scalar("clock", clock, 5);
     hud.scalar("time", data.time, 5);
     hud.scalar("error", (clock - data.time).abs(), 2);
@@ -182,7 +182,7 @@ fn sensor_diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<SensorValidation>,
 ) {
-    let clock_sensor = data.sensor_data(&model, 0)[0];
+    let clock_sensor = data.sensor_scalar(&model, "clock").unwrap_or(0.0);
     let time = data.time;
 
     // Pipeline check: sensor == data.time

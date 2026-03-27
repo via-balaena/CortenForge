@@ -98,8 +98,8 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let pos = d.sensor_data(m, 0)[0];
-                    let vel = d.sensor_data(m, 1)[0];
+                    let pos = d.sensor_scalar(m, "pos").unwrap_or(0.0);
+                    let vel = d.sensor_scalar(m, "vel").unwrap_or(0.0);
                     let energy = d.energy_kinetic + d.energy_potential;
                     format!("pos={pos:+6.3} rad  vel={vel:+6.3} rad/s  E={energy:.4}J")
                 })
@@ -179,8 +179,8 @@ fn setup(
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("JointPos + JointVel");
-    let pos = data.sensor_data(&model, 0)[0];
-    let vel = data.sensor_data(&model, 1)[0];
+    let pos = data.sensor_scalar(&model, "pos").unwrap_or(0.0);
+    let vel = data.sensor_scalar(&model, "vel").unwrap_or(0.0);
     let energy = data.energy_kinetic + data.energy_potential;
     hud.scalar("pos", pos, 3);
     hud.scalar("vel", vel, 3);
@@ -209,7 +209,7 @@ fn sensor_diagnostics(
     let jid = model.sensor_objid[0]; // joint index for the pos sensor
 
     // JointPos pipeline check
-    let pos_sensor = data.sensor_data(&model, 0)[0];
+    let pos_sensor = data.sensor_scalar(&model, "pos").unwrap_or(0.0);
     let pos_state = data.joint_qpos(&model, jid)[0];
     let pos_err = (pos_sensor - pos_state).abs();
     if pos_err > val.pos_max_err {
@@ -217,7 +217,7 @@ fn sensor_diagnostics(
     }
 
     // JointVel pipeline check
-    let vel_sensor = data.sensor_data(&model, 1)[0];
+    let vel_sensor = data.sensor_scalar(&model, "vel").unwrap_or(0.0);
     let vel_state = data.joint_qvel(&model, jid)[0];
     let vel_err = (vel_sensor - vel_state).abs();
     if vel_err > val.vel_max_err {

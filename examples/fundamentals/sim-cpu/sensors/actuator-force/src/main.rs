@@ -58,7 +58,7 @@ const MJCF: &str = r#"
               fromto="0.25 0 0  0.25 0 0.30" rgba="0.40 0.40 0.43 1"/>
 
         <body name="arm" pos="0 0 0">
-            <joint name="hinge" type="hinge" axis="0 1 0" damping="0.1"/>
+            <joint name="hinge" type="hinge" axis="1 0 0" damping="0.1"/>
             <inertial pos="0 0 -0.25" mass="1.0" diaginertia="0.01 0.01 0.01"/>
             <geom name="rod" type="capsule" size="0.02"
                   fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
@@ -102,8 +102,8 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let afrc = d.sensor_data(m, 0)[0];
-                    let jfrc = d.sensor_data(m, 1)[0];
+                    let afrc = d.sensor_scalar(m, "afrc").unwrap_or(0.0);
+                    let jfrc = d.sensor_scalar(m, "jfrc").unwrap_or(0.0);
                     let angle = d.joint_qpos(m, 0)[0].to_degrees();
                     format!(
                         "angle={angle:+6.1}°  afrc={afrc:+6.3}  jfrc={jfrc:+6.3}  diff={:.2e}",
@@ -130,9 +130,7 @@ fn main() {
 
 /// Apply constant control input every frame.
 fn set_control(mut data: ResMut<PhysicsData>) {
-    if !data.ctrl.is_empty() {
-        data.ctrl[0] = CTRL_VALUE;
-    }
+    data.set_ctrl(0, CTRL_VALUE);
 }
 
 fn setup(
@@ -189,8 +187,8 @@ fn setup(
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("Actuator Force");
-    let afrc = data.sensor_data(&model, 0)[0];
-    let jfrc = data.sensor_data(&model, 1)[0];
+    let afrc = data.sensor_scalar(&model, "afrc").unwrap_or(0.0);
+    let jfrc = data.sensor_scalar(&model, "jfrc").unwrap_or(0.0);
     let angle = data.joint_qpos(&model, 0)[0].to_degrees();
     hud.scalar("angle", angle, 1);
     hud.scalar("afrc", afrc, 3);
@@ -215,22 +213,23 @@ fn sensor_diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<SensorValidation>,
 ) {
-    let afrc_sensor = data.sensor_data(&model, 0)[0];
-    let jfrc_sensor = data.sensor_data(&model, 1)[0];
+    let afrc_sensor = data.sensor_scalar(&model, "afrc").unwrap_or(0.0);
+    let jfrc_sensor = data.sensor_scalar(&model, "jfrc").unwrap_or(0.0);
 
     // Pipeline check: sensor == actuator_force[0]
-    if !data.actuator_force.is_empty() {
-        let afrc_data = data.actuator_force[0];
-        let err = (afrc_sensor - afrc_data).abs();
-        if err > val.afrc_pipeline_max_err {
-            val.afrc_pipeline_max_err = err;
-        }
+    let afrc_data = data.actuator_force.first().copied().unwrap_or(0.0);
+    let err = (afrc_sensor - afrc_data).abs();
+    if err > val.afrc_pipeline_max_err {
+        val.afrc_pipeline_max_err = err;
     }
 
     // Analytical check: afrc ≈ CTRL_VALUE (for motor with gain=1, gear=1)
-    let analytical_err = (afrc_sensor - CTRL_VALUE).abs();
-    if analytical_err > val.afrc_analytical_max_err {
-        val.afrc_analytical_max_err = analytical_err;
+    // Skip first frame — ctrl hasn't been applied yet at t=0
+    if data.time > 0.01 {
+        let analytical_err = (afrc_sensor - CTRL_VALUE).abs();
+        if analytical_err > val.afrc_analytical_max_err {
+            val.afrc_analytical_max_err = analytical_err;
+        }
     }
 
     // Cross-path: afrc == jfrc (single motor, gear=1 ⟹ moment=1)

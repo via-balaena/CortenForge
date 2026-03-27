@@ -31,7 +31,6 @@ use sim_bevy::model_data::{
     PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
     sync_geom_transforms,
 };
-use sim_core::ENABLE_ENERGY;
 use sim_core::validation::{Check, print_report};
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
@@ -92,10 +91,10 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let com = d.sensor_data(m, 0);
+                    let com_id = m.sensor_id("com").unwrap_or(0);
+                    let com = d.sensor_data(m, com_id);
                     format!("com=({:+.4},{:+.4},{:+.4})", com[0], com[1], com[2])
-                })
-                .track_energy(0.5),
+                }),
         )
         .add_systems(Startup, setup)
         .add_systems(Update, step_physics_realtime)
@@ -118,8 +117,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mut model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
-    model.enableflags |= ENABLE_ENERGY;
+    let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let mut data = model.make_data();
 
     // Initial displacements: shoulder 30°, elbow 45°
@@ -127,7 +125,8 @@ fn setup(
     data.qpos[model.jnt_qpos_adr[1]] = std::f64::consts::FRAC_PI_4;
     let _ = data.forward(&model);
 
-    let com = data.sensor_data(&model, 0);
+    let com_id = model.sensor_id("com").unwrap_or(0);
+    let com = data.sensor_data(&model, com_id);
     println!("  t=0 com: ({:.4}, {:.4}, {:.4})", com[0], com[1], com[2]);
     println!(
         "  Model: {} bodies, {} joints, {} sensors\n",
@@ -171,7 +170,8 @@ fn setup(
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("SubtreeCom");
-    let com = data.sensor_data(&model, 0);
+    let com_id = model.sensor_id("com").unwrap_or(0);
+    let com = data.sensor_data(&model, com_id);
     hud.vec3("com", com, 4);
 }
 
@@ -196,7 +196,8 @@ fn sensor_diagnostics(
     let body_id = model.sensor_objid[0];
 
     // Pipeline check: sensor == subtree_com
-    let com_sensor = data.sensor_data(&model, 0);
+    let com_id = model.sensor_id("com").unwrap_or(0);
+    let com_sensor = data.sensor_data(&model, com_id);
     let com_state = &data.subtree_com[body_id];
     let err = ((com_sensor[0] - com_state.x).powi(2)
         + (com_sensor[1] - com_state.y).powi(2)
@@ -214,18 +215,36 @@ fn sensor_diagnostics(
         val.com_x_max = com_sensor[0];
     }
 
-    // Analytical t=0 check: compute COM from body masses and inertial positions
-    // Upper body: mass=1, inertial at (0,0,-0.2) in body frame, body at origin
-    //   with shoulder at 30°: body inertial world pos via FK
-    // Lower body: mass=1, inertial at (0,0,-0.2) in body frame, body at (0,0,-0.4)
-    //   from upper, with elbow at 45°
-    // We compare sensor reading against data.subtree_com (already checked above),
-    // so just verify the COM is far from origin (sanity: both joints displaced).
+    // Analytical t=0 check: COM = (m1*p1 + m2*p2) / (m1+m2)
+    //
+    // Upper body (mass=1): inertial at (0,0,-0.2) in body frame.
+    //   Shoulder θ₁=π/6 around Y: world pos = (-0.2·sin(θ₁), 0, -0.2·cos(θ₁))
+    //
+    // Lower body (mass=1): inertial at (0,0,-0.2) in body frame.
+    //   Body origin in world = R(θ₁)·(0,0,-0.4).
+    //   Total rotation = θ₁+θ₂ = π/6+π/4 = 5π/12.
+    //   World pos = origin + R(θ₁+θ₂)·(0,0,-0.2).
     if !val.t0_checked && data.time < 0.01 {
         val.t0_checked = true;
-        // COM should NOT be at (0,0,-0.4) (the straight-down position),
-        // it should have a nonzero X component due to joint displacements
-        val.t0_com_err = com_sensor[0].abs(); // should be > 0
+        let theta1 = std::f64::consts::FRAC_PI_6;
+        let theta2 = std::f64::consts::FRAC_PI_4;
+        // Upper body inertial world position
+        let p1_x = -0.2 * theta1.sin();
+        let p1_z = -0.2 * theta1.cos();
+        // Lower body origin in world
+        let lo_x = -0.4 * theta1.sin();
+        let lo_z = -0.4 * theta1.cos();
+        // Lower body inertial world position (total rotation θ₁+θ₂)
+        let total = theta1 + theta2;
+        let p2_x = lo_x + -0.2 * total.sin();
+        let p2_z = lo_z + -0.2 * total.cos();
+        // COM = average (equal masses)
+        let expected_x = f64::midpoint(p1_x, p2_x);
+        let expected_z = f64::midpoint(p1_z, p2_z);
+        val.t0_com_err = ((com_sensor[0] - expected_x).powi(2)
+            + com_sensor[1].powi(2)
+            + (com_sensor[2] - expected_z).powi(2))
+        .sqrt();
     }
 
     // Report
@@ -247,9 +266,9 @@ fn sensor_diagnostics(
                 ),
             },
             Check {
-                name: "t=0 COM displaced",
-                pass: val.t0_com_err > 0.05,
-                detail: format!("|com_x|={:.4}m (expect > 0.05)", val.t0_com_err),
+                name: "t=0 analytical COM",
+                pass: val.t0_com_err < 1e-6,
+                detail: format!("error={:.2e}m", val.t0_com_err),
             },
         ];
         let _ = print_report("SubtreeCom (t=15s)", &checks);

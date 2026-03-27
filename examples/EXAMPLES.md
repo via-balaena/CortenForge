@@ -7,7 +7,7 @@ examples/
   fundamentals/
     design/           Pure cf-design (implicit surfaces, bio-inspired geometry)
     mesh/             Pure mesh-* (repair, lattice, shell, printability)
-    sim-cpu/          CPU physics fundamentals (MJCF, joints)
+    sim-cpu/          CPU physics fundamentals (MJCF, joints, sensors)
     sim-gpu/          GPU physics fundamentals (future)
   integration/        Cross-domain pipelines (design → sim → mesh → print)
   sdf-physics/
@@ -35,11 +35,41 @@ Pure `mesh-*` examples — mesh processing, no physics.
 
 ## fundamentals/sim-cpu/
 
-CPU physics fundamentals — joints, MJCF, sim-core.
+CPU physics fundamentals — joints, sensors, MJCF, sim-core.
+
+### Joint types
 
 | Example | Package | Status | Notes |
 |---------|---------|--------|-------|
-| `pendulum-sim` | `example-pendulum-sim` | Working | Raw MJCF, pure physics (no cf-design) |
+| `hinge-joint/simple-pendulum` | `example-hinge-joint-pendulum` | Working | Single hinge, energy conservation |
+| `hinge-joint/double-pendulum` | `example-hinge-joint-double-pendulum` | Working | Chaotic two-link chain |
+| `slide-joint/horizontal` | `example-slide-joint-horizontal` | Working | Spring-loaded slider, oscillation |
+| `slide-joint/vertical` | `example-slide-joint-vertical` | Working | Gravity-loaded spring, equilibrium |
+| `ball-joint/spherical-pendulum` | `example-ball-joint-pendulum` | Working | 3-DOF spherical pendulum |
+| `ball-joint/conical-pendulum` | `example-ball-joint-conical` | Working | Steady conical orbit, precession |
+| `ball-joint/cone-limit` | `example-ball-joint-cone-limit` | Working | Ball joint with cone constraint |
+| `ball-joint/cone-limit-orbit` | `example-ball-joint-cone-orbit` | Working | Cone limit with orbital motion |
+
+### Sensors
+
+| Example | Package | Sensors | Status |
+|---------|---------|---------|--------|
+| `sensors/clock` | `example-sensor-clock` | Clock | Working |
+| `sensors/joint-pos-vel` | `example-sensor-joint-pos-vel` | JointPos, JointVel | Working |
+| `sensors/frame-pos-quat` | `example-sensor-frame-pos-quat` | FramePos, FrameQuat | Working |
+| `sensors/subtree-com` | `example-sensor-subtree-com` | SubtreeCom | Working |
+| `sensors/gyro-velocimeter` | `example-sensor-gyro-velocimeter` | Gyro, Velocimeter | Working |
+| `sensors/accelerometer` | `example-sensor-accelerometer` | Accelerometer | Working |
+| `sensors/touch` | `example-sensor-touch` | Touch | Working |
+| `sensors/actuator-force` | `example-sensor-actuator-force` | ActuatorFrc, JointActuatorFrc | Working |
+| `sensors/geom-distance` | `example-sensor-geom-distance` | GeomDist, GeomNormal, GeomFromTo | Working |
+
+### Other
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `pendulum-sim` | `example-pendulum-sim` | Working | Original raw MJCF demo |
+| `multi-scene-test` | `example-multi-scene-test` | Working | Multi-scene infrastructure test |
 
 ## integration/
 
@@ -63,14 +93,14 @@ Baby-step ladder proving the SDF collision thesis on the CPU pipeline.
 | 01 | `01-sdf-grid` | `example-sdf-cpu-01-sdf-grid` | SdfGrid from solid sphere | Working |
 | 02 | `02-thin-grid` | `example-sdf-cpu-02-thin-grid` | Thin-wall grid fidelity | Working |
 | 03 | `03-freefall` | `example-sdf-cpu-03-freefall` | to_model() + gravity | Working |
-| 04 | `04-rest` | `example-sdf-cpu-04-rest` | sdf_plane_contact | Stub |
+| 04 | `04-rest` | `example-sdf-cpu-04-rest` | sdf_plane_contact | Working |
 | 05 | `05-drop` | `example-sdf-cpu-05-drop` | Dynamic contact + restitution | Stub |
 | 06 | `06-slide` | `example-sdf-cpu-06-slide` | Friction / tangential forces | Stub |
-| 07 | `07-pair` | `example-sdf-cpu-07-pair` | sdf_sdf_contact | Stub |
-| 08 | `08-stack` | `example-sdf-cpu-08-stack` | Multi-body stacking | Stub |
-| 09 | `09-cube-in-box` | `example-sdf-cpu-09-cube-in-box` | Concave containment | Stub |
-| 10 | `10-ball-in-bowl` | `example-sdf-cpu-10-ball-in-bowl` | Curved concave SDF contact | Stub |
-| 11 | `11-hinge-free` | `example-sdf-cpu-11-hinge-free` | Joints with SDF bodies | Stub |
+| 07 | `07-pair` | `example-sdf-cpu-07-pair` | sdf_sdf_contact | Working |
+| 08 | `08-stack` | `example-sdf-cpu-08-stack` | Multi-body stacking | Working |
+| 09 | `09-cube-in-box` | `example-sdf-cpu-09-cube-in-box` | Concave containment | Working |
+| 10 | `10-ball-in-bowl` | `example-sdf-cpu-10-ball-in-bowl` | Curved concave SDF contact | Working |
+| 11 | `11-hinge-free` | `example-sdf-cpu-11-hinge-free` | Joints with SDF bodies | Working |
 | 12 | `12-hinge-wall` | `example-sdf-cpu-12-hinge-wall` | Articulated external contact | Stub |
 | 13 | `13-hinge-stop` | `example-sdf-cpu-13-hinge-stop` | Parent-child SDF contact (convex) | Stub |
 | 14 | `14-damped-hinge` | `example-sdf-cpu-14-damped-hinge` | Damping + parameter sensitivity | Stub |

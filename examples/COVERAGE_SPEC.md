@@ -10,22 +10,22 @@ Examples should mirror the distribution of code in the codebase. Every major
 feature should have at least one dedicated example. Examples also serve as
 integration tests — they find bugs that unit tests miss.
 
-## Current State (2026-03-25)
+## Current State (2026-03-26)
 
-- 232K LOC codebase, 4.3K LOC examples (1.9%)
-- sim-core (60K LOC) + sim-mjcf (30K LOC) = 40% of codebase → 1 example
-- cf-design (29K LOC) → 3 examples (proportional)
-- mesh-* (19K LOC) → 1 example (proportional)
-- sim-gpu (8K LOC) → 0 working examples
-- SDF-CPU ladder: 10 working, 6 stubs, 1 blocked
+- 232K LOC codebase
+- sim-core + sim-mjcf → 29 examples (8 joint types, 9 sensors, 10 actuators, 2 legacy)
+- cf-design → 3 examples
+- mesh-* → 1 example
+- sim-gpu → 0 working examples
+- SDF-CPU ladder: 8 working, 7 stubs, 1 blocked
 
 ## Gap Analysis
 
-### Joint Types (4 types, 2 covered)
-- Hinge → covered (pendulum, finger-design, hinges 11–14)
-- Free → covered (all SDF physics)
-- **Slide → ZERO examples**
-- **Ball → ZERO examples**
+### Joint Types (4 types, 4 covered)
+- Hinge → covered (simple-pendulum, double-pendulum, actuator-force, sensor examples)
+- Free → covered (accelerometer, touch, all SDF physics)
+- Slide → covered (horizontal, vertical, geom-distance)
+- Ball → covered (spherical-pendulum, conical-pendulum, cone-limit, frame-pos-quat, gyro-velocimeter)
 
 ### Geometry Types (8 types, ~6 covered)
 - Plane, Sphere, Capsule, Cylinder, Box, Ellipsoid → covered
@@ -33,22 +33,25 @@ integration tests — they find bugs that unit tests miss.
 - **Hfield (height field terrain) → ZERO examples**
 - Sdf → extensively covered
 
-### Actuator System (mostly uncovered)
-- Transmission: Joint ✓, Tendon ✓, **Site ✗, Body ✗, SliderCrank ✗, JointInParent ✗**
-- Dynamics: None ✓, **Filter ✗, FilterExact ✗, Integrator ✗, Muscle ✗, HillMuscle ✗, User ✗**
-- Gain: Fixed ✓, **Affine ✗, Muscle ✗, HillMuscle ✗, User ✗**
-- Bias: None ✓, **Affine ✗, Muscle ✗, HillMuscle ✗, User ✗**
+### Actuator System (10 examples — standard actuators covered, muscles remaining)
+- Transmission: Joint ✓, Tendon ✓, Site ✓, SliderCrank ✓, **Body ✗, JointInParent ✗**
+- Dynamics: None ✓, Filter ✓, Integrator ✓, **Muscle ✗, HillMuscle ✗, User ✗**
+- Gain: Fixed ✓, Affine ✓, **Muscle ✗, HillMuscle ✗, User ✗**
+- Bias: None ✓, Affine ✓, **Muscle ✗, HillMuscle ✗, User ✗**
 
-### Sensors (40+ types, ZERO examples)
-- Position: JointPos, TendonPos, ActuatorPos, FramePos, FrameQuat, SubtreeCom...
-- Velocity: JointVel, TendonVel, FrameLinVel, FrameAngVel, Gyro, Velocimeter...
-- Force: Touch, Force, Torque, ActuatorFrc, JointActuatorFrc, JointLimitFrc...
-- Spatial: Accelerometer, RangeFinder, GeomDist, GeomNormal...
-- Other: Clock, BallQuat, BallAngVel, SubtreeAngMom...
+### Sensors (40+ types, 15 covered in 9 examples)
+- Position: JointPos ✓, FramePos ✓, FrameQuat ✓, SubtreeCom ✓, Clock ✓
+- Velocity: JointVel ✓, Gyro ✓, Velocimeter ✓
+- Force: Touch ✓, ActuatorFrc ✓, JointActuatorFrc ✓
+- Spatial: Accelerometer ✓, GeomDist ✓, GeomNormal ✓, GeomFromTo ✓
+- Ball: BallQuat ✓, BallAngVel ✓ (in ball-joint/spherical-pendulum)
+- **Uncovered:** TendonPos, TendonVel, ActuatorPos, FrameLinVel, FrameAngVel,
+  Force, Torque, JointLimitFrc, RangeFinder, SubtreeAngMom, User, Plugin
 
 ### Collision (partially covered)
 - SDF-plane ✓, SDF-SDF ✓, analytical convex ✓
-- **Mesh-mesh ✗, mesh-plane ✗, convex-convex (GJK/EPA) ✗**
+- Convex-convex (GJK/EPA) ✓ (geom-distance sensor example — also fixed a GJK bug)
+- **Mesh-mesh ✗, mesh-plane ✗**
 - **Height field ✗**
 - **Friction tuning ✗** (06-slide is stub)
 - **Restitution ✗** (05-drop is stub)
@@ -58,7 +61,7 @@ integration tests — they find bugs that unit tests miss.
 - Newton ✓ (default)
 - **PGS ✗, CG ✗** (zero examples)
 - Euler ✓ (default)
-- **RK4 ✗, Implicit ✗, ImplicitFast ✗, ImplicitSpringDamper ✗**
+- RK4 ✓ (used by all actuator examples), **Implicit ✗, ImplicitFast ✗, ImplicitSpringDamper ✗**
 
 ### Constraint System
 - Contact ✓
@@ -95,19 +98,20 @@ integration tests — they find bugs that unit tests miss.
 ```
 fundamentals/
   sim-cpu/
-    pendulum-sim/           # existing — MJCF hinge, energy
-    slide-joint/            # NEW — prismatic joint, linear motion
-    ball-joint/             # NEW — spherical joint, 3DOF rotation
-    sensors/                # NEW — sensor gallery (touch, gyro, accel, frame)
-    actuators/              # NEW — motor types, dynamics, transmission
-    muscles/                # NEW — Hill muscle model, activation dynamics
-    solvers/                # NEW — PGS vs CG vs Newton comparison
-    integrators/            # NEW — Euler vs RK4 vs Implicit
-    equality-constraints/   # NEW — weld, connect, distance
-    contact-tuning/         # NEW — friction, restitution, solref/solimp
-    inverse-dynamics/       # NEW — compute required torques
-    energy-momentum/        # NEW — conservation tracking
-    urdf-loading/           # NEW — load URDF, compare with MJCF
+    pendulum-sim/           # DONE — MJCF hinge, energy
+    hinge-joint/            # DONE — simple + double pendulum
+    slide-joint/            # DONE — horizontal + vertical
+    ball-joint/             # DONE — spherical, conical, cone-limit (4 examples)
+    sensors/                # DONE — 9 examples, 15+ sensor types, GJK bug fixed
+    actuators/              # DONE — 10 examples: motor, servos, damper, filter, cylinder, integrator, gear, site, slider-crank
+    muscles/                # TODO — Hill muscle model, activation dynamics
+    solvers/                # TODO — PGS vs CG vs Newton comparison
+    integrators/            # TODO — Euler vs RK4 vs Implicit
+    equality-constraints/   # TODO — weld, connect, distance
+    contact-tuning/         # TODO — friction, restitution, solref/solimp
+    inverse-dynamics/       # TODO — compute required torques
+    energy-momentum/        # TODO — conservation tracking
+    urdf-loading/           # TODO — load URDF, compare with MJCF
 ```
 
 ---
@@ -441,7 +445,9 @@ revolute elbow, prismatic gripper. Fixed base link. Box and cylinder geoms.
 - URDF with unsupported features (mesh geometry) produces a clear error message,
   not a crash.
 
-### Track 2: SDF-CPU ladder (complete the 6 stubs)
+### Track 2: SDF-CPU ladder (complete the 7 stubs)
+
+Steps 04, 07–11 now working. Remaining stubs:
 
 ```
 sdf-physics/
@@ -452,6 +458,7 @@ sdf-physics/
     13-hinge-stop/ # implement: parent-child SDF contact
     14-damped-hinge/ # implement: damping parameter tuning
     15-concave-stop/ # implement: concave parent geometry
+    16-socket/     # blocked: full socket/condyle
 ```
 
 ### Track 3: GPU baby-step ladder

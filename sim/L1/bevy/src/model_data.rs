@@ -320,6 +320,11 @@ pub fn step_physics_realtime(
         if let Err(e) = data.0.forward(&model.0) {
             eprintln!("Post-step forward failed: {e}");
         }
+    } else if data.0.time == 0.0 {
+        // First frame: no steps taken (Bevy delta_t = 0), but ensure derived
+        // quantities (actuator_moment, site_xpos, etc.) are populated so
+        // PostUpdate systems don't see stale zeros.
+        let _ = data.0.forward(&model.0);
     }
 }
 
