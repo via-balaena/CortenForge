@@ -1,6 +1,6 @@
 # MJCF Energy Flag Cleanup Spec
 
-**Status:** Draft — ready for next session
+**Status:** Done — implemented 2026-03-27
 **Date:** 2026-03-27
 
 ## Problem

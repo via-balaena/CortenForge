@@ -31,7 +31,6 @@ use sim_bevy::model_data::{
     PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms_with, step_physics_realtime,
     sync_geom_transforms,
 };
-use sim_core::ENABLE_ENERGY;
 use sim_core::validation::quat_rotation_angle;
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
@@ -42,7 +41,9 @@ use sim_core::validation::quat_rotation_angle;
 const MJCF: &str = r#"
 <mujoco model="conical_pendulum">
     <compiler angle="radian"/>
-    <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4"/>
+    <option gravity="0 0 -9.81" timestep="0.001" integrator="RK4">
+        <flag energy="enable"/>
+    </option>
 
     <default>
         <geom contype="0" conaffinity="0"/>
@@ -145,8 +146,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mut model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
-    model.enableflags |= ENABLE_ENERGY;
+    let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let mut data = model.make_data();
 
     // ── Initial tilt: 25° about X axis ──────────────────────────────────

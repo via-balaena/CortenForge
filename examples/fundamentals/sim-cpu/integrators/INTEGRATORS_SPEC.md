@@ -1,6 +1,6 @@
 # Integrators Example Spec
 
-**Status:** Draft — awaiting review
+**Status:** Done — implemented 2026-03-27
 **Date:** 2026-03-27
 **Parent:** `examples/COVERAGE_SPEC.md` Track 1, item 7
 
