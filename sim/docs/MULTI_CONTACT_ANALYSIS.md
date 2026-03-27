@@ -546,7 +546,7 @@ Path A viable and improve performance for large meshes.
 
 **Code location:** `mesh_collide.rs:277` (`collide_mesh_plane`).
 
-##### Phase 1 estimated size: ~200 LOC across plane.rs and mesh_collide.rs
+##### Phase 1 total: ~300 LOC across plane.rs and mesh_collide.rs — DONE
 
 #### Phase 2: Box-Box multi-contact (SAT + face clipping)
 
@@ -763,9 +763,9 @@ Phase 5 updates test thresholds and adds new multi-contact tests.
 |-------|-------------|--------|
 | Phase 0: Return type unification | ~100 | ✅ Done (`2d1a564`) |
 | Phase 1a: Plane-Box | ~70 | ✅ Done (`6229155`) |
-| Phase 1b: Plane-Capsule | ~20 | ✅ Done |
-| Phase 1c: Plane-Cylinder | ~130 | ✅ Done |
-| Phase 1d: Plane-Mesh | ~80 | ✅ Done |
+| Phase 1b: Plane-Capsule | ~20 | ✅ Done (`af13ff2`) |
+| Phase 1c: Plane-Cylinder | ~130 | ✅ Done (`ef81935`) |
+| Phase 1d: Plane-Mesh | ~80 | ✅ Done (`c58fdd2`) |
 | Phase 2: Box-box face clipping | ~450 | Remaining |
 | Phase 3: Capsule multi-contact | ~240 | Remaining |
 | Phase 4: Noslip validation | ~0 | Ongoing (validated with each phase) |
