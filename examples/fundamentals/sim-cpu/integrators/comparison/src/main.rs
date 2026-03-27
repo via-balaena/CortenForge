@@ -86,7 +86,6 @@ fn run_integrator(name: &'static str, mjcf_integrator: &str) -> IntegratorResult
     // Initial condition: horizontal (θ = π/2)
     data.qpos[0] = FRAC_PI_2;
     data.forward(&model).expect("forward should succeed");
-    let energy_initial = data.total_energy();
 
     // Track zero-crossings for period measurement
     let mut prev_sign: i8 = if data.qpos[0] > 0.0 { 1 } else { -1 };
@@ -105,7 +104,7 @@ fn run_integrator(name: &'static str, mjcf_integrator: &str) -> IntegratorResult
 
     let energy_final = data.total_energy();
     // Normalize drift by characteristic energy scale, not E₀ (which is ≈ 0)
-    let drift_pct = (energy_final - energy_initial) / M_G_D * 100.0;
+    let drift_pct = (energy_final - data.energy_initial) / M_G_D * 100.0;
 
     let measured_period = if zero_cross_times.len() >= 2 {
         let n = zero_cross_times.len();
@@ -116,7 +115,7 @@ fn run_integrator(name: &'static str, mjcf_integrator: &str) -> IntegratorResult
 
     IntegratorResult {
         name,
-        energy_initial,
+        energy_initial: data.energy_initial,
         energy_final,
         drift_pct,
         measured_period,

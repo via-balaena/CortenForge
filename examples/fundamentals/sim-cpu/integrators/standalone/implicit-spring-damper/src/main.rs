@@ -115,9 +115,8 @@ fn setup(
 
     data.qpos[0] = std::f64::consts::FRAC_PI_2;
     data.forward(&model).expect("forward should succeed");
-    let e0 = data.total_energy();
 
-    println!("  E₀ = {e0:.6} J");
+    println!("  E₀ = {:.6} J", data.energy_initial);
     println!("  Model: {} bodies, {} joints\n", model.nbody, model.njnt);
 
     let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
@@ -145,25 +144,16 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(InitialEnergy(e0));
 }
-
-#[derive(Resource)]
-struct InitialEnergy(f64);
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
 
-fn update_hud(
-    _model: Res<PhysicsModel>,
-    data: Res<PhysicsData>,
-    e0: Res<InitialEnergy>,
-    mut hud: ResMut<PhysicsHud>,
-) {
+fn update_hud(_model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section(INTEGRATOR_NAME);
 
     let energy = data.total_energy();
-    let drift_pct = (energy - e0.0) / M_G_D * 100.0;
+    let drift_pct = (energy - data.energy_initial) / M_G_D * 100.0;
 
     hud.scalar("energy", energy, 4);
     hud.raw(format!("drift: {drift_pct:+.3}% mgd"));
@@ -179,7 +169,7 @@ struct IntegratorValidation {
 
 fn integrator_diagnostics(
     data: Res<PhysicsData>,
-    e0: Res<InitialEnergy>,
+
     harness: Res<ValidationHarness>,
     mut val: ResMut<IntegratorValidation>,
 ) {
@@ -187,7 +177,7 @@ fn integrator_diagnostics(
         val.reported = true;
 
         let energy = data.total_energy();
-        let drift_pct = (energy - e0.0) / M_G_D * 100.0;
+        let drift_pct = (energy - data.energy_initial) / M_G_D * 100.0;
 
         let checks = vec![Check {
             name: "ImplicitSpringDamper bounded",

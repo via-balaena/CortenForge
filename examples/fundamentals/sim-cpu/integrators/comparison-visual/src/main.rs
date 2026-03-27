@@ -116,20 +116,15 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .add_plugins(MultiScenePlugin)
         .init_resource::<PhysicsHud>()
-        .init_resource::<InitialEnergies>()
         .add_systems(Startup, setup)
         .add_systems(PostUpdate, (update_hud, render_physics_hud).chain())
         .run();
 }
 
-#[derive(Resource, Default)]
-struct InitialEnergies(Vec<f64>);
-
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut initial: ResMut<InitialEnergies>,
 ) {
     let mut scenes = PhysicsScenes::default();
 
@@ -142,7 +137,6 @@ fn setup(
         data.qpos[0] = THETA1;
         data.qpos[1] = THETA2;
         data.forward(&model).expect("forward should succeed");
-        initial.0.push(data.total_energy());
 
         let id = scenes.add(def.label, model, data);
 
@@ -162,7 +156,11 @@ fn setup(
         );
     }
 
-    println!("  {} scenes, E₀ = {:.4} J\n", scenes.len(), initial.0[0]);
+    println!(
+        "  {} scenes, E₀ = {:.4} J\n",
+        scenes.len(),
+        scenes.get(0).map_or(0.0, |s| s.data.energy_initial)
+    );
 
     commands.insert_resource(scenes);
 
@@ -179,18 +177,13 @@ fn setup(
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
 
-fn update_hud(
-    scenes: Res<PhysicsScenes>,
-    initial: Res<InitialEnergies>,
-    mut hud: ResMut<PhysicsHud>,
-) {
+fn update_hud(scenes: Res<PhysicsScenes>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("Integrators");
 
-    for (i, scene) in scenes.iter().enumerate() {
-        let e0 = initial.0.get(i).copied().unwrap_or(0.0);
+    for scene in scenes.iter() {
         let energy = scene.data.total_energy();
-        let drift_j = energy - e0;
+        let drift_j = energy - scene.data.energy_initial;
         hud.raw(format!(
             "{:<10} E={:+.4}J  dE={:+.4}J",
             scene.label, energy, drift_j

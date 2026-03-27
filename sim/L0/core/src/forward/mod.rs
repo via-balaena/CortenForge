@@ -373,6 +373,10 @@ impl Data {
             }
             if enabled(model, ENABLE_ENERGY) {
                 crate::energy::mj_energy_vel(model, self);
+                // Capture initial energy on first computation (baseline for drift).
+                if self.energy_initial == 0.0 {
+                    self.energy_initial = self.total_energy();
+                }
             } else {
                 self.energy_kinetic = 0.0;
             }
