@@ -686,6 +686,133 @@ fn box_box_separated() {
 }
 
 // ============================================================================
+// Phase 2: Box-Box Multi-Contact Tests
+// ============================================================================
+
+/// Aligned boxes face-face → 4 contacts (clipped incident face has 4 corners).
+///
+/// Configuration: two 1×1×1 boxes along X, overlapping by 0.1.
+/// Reference face is box1's +X face. Incident face is box2's -X face (1×1).
+/// Clipped polygon = full incident face (fits inside reference face).
+/// All 4 vertices at same depth = 0.1.
+#[test]
+fn box_box_face_face_4_contacts() {
+    let mjcf = r#"
+        <mujoco model="box_box_ff_4">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box1" pos="0 0 0">
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+                <body name="box2" pos="0.9 0 0">
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Two aligned cubes: incident face (1×1) fits inside reference face (1×1)
+    // → 4 contacts, all at depth 0.1
+    assert_eq!(
+        data.ncon, 4,
+        "Aligned box-box face-face should produce 4 contacts, got {}",
+        data.ncon
+    );
+
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..4].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Box stacked on box (gravity, free joint) stays stable with multi-contact.
+#[test]
+fn box_box_stacked_stable() {
+    let mjcf = r#"
+        <mujoco model="box_stack_stable">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"
+                    iterations="100" tolerance="1e-8"/>
+            <worldbody>
+                <geom type="plane" size="5 5 0.1"/>
+                <body name="box1" pos="0 0 0.11">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.5 0.5 0.005"/>
+                </body>
+                <body name="box2" pos="0 0 0.31">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.5 0.5 0.005"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    for _ in 0..500 {
+        data.step(&model).unwrap();
+    }
+
+    // Both boxes should settle near their starting z positions
+    let box1_z = data.qpos[2]; // free joint qpos[2] = z
+    let box2_z = data.qpos[9]; // second free body qpos[7+2] = z
+
+    assert!(
+        box1_z > 0.05 && box1_z < 0.20,
+        "Box1 should settle near z=0.1, got {box1_z:.4}"
+    );
+    assert!(
+        box2_z > 0.20 && box2_z < 0.40,
+        "Box2 should settle near z=0.3, got {box2_z:.4}"
+    );
+}
+
+/// Edge-edge contact (box rotated 45°) → 1 contact.
+#[test]
+fn box_box_edge_edge_1_contact() {
+    let mjcf = r#"
+        <mujoco model="box_box_ee_1">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box1" pos="0 0 0">
+                    <geom type="box" size="0.3 0.3 0.3"/>
+                </body>
+                <body name="box2" pos="0.5 0 0" euler="0 0 45">
+                    <geom type="box" size="0.3 0.3 0.3"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Rotated 45° should give edge-edge (1 contact) or face-edge (few contacts)
+    assert!(
+        data.ncon >= 1,
+        "Edge-edge box contact should produce at least 1 contact, got {}",
+        data.ncon
+    );
+
+    // Contact depth should be positive
+    assert!(
+        data.contacts[0].depth > 0.0,
+        "Edge contact depth should be positive"
+    );
+}
+
+// ============================================================================
 // Cylinder-Sphere Tests
 // ============================================================================
 

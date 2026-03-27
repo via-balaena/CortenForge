@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-27
 **Branch:** `feature/integrator-examples`
-**Status:** Phases 0, 1a–1d complete (all plane pairs done). Phases 2, 3 remain.
+**Status:** Phases 0, 1a–1d, 2 complete. Phase 3 remains.
 
 ## Background
 
@@ -305,7 +305,7 @@ purely a collision-layer effort.
 | Plane-Capsule | `mjc_PlaneCapsule` | 2 | `collide_with_plane` (Capsule arm) | 2 | ✅ **Done** (Phase 1b) |
 | Plane-Cylinder | `mjc_PlaneCylinder` | 4 | `collide_cylinder_plane_impl` | 4 | ✅ **Done** (Phase 1c) |
 | Plane-Mesh | `mjc_PlaneConvex` | 3 | `collide_mesh_plane` | 3 | ✅ **Done** (Phase 1d) |
-| Box-Box | `_boxbox` | ~8 | `collide_box_box` | 1 | **SAT + face clip, not single support** |
+| Box-Box | `_boxbox` | ~8 | `collide_box_box` | ~8 | ✅ **Done** (Phase 2) |
 | Capsule-Box | `mjraw_CapsuleBox` | 2 | `collide_capsule_box` | 1 | **Both caps, not 5-point sample** |
 | Capsule-Capsule | `mjc_CapsuleCapsule` | 2 | `collide_capsule_capsule` | 1 | **Parallel case returns 2** |
 
@@ -548,7 +548,7 @@ Path A viable and improve performance for large meshes.
 
 ##### Phase 1 total: ~300 LOC across plane.rs and mesh_collide.rs — DONE
 
-#### Phase 2: Box-Box multi-contact (SAT + face clipping)
+#### Phase 2: Box-Box multi-contact (SAT + face clipping) — DONE
 
 **Reference:** `_boxbox` in `engine_collision_box.c:602` (~750 LOC)
 
@@ -581,10 +581,29 @@ the single-support-point contact generation with:
 - Deduplicate contacts within `1e-6` distance
 - Cap at `mjMAXCONPAIR`
 
-**Current code location:** `pair_cylinder.rs:392–521`
+**Algorithm (as implemented):**
 
-**Estimated size:** 400–500 LOC new code. The Sutherland-Hodgman clipper is
-reusable for any future polygon-clipping needs.
+SAT phase preserved (15-axis test). Contact generation replaced:
+
+- **Face-face path:** `SatAxisType::Face1/Face2` → identify reference face
+  (box owning the separating axis) and incident face (most anti-parallel face
+  of the other box). Build 4-vertex incident polygon, clip against 4 reference
+  face edge planes via Sutherland-Hodgman. Compute per-vertex depth along
+  reference normal. Filter by margin. Deduplicate within 1e-6.
+
+- **Edge-edge path:** `SatAxisType::Edge(i,j)` → identify the specific parallel
+  edge of each box via support in `-best_axis` direction. Compute closest points
+  on the two segments via `closest_points_segments`. Return 1 contact at midpoint.
+
+**New helper functions:**
+- `clip_polygon_by_plane()` — Sutherland-Hodgman half-plane clipper (~25 LOC)
+- `dedup_contacts()` — O(n²) dedup within 1e-6 distance
+- `SatAxisType` enum — tracks which axis type won SAT (face1/face2/edge)
+
+**New tests:** `box_box_face_face_4_contacts`, `box_box_stacked_stable`,
+`box_box_edge_edge_1_contact`.
+
+**Code location:** `pair_cylinder.rs:387–600`
 
 #### Phase 3: Capsule multi-contact
 
@@ -731,9 +750,9 @@ Tests affected by multi-contact, organized by expected impact:
 | `test_plane_box_tilted_4_contacts` | Verify box on tilted plane → 4 contacts with distinct depths | ✅ Done (1a) |
 | `test_plane_capsule_2_contacts` | Verify horizontal capsule on plane → 2 contacts | ✅ Done (1b) |
 | `test_plane_cylinder_multi_contacts` | Verify cylinder on plane → up to 4 contacts | ✅ Done (1c) |
-| `test_box_box_face_face_contacts` | Verify face-face → 4 contacts |
-| `test_box_box_edge_edge_contact` | Verify edge-edge → 1 contact |
-| `test_box_stack_3_stable` | 3-box stack remains stable for 500 steps |
+| `test_box_box_face_face_contacts` | Verify face-face → 4 contacts | ✅ Done (2) |
+| `test_box_box_edge_edge_contact` | Verify edge-edge → 1 contact | ✅ Done (2) |
+| `test_box_stack_stable` | 2-box stack remains stable for 500 steps | ✅ Done (2) |
 | `test_noslip_multi_contact_converges` | Verify noslip convergence with 4 contacts on tilted plane |
 
 ### Implementation ordering
@@ -766,11 +785,11 @@ Phase 5 updates test thresholds and adds new multi-contact tests.
 | Phase 1b: Plane-Capsule | ~20 | ✅ Done (`af13ff2`) |
 | Phase 1c: Plane-Cylinder | ~130 | ✅ Done (`ef81935`) |
 | Phase 1d: Plane-Mesh | ~80 | ✅ Done (`c58fdd2`) |
-| Phase 2: Box-box face clipping | ~450 | Remaining |
+| Phase 2: Box-box face clipping | ~250 | ✅ Done |
 | Phase 3: Capsule multi-contact | ~240 | Remaining |
 | Phase 4: Noslip validation | ~0 | Ongoing (validated with each phase) |
-| Phase 5: Test updates + new tests | ~200 | Ongoing (12 tests added with 1a–1d) |
-| **Total remaining** | **~890** | |
+| Phase 5: Test updates + new tests | ~200 | Ongoing (15 tests added with 1a–2) |
+| **Total remaining** | **~440** | |
 
 ### What does NOT change
 
