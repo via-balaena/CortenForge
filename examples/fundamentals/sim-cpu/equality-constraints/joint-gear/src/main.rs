@@ -51,13 +51,13 @@ const MJCF: &str = r#"
   </default>
 
   <worldbody>
-    <body name="arm1" pos="-0.3 0 1.5">
-      <joint name="j1" type="hinge" axis="0 1 0" damping="0.5"/>
-      <geom name="arm1" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="0.5"/>
+    <body name="arm1" pos="-0.6 0 2.0">
+      <joint name="j1" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom name="arm1" type="capsule" fromto="0 0 0 0 0 -0.7" size="0.03" mass="0.5"/>
     </body>
-    <body name="arm2" pos="0.3 0 1.5">
-      <joint name="j2" type="hinge" axis="0 1 0" damping="0.5"/>
-      <geom name="arm2" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="0.5"/>
+    <body name="arm2" pos="0.6 0 2.0">
+      <joint name="j2" type="hinge" axis="0 1 0" damping="0.1"/>
+      <geom name="arm2" type="capsule" fromto="0 0 0 0 0 -0.7" size="0.03" mass="0.5"/>
     </body>
   </worldbody>
 
@@ -148,8 +148,8 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, 0.9, 0.0),
-        2.5,
+        Vec3::new(0.0, 1.2, 0.0),
+        4.5,
         std::f32::consts::FRAC_PI_2,
         0.15,
     );
@@ -164,7 +164,7 @@ fn setup(
 
 fn apply_motor(data: ResMut<PhysicsData>) {
     let t = data.time;
-    let ctrl = 2.0 * (2.0 * std::f64::consts::PI * t).sin();
+    let ctrl = 2.0 * (1.0 * std::f64::consts::PI * t).sin();
     data.into_inner().set_ctrl(0, ctrl);
 }
 

@@ -54,7 +54,7 @@ const MJCF: &str = r#"
       <freejoint/>
       <geom name="base_box" type="box" size="0.12 0.08 0.08" mass="1.0"/>
     </body>
-    <body name="arm" pos="0 0 1.2">
+    <body name="arm" pos="0 0 1.42">
       <freejoint/>
       <geom name="arm_cap" type="capsule" fromto="0 0 0 0 0 -0.3" size="0.04" mass="0.5"/>
     </body>

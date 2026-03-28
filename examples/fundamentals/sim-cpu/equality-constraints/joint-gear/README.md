@@ -8,6 +8,25 @@ mechanical linkages from equality constraints.
 See also: [Joint Mimic](../joint-mimic/) — the same constraint type with a 1:1
 ratio.
 
+## Where gear constraints are used
+
+Gear ratios show up whenever joints are mechanically coupled at different rates:
+
+- **Gear trains** — a small gear driving a large gear (or vice versa). The
+  constraint replaces modeling individual gear teeth.
+- **Timing belts / chain drives** — pulleys of different diameters coupled by
+  a belt. The radius ratio sets the gear ratio.
+- **Differential drives** — left and right wheels coupled through a
+  differential mechanism.
+- **Tendon-driven hands** — a single tendon routed through pulleys of different
+  radii at each finger joint, creating different flexion rates.
+- **Transmissions** — any mechanism where one actuator drives multiple joints
+  at different speeds (e.g. worm gears, harmonic drives).
+
+The `polycoef` polynomial generalizes beyond simple ratios — you can encode any
+polynomial relationship `q1 = c0 + c1*q2 + c2*q2² + ...` for nonlinear
+couplings.
+
 ## What you see
 
 - **Two blue capsule arms** — hanging from separate hinges, side by side

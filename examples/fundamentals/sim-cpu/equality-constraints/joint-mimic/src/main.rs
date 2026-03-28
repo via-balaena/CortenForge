@@ -53,18 +53,18 @@ const MJCF: &str = r#"
   </default>
 
   <worldbody>
-    <body name="arm1" pos="-0.3 0 1.5">
-      <joint name="j1" type="hinge" axis="0 1 0" damping="0.5"/>
-      <geom name="arm1" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="0.5"/>
+    <body name="arm1" pos="-0.4 0 2.0">
+      <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+      <geom name="arm1" type="capsule" fromto="0 0 0 0 0 -0.7" size="0.03" mass="1.0"/>
     </body>
-    <body name="arm2" pos="0.3 0 1.5">
-      <joint name="j2" type="hinge" axis="0 1 0" damping="0.5"/>
-      <geom name="arm2" type="capsule" fromto="0 0 0 0 0 -0.4" size="0.03" mass="0.5"/>
+    <body name="arm2" pos="0.4 0 2.0">
+      <joint name="j2" type="hinge" axis="0 1 0" damping="0"/>
+      <geom name="arm2" type="capsule" fromto="0 0 0 0 0 -0.7" size="0.03" mass="1.0"/>
     </body>
   </worldbody>
 
   <equality>
-    <joint joint1="j1" joint2="j2" polycoef="0 1" solref="0.05 1.0"/>
+    <joint joint1="j1" joint2="j2" polycoef="0 1" solref="0.8 0.5"/>
   </equality>
 </mujoco>
 "#;
@@ -74,7 +74,7 @@ const MJCF: &str = r#"
 fn main() {
     println!("=== CortenForge: Joint Mimic (1:1) ===");
     println!("  Two hinge arms coupled 1:1 — start at different angles, converge");
-    println!("  j1 starts at 0.5 rad, j2 starts at -0.3 rad");
+    println!("  j1 starts at 1.2 rad, j2 starts at -1.0 rad");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -122,9 +122,9 @@ fn setup(
     let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let mut data = model.make_data();
 
-    // Start at different angles to show convergence
-    data.qpos[0] = 0.5;
-    data.qpos[1] = -0.3;
+    // Start at dramatically different angles so convergence is visible
+    data.qpos[0] = 1.2; // ~70° forward
+    data.qpos[1] = -1.0; // ~57° backward
     let _ = data.forward(&model);
 
     println!(
@@ -146,8 +146,8 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, 0.9, 0.0),
-        2.5,
+        Vec3::new(0.0, 1.2, 0.0),
+        3.5,
         std::f32::consts::FRAC_PI_2,
         0.15,
     );
@@ -175,7 +175,7 @@ fn update_hud(_model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut
 #[derive(Resource, Default)]
 struct Validation {
     converged: bool,
-    max_err_after_1s: f64,
+    max_err_after_converge: f64,
     reported: bool,
 }
 
@@ -187,11 +187,11 @@ fn diagnostics(
 ) {
     let err = (data.qpos[0] - data.qpos[1]).abs();
 
-    if data.time >= 1.0 {
+    if data.time >= 3.0 {
         if !val.converged && err < 0.1 {
             val.converged = true;
         }
-        val.max_err_after_1s = val.max_err_after_1s.max(err);
+        val.max_err_after_converge = val.max_err_after_converge.max(err);
     }
 
     if harness.reported() && !val.reported {
@@ -200,12 +200,12 @@ fn diagnostics(
             Check {
                 name: "Mimic converges",
                 pass: val.converged,
-                detail: "converged by 1s".into(),
+                detail: "converged by 3s".into(),
             },
             Check {
                 name: "Mimic tracks",
-                pass: val.max_err_after_1s < 0.05,
-                detail: format!("max err = {:.4} rad", val.max_err_after_1s),
+                pass: val.max_err_after_converge < 0.1,
+                detail: format!("max err = {:.4} rad", val.max_err_after_converge),
             },
         ];
         let _ = print_report("Joint Mimic (t=5s)", &checks);

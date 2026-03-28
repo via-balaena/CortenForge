@@ -1,9 +1,10 @@
 //! Distance Constraint — Rigid Rod (1-DOF Scalar Constraint)
 //!
-//! Two free-floating spheres with a distance constraint — they maintain fixed
-//! separation like an invisible rigid rod. Sphere A gets a lateral velocity kick
-//! so the pair tumbles and orbits rather than falling straight down. The heavier
-//! sphere stays lower; the lighter one orbits around it.
+//! Two free-floating spheres connected by a rigid rod (distance constraint).
+//! A visible thin rod is drawn between the sphere centers each frame.
+//! Sphere A gets a lateral velocity kick so the pair tumbles and orbits
+//! rather than falling straight down. The heavier sphere stays lower; the
+//! lighter one orbits around it.
 //!
 //! Validates:
 //! - Distance maintained at 0.5m (< 5mm deviation)
@@ -25,6 +26,7 @@
 use bevy::prelude::*;
 use nalgebra::Vector3;
 use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::physics_pos;
 use sim_bevy::examples::{
     PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
     validation_system,
@@ -36,10 +38,14 @@ use sim_bevy::model_data::{
 };
 use sim_core::validation::{Check, print_report};
 
+/// Marker for the visual rod connecting the two spheres.
+#[derive(Component)]
+struct RodVisual;
+
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 //
 // Two free spheres with a distance constraint (0.5m separation).
-// Ground plane for bouncing. Sphere A is heavier (1.0 kg) and larger.
+// Ground plane for landing. No lateral kick — falls straight down.
 
 const MJCF: &str = r#"
 <mujoco model="distance-rigid-rod">
@@ -52,11 +58,11 @@ const MJCF: &str = r#"
   <worldbody>
     <geom name="ground" type="plane" size="2 2 0.01"/>
 
-    <body name="sphere_a" pos="0 0 1.5">
+    <body name="sphere_a" pos="-0.2 0 1.3">
       <freejoint/>
       <geom name="ga" type="sphere" size="0.08" mass="1.0"/>
     </body>
-    <body name="sphere_b" pos="0 0 1.0">
+    <body name="sphere_b" pos="0.2 0 1.0">
       <freejoint/>
       <geom name="gb" type="sphere" size="0.06" mass="0.5"/>
     </body>
@@ -76,9 +82,9 @@ const BODY_B: usize = 2;
 
 fn main() {
     println!("=== CortenForge: Distance Constraint (Rigid Rod) ===");
-    println!("  Two spheres maintaining {TARGET_DIST}m separation");
+    println!("  Two spheres connected by a rigid rod ({TARGET_DIST}m)");
     println!("  Sphere A: 1.0kg (red), Sphere B: 0.5kg (blue)");
-    println!("  Lateral kick for tumbling dynamics");
+    println!("  Falls straight down, bounces, comes to rest");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -110,6 +116,7 @@ fn main() {
             PostUpdate,
             (
                 sync_geom_transforms,
+                update_rod_visual,
                 validation_system,
                 distance_diagnostics,
                 update_hud,
@@ -128,8 +135,6 @@ fn setup(
     let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let mut data = model.make_data();
 
-    // Lateral velocity kick for interesting tumbling dynamics
-    data.qvel[0] = 1.0;
     let _ = data.forward(&model);
 
     println!(
@@ -161,8 +166,49 @@ fn setup(
 
     spawn_physics_hud(&mut commands);
 
+    // Visible rod between the two spheres (unit cylinder, scaled each frame)
+    let rod_mat = materials.add(MetalPreset::SpringWire.material());
+    commands.spawn((
+        Mesh3d(meshes.add(Cylinder::new(1.0, 1.0))),
+        MeshMaterial3d(rod_mat),
+        Transform::default(),
+        RodVisual,
+    ));
+
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
+}
+
+// ── Rod Visual ──────────────────────────────────────────────────────────────
+
+const ROD_RADIUS: f32 = 0.015;
+
+fn update_rod_visual(data: Res<PhysicsData>, mut query: Query<&mut Transform, With<RodVisual>>) {
+    let pa = &data.xpos[BODY_A];
+    let pb = &data.xpos[BODY_B];
+
+    // Convert MuJoCo (x,y,z) → Bevy (x,z,y)
+    let a = physics_pos(pa[0] as f32, pa[1] as f32, pa[2] as f32);
+    let b = physics_pos(pb[0] as f32, pb[1] as f32, pb[2] as f32);
+
+    let midpoint = (a + b) * 0.5;
+    let diff = b - a;
+    let length = diff.length();
+
+    if length < 1e-6 {
+        return;
+    }
+
+    let dir = diff / length;
+    // Bevy Cylinder is Y-up by default, so rotate from Y to the rod direction
+    let rotation = Quat::from_rotation_arc(Vec3::Y, dir);
+
+    for mut transform in &mut query {
+        // Scale: radius in X/Z, half-length in Y (Cylinder height is 1.0, centered)
+        transform.translation = midpoint;
+        transform.rotation = rotation;
+        transform.scale = Vec3::new(ROD_RADIUS, length, ROD_RADIUS);
+    }
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
