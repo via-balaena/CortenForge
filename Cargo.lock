@@ -2721,7 +2721,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-equality-connect"
+name = "example-equality-connect-body-to-body"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-connect-to-world"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2743,7 +2754,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-equality-joint-coupling"
+name = "example-equality-joint-gear"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-joint-mimic"
 version = "0.7.0"
 dependencies = [
  "bevy",
@@ -2762,7 +2783,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-equality-weld"
+name = "example-equality-weld-body-to-body"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-weld-to-world"
 version = "0.7.0"
 dependencies = [
  "bevy",

@@ -1,5 +1,5 @@
 [package]
-name = "example-equality-weld"
+name = "example-equality-connect-to-world"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
