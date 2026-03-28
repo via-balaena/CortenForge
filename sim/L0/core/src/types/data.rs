@@ -397,8 +397,9 @@ pub struct Data {
     /// When true, mj_fwd_acceleration should be skipped.
     pub newton_solved: bool,
 
-    /// Per-iteration Newton solver statistics (length `solver_niter` after solve).
-    /// Populated by Newton solver; empty for PGS/CG.
+    /// Per-iteration solver statistics (length `solver_niter` after solve).
+    /// Populated by all 3 solvers: PGS fills `improvement` only (other fields
+    /// zeroed); CG and Newton fill all fields.
     pub solver_stat: Vec<SolverStat>,
 
     /// Per-step mean inertia: `trace(qM) / nv`. More accurate than the

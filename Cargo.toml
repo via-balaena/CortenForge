@@ -68,6 +68,9 @@ members = [
     "examples/fundamentals/sim-cpu/integrators/standalone/implicit-fast",
     "examples/fundamentals/sim-cpu/integrators/standalone/implicit-spring-damper",
 
+    # Examples — fundamentals / sim-cpu / solvers
+    "examples/fundamentals/sim-cpu/solvers/comparison",
+
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
     "examples/sdf-physics/cpu/02-thin-grid",

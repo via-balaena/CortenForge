@@ -1,6 +1,6 @@
 # Solvers Example Spec
 
-**Status:** Draft — awaiting review
+**Status:** Implemented — 7/7 checks pass
 **Date:** 2026-03-27
 **Parent:** `examples/COVERAGE_SPEC.md` Track 1, item 6
 
@@ -85,13 +85,13 @@ The comparison example runs all 3 solvers on the same scene, steps each for
     <geom name="ground" type="plane" size="2 2 0.01"
           friction="0.5 0.005 0.001" rgba="0.35 0.35 0.38 1"/>
 
-    <body name="box_a" pos="0 0 0.15">
+    <body name="box_a" pos="0 0 0.1">
       <joint type="free" name="jnt_a"/>
       <geom name="box_a" type="box" size="0.1 0.1 0.1" mass="1.0"
             friction="0.5 0.005 0.001" rgba="0.82 0.22 0.15 1"/>
     </body>
 
-    <body name="box_b" pos="0 0 0.35">
+    <body name="box_b" pos="0 0 0.3">
       <joint type="free" name="jnt_b"/>
       <geom name="box_b" type="box" size="0.1 0.1 0.1" mass="0.5"
             friction="0.5 0.005 0.001" rgba="0.15 0.45 0.82 1"/>
@@ -101,9 +101,9 @@ The comparison example runs all 3 solvers on the same scene, steps each for
 ```
 
 Initial condition: both boxes at rest, positioned so box_a base is at
-z=0.05 (touching ground, box center at z=0.15) and box_b base is at
-z=0.25 (touching box_a top, box center at z=0.35). The solver resolves
-any initial contact overlap and maintains a steady stack.
+z=0.0 (touching ground, box center at z=0.1) and box_b base is at
+z=0.2 (touching box_a top, box center at z=0.3). Box half-size is 0.1m,
+so boxes start exactly at their rest positions with minimal transient.
 
 **Note:** `<freejoint/>` is a MuJoCo shorthand that CortenForge does **not**
 support. Use `<joint type="free"/>` instead.
@@ -144,15 +144,15 @@ Aggregate over all steps:
 ## Console Output
 
 ```
-Running 3 solvers for 5.0s each (dt=0.002, 2500 steps)...
+Running 3 solvers for 5s each (dt=0.002, 2500 steps)...
 
-=== Solver Comparison (t = 5.0s, dt = 0.002) ===
+=== Solver Comparison (t = 5s, dt = 0.002) ===
 
   Solver       Avg iter  Max iter  Drift(mm)  Max depth(mm)  E drift(%)  Fallback
-  ──────────────────────────────────────────────────────────────────────────────
-  PGS            23.4       50      0.02       0.001          +0.003%    n/a
-  CG              8.2       15      0.02       0.001          +0.003%    n/a
-  Newton          2.1        4      0.02       0.001          +0.003%    0/2500
+  ────────────────────────────────────────────────────────────────────────────────
+  PGS            47.4       100      0.000       0.0256      +0.0000%    n/a
+  CG             31.1       100      0.000       0.0256      -0.0000%    n/a
+  Newton          0.2         2      0.000       0.0256      -0.0000%    0/2500
 
   [PASS] All solvers stable: max drift < 1mm
   [PASS] Newton converges in <= 5 avg iterations
@@ -212,8 +212,10 @@ Running 3 solvers for 5.0s each (dt=0.002, 2500 steps)...
   When Newton falls back to PGS, PGS overwrites `solver_niter`/`solver_stat`
   — the Newton stats are lost. `data.newton_solved` is the only reliable
   indicator. CG has no equivalent flag; CG fallback is not tracked.
-- All 3 solvers populate `solver_stat` with per-iteration entries — the
-  comparison table can show iteration stats for PGS and CG, not just Newton
+- All 3 solvers populate `solver_stat` with per-iteration `SolverStat`
+  entries. PGS fills `improvement` only (other fields zeroed); CG and Newton
+  fill all fields (`improvement`, `gradient`, `lineslope`, `nactive`,
+  `nchange`, `nline`)
 
 ## Non-Goals
 
