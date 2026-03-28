@@ -1,14 +1,14 @@
-//! Euler Integrator — Semi-Implicit Euler with Eulerdamp
+//! Implicit Integrator — Full Implicit with Coriolis + LU Factorization
 //!
-//! Single undamped pendulum integrated with semi-implicit Euler. At coarse
-//! timesteps (dt=0.005), Euler exhibits visible energy gain — the pendulum
-//! swings higher over time. This is the expected first-order drift behavior.
+//! Single undamped pendulum integrated with the full implicit method. Includes
+//! Coriolis velocity derivatives and uses LU factorization (asymmetric D matrix).
+//! Maximum accuracy among the implicit variants. Unconditionally stable.
 //!
 //! Validates:
-//! - Energy drift > 0.5% over 15s (demonstrably worse than higher-order methods)
-//! - Oscillation period within 2% of analytical T = 2π√(L_eff/g)
+//! - Energy drift < 0.5% over 15s (stable, slight dissipation OK)
+//! - Oscillation period within 2% of analytical T = 2π√(I/(m·g·d))
 //!
-//! Run with: `cargo run -p example-integrator-euler --release`
+//! Run with: `cargo run -p example-integrator-implicit --release`
 
 #![allow(
     clippy::doc_markdown,
@@ -32,12 +32,40 @@ use sim_bevy::model_data::{
 };
 use sim_core::validation::{Check, print_report};
 
+// ── What the engine computes (full implicit) ───────────────────────────────
+//
+//   Full backward Euler with asymmetric damping Jacobian:
+//
+//   1. Assemble velocity Jacobian (all force derivatives w.r.t. qvel):
+//        D = ∂(qfrc_smooth)/∂(qvel)
+//          = D_joint + D_tendon + D_actuator + D_coriolis
+//                                               ↑ includes Coriolis terms
+//
+//   2. Form system matrix (asymmetric due to Coriolis):
+//        M_hat = M - h · D
+//
+//   3. Solve via LU factorization (P·L·U decomposition):
+//        M_hat · qacc = qfrc_smooth + qfrc_constraint
+//        Requires pivoting since M_hat is not symmetric
+//
+//   4. Update:
+//        qvel  ←  qvel + h · qacc
+//        qpos  ←  manifold_integrate(qpos, h, qvel)
+//
+//   Properties:
+//   - Unconditionally stable (large timesteps won't explode)
+//   - Includes ALL velocity-dependent forces (Coriolis, gyroscopic)
+//   - LU factorization: O(nv³) — most expensive integrator
+//   - Best for: maximum accuracy with implicit stability
+//
+// Source: sim/L0/core/src/forward/acceleration.rs (mj_fwd_acceleration_implicit_full)
+
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 
 const MJCF: &str = r#"
-<mujoco model="integrator-euler">
+<mujoco model="integrator-implicit">
   <compiler angle="radian"/>
-  <option gravity="0 0 -9.81" timestep="0.005" integrator="Euler">
+  <option gravity="0 0 -9.81" timestep="0.005" integrator="implicit">
     <flag energy="enable" contact="disable"/>
   </option>
   <default>
@@ -59,17 +87,14 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
-const INTEGRATOR_NAME: &str = "Euler";
-
-// Characteristic energy scale: m * g * d = 1.0 * 9.81 * 0.25 = 2.4525 J
-// Used to normalize drift (E₀ ≈ 0 when starting from horizontal).
+const INTEGRATOR_NAME: &str = "Implicit";
 const M_G_D: f64 = 1.0 * 9.81 * 0.25;
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: {INTEGRATOR_NAME} Integrator ===");
-    println!("  Semi-implicit Euler — first-order, visible energy drift");
+    println!("  Full implicit — Coriolis + LU factorization");
     println!("  dt = 0.005, zero damping, released from horizontal");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
@@ -115,7 +140,6 @@ fn setup(
     let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let mut data = model.make_data();
 
-    // Initial condition: horizontal (θ = π/2)
     data.qpos[0] = std::f64::consts::FRAC_PI_2;
     data.forward(&model).expect("forward should succeed");
 
@@ -124,7 +148,7 @@ fn setup(
 
     let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
     let mat_tip =
-        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.85, 0.45, 0.15)));
+        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.15, 0.75, 0.35)));
 
     spawn_model_geoms(
         &mut commands,
@@ -183,9 +207,9 @@ fn integrator_diagnostics(
         let drift_pct = (energy - data.energy_initial) / M_G_D * 100.0;
 
         let checks = vec![Check {
-            name: "Euler drifts visibly",
-            pass: drift_pct.abs() > 0.1,
-            detail: format!("drift={drift_pct:+.4}% of m*g*d (expect >0.1%)"),
+            name: "Implicit stable",
+            pass: drift_pct.abs() < 0.5,
+            detail: format!("drift={drift_pct:+.4}% of m*g*d (expect <0.5%)"),
         }];
         let _ = print_report(&format!("{INTEGRATOR_NAME} Integrator (t=15s)"), &checks);
     }

@@ -77,11 +77,10 @@ drift over 15 seconds).
 | 6 | RK4 >> Euler | RK4 drift < Euler drift / 10 |
 | 7 | All periods match | Within 2% of RK4's measured period |
 
-## Standalone variants
+## Per-integrator examples
 
-The `standalone/` folder contains one visual (Bevy window) example per
-integrator. These are for debugging — if an integrator breaks, you can
-run it in isolation:
+Each integrator has its own visual (Bevy window) example with algorithm
+documentation. Run any in isolation:
 
 ```
 cargo run -p example-integrator-euler --release

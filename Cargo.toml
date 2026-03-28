@@ -62,18 +62,18 @@ members = [
     # Examples — fundamentals / sim-cpu / integrators
     "examples/fundamentals/sim-cpu/integrators/comparison",
     "examples/fundamentals/sim-cpu/integrators/comparison-visual",
-    "examples/fundamentals/sim-cpu/integrators/standalone/euler",
-    "examples/fundamentals/sim-cpu/integrators/standalone/rk4",
-    "examples/fundamentals/sim-cpu/integrators/standalone/implicit",
-    "examples/fundamentals/sim-cpu/integrators/standalone/implicit-fast",
-    "examples/fundamentals/sim-cpu/integrators/standalone/implicit-spring-damper",
+    "examples/fundamentals/sim-cpu/integrators/euler",
+    "examples/fundamentals/sim-cpu/integrators/rk4",
+    "examples/fundamentals/sim-cpu/integrators/implicit",
+    "examples/fundamentals/sim-cpu/integrators/implicit-fast",
+    "examples/fundamentals/sim-cpu/integrators/implicit-spring-damper",
 
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
     "examples/fundamentals/sim-cpu/solvers/comparison-visual",
-    "examples/fundamentals/sim-cpu/solvers/standalone/pgs",
-    "examples/fundamentals/sim-cpu/solvers/standalone/cg",
-    "examples/fundamentals/sim-cpu/solvers/standalone/newton",
+    "examples/fundamentals/sim-cpu/solvers/pgs",
+    "examples/fundamentals/sim-cpu/solvers/cg",
+    "examples/fundamentals/sim-cpu/solvers/newton",
 
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",

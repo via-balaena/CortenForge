@@ -1,14 +1,14 @@
-//! Implicit Integrator — Full Implicit with Coriolis + LU Factorization
+//! RK4 Integrator — 4th-Order Runge-Kutta
 //!
-//! Single undamped pendulum integrated with the full implicit method. Includes
-//! Coriolis velocity derivatives and uses LU factorization (asymmetric D matrix).
-//! Maximum accuracy among the implicit variants. Unconditionally stable.
+//! Single undamped pendulum integrated with classic 4-stage RK4. Gold standard
+//! for accuracy: energy drift is near-zero even at coarse timesteps. 4× the
+//! cost of Euler per step, but orders of magnitude better conservation.
 //!
 //! Validates:
-//! - Energy drift < 0.5% over 15s (stable, slight dissipation OK)
+//! - Energy drift < 0.01% over 15s (near-perfect conservation)
 //! - Oscillation period within 2% of analytical T = 2π√(I/(m·g·d))
 //!
-//! Run with: `cargo run -p example-integrator-implicit --release`
+//! Run with: `cargo run -p example-integrator-rk4 --release`
 
 #![allow(
     clippy::doc_markdown,
@@ -32,12 +32,41 @@ use sim_bevy::model_data::{
 };
 use sim_core::validation::{Check, print_report};
 
+// ── What the engine computes (classical RK4) ───────────────────────────────
+//
+//   4th-order Runge-Kutta with Butcher tableau:
+//
+//     c | A          b = [1/6, 1/3, 1/3, 1/6]
+//     ──┼──────
+//     0 |            RK4_A weights:
+//    ½  | ½            [0.5, 0, 0]
+//    ½  | 0  ½         [0,  0.5, 0]
+//     1 | 0  0  1      [0,  0,   1]
+//
+//   Stage evaluation (i = 1,2,3):
+//     1. Trial velocity:  qvel_i = qvel₀ + h · Σⱼ A[i][j] · qacc_j
+//     2. Trial position:  integrate qpos from qpos₀ using qvel_i (manifold-aware)
+//     3. Re-evaluate forces: forward_skip_sensors(model, data)
+//     4. Store qacc_i and act_dot_i
+//
+//   Final combination:
+//     qvel_final = qvel₀ + h · (qacc₀/6 + qacc₁/3 + qacc₂/3 + qacc₃/6)
+//     qpos_final = qpos₀ + h · (qvel₀/6 + qvel₁/3 + qvel₂/3 + qvel₃/6)
+//
+//   Properties:
+//   - 4th-order: O(h⁴) local error → near-zero energy drift at small timesteps
+//   - 4× more expensive than Euler (4 full force evaluations per step)
+//   - NOT symplectic: energy drift is possible but tiny at typical timesteps
+//   - Best for: accuracy-critical simulations, reference solutions, benchmarks
+//
+// Source: sim/L0/core/src/integrate/rk4.rs
+
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 
 const MJCF: &str = r#"
-<mujoco model="integrator-implicit">
+<mujoco model="integrator-rk4">
   <compiler angle="radian"/>
-  <option gravity="0 0 -9.81" timestep="0.005" integrator="implicit">
+  <option gravity="0 0 -9.81" timestep="0.005" integrator="RK4">
     <flag energy="enable" contact="disable"/>
   </option>
   <default>
@@ -59,14 +88,14 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
-const INTEGRATOR_NAME: &str = "Implicit";
+const INTEGRATOR_NAME: &str = "RK4";
 const M_G_D: f64 = 1.0 * 9.81 * 0.25;
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: {INTEGRATOR_NAME} Integrator ===");
-    println!("  Full implicit — Coriolis + LU factorization");
+    println!("  4th-order Runge-Kutta — gold standard accuracy");
     println!("  dt = 0.005, zero damping, released from horizontal");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
@@ -119,8 +148,7 @@ fn setup(
     println!("  Model: {} bodies, {} joints\n", model.nbody, model.njnt);
 
     let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
-    let mat_tip =
-        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.15, 0.75, 0.35)));
+    let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.2, 0.6, 0.85)));
 
     spawn_model_geoms(
         &mut commands,
@@ -179,9 +207,9 @@ fn integrator_diagnostics(
         let drift_pct = (energy - data.energy_initial) / M_G_D * 100.0;
 
         let checks = vec![Check {
-            name: "Implicit stable",
-            pass: drift_pct.abs() < 0.5,
-            detail: format!("drift={drift_pct:+.4}% of m*g*d (expect <0.5%)"),
+            name: "RK4 near-perfect",
+            pass: drift_pct.abs() < 0.001,
+            detail: format!("drift={drift_pct:+.6}% of m*g*d (expect <0.001%)"),
         }];
         let _ = print_report(&format!("{INTEGRATOR_NAME} Integrator (t=15s)"), &checks);
     }

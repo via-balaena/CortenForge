@@ -58,8 +58,8 @@ integration tests — they find bugs that unit tests miss.
 - **Contact parameter override ✗**
 
 ### Solvers & Integration
-- Newton ✓, PGS ✓, CG ✓ (comparison + comparison-visual + 3 standalones)
-- Euler ✓, RK4 ✓, Implicit ✓, ImplicitFast ✓, ImplicitSpringDamper ✓ (comparison + comparison-visual + 5 standalones)
+- Newton ✓, PGS ✓, CG ✓ (comparison + comparison-visual + 3 per-solver)
+- Euler ✓, RK4 ✓, Implicit ✓, ImplicitFast ✓, ImplicitSpringDamper ✓ (comparison + comparison-visual + 5 per-integrator)
 
 ### Constraint System
 - Contact ✓
@@ -103,8 +103,8 @@ fundamentals/
     sensors/                # DONE — 9 examples, 15+ sensor types, GJK bug fixed
     actuators/              # DONE — 10 examples: motor, servos, damper, filter, cylinder, integrator, gear, site, slider-crank
     muscles/                # TODO — Hill muscle model, activation dynamics
-    solvers/                # DONE — comparison + comparison-visual + 3 standalones
-    integrators/            # DONE — comparison + comparison-visual + 5 standalones
+    solvers/                # DONE — comparison + comparison-visual + 3 per-solver
+    integrators/            # DONE — comparison + comparison-visual + 5 per-integrator
     equality-constraints/   # TODO — weld, connect, distance
     contact-tuning/         # TODO — friction, restitution, solref/solimp
     inverse-dynamics/       # TODO — compute required torques

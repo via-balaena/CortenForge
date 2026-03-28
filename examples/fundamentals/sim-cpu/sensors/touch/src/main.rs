@@ -63,6 +63,25 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
+// ── How the touch sensor works ──────────────────────────────────────────────
+//
+//   The engine sums normal contact forces for all contacts involving geoms
+//   attached to the sensor's body:
+//
+//   1. Iterate all active constraints (efc_type, efc_force)
+//   2. For each contact constraint where either geom belongs to this body:
+//        - Frictionless/Elliptic: add efc_force[normal] (pure normal component)
+//        - Pyramidal: add all efc_force[0..dim] (facet projections ≈ 75% of true
+//          normal — this is why we use condim="1" in this example to get exact
+//          normal force instead of the pyramidal approximation)
+//   3. Output: scalar = total summed normal force
+//
+//   Touch reads directly from efc_force (constraint solver output), so it's
+//   only meaningful AFTER the solver runs. Pipeline: step() → forward() →
+//   constraint_solve() → sensor_acc() → touch sensor evaluated here.
+//
+// Source: sim/L0/core/src/sensor/acceleration.rs (touch sensor loop)
+
 const MASS: f64 = 1.0;
 const G: f64 = 9.81;
 const EXPECTED_FORCE: f64 = MASS * G;

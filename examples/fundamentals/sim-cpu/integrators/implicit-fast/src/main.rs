@@ -1,14 +1,14 @@
-//! RK4 Integrator — 4th-Order Runge-Kutta
+//! ImplicitFast Integrator — Symmetric D, Cholesky Factorization
 //!
-//! Single undamped pendulum integrated with classic 4-stage RK4. Gold standard
-//! for accuracy: energy drift is near-zero even at coarse timesteps. 4× the
-//! cost of Euler per step, but orders of magnitude better conservation.
+//! Single undamped pendulum integrated with the implicit-fast method. Same as
+//! full Implicit but skips Coriolis terms and uses Cholesky (not LU) for better
+//! performance. Unconditionally stable.
 //!
 //! Validates:
-//! - Energy drift < 0.01% over 15s (near-perfect conservation)
+//! - Energy drift < 0.5% over 15s (stable, slight dissipation OK)
 //! - Oscillation period within 2% of analytical T = 2π√(I/(m·g·d))
 //!
-//! Run with: `cargo run -p example-integrator-rk4 --release`
+//! Run with: `cargo run -p example-integrator-implicit-fast --release`
 
 #![allow(
     clippy::doc_markdown,
@@ -32,12 +32,42 @@ use sim_bevy::model_data::{
 };
 use sim_core::validation::{Check, print_report};
 
+// ── What the engine computes (implicit fast) ───────────────────────────────
+//
+//   Simplified backward Euler — skips Coriolis for speed:
+//
+//   1. Assemble damping Jacobian (Coriolis EXCLUDED):
+//        D = D_joint + D_tendon + D_actuator
+//        (no mjd_rne_vel call — saves O(nv²) work)
+//
+//   2. Symmetrize: D ← (D + Dᵀ) / 2
+//      (without Coriolis, D is nearly symmetric; forcing symmetry
+//       enables cheaper Cholesky instead of LU)
+//
+//   3. Form SPD system matrix:
+//        M_hat = M - h · D    (symmetric positive definite)
+//
+//   4. Solve via Cholesky factorization:
+//        M_hat = L · Lᵀ,  then backsolve for qacc
+//
+//   5. Update:
+//        qvel  ←  qvel + h · qacc
+//        qpos  ←  manifold_integrate(qpos, h, qvel)
+//
+//   Properties:
+//   - Stable like full implicit, but cheaper (Cholesky vs LU)
+//   - Skipping Coriolis: negligible error for most articulated systems
+//   - Cholesky: O(nv³/3) — roughly half the cost of LU
+//   - Best for: real-time implicit integration where Coriolis is small
+//
+// Source: sim/L0/core/src/forward/acceleration.rs (mj_fwd_acceleration_implicitfast)
+
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 
 const MJCF: &str = r#"
-<mujoco model="integrator-rk4">
+<mujoco model="integrator-implicitfast">
   <compiler angle="radian"/>
-  <option gravity="0 0 -9.81" timestep="0.005" integrator="RK4">
+  <option gravity="0 0 -9.81" timestep="0.005" integrator="implicitfast">
     <flag energy="enable" contact="disable"/>
   </option>
   <default>
@@ -59,14 +89,14 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
-const INTEGRATOR_NAME: &str = "RK4";
+const INTEGRATOR_NAME: &str = "ImplicitFast";
 const M_G_D: f64 = 1.0 * 9.81 * 0.25;
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: {INTEGRATOR_NAME} Integrator ===");
-    println!("  4th-order Runge-Kutta — gold standard accuracy");
+    println!("  Symmetric D, no Coriolis — Cholesky factorization");
     println!("  dt = 0.005, zero damping, released from horizontal");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
@@ -119,7 +149,7 @@ fn setup(
     println!("  Model: {} bodies, {} joints\n", model.nbody, model.njnt);
 
     let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
-    let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.2, 0.6, 0.85)));
+    let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.7, 0.2, 0.7)));
 
     spawn_model_geoms(
         &mut commands,
@@ -178,9 +208,9 @@ fn integrator_diagnostics(
         let drift_pct = (energy - data.energy_initial) / M_G_D * 100.0;
 
         let checks = vec![Check {
-            name: "RK4 near-perfect",
-            pass: drift_pct.abs() < 0.001,
-            detail: format!("drift={drift_pct:+.6}% of m*g*d (expect <0.001%)"),
+            name: "ImplicitFast stable",
+            pass: drift_pct.abs() < 0.5,
+            detail: format!("drift={drift_pct:+.4}% of m*g*d (expect <0.5%)"),
         }];
         let _ = print_report(&format!("{INTEGRATOR_NAME} Integrator (t=15s)"), &checks);
     }

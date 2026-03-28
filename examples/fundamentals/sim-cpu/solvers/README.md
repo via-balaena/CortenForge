@@ -21,16 +21,16 @@ contact problem in 0-2 iterations that PGS needs ~47 for.
 |---------|------|---------------|
 | `comparison/` | Headless | Formatted table + 7 pass/fail checks |
 | `comparison-visual/` | Bevy | 3 stacks side by side, HUD with live iteration counts |
-| `standalone/pgs/` | Bevy | Single PGS stack with solver HUD |
-| `standalone/cg/` | Bevy | Single CG stack with solver HUD |
-| `standalone/newton/` | Bevy | Single Newton stack with solver HUD + fallback status |
+| `pgs/` | Bevy | Single PGS stack with solver HUD |
+| `cg/` | Bevy | Single CG stack with solver HUD |
+| `newton/` | Bevy | Single Newton stack with solver HUD + fallback status |
 
 ## Run
 
 ```
 cargo run -p example-solver-comparison --release          # headless table
 cargo run -p example-solver-comparison-visual --release   # side-by-side
-cargo run -p example-solver-pgs --release                 # PGS standalone
-cargo run -p example-solver-cg --release                  # CG standalone
-cargo run -p example-solver-newton --release              # Newton standalone
+cargo run -p example-solver-pgs --release                 # PGS
+cargo run -p example-solver-cg --release                  # CG
+cargo run -p example-solver-newton --release              # Newton
 ```

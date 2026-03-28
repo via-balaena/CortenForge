@@ -32,6 +32,42 @@ use sim_bevy::model_data::{
 };
 use sim_core::validation::{Check, print_report};
 
+// ── What the engine computes (implicit spring-damper) ──────────────────────
+//
+//   Velocity-level implicit solve with per-DOF spring/damper treatment:
+//
+//   1. Build modified mass matrix (diagonal spring/damper terms):
+//        M_impl = M + h·D_jnt + h²·K_jnt
+//        where K_jnt = diag(joint stiffness), D_jnt = diag(joint damping)
+//
+//   2. Add tendon effects (non-diagonal coupling):
+//        M_impl += Σ_t (h²·k_active + h·b) · Jₜᵀ · Jₜ
+//        k_active = 0 inside deadband [lower, upper], k outside
+//
+//   3. Build right-hand side:
+//        rhs = M·v_old + h·f_ext - h·K·(q - q_eq)
+//
+//   4. Solve via Cholesky:
+//        M_impl · v_new = rhs
+//
+//   5. Recover acceleration and update:
+//        qacc = (v_new - v_old) / h
+//        qpos ← manifold_integrate(qpos, h, v_new)
+//
+//   Properties:
+//   - Unconditionally stable for arbitrarily stiff springs
+//   - Springs treated implicitly: no dt restriction from k/m ratio
+//   - Damping always active; friction remains explicit
+//   - Best for: stiff spring/damper systems that would require tiny dt with Euler
+//
+//   Note: with zero stiffness and zero damping (as in this model), this
+//   degenerates to explicit Euler — the implicit treatment has nothing to do.
+//   See the integrator comparison example for a stiff-spring scenario where
+//   this integrator's stability advantage becomes visible.
+//
+// Source: sim/L0/core/src/forward/acceleration.rs (mj_fwd_acceleration_implicit)
+//         sim/L0/core/src/integrate/implicit.rs (K/D diagonal assembly)
+
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 
 const MJCF: &str = r#"

@@ -1,14 +1,15 @@
-//! CG Solver — Conjugate Gradient on a Two-Box Stack
+//! Newton Solver — Full Newton on a Two-Box Stack
 //!
-//! Two boxes stacked on a ground plane, solved with CG (primal-space,
-//! M^-1 preconditioner). The HUD shows per-step iteration count and max
-//! contact penetration. CG converges faster than PGS but slower than Newton.
+//! Two boxes stacked on a ground plane, solved with Newton (primal-space,
+//! H^-1 preconditioner, line search). The HUD shows per-step iteration
+//! count, fallback status, and max contact penetration. Newton converges
+//! in 0-2 iterations on this simple scene (quadratic convergence).
 //!
 //! Validates:
 //! - Stack stable: `box_a` z-drift < 1mm over 5s
-//! - CG converges: avg iterations <= 50
+//! - Newton converges fast: avg iterations <= 5
 //!
-//! Run with: `cargo run -p example-solver-cg --release`
+//! Run with: `cargo run -p example-solver-newton --release`
 
 #![allow(
     clippy::doc_markdown,
@@ -33,12 +34,45 @@ use sim_bevy::model_data::{
 };
 use sim_core::validation::{Check, print_report};
 
+// ── What the engine computes (Newton solver) ───────────────────────────────
+//
+//   Newton's method — primal-space constraint optimizer with full Hessian:
+//
+//   Objective: same as CG — minimize cost(qacc) over constraint accelerations
+//
+//   Hessian assembly:
+//     H = M + Σ_{active rows i} Dᵢ · Jᵢᵀ · Jᵢ
+//     (Dᵢ = impedance-scaled constraint weight)
+//     Dense path (nv ≤ 60): Cholesky factorization, rank-1 incremental updates
+//     Sparse path (nv > 60): LDL^T with elimination tree
+//
+//   Main loop (for iter = 0..max_iters):
+//     1. Gradient: grad = M·qacc - qfrc_smooth - Jᵀ·efc_force
+//     2. Search direction: search = -H⁻¹ · grad  (Cholesky/LDL solve)
+//     3. Line search (exact 1D Newton):
+//          - Newton step from α=0: α₁ = -f'(0)/f''(0)
+//          - Bracket search until derivative changes sign
+//          - Bracketed refinement: pick best of 3 candidates
+//     4. Move: qacc ← qacc + α · search
+//     5. Re-classify constraints, update active set
+//     6. Incremental Hessian update (rank-1 Cholesky up/downdate)
+//        + cone augmentation for elliptic friction contacts
+//     7. Convergence: if improvement < tol OR |grad| < tol, stop
+//
+//   Properties:
+//   - Quadratic convergence near solution → fewest iterations (0-2 here)
+//   - Most expensive per-iteration (Hessian assembly + factorization)
+//   - Falls back to PGS if Cholesky fails or max iterations exceeded
+//   - Best for: precision-critical contact scenarios, complex friction cones
+//
+// Source: sim/L0/core/src/constraint/solver/newton.rs, hessian.rs, primal.rs
+
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 
 const MJCF: &str = r#"
-<mujoco model="solver-cg">
+<mujoco model="solver-newton">
   <compiler angle="radian"/>
-  <option gravity="0 0 -9.81" timestep="0.002" solver="CG"
+  <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
           iterations="100" tolerance="1e-10">
     <flag energy="enable"/>
   </option>
@@ -62,13 +96,13 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
-const SOLVER_NAME: &str = "CG";
+const SOLVER_NAME: &str = "Newton";
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: {SOLVER_NAME} Solver ===");
-    println!("  Conjugate Gradient — primal-space, M^-1 preconditioner");
+    println!("  Full Newton — primal-space, H^-1 preconditioner, line search");
     println!("  Two boxes stacked on ground, dt = 0.002");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
@@ -88,7 +122,12 @@ fn main() {
             ValidationHarness::new()
                 .report_at(5.0)
                 .print_every(1.0)
-                .display(|_m, d| format!("iter={} ncon={}", d.solver_niter, d.ncon)),
+                .display(|_m, d| {
+                    format!(
+                        "iter={} ncon={} solved={}",
+                        d.solver_niter, d.ncon, d.newton_solved
+                    )
+                }),
         )
         .add_systems(Startup, setup)
         .add_systems(Update, step_physics_realtime)
@@ -162,6 +201,14 @@ fn update_hud(_model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut
 
     hud.raw(format!("iter: {}", data.solver_niter));
     hud.raw(format!("contacts: {}", data.ncon));
+    hud.raw(format!(
+        "solved: {}",
+        if data.newton_solved {
+            "yes"
+        } else {
+            "FALLBACK"
+        }
+    ));
 
     let max_depth = data.contacts[..data.ncon]
         .iter()
@@ -180,6 +227,7 @@ struct SolverValidation {
     reported: bool,
     total_iter: usize,
     steps: usize,
+    fallbacks: usize,
     rest_z: Option<f64>,
     max_drift: f64,
     settled: bool,
@@ -192,6 +240,10 @@ fn solver_diagnostics(
 ) {
     val.total_iter += data.solver_niter;
     val.steps += 1;
+
+    if !data.newton_solved {
+        val.fallbacks += 1;
+    }
 
     let box_a_z = data.qpos[2];
 
@@ -222,9 +274,12 @@ fn solver_diagnostics(
                 detail: format!("max drift = {drift_mm:.3} mm"),
             },
             Check {
-                name: "CG converges: avg iter <= 50",
-                pass: avg_iter <= 50.0,
-                detail: format!("avg = {avg_iter:.1}"),
+                name: "Newton converges fast: avg iter <= 5",
+                pass: avg_iter <= 5.0,
+                detail: format!(
+                    "avg = {avg_iter:.1}, fallbacks = {}/{}",
+                    val.fallbacks, val.steps
+                ),
             },
         ];
         let _ = print_report(&format!("{SOLVER_NAME} Solver (t=5s)"), &checks);

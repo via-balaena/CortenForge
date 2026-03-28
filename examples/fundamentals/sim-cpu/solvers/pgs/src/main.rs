@@ -34,6 +34,39 @@ use sim_bevy::model_data::{
 };
 use sim_core::validation::{Check, print_report};
 
+// ── What the engine computes (PGS solver) ──────────────────────────────────
+//
+//   Projected Gauss-Seidel — dual-space iterative constraint solver:
+//
+//   Setup:
+//     Compute M⁻¹·Jᵀ via sparse LDL solves (one per constraint row)
+//     For each constraint i:
+//       ar_diag[i] = Jᵢ · (M⁻¹·Jᵢᵀ) + R[i]   (diagonal Delassus + regularization)
+//       b_eff[i] = efc_b[i] - Jᵢ · qacc_smooth
+//
+//   Main loop (for iter = 0..max_iters):
+//     For each constraint row i:
+//       1. Residual:  r[i] = b_eff[i] + Jᵢ·qacc + R[i]·f[i]
+//       2. Update:    f[i] ← f[i] - r[i] / ar_diag[i]
+//       3. Project per constraint type:
+//            Equality:     no projection (unconstrained)
+//            Contact/Limit: f[i] = max(0, f[i])          (non-negative normal force)
+//            Friction:      f[i] = clamp(f[i], -μ·fₙ, μ·fₙ)  (friction cone)
+//            Elliptic:      QCQP solve for friction cone  (coupled normal+friction)
+//       4. Incremental update: qacc += Δf · (M⁻¹·Jᵢᵀ)
+//     Check convergence: if relative cost improvement < tolerance, stop
+//
+//   Post-solve:
+//     qfrc_constraint = Jᵀ · efc_force
+//
+//   Properties:
+//   - Always converges (guaranteed for convex LCP)
+//   - Linear convergence rate — needs more iterations than CG/Newton
+//   - O(nefc · nv) per iteration (sparse matrix-vector products)
+//   - Robust fallback: CG and Newton fall back to PGS on failure
+//
+// Source: sim/L0/core/src/constraint/solver/pgs.rs
+
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 
 const MJCF: &str = r#"

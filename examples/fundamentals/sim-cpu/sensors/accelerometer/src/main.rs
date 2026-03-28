@@ -64,6 +64,27 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
+// ── How the accelerometer sensor works ──────────────────────────────────────
+//
+//   The engine computes proper acceleration in the sensor's local frame:
+//
+//   1. Body acceleration (cacc) from forward dynamics: α (angular), a (linear)
+//   2. Transport to sensor site: a_site = a_body + α × r_site
+//   3. Coriolis correction:      a_corrected = a_site + ω × v_site
+//   4. Rotate to local frame:    a_sensor = Rᵀ · a_corrected
+//
+//   Key insight: gravity is NOT subtracted — it drives the dynamics.
+//   In free-fall, net acceleration is zero (a = g, but g drives the motion,
+//   so the body-frame acceleration is zero — weightlessness).
+//   At rest, the ground exerts a reaction force → a_sensor = Rᵀ · (+g) ≈ [0,0,+9.81].
+//   This matches real IMU behavior: a real accelerometer reads +g when stationary.
+//
+//   Sensors are evaluated AFTER the constraint solver runs and accelerations
+//   are finalized. Pipeline: step() → forward() → constraint_solve() →
+//   forward_acceleration() → body_accumulators(cacc) → sensor_acc().
+//
+// Source: sim/L0/core/src/sensor/acceleration.rs (object_acceleration)
+
 const G: f64 = 9.81;
 const START_DELAY: f32 = 1.0; // seconds before physics starts (visual pause)
 

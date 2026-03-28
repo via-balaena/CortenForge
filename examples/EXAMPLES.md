@@ -70,11 +70,11 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 |---------|---------|--------|-------|
 | `integrators/comparison` | `example-integrator-comparison` | Working | Headless energy drift table, 7 checks |
 | `integrators/comparison-visual` | `example-integrator-comparison-visual` | Working | 3 double pendulums side by side |
-| `integrators/standalone/euler` | `example-integrator-euler` | Working | Semi-implicit Euler, visible drift |
-| `integrators/standalone/rk4` | `example-integrator-rk4` | Working | 4th-order Runge-Kutta, near-perfect |
-| `integrators/standalone/implicit` | `example-integrator-implicit` | Working | Full implicit, L-stable |
-| `integrators/standalone/implicit-fast` | `example-integrator-implicit-fast` | Working | Symmetric D, no Coriolis |
-| `integrators/standalone/implicit-spring-damper` | `example-integrator-implicit-spring-damper` | Working | Diagonal spring/damper path |
+| `integrators/euler` | `example-integrator-euler` | Working | Semi-implicit Euler, visible drift |
+| `integrators/rk4` | `example-integrator-rk4` | Working | 4th-order Runge-Kutta, near-perfect |
+| `integrators/implicit` | `example-integrator-implicit` | Working | Full implicit, L-stable |
+| `integrators/implicit-fast` | `example-integrator-implicit-fast` | Working | Symmetric D, no Coriolis |
+| `integrators/implicit-spring-damper` | `example-integrator-implicit-spring-damper` | Working | Diagonal spring/damper path |
 
 ### Solvers
 
@@ -82,9 +82,9 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 |---------|---------|--------|-------|
 | `solvers/comparison` | `example-solver-comparison` | Working | Headless convergence table, 7 checks |
 | `solvers/comparison-visual` | `example-solver-comparison-visual` | Working | 3 stacks side by side |
-| `solvers/standalone/pgs` | `example-solver-pgs` | Working | Projected Gauss-Seidel, ~47 iter |
-| `solvers/standalone/cg` | `example-solver-cg` | Working | Conjugate Gradient, ~31 iter |
-| `solvers/standalone/newton` | `example-solver-newton` | Working | Full Newton, ~0 iter |
+| `solvers/pgs` | `example-solver-pgs` | Working | Projected Gauss-Seidel, ~47 iter |
+| `solvers/cg` | `example-solver-cg` | Working | Conjugate Gradient, ~31 iter |
+| `solvers/newton` | `example-solver-newton` | Working | Full Newton, ~0 iter |
 
 ### Other
 
