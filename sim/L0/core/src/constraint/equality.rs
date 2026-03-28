@@ -8,7 +8,6 @@
 use nalgebra::{DMatrix, DVector, UnitQuaternion, Vector3};
 
 use crate::constraint::compute_point_velocity;
-use crate::constraint::impedance::quaternion_to_axis_angle;
 use crate::types::{Data, MjJointType, Model};
 
 /// Compute constraint velocity as J * qvel (matching MuJoCo's `mj_referenceConstraint`).
@@ -102,7 +101,7 @@ pub fn extract_connect_jacobian(
 /// MuJoCo convention: separate anchor points per body. eq_data layout:
 ///   [0..3] = anchor in body2's local frame
 ///   [3..6] = anchor in body1's local frame (auto-computed at model build)
-///   [6..10] = relpose quaternion [w,x,y,z] = neg(q1_ref) * q2_ref
+///   [6..10] = relpose quaternion [w,x,y,z] = inv(q1_ref) * q2_ref
 ///
 /// Constraint: pos_body1 = pos_body2 AND orientation match.
 pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> EqualityConstraintRows {
@@ -132,14 +131,18 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
     // Position error (zero at reference configuration)
     let pos_error = cpos1 - cpos2;
 
-    // Orientation error (axis-angle), scaled by 0.5 (MuJoCo convention).
+    // Orientation error: imag(q2^{-1} * q1 * relpose).
     //
-    // MuJoCo scales weld rotation error and Jacobian by 0.5 to match the
-    // quaternion-to-angular-velocity relationship: dq/dt = 0.5 * omega * q.
-    // Error = (r1 * relpose) * r2^{-1} (rotation from body2 to target).
-    let target_r1 = r1 * relpose_quat;
-    let rot_error_quat = target_r1 * r2.inverse();
-    let rot_error = quaternion_to_axis_angle(&rot_error_quat) * 0.5;
+    // MuJoCo convention: the error quaternion is q2^{-1} * q1 * relpose.
+    // At reference (q1*relpose = q2), this equals identity → error = 0.
+    // The imaginary part approximates 0.5*axis_angle for small deviations.
+    let quat_target = r1 * relpose_quat; // q1 * relpose
+    let q_err = r2.inverse() * quat_target; // q2^{-1} * q1 * relpose
+    let rot_error = Vector3::new(
+        q_err.quaternion().i,
+        q_err.quaternion().j,
+        q_err.quaternion().k,
+    );
 
     let mut j = DMatrix::zeros(6, nv);
 
@@ -150,11 +153,42 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
         add_body_point_jacobian_row(&mut j, row, &direction, body2, cpos2, -1.0, model, data);
     }
 
-    // Rows 3-5: rotational Jacobian, scaled by 0.5 (MuJoCo convention).
+    // Rows 3-5: rotational Jacobian with per-column quaternion correction.
+    //
+    // MuJoCo corrects each angular Jacobian column via:
+    //   corrected = 0.5 * imag(q2^{-1} * [0, raw_col] * q1 * relpose)
+    //
+    // This rotates the Jacobian into the error frame (body2-local), ensuring
+    // consistency with the orientation error. At reference pose this reduces to
+    // 0.5 * R2^T * col. At identity it reduces to 0.5 * col (simple scaling).
+
+    // Step 1: build uncorrected angular Jacobian difference (sign ±1, no 0.5 scale)
     for row in 0..3 {
         let direction = Vector3::ith(row, 1.0);
-        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body1, 0.5, model, data);
-        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body2, -0.5, model, data);
+        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body1, 1.0, model, data);
+        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body2, -1.0, model, data);
+    }
+
+    // Step 2: per-column quaternion correction
+    let q2_inv_raw = *r2.inverse().quaternion();
+    let qt_raw = *quat_target.quaternion();
+    for col in 0..nv {
+        let ax = j[(3, col)];
+        let ay = j[(4, col)];
+        let az = j[(5, col)];
+        if ax * ax + ay * ay + az * az < 1e-30 {
+            continue;
+        }
+        // pure_q = [0, axis]
+        let pure_q = nalgebra::Quaternion::new(0.0, ax, ay, az);
+        // step1 = q2^{-1} * [0, axis]
+        let step1 = q2_inv_raw * pure_q;
+        // step2 = step1 * (q1 * relpose)
+        let step2 = step1 * qt_raw;
+        // corrected = 0.5 * imaginary part
+        j[(3, col)] = 0.5 * step2.i;
+        j[(4, col)] = 0.5 * step2.j;
+        j[(5, col)] = 0.5 * step2.k;
     }
 
     // Velocity: J * qvel (consistent with Jacobian, matching MuJoCo)

@@ -13,6 +13,7 @@ use crate::types::{ConstraintType, Data, Model};
 // Canonical copy in dynamics/crba.rs. Retained here for non-CRBA uses
 // (quaternion_to_axis_angle, constraint body mass lookup) until those
 // functions are extracted in later phases.
+#[allow(dead_code)]
 const MIN_INERTIA_THRESHOLD: f64 = 1e-10;
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -120,6 +121,7 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
 /// # Returns
 /// Axis-angle representation as `angle * axis` (Vector3)
 #[inline]
+#[allow(dead_code)]
 pub fn quaternion_to_axis_angle(quat: &UnitQuaternion<f64>) -> Vector3<f64> {
     let q = quat.quaternion();
     let (qw, qx, qy, qz) = (q.w, q.i, q.j, q.k);
