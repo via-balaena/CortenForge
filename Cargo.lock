@@ -3195,6 +3195,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-solver-comparison-visual"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-solver-newton"
 version = "0.7.0"
 dependencies = [

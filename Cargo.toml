@@ -70,6 +70,7 @@ members = [
 
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
+    "examples/fundamentals/sim-cpu/solvers/comparison-visual",
     "examples/fundamentals/sim-cpu/solvers/standalone/pgs",
     "examples/fundamentals/sim-cpu/solvers/standalone/cg",
     "examples/fundamentals/sim-cpu/solvers/standalone/newton",
