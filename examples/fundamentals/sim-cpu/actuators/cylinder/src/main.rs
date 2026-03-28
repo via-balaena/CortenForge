@@ -9,13 +9,13 @@
 //!
 //! Pressure alternates between +1 and -1 every 3 seconds. The activation
 //! filter delays the pressure response (tau=0.5s), and viscous damping
-//! (bias[2]) smooths the motion. Joint limits model the end-of-stroke walls.
+//! (bias\[2\]) smooths the motion. Joint limits model the end-of-stroke walls.
 //!
 //! Validates:
 //! - Activation state exists (data.na == 1)
 //! - Filter dynamics: act at t ~= tau is ~0.632 (within 5%)
 //! - Force formula: force ~= area*act + b0 + b1*pos + b2*vel (within 2%)
-//! - Area from diameter: model.actuator_gainprm[0][0] ~= pi/4 * d^2 (within 1e-10)
+//! - Area from diameter: model.actuator_gainprm\[0\]\[0\] ~= pi/4 * d^2 (within 1e-10)
 //!
 //! Run with: `cargo run -p example-actuator-cylinder --release`
 
