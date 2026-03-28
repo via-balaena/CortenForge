@@ -2721,10 +2721,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-equality-connect"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-distance"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-joint-coupling"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-equality-stress-test"
 version = "0.7.0"
 dependencies = [
  "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-weld"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
  "sim-core",
  "sim-mjcf",
 ]
