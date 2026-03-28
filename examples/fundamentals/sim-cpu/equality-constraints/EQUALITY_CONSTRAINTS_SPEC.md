@@ -1,6 +1,6 @@
 # Equality Constraints Examples Spec
 
-**Status:** Draft
+**Status:** Stress test passing (16/16). Bevy examples not yet built.
 **Date:** 2026-03-28
 **Domain:** `examples/fundamentals/sim-cpu/equality-constraints/`
 
