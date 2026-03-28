@@ -1,7 +1,7 @@
 # Bug 2: Body-to-Body Connect Steady-State Offset
 
-**Status:** Root cause confirmed
-**Severity:** High — 55mm permanent offset in zero gravity
+**Status:** FIXED (all fix items implemented and verified)
+**Severity:** Was High — 55mm permanent offset in zero gravity
 
 ## Symptom
 

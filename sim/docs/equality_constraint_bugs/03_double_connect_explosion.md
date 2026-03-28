@@ -1,7 +1,7 @@
 # Bug 3: Double Connect Chain Explosion
 
-**Status:** Root cause confirmed — cascades from Bug 2
-**Severity:** High — system explodes (6M rad/s angular velocity)
+**Status:** FIXED (resolved by Bug 2 fix + solref tuning)
+**Severity:** Was High — system explodes (6M rad/s angular velocity)
 
 ## Symptom
 
