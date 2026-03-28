@@ -628,31 +628,30 @@ SAT phase preserved (15-axis test). Contact generation replaced:
 
 **Code location:** `pair_convex.rs:60–145`
 
-##### 3b. Capsule-Box → 2 contacts — DONE
+##### 3b. Capsule-Box → 2 contacts — DONE (upgraded to full 4-phase)
 
 **Reference:** `mjraw_CapsuleBox` (`engine_collision_box.c:118–590`)
 
-**MuJoCo's algorithm** uses a complex 4-phase feature classification
-(face test → 12-edge test → second contact search → sphere-box delegation).
+**Algorithm:** Full MuJoCo 4-phase `mjraw_CapsuleBox`:
 
-**Algorithm (as implemented):** Simplified approach following MuJoCo's key
-insight — delegate to sphere-box at multiple positions along the capsule:
+1. **Phase 1 (Face test):** Transform endpoints to box-local, count clamped
+   axes. Endpoints with ≤1 clamped axis project onto a face.
+2. **Phase 2 (Edge test):** Iterate 12 box edges, find closest capsule-edge
+   pair via `closest_points_segments_parametric`. Track clamping state.
+3. **Phase 3 (Second contact):** Based on feature type:
+   - 3A (Edge, endpoint clamped): second contact at opposite endpoint.
+   - 3B (Edge, interior/T-crossing): test both endpoints, pick closer.
+   - 3C (Face): walk toward other endpoint, clamp to face boundary.
+4. **Phase 4 (Sphere-box delegation):** Convert t1, t2 to world-space sphere
+   centers, run sphere-box at each. Dedup within 1mm.
 
-1. Test both endpoints (cap_a, cap_b) independently as sphere-box
-   (clamp sphere center to box surface, compute distance vs radius).
-2. Find the closest point on the capsule segment to the box via 5-point
-   sampling + refinement (catches edge/face contacts where neither
-   endpoint is closest).
-3. Emit all penetrating contacts with 1mm dedup.
+**Spec:** `CAPSULE_BOX_UPGRADE_SPEC.md`
 
-This covers the main stability case (capsule lying on face → 2 contacts
-at endpoints) while preserving the existing edge-contact behavior.
-MuJoCo's full 4-phase feature classification could be added later if
-more exotic configurations need better second-contact selection.
+**Tests:** `capsule_box_face_2_contacts`, `capsule_box_edge_contact`,
+`capsule_box_crossing_edge`, `capsule_box_oblique_face`,
+`capsule_box_stress_sweep` (48K config sweep).
 
-**New tests:** `capsule_box_face_2_contacts`.
-
-**Code location:** `pair_cylinder.rs:247–385`
+**Code location:** `pair_cylinder.rs:249–530`
 
 #### Phase 4: Noslip validation and tuning
 

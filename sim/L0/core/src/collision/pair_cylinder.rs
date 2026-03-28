@@ -1,7 +1,7 @@
 //! Analytical pairwise collision for cylinders and box-box SAT.
 
 use super::narrow::{CAP_COLLISION_THRESHOLD, GEOM_EPSILON, make_contact_from_geoms};
-use crate::forward::{closest_point_segment, closest_points_segments};
+use crate::forward::{closest_points_segments, closest_points_segments_parametric};
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Vector3};
 
@@ -239,12 +239,21 @@ pub fn collide_cylinder_capsule(
     )]
 }
 
-/// Capsule-box collision detection.
+/// Feature type for capsule-box collision Phase 1/2 classification.
+enum CapsuleBoxFeature {
+    Face {
+        face_axis: usize,
+        is_endpoint_a: bool,
+    },
+    Edge {
+        clamp_capsule: u8,
+    },
+}
+
+/// Capsule-box collision detection using MuJoCo's 4-phase algorithm.
 ///
-/// Tests both capsule endpoints and the closest point on the capsule axis
-/// to find the minimum distance configuration. Returns up to 2 contacts,
-/// matching MuJoCo's `mjraw_CapsuleBox` which delegates to sphere-box
-/// at 1–2 positions along the capsule segment.
+/// Phase 1: face test, Phase 2: 12-edge test, Phase 3: second contact search,
+/// Phase 4: sphere-box delegation. Returns up to 2 contacts.
 #[allow(clippy::too_many_arguments)]
 pub fn collide_capsule_box(
     model: &Model,
@@ -337,14 +346,195 @@ pub fn collide_capsule_box(
             Some((contact_pos, normal, penetration))
         };
 
-    // Test both endpoints + midpoint refinement, collect all penetrating contacts.
-    let dedup_dist_sq = 1e-6_f64; // merge contacts within 1mm
-    let mut contacts = Vec::with_capacity(2);
-    let mut contact_positions: Vec<Vector3<f64>> = Vec::with_capacity(3);
+    // ── Phase 1: Face test ──
+    // Transform endpoints to box-local frame. Count clamped axes per endpoint.
+    let local_a = box_mat_t * (cap_a - box_pos);
+    let local_b = box_mat_t * (cap_b - box_pos);
 
-    let mut try_add = |sphere_center: Vector3<f64>| {
-        if let Some((cpos, normal, pen)) = sphere_box_test(sphere_center) {
-            // Dedup: skip if too close to an existing contact
+    let mut best_face_dist = f64::MAX;
+    let mut face_feature: Option<CapsuleBoxFeature> = None;
+
+    for (local_ep, is_a) in [(&local_a, true), (&local_b, false)] {
+        let mut clamped_count = 0usize;
+        let mut clamped_axis = 0usize;
+        for i in 0..3 {
+            if local_ep[i].abs() > box_half[i] {
+                clamped_count += 1;
+                clamped_axis = i;
+            }
+        }
+        if clamped_count <= 1 {
+            // On a face (or inside box if 0 clamped)
+            let clamped = Vector3::new(
+                local_ep.x.clamp(-box_half.x, box_half.x),
+                local_ep.y.clamp(-box_half.y, box_half.y),
+                local_ep.z.clamp(-box_half.z, box_half.z),
+            );
+            let dist = (local_ep - clamped).norm();
+            if dist < best_face_dist {
+                best_face_dist = dist;
+                let axis = if clamped_count == 1 {
+                    clamped_axis
+                } else {
+                    // Inside box: pick nearest face
+                    let mut min_d = f64::MAX;
+                    let mut best_ax = 0;
+                    for i in 0..3 {
+                        let d = (box_half[i] - local_ep[i].abs()).abs();
+                        if d < min_d {
+                            min_d = d;
+                            best_ax = i;
+                        }
+                    }
+                    best_ax
+                };
+                face_feature = Some(CapsuleBoxFeature::Face {
+                    face_axis: axis,
+                    is_endpoint_a: is_a,
+                });
+            }
+        }
+    }
+
+    // ── Phase 2: Edge test (12 box edges) ──
+    let mut best_edge_dist = f64::MAX;
+    let mut best_edge_s = 0.0_f64;
+    let mut best_edge_clamp_s = 0_u8;
+
+    for a in 0..3 {
+        let b = (a + 1) % 3;
+        let c = (a + 2) % 3;
+        for &sb in &[-1.0_f64, 1.0] {
+            for &sc in &[-1.0_f64, 1.0] {
+                let mut edge_start = Vector3::zeros();
+                let mut edge_end = Vector3::zeros();
+                edge_start[a] = -box_half[a];
+                edge_end[a] = box_half[a];
+                edge_start[b] = sb * box_half[b];
+                edge_end[b] = sb * box_half[b];
+                edge_start[c] = sc * box_half[c];
+                edge_end[c] = sc * box_half[c];
+
+                let (s, t, clamp_s, _clamp_t) =
+                    closest_points_segments_parametric(local_a, local_b, edge_start, edge_end);
+
+                let cap_pt = local_a + (local_b - local_a) * s;
+                let edge_pt = edge_start + (edge_end - edge_start) * t;
+                let dist = (cap_pt - edge_pt).norm();
+
+                if dist < best_edge_dist {
+                    best_edge_dist = dist;
+                    best_edge_s = s;
+                    best_edge_clamp_s = clamp_s;
+                }
+            }
+        }
+    }
+
+    // ── Select primary feature and t1 ──
+    let (feature, t1) = if let Some(feat) =
+        face_feature.filter(|_| best_face_dist <= best_edge_dist + GEOM_EPSILON)
+    {
+        let t1 = match &feat {
+            CapsuleBoxFeature::Face {
+                is_endpoint_a: true,
+                ..
+            } => 0.0,
+            CapsuleBoxFeature::Face {
+                is_endpoint_a: false,
+                ..
+            } => 1.0,
+            _ => unreachable!(),
+        };
+        (feat, t1)
+    } else {
+        (
+            CapsuleBoxFeature::Edge {
+                clamp_capsule: best_edge_clamp_s,
+            },
+            best_edge_s,
+        )
+    };
+
+    // ── Phase 3: Second contact search ──
+    let cap_dir = cap_b - cap_a;
+
+    let t2 = match &feature {
+        // 3A: Edge, capsule endpoint clamped → second contact at opposite endpoint
+        CapsuleBoxFeature::Edge { clamp_capsule } if *clamp_capsule != 1 => {
+            if *clamp_capsule == 0 {
+                Some(1.0)
+            } else {
+                Some(0.0)
+            }
+        }
+        // 3B: Edge, capsule interior (T/X crossing) → test both endpoints, pick closer
+        CapsuleBoxFeature::Edge { clamp_capsule: _ } => {
+            let clamped_a = Vector3::new(
+                local_a.x.clamp(-box_half.x, box_half.x),
+                local_a.y.clamp(-box_half.y, box_half.y),
+                local_a.z.clamp(-box_half.z, box_half.z),
+            );
+            let clamped_b = Vector3::new(
+                local_b.x.clamp(-box_half.x, box_half.x),
+                local_b.y.clamp(-box_half.y, box_half.y),
+                local_b.z.clamp(-box_half.z, box_half.z),
+            );
+            let dist_a = (local_a - clamped_a).norm();
+            let dist_b = (local_b - clamped_b).norm();
+            Some(if dist_a < dist_b { 0.0 } else { 1.0 })
+        }
+        // 3C: Face closest → walk toward other endpoint, clamp to face boundary
+        CapsuleBoxFeature::Face {
+            face_axis,
+            is_endpoint_a,
+        } => {
+            let (t_on_face, t_other) = if *is_endpoint_a {
+                (0.0, 1.0)
+            } else {
+                (1.0, 0.0)
+            };
+            let on_face_local = if *is_endpoint_a { &local_a } else { &local_b };
+            let other_local = if *is_endpoint_a { &local_b } else { &local_a };
+
+            let mut min_t_cross = 1.0_f64; // walk fraction from on_face to other
+            for i in 0..3 {
+                if i == *face_axis {
+                    continue;
+                }
+                let delta = other_local[i] - on_face_local[i];
+                if delta.abs() < GEOM_EPSILON {
+                    continue;
+                }
+                if other_local[i] > box_half[i] {
+                    let tc = (box_half[i] - on_face_local[i]) / delta;
+                    if tc > 0.0 && tc < min_t_cross {
+                        min_t_cross = tc;
+                    }
+                } else if other_local[i] < -box_half[i] {
+                    let tc = (-box_half[i] - on_face_local[i]) / delta;
+                    if tc > 0.0 && tc < min_t_cross {
+                        min_t_cross = tc;
+                    }
+                }
+            }
+            // Convert walk fraction to capsule parameter space
+            let t2_val = t_on_face + min_t_cross * (t_other - t_on_face);
+            Some(t2_val)
+        }
+    };
+
+    // Filter t2
+    let t2 = t2.filter(|&t2_val| (t2_val - t1).abs() > GEOM_EPSILON);
+
+    // ── Phase 4: Sphere-box delegation ──
+    let dedup_dist_sq = 1e-6_f64;
+    let mut contacts = Vec::with_capacity(2);
+    let mut contact_positions: Vec<Vector3<f64>> = Vec::with_capacity(2);
+
+    let mut try_add = |t: f64| {
+        let center = cap_a + cap_dir * t;
+        if let Some((cpos, normal, pen)) = sphere_box_test(center) {
             let too_close = contact_positions
                 .iter()
                 .any(|p| (p - cpos).norm_squared() < dedup_dist_sq);
@@ -363,33 +553,10 @@ pub fn collide_capsule_box(
         }
     };
 
-    // Endpoint A
-    try_add(cap_a);
-    // Endpoint B
-    try_add(cap_b);
-
-    // Midpoint refinement: find the closest point on the capsule segment to the box,
-    // which catches edge/face contacts where neither endpoint is closest.
-    // Use 5-point sampling to seed, then refine.
-    let mut best_dist = f64::MAX;
-    let mut best_box_pt = box_pos;
-    for &t in &[0.0_f64, 0.25, 0.5, 0.75, 1.0] {
-        let pt = cap_a + (cap_b - cap_a) * t;
-        let local_pt = box_mat_t * (pt - box_pos);
-        let clamped = Vector3::new(
-            local_pt.x.clamp(-box_half.x, box_half.x),
-            local_pt.y.clamp(-box_half.y, box_half.y),
-            local_pt.z.clamp(-box_half.z, box_half.z),
-        );
-        let bp = box_pos + box_mat * clamped;
-        let d = (pt - bp).norm();
-        if d < best_dist {
-            best_dist = d;
-            best_box_pt = bp;
-        }
+    try_add(t1);
+    if let Some(t2_val) = t2 {
+        try_add(t2_val);
     }
-    let refined = closest_point_segment(cap_a, cap_b, best_box_pt);
-    try_add(refined);
 
     contacts
 }

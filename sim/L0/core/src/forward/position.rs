@@ -458,3 +458,120 @@ pub fn closest_points_segments(
 
     (p1 + d1 * s, p2 + d2 * t)
 }
+
+/// Like [`closest_points_segments`] but returns parametric values and clamping state
+/// instead of points. Used by capsule-box collision to classify contact features.
+///
+/// Returns `(s, t, clamp_s, clamp_t)` where:
+/// - `s`, `t`: clamped parameter values in `[0, 1]`
+/// - `clamp_s`, `clamp_t`: `0` = clamped to start, `1` = interior, `2` = clamped to end
+#[allow(clippy::many_single_char_names)]
+pub fn closest_points_segments_parametric(
+    p1: Vector3<f64>,
+    q1: Vector3<f64>,
+    p2: Vector3<f64>,
+    q2: Vector3<f64>,
+) -> (f64, f64, u8, u8) {
+    let d1 = q1 - p1;
+    let d2 = q2 - p2;
+    let r = p1 - p2;
+
+    let a = d1.dot(&d1);
+    let e = d2.dot(&d2);
+    let f = d2.dot(&r);
+
+    // Degenerate segments
+    if a < GEOM_EPSILON && e < GEOM_EPSILON {
+        return (0.0, 0.0, 0, 0);
+    }
+    if a < GEOM_EPSILON {
+        let t = (f / e).clamp(0.0, 1.0);
+        let clamp_t = if t <= 0.0 {
+            0
+        } else if t >= 1.0 {
+            2
+        } else {
+            1
+        };
+        return (0.0, t, 0, clamp_t);
+    }
+    if e < GEOM_EPSILON {
+        let s = (-d1.dot(&r) / a).clamp(0.0, 1.0);
+        let clamp_s = if s <= 0.0 {
+            0
+        } else if s >= 1.0 {
+            2
+        } else {
+            1
+        };
+        return (s, 0.0, clamp_s, 0);
+    }
+
+    let b = d1.dot(&d2);
+    let c = d1.dot(&r);
+    #[allow(clippy::suspicious_operation_groupings)]
+    let denom = a * e - b * b;
+
+    let (mut s, mut t) = if denom.abs() < GEOM_EPSILON {
+        // Parallel segments — convention: s=0, clamp_s=0
+        (0.0, f / e)
+    } else {
+        let s_val = (b * f - c * e) / denom;
+        let t_val = (b * s_val + f) / e;
+        (s_val, t_val)
+    };
+
+    // Track clamping state through the clamp-and-recompute cascade
+    let mut clamp_s: u8 = u8::from(denom.abs() >= GEOM_EPSILON);
+    let mut clamp_t: u8 = 1;
+
+    if s < 0.0 {
+        s = 0.0;
+        clamp_s = 0;
+        t = (f / e).clamp(0.0, 1.0);
+        clamp_t = if t <= 0.0 {
+            0
+        } else if t >= 1.0 {
+            2
+        } else {
+            1
+        };
+    } else if s > 1.0 {
+        s = 1.0;
+        clamp_s = 2;
+        t = ((b + f) / e).clamp(0.0, 1.0);
+        clamp_t = if t <= 0.0 {
+            0
+        } else if t >= 1.0 {
+            2
+        } else {
+            1
+        };
+    }
+
+    if t < 0.0 {
+        t = 0.0;
+        clamp_t = 0;
+        s = (-c / a).clamp(0.0, 1.0);
+        clamp_s = if s <= 0.0 {
+            0
+        } else if s >= 1.0 {
+            2
+        } else {
+            1
+        };
+    } else if t > 1.0 {
+        t = 1.0;
+        clamp_t = 2;
+        s = ((b - c) / a).clamp(0.0, 1.0);
+        clamp_s = if s <= 0.0 {
+            0
+        } else if s >= 1.0 {
+            2
+        } else {
+            1
+        };
+    }
+
+    (s, t, clamp_s, clamp_t)
+}
