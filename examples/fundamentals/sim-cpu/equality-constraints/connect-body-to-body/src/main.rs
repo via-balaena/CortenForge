@@ -104,6 +104,7 @@ fn main() {
             ValidationHarness::new()
                 .report_at(5.0)
                 .print_every(1.0)
+                .track_energy(5.0)
                 .display(|_m, d| {
                     let e = d.energy_kinetic + d.energy_potential;
                     let w1 = Vector3::new(d.qvel[3], d.qvel[4], d.qvel[5]).norm();
@@ -211,8 +212,6 @@ struct Validation {
     max_pivot2_err: f64,
     max_angvel1: f64,
     max_angvel2: f64,
-    initial_energy: Option<f64>,
-    max_energy_growth: f64,
     reported: bool,
 }
 
@@ -222,10 +221,6 @@ fn diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<Validation>,
 ) {
-    if val.initial_energy.is_none() {
-        val.initial_energy = Some(data.energy_kinetic + data.energy_potential);
-    }
-
     let err1 = data.xpos[BODY_LINK1].norm();
     val.max_pivot1_err = val.max_pivot1_err.max(err1);
 
@@ -238,12 +233,6 @@ fn diagnostics(
     val.max_angvel1 = val.max_angvel1.max(w1);
     let w2 = Vector3::new(data.qvel[9], data.qvel[10], data.qvel[11]).norm();
     val.max_angvel2 = val.max_angvel2.max(w2);
-
-    if let Some(e0) = val.initial_energy {
-        let e = data.energy_kinetic + data.energy_potential;
-        let growth = (e - e0) / e0.abs().max(1e-10);
-        val.max_energy_growth = val.max_energy_growth.max(growth);
-    }
 
     if harness.reported() && !val.reported {
         val.reported = true;
@@ -262,11 +251,6 @@ fn diagnostics(
                 name: "Both rotate",
                 pass: val.max_angvel1 > 0.1 && val.max_angvel2 > 0.1,
                 detail: format!("w1={:.2} w2={:.2} rad/s", val.max_angvel1, val.max_angvel2),
-            },
-            Check {
-                name: "Energy bounded",
-                pass: val.max_energy_growth < 0.05,
-                detail: format!("max growth = {:.2}%", val.max_energy_growth * 100.0),
             },
         ];
         let _ = print_report("Connect Body-to-Body (t=5s)", &checks);

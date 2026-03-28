@@ -245,8 +245,6 @@ fn update_hud(_model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut
 struct DistanceValidation {
     max_dist_err: f64,
     sphere_a_moved: bool,
-    initial_energy: Option<f64>,
-    max_energy_growth: f64,
     reported: bool,
 }
 
@@ -256,30 +254,15 @@ fn distance_diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<DistanceValidation>,
 ) {
-    // Record initial energy
-    if val.initial_energy.is_none() {
-        val.initial_energy = Some(data.energy_kinetic + data.energy_potential);
-    }
-
-    // Distance maintained
     let sep = (data.xpos[BODY_A] - data.xpos[BODY_B]).norm();
     let err = (sep - TARGET_DIST).abs();
     val.max_dist_err = val.max_dist_err.max(err);
 
-    // Sphere A moves
     let vel_a = Vector3::new(data.qvel[0], data.qvel[1], data.qvel[2]).norm();
     if vel_a > 0.01 {
         val.sphere_a_moved = true;
     }
 
-    // Energy growth
-    if let Some(e0) = val.initial_energy {
-        let e = data.energy_kinetic + data.energy_potential;
-        let growth = (e - e0) / e0.abs().max(1e-10);
-        val.max_energy_growth = val.max_energy_growth.max(growth);
-    }
-
-    // Final report
     if harness.reported() && !val.reported {
         val.reported = true;
 
@@ -301,11 +284,6 @@ fn distance_diagnostics(
                 name: "Mass ratio effect",
                 pass: vel_b > vel_a * 0.5 || vel_a < 0.01,
                 detail: format!("vel_a={vel_a:.3}, vel_b={vel_b:.3}"),
-            },
-            Check {
-                name: "Energy bounded",
-                pass: val.max_energy_growth < 0.05,
-                detail: format!("max growth = {:.2}%", val.max_energy_growth * 100.0),
             },
         ];
         let _ = print_report("Distance Constraint (t=5s)", &checks);

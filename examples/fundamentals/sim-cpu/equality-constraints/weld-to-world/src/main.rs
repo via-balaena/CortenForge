@@ -35,7 +35,7 @@ use sim_bevy::model_data::{
     PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
     sync_geom_transforms,
 };
-use sim_core::validation::{Check, print_report};
+use sim_core::validation::{Check, print_report, quat_rotation_angle};
 
 // ── MJCF Model ──────────────────────────────────────────────────────────────
 
@@ -172,13 +172,8 @@ fn update_hud(data: Res<PhysicsData>, init: Res<InitialState>, mut hud: ResMut<P
     let disp = (data.xpos[BODY_FIXED] - init.pos).norm() * 1000.0;
     hud.scalar("displacement (mm)", disp, 2);
 
-    let quat_diff = init.quat.inverse() * data.xquat[BODY_FIXED];
-    let angle = 2.0
-        * quat_diff
-            .quaternion()
-            .imag()
-            .norm()
-            .atan2(quat_diff.quaternion().w.abs());
+    let q = (init.quat.inverse() * data.xquat[BODY_FIXED]).into_inner();
+    let angle = quat_rotation_angle(q.w, q.i, q.j, q.k);
     hud.scalar("rotation err (rad)", angle, 4);
 
     hud.scalar("z position", data.xpos[BODY_FIXED][2], 4);
@@ -209,13 +204,8 @@ fn diagnostics(
     let disp = (data.xpos[BODY_FIXED] - init.pos).norm();
     val.max_displacement = val.max_displacement.max(disp);
 
-    let quat_diff = init.quat.inverse() * data.xquat[BODY_FIXED];
-    let angle = 2.0
-        * quat_diff
-            .quaternion()
-            .imag()
-            .norm()
-            .atan2(quat_diff.quaternion().w.abs());
+    let q = (init.quat.inverse() * data.xquat[BODY_FIXED]).into_inner();
+    let angle = quat_rotation_angle(q.w, q.i, q.j, q.k);
     val.max_angle_err = val.max_angle_err.max(angle);
 
     if harness.reported() && !val.reported {

@@ -95,6 +95,7 @@ fn main() {
             ValidationHarness::new()
                 .report_at(5.0)
                 .print_every(1.0)
+                .track_energy(5.0)
                 .display(|_m, d| {
                     let err = d.xpos[1].norm() * 1000.0;
                     let w = Vector3::new(d.qvel[3], d.qvel[4], d.qvel[5]).norm();
@@ -190,8 +191,6 @@ fn update_hud(_model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut
 struct Validation {
     max_pivot_err: f64,
     max_angvel: f64,
-    initial_energy: Option<f64>,
-    max_energy_growth: f64,
     reported: bool,
 }
 
@@ -201,21 +200,11 @@ fn diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<Validation>,
 ) {
-    if val.initial_energy.is_none() {
-        val.initial_energy = Some(data.energy_kinetic + data.energy_potential);
-    }
-
     let err = data.xpos[BODY_LINK].norm();
     val.max_pivot_err = val.max_pivot_err.max(err);
 
     let angvel = Vector3::new(data.qvel[3], data.qvel[4], data.qvel[5]).norm();
     val.max_angvel = val.max_angvel.max(angvel);
-
-    if let Some(e0) = val.initial_energy {
-        let e = data.energy_kinetic + data.energy_potential;
-        let growth = (e - e0) / e0.abs().max(1e-10);
-        val.max_energy_growth = val.max_energy_growth.max(growth);
-    }
 
     if harness.reported() && !val.reported {
         val.reported = true;
@@ -229,11 +218,6 @@ fn diagnostics(
                 name: "Rotation free",
                 pass: val.max_angvel > 0.1,
                 detail: format!("max w = {:.3} rad/s", val.max_angvel),
-            },
-            Check {
-                name: "Energy bounded",
-                pass: val.max_energy_growth < 0.05,
-                detail: format!("max growth = {:.2}%", val.max_energy_growth * 100.0),
             },
         ];
         let _ = print_report("Connect to World (t=5s)", &checks);
