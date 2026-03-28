@@ -33,7 +33,7 @@ change the relative pose (like ground contact forces on impact).
 | Box size | 0.24 x 0.16 x 0.16 m |
 | Capsule length | 0.3 m |
 | Initial separation | 0.3 m (z-axis) |
-| solref | 0.005, 1.0 |
+| solref | 0.003, 1.0 |
 | Ground | Plane at z=0 |
 
 ## Validation

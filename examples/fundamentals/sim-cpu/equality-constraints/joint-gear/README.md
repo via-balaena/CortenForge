@@ -47,7 +47,7 @@ j2 = polycoef[0] + polycoef[1] * j1 = 0 + 2 * j1
 The motor applies a sinusoidal torque to j1:
 
 ```
-ctrl = 2.0 * sin(2*pi*t)  N·m
+ctrl = 2.0 * sin(pi*t)  N·m
 ```
 
 The constraint transmits this motion to j2 at double the rate. In a real
@@ -57,9 +57,9 @@ The constraint force does the work of the gear teeth.
 | Parameter | Value |
 |-----------|-------|
 | Arm mass | 0.5 kg each |
-| Arm length | 0.4 m |
-| Joint damping | 0.5 N·m·s/rad |
-| Motor signal | 2.0 * sin(2*pi*t) N·m |
+| Arm length | 0.7 m |
+| Joint damping | 0.1 N·m·s/rad |
+| Motor signal | 2.0 * sin(pi*t) N·m |
 | polycoef | 0, 2 (2:1 gear) |
 | solref | 0.05, 1.0 (soft) |
 

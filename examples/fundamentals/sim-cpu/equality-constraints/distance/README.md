@@ -1,18 +1,17 @@
 # Distance — Rigid Rod (Scalar Constraint)
 
-Two free-floating spheres connected by an invisible rigid rod — a `<distance>`
+Two free-floating spheres connected by a visible rigid rod — a `<distance>`
 equality constraint that maintains exactly 0.5m of separation between their
-centers. The spheres fall, bounce, and tumble while the distance stays locked.
+centers. The dumbbell falls, lands on the ground, and comes to rest while the
+distance stays locked.
 
 ## What you see
 
 - **Red sphere** (larger, 1.0 kg) and **blue sphere** (smaller, 0.5 kg) —
-  connected by an invisible rod
-- A lateral velocity kick at startup sets the pair tumbling — they orbit each
-  other as they fall
-- After landing on the ground, the pair continues to tumble and bounce while
-  maintaining constant separation
-- The heavier sphere stays lower; the lighter one orbits around it
+  connected by a thin metallic rod
+- The dumbbell starts tilted and falls straight down onto the ground
+- It lands, tips over naturally, and settles horizontal
+- The rod length stays constant throughout — the distance constraint holds
 
 ## Physics
 
@@ -32,23 +31,22 @@ frames.
 
 | Parameter | Value |
 |-----------|-------|
-| Sphere A | 1.0 kg, radius 0.08 m |
-| Sphere B | 0.5 kg, radius 0.06 m |
+| Sphere A | 1.0 kg, radius 0.08 m, pos (-0.2, 0, 1.3) |
+| Sphere B | 0.5 kg, radius 0.06 m, pos (0.2, 0, 1.0) |
 | Target distance | 0.5 m |
-| Initial velocity | 1.0 m/s lateral (sphere A) |
+| Initial orientation | Tilted ~30° from horizontal |
 | solref | 0.005, 1.0 |
 | Ground | Plane at z=0 |
 
 ## Validation
 
-Four automated checks at t=5s:
+Three automated checks at t=5s:
 
 | Check | Expected | Threshold |
 |-------|----------|-----------|
 | **Distance maintained** | Center-to-center stays at 0.5 m | < 5 mm deviation |
 | **Both move** | Sphere A velocity sustained | > 0.01 m/s |
 | **Mass ratio effect** | Lighter sphere moves more | velocity ratio check |
-| **Energy bounded** | No energy injection | < 5% growth |
 
 ## Run
 

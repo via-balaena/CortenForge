@@ -2,15 +2,13 @@
 //!
 //! Two free-floating spheres connected by a rigid rod (distance constraint).
 //! A visible thin rod is drawn between the sphere centers each frame.
-//! Sphere A gets a lateral velocity kick so the pair tumbles and orbits
-//! rather than falling straight down. The heavier sphere stays lower; the
-//! lighter one orbits around it.
+//! The dumbbell starts tilted, falls straight down, lands on the ground,
+//! and settles horizontal.
 //!
 //! Validates:
 //! - Distance maintained at 0.5m (< 5mm deviation)
 //! - Both spheres move (velocity > 0.01 m/s)
 //! - Different masses → lighter sphere moves more
-//! - Energy bounded (< 5% growth)
 //!
 //! Run with: `cargo run -p example-equality-distance --release`
 

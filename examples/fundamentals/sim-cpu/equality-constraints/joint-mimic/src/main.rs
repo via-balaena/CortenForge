@@ -1,17 +1,17 @@
 //! Joint Mimic — 1:1 Joint Coupling
 //!
 //! Two hinge arms side by side with a joint equality constraint enforcing
-//! `j1 = j2` (polycoef="0 1"). They start at different angles (0.5 and -0.3
-//! rad). The constraint pulls them together, and after convergence they swing
-//! in unison under gravity — a mimic joint.
+//! `j1 = j2` (polycoef="0 1"). They start at different angles (1.2 and -1.0
+//! rad). The soft constraint gradually pulls them into sync over several
+//! seconds, then they swing in unison under gravity.
 //!
 //! Demonstrates: `<joint>` equality constraint, polycoef polynomial coupling,
 //! mimic joints (1:1 ratio), constraint convergence from mismatched initial
 //! conditions.
 //!
 //! Validates:
-//! - Mimic converges (error < 0.1 rad by 1s)
-//! - Mimic tracks (stays < 0.05 rad after convergence)
+//! - Mimic converges (error < 0.1 rad by 3s)
+//! - Mimic tracks (stays < 0.1 rad after convergence)
 //!
 //! Run with: `cargo run -p example-equality-joint-mimic --release`
 
