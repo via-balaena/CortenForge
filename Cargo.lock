@@ -3178,9 +3178,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-solver-cg"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-solver-comparison"
 version = "0.7.0"
 dependencies = [
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-solver-newton"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-solver-pgs"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
  "sim-mjcf",
 ]
 
