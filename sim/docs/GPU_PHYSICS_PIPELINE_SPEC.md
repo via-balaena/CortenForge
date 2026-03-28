@@ -1737,6 +1737,12 @@ Full GPU physics pipeline available via `GpuPhysicsPipeline::new()` + `step()`.
 - **Noslip post-processor:** Secondary Jacobi pass on friction rows
   to eliminate residual slip. Matches CPU noslip_postprocess().
 
+- **Equality constraints on GPU:** Connect, Weld, Joint, Distance, and
+  Tendon constraints are fully implemented on the CPU pipeline
+  (`sim-core::constraint::equality`) but not yet ported to GPU shaders.
+  Requires GPU-side Jacobian extraction and assembly into efc_* arrays
+  alongside contact rows.
+
 - **Implicit integrators on GPU:** Modify M in crba.wgsl to include
   h·D + h²·K terms. Requires tendon K/D on GPU.
 

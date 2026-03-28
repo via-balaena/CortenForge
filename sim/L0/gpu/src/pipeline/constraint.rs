@@ -8,6 +8,11 @@
 //!   1. `assemble.wgsl`      — per-contact: PipelineContact → efc_J/D/aref
 //!   2. `newton_solve.wgsl`  — single workgroup: Newton iterations → qacc
 //!   3. `map_forces.wgsl`    — per-DOF: J^T · `efc_force` → `qfrc_constraint`
+//!
+//! **Limitation:** Currently only assembles contact constraints. Equality
+//! constraints (Connect, Weld, Joint, Distance, Tendon) are fully implemented
+//! on the CPU pipeline (`sim-core::constraint::equality`) but not yet ported
+//! to GPU shaders.
 
 #![allow(
     clippy::cast_possible_truncation,

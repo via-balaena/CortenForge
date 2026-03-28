@@ -68,6 +68,16 @@ members = [
     "examples/fundamentals/sim-cpu/integrators/implicit-fast",
     "examples/fundamentals/sim-cpu/integrators/implicit-spring-damper",
 
+    # Examples — fundamentals / sim-cpu / equality-constraints
+    "examples/fundamentals/sim-cpu/equality-constraints/connect-to-world",
+    "examples/fundamentals/sim-cpu/equality-constraints/connect-body-to-body",
+    "examples/fundamentals/sim-cpu/equality-constraints/weld-to-world",
+    "examples/fundamentals/sim-cpu/equality-constraints/weld-body-to-body",
+    "examples/fundamentals/sim-cpu/equality-constraints/distance",
+    "examples/fundamentals/sim-cpu/equality-constraints/joint-mimic",
+    "examples/fundamentals/sim-cpu/equality-constraints/joint-gear",
+    "examples/fundamentals/sim-cpu/equality-constraints/stress-test",
+
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
     "examples/fundamentals/sim-cpu/solvers/comparison-visual",

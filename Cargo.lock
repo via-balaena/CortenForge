@@ -2721,6 +2721,90 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-equality-connect-body-to-body"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-connect-to-world"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-distance"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-joint-gear"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-joint-mimic"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-weld-body-to-body"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-equality-weld-to-world"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-finger-design"
 version = "0.7.0"
 dependencies = [

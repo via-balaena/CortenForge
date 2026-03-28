@@ -65,7 +65,12 @@ impl ModelBuilder {
 
     /// Process a single Connect constraint (3 DOF position constraint).
     ///
-    /// `eq_data[0..3]` = anchor point in body1's local frame.
+    /// eq_data layout (matching MuJoCo's dual-anchor convention):
+    ///   `[0..3]` = anchor in body1's local frame (user-specified)
+    ///   `[3..6]` = anchor in body2's local frame (auto-computed)
+    ///
+    /// The body2 anchor is auto-computed so both anchors map to the same world
+    /// point at qpos0, matching MuJoCo's `engine_setconst.c` behavior.
     fn process_connect(
         &mut self,
         connect: &MjcfConnect,
@@ -105,6 +110,15 @@ impl ModelBuilder {
         data[1] = connect.anchor.y;
         data[2] = connect.anchor.z;
 
+        // Auto-compute body2 anchor: convert body1 anchor to world, then to body2 frame.
+        let (p1, q1) = self.body_world_pose(*body1_id);
+        let anchor_world = p1 + q1 * connect.anchor;
+        let (p2, q2) = self.body_world_pose(body2_id);
+        let anchor_body2 = q2.inverse() * (anchor_world - p2);
+        data[3] = anchor_body2.x;
+        data[4] = anchor_body2.y;
+        data[5] = anchor_body2.z;
+
         self.eq_type.push(EqualityType::Connect);
         self.eq_obj1id.push(*body1_id);
         self.eq_obj2id.push(body2_id);
@@ -122,12 +136,14 @@ impl ModelBuilder {
 
     /// Process a single Weld constraint (6 DOF pose constraint).
     ///
-    /// `eq_data[0..3]` = anchor point, `eq_data[3..7]` = relative quaternion [w,x,y,z],
-    /// `eq_data[7..10]` = relative position offset.
+    /// eq_data layout (matching MuJoCo's engine_setconst.c):
+    ///   `[0..3]` = anchor in body2's local frame (user-specified `anchor` attr)
+    ///   `[3..6]` = anchor in body1's local frame (auto-computed)
+    ///   `[6..10]` = relpose quaternion [w,x,y,z] = neg(q1_ref) * q2_ref
     ///
-    /// When `relpose` is not specified, it is auto-computed from the initial body
-    /// configuration (MuJoCo convention). This ensures the weld has zero position
-    /// and orientation error at the reference pose.
+    /// MuJoCo convention: the `anchor` XML attribute is in body2's frame.
+    /// Body1's anchor is auto-computed so both anchor points map to the same
+    /// world-space position at qpos0.
     fn process_weld(&mut self, weld: &MjcfWeld) -> std::result::Result<(), ModelConversionError> {
         let body1_id =
             self.body_name_to_id
@@ -148,32 +164,35 @@ impl ModelBuilder {
         };
 
         let mut data = [0.0; 11];
-        data[0] = weld.anchor.x;
-        data[1] = weld.anchor.y;
-        data[2] = weld.anchor.z;
+
+        let (pos1, quat1) = self.body_world_pose(*body1_id);
+        let (pos2, quat2) = self.body_world_pose(body2_id);
+
+        // Anchor is in body2's frame (MuJoCo convention). Convert to body1's frame.
+        let anchor_body2 = weld.anchor;
+        let world_point = pos2 + quat2 * anchor_body2;
+        let anchor_body1 = quat1.inverse() * (world_point - pos1);
+
+        data[0] = anchor_body2.x;
+        data[1] = anchor_body2.y;
+        data[2] = anchor_body2.z;
+        data[3] = anchor_body1.x;
+        data[4] = anchor_body1.y;
+        data[5] = anchor_body1.z;
+
         if let Some(relpose) = weld.relpose {
-            data[3] = relpose[3]; // qw
-            data[4] = relpose[4]; // qx
-            data[5] = relpose[5]; // qy
-            data[6] = relpose[6]; // qz
-            data[7] = relpose[0]; // dx
-            data[8] = relpose[1]; // dy
-            data[9] = relpose[2]; // dz
+            // User-specified relpose quaternion
+            data[6] = relpose[3]; // qw
+            data[7] = relpose[4]; // qx
+            data[8] = relpose[5]; // qy
+            data[9] = relpose[6]; // qz
         } else {
-            // Auto-compute relpose from initial body configuration (MuJoCo convention).
-            // relpose_pos = R1^{-1} * (pos2 - pos1), relpose_quat = R1^{-1} * R2
-            let (pos1, quat1) = self.body_world_pose(*body1_id);
-            let (pos2, quat2) = self.body_world_pose(body2_id);
-            let quat1_inv = quat1.inverse();
-            let rel_pos = quat1_inv * (pos2 - pos1);
-            let rel_quat = quat1_inv * quat2;
-            data[3] = rel_quat.w;
-            data[4] = rel_quat.i;
-            data[5] = rel_quat.j;
-            data[6] = rel_quat.k;
-            data[7] = rel_pos.x;
-            data[8] = rel_pos.y;
-            data[9] = rel_pos.z;
+            // Auto-compute relpose: neg(q1) * q2
+            let rel_quat = quat1.inverse() * quat2;
+            data[6] = rel_quat.w;
+            data[7] = rel_quat.i;
+            data[8] = rel_quat.j;
+            data[9] = rel_quat.k;
         }
 
         let eq_defaults = self
