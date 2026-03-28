@@ -363,16 +363,21 @@ fn capsule_capsule_parallel_side() {
     // Both capsules have radius 0.2, parallel axes along Z
     // Distance between axes = 0.35
     // Penetration = 0.2 + 0.2 - 0.35 = 0.05
-    assert_eq!(data.ncon, 1, "Expected 1 contact");
-
-    let contact = &data.contacts[0];
-    let expected_depth = 0.05;
+    // Multi-contact: parallel capsules emit 2 contacts (both endpoints)
     assert!(
-        (contact.depth - expected_depth).abs() < DEPTH_TOL,
-        "Parallel capsule depth: expected {}, got {}",
-        expected_depth,
-        contact.depth
+        data.ncon >= 1 && data.ncon <= 2,
+        "Parallel capsules should produce 1–2 contacts, got {}",
+        data.ncon
     );
+
+    let expected_depth = 0.05;
+    for (i, c) in data.contacts[..data.ncon].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
 }
 
 /// Two perpendicular capsules (T-bone configuration).
@@ -686,6 +691,133 @@ fn box_box_separated() {
 }
 
 // ============================================================================
+// Phase 2: Box-Box Multi-Contact Tests
+// ============================================================================
+
+/// Aligned boxes face-face → 4 contacts (clipped incident face has 4 corners).
+///
+/// Configuration: two 1×1×1 boxes along X, overlapping by 0.1.
+/// Reference face is box1's +X face. Incident face is box2's -X face (1×1).
+/// Clipped polygon = full incident face (fits inside reference face).
+/// All 4 vertices at same depth = 0.1.
+#[test]
+fn box_box_face_face_4_contacts() {
+    let mjcf = r#"
+        <mujoco model="box_box_ff_4">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box1" pos="0 0 0">
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+                <body name="box2" pos="0.9 0 0">
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Two aligned cubes: incident face (1×1) fits inside reference face (1×1)
+    // → 4 contacts, all at depth 0.1
+    assert_eq!(
+        data.ncon, 4,
+        "Aligned box-box face-face should produce 4 contacts, got {}",
+        data.ncon
+    );
+
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..4].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Box stacked on box (gravity, free joint) stays stable with multi-contact.
+#[test]
+fn box_box_stacked_stable() {
+    let mjcf = r#"
+        <mujoco model="box_stack_stable">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"
+                    iterations="100" tolerance="1e-8"/>
+            <worldbody>
+                <geom type="plane" size="5 5 0.1"/>
+                <body name="box1" pos="0 0 0.11">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.5 0.5 0.005"/>
+                </body>
+                <body name="box2" pos="0 0 0.31">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.5 0.5 0.005"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    for _ in 0..500 {
+        data.step(&model).unwrap();
+    }
+
+    // Both boxes should settle near their starting z positions
+    let box1_z = data.qpos[2]; // free joint qpos[2] = z
+    let box2_z = data.qpos[9]; // second free body qpos[7+2] = z
+
+    assert!(
+        box1_z > 0.05 && box1_z < 0.20,
+        "Box1 should settle near z=0.1, got {box1_z:.4}"
+    );
+    assert!(
+        box2_z > 0.20 && box2_z < 0.40,
+        "Box2 should settle near z=0.3, got {box2_z:.4}"
+    );
+}
+
+/// Edge-edge contact (box rotated 45°) → 1 contact.
+#[test]
+fn box_box_edge_edge_1_contact() {
+    let mjcf = r#"
+        <mujoco model="box_box_ee_1">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box1" pos="0 0 0">
+                    <geom type="box" size="0.3 0.3 0.3"/>
+                </body>
+                <body name="box2" pos="0.5 0 0" euler="0 0 45">
+                    <geom type="box" size="0.3 0.3 0.3"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Rotated 45° should give edge-edge (1 contact) or face-edge (few contacts)
+    assert!(
+        data.ncon >= 1,
+        "Edge-edge box contact should produce at least 1 contact, got {}",
+        data.ncon
+    );
+
+    // Contact depth should be positive
+    assert!(
+        data.contacts[0].depth > 0.0,
+        "Edge contact depth should be positive"
+    );
+}
+
+// ============================================================================
 // Cylinder-Sphere Tests
 // ============================================================================
 
@@ -983,15 +1115,370 @@ fn capsule_box_face_overlap() {
     // Capsule surface at x = 0.65 - 0.2 = 0.45
     // Box face at x = 0.5
     // Penetration = 0.5 - 0.45 = 0.05
-    assert_eq!(data.ncon, 1, "Expected 1 contact");
-
-    let contact = &data.contacts[0];
-    let expected_depth = 0.05;
+    // Multi-contact: both capsule endpoints produce sphere-box contacts
     assert!(
-        (contact.depth - expected_depth).abs() < DEPTH_TOL,
-        "Capsule-box face depth: expected {}, got {}",
-        expected_depth,
-        contact.depth
+        data.ncon >= 1 && data.ncon <= 2,
+        "Capsule-box face should produce 1–2 contacts, got {}",
+        data.ncon
+    );
+
+    let expected_depth = 0.05;
+    for (i, c) in data.contacts[..data.ncon].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+// ============================================================================
+// Phase 3: Capsule Multi-Contact Tests
+// ============================================================================
+
+/// Parallel capsules (same axis) → 2 contacts at both endpoints.
+#[test]
+fn capsule_capsule_parallel_2_contacts() {
+    let mjcf = r#"
+        <mujoco model="cap_cap_parallel_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="cap1" pos="0 0 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+                <body name="cap2" pos="0.35 0 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Parallel capsules: both endpoints of cap1 are equidistant to cap2's segment
+    assert_eq!(
+        data.ncon, 2,
+        "Parallel capsules should produce 2 contacts, got {}",
+        data.ncon
+    );
+}
+
+/// Perpendicular capsules → 1 contact (non-parallel path).
+#[test]
+fn capsule_capsule_perpendicular_1_contact() {
+    let mjcf = r#"
+        <mujoco model="cap_cap_perp_1">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="cap1" pos="0 0 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+                <body name="cap2" pos="0.35 0 0" euler="0 90 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 1,
+        "Perpendicular capsules should produce 1 contact, got {}",
+        data.ncon
+    );
+}
+
+/// Capsule lying on box face → 2 contacts (both endpoints).
+#[test]
+fn capsule_box_face_2_contacts() {
+    let mjcf = r#"
+        <mujoco model="cap_box_face_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box" pos="0 0 0">
+                    <geom type="box" size="1.0 1.0 0.5"/>
+                </body>
+                <body name="cap" pos="0 0 0.65">
+                    <geom type="capsule" size="0.2 0.4" euler="0 90 0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Capsule horizontal on top of box: both endpoints at same height
+    // Box top at z=0.5, capsule bottom at z=0.65-0.2=0.45
+    // Penetration = 0.5 - 0.45 = 0.05
+    assert_eq!(
+        data.ncon, 2,
+        "Capsule on box face should produce 2 contacts, got {}",
+        data.ncon
+    );
+
+    let expected_depth = 0.05;
+    for (i, c) in data.contacts[..2].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Capsule endpoint near box edge (not face) — edge feature wins.
+#[test]
+fn capsule_box_edge_contact() {
+    // Capsule vertical, positioned near the vertical edge at (+0.5, +0.5, z).
+    // Both endpoints have 2+ axes clamped → no face feature → edge wins.
+    let mjcf = r#"
+        <mujoco model="cap_box_edge">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box" pos="0 0 0">
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+                <body name="cap" pos="0.6 0.6 0.5">
+                    <geom type="capsule" size="0.15 0.3"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Capsule endpoint A at (0.6, 0.6, 0.2), B at (0.6, 0.6, 0.8).
+    // Closest box point to A: (0.5, 0.5, 0.2), dist = sqrt(0.01+0.01) ≈ 0.1414.
+    // Penetration = 0.15 - 0.1414 ≈ 0.0086.
+    assert!(
+        data.ncon >= 1,
+        "Capsule near box edge should produce at least 1 contact, got {}",
+        data.ncon
+    );
+    assert!(
+        data.ncon <= 2,
+        "Capsule-box should produce at most 2 contacts, got {}",
+        data.ncon
+    );
+}
+
+/// Capsule perpendicular over a box edge (T configuration).
+#[test]
+fn capsule_box_crossing_edge() {
+    // Capsule along Y, crossing perpendicular to an X-axis edge on the top face.
+    // Both endpoints have 2 axes clamped → edge feature, interior clamp.
+    let mjcf = r#"
+        <mujoco model="cap_box_tcross">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box" pos="0 0 0">
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+                <body name="cap" pos="0 0 0.6" euler="90 0 0">
+                    <geom type="capsule" size="0.15 0.6"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Capsule along Y (euler 90 0 0 rotates Z→Y), center at z=0.6.
+    // Cap endpoints: (0, ∓0.6, 0.6). Box top edge at z=0.5.
+    // Capsule mid-segment crosses over an edge → primary contact at crossing point.
+    assert!(
+        data.ncon >= 1 && data.ncon <= 2,
+        "T-crossing capsule should produce 1–2 contacts, got {}",
+        data.ncon
+    );
+
+    for (i, c) in data.contacts[..data.ncon].iter().enumerate() {
+        assert!(
+            c.depth > 0.0,
+            "Contact {i}: expected positive depth, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Capsule at 45° to face — one end on face, other end off to the side.
+#[test]
+fn capsule_box_oblique_face() {
+    // Capsule tilted 45° in XZ plane. Endpoint A projects onto top face,
+    // endpoint B is off to the side and above (no contact).
+    let mjcf = r#"
+        <mujoco model="cap_box_oblique">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="box" pos="0 0 0">
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+                <body name="cap" pos="0.3 0 0.8" euler="0 45 0">
+                    <geom type="capsule" size="0.15 0.4"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // One endpoint near face (z slightly above 0.5, x inside ±0.5) → face feature.
+    // Other endpoint far above and past the edge → filtered out.
+    assert!(
+        data.ncon >= 1,
+        "Oblique capsule should produce at least 1 contact, got {}",
+        data.ncon
+    );
+    assert!(
+        data.ncon <= 2,
+        "Capsule-box should produce at most 2 contacts, got {}",
+        data.ncon
+    );
+}
+
+/// Exhaustive sweep of capsule-box configurations — catches edge-case geometry blowups.
+///
+/// Varies capsule position on a grid around the box, orientation (axis-aligned +
+/// diagonals + misc), and capsule length (short/long). For each configuration:
+/// no panics, contact count 0–2, all depths finite and ≥ -margin, all normals unit.
+#[test]
+fn capsule_box_stress_sweep() {
+    // Two models: short capsule (r=0.1, half_len=0.15) and long (r=0.15, half_len=0.5).
+    let models: Vec<_> = [("short", 0.1, 0.15), ("long", 0.15, 0.5)]
+        .iter()
+        .map(|(name, r, hl)| {
+            let mjcf = format!(
+                r#"<mujoco model="stress_{name}">
+                <option gravity="0 0 0" timestep="0.001"/>
+                <worldbody>
+                    <body name="box" pos="0 0 0">
+                        <geom type="box" size="0.5 0.5 0.5"/>
+                    </body>
+                    <body name="cap" pos="0 0 2">
+                        <joint type="free"/>
+                        <geom type="capsule" size="{r} {hl}"/>
+                    </body>
+                </worldbody>
+            </mujoco>"#
+            );
+            load_model(&mjcf).expect("Failed to load stress model")
+        })
+        .collect();
+
+    // 18 orientations as unit quaternions [qw, qx, qy, qz]
+    use std::f64::consts::FRAC_1_SQRT_2;
+    let s2 = FRAC_1_SQRT_2;
+    #[rustfmt::skip]
+    let orientations: Vec<[f64; 4]> = vec![
+        [1.0, 0.0, 0.0, 0.0],             // identity (Z-up)
+        [s2, s2, 0.0, 0.0],               // 90° about X (Y-up)
+        [s2, -s2, 0.0, 0.0],              // -90° about X
+        [s2, 0.0, s2, 0.0],               // 90° about Y (X-up)
+        [s2, 0.0, -s2, 0.0],              // -90° about Y
+        [s2, 0.0, 0.0, s2],               // 90° about Z
+        // 45° diagonals
+        [0.9239, 0.3827, 0.0, 0.0],       // 45° about X
+        [0.9239, 0.0, 0.3827, 0.0],       // 45° about Y
+        [0.9239, 0.0, 0.0, 0.3827],       // 45° about Z
+        [0.8536, 0.3536, 0.3536, 0.1464], // 45° about (1,1,0)
+        [0.8536, 0.3536, 0.0, 0.3536],    // 45° about (1,0,1)
+        [0.8536, 0.0, 0.3536, 0.3536],    // 45° about (0,1,1)
+        [0.5, 0.5, 0.5, 0.5],             // 120° about (1,1,1)
+        [0.5, -0.5, 0.5, 0.5],            // misc
+        // Misc angles
+        [0.96, 0.0, 0.28, 0.0],           // ~33° about Y
+        [0.866, 0.25, 0.25, 0.354],       // arbitrary
+        [s2, 0.0, 0.5, 0.5],              // misc
+        [0.6, 0.36, 0.48, 0.52],          // misc
+    ];
+
+    // Grid: 11 steps from -1.5 to 1.5
+    let grid_steps = 11;
+    let grid_min = -1.5_f64;
+    let grid_max = 1.5_f64;
+    let step = (grid_max - grid_min) / (grid_steps - 1) as f64;
+
+    let mut total_configs = 0u64;
+    let mut total_contacts = 0u64;
+
+    for model in &models {
+        let mut data = model.make_data();
+        // Free joint qpos starts at index 7 (after the box which has no joint)
+        // Actually box has no joint so capsule's free joint qpos starts at 0.
+        // Free joint: qpos[0..3] = pos, qpos[3..7] = quat
+        let nq = model.nq;
+        assert!(nq >= 7, "Expected free joint with 7 qpos, got nq={nq}");
+
+        for ix in 0..grid_steps {
+            for iy in 0..grid_steps {
+                for iz in 0..grid_steps {
+                    let x = grid_min + ix as f64 * step;
+                    let y = grid_min + iy as f64 * step;
+                    let z = grid_min + iz as f64 * step;
+
+                    for quat in &orientations {
+                        data.qpos[0] = x;
+                        data.qpos[1] = y;
+                        data.qpos[2] = z;
+                        data.qpos[3] = quat[0];
+                        data.qpos[4] = quat[1];
+                        data.qpos[5] = quat[2];
+                        data.qpos[6] = quat[3];
+
+                        data.forward(model)
+                            .unwrap_or_else(|e| panic!("forward failed at pos=({x},{y},{z}): {e}"));
+
+                        total_configs += 1;
+
+                        assert!(data.ncon <= 2, "pos=({x},{y},{z}): ncon={} > 2", data.ncon);
+
+                        for ci in 0..data.ncon {
+                            let c = &data.contacts[ci];
+                            assert!(
+                                c.depth.is_finite(),
+                                "pos=({x},{y},{z}): contact {ci} depth not finite: {}",
+                                c.depth
+                            );
+                            // margin=0 (default), so depth must be >= -margin = 0
+                            assert!(
+                                c.depth >= 0.0,
+                                "pos=({x},{y},{z}): contact {ci} depth {:.6e} < -margin (0)",
+                                c.depth
+                            );
+                            let normal_len = c.normal.norm();
+                            assert!(
+                                (normal_len - 1.0).abs() < 1e-6,
+                                "pos=({x},{y},{z}): contact {ci} normal not unit: len={normal_len}"
+                            );
+                            total_contacts += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sanity: we actually swept a meaningful number of configurations
+    assert!(
+        total_configs > 40_000,
+        "Expected >40K configs, got {total_configs}"
+    );
+    assert!(
+        total_contacts > 0,
+        "No contacts generated across {total_configs} configs — likely a bug"
     );
 }
 

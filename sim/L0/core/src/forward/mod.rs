@@ -56,7 +56,10 @@ pub(crate) use velocity::mj_subtree_vel;
 pub(crate) use actuation::mj_next_activation;
 pub(crate) use passive::{ellipsoid_moment, fluid_geom_semi_axes, norm3};
 pub(crate) use position::SweepAndPrune;
-pub(crate) use position::{aabb_from_geom_aabb, closest_point_segment, closest_points_segments};
+pub(crate) use position::{
+    aabb_from_geom_aabb, closest_point_segment, closest_points_segments,
+    closest_points_segments_parametric,
+};
 
 use crate::types::flags::{disabled, enabled};
 use crate::types::{
@@ -373,6 +376,10 @@ impl Data {
             }
             if enabled(model, ENABLE_ENERGY) {
                 crate::energy::mj_energy_vel(model, self);
+                // Capture initial energy on first computation (baseline for drift).
+                if self.energy_initial == 0.0 {
+                    self.energy_initial = self.total_energy();
+                }
             } else {
                 self.energy_kinetic = 0.0;
             }

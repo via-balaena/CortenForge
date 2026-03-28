@@ -397,8 +397,9 @@ pub struct Data {
     /// When true, mj_fwd_acceleration should be skipped.
     pub newton_solved: bool,
 
-    /// Per-iteration Newton solver statistics (length `solver_niter` after solve).
-    /// Populated by Newton solver; empty for PGS/CG.
+    /// Per-iteration solver statistics (length `solver_niter` after solve).
+    /// Populated by all 3 solvers: PGS fills `improvement` only (other fields
+    /// zeroed); CG and Newton fill all fields.
     pub solver_stat: Vec<SolverStat>,
 
     /// Per-step mean inertia: `trace(qM) / nv`. More accurate than the
@@ -420,6 +421,12 @@ pub struct Data {
     pub energy_potential: f64,
     /// Kinetic energy.
     pub energy_kinetic: f64,
+    /// Total energy at the first `forward()` call with `ENABLE_ENERGY`.
+    ///
+    /// Set once (when `energy_initial == 0.0` and total energy is computed
+    /// for the first time). Use this as the baseline for drift calculations:
+    /// `drift = data.total_energy() - data.energy_initial`.
+    pub energy_initial: f64,
 
     /// §52: Forward/inverse comparison (diagnostic, matches MuJoCo `solver_fwdinv[2]`).
     ///
@@ -789,6 +796,7 @@ impl Clone for Data {
             // Energy
             energy_potential: self.energy_potential,
             energy_kinetic: self.energy_kinetic,
+            energy_initial: self.energy_initial,
             solver_fwdinv: self.solver_fwdinv,
             // Sleep state
             tree_asleep: self.tree_asleep.clone(),
@@ -1126,6 +1134,7 @@ impl Data {
         // 7. Energy — zero.
         self.energy_potential = 0.0;
         self.energy_kinetic = 0.0;
+        self.energy_initial = 0.0;
         self.solver_fwdinv = [0.0, 0.0];
 
         // 8. Warning counters — zero.
@@ -1248,7 +1257,7 @@ mod tests {
     fn data_reset_field_inventory() {
         // Update this constant whenever Data's layout changes.
         // Current value determined empirically — see failure message.
-        const EXPECTED_SIZE: usize = 4360;
+        const EXPECTED_SIZE: usize = 4368;
 
         let actual = std::mem::size_of::<Data>();
         assert_eq!(

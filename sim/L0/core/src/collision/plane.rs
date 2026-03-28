@@ -1,8 +1,6 @@
 //! Collision detection against infinite planes (sphere, box, capsule, cylinder, ellipsoid).
 
-use super::narrow::{
-    AXIS_HORIZONTAL_THRESHOLD, AXIS_VERTICAL_THRESHOLD, GEOM_EPSILON, make_contact_from_geoms,
-};
+use super::narrow::{GEOM_EPSILON, make_contact_from_geoms};
 use crate::types::{Contact, GeomType, Model};
 use nalgebra::{Matrix3, Vector3};
 
@@ -26,7 +24,7 @@ pub fn collide_with_plane(
     size1: Vector3<f64>,
     size2: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Determine which is the plane
     let (
         plane_geom,
@@ -64,7 +62,7 @@ pub fn collide_with_plane(
                 // But for force calculation, we want the force to push the ball OUT of the plane,
                 // so we use +plane_normal for the contact force direction.
                 // Store the "push direction" as the normal to simplify force calculation.
-                Some(make_contact_from_geoms(
+                vec![make_contact_from_geoms(
                     model,
                     contact_pos,
                     plane_normal, // Points UP, away from plane (push direction)
@@ -72,113 +70,116 @@ pub fn collide_with_plane(
                     plane_geom,
                     other_geom,
                     margin,
-                ))
+                )]
             } else {
-                None
+                vec![]
             }
         }
         GeomType::Box => {
-            // Optimized box-plane: compute lowest corner directly instead of testing all 8
+            // Multi-contact box-plane: return up to 4 contacts (all bottom-face
+            // corners), matching MuJoCo's mjc_PlaneBox algorithm.
             //
-            // The support point (lowest corner toward plane) uses the formula:
-            //   corner = center + sum_i( -sign(n·r_i) * h_i * r_i )
+            // Algorithm (from engine_collision_primitive.c:~178):
+            //   For each of the 8 box corners (bitmask i = 0..7):
+            //     corner_offset = ±half.x * rx ± half.y * ry ± half.z * rz
+            //     ldist = dot(normal, corner_offset)
+            //   Filter: ldist <= 0 selects the bottom face (max 4 of 8).
+            //   Inclusion: if the DEEPEST bottom corner is within margin, emit
+            //   ALL bottom-face corners with their individual depths.
             //
-            // where r_i are box local axes in world space and h_i are half-extents.
-            // The sign logic: if n·r_i > 0, the axis points "up" relative to the plane,
-            // so we want the negative end (-h_i * r_i) to get the lowest point.
-            //
-            // Implementation: dx = -sign(n·rx), so corner = center + dx*hx*rx + ...
-            // This is equivalent to the formula but avoids explicit negation.
-            //
-            // This is O(1) instead of O(8) per box.
+            // Why all-or-nothing: on a tilted plane, per-corner depth filtering
+            // produces oscillating contact counts (1–3 per step) that destabilize
+            // the noslip postprocessor. Emitting all 4 bottom-face corners
+            // whenever ANY is in contact ensures stable support. Corners with
+            // negative depth (slightly above plane) produce near-zero constraint
+            // forces — the solver handles this naturally.
+            // See MULTI_CONTACT_ANALYSIS.md Appendix A for verification.
             let half = other_size;
             let rx = other_mat.column(0).into_owned();
             let ry = other_mat.column(1).into_owned();
             let rz = other_mat.column(2).into_owned();
 
-            // Compute -sign(n·axis) for each axis. When dot > 0, axis points toward
-            // plane normal, so we pick the negative end (d = -1). When dot <= 0, we pick
-            // the positive end (d = +1). This gives the corner furthest in -n direction.
-            let dx = if plane_normal.dot(&rx) > 0.0 {
-                -1.0
-            } else {
-                1.0
-            };
-            let dy = if plane_normal.dot(&ry) > 0.0 {
-                -1.0
-            } else {
-                1.0
-            };
-            let dz = if plane_normal.dot(&rz) > 0.0 {
-                -1.0
-            } else {
-                1.0
-            };
+            // Signed distance from box center to plane (positive = above plane)
+            let dist = plane_normal.dot(&other_pos) - plane_distance;
 
-            // Lowest corner is the one most toward the plane (-normal direction)
-            let lowest_corner =
-                other_pos + rx * (dx * half.x) + ry * (dy * half.y) + rz * (dz * half.z);
+            // Pass 1: collect bottom-face corners (ldist <= 0) and find deepest
+            let mut bottom_corners: [(Vector3<f64>, f64); 4] = Default::default();
+            let mut n_bottom = 0usize;
+            let mut min_ldist = f64::MAX; // most negative = deepest
 
-            let dist = plane_normal.dot(&lowest_corner) - plane_distance;
-            let depth = -dist;
+            for i in 0u8..8 {
+                let sx = if i & 1 != 0 { 1.0 } else { -1.0 };
+                let sy = if i & 2 != 0 { 1.0 } else { -1.0 };
+                let sz = if i & 4 != 0 { 1.0 } else { -1.0 };
 
-            if depth > -margin {
-                // Contact position: midpoint between box corner and plane surface.
-                // box_surface = lowest_corner (corner IS on the surface)
-                // plane_surface = lowest_corner + normal * depth
-                // midpoint = lowest_corner + normal * depth / 2
-                let contact_pos = lowest_corner + plane_normal * (depth / 2.0);
-                Some(make_contact_from_geoms(
-                    model,
-                    contact_pos,
-                    plane_normal,
-                    depth,
-                    plane_geom,
-                    other_geom,
-                    margin,
-                ))
+                let corner_offset = rx * (sx * half.x) + ry * (sy * half.y) + rz * (sz * half.z);
+                let ldist = plane_normal.dot(&corner_offset);
+
+                if ldist <= 0.0 && n_bottom < 4 {
+                    bottom_corners[n_bottom] = (corner_offset, ldist);
+                    n_bottom += 1;
+                    if ldist < min_ldist {
+                        min_ldist = ldist;
+                    }
+                }
+            }
+
+            // Pass 2: if the deepest bottom corner is within margin, emit all
+            let deepest_corner_dist = dist + min_ldist; // signed dist of deepest
+            if n_bottom > 0 && deepest_corner_dist <= margin {
+                let mut contacts = Vec::with_capacity(n_bottom);
+                for &(corner_offset, ldist) in &bottom_corners[..n_bottom] {
+                    let corner_depth = -(dist + ldist);
+                    let corner_world = other_pos + corner_offset;
+                    let contact_pos = corner_world + plane_normal * (corner_depth / 2.0);
+
+                    contacts.push(make_contact_from_geoms(
+                        model,
+                        contact_pos,
+                        plane_normal,
+                        corner_depth,
+                        plane_geom,
+                        other_geom,
+                        margin,
+                    ));
+                }
+                contacts
             } else {
-                None
+                vec![]
             }
         }
         GeomType::Capsule => {
-            // Check both end spheres of the capsule
+            // Multi-contact capsule-plane: test both endpoint spheres
+            // independently, matching MuJoCo's mjc_PlaneCapsule which
+            // delegates each endpoint to mjraw_PlaneSphere.
             let radius = other_size.x;
             let half_length = other_size.y;
             let axis = other_mat.column(2).into_owned(); // Z is capsule axis
 
-            let end1 = other_pos + axis * half_length;
-            let end2 = other_pos - axis * half_length;
+            let endpoints = [
+                other_pos + axis * half_length,
+                other_pos - axis * half_length,
+            ];
 
-            let dist1 = plane_normal.dot(&end1) - plane_distance;
-            let dist2 = plane_normal.dot(&end2) - plane_distance;
+            let mut contacts = Vec::with_capacity(2);
+            for end in &endpoints {
+                let dist = plane_normal.dot(end) - plane_distance;
+                let penetration = radius - dist;
 
-            let (closest_end, min_dist) = if dist1 < dist2 {
-                (end1, dist1)
-            } else {
-                (end2, dist2)
-            };
-
-            let penetration = radius - min_dist;
-
-            if penetration > -margin {
-                // Contact position: midpoint between capsule surface and plane surface.
-                // capsule_surface = closest_end - normal * radius
-                // plane_surface   = closest_end - normal * min_dist
-                // midpoint = closest_end - normal * midpoint(radius, min_dist)
-                let contact_pos = closest_end - plane_normal * f64::midpoint(radius, min_dist);
-                Some(make_contact_from_geoms(
-                    model,
-                    contact_pos,
-                    plane_normal,
-                    penetration,
-                    plane_geom,
-                    other_geom,
-                    margin,
-                ))
-            } else {
-                None
+                if penetration > -margin {
+                    let contact_pos = end - plane_normal * f64::midpoint(radius, dist);
+                    contacts.push(make_contact_from_geoms(
+                        model,
+                        contact_pos,
+                        plane_normal,
+                        penetration,
+                        plane_geom,
+                        other_geom,
+                        margin,
+                    ));
+                }
             }
+            contacts
         }
         GeomType::Cylinder => {
             // Cylinder-plane collision: find deepest point on cylinder
@@ -216,7 +217,7 @@ pub fn collide_with_plane(
         ),
         // Plane-plane: two infinite half-spaces. Intersection is either empty, a plane,
         // or a half-space—none of which produce a meaningful contact point.
-        GeomType::Plane => None,
+        GeomType::Plane => vec![],
         // Hfield pairs intercepted at broadphase level (collide_hfield_multi)
         GeomType::Hfield => unreachable!("hfield pairs routed before plane dispatch"),
         // SDF is dispatched before plane in collide_geoms()
@@ -226,24 +227,24 @@ pub fn collide_with_plane(
 
 /// Cylinder-plane collision detection (internal helper).
 ///
-/// Finds the deepest penetrating point on the cylinder. For tilted/upright
-/// cylinders, this is on the rim edge. For horizontal cylinders (axis parallel
-/// to plane), the curved surface is checked.
+/// Returns up to 4 contacts using MuJoCo's `mjc_PlaneCylinder` algorithm:
+/// 2 rim points (near/far cap) + 2 triangle points on the near-cap disk
+/// forming equilateral support.
 ///
-/// # Algorithm
-/// 1. Compute cylinder axis in world frame
-/// 2. Determine if cylinder is "horizontal" (axis nearly parallel to plane)
-/// 3. For non-horizontal: check rim points on both caps in the deepest direction
-/// 4. For horizontal: check the curved surface point closest to plane
-/// 5. Return the deepest penetrating point as contact
+/// # Algorithm (from `engine_collision_primitive.c`)
+/// 1. Orient axis toward plane (flip if needed)
+/// 2. Compute radial direction `vec` = projection of `-normal` onto radial plane
+/// 3. Contact 1: near-cap rim point (deepest). Early exit if not within margin.
+/// 4. Contact 2: far-cap rim point (same radial direction)
+/// 5. Contacts 3–4: triangle points on near-cap disk at `±cross(vec, axis)`
+///    offset by `sqrt(3)/2 * radius`, pulled back to `-0.5 * vec`
 ///
-/// # Parameters
-/// - `plane_normal`: Unit normal of the plane (points away from solid half-space)
-/// - `plane_d`: Signed distance from origin to plane along normal
-/// - `cyl_size`: [radius, half_height, unused]
+/// Uses all-or-nothing inclusion: if contact 1 (deepest) is within margin,
+/// emit all candidate contacts that individually pass the margin test.
+/// See `MULTI_CONTACT_ANALYSIS.md` Appendix A for rationale.
 ///
 /// # Returns
-/// `Some(Contact)` if cylinder penetrates plane, `None` otherwise.
+/// `Vec` with 0–4 contacts.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn collide_cylinder_plane_impl(
@@ -256,93 +257,129 @@ fn collide_cylinder_plane_impl(
     cyl_mat: Matrix3<f64>,
     cyl_size: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     let radius = cyl_size.x;
     let half_height = cyl_size.y;
 
     // Cylinder axis is local Z transformed to world
-    let cyl_axis = cyl_mat.column(2).into_owned();
+    let mut axis = cyl_mat.column(2).into_owned();
 
-    // How aligned is cylinder axis with plane normal?
-    // axis_dot_signed: positive = axis points away from plane, negative = toward plane
-    // axis_dot (abs): 1 = vertical, 0 = horizontal
-    let axis_dot_signed = plane_normal.dot(&cyl_axis);
-    let axis_dot = axis_dot_signed.abs();
+    // Signed distance from cylinder center to plane
+    let dist0 = plane_normal.dot(&cyl_pos) - plane_d;
 
-    // Pre-compute radial direction (projection of plane normal onto radial plane)
-    // Used in Case 1 (horizontal) and Case 3 (tilted)
-    let radial = plane_normal - cyl_axis * axis_dot_signed;
-    let radial_len = radial.norm();
+    // Projection of axis onto plane normal — flip axis so it points toward
+    // the plane (prjaxis >= 0 means the near cap is at +axis * half_height).
+    let mut prjaxis = plane_normal.dot(&axis);
+    if prjaxis > 0.0 {
+        axis = -axis;
+        prjaxis = -prjaxis;
+    }
+    // Now: near cap = cyl_pos + axis * half_height, far cap = cyl_pos - axis * half_height
+    // prjaxis <= 0 (axis points toward plane)
 
-    // Compute the deepest point on the cylinder
-    let deepest_point = if axis_dot < AXIS_HORIZONTAL_THRESHOLD {
-        // Case 1: Cylinder is horizontal (axis parallel to plane)
-        // The deepest point is on the curved surface, directly below the axis
-        if radial_len > GEOM_EPSILON {
-            // Point on curved surface in the direction opposite to plane normal
-            cyl_pos - (radial / radial_len) * radius
-        } else {
-            // Degenerate: plane normal exactly along axis (contradicts horizontal check)
-            cyl_pos - plane_normal * radius
-        }
-    } else if axis_dot > AXIS_VERTICAL_THRESHOLD {
-        // Case 2: Cylinder is vertical (axis perpendicular to plane)
-        // The deepest point is the entire bottom rim (pick center for stability)
-        // Determine which cap faces the plane
-        let cap_dir = if axis_dot_signed > 0.0 {
-            -cyl_axis // Bottom cap faces plane
-        } else {
-            cyl_axis // Top cap faces plane
-        };
-        cyl_pos + cap_dir * half_height
+    // Radial direction: projection of -normal onto the plane perpendicular to axis,
+    // scaled to radius. This gives the rim offset that pushes deepest into the plane.
+    let raw_vec = -plane_normal - axis * (-prjaxis); // -normal + axis * prjaxis
+    let vec_len = raw_vec.norm();
+
+    let vec = if vec_len > GEOM_EPSILON {
+        raw_vec * (radius / vec_len)
     } else {
-        // Case 3: Cylinder is tilted
-        // The deepest point is on one of the rim edges
-        // Find the rim direction that points most into the plane
-        // Note: radial_len = sqrt(1 - axis_dot²) > 0 since axis_dot < AXIS_VERTICAL_THRESHOLD
-        let rim_dir = -radial / radial_len;
-
-        // Determine which cap is lower (faces the plane more)
-        let top_center = cyl_pos + cyl_axis * half_height;
-        let bottom_center = cyl_pos - cyl_axis * half_height;
-
-        let top_rim_point = top_center + rim_dir * radius;
-        let bottom_rim_point = bottom_center + rim_dir * radius;
-
-        let top_depth = -(plane_normal.dot(&top_rim_point) - plane_d);
-        let bottom_depth = -(plane_normal.dot(&bottom_rim_point) - plane_d);
-
-        if bottom_depth > top_depth {
-            bottom_rim_point
-        } else {
-            top_rim_point
-        }
+        // Axis is parallel to normal (disk is parallel to plane).
+        // Use cylinder's local X-axis as fallback radial direction.
+        cyl_mat.column(0).into_owned() * radius
     };
 
-    // Compute penetration depth
-    let signed_dist = plane_normal.dot(&deepest_point) - plane_d;
-    let depth = -signed_dist;
+    let vec_dot_normal = plane_normal.dot(&vec);
 
-    if depth <= -margin {
-        return None;
+    // --- Contact 1: near-cap rim point (deepest) ---
+    let pos1 = cyl_pos + axis * half_height + vec;
+    let depth1 = -(dist0 + prjaxis * half_height + vec_dot_normal);
+
+    // Early exit: if the deepest point isn't within margin, no contacts.
+    if depth1 <= -margin {
+        return vec![];
     }
 
-    // Contact position: midpoint between cylinder surface and plane surface.
-    // cylinder_surface = deepest_point (already on cylinder surface)
-    // plane_surface = deepest_point + normal * depth
-    // midpoint = deepest_point + normal * depth / 2
-    let contact_pos = deepest_point + plane_normal * (depth / 2.0);
-
-    Some(make_contact_from_geoms(
+    let mut contacts = Vec::with_capacity(4);
+    let contact_pos1 = pos1 + plane_normal * (depth1 / 2.0);
+    contacts.push(make_contact_from_geoms(
         model,
-        contact_pos,
+        contact_pos1,
         plane_normal,
-        depth,
+        depth1,
         plane_geom,
         cyl_geom,
         margin,
-    ))
+    ));
+
+    // --- Contact 2: far-cap rim point ---
+    let pos2 = cyl_pos - axis * half_height + vec;
+    let depth2 = -(dist0 - prjaxis * half_height + vec_dot_normal);
+
+    if depth2 > -margin {
+        let contact_pos2 = pos2 + plane_normal * (depth2 / 2.0);
+        contacts.push(make_contact_from_geoms(
+            model,
+            contact_pos2,
+            plane_normal,
+            depth2,
+            plane_geom,
+            cyl_geom,
+            margin,
+        ));
+    }
+
+    // --- Contacts 3–4: triangle points on the near-cap disk ---
+    // Two points offset sideways from the rim point by ±cross(vec, axis),
+    // normalized and scaled by radius * sqrt(3)/2, pulled halfway back
+    // from the rim (at -0.5 * vec). These form an equilateral triangle
+    // inscribed in the near-cap disk with contact 1.
+    let cross = vec.cross(&axis);
+    let cross_len = cross.norm();
+
+    if cross_len > GEOM_EPSILON {
+        let side = cross * (radius * SQRT_3_OVER_2 / cross_len);
+
+        // Triangle depth: near-cap depth with half the radial contribution
+        // (these points are at -0.5*vec instead of +vec, so the radial
+        // component contribution is -0.5 * vec_dot_normal instead of +vec_dot_normal)
+        let depth_tri = -(dist0 + prjaxis * half_height - vec_dot_normal * 0.5);
+
+        if depth_tri > -margin {
+            let base = cyl_pos + axis * half_height - vec * 0.5;
+
+            let pos3 = base + side;
+            let contact_pos3 = pos3 + plane_normal * (depth_tri / 2.0);
+            contacts.push(make_contact_from_geoms(
+                model,
+                contact_pos3,
+                plane_normal,
+                depth_tri,
+                plane_geom,
+                cyl_geom,
+                margin,
+            ));
+
+            let pos4 = base - side;
+            let contact_pos4 = pos4 + plane_normal * (depth_tri / 2.0);
+            contacts.push(make_contact_from_geoms(
+                model,
+                contact_pos4,
+                plane_normal,
+                depth_tri,
+                plane_geom,
+                cyl_geom,
+                margin,
+            ));
+        }
+    }
+
+    contacts
 }
+
+/// sqrt(3) / 2 — used for equilateral triangle inscribed in the cap disk.
+const SQRT_3_OVER_2: f64 = 0.866_025_403_784_438_6;
 
 /// Ellipsoid-plane collision detection (internal helper).
 ///
@@ -371,7 +408,7 @@ fn collide_cylinder_plane_impl(
 /// - `ell_radii`: Ellipsoid radii [rx, ry, rz]
 ///
 /// # Returns
-/// `Some(Contact)` if ellipsoid penetrates plane, `None` otherwise.
+/// `Vec` with one contact if ellipsoid penetrates plane, empty otherwise.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn collide_ellipsoid_plane_impl(
@@ -384,7 +421,7 @@ fn collide_ellipsoid_plane_impl(
     ell_mat: Matrix3<f64>,
     ell_radii: Vector3<f64>,
     margin: f64,
-) -> Option<Contact> {
+) -> Vec<Contact> {
     // Transform plane normal to ellipsoid local frame
     let local_normal = ell_mat.transpose() * plane_normal;
 
@@ -400,7 +437,7 @@ fn collide_ellipsoid_plane_impl(
 
     if scale_norm < GEOM_EPSILON {
         // Degenerate case: normal perpendicular to all radii (shouldn't happen)
-        return None;
+        return vec![];
     }
 
     // Support point on ellipsoid surface in direction toward plane (negative normal)
@@ -418,7 +455,7 @@ fn collide_ellipsoid_plane_impl(
     let depth = -signed_dist; // Positive = penetrating
 
     if depth <= -margin {
-        return None;
+        return vec![];
     }
 
     // Contact position: midpoint between ellipsoid surface and plane surface.
@@ -427,7 +464,7 @@ fn collide_ellipsoid_plane_impl(
     // midpoint = world_support + normal * depth / 2
     let contact_pos = world_support + plane_normal * (depth / 2.0);
 
-    Some(make_contact_from_geoms(
+    vec![make_contact_from_geoms(
         model,
         contact_pos,
         plane_normal,
@@ -435,7 +472,7 @@ fn collide_ellipsoid_plane_impl(
         plane_geom,
         ell_geom,
         margin,
-    ))
+    )]
 }
 
 // ============================================================================
@@ -499,7 +536,7 @@ mod primitive_collision_tests {
         let cyl_pos = Vector3::new(0.0, 0.0, 0.4); // Center at z=0.4
         let cyl_mat = Matrix3::identity(); // Axis along +Z (upright)
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -514,8 +551,8 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Cylinder should contact plane");
-        let c = contact.unwrap();
+        assert!(!contacts.is_empty(), "Cylinder should contact plane");
+        let c = &contacts[0];
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
         assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
     }
@@ -534,7 +571,7 @@ mod primitive_collision_tests {
         let cyl_pos = Vector3::new(0.0, 0.0, 1.0); // Center at z=1.0, bottom at z=0.5
         let cyl_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -550,7 +587,7 @@ mod primitive_collision_tests {
         );
 
         assert!(
-            contact.is_none(),
+            contacts.is_empty(),
             "Cylinder should not contact plane when above"
         );
     }
@@ -615,7 +652,7 @@ mod primitive_collision_tests {
         let bottom_rim_z = bottom_center_z + rim_dir_z * radius;
         let expected_depth = -bottom_rim_z;
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -630,8 +667,8 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Tilted cylinder should contact plane");
-        let c = contact.unwrap();
+        assert!(!contacts.is_empty(), "Tilted cylinder should contact plane");
+        let c = &contacts[0];
         assert_relative_eq!(c.depth, expected_depth, epsilon = 1e-10);
         assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
     }
@@ -655,7 +692,7 @@ mod primitive_collision_tests {
         // Position center at z = radius - epsilon for penetration
         let cyl_pos = Vector3::new(0.0, 0.0, 0.2); // Below radius, should penetrate
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -671,10 +708,10 @@ mod primitive_collision_tests {
         );
 
         assert!(
-            contact.is_some(),
+            !contacts.is_empty(),
             "Horizontal cylinder should contact plane"
         );
-        let c = contact.unwrap();
+        let c = &contacts[0];
         // Penetration should be radius - z_center = 0.3 - 0.2 = 0.1
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
     }
@@ -702,7 +739,7 @@ mod primitive_collision_tests {
         let ell_pos = Vector3::new(0.0, 0.0, 0.4); // Center at z=0.4
         let ell_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -717,8 +754,11 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Ellipsoid (sphere) should contact plane");
-        let c = contact.unwrap();
+        assert!(
+            !contacts.is_empty(),
+            "Ellipsoid (sphere) should contact plane"
+        );
+        let c = &contacts[0];
         // Penetration = radius - z = 0.5 - 0.4 = 0.1
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
         assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
@@ -738,7 +778,7 @@ mod primitive_collision_tests {
         let ell_pos = Vector3::new(0.0, 0.0, 0.7); // Bottom at z = -0.1
         let ell_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -753,8 +793,8 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Tall ellipsoid should contact plane");
-        let c = contact.unwrap();
+        assert!(!contacts.is_empty(), "Tall ellipsoid should contact plane");
+        let c = &contacts[0];
         // Penetration = z_radius - z = 0.8 - 0.7 = 0.1
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
     }
@@ -773,7 +813,7 @@ mod primitive_collision_tests {
         let ell_pos = Vector3::new(0.0, 0.0, 0.15); // Bottom at z = -0.05 (penetrating)
         let ell_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -788,8 +828,8 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Wide ellipsoid should contact plane");
-        let c = contact.unwrap();
+        assert!(!contacts.is_empty(), "Wide ellipsoid should contact plane");
+        let c = &contacts[0];
         // Penetration = z_radius - z = 0.2 - 0.15 = 0.05
         assert_relative_eq!(c.depth, 0.05, epsilon = 1e-6);
     }
@@ -841,7 +881,7 @@ mod primitive_collision_tests {
         let world_support_z = ell_pos.z + local_support_y * sin_a + local_support_z * cos_a;
         let expected_depth = -world_support_z;
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -856,8 +896,11 @@ mod primitive_collision_tests {
             0.0, // margin
         );
 
-        assert!(contact.is_some(), "Rotated ellipsoid should contact plane");
-        let c = contact.unwrap();
+        assert!(
+            !contacts.is_empty(),
+            "Rotated ellipsoid should contact plane"
+        );
+        let c = &contacts[0];
         assert_relative_eq!(c.depth, expected_depth, epsilon = 1e-10);
         assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
     }
@@ -876,7 +919,7 @@ mod primitive_collision_tests {
         let ell_pos = Vector3::new(0.0, 0.0, 1.0); // Far above plane
         let ell_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -892,7 +935,7 @@ mod primitive_collision_tests {
         );
 
         assert!(
-            contact.is_none(),
+            contacts.is_empty(),
             "Ellipsoid should not contact plane when above"
         );
     }
@@ -915,7 +958,7 @@ mod primitive_collision_tests {
         let cyl_pos = Vector3::new(0.0, 0.0, 0.4); // Bottom at z = -0.1
         let cyl_mat = Matrix3::identity(); // Axis along Z (parallel to plane normal)
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -932,10 +975,10 @@ mod primitive_collision_tests {
 
         // Should still detect contact at the bottom rim
         assert!(
-            contact.is_some(),
+            !contacts.is_empty(),
             "Should detect contact even when axis parallel to normal"
         );
-        let c = contact.unwrap();
+        let c = &contacts[0];
         assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
     }
 
@@ -953,7 +996,7 @@ mod primitive_collision_tests {
         let cyl_pos = Vector3::new(0.0, 0.0, 0.4);
         let cyl_mat = Matrix3::identity();
 
-        let contact = collide_with_plane(
+        let contacts = collide_with_plane(
             &model,
             0,
             1,
@@ -966,8 +1009,9 @@ mod primitive_collision_tests {
             model.geom_size[0],
             model.geom_size[1],
             0.0, // margin
-        )
-        .expect("should have contact");
+        );
+        assert!(!contacts.is_empty(), "should have contact");
+        let contact = &contacts[0];
 
         // Normal should be unit length
         assert_relative_eq!(contact.normal.norm(), 1.0, epsilon = 1e-10);

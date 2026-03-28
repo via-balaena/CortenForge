@@ -173,10 +173,25 @@ pub fn collide_with_mesh(
                     mesh_sphere_contact(mesh, &pose1, pose2.position, max_r, use_bvh)
                 }
                 GeomType::Plane => {
-                    // Plane normal is local Z-axis
+                    // Plane normal is local Z-axis — multi-contact (up to 3)
                     let plane_normal = mat2.column(2).into_owned();
                     let plane_d = plane_normal.dot(&pos2);
-                    collide_mesh_plane(mesh, &pose1, plane_normal, plane_d)
+                    let mesh_contacts =
+                        collide_mesh_plane(mesh, &pose1, plane_normal, plane_d, margin);
+                    return mesh_contacts
+                        .into_iter()
+                        .map(|mc| {
+                            make_contact_from_geoms(
+                                model,
+                                mc.point.coords,
+                                mc.normal,
+                                mc.penetration,
+                                geom1,
+                                geom2,
+                                margin,
+                            )
+                        })
+                        .collect();
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
                 // Hfield pairs routed before mesh dispatch (narrow.rs S1 ordering fix)
@@ -210,9 +225,26 @@ pub fn collide_with_mesh(
                     mesh_sphere_contact(mesh, &pose2, pose1.position, max_r, use_bvh)
                 }
                 GeomType::Plane => {
+                    // Multi-contact (up to 3) — negate normals for swapped order
                     let plane_normal = mat1.column(2).into_owned();
                     let plane_d = plane_normal.dot(&pos1);
-                    collide_mesh_plane(mesh, &pose2, plane_normal, plane_d)
+                    let mesh_contacts =
+                        collide_mesh_plane(mesh, &pose2, plane_normal, plane_d, margin);
+                    return mesh_contacts
+                        .into_iter()
+                        .map(|mut mc| {
+                            mc.normal = -mc.normal;
+                            make_contact_from_geoms(
+                                model,
+                                mc.point.coords,
+                                mc.normal,
+                                mc.penetration,
+                                geom1,
+                                geom2,
+                                margin,
+                            )
+                        })
+                        .collect();
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
                 // Hfield pairs routed before mesh dispatch (narrow.rs S1 ordering fix)
@@ -248,50 +280,106 @@ pub fn collide_with_mesh(
         .collect()
 }
 
-/// Mesh vs infinite plane collision.
+/// Mesh vs infinite plane collision — up to 3 contacts.
 ///
-/// Tests all mesh vertices against the plane and returns the deepest penetrating vertex.
+/// Matches MuJoCo's `mjc_PlaneConvex` mesh path (`engine_collision_convex.c`).
+/// Uses Path B (brute-force vertex scan, no adjacency graph).
+///
+/// Algorithm:
+/// 1. Scan all vertices, find the deepest penetrating one → primary contact.
+/// 2. Continue scanning for up to 2 more vertices that:
+///    - Have `depth > -margin` (within margin of plane)
+///    - Are at least `0.3 * rbound` away from the primary contact (prevents clustering)
+/// 3. Return 1–3 contacts with individual depths.
+///
 /// Returns normal pointing FROM mesh outward (i.e. `-plane_normal`), consistent with
-/// all other mesh collision functions. This is a simple but effective approach:
-/// - O(n) in number of vertices
-/// - Handles any mesh topology
-/// - Returns single deepest contact point
+/// all other mesh collision functions.
+///
+/// # Parameters
+/// - `margin`: collision margin — vertices with `depth > -margin` are candidates
 pub fn collide_mesh_plane(
     mesh: &TriangleMeshData,
     mesh_pose: &Pose,
     plane_normal: Vector3<f64>,
     plane_d: f64,
-) -> Option<MeshContact> {
-    let mut deepest: Option<MeshContact> = None;
+    margin: f64,
+) -> Vec<MeshContact> {
+    let vertices = mesh.vertices();
+    if vertices.is_empty() {
+        return vec![];
+    }
 
-    for (i, vertex) in mesh.vertices().iter().enumerate() {
-        // Transform vertex to world space
+    // Compute bounding radius from AABB half-diagonal (conservative >= true rbound)
+    let (aabb_min, aabb_max) = mesh.aabb();
+    let rbound = (aabb_max - aabb_min).norm() / 2.0;
+    let min_separation = 0.3 * rbound; // MuJoCo's tolplanemesh
+    let min_sep_sq = min_separation * min_separation;
+
+    // Pass 1: find all penetrating vertices with their depths, and identify the deepest
+    let mut best_depth = f64::NEG_INFINITY;
+    let mut best_idx = 0;
+
+    // Collect (world_point, depth, vertex_index) for all penetrating vertices
+    let mut candidates: Vec<(Point3<f64>, f64, usize)> = Vec::new();
+
+    for (i, vertex) in vertices.iter().enumerate() {
         let world_v = mesh_pose.transform_point(vertex);
-
-        // Signed distance from plane (positive = above plane, negative = below)
         let signed_dist = plane_normal.dot(&world_v.coords) - plane_d;
         let depth = -signed_dist;
 
-        if depth > 0.0 {
-            match &mut deepest {
-                Some(d) if depth > d.penetration => {
-                    d.point = world_v;
-                    d.normal = -plane_normal;
-                    d.penetration = depth;
-                    d.triangle_index = i; // Store vertex index (not triangle, but useful for debug)
-                }
-                None => {
-                    deepest = Some(MeshContact {
-                        point: world_v,
-                        normal: -plane_normal,
-                        penetration: depth,
-                        triangle_index: i,
-                    });
-                }
-                _ => {}
+        if depth > -margin {
+            if depth > best_depth {
+                best_depth = depth;
+                best_idx = candidates.len();
             }
+            candidates.push((world_v, depth, i));
         }
     }
 
-    deepest
+    if candidates.is_empty() {
+        return vec![];
+    }
+
+    // Primary contact: deepest vertex
+    let (primary_pt, primary_depth, primary_vi) = candidates[best_idx];
+    let normal_out = -plane_normal;
+
+    let mut contacts = Vec::with_capacity(3);
+    contacts.push(MeshContact {
+        point: primary_pt,
+        normal: normal_out,
+        penetration: primary_depth,
+        triangle_index: primary_vi,
+    });
+
+    // Pass 2: find up to 2 additional contacts, sorted by depth (deepest first),
+    // that are far enough from the primary and from each other.
+    // Sort candidates by depth descending (skip primary).
+    let mut extras: Vec<(Point3<f64>, f64, usize)> = candidates
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != best_idx)
+        .map(|(_, c)| *c)
+        .collect();
+    extras.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    for &(pt, depth, vi) in &extras {
+        if contacts.len() >= 3 {
+            break;
+        }
+        // Proximity filter: reject if too close to any existing contact
+        let too_close = contacts
+            .iter()
+            .any(|c| (c.point - pt).norm_squared() < min_sep_sq);
+        if !too_close {
+            contacts.push(MeshContact {
+                point: pt,
+                normal: normal_out,
+                penetration: depth,
+                triangle_index: vi,
+            });
+        }
+    }
+
+    contacts
 }

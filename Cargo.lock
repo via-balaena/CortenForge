@@ -2781,6 +2781,72 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-integrator-comparison"
+version = "0.7.0"
+dependencies = [
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-integrator-comparison-visual"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-integrator-euler"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-integrator-implicit"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-integrator-implicit-fast"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-integrator-implicit-spring-damper"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-integrator-rk4"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-mesh-pipeline"
 version = "0.7.0"
 dependencies = [
@@ -3103,6 +3169,53 @@ dependencies = [
 
 [[package]]
 name = "example-slide-joint-vertical"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-solver-cg"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-solver-comparison"
+version = "0.7.0"
+dependencies = [
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-solver-comparison-visual"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-solver-newton"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-solver-pgs"
 version = "0.7.0"
 dependencies = [
  "bevy",

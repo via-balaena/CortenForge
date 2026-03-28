@@ -40,14 +40,6 @@ use sim_types::Pose;
 /// magnitude of safety margin while still detecting near-degenerate cases.
 pub const GEOM_EPSILON: f64 = 1e-10;
 
-/// Threshold for cylinder axis being nearly vertical (perpendicular to plane).
-/// When |cos(theta)| > 0.999 (theta < 2.6 deg), treat cylinder as vertical.
-pub const AXIS_VERTICAL_THRESHOLD: f64 = 0.999;
-
-/// Threshold for cylinder axis being nearly horizontal (parallel to plane).
-/// When |cos(theta)| < 0.001 (theta > 89.9 deg), treat cylinder as horizontal.
-pub const AXIS_HORIZONTAL_THRESHOLD: f64 = 0.001;
-
 /// Threshold for detecting cylinder cap collision in cylinder-capsule.
 /// When normal is within ~45 deg of cylinder axis (cos > 0.7), treat as cap collision.
 pub const CAP_COLLISION_THRESHOLD: f64 = 0.7;
@@ -100,25 +92,19 @@ pub fn collide_geoms(
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
         return collide_with_plane(
             model, geom1, geom2, type1, type2, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: sphere-sphere collision (analytical, more robust than GJK/EPA)
     if type1 == GeomType::Sphere && type2 == GeomType::Sphere {
-        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2, margin)
-            .into_iter()
-            .collect();
+        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2, margin);
     }
 
     // Special case: capsule-capsule collision (analytical, much faster than GJK/EPA)
     if type1 == GeomType::Capsule && type2 == GeomType::Capsule {
         return collide_capsule_capsule(
             model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: sphere-capsule collision
@@ -127,9 +113,7 @@ pub fn collide_geoms(
     {
         return collide_sphere_capsule(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: sphere-box collision (analytical)
@@ -138,9 +122,7 @@ pub fn collide_geoms(
     {
         return collide_sphere_box(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: capsule-box collision (analytical)
@@ -149,18 +131,14 @@ pub fn collide_geoms(
     {
         return collide_capsule_box(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: box-box collision (SAT)
     if type1 == GeomType::Box && type2 == GeomType::Box {
         return collide_box_box(
             model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: cylinder-sphere collision (analytical)
@@ -169,9 +147,7 @@ pub fn collide_geoms(
     {
         return collide_cylinder_sphere(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        )
-        .into_iter()
-        .collect();
+        );
     }
 
     // Special case: cylinder-capsule collision (analytical with GJK/EPA fallback)
@@ -179,10 +155,11 @@ pub fn collide_geoms(
     if (type1 == GeomType::Cylinder && type2 == GeomType::Capsule)
         || (type1 == GeomType::Capsule && type2 == GeomType::Cylinder)
     {
-        if let Some(contact) = collide_cylinder_capsule(
+        let contacts = collide_cylinder_capsule(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
-        ) {
-            return vec![contact];
+        );
+        if !contacts.is_empty() {
+            return contacts;
         }
         // Fall through to GJK/EPA for degenerate cases (intersecting/parallel axes, cap collisions)
     }

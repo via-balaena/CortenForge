@@ -1,0 +1,25 @@
+[package]
+name = "example-solver-comparison-visual"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sim-core = { workspace = true }
+sim-mjcf = { workspace = true }
+sim-bevy = { workspace = true }
+bevy = { workspace = true, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_winit",
+    "multi_threaded",
+    "tonemapping_luts",
+    "zstd_rust",
+] }
+
+[lints]
+workspace = true

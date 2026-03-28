@@ -968,3 +968,544 @@ fn sphere_plane_far_from_origin() {
         contact.depth
     );
 }
+
+// ============================================================================
+// Multi-contact box-plane tests (Phase 1a)
+// ============================================================================
+
+/// Box resting flat on horizontal plane → exactly 4 contacts.
+///
+/// Configuration:
+/// - Plane at z=0 (horizontal)
+/// - Box half-extents (0.5, 0.5, 0.5), center at z=0.4
+/// - Bottom face at z=-0.1 → all 4 corners penetrate equally
+///
+/// Expected: 4 contacts, all with identical depth (0.1).
+#[test]
+fn box_plane_horizontal_4_contacts() {
+    let mjcf = r#"
+        <mujoco model="box_plane_4contacts">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="box" pos="0 0 0.4">
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 4,
+        "Box flat on horizontal plane should produce 4 contacts, got {}",
+        data.ncon
+    );
+
+    // All 4 corners have the same depth on a horizontal plane
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..4].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Box resting on tilted plane → 4 contacts with distinct depths.
+///
+/// Configuration:
+/// - Plane tilted 10° around X axis
+/// - Box half-extents (0.3, 0.3, 0.3), center placed to penetrate
+/// - Bottom face corners have varying distances to tilted plane
+///
+/// Expected: 4 contacts, depths vary by ~2*0.3*sin(10°) ≈ 0.104 across face.
+#[test]
+fn box_plane_tilted_4_contacts_distinct_depths() {
+    let mjcf = r#"
+        <mujoco model="box_plane_tilted_4">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"
+                      euler="10 0 0"/>
+                <body name="box" pos="0 0 0.2">
+                    <geom type="box" size="0.3 0.3 0.3"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 4,
+        "Box on tilted plane should produce 4 contacts, got {}",
+        data.ncon
+    );
+
+    // Depths should be distinct (not all identical)
+    let depths: Vec<f64> = data.contacts[..4].iter().map(|c| c.depth).collect();
+    let min_depth = depths.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let depth_variation = max_depth - min_depth;
+
+    // On a 10° tilt, the y-extent (0.3) contributes sin(10°)*0.6 ≈ 0.104
+    assert!(
+        depth_variation > 0.05,
+        "Depths should vary significantly on tilted plane, got variation={depth_variation:.4e}, depths={depths:?}"
+    );
+
+    // All contacts should share the same normal (plane normal)
+    let n0 = data.contacts[0].normal;
+    for (i, c) in data.contacts[1..4].iter().enumerate() {
+        let dot = n0.dot(&c.normal);
+        assert!(
+            (dot - 1.0).abs() < 1e-10,
+            "Contact {} normal should match contact 0: dot={dot}",
+            i + 1
+        );
+    }
+}
+
+/// Single box on horizontal plane settles stably with 4-contact support.
+///
+/// Tests that multi-contact plane-box provides stable resting on a flat
+/// surface under gravity. (3-box stack deferred to Phase 2 when box-box
+/// multi-contact is implemented.)
+#[test]
+fn box_plane_single_box_stable() {
+    let mjcf = r#"
+        <mujoco model="box_plane_stable">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"
+                    iterations="100" tolerance="1e-8"/>
+            <worldbody>
+                <geom type="plane" size="5 5 0.1"/>
+                <body name="box" pos="0 0 0.11">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.5 0.5 0.005"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    for _ in 0..500 {
+        data.step(&model).unwrap();
+    }
+
+    assert!(
+        data.qpos.iter().all(|x| x.is_finite()),
+        "Box diverged: qpos contains NaN/Inf"
+    );
+
+    // Box should have settled: very small velocities
+    let max_vel = data.qvel.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    assert!(
+        max_vel < 0.01,
+        "Box should have settled: max velocity = {max_vel:.4e}"
+    );
+
+    // Z position should be approximately the half-extent (resting on plane)
+    let z = data.qpos[2];
+    assert!(z > 0.08 && z < 0.12, "Box z should be ~0.1, got {z:.4}");
+
+    // Should have 4 contacts in steady state
+    assert_eq!(
+        data.ncon, 4,
+        "Settled box on plane should have 4 contacts, got {}",
+        data.ncon
+    );
+}
+
+/// Noslip with multi-contact box-plane produces finite, bounded slip.
+///
+/// Verifies noslip postprocessor convergence with 4 contacts on a tilted
+/// plane — the configuration that broke with the original quick fix.
+#[test]
+fn noslip_multi_contact_box_plane_converges() {
+    let mjcf = r#"
+        <mujoco model="noslip_multi">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"
+                    noslip_iterations="50" noslip_tolerance="1e-12"/>
+            <worldbody>
+                <body pos="0 0 0.11">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.3 0.3 0.005"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"
+                      euler="3 0 0" friction="0.3 0.3 0.005"/>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    for _ in 0..50 {
+        data.step(&model).unwrap();
+    }
+
+    let slip = (data.qvel[0].powi(2) + data.qvel[1].powi(2)).sqrt();
+
+    assert!(slip.is_finite(), "Noslip slip should be finite");
+    assert!(
+        slip < 0.5,
+        "Noslip multi-contact slip should be bounded, got {slip:.4e}"
+    );
+    assert!(
+        data.qpos.iter().all(|x| x.is_finite()),
+        "All positions should be finite"
+    );
+}
+
+// ============================================================================
+// Multi-contact capsule-plane tests (Phase 1b)
+// ============================================================================
+
+/// Horizontal capsule on plane → 2 contacts (both endpoints penetrate).
+///
+/// Configuration:
+/// - Plane at z=0 (horizontal)
+/// - Capsule radius=0.2, half_length=0.5, axis along X (euler="0 90 0")
+/// - Center at z=0.1 → both endpoint spheres at z=0.1
+/// - Both sphere surfaces at z = 0.1 - 0.2 = -0.1
+///
+/// Expected: 2 contacts, both with depth 0.1.
+#[test]
+fn capsule_plane_horizontal_2_contacts() {
+    let mjcf = r#"
+        <mujoco model="capsule_plane_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cap" pos="0 0 0.1" euler="0 90 0">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 2,
+        "Horizontal capsule on plane should produce 2 contacts, got {}",
+        data.ncon
+    );
+
+    // Both endpoints at same height → same depth
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..2].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+
+    // Contact positions should be separated by ~capsule length along X
+    let dx = (data.contacts[0].pos.x - data.contacts[1].pos.x).abs();
+    assert!(
+        dx > 0.8,
+        "Contacts should be separated along capsule axis, got dx={dx:.3}"
+    );
+}
+
+/// Upright capsule on plane → 1 contact (only bottom endpoint).
+///
+/// Verifies that a vertical capsule still produces exactly 1 contact
+/// (the top endpoint is far from the plane).
+#[test]
+fn capsule_plane_upright_1_contact() {
+    let mjcf = r#"
+        <mujoco model="capsule_plane_upright_1">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cap" pos="0 0 0.6">
+                    <geom type="capsule" size="0.2 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Bottom endpoint at z=0.1, top at z=1.1 — only bottom contacts
+    assert_eq!(
+        data.ncon, 1,
+        "Upright capsule should have exactly 1 contact, got {}",
+        data.ncon
+    );
+}
+
+// ============================================================================
+// Phase 1c: Cylinder-Plane Multi-Contact Tests
+// ============================================================================
+
+/// Horizontal cylinder on plane → 2 contacts (both cap rim points).
+///
+/// Configuration: radius=0.3, half_height=0.5, euler="0 90 0" (axis along X),
+/// center at z=0.25. Both cap rims at z = 0.25 - 0.3 = -0.05 (penetration = 0.05).
+/// Triangle points are above the plane (no extra contacts).
+#[test]
+fn cylinder_plane_horizontal_2_contacts() {
+    let mjcf = r#"
+        <mujoco model="cylinder_plane_horiz_2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cyl" pos="0 0 0.25" euler="0 90 0">
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 2,
+        "Horizontal cylinder should produce 2 contacts (both cap rims), got {}",
+        data.ncon
+    );
+
+    let expected_depth = 0.05;
+    for (i, c) in data.contacts[..2].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+
+    // Both contacts should share the same upward normal
+    for c in &data.contacts[..2] {
+        assert!(
+            c.normal.z > 0.99,
+            "Contact normal should point up, got {:?}",
+            c.normal
+        );
+    }
+}
+
+/// Upright cylinder on plane → 3 contacts (1 rim + 2 triangle support).
+///
+/// Configuration: radius=0.3, half_height=0.5, upright (axis along Z),
+/// center at z=0.4. Bottom cap at z = -0.1, penetration = 0.1.
+/// Rim point + 2 equilateral triangle points on the bottom disk, all at
+/// the same depth (disk is parallel to plane).
+#[test]
+fn cylinder_plane_upright_3_contacts() {
+    let mjcf = r#"
+        <mujoco model="cylinder_plane_upright_3">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cyl" pos="0 0 0.4">
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Upright: 1 near-cap rim + 2 triangle. Far cap is above plane (no contact).
+    assert_eq!(
+        data.ncon, 3,
+        "Upright cylinder should produce 3 contacts (rim + 2 triangle), got {}",
+        data.ncon
+    );
+
+    // All 3 points are on the bottom disk at z=-0.1, so same depth
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..3].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Tilted cylinder (45°) on plane → 1 contact (near-cap rim only).
+///
+/// At 45° tilt, only the deepest near-cap rim point contacts the plane.
+/// The far-cap rim and triangle points are too far above the plane.
+#[test]
+fn cylinder_plane_tilted_1_contact() {
+    let mjcf = r#"
+        <mujoco model="cylinder_plane_tilted_1">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cyl" pos="0 0 0.5" euler="45 0 0">
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // At 45° tilt, only the near-cap rim contacts
+    assert_eq!(
+        data.ncon, 1,
+        "45° tilted cylinder should produce 1 contact, got {}",
+        data.ncon
+    );
+
+    // Deepest rim at z ≈ 0.5 - 0.5*cos(45°) - 0.3*sin(45°) ≈ -0.066
+    let depth = data.contacts[0].depth;
+    assert!(
+        depth > 0.04 && depth < 0.10,
+        "Tilted cylinder depth should be ~0.066, got {depth}"
+    );
+}
+
+/// Slightly tilted cylinder (10°) on plane → 3 contacts (rim + 2 triangle).
+///
+/// At shallow tilt, the near-cap rim contacts AND the two equilateral
+/// triangle support points on the near-cap disk also contact. The far cap
+/// is too far above to contribute.
+#[test]
+fn cylinder_plane_slight_tilt_3_contacts() {
+    let mjcf = r#"
+        <mujoco model="cylinder_plane_tilt10_3">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="cyl" pos="0 0 0.4" euler="10 0 0">
+                    <geom type="cylinder" size="0.3 0.5"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // At 10° tilt: near rim + 2 triangle (near-cap disk still faces plane)
+    assert_eq!(
+        data.ncon, 3,
+        "10° tilted cylinder should produce 3 contacts, got {}",
+        data.ncon
+    );
+
+    // Depths should vary: rim is deepest, triangles are shallower
+    let depths: Vec<f64> = data.contacts[..3].iter().map(|c| c.depth).collect();
+    let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_depth = depths.iter().cloned().fold(f64::INFINITY, f64::min);
+
+    assert!(
+        max_depth > min_depth + 0.01,
+        "Depths should vary on tilted plane: max={max_depth:.4}, min={min_depth:.4}"
+    );
+}
+
+// ============================================================================
+// Phase 1d: Mesh-Plane Multi-Contact Tests
+// ============================================================================
+
+/// Box-shaped mesh on horizontal plane → 3 contacts (capped from 4 bottom vertices).
+///
+/// Configuration: 1×1×1 box mesh at z=0.4. Bottom face at z=-0.1 has 4 vertices,
+/// all penetrating with depth=0.1. Proximity filter (0.3 * rbound ≈ 0.26) passes
+/// all 4 since they're 1.0 apart. Capped at maxplanemesh=3.
+#[test]
+fn mesh_plane_box_3_contacts() {
+    let mjcf = r#"
+        <mujoco model="mesh_plane_box_3">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <asset>
+                <mesh name="box1"
+                    vertex="-.5 -.5 -.5  .5 -.5 -.5  .5 .5 -.5  -.5 .5 -.5
+                            -.5 -.5 .5   .5 -.5 .5   .5 .5 .5   -.5 .5 .5"
+                    face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4
+                          2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/>
+            </asset>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="mesh_box" pos="0 0 0.4">
+                    <geom type="mesh" mesh="box1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // 4 bottom vertices penetrate, capped at 3
+    assert_eq!(
+        data.ncon, 3,
+        "Box mesh on plane should produce 3 contacts (capped from 4 bottom vertices), got {}",
+        data.ncon
+    );
+
+    // All contacts on the bottom face at z=-0.1 → depth=0.1
+    let expected_depth = 0.1;
+    for (i, c) in data.contacts[..3].iter().enumerate() {
+        assert!(
+            (c.depth - expected_depth).abs() < DEPTH_TOL,
+            "Contact {i}: expected depth {expected_depth}, got {}",
+            c.depth
+        );
+    }
+}
+
+/// Box-shaped mesh separated from plane → 0 contacts.
+#[test]
+fn mesh_plane_box_separated() {
+    let mjcf = r#"
+        <mujoco model="mesh_plane_separated">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <asset>
+                <mesh name="box1"
+                    vertex="-.5 -.5 -.5  .5 -.5 -.5  .5 .5 -.5  -.5 .5 -.5
+                            -.5 -.5 .5   .5 -.5 .5   .5 .5 .5   -.5 .5 .5"
+                    face="0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4
+                          2 3 7  2 7 6  0 4 7  0 7 3  1 2 6  1 6 5"/>
+            </asset>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1"/>
+                <body name="mesh_box" pos="0 0 2.0">
+                    <geom type="mesh" mesh="box1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(
+        data.ncon, 0,
+        "Separated mesh should have no contacts, got {}",
+        data.ncon
+    );
+}
