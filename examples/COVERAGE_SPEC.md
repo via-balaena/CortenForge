@@ -10,10 +10,10 @@ Examples should mirror the distribution of code in the codebase. Every major
 feature should have at least one dedicated example. Examples also serve as
 integration tests — they find bugs that unit tests miss.
 
-## Current State (2026-03-26)
+## Current State (2026-03-27)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf → 29 examples (8 joint types, 9 sensors, 10 actuators, 2 legacy)
+- sim-core + sim-mjcf → 42 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 2 legacy)
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -58,10 +58,8 @@ integration tests — they find bugs that unit tests miss.
 - **Contact parameter override ✗**
 
 ### Solvers & Integration
-- Newton ✓ (default)
-- **PGS ✗, CG ✗** (zero examples)
-- Euler ✓ (default)
-- RK4 ✓ (used by all actuator examples), **Implicit ✗, ImplicitFast ✗, ImplicitSpringDamper ✗**
+- Newton ✓, PGS ✓, CG ✓ (comparison + comparison-visual + 3 standalones)
+- Euler ✓, RK4 ✓, Implicit ✓, ImplicitFast ✓, ImplicitSpringDamper ✓ (comparison + comparison-visual + 5 standalones)
 
 ### Constraint System
 - Contact ✓
@@ -105,8 +103,8 @@ fundamentals/
     sensors/                # DONE — 9 examples, 15+ sensor types, GJK bug fixed
     actuators/              # DONE — 10 examples: motor, servos, damper, filter, cylinder, integrator, gear, site, slider-crank
     muscles/                # TODO — Hill muscle model, activation dynamics
-    solvers/                # TODO — PGS vs CG vs Newton comparison
-    integrators/            # TODO — Euler vs RK4 vs Implicit
+    solvers/                # DONE — comparison + comparison-visual + 3 standalones
+    integrators/            # DONE — comparison + comparison-visual + 5 standalones
     equality-constraints/   # TODO — weld, connect, distance
     contact-tuning/         # TODO — friction, restitution, solref/solimp
     inverse-dynamics/       # TODO — compute required torques
