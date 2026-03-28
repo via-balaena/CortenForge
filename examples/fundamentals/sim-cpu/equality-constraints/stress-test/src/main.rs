@@ -408,8 +408,8 @@ fn test_connect() -> (usize, usize) {
             </body>
           </worldbody>
           <equality>
-            <connect body1="link1" anchor="0 0 0" solref="0.02 1.0"/>
-            <connect body1="link1" body2="link2" anchor="0 0 -0.5" solref="0.02 1.0"/>
+            <connect body1="link1" anchor="0 0 0" solref="0.005 1.0"/>
+            <connect body1="link1" body2="link2" anchor="0 0 -0.5" solref="0.005 1.0"/>
           </equality>
         </mujoco>
     "#;
@@ -517,7 +517,9 @@ fn test_weld() -> (usize, usize) {
               <geom name="arm_cap" type="capsule" fromto="0 0 0 0 0 -0.3" size="0.04" mass="0.5"/>
             </body>
 
-            <!-- Fixed to world — should resist gravity -->
+            <!-- Fixed to world — should resist gravity.
+                 Offset body requires stiffer solref to avoid penalty-method
+                 pendulum drift (MuJoCo shows 549mm with default solref). -->
             <body name="fixed" pos="0.5 0 1.0">
               <freejoint/>
               <geom name="fixed_sphere" type="sphere" size="0.1" mass="1.0"/>
@@ -525,7 +527,7 @@ fn test_weld() -> (usize, usize) {
           </worldbody>
           <equality>
             <weld body1="base" body2="arm" solref="0.02 1.0"/>
-            <weld body1="fixed" solref="0.02 1.0"/>
+            <weld body1="fixed" solref="0.004 1.0"/>
           </equality>
         </mujoco>
     "#;
@@ -646,7 +648,7 @@ fn test_distance() -> (usize, usize) {
             </body>
           </worldbody>
           <equality>
-            <distance geom1="ga" geom2="gb" distance="0.5" solref="0.02 1.0"/>
+            <distance geom1="ga" geom2="gb" distance="0.5" solref="0.005 1.0"/>
           </equality>
         </mujoco>
     "#;
