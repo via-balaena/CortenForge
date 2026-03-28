@@ -68,6 +68,9 @@ members = [
     "examples/fundamentals/sim-cpu/integrators/implicit-fast",
     "examples/fundamentals/sim-cpu/integrators/implicit-spring-damper",
 
+    # Examples — fundamentals / sim-cpu / equality-constraints
+    "examples/fundamentals/sim-cpu/equality-constraints/stress-test",
+
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
     "examples/fundamentals/sim-cpu/solvers/comparison-visual",

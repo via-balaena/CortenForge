@@ -2721,6 +2721,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-equality-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-finger-design"
 version = "0.7.0"
 dependencies = [
