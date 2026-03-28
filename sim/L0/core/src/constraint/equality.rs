@@ -5,11 +5,25 @@
 //! of the unified constraint arrays.
 //! Corresponds to equality machinery in MuJoCo's `engine_core_constraint.c` (§15).
 
-use nalgebra::{DMatrix, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, DVector, UnitQuaternion, Vector3};
 
 use crate::constraint::compute_point_velocity;
 use crate::constraint::impedance::quaternion_to_axis_angle;
 use crate::types::{Data, MjJointType, Model};
+
+/// Compute constraint velocity as J * qvel (matching MuJoCo's `mj_referenceConstraint`).
+///
+/// This guarantees consistency between the Jacobian and the velocity used in
+/// Baumgarte stabilization, unlike computing velocity from cvel which can diverge.
+fn compute_jqvel(j: &DMatrix<f64>, qvel: &DVector<f64>, nrows: usize, nv: usize) -> Vec<f64> {
+    let mut vel = vec![0.0; nrows];
+    for r in 0..nrows {
+        for c in 0..nv {
+            vel[r] += j[(r, c)] * qvel[c];
+        }
+    }
+    vel
+}
 
 // =============================================================================
 // Equality Constraint Jacobian Extraction (§15, Step 5)
@@ -31,7 +45,11 @@ pub struct EqualityConstraintRows {
 
 /// Extract connect constraint Jacobian (3 translational rows).
 ///
-/// Constraint: anchor_on_body1 = body2_origin (3D position match).
+/// MuJoCo convention: each body has its own anchor point. eq_data layout:
+///   [0..3] = anchor in body1's local frame (user-specified)
+///   [3..6] = anchor in body2's local frame (auto-computed at model build)
+///
+/// Constraint: body1_anchor_world = body2_anchor_world (3D position match).
 /// Jacobian structure: 3×nv with sparse columns at both bodies' DOFs.
 pub fn extract_connect_jacobian(
     model: &Model,
@@ -43,78 +61,8 @@ pub fn extract_connect_jacobian(
     let eq_data = &model.eq_data[eq_id];
     let nv = model.nv;
 
-    let anchor = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
-    let p1 = data.xpos[body1];
-    let r1 = data.xquat[body1];
-    let p2 = if body2 != 0 {
-        data.xpos[body2]
-    } else {
-        Vector3::zeros()
-    };
-
-    let anchor_world = p1 + r1 * anchor;
-    let pos_error = anchor_world - p2;
-
-    let mut j = DMatrix::zeros(3, nv);
-
-    // For each of the 3 Cartesian directions, build a row using the
-    // body-chain traversal pattern from compute_contact_jacobian.
-    for row in 0..3 {
-        let direction = Vector3::ith(row, 1.0);
-        // Body1 contributes positively (anchor moves with body1)
-        add_body_point_jacobian_row(
-            &mut j,
-            row,
-            &direction,
-            body1,
-            anchor_world,
-            1.0,
-            model,
-            data,
-        );
-        // Body2 contributes negatively (constraint wants p2 to match anchor)
-        add_body_point_jacobian_row(&mut j, row, &direction, body2, p2, -1.0, model, data);
-    }
-
-    // Velocity: relative velocity at constraint point
-    let v1 = if body1 != 0 {
-        let cvel1 = &data.cvel[body1];
-        let omega1 = Vector3::new(cvel1[0], cvel1[1], cvel1[2]);
-        let v_lin1 = Vector3::new(cvel1[3], cvel1[4], cvel1[5]);
-        let r1_anchor = r1 * anchor;
-        v_lin1 + omega1.cross(&r1_anchor)
-    } else {
-        Vector3::zeros()
-    };
-    let v2 = if body2 != 0 {
-        let cvel2 = &data.cvel[body2];
-        Vector3::new(cvel2[3], cvel2[4], cvel2[5])
-    } else {
-        Vector3::zeros()
-    };
-    let vel_error = v1 - v2;
-
-    EqualityConstraintRows {
-        j_rows: j,
-        pos: vec![pos_error.x, pos_error.y, pos_error.z],
-        vel: vec![vel_error.x, vel_error.y, vel_error.z],
-    }
-}
-
-/// Extract weld constraint Jacobian (6 rows: 3 translational + 3 rotational).
-///
-/// Constraint: anchor_on_body1 = body2_origin AND orientation match.
-pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> EqualityConstraintRows {
-    let body1 = model.eq_obj1id[eq_id];
-    let body2 = model.eq_obj2id[eq_id];
-    let eq_data = &model.eq_data[eq_id];
-    let nv = model.nv;
-
-    let anchor = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
-    let relpose_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-        eq_data[3], eq_data[4], eq_data[5], eq_data[6],
-    ));
-    let relpose_pos = Vector3::new(eq_data[7], eq_data[8], eq_data[9]);
+    let anchor1 = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
+    let anchor2 = Vector3::new(eq_data[3], eq_data[4], eq_data[5]);
 
     let p1 = data.xpos[body1];
     let r1 = data.xquat[body1];
@@ -124,14 +72,65 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
         (Vector3::zeros(), UnitQuaternion::identity())
     };
 
-    // Constraint reference point on body1 (includes anchor + relpose offset).
-    // MuJoCo convention: cpos = pos1 + R1*(anchor + relpose_pos)
-    // At qpos0 with auto-relpose, this equals pos2, so error = 0.
-    let offset = anchor + relpose_pos;
-    let cpos = p1 + r1 * offset;
+    // Each body's anchor in world frame
+    let pos1 = p1 + r1 * anchor1;
+    let pos2 = p2 + r2 * anchor2;
+    let pos_error = pos1 - pos2;
 
-    // Position error: cpos - pos2 (zero at reference configuration)
-    let pos_error = cpos - p2;
+    let mut j = DMatrix::zeros(3, nv);
+
+    for row in 0..3 {
+        let direction = Vector3::ith(row, 1.0);
+        // Body1 Jacobian at its anchor point
+        add_body_point_jacobian_row(&mut j, row, &direction, body1, pos1, 1.0, model, data);
+        // Body2 Jacobian at its anchor point
+        add_body_point_jacobian_row(&mut j, row, &direction, body2, pos2, -1.0, model, data);
+    }
+
+    // Velocity: J * qvel (consistent with Jacobian, matching MuJoCo)
+    let vel = compute_jqvel(&j, &data.qvel, 3, nv);
+
+    EqualityConstraintRows {
+        j_rows: j,
+        pos: vec![pos_error.x, pos_error.y, pos_error.z],
+        vel,
+    }
+}
+
+/// Extract weld constraint Jacobian (6 rows: 3 translational + 3 rotational).
+///
+/// MuJoCo convention: separate anchor points per body. eq_data layout:
+///   [0..3] = anchor in body2's local frame
+///   [3..6] = anchor in body1's local frame (auto-computed at model build)
+///   [6..10] = relpose quaternion [w,x,y,z] = neg(q1_ref) * q2_ref
+///
+/// Constraint: pos_body1 = pos_body2 AND orientation match.
+pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> EqualityConstraintRows {
+    let body1 = model.eq_obj1id[eq_id];
+    let body2 = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+    let nv = model.nv;
+
+    let anchor_body2 = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
+    let anchor_body1 = Vector3::new(eq_data[3], eq_data[4], eq_data[5]);
+    let relpose_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        eq_data[6], eq_data[7], eq_data[8], eq_data[9],
+    ));
+
+    let p1 = data.xpos[body1];
+    let r1 = data.xquat[body1];
+    let (p2, r2) = if body2 != 0 {
+        (data.xpos[body2], data.xquat[body2])
+    } else {
+        (Vector3::zeros(), UnitQuaternion::identity())
+    };
+
+    // Each body's anchor in world frame
+    let cpos1 = p1 + r1 * anchor_body1;
+    let cpos2 = p2 + r2 * anchor_body2;
+
+    // Position error (zero at reference configuration)
+    let pos_error = cpos1 - cpos2;
 
     // Orientation error (axis-angle), scaled by 0.5 (MuJoCo convention).
     //
@@ -144,13 +143,11 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
 
     let mut j = DMatrix::zeros(6, nv);
 
-    // Rows 0-2: translational Jacobian.
-    // body1 point = cpos (the constraint reference point including offset).
-    // body2 point = pos2 (body origin).
+    // Rows 0-2: translational Jacobian at each body's anchor point.
     for row in 0..3 {
         let direction = Vector3::ith(row, 1.0);
-        add_body_point_jacobian_row(&mut j, row, &direction, body1, cpos, 1.0, model, data);
-        add_body_point_jacobian_row(&mut j, row, &direction, body2, p2, -1.0, model, data);
+        add_body_point_jacobian_row(&mut j, row, &direction, body1, cpos1, 1.0, model, data);
+        add_body_point_jacobian_row(&mut j, row, &direction, body2, cpos2, -1.0, model, data);
     }
 
     // Rows 3-5: rotational Jacobian, scaled by 0.5 (MuJoCo convention).
@@ -160,25 +157,8 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
         add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body2, -0.5, model, data);
     }
 
-    // Velocities (also scaled by 0.5 for rotation)
-    let (vel_error, ang_vel_error) = if body1 != 0 {
-        let cvel1 = &data.cvel[body1];
-        let omega1 = Vector3::new(cvel1[0], cvel1[1], cvel1[2]);
-        let v1 = Vector3::new(cvel1[3], cvel1[4], cvel1[5]);
-        let r1_offset = r1 * offset;
-        let v_cpos = v1 + omega1.cross(&r1_offset);
-
-        if body2 != 0 {
-            let cvel2 = &data.cvel[body2];
-            let omega2 = Vector3::new(cvel2[0], cvel2[1], cvel2[2]);
-            let v2 = Vector3::new(cvel2[3], cvel2[4], cvel2[5]);
-            (v_cpos - v2, (omega1 - omega2) * 0.5)
-        } else {
-            (v_cpos, omega1 * 0.5)
-        }
-    } else {
-        (Vector3::zeros(), Vector3::zeros())
-    };
+    // Velocity: J * qvel (consistent with Jacobian, matching MuJoCo)
+    let vel = compute_jqvel(&j, &data.qvel, 6, nv);
 
     EqualityConstraintRows {
         j_rows: j,
@@ -190,14 +170,7 @@ pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> Equali
             rot_error.y,
             rot_error.z,
         ],
-        vel: vec![
-            vel_error.x,
-            vel_error.y,
-            vel_error.z,
-            ang_vel_error.x,
-            ang_vel_error.y,
-            ang_vel_error.z,
-        ],
+        vel,
     }
 }
 
@@ -471,23 +444,24 @@ pub fn add_body_point_jacobian_row(
                     }
                 }
                 MjJointType::Free => {
-                    // Linear DOFs
+                    // Linear DOFs (world frame)
                     j[(row, dof_adr)] += sign * direction.x;
                     j[(row, dof_adr + 1)] += sign * direction.y;
                     j[(row, dof_adr + 2)] += sign * direction.z;
-                    // Angular DOFs
+                    // Angular DOFs (body-local frame): use body rotation columns R·eᵢ,
+                    // matching the Ball joint pattern and contact Jacobian (DT-75).
+                    // Free joint qvel[3..6] is body-local angular velocity.
                     let jpos = Vector3::new(
                         data.qpos[model.jnt_qpos_adr[jnt_id]],
                         data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
                         data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
                     );
                     let r = point - jpos;
-                    let ex = Vector3::x();
-                    let ey = Vector3::y();
-                    let ez = Vector3::z();
-                    j[(row, dof_adr + 3)] += sign * direction.dot(&ex.cross(&r));
-                    j[(row, dof_adr + 4)] += sign * direction.dot(&ey.cross(&r));
-                    j[(row, dof_adr + 5)] += sign * direction.dot(&ez.cross(&r));
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        let body_axis = rot * Vector3::ith(i, 1.0);
+                        j[(row, dof_adr + 3 + i)] += sign * direction.dot(&body_axis.cross(&r));
+                    }
                 }
             }
         }
@@ -536,10 +510,13 @@ pub fn add_body_angular_jacobian_row(
                     }
                 }
                 MjJointType::Free => {
-                    // Angular DOFs (indices 3-5)
-                    j[(row, dof_adr + 3)] += sign * direction.x;
-                    j[(row, dof_adr + 4)] += sign * direction.y;
-                    j[(row, dof_adr + 5)] += sign * direction.z;
+                    // Angular DOFs (body-local frame): use body rotation columns R·eᵢ,
+                    // matching the Ball joint pattern and contact Jacobian (DT-75).
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        let body_axis = rot * Vector3::ith(i, 1.0);
+                        j[(row, dof_adr + 3 + i)] += sign * direction.dot(&body_axis);
+                    }
                 }
             }
         }

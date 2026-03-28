@@ -100,9 +100,12 @@ fn test_connect_constraint_maintains_attachment() {
 }
 
 /// Test: Connect constraint to world (fixed point in space).
+///
+/// MuJoCo semantics: the constraint locks body1's anchor at its qpos0 world
+/// position. With anchor at body origin and body at (0,0,1), the constraint
+/// keeps the body near (0,0,1) — not at world origin (0,0,0).
 #[test]
 fn test_connect_constraint_to_world() {
-    // Single body connected to world origin
     let mjcf = r#"
         <mujoco model="connect_world">
             <option gravity="0 0 -9.81" timestep="0.001"/>
@@ -120,27 +123,28 @@ fn test_connect_constraint_to_world() {
 
     let model = load_model(mjcf).expect("should load");
     let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let initial_pos = data.xpos[1];
 
-    // Step simulation - body should swing like a pendulum
     for _ in 0..2000 {
         data.step(&model).expect("step failed");
     }
 
-    // The body origin should stay near world origin (0,0,0)
-    // Initial position was (0, 0, 1), but constraint anchor is at body origin
-    let body_origin = data.xpos[1];
-    let distance_from_origin = body_origin.norm();
-
+    // Body should stay near its initial position (0, 0, 1) under constraint + gravity
+    let displacement = (data.xpos[1] - initial_pos).norm();
     assert!(
-        distance_from_origin < 0.1,
-        "Body should stay near world origin, got distance {distance_from_origin}"
+        displacement < 0.01,
+        "Body should stay near initial pos (0,0,1), got displacement {displacement}"
     );
 }
 
 /// Test: Connect constraint with offset anchor.
+///
+/// MuJoCo semantics: the constraint locks body1's anchor at its qpos0 world
+/// position. Body at (1,0,0), anchor at (-0.2,0,0) in body frame → anchor
+/// world = (0.8,0,0). Constraint keeps anchor at (0.8,0,0), not at origin.
 #[test]
 fn test_connect_constraint_offset_anchor() {
-    // Body with anchor at a specific offset
     let mjcf = r#"
         <mujoco model="connect_offset">
             <option gravity="0 0 0" timestep="0.001"/>
@@ -158,22 +162,25 @@ fn test_connect_constraint_offset_anchor() {
 
     let model = load_model(mjcf).expect("should load");
     let mut data = model.make_data();
+    data.forward(&model).expect("forward");
 
-    // The anchor at (-0.2, 0, 0) in body frame should be at world origin
-    // Body position is (1, 0, 0), so anchor world = (1, 0, 0) + (-0.2, 0, 0) = (0.8, 0, 0)
-    // Constraint will pull anchor toward (0, 0, 0)
+    // Anchor at qpos0: body(1,0,0) + (-0.2,0,0) = (0.8,0,0)
+    let initial_anchor = data.xpos[1] + data.xquat[1] * nalgebra::Vector3::new(-0.2, 0.0, 0.0);
+
+    // Give a velocity kick to test constraint enforcement
+    data.qvel[0] = 1.0;
 
     for _ in 0..5000 {
         data.step(&model).expect("step failed");
     }
 
-    // After settling, anchor point should be near world origin
+    // After settling, anchor should return to its initial position (0.8, 0, 0)
     let anchor_world = data.xpos[1] + data.xquat[1] * nalgebra::Vector3::new(-0.2, 0.0, 0.0);
-    let distance = anchor_world.norm();
+    let distance = (anchor_world - initial_anchor).norm();
 
     assert!(
         distance < 0.05,
-        "Anchor should settle at world origin, got distance {distance}"
+        "Anchor should settle at initial position (0.8,0,0), got deviation {distance}"
     );
 }
 
@@ -427,18 +434,22 @@ fn test_joint_equality_lock() {
 
 /// Test: Multiple connect constraints (closed kinematic chain).
 ///
-/// Four bodies forming a parallelogram with connect constraints.
+/// Two bodies constrained: b1 to world, b2 to b1 (no gravity).
+///
+/// MuJoCo semantics: constraints lock bodies at their qpos0 positions.
+/// A velocity kick tests constraint enforcement without gravity-induced
+/// angular coupling from the lever arm.
 #[test]
 fn test_multiple_connect_constraints() {
     let mjcf = r#"
         <mujoco model="multi_connect">
-            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="b1" pos="0 0 1">
                     <freejoint/>
                     <geom type="sphere" size="0.05" mass="0.5"/>
                 </body>
-                <body name="b2" pos="1 0 1">
+                <body name="b2" pos="0.3 0 1">
                     <freejoint/>
                     <geom type="sphere" size="0.05" mass="0.5"/>
                 </body>
@@ -452,22 +463,34 @@ fn test_multiple_connect_constraints() {
 
     let model = load_model(mjcf).expect("should load");
     let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+    let init_b1 = data.xpos[1];
+    let init_b2 = data.xpos[2];
 
-    // Verify multiple constraints loaded
     assert_eq!(model.neq, 2);
 
-    // Step simulation
+    // Velocity kick to test constraint
+    data.qvel[0] = 1.0;
+
     for _ in 0..1000 {
         data.step(&model).expect("step failed");
     }
 
-    // b1 should be near world origin
-    let b1_dist = data.xpos[1].norm();
-    assert!(b1_dist < 0.1, "b1 should be near origin, got {b1_dist}");
+    // b1 should stay near its initial position
+    let b1_disp = (data.xpos[1] - init_b1).norm();
+    assert!(
+        b1_disp < 0.01,
+        "b1 should stay near initial pos, got displacement {b1_disp}"
+    );
 
-    // b2 should be near b1
-    let b2_to_b1 = (data.xpos[2] - data.xpos[1]).norm();
-    assert!(b2_to_b1 < 0.1, "b2 should be near b1, got {b2_to_b1}");
+    // b2 should maintain its offset relative to b1
+    let init_offset = init_b2 - init_b1;
+    let curr_offset = data.xpos[2] - data.xpos[1];
+    let offset_err = (curr_offset - init_offset).norm();
+    assert!(
+        offset_err < 0.05,
+        "b2-b1 offset should be maintained, got error {offset_err}"
+    );
 }
 
 // ============================================================================
@@ -640,9 +663,12 @@ fn test_solimp_affects_constraint_strength() {
         data_weak.step(&model_weak).expect("step failed");
     }
 
-    // Measure constraint violation (distance from world origin)
-    let violation_strong = data_strong.xpos[1].norm();
-    let violation_weak = data_weak.xpos[1].norm();
+    // Measure constraint violation (displacement from initial position).
+    // With MuJoCo semantics, the constraint locks the body at qpos0.
+    // Gravity causes sag; stronger impedance means less sag.
+    let init_pos = nalgebra::Vector3::new(0.0, 0.0, 1.0);
+    let violation_strong = (data_strong.xpos[1] - init_pos).norm();
+    let violation_weak = (data_weak.xpos[1] - init_pos).norm();
 
     // 1. Ordering: weak impedance must allow strictly more violation
     assert!(
@@ -701,7 +727,9 @@ fn test_solimp_default_values_loaded() {
         data.step(&model).expect("step failed");
     }
 
-    let violation = data.xpos[1].norm();
+    // Constraint keeps body near initial pos (0,0,1); violation = sag from gravity.
+    let init_pos = nalgebra::Vector3::new(0.0, 0.0, 1.0);
+    let violation = (data.xpos[1] - init_pos).norm();
     assert!(
         violation < 0.1,
         "Default solimp should still enforce constraint, violation={violation}"
@@ -792,9 +820,9 @@ fn test_weld_constraint_with_relpose() {
     let mut data = model.make_data();
 
     // Verify relpose was loaded (quaternion w=0.707, x=0, y=0.707, z=0 ≈ 90° about Y)
-    // Note: relpose in eq_data is stored as [anchor.x, anchor.y, anchor.z, qw, qx, qy, qz, ...]
-    assert_relative_eq!(model.eq_data[0][3], 0.707, epsilon = 0.01);
-    assert_relative_eq!(model.eq_data[0][5], 0.707, epsilon = 0.01);
+    // New eq_data layout: [0..3]=anchor_body2, [3..6]=anchor_body1, [6..10]=relpose_quat
+    assert_relative_eq!(model.eq_data[0][6], 0.707, epsilon = 0.01); // qw
+    assert_relative_eq!(model.eq_data[0][8], 0.707, epsilon = 0.01); // qy
 
     // Debug: print initial state and constraint forces
     eprintln!("=== Initial state ===");

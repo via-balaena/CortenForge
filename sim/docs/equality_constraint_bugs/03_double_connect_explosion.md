@@ -1,6 +1,6 @@
 # Bug 3: Double Connect Chain Explosion
 
-**Status:** Investigating — likely compounds Bug 2
+**Status:** Root cause confirmed — cascades from Bug 2
 **Severity:** High — system explodes (6M rad/s angular velocity)
 
 ## Symptom
@@ -30,34 +30,75 @@ Result after 5s:
   max angular velocity: 6,444,832 rad/s (explosion)
 ```
 
-## Relationship to Other Bugs
+## Root Cause: Bug 2 Amplified by Gravity
 
-This is likely Bug 2 (body-to-body offset) compounded by gravity and
-a second constraint:
+This is **Bug 2** (free joint angular Jacobian uses world-frame axes
+instead of body rotation columns) combined with gravity:
 
-1. Connect-to-world (rows 0-2) holds body1's origin at (0,0,0)
-2. Connect body-to-body (rows 3-5) tries to hold body1's anchor at
-   body2's origin
-3. Bug 2 causes the body-to-body constraint to have steady-state error
-4. Gravity accelerates body2 downward
-5. The error compounds: body2 drifts, pulling body1 via the first
-   constraint, creating a cascade
+### Cascade Mechanism
 
-If Bug 2 is fixed (body-to-body connect achieves zero error), this
-bug may resolve automatically. However, the explosion suggests
-additional instability — possibly the angular coupling creating
-positive feedback (similar to Bug 1).
+1. **Angular kick** starts body1 rotating. Body1's orientation deviates
+   from identity.
 
-## What Needs Investigation
+2. **Bug 2 activates:** The body-to-body connect Jacobian (rows 3-5)
+   uses wrong angular DOF entries. Constraint forces on body1 project
+   incorrectly onto angular DOFs.
 
-1. **Fix Bug 2 first**, then re-test this scenario.
-2. If still unstable, investigate whether the two connect constraints
-   (6 rows total) create a coupled system that is inherently stiff
-   for the penalty method.
-3. Check if explicit integration of the penalty forces requires smaller
-   timestep for multi-constraint chains (CFL-like stability condition).
+3. **Pivot 2 drifts:** The body-to-body constraint fails to maintain
+   zero error. Body2's anchor drifts away from link2's origin.
+
+4. **Gravity accelerates body2:** With pivot 2 broken, body2 falls
+   freely under gravity. The constraint tries to correct but applies
+   force in wrong angular directions (Bug 2).
+
+5. **Error compounds:** Body2's downward acceleration increases the
+   constraint violation. The incorrect constraint force creates more
+   rotation on body1, which makes the Jacobian even more wrong.
+
+6. **Positive feedback → explosion:** The constraint force magnitude
+   grows exponentially. With penalty-based constraints, there's no
+   hard limit on force — larger error → larger force → larger wrong
+   torque → more rotation → larger error.
+
+### Why Single Constraints Don't Explode
+
+- **Connect-to-world with anchor at origin** (pivot 1): anchor = (0,0,0),
+  so `r = 0` for body1. No angular coupling in Jacobian. The body-frame
+  vs world-frame distinction is irrelevant.
+
+- **Connect body-to-body in zero gravity** (Bug 2 test): No gravity means
+  no sustained external force. The system settles at a wrong equilibrium
+  (55mm offset) but doesn't explode. Energy is finite and gets dissipated.
+
+- **Double connect with gravity** (this bug): Gravity provides continuous
+  energy input through body2. The wrong Jacobian prevents the constraint
+  from correctly opposing gravity's effect, and the error grows without
+  bound.
+
+## Fix Spec
+
+**No independent fix needed.** Bug 3 is entirely caused by Bug 2's
+free joint angular Jacobian error. Fixing Bug 2 (body rotation columns
+in `add_body_point_jacobian_row`) resolves this bug automatically.
+
+See Bug 2 fix spec for the exact code change.
+
+## Verification
+
+After Bug 2's fix is applied:
+- Test 1 (double connect pendulum) should show:
+  - Pivot 1 error < 10mm (connect-to-world holds body1 at origin)
+  - Pivot 2 error < 10mm (body-to-body tracks link2)
+  - Angular velocity stays bounded (no explosion)
+  - Energy bounded (< 5% growth from initial)
+- The double pendulum should swing naturally under gravity
+
+If pivot errors exceed 10mm after Bug 2 fix, investigate:
+1. Whether the supplementary body2 anchor fix (from Bug 2) is needed
+2. Whether the solref/solimp parameters need tuning for chain stability
+3. Whether there's a CFL-like timestep condition for multi-constraint chains
 
 ## Files
 
-Same as Bug 2 — this is the same code path but with two constraints
-instead of one.
+Same as Bug 2:
+- `sim/L0/core/src/constraint/equality.rs:473-491` — THE BUG (Free joint angular Jacobian)
