@@ -10,10 +10,10 @@ Examples should mirror the distribution of code in the codebase. Every major
 feature should have at least one dedicated example. Examples also serve as
 integration tests — they find bugs that unit tests miss.
 
-## Current State (2026-03-27)
+## Current State (2026-03-28)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf → 42 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 2 legacy)
+- sim-core + sim-mjcf → 57 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 2 legacy)
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -51,11 +51,13 @@ integration tests — they find bugs that unit tests miss.
 ### Collision (partially covered)
 - SDF-plane ✓, SDF-SDF ✓, analytical convex ✓
 - Convex-convex (GJK/EPA) ✓ (geom-distance sensor example — also fixed a GJK bug)
+- Friction tuning ✓ (friction-slide, condim-compare — 2 examples)
+- Solref/solimp (bounce) ✓ (solref-bounce — 1 example)
+- Contact parameter override ✓ (pair-override — 1 example)
+- Solimp impedance curve ✓ (solimp-depth — 1 example)
+- Margin/gap activation ✓ (margin-gap — 1 example)
 - **Mesh-mesh ✗, mesh-plane ✗**
 - **Height field ✗**
-- **Friction tuning ✗** (06-slide is stub)
-- **Restitution ✗** (05-drop is stub)
-- **Contact parameter override ✗**
 
 ### Solvers & Integration
 - Newton ✓, PGS ✓, CG ✓ (comparison + comparison-visual + 3 per-solver)
@@ -63,7 +65,7 @@ integration tests — they find bugs that unit tests miss.
 
 ### Constraint System
 - Contact ✓
-- **Equality (weld, connect, distance) ✗**
+- Equality (weld, connect, distance, joint coupling) ✓ (8 examples)
 - **Joint limits (dedicated demo) ✗**
 - **Friction loss ✗**
 - **Tendon limits ✗**
@@ -105,8 +107,8 @@ fundamentals/
     muscles/                # TODO — Hill muscle model, activation dynamics
     solvers/                # DONE — comparison + comparison-visual + 3 per-solver
     integrators/            # DONE — comparison + comparison-visual + 5 per-integrator
-    equality-constraints/   # TODO — weld, connect, distance
-    contact-tuning/         # TODO — friction, restitution, solref/solimp
+    equality-constraints/   # DONE — weld, connect, distance, joint coupling (8 examples)
+    contact-tuning/         # DONE — friction, condim, solref, solimp, margin/gap, pair override (7 examples)
     inverse-dynamics/       # TODO — compute required torques
     energy-momentum/        # TODO — conservation tracking
     urdf-loading/           # TODO — load URDF, compare with MJCF
