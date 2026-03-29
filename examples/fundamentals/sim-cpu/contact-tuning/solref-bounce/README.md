@@ -1,51 +1,50 @@
 # Solref Bounce — Contact Stiffness via Solver Reference
 
-**Three spheres dropped from 0.5m with different contact stiffness/damping.**
+**Three spheres dropped from 0.5m with the same stiffness but different damping.**
 
-See also: [friction-slide](../friction-slide/) | [pair-override](../pair-override/)
+See also: [friction-slide](../friction-slide/) | [solimp-depth](../solimp-depth/)
 
 ## What you see
 
-- Red sphere (stiff) bounces multiple times — high stiffness, low damping
-- Green sphere (default) barely bounces — critically damped
-- Blue sphere (soft) doesn't bounce at all — overdamped, absorbs energy
+- Red sphere (B=10) bounces many times — very underdamped
+- Green sphere (B=30) bounces once or twice — slightly underdamped
+- Blue sphere (B=500) stops dead on impact — very overdamped
 
 ## Physics
 
 In MuJoCo's constraint-based contact, there is no restitution coefficient.
-Bounce behaviour comes entirely from the contact impedance parameters:
+Bounce behaviour comes entirely from the contact impedance parameters.
 
-**solref** controls stiffness (K) and damping (B):
+All three balls use direct-mode `solref=[-K, -B]` with the same stiffness
+K=5000 but different damping B. This isolates the damping effect:
 
-| Mode | Format | K | B |
-|------|--------|---|---|
-| Standard | `[timeconst, dampratio]` | `1/(dmax^2 * tc^2 * dr^2)` | `2/(dmax * tc)` |
-| Direct | `[-K, -B]` | `-solref[0]/dmax^2` | `-solref[1]/dmax` |
+- Low B relative to critical → underdamped → oscillates (bounces)
+- B near critical → slight bounce, settles quickly
+- High B → overdamped → no oscillation, stops immediately
 
-When K is high and B is low relative to critical damping, the contact
-is underdamped — it oscillates (bounces). When B is at critical damping
-or above, the contact absorbs energy monotonically.
-
-All three balls use `condim=1` (frictionless) to isolate the bounce effect.
+All three use `condim=1` (frictionless) to isolate the bounce effect.
 
 ## Parameters
+
+| Parameter | Bouncy (red) | Moderate (green) | Absorbing (blue) |
+|-----------|-------------|-----------------|-----------------|
+| solref | [-5000, -10] | [-5000, -30] | [-5000, -500] |
+| Stiffness K | 5000 | 5000 | 5000 |
+| Damping B | 10 | 30 | 500 |
 
 | Parameter | Value |
 |-----------|-------|
 | Drop height | 0.5 m (center at 0.55m, radius 0.05m) |
 | Sphere mass | 0.5 kg |
-| Timestep | 0.5 ms (finer for bounce accuracy) |
-| Stiff solref | [-5000, -10] (direct mode, underdamped) |
-| Default solref | [0.02, 1.0] (standard, critically damped) |
-| Soft solref | [0.2, 2.0] (standard, overdamped) |
+| Timestep | 0.5 ms |
 
 ## Validation
 
 | Check | Expected | Threshold |
 |-------|----------|-----------|
-| Stiff bounces high | max z > 0.15m after first contact | PASS |
-| Stiff > default | stiff bounce height > default | PASS |
-| Default doesn't bounce | max z < 0.12m after contact | PASS |
+| Bouncy bounces high | max z > 0.15m after contact | PASS |
+| Bouncy > moderate | bouncy bounce height > moderate | PASS |
+| Moderate < bouncy | moderate bounce height < bouncy | PASS |
 
 ## Run
 
