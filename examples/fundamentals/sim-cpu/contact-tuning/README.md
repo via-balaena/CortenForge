@@ -46,8 +46,22 @@ Controls contact stiffness and damping. Two modes:
 - Larger `timeconst` = softer contact
 
 **Direct mode** (`solref[0] <= 0`): `[-stiffness, -damping]`
-- High K, low B = underdamped = bouncy
+- Same K, different B isolates the damping effect on bounce
 - There is no restitution coefficient — bounce comes entirely from impedance.
+
+### Solver Impedance (solimp)
+
+Controls how contact stiffness varies with penetration depth:
+`[d0, d_width, width, midpoint, power]`
+
+- `d0` = impedance at zero penetration (low = soft start like foam)
+- `d_width` = impedance at full width (endpoint)
+- `width` = transition zone in meters
+
+### Margin / Gap
+
+`margin` creates a buffer zone — contact activates before physical
+penetration. `gap` subtracts from margin: `includemargin = margin - gap`.
 
 ### Pair Overrides
 
