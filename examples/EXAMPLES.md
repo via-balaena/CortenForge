@@ -86,6 +86,31 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `solvers/cg` | `example-solver-cg` | Working | Conjugate Gradient, ~31 iter |
 | `solvers/newton` | `example-solver-newton` | Working | Full Newton, ~0 iter |
 
+### Equality Constraints
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `equality-constraints/connect-to-world` | `example-equality-connect-to-world` | Working | Ball-and-socket pendulum |
+| `equality-constraints/connect-body-to-body` | `example-equality-connect-body-to-body` | Working | Double pendulum via constraints |
+| `equality-constraints/weld-to-world` | `example-equality-weld-to-world` | Working | Body frozen in space |
+| `equality-constraints/weld-body-to-body` | `example-equality-weld-body-to-body` | Working | Two bodies rigidly glued |
+| `equality-constraints/distance` | `example-equality-distance` | Working | Rigid rod between spheres |
+| `equality-constraints/joint-mimic` | `example-equality-joint-mimic` | Working | 1:1 joint coupling |
+| `equality-constraints/joint-gear` | `example-equality-joint-gear` | Working | 2:1 gear ratio |
+| `equality-constraints/stress-test` | `example-equality-stress-test` | Working | Headless validation |
+
+### Contact Tuning
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `contact-tuning/friction-slide` | `example-contact-friction-slide` | Working | Friction coefficient on tilted plane |
+| `contact-tuning/condim-compare` | `example-contact-condim-compare` | Working | condim=1 vs 3 vs 6 comparison |
+| `contact-tuning/solref-bounce` | `example-contact-solref-bounce` | Working | Contact stiffness and bounce |
+| `contact-tuning/pair-override` | `example-contact-pair-override` | Working | Explicit `<pair>` override demo |
+| `contact-tuning/solimp-depth` | `example-contact-solimp-depth` | Working | Impedance curve and penetration depth |
+| `contact-tuning/margin-gap` | `example-contact-margin-gap` | Working | Contact activation distance |
+| `contact-tuning/stress-test` | `example-contact-stress-test` | Working | Headless parameter sweep (26 checks) |
+
 ### Other
 
 | Example | Package | Status | Notes |

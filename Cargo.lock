@@ -2694,6 +2694,81 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-contact-condim-compare"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-contact-friction-slide"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-contact-margin-gap"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-contact-pair-override"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-contact-solimp-depth"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-contact-solref-bounce"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-contact-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-design-to-print"
 version = "0.7.0"
 dependencies = [

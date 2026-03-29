@@ -78,6 +78,15 @@ members = [
     "examples/fundamentals/sim-cpu/equality-constraints/joint-gear",
     "examples/fundamentals/sim-cpu/equality-constraints/stress-test",
 
+    # Examples — fundamentals / sim-cpu / contact-tuning
+    "examples/fundamentals/sim-cpu/contact-tuning/friction-slide",
+    "examples/fundamentals/sim-cpu/contact-tuning/condim-compare",
+    "examples/fundamentals/sim-cpu/contact-tuning/solref-bounce",
+    "examples/fundamentals/sim-cpu/contact-tuning/pair-override",
+    "examples/fundamentals/sim-cpu/contact-tuning/solimp-depth",
+    "examples/fundamentals/sim-cpu/contact-tuning/margin-gap",
+    "examples/fundamentals/sim-cpu/contact-tuning/stress-test",
+
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
     "examples/fundamentals/sim-cpu/solvers/comparison-visual",

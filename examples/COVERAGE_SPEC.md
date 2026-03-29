@@ -10,10 +10,10 @@ Examples should mirror the distribution of code in the codebase. Every major
 feature should have at least one dedicated example. Examples also serve as
 integration tests — they find bugs that unit tests miss.
 
-## Current State (2026-03-27)
+## Current State (2026-03-28)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf → 42 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 2 legacy)
+- sim-core + sim-mjcf → 57 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 2 legacy)
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -51,11 +51,13 @@ integration tests — they find bugs that unit tests miss.
 ### Collision (partially covered)
 - SDF-plane ✓, SDF-SDF ✓, analytical convex ✓
 - Convex-convex (GJK/EPA) ✓ (geom-distance sensor example — also fixed a GJK bug)
+- Friction tuning ✓ (friction-slide, condim-compare — 2 examples)
+- Solref/solimp (bounce) ✓ (solref-bounce — 1 example)
+- Contact parameter override ✓ (pair-override — 1 example)
+- Solimp impedance curve ✓ (solimp-depth — 1 example)
+- Margin/gap activation ✓ (margin-gap — 1 example)
 - **Mesh-mesh ✗, mesh-plane ✗**
 - **Height field ✗**
-- **Friction tuning ✗** (06-slide is stub)
-- **Restitution ✗** (05-drop is stub)
-- **Contact parameter override ✗**
 
 ### Solvers & Integration
 - Newton ✓, PGS ✓, CG ✓ (comparison + comparison-visual + 3 per-solver)
@@ -63,7 +65,7 @@ integration tests — they find bugs that unit tests miss.
 
 ### Constraint System
 - Contact ✓
-- **Equality (weld, connect, distance) ✗**
+- Equality (weld, connect, distance, joint coupling) ✓ (8 examples)
 - **Joint limits (dedicated demo) ✗**
 - **Friction loss ✗**
 - **Tendon limits ✗**
@@ -105,8 +107,8 @@ fundamentals/
     muscles/                # TODO — Hill muscle model, activation dynamics
     solvers/                # DONE — comparison + comparison-visual + 3 per-solver
     integrators/            # DONE — comparison + comparison-visual + 5 per-integrator
-    equality-constraints/   # TODO — weld, connect, distance
-    contact-tuning/         # TODO — friction, restitution, solref/solimp
+    equality-constraints/   # DONE — weld, connect, distance, joint coupling (8 examples)
+    contact-tuning/         # DONE — friction, condim, solref, solimp, margin/gap, pair override (7 examples)
     inverse-dynamics/       # TODO — compute required torques
     energy-momentum/        # TODO — conservation tracking
     urdf-loading/           # TODO — load URDF, compare with MJCF
@@ -336,34 +338,23 @@ force extraction (`efc_force`). Shows the difference between removing 6 DOF
   distance over 5 seconds.
 - Constraint forces (`efc_force`) are non-zero when constraints are active.
 
-##### 9. `contact-tuning/` — Friction, Restitution, and Solver Parameters
+##### 9. `contact-tuning/` — Contact Parameter Tuning (7 examples)
 
-A series of balls dropped onto a tilted plane to demonstrate contact parameter
-tuning. Row 1: three balls with different friction coefficients (μ=0.1, 0.5, 1.0)
-— low friction slides, high friction sticks. Row 2: three balls with different
-`solref` (stiff vs soft contact) — stiff bounces sharply, soft sinks slightly.
-Row 3: three balls with different `condim` (1=frictionless, 3=2D friction,
-6=full friction+rolling) — frictionless slides off, rolling friction stops
-quickly.
+One example per concept, each isolating a single contact parameter:
 
-**Concepts covered:** `<pair>` contact overrides, five-element friction
-(`friction="sliding torsional rolling"`), `condim` (1/3/4/6), `solref`
-(timeconst + dampratio → contact stiffness/damping), `solimp` (impedance curve),
-`margin` and `gap`. Shows the three-level parameter hierarchy: explicit pair →
-geom combination → geom defaults.
-
-**MJCF sketch:** Tilted ground plane (15°). 9 spheres in a 3×3 grid.
-`<contact>` section with explicit `<pair>` overrides for each sphere-plane
-interaction. Different friction, solref, condim per row.
-
-**Pass/fail:**
-- Low friction (μ=0.1): ball slides down plane, velocity increasing.
-- High friction (μ=1.0): ball remains stationary on 15° slope (friction force
-  > gravity component: μ > tan(15°) ≈ 0.27).
-- Frictionless (condim=1): ball accelerates down slope at `g·sin(θ)` ± 5%.
-- Stiff solref: bounce height > 50% of drop height.
-- Soft solref: bounce height < 10% of drop height (energy absorbed).
-- Rolling friction: ball stops rotating faster than sliding-only friction.
+1. **friction-slide** — Boxes on 15° tilted plane with μ=0.1, 0.5, 1.0.
+   Low friction slides (μ < tan(15°)), high friction holds.
+2. **condim-compare** — Spheres with condim=1 (frictionless), 3 (rolling),
+   6 (rolling resistance) on tilted plane.
+3. **solref-bounce** — Spheres dropped from 0.5m with same K=5000, different
+   damping B=10/30/500 (bouncy/moderate/absorbing).
+4. **pair-override** — Two identical boxes, one with `<pair>` friction
+   override. Demonstrates override replaces auto-combined values.
+5. **solimp-depth** — Heavy balls with different impedance curves (d0=0.9
+   vs d0=0.1). Low d0 sinks ~19mm (foam), high d0 barely penetrates (steel).
+6. **margin-gap** — Balls with margin=0/0.02/0.05. Larger margin = ball
+   floats higher above the surface.
+7. **stress-test** — Headless validation of all parameters (26 checks).
 
 ##### 10. `inverse-dynamics/` — Compute Required Torques
 
