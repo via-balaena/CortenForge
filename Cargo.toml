@@ -105,6 +105,7 @@ members = [
     "examples/fundamentals/sim-cpu/muscles/stress-test",
     "examples/fundamentals/sim-cpu/muscles/forearm-flexion",
     "examples/fundamentals/sim-cpu/muscles/activation",
+    "examples/fundamentals/sim-cpu/muscles/cocontraction",
 
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
