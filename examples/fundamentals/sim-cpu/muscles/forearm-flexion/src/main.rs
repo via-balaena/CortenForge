@@ -244,8 +244,15 @@ fn setup(
 
 // ── Control ─────────────────────────────────────────────────────────────────
 
+/// Release muscle at this time (seconds).
+const CTRL_RELEASE: f64 = 3.0;
+
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
-    let ctrl = if data.time >= CTRL_ONSET { 1.0 } else { 0.0 };
+    let ctrl = if data.time >= CTRL_ONSET && data.time < CTRL_RELEASE {
+        1.0
+    } else {
+        0.0
+    };
     data.set_ctrl(0, ctrl);
 }
 
@@ -264,7 +271,7 @@ fn spawn_muscle_mesh(
     // Unit cylinder (height 1, radius 1) — we'll scale/position each frame
     let mesh = meshes.add(Cylinder::new(1.0, 1.0));
     let mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.7, 0.15, 0.15),
+        base_color: Color::srgb(0.1, 0.1, 0.9),
         metallic: 0.3,
         perceptual_roughness: 0.6,
         ..default()
@@ -279,7 +286,7 @@ fn spawn_muscle_mesh(
 }
 
 /// Update the muscle cylinder mesh to stretch between attachment points.
-/// Color shifts from dark red (relaxed) to bright red (activated).
+/// Color shifts from blue (relaxed) to red (activated).
 fn update_muscle_mesh(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
@@ -308,15 +315,13 @@ fn update_muscle_mesh(
         transform.rotation = rotation;
         transform.scale = Vec3::new(muscle_radius, length, muscle_radius);
 
-        // Update color based on activation
-        let act = if model.na > 0 {
-            data.act[0].clamp(0.0, 1.0) as f32
-        } else {
-            0.0
-        };
+        // Color driven by actual force magnitude (tension), not activation.
+        // F0 is the peak isometric force — normalize tension against it.
+        let f0 = model.actuator_gainprm[0][2].max(1.0);
+        let tension = (data.actuator_force[0].abs() / f0).clamp(0.0, 1.0) as f32;
         if let Some(mat) = materials.get_mut(&mat_handle.0) {
-            // Dark maroon (relaxed) → bright red (activated)
-            mat.base_color = Color::srgb(0.3 + 0.6 * act, 0.05 + 0.1 * act, 0.05);
+            // Blue (no tension) → Red (peak tension)
+            mat.base_color = Color::srgb(0.8 * tension + 0.1, 0.1, 0.8 * (1.0 - tension) + 0.1);
         }
     }
 }
