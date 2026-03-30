@@ -195,6 +195,19 @@ fn setup(
     commands.insert_resource(PhysicsData(data));
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+fn momentum_drift(mass: f64, qvel: &[f64], initial: &[f64; 3]) -> f64 {
+    ((mass * qvel[0] - initial[0]).powi(2)
+        + (mass * qvel[1] - initial[1]).powi(2)
+        + (mass * qvel[2] - initial[2]).powi(2))
+    .sqrt()
+}
+
+fn angmom_magnitude(sensor: &[f64]) -> f64 {
+    (sensor[0].powi(2) + sensor[1].powi(2) + sensor[2].powi(2)).sqrt()
+}
+
 // ── HUD ───────────────────────────────────────────────────────────────────
 
 fn update_hud(
@@ -206,30 +219,18 @@ fn update_hud(
     hud.clear();
     hud.section("Free Flight — Conservation");
 
-    // Current KE
     let ke = data.energy_kinetic;
-    let ke_drift = (ke - initial.ke).abs();
     hud.scalar("KE", ke, 8);
-    hud.scalar("KE_drift", ke_drift, 2);
+    hud.scalar("KE_drift", (ke - initial.ke).abs(), 2);
 
-    // Current linear momentum
-    let px = initial.mass * data.qvel[0];
-    let py = initial.mass * data.qvel[1];
-    let pz = initial.mass * data.qvel[2];
-    let p_drift = ((px - initial.lin_momentum[0]).powi(2)
-        + (py - initial.lin_momentum[1]).powi(2)
-        + (pz - initial.lin_momentum[2]).powi(2))
-    .sqrt();
+    let p_drift = momentum_drift(initial.mass, data.qvel.as_slice(), &initial.lin_momentum);
     hud.scalar("|p| drift", p_drift, 2);
 
-    // Current angular momentum (from sensor)
     let angmom_data = data.sensor_data(&model, 0);
-    let l_mag = (angmom_data[0].powi(2) + angmom_data[1].powi(2) + angmom_data[2].powi(2)).sqrt();
-    let l_drift = (l_mag - initial.ang_momentum_mag).abs();
+    let l_mag = angmom_magnitude(angmom_data);
     hud.scalar("|L|", l_mag, 10);
-    hud.scalar("|L| drift", l_drift, 2);
+    hud.scalar("|L| drift", (l_mag - initial.ang_momentum_mag).abs(), 2);
 
-    // Angular velocity (precessing for asymmetric body)
     hud.scalar("omega_x", data.qvel[3], 4);
     hud.scalar("omega_y", data.qvel[4], 4);
     hud.scalar("omega_z", data.qvel[5], 4);
@@ -258,31 +259,15 @@ fn conservation_diagnostics(
         return;
     }
 
-    // KE drift
     let ke_drift = (data.energy_kinetic - initial.ke).abs();
-    if ke_drift > val.max_ke_drift {
-        val.max_ke_drift = ke_drift;
-    }
+    val.max_ke_drift = val.max_ke_drift.max(ke_drift);
 
-    // Linear momentum drift
-    let px = initial.mass * data.qvel[0];
-    let py = initial.mass * data.qvel[1];
-    let pz = initial.mass * data.qvel[2];
-    let p_drift = ((px - initial.lin_momentum[0]).powi(2)
-        + (py - initial.lin_momentum[1]).powi(2)
-        + (pz - initial.lin_momentum[2]).powi(2))
-    .sqrt();
-    if p_drift > val.max_p_drift {
-        val.max_p_drift = p_drift;
-    }
+    let p_drift = momentum_drift(initial.mass, data.qvel.as_slice(), &initial.lin_momentum);
+    val.max_p_drift = val.max_p_drift.max(p_drift);
 
-    // Angular momentum magnitude drift (from sensor)
-    let angmom_data = data.sensor_data(&model, 0);
-    let l_mag = (angmom_data[0].powi(2) + angmom_data[1].powi(2) + angmom_data[2].powi(2)).sqrt();
+    let l_mag = angmom_magnitude(data.sensor_data(&model, 0));
     let l_drift = (l_mag - initial.ang_momentum_mag).abs();
-    if l_drift > val.max_l_drift {
-        val.max_l_drift = l_drift;
-    }
+    val.max_l_drift = val.max_l_drift.max(l_drift);
 
     // Report once at harness report time
     if harness.reported() && !val.reported {

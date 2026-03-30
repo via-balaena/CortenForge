@@ -210,15 +210,24 @@ fn update_hud(
     hud.scalar("bounces", f64::from(val.bounce_count), 0);
     if val.bounce_count > 0 {
         hud.scalar("apex_1", val.first_apex_z, 4);
-        let restitution = if initial.drop_z > SPHERE_R {
-            (val.first_apex_z - SPHERE_R) / (initial.drop_z - SPHERE_R)
-        } else {
-            0.0
-        };
-        hud.scalar("restitution", restitution, 3);
+        hud.scalar(
+            "restitution",
+            restitution(val.first_apex_z, initial.drop_z),
+            3,
+        );
     }
 
     hud.scalar("time", data.time, 1);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+fn restitution(apex_z: f64, drop_z: f64) -> f64 {
+    if drop_z > SPHERE_R {
+        (apex_z - SPHERE_R) / (drop_z - SPHERE_R)
+    } else {
+        0.0
+    }
 }
 
 // ── Validation ────────────────────────────────────────────────────────────
@@ -276,11 +285,7 @@ fn bounce_diagnostics(
     if harness.reported() && !val.reported {
         val.reported = true;
 
-        let restitution = if initial.drop_z > SPHERE_R {
-            (val.first_apex_z - SPHERE_R) / (initial.drop_z - SPHERE_R)
-        } else {
-            0.0
-        };
+        let r = restitution(val.first_apex_z, initial.drop_z);
 
         let energy_loss_pct = if initial.total_energy.abs() > 1e-12 {
             ((initial.total_energy - val.first_apex_energy) / initial.total_energy.abs()).abs()
@@ -300,9 +305,9 @@ fn bounce_diagnostics(
             },
             Check {
                 name: "Restitution > 0.85",
-                pass: val.bounce_count > 0 && restitution > 0.85,
+                pass: val.bounce_count > 0 && r > 0.85,
                 detail: format!(
-                    "r={restitution:.4} (drop={:.4}, apex={:.4})",
+                    "r={r:.4} (drop={:.4}, apex={:.4})",
                     initial.drop_z, val.first_apex_z
                 ),
             },
