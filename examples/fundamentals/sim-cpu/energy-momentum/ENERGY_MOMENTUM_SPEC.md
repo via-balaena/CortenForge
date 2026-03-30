@@ -1,6 +1,6 @@
 # Energy-Momentum Examples Spec
 
-**Status:** Stress-test validated (12/12 PASS) — visual examples pending
+**Status:** Complete — 4 visual examples + stress-test (12/12 PASS)
 **Date:** 2026-03-30
 **Domain:** `examples/fundamentals/sim-cpu/energy-momentum/`
 

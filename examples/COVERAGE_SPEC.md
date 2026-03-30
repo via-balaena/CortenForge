@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-03-29)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf → 62 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 2 legacy)
+- sim-core + sim-mjcf → 67 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 5 energy-momentum, 2 legacy)
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -112,7 +112,7 @@ fundamentals/
     equality-constraints/   # DONE — weld, connect, distance, joint coupling (8 examples)
     contact-tuning/         # DONE — friction, condim, solref, solimp, margin/gap, pair override (7 examples)
     inverse-dynamics/       # DONE — gravity-comp, torque-profile, forward-replay, jacobian, stress-test (5 examples)
-    energy-momentum/        # TODO — conservation tracking
+    energy-momentum/        # DONE — 4 visual + stress-test (12 checks)
     urdf-loading/           # TODO — load URDF, compare with MJCF
 ```
 
