@@ -88,6 +88,7 @@ members = [
     "examples/fundamentals/sim-cpu/contact-tuning/stress-test",
 
     # Examples — fundamentals / sim-cpu / energy-momentum
+    "examples/fundamentals/sim-cpu/energy-momentum/free-flight",
     "examples/fundamentals/sim-cpu/energy-momentum/stress-test",
 
     # Examples — fundamentals / sim-cpu / inverse-dynamics

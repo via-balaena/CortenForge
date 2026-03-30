@@ -1,6 +1,6 @@
 # Energy-Momentum Examples Spec
 
-**Status:** Draft — engine fix done, examples pending approval
+**Status:** Stress-test validated (12/12 PASS) — visual examples pending
 **Date:** 2026-03-30
 **Domain:** `examples/fundamentals/sim-cpu/energy-momentum/`
 
@@ -69,8 +69,8 @@ bottom, PE is maximum at the top. Total energy stays flat.
 
 **Pass/fail:**
 - Total energy drift < 0.5% over 10s
-- At bottom swing: KE > 0.9 * total
-- At top swing: PE > 0.9 * total
+- At bottom swing: KE > 0.9 * PE_drop (nearly all PE converted to KE)
+- At top swing: KE ≈ 0 (all energy is potential)
 
 ---
 
@@ -91,8 +91,11 @@ Tuned `solref` for elastic bounce.
 - Bounce height after first bounce vs drop height
 
 **Pass/fail:**
-- Total energy conserved to < 5% through first bounce
-- Bounce height within 15% of drop height
+- Total energy at bounce apex (free flight) within 5% of initial
+  (note: energy measured *during* contact is misleading — contact spring
+  PE is not tracked by `energy_potential`, so total_energy dips during
+  contact and recovers after separation)
+- Bounce height within 15% of drop height (restitution > 0.85)
 - At least 3 visible bounces
 
 ---
@@ -114,8 +117,9 @@ energy is ever gained. Contrast with the undamped case (example 2).
 
 **Pass/fail:**
 - Energy monotonically decreasing (no energy gain at any step)
-- Final energy < 20% of initial after 10s
-- Energy at t=5s < energy at t=0 (obvious dissipation)
+- Final KE < 20% of peak KE (note: total energy ratio is misleading
+  with negative PE reference — track KE specifically)
+- KE visibly decays to near zero
 
 ---
 
@@ -126,18 +130,18 @@ No rendering, no Bevy — pure sim-core.
 
 **Checks:**
 
-1. **Free-flight KE** — zero-gravity free body, KE drift < 1e-10 over 10s
+1. **Free-flight KE** — zero-gravity free body (asymmetric inertia), KE drift < 1e-10 over 10s
 2. **Free-flight linear momentum** — p = m*v constant to < 1e-10
-3. **Free-flight angular momentum** — L magnitude constant to < 1e-8
-4. **Free-flight velocity components** — each of 6 qvel constant to < 1e-10
+3. **Free-flight angular momentum** — |L| constant to < 1e-8 (via SubtreeAngMom sensor)
+4. **Free-flight velocity components** — symmetric body (sphere inertia), each of 6 qvel constant to < 1e-10 (asymmetric bodies precess — angular velocity rotates in world frame while angular momentum is conserved)
 5. **Pendulum energy conservation** — undamped, total drift < 0.5% over 10s
-6. **Pendulum energy partition** — at bottom: KE > 0.9 * total
-7. **Elastic bounce energy** — total energy through bounce < 5% loss
+6. **Pendulum energy partition** — at bottom: KE / PE_drop > 0.9 (not KE/total, since total can be near zero depending on PE reference)
+7. **Elastic bounce energy** — total energy at bounce apex < 5% loss (measured in free flight, not during contact — contact spring PE is untracked)
 8. **Bounce height** — restitution > 0.85
 9. **Damped monotonic** — energy never increases step-to-step
-10. **Damped dissipation** — final energy < 20% of initial
+10. **Damped dissipation** — KE_final / KE_max < 20% (not total energy ratio, which breaks with negative PE)
 11. **Energy flag disabled** — with flag off, energy fields stay 0.0
-12. **Multi-body conservation** — 3 free bodies in zero-g, system KE conserved
+12. **Multi-body conservation** — 3 free bodies in zero-g, system KE conserved to < 1e-10
 
 ## Concept Ladder
 
