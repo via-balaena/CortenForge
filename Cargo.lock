@@ -3129,6 +3129,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-muscle-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-sdf-cpu-01-sdf-grid"
 version = "0.7.0"
 dependencies = [

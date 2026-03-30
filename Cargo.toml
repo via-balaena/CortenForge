@@ -101,6 +101,9 @@ members = [
     "examples/fundamentals/sim-cpu/inverse-dynamics/jacobian",
     "examples/fundamentals/sim-cpu/inverse-dynamics/stress-test",
 
+    # Examples — fundamentals / sim-cpu / muscles
+    "examples/fundamentals/sim-cpu/muscles/stress-test",
+
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
     "examples/fundamentals/sim-cpu/solvers/comparison-visual",

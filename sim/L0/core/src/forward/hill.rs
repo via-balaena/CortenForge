@@ -12,6 +12,7 @@
 
 /// Active force-length curve: piecewise quadratic bump.
 /// Returns 0 outside `[lmin, lmax]`, peak 1.0 at `L = 1.0`.
+#[must_use]
 pub fn muscle_gain_length(length: f64, lmin: f64, lmax: f64) -> f64 {
     const EPS: f64 = 1e-10;
     if length < lmin || length > lmax {
@@ -37,6 +38,7 @@ pub fn muscle_gain_length(length: f64, lmin: f64, lmax: f64) -> f64 {
 
 /// Force-velocity curve: piecewise quadratic.
 /// `velocity` is normalized by `L0 * vmax` so `V = -1` is max shortening.
+#[must_use]
 pub fn muscle_gain_velocity(velocity: f64, fvmax: f64) -> f64 {
     const EPS: f64 = 1e-10;
     let y = fvmax - 1.0;
@@ -52,6 +54,7 @@ pub fn muscle_gain_velocity(velocity: f64, fvmax: f64) -> f64 {
 }
 
 /// Passive force curve: zero below `L = 1.0`, quadratic onset, linear beyond midpoint.
+#[must_use]
 pub fn muscle_passive_force(length: f64, lmax: f64, fpmax: f64) -> f64 {
     const EPS: f64 = 1e-10;
     let b = 0.5 * (1.0 + lmax);
@@ -89,6 +92,7 @@ pub fn sigmoid(x: f64) -> f64 {
 ///
 /// When `tausmooth > 0`, uses quintic sigmoid to blend between `tau_act` and
 /// `tau_deact` instead of a hard switch at `ctrl == act`.
+#[must_use]
 pub fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 10]) -> f64 {
     let ctrl_clamped = ctrl.clamp(0.0, 1.0);
     let act_clamped = act.clamp(0.0, 1.0);
