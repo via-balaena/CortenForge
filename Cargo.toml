@@ -91,6 +91,7 @@ members = [
     "examples/fundamentals/sim-cpu/energy-momentum/free-flight",
     "examples/fundamentals/sim-cpu/energy-momentum/pendulum-energy",
     "examples/fundamentals/sim-cpu/energy-momentum/elastic-bounce",
+    "examples/fundamentals/sim-cpu/energy-momentum/damped-decay",
     "examples/fundamentals/sim-cpu/energy-momentum/stress-test",
 
     # Examples — fundamentals / sim-cpu / inverse-dynamics
