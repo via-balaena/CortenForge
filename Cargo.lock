@@ -2796,6 +2796,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-energy-elastic-bounce"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-energy-free-flight"
 version = "0.7.0"
 dependencies = [
