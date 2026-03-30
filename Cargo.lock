@@ -3149,6 +3149,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-muscle-force-length"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-muscle-forearm-flexion"
 version = "0.7.0"
 dependencies = [
