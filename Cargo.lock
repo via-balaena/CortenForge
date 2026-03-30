@@ -2796,6 +2796,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-energy-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-equality-connect-body-to-body"
 version = "0.7.0"
 dependencies = [
