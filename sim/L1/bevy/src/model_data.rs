@@ -744,6 +744,167 @@ pub fn joint_name(model: &Model, joint_id: usize) -> String {
         .unwrap_or_else(|| format!("joint_{joint_id}"))
 }
 
+// ============================================================================
+// Muscle Visualization Building Blocks
+// ============================================================================
+
+/// Attachment points for a joint-transmission muscle actuator.
+///
+/// Derived from the model's kinematic tree: the joint's parent and child
+/// bodies provide the attachment positions. Local offsets place the endpoints
+/// on the body surface, offset from the body center by the geom radius.
+///
+/// # Usage
+///
+/// ```ignore
+/// let attachment = MuscleAttachment::from_actuator(&model, 0, 1.0);
+/// let (origin, insertion) = attachment.world_points_bevy(&data);
+/// ```
+pub struct MuscleAttachment {
+    /// Index of the parent body (origin side).
+    pub parent_body: usize,
+    /// Index of the child body (insertion side).
+    pub child_body: usize,
+    /// Local offset from parent body origin (body-local frame).
+    pub parent_local: [f64; 3],
+    /// Local offset from child body origin (body-local frame).
+    pub child_local: [f64; 3],
+}
+
+impl MuscleAttachment {
+    /// Derive attachment from a joint-transmission actuator.
+    ///
+    /// `x_side`: +1.0 for front of arm, -1.0 for back (used for agonist/antagonist).
+    /// The local offsets place the origin high on the parent body and the
+    /// insertion partway down the child body, offset from center by the
+    /// body's first geom radius.
+    #[must_use]
+    pub fn from_actuator(model: &Model, actuator_idx: usize, x_side: f64) -> Self {
+        let jnt_id = model.actuator_trnid[actuator_idx][0];
+        let child_body = model.jnt_body[jnt_id];
+        let parent_body = model.body_parent[child_body];
+
+        let parent_radius = Self::first_geom_radius(model, parent_body);
+        let child_radius = Self::first_geom_radius(model, child_body);
+
+        Self {
+            parent_body,
+            child_body,
+            parent_local: [parent_radius * x_side, 0.0, 0.10],
+            child_local: [child_radius * x_side, 0.0, -0.10],
+        }
+    }
+
+    /// Compute world-space attachment points in Bevy coordinates (Y-up).
+    #[must_use]
+    pub fn world_points_bevy(&self, data: &Data) -> (bevy::prelude::Vec3, bevy::prelude::Vec3) {
+        let origin = crate::convert::body_local_to_bevy(
+            &data.xpos[self.parent_body],
+            &data.xmat[self.parent_body],
+            &self.parent_local,
+        );
+        let insertion = crate::convert::body_local_to_bevy(
+            &data.xpos[self.child_body],
+            &data.xmat[self.child_body],
+            &self.child_local,
+        );
+        (origin, insertion)
+    }
+
+    fn first_geom_radius(model: &Model, body: usize) -> f64 {
+        let geom_start = model.body_geom_adr[body];
+        if geom_start < model.ngeom {
+            model.geom_size[geom_start][0]
+        } else {
+            0.02
+        }
+    }
+}
+
+/// Component tagging a muscle mesh entity with its actuator index.
+#[derive(bevy::prelude::Component)]
+pub struct MuscleMeshIndex(pub usize);
+
+/// Spawn cylinder meshes for muscle visualization.
+///
+/// Creates one unit cylinder per muscle, tagged with [`MuscleMeshIndex`].
+/// Call [`update_muscle_meshes`] each frame to position and color them.
+pub fn spawn_muscle_meshes(
+    commands: &mut bevy::prelude::Commands,
+    meshes: &mut bevy::prelude::ResMut<bevy::prelude::Assets<bevy::prelude::Mesh>>,
+    materials: &mut bevy::prelude::ResMut<bevy::prelude::Assets<bevy::prelude::StandardMaterial>>,
+    count: usize,
+) {
+    let mesh = meshes.add(bevy::prelude::Cylinder::new(1.0, 1.0));
+    for i in 0..count {
+        let mat = materials.add(bevy::prelude::StandardMaterial {
+            base_color: bevy::prelude::Color::srgb(0.1, 0.1, 0.9),
+            metallic: 0.3,
+            perceptual_roughness: 0.6,
+            ..Default::default()
+        });
+        commands.spawn((
+            bevy::prelude::Mesh3d(mesh.clone()),
+            bevy::prelude::MeshMaterial3d(mat),
+            bevy::prelude::Transform::default(),
+            MuscleMeshIndex(i),
+        ));
+    }
+}
+
+/// Update muscle mesh transforms and tension-driven color each frame.
+///
+/// Positions each cylinder between its attachment points, scales to match
+/// the distance, and interpolates color from blue (no tension) to red
+/// (peak tension, normalized against F0).
+#[allow(clippy::cast_possible_truncation)] // f64→f32 is intentional for Bevy colors
+pub fn update_muscle_meshes(
+    model: &Model,
+    data: &Data,
+    attachments: &[MuscleAttachment],
+    query: &mut bevy::prelude::Query<(
+        &MuscleMeshIndex,
+        &mut bevy::prelude::Transform,
+        &bevy::prelude::MeshMaterial3d<bevy::prelude::StandardMaterial>,
+    )>,
+    materials: &mut bevy::prelude::ResMut<bevy::prelude::Assets<bevy::prelude::StandardMaterial>>,
+) {
+    for (idx, mut transform, mat_handle) in query {
+        let i = idx.0;
+        if i >= attachments.len() {
+            continue;
+        }
+
+        let (o, ins) = attachments[i].world_points_bevy(data);
+        let midpoint = (o + ins) * 0.5;
+        let diff = ins - o;
+        let length = diff.length();
+        if length < 1e-6 {
+            continue;
+        }
+        let dir = diff / length;
+        let rotation = bevy::prelude::Quat::from_rotation_arc(bevy::prelude::Vec3::Y, dir);
+
+        let muscle_radius = 0.008;
+        transform.translation = midpoint;
+        transform.rotation = rotation;
+        transform.scale = bevy::prelude::Vec3::new(muscle_radius, length, muscle_radius);
+
+        // Tension-driven color: blue (rest) → red (peak force)
+        if i < model.nu {
+            let f0 = model.actuator_gainprm[i][2].max(1.0);
+            let tension = (data.actuator_force[i].abs() / f0).clamp(0.0, 1.0) as f32;
+            if let Some(mat) = materials.get_mut(&mat_handle.0) {
+                mat.base_color = bevy::prelude::Color::srgb(
+                    0.8 * tension + 0.1,
+                    0.1,
+                    0.8 * (1.0 - tension) + 0.1,
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

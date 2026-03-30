@@ -25,8 +25,9 @@ use sim_bevy::examples::{
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
-    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
-    sync_geom_transforms,
+    MuscleAttachment, MuscleMeshIndex, PhysicsAccumulator, PhysicsData, PhysicsModel,
+    spawn_model_geoms, spawn_muscle_meshes, step_physics_realtime, sync_geom_transforms,
+    update_muscle_meshes,
 };
 use sim_core::validation::{Check, print_report};
 
@@ -115,93 +116,15 @@ fn phase_label(time: f64) -> &'static str {
     }
 }
 
-// ── Muscle attachment ─────────────────────────────────────────────────────
-
-struct SingleAttachment {
-    parent_body: usize,
-    child_body: usize,
-    parent_local: [f64; 3],
-    child_local: [f64; 3],
-}
-
-impl SingleAttachment {
-    fn from_actuator(model: &sim_core::Model, actuator_idx: usize, x_side: f64) -> Self {
-        let jnt_id = model.actuator_trnid[actuator_idx][0];
-        let child_body = model.jnt_body[jnt_id];
-        let parent_body = model.body_parent[child_body];
-
-        let parent_geom_start = model.body_geom_adr[parent_body];
-        let parent_radius = if parent_geom_start < model.ngeom {
-            model.geom_size[parent_geom_start][0]
-        } else {
-            0.02
-        };
-        let child_geom_start = model.body_geom_adr[child_body];
-        let child_radius = if child_geom_start < model.ngeom {
-            model.geom_size[child_geom_start][0]
-        } else {
-            0.02
-        };
-
-        // x_side: +1 for agonist (front of arm), -1 for antagonist (back)
-        Self {
-            parent_body,
-            child_body,
-            parent_local: [parent_radius * x_side, 0.0, 0.10],
-            child_local: [child_radius * x_side, 0.0, -0.10],
-        }
-    }
-
-    fn world_points_bevy(&self, data: &sim_core::Data) -> (Vec3, Vec3) {
-        let origin = Self::body_local_to_world(data, self.parent_body, &self.parent_local);
-        let insertion = Self::body_local_to_world(data, self.child_body, &self.child_local);
-        (origin, insertion)
-    }
-
-    fn body_local_to_world(data: &sim_core::Data, body: usize, local: &[f64; 3]) -> Vec3 {
-        let pos = &data.xpos[body];
-        let mat = &data.xmat[body];
-        let wx = pos.x + mat[(0, 0)] * local[0] + mat[(0, 1)] * local[1] + mat[(0, 2)] * local[2];
-        let wy = pos.y + mat[(1, 0)] * local[0] + mat[(1, 1)] * local[1] + mat[(1, 2)] * local[2];
-        let wz = pos.z + mat[(2, 0)] * local[0] + mat[(2, 1)] * local[1] + mat[(2, 2)] * local[2];
-        Vec3::new(wx as f32, wz as f32, wy as f32)
-    }
-}
+// ── Muscle attachment (shared building blocks) ───────────────────────────
 
 #[derive(Resource)]
-struct MuscleAttachments(Vec<SingleAttachment>);
+struct Attachments(Vec<MuscleAttachment>);
 
-// ── Muscle mesh ───────────────────────────────────────────────────────────
-
-#[derive(Component)]
-struct MuscleMeshIndex(usize);
-
-fn spawn_muscle_meshes(
-    commands: &mut Commands,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
-) {
-    let mesh = meshes.add(Cylinder::new(1.0, 1.0));
-    for i in 0..2 {
-        let mat = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.1, 0.1, 0.9),
-            metallic: 0.3,
-            perceptual_roughness: 0.6,
-            ..default()
-        });
-        commands.spawn((
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(mat),
-            Transform::default(),
-            MuscleMeshIndex(i),
-        ));
-    }
-}
-
-fn update_muscle_meshes(
+fn update_muscles(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    attachments: Res<MuscleAttachments>,
+    attachments: Res<Attachments>,
     mut query: Query<(
         &MuscleMeshIndex,
         &mut Transform,
@@ -209,34 +132,7 @@ fn update_muscle_meshes(
     )>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (idx, mut transform, mat_handle) in &mut query {
-        let i = idx.0;
-        if i >= attachments.0.len() {
-            continue;
-        }
-
-        let (o, ins) = attachments.0[i].world_points_bevy(&data);
-        let midpoint = (o + ins) * 0.5;
-        let diff = ins - o;
-        let length = diff.length();
-        if length < 1e-6 {
-            continue;
-        }
-        let dir = diff / length;
-        let rotation = Quat::from_rotation_arc(Vec3::Y, dir);
-
-        let muscle_radius = 0.008;
-        transform.translation = midpoint;
-        transform.rotation = rotation;
-        transform.scale = Vec3::new(muscle_radius, length, muscle_radius);
-
-        // Tension-driven color: blue (rest) → red (peak force)
-        let f0 = model.actuator_gainprm[i][2].max(1.0);
-        let tension = (data.actuator_force[i].abs() / f0).clamp(0.0, 1.0) as f32;
-        if let Some(mat) = materials.get_mut(&mat_handle.0) {
-            mat.base_color = Color::srgb(0.8 * tension + 0.1, 0.1, 0.8 * (1.0 - tension) + 0.1);
-        }
-    }
+    update_muscle_meshes(&model, &data, &attachments.0, &mut query, &mut materials);
 }
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
@@ -277,7 +173,7 @@ fn main() {
             PostUpdate,
             (
                 sync_geom_transforms,
-                update_muscle_meshes,
+                update_muscles,
                 validation_system,
                 cocontraction_diagnostics,
                 update_hud,
@@ -311,8 +207,8 @@ fn setup(
 
     // Agonist on +X side, antagonist on -X side of the arm
     let attachments = vec![
-        SingleAttachment::from_actuator(&model, 0, 1.0),
-        SingleAttachment::from_actuator(&model, 1, -1.0),
+        MuscleAttachment::from_actuator(&model, 0, 1.0),
+        MuscleAttachment::from_actuator(&model, 1, -1.0),
     ];
 
     let mat_upper = materials.add(MetalPreset::CastIron.material());
@@ -328,7 +224,7 @@ fn setup(
         &[("upper", mat_upper), ("rod", mat_rod), ("tip", mat_tip)],
     );
 
-    spawn_muscle_meshes(&mut commands, &mut meshes, &mut materials);
+    spawn_muscle_meshes(&mut commands, &mut meshes, &mut materials, 2);
 
     spawn_example_camera(
         &mut commands,
@@ -340,7 +236,7 @@ fn setup(
 
     spawn_physics_hud(&mut commands);
 
-    commands.insert_resource(MuscleAttachments(attachments));
+    commands.insert_resource(Attachments(attachments));
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
 }

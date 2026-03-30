@@ -1,10 +1,8 @@
 //! Forearm Flexion — Muscle Lifting a Load
 //!
 //! A forearm hanging from gravity, driven by a single MuJoCo `<muscle>`
-//! actuator. The muscle activates at t=0.5s and curls the arm upward,
-//! demonstrating activation dynamics and force-length-velocity curves.
-//! A gizmo line shows the muscle path, derived from the joint's parent/child
-//! body positions — no manual site placement needed.
+//! actuator. The muscle activates at t=0.5s, curls the arm upward, then
+//! releases at t=3.0s. A 3D tendon mesh shows muscle tension (blue→red).
 //!
 //! Run with: `cargo run -p example-muscle-forearm-flexion --release`
 
@@ -25,8 +23,9 @@ use sim_bevy::examples::{
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
-    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
-    sync_geom_transforms,
+    MuscleAttachment, MuscleMeshIndex, PhysicsAccumulator, PhysicsData, PhysicsModel,
+    spawn_model_geoms, spawn_muscle_meshes, step_physics_realtime, sync_geom_transforms,
+    update_muscle_meshes,
 };
 use sim_core::validation::{Check, print_report};
 
@@ -77,82 +76,17 @@ const MJCF: &str = r#"
 "#;
 
 const CTRL_ONSET: f64 = 0.5;
-
-// ── Muscle attachment derived from the model ──────────────────────────────
-
-/// Identifies the two bodies a muscle spans (parent and child of its joint).
-/// Local offsets place the attachment points on the body surface near the joint.
-#[derive(Resource)]
-struct MuscleAttachment {
-    parent_body: usize,
-    child_body: usize,
-    /// Local offset [x, y, z] from parent body origin (body-local frame)
-    parent_local: [f64; 3],
-    /// Local offset [x, y, z] from child body origin (body-local frame)
-    child_local: [f64; 3],
-}
-
-impl MuscleAttachment {
-    /// Derive attachment from a joint-transmission muscle actuator.
-    fn from_model(model: &sim_core::Model, actuator_idx: usize) -> Self {
-        let jnt_id = model.actuator_trnid[actuator_idx][0];
-        let child_body = model.jnt_body[jnt_id];
-        let parent_body = model.body_parent[child_body];
-
-        // Find capsule radius of each body's first geom for surface offset
-        let parent_geom_start = model.body_geom_adr[parent_body];
-        let parent_radius = if parent_geom_start < model.ngeom {
-            model.geom_size[parent_geom_start][0]
-        } else {
-            0.02
-        };
-
-        let child_geom_start = model.body_geom_adr[child_body];
-        let child_radius = if child_geom_start < model.ngeom {
-            model.geom_size[child_geom_start][0]
-        } else {
-            0.02
-        };
-
-        // Origin: high on the upper arm (near shoulder)
-        let parent_local = [parent_radius, 0.0, 0.10];
-        // Insertion: well down the forearm (1/3 of the way)
-        let child_local = [child_radius, 0.0, -0.10];
-
-        Self {
-            parent_body,
-            child_body,
-            parent_local,
-            child_local,
-        }
-    }
-
-    /// Compute world-space attachment points from current body poses.
-    /// Returns Bevy Vec3 (Y-up) ready for gizmo drawing.
-    fn world_points_bevy(&self, data: &sim_core::Data) -> (Vec3, Vec3) {
-        let origin = Self::body_local_to_world(data, self.parent_body, &self.parent_local);
-        let insertion = Self::body_local_to_world(data, self.child_body, &self.child_local);
-        (origin, insertion)
-    }
-
-    fn body_local_to_world(data: &sim_core::Data, body: usize, local: &[f64; 3]) -> Vec3 {
-        let pos = &data.xpos[body];
-        let mat = &data.xmat[body];
-        // world = body_pos + body_rot * local
-        let wx = pos.x + mat[(0, 0)] * local[0] + mat[(0, 1)] * local[1] + mat[(0, 2)] * local[2];
-        let wy = pos.y + mat[(1, 0)] * local[0] + mat[(1, 1)] * local[1] + mat[(1, 2)] * local[2];
-        let wz = pos.z + mat[(2, 0)] * local[0] + mat[(2, 1)] * local[1] + mat[(2, 2)] * local[2];
-        // Z-up → Y-up swap
-        Vec3::new(wx as f32, wz as f32, wy as f32)
-    }
-}
+const CTRL_RELEASE: f64 = 3.0;
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
+
+#[derive(Resource)]
+struct Attachments(Vec<MuscleAttachment>);
 
 fn main() {
     println!("=== CortenForge: Forearm Flexion ===");
     println!("  Muscle actuator drives a forearm against gravity");
-    println!("  Ctrl onset at t={CTRL_ONSET:.1}s, MuJoCo <muscle>, scale=200");
+    println!("  Ctrl on at t={CTRL_ONSET:.1}s, off at t={CTRL_RELEASE:.1}s");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -184,7 +118,7 @@ fn main() {
             PostUpdate,
             (
                 sync_geom_transforms,
-                update_muscle_mesh,
+                update_muscles,
                 validation_system,
                 flexion_diagnostics,
                 update_hud,
@@ -204,14 +138,11 @@ fn setup(
     let mut data = model.make_data();
     data.forward(&model).expect("initial FK");
 
-    let f0 = model.actuator_gainprm[0][2];
     println!(
         "  Model: {} bodies, {} joints, {} actuators",
         model.nbody, model.njnt, model.nu
     );
-    println!("  F0 (auto): {f0:.1} N\n");
-
-    let attachment = MuscleAttachment::from_model(&model, 0);
+    println!("  F0 (auto): {:.1} N\n", model.actuator_gainprm[0][2]);
 
     let mat_upper = materials.add(MetalPreset::CastIron.material());
     let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
@@ -225,27 +156,23 @@ fn setup(
         &data,
         &[("upper", mat_upper), ("rod", mat_rod), ("tip", mat_tip)],
     );
-
+    spawn_muscle_meshes(&mut commands, &mut meshes, &mut materials, 1);
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, 0.65, 0.0), // center on arm (Y-up Bevy coords)
+        Vec3::new(0.0, 0.65, 0.0),
         1.5,
         std::f32::consts::FRAC_PI_2,
         0.0,
     );
-
-    spawn_muscle_mesh(&mut commands, &mut meshes, &mut materials);
     spawn_physics_hud(&mut commands);
 
-    commands.insert_resource(attachment);
+    let attachments = vec![MuscleAttachment::from_actuator(&model, 0, 1.0)];
+    commands.insert_resource(Attachments(attachments));
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
 }
 
 // ── Control ─────────────────────────────────────────────────────────────────
-
-/// Release muscle at this time (seconds).
-const CTRL_RELEASE: f64 = 3.0;
 
 fn apply_ctrl(mut data: ResMut<PhysicsData>) {
     let ctrl = if data.time >= CTRL_ONSET && data.time < CTRL_RELEASE {
@@ -256,74 +183,20 @@ fn apply_ctrl(mut data: ResMut<PhysicsData>) {
     data.set_ctrl(0, ctrl);
 }
 
-// ── Muscle Gizmo ────────────────────────────────────────────────────────────
+// ── Muscle mesh update (delegates to building block) ────────────────────────
 
-/// Marker for the muscle mesh entity so we can query it.
-#[derive(Component)]
-struct MuscleMesh;
-
-/// Spawn the muscle as a cylinder mesh between attachment points.
-fn spawn_muscle_mesh(
-    commands: &mut Commands,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
-) {
-    // Unit cylinder (height 1, radius 1) — we'll scale/position each frame
-    let mesh = meshes.add(Cylinder::new(1.0, 1.0));
-    let mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.1, 0.1, 0.9),
-        metallic: 0.3,
-        perceptual_roughness: 0.6,
-        ..default()
-    });
-
-    commands.spawn((
-        Mesh3d(mesh),
-        MeshMaterial3d(mat),
-        Transform::default(),
-        MuscleMesh,
-    ));
-}
-
-/// Update the muscle cylinder mesh to stretch between attachment points.
-/// Color shifts from blue (relaxed) to red (activated).
-fn update_muscle_mesh(
+fn update_muscles(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    attachment: Res<MuscleAttachment>,
-    mut query: Query<(&mut Transform, &MeshMaterial3d<StandardMaterial>), With<MuscleMesh>>,
+    attachments: Res<Attachments>,
+    mut query: Query<(
+        &MuscleMeshIndex,
+        &mut Transform,
+        &MeshMaterial3d<StandardMaterial>,
+    )>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let (o, ins) = attachment.world_points_bevy(&data);
-    let midpoint = (o + ins) * 0.5;
-    let diff = ins - o;
-    let length = diff.length();
-
-    if length < 1e-6 {
-        return;
-    }
-
-    let dir = diff / length;
-
-    // Bevy Cylinder is Y-aligned by default. Compute rotation from Y-axis to muscle direction.
-    let rotation = Quat::from_rotation_arc(Vec3::Y, dir);
-
-    let muscle_radius = 0.008;
-
-    for (mut transform, mat_handle) in &mut query {
-        transform.translation = midpoint;
-        transform.rotation = rotation;
-        transform.scale = Vec3::new(muscle_radius, length, muscle_radius);
-
-        // Color driven by actual force magnitude (tension), not activation.
-        // F0 is the peak isometric force — normalize tension against it.
-        let f0 = model.actuator_gainprm[0][2].max(1.0);
-        let tension = (data.actuator_force[0].abs() / f0).clamp(0.0, 1.0) as f32;
-        if let Some(mat) = materials.get_mut(&mat_handle.0) {
-            // Blue (no tension) → Red (peak tension)
-            mat.base_color = Color::srgb(0.8 * tension + 0.1, 0.1, 0.8 * (1.0 - tension) + 0.1);
-        }
-    }
+    update_muscle_meshes(&model, &data, &attachments.0, &mut query, &mut materials);
 }
 
 // ── HUD ─────────────────────────────────────────────────────────────────────
@@ -331,12 +204,10 @@ fn update_muscle_mesh(
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("Forearm Flexion");
-
     let force = data.sensor_scalar(&model, "act_force").unwrap_or(0.0);
     let angle = data.sensor_scalar(&model, "jpos").unwrap_or(0.0);
     let vel = data.sensor_scalar(&model, "jvel").unwrap_or(0.0);
     let act = if model.na > 0 { data.act[0] } else { 0.0 };
-
     hud.scalar("activation", act, 3);
     hud.scalar("force (N)", force, 1);
     hud.scalar("angle (rad)", angle, 2);
@@ -364,17 +235,13 @@ fn flexion_diagnostics(
         val.initial_angle = data.qpos[0];
         val.initial_set = true;
     }
-
-    let force = data.actuator_force[0];
-    val.max_force_mag = val.max_force_mag.max(force.abs());
+    val.max_force_mag = val.max_force_mag.max(data.actuator_force[0].abs());
 
     if harness.reported() && !val.reported {
         val.reported = true;
-
         let act = if model.na > 0 { data.act[0] } else { 0.0 };
         let angle = data.qpos[0];
         let angle_change = (angle - val.initial_angle).abs();
-
         let checks = vec![
             Check {
                 name: "Activation reached 1.0",
@@ -391,7 +258,7 @@ fn flexion_diagnostics(
                 pass: angle_change > 0.05,
                 detail: format!(
                     "initial={:.2}, final={angle:.2}, change={angle_change:.2} rad",
-                    val.initial_angle,
+                    val.initial_angle
                 ),
             },
         ];
