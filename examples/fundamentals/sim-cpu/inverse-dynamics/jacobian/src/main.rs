@@ -442,7 +442,7 @@ fn sync_stale_transforms(
 
 // ── Draw velocity arrows ────────────────────────────────────────────────────
 
-/// Convert physics [x,y,z] (Z-up) to Bevy Vec3 (Y-up)
+/// Convert physics \[x,y,z\] (Z-up) to Bevy Vec3 (Y-up)
 fn to_bevy(p: &[f64; 3]) -> Vec3 {
     Vec3::new(p[0] as f32, p[2] as f32, p[1] as f32)
 }
