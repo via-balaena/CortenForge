@@ -1,9 +1,11 @@
 //! Energy queries — potential and kinetic energy computation.
 //!
-//! `mj_energy_pos` computes gravitational + spring potential energy (called after
-//! FK). `mj_energy_vel` computes kinetic energy from the mass matrix or body
-//! velocities (called after CRBA). `Data::total_energy()` returns the sum.
+//! `mj_energy_pos` computes gravitational + joint spring + tendon spring potential
+//! energy (called after FK). `mj_energy_vel` computes kinetic energy from the mass
+//! matrix or body velocities (called after CRBA). `Data::total_energy()` returns
+//! the sum.
 
+use crate::integrate::implicit::tendon_all_dofs_sleeping;
 use crate::tendon::subquat;
 use crate::types::{
     DISABLE_GRAVITY, DISABLE_SPRING, Data, ENABLE_SLEEP, MjJointType, Model, SleepState,
@@ -14,9 +16,11 @@ use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 ///
 /// Following MuJoCo `mj_energyPos()` semantics:
 /// - Phase 1: Gravitational PE — unconditional (no sleep filter).
-/// - Phase 2: Spring PE — gated on `DISABLE_SPRING`, sleep filter applied.
+/// - Phase 2: Joint spring PE — gated on `DISABLE_SPRING`, sleep filter applied.
 ///   Guard: `stiffness == 0.0` (exact zero; negative stiffness processed).
 ///   Ball/free: quaternion geodesic distance via `subquat()`.
+/// - Phase 3: Tendon spring PE — deadband spring with `[lower, upper]` rest range.
+///   Displacement is zero inside the deadband, otherwise distance to nearest edge.
 pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
     let mut potential = 0.0;
 
@@ -107,6 +111,29 @@ pub(crate) fn mj_energy_pos(model: &Model, data: &mut Data) {
                     potential += 0.5 * stiffness * dif.dot(&dif);
                 }
             }
+        }
+
+        // Phase 3: Tendon spring PE — deadband spring matching passive.rs logic.
+        for t in 0..model.ntendon {
+            let k = model.tendon_stiffness[t];
+            if k <= 0.0 {
+                continue;
+            }
+
+            if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+                continue;
+            }
+
+            let length = data.ten_length[t];
+            let [lower, upper] = model.tendon_lengthspring[t];
+            let displacement = if length > upper {
+                length - upper
+            } else if length < lower {
+                length - lower
+            } else {
+                0.0 // inside deadband
+            };
+            potential += 0.5 * k * displacement * displacement;
         }
     }
 
@@ -832,6 +859,163 @@ mod spec_b_tests {
             (data.qfrc_spring[6] - (-1.0)).abs() < 1e-10,
             "hinge force = {}, expected -1.0",
             data.qfrc_spring[6]
+        );
+    }
+
+    // ---- T18: Tendon spring PE — classical spring (low == high) ----
+    #[test]
+    fn t18_tendon_spring_energy_classical() {
+        use crate::types::TendonType;
+
+        // Build minimal hinge model + 1 tendon with stiffness=10, rest=0.5
+        let mut model = build_ball_joint_model(0.0); // zero joint stiffness
+        model.enableflags |= ENABLE_ENERGY;
+
+        model.ntendon = 1;
+        model.tendon_stiffness = vec![10.0];
+        model.tendon_lengthspring = vec![[0.5, 0.5]]; // classical spring, rest=0.5
+        model.tendon_damping = vec![0.0];
+        model.tendon_frictionloss = vec![0.0];
+        model.tendon_limited = vec![false];
+        model.tendon_range = vec![(0.0, 0.0)];
+        model.tendon_solref_fri = vec![[0.02, 1.0]];
+        model.tendon_solimp_fri = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.tendon_solref_lim = vec![[0.02, 1.0]];
+        model.tendon_solimp_lim = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.tendon_margin = vec![0.0];
+        model.tendon_invweight0 = vec![0.0];
+        model.tendon_length0 = vec![0.5];
+        model.tendon_num = vec![0];
+        model.tendon_adr = vec![0];
+        model.tendon_name = vec![Some("t0".into())];
+        model.tendon_group = vec![0];
+        model.tendon_rgba = vec![[0.5, 0.5, 0.5, 1.0]];
+        model.tendon_type = vec![TendonType::Fixed];
+
+        let mut data = model.make_data();
+
+        // Set tendon length to 0.8 (displaced 0.3 from rest=0.5)
+        data.ten_length[0] = 0.8;
+        // Zero gravity for clean test
+        let saved_grav = model.gravity;
+        model.gravity = Vector3::zeros();
+
+        super::mj_energy_pos(&model, &mut data);
+
+        // Expected: 0.5 * 10 * (0.8 - 0.5)^2 = 0.5 * 10 * 0.09 = 0.45
+        let expected = 0.5 * 10.0 * 0.3 * 0.3;
+        assert!(
+            (data.energy_potential - expected).abs() < 1e-10,
+            "tendon spring PE = {}, expected {}",
+            data.energy_potential,
+            expected
+        );
+
+        model.gravity = saved_grav;
+    }
+
+    // ---- T19: Tendon spring PE — deadband (low < high) ----
+    #[test]
+    fn t19_tendon_spring_energy_deadband() {
+        use crate::types::TendonType;
+
+        let mut model = build_ball_joint_model(0.0);
+        model.enableflags |= ENABLE_ENERGY;
+        model.gravity = Vector3::zeros();
+
+        model.ntendon = 1;
+        model.tendon_stiffness = vec![20.0];
+        model.tendon_lengthspring = vec![[0.3, 0.7]]; // deadband [0.3, 0.7]
+        model.tendon_damping = vec![0.0];
+        model.tendon_frictionloss = vec![0.0];
+        model.tendon_limited = vec![false];
+        model.tendon_range = vec![(0.0, 0.0)];
+        model.tendon_solref_fri = vec![[0.02, 1.0]];
+        model.tendon_solimp_fri = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.tendon_solref_lim = vec![[0.02, 1.0]];
+        model.tendon_solimp_lim = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.tendon_margin = vec![0.0];
+        model.tendon_invweight0 = vec![0.0];
+        model.tendon_length0 = vec![0.5];
+        model.tendon_num = vec![0];
+        model.tendon_adr = vec![0];
+        model.tendon_name = vec![Some("t0".into())];
+        model.tendon_group = vec![0];
+        model.tendon_rgba = vec![[0.5, 0.5, 0.5, 1.0]];
+        model.tendon_type = vec![TendonType::Fixed];
+
+        let mut data = model.make_data();
+
+        // Case A: Inside deadband (length=0.5) → PE = 0
+        data.ten_length[0] = 0.5;
+        super::mj_energy_pos(&model, &mut data);
+        assert!(
+            data.energy_potential.abs() < 1e-10,
+            "inside deadband: PE = {}, expected 0",
+            data.energy_potential
+        );
+
+        // Case B: Above deadband (length=1.0, displaced 0.3 from upper=0.7)
+        data.ten_length[0] = 1.0;
+        super::mj_energy_pos(&model, &mut data);
+        let expected_above = 0.5 * 20.0 * 0.3 * 0.3; // 0.9
+        assert!(
+            (data.energy_potential - expected_above).abs() < 1e-10,
+            "above deadband: PE = {}, expected {}",
+            data.energy_potential,
+            expected_above
+        );
+
+        // Case C: Below deadband (length=0.1, displaced 0.2 from lower=0.3)
+        data.ten_length[0] = 0.1;
+        super::mj_energy_pos(&model, &mut data);
+        let expected_below = 0.5 * 20.0 * 0.2 * 0.2; // 0.4
+        assert!(
+            (data.energy_potential - expected_below).abs() < 1e-10,
+            "below deadband: PE = {}, expected {}",
+            data.energy_potential,
+            expected_below
+        );
+    }
+
+    // ---- T20: Tendon spring PE — zero stiffness → no energy ----
+    #[test]
+    fn t20_tendon_zero_stiffness_no_energy() {
+        use crate::types::TendonType;
+
+        let mut model = build_ball_joint_model(0.0);
+        model.enableflags |= ENABLE_ENERGY;
+        model.gravity = Vector3::zeros();
+
+        model.ntendon = 1;
+        model.tendon_stiffness = vec![0.0]; // zero stiffness
+        model.tendon_lengthspring = vec![[0.5, 0.5]];
+        model.tendon_damping = vec![0.0];
+        model.tendon_frictionloss = vec![0.0];
+        model.tendon_limited = vec![false];
+        model.tendon_range = vec![(0.0, 0.0)];
+        model.tendon_solref_fri = vec![[0.02, 1.0]];
+        model.tendon_solimp_fri = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.tendon_solref_lim = vec![[0.02, 1.0]];
+        model.tendon_solimp_lim = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.tendon_margin = vec![0.0];
+        model.tendon_invweight0 = vec![0.0];
+        model.tendon_length0 = vec![0.5];
+        model.tendon_num = vec![0];
+        model.tendon_adr = vec![0];
+        model.tendon_name = vec![Some("t0".into())];
+        model.tendon_group = vec![0];
+        model.tendon_rgba = vec![[0.5, 0.5, 0.5, 1.0]];
+        model.tendon_type = vec![TendonType::Fixed];
+
+        let mut data = model.make_data();
+        data.ten_length[0] = 1.0; // displaced, but zero stiffness
+
+        super::mj_energy_pos(&model, &mut data);
+        assert!(
+            data.energy_potential.abs() < 1e-10,
+            "zero stiffness: PE = {}, expected 0",
+            data.energy_potential
         );
     }
 }

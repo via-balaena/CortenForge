@@ -10,10 +10,10 @@ Examples should mirror the distribution of code in the codebase. Every major
 feature should have at least one dedicated example. Examples also serve as
 integration tests — they find bugs that unit tests miss.
 
-## Current State (2026-03-29)
+## Current State (2026-03-30)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf → 62 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 2 legacy)
+- sim-core + sim-mjcf → 67 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 5 energy-momentum, 2 legacy)
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -39,14 +39,15 @@ integration tests — they find bugs that unit tests miss.
 - Gain: Fixed ✓, Affine ✓, **Muscle ✗, HillMuscle ✗, User ✗**
 - Bias: None ✓, Affine ✓, **Muscle ✗, HillMuscle ✗, User ✗**
 
-### Sensors (40+ types, 15 covered in 9 examples)
+### Sensors (40+ types, 16 covered in 10 examples)
 - Position: JointPos ✓, FramePos ✓, FrameQuat ✓, SubtreeCom ✓, Clock ✓
 - Velocity: JointVel ✓, Gyro ✓, Velocimeter ✓
 - Force: Touch ✓, ActuatorFrc ✓, JointActuatorFrc ✓
 - Spatial: Accelerometer ✓, GeomDist ✓, GeomNormal ✓, GeomFromTo ✓
 - Ball: BallQuat ✓, BallAngVel ✓ (in ball-joint/spherical-pendulum)
+- Momentum: SubtreeAngMom ✓ (in energy-momentum/free-flight)
 - **Uncovered:** TendonPos, TendonVel, ActuatorPos, FrameLinVel, FrameAngVel,
-  Force, Torque, JointLimitFrc, RangeFinder, SubtreeAngMom, User, Plugin
+  Force, Torque, JointLimitFrc, RangeFinder, User, Plugin
 
 ### Collision (partially covered)
 - SDF-plane ✓, SDF-SDF ✓, analytical convex ✓
@@ -79,13 +80,13 @@ integration tests — they find bugs that unit tests miss.
 - Inverse dynamics ✓ (gravity-comp, torque-profile, forward-replay, stress-test — 4 examples)
 - Jacobians (mj_jac_site, velocity mapping) ✓ (jacobian example — stale vs correct comparison)
 
-### Advanced Features (all uncovered)
-- Sleep / wake / islands
-- Keyframes
-- Flex bodies
-- Plugin system / callbacks
-- Energy conservation tracking
-- Domain randomization
+### Advanced Features (mostly uncovered)
+- Energy conservation tracking ✓ (4 visual + 12-check stress-test)
+- **Sleep / wake / islands ✗**
+- **Keyframes ✗**
+- **Flex bodies ✗**
+- **Plugin system / callbacks ✗**
+- **Domain randomization ✗**
 
 ### GPU Pipeline
 - Full pipeline (GpuPhysicsPipeline::step()) → ZERO examples
@@ -112,7 +113,7 @@ fundamentals/
     equality-constraints/   # DONE — weld, connect, distance, joint coupling (8 examples)
     contact-tuning/         # DONE — friction, condim, solref, solimp, margin/gap, pair override (7 examples)
     inverse-dynamics/       # DONE — gravity-comp, torque-profile, forward-replay, jacobian, stress-test (5 examples)
-    energy-momentum/        # TODO — conservation tracking
+    energy-momentum/        # DONE — 4 visual + stress-test (12 checks)
     urdf-loading/           # TODO — load URDF, compare with MJCF
 ```
 
@@ -375,33 +376,21 @@ same two-link planar arm (shoulder + elbow hinge, motor gear=1, no contacts):
    round-trip, free-fall, gravity-comp, tracking, Jacobian, torque profile,
    and body accumulators. All pass.
 
-##### 11. `energy-momentum/` — Conservation Tracking
+##### 11. `energy-momentum/` — DONE (5 examples)
 
-An undamped, frictionless system: a free-floating rigid body (no joints, no
-contacts, no gravity) with initial linear and angular velocity. With no external
-forces, linear momentum, angular momentum, and kinetic energy must all be
-conserved exactly. The example tracks these quantities every timestep and prints
-max deviation. A second scene adds gravity + a perfectly elastic bounce
-(solref tuned for restitution ≈ 1) to show total energy conservation through
-a collision.
+Four visual examples + stress-test (12 checks), one concept per example:
 
-**Concepts covered:** `ENABLE_ENERGY` flag, `data.energy_kinetic`,
-`data.energy_potential`, `data.total_energy()`, momentum computation from
-`data.qvel` and mass matrix, `DISABLE_GRAVITY` flag, elastic collision
-via `solref` tuning.
-
-**MJCF sketch:** Scene A: `<option gravity="0 0 0"/>`, single free body with
-`<key qvel="0.5 0 0 0 0.3 0.2"/>`. Scene B: gravity enabled, ball dropped onto
-plane with tuned solref for elastic bounce.
-
-**Pass/fail:**
-- Scene A: kinetic energy drift < 1e-10 over 10 seconds (machine precision).
-- Scene A: linear velocity constant to machine precision (no forces).
-- Scene A: angular velocity constant (symmetric inertia) or angular momentum
-  conserved (asymmetric inertia) to < 1e-8.
-- Scene B: total energy (KE + PE_gravity) conserved to < 1% through bounce
-  (with elastic solref).
-- Scene B: bounce height within 5% of drop height (near-perfect restitution).
+1. **free-flight** — Zero-gravity free body (asymmetric inertia). KE, linear
+   momentum, angular momentum all conserved to machine precision (~1e-17).
+   Angular velocity precesses (torque-free precession) but |L| is constant.
+2. **pendulum-energy** — Undamped hinge pendulum. PE ↔ KE exchange with
+   total energy flat. KE/PE_drop = 1.0 at bottom swing.
+3. **elastic-bounce** — Ball dropped onto elastic plane. Energy dips during
+   contact (contact spring PE untracked), recovers at apex. Restitution 0.97.
+4. **damped-decay** — Damped pendulum (damping=0.05). Energy monotonically
+   decreasing (0 violations). KE decays from 0.459 J to 0.000 J.
+5. **stress-test** — 12 headless checks: free-flight (4), pendulum (2),
+   bounce (2), damped (2), flag disabled (1), multi-body (1). All pass.
 
 ##### 12. `urdf-loading/` — Load URDF, Compare with MJCF
 

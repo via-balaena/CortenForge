@@ -87,6 +87,13 @@ members = [
     "examples/fundamentals/sim-cpu/contact-tuning/margin-gap",
     "examples/fundamentals/sim-cpu/contact-tuning/stress-test",
 
+    # Examples — fundamentals / sim-cpu / energy-momentum
+    "examples/fundamentals/sim-cpu/energy-momentum/free-flight",
+    "examples/fundamentals/sim-cpu/energy-momentum/pendulum-energy",
+    "examples/fundamentals/sim-cpu/energy-momentum/elastic-bounce",
+    "examples/fundamentals/sim-cpu/energy-momentum/damped-decay",
+    "examples/fundamentals/sim-cpu/energy-momentum/stress-test",
+
     # Examples — fundamentals / sim-cpu / inverse-dynamics
     "examples/fundamentals/sim-cpu/inverse-dynamics/gravity-compensation",
     "examples/fundamentals/sim-cpu/inverse-dynamics/torque-profile",

@@ -121,6 +121,16 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `inverse-dynamics/jacobian` | `example-inverse-jacobian` | Working | Velocity mapping: stale vs correct Jacobian |
 | `inverse-dynamics/stress-test` | `example-inverse-stress-test` | Working | Headless validation (14 checks) |
 
+### Energy-Momentum
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `energy-momentum/free-flight` | `example-energy-free-flight` | Working | Zero-gravity conservation (KE, momentum, angular momentum) |
+| `energy-momentum/pendulum-energy` | `example-energy-pendulum-energy` | Working | PE/KE exchange, total energy constant |
+| `energy-momentum/elastic-bounce` | `example-energy-elastic-bounce` | Working | Energy conservation through contact, restitution 0.97 |
+| `energy-momentum/damped-decay` | `example-energy-damped-decay` | Working | Monotonic energy dissipation from damping |
+| `energy-momentum/stress-test` | `example-energy-stress-test` | Working | Headless validation (12 checks) |
+
 ### Other
 
 | Example | Package | Status | Notes |
