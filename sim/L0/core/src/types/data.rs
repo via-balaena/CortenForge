@@ -621,7 +621,8 @@ pub struct Data {
 
     // ==================== Inverse Dynamics (§52) ====================
     /// Inverse dynamics result: generalized forces that produce current `qacc`.
-    /// Computed by `inverse()`: `qfrc_inverse = M * qacc + qfrc_bias - qfrc_passive`.
+    /// Computed by `inverse()`:
+    /// `qfrc_inverse = M * qacc + qfrc_bias - qfrc_passive - qfrc_constraint`.
     /// Length `nv`.
     pub qfrc_inverse: DVector<f64>,
 

@@ -10,10 +10,10 @@ Examples should mirror the distribution of code in the codebase. Every major
 feature should have at least one dedicated example. Examples also serve as
 integration tests — they find bugs that unit tests miss.
 
-## Current State (2026-03-28)
+## Current State (2026-03-29)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf → 57 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 2 legacy)
+- sim-core + sim-mjcf → 62 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 2 legacy)
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -75,9 +75,11 @@ integration tests — they find bugs that unit tests miss.
 - **MJCF (file with <include>) ✗**
 - **URDF ✗** (entire sim-urdf crate, zero examples)
 
+### Inverse Dynamics & Jacobians
+- Inverse dynamics ✓ (gravity-comp, torque-profile, forward-replay, stress-test — 4 examples)
+- Jacobians (mj_jac_site, velocity mapping) ✓ (jacobian example — stale vs correct comparison)
+
 ### Advanced Features (all uncovered)
-- Inverse dynamics
-- Derivatives / Jacobians
 - Sleep / wake / islands
 - Keyframes
 - Flex bodies
@@ -109,7 +111,7 @@ fundamentals/
     integrators/            # DONE — comparison + comparison-visual + 5 per-integrator
     equality-constraints/   # DONE — weld, connect, distance, joint coupling (8 examples)
     contact-tuning/         # DONE — friction, condim, solref, solimp, margin/gap, pair override (7 examples)
-    inverse-dynamics/       # TODO — compute required torques
+    inverse-dynamics/       # DONE — gravity-comp, torque-profile, forward-replay, jacobian, stress-test (5 examples)
     energy-momentum/        # TODO — conservation tracking
     urdf-loading/           # TODO — load URDF, compare with MJCF
 ```
@@ -356,31 +358,22 @@ One example per concept, each isolating a single contact parameter:
    floats higher above the surface.
 7. **stress-test** — Headless validation of all parameters (26 checks).
 
-##### 10. `inverse-dynamics/` — Compute Required Torques
+##### 10. `inverse-dynamics/` — DONE (5 examples)
 
-A two-link robot arm follows a prescribed trajectory (sinusoidal joint angles).
-At each timestep, the example sets `qpos` and `qacc` to the desired trajectory,
-runs `inverse()`, and reads `qfrc_inverse` — the torques required to produce
-that motion. It then runs a second simulation with a motor actuator applying
-those computed torques and verifies the arm follows the same trajectory. Prints
-the torque profile and tracking error.
+Five examples covering `data.inverse()` and `mj_jac_site()`, all using the
+same two-link planar arm (shoulder + elbow hinge, motor gear=1, no contacts):
 
-**Concepts covered:** `data.inverse(model)`, `qfrc_inverse` output, the
-relationship `qfrc_inverse = M·qacc + bias - passive - constraint`. Jacobian
-computation (`mj_jac`). Round-trip verification: inverse → forward reproduces
-the trajectory.
-
-**MJCF sketch:** Two-link planar arm (two hinge joints in the Y-Z plane). Motor
-actuators on both joints. Gravity enabled.
-
-**Pass/fail:**
-- Inverse dynamics torques are smooth and physically reasonable (no spikes).
-- Forward simulation driven by inverse-computed torques tracks the desired
-  trajectory with position error < 0.1° per joint over 5 seconds.
-- `qfrc_inverse` satisfies the identity: `qfrc_inverse ≈ qfrc_applied +
-  qfrc_actuator` when those are the only external forces.
-- Jacobian (`mj_jac`) at end-effector site has correct dimensions (3×nv) and
-  maps joint velocities to Cartesian velocity within 1%.
+1. **gravity-compensation** — Static holding torques (`qacc=0`, `qvel=0`).
+   Verifies `qfrc_inverse == qfrc_bias`, arm holds pose < 0.001 rad over 5s.
+2. **torque-profile** — Dynamic inverse for sinusoidal trajectory. Verifies
+   smooth torque profile, shoulder peak > elbow peak.
+3. **forward-replay** — Round-trip: replay inverse torques in forward sim.
+   Tracking < 0.02 rad over 5s. Torques disengage at t=5s, arm falls.
+4. **jacobian** — `mj_jac_site` velocity mapping. Two arms: stale Jacobian
+   (left) diverges, correct Jacobian (right) matches FD within 0.3%.
+5. **stress-test** — Headless validation: 14 checks covering formula,
+   round-trip, free-fall, gravity-comp, tracking, Jacobian, torque profile,
+   and body accumulators. All pass.
 
 ##### 11. `energy-momentum/` — Conservation Tracking
 

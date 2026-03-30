@@ -111,6 +111,16 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `contact-tuning/margin-gap` | `example-contact-margin-gap` | Working | Contact activation distance |
 | `contact-tuning/stress-test` | `example-contact-stress-test` | Working | Headless parameter sweep (26 checks) |
 
+### Inverse Dynamics
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `inverse-dynamics/gravity-compensation` | `example-inverse-gravity-compensation` | Working | Static holding torques via inverse() |
+| `inverse-dynamics/torque-profile` | `example-inverse-torque-profile` | Working | Dynamic torques for sinusoidal trajectory |
+| `inverse-dynamics/forward-replay` | `example-inverse-forward-replay` | Working | Round-trip: replay inverse torques in forward sim |
+| `inverse-dynamics/jacobian` | `example-inverse-jacobian` | Working | Velocity mapping: stale vs correct Jacobian |
+| `inverse-dynamics/stress-test` | `example-inverse-stress-test` | Working | Headless validation (14 checks) |
+
 ### Other
 
 | Example | Package | Status | Notes |
