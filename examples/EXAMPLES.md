@@ -131,6 +131,16 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `energy-momentum/damped-decay` | `example-energy-damped-decay` | Working | Monotonic energy dissipation from damping |
 | `energy-momentum/stress-test` | `example-energy-stress-test` | Working | Headless validation (12 checks) |
 
+### Muscles
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `muscles/stress-test` | `example-muscle-stress-test` | Working | Headless validation (51 checks: curves, dynamics, pipeline) |
+| `muscles/forearm-flexion` | `example-muscle-forearm-flexion` | Working | Muscle lifts forearm against gravity, 3D tendon mesh |
+| `muscles/activation` | `example-muscle-activation` | Working | Three time constants, rise/fall asymmetry |
+| `muscles/cocontraction` | `example-muscle-cocontraction` | Working | Agonist-antagonist pair, joint stiffening |
+| `muscles/force-length` | `example-muscle-force-length` | Working | Wide vs narrow FL range, swept joint position |
+
 ### Other
 
 | Example | Package | Status | Notes |
