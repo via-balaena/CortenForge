@@ -1,0 +1,12 @@
+[package]
+name = "example-urdf-error-handling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sim-urdf = { workspace = true }
+
+[lints]
+workspace = true
