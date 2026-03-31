@@ -334,6 +334,7 @@ fn parse_joint<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result
     let mut axis = Vector3::z();
     let mut limit: Option<UrdfJointLimit> = None;
     let mut dynamics: Option<UrdfJointDynamics> = None;
+    let mut mimic: Option<crate::types::UrdfMimic> = None;
 
     let mut buf = Vec::new();
 
@@ -362,6 +363,16 @@ fn parse_joint<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result
                     b"dynamics" => {
                         dynamics = Some(parse_joint_dynamics(e)?);
                     }
+                    b"mimic" => {
+                        let leader = get_attribute(e, "joint")?;
+                        let multiplier = parse_float_attr(e, "multiplier").unwrap_or(1.0);
+                        let offset = parse_float_attr(e, "offset").unwrap_or(0.0);
+                        mimic = Some(crate::types::UrdfMimic {
+                            joint: leader,
+                            multiplier,
+                            offset,
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -387,6 +398,9 @@ fn parse_joint<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result
     }
     if let Some(d) = dynamics {
         joint = joint.with_dynamics(d);
+    }
+    if let Some(m) = mimic {
+        joint = joint.with_mimic(m);
     }
 
     Ok(joint)

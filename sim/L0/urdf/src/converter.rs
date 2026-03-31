@@ -44,6 +44,23 @@ use crate::error::{Result, UrdfError};
 use crate::parser::parse_urdf_str;
 use crate::types::{UrdfGeometry, UrdfJoint, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot};
 
+/// Strip `package://.../<file>` prefix, returning just the filename.
+/// Also strips `file://` prefix. Passes through plain paths unchanged.
+fn strip_package_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("package://") {
+        // "package://pkg_name/meshes/file.stl" → "meshes/file.stl"
+        if let Some(idx) = rest.find('/') {
+            rest[idx + 1..].to_string()
+        } else {
+            rest.to_string()
+        }
+    } else if let Some(rest) = path.strip_prefix("file://") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 /// Convert URDF XML string to MJCF XML string.
 ///
 /// This is the primary conversion function. The resulting MJCF can be
@@ -70,6 +87,27 @@ pub fn robot_to_mjcf(robot: &UrdfRobot) -> Result<String> {
     converter.convert()
 }
 
+/// A mimic constraint collected during tree walk.
+struct MimicEntry {
+    /// The follower joint name (the joint that has <mimic>).
+    follower: String,
+    /// The leader joint name.
+    leader: String,
+    /// Polynomial coefficients: position = multiplier * leader + offset.
+    multiplier: f64,
+    offset: f64,
+}
+
+/// A mesh asset collected during geom conversion.
+struct MeshAssetEntry {
+    /// Unique asset name for MJCF reference.
+    name: String,
+    /// File path from URDF (package:// prefix stripped).
+    file: String,
+    /// Optional scale.
+    scale: Option<nalgebra::Vector3<f64>>,
+}
+
 /// Internal converter state.
 struct Converter<'a> {
     robot: &'a UrdfRobot,
@@ -83,6 +121,10 @@ struct Converter<'a> {
     output: String,
     /// Current indentation level
     indent: usize,
+    /// Mesh assets collected during tree walk.
+    mesh_assets: Vec<MeshAssetEntry>,
+    /// Mimic constraints collected during tree walk.
+    mimic_constraints: Vec<MimicEntry>,
 }
 
 impl<'a> Converter<'a> {
@@ -110,6 +152,8 @@ impl<'a> Converter<'a> {
             parent_to_joints,
             output: String::with_capacity(4096),
             indent: 0,
+            mesh_assets: Vec::new(),
+            mimic_constraints: Vec::new(),
         }
     }
 
@@ -129,6 +173,26 @@ impl<'a> Converter<'a> {
         self.write_line(r#"<compiler angle="radian" eulerseq="xyz" fusestatic="true" discardvisual="true" strippath="true"/>"#);
         self.write_line("");
 
+        // Pre-scan all links for mesh geometries and emit <asset> block
+        self.collect_mesh_assets();
+        if !self.mesh_assets.is_empty() {
+            self.write_line("<asset>");
+            self.indent += 1;
+            let assets = std::mem::take(&mut self.mesh_assets);
+            for ma in &assets {
+                let mut attrs = format!(r#"name="{}" file="{}""#, ma.name, ma.file);
+                if let Some(s) = &ma.scale {
+                    write!(attrs, r#" scale="{} {} {}""#, s.x, s.y, s.z).ok();
+                }
+                self.write_line(&format!("<mesh {attrs}/>"));
+            }
+            // Restore so convert_geom can reference asset names
+            self.mesh_assets = assets;
+            self.indent -= 1;
+            self.write_line("</asset>");
+            self.write_line("");
+        }
+
         // Write worldbody
         self.write_line("<worldbody>");
         self.indent += 1;
@@ -138,6 +202,23 @@ impl<'a> Converter<'a> {
 
         self.indent -= 1;
         self.write_line("</worldbody>");
+
+        // Write equality constraints for mimic joints
+        if !self.mimic_constraints.is_empty() {
+            self.write_line("");
+            self.write_line("<equality>");
+            self.indent += 1;
+            // Take ownership to avoid borrow conflict with write_line
+            let constraints = std::mem::take(&mut self.mimic_constraints);
+            for mc in &constraints {
+                self.write_line(&format!(
+                    r#"<joint joint1="{}" joint2="{}" polycoef="{} {} 0 0 0"/>"#,
+                    mc.follower, mc.leader, mc.offset, mc.multiplier,
+                ));
+            }
+            self.indent -= 1;
+            self.write_line("</equality>");
+        }
 
         self.indent -= 1;
         self.write_line("</mujoco>");
@@ -239,18 +320,18 @@ impl<'a> Converter<'a> {
         Ok(())
     }
 
-    #[allow(clippy::match_same_arms)] // Planar is intentionally separate - different semantics
     fn convert_joint(&mut self, joint: &UrdfJoint) -> Result<()> {
+        // Planar joints decompose into 2 slides + 1 hinge (3 DOF)
+        if joint.joint_type == UrdfJointType::Planar {
+            return self.convert_planar_joint(joint);
+        }
+
         let (joint_type, axis_needed) = match joint.joint_type {
             UrdfJointType::Revolute | UrdfJointType::Continuous => ("hinge", true),
             UrdfJointType::Prismatic => ("slide", true),
             UrdfJointType::Fixed => return Ok(()), // Fixed joints = no joint in MJCF
             UrdfJointType::Floating => ("free", false),
-            UrdfJointType::Planar => {
-                // Planar joints need special handling - use 2 slides + 1 hinge
-                // For now, approximate with a hinge
-                ("hinge", true)
-            }
+            UrdfJointType::Planar => unreachable!("handled above"),
         };
 
         let mut attrs = format!(r#"name="{}" type="{}""#, joint.name, joint_type);
@@ -276,14 +357,62 @@ impl<'a> Converter<'a> {
             }
         }
 
-        // Add dynamics (damping)
+        // Add dynamics (damping and friction)
         if let Some(dynamics) = &joint.dynamics {
             if dynamics.damping > 0.0 {
                 write!(attrs, r#" damping="{}""#, dynamics.damping).ok();
             }
+            if dynamics.friction > 0.0 {
+                write!(attrs, r#" frictionloss="{}""#, dynamics.friction).ok();
+            }
         }
 
         self.write_line(&format!("<joint {attrs}/>"));
+
+        // Collect mimic constraint for post-worldbody emission
+        if let Some(mimic) = &joint.mimic {
+            self.mimic_constraints.push(MimicEntry {
+                follower: joint.name.clone(),
+                leader: mimic.joint.clone(),
+                multiplier: mimic.multiplier,
+                offset: mimic.offset,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Convert a planar joint into 2 slide joints + 1 hinge joint (3 DOF).
+    ///
+    /// The joint axis defines the plane normal. Two orthogonal in-plane axes
+    /// are computed, giving translation in the plane + rotation about the normal.
+    fn convert_planar_joint(&mut self, joint: &UrdfJoint) -> Result<()> {
+        let normal = joint.axis.normalize();
+
+        // Compute two orthogonal in-plane axes
+        let arbitrary = if normal.x.abs() < 0.9 {
+            nalgebra::Vector3::x()
+        } else {
+            nalgebra::Vector3::y()
+        };
+        let in_plane_x = normal.cross(&arbitrary).normalize();
+        let in_plane_y = normal.cross(&in_plane_x).normalize();
+
+        // Slide along in-plane X
+        self.write_line(&format!(
+            r#"<joint name="{}_slide_x" type="slide" axis="{} {} {}"/>"#,
+            joint.name, in_plane_x.x, in_plane_x.y, in_plane_x.z,
+        ));
+        // Slide along in-plane Y
+        self.write_line(&format!(
+            r#"<joint name="{}_slide_y" type="slide" axis="{} {} {}"/>"#,
+            joint.name, in_plane_y.x, in_plane_y.y, in_plane_y.z,
+        ));
+        // Hinge about normal
+        self.write_line(&format!(
+            r#"<joint name="{}_hinge" type="hinge" axis="{} {} {}"/>"#,
+            joint.name, normal.x, normal.y, normal.z,
+        ));
 
         Ok(())
     }
@@ -350,9 +479,29 @@ impl<'a> Converter<'a> {
                 ("cylinder", format!("{} {}", radius, length / 2.0))
             }
             UrdfGeometry::Sphere { radius } => ("sphere", format!("{radius}")),
-            UrdfGeometry::Mesh { filename, scale } => {
-                // DT-177: Add mesh asset support for URDF converter
-                let _ = (filename, scale);
+            UrdfGeometry::Mesh { filename, .. } => {
+                // Look up the pre-collected mesh asset by filename
+                let stripped = strip_package_prefix(filename);
+                if let Some(asset) = self.mesh_assets.iter().find(|a| a.file == stripped) {
+                    let mesh_ref = asset.name.clone();
+                    // Mesh geoms use type="mesh" mesh="asset_name" (no size)
+                    let mut attrs = format!(r#"type="mesh" mesh="{mesh_ref}""#);
+                    if let Some(n) = name {
+                        write!(attrs, r#" name="{n}""#).ok();
+                    }
+                    let pos = origin.xyz;
+                    if pos.norm() > 1e-10 {
+                        write!(attrs, r#" pos="{} {} {}""#, pos.x, pos.y, pos.z).ok();
+                    }
+                    let rpy = origin.rpy;
+                    if rpy.norm() > 1e-10 {
+                        write!(attrs, r#" euler="{} {} {}""#, rpy.x, rpy.y, rpy.z).ok();
+                    }
+                    if is_visual {
+                        attrs.push_str(r#" contype="0" conaffinity="0""#);
+                    }
+                    self.write_line(&format!("<geom {attrs}/>"));
+                }
                 return Ok(());
             }
         };
@@ -384,6 +533,52 @@ impl<'a> Converter<'a> {
         self.write_line(&format!("<geom {attrs}/>"));
 
         Ok(())
+    }
+
+    /// Pre-scan all links to collect mesh asset entries.
+    fn collect_mesh_assets(&mut self) {
+        let mut counter = 0usize;
+        for link in &self.robot.links {
+            // Check collision geometries
+            for collision in &link.collisions {
+                if let UrdfGeometry::Mesh { filename, scale } = &collision.geometry {
+                    let stripped = strip_package_prefix(filename);
+                    // Avoid duplicate assets for the same file
+                    if !self.mesh_assets.iter().any(|a| a.file == stripped) {
+                        let name = if let Some(n) = &collision.name {
+                            n.clone()
+                        } else {
+                            counter += 1;
+                            format!("{}_mesh_{counter}", link.name)
+                        };
+                        self.mesh_assets.push(MeshAssetEntry {
+                            name,
+                            file: stripped,
+                            scale: *scale,
+                        });
+                    }
+                }
+            }
+            // Check visual geometries
+            for visual in &link.visuals {
+                if let UrdfGeometry::Mesh { filename, scale } = &visual.geometry {
+                    let stripped = strip_package_prefix(filename);
+                    if !self.mesh_assets.iter().any(|a| a.file == stripped) {
+                        let name = if let Some(n) = &visual.name {
+                            n.clone()
+                        } else {
+                            counter += 1;
+                            format!("{}_mesh_{counter}", link.name)
+                        };
+                        self.mesh_assets.push(MeshAssetEntry {
+                            name,
+                            file: stripped,
+                            scale: *scale,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     fn write_line(&mut self, line: &str) {

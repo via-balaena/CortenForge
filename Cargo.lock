@@ -3528,6 +3528,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-urdf-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+ "sim-urdf",
+]
+
+[[package]]
 name = "exr"
 version = "1.74.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
