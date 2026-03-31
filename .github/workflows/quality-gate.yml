@@ -95,20 +95,18 @@ jobs:
 
       - name: Run tests
         run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            # Windows: test only library crates (no Bevy, no examples).
-            # Examples are visual Bevy demos with no platform-specific logic.
-            # Skipping them avoids compiling Bevy entirely on Windows.
-            cargo test --all-features \
-              -p mesh-types -p mesh-io -p mesh-repair -p mesh-sdf \
-              -p mesh-offset -p mesh-shell -p mesh-measure \
-              -p mesh-printability -p mesh-lattice -p mesh \
-              -p sim-types -p sim-simd -p sim-core -p sim-mjcf \
-              -p sim-urdf -p sim-conformance-tests -p sim-gpu \
-              -p cf-geometry -p cf-spatial -p cf-design
-          else
-            cargo test --all-features
-          fi
+          # Test only library crates (no Bevy, no examples).
+          # Examples are visual Bevy demos with main() binaries — they contain
+          # no #[test] functions, so `cargo test` would compile them for nothing.
+          # Clippy already verifies they compile. This avoids fragile system
+          # graphics deps on headless CI runners.
+          cargo test --all-features \
+            -p mesh-types -p mesh-io -p mesh-repair -p mesh-sdf \
+            -p mesh-offset -p mesh-shell -p mesh-measure \
+            -p mesh-printability -p mesh-lattice -p mesh \
+            -p sim-types -p sim-simd -p sim-core -p sim-mjcf \
+            -p sim-urdf -p sim-conformance-tests -p sim-gpu \
+            -p cf-geometry -p cf-spatial -p cf-design
         shell: bash
 
   # ============================================================================

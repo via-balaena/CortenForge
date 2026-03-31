@@ -982,6 +982,8 @@ pub struct Model {
     pub hfield_name_to_id: HashMap<String, usize>,
     /// Equality constraint name → index. Populated from `eq_name` entries.
     pub eq_name_to_id: HashMap<String, usize>,
+    /// Keyframe name → index. Populated from `keyframes[i].name`.
+    pub keyframe_name_to_id: HashMap<String, usize>,
 
     // ==================== Explicit Contact Pairs/Excludes ====================
     /// Explicit contact pairs from `<contact><pair>`.
@@ -1201,6 +1203,7 @@ impl Model {
             ElementType::Mesh => self.mesh_name_to_id.get(name).copied(),
             ElementType::Hfield => self.hfield_name_to_id.get(name).copied(),
             ElementType::Equality => self.eq_name_to_id.get(name).copied(),
+            ElementType::Keyframe => self.keyframe_name_to_id.get(name).copied(),
         }
     }
 
@@ -1221,6 +1224,11 @@ impl Model {
             ElementType::Mesh => self.mesh_name.get(id).map(String::as_str),
             ElementType::Hfield => self.hfield_name.get(id).map(String::as_str),
             ElementType::Equality => self.eq_name.get(id).and_then(|n| n.as_deref()),
+            ElementType::Keyframe => self
+                .keyframes
+                .get(id)
+                .map(|k| k.name.as_str())
+                .filter(|n| !n.is_empty()),
         }
     }
 
@@ -1403,5 +1411,12 @@ impl Model {
     #[must_use]
     pub fn tendon_id(&self, name: &str) -> Option<usize> {
         self.tendon_name_to_id.get(name).copied()
+    }
+
+    /// Look up keyframe ID by name. Returns `None` if not found.
+    #[inline]
+    #[must_use]
+    pub fn keyframe_id(&self, name: &str) -> Option<usize> {
+        self.keyframe_name_to_id.get(name).copied()
     }
 }

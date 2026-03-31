@@ -3,8 +3,8 @@
 //! Covers all 27 acceptance criteria from `sim/docs/todo/future_work_4.md`.
 
 use approx::assert_relative_eq;
-use sim_core::ResetError;
 use sim_core::batch::BatchSim;
+use sim_core::{ElementType, ResetError};
 use sim_mjcf::load_model;
 use std::sync::Arc;
 
@@ -984,4 +984,131 @@ fn ac27_reset_restores_mocap_defaults() {
     assert_relative_eq!(data.mocap_pos[mocap_idx].x, 1.0, epsilon = 1e-12);
     assert_relative_eq!(data.mocap_pos[mocap_idx].y, 2.0, epsilon = 1e-12);
     assert_relative_eq!(data.mocap_pos[mocap_idx].z, 3.0, epsilon = 1e-12);
+}
+
+// ============================================================================
+// Keyframe name→index lookup (KEYFRAME_NAME_LOOKUP_SPEC.md)
+// ============================================================================
+
+/// MJCF fixture: mixed named and unnamed keyframes.
+fn pendulum_mixed_keyframes() -> &'static str {
+    r#"
+    <mujoco model="pendulum_mixed_kf">
+        <option gravity="0 0 -9.81" timestep="0.002"/>
+        <worldbody>
+            <body name="link" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <keyframe>
+            <key name="home" qpos="0.0"/>
+            <key qpos="0.5"/>
+            <key name="up" qpos="1.5708"/>
+        </keyframe>
+    </mujoco>
+    "#
+}
+
+// AC01: name2id(Keyframe, "home") returns Some(0)
+#[test]
+fn name_lookup_ac01_name2id_basic() {
+    let model = load_model(pendulum_with_keyframe()).unwrap();
+    assert_eq!(model.name2id(ElementType::Keyframe, "home"), Some(0));
+}
+
+// AC02: name2id(Keyframe, "nonexistent") returns None
+#[test]
+fn name_lookup_ac02_name2id_missing() {
+    let model = load_model(pendulum_with_keyframe()).unwrap();
+    assert_eq!(model.name2id(ElementType::Keyframe, "nonexistent"), None);
+}
+
+// AC03: keyframe_id("home") convenience matches name2id
+#[test]
+fn name_lookup_ac03_convenience_method() {
+    let model = load_model(pendulum_with_keyframe()).unwrap();
+    assert_eq!(
+        model.keyframe_id("home"),
+        model.name2id(ElementType::Keyframe, "home"),
+    );
+}
+
+// AC04: id2name(Keyframe, 0) returns Some("home") for named keyframe
+#[test]
+fn name_lookup_ac04_id2name_named() {
+    let model = load_model(pendulum_with_keyframe()).unwrap();
+    assert_eq!(model.id2name(ElementType::Keyframe, 0), Some("home"));
+}
+
+// AC05: id2name returns None for unnamed keyframe (empty string name)
+#[test]
+fn name_lookup_ac05_id2name_unnamed() {
+    let model = load_model(pendulum_mixed_keyframes()).unwrap();
+    // Index 1 is the unnamed keyframe (no name attribute).
+    assert_eq!(model.id2name(ElementType::Keyframe, 1), None);
+}
+
+// AC06: id2name with out-of-bounds index returns None
+#[test]
+fn name_lookup_ac06_id2name_out_of_bounds() {
+    let model = load_model(pendulum_with_keyframe()).unwrap();
+    assert_eq!(model.id2name(ElementType::Keyframe, 999), None);
+}
+
+// AC07: 3 named keyframes all resolve correctly
+#[test]
+fn name_lookup_ac07_three_named_keyframes() {
+    let model = load_model(pendulum_three_keyframes()).unwrap();
+    assert_eq!(model.keyframe_id("up"), Some(0));
+    assert_eq!(model.keyframe_id("down"), Some(1));
+    assert_eq!(model.keyframe_id("swing"), Some(2));
+}
+
+// AC08: mixed named/unnamed — named resolve, unnamed absent from map
+#[test]
+fn name_lookup_ac08_mixed_named_unnamed() {
+    let model = load_model(pendulum_mixed_keyframes()).unwrap();
+    assert_eq!(model.keyframe_id("home"), Some(0));
+    assert_eq!(model.keyframe_id("up"), Some(2));
+    // Unnamed keyframe at index 1 is not in the map.
+    assert_eq!(model.keyframe_name_to_id.len(), 2);
+    assert!(!model.keyframe_name_to_id.values().any(|&v| v == 1));
+}
+
+// AC09: round-trip — name2id → reset_to_keyframe → verify state
+#[test]
+fn name_lookup_ac09_round_trip_reset() {
+    let model = load_model(pendulum_three_keyframes()).unwrap();
+    let mut data = model.make_data();
+
+    // Look up "down" by name, reset to it, verify state.
+    let idx = model.keyframe_id("down").unwrap();
+    data.reset_to_keyframe(&model, idx).unwrap();
+
+    let kf = &model.keyframes[idx];
+    assert_relative_eq!(data.time, kf.time, epsilon = 1e-15);
+    assert_relative_eq!(data.qpos[0], kf.qpos[0], epsilon = 1e-15);
+    assert_relative_eq!(data.qvel[0], kf.qvel[0], epsilon = 1e-15);
+}
+
+// AC10: URDF-loaded model has empty keyframe map
+#[test]
+fn name_lookup_ac10_urdf_no_keyframes() {
+    let urdf = r#"
+    <robot name="test">
+        <link name="base">
+            <visual>
+                <geometry><box size="0.1 0.1 0.1"/></geometry>
+            </visual>
+            <inertial>
+                <mass value="1.0"/>
+                <inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/>
+            </inertial>
+        </link>
+    </robot>
+    "#;
+    let model = sim_urdf::load_urdf_model(urdf).unwrap();
+    assert!(model.keyframe_name_to_id.is_empty());
+    assert_eq!(model.name2id(ElementType::Keyframe, "anything"), None);
 }

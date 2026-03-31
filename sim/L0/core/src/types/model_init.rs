@@ -385,6 +385,7 @@ impl Model {
             mesh_name_to_id: HashMap::new(),
             hfield_name_to_id: HashMap::new(),
             eq_name_to_id: HashMap::new(),
+            keyframe_name_to_id: HashMap::new(),
 
             // Contact pairs / excludes (empty = no explicit pairs or excludes)
             contact_pairs: vec![],

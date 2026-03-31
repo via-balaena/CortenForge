@@ -5,6 +5,8 @@
 //! tendon length computation, bounding sphere pre-computation, and all other
 //! post-processing that requires the complete builder state.
 
+use std::collections::HashMap;
+
 use nalgebra::{DVector, Vector3};
 use sim_core::{
     ActuatorTransmission, Bounded, ENABLE_SLEEP, GeomType, Integrator, Model, SleepPolicy,
@@ -412,6 +414,7 @@ impl ModelBuilder {
             mesh_name_to_id: self.mesh_name_to_id,
             hfield_name_to_id: self.hfield_name_to_id,
             eq_name_to_id: self.eq_name_to_id,
+            keyframe_name_to_id: HashMap::new(), // Populated post-build in model_from_mjcf()
 
             // Contact pairs / excludes (populated by process_contact)
             contact_pairs: self.contact_pairs,

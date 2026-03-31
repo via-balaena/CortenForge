@@ -1,6 +1,6 @@
 # Examples Coverage Spec
 
-**Status:** Track 1A complete, Track 1B in progress (free-joint done)
+**Status:** Track 1A complete, Track 1B in progress (free-joint + keyframes done)
 **Date:** 2026-03-31
 **Goal:** 100% coverage of codebase capabilities
 
@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-03-31)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 86 examples (Track 1A + free-joint)
+- sim-core + sim-mjcf + sim-urdf → 89 examples (Track 1A + free-joint + keyframes)
   - Joint types: hinge, slide, ball, free (4/4 — all covered)
   - Sensors: 16/31 types covered
   - Actuators: 10 examples, Muscles: 5 examples
@@ -23,8 +23,10 @@ integration tests — they find bugs that unit tests miss.
   - Inverse dynamics: 5 examples, Energy-momentum: 5 examples
   - URDF loading: 10 examples
 - Track 1B in progress: 20 subdirectories, ~70 examples — no stone unturned.
-  **free-joint done (4 examples, 12 stress-test checks).** Remaining 19:
-  keyframes, mocap bodies, contact filtering, joint limits, tendons, 14
+  **2/20 subdirectories done:**
+  - free-joint: 4 examples, 12 stress-test checks
+  - keyframes: 3 examples, 12 stress-test checks
+  Remaining 18: mocap bodies, contact filtering, joint limits, tendons, 14
   advanced sensors, mesh collision, heightfield terrain, passive forces,
   sleep/wake, Hill muscle, adhesion, flex bodies, raycasting, collision
   pairs, derivatives, composites, batch simulation, and plugins.
@@ -107,7 +109,7 @@ integration tests — they find bugs that unit tests miss.
 - **TendonPos/TendonVel sensors → Track 1B**
 
 ### State Management (0% covered)
-- **Keyframes (reset-to-keyframe) → Track 1B**
+- **Keyframes (reset-to-keyframe) → Track 1B** ✓ (3 examples, 12 stress-test checks)
 - **Mocap bodies (kinematic input) → Track 1B**
 
 ### Passive Forces (partially covered)
@@ -468,7 +470,7 @@ fundamentals/
   sim-cpu/
     # --- Layer 1: Missing fundamentals ---
     free-joint/             # DONE — 4 examples, 12 stress-test checks
-    keyframes/              # State snapshots, reset-to-keyframe
+    keyframes/              # DONE — 3 examples, 12 stress-test checks
     mocap-bodies/           # Kinematic input bodies, teleop/animation
 
     # --- Layer 2: Filtering and limits ---
@@ -1412,8 +1414,8 @@ to GPU or advanced features:
 1. **Track 1A** — COMPLETE (82 examples). Basic sim-core fundamentals.
 2. **Track 1B** IN PROGRESS — sim-core foundation layer 2 (~70 examples).
    No stone unturned — every implemented subsystem gets dedicated coverage.
-   **1/20 subdirectories done** (free-joint: 4 examples, 12 stress-test checks).
-   Next: keyframes.
+   **2/20 subdirectories done** (free-joint: 4 examples; keyframes: 3 examples).
+   Next: mocap bodies.
 3. **Track 3** after Track 1B proves the engine — GPU ladder
 4. **Track 2** as needed — SDF-CPU stubs (most SDF work targets GPU)
 5. **Track 4** as needed — design + mesh
