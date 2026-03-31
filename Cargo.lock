@@ -2961,6 +2961,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-free-joint-spinning-toss"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-free-joint-stress-test"
 version = "0.7.0"
 dependencies = [

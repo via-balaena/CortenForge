@@ -63,6 +63,7 @@ members = [
     "examples/fundamentals/sim-cpu/free-joint/stress-test",
     "examples/fundamentals/sim-cpu/free-joint/tumble",
     "examples/fundamentals/sim-cpu/free-joint/projectile",
+    "examples/fundamentals/sim-cpu/free-joint/spinning-toss",
 
     # Examples — fundamentals / sim-cpu / integrators
     "examples/fundamentals/sim-cpu/integrators/comparison",
