@@ -59,6 +59,11 @@ const MJCF: &str = r#"
   <sensor>
     <subtreeangmom name="angmom" body="brick"/>
   </sensor>
+
+  <keyframe>
+    <key name="toss" qpos="0 0 0.5 1 0 0 0"
+         qvel="2 0 4 3 1 0.5"/>
+  </keyframe>
 </mujoco>
 "#;
 
@@ -150,22 +155,7 @@ struct LaunchState {
 }
 
 fn launch_body(data: &mut sim_core::types::Data, model: &sim_core::types::Model) -> (f64, f64) {
-    // Position
-    data.qpos[0] = 0.0;
-    data.qpos[1] = 0.0;
-    data.qpos[2] = Z0;
-    // Identity quaternion
-    data.qpos[3] = 1.0;
-    data.qpos[4] = 0.0;
-    data.qpos[5] = 0.0;
-    data.qpos[6] = 0.0;
-
-    // Velocity
-    for i in 0..3 {
-        data.qvel[i] = INIT_LINVEL[i];
-        data.qvel[3 + i] = INIT_ANGVEL[i];
-    }
-
+    data.reset_to_keyframe(model, 0).expect("keyframe");
     data.forward(model).expect("forward");
 
     let e0 = data.total_energy();

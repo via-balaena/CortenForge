@@ -53,6 +53,11 @@ const MJCF: &str = r#"
             contype="0" conaffinity="0" rgba="0.85 0.30 0.15 1"/>
     </body>
   </worldbody>
+
+  <keyframe>
+    <key name="launch" qpos="0 0 0 1 0 0 0"
+         qvel="3.535533905932738 0 3.535533905932738 0 0 0"/>
+  </keyframe>
 </mujoco>
 "#;
 
@@ -153,9 +158,8 @@ fn setup(
     let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let mut data = model.make_data();
 
-    // Launch
-    data.qvel[0] = vx0();
-    data.qvel[2] = vz0();
+    // Reset to launch keyframe (sets qpos + qvel in one call)
+    data.reset_to_keyframe(&model, 0).expect("keyframe");
     data.forward(&model).expect("forward");
 
     let e0 = data.total_energy();
@@ -205,25 +209,7 @@ fn relaunch(
 ) {
     if data.time - launch.last_relaunch >= RELAUNCH_PERIOD {
         launch.last_relaunch = data.time;
-
-        // Reset position to origin
-        data.qpos[0] = 0.0;
-        data.qpos[1] = 0.0;
-        data.qpos[2] = 0.0;
-        // Reset quaternion to identity
-        data.qpos[3] = 1.0;
-        data.qpos[4] = 0.0;
-        data.qpos[5] = 0.0;
-        data.qpos[6] = 0.0;
-
-        // Reset velocity
-        data.qvel[0] = vx0();
-        data.qvel[1] = 0.0;
-        data.qvel[2] = vz0();
-        data.qvel[3] = 0.0;
-        data.qvel[4] = 0.0;
-        data.qvel[5] = 0.0;
-
+        data.reset_to_keyframe(&model, 0).expect("keyframe");
         data.forward(&model).expect("forward");
         launch.e0 = data.total_energy();
     }

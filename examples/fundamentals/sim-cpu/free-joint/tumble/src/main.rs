@@ -106,7 +106,13 @@ fn main() {
                         "omega=[{:+.3}, {:+.3}, {:+.3}]  |L|={l_mag:.10}",
                         d.qvel[3], d.qvel[4], d.qvel[5],
                     )
-                }),
+                })
+                .track_energy(0.5)
+                .track_quat_norm(
+                    "Quaternion",
+                    |_m, d| (d.qpos[3], d.qpos[4], d.qpos[5], d.qpos[6]),
+                    1e-10,
+                ),
         )
         .add_systems(Startup, setup)
         .add_systems(Update, step_physics_realtime)
@@ -226,9 +232,7 @@ fn update_hud(
 
 #[derive(Resource, Default)]
 struct TumbleValidation {
-    max_ke_drift: f64,
     max_l_drift: f64,
-    max_quat_drift: f64,
     reported: bool,
 }
 
@@ -243,40 +247,21 @@ fn tumble_diagnostics(
         return;
     }
 
-    let ke_drift = (data.energy_kinetic - initial.ke).abs();
-    val.max_ke_drift = val.max_ke_drift.max(ke_drift);
-
     let angmom = data.sensor_data(&model, 0);
     let l_mag = (angmom[0].powi(2) + angmom[1].powi(2) + angmom[2].powi(2)).sqrt();
     let l_drift = (l_mag - initial.ang_momentum_mag).abs();
     val.max_l_drift = val.max_l_drift.max(l_drift);
 
-    let qnorm =
-        (data.qpos[3].powi(2) + data.qpos[4].powi(2) + data.qpos[5].powi(2) + data.qpos[6].powi(2))
-            .sqrt();
-    let quat_drift = (qnorm - 1.0).abs();
-    val.max_quat_drift = val.max_quat_drift.max(quat_drift);
-
+    // |L| conservation is example-specific (no built-in harness tracker).
+    // Energy and quaternion norm are tracked by the harness via track_energy/track_quat_norm.
     if harness.reported() && !val.reported {
         val.reported = true;
 
-        let checks = vec![
-            Check {
-                name: "KE drift < 1e-10",
-                pass: val.max_ke_drift < 1e-10,
-                detail: format!("max = {:.2e}", val.max_ke_drift),
-            },
-            Check {
-                name: "|L| drift < 1e-8",
-                pass: val.max_l_drift < 1e-8,
-                detail: format!("max = {:.2e}", val.max_l_drift),
-            },
-            Check {
-                name: "|quat| drift < 1e-10",
-                pass: val.max_quat_drift < 1e-10,
-                detail: format!("max = {:.2e}", val.max_quat_drift),
-            },
-        ];
-        let _ = print_report("Tumble (t=15s)", &checks);
+        let checks = vec![Check {
+            name: "|L| drift < 1e-8",
+            pass: val.max_l_drift < 1e-8,
+            detail: format!("max = {:.2e}", val.max_l_drift),
+        }];
+        let _ = print_report("Tumble — Angular Momentum (t=15s)", &checks);
     }
 }
