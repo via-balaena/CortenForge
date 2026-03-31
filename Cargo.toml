@@ -59,6 +59,9 @@ members = [
     "examples/fundamentals/sim-cpu/actuators/slider-crank",
     "examples/fundamentals/sim-cpu/multi-scene-test",
 
+    # Examples — fundamentals / sim-cpu / keyframes
+    "examples/fundamentals/sim-cpu/keyframes/stress-test",
+
     # Examples — fundamentals / sim-cpu / free-joint
     "examples/fundamentals/sim-cpu/free-joint/stress-test",
     "examples/fundamentals/sim-cpu/free-joint/tumble",
