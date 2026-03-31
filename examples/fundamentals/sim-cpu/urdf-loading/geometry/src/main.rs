@@ -136,12 +136,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mjcf = sim_urdf::urdf_to_mjcf(GEOMETRY_URDF).expect("URDF→MJCF");
-    let mjcf = mjcf.replace(
-        r#"timestep="0.002"/>"#,
-        r#"timestep="0.002"><flag energy="enable"/></option>"#,
-    );
-    let model = sim_mjcf::load_model(&mjcf).expect("MJCF should parse");
+    let model = sim_urdf::load_urdf_model(GEOMETRY_URDF).expect("URDF should parse");
     let mut data = model.make_data();
 
     data.qpos[0] = 0.4; // offset for visible swing

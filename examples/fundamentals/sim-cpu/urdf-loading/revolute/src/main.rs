@@ -154,13 +154,7 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // Load via the URDF pipeline: URDF → MJCF → Model
-    // Inject energy flag so we can track conservation
-    let mjcf = sim_urdf::urdf_to_mjcf(PENDULUM_URDF).expect("URDF→MJCF");
-    let mjcf = mjcf.replace(
-        r#"timestep="0.002"/>"#,
-        r#"timestep="0.002"><flag energy="enable"/></option>"#,
-    );
-    let model = sim_mjcf::load_model(&mjcf).expect("MJCF should parse");
+    let model = sim_urdf::load_urdf_model(PENDULUM_URDF).expect("URDF should parse");
     let mut data = model.make_data();
 
     // Start at 30° from vertical

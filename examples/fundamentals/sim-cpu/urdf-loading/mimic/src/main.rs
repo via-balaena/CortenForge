@@ -159,12 +159,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mjcf = sim_urdf::urdf_to_mjcf(MIMIC_URDF).expect("URDF→MJCF");
-    let mjcf = mjcf.replace(
-        r#"timestep="0.002"/>"#,
-        r#"timestep="0.002"><flag energy="enable"/></option>"#,
-    );
-    let model = sim_mjcf::load_model(&mjcf).expect("MJCF should parse");
+    let model = sim_urdf::load_urdf_model(MIMIC_URDF).expect("URDF should parse");
     let mut data = model.make_data();
 
     // Leader starts at 30°, follower near expected position

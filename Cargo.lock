@@ -3534,7 +3534,6 @@ dependencies = [
  "bevy",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3563,7 +3562,6 @@ dependencies = [
  "bevy",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3574,7 +3572,6 @@ dependencies = [
  "bevy",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3596,7 +3593,6 @@ dependencies = [
  "bevy",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3618,7 +3614,6 @@ dependencies = [
  "bevy",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
  "sim-urdf",
 ]
 

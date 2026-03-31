@@ -128,12 +128,8 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    // URDF has no stiffness attribute, so inject it on the MJCF joint
     let mjcf = sim_urdf::urdf_to_mjcf(SLIDER_URDF).expect("URDF→MJCF");
-    let mjcf = mjcf.replace(
-        r#"timestep="0.002"/>"#,
-        r#"timestep="0.002"><flag energy="enable"/></option>"#,
-    );
-    // Inject spring stiffness on the joint (URDF has no stiffness attribute)
     let mjcf = mjcf.replace(
         r#"type="slide""#,
         &format!(r#"type="slide" stiffness="{SPRING_K}""#),

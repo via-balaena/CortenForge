@@ -166,7 +166,11 @@ impl<'a> Converter<'a> {
         self.indent += 1;
 
         // Write options
-        self.write_line(r#"<option gravity="0 0 -9.81" timestep="0.002"/>"#);
+        self.write_line(r#"<option gravity="0 0 -9.81" timestep="0.002">"#);
+        self.indent += 1;
+        self.write_line(r#"<flag energy="enable"/>"#);
+        self.indent -= 1;
+        self.write_line(r"</option>");
         self.write_line("");
 
         // Write compiler settings for URDF compatibility
