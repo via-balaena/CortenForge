@@ -49,6 +49,10 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `ball-joint/conical-pendulum` | `example-ball-joint-conical` | Working | Steady conical orbit, precession |
 | `ball-joint/cone-limit` | `example-ball-joint-cone-limit` | Working | Ball joint with cone constraint |
 | `ball-joint/cone-limit-orbit` | `example-ball-joint-cone-orbit` | Working | Cone limit with orbital motion |
+| `free-joint/tumble` | `example-free-joint-tumble` | Working | Torque-free precession, asymmetric inertia |
+| `free-joint/projectile` | `example-free-joint-projectile` | Working | 45-degree launch, parabolic trajectory |
+| `free-joint/spinning-toss` | `example-free-joint-spinning-toss` | Working | Full 6-DOF: translation + rotation decoupled |
+| `free-joint/stress-test` | `example-free-joint-stress-test` | Working | Headless validation (12 checks) |
 
 ### Sensors
 
