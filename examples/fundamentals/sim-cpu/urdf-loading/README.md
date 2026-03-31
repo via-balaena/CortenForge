@@ -2,24 +2,27 @@
 
 Ten examples covering the full `sim-urdf` pipeline: parsing URDF XML,
 converting to MJCF, and compiling to a `sim-core::Model`. Each example
-isolates a single URDF feature and validates it with headless checks.
+isolates a single URDF feature.
 
 The pipeline is: URDF XML → `urdf_to_mjcf()` → MJCF XML → `load_model()` → Model/Data.
 
 ## Examples
 
-| Example | What it demonstrates |
-|---------|---------------------|
-| [revolute](revolute/) | Revolute joint pendulum, period matches analytical prediction |
-| [prismatic](prismatic/) | Prismatic (slide) joint with spring, axis mapping |
-| [continuous](continuous/) | Unlimited revolute, constant torque → linear velocity ramp |
-| [fixed](fixed/) | Fixed joints fuse into parent via `fusestatic`, body count reduces |
-| [mimic](mimic/) | `<mimic>` → equality constraint, leader-follower 2:1 coupling |
-| [geometry](geometry/) | Box, sphere, cylinder size conversion (URDF full → MJCF half) |
-| [inertia](inertia/) | Diagonal vs off-diagonal inertia tensors, precession difference |
-| [damping-friction](damping-friction/) | Damping (velocity-dependent) vs frictionloss (constant), decay profiles |
-| [error-handling](error-handling/) | Invalid URDFs produce correct error variants, no panics |
-| [stress-test](stress-test/) | 31 headless checks covering the full pipeline |
+Eight visual examples (Bevy window with HUD and orbit camera) plus two
+headless validators:
+
+| Example | Type | What it demonstrates |
+|---------|------|---------------------|
+| [revolute](revolute/) | Visual | Revolute pendulum, period + energy tracking |
+| [prismatic](prismatic/) | Visual | Slide joint with spring, period tracking |
+| [continuous](continuous/) | Visual | Unlimited revolute wheel, torque → velocity ramp |
+| [fixed](fixed/) | Visual | Fixed joint fuses into parent, body count reduces |
+| [mimic](mimic/) | Visual | `<mimic>` → equality constraint, 2:1 leader-follower |
+| [geometry](geometry/) | Visual | Box + cylinder + sphere size conversion |
+| [inertia](inertia/) | Visual | Diagonal vs fullinertia, different precession |
+| [damping-friction](damping-friction/) | Visual | Three pendulums: no-loss, damped, friction |
+| [error-handling](error-handling/) | Headless | Invalid URDFs → correct error variants (7 checks) |
+| [stress-test](stress-test/) | Headless | Full pipeline regression gate (31 checks) |
 
 ## Key conversions
 
@@ -38,10 +41,19 @@ The pipeline is: URDF XML → `urdf_to_mjcf()` → MJCF XML → `load_model()` �
 | `<dynamics friction>` | `frictionloss="..."` | Velocity-independent |
 | `<mimic>` | `<equality><joint polycoef>` | Polynomial coupling |
 
-All examples are headless (no Bevy, no window). Run any with:
+## Running
+
+Visual examples open a Bevy window:
 
 ```
-cargo run -p example-urdf-<name> --release
+cargo run -p example-urdf-revolute --release
 ```
 
-Exit code 0 = all checks pass, exit code 1 = failure.
+Headless examples print to console and exit:
+
+```
+cargo run -p example-urdf-stress-test --release
+cargo run -p example-urdf-error-handling --release
+```
+
+Orbit: left-drag | Pan: right-drag | Zoom: scroll

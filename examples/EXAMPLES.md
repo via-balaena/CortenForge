@@ -152,8 +152,8 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `urdf-loading/mimic` | `example-urdf-mimic` | Working | Leader-follower 2:1 coupling via equality |
 | `urdf-loading/geometry` | `example-urdf-geometry` | Working | Box, sphere, cylinder size conversion |
 | `urdf-loading/inertia` | `example-urdf-inertia` | Working | Diagonal vs full inertia, precession |
-| `urdf-loading/damping-friction` | `example-urdf-damping-friction` | Working | Damping + frictionloss decay comparison (7 checks) |
-| `urdf-loading/error-handling` | `example-urdf-error-handling` | Working | Invalid URDFs → correct error variants (7 checks) |
+| `urdf-loading/damping-friction` | `example-urdf-damping-friction` | Working | Three colored pendulums: no-loss, damped, friction (6 checks) |
+| `urdf-loading/error-handling` | `example-urdf-error-handling` | Working | Headless: invalid URDFs → correct error variants (7 checks) |
 | `urdf-loading/stress-test` | `example-urdf-stress-test` | Working | Headless validation (31 checks) |
 
 ### Other

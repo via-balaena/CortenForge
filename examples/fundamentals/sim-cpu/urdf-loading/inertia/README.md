@@ -1,39 +1,41 @@
 # Inertia Tensor Handling
 
-Two free-floating bodies in zero gravity with initial angular velocity:
+Two free-floating boxes in zero gravity, side by side:
+- **Left (blue):** diagonal inertia → `diaginertia` in MJCF
+- **Right (orange):** off-diagonal inertia → `fullinertia` in MJCF
 
-1. **Diagonal inertia** (I_xy = I_xz = I_yz = 0) → `diaginertia` in MJCF
-2. **Off-diagonal inertia** (cross-coupling terms) → `fullinertia` in MJCF
+Both start with the same angular velocity but precess differently.
 
-Both are given identical angular velocity. The diagonal body precesses
-symmetrically; the off-diagonal body precesses differently due to
-cross-coupling terms in Euler's equations.
+## What you see
+
+Two colored boxes spinning. The blue box (diagonal/symmetric) precesses
+smoothly. The orange box (off-diagonal/asymmetric) tumbles differently
+due to cross-coupling terms in Euler's equations.
 
 ## What it tests
 
-URDF always specifies a full 3x3 symmetric inertia tensor (6 values:
-ixx, ixy, ixz, iyy, iyz, izz). The converter detects whether
-off-diagonal terms are present and emits either `diaginertia="Ixx Iyy Izz"`
-or `fullinertia="Ixx Iyy Izz Ixy Ixz Iyz"` in the MJCF output.
+URDF always specifies a full symmetric inertia tensor (6 values). The
+converter detects whether off-diagonal terms are present and emits
+either `diaginertia` or `fullinertia` in MJCF. Both paths must produce
+correct dynamics.
 
-Both paths must produce correct dynamics. The test verifies that:
-- Diagonal inertia values propagate correctly
-- Off-diagonal inertia triggers the `fullinertia` path
-- Both bodies spin stably without NaN
-- Different inertias produce measurably different precession patterns
+Note: this example uses a combined MJCF model (not URDF) for rendering,
+since URDF can't express two independent free-floating bodies in one file.
+The URDF→fullinertia conversion is verified separately.
 
-## Checks
+## Validation
 
-| # | Check | Tolerance |
-|---|-------|-----------|
-| 1 | Diagonal inertia values (0.1, 0.2, 0.3) | 0.001 |
-| 2 | Off-diagonal → `fullinertia` in MJCF | exact |
-| 3 | Full inertia model loads (mass = 2.0) | 0.001 |
-| 4 | Diagonal body spins stably after 5000 steps | qualitative |
-| 5 | Different inertias → different precession | diff > 0.01 |
+| Check | Source |
+|-------|--------|
+| Off-diagonal → fullinertia in MJCF | `print_report` (checks URDF converter output) |
+| Diagonal body spins stably | `print_report` |
+| Full inertia body spins stably | `print_report` |
+| Different precession (diverged) | `print_report` (omega_diff > 0.01) |
 
 ## Run
 
 ```
 cargo run -p example-urdf-inertia --release
 ```
+
+Orbit: left-drag | Pan: right-drag | Zoom: scroll

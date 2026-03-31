@@ -1,37 +1,38 @@
 # Mimic Joint Coupling
 
-Two revolute joints on a common base. The follower joint mimics the leader
-with multiplier=2 and offset=0.1. The URDF `<mimic>` element converts to
-an MJCF `<equality><joint>` with `polycoef`, creating a polynomial
-coupling constraint enforced by the solver.
+Two pendulum arms side by side. The follower mimics the leader with
+multiplier=2 and offset=0.1. The URDF `<mimic>` element converts to an
+MJCF `<equality><joint>` with `polycoef`.
+
+## What you see
+
+Two arms swinging — the right arm (follower) swings at roughly double
+the angle of the left arm (leader). The HUD shows both angles, the
+expected follower angle, and the mimic tracking error.
 
 ## What it tests
 
-The URDF mimic semantics `position = multiplier * leader + offset` map to
-the MuJoCo equality constraint:
+URDF mimic semantics: `position = multiplier * leader + offset`
 
+MuJoCo equivalent:
 ```xml
 <equality>
     <joint joint1="follower" joint2="leader" polycoef="0.1 2.0 0 0 0"/>
 </equality>
 ```
 
-The constraint solver enforces `follower = 2*leader + 0.1` at each
-timestep. The example verifies this relationship holds from two different
-initial conditions.
+## Validation
 
-## Checks
-
-| # | Check | Tolerance |
-|---|-------|-----------|
-| 1 | MJCF output contains `<equality>` with `polycoef` | exact |
-| 2 | Model has equality constraints (neq > 0) | exact |
-| 3 | Two joints in model | exact |
-| 4 | Follower tracks 2*leader + 0.1 from q=0.5 | 0.05 rad |
-| 5 | Constraint holds from q=-0.3 | 0.05 rad |
+| Check | Source |
+|-------|--------|
+| Has equality constraint (neq > 0) | `print_report` |
+| Two joints in model | `print_report` |
+| Mimic tracks (max err < 0.05 rad) | `print_report` (measured: ~0.0001 rad) |
 
 ## Run
 
 ```
 cargo run -p example-urdf-mimic --release
 ```
+
+Orbit: left-drag | Pan: right-drag | Zoom: scroll

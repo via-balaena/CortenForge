@@ -1,9 +1,13 @@
 # Revolute Joint Pendulum
 
-Single hinge pendulum defined in URDF. The arm hangs from the pivot under
-gravity and oscillates. Validates the most common URDF joint type
-(`revolute` → MJCF `hinge`) and verifies the oscillation period matches
-the analytical prediction for a compound pendulum.
+Single hinge pendulum defined in URDF. The arm hangs from an invisible
+pivot and swings under gravity with a rod (cylinder) and tip mass (sphere).
+
+## What you see
+
+A pendulum swinging back and forth. The HUD shows angle, velocity, energy,
+and energy drift. The ValidationHarness tracks period (against the
+analytical compound-pendulum formula) and energy conservation.
 
 ## What it tests
 
@@ -13,28 +17,27 @@ joint type in URDF robot descriptions.
 
 ## Physics
 
-The arm has mass 1.0 kg with COM at 0.25m below the pivot. For a compound
-pendulum at small angles:
+The arm has mass 1.0 kg with COM at 1.0m below the pivot:
 
 ```
-I = m*L^2 + I_cm = 1.0*0.0625 + 0.02 = 0.0825
-T = 2*pi*sqrt(I / (m*g*L)) = 2*pi*sqrt(0.0825 / 2.4525) = 1.152s
+I_pivot = m*L^2 + I_cm = 1.0 + 0.01 = 1.01
+T = 2*pi*sqrt(I / (m*g*L)) ≈ 2.05s
 ```
 
-The measured period matches within 0.03%.
+## Validation
 
-## Checks
-
-| # | Check | Tolerance |
-|---|-------|-----------|
-| 1 | URDF loads with 1 joint | exact |
-| 2 | Joint type is hinge | exact |
-| 3 | Joint limited with range (-3.14, 3.14) | 0.01 |
-| 4 | Period matches analytical T = 1.152s | 2% |
-| 5 | Energy approximately conserved (no damping) | 1% drift |
+| Check | Source |
+|-------|--------|
+| Period matches analytical | `track_period` (2% tolerance) |
+| Energy conserved | `track_energy` (0.5% tolerance) |
+| Revolute → hinge | `print_report` structural check |
+| Joint is limited | `print_report` structural check |
+| MJCF contains hinge | `print_report` structural check |
 
 ## Run
 
 ```
 cargo run -p example-urdf-revolute --release
 ```
+
+Orbit: left-drag | Pan: right-drag | Zoom: scroll

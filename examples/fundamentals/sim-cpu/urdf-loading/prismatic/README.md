@@ -1,38 +1,37 @@
 # Prismatic Joint Slider
 
-Mass on a horizontal spring using a prismatic (slide) joint from URDF. A
-spring force is applied via `qfrc_applied` since URDF has no stiffness
-attribute. Verifies the oscillation period matches T = 2*pi*sqrt(m/k).
+A box sliding back and forth on a horizontal axis, driven by a spring
+(joint stiffness injected into the MJCF since URDF lacks a stiffness
+attribute).
+
+## What you see
+
+A box oscillating left and right. The HUD shows position, velocity, and
+spring force. The ValidationHarness measures the period via zero-crossings.
 
 ## What it tests
 
 The URDF `prismatic` joint converts to an MJCF `slide` with the correct
-axis mapping and position limits. The axis attribute `<axis xyz="1 0 0"/>`
-maps directly to the MJCF joint axis.
+axis mapping and position limits.
 
 ## Physics
-
-The slider has mass 2.0 kg on a spring with k = 50 N/m. The horizontal
-slide axis means gravity does not influence the oscillation.
 
 ```
 T = 2*pi*sqrt(m/k) = 2*pi*sqrt(2/50) = 1.257s
 ```
 
-The measured period matches within 0.05%.
+## Validation
 
-## Checks
-
-| # | Check | Tolerance |
-|---|-------|-----------|
-| 1 | URDF loads with 1 joint | exact |
-| 2 | Joint type is slide | exact |
-| 3 | Slide limits [-1, 1] | 0.001 |
-| 4 | Axis maps to X | 0.01 |
-| 5 | Period matches T = 2*pi*sqrt(m/k) | 2% |
+| Check | Source |
+|-------|--------|
+| Prismatic → slide | `print_report` |
+| Axis maps to X | `print_report` |
+| Period matches T=2pi*sqrt(m/k) | `print_report` zero-crossing (2% tolerance) |
 
 ## Run
 
 ```
 cargo run -p example-urdf-prismatic --release
 ```
+
+Orbit: left-drag | Pan: right-drag | Zoom: scroll

@@ -1,42 +1,38 @@
 # Continuous Joint Wheel
 
-Spinning wheel with no joint limits. The URDF `continuous` joint type is
-an unlimited revolute — it converts to an MJCF `hinge` with
-`limited="false"`. A constant torque is applied and the angular
-acceleration is verified against alpha = tau / I.
+A spinning disc with a marker sphere on its edge. The URDF `continuous`
+joint converts to an MJCF `hinge` with `limited="false"`. A constant
+torque accelerates the wheel — the angle passes well beyond 2*pi without
+clamping.
+
+## What you see
+
+A flat disc spinning faster and faster. The marker sphere makes the
+rotation visible. The HUD shows angle, velocity, and revolution count.
 
 ## What it tests
 
 The key difference between `revolute` and `continuous` in URDF is that
-continuous joints have no position limits. The angle can grow past 2*pi
-without clamping, which is essential for wheels, motors, and other
-continuously rotating mechanisms.
+continuous joints have no position limits. The angle grows without bound.
 
 ## Physics
 
-The wheel has moment of inertia I_zz = 0.02 kg*m^2 about the spin axis.
-Applying torque tau = 1.0 N*m:
-
 ```
-alpha = tau / I = 1.0 / 0.02 = 50 rad/s^2
+alpha = tau / I = 0.1 / 0.02 = 5.0 rad/s^2
 ```
 
-After 500 timesteps at dt = 0.002s, the expected angular velocity is
-exactly 50 rad/s. The match is exact (0.000% error) because there is
-no damping or friction.
+## Validation
 
-## Checks
-
-| # | Check | Tolerance |
-|---|-------|-----------|
-| 1 | Joint type is hinge | exact |
-| 2 | Joint is unlimited (not limited) | exact |
-| 3 | alpha = tau / I after one step | 1% |
-| 4 | Angle passes 2*pi (no clamping) | qualitative |
-| 5 | Constant torque → linear velocity ramp | 1% |
+| Check | Source |
+|-------|--------|
+| Continuous → unlimited hinge | `print_report` |
+| Velocity matches alpha*t | `print_report` (5% tolerance) |
+| Angle past 2*pi (no clamping) | `print_report` |
 
 ## Run
 
 ```
 cargo run -p example-urdf-continuous --release
 ```
+
+Orbit: left-drag | Pan: right-drag | Zoom: scroll
