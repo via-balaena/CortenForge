@@ -3531,7 +3531,10 @@ dependencies = [
 name = "example-urdf-continuous"
 version = "0.7.0"
 dependencies = [
+ "bevy",
+ "sim-bevy",
  "sim-core",
+ "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3539,7 +3542,10 @@ dependencies = [
 name = "example-urdf-damping-friction"
 version = "0.7.0"
 dependencies = [
+ "bevy",
+ "sim-bevy",
  "sim-core",
+ "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3554,7 +3560,10 @@ dependencies = [
 name = "example-urdf-fixed"
 version = "0.7.0"
 dependencies = [
+ "bevy",
+ "sim-bevy",
  "sim-core",
+ "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3562,7 +3571,10 @@ dependencies = [
 name = "example-urdf-geometry"
 version = "0.7.0"
 dependencies = [
+ "bevy",
+ "sim-bevy",
  "sim-core",
+ "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3570,6 +3582,8 @@ dependencies = [
 name = "example-urdf-inertia"
 version = "0.7.0"
 dependencies = [
+ "bevy",
+ "sim-bevy",
  "sim-core",
  "sim-mjcf",
  "sim-urdf",
@@ -3579,7 +3593,10 @@ dependencies = [
 name = "example-urdf-mimic"
 version = "0.7.0"
 dependencies = [
+ "bevy",
+ "sim-bevy",
  "sim-core",
+ "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3587,7 +3604,10 @@ dependencies = [
 name = "example-urdf-prismatic"
 version = "0.7.0"
 dependencies = [
+ "bevy",
+ "sim-bevy",
  "sim-core",
+ "sim-mjcf",
  "sim-urdf",
 ]
 
@@ -3595,7 +3615,10 @@ dependencies = [
 name = "example-urdf-revolute"
 version = "0.7.0"
 dependencies = [
+ "bevy",
+ "sim-bevy",
  "sim-core",
+ "sim-mjcf",
  "sim-urdf",
 ]
 

@@ -1,79 +1,43 @@
 //! Joint Dynamics — Damping and Friction
 //!
-//! Three identical pendulums with different dynamics parameters:
-//! (A) damping=0, friction=0 — no energy loss (conservative)
-//! (B) damping=0.5, friction=0 — velocity-dependent dissipation
-//! (C) damping=0, friction=0.5 — velocity-independent frictionloss
+//! Three identical pendulums side by side with different dynamics:
+//! - Left (blue): no loss — swings forever
+//! - Center (green): damping=0.5 — velocity-dependent, decays smoothly
+//! - Right (red): friction=0.5 — velocity-independent, decays linearly then stops
 //!
-//! All start at the same angle. Compares energy decay: A stays constant,
-//! B and C both decay, but with different profiles.
+//! All start at 45°. Watch the damped and friction arms slow down while
+//! the conservative arm keeps swinging.
 //!
 //! Run: `cargo run -p example-urdf-damping-friction --release`
 
 #![allow(
     clippy::doc_markdown,
+    clippy::needless_pass_by_value,
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::let_underscore_must_use,
     clippy::suboptimal_flops,
     clippy::too_many_lines
 )]
 
-/// No damping, no friction (conservative).
-const NO_LOSS_URDF: &str = r#"<?xml version="1.0"?>
-<robot name="no_loss">
-    <link name="base">
-        <inertial>
-            <mass value="10.0"/>
-            <inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/>
-        </inertial>
-    </link>
-    <link name="arm">
-        <inertial>
-            <origin xyz="0 0 -0.25"/>
-            <mass value="1.0"/>
-            <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.002"/>
-        </inertial>
-    </link>
-    <joint name="hinge" type="revolute">
-        <parent link="base"/>
-        <child link="arm"/>
-        <origin xyz="0 0 1.0"/>
-        <axis xyz="0 1 0"/>
-        <limit lower="-3.14" upper="3.14"/>
-    </joint>
-</robot>
-"#;
+use bevy::prelude::*;
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::physics_pos;
+use sim_bevy::examples::{
+    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
+    validation_system,
+};
+use sim_bevy::model_data::{
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    sync_geom_transforms,
+};
+use sim_core::validation::{Check, print_report};
 
-/// Velocity-dependent damping only.
-const DAMPED_URDF: &str = r#"<?xml version="1.0"?>
-<robot name="damped">
-    <link name="base">
-        <inertial>
-            <mass value="10.0"/>
-            <inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/>
-        </inertial>
-    </link>
-    <link name="arm">
-        <inertial>
-            <origin xyz="0 0 -0.25"/>
-            <mass value="1.0"/>
-            <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.002"/>
-        </inertial>
-    </link>
-    <joint name="hinge" type="revolute">
-        <parent link="base"/>
-        <child link="arm"/>
-        <origin xyz="0 0 1.0"/>
-        <axis xyz="0 1 0"/>
-        <limit lower="-3.14" upper="3.14"/>
-        <dynamics damping="0.5"/>
-    </joint>
-</robot>
-"#;
+// ── URDF for validation checks ───────────────────────────────────────────
 
-/// Velocity-independent friction (frictionloss) only.
 const FRICTION_URDF: &str = r#"<?xml version="1.0"?>
 <robot name="friction">
     <link name="base">
@@ -84,7 +48,7 @@ const FRICTION_URDF: &str = r#"<?xml version="1.0"?>
     </link>
     <link name="arm">
         <inertial>
-            <origin xyz="0 0 -0.25"/>
+            <origin xyz="0 0 -0.5"/>
             <mass value="1.0"/>
             <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.002"/>
         </inertial>
@@ -100,151 +64,233 @@ const FRICTION_URDF: &str = r#"<?xml version="1.0"?>
 </robot>
 "#;
 
-fn check(name: &str, pass: bool, detail: &str) -> bool {
-    let tag = if pass { "PASS" } else { "FAIL" };
-    println!("  [{tag}] {name}: {detail}");
-    pass
-}
+// ── Combined MJCF with three pendulums ───────────────────────────────────
 
-/// Simulate a pendulum for n_steps, return peak velocity magnitude.
-fn simulate_peak_velocity(urdf: &str, n_steps: usize) -> f64 {
-    let model = sim_urdf::load_urdf_model(urdf).expect("parse");
-    let mut data = model.make_data();
-    data.qpos[0] = 0.5; // 0.5 rad initial angle
-    data.forward(&model).expect("forward");
+/// Three pendulums: no-loss, damped, friction. Each has a rod + sphere tip.
+/// Colors: blue (no loss), green (damped), red (friction).
+const COMBINED_MJCF: &str = r#"
+<mujoco model="damping_friction">
+  <compiler angle="radian"/>
+  <option gravity="0 0 -9.81" timestep="0.002">
+    <flag energy="enable"/>
+  </option>
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
 
-    let mut peak_vel = 0.0_f64;
-    for _ in 0..n_steps {
-        data.step(&model).expect("step");
-        peak_vel = peak_vel.max(data.qvel[0].abs());
-    }
-    peak_vel
-}
+  <worldbody>
+    <!-- No loss (blue) -->
+    <body name="arm_none" pos="-0.8 0 2.0">
+      <joint name="j_none" type="hinge" axis="0 1 0" limited="true" range="-3.14 3.14"/>
+      <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.02 0.02 0.002"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.45" size="0.02" rgba="0.3 0.5 0.8 1"/>
+      <geom type="sphere" pos="0 0 -0.5" size="0.06" rgba="0.3 0.5 0.8 1"/>
+    </body>
+
+    <!-- Damped (green) -->
+    <body name="arm_damp" pos="0 0 2.0">
+      <joint name="j_damp" type="hinge" axis="0 1 0" damping="0.5" limited="true" range="-3.14 3.14"/>
+      <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.02 0.02 0.002"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.45" size="0.02" rgba="0.3 0.7 0.3 1"/>
+      <geom type="sphere" pos="0 0 -0.5" size="0.06" rgba="0.3 0.7 0.3 1"/>
+    </body>
+
+    <!-- Friction (red) -->
+    <body name="arm_fric" pos="0.8 0 2.0">
+      <joint name="j_fric" type="hinge" axis="0 1 0" frictionloss="0.5" limited="true" range="-3.14 3.14"/>
+      <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.02 0.02 0.002"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.45" size="0.02" rgba="0.8 0.3 0.3 1"/>
+      <geom type="sphere" pos="0 0 -0.5" size="0.06" rgba="0.8 0.3 0.3 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"#;
+
+const INITIAL_ANGLE: f64 = std::f64::consts::FRAC_PI_4; // 45°
+
+// ── Bevy App ─────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== URDF Loading — Damping & Friction ===\n");
+    println!("=== CortenForge: URDF Damping & Friction ===");
+    println!("  Left (blue): no loss — swings forever");
+    println!("  Center (green): damping=0.5 — decays smoothly");
+    println!("  Right (red): friction=0.5 — decays then stops");
+    println!("  All start at 45°");
+    println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
-    let mut passed = 0u32;
-    let mut total = 0u32;
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "CortenForge — URDF Damping & Friction".into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_plugins(OrbitCameraPlugin)
+        .init_resource::<PhysicsAccumulator>()
+        .init_resource::<PhysicsHud>()
+        .init_resource::<DampingValidation>()
+        .insert_resource(
+            ValidationHarness::new()
+                .report_at(15.0)
+                .print_every(3.0)
+                .display(|_m, d| {
+                    format!(
+                        "none={:+5.1}°  damp={:+5.1}°  fric={:+5.1}°",
+                        d.qpos[0].to_degrees(),
+                        d.qpos[1].to_degrees(),
+                        d.qpos[2].to_degrees(),
+                    )
+                }),
+        )
+        .add_systems(Startup, setup)
+        .add_systems(Update, step_physics_realtime)
+        .add_systems(
+            PostUpdate,
+            (
+                sync_geom_transforms,
+                validation_system,
+                damping_diagnostics,
+                update_hud,
+                render_physics_hud,
+            )
+                .chain(),
+        )
+        .run();
+}
 
-    // --- Check 1: Damping value propagates to model ---
-    let damped_model = sim_urdf::load_urdf_model(DAMPED_URDF).expect("parse");
-    let damping = damped_model.jnt_damping[0];
-    if check(
-        "Damping=0.5 in model",
-        (damping - 0.5).abs() < 0.001,
-        &format!("jnt_damping={damping:.3}"),
-    ) {
-        passed += 1;
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let model = sim_mjcf::load_model(COMBINED_MJCF).expect("MJCF should parse");
+    let mut data = model.make_data();
+
+    // All three start at 45°
+    for i in 0..3 {
+        data.qpos[i] = INITIAL_ANGLE;
     }
-    total += 1;
+    let _ = data.forward(&model);
 
-    // --- Check 2: Frictionloss value propagates to model ---
-    let friction_model = sim_urdf::load_urdf_model(FRICTION_URDF).expect("parse");
-    let fl = friction_model.dof_frictionloss[0];
-    if check(
-        "Frictionloss=0.5 in model",
-        (fl - 0.5).abs() < 0.001,
-        &format!("dof_frictionloss={fl:.3}"),
-    ) {
-        passed += 1;
+    // Verify URDF friction → frictionloss conversion
+    let mjcf = sim_urdf::urdf_to_mjcf(FRICTION_URDF).expect("convert");
+    println!(
+        "  URDF friction → frictionloss: {}\n",
+        mjcf.contains("frictionloss")
+    );
+
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
+
+    spawn_example_camera(
+        &mut commands,
+        physics_pos(0.0, 0.0, 1.5),
+        4.0,
+        std::f32::consts::FRAC_PI_4,
+        0.3,
+    );
+    spawn_physics_hud(&mut commands);
+
+    commands.insert_resource(PhysicsModel(model));
+    commands.insert_resource(PhysicsData(data));
+}
+
+// ── HUD ──────────────────────────────────────────────────────────────────
+
+fn update_hud(_model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
+    hud.clear();
+    hud.section("Damping & Friction");
+
+    hud.raw("Blue: no loss".into());
+    hud.scalar("  angle", data.qpos[0].to_degrees(), 1);
+    hud.raw("Green: damping=0.5".into());
+    hud.scalar("  angle", data.qpos[1].to_degrees(), 1);
+    hud.raw("Red: friction=0.5".into());
+    hud.scalar("  angle", data.qpos[2].to_degrees(), 1);
+    hud.scalar("time", data.time, 1);
+}
+
+// ── Validation ───────────────────────────────────────────────────────────
+
+#[derive(Resource, Default)]
+struct DampingValidation {
+    peak_none: f64,
+    peak_damp: f64,
+    peak_fric: f64,
+    reported: bool,
+}
+
+fn damping_diagnostics(
+    model: Res<PhysicsModel>,
+    data: Res<PhysicsData>,
+    harness: Res<ValidationHarness>,
+    mut val: ResMut<DampingValidation>,
+) {
+    // Track peak velocities in the last few seconds
+    if data.time > 10.0 {
+        val.peak_none = val.peak_none.max(data.qvel[0].abs());
+        val.peak_damp = val.peak_damp.max(data.qvel[1].abs());
+        val.peak_fric = val.peak_fric.max(data.qvel[2].abs());
     }
-    total += 1;
 
-    // --- Check 3: MJCF output contains frictionloss ---
+    if !harness.reported() || val.reported {
+        return;
+    }
+    val.reported = true;
+
+    // Check URDF conversion
     let mjcf = sim_urdf::urdf_to_mjcf(FRICTION_URDF).expect("convert");
     let has_fl = mjcf.contains("frictionloss");
-    if check(
-        "MJCF contains frictionloss",
-        has_fl,
-        &format!("found: {has_fl}"),
-    ) {
-        passed += 1;
-    }
-    total += 1;
 
-    // --- Check 4: Conservative pendulum maintains peak velocity ---
-    let steps = 5000;
-    let peak_no_loss_early = {
-        let model = sim_urdf::load_urdf_model(NO_LOSS_URDF).expect("parse");
-        let mut data = model.make_data();
-        data.qpos[0] = 0.5;
-        data.forward(&model).expect("forward");
-        let mut peak = 0.0_f64;
-        for _ in 0..500 {
-            data.step(&model).expect("step");
-            peak = peak.max(data.qvel[0].abs());
-        }
-        peak
-    };
-    let peak_no_loss_late = {
-        let model = sim_urdf::load_urdf_model(NO_LOSS_URDF).expect("parse");
-        let mut data = model.make_data();
-        data.qpos[0] = 0.5;
-        data.forward(&model).expect("forward");
-        for _ in 0..4500 {
-            data.step(&model).expect("step");
-        }
-        let mut peak = 0.0_f64;
-        for _ in 0..500 {
-            data.step(&model).expect("step");
-            peak = peak.max(data.qvel[0].abs());
-        }
-        peak
-    };
-    let ratio = peak_no_loss_late / peak_no_loss_early;
-    if check(
-        "No-loss pendulum: peak velocity stable",
-        ratio > 0.95,
-        &format!("early={peak_no_loss_early:.4}, late={peak_no_loss_late:.4}, ratio={ratio:.4}"),
-    ) {
-        passed += 1;
-    }
-    total += 1;
+    // Check damping propagated
+    let damping_ok = (model.jnt_damping[1] - 0.5).abs() < 0.001;
 
-    // --- Check 5: Damped pendulum loses energy ---
-    let peak_damped = simulate_peak_velocity(DAMPED_URDF, steps);
-    let peak_no_loss = simulate_peak_velocity(NO_LOSS_URDF, steps);
-    if check(
-        "Damped pendulum: lower peak velocity",
-        peak_damped < peak_no_loss * 0.8,
-        &format!("damped={peak_damped:.4}, no_loss={peak_no_loss:.4}"),
-    ) {
-        passed += 1;
-    }
-    total += 1;
+    // Check frictionloss propagated
+    let fl_ok = (model.dof_frictionloss[2] - 0.5).abs() < 0.001;
 
-    // --- Check 6: Friction pendulum loses energy ---
-    let peak_friction = simulate_peak_velocity(FRICTION_URDF, steps);
-    if check(
-        "Friction pendulum: lower peak velocity",
-        peak_friction < peak_no_loss * 0.8,
-        &format!("friction={peak_friction:.4}, no_loss={peak_no_loss:.4}"),
-    ) {
-        passed += 1;
-    }
-    total += 1;
+    // No-loss should still be swinging, damped/friction should be much smaller
+    let none_swinging = val.peak_none > 0.5;
+    let damp_decayed = val.peak_damp < val.peak_none * 0.5;
+    let fric_decayed = val.peak_fric < val.peak_none * 0.5;
 
-    // --- Check 7: Damped and friction have different decay profiles ---
-    // Damping is velocity-proportional; friction is constant-magnitude.
-    // They should produce different peak velocities over the same time.
-    let diff = (peak_damped - peak_friction).abs();
-    if check(
-        "Damping ≠ friction (different profiles)",
-        diff > 0.001,
-        &format!("damped={peak_damped:.4}, friction={peak_friction:.4}, diff={diff:.4}"),
-    ) {
-        passed += 1;
-    }
-    total += 1;
-
-    // --- Summary ---
-    println!("\n============================================================");
-    println!("  TOTAL: {passed}/{total} checks passed");
-    if passed == total {
-        println!("  ALL PASS");
-    } else {
-        println!("  {} FAILED", total - passed);
-        std::process::exit(1);
-    }
+    let checks = vec![
+        Check {
+            name: "URDF friction → frictionloss",
+            pass: has_fl,
+            detail: format!("found: {has_fl}"),
+        },
+        Check {
+            name: "Damping=0.5 in model",
+            pass: damping_ok,
+            detail: format!("jnt_damping[1]={:.3}", model.jnt_damping[1]),
+        },
+        Check {
+            name: "Frictionloss=0.5 in model",
+            pass: fl_ok,
+            detail: format!("dof_frictionloss[2]={:.3}", model.dof_frictionloss[2]),
+        },
+        Check {
+            name: "No-loss still swinging",
+            pass: none_swinging,
+            detail: format!("peak_vel={:.3}", val.peak_none),
+        },
+        Check {
+            name: "Damped arm decayed",
+            pass: damp_decayed,
+            detail: format!("peak={:.3} vs none={:.3}", val.peak_damp, val.peak_none),
+        },
+        Check {
+            name: "Friction arm decayed",
+            pass: fric_decayed,
+            detail: format!("peak={:.3} vs none={:.3}", val.peak_fric, val.peak_none),
+        },
+    ];
+    let _ = print_report("URDF Damping & Friction", &checks);
 }

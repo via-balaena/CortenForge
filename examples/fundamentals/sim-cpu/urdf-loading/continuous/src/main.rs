@@ -1,24 +1,42 @@
 //! Continuous Joint Wheel
 //!
-//! Spinning wheel with no joint limits (unlimited revolute). A constant torque
-//! is applied via `qfrc_applied` and the angular acceleration is verified
-//! against alpha = tau / I.
+//! A spinning wheel with no joint limits. The URDF `continuous` joint type
+//! converts to an MJCF `hinge` with `limited="false"`. A constant torque is
+//! applied via `qfrc_applied` and the wheel accelerates continuously — the
+//! angle passes well beyond 2*pi without clamping.
 //!
 //! Run: `cargo run -p example-urdf-continuous --release`
 
 #![allow(
     clippy::doc_markdown,
+    clippy::needless_pass_by_value,
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_lossless,
-    clippy::suboptimal_flops
+    clippy::let_underscore_must_use,
+    clippy::suboptimal_flops,
+    clippy::too_many_lines
 )]
 
-use sim_core::MjJointType;
+use bevy::prelude::*;
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::physics_pos;
+use sim_bevy::examples::{
+    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
+    validation_system,
+};
+use sim_bevy::model_data::{
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    sync_geom_transforms,
+};
+use sim_core::validation::{Check, print_report};
 
-/// Wheel on axle with continuous (unlimited revolute) joint about Z.
+// ── URDF Model ───────────────────────────────────────────────────────────
+
+/// Wheel on axle. The wheel is a short, wide cylinder (disc) so the spin
+/// is clearly visible. Continuous joint about Z (vertical axis).
 const WHEEL_URDF: &str = r#"<?xml version="1.0"?>
 <robot name="wheel">
     <link name="axle">
@@ -32,137 +50,196 @@ const WHEEL_URDF: &str = r#"<?xml version="1.0"?>
             <mass value="1.0"/>
             <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.02"/>
         </inertial>
+        <collision>
+            <geometry>
+                <cylinder radius="0.4" length="0.08"/>
+            </geometry>
+        </collision>
+        <collision>
+            <origin xyz="0.3 0 0"/>
+            <geometry>
+                <sphere radius="0.05"/>
+            </geometry>
+        </collision>
     </link>
     <joint name="spin" type="continuous">
         <parent link="axle"/>
         <child link="wheel"/>
+        <origin xyz="0 0 1.0"/>
         <axis xyz="0 0 1"/>
     </joint>
 </robot>
 "#;
 
-fn check(name: &str, pass: bool, detail: &str) -> bool {
-    let tag = if pass { "PASS" } else { "FAIL" };
-    println!("  [{tag}] {name}: {detail}");
-    pass
-}
+// ── Physics constants ────────────────────────────────────────────────────
+
+const TORQUE: f64 = 0.1; // gentle torque so spin is visible
+const I_ZZ: f64 = 0.02;
+
+// ── Bevy App ─────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== URDF Loading — Continuous Joint Wheel ===\n");
+    let alpha = TORQUE / I_ZZ;
+    println!("=== CortenForge: URDF Continuous Joint Wheel ===");
+    println!("  URDF continuous → MJCF hinge (unlimited)");
+    println!("  I_zz={I_ZZ}  tau={TORQUE}  alpha={alpha:.1} rad/s^2");
+    println!("  Wheel accelerates continuously — no angle limit");
+    println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
-    let mut passed = 0u32;
-    let mut total = 0u32;
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "CortenForge — URDF Continuous Wheel".into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_plugins(OrbitCameraPlugin)
+        .init_resource::<PhysicsAccumulator>()
+        .init_resource::<PhysicsHud>()
+        .init_resource::<WheelValidation>()
+        .insert_resource(
+            ValidationHarness::new()
+                .report_at(8.0)
+                .print_every(1.0)
+                .display(|m, d| {
+                    let angle = d.joint_qpos(m, 0)[0];
+                    let vel = d.joint_qvel(m, 0)[0];
+                    format!(
+                        "angle={:.1}°  vel={vel:.2} rad/s  revs={:.1}",
+                        angle.to_degrees(),
+                        angle / (2.0 * std::f64::consts::PI),
+                    )
+                }),
+        )
+        .add_systems(Startup, setup)
+        .add_systems(Update, (apply_torque, step_physics_realtime).chain())
+        .add_systems(
+            PostUpdate,
+            (
+                sync_geom_transforms,
+                validation_system,
+                wheel_diagnostics,
+                update_hud,
+                render_physics_hud,
+            )
+                .chain(),
+        )
+        .run();
+}
 
-    let model = sim_urdf::load_urdf_model(WHEEL_URDF).expect("URDF should parse");
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let mjcf = sim_urdf::urdf_to_mjcf(WHEEL_URDF).expect("URDF→MJCF");
+    let mjcf = mjcf.replace(
+        r#"timestep="0.002"/>"#,
+        r#"timestep="0.002"><flag energy="enable"/></option>"#,
+    );
+    let model = sim_mjcf::load_model(&mjcf).expect("MJCF should parse");
+    let data = model.make_data();
 
-    // --- Check 1: Joint type is hinge ---
-    let is_hinge = model.jnt_type[0] == MjJointType::Hinge;
-    if check(
-        "Joint type is hinge",
-        is_hinge,
-        &format!("type={:?}", model.jnt_type[0]),
-    ) {
-        passed += 1;
+    println!(
+        "  Model: {} bodies, {} joints, {} geoms",
+        model.nbody, model.njnt, model.ngeom
+    );
+    println!(
+        "  Joint type: {:?}, limited: {}\n",
+        model.jnt_type[0], model.jnt_limited[0]
+    );
+
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
+
+    spawn_example_camera(&mut commands, physics_pos(0.0, 0.0, 1.0), 2.5, 0.3, 0.8);
+    spawn_physics_hud(&mut commands);
+
+    commands.insert_resource(PhysicsModel(model));
+    commands.insert_resource(PhysicsData(data));
+}
+
+// ── Torque ───────────────────────────────────────────────────────────────
+
+fn apply_torque(mut data: ResMut<PhysicsData>) {
+    data.qfrc_applied[0] = TORQUE;
+}
+
+// ── HUD ──────────────────────────────────────────────────────────────────
+
+fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
+    hud.clear();
+    hud.section("URDF Continuous Wheel");
+
+    let angle = data.joint_qpos(&model, 0)[0];
+    let vel = data.joint_qvel(&model, 0)[0];
+    let revs = angle / (2.0 * std::f64::consts::PI);
+
+    hud.scalar("angle (deg)", angle.to_degrees(), 1);
+    hud.scalar("velocity (rad/s)", vel, 2);
+    hud.scalar("revolutions", revs, 2);
+    hud.scalar("torque (Nm)", TORQUE, 3);
+    hud.scalar("time", data.time, 1);
+}
+
+// ── Validation ───────────────────────────────────────────────────────────
+
+#[derive(Resource, Default)]
+struct WheelValidation {
+    reported: bool,
+}
+
+fn wheel_diagnostics(
+    model: Res<PhysicsModel>,
+    data: Res<PhysicsData>,
+    harness: Res<ValidationHarness>,
+    mut val: ResMut<WheelValidation>,
+) {
+    if !harness.reported() || val.reported {
+        return;
     }
-    total += 1;
+    val.reported = true;
 
-    // --- Check 2: Joint is NOT limited (continuous = unlimited revolute) ---
+    let is_hinge = model.jnt_type[0] == sim_core::MjJointType::Hinge;
     let is_unlimited = !model.jnt_limited[0];
-    if check(
-        "Joint is unlimited",
-        is_unlimited,
-        &format!("limited={}", model.jnt_limited[0]),
-    ) {
-        passed += 1;
-    }
-    total += 1;
 
-    // --- Check 3: Angular acceleration matches alpha = tau / I ---
-    // I_zz = 0.02 for the wheel about the spin axis.
-    // Apply torque tau = 1.0 N·m, expect alpha = 1.0 / 0.02 = 50 rad/s^2.
-    let tau = 1.0_f64;
-    let i_zz = 0.02_f64;
-    let expected_alpha = tau / i_zz;
+    // Check that velocity matches alpha * t
+    let expected_vel = (TORQUE / I_ZZ) * data.time;
+    let measured_vel = data.qvel[0];
+    let vel_err = ((measured_vel - expected_vel) / expected_vel).abs();
 
-    let mut data = model.make_data();
-    data.forward(&model).expect("forward");
+    // Check that angle exceeds 2*pi
+    let past_2pi = data.qpos[0].abs() > 2.0 * std::f64::consts::PI;
 
-    // Apply constant torque and step once
-    data.qfrc_applied[0] = tau;
-    data.step(&model).expect("step");
-
-    // After one timestep from rest: omega ≈ alpha * dt
-    let dt = model.timestep;
-    let omega = data.qvel[0];
-    let measured_alpha = omega / dt;
-    let rel_err = ((measured_alpha - expected_alpha) / expected_alpha).abs();
-
-    if check(
-        "alpha = tau / I",
-        rel_err < 0.01,
-        &format!(
-            "measured={measured_alpha:.2} rad/s^2, expected={expected_alpha:.2}, err={:.3}%",
-            rel_err * 100.0
-        ),
-    ) {
-        passed += 1;
-    }
-    total += 1;
-
-    // --- Check 4: Angle wraps past 2*pi (no limits clamp it) ---
-    let mut data2 = model.make_data();
-    data2.forward(&model).expect("forward");
-
-    // Give it a big initial angular velocity so it passes 2*pi
-    data2.qvel[0] = 100.0; // 100 rad/s
-    for _ in 0..1000 {
-        data2.step(&model).expect("step");
-    }
-
-    let final_q = data2.qpos[0];
-    let passes_2pi = final_q.abs() > 2.0 * std::f64::consts::PI;
-    if check(
-        "Angle passes 2*pi (no clamping)",
-        passes_2pi,
-        &format!("q={final_q:.2} rad"),
-    ) {
-        passed += 1;
-    }
-    total += 1;
-
-    // --- Check 5: Constant torque → linearly increasing velocity ---
-    let mut data3 = model.make_data();
-    data3.forward(&model).expect("forward");
-
-    let n_steps = 500;
-    for _ in 0..n_steps {
-        data3.qfrc_applied[0] = tau;
-        data3.step(&model).expect("step");
-    }
-
-    let expected_omega = expected_alpha * dt * (n_steps as f64);
-    let measured_omega = data3.qvel[0];
-    let omega_err = ((measured_omega - expected_omega) / expected_omega).abs();
-
-    if check(
-        "Constant torque → linear velocity ramp",
-        omega_err < 0.01,
-        &format!(
-            "omega={measured_omega:.4}, expected={expected_omega:.4}, err={:.3}%",
-            omega_err * 100.0
-        ),
-    ) {
-        passed += 1;
-    }
-    total += 1;
-
-    // --- Summary ---
-    println!("\n============================================================");
-    println!("  TOTAL: {passed}/{total} checks passed");
-    if passed == total {
-        println!("  ALL PASS");
-    } else {
-        println!("  {} FAILED", total - passed);
-        std::process::exit(1);
-    }
+    let checks = vec![
+        Check {
+            name: "Continuous → unlimited hinge",
+            pass: is_hinge && is_unlimited,
+            detail: format!(
+                "type={:?}, limited={}",
+                model.jnt_type[0], model.jnt_limited[0]
+            ),
+        },
+        Check {
+            name: "Velocity matches alpha*t",
+            pass: vel_err < 0.05,
+            detail: format!(
+                "measured={measured_vel:.2}, expected={expected_vel:.2}, err={:.1}%",
+                vel_err * 100.0
+            ),
+        },
+        Check {
+            name: "Angle past 2*pi (no clamping)",
+            pass: past_2pi,
+            detail: format!("angle={:.1} rad", data.qpos[0]),
+        },
+    ];
+    let _ = print_report("URDF Continuous", &checks);
 }

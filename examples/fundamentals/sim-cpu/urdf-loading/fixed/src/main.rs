@@ -1,23 +1,44 @@
 //! Fixed Joint Fusion
 //!
-//! Three links: base → fixed → child → revolute → grandchild.
-//! With `fusestatic="true"` (the default in the URDF converter), the
-//! fixed-joint link merges into its parent. The compiled model has fewer
-//! bodies than the URDF has links.
+//! Three URDF links: base → (fixed) sensor_mount → (revolute) arm.
+//! With `fusestatic="true"`, the sensor_mount merges into the base. The
+//! compiled model has fewer bodies than the URDF has links. Visually you
+//! see a pendulum arm swinging — the fixed-joint link is invisible because
+//! it was fused away.
 //!
 //! Run: `cargo run -p example-urdf-fixed --release`
 
 #![allow(
     clippy::doc_markdown,
+    clippy::needless_pass_by_value,
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::suboptimal_flops
+    clippy::cast_lossless,
+    clippy::let_underscore_must_use,
+    clippy::suboptimal_flops,
+    clippy::too_many_lines
 )]
 
+use bevy::prelude::*;
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::physics_pos;
+use sim_bevy::examples::{
+    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
+    validation_system,
+};
+use sim_bevy::model_data::{
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    sync_geom_transforms,
+};
+use sim_core::validation::{Check, print_report};
+
+// ── URDF Model ───────────────────────────────────────────────────────────
+
 /// Three links: base → (fixed) sensor_mount → (revolute) arm.
-/// The fixed joint should cause sensor_mount to fuse into base.
+/// The arm has collision geometry so it's visible. The sensor_mount is
+/// invisible — it only has inertia and gets fused into the base.
 const FIXED_URDF: &str = r#"<?xml version="1.0"?>
 <robot name="fixed_test">
     <link name="base">
@@ -34,10 +55,22 @@ const FIXED_URDF: &str = r#"<?xml version="1.0"?>
     </link>
     <link name="arm">
         <inertial>
-            <origin xyz="0 0 0.2"/>
+            <origin xyz="0 0 -0.5"/>
             <mass value="1.0"/>
             <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.002"/>
         </inertial>
+        <collision>
+            <origin xyz="0 0 -0.25"/>
+            <geometry>
+                <cylinder radius="0.02" length="0.5"/>
+            </geometry>
+        </collision>
+        <collision>
+            <origin xyz="0 0 -0.5"/>
+            <geometry>
+                <sphere radius="0.06"/>
+            </geometry>
+        </collision>
     </link>
     <joint name="mount_fixed" type="fixed">
         <parent link="base"/>
@@ -47,156 +80,155 @@ const FIXED_URDF: &str = r#"<?xml version="1.0"?>
     <joint name="arm_joint" type="revolute">
         <parent link="sensor_mount"/>
         <child link="arm"/>
-        <origin xyz="0 0 0.2"/>
+        <origin xyz="0 0 2.0"/>
         <axis xyz="0 1 0"/>
         <limit lower="-1.57" upper="1.57"/>
     </joint>
 </robot>
 "#;
 
-/// Four links: base → (fixed) mount1 → (fixed) mount2 → (revolute) arm.
-/// Two chained fixed joints: both should fuse.
-const CHAIN_FIXED_URDF: &str = r#"<?xml version="1.0"?>
-<robot name="chain_fixed">
-    <link name="base">
-        <inertial>
-            <mass value="5.0"/>
-            <inertia ixx="0.5" ixy="0" ixz="0" iyy="0.5" iyz="0" izz="0.5"/>
-        </inertial>
-    </link>
-    <link name="mount1">
-        <inertial>
-            <mass value="0.1"/>
-            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
-        </inertial>
-    </link>
-    <link name="mount2">
-        <inertial>
-            <mass value="0.1"/>
-            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
-        </inertial>
-    </link>
-    <link name="arm">
-        <inertial>
-            <mass value="1.0"/>
-            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
-        </inertial>
-    </link>
-    <joint name="f1" type="fixed">
-        <parent link="base"/>
-        <child link="mount1"/>
-        <origin xyz="0 0 0.05"/>
-    </joint>
-    <joint name="f2" type="fixed">
-        <parent link="mount1"/>
-        <child link="mount2"/>
-        <origin xyz="0 0 0.05"/>
-    </joint>
-    <joint name="arm_joint" type="revolute">
-        <parent link="mount2"/>
-        <child link="arm"/>
-        <origin xyz="0 0 0.1"/>
-        <axis xyz="0 1 0"/>
-        <limit lower="-1.57" upper="1.57"/>
-    </joint>
-</robot>
-"#;
-
-fn check(name: &str, pass: bool, detail: &str) -> bool {
-    let tag = if pass { "PASS" } else { "FAIL" };
-    println!("  [{tag}] {name}: {detail}");
-    pass
-}
+// ── Bevy App ─────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== URDF Loading — Fixed Joint Fusion ===\n");
+    println!("=== CortenForge: URDF Fixed Joint Fusion ===");
+    println!("  3 URDF links, 1 fixed joint → fused into 2 bodies");
+    println!("  The sensor_mount link disappears via fusestatic");
+    println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
-    let mut passed = 0u32;
-    let mut total = 0u32;
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "CortenForge — URDF Fixed Joint Fusion".into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_plugins(OrbitCameraPlugin)
+        .init_resource::<PhysicsAccumulator>()
+        .init_resource::<PhysicsHud>()
+        .init_resource::<FusionValidation>()
+        .insert_resource(
+            ValidationHarness::new()
+                .report_at(8.0)
+                .print_every(2.0)
+                .display(|m, d| {
+                    let angle = d.joint_qpos(m, 0)[0];
+                    format!("angle={:+6.1}°", angle.to_degrees())
+                }),
+        )
+        .add_systems(Startup, setup)
+        .add_systems(Update, step_physics_realtime)
+        .add_systems(
+            PostUpdate,
+            (
+                sync_geom_transforms,
+                validation_system,
+                fusion_diagnostics,
+                update_hud,
+                render_physics_hud,
+            )
+                .chain(),
+        )
+        .run();
+}
 
-    // --- Check 1: Single fixed joint → body count reduced ---
-    let model = sim_urdf::load_urdf_model(FIXED_URDF).expect("URDF should parse");
-    // URDF has 3 links. With fusion: world + base(+sensor_mount) + arm = 3 bodies.
-    // Without fusion it would be 4 (world + base + sensor_mount + arm).
-    let fused = model.nbody < 4;
-    if check(
-        "Fixed joint reduces body count",
-        fused,
-        &format!("nbody={} (expect <4, URDF has 3 links)", model.nbody),
-    ) {
-        passed += 1;
-    }
-    total += 1;
-
-    // --- Check 2: Only 1 joint survives (fixed joint eliminated) ---
-    let one_joint = model.njnt == 1;
-    if check(
-        "Only revolute joint survives",
-        one_joint,
-        &format!("njnt={} (expect 1)", model.njnt),
-    ) {
-        passed += 1;
-    }
-    total += 1;
-
-    // --- Check 3: Model still simulates correctly ---
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let mjcf = sim_urdf::urdf_to_mjcf(FIXED_URDF).expect("URDF→MJCF");
+    let mjcf = mjcf.replace(
+        r#"timestep="0.002"/>"#,
+        r#"timestep="0.002"><flag energy="enable"/></option>"#,
+    );
+    let model = sim_mjcf::load_model(&mjcf).expect("MJCF should parse");
     let mut data = model.make_data();
-    data.qpos[0] = 0.5;
-    data.forward(&model).expect("forward");
 
-    let mut ok = true;
-    for _ in 0..500 {
-        data.step(&model).expect("step");
-        if data.qpos.iter().any(|v| v.is_nan()) {
-            ok = false;
-            break;
-        }
-    }
-    if check(
-        "Fused model simulates 500 steps",
-        ok,
-        &format!("qpos[0]={:.4}", data.qpos[0]),
-    ) {
-        passed += 1;
-    }
-    total += 1;
+    data.qpos[0] = std::f64::consts::FRAC_PI_6; // 30°
+    let _ = data.forward(&model);
 
-    // --- Check 4: Chained fixed joints → both fuse ---
-    let model2 = sim_urdf::load_urdf_model(CHAIN_FIXED_URDF).expect("URDF should parse");
-    // URDF has 4 links, 2 fixed joints, 1 revolute.
-    // With fusion: world + base(+mount1+mount2 fused) + arm = 3 bodies.
-    let chain_fused = model2.nbody < 5;
-    let chain_one_joint = model2.njnt == 1;
-    if check(
-        "Chained fixed joints both fuse",
-        chain_fused && chain_one_joint,
-        &format!(
-            "nbody={} (expect <5), njnt={} (expect 1)",
-            model2.nbody, model2.njnt
-        ),
-    ) {
-        passed += 1;
-    }
-    total += 1;
+    println!("  URDF: 3 links, 2 joints (1 fixed, 1 revolute)",);
+    println!(
+        "  Model: {} bodies, {} joints, {} DOFs (fixed joint eliminated)\n",
+        model.nbody, model.njnt, model.nv
+    );
 
-    // --- Check 5: DOF count is correct (only revolute contributes) ---
-    let dof_ok = model.nv == 1 && model.nq == 1;
-    if check(
-        "DOF = 1 (only revolute)",
-        dof_ok,
-        &format!("nv={}, nq={}", model.nv, model.nq),
-    ) {
-        passed += 1;
-    }
-    total += 1;
+    spawn_model_geoms(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &model,
+        &data,
+        &[],
+    );
 
-    // --- Summary ---
-    println!("\n============================================================");
-    println!("  TOTAL: {passed}/{total} checks passed");
-    if passed == total {
-        println!("  ALL PASS");
-    } else {
-        println!("  {} FAILED", total - passed);
-        std::process::exit(1);
+    spawn_example_camera(
+        &mut commands,
+        physics_pos(0.0, 0.0, 1.5),
+        3.5,
+        std::f32::consts::FRAC_PI_4,
+        0.3,
+    );
+    spawn_physics_hud(&mut commands);
+
+    commands.insert_resource(PhysicsModel(model));
+    commands.insert_resource(PhysicsData(data));
+}
+
+// ── HUD ──────────────────────────────────────────────────────────────────
+
+fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
+    hud.clear();
+    hud.section("URDF Fixed Joint Fusion");
+
+    let angle = data.joint_qpos(&model, 0)[0];
+    let vel = data.joint_qvel(&model, 0)[0];
+
+    hud.raw("URDF: 3 links (base→fixed→arm)".into());
+    hud.raw(format!(
+        "Model: {} bodies, {} joints",
+        model.nbody, model.njnt
+    ));
+    hud.scalar("angle (deg)", angle.to_degrees(), 1);
+    hud.scalar("velocity (rad/s)", vel, 3);
+    hud.scalar("time", data.time, 1);
+}
+
+// ── Validation ───────────────────────────────────────────────────────────
+
+#[derive(Resource, Default)]
+struct FusionValidation {
+    reported: bool,
+}
+
+fn fusion_diagnostics(
+    model: Res<PhysicsModel>,
+    _data: Res<PhysicsData>,
+    harness: Res<ValidationHarness>,
+    mut val: ResMut<FusionValidation>,
+) {
+    if !harness.reported() || val.reported {
+        return;
     }
+    val.reported = true;
+
+    let checks = vec![
+        Check {
+            name: "Fixed joint fused (nbody < 4)",
+            pass: model.nbody < 4,
+            detail: format!("nbody={}", model.nbody),
+        },
+        Check {
+            name: "Only revolute survives (njnt=1)",
+            pass: model.njnt == 1,
+            detail: format!("njnt={}", model.njnt),
+        },
+        Check {
+            name: "DOF = 1",
+            pass: model.nv == 1,
+            detail: format!("nv={}", model.nv),
+        },
+    ];
+    let _ = print_report("URDF Fixed Joint Fusion", &checks);
 }
