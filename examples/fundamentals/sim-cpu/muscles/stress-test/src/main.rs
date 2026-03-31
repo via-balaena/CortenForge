@@ -673,7 +673,7 @@ const HILL_AUTO_F0_MJCF: &str = r#"
 </mujoco>
 "#;
 
-/// Mixed model: one MuJoCo <muscle>, one HillMuscle on separate joints.
+/// Mixed model: one MuJoCo `<muscle>`, one HillMuscle on separate joints.
 const MIXED_MJCF: &str = r#"
 <mujoco model="mixed-muscle">
   <compiler angle="radian"/>
@@ -973,7 +973,7 @@ fn check_f2_forearm_flexion() -> (u32, u32) {
 /// Antagonist: gear=1, L_slack=1.0 → fiber=(length-1.0), optimal at qpos=2.0
 ///   At qpos=1.0: antagonist fiber=0, norm_len=0 → FL≈0, minimal force
 ///   But at qpos=0.5: agonist norm_len=0.5 (boundary), antagonist norm_len=-0.5 (zero)
-/// Better approach: use MuJoCo <muscle> for cocontraction since it handles
+/// Better approach: use MuJoCo `<muscle>` for cocontraction since it handles
 /// length normalization properly via lengthrange.
 const COCONTRACTION_MJCF: &str = r#"
 <mujoco model="cocontraction">
