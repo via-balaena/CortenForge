@@ -1,7 +1,7 @@
 # Examples Coverage Spec
 
-**Status:** Track 1 fleshed out — ready for review
-**Date:** 2026-03-25
+**Status:** Track 1A complete, Track 1B spec drafted — ready for review
+**Date:** 2026-03-30
 **Goal:** 100% coverage of codebase capabilities
 
 ## Principle
@@ -13,7 +13,19 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-03-30)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 82 examples (8 joint types, 9 sensors, 10 actuators, 5 muscles, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 5 energy-momentum, 10 urdf-loading, 2 legacy)
+- sim-core + sim-mjcf + sim-urdf → 82 examples (Track 1A complete)
+  - Joint types: hinge, slide, ball (3/4 — free joint not dedicated)
+  - Sensors: 16/31 types covered
+  - Actuators: 10 examples, Muscles: 5 examples
+  - Integrators: 8 examples, Solvers: 5 examples
+  - Equality constraints: 8 examples
+  - Contact tuning: 7 examples
+  - Inverse dynamics: 5 examples, Energy-momentum: 5 examples
+  - URDF loading: 10 examples
+- Track 1B planned: 13 subdirectories, ~40-50 examples covering free joints,
+  keyframes, mocap bodies, contact filtering, joint limits, tendons (8 examples),
+  14 advanced sensors, passive forces, sleep/wake, raycasting, derivatives,
+  composites, and batch simulation
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -23,7 +35,7 @@ integration tests — they find bugs that unit tests miss.
 
 ### Joint Types (4 types, 4 covered)
 - Hinge → covered (simple-pendulum, double-pendulum, actuator-force, sensor examples)
-- Free → covered (accelerometer, touch, all SDF physics)
+- Free → covered (accelerometer, touch, all SDF physics) — **no dedicated example → Track 1B**
 - Slide → covered (horizontal, vertical, geom-distance)
 - Ball → covered (spherical-pendulum, conical-pendulum, cone-limit, frame-pos-quat, gyro-velocimeter)
 
@@ -40,15 +52,16 @@ integration tests — they find bugs that unit tests miss.
 - Bias: None ✓, Affine ✓, Muscle ✓, **HillMuscle (stress-test only), User ✗**
 - Muscle-specific: Activation dynamics ✓, Force-length ✓, Cocontraction ✓, Forearm flexion ✓
 
-### Sensors (40+ types, 16 covered in 10 examples)
+### Sensors (31 types, 16 covered in 10 examples)
 - Position: JointPos ✓, FramePos ✓, FrameQuat ✓, SubtreeCom ✓, Clock ✓
 - Velocity: JointVel ✓, Gyro ✓, Velocimeter ✓
 - Force: Touch ✓, ActuatorFrc ✓, JointActuatorFrc ✓
 - Spatial: Accelerometer ✓, GeomDist ✓, GeomNormal ✓, GeomFromTo ✓
 - Ball: BallQuat ✓, BallAngVel ✓ (in ball-joint/spherical-pendulum)
 - Momentum: SubtreeAngMom ✓ (in energy-momentum/free-flight)
-- **Uncovered:** TendonPos, TendonVel, ActuatorPos, FrameLinVel, FrameAngVel,
-  Force, Torque, JointLimitFrc, RangeFinder, User, Plugin
+- **Uncovered → Track 1B:** TendonPos, TendonVel, Rangefinder, FrameLinVel,
+  FrameAngVel, FrameLinAcc, FrameAngAcc, Force, Torque, JointLimitFrc,
+  TendonLimitFrc, SubtreeLinVel, ActuatorPos, ActuatorVel
 
 ### Collision (partially covered)
 - SDF-plane ✓, SDF-SDF ✓, analytical convex ✓
@@ -58,6 +71,7 @@ integration tests — they find bugs that unit tests miss.
 - Contact parameter override ✓ (pair-override — 1 example)
 - Solimp impedance curve ✓ (solimp-depth — 1 example)
 - Margin/gap activation ✓ (margin-gap — 1 example)
+- **contype/conaffinity bitmask filtering → Track 1B**
 - **Mesh-mesh ✗, mesh-plane ✗**
 - **Height field ✗**
 
@@ -68,9 +82,9 @@ integration tests — they find bugs that unit tests miss.
 ### Constraint System
 - Contact ✓
 - Equality (weld, connect, distance, joint coupling) ✓ (8 examples)
-- **Joint limits (dedicated demo) ✗**
+- **Joint limits (dedicated demo) → Track 1B**
 - Friction loss ✓ (urdf-loading/damping-friction)
-- **Tendon limits ✗**
+- **Tendon limits → Track 1B (in tendons/)**
 
 ### Model Loading
 - MJCF (inline string) ✓
@@ -81,13 +95,32 @@ integration tests — they find bugs that unit tests miss.
 - Inverse dynamics ✓ (gravity-comp, torque-profile, forward-replay, stress-test — 4 examples)
 - Jacobians (mj_jac_site, velocity mapping) ✓ (jacobian example — stale vs correct comparison)
 
+### Tendon System (0% covered — 1,350 LOC)
+- **Fixed tendons → Track 1B**
+- **Spatial tendons → Track 1B**
+- **Wrapping (sphere, cylinder) → Track 1B**
+- **Pulleys → Track 1B**
+- **Tendon limits → Track 1B**
+- **TendonPos/TendonVel sensors → Track 1B**
+
+### State Management (0% covered)
+- **Keyframes (reset-to-keyframe) → Track 1B**
+- **Mocap bodies (kinematic input) → Track 1B**
+
+### Passive Forces (partially covered)
+- Joint spring/damper → covered (slide-joint, urdf-loading)
+- Gravity compensation → covered (inverse-dynamics)
+- **Fluid drag → Track 1B**
+
 ### Advanced Features (mostly uncovered)
 - Energy conservation tracking ✓ (4 visual + 12-check stress-test)
-- **Sleep / wake / islands ✗**
-- **Keyframes ✗**
-- **Flex bodies ✗**
-- **Plugin system / callbacks ✗**
-- **Domain randomization ✗**
+- **Sleep / wake / islands → Track 1B**
+- **Raycasting → Track 1B**
+- **Derivatives (FD linearization) → Track 1B**
+- **Cable composites → Track 1B**
+- **Batch simulation → Track 1B**
+- **Flex bodies ✗ (experimental — future)**
+- **Plugin system / callbacks ✗ (future)**
 
 ### GPU Pipeline
 - Full pipeline (GpuPhysicsPipeline::step()) → ZERO examples
@@ -97,7 +130,7 @@ integration tests — they find bugs that unit tests miss.
 
 ## Proposed Example Structure
 
-### Track 1: sim-core fundamentals (fill the 90K LOC gap)
+### Track 1A: sim-core fundamentals — COMPLETE (82 examples)
 
 ```
 fundamentals/
@@ -120,7 +153,7 @@ fundamentals/
 
 ---
 
-#### Track 1 Example Descriptions
+#### Track 1A Example Descriptions
 
 ##### 1. `slide-joint/` — Prismatic Joint, Linear Motion
 
@@ -415,6 +448,586 @@ headless stress-test (31 checks). Covers the full `sim_urdf` pipeline:
     equivalence, all joint types, geometry sizes, inertia, limits, damping,
     frictionloss, mimic tracking, planar DOF, mesh conversion, error variants.
 
+### Track 1B: sim-core foundation layer 2 (~40-50 examples)
+
+The next layer of sim-cpu fundamentals. Every feature below has a real,
+production-quality implementation in sim-core. These are not stubs — they are
+fully implemented subsystems with 100-6000+ LOC each, and they need dedicated
+examples to prove correctness, catch regressions, and teach the engine.
+
+Ordered ground-up by dependency: basic concepts first, advanced features last.
+
+```
+fundamentals/
+  sim-cpu/
+    free-joint/             # 6-DOF floating body, quaternion integration
+    keyframes/              # State snapshots, reset-to-keyframe
+    mocap-bodies/           # Kinematic input bodies, teleop/animation
+    contact-filtering/      # contype/conaffinity bitmasks, exclude pairs
+    joint-limits/           # Dedicated limit demo, solref/solimp tuning
+    tendons/                # Fixed, spatial, wrapping, pulleys, limits
+    sensors-advanced/       # 14 uncovered sensor types (or extend sensors/)
+    passive-forces/         # Fluid drag, spring/damper tuning
+    sleep-wake/             # Island-based deactivation, performance
+    raycasting/             # Ray queries, rangefinder, shape intersection
+    derivatives/            # FD linearization, A/B matrices, control design
+    composites/             # Cable composite bodies
+    batch-sim/              # Parallel multi-environment simulation
+```
+
+---
+
+#### Track 1B Example Descriptions
+
+##### 1. `free-joint/` — 6-DOF Floating Body
+
+The only joint type without a dedicated example. A free joint gives a body full
+translational and rotational freedom — 7 qpos (3 position + 4 quaternion), 6
+qvel (3 linear + 3 angular). This is the joint type used for every untethered
+object in the engine.
+
+**Examples:**
+
+1. **tumble** — A box with asymmetric inertia (Ixx ≠ Iyy ≠ Izz) launched with
+   angular velocity in zero gravity. Demonstrates torque-free precession —
+   angular velocity vector precesses around the angular momentum vector, but
+   |L| is exactly conserved. Visualizes the body tumbling and prints quaternion,
+   angular velocity, and angular momentum each second.
+
+2. **projectile** — A sphere launched at 45° in gravity. Parabolic trajectory
+   with exact analytical solution. Demonstrates the 3-DOF translational
+   subspace of a free joint. Prints position vs analytical trajectory.
+
+3. **coupled-rotation** — Two free-floating bodies connected by a weld
+   constraint. Push one, both move as a rigid unit. Demonstrates that free
+   joints + equality constraints compose correctly.
+
+4. **stress-test** — Headless validation (12+ checks):
+   - Quaternion norm preserved to 1e-10 over 10s
+   - Linear momentum conserved in zero-g (< 1e-12)
+   - Angular momentum conserved in zero-g (< 1e-12)
+   - Projectile apex height within 0.1% of v²sin²θ/(2g)
+   - Projectile range within 0.1% of v²sin(2θ)/g
+   - qpos dimension = 7, qvel dimension = 6
+   - Free joint has no limits (unlimited always)
+   - Gravity: linear momentum changes at rate mg, angular unchanged
+   - Multiple free bodies don't interact without contact
+   - Quaternion integration matches exponential map
+
+**Concepts covered:** `type="free"`, 7-DOF qpos (pos + quat) vs 6-DOF qvel
+(lin + ang), quaternion integration on SO(3), torque-free precession,
+conservation laws, exponential map.
+
+##### 2. `keyframes/` — State Snapshots and Reset
+
+Keyframes are named state snapshots stored in the model (`<key>` elements in
+MJCF). They let you save and restore complete simulation states — position,
+velocity, activation, control, and mocap state.
+
+**Examples:**
+
+1. **save-restore** — A pendulum swings for 2 seconds, then resets to a named
+   keyframe (arm horizontal, zero velocity). The arm snaps back to the saved
+   pose and restarts. Cycles through 3 keyframes: rest, horizontal, inverted.
+   Prints state before/after each reset.
+
+2. **multi-keyframe** — A robot arm with 3 keyframes representing different
+   poses (home, reach-left, reach-right). Cycles through them every 2 seconds.
+   Each reset is exact — qpos matches keyframe qpos to machine precision.
+   Demonstrates keyframe with `ctrl` and `act` fields populated.
+
+3. **stress-test** — Headless validation (10+ checks):
+   - qpos matches keyframe qpos exactly after reset
+   - qvel matches keyframe qvel exactly after reset
+   - act matches keyframe act exactly after reset
+   - ctrl matches keyframe ctrl exactly after reset
+   - time resets to keyframe time
+   - Derived quantities (qacc, cvel) cleared after reset
+   - Multiple keyframes indexed correctly
+   - Keyframe with zero-length fields handled gracefully
+   - Reset mid-simulation produces clean state
+   - Simulation runs normally after reset
+
+**Concepts covered:** `<key>` MJCF element, `Data::reset_to_keyframe()`,
+qpos/qvel/act/ctrl state vectors, named poses, simulation checkpoint/restart.
+
+##### 3. `mocap-bodies/` — Kinematic Input Bodies
+
+Mocap (motion capture) bodies are world-attached bodies whose pose is set
+directly via `data.mocap_pos` and `data.mocap_quat` rather than computed by
+the integrator. They're the mechanism for user input, teleop, animation
+playback, and VR controllers.
+
+**Examples:**
+
+1. **drag-target** — A mocap sphere moves on a sinusoidal path. A free-floating
+   box is connected to the mocap body via a weld constraint with compliance
+   (soft weld). The box follows the target with spring-like lag. Demonstrates
+   the basic mocap → constraint → dynamic body pipeline.
+
+2. **push-object** — A mocap paddle sweeps across the scene and pushes a
+   free-floating ball through contact. The mocap body has geometry (capsule)
+   that generates contacts with dynamic bodies. Shows that mocap bodies
+   participate in collision but not in dynamics.
+
+3. **stress-test** — Headless validation (8+ checks):
+   - Mocap body position tracks mocap_pos exactly (zero error)
+   - Mocap body quaternion tracks mocap_quat exactly
+   - Mocap body is always world-child (parent = 0)
+   - Mocap body generates contacts with dynamic bodies
+   - Mocap body not affected by gravity or contact forces
+   - Keyframe reset restores mocap_pos and mocap_quat
+   - Multiple mocap bodies independent of each other
+   - Mocap body with zero mass still works (FK override)
+
+**Concepts covered:** `mocap="true"` in MJCF body, `data.mocap_pos`,
+`data.mocap_quat`, kinematic vs dynamic bodies, weld-to-mocap for soft
+tracking, mocap + contact for pushing/interaction.
+
+##### 4. `contact-filtering/` — Collision Bitmasks and Exclusion
+
+Controls which geometry pairs can collide. Three mechanisms: bitmask filtering
+(`contype`/`conaffinity`), parent-child exclusion (automatic for jointed
+bodies), and explicit pair exclusion (`<exclude>`).
+
+**Examples:**
+
+1. **bitmask** — Four spheres falling onto a plane. Spheres have different
+   contype/conaffinity bitmasks: (A) collides with everything, (B) collides
+   with plane only, (C) collides with other spheres only, (D) collides with
+   nothing. The bitmask rule: contact if `(c1 & a2) != 0 || (c2 & a1) != 0`.
+   Sphere D falls through the ground.
+
+2. **exclude-pairs** — Two overlapping boxes that would normally collide, but
+   an `<exclude body1="a" body2="b"/>` suppresses their contact. A third box
+   with no exclusion collides normally. Shows explicit pair exclusion vs
+   automatic parent-child exclusion.
+
+3. **ghost-layers** — A multi-layer scene: "solid" layer (contype=1,
+   conaffinity=1) and "sensor" layer (contype=2, conaffinity=2). Solid objects
+   collide with each other and with sensor objects, but sensor objects pass
+   through each other. Demonstrates using bitmasks for selective physics layers.
+
+4. **stress-test** — Headless validation (10+ checks):
+   - Bitmask AND rule verified for all 16 combinations of 4-bit types
+   - Parent-child exclusion: jointed bodies don't self-collide
+   - World body (body 0) geoms exempt from parent-child exclusion
+   - Explicit exclude suppresses contact force to zero
+   - Exclude is bidirectional (body1/body2 order doesn't matter)
+   - contype=0 body collides with nothing
+   - conaffinity=0 body collides with nothing
+   - Default contype=conaffinity=1 collides with everything
+   - Explicit `<pair>` bypasses bitmask filtering
+   - Contact count matches expected after filtering
+
+**Concepts covered:** `contype`, `conaffinity`, `<exclude>`, parent-child
+auto-exclusion, `<pair>` override, bitmask AND rule, collision layers.
+
+##### 5. `joint-limits/` — Limit Constraints with Solver Tuning
+
+Joint limits constrain the range of motion. When a joint reaches its limit, the
+solver generates a one-sided constraint. The stiffness and damping of the limit
+response are tuned via `solref` and `solimp` — the same solver parameters used
+for contacts.
+
+**Examples:**
+
+1. **hinge-limits** — A pendulum with `range="-45 45"` degrees. Released from
+   60° (beyond limit). The limit constraint pushes it back. Three variants
+   side by side: stiff limit (high solref K), soft limit (low K, visible
+   penetration), and overdamped limit (high B, no bounce).
+
+2. **slide-limits** — A mass on a rail with `range="-0.3 0.3"`. Driven by a
+   motor that pushes it into the limit. Shows limit force via `JointLimitFrc`
+   sensor. Motor torque increases but position stays clamped.
+
+3. **ball-cone** — A ball joint with `range="0 30"` (30° cone limit). Rod
+   is pushed beyond the cone in different directions. The cone constraint is
+   rotationally symmetric — same limit force regardless of azimuthal angle.
+
+4. **stress-test** — Headless validation (10+ checks):
+   - Position never exceeds range ± solver penetration tolerance
+   - JointLimitFrc > 0 when at limit, == 0 when interior
+   - Limit force increases with penetration depth
+   - Solref stiffness scales limit force linearly
+   - Solimp width controls penetration depth at equilibrium
+   - Hinge, slide, and ball limits all activate correctly
+   - Limit is one-sided (no constraint when interior)
+   - Limit + motor: motor cannot push past limit
+   - Symmetric ball cone: limit force magnitude independent of azimuth
+   - Zero-width range (locked joint) holds position exactly
+
+**Concepts covered:** `limited="true"`, `range`, `jnt_solref`, `jnt_solimp`,
+`JointLimitFrc` sensor, one-sided constraints, limit + motor interaction,
+ball joint cone limits.
+
+##### 6. `tendons/` — Routing, Wrapping, and Limits
+
+The tendon system (1,350 LOC) provides two mechanisms: fixed tendons (linear
+combinations of joint positions) and spatial tendons (3D paths routed through
+sites with optional wrapping around geometry). Tendons can have limits,
+spring-damper dynamics, and serve as actuator transmission.
+
+**Examples:**
+
+1. **fixed-coupling** — Two hinge joints coupled by a fixed tendon with
+   coefficients [1.0, -0.5]. When joint A moves 1 rad, joint B is pulled
+   0.5 rad in the opposite direction. Tendon length = coef1*q1 + coef2*q2.
+   Print TendonPos sensor vs manual calc. Demonstrates the simplest tendon.
+
+2. **spatial-path** — A spatial tendon routed through 3 sites on a 2-link
+   arm. As the arm moves, the tendon length changes. Visualize the 3D tendon
+   path (line segments between sites). TendonPos tracks the path length.
+   Compare against manual distance calculation.
+
+3. **sphere-wrap** — A spatial tendon that wraps around a sphere (representing
+   a bone condyle or pulley wheel). The tendon takes the shortest path that
+   doesn't penetrate the sphere. As the joint angle changes, the wrap arc
+   length changes, producing a moment arm that varies with configuration.
+   Visualize wrap points on the sphere surface.
+
+4. **cylinder-wrap** — Same concept as sphere-wrap but wrapping around a
+   cylinder (representing a tendon sheath or muscle routing). The tendon
+   follows a geodesic on the cylinder surface. Demonstrates the difference
+   between sphere wrap (great-circle arc) and cylinder wrap (helix).
+
+5. **tendon-limits** — A spatial tendon with `limited="true"` and
+   `range="0.1 0.5"`. When the arm configuration would stretch the tendon
+   beyond 0.5, the limit constraint activates and resists further motion.
+   When compressed below 0.1, the lower limit activates. Print TendonLimitFrc
+   sensor readings.
+
+6. **pulley** — A fixed tendon with a pulley (divisor > 1). Two branches
+   of the tendon contribute to length with different mechanical advantage.
+   Demonstrates the `<pulley divisor="2"/>` element.
+
+7. **tendon-actuator** — A motor with `<general tendon="t1">` transmission.
+   The actuator drives the tendon, which in turn drives the joints. Compare
+   against joint-transmission equivalent. Shows that tendon transmission
+   creates configuration-dependent effective gear ratio for spatial tendons.
+
+8. **stress-test** — Headless validation (16+ checks):
+   - Fixed tendon length = Σ coef_i * q_i exactly
+   - Fixed tendon velocity = Σ coef_i * dq_i exactly
+   - TendonPos sensor matches data.ten_length
+   - TendonVel sensor matches data.ten_velocity
+   - Spatial tendon length matches point-to-point distance (no wrapping)
+   - Sphere wrap: tendon doesn't penetrate sphere (distance ≥ radius)
+   - Cylinder wrap: tendon follows geodesic
+   - Tendon limit activates when length exceeds range
+   - TendonLimitFrc > 0 at limit, == 0 interior
+   - Pulley divisor scales branch contribution correctly
+   - Tendon-driven actuator produces correct force
+   - Tendon spring/damper passive force matches analytical
+   - Fixed tendon Jacobian is constant (configuration-independent)
+   - Spatial tendon Jacobian varies with configuration
+   - Multiple tendons on same joint compose correctly
+   - Wrapping with muscle actuator produces realistic moment arm curve
+
+**Concepts covered:** `<tendon><fixed>`, `<tendon><spatial>`, `<site>` routing,
+sphere/cylinder wrapping, `<pulley>`, tendon limits, `TendonPos`/`TendonVel`/
+`TendonLimitFrc` sensors, tendon-driven actuators, moment arms, Jacobian.
+
+##### 7. `sensors-advanced/` — Remaining Sensor Types
+
+14 sensor types not yet covered in the Track 1A `sensors/` examples. One
+example per concept group, keeping the same pattern as the original sensor
+gallery.
+
+**Examples:**
+
+1. **frame-velocity** — A spinning body with `FrameLinVel`, `FrameAngVel`
+   sensors on a site. Verify FrameLinVel matches cross-product ω×r for a
+   body-fixed point. Verify FrameAngVel matches ω in the sensor frame.
+   Analytical comparison against known spinning body.
+
+2. **frame-acceleration** — Same spinning body with `FrameLinAcc`,
+   `FrameAngAcc` sensors. FrameLinAcc includes gravity (sensor reads
+   [0,0,+9.81] at rest). FrameAngAcc is zero for constant-velocity rotation
+   (no angular acceleration). Apply a torque pulse and verify FrameAngAcc
+   matches τ/I during the pulse.
+
+3. **force-torque** — A cantilevered beam (hinge at base, motor holding
+   horizontal). `Force` and `Torque` sensors at the base. Force sensor reads
+   the 3D reaction force (should equal mg downward). Torque sensor reads the
+   3D reaction torque (should equal mgL/2 about the hinge axis). Compare
+   against analytical statics.
+
+4. **rangefinder** — A site with `Rangefinder` sensor pointing downward toward
+   a ground plane. Raise/lower the body — rangefinder distance tracks height
+   exactly. Point at a sphere — distance tracks closest surface point. Point
+   at empty space — returns -1 (no hit). Demonstrates the raycast-backed
+   sensor.
+
+5. **tendon-sensors** — An arm driven by a spatial tendon. `TendonPos` tracks
+   tendon length, `TendonVel` tracks rate of change. Apply sinusoidal motion.
+   Verify TendonVel = d/dt(TendonPos) via finite difference.
+
+6. **limit-forces** — A hinge at its limit with `JointLimitFrc` sensor. A
+   tendon at its limit with `TendonLimitFrc` sensor. Both read the constraint
+   force magnitude. Increase the applied load — limit forces increase
+   proportionally. Verify they're zero when not at limit.
+
+7. **subtree-momentum** — A multi-body tree (3 links). `SubtreeCom`,
+   `SubtreeLinVel`, `SubtreeAngMom` sensors on the root body. SubtreeCom
+   tracks the composite center of mass. In free fall, SubtreeLinVel = g*t.
+   SubtreeAngMom conserved in zero gravity.
+
+8. **stress-test** — Headless validation (20+ checks):
+   - FrameLinVel matches ω×r within 0.1%
+   - FrameAngVel matches ω in sensor frame
+   - FrameLinAcc at rest = [0,0,+g] within 0.5%
+   - FrameAngAcc = 0 for constant-velocity rotation
+   - Force sensor = [0, 0, -mg] for hanging body
+   - Torque sensor magnitude = mgL/2 for horizontal beam
+   - Rangefinder = height above plane ± 0.1%
+   - Rangefinder = -1 for no intersection
+   - TendonPos matches data.ten_length
+   - TendonVel ≈ d/dt(TendonPos) via FD within 1%
+   - JointLimitFrc > 0 at limit
+   - JointLimitFrc == 0 interior
+   - TendonLimitFrc > 0 at limit
+   - SubtreeCom matches manual weighted average
+   - SubtreeLinVel = g*t in free fall within 0.5%
+   - SubtreeAngMom conserved in zero-g within 1e-10
+   - ActuatorPos matches actuator length
+   - All sensor dimensions correct (1D, 3D, 6D)
+   - Sensor noise (if enabled) has correct statistics
+   - Frame sensors in different objtype frames (body, geom, site)
+
+**Concepts covered:** All 14 remaining sensor types: FrameLinVel, FrameAngVel,
+FrameLinAcc, FrameAngAcc, Force, Torque, Rangefinder, TendonPos, TendonVel,
+JointLimitFrc, TendonLimitFrc, SubtreeCom, SubtreeLinVel, ActuatorPos/Vel.
+
+##### 8. `passive-forces/` — Fluid Drag and Damping
+
+Passive forces are configuration/velocity-dependent forces computed
+automatically by the engine — no actuator needed. Joint springs and gravity
+compensation are already demonstrated. This covers the remaining passive force
+types.
+
+**Examples:**
+
+1. **fluid-drag** — A sphere falling through a medium with density (viscosity).
+   Without drag: free-fall acceleration = g. With drag: terminal velocity
+   = sqrt(2mg/(ρCdA)). Three spheres with different drag coefficients
+   side by side — heavy one falls fast, light one reaches terminal velocity
+   quickly. Demonstrates `<option density="1.2" viscosity="1.5e-5"/>` and
+   per-geom fluid interaction.
+
+2. **spring-damper-tuning** — Three identical pendulums with different
+   joint stiffness and damping combinations: (A) stiff spring, low damping
+   (fast oscillation, slow decay), (B) soft spring, high damping (slow,
+   overdamped), (C) critical damping (ζ=1, fastest return without overshoot).
+   Print natural frequency and damping ratio. Verify against analytical
+   ω_n = √(k/I), ζ = c/(2√(kI)).
+
+3. **stress-test** — Headless validation (10+ checks):
+   - Terminal velocity matches analytical within 5%
+   - Drag force proportional to v² at high Re
+   - Zero density/viscosity = zero drag force
+   - Spring restoring force = k*Δq
+   - Damper dissipative force = c*dq
+   - Critical damping: no overshoot, reaches 98% in 4/ω_n seconds
+   - Underdamped: oscillation frequency = ω_n√(1-ζ²)
+   - Overdamped: exponential decay, no oscillation
+   - Gravity compensation: body holds pose with zero actuator force
+   - Spring + gravity: equilibrium offset = mg/(k)
+
+**Concepts covered:** `<option density="" viscosity=""/>`, per-geom fluid
+parameters, joint `stiffness` and `damping`, critical/under/overdamped
+response, natural frequency, damping ratio, terminal velocity.
+
+##### 9. `sleep-wake/` — Island-Based Deactivation
+
+The sleep system (749 LOC) groups bodies into constraint islands and
+deactivates islands whose velocities fall below a threshold. Sleeping bodies
+skip integration and collision narrowphase — essential for large scenes with
+many resting objects.
+
+**Examples:**
+
+1. **sleep-threshold** — 10 boxes dropped onto a plane. After settling, boxes
+   go to sleep (velocity < threshold). Print wake/sleep state per body.
+   Poke one box — it wakes up, disturbs neighbors, they wake too. The whole
+   island wakes and re-sleeps after settling.
+
+2. **wake-on-contact** — A sleeping box resting on a plane. Drop a ball onto
+   it — the contact force wakes the box. Demonstrates the wake-on-contact
+   mechanism. The ball and box form a new island together.
+
+3. **island-groups** — Two separate stacks on a plane (no contact between
+   stacks). Each stack is its own island. Disturb one stack — only that island
+   wakes. The other stack stays asleep. Print island count and membership.
+
+4. **stress-test** — Headless validation (10+ checks):
+   - Bodies sleep after velocity < threshold for countdown duration
+   - Sleeping bodies have zero acceleration
+   - Contact with sleeping body wakes it
+   - Equality constraint with sleeping body wakes it
+   - Separate stacks form separate islands
+   - Island count matches expected
+   - Wake propagates through constraint graph
+   - Sleep countdown resets on velocity spike
+   - Disabled sleep policy: nothing sleeps
+   - Performance: sleeping bodies skip narrowphase (contact count = 0)
+
+**Concepts covered:** `SleepPolicy`, sleep threshold, countdown timer,
+constraint islands, wake-on-contact, wake-on-equality, island membership,
+`tree_asleep`, `nisland`, `nbody_awake`.
+
+##### 10. `raycasting/` — Ray Queries and Shape Intersection
+
+The raycast module (1,231 LOC) supports ray intersection queries against all
+geometry types. Used internally by the Rangefinder sensor but also available
+as a direct API for visibility checks, distance queries, and custom sensors.
+
+**Examples:**
+
+1. **basic-shapes** — Cast rays at each primitive type (sphere, box, capsule,
+   cylinder, ellipsoid, plane) and verify hit distance matches analytical
+   solution. Visualize rays as lines, hit points as dots. Shows the
+   `RaycastHit` return: distance, point, surface normal.
+
+2. **heightfield** — Cast rays down onto a terrain heightfield. The raycast
+   uses ray marching against the elevation data. Vary the terrain — flat,
+   sinusoidal hills, sharp ridges. Verify hit height matches terrain elevation
+   at the hit (x,y).
+
+3. **scene-query** — Multiple objects in a scene. Cast a fan of rays from a
+   fixed origin. Find the nearest hit for each ray — this is how a LIDAR
+   sensor would work. Print distance profile (ray angle → hit distance).
+   Connect Rangefinder sensor to verify it matches the raycast API.
+
+4. **stress-test** — Headless validation (12+ checks):
+   - Sphere: hit distance = center_dist - radius
+   - Plane: hit distance = -dot(origin, normal) / dot(dir, normal)
+   - Box: hit distance matches slab intersection
+   - Miss returns None (ray parallel to plane, ray away from sphere)
+   - Surface normal perpendicular to surface at hit point
+   - Surface normal points toward ray origin (outward-facing)
+   - Heightfield hit z matches terrain(hit.x, hit.y)
+   - Capsule: hit distance matches sphere-swept-line
+   - Cylinder: hit distance matches quadratic solution
+   - Ellipsoid: hit distance matches transformed sphere
+   - Multiple shapes: nearest hit returned
+   - Ray origin inside shape: reports exit point
+
+**Concepts covered:** `raycast()` API, `RaycastHit` struct, analytical
+intersection (sphere, plane, box, capsule, cylinder, ellipsoid), ray marching
+(heightfield, SDF), BVH-accelerated mesh intersection, surface normals.
+
+##### 11. `derivatives/` — Finite-Difference Linearization
+
+The derivatives module (6,029 LOC) computes the linearized dynamics
+A, B, C, D matrices via finite-difference perturbation or hybrid
+analytical/FD methods. These matrices are the foundation for LQR, MPC,
+system identification, and any control design workflow.
+
+**Examples:**
+
+1. **linearize-pendulum** — A single hinge pendulum. Compute A, B matrices
+   at the upright equilibrium. The A matrix eigenvalues reveal the unstable
+   mode (positive real eigenvalue = √(g/L)). Print the 2×2 A matrix and
+   verify eigenvalues match analytical. Demonstrates the simplest use of
+   `derivatives::fd::compute()`.
+
+2. **control-design** — A cart-pole (slide + hinge). Compute A, B at the
+   unstable equilibrium. Design an LQR controller from the linearization
+   (K = lqr(A, B, Q, R)). Run the closed-loop simulation — the cart-pole
+   balances. Without control, it falls. Demonstrates the full pipeline:
+   linearize → design → simulate.
+
+3. **hybrid-vs-fd** — Compare pure FD vs hybrid derivatives on a 3-link arm.
+   Both should produce the same A, B matrices (within perturbation tolerance).
+   Print timing: hybrid is ~2× faster because it uses analytical velocity
+   derivatives instead of perturbing every DOF.
+
+4. **stress-test** — Headless validation (12+ checks):
+   - A matrix eigenvalues match analytical for simple pendulum
+   - B matrix matches gain for motor-driven joint
+   - FD convergence: halving epsilon halves the error (O(ε²) for centered)
+   - Hybrid matches FD within 1e-6
+   - A matrix for stable system has all eigenvalues with negative real part
+   - A matrix for unstable system has positive eigenvalue
+   - Sensor derivatives (C, D) match FD perturbation
+   - Free joint: A is 12×12 (6 pos + 6 vel), B matches
+   - Ball joint: quaternion chain rule handled correctly
+   - Zero-control linearization matches passive dynamics
+   - Multiple actuators: B has correct column count
+   - Transition matrices A*dt + I approximate one-step evolution
+
+**Concepts covered:** `derivatives::fd::compute()`,
+`derivatives::hybrid::compute()`, A/B/C/D state-space matrices, eigenvalue
+analysis, LQR control design, perturbation convergence, quaternion chain
+rules, computational cost comparison.
+
+##### 12. `composites/` — Cable Composite Bodies
+
+The composite system expands a single `<composite>` MJCF element into a chain
+of bodies with joints, geoms, and contact exclusions. Cable composites generate
+a chain of capsule bodies connected by ball joints — useful for ropes, cables,
+and flexible tubes.
+
+**Examples:**
+
+1. **hanging-cable** — A cable composite fixed at one end, hanging under
+   gravity. The cable sags into a catenary-like shape. Vary the number of
+   segments (5, 10, 20) — more segments = smoother curve. Demonstrates
+   `<composite type="cable" count="10">` with geometry and joint parameters.
+
+2. **cable-tension** — A cable stretched between two anchor points. Apply a
+   downward force at the midpoint — the cable deflects. Measure tension via
+   joint forces. Compare against analytical catenary solution for small
+   deflections.
+
+3. **stress-test** — Headless validation (8+ checks):
+   - Correct number of bodies generated (= count)
+   - Correct number of joints (ball joints between segments)
+   - Contact exclusions prevent self-collision of adjacent segments
+   - Cable hangs below anchor (all y positions < anchor y)
+   - Cable end position converges with more segments
+   - Cable preserves total length (sum of segment lengths)
+   - Deleted: deprecated composite types (grid, rope, cloth) return error
+   - Cable with curve="cosine" produces smooth initial shape
+
+**Concepts covered:** `<composite type="cable">`, segment count, joint
+parameters, contact exclusion generation, catenary shape, cable tension,
+curve types (line, cosine, sine).
+
+##### 13. `batch-sim/` — Parallel Multi-Environment Simulation
+
+The batch system (600 LOC) runs N independent copies of the same model in
+parallel using shared-nothing `Data` instances. Essential for reinforcement
+learning, Monte Carlo sampling, and parameter sweeps.
+
+**Examples:**
+
+1. **parameter-sweep** — 8 copies of a pendulum with different damping values
+   (0.0 to 0.7). All step in parallel. After 5 seconds, print the final
+   energy of each — undamped has full energy, highest damping has nearly zero.
+   Demonstrates `BatchSim::new(model, 8)` and `step_all()`.
+
+2. **reset-subset** — 16 environments. Every second, reset the environments
+   whose pendulum has swung past 90°. Others continue. Demonstrates
+   `reset_where(mask)` for selective reset — the RL "done" pattern.
+
+3. **stress-test** — Headless validation (8+ checks):
+   - N environments created with independent state
+   - step_all advances all environments by one timestep
+   - Environments don't cross-contaminate (modify one, others unchanged)
+   - reset_where resets only masked environments
+   - Batch with 1 environment matches single-env simulation exactly
+   - All environments share the same Model (memory efficient)
+   - Batch timing: N environments < N × single-env time (parallelism)
+   - Environment indexing works correctly (0..N)
+
+**Concepts covered:** `BatchSim`, `step_all()`, `reset_where()`, parallel
+stepping via rayon, shared Model, independent Data, parameter sweeps,
+selective reset.
+
+---
+
 ### Track 2: SDF-CPU ladder (complete the 7 stubs)
 
 Steps 04, 07–11 now working. Remaining stubs:
@@ -458,11 +1071,16 @@ fundamentals/
 
 ## Priority
 
-Build from the ground up:
-1. **Track 1** first — sim-core fundamentals (the foundation)
-2. **Track 2** in parallel — finish the CPU stubs
-3. **Track 3** after Track 1 proves the engine — GPU ladder
-4. **Track 4** as needed
+Build from the ground up — the foundation must be bulletproof before moving
+to GPU or advanced features:
+
+1. **Track 1A** — COMPLETE (82 examples). Basic sim-core fundamentals.
+2. **Track 1B** next — sim-core foundation layer 2 (~40-50 examples).
+   Every major subsystem gets dedicated coverage. Examples double as
+   integration tests — they find bugs that unit tests miss.
+3. **Track 3** after Track 1B proves the engine — GPU ladder
+4. **Track 2** as needed — SDF-CPU stubs (most SDF work targets GPU)
+5. **Track 4** as needed — design + mesh
 
 ## Notes
 
