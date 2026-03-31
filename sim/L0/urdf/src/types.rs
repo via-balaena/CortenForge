@@ -354,16 +354,22 @@ impl UrdfJointType {
 }
 
 /// Joint limits from `<limit>` element.
+///
+/// **Note on effort and velocity:** These are parsed from URDF but not mapped
+/// to MJCF joint attributes. `MuJoCo` enforces effort limits via actuator
+/// `forcerange` and has no joint-level velocity limit. Since the URDF converter
+/// does not auto-generate actuators, these fields are preserved for inspection
+/// but do not affect the compiled Model.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UrdfJointLimit {
-    /// Lower position limit (rad or m).
+    /// Lower position limit (rad or m). Mapped to MJCF `range`.
     pub lower: f64,
-    /// Upper position limit (rad or m).
+    /// Upper position limit (rad or m). Mapped to MJCF `range`.
     pub upper: f64,
-    /// Maximum effort (N or Nm).
+    /// Maximum effort (N or Nm). Parsed but not mapped — see struct docs.
     pub effort: f64,
-    /// Maximum velocity (rad/s or m/s).
+    /// Maximum velocity (rad/s or m/s). Parsed but not mapped — see struct docs.
     pub velocity: f64,
 }
 
@@ -410,6 +416,21 @@ impl Default for UrdfJointDynamics {
     }
 }
 
+/// Mimic joint specification from `<mimic>` element.
+///
+/// A mimic joint tracks another joint: `position = multiplier * leader + offset`.
+/// Converted to `MuJoCo` `<equality><joint>` with `polycoef="offset multiplier 0 0 0"`.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct UrdfMimic {
+    /// Name of the leader joint to track.
+    pub joint: String,
+    /// Multiplicative factor (default: 1.0).
+    pub multiplier: f64,
+    /// Additive offset (default: 0.0).
+    pub offset: f64,
+}
+
 /// A joint connecting two links.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -430,6 +451,8 @@ pub struct UrdfJoint {
     pub limit: Option<UrdfJointLimit>,
     /// Joint dynamics (optional).
     pub dynamics: Option<UrdfJointDynamics>,
+    /// Mimic constraint (optional): this joint tracks another joint.
+    pub mimic: Option<UrdfMimic>,
 }
 
 impl UrdfJoint {
@@ -450,6 +473,7 @@ impl UrdfJoint {
             axis: Vector3::z(), // URDF default axis
             limit: None,
             dynamics: None,
+            mimic: None,
         }
     }
 
@@ -478,6 +502,13 @@ impl UrdfJoint {
     #[must_use]
     pub fn with_dynamics(mut self, dynamics: UrdfJointDynamics) -> Self {
         self.dynamics = Some(dynamics);
+        self
+    }
+
+    /// Set the mimic constraint.
+    #[must_use]
+    pub fn with_mimic(mut self, mimic: UrdfMimic) -> Self {
+        self.mimic = Some(mimic);
         self
     }
 }

@@ -141,6 +141,21 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `muscles/cocontraction` | `example-muscle-cocontraction` | Working | Agonist-antagonist pair, joint stiffening |
 | `muscles/force-length` | `example-muscle-force-length` | Working | Wide vs narrow FL range, swept joint position |
 
+### URDF Loading
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `urdf-loading/revolute` | `example-urdf-revolute` | Working | Revolute pendulum, period matches analytical |
+| `urdf-loading/prismatic` | `example-urdf-prismatic` | Working | Slide joint, spring oscillation period |
+| `urdf-loading/continuous` | `example-urdf-continuous` | Working | Unlimited revolute, alpha = tau/I |
+| `urdf-loading/fixed` | `example-urdf-fixed` | Working | Fixed joint fusion, body count reduction |
+| `urdf-loading/mimic` | `example-urdf-mimic` | Working | Leader-follower 2:1 coupling via equality |
+| `urdf-loading/geometry` | `example-urdf-geometry` | Working | Box, sphere, cylinder size conversion |
+| `urdf-loading/inertia` | `example-urdf-inertia` | Working | Diagonal vs full inertia, precession |
+| `urdf-loading/damping-friction` | `example-urdf-damping-friction` | Working | Three colored pendulums: no-loss, damped, friction (6 checks) |
+| `urdf-loading/error-handling` | `example-urdf-error-handling` | Working | Headless: invalid URDFs → correct error variants (7 checks) |
+| `urdf-loading/stress-test` | `example-urdf-stress-test` | Working | Headless validation (31 checks) |
+
 ### Other
 
 | Example | Package | Status | Notes |

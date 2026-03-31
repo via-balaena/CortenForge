@@ -108,6 +108,18 @@ members = [
     "examples/fundamentals/sim-cpu/muscles/cocontraction",
     "examples/fundamentals/sim-cpu/muscles/force-length",
 
+    # Examples — fundamentals / sim-cpu / urdf-loading
+    "examples/fundamentals/sim-cpu/urdf-loading/stress-test",
+    "examples/fundamentals/sim-cpu/urdf-loading/revolute",
+    "examples/fundamentals/sim-cpu/urdf-loading/prismatic",
+    "examples/fundamentals/sim-cpu/urdf-loading/continuous",
+    "examples/fundamentals/sim-cpu/urdf-loading/fixed",
+    "examples/fundamentals/sim-cpu/urdf-loading/mimic",
+    "examples/fundamentals/sim-cpu/urdf-loading/geometry",
+    "examples/fundamentals/sim-cpu/urdf-loading/inertia",
+    "examples/fundamentals/sim-cpu/urdf-loading/damping-friction",
+    "examples/fundamentals/sim-cpu/urdf-loading/error-handling",
+
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
     "examples/fundamentals/sim-cpu/solvers/comparison-visual",

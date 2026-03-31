@@ -15,6 +15,12 @@ and prints a validation report to the console.
 | [`actuators/`](actuators/) | 10 | One example per actuator concept |
 | [`integrators/`](integrators/) | 7 | All 5 integrators + comparison benchmarks |
 | [`solvers/`](solvers/) | 5 | All 3 constraint solvers + comparison benchmarks |
+| [`equality-constraints/`](equality-constraints/) | 8 | Weld, connect, distance, joint coupling |
+| [`contact-tuning/`](contact-tuning/) | 7 | Friction, condim, solref, solimp, margin/gap, pair override |
+| [`inverse-dynamics/`](inverse-dynamics/) | 5 | Gravity-comp, torque-profile, forward-replay, jacobian |
+| [`energy-momentum/`](energy-momentum/) | 5 | Free-flight conservation, PE/KE exchange, bounce, damping |
+| [`muscles/`](muscles/) | 5 | Activation dynamics, force-length, cocontraction |
+| [`urdf-loading/`](urdf-loading/) | 10 | URDF→Model pipeline: all joint types, geometry, mimic, errors |
 | [`multi-scene-test/`](multi-scene-test/) | 1 | Multi-scene infrastructure test |
 
 ## How to use
