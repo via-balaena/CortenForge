@@ -54,6 +54,14 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `free-joint/spinning-toss` | `example-free-joint-spinning-toss` | Working | Full 6-DOF: translation + rotation decoupled |
 | `free-joint/stress-test` | `example-free-joint-stress-test` | Working | Headless validation (12 checks) |
 
+### Keyframes
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `keyframes/save-restore` | `example-keyframes-save-restore` | Working | Pendulum cycles 3 named keyframes (rest, horizontal, inverted) |
+| `keyframes/multi-body` | `example-keyframes-multi-body` | Working | Two-link arm with ctrl state, 3 keyframes |
+| `keyframes/stress-test` | `example-keyframes-stress-test` | Working | Headless validation (12 checks) |
+
 ### Sensors
 
 | Example | Package | Sensors | Status |
