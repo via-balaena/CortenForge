@@ -283,7 +283,7 @@ zip = "8.1"
 # PLY format support
 ply-rs = "0.1"
 # 3MF format support (XML parsing)
-quick-xml = "0.38"
+quick-xml = "0.39"
 # STEP format support (CAD interchange) - truck ecosystem
 truck-stepio = "0.3"
 truck-modeling = "0.6"
