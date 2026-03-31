@@ -337,6 +337,13 @@ pub fn model_from_mjcf(
         .map(|kf| resolve_keyframe(kf, &model))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     model.nkeyframe = model.keyframes.len();
+    model.keyframe_name_to_id = model
+        .keyframes
+        .iter()
+        .enumerate()
+        .filter(|(_, kf)| !kf.name.is_empty())
+        .map(|(i, kf)| (kf.name.clone(), i))
+        .collect();
 
     Ok(model)
 }

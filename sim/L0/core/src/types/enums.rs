@@ -31,6 +31,8 @@ pub enum ElementType {
     Hfield,
     /// Equality constraints (indexed by eq_id).
     Equality,
+    /// Keyframe elements (indexed by keyframe_id).
+    Keyframe,
 }
 
 /// Joint type following `MuJoCo` conventions.
