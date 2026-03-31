@@ -22,10 +22,12 @@ integration tests — they find bugs that unit tests miss.
   - Contact tuning: 7 examples
   - Inverse dynamics: 5 examples, Energy-momentum: 5 examples
   - URDF loading: 10 examples
-- Track 1B planned: 13 subdirectories, ~40-50 examples covering free joints,
-  keyframes, mocap bodies, contact filtering, joint limits, tendons (8 examples),
-  14 advanced sensors, passive forces, sleep/wake, raycasting, derivatives,
-  composites, and batch simulation
+- Track 1B planned: 20 subdirectories, ~70 examples — no stone unturned.
+  Covers every remaining sim-core subsystem: free joints, keyframes, mocap
+  bodies, contact filtering, joint limits, tendons, 14 advanced sensors,
+  mesh collision, heightfield terrain, passive forces, sleep/wake, Hill
+  muscle, adhesion, flex bodies, raycasting, collision pairs, derivatives,
+  composites, batch simulation, and plugins.
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -41,15 +43,15 @@ integration tests — they find bugs that unit tests miss.
 
 ### Geometry Types (8 types, ~6 covered)
 - Plane, Sphere, Capsule, Cylinder, Box, Ellipsoid → covered
-- **Mesh (explicit convex) → ZERO dedicated examples**
-- **Hfield (height field terrain) → ZERO examples**
+- **Mesh (explicit convex, 2,090 LOC) → Track 1B**
+- **Hfield (height field terrain, 441 LOC) → Track 1B**
 - Sdf → extensively covered
 
 ### Actuator System (10 standard + 5 muscle examples)
-- Transmission: Joint ✓, Tendon ✓, Site ✓, SliderCrank ✓, **Body ✗, JointInParent ✗**
-- Dynamics: None ✓, Filter ✓, Integrator ✓, Muscle ✓, **HillMuscle (stress-test only), User ✗**
-- Gain: Fixed ✓, Affine ✓, Muscle ✓, **HillMuscle (stress-test only), User ✗**
-- Bias: None ✓, Affine ✓, Muscle ✓, **HillMuscle (stress-test only), User ✗**
+- Transmission: Joint ✓, Tendon ✓, Site ✓, SliderCrank ✓, **Body (adhesion) → Track 1B**, JointInParent (≈Joint, skip)
+- Dynamics: None ✓, Filter ✓, Integrator ✓, Muscle ✓, **HillMuscle → Track 1B**, User (plugin)
+- Gain: Fixed ✓, Affine ✓, Muscle ✓, **HillMuscle → Track 1B**, User (plugin)
+- Bias: None ✓, Affine ✓, Muscle ✓, **HillMuscle → Track 1B**, User (plugin)
 - Muscle-specific: Activation dynamics ✓, Force-length ✓, Cocontraction ✓, Forearm flexion ✓
 
 ### Sensors (31 types, 16 covered in 10 examples)
@@ -72,8 +74,9 @@ integration tests — they find bugs that unit tests miss.
 - Solimp impedance curve ✓ (solimp-depth — 1 example)
 - Margin/gap activation ✓ (margin-gap — 1 example)
 - **contype/conaffinity bitmask filtering → Track 1B**
-- **Mesh-mesh ✗, mesh-plane ✗**
-- **Height field ✗**
+- **Collision pair isolation (all primitive pairs) → Track 1B**
+- **Mesh-mesh, mesh-plane → Track 1B**
+- **Height field → Track 1B**
 
 ### Solvers & Integration
 - Newton ✓, PGS ✓, CG ✓ (comparison + comparison-visual + 3 per-solver)
@@ -112,15 +115,18 @@ integration tests — they find bugs that unit tests miss.
 - Gravity compensation → covered (inverse-dynamics)
 - **Fluid drag → Track 1B**
 
-### Advanced Features (mostly uncovered)
+### Advanced Features
 - Energy conservation tracking ✓ (4 visual + 12-check stress-test)
 - **Sleep / wake / islands → Track 1B**
-- **Raycasting → Track 1B**
-- **Derivatives (FD linearization) → Track 1B**
+- **Raycasting (1,231 LOC) → Track 1B**
+- **Derivatives (6,029 LOC) → Track 1B**
 - **Cable composites → Track 1B**
-- **Batch simulation → Track 1B**
-- **Flex bodies ✗ (experimental — future)**
-- **Plugin system / callbacks ✗ (future)**
+- **Batch simulation (600 LOC) → Track 1B**
+- **Flex bodies (2,797 LOC, beta) → Track 1B**
+- **Plugin system (24,398 LOC) → Track 1B**
+- **Collision pair isolation (2,600+ LOC) → Track 1B**
+- **HillMuscle (1,894 LOC) → Track 1B**
+- **Body adhesion (276 LOC) → Track 1B**
 
 ### GPU Pipeline
 - Full pipeline (GpuPhysicsPipeline::step()) → ZERO examples
@@ -448,31 +454,55 @@ headless stress-test (31 checks). Covers the full `sim_urdf` pipeline:
     equivalence, all joint types, geometry sizes, inertia, limits, damping,
     frictionloss, mimic tracking, planar DOF, mesh conversion, error variants.
 
-### Track 1B: sim-core foundation layer 2 (~40-50 examples)
+### Track 1B: sim-core foundation layer 2 (~70 examples)
 
-The next layer of sim-cpu fundamentals. Every feature below has a real,
-production-quality implementation in sim-core. These are not stubs — they are
-fully implemented subsystems with 100-6000+ LOC each, and they need dedicated
-examples to prove correctness, catch regressions, and teach the engine.
+The next layer of sim-cpu fundamentals. No stone unturned — every implemented
+subsystem gets dedicated coverage. Every feature below has a real implementation
+in sim-core (LOC noted). Examples double as integration tests that find bugs
+unit tests miss.
 
 Ordered ground-up by dependency: basic concepts first, advanced features last.
 
 ```
 fundamentals/
   sim-cpu/
+    # --- Layer 1: Missing fundamentals ---
     free-joint/             # 6-DOF floating body, quaternion integration
     keyframes/              # State snapshots, reset-to-keyframe
     mocap-bodies/           # Kinematic input bodies, teleop/animation
+
+    # --- Layer 2: Filtering and limits ---
     contact-filtering/      # contype/conaffinity bitmasks, exclude pairs
     joint-limits/           # Dedicated limit demo, solref/solimp tuning
+
+    # --- Layer 3: Tendons ---
     tendons/                # Fixed, spatial, wrapping, pulleys, limits
-    sensors-advanced/       # 14 uncovered sensor types (or extend sensors/)
+
+    # --- Layer 4: Sensors completion ---
+    sensors-advanced/       # 14 uncovered sensor types
+
+    # --- Layer 5: Geometry types ---
+    mesh-collision/         # Explicit convex mesh collision (2,090 LOC)
+    heightfield/            # Terrain collision (441 LOC)
+
+    # --- Layer 6: Passive forces and dynamics ---
     passive-forces/         # Fluid drag, spring/damper tuning
     sleep-wake/             # Island-based deactivation, performance
-    raycasting/             # Ray queries, rangefinder, shape intersection
-    derivatives/            # FD linearization, A/B matrices, control design
+
+    # --- Layer 7: Muscles and actuators (remaining) ---
+    hill-muscle/            # HillMuscle extension (1,894 LOC)
+    adhesion/               # Body transmission — adhesive/magnetic actuation (276 LOC)
+
+    # --- Layer 8: Deformable bodies ---
+    flex-bodies/            # Soft bodies, cloth, cables, self-collision (2,797 LOC)
+
+    # --- Layer 9: Advanced ---
+    raycasting/             # Ray queries, rangefinder, shape intersection (1,231 LOC)
+    collision-pairs/        # All primitive pair functions isolated (2,600+ LOC)
+    derivatives/            # FD linearization, A/B matrices, control design (6,029 LOC)
     composites/             # Cable composite bodies
-    batch-sim/              # Parallel multi-environment simulation
+    batch-sim/              # Parallel multi-environment simulation (600 LOC)
+    plugins/                # Plugin system — custom sensors/forces (24,398 LOC)
 ```
 
 ---
@@ -1026,6 +1056,311 @@ learning, Monte Carlo sampling, and parameter sweeps.
 stepping via rayon, shared Model, independent Data, parameter sweeps,
 selective reset.
 
+##### 14. `mesh-collision/` — Explicit Convex Mesh Collision
+
+The mesh module (2,090 LOC) provides BVH-accelerated triangle mesh collision
+against all primitive types. Mesh geoms are used for realistic object shapes
+imported from CAD or 3D modeling tools — robot links, furniture, terrain
+features, anything that isn't a sphere/box/capsule/cylinder.
+
+**Examples:**
+
+1. **mesh-on-plane** — A convex mesh (tetrahedron defined by 4 triangles)
+   dropped onto a ground plane. The mesh rests stably on one face. Compare
+   rest height against analytical (centroid height of the resting face).
+   Demonstrates `type="mesh"` geom with inline vertex/face data.
+
+2. **mesh-on-mesh** — Two convex meshes (a wedge and a block) dropped onto
+   each other. The mesh-mesh narrow phase uses BVH queries for triangle pair
+   candidates, then triangle-triangle contact generation. Verify stable
+   stacking — no interpenetration beyond solver tolerance.
+
+3. **mesh-primitives** — A mesh pyramid colliding with sphere, capsule, and
+   box side by side. Each pair exercises a different narrow-phase function
+   (`mesh_sphere_contact`, `mesh_box_contact`, `mesh_capsule_contact`).
+   All three should rest stably.
+
+4. **stress-test** — Headless validation (12+ checks):
+   - Mesh-plane: rest height matches face centroid within 1mm
+   - Mesh-mesh: penetration < solver tolerance after settling
+   - Mesh-sphere: contact normal points away from mesh surface
+   - Mesh-capsule: contact point on capsule surface
+   - Mesh-box: stable rest on flat face
+   - BVH queries return correct triangle candidates
+   - Non-convex mesh: concave bowl catches a ball (ball stays in bowl)
+   - Contact count ≥ 1 for each resting pair
+   - Zero contacts when meshes separated
+   - Mesh with single triangle: degeneracy handled
+   - Large mesh (100+ triangles): performance reasonable
+   - Mesh + friction: object doesn't slide on flat face
+
+**Concepts covered:** `type="mesh"`, vertex/face data, BVH construction,
+`mesh_sphere_contact()`, `mesh_box_contact()`, `mesh_capsule_contact()`,
+`mesh_mesh_contact()`, convex vs non-convex mesh, triangle-level contact
+generation.
+
+##### 15. `heightfield/` — Terrain Collision
+
+The heightfield module (441 LOC) provides terrain collision via grid-based
+elevation data. Objects roll and slide over procedural terrain. Used for
+wheeled robots, walking robots, and any ground that isn't a flat plane.
+
+**Examples:**
+
+1. **sphere-on-terrain** — A sphere rolling down a sinusoidal terrain
+   (heightfield with `sin(x)*cos(z)` elevation). The sphere accelerates
+   on downslopes and decelerates on upslopes. Track the sphere's x-position
+   over time — verify it follows the terrain contour.
+
+2. **box-on-hills** — A box sliding down a terrain with gentle hills. The
+   box contacts the terrain on its bottom face. Different friction values
+   control slide speed. The heightfield uses `heightfield_box_contact()`.
+
+3. **terrain-walk** — Three capsules (representing legs) placed on a terrain
+   at different elevations. Each rests at the local terrain height. Apply
+   downward force — capsules push into terrain and are supported. Demonstrates
+   `heightfield_capsule_contact()`.
+
+4. **stress-test** — Headless validation (10+ checks):
+   - Sphere rests at correct terrain elevation (within 1mm)
+   - Box rests flat on flat terrain region
+   - Capsule contacts at both endcap and cylinder
+   - Contact normal matches terrain gradient direction
+   - Flat terrain behaves identically to plane geom
+   - Heightfield boundary: objects at grid edge handled safely
+   - Zero-height terrain = flat plane
+   - High-frequency terrain: contact generation stable
+   - Object rolls downhill under gravity (x-position changes)
+   - Multiple objects on same terrain don't interfere
+
+**Concepts covered:** `type="hfield"`, elevation grid data, grid cell lookup,
+`heightfield_sphere_contact()`, `heightfield_box_contact()`,
+`heightfield_capsule_contact()`, terrain gradient, boundary handling.
+
+##### 16. `hill-muscle/` — Hill-Type Muscle Model
+
+The HillMuscle system (1,894 LOC in fiber.rs) is a CortenForge extension
+beyond MuJoCo's quadratic muscle model. It uses physiologically accurate
+curves: Gaussian active force-length, hyperbolic force-velocity, and
+exponential passive force-length. These match published Hill-type muscle
+models (Zajac 1989, Millard 2013).
+
+**Examples:**
+
+1. **force-curves** — Side-by-side comparison of MuJoCo quadratic FL/FV
+   curves vs HillMuscle Gaussian/hyperbolic curves. Sweep a joint through
+   its range and plot actuator force vs joint position for both models.
+   The Hill curves are smoother at the extremes and match experimental
+   muscle data more closely.
+
+2. **twitch-response** — A single HillMuscle actuator receives a brief
+   control pulse (0.1s). Track the force output over time — it rises with
+   activation dynamics, peaks, then decays. Compare the twitch shape against
+   the MuJoCo muscle's response. The Hill model's hyperbolic FV curve
+   produces a different peak force at high shortening velocities.
+
+3. **eccentric-loading** — A HillMuscle holding a load that is then increased.
+   The muscle lengthens under load (eccentric contraction). The hyperbolic FV
+   curve predicts higher force during lengthening than shortening — this
+   asymmetry is a key feature of real muscle that the Hill model captures.
+
+4. **stress-test** — Headless validation (12+ checks):
+   - Gaussian FL: peak force at optimal length (FL = 1.0 at l_opt)
+   - Gaussian FL: force → 0 at extremes (l < lmin, l > lmax)
+   - Hyperbolic FV: force = 1.0 at zero velocity (isometric)
+   - Hyperbolic FV: force > 1.0 during eccentric (lengthening)
+   - Hyperbolic FV: force < 1.0 during concentric (shortening)
+   - Exponential passive FL: zero below slack, exponential above
+   - Total force = activation * active_FL * FV + passive_FL
+   - HillMuscle activation dynamics match standard first-order
+   - HillMuscle force at optimal length/zero velocity matches gain
+   - Eccentric/concentric asymmetry ratio matches published values
+   - HillMuscle with muscle actuator transmission works correctly
+   - Full pipeline: ctrl → activation → fiber force → joint torque
+
+**Concepts covered:** `GainType::HillMuscle`, `BiasType::HillMuscle`,
+`DynType::HillType`, `hill_active_fl()`, `hill_force_velocity()`,
+`hill_passive_fl()`, Gaussian vs quadratic FL, hyperbolic vs linear FV,
+eccentric/concentric asymmetry, physiological muscle modeling.
+
+##### 17. `adhesion/` — Body Transmission (Adhesive Actuation)
+
+Body transmission (276 LOC) creates adhesive/attractive forces via contact
+normals. The actuator iterates all contacts for a body and applies a force
+along the average contact normal — pulling the body toward whatever it's
+touching. Used for magnetic grippers, suction cups, climbing robots, and
+any scenario requiring adhesion.
+
+**Examples:**
+
+1. **magnetic-gripper** — A free-floating body above a ground plane with a
+   body-transmission actuator. When `ctrl > 0`, the adhesion force pulls
+   the body down into the plane (attraction). When `ctrl = 0`, gravity is
+   the only force. Vary ctrl to demonstrate force scaling. The gripper can
+   hold objects against gravity.
+
+2. **wall-climb** — A body on a vertical wall with adhesion. Gravity pulls
+   it down, adhesion holds it up. Increase adhesion ctrl until the body
+   sticks. Decrease until it slides off. Find the critical ctrl value
+   where adhesion balances gravity.
+
+3. **stress-test** — Headless validation (8+ checks):
+   - Adhesion force = 0 when ctrl = 0
+   - Adhesion force scales linearly with ctrl
+   - Adhesion force direction matches average contact normal
+   - No adhesion when no contacts (body in free flight)
+   - Adhesion can hold body against gravity (equilibrium)
+   - Multiple contacts: force averages normals correctly
+   - Adhesion + friction: body sticks on tilted surface
+   - Body transmission gear ratio affects force magnitude
+
+**Concepts covered:** `MjTrnType::Body`, `mj_transmission_body()`, contact
+normal averaging, adhesive force generation, `data.actuator_force` for
+body transmission, grip strength vs gravity.
+
+##### 18. `flex-bodies/` — Deformable Objects (Beta)
+
+The flex system (2,797 LOC across dynamics and collision) implements
+deformable bodies — cloth, cables, and soft objects. Bodies are connected
+by edge constraints with stiffness and damping. Two bending models are
+available: Cotangent (Wardetzky/Garg, MuJoCo-conformant) and Bridson
+(dihedral angle springs). Self-collision uses specialized algorithms
+(brute-force, BVH, or sweep-and-prune).
+
+**Note:** Flex bodies are beta — core algorithms work but edge cases may
+need refinement. These examples validate the current state and will catch
+regressions as the implementation matures.
+
+**Examples:**
+
+1. **hanging-cloth** — A rectangular flex body (grid of vertices, quad
+   elements) fixed along the top edge, hanging under gravity. The cloth
+   sags into a U-shape. Bending stiffness controls how stiff the drape is.
+   Vary Young's modulus: high = stiff sheet, low = droopy fabric.
+
+2. **cable-drop** — A 1D flex body (chain of vertices, edge elements)
+   dropped onto a plane. The cable coils and settles. Edge stiffness
+   prevents excessive stretching. Demonstrates flex-rigid contact via
+   `flex_collide.rs`.
+
+3. **bending-modes** — Same cloth, two bending models side by side:
+   Cotangent (curvature-based, smoother) vs Bridson (dihedral angle,
+   stiffer at creases). Apply the same perturbation — the deformation
+   patterns differ. Demonstrates `FlexBendingType::Cotangent` vs
+   `FlexBendingType::Bridson`.
+
+4. **self-collision** — A cloth dropped onto itself (folded). Self-collision
+   prevents interpenetration. Three variants: `FlexSelfCollide::None`
+   (passes through itself), `FlexSelfCollide::Narrow` (brute-force
+   detection), `FlexSelfCollide::BVH` (accelerated). Only Narrow and BVH
+   prevent self-interpenetration.
+
+5. **stress-test** — Headless validation (12+ checks):
+   - Edge lengths stay within tolerance of rest length
+   - Hanging cloth: bottom edge below top edge (gravity works)
+   - Young's modulus scaling: higher = less deformation
+   - Bending stiffness: higher = larger bending radius
+   - Flex-rigid contact: flex vertices don't penetrate plane
+   - Self-collision: vertex-vertex distance ≥ minimum gap
+   - Cotangent bending energy = ∫κ² dA (curvature integral)
+   - Bridson bending energy = Σ k*(θ - θ_rest)² (dihedral angles)
+   - Damping: flex oscillations decay over time
+   - Thickness parameter affects contact margin
+   - Friction: flex slides on tilted plane at correct angle
+   - Poisson ratio: lateral contraction under longitudinal stretch
+
+**Concepts covered:** `<flex>`, vertices, edges, elements, `Young`,
+`Poisson`, `damping`, `thickness`, `FlexBendingType` (Cotangent, Bridson),
+`FlexSelfCollide` (None, Narrow, BVH, SAP), flex-rigid contact,
+deformable dynamics, edge constraint assembly.
+
+##### 19. `collision-pairs/` — All Primitive Pair Functions
+
+The collision module has specialized narrow-phase functions for every
+geometry pair type (~2,600 LOC across pair_convex.rs, pair_cylinder.rs,
+plane.rs). Each pair function handles the geometry-specific math — SAT for
+boxes, analytic for spheres, clipping for cylinders. These are exercised
+indirectly by other examples but never isolated.
+
+**Examples:**
+
+1. **sphere-pairs** — Sphere-sphere, sphere-capsule, sphere-box, sphere-
+   cylinder, sphere-plane. Drop each pair, verify contact normal points
+   from shape A to shape B, contact depth matches analytical overlap.
+
+2. **box-pairs** — Box-box (SAT + polygon clipping), box-capsule (polyhedral
+   clipping), box-plane (4-corner contacts), box-cylinder. The complex
+   cases: box-box at a tilted angle generates edge-edge contacts. Verify
+   stable stacking for each.
+
+3. **capsule-cylinder** — Capsule-capsule (segment-segment, up to 2
+   contacts, near-parallel special case), capsule-cylinder, cylinder-
+   cylinder. These are the most geometrically complex pair functions.
+   Verify contact count and normals.
+
+4. **ellipsoid** — Ellipsoid-plane, ellipsoid-sphere, ellipsoid-ellipsoid.
+   Ellipsoids use the general GJK/EPA fallback for most pairs. Verify
+   contacts match (EPA supports these natively).
+
+5. **stress-test** — Headless validation (16+ checks):
+   - Sphere-sphere: contact depth = r1 + r2 - dist(c1, c2)
+   - Sphere-plane: contact depth = radius - height
+   - Box-plane: 1-4 contacts depending on orientation
+   - Box-box: SAT separating axis correct
+   - Capsule-capsule: up to 2 contacts (end-end, end-side, side-side)
+   - Capsule-capsule near-parallel: correct fallback
+   - Contact normal is unit length (|n| = 1.0 ± 1e-10)
+   - Contact normal points from geom1 to geom2
+   - Separated pair: zero contacts
+   - Touching pair: contact depth ≈ 0
+   - Deeply overlapping: contact depth > 0
+   - All primitive-plane pairs: normal = plane normal
+   - Cylinder-sphere: contact on cylinder surface
+   - Box-capsule: clipping produces correct contact patch
+   - GJK/EPA fallback agrees with analytical for sphere-sphere
+   - Each pair function exercised at least once
+
+**Concepts covered:** `collide_sphere_sphere()`, `collide_capsule_capsule()`,
+`collide_sphere_capsule()`, `collide_sphere_box()`, `collide_cylinder_sphere()`,
+`collide_cylinder_capsule()`, `collide_capsule_box()`, `collide_box_box()`,
+`collide_with_plane()`, GJK/EPA fallback, SAT (separating axis theorem),
+polygon clipping, contact normal convention, contact depth.
+
+##### 20. `plugins/` — Custom Sensors and Forces
+
+The plugin system (24,398 LOC) provides a trait-based framework for
+extending the engine with custom computation. Plugins can define new sensor
+types and custom force generators that integrate into the standard forward
+pipeline.
+
+**Examples:**
+
+1. **custom-sensor** — Register a plugin that computes a custom sensor:
+   the distance between two sites raised to a power (nonlinear distance).
+   Wire it into the sensor pipeline via `SensorType::Plugin`. Read the
+   sensor value and verify it matches manual computation. Demonstrates
+   the sensor plugin callback interface.
+
+2. **custom-force** — Register a plugin that applies a custom force: a
+   velocity-dependent drag force (F = -c*v²*v̂) that isn't covered by
+   the built-in fluid model. Wire it into the actuation pipeline. Drop
+   a ball — it reaches terminal velocity. Verify terminal velocity
+   matches analytical sqrt(mg/(c)).
+
+3. **stress-test** — Headless validation (8+ checks):
+   - Custom sensor returns correct value
+   - Custom sensor dimension matches declared ndata
+   - Custom force modifies qfrc_applied correctly
+   - Plugin state persists across timesteps
+   - Multiple plugins coexist without interference
+   - Plugin callback called once per step
+   - Plugin with zero state: works without allocation
+   - Unregistered plugin type: graceful error
+
+**Concepts covered:** Plugin trait, sensor plugin callbacks, force plugin
+callbacks, `SensorType::Plugin`, plugin state, plugin registration,
+custom computation in the forward pipeline.
+
 ---
 
 ### Track 2: SDF-CPU ladder (complete the 7 stubs)
@@ -1075,8 +1410,9 @@ Build from the ground up — the foundation must be bulletproof before moving
 to GPU or advanced features:
 
 1. **Track 1A** — COMPLETE (82 examples). Basic sim-core fundamentals.
-2. **Track 1B** next — sim-core foundation layer 2 (~40-50 examples).
-   Every major subsystem gets dedicated coverage. Examples double as
+2. **Track 1B** next — sim-core foundation layer 2 (~70 examples).
+   No stone unturned — every implemented subsystem gets dedicated coverage.
+   20 subdirectories covering every remaining feature. Examples double as
    integration tests — they find bugs that unit tests miss.
 3. **Track 3** after Track 1B proves the engine — GPU ladder
 4. **Track 2** as needed — SDF-CPU stubs (most SDF work targets GPU)
