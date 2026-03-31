@@ -62,6 +62,7 @@ members = [
     # Examples — fundamentals / sim-cpu / keyframes
     "examples/fundamentals/sim-cpu/keyframes/stress-test",
     "examples/fundamentals/sim-cpu/keyframes/save-restore",
+    "examples/fundamentals/sim-cpu/keyframes/multi-body",
 
     # Examples — fundamentals / sim-cpu / free-joint
     "examples/fundamentals/sim-cpu/free-joint/stress-test",
