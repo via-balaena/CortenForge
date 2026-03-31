@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-03-30)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf → 72 examples (8 joint types, 9 sensors, 10 actuators, 5 muscles, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 5 energy-momentum, 2 legacy)
+- sim-core + sim-mjcf + sim-urdf → 82 examples (8 joint types, 9 sensors, 10 actuators, 5 muscles, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 5 energy-momentum, 10 urdf-loading, 2 legacy)
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -69,13 +69,13 @@ integration tests — they find bugs that unit tests miss.
 - Contact ✓
 - Equality (weld, connect, distance, joint coupling) ✓ (8 examples)
 - **Joint limits (dedicated demo) ✗**
-- **Friction loss ✗**
+- Friction loss ✓ (urdf-loading/damping-friction)
 - **Tendon limits ✗**
 
 ### Model Loading
 - MJCF (inline string) ✓
 - **MJCF (file with <include>) ✗**
-- **URDF ✗** (entire sim-urdf crate, zero examples)
+- URDF ✓ (10 examples: revolute, prismatic, continuous, fixed, mimic, geometry, inertia, damping-friction, error-handling, stress-test)
 
 ### Inverse Dynamics & Jacobians
 - Inverse dynamics ✓ (gravity-comp, torque-profile, forward-replay, stress-test — 4 examples)
@@ -115,7 +115,7 @@ fundamentals/
     contact-tuning/         # DONE — friction, condim, solref, solimp, margin/gap, pair override (7 examples)
     inverse-dynamics/       # DONE — gravity-comp, torque-profile, forward-replay, jacobian, stress-test (5 examples)
     energy-momentum/        # DONE — 4 visual + stress-test (12 checks)
-    urdf-loading/           # TODO — load URDF, compare with MJCF
+    urdf-loading/           # DONE — 10 examples: all joint types, geometry, mimic, inertia, dynamics, errors
 ```
 
 ---
@@ -385,29 +385,35 @@ Four visual examples + stress-test (12 checks), one concept per example:
 5. **stress-test** — 12 headless checks: free-flight (4), pendulum (2),
    bounce (2), damped (2), flag disabled (1), multi-body (1). All pass.
 
-##### 12. `urdf-loading/` — Load URDF, Compare with MJCF
+##### 12. `urdf-loading/` — DONE (10 examples)
 
-Load a simple robot arm defined in both URDF and MJCF format, run identical
-simulations, and verify the dynamics match. The URDF uses standard elements:
-revolute joints, prismatic joint, fixed joint, box/sphere/cylinder primitives,
-inertia tensors. Prints body count, joint count, DOFs, and compares qpos after
-1 second of freefall.
+One concept per example, 8 visual (Bevy) + 1 headless error-handling + 1
+headless stress-test (31 checks). Covers the full `sim_urdf` pipeline:
 
-**Concepts covered:** `sim_urdf::load_urdf_model()`, URDF→MJCF conversion
-pipeline, supported joint types (revolute, continuous, prismatic, fixed,
-floating), supported geometries (box, sphere, cylinder), inertia specification,
-limitations (no mesh loading, no mimic joints, tree structures only).
-
-**MJCF sketch:** Equivalent MJCF and URDF for a 3-DOF arm: revolute shoulder,
-revolute elbow, prismatic gripper. Fixed base link. Box and cylinder geoms.
-
-**Pass/fail:**
-- URDF and MJCF produce identical `model.nbody`, `model.njnt`, `model.nv`.
-- After 1 second of identical simulation: `qpos` matches within 1e-6.
-- `qvel` matches within 1e-6.
-- Joint axes and limits match between URDF and MJCF models.
-- URDF with unsupported features (mesh geometry) produces a clear error message,
-  not a crash.
+1. **revolute** — Hinge pendulum, period matches analytical compound-pendulum
+   formula. `track_period` + `track_energy` validation.
+2. **prismatic** — Slide joint with spring stiffness (MJCF augmentation).
+   Period matches T = 2pi*sqrt(m/k). Zero-crossing period measurement.
+3. **continuous** — Unlimited revolute wheel. Constant torque via
+   `qfrc_applied`, velocity ramps linearly (alpha = tau/I).
+4. **fixed** — Three URDF links, one fixed joint. `fusestatic` merges the
+   fixed link — model has fewer bodies than URDF links.
+5. **mimic** — Two arms coupled 2:1 via `<mimic>` → `<equality><joint
+   polycoef>`. Follower tracks 2*leader + 0.1, max error < 0.0001 rad.
+6. **geometry** — Box + cylinder + sphere on one arm. Verifies URDF
+   full-extents → MJCF half-extents size conversion.
+7. **inertia** — Two free-floating boxes (combined MJCF): diagonal
+   (`diaginertia`) vs off-diagonal (`fullinertia`). Different precession
+   patterns from same initial angular velocity.
+8. **damping-friction** — Three colored pendulums (combined MJCF): no-loss
+   (blue, swings forever), damped (green, decays smoothly), friction (red,
+   decays then stops). URDF `<dynamics friction>` → MJCF `frictionloss`.
+9. **error-handling** — Headless. 7 checks: missing robot, unknown joint
+   type, undefined link, duplicate link, malformed XML, empty string, error
+   message context.
+10. **stress-test** — Headless. 31 checks: structural equivalence, dynamic
+    equivalence, all joint types, geometry sizes, inertia, limits, damping,
+    frictionloss, mimic tracking, planar DOF, mesh conversion, error variants.
 
 ### Track 2: SDF-CPU ladder (complete the 7 stubs)
 
