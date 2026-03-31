@@ -111,6 +111,34 @@ pub fn quat_from_physics_matrix(m: &nalgebra::Matrix3<f64>) -> Quat {
     )
 }
 
+/// Transform a body-local offset to Bevy world-space (Y-up).
+///
+/// Computes `world = body_pos + body_rot * local_offset` in physics space,
+/// then applies the Z-up → Y-up swap. Uses the body's world position and
+/// rotation matrix from `Data::xpos` / `Data::xmat`.
+#[inline]
+#[must_use]
+pub fn body_local_to_bevy(
+    body_pos: &Vector3<f64>,
+    body_mat: &nalgebra::Matrix3<f64>,
+    local: &[f64; 3],
+) -> Vec3 {
+    let wx = body_pos.x
+        + body_mat[(0, 0)] * local[0]
+        + body_mat[(0, 1)] * local[1]
+        + body_mat[(0, 2)] * local[2];
+    let wy = body_pos.y
+        + body_mat[(1, 0)] * local[0]
+        + body_mat[(1, 1)] * local[1]
+        + body_mat[(1, 2)] * local[2];
+    let wz = body_pos.z
+        + body_mat[(2, 0)] * local[0]
+        + body_mat[(2, 1)] * local[1]
+        + body_mat[(2, 2)] * local[2];
+    // Z-up → Y-up swap
+    Vec3::new(wx as f32, wz as f32, wy as f32)
+}
+
 /// Create a Bevy [`Transform`] from a physics-space position (`Point3<f64>`, Z-up).
 ///
 /// This is the recommended way to position any entity using physics coordinates.

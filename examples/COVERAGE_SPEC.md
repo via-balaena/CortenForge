@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-03-30)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf → 67 examples (8 joint types, 9 sensors, 10 actuators, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 5 energy-momentum, 2 legacy)
+- sim-core + sim-mjcf → 72 examples (8 joint types, 9 sensors, 10 actuators, 5 muscles, 8 integrators, 5 solvers, 8 equality constraints, 7 contact tuning, 5 inverse dynamics, 5 energy-momentum, 2 legacy)
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -33,11 +33,12 @@ integration tests — they find bugs that unit tests miss.
 - **Hfield (height field terrain) → ZERO examples**
 - Sdf → extensively covered
 
-### Actuator System (10 examples — standard actuators covered, muscles remaining)
+### Actuator System (10 standard + 5 muscle examples)
 - Transmission: Joint ✓, Tendon ✓, Site ✓, SliderCrank ✓, **Body ✗, JointInParent ✗**
-- Dynamics: None ✓, Filter ✓, Integrator ✓, **Muscle ✗, HillMuscle ✗, User ✗**
-- Gain: Fixed ✓, Affine ✓, **Muscle ✗, HillMuscle ✗, User ✗**
-- Bias: None ✓, Affine ✓, **Muscle ✗, HillMuscle ✗, User ✗**
+- Dynamics: None ✓, Filter ✓, Integrator ✓, Muscle ✓, **HillMuscle (stress-test only), User ✗**
+- Gain: Fixed ✓, Affine ✓, Muscle ✓, **HillMuscle (stress-test only), User ✗**
+- Bias: None ✓, Affine ✓, Muscle ✓, **HillMuscle (stress-test only), User ✗**
+- Muscle-specific: Activation dynamics ✓, Force-length ✓, Cocontraction ✓, Forearm flexion ✓
 
 ### Sensors (40+ types, 16 covered in 10 examples)
 - Position: JointPos ✓, FramePos ✓, FrameQuat ✓, SubtreeCom ✓, Clock ✓
@@ -107,7 +108,7 @@ fundamentals/
     ball-joint/             # DONE — spherical, conical, cone-limit (4 examples)
     sensors/                # DONE — 9 examples, 15+ sensor types, GJK bug fixed
     actuators/              # DONE — 10 examples: motor, servos, damper, filter, cylinder, integrator, gear, site, slider-crank
-    muscles/                # TODO — Hill muscle model, activation dynamics
+    muscles/                # DONE — stress-test (51 checks), forearm-flexion, activation, cocontraction, force-length
     solvers/                # DONE — comparison + comparison-visual + 3 per-solver
     integrators/            # DONE — comparison + comparison-visual + 5 per-integrator
     equality-constraints/   # DONE — weld, connect, distance, joint coupling (8 examples)
@@ -234,33 +235,25 @@ parameters shape the response.
 - `actuator_force[i]` = gain × activation + bias, verified against manual calc.
 - All three arms produce physically distinct motion profiles.
 
-##### 5. `muscles/` — Hill Muscle Model and Activation Dynamics
+##### 5. `muscles/` — DONE (5 examples)
 
-A forearm model: upper arm fixed to world, elbow hinge joint, forearm body with
-a Hill muscle actuator spanning the joint. The muscle has realistic parameters:
-optimal fiber length, tendon slack length, pennation angle, peak isometric force.
-The control signal ramps activation from 0 → 1 over 0.5s, then holds. The
-example prints muscle activation, normalized fiber length, force-length curve
-value, force-velocity curve value, and total muscle force.
+Five examples covering the full muscle actuator system — both MuJoCo `<muscle>`
+(conformant) and HillMuscle (extension). Spec: `muscles/MUSCLE_EXAMPLES_SPEC.md`.
 
-**Concepts covered:** `HillMuscle` dynamics (asymmetric activation rise/fall),
-`HillMuscle` gain (FL × FV × cos(α) active force), `HillMuscle` bias (passive
-force-length), `gainprm` layout (F0, optimal fiber length, tendon slack,
-pennation angle, max contraction velocity). Demonstrates the CortenForge
-extension beyond standard MuJoCo muscle model.
-
-**MJCF sketch:** Two-body forearm. `<general joint="elbow" dyntype="hillmuscle"
-gaintype="hillmuscle" biastype="hillmuscle" .../>` with explicit `gainprm` and
-`dynprm`. A second standard `<muscle>` actuator on a parallel arm for comparison.
-
-**Pass/fail:**
-- Activation rises with time constant τ_act ≈ 10ms and falls with τ_deact ≈ 40ms
-  (verify within 10% of expected exponential).
-- At optimal fiber length (L_norm=1.0), FL curve ≈ 1.0.
-- Passive force is zero for L_norm ≤ 1.0, positive and increasing for L_norm > 1.0.
-- Peak isometric force matches `gainprm[2]` (F0) within 5% at optimal length,
-  zero velocity, full activation.
-- Pennation angle reduces force by cos(α) — verify against zero-pennation case.
+1. **stress-test** — Headless validation: 51 checks across 6 groups (activation
+   dynamics, MuJoCo curve pinning, Hill curve pinning, full-pipeline force,
+   HillMuscle pipeline, dynamic behavior). All pass.
+2. **forearm-flexion** — MuJoCo `<muscle>` lifts forearm against gravity.
+   3D tendon mesh colored by tension (blue→red). Flex/release cycle.
+3. **activation** — Three arms with different time constants (5/20, 10/40,
+   50/200 ms). Arms contract together, release at different rates —
+   demonstrates Millard et al. activation-dependent deactivation asymmetry.
+4. **cocontraction** — Agonist-antagonist pair (gear=±1). Cycles through
+   cocontraction (both red, joint stiff), agonist-only, antagonist-only.
+   Symmetric swings, gravity restores to vertical.
+5. **force-length** — Two arms swept sinusoidally: wide FL range (lmin=0.5,
+   lmax=1.6) vs narrow (lmin=0.8, lmax=1.2). Same motion, different force
+   output visible as tendon color difference.
 
 ##### 6. `solvers/` — PGS vs CG vs Newton Comparison
 

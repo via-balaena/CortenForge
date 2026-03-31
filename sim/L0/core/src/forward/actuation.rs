@@ -24,6 +24,7 @@ use super::muscle::{muscle_gain_length, muscle_gain_velocity, muscle_passive_for
 
 /// Gaussian active force-length curve (Hill-type muscle).
 /// Peak FL=1.0 at normalized length L=1.0. Returns 0 outside [0.5, 1.6].
+#[must_use]
 pub fn hill_active_fl(norm_len: f64) -> f64 {
     let (w_asc, w_desc) = (0.45, 0.56);
     let (l_min, l_max) = (0.5, 1.6);
@@ -37,6 +38,7 @@ pub fn hill_active_fl(norm_len: f64) -> f64 {
 
 /// Hill hyperbolic force-velocity curve.
 /// FV(0) = 1.0. Concentric: Hill hyperbola. Eccentric: plateau approach.
+#[must_use]
 pub fn hill_force_velocity(norm_vel: f64) -> f64 {
     let a = 0.25; // curvature
     let fv_max = 1.5; // eccentric plateau
@@ -53,6 +55,7 @@ pub fn hill_force_velocity(norm_vel: f64) -> f64 {
 
 /// Exponential passive force-length curve (Hill-type muscle).
 /// FP = 0 for L_norm <= 1.0, rises exponentially for L_norm > 1.0.
+#[must_use]
 pub fn hill_passive_fl(norm_len: f64) -> f64 {
     let shape = 4.0;
     if norm_len <= 1.0 {
