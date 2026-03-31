@@ -257,7 +257,7 @@ fn bench_humanoid_self_collision(c: &mut Criterion) {
     // Simulate a humanoid with multiple body parts
     // Each part is a small mesh (~48 triangles)
     // Test collision between adjacent parts
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Create 10 body parts (simplified humanoid segments)
     let body_parts: Vec<_> = (0..10)
@@ -267,8 +267,8 @@ fn bench_humanoid_self_collision(c: &mut Criterion) {
     // Create poses for body parts (arranged in a rough humanoid shape)
     let poses: Vec<_> = (0..10)
         .map(|i| {
-            let x = rng.gen_range(-0.5..0.5);
-            let y = rng.gen_range(-0.5..0.5);
+            let x = rng.random_range(-0.5..0.5);
+            let y = rng.random_range(-0.5..0.5);
             let z = i as f64 * 0.15; // Stack vertically
             Pose::from_position(Point3::new(x, y, z))
         })
@@ -480,17 +480,17 @@ fn bench_closest_point_on_triangle(c: &mut Criterion) {
 
 /// Generate BVH primitives for testing.
 fn generate_bvh_primitives(count: usize) -> Vec<BvhPrimitive> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..count)
         .map(|idx| {
             let base = Point3::new(
-                rng.gen_range(-10.0..10.0),
-                rng.gen_range(-10.0..10.0),
-                rng.gen_range(-10.0..10.0),
+                rng.random_range(-10.0..10.0),
+                rng.random_range(-10.0..10.0),
+                rng.random_range(-10.0..10.0),
             );
             let v0 = base;
-            let v1 = base + Vector3::new(rng.gen_range(0.1..0.5), 0.0, 0.0);
-            let v2 = base + Vector3::new(0.0, rng.gen_range(0.1..0.5), 0.0);
+            let v1 = base + Vector3::new(rng.random_range(0.1..0.5), 0.0, 0.0);
+            let v2 = base + Vector3::new(0.0, rng.random_range(0.1..0.5), 0.0);
             BvhPrimitive::from_triangle(v0, v1, v2, idx)
         })
         .collect()
@@ -541,14 +541,14 @@ fn bench_bvh_query(c: &mut Criterion) {
 
     // Benchmark many queries in sequence
     group.bench_function("batch_100_queries", |b| {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let queries: Vec<_> = (0..100)
             .map(|_| {
                 Aabb::from_center(
                     Point3::new(
-                        rng.gen_range(-5.0..5.0),
-                        rng.gen_range(-5.0..5.0),
-                        rng.gen_range(-5.0..5.0),
+                        rng.random_range(-5.0..5.0),
+                        rng.random_range(-5.0..5.0),
+                        rng.random_range(-5.0..5.0),
                     ),
                     Vector3::new(1.0, 1.0, 1.0),
                 )

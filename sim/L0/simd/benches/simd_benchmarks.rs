@@ -13,14 +13,14 @@ use sim_simd::*;
 
 fn random_vector(rng: &mut impl Rng) -> Vector3<f64> {
     Vector3::new(
-        rng.gen_range(-100.0..100.0),
-        rng.gen_range(-100.0..100.0),
-        rng.gen_range(-100.0..100.0),
+        rng.random_range(-100.0..100.0),
+        rng.random_range(-100.0..100.0),
+        rng.random_range(-100.0..100.0),
     )
 }
 
 fn random_vectors(n: usize) -> Vec<Vector3<f64>> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..n).map(|_| random_vector(&mut rng)).collect()
 }
 
