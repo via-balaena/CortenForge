@@ -1,7 +1,7 @@
 # Examples Coverage Spec
 
-**Status:** Track 1A complete, Track 1B spec drafted — ready for review
-**Date:** 2026-03-30
+**Status:** Track 1A complete, Track 1B in progress (free-joint done)
+**Date:** 2026-03-31
 **Goal:** 100% coverage of codebase capabilities
 
 ## Principle
@@ -10,11 +10,11 @@ Examples should mirror the distribution of code in the codebase. Every major
 feature should have at least one dedicated example. Examples also serve as
 integration tests — they find bugs that unit tests miss.
 
-## Current State (2026-03-30)
+## Current State (2026-03-31)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 82 examples (Track 1A complete)
-  - Joint types: hinge, slide, ball (3/4 — free joint not dedicated)
+- sim-core + sim-mjcf + sim-urdf → 86 examples (Track 1A + free-joint)
+  - Joint types: hinge, slide, ball, free (4/4 — all covered)
   - Sensors: 16/31 types covered
   - Actuators: 10 examples, Muscles: 5 examples
   - Integrators: 8 examples, Solvers: 5 examples
@@ -22,12 +22,12 @@ integration tests — they find bugs that unit tests miss.
   - Contact tuning: 7 examples
   - Inverse dynamics: 5 examples, Energy-momentum: 5 examples
   - URDF loading: 10 examples
-- Track 1B planned: 20 subdirectories, ~70 examples — no stone unturned.
-  Covers every remaining sim-core subsystem: free joints, keyframes, mocap
-  bodies, contact filtering, joint limits, tendons, 14 advanced sensors,
-  mesh collision, heightfield terrain, passive forces, sleep/wake, Hill
-  muscle, adhesion, flex bodies, raycasting, collision pairs, derivatives,
-  composites, batch simulation, and plugins.
+- Track 1B in progress: 20 subdirectories, ~70 examples — no stone unturned.
+  **free-joint done (4 examples, 12 stress-test checks).** Remaining 19:
+  keyframes, mocap bodies, contact filtering, joint limits, tendons, 14
+  advanced sensors, mesh collision, heightfield terrain, passive forces,
+  sleep/wake, Hill muscle, adhesion, flex bodies, raycasting, collision
+  pairs, derivatives, composites, batch simulation, and plugins.
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -37,7 +37,7 @@ integration tests — they find bugs that unit tests miss.
 
 ### Joint Types (4 types, 4 covered)
 - Hinge → covered (simple-pendulum, double-pendulum, actuator-force, sensor examples)
-- Free → covered (accelerometer, touch, all SDF physics) — **no dedicated example → Track 1B**
+- Free → **dedicated directory** (tumble, projectile, spinning-toss, stress-test) + used in energy-momentum, SDF physics
 - Slide → covered (horizontal, vertical, geom-distance)
 - Ball → covered (spherical-pendulum, conical-pendulum, cone-limit, frame-pos-quat, gyro-velocimeter)
 
@@ -467,7 +467,7 @@ Ordered ground-up by dependency: basic concepts first, advanced features last.
 fundamentals/
   sim-cpu/
     # --- Layer 1: Missing fundamentals ---
-    free-joint/             # 6-DOF floating body, quaternion integration
+    free-joint/             # DONE — 4 examples, 12 stress-test checks
     keyframes/              # State snapshots, reset-to-keyframe
     mocap-bodies/           # Kinematic input bodies, teleop/animation
 
@@ -1410,10 +1410,10 @@ Build from the ground up — the foundation must be bulletproof before moving
 to GPU or advanced features:
 
 1. **Track 1A** — COMPLETE (82 examples). Basic sim-core fundamentals.
-2. **Track 1B** next — sim-core foundation layer 2 (~70 examples).
+2. **Track 1B** IN PROGRESS — sim-core foundation layer 2 (~70 examples).
    No stone unturned — every implemented subsystem gets dedicated coverage.
-   20 subdirectories covering every remaining feature. Examples double as
-   integration tests — they find bugs that unit tests miss.
+   **1/20 subdirectories done** (free-joint: 4 examples, 12 stress-test checks).
+   Next: keyframes.
 3. **Track 3** after Track 1B proves the engine — GPU ladder
 4. **Track 2** as needed — SDF-CPU stubs (most SDF work targets GPU)
 5. **Track 4** as needed — design + mesh
