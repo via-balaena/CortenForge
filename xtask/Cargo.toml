@@ -26,7 +26,7 @@ xshell = "0.2"
 regex = "1"
 
 # TOML parsing for Cargo.toml analysis
-toml = "0.9"
+toml = "1.1"
 
 # Serde for config parsing
 serde = { version = "1", features = ["derive"] }
