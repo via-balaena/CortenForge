@@ -49,7 +49,7 @@ use crate::types::MjcfModel;
 pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
-pub const MJB_VERSION: u32 = 2;
+pub const MJB_VERSION: u32 = 3;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;
@@ -172,8 +172,9 @@ pub fn save_mjb_writer<W: Write>(model: &MjcfModel, writer: &mut W) -> Result<()
         .write_to(writer)
         .map_err(|e| MjcfError::MjbSerialize(e.to_string()))?;
 
-    // Serialize model using bincode
-    bincode::serialize_into(writer, model).map_err(|e| MjcfError::MjbSerialize(e.to_string()))?;
+    // Serialize model using bincode (serde compat layer)
+    bincode::serde::encode_into_std_write(model, writer, bincode::config::standard())
+        .map_err(|e| MjcfError::MjbSerialize(e.to_string()))?;
 
     Ok(())
 }
@@ -270,9 +271,10 @@ pub fn load_mjb_reader<R: Read>(reader: &mut R) -> Result<MjcfModel> {
         .map_err(|e| MjcfError::MjbDeserialize(format!("failed to read header: {e}")))?;
     header.validate()?;
 
-    // Deserialize model using bincode
+    // Deserialize model using bincode (serde compat layer)
     let model: MjcfModel =
-        bincode::deserialize_from(reader).map_err(|e| MjcfError::MjbDeserialize(e.to_string()))?;
+        bincode::serde::decode_from_std_read(reader, bincode::config::standard())
+            .map_err(|e| MjcfError::MjbDeserialize(e.to_string()))?;
 
     Ok(model)
 }
