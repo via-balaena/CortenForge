@@ -3197,6 +3197,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mocap-bodies-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-multi-scene-test"
 version = "0.7.0"
 dependencies = [

@@ -64,6 +64,9 @@ members = [
     "examples/fundamentals/sim-cpu/keyframes/save-restore",
     "examples/fundamentals/sim-cpu/keyframes/multi-body",
 
+    # Examples — fundamentals / sim-cpu / mocap-bodies
+    "examples/fundamentals/sim-cpu/mocap-bodies/stress-test",
+
     # Examples — fundamentals / sim-cpu / free-joint
     "examples/fundamentals/sim-cpu/free-joint/stress-test",
     "examples/fundamentals/sim-cpu/free-joint/tumble",
