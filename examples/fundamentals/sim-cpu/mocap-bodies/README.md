@@ -12,7 +12,7 @@ playback, and VR controllers.
 | [stress-test](stress-test/) | Headless validation | 12 checks: position/quaternion tracking, gravity immunity, contact generation, keyframe restore, weld-to-mocap, zero-mass FK, child-follows-parent. |
 | [drag-target](drag-target/) | Weld-to-mocap tracking | Green ghost sphere glides on a sine wave; a box chases it with springy lag via a compliant weld constraint. |
 | [push-object](push-object/) | Mocap contact interaction | Red paddle sweeps across the scene and flicks a blue ball through one-way contact forces. |
-| [spin-fling](spin-fling/) | Orientation-driven interaction | Orange turntable spins via `mocap_quat`; friction flings a ball off the edge. |
+| [tilt-drop](tilt-drop/) | Orientation-driven interaction | Orange platform tilts via `mocap_quat`; ball slides off under gravity once the tilt exceeds friction. |
 
 ## Key ideas
 

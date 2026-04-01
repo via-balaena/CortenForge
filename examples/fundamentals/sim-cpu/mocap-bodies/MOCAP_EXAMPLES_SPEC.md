@@ -28,7 +28,7 @@ Each visual example demonstrates exactly one concept to keep debugging simple.
 1. stress-test     (headless, 12 checks — engine validation)
 2. drag-target     (visual — soft weld tracking, translational mocap_pos)
 3. push-object     (visual — mocap contact interaction, translational sweep)
-4. spin-fling      (visual — orientation-driven mocap_quat, rotational contact)
+4. tilt-drop       (visual — orientation-driven mocap_quat, gravity slide)
 ```
 
 ## Examples
@@ -125,28 +125,32 @@ blue ball across the ground.
 
 ---
 
-### 4. `spin-fling` — Orientation-Driven Mocap Interaction (Visual)
+### 4. `tilt-drop` — Orientation-Driven Mocap Interaction (Visual)
 
-**One concept:** Mocap body orientation (`mocap_quat`) drives rotational
-contact interaction with dynamic bodies.
+**One concept:** Mocap body orientation (`mocap_quat`) changes contact
+geometry, causing a dynamic body to slide off under gravity.
 
-A mocap turntable (flat cylinder) spins via scripted `mocap_quat` updates.
-A small ball sits on top of the platform. Friction transmits the rotation
-to the ball, which eventually slides off the edge and flies away.
+A mocap platform (box) tilts slowly via scripted `mocap_quat` updates
+(rotating about Y). A ball sitting on top stays in place at shallow angles
+but slides off once the tilt exceeds the friction limit.
+
+**Note:** Spinning a mocap body does NOT transmit friction to dynamic bodies.
+Mocap bodies have zero `cvel` (no joints → no velocity in the physics) —
+this matches MuJoCo by design. Orientation-driven interaction works through
+geometry change (tilting the contact normal), not surface velocity.
 
 **MJCF model:**
-- Mocap body: flat cylinder (turntable), pos at moderate height, orange
+- Mocap body: flat box (platform), pos at moderate height, orange
 - Dynamic body: small sphere with free joint resting on the platform, blue
-- Ground plane below (ball lands on it after being flung)
-- Standard gravity (ball needs to rest on platform, then fall after flung)
-- Moderate friction between platform and ball (enough to grip, not infinite)
+- Ground plane below (ball lands on it after sliding off)
+- Standard gravity
 
 **Validation checks (inline, 2 checks):**
-1. Mocap turntable orientation matches scripted rotation each frame
-2. Ball has nonzero horizontal velocity after a few seconds (friction drove it)
+1. Platform orientation matches mocap_quat (FK invariant)
+2. Ball fell below platform height (slid off)
 
-**What the user sees:** An orange disc spinning up; a blue ball gripping
-the surface, sliding outward, then flying off the edge.
+**What the user sees:** An orange platform slowly tilting; a blue ball
+sitting still, then sliding off the edge and falling to the ground.
 
 ## Directory Layout
 
@@ -162,7 +166,7 @@ mocap-bodies/
   push-object/
     Cargo.toml
     src/main.rs
-  spin-fling/
+  tilt-drop/
     Cargo.toml
     src/main.rs
 ```
