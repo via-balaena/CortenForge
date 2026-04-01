@@ -62,6 +62,15 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `keyframes/multi-body` | `example-keyframes-multi-body` | Working | Two-link arm with ctrl state, 3 keyframes |
 | `keyframes/stress-test` | `example-keyframes-stress-test` | Working | Headless validation (12 checks) |
 
+### Mocap Bodies
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `mocap-bodies/stress-test` | `example-mocap-bodies-stress-test` | Working | Headless validation (12 checks) |
+| `mocap-bodies/drag-target` | `example-mocap-bodies-drag-target` | Working | Soft weld tracking — box follows mocap sphere |
+| `mocap-bodies/push-object` | `example-mocap-bodies-push-object` | Working | One-way contact — paddle pushes ball |
+| `mocap-bodies/tilt-drop` | `example-mocap-bodies-tilt-drop` | Working | Orientation-driven — tilting platform slides ball off |
+
 ### Sensors
 
 | Example | Package | Sensors | Status |

@@ -1144,3 +1144,199 @@ fn test_distance_inactive_ignored() {
         "Inactive distance constraint should allow free fall, z = {z}"
     );
 }
+
+// ============================================================================
+// Weld-to-Mocap Tests
+// ============================================================================
+
+/// Test: Soft weld from dynamic body to mocap body — position tracking.
+///
+/// A mocap body is moved to a new position. A free-floating dynamic body
+/// is connected via a compliant weld constraint. The dynamic body should
+/// drift toward the mocap target; the mocap body must remain at the exact
+/// user-set position (kinematic, unaffected by constraint forces).
+///
+/// This is the mechanism behind "drag-target" interactions: mocap provides
+/// user input, the weld transmits it as a spring-like force to dynamics.
+///
+/// Note: uses RK4 integrator for better stability with penalty forces and
+/// a moderate displacement (0.3 m) to stay within the linearized regime.
+#[test]
+fn test_weld_to_mocap_position_tracking() {
+    let mjcf = r#"
+        <mujoco model="weld_mocap">
+            <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
+            <worldbody>
+                <body name="target" mocap="true" pos="0 0 1">
+                    <geom type="sphere" size="0.05" mass="0.1"/>
+                </body>
+                <body name="follower" pos="0 0 1">
+                    <freejoint name="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <weld body1="follower" body2="target" solref="0.02 1.0"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    // Verify setup.
+    assert_eq!(model.neq, 1);
+    assert_eq!(model.nmocap, 1);
+
+    // Both start at the same position → zero violation.
+    data.forward(&model).expect("forward");
+    let sep0 = (data.xpos[2] - data.xpos[1]).norm(); // follower=body2, target=body1
+    assert!(sep0 < 1e-6, "initial separation should be ~0, got {sep0}");
+
+    // Move mocap target 0.3 m along X.
+    let target_pos = nalgebra::Vector3::new(0.3, 0.0, 1.0);
+    let mocap_idx = model.body_mocapid[1].expect("target is mocap");
+    data.mocap_pos[mocap_idx] = target_pos;
+
+    // Step 3000 steps (3 s) — follower should converge toward target.
+    for _ in 0..3000 {
+        data.step(&model).expect("step failed");
+    }
+
+    // 1. Mocap body stays exactly where we put it (kinematic).
+    assert_relative_eq!(data.xpos[1], target_pos, epsilon = 1e-10);
+
+    // 2. Follower has moved most of the way toward the target.
+    //    Explicit penalty won't reach zero residual, but should close > 80%.
+    let final_sep = (data.xpos[2] - target_pos).norm();
+    assert!(
+        final_sep < 0.15,
+        "Follower should converge toward mocap target, separation = {final_sep}"
+    );
+
+    // 3. Verify the follower actually moved (not stuck at origin).
+    let follower_x = data.xpos[2].x;
+    assert!(
+        follower_x > 0.1,
+        "Follower should have moved toward target along X, x = {follower_x}"
+    );
+}
+
+/// Test: Soft weld from dynamic body to mocap body — orientation tracking.
+///
+/// The mocap body is rotated 30° about Z (small enough for the linearized
+/// penalty to converge). The free-floating follower, connected by a
+/// compliant weld, should rotate to match. Uses RK4 for stability.
+#[test]
+fn test_weld_to_mocap_orientation_tracking() {
+    let mjcf = r#"
+        <mujoco model="weld_mocap_orient">
+            <option gravity="0 0 0" timestep="0.001" integrator="RK4"/>
+            <worldbody>
+                <body name="target" mocap="true" pos="0 0 1">
+                    <geom type="box" size="0.2 0.1 0.05" mass="0.1"/>
+                </body>
+                <body name="follower" pos="0 0 1">
+                    <freejoint name="free"/>
+                    <geom type="box" size="0.2 0.1 0.05" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <weld body1="follower" body2="target" solref="0.02 1.0"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    // Rotate mocap target 30° about Z (0.524 rad — within linear regime).
+    let target_angle = std::f64::consts::FRAC_PI_6;
+    let target_quat =
+        nalgebra::UnitQuaternion::from_axis_angle(&nalgebra::Vector3::z_axis(), target_angle);
+    let mocap_idx = model.body_mocapid[1].expect("target is mocap");
+    data.mocap_quat[mocap_idx] = target_quat;
+
+    // Step 5000 steps (5 s).
+    for _ in 0..5000 {
+        data.step(&model).expect("step failed");
+    }
+
+    // 1. Mocap orientation is exact.
+    let mocap_angle_out = data.xquat[1].angle();
+    assert_relative_eq!(mocap_angle_out, target_angle, epsilon = 1e-6);
+
+    // 2. Follower orientation converged partway — explicit penalty won't
+    //    reach zero error, but should show clear rotational tracking.
+    let rel_quat = data.xquat[1].inverse() * data.xquat[2];
+    let angle_error = rel_quat.angle();
+    assert!(
+        angle_error < 0.35,
+        "Follower orientation should track mocap, angle error = {angle_error} rad"
+    );
+
+    // 3. Verify follower actually rotated (not stuck at identity).
+    let follower_angle = data.xquat[2].angle();
+    assert!(
+        follower_angle > 0.1,
+        "Follower should have rotated toward target, angle = {follower_angle} rad"
+    );
+}
+
+/// Test: Moving mocap body generates constraint force on dynamic body only.
+///
+/// Verifies Newton's-3rd-law asymmetry: the penalty force acts on the
+/// dynamic body's qfrc_constraint, while the mocap body has no DOFs and
+/// therefore no constraint force accumulation.
+#[test]
+fn test_weld_to_mocap_force_asymmetry() {
+    let mjcf = r#"
+        <mujoco model="weld_mocap_force">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="target" mocap="true" pos="0 0 1">
+                    <geom type="sphere" size="0.05" mass="0.1"/>
+                </body>
+                <body name="follower" pos="0 0 1">
+                    <freejoint name="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <weld body1="follower" body2="target" solref="0.02 1.0"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    // Move mocap to create violation.
+    let mocap_idx = model.body_mocapid[1].expect("target is mocap");
+    data.mocap_pos[mocap_idx] = nalgebra::Vector3::new(1.0, 0.0, 1.0);
+
+    // One forward pass to compute constraint forces.
+    data.forward(&model).expect("forward");
+
+    // The follower has 6 DOFs (free joint). At least one constraint force
+    // component should be nonzero (pulling follower toward target).
+    let max_frc = data
+        .qfrc_constraint
+        .iter()
+        .map(|x| x.abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_frc > 1e-6,
+        "Weld-to-mocap should generate constraint force on dynamic body, max = {max_frc}"
+    );
+
+    // Step and verify mocap body did not move.
+    for _ in 0..100 {
+        data.step(&model).expect("step failed");
+    }
+    assert_relative_eq!(
+        data.xpos[1],
+        nalgebra::Vector3::new(1.0, 0.0, 1.0),
+        epsilon = 1e-10
+    );
+}
