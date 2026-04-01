@@ -146,7 +146,7 @@ fn check_1_position_tracks() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_A).expect("parse");
     let mut data = model.make_data();
 
-    let wall_id = 1; // first non-world body
+    let wall_id = model.body_id("wall").expect("wall body exists");
     let mocap_idx = model.body_mocapid[wall_id].expect("wall is mocap");
 
     let new_pos = Vector3::new(3.0, 4.0, 5.0);
@@ -168,7 +168,7 @@ fn check_2_quaternion_tracks() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_A).expect("parse");
     let mut data = model.make_data();
 
-    let wall_id = 1;
+    let wall_id = model.body_id("wall").expect("wall body exists");
     let mocap_idx = model.body_mocapid[wall_id].expect("wall is mocap");
 
     // 45° about Z
@@ -190,7 +190,7 @@ fn check_2_quaternion_tracks() -> (u32, u32) {
 fn check_3_world_child() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_A).expect("parse");
 
-    let wall_id = 1;
+    let wall_id = model.body_id("wall").expect("wall body exists");
     let parent = model.body_parent[wall_id];
     let p = check(
         "World-child invariant",
@@ -206,7 +206,7 @@ fn check_4_contact_generation() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_A).expect("parse");
     let mut data = model.make_data();
 
-    let wall_id = 1;
+    let wall_id = model.body_id("wall").expect("wall body exists");
     let mocap_idx = model.body_mocapid[wall_id].expect("wall is mocap");
 
     // Move wall right next to ball (ball is at x=0, wall geom half-size=0.05)
@@ -230,7 +230,7 @@ fn check_5_gravity_immune() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_A).expect("parse");
     let mut data = model.make_data();
 
-    let wall_id = 1;
+    let wall_id = model.body_id("wall").expect("wall body exists");
     data.forward(&model).expect("forward");
     let pos_before = data.xpos[wall_id];
 
@@ -253,7 +253,7 @@ fn check_6_contact_immune() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_A).expect("parse");
     let mut data = model.make_data();
 
-    let wall_id = 1;
+    let wall_id = model.body_id("wall").expect("wall body exists");
     let mocap_idx = model.body_mocapid[wall_id].expect("wall is mocap");
 
     // Place wall in contact with ball
@@ -279,10 +279,9 @@ fn check_7_multi_mocap() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_B).expect("parse");
     let mut data = model.make_data();
 
-    let a_id = 1;
-    let b_id = 2;
+    let a_id = model.body_id("target_a").expect("target_a exists");
+    let b_id = model.body_id("target_b").expect("target_b exists");
     let idx_a = model.body_mocapid[a_id].expect("target_a is mocap");
-    let _idx_b = model.body_mocapid[b_id].expect("target_b is mocap");
 
     data.forward(&model).expect("forward");
     let b_pos_before = data.xpos[b_id];
@@ -310,7 +309,7 @@ fn check_8_keyframe_restore() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_C).expect("parse");
     let mut data = model.make_data();
 
-    let target_id = 1;
+    let target_id = model.body_id("target").expect("target exists");
     let mocap_idx = model.body_mocapid[target_id].expect("target is mocap");
 
     // Scramble mocap to arbitrary values
@@ -340,7 +339,7 @@ fn check_9_weld_force() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_D).expect("parse");
     let mut data = model.make_data();
 
-    let target_id = 1;
+    let target_id = model.body_id("target").expect("target exists");
     let mocap_idx = model.body_mocapid[target_id].expect("target is mocap");
 
     // Displace mocap to create violation
@@ -367,8 +366,8 @@ fn check_10_weld_tracking() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_D).expect("parse");
     let mut data = model.make_data();
 
-    let target_id = 1;
-    let follower_id = 2;
+    let target_id = model.body_id("target").expect("target exists");
+    let follower_id = model.body_id("follower").expect("follower exists");
     let mocap_idx = model.body_mocapid[target_id].expect("target is mocap");
 
     // Displace mocap 0.3 m along X
@@ -397,7 +396,7 @@ fn check_11_zero_mass_fk() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_E).expect("parse");
     let mut data = model.make_data();
 
-    let ghost_id = 1;
+    let ghost_id = model.body_id("ghost").expect("ghost exists");
     let mocap_idx = model.body_mocapid[ghost_id].expect("ghost is mocap");
 
     // Verify mass is actually zero
@@ -422,8 +421,8 @@ fn check_12_child_follows() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_F).expect("parse");
     let mut data = model.make_data();
 
-    let platform_id = 1;
-    let arm_id = 2;
+    let platform_id = model.body_id("platform").expect("platform exists");
+    let arm_id = model.body_id("arm").expect("arm exists");
     let mocap_idx = model.body_mocapid[platform_id].expect("platform is mocap");
 
     // Get initial positions

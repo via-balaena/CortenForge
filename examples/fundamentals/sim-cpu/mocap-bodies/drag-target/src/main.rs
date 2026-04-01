@@ -97,9 +97,11 @@ fn main() {
                 .report_at(10.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let mocap_idx = m.body_mocapid[1].expect("target is mocap");
+                    let tid = m.body_id("target").expect("target exists");
+                    let fid = m.body_id("follower").expect("follower exists");
+                    let mocap_idx = m.body_mocapid[tid].expect("target is mocap");
                     let target = d.mocap_pos[mocap_idx];
-                    let follower = d.xpos[2];
+                    let follower = d.xpos[fid];
                     let sep = (follower - target).norm();
                     format!(
                         "target=[{:.2}, {:.2}, {:.2}]  sep={sep:.3}",
@@ -173,7 +175,8 @@ fn setup(
 
 /// Update mocap_pos to follow a sinusoidal path before stepping.
 fn drive_mocap(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
-    let mocap_idx = model.body_mocapid[1].expect("target is mocap");
+    let tid = model.body_id("target").expect("target exists");
+    let mocap_idx = model.body_mocapid[tid].expect("target is mocap");
     let t = data.time;
     let phase = 2.0 * std::f64::consts::PI * FREQ * t;
     data.mocap_pos[mocap_idx] =
@@ -186,9 +189,11 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Drag Target — Soft Weld Tracking");
 
-    let mocap_idx = model.body_mocapid[1].expect("target is mocap");
+    let tid = model.body_id("target").expect("target exists");
+    let fid = model.body_id("follower").expect("follower exists");
+    let mocap_idx = model.body_mocapid[tid].expect("target is mocap");
     let target = data.mocap_pos[mocap_idx];
-    let follower = data.xpos[2];
+    let follower = data.xpos[fid];
     let sep = (follower - target).norm();
 
     hud.raw(format!(
@@ -218,13 +223,15 @@ fn diagnostics(
     harness: Res<ValidationHarness>,
     mut state: Local<DiagState>,
 ) {
-    let mocap_idx = model.body_mocapid[1].expect("target is mocap");
+    let tid = model.body_id("target").expect("target exists");
+    let fid = model.body_id("follower").expect("follower exists");
+    let mocap_idx = model.body_mocapid[tid].expect("target is mocap");
     let target = data.mocap_pos[mocap_idx];
-    let follower = data.xpos[2];
+    let follower = data.xpos[fid];
     let sep = (follower - target).norm();
 
     // Track the mocap body's actual xpos vs what we set.
-    let mocap_xpos = data.xpos[1];
+    let mocap_xpos = data.xpos[tid];
     let mocap_err = (mocap_xpos - target).norm();
     if mocap_err > state.mocap_drift {
         state.mocap_drift = mocap_err;

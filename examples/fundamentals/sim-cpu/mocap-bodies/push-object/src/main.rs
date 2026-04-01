@@ -92,9 +92,11 @@ fn main() {
                 .report_at(8.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let mocap_idx = m.body_mocapid[1].expect("paddle is mocap");
+                    let pid = m.body_id("paddle").expect("paddle exists");
+                    let bid = m.body_id("ball").expect("ball exists");
+                    let mocap_idx = m.body_mocapid[pid].expect("paddle is mocap");
                     let paddle_x = d.mocap_pos[mocap_idx].x;
-                    let ball_x = d.xpos[2].x;
+                    let ball_x = d.xpos[bid].x;
                     format!("paddle_x={paddle_x:.2}  ball_x={ball_x:.2}")
                 }),
         )
@@ -160,7 +162,8 @@ fn setup(
 
 /// Sweep the paddle along +X at constant speed.
 fn drive_paddle(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
-    let mocap_idx = model.body_mocapid[1].expect("paddle is mocap");
+    let pid = model.body_id("paddle").expect("paddle exists");
+    let mocap_idx = model.body_mocapid[pid].expect("paddle is mocap");
     let t = data.time;
     let x = START_X + SWEEP_SPEED * t;
     data.mocap_pos[mocap_idx] = nalgebra::Vector3::new(x, 0.0, PADDLE_Z);
@@ -172,9 +175,11 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Push Object — Mocap Contact");
 
-    let mocap_idx = model.body_mocapid[1].expect("paddle is mocap");
+    let pid = model.body_id("paddle").expect("paddle exists");
+    let bid = model.body_id("ball").expect("ball exists");
+    let mocap_idx = model.body_mocapid[pid].expect("paddle is mocap");
     let paddle_x = data.mocap_pos[mocap_idx].x;
-    let ball_pos = data.xpos[2];
+    let ball_pos = data.xpos[bid];
 
     hud.scalar("paddle X", paddle_x, 3);
     hud.raw(format!(
@@ -201,14 +206,17 @@ fn diagnostics(
     harness: Res<ValidationHarness>,
     mut state: Local<DiagState>,
 ) {
+    let pid = model.body_id("paddle").expect("paddle exists");
+    let bid = model.body_id("ball").expect("ball exists");
+
     // Record ball's initial X on first frame.
     if state.ball_initial_x.is_none() {
-        state.ball_initial_x = Some(data.xpos[2].x);
+        state.ball_initial_x = Some(data.xpos[bid].x);
     }
 
     // Track FK invariant: xpos must match mocap_pos exactly.
-    let mocap_idx = model.body_mocapid[1].expect("paddle is mocap");
-    let fk_err = (data.xpos[1] - data.mocap_pos[mocap_idx]).norm();
+    let mocap_idx = model.body_mocapid[pid].expect("paddle is mocap");
+    let fk_err = (data.xpos[pid] - data.mocap_pos[mocap_idx]).norm();
     if fk_err > state.paddle_drift {
         state.paddle_drift = fk_err;
     }
@@ -216,7 +224,7 @@ fn diagnostics(
     if harness.reported() && !state.reported {
         state.reported = true;
 
-        let ball_x = data.xpos[2].x;
+        let ball_x = data.xpos[bid].x;
         let initial_x = state.ball_initial_x.unwrap_or(0.0);
         let ball_moved = ball_x - initial_x;
 

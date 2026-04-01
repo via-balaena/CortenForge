@@ -89,9 +89,11 @@ fn main() {
                 .report_at(20.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let mocap_idx = m.body_mocapid[1].expect("platform is mocap");
+                    let plid = m.body_id("platform").expect("platform exists");
+                    let blid = m.body_id("ball").expect("ball exists");
+                    let mocap_idx = m.body_mocapid[plid].expect("platform is mocap");
                     let tilt = d.mocap_quat[mocap_idx].angle();
-                    let ball_z = d.xpos[2].z;
+                    let ball_z = d.xpos[blid].z;
                     format!("tilt={tilt:.2} rad  ball_z={ball_z:.3}")
                 }),
         )
@@ -157,7 +159,8 @@ fn setup(
 
 /// Tilt the platform about Y axis. Linear ramp then hold.
 fn drive_tilt(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
-    let mocap_idx = model.body_mocapid[1].expect("platform is mocap");
+    let plid = model.body_id("platform").expect("platform exists");
+    let mocap_idx = model.body_mocapid[plid].expect("platform is mocap");
     let t = data.time;
     let angle = MAX_TILT * (t / TILT_TIME).min(1.0);
     data.mocap_quat[mocap_idx] =
@@ -170,9 +173,11 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.clear();
     hud.section("Tilt Drop — Orientation-Driven Mocap");
 
-    let mocap_idx = model.body_mocapid[1].expect("platform is mocap");
+    let plid = model.body_id("platform").expect("platform exists");
+    let blid = model.body_id("ball").expect("ball exists");
+    let mocap_idx = model.body_mocapid[plid].expect("platform is mocap");
     let tilt = data.mocap_quat[mocap_idx].angle();
-    let ball_pos = data.xpos[2];
+    let ball_pos = data.xpos[blid];
 
     hud.scalar("tilt (rad)", tilt, 3);
     hud.scalar("tilt (deg)", tilt.to_degrees(), 1);
@@ -200,14 +205,16 @@ fn diagnostics(
     mut state: Local<DiagState>,
 ) {
     // FK invariant: xquat must match mocap_quat.
-    let mocap_idx = model.body_mocapid[1].expect("platform is mocap");
-    let fk_err = data.xquat[1].angle_to(&data.mocap_quat[mocap_idx]);
+    let plid = model.body_id("platform").expect("platform exists");
+    let blid = model.body_id("ball").expect("ball exists");
+    let mocap_idx = model.body_mocapid[plid].expect("platform is mocap");
+    let fk_err = data.xquat[plid].angle_to(&data.mocap_quat[mocap_idx]);
     if fk_err > state.mocap_drift {
         state.mocap_drift = fk_err;
     }
 
     // Detect if ball has fallen off (below platform height).
-    if data.xpos[2].z < 0.5 {
+    if data.xpos[blid].z < 0.5 {
         state.ball_fell = true;
     }
 
@@ -223,7 +230,10 @@ fn diagnostics(
             Check {
                 name: "Ball slid off tilted platform",
                 pass: state.ball_fell,
-                detail: format!("ball_z = {:.3}, fell = {}", data.xpos[2].z, state.ball_fell),
+                detail: format!(
+                    "ball_z = {:.3}, fell = {}",
+                    data.xpos[blid].z, state.ball_fell
+                ),
             },
         ];
         let _ = print_report("Tilt Drop (t=20s)", &checks);
