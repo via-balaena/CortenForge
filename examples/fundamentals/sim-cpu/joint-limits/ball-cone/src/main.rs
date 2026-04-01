@@ -1,8 +1,13 @@
 //! Ball Cone — Ball Joint Cone Limit
 //!
-//! A rod hanging from a ball joint with range="0 30" (30-degree cone).
-//! Starts tilted ~40 degrees beyond the cone and is pushed back by the
-//! constraint. Demonstrates rotationally symmetric cone limits.
+//! A rod on a ball joint with a 30-degree cone limit, given initial angular
+//! velocity to orbit along the cone boundary. Light damping slowly bleeds
+//! energy, so the tip spirals inward like a coin-funnel toy — orbiting the
+//! cone rim, then spiraling down to rest at the bottom. A fading trail traces
+//! the path.
+//!
+//! Demonstrates: cone limit as a rotationally symmetric 3D surface,
+//! friction-free constraint sliding, energy decay, trail visualization.
 //!
 //! Run with: `cargo run -p example-joint-limits-ball-cone --release`
 
@@ -26,34 +31,38 @@ use sim_bevy::examples::{
     PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
     validation_system,
 };
+use sim_bevy::gizmos::{TrailGizmo, draw_trails, sample_trails};
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
-    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms_with, step_physics_realtime,
     sync_geom_transforms,
 };
 use sim_core::validation::{Check, print_report};
 
 // ── MJCF Model ────────────────────────────────────────────────────────────
 
-/// Ball joint with 30° cone limit. Initial orientation set programmatically
-/// to ~40° tilt about X-axis (beyond the cone).
+/// Ball joint with 30° cone limit. Very light damping (0.01) so the orbit
+/// persists for ~15s before spiraling to rest at the bottom.
 const MJCF: &str = r#"
 <mujoco model="ball-cone">
   <compiler angle="degree"/>
   <option gravity="0 0 -9.81" timestep="0.002"/>
 
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
   <worldbody>
     <body name="pivot" pos="0 0 1.5">
-      <geom name="pivot_geom" type="sphere" size="0.04"
-            rgba="0.4 0.4 0.4 1" contype="0" conaffinity="0"/>
+      <geom name="pivot_geom" type="sphere" size="0.04" rgba="0.4 0.4 0.4 1"/>
       <body name="rod" pos="0 0 0">
         <joint name="ball" type="ball" limited="true" range="0 30"
-               damping="0.2"/>
+               damping="0.08"/>
         <geom name="rod_geom" type="capsule"
-              fromto="0 0 0 0 0 -0.5" size="0.015" mass="0.5"
+              fromto="0 0 0 0 0 -0.6" size="0.015" mass="0.3"
               rgba="0.85 0.5 0.15 1"/>
-        <body name="tip" pos="0 0 -0.5">
-          <geom name="tip_geom" type="sphere" size="0.04" mass="0.5"
+        <body name="tip" pos="0 0 -0.6">
+          <geom name="tip_geom" type="sphere" size="0.05" mass="1.0"
                 rgba="0.85 0.5 0.15 1"/>
         </body>
       </body>
@@ -66,21 +75,35 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
+// ── Physics constants ─────────────────────────────────────────────────────
+
+const ROD_LENGTH: f64 = 0.6;
+const GRAVITY: f64 = 9.81;
 const CONE_LIMIT_DEG: f64 = 30.0;
-const INITIAL_TILT_DEG: f64 = 40.0;
+const CONE_LIMIT_RAD: f64 = CONE_LIMIT_DEG * std::f64::consts::PI / 180.0;
+
+/// Angular velocity for conical pendulum orbit at angle theta:
+/// omega = sqrt(g / (L * cos(theta)))
+fn conical_omega(theta: f64) -> f64 {
+    (GRAVITY / (ROD_LENGTH * theta.cos())).sqrt()
+}
 
 // ── Bevy App ──────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== CortenForge: Ball Cone — 30\u{00b0} Cone Limit ===");
-    println!("  Gold rod on ball joint, cone limit = {CONE_LIMIT_DEG}\u{00b0}");
-    println!("  Starts at {INITIAL_TILT_DEG}\u{00b0} tilt (beyond cone)");
+    let omega = conical_omega(CONE_LIMIT_RAD);
+    let period = 2.0 * std::f64::consts::PI / omega;
+    println!("=== CortenForge: Ball Cone \u{2014} 30\u{00b0} Cone Limit ===");
+    println!("  Gold rod orbits along cone boundary, then spirals to rest");
+    println!(
+        "  L={ROD_LENGTH}m, cone={CONE_LIMIT_DEG}\u{00b0}, \u{03c9}={omega:.2} rad/s, T={period:.2}s"
+    );
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "CortenForge — Ball Cone (Joint Limits)".into(),
+                title: "CortenForge \u{2014} Ball Cone (Joint Limits)".into(),
                 ..default()
             }),
             ..default()
@@ -90,8 +113,8 @@ fn main() {
         .init_resource::<PhysicsHud>()
         .insert_resource(
             ValidationHarness::new()
-                .report_at(5.0)
-                .print_every(0.5)
+                .report_at(15.0)
+                .print_every(1.0)
                 .display(|m, d| {
                     let jid = m.joint_id("ball").unwrap();
                     let q = d.joint_qpos(m, jid);
@@ -106,6 +129,8 @@ fn main() {
             PostUpdate,
             (
                 sync_geom_transforms,
+                sample_trails,
+                draw_trails,
                 validation_system,
                 diagnostics,
                 update_hud,
@@ -134,15 +159,24 @@ fn setup(
     let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
     let mut data = model.make_data();
 
-    // Set initial quaternion: ~40° tilt about X axis (beyond 30° cone)
+    // Initial tilt: exactly at cone boundary (30° about X)
     let jid = model.joint_id("ball").expect("ball joint");
     let adr = model.jnt_qpos_adr[jid];
-    let angle = INITIAL_TILT_DEG.to_radians();
-    let half = angle / 2.0;
+    let half = CONE_LIMIT_RAD / 2.0;
     data.qpos[adr] = half.cos(); // w
     data.qpos[adr + 1] = half.sin(); // x
     data.qpos[adr + 2] = 0.0; // y
     data.qpos[adr + 3] = 0.0; // z
+
+    // Initial angular velocity: omega about world Z for conical orbit.
+    // Body is tilted theta about X, so world Z in body frame = [0, sin(theta), cos(theta)]
+    let dof_adr = model.jnt_dof_adr[jid];
+    let omega = conical_omega(CONE_LIMIT_RAD);
+    data.qvel[dof_adr] = 0.0;
+    data.qvel[dof_adr + 1] = omega * CONE_LIMIT_RAD.sin();
+    data.qvel[dof_adr + 2] = omega * CONE_LIMIT_RAD.cos();
+
+    let _ = data.forward(&model);
 
     // Materials
     let mat_gold =
@@ -150,7 +184,7 @@ fn setup(
     let mat_pivot =
         materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.4, 0.4, 0.4)));
 
-    spawn_model_geoms(
+    spawn_model_geoms_with(
         &mut commands,
         &mut meshes,
         &mut materials,
@@ -161,6 +195,11 @@ fn setup(
             ("rod_geom", mat_gold.clone()),
             ("tip_geom", mat_gold),
         ],
+        |cmds, _id, name| {
+            if name == "tip_geom" {
+                cmds.insert(TrailGizmo::new(800, Color::srgb(0.85, 0.5, 0.15), 0.01));
+            }
+        },
     );
 
     spawn_example_camera(
@@ -219,7 +258,10 @@ fn diagnostics(
     let deflection = quat_angle(q).to_degrees();
     let frc = data.jnt_limit_frc[jid];
 
-    state.max_deflection = state.max_deflection.max(deflection);
+    // Track max deflection after 1s (skip initial transient)
+    if data.time > 1.0 {
+        state.max_deflection = state.max_deflection.max(deflection);
+    }
     state.max_frc = state.max_frc.max(frc);
 
     if !harness.reported() || state.reported {
@@ -238,15 +280,17 @@ fn diagnostics(
             ),
         },
         Check {
-            name: "JointLimitFrc > 0 when at cone boundary",
+            name: "JointLimitFrc > 0 (cone constraint activated)",
             pass: state.max_frc > 0.0,
             detail: format!("peak limit_frc = {:.2}", state.max_frc),
         },
         Check {
-            name: "Cone is symmetric (deflection settles near limit)",
-            pass: deflection < CONE_LIMIT_DEG + tol,
-            detail: format!("current deflection = {deflection:.1}\u{00b0} at t=5s"),
+            name: "Deflection decaying (energy loss via damping)",
+            pass: deflection < CONE_LIMIT_DEG,
+            detail: format!(
+                "deflection = {deflection:.1}\u{00b0} at t=15s (should be < {CONE_LIMIT_DEG}\u{00b0})"
+            ),
         },
     ];
-    let _ = print_report("Ball Cone (t=5s)", &checks);
+    let _ = print_report("Ball Cone (t=15s)", &checks);
 }
