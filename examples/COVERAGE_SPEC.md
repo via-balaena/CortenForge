@@ -732,7 +732,7 @@ spring-damper dynamics, and serve as actuator transmission.
    When compressed below 0.1, the lower limit activates. Print TendonLimitFrc
    sensor readings.
 
-6. **pulley** — A fixed tendon with a pulley (divisor > 1). Two branches
+6. **pulley** — A spatial tendon with a pulley (divisor > 1). Two branches
    of the tendon contribute to length with different mechanical advantage.
    Demonstrates the `<pulley divisor="2"/>` element.
 
@@ -757,7 +757,7 @@ spring-damper dynamics, and serve as actuator transmission.
    - Fixed tendon Jacobian is constant (configuration-independent)
    - Spatial tendon Jacobian varies with configuration
    - Multiple tendons on same joint compose correctly
-   - Wrapping with muscle actuator produces realistic moment arm curve
+   - Spatial tendon moment arm varies with configuration (Jacobian check)
 
 **Concepts covered:** `<tendon><fixed>`, `<tendon><spatial>`, `<site>` routing,
 sphere/cylinder wrapping, `<pulley>`, tendon limits, `TendonPos`/`TendonVel`/

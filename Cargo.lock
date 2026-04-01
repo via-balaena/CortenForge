@@ -3725,6 +3725,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-tendon-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-urdf-continuous"
 version = "0.7.0"
 dependencies = [
