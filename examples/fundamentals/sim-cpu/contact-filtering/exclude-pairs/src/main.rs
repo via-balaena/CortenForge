@@ -174,22 +174,6 @@ fn setup(
 
 // ── HUD ───────────────────────────────────────────────────────────────────
 
-fn contacts_between_bodies(
-    model: &sim_core::Model,
-    data: &sim_core::Data,
-    b1: usize,
-    b2: usize,
-) -> usize {
-    data.contacts
-        .iter()
-        .filter(|c| {
-            let cb1 = model.geom_body[c.geom1];
-            let cb2 = model.geom_body[c.geom2];
-            (cb1 == b1 && cb2 == b2) || (cb1 == b2 && cb2 == b1)
-        })
-        .count()
-}
-
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("Exclude Pairs — Body-Pair Exclusion");
@@ -201,12 +185,12 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
 
     hud.raw(String::from("LEFT (excluded):"));
     hud.raw(format!("  sphere z={:.3}", data.xpos[ex].z));
-    let ex_con = contacts_between_bodies(&model, &data, pl, ex);
+    let ex_con = data.contacts_between_bodies(&model, pl, ex);
     hud.raw(format!("  contacts: {ex_con}"));
 
     hud.raw(String::from("RIGHT (normal):"));
     hud.raw(format!("  sphere z={:.3}", data.xpos[nm].z));
-    let nm_con = contacts_between_bodies(&model, &data, pr, nm);
+    let nm_con = data.contacts_between_bodies(&model, pr, nm);
     hud.raw(format!("  contacts: {nm_con}"));
 
     hud.scalar("time", data.time, 1);
@@ -234,9 +218,9 @@ fn diagnostics(
 
     state.max_excluded_contacts = state
         .max_excluded_contacts
-        .max(contacts_between_bodies(&model, &data, pl, ex));
+        .max(data.contacts_between_bodies(&model, pl, ex));
 
-    if contacts_between_bodies(&model, &data, pr, nm) > 0 {
+    if data.contacts_between_bodies(&model, pr, nm) > 0 {
         state.normal_ever_collided = true;
     }
 

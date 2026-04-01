@@ -180,13 +180,6 @@ fn setup(
 
 // ── HUD ───────────────────────────────────────────────────────────────────
 
-fn contacts_between_geoms(data: &sim_core::Data, g1: usize, g2: usize) -> usize {
-    data.contacts
-        .iter()
-        .filter(|c| (c.geom1 == g1 && c.geom2 == g2) || (c.geom1 == g2 && c.geom2 == g1))
-        .count()
-}
-
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("Ghost Layers — Collision Layers");
@@ -203,7 +196,7 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
 
     let ga_geom = model.geom_id("ga_geom").expect("ga_geom");
     let gb_geom = model.geom_id("gb_geom").expect("gb_geom");
-    let ghost_ghost = contacts_between_geoms(&data, ga_geom, gb_geom);
+    let ghost_ghost = data.contacts_between_geoms(ga_geom, gb_geom);
     hud.raw(format!("ghost<>ghost: {ghost_ghost} contacts"));
 
     hud.scalar("ncon", data.ncon as f64, 0);
@@ -226,7 +219,7 @@ fn diagnostics(
 ) {
     let ga_geom = model.geom_id("ga_geom").expect("ga_geom");
     let gb_geom = model.geom_id("gb_geom").expect("gb_geom");
-    let gg = contacts_between_geoms(&data, ga_geom, gb_geom);
+    let gg = data.contacts_between_geoms(ga_geom, gb_geom);
     state.max_ghost_ghost_contacts = state.max_ghost_ghost_contacts.max(gg);
 
     if !harness.reported() || state.reported {

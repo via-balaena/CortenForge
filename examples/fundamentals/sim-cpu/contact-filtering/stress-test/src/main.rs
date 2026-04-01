@@ -197,39 +197,6 @@ fn check(name: &str, pass: bool, detail: &str) -> bool {
     pass
 }
 
-/// Count contacts involving a specific geom.
-fn contacts_involving_geom(data: &sim_core::Data, geom_id: usize) -> usize {
-    data.contacts
-        .iter()
-        .filter(|c| c.geom1 == geom_id || c.geom2 == geom_id)
-        .count()
-}
-
-/// Count contacts between two specific geoms.
-fn contacts_between_geoms(data: &sim_core::Data, g1: usize, g2: usize) -> usize {
-    data.contacts
-        .iter()
-        .filter(|c| (c.geom1 == g1 && c.geom2 == g2) || (c.geom1 == g2 && c.geom2 == g1))
-        .count()
-}
-
-/// Count contacts between two specific bodies.
-fn contacts_between_bodies(
-    model: &sim_core::Model,
-    data: &sim_core::Data,
-    b1: usize,
-    b2: usize,
-) -> usize {
-    data.contacts
-        .iter()
-        .filter(|c| {
-            let cb1 = model.geom_body[c.geom1];
-            let cb2 = model.geom_body[c.geom2];
-            (cb1 == b1 && cb2 == b2) || (cb1 == b2 && cb2 == b1)
-        })
-        .count()
-}
-
 // ── Check 1: contype=0 falls through ground ──────────────────────────────
 
 fn check_1_ghost_falls_through() -> (u32, u32) {
@@ -287,7 +254,7 @@ fn check_3_ghost_no_contacts() -> (u32, u32) {
         data.step(&model).expect("step");
     }
 
-    let ghost_contacts = contacts_involving_geom(&data, ghost_geom);
+    let ghost_contacts = data.contacts_involving_geom(ghost_geom);
     let p = check(
         "ncon=0 for ghost",
         ghost_contacts == 0,
@@ -335,7 +302,7 @@ fn check_5_cross_layer_collides() -> (u32, u32) {
         data.step(&model).expect("step");
     }
 
-    let ab_contacts = contacts_between_geoms(&data, a_geom, b_geom);
+    let ab_contacts = data.contacts_between_geoms(a_geom, b_geom);
     let p = check(
         "Cross-layer bitmask collides",
         ab_contacts > 0,
@@ -373,7 +340,7 @@ fn check_6_disjoint_no_contact() -> (u32, u32) {
     data.forward(&model).expect("forward");
     data.step(&model).expect("step");
 
-    let bc_contacts = contacts_between_geoms(&data, b_geom, c_geom);
+    let bc_contacts = data.contacts_between_geoms(b_geom, c_geom);
     let p = check(
         "Disjoint layers no contact",
         bc_contacts == 0,
@@ -404,7 +371,7 @@ fn check_7_parent_child_excluded() -> (u32, u32) {
     data.forward(&model).expect("forward");
     data.step(&model).expect("step");
 
-    let pc_contacts = contacts_between_bodies(&model, &data, parent_body, child_body);
+    let pc_contacts = data.contacts_between_bodies(&model, parent_body, child_body);
     let p = check(
         "Parent-child auto-excluded",
         pc_contacts == 0,
@@ -436,7 +403,7 @@ fn check_8_world_body_exempt() -> (u32, u32) {
     // Check for contacts between ground (body 0) and the parent or child.
     // body_parent[parent_body] = 0 (world), but world is exempt from
     // parent-child filter, so ground plane should collide.
-    let ground_contacts = contacts_involving_geom(&data, ground_geom);
+    let ground_contacts = data.contacts_involving_geom(ground_geom);
     let p = check(
         "World body exempt from auto-exclusion",
         ground_contacts > 0,
@@ -463,8 +430,8 @@ fn check_9_exclude_suppresses() -> (u32, u32) {
         data.step(&model).expect("step");
     }
 
-    let ab_contacts = contacts_between_bodies(&model, &data, body_a, body_b);
-    let ac_contacts = contacts_between_bodies(&model, &data, body_a, body_c);
+    let ab_contacts = data.contacts_between_bodies(&model, body_a, body_b);
+    let ac_contacts = data.contacts_between_bodies(&model, body_a, body_c);
 
     // box_a ↔ box_c should be 0 because they're at different X (0 vs 0.5)
     // and don't overlap. We mainly care that ab = 0.
@@ -489,7 +456,7 @@ fn check_10_exclude_bidirectional() -> (u32, u32) {
         data.step(&model).expect("step");
     }
 
-    let ab_contacts = contacts_between_bodies(&model, &data, body_a, body_b);
+    let ab_contacts = data.contacts_between_bodies(&model, body_a, body_b);
     let p = check(
         "Exclude is bidirectional",
         ab_contacts == 0,
@@ -514,7 +481,7 @@ fn check_11_pair_bypasses_bitmask() -> (u32, u32) {
     data.forward(&model).expect("forward");
     data.step(&model).expect("step");
 
-    let lr_contacts = contacts_between_geoms(&data, left_geom, right_geom);
+    let lr_contacts = data.contacts_between_geoms(left_geom, right_geom);
     let p = check(
         "Pair bypasses bitmask",
         lr_contacts > 0,
