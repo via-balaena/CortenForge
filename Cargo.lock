@@ -3191,6 +3191,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-joint-limits-ball-cone"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-joint-limits-hinge-limits"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-joint-limits-slide-limits"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-joint-limits-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-keyframes-multi-body"
 version = "0.7.0"
 dependencies = [
