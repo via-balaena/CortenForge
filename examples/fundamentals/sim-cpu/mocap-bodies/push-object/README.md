@@ -17,7 +17,7 @@ forces push the ball; the paddle continues unaffected.
   regardless of what it hits.
 
 - **Blue sphere:** A free-floating dynamic ball resting on the ground plane.
-  When the paddle contacts it, the ball is launched in the sweep direction.
+  When the paddle reaches it, the ball is pushed along continuously.
 
 - **The asymmetry:** The paddle does not slow down, deflect, or react to the
   ball in any way. Contact forces are computed, but they only act on the
@@ -26,9 +26,9 @@ forces push the ball; the paddle continues unaffected.
 ## What to look for
 
 - The ball sits still until the paddle arrives.
-- On contact, the ball is pushed forward and rolls/bounces across the ground.
-- The paddle sweeps through at constant speed — no stutter, no recoil.
-- The HUD shows `contacts > 0` during the collision window.
+- On contact, the paddle bulldozes the ball forward at its own speed.
+- The paddle sweeps at constant speed — no stutter, no recoil.
+- The HUD shows `contacts > 0` while the paddle pushes the ball.
 
 ## Run
 
