@@ -68,6 +68,7 @@ members = [
     "examples/fundamentals/sim-cpu/mocap-bodies/stress-test",
     "examples/fundamentals/sim-cpu/mocap-bodies/drag-target",
     "examples/fundamentals/sim-cpu/mocap-bodies/push-object",
+    "examples/fundamentals/sim-cpu/mocap-bodies/tilt-drop",
 
     # Examples — fundamentals / sim-cpu / free-joint
     "examples/fundamentals/sim-cpu/free-joint/stress-test",
