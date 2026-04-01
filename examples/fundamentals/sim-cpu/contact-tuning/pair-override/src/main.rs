@@ -11,7 +11,7 @@
 //! - Override box (red)  → slides (pair overrides mu to 0.1 < tan(15°))
 //!
 //! Demonstrates the three-level parameter hierarchy:
-//!   explicit <pair> > geom combination > defaults
+//!   explicit `<pair>` > geom combination > defaults
 //!
 //! Validates:
 //! - Auto box holds (vel < 0.05 m/s)

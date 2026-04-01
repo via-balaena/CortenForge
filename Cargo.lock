@@ -2716,6 +2716,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-contact-filtering-bitmask"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-contact-filtering-exclude-pairs"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-contact-filtering-ghost-layers"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-contact-filtering-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-contact-friction-slide"
 version = "0.7.0"
 dependencies = [

@@ -1013,6 +1013,43 @@ impl Data {
             .unwrap_or(0.0)
     }
 
+    // ==================== Contact Queries ====================
+
+    /// Count active contacts involving a specific geom.
+    #[must_use]
+    pub fn contacts_involving_geom(&self, geom_id: usize) -> usize {
+        self.contacts
+            .iter()
+            .filter(|c| c.geom1 == geom_id || c.geom2 == geom_id)
+            .count()
+    }
+
+    /// Count active contacts between two specific geoms (order-agnostic).
+    #[must_use]
+    pub fn contacts_between_geoms(&self, geom1: usize, geom2: usize) -> usize {
+        self.contacts
+            .iter()
+            .filter(|c| {
+                (c.geom1 == geom1 && c.geom2 == geom2) || (c.geom1 == geom2 && c.geom2 == geom1)
+            })
+            .count()
+    }
+
+    /// Count active contacts between two bodies (order-agnostic).
+    ///
+    /// Uses `model.geom_body` to resolve each contact's geom pair to body IDs.
+    #[must_use]
+    pub fn contacts_between_bodies(&self, model: &Model, body1: usize, body2: usize) -> usize {
+        self.contacts
+            .iter()
+            .filter(|c| {
+                let b1 = model.geom_body[c.geom1];
+                let b2 = model.geom_body[c.geom2];
+                (b1 == body1 && b2 == body2) || (b1 == body2 && b2 == body1)
+            })
+            .count()
+    }
+
     // ====================================================================
 
     /// Reset state to model defaults.
