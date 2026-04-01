@@ -95,6 +95,9 @@ members = [
     "examples/fundamentals/sim-cpu/equality-constraints/joint-gear",
     "examples/fundamentals/sim-cpu/equality-constraints/stress-test",
 
+    # Examples — fundamentals / sim-cpu / contact-filtering
+    "examples/fundamentals/sim-cpu/contact-filtering/stress-test",
+
     # Examples — fundamentals / sim-cpu / contact-tuning
     "examples/fundamentals/sim-cpu/contact-tuning/friction-slide",
     "examples/fundamentals/sim-cpu/contact-tuning/condim-compare",
