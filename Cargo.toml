@@ -105,6 +105,7 @@ members = [
     "examples/fundamentals/sim-cpu/tendons/stress-test",
     "examples/fundamentals/sim-cpu/tendons/fixed-coupling",
     "examples/fundamentals/sim-cpu/tendons/spatial-path",
+    "examples/fundamentals/sim-cpu/tendons/sphere-wrap",
 
     # Examples — fundamentals / sim-cpu / joint-limits
     "examples/fundamentals/sim-cpu/joint-limits/stress-test",
