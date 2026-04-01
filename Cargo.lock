@@ -3197,6 +3197,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mocap-bodies-drag-target"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-mocap-bodies-stress-test"
 version = "0.7.0"
 dependencies = [
