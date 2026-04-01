@@ -2,8 +2,8 @@
 
 A fixed tendon couples two hinge joints with coefficients `[1.0, −0.5]`.
 The tendon length is a linear combination of joint positions:
-`L = 1.0 × q_A + (−0.5) × q_B`. A stiff spring on the tendon creates a
-restoring force that mechanically links the two joints.
+`L = 1.0 × q_A + (−0.5) × q_B`. A spring on the tendon (stiffness=100,
+damping=3) creates a restoring force that mechanically links the two joints.
 
 ## Concept
 
@@ -15,10 +15,10 @@ joints. The coupling ratio is set by the coefficients: when joint A moves
 
 ## What you see
 
-- **Blue pendulum (A):** driven by a sinusoidal motor (0.5 Hz, ±2 N·m).
+- **Blue pendulum (A):** driven by a sinusoidal motor (0.5 Hz, ±8 N·m).
 - **Red pendulum (B):** no motor — moves only through the tendon spring force.
-- **Tendon line** connects the two tips, colored by force:
-  green (relaxed) → yellow (moderate) → red (high stress).
+- **Tendon line** connects the two tips, colored by stretch state:
+  blue (compressed) → green (relaxed) → red (stretched).
 - B follows A at roughly half the amplitude and in the opposite direction.
 - The HUD confirms `TendonPos` matches the manual calculation
   `1.0 × q_A − 0.5 × q_B` to machine precision every frame.
