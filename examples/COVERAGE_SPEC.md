@@ -1,6 +1,6 @@
 # Examples Coverage Spec
 
-**Status:** Track 1A complete, Track 1B in progress (free-joint + keyframes + mocap-bodies done)
+**Status:** Track 1A complete, Track 1B in progress (free-joint + keyframes + mocap-bodies + contact-filtering done)
 **Date:** 2026-04-01
 **Goal:** 100% coverage of codebase capabilities
 
@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-04-01)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 93 examples (Track 1A + free-joint + keyframes + mocap-bodies)
+- sim-core + sim-mjcf + sim-urdf → 97 examples (Track 1A + free-joint + keyframes + mocap-bodies + contact-filtering)
   - Joint types: hinge, slide, ball, free (4/4 — all covered)
   - Sensors: 16/31 types covered
   - Actuators: 10 examples, Muscles: 5 examples
@@ -24,11 +24,12 @@ integration tests — they find bugs that unit tests miss.
   - URDF loading: 10 examples
   - Mocap bodies: 4 examples, 12 stress-test checks
 - Track 1B in progress: 20 subdirectories, ~70 examples — no stone unturned.
-  **3/20 subdirectories done:**
+  **4/20 subdirectories done:**
   - free-joint: 4 examples, 12 stress-test checks
   - keyframes: 3 examples, 12 stress-test checks
   - mocap-bodies: 4 examples, 12 stress-test checks
-  Remaining 17: contact filtering, joint limits, tendons, 14
+  - contact-filtering: 4 examples, 12 stress-test checks
+  Remaining 16: joint limits, tendons, 14
   advanced sensors, mesh collision, heightfield terrain, passive forces,
   sleep/wake, Hill muscle, adhesion, flex bodies, raycasting, collision
   pairs, derivatives, composites, batch simulation, and plugins.
@@ -476,7 +477,7 @@ fundamentals/
     mocap-bodies/           # DONE — 4 examples, 12 stress-test checks
 
     # --- Layer 2: Filtering and limits ---
-    contact-filtering/      # contype/conaffinity bitmasks, exclude pairs
+    contact-filtering/      # DONE — 4 examples, 12 stress-test checks
     joint-limits/           # Dedicated limit demo, solref/solimp tuning
 
     # --- Layer 3: Tendons ---

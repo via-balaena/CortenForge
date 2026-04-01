@@ -71,6 +71,15 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `mocap-bodies/push-object` | `example-mocap-bodies-push-object` | Working | One-way contact — paddle pushes ball |
 | `mocap-bodies/tilt-drop` | `example-mocap-bodies-tilt-drop` | Working | Orientation-driven — tilting platform slides ball off |
 
+### Contact Filtering
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `contact-filtering/stress-test` | `example-contact-filtering-stress-test` | Working | Headless validation (12 checks: bitmask AND/OR, parent-child, exclude, pair bypass) |
+| `contact-filtering/bitmask` | `example-contact-filtering-bitmask` | Working | 4 spheres with different contype/conaffinity — two rest, two fall through |
+| `contact-filtering/exclude-pairs` | `example-contact-filtering-exclude-pairs` | Working | Mocap platform side-by-side — excluded sphere passes through, normal lands |
+| `contact-filtering/ghost-layers` | `example-contact-filtering-ghost-layers` | Working | Solid/ghost collision layers — ghosts rest on solids, pass through each other |
+
 ### Sensors
 
 | Example | Package | Sensors | Status |
