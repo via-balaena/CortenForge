@@ -80,6 +80,15 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `contact-filtering/exclude-pairs` | `example-contact-filtering-exclude-pairs` | Working | Mocap platform side-by-side — excluded sphere passes through, normal lands |
 | `contact-filtering/ghost-layers` | `example-contact-filtering-ghost-layers` | Working | Solid/ghost collision layers — ghosts rest on solids, pass through each other |
 
+### Joint Limits
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `joint-limits/stress-test` | `example-joint-limits-stress-test` | Working | Headless validation (12 checks: hinge/slide/ball activation, sensor, solref, solimp, motor, locked, penetration, symmetry) |
+| `joint-limits/hinge-limits` | `example-joint-limits-hinge-limits` | Working | 3 pendulums comparing stiff/default/soft solref — different bounce and penetration |
+| `joint-limits/slide-limits` | `example-joint-limits-slide-limits` | Working | Box on rail pushed by motor into limit — limit force balances motor force |
+| `joint-limits/ball-cone` | `example-joint-limits-ball-cone` | Working | Ball joint 30° cone limit — tip orbits boundary then spirals to rest (coin-funnel) |
+
 ### Sensors
 
 | Example | Package | Sensors | Status |

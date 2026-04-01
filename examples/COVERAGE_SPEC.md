@@ -478,7 +478,7 @@ fundamentals/
 
     # --- Layer 2: Filtering and limits ---
     contact-filtering/      # DONE — 4 examples, 12 stress-test checks
-    joint-limits/           # Dedicated limit demo, solref/solimp tuning
+    joint-limits/           # DONE — 4 examples, 12 stress-test checks
 
     # --- Layer 3: Tendons ---
     tendons/                # Fixed, spatial, wrapping, pulleys, limits
