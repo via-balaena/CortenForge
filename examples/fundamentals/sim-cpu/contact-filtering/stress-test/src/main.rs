@@ -96,7 +96,7 @@ const MODEL_B: &str = r#"
 /// Model C — Parent-child auto-exclusion (checks 7–8).
 /// Non-world parent body (via freejoint) with a hinge child.
 /// Parent and child geoms overlap spatially.
-/// Parent-child filter: body_parent[child] = parent, both non-zero → excluded.
+/// Parent-child filter: body_parent\[child\] = parent, both non-zero → excluded.
 /// Ground plane (body 0) is exempt from parent-child filter → collides with child.
 const MODEL_C: &str = r#"
 <mujoco model="parent-child">
@@ -116,7 +116,7 @@ const MODEL_C: &str = r#"
 "#;
 
 /// Model D — Explicit exclusion (checks 9–10).
-/// Two overlapping free bodies with <exclude>.
+/// Two overlapping free bodies with `<exclude>`.
 /// Third body with no exclusion collides normally.
 const MODEL_D: &str = r#"
 <mujoco model="exclude-pairs">
@@ -167,7 +167,7 @@ const MODEL_D2: &str = r#"
 /// Model E — Explicit pair override (checks 11–12).
 /// Two geoms with contype=1, conaffinity=0 → bitmask fails:
 ///   (1 & 0) || (1 & 0) = false.
-/// An explicit <pair> bypasses bitmask and sets condim=1 (frictionless).
+/// An explicit `<pair>` bypasses bitmask and sets condim=1 (frictionless).
 const MODEL_E: &str = r#"
 <mujoco model="pair-override">
   <option gravity="0 0 -9.81" timestep="0.002"/>
