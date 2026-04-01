@@ -37,7 +37,7 @@ use sim_bevy::model_data::{
     PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms_with, step_physics_realtime,
     sync_geom_transforms,
 };
-use sim_core::validation::{Check, print_report};
+use sim_core::validation::{Check, print_report, quat_rotation_angle};
 
 // ── MJCF Model ────────────────────────────────────────────────────────────
 
@@ -118,7 +118,7 @@ fn main() {
                 .display(|m, d| {
                     let jid = m.joint_id("ball").unwrap();
                     let q = d.joint_qpos(m, jid);
-                    let angle = quat_angle(q).to_degrees();
+                    let angle = quat_rotation_angle(q[0], q[1], q[2], q[3]).to_degrees();
                     let frc = d.jnt_limit_frc[jid];
                     format!("defl={angle:.1}\u{00b0} frc={frc:.2}")
                 }),
@@ -139,14 +139,6 @@ fn main() {
                 .chain(),
         )
         .run();
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────
-
-/// Compute rotation angle (radians, 0..pi) from a unit quaternion [w, x, y, z].
-fn quat_angle(q: &[f64]) -> f64 {
-    let sin_half = (q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-    2.0 * sin_half.atan2(q[0].abs())
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────
@@ -223,7 +215,7 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
 
     let jid = model.joint_id("ball").expect("ball");
     let q = data.joint_qpos(&model, jid);
-    let deflection = quat_angle(q).to_degrees();
+    let deflection = quat_rotation_angle(q[0], q[1], q[2], q[3]).to_degrees();
     let frc = data.jnt_limit_frc[jid];
     let active = deflection > CONE_LIMIT_DEG - 1.0;
 
@@ -255,7 +247,7 @@ fn diagnostics(
 ) {
     let jid = model.joint_id("ball").expect("ball");
     let q = data.joint_qpos(&model, jid);
-    let deflection = quat_angle(q).to_degrees();
+    let deflection = quat_rotation_angle(q[0], q[1], q[2], q[3]).to_degrees();
     let frc = data.jnt_limit_frc[jid];
 
     // Track max deflection after 1s (skip initial transient)

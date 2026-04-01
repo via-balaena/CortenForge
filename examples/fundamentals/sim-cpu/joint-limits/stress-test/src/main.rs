@@ -222,11 +222,7 @@ fn check(name: &str, pass: bool, detail: &str) -> bool {
     pass
 }
 
-/// Compute rotation angle (radians, 0..pi) from a unit quaternion [w, x, y, z].
-fn quat_angle(q: &[f64]) -> f64 {
-    let sin_half = (q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-    2.0 * sin_half.atan2(q[0].abs())
-}
+use sim_core::validation::quat_rotation_angle;
 
 // ── Check 1: Hinge limit activates ─────────────────────────────────────────
 
@@ -294,7 +290,7 @@ fn check_3_ball_cone_activates() -> (u32, u32) {
     }
 
     let q = data.joint_qpos(&model, jid);
-    let deflection = quat_angle(q).to_degrees();
+    let deflection = quat_rotation_angle(q[0], q[1], q[2], q[3]).to_degrees();
     let limit_deg = 30.0;
     let tol_deg = 5.0;
     let p = check(
