@@ -3725,6 +3725,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-tendon-fixed-coupling"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-tendon-stress-test"
 version = "0.7.0"
 dependencies = [
