@@ -97,6 +97,9 @@ members = [
 
     # Examples — fundamentals / sim-cpu / contact-filtering
     "examples/fundamentals/sim-cpu/contact-filtering/stress-test",
+    "examples/fundamentals/sim-cpu/contact-filtering/bitmask",
+    "examples/fundamentals/sim-cpu/contact-filtering/exclude-pairs",
+    "examples/fundamentals/sim-cpu/contact-filtering/ghost-layers",
 
     # Examples — fundamentals / sim-cpu / contact-tuning
     "examples/fundamentals/sim-cpu/contact-tuning/friction-slide",

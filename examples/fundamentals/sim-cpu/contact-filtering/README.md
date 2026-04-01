@@ -10,7 +10,7 @@ body-pair exclusion (`<exclude>`), and explicit geom-pair override (`<pair>`).
 |---------|---------|-------------|
 | [stress-test](stress-test/) | Headless validation | 12 checks: bitmask AND/OR rule, cross-layer filtering, parent-child exclusion, world body exemption, `<exclude>` suppression, `<pair>` bypass + condim override. |
 | [bitmask](bitmask/) | contype/conaffinity bitmask rule | Four spheres with different bitmask values: two rest on the ground, two fall through. |
-| [exclude-pairs](exclude-pairs/) | `<exclude>` body-pair suppression | Three boxes; excluded pair passes through each other, non-excluded pair collides normally. |
+| [exclude-pairs](exclude-pairs/) | `<exclude>` body-pair suppression | Two platforms side by side; excluded sphere passes through, normal sphere lands on top. |
 | [ghost-layers](ghost-layers/) | Collision layers via bitmasks | Solid and ghost layers: solids stack, ghosts rest on solids but pass through each other. |
 
 ## Key ideas
