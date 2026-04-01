@@ -3191,6 +3191,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-joint-limits-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-keyframes-multi-body"
 version = "0.7.0"
 dependencies = [
