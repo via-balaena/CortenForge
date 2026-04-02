@@ -3573,6 +3573,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sensor-adv-actuator-pos-vel"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-sensor-adv-force-torque"
 version = "0.7.0"
 dependencies = [
