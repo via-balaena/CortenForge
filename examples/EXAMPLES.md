@@ -221,6 +221,16 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `tendons/pulley` | `example-tendon-pulley` | Working | 2:1 mechanical advantage, resistance-band ribbon |
 | `tendons/tendon-actuator` | `example-tendon-actuator` | Working | Tendon vs joint transmission comparison |
 
+### Passive Forces
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `passive-forces/stress-test` | `example-passive-stress-test` | Working | Headless validation (18 checks: fluid drag, ellipsoid model, wind, springs, dampers, implicit mode, disable flags) |
+| `passive-forces/fluid-drag` | `example-passive-fluid-drag` | Working | 3 spheres (different mass) in dense medium — terminal velocity separation (5 checks) |
+| `passive-forces/ellipsoid-drag` | `example-passive-ellipsoid-drag` | Working | 3 shapes (capsule/sphere/cylinder), equal mass — shape determines drag (4 checks) |
+| `passive-forces/wind` | `example-passive-wind` | Working | Wind on/off: sphere drifts, pendulum deflects then recovers (3 checks) |
+| `passive-forces/spring-damper-tuning` | `example-passive-spring-damper-tuning` | Working | Underdamped/critical/overdamped — 3 classical damping regimes (6 checks) |
+
 ### Other
 
 | Example | Package | Status | Notes |
