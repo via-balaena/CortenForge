@@ -133,6 +133,7 @@ fn main() {
                 validation_system,
                 diagnostics,
                 draw_tendon_path,
+                draw_ruler_ticks,
                 update_hud,
                 render_physics_hud,
             )
@@ -215,23 +216,81 @@ fn apply_control(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
 
 // ── Tendon Visualization ──────────────────────────────────────────────────
 
-/// Draw tendon branches with force-based coloring + ruler tick marks.
+/// Self-calibrating min/max for each branch's segment length.
+#[derive(Default)]
+struct BandState {
+    b1_min: f32,
+    b1_max: f32,
+    b2_min: f32,
+    b2_max: f32,
+    init: bool,
+}
+
+/// Draw a ribbon of `N` parallel lines between two points.
+fn draw_ribbon(gizmos: &mut Gizmos, start: Vec3, end: Vec3, half_width: f32, color: Color) {
+    const N: usize = 5;
+    let dir = (end - start).normalize_or_zero();
+    let mut perp = dir.cross(Vec3::Z);
+    if perp.length_squared() < 0.001 {
+        perp = dir.cross(Vec3::X);
+    }
+    perp = perp.normalize_or_zero();
+    for s in 0..N {
+        let t = s as f32 / (N - 1) as f32 - 0.5; // −0.5 … +0.5
+        let offset = perp * (t * 2.0 * half_width);
+        gizmos.line(start + offset, end + offset, color);
+    }
+}
+
+/// Map a branch length to half-width: short → thick, long → thin.
+fn band_half_width(len: f32, min_len: f32, max_len: f32) -> f32 {
+    const MAX_HW: f32 = 0.018;
+    const MIN_HW: f32 = 0.003;
+    let range = max_len - min_len;
+    if range < 1e-6 {
+        return (MAX_HW + MIN_HW) * 0.5;
+    }
+    let t = ((len - min_len) / range).clamp(0.0, 1.0);
+    MAX_HW + t * (MIN_HW - MAX_HW) // t=0 (shortest) → MAX, t=1 (longest) → MIN
+}
+
+/// Draw tendon branches as resistance-band ribbons + ruler tick marks.
 ///
-/// When a side is actively pulling:
-/// - Branch 1 (top/load): **red** — receives more force (mechanical advantage)
-/// - Branch 2 (bottom/pull): **orange** — applies less force, more distance
-///
-/// When returning (not actively pulling): dim gray.
-fn draw_tendon_path(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<PhysicsData>) {
+/// Ribbon width is inversely proportional to branch length — thicker when
+/// compressed, thinner when stretched.  Self-calibrates over the first cycle.
+fn draw_tendon_path(
+    mut gizmos: Gizmos,
+    model: Res<PhysicsModel>,
+    data: Res<PhysicsData>,
+    mut band: Local<BandState>,
+) {
     let tid = model.tendon_id("pulley_tendon").expect("tendon");
     let adr = data.ten_wrapadr[tid];
     let num = data.ten_wrapnum[tid];
 
-    // -- 4-color scheme: warm = stretching, cool = contracting --
-    //   Top stretching:    red        Top contracting:    blue
-    //   Bottom stretching: orange     Bottom contracting: teal
-    // Brightness scales with displacement magnitude.
     if num >= 2 {
+        // -- Branch lengths for band width --
+        let s1 = model.site_id("s1").expect("s1");
+        let s2 = model.site_id("s2").expect("s2");
+        let s3 = model.site_id("s3").expect("s3");
+        let s4 = model.site_id("s4").expect("s4");
+        let b1 = (data.site_xpos[s1] - data.site_xpos[s2]).norm() as f32;
+        let b2 = (data.site_xpos[s3] - data.site_xpos[s4]).norm() as f32;
+        if !band.init {
+            band.b1_min = b1;
+            band.b1_max = b1;
+            band.b2_min = b2;
+            band.b2_max = b2;
+            band.init = true;
+        }
+        band.b1_min = band.b1_min.min(b1);
+        band.b1_max = band.b1_max.max(b1);
+        band.b2_min = band.b2_min.min(b2);
+        band.b2_max = band.b2_max.max(b2);
+        let b1_hw = band_half_width(b1, band.b1_min, band.b1_max);
+        let b2_hw = band_half_width(b2, band.b2_min, band.b2_max);
+
+        // -- 4-color scheme --
         let jt = model.joint_id("j_top").expect("j_top");
         let jb = model.joint_id("j_bot").expect("j_bot");
         let top_vel = data.qvel[model.jnt_dof_adr[jt]];
@@ -239,22 +298,19 @@ fn draw_tendon_path(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<Phys
         let top_mag = (data.qpos[model.jnt_qpos_adr[jt]].abs() / 0.15).clamp(0.1, 1.0) as f32;
         let bot_mag = (data.qpos[model.jnt_qpos_adr[jb]].abs() / 0.15).clamp(0.1, 1.0) as f32;
 
-        // Top branch: red when stretching (vel > 0), blue when contracting
         let load_color = if top_vel > 0.005 {
-            Color::srgb(0.95 * top_mag, 0.2 * top_mag, 0.1) // red
+            Color::srgb(0.95 * top_mag, 0.2 * top_mag, 0.1)
         } else if top_vel < -0.005 {
-            Color::srgb(0.15, 0.3 * top_mag, 0.9 * top_mag) // blue
+            Color::srgb(0.15, 0.3 * top_mag, 0.9 * top_mag)
         } else {
-            Color::srgb(0.35, 0.35, 0.3) // neutral gray
+            Color::srgb(0.35, 0.35, 0.3)
         };
-
-        // Bottom branch: orange when stretching (vel < 0), teal when contracting
         let pull_color = if bot_vel < -0.005 {
-            Color::srgb(0.95 * bot_mag, 0.5 * bot_mag, 0.1) // orange
+            Color::srgb(0.95 * bot_mag, 0.5 * bot_mag, 0.1)
         } else if bot_vel > 0.005 {
-            Color::srgb(0.1, 0.7 * bot_mag, 0.7 * bot_mag) // teal
+            Color::srgb(0.1, 0.7 * bot_mag, 0.7 * bot_mag)
         } else {
-            Color::srgb(0.35, 0.35, 0.3) // neutral gray
+            Color::srgb(0.35, 0.35, 0.3)
         };
 
         // Find pulley marker
@@ -266,20 +322,20 @@ fn draw_tendon_path(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<Phys
             }
         }
 
+        // Draw ribbon segments
         for i in 0..num - 1 {
             if data.wrap_obj[adr + i] == -2 || data.wrap_obj[adr + i + 1] == -2 {
                 continue;
             }
-            let color = if pulley_idx.is_some_and(|pi| i < pi) {
-                load_color
-            } else {
-                pull_color
-            };
+            let is_branch1 = pulley_idx.is_some_and(|pi| i < pi);
+            let color = if is_branch1 { load_color } else { pull_color };
+            let hw = if is_branch1 { b1_hw } else { b2_hw };
             let start = vec3_from_vector(&data.wrap_xpos[adr + i]);
             let end = vec3_from_vector(&data.wrap_xpos[adr + i + 1]);
-            gizmos.line(start, end, color);
+            draw_ribbon(&mut gizmos, start, end, hw, color);
         }
 
+        // Site dots
         for i in 0..num {
             if data.wrap_obj[adr + i] != -2 {
                 let color = if pulley_idx.is_some_and(|pi| i <= pi) {
@@ -292,33 +348,22 @@ fn draw_tendon_path(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<Phys
             }
         }
     }
+}
 
-    // -- Ruler tick marks along each rail --
+/// Ruler tick marks along each vertical rail (every 5 cm).
+fn draw_ruler_ticks(mut gizmos: Gizmos) {
     let tick_color = Color::srgba(0.6, 0.6, 0.6, 0.5);
     let tick_half = 0.08;
 
-    // Top rail: center at Bevy Y = 1.1, ticks every 0.05m
-    let top_center_y: f32 = 1.1;
-    for i in -6..=6 {
-        let offset = i as f32 * 0.05;
-        let y = top_center_y + offset;
-        gizmos.line(
-            Vec3::new(-tick_half, y, 0.0),
-            Vec3::new(tick_half, y, 0.0),
-            tick_color,
-        );
-    }
-
-    // Bottom rail: center at Bevy Y = 0.3, same spacing
-    let bot_center_y: f32 = 0.3;
-    for i in -6..=6 {
-        let offset = i as f32 * 0.05;
-        let y = bot_center_y + offset;
-        gizmos.line(
-            Vec3::new(-tick_half, y, 0.0),
-            Vec3::new(tick_half, y, 0.0),
-            tick_color,
-        );
+    for &center_y in &[1.1_f32, 0.3_f32] {
+        for i in -6..=6 {
+            let y = center_y + i as f32 * 0.05;
+            gizmos.line(
+                Vec3::new(-tick_half, y, 0.0),
+                Vec3::new(tick_half, y, 0.0),
+                tick_color,
+            );
+        }
     }
 }
 

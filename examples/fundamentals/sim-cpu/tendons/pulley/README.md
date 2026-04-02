@@ -21,7 +21,9 @@ force.
 - **Yellow sphere:** the fixed pulley anchor between the two rails.
 - Both masses are spring-centered (stiffness=8) so they return to rest.
 - Ruler tick marks along each rail (every 5 cm) make the 2:1 ratio visible.
-- 4-color tendon lines show branch state:
+- Tendon draws as a **resistance-band ribbon** — thick when compressed,
+  thin when stretched. Self-calibrates over the first oscillation cycle.
+- 4-color ribbon shows branch state:
   - **Red / Orange:** stretching (top / bottom branch).
   - **Blue / Teal:** contracting (top / bottom branch).
   - **Gray:** near zero velocity.
