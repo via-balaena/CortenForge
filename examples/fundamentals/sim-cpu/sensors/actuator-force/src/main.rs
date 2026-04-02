@@ -6,7 +6,7 @@
 //! should agree for a single motor with gear=1.
 //!
 //! Validates:
-//! - ActuatorFrc sensor == data.actuator_force[0] (pipeline check)
+//! - ActuatorFrc sensor == data.actuator_force\[0\] (pipeline check)
 //! - ActuatorFrc ≈ 5.0 (ctrl * gain * gear = 5 * 1 * 1)
 //! - JointActuatorFrc == ActuatorFrc (cross-path check, gear=1 ⟹ moment=1)
 //! - |ActuatorFrc| > 1.0 at all times after t=0.01s (non-zero check)
