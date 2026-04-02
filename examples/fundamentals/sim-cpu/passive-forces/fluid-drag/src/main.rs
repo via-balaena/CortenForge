@@ -23,7 +23,8 @@
     clippy::needless_pass_by_value,
     clippy::cast_sign_loss,
     clippy::cast_lossless,
-    clippy::let_underscore_must_use
+    clippy::let_underscore_must_use,
+    clippy::unwrap_used
 )]
 
 use bevy::prelude::*;
@@ -102,9 +103,9 @@ fn main() {
                 .print_every(1.0)
                 .display(|m, d| {
                     let t = d.time;
-                    let dof_l = m.body_dof_adr[1];
-                    let dof_m = m.body_dof_adr[2];
-                    let dof_h = m.body_dof_adr[3];
+                    let dof_l = m.body_dof_adr[m.body_id("light").unwrap()];
+                    let dof_m = m.body_dof_adr[m.body_id("medium").unwrap()];
+                    let dof_h = m.body_dof_adr[m.body_id("heavy").unwrap()];
                     let vz_l = -d.qvel[dof_l + 2];
                     let vz_m = -d.qvel[dof_m + 2];
                     let vz_h = -d.qvel[dof_h + 2];
@@ -185,20 +186,21 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.section("Terminal Velocity");
     hud.raw(String::new());
 
-    let bodies: [(&str, &str, usize); 3] = [
-        ("Light ", "0.5 kg", 1),
-        ("Medium", "2.0 kg", 2),
-        ("Heavy ", "8.0 kg", 3),
+    let bodies: [(&str, &str, &str); 3] = [
+        ("Light ", "0.5 kg", "light"),
+        ("Medium", "2.0 kg", "medium"),
+        ("Heavy ", "8.0 kg", "heavy"),
     ];
 
     //  Header
     hud.raw("           speed    drag/wt".to_string());
 
-    for (name, mass_label, body_id) in &bodies {
-        let dof = m.body_dof_adr[*body_id];
+    for (name, mass_label, body_name) in &bodies {
+        let bid = m.body_id(body_name).expect(body_name);
+        let dof = m.body_dof_adr[bid];
         let vz = -d.qvel[dof + 2];
         let fz = d.qfrc_fluid[dof + 2];
-        let weight = m.body_mass[*body_id] * 9.81;
+        let weight = m.body_mass[bid] * 9.81;
         let pct = fz / weight * 100.0;
 
         hud.raw(format!("  {name} ({mass_label})  {vz:5.3} m/s  {pct:5.1}%"));
@@ -236,7 +238,8 @@ fn drag_diagnostics(
     }
 
     // Light sphere z-velocity (downward speed, positive)
-    let dof_light = m.body_dof_adr[1];
+    let bid_l = m.body_id("light").expect("light");
+    let dof_light = m.body_dof_adr[bid_l];
     let vz_light = -d.qvel[dof_light + 2];
 
     // Check if acceleration is small (velocity plateau)
@@ -257,23 +260,24 @@ fn drag_diagnostics(
     if harness.reported() && !val.reported {
         val.reported = true;
 
-        let dof_medium = m.body_dof_adr[2];
-        let dof_heavy = m.body_dof_adr[3];
+        let bid_m = m.body_id("medium").expect("medium");
+        let bid_h = m.body_id("heavy").expect("heavy");
+        let dof_medium = m.body_dof_adr[bid_m];
+        let dof_heavy = m.body_dof_adr[bid_h];
         let vz_medium = -d.qvel[dof_medium + 2];
         let vz_heavy = -d.qvel[dof_heavy + 2];
 
         // Drag-weight balance for each body
-        let dof_l = m.body_dof_adr[1];
-        let drag_l = d.qfrc_fluid[dof_l + 2];
-        let w_l = m.body_mass[1] * 9.81;
+        let drag_l = d.qfrc_fluid[dof_light + 2];
+        let w_l = m.body_mass[bid_l] * 9.81;
         let err_l = ((drag_l - w_l) / w_l * 100.0).abs();
 
         let drag_m = d.qfrc_fluid[dof_medium + 2];
-        let w_m = m.body_mass[2] * 9.81;
+        let w_m = m.body_mass[bid_m] * 9.81;
         let err_m = ((drag_m - w_m) / w_m * 100.0).abs();
 
         let drag_h = d.qfrc_fluid[dof_heavy + 2];
-        let w_h = m.body_mass[3] * 9.81;
+        let w_h = m.body_mass[bid_h] * 9.81;
         let err_h = ((drag_h - w_h) / w_h * 100.0).abs();
 
         let checks = vec![

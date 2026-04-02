@@ -27,7 +27,8 @@
     clippy::needless_pass_by_value,
     clippy::cast_sign_loss,
     clippy::cast_lossless,
-    clippy::let_underscore_must_use
+    clippy::let_underscore_must_use,
+    clippy::unwrap_used
 )]
 
 use bevy::prelude::*;
@@ -108,9 +109,9 @@ fn main() {
                 .print_every(1.0)
                 .display(|m, d| {
                     let t = d.time;
-                    let dof_c = m.body_dof_adr[1];
-                    let dof_s = m.body_dof_adr[2];
-                    let dof_y = m.body_dof_adr[3];
+                    let dof_c = m.body_dof_adr[m.body_id("capsule").unwrap()];
+                    let dof_s = m.body_dof_adr[m.body_id("sphere").unwrap()];
+                    let dof_y = m.body_dof_adr[m.body_id("cylinder").unwrap()];
                     let vc = -d.qvel[dof_c + 2];
                     let vs = -d.qvel[dof_s + 2];
                     let vy = -d.qvel[dof_y + 2];
@@ -187,15 +188,20 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     hud.section("Ellipsoid Drag (5-component)");
     hud.raw(String::new());
 
-    let shapes: [(&str, usize); 3] = [("Capsule ", 1), ("Sphere  ", 2), ("Cylinder", 3)];
+    let shapes: [(&str, &str); 3] = [
+        ("Capsule ", "capsule"),
+        ("Sphere  ", "sphere"),
+        ("Cylinder", "cylinder"),
+    ];
 
     hud.raw("              speed    drag/wt".to_string());
 
-    for (name, body_id) in &shapes {
-        let dof = m.body_dof_adr[*body_id];
+    for (name, body_name) in &shapes {
+        let bid = m.body_id(body_name).expect(body_name);
+        let dof = m.body_dof_adr[bid];
         let vz = -d.qvel[dof + 2];
         let fz = d.qfrc_fluid[dof + 2];
-        let weight = m.body_mass[*body_id] * 9.81;
+        let weight = m.body_mass[bid] * 9.81;
         let pct = fz / weight * 100.0;
 
         hud.raw(format!("  {name}  {vz:6.3} m/s  {pct:5.1}%"));
@@ -229,19 +235,23 @@ fn ellipsoid_diagnostics(
     let m = &model.0;
     let d = &data.0;
 
-    let dof_cap = m.body_dof_adr[1];
-    let dof_sph = m.body_dof_adr[2];
-    let dof_cyl = m.body_dof_adr[3];
+    let bid_cap = m.body_id("capsule").expect("capsule");
+    let bid_sph = m.body_id("sphere").expect("sphere");
+    let bid_cyl = m.body_id("cylinder").expect("cylinder");
+
+    let dof_cap = m.body_dof_adr[bid_cap];
+    let dof_sph = m.body_dof_adr[bid_sph];
+    let dof_cyl = m.body_dof_adr[bid_cyl];
 
     let v_cap = -d.qvel[dof_cap + 2];
     let v_sph = -d.qvel[dof_sph + 2];
     let v_cyl = -d.qvel[dof_cyl + 2];
 
-    // Drag-weight balance
+    // Drag-weight balance (all same mass)
     let drag_cap = d.qfrc_fluid[dof_cap + 2];
     let drag_sph = d.qfrc_fluid[dof_sph + 2];
     let drag_cyl = d.qfrc_fluid[dof_cyl + 2];
-    let weight = m.body_mass[1] * 9.81; // all same mass
+    let weight = m.body_mass[bid_cap] * 9.81;
 
     let err_cap = ((drag_cap - weight) / weight * 100.0).abs();
     let err_sph = ((drag_sph - weight) / weight * 100.0).abs();

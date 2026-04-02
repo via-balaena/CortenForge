@@ -372,7 +372,7 @@ fn check_04_viscous_linearity() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_C).expect("parse");
 
     // Test at two velocities: v and 2v
-    let dof_adr = model.body_dof_adr[1]; // body 1 (sphere)
+    let dof_adr = model.body_dof_adr[model.body_id("sphere").expect("sphere")];
     let v1 = 1.0;
     let v2 = 2.0;
 
@@ -412,7 +412,7 @@ fn check_05_ellipsoid_activates() -> (u32, u32) {
     }
     data.forward(&model).expect("forward");
 
-    let dof_adr = model.body_dof_adr[1]; // sphere body
+    let dof_adr = model.body_dof_adr[model.body_id("sphere").expect("sphere")];
     let fluid_z = data.qfrc_fluid[dof_adr + 2];
 
     // Also verify geom_fluid[0] was set to 1.0 (ellipsoid activated)
@@ -498,7 +498,7 @@ fn check_08_wind_stationary() -> (u32, u32) {
     // Body at rest, wind = [10, 0, 0]. Forward computes fluid forces.
     data.forward(&model).expect("forward");
 
-    let dof_adr = model.body_dof_adr[1]; // body 1
+    let dof_adr = model.body_dof_adr[model.body_id("sphere").expect("sphere")];
     let fx = data.qfrc_fluid[dof_adr]; // x-component
 
     let p = check(
@@ -517,7 +517,7 @@ fn check_09_wind_cancellation() -> (u32, u32) {
 
     // Wind = [10, 0, 0]. Set body velocity to match wind.
     // Free joint DOF order: [vx, vy, vz, wx, wy, wz]
-    let dof_adr = model.body_dof_adr[1];
+    let dof_adr = model.body_dof_adr[model.body_id("sphere").expect("sphere")];
     data.qvel[dof_adr] = 10.0; // vx = wind_x
 
     data.forward(&model).expect("forward");
@@ -543,7 +543,7 @@ fn check_10_wind_direction() -> (u32, u32) {
 
     data.forward(&model).expect("forward");
 
-    let dof_adr = model.body_dof_adr[1];
+    let dof_adr = model.body_dof_adr[model.body_id("sphere").expect("sphere")];
     let fx = data.qfrc_fluid[dof_adr]; // x-component
     let fy = data.qfrc_fluid[dof_adr + 1]; // y-component
 

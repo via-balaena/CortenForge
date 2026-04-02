@@ -109,7 +109,7 @@ fn main() {
                 .print_every(1.0)
                 .display(|m, d| {
                     let t = d.time;
-                    let dof_d = m.body_dof_adr[1];
+                    let dof_d = m.body_dof_adr[m.body_id("drifter").unwrap()];
                     let vx = d.qvel[dof_d];
                     let vz = -d.qvel[dof_d + 2];
                     let jid = m.joint_id("hinge").unwrap();
@@ -200,7 +200,7 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
     let d = &data.0;
 
     hud.section("Drifter (free sphere)");
-    let dof_d = m.body_dof_adr[1];
+    let dof_d = m.body_dof_adr[m.body_id("drifter").expect("drifter")];
     hud.scalar("vx (m/s)", d.qvel[dof_d], 3);
     hud.scalar("vz (m/s)", -d.qvel[dof_d + 2], 3);
 
@@ -254,7 +254,7 @@ fn wind_diagnostics(
     }
 
     // Track peak values during wind-on period
-    let dof_d = m.body_dof_adr[1];
+    let dof_d = m.body_dof_adr[m.body_id("drifter").expect("drifter")];
     let vx = d.qvel[dof_d];
     val.max_vx = val.max_vx.max(vx);
 
