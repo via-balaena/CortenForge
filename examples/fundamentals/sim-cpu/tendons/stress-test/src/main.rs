@@ -327,7 +327,7 @@ fn dist(a: &Vector3<f64>, b: &Vector3<f64>) -> f64 {
 
 // ── Check 1: Fixed tendon length ───────────────────────────────────────────
 
-/// L = 1.0 * qpos[j_a] + (-0.5) * qpos[j_b] — exact for fixed tendons.
+/// L = 1.0 * qpos\[j_a\] + (-0.5) * qpos\[j_b\] — exact for fixed tendons.
 fn check_1_fixed_length() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_FIXED).expect("parse");
     let mut data = model.make_data();
@@ -355,7 +355,7 @@ fn check_1_fixed_length() -> (u32, u32) {
 
 // ── Check 2: Fixed tendon velocity ─────────────────────────────────────────
 
-/// V = 1.0 * qvel[j_a] + (-0.5) * qvel[j_b] — exact for fixed tendons.
+/// V = 1.0 * qvel\[j_a\] + (-0.5) * qvel\[j_b\] — exact for fixed tendons.
 fn check_2_fixed_velocity() -> (u32, u32) {
     let model = sim_mjcf::load_model(MODEL_FIXED).expect("parse");
     let mut data = model.make_data();

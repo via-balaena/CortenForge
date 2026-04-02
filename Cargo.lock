@@ -3573,6 +3573,85 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sensor-adv-actuator-pos-vel"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-sensor-adv-force-torque"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-sensor-adv-frame-acceleration"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-sensor-adv-frame-velocity"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-sensor-adv-rangefinder"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-sensor-adv-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-sensor-adv-subtree-angmom"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-sensor-adv-subtree-velocity"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-sensor-clock"
 version = "0.7.0"
 dependencies = [
