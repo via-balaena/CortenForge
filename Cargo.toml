@@ -117,6 +117,7 @@ members = [
     "examples/fundamentals/sim-cpu/sensors-advanced/frame-acceleration",
     "examples/fundamentals/sim-cpu/sensors-advanced/force-torque",
     "examples/fundamentals/sim-cpu/sensors-advanced/rangefinder",
+    "examples/fundamentals/sim-cpu/sensors-advanced/subtree-velocity",
 
     # Examples — fundamentals / sim-cpu / joint-limits
     "examples/fundamentals/sim-cpu/joint-limits/stress-test",
