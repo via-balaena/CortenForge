@@ -3573,6 +3573,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sensor-adv-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-sensor-clock"
 version = "0.7.0"
 dependencies = [
