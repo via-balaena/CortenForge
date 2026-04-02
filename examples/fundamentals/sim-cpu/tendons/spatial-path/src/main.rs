@@ -82,7 +82,7 @@ const MJCF: &str = r#"
 fn main() {
     println!("=== CortenForge: Spatial Path — Tendon ===");
     println!("  3 sites on a 2-link arm, no wrapping");
-    println!("  Tendon path: colored line (blue/green/red = compressed/relaxed/stretched)");
+    println!("  Tendon color: green (short) / yellow / red (long) — self-calibrating");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()

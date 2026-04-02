@@ -94,7 +94,7 @@ const MJCF: &str = r#"
 fn main() {
     println!("=== CortenForge: Sphere Wrap — Tendon ===");
     println!("  Arm rotates around a sphere; tendon wraps when path crosses it");
-    println!("  Tendon color: blue (shortening) / green (still) / red (lengthening)");
+    println!("  Tendon color: green (short) / yellow / red (long) — self-calibrating");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()

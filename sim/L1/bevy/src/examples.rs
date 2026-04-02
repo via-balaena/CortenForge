@@ -8,6 +8,15 @@
 //! [`ValidationHarness`] replaces per-example boilerplate for physics validation.
 //! Declare trackers, display functions, and report timing via a builder API, then
 //! add [`validation_system`] to `PostUpdate`.
+//!
+//! # Tendon Visualization
+//!
+//! Color helpers and path-drawing utilities for tendon examples:
+//! - [`tendon_color_bipolar`] — blue (−1) → green (0) → red (+1)
+//! - [`tendon_color_ramp`] — green (0) → yellow (0.5) → red (1)
+//! - [`draw_tendon_segments`] — wrap path as line segments + dot markers
+//! - [`draw_sphere_arc`] — great-circle arc for sphere wrapping
+//! - [`draw_cylinder_arc`] — helical geodesic for cylinder wrapping
 
 use bevy::prelude::*;
 use nalgebra::{Matrix3, Vector3};
