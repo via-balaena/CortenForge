@@ -20,5 +20,5 @@ validation checks.
 ## Coverage
 
 After this directory, **31/31 non-plugin sensor types** have dedicated
-examples across the codebase. See the
-[spec](SENSORS_ADVANCED_SPEC.md) for the full coverage map.
+examples across the codebase. See `examples/COVERAGE_SPEC.md` §7 for
+the original plan.

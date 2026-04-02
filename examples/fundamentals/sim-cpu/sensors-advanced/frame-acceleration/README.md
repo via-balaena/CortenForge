@@ -24,17 +24,16 @@ HUD shows |a| oscillating, exceeding g at the bottom of each swing
 ```
 t=  1.0s  HOLD  |a|=9.8100  alpha_y=0.0000
 t=  2.0s  HOLD  |a|=9.8100  alpha_y=0.0000
-...
-t=  6.0s  SWING  |a|=12.345  alpha_y=-14.321
-t=  7.0s  SWING  |a|=9.123   alpha_y=8.456
+t=  3.0s  SWING  |a|=11.472  alpha_y=-3.324
+t=  4.0s  SWING  |a|=11.573  alpha_y=-3.537
 ```
 
 ## Pass/fail criteria
 
 | Check | Condition | Tolerance |
 |-------|-----------|-----------|
-| Rest: a_z = +g | max error during t=1–4s | < 0.5% of g |
-| Rest: alpha ≈ 0 | max |alpha| during t=1–4s | < 0.01 rad/s^2 |
+| Rest: a_z = +g | max error during t=1–2.5s | < 0.5% of g |
+| Rest: alpha ≈ 0 | max |alpha| during t=1–2.5s | < 0.01 rad/s^2 |
 | Swing: sign match | sign(alpha_Y) = sign(cos(theta)) | 0 violations |
 | Swing: |a| > g | centripetal + gravity at bottom | verified |
 

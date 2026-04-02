@@ -32,7 +32,7 @@ The down reading oscillates sinusoidally. The side reading is always −1.
 |-------|-----------|-----------|
 | Down = height | max error over 15s | < 0.01 m |
 | Side = −1 | every single frame | 0 violations |
-| Range oscillates | min ≈ 0.42, max ≈ 1.42 | < 0.05 m |
+| Range oscillates | min ≈ 0.42, max ≈ 1.42 | < 0.1 m |
 
 ## Run
 

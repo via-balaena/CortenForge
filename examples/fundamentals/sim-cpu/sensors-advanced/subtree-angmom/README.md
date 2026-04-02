@@ -18,8 +18,8 @@ slowdown. The HUD shows |L| rock-steady to machine precision.
 ## Expected console output
 
 ```
-t=  1.0s  |L|=0.12285714  L_y=0.12285714
-t=  2.0s  |L|=0.12285714  L_y=0.12285714
+t=  1.0s  |L|=0.17293656  L_y=0.17293656
+t=  2.0s  |L|=0.17293656  L_y=0.17293656
 ...
 ```
 
