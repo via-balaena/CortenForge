@@ -121,6 +121,10 @@ members = [
     "examples/fundamentals/sim-cpu/sensors-advanced/subtree-angmom",
     "examples/fundamentals/sim-cpu/sensors-advanced/actuator-pos-vel",
 
+    # Examples — fundamentals / sim-cpu / passive-forces
+    "examples/fundamentals/sim-cpu/passive-forces/stress-test",
+    "examples/fundamentals/sim-cpu/passive-forces/fluid-drag",
+
     # Examples — fundamentals / sim-cpu / joint-limits
     "examples/fundamentals/sim-cpu/joint-limits/stress-test",
     "examples/fundamentals/sim-cpu/joint-limits/hinge-limits",
