@@ -22,10 +22,10 @@
 
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::convert::{physics_pos, vec3_from_vector};
+use sim_bevy::convert::physics_pos;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, draw_tendon_segments, render_physics_hud, spawn_example_camera,
+    spawn_physics_hud, tendon_color_ramp, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -196,37 +196,13 @@ fn delayed_step(
 /// Green when slack, red when at the limit.
 fn draw_tendon_path(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<PhysicsData>) {
     let tid = model.tendon_id("tether").expect("tendon");
-    let adr = data.ten_wrapadr[tid];
-    let num = data.ten_wrapnum[tid];
-    if num < 2 {
-        return;
-    }
-
     let length = data.ten_length[tid];
     let (_, hi) = model.tendon_range[tid];
 
     // 0 = fully slack, 1 = at limit
-    let t = (length / hi).clamp(0.0, 1.0) as f32;
+    let color = tendon_color_ramp((length / hi) as f32);
 
-    // Green (slack) → Yellow → Red (at limit)
-    let color = if t < 0.5 {
-        let s = t * 2.0;
-        Color::srgb(s, 0.8, 0.0)
-    } else {
-        let s = (t - 0.5) * 2.0;
-        Color::srgb(1.0, 0.8 * (1.0 - s), 0.0)
-    };
-
-    for i in 0..num - 1 {
-        let start = vec3_from_vector(&data.wrap_xpos[adr + i]);
-        let end = vec3_from_vector(&data.wrap_xpos[adr + i + 1]);
-        gizmos.line(start, end, color);
-    }
-
-    for i in 0..num {
-        let pos = vec3_from_vector(&data.wrap_xpos[adr + i]);
-        gizmos.sphere(Isometry3d::from_translation(pos), 0.008, color);
-    }
+    draw_tendon_segments(&mut gizmos, &data, tid, color, 0.008);
 }
 
 // ── HUD ───────────────────────────────────────────────────────────────────

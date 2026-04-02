@@ -21,10 +21,10 @@
 
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::convert::{physics_pos, vec3_from_vector};
+use sim_bevy::convert::physics_pos;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, draw_tendon_segments, render_physics_hud, spawn_example_camera,
+    spawn_physics_hud, tendon_color_ramp, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -109,7 +109,7 @@ fn main() {
                 }),
         )
         .add_systems(Startup, setup)
-        .add_systems(Update, step_physics_realtime)
+        .add_systems(Update, delayed_step)
         .add_systems(
             PostUpdate,
             (
@@ -133,7 +133,12 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let model = sim_mjcf::load_model(MJCF).expect("MJCF should parse");
-    let data = model.make_data();
+    let mut data = model.make_data();
+
+    // Start with arm horizontal (shoulder at −90°), hold briefly, then drop.
+    let sh = model.joint_id("shoulder").expect("shoulder");
+    data.qpos[model.jnt_qpos_adr[sh]] = -std::f64::consts::FRAC_PI_2;
+    data.forward(&model).expect("forward");
 
     let mat_upper =
         materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.55, 0.55, 0.65)));
@@ -162,47 +167,59 @@ fn setup(
     commands.insert_resource(PhysicsData(data));
 }
 
-// ── Tendon Visualization ──────────────────────────────────────────────────
+// ── Delayed Step ─────────────────────────────────────────────────────────
 
-/// Draw the spatial tendon path from wrap_xpos data, colored by velocity.
-///
-/// - Blue: tendon shortening (velocity < 0)
-/// - Green: stationary
-/// - Red: tendon lengthening (velocity > 0)
-fn draw_tendon_path(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<PhysicsData>) {
-    let tid = model.tendon_id("path").expect("tendon");
-    let adr = data.ten_wrapadr[tid];
-    let num = data.ten_wrapnum[tid];
-    if num < 2 {
+/// Hold the arm still for 1.5 s so you can see the starting pose, then release.
+fn delayed_step(
+    model: Res<PhysicsModel>,
+    data: ResMut<PhysicsData>,
+    time: Res<Time>,
+    accumulator: ResMut<PhysicsAccumulator>,
+) {
+    if time.elapsed_secs() < 1.5 {
         return;
     }
+    step_physics_realtime(model, data, time, accumulator);
+}
 
-    // Velocity-based color: saturate at ±0.01 m/s (sites are close to joint
-    // axes, so the tendon velocity is small even with decent angular rates).
-    let vel = data.ten_velocity[tid];
-    let t = (vel / 0.01).clamp(-1.0, 1.0) as f32;
+// ── Tendon Visualization ──────────────────────────────────────────────────
 
-    let color = if t >= 0.0 {
-        // Green → Red (lengthening)
-        Color::srgb(t, 0.8 * (1.0 - t), 0.0)
+/// Self-calibrating length range for color mapping.
+#[derive(Default)]
+struct LenRange {
+    min: f64,
+    max: f64,
+    init: bool,
+}
+
+/// Draw the spatial tendon path, colored by length.
+/// Green (shortest observed) → yellow → red (longest observed).
+fn draw_tendon_path(
+    mut gizmos: Gizmos,
+    model: Res<PhysicsModel>,
+    data: Res<PhysicsData>,
+    mut range: Local<LenRange>,
+) {
+    let tid = model.tendon_id("path").expect("tendon");
+    let length = data.ten_length[tid];
+
+    if !range.init {
+        range.min = length;
+        range.max = length;
+        range.init = true;
+    }
+    range.min = range.min.min(length);
+    range.max = range.max.max(length);
+
+    let span = range.max - range.min;
+    let t = if span > 1e-10 {
+        ((length - range.min) / span) as f32
     } else {
-        // Green → Blue (shortening)
-        let s = -t;
-        Color::srgb(0.0, 0.8 * (1.0 - s), s)
+        0.0
     };
+    let color = tendon_color_ramp(t);
 
-    // Draw line segments along the path
-    for i in 0..num - 1 {
-        let start = vec3_from_vector(&data.wrap_xpos[adr + i]);
-        let end = vec3_from_vector(&data.wrap_xpos[adr + i + 1]);
-        gizmos.line(start, end, color);
-    }
-
-    // Small spheres at each path point
-    for i in 0..num {
-        let pos = vec3_from_vector(&data.wrap_xpos[adr + i]);
-        gizmos.sphere(Isometry3d::from_translation(pos), 0.008, color);
-    }
+    draw_tendon_segments(&mut gizmos, &data, tid, color, 0.008);
 }
 
 // ── HUD ───────────────────────────────────────────────────────────────────

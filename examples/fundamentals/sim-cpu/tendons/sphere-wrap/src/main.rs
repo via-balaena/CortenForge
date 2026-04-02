@@ -23,8 +23,8 @@ use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::{physics_pos, vec3_from_vector};
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, draw_sphere_arc, render_physics_hud, spawn_example_camera,
+    spawn_physics_hud, tendon_color_ramp, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -198,10 +198,23 @@ fn apply_control(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
 
 // ── Tendon Visualization ──────────────────────────────────────────────────
 
-/// Draw the spatial tendon path from wrap_xpos, colored by velocity.
-/// Between tangent points on the sphere, interpolate a smooth arc instead of
-/// a straight line (which would cut through the sphere).
-fn draw_tendon_path(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<PhysicsData>) {
+/// Self-calibrating length range for color mapping.
+#[derive(Default)]
+struct LenRange {
+    min: f64,
+    max: f64,
+    init: bool,
+}
+
+/// Draw the spatial tendon path, colored by length.
+/// Green (shortest) → yellow → red (longest). Between tangent points on the
+/// sphere, interpolate a smooth arc instead of a straight line.
+fn draw_tendon_path(
+    mut gizmos: Gizmos,
+    model: Res<PhysicsModel>,
+    data: Res<PhysicsData>,
+    mut range: Local<LenRange>,
+) {
     let tid = model.tendon_id("wrap_tendon").expect("tendon");
     let adr = data.ten_wrapadr[tid];
     let num = data.ten_wrapnum[tid];
@@ -209,17 +222,22 @@ fn draw_tendon_path(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<Phys
         return;
     }
 
-    let vel = data.ten_velocity[tid];
-    let t = (vel / 0.05).clamp(-1.0, 1.0) as f32;
+    let length = data.ten_length[tid];
+    if !range.init {
+        range.min = length;
+        range.max = length;
+        range.init = true;
+    }
+    range.min = range.min.min(length);
+    range.max = range.max.max(length);
 
-    let color = if t >= 0.0 {
-        Color::srgb(t, 0.8 * (1.0 - t), 0.0)
+    let span = range.max - range.min;
+    let t = if span > 1e-10 {
+        ((length - range.min) / span) as f32
     } else {
-        let s = -t;
-        Color::srgb(0.0, 0.8 * (1.0 - s), s)
+        0.0
     };
-
-    let arc_segments = 24;
+    let color = tendon_color_ramp(t);
 
     for i in 0..num - 1 {
         let obj_a = data.wrap_obj[adr + i];
@@ -227,43 +245,22 @@ fn draw_tendon_path(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<Phys
         let pa = data.wrap_xpos[adr + i];
         let pb = data.wrap_xpos[adr + i + 1];
 
-        // If both points are on the same geom, interpolate a sphere arc
         if obj_a >= 0 && obj_a == obj_b {
             let gid = obj_a as usize;
-            let center = data.geom_xpos[gid];
-            let radius = model.geom_size[gid].x;
-
-            // Directions from center to each tangent point
-            let da = (pa - center).normalize();
-            let db = (pb - center).normalize();
-            let dot = da.dot(&db).clamp(-1.0, 1.0);
-            let angle = dot.acos();
-
-            if angle.abs() < 1e-8 {
-                // Degenerate — just draw a line
-                gizmos.line(vec3_from_vector(&pa), vec3_from_vector(&pb), color);
-            } else {
-                // Slerp along the great-circle arc
-                let sin_angle = angle.sin();
-                let mut prev = vec3_from_vector(&pa);
-                for seg in 1..=arc_segments {
-                    let frac = f64::from(seg) / f64::from(arc_segments);
-                    let sa = ((1.0 - frac) * angle).sin() / sin_angle;
-                    let sb = (frac * angle).sin() / sin_angle;
-                    let dir = da * sa + db * sb;
-                    let point = center + dir * radius;
-                    let cur = vec3_from_vector(&point);
-                    gizmos.line(prev, cur, color);
-                    prev = cur;
-                }
-            }
+            draw_sphere_arc(
+                &mut gizmos,
+                &data.geom_xpos[gid],
+                model.geom_size[gid].x,
+                &pa,
+                &pb,
+                24,
+                color,
+            );
         } else {
-            // Straight segment (site-to-tangent or site-to-site)
             gizmos.line(vec3_from_vector(&pa), vec3_from_vector(&pb), color);
         }
     }
 
-    // Markers at endpoints and tangent points
     for i in 0..num {
         let pos = vec3_from_vector(&data.wrap_xpos[adr + i]);
         gizmos.sphere(Isometry3d::from_translation(pos), 0.006, color);

@@ -20,12 +20,11 @@
 )]
 
 use bevy::prelude::*;
-use nalgebra::Vector3;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::{physics_pos, vec3_from_vector};
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, draw_cylinder_arc, render_physics_hud, spawn_example_camera,
+    spawn_physics_hud, tendon_color_ramp, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -236,21 +235,11 @@ fn draw_tendon_path(
 
     let span = range.max - range.min;
     let t = if span > 1e-10 {
-        ((length - range.min) / span).clamp(0.0, 1.0) as f32
+        ((length - range.min) / span) as f32
     } else {
         0.0
     };
-
-    // Green → Yellow (t=0.5) → Red (t=1.0)
-    let color = if t < 0.5 {
-        let s = t * 2.0;
-        Color::srgb(s, 0.8, 0.0)
-    } else {
-        let s = (t - 0.5) * 2.0;
-        Color::srgb(1.0, 0.8 * (1.0 - s), 0.0)
-    };
-
-    let arc_segments: i32 = 32;
+    let color = tendon_color_ramp(t);
 
     for i in 0..num - 1 {
         let obj_a = data.wrap_obj[adr + i];
@@ -260,38 +249,16 @@ fn draw_tendon_path(
 
         if obj_a >= 0 && obj_a == obj_b {
             let gid = obj_a as usize;
-            let center = data.geom_xpos[gid];
-            let mat = data.geom_xmat[gid];
-            let radius = model.geom_size[gid].x;
-
-            // Transform tangent points to cylinder-local frame
-            let la = mat.transpose() * (pa - center);
-            let lb = mat.transpose() * (pb - center);
-
-            // In local frame: XY is the cross-section, Z is the axis.
-            // Compute angles in XY plane.
-            let angle_a = la.y.atan2(la.x);
-            let angle_b = lb.y.atan2(lb.x);
-
-            // Choose the shorter arc direction
-            let mut delta = angle_b - angle_a;
-            if delta > std::f64::consts::PI {
-                delta -= 2.0 * std::f64::consts::PI;
-            } else if delta < -std::f64::consts::PI {
-                delta += 2.0 * std::f64::consts::PI;
-            }
-
-            let mut prev = vec3_from_vector(&pa);
-            for seg in 1..=arc_segments {
-                let frac = f64::from(seg) / f64::from(arc_segments);
-                let angle = angle_a + delta * frac;
-                let z = la.z + (lb.z - la.z) * frac;
-                let local = Vector3::new(radius * angle.cos(), radius * angle.sin(), z);
-                let world = center + mat * local;
-                let cur = vec3_from_vector(&world);
-                gizmos.line(prev, cur, color);
-                prev = cur;
-            }
+            draw_cylinder_arc(
+                &mut gizmos,
+                &data.geom_xpos[gid],
+                &data.geom_xmat[gid],
+                model.geom_size[gid].x,
+                &pa,
+                &pb,
+                32,
+                color,
+            );
         } else {
             gizmos.line(vec3_from_vector(&pa), vec3_from_vector(&pb), color);
         }

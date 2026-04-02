@@ -24,7 +24,7 @@ use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::{physics_pos, vec3_from_vector};
 use sim_bevy::examples::{
     PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    tendon_color_ramp, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -195,32 +195,45 @@ fn setup(
 
 // ── Tendon Visualization ──────────────────────────────────────────────────
 
-/// Draw the tendon as a line between the two attachment sites, colored by state.
-///
-/// - Green: relaxed (near rest length)
-/// - Red: stretched (tendon longer than rest → tension)
-/// - Blue: compressed (tendon shorter than rest)
-fn draw_tendon_force(mut gizmos: Gizmos, model: Res<PhysicsModel>, data: Res<PhysicsData>) {
+/// Self-calibrating length range for color mapping.
+#[derive(Default)]
+struct LenRange {
+    min: f64,
+    max: f64,
+    init: bool,
+}
+
+/// Draw the tendon as a line between the two attachment sites, colored by length.
+/// Green (shortest observed) → yellow → red (longest observed).
+fn draw_tendon_force(
+    mut gizmos: Gizmos,
+    model: Res<PhysicsModel>,
+    data: Res<PhysicsData>,
+    mut range: Local<LenRange>,
+) {
     let sa = model.site_id("attach_a").expect("attach_a");
     let sb = model.site_id("attach_b").expect("attach_b");
     let start = vec3_from_vector(&data.site_xpos[sa]);
     let end = vec3_from_vector(&data.site_xpos[sb]);
 
-    // Tendon length relative to rest (L0 = 0 for this model).
-    // Positive length = stretched, negative = compressed.
-    let length = data.ten_length[0];
-    // Normalize: full color at ±0.08 rad displacement.
-    let t = (length / 0.08).clamp(-1.0, 1.0) as f32;
+    // Use the visual (Euclidean) distance between sites for color,
+    // not ten_length (which is the algebraic coupling sum and stays near 0).
+    let length = (data.site_xpos[sa] - data.site_xpos[sb]).norm();
+    if !range.init {
+        range.min = length;
+        range.max = length;
+        range.init = true;
+    }
+    range.min = range.min.min(length);
+    range.max = range.max.max(length);
 
-    // Interpolate: blue (-1) → green (0) → red (+1)
-    let color = if t >= 0.0 {
-        // Green → Red (stretched / tension)
-        Color::srgb(t, 0.8 * (1.0 - t), 0.0)
+    let span = range.max - range.min;
+    let t = if span > 1e-10 {
+        ((length - range.min) / span) as f32
     } else {
-        // Green → Blue (compressed)
-        let s = -t;
-        Color::srgb(0.0, 0.8 * (1.0 - s), s)
+        0.0
     };
+    let color = tendon_color_ramp(t);
 
     gizmos.line(start, end, color);
 
