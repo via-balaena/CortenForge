@@ -1,6 +1,6 @@
 # Sensors Advanced — Remaining Sensor Types
 
-**Status:** Draft
+**Status:** Complete — 7 visual examples + 1 stress-test (25 checks), all passing
 **Date:** 2026-04-02
 **Parent:** `examples/COVERAGE_SPEC.md` §7
 **Depends on:** Track 1A `sensors/` (9 examples), `joint-limits/`, `tendons/`
