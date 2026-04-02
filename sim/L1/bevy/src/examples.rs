@@ -8,8 +8,18 @@
 //! [`ValidationHarness`] replaces per-example boilerplate for physics validation.
 //! Declare trackers, display functions, and report timing via a builder API, then
 //! add [`validation_system`] to `PostUpdate`.
+//!
+//! # Tendon Visualization
+//!
+//! Color helpers and path-drawing utilities for tendon examples:
+//! - [`tendon_color_bipolar`] — blue (−1) → green (0) → red (+1)
+//! - [`tendon_color_ramp`] — green (0) → yellow (0.5) → red (1)
+//! - [`draw_tendon_segments`] — wrap path as line segments + dot markers
+//! - [`draw_sphere_arc`] — great-circle arc for sphere wrapping
+//! - [`draw_cylinder_arc`] — helical geodesic for cylinder wrapping
 
 use bevy::prelude::*;
+use nalgebra::{Matrix3, Vector3};
 use sim_core::validation::{
     Check, EnergyConservationTracker, EnergyMonotonicityTracker, EquilibriumTracker, LimitTracker,
     PeriodTracker, QuaternionNormTracker, print_report,
@@ -17,6 +27,7 @@ use sim_core::validation::{
 use sim_core::{Data, Model};
 
 use crate::camera::OrbitCamera;
+use crate::convert::vec3_from_vector;
 use crate::model_data::{PhysicsData, PhysicsModel};
 
 /// Timer for periodic diagnostic printing in examples.
@@ -603,6 +614,158 @@ pub fn render_physics_hud(
     }
 }
 
+// ── Tendon Visualization Utilities ──────────────────────────────────────────
+
+/// Bipolar tendon color: blue (−1) → green (0) → red (+1).
+///
+/// Use for quantities that span positive and negative:
+/// - Elongation from rest: `t = (length - rest) / saturation`
+/// - Velocity: `t = velocity / saturation`
+///
+/// `t` is clamped to [−1, 1] internally.
+#[must_use]
+pub fn tendon_color_bipolar(t: f32) -> Color {
+    let t = t.clamp(-1.0, 1.0);
+    if t >= 0.0 {
+        Color::srgb(t, 0.8 * (1.0 - t), 0.0)
+    } else {
+        let s = -t;
+        Color::srgb(0.0, 0.8 * (1.0 - s), s)
+    }
+}
+
+/// Ramp tendon color: green (0) → yellow (0.5) → red (1).
+///
+/// Use for quantities normalized to [0, 1]:
+/// - Proximity to limit: `t = length / limit`
+/// - Self-calibrating range: `t = (length - min) / (max - min)`
+///
+/// `t` is clamped to [0, 1] internally.
+#[must_use]
+pub fn tendon_color_ramp(t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        let s = t * 2.0;
+        Color::srgb(s, 0.8, 0.0)
+    } else {
+        let s = (t - 0.5) * 2.0;
+        Color::srgb(1.0, 0.8 * (1.0 - s), 0.0)
+    }
+}
+
+/// Draw a spatial tendon's wrap path as line segments with dot markers.
+///
+/// Reads `wrap_xpos` for the given tendon and draws straight-line segments
+/// between consecutive points, plus small spheres at each point.
+/// Coordinates are converted from physics (Z-up) to Bevy (Y-up).
+pub fn draw_tendon_segments(
+    gizmos: &mut Gizmos,
+    data: &Data,
+    tendon_id: usize,
+    color: Color,
+    dot_radius: f32,
+) {
+    let adr = data.ten_wrapadr[tendon_id];
+    let num = data.ten_wrapnum[tendon_id];
+    if num < 2 {
+        return;
+    }
+    for i in 0..num - 1 {
+        let start = vec3_from_vector(&data.wrap_xpos[adr + i]);
+        let end = vec3_from_vector(&data.wrap_xpos[adr + i + 1]);
+        gizmos.line(start, end, color);
+    }
+    for i in 0..num {
+        let pos = vec3_from_vector(&data.wrap_xpos[adr + i]);
+        gizmos.sphere(Isometry3d::from_translation(pos), dot_radius, color);
+    }
+}
+
+/// Draw a great-circle arc between two tangent points on a sphere surface.
+///
+/// Interpolates `arc_segments` steps via spherical linear interpolation (slerp)
+/// from `from` to `to` at distance `radius` from `center`. All positions are
+/// in physics coordinates (Z-up) and converted to Bevy (Y-up) for drawing.
+#[allow(clippy::cast_precision_loss)]
+pub fn draw_sphere_arc(
+    gizmos: &mut Gizmos,
+    center: &Vector3<f64>,
+    radius: f64,
+    from: &Vector3<f64>,
+    to: &Vector3<f64>,
+    arc_segments: usize,
+    color: Color,
+) {
+    let da = (from - center).normalize();
+    let db = (to - center).normalize();
+    let dot = da.dot(&db).clamp(-1.0, 1.0);
+    let angle = dot.acos();
+
+    if angle.abs() < 1e-8 {
+        gizmos.line(vec3_from_vector(from), vec3_from_vector(to), color);
+        return;
+    }
+
+    let sin_angle = angle.sin();
+    let mut prev = vec3_from_vector(from);
+    for seg in 1..=arc_segments {
+        let frac = seg as f64 / arc_segments as f64;
+        let sa = ((1.0 - frac) * angle).sin() / sin_angle;
+        let sb = (frac * angle).sin() / sin_angle;
+        let dir = da * sa + db * sb;
+        let point = center + dir * radius;
+        let cur = vec3_from_vector(&point);
+        gizmos.line(prev, cur, color);
+        prev = cur;
+    }
+}
+
+/// Draw a helical geodesic arc between two tangent points on a cylinder surface.
+///
+/// Interpolates `arc_segments` steps along the cylinder's surface in its local
+/// frame (XY = cross-section, Z = axis). `rotation` is the cylinder's 3×3
+/// orientation matrix (`geom_xmat`). All positions are in physics coordinates
+/// (Z-up) and converted to Bevy (Y-up) for drawing.
+#[allow(clippy::cast_precision_loss, clippy::too_many_arguments)]
+pub fn draw_cylinder_arc(
+    gizmos: &mut Gizmos,
+    center: &Vector3<f64>,
+    rotation: &Matrix3<f64>,
+    radius: f64,
+    from: &Vector3<f64>,
+    to: &Vector3<f64>,
+    arc_segments: usize,
+    color: Color,
+) {
+    // Transform tangent points to cylinder-local frame
+    let la = rotation.transpose() * (from - center);
+    let lb = rotation.transpose() * (to - center);
+
+    // In local frame: XY is the cross-section, Z is the axis
+    let angle_a = la.y.atan2(la.x);
+    let angle_b = lb.y.atan2(lb.x);
+
+    // Choose the shorter arc direction
+    let mut delta = angle_b - angle_a;
+    if delta > std::f64::consts::PI {
+        delta -= 2.0 * std::f64::consts::PI;
+    } else if delta < -std::f64::consts::PI {
+        delta += 2.0 * std::f64::consts::PI;
+    }
+
+    let mut prev = vec3_from_vector(from);
+    for seg in 1..=arc_segments {
+        let frac = seg as f64 / arc_segments as f64;
+        let angle = angle_a + delta * frac;
+        let z = la.z + (lb.z - la.z) * frac;
+        let local = Vector3::new(radius * angle.cos(), radius * angle.sin(), z);
+        let world = center + rotation * local;
+        let cur = vec3_from_vector(&world);
+        gizmos.line(prev, cur, color);
+        prev = cur;
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -774,5 +937,78 @@ mod tests {
         assert_eq!(hud.lines[1].value, "1.50");
         // Raw has label only
         assert_eq!(hud.lines[2].label, "done");
+    }
+
+    // ── Tendon color tests ──────────────────────────────────────────────
+
+    fn color_rgb(c: Color) -> (f32, f32, f32) {
+        let srgba = c.to_srgba();
+        (srgba.red, srgba.green, srgba.blue)
+    }
+
+    #[test]
+    fn bipolar_green_at_zero() {
+        let (r, g, b) = color_rgb(tendon_color_bipolar(0.0));
+        assert!(r.abs() < 1e-4, "r={r}");
+        assert!((g - 0.8).abs() < 1e-4, "g={g}");
+        assert!(b.abs() < 1e-4, "b={b}");
+    }
+
+    #[test]
+    fn bipolar_red_at_plus_one() {
+        let (r, g, b) = color_rgb(tendon_color_bipolar(1.0));
+        assert!((r - 1.0).abs() < 1e-4, "r={r}");
+        assert!(g.abs() < 1e-4, "g={g}");
+        assert!(b.abs() < 1e-4, "b={b}");
+    }
+
+    #[test]
+    fn bipolar_blue_at_minus_one() {
+        let (r, g, b) = color_rgb(tendon_color_bipolar(-1.0));
+        assert!(r.abs() < 1e-4, "r={r}");
+        assert!(g.abs() < 1e-4, "g={g}");
+        assert!((b - 1.0).abs() < 1e-4, "b={b}");
+    }
+
+    #[test]
+    fn bipolar_clamps_beyond_range() {
+        let a = color_rgb(tendon_color_bipolar(5.0));
+        let b = color_rgb(tendon_color_bipolar(1.0));
+        assert!((a.0 - b.0).abs() < 1e-6);
+        assert!((a.1 - b.1).abs() < 1e-6);
+        assert!((a.2 - b.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ramp_green_at_zero() {
+        let (r, g, b) = color_rgb(tendon_color_ramp(0.0));
+        assert!(r.abs() < 1e-4, "r={r}");
+        assert!((g - 0.8).abs() < 1e-4, "g={g}");
+        assert!(b.abs() < 1e-4, "b={b}");
+    }
+
+    #[test]
+    fn ramp_yellow_at_half() {
+        let (r, g, b) = color_rgb(tendon_color_ramp(0.5));
+        assert!((r - 1.0).abs() < 1e-4, "r={r}");
+        assert!((g - 0.8).abs() < 1e-4, "g={g}");
+        assert!(b.abs() < 1e-4, "b={b}");
+    }
+
+    #[test]
+    fn ramp_red_at_one() {
+        let (r, g, b) = color_rgb(tendon_color_ramp(1.0));
+        assert!((r - 1.0).abs() < 1e-4, "r={r}");
+        assert!(g.abs() < 1e-4, "g={g}");
+        assert!(b.abs() < 1e-4, "b={b}");
+    }
+
+    #[test]
+    fn ramp_clamps_beyond_range() {
+        let a = color_rgb(tendon_color_ramp(-0.5));
+        let b = color_rgb(tendon_color_ramp(0.0));
+        assert!((a.0 - b.0).abs() < 1e-6);
+        assert!((a.1 - b.1).abs() < 1e-6);
+        assert!((a.2 - b.2).abs() < 1e-6);
     }
 }

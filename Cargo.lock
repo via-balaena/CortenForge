@@ -3725,6 +3725,86 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-tendon-actuator"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-tendon-cylinder-wrap"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-tendon-fixed-coupling"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-tendon-limits"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-tendon-pulley"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-tendon-spatial-path"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-tendon-sphere-wrap"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-tendon-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-urdf-continuous"
 version = "0.7.0"
 dependencies = [

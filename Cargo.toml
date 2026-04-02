@@ -101,6 +101,16 @@ members = [
     "examples/fundamentals/sim-cpu/contact-filtering/exclude-pairs",
     "examples/fundamentals/sim-cpu/contact-filtering/ghost-layers",
 
+    # Examples — fundamentals / sim-cpu / tendons
+    "examples/fundamentals/sim-cpu/tendons/stress-test",
+    "examples/fundamentals/sim-cpu/tendons/fixed-coupling",
+    "examples/fundamentals/sim-cpu/tendons/spatial-path",
+    "examples/fundamentals/sim-cpu/tendons/sphere-wrap",
+    "examples/fundamentals/sim-cpu/tendons/cylinder-wrap",
+    "examples/fundamentals/sim-cpu/tendons/tendon-limits",
+    "examples/fundamentals/sim-cpu/tendons/pulley",
+    "examples/fundamentals/sim-cpu/tendons/tendon-actuator",
+
     # Examples — fundamentals / sim-cpu / joint-limits
     "examples/fundamentals/sim-cpu/joint-limits/stress-test",
     "examples/fundamentals/sim-cpu/joint-limits/hinge-limits",
