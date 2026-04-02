@@ -3756,6 +3756,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-tendon-pulley"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-tendon-spatial-path"
 version = "0.7.0"
 dependencies = [
