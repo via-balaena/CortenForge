@@ -7,15 +7,15 @@ exact damping ratios, producing the three classical second-order responses.
 ## What it demonstrates
 
 - **Underdamped (blue, zeta=0.1)**: oscillates with decaying amplitude.
-  23 zero-crossings in 15 seconds. Period matches analytical within 0.3%.
+  23 zero-crossings. Period matches analytical within 0.5%.
 - **Critically damped (green, zeta=1.0)**: fastest return to equilibrium
-  without overshoot. Settles in ~1.3 seconds.
+  without overshoot. Settles in ~1.3s after release.
 - **Overdamped (red, zeta=3.0)**: sluggish exponential decay, no oscillation.
-  Settles in ~5.3 seconds (4x slower than critical).
+  Settles in ~5.3s after release (~4x slower than critical).
 
 ## What you see
 
-Three arms displaced to ~45 degrees and released simultaneously. The blue arm
+A 2-second hold at the starting angle, then all three release. The blue arm
 oscillates back and forth with decreasing swings. The green arm returns
 smoothly in one motion. The red arm creeps back slowly. The HUD shows angle,
 angular velocity, and system parameters.
