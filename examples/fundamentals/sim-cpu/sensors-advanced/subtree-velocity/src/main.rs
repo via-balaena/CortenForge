@@ -28,8 +28,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, render_physics_hud, sensor_vec3, spawn_example_camera,
+    spawn_physics_hud, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{PhysicsData, PhysicsModel, spawn_model_geoms, sync_geom_transforms};
@@ -106,7 +106,7 @@ fn main() {
                 .report_at(5.0)
                 .print_every(0.5)
                 .display(|m, d| {
-                    let v = sensor_vec3_or_zero(d, m, "sub_vel");
+                    let v = sensor_vec3(d, m, "sub_vel");
                     // Sim time = 0 during hold (physics not stepping), then ramps
                     let expected_vz = -G * d.time;
                     let phase = if d.time < 0.01 { "HOLD" } else { "FALL" };
@@ -212,8 +212,8 @@ fn delayed_step(
 // ── HUD ─────────────────────────────────────────────────────────────────────
 
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
-    let v = sensor_vec3_or_zero(&data, &model, "sub_vel");
-    let com = sensor_vec3_or_zero(&data, &model, "sub_com");
+    let v = sensor_vec3(&data, &model, "sub_vel");
+    let com = sensor_vec3(&data, &model, "sub_com");
     let expected_vz = -G * data.time;
 
     hud.clear();
@@ -249,8 +249,8 @@ fn sensor_diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<SensorValidation>,
 ) {
-    let v = sensor_vec3_or_zero(&data, &model, "sub_vel");
-    let com = sensor_vec3_or_zero(&data, &model, "sub_com");
+    let v = sensor_vec3(&data, &model, "sub_vel");
+    let com = sensor_vec3(&data, &model, "sub_com");
 
     // Sim time starts at 0 and only advances once physics steps
 
@@ -303,20 +303,4 @@ fn sensor_diagnostics(
         ];
         let _ = print_report("Subtree Velocity (t=5s)", &checks);
     }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn sensor_vec3_or_zero(
-    data: &sim_core::types::Data,
-    model: &sim_core::types::Model,
-    name: &str,
-) -> [f64; 3] {
-    if let Some(id) = model.sensor_id(name) {
-        let s = data.sensor_data(model, id);
-        if s.len() >= 3 {
-            return [s[0], s[1], s[2]];
-        }
-    }
-    [0.0, 0.0, 0.0]
 }

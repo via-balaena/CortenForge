@@ -31,8 +31,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, render_physics_hud, sensor_vec3, spawn_example_camera,
+    spawn_physics_hud, validation_system, vec3_magnitude,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -111,10 +111,10 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let f = sensor_vec3_or_zero(d, m, "base_force");
-                    let t = sensor_vec3_or_zero(d, m, "base_torque");
-                    let f_mag = vec3_norm(&f);
-                    let t_mag = vec3_norm(&t);
+                    let f = sensor_vec3(d, m, "base_force");
+                    let t = sensor_vec3(d, m, "base_torque");
+                    let f_mag = vec3_magnitude(&f);
+                    let t_mag = vec3_magnitude(&t);
                     format!("|F|={f_mag:.4}  |tau|={t_mag:.4}")
                 }),
         )
@@ -177,10 +177,10 @@ fn setup(
 // ── HUD ─────────────────────────────────────────────────────────────────────
 
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
-    let f = sensor_vec3_or_zero(&data, &model, "base_force");
-    let t = sensor_vec3_or_zero(&data, &model, "base_torque");
-    let f_mag = vec3_norm(&f);
-    let t_mag = vec3_norm(&t);
+    let f = sensor_vec3(&data, &model, "base_force");
+    let t = sensor_vec3(&data, &model, "base_torque");
+    let f_mag = vec3_magnitude(&f);
+    let t_mag = vec3_magnitude(&t);
 
     hud.clear();
     hud.section("Force & Torque (static beam)");
@@ -225,10 +225,10 @@ fn sensor_diagnostics(
         return;
     }
 
-    let f = sensor_vec3_or_zero(&data, &model, "base_force");
-    let t = sensor_vec3_or_zero(&data, &model, "base_torque");
-    let f_mag = vec3_norm(&f);
-    let t_mag = vec3_norm(&t);
+    let f = sensor_vec3(&data, &model, "base_force");
+    let t = sensor_vec3(&data, &model, "base_torque");
+    let f_mag = vec3_magnitude(&f);
+    let t_mag = vec3_magnitude(&t);
 
     val.sum_f_mag += f_mag;
     val.sum_t_mag += t_mag;
@@ -272,24 +272,4 @@ fn sensor_diagnostics(
         ];
         let _ = print_report("Force & Torque (t=15s)", &checks);
     }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn sensor_vec3_or_zero(
-    data: &sim_core::types::Data,
-    model: &sim_core::types::Model,
-    name: &str,
-) -> [f64; 3] {
-    if let Some(id) = model.sensor_id(name) {
-        let s = data.sensor_data(model, id);
-        if s.len() >= 3 {
-            return [s[0], s[1], s[2]];
-        }
-    }
-    [0.0, 0.0, 0.0]
-}
-
-fn vec3_norm(v: &[f64; 3]) -> f64 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }

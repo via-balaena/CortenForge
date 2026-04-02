@@ -26,8 +26,8 @@ use std::f64::consts::PI;
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, render_physics_hud, sensor_vec3, spawn_example_camera,
+    spawn_physics_hud, validation_system, vec3_magnitude,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -104,9 +104,9 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let v = sensor_vec3_or_zero(d, m, "tip_linvel");
-                    let speed = vec3_norm(&v);
-                    let w = sensor_vec3_or_zero(d, m, "tip_angvel");
+                    let v = sensor_vec3(d, m, "tip_linvel");
+                    let speed = vec3_magnitude(&v);
+                    let w = sensor_vec3(d, m, "tip_angvel");
                     format!("|v|={speed:.4}  ω_z={:.4}", w[2])
                 }),
         )
@@ -175,9 +175,9 @@ fn drive_motor(mut data: ResMut<PhysicsData>) {
 // ── HUD ─────────────────────────────────────────────────────────────────────
 
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
-    let v = sensor_vec3_or_zero(&data, &model, "tip_linvel");
-    let w = sensor_vec3_or_zero(&data, &model, "tip_angvel");
-    let speed = vec3_norm(&v);
+    let v = sensor_vec3(&data, &model, "tip_linvel");
+    let w = sensor_vec3(&data, &model, "tip_angvel");
+    let speed = vec3_magnitude(&v);
 
     hud.clear();
     hud.section("Frame Velocity");
@@ -227,9 +227,9 @@ fn sensor_diagnostics(
         return;
     }
 
-    let v = sensor_vec3_or_zero(&data, &model, "tip_linvel");
-    let w = sensor_vec3_or_zero(&data, &model, "tip_angvel");
-    let speed = vec3_norm(&v);
+    let v = sensor_vec3(&data, &model, "tip_linvel");
+    let w = sensor_vec3(&data, &model, "tip_angvel");
+    let speed = vec3_magnitude(&v);
 
     val.sum_speed += speed;
     val.sum_wz += w[2];
@@ -273,24 +273,4 @@ fn sensor_diagnostics(
         ];
         let _ = print_report("Frame Velocity (t=15s)", &checks);
     }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn sensor_vec3_or_zero(
-    data: &sim_core::types::Data,
-    model: &sim_core::types::Model,
-    name: &str,
-) -> [f64; 3] {
-    if let Some(id) = model.sensor_id(name) {
-        let s = data.sensor_data(model, id);
-        if s.len() >= 3 {
-            return [s[0], s[1], s[2]];
-        }
-    }
-    [0.0, 0.0, 0.0]
-}
-
-fn vec3_norm(v: &[f64; 3]) -> f64 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }

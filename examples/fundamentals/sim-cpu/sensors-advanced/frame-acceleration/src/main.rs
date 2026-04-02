@@ -27,8 +27,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, render_physics_hud, sensor_vec3, spawn_example_camera,
+    spawn_physics_hud, validation_system, vec3_magnitude,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -106,9 +106,9 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let a = sensor_vec3_or_zero(d, m, "tip_linacc");
-                    let a_mag = vec3_norm(&a);
-                    let alpha = sensor_vec3_or_zero(d, m, "tip_angacc");
+                    let a = sensor_vec3(d, m, "tip_linacc");
+                    let a_mag = vec3_magnitude(&a);
+                    let alpha = sensor_vec3(d, m, "tip_angacc");
                     let phase = if d.time < RELEASE_TIME {
                         "HOLD"
                     } else {
@@ -194,9 +194,9 @@ fn drive_motor(mut data: ResMut<PhysicsData>, model: Res<PhysicsModel>) {
 // ── HUD ─────────────────────────────────────────────────────────────────────
 
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
-    let a = sensor_vec3_or_zero(&data, &model, "tip_linacc");
-    let alpha = sensor_vec3_or_zero(&data, &model, "tip_angacc");
-    let a_mag = vec3_norm(&a);
+    let a = sensor_vec3(&data, &model, "tip_linacc");
+    let alpha = sensor_vec3(&data, &model, "tip_angacc");
+    let a_mag = vec3_magnitude(&a);
     let theta = data.sensor_scalar(&model, "theta").unwrap_or(0.0);
 
     let phase = if data.time < RELEASE_TIME {
@@ -238,10 +238,10 @@ fn sensor_diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<SensorValidation>,
 ) {
-    let a = sensor_vec3_or_zero(&data, &model, "tip_linacc");
-    let alpha = sensor_vec3_or_zero(&data, &model, "tip_angacc");
-    let a_mag = vec3_norm(&a);
-    let alpha_mag = vec3_norm(&alpha);
+    let a = sensor_vec3(&data, &model, "tip_linacc");
+    let alpha = sensor_vec3(&data, &model, "tip_angacc");
+    let a_mag = vec3_magnitude(&a);
+    let alpha_mag = vec3_magnitude(&alpha);
     let theta = data.sensor_scalar(&model, "theta").unwrap_or(0.0);
 
     // Rest phase: t = 1–4s (skip first second for settling)
@@ -297,24 +297,4 @@ fn sensor_diagnostics(
         ];
         let _ = print_report("Frame Acceleration (t=15s)", &checks);
     }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn sensor_vec3_or_zero(
-    data: &sim_core::types::Data,
-    model: &sim_core::types::Model,
-    name: &str,
-) -> [f64; 3] {
-    if let Some(id) = model.sensor_id(name) {
-        let s = data.sensor_data(model, id);
-        if s.len() >= 3 {
-            return [s[0], s[1], s[2]];
-        }
-    }
-    [0.0, 0.0, 0.0]
-}
-
-fn vec3_norm(v: &[f64; 3]) -> f64 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }

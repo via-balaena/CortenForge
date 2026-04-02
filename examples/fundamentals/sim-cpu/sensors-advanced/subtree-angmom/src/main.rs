@@ -25,8 +25,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, render_physics_hud, sensor_vec3, spawn_example_camera,
+    spawn_physics_hud, validation_system, vec3_magnitude,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -95,8 +95,8 @@ fn main() {
                 .report_at(15.0)
                 .print_every(1.0)
                 .display(|m, d| {
-                    let l = sensor_vec3_or_zero(d, m, "sub_angmom");
-                    let l_mag = vec3_norm(&l);
+                    let l = sensor_vec3(d, m, "sub_angmom");
+                    let l_mag = vec3_magnitude(&l);
                     format!("|L|={l_mag:.8}  L_y={:.8}", l[1])
                 }),
         )
@@ -171,8 +171,8 @@ fn setup(
 // ── HUD ─────────────────────────────────────────────────────────────────────
 
 fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
-    let l = sensor_vec3_or_zero(&data, &model, "sub_angmom");
-    let l_mag = vec3_norm(&l);
+    let l = sensor_vec3(&data, &model, "sub_angmom");
+    let l_mag = vec3_magnitude(&l);
 
     hud.clear();
     hud.section("Subtree Angular Momentum");
@@ -200,8 +200,8 @@ fn sensor_diagnostics(
     harness: Res<ValidationHarness>,
     mut val: ResMut<SensorValidation>,
 ) {
-    let l = sensor_vec3_or_zero(&data, &model, "sub_angmom");
-    let l_mag = vec3_norm(&l);
+    let l = sensor_vec3(&data, &model, "sub_angmom");
+    let l_mag = vec3_magnitude(&l);
 
     // Record initial |L| after first step
     if val.l0_mag.is_none() && data.time > 0.001 {
@@ -243,24 +243,4 @@ fn sensor_diagnostics(
         ];
         let _ = print_report("Subtree AngMom (t=15s)", &checks);
     }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn sensor_vec3_or_zero(
-    data: &sim_core::types::Data,
-    model: &sim_core::types::Model,
-    name: &str,
-) -> [f64; 3] {
-    if let Some(id) = model.sensor_id(name) {
-        let s = data.sensor_data(model, id);
-        if s.len() >= 3 {
-            return [s[0], s[1], s[2]];
-        }
-    }
-    [0.0, 0.0, 0.0]
-}
-
-fn vec3_norm(v: &[f64; 3]) -> f64 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }

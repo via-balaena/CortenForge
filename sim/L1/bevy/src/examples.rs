@@ -616,6 +616,32 @@ pub fn render_physics_hud(
 
 // ── Tendon Visualization Utilities ──────────────────────────────────────────
 
+// ── Sensor Helpers ─────────────────────────────────────────────────────────
+
+/// Read a 3D sensor by name, returning `[x, y, z]`.
+///
+/// Returns `[0, 0, 0]` if the sensor is not found or has fewer than 3
+/// elements. Useful for `FrameLinVel`, `FrameAngVel`, `Force`, `Torque`,
+/// `SubtreeLinVel`, `SubtreeAngMom`, and other 3D sensor types.
+#[must_use]
+pub fn sensor_vec3(data: &Data, model: &Model, name: &str) -> [f64; 3] {
+    if let Some(id) = model.sensor_id(name) {
+        let s = data.sensor_data(model, id);
+        if s.len() >= 3 {
+            return [s[0], s[1], s[2]];
+        }
+    }
+    [0.0, 0.0, 0.0]
+}
+
+/// Euclidean magnitude of a 3-element array.
+#[must_use]
+pub fn vec3_magnitude(v: &[f64; 3]) -> f64 {
+    v[0].hypot(v[1]).hypot(v[2])
+}
+
+// ── Tendon Visualization ──────────────────────────────────────────────────
+
 /// Bipolar tendon color: blue (−1) → green (0) → red (+1).
 ///
 /// Use for quantities that span positive and negative:
