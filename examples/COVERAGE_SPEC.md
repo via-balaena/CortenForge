@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-04-02)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 112 examples (Track 1A + Track 1B layers 1–4)
+- sim-core + sim-mjcf + sim-urdf → 117 examples (Track 1A + Track 1B layers 1–6)
   - Joint types: hinge, slide, ball, free (4/4 — all covered)
   - Sensors: 31/31 types covered (Track 1A: 16, tendons: 3, joint-limits: 1, sensors-advanced: 11+)
   - Actuators: 10 examples, Muscles: 5 examples
@@ -25,8 +25,9 @@ integration tests — they find bugs that unit tests miss.
   - Mocap bodies: 4 examples, 12 stress-test checks
   - Tendons: 8 examples, 16 stress-test checks
   - Sensors-advanced: 7 examples, 25 stress-test checks
+  - Passive forces: 5 examples, 18 stress-test checks
 - Track 1B in progress: 20 subdirectories, ~70 examples — no stone unturned.
-  **8/20 subdirectories done:**
+  **9/20 subdirectories done:**
   - free-joint: 4 examples, 12 stress-test checks
   - keyframes: 3 examples, 12 stress-test checks
   - mocap-bodies: 4 examples, 12 stress-test checks
@@ -34,7 +35,8 @@ integration tests — they find bugs that unit tests miss.
   - joint-limits: 4 examples, 12 stress-test checks
   - tendons: 8 examples, 16 stress-test checks
   - sensors-advanced: 7 examples, 25 stress-test checks
-  Remaining 13: mesh collision, heightfield terrain, passive forces,
+  - passive-forces: 5 examples, 18 stress-test checks
+  Remaining 12: mesh collision, heightfield terrain,
   sleep/wake, Hill muscle, adhesion, flex bodies, raycasting, collision
   pairs, derivatives, composites, batch simulation, and plugins.
 - cf-design → 3 examples
@@ -119,10 +121,14 @@ integration tests — they find bugs that unit tests miss.
 - **Keyframes (reset-to-keyframe) → Track 1B** ✓ (3 examples, 12 stress-test checks)
 - **Mocap bodies (kinematic input) → Track 1B**
 
-### Passive Forces (partially covered)
-- Joint spring/damper → covered (slide-joint, urdf-loading)
-- Gravity compensation → covered (inverse-dynamics)
-- **Fluid drag → Track 1B**
+### Passive Forces (fully covered)
+- Joint spring/damper ✓ (slide-joint, urdf-loading, spring-damper-tuning)
+- Gravity compensation ✓ (inverse-dynamics)
+- Fluid drag ✓ (fluid-drag, ellipsoid-drag — both inertia-box and ellipsoid models)
+- Wind ✓ (wind — on/off demonstration with pendulum + drifter)
+- Spring-damper response ✓ (spring-damper-tuning — underdamped/critical/overdamped)
+- ImplicitSpringDamper suppression ✓ (stress-test)
+- Disable flags ✓ (stress-test)
 
 ### Advanced Features
 - Energy conservation tracking ✓ (4 visual + 12-check stress-test)
