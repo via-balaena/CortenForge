@@ -12,10 +12,10 @@ Linear and angular acceleration at a site on a pendulum arm.
 
 ## Expected visual behavior
 
-Phase 1 (0–5s): Arm held perfectly horizontal by a strong motor. No motion.
+Phase 1 (0–3s): Arm held perfectly horizontal by a strong motor. No motion.
 HUD shows a = [0, 0, +9.81].
 
-Phase 2 (5–15s): Motor releases, arm swings as a pendulum. Tip traces arcs.
+Phase 2 (3–15s): Motor releases, arm swings as a pendulum. Tip traces arcs.
 HUD shows |a| oscillating, exceeding g at the bottom of each swing
 (centripetal acceleration adds to gravity).
 

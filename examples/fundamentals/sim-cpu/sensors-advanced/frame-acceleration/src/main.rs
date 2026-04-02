@@ -78,15 +78,15 @@ const MJCF: &str = r#"
 "#;
 
 const G: f64 = 9.81;
-const RELEASE_TIME: f64 = 5.0;
+const RELEASE_TIME: f64 = 3.0;
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("=== CortenForge: Frame Acceleration Sensors ===");
     println!("  FrameLinAcc + FrameAngAcc on a pendulum arm");
-    println!("  Phase 1 (0–5s): Motor holds horizontal — a = [0,0,+g]");
-    println!("  Phase 2 (5–15s): Released — swings as pendulum");
+    println!("  Phase 1 (0–3s): Motor holds horizontal — a = [0,0,+g]");
+    println!("  Phase 2 (3–15s): Released — swings as pendulum");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -244,16 +244,16 @@ fn sensor_diagnostics(
     let alpha_mag = vec3_magnitude(&alpha);
     let theta = data.sensor_scalar(&model, "theta").unwrap_or(0.0);
 
-    // Rest phase: t = 1–4s (skip first second for settling)
-    if data.time > 1.0 && data.time < 4.0 {
+    // Rest phase: t = 1–2.5s (skip first second for settling, stop before release)
+    if data.time > 1.0 && data.time < 2.5 {
         let az_err = (a[2] - G).abs();
         val.rest_max_az_err = val.rest_max_az_err.max(az_err);
         val.rest_max_alpha_mag = val.rest_max_alpha_mag.max(alpha_mag);
         val.rest_samples += 1;
     }
 
-    // Swing phase: t > 6s (skip 1s after release for transient)
-    if data.time > 6.0 {
+    // Swing phase: t > 4s (skip 1s after release for transient)
+    if data.time > 4.0 {
         val.swing_max_a_mag = val.swing_max_a_mag.max(a_mag);
 
         // For a Y-axis hinge with arm at angle θ from horizontal:
