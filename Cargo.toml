@@ -124,6 +124,9 @@ members = [
     # Examples — fundamentals / sim-cpu / passive-forces
     "examples/fundamentals/sim-cpu/passive-forces/stress-test",
     "examples/fundamentals/sim-cpu/passive-forces/fluid-drag",
+    "examples/fundamentals/sim-cpu/passive-forces/ellipsoid-drag",
+    "examples/fundamentals/sim-cpu/passive-forces/wind",
+    "examples/fundamentals/sim-cpu/passive-forces/spring-damper-tuning",
 
     # Examples — fundamentals / sim-cpu / joint-limits
     "examples/fundamentals/sim-cpu/joint-limits/stress-test",
