@@ -103,6 +103,19 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `sensors/actuator-force` | `example-sensor-actuator-force` | ActuatorFrc, JointActuatorFrc | Working |
 | `sensors/geom-distance` | `example-sensor-geom-distance` | GeomDist, GeomNormal, GeomFromTo | Working |
 
+### Sensors Advanced
+
+| Example | Package | Sensors | Status |
+|---------|---------|---------|--------|
+| `sensors-advanced/stress-test` | `example-sensor-adv-stress-test` | All 15 types (25 checks) | Working |
+| `sensors-advanced/frame-velocity` | `example-sensor-adv-frame-velocity` | FrameLinVel, FrameAngVel | Working |
+| `sensors-advanced/frame-acceleration` | `example-sensor-adv-frame-acceleration` | FrameLinAcc, FrameAngAcc | Working |
+| `sensors-advanced/force-torque` | `example-sensor-adv-force-torque` | Force, Torque | Working |
+| `sensors-advanced/rangefinder` | `example-sensor-adv-rangefinder` | Rangefinder | Working |
+| `sensors-advanced/subtree-velocity` | `example-sensor-adv-subtree-velocity` | SubtreeLinVel | Working |
+| `sensors-advanced/subtree-angmom` | `example-sensor-adv-subtree-angmom` | SubtreeAngMom | Working |
+| `sensors-advanced/actuator-pos-vel` | `example-sensor-adv-actuator-pos-vel` | ActuatorPos, ActuatorVel | Working |
+
 ### Integrators
 
 | Example | Package | Status | Notes |

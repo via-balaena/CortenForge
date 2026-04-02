@@ -1,7 +1,7 @@
 # Examples Coverage Spec
 
-**Status:** Track 1A complete, Track 1B in progress (free-joint + keyframes + mocap-bodies + contact-filtering done)
-**Date:** 2026-04-01
+**Status:** Track 1A complete, Track 1B in progress
+**Date:** 2026-04-02
 **Goal:** 100% coverage of codebase capabilities
 
 ## Principle
@@ -10,12 +10,12 @@ Examples should mirror the distribution of code in the codebase. Every major
 feature should have at least one dedicated example. Examples also serve as
 integration tests — they find bugs that unit tests miss.
 
-## Current State (2026-04-01)
+## Current State (2026-04-02)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 97 examples (Track 1A + free-joint + keyframes + mocap-bodies + contact-filtering)
+- sim-core + sim-mjcf + sim-urdf → 112 examples (Track 1A + Track 1B layers 1–4)
   - Joint types: hinge, slide, ball, free (4/4 — all covered)
-  - Sensors: 16/31 types covered
+  - Sensors: 31/31 types covered (Track 1A: 16, tendons: 3, joint-limits: 1, sensors-advanced: 11+)
   - Actuators: 10 examples, Muscles: 5 examples
   - Integrators: 8 examples, Solvers: 5 examples
   - Equality constraints: 8 examples
@@ -23,14 +23,18 @@ integration tests — they find bugs that unit tests miss.
   - Inverse dynamics: 5 examples, Energy-momentum: 5 examples
   - URDF loading: 10 examples
   - Mocap bodies: 4 examples, 12 stress-test checks
+  - Tendons: 8 examples, 16 stress-test checks
+  - Sensors-advanced: 7 examples, 25 stress-test checks
 - Track 1B in progress: 20 subdirectories, ~70 examples — no stone unturned.
-  **4/20 subdirectories done:**
+  **8/20 subdirectories done:**
   - free-joint: 4 examples, 12 stress-test checks
   - keyframes: 3 examples, 12 stress-test checks
   - mocap-bodies: 4 examples, 12 stress-test checks
   - contact-filtering: 4 examples, 12 stress-test checks
-  Remaining 16: joint limits, tendons, 14
-  advanced sensors, mesh collision, heightfield terrain, passive forces,
+  - joint-limits: 4 examples, 12 stress-test checks
+  - tendons: 8 examples, 16 stress-test checks
+  - sensors-advanced: 7 examples, 25 stress-test checks
+  Remaining 13: mesh collision, heightfield terrain, passive forces,
   sleep/wake, Hill muscle, adhesion, flex bodies, raycasting, collision
   pairs, derivatives, composites, batch simulation, and plugins.
 - cf-design → 3 examples
@@ -481,10 +485,10 @@ fundamentals/
     joint-limits/           # DONE — 4 examples, 12 stress-test checks
 
     # --- Layer 3: Tendons ---
-    tendons/                # Fixed, spatial, wrapping, pulleys, limits
+    tendons/                # DONE — 8 examples, 16 stress-test checks
 
     # --- Layer 4: Sensors completion ---
-    sensors-advanced/       # 14 uncovered sensor types
+    sensors-advanced/       # DONE — 7 examples, 25 stress-test checks
 
     # --- Layer 5: Geometry types ---
     mesh-collision/         # Explicit convex mesh collision (2,090 LOC)
@@ -763,76 +767,35 @@ spring-damper dynamics, and serve as actuator transmission.
 sphere/cylinder wrapping, `<pulley>`, tendon limits, `TendonPos`/`TendonVel`/
 `TendonLimitFrc` sensors, tendon-driven actuators, moment arms, Jacobian.
 
-##### 7. `sensors-advanced/` — Remaining Sensor Types
+##### 7. `sensors-advanced/` — DONE (7 examples, 25 stress-test checks)
 
-14 sensor types not yet covered in the Track 1A `sensors/` examples. One
-example per concept group, keeping the same pattern as the original sensor
-gallery.
+All remaining sensor types not covered in Track 1A `sensors/`. One concept
+per example, each with analytical validation. Tendon sensors (TendonPos,
+TendonVel, TendonLimitFrc) and JointLimitFrc omitted here — already covered
+by `tendons/` and `joint-limits/`. ActuatorPos/Vel added as a replacement.
 
-**Examples:**
+1. **frame-velocity** — Spinning rod (ω=2π, R=0.5m). FrameLinVel |v|=π,
+   FrameAngVel ω_z=2π. Both at 0.000% error.
+2. **frame-acceleration** — Pendulum held 3s then released. FrameLinAcc
+   at rest = [0,0,+g]. FrameAngAcc sign tracks cos(θ).
+3. **force-torque** — Static beam (m=1kg, L=0.8m). Force |F|=mg at 0.1%,
+   Torque |τ|=mgL/2 at 0.2%.
+4. **rangefinder** — Oscillating body above ground. Distance tracks height
+   at zero error. Side sensor reads −1 every frame.
+5. **subtree-velocity** — 3-link chain free-fall. SubtreeLinVel v_z = −gt
+   at 0.3%. 2-second hover before drop.
+6. **subtree-angmom** — Single body spinning in zero-g. SubtreeAngMom |L|
+   conserved to 3.2e-16 (machine epsilon).
+7. **actuator-pos-vel** — Gear=2 servo. ActuatorPos = 2×JointPos at exact
+   zero error.
+8. **stress-test** — 25 headless checks: FrameLinVel (3), FrameAngVel (2),
+   FrameLinAcc (3), FrameAngAcc (2), Force/Torque (3), Rangefinder (3),
+   SubtreeLinVel (2), SubtreeAngMom (1), ActuatorPos/Vel (2), Frame*Axis (1),
+   Magnetometer (1), sensor dimensions (1).
 
-1. **frame-velocity** — A spinning body with `FrameLinVel`, `FrameAngVel`
-   sensors on a site. Verify FrameLinVel matches cross-product ω×r for a
-   body-fixed point. Verify FrameAngVel matches ω in the sensor frame.
-   Analytical comparison against known spinning body.
-
-2. **frame-acceleration** — Same spinning body with `FrameLinAcc`,
-   `FrameAngAcc` sensors. FrameLinAcc includes gravity (sensor reads
-   [0,0,+9.81] at rest). FrameAngAcc is zero for constant-velocity rotation
-   (no angular acceleration). Apply a torque pulse and verify FrameAngAcc
-   matches τ/I during the pulse.
-
-3. **force-torque** — A cantilevered beam (hinge at base, motor holding
-   horizontal). `Force` and `Torque` sensors at the base. Force sensor reads
-   the 3D reaction force (should equal mg downward). Torque sensor reads the
-   3D reaction torque (should equal mgL/2 about the hinge axis). Compare
-   against analytical statics.
-
-4. **rangefinder** — A site with `Rangefinder` sensor pointing downward toward
-   a ground plane. Raise/lower the body — rangefinder distance tracks height
-   exactly. Point at a sphere — distance tracks closest surface point. Point
-   at empty space — returns -1 (no hit). Demonstrates the raycast-backed
-   sensor.
-
-5. **tendon-sensors** — An arm driven by a spatial tendon. `TendonPos` tracks
-   tendon length, `TendonVel` tracks rate of change. Apply sinusoidal motion.
-   Verify TendonVel = d/dt(TendonPos) via finite difference.
-
-6. **limit-forces** — A hinge at its limit with `JointLimitFrc` sensor. A
-   tendon at its limit with `TendonLimitFrc` sensor. Both read the constraint
-   force magnitude. Increase the applied load — limit forces increase
-   proportionally. Verify they're zero when not at limit.
-
-7. **subtree-momentum** — A multi-body tree (3 links). `SubtreeCom`,
-   `SubtreeLinVel`, `SubtreeAngMom` sensors on the root body. SubtreeCom
-   tracks the composite center of mass. In free fall, SubtreeLinVel = g*t.
-   SubtreeAngMom conserved in zero gravity.
-
-8. **stress-test** — Headless validation (20+ checks):
-   - FrameLinVel matches ω×r within 0.1%
-   - FrameAngVel matches ω in sensor frame
-   - FrameLinAcc at rest = [0,0,+g] within 0.5%
-   - FrameAngAcc = 0 for constant-velocity rotation
-   - Force sensor = [0, 0, -mg] for hanging body
-   - Torque sensor magnitude = mgL/2 for horizontal beam
-   - Rangefinder = height above plane ± 0.1%
-   - Rangefinder = -1 for no intersection
-   - TendonPos matches data.ten_length
-   - TendonVel ≈ d/dt(TendonPos) via FD within 1%
-   - JointLimitFrc > 0 at limit
-   - JointLimitFrc == 0 interior
-   - TendonLimitFrc > 0 at limit
-   - SubtreeCom matches manual weighted average
-   - SubtreeLinVel = g*t in free fall within 0.5%
-   - SubtreeAngMom conserved in zero-g within 1e-10
-   - ActuatorPos matches actuator length
-   - All sensor dimensions correct (1D, 3D, 6D)
-   - Sensor noise (if enabled) has correct statistics
-   - Frame sensors in different objtype frames (body, geom, site)
-
-**Concepts covered:** All 14 remaining sensor types: FrameLinVel, FrameAngVel,
-FrameLinAcc, FrameAngAcc, Force, Torque, Rangefinder, TendonPos, TendonVel,
-JointLimitFrc, TendonLimitFrc, SubtreeCom, SubtreeLinVel, ActuatorPos/Vel.
+**Concepts covered:** FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc,
+Force, Torque, Rangefinder, SubtreeLinVel, SubtreeAngMom, ActuatorPos,
+ActuatorVel, FrameXAxis, FrameYAxis, FrameZAxis, Magnetometer.
 
 ##### 8. `passive-forces/` — Fluid Drag and Damping
 
