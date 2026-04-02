@@ -14,13 +14,13 @@ for more complex routing (wrapping, pulleys) shown in later examples.
 
 ## What you see
 
-- A 2-link arm (shoulder + elbow hinges) released from a tilted position,
-  swinging under gravity with light damping.
+- A 2-link arm starts horizontal (−90°), holds for 1.5 s, then drops
+  under gravity with light damping.
 - Three small spheres mark the tendon sites along the arm surface: origin
   (upper arm), midpoint (near elbow), insertion (forearm).
 - A colored line traces the tendon path through all three sites.
-- Line color shows tendon velocity: blue (shortening) → green (stationary)
-  → red (lengthening). The color cycles as the arm swings back and forth.
+- Line color shows tendon length: green (shortest observed) → yellow →
+  red (longest observed). Self-calibrates over the first swing cycle.
 - The HUD confirms `TendonPos` matches the sum of segment distances
   `d(s1,s2) + d(s2,s3)` to machine precision every frame.
 

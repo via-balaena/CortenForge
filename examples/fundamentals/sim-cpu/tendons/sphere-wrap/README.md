@@ -21,8 +21,8 @@ anatomical or mechanical features.
 - When the straight-line path would cross through the sphere, the tendon
   wraps — you see the path hug the sphere surface as an arc.
 - When the path is clear, the tendon goes straight (no wrapping).
-- Line color shows velocity: blue (shortening) → green (stationary) → red
-  (lengthening).
+- Line color shows tendon length: green (shortest observed) → yellow →
+  red (longest observed). Self-calibrates over the first oscillation cycle.
 - The HUD shows tendon length, wrap point count, and whether wrapping is
   active.
 

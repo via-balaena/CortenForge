@@ -195,6 +195,19 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `urdf-loading/error-handling` | `example-urdf-error-handling` | Working | Headless: invalid URDFs → correct error variants (7 checks) |
 | `urdf-loading/stress-test` | `example-urdf-stress-test` | Working | Headless validation (31 checks) |
 
+### Tendons
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `tendons/stress-test` | `example-tendon-stress-test` | Working | Headless validation (16 checks) |
+| `tendons/fixed-coupling` | `example-tendon-fixed-coupling` | Working | Two pendulums coupled by fixed tendon [1.0, -0.5] |
+| `tendons/spatial-path` | `example-tendon-spatial-path` | Working | 3-site tendon on 2-link arm, starts at -90° |
+| `tendons/sphere-wrap` | `example-tendon-sphere-wrap` | Working | Tendon wraps around sphere via great-circle arc |
+| `tendons/cylinder-wrap` | `example-tendon-cylinder-wrap` | Working | Tendon wraps around cylinder via helical geodesic |
+| `tendons/tendon-limits` | `example-tendon-limits` | Working | Pendulum tethered by limited tendon |
+| `tendons/pulley` | `example-tendon-pulley` | Working | 2:1 mechanical advantage, resistance-band ribbon |
+| `tendons/tendon-actuator` | `example-tendon-actuator` | Working | Tendon vs joint transmission comparison |
+
 ### Other
 
 | Example | Package | Status | Notes |

@@ -17,8 +17,9 @@ joints. The coupling ratio is set by the coefficients: when joint A moves
 
 - **Blue pendulum (A):** driven by a sinusoidal motor (0.5 Hz, ±8 N·m).
 - **Red pendulum (B):** no motor — moves only through the tendon spring force.
-- **Tendon line** connects the two tips, colored by stretch state:
-  blue (compressed) → green (relaxed) → red (stretched).
+- **Tendon line** connects the two tips, colored by distance between them:
+  green (closest observed) → yellow → red (farthest observed).
+  Self-calibrates over the first oscillation cycle.
 - B follows A at roughly half the amplitude and in the opposite direction.
 - The HUD confirms `TendonPos` matches the manual calculation
   `1.0 × q_A − 0.5 × q_B` to machine precision every frame.
