@@ -154,10 +154,10 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, -4.0, 2.0),
-        14.0,
-        std::f32::consts::FRAC_PI_6,
-        0.15,
+        Vec3::new(0.0, -3.0, 3.0),
+        16.0,
+        std::f32::consts::FRAC_PI_4,
+        0.2,
     );
 
     spawn_physics_hud(&mut commands);
@@ -176,7 +176,8 @@ fn draw_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmo
     let ray_color = Color::srgba(0.2, 0.8, 1.0, 0.4);
     let hit_color = Color::srgb(0.2, 1.0, 0.3);
     let normal_color = Color::srgb(1.0, 0.9, 0.2);
-    let normal_len = 0.4;
+    let dot_radius = 0.06;
+    let normal_len = 0.5;
 
     for (i, &(_, x, _)) in TARGETS.iter().enumerate() {
         let start = Vec3::new(x as f32, 0.0, RAY_Z as f32);
@@ -193,7 +194,7 @@ fn draw_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmo
                 // Ray line (origin to hit)
                 gizmos.line(start, hp, ray_color);
                 // Hit point
-                gizmos.sphere(Isometry3d::from_translation(hp), 0.04, hit_color);
+                gizmos.sphere(Isometry3d::from_translation(hp), dot_radius, hit_color);
                 // Normal arrow
                 gizmos.arrow(hp, hp + n * normal_len, normal_color);
             }
