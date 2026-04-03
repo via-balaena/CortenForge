@@ -494,6 +494,27 @@ mod tests {
     }
 
     #[test]
+    fn test_raycast_flat_heightfield() {
+        // Flat heightfield at z=0 — ray from (0,0,3) in -Z should hit at distance ≈ 3.0
+        let hfield = cf_geometry::HeightFieldData::flat(10, 10, 1.0, 0.0);
+        let shape = Shape::height_field(Arc::new(hfield));
+        let pose = Pose::identity();
+        let origin = Point3::new(4.0, 4.0, 3.0); // center of 10×10 field
+        let direction = UnitVector3::new_normalize(-Vector3::z());
+
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0).unwrap();
+
+        assert_relative_eq!(hit.distance, 3.0, epsilon = 0.01);
+        assert_relative_eq!(hit.point.z, 0.0, epsilon = 0.01);
+        // Normal should point upward (+Z) for a flat surface
+        assert!(
+            hit.normal.z > 0.9,
+            "normal should point up, got {:?}",
+            hit.normal
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "all radii must be positive")]
     fn test_raycast_ellipsoid_zero_radius() {
         // Ellipsoid with zero radius panics at construction (cf-geometry invariant)
