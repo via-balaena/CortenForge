@@ -123,8 +123,9 @@ the `Arc<HeightFieldData>` entry:
 use std::sync::Arc;
 use cf_geometry::HeightFieldData;
 
-// MuJoCo size = [4, 4, ...] → full extent = 8×8, 64 samples → cell_size = 8/63
-let cell_size = 8.0 / 63.0;
+// MuJoCo hfield size = [half_x, half_y, z_top, z_bottom].
+// Half-extent 4 → full extent 8 m.  64 samples → 63 intervals → cell_size:
+let cell_size = (2.0 * 4.0) / (64.0 - 1.0); // = 8/63 ≈ 0.127 m
 let hfield = HeightFieldData::from_fn(64, 64, cell_size, |x, y| {
     0.3 * (std::f64::consts::TAU * x / 4.0).sin()
         * (std::f64::consts::TAU * y / 4.0).cos()
