@@ -3424,6 +3424,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-raycasting-stress-test"
+version = "0.7.0"
+dependencies = [
+ "cf-geometry",
+ "nalgebra",
+ "sim-core",
+ "sim-types",
+]
+
+[[package]]
 name = "example-sdf-cpu-01-sdf-grid"
 version = "0.7.0"
 dependencies = [
