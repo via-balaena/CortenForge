@@ -920,7 +920,7 @@ system identification, and any control design workflow.
    at the upright equilibrium. The A matrix eigenvalues reveal the unstable
    mode (positive real eigenvalue = √(g/L)). Print the 2×2 A matrix and
    verify eigenvalues match analytical. Demonstrates the simplest use of
-   `derivatives::fd::compute()`.
+   `mjd_transition_fd()`.
 
 2. **control-design** — A cart-pole (slide + hinge). Compute A, B at the
    unstable equilibrium. Design an LQR controller from the linearization
@@ -931,7 +931,7 @@ system identification, and any control design workflow.
 3. **hybrid-vs-fd** — Compare pure FD vs hybrid derivatives on a 3-link arm.
    Both should produce the same A, B matrices (within perturbation tolerance).
    Print timing: hybrid is ~2× faster because it uses analytical velocity
-   derivatives instead of perturbing every DOF.
+   derivatives instead of perturbing every DOF (`mjd_transition_hybrid()`).
 
 4. **stress-test** — Headless validation (12+ checks):
    - A matrix eigenvalues match analytical for simple pendulum
@@ -947,8 +947,8 @@ system identification, and any control design workflow.
    - Multiple actuators: B has correct column count
    - Transition matrices A*dt + I approximate one-step evolution
 
-**Concepts covered:** `derivatives::fd::compute()`,
-`derivatives::hybrid::compute()`, A/B/C/D state-space matrices, eigenvalue
+**Concepts covered:** `mjd_transition_fd()`,
+`mjd_transition_hybrid()`, A/B/C/D state-space matrices, eigenvalue
 analysis, LQR control design, perturbation convergence, quaternion chain
 rules, computational cost comparison.
 

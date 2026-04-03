@@ -2819,6 +2819,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-derivatives-stress-test"
+version = "0.7.0"
+dependencies = [
+ "nalgebra",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-design-to-print"
 version = "0.7.0"
 dependencies = [
