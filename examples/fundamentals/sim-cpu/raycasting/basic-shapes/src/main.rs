@@ -154,10 +154,10 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, -3.0, 3.0),
-        16.0,
-        std::f32::consts::FRAC_PI_4,
-        0.2,
+        Vec3::new(1.0, 0.0, 0.5), // center of shape row
+        12.0,
+        std::f32::consts::FRAC_PI_4 + 1.745, // +100° rightward
+        0.55,                                // ~32° elevation — shapes + gizmos clearly visible
     );
 
     spawn_physics_hud(&mut commands);
@@ -167,6 +167,17 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
+}
+
+// ── Coordinate conversion ───────────────────────────────────────────────────
+
+/// Physics Z-up → Bevy Y-up: swap Y and Z.
+fn to_bevy(v: Vector3<f64>) -> Vec3 {
+    Vec3::new(v.x as f32, v.z as f32, v.y as f32)
+}
+
+fn point_to_bevy(p: Point3<f64>) -> Vec3 {
+    Vec3::new(p.x as f32, p.z as f32, p.y as f32)
 }
 
 // ── Gizmo Drawing ───────────────────────────────────────────────────────────
@@ -180,16 +191,13 @@ fn draw_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmo
     let normal_len = 0.5;
 
     for (i, &(_, x, _)) in TARGETS.iter().enumerate() {
-        let start = Vec3::new(x as f32, 0.0, RAY_Z as f32);
+        // Ray origin in physics space: (x, 0, RAY_Z) → Bevy: (x, RAY_Z, 0)
+        let start = to_bevy(Vector3::new(x, 0.0, RAY_Z));
 
         match results.get(i).and_then(|(_, _, h)| h.as_ref()) {
             Some(hit) => {
-                let hp = Vec3::new(hit.point.x as f32, hit.point.y as f32, hit.point.z as f32);
-                let n = Vec3::new(
-                    hit.normal.x as f32,
-                    hit.normal.y as f32,
-                    hit.normal.z as f32,
-                );
+                let hp = point_to_bevy(hit.point);
+                let n = to_bevy(hit.normal);
 
                 // Ray line (origin to hit)
                 gizmos.line(start, hp, ray_color);
@@ -200,7 +208,7 @@ fn draw_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmo
             }
             None => {
                 // Miss — draw faint grey line
-                let end = Vec3::new(x as f32, 0.0, -1.0);
+                let end = to_bevy(Vector3::new(x, 0.0, -1.0));
                 gizmos.line(start, end, Color::srgba(0.5, 0.5, 0.5, 0.3));
             }
         }
