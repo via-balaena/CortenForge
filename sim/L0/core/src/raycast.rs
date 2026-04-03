@@ -645,4 +645,132 @@ mod tests {
         let result = raycast_scene(&model, &data, origin, direction, 100.0, None, None);
         assert!(result.is_none());
     }
+
+    #[test]
+    fn test_raycast_convex_mesh_not_bounding_sphere() {
+        // A long thin tetrahedron along Z. Its bounding sphere is much larger
+        // than the hull in the X/Y directions. A ray aimed at (0.8, 0, 5) in +Z
+        // would hit the bounding sphere but must miss the actual hull.
+        let vertices = vec![
+            Point3::new(0.0, 0.0, -2.0),
+            Point3::new(0.1, 0.0, 2.0),
+            Point3::new(-0.05, 0.087, 2.0),
+            Point3::new(-0.05, -0.087, 2.0),
+        ];
+        let hull = cf_geometry::convex_hull(&vertices, None).unwrap();
+        let shape = Shape::convex_mesh(hull);
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
+
+        // Ray at x=0.8 — well outside the thin hull but inside its bounding sphere
+        let origin = Point3::new(0.8, 0.0, 0.0);
+        let direction = UnitVector3::new_normalize(Vector3::z());
+        let hit = raycast_shape(&shape, &pose, origin, direction, 20.0);
+        assert!(hit.is_none(), "Ray should miss the thin hull");
+
+        // Ray at x=0 — should hit the hull
+        let origin_center = Point3::new(0.0, 0.0, 0.0);
+        let hit_center = raycast_shape(&shape, &pose, origin_center, direction, 20.0);
+        assert!(hit_center.is_some(), "Ray along center should hit the hull");
+    }
+
+    #[test]
+    fn test_raycast_scene_plane_geom() {
+        let mut model = Model::empty();
+        model.nbody = 1;
+
+        // Add a plane geom (ground at z=0)
+        model.geom_type.push(GeomType::Plane);
+        model.geom_body.push(0);
+        model.geom_pos.push(Vector3::zeros());
+        model.geom_quat.push(UnitQuaternion::identity());
+        model.geom_size.push(Vector3::new(10.0, 10.0, 0.01)); // MuJoCo plane size
+        model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_condim.push(3);
+        model.geom_contype.push(1);
+        model.geom_conaffinity.push(1);
+        model.geom_margin.push(0.0);
+        model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
+        model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+        model.geom_solref.push([0.02, 1.0]);
+        model.geom_name.push(None);
+        model.geom_rbound.push(0.0);
+        model.geom_mesh.push(None);
+        model.geom_hfield.push(None);
+        model.geom_shape.push(None);
+        model.geom_group.push(0);
+        model.geom_rgba.push([0.5, 0.5, 0.5, 1.0]);
+        model.ngeom = 1;
+
+        let mut data = model.make_data();
+        // Plane at z=2 with identity orientation (normal = +Z)
+        data.geom_xpos = vec![Vector3::new(0.0, 0.0, 2.0)];
+        data.geom_xmat = vec![nalgebra::Matrix3::identity()];
+
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        let result = raycast_scene(&model, &data, origin, direction, 100.0, None, None);
+        let hit = result.unwrap();
+        assert_eq!(hit.geom_id, 0);
+        assert_relative_eq!(hit.hit.distance, 2.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_raycast_scene_mesh_geom() {
+        let mut model = Model::empty();
+        model.nbody = 1;
+
+        // Build a simple triangle mesh (a quad made of 2 triangles at z=3)
+        let vertices = vec![
+            Point3::new(-1.0, -1.0, 0.0),
+            Point3::new(1.0, -1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(-1.0, 1.0, 0.0),
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 3];
+        let mesh_data = crate::mesh::TriangleMeshData::new(vertices, indices);
+
+        model.mesh_data.push(std::sync::Arc::new(mesh_data));
+        model.nmesh = 1;
+
+        // Add a mesh geom
+        model.geom_type.push(GeomType::Mesh);
+        model.geom_body.push(0);
+        model.geom_pos.push(Vector3::zeros());
+        model.geom_quat.push(UnitQuaternion::identity());
+        model.geom_size.push(Vector3::new(1.0, 1.0, 1.0));
+        model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_condim.push(3);
+        model.geom_contype.push(1);
+        model.geom_conaffinity.push(1);
+        model.geom_margin.push(0.0);
+        model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
+        model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+        model.geom_solref.push([0.02, 1.0]);
+        model.geom_name.push(None);
+        model.geom_rbound.push(1.5);
+        model.geom_mesh.push(Some(0)); // references mesh_data[0]
+        model.geom_hfield.push(None);
+        model.geom_shape.push(None);
+        model.geom_group.push(0);
+        model.geom_rgba.push([0.5, 0.5, 0.5, 1.0]);
+        model.ngeom = 1;
+
+        let mut data = model.make_data();
+        // Mesh at z=3
+        data.geom_xpos = vec![Vector3::new(0.0, 0.0, 3.0)];
+        data.geom_xmat = vec![nalgebra::Matrix3::identity()];
+
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        let result = raycast_scene(&model, &data, origin, direction, 100.0, None, None);
+        let hit = result.unwrap();
+        assert_eq!(hit.geom_id, 0);
+        assert_relative_eq!(hit.hit.distance, 3.0, epsilon = 1e-6);
+    }
 }
