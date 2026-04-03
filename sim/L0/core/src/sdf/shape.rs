@@ -16,6 +16,8 @@
 //! - [`compute_shape_contact`] — SDF-SDF contacts (analytical or grid fallback)
 //! - [`compute_shape_plane_contact`] — SDF-Plane contacts (analytical or grid fallback)
 
+use std::sync::Arc;
+
 use cf_geometry::Aabb;
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
@@ -83,6 +85,11 @@ pub trait PhysicsShape: Send + Sync + std::fmt::Debug {
     /// Used by GPU compute shaders, SDF-vs-primitive contacts
     /// (primitives.rs), and flex vertex collision (flex_narrow.rs).
     fn sdf_grid(&self) -> &SdfGrid;
+
+    /// The underlying SDF grid as a shared handle.
+    ///
+    /// Used by `raycast_scene` to construct `Shape::Sdf` for ray queries.
+    fn sdf_grid_arc(&self) -> Arc<SdfGrid>;
 
     // === OPTIONAL: octree acceleration ===
 

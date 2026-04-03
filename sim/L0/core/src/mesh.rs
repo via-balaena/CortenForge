@@ -47,7 +47,10 @@
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 
-use cf_geometry::{Aabb, Bounded, Bvh, ConvexHull, IndexedMesh, bvh_from_mesh, convex_hull};
+use cf_geometry::{
+    Aabb, Bounded, Bvh, ConvexHull, IndexedMesh, bvh_from_mesh, closest_point_on_triangle,
+    convex_hull,
+};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -679,96 +682,6 @@ pub fn triangle_sphere_contact(
     };
 
     Some((closest, normal, penetration))
-}
-
-/// Find the closest point on a triangle to a given point.
-///
-/// Uses barycentric coordinates to determine the closest feature
-/// (vertex, edge, or face).
-#[must_use]
-pub fn closest_point_on_triangle(
-    v0: Point3<f64>,
-    v1: Point3<f64>,
-    v2: Point3<f64>,
-    p: Point3<f64>,
-) -> Point3<f64> {
-    // Check if P is in vertex region outside V0
-    let ab = v1 - v0;
-    let ac = v2 - v0;
-    let ap = p - v0;
-
-    let d1 = ab.dot(&ap);
-    let d2 = ac.dot(&ap);
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return v0; // Closest to vertex V0
-    }
-
-    // Check if P is in vertex region outside V1
-    let bp = p - v1;
-    let d3 = ab.dot(&bp);
-    let d4 = ac.dot(&bp);
-    if d3 >= 0.0 && d4 <= d3 {
-        return v1; // Closest to vertex V1
-    }
-
-    // Check if P is in edge region of AB
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let denom = d1 - d3;
-        // Guard against degenerate edge (d1 ≈ d3)
-        let v = if denom.abs() > EPSILON {
-            d1 / denom
-        } else {
-            0.5
-        };
-        return Point3::from(v0.coords + ab * v); // On edge AB
-    }
-
-    // Check if P is in vertex region outside V2
-    let cp = p - v2;
-    let d5 = ab.dot(&cp);
-    let d6 = ac.dot(&cp);
-    if d6 >= 0.0 && d5 <= d6 {
-        return v2; // Closest to vertex V2
-    }
-
-    // Check if P is in edge region of AC
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let denom = d2 - d6;
-        // Guard against degenerate edge (d2 ≈ d6)
-        let w = if denom.abs() > EPSILON {
-            d2 / denom
-        } else {
-            0.5
-        };
-        return Point3::from(v0.coords + ac * w); // On edge AC
-    }
-
-    // Check if P is in edge region of BC
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let num = d4 - d3;
-        let denom = num + (d5 - d6);
-        // Guard against degenerate edge
-        let w = if denom.abs() > EPSILON {
-            num / denom
-        } else {
-            0.5
-        };
-        return Point3::from(v1.coords + (v2 - v1) * w); // On edge BC
-    }
-
-    // P is inside the triangle
-    let total = va + vb + vc;
-    // Guard against degenerate triangles (total ≈ 0 means triangle has no area)
-    if total.abs() < EPSILON {
-        return v0; // Fallback to first vertex for degenerate triangle
-    }
-    let denom = 1.0 / total;
-    let v = vb * denom;
-    let w = vc * denom;
-    Point3::from(v0.coords + ab * v + ac * w)
 }
 
 /// Test collision between a triangle and a capsule.

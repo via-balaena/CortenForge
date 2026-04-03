@@ -22,9 +22,10 @@ use std::hint::black_box;
 
 use sim_core::Aabb;
 use sim_core::Pose;
+use sim_core::closest_point_on_triangle;
 use sim_core::mesh::{
-    TriangleMeshData, closest_point_on_triangle, mesh_mesh_contact, mesh_mesh_deepest_contact,
-    triangle_box_contact, triangle_capsule_contact, triangle_sphere_contact,
+    TriangleMeshData, mesh_mesh_contact, mesh_mesh_deepest_contact, triangle_box_contact,
+    triangle_capsule_contact, triangle_sphere_contact,
 };
 use sim_core::mid_phase::{Bvh, BvhPrimitive};
 

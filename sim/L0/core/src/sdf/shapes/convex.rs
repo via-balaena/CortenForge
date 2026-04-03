@@ -63,6 +63,10 @@ impl PhysicsShape for ShapeConvex {
     fn sdf_grid(&self) -> &SdfGrid {
         &self.grid
     }
+
+    fn sdf_grid_arc(&self) -> Arc<SdfGrid> {
+        self.grid.clone()
+    }
 }
 
 #[cfg(test)]

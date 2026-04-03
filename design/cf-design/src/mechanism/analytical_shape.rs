@@ -70,6 +70,10 @@ impl PhysicsShape for AnalyticalShape {
         &self.grid
     }
 
+    fn sdf_grid_arc(&self) -> Arc<SdfGrid> {
+        self.grid.clone()
+    }
+
     fn evaluate_interval(&self, local_aabb: &Aabb) -> Option<(f64, f64)> {
         let (lo, hi) = self.solid.evaluate_interval(local_aabb);
 
