@@ -41,7 +41,7 @@ fn origin_and_plus_z() -> (Point3<f64>, UnitVector3<f64>) {
 }
 
 /// Compute all per-shape hits for reuse by normal-property checks.
-/// Returns (shape_name, ray_direction, Option<RaycastHit>) for each shape test that should hit.
+/// Returns `(shape_name, ray_direction, Option<RaycastHit>)` for each shape test that should hit.
 fn all_shape_hits() -> Vec<(&'static str, Vector3<f64>, RaycastHit)> {
     let (origin, dir_z) = origin_and_plus_z();
     let max_dist = 20.0;
