@@ -24,8 +24,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    GeomBodyId, PhysicsHud, SleepMaterials, ValidationHarness, render_physics_hud,
+    spawn_example_camera, spawn_physics_hud, update_sleep_colors, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -70,16 +70,7 @@ const IMPULSE_DURATION: f64 = 0.05;
 const IMPULSE_FORCE: f64 = 60.0;
 const REPORT_TIME: f64 = 15.0;
 
-// ── Components & Resources ────────────────────────────────────────────────
-
-#[derive(Component)]
-struct GeomBodyId(usize);
-
-#[derive(Resource)]
-struct SleepMaterials {
-    awake: Handle<StandardMaterial>,
-    asleep: Handle<StandardMaterial>,
-}
+// ── Resources ─────────────────────────────────────────────────────────────
 
 #[derive(Resource)]
 struct BodyIds {
@@ -221,22 +212,6 @@ fn apply_impulse(mut data: ResMut<PhysicsData>, bodies: Res<BodyIds>) {
         data.0.xfrc_applied[a3][5] = IMPULSE_FORCE; // upward force on top of Stack A
     } else {
         data.0.xfrc_applied[a3][5] = 0.0;
-    }
-}
-
-// ── Sleep Color Coding ────────────────────────────────────────────────────
-
-fn update_sleep_colors(
-    data: Res<PhysicsData>,
-    mats: Res<SleepMaterials>,
-    mut query: Query<(&GeomBodyId, &mut MeshMaterial3d<StandardMaterial>)>,
-) {
-    for (body_id, mut mat_handle) in &mut query {
-        match data.0.body_sleep_state[body_id.0] {
-            SleepState::Awake => *mat_handle = MeshMaterial3d(mats.awake.clone()),
-            SleepState::Asleep => *mat_handle = MeshMaterial3d(mats.asleep.clone()),
-            SleepState::Static => {}
-        }
     }
 }
 

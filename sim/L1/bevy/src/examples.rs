@@ -792,6 +792,58 @@ pub fn draw_cylinder_arc(
     }
 }
 
+// ── Sleep-State Color Coding ────────────────────────────────────────────────
+
+/// Tags each geom entity with its owning body index.
+///
+/// Attach via [`spawn_model_geoms_with`](crate::model_data::spawn_model_geoms_with)
+/// callback during setup:
+///
+/// ```ignore
+/// spawn_model_geoms_with(
+///     &mut commands, &mut meshes, &mut materials, &model, &data, &overrides,
+///     |cmd, geom_id, _name| { cmd.insert(GeomBodyId(model.geom_body[geom_id])); },
+/// );
+/// ```
+#[derive(Component)]
+pub struct GeomBodyId(pub usize);
+
+/// Pre-allocated material handles for sleep-state color coding.
+///
+/// Insert as a resource during setup. The [`update_sleep_colors`] system
+/// reads these handles each frame to swap entity materials based on
+/// `body_sleep_state`.
+#[derive(Resource)]
+pub struct SleepMaterials {
+    /// Material for awake bodies.
+    pub awake: Handle<StandardMaterial>,
+    /// Material for sleeping bodies.
+    pub asleep: Handle<StandardMaterial>,
+}
+
+/// Bevy system that color-codes geom entities by their body's sleep state.
+///
+/// Requires [`GeomBodyId`] on each geom entity and [`SleepMaterials`] as a
+/// resource. Add to `PostUpdate` after `sync_geom_transforms`.
+///
+/// - `Awake` → `SleepMaterials::awake` (orange)
+/// - `Asleep` → `SleepMaterials::asleep` (steel blue)
+/// - `Static` → unchanged (keeps initial material, e.g. floor)
+#[allow(clippy::needless_pass_by_value)] // Bevy system signature
+pub fn update_sleep_colors(
+    data: Res<PhysicsData>,
+    mats: Res<SleepMaterials>,
+    mut query: Query<(&GeomBodyId, &mut MeshMaterial3d<StandardMaterial>)>,
+) {
+    for (body_id, mut mat_handle) in &mut query {
+        match data.0.body_sleep_state[body_id.0] {
+            sim_core::SleepState::Awake => *mat_handle = MeshMaterial3d(mats.awake.clone()),
+            sim_core::SleepState::Asleep => *mat_handle = MeshMaterial3d(mats.asleep.clone()),
+            sim_core::SleepState::Static => {}
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
