@@ -231,6 +231,15 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `passive-forces/wind` | `example-passive-wind` | Working | Wind on/off: sphere drifts, pendulum deflects then recovers (3 checks) |
 | `passive-forces/spring-damper-tuning` | `example-passive-spring-damper-tuning` | Working | Underdamped/critical/overdamped — 3 classical damping regimes (6 checks) |
 
+### Sleep/Wake
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `sleep-wake/stress-test` | `example-sleep-wake-stress-test` | Working | Headless validation (18 checks: threshold, countdown, wake triggers, islands, policy flags, narrowphase skip) |
+| `sleep-wake/sleep-settle` | `example-sleep-wake-settle` | Working | 5 boxes drop and turn blue as they settle and sleep (4 checks) |
+| `sleep-wake/wake-on-contact` | `example-sleep-wake-contact` | Working | Init-sleep box wakes on ball impact (5 checks) |
+| `sleep-wake/island-groups` | `example-sleep-wake-islands` | Working | Two stacks — poke one, other stays asleep (5 checks) |
+
 ### Other
 
 | Example | Package | Status | Notes |

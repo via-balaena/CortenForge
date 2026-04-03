@@ -842,43 +842,37 @@ types.
 parameters, joint `stiffness` and `damping`, critical/under/overdamped
 response, natural frequency, damping ratio, terminal velocity.
 
-##### 9. `sleep-wake/` — Island-Based Deactivation
+##### 9. `sleep-wake/` — Island-Based Deactivation ✅
 
-The sleep system (749 LOC) groups bodies into constraint islands and
+The sleep system (1,415 LOC) groups bodies into constraint islands and
 deactivates islands whose velocities fall below a threshold. Sleeping bodies
 skip integration and collision narrowphase — essential for large scenes with
 many resting objects.
 
-**Examples:**
+**Examples (4 — all implemented):**
 
-1. **sleep-threshold** — 10 boxes dropped onto a plane. After settling, boxes
-   go to sleep (velocity < threshold). Print wake/sleep state per body.
-   Poke one box — it wakes up, disturbs neighbors, they wake too. The whole
-   island wakes and re-sleeps after settling.
+1. **sleep-settle** — 5 boxes drop from staggered heights and turn blue one by
+   one as they settle below the velocity threshold and sleep. Pure sleep
+   mechanism: threshold + countdown + transition. (4 checks)
 
-2. **wake-on-contact** — A sleeping box resting on a plane. Drop a ball onto
-   it — the contact force wakes the box. Demonstrates the wake-on-contact
-   mechanism. The ball and box form a new island together.
+2. **wake-on-contact** — A box with `sleep="init"` sits on a plane (frozen,
+   blue). A ball drops from above — contact wakes the box (turns orange).
+   Demonstrates init-sleep freeze and contact-triggered wake. (5 checks)
 
-3. **island-groups** — Two separate stacks on a plane (no contact between
-   stacks). Each stack is its own island. Disturb one stack — only that island
-   wakes. The other stack stays asleep. Print island count and membership.
+3. **island-groups** — Two stacks of 3 boxes, 3 m apart. Both settle and sleep.
+   An impulse disturbs one stack — only that stack wakes. The other stays
+   asleep. Demonstrates island independence. (5 checks)
 
-4. **stress-test** — Headless validation (10+ checks):
-   - Bodies sleep after velocity < threshold for countdown duration
-   - Sleeping bodies have zero acceleration
-   - Contact with sleeping body wakes it
-   - Equality constraint with sleeping body wakes it
-   - Separate stacks form separate islands
-   - Island count matches expected
-   - Wake propagates through constraint graph
-   - Sleep countdown resets on velocity spike
-   - Disabled sleep policy: nothing sleeps
-   - Performance: sleeping bodies skip narrowphase (contact count = 0)
+4. **stress-test** — Headless validation (18 checks):
+   - Sleep threshold, qvel/qacc/qfrc zeroing, countdown duration
+   - Wake on contact, equality, xfrc_applied, cascade
+   - Island singletons, shared islands, island count, selective wake
+   - Countdown reset, sleep policy Never, ENABLE_SLEEP disabled
+   - Narrowphase skip, nbody_awake bookkeeping
 
 **Concepts covered:** `SleepPolicy`, sleep threshold, countdown timer,
 constraint islands, wake-on-contact, wake-on-equality, island membership,
-`tree_asleep`, `nisland`, `nbody_awake`.
+`tree_asleep`, `nisland`, `nbody_awake`, `sleep="init"`, narrowphase skip.
 
 ##### 10. `raycasting/` — Ray Queries and Shape Intersection
 
