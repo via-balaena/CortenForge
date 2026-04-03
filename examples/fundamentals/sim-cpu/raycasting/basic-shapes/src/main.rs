@@ -184,11 +184,11 @@ fn point_to_bevy(p: Point3<f64>) -> Vec3 {
 
 fn draw_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmos) {
     let results = cast_rays(&model, &data);
-    let ray_color = Color::srgba(0.2, 0.8, 1.0, 0.4);
-    let hit_color = Color::srgb(0.2, 1.0, 0.3);
-    let normal_color = Color::srgb(1.0, 0.9, 0.2);
-    let dot_radius = 0.06;
-    let normal_len = 0.5;
+    let ray_color = Color::srgba(0.2, 0.8, 1.0, 0.6);
+    let hit_color = Color::srgb(0.1, 1.0, 0.2);
+    let normal_color = Color::srgb(1.0, 0.85, 0.0);
+    let dot_radius = 0.12;
+    let normal_len = 0.8;
 
     for (i, &(_, x, _)) in TARGETS.iter().enumerate() {
         // Ray origin in physics space: (x, 0, RAY_Z) → Bevy: (x, RAY_Z, 0)
