@@ -27,11 +27,11 @@ each shape type analytically:
 
 | Shape | Intersection method | Expected distance |
 |-------|-------------------|-------------------|
-| Sphere r=0.5 | Quadratic ray-sphere | 2.500 |
-| Box 0.5^3 | Slab test (per-axis min/max) | 2.500 |
-| Capsule r=0.3 hl=0.5 | Sphere-swept-line (cap hit) | 2.200 |
-| Cylinder r=0.3 hl=0.5 | Flat cap test | 2.500 |
-| Ellipsoid (0.6, 0.4, 0.3) | Scaled unit-sphere | 2.700 |
+| Sphere r=0.5 | Quadratic ray-sphere | 2.000 |
+| Box 0.5^3 | Slab test (per-axis min/max) | 2.000 |
+| Capsule r=0.3 hl=0.5 | Sphere-swept-line (cap hit) | 1.400 |
+| Cylinder r=0.3 hl=0.5 | Flat cap test | 2.000 |
+| Ellipsoid (0.6, 0.4, 0.3) | Scaled unit-sphere | 2.400 |
 | Ground plane | Ray-plane formula | 3.000 |
 
 All normals point upward (+Z) since every ray strikes the top surface of

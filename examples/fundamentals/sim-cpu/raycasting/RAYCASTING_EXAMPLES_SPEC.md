@@ -40,9 +40,9 @@ the `RaycastHit` return (distance, point, normal).
 
 ### Scene
 
-Six shapes arranged in a row along X, each at z=0: sphere, box, capsule,
-cylinder, ellipsoid, plane (ground). All shapes are at rest (no joints, no
-gravity). A ray fires from above (+Z) straight down (-Z) at each shape.
+Six shapes arranged in a row along X, each sitting on the ground plane.
+All shapes are at rest (no joints, no gravity). A ray fires from above
+(+Z) straight down (-Z) at each shape.
 
 ### MJCF sketch
 
@@ -50,11 +50,11 @@ gravity). A ray fires from above (+Z) straight down (-Z) at each shape.
 <mujoco model="basic-shapes">
   <option gravity="0 0 0" timestep="0.002"/>
   <worldbody>
-    <geom name="sphere"   type="sphere"   pos="-4 0 0" size="0.5"/>
-    <geom name="box"      type="box"      pos="-2 0 0" size="0.5 0.5 0.5"/>
-    <geom name="capsule"  type="capsule"  pos=" 0 0 0" size="0.3 0.5"/>
-    <geom name="cylinder" type="cylinder" pos=" 2 0 0" size="0.3 0.5"/>
-    <geom name="ellipsoid" type="ellipsoid" pos=" 4 0 0" size="0.6 0.4 0.3"/>
+    <geom name="sphere"   type="sphere"   pos="-4 0 0.5" size="0.5"/>
+    <geom name="box"      type="box"      pos="-2 0 0.5" size="0.5 0.5 0.5"/>
+    <geom name="capsule"  type="capsule"  pos=" 0 0 0.8" size="0.3 0.5"/>
+    <geom name="cylinder" type="cylinder" pos=" 2 0 0.5" size="0.3 0.5"/>
+    <geom name="ellipsoid" type="ellipsoid" pos=" 4 0 0.3" size="0.6 0.4 0.3"/>
     <geom name="ground"   type="plane"    size="6 2 0.01"/>
   </worldbody>
 </mujoco>
@@ -73,11 +73,11 @@ Each step, for each shape:
 ### HUD
 
 ```
-Sphere    dist=2.500  normal=(0, 0, 1)
-Box       dist=2.500  normal=(0, 0, 1)
-Capsule   dist=2.200  normal=(0, 0, 1)
-Cylinder  dist=2.500  normal=(0, 0, 1)
-Ellipsoid dist=2.700  normal≈(0, 0, 1)
+Sphere    dist=2.000  normal=(0, 0, 1)
+Box       dist=2.000  normal=(0, 0, 1)
+Capsule   dist=1.400  normal=(0, 0, 1)
+Cylinder  dist=2.000  normal=(0, 0, 1)
+Ellipsoid dist=2.400  normal≈(0, 0, 1)
 Ground    dist=3.000  normal=(0, 0, 1)
 ```
 

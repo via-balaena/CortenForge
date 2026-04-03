@@ -44,15 +44,15 @@ const MJCF: &str = r#"
 <mujoco model="basic-shapes">
   <option gravity="0 0 0" timestep="0.002"/>
   <worldbody>
-    <geom name="sphere"    type="sphere"    pos="-4 0 0" size="0.5"
+    <geom name="sphere"    type="sphere"    pos="-4 0 0.5" size="0.5"
           rgba="0.25 0.55 0.85 1"/>
-    <geom name="box"       type="box"       pos="-2 0 0" size="0.5 0.5 0.5"
+    <geom name="box"       type="box"       pos="-2 0 0.5" size="0.5 0.5 0.5"
           rgba="0.85 0.35 0.25 1"/>
-    <geom name="capsule"   type="capsule"   pos=" 0 0 0" size="0.3 0.5"
+    <geom name="capsule"   type="capsule"   pos=" 0 0 0.8" size="0.3 0.5"
           rgba="0.30 0.75 0.40 1"/>
-    <geom name="cylinder"  type="cylinder"  pos=" 2 0 0" size="0.3 0.5"
+    <geom name="cylinder"  type="cylinder"  pos=" 2 0 0.5" size="0.3 0.5"
           rgba="0.80 0.65 0.20 1"/>
-    <geom name="ellipsoid" type="ellipsoid"  pos=" 4 0 0" size="0.6 0.4 0.3"
+    <geom name="ellipsoid" type="ellipsoid"  pos=" 4 0 0.3" size="0.6 0.4 0.3"
           rgba="0.65 0.30 0.75 1"/>
     <geom name="ground"    type="plane"     size="6 2 0.01"
           rgba="0.25 0.25 0.28 1"/>
@@ -64,11 +64,11 @@ const MJCF: &str = r#"
 
 /// (display_name, ray_x, expected_distance)
 const TARGETS: &[(&str, f64, f64)] = &[
-    ("Sphere", -4.0, 2.5),   // r=0.5, top at z=0.5
-    ("Box", -2.0, 2.5),      // half_z=0.5, top at z=0.5
-    ("Capsule", 0.0, 2.2),   // hl=0.5, r=0.3, top at z=0.8
-    ("Cylinder", 2.0, 2.5),  // hl=0.5, top at z=0.5
-    ("Ellipsoid", 4.0, 2.7), // rz=0.3, top at z=0.3
+    ("Sphere", -4.0, 2.0),   // center z=0.5, top at z=1.0
+    ("Box", -2.0, 2.0),      // center z=0.5, top at z=1.0
+    ("Capsule", 0.0, 1.4),   // center z=0.8, top at z=1.6
+    ("Cylinder", 2.0, 2.0),  // center z=0.5, top at z=1.0
+    ("Ellipsoid", 4.0, 2.4), // center z=0.3, top at z=0.6
     ("Ground", 6.0, 3.0),    // plane at z=0
 ];
 
@@ -178,11 +178,10 @@ fn draw_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmo
     let normal_color = Color::srgb(1.0, 0.9, 0.2);
     let normal_len = 0.4;
 
-    for &(_, x, expected) in TARGETS {
+    for (i, &(_, x, _)) in TARGETS.iter().enumerate() {
         let start = Vec3::new(x as f32, 0.0, RAY_Z as f32);
-        let results_entry = results.iter().find(|r| (r.1 - expected).abs() < 1e-6);
 
-        match results_entry.and_then(|r| r.2.as_ref()) {
+        match results.get(i).and_then(|(_, _, h)| h.as_ref()) {
             Some(hit) => {
                 let hp = Vec3::new(hit.point.x as f32, hit.point.y as f32, hit.point.z as f32);
                 let n = Vec3::new(
