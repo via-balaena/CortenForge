@@ -3435,6 +3435,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-raycasting-heightfield"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-raycasting-scene-query"
 version = "0.7.0"
 dependencies = [
