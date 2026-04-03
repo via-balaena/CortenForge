@@ -25,6 +25,7 @@
     clippy::similar_names
 )]
 
+use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::math::Isometry3d;
 use bevy::prelude::*;
 use nalgebra::{Point3, UnitVector3, Vector3};
@@ -33,7 +34,6 @@ use sim_bevy::examples::{
     PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
     validation_system,
 };
-use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{PhysicsData, PhysicsModel, spawn_model_geoms, sync_geom_transforms};
 use sim_core::validation::{Check, print_report};
 use sim_core::{SceneRayHit, raycast_scene};
@@ -103,6 +103,12 @@ fn point_to_bevy(p: Point3<f64>) -> Vec3 {
     Vec3::new(p.x as f32, p.z as f32, p.y as f32)
 }
 
+fn configure_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
+    let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
+    config.line.width = 3.0;
+    config.depth_bias = -0.01;
+}
+
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -127,7 +133,7 @@ fn main() {
                 .print_every(1.0)
                 .display(|_m, _d| "static scene — no physics stepping".into()),
         )
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, configure_gizmos))
         .add_systems(
             PostUpdate,
             (
@@ -153,7 +159,13 @@ fn setup(
 
     println!("  Model: {} geoms, {} bodies\n", model.ngeom, model.nbody);
 
-    let mat_ground = materials.add(MetalPreset::BrushedMetal.material());
+    let mat_ground = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.15, 0.15, 0.18, 0.4),
+        alpha_mode: AlphaMode::Blend,
+        perceptual_roughness: 1.0,
+        metallic: 0.0,
+        ..default()
+    });
 
     spawn_model_geoms(
         &mut commands,
@@ -186,8 +198,8 @@ fn setup(
 fn draw_fan(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmos) {
     let results = cast_fan(&model, &data);
     let eye = point_to_bevy(eye_origin());
-    let hit_line_color = Color::srgba(0.2, 0.8, 1.0, 0.6);
-    let miss_line_color = Color::srgba(0.5, 0.5, 0.5, 0.2);
+    let hit_line_color = Color::srgba(0.2, 0.8, 1.0, 0.9);
+    let miss_line_color = Color::srgba(0.9, 0.3, 0.3, 0.7);
     let hit_dot_color = Color::srgb(0.1, 1.0, 0.2);
     let dot_radius = 0.08;
 
