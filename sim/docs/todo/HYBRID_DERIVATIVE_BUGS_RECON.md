@@ -2,16 +2,16 @@
 
 **Date:** 2026-04-03
 **Found by:** Derivatives stress-test example development
-**Status:** Recon complete — ready for fix spec
+**Status:** RESOLVED — Bug 1 fixed, Bug 2 was false alarm
 
 ---
 
 ## Summary
 
-Two bugs where `mjd_transition_hybrid` disagrees with `mjd_transition_fd`:
+Two apparent issues where `mjd_transition_hybrid` disagrees with `mjd_transition_fd`:
 
-1. **B matrix for actuated systems** — relative error 1.0 — **ROOT CAUSE CONFIRMED**
-2. **A matrix for ball joints** — relative error ~1.0 — needs deeper investigation
+1. **B matrix for actuated systems** — relative error 1.0 — **FIXED** (moment dispatch)
+2. **A matrix for ball joints** — relative error ~1.0 — **FALSE ALARM** (error metric floor)
 
 Both are untested by the existing 52-test suite. Both affect the
 recommended fast path for control/optimization workflows (iLQR, MPC, DDP).

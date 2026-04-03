@@ -2657,3 +2657,80 @@ fn test_validate_analytical_vs_fd_actuated() {
         "validate_analytical_vs_fd: err_B = {err_b:.2e} (should be < 1e-3)"
     );
 }
+
+// ============================================================================
+// Ball joint hybrid A — diagnostic
+// ============================================================================
+
+/// Hybrid A matches FD A for ball joints (including extreme inertia ratios).
+///
+/// The original stress test reported error ~1.0, but this was caused by
+/// `max_relative_error` with a strict floor (1e-10) amplifying FD noise on
+/// near-zero entries. With a reasonable floor (1e-6), the error is <1e-3.
+#[test]
+fn test_ball_joint_hybrid_vs_fd_a() {
+    // Standard inertia (box geom)
+    let mjcf = r#"
+        <mujoco model="ball_standard">
+            <option gravity="0 0 -9.81" timestep="0.002"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint type="ball" name="ball"/>
+                    <geom type="box" size="0.3 0.1 0.05" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.qvel[2] = 0.2;
+    data.forward(&model).unwrap();
+
+    let config_fd = DerivativeConfig {
+        use_analytical: false,
+        ..Default::default()
+    };
+    let fd = mjd_transition_fd(&model, &data, &config_fd).unwrap();
+    let hyb = mjd_transition_hybrid(&model, &data, &DerivativeConfig::default()).unwrap();
+
+    // Use floor=1e-6 to avoid FD noise on near-zero entries dominating.
+    // Tolerance is 2e-3 (looser than hinge joints) because ball joint FD
+    // has inherent noise from quaternion tangent-space mapping.
+    let err = max_relative_error(&fd.A, &hyb.A, 1e-6);
+    assert!(
+        err < 2e-3,
+        "Ball joint hybrid vs FD A (standard inertia): {err:.2e}"
+    );
+
+    // Extreme inertia (100:1 ratio — diaginertia 0.1/0.1/0.001)
+    let mjcf2 = r#"
+        <mujoco model="ball_extreme">
+            <compiler angle="radian"/>
+            <option gravity="0 0 -9.81" timestep="0.002"/>
+            <worldbody>
+                <body name="link" pos="0 0 0">
+                    <joint name="ball" type="ball"/>
+                    <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.1 0.1 0.001"/>
+                    <geom type="capsule" size="0.02" fromto="0 0 0  0 0 -1" rgba="0.5 0.5 0.5 1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+    let model2 = sim_mjcf::load_model(mjcf2).unwrap();
+    let mut data2 = model2.make_data();
+    data2.qvel[0] = 0.5;
+    data2.qvel[1] = -0.3;
+    data2.qvel[2] = 0.2;
+    data2.forward(&model2).unwrap();
+
+    let fd2 = mjd_transition_fd(&model2, &data2, &config_fd).unwrap();
+    let hyb2 = mjd_transition_hybrid(&model2, &data2, &DerivativeConfig::default()).unwrap();
+
+    let err2 = max_relative_error(&fd2.A, &hyb2.A, 1e-6);
+    assert!(
+        err2 < 2e-3,
+        "Ball joint hybrid vs FD A (extreme inertia): {err2:.2e}"
+    );
+}
