@@ -2819,6 +2819,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-derivatives-linearize-pendulum"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-derivatives-stress-test"
 version = "0.7.0"
 dependencies = [
