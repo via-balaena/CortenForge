@@ -3787,6 +3787,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sleep-wake-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-slide-joint-horizontal"
 version = "0.7.0"
 dependencies = [
