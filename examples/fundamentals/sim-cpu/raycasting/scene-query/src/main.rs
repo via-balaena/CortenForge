@@ -30,6 +30,7 @@ use bevy::math::Isometry3d;
 use bevy::prelude::*;
 use nalgebra::{Point3, UnitVector3, Vector3};
 use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::{vec3_from_point, vec3_from_vector};
 use sim_bevy::examples::{
     PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
     validation_system,
@@ -90,17 +91,6 @@ fn cast_fan(model: &sim_core::Model, data: &sim_core::Data) -> Vec<Option<SceneR
             )
         })
         .collect()
-}
-
-// ── Coordinate conversion ───────────────────────────────────────────────────
-
-/// Physics Z-up → Bevy Y-up: swap Y and Z.
-fn to_bevy(v: Vector3<f64>) -> Vec3 {
-    Vec3::new(v.x as f32, v.z as f32, v.y as f32)
-}
-
-fn point_to_bevy(p: Point3<f64>) -> Vec3 {
-    Vec3::new(p.x as f32, p.z as f32, p.y as f32)
 }
 
 fn configure_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
@@ -197,7 +187,7 @@ fn setup(
 
 fn draw_fan(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmos) {
     let results = cast_fan(&model, &data);
-    let eye = point_to_bevy(eye_origin());
+    let eye = vec3_from_point(&eye_origin());
     let hit_line_color = Color::srgba(0.2, 0.8, 1.0, 0.9);
     let miss_line_color = Color::srgba(0.9, 0.3, 0.3, 0.7);
     let hit_dot_color = Color::srgb(0.1, 1.0, 0.2);
@@ -214,12 +204,12 @@ fn draw_fan(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmos
         let dir = ray_direction(i).into_inner();
         match result {
             Some(hit) => {
-                let hp = point_to_bevy(hit.hit.point);
+                let hp = vec3_from_point(&hit.hit.point);
                 gizmos.line(eye, hp, hit_line_color);
                 gizmos.sphere(Isometry3d::from_translation(hp), dot_radius, hit_dot_color);
             }
             None => {
-                let end = to_bevy(dir * MAX_DISTANCE);
+                let end = vec3_from_vector(&(dir * MAX_DISTANCE));
                 gizmos.line(eye, eye + end, miss_line_color);
             }
         }

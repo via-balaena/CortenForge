@@ -29,6 +29,7 @@ use bevy::math::Isometry3d;
 use bevy::prelude::*;
 use nalgebra::{Point3, UnitVector3, Vector3};
 use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::{vec3_from_point, vec3_from_vector};
 use sim_bevy::examples::{
     PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
     validation_system,
@@ -169,17 +170,6 @@ fn setup(
     commands.insert_resource(PhysicsData(data));
 }
 
-// ── Coordinate conversion ───────────────────────────────────────────────────
-
-/// Physics Z-up → Bevy Y-up: swap Y and Z.
-fn to_bevy(v: Vector3<f64>) -> Vec3 {
-    Vec3::new(v.x as f32, v.z as f32, v.y as f32)
-}
-
-fn point_to_bevy(p: Point3<f64>) -> Vec3 {
-    Vec3::new(p.x as f32, p.z as f32, p.y as f32)
-}
-
 // ── Gizmo Drawing ───────────────────────────────────────────────────────────
 
 fn draw_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmos) {
@@ -192,12 +182,12 @@ fn draw_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmo
 
     for (i, &(_, x, _)) in TARGETS.iter().enumerate() {
         // Ray origin in physics space: (x, 0, RAY_Z) → Bevy: (x, RAY_Z, 0)
-        let start = to_bevy(Vector3::new(x, 0.0, RAY_Z));
+        let start = vec3_from_vector(&Vector3::new(x, 0.0, RAY_Z));
 
         match results.get(i).and_then(|(_, _, h)| h.as_ref()) {
             Some(hit) => {
-                let hp = point_to_bevy(hit.point);
-                let n = to_bevy(hit.normal);
+                let hp = vec3_from_point(&hit.point);
+                let n = vec3_from_vector(&hit.normal);
 
                 // Ray line (origin to hit)
                 gizmos.line(start, hp, ray_color);
@@ -208,7 +198,7 @@ fn draw_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmos: Gizmo
             }
             None => {
                 // Miss — draw faint grey line
-                let end = to_bevy(Vector3::new(x, 0.0, -1.0));
+                let end = vec3_from_vector(&Vector3::new(x, 0.0, -1.0));
                 gizmos.line(start, end, Color::srgba(0.5, 0.5, 0.5, 0.3));
             }
         }

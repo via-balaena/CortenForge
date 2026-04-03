@@ -31,6 +31,7 @@ use bevy::math::Isometry3d;
 use bevy::prelude::*;
 use nalgebra::{Point3, UnitVector3, Vector3};
 use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::{vec3_from_point, vec3_from_vector};
 use sim_bevy::examples::{
     PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
     validation_system,
@@ -103,17 +104,6 @@ fn cast_terrain_rays(model: &sim_core::Model, data: &sim_core::Data) -> Vec<RayR
         }
     }
     results
-}
-
-// ── Coordinate conversion ───────────────────────────────────────────────────
-
-/// Physics Z-up → Bevy Y-up: swap Y and Z.
-fn to_bevy_vec(v: Vector3<f64>) -> Vec3 {
-    Vec3::new(v.x as f32, v.z as f32, v.y as f32)
-}
-
-fn to_bevy_pt(p: Point3<f64>) -> Vec3 {
-    Vec3::new(p.x as f32, p.z as f32, p.y as f32)
 }
 
 // ── Terrain mesh builder ────────────────────────────────────────────────────
@@ -269,19 +259,19 @@ fn draw_terrain_rays(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut gizmo
     let normal_len = 0.3;
 
     for r in &results {
-        let start = to_bevy_vec(Vector3::new(r.x, r.y, RAY_Z));
+        let start = vec3_from_vector(&Vector3::new(r.x, r.y, RAY_Z));
 
         match &r.hit {
             Some(hit) => {
-                let hp = to_bevy_pt(hit.point);
-                let n = to_bevy_vec(hit.normal);
+                let hp = vec3_from_point(&hit.point);
+                let n = vec3_from_vector(&hit.normal);
 
                 gizmos.line(start, hp, ray_color);
                 gizmos.sphere(Isometry3d::from_translation(hp), dot_radius, hit_color);
                 gizmos.arrow(hp, hp + n * normal_len, normal_color);
             }
             None => {
-                let end = to_bevy_vec(Vector3::new(r.x, r.y, -1.0));
+                let end = vec3_from_vector(&Vector3::new(r.x, r.y, -1.0));
                 gizmos.line(start, end, Color::srgba(0.9, 0.3, 0.3, 0.7));
             }
         }
