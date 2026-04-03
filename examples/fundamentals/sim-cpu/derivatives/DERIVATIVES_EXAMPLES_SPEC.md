@@ -257,7 +257,7 @@ a window.
 
 **Hybrid vs FD agreement (3):**
 11. `max_relative_error(A_fd, A_hybrid)` < 1e-4 for 3-link pendulum
-12. `validate_analytical_vs_fd()` A error < 1e-3 for actuated system
+12. `validate_analytical_vs_fd()` A+B errors < 1e-3 for actuated system
 13. `validate_analytical_vs_fd()` returns errors < 1e-3 for unactuated system
 
 **Sensor derivatives (3):**
@@ -279,7 +279,7 @@ a window.
 **Quaternion handling (3):**
 24. Ball joint A is 6×6, not 8×8 (tangent space, not coordinate space)
 25. Free joint A is 12×12, not 14×14
-26. Ball joint FD produces well-conditioned output (finite, 6×6, nontrivial)
+26. Ball joint hybrid vs FD A agreement (< 2e-3, floor=1e-6)
 
 **Actuator / activation (3):**
 27. B column count equals nu for multi-actuator system

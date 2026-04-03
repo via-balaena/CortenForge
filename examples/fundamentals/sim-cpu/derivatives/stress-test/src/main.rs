@@ -827,34 +827,31 @@ fn check_25_free_tangent_space() -> (u32, u32) {
     (u32::from(p), 1)
 }
 
-fn check_26_ball_fd_well_conditioned() -> (u32, u32) {
+fn check_26_ball_hybrid_vs_fd() -> (u32, u32) {
     let model = ball_pendulum();
     let mut data = model.make_data();
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.qvel[2] = 0.2;
     data.forward(&model).expect("forward");
 
-    let config = DerivativeConfig::default();
-    let d = mjd_transition_fd(&model, &data, &config).expect("fd");
+    let config_fd = DerivativeConfig {
+        use_analytical: false,
+        ..Default::default()
+    };
+    let fd = mjd_transition_fd(&model, &data, &config_fd).expect("fd");
+    let hyb = mjd_transition_hybrid(&model, &data, &DerivativeConfig::default()).expect("hybrid");
 
-    // Ball joint FD: A should be 6×6, all finite, and nontrivial.
-    // We don't compare hybrid vs FD here because extreme inertia ratios
-    // produce near-zero entries where max_relative_error with a tight
-    // floor gives false ~1.0 errors. The hybrid is verified to match FD
-    // to 1.5e-4 (floor=1e-6) in test_ball_joint_hybrid_vs_fd_a.
-    let dim_ok = d.A.nrows() == 6 && d.A.ncols() == 6;
-    let finite = d.A.iter().all(|v| v.is_finite());
-    // Off-diagonal norm: A minus identity should be nonzero (gravity effect)
-    let eye = DMatrix::identity(6, 6);
-    let off_diag_norm = (&d.A - &eye).norm();
-    let nontrivial = off_diag_norm > 1e-6;
-
-    let ok = dim_ok && finite && nontrivial;
+    // Use floor=1e-6 to avoid false alarms from FD noise on near-zero
+    // entries. Extreme inertia ratios (e.g. diaginertia 0.1/0.1/0.001)
+    // produce coupling entries of order 1e-10 where sign differences
+    // inflate max_relative_error to ~1.0 with a tight floor. See the
+    // inline comment in mjd_quat_integrate (integration.rs) for details.
+    let (err, _) = max_relative_error(&fd.A, &hyb.A, 1e-6);
     let p = check(
-        "Ball: FD well-conditioned",
-        ok,
-        &format!(
-            "6×6={dim_ok}, finite={finite}, ‖A-I‖={off_diag_norm:.4e} (nq={}, nv={})",
-            model.nq, model.nv
-        ),
+        "Ball: hybrid vs FD A (floor=1e-6)",
+        err < 2e-3,
+        &format!("max rel err = {err:.2e} (nq={}, nv={})", model.nq, model.nv),
     );
     (u32::from(p), 1)
 }
@@ -1065,10 +1062,7 @@ fn main() {
         // Quaternion handling (3)
         ("Ball tangent space", check_24_ball_tangent_space),
         ("Free tangent space", check_25_free_tangent_space),
-        (
-            "Ball FD well-conditioned",
-            check_26_ball_fd_well_conditioned,
-        ),
+        ("Ball hybrid vs FD", check_26_ball_hybrid_vs_fd),
         // Actuator / activation (3)
         ("B cols = nu", check_27_B_columns_multi_actuator),
         ("Filter activation in A", check_28_activation_filter_in_A),
