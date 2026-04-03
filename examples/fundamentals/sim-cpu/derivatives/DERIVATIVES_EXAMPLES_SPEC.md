@@ -1,6 +1,6 @@
 # Derivatives Examples Spec
 
-**Status:** Draft
+**Status:** Stress-test implemented (32/32). Visual examples 1–6 pending.
 **Date:** 2026-04-03
 **Module:** `sim_core::derivatives` (6,029 LOC)
 
