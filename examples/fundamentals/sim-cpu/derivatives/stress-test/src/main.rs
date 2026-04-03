@@ -835,8 +835,11 @@ fn check_26_ball_fd_well_conditioned() -> (u32, u32) {
     let config = DerivativeConfig::default();
     let d = mjd_transition_fd(&model, &data, &config).expect("fd");
 
-    // Ball joint FD: A should be 6×6, all finite, and nontrivial
-    // (not identity — gravity produces off-diagonal coupling).
+    // Ball joint FD: A should be 6×6, all finite, and nontrivial.
+    // We don't compare hybrid vs FD here because extreme inertia ratios
+    // produce near-zero entries where max_relative_error with a tight
+    // floor gives false ~1.0 errors. The hybrid is verified to match FD
+    // to 1.5e-4 (floor=1e-6) in test_ball_joint_hybrid_vs_fd_a.
     let dim_ok = d.A.nrows() == 6 && d.A.ncols() == 6;
     let finite = d.A.iter().all(|v| v.is_finite());
     // Off-diagonal norm: A minus identity should be nonzero (gravity effect)
