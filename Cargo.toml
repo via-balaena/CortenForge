@@ -179,6 +179,7 @@ members = [
     # Examples — fundamentals / sim-cpu / derivatives
     "examples/fundamentals/sim-cpu/derivatives/stress-test",
     "examples/fundamentals/sim-cpu/derivatives/linearize-pendulum",
+    "examples/fundamentals/sim-cpu/derivatives/control-design",
 
     # Examples — fundamentals / sim-cpu / raycasting
     "examples/fundamentals/sim-cpu/raycasting/stress-test",
