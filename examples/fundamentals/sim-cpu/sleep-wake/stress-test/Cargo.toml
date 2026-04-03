@@ -1,0 +1,13 @@
+[package]
+name = "example-sleep-wake-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sim-core = { workspace = true }
+sim-mjcf = { workspace = true }
+
+[lints]
+workspace = true

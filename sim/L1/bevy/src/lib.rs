@@ -90,7 +90,8 @@ pub mod prelude {
         bevy_to_physics, physics_pos, transform_from_physics, transform_from_physics_pose,
     };
     pub use crate::examples::{
-        DiagTimer, ValidationHarness, spawn_example_camera, validation_system,
+        DiagTimer, GeomBodyId, SleepMaterials, ValidationHarness, spawn_example_camera,
+        update_sleep_colors, validation_system,
     };
     pub use crate::gizmos::{DebugGizmosSet, TrailGizmo, draw_trails, sample_trails};
     // Model/Data architecture (MuJoCo-style) - PREFERRED API

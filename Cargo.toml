@@ -176,6 +176,12 @@ members = [
     "examples/fundamentals/sim-cpu/urdf-loading/damping-friction",
     "examples/fundamentals/sim-cpu/urdf-loading/error-handling",
 
+    # Examples — fundamentals / sim-cpu / sleep-wake
+    "examples/fundamentals/sim-cpu/sleep-wake/stress-test",
+    "examples/fundamentals/sim-cpu/sleep-wake/sleep-settle",
+    "examples/fundamentals/sim-cpu/sleep-wake/wake-on-contact",
+    "examples/fundamentals/sim-cpu/sleep-wake/island-groups",
+
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
     "examples/fundamentals/sim-cpu/solvers/comparison-visual",
