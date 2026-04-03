@@ -11,8 +11,7 @@
 The sleep system groups bodies into **constraint islands** and deactivates
 islands whose velocities fall below a threshold. Sleeping bodies skip
 integration and collision narrowphase — essential for large scenes with many
-resting objects. This example group demonstrates the three pillars of the
-system: **sleep transition**, **wake propagation**, and **island decomposition**.
+resting objects. Each visual example demonstrates exactly **one concept**.
 
 ### Key engine concepts
 
@@ -37,7 +36,7 @@ Drop → Collide → Settle → Countdown (10 steps) → Sleep
                               Contact/Force → Wake → Countdown → Sleep
 ```
 
-### Visual convention (all three visual examples)
+### Visual convention (all visual examples)
 
 Bodies are **color-coded by sleep state** each frame:
 - **Orange/warm** = Awake
@@ -55,116 +54,108 @@ This makes sleep transitions immediately visible without reading the console.
 
 ---
 
-## Example 1: `sleep-threshold/` — Velocity Threshold and Countdown
+## Example 1: `sleep-settle/` — Velocity Threshold and Sleep Transition
+
+### Concept
+Bodies go to sleep when their velocity drops below the threshold for long
+enough. This is the fundamental sleep mechanism.
 
 ### One-liner
-Ten boxes settle on a plane and go to sleep; a mid-simulation impulse
-triggers a cascade wake-and-re-sleep cycle.
+Five boxes drop from staggered heights and turn blue one by one as they
+settle and sleep.
 
 ### What it demonstrates
 - Velocity threshold: bodies sleep when all DOF velocities drop below
   `sleep_tolerance * dof_length`
 - Countdown timer: `MIN_AWAKE = 10` consecutive sub-threshold steps required
-- Sleep transition: `nbody_awake` decreases as boxes settle
-- Wake cascade: disturbing one sleeping box wakes its contact neighbors
-- Re-sleep: after the disturbance settles, everything sleeps again
+- `nbody_awake` counts down as boxes settle at different times
 
 ### Scene
 
-10 unit boxes (mass 1 kg each) arranged in a line on a ground plane, dropped
-from heights 0.5–1.0 m (staggered so they don't all land simultaneously).
-Spacing is wide enough that boxes don't touch each other after settling — each
-is an independent singleton (no shared island).
-
-At **t = 7.0 s**, apply `xfrc_applied` impulse (lateral force) to box 5,
-pushing it into box 6. The contact wakes box 6, which may bump box 7, etc.
-The cascade propagates until energy dissipates.
+5 boxes (mass 1 kg each) dropped from heights 0.4–0.8 m (staggered so they
+land at different times). Spacing is wide — no contact between boxes. Each is
+an independent singleton. No impulse, no disturbance. Just gravity → settle
+→ sleep.
 
 ### MJCF sketch
 
 ```xml
 <mujoco>
-  <option timestep="0.002">
+  <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.05">
     <flag sleep="enable"/>
   </option>
   <worldbody>
-    <geom name="floor" type="plane" size="10 10 0.1"/>
-    <!-- 10 boxes, free joints, staggered heights -->
-    <body name="box_0" pos="-4.5 0 1.0">
-      <freejoint/>
-      <geom type="box" size="0.15 0.15 0.15" mass="1"/>
-    </body>
-    <!-- ... box_1 through box_9, spacing 1.0 along X ... -->
-  </body>
+    <geom name="floor" type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+    <body name="box_0" pos="-2 0 0.4"><freejoint/>
+      <geom type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+    <body name="box_1" pos="-1 0 0.5"><freejoint/>
+      <geom .../>  </body>
+    <body name="box_2" pos="0 0 0.6"><freejoint/> ...  </body>
+    <body name="box_3" pos="1 0 0.7"><freejoint/> ...  </body>
+    <body name="box_4" pos="2 0 0.8"><freejoint/> ...  </body>
+  </worldbody>
 </mujoco>
 ```
 
 ### HUD
 
 ```
-Sleep Threshold Demo
+Sleep Settle
 ────────────────────
-  time           7.42 s
-  bodies awake   3 / 10
-  trees awake    3 / 10
-  islands        1
+  time           3.20 s
+  awake          2 / 5
   ────────────────────
   box_0          Asleep
   box_1          Asleep
-  ...
-  box_5          Awake    ← impulse target
-  box_6          Awake    ← contact wake
-  box_7          Awake    ← cascade
-  ...
+  box_2          Asleep
+  box_3          Awake
+  box_4          Awake
 ```
 
 ### Validation harness
 
 | Check | Condition | Tolerance |
 |-------|-----------|-----------|
-| All awake at start | `nbody_awake == 11` (10 + world) at t=0.1 | exact |
+| All awake at start | `nbody_awake == 6` (5 + world) at t=0.1 | exact |
 | All asleep after settle | `nbody_awake == 1` (world only) by t=6.0 | exact |
-| Wake after impulse | `nbody_awake > 1` at t=7.1 | — |
 | Sleeping qvel = 0 | `|qvel[dof]| == 0.0` for all sleeping DOFs at t=6.5 | exact (bitwise) |
 | Sleeping qacc = 0 | `|qacc[dof]| == 0.0` for all sleeping DOFs at t=6.5 | exact (bitwise) |
-| Re-sleep after cascade | `nbody_awake == 1` by t=14.0 | exact |
-| Energy decreasing | total energy monotonically non-increasing after t=3.0 | 0.01 J |
 
 ### Camera
 
-- Target: center of box line (0, 0, 0.3)
-- Distance: 8.0
-- Azimuth: 0° (side view along Y axis, seeing the full line of boxes)
+- Target: (0, 0, 0.3)
+- Distance: 6.0
+- Azimuth: 0° (side view)
 - Elevation: 25°
 
 ---
 
 ## Example 2: `wake-on-contact/` — Contact-Triggered Reactivation
 
+### Concept
+Contact between an awake body and a sleeping body wakes the sleeper.
+
 ### One-liner
-A sleeping box is struck by a falling ball — the contact force wakes the box
-and they settle together into a shared island.
+A sleeping box is struck by a falling ball — the contact wakes the box.
 
 ### What it demonstrates
 - `sleep="init"` policy: box starts asleep from timestep 0 (no settling wait)
 - Wake-on-contact mechanism: `mj_wake_collision()` detects awake-vs-sleeping
   contact and wakes the sleeping tree
-- Island formation: after contact, both bodies share a constraint island
-- Init-sleep freeze: the box does not move under gravity while asleep —
-  position stays exactly at the initial placement until woken
+- Init-sleep freeze: box does not move under gravity while asleep
 
 ### Scene
 
 A single box (mass 2 kg) resting on a ground plane with `sleep="init"` — it
-starts asleep. A sphere (mass 0.5 kg) is positioned 2.0 m above, with initial
-velocity zero. The sphere free-falls under gravity and strikes the box at
-approximately t = 0.64 s.
+starts asleep (blue). A sphere (mass 0.5 kg) is positioned 2.0 m above. The
+sphere free-falls under gravity and strikes the box at approximately t = 0.64 s.
+The box turns orange on impact.
 
 ### MJCF sketch
 
 ```xml
 <mujoco>
-  <option timestep="0.002">
+  <option timestep="0.002" sleep_tolerance="0.05">
     <flag sleep="enable"/>
   </option>
   <worldbody>
@@ -189,8 +180,7 @@ Wake-on-Contact
   time           0.70 s
   box            Awake    ← woke on contact
   ball           Awake
-  islands        1        ← shared island
-  contacts       2        ← box-floor + ball-box
+  contacts       2
   ────────────────────
   impact time    0.64 s
 ```
@@ -201,9 +191,8 @@ Wake-on-Contact
 |-------|-----------|-----------|
 | Box starts asleep | `sleep_state(box) == Asleep` at t=0.0 | exact |
 | Ball starts awake | `sleep_state(ball) == Awake` at t=0.0 | exact |
-| Box wakes on impact | `sleep_state(box) == Awake` at t=0.7 | exact |
-| Shared island | `tree_island[box_tree] == tree_island[ball_tree]` post-contact | exact |
 | Box frozen while asleep | box z-position == 0.15 at t=0.3 (no gravity drift) | 1e-12 |
+| Box wakes on impact | `sleep_state(box) == Awake` at t=0.7 | exact |
 | Both re-sleep | `nbody_awake == 1` by t=14.0 | exact |
 
 ### Camera
@@ -217,39 +206,37 @@ Wake-on-Contact
 
 ## Example 3: `island-groups/` — Independent Constraint Islands
 
+### Concept
+Constraint islands are independent — disturbing one doesn't affect the other.
+
 ### One-liner
 Two separated stacks form independent islands; disturbing one leaves the
 other asleep.
 
 ### What it demonstrates
-- Island discovery: DFS flood-fill over the contact/constraint adjacency graph
-  groups coupled bodies into islands
-- Island independence: each island's sleep state is evaluated atomically —
-  all trees in an island must be ready before any sleep
+- Island discovery: DFS flood-fill groups coupled bodies into islands
+- Island independence: each island's sleep state is evaluated atomically
 - Selective wake: applying force to one island wakes only that island
-- `nisland` and `tree_island` diagnostics
 
 ### Scene
 
 Two stacks of 3 boxes each, placed 3.0 m apart on a ground plane. Stack A at
-x = -1.5, Stack B at x = +1.5. Each stack is a vertical column (boxes
-resting on each other). While settling (awake), each stack forms its own
-constraint island via inter-box contacts. Once all boxes sleep, islands
+x = -1.5, Stack B at x = +1.5. While settling (awake), each stack forms its
+own constraint island via inter-box contacts. Once all boxes sleep, islands
 disappear (`nisland == 0` — sleeping trees are excluded from island discovery).
 
 At **t = 7.0 s**, apply a lateral `xfrc_applied` to the top box of Stack A.
-Stack A's island wakes; Stack B remains asleep.
+Stack A's island wakes (turns orange); Stack B remains asleep (blue).
 
 ### MJCF sketch
 
 ```xml
 <mujoco>
-  <option timestep="0.002">
+  <option timestep="0.002" sleep_tolerance="0.05">
     <flag sleep="enable"/>
   </option>
   <worldbody>
     <geom name="floor" type="plane" size="10 10 0.1"/>
-
     <!-- Stack A -->
     <body name="a1" pos="-1.5 0 0.15"><freejoint/>
       <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
@@ -257,7 +244,6 @@ Stack A's island wakes; Stack B remains asleep.
       <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
     <body name="a3" pos="-1.5 0 0.75"><freejoint/>
       <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
-
     <!-- Stack B -->
     <body name="b1" pos="1.5 0 0.15"><freejoint/>
       <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
@@ -275,13 +261,13 @@ Stack A's island wakes; Stack B remains asleep.
 Island Groups
 ────────────────────
   time           7.50 s
-  islands        1        ← only Stack A's island (B is asleep/no island)
-  bodies awake   4 / 6    ← 3 from Stack A + world
+  islands        1
+  awake          3 / 6
   ────────────────────
   Stack A
     a1           Awake
     a2           Awake
-    a3           Awake    ← impulse target
+    a3           Awake    <- impulse
   Stack B
     b1           Asleep
     b2           Asleep
@@ -295,8 +281,7 @@ Island Groups
 | All asleep after settle | `nbody_awake == 1` by t=6.0 | exact |
 | Stack A wakes after impulse | all 3 Stack A bodies `Awake` at t=7.1 | exact |
 | Stack B stays asleep | all 3 Stack B bodies `Asleep` at t=7.1 | exact |
-| Island count pre-disturb | `nisland == 0` when all asleep (no islands for sleeping trees) | exact |
-| Stack B never wakes | Stack B bodies remain `Asleep` throughout t=7.0–14.0 | exact |
+| Island count pre-disturb | `nisland == 0` when all asleep | exact |
 | Stack A re-sleeps | Stack A bodies `Asleep` by t=14.0 | exact |
 
 ### Camera
@@ -308,7 +293,7 @@ Island Groups
 
 ---
 
-## Example 4: `stress-test/` — Headless Validation
+## Example 4: `stress-test/` — Headless Validation (IMPLEMENTED)
 
 ### One-liner
 18 automated checks covering sleep threshold, wake triggers, island
@@ -342,26 +327,11 @@ mechanism in the 1,415-LOC island module.
 | 17 | Narrowphase skip | 2 sleeping boxes side by side | zero contacts between them | exact |
 | 18 | nbody_awake bookkeeping | various states | `nbody_awake` matches count of non-`Asleep` bodies (i.e. `Awake` + `Static`) | exact |
 
-### Implementation notes
-
-- Run multiple independent `Model` / `Data` pairs (no Bevy, no window)
-- Each check builds its own minimal MJCF scene
-- Step the simulation directly via `data.step(&model)`
-- Use `data.sleep_state(body_id)`, `data.nbody_awake()`, `data.nisland()`
-- For check 7 (wake on equality): use `<equality><weld .../>` between two
-  free bodies, set one to `sleep="init"`
-- For check 14 (countdown reset): monitor `data.tree_asleep[tree]` values
-  directly — they count from `-(1+MIN_AWAKE)` toward `-1`
-- For check 17 (narrowphase skip): count contacts involving the two sleeping
-  bodies — should be zero despite overlapping margin
-
 ### Run
 
 ```sh
-cargo run -p example-sleep-wake-stress-test
+cargo run -p example-sleep-wake-stress-test --release
 ```
-
-No window opens. Console prints pass/fail report and exits.
 
 ---
 
@@ -371,7 +341,7 @@ No window opens. Console prints pass/fail report and exits.
 examples/fundamentals/sim-cpu/sleep-wake/
 ├── SLEEP_WAKE_SPEC.md          # this file
 ├── README.md                   # group overview (museum-plaque style)
-├── sleep-threshold/
+├── sleep-settle/
 │   ├── Cargo.toml
 │   ├── README.md
 │   └── src/main.rs
@@ -383,7 +353,7 @@ examples/fundamentals/sim-cpu/sleep-wake/
 │   ├── Cargo.toml
 │   ├── README.md
 │   └── src/main.rs
-└── stress-test/
+└── stress-test/                # IMPLEMENTED
     ├── Cargo.toml
     ├── README.md
     └── src/main.rs
@@ -393,7 +363,7 @@ examples/fundamentals/sim-cpu/sleep-wake/
 
 | Example | Package name |
 |---------|-------------|
-| sleep-threshold | `example-sleep-wake-threshold` |
+| sleep-settle | `example-sleep-wake-settle` |
 | wake-on-contact | `example-sleep-wake-contact` |
 | island-groups | `example-sleep-wake-islands` |
 | stress-test | `example-sleep-wake-stress-test` |
@@ -402,13 +372,10 @@ examples/fundamentals/sim-cpu/sleep-wake/
 
 ## Implementation order
 
-1. **stress-test** — headless, no visuals, validates all engine features first
-2. **sleep-threshold** — primary visual example, most concepts
-3. **wake-on-contact** — focused single-concept demo
-4. **island-groups** — island decomposition visual
-
-Stress test first ensures the engine behaves correctly before we build
-visuals on top of it.
+1. **stress-test** — DONE. 18/18 PASS.
+2. **sleep-settle** — pure sleep mechanism, simplest visual
+3. **wake-on-contact** — single wake trigger
+4. **island-groups** — island independence
 
 ---
 
@@ -458,19 +425,3 @@ spawn_model_geoms_with(
 | Awake | warm orange `(0.95, 0.45, 0.15)` | `Anodized(Color::srgb(0.95, 0.45, 0.15))` |
 | Asleep | steel blue `(0.35, 0.50, 0.70)` | `Anodized(Color::srgb(0.35, 0.50, 0.70))` |
 | Static | dark grey `(0.25, 0.25, 0.25)` | `CastIron` |
-
-### Applying xfrc_applied for mid-simulation impulse
-
-```rust
-fn apply_impulse(mut data: ResMut<PhysicsData>, model: Res<PhysicsModel>) {
-    let t = data.0.time;
-    let body_id = model.0.body_id("box_5").expect("box_5 exists");
-    if (7.0..7.05).contains(&t) {
-        // Apply lateral force to target body for a few timesteps
-        data.0.xfrc_applied[body_id] = SpatialVector::new(0.0, 0.0, 0.0, 50.0, 0.0, 0.0);
-    } else {
-        // Clear forces outside impulse window
-        data.0.xfrc_applied[body_id] = SpatialVector::zeros();
-    }
-}
-```
