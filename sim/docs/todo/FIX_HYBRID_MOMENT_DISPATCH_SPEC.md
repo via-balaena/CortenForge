@@ -150,6 +150,12 @@ judgment call — two copies of the same match is acceptable for clarity.
 
 ## Verification
 
+### Import needed
+
+`validate_analytical_vs_fd` is not currently imported in the test file
+but is exported from `sim_core`. Add it to the existing `use sim_core`
+block.
+
 ### Unit tests to add (in `sim/L0/tests/integration/derivatives.rs`)
 
 1. **`test_hybrid_vs_fd_B_joint_motor`** — 3-hinge pendulum with 2 motor

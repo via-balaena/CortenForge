@@ -8,6 +8,7 @@ use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, DISABLE_GRAVITY, DISABLE_SPRING,
     DerivativeConfig, GainType, Integrator, Model, mj_integrate_pos_explicit, mj_solve_sparse,
     mjd_smooth_pos, mjd_smooth_vel, mjd_transition_fd, mjd_transition_hybrid,
+    validate_analytical_vs_fd,
 };
 
 // ============================================================================
@@ -2524,4 +2525,135 @@ fn t12_cutoff_clamped_sensor_zero_derivatives() {
             c[(0, j)]
         );
     }
+}
+
+// ============================================================================
+// Hybrid moment dispatch — Joint/Tendon transmission B + activation columns
+// ============================================================================
+
+/// Hybrid B matrix matches FD B for Joint-transmission motor actuators.
+/// Regression test for the actuator_moment dispatch bug (Joint transmissions
+/// never populate data.actuator_moment — the hybrid path must construct the
+/// moment inline from gear and jnt_dof_adr).
+#[test]
+fn test_hybrid_vs_fd_b_joint_motor() {
+    let mut model = Model::n_link_pendulum(3, 1.0, 0.1);
+    add_torque_actuators(&mut model, 2); // motors on joints 0, 1
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.5;
+    data.qpos[2] = 0.7;
+    data.forward(&model).unwrap();
+
+    let config_fd = DerivativeConfig {
+        use_analytical: false,
+        ..Default::default()
+    };
+    let fd = mjd_transition_fd(&model, &data, &config_fd).unwrap();
+    let hyb = mjd_transition_hybrid(&model, &data, &DerivativeConfig::default()).unwrap();
+
+    assert_eq!(fd.B.nrows(), hyb.B.nrows());
+    assert_eq!(fd.B.ncols(), hyb.B.ncols());
+    let err = max_relative_error(&fd.B, &hyb.B, 1e-10);
+    assert!(
+        err < 1e-4,
+        "Hybrid B vs FD B for Joint motors: max rel err = {err:.2e} (should be < 1e-4)"
+    );
+}
+
+/// Hybrid B matrix matches FD B for Tendon-transmission actuators.
+#[test]
+fn test_hybrid_vs_fd_b_tendon_actuator() {
+    let mjcf = r#"
+    <mujoco model="tendon-actuator">
+      <compiler angle="radian"/>
+      <option gravity="0 0 -9.81" timestep="0.002"/>
+      <worldbody>
+        <body name="link" pos="0 0 0">
+          <joint name="hinge" type="hinge" axis="0 1 0"/>
+          <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.1 0.1 0.001"/>
+          <geom type="capsule" size="0.02" fromto="0 0 0  0 0 -1" rgba="0.5 0.5 0.5 1"/>
+          <site name="tip" pos="0 0 -1"/>
+        </body>
+        <site name="anchor" pos="0 0 0"/>
+      </worldbody>
+      <tendon>
+        <spatial name="ten">
+          <site site="anchor"/>
+          <site site="tip"/>
+        </spatial>
+      </tendon>
+      <actuator>
+        <motor name="ten_motor" tendon="ten" gear="5"/>
+      </actuator>
+    </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).unwrap();
+
+    let config_fd = DerivativeConfig {
+        use_analytical: false,
+        ..Default::default()
+    };
+    let fd = mjd_transition_fd(&model, &data, &config_fd).unwrap();
+    let hyb = mjd_transition_hybrid(&model, &data, &DerivativeConfig::default()).unwrap();
+
+    assert_eq!(fd.B.nrows(), hyb.B.nrows());
+    assert_eq!(fd.B.ncols(), hyb.B.ncols());
+    let err = max_relative_error(&fd.B, &hyb.B, 1e-10);
+    assert!(
+        err < 1e-4,
+        "Hybrid B vs FD B for Tendon motor: max rel err = {err:.2e} (should be < 1e-4)"
+    );
+}
+
+/// Hybrid A activation columns match FD for Joint-transmission filter actuators.
+/// Regression test: the activation column code path had the same actuator_moment
+/// dispatch bug as the B matrix code path.
+#[test]
+fn test_hybrid_vs_fd_act_col_joint_filter() {
+    let mut model = Model::n_link_pendulum(1, 1.0, 0.5);
+    add_filter_actuator(&mut model, 0, 0.1); // filter on joint 0, tau=0.1
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.forward(&model).unwrap();
+
+    let config_fd = DerivativeConfig {
+        use_analytical: false,
+        ..Default::default()
+    };
+    let fd = mjd_transition_fd(&model, &data, &config_fd).unwrap();
+    let hyb = mjd_transition_hybrid(&model, &data, &DerivativeConfig::default()).unwrap();
+
+    // Compare the full A matrix (includes activation columns at col 2*nv..2*nv+na)
+    let err = max_relative_error(&fd.A, &hyb.A, 1e-10);
+    assert!(
+        err < 1e-4,
+        "Hybrid A vs FD A for Joint filter actuator: max rel err = {err:.2e} (should be < 1e-4)"
+    );
+}
+
+/// validate_analytical_vs_fd passes for multi-actuator Joint-transmission models.
+/// This is the end-to-end check: both err_A and err_B must be small.
+#[test]
+fn test_validate_analytical_vs_fd_actuated() {
+    let mut model = Model::n_link_pendulum(3, 1.0, 0.1);
+    add_torque_actuators(&mut model, 3); // motors on all 3 joints
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.5;
+    data.qpos[2] = 0.7;
+    data.forward(&model).unwrap();
+
+    let (err_a, err_b) = validate_analytical_vs_fd(&model, &data).expect("validate should succeed");
+    assert!(
+        err_a < 1e-3,
+        "validate_analytical_vs_fd: err_A = {err_a:.2e} (should be < 1e-3)"
+    );
+    assert!(
+        err_b < 1e-3,
+        "validate_analytical_vs_fd: err_B = {err_b:.2e} (should be < 1e-3)"
+    );
 }

@@ -572,15 +572,12 @@ fn check_12_hybrid_vs_fd_actuated() -> (u32, u32) {
     data.qpos[2] = 0.7;
     data.forward(&model).expect("forward");
 
-    // Hybrid velocity-column analytical derivatives match FD for the A matrix
-    // on actuated systems. B matrix uses a different analytical path that may
-    // diverge from pure FD — test A only here.
-    let (err_a, _err_b) = validate_analytical_vs_fd(&model, &data).expect("validate");
-    let ok = err_a < 1e-3;
+    let (err_a, err_b) = validate_analytical_vs_fd(&model, &data).expect("validate");
+    let ok = err_a < 1e-3 && err_b < 1e-3;
     let p = check(
-        "Hybrid vs FD: actuated A matrix",
+        "Hybrid vs FD: actuated A+B",
         ok,
-        &format!("err_A = {err_a:.2e} (nu={})", model.nu),
+        &format!("err_A = {err_a:.2e}, err_B = {err_b:.2e} (nu={})", model.nu),
     );
     (u32::from(p), 1)
 }
@@ -1044,7 +1041,7 @@ fn main() {
         ("fd_convergence_check", check_10_fd_convergence_utility),
         // Hybrid vs FD (3)
         ("Hybrid vs FD: A", check_11_hybrid_vs_fd_A),
-        ("Hybrid vs FD: actuated A", check_12_hybrid_vs_fd_actuated),
+        ("Hybrid vs FD: actuated A+B", check_12_hybrid_vs_fd_actuated),
         ("validate_analytical_vs_fd", check_13_validate_utility),
         // Sensor derivatives (3)
         ("C Some when enabled", check_14_C_some_when_enabled),

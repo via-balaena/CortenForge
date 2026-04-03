@@ -1931,11 +1931,37 @@ pub fn mjd_transition_hybrid(
                 }
             };
 
-            // ∂qfrc/∂act = moment · gain
-            let moment = &data.actuator_moment[actuator_idx];
+            // ∂qfrc/∂act = moment · gain — dispatch by transmission type.
+            // Joint/Tendon transmissions don't populate data.actuator_moment.
             let mut dvdact = DVector::zeros(nv);
-            for dof in 0..nv {
-                dvdact[dof] = h * gain * moment[dof];
+            let gear = model.actuator_gear[actuator_idx][0];
+            let trnid = model.actuator_trnid[actuator_idx][0];
+            match model.actuator_trntype[actuator_idx] {
+                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                    if trnid < model.njnt {
+                        let dof_adr = model.jnt_dof_adr[trnid];
+                        let nv_jnt = model.jnt_type[trnid].nv();
+                        for k in 0..nv_jnt {
+                            dvdact[dof_adr + k] = h * gain * gear;
+                        }
+                    }
+                }
+                ActuatorTransmission::Tendon => {
+                    if trnid < model.ntendon {
+                        let j = &data.ten_J[trnid];
+                        for dof in 0..nv {
+                            dvdact[dof] = h * gain * gear * j[dof];
+                        }
+                    }
+                }
+                ActuatorTransmission::Site
+                | ActuatorTransmission::Body
+                | ActuatorTransmission::SliderCrank => {
+                    let moment = &data.actuator_moment[actuator_idx];
+                    for dof in 0..nv {
+                        dvdact[dof] = h * gain * moment[dof];
+                    }
+                }
             }
 
             // Solve: M⁻¹ or (M−hD)⁻¹ or (M+hD+h²K)⁻¹
@@ -2450,10 +2476,38 @@ pub fn mjd_transition_hybrid(
                 }
             };
 
-            let moment = &data.actuator_moment[actuator_idx];
+            // Build moment-scaled force vector, dispatching by transmission type.
+            // Joint/Tendon transmissions don't populate data.actuator_moment
+            // (it stays zero from init) — construct the moment inline instead.
             let mut dvdctrl = DVector::zeros(nv);
-            for dof in 0..nv {
-                dvdctrl[dof] = h * gain * moment[dof];
+            let gear = model.actuator_gear[actuator_idx][0];
+            let trnid = model.actuator_trnid[actuator_idx][0];
+            match model.actuator_trntype[actuator_idx] {
+                ActuatorTransmission::Joint | ActuatorTransmission::JointInParent => {
+                    if trnid < model.njnt {
+                        let dof_adr = model.jnt_dof_adr[trnid];
+                        let nv_jnt = model.jnt_type[trnid].nv();
+                        for k in 0..nv_jnt {
+                            dvdctrl[dof_adr + k] = h * gain * gear;
+                        }
+                    }
+                }
+                ActuatorTransmission::Tendon => {
+                    if trnid < model.ntendon {
+                        let j = &data.ten_J[trnid];
+                        for dof in 0..nv {
+                            dvdctrl[dof] = h * gain * gear * j[dof];
+                        }
+                    }
+                }
+                ActuatorTransmission::Site
+                | ActuatorTransmission::Body
+                | ActuatorTransmission::SliderCrank => {
+                    let moment = &data.actuator_moment[actuator_idx];
+                    for dof in 0..nv {
+                        dvdctrl[dof] = h * gain * moment[dof];
+                    }
+                }
             }
 
             match model.integrator {
