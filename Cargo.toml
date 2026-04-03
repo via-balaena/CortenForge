@@ -179,6 +179,7 @@ members = [
     # Examples — fundamentals / sim-cpu / sleep-wake
     "examples/fundamentals/sim-cpu/sleep-wake/stress-test",
     "examples/fundamentals/sim-cpu/sleep-wake/sleep-settle",
+    "examples/fundamentals/sim-cpu/sleep-wake/wake-on-contact",
 
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
