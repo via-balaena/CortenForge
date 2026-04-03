@@ -417,3 +417,10 @@ pub mod mesh_contact_force_diagnostic;
 // ============================================================================
 
 pub mod named_accessors;
+
+// ============================================================================
+// Raycast Heightfield Pipeline Tests
+// ============================================================================
+
+/// MJCF hfield loading → data replacement → raycast_scene end-to-end.
+pub mod raycast_heightfield;
