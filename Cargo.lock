@@ -3787,6 +3787,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-sleep-wake-settle"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-sleep-wake-stress-test"
 version = "0.7.0"
 dependencies = [

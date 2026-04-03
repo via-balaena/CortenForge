@@ -87,12 +87,15 @@ an independent singleton. No impulse, no disturbance. Just gravity → settle
   <worldbody>
     <geom name="floor" type="plane" size="5 5 0.1" solref="0.005 1.5"/>
     <body name="box_0" pos="-2 0 0.4"><freejoint/>
-      <geom type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
+      <geom name="g0" type="box" size="0.15 0.15 0.15" mass="1" solref="0.005 1.5"/></body>
     <body name="box_1" pos="-1 0 0.5"><freejoint/>
-      <geom .../>  </body>
-    <body name="box_2" pos="0 0 0.6"><freejoint/> ...  </body>
-    <body name="box_3" pos="1 0 0.7"><freejoint/> ...  </body>
-    <body name="box_4" pos="2 0 0.8"><freejoint/> ...  </body>
+      <geom name="g1" type="box" .../></body>
+    <body name="box_2" pos="0 0 0.6"><freejoint/>
+      <geom name="g2" .../></body>
+    <body name="box_3" pos="1 0 0.7"><freejoint/>
+      <geom name="g3" .../></body>
+    <body name="box_4" pos="2 0 0.8"><freejoint/>
+      <geom name="g4" .../></body>
   </worldbody>
 </mujoco>
 ```
@@ -147,8 +150,8 @@ A sleeping box is struck by a falling ball — the contact wakes the box.
 ### Scene
 
 A single box (mass 2 kg) resting on a ground plane with `sleep="init"` — it
-starts asleep (blue). A sphere (mass 0.5 kg) is positioned 2.0 m above. The
-sphere free-falls under gravity and strikes the box at approximately t = 0.64 s.
+starts asleep (blue). A sphere (mass 0.5 kg) is positioned 1.0 m above. The
+sphere free-falls under gravity and strikes the box at approximately t = 0.38 s.
 The box turns orange on impact.
 
 ### MJCF sketch
@@ -162,11 +165,11 @@ The box turns orange on impact.
     <geom name="floor" type="plane" size="5 5 0.1"/>
     <body name="box" pos="0 0 0.15" sleep="init">
       <freejoint/>
-      <geom type="box" size="0.15 0.15 0.15" mass="2"/>
+      <geom name="box_geom" type="box" size="0.15 0.15 0.15" mass="2"/>
     </body>
-    <body name="ball" pos="0 0 2.0">
+    <body name="ball" pos="0 0 1.0">
       <freejoint/>
-      <geom type="sphere" size="0.1" mass="0.5"/>
+      <geom name="ball_geom" type="sphere" size="0.1" mass="0.5"/>
     </body>
   </worldbody>
 </mujoco>
@@ -177,12 +180,12 @@ The box turns orange on impact.
 ```
 Wake-on-Contact
 ────────────────────
-  time           0.70 s
+  time           0.45 s
   box            Awake    ← woke on contact
   ball           Awake
   contacts       2
   ────────────────────
-  impact time    0.64 s
+  impact time    0.38 s
 ```
 
 ### Validation harness
@@ -192,7 +195,7 @@ Wake-on-Contact
 | Box starts asleep | `sleep_state(box) == Asleep` at t=0.0 | exact |
 | Ball starts awake | `sleep_state(ball) == Awake` at t=0.0 | exact |
 | Box frozen while asleep | box z-position == 0.15 at t=0.3 (no gravity drift) | 1e-12 |
-| Box wakes on impact | `sleep_state(box) == Awake` at t=0.7 | exact |
+| Box wakes on impact | `sleep_state(box) == Awake` at t=0.5 | exact |
 | Both re-sleep | `nbody_awake == 1` by t=14.0 | exact |
 
 ### Camera
@@ -239,18 +242,18 @@ Stack A's island wakes (turns orange); Stack B remains asleep (blue).
     <geom name="floor" type="plane" size="10 10 0.1"/>
     <!-- Stack A -->
     <body name="a1" pos="-1.5 0 0.15"><freejoint/>
-      <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
+      <geom name="ga1" type="box" size="0.15 0.15 0.15" mass="1"/></body>
     <body name="a2" pos="-1.5 0 0.45"><freejoint/>
-      <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
+      <geom name="ga2" type="box" size="0.15 0.15 0.15" mass="1"/></body>
     <body name="a3" pos="-1.5 0 0.75"><freejoint/>
-      <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
+      <geom name="ga3" type="box" size="0.15 0.15 0.15" mass="1"/></body>
     <!-- Stack B -->
     <body name="b1" pos="1.5 0 0.15"><freejoint/>
-      <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
+      <geom name="gb1" type="box" size="0.15 0.15 0.15" mass="1"/></body>
     <body name="b2" pos="1.5 0 0.45"><freejoint/>
-      <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
+      <geom name="gb2" type="box" size="0.15 0.15 0.15" mass="1"/></body>
     <body name="b3" pos="1.5 0 0.75"><freejoint/>
-      <geom type="box" size="0.15 0.15 0.15" mass="1"/></body>
+      <geom name="gb3" type="box" size="0.15 0.15 0.15" mass="1"/></body>
   </worldbody>
 </mujoco>
 ```
