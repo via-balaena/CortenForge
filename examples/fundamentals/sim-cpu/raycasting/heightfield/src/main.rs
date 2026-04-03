@@ -35,7 +35,7 @@ use sim_bevy::examples::{
     PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
     validation_system,
 };
-use sim_bevy::model_data::{PhysicsData, PhysicsModel, spawn_model_geoms, sync_geom_transforms};
+use sim_bevy::model_data::{PhysicsData, PhysicsModel, sync_geom_transforms};
 use sim_core::validation::{Check, print_report};
 use sim_core::{HeightFieldData, raycast_scene};
 
@@ -116,6 +116,47 @@ fn to_bevy_pt(p: Point3<f64>) -> Vec3 {
     Vec3::new(p.x as f32, p.z as f32, p.y as f32)
 }
 
+// ── Terrain mesh builder ────────────────────────────────────────────────────
+
+/// Build a Bevy `Mesh` from the terrain function, in Y-up coordinates.
+fn build_terrain_mesh(grid: usize, cell: f64) -> Mesh {
+    let mut positions = Vec::with_capacity(grid * grid);
+    let mut normals = Vec::with_capacity(grid * grid);
+    let mut indices = Vec::with_capacity((grid - 1) * (grid - 1) * 6);
+
+    // Vertices
+    for row in 0..grid {
+        for col in 0..grid {
+            let x = col as f64 * cell;
+            let y = row as f64 * cell;
+            let z = terrain(x, y);
+            // Physics (x, y, z) → Bevy (x, z, y)
+            positions.push([x as f32, z as f32, y as f32]);
+            let n = terrain_normal(x, y);
+            normals.push([n.x as f32, n.z as f32, n.y as f32]);
+        }
+    }
+
+    // Triangle indices (two triangles per cell)
+    for row in 0..(grid - 1) {
+        for col in 0..(grid - 1) {
+            let tl = (row * grid + col) as u32;
+            let tr = tl + 1;
+            let bl = tl + grid as u32;
+            let br = bl + 1;
+            indices.extend_from_slice(&[tl, bl, tr, tr, bl, br]);
+        }
+    }
+
+    Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(bevy::mesh::Indices::U32(indices))
+}
+
 fn configure_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
     config.line.width = 2.0;
@@ -182,6 +223,8 @@ fn setup(
         GRID_SIZE as f64 * CELL_SIZE
     );
 
+    // Build terrain mesh manually (spawn_model_geoms skips hfield geoms)
+    let terrain_mesh = build_terrain_mesh(GRID_SIZE, CELL_SIZE);
     let mat_terrain = materials.add(StandardMaterial {
         base_color: Color::srgba(0.35, 0.55, 0.35, 0.6),
         alpha_mode: AlphaMode::Blend,
@@ -191,15 +234,11 @@ fn setup(
         cull_mode: None,
         ..default()
     });
-
-    spawn_model_geoms(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &model,
-        &data,
-        &[("terrain", mat_terrain)],
-    );
+    commands.spawn((
+        Mesh3d(meshes.add(terrain_mesh)),
+        MeshMaterial3d(mat_terrain),
+        Transform::IDENTITY,
+    ));
 
     // Camera: above and to the side, looking at terrain center
     let center = (GRID_SIZE as f32 * CELL_SIZE as f32) / 2.0;
