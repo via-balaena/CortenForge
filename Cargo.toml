@@ -176,6 +176,12 @@ members = [
     "examples/fundamentals/sim-cpu/urdf-loading/damping-friction",
     "examples/fundamentals/sim-cpu/urdf-loading/error-handling",
 
+    # Examples — fundamentals / sim-cpu / raycasting
+    "examples/fundamentals/sim-cpu/raycasting/stress-test",
+    "examples/fundamentals/sim-cpu/raycasting/basic-shapes",
+    "examples/fundamentals/sim-cpu/raycasting/scene-query",
+    "examples/fundamentals/sim-cpu/raycasting/heightfield",
+
     # Examples — fundamentals / sim-cpu / sleep-wake
     "examples/fundamentals/sim-cpu/sleep-wake/stress-test",
     "examples/fundamentals/sim-cpu/sleep-wake/sleep-settle",

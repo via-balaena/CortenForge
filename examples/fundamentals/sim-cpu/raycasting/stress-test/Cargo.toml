@@ -1,0 +1,15 @@
+[package]
+name = "example-raycasting-stress-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sim-core = { workspace = true }
+sim-types = { workspace = true }
+cf-geometry = { workspace = true }
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true

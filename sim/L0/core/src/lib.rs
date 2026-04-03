@@ -143,15 +143,16 @@ pub use batch::BatchSim;
 pub use cf_geometry::{Aabb, Axis, Bounded, Shape};
 pub use convex_hull::{ConvexHull, convex_hull, quickhull};
 
+pub use cf_geometry::closest_point_on_triangle;
 pub use contact::{ContactForce, ContactManifold, ContactPoint};
 pub use heightfield::{HeightFieldContact, HeightFieldData};
 pub use mesh::{
-    MeshContact, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,
-    mesh_capsule_contact, mesh_mesh_contact, mesh_mesh_deepest_contact, mesh_sphere_contact,
-    triangle_box_contact, triangle_capsule_contact, triangle_sphere_contact,
+    MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact, mesh_mesh_contact,
+    mesh_mesh_deepest_contact, mesh_sphere_contact, triangle_box_contact, triangle_capsule_contact,
+    triangle_sphere_contact,
 };
 pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_mesh, bvh_from_triangle_mesh, query_bvh_pair};
-pub use raycast::{RaycastHit, raycast_shape};
+pub use raycast::{RaycastHit, SceneRayHit, raycast_scene, raycast_shape};
 pub use sdf::{
     PhysicsShape, SdfContact, SdfGrid, ShapeConcave, ShapeConvex, ShapeSphere, sdf_box_contact,
     sdf_capsule_contact, sdf_point_contact, sdf_sphere_contact,

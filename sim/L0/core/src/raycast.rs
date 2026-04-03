@@ -4,36 +4,19 @@
 //! collision shapes. It's used for rangefinder sensors, visibility checks, and
 //! other distance-based queries.
 //!
-//! # Supported Shapes
-//!
-//! - Sphere: Analytic ray-sphere intersection
-//! - Plane: Analytic ray-plane intersection
-//! - Box: Ray-AABB slab test (in local coordinates)
-//! - Capsule: Ray-capsule intersection (sphere-swept line)
-//! - Cylinder: Analytic ray-cylinder intersection
-//! - Ellipsoid: Transformed sphere intersection
-//! - `HeightField`: Ray marching against terrain
-//! - SDF: Ray marching with distance field
-//! - `ConvexMesh`: GJK-raycast or brute-force face test
-//! - `TriangleMesh`: BVH-accelerated triangle intersection
+//! Shape-level intersection is delegated to [`cf_geometry::ray_cast`], which
+//! supports all 10 shape types in local space. This module adds world-space
+//! pose transforms and the scene-level [`raycast_scene`] query.
 
-// Allow precision loss for vertex counts (safe for meshes < 2^52 vertices)
-// Allow truncation and sign loss for step count calculation (safe for reasonable distances)
-// Allow suspicious_operation_groupings - false positive for quadratic discriminant formula b*b - a*c
-// Allow many_single_char_names - standard notation for Möller-Trumbore algorithm
-#![allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::similar_names,
-    clippy::suspicious_operation_groupings,
-    clippy::many_single_char_names
-)]
+use std::sync::Arc;
 
-use nalgebra::{Point3, UnitVector3, Vector3};
+use nalgebra::{Point3, Rotation3, UnitQuaternion, UnitVector3, Vector3};
 use sim_types::Pose;
 
-use cf_geometry::Shape;
+use cf_geometry::{Ray, Shape, ray_cast, ray_triangle};
+
+use crate::collision::narrow::geom_to_shape;
+use crate::types::{Data, GeomType, Model};
 
 /// Result of a ray cast against a shape.
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +51,10 @@ fn safe_normalize(v: &Vector3<f64>, fallback: Vector3<f64>) -> Vector3<f64> {
 
 /// Cast a ray against a collision shape.
 ///
+/// Transforms the ray to the shape's local frame, delegates to
+/// [`cf_geometry::ray_cast`] for the intersection test, and transforms
+/// the result back to world coordinates.
+///
 /// # Arguments
 ///
 /// * `shape` - The collision shape to test
@@ -87,693 +74,18 @@ pub fn raycast_shape(
     ray_direction: UnitVector3<f64>,
     max_distance: f64,
 ) -> Option<RaycastHit> {
-    match shape {
-        Shape::Sphere { radius } => raycast_sphere(
-            shape_pose.position,
-            *radius,
-            ray_origin,
-            ray_direction,
-            max_distance,
-        ),
-        Shape::Plane { normal, distance } => {
-            // Transform plane to world space
-            let world_normal = safe_normalize(&shape_pose.transform_vector(normal), *normal);
-            let world_point = shape_pose.position + world_normal * *distance;
-            raycast_plane(
-                &world_point,
-                &world_normal,
-                ray_origin,
-                ray_direction,
-                max_distance,
-            )
-        }
-        Shape::Box { half_extents } => raycast_box(
-            shape_pose,
-            *half_extents,
-            ray_origin,
-            ray_direction,
-            max_distance,
-        ),
-        Shape::Capsule {
-            half_length,
-            radius,
-        } => raycast_capsule(
-            shape_pose,
-            *half_length,
-            *radius,
-            ray_origin,
-            ray_direction,
-            max_distance,
-        ),
-        Shape::Cylinder {
-            half_length,
-            radius,
-        } => raycast_cylinder(
-            shape_pose,
-            *half_length,
-            *radius,
-            ray_origin,
-            ray_direction,
-            max_distance,
-        ),
-        Shape::Ellipsoid { radii } => {
-            raycast_ellipsoid(shape_pose, *radii, ray_origin, ray_direction, max_distance)
-        }
-        Shape::ConvexMesh { hull } => raycast_convex_mesh(
-            shape_pose,
-            &hull.vertices,
-            ray_origin,
-            ray_direction,
-            max_distance,
-        ),
-        Shape::HeightField { data } => raycast_heightfield(
-            shape_pose,
-            data.as_ref(),
-            ray_origin,
-            ray_direction,
-            max_distance,
-        ),
-        Shape::Sdf { data } => raycast_sdf(
-            shape_pose,
-            data.as_ref(),
-            ray_origin,
-            ray_direction,
-            max_distance,
-        ),
-        Shape::TriangleMesh { mesh, bvh } => raycast_indexed_mesh(
-            shape_pose,
-            mesh,
-            bvh,
-            ray_origin,
-            ray_direction,
-            max_distance,
-        ),
-    }
-}
-
-/// Ray-sphere intersection.
-///
-/// Uses the analytic quadratic formula.
-fn raycast_sphere(
-    center: Point3<f64>,
-    radius: f64,
-    ray_origin: Point3<f64>,
-    ray_direction: UnitVector3<f64>,
-    max_distance: f64,
-) -> Option<RaycastHit> {
-    let oc = ray_origin - center;
-    let dir = ray_direction.as_ref();
-
-    // Quadratic: t^2 + 2*b*t + c = 0 where b = oc·dir, c = oc·oc - r²
-    let b = oc.dot(dir);
-    let c = oc.dot(&oc) - radius * radius;
-    let discriminant = b * b - c;
-
-    // Check for miss OR NaN (NaN < 0.0 is false, so explicitly check)
-    if !(discriminant >= 0.0) {
-        return None;
-    }
-
-    let sqrt_d = discriminant.sqrt();
-
-    // Try the near hit first
-    let mut t = -b - sqrt_d;
-    if t < 0.0 {
-        // Near hit is behind, try far hit
-        t = -b + sqrt_d;
-    }
-
-    if t < 0.0 || t > max_distance {
-        return None;
-    }
-
-    let point = ray_origin + dir * t;
-    let to_point = point - center;
-    let dist = to_point.norm();
-    // Safe normalize: for a sphere hit, distance should equal radius (non-zero)
-    let normal = if dist > 1e-10 { to_point / dist } else { *dir };
-
-    Some(RaycastHit::new(t, point, normal))
-}
-
-/// Ray-plane intersection.
-///
-/// The plane is defined by a point and normal.
-fn raycast_plane(
-    plane_point: &Point3<f64>,
-    plane_normal: &Vector3<f64>,
-    ray_origin: Point3<f64>,
-    ray_direction: UnitVector3<f64>,
-    max_distance: f64,
-) -> Option<RaycastHit> {
-    // Validate plane normal is not degenerate
-    let normal_len_sq = plane_normal.norm_squared();
-    if normal_len_sq < 1e-20 {
-        return None;
-    }
-
-    let dir = ray_direction.as_ref();
-    let denom = plane_normal.dot(dir);
-
-    // Parallel to plane (or NaN)
-    if !(denom.abs() >= 1e-10) {
-        return None;
-    }
-
-    let t = (plane_point - ray_origin).dot(plane_normal) / denom;
-
-    if t < 0.0 || t > max_distance {
-        return None;
-    }
-
-    let point = ray_origin + dir * t;
-    // Return normal pointing toward ray origin
-    let normal = if denom > 0.0 {
-        -*plane_normal
-    } else {
-        *plane_normal
-    };
-
-    Some(RaycastHit::new(t, point, normal))
-}
-
-/// Ray-box intersection using slab method.
-fn raycast_box(
-    pose: &Pose,
-    half_extents: Vector3<f64>,
-    ray_origin: Point3<f64>,
-    ray_direction: UnitVector3<f64>,
-    max_distance: f64,
-) -> Option<RaycastHit> {
-    // Transform ray to local space
-    let inv_pose = pose.inverse();
-    let local_origin = inv_pose.transform_point(&ray_origin);
-    let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
-
-    let mut t_min = 0.0_f64;
-    let mut t_max = max_distance;
-    let mut hit_normal = Vector3::zeros();
-
-    // Test each slab
-    for i in 0..3 {
-        let origin_i = local_origin[i];
-        let dir_i = local_dir[i];
-        let extent = half_extents[i];
-
-        if dir_i.abs() < 1e-10 {
-            // Ray parallel to slab
-            if origin_i < -extent || origin_i > extent {
-                return None;
-            }
-        } else {
-            let inv_dir = 1.0 / dir_i;
-            let t1 = (-extent - origin_i) * inv_dir;
-            let t2 = (extent - origin_i) * inv_dir;
-
-            let (t_near, t_far, sign) = if t1 < t2 {
-                (t1, t2, -1.0)
-            } else {
-                (t2, t1, 1.0)
-            };
-
-            if t_near > t_min {
-                t_min = t_near;
-                hit_normal = Vector3::zeros();
-                hit_normal[i] = sign;
-            }
-
-            t_max = t_max.min(t_far);
-
-            if t_min > t_max {
-                return None;
-            }
-        }
-    }
-
-    if t_min < 0.0 || t_min > max_distance {
-        return None;
-    }
-
-    let point = ray_origin + ray_direction.as_ref() * t_min;
-    let world_normal = safe_normalize(&pose.transform_vector(&hit_normal), hit_normal);
-
-    Some(RaycastHit::new(t_min, point, world_normal))
-}
-
-/// Ray-capsule intersection.
-///
-/// A capsule is a sphere-swept line segment. We test against the infinite
-/// cylinder and the end caps.
-fn raycast_capsule(
-    pose: &Pose,
-    half_length: f64,
-    radius: f64,
-    ray_origin: Point3<f64>,
-    ray_direction: UnitVector3<f64>,
-    max_distance: f64,
-) -> Option<RaycastHit> {
-    // Transform ray to local space
-    let inv_pose = pose.inverse();
-    let local_origin = inv_pose.transform_point(&ray_origin);
-    let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
-
-    // Capsule axis is along Z
-    let p1 = Point3::new(0.0, 0.0, -half_length);
-    let p2 = Point3::new(0.0, 0.0, half_length);
-
-    let mut closest_hit: Option<(f64, Point3<f64>, Vector3<f64>)> = None;
-    let mut check_hit = |t: f64, pt: Point3<f64>, normal: Vector3<f64>| {
-        if t >= 0.0
-            && t <= max_distance
-            && (closest_hit.is_none() || t < closest_hit.as_ref().map_or(f64::MAX, |h| h.0))
-        {
-            closest_hit = Some((t, pt, normal));
-        }
-    };
-
-    // Test against infinite cylinder (XY components only)
-    let oc = Vector3::new(local_origin.x, local_origin.y, 0.0);
-    let dir_xy = Vector3::new(local_dir.x, local_dir.y, 0.0);
-
-    let a = dir_xy.dot(&dir_xy);
-    let b = oc.dot(&dir_xy);
-    let c = oc.dot(&oc) - radius * radius;
-
-    if a > 1e-10 {
-        let discriminant = b * b - a * c;
-        // Use >= 0.0 pattern that correctly handles NaN (NaN >= 0.0 is false)
-        if discriminant >= 0.0 && discriminant.is_finite() {
-            let sqrt_d = discriminant.sqrt();
-
-            for t in [(-b - sqrt_d) / a, (-b + sqrt_d) / a] {
-                if t >= 0.0 && t.is_finite() {
-                    let pt = local_origin + local_dir * t;
-                    // Check if hit is on cylinder body (not beyond caps)
-                    if pt.z >= -half_length && pt.z <= half_length {
-                        let radial = Vector3::new(pt.x, pt.y, 0.0);
-                        let radial_len = radial.norm();
-                        // Safe normalize: for cylinder hit, radial distance equals radius
-                        let normal = if radial_len > 1e-10 {
-                            radial / radial_len
-                        } else {
-                            Vector3::x()
-                        };
-                        check_hit(t, pt, normal);
-                    }
-                }
-            }
-        }
-    }
-
-    // Test against end cap spheres
-    for &cap_center in &[p1, p2] {
-        let oc = local_origin - cap_center;
-        let b = oc.dot(&local_dir);
-        let c = oc.dot(&oc) - radius * radius;
-        let discriminant = b * b - c;
-
-        if discriminant >= 0.0 && discriminant.is_finite() {
-            let sqrt_d = discriminant.sqrt();
-            let t = -b - sqrt_d;
-            if t >= 0.0 {
-                let pt = local_origin + local_dir * t;
-                let to_pt = pt - cap_center;
-                let dist = to_pt.norm();
-                // Safe normalize: for sphere cap hit, distance equals radius
-                let normal = if dist > 1e-10 {
-                    to_pt / dist
-                } else {
-                    local_dir
-                };
-                check_hit(t, pt, normal);
-            }
-        }
-    }
-
-    closest_hit.map(|(t, local_pt, local_normal)| {
-        let world_pt = pose.transform_point(&local_pt);
-        let world_normal_raw = pose.transform_vector(&local_normal);
-        let wn_len = world_normal_raw.norm();
-        // Safe normalize: local_normal was already normalized
-        let world_normal = if wn_len > 1e-10 {
-            world_normal_raw / wn_len
-        } else {
-            local_normal
-        };
-        RaycastHit::new(t, world_pt, world_normal)
-    })
-}
-
-/// Ray-cylinder intersection (flat caps, no hemispheres).
-fn raycast_cylinder(
-    pose: &Pose,
-    half_length: f64,
-    radius: f64,
-    ray_origin: Point3<f64>,
-    ray_direction: UnitVector3<f64>,
-    max_distance: f64,
-) -> Option<RaycastHit> {
-    // Transform ray to local space
-    let inv_pose = pose.inverse();
-    let local_origin = inv_pose.transform_point(&ray_origin);
-    let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
-
-    let mut closest_t = f64::MAX;
-    let mut closest_hit: Option<(Point3<f64>, Vector3<f64>)> = None;
-
-    // Test infinite cylinder (XY only)
-    let oc = Vector3::new(local_origin.x, local_origin.y, 0.0);
-    let dir_xy = Vector3::new(local_dir.x, local_dir.y, 0.0);
-
-    let a = dir_xy.dot(&dir_xy);
-    let b = oc.dot(&dir_xy);
-    let c = oc.dot(&oc) - radius * radius;
-
-    if a > 1e-10 {
-        let discriminant = b * b - a * c;
-        // Use >= 0.0 pattern that correctly handles NaN
-        if discriminant >= 0.0 && discriminant.is_finite() {
-            let sqrt_d = discriminant.sqrt();
-
-            for t in [(-b - sqrt_d) / a, (-b + sqrt_d) / a] {
-                if t >= 0.0 && t < closest_t && t <= max_distance && t.is_finite() {
-                    let pt = local_origin + local_dir * t;
-                    if pt.z >= -half_length && pt.z <= half_length {
-                        closest_t = t;
-                        let radial = Vector3::new(pt.x, pt.y, 0.0);
-                        let normal = safe_normalize(&radial, Vector3::x());
-                        closest_hit = Some((pt, normal));
-                    }
-                }
-            }
-        }
-    }
-
-    // Test flat caps
-    for (cap_z, cap_normal) in [
-        (-half_length, Vector3::new(0.0, 0.0, -1.0)),
-        (half_length, Vector3::new(0.0, 0.0, 1.0)),
-    ] {
-        if local_dir.z.abs() > 1e-10 {
-            let t = (cap_z - local_origin.z) / local_dir.z;
-            if t >= 0.0 && t < closest_t && t <= max_distance {
-                let pt = local_origin + local_dir * t;
-                // Check if hit is inside cap circle
-                if pt.x * pt.x + pt.y * pt.y <= radius * radius {
-                    closest_t = t;
-                    closest_hit = Some((pt, cap_normal));
-                }
-            }
-        }
-    }
-
-    closest_hit.map(|(local_pt, local_normal)| {
-        let world_pt = pose.transform_point(&local_pt);
-        let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
-        RaycastHit::new(closest_t, world_pt, world_normal)
-    })
-}
-
-/// Ray-ellipsoid intersection.
-///
-/// Transform the ray by the inverse scale to make it a sphere intersection.
-fn raycast_ellipsoid(
-    pose: &Pose,
-    radii: Vector3<f64>,
-    ray_origin: Point3<f64>,
-    ray_direction: UnitVector3<f64>,
-    max_distance: f64,
-) -> Option<RaycastHit> {
-    // Validate radii - avoid division by zero
-    const MIN_RADIUS: f64 = 1e-10;
-    if radii.x < MIN_RADIUS || radii.y < MIN_RADIUS || radii.z < MIN_RADIUS {
-        return None;
-    }
-
-    // Transform ray to local space
-    let inv_pose = pose.inverse();
-    let local_origin = inv_pose.transform_point(&ray_origin);
-    let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
-
-    // Scale by inverse radii to transform to unit sphere problem
-    let scaled_origin = Point3::new(
-        local_origin.x / radii.x,
-        local_origin.y / radii.y,
-        local_origin.z / radii.z,
-    );
-    let scaled_dir = Vector3::new(
-        local_dir.x / radii.x,
-        local_dir.y / radii.y,
-        local_dir.z / radii.z,
-    );
-
-    // Ray-unit-sphere intersection
-    let oc = scaled_origin.coords;
-    let a = scaled_dir.dot(&scaled_dir);
-    let b = oc.dot(&scaled_dir);
-    let c = oc.dot(&oc) - 1.0;
-
-    let discriminant = b * b - a * c;
-    // Check for miss OR NaN
-    if !(discriminant >= 0.0) {
-        return None;
-    }
-
-    // Check for degenerate scaled direction (a ≈ 0 means ray parallel to ellipsoid axis)
-    if a < 1e-20 {
-        return None;
-    }
-
-    let sqrt_d = discriminant.sqrt();
-    let mut t_scaled = (-b - sqrt_d) / a;
-    if t_scaled < 0.0 {
-        t_scaled = (-b + sqrt_d) / a;
-    }
-
-    if t_scaled < 0.0 {
-        return None;
-    }
-
-    // Compute actual t in original space
-    let local_pt = local_origin + local_dir * t_scaled;
-    let t = (pose.transform_point(&local_pt) - ray_origin).norm();
-
-    if t > max_distance {
-        return None;
-    }
-
-    // Normal: gradient of ellipsoid function f(x,y,z) = (x/a)² + (y/b)² + (z/c)² - 1
-    let grad = Vector3::new(
-        2.0 * local_pt.x / (radii.x * radii.x),
-        2.0 * local_pt.y / (radii.y * radii.y),
-        2.0 * local_pt.z / (radii.z * radii.z),
-    );
-    let local_normal = safe_normalize(&grad, Vector3::z());
-
-    let world_pt = pose.transform_point(&local_pt);
-    let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
-
-    Some(RaycastHit::new(t, world_pt, world_normal))
-}
-
-/// Ray-convex mesh intersection.
-///
-/// Tests each face of the convex hull.
-fn raycast_convex_mesh(
-    pose: &Pose,
-    vertices: &[Point3<f64>],
-    ray_origin: Point3<f64>,
-    ray_direction: UnitVector3<f64>,
-    max_distance: f64,
-) -> Option<RaycastHit> {
-    if vertices.len() < 4 {
-        return None;
-    }
-
-    // Transform ray to local space
-    let inv_pose = pose.inverse();
-    let local_origin = inv_pose.transform_point(&ray_origin);
-    let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
-
-    // Simple approach: compute convex hull faces and test each
-    // For a proper implementation, we'd use GJK-raycast or cache the hull
-    // For now, use a conservative sphere bound
-
-    // Compute bounding sphere
-    let centroid: Vector3<f64> =
-        vertices.iter().map(|v| v.coords).sum::<Vector3<f64>>() / (vertices.len() as f64);
-    let center = Point3::from(centroid);
-    let radius = vertices
-        .iter()
-        .map(|v| (v - center).norm())
-        .fold(0.0_f64, f64::max);
-
-    // First test bounding sphere
-    let oc = local_origin - center;
-    let b = oc.dot(&local_dir);
-    let c = oc.dot(&oc) - radius * radius;
-    let discriminant = b * b - c;
-
-    // Check for miss OR NaN
-    if !(discriminant >= 0.0) {
-        return None;
-    }
-
-    // For a proper convex mesh, we'd test actual faces here
-    // This is a simplified approximation using the bounding sphere
-    let sqrt_d = discriminant.sqrt();
-    let t = -b - sqrt_d;
-
-    if !(t >= 0.0 && t <= max_distance) {
-        return None;
-    }
-
-    let local_pt = local_origin + local_dir * t;
-    let to_pt = local_pt - center;
-    let local_normal = safe_normalize(&to_pt, local_dir);
-
-    let world_pt = pose.transform_point(&local_pt);
-    let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
-
-    Some(RaycastHit::new(t, world_pt, world_normal))
-}
-
-/// Ray-heightfield intersection using ray marching.
-fn raycast_heightfield(
-    pose: &Pose,
-    data: &crate::heightfield::HeightFieldData,
-    ray_origin: Point3<f64>,
-    ray_direction: UnitVector3<f64>,
-    max_distance: f64,
-) -> Option<RaycastHit> {
-    // Transform ray to local space
-    let inv_pose = pose.inverse();
-    let local_origin = inv_pose.transform_point(&ray_origin);
-    let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
-
-    // Simple ray marching approach
-    let cell_size = data.cell_size();
-    // Validate step_size to avoid division by zero or infinite loops
-    if cell_size <= 0.0 || !cell_size.is_finite() {
-        return None;
-    }
-    let step_size = cell_size * 0.5;
-    // Clamp max_steps to prevent integer overflow and excessive iteration
-    let max_steps = ((max_distance / step_size) as usize + 1).min(100_000);
-
-    let mut t = 0.0;
-    let mut prev_height_diff = None;
-
-    for _ in 0..max_steps {
-        if t > max_distance {
-            break;
-        }
-
-        let pt = local_origin + local_dir * t;
-
-        // Sample height at this XY position
-        if let Some(ground_height) = data.sample(pt.x, pt.y) {
-            let height_diff = pt.z - ground_height;
-
-            // Check for crossing
-            if let Some(prev_diff) = prev_height_diff {
-                if prev_diff > 0.0 && height_diff <= 0.0 {
-                    // Crossed the surface, refine with binary search
-                    let mut t_lo = t - step_size;
-                    let mut t_hi = t;
-
-                    for _ in 0..8 {
-                        let t_mid = (t_lo + t_hi) * 0.5;
-                        let mid_pt = local_origin + local_dir * t_mid;
-                        if let Some(mid_height) = data.sample(mid_pt.x, mid_pt.y) {
-                            if mid_pt.z - mid_height > 0.0 {
-                                t_lo = t_mid;
-                            } else {
-                                t_hi = t_mid;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-
-                    let final_t = (t_lo + t_hi) * 0.5;
-                    let final_pt = local_origin + local_dir * final_t;
-
-                    // Compute normal from heightfield gradient
-                    let normal = data
-                        .normal(final_pt.x, final_pt.y)
-                        .unwrap_or_else(Vector3::z);
-
-                    let world_pt = pose.transform_point(&final_pt);
-                    let world_normal = safe_normalize(&pose.transform_vector(&normal), normal);
-
-                    return Some(RaycastHit::new(final_t, world_pt, world_normal));
-                }
-            }
-
-            prev_height_diff = Some(height_diff);
-        }
-
-        t += step_size;
-    }
-
-    None
-}
-
-/// Ray-SDF intersection using sphere tracing.
-fn raycast_sdf(
-    pose: &Pose,
-    data: &crate::sdf::SdfGrid,
-    ray_origin: Point3<f64>,
-    ray_direction: UnitVector3<f64>,
-    max_distance: f64,
-) -> Option<RaycastHit> {
-    // Transform ray to local space
-    let inv_pose = pose.inverse();
-    let local_origin = inv_pose.transform_point(&ray_origin);
-    let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
-
-    // Sphere tracing
-    let mut t = 0.0;
-    let max_steps = 128;
-    let epsilon = 1e-4;
-
-    for _ in 0..max_steps {
-        if t > max_distance {
-            return None;
-        }
-
-        let pt = local_origin + local_dir * t;
-
-        // Sample SDF - returns Option, so we need to handle the case where
-        // the point is outside the grid bounds
-        let Some(dist) = data.distance(pt) else {
-            t += epsilon;
-            continue;
-        };
-
-        if dist < epsilon {
-            // Hit! Compute normal from gradient
-            let grad = data.gradient(pt).unwrap_or_else(Vector3::z);
-            let normal = safe_normalize(&grad, Vector3::z());
-
-            let world_pt = pose.transform_point(&pt);
-            let world_normal = safe_normalize(&pose.transform_vector(&normal), normal);
-
-            return Some(RaycastHit::new(t, world_pt, world_normal));
-        }
-
-        // Step by the distance (sphere tracing guarantee)
-        // Handle negative distances (inside object) and NaN by using epsilon as minimum step
-        let step = if dist.is_finite() && dist > epsilon {
-            dist
-        } else {
-            epsilon
-        };
-        t += step;
-    }
-
-    None
+    // Transform ray to shape's local space
+    let local_origin = shape_pose.inverse_transform_point(&ray_origin);
+    let local_dir = shape_pose.inverse_transform_vector(ray_direction.as_ref());
+    let local_ray = Ray::new(local_origin, local_dir);
+
+    // Delegate to cf-geometry (all 10 shapes, local-space)
+    let hit = ray_cast(&local_ray, shape, max_distance)?;
+
+    // Transform hit back to world space
+    let world_point = shape_pose.transform_point(&hit.point);
+    let world_normal = safe_normalize(&shape_pose.transform_vector(&hit.normal), hit.normal);
+    Some(RaycastHit::new(hit.distance, world_point, world_normal))
 }
 
 /// Ray-triangle mesh intersection using BVH with early termination.
@@ -804,6 +116,8 @@ pub fn raycast_triangle_mesh_data(
         return None;
     }
 
+    let local_ray = Ray::new(local_origin, local_dir);
+
     // Use BVH with early termination if available
     if let Some(bvh) = data.bvh() {
         // Precompute inverse direction for slab test
@@ -818,13 +132,11 @@ pub fn raycast_triangle_mesh_data(
         let result = bvh.query_ray_closest(&local_origin, &ray_dir_inv, max_distance, |tri_idx| {
             let (v0, v1, v2) = data.triangle_vertices(tri_idx)?;
 
-            if let Some((t, pt, normal)) =
-                ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, cutoff)
-            {
-                if t < cutoff {
-                    cutoff = t;
-                    closest_hit = Some((t, pt, normal));
-                    return Some(t);
+            if let Some(hit) = ray_triangle(&local_ray, v0, v1, v2, cutoff) {
+                if hit.distance < cutoff {
+                    cutoff = hit.distance;
+                    closest_hit = Some((hit.distance, hit.point, hit.normal));
+                    return Some(hit.distance);
                 }
             }
             None
@@ -834,7 +146,8 @@ pub fn raycast_triangle_mesh_data(
         let hit = closest_hit.or_else(|| {
             result.and_then(|(tri_idx, _)| {
                 let (v0, v1, v2) = data.triangle_vertices(tri_idx)?;
-                ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, max_distance)
+                let h = ray_triangle(&local_ray, v0, v1, v2, max_distance)?;
+                Some((h.distance, h.point, h.normal))
             })
         });
 
@@ -854,11 +167,11 @@ pub fn raycast_triangle_mesh_data(
             let _ = face_idx; // Index available if needed
             let cutoff = closest_hit.as_ref().map_or(max_distance, |h| h.0);
 
-            if let Some((t, pt, normal)) =
-                ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, cutoff)
-            {
-                if closest_hit.is_none() || t < closest_hit.as_ref().map_or(f64::MAX, |h| h.0) {
-                    closest_hit = Some((t, pt, normal));
+            if let Some(hit) = ray_triangle(&local_ray, v0, v1, v2, cutoff) {
+                if closest_hit.is_none()
+                    || hit.distance < closest_hit.as_ref().map_or(f64::MAX, |h| h.0)
+                {
+                    closest_hit = Some((hit.distance, hit.point, hit.normal));
                 }
             }
         }
@@ -871,136 +184,142 @@ pub fn raycast_triangle_mesh_data(
     }
 }
 
-/// Ray–indexed-mesh intersection using BVH with early termination.
+/// Result of a scene-level ray cast, identifying both the hit geom and
+/// the intersection details.
+#[derive(Debug, Clone, Copy)]
+pub struct SceneRayHit {
+    /// Index of the geom that was hit.
+    pub geom_id: usize,
+    /// Intersection details in world coordinates.
+    pub hit: RaycastHit,
+}
+
+/// Build a world-space [`Pose`] from a geom's position and rotation matrix.
+fn geom_pose(data: &Data, geom_id: usize) -> Pose {
+    let pos = data.geom_xpos[geom_id];
+    let mat = data.geom_xmat[geom_id];
+    let quat = UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(mat));
+    Pose::from_position_rotation(Point3::from(pos), quat)
+}
+
+/// Track a closer hit, tightening the search cutoff.
+#[inline]
+fn track_closest(
+    hit: RaycastHit,
+    geom_id: usize,
+    cutoff: &mut f64,
+    closest: &mut Option<SceneRayHit>,
+) {
+    if hit.distance < *cutoff {
+        *cutoff = hit.distance;
+        *closest = Some(SceneRayHit { geom_id, hit });
+    }
+}
+
+/// Cast a ray against all geoms in the scene, returning the closest hit.
 ///
-/// This is the [`cf_geometry::IndexedMesh`] + [`cf_geometry::Bvh`] counterpart
-/// of [`raycast_triangle_mesh`]. It performs BVH-accelerated ray casting
-/// directly against the geometry types from `cf-geometry`.
-fn raycast_indexed_mesh(
-    pose: &Pose,
-    mesh: &cf_geometry::IndexedMesh,
-    bvh: &cf_geometry::Bvh,
+/// Matches MuJoCo's `mj_ray` API. Iterates over all geoms, applying optional
+/// filters, and returns the nearest intersection.
+///
+/// # Filters
+///
+/// - `bodyexclude` — skip all geoms attached to this body (e.g., to avoid
+///   self-intersection). To exclude static/worldbody geoms, pass `Some(0)`.
+/// - `geomgroup` — 6-element boolean array. A geom is skipped if
+///   `!geomgroup[geom.group]`. Pass `None` to include all groups.
+///
+/// # Returns
+///
+/// The closest [`SceneRayHit`], or `None` if no geom is hit within `max_distance`.
+#[must_use]
+pub fn raycast_scene(
+    model: &Model,
+    data: &Data,
     ray_origin: Point3<f64>,
     ray_direction: UnitVector3<f64>,
     max_distance: f64,
-) -> Option<RaycastHit> {
-    // Validate max_distance
-    if !max_distance.is_finite() || max_distance <= 0.0 {
-        return None;
-    }
-
-    // Transform ray to local space
-    let inv_pose = pose.inverse();
-    let local_origin = inv_pose.transform_point(&ray_origin);
-    let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
-
-    // Check for degenerate ray (zero direction after transform)
-    let dir_norm = local_dir.norm();
-    if dir_norm < 1e-10 {
-        return None;
-    }
-
-    // Helper: look up triangle vertices from mesh by face index
-    let tri_verts = |face_idx: usize| -> Option<(Point3<f64>, Point3<f64>, Point3<f64>)> {
-        let face = mesh.faces.get(face_idx)?;
-        Some((
-            mesh.vertices[face[0] as usize],
-            mesh.vertices[face[1] as usize],
-            mesh.vertices[face[2] as usize],
-        ))
-    };
-
-    // Precompute inverse direction for slab test
-    // IEEE 754: 1.0/0.0 = ±∞, which the slab test handles correctly for axis-aligned rays
-    let ray_dir_inv = Vector3::new(1.0 / local_dir.x, 1.0 / local_dir.y, 1.0 / local_dir.z);
-
-    // Track the closest hit for both result and early termination
-    let mut closest_hit: Option<(f64, Point3<f64>, Vector3<f64>)> = None;
+    bodyexclude: Option<usize>,
+    geomgroup: Option<&[bool; 6]>,
+) -> Option<SceneRayHit> {
+    let mut closest: Option<SceneRayHit> = None;
     let mut cutoff = max_distance;
 
-    // Use query_ray_closest with a callback that tests triangles and updates cutoff
-    let result = bvh.query_ray_closest(&local_origin, &ray_dir_inv, max_distance, |tri_idx| {
-        let (v0, v1, v2) = tri_verts(tri_idx)?;
-
-        if let Some((t, pt, normal)) =
-            ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, cutoff)
-        {
-            if t < cutoff {
-                cutoff = t;
-                closest_hit = Some((t, pt, normal));
-                return Some(t);
+    for geom_id in 0..model.ngeom {
+        // Body exclusion filter
+        if let Some(body_id) = bodyexclude {
+            if model.geom_body[geom_id] == body_id {
+                continue;
             }
         }
-        None
-    });
 
-    // Use either the callback result or our tracked closest_hit
-    let hit = closest_hit.or_else(|| {
-        result.and_then(|(tri_idx, _)| {
-            let (v0, v1, v2) = tri_verts(tri_idx)?;
-            ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, max_distance)
-        })
-    });
+        // Geom group filter
+        if let Some(groups) = geomgroup {
+            if let Some(&g) = model.geom_group.get(geom_id) {
+                let g = usize::try_from(g).unwrap_or(0);
+                if g < 6 && !groups[g] {
+                    continue;
+                }
+            }
+        }
 
-    hit.map(|(t, local_pt, local_normal)| {
-        let world_pt = pose.transform_point(&local_pt);
-        let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
-        RaycastHit::new(t, world_pt, world_normal)
-    })
-}
+        let pose = geom_pose(data, geom_id);
+        let geom_type = model.geom_type[geom_id];
 
-/// Möller–Trumbore ray-triangle intersection.
-fn ray_triangle_intersection(
-    ray_origin: Point3<f64>,
-    ray_dir: Vector3<f64>,
-    v0: Point3<f64>,
-    v1: Point3<f64>,
-    v2: Point3<f64>,
-    max_distance: f64,
-) -> Option<(f64, Point3<f64>, Vector3<f64>)> {
-    const EPSILON: f64 = 1e-10;
+        // Primitive shapes via geom_to_shape (Sphere, Box, Capsule, Cylinder, Ellipsoid)
+        if let Some(shape) = geom_to_shape(geom_type, model.geom_size[geom_id]) {
+            if let Some(hit) = raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff) {
+                track_closest(hit, geom_id, &mut cutoff, &mut closest);
+            }
+        }
 
-    let edge1 = v1 - v0;
-    let edge2 = v2 - v0;
-    let h = ray_dir.cross(&edge2);
-    let a = edge1.dot(&h);
-
-    if a.abs() < EPSILON {
-        return None; // Ray parallel to triangle
+        // Handle types not covered by geom_to_shape
+        match geom_type {
+            GeomType::Plane => {
+                // MuJoCo convention: plane normal = local +Z, passes through geom origin
+                let shape = Shape::plane(Vector3::z(), 0.0);
+                if let Some(hit) = raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff) {
+                    track_closest(hit, geom_id, &mut cutoff, &mut closest);
+                }
+            }
+            GeomType::Mesh => {
+                if let Some(mesh_id) = model.geom_mesh[geom_id] {
+                    if let Some(hit) = raycast_triangle_mesh_data(
+                        &pose,
+                        model.mesh_data[mesh_id].as_ref(),
+                        ray_origin,
+                        ray_direction,
+                        cutoff,
+                    ) {
+                        track_closest(hit, geom_id, &mut cutoff, &mut closest);
+                    }
+                }
+            }
+            GeomType::Hfield => {
+                if let Some(hfield_id) = model.geom_hfield[geom_id] {
+                    let shape = Shape::height_field(Arc::clone(&model.hfield_data[hfield_id]));
+                    if let Some(hit) =
+                        raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff)
+                    {
+                        track_closest(hit, geom_id, &mut cutoff, &mut closest);
+                    }
+                }
+            }
+            GeomType::Sdf => {
+                if let Some(shape_id) = model.geom_shape[geom_id] {
+                    let grid = model.shape_data[shape_id].sdf_grid_arc();
+                    let shape = Shape::sdf(grid);
+                    if let Some(hit) =
+                        raycast_shape(&shape, &pose, ray_origin, ray_direction, cutoff)
+                    {
+                        track_closest(hit, geom_id, &mut cutoff, &mut closest);
+                    }
+                }
+            }
+            _ => {} // Already handled by geom_to_shape above
+        }
     }
 
-    let f = 1.0 / a;
-    let s = ray_origin - v0;
-    let u = f * s.dot(&h);
-
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-
-    let q = s.cross(&edge1);
-    let v = f * ray_dir.dot(&q);
-
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-
-    let t = f * edge2.dot(&q);
-
-    if t < EPSILON || t > max_distance {
-        return None;
-    }
-
-    let point = ray_origin + ray_dir * t;
-    let cross = edge1.cross(&edge2);
-    let normal = safe_normalize(&cross, Vector3::z());
-    // Ensure normal points toward ray
-    let normal = if normal.dot(&ray_dir) > 0.0 {
-        -normal
-    } else {
-        normal
-    };
-
-    Some((t, point, normal))
+    closest
 }
 
 #[cfg(test)]
@@ -1011,12 +330,12 @@ mod tests {
 
     #[test]
     fn test_raycast_sphere_hit() {
-        let center = Point3::new(0.0, 0.0, 5.0);
-        let radius = 1.0;
+        let shape = Shape::sphere(1.0);
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_sphere(center, radius, origin, direction, 10.0).unwrap();
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0).unwrap();
 
         assert_relative_eq!(hit.distance, 4.0, epsilon = 1e-6);
         assert_relative_eq!(hit.point.z, 4.0, epsilon = 1e-6);
@@ -1025,35 +344,35 @@ mod tests {
 
     #[test]
     fn test_raycast_sphere_miss() {
-        let center = Point3::new(5.0, 0.0, 0.0);
-        let radius = 1.0;
+        let shape = Shape::sphere(1.0);
+        let pose = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_sphere(center, radius, origin, direction, 10.0);
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0);
         assert!(hit.is_none());
     }
 
     #[test]
     fn test_raycast_sphere_max_distance() {
-        let center = Point3::new(0.0, 0.0, 10.0);
-        let radius = 1.0;
+        let shape = Shape::sphere(1.0);
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 10.0));
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
         // Hit is at t=9, which is beyond max_distance=5
-        let hit = raycast_sphere(center, radius, origin, direction, 5.0);
+        let hit = raycast_shape(&shape, &pose, origin, direction, 5.0);
         assert!(hit.is_none());
     }
 
     #[test]
     fn test_raycast_plane_hit() {
-        let plane_point = Point3::new(0.0, 0.0, 5.0);
-        let plane_normal = Vector3::z();
+        let shape = Shape::plane(Vector3::z(), 0.0);
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_plane(&plane_point, &plane_normal, origin, direction, 10.0).unwrap();
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0).unwrap();
 
         assert_relative_eq!(hit.distance, 5.0, epsilon = 1e-6);
         assert_relative_eq!(hit.normal.z, -1.0, epsilon = 1e-6);
@@ -1061,23 +380,23 @@ mod tests {
 
     #[test]
     fn test_raycast_plane_parallel() {
-        let plane_point = Point3::new(0.0, 0.0, 5.0);
-        let plane_normal = Vector3::z();
+        let shape = Shape::plane(Vector3::z(), 0.0);
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::x()); // Parallel to plane
 
-        let hit = raycast_plane(&plane_point, &plane_normal, origin, direction, 10.0);
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0);
         assert!(hit.is_none());
     }
 
     #[test]
     fn test_raycast_box_hit() {
+        let shape = Shape::box_shape(Vector3::new(1.0, 1.0, 1.0));
         let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
-        let half_extents = Vector3::new(1.0, 1.0, 1.0);
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_box(&pose, half_extents, origin, direction, 10.0).unwrap();
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0).unwrap();
 
         assert_relative_eq!(hit.distance, 4.0, epsilon = 1e-6);
         assert_relative_eq!(hit.normal.z, -1.0, epsilon = 1e-6);
@@ -1085,24 +404,23 @@ mod tests {
 
     #[test]
     fn test_raycast_box_miss() {
+        let shape = Shape::box_shape(Vector3::new(1.0, 1.0, 1.0));
         let pose = Pose::from_position(Point3::new(5.0, 0.0, 5.0));
-        let half_extents = Vector3::new(1.0, 1.0, 1.0);
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_box(&pose, half_extents, origin, direction, 10.0);
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0);
         assert!(hit.is_none());
     }
 
     #[test]
     fn test_raycast_capsule_hit_body() {
+        let shape = Shape::capsule(2.0, 0.5);
         let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
-        let half_length = 2.0;
-        let radius = 0.5;
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_capsule(&pose, half_length, radius, origin, direction, 10.0).unwrap();
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0).unwrap();
 
         // Should hit the cap sphere at z = 5 - 2 - 0.5 = 2.5
         assert_relative_eq!(hit.distance, 2.5, epsilon = 1e-4);
@@ -1110,13 +428,12 @@ mod tests {
 
     #[test]
     fn test_raycast_cylinder_hit() {
+        let shape = Shape::cylinder(1.0, 0.5);
         let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
-        let half_length = 1.0;
-        let radius = 0.5;
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_cylinder(&pose, half_length, radius, origin, direction, 10.0).unwrap();
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0).unwrap();
 
         // Should hit the bottom cap at z = 5 - 1 = 4
         assert_relative_eq!(hit.distance, 4.0, epsilon = 1e-6);
@@ -1125,12 +442,12 @@ mod tests {
 
     #[test]
     fn test_raycast_ellipsoid_hit() {
+        let shape = Shape::ellipsoid(Vector3::new(1.0, 1.0, 2.0));
         let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
-        let radii = Vector3::new(1.0, 1.0, 2.0); // Stretched along Z
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_ellipsoid(&pose, radii, origin, direction, 10.0).unwrap();
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0).unwrap();
 
         // Should hit at z = 5 - 2 = 3
         assert_relative_eq!(hit.distance, 3.0, epsilon = 1e-4);
@@ -1150,82 +467,331 @@ mod tests {
 
     #[test]
     fn test_ray_triangle_intersection() {
-        let origin = Point3::new(0.0, 0.0, 1.0);
-        let dir = -Vector3::z();
+        let ray = Ray::new(Point3::new(0.0, 0.0, 1.0), -Vector3::z());
         let v0 = Point3::new(-1.0, -1.0, 0.0);
         let v1 = Point3::new(1.0, -1.0, 0.0);
         let v2 = Point3::new(0.0, 1.0, 0.0);
 
-        let hit = ray_triangle_intersection(origin, dir, v0, v1, v2, 10.0).unwrap();
+        let hit = ray_triangle(&ray, v0, v1, v2, 10.0).unwrap();
 
-        assert_relative_eq!(hit.0, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(hit.2.z, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(hit.distance, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(hit.normal.z, 1.0, epsilon = 1e-6);
     }
 
     // =========================================================================
-    // Edge case tests for NaN/zero/infinity handling
+    // Edge case tests
     // =========================================================================
 
     #[test]
-    fn test_raycast_sphere_nan_discriminant() {
-        // Test that NaN discriminant is handled properly
-        // This can happen with extreme values
-        let center = Point3::new(0.0, 0.0, 0.0);
-        let radius = 1.0;
+    fn test_raycast_sphere_inside() {
+        // Ray origin inside sphere — should return exit point
+        let shape = Shape::sphere(1.0);
+        let pose = Pose::identity();
         let origin = Point3::origin();
-        // Ray inside sphere pointing outward - should still return valid hit
         let direction = UnitVector3::new_normalize(Vector3::z());
-        let hit = raycast_sphere(center, radius, origin, direction, 10.0);
-        // Origin is inside sphere, so we should get the exit point
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0);
         assert!(hit.is_some());
     }
 
     #[test]
-    fn test_raycast_ellipsoid_zero_radius() {
-        // Ellipsoid with zero radius should return None
-        let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
-        let radii = Vector3::new(0.0, 1.0, 1.0); // Zero X radius
-        let origin = Point3::origin();
-        let direction = UnitVector3::new_normalize(Vector3::z());
+    fn test_raycast_flat_heightfield() {
+        // Flat heightfield at z=0 — ray from (0,0,3) in -Z should hit at distance ≈ 3.0
+        let hfield = cf_geometry::HeightFieldData::flat(10, 10, 1.0, 0.0);
+        let shape = Shape::height_field(Arc::new(hfield));
+        let pose = Pose::identity();
+        let origin = Point3::new(4.0, 4.0, 3.0); // center of 10×10 field
+        let direction = UnitVector3::new_normalize(-Vector3::z());
 
-        let hit = raycast_ellipsoid(&pose, radii, origin, direction, 10.0);
-        assert!(hit.is_none());
+        let hit = raycast_shape(&shape, &pose, origin, direction, 10.0).unwrap();
+
+        assert_relative_eq!(hit.distance, 3.0, epsilon = 0.01);
+        assert_relative_eq!(hit.point.z, 0.0, epsilon = 0.01);
+        // Normal should point upward (+Z) for a flat surface
+        assert!(
+            hit.normal.z > 0.9,
+            "normal should point up, got {:?}",
+            hit.normal
+        );
     }
 
     #[test]
-    fn test_raycast_plane_zero_normal() {
-        // Plane with zero normal should return None (degenerate)
-        let plane_point = Point3::new(0.0, 0.0, 5.0);
-        let plane_normal = Vector3::zeros(); // Degenerate normal
-        let origin = Point3::origin();
-        let direction = UnitVector3::new_normalize(Vector3::z());
+    #[should_panic(expected = "all radii must be positive")]
+    fn test_raycast_ellipsoid_zero_radius() {
+        // Ellipsoid with zero radius panics at construction (cf-geometry invariant)
+        let _shape = Shape::ellipsoid(Vector3::new(0.0, 1.0, 1.0));
+    }
 
-        let hit = raycast_plane(&plane_point, &plane_normal, origin, direction, 10.0);
-        assert!(hit.is_none());
+    #[test]
+    #[should_panic(expected = "normal must be non-zero")]
+    fn test_raycast_plane_zero_normal() {
+        // Plane with zero normal panics at construction (cf-geometry invariant)
+        let _shape = Shape::plane(Vector3::zeros(), 0.0);
     }
 
     #[test]
     fn test_raycast_max_distance_zero() {
         // Zero max_distance should return None
-        let center = Point3::new(0.0, 0.0, 0.5); // Very close
-        let radius = 1.0;
+        let shape = Shape::sphere(1.0);
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 0.5));
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_sphere(center, radius, origin, direction, 0.0);
-        // Hit point would be at distance < 0.0, so no hit within 0 distance
+        let hit = raycast_shape(&shape, &pose, origin, direction, 0.0);
         assert!(hit.is_none());
     }
 
     #[test]
     fn test_raycast_negative_max_distance() {
         // Negative max_distance should return None
-        let center = Point3::new(0.0, 0.0, 5.0);
-        let radius = 1.0;
+        let shape = Shape::sphere(1.0);
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
         let origin = Point3::origin();
         let direction = UnitVector3::new_normalize(Vector3::z());
 
-        let hit = raycast_sphere(center, radius, origin, direction, -10.0);
+        let hit = raycast_shape(&shape, &pose, origin, direction, -10.0);
         assert!(hit.is_none());
+    }
+
+    // =========================================================================
+    // Scene-level raycast tests
+    // =========================================================================
+
+    /// Push a sphere geom attached to `body_id` at the given local position.
+    fn push_sphere_geom(model: &mut Model, body_id: usize, pos: Vector3<f64>, radius: f64) {
+        model.geom_type.push(GeomType::Sphere);
+        model.geom_body.push(body_id);
+        model.geom_pos.push(pos);
+        model.geom_quat.push(UnitQuaternion::identity());
+        model.geom_size.push(Vector3::new(radius, radius, radius));
+        model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_condim.push(3);
+        model.geom_contype.push(1);
+        model.geom_conaffinity.push(1);
+        model.geom_margin.push(0.0);
+        model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
+        model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+        model.geom_solref.push([0.02, 1.0]);
+        model.geom_name.push(None);
+        model.geom_rbound.push(radius);
+        model.geom_mesh.push(None);
+        model.geom_hfield.push(None);
+        model.geom_shape.push(None);
+        model.geom_group.push(0);
+        model.geom_rgba.push([0.5, 0.5, 0.5, 1.0]);
+        model.ngeom += 1;
+    }
+
+    /// Build a minimal model+data with two sphere geoms along +Z.
+    /// Geom 0: sphere r=1 at z=3. Geom 1: sphere r=1 at z=8.
+    fn make_scene_model() -> (Model, Data) {
+        let mut model = Model::empty();
+        model.nbody = 1; // just world body
+
+        // Two sphere geoms — body IDs 1 and 2 (for exclusion tests)
+        push_sphere_geom(&mut model, 1, Vector3::zeros(), 1.0);
+        push_sphere_geom(&mut model, 2, Vector3::zeros(), 1.0);
+
+        let mut data = model.make_data();
+
+        // Manually place geom world positions (skip forward kinematics)
+        data.geom_xpos = vec![
+            Vector3::new(0.0, 0.0, 3.0), // geom 0 at z=3
+            Vector3::new(0.0, 0.0, 8.0), // geom 1 at z=8
+        ];
+        data.geom_xmat = vec![nalgebra::Matrix3::identity(); 2];
+
+        (model, data)
+    }
+
+    #[test]
+    fn test_raycast_scene_hits_closest() {
+        let (model, data) = make_scene_model();
+        let origin = Point3::origin();
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        let result = raycast_scene(&model, &data, origin, direction, 100.0, None, None);
+        let hit = result.unwrap();
+
+        // Closer sphere at z=3 (r=1) → hit at z=2
+        assert_eq!(hit.geom_id, 0);
+        assert_relative_eq!(hit.hit.distance, 2.0, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_raycast_scene_bodyexclude() {
+        let (model, data) = make_scene_model();
+        let origin = Point3::origin();
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        // Exclude body 1 (has geom 0) — should hit the farther sphere on body 2
+        let result = raycast_scene(&model, &data, origin, direction, 100.0, Some(1), None);
+        let hit = result.unwrap();
+
+        assert_eq!(hit.geom_id, 1);
+        assert_relative_eq!(hit.hit.distance, 7.0, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_raycast_scene_geomgroup_filter() {
+        let (mut model, mut data) = make_scene_model();
+
+        // Put geom 0 in group 1, geom 1 in group 0
+        model.geom_group[0] = 1;
+        model.geom_group[1] = 0;
+
+        // Re-set positions (make_scene_model already did this, but model changed)
+        data.geom_xpos = vec![Vector3::new(0.0, 0.0, 3.0), Vector3::new(0.0, 0.0, 8.0)];
+        data.geom_xmat = vec![nalgebra::Matrix3::identity(); 2];
+
+        let origin = Point3::origin();
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        // Only include group 0 → geom 0 (group 1) is filtered out
+        let groups = [true, false, false, false, false, false];
+        let result = raycast_scene(&model, &data, origin, direction, 100.0, None, Some(&groups));
+        let hit = result.unwrap();
+
+        assert_eq!(hit.geom_id, 1); // The farther sphere in group 0
+    }
+
+    #[test]
+    fn test_raycast_scene_no_hit() {
+        let (model, data) = make_scene_model();
+        let origin = Point3::origin();
+        // Fire ray in -Z — away from both spheres
+        let direction = UnitVector3::new_normalize(-Vector3::z());
+
+        let result = raycast_scene(&model, &data, origin, direction, 100.0, None, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_raycast_convex_mesh_not_bounding_sphere() {
+        // A long thin tetrahedron along Z. Its bounding sphere is much larger
+        // than the hull in the X/Y directions. A ray aimed at (0.8, 0, 5) in +Z
+        // would hit the bounding sphere but must miss the actual hull.
+        let vertices = vec![
+            Point3::new(0.0, 0.0, -2.0),
+            Point3::new(0.1, 0.0, 2.0),
+            Point3::new(-0.05, 0.087, 2.0),
+            Point3::new(-0.05, -0.087, 2.0),
+        ];
+        let hull = cf_geometry::convex_hull(&vertices, None).unwrap();
+        let shape = Shape::convex_mesh(hull);
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
+
+        // Ray at x=0.8 — well outside the thin hull but inside its bounding sphere
+        let origin = Point3::new(0.8, 0.0, 0.0);
+        let direction = UnitVector3::new_normalize(Vector3::z());
+        let hit = raycast_shape(&shape, &pose, origin, direction, 20.0);
+        assert!(hit.is_none(), "Ray should miss the thin hull");
+
+        // Ray at x=0 — should hit the hull
+        let origin_center = Point3::new(0.0, 0.0, 0.0);
+        let hit_center = raycast_shape(&shape, &pose, origin_center, direction, 20.0);
+        assert!(hit_center.is_some(), "Ray along center should hit the hull");
+    }
+
+    #[test]
+    fn test_raycast_scene_plane_geom() {
+        let mut model = Model::empty();
+        model.nbody = 1;
+
+        // Add a plane geom (ground at z=0)
+        model.geom_type.push(GeomType::Plane);
+        model.geom_body.push(0);
+        model.geom_pos.push(Vector3::zeros());
+        model.geom_quat.push(UnitQuaternion::identity());
+        model.geom_size.push(Vector3::new(10.0, 10.0, 0.01)); // MuJoCo plane size
+        model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_condim.push(3);
+        model.geom_contype.push(1);
+        model.geom_conaffinity.push(1);
+        model.geom_margin.push(0.0);
+        model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
+        model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+        model.geom_solref.push([0.02, 1.0]);
+        model.geom_name.push(None);
+        model.geom_rbound.push(0.0);
+        model.geom_mesh.push(None);
+        model.geom_hfield.push(None);
+        model.geom_shape.push(None);
+        model.geom_group.push(0);
+        model.geom_rgba.push([0.5, 0.5, 0.5, 1.0]);
+        model.ngeom = 1;
+
+        let mut data = model.make_data();
+        // Plane at z=2 with identity orientation (normal = +Z)
+        data.geom_xpos = vec![Vector3::new(0.0, 0.0, 2.0)];
+        data.geom_xmat = vec![nalgebra::Matrix3::identity()];
+
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        let result = raycast_scene(&model, &data, origin, direction, 100.0, None, None);
+        let hit = result.unwrap();
+        assert_eq!(hit.geom_id, 0);
+        assert_relative_eq!(hit.hit.distance, 2.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_raycast_scene_mesh_geom() {
+        let mut model = Model::empty();
+        model.nbody = 1;
+
+        // Build a simple triangle mesh (a quad made of 2 triangles at z=3)
+        let vertices = vec![
+            Point3::new(-1.0, -1.0, 0.0),
+            Point3::new(1.0, -1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(-1.0, 1.0, 0.0),
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 3];
+        let mesh_data = crate::mesh::TriangleMeshData::new(vertices, indices);
+
+        model.mesh_data.push(std::sync::Arc::new(mesh_data));
+        model.nmesh = 1;
+
+        // Add a mesh geom
+        model.geom_type.push(GeomType::Mesh);
+        model.geom_body.push(0);
+        model.geom_pos.push(Vector3::zeros());
+        model.geom_quat.push(UnitQuaternion::identity());
+        model.geom_size.push(Vector3::new(1.0, 1.0, 1.0));
+        model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_condim.push(3);
+        model.geom_contype.push(1);
+        model.geom_conaffinity.push(1);
+        model.geom_margin.push(0.0);
+        model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
+        model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+        model.geom_solref.push([0.02, 1.0]);
+        model.geom_name.push(None);
+        model.geom_rbound.push(1.5);
+        model.geom_mesh.push(Some(0)); // references mesh_data[0]
+        model.geom_hfield.push(None);
+        model.geom_shape.push(None);
+        model.geom_group.push(0);
+        model.geom_rgba.push([0.5, 0.5, 0.5, 1.0]);
+        model.ngeom = 1;
+
+        let mut data = model.make_data();
+        // Mesh at z=3
+        data.geom_xpos = vec![Vector3::new(0.0, 0.0, 3.0)];
+        data.geom_xmat = vec![nalgebra::Matrix3::identity()];
+
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        let result = raycast_scene(&model, &data, origin, direction, 100.0, None, None);
+        let hit = result.unwrap();
+        assert_eq!(hit.geom_id, 0);
+        assert_relative_eq!(hit.hit.distance, 3.0, epsilon = 1e-6);
     }
 }

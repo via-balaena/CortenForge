@@ -7,15 +7,12 @@
 use super::geom_distance::geom_distance;
 use super::postprocess::{sensor_write, sensor_write3, sensor_write4, sensor_write6};
 use super::sensor_body_id;
-use crate::collision::narrow::geom_to_shape;
-use crate::raycast::raycast_shape;
 use crate::types::flags::disabled;
 use crate::types::{
-    ActuatorTransmission, DISABLE_SENSOR, Data, ENABLE_SLEEP, GeomType, MjJointType, MjObjectType,
+    ActuatorTransmission, DISABLE_SENSOR, Data, ENABLE_SLEEP, MjJointType, MjObjectType,
     MjSensorDataType, MjSensorType, Model, SensorStage, SleepState,
 };
 use nalgebra::{Matrix3, Point3, UnitQuaternion, UnitVector3, Vector3};
-use sim_types::Pose;
 
 /// Resolve position and rotation matrix for a reference object.
 /// Mirrors MuJoCo's `get_xpos_xmat()` dispatch.
@@ -250,8 +247,8 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
 
             MjSensorType::Rangefinder => {
                 // Rangefinder: ray-cast along site's positive Z axis to find
-                // distance to nearest geom surface. Skips the geom attached to
-                // the sensor's parent body to avoid self-intersection.
+                // distance to nearest geom surface. Skips geoms on the
+                // sensor's parent body to avoid self-intersection.
                 if model.sensor_objtype[sensor_id] == MjObjectType::Site && objid < model.nsite {
                     let ray_origin = Point3::from(data.site_xpos[objid]);
                     // MuJoCo convention: rangefinder shoots along +Z of site frame
@@ -260,81 +257,29 @@ pub fn mj_sensor_pos(model: &Model, data: &mut Data) {
                         data.site_xmat[objid][(1, 2)],
                         data.site_xmat[objid][(2, 2)],
                     );
-                    let ray_dir = site_z;
 
-                    // Normalize ray direction (should already be unit, but be safe)
-                    let ray_norm = ray_dir.norm();
+                    let ray_norm = site_z.norm();
                     if ray_norm < 1e-10 {
-                        sensor_write(&mut data.sensordata, adr, 0, -1.0); // Invalid direction
+                        sensor_write(&mut data.sensordata, adr, 0, -1.0);
                     } else {
-                        let ray_direction = UnitVector3::new_normalize(ray_dir);
-
-                        // Determine max range: use cutoff if positive, otherwise large default
+                        let ray_direction = UnitVector3::new_normalize(site_z);
                         let max_range = if model.sensor_cutoff[sensor_id] > 0.0 {
                             model.sensor_cutoff[sensor_id]
                         } else {
-                            100.0 // Default max range
+                            100.0
                         };
-
-                        // Exclude geoms belonging to the sensor's parent body
                         let parent_body = model.site_body[objid];
 
-                        let mut closest_dist = -1.0_f64; // -1 means no hit (MuJoCo convention)
-
-                        for geom_id in 0..model.ngeom {
-                            // Skip geoms on the sensor's parent body (self-intersection)
-                            if model.geom_body[geom_id] == parent_body {
-                                continue;
-                            }
-
-                            // Build shape pose from geom world transform
-                            let geom_pos = data.geom_xpos[geom_id];
-                            let geom_mat = data.geom_xmat[geom_id];
-                            let geom_quat = UnitQuaternion::from_rotation_matrix(
-                                &nalgebra::Rotation3::from_matrix_unchecked(geom_mat),
-                            );
-                            let shape_pose =
-                                Pose::from_position_rotation(Point3::from(geom_pos), geom_quat);
-
-                            // Convert geom to collision shape for ray testing
-                            if let Some(shape) =
-                                geom_to_shape(model.geom_type[geom_id], model.geom_size[geom_id])
-                            {
-                                if let Some(hit) = raycast_shape(
-                                    &shape,
-                                    &shape_pose,
-                                    ray_origin,
-                                    ray_direction,
-                                    max_range,
-                                ) {
-                                    if closest_dist < 0.0 || hit.distance < closest_dist {
-                                        closest_dist = hit.distance;
-                                    }
-                                }
-                            }
-
-                            // Also handle mesh geoms
-                            if model.geom_type[geom_id] == GeomType::Mesh {
-                                if let Some(mesh_id) = model.geom_mesh[geom_id] {
-                                    let mesh_data = &model.mesh_data[mesh_id];
-                                    let shape_pose = Pose::from_position_rotation(
-                                        Point3::from(geom_pos),
-                                        geom_quat,
-                                    );
-                                    if let Some(hit) = crate::raycast::raycast_triangle_mesh_data(
-                                        &shape_pose,
-                                        mesh_data.as_ref(),
-                                        ray_origin,
-                                        ray_direction,
-                                        max_range,
-                                    ) {
-                                        if closest_dist < 0.0 || hit.distance < closest_dist {
-                                            closest_dist = hit.distance;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        let closest_dist = crate::raycast::raycast_scene(
+                            model,
+                            data,
+                            ray_origin,
+                            ray_direction,
+                            max_range,
+                            Some(parent_body),
+                            None,
+                        )
+                        .map_or(-1.0, |r| r.hit.distance);
 
                         sensor_write(&mut data.sensordata, adr, 0, closest_dist);
                     }

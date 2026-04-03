@@ -83,6 +83,10 @@ impl PhysicsShape for ShapeSphere {
         &self.grid
     }
 
+    fn sdf_grid_arc(&self) -> Arc<SdfGrid> {
+        self.grid.clone()
+    }
+
     fn evaluate_interval(&self, local_aabb: &Aabb) -> Option<(f64, f64)> {
         let (min_norm, max_norm) = norm_interval(local_aabb);
         Some((min_norm - self.radius, max_norm - self.radius))

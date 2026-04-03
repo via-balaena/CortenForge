@@ -874,46 +874,38 @@ many resting objects.
 constraint islands, wake-on-contact, wake-on-equality, island membership,
 `tree_asleep`, `nisland`, `nbody_awake`, `sleep="init"`, narrowphase skip.
 
-##### 10. `raycasting/` — Ray Queries and Shape Intersection
+##### 10. `raycasting/` — Ray Queries and Shape Intersection ✅
 
-The raycast module (1,231 LOC) supports ray intersection queries against all
-geometry types. Used internally by the Rangefinder sensor but also available
-as a direct API for visibility checks, distance queries, and custom sensors.
+The raycast module supports ray intersection queries against all geometry
+types. Used internally by the Rangefinder sensor but also available as a
+direct API for visibility checks, distance queries, and custom sensors.
 
-**Examples:**
+**Examples (4 — all implemented):**
 
-1. **basic-shapes** — Cast rays at each primitive type (sphere, box, capsule,
-   cylinder, ellipsoid, plane) and verify hit distance matches analytical
-   solution. Visualize rays as lines, hit points as dots. Shows the
-   `RaycastHit` return: distance, point, surface normal.
+1. **stress-test** ✅ — Headless validation (20 checks):
+   - Per-shape analytical intersection: sphere, plane, box, capsule,
+     cylinder, ellipsoid, heightfield, convex mesh (10 checks)
+   - Surface normal properties: unit-length, faces ray, perpendicular (3)
+   - Scene-level queries: nearest hit, body exclude, geom group filter,
+     scene miss (4)
+   - Edge cases: inside sphere, max distance clamp, zero max distance (3)
 
-2. **heightfield** — Cast rays down onto a terrain heightfield. The raycast
-   uses ray marching against the elevation data. Vary the terrain — flat,
-   sinusoidal hills, sharp ridges. Verify hit height matches terrain elevation
-   at the hit (x,y).
+2. **basic-shapes** ✅ — 6 primitives (sphere, box, capsule, cylinder,
+   ellipsoid, plane) struck by downward rays. Green hit dots + yellow
+   normal arrows. HUD shows distance and normal per shape. 5 checks.
 
-3. **scene-query** — Multiple objects in a scene. Cast a fan of rays from a
-   fixed origin. Find the nearest hit for each ray — this is how a LIDAR
-   sensor would work. Print distance profile (ray angle → hit distance).
-   Connect Rangefinder sensor to verify it matches the raycast API.
+3. **scene-query** ✅ — LIDAR fan of 36 rays from a central eye. Cyan hit
+   lines, red miss lines. Body exclusion demonstrated. HUD shows hit/miss
+   counts, nearest/farthest geom. 4 checks.
 
-4. **stress-test** — Headless validation (12+ checks):
-   - Sphere: hit distance = center_dist - radius
-   - Plane: hit distance = -dot(origin, normal) / dot(dir, normal)
-   - Box: hit distance matches slab intersection
-   - Miss returns None (ray parallel to plane, ray away from sphere)
-   - Surface normal perpendicular to surface at hit point
-   - Surface normal points toward ray origin (outward-facing)
-   - Heightfield hit z matches terrain(hit.x, hit.y)
-   - Capsule: hit distance matches sphere-swept-line
-   - Cylinder: hit distance matches quadratic solution
-   - Ellipsoid: hit distance matches transformed sphere
-   - Multiple shapes: nearest hit returned
-   - Ray origin inside shape: reports exit point
+4. **heightfield** ✅ — 8×8 ray grid onto sinusoidal terrain. MJCF hfield
+   loaded and replaced with `HeightFieldData::from_fn`. Dot cloud traces
+   the surface. 3 checks (hit rate, z-accuracy, gradient normals).
 
-**Concepts covered:** `raycast()` API, `RaycastHit` struct, analytical
-intersection (sphere, plane, box, capsule, cylinder, ellipsoid), ray marching
-(heightfield, SDF), BVH-accelerated mesh intersection, surface normals.
+**Concepts covered:** `raycast_shape`, `raycast_scene`, `RaycastHit`,
+`SceneRayHit`, analytical intersection (sphere, plane, box, capsule,
+cylinder, ellipsoid), ray marching (heightfield), convex mesh hull test,
+body exclusion, geom group filtering, surface normals.
 
 ##### 11. `derivatives/` — Finite-Difference Linearization
 
