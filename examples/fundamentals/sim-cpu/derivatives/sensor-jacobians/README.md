@@ -11,15 +11,16 @@ y_{t+1} = C * x_t + D * u_t
 
 ## What you see
 
-- **Metal rod** with an **orange tip sphere** — a single-link pendulum
-  tilted 0.5 rad from vertical with 0.1 N·m applied torque
+- **Heavy metal rod** (5 kg, damped) with an **orange tip sphere** — tilted
+  0.5 rad from vertical
 - Frozen for 3 seconds showing the C and D matrices on the HUD
-- Released with a 2.0 N·m torque pulse — the pendulum swings
+- Released with a brief 30 N·m torque kick (0.5s), then coasts under gravity
+- The pendulum swings out and back without spinning — no runaway rotation
 - HUD shows **predicted** sensor values (from C*dx + D*du) alongside
-  **actual** sensor readings, with prediction error
-- Near the linearization point the error is tiny; as the pendulum swings
-  further away, the linear prediction diverges — showing where the
-  linearization stops being trustworthy
+  **actual** sensor readings
+- **Per-swing average error** updates every full oscillation cycle (detected
+  via velocity zero-crossings) — error grows when the arm is far from the
+  linearization point, shrinks when it swings back
 
 ## Physics
 
@@ -29,18 +30,21 @@ plus one motor actuator. This gives:
 - C: 2x2 (nsensordata x 2*nv) — how sensor readings change with state
 - D: 2x1 (nsensordata x nu) — how sensor readings change with control
 
-C is nearly diagonal: the position sensor responds mainly to dq, the velocity
-sensor responds mainly to qvel. D is small — control affects sensors only
-indirectly through one timestep of dynamics.
+C is nearly diagonal: the position sensor responds mainly to dq (with a small
+dt=0.002 velocity coupling), the velocity sensor responds mainly to qvel (with
+gravity coupling in the position column). D is small — control affects sensors
+only indirectly through one timestep of dynamics (torque -> acceleration ->
+state change).
 
 | Parameter | Value |
 |-----------|-------|
-| DOF | 1 (hinge) |
+| DOF | 1 (hinge, damping=0.5) |
 | Actuators | 1 (motor) |
 | Sensors | 2 (jointpos, jointvel) |
 | State dim | 2 (dq, qvel) |
+| Body mass | 5.0 kg (CoM at 0.5 m) |
 | Linearization | qpos=0.5, ctrl=0.1 |
-| Torque pulse | 6.0 N·m at release (just overpowers gravity) |
+| Torque kick | 30 N·m for 0.5s, then coast |
 | FD method | centered, eps = 1e-6 |
 
 ## Validation
