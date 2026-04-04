@@ -2704,6 +2704,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-batch-sim-reset-subset"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-batch-sim-stress-test"
 version = "0.7.0"
 dependencies = [

@@ -201,6 +201,7 @@ members = [
     # Examples — fundamentals / sim-cpu / batch-sim
     "examples/fundamentals/sim-cpu/batch-sim/stress-test",
     "examples/fundamentals/sim-cpu/batch-sim/parameter-sweep",
+    "examples/fundamentals/sim-cpu/batch-sim/reset-subset",
 
     # Examples — fundamentals / sim-cpu / composites
     "examples/fundamentals/sim-cpu/composites/stress-test",
