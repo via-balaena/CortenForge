@@ -184,6 +184,7 @@ members = [
     "examples/fundamentals/sim-cpu/derivatives/sensor-jacobians",
     "examples/fundamentals/sim-cpu/derivatives/inverse-dynamics",
     "examples/fundamentals/sim-cpu/derivatives/convergence",
+    "examples/fundamentals/sim-cpu/derivatives/epsilon-vcurve",
 
     # Examples — fundamentals / sim-cpu / raycasting
     "examples/fundamentals/sim-cpu/raycasting/stress-test",
