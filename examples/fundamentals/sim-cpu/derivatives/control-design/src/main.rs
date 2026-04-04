@@ -322,7 +322,7 @@ fn setup(
 
 // ── State error ─────────────────────────────────────────────────────────────
 
-/// Compute state error relative to upright equilibrium (qpos[1] = 0).
+/// Compute state error relative to upright equilibrium (qpos\[1\] = 0).
 /// x_err = [cart_pos, pole_angle, cart_vel, pole_vel]
 fn state_error(data: &sim_core::Data) -> nalgebra::DVector<f64> {
     nalgebra::DVector::from_vec(vec![data.qpos[0], data.qpos[1], data.qvel[0], data.qvel[1]])
