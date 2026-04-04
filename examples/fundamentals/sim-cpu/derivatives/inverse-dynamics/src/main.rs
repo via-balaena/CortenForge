@@ -87,7 +87,7 @@ struct ReleaseState {
 
 /// Per-swing error stats for DfDa vs M, using joint 1 velocity zero-crossings.
 /// A double pendulum's motion is complex, but joint 1 still has a dominant
-/// oscillation — 2 zero-crossings of qvel[0] = one full swing.
+/// oscillation — 2 zero-crossings of qvel\[0\] = one full swing.
 #[derive(Resource)]
 struct SwingStats {
     // Accumulators for current swing
