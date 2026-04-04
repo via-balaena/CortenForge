@@ -284,14 +284,16 @@ fn setup(
         landed_at: [0.0; NUM_ENVS],
     });
 
-    // Camera: side view showing height + all 12 lanes
-    // Look at physics (0, 0, 2.5) = mid-height in Bevy Y-up
+    // Camera: front view, perpendicular to the lane row.
+    // Landers spread along Bevy Z (physics Y), height along Bevy Y (physics Z).
+    // azimuth=0 → camera on Bevy +X axis looking toward -X → lanes run left-right.
+    // Target slightly above ground so the landed line sits near screen center.
     spawn_example_camera(
         &mut commands,
-        physics_pos(0.0, 0.0, 2.5),
-        14.0,                        // distance
-        std::f32::consts::FRAC_PI_2, // azimuth (side view)
-        0.15,                        // elevation
+        physics_pos(0.0, 0.0, 0.8),
+        16.0, // distance — wide enough to see all 12 lanes
+        0.0,  // azimuth — looking along -X, lanes are horizontal
+        0.15, // elevation — slight upward angle
     );
 
     spawn_physics_hud(&mut commands);
