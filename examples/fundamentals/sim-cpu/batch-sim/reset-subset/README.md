@@ -5,8 +5,8 @@ constant thrust. A motor actuator on a vertical slide joint provides
 upward force. Too little thrust and they crash; too much and they hover
 forever. After each failure, `BatchSim::reset_where(mask)` snaps the
 lander back to 3 m and nudges its thrust toward the sweet spot
-(`m·g ≈ 9.81 N`). Over ~10 seconds every lander converges and lands
-softly.
+(`m·g ≈ 9.81 N`). Over ~30 seconds every lander converges and lands
+softly — turning green on touchdown.
 
 This is the RL "done + adapt" pattern: selectively reset failed
 environments, adjust their parameters, and let them try again — all
@@ -14,28 +14,27 @@ while successful environments continue uninterrupted.
 
 ## What you see
 
-- **Twelve landers** in parallel lanes, color-coded red (low thrust) to
-  blue (high thrust)
+- **Twelve landers** in parallel lanes, silver while in flight
 - Low-thrust landers plummet, crash, snap back to the top, and try again
   with slightly more thrust
 - High-thrust landers hover uselessly, snap back, and try again with
   slightly less thrust
-- Middle landers descend gracefully on their first attempt
-- One by one, every lane finds the right touch and settles on the ground
+- One by one, each lane finds the right touch and turns **green** on landing
+- The convergence takes ~30 seconds — you watch the learning happen
 
 ## Physics
 
 For mass `m = 1 kg` on a vertical slide joint:
 
 - Net acceleration: `a = thrust/m − g`
-- Soft landing requires: `|v_impact| < 4.0 m/s`
-- Landing window: thrust ∈ [7.1, 9.8] N
+- Soft landing requires: `|v_impact| < 2.0 m/s`
+- Landing window: thrust ∈ [9.1, 9.8] N (narrow — most envs miss on first try)
 
 Thrust adaptation after each failure:
 
-- **Crash:** proportional nudge `+= clamp(|v| × 0.5, 0.5, 3.0)` —
-  harder crashes get bigger corrections
-- **Hover:** fixed nudge `−= 1.5 N`
+- **Crash:** proportional nudge `+= clamp(|v| × 0.08, 0.08, 0.4)` —
+  small corrections for gradual convergence
+- **Hover:** fixed nudge `−= 0.25 N`
 
 ## Key API demonstrated
 
@@ -48,7 +47,7 @@ let mask: Vec<bool> = (0..12)
 // Adapt thrust BEFORE reset (uses pre-reset velocity)
 for i in 0..12 {
     if mask[i] && status[i] == Crashed {
-        thrusts[i] += (impact_vel[i].abs() * 0.5).clamp(0.5, 3.0);
+        thrusts[i] += (impact_vel[i].abs() * 0.08).clamp(0.08, 0.4);
     }
 }
 
@@ -58,7 +57,7 @@ batch.reset_where(&mask);
 
 ## Validation
 
-Four automated checks at t=10s:
+Four automated checks at t=35s:
 
 | Check | Expected |
 |-------|----------|
