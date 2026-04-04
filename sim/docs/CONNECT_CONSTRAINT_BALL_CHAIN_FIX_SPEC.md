@@ -1,7 +1,7 @@
 # Spec: Implicit Mass Correction for ImplicitFast/Implicit + Newton Solver
 
-**Status:** Draft
-**Blocks:** cable-catenary, cable-loaded examples
+**Status:** Complete
+**Commit:** `b1a34de`
 **Key file:** `sim/L0/core/src/forward/mod.rs` (1-condition change)
 
 ---
