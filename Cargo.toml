@@ -176,6 +176,16 @@ members = [
     "examples/fundamentals/sim-cpu/urdf-loading/damping-friction",
     "examples/fundamentals/sim-cpu/urdf-loading/error-handling",
 
+    # Examples — fundamentals / sim-cpu / derivatives
+    "examples/fundamentals/sim-cpu/derivatives/stress-test",
+    "examples/fundamentals/sim-cpu/derivatives/linearize-pendulum",
+    "examples/fundamentals/sim-cpu/derivatives/control-design",
+    "examples/fundamentals/sim-cpu/derivatives/hybrid-vs-fd",
+    "examples/fundamentals/sim-cpu/derivatives/sensor-jacobians",
+    "examples/fundamentals/sim-cpu/derivatives/inverse-dynamics",
+    "examples/fundamentals/sim-cpu/derivatives/convergence",
+    "examples/fundamentals/sim-cpu/derivatives/epsilon-vcurve",
+
     # Examples — fundamentals / sim-cpu / raycasting
     "examples/fundamentals/sim-cpu/raycasting/stress-test",
     "examples/fundamentals/sim-cpu/raycasting/basic-shapes",

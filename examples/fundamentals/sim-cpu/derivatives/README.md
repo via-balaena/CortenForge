@@ -1,0 +1,46 @@
+# Derivatives — Finite-Difference Linearization
+
+Eight examples demonstrating the derivatives module, which linearizes the
+discrete simulation step `x_{t+1} = f(x_t, u_t)` into state-space matrices
+A, B, C, D. These matrices are the foundation for LQR, MPC, iLQR/DDP,
+system identification, and any control design workflow.
+
+## API
+
+- **`mjd_transition_fd`** — pure finite-difference linearization. Perturbs
+  each state/control component, steps the simulation, measures differences.
+  Works with any integrator, captures contact transitions naturally.
+- **`mjd_transition_hybrid`** — hybrid analytical+FD. Uses analytical
+  velocity derivatives (from `qDeriv`) for velocity columns of A, FD only
+  for position columns. ~2x faster than pure FD.
+- **`mjd_transition`** — auto-dispatch (hybrid when available, else FD).
+- **`mjd_inverse_fd`** — FD Jacobians of inverse dynamics (DfDq, DfDv, DfDa).
+- **`DerivativeConfig`** — controls epsilon, centered vs forward differences,
+  hybrid mode, and sensor derivative computation.
+
+## Examples
+
+| Example | Concept | Checks |
+|---------|---------|--------|
+| [linearize-pendulum](linearize-pendulum/) | `mjd_transition_fd` — A, B matrices, eigenvalue analysis | 4 |
+| [control-design](control-design/) | LQR from linearization — A, B to closed-loop balance | 4 |
+| [hybrid-vs-fd](hybrid-vs-fd/) | `mjd_transition_hybrid` vs FD — accuracy + timing | 4 |
+| [sensor-jacobians](sensor-jacobians/) | C, D sensor derivative matrices | 5 |
+| [inverse-dynamics](inverse-dynamics/) | `mjd_inverse_fd` — DfDq, DfDv, DfDa, verify DfDa = M | 4 |
+| [convergence](convergence/) | eps + centered/forward tuning — O(eps) vs O(eps^2) | 4 |
+| [epsilon-vcurve](epsilon-vcurve/) | Optimal epsilon — truncation vs roundoff tradeoff | 4 |
+| [stress-test](stress-test/) | Headless: dimensions, eigenvalues, convergence, hybrid, sensors, inverse, integrators, quaternions, contacts | 32 |
+| | **Total** | **61** |
+
+## Run
+
+```
+cargo run -p example-derivatives-linearize-pendulum --release
+cargo run -p example-derivatives-control-design --release
+cargo run -p example-derivatives-hybrid-vs-fd --release
+cargo run -p example-derivatives-sensor-jacobians --release
+cargo run -p example-derivatives-inverse-dynamics --release
+cargo run -p example-derivatives-convergence --release
+cargo run -p example-derivatives-epsilon-vcurve --release
+cargo run -p example-derivatives-stress-test --release
+```
