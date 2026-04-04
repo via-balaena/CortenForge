@@ -13,18 +13,19 @@ gate 79/79. This document tracks post-v1.0 work only.
 
 | Metric | Count |
 |--------|------:|
-| Total DT items (DT-1 through DT-180) | 178 |
+| Total DT items (DT-1 through DT-181) | 179 |
 | Completed | 56 |
 | Retired | 1 |
-| Remaining (open) | 121 |
+| Remaining (open) | 122 |
 
 Numbers DT-145 and DT-149 were never assigned. DT-179/180 added by cf-design Phase 5.
+DT-181 added during derivatives examples (sensor FD optimization).
 
 ### Open items by tier
 
 | Tier | Count | Description |
 |------|------:|-------------|
-| T1 | 60 | Plan + implement (mechanical, parent spec defines the "what") |
+| T1 | 61 | Plan + implement (mechanical, parent spec defines the "what") |
 | T2 | 45 | Grouped spec (related items share one spec) |
 | T3 | 16 | Individual spec (algorithmic complexity, dedicated design needed) |
 
@@ -64,6 +65,7 @@ Numbers DT-145 and DT-149 were never assigned. DT-179/180 added by cf-design Pha
 | DT-157 | T2 | Analytical sensor derivatives -- per-sensor-type analytical Jacobians (CortenForge extension, not MuJoCo conformance) | 10f |
 | DT-158 | T2 | Inverse dynamics sensor derivatives (`DsDq`/`DsDv`/`DsDa` in `mjd_inverseFD`) | 10f |
 | DT-159 | T1 | `step()` to `forward_skip + integrate` migration for FD loops -- `skipsensor` optimization | 10f |
+| DT-181 | T1 | Standalone sensor-only re-evaluation (`mj_sensorPos` + `mj_sensorVel` + `mj_sensorAcc`) -- FD sensor derivatives currently call full `forward()` after each perturbed `step()` to get post-integration sensordata. MuJoCo only re-evaluates sensors. Adding a sensor-only path avoids redundant kinematics/forces recomputation. Depends on DT-159. | derivatives examples |
 
 ## Advanced Differentiation
 
@@ -334,7 +336,7 @@ number is accounted for.
 
 ## DT Number Cross-Reference
 
-Every DT number from DT-1 through DT-178 appears in this file. Numbers
+Every DT number from DT-1 through DT-181 appears in this file. Numbers
 DT-145 and DT-149 were never assigned.
 
 Open items appear in the themed sections above. Completed and retired items
