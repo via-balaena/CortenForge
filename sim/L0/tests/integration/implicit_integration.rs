@@ -1181,3 +1181,72 @@ fn test_implicit_derivative_consistency() {
         "Implicit dvdv analytical vs FD max_err={max_err}"
     );
 }
+
+// ============================================================================
+// ImplicitFast + Equality Constraint Stability
+// ============================================================================
+
+/// Regression test: ImplicitFast + connect constraint on ball-joint chain.
+///
+/// A 3-segment cable composite (count=4, ball joints) with a connect constraint
+/// pinning the far end to a fixed body. Without the implicit M_hat correction
+/// in the post-Newton acceleration step, the constraint solver produces
+/// over-sized accelerations (base M instead of M_hat = M + h·damping),
+/// causing velocity explosion (77K rad/s within 10ms).
+///
+/// The fix: `forward_acc()` always runs `mj_fwd_acceleration_implicitfast()`
+/// for ImplicitFast, even when Newton succeeded. This applies the
+/// velocity-derivative mass correction to qacc.
+#[test]
+fn test_implicitfast_connect_ball_chain_stability() {
+    let mjcf = r#"
+        <mujoco model="cable-connect-stability">
+            <option gravity="0 0 -9.81" timestep="0.001" integrator="implicitfast"
+                    solver="Newton" iterations="200" tolerance="1e-12"/>
+            <worldbody>
+                <body name="left" pos="-0.5 0 1">
+                    <composite type="cable" prefix="A" count="4 1 1"
+                               initial="none" curve="l 0 0" size="1.0">
+                        <joint kind="main" damping="0.5"/>
+                        <geom type="capsule" size="0.01" density="200"
+                              contype="0" conaffinity="0"/>
+                    </composite>
+                </body>
+                <body name="right" pos="0.5 0 1">
+                    <geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="AB_last" body2="right" anchor="0.33333 0 0"
+                         solref="0.002 1.0"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load cable+connect model");
+    assert_eq!(model.integrator, sim_core::Integrator::ImplicitFast);
+    let mut data = model.make_data();
+
+    // Step for 1 second (1000 steps at dt=0.001)
+    let mut max_qvel = 0.0_f64;
+    for step in 0..1000 {
+        data.step(&model).expect("step failed");
+
+        let step_max = data.qvel.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        max_qvel = max_qvel.max(step_max);
+
+        assert!(
+            step_max < 100.0,
+            "Velocity explosion at step {step}: max_qvel={step_max:.1} rad/s \
+             (before fix this hit 77,328 rad/s at ~10 steps)"
+        );
+    }
+
+    // After settling, velocities should be small (cable hanging under gravity
+    // with both ends constrained — it reaches a catenary equilibrium).
+    let final_max = data.qvel.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    assert!(
+        final_max < 10.0,
+        "Cable should be settling: final max_qvel={final_max:.4} rad/s"
+    );
+}
