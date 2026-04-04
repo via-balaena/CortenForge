@@ -83,7 +83,7 @@ fn initial_thrust(i: usize) -> f64 {
 // ── MJCF ─────────────────────────────────────────────────────────────────
 
 /// Lander: capsule body + flat cylinder base on a vertical slide joint.
-/// Motor actuator provides upward thrust via ctrl[0].
+/// Motor actuator provides upward thrust via `ctrl\[0\]`.
 const MJCF: &str = r#"
 <mujoco model="soft-landing">
   <compiler angle="radian"/>
