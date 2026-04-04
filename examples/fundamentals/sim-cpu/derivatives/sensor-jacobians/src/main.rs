@@ -44,11 +44,11 @@ const MJCF: &str = r#"
 
   <worldbody>
     <body name="link" pos="0 0 0">
-      <joint name="hinge" type="hinge" axis="0 1 0"/>
-      <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.1 0.1 0.001"/>
-      <geom name="rod" type="capsule" size="0.02"
+      <joint name="hinge" type="hinge" axis="0 1 0" damping="0.5"/>
+      <inertial pos="0 0 -0.5" mass="5.0" diaginertia="0.5 0.5 0.01"/>
+      <geom name="rod" type="capsule" size="0.025"
             fromto="0 0 0  0 0 -0.5" rgba="0.48 0.48 0.50 1"/>
-      <geom name="tip" type="sphere" size="0.05"
+      <geom name="tip" type="sphere" size="0.06"
             pos="0 0 -0.5" rgba="0.9 0.5 0.1 1"/>
     </body>
   </worldbody>
@@ -67,7 +67,8 @@ const MJCF: &str = r#"
 // ── Resources ─────────────────────────────────────────────────────────────
 
 const FREEZE_SECS: f64 = 3.0;
-const CTRL_PULSE: f64 = 2.0; // N·m — noticeable torque
+const CTRL_PULSE: f64 = 30.0; // N·m — brief impulse, then coast
+const PULSE_DURATION: f64 = 0.5; // seconds — short kick then ctrl=0
 
 #[derive(Resource)]
 struct SensorResult {
@@ -83,6 +84,23 @@ struct SensorResult {
 struct ReleaseState {
     released: bool,
     accumulator: f64,
+}
+
+/// Rolling average of prediction error, updated every full swing cycle.
+/// A full swing = 2 velocity zero-crossings (out and back).
+#[derive(Resource)]
+struct ErrorStats {
+    // Accumulators for current swing
+    pos_err_sum: f64,
+    vel_err_sum: f64,
+    sample_count: u32,
+    // Displayed values (frozen between swings)
+    avg_pos_err: f64,
+    avg_vel_err: f64,
+    swing_count: u32,
+    // Zero-crossing detection
+    prev_vel_sign: f64,
+    crossings: u32,
 }
 
 // ── Bevy App ────────────────────────────────────────────────────────────────
@@ -106,6 +124,16 @@ fn main() {
         .insert_resource(ReleaseState {
             released: false,
             accumulator: 0.0,
+        })
+        .insert_resource(ErrorStats {
+            pos_err_sum: 0.0,
+            vel_err_sum: 0.0,
+            sample_count: 0,
+            avg_pos_err: 0.0,
+            avg_vel_err: 0.0,
+            swing_count: 0,
+            prev_vel_sign: 0.0,
+            crossings: 0,
         })
         .add_systems(Startup, setup)
         .add_systems(Update, gated_step)
@@ -255,8 +283,12 @@ fn gated_step(
         release.released = true;
     }
 
-    // Apply torque pulse and step
-    data.ctrl[0] = CTRL_PULSE;
+    // Brief torque pulse, then coast under gravity + damping
+    if data.time < PULSE_DURATION {
+        data.ctrl[0] = CTRL_PULSE;
+    } else {
+        data.ctrl[0] = 0.0;
+    }
     release.accumulator += time.delta_secs_f64();
     while release.accumulator >= model.timestep {
         release.accumulator -= model.timestep;
@@ -273,6 +305,7 @@ fn update_hud(
     model: Option<Res<PhysicsModel>>,
     data: Option<Res<PhysicsData>>,
     mut hud: ResMut<PhysicsHud>,
+    mut stats: ResMut<ErrorStats>,
 ) {
     let Some(r) = sr else { return };
 
@@ -335,21 +368,52 @@ fn update_hud(
         let err_pos = (pred_pos - actual_pos).abs();
         let err_vel = (pred_vel - actual_vel).abs();
 
+        // Accumulate errors and detect swing cycles via velocity zero-crossings
+        stats.pos_err_sum += err_pos;
+        stats.vel_err_sum += err_vel;
+        stats.sample_count += 1;
+
+        let vel_sign = data.qvel[0].signum();
+        let sign_changed = stats.prev_vel_sign * vel_sign < 0.0; // opposite signs
+        if sign_changed {
+            stats.crossings += 1;
+            // 2 crossings = one full swing — update displayed averages
+            if stats.crossings >= 2 && stats.sample_count > 0 {
+                let n = f64::from(stats.sample_count);
+                stats.avg_pos_err = stats.pos_err_sum / n;
+                stats.avg_vel_err = stats.vel_err_sum / n;
+                stats.swing_count += 1;
+                stats.pos_err_sum = 0.0;
+                stats.vel_err_sum = 0.0;
+                stats.sample_count = 0;
+                stats.crossings = 0;
+            }
+        }
+        if vel_sign.abs() > 0.0 {
+            stats.prev_vel_sign = vel_sign;
+        }
+
         hud.section("Predicted vs Actual");
-        hud.raw("          predicted    actual      error".into());
-        hud.raw(format!(
-            "  pos   {pred_pos:>10.4}  {actual_pos:>10.4}  {err_pos:>10.2e}"
-        ));
-        hud.raw(format!(
-            "  vel   {pred_vel:>10.4}  {actual_vel:>10.4}  {err_vel:>10.2e}"
-        ));
+        hud.raw("          predicted    actual".into());
+        hud.raw(format!("  pos   {pred_pos:>10.4}  {actual_pos:>10.4}"));
+        hud.raw(format!("  vel   {pred_vel:>10.4}  {actual_vel:>10.4}"));
         hud.raw(String::new());
+
+        if stats.swing_count > 0 {
+            hud.raw(format!("Avg error (swing #{}):", stats.swing_count));
+            hud.raw(format!("  pos:  {:.2e}", stats.avg_pos_err));
+            hud.raw(format!("  vel:  {:.2e}", stats.avg_vel_err));
+        } else {
+            hud.raw("Avg error: waiting for first full swing...".into());
+        }
+        hud.raw(String::new());
+
         hud.scalar("sim time", data.time, 2);
         hud.scalar("|dx|", dx.norm(), 4);
 
-        if dx.norm() < 0.05 {
+        if stats.swing_count > 0 && stats.avg_pos_err < 0.01 && stats.avg_vel_err < 0.1 {
             hud.raw("Linear regime — prediction accurate".into());
-        } else {
+        } else if stats.swing_count > 0 {
             hud.raw("Nonlinear — prediction diverging".into());
         }
     }

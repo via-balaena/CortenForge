@@ -40,7 +40,7 @@ indirectly through one timestep of dynamics.
 | Sensors | 2 (jointpos, jointvel) |
 | State dim | 2 (dq, qvel) |
 | Linearization | qpos=0.5, ctrl=0.1 |
-| Torque pulse | 2.0 N·m at release |
+| Torque pulse | 6.0 N·m at release (just overpowers gravity) |
 | FD method | centered, eps = 1e-6 |
 
 ## Validation
