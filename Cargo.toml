@@ -181,6 +181,7 @@ members = [
     "examples/fundamentals/sim-cpu/derivatives/linearize-pendulum",
     "examples/fundamentals/sim-cpu/derivatives/control-design",
     "examples/fundamentals/sim-cpu/derivatives/hybrid-vs-fd",
+    "examples/fundamentals/sim-cpu/derivatives/sensor-jacobians",
 
     # Examples — fundamentals / sim-cpu / raycasting
     "examples/fundamentals/sim-cpu/raycasting/stress-test",

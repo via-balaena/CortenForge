@@ -1,0 +1,16 @@
+[package]
+name = "example-derivatives-sensor-jacobians"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sim-core = { workspace = true }
+sim-mjcf = { workspace = true }
+sim-bevy = { workspace = true }
+bevy = { workspace = true }
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true
