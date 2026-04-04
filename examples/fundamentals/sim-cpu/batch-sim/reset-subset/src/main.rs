@@ -8,7 +8,7 @@
 //! lander back to 3 m and nudges its thrust toward the sweet spot
 //! (`m·g ≈ 9.81 N`). Over ~30 s every lander converges and lands softly.
 //!
-//! Landers flash RED on crash, BLUE on hover, and turn GREEN on landing.
+//! Landers turn GREEN on landing — motion tells the rest of the story.
 //!
 //! Run: `cargo run -p example-batch-sim-reset-subset --release`
 
@@ -164,7 +164,7 @@ struct ResetValidation {
 fn main() {
     println!("=== CortenForge: Soft Landing ===");
     println!("  12 landers, each finding the right thrust to land gently");
-    println!("  Too little → crash (red) | Too much → hover (blue) | Just right → landed (green)");
+    println!("  Too little → crash | Too much → hover | Just right → landed (green)");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
