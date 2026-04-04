@@ -30,7 +30,7 @@ use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::physics_pos;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
+    HudText, PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera,
     validation_system,
 };
 use sim_bevy::materials::MetalPreset;
@@ -48,8 +48,9 @@ const REPORT_TIME: f64 = 10.0;
 const START_HEIGHT: f64 = 3.0;
 
 /// Soft-landing velocity threshold (m/s). Land slower than this → success.
-/// v_max² = 2·(g − thrust/m)·h → landing window width ≈ 2.67 N.
-const SOFT_VEL: f64 = 4.0;
+/// Landing window: thrust ∈ [m·(g − v²/2h), m·g] ≈ [8.3, 9.8] N (width ~1.5 N).
+/// Tight enough that only ~1 env lands on the first try.
+const SOFT_VEL: f64 = 3.0;
 
 /// Ground level — below this we evaluate landing.
 const GROUND: f64 = 0.1;
@@ -58,20 +59,20 @@ const GROUND: f64 = 0.1;
 const HOVER_VEL_THRESH: f64 = -0.3;
 const HOVER_TIME: f64 = 1.0;
 
-/// Hover thrust adaptation step (N).
-const HOVER_NUDGE: f64 = 1.5;
+/// Hover thrust adaptation step (N). Small so convergence is gradual.
+const HOVER_NUDGE: f64 = 0.8;
 
 /// Max crash thrust adaptation step (N).
-const CRASH_NUDGE_MAX: f64 = 3.0;
+const CRASH_NUDGE_MAX: f64 = 1.5;
 
 /// Mass of the lander (kg) — must match MJCF.
 const MASS: f64 = 1.0;
 
-/// Initial thrust levels: 2 N to 15 N.
+/// Initial thrust levels: 3 N to 14 N (clean 1 N spacing).
 /// Equilibrium is m·g ≈ 9.81 N. Low end crashes, high end hovers.
 fn initial_thrust(i: usize) -> f64 {
     let t = i as f64 / (NUM_ENVS - 1) as f64;
-    2.0 + t * 13.0 // 2.0 → 15.0 N
+    3.0 + t * 11.0 // 3.0 → 14.0 N
 }
 
 // ── MJCF ─────────────────────────────────────────────────────────────────
@@ -296,7 +297,30 @@ fn setup(
         0.15, // elevation — slight upward angle
     );
 
-    spawn_physics_hud(&mut commands);
+    // HUD in bottom-left (landers descend from top, so bottom is clearer)
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(10.0),
+                left: Val::Px(10.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+            GlobalZIndex(999),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                HudText,
+                Text::new(""),
+                TextFont {
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+            ));
+        });
 
     // Dummy PhysicsModel/PhysicsData for ValidationHarness
     let dummy_model = (*model).clone();
@@ -391,7 +415,7 @@ fn step_batch(mut res: ResMut<BatchResource>, time: Res<Time>) {
                     match res.status[i] {
                         LanderStatus::Crashed => {
                             // Proportional: harder crash → bigger nudge
-                            let nudge = (impact_vel[i].abs() * 0.5).clamp(0.5, CRASH_NUDGE_MAX);
+                            let nudge = (impact_vel[i].abs() * 0.3).clamp(0.3, CRASH_NUDGE_MAX);
                             res.thrusts[i] += nudge;
                         }
                         LanderStatus::Hovering => {
