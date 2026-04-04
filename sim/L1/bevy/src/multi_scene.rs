@@ -52,6 +52,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use cf_geometry::Shape;
+use sim_core::batch::BatchSim;
 use sim_core::{Data, GeomType, Model};
 
 use crate::convert::{quat_from_physics_matrix, vec3_from_vector};
@@ -195,6 +196,30 @@ pub fn sync_scene_geom_transforms(
             if idx < scene.data.geom_xpos.len() {
                 transform.translation = vec3_from_vector(&scene.data.geom_xpos[idx]) + scene.offset;
                 transform.rotation = quat_from_physics_matrix(&scene.data.geom_xmat[idx]);
+            }
+        }
+    }
+}
+
+/// Copy geom poses from a [`BatchSim`] into the corresponding [`PhysicsScenes`].
+///
+/// Call each frame **before** [`sync_scene_geom_transforms`] to keep
+/// visual geoms in sync with batch simulation state. Each `BatchSim`
+/// env maps to the `PhysicsScene` at the same index.
+///
+/// ```ignore
+/// fn my_sync(res: Res<MyBatchResource>, mut scenes: ResMut<PhysicsScenes>) {
+///     sync_batch_geoms(&res.batch, &mut scenes);
+/// }
+/// ```
+pub fn sync_batch_geoms(batch: &BatchSim, scenes: &mut PhysicsScenes) {
+    for i in 0..batch.len() {
+        if let (Some(env), Some(scene)) = (batch.env(i), scenes.get_mut(i)) {
+            for g in 0..env.geom_xpos.len() {
+                if g < scene.data.geom_xpos.len() {
+                    scene.data.geom_xpos[g] = env.geom_xpos[g];
+                    scene.data.geom_xmat[g] = env.geom_xmat[g];
+                }
             }
         }
     }

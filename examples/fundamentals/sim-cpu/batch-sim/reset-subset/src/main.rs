@@ -33,11 +33,13 @@ use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::physics_pos;
 use sim_bevy::examples::{
-    HudText, PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera,
-    validation_system,
+    HudText, PhysicsHud, ValidationHarness, insert_batch_validation_dummies, render_physics_hud,
+    spawn_example_camera, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
-use sim_bevy::multi_scene::{PhysicsScenes, spawn_scene_geoms_with, sync_scene_geom_transforms};
+use sim_bevy::multi_scene::{
+    PhysicsScenes, spawn_scene_geoms_with, sync_batch_geoms, sync_scene_geom_transforms,
+};
 use sim_core::batch::BatchSim;
 use sim_core::validation::{Check, print_report};
 
@@ -328,11 +330,7 @@ fn setup(
             ));
         });
 
-    // Dummy PhysicsModel/PhysicsData for ValidationHarness
-    let dummy_model = (*model).clone();
-    let dummy_data = dummy_model.make_data();
-    commands.insert_resource(sim_bevy::model_data::PhysicsModel(dummy_model));
-    commands.insert_resource(sim_bevy::model_data::PhysicsData(dummy_data));
+    insert_batch_validation_dummies(&mut commands, &model);
 }
 
 // ── Stepping + Reset ─────────────────────────────────────────────────────
@@ -466,16 +464,7 @@ fn sync_dummy_time(res: Res<BatchResource>, mut data: ResMut<sim_bevy::model_dat
 // ── Sync batch geom poses → PhysicsScenes for rendering ─────────────────
 
 fn sync_batch_to_scenes(res: Res<BatchResource>, mut scenes: ResMut<PhysicsScenes>) {
-    for i in 0..NUM_ENVS {
-        if let (Some(env), Some(scene)) = (res.batch.env(i), scenes.get_mut(i)) {
-            for g in 0..env.geom_xpos.len() {
-                if g < scene.data.geom_xpos.len() {
-                    scene.data.geom_xpos[g] = env.geom_xpos[g];
-                    scene.data.geom_xmat[g] = env.geom_xmat[g];
-                }
-            }
-        }
-    }
+    sync_batch_geoms(&res.batch, &mut scenes);
 }
 
 // ── Validation ───────────────────────────────────────────────────────────

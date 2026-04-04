@@ -26,12 +26,15 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::physics_pos;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsHud, ValidationHarness, insert_batch_validation_dummies, render_physics_hud,
+    spawn_example_camera, spawn_physics_hud, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
-use sim_bevy::multi_scene::{PhysicsScenes, spawn_scene_geoms, sync_scene_geom_transforms};
+use sim_bevy::multi_scene::{
+    PhysicsScenes, spawn_scene_geoms, sync_batch_geoms, sync_scene_geom_transforms,
+};
 use sim_core::batch::BatchSim;
 use sim_core::validation::{Check, print_report};
 
@@ -188,14 +191,14 @@ fn setup(
         let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
         let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(tip_colors[i]));
 
-        let x = (i as f32 - (NUM_ENVS as f32 - 1.0) / 2.0) * SPACING;
+        let lane = (i as f32 - (NUM_ENVS as f32 - 1.0) / 2.0) * SPACING;
         spawn_scene_geoms(
             &mut commands,
             &mut meshes,
             &mut materials,
             &mut scenes,
             id,
-            Vec3::new(x, 0.0, 0.0),
+            physics_pos(lane, 0.0, 0.0),
             &[
                 ("bracket", mat_bracket),
                 ("socket", mat_socket),
@@ -216,7 +219,7 @@ fn setup(
 
     spawn_example_camera(
         &mut commands,
-        Vec3::new(0.0, 0.0, -0.5),
+        physics_pos(0.0, -0.5, 0.0),
         11.0,
         std::f32::consts::FRAC_PI_2,
         0.25,
@@ -224,11 +227,7 @@ fn setup(
 
     spawn_physics_hud(&mut commands);
 
-    // Insert dummy PhysicsModel/PhysicsData for ValidationHarness display fn
-    let dummy_model = (*model).clone();
-    let dummy_data = dummy_model.make_data();
-    commands.insert_resource(sim_bevy::model_data::PhysicsModel(dummy_model));
-    commands.insert_resource(sim_bevy::model_data::PhysicsData(dummy_data));
+    insert_batch_validation_dummies(&mut commands, &model);
 }
 
 // ── Stepping ─────────────────────────────────────────────────────────────
@@ -271,16 +270,7 @@ fn sync_dummy_time(res: Res<BatchResource>, mut data: ResMut<sim_bevy::model_dat
 // ── Sync batch geom poses → PhysicsScenes for rendering ─────────────────
 
 fn sync_batch_to_scenes(res: Res<BatchResource>, mut scenes: ResMut<PhysicsScenes>) {
-    for i in 0..NUM_ENVS {
-        if let (Some(env), Some(scene)) = (res.batch.env(i), scenes.get_mut(i)) {
-            for g in 0..env.geom_xpos.len() {
-                if g < scene.data.geom_xpos.len() {
-                    scene.data.geom_xpos[g] = env.geom_xpos[g];
-                    scene.data.geom_xmat[g] = env.geom_xmat[g];
-                }
-            }
-        }
-    }
+    sync_batch_geoms(&res.batch, &mut scenes);
 }
 
 // ── Validation ───────────────────────────────────────────────────────────

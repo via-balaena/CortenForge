@@ -645,6 +645,19 @@ pub fn spawn_physics_hud(commands: &mut Commands) {
         });
 }
 
+/// Insert dummy [`PhysicsModel`] / [`PhysicsData`] resources so that
+/// [`validation_system`] can run in examples that use a `BatchSim` instead
+/// of a single Model/Data pair.
+///
+/// The caller must keep `PhysicsData.time` in sync with the batch
+/// simulation time each frame (e.g. `data.0.time = sim_time`).
+pub fn insert_batch_validation_dummies(commands: &mut Commands, model: &Model) {
+    let m = model.clone();
+    let d = m.make_data();
+    commands.insert_resource(PhysicsModel(m));
+    commands.insert_resource(PhysicsData(d));
+}
+
 /// Bevy system: render [`PhysicsHud`] lines as Node-based UI text.
 ///
 /// Add to `PostUpdate`:
