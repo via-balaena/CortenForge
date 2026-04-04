@@ -249,6 +249,19 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `raycasting/scene-query` | `example-raycasting-scene-query` | Working | LIDAR fan of 36 rays, body exclusion, geom group filter (4 checks) |
 | `raycasting/heightfield` | `example-raycasting-heightfield` | Working | Ray marching on sinusoidal terrain, dot cloud tracing surface (3 checks) |
 
+### Derivatives
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `derivatives/linearize-pendulum` | `example-derivatives-linearize-pendulum` | Working | `mjd_transition_fd` — A, B matrices, eigenvalue analysis (4 checks) |
+| `derivatives/control-design` | `example-derivatives-control-design` | Working | LQR from linearization — A, B to closed-loop cart-pole balance (4 checks) |
+| `derivatives/hybrid-vs-fd` | `example-derivatives-hybrid-vs-fd` | Working | `mjd_transition_hybrid` vs FD — accuracy + timing race (4 checks) |
+| `derivatives/sensor-jacobians` | `example-derivatives-sensor-jacobians` | Working | C, D sensor derivative matrices — predicted vs actual (5 checks) |
+| `derivatives/inverse-dynamics` | `example-derivatives-inverse-dynamics` | Working | `mjd_inverse_fd` — DfDq, DfDv, DfDa, verify DfDa = M (4 checks) |
+| `derivatives/convergence` | `example-derivatives-convergence` | Working | Centered O(eps^2) vs forward O(eps) — clock-hand sweep (4 checks) |
+| `derivatives/epsilon-vcurve` | `example-derivatives-epsilon-vcurve` | Working | Optimal epsilon — truncation vs roundoff V-curve (4 checks) |
+| `derivatives/stress-test` | `example-derivatives-stress-test` | Working | Headless validation (32 checks) |
+
 ### Other
 
 | Example | Package | Status | Notes |

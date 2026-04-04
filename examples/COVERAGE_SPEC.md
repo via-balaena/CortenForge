@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-04-02)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 117 examples (Track 1A + Track 1B layers 1–6)
+- sim-core + sim-mjcf + sim-urdf → 136 examples (Track 1A + Track 1B layers 1–9)
   - Joint types: hinge, slide, ball, free (4/4 — all covered)
   - Sensors: 31/31 types covered (Track 1A: 16, tendons: 3, joint-limits: 1, sensors-advanced: 11+)
   - Actuators: 10 examples, Muscles: 5 examples
@@ -27,7 +27,7 @@ integration tests — they find bugs that unit tests miss.
   - Sensors-advanced: 7 examples, 25 stress-test checks
   - Passive forces: 5 examples, 18 stress-test checks
 - Track 1B in progress: 20 subdirectories, ~70 examples — no stone unturned.
-  **9/20 subdirectories done:**
+  **12/20 subdirectories done:**
   - free-joint: 4 examples, 12 stress-test checks
   - keyframes: 3 examples, 12 stress-test checks
   - mocap-bodies: 4 examples, 12 stress-test checks
@@ -36,9 +36,12 @@ integration tests — they find bugs that unit tests miss.
   - tendons: 8 examples, 16 stress-test checks
   - sensors-advanced: 7 examples, 25 stress-test checks
   - passive-forces: 5 examples, 18 stress-test checks
-  Remaining 12: mesh collision, heightfield terrain,
-  sleep/wake, Hill muscle, adhesion, flex bodies, raycasting, collision
-  pairs, derivatives, composites, batch simulation, and plugins.
+  - sleep-wake: 4 examples, 18 stress-test checks
+  - raycasting: 4 examples, 20 stress-test checks
+  - derivatives: 8 examples (7 visual + 1 stress-test), 61 checks
+  Remaining 9: mesh collision, heightfield terrain,
+  Hill muscle, adhesion, flex bodies, collision
+  pairs, composites, batch simulation, and plugins.
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -132,9 +135,9 @@ integration tests — they find bugs that unit tests miss.
 
 ### Advanced Features
 - Energy conservation tracking ✓ (4 visual + 12-check stress-test)
-- **Sleep / wake / islands → Track 1B**
-- **Raycasting (1,231 LOC) → Track 1B**
-- **Derivatives (6,029 LOC) → Track 1B**
+- Sleep / wake / islands ✓ (4 examples, 18 stress-test checks)
+- Raycasting ✓ (4 examples, 20 stress-test checks)
+- Derivatives ✓ (8 examples, 61 checks: FD linearization, LQR, hybrid vs FD, sensor Jacobians, inverse dynamics, convergence, V-curve)
 - **Cable composites → Track 1B**
 - **Batch simulation (600 LOC) → Track 1B**
 - **Flex bodies (2,797 LOC, beta) → Track 1B**
@@ -501,8 +504,8 @@ fundamentals/
     heightfield/            # Terrain collision (441 LOC)
 
     # --- Layer 6: Passive forces and dynamics ---
-    passive-forces/         # Fluid drag, spring/damper tuning
-    sleep-wake/             # Island-based deactivation, performance
+    passive-forces/         # DONE — 5 examples, 18 stress-test checks
+    sleep-wake/             # DONE — 4 examples, 18 stress-test checks
 
     # --- Layer 7: Muscles and actuators (remaining) ---
     hill-muscle/            # HillMuscle extension (1,894 LOC)
@@ -512,9 +515,9 @@ fundamentals/
     flex-bodies/            # Soft bodies, cloth, cables, self-collision (2,797 LOC)
 
     # --- Layer 9: Advanced ---
-    raycasting/             # Ray queries, rangefinder, shape intersection (1,231 LOC)
+    raycasting/             # DONE — 4 examples, 20 stress-test checks
     collision-pairs/        # All primitive pair functions isolated (2,600+ LOC)
-    derivatives/            # FD linearization, A/B matrices, control design (6,029 LOC)
+    derivatives/            # DONE — 8 examples (7 visual + 1 stress-test), 61 checks
     composites/             # Cable composite bodies
     batch-sim/              # Parallel multi-environment simulation (600 LOC)
     plugins/                # Plugin system — custom sensors/forces (24,398 LOC)
