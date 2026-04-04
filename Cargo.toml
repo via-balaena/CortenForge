@@ -182,6 +182,8 @@ members = [
     "examples/fundamentals/sim-cpu/derivatives/control-design",
     "examples/fundamentals/sim-cpu/derivatives/hybrid-vs-fd",
     "examples/fundamentals/sim-cpu/derivatives/sensor-jacobians",
+    "examples/fundamentals/sim-cpu/derivatives/inverse-dynamics",
+    "examples/fundamentals/sim-cpu/derivatives/convergence",
 
     # Examples — fundamentals / sim-cpu / raycasting
     "examples/fundamentals/sim-cpu/raycasting/stress-test",

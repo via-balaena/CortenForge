@@ -2830,7 +2830,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-derivatives-convergence"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-derivatives-hybrid-vs-fd"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "nalgebra",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-derivatives-inverse-dynamics"
 version = "0.7.0"
 dependencies = [
  "bevy",
