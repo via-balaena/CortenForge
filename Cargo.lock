@@ -2705,6 +2705,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-composite-hanging-cable"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-composite-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-contact-condim-compare"
 version = "0.7.0"
 dependencies = [
