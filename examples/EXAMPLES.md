@@ -240,6 +240,15 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `sleep-wake/wake-on-contact` | `example-sleep-wake-contact` | Working | Init-sleep box wakes on ball impact (5 checks) |
 | `sleep-wake/island-groups` | `example-sleep-wake-islands` | Working | Two stacks — poke one, other stays asleep (5 checks) |
 
+### Composites
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `composites/stress-test` | `example-composite-stress-test` | Working | Headless validation (11 checks: body count, joints, exclusions, convergence, length, curves, independence) |
+| `composites/hanging-cable` | `example-composite-hanging-cable` | Working | 3 cables (5/10/20 segments) pinned at one end, resolution comparison (5 checks) |
+| `composites/cable-catenary` | `example-composite-cable-catenary` | Working | Both-ends-fixed gold cable, catenary sag (4 checks) |
+| `composites/cable-loaded` | `example-composite-cable-loaded` | Working | Midpoint 5N force, V-shape sag, red load indicator (4 checks) |
+
 ### Raycasting
 
 | Example | Package | Status | Notes |

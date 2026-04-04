@@ -518,7 +518,7 @@ fundamentals/
     raycasting/             # DONE — 4 examples, 20 stress-test checks
     collision-pairs/        # All primitive pair functions isolated (2,600+ LOC)
     derivatives/            # DONE — 8 examples (7 visual + 1 stress-test), 61 checks
-    composites/             # Cable composite bodies
+    composites/             # DONE — 4 examples (3 visual + 1 stress-test), 15 checks
     batch-sim/              # Parallel multi-environment simulation (600 LOC)
     plugins/                # Plugin system — custom sensors/forces (24,398 LOC)
 ```
@@ -955,38 +955,34 @@ system identification, and any control design workflow.
 analysis, LQR control design, perturbation convergence, quaternion chain
 rules, computational cost comparison.
 
-##### 12. `composites/` — Cable Composite Bodies
+##### 12. `composites/` — Cable Composite Bodies — DONE
 
 The composite system expands a single `<composite>` MJCF element into a chain
 of bodies with joints, geoms, and contact exclusions. Cable composites generate
 a chain of capsule bodies connected by ball joints — useful for ropes, cables,
 and flexible tubes.
 
-**Examples:**
+**Examples (4 total, 15 checks):**
 
-1. **hanging-cable** — A cable composite fixed at one end, hanging under
-   gravity. The cable sags into a catenary-like shape. Vary the number of
-   segments (5, 10, 20) — more segments = smoother curve. Demonstrates
-   `<composite type="cable" count="10">` with geometry and joint parameters.
+1. **stress-test** — Headless validation (11 checks): body count, joint
+   count/types, contact exclusions, gravity hang, convergence, length
+   preservation, cosine curve shape, multi-cable independence.
 
-2. **cable-tension** — A cable stretched between two anchor points. Apply a
-   downward force at the midpoint — the cable deflects. Measure tension via
-   joint forces. Compare against analytical catenary solution for small
-   deflections.
+2. **hanging-cable** — Three cables (5/10/20 segments) pinned at one end,
+   hanging under gravity. Resolution comparison — more segments = smoother
+   catenary. 5 checks.
 
-3. **stress-test** — Headless validation (8+ checks):
-   - Correct number of bodies generated (= count)
-   - Correct number of joints (ball joints between segments)
-   - Contact exclusions prevent self-collision of adjacent segments
-   - Cable hangs below anchor (all y positions < anchor y)
-   - Cable end position converges with more segments
-   - Cable preserves total length (sum of segment lengths)
-   - Deleted: deprecated composite types (grid, rope, cloth) return error
-   - Cable with curve="cosine" produces smooth initial shape
+3. **cable-catenary** — Gold cable spanning two pylons, pinned at both ends
+   (ball joint left, connect constraint right). Half-sine initial bulge for
+   slack, sags into catenary. 4 checks.
+
+4. **cable-loaded** — Cyan cable spanning two pylons with 5N downward force
+   at midpoint via `xfrc_applied`. V-shaped sag deeper than passive catenary.
+   Red sphere tracks the load point. 4 checks.
 
 **Concepts covered:** `<composite type="cable">`, segment count, joint
-parameters, contact exclusion generation, catenary shape, cable tension,
-curve types (line, cosine, sine).
+parameters, contact exclusion generation, catenary shape, `xfrc_applied`,
+equality connect constraints, curve types (line, sine).
 
 ##### 13. `batch-sim/` — Parallel Multi-Environment Simulation
 

@@ -198,6 +198,12 @@ members = [
     "examples/fundamentals/sim-cpu/sleep-wake/wake-on-contact",
     "examples/fundamentals/sim-cpu/sleep-wake/island-groups",
 
+    # Examples — fundamentals / sim-cpu / composites
+    "examples/fundamentals/sim-cpu/composites/stress-test",
+    "examples/fundamentals/sim-cpu/composites/hanging-cable",
+    "examples/fundamentals/sim-cpu/composites/cable-catenary",
+    "examples/fundamentals/sim-cpu/composites/cable-loaded",
+
     # Examples — fundamentals / sim-cpu / solvers
     "examples/fundamentals/sim-cpu/solvers/comparison",
     "examples/fundamentals/sim-cpu/solvers/comparison-visual",
