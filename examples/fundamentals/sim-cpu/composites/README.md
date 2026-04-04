@@ -12,6 +12,8 @@ for adjacent segments.
 |---------|---------|-------------|
 | [stress-test](stress-test/) | Headless validation | 8 checks (11 assertions): body count, joint types, contact exclusions, gravity hang, segment convergence, length preservation, curve shapes, multi-cable independence. |
 | [hanging-cable](hanging-cable/) | Resolution comparison | Three cables (5/10/20 segments) pinned at one end — more segments = smoother catenary curve. |
+| [cable-catenary](cable-catenary/) | Both-ends-fixed sag | Gold cable spanning two pylons, pinned at both ends. Sags under gravity into a catenary shape. |
+| [cable-loaded](cable-loaded/) | Midpoint force | Cyan cable spanning two pylons with a 5N downward force at the midpoint. V-shaped sag deeper than passive catenary. |
 
 ## Key ideas
 
@@ -24,6 +26,8 @@ for adjacent segments.
   line, `s` = sine, `c` = cosine, `0` = zero. Three values for x, y, z axes.
 - **`size="L A F"`:** Length along the curve axis, amplitude for sin/cos,
   frequency multiplier.
+- **Slack for catenary:** Rigid links summing to exactly the span can't sag.
+  Use `curve="l 0 s"` with a sine bulge to give path length > span.
 - **Contact exclusions:** Automatically generated for adjacent cable bodies
   (N-2 pairs for N-1 bodies) to prevent self-collision between neighbors.
 - **`prefix="X"`:** All generated elements get prefix X (bodies: XB_first,

@@ -2,7 +2,7 @@
 
 Standalone visual examples covering every major subsystem of the CortenForge
 CPU physics engine. Each example runs in a Bevy window with an orbit camera
-and prints a validation report to the console. 136 examples across 24 domains.
+and prints a validation report to the console. 140 examples across 25 domains.
 
 ## Domains
 
@@ -31,6 +31,7 @@ and prints a validation report to the console. 136 examples across 24 domains.
 | [`keyframes/`](keyframes/) | 3 | Save-restore, multi-body |
 | [`mocap-bodies/`](mocap-bodies/) | 4 | Drag target, push object, tilt-drop |
 | [`sleep-wake/`](sleep-wake/) | 4 | Sleep settle, wake on contact, island groups |
+| [`composites/`](composites/) | 4 | Cable composites — hanging, catenary, loaded, stress-test |
 | [`urdf-loading/`](urdf-loading/) | 10 | URDF→Model pipeline: all joint types, geometry, mimic, errors |
 | [`multi-scene-test/`](multi-scene-test/) | 1 | Multi-scene infrastructure test |
 
