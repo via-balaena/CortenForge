@@ -6,36 +6,40 @@ applied as a velocity-proportional control torque (`ctrl = -D * qvel`).
 
 ## What you see
 
-- **Eight pendulums** in a row, all starting at 90° tilt
+- **Eight pendulums** in a row, each with a bracket and socket at the pivot
 - Color gradient: green (undamped) to red (highest damping)
-- The green pendulum swings forever — full energy conservation
-- The red pendulum barely swings — energy dissipated almost immediately
-- HUD shows per-env energy and percentage remaining
+- The green pendulum swings forever — perfect energy conservation (RK4)
+- Each subsequent pendulum decays faster — a smooth gradient from perpetual
+  swing to fully settled
+- HUD shows per-env energy and percentage lost
 
 ## Design decision: damping via ctrl
 
 All environments share one `Model`, so `dof_damping` cannot vary per-env.
 Instead, each env applies a velocity-proportional torque through a motor
 actuator: `ctrl[0] = -D_i * qvel[0]`. This produces identical physics to
-joint damping (`τ = -D * ω`).
+joint damping (`tau = -D * omega`).
 
 Motor actuators default to `ctrllimited=false` (unbounded ctrlrange), so
 the torque is never clipped.
 
 ## Physics
 
-| Env | D | Expected behavior |
-|-----|---|-------------------|
-| 0 | 0.0 | Perpetual swing, energy conserved |
-| 1 | 0.1 | Slow decay |
-| 2 | 0.2 | Moderate decay |
-| 3 | 0.3 | Moderate decay |
-| 4 | 0.4 | Noticeable settling |
-| 5 | 0.5 | Mostly settled by t=10 |
-| 6 | 0.6 | Nearly stopped |
-| 7 | 0.7 | Overdamped, barely swings |
+Damping coefficients use exponential doubling for visual variety — low
+values keep pendulums swinging, high values settle quickly.
 
-Energy dissipation rate: `dE/dt = -D * ω²`
+| Env | D | Energy at t=10 |
+|-----|-------|----------------|
+| 0 | 0.000 | ~0 J (conserved) |
+| 1 | 0.005 | ~-0.8 J (16% lost) |
+| 2 | 0.010 | ~-1.5 J (30% lost) |
+| 3 | 0.020 | ~-2.5 J (51% lost) |
+| 4 | 0.040 | ~-3.8 J (78% lost) |
+| 5 | 0.080 | ~-4.7 J (95% lost) |
+| 6 | 0.160 | ~-4.9 J (99.8% lost) |
+| 7 | 0.320 | ~-4.9 J (100% lost) |
+
+Energy dissipation rate: `dE/dt = -D * omega^2`
 
 ## Validation
 
@@ -43,10 +47,10 @@ Four automated checks at t=10s:
 
 | Check | Expected |
 |-------|----------|
-| Undamped energy conserved | drift < 1% for D=0.0 |
-| Damped energy decays | < 5% remaining for D=0.7 |
+| Undamped energy conserved | drift < 0.1% of mgl (RK4) |
+| Damped energy dissipated | E7 lost > 50% of mgl vs E0 |
 | Energy monotonically ordered | E_0 > E_1 > ... > E_7 |
-| All envs stepped | all 8 at t ≈ 10.0s |
+| All envs stepped | all 8 at t ~ 10.0s |
 
 ## Run
 

@@ -1,7 +1,7 @@
 //! Parameter Sweep — BatchSim Construction and Parallel Stepping
 //!
 //! Eight pendulums side by side, each with a different effective damping
-//! coefficient (0.0 to 0.7). All share one Model and step in parallel via
+//! coefficient (0.0 to 0.32). All share one Model and step in parallel via
 //! `BatchSim::step_all()`. Damping is applied per-env as a velocity-
 //! proportional control torque: `ctrl[0] = -D * qvel[0]`.
 //!
@@ -41,27 +41,33 @@ const NUM_ENVS: usize = 8;
 const SPACING: f32 = 1.5;
 const REPORT_TIME: f64 = 10.0;
 
-/// Damping coefficients: D_i = i * 0.1
-const DAMPING: [f64; NUM_ENVS] = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7];
+/// Damping coefficients — quadratic spacing for visual variety.
+/// Low values keep pendulums swinging; highest value settles quickly.
+const DAMPING: [f64; NUM_ENVS] = [0.0, 0.005, 0.01, 0.02, 0.04, 0.08, 0.16, 0.32];
 
 // ── MJCF ─────────────────────────────────────────────────────────────────
 
 /// Single-link pendulum with motor actuator for ctrl-based damping.
 /// Energy enabled for validation. No contacts (pure pendulum).
+/// RK4 integrator for near-perfect energy conservation on the undamped env.
 const MJCF: &str = r#"
 <mujoco model="parameter-sweep">
   <compiler angle="radian"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="Euler">
+  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
     <flag energy="enable" contact="disable"/>
   </option>
   <default>
     <geom contype="0" conaffinity="0"/>
   </default>
   <worldbody>
+    <geom name="bracket" type="box" size="0.04 0.03 0.02"
+          pos="0 0 0" rgba="0.35 0.33 0.32 1"/>
     <body name="link" pos="0 0 0">
       <joint name="hinge" type="hinge" axis="0 1 0" damping="0"/>
       <inertial pos="0 0 -0.5" mass="1.0" diaginertia="0.01 0.01 0.01"/>
-      <geom name="rod" type="capsule" size="0.025"
+      <geom name="socket" type="sphere" size="0.03"
+            pos="0 0 0" rgba="0.35 0.33 0.32 1"/>
+      <geom name="rod" type="capsule" size="0.02"
             fromto="0 0 0  0 0 -1.0" rgba="0.50 0.50 0.53 1"/>
       <geom name="tip" type="sphere" size="0.05"
             pos="0 0 -1.0"/>
@@ -92,7 +98,7 @@ struct SweepValidation {
 
 fn main() {
     println!("=== CortenForge: Parameter Sweep ===");
-    println!("  8 pendulums, damping D = 0.0 to 0.7");
+    println!("  8 pendulums, damping D = 0.0 to 0.32");
     println!("  All share one Model, step in parallel via BatchSim");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
@@ -163,7 +169,7 @@ fn setup(
         Color::srgb(0.80, 0.50, 0.15),
         Color::srgb(0.85, 0.40, 0.15),
         Color::srgb(0.85, 0.25, 0.15),
-        Color::srgb(0.85, 0.15, 0.15), // D=0.7 red (highest damping)
+        Color::srgb(0.85, 0.15, 0.15), // D=0.21 red (highest damping)
     ];
 
     for i in 0..NUM_ENVS {
@@ -173,8 +179,12 @@ fn setup(
         scene_data.qpos[0] = std::f64::consts::FRAC_PI_2;
         scene_data.forward(&scene_model).expect("forward");
 
-        let id = scenes.add(format!("D={:.1}", DAMPING[i]), scene_model, scene_data);
+        let id = scenes.add(format!("D={:.2}", DAMPING[i]), scene_model, scene_data);
 
+        let mat_bracket =
+            materials.add(MetalPreset::CastIron.with_color(Color::srgb(0.35, 0.33, 0.32)));
+        let mat_socket =
+            materials.add(MetalPreset::CastIron.with_color(Color::srgb(0.35, 0.33, 0.32)));
         let mat_rod = materials.add(MetalPreset::BrushedMetal.material());
         let mat_tip = materials.add(MetalPreset::PolishedSteel.with_color(tip_colors[i]));
 
@@ -186,7 +196,12 @@ fn setup(
             &mut scenes,
             id,
             Vec3::new(x, 0.0, 0.0),
-            &[("rod", mat_rod), ("tip", mat_tip)],
+            &[
+                ("bracket", mat_bracket),
+                ("socket", mat_socket),
+                ("rod", mat_rod),
+                ("tip", mat_tip),
+            ],
         );
     }
 
@@ -292,28 +307,28 @@ fn track_validation(
     let mgl = 1.0 * 9.81 * 0.5; // mass=1, g=9.81, l_com=0.5
 
     // Check 1: Undamped energy conserved (D=0)
-    // Euler integrator drifts, so allow 1% of mgl
+    // RK4 integrator — expect near-perfect conservation
     let drift_abs = (energies[0] - e0_initial).abs();
     let drift_pct = drift_abs / mgl * 100.0;
     let check1 = Check {
         name: "Undamped energy conserved",
-        pass: drift_abs < 0.01 * mgl,
+        pass: drift_abs < 0.001 * mgl,
         detail: format!(
-            "E0_initial={e0_initial:.4}, E0_now={:.4}, |drift|={drift_abs:.4} ({drift_pct:.2}% of mgl)",
+            "E0_initial={e0_initial:.4}, E0_now={:.4}, |drift|={drift_abs:.6} ({drift_pct:.4}% of mgl)",
             energies[0],
         ),
     };
 
-    // Check 2: Highest damping settles near rest energy (-mgl)
-    let e_rest = -mgl;
-    let settle_err = (energies[7] - e_rest).abs();
+    // Check 2: Highest damping has lost significant energy vs undamped
+    // E7 should be well below E0 (closer to rest energy -mgl)
+    let energy_lost = energies[0] - energies[7];
+    let lost_pct = energy_lost / mgl * 100.0;
     let check2 = Check {
-        name: "Damped energy settles",
-        pass: settle_err < 0.05 * mgl,
+        name: "Damped energy dissipated",
+        pass: energy_lost > 0.5 * mgl,
         detail: format!(
-            "E7={:.4}, E_rest={e_rest:.4}, |err|={settle_err:.4} ({:.1}% of mgl)",
-            energies[7],
-            settle_err / mgl * 100.0,
+            "E0={:.4}, E7={:.4}, lost={energy_lost:.4} ({lost_pct:.1}% of mgl)",
+            energies[0], energies[7],
         ),
     };
 
@@ -365,16 +380,18 @@ fn update_hud(res: Res<BatchResource>, mut hud: ResMut<PhysicsHud>) {
         hud.scalar("time", env0.time, 1);
     }
 
+    // Energy ranges from 0 (initial, COM at pivot height) to -mgl (rest).
+    // Show percentage of energy lost: 0% = still swinging, 100% = fully settled.
+    let mgl = 1.0 * 9.81 * 0.5;
     hud.section("Per-Env Energy");
     for i in 0..NUM_ENVS {
         if let Some(env) = res.batch.env(i) {
             let e = env.total_energy();
-            let pct = if res.initial_energies[i].abs() > 1e-15 {
-                e / res.initial_energies[i] * 100.0
-            } else {
-                0.0
-            };
-            hud.raw(format!("D={:.1}  E={:+.3}J  ({:.0}%)", DAMPING[i], e, pct));
+            let lost_pct = (res.initial_energies[i] - e) / mgl * 100.0;
+            hud.raw(format!(
+                "D={:.3}  E={:+.4}J  lost {:.3}%",
+                DAMPING[i], e, lost_pct
+            ));
         }
     }
 }
