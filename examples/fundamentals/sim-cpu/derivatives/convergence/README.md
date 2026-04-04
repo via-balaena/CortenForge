@@ -5,40 +5,40 @@ perturbation size `eps` and the differencing scheme. This example shows the
 fundamental tradeoff:
 
 - **Centered differences** `(f(x+e) - f(x-e)) / 2e` have O(eps^2) error —
-  halving eps reduces error by 4x
+  reducing eps by 10x reduces error by 100x
 - **Forward differences** `(f(x+e) - f(x)) / e` have O(eps) error —
-  halving eps only halves the error
-
-The HUD displays a convergence table at five epsilon values (1e-3 through 1e-7),
-with error ratios between consecutive rows confirming the theoretical rates:
-~100x reduction per decade for centered, ~10x for forward.
+  reducing eps by 10x only reduces error by 10x
 
 ## What you see
 
-- **Single pendulum** (1 hinge, Y-axis) with motor actuator, frozen at
-  q=0.8 rad — this is a static snapshot, not a simulation
-- The HUD shows the convergence table: `eps | centered error | forward error`
-- Below the table, error ratios between consecutive epsilon values show the
-  convergence rate
+- **Single pendulum** (1 hinge, Y-axis) with motor actuator, ticking like a
+  clock hand through 12 positions around the circle
+- Frozen for 3 seconds at 1 o'clock (210 deg), then ticks to the next hour
+  every 2 seconds
+- At each position the convergence table is recomputed — the ratio row shows
+  centered ~100x and forward ~10x regardless of configuration
 - Centered error is always smaller than forward error at every epsilon
 
 ## Physics
 
 The model is deliberately simple — one DOF, one actuator — so the A matrix is
 just 2x2 and B is 2x1. The focus is on numerical analysis, not the dynamics.
-A non-zero state (q=0.8, qvel=0.5, ctrl=0.3) ensures nontrivial derivative
-values that exercise the convergence behavior.
+The clock-hand sweep demonstrates that convergence rates are a property of the
+differencing scheme, not the particular state.
 
-Ground truth is defined as centered differences at eps=1e-7 (the smallest
-tested value). All other results are compared against this reference.
+Ground truth is centered differences at eps=1e-8. Test values (1e-2, 1e-3) are
+well above the model's precision floor (~1e-7), keeping ratios clean. At
+smaller epsilons, centered convergence stalls as roundoff overtakes truncation
+error — that tradeoff is a separate concept (the "FD V-curve").
 
 | Parameter | Value |
 |-----------|-------|
-| DOF | 1 (hinge) |
+| DOF | 1 (hinge, damping=0) |
 | Actuators | 1 (motor) |
-| State | qpos=0.8, qvel=0.5, ctrl=0.3 |
-| Epsilon range | 1e-3, 1e-4, 1e-5, 1e-6 |
-| Ground truth | centered, eps=1e-7 |
+| Test epsilons | 1e-2, 1e-3 |
+| Ground truth | centered, eps=1e-8 |
+| Clock positions | 12, starting at 1 o'clock (210 deg) |
+| Tick interval | 2s wall time |
 
 ## Validation
 
