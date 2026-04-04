@@ -26,8 +26,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsDelay, PhysicsHud, ValidationHarness, physics_delay_elapsed, render_physics_hud,
+    spawn_example_camera, spawn_physics_hud, tick_physics_delay, validation_system,
 };
 use sim_bevy::model_data::{
     PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
@@ -88,23 +88,6 @@ const MJCF: &str = r#"
 </mujoco>
 "#;
 
-// ── Startup delay ───────────────────────────────────────────────────────────
-
-/// Freeze physics for a few seconds so the user can see the initial position.
-#[derive(Resource)]
-struct StartDelay {
-    elapsed: f32,
-    duration: f32,
-}
-
-fn tick_delay(time: Res<Time>, mut delay: ResMut<StartDelay>) {
-    delay.elapsed += time.delta_secs();
-}
-
-fn delay_elapsed(delay: Res<StartDelay>) -> bool {
-    delay.elapsed >= delay.duration
-}
-
 // ── Cable body indices ──────────────────────────────────────────────────────
 
 /// Body layout (from MJCF expansion):
@@ -151,7 +134,7 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<PhysicsAccumulator>()
         .init_resource::<PhysicsHud>()
-        .init_resource::<HangValidation>()
+        .insert_resource(PhysicsDelay::new(2.0))
         .insert_resource(
             ValidationHarness::new()
                 .report_at(15.0)
@@ -169,9 +152,8 @@ fn main() {
                     )
                 }),
         )
-        .insert_resource(StartDelay { elapsed: 0.0, duration: 2.0 })
         .add_systems(Startup, setup)
-        .add_systems(Update, (tick_delay, step_physics_realtime.run_if(delay_elapsed)).chain())
+        .add_systems(Update, (tick_physics_delay, step_physics_realtime.run_if(physics_delay_elapsed)).chain())
         .add_systems(
             PostUpdate,
             (
@@ -246,21 +228,14 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
 
 const ANCHOR_Z: f64 = 1.2;
 
-#[derive(Resource, Default)]
-struct HangValidation {
-    reported: bool,
-}
-
 fn hang_diagnostics(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    harness: Res<ValidationHarness>,
-    mut val: ResMut<HangValidation>,
+    mut harness: ResMut<ValidationHarness>,
 ) {
-    if !harness.reported() || val.reported {
+    if !harness.take_reported() {
         return;
     }
-    val.reported = true;
 
     let info = CableInfo::from_model(&model);
 

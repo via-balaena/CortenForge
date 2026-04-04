@@ -47,6 +47,51 @@ pub struct DiagTimer {
     pub last: f64,
 }
 
+// ── Physics Delay ─────────────────────────────────────────────────────────
+
+/// Startup delay: freezes physics for a few seconds so the user can see the
+/// initial configuration before simulation begins.
+///
+/// Insert as a resource with `PhysicsDelay::new(seconds)`, add
+/// [`tick_physics_delay`] and gate your stepping with
+/// [`physics_delay_elapsed`]:
+///
+/// ```ignore
+/// .insert_resource(PhysicsDelay::new(2.0))
+/// .add_systems(Update, (
+///     tick_physics_delay,
+///     step_physics_realtime.run_if(physics_delay_elapsed),
+/// ).chain())
+/// ```
+#[derive(Resource)]
+pub struct PhysicsDelay {
+    elapsed: f32,
+    duration: f32,
+}
+
+impl PhysicsDelay {
+    /// Create a new delay that freezes physics for `duration` seconds.
+    #[must_use]
+    pub fn new(duration: f32) -> Self {
+        Self {
+            elapsed: 0.0,
+            duration,
+        }
+    }
+}
+
+/// Bevy system: tick the [`PhysicsDelay`] timer each frame.
+#[allow(clippy::needless_pass_by_value)]
+pub fn tick_physics_delay(time: Res<Time>, mut delay: ResMut<PhysicsDelay>) {
+    delay.elapsed += time.delta_secs();
+}
+
+/// Run condition: returns `true` once the [`PhysicsDelay`] has elapsed.
+#[allow(clippy::needless_pass_by_value, clippy::must_use_candidate)]
+pub fn physics_delay_elapsed(delay: Res<PhysicsDelay>) -> bool {
+    delay.elapsed >= delay.duration
+}
+
 /// Spawn a standard example camera and two-point lighting rig.
 ///
 /// Creates an [`OrbitCamera`] aimed at `target` with the given `distance`,
@@ -168,6 +213,7 @@ pub struct ValidationHarness {
     report_time: f64,
     print_interval: f64,
     reported: bool,
+    custom_reported: bool,
     last_print: f64,
     display: Option<fn(&Model, &Data) -> String>,
 }
@@ -183,6 +229,7 @@ impl ValidationHarness {
             report_time: 15.0,
             print_interval: 1.0,
             reported: false,
+            custom_reported: false,
             last_print: 0.0,
             display: None,
         }
@@ -345,6 +392,26 @@ impl ValidationHarness {
     #[must_use]
     pub fn reported(&self) -> bool {
         self.reported
+    }
+
+    /// Returns `true` exactly once after the harness report fires.
+    ///
+    /// Use this in custom diagnostics systems to run your own checks at
+    /// report time without needing a separate `{ reported: bool }` resource:
+    ///
+    /// ```ignore
+    /// fn my_diagnostics(mut harness: ResMut<ValidationHarness>, ...) {
+    ///     if !harness.take_reported() { return; }
+    ///     // ... custom checks, print_report, etc.
+    /// }
+    /// ```
+    pub fn take_reported(&mut self) -> bool {
+        if self.reported && !self.custom_reported {
+            self.custom_reported = true;
+            true
+        } else {
+            false
+        }
     }
 }
 

@@ -26,8 +26,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsDelay, PhysicsHud, ValidationHarness, physics_delay_elapsed, render_physics_hud,
+    spawn_example_camera, spawn_physics_hud, tick_physics_delay, validation_system,
 };
 use sim_bevy::model_data::{
     PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
@@ -84,22 +84,6 @@ const MJCF: &str = r#"
 const ANCHOR_Z: f64 = 1.2;
 const LOAD_FORCE: f64 = 5.0; // Newtons downward at midpoint
 
-// ── Startup delay ───────────────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct StartDelay {
-    elapsed: f32,
-    duration: f32,
-}
-
-fn tick_delay(time: Res<Time>, mut delay: ResMut<StartDelay>) {
-    delay.elapsed += time.delta_secs();
-}
-
-fn delay_elapsed(delay: Res<StartDelay>) -> bool {
-    delay.elapsed >= delay.duration
-}
-
 // ── Midpoint body index ────────────────────────────────────────────────────
 
 #[derive(Resource)]
@@ -127,11 +111,7 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<PhysicsAccumulator>()
         .init_resource::<PhysicsHud>()
-        .init_resource::<LoadedValidation>()
-        .insert_resource(StartDelay {
-            elapsed: 0.0,
-            duration: 2.0,
-        })
+        .insert_resource(PhysicsDelay::new(2.0))
         .insert_resource(
             ValidationHarness::new()
                 .report_at(15.0)
@@ -149,10 +129,10 @@ fn main() {
         .add_systems(
             Update,
             (
-                tick_delay,
+                tick_physics_delay,
                 (apply_midpoint_load, step_physics_realtime)
                     .chain()
-                    .run_if(delay_elapsed),
+                    .run_if(physics_delay_elapsed),
             )
                 .chain(),
         )
@@ -285,22 +265,15 @@ fn compute_sag(data: &sim_core::Data, first: usize, last: usize) -> (f64, usize)
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
-#[derive(Resource, Default)]
-struct LoadedValidation {
-    reported: bool,
-}
-
 fn loaded_diagnostics(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
     mid: Res<MidpointBody>,
-    harness: Res<ValidationHarness>,
-    mut val: ResMut<LoadedValidation>,
+    mut harness: ResMut<ValidationHarness>,
 ) {
-    if !harness.reported() || val.reported {
+    if !harness.take_reported() {
         return;
     }
-    val.reported = true;
 
     let first = model.body_id("AB_first").unwrap();
     let last = model.body_id("AB_last").unwrap();

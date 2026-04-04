@@ -27,8 +27,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    PhysicsDelay, PhysicsHud, ValidationHarness, physics_delay_elapsed, render_physics_hud,
+    spawn_example_camera, spawn_physics_hud, tick_physics_delay, validation_system,
 };
 use sim_bevy::model_data::{
     PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, step_physics_realtime,
@@ -102,22 +102,6 @@ const MJCF: &str = r#"
 
 const ANCHOR_Z: f64 = 1.2;
 
-// ── Startup delay ───────────────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct StartDelay {
-    elapsed: f32,
-    duration: f32,
-}
-
-fn tick_delay(time: Res<Time>, mut delay: ResMut<StartDelay>) {
-    delay.elapsed += time.delta_secs();
-}
-
-fn delay_elapsed(delay: Res<StartDelay>) -> bool {
-    delay.elapsed >= delay.duration
-}
-
 // ── Bevy App ────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -137,11 +121,7 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<PhysicsAccumulator>()
         .init_resource::<PhysicsHud>()
-        .init_resource::<CatenaryValidation>()
-        .insert_resource(StartDelay {
-            elapsed: 0.0,
-            duration: 2.0,
-        })
+        .insert_resource(PhysicsDelay::new(2.0))
         .insert_resource(
             ValidationHarness::new()
                 .report_at(15.0)
@@ -157,7 +137,11 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (tick_delay, step_physics_realtime.run_if(delay_elapsed)).chain(),
+            (
+                tick_physics_delay,
+                step_physics_realtime.run_if(physics_delay_elapsed),
+            )
+                .chain(),
         )
         .add_systems(
             PostUpdate,
@@ -246,21 +230,14 @@ fn compute_sag(data: &sim_core::Data, first: usize, last: usize) -> (f64, usize)
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
-#[derive(Resource, Default)]
-struct CatenaryValidation {
-    reported: bool,
-}
-
 fn catenary_diagnostics(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    harness: Res<ValidationHarness>,
-    mut val: ResMut<CatenaryValidation>,
+    mut harness: ResMut<ValidationHarness>,
 ) {
-    if !harness.reported() || val.reported {
+    if !harness.take_reported() {
         return;
     }
-    val.reported = true;
 
     let first = model.body_id("AB_first").unwrap();
     let last = model.body_id("AB_last").unwrap();
