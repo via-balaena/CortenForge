@@ -2694,6 +2694,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-batch-sim-parameter-sweep"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-batch-sim-reset-subset"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
+name = "example-batch-sim-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-bio-shapes"
 version = "0.7.0"
 dependencies = [

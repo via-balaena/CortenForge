@@ -249,6 +249,14 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `composites/cable-catenary` | `example-composite-cable-catenary` | Working | Both-ends-fixed gold cable, catenary sag (4 checks) |
 | `composites/cable-loaded` | `example-composite-cable-loaded` | Working | Midpoint 5N force, V-shape sag, red load indicator (4 checks) |
 
+### Batch Simulation
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `batch-sim/parameter-sweep` | `example-batch-sim-parameter-sweep` | Working | 8 pendulums, different damping, parallel via `step_all()` (4 checks) |
+| `batch-sim/reset-subset` | `example-batch-sim-reset-subset` | Working | 12 landers converging on soft landing via `reset_where()` (4 checks) |
+| `batch-sim/stress-test` | `example-batch-sim-stress-test` | Working | Headless validation (10 checks: construction, independence, determinism, resets, parity) |
+
 ### Raycasting
 
 | Example | Package | Status | Notes |

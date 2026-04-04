@@ -111,7 +111,7 @@ pub mod prelude {
     };
     pub use crate::multi_scene::{
         MultiScenePlugin, PhysicsScene, PhysicsSceneId, PhysicsScenes, spawn_scene_geoms,
-        spawn_scene_geoms_with, step_scenes_lockstep, sync_scene_geom_transforms,
+        spawn_scene_geoms_with, step_scenes_lockstep, sync_batch_geoms, sync_scene_geom_transforms,
     };
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{
