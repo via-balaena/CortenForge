@@ -1,12 +1,14 @@
 //! Soft Landing — Finding the Right Touch
 //!
-//! Twelve landers descend under gravity from 5 m, each with a different
+//! Twelve landers descend under gravity from 3 m, each with a different
 //! constant thrust. Too little thrust → CRASH (slam into ground). Too much
 //! → HOVER (never lands). Just right → SOFT LANDING.
 //!
 //! After each crash or hover, `BatchSim::reset_where(mask)` snaps the
-//! lander back to 5 m and nudges its thrust toward the sweet spot
-//! (`m·g ≈ 9.81 N`). Over ~10 s every lander converges and lands softly.
+//! lander back to 3 m and nudges its thrust toward the sweet spot
+//! (`m·g ≈ 9.81 N`). Over ~30 s every lander converges and lands softly.
+//!
+//! Landers flash RED on crash, BLUE on hover, and turn GREEN on landing.
 //!
 //! Run: `cargo run -p example-batch-sim-reset-subset --release`
 
@@ -21,7 +23,8 @@
     clippy::needless_range_loop,
     clippy::let_underscore_must_use,
     clippy::suboptimal_flops,
-    clippy::float_cmp
+    clippy::float_cmp,
+    clippy::too_many_lines
 )]
 
 use std::sync::Arc;
@@ -34,7 +37,7 @@ use sim_bevy::examples::{
     validation_system,
 };
 use sim_bevy::materials::MetalPreset;
-use sim_bevy::multi_scene::{PhysicsScenes, spawn_scene_geoms, sync_scene_geom_transforms};
+use sim_bevy::multi_scene::{PhysicsScenes, spawn_scene_geoms_with, sync_scene_geom_transforms};
 use sim_core::batch::BatchSim;
 use sim_core::validation::{Check, print_report};
 
@@ -42,15 +45,15 @@ use sim_core::validation::{Check, print_report};
 
 const NUM_ENVS: usize = 12;
 const SPACING: f32 = 1.2;
-const REPORT_TIME: f64 = 10.0;
+const REPORT_TIME: f64 = 35.0;
 
 /// Starting height (metres).
 const START_HEIGHT: f64 = 3.0;
 
 /// Soft-landing velocity threshold (m/s). Land slower than this → success.
-/// Landing window: thrust ∈ [m·(g − v²/2h), m·g] ≈ [8.3, 9.8] N (width ~1.5 N).
-/// Tight enough that only ~1 env lands on the first try.
-const SOFT_VEL: f64 = 3.0;
+/// Landing window: thrust ∈ [m·(g − v²/2h), m·g] ≈ [9.1, 9.8] N.
+/// Narrow enough that almost no env lands on the first try.
+const SOFT_VEL: f64 = 2.0;
 
 /// Ground level — below this we evaluate landing.
 const GROUND: f64 = 0.1;
@@ -59,16 +62,16 @@ const GROUND: f64 = 0.1;
 const HOVER_VEL_THRESH: f64 = -0.3;
 const HOVER_TIME: f64 = 1.0;
 
-/// Hover thrust adaptation step (N). Small so convergence is gradual.
-const HOVER_NUDGE: f64 = 0.8;
+/// Hover thrust adaptation step (N). Small for gradual convergence.
+const HOVER_NUDGE: f64 = 0.25;
 
 /// Max crash thrust adaptation step (N).
-const CRASH_NUDGE_MAX: f64 = 1.5;
+const CRASH_NUDGE_MAX: f64 = 0.4;
 
 /// Mass of the lander (kg) — must match MJCF.
 const MASS: f64 = 1.0;
 
-/// Initial thrust levels: 3 N to 14 N (clean 1 N spacing).
+/// Initial thrust levels: 3 N to 14 N.
 /// Equilibrium is m·g ≈ 9.81 N. Low end crashes, high end hovers.
 fn initial_thrust(i: usize) -> f64 {
     let t = i as f64 / (NUM_ENVS - 1) as f64;
@@ -110,13 +113,9 @@ const MJCF: &str = r#"
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LanderStatus {
-    /// In flight — descending (or ascending).
     Flying,
-    /// Hit the ground too fast.
     Crashed,
-    /// Stuck above hover ceiling.
     Hovering,
-    /// Touched down gently — success.
     Landed,
 }
 
@@ -131,7 +130,17 @@ impl LanderStatus {
     }
 }
 
-// ── Resources ────────────────────────────────────────────────────────────
+// ── Components & Resources ──────────────────────────────────────────────
+
+/// Tags the "body" geom of lander `i` so we can swap its material.
+#[derive(Component)]
+struct LanderBody(usize);
+
+#[derive(Resource)]
+struct LanderMaterials {
+    flying: Handle<StandardMaterial>,
+    landed: Handle<StandardMaterial>,
+}
 
 #[derive(Resource)]
 struct BatchResource {
@@ -139,13 +148,9 @@ struct BatchResource {
     model: Arc<sim_core::Model>,
     accumulator: f64,
     sim_time: f64,
-    /// Current thrust per env (adapted after each reset).
     thrusts: [f64; NUM_ENVS],
-    /// Running status per env.
     status: [LanderStatus; NUM_ENVS],
-    /// How many times each env has been reset.
     reset_counts: [u32; NUM_ENVS],
-    /// Sim time at which each env last landed (for "untouched" check).
     landed_at: [f64; NUM_ENVS],
 }
 
@@ -159,7 +164,7 @@ struct ResetValidation {
 fn main() {
     println!("=== CortenForge: Soft Landing ===");
     println!("  12 landers, each finding the right thrust to land gently");
-    println!("  Too little → crash | Too much → hover | Just right → soft landing");
+    println!("  Too little → crash (red) | Too much → hover (blue) | Just right → landed (green)");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -176,7 +181,7 @@ fn main() {
         .insert_resource(
             ValidationHarness::new()
                 .report_at(REPORT_TIME)
-                .print_every(2.0)
+                .print_every(5.0)
                 .display(|_m, _d| String::new()),
         )
         .add_systems(Startup, setup)
@@ -186,6 +191,7 @@ fn main() {
             (
                 sync_batch_to_scenes,
                 sync_scene_geom_transforms,
+                update_lander_colors,
                 sync_dummy_time,
                 validation_system,
                 track_validation,
@@ -207,60 +213,63 @@ fn setup(
     let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF should parse"));
 
     let mut batch = BatchSim::new(Arc::clone(&model), NUM_ENVS);
-
-    // All envs start at the model default (qpos0 = 0, meaning z = 5 from
-    // the body pos). Nothing to set — the MJCF default is the start state.
-    // Run forward to compute initial geom poses.
     for env in batch.envs_mut() {
         env.forward(&model).expect("forward");
     }
 
-    // Initial thrusts
     let mut thrusts = [0.0; NUM_ENVS];
     for i in 0..NUM_ENVS {
         thrusts[i] = initial_thrust(i);
     }
 
+    // ── Status-driven materials ─────────────────────────────────────────
+    let mat_flying =
+        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.55, 0.55, 0.58)));
+    let mat_landed =
+        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.10, 0.85, 0.15)));
+
+    commands.insert_resource(LanderMaterials {
+        flying: mat_flying.clone(),
+        landed: mat_landed,
+    });
+
     // ── Visual scenes ───────────────────────────────────────────────────
     let mut scenes = PhysicsScenes::default();
 
-    for i in 0..NUM_ENVS {
-        // Colour: red (low thrust / crashers) → blue (high thrust / hoverers)
-        // Middle envs near equilibrium get a neutral gray that turns green on
-        // landing (we'll handle the green shift via material swap or HUD).
-        let t = i as f32 / (NUM_ENVS - 1) as f32;
-        let body_color = Color::srgb(
-            0.85 - 0.60 * t, // R: 0.85 → 0.25
-            0.35,            // G: constant mid
-            0.25 + 0.60 * t, // B: 0.25 → 0.85
-        );
+    let mat_base = materials.add(MetalPreset::CastIron.with_color(Color::srgb(0.35, 0.33, 0.32)));
+    let mat_top =
+        materials.add(MetalPreset::BrushedMetal.with_color(Color::srgb(0.85, 0.85, 0.85)));
 
+    for i in 0..NUM_ENVS {
         let scene_model = (*model).clone();
         let mut scene_data = scene_model.make_data();
         scene_data.forward(&scene_model).expect("forward");
 
         let id = scenes.add(format!("{:.1}N", thrusts[i]), scene_model, scene_data);
 
-        let mat_body = materials.add(MetalPreset::PolishedSteel.with_color(body_color));
-        let mat_base =
-            materials.add(MetalPreset::CastIron.with_color(Color::srgb(0.35, 0.33, 0.32)));
-        let mat_top =
-            materials.add(MetalPreset::BrushedMetal.with_color(Color::srgb(0.85, 0.85, 0.85)));
-
-        // Space landers along physics Y-axis (side by side)
         let lane = (i as f32 - (NUM_ENVS as f32 - 1.0) / 2.0) * SPACING;
-        spawn_scene_geoms(
+        let env_index = i;
+        spawn_scene_geoms_with(
             &mut commands,
             &mut meshes,
             &mut materials,
             &mut scenes,
             id,
             physics_pos(0.0, lane, 0.0),
-            &[("body", mat_body), ("base", mat_base), ("top", mat_top)],
+            &[
+                ("body", mat_flying.clone()),
+                ("base", mat_base.clone()),
+                ("top", mat_top.clone()),
+            ],
+            |entity_cmds, _geom_id, geom_name| {
+                if geom_name == "body" {
+                    entity_cmds.insert(LanderBody(env_index));
+                }
+            },
         );
     }
 
-    // Ground plane at physics z=0 (Bevy y=0), facing Bevy Y-up
+    // Ground plane at physics z=0 (Bevy y=0)
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(50.0)))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -286,18 +295,15 @@ fn setup(
     });
 
     // Camera: front view, perpendicular to the lane row.
-    // Landers spread along Bevy Z (physics Y), height along Bevy Y (physics Z).
-    // azimuth=0 → camera on Bevy +X axis looking toward -X → lanes run left-right.
-    // Target slightly above ground so the landed line sits near screen center.
     spawn_example_camera(
         &mut commands,
         physics_pos(0.0, 0.0, 0.8),
-        16.0, // distance — wide enough to see all 12 lanes
-        0.0,  // azimuth — looking along -X, lanes are horizontal
-        0.15, // elevation — slight upward angle
+        16.0, // distance
+        0.0,  // azimuth — looking along -X, lanes horizontal
+        0.15, // elevation
     );
 
-    // HUD in bottom-left (landers descend from top, so bottom is clearer)
+    // HUD in bottom-left (under the landing horizon)
     commands
         .spawn((
             Node {
@@ -339,14 +345,11 @@ fn step_batch(mut res: ResMut<BatchResource>, time: Res<Time>) {
     let mut steps = 0;
 
     while res.accumulator >= dt_sim && steps < 200 {
-        // Snapshot per-env ctrl values before the mutable borrow.
-        // Landed envs get exactly m·g to cancel gravity (net force = 0).
         let status_snap = res.status;
         let thrust_snap = res.thrusts;
         for (i, env) in res.batch.envs_mut().enumerate() {
             if status_snap[i] == LanderStatus::Landed {
-                // Freeze: pin to ground, zero velocity, balance gravity
-                env.qpos[0] = -START_HEIGHT; // body origin z minus start = ground
+                env.qpos[0] = -START_HEIGHT;
                 env.qvel[0] = 0.0;
                 env.ctrl[0] = MASS * 9.81;
             } else {
@@ -359,7 +362,7 @@ fn step_batch(mut res: ResMut<BatchResource>, time: Res<Time>) {
         res.sim_time += dt_sim;
         steps += 1;
 
-        // Re-freeze landed envs after step (prevents any drift)
+        // Re-freeze landed envs after step
         let status_post = res.status;
         for (i, env) in res.batch.envs_mut().enumerate() {
             if status_post[i] == LanderStatus::Landed {
@@ -370,26 +373,23 @@ fn step_batch(mut res: ResMut<BatchResource>, time: Res<Time>) {
 
         // ── Evaluate landings / crashes / hovers ────────────────────
         let mut mask = [false; NUM_ENVS];
-        let mut impact_vel = [0.0f64; NUM_ENVS]; // capture before reset
+        let mut impact_vel = [0.0f64; NUM_ENVS];
 
         for i in 0..NUM_ENVS {
             if res.status[i] == LanderStatus::Landed {
-                continue; // already done
+                continue;
             }
 
             if let Some(env) = res.batch.env(i) {
-                let z = env.qpos[0]; // slide displacement from body origin
-                let height = START_HEIGHT + z; // actual height above ground
-                let vel = env.qvel[0]; // downward is negative
+                let height = START_HEIGHT + env.qpos[0];
+                let vel = env.qvel[0];
 
                 if height <= GROUND {
                     impact_vel[i] = vel;
                     if vel.abs() > SOFT_VEL {
-                        // CRASH — too fast
                         res.status[i] = LanderStatus::Crashed;
                         mask[i] = true;
                     } else {
-                        // SOFT LANDING — pin to ground immediately
                         res.status[i] = LanderStatus::Landed;
                         res.landed_at[i] = res.sim_time;
                         if let Some(env) = res.batch.env_mut(i) {
@@ -398,24 +398,18 @@ fn step_batch(mut res: ResMut<BatchResource>, time: Res<Time>) {
                         }
                     }
                 } else if env.time > HOVER_TIME && vel > HOVER_VEL_THRESH {
-                    // HOVER — not descending meaningfully after HOVER_TIME.
-                    // Uses env.time (resets to 0 on reset_where) so a
-                    // freshly-reset env gets a full flight window.
                     res.status[i] = LanderStatus::Hovering;
                     mask[i] = true;
                 }
             }
         }
 
-        // Batch-reset all crashed / hovering envs
         if mask.iter().any(|&m| m) {
-            // Adapt thrusts BEFORE reset (uses pre-reset state)
             for i in 0..NUM_ENVS {
                 if mask[i] {
                     match res.status[i] {
                         LanderStatus::Crashed => {
-                            // Proportional: harder crash → bigger nudge
-                            let nudge = (impact_vel[i].abs() * 0.3).clamp(0.3, CRASH_NUDGE_MAX);
+                            let nudge = (impact_vel[i].abs() * 0.08).clamp(0.08, CRASH_NUDGE_MAX);
                             res.thrusts[i] += nudge;
                         }
                         LanderStatus::Hovering => {
@@ -431,18 +425,35 @@ fn step_batch(mut res: ResMut<BatchResource>, time: Res<Time>) {
             for i in 0..NUM_ENVS {
                 if mask[i] {
                     res.reset_counts[i] += 1;
-                    res.status[i] = LanderStatus::Flying; // back in the air
+                    res.status[i] = LanderStatus::Flying;
                 }
             }
         }
     }
 
-    // Post-step forward to refresh geom poses
     if steps > 0 {
         let model = Arc::clone(&res.model);
         for env in res.batch.envs_mut() {
             let _ = env.forward(&model);
         }
+    }
+}
+
+// ── Dynamic lander colors ───────────────────────────────────────────────
+
+fn update_lander_colors(
+    res: Res<BatchResource>,
+    mats: Res<LanderMaterials>,
+    mut query: Query<(&LanderBody, &mut MeshMaterial3d<StandardMaterial>)>,
+) {
+    for (lander, mut mat) in &mut query {
+        let i = lander.0;
+        let new_mat = if res.status[i] == LanderStatus::Landed {
+            &mats.landed
+        } else {
+            &mats.flying
+        };
+        mat.0 = new_mat.clone();
     }
 }
 
@@ -479,7 +490,6 @@ fn track_validation(
     }
     val.reported = true;
 
-    // Check 1: Low-thrust envs crashed and were reset
     let low_reset = (0..2).all(|i| res.reset_counts[i] > 0);
     let check1 = Check {
         name: "Low-thrust envs crashed and reset",
@@ -490,7 +500,6 @@ fn track_validation(
         ),
     };
 
-    // Check 2: High-thrust envs hovered and were reset
     let high_reset = (10..NUM_ENVS).all(|i| res.reset_counts[i] > 0);
     let check2 = Check {
         name: "High-thrust envs hovered and reset",
@@ -501,7 +510,6 @@ fn track_validation(
         ),
     };
 
-    // Check 3: All envs eventually landed softly
     let all_landed = (0..NUM_ENVS).all(|i| res.status[i] == LanderStatus::Landed);
     let landed_count = (0..NUM_ENVS)
         .filter(|&i| res.status[i] == LanderStatus::Landed)
@@ -518,17 +526,9 @@ fn track_validation(
         ),
     };
 
-    // Check 4: Landed envs were not reset after landing.
-    // Once an env reaches Landed, we skip it in the reset mask, so its
-    // env.time should exceed (REPORT_TIME - landed_at_global) — meaning
-    // it has been stepping continuously since it landed.
     let landed_untouched = (0..NUM_ENVS)
         .filter(|&i| res.status[i] == LanderStatus::Landed)
-        .all(|i| {
-            // env.time must be > 0 (not freshly reset) and should have
-            // been accumulating since at least the landing moment.
-            res.batch.env(i).is_some_and(|e| e.time > 1.0)
-        });
+        .all(|i| res.batch.env(i).is_some_and(|e| e.time > 1.0));
     let check4 = Check {
         name: "Landed envs untouched by reset_where",
         pass: landed_untouched,
