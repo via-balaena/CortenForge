@@ -2715,6 +2715,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-composite-cable-loaded"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-composite-hanging-cable"
 version = "0.7.0"
 dependencies = [
