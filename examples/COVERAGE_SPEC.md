@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-04-02)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 136 examples (Track 1A + Track 1B layers 1–9)
+- sim-core + sim-mjcf + sim-urdf → 139 examples (Track 1A + Track 1B layers 1–13)
   - Joint types: hinge, slide, ball, free (4/4 — all covered)
   - Sensors: 31/31 types covered (Track 1A: 16, tendons: 3, joint-limits: 1, sensors-advanced: 11+)
   - Actuators: 10 examples, Muscles: 5 examples
@@ -27,7 +27,7 @@ integration tests — they find bugs that unit tests miss.
   - Sensors-advanced: 7 examples, 25 stress-test checks
   - Passive forces: 5 examples, 18 stress-test checks
 - Track 1B in progress: 20 subdirectories, ~70 examples — no stone unturned.
-  **12/20 subdirectories done:**
+  **13/20 subdirectories done:**
   - free-joint: 4 examples, 12 stress-test checks
   - keyframes: 3 examples, 12 stress-test checks
   - mocap-bodies: 4 examples, 12 stress-test checks
@@ -39,9 +39,11 @@ integration tests — they find bugs that unit tests miss.
   - sleep-wake: 4 examples, 18 stress-test checks
   - raycasting: 4 examples, 20 stress-test checks
   - derivatives: 8 examples (7 visual + 1 stress-test), 61 checks
-  Remaining 9: mesh collision, heightfield terrain,
+  - composites: 4 examples (3 visual + 1 stress-test), 15 checks
+  - batch-sim: 3 examples (2 visual + 1 stress-test), 18 checks
+  Remaining 7: mesh collision, heightfield terrain,
   Hill muscle, adhesion, flex bodies, collision
-  pairs, composites, batch simulation, and plugins.
+  pairs, and plugins.
 - cf-design → 3 examples
 - mesh-* → 1 example
 - sim-gpu → 0 working examples
@@ -139,7 +141,7 @@ integration tests — they find bugs that unit tests miss.
 - Raycasting ✓ (4 examples, 20 stress-test checks)
 - Derivatives ✓ (8 examples, 61 checks: FD linearization, LQR, hybrid vs FD, sensor Jacobians, inverse dynamics, convergence, V-curve)
 - **Cable composites → Track 1B**
-- **Batch simulation (600 LOC) → Track 1B**
+- Batch simulation ✓ (3 examples, 18 checks: parameter-sweep, soft-landing reset_where, stress-test)
 - **Flex bodies (2,797 LOC, beta) → Track 1B**
 - **Plugin system (24,398 LOC) → Track 1B**
 - **Collision pair isolation (2,600+ LOC) → Track 1B**
@@ -519,7 +521,7 @@ fundamentals/
     collision-pairs/        # All primitive pair functions isolated (2,600+ LOC)
     derivatives/            # DONE — 8 examples (7 visual + 1 stress-test), 61 checks
     composites/             # DONE — 4 examples (3 visual + 1 stress-test), 15 checks
-    batch-sim/              # Parallel multi-environment simulation (600 LOC)
+    batch-sim/              # DONE — 3 examples (2 visual + 1 stress-test), 18 checks
     plugins/                # Plugin system — custom sensors/forces (24,398 LOC)
 ```
 
@@ -984,36 +986,31 @@ and flexible tubes.
 parameters, contact exclusion generation, catenary shape, `xfrc_applied`,
 equality connect constraints, curve types (line, sine).
 
-##### 13. `batch-sim/` — Parallel Multi-Environment Simulation
+##### 13. `batch-sim/` — Parallel Multi-Environment Simulation — DONE
 
 The batch system (600 LOC) runs N independent copies of the same model in
 parallel using shared-nothing `Data` instances. Essential for reinforcement
 learning, Monte Carlo sampling, and parameter sweeps.
 
-**Examples:**
+**Examples (3 examples, 18 checks):**
 
-1. **parameter-sweep** — 8 copies of a pendulum with different damping values
-   (0.0 to 0.7). All step in parallel. After 5 seconds, print the final
-   energy of each — undamped has full energy, highest damping has nearly zero.
-   Demonstrates `BatchSim::new(model, 8)` and `step_all()`.
+1. **parameter-sweep** (visual, 4 checks) — 8 pendulums with different
+   ctrl-based damping (0.0 to 0.32). All step in parallel via `step_all()`.
+   Undamped pendulum conserves energy (RK4); highest damping settles quickly.
 
-2. **reset-subset** — 16 environments. Every second, reset the environments
-   whose pendulum has swung past 90°. Others continue. Demonstrates
-   `reset_where(mask)` for selective reset — the RL "done" pattern.
+2. **reset-subset** (visual, 4 checks) — "Soft Landing": 12 landers on
+   vertical slide joints descend under gravity with different thrust levels.
+   Too little → crash, too much → hover, just right → soft landing (green).
+   `reset_where(mask)` resets failures; thrust adapts each generation.
+   All 12 converge over ~30 seconds.
 
-3. **stress-test** — Headless validation (8+ checks):
-   - N environments created with independent state
-   - step_all advances all environments by one timestep
-   - Environments don't cross-contaminate (modify one, others unchanged)
-   - reset_where resets only masked environments
-   - Batch with 1 environment matches single-env simulation exactly
-   - All environments share the same Model (memory efficient)
-   - Batch timing: N environments < N × single-env time (parallelism)
-   - Environment indexing works correctly (0..N)
+3. **stress-test** (headless, 10 checks) — Construction, independent state,
+   parallel stepping, cross-contamination isolation, bitwise determinism,
+   `reset(i)`, `reset_where`, `reset_all`, shared model, single-env parity.
 
-**Concepts covered:** `BatchSim`, `step_all()`, `reset_where()`, parallel
-stepping via rayon, shared Model, independent Data, parameter sweeps,
-selective reset.
+**Concepts covered:** `BatchSim`, `step_all()`, `reset_where()`, `reset(i)`,
+`reset_all()`, shared Model, independent Data, parameter sweeps, selective
+reset with adaptation, `sync_batch_geoms` infrastructure.
 
 ##### 14. `mesh-collision/` — Explicit Convex Mesh Collision
 
