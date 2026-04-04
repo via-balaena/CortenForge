@@ -1,52 +1,59 @@
-# Reset Subset — Selective Reset with `reset_where(mask)`
+# Soft Landing — Selective Reset with `reset_where`
 
-Sixteen pendulums in a row, each with a different initial angular velocity.
-Every 0.25s of sim time, any pendulum whose angle exceeds +/-90 deg gets
-reset via `BatchSim::reset_where(mask)`. Low-velocity pendulums never cross
-the threshold; high-velocity ones get reset frequently.
+Twelve landers descend under gravity from 3 m, each with a different
+constant thrust. A motor actuator on a vertical slide joint provides
+upward force. Too little thrust and they crash; too much and they hover
+forever. After each failure, `BatchSim::reset_where(mask)` snaps the
+lander back to 3 m and nudges its thrust toward the sweet spot
+(`m·g ≈ 9.81 N`). Over ~10 seconds every lander converges and lands
+softly.
 
-This is the RL "done" pattern: selectively reset finished environments
-while others continue uninterrupted.
+This is the RL "done + adapt" pattern: selectively reset failed
+environments, adjust their parameters, and let them try again — all
+while successful environments continue uninterrupted.
 
 ## What you see
 
-- **Sixteen pendulums** in a row, color gradient: blue (low velocity) to
-  orange (high velocity)
-- Blue pendulums oscillate gently and never reset
-- Orange pendulums swing wide, snap back to start on reset, swing again
-- HUD shows per-env angle, reset count, and total resets
+- **Twelve landers** in parallel lanes, color-coded red (low thrust) to
+  blue (high thrust)
+- Low-thrust landers plummet, crash, snap back to the top, and try again
+  with slightly more thrust
+- High-thrust landers hover uselessly, snap back, and try again with
+  slightly less thrust
+- Middle landers descend gracefully on their first attempt
+- One by one, every lane finds the right touch and settles on the ground
 
 ## Physics
 
-Each pendulum starts at 45 deg tilt with velocity `v_i = i * 0.5 rad/s`.
-A pendulum needs omega >= ~5.2 rad/s to swing from 45 deg past 90 deg
-(energy conservation). Envs 0-10 lack the energy; envs 11-15 cross easily.
+For mass `m = 1 kg` on a vertical slide joint:
 
-| Env group | Initial omega (rad/s) | Crosses +/-90 deg? | Gets reset? |
-|-----------|----------------------|-------------------|-------------|
-| 0-4 | 0.0-2.0 | No | Never |
-| 5-10 | 2.5-5.0 | Borderline | Rarely |
-| 11-15 | 5.5-7.5 | Yes | Frequently |
+- Net acceleration: `a = thrust/m − g`
+- Soft landing requires: `|v_impact| < 4.0 m/s`
+- Landing window: thrust ∈ [7.1, 9.8] N
+
+Thrust adaptation after each failure:
+
+- **Crash:** proportional nudge `+= clamp(|v| × 0.5, 0.5, 3.0)` —
+  harder crashes get bigger corrections
+- **Hover:** fixed nudge `−= 1.5 N`
 
 ## Key API demonstrated
 
 ```rust
-// Build mask: which envs crossed the threshold?
-let mask: Vec<bool> = (0..16)
-    .map(|i| batch.env(i).unwrap().qpos[0].abs() > PI/2)
+// Evaluate: which envs crashed or hovered?
+let mask: Vec<bool> = (0..12)
+    .map(|i| status[i] == Crashed || status[i] == Hovering)
     .collect();
 
-// Reset only those envs — others continue uninterrupted
-batch.reset_where(&mask);
-
-// Re-apply per-env initial conditions on reset envs
-for i in 0..16 {
-    if mask[i] {
-        let env = batch.env_mut(i).unwrap();
-        env.qpos[0] = initial_angle;
-        env.qvel[0] = initial_velocity(i);
+// Adapt thrust BEFORE reset (uses pre-reset velocity)
+for i in 0..12 {
+    if mask[i] && status[i] == Crashed {
+        thrusts[i] += (impact_vel[i].abs() * 0.5).clamp(0.5, 3.0);
     }
 }
+
+// Reset only failed envs — landed envs continue uninterrupted
+batch.reset_where(&mask);
 ```
 
 ## Validation
@@ -55,10 +62,10 @@ Four automated checks at t=10s:
 
 | Check | Expected |
 |-------|----------|
-| Low-velocity envs never reset | envs 0-4 have zero resets |
-| High-velocity envs reset | envs 13-15 have reset at least once |
-| Reset restores state | total resets > 0 |
-| Non-reset envs untouched | envs 0-4 have continuous time near 10s |
+| Low-thrust envs crashed and reset | Envs 0–1 have reset_count > 0 |
+| High-thrust envs hovered and reset | Envs 10–11 have reset_count > 0 |
+| All envs eventually landed | 12/12 in LANDED state |
+| Landed envs untouched by reset_where | env.time > 1.0 for all landed |
 
 ## Run
 

@@ -110,55 +110,81 @@ Energy is read directly from `env.energy_kinetic + env.energy_potential`
 
 ### What you see
 
-Sixteen pendulums in a row. Each has a different initial angular velocity
-(0.0 to 4.5 rad/s). They swing freely. Every 1.0s of **sim time**, any
-pendulum whose angle exceeds ±90° gets reset — it snaps back to its starting
-state and resumes swinging. Pendulums that haven't crossed the threshold
-continue uninterrupted.
+Twelve landers in a row, each descending under gravity from 5 m. Each has a
+different constant thrust level via its motor actuator. They all drop
+simultaneously.
 
-The HUD shows per-env status ("swinging" vs "RESET") and a running count
-of total resets.
+- **Low thrust (left):** Landers plummet and slam into the ground — CRASH —
+  flash red, snap back to 5 m, fall again.
+- **Tuned thrust (middle):** Landers descend gracefully and touch down with
+  low velocity — SOFT LANDING — turn green, stay put.
+- **High thrust (right):** Landers fight gravity too hard, hover or drift
+  upward — HOVER — flash blue, snap back to 5 m, float again.
+
+After each reset, thrust nudges toward the sweet spot (+Δ for crashers,
+−Δ for hoverers). Over ~10 seconds every lander converges — lanes turn
+green one by one as each finds the right touch.
+
+The HUD shows per-env thrust, velocity, status (CRASH / HOVER / LANDED),
+and a running count of resets + landings.
 
 ### Scene
 
-- **MJCF:** Single-link pendulum with hinge joint, no damping, no actuator.
-- **BatchSim:** `BatchSim::new(Arc::new(model), 16)`.
+- **MJCF:** Single body (capsule + disc) on a vertical slide joint with one
+  motor actuator. Gravity `−9.81`. Contacts disabled.
+- **BatchSim:** `BatchSim::new(Arc::new(model), 12)`.
 - **Init:** For each env `i` via `envs_mut()`:
-  - `qpos[0] = π/4` (45° tilt)
-  - `qvel[0] = i as f64 * 0.3` (0.0 to 4.5 rad/s)
-- **Per-second logic (every 1.0s sim time):**
-  1. Build mask: `mask[i] = |env.qpos[0]| > π/2`
-  2. Call `batch.reset_where(&mask)`
-  3. For each reset env: restore initial conditions
-     (`qpos[0] = π/4`, `qvel[0] = v_i`) — `reset()` restores to
-     `qpos0 = 0, qvel = 0`, so we must re-apply the per-env initial state.
+  - `qpos[0] = 5.0` (start at 5 m height)
+  - `qvel[0] = 0.0` (released from rest)
+- **Per-step:** `ctrl[0] = thrust_i` (constant per env, varies across envs).
+- **Evaluation (continuous, every physics step):** For each env:
+  - `qpos[0] ≤ 0.1` AND `|qvel[0]| > 2.0` → **CRASH** (landed too fast)
+  - `sim_time > 2.0` AND `qpos[0] > 4.0` → **HOVER** (never coming down)
+  - `qpos[0] ≤ 0.1` AND `|qvel[0]| ≤ 2.0` → **LANDED** (soft touchdown)
 
 ### Visual rendering
 
-Same pattern as parameter-sweep: `BatchSim` as a `Resource`, 16 visual
-pendulums at X-offsets, custom sync system. Pendulums that just reset
-flash a highlight color for a few frames.
+Same pattern as parameter-sweep: `BatchSim` as a `Resource`, 12 visual
+landers at Y-offsets, custom sync system.
+
+- **Lander geometry:** Capsule body + flat cylinder base (reads as a little
+  spacecraft).
+- **Color:** Green = landed, Red = last crash, Blue = last hover, Gray = in
+  flight.
+- **Ground plane:** Flat surface at z = 0 for visual reference.
+- **Camera:** Side view, all 12 lanes visible. Y-spacing ~1.5 m.
 
 ### Physics
 
-An undamped pendulum's max angle depends on initial kinetic energy.
-Conservation of energy: `½Iω² = mgl(1 - cos θ_max)`. With different initial
-ω, some envs never reach 90° and others overshoot easily.
+For mass `m` on a vertical slide joint with gravity `g = 9.81`:
 
-| Env group | Initial ω (rad/s) | Crosses ±90°? | Gets reset? |
-|-----------|-------------------|---------------|-------------|
-| 0–4 | 0.0–1.2 | No | Never |
-| 5–10 | 1.5–3.0 | Sometimes | Occasionally |
-| 11–15 | 3.3–4.5 | Frequently | Often |
+- Motor force: `F = thrust_i` (Newtons, upward via ctrl).
+- Net acceleration: `a = thrust_i / m − g`.
+- Equilibrium thrust: `thrust = m · g` (≈ 9.81 N for 1 kg).
+
+| Env group | Thrust (N) | Behavior |
+|-----------|-----------|----------|
+| 0–3 | 0.0–4.5 | Net downward accel → crash |
+| 4–7 | 5.0–8.5 | Slow descent → soft landing zone |
+| 8–11 | 9.0–12.5 | Near-hover or drifts upward |
+
+**Thrust adaptation after reset:**
+
+- CRASH: `thrust_i += 0.4` (need more lift).
+- HOVER: `thrust_i -= 0.4` (need less lift).
+
+All 12 envs converge toward `m · g`. The ones starting closest to
+equilibrium land first; the extremes take more generations but all
+eventually find the right touch.
 
 ### Validation (4 checks at t=10s)
 
 | # | Check | Criterion |
 |---|-------|-----------|
-| 1 | Low-velocity envs never reset | Envs 0–2 have `time > 9.0` (continuous, never reset) |
-| 2 | High-velocity envs reset | Envs 13–15 have been reset at least once (tracked by counter) |
-| 3 | Reset restores qpos | Immediately after `reset_where`, reset envs have `qpos == qpos0` |
-| 4 | Non-reset envs untouched | `reset_where` does not alter envs where `mask[i] == false` |
+| 1 | Low-thrust envs crashed and reset | Envs 0–1 have `reset_count > 0` |
+| 2 | High-thrust envs hovered and reset | Envs 10–11 have `reset_count > 0` |
+| 3 | All envs eventually landed | All 12 envs in LANDED state by t = 10 |
+| 4 | Landed envs untouched by reset_where | Landed envs have continuous time (never reset after landing) |
 
 ### Package
 
