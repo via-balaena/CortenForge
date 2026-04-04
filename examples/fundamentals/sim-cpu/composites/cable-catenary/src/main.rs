@@ -54,7 +54,7 @@ use sim_core::validation::{Check, print_report};
 /// Connect anchor: the S_last site is at [edge_length, 0, 0] in AB_last's
 /// local frame. For a curved cable the edge_length varies per segment, but
 /// the last two vertices (ix=14,15) are nearly straight (sin ≈ 0 near π),
-/// so the last edge_length ≈ size[0]/(count-1) = 1.0/15 = 0.06667.
+/// so the last edge_length ≈ size\[0\]/(count-1) = 1.0/15 = 0.06667.
 const MJCF: &str = r#"
 <mujoco model="cable-catenary">
   <option gravity="0 0 -9.81" timestep="0.002" integrator="implicitfast"
