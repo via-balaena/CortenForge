@@ -1,9 +1,8 @@
 # Cylinder MULTICCD Face Enumeration
 
-**Status:** Draft
+**Status:** Complete
 **Branch:** `feature/mesh-collision-examples`
-**Blocked by:** Nothing — all infrastructure exists.
-**Blocks:** T10 integration test (`mesh_cylinder_settling`), mesh-collision examples
+**Commit:** `8fd52eb`
 
 ---
 
@@ -100,7 +99,8 @@ fn support_face_points_cylinder(pose, half_length, radius, direction):
 
 ## Changes
 
-Single file: `sim/L0/core/src/gjk_epa.rs`.
+Three files: `sim/L0/core/src/gjk_epa.rs`, `sim/L0/core/src/collision/narrow.rs`,
+`sim/L0/tests/integration/mesh_cylinder_ellipsoid.rs`.
 
 ### Change 1: Add `Shape::Cylinder` arm to `support_face_points()`
 
@@ -191,6 +191,35 @@ force/weight ≈ 1.0.
 
 ---
 
+## Bugs discovered during implementation
+
+### Bug 1: MULTICCD face direction inverted (narrow.rs)
+
+`multiccd_contacts()` passed `-primary.normal` to `support_face_points()`,
+which selected the face of shape A **opposite** the contact face. The EPA
+normal points outward from the Minkowski difference boundary toward shape A's
+contact face, so `+normal` (not `-normal`) is the correct support direction.
+
+**Symptom:** Only 1 contact generated (wrong face returned single point or
+irrelevant vertices). Cylinder slowly sank through mesh despite MULTICCD.
+
+**Fix:** Changed `&(-primary.normal)` to `&primary.normal` in
+`multiccd_contacts()` at `narrow.rs:297`.
+
+### Bug 2: Integration tests used no-op MJCF for MULTICCD
+
+All three tests in `mesh_cylinder_ellipsoid.rs` used
+`<custom><numeric name="ENABLE_MULTICCD" data="1"/>` to enable MULTICCD.
+This is a no-op — the parser only recognizes `<flag multiccd="enable"/>`
+as a child of `<option>`.
+
+**Symptom:** MULTICCD was never active in integration tests. T12 passed
+only because it checked contact existence (always 1 from EPA), not count.
+
+**Fix:** Changed to `<option><flag multiccd="enable"/></option>`.
+
+---
+
 ## Session plan
 
 | Session | Scope | Entry | Exit |
@@ -204,21 +233,15 @@ force/weight ≈ 1.0.
 
 | File | Role |
 |------|------|
-| `sim/L0/core/src/gjk_epa.rs` | `support_face_points()` — add Cylinder arm + constants |
-| `sim/L0/core/src/collision/narrow.rs` | `multiccd_contacts()` — caller (read-only, no changes needed) |
-| `sim/L0/tests/integration/mesh_cylinder_ellipsoid.rs` | Un-ignore T10 |
+| `sim/L0/core/src/gjk_epa.rs` | `support_face_points()` — added Cylinder arm + constants |
+| `sim/L0/core/src/collision/narrow.rs` | `multiccd_contacts()` — fixed face direction (`-normal` → `+normal`) |
+| `sim/L0/tests/integration/mesh_cylinder_ellipsoid.rs` | Un-ignored T10, fixed MJCF `<flag>` syntax |
 
 ---
 
 ## Risk
 
-**Low.** The change adds a new match arm to `support_face_points()` — no
-existing arms are modified. The `_ =>` catch-all continues to handle all
-other smooth shapes (Sphere, Capsule, Ellipsoid). The new arm only activates
-when MULTICCD is enabled AND the contact direction aligns with the cylinder
-axis. Non-MULTICCD paths are completely unaffected.
-
-The cap enumeration geometry is trivial (evenly-spaced points on a circle).
-The only tuning parameters are `N_CAP_POINTS` (8) and `CAP_FACE_THRESHOLD`
-(10.0), both of which have clear geometric justifications and wide stable
-ranges.
+**Low.** The Cylinder arm adds a new match case — no existing arms modified.
+The face direction fix corrects all MULTICCD callers (both narrow.rs and
+mesh_collide.rs paths). The `_ =>` catch-all continues to handle Sphere,
+Capsule, Ellipsoid. 2027 tests pass with zero regressions.
