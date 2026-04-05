@@ -12,6 +12,7 @@ use crate::types::{
 use cf_geometry::Shape;
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
+use tracing::warn;
 
 /// GJK/EPA collision between two convex shapes with MULTICCD and margin support.
 ///
@@ -182,13 +183,27 @@ pub fn collide_with_mesh(
                 GeomType::Sphere => {
                     mesh_sphere_contact(mesh, &pose1, pose2.position, size2.x, use_bvh)
                 }
-                // Capsule and Cylinder both use capsule collision (cylinder approximated as capsule)
-                GeomType::Capsule | GeomType::Cylinder => {
+                GeomType::Capsule => {
                     let half_len = size2.y;
                     let axis = pose2.rotation * Vector3::z();
                     let start = pose2.position - axis * half_len;
                     let end = pose2.position + axis * half_len;
                     mesh_capsule_contact(mesh, &pose1, start, end, size2.x, use_bvh)
+                }
+                GeomType::Cylinder => {
+                    // Exact cylinder collision via GJK/EPA on mesh convex hull
+                    if let Some(hull) = mesh.convex_hull() {
+                        let shape1 = Shape::convex_mesh(hull.clone());
+                        let shape2 = Shape::Cylinder {
+                            half_length: size2.y,
+                            radius: size2.x,
+                        };
+                        return gjk_epa_shape_pair(
+                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
+                        );
+                    }
+                    warn!("mesh-cylinder collision requires convex hull; returning no contacts");
+                    return vec![];
                 }
                 GeomType::Box => mesh_box_contact(mesh, &pose1, &pose2, &size2, use_bvh),
                 GeomType::Ellipsoid => {
@@ -235,13 +250,28 @@ pub fn collide_with_mesh(
                 GeomType::Sphere => {
                     mesh_sphere_contact(mesh, &pose2, pose1.position, size1.x, use_bvh)
                 }
-                // Capsule and Cylinder both use capsule collision (cylinder approximated as capsule)
-                GeomType::Capsule | GeomType::Cylinder => {
+                GeomType::Capsule => {
                     let half_len = size1.y;
                     let axis = pose1.rotation * Vector3::z();
                     let start = pose1.position - axis * half_len;
                     let end = pose1.position + axis * half_len;
                     mesh_capsule_contact(mesh, &pose2, start, end, size1.x, use_bvh)
+                }
+                GeomType::Cylinder => {
+                    // Exact cylinder collision via GJK/EPA on mesh convex hull.
+                    // Arguments in geom-order: shape1=cylinder (geom1), shape2=hull (geom2).
+                    if let Some(hull) = mesh.convex_hull() {
+                        let shape1 = Shape::Cylinder {
+                            half_length: size1.y,
+                            radius: size1.x,
+                        };
+                        let shape2 = Shape::convex_mesh(hull.clone());
+                        return gjk_epa_shape_pair(
+                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
+                        );
+                    }
+                    warn!("mesh-cylinder collision requires convex hull; returning no contacts");
+                    return vec![];
                 }
                 GeomType::Box => mesh_box_contact(mesh, &pose2, &pose1, &size1, use_bvh),
                 GeomType::Ellipsoid => {
