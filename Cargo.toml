@@ -226,6 +226,9 @@ members = [
     "examples/fundamentals/sim-cpu/mesh-collision/mesh-on-mesh",
     "examples/fundamentals/sim-cpu/mesh-collision/stress-test",
 
+    # Examples — fundamentals / sim-ml / spaces
+    "examples/fundamentals/sim-ml/spaces/stress-test",
+
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
     "examples/sdf-physics/cpu/02-thin-grid",
