@@ -356,3 +356,17 @@ the non-mesh dispatch in `narrow.rs` (cylinder-cylinder, cylinder-box,
 ellipsoid-* all go through GJK/EPA). This fix routes mesh-cylinder and
 mesh-ellipsoid through the same proven path. The only new code is the helper
 extraction and dispatch wiring.
+
+## Known constraint: degenerate convex hulls
+
+Flat meshes (all vertices coplanar, zero volume) produce degenerate convex
+hulls that GJK/EPA cannot process — EPA requires a 3D simplex to expand.
+This affects all hull-based paths: mesh-mesh, mesh-cylinder, mesh-ellipsoid.
+The triangle-level fallbacks (mesh-sphere, mesh-capsule, mesh-box) are
+unaffected.
+
+This is inherent to GJK/EPA, shared with MuJoCo (`MakeGraph()` also
+requires volume), and only triggered by meshes that no real pipeline
+produces (CAD meshes are closed surfaces with volume). Unit tests use a
+thin slab mesh (`box_mesh(1, 1, 0.01)`) instead of a zero-volume quad to
+avoid this limitation. Not tracked as a defect.

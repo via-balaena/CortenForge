@@ -1627,4 +1627,144 @@ mod spec_d_tests {
             contacts.len()
         );
     }
+
+    // ========================================================================
+    // Mesh–Ellipsoid GJK/EPA dispatch tests
+    // ========================================================================
+
+    /// Helper: set up a (Mesh, Ellipsoid) model.
+    /// Returns the model with geom0 = mesh, geom1 = ellipsoid.
+    fn mesh_ellipsoid_model(mesh: Arc<TriangleMeshData>, radii: Vector3<f64>) -> Model {
+        let mut model = make_model(GeomType::Mesh, Vector3::zeros(), GeomType::Ellipsoid, radii);
+        model.geom_mesh = vec![Some(0), None];
+        model.mesh_data = vec![mesh];
+        model
+    }
+
+    /// T3: Oblate ellipsoid flat-axis on mesh slab.
+    /// Radii [0.3, 0.3, 0.05] — thin disc. Center at z = 0.05 - 0.02 = 0.03
+    /// so bottom at z = -0.02, penetrating slab top (z=0) by 0.02.
+    /// Old sphere approx would use max_r = 0.3, making the object float.
+    #[test]
+    fn test_mesh_ellipsoid_oblate_on_mesh() {
+        let mesh = ground_slab_mesh();
+        let radii = Vector3::new(0.3, 0.3, 0.05);
+        let model = mesh_ellipsoid_model(mesh, radii);
+
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        // Center at z=0.03 → bottom at z=0.03-0.05=-0.02 → overlaps slab top by 0.02
+        let pos_ell = Vector3::new(0.0, 0.0, 0.03);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_ell, mat, 0.0);
+        assert!(!contacts.is_empty(), "should produce contact");
+
+        let c = &contacts[0];
+        // Normal should point +Z (from mesh toward ellipsoid)
+        assert!(
+            c.normal.z > 0.9,
+            "normal should point +Z, got {:?}",
+            c.normal
+        );
+        // Penetration ~0.02
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive (~0.02), got {}",
+            c.depth
+        );
+    }
+
+    /// T4: Prolate ellipsoid long-axis on mesh slab.
+    /// Radii [0.05, 0.05, 0.3] — tall cigar shape. Center at z = 0.28
+    /// → bottom at z = -0.02, penetrating slab top by 0.02.
+    #[test]
+    fn test_mesh_ellipsoid_prolate_on_mesh() {
+        let mesh = ground_slab_mesh();
+        let radii = Vector3::new(0.05, 0.05, 0.3);
+        let model = mesh_ellipsoid_model(mesh, radii);
+
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        // Center at z=0.28 → bottom at z=0.28-0.3=-0.02 → overlaps slab top
+        let pos_ell = Vector3::new(0.0, 0.0, 0.28);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_ell, mat, 0.0);
+        assert!(!contacts.is_empty(), "should produce contact");
+
+        let c = &contacts[0];
+        assert!(
+            c.normal.z > 0.9,
+            "normal should point +Z, got {:?}",
+            c.normal
+        );
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive, got {}",
+            c.depth
+        );
+    }
+
+    /// T6: Ellipsoid vs mesh — sphere regression.
+    /// Oblate ellipsoid (radii [0.3, 0.3, 0.05]) with center at z = 0.05
+    /// (bottom at z=0 = slab top). Old sphere approx used max_r=0.3, so
+    /// the "sphere" bottom would be at z = 0.05 - 0.3 = -0.25 → depth ~0.26.
+    /// Correct ellipsoid: bottom at z = 0.05 - 0.05 = 0.0 → depth ~SLAB_HZ.
+    #[test]
+    fn test_mesh_ellipsoid_not_sphere_regression() {
+        let mesh = ground_slab_mesh();
+        let radii = Vector3::new(0.3, 0.3, 0.05);
+        let model = mesh_ellipsoid_model(mesh, radii);
+
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        // Center at z=0.05: correct bottom at z=0 (just at slab top)
+        let pos_ell = Vector3::new(0.0, 0.0, 0.05);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_ell, mat, 0.0);
+        assert!(
+            !contacts.is_empty(),
+            "ellipsoid at z=0.05 should contact slab"
+        );
+
+        let c = &contacts[0];
+        // With correct ellipsoid: depth ~SLAB_HZ (~0.01)
+        // With sphere approx (r=0.3): depth ~0.26
+        assert!(
+            c.depth < 0.05,
+            "depth should be small (~{SLAB_HZ}) not large (~0.26 from sphere approx), got {}",
+            c.depth
+        );
+    }
+
+    /// T8: Mesh–Ellipsoid swapped geom order (Ellipsoid, Mesh).
+    #[test]
+    fn test_mesh_ellipsoid_swapped_geom_order() {
+        let mesh = ground_slab_mesh();
+        let radii = Vector3::new(0.3, 0.3, 0.05);
+
+        // geom0 = ellipsoid, geom1 = mesh (swapped)
+        let mut model = make_model(GeomType::Ellipsoid, radii, GeomType::Mesh, Vector3::zeros());
+        model.geom_mesh = vec![None, Some(0)];
+        model.mesh_data = vec![mesh];
+
+        // Ellipsoid at z=0.03 (bottom at -0.02), slab at z=-SLAB_HZ
+        let pos_ell = Vector3::new(0.0, 0.0, 0.03);
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_ell, mat, pos_mesh, mat, 0.0);
+        assert!(!contacts.is_empty(), "swapped order should produce contact");
+
+        let c = &contacts[0];
+        assert!(
+            c.normal.z.abs() > 0.9,
+            "normal should be along Z axis, got {:?}",
+            c.normal
+        );
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive, got {}",
+            c.depth
+        );
+    }
 }

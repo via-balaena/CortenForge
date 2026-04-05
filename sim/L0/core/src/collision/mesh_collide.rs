@@ -116,9 +116,8 @@ fn gjk_epa_shape_pair(
 /// Collision detection involving at least one mesh geometry.
 ///
 /// Dispatches to specialized mesh-primitive or mesh-mesh implementations.
-/// For mesh-primitive collisions, approximations are used for some geometry types:
-/// - Cylinder: approximated as capsule (conservative, may report false positives)
-/// - Ellipsoid: approximated as sphere with max radius (conservative)
+/// Cylinder and ellipsoid pairs use GJK/EPA on the mesh's convex hull.
+/// Sphere, capsule, and box pairs use dedicated triangle-level functions.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
 pub fn collide_with_mesh(
@@ -207,9 +206,16 @@ pub fn collide_with_mesh(
                 }
                 GeomType::Box => mesh_box_contact(mesh, &pose1, &pose2, &size2, use_bvh),
                 GeomType::Ellipsoid => {
-                    // Approximate as sphere with max radius (conservative)
-                    let max_r = size2.x.max(size2.y).max(size2.z);
-                    mesh_sphere_contact(mesh, &pose1, pose2.position, max_r, use_bvh)
+                    // Exact ellipsoid collision via GJK/EPA on mesh convex hull
+                    if let Some(hull) = mesh.convex_hull() {
+                        let shape1 = Shape::convex_mesh(hull.clone());
+                        let shape2 = Shape::Ellipsoid { radii: size2 };
+                        return gjk_epa_shape_pair(
+                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
+                        );
+                    }
+                    warn!("mesh-ellipsoid collision requires convex hull; returning no contacts");
+                    return vec![];
                 }
                 GeomType::Plane => {
                     // Plane normal is local Z-axis — multi-contact (up to 3)
@@ -275,8 +281,17 @@ pub fn collide_with_mesh(
                 }
                 GeomType::Box => mesh_box_contact(mesh, &pose2, &pose1, &size1, use_bvh),
                 GeomType::Ellipsoid => {
-                    let max_r = size1.x.max(size1.y).max(size1.z);
-                    mesh_sphere_contact(mesh, &pose2, pose1.position, max_r, use_bvh)
+                    // Exact ellipsoid collision via GJK/EPA on mesh convex hull.
+                    // Arguments in geom-order: shape1=ellipsoid (geom1), shape2=hull (geom2).
+                    if let Some(hull) = mesh.convex_hull() {
+                        let shape1 = Shape::Ellipsoid { radii: size1 };
+                        let shape2 = Shape::convex_mesh(hull.clone());
+                        return gjk_epa_shape_pair(
+                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
+                        );
+                    }
+                    warn!("mesh-ellipsoid collision requires convex hull; returning no contacts");
+                    return vec![];
                 }
                 GeomType::Plane => {
                     // Multi-contact (up to 3) — negate normals for swapped order
