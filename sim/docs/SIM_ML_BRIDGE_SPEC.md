@@ -834,38 +834,51 @@ This is v1. The conscious decisions here create clean growth paths:
 - `tensor.rs`: `row()` / `row_mut()` for batched tensor access
 - Tests: shape arithmetic, f64→f32 precision, row access, edge cases
 
-### Phase 2: ObservationSpace + ActionSpace
-- `space.rs`: Extractor enum, ObservationSpace, builder, `extract()`, `extract_batch()`
-- `space.rs`: Injector enum, ActionSpace, builder, `apply()`, `apply_batch()`
+### Phase 2a: ObservationSpace
+- `space.rs`: Extractor enum (13 variants), ObservationSpace struct
+- `space.rs`: ObservationSpaceBuilder with build-time validation
+- `space.rs`: `extract()` single-env, `extract_batch()` multi-env
 - `error.rs`: SpaceError
-- Tests: round-trip (extract → verify against direct Data field access),
-  builder validation errors, range boundary checks, all extractor variants,
-  sensor-by-name resolution, ctrl clamping, batch extract/apply
+- Tests: each extractor variant verified against direct Data field access
+  (f64→f32 cast matches), builder validation errors (out-of-bounds range,
+  unknown sensor name), batch extract shape correctness
+
+### Phase 2b: ActionSpace
+- `space.rs`: Injector enum (5 variants), ActionSpace struct
+- `space.rs`: ActionSpaceBuilder with build-time validation
+- `space.rs`: `apply()` single-env, `apply_batch()` multi-env
+- Tests: round-trip (apply action → read Data field → verify f32→f64),
+  ctrl clamping against model.actuator_ctrlrange, builder validation
+  errors, batch apply correctness
 
 ### Phase 3: Environment trait + SimEnv
 - `env.rs`: Environment trait, SimEnv struct, SimEnvBuilder
-- `error.rs`: EnvError, VecStepError, ResetError
+- `error.rs`: EnvError, ResetError
 - Tests: single-env episode lifecycle, sub-stepping correctness, early
   termination during sub-steps, reward/done/truncated correctness,
   on_reset hook + forward() recomputation, builder validation
+  (missing fields, sub_steps = 0)
 
 ### Phase 4: VecEnv
 - `vec_env.rs`: VecEnv, VecEnvBuilder, VecStepResult
+- `error.rs`: VecStepError
 - Tests: batched step matches N sequential SimEnv steps (bit-exact),
   auto-reset semantics (terminal_observations populated correctly),
   per-env action isolation, done/truncated flag correctness,
-  on_reset with env_index, sub-stepping, physics error auto-reset
+  on_reset with env_index, sub-stepping (all sub-steps run, evaluate
+  at end), divergence accumulation across sub-steps, physics error
+  auto-reset, wrong action shape → VecStepError
 
-### Phase 4b: Benchmarks
+### Phase 5: Benchmarks
 - `benches/bridge_benchmarks.rs`: criterion benchmarks
 - `extract()` / `extract_batch()` latency (pendulum, humanoid)
 - `apply()` / `apply_batch()` latency
 - `VecEnv::step()` total throughput: 64 pendulums, 64 humanoids
 - Bridge overhead measurement: `VecEnv::step()` vs raw `BatchSim::step_all()`
 - Verify targets from §12: bridge <5% of step time, extract <1 µs, etc.
-- If targets are missed: profile, fix, re-measure before Phase 5
+- If targets are missed: profile, fix, re-measure before Phase 6
 
-### Phase 5: Integration examples
+### Phase 6: Integration examples
 - Pendulum swing-up (simplest: 1 hinge joint, 1 actuator, scalar obs)
 - Cart-pole balance (classic RL benchmark, 4D obs, 1D action)
 - Multi-env throughput demo (64 envs, measure steps/sec)
