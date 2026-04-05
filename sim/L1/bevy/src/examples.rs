@@ -538,7 +538,7 @@ pub fn validation_system(
 /// force/weight validation in settling examples.
 ///
 /// Add as a resource and pair with [`accumulate_contact_force`] in `PostUpdate`.
-/// After the window closes, call [`avg_force_ratio`] to get the average
+/// After the window closes, call [`ContactForceAccumulator::avg_force_ratio`] to get the average
 /// contact-force / weight ratio.
 ///
 /// ```ignore
