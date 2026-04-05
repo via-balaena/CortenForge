@@ -19,11 +19,41 @@
 //! - [`VecEnv`] — vectorized environments wrapping `BatchSim` for parallel
 //!   stepping with auto-reset.
 //!
-//! ## Design
+//! ## Design principles
 //!
-//! - `f32` throughout (ML convention). The bridge owns the `f64→f32` conversion.
-//! - Dynamic shapes (`Vec<usize>`) — observation/action dimensions vary per task.
-//! - No strides, no views, no autograd. Growth path is clear but not premature.
+//! - **Sim purity** — `sim-core` and `sim-types` gain zero new dependencies or
+//!   traits.  All ML-facing abstractions live here.
+//! - **Composition over inheritance** — the bridge wraps `Model` + `Data` (and
+//!   `BatchSim`); it doesn't subclass or modify them.
+//! - **`f64→f32` is a conscious boundary** — the sim is `f64` throughout.
+//!   ML is `f32`.  The bridge owns this conversion explicitly.
+//! - **Vectorized from day one** — `VecEnv` produces a single `Tensor` of
+//!   shape `[n_envs, obs_dim]`, not `Vec<Tensor>`.  One allocation, one
+//!   memory layout.  Same for actions in.
+//! - **Reward and termination are user-defined** — the bridge provides the
+//!   hook; the user provides the logic via closures.
+//! - No strides, no views, no autograd.  Growth path is clear but not premature.
+//!
+//! ## What this crate does NOT do
+//!
+//! - **No policy implementations** — that's the RL library's job.
+//! - **No autodiff** — `Tensor` is a dumb buffer.  Autodiff is a future crate.
+//! - **No GPU tensor ops** — `Tensor` lives on CPU.  GPU acceleration lives in
+//!   `sim-gpu` (compute shaders) and future autodiff (GPU kernels).
+//! - **No observation normalization** — running mean/std belongs in the RL
+//!   library's policy preprocessing, not in the bridge.
+//! - **No domain randomization primitives** — the `on_reset` hook gives users
+//!   full control.
+//! - **No Bevy dependency** — this is Layer 0.
+//!
+//! ## Growth path
+//!
+//! | Future capability | How it fits |
+//! |---|---|
+//! | Autodiff | Replace `Tensor` internals with a tape-backed tensor.  External API unchanged. |
+//! | GPU tensors | `Tensor` gains a `Device` enum.  Builder API unchanged. |
+//! | Custom extractors | `Extractor` enum grows new variants without breaking existing builders. |
+//! | Pre-allocated buffers | `VecEnv` owns internal buffers, `step()` fills in-place, zero-alloc hot path. |
 
 // Safety lint: deny unwrap/expect in library code.
 #![deny(clippy::unwrap_used, clippy::expect_used)]

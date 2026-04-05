@@ -53,6 +53,25 @@ pub struct VecStepResult {
 /// Wraps [`BatchSim`] and adds observation / action / reward / done semantics.
 /// Constructed via [`VecEnv::builder()`].
 ///
+/// ## Threading model
+///
+/// Physics stepping is parallelized via `BatchSim::step_all()` (rayon).
+/// The bridge's own work (action injection, reward/done evaluation,
+/// observation extraction, resets) runs sequentially after `step_all()`
+/// returns — physics dominates wall time; the bridge overhead is <2%.
+///
+/// Reward/done/truncated closures are `Fn + Send + Sync` so that `VecEnv`
+/// itself is `Send + Sync` (essential for async training loops).
+/// `on_reset_fn` is `FnMut + Send` (no `Sync`) because resets are
+/// sequential — the closure can own mutable state like an RNG directly.
+///
+/// ## Sub-stepping
+///
+/// All sub-steps run for all envs via `batch.step_all()` — no per-env
+/// early exit (contrast with [`SimEnv`](crate::SimEnv) which breaks on
+/// `done` each sub-step).  Done/truncated are evaluated once at the final
+/// state.  This preserves `BatchSim`'s single parallel dispatch.
+///
 /// [`BatchSim`]: sim_core::BatchSim
 pub struct VecEnv {
     model: Arc<Model>,

@@ -67,6 +67,14 @@ pub trait Environment {
 /// The user provides only the task-specific parts: reward, termination,
 /// and optional reset customization (domain randomization).
 ///
+/// ## Sub-stepping
+///
+/// `SimEnv` checks `done_fn` after each sub-step and breaks early if
+/// the episode terminates — avoiding post-terminal corruption.  This is
+/// cheap for a single env (one branch per sub-step).  Contrast with
+/// [`VecEnv`](crate::VecEnv) which runs all sub-steps unconditionally
+/// and evaluates done once at the final state.
+///
 /// Constructed via [`SimEnv::builder()`].
 pub struct SimEnv {
     model: Arc<Model>,
