@@ -23,8 +23,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
-    validation_system,
+    ContactForceAccumulator, PhysicsHud, ValidationHarness, accumulate_contact_force,
+    render_physics_hud, spawn_example_camera, spawn_physics_hud, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -101,7 +101,7 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .init_resource::<PhysicsAccumulator>()
         .init_resource::<PhysicsHud>()
-        .init_resource::<MeshPlaneValidation>()
+        .insert_resource(ContactForceAccumulator::new(1, 3.0, 5.0))
         .insert_resource(
             ValidationHarness::new()
                 .report_at(5.0)
@@ -120,6 +120,7 @@ fn main() {
             (
                 sync_geom_transforms,
                 validation_system,
+                accumulate_contact_force,
                 diagnostics,
                 update_hud,
                 render_physics_hud,
@@ -171,14 +172,13 @@ fn setup(
 
 // ── HUD ────────────────────────────────────────────────────────────────────
 
-fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
+fn update_hud(data: Res<PhysicsData>, mut hud: ResMut<PhysicsHud>) {
     hud.clear();
     hud.section("Mesh-on-Plane");
 
     let z = data.xpos[1].z;
     let vz = data.cvel[1][5];
     let ncon = data.contacts.len();
-    let _ = &*model;
 
     hud.scalar("z", z, 3);
     hud.scalar("vz", vz, 4);
@@ -188,78 +188,45 @@ fn update_hud(model: Res<PhysicsModel>, data: Res<PhysicsData>, mut hud: ResMut<
 
 // ── Validation ─────────────────────────────────────────────────────────────
 
-#[derive(Resource, Default)]
-struct MeshPlaneValidation {
-    /// Sum of contact forces after settling (for averaging).
-    force_sum: f64,
-    force_count: u32,
-    reported: bool,
-}
-
 fn diagnostics(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    harness: Res<ValidationHarness>,
-    mut val: ResMut<MeshPlaneValidation>,
+    acc: Res<ContactForceAccumulator>,
+    mut harness: ResMut<ValidationHarness>,
 ) {
-    let time = data.time;
-
-    // Accumulate contact force in the 3–5s window (after settling)
-    if time > 3.0 && time < 5.0 {
-        for (i, ct) in data.efc_type.iter().enumerate() {
-            if matches!(
-                ct,
-                sim_core::ConstraintType::ContactFrictionless
-                    | sim_core::ConstraintType::ContactPyramidal
-                    | sim_core::ConstraintType::ContactElliptic
-            ) {
-                val.force_sum += data.efc_force[i].abs();
-            }
-        }
-        val.force_count += 1;
+    if !harness.take_reported() {
+        return;
     }
 
-    if harness.reported() && !val.reported {
-        val.reported = true;
+    let z = data.xpos[1].z;
+    let vz = data.cvel[1][5];
+    let ncon = data.contacts.len();
+    let force_ratio = acc.avg_force_ratio(&model);
 
-        let z = data.xpos[1].z;
-        let vz = data.cvel[1][5];
-        let ncon = data.contacts.len();
-
-        let body_mass = model.body_mass[1];
-        let weight = body_mass * 9.81;
-        let avg_force = if val.force_count > 0 {
-            val.force_sum / f64::from(val.force_count)
-        } else {
-            0.0
-        };
-        let force_ratio = avg_force / weight;
-
-        let checks = vec![
-            Check {
-                name: "Rest height",
-                pass: (z - REST_HEIGHT).abs() < 0.003,
-                detail: format!(
-                    "z={z:.4} (expect ≈{REST_HEIGHT:.3}, err={:.4})",
-                    (z - REST_HEIGHT).abs()
-                ),
-            },
-            Check {
-                name: "Settled",
-                pass: vz.abs() < 0.01,
-                detail: format!("vz={vz:.6}"),
-            },
-            Check {
-                name: "Contact force",
-                pass: (0.95..=1.05).contains(&force_ratio),
-                detail: format!("force/weight={force_ratio:.4}"),
-            },
-            Check {
-                name: "Contacts exist",
-                pass: ncon >= 1,
-                detail: format!("ncon={ncon}"),
-            },
-        ];
-        let _ = print_report("Mesh-on-Plane (t=5s)", &checks);
-    }
+    let checks = vec![
+        Check {
+            name: "Rest height",
+            pass: (z - REST_HEIGHT).abs() < 0.003,
+            detail: format!(
+                "z={z:.4} (expect ≈{REST_HEIGHT:.3}, err={:.4})",
+                (z - REST_HEIGHT).abs()
+            ),
+        },
+        Check {
+            name: "Settled",
+            pass: vz.abs() < 0.01,
+            detail: format!("vz={vz:.6}"),
+        },
+        Check {
+            name: "Contact force",
+            pass: (0.95..=1.05).contains(&force_ratio),
+            detail: format!("force/weight={force_ratio:.4}"),
+        },
+        Check {
+            name: "Contacts exist",
+            pass: ncon >= 1,
+            detail: format!("ncon={ncon}"),
+        },
+    ];
+    let _ = print_report("Mesh-on-Plane (t=5s)", &checks);
 }
