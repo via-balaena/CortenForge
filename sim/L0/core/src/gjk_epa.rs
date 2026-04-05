@@ -34,6 +34,13 @@ const HILL_CLIMB_MIN: usize = 10;
 /// Tolerance for numerical comparisons in support functions.
 const EPSILON: f64 = 1e-8;
 
+/// Number of rim points for cylinder cap face enumeration in MULTICCD.
+const N_CAP_POINTS: usize = 8;
+
+/// Axial-to-radial ratio threshold for detecting cylinder cap contact.
+/// When |axial| / radial > threshold, direction is within ~5.7 deg of axis.
+const CAP_FACE_THRESHOLD: f64 = 10.0;
+
 /// Default GJK max iterations (used when no Model context available).
 /// MuJoCo default: 35. Historical CortenForge value: 64.
 pub const GJK_MAX_ITERATIONS: usize = 35;
@@ -267,6 +274,39 @@ pub fn support_face_points(
                 .filter(|v| (v.coords.dot(&local_dir) - max_dot).abs() < EPSILON * 10.0)
                 .map(|v| pose.transform_point(v))
                 .collect()
+        }
+        Shape::Cylinder {
+            half_length,
+            radius,
+        } => {
+            let local_dir = pose.rotation.inverse() * direction;
+            let axial = local_dir.z.abs();
+            let radial = local_dir.x.hypot(local_dir.y);
+
+            if axial > radial * CAP_FACE_THRESHOLD {
+                // Flat cap contact — enumerate rim points
+                let cap_z = if local_dir.z >= 0.0 {
+                    *half_length
+                } else {
+                    -*half_length
+                };
+                // Both N_CAP_POINTS (8) and loop index i (< 8) are exact in f64.
+                #[allow(clippy::cast_precision_loss)]
+                let n_f64 = N_CAP_POINTS as f64;
+                (0..N_CAP_POINTS)
+                    .map(|i| {
+                        #[allow(clippy::cast_precision_loss)]
+                        let angle = 2.0 * std::f64::consts::PI * (i as f64) / n_f64;
+                        let local_pt =
+                            Point3::new(radius * angle.cos(), radius * angle.sin(), cap_z);
+                        pose.transform_point(&local_pt)
+                    })
+                    .collect()
+            } else {
+                // Curved surface — single support point
+                let warm_start = Cell::new(0);
+                vec![support(shape, pose, direction, &warm_start)]
+            }
         }
         // Smooth shapes: single support point
         _ => {
@@ -903,6 +943,122 @@ mod tests {
             &pose_b,
             GJK_MAX_ITERATIONS
         ));
+    }
+
+    // =========================================================================
+    // Cylinder support_face_points tests
+    // =========================================================================
+
+    /// T1: Cap-aligned direction returns N_CAP_POINTS rim points.
+    #[test]
+    fn test_support_face_points_cylinder_cap_aligned() {
+        let shape = Shape::cylinder(1.0, 0.5);
+        let pose = Pose::identity();
+        let dir = -Vector3::z(); // Bottom cap
+
+        let points = support_face_points(&shape, &pose, &dir);
+        assert_eq!(points.len(), N_CAP_POINTS);
+
+        for pt in &points {
+            // All at z = -half_length
+            assert_relative_eq!(pt.z, -1.0, epsilon = 1e-10);
+            // All at distance radius from axis
+            let radial_dist = pt.x.hypot(pt.y);
+            assert_relative_eq!(radial_dist, 0.5, epsilon = 1e-10);
+        }
+
+        // Evenly spaced: consecutive angular separation = 2π/8 = π/4
+        let mut angles: Vec<f64> = points.iter().map(|pt| pt.y.atan2(pt.x)).collect();
+        angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for i in 0..angles.len() - 1 {
+            let sep = angles[i + 1] - angles[i];
+            assert_relative_eq!(sep, std::f64::consts::FRAC_PI_4, epsilon = 1e-10);
+        }
+    }
+
+    /// T2: Radial direction returns 1 point (curved surface).
+    #[test]
+    fn test_support_face_points_cylinder_radial() {
+        let shape = Shape::cylinder(1.0, 0.5);
+        let pose = Pose::identity();
+        let dir = Vector3::x();
+
+        let points = support_face_points(&shape, &pose, &dir);
+        assert_eq!(points.len(), 1);
+        assert_relative_eq!(points[0].x, 0.5, epsilon = 1e-10);
+    }
+
+    /// T3: Slightly off-axis (3 deg) still returns cap points.
+    #[test]
+    fn test_support_face_points_cylinder_slightly_off_axis() {
+        let shape = Shape::cylinder(1.0, 0.5);
+        let pose = Pose::identity();
+        // 3 degrees from -Z → within 5.7-degree threshold
+        let angle = 3.0_f64.to_radians();
+        let dir = Vector3::new(angle.sin(), 0.0, -angle.cos());
+
+        let points = support_face_points(&shape, &pose, &dir);
+        assert_eq!(points.len(), N_CAP_POINTS);
+    }
+
+    /// T4: 45-degree direction returns 1 point (curved surface).
+    #[test]
+    fn test_support_face_points_cylinder_45_degrees() {
+        let shape = Shape::cylinder(1.0, 0.5);
+        let pose = Pose::identity();
+        let dir = Vector3::new(1.0, 0.0, -1.0).normalize();
+
+        let points = support_face_points(&shape, &pose, &dir);
+        assert_eq!(points.len(), 1);
+    }
+
+    /// T5: Rotated cylinder (axis along X). -X direction returns cap points.
+    #[test]
+    fn test_support_face_points_cylinder_rotated() {
+        use nalgebra::UnitQuaternion;
+
+        let shape = Shape::cylinder(1.0, 0.5);
+        // Rotate 90 degrees about Y: local Z → world -X
+        let rotation =
+            UnitQuaternion::from_axis_angle(&Vector3::y_axis(), -std::f64::consts::FRAC_PI_2);
+        let pose = Pose {
+            position: Point3::origin(),
+            rotation,
+        };
+        // -X in world = +Z in local (after inverse rotation)
+        let dir = -Vector3::x();
+
+        let points = support_face_points(&shape, &pose, &dir);
+        assert_eq!(points.len(), N_CAP_POINTS);
+
+        for pt in &points {
+            // Cap at local z = +half_length, which maps to world x = -half_length
+            assert_relative_eq!(pt.x, -1.0, epsilon = 1e-6);
+            // All at distance radius from the cylinder axis (which is now world X)
+            let radial_dist = pt.y.hypot(pt.z);
+            assert_relative_eq!(radial_dist, 0.5, epsilon = 1e-6);
+        }
+    }
+
+    /// T6: Top cap vs bottom cap.
+    #[test]
+    fn test_support_face_points_cylinder_top_vs_bottom() {
+        let shape = Shape::cylinder(1.0, 0.5);
+        let pose = Pose::identity();
+
+        // +Z → top cap
+        let top_pts = support_face_points(&shape, &pose, &Vector3::z());
+        assert_eq!(top_pts.len(), N_CAP_POINTS);
+        for pt in &top_pts {
+            assert_relative_eq!(pt.z, 1.0, epsilon = 1e-10);
+        }
+
+        // -Z → bottom cap
+        let bot_pts = support_face_points(&shape, &pose, &(-Vector3::z()));
+        assert_eq!(bot_pts.len(), N_CAP_POINTS);
+        for pt in &bot_pts {
+            assert_relative_eq!(pt.z, -1.0, epsilon = 1e-10);
+        }
     }
 
     // =========================================================================

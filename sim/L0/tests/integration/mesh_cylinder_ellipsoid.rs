@@ -103,13 +103,9 @@ fn settle_and_measure(
 /// Expected rest height: center at z = half_length = 0.2.
 /// Contact force ≈ weight.
 ///
-/// Currently ignored: cylinder flat-cap produces only 1 MULTICCD contact
-/// because `support_face_points` lacks a `Shape::Cylinder` arm (falls through
-/// to smooth-shape single-point). Single contact is rotationally unstable →
-/// cylinder tips and tunnels. Will pass after cylinder MULTICCD face
-/// enumeration is implemented.
+/// With cylinder MULTICCD face enumeration (8 cap rim points), the flat cap
+/// produces multiple contacts providing rotational stability.
 #[test]
-#[ignore = "blocked on cylinder MULTICCD face enumeration (support_face_points)"]
 fn mesh_cylinder_settling() {
     let half_length: f64 = 0.2;
     let radius: f64 = 0.1;
@@ -126,10 +122,9 @@ fn mesh_cylinder_settling() {
     // is at z=0 (mesh surface). MULTICCD provides flat-cap stability.
     let mjcf = format!(
         r#"<mujoco>
-  <option gravity="0 0 -{gravity}" timestep="0.001"/>
-  <custom>
-    <numeric name="ENABLE_MULTICCD" data="1"/>
-  </custom>
+  <option gravity="0 0 -{gravity}" timestep="0.001">
+    <flag multiccd="enable"/>
+  </option>
   <asset>
     <mesh name="ground" vertex="{gnd_verts}" face="{gnd_faces}"/>
   </asset>
@@ -263,10 +258,9 @@ fn mesh_cylinder_multiccd() {
 
     let mjcf = format!(
         r#"<mujoco>
-  <option gravity="0 0 -{gravity}" timestep="0.001"/>
-  <custom>
-    <numeric name="ENABLE_MULTICCD" data="1"/>
-  </custom>
+  <option gravity="0 0 -{gravity}" timestep="0.001">
+    <flag multiccd="enable"/>
+  </option>
   <asset>
     <mesh name="ground" vertex="{gnd_verts}" face="{gnd_faces}"/>
   </asset>

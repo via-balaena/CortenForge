@@ -289,10 +289,12 @@ pub fn multiccd_contacts(
     _tolerance: f64,
 ) -> Vec<GjkContact> {
     // MULTICCD strategy: enumerate all vertices on shape A's contact face
-    // (the set of vertices sharing the maximum support value in the -normal
-    // direction). For flat faces (box, convex mesh), this gives the face
+    // (the set of vertices sharing the maximum support value in the normal
+    // direction). The EPA normal points outward from the Minkowski difference
+    // toward shape A's contact face, so using +normal selects the face of A
+    // that faces B. For flat faces (box, convex mesh), this gives the face
     // corners. For curved shapes, this gives a single point.
-    let face_points = support_face_points(shape_a, pose_a, &(-primary.normal));
+    let face_points = support_face_points(shape_a, pose_a, &primary.normal);
 
     if face_points.len() <= 1 {
         // Curved surface or single vertex — no additional contacts
