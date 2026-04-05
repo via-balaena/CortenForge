@@ -7269,6 +7269,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-ml-bridge"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sim-simd"
 version = "0.7.0"
 dependencies = [

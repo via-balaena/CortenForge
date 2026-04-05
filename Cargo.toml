@@ -268,6 +268,7 @@ members = [
     "sim/L0/urdf",
     "sim/L0/tests",
     "sim/L0/gpu",
+    "sim/L0/ml-bridge",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
@@ -440,6 +441,7 @@ sim-core = { path = "sim/L0/core" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
 sim-gpu = { path = "sim/L0/gpu" }
+sim-ml-bridge = { path = "sim/L0/ml-bridge" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
 

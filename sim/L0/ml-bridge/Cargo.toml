@@ -1,0 +1,18 @@
+[package]
+name = "sim-ml-bridge"
+description = "ML boundary layer for RL training — zero Bevy, zero ML framework deps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[lints]
+workspace = true
