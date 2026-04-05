@@ -3,8 +3,8 @@
 use super::narrow::{GEOM_EPSILON, make_contact_from_geoms, multiccd_contacts};
 use crate::gjk_epa::{gjk_distance, gjk_epa_contact};
 use crate::mesh::{
-    MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact,
-    mesh_mesh_deepest_contact, mesh_sphere_contact,
+    MeshContact, TriangleMeshData, mesh_capsule_contact, mesh_mesh_deepest_contact,
+    mesh_sphere_contact,
 };
 use crate::types::{
     Contact, DISABLE_MIDPHASE, ENABLE_MULTICCD, GeomType, Model, disabled, enabled,
@@ -204,7 +204,20 @@ pub fn collide_with_mesh(
                     warn!("mesh-cylinder collision requires convex hull; returning no contacts");
                     return vec![];
                 }
-                GeomType::Box => mesh_box_contact(mesh, &pose1, &pose2, &size2, use_bvh),
+                GeomType::Box => {
+                    // Exact box collision via GJK/EPA on mesh convex hull
+                    if let Some(hull) = mesh.convex_hull() {
+                        let shape1 = Shape::convex_mesh(hull.clone());
+                        let shape2 = Shape::Box {
+                            half_extents: size2,
+                        };
+                        return gjk_epa_shape_pair(
+                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
+                        );
+                    }
+                    warn!("mesh-box collision requires convex hull; returning no contacts");
+                    return vec![];
+                }
                 GeomType::Ellipsoid => {
                     // Exact ellipsoid collision via GJK/EPA on mesh convex hull
                     if let Some(hull) = mesh.convex_hull() {
@@ -279,7 +292,21 @@ pub fn collide_with_mesh(
                     warn!("mesh-cylinder collision requires convex hull; returning no contacts");
                     return vec![];
                 }
-                GeomType::Box => mesh_box_contact(mesh, &pose2, &pose1, &size1, use_bvh),
+                GeomType::Box => {
+                    // Exact box collision via GJK/EPA on mesh convex hull.
+                    // Arguments in geom-order: shape1=box (geom1), shape2=hull (geom2).
+                    if let Some(hull) = mesh.convex_hull() {
+                        let shape1 = Shape::Box {
+                            half_extents: size1,
+                        };
+                        let shape2 = Shape::convex_mesh(hull.clone());
+                        return gjk_epa_shape_pair(
+                            model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
+                        );
+                    }
+                    warn!("mesh-box collision requires convex hull; returning no contacts");
+                    return vec![];
+                }
                 GeomType::Ellipsoid => {
                     // Exact ellipsoid collision via GJK/EPA on mesh convex hull.
                     // Arguments in geom-order: shape1=ellipsoid (geom1), shape2=hull (geom2).

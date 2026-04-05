@@ -3419,6 +3419,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-mesh-collision-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+]
+
+[[package]]
 name = "example-mesh-pipeline"
 version = "0.7.0"
 dependencies = [
