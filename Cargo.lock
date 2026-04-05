@@ -3504,6 +3504,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ml-spaces-obs-extract"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+ "sim-ml-bridge",
+]
+
+[[package]]
 name = "example-ml-spaces-stress-test"
 version = "0.7.0"
 dependencies = [
