@@ -7273,6 +7273,8 @@ name = "sim-ml-bridge"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "sim-core",
+ "sim-mjcf",
  "thiserror 2.0.18",
 ]
 

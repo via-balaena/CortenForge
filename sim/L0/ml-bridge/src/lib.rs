@@ -10,6 +10,8 @@
 //!
 //! - [`Tensor`] — flat `f32` buffer with shape metadata.
 //! - [`TensorSpec`] — shape + optional bounds for observation/action spaces.
+//! - [`ObservationSpace`] — configurable mapping from `Data` fields to a flat
+//!   `Tensor`.
 //!
 //! ## Design
 //!
@@ -21,7 +23,9 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod error;
+pub mod space;
 pub mod tensor;
 
-pub use error::TensorError;
+pub use error::{SpaceError, TensorError};
+pub use space::{ObservationSpace, ObservationSpaceBuilder};
 pub use tensor::{Tensor, TensorSpec};

@@ -9,10 +9,12 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+sim-core = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+sim-mjcf = { workspace = true }
 
 [lints]
 workspace = true
