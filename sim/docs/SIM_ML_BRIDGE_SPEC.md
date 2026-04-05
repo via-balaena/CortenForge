@@ -688,6 +688,13 @@ In practice, physics tasks don't "recover" from terminal states within a
 few sub-steps — a humanoid that falls below height 0.5 at sub-step 3 will
 still be below 0.5 at sub-step 10.
 
+**Divergence detection across sub-steps**: if env 5 diverges at sub-step 3,
+BatchSim auto-resets it, then sub-steps 4–10 run on the reset state. The
+`divergence_detected()` flag may be cleared by the successful subsequent
+steps. To avoid missing this, VecEnv accumulates divergence into a per-env
+flag after each `step_all()` call (OR into a `Vec<bool>`). Any env that
+diverged during any sub-step is treated as done at evaluation time.
+
 If a future task requires per-env early exit in VecEnv, the growth path is:
 replace the `step_all()` × N loop with a `step_where(awake_mask)` method
 on BatchSim that skips sleeping/done envs. This is additive to BatchSim,
@@ -701,7 +708,7 @@ not a redesign of VecEnv.
 |------|--------|---------|
 | `TensorError` | `Tensor::try_from_*` | Shape mismatch: `data.len() != product(shape)`. For external input validation. Internal code uses panicking `from_slice` instead (§5.1). |
 | `SpaceError` | Builders | Range out of bounds, sensor name not found, dimension mismatch. Returned by `ObservationSpaceBuilder::build()`, `ActionSpaceBuilder::build()`. |
-| `EnvError` | Env builders | Missing required field (no obs space, no reward fn). Returned by `SimEnvBuilder::build()`, `VecEnvBuilder::build()`. |
+| `EnvError` | Env builders | Missing required field (no obs space, no reward fn) or invalid config (`sub_steps = 0`). Returned by `SimEnvBuilder::build()`, `VecEnvBuilder::build()`. |
 | `VecStepError` | `VecEnv::step()` | Bridge-level error: wrong action shape, wrong batch size. NOT per-env physics errors. |
 | `ResetError` | `reset()` / `reset_all()` | `forward()` failed after reset + on_reset hook. Rare — indicates the on_reset hook put Data into an invalid state. |
 | `StepError` | sim-core | Per-env physics error. In VecEnv, reported per-env in `VecStepResult::errors`. In SimEnv, propagated as `Result` from `SimEnv::step()`. |
