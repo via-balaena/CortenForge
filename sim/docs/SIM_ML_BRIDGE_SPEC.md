@@ -827,6 +827,20 @@ This is v1. The conscious decisions here create clean growth paths:
 
 ## 15. Implementation Plan
 
+### Per-phase workflow
+
+Every phase follows the same cycle:
+
+1. **Recon** — read this spec's section for the phase, then read the source
+   files you're building on (e.g., Phase 2a reads `Data` field definitions;
+   Phase 4 reads `BatchSim` API). Don't implement from memory — verify
+   field names, method signatures, and trait bounds against current code.
+2. **Implement** — write the code and tests specified for the phase.
+3. **Self-check** — run `cargo test -p sim-ml-bridge`, `cargo clippy -p
+   sim-ml-bridge -- -D warnings`, `cargo doc -p sim-ml-bridge`. Fix issues.
+4. **Review** — present to user for review before moving to the next phase.
+5. **Commit** — after approval.
+
 ### Phase 1: Crate scaffold + Tensor + TensorSpec
 - Cargo.toml, lib.rs, module structure
 - `tensor.rs`: Tensor struct, constructors, f64→f32 conversion, shape validation
