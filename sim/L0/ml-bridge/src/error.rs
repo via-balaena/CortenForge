@@ -79,6 +79,24 @@ pub enum EnvError {
     ZeroSubSteps,
 }
 
+/// Bridge-level error from [`VecEnv::step()`](crate::VecEnv::step).
+///
+/// Only for shape/dimension mismatches — never for per-env physics errors
+/// (those are reported in `VecStepResult::errors`).
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum VecStepError {
+    /// Action tensor has the wrong shape.
+    #[error("action shape mismatch: expected [{n_envs}, {act_dim}], got {actual:?}")]
+    ActionShapeMismatch {
+        /// Expected number of environments (rows).
+        n_envs: usize,
+        /// Expected action dimension (columns).
+        act_dim: usize,
+        /// Actual shape provided.
+        actual: Vec<usize>,
+    },
+}
+
 /// Error from `reset()` / `reset_all()`.
 ///
 /// Indicates that `forward()` failed after reset + `on_reset` hook —

@@ -16,6 +16,8 @@
 //!   `Data` fields, with ctrl clamping.
 //! - [`Environment`] trait + [`SimEnv`] — closure-based single RL environment
 //!   with sub-stepping and early termination.
+//! - [`VecEnv`] — vectorized environments wrapping `BatchSim` for parallel
+//!   stepping with auto-reset.
 //!
 //! ## Design
 //!
@@ -30,8 +32,10 @@ pub mod env;
 pub mod error;
 pub mod space;
 pub mod tensor;
+pub mod vec_env;
 
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
-pub use error::{EnvError, ResetError, SpaceError, TensorError};
+pub use error::{EnvError, ResetError, SpaceError, TensorError, VecStepError};
 pub use space::{ActionSpace, ActionSpaceBuilder, ObservationSpace, ObservationSpaceBuilder};
 pub use tensor::{Tensor, TensorSpec};
+pub use vec_env::{VecEnv, VecEnvBuilder, VecStepResult};
