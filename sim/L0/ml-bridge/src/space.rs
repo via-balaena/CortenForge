@@ -1,8 +1,8 @@
 //! Observation and action space definitions.
 //!
 //! [`ObservationSpace`] maps selected slices of [`Data`] to a flat
-//! [`Tensor`].  `ActionSpace` (Phase 2b) will map a flat [`Tensor`] back
-//! into [`Data`] fields.
+//! [`Tensor`].  [`ActionSpace`] maps a flat [`Tensor`] back into [`Data`]
+//! fields.
 //!
 //! Both spaces are built via builder APIs that validate ranges against
 //! the [`Model`] at `build()` time — invalid ranges produce [`SpaceError`],
@@ -494,6 +494,301 @@ fn resolve_sensor(name: &str, model: &Model) -> Result<Extractor, SpaceError> {
     Ok(Extractor::Sensordata(adr..adr + dim))
 }
 
+// ─── Injector ───────────────────────────────────────────────────────────────
+
+/// A single injection: "write these action elements into this field of Data."
+///
+/// Flat fields use element indices.  Per-body fields use body indices and
+/// unflatten automatically (6 per body for `xfrc_applied`, 3 for `mocap_pos`,
+/// 4 for `mocap_quat`).
+#[derive(Debug, Clone)]
+enum Injector {
+    /// `action[offset..]` → `data.ctrl[range]`.  Clamped to `actuator_ctrlrange`.
+    Ctrl(Range<usize>),
+    /// `action[offset..]` → `data.qfrc_applied[range]`.
+    QfrcApplied(Range<usize>),
+    /// `action[offset..]` → `data.xfrc_applied[body_range]` (6 per body).
+    XfrcApplied(Range<usize>),
+    /// `action[offset..]` → `data.mocap_pos[body_range]` (3 per body).
+    MocapPos(Range<usize>),
+    /// `action[offset..]` → `data.mocap_quat[body_range]` (4 per body).
+    MocapQuat(Range<usize>),
+}
+
+impl Injector {
+    /// Number of `f32` elements this injector consumes from the action tensor.
+    fn dim(&self) -> usize {
+        match self {
+            Self::Ctrl(r) | Self::QfrcApplied(r) => r.len(),
+            Self::XfrcApplied(r) => r.len() * 6,
+            Self::MocapPos(r) => r.len() * 3,
+            Self::MocapQuat(r) => r.len() * 4,
+        }
+    }
+
+    /// Inject values from `action_slice` (f32) into `data`, clamping Ctrl.
+    #[allow(clippy::cast_possible_truncation)]
+    fn inject(&self, action_slice: &[f32], data: &mut Data, model: &Model) {
+        match self {
+            Self::Ctrl(r) => {
+                for (i, &val) in r.clone().zip(action_slice.iter()) {
+                    let v = f64::from(val);
+                    let (lo, hi) = model.actuator_ctrlrange[i];
+                    data.ctrl[i] = v.clamp(lo, hi);
+                }
+            }
+            Self::QfrcApplied(r) => {
+                for (i, &val) in r.clone().zip(action_slice.iter()) {
+                    data.qfrc_applied[i] = f64::from(val);
+                }
+            }
+            Self::XfrcApplied(r) => {
+                let mut offset = 0;
+                for body in r.clone() {
+                    for k in 0..6 {
+                        data.xfrc_applied[body][k] = f64::from(action_slice[offset + k]);
+                    }
+                    offset += 6;
+                }
+            }
+            Self::MocapPos(r) => {
+                let mut offset = 0;
+                for body in r.clone() {
+                    data.mocap_pos[body] = nalgebra::Vector3::new(
+                        f64::from(action_slice[offset]),
+                        f64::from(action_slice[offset + 1]),
+                        f64::from(action_slice[offset + 2]),
+                    );
+                    offset += 3;
+                }
+            }
+            Self::MocapQuat(r) => {
+                let mut offset = 0;
+                for body in r.clone() {
+                    let q = nalgebra::Quaternion::new(
+                        f64::from(action_slice[offset]),     // w
+                        f64::from(action_slice[offset + 1]), // i
+                        f64::from(action_slice[offset + 2]), // j
+                        f64::from(action_slice[offset + 3]), // k
+                    );
+                    // Normalize to unit quaternion (policies output noisy values).
+                    data.mocap_quat[body] = nalgebra::UnitQuaternion::new_normalize(q);
+                    offset += 4;
+                }
+            }
+        }
+    }
+}
+
+// ─── ActionSpace ────────────────────────────────────────────────────────────
+
+/// Selects which slices of `Data` the action vector writes to.
+///
+/// The action tensor is a flat `f32` vector.  Each injector consumes a
+/// contiguous slice of that vector and writes it to the corresponding
+/// `Data` field, casting `f32→f64`.  `Ctrl` injectors additionally clamp
+/// to `model.actuator_ctrlrange`.
+///
+/// Constructed via [`ActionSpace::builder()`].
+#[derive(Debug, Clone)]
+pub struct ActionSpace {
+    injectors: Vec<(usize, Injector)>, // (offset_in_action, injector)
+    dim: usize,
+}
+
+impl ActionSpace {
+    /// Start building an action space.
+    #[must_use]
+    pub const fn builder() -> ActionSpaceBuilder {
+        ActionSpaceBuilder {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Total action dimension (number of `f32` elements).
+    #[must_use]
+    pub const fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// A [`TensorSpec`] describing this action space.
+    ///
+    /// For `Ctrl` injectors the bounds come from `model.actuator_ctrlrange`.
+    /// Other injectors are unbounded (`-inf..inf`).
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn spec(&self, model: &Model) -> TensorSpec {
+        let mut low = vec![f32::NEG_INFINITY; self.dim];
+        let mut high = vec![f32::INFINITY; self.dim];
+        for (offset, inj) in &self.injectors {
+            if let Injector::Ctrl(r) = inj {
+                for (k, i) in r.clone().enumerate() {
+                    let (lo, hi) = model.actuator_ctrlrange[i];
+                    low[offset + k] = lo as f32;
+                    high[offset + k] = hi as f32;
+                }
+            }
+        }
+        TensorSpec {
+            shape: vec![self.dim],
+            low: Some(low),
+            high: Some(high),
+        }
+    }
+
+    /// Apply an action tensor to a single `Data` instance.
+    ///
+    /// Casts `f32→f64`.  Clamps `Ctrl` injectors to
+    /// `model.actuator_ctrlrange`.
+    pub fn apply(&self, action: &Tensor, data: &mut Data, model: &Model) {
+        let slice = action.as_slice();
+        for (offset, inj) in &self.injectors {
+            let n = inj.dim();
+            inj.inject(&slice[*offset..*offset + n], data, model);
+        }
+    }
+
+    /// Apply batched actions `[n, dim]` to `N` `Data` instances.
+    pub fn apply_batch<'a>(
+        &self,
+        actions: &Tensor,
+        envs: impl ExactSizeIterator<Item = &'a mut Data>,
+        model: &Model,
+    ) {
+        for (i, data) in envs.enumerate() {
+            let row = actions.row(i);
+            for (offset, inj) in &self.injectors {
+                let n = inj.dim();
+                inj.inject(&row[*offset..*offset + n], data, model);
+            }
+        }
+    }
+}
+
+// ─── ActionSpaceBuilder ─────────────────────────────────────────────────────
+
+/// A pending entry in the action builder.
+#[derive(Debug, Clone)]
+enum ActionBuilderEntry {
+    /// Already resolved to a concrete injector.
+    Resolved(Injector),
+    /// Shorthand: expand to `Ctrl(0..nu)` at `build()` time.
+    AllCtrl,
+}
+
+/// Builder for [`ActionSpace`].
+///
+/// Add injectors in the order you want them laid out in the action vector.
+/// Call [`build()`](Self::build) to validate all ranges against the model.
+#[derive(Debug, Clone)]
+pub struct ActionSpaceBuilder {
+    entries: Vec<ActionBuilderEntry>,
+}
+
+impl ActionSpaceBuilder {
+    /// Inject `action[..]` → `data.ctrl[range]`.  Clamped at apply time.
+    #[must_use]
+    pub fn ctrl(mut self, range: Range<usize>) -> Self {
+        self.entries
+            .push(ActionBuilderEntry::Resolved(Injector::Ctrl(range)));
+        self
+    }
+
+    /// Inject into all ctrl channels (`0..nu`).  Expanded at `build()` time.
+    #[must_use]
+    pub fn all_ctrl(mut self) -> Self {
+        self.entries.push(ActionBuilderEntry::AllCtrl);
+        self
+    }
+
+    /// Inject `action[..]` → `data.qfrc_applied[range]`.
+    #[must_use]
+    pub fn qfrc_applied(mut self, range: Range<usize>) -> Self {
+        self.entries
+            .push(ActionBuilderEntry::Resolved(Injector::QfrcApplied(range)));
+        self
+    }
+
+    /// Inject `action[..]` → `data.xfrc_applied[body_range]` (6 per body).
+    #[must_use]
+    pub fn xfrc_applied(mut self, body_range: Range<usize>) -> Self {
+        self.entries
+            .push(ActionBuilderEntry::Resolved(Injector::XfrcApplied(
+                body_range,
+            )));
+        self
+    }
+
+    /// Inject `action[..]` → `data.mocap_pos[body_range]` (3 per body).
+    #[must_use]
+    pub fn mocap_pos(mut self, body_range: Range<usize>) -> Self {
+        self.entries
+            .push(ActionBuilderEntry::Resolved(Injector::MocapPos(body_range)));
+        self
+    }
+
+    /// Inject `action[..]` → `data.mocap_quat[body_range]` (4 per body).
+    #[must_use]
+    pub fn mocap_quat(mut self, body_range: Range<usize>) -> Self {
+        self.entries
+            .push(ActionBuilderEntry::Resolved(Injector::MocapQuat(
+                body_range,
+            )));
+        self
+    }
+
+    /// Validate all ranges against the model and freeze the space.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpaceError`] if any range is out of bounds.
+    pub fn build(self, model: &Model) -> Result<ActionSpace, SpaceError> {
+        let mut injectors = Vec::with_capacity(self.entries.len());
+        let mut offset = 0;
+
+        for entry in self.entries {
+            let inj = match entry {
+                ActionBuilderEntry::Resolved(inj) => {
+                    validate_injector(&inj, model)?;
+                    inj
+                }
+                ActionBuilderEntry::AllCtrl => Injector::Ctrl(0..model.nu),
+            };
+            let d = inj.dim();
+            injectors.push((offset, inj));
+            offset += d;
+        }
+
+        Ok(ActionSpace {
+            injectors,
+            dim: offset,
+        })
+    }
+}
+
+/// Validate that an injector's range fits the model's dimensions.
+fn validate_injector(inj: &Injector, model: &Model) -> Result<(), SpaceError> {
+    match inj {
+        Injector::Ctrl(r) => check_flat("ctrl", r, model.nu),
+        Injector::QfrcApplied(r) => check_flat("qfrc_applied", r, model.nv),
+        Injector::XfrcApplied(r) => check_body("xfrc_applied", r, model.nbody),
+        Injector::MocapPos(r) => check_mocap("mocap_pos", r, model.nmocap),
+        Injector::MocapQuat(r) => check_mocap("mocap_quat", r, model.nmocap),
+    }
+}
+
+/// Check a mocap-body range against `nmocap`.
+fn check_mocap(field: &'static str, range: &Range<usize>, nmocap: usize) -> Result<(), SpaceError> {
+    if range.end > nmocap {
+        return Err(SpaceError::MocapRangeOutOfBounds {
+            field,
+            range: range.clone(),
+            nmocap,
+        });
+    }
+    Ok(())
+}
+
 // ─── tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -963,5 +1258,347 @@ mod tests {
             .unwrap();
         let obs = space.extract(&data);
         assert_eq!(obs.as_slice()[0], val as f32);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  ActionSpace tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    /// Build a pendulum with ctrllimited motor for clamping tests.
+    fn pendulum_clamped() -> (Model, Data) {
+        let xml = r#"
+        <mujoco>
+          <worldbody>
+            <body name="pendulum" pos="0 0 1">
+              <joint name="hinge" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <motor joint="hinge" name="motor" ctrllimited="true" ctrlrange="-1 1"/>
+          </actuator>
+        </mujoco>
+        "#;
+        let model = sim_mjcf::load_model(xml).expect("valid MJCF");
+        let data = model.make_data();
+        (model, data)
+    }
+
+    // ── ctrl injection + round-trip ──────────────────────────────────────
+
+    #[test]
+    fn apply_ctrl_roundtrip() {
+        let (model, mut data) = pendulum();
+        let space = ActionSpace::builder().ctrl(0..1).build(&model).unwrap();
+        let action = Tensor::from_slice(&[0.75_f32], &[1]);
+        space.apply(&action, &mut data, &model);
+        assert_eq!(data.ctrl[0], f64::from(0.75_f32));
+    }
+
+    #[test]
+    fn apply_ctrl_clamping() {
+        let (model, mut data) = pendulum_clamped();
+        let space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+        // Action exceeds ctrlrange [-1, 1]
+        let action = Tensor::from_slice(&[5.0_f32], &[1]);
+        space.apply(&action, &mut data, &model);
+        assert_eq!(data.ctrl[0], 1.0);
+
+        let action = Tensor::from_slice(&[-5.0_f32], &[1]);
+        space.apply(&action, &mut data, &model);
+        assert_eq!(data.ctrl[0], -1.0);
+    }
+
+    #[test]
+    fn apply_ctrl_within_range_not_clamped() {
+        let (model, mut data) = pendulum_clamped();
+        let space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+        let action = Tensor::from_slice(&[0.5_f32], &[1]);
+        space.apply(&action, &mut data, &model);
+        assert_eq!(data.ctrl[0], f64::from(0.5_f32));
+    }
+
+    // ── qfrc_applied injection ───────────────────────────────────────────
+
+    #[test]
+    fn apply_qfrc_applied_roundtrip() {
+        let (model, mut data) = pendulum();
+        let space = ActionSpace::builder()
+            .qfrc_applied(0..1)
+            .build(&model)
+            .unwrap();
+        let action = Tensor::from_slice(&[2.71_f32], &[1]);
+        space.apply(&action, &mut data, &model);
+        assert_eq!(data.qfrc_applied[0], f64::from(2.71_f32));
+    }
+
+    // ── xfrc_applied injection ───────────────────────────────────────────
+
+    #[test]
+    fn apply_xfrc_applied_roundtrip() {
+        let (model, mut data) = pendulum();
+        // Body 1 = pendulum
+        let space = ActionSpace::builder()
+            .xfrc_applied(1..2)
+            .build(&model)
+            .unwrap();
+        assert_eq!(space.dim(), 6);
+        let vals = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let action = Tensor::from_slice(&vals, &[6]);
+        space.apply(&action, &mut data, &model);
+        for (k, &val) in vals.iter().enumerate() {
+            assert_eq!(data.xfrc_applied[1][k], f64::from(val));
+        }
+    }
+
+    // ── mocap_pos injection ─────────────────────────────────────────────��
+
+    fn pendulum_mocap() -> (Model, Data) {
+        let xml = r#"
+        <mujoco>
+          <worldbody>
+            <body name="target" mocap="true" pos="0.5 0 0.5">
+              <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+            </body>
+            <body name="pendulum" pos="0 0 1">
+              <joint name="hinge" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <motor joint="hinge" name="motor"/>
+          </actuator>
+        </mujoco>
+        "#;
+        let model = sim_mjcf::load_model(xml).expect("valid MJCF");
+        let data = model.make_data();
+        (model, data)
+    }
+
+    #[test]
+    fn apply_mocap_pos_roundtrip() {
+        let (model, mut data) = pendulum_mocap();
+        assert_eq!(model.nmocap, 1);
+        let space = ActionSpace::builder()
+            .mocap_pos(0..1)
+            .build(&model)
+            .unwrap();
+        assert_eq!(space.dim(), 3);
+        let action = Tensor::from_slice(&[1.0_f32, 2.0, 3.0], &[3]);
+        space.apply(&action, &mut data, &model);
+        assert_eq!(data.mocap_pos[0][0], f64::from(1.0_f32));
+        assert_eq!(data.mocap_pos[0][1], f64::from(2.0_f32));
+        assert_eq!(data.mocap_pos[0][2], f64::from(3.0_f32));
+    }
+
+    // ── mocap_quat injection ─────────────────────────────────────────────
+
+    #[test]
+    fn apply_mocap_quat_roundtrip() {
+        let (model, mut data) = pendulum_mocap();
+        let space = ActionSpace::builder()
+            .mocap_quat(0..1)
+            .build(&model)
+            .unwrap();
+        assert_eq!(space.dim(), 4);
+        // Approximate identity quaternion (will be normalized)
+        let action = Tensor::from_slice(&[1.0_f32, 0.0, 0.0, 0.0], &[4]);
+        space.apply(&action, &mut data, &model);
+        let q = &data.mocap_quat[0];
+        assert!((q.w - 1.0).abs() < 1e-6);
+        assert!(q.i.abs() < 1e-6);
+        assert!(q.j.abs() < 1e-6);
+        assert!(q.k.abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_mocap_quat_normalizes() {
+        let (model, mut data) = pendulum_mocap();
+        let space = ActionSpace::builder()
+            .mocap_quat(0..1)
+            .build(&model)
+            .unwrap();
+        // Non-unit quaternion — should be normalized
+        let action = Tensor::from_slice(&[2.0_f32, 0.0, 0.0, 0.0], &[4]);
+        space.apply(&action, &mut data, &model);
+        let q = &data.mocap_quat[0];
+        let norm = q.quaternion().norm();
+        assert!((norm - 1.0).abs() < 1e-10);
+    }
+
+    // ── all_ctrl shorthand ───────────────────────────────────────────────
+
+    #[test]
+    fn all_ctrl_expands_to_full_range() {
+        let (model, _data) = pendulum();
+        let space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+        assert_eq!(space.dim(), model.nu);
+    }
+
+    // ── dim + spec ───────────────────────────────────────────────────────
+
+    #[test]
+    fn action_dim_sums_injectors() {
+        let (model, _data) = pendulum();
+        // ctrl(1) + qfrc_applied(1) + xfrc_applied(1 body × 6) = 8
+        let space = ActionSpace::builder()
+            .ctrl(0..1)
+            .qfrc_applied(0..1)
+            .xfrc_applied(1..2)
+            .build(&model)
+            .unwrap();
+        assert_eq!(space.dim(), 8);
+    }
+
+    #[test]
+    fn action_spec_has_ctrl_bounds() {
+        let (model, _data) = pendulum_clamped();
+        let space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+        let spec = space.spec(&model);
+        assert_eq!(spec.shape, vec![1]);
+        let low = spec.low.unwrap();
+        let high = spec.high.unwrap();
+        assert_eq!(low[0], -1.0_f32);
+        assert_eq!(high[0], 1.0_f32);
+    }
+
+    #[test]
+    fn action_spec_non_ctrl_unbounded() {
+        let (model, _data) = pendulum();
+        let space = ActionSpace::builder()
+            .qfrc_applied(0..1)
+            .build(&model)
+            .unwrap();
+        let spec = space.spec(&model);
+        let low = spec.low.unwrap();
+        let high = spec.high.unwrap();
+        assert_eq!(low[0], f32::NEG_INFINITY);
+        assert_eq!(high[0], f32::INFINITY);
+    }
+
+    // ── batch apply ──────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_batch_matches_individual_applies() {
+        let (model, mut d1) = pendulum();
+        let mut d2 = model.make_data();
+
+        let space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+
+        // Batch apply
+        let actions = Tensor::from_slice(&[0.5_f32, -0.3], &[2, 1]);
+        space.apply_batch(&actions, [&mut d1, &mut d2].into_iter(), &model);
+
+        assert_eq!(d1.ctrl[0], f64::from(0.5_f32));
+        assert_eq!(d2.ctrl[0], f64::from(-0.3_f32));
+    }
+
+    #[test]
+    fn apply_batch_clamps_ctrl() {
+        let (model, mut d1) = pendulum_clamped();
+        let mut d2 = model.make_data();
+
+        let space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+
+        let actions = Tensor::from_slice(&[5.0_f32, -5.0], &[2, 1]);
+        space.apply_batch(&actions, [&mut d1, &mut d2].into_iter(), &model);
+
+        assert_eq!(d1.ctrl[0], 1.0);
+        assert_eq!(d2.ctrl[0], -1.0);
+    }
+
+    // ── validation errors ────────────────────────────────────────────────
+
+    #[test]
+    fn action_ctrl_range_out_of_bounds() {
+        let (model, _data) = pendulum();
+        let err = ActionSpace::builder()
+            .ctrl(0..100)
+            .build(&model)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SpaceError::RangeOutOfBounds { field: "ctrl", .. }
+        ));
+    }
+
+    #[test]
+    fn action_qfrc_applied_range_out_of_bounds() {
+        let (model, _data) = pendulum();
+        let err = ActionSpace::builder()
+            .qfrc_applied(0..100)
+            .build(&model)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SpaceError::RangeOutOfBounds {
+                field: "qfrc_applied",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn action_xfrc_applied_range_out_of_bounds() {
+        let (model, _data) = pendulum();
+        let err = ActionSpace::builder()
+            .xfrc_applied(0..100)
+            .build(&model)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SpaceError::BodyRangeOutOfBounds {
+                field: "xfrc_applied",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn action_mocap_pos_range_out_of_bounds() {
+        let (model, _data) = pendulum(); // no mocap bodies
+        let err = ActionSpace::builder()
+            .mocap_pos(0..1)
+            .build(&model)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SpaceError::MocapRangeOutOfBounds {
+                field: "mocap_pos",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn action_mocap_quat_range_out_of_bounds() {
+        let (model, _data) = pendulum(); // no mocap bodies
+        let err = ActionSpace::builder()
+            .mocap_quat(0..1)
+            .build(&model)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SpaceError::MocapRangeOutOfBounds {
+                field: "mocap_quat",
+                ..
+            }
+        ));
+    }
+
+    // ── f32→f64 cast correctness ─────────────────────────────────────────
+
+    #[test]
+    fn f32_to_f64_cast_uses_from() {
+        // Verify that f32→f64 via f64::from() is exact (no precision loss)
+        let val = 0.1_f32;
+        let (model, mut data) = pendulum();
+        let space = ActionSpace::builder()
+            .qfrc_applied(0..1)
+            .build(&model)
+            .unwrap();
+        let action = Tensor::from_slice(&[val], &[1]);
+        space.apply(&action, &mut data, &model);
+        assert_eq!(data.qfrc_applied[0], f64::from(val));
     }
 }

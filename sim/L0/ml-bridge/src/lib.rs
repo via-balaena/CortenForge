@@ -12,6 +12,8 @@
 //! - [`TensorSpec`] — shape + optional bounds for observation/action spaces.
 //! - [`ObservationSpace`] — configurable mapping from `Data` fields to a flat
 //!   `Tensor`.
+//! - [`ActionSpace`] — configurable mapping from a flat `Tensor` back into
+//!   `Data` fields, with ctrl clamping.
 //!
 //! ## Design
 //!
@@ -27,5 +29,5 @@ pub mod space;
 pub mod tensor;
 
 pub use error::{SpaceError, TensorError};
-pub use space::{ObservationSpace, ObservationSpaceBuilder};
+pub use space::{ActionSpace, ActionSpaceBuilder, ObservationSpace, ObservationSpaceBuilder};
 pub use tensor::{Tensor, TensorSpec};

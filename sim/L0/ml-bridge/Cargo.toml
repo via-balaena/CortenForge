@@ -9,6 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nalgebra = { workspace = true }
 sim-core = { workspace = true }
 thiserror = { workspace = true }
 

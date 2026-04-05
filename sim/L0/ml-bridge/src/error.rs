@@ -45,6 +45,17 @@ pub enum SpaceError {
         nbody: usize,
     },
 
+    /// A mocap-body range exceeds `nmocap`.
+    #[error("{field} mocap range {range:?} out of bounds (nmocap = {nmocap})")]
+    MocapRangeOutOfBounds {
+        /// Name of the mocap field (e.g. `mocap_pos`, `mocap_quat`).
+        field: &'static str,
+        /// The requested mocap-body range.
+        range: Range<usize>,
+        /// Total number of mocap bodies.
+        nmocap: usize,
+    },
+
     /// A sensor name was not found in the model.
     #[error("sensor \"{name}\" not found in model")]
     SensorNotFound {
