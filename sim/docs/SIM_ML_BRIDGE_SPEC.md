@@ -1,6 +1,6 @@
 # sim-ml-bridge Spec
 
-> **Status**: Draft v2  
+> **Status**: Draft v3  
 > **Crate**: `sim-ml-bridge` (Layer 0 — zero Bevy, zero ML framework deps)  
 > **Location**: `sim/L0/ml-bridge/`  
 > **Depends on**: `sim-core`, `sim-types`  
@@ -356,8 +356,8 @@ pub trait Environment {
     fn observation_space(&self) -> &ObservationSpace;
     fn action_space(&self) -> &ActionSpace;
     fn observe(&self) -> Tensor;
-    fn step(&mut self, action: &Tensor) -> StepResult;
-    fn reset(&mut self) -> Tensor;
+    fn step(&mut self, action: &Tensor) -> Result<StepResult, StepError>;
+    fn reset(&mut self) -> Result<Tensor, ResetError>;
     fn model(&self) -> &Model;
     fn data(&self) -> &Data;
 }
@@ -407,16 +407,21 @@ impl SimEnvBuilder {
 }
 ```
 
-**`SimEnv::step()` implementation**:
+**`SimEnv::step()` → `Result<StepResult, StepError>`**:
 1. `self.act_space.apply(action, &mut self.data)`
-2. For `sub_steps` iterations: `self.data.step(&self.model)?`
+2. For each sub-step `k` in `0..sub_steps`:
+   a. `self.data.step(&self.model)?` — propagates physics errors to caller
+   b. If `(self.done_fn)(&self.model, &self.data)` → break (early termination)
 3. Compute `reward = (self.reward_fn)(&self.model, &self.data)`
 4. Compute `done = (self.done_fn)(&self.model, &self.data)`
 5. Compute `truncated = (self.truncated_fn)(&self.model, &self.data)`
 6. Extract `obs = self.obs_space.extract(&self.data)`
-7. Return `StepResult { observation: obs, reward, done, truncated }`
+7. Return `Ok(StepResult { observation: obs, reward, done, truncated })`
 
-**`SimEnv::reset()` implementation**:
+Unlike VecEnv, SimEnv propagates physics errors directly — the caller
+decides whether to reset and retry.
+
+**`SimEnv::reset()` → `Result<Tensor, ResetError>`**:
 1. `self.data.reset(&self.model)` — standard Data reset (zeros everything)
 2. If `on_reset_fn` is set: `(self.on_reset_fn)(&self.model, &mut self.data)` — domain randomization
 3. `self.data.forward(&self.model)?` — recompute derived quantities from modified state
@@ -425,6 +430,8 @@ impl SimEnvBuilder {
 Step 3 is important: if `on_reset` modifies `qpos` (e.g., random initial angles),
 the derived quantities (`xpos`, `xquat`, `sensordata`) must be recomputed
 before extracting the observation. `forward()` does this without integrating.
+If `forward()` fails, the on_reset hook likely put Data into an invalid
+configuration (e.g., NaN in qpos) — this is a `ResetError`.
 
 ## 7. VecEnv — Vectorized Environments
 
@@ -444,16 +451,44 @@ pub struct VecEnv {
     reward_fn: Arc<dyn Fn(&Model, &Data) -> f64 + Send + Sync>,
     done_fn: Arc<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
     truncated_fn: Arc<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
-    on_reset_fn: Option<Arc<dyn Fn(&Model, &mut Data, usize) + Send + Sync>>,
+    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data, usize) + Send>>,
     sub_steps: usize,
 }
 ```
 
-**Core API**:
+### 7.1 VecEnvBuilder
+
 ```rust
 impl VecEnv {
     pub fn builder(model: Arc<Model>, n_envs: usize) -> VecEnvBuilder;
+}
 
+impl VecEnvBuilder {
+    pub fn observation_space(self, space: ObservationSpace) -> Self;
+    pub fn action_space(self, space: ActionSpace) -> Self;
+    pub fn reward(self, f: impl Fn(&Model, &Data) -> f64 + Send + Sync + 'static) -> Self;
+    pub fn done(self, f: impl Fn(&Model, &Data) -> bool + Send + Sync + 'static) -> Self;
+    pub fn truncated(self, f: impl Fn(&Model, &Data) -> bool + Send + Sync + 'static) -> Self;
+    pub fn sub_steps(self, n: usize) -> Self;
+
+    /// Hook called after Data::reset() for each env that resets.
+    ///
+    /// Receives `(model, data, env_index)` — the env index lets the closure
+    /// use per-env RNG seeds or deterministic randomization schedules.
+    ///
+    /// `FnMut + Send`: `FnMut` because resets are sequential (the closure
+    /// can own mutable state like an RNG directly). `Send` so VecEnv is
+    /// `Send`. See §7.3 for the full threading model.
+    pub fn on_reset(self, f: impl FnMut(&Model, &mut Data, usize) + Send + 'static) -> Self;
+
+    pub fn build(self) -> Result<VecEnv, EnvError>;
+}
+```
+
+### 7.2 Core API
+
+```rust
+impl VecEnv {
     /// Number of parallel environments.
     pub fn n_envs(&self) -> usize;
 
@@ -461,12 +496,12 @@ impl VecEnv {
     ///
     /// `actions` has shape [n_envs, act_dim]. Row i is applied to env i.
     /// Environments where done or truncated is true are automatically
-    /// reset after the step.
-    pub fn step(&mut self, actions: &Tensor) -> VecStepResult;
+    /// reset after the step. See §7.4 for error handling.
+    pub fn step(&mut self, actions: &Tensor) -> Result<VecStepResult, VecStepError>;
 
     /// Reset all environments, returning initial observations.
     /// Shape: [n_envs, obs_dim].
-    pub fn reset_all(&mut self) -> Tensor;
+    pub fn reset_all(&mut self) -> Result<Tensor, ResetError>;
 
     /// Access underlying BatchSim for advanced use.
     pub fn batch(&self) -> &BatchSim;
@@ -477,26 +512,80 @@ impl VecEnv {
 }
 ```
 
-**`VecEnv::step()` implementation**:
-1. Scatter actions: for each env `i`, `self.act_space.apply(actions.row(i), env_i)`
-2. For `sub_steps` iterations: `self.batch.step_all()`
-3. For each env: compute reward, done, truncated
-4. For done/truncated envs: extract terminal observation, then reset
-5. Extract batched observation `[n_envs, obs_dim]` from all envs
-6. Return `VecStepResult`
+### 7.3 Threading Model
 
-**`on_reset_fn` for VecEnv**: takes `(model, data, env_index)` — the env
-index lets the closure use per-env RNG seeds or deterministic domain
-randomization schedules. The closure is `Fn` (not `FnMut`) + `Send + Sync`
-because VecEnv may reset multiple envs and the closure must be callable from
-any context. Per-env mutable state (RNG) should live outside the closure
-or use interior mutability.
+**Physics stepping** is parallelized via `BatchSim::step_all()` (rayon
+`par_iter_mut`). The bridge's own work (action injection, reward/done
+evaluation, observation extraction, resets) runs sequentially after
+`step_all()` returns. This is the right split: physics dominates wall time;
+the bridge's per-env overhead is trivial (<1 µs per env).
 
-**Auto-reset semantics**: when an env is done or truncated, `VecEnv::step()`:
+**Why closures still need `Send + Sync`**: reward, done, and truncated
+closures are `Fn + Send + Sync` not because they're called in parallel, but
+so that `VecEnv` itself is `Send + Sync` — essential if the training loop
+runs on a different thread or uses async.
+
+**`on_reset_fn` is `FnMut + Send`**: `FnMut` because resets are sequential
+(one closure invocation at a time) — the closure can own mutable state
+directly. `Send` so VecEnv remains `Send`. No `Sync` needed (exclusive
+access via `&mut self`).
+
+```rust
+let mut rngs: Vec<StdRng> = (0..n_envs)
+    .map(|i| StdRng::seed_from_u64(42 + i as u64))
+    .collect();
+
+VecEnv::builder(model, n_envs)
+    .on_reset(move |_model, data, env_idx| {
+        // Each env gets its own deterministic RNG
+        data.qpos[0] += rngs[env_idx].gen_range(-0.1..0.1);
+    })
+    .build()?;
+```
+
+No `Arc<Mutex<RNG>>`, no interior mutability. The cost: resets are
+sequential. Acceptable because resets are rare (once per episode) and cheap
+relative to stepping (just `Data::reset()` + `forward()`).
+
+### 7.4 Error Handling in VecEnv::step()
+
+`BatchSim::step_all()` returns `Vec<Option<StepError>>`. Three cases:
+
+| Scenario | Behavior |
+|----------|----------|
+| **NaN / divergence** | Auto-reset by BatchSim (transparent). `data.divergence_detected()` returns true. VecEnv treats this as `done = true` — the env was unrecoverable, so we extract terminal obs (if possible), reset, and continue. |
+| **All envs succeed** | Normal path. No errors. |
+| **Non-recoverable error** (CholeskyFailed, LuSingular) | VecEnv auto-resets the failed env (same as done). `VecStepResult` includes an `errors: Vec<Option<StepError>>` field so the caller can inspect which envs had physics failures. Training continues — one bad env shouldn't halt a 64-env batch. |
+
+```rust
+pub struct VecStepResult {
+    pub observations: Tensor,
+    pub rewards: Vec<f64>,
+    pub dones: Vec<bool>,
+    pub truncateds: Vec<bool>,
+    pub terminal_observations: Vec<Option<Tensor>>,
+    /// Per-env physics errors. `None` = success. `Some(e)` = this env had
+    /// a non-recoverable physics error and was auto-reset. Most training
+    /// loops can ignore this — it's for diagnostics.
+    pub errors: Vec<Option<StepError>>,
+}
+```
+
+`VecEnv::step()` returns `Err(VecStepError)` only for bridge-level errors
+(wrong action tensor shape, etc.), never for per-env physics errors. Physics
+errors are per-env and reported in `VecStepResult::errors`.
+
+### 7.5 Auto-Reset Implementation
+
+When an env is done, truncated, or has a physics error, `VecEnv::step()`:
 1. Extracts the terminal observation → `terminal_observations[i] = Some(obs)`
+   (skipped if the env diverged and state is garbage — `Some` only if
+   `!data.divergence_detected()`)
 2. Calls `self.batch.reset(i)`
-3. Calls `on_reset_fn` if set
-4. Calls `forward()` on the reset env to recompute derived quantities
+3. Calls `on_reset_fn(model, data, i)` if set
+4. Calls `data.forward(model)` to recompute derived quantities
+   (if `forward()` fails, the env remains in reset state — clean qpos0 —
+   and the error is logged in `VecStepResult::errors[i]`)
 5. Extracts the fresh initial observation → `observations[i]`
 
 The `done`/`truncated` flags in VecStepResult refer to the completed episode.
@@ -537,10 +626,10 @@ let mut env = VecEnv::builder(model.clone(), 64)
     .build()?;
 
 // ── Training loop ──
-let mut obs = env.reset_all();  // [64, obs_dim]
+let mut obs = env.reset_all()?;  // [64, obs_dim]
 loop {
-    let actions = policy.forward(&obs);           // [64, act_dim]
-    let result = env.step(&actions);
+    let actions = policy.forward(&obs);              // [64, act_dim]
+    let result = env.step(&actions)?;
 
     buffer.push(&obs, &actions, &result);
 
@@ -570,17 +659,102 @@ env and avoids post-terminal state corruption.
 
 ## 10. Error Handling
 
-- `SpaceError` — returned by builders when ranges are out of bounds, sensor
-  names aren't found, or dimensions don't match the model.
-- `EnvError` — returned by `SimEnvBuilder::build()` / `VecEnvBuilder::build()`
-  for missing required fields (no observation space, no reward function, etc.).
-- `StepError` — physics errors from sim-core. In `VecEnv`, NaN/divergence
-  triggers auto-reset (inherited from BatchSim). Non-recoverable errors
-  (`CholeskyFailed`, `LuSingular`) propagate as `Result`.
+### Error types
+
+| Type | Source | Meaning |
+|------|--------|---------|
+| `SpaceError` | Builders | Range out of bounds, sensor name not found, dimension mismatch. Returned by `ObservationSpaceBuilder::build()`, `ActionSpaceBuilder::build()`. |
+| `EnvError` | Env builders | Missing required field (no obs space, no reward fn). Returned by `SimEnvBuilder::build()`, `VecEnvBuilder::build()`. |
+| `VecStepError` | `VecEnv::step()` | Bridge-level error: wrong action shape, wrong batch size. NOT per-env physics errors. |
+| `ResetError` | `reset()` / `reset_all()` | `forward()` failed after reset + on_reset hook. Rare — indicates the on_reset hook put Data into an invalid state. |
+| `StepError` | sim-core | Per-env physics error. In VecEnv, reported per-env in `VecStepResult::errors`. In SimEnv, propagated as `Result` from `SimEnv::step()`. |
+
+### SimEnv error propagation
+
+`SimEnv::step()` returns `Result<StepResult, StepError>`. Physics errors
+propagate directly — the caller decides whether to reset and retry.
+
+### VecEnv error propagation
+
+See §7.4. Per-env physics errors never halt the batch. They're reported
+in `VecStepResult::errors` and the failed env is auto-reset. Only
+bridge-level errors (wrong tensor shape) return `Err(VecStepError)`.
 
 Zero `unwrap` in library code. All fallible operations return `Result`.
 
-## 11. What This Crate Does NOT Do
+## 11. Reproducibility and Seeding
+
+The bridge and sim are fully deterministic. There is no internal RNG
+state anywhere in `Model`, `Data`, `BatchSim`, or the bridge.
+
+**The only source of non-determinism is the user's `on_reset` hook.**
+
+Contract:
+- The bridge guarantees: given identical actions and identical initial
+  state, `VecEnv::step()` produces bit-identical results regardless of
+  thread count or scheduling order (inherited from BatchSim's determinism
+  guarantee).
+- The user guarantees: if they want reproducible training runs, they must
+  seed their `on_reset` RNG deterministically.
+
+**Recommended pattern for reproducible VecEnv:**
+
+```rust
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+
+// Master seed → per-env child seeds (deterministic)
+let master_seed: u64 = 42;
+let mut rngs: Vec<StdRng> = (0..n_envs)
+    .map(|i| StdRng::seed_from_u64(master_seed + i as u64))
+    .collect();
+
+VecEnv::builder(model, n_envs)
+    .on_reset(move |_model, data, env_idx| {
+        let rng = &mut rngs[env_idx];
+        data.qpos[0] += rng.gen_range(-0.1..0.1);
+    })
+    .build()?;
+```
+
+Because resets are sequential (§7.3) and the per-env RNG is indexed by
+`env_idx`, this produces identical randomization regardless of which envs
+reset on which step.
+
+## 12. Performance
+
+### Targets
+
+The bridge must not be the bottleneck. Physics stepping dominates wall time;
+the bridge (extraction, injection, reward/done evaluation) should be <5%
+of step time.
+
+| Benchmark | Target | Notes |
+|-----------|--------|-------|
+| `extract()` single env | <1 µs | Flat copy + f64→f32 cast for ~100 floats |
+| `apply()` single env | <500 ns | f32→f64 cast + clamp for ~20 floats |
+| `extract_batch()` 64 envs | <50 µs | Single contiguous write, no per-env alloc |
+| `VecEnv::step()` overhead | <5% of total | Extraction + injection + reward/done eval |
+| VecEnv 64 pendulums, 1 sub-step | >100K action-steps/sec | Physics-bound, not bridge-bound |
+| VecEnv 64 humanoids, 10 sub-steps | >10K action-steps/sec | Complex model, still physics-bound |
+
+These are first-pass targets. We measure in Phase 4b and adjust if needed.
+The key invariant: the bridge should never appear in profiling hot spots.
+
+### Allocation budget
+
+| Operation | Allocations per call |
+|-----------|---------------------|
+| `Tensor::zeros` | 2 (data vec + shape vec) |
+| `extract()` | 2 (one Tensor) |
+| `extract_batch()` | 2 (one Tensor) |
+| `apply()` / `apply_batch()` | 0 |
+| `VecEnv::step()` | 2 (observations Tensor) + N (terminal_observations for done envs) + 4 (result vecs) |
+
+v1 allocates per step. Growth path (§14): VecEnv pre-allocates internal
+buffers, `step()` fills in-place, zero-alloc hot path.
+
+## 13. What This Crate Does NOT Do
 
 - **No policy implementations** — that's the RL library's job.
 - **No autodiff** — that's the autodiff crate's job. Tensor is a dumb buffer.
@@ -593,7 +767,7 @@ Zero `unwrap` in library code. All fallible operations return `Result`.
 - **No logging/metrics** — the user instruments their own training loop.
 - **No Bevy dependency** — this is Layer 0.
 
-## 12. Growth Path
+## 14. Growth Path
 
 This is v1. The conscious decisions here create clean growth paths:
 
@@ -607,7 +781,7 @@ This is v1. The conscious decisions here create clean growth paths:
 | **Curriculum learning** | User switches reward/done closures between phases. Or: `VecEnv` gains `set_reward()` / `set_done()` methods. |
 | **Pre-allocated buffers** | v1 allocates VecStepResult per step. v2: VecEnv owns internal buffers, `step()` fills them in-place, returns a borrow or lightweight copy. Zero-alloc hot path. |
 
-## 13. Implementation Plan
+## 15. Implementation Plan
 
 ### Phase 1: Crate scaffold + Tensor + TensorSpec
 - Cargo.toml, lib.rs, module structure
@@ -626,7 +800,7 @@ This is v1. The conscious decisions here create clean growth paths:
 
 ### Phase 3: Environment trait + SimEnv
 - `env.rs`: Environment trait, SimEnv struct, SimEnvBuilder
-- `error.rs`: EnvError
+- `error.rs`: EnvError, VecStepError, ResetError
 - Tests: single-env episode lifecycle, sub-stepping correctness, early
   termination during sub-steps, reward/done/truncated correctness,
   on_reset hook + forward() recomputation, builder validation
@@ -636,20 +810,25 @@ This is v1. The conscious decisions here create clean growth paths:
 - Tests: batched step matches N sequential SimEnv steps (bit-exact),
   auto-reset semantics (terminal_observations populated correctly),
   per-env action isolation, done/truncated flag correctness,
-  on_reset with env_index, sub-stepping
+  on_reset with env_index, sub-stepping, physics error auto-reset
+
+### Phase 4b: Benchmarks
+- `benches/bridge_benchmarks.rs`: criterion benchmarks
+- `extract()` / `extract_batch()` latency (pendulum, humanoid)
+- `apply()` / `apply_batch()` latency
+- `VecEnv::step()` total throughput: 64 pendulums, 64 humanoids
+- Bridge overhead measurement: `VecEnv::step()` vs raw `BatchSim::step_all()`
+- Verify targets from §12: bridge <5% of step time, extract <1 µs, etc.
+- If targets are missed: profile, fix, re-measure before Phase 5
 
 ### Phase 5: Integration examples
 - Pendulum swing-up (simplest: 1 hinge joint, 1 actuator, scalar obs)
 - Cart-pole balance (classic RL benchmark, 4D obs, 1D action)
 - Multi-env throughput demo (64 envs, measure steps/sec)
 
-## 14. Acceptance Criteria
+## 16. Acceptance Criteria
 
-- [ ] Zero Bevy dependencies in `cargo tree`
-- [ ] Zero ML framework dependencies
-- [ ] Zero `unwrap`/`expect` in library code
-- [ ] Full rustdoc (zero doc warnings)
-- [ ] Clippy clean (`-D warnings`)
+### Correctness
 - [ ] `VecEnv::step()` with 64 envs produces bit-exact results vs
       64 sequential `SimEnv::step()` calls
 - [ ] Auto-reset populates `terminal_observations` correctly
@@ -663,3 +842,19 @@ This is v1. The conscious decisions here create clean growth paths:
       derived quantities before observation extraction
 - [ ] Sensor-by-name resolution fails gracefully at `build()` time
 - [ ] Batched tensor shapes are correct: `[n_envs, obs_dim]` / `[n_envs, act_dim]`
+- [ ] Per-env physics errors reported in `VecStepResult::errors`, don't halt batch
+- [ ] Diverged envs auto-reset, `terminal_observations[i]` is `None` (state is garbage)
+- [ ] Reproducible: same seed + same actions → bit-identical trajectory
+
+### Quality
+- [ ] Zero Bevy dependencies in `cargo tree`
+- [ ] Zero ML framework dependencies
+- [ ] Zero `unwrap`/`expect` in library code
+- [ ] Full rustdoc (zero doc warnings)
+- [ ] Clippy clean (`-D warnings`)
+
+### Performance
+- [ ] `extract()` single env <1 µs (criterion bench)
+- [ ] `apply()` single env <500 ns (criterion bench)
+- [ ] Bridge overhead <5% of `VecEnv::step()` total time
+- [ ] VecEnv 64 pendulums >100K action-steps/sec
