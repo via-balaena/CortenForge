@@ -279,6 +279,19 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 | `derivatives/epsilon-vcurve` | `example-derivatives-epsilon-vcurve` | Working | Optimal epsilon — truncation vs roundoff V-curve (4 checks) |
 | `derivatives/stress-test` | `example-derivatives-stress-test` | Working | Headless validation (32 checks) |
 
+### Mesh Collision
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `mesh-collision/mesh-on-plane` | `example-mesh-collision-plane` | Working | Tetrahedron on ground plane, `collide_mesh_plane()` |
+| `mesh-collision/mesh-sphere` | `example-mesh-collision-sphere` | Working | Sphere on mesh slab, BVH `mesh_sphere_contact()` |
+| `mesh-collision/mesh-box` | `example-mesh-collision-box` | Working | Box on mesh slab, GJK/EPA + MULTICCD |
+| `mesh-collision/mesh-capsule` | `example-mesh-collision-capsule` | Working | Sideways capsule on mesh slab, BVH `mesh_capsule_contact()` |
+| `mesh-collision/mesh-cylinder` | `example-mesh-collision-cylinder` | Working | Upright cylinder, GJK/EPA + MULTICCD (branch highlight) |
+| `mesh-collision/mesh-ellipsoid` | `example-mesh-collision-ellipsoid` | Working | Oblate disc, GJK/EPA exact support (branch highlight) |
+| `mesh-collision/mesh-on-mesh` | `example-mesh-collision-mesh` | Working | Wedge on mesh platform, hull-hull GJK/EPA + MULTICCD |
+| `mesh-collision/stress-test` | `example-mesh-collision-stress-test` | Working | Headless validation (21 checks: all 7 pairs + edge cases) |
+
 ### Other
 
 | Example | Package | Status | Notes |

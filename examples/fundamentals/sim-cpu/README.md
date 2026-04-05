@@ -2,7 +2,7 @@
 
 Standalone visual examples covering every major subsystem of the CortenForge
 CPU physics engine. Each example runs in a Bevy window with an orbit camera
-and prints a validation report to the console. 143 examples across 26 domains.
+and prints a validation report to the console. 151 examples across 27 domains.
 
 ## Domains
 
@@ -34,6 +34,7 @@ and prints a validation report to the console. 143 examples across 26 domains.
 | [`composites/`](composites/) | 4 | Cable composites — hanging, catenary, loaded, stress-test |
 | [`batch-sim/`](batch-sim/) | 3 | Parallel multi-env — parameter sweep, soft landing (reset_where), stress-test |
 | [`urdf-loading/`](urdf-loading/) | 10 | URDF→Model pipeline: all joint types, geometry, mimic, errors |
+| [`mesh-collision/`](mesh-collision/) | 8 | All 7 mesh collision pairs (BVH + GJK/EPA) + stress-test |
 | [`multi-scene-test/`](multi-scene-test/) | 1 | Multi-scene infrastructure test |
 
 ## How to use
