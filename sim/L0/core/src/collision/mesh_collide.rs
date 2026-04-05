@@ -13,6 +13,105 @@ use cf_geometry::Shape;
 use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_types::Pose;
 
+/// GJK/EPA collision between two convex shapes with MULTICCD and margin support.
+///
+/// Arguments must be in geom-order: shape1/pose1 correspond to geom1,
+/// shape2/pose2 correspond to geom2. This ensures the GJK normal convention
+/// ("from B toward A" = from geom2 toward geom1) is correct without
+/// manual negation.
+///
+/// Returns `Contact`(s) directly — no `MeshContact` intermediate.
+#[allow(clippy::too_many_arguments)]
+fn gjk_epa_shape_pair(
+    model: &Model,
+    shape1: &Shape,
+    pose1: &Pose,
+    shape2: &Shape,
+    pose2: &Pose,
+    geom1: usize,
+    geom2: usize,
+    margin: f64,
+) -> Vec<Contact> {
+    if let Some(gjk) = gjk_epa_contact(
+        shape1,
+        pose1,
+        shape2,
+        pose2,
+        model.ccd_iterations,
+        model.ccd_tolerance,
+    ) {
+        // MULTICCD: generate multiple contacts for flat surfaces
+        if enabled(model, ENABLE_MULTICCD) {
+            let multi = multiccd_contacts(
+                shape1,
+                pose1,
+                shape2,
+                pose2,
+                &gjk,
+                model.ccd_iterations,
+                model.ccd_tolerance,
+            );
+            return multi
+                .into_iter()
+                .map(|c| {
+                    make_contact_from_geoms(
+                        model,
+                        c.point.coords,
+                        c.normal,
+                        c.penetration,
+                        geom1,
+                        geom2,
+                        margin,
+                    )
+                })
+                .collect();
+        }
+
+        return vec![make_contact_from_geoms(
+            model,
+            gjk.point.coords,
+            gjk.normal,
+            gjk.penetration,
+            geom1,
+            geom2,
+            margin,
+        )];
+    } else if margin > 0.0 {
+        // Margin-zone contact: shapes don't overlap but are within margin distance
+        if let Some(dist) = gjk_distance(
+            shape1,
+            pose1,
+            shape2,
+            pose2,
+            model.ccd_iterations,
+            model.ccd_tolerance,
+        ) {
+            if dist.distance < margin {
+                let depth = -dist.distance;
+                let diff = dist.witness_b - dist.witness_a;
+                let diff_norm = diff.norm();
+                let normal = if diff_norm > GEOM_EPSILON {
+                    diff / diff_norm
+                } else {
+                    Vector3::z()
+                };
+                let midpoint = nalgebra::center(&dist.witness_a, &dist.witness_b);
+                return vec![make_contact_from_geoms(
+                    model,
+                    midpoint.coords,
+                    normal,
+                    depth,
+                    geom1,
+                    geom2,
+                    margin,
+                )];
+            }
+        }
+    }
+
+    vec![]
+}
+
 /// Collision detection involving at least one mesh geometry.
 ///
 /// Dispatches to specialized mesh-primitive or mesh-mesh implementations.
@@ -63,84 +162,9 @@ pub fn collide_with_mesh(
             if let (Some(hull1), Some(hull2)) = (mesh1.convex_hull(), mesh2.convex_hull()) {
                 let shape1 = Shape::convex_mesh(hull1.clone());
                 let shape2 = Shape::convex_mesh(hull2.clone());
-
-                if let Some(gjk) = gjk_epa_contact(
-                    &shape1,
-                    &pose1,
-                    &shape2,
-                    &pose2,
-                    model.ccd_iterations,
-                    model.ccd_tolerance,
-                ) {
-                    // MULTICCD: generate multiple contacts for flat hull surfaces
-                    if enabled(model, ENABLE_MULTICCD) {
-                        let multi = multiccd_contacts(
-                            &shape1,
-                            &pose1,
-                            &shape2,
-                            &pose2,
-                            &gjk,
-                            model.ccd_iterations,
-                            model.ccd_tolerance,
-                        );
-                        return multi
-                            .into_iter()
-                            .map(|c| {
-                                make_contact_from_geoms(
-                                    model,
-                                    c.point.coords,
-                                    c.normal,
-                                    c.penetration,
-                                    geom1,
-                                    geom2,
-                                    margin,
-                                )
-                            })
-                            .collect();
-                    }
-
-                    return vec![make_contact_from_geoms(
-                        model,
-                        gjk.point.coords,
-                        gjk.normal,
-                        gjk.penetration,
-                        geom1,
-                        geom2,
-                        margin,
-                    )];
-                } else if margin > 0.0 {
-                    // Margin-zone contact for hull pairs
-                    if let Some(dist) = gjk_distance(
-                        &shape1,
-                        &pose1,
-                        &shape2,
-                        &pose2,
-                        model.ccd_iterations,
-                        model.ccd_tolerance,
-                    ) {
-                        if dist.distance < margin {
-                            let depth = -dist.distance;
-                            let diff = dist.witness_b - dist.witness_a;
-                            let diff_norm = diff.norm();
-                            let normal = if diff_norm > GEOM_EPSILON {
-                                diff / diff_norm
-                            } else {
-                                Vector3::z()
-                            };
-                            let midpoint = nalgebra::center(&dist.witness_a, &dist.witness_b);
-                            return vec![make_contact_from_geoms(
-                                model,
-                                midpoint.coords,
-                                normal,
-                                depth,
-                                geom1,
-                                geom2,
-                                margin,
-                            )];
-                        }
-                    }
-                }
-                return vec![];
+                return gjk_epa_shape_pair(
+                    model, &shape1, &pose1, &shape2, &pose2, geom1, geom2, margin,
+                );
             }
 
             // Fallback to per-triangle BVH if either mesh lacks hull.
