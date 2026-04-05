@@ -63,3 +63,30 @@ pub enum SpaceError {
         name: String,
     },
 }
+
+/// Errors arising from environment builder validation.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum EnvError {
+    /// A required field was not set on the builder.
+    #[error("missing required field: {field}")]
+    MissingField {
+        /// Name of the missing builder field.
+        field: &'static str,
+    },
+
+    /// `sub_steps` was set to zero.
+    #[error("sub_steps must be >= 1, got 0")]
+    ZeroSubSteps,
+}
+
+/// Error from `reset()` / `reset_all()`.
+///
+/// Indicates that `forward()` failed after reset + `on_reset` hook —
+/// the `on_reset` hook likely put `Data` into an invalid state.
+#[derive(Debug, thiserror::Error)]
+#[error("forward() failed after reset: {source}")]
+pub struct ResetError {
+    /// The underlying physics error from `forward()`.
+    #[from]
+    pub source: sim_core::StepError,
+}
