@@ -183,6 +183,22 @@ impl Environment for SimEnv {
     }
 }
 
+impl SimEnv {
+    /// Mutable access to the underlying `Data`.
+    ///
+    /// Prefer [`on_reset`](SimEnvBuilder::on_reset) for initial conditions
+    /// and [`ActionSpace::apply`] for control inputs.  This escape hatch is
+    /// for inspection, debugging, visualization, and advanced use cases
+    /// (e.g., force injection between sub-steps) where you need direct
+    /// state access.
+    ///
+    /// If you modify `qpos`, call `data.forward(model)` afterwards to
+    /// recompute derived quantities (`xpos`, `xquat`, `sensordata`, etc.).
+    pub const fn data_mut(&mut self) -> &mut Data {
+        &mut self.data
+    }
+}
+
 // ─── SimEnvBuilder ──────────────────────────────────────────────────────────
 
 /// Builder for [`SimEnv`].
