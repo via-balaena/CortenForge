@@ -15,7 +15,12 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+criterion = { workspace = true }
 sim-mjcf = { workspace = true }
+
+[[bench]]
+name = "bridge_benchmarks"
+harness = false
 
 [lints]
 workspace = true

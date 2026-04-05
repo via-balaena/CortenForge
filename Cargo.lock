@@ -7273,6 +7273,7 @@ name = "sim-ml-bridge"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "criterion",
  "nalgebra",
  "sim-core",
  "sim-mjcf",
