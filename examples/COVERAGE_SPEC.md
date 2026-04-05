@@ -13,7 +13,7 @@ integration tests — they find bugs that unit tests miss.
 ## Current State (2026-04-02)
 
 - 232K LOC codebase
-- sim-core + sim-mjcf + sim-urdf → 139 examples (Track 1A + Track 1B layers 1–13)
+- sim-core + sim-mjcf + sim-urdf → 147 examples (Track 1A + Track 1B layers 1–14)
   - Joint types: hinge, slide, ball, free (4/4 — all covered)
   - Sensors: 31/31 types covered (Track 1A: 16, tendons: 3, joint-limits: 1, sensors-advanced: 11+)
   - Actuators: 10 examples, Muscles: 5 examples
@@ -27,7 +27,7 @@ integration tests — they find bugs that unit tests miss.
   - Sensors-advanced: 7 examples, 25 stress-test checks
   - Passive forces: 5 examples, 18 stress-test checks
 - Track 1B in progress: 20 subdirectories, ~70 examples — no stone unturned.
-  **13/20 subdirectories done:**
+  **14/20 subdirectories done:**
   - free-joint: 4 examples, 12 stress-test checks
   - keyframes: 3 examples, 12 stress-test checks
   - mocap-bodies: 4 examples, 12 stress-test checks
@@ -41,7 +41,8 @@ integration tests — they find bugs that unit tests miss.
   - derivatives: 8 examples (7 visual + 1 stress-test), 61 checks
   - composites: 4 examples (3 visual + 1 stress-test), 15 checks
   - batch-sim: 3 examples (2 visual + 1 stress-test), 18 checks
-  Remaining 7: mesh collision, heightfield terrain,
+  - mesh-collision: 8 examples (7 visual + 1 stress-test), 21 checks
+  Remaining 6: heightfield terrain,
   Hill muscle, adhesion, flex bodies, collision
   pairs, and plugins.
 - cf-design → 3 examples
@@ -59,7 +60,7 @@ integration tests — they find bugs that unit tests miss.
 
 ### Geometry Types (8 types, ~6 covered)
 - Plane, Sphere, Capsule, Cylinder, Box, Ellipsoid → covered
-- **Mesh (explicit convex, 2,090 LOC) → Track 1B**
+- Mesh (explicit convex, 2,090 LOC) ✓ (8 examples: 7 visual + 1 stress-test, 21 checks)
 - **Hfield (height field terrain, 441 LOC) → Track 1B**
 - Sdf → extensively covered
 
@@ -91,7 +92,7 @@ integration tests — they find bugs that unit tests miss.
 - Margin/gap activation ✓ (margin-gap — 1 example)
 - **contype/conaffinity bitmask filtering → Track 1B**
 - **Collision pair isolation (all primitive pairs) → Track 1B**
-- **Mesh-mesh, mesh-plane → Track 1B**
+- Mesh-mesh, mesh-plane ✓ (mesh-collision/ — all 7 pairs covered)
 - **Height field → Track 1B**
 
 ### Solvers & Integration
@@ -502,7 +503,7 @@ fundamentals/
     sensors-advanced/       # DONE — 7 examples, 25 stress-test checks
 
     # --- Layer 5: Geometry types ---
-    mesh-collision/         # Explicit convex mesh collision (2,090 LOC)
+    mesh-collision/         # DONE — 8 examples (7 visual + 1 stress-test), 21 checks
     heightfield/            # Terrain collision (441 LOC)
 
     # --- Layer 6: Passive forces and dynamics ---
@@ -1012,48 +1013,35 @@ learning, Monte Carlo sampling, and parameter sweeps.
 `reset_all()`, shared Model, independent Data, parameter sweeps, selective
 reset with adaptation, `sync_batch_geoms` infrastructure.
 
-##### 14. `mesh-collision/` — Explicit Convex Mesh Collision
+##### 14. `mesh-collision/` — DONE (8 examples, 21 stress-test checks)
 
-The mesh module (2,090 LOC) provides BVH-accelerated triangle mesh collision
-against all primitive types. Mesh geoms are used for realistic object shapes
-imported from CAD or 3D modeling tools — robot links, furniture, terrain
-features, anything that isn't a sphere/box/capsule/cylinder.
+Seven visual examples + one headless stress test covering every mesh collision
+pair in the dispatch table. Each visual example isolates one pair and validates
+rest height, settling, and contact force/weight ratio.
 
 **Examples:**
 
-1. **mesh-on-plane** — A convex mesh (tetrahedron defined by 4 triangles)
-   dropped onto a ground plane. The mesh rests stably on one face. Compare
-   rest height against analytical (centroid height of the resting face).
-   Demonstrates `type="mesh"` geom with inline vertex/face data.
+1. **mesh-on-plane** — Tetrahedron (4 verts, 4 faces) on infinite ground plane.
+   `collide_mesh_plane()` path. Rest height = centroid-to-base = 0.204.
+2. **mesh-sphere** — Sphere on mesh ground slab. BVH-accelerated
+   `mesh_sphere_contact()`. Rest height = radius = 0.1.
+3. **mesh-box** — Box on mesh slab. GJK/EPA + MULTICCD for face-face stability.
+   `triangle_box_contact()` was removed (algorithmically incomplete).
+4. **mesh-capsule** — Sideways capsule on mesh slab. BVH-accelerated
+   `mesh_capsule_contact()`. Rest height = radius = 0.1.
+5. **mesh-cylinder** — Upright cylinder on mesh slab. GJK/EPA + MULTICCD.
+   Branch highlight: previously used capsule approximation. Rest height = 0.2.
+6. **mesh-ellipsoid** — Oblate disc (0.3×0.3×0.05) on mesh slab. GJK/EPA.
+   Branch highlight: sphere approx gave z=0.3 (6x error). Now z=0.05.
+7. **mesh-on-mesh** — Wedge on mesh platform. Hull-hull GJK/EPA + MULTICCD.
+   Both colliders are `type="mesh"`.
+8. **stress-test** — 21 headless checks: all 7 pairs + edge cases (separated
+   meshes, single-triangle mesh, swapped geom order).
 
-2. **mesh-on-mesh** — Two convex meshes (a wedge and a block) dropped onto
-   each other. The mesh-mesh narrow phase uses BVH queries for triangle pair
-   candidates, then triangle-triangle contact generation. Verify stable
-   stacking — no interpenetration beyond solver tolerance.
-
-3. **mesh-primitives** — A mesh pyramid colliding with sphere, capsule, and
-   box side by side. Each pair exercises a different narrow-phase function
-   (`mesh_sphere_contact`, `mesh_box_contact`, `mesh_capsule_contact`).
-   All three should rest stably.
-
-4. **stress-test** — Headless validation (12+ checks):
-   - Mesh-plane: rest height matches face centroid within 1mm
-   - Mesh-mesh: penetration < solver tolerance after settling
-   - Mesh-sphere: contact normal points away from mesh surface
-   - Mesh-capsule: contact point on capsule surface
-   - Mesh-box: stable rest on flat face
-   - BVH queries return correct triangle candidates
-   - Non-convex mesh: concave bowl catches a ball (ball stays in bowl)
-   - Contact count ≥ 1 for each resting pair
-   - Zero contacts when meshes separated
-   - Mesh with single triangle: degeneracy handled
-   - Large mesh (100+ triangles): performance reasonable
-   - Mesh + friction: object doesn't slide on flat face
-
-**Concepts covered:** `type="mesh"`, vertex/face data, BVH construction,
-`mesh_sphere_contact()`, `mesh_box_contact()`, `mesh_capsule_contact()`,
-`mesh_mesh_contact()`, convex vs non-convex mesh, triangle-level contact
-generation.
+**Concepts covered:** `type="mesh"`, inline vertex/face data, BVH triangle
+queries, GJK/EPA on convex hulls, MULTICCD for face-face stability,
+`mesh_sphere_contact()`, `mesh_capsule_contact()`, `gjk_epa_shape_pair()`,
+`collide_mesh_plane()`.
 
 ##### 15. `heightfield/` — Terrain Collision
 

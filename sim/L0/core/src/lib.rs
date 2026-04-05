@@ -147,8 +147,8 @@ pub use cf_geometry::closest_point_on_triangle;
 pub use contact::{ContactForce, ContactManifold, ContactPoint};
 pub use heightfield::{HeightFieldContact, HeightFieldData};
 pub use mesh::{
-    MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact, mesh_mesh_contact,
-    mesh_mesh_deepest_contact, mesh_sphere_contact, triangle_box_contact, triangle_capsule_contact,
+    MeshContact, TriangleMeshData, mesh_capsule_contact, mesh_mesh_contact,
+    mesh_mesh_deepest_contact, mesh_sphere_contact, triangle_capsule_contact,
     triangle_sphere_contact,
 };
 pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_mesh, bvh_from_triangle_mesh, query_bvh_pair};

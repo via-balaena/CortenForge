@@ -24,7 +24,7 @@ use sim_core::validation::{
     Check, EnergyConservationTracker, EnergyMonotonicityTracker, EquilibriumTracker, LimitTracker,
     PeriodTracker, QuaternionNormTracker, print_report,
 };
-use sim_core::{Data, Model};
+use sim_core::{ConstraintType, Data, Model};
 
 use crate::camera::OrbitCamera;
 use crate::convert::vec3_from_vector;
@@ -529,6 +529,85 @@ pub fn validation_system(
             let title = format!("Validation Report (t={report_time:.0}s)");
             let _ = print_report(&title, &checks);
         }
+    }
+}
+
+// ── Contact Force Accumulator ────────────────────────────────────────────────
+
+/// Accumulates total contact constraint force over a time window for
+/// force/weight validation in settling examples.
+///
+/// Add as a resource and pair with [`accumulate_contact_force`] in `PostUpdate`.
+/// After the window closes, call [`ContactForceAccumulator::avg_force_ratio`] to get the average
+/// contact-force / weight ratio.
+///
+/// ```ignore
+/// App::new()
+///     .insert_resource(ContactForceAccumulator::new(1, 3.0, 5.0))
+///     .add_systems(PostUpdate, accumulate_contact_force)
+/// ```
+#[derive(Resource)]
+pub struct ContactForceAccumulator {
+    /// Body index whose weight is the denominator.
+    body_id: usize,
+    /// Start of the averaging window (sim seconds).
+    start: f64,
+    /// End of the averaging window (sim seconds).
+    end: f64,
+    force_sum: f64,
+    sample_count: u32,
+}
+
+impl ContactForceAccumulator {
+    /// Create a new accumulator.
+    ///
+    /// - `body_id`: index of the body whose mass determines weight (typically 1)
+    /// - `start`/`end`: sim-time window over which to average (e.g. 3.0..5.0)
+    #[must_use]
+    pub fn new(body_id: usize, start: f64, end: f64) -> Self {
+        Self {
+            body_id,
+            start,
+            end,
+            force_sum: 0.0,
+            sample_count: 0,
+        }
+    }
+
+    /// Average force / weight ratio over the accumulation window.
+    ///
+    /// Returns 0.0 if no samples were collected.
+    #[must_use]
+    pub fn avg_force_ratio(&self, model: &Model) -> f64 {
+        if self.sample_count == 0 {
+            return 0.0;
+        }
+        let weight = model.body_mass[self.body_id] * 9.81;
+        if weight == 0.0 {
+            return 0.0;
+        }
+        (self.force_sum / f64::from(self.sample_count)) / weight
+    }
+}
+
+/// Bevy system: sample total contact force each timestep within the window.
+///
+/// Add to `PostUpdate` (after `sync_geom_transforms`).
+#[allow(clippy::needless_pass_by_value)]
+pub fn accumulate_contact_force(data: Res<PhysicsData>, mut acc: ResMut<ContactForceAccumulator>) {
+    let time = data.time;
+    if time > acc.start && time < acc.end {
+        for (i, ct) in data.efc_type.iter().enumerate() {
+            if matches!(
+                ct,
+                ConstraintType::ContactFrictionless
+                    | ConstraintType::ContactPyramidal
+                    | ConstraintType::ContactElliptic
+            ) {
+                acc.force_sum += data.efc_force[i].abs();
+            }
+        }
+        acc.sample_count += 1;
     }
 }
 

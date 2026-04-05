@@ -357,7 +357,7 @@ foundation isn't right.
 | Task | Source | Tier | Description |
 |------|--------|------|-------------|
 | DT-130 | 10e | T3 | Dense AR matrix optimization — PGS currently computes full nefc×nefc `efc_AR` matrix. MuJoCo uses sparse row-level operations (`ARblock`). Performance optimization, not conformance. Discovered during Phase 8 Spec B review. |
-| DT-134 | 16 | T2 | Mesh-primitive dispatch to GJK/EPA on convex hulls — mesh-sphere, mesh-capsule, mesh-box pairs currently use per-triangle BVH; should route through `convex_mesh_from_hull()` + `gjk_epa_contact()` when hull available (AD-1 option a). Deferred from Phase 9 Spec A. |
+| DT-134 | 16 | T2 | Mesh-primitive dispatch to GJK/EPA on convex hulls — **Partially resolved (2026-04-05):** mesh-cylinder and mesh-ellipsoid now route through `gjk_epa_shape_pair()` (correctness fix, not just perf — old paths used capsule/sphere approximations). Remaining: mesh-sphere, mesh-capsule, mesh-box still use per-triangle BVH (correct, perf-only). Spec: `mesh_collision_fixes/MESH_CYLINDER_ELLIPSOID_SPEC.md`. Branch: `feature/mesh-collision-examples`. |
 | §40d | 10 | — | Sparse Jacobian for fluid derivatives (nv > 200) |
 | §40e | 10 | — | Refactor `mj_jac_site` to use `mj_jac_point` kernel |
 | §48 | 12 | — | SIMD batch audit for hot paths |

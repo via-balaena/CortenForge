@@ -24,8 +24,8 @@ use sim_core::Aabb;
 use sim_core::Pose;
 use sim_core::closest_point_on_triangle;
 use sim_core::mesh::{
-    TriangleMeshData, mesh_mesh_contact, mesh_mesh_deepest_contact, triangle_box_contact,
-    triangle_capsule_contact, triangle_sphere_contact,
+    TriangleMeshData, mesh_mesh_contact, mesh_mesh_deepest_contact, triangle_capsule_contact,
+    triangle_sphere_contact,
 };
 use sim_core::mid_phase::{Bvh, BvhPrimitive};
 
@@ -412,40 +412,7 @@ fn bench_triangle_capsule(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark triangle-box collision detection.
-fn bench_triangle_box(c: &mut Criterion) {
-    let mut group = c.benchmark_group("triangle_box");
-
-    let v0 = Point3::new(-1.0, -1.0, 0.0);
-    let v1 = Point3::new(1.0, -1.0, 0.0);
-    let v2 = Point3::new(0.0, 1.0, 0.0);
-
-    let half_extents = Vector3::new(0.3, 0.3, 0.3);
-
-    let test_cases = [
-        ("axis_aligned_hit", Point3::new(0.0, 0.0, 0.2), 0.0),
-        ("rotated_45_hit", Point3::new(0.0, 0.0, 0.2), 45.0),
-        ("miss", Point3::new(0.0, 0.0, 2.0), 0.0),
-    ];
-
-    for (name, center, angle_deg) in test_cases {
-        let rotation = UnitQuaternion::from_euler_angles(0.0, 0.0, (angle_deg as f64).to_radians());
-        group.bench_with_input(BenchmarkId::new("contact", name), &(), |b, _| {
-            b.iter(|| {
-                black_box(triangle_box_contact(
-                    v0,
-                    v1,
-                    v2,
-                    center,
-                    &rotation,
-                    &half_extents,
-                ))
-            });
-        });
-    }
-
-    group.finish();
-}
+// bench_triangle_box removed — mesh-box collision now uses GJK/EPA
 
 /// Benchmark closest point on triangle computation.
 fn bench_closest_point_on_triangle(c: &mut Criterion) {
@@ -604,7 +571,6 @@ criterion_group!(
     // Triangle-primitive collision
     bench_triangle_sphere,
     bench_triangle_capsule,
-    bench_triangle_box,
     bench_closest_point_on_triangle,
     // BVH benchmarks
     bench_bvh_construction,

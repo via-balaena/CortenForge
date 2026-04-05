@@ -1410,4 +1410,361 @@ mod spec_d_tests {
         // or very close contacts that get deduplicated
         assert!(!contacts.is_empty(), "should produce at least one contact");
     }
+
+    // ========================================================================
+    // Mesh–Cylinder GJK/EPA dispatch tests
+    // ========================================================================
+
+    /// Ground slab half-thickness. The slab mesh is centered at origin with
+    /// top face at `z = SLAB_HZ`. Tests place the mesh at `z = -SLAB_HZ`
+    /// so the top surface aligns with `z = 0`.
+    const SLAB_HZ: f64 = 0.01;
+
+    /// Create a thin ground-slab mesh (2×2×0.02) with convex hull.
+    fn ground_slab_mesh() -> Arc<TriangleMeshData> {
+        box_mesh(1.0, 1.0, SLAB_HZ)
+    }
+
+    /// Helper: set up a (Mesh, Cylinder) model with given mesh and cylinder size.
+    /// Returns the model with geom0 = mesh, geom1 = cylinder.
+    fn mesh_cylinder_model(
+        mesh: Arc<TriangleMeshData>,
+        cyl_half_length: f64,
+        cyl_radius: f64,
+    ) -> Model {
+        let mut model = make_model(
+            GeomType::Mesh,
+            Vector3::zeros(), // mesh size unused (hull provides geometry)
+            GeomType::Cylinder,
+            Vector3::new(cyl_radius, cyl_half_length, 0.0),
+        );
+        model.geom_mesh = vec![Some(0), None];
+        model.mesh_data = vec![mesh];
+        model
+    }
+
+    /// T1: Cylinder flat-end on mesh slab — upright cylinder penetrating slightly.
+    /// Slab top at z=0, cylinder center at z=0.18 → bottom cap at z=-0.02 → 0.02 penetration.
+    #[test]
+    fn test_mesh_cylinder_flat_end_on_mesh() {
+        let mesh = ground_slab_mesh();
+        let model = mesh_cylinder_model(mesh, 0.2, 0.1);
+
+        // Slab centered at z=-SLAB_HZ so top face is at z=0
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        // Cylinder center at z=0.18 → bottom cap at z=-0.02 → overlaps slab top by 0.02
+        let pos_cyl = Vector3::new(0.0, 0.0, 0.18);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_cyl, mat, 0.0);
+        assert!(!contacts.is_empty(), "should produce contact");
+
+        let c = &contacts[0];
+        // Contact normal should point roughly +Z (from mesh toward cylinder)
+        assert!(
+            c.normal.z > 0.9,
+            "normal should point +Z, got {:?}",
+            c.normal
+        );
+        // Penetration ~0.02
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive (~0.02), got {}",
+            c.depth
+        );
+    }
+
+    /// T2: Cylinder curved-side on mesh — lying on its side.
+    /// Rotated 90 deg about Y so axis points along X. Center at z=0.08
+    /// → curved surface bottom at z=-0.02 → overlaps slab top by 0.02.
+    #[test]
+    fn test_mesh_cylinder_curved_side_on_mesh() {
+        let mesh = ground_slab_mesh();
+        let model = mesh_cylinder_model(mesh, 0.2, 0.1);
+
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        // Center at z=0.08 so curved surface (radius=0.1) bottom at z=-0.02
+        let pos_cyl = Vector3::new(0.0, 0.0, 0.08);
+        let mat_mesh = Matrix3::identity();
+        // Rotate cylinder 90 deg about Y axis (axis now points along X)
+        let rot = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), std::f64::consts::FRAC_PI_2);
+        let mat_cyl = *rot.to_rotation_matrix().matrix();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat_mesh, pos_cyl, mat_cyl, 0.0);
+        assert!(!contacts.is_empty(), "should produce contact");
+
+        let c = &contacts[0];
+        // Contact normal should point roughly +Z
+        assert!(
+            c.normal.z > 0.9,
+            "normal should point +Z, got {:?}",
+            c.normal
+        );
+    }
+
+    /// T5: Cylinder vs mesh — capsule regression.
+    /// With correct cylinder: center at z=0.18, bottom cap at z=-0.02 → penetrates slab.
+    /// With capsule approx: center at z=0.18, hemisphere bottom at z=-0.02
+    /// (half_length=0.2, but hemisphere extends radius=0.1 further).
+    /// Actually capsule bottom = z - half_length - radius = 0.18 - 0.2 - 0.1 = -0.12.
+    /// Both would detect contact at this position.
+    ///
+    /// The key regression test: place cylinder center at z = half_length = 0.2
+    /// (cap exactly at z=0 = slab top). Cylinder: barely touching → depth ~SLAB_HZ.
+    /// Capsule: hemisphere center at z=0, hemisphere extends to z=-0.1 → much deeper.
+    /// We verify depth is small (~SLAB_HZ), not large (~0.1).
+    #[test]
+    fn test_mesh_cylinder_not_capsule_regression() {
+        let mesh = ground_slab_mesh();
+        let model = mesh_cylinder_model(mesh, 0.2, 0.1);
+
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        // Cylinder center at z=0.2: bottom flat cap at z=0 (just at slab top)
+        let pos_cyl = Vector3::new(0.0, 0.0, 0.2);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_cyl, mat, 0.0);
+        assert!(
+            !contacts.is_empty(),
+            "cylinder at z=0.2 should contact slab"
+        );
+
+        let c = &contacts[0];
+        // With correct cylinder: cap at z=0, slab top at z=0, depth = SLAB_HZ (~0.01)
+        // With capsule: hemisphere bottom at z=0.2-0.2-0.1=-0.1, depth would be ~0.11
+        assert!(
+            c.depth < 0.05,
+            "depth should be small (~{SLAB_HZ}) not large (~0.1 from capsule approx), got {}",
+            c.depth
+        );
+    }
+
+    /// T7: Mesh–Cylinder swapped geom order (Cylinder, Mesh).
+    /// Should produce identical physics — same contact with correct normal convention.
+    #[test]
+    fn test_mesh_cylinder_swapped_geom_order() {
+        let mesh = ground_slab_mesh();
+
+        // Model with geom0 = cylinder, geom1 = mesh (swapped)
+        let mut model = make_model(
+            GeomType::Cylinder,
+            Vector3::new(0.1, 0.2, 0.0), // radius=0.1, half_length=0.2
+            GeomType::Mesh,
+            Vector3::zeros(),
+        );
+        model.geom_mesh = vec![None, Some(0)];
+        model.mesh_data = vec![mesh];
+
+        // Cylinder at z=0.18, mesh slab at z=-SLAB_HZ
+        let pos_cyl = Vector3::new(0.0, 0.0, 0.18);
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_cyl, mat, pos_mesh, mat, 0.0);
+        assert!(!contacts.is_empty(), "swapped order should produce contact");
+
+        let c = &contacts[0];
+        // Normal convention: from geom2 toward geom1.
+        // GJK(shape1=cyl, shape2=hull) → normal from hull toward cyl = +Z.
+        // geom1=cyl, geom2=mesh, so normal from geom2(mesh) toward geom1(cyl) = +Z.
+        assert!(
+            c.normal.z.abs() > 0.9,
+            "normal should be along Z axis, got {:?}",
+            c.normal
+        );
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive, got {}",
+            c.depth
+        );
+    }
+
+    /// T9: No convex hull — graceful fallback (empty contacts, no panic).
+    #[test]
+    fn test_mesh_cylinder_no_hull_graceful() {
+        // Create mesh WITHOUT computing convex hull
+        let vertices = vec![
+            Point3::new(-1.0, -1.0, -0.01),
+            Point3::new(1.0, -1.0, -0.01),
+            Point3::new(1.0, 1.0, -0.01),
+            Point3::new(-1.0, 1.0, -0.01),
+            Point3::new(-1.0, -1.0, 0.01),
+            Point3::new(1.0, -1.0, 0.01),
+            Point3::new(1.0, 1.0, 0.01),
+            Point3::new(-1.0, 1.0, 0.01),
+        ];
+        #[rustfmt::skip]
+        let indices = vec![
+            0,1,2, 0,2,3,
+            4,6,5, 4,7,6,
+            0,4,5, 0,5,1,
+            2,6,7, 2,7,3,
+            0,3,7, 0,7,4,
+            1,5,6, 1,6,2,
+        ];
+        let mesh = TriangleMeshData::new(vertices, indices);
+        // Deliberately NOT calling mesh.compute_convex_hull()
+        assert!(mesh.convex_hull().is_none(), "precondition: no hull");
+
+        let mut model = make_model(
+            GeomType::Mesh,
+            Vector3::zeros(),
+            GeomType::Cylinder,
+            Vector3::new(0.1, 0.2, 0.0),
+        );
+        model.geom_mesh = vec![Some(0), None];
+        model.mesh_data = vec![Arc::new(mesh)];
+
+        let pos1 = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        let pos2 = Vector3::new(0.0, 0.0, 0.18);
+        let mat = Matrix3::identity();
+
+        // Should return empty contacts, not panic
+        let contacts = collide_geoms(&model, 0, 1, pos1, mat, pos2, mat, 0.0);
+        assert!(
+            contacts.is_empty(),
+            "no hull → no contacts, got {}",
+            contacts.len()
+        );
+    }
+
+    // ========================================================================
+    // Mesh–Ellipsoid GJK/EPA dispatch tests
+    // ========================================================================
+
+    /// Helper: set up a (Mesh, Ellipsoid) model.
+    /// Returns the model with geom0 = mesh, geom1 = ellipsoid.
+    fn mesh_ellipsoid_model(mesh: Arc<TriangleMeshData>, radii: Vector3<f64>) -> Model {
+        let mut model = make_model(GeomType::Mesh, Vector3::zeros(), GeomType::Ellipsoid, radii);
+        model.geom_mesh = vec![Some(0), None];
+        model.mesh_data = vec![mesh];
+        model
+    }
+
+    /// T3: Oblate ellipsoid flat-axis on mesh slab.
+    /// Radii [0.3, 0.3, 0.05] — thin disc. Center at z = 0.05 - 0.02 = 0.03
+    /// so bottom at z = -0.02, penetrating slab top (z=0) by 0.02.
+    /// Old sphere approx would use max_r = 0.3, making the object float.
+    #[test]
+    fn test_mesh_ellipsoid_oblate_on_mesh() {
+        let mesh = ground_slab_mesh();
+        let radii = Vector3::new(0.3, 0.3, 0.05);
+        let model = mesh_ellipsoid_model(mesh, radii);
+
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        // Center at z=0.03 → bottom at z=0.03-0.05=-0.02 → overlaps slab top by 0.02
+        let pos_ell = Vector3::new(0.0, 0.0, 0.03);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_ell, mat, 0.0);
+        assert!(!contacts.is_empty(), "should produce contact");
+
+        let c = &contacts[0];
+        // Normal should point +Z (from mesh toward ellipsoid)
+        assert!(
+            c.normal.z > 0.9,
+            "normal should point +Z, got {:?}",
+            c.normal
+        );
+        // Penetration ~0.02
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive (~0.02), got {}",
+            c.depth
+        );
+    }
+
+    /// T4: Prolate ellipsoid long-axis on mesh slab.
+    /// Radii [0.05, 0.05, 0.3] — tall cigar shape. Center at z = 0.28
+    /// → bottom at z = -0.02, penetrating slab top by 0.02.
+    #[test]
+    fn test_mesh_ellipsoid_prolate_on_mesh() {
+        let mesh = ground_slab_mesh();
+        let radii = Vector3::new(0.05, 0.05, 0.3);
+        let model = mesh_ellipsoid_model(mesh, radii);
+
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        // Center at z=0.28 → bottom at z=0.28-0.3=-0.02 → overlaps slab top
+        let pos_ell = Vector3::new(0.0, 0.0, 0.28);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_ell, mat, 0.0);
+        assert!(!contacts.is_empty(), "should produce contact");
+
+        let c = &contacts[0];
+        assert!(
+            c.normal.z > 0.9,
+            "normal should point +Z, got {:?}",
+            c.normal
+        );
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive, got {}",
+            c.depth
+        );
+    }
+
+    /// T6: Ellipsoid vs mesh — sphere regression.
+    /// Oblate ellipsoid (radii [0.3, 0.3, 0.05]) with center at z = 0.05
+    /// (bottom at z=0 = slab top). Old sphere approx used max_r=0.3, so
+    /// the "sphere" bottom would be at z = 0.05 - 0.3 = -0.25 → depth ~0.26.
+    /// Correct ellipsoid: bottom at z = 0.05 - 0.05 = 0.0 → depth ~SLAB_HZ.
+    #[test]
+    fn test_mesh_ellipsoid_not_sphere_regression() {
+        let mesh = ground_slab_mesh();
+        let radii = Vector3::new(0.3, 0.3, 0.05);
+        let model = mesh_ellipsoid_model(mesh, radii);
+
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        // Center at z=0.05: correct bottom at z=0 (just at slab top)
+        let pos_ell = Vector3::new(0.0, 0.0, 0.05);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_mesh, mat, pos_ell, mat, 0.0);
+        assert!(
+            !contacts.is_empty(),
+            "ellipsoid at z=0.05 should contact slab"
+        );
+
+        let c = &contacts[0];
+        // With correct ellipsoid: depth ~SLAB_HZ (~0.01)
+        // With sphere approx (r=0.3): depth ~0.26
+        assert!(
+            c.depth < 0.05,
+            "depth should be small (~{SLAB_HZ}) not large (~0.26 from sphere approx), got {}",
+            c.depth
+        );
+    }
+
+    /// T8: Mesh–Ellipsoid swapped geom order (Ellipsoid, Mesh).
+    #[test]
+    fn test_mesh_ellipsoid_swapped_geom_order() {
+        let mesh = ground_slab_mesh();
+        let radii = Vector3::new(0.3, 0.3, 0.05);
+
+        // geom0 = ellipsoid, geom1 = mesh (swapped)
+        let mut model = make_model(GeomType::Ellipsoid, radii, GeomType::Mesh, Vector3::zeros());
+        model.geom_mesh = vec![None, Some(0)];
+        model.mesh_data = vec![mesh];
+
+        // Ellipsoid at z=0.03 (bottom at -0.02), slab at z=-SLAB_HZ
+        let pos_ell = Vector3::new(0.0, 0.0, 0.03);
+        let pos_mesh = Vector3::new(0.0, 0.0, -SLAB_HZ);
+        let mat = Matrix3::identity();
+
+        let contacts = collide_geoms(&model, 0, 1, pos_ell, mat, pos_mesh, mat, 0.0);
+        assert!(!contacts.is_empty(), "swapped order should produce contact");
+
+        let c = &contacts[0];
+        assert!(
+            c.normal.z.abs() > 0.9,
+            "normal should be along Z axis, got {:?}",
+            c.normal
+        );
+        assert!(
+            c.depth > 0.0 && c.depth < 0.05,
+            "depth should be small positive, got {}",
+            c.depth
+        );
+    }
 }
