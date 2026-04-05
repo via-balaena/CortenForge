@@ -104,6 +104,8 @@ impl Tensor {
     pub fn zeros(shape: &[usize]) -> Self;
     pub fn from_slice(data: &[f32], shape: &[usize]) -> Self;
     pub fn from_f64_slice(data: &[f64], shape: &[usize]) -> Self;  // f64→f32
+    pub fn try_from_slice(data: &[f32], shape: &[usize]) -> Result<Self, TensorError>;
+    pub fn try_from_f64_slice(data: &[f64], shape: &[usize]) -> Result<Self, TensorError>;
     pub fn shape(&self) -> &[usize];
     pub fn ndim(&self) -> usize;
     pub fn len(&self) -> usize;           // total elements (product of shape)
@@ -121,6 +123,16 @@ impl Tensor {
 `row()` / `row_mut()` exist because VecEnv works with batched tensors
 of shape `[n_envs, dim]` and needs to scatter actions into individual envs.
 No strides, no general indexing — just the one operation we actually need.
+
+**Validation policy**: `from_slice` and `from_f64_slice` **panic** if
+`data.len() != product(shape)`. This is always a programming error — a shape
+mismatch between what you have and what you declared. Panicking matches
+nalgebra's convention and keeps the hot-path API ergonomic (no unwrapping).
+`try_from_slice` and `try_from_f64_slice` return `Result<Self, TensorError>`
+for callers who need to validate external input (e.g., deserializing a
+tensor from disk or network). Internal bridge code (extract, apply) uses
+the panicking variants — shapes are validated once at build() time and
+guaranteed correct thereafter.
 
 ### 5.2 TensorSpec
 
@@ -495,8 +507,9 @@ impl VecEnv {
     /// Step all environments.
     ///
     /// `actions` has shape [n_envs, act_dim]. Row i is applied to env i.
-    /// Environments where done or truncated is true are automatically
-    /// reset after the step. See §7.4 for error handling.
+    /// All N sub-steps run for all envs (no per-env early exit — §9).
+    /// Done/truncated evaluated once at final state, then auto-reset (§7.5).
+    /// Returns `Err(VecStepError)` only for bridge errors (§7.4).
     pub fn step(&mut self, actions: &Tensor) -> Result<VecStepResult, VecStepError>;
 
     /// Reset all environments, returning initial observations.
@@ -652,10 +665,33 @@ The reward/done/truncated functions see the final state after all sub-steps.
 
 This matches MuJoCo's `n_sub_steps` parameter in dm_control.
 
-**Early termination during sub-stepping**: if `done_fn` returns true after
-sub-step `k < sub_steps`, remaining sub-steps are skipped. The reward is
-computed from the terminal state. This prevents wasting compute on a dead
-env and avoids post-terminal state corruption.
+### SimEnv: early termination
+
+`SimEnv` checks `done_fn` after each sub-step. If true, remaining sub-steps
+are skipped. Reward is computed from the terminal state. This is cheap
+(single env, one branch per sub-step) and avoids post-terminal corruption.
+
+### VecEnv: evaluate at end only
+
+`VecEnv` runs all N sub-steps for all envs via `batch.step_all()`, then
+evaluates done/truncated once at the final state. **No per-env early exit.**
+
+Why: `step_all()` steps every env in one parallel dispatch. Per-env early
+exit would require either (a) masking individual envs out of the batch on
+each sub-step (breaking the single `par_iter_mut` dispatch) or (b) running
+individual `data.step()` calls (losing batch parallelism). Neither is worth
+the complexity for v1.
+
+This matches the standard approach in dm_control and Gymnasium MuJoCo
+wrappers: all sub-steps run unconditionally, done is evaluated at the end.
+In practice, physics tasks don't "recover" from terminal states within a
+few sub-steps — a humanoid that falls below height 0.5 at sub-step 3 will
+still be below 0.5 at sub-step 10.
+
+If a future task requires per-env early exit in VecEnv, the growth path is:
+replace the `step_all()` × N loop with a `step_where(awake_mask)` method
+on BatchSim that skips sleeping/done envs. This is additive to BatchSim,
+not a redesign of VecEnv.
 
 ## 10. Error Handling
 
@@ -663,6 +699,7 @@ env and avoids post-terminal state corruption.
 
 | Type | Source | Meaning |
 |------|--------|---------|
+| `TensorError` | `Tensor::try_from_*` | Shape mismatch: `data.len() != product(shape)`. For external input validation. Internal code uses panicking `from_slice` instead (§5.1). |
 | `SpaceError` | Builders | Range out of bounds, sensor name not found, dimension mismatch. Returned by `ObservationSpaceBuilder::build()`, `ActionSpaceBuilder::build()`. |
 | `EnvError` | Env builders | Missing required field (no obs space, no reward fn). Returned by `SimEnvBuilder::build()`, `VecEnvBuilder::build()`. |
 | `VecStepError` | `VecEnv::step()` | Bridge-level error: wrong action shape, wrong batch size. NOT per-env physics errors. |
