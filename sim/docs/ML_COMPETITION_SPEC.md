@@ -1,223 +1,352 @@
 # ML Competition Framework Spec
 
 > **Status**: Draft
-> **Crate**: sim-ml-bridge (extensions) + new competition test harness
+> **Crate**: sim-ml-bridge (extensions)
 > **Branch**: feature/sim-ml-bridge
 
-## Problem
+## Vision
 
-We have three hand-coded algorithms (CEM, REINFORCE, PPO) running on a
-2-DOF reaching arm with 10 actor params. The results tell the wrong story:
+CortenForge's ML layer is designed to scale from pedagogical hand-coded
+algorithms all the way to differentiable co-design — jointly optimizing
+a creature's morphology and control policy, then 3D printing the result.
 
-| Algorithm | Reward improvement | Done triggers | Params |
-|-----------|-------------------|---------------|--------|
-| CEM       | ~50%              | **>=10/epoch**| 10     |
-| REINFORCE | **91%**           | 0-3/epoch     | 10     |
-| PPO       | 88%               | 0/epoch       | 15     |
+This spec defines the architecture at every level of that journey. The
+key constraint: each level must be a clean boundary where you can swap
+implementations without rewriting the layers above. Hand-coded gradients
+today, burn autograd tomorrow, differentiable physics next year — the
+Algorithm implementations and competition tests never change.
 
-CEM wins on reaches, REINFORCE wins on reward, PPO adds overhead. This
-inverts the expected CEM < REINFORCE < PPO ordering because the problem
-is too small — 10 params is trivial for evolutionary search and low-
-variance enough for raw policy gradients.
+## The scaling ladder
 
-## Goal
+| Level | What | Param scale | Compute | Unlocks |
+|-------|------|------------|---------|---------|
+| **0** | Linear policies, hand-coded math | 10-80 | CPU, manual | Pedagogical examples, algorithm comparison |
+| **1** | 1-layer MLP, hand-coded backprop | 600 | CPU, manual | Scaled tasks where PPO > REINFORCE > CEM |
+| **2** | Deep networks, autograd | 10K-1M | CPU/GPU, burn/candle | Research-grade RL, complex tasks |
+| **3** | GPU-accelerated environments | Any | GPU envs + GPU networks | Isaac Gym-style massively parallel training |
+| **4** | Differentiable physics | Any | Backprop through sim | Model-based RL with exact dynamics gradients, trajectory optimization |
+| **5** | Co-design | Any | End-to-end differentiable | Jointly optimize body (cf-design) + brain (policy), then fabricate |
 
-Build an abstraction layer and scaled-up task where:
+Each level builds on the one below. The architecture is designed so
+that reaching level N never requires rewriting level N-1.
 
-1. **5 algorithms** (CEM, REINFORCE, PPO, SAC, TD3) compete on
-   standardized tasks with comparable metrics
-2. **The ordering is honest** — algorithms win where theory predicts
-   they should, and we can form hypotheses and verify them
-3. **Adding algorithm N+1 is cheap** — implement one trait, plug in
-4. **Adding task M+1 is cheap** — define one config, run all algorithms
+### Level 0-1: Hand-coded (this implementation cycle)
 
-## Algorithm landscape
+What we build first. 5 algorithms, 2 tasks (2-DOF and 6-DOF reaching
+arms), linear and single-layer MLP policies with hand-coded gradients.
+The competition framework validates that algorithm ordering matches
+theory. All infrastructure (traits, tasks, competition runner) is
+established here and carries forward to all subsequent levels.
 
-### The five algorithms and their structural differences
+### Level 2: Autograd
 
-| Property | CEM | REINFORCE | PPO | SAC | TD3 |
-|----------|-----|-----------|-----|-----|-----|
-| Family | Evolutionary | On-policy PG | On-policy PG | Off-policy AC | Off-policy AC |
-| Data usage | Whole-rollout fitness | Per-step, use once | Per-step, use K times | Per-step, replay forever | Per-step, replay forever |
-| Episode structure | Episodic (reset between generations) | Episodic | Episodic | Continuous (auto-reset) | Continuous (auto-reset) |
-| Gradient? | No | Policy gradient | Clipped surrogate | Policy + 2 Q-functions + entropy | Policy + 2 Q-functions |
-| Exploration | Parameter perturbation | Gaussian action noise | Gaussian action noise | Entropy-maximizing | Target policy smoothing |
-| Key strength | Simple, no gradients | Unbiased gradient | Stable, sample-efficient (on-policy) | Sample-efficient (off-policy), automatic exploration | Stable off-policy, simple |
+Swap the hand-coded `MlpPolicy` for a `BurnPolicy` backed by burn
+(or candle). The `Algorithm` implementations don't change — they call
+the same `DifferentiablePolicy` trait methods. What changes:
 
-### The three structural fault lines
+- Networks can be arbitrarily deep (3+ layers, residual connections)
+- Gradient computation is automatic (no hand-coded backprop)
+- GPU tensor operations available via burn's backends
+- New policy architectures (conv for vision, recurrent for POMDP)
+  slot in without touching algorithm code
 
-**1. What data gets stored:**
-- CEM: scalar fitness per rollout
-- REINFORCE/PPO: per-step (obs, action, reward, mu_old, v_old) trajectories
-- SAC/TD3: per-step (s, a, r, s', done) transitions in a replay buffer
+The trait boundary is the firewall: algorithms depend on trait
+interfaces, never on concrete policy implementations.
 
-**2. When updates happen:**
-- CEM: after all envs complete one episode
-- REINFORCE: same
-- PPO: same, but K passes over the data
-- SAC/TD3: every step (after warmup), using random mini-batches from replay
+### Level 3: GPU-accelerated environments
 
-**3. What gets optimized:**
-- CEM: distribution over policy params (mean, std)
-- REINFORCE: policy params via gradient ascent
-- PPO: policy params + value function params
-- SAC: policy + 2 Q-functions + entropy temperature (auto-tuned)
-- TD3: policy + 2 Q-functions (delayed actor updates)
+CortenForge already has a GPU physics pipeline spec
+(`sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md`). When the sim runs on GPU,
+the ML layer can run thousands of parallel environments without
+CPU-GPU transfer overhead:
 
-### Why this set of five
+- VecEnv backed by GPU BatchSim (observations stay on device)
+- Policy forward pass on GPU (burn backend)
+- No CPU roundtrip per step — entire rollout is GPU-resident
+- Isaac Gym demonstrated 10,000+ envs at real-time — same principle
 
-These five span the three major families (evolutionary, on-policy,
-off-policy) with enough overlap to isolate individual design choices:
+The `VecEnv` trait and `TaskConfig` stay the same. The implementation
+swaps CPU BatchSim for GPU BatchSim. Algorithms see the same
+`step() -> VecStepResult` interface.
 
-- CEM vs REINFORCE: gradient-free vs gradient-based (same data)
-- REINFORCE vs PPO: raw PG vs clipped surrogate + baseline (same family)
-- PPO vs SAC: on-policy vs off-policy (both actor-critic)
-- SAC vs TD3: entropy-regularized vs deterministic (same family)
+### Level 4: Differentiable physics
 
-Each pair isolates one conceptual difference.
-
-## Architecture
-
-### Layer 1: Policy and Value Function traits
-
-The policy maps observations to actions. The value function maps
-observations to scalar estimates. Both own their parameters and can
-compute gradients analytically (no autograd).
+This is where CortenForge diverges from MuJoCo. MuJoCo MPC uses
+finite differences to approximate dynamics gradients. A differentiable
+sim provides exact analytical gradients:
 
 ```
+d(state_{t+1}) / d(action_t)     — how actions affect next state
+d(state_{t+1}) / d(state_t)      — how state propagates
+d(reward_t) / d(action_t)         — direct reward sensitivity
+```
+
+This enables:
+- **Model-based RL** (PETS, Dreamer) with exact dynamics model
+- **Direct trajectory optimization** — backprop through time, no RL
+  needed. Compute d(total_reward) / d(action_sequence) analytically.
+- **System identification** — fit simulator parameters to real-world
+  data via gradient descent
+- **Analytical policy gradients** — instead of estimating the policy
+  gradient via sampling (REINFORCE), compute it exactly through the
+  differentiable dynamics
+
+The sim already computes Jacobians for constraints and contact. The
+path to full differentiability is extending this to the complete
+forward dynamics pipeline. This is a major project but the architecture
+must not prevent it.
+
+**What differentiable physics requires from the ML layer:**
+- Tensor type that supports autodiff (burn tensors with gradient
+  tracking, or a custom tape)
+- Reward functions that are differentiable (not opaque closures)
+- A `DifferentiableEnv` trait extending `Environment` with:
+  ```
+  fn step_differentiable(&self, action: &Tensor) -> DiffStepResult
+  // where DiffStepResult carries gradient information
+  ```
+
+### Level 5: Co-design
+
+The endgame. cf-design generates body geometry (SDF-based, implicit
+surfaces). sim runs the physics. ML optimizes the control policy.
+Co-design closes the loop:
+
+```
+morphology_params ──→ cf-design ──→ body geometry
+                                        │
+                                        ▼
+policy_params ──→ policy ──→ actions ──→ sim ──→ reward
+    ▲                                              │
+    └──────────── gradient ────────────────────────┘
+                     │
+morphology_params ◄──┘  (level 4: backprop through sim + design)
+```
+
+With differentiable physics (level 4) and differentiable geometry
+(cf-design's SDF representation is inherently differentiable), the
+entire pipeline from morphology parameters to reward is differentiable.
+Gradient descent can jointly optimize both.
+
+This doesn't exist anywhere. MuJoCo is a black-box sim. Isaac Gym
+doesn't have a design system. CortenForge + cf-design + differentiable
+physics would be genuinely novel.
+
+**What co-design requires from the ML layer:**
+- `MorphologySpace` — parameterizes body geometry (joint lengths,
+  link shapes, actuator placements)
+- `CoDesignAlgorithm` trait — optimizes both morphology and policy
+- Integration with cf-design's SDF representation
+- The ability to reconstruct MJCF (or equivalent) from morphology
+  params at each optimization step
+
+## Trait architecture
+
+The traits are the stable interfaces that survive all 6 levels. They
+are designed with knowledge of the full scaling ladder — no level
+should require breaking a trait boundary.
+
+### Compute backend (the foundation)
+
+The traits operate on slices (`&[f32]`, `&[f64]`, `&mut [f64]`), not
+framework-specific tensor types. This is deliberate:
+
+- Level 0-1: data lives in plain arrays
+- Level 2+: autograd backends convert slices to/from their tensor
+  format internally. The trait boundary stays at slices.
+- Level 3+: GPU backends materialize slices lazily or batch the
+  conversions
+
+If a future level needs zero-copy GPU tensors in the trait signatures,
+the traits can be extended with optional methods (default impls that
+delegate to the slice versions). The slice-based methods remain as
+the universal fallback.
+
+### Policy trait (split for flexibility)
+
+```rust
+/// Base policy — enough for evolutionary methods (CEM, CMA-ES).
+/// Does not require gradient computation.
 trait Policy: Send + Sync {
     fn n_params(&self) -> usize;
     fn params(&self) -> &[f64];
     fn set_params(&mut self, params: &[f64]);
 
-    /// Forward pass: obs -> mean action
+    /// Deterministic forward pass: obs -> mean action.
     fn forward(&self, obs: &[f32]) -> Vec<f64>;
+}
 
+/// Extends Policy with gradient computation.
+/// Required by all gradient-based algorithms.
+///
+/// At levels 0-1, gradients are hand-coded.
+/// At level 2+, an autograd backend computes them automatically
+/// from the forward pass — the algorithm never knows the difference.
+trait DifferentiablePolicy: Policy {
     /// d/dtheta log pi(a|s) for Gaussian policy with given sigma.
-    /// Returns gradient w.r.t. all params.
-    /// Only needed by gradient-based algorithms (not CEM).
     fn log_prob_gradient(
-        &self, obs: &[f32], action: &[f64], sigma: f64,
+        &self,
+        obs: &[f32],
+        action: &[f64],
+        sigma: f64,
     ) -> Vec<f64>;
 }
 
+/// Extends Policy with a learnable log_std for entropy-based methods.
+/// Required by SAC (entropy-regularized exploration).
+///
+/// Algorithms that use fixed sigma schedules (REINFORCE, PPO) use
+/// DifferentiablePolicy. SAC needs learned exploration, so it uses
+/// this trait which adds log_std as part of the policy output.
+trait StochasticPolicy: DifferentiablePolicy {
+    /// Forward pass that also returns log_std per action dimension.
+    fn forward_stochastic(&self, obs: &[f32]) -> (Vec<f64>, Vec<f64>);
+
+    /// Gradient of log pi(a|s) w.r.t. all params (including log_std).
+    fn log_prob_gradient_stochastic(
+        &self,
+        obs: &[f32],
+        action: &[f64],
+    ) -> Vec<f64>;
+
+    /// Entropy of the policy at a given state.
+    fn entropy(&self, obs: &[f32]) -> f64;
+}
+```
+
+**Why the three-level split:**
+- CEM only needs `Policy` (forward + param perturbation)
+- REINFORCE, PPO, TD3 need `DifferentiablePolicy` (+ gradients)
+- SAC needs `StochasticPolicy` (+ learned exploration)
+
+An autograd backend implements all three — `log_prob_gradient` is
+derived automatically from the forward pass. Hand-coded backends
+implement each manually.
+
+### Value function traits
+
+```rust
+/// State value function V(s).
+/// Used by PPO (advantage estimation) and optionally A2C.
 trait ValueFn: Send + Sync {
     fn n_params(&self) -> usize;
     fn params(&self) -> &[f64];
     fn set_params(&mut self, params: &[f64]);
 
-    /// V(s) or Q(s,a) — forward pass
     fn forward(&self, obs: &[f32]) -> f64;
-
-    /// Gradient of MSE loss: d/d_params (forward(obs) - target)^2
     fn mse_gradient(&self, obs: &[f32], target: f64) -> Vec<f64>;
 }
-```
 
-**Implementations (Phase 1):**
-
-```
-LinearPolicy    — tanh(W * s_scaled + b)
-                  Current 10-param version for 2-DOF
-MlpPolicy       — tanh(W2 * tanh(W1 * s + b1) + b2)
-                  Single hidden layer, hand-coded backprop
-
-LinearValue     — w . s_scaled + b
-                  Current 5-param version
-MlpValue        — w2 . tanh(W1 * s + b1) + b2
-                  Single hidden layer
-```
-
-For SAC/TD3, the Q-function takes (obs, action) as input:
-
-```
+/// State-action value function Q(s, a).
+/// Used by SAC and TD3 (twin Q-networks).
 trait QFunction: Send + Sync {
     fn n_params(&self) -> usize;
     fn params(&self) -> &[f64];
     fn set_params(&mut self, params: &[f64]);
 
-    /// Q(s, a)
     fn forward(&self, obs: &[f32], action: &[f64]) -> f64;
 
-    /// Gradient of MSE loss w.r.t. params
+    /// Gradient of MSE loss w.r.t. Q-function params.
     fn mse_gradient(
-        &self, obs: &[f32], action: &[f64], target: f64,
+        &self,
+        obs: &[f32],
+        action: &[f64],
+        target: f64,
     ) -> Vec<f64>;
 
-    /// Gradient of Q(s, a) w.r.t. action (for policy improvement)
-    fn action_gradient(&self, obs: &[f32], action: &[f64]) -> Vec<f64>;
+    /// Gradient of Q(s, a) w.r.t. action.
+    /// Used by TD3 for deterministic policy gradient:
+    ///   dJ/dtheta = dQ/da * da/dtheta
+    /// Used by SAC for reparameterized policy gradient.
+    fn action_gradient(
+        &self,
+        obs: &[f32],
+        action: &[f64],
+    ) -> Vec<f64>;
 }
 ```
 
-**OBS_SCALE normalization**: Policies and value functions accept raw
-`&[f32]` observations. Normalization (OBS_SCALE) is configured at
-construction time, not baked into the trait. This lets the same policy
-type work across tasks with different observation scales.
+### Target networks (for off-policy stability)
 
-### Layer 2: Task definition
+SAC and TD3 use "target" copies of their Q-networks that are slowly
+updated via Polyak averaging (soft update). This is a pattern, not a
+trait:
 
-A task is a reusable environment configuration. It encapsulates
-everything needed to construct a VecEnv: MJCF, spaces, reward, done,
-truncation, sub-steps, and observation normalization.
-
+```rust
+/// Soft-update target params: target = tau * source + (1-tau) * target
+fn soft_update(target: &mut dyn QFunction, source: &dyn QFunction, tau: f64) {
+    let src = source.params();
+    let tgt = target.params().to_vec();
+    let updated: Vec<f64> = tgt.iter().zip(src).map(|(&t, &s)| tau * s + (1.0 - tau) * t).collect();
+    target.set_params(&updated);
+}
 ```
+
+This works at any level — it only touches `params()` and `set_params()`.
+
+### Task definition
+
+```rust
 struct TaskConfig {
     name: &'static str,
     mjcf: &'static str,
-    obs_builder: fn(&Model) -> ObservationSpace,
-    act_builder: fn(&Model) -> ActionSpace,
+    build_obs: fn(&Model) -> ObservationSpace,
+    build_act: fn(&Model) -> ActionSpace,
     reward_fn: Arc<dyn Fn(&Model, &Data) -> f64 + Send + Sync>,
     done_fn: Arc<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
     truncated_fn: Arc<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
     sub_steps: usize,
-    obs_scale: Vec<f64>,     // normalization factors per obs dim
-    episode_timeout: f64,     // seconds
+    obs_scale: Vec<f64>,
+    episode_timeout: f64,
 }
 
 impl TaskConfig {
     fn build_vec_env(&self, n_envs: usize) -> VecEnv;
-    fn obs_dim(&self) -> usize;
-    fn act_dim(&self) -> usize;
+    fn obs_dim(&self, model: &Model) -> usize;
+    fn act_dim(&self, model: &Model) -> usize;
+
+    // Built-in tasks
+    fn reaching_2dof() -> Self;
+    fn reaching_6dof() -> Self;
 }
 ```
 
-**Built-in tasks:**
-- `TaskConfig::reaching_2dof()` — current 2-joint arm (4 obs, 2 act)
-- `TaskConfig::reaching_6dof()` — scaled-up 6-joint arm (12 obs, 6 act)
+At level 3 (GPU envs), `TaskConfig` gains a `build_gpu_vec_env()` that
+returns a GPU-backed VecEnv with the same step/reset interface.
 
-### Layer 3: Algorithm trait
+At level 4 (differentiable physics), `TaskConfig` gains a
+`build_diff_env()` that returns a differentiable environment. The
+reward_fn would need to be differentiable (not an opaque closure) —
+this is a level-4 concern that doesn't affect levels 0-2.
 
-This is the core abstraction. The trait is deliberately thin — each
-algorithm owns its entire training logic. The runner only needs to
-know how to start it and collect results.
+### Algorithm trait
 
-```
+```rust
 struct EpochMetrics {
     epoch: usize,
     mean_reward: f64,
     done_count: usize,
     total_steps: usize,
     wall_time_ms: u64,
-    extra: BTreeMap<String, f64>,  // algorithm-specific
+    extra: BTreeMap<String, f64>,
 }
 
-struct RunResult {
-    algorithm: String,
-    task: String,
-    epochs: Vec<EpochMetrics>,
-    total_wall_time_ms: u64,
+enum TrainingBudget {
+    Epochs(usize),
+    Steps(usize),
 }
 
-trait Algorithm {
+/// The core abstraction. Each algorithm owns its entire training loop.
+///
+/// This trait has ONE method. The algorithm interacts with VecEnv
+/// internally, manages its own data structures (trajectories, replay
+/// buffers, populations), and reports standardized metrics.
+///
+/// The monolithic train() is deliberate — see "Why train() is
+/// monolithic" below.
+trait Algorithm: Send {
     fn name(&self) -> &str;
 
-    /// Run the full training loop on the given task.
-    /// Returns one EpochMetrics per evaluation point.
-    ///
-    /// The algorithm owns the VecEnv interaction loop internally.
-    /// This is the coarsest possible trait boundary — it avoids
-    /// forcing a shared rollout interface across fundamentally
-    /// different data requirements.
     fn train(
         &mut self,
         task: &TaskConfig,
@@ -226,57 +355,46 @@ trait Algorithm {
         seed: u64,
     ) -> Vec<EpochMetrics>;
 }
-
-enum TrainingBudget {
-    Epochs(usize),       // For episodic algorithms (CEM, REINFORCE, PPO)
-    Steps(usize),        // For continuous algorithms (SAC, TD3)
-}
 ```
 
-**Why `train()` is monolithic** (the key design decision):
+**Why `train()` is monolithic:**
 
-The five algorithms have fundamentally different inner loops:
+The five core algorithms have fundamentally different inner loops:
 
-- CEM: perturb params → run all envs → rank → select elites
-- REINFORCE: sample policy → run all envs → compute returns → gradient step
-- PPO: sample policy → run all envs → GAE → K clipped passes
-- SAC: sample policy → step → store transition → sample batch → update
-  critics → update actor → update temperature → soft-update targets
-- TD3: sample policy → step → store transition → sample batch → update
-  critics → (every d steps) update actor → update targets
+| Algorithm | Inner loop |
+|-----------|-----------|
+| CEM | perturb params → run all envs → rank → select elites |
+| REINFORCE | sample policy → run all envs → compute returns → gradient step |
+| PPO | sample policy → run all envs → GAE → K clipped passes |
+| SAC | step env → store transition → sample batch → update 5 networks → adjust temperature |
+| TD3 | step env → store transition → sample batch → update critics → (every d steps) update actor + targets |
 
-Trying to factor these into shared sub-steps (collect/update) forces
-awkward abstractions. The `act()/observe()` step-level trait was
-considered and rejected because:
+Future algorithms are even more divergent:
 
-1. CEM doesn't use per-step observations at all
-2. SAC/TD3 need the replay buffer to be internal state
-3. PPO's K-pass loop doesn't fit step-level granularity
-4. The runner would need mode flags (episodic vs continuous) that
-   leak algorithm internals
+| Algorithm | Loop structure |
+|-----------|---------------|
+| CMA-ES | Like CEM but with covariance matrix adaptation |
+| A3C | Parallel workers with async gradient updates |
+| PETS | Collect data → fit dynamics model ensemble → plan via CEM through model |
+| Dreamer | Collect data → fit world model → imagine rollouts → update policy in imagination |
+| MAP-Elites | Mutation → evaluate → place in behavior-performance archive |
 
-Instead, each algorithm owns its complete loop. The trait boundary
-is just "take a task, produce metrics." This is boring — and that's
-the point. The complexity lives inside each algorithm where it
-belongs, not in shared machinery that tries to be everything.
+A step-level trait (`act()/observe()`) was considered and rejected:
 
-**What algorithms emit via `extra` metrics:**
+1. CEM doesn't use per-step observations — it perturbs params, not actions
+2. SAC's replay buffer is internal state that doesn't fit step-level callbacks
+3. PPO's K-pass inner loop doesn't map to step-level granularity
+4. Model-based methods (PETS, Dreamer) have a completely different
+   loop structure (train model → plan through model → collect data)
+5. MAP-Elites doesn't even have a sequential training loop
 
-| Algorithm | Extra metrics |
-|-----------|--------------|
-| CEM | elite_mean_fitness, population_std |
-| REINFORCE | grad_norm, baseline_variance |
-| PPO | value_loss, clip_fraction, actor_grad_norm |
-| SAC | q1_loss, q2_loss, policy_loss, entropy, alpha |
-| TD3 | q1_loss, q2_loss, policy_loss |
+The monolithic `train()` means: each algorithm is a self-contained
+implementation. The competition runner doesn't know or care how they
+work. Adding algorithm N+1 means implementing one method.
 
-### Layer 4: Competition runner
+### Competition runner
 
-The competition runner is a test utility, not a runtime framework.
-It runs multiple algorithms on the same task and produces comparable
-results.
-
-```
+```rust
 struct Competition {
     task: TaskConfig,
     n_envs: usize,
@@ -286,37 +404,86 @@ struct Competition {
 
 struct CompetitionResult {
     task: String,
-    runs: Vec<RunResult>,  // one per (algorithm, seed) pair
+    runs: Vec<RunResult>,
+}
+
+struct RunResult {
+    algorithm: String,
+    seed: u64,
+    epochs: Vec<EpochMetrics>,
+    total_wall_time_ms: u64,
 }
 
 impl Competition {
-    fn run(&self, algorithms: &mut [&mut dyn Algorithm]) -> CompetitionResult;
+    fn run(&self, algorithms: &mut [Box<dyn Algorithm>]) -> CompetitionResult;
     fn print_summary(result: &CompetitionResult);
+    fn assert_ordering(result: &CompetitionResult, metric: &str, order: &[&str]);
 }
 ```
 
-The `print_summary` produces a table like:
-
-```
-Task: reaching_6dof (12 obs, 6 act, 50 envs, 60 epochs)
-Seed: 42
-
-Algorithm   | Improvement | Done/epoch | Wall time | Key metric
-------------|-------------|------------|-----------|------------------
-CEM         |   23%       |  0/50      |   4.2s    | pop_std=0.08
-REINFORCE   |   71%       |  2/50      |   3.8s    | grad_norm=0.12
-PPO         |   89%       | 18/50      |   5.1s    | value_loss=42.3
-SAC         |   94%       | 31/50      |   8.7s    | entropy=1.24
-TD3         |   91%       | 26/50      |   7.9s    | q_loss=18.7
+The `assert_ordering` method is the hypothesis tester:
+```rust
+competition.assert_ordering(&result, "mean_reward", &["CEM", "REINFORCE", "PPO", "TD3", "SAC"]);
+// Asserts: CEM < REINFORCE < PPO < TD3 < SAC on mean_reward
 ```
 
-### Layer 5: Shared components
+## Algorithm landscape
 
-These are internal building blocks used by multiple algorithms, but
-NOT part of the trait boundary.
+### The five core algorithms
 
-**Adam optimizer** (generic):
-```
+| Property | CEM | REINFORCE | PPO | SAC | TD3 |
+|----------|-----|-----------|-----|-----|-----|
+| Family | Evolutionary | On-policy PG | On-policy PG | Off-policy AC | Off-policy AC |
+| Uses Policy | `Policy` | `DifferentiablePolicy` | `DifferentiablePolicy` | `StochasticPolicy` | `DifferentiablePolicy` |
+| Uses ValueFn | No | No | `ValueFn` (V) | No | No |
+| Uses QFunction | No | No | No | 2x `QFunction` | 2x `QFunction` |
+| Uses ReplayBuffer | No | No | No | Yes | Yes |
+| Target networks | No | No | No | 2x Q targets | 2x Q targets + policy target |
+| Data usage | Whole-rollout fitness | Per-step, use once | Per-step, K passes | Per-step, replay forever | Per-step, replay forever |
+| Exploration | Param perturbation | Gaussian noise (fixed sigma) | Gaussian noise (fixed sigma) | Entropy maximization (learned) | Target policy smoothing |
+| Update frequency | Per generation | Per epoch | Per epoch (K passes) | Per step | Per step |
+
+### Why this set of five spans the design space
+
+Each adjacent pair isolates one conceptual difference:
+
+- **CEM → REINFORCE**: gradient-free → gradient-based
+- **REINFORCE → PPO**: raw PG → clipped surrogate + learned baseline
+- **PPO → SAC**: on-policy → off-policy, fixed sigma → learned entropy
+- **SAC → TD3**: entropy-regularized → deterministic, maximum entropy → target smoothing
+
+### Future algorithms the architecture supports
+
+The trait architecture is designed to accommodate these without changes:
+
+| Algorithm | Family | What it needs | Level |
+|-----------|--------|--------------|-------|
+| CMA-ES | Evolutionary | `Policy` only | 0 |
+| A2C | On-policy | `DifferentiablePolicy` + `ValueFn` | 0-1 |
+| TRPO | On-policy | `DifferentiablePolicy` + `ValueFn` + Fisher vector product | 2 |
+| DDPG | Off-policy | `DifferentiablePolicy` + `QFunction` | 1 |
+| HER | Off-policy + goal relabeling | Any off-policy + goal-conditioned task | 1-2 |
+| PETS | Model-based | Dynamics model ensemble + CEM planner | 2 |
+| Dreamer | Model-based | World model (RSSM) + imagination rollouts | 2 |
+| MAP-Elites | Quality-diversity | `Policy` + behavior descriptor | 0-1 |
+| PPG | On-policy | `DifferentiablePolicy` + `ValueFn` + auxiliary heads | 2 |
+| DreamerV3 | Model-based | Symlog predictions, discrete world model | 2 |
+
+None of these require changing the `Algorithm` trait. They implement
+`train()` with their own internal structure.
+
+TRPO requires a Fisher vector product (second-order optimization).
+At level 0-1, this is hand-coded. At level 2+, autograd computes it
+via Hessian-vector products. The `DifferentiablePolicy` trait doesn't
+need to expose second-order methods — TRPO computes them internally
+using the first-order `log_prob_gradient` + finite differences, or
+at level 2+ via the autograd backend directly.
+
+## Shared components
+
+### Adam optimizer (generic)
+
+```rust
 struct Adam {
     params: Vec<f64>,
     m: Vec<f64>,
@@ -327,80 +494,185 @@ struct Adam {
     beta2: f64,
     eps: f64,
 }
+
+impl Adam {
+    fn new(n_params: usize, lr: f64) -> Self;
+    fn step(&mut self, gradient: &[f64], ascent: bool);
+    fn params(&self) -> &[f64];
+    fn set_params(&mut self, params: &[f64]);
+}
 ```
 
-Used by: REINFORCE, PPO, SAC, TD3.
+Used by: REINFORCE, PPO, SAC, TD3 (and all gradient-based methods).
 
-**Replay buffer** (for off-policy):
-```
+At level 2+, this may be replaced by the autograd framework's built-in
+optimizer. The `Algorithm` trait doesn't care — Adam is internal.
+
+### Replay buffer
+
+```rust
 struct ReplayBuffer {
     capacity: usize,
-    transitions: Vec<Transition>,
-    // ring buffer semantics
-}
-
-struct Transition {
+    obs_dim: usize,
+    act_dim: usize,
+    // Ring buffer storage
     obs: Vec<f32>,
-    action: Vec<f64>,
-    reward: f64,
+    actions: Vec<f64>,
+    rewards: Vec<f64>,
     next_obs: Vec<f32>,
-    done: bool,
+    dones: Vec<bool>,
+    len: usize,
+    pos: usize,
+}
+
+struct TransitionBatch {
+    obs: Vec<f32>,       // [batch_size x obs_dim]
+    actions: Vec<f64>,   // [batch_size x act_dim]
+    rewards: Vec<f64>,   // [batch_size]
+    next_obs: Vec<f32>,  // [batch_size x obs_dim]
+    dones: Vec<bool>,    // [batch_size]
+}
+
+impl ReplayBuffer {
+    fn new(capacity: usize, obs_dim: usize, act_dim: usize) -> Self;
+    fn push(&mut self, obs: &[f32], action: &[f64], reward: f64, next_obs: &[f32], done: bool);
+    fn sample(&self, batch_size: usize, rng: &mut impl Rng) -> TransitionBatch;
+    fn len(&self) -> usize;
 }
 ```
 
-Used by: SAC, TD3.
+Used by: SAC, TD3 (and all off-policy methods).
 
-**GAE computation** (generalized advantage estimation):
-```
+At level 3 (GPU), the replay buffer could be GPU-resident.
+
+### GAE computation
+
+```rust
 fn compute_gae(
     rewards: &[f64],
     values: &[f64],
-    next_value: f64,
+    next_value: f64,  // bootstrap: 0 if done, V(s') if truncated
     gamma: f64,
     lambda: f64,
 ) -> (Vec<f64>, Vec<f64>)  // (advantages, value_targets)
 ```
 
-Used by: PPO (and potentially A2C if added later).
+Used by: PPO (and A2C, PPG, any GAE-based method).
 
-**Episodic collector** (run all envs to completion):
-```
-struct EpisodicCollector { ... }
+### Episodic collector
 
-impl EpisodicCollector {
-    fn collect(
-        env: &mut VecEnv,
-        policy: &dyn Policy,
-        sigma: f64,
-        rng: &mut StdRng,
-    ) -> Vec<Trajectory>;
+```rust
+struct EpisodicRollout {
+    obs: Vec<Vec<f32>>,        // [n_envs][steps][obs_dim]
+    actions: Vec<Vec<f64>>,    // [n_envs][steps][act_dim]
+    rewards: Vec<Vec<f64>>,    // [n_envs][steps]
+    dones: Vec<bool>,          // [n_envs] — how each env ended
+    terminal_obs: Vec<Option<Vec<f32>>>,  // [n_envs]
 }
+
+fn collect_episodic_rollout(
+    env: &mut VecEnv,
+    act_fn: &mut dyn FnMut(usize, &[f32]) -> Vec<f64>,
+    max_steps: usize,
+) -> EpisodicRollout;
 ```
 
-Used by: CEM (for fitness eval), REINFORCE, PPO. Each algorithm
-wraps this with its own trajectory type (CEM only needs rewards,
-PPO also needs mu_old/v_old).
+Used by: CEM, REINFORCE, PPO (any episodic method).
+
+### Policy implementations
+
+**Level 0:**
+```rust
+struct LinearPolicy { ... }      // tanh(W * s_scaled + b)
+struct LinearValue { ... }       // w . s_scaled + b
+struct LinearQ { ... }           // w . [s_scaled; a] + b
+```
+
+**Level 1:**
+```rust
+struct MlpPolicy { ... }        // tanh(W2 * tanh(W1 * s + b1) + b2)
+struct MlpValue { ... }         // w2 . tanh(W1 * s + b1) + b2
+struct MlpQ { ... }             // w2 . tanh(W1 * [s; a] + b1) + b2
+```
+
+All implement hand-coded `forward()` and gradient methods.
+
+**Level 2+ (future, not implemented now):**
+```rust
+struct BurnPolicy<B: Backend> { ... }   // arbitrary burn Module
+struct CandlePolicy { ... }             // candle-based
+```
+
+These implement the same traits via autograd. The algorithm doesn't
+know the difference.
+
+## MLP backpropagation (hand-coded, level 1)
+
+Single hidden layer with tanh activation.
+
+### Policy forward + gradient
+
+```
+Forward:
+    z1 = W1 * s + b1           // [H]
+    h  = tanh(z1)              // [H]
+    z2 = W2 * h + b2           // [A]
+    mu = tanh(z2)              // [A]
+
+Gradient of log pi(a|s) w.r.t. all params:
+    score[a] = (a - mu[a]) / sigma^2 * (1 - mu[a]^2)
+
+    dW2[a,h] = score[a] * h[h]
+    db2[a]   = score[a]
+    d_h[h]   = sum_a( score[a] * W2[a,h] )
+    d_z1[h]  = d_h[h] * (1 - h[h]^2)
+    dW1[h,o] = d_z1[h] * s[o]
+    db1[h]   = d_z1[h]
+```
+
+### Value function forward + gradient
+
+```
+Forward:
+    z1 = W1 * s + b1
+    h  = tanh(z1)
+    V  = w2 . h + b2
+
+Gradient of (V - target)^2:
+    dL_dV = 2 * (V - target)
+
+    dw2[h] = dL_dV * h[h]
+    db2    = dL_dV
+    d_z1[h]  = dL_dV * w2[h] * (1 - h[h]^2)
+    dW1[h,o] = d_z1[h] * s[o]
+    db1[h]   = d_z1[h]
+```
+
+### Q-function forward + gradient
+
+Same as value function but input is `[s; a]` (concatenated obs + action).
+The `action_gradient` (dQ/da) follows the same chain rule through W1's
+action columns.
+
+All gradients are O(H * max(O, A)) per sample.
 
 ## Scaled-up task: 6-DOF reaching arm
 
 ### Why 6-DOF
 
-At 614 actor params (MLP with 32-unit hidden layer):
-- **CEM** needs population ~2-10x param count = 1200-6000. With 50
-  envs, that's 24-120 generations just to evaluate one population.
-  CEM becomes sample-starved.
-- **REINFORCE** has 614-dimensional gradient to estimate from noisy
-  returns. High variance, slow convergence.
-- **PPO** with a learned V(s) reduces per-state variance, making the
-  614-dim gradient tractable. K passes squeeze more signal per epoch.
-- **SAC/TD3** with replay buffer reuse every transition ~100x,
-  radically better sample efficiency.
-
-This is the regime where the theoretical ordering holds.
+At 614 MLP actor params:
+- **CEM** needs population ~2-10x params = 1200-6000. With 50 envs,
+  that's 24-120 generations per population. Sample-starved.
+- **REINFORCE** has a 614-dim gradient estimated from noisy returns.
+  High variance, slow convergence.
+- **PPO** reduces variance via learned V(s), making 614-dim gradients
+  tractable. K passes extract more signal per epoch.
+- **SAC/TD3** reuse every transition ~100x from replay. Radically
+  better sample efficiency.
 
 ### MJCF
 
-3-segment planar arm (6 hinge joints, alternating axes for 3D reach):
+3-segment planar arm with 6 hinge joints:
 
 ```xml
 <mujoco model="reaching-arm-6dof">
@@ -443,236 +715,177 @@ This is the regime where the theoretical ordering holds.
 </mujoco>
 ```
 
-Observation: 12-dim (6 qpos + 6 qvel)
-Action: 6-dim (6 motor torques)
-Reward: -(qpos - target_qpos)^2 (joint-space, same as 2-DOF)
-Done: fingertip within 5cm of target AND low velocity
-Truncated: time > 5.0s (longer episodes for 6 joints)
+- Observation: 12-dim (6 qpos + 6 qvel)
+- Action: 6-dim (6 motor torques)
+- Reward: -(qpos - target_qpos)^2 (joint-space)
+- Done: fingertip within 5cm AND velocity < threshold
+- Truncated: time > 5.0s
 
-### Policy sizes
+### Policy and critic sizes
 
-| Policy | Params | Formula |
-|--------|--------|---------|
-| Linear (12→6) | 78 | W[6x12] + b[6] |
-| MLP (12→32→6) | 614 | W1[32x12] + b1[32] + W2[6x32] + b2[6] |
-
-| Value fn | Params | Formula |
-|----------|--------|---------|
+| Network | Params | Architecture |
+|---------|--------|-------------|
+| Linear actor | 78 | W[6x12] + b[6] |
+| MLP actor | 614 | 12 → 32 → 6 |
 | Linear V(s) | 13 | w[12] + b |
-| MLP V(s) | 417 | W1[32x12] + b1[32] + w2[32] + b2 |
+| MLP V(s) | 417 | 12 → 32 → 1 |
 | Linear Q(s,a) | 19 | w[18] + b |
-| MLP Q(s,a) | 609 | W1[32x18] + b1[32] + w2[32] + b2 |
+| MLP Q(s,a) | 609 | 18 → 32 → 1 |
 
-### Expected ordering on 6-DOF with MLP
+### Expected ordering on 6-DOF MLP
 
-| Algorithm | Expected improvement | Expected reaches | Why |
-|-----------|---------------------|-----------------|-----|
-| CEM | 20-40% | 0 | 614-dim search space, sample-starved |
+| Algorithm | Improvement | Reaches | Why |
+|-----------|------------|---------|-----|
+| CEM | 20-40% | 0 | 614-dim search, sample-starved |
 | REINFORCE | 60-75% | 0-5 | High-variance 614-dim gradient |
 | PPO | 85-95% | 10-30 | Learned baseline reduces variance |
-| SAC | 90-98% | 25-40 | Off-policy reuse, entropy exploration |
-| TD3 | 88-95% | 20-35 | Off-policy, less exploration than SAC |
-
-These are predictions to be verified. The competition framework
-exists to test hypotheses like these efficiently.
-
-## MLP backpropagation (hand-coded)
-
-Single hidden layer with tanh activation. No autograd needed — the
-chain rule for one layer is straightforward.
-
-### Forward pass
-
-```
-h = tanh(W1 * s + b1)        // hidden: [H]
-mu = tanh(W2 * h + b2)       // output: [A]
-```
-
-### Backward pass (policy gradient)
-
-Given d/d_mu log pi(a|s) (the score function from the Gaussian):
-
-```
-score_a = (a - mu) / sigma^2 * (1 - mu^2)     // [A]
-
-// Output layer gradients:
-dW2[a,h] = score_a[a] * h[h]                   // [A x H]
-db2[a]   = score_a[a]                           // [A]
-
-// Backprop through hidden layer:
-d_h[h] = sum_a score_a[a] * W2[a,h]            // [H]
-d_z1[h] = d_h[h] * (1 - h[h]^2)               // tanh derivative
-
-dW1[h,o] = d_z1[h] * s[o]                      // [H x O]
-db1[h]   = d_z1[h]                             // [H]
-```
-
-### Value function backward pass
-
-```
-V = w2 . tanh(W1 * s + b1) + b2
-
-dL/dV = 2 * (V - target)
-
-dw2[h] = dL/dV * h[h]
-db2    = dL/dV
-dW1[h,o] = dL/dV * w2[h] * (1 - h[h]^2) * s[o]
-db1[h]   = dL/dV * w2[h] * (1 - h[h]^2)
-```
-
-All gradients are O(H * max(O, A)) per sample — fast enough for
-H=32 without batched linear algebra.
+| TD3 | 88-95% | 20-35 | Off-policy reuse, less exploration |
+| SAC | 90-98% | 25-40 | Off-policy + entropy exploration |
 
 ## Implementation plan
 
-### Phase 1: Abstractions in sim-ml-bridge
+### Phase 1: Core abstractions (sim-ml-bridge)
 
-1. `Policy` trait + `LinearPolicy` + `MlpPolicy` implementations
-2. `ValueFn` trait + `LinearValue` + `MlpValue` implementations
-3. `QFunction` trait + `LinearQ` + `MlpQ` implementations
-4. `Adam` optimizer (generic, Vec-based)
-5. `ReplayBuffer`
-6. `GAE` computation (standalone function)
-7. `TaskConfig` struct + `reaching_2dof()` + `reaching_6dof()`
-8. `EpochMetrics`, `RunResult`, `TrainingBudget`
-9. `Algorithm` trait
-10. `Competition` runner
+1. `Policy` + `DifferentiablePolicy` + `StochasticPolicy` traits
+2. `ValueFn` trait
+3. `QFunction` trait
+4. `LinearPolicy`, `LinearValue`, `LinearQ` implementations
+5. `MlpPolicy`, `MlpValue`, `MlpQ` implementations
+6. `Adam` optimizer (Vec-based, generic)
+7. `ReplayBuffer`
+8. `compute_gae()` standalone function
+9. `collect_episodic_rollout()` utility
+10. `TaskConfig` + `reaching_2dof()` + `reaching_6dof()`
+11. `EpochMetrics`, `TrainingBudget`, `RunResult`
+12. `Algorithm` trait
+13. `Competition` runner
 
-Tests: gradient finite-difference checks for all MLP variants,
-replay buffer correctness, GAE correctness.
+Gradient finite-difference tests for every forward+gradient pair.
 
 ### Phase 2: Algorithm implementations
 
-Each algorithm is a struct implementing `Algorithm`. They live in
-sim-ml-bridge (not in examples) so the competition tests can use them.
+In sim-ml-bridge, not in examples:
 
-1. `Cem` — rewrite of current CEM logic using `Policy` trait
-2. `Reinforce` — rewrite using `Policy` + `Adam`
-3. `Ppo` — rewrite using `Policy` + `ValueFn` + `Adam` + `GAE`
-4. `Sac` — new: `Policy` + 2x `QFunction` + `ReplayBuffer` + `Adam`
-   + entropy temperature auto-tuning
-5. `Td3` — new: `Policy` + 2x `QFunction` + `ReplayBuffer` + `Adam`
-   + delayed actor update + target policy smoothing
+1. `Cem` — `Policy` only, population-based
+2. `Reinforce` — `DifferentiablePolicy` + `Adam`
+3. `Ppo` — `DifferentiablePolicy` + `ValueFn` + `Adam` + GAE
+4. `Td3` — `DifferentiablePolicy` + 2x `QFunction` + `ReplayBuffer`
+   + `Adam` + delayed actor + target networks
+5. `Sac` — `StochasticPolicy` + 2x `QFunction` + `ReplayBuffer`
+   + `Adam` + auto-tuned entropy temperature
 
-Tests per algorithm: convergence on 2-DOF (regression), gradient
-checks, algorithm-specific invariants.
+TD3 before SAC — TD3 is simpler, shares the twin-Q + replay
+infrastructure that SAC builds on.
 
 ### Phase 3: Competition tests
 
 ```rust
 #[test]
-fn two_dof_linear_competition() {
-    // All 5 algorithms on the easy task with linear policies.
-    // CEM should still do well here (10-dim search is trivial).
-    // This is the regression test — existing behavior preserved.
+fn two_dof_linear_regression() {
+    // All 5 on easy task. Verify existing behavior preserved.
 }
 
 #[test]
-fn six_dof_mlp_competition() {
-    // THE test. 5 algorithms on the hard task with MLP policies.
-    // Expected ordering: CEM << REINFORCE < PPO < TD3 <= SAC
+fn six_dof_mlp_ordering() {
+    // THE test. CEM << REINFORCE < PPO < TD3 <= SAC
 }
 
 #[test]
-fn sample_efficiency_comparison() {
-    // Same task, same budget (total env steps), different algorithms.
-    // Off-policy (SAC/TD3) should dominate at low sample budgets.
+fn sample_efficiency() {
+    // Same total env steps, different algorithms.
+    // Off-policy should dominate at low budgets.
 }
 
 #[test]
-fn linear_vs_mlp_policy_comparison() {
-    // Same algorithm (PPO), same task (6-DOF), linear vs MLP policy.
-    // MLP should significantly outperform linear.
+fn linear_vs_mlp() {
+    // Same algorithm, same task, different policy complexity.
+    // MLP >> linear on 6-DOF.
 }
 ```
 
-### Phase 4: Visual examples (updated)
+### Phase 4: Visual examples
 
-The existing Bevy examples (CEM, REINFORCE, PPO) are updated to use
-the abstracted `Algorithm` + `TaskConfig`, but remain standalone
-single-file examples. New SAC/TD3 examples follow the same pattern.
+Update existing CEM/REINFORCE/PPO Bevy examples to use TaskConfig +
+Algorithm abstractions. Add SAC and TD3 visual examples. Each remains
+a standalone single-file example (museum plaque principle).
 
-The visual examples are NOT abstracted into a shared Bevy framework —
-they stay as readable, self-contained files per the museum plaque
-principle.
+### Phase 5+ (future levels)
 
-## What lives where
+- Level 2: Add burn backend, implement `BurnPolicy` etc.
+- Level 3: GPU VecEnv backed by GPU BatchSim
+- Level 4: Differentiable forward dynamics
+- Level 5: cf-design integration for co-design
 
-```
-sim/L0/ml-bridge/src/
-    lib.rs              — existing VecEnv, Tensor, spaces
-    policy.rs           — Policy trait + LinearPolicy + MlpPolicy
-    value.rs            — ValueFn trait + LinearValue + MlpValue
-    q_function.rs       — QFunction trait + LinearQ + MlpQ
-    adam.rs              — Generic Adam optimizer
-    replay_buffer.rs    — ReplayBuffer for off-policy
-    gae.rs              — GAE computation
-    task.rs             — TaskConfig + built-in tasks
-    algorithm.rs        — Algorithm trait + EpochMetrics + Competition
-    algorithms/
-        cem.rs
-        reinforce.rs
-        ppo.rs
-        sac.rs
-        td3.rs
+## Hypotheses
 
-examples/fundamentals/sim-ml/
-    vec-env/
-        auto-reset/     — CEM visual example (updated)
-        reinforce/      — REINFORCE visual example (updated)
-        ppo/            — PPO visual example (updated)
-        sac/            — SAC visual example (new)
-        td3/            — TD3 visual example (new)
-```
+Scientific questions the framework is designed to answer. Each becomes
+a test assertion.
 
-## Risks and mitigations
+### Level 0-1 hypotheses
 
-**Risk: MLP backprop bugs.** Hand-coded gradients for single-layer
-MLPs are straightforward but error-prone at scale. **Mitigation:**
-every Policy/ValueFn/QFunction implementation gets a finite-difference
-gradient test. These are the first tests written, before any algorithm
-code.
+1. **CEM scales poorly with param count.** CEM goes from >=10 reaches
+   (2-DOF, 10 params) to 0 reaches (6-DOF, 614 params).
 
-**Risk: SAC/TD3 complexity.** Off-policy methods have more moving
-parts (replay buffer, target networks, soft updates, entropy tuning).
-**Mitigation:** implement TD3 first (simpler — no entropy), then SAC
-builds on the same replay buffer + twin Q infrastructure.
+2. **PPO's value function matters at scale.** PPO >> REINFORCE on
+   6-DOF (>15pp gap) but PPO ~ REINFORCE on 2-DOF (<5pp gap).
 
-**Risk: 6-DOF arm physics.** More joints means more complex dynamics
-and potentially harder-to-tune rewards. **Mitigation:** verify the
-6-DOF arm works with a hand-tuned controller first (known-good IK
-solution), then train algorithms.
+3. **Off-policy is more sample-efficient.** SAC reaches 80% improvement
+   in 1/3 the env steps PPO needs.
 
-**Risk: Over-abstraction.** The trait system could become a framework
-that obscures rather than clarifies. **Mitigation:** the Algorithm
-trait has ONE method (train). Shared components (Adam, ReplayBuffer,
-GAE) are standalone utilities, not mandatory base classes. An
-algorithm can ignore all shared components and implement train()
-from scratch.
+4. **MLP >> linear for complex tasks.** MLP doubles done triggers vs
+   linear on 6-DOF.
 
-## Hypotheses to test
+5. **Entropy helps exploration.** SAC > TD3 on done triggers due to
+   entropy-driven precise reaching.
 
-These are the scientific questions the competition framework is
-designed to answer:
+### Level 2 hypotheses
 
-1. **CEM scales poorly with param count.** Predict: CEM goes from
-   >=10 reaches (2-DOF, 10 params) to 0 reaches (6-DOF, 614 params)
-   with the same env budget.
+6. **Deeper networks improve on 6-DOF.** 3-layer MLP > 1-layer MLP
+   for PPO/SAC on 6-DOF (diminishing returns beyond 2 layers).
 
-2. **PPO's value function matters at scale.** Predict: PPO >> REINFORCE
-   on 6-DOF (>15pp improvement gap), but PPO ~ REINFORCE on 2-DOF
-   (<5pp gap).
+7. **Autograd enables TRPO.** TRPO (natural gradient) > PPO on 6-DOF
+   when Fisher vector products are available.
 
-3. **Off-policy is more sample-efficient.** Predict: SAC reaches 80%
-   improvement in 1/3 the env steps that PPO needs.
+### Level 3 hypotheses
 
-4. **MLP >> linear for complex tasks.** Predict: MLP policy doubles
-   the done trigger count vs linear on 6-DOF, even with the same
-   algorithm.
+8. **Massive parallelism changes the game.** 5000 envs on GPU makes
+   even CEM competitive on 6-DOF (brute force works with enough
+   samples).
 
-5. **Entropy helps exploration.** Predict: SAC > TD3 on done triggers
-   because entropy regularization discovers the precise reaching
-   behavior that deterministic TD3 misses.
+9. **On-policy benefits more from parallelism.** PPO improvement gap
+   over SAC shrinks with 5000 envs (on-policy sample inefficiency
+   offset by cheap samples).
 
-Each hypothesis becomes a test assertion. If a hypothesis fails,
-that's a finding worth documenting — not a bug to fix.
+### Level 4-5 hypotheses
+
+10. **Differentiable physics obsoletes model-free RL for known dynamics.**
+    Direct trajectory optimization > PPO > SAC when dynamics gradients
+    are available (no estimation variance).
+
+11. **Co-design finds better solutions than fixed-morphology RL.**
+    Jointly optimized body+brain > best brain on a fixed body.
+
+Each failed hypothesis is a finding, not a bug.
+
+## Risks
+
+**Over-abstraction.** The Algorithm trait has ONE method. Shared
+components are utilities, not mandatory base classes. An algorithm can
+ignore everything and implement `train()` from scratch.
+
+**Hand-coded MLP ceiling.** Level 1 maxes out at 1 hidden layer.
+This is by design — level 2 (autograd) removes the ceiling. The
+trait split ensures no algorithm code changes when the backend upgrades.
+
+**6-DOF arm physics.** More joints = harder dynamics. Mitigated by
+verifying the arm with a known-good hand-tuned controller before
+training algorithms on it.
+
+**SAC/TD3 complexity.** Off-policy methods have many moving parts.
+Mitigated by implementing TD3 first (simpler), then SAC builds on
+the same infrastructure.
+
+**Premature GPU optimization.** Level 3 is future work. The trait
+interfaces are designed not to prevent it, but we don't build GPU
+support until we have compelling evidence it's needed (e.g., level 2
+results showing 1000-env runs are CPU-bound).
