@@ -27,58 +27,28 @@ use sim_ml_bridge::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const DONE_THRESHOLD: f64 = 2.0;
-const TIME_LIMIT: f64 = 5.0;
+const ANGLES: [f64; 4] = [0.5, 1.0, 1.5, 2.0];
+const TRUNCATE_TIME: f64 = 2.0;
 const REPORT_TIME: f64 = 15.0;
 
 // ── Resources ──────────────────────────────────────────────────────────────
 
 #[derive(Resource)]
-struct EpisodeState {
+struct OnResetState {
     episode: u32,
-    step_count: u32,
-    cumulative_reward: f64,
-    last_reward: f64,
-    last_done: bool,
-    last_truncated: bool,
-}
-
-impl Default for EpisodeState {
-    fn default() -> Self {
-        Self {
-            episode: 1,
-            step_count: 0,
-            cumulative_reward: 0.0,
-            last_reward: 0.0,
-            last_done: false,
-            last_truncated: false,
-        }
-    }
-}
-
-#[derive(Resource)]
-#[allow(clippy::struct_excessive_bools)]
-struct EpisodeValidation {
-    episodes_completed: u32,
-    reset_obs_ok: bool,
-    done_qpos_ok: bool,
-    truncated_time_ok: bool,
-    reward_ok: bool,
-    saw_done: bool,
-    saw_truncated: bool,
+    last_start_angle: f64,
+    angles_seen: Vec<f64>,
+    sensor_matches: bool,
     reported: bool,
 }
 
-impl Default for EpisodeValidation {
+impl Default for OnResetState {
     fn default() -> Self {
         Self {
-            episodes_completed: 0,
-            reset_obs_ok: true,
-            done_qpos_ok: true,
-            truncated_time_ok: true,
-            reward_ok: true,
-            saw_done: false,
-            saw_truncated: false,
+            episode: 1,
+            last_start_angle: 0.0,
+            angles_seen: Vec::new(),
+            sensor_matches: true,
             reported: false,
         }
     }
@@ -112,9 +82,10 @@ const MJCF: &str = r#"
 // ── Bevy App ───────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== CortenForge: Episode Lifecycle (Pattern B spike) ===");
-    println!("  Done: |angle| > {DONE_THRESHOLD:.1} rad");
-    println!("  Truncated: time > {TIME_LIMIT:.0} s");
+    println!("=== CortenForge: Domain Randomization via on_reset ===");
+    println!("  Angles: {ANGLES:?} (cycling)");
+    println!("  Truncated: time > {TRUNCATE_TIME:.0} s");
+    println!("  Action: zero (pure gravity)");
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     // ── Build SimEnv outside Bevy ──
@@ -133,25 +104,35 @@ fn main() {
 
     println!("  obs_dim={}, act_dim={}", obs.dim(), act.dim());
 
-    let done_threshold = DONE_THRESHOLD;
+    let mut cycle_index = 0_usize;
+    let truncate_time = TRUNCATE_TIME;
+
     let mut env = SimEnv::builder(model_arc.clone())
         .observation_space(obs)
         .action_space(act)
-        .reward(|_m, d| -d.qpos[0].powi(2))
-        .done(move |_m, d| d.qpos[0].abs() > done_threshold)
-        .truncated(move |_m, d| d.qpos[0].abs() <= done_threshold && d.time > TIME_LIMIT)
+        .reward(|_m, _d| 0.0)
+        .done(|_m, _d| false)
+        .truncated(move |_m, d| d.time > truncate_time)
+        .on_reset(move |_m, data| {
+            data.qpos[0] = ANGLES[cycle_index % ANGLES.len()];
+            cycle_index += 1;
+        })
         .build()
         .expect("env build");
 
+    // First reset invokes on_reset — starts at ANGLES[0] = 0.5
     env.reset().expect("reset");
 
     let model_owned = (*model_arc).clone();
     let data_owned = env.data().clone();
 
+    // Record the first starting angle
+    let first_angle = env.data().qpos[0];
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "CortenForge — Episode Lifecycle".into(),
+                title: "CortenForge — on_reset".into(),
                 ..default()
             }),
             ..default()
@@ -162,8 +143,13 @@ fn main() {
         .insert_resource(env)
         .init_resource::<PhysicsAccumulator>()
         .init_resource::<PhysicsHud>()
-        .init_resource::<EpisodeState>()
-        .init_resource::<EpisodeValidation>()
+        .insert_resource(OnResetState {
+            episode: 1,
+            last_start_angle: first_angle,
+            angles_seen: vec![first_angle],
+            sensor_matches: true,
+            reported: false,
+        })
         .insert_resource(
             ValidationHarness::new()
                 .wall_clock()
@@ -182,7 +168,7 @@ fn main() {
             (
                 sync_geom_transforms,
                 validation_system,
-                episode_diagnostics,
+                on_reset_diagnostics,
                 update_hud,
                 render_physics_hud,
             )
@@ -191,7 +177,7 @@ fn main() {
         .run();
 }
 
-// ── Setup (rendering only — SimEnv is already built) ──────────────────────
+// ── Setup ──────────────────────────────────────────────────────────────────
 
 fn setup(
     mut commands: Commands,
@@ -229,68 +215,39 @@ fn step_env(
     mut physics_data: ResMut<PhysicsData>,
     time: Res<Time>,
     mut acc: ResMut<PhysicsAccumulator>,
-    mut state: ResMut<EpisodeState>,
-    mut val: ResMut<EpisodeValidation>,
+    mut state: ResMut<OnResetState>,
 ) {
     acc.0 += time.delta_secs_f64();
     let dt = model.0.timestep;
-    let mut action = Tensor::zeros(&[1]); // pre-allocate, reuse
+    let action = Tensor::zeros(&[1]); // zero action — pure gravity
 
+    let chunk = dt;
     #[allow(clippy::cast_sign_loss)]
-    let budget = ((acc.0 / dt).max(0.0) as u32).min(200);
+    let budget = ((acc.0 / chunk).max(0.0) as u32).min(200);
     for _ in 0..budget {
-        // Sinusoidal policy near pendulum resonance (ω₀ ≈ 5.4 rad/s).
-        // Amplitude 4.0 exceeds the gravitational restoring torque (~2.4 Nm)
-        // at all angles, ensuring the pendulum swings past the done threshold.
-        let t = env.data().time;
-        action.as_mut_slice()[0] = (t * 5.0).sin() as f32 * 4.0;
-
         let result = env.step(&action).expect("step");
-        state.step_count += 1;
-        state.cumulative_reward += result.reward;
-        state.last_reward = result.reward;
-        state.last_done = result.done;
-        state.last_truncated = result.truncated;
 
-        // ── Validate reward against manual calculation ──
-        let manual_reward = -(env.data().qpos[0].powi(2));
-        if (result.reward - manual_reward).abs() > 1e-10 {
-            val.reward_ok = false;
-        }
-
-        // ── Handle episode end ──
-        if result.done || result.truncated {
-            if result.done {
-                val.saw_done = true;
-                if env.data().qpos[0].abs() <= DONE_THRESHOLD {
-                    val.done_qpos_ok = false;
-                }
-            }
-            if result.truncated {
-                val.saw_truncated = true;
-                if env.data().time <= TIME_LIMIT {
-                    val.truncated_time_ok = false;
-                }
-            }
-
-            val.episodes_completed += 1;
+        if result.truncated {
             state.episode += 1;
-            state.step_count = 0;
-            state.cumulative_reward = 0.0;
+            let _obs = env.reset().expect("reset");
 
-            let obs = env.reset().expect("reset");
-            // After reset, obs should be near [0, 0].
-            if obs.as_slice().iter().any(|v| v.abs() > 1e-4) {
-                val.reset_obs_ok = false;
+            // Check 4: sensor must match qpos after on_reset + forward()
+            let qpos = env.data().qpos[0];
+            let sensor = env
+                .data()
+                .sensor_scalar(&model, "angle")
+                .unwrap_or(f64::NAN);
+            if (qpos - sensor).abs() > 1e-10 {
+                state.sensor_matches = false;
             }
+
+            state.last_start_angle = qpos;
+            state.angles_seen.push(qpos);
         }
 
-        acc.0 -= dt;
+        acc.0 -= chunk;
     }
 
-    // Selective sync: copy only the fields needed for rendering and HUD.
-    // SimEnv.step() already calls forward() after sub-stepping, so
-    // geom_xpos, geom_xmat, sensordata, etc. are already fresh.
     sync_rendering_data(env.data(), &mut physics_data.0);
 }
 
@@ -299,20 +256,29 @@ fn step_env(
 fn update_hud(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    state: Res<EpisodeState>,
+    state: Res<OnResetState>,
     mut hud: ResMut<PhysicsHud>,
 ) {
     hud.clear();
 
-    hud.section("Episode");
-    hud.raw(format!("episode:  {}", state.episode));
-    hud.raw(format!("steps:    {}", state.step_count));
-    hud.scalar("reward_sum", state.cumulative_reward, 2);
+    hud.section("On-Reset");
+    hud.raw(format!(" episode:     {}", state.episode));
+    hud.scalar(" start_angle", state.last_start_angle, 4);
 
-    hud.section("Last Step");
-    hud.scalar("reward", state.last_reward, 4);
-    hud.raw(format!("done:      {}", state.last_done));
-    hud.raw(format!("truncated: {}", state.last_truncated));
+    // Show sequence with bracket around current angle
+    let idx = (state.episode as usize - 1) % ANGLES.len();
+    let seq: Vec<String> = ANGLES
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            if i == idx {
+                format!("[{a}]")
+            } else {
+                format!("{a}")
+            }
+        })
+        .collect();
+    hud.raw(format!(" sequence:    {}", seq.join(" -> ")));
 
     hud.section("State");
     let angle = data.sensor_scalar(&model, "angle").unwrap_or(0.0);
@@ -324,41 +290,69 @@ fn update_hud(
 
 // ── Validation (PostUpdate) ───────────────────────────────────────────────
 
-fn episode_diagnostics(harness: Res<ValidationHarness>, mut val: ResMut<EpisodeValidation>) {
-    // Report is triggered by the harness at REPORT_TIME wall-clock seconds.
-    if harness.reported() && !val.reported {
-        val.reported = true;
-
-        let checks = vec![
-            Check {
-                name: "Episodes completed",
-                pass: val.episodes_completed >= 2,
-                detail: format!("{} (>= 2)", val.episodes_completed),
-            },
-            Check {
-                name: "Reset obs near initial",
-                pass: val.reset_obs_ok,
-                detail: format!("all_ok={}", val.reset_obs_ok),
-            },
-            Check {
-                name: "Done fires at threshold",
-                pass: val.saw_done && val.done_qpos_ok,
-                detail: format!("saw_done={}, qpos_ok={}", val.saw_done, val.done_qpos_ok),
-            },
-            Check {
-                name: "Truncated fires at time limit",
-                pass: !val.saw_truncated || val.truncated_time_ok,
-                detail: format!(
-                    "saw_truncated={}, time_ok={}",
-                    val.saw_truncated, val.truncated_time_ok
-                ),
-            },
-            Check {
-                name: "Reward matches manual",
-                pass: val.reward_ok,
-                detail: format!("all_ok={}", val.reward_ok),
-            },
-        ];
-        let _ = print_report("Episode Lifecycle (Pattern B)", &checks);
+fn on_reset_diagnostics(
+    harness: Res<ValidationHarness>,
+    env: Res<SimEnv>,
+    mut state: ResMut<OnResetState>,
+) {
+    if !harness.reported() || state.reported {
+        return;
     }
+    state.reported = true;
+
+    // Check 1: at least 4 episodes (one full cycle)
+    let enough_episodes = state.episode >= 5;
+
+    // Check 2: all 4 angles seen
+    let all_seen = ANGLES.iter().all(|target| {
+        state
+            .angles_seen
+            .iter()
+            .any(|seen| (*seen - *target).abs() < 1e-10)
+    });
+
+    // Check 3: angles cycle in order
+    let in_order = state.angles_seen.iter().enumerate().all(|(i, seen)| {
+        let expected = ANGLES[i % ANGLES.len()];
+        (*seen - expected).abs() < 1e-10
+    });
+
+    // Check 4: sensor matched qpos at every reset (tracked inline)
+    let sensor_ok = state.sensor_matches;
+
+    // Check 5: no NaN
+    let obs = env.observe();
+    let no_nan = obs.as_slice().iter().all(|v| v.is_finite());
+
+    let checks = vec![
+        Check {
+            name: "At least 4 episodes",
+            pass: enough_episodes,
+            detail: format!("episodes={}", state.episode),
+        },
+        Check {
+            name: "All 4 angles seen",
+            pass: all_seen,
+            detail: format!("seen={:?}", state.angles_seen),
+        },
+        Check {
+            name: "Angles cycle in order",
+            pass: in_order,
+            detail: format!(
+                "first_4={:?}",
+                &state.angles_seen[..state.angles_seen.len().min(4)]
+            ),
+        },
+        Check {
+            name: "Sensor reflects start angle",
+            pass: sensor_ok,
+            detail: format!("all_matched={sensor_ok}"),
+        },
+        Check {
+            name: "No NaN",
+            pass: no_nan,
+            detail: format!("finite={}", obs.as_slice().iter().all(|v| v.is_finite())),
+        },
+    ];
+    let _ = print_report("On-Reset (Domain Randomization)", &checks);
 }
