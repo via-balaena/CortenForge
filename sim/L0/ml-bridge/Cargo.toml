@@ -16,12 +16,12 @@ bevy_ecs = { version = "0.18", optional = true }
 nalgebra = { workspace = true }
 rand = { workspace = true }
 sim-core = { workspace = true }
+sim-mjcf = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { workspace = true }
-sim-mjcf = { workspace = true }
 
 [[bench]]
 name = "bridge_benchmarks"

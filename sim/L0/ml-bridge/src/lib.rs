@@ -71,6 +71,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod algorithm;
+pub mod competition;
 pub mod env;
 pub mod error;
 pub mod gae;
@@ -81,11 +82,13 @@ pub mod policy;
 pub mod replay_buffer;
 pub mod rollout;
 pub mod space;
+pub mod task;
 pub mod tensor;
 pub mod value;
 pub mod vec_env;
 
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+pub use competition::{Competition, CompetitionResult, RunResult};
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
 pub use error::{EnvError, ResetError, SpaceError, TensorError, VecStepError};
 pub use gae::compute_gae;
@@ -98,6 +101,7 @@ pub use rollout::{EpisodicRollout, Trajectory, collect_episodic_rollout};
 pub use space::{
     ActionSpace, ActionSpaceBuilder, ObsSegment, ObservationSpace, ObservationSpaceBuilder,
 };
+pub use task::{TaskConfig, TaskConfigBuilder, reaching_2dof, reaching_6dof};
 pub use tensor::{Tensor, TensorSpec};
 pub use value::{QFunction, ValueFn, soft_update, soft_update_value};
 pub use vec_env::{VecEnv, VecEnvBuilder, VecStepResult};

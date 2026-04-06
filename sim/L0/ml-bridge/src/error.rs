@@ -77,6 +77,15 @@ pub enum EnvError {
     /// `sub_steps` was set to zero.
     #[error("sub_steps must be >= 1, got 0")]
     ZeroSubSteps,
+
+    /// `obs_scale` length doesn't match observation dimension.
+    #[error("obs_scale length mismatch: obs_dim = {expected}, obs_scale len = {actual}")]
+    ObsScaleMismatch {
+        /// Expected length (observation dimension).
+        expected: usize,
+        /// Actual length of the provided `obs_scale`.
+        actual: usize,
+    },
 }
 
 /// Bridge-level error from [`VecEnv::step()`](crate::VecEnv::step).
