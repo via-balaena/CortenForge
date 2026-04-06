@@ -6,23 +6,42 @@
 
 ## Vision
 
-CortenForge's ML layer is designed to scale from pedagogical hand-coded
-algorithms all the way to differentiable co-design — jointly optimizing
-a mechanism's morphology and control policy, then fabricating the result.
+This is the R34 GT-R Skyline of RL frameworks.
 
-This spec defines the architecture at every level of that journey. The
-key constraint: each level must be a clean boundary where you can swap
-implementations without rewriting the layers above. Hand-coded gradients
-today, burn autograd tomorrow, differentiable physics next year — the
-Algorithm implementations and competition tests never change.
+The Nissan BNR34 has been the car to beat every year since 1999 — not
+because it shipped with the most power, but because Nissan overbuilt
+the chassis and engine to handle 3x factory spec with bolt-on parts.
+Stock, it's a 280 HP grand tourer. With bolt-ons, 500 HP. Built motor,
+1000+. Full race, 1500+. At every stage it's unmistakably an R34 —
+same chassis, same identity, completely different capability.
+
+CortenForge's ML layer follows the same principle. It scales from
+pedagogical hand-coded algorithms all the way to differentiable
+co-design — jointly optimizing a mechanism's morphology and control
+policy, then fabricating the result. The key constraint: each level
+must be a clean boundary where you can swap implementations without
+rewriting the layers above. Hand-coded gradients today, burn autograd
+tomorrow, differentiable physics next year — the Algorithm
+implementations and competition tests never change.
+
+The chassis is the trait architecture. The engine is the policy
+implementation. The ECU is the algorithm. The aftermarket is every
+future backend and algorithm that doesn't exist yet but will bolt
+right in.
 
 ## Serviceability
 
-The architecture follows a chassis-and-parts model. The chassis is
-permanent — trait interfaces, method signatures, output formats. Parts
-are swappable — policy implementations, optimizers, algorithms, compute
-backends. The plumbing between them (trait bounds, constructor
-signatures) is the bolt pattern that makes parts interchangeable.
+The R34's secret isn't any single part — it's how the parts connect.
+Every bolt pattern, every flange, every wiring harness was designed so
+that aftermarket manufacturers could build parts that just fit. This
+section defines that bolt pattern for the ML layer.
+
+The chassis is permanent — trait interfaces, method signatures, output
+formats. Parts are swappable — policy implementations, optimizers,
+algorithms, compute backends. The plumbing between them (trait bounds,
+constructor signatures) is the bolt pattern that makes parts
+interchangeable. The traits are designed for levels 0-5 when we're
+shipping level 0 — headroom the factory hasn't shipped yet.
 
 ### Part categories
 
@@ -116,50 +135,59 @@ signatures) is the bolt pattern that makes parts interchangeable.
    `forward()`. Existing implementations continue to compile and work.
    Optimized implementations override the default.
 
-### What this enables
+### What this enables (the aftermarket catalog)
 
-- **Swap LinearPolicy for MlpPolicy**: change one line in the
-  algorithm constructor call. Zero algorithm code changes.
-- **Swap MlpPolicy for BurnPolicy**: same — one constructor line.
-  The algorithm calls the same trait methods.
-- **Add a new algorithm (Dreamer)**: implement `Algorithm::train()`.
-  Use any existing parts (ReplayBuffer, Adam) or bring your own.
-  No existing code modified.
-- **Add a new task (locomotion)**: define a `TaskConfig`. Run all
-  existing algorithms on it immediately.
-- **Upgrade optimizer (Adam → AdamW)**: add variant to
-  `OptimizerConfig`. Existing algorithms gain access via config
-  change, no code edits.
-- **Switch compute backend (CPU → GPU/burn)**: implement traits
-  with burn backend. Plug into existing algorithms via constructor.
+- **Swap LinearPolicy for MlpPolicy**: unbolt stock turbos, bolt on
+  HKS GT-SS. One constructor line. Zero algorithm code changes.
+- **Swap MlpPolicy for BurnPolicy**: swap the whole engine
+  management for a Haltech standalone. Same bolt pattern, completely
+  different internals. The algorithm calls the same trait methods.
+- **Add a new algorithm (Dreamer)**: bolt on a part that didn't
+  exist when the car was built. Implement `Algorithm::train()`, use
+  any existing parts (ReplayBuffer, Adam) or bring your own. No
+  existing code modified.
+- **Add a new task (locomotion)**: take the car to a new track.
+  Define a `TaskConfig`. Run all existing algorithms on it immediately.
+- **Upgrade optimizer (Adam → AdamW)**: swap the intercooler. Add
+  variant to `OptimizerConfig`. Existing algorithms gain access via
+  config change, no code edits.
+- **Switch compute backend (CPU → GPU/burn)**: swap the whole
+  drivetrain from RWD to AWD. Implement traits with burn backend.
+  Plug into existing algorithms via constructor. The driver (algorithm)
+  doesn't know the difference.
 
 ## The scaling ladder
 
-| Level | What | Param scale | Compute | Unlocks |
-|-------|------|------------|---------|---------|
-| **0** | Linear policies, hand-coded math | 10-80 | CPU, manual | Pedagogical examples, algorithm comparison |
-| **1** | 1-layer MLP, hand-coded backprop | 600 | CPU, manual | Scaled tasks where PPO > REINFORCE > CEM |
-| **2** | Deep networks, autograd | 10K-1M | CPU/GPU, burn/candle | Research-grade RL, complex tasks |
-| **3** | GPU-accelerated environments | Any | GPU envs + GPU networks | Isaac Gym-style massively parallel training |
-| **4** | Differentiable physics | Any | Backprop through sim | Model-based RL with exact dynamics gradients, trajectory optimization |
-| **5** | Co-design | Any | End-to-end differentiable | Jointly optimize morphology (cf-design) + controller (policy), then fabricate |
+Like building an R34 — stock to full race, same chassis at every stage.
+
+| Level | Stage | What | R34 analogy |
+|-------|-------|------|-------------|
+| **0** | Stock | Linear policies, hand-coded math | Factory spec. Everything works out of the box. 280 HP. |
+| **1** | Bolt-on | 1-layer MLP, hand-coded backprop | Intake, exhaust, boost controller. Same engine, more power. 450 HP. |
+| **2** | Built motor | Deep networks, autograd | Forged internals, bigger turbos. The engine is replaced but the chassis is the same. 800 HP. |
+| **3** | Full race | GPU-accelerated environments | Sequential gearbox, standalone ECU, race fuel. 1200 HP. Chassis reinforced, identity unchanged. |
+| **4** | Time attack | Differentiable physics | Aero kit, slicks, data-logged everything. Pushing the platform to its theoretical limit. |
+| **5** | Concept car | Co-design | Redesign the body around the drivetrain. The chassis finally evolves — but it earned that right by proving itself at every stage below. |
 
 Each level builds on the one below. The architecture is designed so
-that reaching level N never requires rewriting level N-1.
+that reaching level N never requires rewriting level N-1 — you don't
+cut the chassis to install a bigger turbo.
 
-### Level 0-1: Hand-coded (this implementation cycle)
+### Level 0-1: Stock → Bolt-on (this implementation cycle)
 
-What we build first. 5 algorithms, 2 tasks (2-DOF and 6-DOF reaching
+Factory delivery. 5 algorithms, 2 tasks (2-DOF and 6-DOF reaching
 arms), linear and single-layer MLP policies with hand-coded gradients.
 The competition framework validates that algorithm ordering matches
 theory. All infrastructure (traits, tasks, competition runner) is
-established here and carries forward to all subsequent levels.
+established here — this is the chassis leaving the factory. Everything
+above bolts onto what we build now.
 
-### Level 2: Autograd
+### Level 2: Built motor (autograd)
 
-Swap the hand-coded `MlpPolicy` for a `BurnPolicy` backed by burn
-(or candle). The `Algorithm` implementations don't change — they call
-the same `DifferentiablePolicy` trait methods. What changes:
+Unbolt the hand-coded MlpPolicy, bolt in a `BurnPolicy` backed by
+burn (or candle). The `Algorithm` implementations don't change — they
+call the same `DifferentiablePolicy` trait methods. Same bolt pattern,
+completely different internals:
 
 - Networks can be arbitrarily deep (3+ layers, residual connections)
 - Gradient computation is automatic (no hand-coded backprop)
@@ -168,9 +196,11 @@ the same `DifferentiablePolicy` trait methods. What changes:
   slot in without touching algorithm code
 
 The trait boundary is the firewall: algorithms depend on trait
-interfaces, never on concrete policy implementations.
+interfaces, never on concrete policy implementations. Like how the
+R34's RB26 and an aftermarket RB28 have the same bolt pattern to the
+transmission — the gearbox doesn't know which engine is upstream.
 
-### Level 3: GPU-accelerated environments
+### Level 3: Full race (GPU-accelerated environments)
 
 CortenForge already has a GPU physics pipeline spec
 (`sim/docs/GPU_PHYSICS_PIPELINE_SPEC.md`). When the sim runs on GPU,
@@ -184,9 +214,10 @@ CPU-GPU transfer overhead:
 
 The `VecEnv` trait and `TaskConfig` stay the same. The implementation
 swaps CPU BatchSim for GPU BatchSim. Algorithms see the same
-`step() -> VecStepResult` interface.
+`step() -> VecStepResult` interface. Standalone ECU, race fuel, 1200
+HP — but the chassis rails are the same ones that left the factory.
 
-### Level 4: Differentiable physics
+### Level 4: Time attack (differentiable physics)
 
 This is where CortenForge diverges from MuJoCo. MuJoCo MPC uses
 finite differences to approximate dynamics gradients. A differentiable
@@ -223,11 +254,12 @@ must not prevent it.
   // where DiffStepResult carries gradient information
   ```
 
-### Level 5: Co-design
+### Level 5: Concept car (co-design)
 
-The final integration target. cf-design generates body geometry (SDF-based, implicit
-surfaces). sim runs the physics. ML optimizes the control policy.
-Co-design closes the loop:
+The final integration target. cf-design generates body geometry
+(SDF-based, implicit surfaces). sim runs the physics. ML optimizes
+the control policy. Co-design closes the loop — now the chassis
+itself evolves, but only because it proved itself at every stage below:
 
 ```
 morphology_params ──→ cf-design ──→ body geometry
@@ -260,9 +292,11 @@ design system.
 
 ## Trait architecture
 
-The traits are the stable interfaces that survive all 6 levels. They
-are designed with knowledge of the full scaling ladder — no level
-should require breaking a trait boundary.
+The traits are the chassis rails — the part of the R34 that never
+changes no matter what you bolt on. They are designed with knowledge
+of the full scaling ladder, the same way Nissan designed the RB26
+block to handle boost levels they never advertised. No level should
+require breaking a trait boundary.
 
 ### Compute backend (the foundation)
 
@@ -308,6 +342,15 @@ trait DifferentiablePolicy: Policy {
         action: &[f64],
         sigma: f64,
     ) -> Vec<f64>;
+
+    /// Vector-Jacobian product: v^T * d(forward(obs))/d(params).
+    ///
+    /// TD3 passes dQ/da as v to compute the deterministic policy gradient:
+    ///   dJ/dtheta = dQ/da * d(mu)/d(theta)
+    ///
+    /// At levels 0-1, hand-coded per policy architecture.
+    /// At level 2+, autograd computes this via backward().
+    fn forward_vjp(&self, obs: &[f32], v: &[f64]) -> Vec<f64>;
 }
 
 /// Extends Policy with a learnable log_std for entropy-based methods.
@@ -329,6 +372,25 @@ trait StochasticPolicy: DifferentiablePolicy {
 
     /// Entropy of the policy at a given state.
     fn entropy(&self, obs: &[f32]) -> f64;
+
+    /// Vector-Jacobian product for the reparameterized action.
+    ///
+    /// Given obs and noise eps, the reparameterized action is:
+    ///   a = mu(obs) + exp(log_std) * eps
+    ///
+    /// Returns v^T * d(a)/d(params) where params includes log_std.
+    /// SAC uses this for its actor gradient:
+    ///   dJ/dtheta = alpha * d(log_pi)/dtheta - dQ/da * d(a)/dtheta
+    ///
+    /// dQ/da comes from QFunction::action_gradient().
+    /// d(log_pi)/dtheta comes from log_prob_gradient_stochastic().
+    /// d(a)/dtheta comes from this method.
+    fn reparameterized_vjp(
+        &self,
+        obs: &[f32],
+        eps: &[f64],
+        v: &[f64],
+    ) -> Vec<f64>;
 }
 ```
 
@@ -336,6 +398,16 @@ trait StochasticPolicy: DifferentiablePolicy {
 - CEM only needs `Policy` (forward + param perturbation)
 - REINFORCE, PPO, TD3 need `DifferentiablePolicy` (+ gradients)
 - SAC needs `StochasticPolicy` (+ learned exploration)
+
+**Known limitation — scalar sigma:** `log_prob_gradient` takes a single
+`sigma: f64` for all action dimensions (isotropic Gaussian). This is
+correct for levels 0-1 where sigma is a scheduled scalar. Advanced PPO
+with per-dimension sigma (common at level 2+) would need per-dimension
+values. Planned resolution: add `log_prob_gradient_aniso(obs, action,
+sigmas: &[f64])` as a default method at level 2. Existing
+implementations continue to compile (default delegates to `log_prob_gradient`
+with `sigmas[0]`). No algorithm code changes — PPO variants that want
+anisotropic sigma call the new method.
 
 An autograd backend implements all three — `log_prob_gradient` is
 derived automatically from the forward pass. Hand-coded backends
@@ -437,6 +509,13 @@ At level 4 (differentiable physics), `TaskConfig` gains a
 reward_fn would need to be differentiable (not an opaque closure) —
 this is a level-4 concern that doesn't affect levels 0-2.
 
+**Known limitation — `&'static str` MJCF:** `mjcf` is `&'static str`,
+which prevents dynamic MJCF generation. Level 5 (co-design) regenerates
+MJCF from morphology parameters each optimization step — a static
+string can't hold that. Planned resolution: change to
+`Cow<'static, str>` when level 5 work begins. All existing callers
+(string literals) continue to compile unchanged.
+
 ### Algorithm trait
 
 ```rust
@@ -456,9 +535,9 @@ enum TrainingBudget {
 
 /// The core abstraction. Each algorithm owns its entire training loop.
 ///
-/// This trait has ONE method. The algorithm interacts with VecEnv
-/// internally, manages its own data structures (trajectories, replay
-/// buffers, populations), and reports standardized metrics.
+/// This trait has ONE method. The algorithm receives a ready-to-use
+/// VecEnv — it never constructs its own environment. This follows
+/// plumbing rule 1: algorithms accept parts, never construct them.
 ///
 /// The monolithic train() is deliberate — see "Why train() is
 /// monolithic" below.
@@ -467,8 +546,7 @@ trait Algorithm: Send {
 
     fn train(
         &mut self,
-        task: &TaskConfig,
-        n_envs: usize,
+        env: &mut VecEnv,
         budget: TrainingBudget,
         seed: u64,
     ) -> Vec<EpochMetrics>;
@@ -510,6 +588,15 @@ The monolithic `train()` means: each algorithm is a self-contained
 implementation. The competition runner doesn't know or care how they
 work. Adding algorithm N+1 means implementing one method.
 
+**Scope clarification:** `Algorithm::train()` is for headless competition
+runs and batch experiments. Visual Bevy examples implement their own
+training loops using the shared components (`compute_gae`, `ReplayBuffer`,
+`Adam`, `collect_episodic_rollout`) directly — they do not go through
+`Algorithm::train()`. This is deliberate: Bevy examples need per-epoch
+control (rendering, HUD updates, camera), which a monolithic `train()`
+cannot provide. The shared components are the reusable layer; the
+`Algorithm` trait is the competition layer.
+
 ### Competition runner
 
 ```rust
@@ -533,6 +620,9 @@ struct RunResult {
 }
 
 impl Competition {
+    /// Run all algorithms on the task. The runner constructs a fresh
+    /// VecEnv for each (algorithm, seed) pair — algorithms never see
+    /// TaskConfig, only the ready-to-use environment.
     fn run(&self, algorithms: &mut [Box<dyn Algorithm>]) -> CompetitionResult;
     fn print_summary(result: &CompetitionResult);
     fn assert_ordering(result: &CompetitionResult, metric: &str, order: &[&str]);
@@ -630,6 +720,16 @@ converting slices to/from framework tensors internally.
 Algorithms receive `OptimizerConfig` at construction time and call
 `config.build(n_params)` to create their optimizer instances. Swapping
 Adam for AdamW is a config change — zero algorithm code edits.
+
+**Known limitation — dual param ownership:** Both `Optimizer` and
+`Policy`/`ValueFn`/`QFunction` own independent copies of parameters.
+After every `optimizer.step()`, the algorithm must manually sync:
+`network.set_params(optimizer.params())`. Forgetting this produces
+silent bugs (policy outputs stop changing). SAC has 5 optimizer-network
+pairs — 5 sync points per update step. This is a level 0-1 wart:
+at level 2+, autograd optimizers modify the network in-place and the
+problem disappears. For level 0-1, the manual sync is explicit and
+greppable — test failures catch desyncs immediately.
 
 ### Replay buffer
 
@@ -748,6 +848,15 @@ Gradient of log pi(a|s) w.r.t. all params:
     dW2[a,h] = score[a] * h[h]
     db2[a]   = score[a]
     d_h[h]   = sum_a( score[a] * W2[a,h] )
+    d_z1[h]  = d_h[h] * (1 - h[h]^2)
+    dW1[h,o] = d_z1[h] * s[o]
+    db1[h]   = d_z1[h]
+
+VJP: v^T * d(mu)/d(params)  (used by TD3 with v = dQ/da):
+    d_mu[a]  = v[a] * (1 - mu[a]^2)     // tanh derivative
+    dW2[a,h] = d_mu[a] * h[h]
+    db2[a]   = d_mu[a]
+    d_h[h]   = sum_a( d_mu[a] * W2[a,h] )
     d_z1[h]  = d_h[h] * (1 - h[h]^2)
     dW1[h,o] = d_z1[h] * s[o]
     db1[h]   = d_z1[h]
@@ -885,6 +994,23 @@ At 614 MLP actor params:
 
 Gradient finite-difference tests for every forward+gradient pair.
 
+### Phase 1.5: Batch default methods
+
+Before implementing off-policy algorithms (SAC, TD3), add batch
+default methods to `Policy`, `ValueFn`, and `QFunction`:
+
+- `forward_batch(obs_batch, obs_dim) -> Vec<f64>`
+- `mse_gradient_batch(obs_batch, targets, obs_dim) -> Vec<f64>`
+- `action_gradient_batch(obs_batch, actions, obs_dim) -> Vec<f64>`
+
+Default implementations loop over single-sample methods internally.
+Zero performance gain at level 0-1, but algorithm code reads as batch
+operations rather than manual loops. At level 2+, autograd backends
+override with real batched computation (single backward pass over
+the full batch). Without these, SAC/TD3 implementations would have
+256 sequential calls with 256 `Vec<f64>` allocations per replay
+buffer batch — correct but ugly.
+
 ### Phase 2: Algorithm implementations
 
 In sim-ml-bridge, not in examples. Each algorithm accepts its parts
@@ -1013,17 +1139,25 @@ Each failed hypothesis is a finding, not a bug.
 
 ## Risks
 
+Every R34 build goes wrong the same way: skipping stages. You don't
+bolt on 1000 HP turbos before verifying the stock block can hold boost.
+Same rules here.
+
 **Over-abstraction.** The Algorithm trait has ONE method. Shared
 components are utilities, not mandatory base classes. An algorithm can
-ignore everything and implement `train()` from scratch.
+ignore everything and implement `train()` from scratch. Don't add
+parts to the catalog before a customer needs them.
 
 **Hand-coded MLP ceiling.** Level 1 maxes out at 1 hidden layer.
 This is by design — level 2 (autograd) removes the ceiling. The
 trait split ensures no algorithm code changes when the backend upgrades.
+Stock turbos have a power ceiling. That's why you upgrade them — but
+you prove the stock setup works first.
 
 **6-DOF arm physics.** More joints = harder dynamics. Mitigated by
 verifying the arm with a known-good hand-tuned controller before
-training algorithms on it.
+training algorithms on it. Shake the car down on stock boost before
+turning it up.
 
 **SAC/TD3 complexity.** Off-policy methods have many moving parts.
 Mitigated by implementing TD3 first (simpler), then SAC builds on
@@ -1032,4 +1166,5 @@ the same infrastructure.
 **Premature GPU optimization.** Level 3 is future work. The trait
 interfaces are designed not to prevent it, but we don't build GPU
 support until we have compelling evidence it's needed (e.g., level 2
-results showing 1000-env runs are CPU-bound).
+results showing 1000-env runs are CPU-bound). Don't build the motor
+until the stock block has been verified on the dyno.
