@@ -356,21 +356,27 @@ const MJCF_6DOF: &str = r#"
 /// # Panics
 ///
 /// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
-#[allow(clippy::expect_used)]
+#[allow(clippy::panic)]
 #[must_use]
 pub fn reaching_2dof() -> TaskConfig {
-    let model = Arc::new(sim_mjcf::load_model(MJCF_2DOF).expect("hardcoded 2-DOF MJCF"));
+    let model = Arc::new(match sim_mjcf::load_model(MJCF_2DOF) {
+        Ok(m) => m,
+        Err(e) => panic!("hardcoded 2-DOF MJCF failed to parse: {e}"),
+    });
 
-    let obs_space = ObservationSpace::builder()
+    let obs_space = match ObservationSpace::builder()
         .all_qpos()
         .all_qvel()
         .build(&model)
-        .expect("2-DOF obs space");
+    {
+        Ok(s) => s,
+        Err(e) => panic!("2-DOF obs space build failed: {e}"),
+    };
 
-    let act_space = ActionSpace::builder()
-        .all_ctrl()
-        .build(&model)
-        .expect("2-DOF act space");
+    let act_space = match ActionSpace::builder().all_ctrl().build(&model) {
+        Ok(s) => s,
+        Err(e) => panic!("2-DOF act space build failed: {e}"),
+    };
 
     let obs_dim = obs_space.dim();
     let act_dim = act_space.dim();
@@ -433,21 +439,27 @@ pub fn reaching_2dof() -> TaskConfig {
 /// # Panics
 ///
 /// Panics if the hardcoded MJCF fails to parse (indicates a code bug).
-#[allow(clippy::expect_used)]
+#[allow(clippy::panic)]
 #[must_use]
 pub fn reaching_6dof() -> TaskConfig {
-    let model = Arc::new(sim_mjcf::load_model(MJCF_6DOF).expect("hardcoded 6-DOF MJCF"));
+    let model = Arc::new(match sim_mjcf::load_model(MJCF_6DOF) {
+        Ok(m) => m,
+        Err(e) => panic!("hardcoded 6-DOF MJCF failed to parse: {e}"),
+    });
 
-    let obs_space = ObservationSpace::builder()
+    let obs_space = match ObservationSpace::builder()
         .all_qpos()
         .all_qvel()
         .build(&model)
-        .expect("6-DOF obs space");
+    {
+        Ok(s) => s,
+        Err(e) => panic!("6-DOF obs space build failed: {e}"),
+    };
 
-    let act_space = ActionSpace::builder()
-        .all_ctrl()
-        .build(&model)
-        .expect("6-DOF act space");
+    let act_space = match ActionSpace::builder().all_ctrl().build(&model) {
+        Ok(s) => s,
+        Err(e) => panic!("6-DOF act space build failed: {e}"),
+    };
 
     let obs_dim = obs_space.dim();
     let act_dim = act_space.dim();
@@ -462,14 +474,23 @@ pub fn reaching_6dof() -> TaskConfig {
     let target_joints: [f64; 6] = [0.5, 0.2, -0.8, 0.1, 0.5, -0.1];
 
     // Compute target fingertip position via forward kinematics.
+    #[allow(clippy::panic)]
     let target_tip = {
         let mut batch = BatchSim::new(Arc::clone(&model), 1);
-        let data = batch.env_mut(0).expect("env 0");
-        for (i, &q) in target_joints.iter().enumerate() {
-            data.qpos[i] = q;
+        {
+            let data = batch
+                .env_mut(0)
+                .unwrap_or_else(|| panic!("6-DOF FK: no env 0"));
+            for (i, &q) in target_joints.iter().enumerate() {
+                data.qpos[i] = q;
+            }
+            data.forward(&model)
+                .unwrap_or_else(|e| panic!("6-DOF FK failed: {e}"));
         }
-        data.forward(&model).expect("FK for 6-DOF target");
-        let tip = batch.env(0).expect("env 0").site_xpos[0];
+        let tip = batch
+            .env(0)
+            .unwrap_or_else(|| panic!("6-DOF FK: no env 0"))
+            .site_xpos[0];
         [tip.x, tip.y, tip.z]
     };
 

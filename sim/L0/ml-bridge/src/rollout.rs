@@ -1,6 +1,6 @@
 //! Episodic rollout collector for on-policy algorithms.
 //!
-//! Steps a [`VecEnv`](crate::VecEnv) until all environments complete an
+//! Steps a [`VecEnv`] until all environments complete an
 //! episode (done or truncated), recording observations, actions, rewards,
 //! and terminal state per environment.
 //!
