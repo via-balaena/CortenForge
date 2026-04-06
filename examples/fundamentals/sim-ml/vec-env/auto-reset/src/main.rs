@@ -297,13 +297,14 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    use rand::SeedableRng;
-
     let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF parse"));
     let mut vec_env = build_vec_env(&model, NUM_ENVS);
     let init_obs = vec_env.reset_all().expect("reset");
 
-    let mut rng = rand::rngs::StdRng::from_os_rng();
+    let mut rng = {
+        use rand::SeedableRng;
+        rand::rngs::StdRng::seed_from_u64(42)
+    };
     let mu = [0.0f64; NUM_PARAMS];
     let sigma = [SIGMA_INIT; NUM_PARAMS];
     let perturbations = sample_perturbations(&mu, &sigma, &mut rng, NUM_ENVS);
