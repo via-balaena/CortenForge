@@ -3603,6 +3603,7 @@ name = "example-ml-vec-env-auto-reset"
 version = "0.7.0"
 dependencies = [
  "bevy",
+ "rand 0.9.2",
  "sim-bevy",
  "sim-core",
  "sim-mjcf",
