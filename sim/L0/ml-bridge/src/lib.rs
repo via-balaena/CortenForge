@@ -74,6 +74,7 @@ pub mod algorithm;
 pub mod env;
 pub mod error;
 pub mod linear;
+pub mod mlp;
 pub mod optimizer;
 pub mod policy;
 pub mod space;
@@ -85,6 +86,7 @@ pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
 pub use error::{EnvError, ResetError, SpaceError, TensorError, VecStepError};
 pub use linear::{LinearPolicy, LinearQ, LinearValue};
+pub use mlp::{MlpPolicy, MlpQ, MlpValue};
 pub use optimizer::{Optimizer, OptimizerConfig};
 pub use policy::{DifferentiablePolicy, Policy, StochasticPolicy};
 pub use space::{
