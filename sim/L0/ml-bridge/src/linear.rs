@@ -321,7 +321,7 @@ impl QFunction for LinearQ {
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::float_cmp)]
+#[allow(clippy::unwrap_used, clippy::float_cmp, clippy::cast_precision_loss)]
 mod tests {
     use super::*;
 
@@ -675,5 +675,208 @@ mod tests {
                 "forward[{i}]: expected={e}, actual={a}"
             );
         }
+    }
+
+    // ── Batch method tests ────────────────────────────────────────────
+
+    fn test_obs2() -> Vec<f32> {
+        vec![-0.3_f32, 2.0, 0.5, -1.0]
+    }
+
+    fn batch_obs() -> Vec<f32> {
+        let mut batch = test_obs();
+        batch.extend(test_obs2());
+        batch
+    }
+
+    #[test]
+    fn linear_policy_forward_batch_matches_loop() {
+        let mut p = LinearPolicy::new(OBS_DIM, ACT_DIM, &OBS_SCALE);
+        p.set_params(&test_params_policy());
+
+        let obs_batch = batch_obs();
+        let batch_result = p.forward_batch(&obs_batch, OBS_DIM);
+
+        let single0 = p.forward(&test_obs());
+        let single1 = p.forward(&test_obs2());
+
+        assert_eq!(batch_result.len(), ACT_DIM * 2);
+        for i in 0..ACT_DIM {
+            assert!((batch_result[i] - single0[i]).abs() < 1e-12);
+            assert!((batch_result[ACT_DIM + i] - single1[i]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn linear_policy_forward_vjp_batch_matches_loop() {
+        let mut p = LinearPolicy::new(OBS_DIM, ACT_DIM, &OBS_SCALE);
+        p.set_params(&test_params_policy());
+
+        let obs_batch = batch_obs();
+        let v_batch = vec![0.5, -0.3, 0.2, 0.8]; // 2 samples × 2 act_dim
+
+        let batch_result = p.forward_vjp_batch(&obs_batch, &v_batch, OBS_DIM);
+
+        let vjp0 = p.forward_vjp(&test_obs(), &v_batch[..ACT_DIM]);
+        let vjp1 = p.forward_vjp(&test_obs2(), &v_batch[ACT_DIM..]);
+
+        assert_eq!(batch_result.len(), p.n_params());
+        for i in 0..p.n_params() {
+            let expected = f64::midpoint(vjp0[i], vjp1[i]);
+            assert!(
+                (batch_result[i] - expected).abs() < 1e-12,
+                "vjp_batch[{i}]: batch={}, manual={}",
+                batch_result[i],
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn linear_value_forward_batch_matches_loop() {
+        let mut v = LinearValue::new(OBS_DIM, &OBS_SCALE);
+        v.set_params(&[0.3, -0.5, 0.8, -0.2, 0.1]);
+
+        let obs_batch = batch_obs();
+        let batch_result = v.forward_batch(&obs_batch, OBS_DIM);
+
+        let single0 = v.forward(&test_obs());
+        let single1 = v.forward(&test_obs2());
+
+        assert_eq!(batch_result.len(), 2);
+        assert!((batch_result[0] - single0).abs() < 1e-12);
+        assert!((batch_result[1] - single1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn linear_value_mse_gradient_batch_matches_loop() {
+        let mut v = LinearValue::new(OBS_DIM, &OBS_SCALE);
+        v.set_params(&[0.3, -0.5, 0.8, -0.2, 0.1]);
+
+        let obs_batch = batch_obs();
+        let targets = [1.0, -0.5];
+
+        let batch_grad = v.mse_gradient_batch(&obs_batch, &targets, OBS_DIM);
+
+        let grad0 = v.mse_gradient(&test_obs(), targets[0]);
+        let grad1 = v.mse_gradient(&test_obs2(), targets[1]);
+
+        assert_eq!(batch_grad.len(), v.n_params());
+        for i in 0..v.n_params() {
+            let expected = f64::midpoint(grad0[i], grad1[i]);
+            assert!(
+                (batch_grad[i] - expected).abs() < 1e-12,
+                "mse_grad_batch[{i}]: batch={}, manual={}",
+                batch_grad[i],
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn linear_q_forward_batch_matches_loop() {
+        let mut q = LinearQ::new(OBS_DIM, ACT_DIM, &OBS_SCALE);
+        let q_params: Vec<f64> = (0..q.n_params())
+            .map(|i| (i as f64).mul_add(0.1, -0.3))
+            .collect();
+        q.set_params(&q_params);
+
+        let obs_batch = batch_obs();
+        let act0 = test_action();
+        let act1 = vec![-0.2, 0.5];
+        let actions: Vec<f64> = act0.iter().chain(act1.iter()).copied().collect();
+
+        let batch_result = q.forward_batch(&obs_batch, &actions, OBS_DIM, ACT_DIM);
+
+        let single0 = q.forward(&test_obs(), &act0);
+        let single1 = q.forward(&test_obs2(), &act1);
+
+        assert_eq!(batch_result.len(), 2);
+        assert!((batch_result[0] - single0).abs() < 1e-12);
+        assert!((batch_result[1] - single1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn linear_q_mse_gradient_batch_matches_loop() {
+        let mut q = LinearQ::new(OBS_DIM, ACT_DIM, &OBS_SCALE);
+        let q_params: Vec<f64> = (0..q.n_params())
+            .map(|i| (i as f64).mul_add(0.1, -0.3))
+            .collect();
+        q.set_params(&q_params);
+
+        let obs_batch = batch_obs();
+        let act0 = test_action();
+        let act1 = vec![-0.2, 0.5];
+        let actions: Vec<f64> = act0.iter().chain(act1.iter()).copied().collect();
+        let targets = [2.0, -1.0];
+
+        let batch_grad = q.mse_gradient_batch(&obs_batch, &actions, &targets, OBS_DIM, ACT_DIM);
+
+        let grad0 = q.mse_gradient(&test_obs(), &act0, targets[0]);
+        let grad1 = q.mse_gradient(&test_obs2(), &act1, targets[1]);
+
+        assert_eq!(batch_grad.len(), q.n_params());
+        for i in 0..q.n_params() {
+            let expected = f64::midpoint(grad0[i], grad1[i]);
+            assert!(
+                (batch_grad[i] - expected).abs() < 1e-12,
+                "q_mse_grad_batch[{i}]: batch={}, manual={}",
+                batch_grad[i],
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn linear_q_action_gradient_batch_matches_loop() {
+        let mut q = LinearQ::new(OBS_DIM, ACT_DIM, &OBS_SCALE);
+        let q_params: Vec<f64> = (0..q.n_params())
+            .map(|i| (i as f64).mul_add(0.1, -0.3))
+            .collect();
+        q.set_params(&q_params);
+
+        let obs_batch = batch_obs();
+        let act0 = test_action();
+        let act1 = vec![-0.2, 0.5];
+        let actions: Vec<f64> = act0.iter().chain(act1.iter()).copied().collect();
+
+        let batch_result = q.action_gradient_batch(&obs_batch, &actions, OBS_DIM, ACT_DIM);
+
+        let single0 = q.action_gradient(&test_obs(), &act0);
+        let single1 = q.action_gradient(&test_obs2(), &act1);
+
+        assert_eq!(batch_result.len(), ACT_DIM * 2);
+        for i in 0..ACT_DIM {
+            assert!((batch_result[i] - single0[i]).abs() < 1e-12);
+            assert!((batch_result[ACT_DIM + i] - single1[i]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn batch_empty_returns_empty_or_zeros() {
+        let p = LinearPolicy::new(OBS_DIM, ACT_DIM, &OBS_SCALE);
+        assert!(p.forward_batch(&[], OBS_DIM).is_empty());
+        assert_eq!(
+            p.forward_vjp_batch(&[], &[], OBS_DIM),
+            vec![0.0; p.n_params()]
+        );
+
+        let v = LinearValue::new(OBS_DIM, &OBS_SCALE);
+        assert!(v.forward_batch(&[], OBS_DIM).is_empty());
+        assert_eq!(
+            v.mse_gradient_batch(&[], &[], OBS_DIM),
+            vec![0.0; v.n_params()]
+        );
+
+        let q = LinearQ::new(OBS_DIM, ACT_DIM, &OBS_SCALE);
+        assert!(q.forward_batch(&[], &[], OBS_DIM, ACT_DIM).is_empty());
+        assert_eq!(
+            q.mse_gradient_batch(&[], &[], &[], OBS_DIM, ACT_DIM),
+            vec![0.0; q.n_params()]
+        );
+        assert!(
+            q.action_gradient_batch(&[], &[], OBS_DIM, ACT_DIM)
+                .is_empty()
+        );
     }
 }

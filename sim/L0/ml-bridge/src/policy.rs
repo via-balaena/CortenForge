@@ -43,6 +43,24 @@ pub trait Policy: Send + Sync {
 
     /// Deterministic forward pass: observation → mean action.
     fn forward(&self, obs: &[f32]) -> Vec<f64>;
+
+    /// Batched forward pass.
+    ///
+    /// `obs_batch` is a flat `[N × obs_dim]` slice.  Returns a flat
+    /// `[N × act_dim]` vector.
+    ///
+    /// Default implementation loops [`forward()`](Self::forward) per sample.
+    /// At level 2+, autograd backends override with a single batched
+    /// forward pass.
+    fn forward_batch(&self, obs_batch: &[f32], obs_dim: usize) -> Vec<f64> {
+        let n = obs_batch.len() / obs_dim;
+        let mut out = Vec::new();
+        for i in 0..n {
+            let row = &obs_batch[i * obs_dim..(i + 1) * obs_dim];
+            out.extend(self.forward(row));
+        }
+        out
+    }
 }
 
 // ── Differentiable policy ──────────────────────────────────────────────────
@@ -75,6 +93,41 @@ pub trait DifferentiablePolicy: Policy {
     /// At levels 0-1, hand-coded per policy architecture.
     /// At level 2+, autograd computes this via `backward()`.
     fn forward_vjp(&self, obs: &[f32], v: &[f64]) -> Vec<f64>;
+
+    /// Batched VJP — mean of per-sample VJPs.
+    ///
+    /// `obs_batch` is flat `[N × obs_dim]`, `v_batch` is flat `[N × act_dim]`.
+    /// Returns the **mean** VJP across the batch: `[n_params]`.
+    ///
+    /// TD3 actor gradient: `dJ/dθ = (1/N) Σ dQ/da · dμ/dθ`.
+    ///
+    /// Default implementation loops [`forward_vjp()`](Self::forward_vjp)
+    /// and averages.  At level 2+, autograd backends override with a
+    /// single batched backward pass.
+    fn forward_vjp_batch(&self, obs_batch: &[f32], v_batch: &[f64], obs_dim: usize) -> Vec<f64> {
+        let n_params = self.n_params();
+        let n = obs_batch.len() / obs_dim;
+        if n == 0 {
+            return vec![0.0; n_params];
+        }
+        // Infer act_dim from v_batch.
+        let act_dim = v_batch.len() / n;
+        let mut acc = vec![0.0; n_params];
+        for i in 0..n {
+            let obs = &obs_batch[i * obs_dim..(i + 1) * obs_dim];
+            let v = &v_batch[i * act_dim..(i + 1) * act_dim];
+            let vjp = self.forward_vjp(obs, v);
+            for (a, g) in acc.iter_mut().zip(&vjp) {
+                *a += g;
+            }
+        }
+        #[allow(clippy::cast_precision_loss)] // batch size < 2^52
+        let inv_n = 1.0 / n as f64;
+        for a in &mut acc {
+            *a *= inv_n;
+        }
+        acc
+    }
 }
 
 // ── Stochastic policy ──────────────────────────────────────────────────────

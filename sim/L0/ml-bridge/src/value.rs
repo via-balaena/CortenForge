@@ -41,6 +41,52 @@ pub trait ValueFn: Send + Sync {
     /// Returns d/d(params) [(V(obs) − target)²], a vector of length
     /// `n_params()`. The factor of 2 is included.
     fn mse_gradient(&self, obs: &[f32], target: f64) -> Vec<f64>;
+
+    /// Batched forward pass.
+    ///
+    /// `obs_batch` is flat `[N × obs_dim]`.  Returns `[N]` predicted values.
+    ///
+    /// Default implementation loops [`forward()`](Self::forward) per sample.
+    fn forward_batch(&self, obs_batch: &[f32], obs_dim: usize) -> Vec<f64> {
+        let n = obs_batch.len() / obs_dim;
+        (0..n)
+            .map(|i| {
+                let row = &obs_batch[i * obs_dim..(i + 1) * obs_dim];
+                self.forward(row)
+            })
+            .collect()
+    }
+
+    /// Batched MSE gradient — **mean** over the batch.
+    ///
+    /// `obs_batch` is flat `[N × obs_dim]`, `targets` has length `N`.
+    /// Returns the mean gradient `[n_params]`:
+    ///   `(1/N) Σ d/d(params) [(V(obs_i) − target_i)²]`
+    ///
+    /// Default implementation loops [`mse_gradient()`](Self::mse_gradient)
+    /// and averages.  At level 2+, autograd backends override with a
+    /// single backward pass on `mean((V_batch − targets)²)`.
+    fn mse_gradient_batch(&self, obs_batch: &[f32], targets: &[f64], obs_dim: usize) -> Vec<f64> {
+        let n_params = self.n_params();
+        let n = obs_batch.len() / obs_dim;
+        if n == 0 {
+            return vec![0.0; n_params];
+        }
+        let mut acc = vec![0.0; n_params];
+        for i in 0..n {
+            let row = &obs_batch[i * obs_dim..(i + 1) * obs_dim];
+            let grad = self.mse_gradient(row, targets[i]);
+            for (a, g) in acc.iter_mut().zip(&grad) {
+                *a += g;
+            }
+        }
+        #[allow(clippy::cast_precision_loss)] // batch size < 2^52
+        let inv_n = 1.0 / n as f64;
+        for a in &mut acc {
+            *a *= inv_n;
+        }
+        acc
+    }
 }
 
 // ── State-action value function ────────────────────────────────────────────
@@ -86,6 +132,93 @@ pub trait QFunction: Send + Sync {
     ///
     /// Used by SAC for the reparameterized policy gradient.
     fn action_gradient(&self, obs: &[f32], action: &[f64]) -> Vec<f64>;
+
+    /// Batched forward pass.
+    ///
+    /// `obs_batch` is flat `[N × obs_dim]`, `actions` is flat
+    /// `[N × act_dim]`.  Returns `[N]` predicted Q-values.
+    ///
+    /// Default implementation loops [`forward()`](Self::forward) per sample.
+    fn forward_batch(
+        &self,
+        obs_batch: &[f32],
+        actions: &[f64],
+        obs_dim: usize,
+        act_dim: usize,
+    ) -> Vec<f64> {
+        let n = obs_batch.len() / obs_dim;
+        (0..n)
+            .map(|i| {
+                let obs = &obs_batch[i * obs_dim..(i + 1) * obs_dim];
+                let act = &actions[i * act_dim..(i + 1) * act_dim];
+                self.forward(obs, act)
+            })
+            .collect()
+    }
+
+    /// Batched MSE gradient — **mean** over the batch.
+    ///
+    /// `obs_batch` is flat `[N × obs_dim]`, `actions` is flat
+    /// `[N × act_dim]`, `targets` has length `N`.
+    /// Returns the mean gradient `[n_params]`:
+    ///   `(1/N) Σ d/d(params) [(Q(s_i, a_i) − target_i)²]`
+    ///
+    /// Default implementation loops [`mse_gradient()`](Self::mse_gradient)
+    /// and averages.
+    fn mse_gradient_batch(
+        &self,
+        obs_batch: &[f32],
+        actions: &[f64],
+        targets: &[f64],
+        obs_dim: usize,
+        act_dim: usize,
+    ) -> Vec<f64> {
+        let n_params = self.n_params();
+        let n = obs_batch.len() / obs_dim;
+        if n == 0 {
+            return vec![0.0; n_params];
+        }
+        let mut acc = vec![0.0; n_params];
+        for i in 0..n {
+            let obs = &obs_batch[i * obs_dim..(i + 1) * obs_dim];
+            let act = &actions[i * act_dim..(i + 1) * act_dim];
+            let grad = self.mse_gradient(obs, act, targets[i]);
+            for (a, g) in acc.iter_mut().zip(&grad) {
+                *a += g;
+            }
+        }
+        #[allow(clippy::cast_precision_loss)] // batch size < 2^52
+        let inv_n = 1.0 / n as f64;
+        for a in &mut acc {
+            *a *= inv_n;
+        }
+        acc
+    }
+
+    /// Batched action gradient.
+    ///
+    /// `obs_batch` is flat `[N × obs_dim]`, `actions` is flat
+    /// `[N × act_dim]`.  Returns flat `[N × act_dim]` — one dQ/da per
+    /// sample.
+    ///
+    /// Default implementation loops
+    /// [`action_gradient()`](Self::action_gradient) per sample.
+    fn action_gradient_batch(
+        &self,
+        obs_batch: &[f32],
+        actions: &[f64],
+        obs_dim: usize,
+        act_dim: usize,
+    ) -> Vec<f64> {
+        let n = obs_batch.len() / obs_dim;
+        let mut out = Vec::with_capacity(n * act_dim);
+        for i in 0..n {
+            let obs = &obs_batch[i * obs_dim..(i + 1) * obs_dim];
+            let act = &actions[i * act_dim..(i + 1) * act_dim];
+            out.extend(self.action_gradient(obs, act));
+        }
+        out
+    }
 }
 
 // ── Target network utilities ───────────────────────────────────────────────
