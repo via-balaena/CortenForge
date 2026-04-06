@@ -79,6 +79,7 @@ pub mod mlp;
 pub mod optimizer;
 pub mod policy;
 pub mod replay_buffer;
+pub mod rollout;
 pub mod space;
 pub mod tensor;
 pub mod value;
@@ -93,6 +94,7 @@ pub use mlp::{MlpPolicy, MlpQ, MlpValue};
 pub use optimizer::{Optimizer, OptimizerConfig};
 pub use policy::{DifferentiablePolicy, Policy, StochasticPolicy};
 pub use replay_buffer::{ReplayBuffer, TransitionBatch};
+pub use rollout::{EpisodicRollout, Trajectory, collect_episodic_rollout};
 pub use space::{
     ActionSpace, ActionSpaceBuilder, ObsSegment, ObservationSpace, ObservationSpaceBuilder,
 };
