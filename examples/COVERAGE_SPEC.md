@@ -1348,6 +1348,36 @@ fundamentals/
     (existing 1 is good — maybe add mesh-collision demo)
 ```
 
+### Track 5: sim-ml-bridge — ML boundary layer + learning algorithms
+
+The ML bridge (111 tests, 6 phases) gets its own example track covering
+spaces, SimEnv, VecEnv, and a learning algorithm ladder. Full spec:
+`fundamentals/sim-ml/SIM_ML_EXAMPLES_SPEC.md`.
+
+**Phases 1–3 (15 examples):**
+```
+fundamentals/sim-ml/
+  spaces/          #1–5   observation/action space demos
+  sim-env/         #6–9   episode lifecycle, sub-stepping, domain randomization
+  vec-env/         #10–15 parallel environments + learning algorithms
+```
+
+**Learning algorithm ladder (#12, #14, #15):** Same 2-link reaching arm,
+same target, same VecEnv — three different optimizers. The visual
+progression tells the story of why modern RL uses gradients:
+
+| # | Algorithm | Type | Gradient? | Visual result |
+|---|-----------|------|-----------|---------------|
+| 12 | CEM | Evolutionary | No | ~20/50 reach (perturbation diversity) — **DONE** |
+| 14 | REINFORCE | Policy gradient | Hand-coded | All 50 converge in unison |
+| 15 | PPO | Actor-critic | Hand-coded | Faster, smoother convergence |
+
+All three use a linear policy with 10 params — no ML framework needed.
+The gradients are analytically computable via chain rule through tanh.
+This avoids adding autograd/neural-network dependencies. If a fourth
+algorithm is needed (SAC, TD3), that's the point to evaluate whether a
+lean autograd abstraction or `candle` dependency is warranted.
+
 ## Priority
 
 Build from the ground up — the foundation must be bulletproof before moving
@@ -1356,11 +1386,11 @@ to GPU or advanced features:
 1. **Track 1A** — COMPLETE (82 examples). Basic sim-core fundamentals.
 2. **Track 1B** IN PROGRESS — sim-core foundation layer 2 (~70 examples).
    No stone unturned — every implemented subsystem gets dedicated coverage.
-   **3/20 subdirectories done** (free-joint, keyframes, mocap-bodies).
-   Next: contact filtering.
-3. **Track 3** after Track 1B proves the engine — GPU ladder
-4. **Track 2** as needed — SDF-CPU stubs (most SDF work targets GPU)
-5. **Track 4** as needed — design + mesh
+   **14/20 subdirectories done.**
+3. **Track 5** — sim-ml-bridge. #11 + #12 DONE. #14 (REINFORCE) next.
+4. **Track 3** after Track 1B proves the engine — GPU ladder
+5. **Track 2** as needed — SDF-CPU stubs (most SDF work targets GPU)
+6. **Track 4** as needed — design + mesh
 
 ## Notes
 

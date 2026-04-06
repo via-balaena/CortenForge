@@ -1,6 +1,6 @@
 # sim-ml-bridge Visual Examples Spec
 
-> **Status**: Draft v2
+> **Status**: Draft v3
 > **Location**: `examples/fundamentals/sim-ml/`
 > **Depends on**: `sim-ml-bridge`, `sim-bevy`, `sim-core`, `sim-mjcf`
 
@@ -8,8 +8,9 @@
 
 The sim-ml-bridge crate (Phases 1–6 complete, 111 tests) needs visual Bevy
 examples following the same "baby steps, one concept per example" pattern as
-`examples/fundamentals/sim-cpu/`. The crown jewel should have the same "watch
-the learning happen" quality as `batch-sim/reset-subset` (soft landing).
+`examples/fundamentals/sim-cpu/`. The crown jewels should have "watch the
+learning happen" quality — a population of arms going from chaos to
+coordinated reaching.
 
 ## Prerequisite sim-cpu Examples
 
@@ -58,11 +59,23 @@ examples/fundamentals/sim-ml/
 └── vec-env/
     ├── stress-test/          #10 — headless correctness gate
     ├── parallel-step/        #11 — 8 pendulums, different actions
-    ├── auto-reset/           #12 — ★ crown jewel: 10 reaching arms + CEM
-    └── terminal-obs/         #13 — done vs truncated, value bootstrapping
+    ├── auto-reset/           #12 — ★ 50 reaching arms + CEM (sampling)
+    ├── terminal-obs/         #13 — done vs truncated, value bootstrapping
+    ├── reinforce/            #14 — ★ 50 reaching arms + REINFORCE (gradient)
+    └── ppo/                  #15 — ★ 50 reaching arms + PPO (actor-critic)
 ```
 
-13 examples total. Package naming: `example-ml-{group}-{name}`.
+15 examples total. Package naming: `example-ml-{group}-{name}`.
+
+Examples #12, #14, #15 form a **learning algorithm ladder**: same arm,
+same target, same VecEnv — three different optimizers. The visual progression
+tells the story of why modern RL uses gradients:
+
+| # | Algorithm | Type | Visual result |
+|---|-----------|------|---------------|
+| 12 | CEM | Sampling-based | ~20/50 reach (perturbation diversity) |
+| 14 | REINFORCE | Policy gradient | All 50 converge in unison |
+| 15 | PPO | Actor-critic | Faster, smoother convergence than REINFORCE |
 
 ## Bevy Integration Patterns
 
@@ -375,60 +388,132 @@ tensor shapes.
 - rewards.len() == 8
 - Bit-exact match vs sequential SimEnv stepping
 
-### #12. auto-reset ★ — "Auto-Reset: Reaching Arm + CEM"
+### #12. auto-reset ★ — "Auto-Reset: Reaching Arm + CEM" — DONE
 
-**Crown jewel.** 10 two-link arms learn to reach a target via the
-Cross-Entropy Method. Each generation, VecEnv runs 10 perturbations of a
-shared linear policy. Arms that reach the target trigger done → auto-reset.
-Arms that time out trigger truncated → auto-reset. After all 10 finish,
-CEM updates the policy, `reset_all()`, next generation.
+**Sampling-based learning.** 50 two-link arms learn to reach a target via
+CEM. Each generation, VecEnv runs 50 perturbations of a shared linear
+policy. Done triggers auto-reset (arm reached target). Truncated triggers
+auto-reset (timeout). After all 50 finish, CEM selects top-15 elites,
+updates μ and σ, resets all, next generation.
 
-The visual story: generation 1 is chaos (arms flailing). By generation 5–8,
-arms reach roughly the right direction. By generation 15–20, all 10 reach
-smoothly and park at the target. The audience watches a population
-collectively learn a coordinated movement.
+Visual story: gen 1 chaos → gen 10–15 partial convergence (~20/50 reach)
+→ gen 25+ steady at 18–22/50. Not all arms converge — each runs a
+different perturbation. This is the nature of CEM (sampling-based).
 
-**Physics:** 2-link planar arm in XZ plane (vertical, with gravity).
-Shoulder + elbow hinges, motor actuators. Fingertip site for end-effector
-tracking. No contact, RK4, dt=0.002.
+**Physics:** 2-link planar arm, gear=10/5, damping=2.0/1.0, dt=0.002,
+RK4, no contact. Fingertip site at end of forearm.
 
-**CEM:** Linear policy `action = tanh(W · obs + b)`, 10 parameters. Obs =
-qpos + qvel (4 dims). Action = 2 torques. 10 envs = 10 perturbations per
-generation, top-3 elite selection. ~20–30 generations to converge.
+**Policy:** `action = tanh(W · obs_scaled + b)`, 10 params. Obs normalized
+via OBS_SCALE to prevent tanh saturation.
 
-**VecEnv configuration:**
-- `obs_space`: all_qpos() + all_qvel() → dim=4
-- `act_space`: all_ctrl() → dim=2
-- `reward`: -(distance_to_target + 0.1 × velocity_norm) per step
-- `done`: fingertip within 5 cm of target AND velocity < 0.3 rad/s
-- `truncated`: time > 3.0 s
-- `sub_steps`: 5 (100 Hz control, 500 Hz physics)
+**Reward:** Joint-space squared error `-(qpos - target_qpos)²`. Cartesian
+distance plateaus at ~27cm; joint-space is directly optimizable by CEM.
 
-**Generation loop:**
+**Done:** Cartesian end-effector within 5cm of target AND vel < 0.5 rad/s.
+
+**Key finding from assumption testing:** CEM needs ~5× the parameter count
+in envs (50 envs for 10 params). 10 envs produced 0 reaches across all
+configurations tested.
+
+Full spec + implementation notes: `auto-reset/AUTO_RESET_SPEC.md`.
+
+### #14. reinforce ★ — "Policy Gradient: Reaching Arm + REINFORCE"
+
+**Gradient-based learning.** Same arm, same target, same VecEnv as #12 —
+but replaces CEM with REINFORCE (vanilla policy gradient). All 50 envs
+share ONE policy (no perturbations). The visual difference is dramatic:
+all 50 arms converge to the same smooth reach in unison.
+
+**Why this matters:** CEM can only rank whole rollouts — it doesn't know
+WHICH actions were good. REINFORCE computes per-step credit assignment
+via the policy gradient theorem, giving a gradient that points toward
+better actions at each state. This is the fundamental advance of modern RL.
+
+**Policy:** Gaussian stochastic: `a ~ N(μ(s), σ²)` where `μ(s) = tanh(W·obs+b)`.
+Same 10 params as CEM. σ is a learned or annealed exploration parameter.
+During eval (visual), all envs use the mean action — producing identical
+behavior.
+
+**Gradient (hand-coded, no autograd):**
 ```
-RUNNING:
-  - Step VecEnv, apply perturbed policy per env
-  - Track cumulative reward per env
-  - When done/truncated: mark env "generation-complete"
-  - When all 10 complete → UPDATING
+∇θ J ≈ (1/N) Σᵢ Σₜ ∇θ log π(aₜ|sₜ) · Rₜ
 
-UPDATING:
-  - Pause 1.5 s (real computation boundary, not visual hack)
-  - CEM update: elite selection, update μ and σ
-  - reset_all(), sample new perturbations → RUNNING
+For Gaussian π with linear mean:
+  ∇θ log π(a|s) = (a - μ(s)) / σ² · ∇θ μ(s)
+  ∇W μ = (1 - tanh²(W·s+b)) · s^T    (outer product)
+  ∇b μ = (1 - tanh²(W·s+b))
 ```
 
-HUD: generation counter, reached count, best reward, per-env status.
+~50 lines of gradient math. No autograd framework needed.
+
+**Training loop:**
+```
+For each epoch:
+  1. reset_all()
+  2. Run full episodes, recording (obs, action, reward) per step per env
+  3. Compute discounted returns Rₜ = Σ γ^k r_{t+k}
+  4. Subtract baseline (mean return) to reduce variance
+  5. Compute policy gradient from recorded trajectories
+  6. Update W, b via gradient ascent: θ += lr · ∇θ J
+```
+
+**VecEnv config:** Identical to #12 (same obs, act, reward, done, truncated,
+sub_steps). Only the optimizer differs.
+
+**Visual story:** Epoch 1 — random actions, arms flail. Epoch 5–10 — all
+50 arms swing toward target together (not varied like CEM). Epoch 20–30 —
+all 50 reach and park at the green sphere in perfect unison. The "watch
+the learning happen" moment.
 
 **Validates:**
-- At least 6/10 envs trigger done by generation 25
-- Reward improvement > 50% from gen 1 to gen 25
-- Policy mean shifted (μ norm > 0.5)
-- σ decreased (mean < 0.5, from init=1.0)
-- terminal_obs always populated on reset
-- Post-reset obs is initial state
+- All 50 envs converge to same behavior (max pairwise qpos difference < 0.1)
+- ≥40/50 trigger done by epoch 30
+- Reward improvement ≥80% from epoch 1
+- Faster convergence than CEM (#12)
 
-Full spec: `auto-reset/AUTO_RESET_SPEC.md`.
+### #15. ppo ★ — "Actor-Critic: Reaching Arm + PPO"
+
+**The industry standard.** Same arm, same target — PPO (Proximal Policy
+Optimization). Adds a value function (critic) for variance reduction and
+a clipped surrogate objective for stable updates. The visual result:
+faster and smoother convergence than REINFORCE, with less oscillation in
+the learning curve.
+
+**Why this matters:** REINFORCE has high variance — the gradient estimate
+is noisy because it uses raw returns. PPO reduces variance by subtracting
+a learned baseline (value function) and prevents destructive large updates
+via clipping. This is why PPO is the default algorithm in robotics RL.
+
+**Architecture (hand-coded, no autograd):**
+- **Actor:** same Gaussian linear policy as #14, 10 params
+- **Critic:** linear value function `V(s) = w_v · obs + b_v`, 5 params
+- **Total:** 15 params (still analytically tractable)
+
+**Key PPO additions over REINFORCE:**
+```
+1. GAE (Generalized Advantage Estimation):
+   Aₜ = Σ (γλ)^k δₜ₊ₖ   where δₜ = rₜ + γV(sₜ₊₁) - V(sₜ)
+
+2. Clipped surrogate objective:
+   L = min(rₜ·Aₜ, clip(rₜ, 1-ε, 1+ε)·Aₜ)
+   where rₜ = π_new(a|s) / π_old(a|s)
+
+3. Value function loss:
+   L_v = (V(s) - R_target)²
+```
+
+~150 lines of gradient math. Still no autograd — the linear policy and
+linear critic both have analytically computable gradients.
+
+**Visual story:** Converges noticeably faster than REINFORCE. By epoch
+10–15, all 50 arms reach smoothly. The learning curve (shown in HUD) is
+smoother — less oscillation between epochs.
+
+**Validates:**
+- ≥40/50 trigger done by epoch 20 (faster than REINFORCE's epoch 30)
+- Learning curve monotonically improves (no large regressions)
+- Value function loss decreases over training
+- Clipping activates in early epochs (prevents destructive updates)
 
 ### #13. terminal-obs — "Terminal Observations for Value Bootstrapping"
 
@@ -469,9 +554,13 @@ next:
 
 ### Phase 3: VecEnv
 10. **stress-test** — headless, 11 integration checks
-11. parallel-step — introduces Pattern C (VecEnv rendering)
-12. auto-reset — ★ crown jewel, reaching arm + CEM population learning
+11. parallel-step — introduces Pattern C (VecEnv rendering) — **DONE**
+12. auto-reset — ★ reaching arm + CEM (sampling-based) — **DONE**
 13. terminal-obs — deep RL concept, HUD-focused
+
+### Phase 4: Learning Algorithm Ladder
+14. reinforce — ★ same arm + REINFORCE (gradient-based)
+15. ppo — ★ same arm + PPO (actor-critic)
 
 ## READMEs
 
