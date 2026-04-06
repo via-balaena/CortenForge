@@ -21,7 +21,7 @@ All sim-ml examples build on features confirmed working in Track 1A + 1B
 | All Phase 1+2 (pendulum) | hinge joint, motor actuator, jointpos/jointvel sensors | ✅ Track 1A |
 | #4 obs-rich (cart-pole) | slide + hinge joints, contact (ground plane) | ✅ Track 1A |
 | All Phase 3 (VecEnv) | batch-sim (BatchSim, PhysicsScenes, sync_batch_geoms) | ✅ Track 1B #13 |
-| #12 auto-reset (landers) | slide joint, motor actuator, gravity | ✅ Track 1A |
+| #12 auto-reset (reaching arm) | 2 hinge joints, motor actuators, gravity, site_xpos | ✅ Track 1A |
 
 **No dependency on unfinished Track 1B items** (heightfield, hill muscle,
 adhesion, flex bodies, collision pairs, plugins). All prerequisite features
@@ -58,7 +58,7 @@ examples/fundamentals/sim-ml/
 └── vec-env/
     ├── stress-test/          #10 — headless correctness gate
     ├── parallel-step/        #11 — 8 pendulums, different actions
-    ├── auto-reset/           #12 — ★ crown jewel: 12 landers via VecEnv
+    ├── auto-reset/           #12 — ★ crown jewel: 10 reaching arms + CEM
     └── terminal-obs/         #13 — done vs truncated, value bootstrapping
 ```
 
@@ -375,85 +375,60 @@ tensor shapes.
 - rewards.len() == 8
 - Bit-exact match vs sequential SimEnv stepping
 
-### #12. auto-reset ★ — "Auto-Reset: The RL Training Loop"
+### #12. auto-reset ★ — "Auto-Reset: Reaching Arm + CEM"
 
-**Crown jewel.** This is the `batch-sim/reset-subset` (soft landing)
-scenario **reimplemented with VecEnv**. Same 12 landers, same thrust
-adaptation, same convergence — but using the ml-bridge API instead of raw
-BatchSim. Users can directly compare the two versions to see what the
-bridge abstracts away.
+**Crown jewel.** 10 two-link arms learn to reach a target via the
+Cross-Entropy Method. Each generation, VecEnv runs 10 perturbations of a
+shared linear policy. Arms that reach the target trigger done → auto-reset.
+Arms that time out trigger truncated → auto-reset. After all 10 finish,
+CEM updates the policy, `reset_all()`, next generation.
 
-12 landers on slide joints with gravity and motor thrust. Different thrust
-levels per env. Some crash (done), some hover (truncated). On auto-reset,
-lander snaps back to top. Green on successful soft landing. Thrust adapts
-toward equilibrium via the on_reset hook.
+The visual story: generation 1 is chaos (arms flailing). By generation 5–8,
+arms reach roughly the right direction. By generation 15–20, all 10 reach
+smoothly and park at the target. The audience watches a population
+collectively learn a coordinated movement.
 
-**MJCF:**
-```xml
-<mujoco model="soft-landing-vecenv">
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag energy="enable" contact="disable"/>
-  </option>
-  <worldbody>
-    <body name="lander" pos="0 0 3">
-      <joint name="slide" type="slide" axis="0 0 1" damping="0"/>
-      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
-      <geom name="body" type="capsule" size="0.06"
-            fromto="0 0 -0.15 0 0 0.15"/>
-      <geom name="base" type="cylinder" size="0.10 0.02" pos="0 0 -0.17"/>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor name="thrust" joint="slide" gear="1"/>
-  </actuator>
-</mujoco>
-```
+**Physics:** 2-link planar arm in XZ plane (vertical, with gravity).
+Shoulder + elbow hinges, motor actuators. Fingertip site for end-effector
+tracking. No contact, RK4, dt=0.002.
+
+**CEM:** Linear policy `action = tanh(W · obs + b)`, 10 parameters. Obs =
+qpos + qvel (4 dims). Action = 2 torques. 10 envs = 10 perturbations per
+generation, top-3 elite selection. ~20–30 generations to converge.
 
 **VecEnv configuration:**
-- `obs_space`: all_qpos() + all_qvel() → [height, velocity]
-- `act_space`: all_ctrl() → [thrust]
-- `reward`: height-based survival (positive while above ground)
-- `done`: height < ground level (landed or crashed)
-- `truncated`: time > 3.0 (hovering too long)
-- `on_reset`: resets thrust for the env (domain randomization)
+- `obs_space`: all_qpos() + all_qvel() → dim=4
+- `act_space`: all_ctrl() → dim=2
+- `reward`: -(distance_to_target + 0.1 × velocity_norm) per step
+- `done`: fingertip within 5 cm of target AND velocity < 0.3 rad/s
+- `truncated`: time > 3.0 s
+- `sub_steps`: 5 (100 Hz control, 500 Hz physics)
 
-**Control flow — where the thrust adaptation lives:**
-
-In the raw-BatchSim soft-landing example, thrust adaptation happens in
-the Bevy stepping system (imperative code that reads state and nudges
-thrust). In the VecEnv version, the same logic moves into the **Bevy
-stepping system that reads `VecStepResult`**:
-
+**Generation loop:**
 ```
-each frame:
-  1. build action tensor from per-env thrust values
-  2. result = vec_env.step(&actions)
-  3. for each env i:
-     if result.dones[i]:
-       read terminal_observations[i] to get impact velocity
-       if impact too fast → nudge thrust[i] up (crash)
-       if landed softly → mark as LANDED
-     if result.truncateds[i]:
-       nudge thrust[i] down (was hovering)
-  4. sync rendering
+RUNNING:
+  - Step VecEnv, apply perturbed policy per env
+  - Track cumulative reward per env
+  - When done/truncated: mark env "generation-complete"
+  - When all 10 complete → UPDATING
+
+UPDATING:
+  - Pause 1.5 s (real computation boundary, not visual hack)
+  - CEM update: elite selection, update μ and σ
+  - reset_all(), sample new perturbations → RUNNING
 ```
 
-The VecEnv handles the auto-reset internally (steps 2 handles reset +
-on_reset + forward). The Bevy system only reads the result and adapts
-the policy (thrust values). This is the key difference from the raw
-version: the reset logic is inside VecEnv, the adaptation logic is
-outside. Users see this separation clearly.
-
-HUD: per-env status (FLYING/CRASH/HOVER/LAND), episode count,
-terminal_obs indicator, total resets, steps/sec.
+HUD: generation counter, reached count, best reward, per-env status.
 
 **Validates:**
-- All envs complete at least 2 episodes
-- terminal_observations populated for done/truncated envs, None otherwise
-- Post-reset observation is initial state (not terminal)
-- Terminal obs differs from initial obs
-- Total episodes > 24 (continuous training loop confirmed)
-- At least 1 env converges to soft landing (thrust ≈ mg)
+- At least 6/10 envs trigger done by generation 25
+- Reward improvement > 50% from gen 1 to gen 25
+- Policy mean shifted (μ norm > 0.5)
+- σ decreased (mean < 0.5, from init=1.0)
+- terminal_obs always populated on reset
+- Post-reset obs is initial state
+
+Full spec: `auto-reset/AUTO_RESET_SPEC.md`.
 
 ### #13. terminal-obs — "Terminal Observations for Value Bootstrapping"
 
@@ -495,7 +470,7 @@ next:
 ### Phase 3: VecEnv
 10. **stress-test** — headless, 11 integration checks
 11. parallel-step — introduces Pattern C (VecEnv rendering)
-12. auto-reset — ★ crown jewel, soft-landing reimplemented with VecEnv
+12. auto-reset — ★ crown jewel, reaching arm + CEM population learning
 13. terminal-obs — deep RL concept, HUD-focused
 
 ## READMEs

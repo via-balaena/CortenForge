@@ -3599,6 +3599,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ml-vec-env-auto-reset"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+ "sim-ml-bridge",
+]
+
+[[package]]
 name = "example-ml-vec-env-parallel-step"
 version = "0.7.0"
 dependencies = [
