@@ -19,6 +19,17 @@
 //! - [`VecEnv`] — vectorized environments wrapping `BatchSim` for parallel
 //!   stepping with auto-reset.
 //!
+//! ## ML traits (the chassis)
+//!
+//! - [`Policy`] / [`DifferentiablePolicy`] / [`StochasticPolicy`] — three-tier
+//!   policy trait hierarchy.  CEM needs `Policy`, REINFORCE/PPO/TD3 need
+//!   `DifferentiablePolicy`, SAC needs `StochasticPolicy`.
+//! - [`ValueFn`] — state value V(s).  Used by PPO (advantage estimation).
+//! - [`QFunction`] — state-action value Q(s, a).  Used by SAC/TD3.
+//! - [`Optimizer`] / [`OptimizerConfig`] — injectable optimizer with Adam.
+//! - [`Algorithm`] — monolithic `train()` for headless competition runs.
+//! - [`EpochMetrics`] / [`TrainingBudget`] — training output types.
+//!
 //! ## Design principles
 //!
 //! - **Sim purity** — `sim-core` and `sim-types` gain zero new dependencies or
@@ -36,7 +47,8 @@
 //!
 //! ## What this crate does NOT do
 //!
-//! - **No policy implementations** — that's the RL library's job.
+//! - **No concrete policy implementations** — the traits are here, but
+//!   `LinearPolicy`, `MlpPolicy`, etc. are separate modules (coming next).
 //! - **No autodiff** — `Tensor` is a dumb buffer.  Autodiff is a future crate.
 //! - **No GPU tensor ops** — `Tensor` lives on CPU.  GPU acceleration lives in
 //!   `sim-gpu` (compute shaders) and future autodiff (GPU kernels).
@@ -58,16 +70,24 @@
 // Safety lint: deny unwrap/expect in library code.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+pub mod algorithm;
 pub mod env;
 pub mod error;
+pub mod optimizer;
+pub mod policy;
 pub mod space;
 pub mod tensor;
+pub mod value;
 pub mod vec_env;
 
+pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
 pub use error::{EnvError, ResetError, SpaceError, TensorError, VecStepError};
+pub use optimizer::{Optimizer, OptimizerConfig};
+pub use policy::{DifferentiablePolicy, Policy, StochasticPolicy};
 pub use space::{
     ActionSpace, ActionSpaceBuilder, ObsSegment, ObservationSpace, ObservationSpaceBuilder,
 };
 pub use tensor::{Tensor, TensorSpec};
+pub use value::{QFunction, ValueFn, soft_update, soft_update_value};
 pub use vec_env::{VecEnv, VecEnvBuilder, VecStepResult};
