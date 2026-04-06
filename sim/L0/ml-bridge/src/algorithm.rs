@@ -73,7 +73,7 @@ pub enum TrainingBudget {
 /// ```
 pub trait Algorithm: Send {
     /// Algorithm name (e.g., `"CEM"`, `"PPO"`, `"SAC"`).
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 
     /// Run the full training loop.
     ///

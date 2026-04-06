@@ -19,7 +19,7 @@
 //! keeps pre-activation values moderate, which matters for `tanh` (policy)
 //! and for gradient magnitude (all three).
 
-use crate::policy::{DifferentiablePolicy, Policy};
+use crate::policy::{DifferentiablePolicy, Policy, StochasticPolicy};
 use crate::value::{QFunction, ValueFn};
 
 // ── LinearPolicy ──────────────────────────────────────────────────────────
@@ -315,6 +315,222 @@ impl QFunction for LinearQ {
     fn action_gradient(&self, _obs: &[f32], _action: &[f64]) -> Vec<f64> {
         // dQ/da[j] = w[obs_dim + j]
         self.params[self.obs_dim..self.obs_dim + self.act_dim].to_vec()
+    }
+}
+
+// ── LinearStochasticPolicy ────────────────────────────────────────────────
+
+/// Linear stochastic policy with learnable `log_std`.
+///
+/// Same architecture as [`LinearPolicy`] for the mean:
+///   `μ(s) = tanh(W · s_scaled + b)`
+///
+/// Plus `act_dim` learnable `log_std` parameters that define the per-action
+/// exploration noise: `σ_a = exp(log_std_a)`.
+///
+/// # Parameter layout
+///
+/// `W[act_dim × obs_dim]` row-major, then `b[act_dim]`, then
+/// `log_std[act_dim]`.
+///
+/// Total: `act_dim * (obs_dim + 1) + act_dim` parameters.
+///
+/// Implements [`StochasticPolicy`] — required by SAC.
+pub struct LinearStochasticPolicy {
+    obs_dim: usize,
+    act_dim: usize,
+    obs_scale: Vec<f64>,
+    params: Vec<f64>,
+}
+
+impl LinearStochasticPolicy {
+    /// Create a new stochastic linear policy.
+    ///
+    /// `log_std` parameters are initialized to `init_log_std` (e.g., -0.5
+    /// gives σ ≈ 0.6).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `obs_scale.len() != obs_dim`.
+    #[must_use]
+    pub fn new(obs_dim: usize, act_dim: usize, obs_scale: &[f64], init_log_std: f64) -> Self {
+        assert!(
+            obs_scale.len() == obs_dim,
+            "LinearStochasticPolicy::new: obs_scale.len() ({}) != obs_dim ({obs_dim})",
+            obs_scale.len(),
+        );
+        let n_mean_params = act_dim * (obs_dim + 1);
+        let mut params = vec![0.0; n_mean_params + act_dim];
+        // Initialize log_std.
+        for i in 0..act_dim {
+            params[n_mean_params + i] = init_log_std;
+        }
+        Self {
+            obs_dim,
+            act_dim,
+            obs_scale: obs_scale.to_vec(),
+            params,
+        }
+    }
+
+    fn scaled_obs(&self, obs: &[f32]) -> Vec<f64> {
+        obs.iter()
+            .zip(&self.obs_scale)
+            .map(|(&o, &s)| f64::from(o) * s)
+            .collect()
+    }
+
+    /// Offset into params where `log_std` starts.
+    const fn log_std_offset(&self) -> usize {
+        self.act_dim * (self.obs_dim + 1)
+    }
+}
+
+impl Policy for LinearStochasticPolicy {
+    fn n_params(&self) -> usize {
+        self.params.len()
+    }
+
+    fn params(&self) -> &[f64] {
+        &self.params
+    }
+
+    fn set_params(&mut self, params: &[f64]) {
+        assert!(
+            params.len() == self.params.len(),
+            "LinearStochasticPolicy::set_params: expected {} params, got {}",
+            self.params.len(),
+            params.len(),
+        );
+        self.params.copy_from_slice(params);
+    }
+
+    fn forward(&self, obs: &[f32]) -> Vec<f64> {
+        let s = self.scaled_obs(obs);
+        let mut mu = Vec::with_capacity(self.act_dim);
+        for a in 0..self.act_dim {
+            let mut z = self.params[self.act_dim * self.obs_dim + a]; // bias
+            for (o, &so) in s.iter().enumerate() {
+                z += self.params[a * self.obs_dim + o] * so;
+            }
+            mu.push(z.tanh());
+        }
+        mu
+    }
+}
+
+impl DifferentiablePolicy for LinearStochasticPolicy {
+    fn log_prob_gradient(&self, obs: &[f32], action: &[f64], sigma: f64) -> Vec<f64> {
+        let s = self.scaled_obs(obs);
+        let mu = self.forward(obs);
+        let sigma2 = sigma * sigma;
+        let mut grad = vec![0.0; self.params.len()];
+
+        for a in 0..self.act_dim {
+            let tanh_deriv = mu[a].mul_add(-mu[a], 1.0);
+            let score = (action[a] - mu[a]) / sigma2 * tanh_deriv;
+
+            for o in 0..self.obs_dim {
+                grad[a * self.obs_dim + o] = score * s[o];
+            }
+            grad[self.act_dim * self.obs_dim + a] = score;
+        }
+        // log_std params have zero gradient when using external sigma.
+        grad
+    }
+
+    fn forward_vjp(&self, obs: &[f32], v: &[f64]) -> Vec<f64> {
+        let s = self.scaled_obs(obs);
+        let mu = self.forward(obs);
+        let mut vjp = vec![0.0; self.params.len()];
+
+        for a in 0..self.act_dim {
+            let tanh_deriv = mu[a].mul_add(-mu[a], 1.0);
+
+            for o in 0..self.obs_dim {
+                vjp[a * self.obs_dim + o] = v[a] * tanh_deriv * s[o];
+            }
+            vjp[self.act_dim * self.obs_dim + a] = v[a] * tanh_deriv;
+        }
+        // log_std: d(a)/d(log_std) = 0 when a = mu (deterministic forward).
+        vjp
+    }
+}
+
+impl StochasticPolicy for LinearStochasticPolicy {
+    fn forward_stochastic(&self, obs: &[f32]) -> (Vec<f64>, Vec<f64>) {
+        let mu = self.forward(obs);
+        let ls_offset = self.log_std_offset();
+        let log_std = self.params[ls_offset..ls_offset + self.act_dim].to_vec();
+        (mu, log_std)
+    }
+
+    fn log_prob_gradient_stochastic(&self, obs: &[f32], action: &[f64]) -> Vec<f64> {
+        let s = self.scaled_obs(obs);
+        let mu = self.forward(obs);
+        let ls_offset = self.log_std_offset();
+        let mut grad = vec![0.0; self.params.len()];
+
+        for a in 0..self.act_dim {
+            let log_std = self.params[ls_offset + a];
+            let std = log_std.exp();
+            let var = std * std;
+            let diff = action[a] - mu[a];
+            let tanh_deriv = mu[a].mul_add(-mu[a], 1.0);
+
+            // d(log π)/d(mean_params) = (a - μ) / σ² * d(μ)/d(θ)
+            let score_mean = diff / var * tanh_deriv;
+            for o in 0..self.obs_dim {
+                grad[a * self.obs_dim + o] = score_mean * s[o];
+            }
+            grad[self.act_dim * self.obs_dim + a] = score_mean;
+
+            // d(log π)/d(log_std) = (a - μ)² / σ² - 1
+            // (because log π = -0.5*(a-μ)²/σ² - log σ - 0.5*log(2π),
+            //  d/d(log_std) = (a-μ)²/σ² * d(σ²)/d(log_std) / (2σ²) - 1
+            //               = (a-μ)²/σ² - 1)
+            grad[ls_offset + a] = diff * diff / var - 1.0;
+        }
+        grad
+    }
+
+    fn entropy(&self, _obs: &[f32]) -> f64 {
+        let ls_offset = self.log_std_offset();
+        // H[N(μ, σ²)] = 0.5 * ln(2πe) + ln(σ) per dimension
+        // = 0.5 * ln(2πe) + log_std per dimension
+        let half_ln_2pie = 0.5 * (2.0 * std::f64::consts::PI * std::f64::consts::E).ln();
+        let mut h = 0.0;
+        for a in 0..self.act_dim {
+            h += half_ln_2pie + self.params[ls_offset + a];
+        }
+        h
+    }
+
+    fn reparameterized_vjp(&self, obs: &[f32], eps: &[f64], v: &[f64]) -> Vec<f64> {
+        // a = μ(obs) + exp(log_std) * ε
+        // d(a)/d(mean_params) = d(μ)/d(θ)  (same as forward_vjp for the mean part)
+        // d(a)/d(log_std_a) = exp(log_std_a) * ε_a = σ_a * ε_a
+        let s = self.scaled_obs(obs);
+        let mu = self.forward(obs);
+        let ls_offset = self.log_std_offset();
+        let mut vjp = vec![0.0; self.params.len()];
+
+        // Mean params: v^T · d(μ)/d(θ)
+        for a in 0..self.act_dim {
+            let tanh_deriv = mu[a].mul_add(-mu[a], 1.0);
+            for o in 0..self.obs_dim {
+                vjp[a * self.obs_dim + o] = v[a] * tanh_deriv * s[o];
+            }
+            vjp[self.act_dim * self.obs_dim + a] = v[a] * tanh_deriv;
+        }
+
+        // log_std params: v_a * d(a_a)/d(log_std_a) = v_a * σ_a * ε_a
+        for a in 0..self.act_dim {
+            let std = self.params[ls_offset + a].exp();
+            vjp[ls_offset + a] = v[a] * std * eps[a];
+        }
+
+        vjp
     }
 }
 

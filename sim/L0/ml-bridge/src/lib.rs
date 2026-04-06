@@ -71,6 +71,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod algorithm;
+pub mod cem;
 pub mod competition;
 pub mod env;
 pub mod error;
@@ -79,29 +80,38 @@ pub mod linear;
 pub mod mlp;
 pub mod optimizer;
 pub mod policy;
+pub mod ppo;
+pub mod reinforce;
 pub mod replay_buffer;
 pub mod rollout;
+pub mod sac;
 pub mod space;
 pub mod task;
+pub mod td3;
 pub mod tensor;
 pub mod value;
 pub mod vec_env;
 
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+pub use cem::{Cem, CemHyperparams};
 pub use competition::{Competition, CompetitionResult, RunResult};
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
 pub use error::{EnvError, ResetError, SpaceError, TensorError, VecStepError};
 pub use gae::compute_gae;
-pub use linear::{LinearPolicy, LinearQ, LinearValue};
+pub use linear::{LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue};
 pub use mlp::{MlpPolicy, MlpQ, MlpValue};
 pub use optimizer::{Optimizer, OptimizerConfig};
 pub use policy::{DifferentiablePolicy, Policy, StochasticPolicy};
+pub use ppo::{Ppo, PpoHyperparams};
+pub use reinforce::{Reinforce, ReinforceHyperparams};
 pub use replay_buffer::{ReplayBuffer, TransitionBatch};
 pub use rollout::{EpisodicRollout, Trajectory, collect_episodic_rollout};
+pub use sac::{Sac, SacHyperparams};
 pub use space::{
     ActionSpace, ActionSpaceBuilder, ObsSegment, ObservationSpace, ObservationSpaceBuilder,
 };
 pub use task::{TaskConfig, TaskConfigBuilder, reaching_2dof, reaching_6dof};
+pub use td3::{Td3, Td3Hyperparams};
 pub use tensor::{Tensor, TensorSpec};
 pub use value::{QFunction, ValueFn, soft_update, soft_update_value};
 pub use vec_env::{VecEnv, VecEnvBuilder, VecStepResult};

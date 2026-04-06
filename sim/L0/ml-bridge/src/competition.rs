@@ -162,20 +162,18 @@ mod tests {
 
     /// Minimal Algorithm implementation for testing.
     struct MockAlgorithm {
-        name: String,
+        name: &'static str,
     }
 
     impl MockAlgorithm {
-        fn new(name: &str) -> Self {
-            Self {
-                name: name.to_string(),
-            }
+        fn new(name: &'static str) -> Self {
+            Self { name }
         }
     }
 
     impl Algorithm for MockAlgorithm {
-        fn name(&self) -> &str {
-            &self.name
+        fn name(&self) -> &'static str {
+            self.name
         }
 
         fn train(
