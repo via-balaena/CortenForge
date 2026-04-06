@@ -3504,6 +3504,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ml-sim-env-stress-test"
+version = "0.7.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+ "sim-ml-bridge",
+]
+
+[[package]]
 name = "example-ml-spaces-act-clamping"
 version = "0.7.0"
 dependencies = [

@@ -233,6 +233,9 @@ members = [
     "examples/fundamentals/sim-ml/spaces/obs-rich",
     "examples/fundamentals/sim-ml/spaces/act-clamping",
 
+    # Examples — fundamentals / sim-ml / sim-env
+    "examples/fundamentals/sim-ml/sim-env/stress-test",
+
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
     "examples/sdf-physics/cpu/02-thin-grid",
