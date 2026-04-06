@@ -711,20 +711,49 @@ impl PhysicsHud {
 #[derive(Component)]
 pub struct HudText;
 
-/// Spawn the HUD overlay: a dark semi-transparent panel with monospace text.
+/// Screen corner for HUD placement.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum HudPosition {
+    /// Top-left corner (default).
+    #[default]
+    TopLeft,
+    /// Bottom-left corner — use when the example's geometry occupies the
+    /// upper portion of the screen (e.g., cart-pole, batch-sim grids).
+    BottomLeft,
+}
+
+/// Spawn the HUD overlay in the top-left corner.
 ///
 /// Call once in your `Startup` system. Pair with [`render_physics_hud`] in
 /// `PostUpdate` and init [`PhysicsHud`] as a resource.
 pub fn spawn_physics_hud(commands: &mut Commands) {
+    spawn_physics_hud_at(commands, HudPosition::TopLeft);
+}
+
+/// Spawn the HUD overlay at the given screen corner.
+///
+/// See [`spawn_physics_hud`] for the default (top-left) variant.
+pub fn spawn_physics_hud_at(commands: &mut Commands, position: HudPosition) {
+    let node = match position {
+        HudPosition::TopLeft => Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(10.0),
+            left: Val::Px(10.0),
+            padding: UiRect::all(Val::Px(8.0)),
+            ..default()
+        },
+        HudPosition::BottomLeft => Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(10.0),
+            left: Val::Px(10.0),
+            padding: UiRect::all(Val::Px(8.0)),
+            ..default()
+        },
+    };
+
     commands
         .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(10.0),
-                left: Val::Px(10.0),
-                padding: UiRect::all(Val::Px(8.0)),
-                ..default()
-            },
+            node,
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
             GlobalZIndex(999),
         ))

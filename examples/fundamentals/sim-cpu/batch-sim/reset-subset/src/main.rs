@@ -33,8 +33,8 @@ use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::convert::physics_pos;
 use sim_bevy::examples::{
-    HudText, PhysicsHud, ValidationHarness, insert_batch_validation_dummies, render_physics_hud,
-    spawn_example_camera, validation_system,
+    HudPosition, PhysicsHud, ValidationHarness, insert_batch_validation_dummies,
+    render_physics_hud, spawn_example_camera, spawn_physics_hud_at, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::multi_scene::{
@@ -305,30 +305,7 @@ fn setup(
         0.15, // elevation
     );
 
-    // HUD in bottom-left (under the landing horizon)
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: Val::Px(10.0),
-                left: Val::Px(10.0),
-                padding: UiRect::all(Val::Px(8.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
-            GlobalZIndex(999),
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                HudText,
-                Text::new(""),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
-                TextColor(Color::WHITE),
-            ));
-        });
+    spawn_physics_hud_at(&mut commands, HudPosition::BottomLeft);
 
     insert_batch_validation_dummies(&mut commands, &model);
 }

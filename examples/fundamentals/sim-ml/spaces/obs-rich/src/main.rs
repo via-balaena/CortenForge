@@ -11,8 +11,8 @@
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{
-    HudText, PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera,
-    validation_system,
+    HudPosition, PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera,
+    spawn_physics_hud_at, validation_system,
 };
 use sim_bevy::materials::MetalPreset;
 use sim_bevy::model_data::{
@@ -153,30 +153,7 @@ fn setup(
         0.2,
     );
 
-    // HUD in bottom-left.
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: Val::Px(10.0),
-                left: Val::Px(10.0),
-                padding: UiRect::all(Val::Px(8.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
-            GlobalZIndex(999),
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                HudText,
-                Text::new(""),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
-                TextColor(Color::WHITE),
-            ));
-        });
+    spawn_physics_hud_at(&mut commands, HudPosition::BottomLeft);
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
