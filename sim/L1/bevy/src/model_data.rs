@@ -279,7 +279,7 @@ pub fn step_model_data(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) 
 ///    .add_systems(Update, step_physics_realtime);
 /// ```
 #[derive(Resource)]
-pub struct PhysicsAccumulator(f64);
+pub struct PhysicsAccumulator(pub f64);
 
 impl Default for PhysicsAccumulator {
     fn default() -> Self {
@@ -326,6 +326,32 @@ pub fn step_physics_realtime(
         // PostUpdate systems don't see stale zeros.
         let _ = data.0.forward(&model.0);
     }
+}
+
+/// Copy only the fields needed for rendering and HUD from one [`Data`] to another.
+///
+/// This is a lighter alternative to `Data::clone()` for "Pattern B" examples
+/// where a `SimEnv` owns the authoritative `Data` and [`PhysicsData`] is used
+/// only for rendering.  In steady state (same model, same geom count) every
+/// `clone_from` reuses existing allocations — zero heap alloc per frame.
+///
+/// Fields copied: `geom_xpos`, `geom_xmat`, `site_xpos`, `site_xmat`,
+/// `time`, `qpos`, `qvel`, `ctrl`, `sensordata`.
+pub fn sync_rendering_data(src: &Data, dst: &mut Data) {
+    // Required for sync_geom_transforms:
+    dst.geom_xpos.clone_from(&src.geom_xpos);
+    dst.geom_xmat.clone_from(&src.geom_xmat);
+
+    // Required for sync_site_transforms:
+    dst.site_xpos.clone_from(&src.site_xpos);
+    dst.site_xmat.clone_from(&src.site_xmat);
+
+    // Required for HUD / validation:
+    dst.time = src.time;
+    dst.qpos.clone_from(&src.qpos);
+    dst.qvel.clone_from(&src.qvel);
+    dst.ctrl.clone_from(&src.ctrl);
+    dst.sensordata.clone_from(&src.sensordata);
 }
 
 /// Synchronize body transforms from physics Data to Bevy entities.

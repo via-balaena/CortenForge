@@ -1,0 +1,851 @@
+//! Auto-Reset — Reaching Arm + CEM
+//!
+//! 50 two-link arms learn to reach a target using Cross-Entropy Method.
+//! Each generation, 50 envs run different policy perturbations. Arms that
+//! reach the target trigger `done` → auto-reset. After all complete, CEM
+//! updates the policy toward the best performers.
+//!
+//! The visual story: generation 1 is chaos (arms flailing). By generation
+//! 10–15, arms reach roughly the right direction. By generation 25–30,
+//! most arms smoothly reach and park at the green target.
+//!
+//! Run: `cargo run -p example-ml-vec-env-auto-reset --release`
+
+#![allow(
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::let_underscore_must_use,
+    clippy::suboptimal_flops,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::unwrap_used,
+    clippy::imprecise_flops,
+    dead_code
+)]
+
+use std::sync::Arc;
+
+use bevy::prelude::*;
+use rand::Rng;
+use sim_bevy::camera::OrbitCameraPlugin;
+use sim_bevy::convert::physics_pos;
+use sim_bevy::examples::{
+    HudPosition, PhysicsHud, ValidationHarness, insert_batch_validation_dummies,
+    render_physics_hud, spawn_example_camera, spawn_physics_hud_at, validation_system,
+};
+use sim_bevy::materials::MetalPreset;
+use sim_bevy::multi_scene::{
+    PhysicsScenes, spawn_scene_geoms, sync_batch_geoms, sync_scene_geom_transforms,
+};
+use sim_core::validation::{Check, print_report};
+use sim_ml_bridge::{ActionSpace, ObservationSpace, Tensor, VecEnv};
+
+// ── Constants ───────────────────────────────────────────────────────────────
+
+const NUM_ENVS: usize = 50;
+const SPACING: f32 = 0.8;
+const TARGET: [f64; 3] = [0.4, 0.0, 0.3];
+const REACH_THRESHOLD: f64 = 0.05;
+const VEL_THRESHOLD: f64 = 0.5;
+const EPISODE_TIMEOUT: f64 = 3.0;
+const PAUSE_TIME: f64 = 1.5;
+const NUM_ELITES: usize = 15;
+const SIGMA_INIT: f64 = 1.0;
+const SIGMA_MIN: f64 = 0.1;
+const MAX_GENERATIONS: usize = 30;
+const VALIDATION_GEN: usize = 25;
+const NUM_PARAMS: usize = 10; // W[2x4] + b[2]
+
+/// Target joint angles (IK solution for TARGET end-effector position).
+const TARGET_QPOS: [f64; 2] = [-0.242, 1.982];
+
+// ── MJCF ────────────────────────────────────────────────────────────────────
+
+const MJCF: &str = r#"
+<mujoco model="reaching-arm">
+  <compiler angle="radian" inertiafromgeom="true"/>
+  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
+    <flag contact="disable"/>
+  </option>
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+  <worldbody>
+    <body name="upper_arm" pos="0 0 0">
+      <joint name="shoulder" type="hinge" axis="0 -1 0"
+             limited="true" range="-3.14159 3.14159" damping="2.0"/>
+      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.5 0 0"
+            size="0.03" mass="0.5" rgba="0.3 0.5 0.85 1"/>
+      <body name="forearm" pos="0.5 0 0">
+        <joint name="elbow" type="hinge" axis="0 -1 0"
+               limited="true" range="-2.6 2.6" damping="1.0"/>
+        <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.4 0 0"
+              size="0.025" mass="0.3" rgba="0.85 0.4 0.2 1"/>
+        <site name="fingertip" pos="0.4 0 0" size="0.015"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="shoulder_motor" joint="shoulder" gear="10"
+           ctrllimited="true" ctrlrange="-1 1"/>
+    <motor name="elbow_motor" joint="elbow" gear="5"
+           ctrllimited="true" ctrlrange="-1 1"/>
+  </actuator>
+</mujoco>
+"#;
+
+// ── Policy ──────────────────────────────────────────────────────────────────
+
+/// Observation normalization scales (keeps pre-tanh values moderate).
+const OBS_SCALE: [f64; 4] = [
+    1.0 / std::f64::consts::PI, // qpos[0]: range ≈ [-π, π]
+    1.0 / std::f64::consts::PI, // qpos[1]: range ≈ [-2.6, 2.6]
+    0.1,                        // qvel[0]: range ≈ [-10, 10]
+    0.1,                        // qvel[1]: range ≈ [-10, 10]
+];
+
+/// Linear policy: action = tanh(W * obs_norm + b)
+fn apply_policy(params: &[f64], obs: &[f32]) -> [f32; 2] {
+    let mut out = [0.0f32; 2];
+    for a in 0..2 {
+        let mut val = params[8 + a];
+        for o in 0..4 {
+            val += params[a * 4 + o] * f64::from(obs[o]) * OBS_SCALE[o];
+        }
+        out[a] = val.tanh() as f32;
+    }
+    out
+}
+
+// ── CEM Helpers ─────────────────────────────────────────────────────────────
+
+/// Box-Muller normal sample.
+fn randn(rng: &mut impl Rng) -> f64 {
+    let u1: f64 = 1.0 - rng.random::<f64>();
+    let u2: f64 = rng.random::<f64>();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
+fn build_vec_env(model: &Arc<sim_core::Model>, n_envs: usize) -> VecEnv {
+    let obs = ObservationSpace::builder()
+        .all_qpos()
+        .all_qvel()
+        .build(model)
+        .expect("obs build");
+    let act = ActionSpace::builder()
+        .all_ctrl()
+        .build(model)
+        .expect("act build");
+
+    let target = TARGET;
+    VecEnv::builder(model.clone(), n_envs)
+        .observation_space(obs)
+        .action_space(act)
+        .reward(move |_m, d| {
+            let e0 = d.qpos[0] - TARGET_QPOS[0];
+            let e1 = d.qpos[1] - TARGET_QPOS[1];
+            -(e0 * e0 + e1 * e1)
+        })
+        .done(move |_m, d| {
+            let tip = d.site_xpos[0];
+            let dx = tip.x - target[0];
+            let dz = tip.z - target[2];
+            let dist = (dx * dx + dz * dz).sqrt();
+            let vel = (d.qvel[0] * d.qvel[0] + d.qvel[1] * d.qvel[1]).sqrt();
+            dist < REACH_THRESHOLD && vel < VEL_THRESHOLD
+        })
+        .truncated(|_m, d| d.time > EPISODE_TIMEOUT)
+        .sub_steps(5)
+        .build()
+        .expect("vec_env build")
+}
+
+fn sample_perturbations(
+    mu: &[f64; NUM_PARAMS],
+    sigma: &[f64; NUM_PARAMS],
+    rng: &mut impl Rng,
+    n: usize,
+) -> Vec<[f64; NUM_PARAMS]> {
+    (0..n)
+        .map(|_| {
+            let mut params = [0.0; NUM_PARAMS];
+            for k in 0..NUM_PARAMS {
+                params[k] = mu[k] + sigma[k] * randn(rng);
+            }
+            params
+        })
+        .collect()
+}
+
+fn cem_update(
+    mu: &mut [f64; NUM_PARAMS],
+    sigma: &mut [f64; NUM_PARAMS],
+    perturbations: &[[f64; NUM_PARAMS]],
+    rewards: &[f64],
+    n_elites: usize,
+) {
+    let n = rewards.len();
+    let mut indices: Vec<usize> = (0..n).collect();
+    indices.sort_by(|&a, &b| rewards[b].partial_cmp(&rewards[a]).unwrap());
+    let elite_idx = &indices[..n_elites];
+
+    for k in 0..NUM_PARAMS {
+        let elite_vals: Vec<f64> = elite_idx.iter().map(|&i| perturbations[i][k]).collect();
+        let mean = elite_vals.iter().sum::<f64>() / n_elites as f64;
+        let var = elite_vals.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n_elites as f64;
+        mu[k] = mean;
+        sigma[k] = var.sqrt().max(SIGMA_MIN);
+    }
+}
+
+// ── Bevy Resources ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Running,
+    Updating,
+}
+
+#[derive(Resource)]
+struct CemResource {
+    vec_env: VecEnv,
+    actions: Tensor,
+    current_obs: Tensor,
+
+    mu: [f64; NUM_PARAMS],
+    sigma: [f64; NUM_PARAMS],
+    perturbations: Vec<[f64; NUM_PARAMS]>,
+
+    generation: usize,
+    phase: Phase,
+    gen_complete: Vec<bool>,
+    gen_reached: Vec<bool>,
+    cum_rewards: Vec<f64>,
+
+    accumulator: f64,
+    sim_time: f64,
+    pause_timer: f64,
+
+    rng: rand::rngs::StdRng,
+
+    // History (per generation)
+    best_rewards: Vec<f64>,
+    reach_counts: Vec<usize>,
+}
+
+#[derive(Resource, Default)]
+struct AutoResetValidation {
+    reported: bool,
+}
+
+// ── Bevy App ────────────────────────────────────────────────────────────────
+
+fn main() {
+    println!("=== CortenForge: Auto-Reset — Reaching Arm + CEM ===");
+    println!("  {NUM_ENVS} arms, {MAX_GENERATIONS} generations, {NUM_ELITES} elites");
+    println!(
+        "  Target: ({:.1}, {:.1}, {:.1})",
+        TARGET[0], TARGET[1], TARGET[2]
+    );
+    println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
+
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "CortenForge — Auto-Reset (Reaching Arm + CEM)".into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_plugins(OrbitCameraPlugin)
+        .init_resource::<PhysicsHud>()
+        .init_resource::<AutoResetValidation>()
+        .insert_resource(
+            ValidationHarness::new()
+                .wall_clock()
+                .report_at(180.0)
+                .print_every(10.0)
+                .display(|_m, _d| String::new()),
+        )
+        .add_systems(Startup, setup)
+        .add_systems(Update, step_cem)
+        .add_systems(
+            PostUpdate,
+            (
+                sync_vec_env_to_scenes,
+                sync_scene_geom_transforms,
+                sync_dummy_time,
+                validation_system,
+                track_validation,
+                update_hud,
+                render_physics_hud,
+            )
+                .chain(),
+        )
+        .run();
+}
+
+// ── Setup ───────────────────────────────────────────────────────────────────
+
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF parse"));
+    let mut vec_env = build_vec_env(&model, NUM_ENVS);
+    let init_obs = vec_env.reset_all().expect("reset");
+
+    let mut rng = {
+        use rand::SeedableRng;
+        rand::rngs::StdRng::seed_from_u64(42)
+    };
+    let mu = [0.0f64; NUM_PARAMS];
+    let sigma = [SIGMA_INIT; NUM_PARAMS];
+    let perturbations = sample_perturbations(&mu, &sigma, &mut rng, NUM_ENVS);
+
+    // ── PhysicsScenes ──
+    let mut scenes = PhysicsScenes::default();
+
+    let mat_upper =
+        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.3, 0.5, 0.85)));
+    let mat_forearm =
+        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.85, 0.4, 0.2)));
+
+    // Target sphere material (shared)
+    let mat_target = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.2, 0.9, 0.2, 0.5),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    let target_mesh = meshes.add(Sphere::new(0.03));
+
+    for i in 0..NUM_ENVS {
+        let scene_model = (*model).clone();
+        let mut scene_data = scene_model.make_data();
+        scene_data.forward(&scene_model).expect("forward");
+
+        let id = scenes.add(format!("env-{i}"), scene_model, scene_data);
+
+        let lane = (i as f32 - (NUM_ENVS as f32 - 1.0) / 2.0) * SPACING;
+        spawn_scene_geoms(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &mut scenes,
+            id,
+            physics_pos(lane, 0.0, 0.0),
+            &[
+                ("upper_geom", mat_upper.clone()),
+                ("forearm_geom", mat_forearm.clone()),
+            ],
+        );
+
+        // Target sphere
+        let target_bevy = physics_pos(lane + TARGET[0] as f32, 0.0, TARGET[2] as f32);
+        commands.spawn((
+            Mesh3d(target_mesh.clone()),
+            MeshMaterial3d(mat_target.clone()),
+            Transform::from_translation(target_bevy),
+        ));
+    }
+
+    commands.insert_resource(scenes);
+
+    let actions = Tensor::zeros(&[NUM_ENVS, 2]);
+    commands.insert_resource(CemResource {
+        vec_env,
+        actions,
+        current_obs: init_obs,
+        mu,
+        sigma,
+        perturbations,
+        generation: 0,
+        phase: Phase::Running,
+        gen_complete: vec![false; NUM_ENVS],
+        gen_reached: vec![false; NUM_ENVS],
+        cum_rewards: vec![0.0; NUM_ENVS],
+        accumulator: 0.0,
+        sim_time: 0.0,
+        pause_timer: 0.0,
+        rng,
+        best_rewards: Vec::new(),
+        reach_counts: Vec::new(),
+    });
+
+    // Camera: front view of the arm row.
+    spawn_example_camera(
+        &mut commands,
+        physics_pos(0.0, -0.5, 0.0),
+        35.0,
+        std::f32::consts::FRAC_PI_2,
+        0.15,
+    );
+
+    spawn_physics_hud_at(&mut commands, HudPosition::BottomLeft);
+    insert_batch_validation_dummies(&mut commands, &model);
+}
+
+// ── Stepping (CEM state machine) ────────────────────────────────────────────
+
+fn step_cem(mut res: ResMut<CemResource>, time: Res<Time>) {
+    match res.phase {
+        Phase::Running => {
+            if res.generation >= MAX_GENERATIONS {
+                return;
+            }
+
+            let wall_dt = time.delta_secs_f64();
+            res.accumulator += wall_dt;
+            let dt_action = 5.0 * res.vec_env.model().timestep;
+
+            #[allow(clippy::cast_sign_loss)]
+            let budget = ((res.accumulator / dt_action).max(0.0) as u32).min(200);
+
+            for _ in 0..budget {
+                // Compute actions from perturbed policies
+                for i in 0..NUM_ENVS {
+                    if !res.gen_complete[i] {
+                        let obs = res.current_obs.row(i);
+                        let acts = apply_policy(&res.perturbations[i], obs);
+                        let row = res.actions.row_mut(i);
+                        row[0] = acts[0];
+                        row[1] = acts[1];
+                    }
+                }
+
+                let actions = res.actions.clone();
+                let result = res.vec_env.step(&actions).expect("vec step");
+
+                for i in 0..NUM_ENVS {
+                    if !res.gen_complete[i] {
+                        res.cum_rewards[i] += result.rewards[i];
+                        if result.dones[i] || result.truncateds[i] {
+                            res.gen_complete[i] = true;
+                            if result.dones[i] {
+                                res.gen_reached[i] = true;
+                            }
+                        }
+                    }
+                }
+
+                res.current_obs = result.observations;
+                res.accumulator -= dt_action;
+                res.sim_time += dt_action;
+
+                if res.gen_complete.iter().all(|&c| c) {
+                    // Record stats and transition to UPDATING
+                    let best = res
+                        .cum_rewards
+                        .iter()
+                        .copied()
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    let reached = res.gen_reached.iter().filter(|&&r| r).count();
+                    res.best_rewards.push(best);
+                    res.reach_counts.push(reached);
+
+                    let sigma_mean = res.sigma.iter().sum::<f64>() / NUM_PARAMS as f64;
+                    println!(
+                        "gen {:>2}: reached={reached:>2}/{NUM_ENVS}  best_R={best:>8.1}  σ_mean={sigma_mean:.3}",
+                        res.generation + 1
+                    );
+
+                    res.phase = Phase::Updating;
+                    res.pause_timer = PAUSE_TIME;
+                    break;
+                }
+            }
+        }
+        Phase::Updating => {
+            let wall_dt = time.delta_secs_f64();
+            res.pause_timer -= wall_dt;
+
+            if res.pause_timer <= 0.0 {
+                // CEM update — destructure for disjoint field borrows
+                let perturbations = res.perturbations.clone();
+                let cum_rewards = res.cum_rewards.clone();
+                let inner = &mut *res;
+                cem_update(
+                    &mut inner.mu,
+                    &mut inner.sigma,
+                    &perturbations,
+                    &cum_rewards,
+                    NUM_ELITES,
+                );
+
+                // Next generation — copy mu/sigma to locals for sampling
+                let mu = res.mu;
+                let sigma = res.sigma;
+                res.generation += 1;
+                res.perturbations = sample_perturbations(&mu, &sigma, &mut res.rng, NUM_ENVS);
+                res.current_obs = res.vec_env.reset_all().expect("reset");
+                res.cum_rewards.fill(0.0);
+                res.gen_complete.fill(false);
+                res.gen_reached.fill(false);
+                res.phase = Phase::Running;
+            }
+        }
+    }
+}
+
+// ── Sync ────────────────────────────────────────────────────────────────────
+
+fn sync_vec_env_to_scenes(res: Res<CemResource>, mut scenes: ResMut<PhysicsScenes>) {
+    sync_batch_geoms(res.vec_env.batch(), &mut scenes);
+}
+
+fn sync_dummy_time(res: Res<CemResource>, mut data: ResMut<sim_bevy::model_data::PhysicsData>) {
+    data.0.time = res.sim_time;
+}
+
+// ── Validation ──────────────────────────────────────────────────────────────
+
+fn track_validation(res: Res<CemResource>, mut val: ResMut<AutoResetValidation>) {
+    // Report after VALIDATION_GEN generations complete
+    if res.generation < VALIDATION_GEN || val.reported {
+        return;
+    }
+    val.reported = true;
+
+    let gen_idx = VALIDATION_GEN - 1; // 0-indexed
+    let reached = if gen_idx < res.reach_counts.len() {
+        res.reach_counts[gen_idx]
+    } else {
+        0
+    };
+    let gen1_best = res
+        .best_rewards
+        .first()
+        .copied()
+        .unwrap_or(f64::NEG_INFINITY);
+    let gen_best = if gen_idx < res.best_rewards.len() {
+        res.best_rewards[gen_idx]
+    } else {
+        f64::NEG_INFINITY
+    };
+    let mu_norm = res.mu.iter().map(|&v| v * v).sum::<f64>().sqrt();
+    let sigma_mean = res.sigma.iter().sum::<f64>() / NUM_PARAMS as f64;
+
+    let improvement = if gen1_best.abs() > 1e-10 {
+        (gen_best - gen1_best) / gen1_best.abs()
+    } else {
+        0.0
+    };
+
+    let checks = [
+        Check {
+            name: "Convergence (≥10 reached)",
+            pass: reached >= 10,
+            detail: format!("reached={reached}/{NUM_ENVS}"),
+        },
+        Check {
+            name: "Reward improvement ≥50%",
+            pass: improvement > 0.5,
+            detail: format!(
+                "gen1={gen1_best:.1} → gen{VALIDATION_GEN}={gen_best:.1} ({:.0}%)",
+                improvement * 100.0
+            ),
+        },
+        Check {
+            name: "Policy shifted (μ norm > 0.5)",
+            pass: mu_norm > 0.5,
+            detail: format!("‖μ‖={mu_norm:.3}"),
+        },
+        Check {
+            name: "σ decreased (< 0.5)",
+            pass: sigma_mean < 0.5,
+            detail: format!("mean(σ)={sigma_mean:.3}"),
+        },
+    ];
+
+    let _ = print_report(&format!("Auto-Reset CEM (gen {VALIDATION_GEN})"), &checks);
+}
+
+// ── HUD ─────────────────────────────────────────────────────────────────────
+
+fn update_hud(res: Res<CemResource>, mut hud: ResMut<PhysicsHud>) {
+    hud.clear();
+    hud.section("Reaching Arm (VecEnv + CEM)");
+    hud.raw(format!(
+        "generation: {} / {MAX_GENERATIONS}",
+        res.generation + 1
+    ));
+    hud.raw(format!(
+        "phase: {:?}{}",
+        res.phase,
+        if res.phase == Phase::Updating {
+            format!(" ({:.1}s)", res.pause_timer.max(0.0))
+        } else {
+            String::new()
+        }
+    ));
+
+    let cur_reached = res.gen_reached.iter().filter(|&&r| r).count();
+    let cur_complete = res.gen_complete.iter().filter(|&&c| c).count();
+    hud.raw(format!(
+        "reached: {cur_reached}/{NUM_ENVS}  done: {cur_complete}/{NUM_ENVS}"
+    ));
+
+    if let Some(&best) = res.best_rewards.last() {
+        hud.raw(format!("best reward: {best:.1}"));
+    }
+
+    let sigma_mean = res.sigma.iter().sum::<f64>() / NUM_PARAMS as f64;
+    hud.raw(format!("σ mean: {sigma_mean:.3}"));
+
+    // Per-env scoreboard (show top 10 and bottom 5)
+    if res.gen_complete.iter().any(|&c| c) {
+        hud.section("Per-Env (sample)");
+        let mut sorted: Vec<usize> = (0..NUM_ENVS).collect();
+        sorted.sort_by(|&a, &b| res.cum_rewards[b].partial_cmp(&res.cum_rewards[a]).unwrap());
+
+        for (rank, &i) in sorted.iter().take(8).enumerate() {
+            let status = if res.gen_reached[i] {
+                "DONE"
+            } else if res.gen_complete[i] {
+                "TRUNC"
+            } else {
+                "..."
+            };
+            let star = if rank < NUM_ELITES { "★" } else { " " };
+            hud.raw(format!(
+                "{star} {i:>2} R={:>8.1}  {status}",
+                res.cum_rewards[i]
+            ));
+        }
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Headless CEM runner for tests ──
+
+    struct CemResult {
+        gen1_best: f64,
+        last_best: f64,
+        mu_norm: f64,
+        sigma_mean: f64,
+        last_gen_reached: usize,
+        terminal_obs_all_some: bool,
+        reset_obs_near_zero: bool,
+        reward_range: f64,
+        gen1_reward_variance: f64,
+    }
+
+    fn run_cem_headless(seed: u64) -> CemResult {
+        use rand::SeedableRng;
+
+        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
+        let mut vec_env = build_vec_env(&model, NUM_ENVS);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
+        let mut mu = [0.0f64; NUM_PARAMS];
+        let mut sigma = [SIGMA_INIT; NUM_PARAMS];
+
+        let mut gen1_best = f64::NEG_INFINITY;
+        let mut last_best = f64::NEG_INFINITY;
+        let mut last_gen_reached = 0;
+        let mut terminal_obs_all_some = true;
+        let mut reset_obs_near_zero = true;
+        let mut min_reward = f64::INFINITY;
+        let mut max_reward = f64::NEG_INFINITY;
+        let mut gen1_reward_variance = 0.0;
+
+        for generation in 0..MAX_GENERATIONS {
+            let perturbations = sample_perturbations(&mu, &sigma, &mut rng, NUM_ENVS);
+            let init_obs = vec_env.reset_all().expect("reset");
+
+            for i in 0..NUM_ENVS {
+                let row = init_obs.row(i);
+                if row[0].abs() > 0.01 || row[1].abs() > 0.01 {
+                    reset_obs_near_zero = false;
+                }
+            }
+
+            let mut cum_rewards = [0.0f64; NUM_ENVS];
+            let mut gen_complete = [false; NUM_ENVS];
+            let mut reached = [false; NUM_ENVS];
+            let mut actions = Tensor::zeros(&[NUM_ENVS, 2]);
+            let mut current_obs = init_obs;
+            let max_steps = (EPISODE_TIMEOUT / (5.0 * 0.002)) as usize + 50;
+
+            for _ in 0..max_steps {
+                for i in 0..NUM_ENVS {
+                    if !gen_complete[i] {
+                        let obs = current_obs.row(i);
+                        let acts = apply_policy(&perturbations[i], obs);
+                        let row = actions.row_mut(i);
+                        row[0] = acts[0];
+                        row[1] = acts[1];
+                    }
+                }
+
+                let result = vec_env.step(&actions).expect("step");
+
+                for i in 0..NUM_ENVS {
+                    if !gen_complete[i] {
+                        cum_rewards[i] += result.rewards[i];
+                        if result.dones[i] || result.truncateds[i] {
+                            gen_complete[i] = true;
+                            if result.dones[i] {
+                                reached[i] = true;
+                            }
+                            if result.terminal_observations[i].is_none() {
+                                terminal_obs_all_some = false;
+                            }
+                        }
+                    }
+                }
+
+                current_obs = result.observations;
+                if gen_complete.iter().all(|&c| c) {
+                    break;
+                }
+            }
+
+            let gen_best = cum_rewards
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            let gen_worst = cum_rewards.iter().copied().fold(f64::INFINITY, f64::min);
+
+            if generation == 0 {
+                gen1_best = gen_best;
+                let mean_r = cum_rewards.iter().sum::<f64>() / NUM_ENVS as f64;
+                gen1_reward_variance = cum_rewards
+                    .iter()
+                    .map(|&r| (r - mean_r).powi(2))
+                    .sum::<f64>()
+                    / NUM_ENVS as f64;
+            }
+
+            last_best = gen_best;
+            last_gen_reached = reached.iter().filter(|&&r| r).count();
+            min_reward = min_reward.min(gen_worst);
+            max_reward = max_reward.max(gen_best);
+
+            cem_update(
+                &mut mu,
+                &mut sigma,
+                &perturbations,
+                &cum_rewards,
+                NUM_ELITES,
+            );
+        }
+
+        let mu_norm = mu.iter().map(|&v| v * v).sum::<f64>().sqrt();
+        let sigma_mean = sigma.iter().sum::<f64>() / NUM_PARAMS as f64;
+
+        CemResult {
+            gen1_best,
+            last_best,
+            mu_norm,
+            sigma_mean,
+            last_gen_reached,
+            terminal_obs_all_some,
+            reset_obs_near_zero,
+            reward_range: max_reward - min_reward,
+            gen1_reward_variance,
+        }
+    }
+
+    // ── 8 assumption tests ──
+
+    #[test]
+    fn site_xpos_populated_after_forward() {
+        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
+        let mut data = model.make_data();
+        data.reset(&model);
+        data.forward(&model).expect("forward");
+        let tip = data.site_xpos[0];
+        assert!((tip.x - 0.9).abs() < 0.02, "tip.x={:.4}", tip.x);
+        assert!(tip.y.abs() < 0.01, "tip.y={:.4}", tip.y);
+        assert!(tip.z.abs() < 0.01, "tip.z={:.4}", tip.z);
+    }
+
+    #[test]
+    fn reset_restores_qpos_to_zero() {
+        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
+        let mut data = model.make_data();
+        data.ctrl[0] = 1.0;
+        data.ctrl[1] = 1.0;
+        for _ in 0..200 {
+            data.step(&model).expect("step");
+        }
+        data.reset(&model);
+        assert_eq!(data.qpos[0], 0.0);
+        assert_eq!(data.qpos[1], 0.0);
+    }
+
+    #[test]
+    fn gravity_makes_arm_fall() {
+        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
+        let mut data = model.make_data();
+        data.reset(&model);
+        data.forward(&model).expect("forward");
+        let initial_z = data.site_xpos[0].z;
+        for _ in 0..500 {
+            data.step(&model).expect("step");
+        }
+        assert!(data.site_xpos[0].z < initial_z - 0.1);
+    }
+
+    #[test]
+    fn cem_converges_in_30_generations() {
+        let r = run_cem_headless(42);
+        assert!(r.last_gen_reached >= 10, "reached={}", r.last_gen_reached);
+        let improvement = (r.last_best - r.gen1_best) / r.gen1_best.abs();
+        assert!(improvement > 0.5, "improvement={:.0}%", improvement * 100.0);
+        assert!(r.mu_norm > 0.5, "mu_norm={:.3}", r.mu_norm);
+        assert!(r.sigma_mean < 0.5, "sigma={:.3}", r.sigma_mean);
+    }
+
+    #[test]
+    fn fifty_envs_sufficient_for_ten_params() {
+        let mut converged = 0;
+        for seed in [42, 123, 999] {
+            let r = run_cem_headless(seed);
+            if r.last_gen_reached >= 10 && r.mu_norm > 0.5 {
+                converged += 1;
+            }
+        }
+        assert!(converged >= 2, "converged {converged}/3");
+    }
+
+    #[test]
+    fn tanh_saturation_preserves_gradient() {
+        let r = run_cem_headless(42);
+        assert!(
+            r.gen1_reward_variance > 1.0,
+            "var={:.3}",
+            r.gen1_reward_variance
+        );
+    }
+
+    #[test]
+    fn sub_steps_give_100hz_control() {
+        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
+        let mut vec_env = build_vec_env(&model, 1);
+        vec_env.reset_all().expect("reset");
+        let actions = Tensor::zeros(&[1, 2]);
+        vec_env.step(&actions).expect("step");
+        let time = vec_env.batch().env(0).unwrap().time;
+        assert!((time - 0.01).abs() < 1e-10, "time={time}");
+    }
+
+    #[test]
+    fn episode_timeout_dynamic_range() {
+        let r = run_cem_headless(42);
+        assert!(r.reward_range > 50.0, "range={:.1}", r.reward_range);
+    }
+}

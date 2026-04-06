@@ -107,7 +107,7 @@ pub mod prelude {
         ModelGeomIndex, ModelSiteIndex, MuscleAttachment, MuscleMeshIndex, PhysicsAccumulator,
         PhysicsData, PhysicsModel, spawn_model_geoms, spawn_model_geoms_with, spawn_muscle_meshes,
         step_model_data, step_physics_realtime, sync_geom_transforms, sync_model_data_to_bevy,
-        update_muscle_meshes,
+        sync_rendering_data, update_muscle_meshes,
     };
     pub use crate::multi_scene::{
         MultiScenePlugin, PhysicsScene, PhysicsSceneId, PhysicsScenes, spawn_scene_geoms,

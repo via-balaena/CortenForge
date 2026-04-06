@@ -226,6 +226,26 @@ members = [
     "examples/fundamentals/sim-cpu/mesh-collision/mesh-on-mesh",
     "examples/fundamentals/sim-cpu/mesh-collision/stress-test",
 
+    # Examples — fundamentals / sim-ml / spaces
+    "examples/fundamentals/sim-ml/spaces/stress-test",
+    "examples/fundamentals/sim-ml/spaces/obs-extract",
+    "examples/fundamentals/sim-ml/spaces/act-inject",
+    "examples/fundamentals/sim-ml/spaces/obs-rich",
+    "examples/fundamentals/sim-ml/spaces/act-clamping",
+
+    # Examples — fundamentals / sim-ml / sim-env
+    "examples/fundamentals/sim-ml/sim-env/stress-test",
+    "examples/fundamentals/sim-ml/sim-env/episode-loop",
+    "examples/fundamentals/sim-ml/sim-env/sub-stepping",
+    "examples/fundamentals/sim-ml/sim-env/on-reset",
+
+    # Examples — fundamentals / sim-ml / vec-env
+    "examples/fundamentals/sim-ml/vec-env/stress-test",
+    "examples/fundamentals/sim-ml/vec-env/parallel-step",
+    "examples/fundamentals/sim-ml/vec-env/auto-reset",
+    "examples/fundamentals/sim-ml/vec-env/reinforce",
+    "examples/fundamentals/sim-ml/vec-env/ppo",
+
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
     "examples/sdf-physics/cpu/02-thin-grid",
@@ -268,6 +288,7 @@ members = [
     "sim/L0/urdf",
     "sim/L0/tests",
     "sim/L0/gpu",
+    "sim/L0/ml-bridge",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
@@ -440,6 +461,7 @@ sim-core = { path = "sim/L0/core" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
 sim-gpu = { path = "sim/L0/gpu" }
+sim-ml-bridge = { path = "sim/L0/ml-bridge" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }
 
