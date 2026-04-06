@@ -239,6 +239,9 @@ members = [
     "examples/fundamentals/sim-ml/sim-env/sub-stepping",
     "examples/fundamentals/sim-ml/sim-env/on-reset",
 
+    # Examples — fundamentals / sim-ml / vec-env
+    "examples/fundamentals/sim-ml/vec-env/stress-test",
+
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
     "examples/sdf-physics/cpu/02-thin-grid",
