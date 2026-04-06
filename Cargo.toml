@@ -243,6 +243,7 @@ members = [
     "examples/fundamentals/sim-ml/vec-env/stress-test",
     "examples/fundamentals/sim-ml/vec-env/parallel-step",
     "examples/fundamentals/sim-ml/vec-env/auto-reset",
+    "examples/fundamentals/sim-ml/vec-env/reinforce",
 
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",

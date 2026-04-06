@@ -3622,6 +3622,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ml-vec-env-reinforce"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "rand 0.9.2",
+ "sim-bevy",
+ "sim-core",
+ "sim-mjcf",
+ "sim-ml-bridge",
+]
+
+[[package]]
 name = "example-ml-vec-env-stress-test"
 version = "0.7.0"
 dependencies = [
