@@ -66,6 +66,8 @@ pub mod vec_env;
 
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
 pub use error::{EnvError, ResetError, SpaceError, TensorError, VecStepError};
-pub use space::{ActionSpace, ActionSpaceBuilder, ObservationSpace, ObservationSpaceBuilder};
+pub use space::{
+    ActionSpace, ActionSpaceBuilder, ObsSegment, ObservationSpace, ObservationSpaceBuilder,
+};
 pub use tensor::{Tensor, TensorSpec};
 pub use vec_env::{VecEnv, VecEnvBuilder, VecStepResult};

@@ -216,6 +216,7 @@ pub struct ValidationHarness {
     custom_reported: bool,
     last_print: f64,
     display: Option<fn(&Model, &Data) -> String>,
+    use_wall_clock: bool,
 }
 
 impl ValidationHarness {
@@ -232,6 +233,7 @@ impl ValidationHarness {
             custom_reported: false,
             last_print: 0.0,
             display: None,
+            use_wall_clock: false,
         }
     }
 
@@ -256,6 +258,16 @@ impl ValidationHarness {
     #[must_use]
     pub fn display(mut self, f: fn(&Model, &Data) -> String) -> Self {
         self.display = Some(f);
+        self
+    }
+
+    /// Use wall-clock time (Bevy's `Time` resource) instead of sim time
+    /// for `report_at` and `print_every` triggers.
+    ///
+    /// Use this for episodic environments where `data.time` resets each episode.
+    #[must_use]
+    pub fn wall_clock(mut self) -> Self {
+        self.use_wall_clock = true;
         self
     }
 
@@ -433,8 +445,13 @@ pub fn validation_system(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
     mut harness: ResMut<ValidationHarness>,
+    bevy_time: Res<Time>,
 ) {
-    let time = data.time;
+    let time = if harness.use_wall_clock {
+        bevy_time.elapsed_secs_f64()
+    } else {
+        data.time
+    };
     let model_ref: &Model = &model;
     let data_ref: &Data = &data;
 

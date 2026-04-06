@@ -1,8 +1,7 @@
 #![allow(missing_docs, clippy::expect_used, clippy::cast_precision_loss)]
 
-use std::cell::Cell;
-use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sim_core::Model;
 use sim_core::validation::{Check, print_report};
@@ -179,7 +178,7 @@ fn check_4_on_reset_counter() -> Check {
     let model = load();
     let (obs, act) = build_spaces(&model);
 
-    let counter = Rc::new(Cell::new(0_usize));
+    let counter = Arc::new(AtomicUsize::new(0));
     let counter_hook = counter.clone();
 
     let mut env = SimEnv::builder(model)
@@ -189,7 +188,7 @@ fn check_4_on_reset_counter() -> Check {
         .done(|_m, d| d.qpos[0].abs() > 0.5)
         .truncated(|_m, _d| false)
         .on_reset(move |_m, _d| {
-            counter_hook.set(counter_hook.get() + 1);
+            counter_hook.fetch_add(1, Ordering::Relaxed);
         })
         .build()
         .expect("env build");
@@ -205,7 +204,7 @@ fn check_4_on_reset_counter() -> Check {
         }
     }
 
-    let count = counter.get();
+    let count = counter.load(Ordering::Relaxed);
     Check {
         name: "on_reset counter",
         pass: count == 20,

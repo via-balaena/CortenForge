@@ -60,10 +60,10 @@ pub struct VecStepResult {
 /// observation extraction, resets) runs sequentially after `step_all()`
 /// returns — physics dominates wall time; the bridge overhead is <2%.
 ///
-/// Reward/done/truncated closures are `Fn + Send + Sync` so that `VecEnv`
-/// itself is `Send + Sync` (essential for async training loops).
-/// `on_reset_fn` is `FnMut + Send` (no `Sync`) because resets are
-/// sequential — the closure can own mutable state like an RNG directly.
+/// All closures are `Send + Sync` so that `VecEnv` itself is
+/// `Send + Sync` (essential for async training loops and Bevy resources).
+/// `on_reset_fn` is `FnMut` (resets are sequential — the closure can
+/// own mutable state like an RNG directly).
 ///
 /// ## Sub-stepping
 ///
@@ -81,7 +81,7 @@ pub struct VecEnv {
     reward_fn: Arc<dyn Fn(&Model, &Data) -> f64 + Send + Sync>,
     done_fn: Arc<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
     truncated_fn: Arc<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
-    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data, usize) + Send>>,
+    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data, usize) + Send + Sync>>,
     sub_steps: usize,
 }
 
@@ -301,7 +301,7 @@ pub struct VecEnvBuilder {
     reward_fn: Option<Arc<dyn Fn(&Model, &Data) -> f64 + Send + Sync>>,
     done_fn: Option<Arc<dyn Fn(&Model, &Data) -> bool + Send + Sync>>,
     truncated_fn: Option<Arc<dyn Fn(&Model, &Data) -> bool + Send + Sync>>,
-    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data, usize) + Send>>,
+    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data, usize) + Send + Sync>>,
     sub_steps: usize,
 }
 
@@ -355,7 +355,10 @@ impl VecEnvBuilder {
     /// Receives `(model, data, env_index)` — the env index lets the closure
     /// use per-env RNG seeds or deterministic randomization schedules.
     #[must_use]
-    pub fn on_reset(mut self, f: impl FnMut(&Model, &mut Data, usize) + Send + 'static) -> Self {
+    pub fn on_reset(
+        mut self,
+        f: impl FnMut(&Model, &mut Data, usize) + Send + Sync + 'static,
+    ) -> Self {
         self.on_reset_fn = Some(Box::new(f));
         self
     }

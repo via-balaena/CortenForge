@@ -22,18 +22,6 @@ use sim_bevy::model_data::{
 use sim_core::validation::{Check, print_report};
 use sim_ml_bridge::ObservationSpace;
 
-// ── Bevy Resource wrapper ──────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct ObsSpace(ObservationSpace);
-
-impl std::ops::Deref for ObsSpace {
-    type Target = ObservationSpace;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 // ── MJCF Model ─────────────────────────────────────────────────────────────
 
 const MJCF: &str = r#"
@@ -66,40 +54,6 @@ const MJCF: &str = r#"
   </sensor>
 </mujoco>
 "#;
-
-// Extractor layout: the observation vector is a concatenation of these
-// segments in order, with their starting offsets and lengths.
-struct ExtractorLayout {
-    // (label, offset, len)
-    segments: Vec<(&'static str, usize, usize)>,
-    total_dim: usize,
-}
-
-fn build_layout(model: &sim_core::Model) -> ExtractorLayout {
-    let mut segments = Vec::new();
-    let mut offset = 0;
-
-    let mut seg = |label: &'static str, len: usize| {
-        segments.push((label, offset, len));
-        offset += len;
-    };
-
-    seg("qpos", model.nq); // 2
-    seg("qvel", model.nv); // 2
-    seg("sensor(cart_pos)", 1); // 1
-    seg("sensor(cart_vel)", 1); // 1
-    seg("sensor(pole_angle)", 1); // 1
-    seg("sensor(pole_angvel)", 1); // 1
-    seg("xpos(1..3)", (3 - 1) * 3); // 2 bodies * 3 = 6
-    seg("energy", 2); // kinetic + potential
-    seg("time", 1); // 1
-    seg("contact_count", 1); // 1
-
-    ExtractorLayout {
-        segments,
-        total_dim: offset,
-    }
-}
 
 // ── Bevy App ───────────────────────────────────────────────────────────────
 
@@ -172,13 +126,10 @@ fn setup(
         .build(&model)
         .expect("obs space build");
 
-    let layout = build_layout(&model);
-    assert_eq!(obs_space.dim(), layout.total_dim, "layout dim mismatch");
-
     println!(
         "  obs_space: dim={}, segments={}\n",
         obs_space.dim(),
-        layout.segments.len()
+        obs_space.segments().len()
     );
 
     let mat_cart = materials.add(MetalPreset::BrushedMetal.material());
@@ -229,32 +180,33 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(ObsSpace(obs_space));
+    commands.insert_resource(obs_space);
 }
 
 // ── HUD ────────────────────────────────────────────────────────────────────
 
 fn update_hud(
-    model: Res<PhysicsModel>,
+    _model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    obs_space: Res<ObsSpace>,
+    obs_space: Res<ObservationSpace>,
     mut hud: ResMut<PhysicsHud>,
 ) {
     let obs = obs_space.extract(&data);
     let s = obs.as_slice();
-    let layout = build_layout(&model);
 
     hud.clear();
     hud.section("Rich Observation");
     hud.raw(format!("dim={}, shape={:?}", obs_space.dim(), obs.shape()));
     hud.raw(String::new());
 
-    for &(label, offset, len) in &layout.segments {
-        let vals = &s[offset..offset + len];
+    for seg in obs_space.segments() {
+        let vals = &s[seg.offset..seg.offset + seg.dim];
         let formatted: Vec<String> = vals.iter().map(|v| format!("{v:+.4}")).collect();
         hud.raw(format!(
-            "[{offset:>2}..{:>2}] {label:<20} {}",
-            offset + len,
+            "[{:>2}..{:>2}] {:<20} {}",
+            seg.offset,
+            seg.offset + seg.dim,
+            seg.label,
             formatted.join(" ")
         ));
     }
@@ -274,13 +226,13 @@ struct RichValidation {
 fn rich_diagnostics(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    obs_space: Res<ObsSpace>,
+    obs_space: Res<ObservationSpace>,
     harness: Res<ValidationHarness>,
     mut val: ResMut<RichValidation>,
 ) {
     let obs = obs_space.extract(&data);
     let s = obs.as_slice();
-    let layout = build_layout(&model);
+    let segments = obs_space.segments();
 
     // Check named sensors vs manual sensordata indexing.
     // sensor("cart_pos") is at offset 4, sensordata[0] is cart_pos.
@@ -296,24 +248,24 @@ fn rich_diagnostics(
     if harness.reported() && !val.reported {
         val.reported = true;
 
-        let dim_ok = obs_space.dim() == layout.total_dim;
+        let seg_dim_sum: usize = segments.iter().map(|s| s.dim).sum();
+        let dim_ok = obs_space.dim() == seg_dim_sum;
 
         // xpos segment: bodies 1..3 = 2 bodies * 3 = 6 floats.
         let xpos_count = (model.nbody - 1) * 3;
         let xpos_ok = xpos_count == 6;
 
         // energy segment: always 2 floats.
-        let energy_ok = layout
-            .segments
+        let energy_ok = segments
             .iter()
-            .find(|s| s.0 == "energy")
-            .is_some_and(|s| s.2 == 2);
+            .find(|s| s.label == "energy")
+            .is_some_and(|s| s.dim == 2);
 
         let checks = vec![
             Check {
                 name: "obs_dim",
                 pass: dim_ok,
-                detail: format!("{} (sum={})", obs_space.dim(), layout.total_dim),
+                detail: format!("{} (sum={})", obs_space.dim(), seg_dim_sum),
             },
             Check {
                 name: "Named sensors",

@@ -11,12 +11,17 @@
 
 use std::sync::Arc;
 
-use bevy::ecs::system::NonSendMut;
 use bevy::prelude::*;
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::examples::{PhysicsHud, render_physics_hud, spawn_example_camera, spawn_physics_hud};
+use sim_bevy::examples::{
+    PhysicsHud, ValidationHarness, render_physics_hud, spawn_example_camera, spawn_physics_hud,
+    validation_system,
+};
 use sim_bevy::materials::MetalPreset;
-use sim_bevy::model_data::{PhysicsData, PhysicsModel, spawn_model_geoms, sync_geom_transforms};
+use sim_bevy::model_data::{
+    PhysicsAccumulator, PhysicsData, PhysicsModel, spawn_model_geoms, sync_geom_transforms,
+    sync_rendering_data,
+};
 use sim_core::validation::{Check, print_report};
 use sim_ml_bridge::{ActionSpace, Environment, ObservationSpace, SimEnv, Tensor};
 
@@ -27,14 +32,6 @@ const TIME_LIMIT: f64 = 5.0;
 const REPORT_TIME: f64 = 15.0;
 
 // ── Resources ──────────────────────────────────────────────────────────────
-
-/// Wrapper for `SimEnv`.  Inserted as a **non-send** resource because
-/// `SimEnv` contains `Box<dyn Fn(...)>` closures that are not `Send + Sync`.
-struct SimEnvRes(SimEnv);
-
-/// Wall-clock accumulator for fixed-timestep stepping.
-#[derive(Resource, Default)]
-struct StepAccumulator(f64);
 
 #[derive(Resource)]
 struct EpisodeState {
@@ -69,7 +66,6 @@ struct EpisodeValidation {
     reward_ok: bool,
     saw_done: bool,
     saw_truncated: bool,
-    last_print: f64,
     reported: bool,
 }
 
@@ -83,7 +79,6 @@ impl Default for EpisodeValidation {
             reward_ok: true,
             saw_done: false,
             saw_truncated: false,
-            last_print: 0.0,
             reported: false,
         }
     }
@@ -123,10 +118,6 @@ fn main() {
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     // ── Build SimEnv outside Bevy ──
-    //
-    // SimEnv contains Box<dyn Fn(...)> closures that are not Send+Sync,
-    // so it must be a non-send resource.  We build it here and hand it
-    // to the App via insert_non_send_resource().
 
     let model_arc = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF parse"));
 
@@ -168,17 +159,29 @@ fn main() {
         .add_plugins(OrbitCameraPlugin)
         .insert_resource(PhysicsModel(model_owned))
         .insert_resource(PhysicsData(data_owned))
-        .insert_non_send_resource(SimEnvRes(env))
-        .init_resource::<StepAccumulator>()
+        .insert_resource(env)
+        .init_resource::<PhysicsAccumulator>()
         .init_resource::<PhysicsHud>()
         .init_resource::<EpisodeState>()
         .init_resource::<EpisodeValidation>()
+        .insert_resource(
+            ValidationHarness::new()
+                .wall_clock()
+                .report_at(REPORT_TIME)
+                .print_every(1.0)
+                .display(|m, d| {
+                    let angle = d.sensor_scalar(m, "angle").unwrap_or(0.0);
+                    let angvel = d.sensor_scalar(m, "angvel").unwrap_or(0.0);
+                    format!("angle={angle:+.4}  angvel={angvel:+.4}")
+                }),
+        )
         .add_systems(Startup, setup)
         .add_systems(Update, step_env)
         .add_systems(
             PostUpdate,
             (
                 sync_geom_transforms,
+                validation_system,
                 episode_diagnostics,
                 update_hud,
                 render_physics_hud,
@@ -221,11 +224,11 @@ fn setup(
 // ── Stepping (Update) ─────────────────────────────────────────────────────
 
 fn step_env(
-    mut env: NonSendMut<SimEnvRes>,
+    mut env: ResMut<SimEnv>,
     model: Res<PhysicsModel>,
     mut physics_data: ResMut<PhysicsData>,
     time: Res<Time>,
-    mut acc: ResMut<StepAccumulator>,
+    mut acc: ResMut<PhysicsAccumulator>,
     mut state: ResMut<EpisodeState>,
     mut val: ResMut<EpisodeValidation>,
 ) {
@@ -237,11 +240,11 @@ fn step_env(
         // Sinusoidal policy near pendulum resonance (ω₀ ≈ 5.4 rad/s).
         // Amplitude 4.0 exceeds the gravitational restoring torque (~2.4 Nm)
         // at all angles, ensuring the pendulum swings past the done threshold.
-        let t = env.0.data().time;
+        let t = env.data().time;
         let action_val = (t * 5.0).sin() as f32 * 4.0;
         let action = Tensor::from_slice(&[action_val], &[1]);
 
-        let result = env.0.step(&action).expect("step");
+        let result = env.step(&action).expect("step");
         steps += 1;
         state.step_count += 1;
         state.cumulative_reward += result.reward;
@@ -250,7 +253,7 @@ fn step_env(
         state.last_truncated = result.truncated;
 
         // ── Validate reward against manual calculation ──
-        let manual_reward = -(env.0.data().qpos[0].powi(2));
+        let manual_reward = -(env.data().qpos[0].powi(2));
         if (result.reward - manual_reward).abs() > 1e-10 {
             val.reward_ok = false;
         }
@@ -259,13 +262,13 @@ fn step_env(
         if result.done || result.truncated {
             if result.done {
                 val.saw_done = true;
-                if env.0.data().qpos[0].abs() <= DONE_THRESHOLD {
+                if env.data().qpos[0].abs() <= DONE_THRESHOLD {
                     val.done_qpos_ok = false;
                 }
             }
             if result.truncated {
                 val.saw_truncated = true;
-                if env.0.data().time <= TIME_LIMIT {
+                if env.data().time <= TIME_LIMIT {
                     val.truncated_time_ok = false;
                 }
             }
@@ -275,7 +278,7 @@ fn step_env(
             state.step_count = 0;
             state.cumulative_reward = 0.0;
 
-            let obs = env.0.reset().expect("reset");
+            let obs = env.reset().expect("reset");
             // After reset, obs should be near [0, 0].
             if obs.as_slice().iter().any(|v| v.abs() > 1e-4) {
                 val.reset_obs_ok = false;
@@ -285,18 +288,10 @@ fn step_env(
         acc.0 -= dt;
     }
 
-    // ── Pattern B: refresh kinematics, then copy to PhysicsData ──
-    //
-    // sim-core's step() integrates but does NOT recompute kinematics
-    // (geom_xpos, geom_xmat, sensordata).  We call forward() once
-    // after all sub-steps, then clone the full Data for rendering.
-    if steps > 0 {
-        env.0
-            .data_mut()
-            .forward(&model.0)
-            .expect("post-step forward");
-    }
-    physics_data.0 = env.0.data().clone();
+    // Selective sync: copy only the fields needed for rendering and HUD.
+    // SimEnv.step() already calls forward() after sub-stepping, so
+    // geom_xpos, geom_xmat, sensordata, etc. are already fresh.
+    sync_rendering_data(env.data(), &mut physics_data.0);
 }
 
 // ── HUD (PostUpdate) ──────────────────────────────────────────────────────
@@ -329,27 +324,9 @@ fn update_hud(
 
 // ── Validation (PostUpdate) ───────────────────────────────────────────────
 
-fn episode_diagnostics(
-    time: Res<Time>,
-    state: Res<EpisodeState>,
-    data: Res<PhysicsData>,
-    model: Res<PhysicsModel>,
-    mut val: ResMut<EpisodeValidation>,
-) {
-    let elapsed = time.elapsed_secs_f64();
-
-    // Periodic console output (every 1 s wall clock).
-    if elapsed - val.last_print >= 1.0 {
-        val.last_print = elapsed;
-        let angle = data.sensor_scalar(&model, "angle").unwrap_or(0.0);
-        println!(
-            "  t={elapsed:.1}  ep={}  steps={}  angle={angle:+.4}  reward={:.4}  eps_done={}",
-            state.episode, state.step_count, state.last_reward, val.episodes_completed,
-        );
-    }
-
-    // Report at REPORT_TIME wall-clock seconds.
-    if !val.reported && elapsed > REPORT_TIME {
+fn episode_diagnostics(harness: Res<ValidationHarness>, mut val: ResMut<EpisodeValidation>) {
+    // Report is triggered by the harness at REPORT_TIME wall-clock seconds.
+    if harness.reported() && !val.reported {
         val.reported = true;
 
         let checks = vec![

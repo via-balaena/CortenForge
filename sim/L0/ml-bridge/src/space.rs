@@ -142,6 +142,20 @@ fn copy_vec_f64(src: &[f64], range: &Range<usize>, dst: &mut [f32]) {
     }
 }
 
+// ─── ObsSegment ────────────────────────────────────────────────────────────
+
+/// One segment of the observation vector, describing where an extractor's
+/// output lands in the flat obs buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObsSegment {
+    /// Human-readable label, e.g. `"qpos(0..2)"`, `"sensor(cart_pos)"`, `"energy"`.
+    pub label: String,
+    /// Start index in the flat observation vector.
+    pub offset: usize,
+    /// Number of `f32` elements this segment occupies.
+    pub dim: usize,
+}
+
 // ─── ObservationSpace ───────────────────────────────────────────────────────
 
 /// Selects which slices of `Data` become the observation vector.
@@ -152,8 +166,10 @@ fn copy_vec_f64(src: &[f64], range: &Range<usize>, dst: &mut [f32]) {
 ///
 /// Constructed via [`ObservationSpace::builder()`].
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct ObservationSpace {
     extractors: Vec<Extractor>,
+    segments: Vec<ObsSegment>,
     dim: usize,
 }
 
@@ -170,6 +186,15 @@ impl ObservationSpace {
     #[must_use]
     pub const fn dim(&self) -> usize {
         self.dim
+    }
+
+    /// The segments describing the layout of the observation vector.
+    ///
+    /// Each segment tells you which extractor produced which slice of the
+    /// flat obs buffer — useful for labeling HUD displays.
+    #[must_use]
+    pub fn segments(&self) -> &[ObsSegment] {
+        &self.segments
     }
 
     /// A [`TensorSpec`] describing this observation space (unbounded).
@@ -397,28 +422,70 @@ impl ObservationSpaceBuilder {
     /// name is not found.
     pub fn build(self, model: &Model) -> Result<ObservationSpace, SpaceError> {
         let mut extractors = Vec::with_capacity(self.entries.len());
+        let mut segments = Vec::with_capacity(self.entries.len());
+        let mut offset = 0;
 
         for entry in self.entries {
-            let ext = match entry {
+            let (ext, label) = match entry {
                 BuilderEntry::Resolved(ext) => {
                     validate_extractor(&ext, model)?;
-                    ext
+                    let label = extractor_label(&ext);
+                    (ext, label)
                 }
-                BuilderEntry::SensorByName(name) => resolve_sensor(&name, model)?,
-                BuilderEntry::AllQpos => Extractor::Qpos(0..model.nq),
-                BuilderEntry::AllQvel => Extractor::Qvel(0..model.nv),
-                BuilderEntry::AllSensordata => Extractor::Sensordata(0..model.nsensordata),
+                BuilderEntry::SensorByName(ref name) => {
+                    let ext = resolve_sensor(name, model)?;
+                    let label = format!("sensor({name})");
+                    (ext, label)
+                }
+                BuilderEntry::AllQpos => {
+                    let ext = Extractor::Qpos(0..model.nq);
+                    (ext, format!("qpos(0..{})", model.nq))
+                }
+                BuilderEntry::AllQvel => {
+                    let ext = Extractor::Qvel(0..model.nv);
+                    (ext, format!("qvel(0..{})", model.nv))
+                }
+                BuilderEntry::AllSensordata => {
+                    let ext = Extractor::Sensordata(0..model.nsensordata);
+                    (ext, format!("sensordata(0..{})", model.nsensordata))
+                }
             };
+            let dim = ext.dim();
+            segments.push(ObsSegment { label, offset, dim });
+            offset += dim;
             extractors.push(ext);
         }
 
-        let dim = extractors.iter().map(Extractor::dim).sum();
+        let dim = offset;
 
-        Ok(ObservationSpace { extractors, dim })
+        Ok(ObservationSpace {
+            extractors,
+            segments,
+            dim,
+        })
     }
 }
 
 // ─── validation helpers ─────────────────────────────────────────────────────
+
+/// Produce a human-readable label for an extractor.
+fn extractor_label(ext: &Extractor) -> String {
+    match ext {
+        Extractor::Qpos(r) => format!("qpos({}..{})", r.start, r.end),
+        Extractor::Qvel(r) => format!("qvel({}..{})", r.start, r.end),
+        Extractor::Qacc(r) => format!("qacc({}..{})", r.start, r.end),
+        Extractor::Ctrl(r) => format!("ctrl({}..{})", r.start, r.end),
+        Extractor::Sensordata(r) => format!("sensordata({}..{})", r.start, r.end),
+        Extractor::ActuatorForce(r) => format!("actuator_force({}..{})", r.start, r.end),
+        Extractor::QfrcConstraint(r) => format!("qfrc_constraint({}..{})", r.start, r.end),
+        Extractor::Xpos(r) => format!("xpos({}..{})", r.start, r.end),
+        Extractor::Xquat(r) => format!("xquat({}..{})", r.start, r.end),
+        Extractor::Cvel(r) => format!("cvel({}..{})", r.start, r.end),
+        Extractor::ContactCount => "contact_count".to_owned(),
+        Extractor::Time => "time".to_owned(),
+        Extractor::Energy => "energy".to_owned(),
+    }
+}
 
 /// Validate that an extractor's range fits the model's dimensions.
 fn validate_extractor(ext: &Extractor, model: &Model) -> Result<(), SpaceError> {
@@ -591,6 +658,7 @@ impl Injector {
 ///
 /// Constructed via [`ActionSpace::builder()`].
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct ActionSpace {
     injectors: Vec<(usize, Injector)>, // (offset_in_action, injector)
     dim: usize,
@@ -1070,6 +1138,80 @@ mod tests {
         assert_eq!(space.dim(), 3);
         let obs = space.extract(&data);
         assert_eq!(obs.as_slice(), &[1.0_f32, 2.0, 3.0]);
+    }
+
+    // ── segments ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn segments_labels_offsets_dims() {
+        // Build a cart-pole model with enough variety for 5 extractors.
+        let xml = r#"
+        <mujoco>
+          <option>
+            <flag energy="enable"/>
+          </option>
+          <worldbody>
+            <body name="cart" pos="0 0 0.5">
+              <joint name="slide" type="slide" axis="1 0 0"/>
+              <geom size="0.1"/>
+              <body name="pole" pos="0 0 0.1">
+                <joint name="hinge" type="hinge" axis="0 1 0"/>
+                <geom type="capsule" size="0.02" fromto="0 0 0 0 0 0.5"/>
+              </body>
+            </body>
+          </worldbody>
+          <actuator>
+            <motor joint="slide" name="force"/>
+          </actuator>
+          <sensor>
+            <jointpos joint="slide" name="cart_pos"/>
+            <jointvel joint="hinge" name="pole_vel"/>
+          </sensor>
+        </mujoco>
+        "#;
+        let model = sim_mjcf::load_model(xml).expect("valid MJCF");
+
+        let space = ObservationSpace::builder()
+            .all_qpos()                     // 1: qpos(0..2)
+            .all_qvel()                     // 2: qvel(0..2)
+            .sensor("cart_pos")             // 3: sensor(cart_pos)
+            .sensor("pole_vel")             // 4: sensor(pole_vel)
+            .energy()                       // 5: energy
+            .build(&model)
+            .unwrap();
+
+        let segs = space.segments();
+        assert_eq!(segs.len(), 5);
+
+        // Segment 0: all_qpos → qpos(0..2), offset=0, dim=2
+        assert_eq!(segs[0].label, "qpos(0..2)");
+        assert_eq!(segs[0].offset, 0);
+        assert_eq!(segs[0].dim, 2);
+
+        // Segment 1: all_qvel → qvel(0..2), offset=2, dim=2
+        assert_eq!(segs[1].label, "qvel(0..2)");
+        assert_eq!(segs[1].offset, 2);
+        assert_eq!(segs[1].dim, 2);
+
+        // Segment 2: sensor("cart_pos"), offset=4, dim=1
+        assert_eq!(segs[2].label, "sensor(cart_pos)");
+        assert_eq!(segs[2].offset, 4);
+        assert_eq!(segs[2].dim, 1);
+
+        // Segment 3: sensor("pole_vel"), offset=5, dim=1
+        assert_eq!(segs[3].label, "sensor(pole_vel)");
+        assert_eq!(segs[3].offset, 5);
+        assert_eq!(segs[3].dim, 1);
+
+        // Segment 4: energy, offset=6, dim=2
+        assert_eq!(segs[4].label, "energy");
+        assert_eq!(segs[4].offset, 6);
+        assert_eq!(segs[4].dim, 2);
+
+        // Total dim should match sum of segment dims.
+        let sum: usize = segs.iter().map(|s| s.dim).sum();
+        assert_eq!(space.dim(), sum);
+        assert_eq!(space.dim(), 8);
     }
 
     // ── spec ─────────────────────────────────────────────────────────────

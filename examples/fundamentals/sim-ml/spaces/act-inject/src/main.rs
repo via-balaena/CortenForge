@@ -23,18 +23,6 @@ use sim_bevy::model_data::{
 use sim_core::validation::{Check, print_report};
 use sim_ml_bridge::{ActionSpace, Tensor};
 
-// ── Bevy Resource wrapper ──────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct ActSpace(ActionSpace);
-
-impl std::ops::Deref for ActSpace {
-    type Target = ActionSpace;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 #[derive(Resource, Default)]
 struct LastAction(f32);
 
@@ -157,7 +145,7 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(ActSpace(act_space));
+    commands.insert_resource(act_space);
 }
 
 // ── Control ────────────────────────────────────────────────────────────────
@@ -165,7 +153,7 @@ fn setup(
 fn apply_action(
     model: Res<PhysicsModel>,
     mut data: ResMut<PhysicsData>,
-    act_space: Res<ActSpace>,
+    act_space: Res<ActionSpace>,
     mut last: ResMut<LastAction>,
 ) {
     // Sinusoidal action: 2.0 * sin(2*t), sweeps full ctrlrange [-2, 2].
@@ -181,7 +169,7 @@ fn apply_action(
 fn update_hud(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    act_space: Res<ActSpace>,
+    act_space: Res<ActionSpace>,
     last: Res<LastAction>,
     mut hud: ResMut<PhysicsHud>,
 ) {
@@ -220,7 +208,7 @@ struct ActValidation {
 fn act_diagnostics(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    act_space: Res<ActSpace>,
+    act_space: Res<ActionSpace>,
     last: Res<LastAction>,
     harness: Res<ValidationHarness>,
     mut val: ResMut<ActValidation>,

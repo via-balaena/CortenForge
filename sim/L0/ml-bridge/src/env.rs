@@ -76,15 +76,16 @@ pub trait Environment {
 /// and evaluates done once at the final state.
 ///
 /// Constructed via [`SimEnv::builder()`].
+#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct SimEnv {
     model: Arc<Model>,
     data: Data,
     obs_space: ObservationSpace,
     act_space: ActionSpace,
-    reward_fn: Box<dyn Fn(&Model, &Data) -> f64>,
-    done_fn: Box<dyn Fn(&Model, &Data) -> bool>,
-    truncated_fn: Box<dyn Fn(&Model, &Data) -> bool>,
-    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data)>>,
+    reward_fn: Box<dyn Fn(&Model, &Data) -> f64 + Send + Sync>,
+    done_fn: Box<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
+    truncated_fn: Box<dyn Fn(&Model, &Data) -> bool + Send + Sync>,
+    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data) + Send + Sync>>,
     sub_steps: usize,
 }
 
@@ -141,15 +142,18 @@ impl Environment for SimEnv {
             }
         }
 
-        // 3–5. Evaluate reward, done, truncated
+        // 3. Recompute kinematics so geom poses, sensors, etc. are fresh.
+        self.data.forward(&self.model)?;
+
+        // 4–6. Evaluate reward, done, truncated
         let reward = (self.reward_fn)(&self.model, &self.data);
         let done = (self.done_fn)(&self.model, &self.data);
         let truncated = (self.truncated_fn)(&self.model, &self.data);
 
-        // 6. Extract observation
+        // 7. Extract observation
         let observation = self.obs_space.extract(&self.data);
 
-        // 7. Return
+        // 8. Return
         Ok(StepResult {
             observation,
             reward,
@@ -206,10 +210,10 @@ pub struct SimEnvBuilder {
     model: Arc<Model>,
     obs_space: Option<ObservationSpace>,
     act_space: Option<ActionSpace>,
-    reward_fn: Option<Box<dyn Fn(&Model, &Data) -> f64>>,
-    done_fn: Option<Box<dyn Fn(&Model, &Data) -> bool>>,
-    truncated_fn: Option<Box<dyn Fn(&Model, &Data) -> bool>>,
-    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data)>>,
+    reward_fn: Option<Box<dyn Fn(&Model, &Data) -> f64 + Send + Sync>>,
+    done_fn: Option<Box<dyn Fn(&Model, &Data) -> bool + Send + Sync>>,
+    truncated_fn: Option<Box<dyn Fn(&Model, &Data) -> bool + Send + Sync>>,
+    on_reset_fn: Option<Box<dyn FnMut(&Model, &mut Data) + Send + Sync>>,
     sub_steps: usize,
 }
 
@@ -230,21 +234,21 @@ impl SimEnvBuilder {
 
     /// Set the reward function.
     #[must_use]
-    pub fn reward(mut self, f: impl Fn(&Model, &Data) -> f64 + 'static) -> Self {
+    pub fn reward(mut self, f: impl Fn(&Model, &Data) -> f64 + Send + Sync + 'static) -> Self {
         self.reward_fn = Some(Box::new(f));
         self
     }
 
     /// Set the done (terminal) function.
     #[must_use]
-    pub fn done(mut self, f: impl Fn(&Model, &Data) -> bool + 'static) -> Self {
+    pub fn done(mut self, f: impl Fn(&Model, &Data) -> bool + Send + Sync + 'static) -> Self {
         self.done_fn = Some(Box::new(f));
         self
     }
 
     /// Set the truncated function.
     #[must_use]
-    pub fn truncated(mut self, f: impl Fn(&Model, &Data) -> bool + 'static) -> Self {
+    pub fn truncated(mut self, f: impl Fn(&Model, &Data) -> bool + Send + Sync + 'static) -> Self {
         self.truncated_fn = Some(Box::new(f));
         self
     }
@@ -264,7 +268,7 @@ impl SimEnvBuilder {
     /// positions, etc.  The closure is `FnMut` so it can own and advance
     /// its own RNG.
     #[must_use]
-    pub fn on_reset(mut self, f: impl FnMut(&Model, &mut Data) + 'static) -> Self {
+    pub fn on_reset(mut self, f: impl FnMut(&Model, &mut Data) + Send + Sync + 'static) -> Self {
         self.on_reset_fn = Some(Box::new(f));
         self
     }
@@ -603,6 +607,62 @@ mod tests {
         let obs1 = env.observe();
         let obs2 = env.observation_space().extract(env.data());
         assert_eq!(obs1, obs2);
+    }
+
+    // ── sensordata freshness after step ─────────────────────────────────
+
+    #[test]
+    fn step_recomputes_sensordata() {
+        // forward() inside step() should refresh sensordata so that
+        // sensor readings match the post-step qpos.
+        let xml = r#"
+        <mujoco>
+          <option timestep="0.01"/>
+          <worldbody>
+            <body name="pendulum" pos="0 0 1">
+              <joint name="hinge" type="hinge" axis="0 1 0"/>
+              <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <motor joint="hinge" name="motor"/>
+          </actuator>
+          <sensor>
+            <jointpos joint="hinge" name="angle"/>
+          </sensor>
+        </mujoco>
+        "#;
+        let model = Arc::new(sim_mjcf::load_model(xml).expect("valid MJCF"));
+
+        let obs_space = ObservationSpace::builder()
+            .all_qpos()
+            .all_qvel()
+            .build(&model)
+            .unwrap();
+        let act_space = ActionSpace::builder().all_ctrl().build(&model).unwrap();
+
+        let mut env = SimEnv::builder(model)
+            .observation_space(obs_space)
+            .action_space(act_space)
+            .reward(|_m, _d| 0.0)
+            .done(|_m, _d| false)
+            .truncated(|_m, _d| false)
+            .build()
+            .unwrap();
+
+        env.reset().unwrap();
+
+        // Apply torque to move the pendulum.
+        let action = Tensor::from_slice(&[5.0_f32], &[1]);
+        env.step(&action).unwrap();
+
+        // After step(), sensordata should match qpos (jointpos sensor).
+        let qpos = env.data().qpos[0];
+        let sensor = env.data().sensordata[0];
+        assert!(
+            (qpos - sensor).abs() < 1e-12,
+            "sensordata[0]={sensor} != qpos[0]={qpos} — forward() not called after step?",
+        );
     }
 
     // ── model() / data() accessors ───────────────────────────────────────

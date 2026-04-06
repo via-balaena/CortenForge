@@ -22,18 +22,6 @@ use sim_bevy::model_data::{
 use sim_core::validation::{Check, print_report};
 use sim_ml_bridge::ObservationSpace;
 
-// ── Bevy Resource wrapper ──────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct ObsSpace(ObservationSpace);
-
-impl std::ops::Deref for ObsSpace {
-    type Target = ObservationSpace;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 // ── MJCF Model ─────────────────────────────────────────────────────────────
 
 const MJCF: &str = r#"
@@ -155,7 +143,7 @@ fn setup(
 
     commands.insert_resource(PhysicsModel(model));
     commands.insert_resource(PhysicsData(data));
-    commands.insert_resource(ObsSpace(obs_space));
+    commands.insert_resource(obs_space);
 }
 
 // ── HUD ────────────────────────────────────────────────────────────────────
@@ -163,7 +151,7 @@ fn setup(
 fn update_hud(
     model: Res<PhysicsModel>,
     data: Res<PhysicsData>,
-    obs_space: Res<ObsSpace>,
+    obs_space: Res<ObservationSpace>,
     mut hud: ResMut<PhysicsHud>,
 ) {
     let obs = obs_space.extract(&data);
@@ -221,7 +209,7 @@ struct ObsValidation {
 
 fn obs_diagnostics(
     data: Res<PhysicsData>,
-    obs_space: Res<ObsSpace>,
+    obs_space: Res<ObservationSpace>,
     harness: Res<ValidationHarness>,
     mut val: ResMut<ObsValidation>,
 ) {
