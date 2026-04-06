@@ -73,10 +73,12 @@
 pub mod algorithm;
 pub mod env;
 pub mod error;
+pub mod gae;
 pub mod linear;
 pub mod mlp;
 pub mod optimizer;
 pub mod policy;
+pub mod replay_buffer;
 pub mod space;
 pub mod tensor;
 pub mod value;
@@ -85,10 +87,12 @@ pub mod vec_env;
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
 pub use error::{EnvError, ResetError, SpaceError, TensorError, VecStepError};
+pub use gae::compute_gae;
 pub use linear::{LinearPolicy, LinearQ, LinearValue};
 pub use mlp::{MlpPolicy, MlpQ, MlpValue};
 pub use optimizer::{Optimizer, OptimizerConfig};
 pub use policy::{DifferentiablePolicy, Policy, StochasticPolicy};
+pub use replay_buffer::{ReplayBuffer, TransitionBatch};
 pub use space::{
     ActionSpace, ActionSpaceBuilder, ObsSegment, ObservationSpace, ObservationSpaceBuilder,
 };

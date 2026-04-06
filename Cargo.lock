@@ -7427,6 +7427,7 @@ dependencies = [
  "bevy_ecs",
  "criterion",
  "nalgebra",
+ "rand 0.9.2",
  "sim-core",
  "sim-mjcf",
  "thiserror 2.0.18",

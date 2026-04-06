@@ -14,6 +14,7 @@ bevy = ["dep:bevy_ecs"]
 [dependencies]
 bevy_ecs = { version = "0.18", optional = true }
 nalgebra = { workspace = true }
+rand = { workspace = true }
 sim-core = { workspace = true }
 thiserror = { workspace = true }
 
