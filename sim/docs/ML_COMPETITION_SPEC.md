@@ -16,6 +16,123 @@ implementations without rewriting the layers above. Hand-coded gradients
 today, burn autograd tomorrow, differentiable physics next year — the
 Algorithm implementations and competition tests never change.
 
+## Serviceability
+
+The architecture follows a chassis-and-parts model. The chassis is
+permanent — trait interfaces, method signatures, output formats. Parts
+are swappable — policy implementations, optimizers, algorithms, compute
+backends. The plumbing between them (trait bounds, constructor
+signatures) is the bolt pattern that makes parts interchangeable.
+
+### Part categories
+
+| Category | What | Expected lifetime | Swap frequency |
+|----------|------|-------------------|---------------|
+| **Chassis** | Trait interfaces (`Policy`, `Algorithm`, `ValueFn`, `QFunction`) | Permanent. Breaking changes are project-level events. | Never |
+| **Bolt pattern** | Method signatures (`forward(&[f32]) -> Vec<f64>`) | Permanent. Additive extensions only (default methods). | Never |
+| **Diagnostics port** | `EpochMetrics`, `CompetitionResult`, `RunResult` | Permanent. Fields are additive (new `extra` keys, never remove existing). | Never |
+| **Engine** | Policy impl (`LinearPolicy`, `MlpPolicy`, `BurnPolicy`) | Years. Replaced when compute backend upgrades. | Per level transition |
+| **Transmission** | Optimizer (`Adam`, `AdamW`, framework-native) | Years. Replaced when better optimizer is available. | Occasional |
+| **ECU** | Algorithm impl (`Ppo`, `Sac`, `Td3`) | Long-lived. Independently upgradeable. Bug fixes don't touch other algorithms. | Algorithm-specific |
+| **Fuel system** | `TaskConfig`, `VecEnv` | Extended over time. New tasks added, existing tasks stable. | Additive only |
+| **Aftermarket** | Future backends (burn, candle, wgpu), future algorithms (Dreamer, MAP-Elites) | Plugs in without modifying any existing part. | N/A |
+
+### Plumbing rules
+
+1. **Algorithms accept parts, never construct them.** An algorithm
+   receives its policy, value function, and optimizer through its
+   constructor — not by hardcoding concrete types internally. This is
+   the difference between bolting an engine in vs welding it to the
+   frame.
+
+   ```rust
+   // Good: algorithm accepts any DifferentiablePolicy
+   impl Ppo {
+       fn new(
+           policy: Box<dyn DifferentiablePolicy>,
+           value_fn: Box<dyn ValueFn>,
+           optimizer_config: OptimizerConfig,
+           hyperparams: PpoHyperparams,
+       ) -> Self;
+   }
+
+   // Bad: algorithm constructs its own policy
+   impl Ppo {
+       fn new(obs_dim: usize, act_dim: usize) -> Self {
+           let policy = MlpPolicy::new(obs_dim, 32, act_dim); // welded
+       }
+   }
+   ```
+
+2. **Parts declare their requirements.** Each algorithm's constructor
+   signature IS its parts manifest — the type bounds tell you exactly
+   what it needs. No reading implementation code to figure out
+   compatibility.
+
+   | Algorithm | Required parts |
+   |-----------|---------------|
+   | CEM | `Policy` + `OptimizerConfig` (none — evolutionary) |
+   | REINFORCE | `DifferentiablePolicy` + `OptimizerConfig` |
+   | PPO | `DifferentiablePolicy` + `ValueFn` + `OptimizerConfig` |
+   | TD3 | `DifferentiablePolicy` + 2x `QFunction` + `OptimizerConfig` |
+   | SAC | `StochasticPolicy` + 2x `QFunction` + `OptimizerConfig` |
+
+3. **Optimizer is injectable.** Algorithms don't hardcode Adam.
+   They accept an `OptimizerConfig` that specifies the optimizer type
+   and hyperparameters. When AdamW or LAMB becomes relevant, no
+   algorithm code changes.
+
+   ```rust
+   enum OptimizerConfig {
+       Adam { lr: f64, beta1: f64, beta2: f64, eps: f64 },
+       // Future:
+       // AdamW { lr: f64, beta1: f64, beta2: f64, weight_decay: f64 },
+       // Sgd { lr: f64, momentum: f64 },
+   }
+
+   impl OptimizerConfig {
+       fn build(&self, n_params: usize) -> Box<dyn Optimizer>;
+   }
+
+   trait Optimizer {
+       fn step(&mut self, gradient: &[f64], ascent: bool);
+       fn params(&self) -> &[f64];
+       fn set_params(&mut self, params: &[f64]);
+   }
+   ```
+
+4. **New parts never modify existing parts.** Adding `BurnPolicy`
+   does not touch `MlpPolicy`, `Ppo`, or any algorithm. Adding `Sac`
+   does not touch `Ppo` or `Reinforce`. Additive only.
+
+5. **The diagnostics port is append-only.** `EpochMetrics::extra` is
+   a `BTreeMap<String, f64>`. Algorithms add keys, never remove them.
+   Competition tests that check specific keys continue working when
+   new keys appear.
+
+6. **Chassis extensions use default methods.** If a future level
+   needs a new trait method (e.g., `Policy::forward_batch` for GPU),
+   it's added with a default impl that delegates to the single-sample
+   `forward()`. Existing implementations continue to compile and work.
+   Optimized implementations override the default.
+
+### What this enables
+
+- **Swap LinearPolicy for MlpPolicy**: change one line in the
+  algorithm constructor call. Zero algorithm code changes.
+- **Swap MlpPolicy for BurnPolicy**: same — one constructor line.
+  The algorithm calls the same trait methods.
+- **Add a new algorithm (Dreamer)**: implement `Algorithm::train()`.
+  Use any existing parts (ReplayBuffer, Adam) or bring your own.
+  No existing code modified.
+- **Add a new task (locomotion)**: define a `TaskConfig`. Run all
+  existing algorithms on it immediately.
+- **Upgrade optimizer (Adam → AdamW)**: add variant to
+  `OptimizerConfig`. Existing algorithms gain access via config
+  change, no code edits.
+- **Switch compute backend (CPU → GPU/burn)**: implement traits
+  with burn backend. Plug into existing algorithms via constructor.
+
 ## The scaling ladder
 
 | Level | What | Param scale | Compute | Unlocks |
@@ -482,32 +599,37 @@ at level 2+ via the autograd backend directly.
 
 ## Shared components
 
-### Adam optimizer (generic)
+### Optimizer trait + implementations
+
+The optimizer is a swappable part, not hardcoded into algorithms.
 
 ```rust
-struct Adam {
-    params: Vec<f64>,
-    m: Vec<f64>,
-    v: Vec<f64>,
-    t: usize,
-    lr: f64,
-    beta1: f64,
-    beta2: f64,
-    eps: f64,
-}
-
-impl Adam {
-    fn new(n_params: usize, lr: f64) -> Self;
+trait Optimizer: Send {
     fn step(&mut self, gradient: &[f64], ascent: bool);
     fn params(&self) -> &[f64];
     fn set_params(&mut self, params: &[f64]);
+    fn n_params(&self) -> usize;
+}
+
+enum OptimizerConfig {
+    Adam { lr: f64, beta1: f64, beta2: f64, eps: f64 },
+    // Future variants added here — no algorithm code changes:
+    // AdamW { lr: f64, beta1: f64, beta2: f64, weight_decay: f64 },
+    // Sgd { lr: f64, momentum: f64 },
+}
+
+impl OptimizerConfig {
+    fn build(&self, n_params: usize) -> Box<dyn Optimizer>;
 }
 ```
 
-Used by: REINFORCE, PPO, SAC, TD3 (and all gradient-based methods).
+Level 0-1: `Adam` struct implements `Optimizer`.
+Level 2+: burn/candle native optimizers implement `Optimizer`,
+converting slices to/from framework tensors internally.
 
-At level 2+, this may be replaced by the autograd framework's built-in
-optimizer. The `Algorithm` trait doesn't care — Adam is internal.
+Algorithms receive `OptimizerConfig` at construction time and call
+`config.build(n_params)` to create their optimizer instances. Swapping
+Adam for AdamW is a config change — zero algorithm code edits.
 
 ### Replay buffer
 
@@ -765,15 +887,36 @@ Gradient finite-difference tests for every forward+gradient pair.
 
 ### Phase 2: Algorithm implementations
 
-In sim-ml-bridge, not in examples:
+In sim-ml-bridge, not in examples. Each algorithm accepts its parts
+through the constructor (injectable, not hardcoded):
 
-1. `Cem` — `Policy` only, population-based
-2. `Reinforce` — `DifferentiablePolicy` + `Adam`
-3. `Ppo` — `DifferentiablePolicy` + `ValueFn` + `Adam` + GAE
-4. `Td3` — `DifferentiablePolicy` + 2x `QFunction` + `ReplayBuffer`
-   + `Adam` + delayed actor + target networks
-5. `Sac` — `StochasticPolicy` + 2x `QFunction` + `ReplayBuffer`
-   + `Adam` + auto-tuned entropy temperature
+```rust
+// Example: PPO construction — all parts are swappable
+let ppo = Ppo::new(
+    Box::new(MlpPolicy::new(obs_dim, 32, act_dim, &obs_scale)),
+    Box::new(MlpValue::new(obs_dim, 32, &obs_scale)),
+    OptimizerConfig::Adam { lr: 0.025, beta1: 0.9, beta2: 0.999, eps: 1e-8 },
+    PpoHyperparams { clip_eps: 0.2, k_passes: 2, gamma: 0.99, gae_lambda: 0.95, .. },
+);
+
+// Same PPO, different parts — zero algorithm code changes:
+let ppo_burn = Ppo::new(
+    Box::new(BurnPolicy::new(burn_config)),  // autograd backend
+    Box::new(BurnValue::new(burn_config)),
+    OptimizerConfig::AdamW { lr: 3e-4, .. }, // different optimizer
+    PpoHyperparams { .. },
+);
+```
+
+Algorithm list and their required parts:
+
+1. `Cem` — `Policy` (no optimizer, no gradients)
+2. `Reinforce` — `DifferentiablePolicy` + `OptimizerConfig`
+3. `Ppo` — `DifferentiablePolicy` + `ValueFn` + `OptimizerConfig`
+4. `Td3` — `DifferentiablePolicy` + 2x `QFunction` + `OptimizerConfig`
+   + `ReplayBuffer` config + delayed actor + target networks
+5. `Sac` — `StochasticPolicy` + 2x `QFunction` + `OptimizerConfig`
+   + `ReplayBuffer` config + auto-tuned entropy temperature
 
 TD3 before SAC — TD3 is simpler, shares the twin-Q + replay
 infrastructure that SAC builds on.
