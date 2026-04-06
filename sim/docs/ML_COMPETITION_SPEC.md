@@ -8,7 +8,7 @@
 
 CortenForge's ML layer is designed to scale from pedagogical hand-coded
 algorithms all the way to differentiable co-design — jointly optimizing
-a creature's morphology and control policy, then 3D printing the result.
+a mechanism's morphology and control policy, then fabricating the result.
 
 This spec defines the architecture at every level of that journey. The
 key constraint: each level must be a clean boundary where you can swap
@@ -25,7 +25,7 @@ Algorithm implementations and competition tests never change.
 | **2** | Deep networks, autograd | 10K-1M | CPU/GPU, burn/candle | Research-grade RL, complex tasks |
 | **3** | GPU-accelerated environments | Any | GPU envs + GPU networks | Isaac Gym-style massively parallel training |
 | **4** | Differentiable physics | Any | Backprop through sim | Model-based RL with exact dynamics gradients, trajectory optimization |
-| **5** | Co-design | Any | End-to-end differentiable | Jointly optimize body (cf-design) + brain (policy), then fabricate |
+| **5** | Co-design | Any | End-to-end differentiable | Jointly optimize morphology (cf-design) + controller (policy), then fabricate |
 
 Each level builds on the one below. The architecture is designed so
 that reaching level N never requires rewriting level N-1.
@@ -108,7 +108,7 @@ must not prevent it.
 
 ### Level 5: Co-design
 
-The endgame. cf-design generates body geometry (SDF-based, implicit
+The final integration target. cf-design generates body geometry (SDF-based, implicit
 surfaces). sim runs the physics. ML optimizes the control policy.
 Co-design closes the loop:
 
@@ -128,9 +128,10 @@ With differentiable physics (level 4) and differentiable geometry
 entire pipeline from morphology parameters to reward is differentiable.
 Gradient descent can jointly optimize both.
 
-This doesn't exist anywhere. MuJoCo is a black-box sim. Isaac Gym
-doesn't have a design system. CortenForge + cf-design + differentiable
-physics would be genuinely novel.
+This integrated pipeline (differentiable geometry + differentiable
+physics + policy optimization) is not available in existing toolchains.
+MuJoCo is a black-box sim. Isaac Gym does not include a parametric
+design system.
 
 **What co-design requires from the ML layer:**
 - `MorphologySpace` — parameterizes body geometry (joint lengths,
@@ -667,8 +668,8 @@ At 614 MLP actor params:
   High variance, slow convergence.
 - **PPO** reduces variance via learned V(s), making 614-dim gradients
   tractable. K passes extract more signal per epoch.
-- **SAC/TD3** reuse every transition ~100x from replay. Radically
-  better sample efficiency.
+- **SAC/TD3** reuse every transition ~100x from replay buffer.
+  Significantly better sample efficiency.
 
 ### MJCF
 
@@ -787,7 +788,7 @@ fn two_dof_linear_regression() {
 
 #[test]
 fn six_dof_mlp_ordering() {
-    // THE test. CEM << REINFORCE < PPO < TD3 <= SAC
+    // Primary ordering test. CEM << REINFORCE < PPO < TD3 <= SAC
 }
 
 #[test]
@@ -848,9 +849,9 @@ a test assertion.
 
 ### Level 3 hypotheses
 
-8. **Massive parallelism changes the game.** 5000 envs on GPU makes
-   even CEM competitive on 6-DOF (brute force works with enough
-   samples).
+8. **Massive parallelism compensates for sample inefficiency.** 5000
+   envs on GPU makes CEM competitive on 6-DOF (sufficient population
+   size offsets high dimensionality).
 
 9. **On-policy benefits more from parallelism.** PPO improvement gap
    over SAC shrinks with 5000 envs (on-policy sample inefficiency
@@ -858,12 +859,12 @@ a test assertion.
 
 ### Level 4-5 hypotheses
 
-10. **Differentiable physics obsoletes model-free RL for known dynamics.**
+10. **Differentiable physics outperforms model-free RL on known dynamics.**
     Direct trajectory optimization > PPO > SAC when dynamics gradients
     are available (no estimation variance).
 
 11. **Co-design finds better solutions than fixed-morphology RL.**
-    Jointly optimized body+brain > best brain on a fixed body.
+    Jointly optimized morphology+controller > best controller on a fixed morphology.
 
 Each failed hypothesis is a finding, not a bug.
 
