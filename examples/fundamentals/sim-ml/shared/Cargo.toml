@@ -1,5 +1,5 @@
 [package]
-name = "example-ml-vec-env-auto-reset"
+name = "example-ml-shared"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,8 +7,6 @@ publish = false
 
 [dependencies]
 bevy = { workspace = true }
-example-ml-shared = { path = "../../shared" }
-rand = { workspace = true }
 sim-bevy = { workspace = true }
 sim-core = { workspace = true }
 sim-ml-bridge = { workspace = true }

@@ -28,99 +28,24 @@
     dead_code
 )]
 
-use std::sync::Arc;
-
 use bevy::prelude::*;
+use example_ml_shared::{setup_reaching_arms, sync_batch_geoms};
 use rand::Rng;
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::convert::physics_pos;
-use sim_bevy::examples::{
-    HudPosition, PhysicsHud, ValidationHarness, insert_batch_validation_dummies,
-    render_physics_hud, spawn_example_camera, spawn_physics_hud_at, validation_system,
-};
-use sim_bevy::materials::MetalPreset;
-use sim_bevy::multi_scene::{
-    PhysicsScenes, spawn_scene_geoms, sync_batch_geoms, sync_scene_geom_transforms,
-};
+use sim_bevy::examples::{PhysicsHud, ValidationHarness, render_physics_hud, validation_system};
+use sim_bevy::multi_scene::{PhysicsScenes, sync_scene_geom_transforms};
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{ActionSpace, ObservationSpace, Tensor, VecEnv};
+use sim_ml_bridge::{LinearPolicy, Policy, Tensor, VecEnv, reaching_2dof};
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const NUM_ENVS: usize = 50;
-const SPACING: f32 = 0.8;
-const TARGET: [f64; 3] = [0.4, 0.0, 0.3];
-const REACH_THRESHOLD: f64 = 0.05;
-const VEL_THRESHOLD: f64 = 0.5;
-const EPISODE_TIMEOUT: f64 = 3.0;
 const PAUSE_TIME: f64 = 1.5;
 const NUM_ELITES: usize = 15;
 const SIGMA_INIT: f64 = 1.0;
 const SIGMA_MIN: f64 = 0.1;
 const MAX_GENERATIONS: usize = 30;
 const VALIDATION_GEN: usize = 25;
-const NUM_PARAMS: usize = 10; // W[2x4] + b[2]
-
-/// Target joint angles (IK solution for TARGET end-effector position).
-const TARGET_QPOS: [f64; 2] = [-0.242, 1.982];
-
-// ── MJCF ────────────────────────────────────────────────────────────────────
-
-const MJCF: &str = r#"
-<mujoco model="reaching-arm">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="upper_arm" pos="0 0 0">
-      <joint name="shoulder" type="hinge" axis="0 -1 0"
-             limited="true" range="-3.14159 3.14159" damping="2.0"/>
-      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.5 0 0"
-            size="0.03" mass="0.5" rgba="0.3 0.5 0.85 1"/>
-      <body name="forearm" pos="0.5 0 0">
-        <joint name="elbow" type="hinge" axis="0 -1 0"
-               limited="true" range="-2.6 2.6" damping="1.0"/>
-        <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.4 0 0"
-              size="0.025" mass="0.3" rgba="0.85 0.4 0.2 1"/>
-        <site name="fingertip" pos="0.4 0 0" size="0.015"/>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor name="shoulder_motor" joint="shoulder" gear="10"
-           ctrllimited="true" ctrlrange="-1 1"/>
-    <motor name="elbow_motor" joint="elbow" gear="5"
-           ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
-// ── Policy ──────────────────────────────────────────────────────────────────
-
-/// Observation normalization scales (keeps pre-tanh values moderate).
-const OBS_SCALE: [f64; 4] = [
-    1.0 / std::f64::consts::PI, // qpos[0]: range ≈ [-π, π]
-    1.0 / std::f64::consts::PI, // qpos[1]: range ≈ [-2.6, 2.6]
-    0.1,                        // qvel[0]: range ≈ [-10, 10]
-    0.1,                        // qvel[1]: range ≈ [-10, 10]
-];
-
-/// Linear policy: action = tanh(W * obs_norm + b)
-fn apply_policy(params: &[f64], obs: &[f32]) -> [f32; 2] {
-    let mut out = [0.0f32; 2];
-    for a in 0..2 {
-        let mut val = params[8 + a];
-        for o in 0..4 {
-            val += params[a * 4 + o] * f64::from(obs[o]) * OBS_SCALE[o];
-        }
-        out[a] = val.tanh() as f32;
-    }
-    out
-}
 
 // ── CEM Helpers ─────────────────────────────────────────────────────────────
 
@@ -131,70 +56,31 @@ fn randn(rng: &mut impl Rng) -> f64 {
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
 }
 
-fn build_vec_env(model: &Arc<sim_core::Model>, n_envs: usize) -> VecEnv {
-    let obs = ObservationSpace::builder()
-        .all_qpos()
-        .all_qvel()
-        .build(model)
-        .expect("obs build");
-    let act = ActionSpace::builder()
-        .all_ctrl()
-        .build(model)
-        .expect("act build");
-
-    let target = TARGET;
-    VecEnv::builder(model.clone(), n_envs)
-        .observation_space(obs)
-        .action_space(act)
-        .reward(move |_m, d| {
-            let e0 = d.qpos[0] - TARGET_QPOS[0];
-            let e1 = d.qpos[1] - TARGET_QPOS[1];
-            -(e0 * e0 + e1 * e1)
-        })
-        .done(move |_m, d| {
-            let tip = d.site_xpos[0];
-            let dx = tip.x - target[0];
-            let dz = tip.z - target[2];
-            let dist = (dx * dx + dz * dz).sqrt();
-            let vel = (d.qvel[0] * d.qvel[0] + d.qvel[1] * d.qvel[1]).sqrt();
-            dist < REACH_THRESHOLD && vel < VEL_THRESHOLD
-        })
-        .truncated(|_m, d| d.time > EPISODE_TIMEOUT)
-        .sub_steps(5)
-        .build()
-        .expect("vec_env build")
-}
-
-fn sample_perturbations(
-    mu: &[f64; NUM_PARAMS],
-    sigma: &[f64; NUM_PARAMS],
-    rng: &mut impl Rng,
-    n: usize,
-) -> Vec<[f64; NUM_PARAMS]> {
+fn sample_perturbations(mu: &[f64], sigma: &[f64], rng: &mut impl Rng, n: usize) -> Vec<Vec<f64>> {
+    let n_params = mu.len();
     (0..n)
         .map(|_| {
-            let mut params = [0.0; NUM_PARAMS];
-            for k in 0..NUM_PARAMS {
-                params[k] = mu[k] + sigma[k] * randn(rng);
-            }
-            params
+            (0..n_params)
+                .map(|k| mu[k] + sigma[k] * randn(rng))
+                .collect()
         })
         .collect()
 }
 
 fn cem_update(
-    mu: &mut [f64; NUM_PARAMS],
-    sigma: &mut [f64; NUM_PARAMS],
-    perturbations: &[[f64; NUM_PARAMS]],
+    mu: &mut [f64],
+    sigma: &mut [f64],
+    perturbations: &[Vec<f64>],
     rewards: &[f64],
     n_elites: usize,
 ) {
     let n = rewards.len();
+    let n_params = mu.len();
     let mut indices: Vec<usize> = (0..n).collect();
     indices.sort_by(|&a, &b| rewards[b].partial_cmp(&rewards[a]).unwrap());
     let elite_idx = &indices[..n_elites];
 
-    for k in 0..NUM_PARAMS {
+    for k in 0..n_params {
         let elite_vals: Vec<f64> = elite_idx.iter().map(|&i| perturbations[i][k]).collect();
         let mean = elite_vals.iter().sum::<f64>() / n_elites as f64;
         let var = elite_vals.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n_elites as f64;
@@ -217,9 +103,10 @@ struct CemResource {
     actions: Tensor,
     current_obs: Tensor,
 
-    mu: [f64; NUM_PARAMS],
-    sigma: [f64; NUM_PARAMS],
-    perturbations: Vec<[f64; NUM_PARAMS]>,
+    policy: LinearPolicy,
+    mu: Vec<f64>,
+    sigma: Vec<f64>,
+    perturbations: Vec<Vec<f64>>,
 
     generation: usize,
     phase: Phase,
@@ -248,10 +135,6 @@ struct AutoResetValidation {
 fn main() {
     println!("=== CortenForge: Auto-Reset — Reaching Arm + CEM ===");
     println!("  {NUM_ENVS} arms, {MAX_GENERATIONS} generations, {NUM_ELITES} elites");
-    println!(
-        "  Target: ({:.1}, {:.1}, {:.1})",
-        TARGET[0], TARGET[1], TARGET[2]
-    );
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -297,72 +180,31 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF parse"));
-    let mut vec_env = build_vec_env(&model, NUM_ENVS);
+    let task = reaching_2dof();
+    let policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
+    let n_params = policy.n_params();
+
+    let (mut vec_env, scenes) =
+        setup_reaching_arms(&task, NUM_ENVS, &mut commands, &mut meshes, &mut materials);
+
     let init_obs = vec_env.reset_all().expect("reset");
 
     let mut rng = {
         use rand::SeedableRng;
         rand::rngs::StdRng::seed_from_u64(42)
     };
-    let mu = [0.0f64; NUM_PARAMS];
-    let sigma = [SIGMA_INIT; NUM_PARAMS];
+    let mu = vec![0.0f64; n_params];
+    let sigma = vec![SIGMA_INIT; n_params];
     let perturbations = sample_perturbations(&mu, &sigma, &mut rng, NUM_ENVS);
-
-    // ── PhysicsScenes ──
-    let mut scenes = PhysicsScenes::default();
-
-    let mat_upper =
-        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.3, 0.5, 0.85)));
-    let mat_forearm =
-        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.85, 0.4, 0.2)));
-
-    // Target sphere material (shared)
-    let mat_target = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.2, 0.9, 0.2, 0.5),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    });
-    let target_mesh = meshes.add(Sphere::new(0.03));
-
-    for i in 0..NUM_ENVS {
-        let scene_model = (*model).clone();
-        let mut scene_data = scene_model.make_data();
-        scene_data.forward(&scene_model).expect("forward");
-
-        let id = scenes.add(format!("env-{i}"), scene_model, scene_data);
-
-        let lane = (i as f32 - (NUM_ENVS as f32 - 1.0) / 2.0) * SPACING;
-        spawn_scene_geoms(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            &mut scenes,
-            id,
-            physics_pos(lane, 0.0, 0.0),
-            &[
-                ("upper_geom", mat_upper.clone()),
-                ("forearm_geom", mat_forearm.clone()),
-            ],
-        );
-
-        // Target sphere
-        let target_bevy = physics_pos(lane + TARGET[0] as f32, 0.0, TARGET[2] as f32);
-        commands.spawn((
-            Mesh3d(target_mesh.clone()),
-            MeshMaterial3d(mat_target.clone()),
-            Transform::from_translation(target_bevy),
-        ));
-    }
 
     commands.insert_resource(scenes);
 
-    let actions = Tensor::zeros(&[NUM_ENVS, 2]);
+    let actions = Tensor::zeros(&[NUM_ENVS, task.act_dim()]);
     commands.insert_resource(CemResource {
         vec_env,
         actions,
         current_obs: init_obs,
+        policy,
         mu,
         sigma,
         perturbations,
@@ -378,18 +220,6 @@ fn setup(
         best_rewards: Vec::new(),
         reach_counts: Vec::new(),
     });
-
-    // Camera: front view of the arm row.
-    spawn_example_camera(
-        &mut commands,
-        physics_pos(0.0, -0.5, 0.0),
-        35.0,
-        std::f32::consts::FRAC_PI_2,
-        0.15,
-    );
-
-    spawn_physics_hud_at(&mut commands, HudPosition::BottomLeft);
-    insert_batch_validation_dummies(&mut commands, &model);
 }
 
 // ── Stepping (CEM state machine) ────────────────────────────────────────────
@@ -410,13 +240,15 @@ fn step_cem(mut res: ResMut<CemResource>, time: Res<Time>) {
 
             for _ in 0..budget {
                 // Compute actions from perturbed policies
+                let inner = &mut *res;
                 for i in 0..NUM_ENVS {
-                    if !res.gen_complete[i] {
-                        let obs = res.current_obs.row(i);
-                        let acts = apply_policy(&res.perturbations[i], obs);
-                        let row = res.actions.row_mut(i);
-                        row[0] = acts[0];
-                        row[1] = acts[1];
+                    if !inner.gen_complete[i] {
+                        let obs = inner.current_obs.row(i);
+                        inner.policy.set_params(&inner.perturbations[i]);
+                        let acts = inner.policy.forward(obs);
+                        let row = inner.actions.row_mut(i);
+                        row[0] = acts[0] as f32;
+                        row[1] = acts[1] as f32;
                     }
                 }
 
@@ -441,6 +273,7 @@ fn step_cem(mut res: ResMut<CemResource>, time: Res<Time>) {
 
                 if res.gen_complete.iter().all(|&c| c) {
                     // Record stats and transition to UPDATING
+                    let n_params = res.mu.len();
                     let best = res
                         .cum_rewards
                         .iter()
@@ -450,7 +283,7 @@ fn step_cem(mut res: ResMut<CemResource>, time: Res<Time>) {
                     res.best_rewards.push(best);
                     res.reach_counts.push(reached);
 
-                    let sigma_mean = res.sigma.iter().sum::<f64>() / NUM_PARAMS as f64;
+                    let sigma_mean = res.sigma.iter().sum::<f64>() / n_params as f64;
                     println!(
                         "gen {:>2}: reached={reached:>2}/{NUM_ENVS}  best_R={best:>8.1}  σ_mean={sigma_mean:.3}",
                         res.generation + 1
@@ -479,9 +312,9 @@ fn step_cem(mut res: ResMut<CemResource>, time: Res<Time>) {
                     NUM_ELITES,
                 );
 
-                // Next generation — copy mu/sigma to locals for sampling
-                let mu = res.mu;
-                let sigma = res.sigma;
+                // Next generation
+                let mu = res.mu.clone();
+                let sigma = res.sigma.clone();
                 res.generation += 1;
                 res.perturbations = sample_perturbations(&mu, &sigma, &mut res.rng, NUM_ENVS);
                 res.current_obs = res.vec_env.reset_all().expect("reset");
@@ -513,6 +346,7 @@ fn track_validation(res: Res<CemResource>, mut val: ResMut<AutoResetValidation>)
     }
     val.reported = true;
 
+    let n_params = res.mu.len();
     let gen_idx = VALIDATION_GEN - 1; // 0-indexed
     let reached = if gen_idx < res.reach_counts.len() {
         res.reach_counts[gen_idx]
@@ -530,7 +364,7 @@ fn track_validation(res: Res<CemResource>, mut val: ResMut<AutoResetValidation>)
         f64::NEG_INFINITY
     };
     let mu_norm = res.mu.iter().map(|&v| v * v).sum::<f64>().sqrt();
-    let sigma_mean = res.sigma.iter().sum::<f64>() / NUM_PARAMS as f64;
+    let sigma_mean = res.sigma.iter().sum::<f64>() / n_params as f64;
 
     let improvement = if gen1_best.abs() > 1e-10 {
         (gen_best - gen1_best) / gen1_best.abs()
@@ -570,6 +404,7 @@ fn track_validation(res: Res<CemResource>, mut val: ResMut<AutoResetValidation>)
 // ── HUD ─────────────────────────────────────────────────────────────────────
 
 fn update_hud(res: Res<CemResource>, mut hud: ResMut<PhysicsHud>) {
+    let n_params = res.mu.len();
     hud.clear();
     hud.section("Reaching Arm (VecEnv + CEM)");
     hud.raw(format!(
@@ -596,10 +431,10 @@ fn update_hud(res: Res<CemResource>, mut hud: ResMut<PhysicsHud>) {
         hud.raw(format!("best reward: {best:.1}"));
     }
 
-    let sigma_mean = res.sigma.iter().sum::<f64>() / NUM_PARAMS as f64;
+    let sigma_mean = res.sigma.iter().sum::<f64>() / n_params as f64;
     hud.raw(format!("σ mean: {sigma_mean:.3}"));
 
-    // Per-env scoreboard (show top 10 and bottom 5)
+    // Per-env scoreboard (show top 8)
     if res.gen_complete.iter().any(|&c| c) {
         hud.section("Per-Env (sample)");
         let mut sorted: Vec<usize> = (0..NUM_ENVS).collect();
@@ -627,6 +462,7 @@ fn update_hud(res: Res<CemResource>, mut hud: ResMut<PhysicsHud>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim_ml_bridge::reaching_2dof;
 
     // ── Headless CEM runner for tests ──
 
@@ -642,15 +478,18 @@ mod tests {
         gen1_reward_variance: f64,
     }
 
+    #[allow(clippy::too_many_lines)]
     fn run_cem_headless(seed: u64) -> CemResult {
         use rand::SeedableRng;
 
-        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
-        let mut vec_env = build_vec_env(&model, NUM_ENVS);
+        let task = reaching_2dof();
+        let mut policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
+        let n_params = policy.n_params();
+        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build_vec_env");
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
-        let mut mu = [0.0f64; NUM_PARAMS];
-        let mut sigma = [SIGMA_INIT; NUM_PARAMS];
+        let mut mu = vec![0.0f64; n_params];
+        let mut sigma = vec![SIGMA_INIT; n_params];
 
         let mut gen1_best = f64::NEG_INFINITY;
         let mut last_best = f64::NEG_INFINITY;
@@ -660,6 +499,10 @@ mod tests {
         let mut min_reward = f64::INFINITY;
         let mut max_reward = f64::NEG_INFINITY;
         let mut gen1_reward_variance = 0.0;
+
+        let episode_timeout = 3.0;
+        let timestep = vec_env.model().timestep;
+        let max_steps = (episode_timeout / (5.0 * timestep)) as usize + 50;
 
         for generation in 0..MAX_GENERATIONS {
             let perturbations = sample_perturbations(&mu, &sigma, &mut rng, NUM_ENVS);
@@ -672,21 +515,21 @@ mod tests {
                 }
             }
 
-            let mut cum_rewards = [0.0f64; NUM_ENVS];
+            let mut cum_rewards = vec![0.0f64; NUM_ENVS];
             let mut gen_complete = [false; NUM_ENVS];
             let mut reached = [false; NUM_ENVS];
-            let mut actions = Tensor::zeros(&[NUM_ENVS, 2]);
+            let mut actions = Tensor::zeros(&[NUM_ENVS, task.act_dim()]);
             let mut current_obs = init_obs;
-            let max_steps = (EPISODE_TIMEOUT / (5.0 * 0.002)) as usize + 50;
 
             for _ in 0..max_steps {
                 for i in 0..NUM_ENVS {
                     if !gen_complete[i] {
                         let obs = current_obs.row(i);
-                        let acts = apply_policy(&perturbations[i], obs);
+                        policy.set_params(&perturbations[i]);
+                        let acts = policy.forward(obs);
                         let row = actions.row_mut(i);
-                        row[0] = acts[0];
-                        row[1] = acts[1];
+                        row[0] = acts[0] as f32;
+                        row[1] = acts[1] as f32;
                     }
                 }
 
@@ -744,7 +587,7 @@ mod tests {
         }
 
         let mu_norm = mu.iter().map(|&v| v * v).sum::<f64>().sqrt();
-        let sigma_mean = sigma.iter().sum::<f64>() / NUM_PARAMS as f64;
+        let sigma_mean = sigma.iter().sum::<f64>() / n_params as f64;
 
         CemResult {
             gen1_best,
@@ -763,7 +606,9 @@ mod tests {
 
     #[test]
     fn site_xpos_populated_after_forward() {
-        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
+        let task = reaching_2dof();
+        let vec_env = task.build_vec_env(1).expect("build");
+        let model = vec_env.model().clone();
         let mut data = model.make_data();
         data.reset(&model);
         data.forward(&model).expect("forward");
@@ -775,7 +620,9 @@ mod tests {
 
     #[test]
     fn reset_restores_qpos_to_zero() {
-        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
+        let task = reaching_2dof();
+        let vec_env = task.build_vec_env(1).expect("build");
+        let model = vec_env.model().clone();
         let mut data = model.make_data();
         data.ctrl[0] = 1.0;
         data.ctrl[1] = 1.0;
@@ -789,7 +636,9 @@ mod tests {
 
     #[test]
     fn gravity_makes_arm_fall() {
-        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
+        let task = reaching_2dof();
+        let vec_env = task.build_vec_env(1).expect("build");
+        let model = vec_env.model().clone();
         let mut data = model.make_data();
         data.reset(&model);
         data.forward(&model).expect("forward");
@@ -834,10 +683,10 @@ mod tests {
 
     #[test]
     fn sub_steps_give_100hz_control() {
-        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
-        let mut vec_env = build_vec_env(&model, 1);
+        let task = reaching_2dof();
+        let mut vec_env = task.build_vec_env(1).expect("build");
         vec_env.reset_all().expect("reset");
-        let actions = Tensor::zeros(&[1, 2]);
+        let actions = Tensor::zeros(&[1, task.act_dim()]);
         vec_env.step(&actions).expect("step");
         let time = vec_env.batch().env(0).unwrap().time;
         assert!((time - 0.01).abs() < 1e-10, "time={time}");
