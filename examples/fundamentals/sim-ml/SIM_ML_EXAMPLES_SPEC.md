@@ -1,6 +1,6 @@
 # sim-ml-bridge Visual Examples Spec
 
-> **Status**: Draft v3
+> **Status**: Draft v4 — Phase 4 complete (5 algorithm examples, 17 total)
 > **Location**: `examples/fundamentals/sim-ml/`
 > **Depends on**: `sim-ml-bridge`, `sim-bevy`, `sim-core`, `sim-mjcf`
 
@@ -62,10 +62,12 @@ examples/fundamentals/sim-ml/
     ├── auto-reset/           #12 — ★ 50 reaching arms + CEM (sampling)
     ├── terminal-obs/         #13 — done vs truncated, value bootstrapping
     ├── reinforce/            #14 — ★ 50 reaching arms + REINFORCE (gradient)
-    └── ppo/                  #15 — ★ 50 reaching arms + PPO (actor-critic)
+    ├── ppo/                  #15 — ★ 50 reaching arms + PPO (actor-critic)
+    ├── td3/                  #16 — ★ 50 reaching arms + TD3 (off-policy, DPG)
+    └── sac/                  #17 — ★ 50 reaching arms + SAC (off-policy, entropy)
 ```
 
-15 examples total. Package naming: `example-ml-{group}-{name}`.
+17 examples total. Package naming: `example-ml-{group}-{name}`.
 
 Examples #12, #14, #15 form a **learning algorithm ladder**: same arm,
 same target, same VecEnv — three different optimizers. The visual
@@ -76,6 +78,8 @@ progression tells the story of the level 0-1 landscape:
 | 12 | CEM | Sampling-based | ★ Best performer — arms converge and reach target |
 | 14 | REINFORCE | Policy gradient | Arms improve but can't reach precisely |
 | 15 | PPO | Actor-critic | Better than REINFORCE, still below CEM |
+| 16 | TD3 | Off-policy (DPG) | ~30% improvement then plateau (linear Q saturates) |
+| 17 | SAC | Off-policy (entropy) | ~50% steady improvement (entropy prevents saturation) |
 
 **Note on ordering:** the original spec predicted gradient methods would
 dominate CEM. Phase 3 competition tests (seed 42, 50ep/50env) showed the
@@ -567,9 +571,11 @@ next:
 12. auto-reset — ★ reaching arm + CEM (sampling-based) — **DONE**
 13. terminal-obs — deep RL concept, HUD-focused
 
-### Phase 4: Learning Algorithm Ladder
-14. reinforce — ★ same arm + REINFORCE (gradient-based)
-15. ppo — ★ same arm + PPO (actor-critic)
+### Phase 4: Learning Algorithm Ladder — COMPLETE
+14. reinforce — ★ same arm + REINFORCE (gradient-based) — **DONE**
+15. ppo — ★ same arm + PPO (actor-critic) — **DONE**
+16. td3 — ★ same arm + TD3 (off-policy, twin-Q, DPG) — **DONE**
+17. sac — ★ same arm + SAC (off-policy, entropy, reparameterized) — **DONE**
 
 ## READMEs
 

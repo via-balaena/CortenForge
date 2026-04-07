@@ -1,8 +1,8 @@
 # ML Competition Framework Spec
 
-> **Status**: Draft
+> **Status**: Phases 1–4 complete. Phase 5+ (future levels) pending.
 > **Crate**: sim-ml-bridge (extensions)
-> **Branch**: feature/sim-ml-bridge
+> **Branch**: feature/competition-tests
 
 ## Vision
 
@@ -1100,11 +1100,25 @@ REINFORCE << PPO << TD3 ≈ SAC << CEM (49 dones). CEM's gradient-free
 search dominates hand-coded gradients on smooth quadratic reward.
 The predicted ordering becomes the level 2 (autograd) hypothesis.
 
-### Phase 4: Visual examples
+### Phase 4: Visual examples — COMPLETE
 
-Update existing CEM/REINFORCE/PPO Bevy examples to use TaskConfig +
-Algorithm abstractions. Add SAC and TD3 visual examples. Each remains
-a standalone single-file example (museum plaque principle).
+Refactored CEM/REINFORCE/PPO and added TD3/SAC visual examples. All
+five use shared building blocks from sim-ml-bridge (policies, values,
+optimizers, ReplayBuffer, soft_update, gaussian_log_prob, compute_gae)
+and example-ml-shared (setup_reaching_arms, sync_batch_geoms). Only
+algorithm-specific update logic stays inline (the teaching point).
+
+See `examples/fundamentals/sim-ml/PHASE_4_SPEC.md` for full details.
+
+Results at level 0 (linear function approximation):
+- CEM: best performer (~20/50 reached), gradient-free search dominates
+- REINFORCE: 90% reward improvement, 0/50 reached
+- PPO: 88% reward improvement, value loss 10072→182
+- TD3: ~30% improvement then plateau (linear Q DPG saturates)
+- SAC: ~50% steady improvement (entropy prevents DPG saturation)
+
+5 examples, 10 tests (TD3) + 10 tests (SAC) + existing tests for
+CEM/REINFORCE/PPO. All passing.
 
 ### Phase 5+ (future levels)
 

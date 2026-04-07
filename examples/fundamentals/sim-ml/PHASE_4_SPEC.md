@@ -1,8 +1,8 @@
 # Phase 4: Visual Examples Refactor + TD3/SAC
 
-> **Status**: In Progress (Steps 1–4 done: shared crate + CEM/REINFORCE/PPO refactors)
+> **Status**: Complete (all 6 steps done: shared crate + CEM/REINFORCE/PPO refactors + TD3/SAC new examples)
 > **Location**: `examples/fundamentals/sim-ml/vec-env/`
-> **Parent spec**: `sim/docs/ML_COMPETITION_SPEC.md`, Phase 4
+> **Parent spec**: `ML_COMPETITION_SPEC.md`, Phase 4
 > **Depends on**: Phase 3 (competition tests, all passing)
 
 ## Context
