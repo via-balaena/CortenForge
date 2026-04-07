@@ -68,14 +68,23 @@ examples/fundamentals/sim-ml/
 15 examples total. Package naming: `example-ml-{group}-{name}`.
 
 Examples #12, #14, #15 form a **learning algorithm ladder**: same arm,
-same target, same VecEnv — three different optimizers. The visual progression
-tells the story of why modern RL uses gradients:
+same target, same VecEnv — three different optimizers. The visual
+progression tells the story of the level 0-1 landscape:
 
 | # | Algorithm | Type | Visual result |
 |---|-----------|------|---------------|
-| 12 | CEM | Sampling-based | ~20/50 reach (perturbation diversity) |
-| 14 | REINFORCE | Policy gradient | All 50 converge in unison |
-| 15 | PPO | Actor-critic | Faster, smoother convergence than REINFORCE |
+| 12 | CEM | Sampling-based | ★ Best performer — arms converge and reach target |
+| 14 | REINFORCE | Policy gradient | Arms improve but can't reach precisely |
+| 15 | PPO | Actor-critic | Better than REINFORCE, still below CEM |
+
+**Note on ordering:** the original spec predicted gradient methods would
+dominate CEM. Phase 3 competition tests (seed 42, 50ep/50env) showed the
+**opposite** at level 0-1: CEM (-1.05, 49 dones) >> TD3/SAC (-11) >>
+PPO (-3449) >> REINFORCE (-7500). Hand-coded gradients in 614-dim space
+are too noisy to outperform gradient-free search on a smooth quadratic
+reward. The visual examples should reflect what actually happens — CEM
+as the crown jewel, gradient methods as the "why autograd matters"
+motivation. See `sim/docs/COMPETITION_TESTS_SPEC.md` for full analysis.
 
 ## Bevy Integration Patterns
 
