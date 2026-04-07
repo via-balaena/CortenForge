@@ -536,17 +536,85 @@ and **1e-4** (FD tests where no oracle exists).
 | Algorithm updates | Remove all `set_params(optimizer.params())` sync calls |
 | Tests | Same Adam behavior, no sync bugs |
 
-### Phase 5: Deeper networks + new capabilities (~100 LOC)
+### Phase 5: ReLU + Xavier init (~100 LOC)
 
-**Deliverable**: Capabilities that were impossible at level 0-1.
+**Deliverable**: Activation choice and proper initialization for deep nets.
+
+Two of the five original items are already implemented:
+- **2+ hidden layers** — done in Phase 3. All autograd types accept
+  `hidden_dims: &[usize]`. FD-tested with `&[4, 4]`.
+- **Per-dimension sigma** — done in Phase 3. `AutogradStochasticPolicy`
+  stores `log_std[act_dim]` as learnable params.
+
+Remaining work:
 
 | Item | Detail |
 |------|--------|
-| 2+ hidden layers | `hidden_dims: vec![64, 64]` just works — no new backprop code |
-| ReLU activation | `tape.relu(a)` — one new op, backward = `if a > 0 { grad } else { 0 }` |
-| Per-dimension sigma | `log_std` as `[act_dim]` params, not scalar — anisotropic exploration |
-| Xavier initialization | `AutogradPolicy::new_xavier()` — proper init for deep nets |
-| Tests | FD tests for new ops. Training convergence on 2-DOF reaching with 2-layer net. |
+| `Tape::relu(a)` | New tape op. Backward = `if a > 0 { 1 } else { 0 }` — precomputable at forward time, so it fits in `Unary { parent, local }`. No new `BackwardOp` variant needed. |
+| `linear_relu` layer fn | `relu(W · x + b)` in `autograd_layers.rs`. Same pattern as `linear_tanh`. |
+| `Activation` enum | `Tanh` / `Relu`. Stored in autograd network types. Hidden layers dispatch on it; output layer stays fixed (tanh for policy, raw for value/Q). |
+| Xavier / He init | `new_xavier(rng)` constructors on all 4 autograd types. Glorot uniform for tanh: `W ~ U(-√(6/(fin+fout)), √(6/(fin+fout)))`. He normal for ReLU: `W ~ N(0, √(2/fin))`. Biases zero. |
+| Tests | FD test for `relu`. Convergence test: 2-layer ReLU net on 2-DOF reaching. |
+
+#### Implementation details
+
+**`Tape::relu`** (~5 LOC):
+```rust
+pub fn relu(&mut self, a: Var) -> Var {
+    let val = self.value(a);
+    let out = if val > 0.0 { val } else { 0.0 };
+    let local = if val > 0.0 { 1.0 } else { 0.0 };
+    self.push(out, BackwardOp::Unary { parent: a.0, local }, false)
+}
+```
+
+**`linear_relu`** (~5 LOC):
+```rust
+pub fn linear_relu(tape, w, b, x, out_dim, in_dim) -> Vec<Var> {
+    let z = tape.affine(w, x, b, out_dim, in_dim);
+    z.into_iter().map(|zi| tape.relu(zi)).collect()
+}
+```
+
+**`Activation` enum** (~5 LOC):
+```rust
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Activation {
+    #[default]
+    Tanh,
+    Relu,
+}
+```
+
+Lives in `autograd_layers.rs` (or `autograd.rs`). Used by `forward_on_tape`
+in all 4 autograd types to dispatch between `linear_tanh` and `linear_relu`
+for hidden layers. Output layer behavior is unchanged:
+- `AutogradPolicy` / `AutogradStochasticPolicy`: output = `linear_tanh`
+  (bounds actions to [-1, 1]).
+- `AutogradValue` / `AutogradQ`: output = `linear_raw` (unbounded).
+
+**Xavier / He init** (~40 LOC):
+
+`new_xavier(obs_dim, hidden_dims, act_dim, obs_scale, activation, rng)`
+constructors on `AutogradPolicy`, `AutogradStochasticPolicy`,
+`AutogradValue`, `AutogradQ`. Same architecture as `new()`, but
+initializes weights instead of zeroing them.
+
+Initialization strategy depends on activation:
+- `Activation::Tanh` → Glorot uniform: `W_ij ~ U(-limit, limit)` where
+  `limit = √(6 / (fan_in + fan_out))`.
+- `Activation::Relu` → He normal: `W_ij ~ N(0, √(2 / fan_in))`.
+- Biases: always zero (standard practice).
+
+Takes `&mut impl Rng` for deterministic seeding in tests.
+
+**Convergence test** (~30 LOC):
+
+Train `AutogradPolicy` with `hidden_dims = &[32, 32]` and
+`Activation::Relu` + Xavier init on 2-DOF reaching via REINFORCE
+(20 epochs, 20 envs). Assert reward improves. Validates the full
+stack: ReLU gradients, Xavier init, multi-layer backward, optimizer
+integration.
 
 ### Phase 6: Competition re-run
 
