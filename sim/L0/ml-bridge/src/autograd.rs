@@ -392,12 +392,7 @@ impl Default for Tape {
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::float_cmp,
-    clippy::cast_precision_loss,
-    clippy::redundant_closure_for_method_calls
-)]
+#[allow(clippy::unwrap_used, clippy::float_cmp, clippy::cast_precision_loss)]
 mod tests {
     use super::*;
 
@@ -491,35 +486,35 @@ mod tests {
 
     #[test]
     fn neg_gradient_matches_fd() {
-        assert_grad_fd(2.5, |t, p| t.neg(p));
+        assert_grad_fd(2.5, Tape::neg);
     }
 
     #[test]
     fn tanh_gradient_matches_fd() {
         // Test at several points including near saturation.
         for &x in &[-2.0, -0.5, 0.0, 0.5, 2.0] {
-            assert_grad_fd(x, |t, p| t.tanh(p));
+            assert_grad_fd(x, Tape::tanh);
         }
     }
 
     #[test]
     fn square_gradient_matches_fd() {
         for &x in &[-3.0, 0.0, 1.5] {
-            assert_grad_fd(x, |t, p| t.square(p));
+            assert_grad_fd(x, Tape::square);
         }
     }
 
     #[test]
     fn ln_gradient_matches_fd() {
         for &x in &[0.1, 1.0, 5.0] {
-            assert_grad_fd(x, |t, p| t.ln(p));
+            assert_grad_fd(x, Tape::ln);
         }
     }
 
     #[test]
     fn exp_gradient_matches_fd() {
         for &x in &[-1.0, 0.0, 2.0] {
-            assert_grad_fd(x, |t, p| t.exp(p));
+            assert_grad_fd(x, Tape::exp);
         }
     }
 
@@ -540,12 +535,12 @@ mod tests {
 
     #[test]
     fn sum_gradient_matches_fd() {
-        assert_grads_fd(&[1.0, 2.0, 3.0], |t, p| t.sum(p));
+        assert_grads_fd(&[1.0, 2.0, 3.0], Tape::sum);
     }
 
     #[test]
     fn mean_gradient_matches_fd() {
-        assert_grads_fd(&[1.0, 2.0, 3.0], |t, p| t.mean(p));
+        assert_grads_fd(&[1.0, 2.0, 3.0], Tape::mean);
     }
 
     #[test]
