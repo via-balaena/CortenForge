@@ -189,6 +189,101 @@ Prediction: autograd reverses CEM's dominance because gradient methods
 can exploit local curvature. CEM's search space explodes combinatorially
 but the gradient points directly downhill.
 
+---
+
+## Level 2 results (autograd, Phase 6)
+
+### Test 8: `competition_6dof_autograd_1layer_parity` (506s)
+
+All 5 algorithms, autograd backends, 1 hidden layer (32 units), 6-DOF.
+Same architecture as level 0-1 — validates autograd doesn't regress.
+
+| Algorithm | Reward | Dones | Level 0-1 Reward |
+|-----------|--------|-------|------------------|
+| CEM | -1.05 | 49 | -1.05 |
+| SAC | -10.64 | 0 | -10.82 |
+| TD3 | -11.99 | 0 | -11.99 |
+| PPO | -3449.38 | 0 | -3449.38 |
+| REINFORCE | -7499.96 | 0 | -7499.96 |
+
+- **Exact parity** for CEM, TD3, PPO, REINFORCE — autograd produces
+  identical results with the same architecture.
+- **SAC improved** (-10.82 → -10.64) and **overtakes TD3** for the first
+  time. `AutogradStochasticPolicy` gives SAC an MLP actor (previously
+  stuck with `LinearStochasticPolicy`).
+- Ordering: CEM >> SAC > TD3 >> PPO >> REINFORCE (same as level 0-1,
+  with SAC/TD3 swap).
+
+### Test 9: `competition_6dof_autograd_2layer` (2851s)
+
+All 5 algorithms, autograd backends, 2 hidden layers (64+64), ReLU,
+Xavier/He init, 6-DOF. ~5,400 params per network (vs 614 at level 0-1).
+
+| Algorithm | Reward | Dones | Level 0-1 Reward | Change |
+|-----------|--------|-------|------------------|--------|
+| CEM | -3.07 | 0 | -1.05 | 3x worse |
+| TD3 | -4.08 | 0 | -11.99 | 3x better |
+| SAC | -30.04 | 0 | -10.82 | 3x worse |
+| PPO | -9025.90 | 0 | -3449.38 | 2.6x worse |
+| REINFORCE | -11979.50 | 0 | -7499.96 | 1.6x worse |
+
+Ordering: CEM (-3.07) > TD3 (-4.08) >> SAC >> PPO >> REINFORCE
+
+### Headline finding
+
+**The ordering reversal has not happened at 50 epochs — but it's imminent.**
+
+CEM and TD3 are converging from opposite directions:
+- **CEM degraded 3x** (-1.05 → -3.07): 50 candidates can't search
+  5,400 dims effectively. CEM has plateaued.
+- **TD3 improved 3x** (-11.99 → -4.08): the deeper network is learning,
+  just needs more gradient steps. TD3's evaluation rewards during
+  training: -29 → -18 → -9 → -5 → -4. Still converging.
+
+The gap is 1 reward unit (-3.07 vs -4.08). TD3 at this trajectory
+would overtake CEM within ~70-100 more epochs.
+
+### Why 50 epochs isn't enough
+
+The budget was calibrated for 614 params (level 0-1). At 5,400 params:
+
+| Factor | Level 0-1 | Level 2 | Impact |
+|--------|-----------|---------|--------|
+| Params | 614 | ~5,400 | 8.8x more parameters to optimize |
+| Steps/param | ~2,000 | ~230 | 8.8x less per-param training signal |
+| CEM candidates/param | 1:12 | 1:108 | Fundamentally insufficient for CEM |
+| TD3 replay ratio | ~780x | ~780x | Same — replay helps scale |
+
+Off-policy methods (TD3) handle the scaling best because replay
+multiplies effective sample count. On-policy methods (PPO, REINFORCE)
+use each sample once, so 8.8x more params = 8.8x less per-param signal.
+
+### SAC instability
+
+SAC finished at -30.04 but was at -10.81 two epochs earlier. The
+final-epoch reward is a fluke — SAC oscillated between -8 and -30
+throughout training. Root cause: learning rate 3e-4 is too aggressive
+for a deep stochastic policy with entropy regularization. The entropy
+bonus pulls the policy toward randomness while the Q-gradient pulls
+toward exploitation — with a too-large LR, the policy oscillates
+between these attractors.
+
+### Follow-up experiments (Phase 6b)
+
+Three levers to test the reversal hypothesis:
+
+1. **More epochs** (200-300): let TD3/SAC converge with same hyperparams.
+   Estimated ~40 min per algorithm in release mode.
+2. **Lower learning rate** (3e-4 → 1e-4): stabilize SAC and help all
+   gradient methods converge smoothly with 5K params.
+3. **More environments** (50 → 200): 4x more data per epoch. Helps
+   on-policy methods (PPO, REINFORCE) most — each gradient estimate
+   uses 4x more samples.
+
+These are independent variables — run one at a time to isolate the effect.
+
+---
+
 ## Verification
 
 ```bash

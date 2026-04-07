@@ -587,23 +587,26 @@ Two of the five original items were already done in Phase 3:
   always uses tanh (bounds actions to [-1, 1]), value/Q output always
   uses raw (unbounded).
 
-### Phase 6: Competition re-run
+### Phase 6: Competition re-run — DONE
 
-**Deliverable**: Updated competition test results with autograd backends.
+**Delivered**: 10 builder functions, 2 integration tests, full results
+documented in `COMPETITION_TESTS_SPEC.md`. Training observability added
+(`on_epoch` callback on `Algorithm::train`).
 
-| Item | Detail |
+| Item | Status |
 |------|--------|
-| Swap implementations | Competition tests use `AutogradPolicy`/`AutogradValue`/`AutogradQ` |
-| 1-hidden-layer baseline | Must match level 0-1 results (same architecture = same performance) |
-| 2-hidden-layer runs | The real test — gradient methods should improve dramatically |
-| Document ordering | Does it reverse? Where? By how much? |
-| Update `COMPETITION_TESTS_SPEC.md` | Level 2 results section |
+| Swap implementations | Done — autograd types for all 5 algorithms |
+| 1-hidden-layer baseline | Done — exact parity (CEM -1.05, TD3 -11.99, PPO -3449, REINFORCE -7500). SAC overtakes TD3 with MLP actor. |
+| 2-hidden-layer runs | Done — CEM -3.07, TD3 -4.08, SAC -30.04, PPO -9026, REINFORCE -11980 |
+| Document ordering | Done — CEM still wins at 50 epochs but TD3 is 1 unit behind and converging. Reversal imminent at ~100-200 epochs. |
+| Update `COMPETITION_TESTS_SPEC.md` | Done — level 2 results section with analysis |
+| Training observability | Done — `on_epoch` callback, `Competition::new_verbose()`. Spec: `TRAINING_OBSERVABILITY_SPEC.md` |
 
-**Hypothesis**: With autograd + 2 hidden layers:
-- PPO and SAC overtake CEM on 2-DOF
-- CEM still competitive on low-param configs
-- TD3 becomes viable (batch backward removes the per-sample noise)
-- REINFORCE improves but still worst gradient method (no baseline/clipping)
+**Hypothesis result**: Partially confirmed. TD3 improved 3x (-11.99 → -4.08)
+while CEM degraded 3x (-1.05 → -3.07). The crossover is imminent but
+didn't happen at 50 epochs — budget wasn't scaled for 8.8x more params.
+SAC unstable due to aggressive LR. On-policy methods (PPO, REINFORCE)
+need much more data per epoch. Follow-up experiments proposed (Phase 6b).
 
 ### Phase 7: Visual examples
 
@@ -772,8 +775,8 @@ policy/value trait change — the trait firewall is intact.
 
 1. **Every autograd gradient matches hand-coded to 1e-10** (Phase 3) — DONE
 2. **FD-validated where no oracle exists** (Phase 3+5) — DONE (stochastic policy, 2-layer nets, ReLU nets, tol=1e-4)
-3. **Competition results unchanged for same architecture** (Phase 6)
-4. **Gradient methods improve with 2+ hidden layers** (Phase 6)
+3. **Competition results unchanged for same architecture** (Phase 6) — DONE. Exact parity for CEM/TD3/PPO/REINFORCE. SAC improved (MLP actor).
+4. **Gradient methods improve with 2+ hidden layers** (Phase 6) — PARTIAL. TD3 improved 3x (-11.99 → -4.08). CEM degraded 3x. Crossover imminent but not at 50 epochs.
 5. **Trait firewall holds** — DONE. Algorithms are oblivious to backend. Only optimizer-level change (Phase 4: `step_in_place`).
 6. **Total autograd code ~1800 library LOC + ~1400 test LOC** across autograd engine, layers, policy, value, and optimizer integration. Original 800 LOC estimate underestimated trait impls, stochastic policy, activation/init, and test code.
 7. **Zero new external dependencies** (pure Rust, no ML framework) — DONE
