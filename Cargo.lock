@@ -3637,10 +3637,11 @@ name = "example-ml-vec-env-ppo"
 version = "0.7.0"
 dependencies = [
  "bevy",
+ "example-ml-shared",
  "rand 0.9.2",
+ "rand_distr",
  "sim-bevy",
  "sim-core",
- "sim-mjcf",
  "sim-ml-bridge",
 ]
 
