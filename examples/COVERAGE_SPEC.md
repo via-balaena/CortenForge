@@ -1354,29 +1354,33 @@ The ML bridge (111 tests, 6 phases) gets its own example track covering
 spaces, SimEnv, VecEnv, and a learning algorithm ladder. Full spec:
 `fundamentals/sim-ml/SIM_ML_EXAMPLES_SPEC.md`.
 
-**Phases 1–3 (15 examples):**
+**Phases 1–3 (spaces, sim-env, vec-env basics — 13 examples):**
 ```
 fundamentals/sim-ml/
   spaces/          #1–5   observation/action space demos
   sim-env/         #6–9   episode lifecycle, sub-stepping, domain randomization
-  vec-env/         #10–15 parallel environments + learning algorithms
+  vec-env/         #10–13 parallel environments (stress-test, parallel-step, auto-reset, terminal-obs)
 ```
 
-**Learning algorithm ladder (#12, #14, #15):** Same 2-link reaching arm,
-same target, same VecEnv — three different optimizers. The visual
-progression tells the story of why modern RL uses gradients:
+**Phase 4: Learning algorithm ladder (#12, #14–#17) — COMPLETE:**
 
-| # | Algorithm | Type | Gradient? | Visual result |
-|---|-----------|------|-----------|---------------|
-| 12 | CEM | Evolutionary | No | ~20/50 reach (perturbation diversity) — **DONE** |
-| 14 | REINFORCE | Policy gradient | Hand-coded | All 50 converge in unison |
-| 15 | PPO | Actor-critic | Hand-coded | Faster, smoother convergence |
+Same 2-link reaching arm, same target, same VecEnv — five different
+optimizers. All use shared building blocks from sim-ml-bridge; only
+algorithm-specific update logic stays inline.
 
-All three use a linear policy with 10 params — no ML framework needed.
-The gradients are analytically computable via chain rule through tanh.
-This avoids adding autograd/neural-network dependencies. If a fourth
-algorithm is needed (SAC, TD3), that's the point to evaluate whether a
-lean autograd abstraction or `candle` dependency is warranted.
+| # | Algorithm | Type | Visual result |
+|---|-----------|------|---------------|
+| 12 | CEM | Sampling-based | ★ ~20/50 reach — best at level 0 — **DONE** |
+| 14 | REINFORCE | Policy gradient | 90% reward improvement, 0 reached — **DONE** |
+| 15 | PPO | Actor-critic | 88% improvement, value loss decreasing — **DONE** |
+| 16 | TD3 | Off-policy (DPG) | ~30% improvement then plateau — **DONE** |
+| 17 | SAC | Off-policy (entropy) | ~50% steady improvement — **DONE** |
+
+All use linear policies (10–12 params) — no ML framework needed.
+Gradients analytically computable via chain rule through tanh.
+TD3/SAC add ReplayBuffer, soft_update, and twin Q-networks from
+sim-ml-bridge. SAC's entropy regularization prevents DPG saturation,
+outperforming TD3 at level 0.
 
 ## Priority
 
@@ -1387,7 +1391,7 @@ to GPU or advanced features:
 2. **Track 1B** IN PROGRESS — sim-core foundation layer 2 (~70 examples).
    No stone unturned — every implemented subsystem gets dedicated coverage.
    **14/20 subdirectories done.**
-3. **Track 5** — sim-ml-bridge. #11 + #12 DONE. #14 (REINFORCE) next.
+3. **Track 5** — sim-ml-bridge. Phase 4 COMPLETE (17 examples, 5 algorithms).
 4. **Track 3** after Track 1B proves the engine — GPU ladder
 5. **Track 2** as needed — SDF-CPU stubs (most SDF work targets GPU)
 6. **Track 4** as needed — design + mesh
