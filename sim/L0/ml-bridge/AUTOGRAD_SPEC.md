@@ -4,7 +4,7 @@
 > inside `sim-ml-bridge`. No external ML framework deps. Hand-coded gradients
 > become the test oracle; autograd becomes the production path.
 
-**Status**: v2 — Phases 1-3 implemented, spec updated with implementation findings
+**Status**: v3 — Phases 1-5 implemented, spec updated with implementation findings
 **Crate**: `sim-ml-bridge` (new module: `autograd`)
 **License precedents**: micrograd (MIT), burn (Apache-2.0/MIT), dfdx (Apache-2.0/MIT)
 
@@ -17,7 +17,7 @@ These are the constraints. Every implementation decision flows from them.
 | Principle | What it means |
 |-----------|---------------|
 | **Transparent** | You can print the tape, see every node, trace any gradient back to the chain rule step that produced it. No hidden machinery. |
-| **Simple** | 8 scalar ops + affine. No graph optimization, no lazy eval, no cleverness that hides the math. If you can't explain a line to a beginner, rewrite it. |
+| **Simple** | 9 scalar ops + affine. No graph optimization, no lazy eval, no cleverness that hides the math. If you can't explain a line to a beginner, rewrite it. |
 | **Complete** | Handles all 5 algorithms' gradient needs (REINFORCE, PPO, TD3, SAC, CEM doesn't need gradients). Not "general ML complete" — RL complete. |
 | **Reliable** | Two independent oracles: finite differences AND hand-coded. Both must agree. If they don't, the autograd is wrong. |
 | **Predictable** | Deterministic. Fresh tape per forward pass. No hidden state, no accumulation artifacts between calls. Same inputs → same outputs, always. |
@@ -37,7 +37,7 @@ obviously correct by construction.
 
 | Reason | Detail |
 |--------|--------|
-| **RL needs ~10 ops** | General frameworks carry thousands of ops for conv, attention, etc. We need: add, mul, sub, neg, tanh, square, log, exp + fused matmul. |
+| **RL needs ~10 ops** | General frameworks carry thousands of ops for conv, attention, etc. We need: add, mul, sub, neg, tanh, relu, square, log, exp + fused matmul. |
 | **Perfect test oracles** | Every hand-coded gradient in `linear.rs` and `mlp.rs` is finite-difference validated. We can verify autograd against them bit-for-bit. |
 | **Parameter sync wart disappears** | Level 0-1 has dual param ownership (optimizer + network). Autograd owns params in one place. |
 | **Foundational fix** | CortenForge principle: own your chassis. burn/candle are someone else's. |
@@ -189,7 +189,7 @@ which is more transparent and still correct (verified by FD tests).
 | `Var(u32)` not `Var(usize)` | 4B nodes is more than enough; halves index size |
 | `enum BackwardOp` not `Box<dyn FnOnce>` | No heap allocation per op. Enum is stack-sized, cache-friendly |
 | `local: f64` not `fn` pointers | Simpler, no indirection. Gradient rule is a precomputed number, not a callback |
-| `Tanh` special variant | Only op whose gradient depends on its output value. All others are precomputable |
+| `Tanh` special variant | Only op whose gradient depends on its output value. All others (including `relu`) are precomputable into `Unary { local }` |
 | Flat `Vec<Node>` not `HashMap` | Sequential allocation, sequential backward. Cache-perfect |
 | No `Arc`, no lifetimes | Tape owns everything. Vars are Copy indices. Zero reference counting |
 | `leaf_mask` not `HashSet<UniqueId>` | Vec<bool> indexed by Var position. O(1) lookup, no hashing |
@@ -210,13 +210,14 @@ impl Tape {
     /// Create a constant (leaf whose gradient we discard).
     pub fn constant(&mut self, value: f64) -> Var;
 
-    // ── Scalar operations (8 primitives) ───────────────────────────
+    // ── Scalar operations (9 primitives) ───────────────────────────
 
     pub fn add(&mut self, a: Var, b: Var) -> Var;     // da=1, db=1
     pub fn sub(&mut self, a: Var, b: Var) -> Var;     // da=1, db=-1
     pub fn mul(&mut self, a: Var, b: Var) -> Var;     // da=b, db=a
     pub fn neg(&mut self, a: Var) -> Var;              // da=-1
     pub fn tanh(&mut self, a: Var) -> Var;             // da=1-out²
+    pub fn relu(&mut self, a: Var) -> Var;             // da=if a>0 {1} else {0}
     pub fn square(&mut self, a: Var) -> Var;           // da=2*a
     pub fn ln(&mut self, a: Var) -> Var;               // da=1/a
     pub fn exp(&mut self, a: Var) -> Var;              // da=out
@@ -481,7 +482,7 @@ by both `step()` and `step_in_place()` — zero duplication.
 | Item | Status |
 |------|--------|
 | `Tape::new()`, `param()`, `constant()` | Done |
-| 8 scalar ops: add, sub, mul, neg, tanh, square, ln, exp | Done |
+| 8 scalar ops: add, sub, mul, neg, tanh, square, ln, exp (relu added in Phase 5) | Done |
 | 3 fused ops: `affine`, `sum`, `mean` (pulled from Phase 2) | Done |
 | `backward()` | Done |
 | `grad()`, `value()` | Done |
@@ -526,95 +527,65 @@ oracle (`LinearStochasticPolicy` has 0 hidden layers, `MlpPolicy` has no
 Two tolerance tiers exist: **1e-10** (parity against hand-coded oracle)
 and **1e-4** (FD tests where no oracle exists).
 
-### Phase 4: Optimizer integration (~50 LOC)
+### Phase 4: Optimizer integration — DONE
 
-**Deliverable**: `Optimizer::step_in_place(&mut self, params: &mut [f64], grads: &[f64], ascent: bool)`.
+**Delivered**: `Optimizer::step_in_place` + algorithm migration. 5 new tests.
 
-| Item | Detail |
+| Item | Status |
 |------|--------|
-| New optimizer method | Works on borrowed slices, not owned params |
-| Algorithm updates | Remove all `set_params(optimizer.params())` sync calls |
-| Tests | Same Adam behavior, no sync bugs |
+| `Optimizer::step_in_place(&mut self, params: &mut [f64], gradient: &[f64], ascent: bool)` | Done |
+| `adam_update()` free function — shared by `step()` and `step_in_place()` | Done |
+| REINFORCE: 2 sync points removed | Done |
+| PPO: 4 sync points removed (2 init + 2 per K pass) | Done |
+| TD3: 6 sync points removed (3 init + 3 per update) | Done |
+| SAC: 6 sync points removed (3 init + 3 per update) | Done |
+| Tests: `step_in_place` matches `step` (single + multi-step momentum) | Done — 5 tests |
 
-### Phase 5: ReLU + Xavier init (~100 LOC)
+**Implementation finding**: `adam_update()` extraction eliminated all code
+duplication between `step()` and `step_in_place()`. The optimizer still
+holds a `params: Vec<f64>` for backward compatibility with `step()`, but
+`step_in_place()` ignores it — only m/v/t state is used. Algorithm code
+now does `let mut p = network.params().to_vec(); optimizer.step_in_place(&mut p, ...); network.set_params(&p);` — still requires `set_params` on
+the network because traits don't expose `params_mut()`. The dual ownership
+wart is eliminated (optimizer no longer needs `set_params` at init).
 
-**Deliverable**: Activation choice and proper initialization for deep nets.
+### Phase 5: ReLU + Xavier init — DONE
 
-Two of the five original items are already implemented:
-- **2+ hidden layers** — done in Phase 3. All autograd types accept
-  `hidden_dims: &[usize]`. FD-tested with `&[4, 4]`.
-- **Per-dimension sigma** — done in Phase 3. `AutogradStochasticPolicy`
-  stores `log_std[act_dim]` as learnable params.
+**Delivered**: Activation choice, proper initialization, 5 new tests.
 
-Remaining work:
+Two of the five original items were already done in Phase 3:
+- **2+ hidden layers** — all autograd types accept `hidden_dims: &[usize]`.
+- **Per-dimension sigma** — `AutogradStochasticPolicy` stores `log_std[act_dim]`.
 
-| Item | Detail |
+| Item | Status |
 |------|--------|
-| `Tape::relu(a)` | New tape op. Backward = `if a > 0 { 1 } else { 0 }` — precomputable at forward time, so it fits in `Unary { parent, local }`. No new `BackwardOp` variant needed. |
-| `linear_relu` layer fn | `relu(W · x + b)` in `autograd_layers.rs`. Same pattern as `linear_tanh`. |
-| `Activation` enum | `Tanh` / `Relu`. Stored in autograd network types. Hidden layers dispatch on it; output layer stays fixed (tanh for policy, raw for value/Q). |
-| Xavier / He init | `new_xavier(rng)` constructors on all 4 autograd types. Glorot uniform for tanh: `W ~ U(-√(6/(fin+fout)), √(6/(fin+fout)))`. He normal for ReLU: `W ~ N(0, √(2/fin))`. Biases zero. |
-| Tests | FD test for `relu`. Convergence test: 2-layer ReLU net on 2-DOF reaching. |
+| `Tape::relu(a)` — 9th scalar op, fits in `Unary { parent, local }` | Done |
+| `linear_relu` layer fn in `autograd_layers.rs` | Done |
+| `Activation` enum (`Tanh` / `Relu`) in `autograd_layers.rs` | Done |
+| `linear_hidden` dispatch fn (delegates to `linear_tanh` or `linear_relu`) | Done |
+| All 4 autograd types store `activation` field | Done |
+| `new_with(activation)` constructors on all 4 types | Done |
+| `new_xavier(activation, rng)` constructors on all 4 types | Done |
+| `xavier_init` helper — Glorot uniform for Tanh, He normal for ReLU | Done |
+| FD tests: `relu`, `linear_relu`, ReLU 2-layer policy | Done — 3 tests |
+| Xavier init nonzero weights test | Done |
+| Convergence: 2-layer ReLU+Xavier REINFORCE on 2-DOF reaching | Done |
 
-#### Implementation details
-
-**`Tape::relu`** (~5 LOC):
-```rust
-pub fn relu(&mut self, a: Var) -> Var {
-    let val = self.value(a);
-    let out = if val > 0.0 { val } else { 0.0 };
-    let local = if val > 0.0 { 1.0 } else { 0.0 };
-    self.push(out, BackwardOp::Unary { parent: a.0, local }, false)
-}
-```
-
-**`linear_relu`** (~5 LOC):
-```rust
-pub fn linear_relu(tape, w, b, x, out_dim, in_dim) -> Vec<Var> {
-    let z = tape.affine(w, x, b, out_dim, in_dim);
-    z.into_iter().map(|zi| tape.relu(zi)).collect()
-}
-```
-
-**`Activation` enum** (~5 LOC):
-```rust
-#[derive(Clone, Copy, Debug, Default)]
-pub enum Activation {
-    #[default]
-    Tanh,
-    Relu,
-}
-```
-
-Lives in `autograd_layers.rs` (or `autograd.rs`). Used by `forward_on_tape`
-in all 4 autograd types to dispatch between `linear_tanh` and `linear_relu`
-for hidden layers. Output layer behavior is unchanged:
-- `AutogradPolicy` / `AutogradStochasticPolicy`: output = `linear_tanh`
-  (bounds actions to [-1, 1]).
-- `AutogradValue` / `AutogradQ`: output = `linear_raw` (unbounded).
-
-**Xavier / He init** (~40 LOC):
-
-`new_xavier(obs_dim, hidden_dims, act_dim, obs_scale, activation, rng)`
-constructors on `AutogradPolicy`, `AutogradStochasticPolicy`,
-`AutogradValue`, `AutogradQ`. Same architecture as `new()`, but
-initializes weights instead of zeroing them.
-
-Initialization strategy depends on activation:
-- `Activation::Tanh` → Glorot uniform: `W_ij ~ U(-limit, limit)` where
-  `limit = √(6 / (fan_in + fan_out))`.
-- `Activation::Relu` → He normal: `W_ij ~ N(0, √(2 / fan_in))`.
-- Biases: always zero (standard practice).
-
-Takes `&mut impl Rng` for deterministic seeding in tests.
-
-**Convergence test** (~30 LOC):
-
-Train `AutogradPolicy` with `hidden_dims = &[32, 32]` and
-`Activation::Relu` + Xavier init on 2-DOF reaching via REINFORCE
-(20 epochs, 20 envs). Assert reward improves. Validates the full
-stack: ReLU gradients, Xavier init, multi-layer backward, optimizer
-integration.
+**Implementation findings**:
+- `relu` needed no new `BackwardOp` variant — its gradient is a constant
+  (`1.0` or `0.0`) determined at forward time, fitting in the existing
+  `Unary { parent, local }` variant. Same simplification that worked for
+  all non-tanh ops.
+- `xavier_init` and `randn` helpers are duplicated between
+  `autograd_policy.rs` and `autograd_value.rs` (same pattern as
+  `compute_offsets` / `LayerOffsets`). Could be extracted to a shared
+  module if more network types are added.
+- All existing tests still pass with `Activation::Tanh` (default) — the
+  `new()` constructors delegate to `new_with(..., Activation::Tanh)`, so
+  backward compatibility is preserved.
+- Output layer behavior is unchanged by activation choice: policy output
+  always uses tanh (bounds actions to [-1, 1]), value/Q output always
+  uses raw (unbounded).
 
 ### Phase 6: Competition re-run
 
@@ -650,20 +621,25 @@ integration.
 
 ```
 sim/L0/ml-bridge/src/
-├── autograd.rs          // Phase 1: Tape, Var, Node, backward, 8 scalar ops + affine/sum/mean
-├── autograd_layers.rs   // Phase 2: linear_tanh, linear_raw, gaussian_log_prob, mse_loss
-├── autograd_policy.rs   // Phase 3: AutogradPolicy, AutogradStochasticPolicy
-├── autograd_value.rs    // Phase 3: AutogradValue, AutogradQ
+├── autograd.rs          // Phase 1+5: Tape, Var, Node, backward, 9 scalar ops + affine/sum/mean
+├── autograd_layers.rs   // Phase 2+5: linear_tanh, linear_relu, linear_raw, linear_hidden,
+│                        //            Activation enum, gaussian_log_prob, mse_loss
+├── autograd_policy.rs   // Phase 3+5: AutogradPolicy, AutogradStochasticPolicy,
+│                        //            xavier_init, new_with, new_xavier
+├── autograd_value.rs    // Phase 3+5: AutogradValue, AutogradQ,
+│                        //            xavier_init, new_with, new_xavier
+├── optimizer.rs         // Phase 4: adam_update, step_in_place
 ├── lib.rs               // pub mod + re-exports for all autograd modules
-└── ... (existing files unchanged)
+└── ... (existing algorithm files: reinforce, ppo, td3, sac — Phase 4 sync removal)
 ```
 
-**Note**: `affine`, `sum`, and `mean` live in `autograd.rs` (Phase 1), not
-`autograd_layers.rs` — they are tape primitives, not RL-specific layers.
+**Note**: `affine`, `sum`, `mean`, and `relu` live in `autograd.rs` (tape
+primitives), not `autograd_layers.rs`. `Activation` enum and `linear_hidden`
+dispatch live in `autograd_layers.rs` since they are layer-level concerns.
 
-**Note**: `compute_offsets` and `LayerOffsets` are duplicated between
-`autograd_policy.rs` and `autograd_value.rs`. Could be extracted to a
-shared module if more network types are added.
+**Note**: `compute_offsets`, `LayerOffsets`, `xavier_init`, and `randn`
+are duplicated between `autograd_policy.rs` and `autograd_value.rs`.
+Could be extracted to a shared module if more network types are added.
 
 **Note**: `autograd_layers::gaussian_log_prob` has the same name as
 `sac::gaussian_log_prob` but a different signature (takes `Var`s, not
@@ -758,7 +734,7 @@ The performance regression for small nets is acceptable because:
 
 ## 12. What changes for algorithms
 
-**Nothing.** That's the whole point of the trait firewall.
+**Trait firewall holds.** Algorithms are oblivious to the autograd backend.
 
 ```rust
 // REINFORCE doesn't know or care:
@@ -771,9 +747,10 @@ let policy_grad = policy.forward_vjp(obs, &dq_da);
 // Works with any QFunction + DifferentiablePolicy implementation.
 ```
 
-The only algorithm-level change is in Phase 4: removing the manual
-`set_params(optimizer.params())` sync calls, because autograd policies
-own their params directly.
+The only algorithm-level change was Phase 4: replacing
+`optimizer.step() + network.set_params(optimizer.params())` with
+`optimizer.step_in_place()`. This is an optimizer-level change, not a
+policy/value trait change — the trait firewall is intact.
 
 ---
 
@@ -794,10 +771,10 @@ own their params directly.
 ## 14. Success criteria
 
 1. **Every autograd gradient matches hand-coded to 1e-10** (Phase 3) — DONE
-2. **FD-validated where no oracle exists** (Phase 3) — DONE (stochastic policy, 2-layer nets, tol=1e-4)
+2. **FD-validated where no oracle exists** (Phase 3+5) — DONE (stochastic policy, 2-layer nets, ReLU nets, tol=1e-4)
 3. **Competition results unchanged for same architecture** (Phase 6)
 4. **Gradient methods improve with 2+ hidden layers** (Phase 6)
-5. **Zero algorithm code changes** (trait firewall holds)
-6. **Total autograd code ~1300 library LOC + ~970 test LOC** (engine + layers + trait impls). Original estimate of 800 LOC underestimated test code and the `StochasticPolicy` impl.
+5. **Trait firewall holds** — DONE. Algorithms are oblivious to backend. Only optimizer-level change (Phase 4: `step_in_place`).
+6. **Total autograd code ~1800 library LOC + ~1400 test LOC** across autograd engine, layers, policy, value, and optimizer integration. Original 800 LOC estimate underestimated trait impls, stochastic policy, activation/init, and test code.
 7. **Zero new external dependencies** (pure Rust, no ML framework) — DONE
-8. **47 tests, 0 failures** across 4 files — DONE
+8. **57 autograd-related tests, 0 failures** across 5 files (autograd, layers, policy, value, optimizer) — DONE. 296 total crate tests pass.
