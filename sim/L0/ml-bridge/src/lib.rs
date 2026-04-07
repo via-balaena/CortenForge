@@ -71,6 +71,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod algorithm;
+pub mod autograd;
 pub mod cem;
 pub mod competition;
 pub mod env;
@@ -93,6 +94,7 @@ pub mod value;
 pub mod vec_env;
 
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+pub use autograd::{Tape, Var};
 pub use cem::{Cem, CemHyperparams};
 pub use competition::{Competition, CompetitionResult, RunResult};
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
