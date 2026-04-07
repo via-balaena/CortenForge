@@ -1013,7 +1013,7 @@ is sufficient to find downhill directions.
 lower-variance gradients, batch backward passes, and richer function
 approximation. The level 0-1 results are the baseline to beat.
 
-See `sim/docs/COMPETITION_TESTS_SPEC.md` for full results.
+See `COMPETITION_TESTS_SPEC.md` for full results.
 
 ## Implementation plan
 
@@ -1093,7 +1093,7 @@ infrastructure that SAC builds on.
 7 integration tests in `sim/L0/ml-bridge/tests/competition.rs`.
 All `#[ignore]` (multi-minute runs). Run with `--release`.
 
-See `sim/docs/COMPETITION_TESTS_SPEC.md` for full results and analysis.
+See `COMPETITION_TESTS_SPEC.md` for full results and analysis.
 
 The predicted ordering was reversed at level 0-1. Verified ordering:
 REINFORCE << PPO << TD3 ≈ SAC << CEM (49 dones). CEM's gradient-free

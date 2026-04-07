@@ -88,7 +88,7 @@ PPO (-3449) >> REINFORCE (-7500). Hand-coded gradients in 614-dim space
 are too noisy to outperform gradient-free search on a smooth quadratic
 reward. The visual examples should reflect what actually happens — CEM
 as the crown jewel, gradient methods as the "why autograd matters"
-motivation. See `sim/docs/COMPETITION_TESTS_SPEC.md` for full analysis.
+motivation. See `COMPETITION_TESTS_SPEC.md` for full analysis.
 
 ## Bevy Integration Patterns
 
