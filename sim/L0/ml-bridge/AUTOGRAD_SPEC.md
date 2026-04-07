@@ -459,16 +459,16 @@ The optimizer operates directly on the network's `params: Vec<f64>`:
 
 ```rust
 impl Optimizer {
-    /// Update params in-place. Reads gradients from the most recent backward pass.
-    pub fn step_autograd(&mut self, params: &mut [f64], grads: &[f64]);
+    /// Update params in-place. Same math as step(), but on borrowed slices.
+    /// `ascent` is required — actors maximize, critics minimize.
+    pub fn step_in_place(&mut self, params: &mut [f64], grads: &[f64], ascent: bool);
 }
 ```
 
-Or: the network types expose `&mut [f64]` to the optimizer, and the
-optimizer writes directly. No copy, no sync, no silent bugs.
-
-The existing `Optimizer` struct (with Adam state) stays. We add a method
-that takes `(&mut [f64], &[f64])` instead of managing its own param copy.
+The existing `Optimizer` trait (with Adam state: m, v, t) stays. The new
+method takes `(&mut [f64], &[f64], bool)` instead of managing its own
+param copy. Core math extracted into `adam_update()` free function shared
+by both `step()` and `step_in_place()` — zero duplication.
 
 ---
 
@@ -528,7 +528,7 @@ and **1e-4** (FD tests where no oracle exists).
 
 ### Phase 4: Optimizer integration (~50 LOC)
 
-**Deliverable**: `Optimizer::step_in_place(&mut self, params: &mut [f64], grads: &[f64])`.
+**Deliverable**: `Optimizer::step_in_place(&mut self, params: &mut [f64], grads: &[f64], ascent: bool)`.
 
 | Item | Detail |
 |------|--------|
