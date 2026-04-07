@@ -14,7 +14,7 @@
 //! is linear (no tanh) — value predictions are unbounded.
 
 use crate::autograd::{Tape, Var};
-use crate::autograd_layers::{linear_raw, linear_tanh, mse_loss};
+use crate::autograd_layers::{Activation, linear_hidden, linear_raw, mse_loss};
 use crate::value::{QFunction, ValueFn};
 
 // ── Layer offset bookkeeping (shared with autograd_policy.rs) ─────────────
@@ -52,6 +52,41 @@ fn compute_offsets(layer_sizes: &[usize]) -> Vec<LayerOffsets> {
     offsets
 }
 
+// ── Xavier / He initialization ────────────────────────────────────────────
+
+/// Box-Muller normal sample.
+fn randn(rng: &mut impl rand::Rng) -> f64 {
+    let u1: f64 = 1.0 - rng.random::<f64>();
+    let u2: f64 = rng.random::<f64>();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
+/// Initialize weights using Xavier (Glorot) or He initialization.
+#[allow(clippy::cast_precision_loss)]
+fn xavier_init(
+    params: &mut [f64],
+    layer_offsets: &[LayerOffsets],
+    activation: Activation,
+    rng: &mut impl rand::Rng,
+) {
+    for layer in layer_offsets {
+        match activation {
+            Activation::Tanh => {
+                let limit = (6.0 / (layer.in_dim + layer.out_dim) as f64).sqrt();
+                for p in &mut params[layer.w_start..layer.w_end] {
+                    *p = (2.0_f64).mul_add(rng.random::<f64>(), -1.0) * limit;
+                }
+            }
+            Activation::Relu => {
+                let std = (2.0 / layer.in_dim as f64).sqrt();
+                for p in &mut params[layer.w_start..layer.w_end] {
+                    *p = randn(rng) * std;
+                }
+            }
+        }
+    }
+}
+
 // ── AutogradValue ─────────────────────────────────────────────────────────
 
 /// Autograd-backed state value function V(s).
@@ -62,16 +97,34 @@ pub struct AutogradValue {
     obs_scale: Vec<f64>,
     params: Vec<f64>,
     layer_offsets: Vec<LayerOffsets>,
+    activation: Activation,
 }
 
 impl AutogradValue {
     /// Create a new value function with zero-initialized parameters.
+    ///
+    /// Uses [`Activation::Tanh`] for hidden layers.
     ///
     /// # Panics
     ///
     /// Panics if `obs_scale.len() != obs_dim` or `hidden_dims` is empty.
     #[must_use]
     pub fn new(obs_dim: usize, hidden_dims: &[usize], obs_scale: &[f64]) -> Self {
+        Self::new_with(obs_dim, hidden_dims, obs_scale, Activation::Tanh)
+    }
+
+    /// Create a new value function with explicit activation choice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `obs_scale.len() != obs_dim` or `hidden_dims` is empty.
+    #[must_use]
+    pub fn new_with(
+        obs_dim: usize,
+        hidden_dims: &[usize],
+        obs_scale: &[f64],
+        activation: Activation,
+    ) -> Self {
         assert!(
             obs_scale.len() == obs_dim,
             "AutogradValue::new: obs_scale.len() ({}) != obs_dim ({obs_dim})",
@@ -93,7 +146,22 @@ impl AutogradValue {
             obs_scale: obs_scale.to_vec(),
             params: vec![0.0; n_params],
             layer_offsets,
+            activation,
         }
+    }
+
+    /// Create a value function with Xavier/He-initialized weights.
+    #[must_use]
+    pub fn new_xavier(
+        obs_dim: usize,
+        hidden_dims: &[usize],
+        obs_scale: &[f64],
+        activation: Activation,
+        rng: &mut impl rand::Rng,
+    ) -> Self {
+        let mut v = Self::new_with(obs_dim, hidden_dims, obs_scale, activation);
+        xavier_init(&mut v.params, &v.layer_offsets, activation, rng);
+        v
     }
 
     /// Forward pass on a tape, returning the scalar output `Var`.
@@ -109,7 +177,15 @@ impl AutogradValue {
             current = if is_last {
                 linear_raw(tape, w, b, &current, layer.out_dim, layer.in_dim)
             } else {
-                linear_tanh(tape, w, b, &current, layer.out_dim, layer.in_dim)
+                linear_hidden(
+                    tape,
+                    w,
+                    b,
+                    &current,
+                    layer.out_dim,
+                    layer.in_dim,
+                    self.activation,
+                )
             };
         }
         current[0]
@@ -173,16 +249,35 @@ pub struct AutogradQ {
     obs_scale: Vec<f64>,
     params: Vec<f64>,
     layer_offsets: Vec<LayerOffsets>,
+    activation: Activation,
 }
 
 impl AutogradQ {
     /// Create a new Q-function with zero-initialized parameters.
+    ///
+    /// Uses [`Activation::Tanh`] for hidden layers.
     ///
     /// # Panics
     ///
     /// Panics if `obs_scale.len() != obs_dim` or `hidden_dims` is empty.
     #[must_use]
     pub fn new(obs_dim: usize, hidden_dims: &[usize], act_dim: usize, obs_scale: &[f64]) -> Self {
+        Self::new_with(obs_dim, hidden_dims, act_dim, obs_scale, Activation::Tanh)
+    }
+
+    /// Create a new Q-function with explicit activation choice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `obs_scale.len() != obs_dim` or `hidden_dims` is empty.
+    #[must_use]
+    pub fn new_with(
+        obs_dim: usize,
+        hidden_dims: &[usize],
+        act_dim: usize,
+        obs_scale: &[f64],
+        activation: Activation,
+    ) -> Self {
         assert!(
             obs_scale.len() == obs_dim,
             "AutogradQ::new: obs_scale.len() ({}) != obs_dim ({obs_dim})",
@@ -206,7 +301,23 @@ impl AutogradQ {
             obs_scale: obs_scale.to_vec(),
             params: vec![0.0; n_params],
             layer_offsets,
+            activation,
         }
+    }
+
+    /// Create a Q-function with Xavier/He-initialized weights.
+    #[must_use]
+    pub fn new_xavier(
+        obs_dim: usize,
+        hidden_dims: &[usize],
+        act_dim: usize,
+        obs_scale: &[f64],
+        activation: Activation,
+        rng: &mut impl rand::Rng,
+    ) -> Self {
+        let mut q = Self::new_with(obs_dim, hidden_dims, act_dim, obs_scale, activation);
+        xavier_init(&mut q.params, &q.layer_offsets, activation, rng);
+        q
     }
 
     /// Build concatenated input `[s_scaled; action]` on the tape.
@@ -242,7 +353,15 @@ impl AutogradQ {
             current = if is_last {
                 linear_raw(tape, w, b, &current, layer.out_dim, layer.in_dim)
             } else {
-                linear_tanh(tape, w, b, &current, layer.out_dim, layer.in_dim)
+                linear_hidden(
+                    tape,
+                    w,
+                    b,
+                    &current,
+                    layer.out_dim,
+                    layer.in_dim,
+                    self.activation,
+                )
             };
         }
         current[0]

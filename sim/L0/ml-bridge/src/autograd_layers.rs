@@ -8,7 +8,14 @@
 //! # Layers
 //!
 //! - [`linear_tanh`] — `tanh(W · x + b)`, used for policy hidden + output layers.
+//! - [`linear_relu`] — `relu(W · x + b)`, alternative for hidden layers in deep nets.
 //! - [`linear_raw`] — `W · x + b` (no activation), used for value/Q output layers.
+//!
+//! # Activation selection
+//!
+//! [`Activation`] enum (`Tanh` / `Relu`) — stored in autograd network types.
+//! Hidden layers dispatch on it; output layers stay fixed (tanh for policy,
+//! raw for value/Q).
 //!
 //! # Loss functions
 //!
@@ -47,6 +54,27 @@ pub fn linear_tanh(
     z.into_iter().map(|zi| tape.tanh(zi)).collect()
 }
 
+/// `z = relu(W · x + b)`.
+///
+/// Same as [`linear_tanh`] but with `ReLU` activation. Preferred for hidden
+/// layers in deeper networks (2+ layers) — avoids tanh saturation.
+///
+/// # Panics
+///
+/// Panics if slice lengths don't match dimensions.
+#[must_use]
+pub fn linear_relu(
+    tape: &mut Tape,
+    w: &[Var],
+    b: &[Var],
+    x: &[Var],
+    out_dim: usize,
+    in_dim: usize,
+) -> Vec<Var> {
+    let z = tape.affine(w, x, b, out_dim, in_dim);
+    z.into_iter().map(|zi| tape.relu(zi)).collect()
+}
+
 /// `z = W · x + b` (no activation).
 ///
 /// Same as [`linear_tanh`] but without the `tanh` — output is unbounded.
@@ -65,6 +93,44 @@ pub fn linear_raw(
     in_dim: usize,
 ) -> Vec<Var> {
     tape.affine(w, x, b, out_dim, in_dim)
+}
+
+// ── Activation selection ─────────────────────────────────────────────────
+
+/// Hidden-layer activation function.
+///
+/// Stored in autograd network types. Output layers are unaffected:
+/// policy output uses tanh (bounds to [-1, 1]), value/Q output uses
+/// raw (unbounded).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Activation {
+    /// `tanh` — bounded to [-1, 1]. Default for compatibility with
+    /// hand-coded MLP oracle.
+    #[default]
+    Tanh,
+    /// `relu` — `max(0, x)`. Preferred for deeper networks (2+ layers).
+    Relu,
+}
+
+/// Apply a linear layer with the given hidden activation.
+///
+/// Dispatches to [`linear_tanh`] or [`linear_relu`] based on `activation`.
+/// For output layers, use [`linear_tanh`] (policy) or [`linear_raw`]
+/// (value/Q) directly.
+#[must_use]
+pub fn linear_hidden(
+    tape: &mut Tape,
+    w: &[Var],
+    b: &[Var],
+    x: &[Var],
+    out_dim: usize,
+    in_dim: usize,
+    activation: Activation,
+) -> Vec<Var> {
+    match activation {
+        Activation::Tanh => linear_tanh(tape, w, b, x, out_dim, in_dim),
+        Activation::Relu => linear_relu(tape, w, b, x, out_dim, in_dim),
+    }
 }
 
 // ── Loss functions ────────────────────────────────────────────────────────
@@ -242,6 +308,24 @@ mod tests {
                 "linear_tanh output {val} outside [-1, 1]"
             );
         }
+    }
+
+    // ── linear_relu tests ─────────────────────────────────────────
+
+    #[test]
+    fn linear_relu_gradient_matches_fd() {
+        let params = vec![
+            0.3, -0.5, 0.8, -0.2, 0.4, -0.1, // W: 2×3
+            0.1, -0.05, // b: 2
+            1.0, -0.5, 2.0, // x: 3
+        ];
+        assert_grads_fd(&params, |tape, p| {
+            let w = &p[0..6];
+            let b = &p[6..8];
+            let x = &p[8..11];
+            let out = linear_relu(tape, w, b, x, 2, 3);
+            tape.sum(&out)
+        });
     }
 
     // ── linear_raw tests ──────────────────────────────────────────

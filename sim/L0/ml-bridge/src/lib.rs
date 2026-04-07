@@ -98,7 +98,9 @@ pub mod vec_env;
 
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 pub use autograd::{Tape, Var};
-pub use autograd_layers::{linear_raw, linear_tanh, mse_loss, mse_loss_batch};
+pub use autograd_layers::{
+    Activation, linear_hidden, linear_raw, linear_relu, linear_tanh, mse_loss, mse_loss_batch,
+};
 pub use autograd_policy::{AutogradPolicy, AutogradStochasticPolicy};
 pub use autograd_value::{AutogradQ, AutogradValue};
 pub use cem::{Cem, CemHyperparams};

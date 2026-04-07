@@ -19,9 +19,9 @@
 //!
 //! # Supported operations
 //!
-//! Eight scalar primitives: [`Tape::add`], [`Tape::sub`], [`Tape::mul`],
-//! [`Tape::neg`], [`Tape::tanh`], [`Tape::square`], [`Tape::ln`],
-//! [`Tape::exp`].
+//! Nine scalar primitives: [`Tape::add`], [`Tape::sub`], [`Tape::mul`],
+//! [`Tape::neg`], [`Tape::tanh`], [`Tape::relu`], [`Tape::square`],
+//! [`Tape::ln`], [`Tape::exp`].
 //!
 //! Three fused operations: [`Tape::affine`] (matrix-vector multiply + bias),
 //! [`Tape::sum`], [`Tape::mean`].
@@ -263,6 +263,14 @@ impl Tape {
             false,
         )
     }
+
+    /// `max(0, a)`. Gradient: `da = if a > 0 { 1 } else { 0 }`.
+    #[must_use]
+    pub fn relu(&mut self, a: Var) -> Var {
+        let va = self.value(a);
+        let (out, local) = if va > 0.0 { (va, 1.0) } else { (0.0, 0.0) };
+        self.push(out, BackwardOp::Unary { parent: a.0, local }, false)
+    }
 }
 
 // ── Fused operations ──────────────────────────────────────────────────────
@@ -494,6 +502,14 @@ mod tests {
         // Test at several points including near saturation.
         for &x in &[-2.0, -0.5, 0.0, 0.5, 2.0] {
             assert_grad_fd(x, Tape::tanh);
+        }
+    }
+
+    #[test]
+    fn relu_gradient_matches_fd() {
+        // Positive, negative, and near-zero.
+        for &x in &[-2.0, -0.1, 0.1, 1.5, 3.0] {
+            assert_grad_fd(x, Tape::relu);
         }
     }
 

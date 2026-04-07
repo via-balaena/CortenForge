@@ -16,7 +16,7 @@
 //! `Vec<f64>` — same convention as [`MlpPolicy`](crate::MlpPolicy).
 
 use crate::autograd::{Tape, Var};
-use crate::autograd_layers::{gaussian_log_prob, linear_tanh};
+use crate::autograd_layers::{Activation, gaussian_log_prob, linear_hidden, linear_tanh};
 use crate::policy::{DifferentiablePolicy, Policy, StochasticPolicy};
 
 // ── Layer offset bookkeeping ──────────────────────────────────────────────
@@ -56,6 +56,48 @@ fn compute_offsets(layer_sizes: &[usize]) -> Vec<LayerOffsets> {
     offsets
 }
 
+// ── Xavier / He initialization ────────────────────────────────────────────
+
+/// Box-Muller normal sample.
+fn randn(rng: &mut impl rand::Rng) -> f64 {
+    let u1: f64 = 1.0 - rng.random::<f64>();
+    let u2: f64 = rng.random::<f64>();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
+/// Initialize weights using Xavier (Glorot) or He initialization.
+///
+/// - `Activation::Tanh` → Glorot uniform: `W ~ U(-limit, limit)`,
+///   `limit = √(6 / (fan_in + fan_out))`.
+/// - `Activation::Relu` → He normal: `W ~ N(0, √(2 / fan_in))`.
+/// - Biases: always zero.
+#[allow(clippy::cast_precision_loss)]
+fn xavier_init(
+    params: &mut [f64],
+    layer_offsets: &[LayerOffsets],
+    activation: Activation,
+    rng: &mut impl rand::Rng,
+) {
+    for layer in layer_offsets {
+        match activation {
+            Activation::Tanh => {
+                let limit = (6.0 / (layer.in_dim + layer.out_dim) as f64).sqrt();
+                for p in &mut params[layer.w_start..layer.w_end] {
+                    // Uniform on [-limit, limit]
+                    *p = (2.0_f64).mul_add(rng.random::<f64>(), -1.0) * limit;
+                }
+            }
+            Activation::Relu => {
+                let std = (2.0 / layer.in_dim as f64).sqrt();
+                for p in &mut params[layer.w_start..layer.w_end] {
+                    *p = randn(rng) * std;
+                }
+            }
+        }
+        // Biases stay zero (already initialized).
+    }
+}
+
 // ── AutogradPolicy ────────────────────────────────────────────────────────
 
 /// Autograd-backed policy with arbitrary hidden layer depth.
@@ -72,6 +114,7 @@ pub struct AutogradPolicy {
     obs_scale: Vec<f64>,
     params: Vec<f64>,
     layer_offsets: Vec<LayerOffsets>,
+    activation: Activation,
 }
 
 impl AutogradPolicy {
@@ -81,11 +124,34 @@ impl AutogradPolicy {
     /// `vec![32]` gives one hidden layer of 32 units (matching `MlpPolicy`),
     /// `vec![64, 64]` gives two hidden layers.
     ///
+    /// Uses [`Activation::Tanh`] for hidden layers (matching the hand-coded
+    /// oracle). Use [`new_with`](Self::new_with) to select a different
+    /// activation.
+    ///
     /// # Panics
     ///
     /// Panics if `obs_scale.len() != obs_dim` or `hidden_dims` is empty.
     #[must_use]
     pub fn new(obs_dim: usize, hidden_dims: &[usize], act_dim: usize, obs_scale: &[f64]) -> Self {
+        Self::new_with(obs_dim, hidden_dims, act_dim, obs_scale, Activation::Tanh)
+    }
+
+    /// Create a new policy with zero-initialized parameters and explicit
+    /// activation choice for hidden layers.
+    ///
+    /// Output layer always uses tanh (bounds actions to [-1, 1]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `obs_scale.len() != obs_dim` or `hidden_dims` is empty.
+    #[must_use]
+    pub fn new_with(
+        obs_dim: usize,
+        hidden_dims: &[usize],
+        act_dim: usize,
+        obs_scale: &[f64],
+        activation: Activation,
+    ) -> Self {
         assert!(
             obs_scale.len() == obs_dim,
             "AutogradPolicy::new: obs_scale.len() ({}) != obs_dim ({obs_dim})",
@@ -110,7 +176,28 @@ impl AutogradPolicy {
             obs_scale: obs_scale.to_vec(),
             params: vec![0.0; n_params],
             layer_offsets,
+            activation,
         }
+    }
+
+    /// Create a policy with Xavier/He-initialized weights.
+    ///
+    /// - [`Activation::Tanh`] → Glorot uniform: `W ~ U(-limit, limit)`
+    ///   where `limit = √(6 / (fan_in + fan_out))`.
+    /// - [`Activation::Relu`] → He normal: `W ~ N(0, √(2 / fan_in))`.
+    /// - Biases: zero.
+    #[must_use]
+    pub fn new_xavier(
+        obs_dim: usize,
+        hidden_dims: &[usize],
+        act_dim: usize,
+        obs_scale: &[f64],
+        activation: Activation,
+        rng: &mut impl rand::Rng,
+    ) -> Self {
+        let mut policy = Self::new_with(obs_dim, hidden_dims, act_dim, obs_scale, activation);
+        xavier_init(&mut policy.params, &policy.layer_offsets, activation, rng);
+        policy
     }
 
     /// Run the forward pass on a tape, returning output `Var`s.
@@ -123,14 +210,29 @@ impl AutogradPolicy {
         param_vars: &[crate::autograd::Var],
         x: &[crate::autograd::Var],
     ) -> Vec<crate::autograd::Var> {
+        let n_layers = self.layer_offsets.len();
         let mut current = x.to_vec();
 
-        // All layers use tanh — hidden layers for activation, output layer
-        // to bound actions to [-1, 1].
-        for layer in &self.layer_offsets {
+        for (i, layer) in self.layer_offsets.iter().enumerate() {
             let w = &param_vars[layer.w_start..layer.w_end];
             let b = &param_vars[layer.b_start..layer.b_end];
-            current = linear_tanh(tape, w, b, &current, layer.out_dim, layer.in_dim);
+            let is_last = i == n_layers - 1;
+
+            current = if is_last {
+                // Output layer always uses tanh to bound actions to [-1, 1].
+                linear_tanh(tape, w, b, &current, layer.out_dim, layer.in_dim)
+            } else {
+                // Hidden layers use the configured activation.
+                linear_hidden(
+                    tape,
+                    w,
+                    b,
+                    &current,
+                    layer.out_dim,
+                    layer.in_dim,
+                    self.activation,
+                )
+            };
         }
         current
     }
@@ -235,11 +337,14 @@ pub struct AutogradStochasticPolicy {
     layer_offsets: Vec<LayerOffsets>,
     /// Index where `log_std` params begin in the flat param vector.
     log_std_offset: usize,
+    activation: Activation,
 }
 
 impl AutogradStochasticPolicy {
     /// Create a new stochastic policy with zero-initialized network params
     /// and `log_std` initialized to `init_log_std`.
+    ///
+    /// Uses [`Activation::Tanh`] for hidden layers.
     ///
     /// # Panics
     ///
@@ -251,6 +356,30 @@ impl AutogradStochasticPolicy {
         act_dim: usize,
         obs_scale: &[f64],
         init_log_std: f64,
+    ) -> Self {
+        Self::new_with(
+            obs_dim,
+            hidden_dims,
+            act_dim,
+            obs_scale,
+            init_log_std,
+            Activation::Tanh,
+        )
+    }
+
+    /// Create a new stochastic policy with explicit activation choice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `obs_scale.len() != obs_dim` or `hidden_dims` is empty.
+    #[must_use]
+    pub fn new_with(
+        obs_dim: usize,
+        hidden_dims: &[usize],
+        act_dim: usize,
+        obs_scale: &[f64],
+        init_log_std: f64,
+        activation: Activation,
     ) -> Self {
         assert!(
             obs_scale.len() == obs_dim,
@@ -282,16 +411,57 @@ impl AutogradStochasticPolicy {
             params,
             layer_offsets,
             log_std_offset,
+            activation,
         }
+    }
+
+    /// Create a stochastic policy with Xavier/He-initialized weights.
+    ///
+    /// Network weights are initialized per activation strategy.
+    /// `log_std` params are initialized to `init_log_std`.
+    #[must_use]
+    pub fn new_xavier(
+        obs_dim: usize,
+        hidden_dims: &[usize],
+        act_dim: usize,
+        obs_scale: &[f64],
+        init_log_std: f64,
+        activation: Activation,
+        rng: &mut impl rand::Rng,
+    ) -> Self {
+        let mut policy = Self::new_with(
+            obs_dim,
+            hidden_dims,
+            act_dim,
+            obs_scale,
+            init_log_std,
+            activation,
+        );
+        xavier_init(&mut policy.params, &policy.layer_offsets, activation, rng);
+        policy
     }
 
     /// Forward pass on a tape, returning output mean `Var`s.
     fn forward_on_tape(&self, tape: &mut Tape, param_vars: &[Var], x: &[Var]) -> Vec<Var> {
+        let n_layers = self.layer_offsets.len();
         let mut current = x.to_vec();
-        for layer in &self.layer_offsets {
+        for (i, layer) in self.layer_offsets.iter().enumerate() {
             let w = &param_vars[layer.w_start..layer.w_end];
             let b = &param_vars[layer.b_start..layer.b_end];
-            current = linear_tanh(tape, w, b, &current, layer.out_dim, layer.in_dim);
+            let is_last = i == n_layers - 1;
+            current = if is_last {
+                linear_tanh(tape, w, b, &current, layer.out_dim, layer.in_dim)
+            } else {
+                linear_hidden(
+                    tape,
+                    w,
+                    b,
+                    &current,
+                    layer.out_dim,
+                    layer.in_dim,
+                    self.activation,
+                )
+            };
         }
         current
     }
@@ -755,5 +925,110 @@ mod tests {
             .zip(eps)
             .map(|((&m, &ls), &e)| ls.exp().mul_add(e, m))
             .collect()
+    }
+
+    // ── ReLU activation tests ────────────────────────────────────
+
+    #[test]
+    fn relu_two_layer_log_prob_gradient_matches_fd() {
+        let obs_dim = 3;
+        let act_dim = 2;
+        let scale = [1.0, 1.0, 1.0];
+        let mut ag =
+            AutogradPolicy::new_with(obs_dim, &[4, 4], act_dim, &scale, crate::Activation::Relu);
+        let n = ag.n_params();
+        let params: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.13).sin() * 0.5).collect();
+        ag.set_params(&params);
+
+        let obs = [0.5_f32, -0.3, 0.8];
+        let action = [0.2, -0.4];
+        let sigma = 0.3;
+
+        let analytical = ag.log_prob_gradient(&obs, &action, sigma);
+
+        let eps = 1e-6;
+        let tol = 1e-4;
+        let mut perturbed = params.clone();
+        for i in 0..n {
+            let orig = perturbed[i];
+
+            perturbed[i] = orig + eps;
+            ag.set_params(&perturbed);
+            let lp_plus = eval_log_prob(&ag, &obs, &action, sigma);
+
+            perturbed[i] = orig - eps;
+            ag.set_params(&perturbed);
+            let lp_minus = eval_log_prob(&ag, &obs, &action, sigma);
+
+            perturbed[i] = orig;
+
+            let fd = (lp_plus - lp_minus) / (2.0 * eps);
+            let err = (analytical[i] - fd).abs();
+            assert!(
+                err < tol,
+                "ReLU 2-layer FD param[{i}]: analytical={}, fd={fd}, err={err}",
+                analytical[i],
+            );
+        }
+    }
+
+    // ── Xavier init ──────────────────────────────────────────────
+
+    #[test]
+    fn xavier_init_nonzero_weights() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        let p =
+            AutogradPolicy::new_xavier(4, &[8, 8], 2, &[1.0; 4], crate::Activation::Relu, &mut rng);
+
+        // Weights should be non-zero.
+        let any_nonzero = p.params().iter().any(|&v| v.abs() > 1e-12);
+        assert!(any_nonzero, "Xavier init should produce non-zero weights");
+    }
+
+    // ── Convergence with 2-layer ReLU + Xavier ───────────────────
+
+    #[test]
+    fn relu_xavier_convergence_2dof() {
+        use crate::algorithm::{Algorithm, TrainingBudget};
+        use crate::optimizer::OptimizerConfig;
+        use crate::reaching_2dof;
+        use crate::reinforce::{Reinforce, ReinforceHyperparams};
+        use rand::SeedableRng;
+
+        let task = reaching_2dof();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        let policy = Box::new(AutogradPolicy::new_xavier(
+            task.obs_dim(),
+            &[32, 32],
+            task.act_dim(),
+            task.obs_scale(),
+            crate::Activation::Relu,
+            &mut rng,
+        ));
+
+        let mut algo = Reinforce::new(
+            policy,
+            OptimizerConfig::adam(0.05),
+            ReinforceHyperparams {
+                gamma: 0.99,
+                sigma_init: 0.5,
+                sigma_decay: 0.95,
+                sigma_min: 0.05,
+                max_episode_steps: 300,
+            },
+        );
+
+        let mut env = task.build_vec_env(20).unwrap();
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(20), 42);
+
+        let first = metrics[0].mean_reward;
+        let last = metrics[19].mean_reward;
+        assert!(
+            last > first,
+            "2-layer ReLU+Xavier should improve: first={first:.1}, last={last:.1}",
+        );
     }
 }
