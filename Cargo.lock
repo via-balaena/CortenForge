@@ -3668,6 +3668,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ml-vec-env-td3"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "example-ml-shared",
+ "rand 0.9.2",
+ "rand_distr",
+ "sim-bevy",
+ "sim-core",
+ "sim-ml-bridge",
+]
+
+[[package]]
 name = "example-mocap-bodies-drag-target"
 version = "0.7.0"
 dependencies = [
