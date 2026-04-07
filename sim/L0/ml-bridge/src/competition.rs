@@ -71,6 +71,33 @@ impl CompetitionResult {
             .filter(|r| r.algorithm_name == algorithm)
             .collect()
     }
+
+    /// Print a summary table of all results to stderr.
+    ///
+    /// Uses `eprintln!` so output is visible even under test capture
+    /// (shows on failure, or with `--nocapture`).
+    pub fn print_summary(&self) {
+        eprintln!(
+            "\n{:<20} {:<15} {:>14} {:>12} {:>10}",
+            "Task", "Algorithm", "Final Reward", "Total Dones", "Wall (ms)"
+        );
+        eprintln!("{}", "-".repeat(75));
+        for run in &self.runs {
+            let reward = run
+                .final_reward()
+                .map_or_else(|| "N/A".to_string(), |r| format!("{r:.2}"));
+            let wall: u64 = run.metrics.iter().map(|m| m.wall_time_ms).sum();
+            eprintln!(
+                "{:<20} {:<15} {:>14} {:>12} {:>10}",
+                run.task_name,
+                run.algorithm_name,
+                reward,
+                run.total_dones(),
+                wall
+            );
+        }
+        eprintln!();
+    }
 }
 
 // ── Competition ─────────────────────────────────────────────────────────────
