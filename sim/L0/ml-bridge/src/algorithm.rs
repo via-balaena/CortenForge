@@ -69,7 +69,7 @@ pub enum TrainingBudget {
 ///     PpoHyperparams { clip_eps: 0.2, k_passes: 2, gamma: 0.99, .. },
 /// );
 ///
-/// let metrics = ppo.train(&mut env, TrainingBudget::Epochs(30), seed);
+/// let metrics = ppo.train(&mut env, TrainingBudget::Epochs(30), seed, &|_| {});
 /// ```
 pub trait Algorithm: Send {
     /// Algorithm name (e.g., `"CEM"`, `"PPO"`, `"SAC"`).
@@ -80,7 +80,17 @@ pub trait Algorithm: Send {
     /// The algorithm steps `env`, manages its own data structures
     /// (trajectories, replay buffers, populations), and returns
     /// standardized metrics for each epoch.
-    fn train(&mut self, env: &mut VecEnv, budget: TrainingBudget, seed: u64) -> Vec<EpochMetrics>;
+    ///
+    /// `on_epoch` is called after each epoch with that epoch's metrics.
+    /// Pass `&|_| {}` for silent operation, or a logging callback for
+    /// real-time training visibility.
+    fn train(
+        &mut self,
+        env: &mut VecEnv,
+        budget: TrainingBudget,
+        seed: u64,
+        on_epoch: &dyn Fn(&EpochMetrics),
+    ) -> Vec<EpochMetrics>;
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────

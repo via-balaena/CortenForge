@@ -97,7 +97,13 @@ impl Algorithm for Reinforce {
         clippy::too_many_lines,
         clippy::panic
     )]
-    fn train(&mut self, env: &mut VecEnv, budget: TrainingBudget, seed: u64) -> Vec<EpochMetrics> {
+    fn train(
+        &mut self,
+        env: &mut VecEnv,
+        budget: TrainingBudget,
+        seed: u64,
+        on_epoch: &dyn Fn(&EpochMetrics),
+    ) -> Vec<EpochMetrics> {
         let mut rng = StdRng::seed_from_u64(seed);
         let n_params = self.policy.n_params();
         let n_envs = env.n_envs();
@@ -152,14 +158,16 @@ impl Algorithm for Reinforce {
 
             let n_samples = all_returns.len();
             if n_samples == 0 {
-                metrics.push(EpochMetrics {
+                let em = EpochMetrics {
                     epoch,
                     mean_reward: 0.0,
                     done_count: 0,
                     total_steps: 0,
                     wall_time_ms: t0.elapsed().as_millis() as u64,
                     extra: BTreeMap::new(),
-                });
+                };
+                on_epoch(&em);
+                metrics.push(em);
                 continue;
             }
 
@@ -217,14 +225,16 @@ impl Algorithm for Reinforce {
             extra.insert("sigma".into(), sigma);
             extra.insert("policy_grad_norm".into(), grad_norm);
 
-            metrics.push(EpochMetrics {
+            let em = EpochMetrics {
                 epoch,
                 mean_reward,
                 done_count,
                 total_steps: epoch_steps,
                 wall_time_ms: t0.elapsed().as_millis() as u64,
                 extra,
-            });
+            };
+            on_epoch(&em);
+            metrics.push(em);
         }
 
         metrics
@@ -271,7 +281,7 @@ mod tests {
         let (mut algo, task) = make_reinforce();
         let mut env = task.build_vec_env(10).unwrap();
 
-        let metrics = algo.train(&mut env, TrainingBudget::Epochs(5), 42);
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(5), 42, &|_| {});
 
         assert_eq!(metrics.len(), 5);
         for (i, m) in metrics.iter().enumerate() {
@@ -287,7 +297,7 @@ mod tests {
         let (mut algo, task) = make_reinforce();
         let mut env = task.build_vec_env(20).unwrap();
 
-        let metrics = algo.train(&mut env, TrainingBudget::Epochs(10), 42);
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(10), 42, &|_| {});
 
         let first = metrics[0].mean_reward;
         let last = metrics[9].mean_reward;

@@ -125,7 +125,13 @@ impl Algorithm for Ppo {
         clippy::too_many_lines,
         clippy::panic
     )]
-    fn train(&mut self, env: &mut VecEnv, budget: TrainingBudget, seed: u64) -> Vec<EpochMetrics> {
+    fn train(
+        &mut self,
+        env: &mut VecEnv,
+        budget: TrainingBudget,
+        seed: u64,
+        on_epoch: &dyn Fn(&EpochMetrics),
+    ) -> Vec<EpochMetrics> {
         let mut rng = StdRng::seed_from_u64(seed);
         let n_envs = env.n_envs();
         let hp = self.hyperparams;
@@ -225,14 +231,16 @@ impl Algorithm for Ppo {
 
             let n_samples = steps.len();
             if n_samples == 0 {
-                metrics.push(EpochMetrics {
+                let em = EpochMetrics {
                     epoch,
                     mean_reward: 0.0,
                     done_count: 0,
                     total_steps: 0,
                     wall_time_ms: t0.elapsed().as_millis() as u64,
                     extra: BTreeMap::new(),
-                });
+                };
+                on_epoch(&em);
+                metrics.push(em);
                 continue;
             }
 
@@ -353,14 +361,16 @@ impl Algorithm for Ppo {
             extra.insert("policy_grad_norm".into(), last_actor_grad_norm);
             extra.insert("critic_grad_norm".into(), last_critic_grad_norm);
 
-            metrics.push(EpochMetrics {
+            let em = EpochMetrics {
                 epoch,
                 mean_reward,
                 done_count,
                 total_steps: epoch_steps,
                 wall_time_ms: t0.elapsed().as_millis() as u64,
                 extra,
-            });
+            };
+            on_epoch(&em);
+            metrics.push(em);
         }
 
         metrics
@@ -412,7 +422,7 @@ mod tests {
         let (mut algo, task) = make_ppo();
         let mut env = task.build_vec_env(10).unwrap();
 
-        let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42);
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
         assert_eq!(metrics.len(), 3);
         for (i, m) in metrics.iter().enumerate() {
@@ -431,7 +441,7 @@ mod tests {
         let (mut algo, task) = make_ppo();
         let mut env = task.build_vec_env(10).unwrap();
 
-        let metrics = algo.train(&mut env, TrainingBudget::Epochs(2), 0);
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(2), 0, &|_| {});
         for m in &metrics {
             for (k, v) in &m.extra {
                 assert!(v.is_finite(), "extra[{k}] = {v} is not finite");
@@ -444,7 +454,7 @@ mod tests {
         let (mut algo, task) = make_ppo();
         let mut env = task.build_vec_env(10).unwrap();
 
-        let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42);
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
         for m in &metrics {
             let cf = m.extra["clip_fraction"];
             assert!((0.0..=1.0).contains(&cf), "clip_fraction {cf} out of [0,1]");

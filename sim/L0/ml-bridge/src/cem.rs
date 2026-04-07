@@ -88,7 +88,13 @@ impl Algorithm for Cem {
         clippy::cast_sign_loss
     )]
     #[allow(clippy::panic)]
-    fn train(&mut self, env: &mut VecEnv, budget: TrainingBudget, seed: u64) -> Vec<EpochMetrics> {
+    fn train(
+        &mut self,
+        env: &mut VecEnv,
+        budget: TrainingBudget,
+        seed: u64,
+        on_epoch: &dyn Fn(&EpochMetrics),
+    ) -> Vec<EpochMetrics> {
         let mut rng = StdRng::seed_from_u64(seed);
         let n_envs = env.n_envs();
         let n_epochs = match budget {
@@ -169,14 +175,16 @@ impl Algorithm for Cem {
             extra.insert("noise_std".into(), noise_std);
             extra.insert("elite_mean_reward".into(), elite_mean_reward);
 
-            metrics.push(EpochMetrics {
+            let em = EpochMetrics {
                 epoch,
                 mean_reward,
                 done_count,
                 total_steps: epoch_steps,
                 wall_time_ms: t0.elapsed().as_millis() as u64,
                 extra,
-            });
+            };
+            on_epoch(&em);
+            metrics.push(em);
         }
 
         metrics
@@ -235,7 +243,7 @@ mod tests {
             },
         );
 
-        let metrics = cem.train(&mut env, TrainingBudget::Epochs(5), 42);
+        let metrics = cem.train(&mut env, TrainingBudget::Epochs(5), 42, &|_| {});
 
         assert_eq!(metrics.len(), 5);
         for (i, m) in metrics.iter().enumerate() {
@@ -275,7 +283,7 @@ mod tests {
             },
         );
 
-        let metrics = cem.train(&mut env, TrainingBudget::Epochs(2), 0);
+        let metrics = cem.train(&mut env, TrainingBudget::Epochs(2), 0, &|_| {});
         for m in &metrics {
             assert!(m.extra["noise_std"] >= 0.0);
             assert!(m.extra["elite_mean_reward"].is_finite());

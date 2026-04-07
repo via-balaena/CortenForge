@@ -122,10 +122,11 @@ pub struct Competition {
     n_envs: usize,
     budget: TrainingBudget,
     seed: u64,
+    verbose: bool,
 }
 
 impl Competition {
-    /// Create a competition runner.
+    /// Create a competition runner (silent — no epoch logging).
     ///
     /// - `n_envs`: parallel environments per run.
     /// - `budget`: how long each algorithm trains.
@@ -136,6 +137,21 @@ impl Competition {
             n_envs,
             budget,
             seed,
+            verbose: false,
+        }
+    }
+
+    /// Create a competition runner with epoch-level logging to stderr.
+    ///
+    /// Prints algorithm start/end messages and per-epoch metrics, so you
+    /// can watch training progress in real time during multi-minute runs.
+    #[must_use]
+    pub const fn new_verbose(n_envs: usize, budget: TrainingBudget, seed: u64) -> Self {
+        Self {
+            n_envs,
+            budget,
+            seed,
+            verbose: true,
         }
     }
 
@@ -158,11 +174,36 @@ impl Competition {
             for builder in builders {
                 let mut env = task.build_vec_env(self.n_envs)?;
                 let mut algorithm = builder(task);
-                let metrics = algorithm.train(&mut env, self.budget, self.seed);
+                let name = algorithm.name();
+
+                if self.verbose {
+                    eprintln!("\n[{name}] training on {}...", task.name());
+                }
+
+                let t0 = std::time::Instant::now();
+                let verbose = self.verbose;
+
+                let metrics = algorithm.train(&mut env, self.budget, self.seed, &|m| {
+                    if verbose {
+                        eprintln!(
+                            "  epoch {:>3}: reward={:>10.2}, dones={:>3}, {}ms",
+                            m.epoch, m.mean_reward, m.done_count, m.wall_time_ms
+                        );
+                    }
+                });
+
+                if self.verbose {
+                    let final_reward = metrics.last().map_or(f64::NAN, |m| m.mean_reward);
+                    let total_dones: usize = metrics.iter().map(|m| m.done_count).sum();
+                    eprintln!(
+                        "[{name}] done — reward={final_reward:.2}, {total_dones} dones, {:.1}s",
+                        t0.elapsed().as_secs_f64()
+                    );
+                }
 
                 runs.push(RunResult {
                     task_name: task.name().to_string(),
-                    algorithm_name: algorithm.name().to_string(),
+                    algorithm_name: name.to_string(),
                     metrics,
                 });
             }
@@ -208,6 +249,7 @@ mod tests {
             env: &mut VecEnv,
             budget: TrainingBudget,
             _seed: u64,
+            on_epoch: &dyn Fn(&EpochMetrics),
         ) -> Vec<EpochMetrics> {
             let n_epochs = match budget {
                 TrainingBudget::Epochs(n) => n,
@@ -219,20 +261,22 @@ mod tests {
             let act_dim = env.model().nu;
             let n_envs = env.n_envs();
 
-            (0..n_epochs)
-                .map(|epoch| {
-                    let actions = crate::tensor::Tensor::zeros(&[n_envs, act_dim]);
-                    let _ = env.step(&actions);
-                    EpochMetrics {
-                        epoch,
-                        mean_reward: -1.0,
-                        done_count: 0,
-                        total_steps: n_envs,
-                        wall_time_ms: 0,
-                        extra: BTreeMap::new(),
-                    }
-                })
-                .collect()
+            let mut metrics = Vec::with_capacity(n_epochs);
+            for epoch in 0..n_epochs {
+                let actions = crate::tensor::Tensor::zeros(&[n_envs, act_dim]);
+                let _ = env.step(&actions);
+                let em = EpochMetrics {
+                    epoch,
+                    mean_reward: -1.0,
+                    done_count: 0,
+                    total_steps: n_envs,
+                    wall_time_ms: 0,
+                    extra: BTreeMap::new(),
+                };
+                on_epoch(&em);
+                metrics.push(em);
+            }
+            metrics
         }
     }
 

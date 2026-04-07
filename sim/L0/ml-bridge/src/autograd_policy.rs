@@ -1022,7 +1022,7 @@ mod tests {
         );
 
         let mut env = task.build_vec_env(20).unwrap();
-        let metrics = algo.train(&mut env, TrainingBudget::Epochs(20), 42);
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(20), 42, &|_| {});
 
         let first = metrics[0].mean_reward;
         let last = metrics[19].mean_reward;

@@ -141,7 +141,13 @@ impl Algorithm for Td3 {
         clippy::too_many_lines,
         clippy::panic
     )]
-    fn train(&mut self, env: &mut VecEnv, budget: TrainingBudget, seed: u64) -> Vec<EpochMetrics> {
+    fn train(
+        &mut self,
+        env: &mut VecEnv,
+        budget: TrainingBudget,
+        seed: u64,
+        on_epoch: &dyn Fn(&EpochMetrics),
+    ) -> Vec<EpochMetrics> {
         let mut rng = StdRng::seed_from_u64(seed);
         let n_envs = env.n_envs();
         let hp = self.hyperparams;
@@ -413,14 +419,16 @@ impl Algorithm for Td3 {
             }
             extra.insert("buffer_size".into(), buffer.len() as f64);
 
-            metrics.push(EpochMetrics {
+            let em = EpochMetrics {
                 epoch,
                 mean_reward,
                 done_count: epoch_done_count,
                 total_steps: epoch_steps,
                 wall_time_ms: t0.elapsed().as_millis() as u64,
                 extra,
-            });
+            };
+            on_epoch(&em);
+            metrics.push(em);
         }
 
         metrics
@@ -476,7 +484,7 @@ mod tests {
         let (mut algo, task) = make_td3();
         let mut env = task.build_vec_env(5).unwrap();
 
-        let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42);
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
 
         assert_eq!(metrics.len(), 3);
         for (i, m) in metrics.iter().enumerate() {
@@ -491,7 +499,7 @@ mod tests {
         let (mut algo, task) = make_td3();
         let mut env = task.build_vec_env(5).unwrap();
 
-        let metrics = algo.train(&mut env, TrainingBudget::Epochs(2), 42);
+        let metrics = algo.train(&mut env, TrainingBudget::Epochs(2), 42, &|_| {});
 
         let buf_epoch0 = metrics[0].extra["buffer_size"];
         let buf_epoch1 = metrics[1].extra["buffer_size"];

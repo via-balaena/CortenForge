@@ -1120,7 +1120,7 @@ fn competition_6dof_all_mlp() {
 #[ignore = "multi-minute competition run"]
 fn competition_6dof_autograd_1layer_parity() {
     let task = reaching_6dof();
-    let comp = Competition::new(50, TrainingBudget::Epochs(50), 42);
+    let comp = Competition::new_verbose(50, TrainingBudget::Epochs(50), 42);
 
     let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
         &build_cem_autograd_1layer,
@@ -1221,7 +1221,7 @@ fn competition_6dof_autograd_1layer_parity() {
 #[ignore = "multi-minute competition run"]
 fn competition_6dof_autograd_2layer() {
     let task = reaching_6dof();
-    let comp = Competition::new(50, TrainingBudget::Epochs(50), 42);
+    let comp = Competition::new_verbose(50, TrainingBudget::Epochs(50), 42);
 
     let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
         &build_cem_autograd_2layer,
