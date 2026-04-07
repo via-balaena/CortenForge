@@ -26,41 +26,22 @@
     dead_code
 )]
 
-use std::sync::Arc;
-
 use bevy::prelude::*;
-use rand::Rng;
+use example_ml_shared::{setup_reaching_arms, sync_batch_geoms};
+use rand_distr::{Distribution, Normal};
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::convert::physics_pos;
-use sim_bevy::examples::{
-    HudPosition, PhysicsHud, ValidationHarness, insert_batch_validation_dummies,
-    render_physics_hud, spawn_example_camera, spawn_physics_hud_at, validation_system,
-};
-use sim_bevy::materials::MetalPreset;
-use sim_bevy::multi_scene::{
-    PhysicsScenes, spawn_scene_geoms, sync_batch_geoms, sync_scene_geom_transforms,
-};
+use sim_bevy::examples::{PhysicsHud, ValidationHarness, render_physics_hud, validation_system};
+use sim_bevy::multi_scene::{PhysicsScenes, sync_scene_geom_transforms};
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{ActionSpace, ObservationSpace, Tensor, VecEnv};
+use sim_ml_bridge::{
+    DifferentiablePolicy, LinearPolicy, LinearValue, Optimizer, OptimizerConfig, Policy, Tensor,
+    Trajectory, ValueFn, VecEnv, compute_gae, reaching_2dof,
+};
 
-// ── Constants (inherited from CEM / REINFORCE) ───────────────────────────
+// ── Constants ───────────────────────────────────────────────────────────────
 
 const NUM_ENVS: usize = 50;
-const SPACING: f32 = 0.8;
-const TARGET: [f64; 3] = [0.4, 0.0, 0.3];
-const REACH_THRESHOLD: f64 = 0.05;
-const VEL_THRESHOLD: f64 = 0.5;
-const EPISODE_TIMEOUT: f64 = 3.0;
 const PAUSE_TIME: f64 = 1.5;
-
-/// Target joint angles (IK solution for TARGET end-effector position).
-const TARGET_QPOS: [f64; 2] = [-0.242, 1.982];
-
-// ── PPO-specific constants ───────────────────────────────────────────────
-
-const NUM_ACTOR_PARAMS: usize = 10; // W[2x4] + b[2]
-const NUM_CRITIC_PARAMS: usize = 5; // w_v[4] + b_v
-
 const MAX_EPOCHS: usize = 30;
 const VALIDATION_EPOCH: usize = 25;
 const GAMMA: f64 = 0.99;
@@ -73,321 +54,44 @@ const SIGMA_INIT: f64 = 0.5;
 const SIGMA_MIN: f64 = 0.05;
 const SIGMA_DECAY: f64 = 0.90;
 const MAX_GRAD_NORM: f64 = 0.5;
-const ADAM_BETA1: f64 = 0.9;
-const ADAM_BETA2: f64 = 0.999;
-const ADAM_EPS: f64 = 1e-8;
 
-// ── MJCF (identical to CEM / REINFORCE) ──────────────────────────────────
-
-const MJCF: &str = r#"
-<mujoco model="reaching-arm">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="upper_arm" pos="0 0 0">
-      <joint name="shoulder" type="hinge" axis="0 -1 0"
-             limited="true" range="-3.14159 3.14159" damping="2.0"/>
-      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.5 0 0"
-            size="0.03" mass="0.5" rgba="0.3 0.5 0.85 1"/>
-      <body name="forearm" pos="0.5 0 0">
-        <joint name="elbow" type="hinge" axis="0 -1 0"
-               limited="true" range="-2.6 2.6" damping="1.0"/>
-        <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.4 0 0"
-              size="0.025" mass="0.3" rgba="0.85 0.4 0.2 1"/>
-        <site name="fingertip" pos="0.4 0 0" size="0.015"/>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor name="shoulder_motor" joint="shoulder" gear="10"
-           ctrllimited="true" ctrlrange="-1 1"/>
-    <motor name="elbow_motor" joint="elbow" gear="5"
-           ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
-// ── Policy (actor — same as REINFORCE) ───────────────────────────────────
-
-/// Observation normalization scales (keeps pre-tanh values moderate).
-const OBS_SCALE: [f64; 4] = [
-    1.0 / std::f64::consts::PI,
-    1.0 / std::f64::consts::PI,
-    0.1,
-    0.1,
-];
-
-/// Compute mean action: mu(s) = tanh(W * s_scaled + b)
-fn policy_mean(params: &[f64], obs: &[f32]) -> [f64; 2] {
-    let mut mu = [0.0f64; 2];
-    for a in 0..2 {
-        let mut z = params[8 + a]; // bias
-        for o in 0..4 {
-            z += params[a * 4 + o] * f64::from(obs[o]) * OBS_SCALE[o];
-        }
-        mu[a] = z.tanh();
-    }
-    mu
-}
-
-/// Sample stochastic action: a = mu(s) + sigma * eps
-fn sample_action(params: &[f64], obs: &[f32], sigma: f64, rng: &mut impl Rng) -> [f64; 2] {
-    let mu = policy_mean(params, obs);
-    [mu[0] + sigma * randn(rng), mu[1] + sigma * randn(rng)]
-}
-
-/// Compute d/dtheta log pi(a|s) for all 10 actor params.
-fn policy_gradient(
-    params: &[f64],
-    obs: &[f32],
-    action: &[f64; 2],
-    sigma: f64,
-) -> [f64; NUM_ACTOR_PARAMS] {
-    let mu = policy_mean(params, obs);
-    let sigma2 = sigma * sigma;
-    let mut grad = [0.0f64; NUM_ACTOR_PARAMS];
-
-    for a in 0..2 {
-        let tanh_deriv = 1.0 - mu[a] * mu[a];
-        let score = (action[a] - mu[a]) / sigma2 * tanh_deriv;
-
-        for o in 0..4 {
-            let s_scaled = f64::from(obs[o]) * OBS_SCALE[o];
-            grad[a * 4 + o] = score * s_scaled;
-        }
-        grad[8 + a] = score;
-    }
-    grad
-}
-
-// ── Critic (new for PPO) ─────────────────────────────────────────────────
-
-/// Linear value function: V(s) = w_v . s_scaled + b_v
-fn value_function(critic_params: &[f64], obs: &[f32]) -> f64 {
-    let mut v = critic_params[4]; // bias
-    for o in 0..4 {
-        v += critic_params[o] * f64::from(obs[o]) * OBS_SCALE[o];
-    }
-    v
-}
-
-/// Gradient of MSE loss: d/d_params (V(s) - target)^2
-/// = 2 * (V(s) - target) * d/d_params V(s)
-fn value_gradient(critic_params: &[f64], obs: &[f32], target: f64) -> [f64; NUM_CRITIC_PARAMS] {
-    let v = value_function(critic_params, obs);
-    let residual = 2.0 * (v - target);
-    let mut grad = [0.0f64; NUM_CRITIC_PARAMS];
-    for o in 0..4 {
-        grad[o] = residual * f64::from(obs[o]) * OBS_SCALE[o];
-    }
-    grad[4] = residual; // bias
-    grad
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-/// Box-Muller normal sample.
-fn randn(rng: &mut impl Rng) -> f64 {
-    let u1: f64 = 1.0 - rng.random::<f64>();
-    let u2: f64 = rng.random::<f64>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
-
-fn build_vec_env(model: &Arc<sim_core::Model>, n_envs: usize) -> VecEnv {
-    let obs = ObservationSpace::builder()
-        .all_qpos()
-        .all_qvel()
-        .build(model)
-        .expect("obs build");
-    let act = ActionSpace::builder()
-        .all_ctrl()
-        .build(model)
-        .expect("act build");
-
-    let target = TARGET;
-    VecEnv::builder(model.clone(), n_envs)
-        .observation_space(obs)
-        .action_space(act)
-        .reward(move |_m, d| {
-            let e0 = d.qpos[0] - TARGET_QPOS[0];
-            let e1 = d.qpos[1] - TARGET_QPOS[1];
-            -(e0 * e0 + e1 * e1)
-        })
-        .done(move |_m, d| {
-            let tip = d.site_xpos[0];
-            let dx = tip.x - target[0];
-            let dz = tip.z - target[2];
-            let dist = (dx * dx + dz * dz).sqrt();
-            let vel = (d.qvel[0] * d.qvel[0] + d.qvel[1] * d.qvel[1]).sqrt();
-            dist < REACH_THRESHOLD && vel < VEL_THRESHOLD
-        })
-        .truncated(|_m, d| d.time > EPISODE_TIMEOUT)
-        .sub_steps(5)
-        .build()
-        .expect("vec_env build")
-}
-
-// ── Trajectory recording ─────────────────────────────────────────────────
-
-struct Trajectory {
-    obs: Vec<[f32; 4]>,
-    actions: Vec<[f64; 2]>,
-    rewards: Vec<f64>,
-    mu_old: Vec<[f64; 2]>,
-    v_old: Vec<f64>,
-    terminal_obs: Option<[f32; 4]>,
-    done: bool, // true = done (reached), false = truncated (timeout)
-}
-
-impl Trajectory {
-    fn new() -> Self {
-        Self {
-            obs: Vec::with_capacity(350),
-            actions: Vec::with_capacity(350),
-            rewards: Vec::with_capacity(350),
-            mu_old: Vec::with_capacity(350),
-            v_old: Vec::with_capacity(350),
-            terminal_obs: None,
-            done: false,
-        }
-    }
-
-    const fn len(&self) -> usize {
-        self.rewards.len()
-    }
-}
-
-// ── GAE computation ──────────────────────────────────────────────────────
-
-/// Compute GAE advantages and value targets for one trajectory.
-///
-/// Returns (advantages, value_targets) where value_targets = advantages + v_old.
-fn compute_gae(
-    traj: &Trajectory,
-    critic_params: &[f64],
-    gamma: f64,
-    gae_lambda: f64,
-) -> (Vec<f64>, Vec<f64>) {
-    let n = traj.len();
-    if n == 0 {
-        return (Vec::new(), Vec::new());
-    }
-
-    let mut advantages = vec![0.0; n];
-
-    // Bootstrap value at terminal state
-    let v_next_terminal = if traj.done {
-        // Episode truly ended — no future value
-        0.0
-    } else {
-        // Truncated — bootstrap from critic
-        traj.terminal_obs
-            .as_ref()
-            .map_or(0.0, |obs| value_function(critic_params, obs))
-    };
-
-    // Backward pass: A_t = delta_t + gamma * lambda * A_{t+1}
-    let mut gae = 0.0;
-    for t in (0..n).rev() {
-        let v_next = if t + 1 < n {
-            traj.v_old[t + 1]
-        } else {
-            v_next_terminal
-        };
-        let delta = traj.rewards[t] + gamma * v_next - traj.v_old[t];
-        gae = delta + gamma * gae_lambda * gae;
-        advantages[t] = gae;
-    }
-
-    // Value targets: R_t = A_t + V_old(s_t)
-    let value_targets: Vec<f64> = advantages
-        .iter()
-        .zip(traj.v_old.iter())
-        .map(|(&a, &v)| a + v)
-        .collect();
-
-    (advantages, value_targets)
-}
-
-// ── Adam optimizer (const-generic) ───────────────────────────────────────
-
-struct AdamState<const N: usize> {
-    m: [f64; N],
-    v: [f64; N],
-    t: usize,
-}
-
-impl<const N: usize> AdamState<N> {
-    const fn new() -> Self {
-        Self {
-            m: [0.0; N],
-            v: [0.0; N],
-            t: 0,
-        }
-    }
-}
-
-/// Adam update. `ascent=true` for actor (maximize), `false` for critic (minimize).
-fn adam_update<const N: usize>(
-    params: &mut [f64; N],
-    adam: &mut AdamState<N>,
-    grad: &[f64; N],
-    lr: f64,
-    max_grad_norm: f64,
-    ascent: bool,
-) {
-    // Gradient clipping
-    let grad_norm = grad.iter().map(|&g| g * g).sum::<f64>().sqrt();
-    let scale = if grad_norm > max_grad_norm {
-        max_grad_norm / grad_norm
-    } else {
-        1.0
-    };
-
-    adam.t += 1;
-    #[allow(clippy::cast_possible_wrap)]
-    let t_i32 = adam.t as i32;
-    let bc1 = 1.0 - ADAM_BETA1.powi(t_i32);
-    let bc2 = 1.0 - ADAM_BETA2.powi(t_i32);
-
-    let sign = if ascent { 1.0 } else { -1.0 };
-
-    for k in 0..N {
-        let g = grad[k] * scale;
-        adam.m[k] = ADAM_BETA1 * adam.m[k] + (1.0 - ADAM_BETA1) * g;
-        adam.v[k] = ADAM_BETA2 * adam.v[k] + (1.0 - ADAM_BETA2) * g * g;
-        let m_hat = adam.m[k] / bc1;
-        let v_hat = adam.v[k] / bc2;
-        params[k] += sign * lr * m_hat / (v_hat.sqrt() + ADAM_EPS);
-    }
-}
-
-// ── PPO update ───────────────────────────────────────────────────────────
+// ── PPO Update ──────────────────────────────────────────────────────────────
 
 struct PpoResult {
     actor_grad_norm: f64,
-    critic_grad_norm: f64,
     mean_value_loss: f64,
     clip_fraction: f64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ppo_update(
-    actor_params: &mut [f64; NUM_ACTOR_PARAMS],
-    critic_params: &mut [f64; NUM_CRITIC_PARAMS],
-    actor_adam: &mut AdamState<NUM_ACTOR_PARAMS>,
-    critic_adam: &mut AdamState<NUM_CRITIC_PARAMS>,
+    policy: &mut LinearPolicy,
+    value_fn: &mut LinearValue,
+    policy_optimizer: &mut dyn Optimizer,
+    value_optimizer: &mut dyn Optimizer,
     trajectories: &[Trajectory],
+    mu_old_all: &[Vec<Vec<f64>>],
+    v_old_all: &[Vec<f64>],
     sigma: f64,
+    k_passes: usize,
 ) -> PpoResult {
-    // 1. Compute GAE advantages and value targets (FROZEN for all K passes)
+    let n_actor_params = policy.n_params();
+    let n_critic_params = value_fn.n_params();
+
+    // 1. Compute GAE advantages and value targets using shared compute_gae
     let gae_results: Vec<(Vec<f64>, Vec<f64>)> = trajectories
         .iter()
-        .map(|traj| compute_gae(traj, critic_params, GAMMA, GAE_LAMBDA))
+        .enumerate()
+        .map(|(i, traj)| {
+            let next_value = if traj.done {
+                0.0
+            } else {
+                traj.terminal_obs
+                    .as_ref()
+                    .map_or(0.0, |obs| value_fn.forward(obs))
+            };
+            compute_gae(&traj.rewards, &v_old_all[i], next_value, GAMMA, GAE_LAMBDA)
+        })
         .collect();
 
     // 2. Flatten and normalize advantages
@@ -408,24 +112,23 @@ fn ppo_update(
         }
     }
 
-    // Rebuild per-trajectory advantage views (indices into flat array)
+    // Rebuild per-trajectory advantage offsets
     let mut traj_adv_offsets: Vec<usize> = Vec::new();
     let mut offset = 0;
     for traj in trajectories {
         traj_adv_offsets.push(offset);
-        offset += traj.len();
+        offset += traj.rewards.len();
     }
 
     // 3. K optimization passes over frozen rollout data
     let mut last_actor_grad_norm = 0.0;
-    let mut last_critic_grad_norm = 0.0;
     let mut total_value_loss = 0.0;
     let mut total_clip_count = 0usize;
     let mut total_samples = 0usize;
 
-    for _pass in 0..K_OPT_PASSES {
-        let mut actor_grad = [0.0f64; NUM_ACTOR_PARAMS];
-        let mut critic_grad = [0.0f64; NUM_CRITIC_PARAMS];
+    for _pass in 0..k_passes {
+        let mut actor_grad = vec![0.0f64; n_actor_params];
+        let mut critic_grad = vec![0.0f64; n_critic_params];
         let mut n_samples = 0usize;
         let mut clip_count = 0usize;
         let mut value_loss = 0.0;
@@ -434,19 +137,19 @@ fn ppo_update(
             let (_, ref value_targets) = gae_results[traj_idx];
             let adv_offset = traj_adv_offsets[traj_idx];
 
-            for t in 0..traj.len() {
+            for t in 0..traj.rewards.len() {
                 let obs = &traj.obs[t];
                 let action = &traj.actions[t];
                 let advantage = all_advantages[adv_offset + t];
-                let mu_old = &traj.mu_old[t];
+                let mu_old = &mu_old_all[traj_idx][t];
 
                 // Recompute mu_new from current actor params
-                let mu_new = policy_mean(actor_params, obs);
+                let mu_new = policy.forward(obs);
 
                 // Log importance ratio: log(pi_new/pi_old)
                 let sigma2 = sigma * sigma;
                 let mut log_ratio = 0.0;
-                for a in 0..2 {
+                for a in 0..action.len() {
                     log_ratio += -0.5
                         * ((action[a] - mu_new[a]).powi(2) - (action[a] - mu_old[a]).powi(2))
                         / sigma2;
@@ -459,23 +162,21 @@ fn ppo_update(
                 let clipped = clamped_ratio * advantage;
 
                 if unclipped <= clipped {
-                    // Unclipped is the min — gradient flows through ratio
-                    let g = policy_gradient(actor_params, obs, action, sigma);
-                    for k in 0..NUM_ACTOR_PARAMS {
+                    let g = policy.log_prob_gradient(obs, action, sigma);
+                    for k in 0..n_actor_params {
                         actor_grad[k] += advantage * ratio * g[k];
                     }
                 } else {
-                    // Clipped — no actor gradient for this sample
                     clip_count += 1;
                 }
 
                 // Critic: MSE loss gradient against frozen value targets
                 let target = value_targets[t];
-                let v_new = value_function(critic_params, obs);
+                let v_new = value_fn.forward(obs);
                 value_loss += (v_new - target).powi(2);
 
-                let vg = value_gradient(critic_params, obs, target);
-                for k in 0..NUM_CRITIC_PARAMS {
+                let vg = value_fn.mse_gradient(obs, target);
+                for k in 0..n_critic_params {
                     critic_grad[k] += vg[k];
                 }
 
@@ -486,44 +187,32 @@ fn ppo_update(
         // Average gradients
         if n_samples > 0 {
             let n_f = n_samples as f64;
-            for k in 0..NUM_ACTOR_PARAMS {
-                actor_grad[k] /= n_f;
+            for g in &mut actor_grad {
+                *g /= n_f;
             }
-            for k in 0..NUM_CRITIC_PARAMS {
-                critic_grad[k] /= n_f;
+            for g in &mut critic_grad {
+                *g /= n_f;
             }
             value_loss /= n_f;
         }
 
         last_actor_grad_norm = actor_grad.iter().map(|&g| g * g).sum::<f64>().sqrt();
-        last_critic_grad_norm = critic_grad.iter().map(|&g| g * g).sum::<f64>().sqrt();
         total_value_loss += value_loss;
         total_clip_count += clip_count;
         total_samples += n_samples;
 
-        // Adam updates
-        adam_update(
-            actor_params,
-            actor_adam,
-            &actor_grad,
-            LR_ACTOR,
-            MAX_GRAD_NORM,
-            true, // ascent — maximize surrogate
-        );
-        adam_update(
-            critic_params,
-            critic_adam,
-            &critic_grad,
-            LR_CRITIC,
-            MAX_GRAD_NORM,
-            false, // descent — minimize value loss
-        );
+        // Optimizer steps
+        policy_optimizer.step(&actor_grad, true); // ascent — maximize surrogate
+        value_optimizer.step(&critic_grad, false); // descent — minimize value loss
+
+        // Pitfall #1: sync both optimizer params back to networks
+        policy.set_params(policy_optimizer.params());
+        value_fn.set_params(value_optimizer.params());
     }
 
     PpoResult {
         actor_grad_norm: last_actor_grad_norm,
-        critic_grad_norm: last_critic_grad_norm,
-        mean_value_loss: total_value_loss / K_OPT_PASSES as f64,
+        mean_value_loss: total_value_loss / k_passes as f64,
         clip_fraction: if total_samples > 0 {
             total_clip_count as f64 / total_samples as f64
         } else {
@@ -546,10 +235,10 @@ struct PpoResource {
     actions: Tensor,
     current_obs: Tensor,
 
-    actor_params: [f64; NUM_ACTOR_PARAMS],
-    critic_params: [f64; NUM_CRITIC_PARAMS],
-    actor_adam: AdamState<NUM_ACTOR_PARAMS>,
-    critic_adam: AdamState<NUM_CRITIC_PARAMS>,
+    policy: LinearPolicy,
+    value_fn: LinearValue,
+    policy_optimizer: Box<dyn Optimizer>,
+    value_optimizer: Box<dyn Optimizer>,
     sigma: f64,
 
     epoch: usize,
@@ -557,6 +246,9 @@ struct PpoResource {
     env_complete: Vec<bool>,
     env_reached: Vec<bool>,
     trajectories: Vec<Trajectory>,
+    // Pitfall #2: mu_old and v_old stored in parallel alongside Trajectory
+    mu_old: Vec<Vec<Vec<f64>>>, // [env][step][act_dim]
+    v_old: Vec<Vec<f64>>,       // [env][step]
 
     accumulator: f64,
     sim_time: f64,
@@ -583,10 +275,6 @@ fn main() {
     println!("=== CortenForge: PPO — Reaching Arm + Actor-Critic ===");
     println!("  {NUM_ENVS} arms, {MAX_EPOCHS} epochs, lr_actor={LR_ACTOR}, lr_critic={LR_CRITIC}");
     println!("  K={K_OPT_PASSES} opt passes, clip_eps={CLIP_EPS}, gae_lambda={GAE_LAMBDA}");
-    println!(
-        "  Target: ({:.1}, {:.1}, {:.1})",
-        TARGET[0], TARGET[1], TARGET[2]
-    );
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -632,8 +320,26 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF parse"));
-    let mut vec_env = build_vec_env(&model, NUM_ENVS);
+    let task = reaching_2dof();
+    let policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
+    let value_fn = LinearValue::new(task.obs_dim(), task.obs_scale());
+
+    let make_optimizer = |n_params, lr| {
+        OptimizerConfig::Adam {
+            lr,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            max_grad_norm: MAX_GRAD_NORM,
+        }
+        .build(n_params)
+    };
+    let policy_optimizer = make_optimizer(policy.n_params(), LR_ACTOR);
+    let value_optimizer = make_optimizer(value_fn.n_params(), LR_CRITIC);
+
+    let (mut vec_env, scenes) =
+        setup_reaching_arms(&task, NUM_ENVS, &mut commands, &mut meshes, &mut materials);
+
     let init_obs = vec_env.reset_all().expect("reset");
 
     let rng = {
@@ -641,70 +347,26 @@ fn setup(
         rand::rngs::StdRng::seed_from_u64(42)
     };
 
-    // ── PhysicsScenes ──
-    let mut scenes = PhysicsScenes::default();
-
-    let mat_upper =
-        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.3, 0.5, 0.85)));
-    let mat_forearm =
-        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.85, 0.4, 0.2)));
-
-    let mat_target = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.2, 0.9, 0.2, 0.5),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    });
-    let target_mesh = meshes.add(Sphere::new(0.03));
-
-    for i in 0..NUM_ENVS {
-        let scene_model = (*model).clone();
-        let mut scene_data = scene_model.make_data();
-        scene_data.forward(&scene_model).expect("forward");
-
-        let id = scenes.add(format!("env-{i}"), scene_model, scene_data);
-
-        let lane = (i as f32 - (NUM_ENVS as f32 - 1.0) / 2.0) * SPACING;
-        spawn_scene_geoms(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            &mut scenes,
-            id,
-            physics_pos(lane, 0.0, 0.0),
-            &[
-                ("upper_geom", mat_upper.clone()),
-                ("forearm_geom", mat_forearm.clone()),
-            ],
-        );
-
-        let target_bevy = physics_pos(lane + TARGET[0] as f32, 0.0, TARGET[2] as f32);
-        commands.spawn((
-            Mesh3d(target_mesh.clone()),
-            MeshMaterial3d(mat_target.clone()),
-            Transform::from_translation(target_bevy),
-        ));
-    }
-
     commands.insert_resource(scenes);
 
-    let actions = Tensor::zeros(&[NUM_ENVS, 2]);
-    let trajectories: Vec<Trajectory> = (0..NUM_ENVS).map(|_| Trajectory::new()).collect();
+    let actions = Tensor::zeros(&[NUM_ENVS, task.act_dim()]);
 
     commands.insert_resource(PpoResource {
         vec_env,
         actions,
         current_obs: init_obs,
-        actor_params: [0.0f64; NUM_ACTOR_PARAMS],
-        critic_params: [0.0f64; NUM_CRITIC_PARAMS],
-        actor_adam: AdamState::new(),
-        critic_adam: AdamState::new(),
+        policy,
+        value_fn,
+        policy_optimizer,
+        value_optimizer,
         sigma: SIGMA_INIT,
         epoch: 0,
         phase: Phase::Running,
         env_complete: vec![false; NUM_ENVS],
         env_reached: vec![false; NUM_ENVS],
-        trajectories,
+        trajectories: (0..NUM_ENVS).map(|_| new_trajectory()).collect(),
+        mu_old: (0..NUM_ENVS).map(|_| Vec::with_capacity(350)).collect(),
+        v_old: (0..NUM_ENVS).map(|_| Vec::with_capacity(350)).collect(),
         accumulator: 0.0,
         sim_time: 0.0,
         pause_timer: 0.0,
@@ -715,17 +377,16 @@ fn setup(
         value_losses: Vec::new(),
         clip_fractions: Vec::new(),
     });
+}
 
-    spawn_example_camera(
-        &mut commands,
-        physics_pos(0.0, -0.5, 0.0),
-        35.0,
-        std::f32::consts::FRAC_PI_2,
-        0.15,
-    );
-
-    spawn_physics_hud_at(&mut commands, HudPosition::BottomLeft);
-    insert_batch_validation_dummies(&mut commands, &model);
+fn new_trajectory() -> Trajectory {
+    Trajectory {
+        obs: Vec::with_capacity(350),
+        actions: Vec::with_capacity(350),
+        rewards: Vec::with_capacity(350),
+        done: false,
+        terminal_obs: None,
+    }
 }
 
 // ── Stepping (PPO state machine) ─────────────────────────────────────────
@@ -745,29 +406,25 @@ fn step_ppo(mut res: ResMut<PpoResource>, time: Res<Time>) {
             let budget = ((res.accumulator / dt_action).max(0.0) as u32).min(200);
 
             for _ in 0..budget {
-                let obs_snapshot: Vec<[f32; 4]> = (0..NUM_ENVS)
-                    .map(|i| {
-                        let r = res.current_obs.row(i);
-                        [r[0], r[1], r[2], r[3]]
-                    })
-                    .collect();
-
-                let actor_params = res.actor_params;
-                let critic_params = res.critic_params;
-                let sigma = res.sigma;
+                let inner = &mut *res;
+                let noise = Normal::new(0.0, inner.sigma).unwrap();
                 for i in 0..NUM_ENVS {
-                    if !res.env_complete[i] {
-                        let obs_arr = obs_snapshot[i];
-                        let action = sample_action(&actor_params, &obs_arr, sigma, &mut res.rng);
-                        let mu = policy_mean(&actor_params, &obs_arr);
-                        let v = value_function(&critic_params, &obs_arr);
+                    if !inner.env_complete[i] {
+                        let obs = inner.current_obs.row(i);
+                        let mu = inner.policy.forward(obs);
+                        let v = inner.value_fn.forward(obs);
+                        let action: Vec<f64> = mu
+                            .iter()
+                            .map(|&m| m + noise.sample(&mut inner.rng))
+                            .collect();
 
-                        res.trajectories[i].obs.push(obs_arr);
-                        res.trajectories[i].actions.push(action);
-                        res.trajectories[i].mu_old.push(mu);
-                        res.trajectories[i].v_old.push(v);
+                        inner.trajectories[i].obs.push(obs.to_vec());
+                        inner.trajectories[i].actions.push(action.clone());
+                        // Pitfall #2: store mu_old and v_old in parallel
+                        inner.mu_old[i].push(mu);
+                        inner.v_old[i].push(v);
 
-                        let row = res.actions.row_mut(i);
+                        let row = inner.actions.row_mut(i);
                         row[0] = action[0] as f32;
                         row[1] = action[1] as f32;
                     }
@@ -787,8 +444,7 @@ fn step_ppo(mut res: ResMut<PpoResource>, time: Res<Time>) {
                             }
                             // Store terminal obs for GAE bootstrap
                             let obs = result.observations.row(i);
-                            res.trajectories[i].terminal_obs =
-                                Some([obs[0], obs[1], obs[2], obs[3]]);
+                            res.trajectories[i].terminal_obs = Some(obs.to_vec());
                         }
                     }
                 }
@@ -827,15 +483,20 @@ fn step_ppo(mut res: ResMut<PpoResource>, time: Res<Time>) {
 
             if res.pause_timer <= 0.0 {
                 let trajectories = std::mem::take(&mut res.trajectories);
+                let mu_old = std::mem::take(&mut res.mu_old);
+                let v_old = std::mem::take(&mut res.v_old);
                 let sigma = res.sigma;
                 let inner = &mut *res;
                 let result = ppo_update(
-                    &mut inner.actor_params,
-                    &mut inner.critic_params,
-                    &mut inner.actor_adam,
-                    &mut inner.critic_adam,
+                    &mut inner.policy,
+                    &mut inner.value_fn,
+                    inner.policy_optimizer.as_mut(),
+                    inner.value_optimizer.as_mut(),
                     &trajectories,
+                    &mu_old,
+                    &v_old,
                     sigma,
+                    K_OPT_PASSES,
                 );
 
                 inner.actor_grad_norms.push(result.actor_grad_norm);
@@ -850,7 +511,9 @@ fn step_ppo(mut res: ResMut<PpoResource>, time: Res<Time>) {
                 res.current_obs = res.vec_env.reset_all().expect("reset");
                 res.env_complete.fill(false);
                 res.env_reached.fill(false);
-                res.trajectories = (0..NUM_ENVS).map(|_| Trajectory::new()).collect();
+                res.trajectories = (0..NUM_ENVS).map(|_| new_trajectory()).collect();
+                res.mu_old = (0..NUM_ENVS).map(|_| Vec::with_capacity(350)).collect();
+                res.v_old = (0..NUM_ENVS).map(|_| Vec::with_capacity(350)).collect();
                 res.phase = Phase::Running;
             }
         }
@@ -1014,51 +677,64 @@ mod tests {
         run_ppo_headless_with_k_lr(seed, K_OPT_PASSES, LR_ACTOR)
     }
 
-    fn run_ppo_headless_with_k(seed: u64, k_passes: usize) -> PpoHeadlessResult {
-        run_ppo_headless_with_k_lr(seed, k_passes, LR_ACTOR)
-    }
-
     fn run_ppo_headless_with_k_lr(seed: u64, k_passes: usize, lr_actor: f64) -> PpoHeadlessResult {
         use rand::SeedableRng;
 
-        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
-        let mut vec_env = build_vec_env(&model, NUM_ENVS);
+        let task = reaching_2dof();
+        let mut policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
+        let mut value_fn = LinearValue::new(task.obs_dim(), task.obs_scale());
+
+        let make_optimizer = |n_params, lr| {
+            OptimizerConfig::Adam {
+                lr,
+                beta1: 0.9,
+                beta2: 0.999,
+                eps: 1e-8,
+                max_grad_norm: MAX_GRAD_NORM,
+            }
+            .build(n_params)
+        };
+        let mut policy_optimizer = make_optimizer(policy.n_params(), lr_actor);
+        let mut value_optimizer = make_optimizer(value_fn.n_params(), LR_CRITIC);
+
+        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build_vec_env");
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-        let mut actor_params = [0.0f64; NUM_ACTOR_PARAMS];
-        let mut critic_params = [0.0f64; NUM_CRITIC_PARAMS];
-        let mut actor_adam = AdamState::<NUM_ACTOR_PARAMS>::new();
-        let mut critic_adam = AdamState::<NUM_CRITIC_PARAMS>::new();
         let mut sigma = SIGMA_INIT;
 
         let mut ep1_mean_reward = 0.0;
         let mut last_mean_reward = 0.0;
         let mut per_epoch_reached = Vec::new();
-        let mut value_losses = Vec::new();
-        let mut clip_fractions = Vec::new();
+        let mut value_losses_out = Vec::new();
+        let mut clip_fractions_out = Vec::new();
 
-        let max_steps = (EPISODE_TIMEOUT / (5.0 * 0.002)) as usize + 50;
+        let episode_timeout = 3.0;
+        let timestep = vec_env.model().timestep;
+        let max_steps = (episode_timeout / (5.0 * timestep)) as usize + 50;
 
         for epoch in 0..MAX_EPOCHS {
             let mut current_obs = vec_env.reset_all().expect("reset");
             let mut trajectories: Vec<Trajectory> =
-                (0..NUM_ENVS).map(|_| Trajectory::new()).collect();
+                (0..NUM_ENVS).map(|_| new_trajectory()).collect();
+            let mut mu_old_all: Vec<Vec<Vec<f64>>> = (0..NUM_ENVS).map(|_| Vec::new()).collect();
+            let mut v_old_all: Vec<Vec<f64>> = (0..NUM_ENVS).map(|_| Vec::new()).collect();
             let mut env_complete = [false; NUM_ENVS];
             let mut env_reached = [false; NUM_ENVS];
-            let mut actions = Tensor::zeros(&[NUM_ENVS, 2]);
+            let mut actions = Tensor::zeros(&[NUM_ENVS, task.act_dim()]);
+            let noise = Normal::new(0.0, sigma).unwrap();
 
             for _ in 0..max_steps {
                 for i in 0..NUM_ENVS {
                     if !env_complete[i] {
                         let obs = current_obs.row(i);
-                        let obs_arr: [f32; 4] = [obs[0], obs[1], obs[2], obs[3]];
-                        let action = sample_action(&actor_params, obs, sigma, &mut rng);
-                        let mu = policy_mean(&actor_params, &obs_arr);
-                        let v = value_function(&critic_params, &obs_arr);
+                        let mu = policy.forward(obs);
+                        let v = value_fn.forward(obs);
+                        let action: Vec<f64> =
+                            mu.iter().map(|&m| m + noise.sample(&mut rng)).collect();
 
-                        trajectories[i].obs.push(obs_arr);
-                        trajectories[i].actions.push(action);
-                        trajectories[i].mu_old.push(mu);
-                        trajectories[i].v_old.push(v);
+                        trajectories[i].obs.push(obs.to_vec());
+                        trajectories[i].actions.push(action.clone());
+                        mu_old_all[i].push(mu);
+                        v_old_all[i].push(v);
 
                         let row = actions.row_mut(i);
                         row[0] = action[0] as f32;
@@ -1078,7 +754,7 @@ mod tests {
                                 trajectories[i].done = true;
                             }
                             let obs = result.observations.row(i);
-                            trajectories[i].terminal_obs = Some([obs[0], obs[1], obs[2], obs[3]]);
+                            trajectories[i].terminal_obs = Some(obs.to_vec());
                         }
                     }
                 }
@@ -1102,170 +778,64 @@ mod tests {
             last_mean_reward = mean_reward;
             per_epoch_reached.push(reached);
 
-            // PPO update (with variable K passes)
-            let gae_results: Vec<(Vec<f64>, Vec<f64>)> = trajectories
-                .iter()
-                .map(|traj| compute_gae(traj, &critic_params, GAMMA, GAE_LAMBDA))
-                .collect();
+            let result = ppo_update(
+                &mut policy,
+                &mut value_fn,
+                policy_optimizer.as_mut(),
+                value_optimizer.as_mut(),
+                &trajectories,
+                &mu_old_all,
+                &v_old_all,
+                sigma,
+                k_passes,
+            );
 
-            let mut all_advantages: Vec<f64> = Vec::new();
-            for (advantages, _) in &gae_results {
-                all_advantages.extend(advantages);
-            }
-
-            let n_total = all_advantages.len().max(1) as f64;
-            let mean_adv = all_advantages.iter().sum::<f64>() / n_total;
-            for a in &mut all_advantages {
-                *a -= mean_adv;
-            }
-            let std_adv = (all_advantages.iter().map(|&a| a * a).sum::<f64>() / n_total).sqrt();
-            if std_adv > 1e-8 {
-                for a in &mut all_advantages {
-                    *a /= std_adv;
-                }
-            }
-
-            let mut traj_adv_offsets: Vec<usize> = Vec::new();
-            let mut offset = 0;
-            for traj in &trajectories {
-                traj_adv_offsets.push(offset);
-                offset += traj.len();
-            }
-
-            let mut epoch_clip_count = 0usize;
-            let mut epoch_samples = 0usize;
-            let mut epoch_vloss = 0.0;
-
-            for _pass in 0..k_passes {
-                let mut actor_grad = [0.0f64; NUM_ACTOR_PARAMS];
-                let mut critic_grad = [0.0f64; NUM_CRITIC_PARAMS];
-                let mut n_samples = 0usize;
-                let mut clip_count = 0usize;
-                let mut pass_vloss = 0.0;
-
-                for (traj_idx, traj) in trajectories.iter().enumerate() {
-                    let (_, ref vtargets) = gae_results[traj_idx];
-                    let adv_off = traj_adv_offsets[traj_idx];
-
-                    for t in 0..traj.len() {
-                        let obs = &traj.obs[t];
-                        let action = &traj.actions[t];
-                        let advantage = all_advantages[adv_off + t];
-                        let mu_old = &traj.mu_old[t];
-
-                        let mu_new = policy_mean(&actor_params, obs);
-                        let sigma2 = sigma * sigma;
-                        let mut log_ratio = 0.0;
-                        for a in 0..2 {
-                            log_ratio += -0.5
-                                * ((action[a] - mu_new[a]).powi(2)
-                                    - (action[a] - mu_old[a]).powi(2))
-                                / sigma2;
-                        }
-                        let ratio = log_ratio.exp();
-
-                        let unclipped = ratio * advantage;
-                        let clamped = ratio.clamp(1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * advantage;
-
-                        if unclipped <= clamped {
-                            let g = policy_gradient(&actor_params, obs, action, sigma);
-                            for k in 0..NUM_ACTOR_PARAMS {
-                                actor_grad[k] += advantage * ratio * g[k];
-                            }
-                        } else {
-                            clip_count += 1;
-                        }
-
-                        let target = vtargets[t];
-                        let v_new = value_function(&critic_params, obs);
-                        pass_vloss += (v_new - target).powi(2);
-
-                        let vg = value_gradient(&critic_params, obs, target);
-                        for k in 0..NUM_CRITIC_PARAMS {
-                            critic_grad[k] += vg[k];
-                        }
-
-                        n_samples += 1;
-                    }
-                }
-
-                if n_samples > 0 {
-                    let n_f = n_samples as f64;
-                    for k in 0..NUM_ACTOR_PARAMS {
-                        actor_grad[k] /= n_f;
-                    }
-                    for k in 0..NUM_CRITIC_PARAMS {
-                        critic_grad[k] /= n_f;
-                    }
-                    pass_vloss /= n_f;
-                }
-
-                epoch_clip_count += clip_count;
-                epoch_samples += n_samples;
-                epoch_vloss += pass_vloss;
-
-                adam_update(
-                    &mut actor_params,
-                    &mut actor_adam,
-                    &actor_grad,
-                    lr_actor,
-                    MAX_GRAD_NORM,
-                    true,
-                );
-                adam_update(
-                    &mut critic_params,
-                    &mut critic_adam,
-                    &critic_grad,
-                    LR_CRITIC,
-                    MAX_GRAD_NORM,
-                    false,
-                );
-            }
-
-            value_losses.push(epoch_vloss / k_passes as f64);
-            clip_fractions.push(if epoch_samples > 0 {
-                epoch_clip_count as f64 / epoch_samples as f64
-            } else {
-                0.0
-            });
+            value_losses_out.push(result.mean_value_loss);
+            clip_fractions_out.push(result.clip_fraction);
 
             sigma = (sigma * SIGMA_DECAY).max(SIGMA_MIN);
         }
 
         let best_reached = per_epoch_reached.iter().max().copied().unwrap_or(0);
-        let actor_param_norm = actor_params.iter().map(|&v| v * v).sum::<f64>().sqrt();
+        let actor_param_norm = policy.params().iter().map(|&v| v * v).sum::<f64>().sqrt();
 
         PpoHeadlessResult {
             ep1_mean_reward,
             last_mean_reward,
             best_reached,
             per_epoch_reached,
-            value_losses,
-            clip_fractions,
+            value_losses: value_losses_out,
+            clip_fractions: clip_fractions_out,
             final_sigma: sigma,
             actor_param_norm,
         }
     }
 
-    // ── Stress test 1: Critic gradient correctness ──
+    // ── Stress tests ──
 
     #[test]
     fn critic_gradient_matches_finite_difference() {
-        let critic_params = [0.3, -0.1, 0.5, 0.2, -0.15];
+        let task = reaching_2dof();
+        let mut value_fn = LinearValue::new(task.obs_dim(), task.obs_scale());
+        let params = [0.3, -0.1, 0.5, 0.2, -0.15];
+        value_fn.set_params(&params);
+
         let obs: [f32; 4] = [0.5, -0.3, 0.8, -0.4];
         let target = -50.0;
 
-        let analytic = value_gradient(&critic_params, &obs, target);
+        let analytic = value_fn.mse_gradient(&obs, target);
 
         let eps = 1e-5;
-        for k in 0..NUM_CRITIC_PARAMS {
-            let mut p_plus = critic_params;
-            let mut p_minus = critic_params;
+        for k in 0..value_fn.n_params() {
+            let mut p_plus = params;
+            let mut p_minus = params;
             p_plus[k] += eps;
             p_minus[k] -= eps;
 
-            let loss_plus = (value_function(&p_plus, &obs) - target).powi(2);
-            let loss_minus = (value_function(&p_minus, &obs) - target).powi(2);
+            value_fn.set_params(&p_plus);
+            let loss_plus = (value_fn.forward(&obs) - target).powi(2);
+            value_fn.set_params(&p_minus);
+            let loss_minus = (value_fn.forward(&obs) - target).powi(2);
             let numerical = (loss_plus - loss_minus) / (2.0 * eps);
 
             assert!(
@@ -1278,29 +848,13 @@ mod tests {
         }
     }
 
-    // ── Stress test 2: GAE matches discounted returns at lambda=1.0 ──
-
     #[test]
     fn gae_lambda_one_matches_discounted_returns() {
-        // At lambda=1, GAE advantages should equal discounted returns minus V(s)
-        let mut traj = Trajectory::new();
-        traj.rewards = vec![1.0, 2.0, 3.0];
-        traj.obs = vec![[0.1, 0.2, 0.3, 0.4]; 3];
-        traj.mu_old = vec![[0.0; 2]; 3];
-        traj.done = true; // episode ended — V(s_{T+1}) = 0
-        traj.terminal_obs = None;
-
-        // Use a known critic: V(s) = constant for simplicity
-        let critic_params = [0.0, 0.0, 0.0, 0.0, -5.0]; // V(s) = -5 for all s
-        traj.v_old = vec![-5.0; 3];
-
-        let (advantages, _) = compute_gae(&traj, &critic_params, GAMMA, 1.0);
+        let rewards = vec![1.0, 2.0, 3.0];
+        let values = vec![-5.0; 3];
+        let (advantages, _) = compute_gae(&rewards, &values, 0.0, GAMMA, 1.0);
 
         // Hand-compute discounted returns (done → no bootstrap):
-        // R_2 = 3.0
-        // R_1 = 2.0 + 0.99 * 3.0 = 4.97
-        // R_0 = 1.0 + 0.99 * 4.97 = 5.9203
-        // Advantages = R_t - V(s_t) = R_t - (-5) = R_t + 5
         let r2 = 3.0;
         let r1 = 2.0 + GAMMA * r2;
         let r0 = 1.0 + GAMMA * r1;
@@ -1325,12 +879,9 @@ mod tests {
         );
     }
 
-    // ── Stress test 3: Clipping activates ──
-
     #[test]
     fn clipping_activates_in_early_epochs() {
         let r = run_ppo_headless(42);
-        // Clip fraction should be > 0 in at least some early epochs
         let early_clipping = r.clip_fractions.iter().take(10).any(|&f| f > 0.0);
         assert!(
             early_clipping,
@@ -1339,28 +890,10 @@ mod tests {
         );
     }
 
-    // ── Stress test 4: PPO converges in 30 epochs ──
-
     #[test]
     fn ppo_converges_in_30_epochs() {
         let r = run_ppo_headless(42);
         let improvement = (r.last_mean_reward - r.ep1_mean_reward) / r.ep1_mean_reward.abs();
-
-        println!(
-            "PPO convergence: ep1={:.1}, ep30={:.1}, improvement={:.0}%",
-            r.ep1_mean_reward,
-            r.last_mean_reward,
-            improvement * 100.0
-        );
-        println!(
-            "best_reached={}, per_epoch_reached={:?}",
-            r.best_reached, r.per_epoch_reached
-        );
-
-        // PPO with K=2 and a 10-param linear policy achieves ~88% improvement.
-        // REINFORCE reaches 91% — the clipped surrogate is slightly conservative
-        // for this tiny problem. The 10-param linear actor is the bottleneck,
-        // not the optimizer.
         assert!(
             improvement > 0.80,
             "improvement={:.0}%, want >80%",
@@ -1373,29 +906,17 @@ mod tests {
         );
     }
 
-    // ── Stress test 5: PPO learns a value function (what REINFORCE can't do) ──
-
     #[test]
     fn ppo_learns_value_function() {
         let r = run_ppo_headless(42);
-        // PPO's advantage over REINFORCE isn't raw speed on this tiny problem —
-        // it's that the critic learns a state-dependent baseline. Neither algorithm
-        // triggers done conditions with a 10-param linear policy (0-3 reaches),
-        // but PPO's critic proves the value function is tracking the reward
-        // landscape. This is the foundation for scaling to larger networks.
         let n = r.value_losses.len();
         let early = r.value_losses[..3].iter().sum::<f64>() / 3.0;
         let late = r.value_losses[n - 3..].iter().sum::<f64>() / 3.0;
-        println!(
-            "PPO value function: early_vloss={early:.1}, late_vloss={late:.1}, reduction={:.0}%",
-            (1.0 - late / early) * 100.0
-        );
         assert!(
             late < early * 0.5,
             "value loss should decrease by >50%: early={early:.1}, late={late:.1}"
         );
 
-        // Reward improvement should still be substantial
         let improvement = (r.last_mean_reward - r.ep1_mean_reward) / r.ep1_mean_reward.abs();
         assert!(
             improvement > 0.80,
@@ -1404,32 +925,24 @@ mod tests {
         );
     }
 
-    // ── Stress test 6: Value loss decreases ──
-
     #[test]
     fn value_loss_decreases() {
         let r = run_ppo_headless(42);
-        // Compare first 3 epochs' avg value loss to last 3
         let n = r.value_losses.len();
         assert!(n >= 6, "need at least 6 epochs of value losses");
 
         let early_avg: f64 = r.value_losses[..3].iter().sum::<f64>() / 3.0;
         let late_avg: f64 = r.value_losses[n - 3..].iter().sum::<f64>() / 3.0;
 
-        println!("value loss: early_avg={early_avg:.2}, late_avg={late_avg:.2}");
         assert!(
             late_avg < early_avg,
             "value loss should decrease: early={early_avg:.2} -> late={late_avg:.2}"
         );
     }
 
-    // ── Stress test 7: Importance ratio stays near 1 ──
-
     #[test]
     fn clip_fraction_reasonable() {
         let r = run_ppo_headless(42);
-        // Clip fraction should be between 0 and 0.5 — if it's too high,
-        // the policy is drifting too far per epoch.
         for (i, &cf) in r.clip_fractions.iter().enumerate() {
             assert!(
                 cf < 0.5,
@@ -1439,14 +952,8 @@ mod tests {
         }
     }
 
-    // ── Stress test 8: Multiple opt passes help ──
-
     #[test]
     fn multiple_opt_passes_help() {
-        // At low lr, K>1 squeezes more learning per epoch from the same data.
-        // Use lr=0.01 where the effect is clearest (K=4 ≈ 82% vs K=1 ≈ 80%).
-        // At higher lr, K>1 can overshoot — the clipping is too conservative
-        // for the policy change rate in this tiny problem.
         let lr = 0.01;
         let r_k1 = run_ppo_headless_with_k_lr(42, 1, lr);
         let r_k4 = run_ppo_headless_with_k_lr(42, 4, lr);
@@ -1456,13 +963,6 @@ mod tests {
         let improvement_k4 =
             (r_k4.last_mean_reward - r_k4.ep1_mean_reward) / r_k4.ep1_mean_reward.abs();
 
-        println!(
-            "lr={lr}: K=1 improvement={:.0}%, K=4 improvement={:.0}%",
-            improvement_k1 * 100.0,
-            improvement_k4 * 100.0,
-        );
-
-        // K=4 should be at least as good as K=1 at low lr
         assert!(
             improvement_k4 >= improvement_k1,
             "K=4 ({:.0}%) should be >= K=1 ({:.0}%) at lr={lr}",
@@ -1471,26 +971,30 @@ mod tests {
         );
     }
 
-    // ── Actor gradient still correct (inherited from REINFORCE) ──
-
     #[test]
     fn actor_gradient_matches_finite_difference() {
+        let task = reaching_2dof();
+        let mut policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
         let params = [0.1, -0.2, 0.3, 0.15, -0.1, 0.25, -0.05, 0.2, 0.1, -0.1];
+        policy.set_params(&params);
+
         let obs: [f32; 4] = [0.5, -0.3, 0.8, -0.4];
         let action = [0.3, -0.2];
         let sigma = 0.3;
 
-        let analytic = policy_gradient(&params, &obs, &action, sigma);
+        let analytic = policy.log_prob_gradient(&obs, &action, sigma);
 
         let eps = 1e-5;
-        for k in 0..NUM_ACTOR_PARAMS {
+        for k in 0..policy.n_params() {
             let mut p_plus = params;
             let mut p_minus = params;
             p_plus[k] += eps;
             p_minus[k] -= eps;
 
-            let mu_plus = policy_mean(&p_plus, &obs);
-            let mu_minus = policy_mean(&p_minus, &obs);
+            policy.set_params(&p_plus);
+            let mu_plus = policy.forward(&obs);
+            policy.set_params(&p_minus);
+            let mu_minus = policy.forward(&obs);
 
             let log_pi_plus: f64 = (0..2)
                 .map(|a| -0.5 * (action[a] - mu_plus[a]).powi(2) / (sigma * sigma))

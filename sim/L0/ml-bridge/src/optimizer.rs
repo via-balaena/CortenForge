@@ -20,7 +20,7 @@
 /// Optimizers own a copy of the parameter vector and update it in-place
 /// on each `step()`. The algorithm must sync the updated params back to
 /// the network after each step.
-pub trait Optimizer: Send {
+pub trait Optimizer: Send + Sync {
     /// Apply one gradient update.
     ///
     /// - `ascent = true`: maximize (policy gradient — REINFORCE, PPO actor).

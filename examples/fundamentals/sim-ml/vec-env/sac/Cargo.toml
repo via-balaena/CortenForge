@@ -1,5 +1,5 @@
 [package]
-name = "example-ml-vec-env-reinforce"
+name = "example-ml-vec-env-sac"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

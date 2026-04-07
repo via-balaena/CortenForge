@@ -1,8 +1,8 @@
 # ML Competition Framework Spec
 
-> **Status**: Draft
+> **Status**: Phases 1–4 complete. Phase 5+ (future levels) pending.
 > **Crate**: sim-ml-bridge (extensions)
-> **Branch**: feature/sim-ml-bridge
+> **Branch**: feature/competition-tests
 
 ## Vision
 
@@ -631,8 +631,12 @@ impl Competition {
 
 The `assert_ordering` method is the hypothesis tester:
 ```rust
+// Original prediction (level 2+ hypothesis — not yet verified):
 competition.assert_ordering(&result, "mean_reward", &["CEM", "REINFORCE", "PPO", "TD3", "SAC"]);
-// Asserts: CEM < REINFORCE < PPO < TD3 < SAC on mean_reward
+
+// Actual level 0-1 ordering (verified by Phase 3 competition tests):
+// REINFORCE < PPO < TD3 ≈ SAC < CEM
+// See "Actual ordering at level 0-1" section below for analysis.
 ```
 
 ## Algorithm landscape
@@ -974,6 +978,43 @@ At 614 MLP actor params:
 | TD3 | 88-95% | 20-35 | Off-policy reuse, less exploration |
 | SAC | 90-98% | 25-40 | Off-policy + entropy exploration |
 
+### Actual ordering at level 0-1 (Phase 3 results)
+
+The predicted ordering was **reversed** at level 0-1. Results from
+competition tests (seed 42, 50ep/50env, `--release`):
+
+| Algorithm | Final Reward | Dones | Why |
+|-----------|-------------|-------|-----|
+| CEM | -1.05 | **49** | Gradient-free search wins on smooth quadratic reward |
+| SAC | -10.82 | 0 | Off-policy replay helps; LinearStochasticPolicy handicap |
+| TD3 | -11.99 | 0 | Off-policy replay helps |
+| PPO | -3449 | 0 | Hand-coded gradients too noisy in 614-dim |
+| REINFORCE | -7500 | 0 | Highest variance — no baseline, no replay |
+
+**Why the reversal:** the predicted ordering assumed gradient estimates
+are good enough to outperform evolutionary search. At level 0-1 with
+hand-coded backprop, they aren't — each gradient is multiplied by a
+noisy return/advantage estimate, and 25K samples/epoch can't stabilize
+a 614-dim gradient. CEM wins because it needs no gradient estimates —
+on a smooth, unimodal -(qpos-target)^2 landscape, 50 candidates/gen
+is sufficient to find downhill directions.
+
+**Additional findings:**
+- Linear PPO beats MLP PPO (-2705 vs -3879) — the quadratic reward
+  landscape is well-served by a linear controller (PD-like). MLP's
+  extra capacity is wasted overhead at level 0-1 budgets.
+- CEM beats gradient methods even at very low budgets (20ep/20env)
+  because it has zero warmup overhead.
+- The done condition (5cm + velocity < 0.5) is too precise for any
+  gradient method to trigger at level 0-1 budgets.
+
+**The predicted ordering becomes the level 2 hypothesis:** autograd
+(burn/candle) with deeper networks should reverse this by providing
+lower-variance gradients, batch backward passes, and richer function
+approximation. The level 0-1 results are the baseline to beat.
+
+See `COMPETITION_TESTS_SPEC.md` for full results.
+
 ## Implementation plan
 
 ### Phase 1: Core abstractions (sim-ml-bridge)
@@ -1047,37 +1088,37 @@ Algorithm list and their required parts:
 TD3 before SAC — TD3 is simpler, shares the twin-Q + replay
 infrastructure that SAC builds on.
 
-### Phase 3: Competition tests
+### Phase 3: Competition tests — COMPLETE
 
-```rust
-#[test]
-fn two_dof_linear_regression() {
-    // All 5 on easy task. Verify existing behavior preserved.
-}
+7 integration tests in `sim/L0/ml-bridge/tests/competition.rs`.
+All `#[ignore]` (multi-minute runs). Run with `--release`.
 
-#[test]
-fn six_dof_mlp_ordering() {
-    // Primary ordering test. CEM << REINFORCE < PPO < TD3 <= SAC
-}
+See `COMPETITION_TESTS_SPEC.md` for full results and analysis.
 
-#[test]
-fn sample_efficiency() {
-    // Same total env steps, different algorithms.
-    // Off-policy should dominate at low budgets.
-}
+The predicted ordering was reversed at level 0-1. Verified ordering:
+REINFORCE << PPO << TD3 ≈ SAC << CEM (49 dones). CEM's gradient-free
+search dominates hand-coded gradients on smooth quadratic reward.
+The predicted ordering becomes the level 2 (autograd) hypothesis.
 
-#[test]
-fn linear_vs_mlp() {
-    // Same algorithm, same task, different policy complexity.
-    // MLP >> linear on 6-DOF.
-}
-```
+### Phase 4: Visual examples — COMPLETE
 
-### Phase 4: Visual examples
+Refactored CEM/REINFORCE/PPO and added TD3/SAC visual examples. All
+five use shared building blocks from sim-ml-bridge (policies, values,
+optimizers, ReplayBuffer, soft_update, gaussian_log_prob, compute_gae)
+and example-ml-shared (setup_reaching_arms, sync_batch_geoms). Only
+algorithm-specific update logic stays inline (the teaching point).
 
-Update existing CEM/REINFORCE/PPO Bevy examples to use TaskConfig +
-Algorithm abstractions. Add SAC and TD3 visual examples. Each remains
-a standalone single-file example (museum plaque principle).
+See `examples/fundamentals/sim-ml/PHASE_4_SPEC.md` for full details.
+
+Results at level 0 (linear function approximation):
+- CEM: best performer (~20/50 reached), gradient-free search dominates
+- REINFORCE: 90% reward improvement, 0/50 reached
+- PPO: 88% reward improvement, value loss 10072→182
+- TD3: ~30% improvement then plateau (linear Q DPG saturates)
+- SAC: ~50% steady improvement (entropy prevents DPG saturation)
+
+5 examples, 10 tests (TD3) + 10 tests (SAC) + existing tests for
+CEM/REINFORCE/PPO. All passing.
 
 ### Phase 5+ (future levels)
 

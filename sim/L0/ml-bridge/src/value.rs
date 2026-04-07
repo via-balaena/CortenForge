@@ -5,8 +5,11 @@
 //!   Q-networks, target network soft updates, deterministic/reparameterized
 //!   policy gradients).
 //!
-//! Also provides [`soft_update`] — Polyak averaging for target network
-//! updates, used by all off-policy actor-critic methods.
+//! Also provides [`soft_update`] / [`soft_update_policy`] / [`soft_update_value`]
+//! — Polyak averaging for target network updates, used by all off-policy
+//! actor-critic methods.
+
+use crate::policy::Policy;
 
 // ── State value function ───────────────────────────────────────────────────
 
@@ -17,7 +20,7 @@
 ///
 /// # Parameter contract
 ///
-/// Same as [`Policy`](crate::Policy): `params()` returns `&[f64]` of length
+/// Same as [`Policy`]: `params()` returns `&[f64]` of length
 /// `n_params()`, `set_params()` panics on wrong length.
 pub trait ValueFn: Send + Sync {
     /// Number of learnable parameters.
@@ -230,6 +233,20 @@ pub trait QFunction: Send + Sync {
 /// This is a free function (not a trait method) because it's a pattern used
 /// across algorithms, not an inherent capability of Q-functions.
 pub fn soft_update(target: &mut dyn QFunction, source: &dyn QFunction, tau: f64) {
+    let src = source.params();
+    let tgt = target.params().to_vec();
+    let updated: Vec<f64> = tgt
+        .iter()
+        .zip(src)
+        .map(|(&t, &s)| tau.mul_add(s, (1.0 - tau) * t))
+        .collect();
+    target.set_params(&updated);
+}
+
+/// Polyak averaging for [`Policy`] targets (TD3).
+///
+/// Same as [`soft_update`] but for policies.
+pub fn soft_update_policy(target: &mut dyn Policy, source: &dyn Policy, tau: f64) {
     let src = source.params();
     let tgt = target.params().to_vec();
     let updated: Vec<f64> = tgt

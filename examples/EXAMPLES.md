@@ -8,6 +8,7 @@ examples/
     design/           Pure cf-design (implicit surfaces, bio-inspired geometry)
     mesh/             Pure mesh-* (repair, lattice, shell, printability)
     sim-cpu/          CPU physics fundamentals (MJCF, joints, sensors)
+    sim-ml/           ML boundary layer (spaces, environments, learning algorithms)
     sim-gpu/          GPU physics fundamentals (future)
   integration/        Cross-domain pipelines (design → sim → mesh → print)
   sdf-physics/
@@ -298,6 +299,22 @@ CPU physics fundamentals — joints, sensors, MJCF, sim-core.
 |---------|---------|--------|-------|
 | `pendulum-sim` | `example-pendulum-sim` | Working | Original raw MJCF demo |
 | `multi-scene-test` | `example-multi-scene-test` | Working | Multi-scene infrastructure test |
+
+## fundamentals/sim-ml/
+
+ML boundary layer — observation/action spaces, environments, learning algorithms.
+
+### Vec-Env Learning Algorithms
+
+| Example | Package | Status | Notes |
+|---------|---------|--------|-------|
+| `vec-env/stress-test` | `example-ml-vec-env-stress-test` | Working | Headless VecEnv correctness (11 checks) |
+| `vec-env/parallel-step` | `example-ml-vec-env-parallel-step` | Working | 8 pendulums, different actions |
+| `vec-env/auto-reset` | `example-ml-vec-env-auto-reset` | Working | ★ 50 reaching arms + CEM (8 tests) |
+| `vec-env/reinforce` | `example-ml-vec-env-reinforce` | Working | ★ 50 reaching arms + REINFORCE (7 tests) |
+| `vec-env/ppo` | `example-ml-vec-env-ppo` | Working | ★ 50 reaching arms + PPO (9 tests) |
+| `vec-env/td3` | `example-ml-vec-env-td3` | Working | ★ 50 reaching arms + TD3 (5 tests) |
+| `vec-env/sac` | `example-ml-vec-env-sac` | Working | ★ 50 reaching arms + SAC (5 tests) |
 
 ## integration/
 

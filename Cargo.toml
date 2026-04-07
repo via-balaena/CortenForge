@@ -239,12 +239,17 @@ members = [
     "examples/fundamentals/sim-ml/sim-env/sub-stepping",
     "examples/fundamentals/sim-ml/sim-env/on-reset",
 
+    # Examples — fundamentals / sim-ml / shared
+    "examples/fundamentals/sim-ml/shared",
+
     # Examples — fundamentals / sim-ml / vec-env
     "examples/fundamentals/sim-ml/vec-env/stress-test",
     "examples/fundamentals/sim-ml/vec-env/parallel-step",
     "examples/fundamentals/sim-ml/vec-env/auto-reset",
     "examples/fundamentals/sim-ml/vec-env/reinforce",
     "examples/fundamentals/sim-ml/vec-env/ppo",
+    "examples/fundamentals/sim-ml/vec-env/td3",
+    "examples/fundamentals/sim-ml/vec-env/sac",
 
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
@@ -365,6 +370,7 @@ parry3d = "0.17"
 # Randomness
 # ---------------------------------------------------------------------------
 rand = "0.9"
+rand_distr = "0.5"
 
 # ---------------------------------------------------------------------------
 # Parallelism

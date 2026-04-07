@@ -24,39 +24,22 @@
     dead_code
 )]
 
-use std::sync::Arc;
-
 use bevy::prelude::*;
-use rand::Rng;
+use example_ml_shared::{setup_reaching_arms, sync_batch_geoms};
+use rand_distr::{Distribution, Normal};
 use sim_bevy::camera::OrbitCameraPlugin;
-use sim_bevy::convert::physics_pos;
-use sim_bevy::examples::{
-    HudPosition, PhysicsHud, ValidationHarness, insert_batch_validation_dummies,
-    render_physics_hud, spawn_example_camera, spawn_physics_hud_at, validation_system,
-};
-use sim_bevy::materials::MetalPreset;
-use sim_bevy::multi_scene::{
-    PhysicsScenes, spawn_scene_geoms, sync_batch_geoms, sync_scene_geom_transforms,
-};
+use sim_bevy::examples::{PhysicsHud, ValidationHarness, render_physics_hud, validation_system};
+use sim_bevy::multi_scene::{PhysicsScenes, sync_scene_geom_transforms};
 use sim_core::validation::{Check, print_report};
-use sim_ml_bridge::{ActionSpace, ObservationSpace, Tensor, VecEnv};
+use sim_ml_bridge::{
+    DifferentiablePolicy, LinearPolicy, Optimizer, OptimizerConfig, Policy, Tensor, Trajectory,
+    VecEnv, reaching_2dof,
+};
 
-// ── Constants (inherited from CEM) ─────────────────────────────────────────
+// ── Constants ───────────────────────────────────────────────────────────────
 
 const NUM_ENVS: usize = 50;
-const SPACING: f32 = 0.8;
-const TARGET: [f64; 3] = [0.4, 0.0, 0.3];
-const REACH_THRESHOLD: f64 = 0.05;
-const VEL_THRESHOLD: f64 = 0.5;
-const EPISODE_TIMEOUT: f64 = 3.0;
 const PAUSE_TIME: f64 = 1.5;
-const NUM_PARAMS: usize = 10; // W[2x4] + b[2]
-
-/// Target joint angles (IK solution for TARGET end-effector position).
-const TARGET_QPOS: [f64; 2] = [-0.242, 1.982];
-
-// ── REINFORCE-specific constants ───────────────────────────────────────────
-
 const MAX_EPOCHS: usize = 30;
 const VALIDATION_EPOCH: usize = 25;
 const GAMMA: f64 = 0.99;
@@ -65,204 +48,21 @@ const SIGMA_INIT: f64 = 0.5;
 const SIGMA_MIN: f64 = 0.05;
 const SIGMA_DECAY: f64 = 0.90;
 const MAX_GRAD_NORM: f64 = 1.0;
-const ADAM_BETA1: f64 = 0.9;
-const ADAM_BETA2: f64 = 0.999;
-const ADAM_EPS: f64 = 1e-8;
 
-// ── MJCF (identical to CEM) ───────────────────────────────────────────────
+// ── REINFORCE Helpers ───────────────────────────────────────────────────────
 
-const MJCF: &str = r#"
-<mujoco model="reaching-arm">
-  <compiler angle="radian" inertiafromgeom="true"/>
-  <option gravity="0 0 -9.81" timestep="0.002" integrator="RK4">
-    <flag contact="disable"/>
-  </option>
-  <default>
-    <geom contype="0" conaffinity="0"/>
-  </default>
-  <worldbody>
-    <body name="upper_arm" pos="0 0 0">
-      <joint name="shoulder" type="hinge" axis="0 -1 0"
-             limited="true" range="-3.14159 3.14159" damping="2.0"/>
-      <geom name="upper_geom" type="capsule" fromto="0 0 0 0.5 0 0"
-            size="0.03" mass="0.5" rgba="0.3 0.5 0.85 1"/>
-      <body name="forearm" pos="0.5 0 0">
-        <joint name="elbow" type="hinge" axis="0 -1 0"
-               limited="true" range="-2.6 2.6" damping="1.0"/>
-        <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.4 0 0"
-              size="0.025" mass="0.3" rgba="0.85 0.4 0.2 1"/>
-        <site name="fingertip" pos="0.4 0 0" size="0.015"/>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <motor name="shoulder_motor" joint="shoulder" gear="10"
-           ctrllimited="true" ctrlrange="-1 1"/>
-    <motor name="elbow_motor" joint="elbow" gear="5"
-           ctrllimited="true" ctrlrange="-1 1"/>
-  </actuator>
-</mujoco>
-"#;
-
-// ── Policy (same structure as CEM, now with gradient) ──────────────────────
-
-/// Observation normalization scales (keeps pre-tanh values moderate).
-const OBS_SCALE: [f64; 4] = [
-    1.0 / std::f64::consts::PI,
-    1.0 / std::f64::consts::PI,
-    0.1,
-    0.1,
-];
-
-/// Compute mean action: mu(s) = tanh(W * s_scaled + b)
-fn policy_mean(params: &[f64], obs: &[f32]) -> [f64; 2] {
-    let mut mu = [0.0f64; 2];
-    for a in 0..2 {
-        let mut z = params[8 + a]; // bias
-        for o in 0..4 {
-            z += params[a * 4 + o] * f64::from(obs[o]) * OBS_SCALE[o];
-        }
-        mu[a] = z.tanh();
+/// Discounted returns: R_t = sum_k gamma^k * r_{t+k}
+fn discounted_returns(rewards: &[f64], gamma: f64) -> Vec<f64> {
+    let n = rewards.len();
+    let mut returns = vec![0.0; n];
+    if n == 0 {
+        return returns;
     }
-    mu
-}
-
-/// Sample stochastic action: a = mu(s) + sigma * eps
-fn sample_action(params: &[f64], obs: &[f32], sigma: f64, rng: &mut impl Rng) -> [f64; 2] {
-    let mu = policy_mean(params, obs);
-    [mu[0] + sigma * randn(rng), mu[1] + sigma * randn(rng)]
-}
-
-/// Compute policy gradient for one (obs, action) pair.
-/// Returns gradient w.r.t. all 10 params.
-///
-/// For Gaussian policy pi(a|s) = N(a; tanh(W*s+b), sigma^2*I):
-///   d/dtheta log pi = (a - mu) / sigma^2 * d/dtheta mu
-///   d/dW mu = (1 - mu^2) * s_scaled^T
-///   d/db mu = (1 - mu^2)
-fn policy_gradient(
-    params: &[f64],
-    obs: &[f32],
-    action: &[f64; 2],
-    sigma: f64,
-) -> [f64; NUM_PARAMS] {
-    let mu = policy_mean(params, obs);
-    let sigma2 = sigma * sigma;
-    let mut grad = [0.0f64; NUM_PARAMS];
-
-    for a in 0..2 {
-        let tanh_deriv = 1.0 - mu[a] * mu[a];
-        let score = (action[a] - mu[a]) / sigma2 * tanh_deriv;
-
-        // d/dW[a, o]
-        for o in 0..4 {
-            let s_scaled = f64::from(obs[o]) * OBS_SCALE[o];
-            grad[a * 4 + o] = score * s_scaled;
-        }
-        // d/db[a]
-        grad[8 + a] = score;
+    returns[n - 1] = rewards[n - 1];
+    for t in (0..n - 1).rev() {
+        returns[t] = rewards[t] + gamma * returns[t + 1];
     }
-    grad
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-/// Box-Muller normal sample.
-fn randn(rng: &mut impl Rng) -> f64 {
-    let u1: f64 = 1.0 - rng.random::<f64>();
-    let u2: f64 = rng.random::<f64>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
-
-fn build_vec_env(model: &Arc<sim_core::Model>, n_envs: usize) -> VecEnv {
-    let obs = ObservationSpace::builder()
-        .all_qpos()
-        .all_qvel()
-        .build(model)
-        .expect("obs build");
-    let act = ActionSpace::builder()
-        .all_ctrl()
-        .build(model)
-        .expect("act build");
-
-    let target = TARGET;
-    VecEnv::builder(model.clone(), n_envs)
-        .observation_space(obs)
-        .action_space(act)
-        .reward(move |_m, d| {
-            // Joint-space squared error — same as CEM.
-            // Cartesian distance plateaus for both CEM and REINFORCE.
-            let e0 = d.qpos[0] - TARGET_QPOS[0];
-            let e1 = d.qpos[1] - TARGET_QPOS[1];
-            -(e0 * e0 + e1 * e1)
-        })
-        .done(move |_m, d| {
-            let tip = d.site_xpos[0];
-            let dx = tip.x - target[0];
-            let dz = tip.z - target[2];
-            let dist = (dx * dx + dz * dz).sqrt();
-            let vel = (d.qvel[0] * d.qvel[0] + d.qvel[1] * d.qvel[1]).sqrt();
-            dist < REACH_THRESHOLD && vel < VEL_THRESHOLD
-        })
-        .truncated(|_m, d| d.time > EPISODE_TIMEOUT)
-        .sub_steps(5)
-        .build()
-        .expect("vec_env build")
-}
-
-// ── Trajectory recording ───────────────────────────────────────────────────
-
-struct Trajectory {
-    obs: Vec<[f32; 4]>,
-    actions: Vec<[f64; 2]>,
-    rewards: Vec<f64>,
-}
-
-impl Trajectory {
-    fn new() -> Self {
-        Self {
-            obs: Vec::with_capacity(350),
-            actions: Vec::with_capacity(350),
-            rewards: Vec::with_capacity(350),
-        }
-    }
-
-    const fn len(&self) -> usize {
-        self.rewards.len()
-    }
-
-    /// Discounted returns: R_t = sum_k gamma^k * r_{t+k}
-    fn discounted_returns(&self, gamma: f64) -> Vec<f64> {
-        let n = self.rewards.len();
-        let mut returns = vec![0.0; n];
-        if n == 0 {
-            return returns;
-        }
-        returns[n - 1] = self.rewards[n - 1];
-        for t in (0..n - 1).rev() {
-            returns[t] = self.rewards[t] + gamma * returns[t + 1];
-        }
-        returns
-    }
-}
-
-// ── REINFORCE update ───────────────────────────────────────────────────────
-
-/// Adam optimizer state.
-struct AdamState {
-    m: [f64; NUM_PARAMS], // first moment
-    v: [f64; NUM_PARAMS], // second moment
-    t: usize,             // step count
-}
-
-impl AdamState {
-    const fn new() -> Self {
-        Self {
-            m: [0.0; NUM_PARAMS],
-            v: [0.0; NUM_PARAMS],
-            t: 0,
-        }
-    }
+    returns
 }
 
 struct ReinforceResult {
@@ -270,18 +70,18 @@ struct ReinforceResult {
 }
 
 fn reinforce_update(
-    params: &mut [f64; NUM_PARAMS],
-    adam: &mut AdamState,
+    policy: &mut LinearPolicy,
+    optimizer: &mut dyn Optimizer,
     trajectories: &[Trajectory],
     sigma: f64,
     gamma: f64,
-    lr: f64,
-    max_grad_norm: f64,
 ) -> ReinforceResult {
+    let n_params = policy.n_params();
+
     // Compute all discounted returns
     let all_returns: Vec<Vec<f64>> = trajectories
         .iter()
-        .map(|t| t.discounted_returns(gamma))
+        .map(|t| discounted_returns(&t.rewards, gamma))
         .collect();
 
     // Collect all advantages (return - baseline), then normalize
@@ -309,16 +109,16 @@ fn reinforce_update(
     }
 
     // Accumulate gradient using normalized advantages.
-    let mut grad = [0.0f64; NUM_PARAMS];
+    let mut grad = vec![0.0f64; n_params];
     let mut n_samples = 0;
     let mut adv_idx = 0;
 
     for traj in trajectories {
-        for t in 0..traj.len() {
+        for t in 0..traj.rewards.len() {
             let advantage = all_advantages[adv_idx];
             adv_idx += 1;
-            let g = policy_gradient(params, &traj.obs[t], &traj.actions[t], sigma);
-            for k in 0..NUM_PARAMS {
+            let g = policy.log_prob_gradient(&traj.obs[t], &traj.actions[t], sigma);
+            for k in 0..n_params {
                 grad[k] += g[k] * advantage;
             }
             n_samples += 1;
@@ -327,34 +127,18 @@ fn reinforce_update(
 
     // Average over all samples
     if n_samples > 0 {
-        for k in 0..NUM_PARAMS {
-            grad[k] /= f64::from(n_samples);
+        for g in &mut grad {
+            *g /= f64::from(n_samples);
         }
     }
 
-    // Gradient clipping (before Adam)
     let grad_norm = grad.iter().map(|&g| g * g).sum::<f64>().sqrt();
-    if grad_norm > max_grad_norm {
-        let scale = max_grad_norm / grad_norm;
-        for k in 0..NUM_PARAMS {
-            grad[k] *= scale;
-        }
-    }
 
-    // Adam update (gradient ascent: we ADD the update)
-    adam.t += 1;
-    #[allow(clippy::cast_possible_wrap)]
-    let t_i32 = adam.t as i32;
-    let bc1 = 1.0 - ADAM_BETA1.powi(t_i32);
-    let bc2 = 1.0 - ADAM_BETA2.powi(t_i32);
+    // Optimizer step (gradient ascent — maximize expected return)
+    optimizer.step(&grad, true);
 
-    for k in 0..NUM_PARAMS {
-        adam.m[k] = ADAM_BETA1 * adam.m[k] + (1.0 - ADAM_BETA1) * grad[k];
-        adam.v[k] = ADAM_BETA2 * adam.v[k] + (1.0 - ADAM_BETA2) * grad[k] * grad[k];
-        let m_hat = adam.m[k] / bc1;
-        let v_hat = adam.v[k] / bc2;
-        params[k] += lr * m_hat / (v_hat.sqrt() + ADAM_EPS);
-    }
+    // Pitfall #1: sync optimizer params back to policy
+    policy.set_params(optimizer.params());
 
     ReinforceResult { grad_norm }
 }
@@ -373,8 +157,8 @@ struct ReinforceResource {
     actions: Tensor,
     current_obs: Tensor,
 
-    params: [f64; NUM_PARAMS],
-    adam: AdamState,
+    policy: LinearPolicy,
+    optimizer: Box<dyn Optimizer>,
     sigma: f64,
 
     epoch: usize,
@@ -405,10 +189,6 @@ struct ReinforceValidation {
 fn main() {
     println!("=== CortenForge: REINFORCE — Reaching Arm + Policy Gradient ===");
     println!("  {NUM_ENVS} arms, {MAX_EPOCHS} epochs, lr={LR}, gamma={GAMMA}");
-    println!(
-        "  Target: ({:.1}, {:.1}, {:.1})",
-        TARGET[0], TARGET[1], TARGET[2]
-    );
     println!("  Orbit: left-drag | Pan: right-drag | Zoom: scroll\n");
 
     App::new()
@@ -454,8 +234,21 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF parse"));
-    let mut vec_env = build_vec_env(&model, NUM_ENVS);
+    let task = reaching_2dof();
+    let policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
+    let n_params = policy.n_params();
+    let optimizer = OptimizerConfig::Adam {
+        lr: LR,
+        beta1: 0.9,
+        beta2: 0.999,
+        eps: 1e-8,
+        max_grad_norm: MAX_GRAD_NORM,
+    }
+    .build(n_params);
+
+    let (mut vec_env, scenes) =
+        setup_reaching_arms(&task, NUM_ENVS, &mut commands, &mut meshes, &mut materials);
+
     let init_obs = vec_env.reset_all().expect("reset");
 
     let rng = {
@@ -463,62 +256,17 @@ fn setup(
         rand::rngs::StdRng::seed_from_u64(42)
     };
 
-    // ── PhysicsScenes ──
-    let mut scenes = PhysicsScenes::default();
-
-    let mat_upper =
-        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.3, 0.5, 0.85)));
-    let mat_forearm =
-        materials.add(MetalPreset::PolishedSteel.with_color(Color::srgb(0.85, 0.4, 0.2)));
-
-    let mat_target = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.2, 0.9, 0.2, 0.5),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    });
-    let target_mesh = meshes.add(Sphere::new(0.03));
-
-    for i in 0..NUM_ENVS {
-        let scene_model = (*model).clone();
-        let mut scene_data = scene_model.make_data();
-        scene_data.forward(&scene_model).expect("forward");
-
-        let id = scenes.add(format!("env-{i}"), scene_model, scene_data);
-
-        let lane = (i as f32 - (NUM_ENVS as f32 - 1.0) / 2.0) * SPACING;
-        spawn_scene_geoms(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            &mut scenes,
-            id,
-            physics_pos(lane, 0.0, 0.0),
-            &[
-                ("upper_geom", mat_upper.clone()),
-                ("forearm_geom", mat_forearm.clone()),
-            ],
-        );
-
-        let target_bevy = physics_pos(lane + TARGET[0] as f32, 0.0, TARGET[2] as f32);
-        commands.spawn((
-            Mesh3d(target_mesh.clone()),
-            MeshMaterial3d(mat_target.clone()),
-            Transform::from_translation(target_bevy),
-        ));
-    }
-
     commands.insert_resource(scenes);
 
-    let actions = Tensor::zeros(&[NUM_ENVS, 2]);
-    let trajectories: Vec<Trajectory> = (0..NUM_ENVS).map(|_| Trajectory::new()).collect();
+    let actions = Tensor::zeros(&[NUM_ENVS, task.act_dim()]);
+    let trajectories: Vec<Trajectory> = (0..NUM_ENVS).map(|_| new_trajectory()).collect();
 
     commands.insert_resource(ReinforceResource {
         vec_env,
         actions,
         current_obs: init_obs,
-        params: [0.0f64; NUM_PARAMS],
-        adam: AdamState::new(),
+        policy,
+        optimizer,
         sigma: SIGMA_INIT,
         epoch: 0,
         phase: Phase::Running,
@@ -533,17 +281,16 @@ fn setup(
         reach_counts: Vec::new(),
         grad_norms: Vec::new(),
     });
+}
 
-    spawn_example_camera(
-        &mut commands,
-        physics_pos(0.0, -0.5, 0.0),
-        35.0,
-        std::f32::consts::FRAC_PI_2,
-        0.15,
-    );
-
-    spawn_physics_hud_at(&mut commands, HudPosition::BottomLeft);
-    insert_batch_validation_dummies(&mut commands, &model);
+fn new_trajectory() -> Trajectory {
+    Trajectory {
+        obs: Vec::with_capacity(350),
+        actions: Vec::with_capacity(350),
+        rewards: Vec::with_capacity(350),
+        done: false,
+        terminal_obs: None,
+    }
 }
 
 // ── Stepping (REINFORCE state machine) ─────────────────────────────────────
@@ -563,26 +310,22 @@ fn step_reinforce(mut res: ResMut<ReinforceResource>, time: Res<Time>) {
             let budget = ((res.accumulator / dt_action).max(0.0) as u32).min(200);
 
             for _ in 0..budget {
-                // Sample actions from stochastic policy
-                // Copy obs out to avoid borrow conflict with rng
-                let obs_snapshot: Vec<[f32; 4]> = (0..NUM_ENVS)
-                    .map(|i| {
-                        let r = res.current_obs.row(i);
-                        [r[0], r[1], r[2], r[3]]
-                    })
-                    .collect();
-
-                let params = res.params;
-                let sigma = res.sigma;
+                // Sample actions from stochastic policy (shared policy + Gaussian noise)
+                let inner = &mut *res;
+                let noise = Normal::new(0.0, inner.sigma).unwrap();
                 for i in 0..NUM_ENVS {
-                    if !res.env_complete[i] {
-                        let obs_arr = obs_snapshot[i];
-                        let action = sample_action(&params, &obs_arr, sigma, &mut res.rng);
+                    if !inner.env_complete[i] {
+                        let obs = inner.current_obs.row(i);
+                        let mu = inner.policy.forward(obs);
+                        let action: Vec<f64> = mu
+                            .iter()
+                            .map(|&m| m + noise.sample(&mut inner.rng))
+                            .collect();
 
-                        res.trajectories[i].obs.push(obs_arr);
-                        res.trajectories[i].actions.push(action);
+                        inner.trajectories[i].obs.push(obs.to_vec());
+                        inner.trajectories[i].actions.push(action.clone());
 
-                        let row = res.actions.row_mut(i);
+                        let row = inner.actions.row_mut(i);
                         row[0] = action[0] as f32;
                         row[1] = action[1] as f32;
                     }
@@ -642,13 +385,11 @@ fn step_reinforce(mut res: ResMut<ReinforceResource>, time: Res<Time>) {
                 let sigma = res.sigma;
                 let inner = &mut *res;
                 let result = reinforce_update(
-                    &mut inner.params,
-                    &mut inner.adam,
+                    &mut inner.policy,
+                    inner.optimizer.as_mut(),
                     &trajectories,
                     sigma,
                     GAMMA,
-                    LR,
-                    MAX_GRAD_NORM,
                 );
                 inner.grad_norms.push(result.grad_norm);
 
@@ -660,7 +401,7 @@ fn step_reinforce(mut res: ResMut<ReinforceResource>, time: Res<Time>) {
                 res.current_obs = res.vec_env.reset_all().expect("reset");
                 res.env_complete.fill(false);
                 res.env_reached.fill(false);
-                res.trajectories = (0..NUM_ENVS).map(|_| Trajectory::new()).collect();
+                res.trajectories = (0..NUM_ENVS).map(|_| new_trajectory()).collect();
                 res.phase = Phase::Running;
             }
         }
@@ -706,6 +447,14 @@ fn track_validation(res: Res<ReinforceResource>, mut val: ResMut<ReinforceValida
         0.0
     };
 
+    let param_norm = res
+        .policy
+        .params()
+        .iter()
+        .map(|&v| v * v)
+        .sum::<f64>()
+        .sqrt();
+
     let checks = [
         Check {
             name: "Reward improvement >=80%",
@@ -717,11 +466,8 @@ fn track_validation(res: Res<ReinforceResource>, mut val: ResMut<ReinforceValida
         },
         Check {
             name: "Policy learned (||theta|| > 0.5)",
-            pass: res.params.iter().map(|&v| v * v).sum::<f64>().sqrt() > 0.5,
-            detail: format!(
-                "||theta||={:.3}",
-                res.params.iter().map(|&v| v * v).sum::<f64>().sqrt()
-            ),
+            pass: param_norm > 0.5,
+            detail: format!("||theta||={param_norm:.3}"),
         },
         Check {
             name: "Sigma decreased",
@@ -770,7 +516,6 @@ fn update_hud(res: Res<ReinforceResource>, mut hud: ResMut<PhysicsHud>) {
         hud.section("Reward Curve");
         let rewards = &res.mean_rewards;
         let n = rewards.len();
-        // Show first, middle, and last
         let mut entries = Vec::new();
         entries.push(format!("ep1:{:.0}", rewards[0]));
         if n > 5 {
@@ -807,14 +552,23 @@ mod tests {
         per_epoch_reached: Vec<usize>,
     }
 
+    #[allow(clippy::too_many_lines)]
     fn run_reinforce_headless(seed: u64) -> ReinforceHeadlessResult {
         use rand::SeedableRng;
 
-        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
-        let mut vec_env = build_vec_env(&model, NUM_ENVS);
+        let task = reaching_2dof();
+        let mut policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
+        let n_params = policy.n_params();
+        let mut optimizer = OptimizerConfig::Adam {
+            lr: LR,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            max_grad_norm: MAX_GRAD_NORM,
+        }
+        .build(n_params);
+        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build_vec_env");
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-        let mut params = [0.0f64; NUM_PARAMS];
-        let mut adam = AdamState::new();
         let mut sigma = SIGMA_INIT;
 
         let mut ep1_mean_reward = 0.0;
@@ -822,25 +576,29 @@ mod tests {
         let mut last_reached = 0;
         let mut per_epoch_reached = Vec::new();
 
-        let max_steps = (EPISODE_TIMEOUT / (5.0 * 0.002)) as usize + 50;
+        let episode_timeout = 3.0;
+        let timestep = vec_env.model().timestep;
+        let max_steps = (episode_timeout / (5.0 * timestep)) as usize + 50;
 
         for epoch in 0..MAX_EPOCHS {
             let mut current_obs = vec_env.reset_all().expect("reset");
             let mut trajectories: Vec<Trajectory> =
-                (0..NUM_ENVS).map(|_| Trajectory::new()).collect();
+                (0..NUM_ENVS).map(|_| new_trajectory()).collect();
             let mut env_complete = [false; NUM_ENVS];
             let mut env_reached = [false; NUM_ENVS];
-            let mut actions = Tensor::zeros(&[NUM_ENVS, 2]);
+            let mut actions = Tensor::zeros(&[NUM_ENVS, task.act_dim()]);
+            let noise = Normal::new(0.0, sigma).unwrap();
 
             for _ in 0..max_steps {
                 for i in 0..NUM_ENVS {
                     if !env_complete[i] {
                         let obs = current_obs.row(i);
-                        let obs_arr: [f32; 4] = [obs[0], obs[1], obs[2], obs[3]];
-                        let action = sample_action(&params, obs, sigma, &mut rng);
+                        let mu = policy.forward(obs);
+                        let action: Vec<f64> =
+                            mu.iter().map(|&m| m + noise.sample(&mut rng)).collect();
 
-                        trajectories[i].obs.push(obs_arr);
-                        trajectories[i].actions.push(action);
+                        trajectories[i].obs.push(obs.to_vec());
+                        trajectories[i].actions.push(action.clone());
 
                         let row = actions.row_mut(i);
                         row[0] = action[0] as f32;
@@ -882,19 +640,11 @@ mod tests {
             last_reached = reached;
             per_epoch_reached.push(reached);
 
-            reinforce_update(
-                &mut params,
-                &mut adam,
-                &trajectories,
-                sigma,
-                GAMMA,
-                LR,
-                MAX_GRAD_NORM,
-            );
+            reinforce_update(&mut policy, optimizer.as_mut(), &trajectories, sigma, GAMMA);
             sigma = (sigma * SIGMA_DECAY).max(SIGMA_MIN);
         }
 
-        let param_norm = params.iter().map(|&v| v * v).sum::<f64>().sqrt();
+        let param_norm = policy.params().iter().map(|&v| v * v).sum::<f64>().sqrt();
 
         ReinforceHeadlessResult {
             ep1_mean_reward,
@@ -910,24 +660,28 @@ mod tests {
 
     #[test]
     fn gradient_matches_finite_difference() {
-        // Verify hand-coded gradient against numerical approximation
+        let task = reaching_2dof();
+        let mut policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
         let params = [0.1, -0.2, 0.3, 0.15, -0.1, 0.25, -0.05, 0.2, 0.1, -0.1];
+        policy.set_params(&params);
+
         let obs: [f32; 4] = [0.5, -0.3, 0.8, -0.4];
         let action = [0.3, -0.2];
         let sigma = 0.3;
 
-        let analytic = policy_gradient(&params, &obs, &action, sigma);
+        let analytic = policy.log_prob_gradient(&obs, &action, sigma);
 
         let eps = 1e-5;
-        for k in 0..NUM_PARAMS {
+        for k in 0..policy.n_params() {
             let mut p_plus = params;
             let mut p_minus = params;
             p_plus[k] += eps;
             p_minus[k] -= eps;
 
-            // log pi(a|s) = -0.5 * sum_a (a - mu)^2 / sigma^2  (plus const)
-            let mu_plus = policy_mean(&p_plus, &obs);
-            let mu_minus = policy_mean(&p_minus, &obs);
+            policy.set_params(&p_plus);
+            let mu_plus = policy.forward(&obs);
+            policy.set_params(&p_minus);
+            let mu_minus = policy.forward(&obs);
 
             let log_pi_plus: f64 = (0..2)
                 .map(|a| -0.5 * (action[a] - mu_plus[a]).powi(2) / (sigma * sigma))
@@ -951,9 +705,6 @@ mod tests {
     #[test]
     fn reinforce_converges_in_30_epochs() {
         let r = run_reinforce_headless(42);
-        // REINFORCE achieves 90%+ reward improvement but fewer done triggers
-        // than CEM — the gradient is too noisy for 5cm precision.
-        // This is the honest result: vanilla PG gets close but can't finish.
         let improvement = (r.last_mean_reward - r.ep1_mean_reward) / r.ep1_mean_reward.abs();
         assert!(
             improvement > 0.8,
@@ -965,7 +716,6 @@ mod tests {
             "param_norm={:.3}, want >0.5",
             r.param_norm
         );
-        // Verify reward significantly improved (not still at starting level)
         assert!(
             r.last_mean_reward > r.ep1_mean_reward * 0.15,
             "last_mean_reward={:.1}, want better than {:.1}",
@@ -976,20 +726,19 @@ mod tests {
 
     #[test]
     fn all_envs_identical_on_mean_policy() {
-        // With same deterministic policy (no noise), all envs should produce
-        // identical trajectories.
-        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
-        let mut vec_env = build_vec_env(&model, NUM_ENVS);
-        let mut current_obs = vec_env.reset_all().expect("reset");
-
+        let task = reaching_2dof();
+        let mut policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
         let params = [0.1, -0.2, 0.3, 0.15, -0.1, 0.25, -0.05, 0.2, 0.1, -0.1];
-        let mut actions = Tensor::zeros(&[NUM_ENVS, 2]);
+        policy.set_params(&params);
+
+        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build");
+        let mut current_obs = vec_env.reset_all().expect("reset");
+        let mut actions = Tensor::zeros(&[NUM_ENVS, task.act_dim()]);
 
         for _ in 0..50 {
-            // Deterministic policy (no noise)
             for i in 0..NUM_ENVS {
                 let obs = current_obs.row(i);
-                let mu = policy_mean(&params, obs);
+                let mu = policy.forward(obs);
                 let row = actions.row_mut(i);
                 row[0] = mu[0] as f32;
                 row[1] = mu[1] as f32;
@@ -998,7 +747,6 @@ mod tests {
             current_obs = result.observations;
         }
 
-        // All envs should have identical observations
         let ref_obs = current_obs.row(0);
         for i in 1..NUM_ENVS {
             let obs = current_obs.row(i);
@@ -1029,27 +777,30 @@ mod tests {
     fn baseline_reduces_gradient_variance() {
         use rand::SeedableRng;
 
-        let model = Arc::new(sim_mjcf::load_model(MJCF).expect("MJCF"));
-        let mut vec_env = build_vec_env(&model, NUM_ENVS);
+        let task = reaching_2dof();
+        let policy = LinearPolicy::new(task.obs_dim(), task.act_dim(), task.obs_scale());
+        let mut vec_env = task.build_vec_env(NUM_ENVS).expect("build");
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-        let params = [0.0f64; NUM_PARAMS];
         let sigma = SIGMA_INIT;
+        let noise = Normal::new(0.0, sigma).unwrap();
 
         // Collect one epoch of trajectories
         let mut current_obs = vec_env.reset_all().expect("reset");
-        let mut trajectories: Vec<Trajectory> = (0..NUM_ENVS).map(|_| Trajectory::new()).collect();
+        let mut trajectories: Vec<Trajectory> = (0..NUM_ENVS).map(|_| new_trajectory()).collect();
         let mut env_complete = [false; NUM_ENVS];
-        let mut actions = Tensor::zeros(&[NUM_ENVS, 2]);
-        let max_steps = (EPISODE_TIMEOUT / (5.0 * 0.002)) as usize + 50;
+        let mut actions = Tensor::zeros(&[NUM_ENVS, task.act_dim()]);
+        let episode_timeout = 3.0;
+        let timestep = vec_env.model().timestep;
+        let max_steps = (episode_timeout / (5.0 * timestep)) as usize + 50;
 
         for _ in 0..max_steps {
             for i in 0..NUM_ENVS {
                 if !env_complete[i] {
                     let obs = current_obs.row(i);
-                    let obs_arr: [f32; 4] = [obs[0], obs[1], obs[2], obs[3]];
-                    let action = sample_action(&params, obs, sigma, &mut rng);
-                    trajectories[i].obs.push(obs_arr);
-                    trajectories[i].actions.push(action);
+                    let mu = policy.forward(obs);
+                    let action: Vec<f64> = mu.iter().map(|&m| m + noise.sample(&mut rng)).collect();
+                    trajectories[i].obs.push(obs.to_vec());
+                    trajectories[i].actions.push(action.clone());
                     let row = actions.row_mut(i);
                     row[0] = action[0] as f32;
                     row[1] = action[1] as f32;
@@ -1073,7 +824,7 @@ mod tests {
         // Compute gradients with and without baseline
         let all_returns: Vec<Vec<f64>> = trajectories
             .iter()
-            .map(|t| t.discounted_returns(GAMMA))
+            .map(|t| discounted_returns(&t.rewards, GAMMA))
             .collect();
 
         let mut total = 0.0;
@@ -1086,14 +837,13 @@ mod tests {
         }
         let baseline = total / f64::from(count);
 
-        // Compute per-sample gradient norms with and without baseline
         let mut norms_no_baseline = Vec::new();
         let mut norms_with_baseline = Vec::new();
 
         for (env_idx, traj) in trajectories.iter().enumerate() {
             let returns = &all_returns[env_idx];
-            for t in 0..traj.len() {
-                let g = policy_gradient(&params, &traj.obs[t], &traj.actions[t], sigma);
+            for t in 0..traj.rewards.len() {
+                let g = policy.log_prob_gradient(&traj.obs[t], &traj.actions[t], sigma);
 
                 let no_bl: f64 = g
                     .iter()
@@ -1122,12 +872,8 @@ mod tests {
 
     #[test]
     fn discounted_returns_correctness() {
-        let mut traj = Trajectory::new();
-        traj.rewards = vec![1.0, 2.0, 3.0];
-        let returns = traj.discounted_returns(0.9);
-        // R_2 = 3.0
-        // R_1 = 2.0 + 0.9 * 3.0 = 4.7
-        // R_0 = 1.0 + 0.9 * 4.7 = 5.23
+        let rewards = vec![1.0, 2.0, 3.0];
+        let returns = discounted_returns(&rewards, 0.9);
         assert!((returns[2] - 3.0).abs() < 1e-10);
         assert!((returns[1] - 4.7).abs() < 1e-10);
         assert!((returns[0] - 5.23).abs() < 1e-10);
