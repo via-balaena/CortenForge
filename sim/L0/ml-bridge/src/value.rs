@@ -20,7 +20,7 @@ use crate::policy::Policy;
 ///
 /// # Parameter contract
 ///
-/// Same as [`Policy`](crate::Policy): `params()` returns `&[f64]` of length
+/// Same as [`Policy`]: `params()` returns `&[f64]` of length
 /// `n_params()`, `set_params()` panics on wrong length.
 pub trait ValueFn: Send + Sync {
     /// Number of learnable parameters.
