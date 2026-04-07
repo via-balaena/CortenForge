@@ -106,12 +106,12 @@ pub use ppo::{Ppo, PpoHyperparams};
 pub use reinforce::{Reinforce, ReinforceHyperparams};
 pub use replay_buffer::{ReplayBuffer, TransitionBatch};
 pub use rollout::{EpisodicRollout, Trajectory, collect_episodic_rollout};
-pub use sac::{Sac, SacHyperparams};
+pub use sac::{Sac, SacHyperparams, gaussian_log_prob};
 pub use space::{
     ActionSpace, ActionSpaceBuilder, ObsSegment, ObservationSpace, ObservationSpaceBuilder,
 };
 pub use task::{TaskConfig, TaskConfigBuilder, reaching_2dof, reaching_6dof};
 pub use td3::{Td3, Td3Hyperparams};
 pub use tensor::{Tensor, TensorSpec};
-pub use value::{QFunction, ValueFn, soft_update, soft_update_value};
+pub use value::{QFunction, ValueFn, soft_update, soft_update_policy, soft_update_value};
 pub use vec_env::{VecEnv, VecEnvBuilder, VecStepResult};

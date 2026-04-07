@@ -42,7 +42,7 @@ use sim_bevy::multi_scene::{PhysicsScenes, sync_scene_geom_transforms};
 use sim_core::validation::{Check, print_report};
 use sim_ml_bridge::{
     LinearQ, LinearStochasticPolicy, Optimizer, OptimizerConfig, Policy, QFunction, ReplayBuffer,
-    StochasticPolicy, Tensor, VecEnv, reaching_2dof, soft_update,
+    StochasticPolicy, Tensor, VecEnv, gaussian_log_prob, reaching_2dof, soft_update,
 };
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -73,15 +73,6 @@ struct SacUpdateResult {
     alpha: f64,
     entropy: f64,
     new_log_alpha: f64,
-}
-
-/// Gaussian log-probability for reparameterized action a = μ + σ*ε.
-fn log_prob_from_eps(eps: &[f64], log_std: &[f64]) -> f64 {
-    let half_log_2pi = 0.5 * (2.0 * std::f64::consts::PI).ln();
-    eps.iter()
-        .zip(log_std)
-        .map(|(&e, &ls)| -0.5 * e * e - ls - half_log_2pi)
-        .sum()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -122,7 +113,7 @@ fn sac_update(
             .map(|((&m, &ls), &e)| m + ls.exp() * e)
             .collect();
 
-        let log_prob_next = log_prob_from_eps(&eps_next, &log_std_next);
+        let log_prob_next = gaussian_log_prob(&a_next, &mu_next, &log_std_next);
 
         // Twin Q with entropy bonus: y = r + γ(1-d)(min(Q1',Q2') - α log π)
         let q1_next = target_q1.forward(next_obs, &a_next);
@@ -187,7 +178,7 @@ fn sac_update(
             .map(|((&m, &ls), &e)| m + ls.exp() * e)
             .collect();
 
-        let log_prob = log_prob_from_eps(&eps, &log_std);
+        let log_prob = gaussian_log_prob(&a, &mu, &log_std);
         mean_log_prob += log_prob;
         mean_entropy += policy.entropy(obs);
 

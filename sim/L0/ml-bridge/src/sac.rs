@@ -130,8 +130,11 @@ fn randn(rng: &mut impl rand::Rng) -> f64 {
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
 }
 
-/// Log probability of action under diagonal Gaussian.
-fn log_prob(action: &[f64], mu: &[f64], log_std: &[f64]) -> f64 {
+/// Log probability of action under a diagonal Gaussian.
+///
+/// Computes `log N(action | mu, diag(exp(log_std)²))`.
+#[must_use]
+pub fn gaussian_log_prob(action: &[f64], mu: &[f64], log_std: &[f64]) -> f64 {
     let mut lp = 0.0;
     for i in 0..action.len() {
         let std = log_std[i].exp();
@@ -302,7 +305,7 @@ impl Algorithm for Sac {
                         let q1_val = self.target_q1.forward(next_obs, &a_next);
                         let q2_val = self.target_q2.forward(next_obs, &a_next);
                         let min_q = q1_val.min(q2_val);
-                        let lp = log_prob(&a_next, &mu_next, &log_std_next);
+                        let lp = gaussian_log_prob(&a_next, &mu_next, &log_std_next);
                         let d = if batch.dones[b] { 1.0 } else { 0.0 };
                         targets.push(
                             (hp.gamma * (1.0 - d))
@@ -421,7 +424,7 @@ impl Algorithm for Sac {
                                 .zip(&eps)
                                 .map(|((&m, &ls), &e)| ls.exp().mul_add(e, m).clamp(-1.0, 1.0))
                                 .collect();
-                            mean_log_pi += log_prob(&action, &mu, &log_std);
+                            mean_log_pi += gaussian_log_prob(&action, &mu, &log_std);
                         }
                         mean_log_pi *= inv_n;
 

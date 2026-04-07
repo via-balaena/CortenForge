@@ -40,7 +40,7 @@ use sim_bevy::multi_scene::{PhysicsScenes, sync_scene_geom_transforms};
 use sim_core::validation::{Check, print_report};
 use sim_ml_bridge::{
     DifferentiablePolicy, LinearPolicy, LinearQ, Optimizer, OptimizerConfig, Policy, QFunction,
-    ReplayBuffer, Tensor, VecEnv, reaching_2dof, soft_update,
+    ReplayBuffer, Tensor, VecEnv, reaching_2dof, soft_update, soft_update_policy,
 };
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -190,15 +190,7 @@ fn td3_update(
         soft_update(target_q1, q1, TAU);
         soft_update(target_q2, q2, TAU);
 
-        // Manual soft-update for target policy (no trait function for Policy)
-        let source_p = policy.params().to_vec();
-        let new_target: Vec<f64> = target_policy
-            .params()
-            .iter()
-            .zip(&source_p)
-            .map(|(&t, &s)| TAU * s + (1.0 - TAU) * t)
-            .collect();
-        target_policy.set_params(&new_target);
+        soft_update_policy(target_policy, policy, TAU);
 
         Some(norm)
     } else {
