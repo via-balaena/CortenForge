@@ -1,6 +1,6 @@
 # Phase 4: Visual Examples Refactor + TD3/SAC
 
-> **Status**: In Progress (Steps 1–2 done: shared crate + CEM refactor)
+> **Status**: In Progress (Steps 1–4 done: shared crate + CEM/REINFORCE/PPO refactors)
 > **Location**: `examples/fundamentals/sim-ml/vec-env/`
 > **Parent spec**: `sim/docs/ML_COMPETITION_SPEC.md`, Phase 4
 > **Depends on**: Phase 3 (competition tests, all passing)
@@ -172,6 +172,8 @@ dones, best reward at level 0-1.
 - Remove hand-rolled trajectory struct → use `Trajectory` from rollout
 - Use `setup_reaching_arms()` for Bevy scaffolding
 - Keep: discounted returns, policy gradient computation, Phase state machine
+- **Done** — 7/7 tests pass, 90% reward improvement, 0/50 reached (expected)
+- Also: `Optimizer` trait fixed to require `Send + Sync` (foundational fix)
 
 **Algorithm-specific Resource fields:**
 - `policy: LinearPolicy`
@@ -193,6 +195,7 @@ Contrast with CEM which reaches.
 - Remove hand-rolled GAE → `sim_ml_bridge::compute_gae()`
 - Use `setup_reaching_arms()` for Bevy scaffolding
 - Keep: K-pass clipped surrogate, advantage normalization, Phase state machine
+- **Done** — 9/9 tests pass, 88% reward improvement, value loss 10072→182
 
 **Algorithm-specific Resource fields:**
 - `policy: LinearPolicy`
@@ -200,7 +203,7 @@ Contrast with CEM which reaches.
 - `policy_optimizer: Box<dyn Optimizer>`
 - `value_optimizer: Box<dyn Optimizer>`
 - `sigma: f64`
-- `trajectories: Vec<Trajectory>` (with value estimates for GAE)
+- `trajectories: Vec<Trajectory>` + parallel `mu_old`/`v_old` Vecs (Pitfall #2)
 
 **Visual story:** Similar to REINFORCE but smoother convergence.
 The learned baseline (V(s)) reduces gradient variance. HUD shows
