@@ -307,3 +307,68 @@ cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocaptur
 cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture competition_6dof_autograd_1layer_parity
 cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture competition_6dof_autograd_2layer
 ```
+
+---
+
+## Phase 6b results (budget scaling experiments)
+
+### Test 11: `budget_scaling_lower_lr` (2899s)
+
+6b-2: Lower learning rates, 50 epochs, 50 envs, 2-layer [64,64] ReLU
+Xavier, seed 42. LR changes: REINFORCE 0.05 → 0.01, PPO 0.025 → 0.005,
+TD3 3e-4 → 1e-4, SAC 3e-4 → 1e-4 (optimizer + `alpha_lr`). CEM unchanged.
+
+| Algorithm | Reward | Dones | Phase 6 Reward | Change |
+|-----------|--------|-------|----------------|--------|
+| CEM | -3.07 | 0 | -3.07 | Same (gradient-free) |
+| TD3 | -9.81 | 0 | -4.08 | 2.4x worse |
+| SAC | -14.40 | 0 | -30.04 | 2.1x better |
+| PPO | -9394.01 | 0 | -9025.90 | Slightly worse |
+| REINFORCE | -9740.68 | 0 | -11979.50 | 1.2x better |
+
+Ordering: CEM (-3.07) > TD3 (-9.81) > SAC (-14.40) >> PPO >> REINFORCE
+
+**CEM still dominates.** The ordering reversal did not happen — lower LR
+alone is not enough.
+
+### Findings
+
+- **SAC hypothesis confirmed.** SAC stabilized from -30.04 to -14.40
+  (2.1x better). At original LR, SAC oscillated between -8 and -30 due
+  to entropy/exploitation tug-of-war. At 1e-4, the oscillation range
+  narrowed to -10 to -26. Still not stable enough to challenge CEM, but
+  a clear improvement.
+
+- **TD3 got worse.** -4.08 → -9.81 (2.4x worse). The lower LR slowed
+  convergence — TD3 needs more gradient steps to compensate. However,
+  TD3's epoch-by-epoch trajectory tells a different story:
+
+  ```
+  TD3 eval rewards (odd epochs only — even epochs are training):
+  ep1: -19 → ep9: -10 → ep19: -3.78 → ep27: -3.83 → ep43: -2.63 → ep45: -1.95 → ep49: -9.81
+  ```
+
+  **TD3 hit -1.95 at epoch 45 — better than CEM's -3.07.** The reversal
+  happened transiently but TD3 couldn't hold it. The policy found a good
+  region, then drifted away. This suggests TD3 with lower LR *can*
+  overtake CEM but needs either more epochs or a scheduler to lock in
+  the gains.
+
+- **PPO diverged, then slowly recovered.** Started at -12,802, worsened
+  to -15,105 by epoch 22 (the lower LR couldn't prevent initial
+  divergence with 5K params), then slowly recovered to -9,394 by epoch
+  49. Still 3 OOM behind CEM. The learning curve was U-shaped — PPO
+  needs fundamentally more data per epoch, not just lower LR.
+
+- **REINFORCE showed a similar U-shape.** Improved from -12,802 to
+  -4,705 by epoch 26, then regressed to -9,741. The lower LR helped
+  early convergence but couldn't prevent the high-variance gradient
+  estimates from destabilizing the policy.
+
+### Implications for Tests 10 and 12
+
+The TD3 transient reversal at epoch 45 (-1.95 < -3.07) strongly supports
+the Test 10 hypothesis: 200 epochs should give TD3 enough time to
+converge and hold. The key question is whether TD3's instability at
+low LR (the -1.95 → -9.81 regression) also appears at the original
+3e-4 LR with more epochs.
