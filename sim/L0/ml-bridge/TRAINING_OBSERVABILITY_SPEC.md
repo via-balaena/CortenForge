@@ -3,7 +3,7 @@
 > Make `Algorithm::train` transparent. Every epoch should be visible as it
 > happens, not hidden behind a multi-minute black box.
 
-**Status**: Draft
+**Status**: Complete
 **Crate**: `sim-ml-bridge`
 **Motivation**: Competition tests (Phase 6) run 5 algorithms × 50 epochs
 each. With no logging, you stare at a blank terminal for 10+ minutes and
