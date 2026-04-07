@@ -666,6 +666,198 @@ fn build_sac_autograd_2layer(task: &TaskConfig) -> Box<dyn Algorithm> {
     ))
 }
 
+// ── 2-layer autograd builders with lower learning rates (Phase 6b-2) ────────
+
+fn build_reinforce_autograd_2layer_low_lr(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let mut rng = StdRng::seed_from_u64(0);
+    let p = Box::new(AutogradPolicy::new_xavier(
+        task.obs_dim(),
+        &[64, 64],
+        task.act_dim(),
+        task.obs_scale(),
+        Activation::Relu,
+        &mut rng,
+    ));
+    Box::new(Reinforce::new(
+        p,
+        OptimizerConfig::adam(0.01),
+        ReinforceHyperparams {
+            gamma: 0.99,
+            sigma_init: 0.5,
+            sigma_decay: 0.95,
+            sigma_min: 0.05,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_ppo_autograd_2layer_low_lr(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let mut rng = StdRng::seed_from_u64(0);
+    let p = Box::new(AutogradPolicy::new_xavier(
+        task.obs_dim(),
+        &[64, 64],
+        task.act_dim(),
+        task.obs_scale(),
+        Activation::Relu,
+        &mut rng,
+    ));
+    let v = Box::new(AutogradValue::new_xavier(
+        task.obs_dim(),
+        &[64, 64],
+        task.obs_scale(),
+        Activation::Relu,
+        &mut rng,
+    ));
+    Box::new(Ppo::new(
+        p,
+        v,
+        OptimizerConfig::adam(0.005),
+        PpoHyperparams {
+            clip_eps: 0.2,
+            k_passes: 2,
+            gamma: 0.99,
+            gae_lambda: 0.95,
+            sigma_init: 0.5,
+            sigma_decay: 0.90,
+            sigma_min: 0.05,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_td3_autograd_2layer_low_lr(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let od = task.obs_dim();
+    let ad = task.act_dim();
+    let sc = task.obs_scale();
+    let mut rng = StdRng::seed_from_u64(0);
+    Box::new(Td3::new(
+        Box::new(AutogradPolicy::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradPolicy::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        OptimizerConfig::adam(1e-4),
+        Td3Hyperparams {
+            gamma: 0.99,
+            tau: 0.005,
+            policy_noise: 0.2,
+            noise_clip: 0.5,
+            exploration_noise: 0.1,
+            policy_delay: 2,
+            batch_size: 64,
+            buffer_capacity: 50_000,
+            warmup_steps: 200,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_sac_autograd_2layer_low_lr(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let od = task.obs_dim();
+    let ad = task.act_dim();
+    let sc = task.obs_scale();
+    let mut rng = StdRng::seed_from_u64(0);
+    Box::new(Sac::new(
+        Box::new(AutogradStochasticPolicy::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            -0.5,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        OptimizerConfig::adam(1e-4),
+        SacHyperparams {
+            gamma: 0.99,
+            tau: 0.005,
+            alpha_init: 0.2,
+            auto_alpha: true,
+            target_entropy: -(ad as f64),
+            alpha_lr: 1e-4,
+            batch_size: 64,
+            buffer_capacity: 50_000,
+            warmup_steps: 200,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
 // ── Test 1: Regression baseline ────────────────────────────────────────────
 
 /// All 5 algorithms, linear policies, 2-DOF.  Sanity check that everything
@@ -1303,4 +1495,299 @@ fn competition_6dof_autograd_2layer() {
     // Compare level 0-1 vs level 2 for context.
     eprintln!("\nLevel 0-1 reference (hand-coded, 1 layer):");
     eprintln!("  CEM: -1.05 (49 dones), TD3: -11.99, SAC: -10.82, PPO: -3449, REINFORCE: -7500");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 6b: Budget scaling experiments
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Three independent experiments, each changing one variable from the
+// Phase 6 baseline (Test 9: seed 42, 50ep/50env, 2-layer [64,64] ReLU
+// Xavier).  Isolate the effect of each variable on the ordering.
+//
+// Phase 6 baseline:
+//   CEM (-3.07) > TD3 (-4.08) >> SAC (-30.04) >> PPO (-9026) >> REINFORCE (-11980)
+
+// ── Test 10: 6b-1 — More epochs ──────────────────────────────────────────
+
+/// 200 epochs instead of 50.  Same architecture, same envs, same seed.
+///
+/// **Hypothesis**: TD3 overtakes CEM.  At epoch 50, TD3 was at -4.08 and
+/// still converging (eval trajectory: -29 → -18 → -9 → -5 → -4).  CEM
+/// was at -3.07 with exploration noise at minimum — plateaued.
+///
+/// Only runs the top 3 (CEM, TD3, SAC).  PPO (-9,026) and REINFORCE
+/// (-11,980) are 3 orders of magnitude behind — 4x more epochs won't
+/// close a 1,000x gap.  Their problem is gradient variance, not
+/// training duration.
+#[test]
+#[ignore = "multi-minute competition run"]
+fn budget_scaling_more_epochs() {
+    let task = reaching_6dof();
+    let comp = Competition::new_verbose(50, TrainingBudget::Epochs(200), 42);
+
+    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+        &build_cem_autograd_2layer,
+        &build_td3_autograd_2layer,
+        &build_sac_autograd_2layer,
+    ];
+
+    let result = comp.run(&[task], &builders).expect("competition failed");
+    result.print_summary();
+
+    let cem = result.find("reaching-6dof", "CEM").unwrap();
+    let td3 = result.find("reaching-6dof", "TD3").unwrap();
+    let sac = result.find("reaching-6dof", "SAC").unwrap();
+
+    // All metrics must be finite.
+    for run in [cem, td3, sac] {
+        for m in &run.metrics {
+            assert!(
+                m.mean_reward.is_finite(),
+                "{} epoch {} non-finite reward: {}",
+                run.algorithm_name,
+                m.epoch,
+                m.mean_reward
+            );
+        }
+    }
+
+    let r_cem = cem.final_reward().unwrap();
+    let r_td3 = td3.final_reward().unwrap();
+    let r_sac = sac.final_reward().unwrap();
+
+    // Collect into sorted order for reporting.
+    let mut ranked: Vec<(&str, f64, usize)> = vec![
+        ("CEM", r_cem, cem.total_dones()),
+        ("TD3", r_td3, td3.total_dones()),
+        ("SAC", r_sac, sac.total_dones()),
+    ];
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    eprintln!("\n=== 6b-1: More epochs (200ep/50env, 2-layer autograd) ===");
+    eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
+    eprintln!("{}", "-".repeat(40));
+    for (name, reward, dones) in &ranked {
+        eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
+    }
+
+    let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
+    eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
+
+    // Did gradient methods overtake CEM?
+    let best_gradient = r_td3.max(r_sac);
+    if best_gradient > r_cem {
+        let winner = if r_td3 >= r_sac { "TD3" } else { "SAC" };
+        eprintln!(
+            "\n*** ORDERING REVERSED: {winner} ({best_gradient:.2}) overtakes CEM ({r_cem:.2}) ***"
+        );
+    } else {
+        eprintln!("\n*** CEM ({r_cem:.2}) still dominates — gradient best: {best_gradient:.2} ***");
+    }
+
+    // Phase 6 baseline comparison.
+    eprintln!("\nPhase 6 baseline (50ep/50env):");
+    eprintln!("  CEM: -3.07, TD3: -4.08, SAC: -30.04");
+}
+
+// ── Test 11: 6b-2 — Lower learning rate ──────────────────────────────────
+
+/// Lower learning rates for all gradient methods.  Same epochs, same envs.
+///
+/// **Hypothesis**: SAC stabilizes (was oscillating -8 to -30 due to
+/// aggressive LR).  All gradient methods converge smoother with 5K params.
+///
+/// LR changes (CEM unchanged — gradient-free):
+/// - REINFORCE: 0.05 → 0.01 (5x reduction)
+/// - PPO: 0.025 → 0.005 (5x reduction)
+/// - TD3: 3e-4 → 1e-4 (3x reduction)
+/// - SAC: 3e-4 → 1e-4 optimizer + `alpha_lr` (3x reduction)
+#[test]
+#[ignore = "multi-minute competition run"]
+fn budget_scaling_lower_lr() {
+    let task = reaching_6dof();
+    let comp = Competition::new_verbose(50, TrainingBudget::Epochs(50), 42);
+
+    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+        &build_cem_autograd_2layer,
+        &build_reinforce_autograd_2layer_low_lr,
+        &build_ppo_autograd_2layer_low_lr,
+        &build_td3_autograd_2layer_low_lr,
+        &build_sac_autograd_2layer_low_lr,
+    ];
+
+    let result = comp.run(&[task], &builders).expect("competition failed");
+    result.print_summary();
+
+    let cem = result.find("reaching-6dof", "CEM").unwrap();
+    let td3 = result.find("reaching-6dof", "TD3").unwrap();
+    let sac = result.find("reaching-6dof", "SAC").unwrap();
+    let ppo = result.find("reaching-6dof", "PPO").unwrap();
+    let reinforce = result.find("reaching-6dof", "REINFORCE").unwrap();
+
+    // All metrics must be finite.
+    for run in [cem, td3, sac, ppo, reinforce] {
+        for m in &run.metrics {
+            assert!(
+                m.mean_reward.is_finite(),
+                "{} epoch {} non-finite reward: {}",
+                run.algorithm_name,
+                m.epoch,
+                m.mean_reward
+            );
+        }
+    }
+
+    let r_cem = cem.final_reward().unwrap();
+    let r_td3 = td3.final_reward().unwrap();
+    let r_sac = sac.final_reward().unwrap();
+    let r_ppo = ppo.final_reward().unwrap();
+    let r_reinforce = reinforce.final_reward().unwrap();
+
+    // Collect into sorted order for reporting.
+    let mut ranked: Vec<(&str, f64, usize)> = vec![
+        ("CEM", r_cem, cem.total_dones()),
+        ("TD3", r_td3, td3.total_dones()),
+        ("SAC", r_sac, sac.total_dones()),
+        ("PPO", r_ppo, ppo.total_dones()),
+        ("REINFORCE", r_reinforce, reinforce.total_dones()),
+    ];
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    eprintln!("\n=== 6b-2: Lower LR (50ep/50env, 2-layer autograd) ===");
+    eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
+    eprintln!("{}", "-".repeat(40));
+    for (name, reward, dones) in &ranked {
+        eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
+    }
+
+    let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
+    eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
+
+    // Did gradient methods overtake CEM?
+    let best_gradient = r_td3.max(r_sac).max(r_ppo).max(r_reinforce);
+    if best_gradient > r_cem {
+        let winner = if r_td3 >= best_gradient {
+            "TD3"
+        } else if r_sac >= best_gradient {
+            "SAC"
+        } else if r_ppo >= best_gradient {
+            "PPO"
+        } else {
+            "REINFORCE"
+        };
+        eprintln!(
+            "\n*** ORDERING REVERSED: {winner} ({best_gradient:.2}) overtakes CEM ({r_cem:.2}) ***"
+        );
+    } else {
+        eprintln!(
+            "\n*** CEM ({r_cem:.2}) still dominates — gradient methods' best: {best_gradient:.2} ***"
+        );
+    }
+
+    // Phase 6 baseline comparison.
+    eprintln!("\nPhase 6 baseline (original LR):");
+    eprintln!("  CEM: -3.07, TD3: -4.08, SAC: -30.04, PPO: -9026, REINFORCE: -11980");
+}
+
+// ── Test 12: 6b-3 — More environments ────────────────────────────────────
+
+/// 200 environments instead of 50.  Same epochs, same LR.
+///
+/// **Hypothesis**: On-policy methods (PPO, REINFORCE) improve most — 4x
+/// more samples per gradient estimate reduces variance.  Off-policy
+/// methods benefit less because replay already multiplies effective
+/// sample count.  CEM gets 200 candidates/generation instead of 50 —
+/// better coverage of the 5K-dim search space.
+#[test]
+#[ignore = "multi-minute competition run"]
+fn budget_scaling_more_envs() {
+    let task = reaching_6dof();
+    let comp = Competition::new_verbose(200, TrainingBudget::Epochs(50), 42);
+
+    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+        &build_cem_autograd_2layer,
+        &build_reinforce_autograd_2layer,
+        &build_ppo_autograd_2layer,
+        &build_td3_autograd_2layer,
+        &build_sac_autograd_2layer,
+    ];
+
+    let result = comp.run(&[task], &builders).expect("competition failed");
+    result.print_summary();
+
+    let cem = result.find("reaching-6dof", "CEM").unwrap();
+    let td3 = result.find("reaching-6dof", "TD3").unwrap();
+    let sac = result.find("reaching-6dof", "SAC").unwrap();
+    let ppo = result.find("reaching-6dof", "PPO").unwrap();
+    let reinforce = result.find("reaching-6dof", "REINFORCE").unwrap();
+
+    // All metrics must be finite.
+    for run in [cem, td3, sac, ppo, reinforce] {
+        for m in &run.metrics {
+            assert!(
+                m.mean_reward.is_finite(),
+                "{} epoch {} non-finite reward: {}",
+                run.algorithm_name,
+                m.epoch,
+                m.mean_reward
+            );
+        }
+    }
+
+    let r_cem = cem.final_reward().unwrap();
+    let r_td3 = td3.final_reward().unwrap();
+    let r_sac = sac.final_reward().unwrap();
+    let r_ppo = ppo.final_reward().unwrap();
+    let r_reinforce = reinforce.final_reward().unwrap();
+
+    // Collect into sorted order for reporting.
+    let mut ranked: Vec<(&str, f64, usize)> = vec![
+        ("CEM", r_cem, cem.total_dones()),
+        ("TD3", r_td3, td3.total_dones()),
+        ("SAC", r_sac, sac.total_dones()),
+        ("PPO", r_ppo, ppo.total_dones()),
+        ("REINFORCE", r_reinforce, reinforce.total_dones()),
+    ];
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    eprintln!("\n=== 6b-3: More envs (50ep/200env, 2-layer autograd) ===");
+    eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
+    eprintln!("{}", "-".repeat(40));
+    for (name, reward, dones) in &ranked {
+        eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
+    }
+
+    let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
+    eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
+
+    // Did gradient methods overtake CEM?
+    let best_gradient = r_td3.max(r_sac).max(r_ppo).max(r_reinforce);
+    if best_gradient > r_cem {
+        let winner = if r_td3 >= best_gradient {
+            "TD3"
+        } else if r_sac >= best_gradient {
+            "SAC"
+        } else if r_ppo >= best_gradient {
+            "PPO"
+        } else {
+            "REINFORCE"
+        };
+        eprintln!(
+            "\n*** ORDERING REVERSED: {winner} ({best_gradient:.2}) overtakes CEM ({r_cem:.2}) ***"
+        );
+    } else {
+        eprintln!(
+            "\n*** CEM ({r_cem:.2}) still dominates — gradient methods' best: {best_gradient:.2} ***"
+        );
+    }
+
+    // Phase 6 baseline comparison.
+    eprintln!("\nPhase 6 baseline (50 envs):");
+    eprintln!("  CEM: -3.07, TD3: -4.08, SAC: -30.04, PPO: -9026, REINFORCE: -11980");
+
+    // CEM scaling note: 200 candidates/generation vs 50 at baseline.
+    // At ~5,400 params, that's 1:27 candidates/param (vs 1:108 at baseline).
+    // Still insufficient for gradient-free search, but 4x better coverage.
+    eprintln!("\nCEM note: 200 candidates/gen (1:27 params/candidate) vs 50 (1:108) at baseline");
 }

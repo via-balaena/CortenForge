@@ -614,19 +614,122 @@ need much more data per epoch. Follow-up experiments proposed (Phase 6b).
 the 8.8x param increase. Three independent experiments on the same
 reaching-6dof task (one variable at a time).
 
-| Experiment | Variable | Change | Hypothesis |
-|------------|----------|--------|------------|
-| 6b-1: More epochs | Training duration | 50 → 200 epochs | TD3 overtakes CEM. CEM plateaus while TD3 converges. |
-| 6b-2: Lower LR | Learning rate | 3e-4 → 1e-4 (off-policy), 0.05 → 0.01 (on-policy) | SAC stabilizes. All gradient methods converge smoother. |
-| 6b-3: More envs | Data per epoch | 50 → 200 envs | On-policy methods (PPO, REINFORCE) improve most — 4x more samples per gradient estimate. |
-
 **Key constraint**: run one variable at a time. Each experiment compares
-against the Phase 6 baseline (50 epochs, original LR, 50 envs) to
-isolate the effect.
+against the Phase 6 baseline (Test 9: seed 42, 50ep/50env, 2-layer
+[64,64] ReLU Xavier) to isolate the effect.
 
 **Prediction**: Experiment 6b-1 (more epochs) alone should reverse the
 TD3/CEM ordering. TD3 was at -4.08 vs CEM -3.07 at epoch 50, and TD3
 was still converging while CEM had plateaued.
+
+#### Phase 6 baseline (Test 9, for reference)
+
+| Algorithm | Reward | Dones | Params |
+|-----------|--------|-------|--------|
+| CEM | -3.07 | 0 | ~5,400 |
+| TD3 | -4.08 | 0 | ~5,400 |
+| SAC | -30.04 | 0 | ~5,400 |
+| PPO | -9,025.90 | 0 | ~5,400 |
+| REINFORCE | -11,979.50 | 0 | ~5,400 |
+
+#### Experiment matrix
+
+| Test | Name | Variable | Baseline → New | Hypothesis | Algorithms |
+|------|------|----------|---------------|------------|------------|
+| 10 | `budget_scaling_more_epochs` | Epochs | 50 → 200 | TD3 overtakes CEM. CEM plateaus, TD3 converges. | CEM, TD3, SAC (top 3) |
+| 11 | `budget_scaling_lower_lr` | Learning rate | see below | SAC stabilizes. All gradient methods converge smoother. | All 5 |
+| 12 | `budget_scaling_more_envs` | Envs | 50 → 200 | On-policy (PPO, REINFORCE) improve most — 4x samples per gradient estimate. | All 5 |
+
+**Why top-3 for Test 10**: PPO (-9,026) and REINFORCE (-11,980) are
+3 orders of magnitude behind CEM/TD3 at 50 epochs. 4x more epochs won't
+bridge that gap — their problem is gradient variance, not training
+duration. Including them wastes ~70 min of wall clock.
+
+#### 6b-2 learning rate changes
+
+Same reduction factor per family. CEM is gradient-free — unchanged.
+
+| Algorithm | Current LR | New LR | Reduction |
+|-----------|-----------|--------|-----------|
+| REINFORCE | 0.05 | 0.01 | 5x |
+| PPO | 0.025 | 0.005 | 5x |
+| TD3 | 3e-4 | 1e-4 | 3x |
+| SAC (optimizer) | 3e-4 | 1e-4 | 3x |
+| SAC (alpha_lr) | 3e-4 | 1e-4 | 3x |
+
+#### New builder functions (4 total, Test 11 only)
+
+Tests 10 and 12 reuse existing `build_*_autograd_2layer` builders —
+only `Competition::new_verbose(...)` params change.
+
+Test 11 needs lower-LR variants (identical to `build_*_autograd_2layer`
+except `OptimizerConfig::adam(lr)` and SAC's `alpha_lr`):
+
+```rust
+fn build_reinforce_autograd_2layer_low_lr(task: &TaskConfig) -> Box<dyn Algorithm>
+    // OptimizerConfig::adam(0.01) instead of 0.05
+fn build_ppo_autograd_2layer_low_lr(task: &TaskConfig) -> Box<dyn Algorithm>
+    // OptimizerConfig::adam(0.005) instead of 0.025
+fn build_td3_autograd_2layer_low_lr(task: &TaskConfig) -> Box<dyn Algorithm>
+    // OptimizerConfig::adam(1e-4) instead of 3e-4
+fn build_sac_autograd_2layer_low_lr(task: &TaskConfig) -> Box<dyn Algorithm>
+    // OptimizerConfig::adam(1e-4) instead of 3e-4, alpha_lr: 1e-4
+```
+
+#### Test structure (each test)
+
+Each test follows the Test 9 pattern:
+
+1. `let task = reaching_6dof();`
+2. `let comp = Competition::new_verbose(n_envs, TrainingBudget::Epochs(n), 42);`
+3. Build algorithm vector, `comp.run(&[task], &builders)`
+4. Assert all metrics finite
+5. Print ranked table (algorithm, final reward, dones)
+6. Check if any gradient method overtakes CEM → print reversal finding
+7. Print Phase 6 baseline comparison
+
+Assertions are **minimal/exploratory** — these are scientific
+experiments, not regressions. Document whatever ordering emerges.
+
+#### Runtime estimates
+
+Based on Test 9 = ~2,850s for 5 algos at 50ep/50env (~570s/algo):
+
+| Test | Algos | Scaling factor | Estimated time |
+|------|-------|---------------|---------------|
+| 10 | 3 | 4x epochs | ~110 min |
+| 11 | 5 | 1x (same budget) | ~47 min |
+| 12 | 5 | 4x envs | ~190 min |
+
+Total: ~350 min (~6 hours). Run sequentially, one at a time.
+
+#### Execution plan
+
+1. Implement all 3 tests + 4 builder functions
+2. Run Test 11 first (cheapest at ~47 min, validates plumbing)
+3. Run Test 10 second (headline test at ~110 min)
+4. Run Test 12 last (~190 min)
+5. Document results in `COMPETITION_TESTS_SPEC.md` after each run
+
+#### Files modified
+
+| File | Change |
+|------|--------|
+| `tests/competition.rs` | 4 new builder functions + 3 new test functions (Tests 10-12) |
+| `AUTOGRAD_SPEC.md` | This section (Phase 6b expanded) |
+| `../../examples/fundamentals/sim-ml/COMPETITION_TESTS_SPEC.md` | Results section after each experiment |
+
+#### Verification
+
+```bash
+# Quick: existing tests still pass
+cargo test -p sim-ml-bridge --lib
+
+# Run one budget scaling experiment (use --release, these are multi-minute)
+cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture budget_scaling_lower_lr
+cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture budget_scaling_more_epochs
+cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture budget_scaling_more_envs
+```
 
 ### Phase 6c: Nonlinear task design
 
