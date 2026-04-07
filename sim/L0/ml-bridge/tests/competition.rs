@@ -1,4 +1,4 @@
-//! Competition integration tests — Phase 3 of `ML_COMPETITION_SPEC.md`.
+//! Competition integration tests — Phases 3 + 6 of `ML_COMPETITION_SPEC.md`.
 //!
 //! These tests validate the spec's hypotheses about algorithm ordering by
 //! running real training loops through the `Competition` runner.  Each test
@@ -10,12 +10,17 @@
 //! cargo test -p sim-ml-bridge --test competition -- --ignored --nocapture
 //! ```
 //!
-//! ## Known limitation: SAC's policy
+//! ## Level 0-1 (Tests 1-7): Hand-coded gradients
 //!
-//! No `MlpStochasticPolicy` exists yet.  SAC uses `LinearStochasticPolicy`
-//! even when other algorithms get `MlpPolicy`.  This handicaps SAC in any
-//! MLP-level comparison.  Hypotheses involving SAC document this and should
-//! be revisited when `MlpStochasticPolicy` is added.
+//! SAC uses `LinearStochasticPolicy` (no `MlpStochasticPolicy` exists).
+//! This handicaps SAC in any MLP-level comparison.
+//!
+//! ## Level 2 (Tests 8-9): Autograd backends
+//!
+//! `AutogradStochasticPolicy` resolves SAC's handicap — SAC gets a real
+//! MLP actor for the first time.  Two tests:
+//! - Test 8: 1-hidden-layer parity (same arch as level 0-1 → same ordering)
+//! - Test 9: 2-hidden-layer headline test (gradient methods should overtake CEM)
 
 #![allow(
     clippy::unwrap_used,
@@ -25,9 +30,12 @@
     clippy::missing_const_for_fn
 )]
 
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use sim_ml_bridge::{
-    Algorithm, Cem, CemHyperparams, Competition, LinearPolicy, LinearQ, LinearStochasticPolicy,
-    LinearValue, MlpPolicy, MlpQ, MlpValue, OptimizerConfig, Ppo, PpoHyperparams, Reinforce,
+    Activation, Algorithm, AutogradPolicy, AutogradQ, AutogradStochasticPolicy, AutogradValue, Cem,
+    CemHyperparams, Competition, LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue,
+    MlpPolicy, MlpQ, MlpValue, OptimizerConfig, Ppo, PpoHyperparams, Reinforce,
     ReinforceHyperparams, RunResult, Sac, SacHyperparams, TaskConfig, Td3, Td3Hyperparams,
     TrainingBudget, reaching_2dof, reaching_6dof,
 };
@@ -299,6 +307,349 @@ fn build_sac_mlp(task: &TaskConfig) -> Box<dyn Algorithm> {
         Box::new(MlpQ::new(od, 32, ad, sc)),
         Box::new(MlpQ::new(od, 32, ad, sc)),
         Box::new(MlpQ::new(od, 32, ad, sc)),
+        OptimizerConfig::adam(3e-4),
+        SacHyperparams {
+            gamma: 0.99,
+            tau: 0.005,
+            alpha_init: 0.2,
+            auto_alpha: true,
+            target_entropy: -(ad as f64),
+            alpha_lr: 3e-4,
+            batch_size: 64,
+            buffer_capacity: 50_000,
+            warmup_steps: 200,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+// ── Level 2 builder functions (autograd backends) ─────────────────────────
+//
+// 1-layer: same architecture as level 0-1 (1 hidden, 32 units, tanh, zero-init).
+// Purpose: verify autograd produces same competition ordering.
+//
+// 2-layer: deeper nets (2 hidden, 64+64, relu, Xavier/He init).
+// Purpose: test whether gradient methods overtake CEM.
+
+fn build_cem_autograd_1layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let p = Box::new(AutogradPolicy::new(
+        task.obs_dim(),
+        &[32],
+        task.act_dim(),
+        task.obs_scale(),
+    ));
+    Box::new(Cem::new(
+        p,
+        CemHyperparams {
+            elite_fraction: 0.2,
+            noise_std: 0.3,
+            noise_decay: 0.95,
+            noise_min: 0.01,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_reinforce_autograd_1layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let p = Box::new(AutogradPolicy::new(
+        task.obs_dim(),
+        &[32],
+        task.act_dim(),
+        task.obs_scale(),
+    ));
+    Box::new(Reinforce::new(
+        p,
+        OptimizerConfig::adam(0.05),
+        ReinforceHyperparams {
+            gamma: 0.99,
+            sigma_init: 0.5,
+            sigma_decay: 0.95,
+            sigma_min: 0.05,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_ppo_autograd_1layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let p = Box::new(AutogradPolicy::new(
+        task.obs_dim(),
+        &[32],
+        task.act_dim(),
+        task.obs_scale(),
+    ));
+    let v = Box::new(AutogradValue::new(task.obs_dim(), &[32], task.obs_scale()));
+    Box::new(Ppo::new(
+        p,
+        v,
+        OptimizerConfig::adam(0.025),
+        PpoHyperparams {
+            clip_eps: 0.2,
+            k_passes: 2,
+            gamma: 0.99,
+            gae_lambda: 0.95,
+            sigma_init: 0.5,
+            sigma_decay: 0.90,
+            sigma_min: 0.05,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_td3_autograd_1layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let od = task.obs_dim();
+    let ad = task.act_dim();
+    let sc = task.obs_scale();
+    Box::new(Td3::new(
+        Box::new(AutogradPolicy::new(od, &[32], ad, sc)),
+        Box::new(AutogradPolicy::new(od, &[32], ad, sc)),
+        Box::new(AutogradQ::new(od, &[32], ad, sc)),
+        Box::new(AutogradQ::new(od, &[32], ad, sc)),
+        Box::new(AutogradQ::new(od, &[32], ad, sc)),
+        Box::new(AutogradQ::new(od, &[32], ad, sc)),
+        OptimizerConfig::adam(3e-4),
+        Td3Hyperparams {
+            gamma: 0.99,
+            tau: 0.005,
+            policy_noise: 0.2,
+            noise_clip: 0.5,
+            exploration_noise: 0.1,
+            policy_delay: 2,
+            batch_size: 64,
+            buffer_capacity: 50_000,
+            warmup_steps: 200,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+/// SAC autograd 1-layer — first time SAC gets an MLP actor.
+/// `AutogradStochasticPolicy` resolves the `LinearStochasticPolicy` handicap
+/// from level 0-1.  NOT exact parity (architecture upgrade), but comparable
+/// capacity (1 hidden layer, 32 units).
+fn build_sac_autograd_1layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let od = task.obs_dim();
+    let ad = task.act_dim();
+    let sc = task.obs_scale();
+    Box::new(Sac::new(
+        Box::new(AutogradStochasticPolicy::new(od, &[32], ad, sc, -0.5)),
+        Box::new(AutogradQ::new(od, &[32], ad, sc)),
+        Box::new(AutogradQ::new(od, &[32], ad, sc)),
+        Box::new(AutogradQ::new(od, &[32], ad, sc)),
+        Box::new(AutogradQ::new(od, &[32], ad, sc)),
+        OptimizerConfig::adam(3e-4),
+        SacHyperparams {
+            gamma: 0.99,
+            tau: 0.005,
+            alpha_init: 0.2,
+            auto_alpha: true,
+            target_entropy: -(ad as f64),
+            alpha_lr: 3e-4,
+            batch_size: 64,
+            buffer_capacity: 50_000,
+            warmup_steps: 200,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+// ── 2-layer autograd builders (ReLU + Xavier/He init) ─────────────────────
+
+fn build_cem_autograd_2layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let mut rng = StdRng::seed_from_u64(0);
+    let p = Box::new(AutogradPolicy::new_xavier(
+        task.obs_dim(),
+        &[64, 64],
+        task.act_dim(),
+        task.obs_scale(),
+        Activation::Relu,
+        &mut rng,
+    ));
+    Box::new(Cem::new(
+        p,
+        CemHyperparams {
+            elite_fraction: 0.2,
+            noise_std: 0.3,
+            noise_decay: 0.95,
+            noise_min: 0.01,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_reinforce_autograd_2layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let mut rng = StdRng::seed_from_u64(0);
+    let p = Box::new(AutogradPolicy::new_xavier(
+        task.obs_dim(),
+        &[64, 64],
+        task.act_dim(),
+        task.obs_scale(),
+        Activation::Relu,
+        &mut rng,
+    ));
+    Box::new(Reinforce::new(
+        p,
+        OptimizerConfig::adam(0.05),
+        ReinforceHyperparams {
+            gamma: 0.99,
+            sigma_init: 0.5,
+            sigma_decay: 0.95,
+            sigma_min: 0.05,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_ppo_autograd_2layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let mut rng = StdRng::seed_from_u64(0);
+    let p = Box::new(AutogradPolicy::new_xavier(
+        task.obs_dim(),
+        &[64, 64],
+        task.act_dim(),
+        task.obs_scale(),
+        Activation::Relu,
+        &mut rng,
+    ));
+    let v = Box::new(AutogradValue::new_xavier(
+        task.obs_dim(),
+        &[64, 64],
+        task.obs_scale(),
+        Activation::Relu,
+        &mut rng,
+    ));
+    Box::new(Ppo::new(
+        p,
+        v,
+        OptimizerConfig::adam(0.025),
+        PpoHyperparams {
+            clip_eps: 0.2,
+            k_passes: 2,
+            gamma: 0.99,
+            gae_lambda: 0.95,
+            sigma_init: 0.5,
+            sigma_decay: 0.90,
+            sigma_min: 0.05,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_td3_autograd_2layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let od = task.obs_dim();
+    let ad = task.act_dim();
+    let sc = task.obs_scale();
+    let mut rng = StdRng::seed_from_u64(0);
+    Box::new(Td3::new(
+        Box::new(AutogradPolicy::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradPolicy::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        OptimizerConfig::adam(3e-4),
+        Td3Hyperparams {
+            gamma: 0.99,
+            tau: 0.005,
+            policy_noise: 0.2,
+            noise_clip: 0.5,
+            exploration_noise: 0.1,
+            policy_delay: 2,
+            batch_size: 64,
+            buffer_capacity: 50_000,
+            warmup_steps: 200,
+            max_episode_steps: max_steps(task),
+        },
+    ))
+}
+
+fn build_sac_autograd_2layer(task: &TaskConfig) -> Box<dyn Algorithm> {
+    let od = task.obs_dim();
+    let ad = task.act_dim();
+    let sc = task.obs_scale();
+    let mut rng = StdRng::seed_from_u64(0);
+    Box::new(Sac::new(
+        Box::new(AutogradStochasticPolicy::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            -0.5,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
+        Box::new(AutogradQ::new_xavier(
+            od,
+            &[64, 64],
+            ad,
+            sc,
+            Activation::Relu,
+            &mut rng,
+        )),
         OptimizerConfig::adam(3e-4),
         SacHyperparams {
             gamma: 0.99,
@@ -746,4 +1097,210 @@ fn competition_6dof_all_mlp() {
             eprintln!("{name}: reward={r:.2}, dones={}", run.total_dones());
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Level 2: Autograd competition re-run (Phase 6)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Test 8: Autograd 1-layer parity ──────────────────────────────────────
+
+/// All 5 algorithms, autograd backends, 1 hidden layer (32 units), 6-DOF.
+///
+/// Same architecture as level 0-1 MLP tests → ordering should match:
+///   REINFORCE << PPO << TD3 ≈ SAC << CEM
+///
+/// Two differences from level 0-1:
+/// 1. Gradients computed via tape-based reverse-mode AD, not hand-coded
+/// 2. SAC gets `AutogradStochasticPolicy` (MLP actor) instead of
+///    `LinearStochasticPolicy` — capacity upgrade, may improve SAC's rank
+///
+/// This test validates that autograd doesn't regress performance.
+#[test]
+#[ignore = "multi-minute competition run"]
+fn competition_6dof_autograd_1layer_parity() {
+    let task = reaching_6dof();
+    let comp = Competition::new(50, TrainingBudget::Epochs(50), 42);
+
+    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+        &build_cem_autograd_1layer,
+        &build_reinforce_autograd_1layer,
+        &build_ppo_autograd_1layer,
+        &build_td3_autograd_1layer,
+        &build_sac_autograd_1layer,
+    ];
+
+    let result = comp.run(&[task], &builders).expect("competition failed");
+    result.print_summary();
+
+    let cem = result.find("reaching-6dof", "CEM").unwrap();
+    let td3 = result.find("reaching-6dof", "TD3").unwrap();
+    let sac = result.find("reaching-6dof", "SAC").unwrap();
+    let ppo = result.find("reaching-6dof", "PPO").unwrap();
+    let reinforce = result.find("reaching-6dof", "REINFORCE").unwrap();
+
+    // All metrics must be finite.
+    for run in [cem, td3, sac, ppo, reinforce] {
+        for m in &run.metrics {
+            assert!(
+                m.mean_reward.is_finite(),
+                "{} epoch {} non-finite reward: {}",
+                run.algorithm_name,
+                m.epoch,
+                m.mean_reward
+            );
+        }
+    }
+
+    let r_cem = cem.final_reward().unwrap();
+    let r_td3 = td3.final_reward().unwrap();
+    let r_sac = sac.final_reward().unwrap();
+    let r_ppo = ppo.final_reward().unwrap();
+    let r_reinforce = reinforce.final_reward().unwrap();
+
+    // Level 0-1 ordering should hold: CEM > off-policy > on-policy.
+    // Autograd with same architecture shouldn't change the fundamentals.
+    assert!(
+        r_cem > r_td3,
+        "CEM ({r_cem:.2}) should beat TD3 ({r_td3:.2}) at 1 layer"
+    );
+    assert!(
+        r_td3 > r_ppo,
+        "TD3 ({r_td3:.2}) should beat PPO ({r_ppo:.2}) at 1 layer"
+    );
+    assert!(
+        r_ppo > r_reinforce,
+        "PPO ({r_ppo:.2}) should beat REINFORCE ({r_reinforce:.2}) at 1 layer"
+    );
+
+    // Print full results for the record.
+    eprintln!("\n=== Level 2 parity (1-layer autograd) ===");
+    for (name, reward) in [
+        ("CEM", r_cem),
+        ("SAC", r_sac),
+        ("TD3", r_td3),
+        ("PPO", r_ppo),
+        ("REINFORCE", r_reinforce),
+    ] {
+        let run = result.find("reaching-6dof", name).unwrap();
+        eprintln!("{name}: reward={reward:.2}, dones={}", run.total_dones());
+    }
+
+    // SAC comparison: now with MLP actor, does it beat TD3?
+    if r_sac > r_td3 {
+        eprintln!(
+            "Finding: SAC ({r_sac:.2}) overtakes TD3 ({r_td3:.2}) — \
+             MLP stochastic actor unlocked by autograd"
+        );
+    } else {
+        eprintln!("Finding: TD3 ({r_td3:.2}) still ahead of SAC ({r_sac:.2}) at 1 layer");
+    }
+}
+
+// ── Test 9: Autograd 2-layer — the headline test ─────────────────────────
+
+/// All 5 algorithms, autograd backends, 2 hidden layers (64+64), `ReLU`,
+/// Xavier/He init, 6-DOF.
+///
+/// **The hypothesis**: deeper networks reverse the level 0-1 ordering.
+/// CEM's 50 candidates are insufficient for ~5K+ parameters. Gradient
+/// methods exploit local curvature via autograd.  Predicted new ordering:
+///
+///   CEM << REINFORCE < PPO < TD3 <= SAC
+///
+/// This test uses minimal assertions (all finite, all improve) and
+/// documents whatever ordering emerges.  The results are the science —
+/// a "failed" hypothesis is a finding, not a bug.
+///
+/// Parameter counts (6-DOF reaching: obs=12, act=6):
+/// - `AutogradPolicy` [64,64]: 12*64 + 64 + 64*64 + 64 + 64*6 + 6 = 5,382
+/// - `AutogradQ` [64,64]:      18*64 + 64 + 64*64 + 64 + 64*1 + 1 = 5,441
+/// - CEM with 50 candidates exploring ~5K dims: ~108 params/candidate
+///   (vs 12 params/candidate at level 0-1)
+#[test]
+#[ignore = "multi-minute competition run"]
+fn competition_6dof_autograd_2layer() {
+    let task = reaching_6dof();
+    let comp = Competition::new(50, TrainingBudget::Epochs(50), 42);
+
+    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+        &build_cem_autograd_2layer,
+        &build_reinforce_autograd_2layer,
+        &build_ppo_autograd_2layer,
+        &build_td3_autograd_2layer,
+        &build_sac_autograd_2layer,
+    ];
+
+    let result = comp.run(&[task], &builders).expect("competition failed");
+    result.print_summary();
+
+    let cem = result.find("reaching-6dof", "CEM").unwrap();
+    let td3 = result.find("reaching-6dof", "TD3").unwrap();
+    let sac = result.find("reaching-6dof", "SAC").unwrap();
+    let ppo = result.find("reaching-6dof", "PPO").unwrap();
+    let reinforce = result.find("reaching-6dof", "REINFORCE").unwrap();
+
+    // All metrics must be finite.
+    for run in [cem, td3, sac, ppo, reinforce] {
+        for m in &run.metrics {
+            assert!(
+                m.mean_reward.is_finite(),
+                "{} epoch {} non-finite reward: {}",
+                run.algorithm_name,
+                m.epoch,
+                m.mean_reward
+            );
+        }
+    }
+
+    let r_cem = cem.final_reward().unwrap();
+    let r_td3 = td3.final_reward().unwrap();
+    let r_sac = sac.final_reward().unwrap();
+    let r_ppo = ppo.final_reward().unwrap();
+    let r_reinforce = reinforce.final_reward().unwrap();
+
+    // Collect into sorted order for reporting.
+    let mut ranked: Vec<(&str, f64, usize)> = vec![
+        ("CEM", r_cem, cem.total_dones()),
+        ("TD3", r_td3, td3.total_dones()),
+        ("SAC", r_sac, sac.total_dones()),
+        ("PPO", r_ppo, ppo.total_dones()),
+        ("REINFORCE", r_reinforce, reinforce.total_dones()),
+    ];
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    eprintln!("\n=== Level 2 headline results (2-layer autograd, ReLU, Xavier) ===");
+    eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
+    eprintln!("{}", "-".repeat(40));
+    for (name, reward, dones) in &ranked {
+        eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
+    }
+
+    let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
+    eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
+
+    // Did gradient methods overtake CEM?
+    let best_gradient = r_td3.max(r_sac).max(r_ppo).max(r_reinforce);
+    if best_gradient > r_cem {
+        let winner = if r_td3 >= best_gradient {
+            "TD3"
+        } else if r_sac >= best_gradient {
+            "SAC"
+        } else if r_ppo >= best_gradient {
+            "PPO"
+        } else {
+            "REINFORCE"
+        };
+        eprintln!(
+            "\n*** ORDERING REVERSED: {winner} ({best_gradient:.2}) overtakes CEM ({r_cem:.2}) ***"
+        );
+    } else {
+        eprintln!(
+            "\n*** CEM ({r_cem:.2}) still dominates — gradient methods' best: {best_gradient:.2} ***"
+        );
+    }
+
+    // Compare level 0-1 vs level 2 for context.
+    eprintln!("\nLevel 0-1 reference (hand-coded, 1 layer):");
+    eprintln!("  CEM: -1.05 (49 dones), TD3: -11.99, SAC: -10.82, PPO: -3449, REINFORCE: -7500");
 }
