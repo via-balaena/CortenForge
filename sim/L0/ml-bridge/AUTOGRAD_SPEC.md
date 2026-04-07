@@ -4,7 +4,7 @@
 > inside `sim-ml-bridge`. No external ML framework deps. Hand-coded gradients
 > become the test oracle; autograd becomes the production path.
 
-**Status**: Draft v1
+**Status**: v2 — Phases 1-3 implemented, spec updated with implementation findings
 **Crate**: `sim-ml-bridge` (new module: `autograd`)
 **License precedents**: micrograd (MIT), burn (Apache-2.0/MIT), dfdx (Apache-2.0/MIT)
 
@@ -139,33 +139,33 @@ BFS, no graph traversal.
 
 This is simpler than all three reference implementations.
 
-### Types
+### Types (as implemented)
 
 ```rust
 /// Index into the tape. Copy + lightweight.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Var(u32);
 
 /// One node in the computation graph.
 struct Node {
     value: f64,
-    /// How to propagate gradient to parents.
-    /// Called with (this node's grad, &mut all grads).
-    backward: BackwardFn,
+    backward: BackwardOp,
 }
 
-/// Backward function — propagates gradient to parent nodes.
-/// `grad` is this node's accumulated gradient.
-/// Writes into parent slots in the gradient vec.
-enum BackwardFn {
-    /// No parents (leaf / constant).
+/// How a node propagates gradient to its parents.
+///
+/// Most ops store the local gradient as a precomputed f64 scalar.
+/// `tanh` is special: its gradient depends on the output value (1 − out²),
+/// so it stores `out` explicitly.
+enum BackwardOp {
+    /// Leaf node (parameter or constant) — no parents.
     Leaf,
-    /// One parent.
-    Unary { parent: u32, f: fn(f64, f64, &Node) -> f64 },
-    /// Two parents.
-    Binary { lhs: u32, rhs: u32, f: fn(f64, f64, &Node, &Node) -> (f64, f64) },
-    /// Matrix-vector multiply: multiple parents.
-    MatVec { w_start: u32, x_start: u32, rows: u32, cols: u32 },
+    /// One parent. grad[parent] += local * grad[self].
+    Unary { parent: u32, local: f64 },
+    /// Two parents. grad[lhs] += dl * grad[self], grad[rhs] += dr * grad[self].
+    Binary { lhs: u32, rhs: u32, dl: f64, dr: f64 },
+    /// tanh(parent). Local gradient = 1 − out², computed during backward.
+    Tanh { parent: u32, out: f64 },
 }
 
 /// The computation tape. One per forward pass, discarded after backward.
@@ -176,15 +176,24 @@ pub struct Tape {
 }
 ```
 
+**Key simplification from v1**: `BackwardOp` uses precomputed `f64` scalars
+instead of function pointers. For most ops the local gradient is a constant
+computed at forward time (e.g., `mul(a,b)`: `dl=b.value, dr=a.value`).
+No `MatVec` variant — `affine` composes from scalar `mul`/`add`/`sum` ops,
+which is more transparent and still correct (verified by FD tests).
+
 ### Why this works
 
 | Design choice | Justification |
 |---------------|---------------|
 | `Var(u32)` not `Var(usize)` | 4B nodes is more than enough; halves index size |
-| `enum BackwardFn` not `Box<dyn FnOnce>` | No heap allocation per op. Enum is stack-sized, cache-friendly |
+| `enum BackwardOp` not `Box<dyn FnOnce>` | No heap allocation per op. Enum is stack-sized, cache-friendly |
+| `local: f64` not `fn` pointers | Simpler, no indirection. Gradient rule is a precomputed number, not a callback |
+| `Tanh` special variant | Only op whose gradient depends on its output value. All others are precomputable |
 | Flat `Vec<Node>` not `HashMap` | Sequential allocation, sequential backward. Cache-perfect |
 | No `Arc`, no lifetimes | Tape owns everything. Vars are Copy indices. Zero reference counting |
 | `leaf_mask` not `HashSet<UniqueId>` | Vec<bool> indexed by Var position. O(1) lookup, no hashing |
+| No `MatVec` variant | `affine` composes from `mul`+`sum`+`add`. Transparent, auto-correct gradients |
 
 ### API
 
@@ -239,29 +248,28 @@ impl Tape {
 }
 ```
 
-### backward() implementation
+### backward() implementation (as implemented)
 
 ```rust
 pub fn backward(&mut self, output: Var) {
-    // Seed: d(output)/d(output) = 1
     self.grads[output.0 as usize] = 1.0;
 
-    // Reverse walk — tape is already topologically sorted by construction
     for i in (0..=output.0 as usize).rev() {
         let g = self.grads[i];
-        if g == 0.0 { continue; }  // skip unreached nodes
+        if g == 0.0 { continue; }
 
-        match &self.nodes[i].backward {
-            BackwardFn::Leaf => {},
-            BackwardFn::Unary { parent, f } => {
-                self.grads[*parent as usize] += f(g, self.nodes[i].value, &self.nodes[*parent as usize]);
-            },
-            BackwardFn::Binary { lhs, rhs, f } => {
-                let (dl, dr) = f(g, self.nodes[i].value, &self.nodes[*lhs as usize], &self.nodes[*rhs as usize]);
-                self.grads[*lhs as usize] += dl;
-                self.grads[*rhs as usize] += dr;
-            },
-            BackwardFn::MatVec { .. } => { /* fused kernel */ },
+        match self.nodes[i].backward {
+            BackwardOp::Leaf => {}
+            BackwardOp::Unary { parent, local } => {
+                self.grads[parent as usize] += local * g;
+            }
+            BackwardOp::Binary { lhs, rhs, dl, dr } => {
+                self.grads[lhs as usize] += dl * g;
+                self.grads[rhs as usize] += dr * g;
+            }
+            BackwardOp::Tanh { parent, out } => {
+                self.grads[parent as usize] += out.mul_add(-out, 1.0) * g;
+            }
         }
     }
 }
@@ -466,47 +474,57 @@ that takes `(&mut [f64], &[f64])` instead of managing its own param copy.
 
 ## 8. Phase plan
 
-### Phase 1: Core engine (~200 LOC)
+### Phase 1: Core engine — DONE
 
-**Deliverable**: `src/autograd.rs` — Tape, Var, Node, backward.
+**Delivered**: `src/autograd.rs` — 393 library LOC, 234 test LOC, 17 tests.
 
-| Item | Detail |
+| Item | Status |
 |------|--------|
-| `Tape::new()`, `param()`, `constant()` | Leaf creation |
-| 8 scalar ops | add, sub, mul, neg, tanh, square, ln, exp |
-| `backward()` | Reverse walk with gradient accumulation |
-| `grad()`, `value()` | Read results |
-| Tests | Finite-difference test for every op (central differences, ε=1e-7, tol=1e-5) |
+| `Tape::new()`, `param()`, `constant()` | Done |
+| 8 scalar ops: add, sub, mul, neg, tanh, square, ln, exp | Done |
+| 3 fused ops: `affine`, `sum`, `mean` (pulled from Phase 2) | Done |
+| `backward()` | Done |
+| `grad()`, `value()` | Done |
+| FD tests for every op (ε=1e-7, tol=1e-5) | Done — 17 tests |
 
-**Validation**: Every op tested against `(f(x+ε) - f(x-ε)) / 2ε`.
+**Implementation note**: `affine` composes from `mul`+`sum`+`add` rather
+than a fused `MatVec` backward variant. This is more transparent and
+correct by construction (each scalar op is individually FD-tested).
 
-### Phase 2: Fused ops + RL layers (~150 LOC)
+### Phase 2: RL layers — DONE
 
-**Deliverable**: `affine`, `sum`, `mean` fused ops + `linear_tanh`,
-`linear_raw`, `gaussian_log_prob`, `mse_loss` layer functions.
+**Delivered**: `src/autograd_layers.rs` — 171 library LOC, 238 test LOC, 10 tests.
 
-| Item | Detail |
+| Item | Status |
 |------|--------|
-| `affine()` | Fused W·x+b with correct gradient propagation |
-| `linear_tanh()` / `linear_raw()` | Layer builders |
-| `gaussian_log_prob()` | Full log-prob with per-dim sigma |
-| `mse_loss()` / `mse_loss_batch()` | Loss functions |
-| Tests | FD tests for each layer. Forward parity with hand-coded `MlpPolicy::forward`. |
+| `linear_tanh()` / `linear_raw()` | Done |
+| `gaussian_log_prob()` (per-dim `log_std`) | Done |
+| `mse_loss()` / `mse_loss_batch()` | Done |
+| FD tests for each layer | Done |
+| Forward parity with `MlpPolicy::forward` | Done — matches to 1e-12 |
+| Value parity with `sac::gaussian_log_prob` | Done — matches to 1e-12 |
 
-### Phase 3: Trait implementations (~300 LOC)
+### Phase 3: Trait implementations — DONE
 
-**Deliverable**: `AutogradPolicy`, `AutogradStochasticPolicy`,
-`AutogradValue`, `AutogradQ` — all implementing the existing traits.
+**Delivered**: `src/autograd_policy.rs` (437 library LOC, 322 test LOC),
+`src/autograd_value.rs` (304 library LOC, 175 test LOC). 20 tests total.
 
-| Item | Detail |
+| Item | Status |
 |------|--------|
-| `AutogradPolicy` | `Policy` + `DifferentiablePolicy` for arbitrary depth |
-| `AutogradStochasticPolicy` | `StochasticPolicy` with learned `log_std` |
-| `AutogradValue` | `ValueFn` with autograd MSE gradient |
-| `AutogradQ` | `QFunction` with autograd action_gradient + MSE gradient |
-| **Parity tests** | For 1-hidden-layer configs, compare every gradient method against hand-coded `MlpPolicy`/`MlpValue`/`MlpQ` outputs. Must match to 1e-10. |
+| `AutogradPolicy` — `Policy` + `DifferentiablePolicy` | Done |
+| `AutogradStochasticPolicy` — `StochasticPolicy` with learned `log_std` | Done |
+| `AutogradValue` — `ValueFn` | Done |
+| `AutogradQ` — `QFunction` with `action_gradient` + `mse_gradient` | Done |
+| Parity tests: forward, `log_prob_gradient`, `forward_vjp` | Done — 1e-10 |
+| Parity tests: `mse_gradient` (Value + Q), `action_gradient` (Q) | Done — 1e-10 |
+| 2-layer `AutogradPolicy` FD test | Done — 1e-4 (no oracle, pure FD) |
+| `AutogradStochasticPolicy` FD tests | Done — 1e-4 (no oracle, pure FD) |
 
-This is the critical phase. The hand-coded implementations are the oracle.
+**Implementation finding**: There is no hand-coded MLP stochastic policy
+oracle (`LinearStochasticPolicy` has 0 hidden layers, `MlpPolicy` has no
+`log_std`). `AutogradStochasticPolicy` is validated via FD tests only.
+Two tolerance tiers exist: **1e-10** (parity against hand-coded oracle)
+and **1e-4** (FD tests where no oracle exists).
 
 ### Phase 4: Optimizer integration (~50 LOC)
 
@@ -560,17 +578,29 @@ This is the critical phase. The hand-coded implementations are the oracle.
 
 ---
 
-## 9. File structure
+## 9. File structure (as implemented)
 
 ```
 sim/L0/ml-bridge/src/
-├── autograd.rs          // Phase 1: Tape, Var, Node, backward, scalar ops
-├── autograd_layers.rs   // Phase 2: affine, linear_tanh, gaussian_log_prob, mse_loss
+├── autograd.rs          // Phase 1: Tape, Var, Node, backward, 8 scalar ops + affine/sum/mean
+├── autograd_layers.rs   // Phase 2: linear_tanh, linear_raw, gaussian_log_prob, mse_loss
 ├── autograd_policy.rs   // Phase 3: AutogradPolicy, AutogradStochasticPolicy
 ├── autograd_value.rs    // Phase 3: AutogradValue, AutogradQ
-├── lib.rs               // Add: pub mod autograd, autograd_layers, etc.
+├── lib.rs               // pub mod + re-exports for all autograd modules
 └── ... (existing files unchanged)
 ```
+
+**Note**: `affine`, `sum`, and `mean` live in `autograd.rs` (Phase 1), not
+`autograd_layers.rs` — they are tape primitives, not RL-specific layers.
+
+**Note**: `compute_offsets` and `LayerOffsets` are duplicated between
+`autograd_policy.rs` and `autograd_value.rs`. Could be extracted to a
+shared module if more network types are added.
+
+**Note**: `autograd_layers::gaussian_log_prob` has the same name as
+`sac::gaussian_log_prob` but a different signature (takes `Var`s, not
+`f64`s). The autograd version is not re-exported at the crate root to
+avoid confusion — access it via `autograd_layers::gaussian_log_prob`.
 
 Hand-coded implementations (`linear.rs`, `mlp.rs`) stay forever — they are:
 1. The test oracle for autograd correctness
@@ -685,7 +715,7 @@ own their params directly.
 |-----------|-----|
 | GPU tensors | Physics is CPU. GPU pipeline is in sim-gpu, separate concern. |
 | Compile-time shapes | Networks are small. Runtime dim checks suffice. |
-| Custom backward kernels | Fused `affine` is the only optimization needed. |
+| Custom backward kernels | `affine` composes from scalar ops — no fused kernel needed. |
 | Observation normalization | Belongs in policy preprocessing, not autograd. |
 | Differentiable physics | Future (level 4-5). Autograd through the policy only. |
 | Recurrent policies (LSTM/GRU) | Future. Linear + MLP is enough for level 2. |
@@ -695,9 +725,11 @@ own their params directly.
 
 ## 14. Success criteria
 
-1. **Every autograd gradient matches hand-coded to 1e-10** (Phase 3)
-2. **Competition results unchanged for same architecture** (Phase 6)
-3. **Gradient methods improve with 2+ hidden layers** (Phase 6)
-4. **Zero algorithm code changes** (trait firewall holds)
-5. **Total autograd code < 800 LOC** (engine + layers + trait impls)
-6. **Zero new external dependencies** (pure Rust, no ML framework)
+1. **Every autograd gradient matches hand-coded to 1e-10** (Phase 3) — DONE
+2. **FD-validated where no oracle exists** (Phase 3) — DONE (stochastic policy, 2-layer nets, tol=1e-4)
+3. **Competition results unchanged for same architecture** (Phase 6)
+4. **Gradient methods improve with 2+ hidden layers** (Phase 6)
+5. **Zero algorithm code changes** (trait firewall holds)
+6. **Total autograd code ~1300 library LOC + ~970 test LOC** (engine + layers + trait impls). Original estimate of 800 LOC underestimated test code and the `StochasticPolicy` impl.
+7. **Zero new external dependencies** (pure Rust, no ML framework) — DONE
+8. **47 tests, 0 failures** across 4 files — DONE
