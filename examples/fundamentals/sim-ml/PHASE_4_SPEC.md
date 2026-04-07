@@ -1,6 +1,6 @@
 # Phase 4: Visual Examples Refactor + TD3/SAC
 
-> **Status**: Draft
+> **Status**: In Progress (Steps 1–2 done: shared crate + CEM refactor)
 > **Location**: `examples/fundamentals/sim-ml/vec-env/`
 > **Parent spec**: `sim/docs/ML_COMPETITION_SPEC.md`, Phase 4
 > **Depends on**: Phase 3 (competition tests, all passing)
@@ -30,7 +30,7 @@ Replace hand-rolled duplicates with sim-ml-bridge imports:
 | Custom `AdamState` + `adam_update()` | `OptimizerConfig::adam(lr).build(n_params)` |
 | Custom `compute_gae()` (PPO) | `sim_ml_bridge::compute_gae()` |
 | Custom `Trajectory` struct | `sim_ml_bridge::Trajectory` from `collect_episodic_rollout()` |
-| Custom `randn()` | Use `rand_distr::Normal` directly |
+| Custom `randn()` | `rand_distr::Normal` (added to workspace) |
 | N/A (new) | `ReplayBuffer` for TD3/SAC |
 | N/A (new) | `soft_update()` for TD3/SAC target networks |
 
@@ -147,9 +147,10 @@ target. 6-DOF is for headless competition tests.
 **What changes:**
 - Remove inline MJCF → `reaching_2dof()`
 - Remove hand-rolled policy eval → `LinearPolicy::forward()`
-- Remove hand-rolled `randn()` → `rand_distr::Normal`
+- Remove hand-rolled `randn()` → `rand_distr::Normal` (added to workspace)
 - Use `setup_reaching_arms()` for Bevy scaffolding
 - Keep: CEM elite selection logic, Phase state machine, HUD
+- **Done** — 8/8 tests pass, identical convergence (20/50 reached gen 25)
 
 **Algorithm-specific Resource fields:**
 - `policy: LinearPolicy`
