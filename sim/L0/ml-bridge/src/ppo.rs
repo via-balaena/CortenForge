@@ -137,11 +137,9 @@ impl Algorithm for Ppo {
             TrainingBudget::Steps(s) => s / (n_envs * hp.max_episode_steps).max(1),
         };
 
-        // Build separate optimizers for actor and critic.
+        // Build separate optimizers for actor and critic (momentum state only).
         let mut actor_opt = self.optimizer_config.build(n_policy_params);
-        actor_opt.set_params(self.policy.params());
         let mut critic_opt = self.optimizer_config.build(n_value_params);
-        critic_opt.set_params(self.value_fn.params());
 
         let mut sigma = hp.sigma_init;
         let mut metrics = Vec::with_capacity(n_epochs);
@@ -315,11 +313,13 @@ impl Algorithm for Ppo {
                 total_clip_count += clip_count;
                 total_sample_count += n_samples;
 
-                // Adam updates.
-                actor_opt.step(&actor_grad, true); // ascent
-                self.policy.set_params(actor_opt.params());
-                critic_opt.step(&critic_grad, false); // descent
-                self.value_fn.set_params(critic_opt.params());
+                // Adam updates (in-place on network params).
+                let mut ap = self.policy.params().to_vec();
+                actor_opt.step_in_place(&mut ap, &actor_grad, true);
+                self.policy.set_params(&ap);
+                let mut cp = self.value_fn.params().to_vec();
+                critic_opt.step_in_place(&mut cp, &critic_grad, false);
+                self.value_fn.set_params(&cp);
             }
 
             // Decay sigma.

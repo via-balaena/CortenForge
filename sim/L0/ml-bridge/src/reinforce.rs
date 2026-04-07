@@ -108,9 +108,8 @@ impl Algorithm for Reinforce {
             TrainingBudget::Steps(s) => s / (n_envs * hp.max_episode_steps).max(1),
         };
 
-        // Build optimizer, sync params from policy.
+        // Build optimizer (momentum state only — no param copy needed).
         let mut optimizer = self.optimizer_config.build(n_params);
-        optimizer.set_params(self.policy.params());
 
         let mut sigma = hp.sigma_init;
         let mut metrics = Vec::with_capacity(n_epochs);
@@ -192,9 +191,10 @@ impl Algorithm for Reinforce {
 
             let grad_norm = grad.iter().map(|g| g * g).sum::<f64>().sqrt();
 
-            // Adam ascent step + sync policy.
-            optimizer.step(&grad, true);
-            self.policy.set_params(optimizer.params());
+            // Adam ascent step (in-place on policy params).
+            let mut p = self.policy.params().to_vec();
+            optimizer.step_in_place(&mut p, &grad, true);
+            self.policy.set_params(&p);
 
             // Decay sigma.
             sigma = (sigma * hp.sigma_decay).max(hp.sigma_min);

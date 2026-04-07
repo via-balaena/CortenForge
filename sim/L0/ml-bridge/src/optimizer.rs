@@ -5,23 +5,29 @@
 //! to create their optimizer instances. Swapping Adam for `AdamW` is a config
 //! change — zero algorithm code edits.
 //!
-//! ## Dual param ownership
+//! ## Two update paths
 //!
-//! Both the optimizer and the network (`Policy`, `ValueFn`, `QFunction`) own
-//! independent copies of parameters. After every [`Optimizer::step`], the
-//! algorithm must manually sync: `network.set_params(optimizer.params())`.
-//! This is a level 0-1 wart — at level 2+, autograd optimizers modify the
-//! network in-place and the problem disappears.
+//! - [`Optimizer::step`] — optimizer owns params internally. Used by level 0-1
+//!   code that still calls `network.set_params(optimizer.params())`.
+//! - [`Optimizer::step_in_place`] — operates on borrowed `&mut [f64]` params.
+//!   Eliminates the dual param ownership wart: the optimizer holds only
+//!   momentum state (m, v), not a copy of the parameters.
 
 // ── Optimizer trait ────────────────────────────────────────────────────────
 
 /// Trait for parameter optimizers.
 ///
-/// Optimizers own a copy of the parameter vector and update it in-place
-/// on each `step()`. The algorithm must sync the updated params back to
-/// the network after each step.
+/// Two update paths:
+///
+/// - [`step`](Optimizer::step): optimizer owns params internally. After each
+///   call, the algorithm must sync via `network.set_params(optimizer.params())`.
+///   Used by level 0-1 algorithms.
+///
+/// - [`step_in_place`](Optimizer::step_in_place): operates on borrowed params.
+///   No sync needed — the caller owns the params and passes them in. This
+///   eliminates the dual param ownership wart.
 pub trait Optimizer: Send + Sync {
-    /// Apply one gradient update.
+    /// Apply one gradient update to the optimizer's internal params.
     ///
     /// - `ascent = true`: maximize (policy gradient — REINFORCE, PPO actor).
     /// - `ascent = false`: minimize (MSE loss — value function, Q-function).
@@ -30,6 +36,18 @@ pub trait Optimizer: Send + Sync {
     ///
     /// Panics if `gradient.len() != self.n_params()`.
     fn step(&mut self, gradient: &[f64], ascent: bool);
+
+    /// Apply one gradient update directly to borrowed params.
+    ///
+    /// Same math as [`step`](Optimizer::step), but operates on the caller's
+    /// param buffer instead of the optimizer's internal copy. Eliminates the
+    /// `network.set_params(optimizer.params())` sync pattern.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `params.len() != self.n_params()` or
+    /// `gradient.len() != self.n_params()`.
+    fn step_in_place(&mut self, params: &mut [f64], gradient: &[f64], ascent: bool);
 
     /// Current parameter values after the most recent step.
     fn params(&self) -> &[f64];
@@ -131,49 +149,104 @@ impl Adam {
     }
 }
 
+/// Core Adam update — shared between `step` and `step_in_place`.
+///
+/// Operates on borrowed slices so the same math works whether params
+/// live inside the optimizer or are owned by the caller.
+#[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
+fn adam_update(
+    params: &mut [f64],
+    gradient: &[f64],
+    m: &mut [f64],
+    v: &mut [f64],
+    t: &mut usize,
+    lr: f64,
+    beta1: f64,
+    beta2: f64,
+    eps: f64,
+    max_grad_norm: f64,
+    ascent: bool,
+) {
+    let n = params.len();
+    assert!(
+        gradient.len() == n,
+        "Adam: expected {} gradient elements, got {}",
+        n,
+        gradient.len(),
+    );
+
+    // Gradient clipping by L2 norm.
+    let grad_norm_sq: f64 = gradient.iter().map(|g| g * g).sum();
+    let grad_norm = grad_norm_sq.sqrt();
+    let clip_scale = if grad_norm > max_grad_norm {
+        max_grad_norm / grad_norm
+    } else {
+        1.0
+    };
+
+    *t += 1;
+    #[allow(clippy::cast_precision_loss)] // t < 2^52 in practice
+    let tf = *t as f64;
+
+    // Bias correction factors.
+    let bc1 = 1.0 - beta1.powf(tf);
+    let bc2 = 1.0 - beta2.powf(tf);
+
+    let direction = if ascent { 1.0 } else { -1.0 };
+
+    for (i, &gi) in gradient.iter().enumerate() {
+        let g = gi * clip_scale;
+
+        // Update biased first moment estimate.
+        m[i] = beta1.mul_add(m[i], (1.0 - beta1) * g);
+        // Update biased second raw moment estimate.
+        v[i] = beta2.mul_add(v[i], (1.0 - beta2) * g * g);
+
+        // Bias-corrected estimates.
+        let m_hat = m[i] / bc1;
+        let v_hat = v[i] / bc2;
+
+        params[i] += direction * lr * m_hat / (v_hat.sqrt() + eps);
+    }
+}
+
 impl Optimizer for Adam {
     fn step(&mut self, gradient: &[f64], ascent: bool) {
-        let n = self.params.len();
-        assert!(
-            gradient.len() == n,
-            "Adam::step: expected {} gradient elements, got {}",
-            n,
-            gradient.len(),
+        adam_update(
+            &mut self.params,
+            gradient,
+            &mut self.m,
+            &mut self.v,
+            &mut self.t,
+            self.lr,
+            self.beta1,
+            self.beta2,
+            self.eps,
+            self.max_grad_norm,
+            ascent,
         );
+    }
 
-        // Gradient clipping by L2 norm.
-        let grad_norm_sq: f64 = gradient.iter().map(|g| g * g).sum();
-        let grad_norm = grad_norm_sq.sqrt();
-        let clip_scale = if grad_norm > self.max_grad_norm {
-            self.max_grad_norm / grad_norm
-        } else {
-            1.0
-        };
-
-        self.t += 1;
-        #[allow(clippy::cast_precision_loss)] // t < 2^52 in practice
-        let t = self.t as f64;
-
-        // Bias correction factors.
-        let bc1 = 1.0 - self.beta1.powf(t);
-        let bc2 = 1.0 - self.beta2.powf(t);
-
-        let direction = if ascent { 1.0 } else { -1.0 };
-
-        for (i, &gi) in gradient.iter().enumerate() {
-            let g = gi * clip_scale;
-
-            // Update biased first moment estimate.
-            self.m[i] = self.beta1.mul_add(self.m[i], (1.0 - self.beta1) * g);
-            // Update biased second raw moment estimate.
-            self.v[i] = self.beta2.mul_add(self.v[i], (1.0 - self.beta2) * g * g);
-
-            // Bias-corrected estimates.
-            let m_hat = self.m[i] / bc1;
-            let v_hat = self.v[i] / bc2;
-
-            self.params[i] += direction * self.lr * m_hat / (v_hat.sqrt() + self.eps);
-        }
+    fn step_in_place(&mut self, params: &mut [f64], gradient: &[f64], ascent: bool) {
+        assert!(
+            params.len() == self.m.len(),
+            "Adam::step_in_place: expected {} params, got {}",
+            self.m.len(),
+            params.len(),
+        );
+        adam_update(
+            params,
+            gradient,
+            &mut self.m,
+            &mut self.v,
+            &mut self.t,
+            self.lr,
+            self.beta1,
+            self.beta2,
+            self.eps,
+            self.max_grad_norm,
+            ascent,
+        );
     }
 
     fn params(&self) -> &[f64] {
@@ -362,6 +435,95 @@ mod tests {
         let config = OptimizerConfig::adam(0.1);
         let mut opt = config.build(2);
         opt.step(&[1.0, 2.0, 3.0], false);
+    }
+
+    // ── step_in_place ───────────────────────────────────────────────
+
+    #[test]
+    fn step_in_place_matches_step() {
+        // Same lr, same gradient, same starting params → identical result.
+        let config = OptimizerConfig::adam(0.1);
+
+        // Path A: step() on internal params.
+        let mut opt_a = config.build(2);
+        opt_a.set_params(&[5.0, -3.0]);
+        opt_a.step(&[2.0, -1.0], false);
+
+        // Path B: step_in_place() on external params.
+        let mut opt_b = config.build(2);
+        let mut params = [5.0, -3.0];
+        opt_b.step_in_place(&mut params, &[2.0, -1.0], false);
+
+        assert!(
+            (opt_a.params()[0] - params[0]).abs() < 1e-15
+                && (opt_a.params()[1] - params[1]).abs() < 1e-15,
+            "step and step_in_place should produce identical results"
+        );
+    }
+
+    #[test]
+    fn step_in_place_multi_step_momentum() {
+        // Multiple steps — momentum state must accumulate identically.
+        let config = OptimizerConfig::adam(0.05);
+
+        let mut opt_a = config.build(1);
+        opt_a.set_params(&[5.0]);
+
+        let mut opt_b = config.build(1);
+        let mut p = [5.0];
+
+        for _ in 0..20 {
+            let grad_a = [2.0 * opt_a.params()[0]];
+            opt_a.step(&grad_a, false);
+
+            let grad_b = [2.0 * p[0]];
+            opt_b.step_in_place(&mut p, &grad_b, false);
+        }
+
+        assert!(
+            (opt_a.params()[0] - p[0]).abs() < 1e-12,
+            "after 20 steps: step={}, step_in_place={}",
+            opt_a.params()[0],
+            p[0]
+        );
+    }
+
+    #[test]
+    fn step_in_place_converges_on_quadratic() {
+        // Same convergence test as step(), but via step_in_place.
+        let config = OptimizerConfig::adam(0.05);
+        let mut opt = config.build(2);
+        let mut params = [5.0, -3.0];
+
+        for _ in 0..500 {
+            let grad = [2.0 * params[0], 2.0 * params[1]];
+            opt.step_in_place(&mut params, &grad, false);
+        }
+
+        assert!(
+            params[0].abs() < 0.01 && params[1].abs() < 0.01,
+            "should converge near origin, got ({}, {})",
+            params[0],
+            params[1]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "expected 2 params, got 3")]
+    fn step_in_place_wrong_params_length_panics() {
+        let config = OptimizerConfig::adam(0.1);
+        let mut opt = config.build(2);
+        let mut params = [1.0, 2.0, 3.0];
+        opt.step_in_place(&mut params, &[1.0, 2.0], false);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected 2 gradient elements, got 3")]
+    fn step_in_place_wrong_gradient_length_panics() {
+        let config = OptimizerConfig::adam(0.1);
+        let mut opt = config.build(2);
+        let mut params = [1.0, 2.0];
+        opt.step_in_place(&mut params, &[1.0, 2.0, 3.0], false);
     }
 
     // ── Config ─────────────────────────────────────────────────────────

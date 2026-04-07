@@ -151,13 +151,10 @@ impl Algorithm for Td3 {
             TrainingBudget::Steps(s) => s / (n_envs * hp.max_episode_steps).max(1),
         };
 
-        // Build 3 optimizers: actor, Q1, Q2.
+        // Build 3 optimizers: actor, Q1, Q2 (momentum state only).
         let mut actor_opt = self.optimizer_config.build(self.policy.n_params());
-        actor_opt.set_params(self.policy.params());
         let mut q1_opt = self.optimizer_config.build(self.q1.n_params());
-        q1_opt.set_params(self.q1.params());
         let mut q2_opt = self.optimizer_config.build(self.q2.n_params());
-        q2_opt.set_params(self.q2.params());
 
         // Infer dimensions from first reset.
         let current_obs_tensor = env
@@ -299,7 +296,7 @@ impl Algorithm for Td3 {
                         targets.push((hp.gamma * (1.0 - d)).mul_add(min_q, batch.rewards[b]));
                     }
 
-                    // Update Q1, Q2 with batched MSE gradient.
+                    // Update Q1, Q2 with batched MSE gradient (in-place).
                     let q1_grad = self.q1.mse_gradient_batch(
                         &batch.obs,
                         &batch.actions,
@@ -307,8 +304,9 @@ impl Algorithm for Td3 {
                         obs_dim,
                         act_dim,
                     );
-                    q1_opt.step(&q1_grad, false);
-                    self.q1.set_params(q1_opt.params());
+                    let mut q1p = self.q1.params().to_vec();
+                    q1_opt.step_in_place(&mut q1p, &q1_grad, false);
+                    self.q1.set_params(&q1p);
 
                     let q2_grad = self.q2.mse_gradient_batch(
                         &batch.obs,
@@ -317,8 +315,9 @@ impl Algorithm for Td3 {
                         obs_dim,
                         act_dim,
                     );
-                    q2_opt.step(&q2_grad, false);
-                    self.q2.set_params(q2_opt.params());
+                    let mut q2p = self.q2.params().to_vec();
+                    q2_opt.step_in_place(&mut q2p, &q2_grad, false);
+                    self.q2.set_params(&q2p);
 
                     // Track Q losses (mean batch MSE).
                     let q1_loss: f64 = (0..hp.batch_size)
@@ -375,8 +374,9 @@ impl Algorithm for Td3 {
                         // = -mean(dQ/da · dμ/dθ) = -dJ/dθ.
                         // We want to maximize J, so we do ascent on dJ/dθ = -(-dJ/dθ).
                         // Equivalently: descent on (-dJ/dθ).
-                        actor_opt.step(&actor_grad, false); // descent on -dJ/dθ = ascent on J
-                        self.policy.set_params(actor_opt.params());
+                        let mut ap = self.policy.params().to_vec();
+                        actor_opt.step_in_place(&mut ap, &actor_grad, false);
+                        self.policy.set_params(&ap);
 
                         epoch_policy_loss +=
                             dq_da.iter().map(|g| g * g).sum::<f64>().sqrt() / hp.batch_size as f64;

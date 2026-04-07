@@ -169,13 +169,10 @@ impl Algorithm for Sac {
             TrainingBudget::Steps(s) => s / (n_envs * hp.max_episode_steps).max(1),
         };
 
-        // Build 3 optimizers: actor, Q1, Q2.
+        // Build 3 optimizers: actor, Q1, Q2 (momentum state only).
         let mut actor_opt = self.optimizer_config.build(self.policy.n_params());
-        actor_opt.set_params(self.policy.params());
         let mut q1_opt = self.optimizer_config.build(self.q1.n_params());
-        q1_opt.set_params(self.q1.params());
         let mut q2_opt = self.optimizer_config.build(self.q2.n_params());
-        q2_opt.set_params(self.q2.params());
 
         // Infer dimensions from first reset.
         let current_obs_tensor = env
@@ -322,8 +319,9 @@ impl Algorithm for Sac {
                         obs_dim,
                         act_dim,
                     );
-                    q1_opt.step(&q1_grad, false);
-                    self.q1.set_params(q1_opt.params());
+                    let mut q1p = self.q1.params().to_vec();
+                    q1_opt.step_in_place(&mut q1p, &q1_grad, false);
+                    self.q1.set_params(&q1p);
 
                     let q2_grad = self.q2.mse_gradient_batch(
                         &batch.obs,
@@ -332,8 +330,9 @@ impl Algorithm for Sac {
                         obs_dim,
                         act_dim,
                     );
-                    q2_opt.step(&q2_grad, false);
-                    self.q2.set_params(q2_opt.params());
+                    let mut q2p = self.q2.params().to_vec();
+                    q2_opt.step_in_place(&mut q2p, &q2_grad, false);
+                    self.q2.set_params(&q2p);
 
                     // Track Q losses.
                     let q1_loss: f64 = (0..hp.batch_size)
@@ -406,8 +405,9 @@ impl Algorithm for Sac {
                     let policy_loss = actor_grad.iter().map(|g| g * g).sum::<f64>().sqrt();
                     epoch_policy_loss += policy_loss;
 
-                    actor_opt.step(&actor_grad, true); // ascent on J
-                    self.policy.set_params(actor_opt.params());
+                    let mut ap = self.policy.params().to_vec();
+                    actor_opt.step_in_place(&mut ap, &actor_grad, true);
+                    self.policy.set_params(&ap);
 
                     // ── 4. Update α (auto-tuning) ────────────────────────
 
