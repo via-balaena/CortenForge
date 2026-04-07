@@ -31,6 +31,7 @@
 use bevy::prelude::*;
 use example_ml_shared::{setup_reaching_arms, sync_batch_geoms};
 use rand::Rng;
+use rand_distr::{Distribution, Normal};
 use sim_bevy::camera::OrbitCameraPlugin;
 use sim_bevy::examples::{PhysicsHud, ValidationHarness, render_physics_hud, validation_system};
 use sim_bevy::multi_scene::{PhysicsScenes, sync_scene_geom_transforms};
@@ -49,19 +50,15 @@ const VALIDATION_GEN: usize = 25;
 
 // ── CEM Helpers ─────────────────────────────────────────────────────────────
 
-/// Box-Muller normal sample.
-fn randn(rng: &mut impl Rng) -> f64 {
-    let u1: f64 = 1.0 - rng.random::<f64>();
-    let u2: f64 = rng.random::<f64>();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
-
 fn sample_perturbations(mu: &[f64], sigma: &[f64], rng: &mut impl Rng, n: usize) -> Vec<Vec<f64>> {
     let n_params = mu.len();
     (0..n)
         .map(|_| {
             (0..n_params)
-                .map(|k| mu[k] + sigma[k] * randn(rng))
+                .map(|k| {
+                    let dist = Normal::new(mu[k], sigma[k]).unwrap();
+                    dist.sample(rng)
+                })
                 .collect()
         })
         .collect()
