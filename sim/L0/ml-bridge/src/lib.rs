@@ -73,6 +73,8 @@
 pub mod algorithm;
 pub mod autograd;
 pub mod autograd_layers;
+pub mod autograd_policy;
+pub mod autograd_value;
 pub mod cem;
 pub mod competition;
 pub mod env;
@@ -97,6 +99,8 @@ pub mod vec_env;
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 pub use autograd::{Tape, Var};
 pub use autograd_layers::{linear_raw, linear_tanh, mse_loss, mse_loss_batch};
+pub use autograd_policy::{AutogradPolicy, AutogradStochasticPolicy};
+pub use autograd_value::{AutogradQ, AutogradValue};
 pub use cem::{Cem, CemHyperparams};
 pub use competition::{Competition, CompetitionResult, RunResult};
 pub use env::{Environment, SimEnv, SimEnvBuilder, StepResult};
