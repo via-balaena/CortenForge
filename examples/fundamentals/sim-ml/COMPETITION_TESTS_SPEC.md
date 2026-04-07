@@ -1,9 +1,9 @@
-# Competition Tests Spec (Phase 3)
+# Competition Tests Spec (Phases 3 + 6)
 
-> **Status**: Complete
+> **Status**: Phase 3 complete, Phase 6 complete, Phase 6b/6c planned
 > **Crate**: sim-ml-bridge
-> **Parent spec**: ML_COMPETITION_SPEC.md, Phase 3
-> **Branch**: feature/competition-tests
+> **Parent spec**: ML_COMPETITION_SPEC.md (Phase 3), AUTOGRAD_SPEC.md (Phase 6)
+> **Branch**: main
 
 ## Context
 
@@ -296,6 +296,14 @@ cargo test -p sim-ml-bridge --lib
 # Run one hypothesis (fast feedback)
 cargo test -p sim-ml-bridge --test competition --release hypothesis_cem -- --ignored --nocapture
 
-# Run all competition tests (full sweep — ~7 min in release)
+# Run level 0-1 tests (Tests 1-7, ~7 min in release)
 cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture
+
+# Run level 2 autograd tests only (Tests 8-9, ~56 min in release)
+# These print epoch-level progress via Competition::new_verbose()
+cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture competition_6dof_autograd
+
+# Run one autograd test
+cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture competition_6dof_autograd_1layer_parity
+cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture competition_6dof_autograd_2layer
 ```

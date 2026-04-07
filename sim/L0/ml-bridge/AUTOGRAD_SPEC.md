@@ -4,7 +4,7 @@
 > inside `sim-ml-bridge`. No external ML framework deps. Hand-coded gradients
 > become the test oracle; autograd becomes the production path.
 
-**Status**: v3 — Phases 1-5 implemented, spec updated with implementation findings
+**Status**: v4 — Phases 1-6 implemented, Phase 6 results documented
 **Crate**: `sim-ml-bridge` (new module: `autograd`)
 **License precedents**: micrograd (MIT), burn (Apache-2.0/MIT), dfdx (Apache-2.0/MIT)
 
@@ -608,6 +608,49 @@ didn't happen at 50 epochs — budget wasn't scaled for 8.8x more params.
 SAC unstable due to aggressive LR. On-policy methods (PPO, REINFORCE)
 need much more data per epoch. Follow-up experiments proposed (Phase 6b).
 
+### Phase 6b: Budget scaling experiments
+
+**Deliverable**: Confirm the ordering reversal by scaling budget to match
+the 8.8x param increase. Three independent experiments on the same
+reaching-6dof task (one variable at a time).
+
+| Experiment | Variable | Change | Hypothesis |
+|------------|----------|--------|------------|
+| 6b-1: More epochs | Training duration | 50 → 200 epochs | TD3 overtakes CEM. CEM plateaus while TD3 converges. |
+| 6b-2: Lower LR | Learning rate | 3e-4 → 1e-4 (off-policy), 0.05 → 0.01 (on-policy) | SAC stabilizes. All gradient methods converge smoother. |
+| 6b-3: More envs | Data per epoch | 50 → 200 envs | On-policy methods (PPO, REINFORCE) improve most — 4x more samples per gradient estimate. |
+
+**Key constraint**: run one variable at a time. Each experiment compares
+against the Phase 6 baseline (50 epochs, original LR, 50 envs) to
+isolate the effect.
+
+**Prediction**: Experiment 6b-1 (more epochs) alone should reverse the
+TD3/CEM ordering. TD3 was at -4.08 vs CEM -3.07 at epoch 50, and TD3
+was still converging while CEM had plateaued.
+
+### Phase 6c: Nonlinear task design
+
+**Deliverable**: A task where deeper networks have an inherent advantage
+over linear controllers, replacing or supplementing the smooth quadratic
+reaching task.
+
+The current reaching-6dof reward (`-Σ(qpos - target)²`) is smooth,
+unimodal, and approximately solvable by a linear PD controller. CEM
+exploits this — random search on a smooth landscape is nearly as good as
+gradient descent. A nonlinear task would expose CEM's limitations and
+amplify gradient methods' advantage.
+
+Properties the new task should have:
+- **Task-space reward** (end-effector position, not joint angles)
+- **Obstacles or contacts** (discontinuous dynamics)
+- **Nonlinear reward landscape** (multiple waypoints, avoidance zones)
+- **Same 6-DOF arm** (isolate the task, not the morphology)
+
+Candidates:
+- Reaching through a narrow gap (contact penalty)
+- Sequential waypoint reaching (time-varying target)
+- Reaching with joint limit penalties (soft constraints)
+
 ### Phase 7: Visual examples
 
 **Deliverable**: Updated Bevy examples showing the ordering reversal live.
@@ -648,6 +691,16 @@ Could be extracted to a shared module if more network types are added.
 `sac::gaussian_log_prob` but a different signature (takes `Var`s, not
 `f64`s). The autograd version is not re-exported at the crate root to
 avoid confusion — access it via `autograd_layers::gaussian_log_prob`.
+
+Phase 6 additions:
+```
+sim/L0/ml-bridge/
+├── src/algorithm.rs     // Phase 6: on_epoch callback on Algorithm::train
+├── src/competition.rs   // Phase 6: verbose field, new_verbose(), epoch logging
+├── tests/competition.rs // Phase 6: 10 autograd builders, Tests 8-9
+├── TRAINING_OBSERVABILITY_SPEC.md  // on_epoch design rationale
+└── DEFERRED.md          // Deferred tasks (n_params, early stopping, persistence, RNG)
+```
 
 Hand-coded implementations (`linear.rs`, `mlp.rs`) stay forever — they are:
 1. The test oracle for autograd correctness
@@ -750,10 +803,11 @@ let policy_grad = policy.forward_vjp(obs, &dq_da);
 // Works with any QFunction + DifferentiablePolicy implementation.
 ```
 
-The only algorithm-level change was Phase 4: replacing
-`optimizer.step() + network.set_params(optimizer.params())` with
-`optimizer.step_in_place()`. This is an optimizer-level change, not a
-policy/value trait change — the trait firewall is intact.
+Two algorithm-level changes, neither breaking the trait firewall:
+- Phase 4: `optimizer.step_in_place()` replaced manual param sync.
+- Phase 6: `on_epoch: &dyn Fn(&EpochMetrics)` added to `Algorithm::train`
+  for training observability. Existing call sites pass `&|_| {}`.
+  Spec: `TRAINING_OBSERVABILITY_SPEC.md`.
 
 ---
 
