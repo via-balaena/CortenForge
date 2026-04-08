@@ -316,7 +316,7 @@ directly (with serde derives added). No separate snapshot config type.
 |-----------|----------------|-------------------------------|------------|-----------------|
 | CEM | actor | — | — | `noise_std` |
 | REINFORCE | actor | — | actor | `sigma` |
-| PPO | actor | value | actor, value | — |
+| PPO | actor | value | actor, value | `sigma` |
 | TD3 | actor | actor_target, q1, q2, q1_target, q2_target | actor, q1, q2 | — |
 | SAC | actor | q1, q2, q1_target, q2_target | actor, q1, q2 | `log_alpha`, `alpha_lr` |
 
@@ -1118,7 +1118,7 @@ for obs in test_observations {
 - Algorithm::checkpoint() on trait + 5 real impls:
   - CEM: policy + noise_std
   - REINFORCE: policy + actor optimizer + sigma
-  - PPO: policy + value + actor optimizer + value optimizer
+  - PPO: policy + value + actor optimizer + value optimizer + sigma
   - TD3: actor + actor_target + q1 + q2 + q1_target + q2_target + 3 optimizers
   - SAC: actor + q1 + q2 + q1_target + q2_target + 3 optimizers (actor, q1, q2) + log_alpha
 - Per-algorithm from_checkpoint() constructors (5 impls)
