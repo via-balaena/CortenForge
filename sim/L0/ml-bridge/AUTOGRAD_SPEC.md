@@ -703,21 +703,53 @@ Based on Test 9 = ~2,850s for 5 algos at 50ep/50env (~570s/algo):
 
 Total: ~350 min (~6 hours). Run sequentially, one at a time.
 
-#### Execution plan
+#### Results
 
-1. Implement all 3 tests + 4 builder functions
-2. Run Test 11 first (cheapest at ~47 min, validates plumbing)
-3. Run Test 10 second (headline test at ~110 min)
-4. Run Test 12 last (~190 min)
-5. Document results in `COMPETITION_TESTS_SPEC.md` after each run
+All three experiments complete. Full analysis in `COMPETITION_TESTS_SPEC.md`.
+
+| Test | Variable | Winner | Reward | Key finding |
+|------|----------|--------|--------|-------------|
+| 11 (LR) | 3e-4 → 1e-4 | CEM | -3.07 | SAC stabilized (-30 → -14). TD3 transiently beat CEM at ep45 (-1.95). |
+| 10 (epochs) | 50 → 200 | **TD3** | -5.22 | **Ordering reversed.** Both degraded from 50ep; CEM degraded faster. |
+| 12 (envs) | 50 → 200 | CEM | -0.84 | CEM's best result ever (195 dones). Gradient methods collapsed. |
+
+**Headline finding**: Algorithm ordering depends on *how* you scale
+compute, not *how much*:
+
+- **CEM scales with candidates** (more envs = more candidates/generation).
+  200 candidates in 5,400 dims → CEM solves the task (-0.84, 195 dones).
+- **Gradient methods scale with training duration** (more epochs).
+  TD3 overtakes CEM at 200 epochs (-5.22 vs -5.75).
+- **Neither scales well with the other's lever.** TD3 collapsed at
+  200 envs (replay buffer overflow). CEM degraded at 200 epochs
+  (random-walk after hitting noise_min).
+
+**Unexpected findings**:
+
+1. **On-policy methods got *worse* with 4x more envs.** REINFORCE and
+   PPO diverged harder because the gradient sum (not mean) scales with
+   env count — effectively 4x higher LR. Fix: normalize gradients by
+   batch size.
+2. **TD3's replay buffer (50K) is too small for 200 envs.** 200 envs ×
+   500 steps = 100K transitions/epoch. Buffer can't hold one epoch.
+   TD3 becomes effectively on-policy.
+3. **CEM's noise schedule breaks at 200 epochs.** Hits noise_min by
+   epoch ~75, then random-walks in 5,400 dims for 125 more epochs.
+   Needs cyclical or adaptive noise for long-horizon training.
+
+**Hypothesis result**: Partially confirmed. The reversal happens when
+scaling epochs (Test 10: TD3 > CEM) but not when scaling envs (Test 12:
+CEM dominates). The smooth quadratic reward is fundamental — CEM will
+always be competitive on this task given enough candidates. Phase 6c
+(nonlinear task) is needed to prove gradient methods' structural advantage.
 
 #### Files modified
 
 | File | Change |
 |------|--------|
 | `tests/competition.rs` | 4 new builder functions + 3 new test functions (Tests 10-12) |
-| `AUTOGRAD_SPEC.md` | This section (Phase 6b expanded) |
-| `../../examples/fundamentals/sim-ml/COMPETITION_TESTS_SPEC.md` | Results section after each experiment |
+| `AUTOGRAD_SPEC.md` | This section (Phase 6b expanded + results) |
+| `../../examples/fundamentals/sim-ml/COMPETITION_TESTS_SPEC.md` | Full results + per-experiment analysis |
 
 #### Verification
 
