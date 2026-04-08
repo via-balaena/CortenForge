@@ -45,6 +45,9 @@ pub trait ValueFn: Send + Sync {
     /// `n_params()`. The factor of 2 is included.
     fn mse_gradient(&self, obs: &[f32], target: f64) -> Vec<f64>;
 
+    /// Describes this value function's architecture.
+    fn descriptor(&self) -> crate::artifact::NetworkDescriptor;
+
     /// Batched forward pass.
     ///
     /// `obs_batch` is flat `[N × obs_dim]`.  Returns `[N]` predicted values.
@@ -135,6 +138,9 @@ pub trait QFunction: Send + Sync {
     ///
     /// Used by SAC for the reparameterized policy gradient.
     fn action_gradient(&self, obs: &[f32], action: &[f64]) -> Vec<f64>;
+
+    /// Describes this Q-function's architecture.
+    fn descriptor(&self) -> crate::artifact::NetworkDescriptor;
 
     /// Batched forward pass.
     ///
@@ -288,12 +294,22 @@ mod tests {
     // ── Mock Q-function for soft_update tests ──────────────────────────
 
     struct MockQ {
+        obs_dim: usize,
+        act_dim: usize,
+        obs_scale: Vec<f64>,
         p: Vec<f64>,
     }
 
     impl MockQ {
         fn new(p: Vec<f64>) -> Self {
-            Self { p }
+            // Treat as a linear Q with obs_dim = p.len() - 2, act_dim = 1.
+            let obs_dim = p.len().saturating_sub(2);
+            Self {
+                obs_dim,
+                act_dim: 1,
+                obs_scale: vec![1.0; obs_dim],
+                p,
+            }
         }
     }
 
@@ -321,6 +337,16 @@ mod tests {
         }
         fn action_gradient(&self, _obs: &[f32], _action: &[f64]) -> Vec<f64> {
             vec![0.0]
+        }
+        fn descriptor(&self) -> crate::artifact::NetworkDescriptor {
+            crate::artifact::NetworkDescriptor {
+                kind: crate::artifact::NetworkKind::Linear,
+                obs_dim: self.obs_dim,
+                act_dim: Some(self.act_dim),
+                hidden_dims: vec![],
+                activation: crate::autograd_layers::Activation::Tanh,
+                obs_scale: self.obs_scale.clone(),
+            }
         }
     }
 

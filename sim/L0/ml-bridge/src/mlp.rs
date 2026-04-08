@@ -21,6 +21,8 @@
 //! - [`MlpValue`]: `W1[H×O]` + `b1[H]` + `w2[H]` + `b2` (scalar).
 //! - [`MlpQ`]: `W1[H×(O+A)]` + `b1[H]` + `w2[H]` + `b2` (scalar).
 
+use crate::artifact::{NetworkDescriptor, NetworkKind, PolicyDescriptor};
+use crate::autograd_layers::Activation;
 use crate::policy::{DifferentiablePolicy, Policy};
 use crate::value::{QFunction, ValueFn};
 
@@ -188,6 +190,18 @@ impl Policy for MlpPolicy {
         self.params.copy_from_slice(params);
     }
 
+    fn descriptor(&self) -> PolicyDescriptor {
+        PolicyDescriptor {
+            kind: NetworkKind::Mlp,
+            obs_dim: self.obs_dim,
+            act_dim: self.act_dim,
+            hidden_dims: vec![self.hidden_dim],
+            activation: Activation::Tanh,
+            obs_scale: self.obs_scale.clone(),
+            stochastic: false,
+        }
+    }
+
     fn forward(&self, obs: &[f32]) -> Vec<f64> {
         self.forward_with_hidden(obs).0
     }
@@ -298,6 +312,17 @@ impl ValueFn for MlpValue {
             params.len(),
         );
         self.params.copy_from_slice(params);
+    }
+
+    fn descriptor(&self) -> NetworkDescriptor {
+        NetworkDescriptor {
+            kind: NetworkKind::Mlp,
+            obs_dim: self.obs_dim,
+            act_dim: None,
+            hidden_dims: vec![self.hidden_dim],
+            activation: Activation::Tanh,
+            obs_scale: self.obs_scale.clone(),
+        }
     }
 
     fn forward(&self, obs: &[f32]) -> f64 {
@@ -424,6 +449,17 @@ impl QFunction for MlpQ {
             params.len(),
         );
         self.params.copy_from_slice(params);
+    }
+
+    fn descriptor(&self) -> NetworkDescriptor {
+        NetworkDescriptor {
+            kind: NetworkKind::Mlp,
+            obs_dim: self.obs_dim,
+            act_dim: Some(self.act_dim),
+            hidden_dims: vec![self.hidden_dim],
+            activation: Activation::Tanh,
+            obs_scale: self.obs_scale.clone(),
+        }
     }
 
     fn forward(&self, obs: &[f32], action: &[f64]) -> f64 {

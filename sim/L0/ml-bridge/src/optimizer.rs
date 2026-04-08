@@ -13,6 +13,8 @@
 //!   Eliminates the dual param ownership wart: the optimizer holds only
 //!   momentum state (m, v), not a copy of the parameters.
 
+use serde::{Deserialize, Serialize};
+
 // ── Optimizer trait ────────────────────────────────────────────────────────
 
 /// Trait for parameter optimizers.
@@ -68,7 +70,7 @@ pub trait Optimizer: Send + Sync {
 /// Configuration for creating an [`Optimizer`] instance.
 ///
 /// Derives `Copy` — SAC needs 5 optimizer instances from the same config.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum OptimizerConfig {
     /// Adam optimizer (Kingma & Ba, 2015).
     Adam {

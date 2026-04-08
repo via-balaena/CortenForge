@@ -15,6 +15,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::vec_env::VecEnv;
 
 // ── Training types ─────────────────────────────────────────────────────────
@@ -25,7 +27,7 @@ use crate::vec_env::VecEnv;
 /// the diagnostics port — algorithms add keys (e.g., `"policy_loss"`,
 /// `"entropy"`, `"clip_fraction"`), never remove them. Competition tests
 /// that check specific keys continue working when new keys appear.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpochMetrics {
     /// Epoch index (0-based).
     pub epoch: usize,

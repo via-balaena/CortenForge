@@ -44,6 +44,10 @@ pub trait Policy: Send + Sync {
     /// Deterministic forward pass: observation → mean action.
     fn forward(&self, obs: &[f32]) -> Vec<f64>;
 
+    /// Describes this policy's architecture — enough to reconstruct
+    /// an empty policy with the same structure.
+    fn descriptor(&self) -> crate::artifact::PolicyDescriptor;
+
     /// Batched forward pass.
     ///
     /// `obs_batch` is a flat `[N × obs_dim]` slice.  Returns a flat

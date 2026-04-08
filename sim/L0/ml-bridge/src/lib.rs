@@ -71,6 +71,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod algorithm;
+pub mod artifact;
 pub mod autograd;
 pub mod autograd_layers;
 pub mod autograd_policy;
@@ -97,6 +98,10 @@ pub mod value;
 pub mod vec_env;
 
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+pub use artifact::{
+    ArtifactError, CURRENT_VERSION, NetworkDescriptor, NetworkKind, PolicyArtifact,
+    PolicyDescriptor, TrainingProvenance,
+};
 pub use autograd::{Tape, Var};
 pub use autograd_layers::{
     Activation, linear_hidden, linear_raw, linear_relu, linear_tanh, mse_loss, mse_loss_batch,

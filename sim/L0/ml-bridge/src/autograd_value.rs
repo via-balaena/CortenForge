@@ -13,6 +13,7 @@
 //! `Vec<f64>` with `W1 b1 W2 b2 ...` in row-major order. The output layer
 //! is linear (no tanh) — value predictions are unbounded.
 
+use crate::artifact::{NetworkDescriptor, NetworkKind};
 use crate::autograd::{Tape, Var};
 use crate::autograd_layers::{Activation, linear_hidden, linear_raw, mse_loss};
 use crate::value::{QFunction, ValueFn};
@@ -222,6 +223,23 @@ impl ValueFn for AutogradValue {
         self.params.copy_from_slice(params);
     }
 
+    fn descriptor(&self) -> NetworkDescriptor {
+        let hidden_dims: Vec<usize> = self
+            .layer_offsets
+            .iter()
+            .take(self.layer_offsets.len().saturating_sub(1))
+            .map(|l| l.out_dim)
+            .collect();
+        NetworkDescriptor {
+            kind: NetworkKind::Autograd,
+            obs_dim: self.obs_scale.len(),
+            act_dim: None,
+            hidden_dims,
+            activation: self.activation,
+            obs_scale: self.obs_scale.clone(),
+        }
+    }
+
     fn forward(&self, obs: &[f32]) -> f64 {
         let (mut tape, param_vars, x) = self.setup_tape(obs);
         let out = self.forward_on_tape(&mut tape, &param_vars, &x);
@@ -385,6 +403,23 @@ impl QFunction for AutogradQ {
             params.len(),
         );
         self.params.copy_from_slice(params);
+    }
+
+    fn descriptor(&self) -> NetworkDescriptor {
+        let hidden_dims: Vec<usize> = self
+            .layer_offsets
+            .iter()
+            .take(self.layer_offsets.len().saturating_sub(1))
+            .map(|l| l.out_dim)
+            .collect();
+        NetworkDescriptor {
+            kind: NetworkKind::Autograd,
+            obs_dim: self.obs_dim,
+            act_dim: Some(self.layer_offsets[0].in_dim - self.obs_dim),
+            hidden_dims,
+            activation: self.activation,
+            obs_scale: self.obs_scale.clone(),
+        }
     }
 
     fn forward(&self, obs: &[f32], action: &[f64]) -> f64 {
