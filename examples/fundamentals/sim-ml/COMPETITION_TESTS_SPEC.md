@@ -1,6 +1,6 @@
 # Competition Tests Spec (Phases 3 + 6)
 
-> **Status**: Phase 3 complete, Phase 6 complete, Phase 6b/6c planned
+> **Status**: Phase 3 complete, Phase 6 complete, Phase 6b complete, Phase 6c planned
 > **Crate**: sim-ml-bridge
 > **Parent spec**: ML_COMPETITION_SPEC.md (Phase 3), AUTOGRAD_SPEC.md (Phase 6)
 > **Branch**: main

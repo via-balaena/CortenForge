@@ -965,7 +965,7 @@ Two algorithm-level changes, neither breaking the trait firewall:
 1. **Every autograd gradient matches hand-coded to 1e-10** (Phase 3) — DONE
 2. **FD-validated where no oracle exists** (Phase 3+5) — DONE (stochastic policy, 2-layer nets, ReLU nets, tol=1e-4)
 3. **Competition results unchanged for same architecture** (Phase 6) — DONE. Exact parity for CEM/TD3/PPO/REINFORCE. SAC improved (MLP actor).
-4. **Gradient methods improve with 2+ hidden layers** (Phase 6) — PARTIAL. TD3 improved 3x (-11.99 → -4.08). CEM degraded 3x. Crossover imminent but not at 50 epochs.
+4. **Gradient methods improve with 2+ hidden layers** (Phase 6+6b) — DONE. TD3 improved 3x at 50 epochs (-11.99 → -4.08), reversed ordering at 200 epochs (TD3 -5.22 vs CEM -5.75, Test 10).
 5. **Trait firewall holds** — DONE. Algorithms are oblivious to backend. Only optimizer-level change (Phase 4: `step_in_place`).
 6. **Total autograd code ~1800 library LOC + ~1400 test LOC** across autograd engine, layers, policy, value, and optimizer integration. Original 800 LOC estimate underestimated trait impls, stochastic policy, activation/init, and test code.
 7. **Zero new external dependencies** (pure Rust, no ML framework) — DONE

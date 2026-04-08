@@ -15,12 +15,13 @@
 //! SAC uses `LinearStochasticPolicy` (no `MlpStochasticPolicy` exists).
 //! This handicaps SAC in any MLP-level comparison.
 //!
-//! ## Level 2 (Tests 8-9): Autograd backends
+//! ## Level 2 (Tests 8-12): Autograd backends
 //!
 //! `AutogradStochasticPolicy` resolves SAC's handicap — SAC gets a real
-//! MLP actor for the first time.  Two tests:
+//! MLP actor for the first time.
 //! - Test 8: 1-hidden-layer parity (same arch as level 0-1 → same ordering)
 //! - Test 9: 2-hidden-layer headline test (gradient methods should overtake CEM)
+//! - Tests 10-12: Phase 6b budget scaling (more epochs, lower LR, more envs)
 
 #![allow(
     clippy::unwrap_used,
