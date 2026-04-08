@@ -56,6 +56,27 @@ fn max_steps(task: &TaskConfig) -> usize {
     if task.act_dim() <= 2 { 300 } else { 500 }
 }
 
+/// Check if any gradient method overtook CEM and print the finding.
+///
+/// `gradient_results` is a slice of `(name, final_reward)` for all
+/// gradient-based algorithms in the test.
+fn print_reversal_check(r_cem: f64, gradient_results: &[(&str, f64)]) {
+    let (best_name, best_reward) = gradient_results
+        .iter()
+        .copied()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .expect("at least one gradient method");
+    if best_reward > r_cem {
+        eprintln!(
+            "\n*** ORDERING REVERSED: {best_name} ({best_reward:.2}) overtakes CEM ({r_cem:.2}) ***"
+        );
+    } else {
+        eprintln!(
+            "\n*** CEM ({r_cem:.2}) still dominates — gradient methods' best: {best_reward:.2} ***"
+        );
+    }
+}
+
 // ── Builder functions ──────────────────────────────────────────────────────
 //
 // One per (algorithm, policy_level).  Each returns Box<dyn Algorithm>.
@@ -1333,15 +1354,7 @@ fn competition_6dof_autograd_1layer_parity() {
 
     // All metrics must be finite.
     for run in [cem, td3, sac, ppo, reinforce] {
-        for m in &run.metrics {
-            assert!(
-                m.mean_reward.is_finite(),
-                "{} epoch {} non-finite reward: {}",
-                run.algorithm_name,
-                m.epoch,
-                m.mean_reward
-            );
-        }
+        run.assert_finite();
     }
 
     let r_cem = cem.final_reward().unwrap();
@@ -1434,15 +1447,7 @@ fn competition_6dof_autograd_2layer() {
 
     // All metrics must be finite.
     for run in [cem, td3, sac, ppo, reinforce] {
-        for m in &run.metrics {
-            assert!(
-                m.mean_reward.is_finite(),
-                "{} epoch {} non-finite reward: {}",
-                run.algorithm_name,
-                m.epoch,
-                m.mean_reward
-            );
-        }
+        run.assert_finite();
     }
 
     let r_cem = cem.final_reward().unwrap();
@@ -1451,46 +1456,19 @@ fn competition_6dof_autograd_2layer() {
     let r_ppo = ppo.final_reward().unwrap();
     let r_reinforce = reinforce.final_reward().unwrap();
 
-    // Collect into sorted order for reporting.
-    let mut ranked: Vec<(&str, f64, usize)> = vec![
-        ("CEM", r_cem, cem.total_dones()),
-        ("TD3", r_td3, td3.total_dones()),
-        ("SAC", r_sac, sac.total_dones()),
-        ("PPO", r_ppo, ppo.total_dones()),
-        ("REINFORCE", r_reinforce, reinforce.total_dones()),
-    ];
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-    eprintln!("\n=== Level 2 headline results (2-layer autograd, ReLU, Xavier) ===");
-    eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
-    eprintln!("{}", "-".repeat(40));
-    for (name, reward, dones) in &ranked {
-        eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
-    }
-
-    let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
-    eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
-
-    // Did gradient methods overtake CEM?
-    let best_gradient = r_td3.max(r_sac).max(r_ppo).max(r_reinforce);
-    if best_gradient > r_cem {
-        let winner = if r_td3 >= best_gradient {
-            "TD3"
-        } else if r_sac >= best_gradient {
-            "SAC"
-        } else if r_ppo >= best_gradient {
-            "PPO"
-        } else {
-            "REINFORCE"
-        };
-        eprintln!(
-            "\n*** ORDERING REVERSED: {winner} ({best_gradient:.2}) overtakes CEM ({r_cem:.2}) ***"
-        );
-    } else {
-        eprintln!(
-            "\n*** CEM ({r_cem:.2}) still dominates — gradient methods' best: {best_gradient:.2} ***"
-        );
-    }
+    result.print_ranked(
+        "reaching-6dof",
+        "Level 2 headline results (2-layer autograd, ReLU, Xavier)",
+    );
+    print_reversal_check(
+        r_cem,
+        &[
+            ("TD3", r_td3),
+            ("SAC", r_sac),
+            ("PPO", r_ppo),
+            ("REINFORCE", r_reinforce),
+        ],
+    );
 
     // Compare level 0-1 vs level 2 for context.
     eprintln!("\nLevel 0-1 reference (hand-coded, 1 layer):");
@@ -1541,49 +1519,18 @@ fn budget_scaling_more_epochs() {
 
     // All metrics must be finite.
     for run in [cem, td3, sac] {
-        for m in &run.metrics {
-            assert!(
-                m.mean_reward.is_finite(),
-                "{} epoch {} non-finite reward: {}",
-                run.algorithm_name,
-                m.epoch,
-                m.mean_reward
-            );
-        }
+        run.assert_finite();
     }
 
     let r_cem = cem.final_reward().unwrap();
     let r_td3 = td3.final_reward().unwrap();
     let r_sac = sac.final_reward().unwrap();
 
-    // Collect into sorted order for reporting.
-    let mut ranked: Vec<(&str, f64, usize)> = vec![
-        ("CEM", r_cem, cem.total_dones()),
-        ("TD3", r_td3, td3.total_dones()),
-        ("SAC", r_sac, sac.total_dones()),
-    ];
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-    eprintln!("\n=== 6b-1: More epochs (200ep/50env, 2-layer autograd) ===");
-    eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
-    eprintln!("{}", "-".repeat(40));
-    for (name, reward, dones) in &ranked {
-        eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
-    }
-
-    let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
-    eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
-
-    // Did gradient methods overtake CEM?
-    let best_gradient = r_td3.max(r_sac);
-    if best_gradient > r_cem {
-        let winner = if r_td3 >= r_sac { "TD3" } else { "SAC" };
-        eprintln!(
-            "\n*** ORDERING REVERSED: {winner} ({best_gradient:.2}) overtakes CEM ({r_cem:.2}) ***"
-        );
-    } else {
-        eprintln!("\n*** CEM ({r_cem:.2}) still dominates — gradient best: {best_gradient:.2} ***");
-    }
+    result.print_ranked(
+        "reaching-6dof",
+        "6b-1: More epochs (200ep/50env, 2-layer autograd)",
+    );
+    print_reversal_check(r_cem, &[("TD3", r_td3), ("SAC", r_sac)]);
 
     // Phase 6 baseline comparison.
     eprintln!("\nPhase 6 baseline (50ep/50env):");
@@ -1627,15 +1574,7 @@ fn budget_scaling_lower_lr() {
 
     // All metrics must be finite.
     for run in [cem, td3, sac, ppo, reinforce] {
-        for m in &run.metrics {
-            assert!(
-                m.mean_reward.is_finite(),
-                "{} epoch {} non-finite reward: {}",
-                run.algorithm_name,
-                m.epoch,
-                m.mean_reward
-            );
-        }
+        run.assert_finite();
     }
 
     let r_cem = cem.final_reward().unwrap();
@@ -1644,46 +1583,19 @@ fn budget_scaling_lower_lr() {
     let r_ppo = ppo.final_reward().unwrap();
     let r_reinforce = reinforce.final_reward().unwrap();
 
-    // Collect into sorted order for reporting.
-    let mut ranked: Vec<(&str, f64, usize)> = vec![
-        ("CEM", r_cem, cem.total_dones()),
-        ("TD3", r_td3, td3.total_dones()),
-        ("SAC", r_sac, sac.total_dones()),
-        ("PPO", r_ppo, ppo.total_dones()),
-        ("REINFORCE", r_reinforce, reinforce.total_dones()),
-    ];
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-    eprintln!("\n=== 6b-2: Lower LR (50ep/50env, 2-layer autograd) ===");
-    eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
-    eprintln!("{}", "-".repeat(40));
-    for (name, reward, dones) in &ranked {
-        eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
-    }
-
-    let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
-    eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
-
-    // Did gradient methods overtake CEM?
-    let best_gradient = r_td3.max(r_sac).max(r_ppo).max(r_reinforce);
-    if best_gradient > r_cem {
-        let winner = if r_td3 >= best_gradient {
-            "TD3"
-        } else if r_sac >= best_gradient {
-            "SAC"
-        } else if r_ppo >= best_gradient {
-            "PPO"
-        } else {
-            "REINFORCE"
-        };
-        eprintln!(
-            "\n*** ORDERING REVERSED: {winner} ({best_gradient:.2}) overtakes CEM ({r_cem:.2}) ***"
-        );
-    } else {
-        eprintln!(
-            "\n*** CEM ({r_cem:.2}) still dominates — gradient methods' best: {best_gradient:.2} ***"
-        );
-    }
+    result.print_ranked(
+        "reaching-6dof",
+        "6b-2: Lower LR (50ep/50env, 2-layer autograd)",
+    );
+    print_reversal_check(
+        r_cem,
+        &[
+            ("TD3", r_td3),
+            ("SAC", r_sac),
+            ("PPO", r_ppo),
+            ("REINFORCE", r_reinforce),
+        ],
+    );
 
     // Phase 6 baseline comparison.
     eprintln!("\nPhase 6 baseline (original LR):");
@@ -1724,15 +1636,7 @@ fn budget_scaling_more_envs() {
 
     // All metrics must be finite.
     for run in [cem, td3, sac, ppo, reinforce] {
-        for m in &run.metrics {
-            assert!(
-                m.mean_reward.is_finite(),
-                "{} epoch {} non-finite reward: {}",
-                run.algorithm_name,
-                m.epoch,
-                m.mean_reward
-            );
-        }
+        run.assert_finite();
     }
 
     let r_cem = cem.final_reward().unwrap();
@@ -1741,46 +1645,19 @@ fn budget_scaling_more_envs() {
     let r_ppo = ppo.final_reward().unwrap();
     let r_reinforce = reinforce.final_reward().unwrap();
 
-    // Collect into sorted order for reporting.
-    let mut ranked: Vec<(&str, f64, usize)> = vec![
-        ("CEM", r_cem, cem.total_dones()),
-        ("TD3", r_td3, td3.total_dones()),
-        ("SAC", r_sac, sac.total_dones()),
-        ("PPO", r_ppo, ppo.total_dones()),
-        ("REINFORCE", r_reinforce, reinforce.total_dones()),
-    ];
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-    eprintln!("\n=== 6b-3: More envs (50ep/200env, 2-layer autograd) ===");
-    eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
-    eprintln!("{}", "-".repeat(40));
-    for (name, reward, dones) in &ranked {
-        eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
-    }
-
-    let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
-    eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
-
-    // Did gradient methods overtake CEM?
-    let best_gradient = r_td3.max(r_sac).max(r_ppo).max(r_reinforce);
-    if best_gradient > r_cem {
-        let winner = if r_td3 >= best_gradient {
-            "TD3"
-        } else if r_sac >= best_gradient {
-            "SAC"
-        } else if r_ppo >= best_gradient {
-            "PPO"
-        } else {
-            "REINFORCE"
-        };
-        eprintln!(
-            "\n*** ORDERING REVERSED: {winner} ({best_gradient:.2}) overtakes CEM ({r_cem:.2}) ***"
-        );
-    } else {
-        eprintln!(
-            "\n*** CEM ({r_cem:.2}) still dominates — gradient methods' best: {best_gradient:.2} ***"
-        );
-    }
+    result.print_ranked(
+        "reaching-6dof",
+        "6b-3: More envs (50ep/200env, 2-layer autograd)",
+    );
+    print_reversal_check(
+        r_cem,
+        &[
+            ("TD3", r_td3),
+            ("SAC", r_sac),
+            ("PPO", r_ppo),
+            ("REINFORCE", r_reinforce),
+        ],
+    );
 
     // Phase 6 baseline comparison.
     eprintln!("\nPhase 6 baseline (50 envs):");

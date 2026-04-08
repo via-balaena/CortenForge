@@ -37,6 +37,26 @@ impl RunResult {
     pub fn total_dones(&self) -> usize {
         self.metrics.iter().map(|m| m.done_count).sum()
     }
+
+    /// Panics if any epoch has a non-finite `mean_reward`.
+    ///
+    /// Checks every epoch in `self.metrics`. On failure, the panic message
+    /// includes the algorithm name, epoch index, and the offending value.
+    ///
+    /// # Panics
+    ///
+    /// Panics when any `EpochMetrics::mean_reward` is `NaN` or infinite.
+    pub fn assert_finite(&self) {
+        for m in &self.metrics {
+            assert!(
+                m.mean_reward.is_finite(),
+                "{} epoch {} non-finite reward: {}",
+                self.algorithm_name,
+                m.epoch,
+                m.mean_reward
+            );
+        }
+    }
 }
 
 // ── CompetitionResult ───────────────────────────────────────────────────────
@@ -70,6 +90,36 @@ impl CompetitionResult {
             .iter()
             .filter(|r| r.algorithm_name == algorithm)
             .collect()
+    }
+
+    /// Print a ranked results table for one task to stderr.
+    ///
+    /// Sorts algorithms by final reward (best first), prints a formatted
+    /// table with algorithm name, final reward, and total dones, followed
+    /// by the ordering string (e.g., "CEM > TD3 > SAC").
+    pub fn print_ranked(&self, task: &str, title: &str) {
+        let runs = self.for_task(task);
+        let mut ranked: Vec<(&str, f64, usize)> = runs
+            .iter()
+            .map(|r| {
+                (
+                    r.algorithm_name.as_str(),
+                    r.final_reward().unwrap_or(f64::NAN),
+                    r.total_dones(),
+                )
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        eprintln!("\n=== {title} ===");
+        eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
+        eprintln!("{}", "-".repeat(40));
+        for (name, reward, dones) in &ranked {
+            eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
+        }
+
+        let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
+        eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
     }
 
     /// Print a summary table of all results to stderr.
@@ -374,6 +424,59 @@ mod tests {
         };
         assert_eq!(run.final_reward(), None);
         assert_eq!(run.total_dones(), 0);
+    }
+
+    #[test]
+    fn assert_finite_passes() {
+        let run = RunResult {
+            task_name: "t".into(),
+            algorithm_name: "a".into(),
+            metrics: vec![EpochMetrics {
+                epoch: 0,
+                mean_reward: -5.0,
+                done_count: 0,
+                total_steps: 10,
+                wall_time_ms: 0,
+                extra: BTreeMap::new(),
+            }],
+        };
+        run.assert_finite(); // should not panic
+    }
+
+    #[test]
+    #[should_panic(expected = "non-finite reward")]
+    fn assert_finite_catches_nan() {
+        let run = RunResult {
+            task_name: "t".into(),
+            algorithm_name: "a".into(),
+            metrics: vec![EpochMetrics {
+                epoch: 0,
+                mean_reward: f64::NAN,
+                done_count: 0,
+                total_steps: 10,
+                wall_time_ms: 0,
+                extra: BTreeMap::new(),
+            }],
+        };
+        run.assert_finite();
+    }
+
+    #[test]
+    #[should_panic(expected = "non-finite reward")]
+    fn assert_finite_catches_inf() {
+        let run = RunResult {
+            task_name: "t".into(),
+            algorithm_name: "a".into(),
+            metrics: vec![EpochMetrics {
+                epoch: 0,
+                mean_reward: f64::INFINITY,
+                done_count: 0,
+                total_steps: 10,
+                wall_time_ms: 0,
+                extra: BTreeMap::new(),
+            }],
+        };
+        run.assert_finite();
     }
 
     // ── CompetitionResult helpers ─────────────────────────────────────
