@@ -251,6 +251,11 @@ pub use linalg::mj_solve_sparse;
 // Spatial algebra types (extracted to dynamics/spatial.rs)
 pub use dynamics::SpatialVector;
 
+// Re-export nalgebra types that appear in public API (Data, Model fields).
+// Downstream crates should not need a direct nalgebra dependency just to use
+// xpos, xquat, qpos, etc.
+pub use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
+
 // MuJoCo-style physics pipeline types (primary API — not yet extracted)
 // Pyramidal force recovery (§32) — extracted to constraint/solver
 pub use constraint::solver::decode_pyramid;

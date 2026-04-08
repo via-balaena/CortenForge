@@ -45,6 +45,17 @@ pub enum SpaceError {
         nbody: usize,
     },
 
+    /// A site-index range exceeds `nsite`.
+    #[error("{field} site range {range:?} out of bounds (nsite = {nsite})")]
+    SiteRangeOutOfBounds {
+        /// Name of the per-site field (e.g. `site_xpos`).
+        field: &'static str,
+        /// The requested site range.
+        range: Range<usize>,
+        /// Total number of sites.
+        nsite: usize,
+    },
+
     /// A mocap-body range exceeds `nmocap`.
     #[error("{field} mocap range {range:?} out of bounds (nmocap = {nmocap})")]
     MocapRangeOutOfBounds {

@@ -38,6 +38,9 @@ enum Extractor {
     Xquat(Range<usize>),
     Cvel(Range<usize>),
 
+    // Per-site fields — range is site indices, flattened on extraction.
+    SiteXpos(Range<usize>),
+
     // Scalars.
     ContactCount,
     Time,
@@ -56,7 +59,7 @@ impl Extractor {
             | Self::ActuatorForce(r)
             | Self::QfrcConstraint(r) => r.len(),
 
-            Self::Xpos(r) => r.len() * 3,
+            Self::Xpos(r) | Self::SiteXpos(r) => r.len() * 3,
             Self::Xquat(r) => r.len() * 4,
             Self::Cvel(r) => r.len() * 6,
 
@@ -81,6 +84,16 @@ impl Extractor {
                 let mut offset = 0;
                 for body in r.clone() {
                     let v = &data.xpos[body];
+                    buf[offset] = v[0] as f32;
+                    buf[offset + 1] = v[1] as f32;
+                    buf[offset + 2] = v[2] as f32;
+                    offset += 3;
+                }
+            }
+            Self::SiteXpos(r) => {
+                let mut offset = 0;
+                for site in r.clone() {
+                    let v = &data.site_xpos[site];
                     buf[offset] = v[0] as f32;
                     buf[offset + 1] = v[1] as f32;
                     buf[offset + 2] = v[2] as f32;
@@ -338,6 +351,14 @@ impl ObservationSpaceBuilder {
         self
     }
 
+    /// Observe site positions: 3 floats per site in `site_range`.
+    #[must_use]
+    pub fn site_xpos(mut self, site_range: Range<usize>) -> Self {
+        self.entries
+            .push(BuilderEntry::Resolved(Extractor::SiteXpos(site_range)));
+        self
+    }
+
     /// Observe body orientations: 4 floats (w, i, j, k) per body in `body_range`.
     #[must_use]
     pub fn xquat(mut self, body_range: Range<usize>) -> Self {
@@ -479,6 +500,7 @@ fn extractor_label(ext: &Extractor) -> String {
         Extractor::ActuatorForce(r) => format!("actuator_force({}..{})", r.start, r.end),
         Extractor::QfrcConstraint(r) => format!("qfrc_constraint({}..{})", r.start, r.end),
         Extractor::Xpos(r) => format!("xpos({}..{})", r.start, r.end),
+        Extractor::SiteXpos(r) => format!("site_xpos({}..{})", r.start, r.end),
         Extractor::Xquat(r) => format!("xquat({}..{})", r.start, r.end),
         Extractor::Cvel(r) => format!("cvel({}..{})", r.start, r.end),
         Extractor::ContactCount => "contact_count".to_owned(),
@@ -512,6 +534,7 @@ fn validate_extractor(ext: &Extractor, model: &Model) -> Result<(), SpaceError> 
         Extractor::Sensordata(r) => check_flat("sensordata", r, model.nsensordata),
 
         Extractor::Xpos(r) => check_body("xpos", r, model.nbody),
+        Extractor::SiteXpos(r) => check_site("site_xpos", r, model.nsite),
         Extractor::Xquat(r) => check_body("xquat", r, model.nbody),
         Extractor::Cvel(r) => check_body("cvel", r, model.nbody),
 
@@ -543,6 +566,18 @@ fn check_body(field: &'static str, range: &Range<usize>, nbody: usize) -> Result
             field,
             range: range.clone(),
             nbody,
+        });
+    }
+    Ok(())
+}
+
+/// Check a site-index range against `nsite`.
+fn check_site(field: &'static str, range: &Range<usize>, nsite: usize) -> Result<(), SpaceError> {
+    if range.end > nsite {
+        return Err(SpaceError::SiteRangeOutOfBounds {
+            field,
+            range: range.clone(),
+            nsite,
         });
     }
     Ok(())
@@ -1029,6 +1064,23 @@ mod tests {
         assert!(obs.as_slice().iter().all(|&v| v == 0.0));
     }
 
+    // ── per-site extractors ─────────────────────────────────────────────
+
+    #[test]
+    fn extract_site_xpos() {
+        let (model, data) = pendulum();
+        // Pendulum has 1 site: "tip" at pos="0 0 -0.5" on body 1.
+        assert_eq!(model.nsite, 1);
+        let space = ObservationSpace::builder()
+            .site_xpos(0..1)
+            .build(&model)
+            .unwrap();
+        let obs = space.extract(&data);
+        assert_eq!(obs.shape(), &[3]); // 1 site × 3 floats
+        // Position depends on FK state — just verify shape and finite values.
+        assert!(obs.as_slice().iter().all(|v| v.is_finite()));
+    }
+
     // ── scalar extractors ────────────────────────────────────────────────
 
     #[test]
@@ -1339,6 +1391,22 @@ mod tests {
         assert!(matches!(
             err,
             SpaceError::BodyRangeOutOfBounds { field: "cvel", .. }
+        ));
+    }
+
+    #[test]
+    fn site_xpos_range_out_of_bounds() {
+        let (model, _data) = pendulum();
+        let err = ObservationSpace::builder()
+            .site_xpos(0..100)
+            .build(&model)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SpaceError::SiteRangeOutOfBounds {
+                field: "site_xpos",
+                ..
+            }
         ));
     }
 
