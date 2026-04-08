@@ -5,7 +5,7 @@
 > of every trait, every algorithm, every policy type. The currency of the
 > ML layer.
 
-**Status**: v6 — all grading gaps resolved, pending A+ before implementation
+**Status**: v8 — Phase 1 complete (commit `066abea`), Phase 2 next
 **Crate**: `sim-ml-bridge`
 **New dependencies**: `serde`, `serde_json`
 
@@ -102,6 +102,11 @@ pub enum NetworkKind {
 `#[non_exhaustive]` — future kinds (Cnn, Rnn, Transformer,
 MixtureOfExperts) can be added without breaking existing serialized files
 or match arms.
+
+**Implementation note**: Within the defining crate, the compiler sees all
+variants and warns about unreachable wildcard patterns. Functions that
+match on `NetworkKind` need `#[allow(unreachable_patterns)]` to suppress
+this — the wildcard IS needed for downstream crates and future variants.
 
 ### 4.2 PolicyDescriptor — the recipe card
 
@@ -251,6 +256,10 @@ pub enum ArtifactError {
 ```
 
 Used by `save()`, `load()`, `to_policy()`, and `validate()`.
+
+**No `Clone` derive** — `std::io::Error` and `serde_json::Error` don't
+implement `Clone`. This means callers can't clone `ArtifactError` values,
+which is fine — errors are consumed, not shared.
 
 `UnsupportedCombination` is returned by `to_policy()` for valid `NetworkKind`
 values that don't have a concrete type for the requested `stochastic` mode
@@ -838,9 +847,8 @@ fn compute_param_count(d: &PolicyDescriptor) -> usize {
             d.obs_dim * h + h + h * d.act_dim + d.act_dim
         }
 
-        // MlpStochasticPolicy doesn't exist — caught by validate() step 4.
-        // Returns 0 as a safety net; validate() rejects before we get here.
-        (NetworkKind::Mlp, true) => 0,
+        // (Mlp, true) is caught by validate() step 4 before reaching here.
+        // Falls through to the wildcard arm (returns 0).
 
         // General multi-layer: sizes = [obs_dim, H1, ..., Hn, act_dim]
         // Sum of (sizes[i] * sizes[i+1] + sizes[i+1]) for each layer.
@@ -1041,10 +1049,9 @@ for obs in test_observations {
   scalars from `train()` locals to struct fields (§4.9)
 
 ### Test mock updates
-- `MockQ` (`value.rs` tests): Only stores `p: Vec<f64>` — cannot produce
-  a `NetworkDescriptor`. Replace with a real `LinearQ` in the soft_update
-  tests, or add `obs_dim`, `act_dim`, `obs_scale` fields and a trivial
-  `descriptor()` returning `NetworkKind::Linear`.
+- `MockQ` (`value.rs` tests): **Done (Phase 1)** — added `obs_dim`,
+  `act_dim`, `obs_scale` fields. `descriptor()` returns
+  `NetworkKind::Linear`. `MockQ::new(p)` derives dimensions from param count.
 - `MockAlgorithm` (`competition.rs` tests): Only stores `name: &str` —
   cannot implement `policy_artifact()` or `checkpoint()`. Add a
   `LinearPolicy` field constructed in `MockAlgorithm::new()`. Implement
@@ -1097,17 +1104,11 @@ for obs in test_observations {
 
 ## 11. Phasing
 
-**Phase 1 — Foundation types + descriptor trait surgery**
-- New deps: `serde` (with `derive`), `serde_json`
-- Serde derives on EpochMetrics, Activation, OptimizerConfig
-- New types: NetworkKind, PolicyDescriptor, NetworkDescriptor, ArtifactError
-- New types: PolicyArtifact, TrainingProvenance
-- Policy::descriptor() on trait + 5 impls
-- ValueFn::descriptor() on trait + 3 impls
-- QFunction::descriptor() on trait + 3 impls
-- PolicyArtifact: from_policy(), with_provenance(), save(), load(), to_policy(), validate()
-- Round-trip tests for every policy type + value/Q type
-- Validation tests (version, param count, obs_scale, hidden_dims, error cases)
+**Phase 1 — Foundation types + descriptor trait surgery** ✓ `066abea`
+- All types in `src/artifact.rs` (ArtifactError co-located, not in `error.rs`)
+- 11 descriptor impls (5 Policy + 3 ValueFn + 3 QFunction)
+- 28 tests (descriptors, round-trips, validation, provenance, serde format)
+- MockQ updated with descriptor fields (Phase 2 still needs MockAlgorithm)
 
 **Phase 2 — Algorithm integration + checkpointing**
 - **Prerequisite**: State promotion (§4.9) — promote optimizer instances and
