@@ -5,7 +5,7 @@
 > of every trait, every algorithm, every policy type. The currency of the
 > ML layer.
 
-**Status**: v1 — Design phase (open questions marked with **OPEN**)
+**Status**: v2 — Open questions resolved, ready for implementation review
 **Crate**: `sim-ml-bridge`
 **New dependencies**: `serde`, `serde_json`
 
@@ -23,6 +23,7 @@ These mirror how logging was built — structural, universal, extensible.
 | **Forward-compatible** | Adding new policy kinds, new provenance fields, new checkpoint data never breaks existing readers. Unknown JSON fields are silently ignored. Version field gates structural changes. |
 | **Human-inspectable** | `cat policy.artifact.json` tells you the architecture, the weights, the training history. No hex editors, no binary decoders. Debuggability is non-negotiable. |
 | **Composable** | Artifacts are the transfer mechanism between training stages. Train with CEM → save → load as initialization for TD3 → save → deploy in Bevy. Each stage appends provenance. |
+| **No dead code on traits** | Every trait method must have a real implementation. No `todo!()` bodies, no panic stubs. If we aren't implementing it yet, the method doesn't go on the trait yet. Define the types now; add the trait methods when the first algorithm implements them. |
 
 ---
 
@@ -73,14 +74,35 @@ Five things come out of training, at three tiers of scope:
 | **Replay buffer** | Stored transitions for off-policy | Resume TD3/SAC without re-collecting data |
 | **RNG state** | Exact random number generator state | Bit-exact reproducibility across resume |
 
-**Scope of this spec**: Tier 1 fully implemented. Tier 2 interfaces defined,
-implementations phased. Tier 3 interfaces defined, implementations deferred.
+**Scope of this spec**: Tier 1 fully implemented. Tier 2 types defined,
+trait methods and implementations deferred until first real use. Tier 3
+types defined, everything else deferred.
 
 ---
 
 ## 4. Core types
 
-### 4.1 PolicyDescriptor — the recipe card
+### 4.1 NetworkKind — shared architecture enum
+
+One enum shared by policies, value functions, and Q-functions. The
+distinction between "a Linear policy" and "a Linear value function"
+is in the descriptor type, not the kind.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum NetworkKind {
+    Linear,
+    Mlp,
+    Autograd,
+}
+```
+
+`#[non_exhaustive]` — future kinds (Cnn, Rnn, Transformer,
+MixtureOfExperts) can be added without breaking existing serialized files
+or match arms.
+
+### 4.2 PolicyDescriptor — the recipe card
 
 Enough information to reconstruct an empty policy with the same structure.
 
@@ -88,7 +110,7 @@ Enough information to reconstruct an empty policy with the same structure.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PolicyDescriptor {
     /// Which concrete type to construct.
-    pub kind: PolicyKind,
+    pub kind: NetworkKind,
     /// Observation dimensionality.
     pub obs_dim: usize,
     /// Action dimensionality.
@@ -104,23 +126,11 @@ pub struct PolicyDescriptor {
 }
 ```
 
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum PolicyKind {
-    Linear,
-    Mlp,
-    Autograd,
-}
-```
-
-`#[non_exhaustive]` on `PolicyKind` — future kinds (Cnn, Rnn, Transformer,
-MixtureOfExperts) can be added without breaking existing serialized files
-or match arms.
-
-### 4.2 NetworkDescriptor — recipe card for critics
+### 4.3 NetworkDescriptor — recipe card for critics
 
 Same pattern as PolicyDescriptor but for ValueFn and QFunction types.
+Uses the same `NetworkKind` enum. No `stochastic` flag — critics don't
+have learned exploration.
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -140,28 +150,7 @@ pub struct NetworkDescriptor {
 }
 ```
 
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum NetworkKind {
-    Linear,
-    Mlp,
-    Autograd,
-}
-```
-
-**OPEN 1: Should PolicyDescriptor and NetworkDescriptor be the same type?**
-
-Arguments for separate: policies have `stochastic` flag, critics don't. Policies
-are the deployable star; critics are supporting cast. Semantic clarity.
-
-Arguments for unified: fields overlap 90%. One fewer type to maintain. Unified
-reconstruction logic.
-
-Current lean: **Separate.** The `stochastic` flag is policy-specific and would be
-awkward on a critic descriptor. Semantic clarity > fewer types.
-
-### 4.3 PolicyArtifact — the deployable brain
+### 4.4 PolicyArtifact — the deployable brain
 
 The foundational currency of the ML domain.
 
@@ -179,7 +168,12 @@ pub struct PolicyArtifact {
 }
 ```
 
-### 4.4 TrainingProvenance — the lineage
+### 4.5 TrainingProvenance — the lineage
+
+Provenance is **built by the caller, not the algorithm.** The algorithm
+knows the policy state. The caller (Competition runner, Bevy example)
+knows the task name, seed, hyperparams, and has the returned metrics.
+See §5.4 and §7 for provenance assembly patterns.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +196,8 @@ pub struct TrainingProvenance {
     pub timestamp: String,
     /// Algorithm-specific hyperparameters.
     /// Mirrors the EpochMetrics.extra pattern — append-only, no schema coupling.
+    /// Integer hyperparams (batch_size, etc.) stored as f64 for consistency
+    /// with the existing EpochMetrics.extra convention.
     pub hyperparams: BTreeMap<String, f64>,
     /// Full training curve — every epoch's metrics.
     pub metrics: Vec<EpochMetrics>,
@@ -216,17 +212,45 @@ train on easy task → save → load as initialization → train on hard task. T
 hard-task provenance's `parent` points to the easy-task provenance. Full
 chain-of-custody, no matter how many training stages.
 
-### 4.5 TrainingCheckpoint — the resume point
+### 4.6 ArtifactError — dedicated error type
 
-**OPEN 2: Define `checkpoint()` on Algorithm trait now, or defer?**
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum ArtifactError {
+    #[error("unsupported artifact version {found} (max supported: {max})")]
+    UnsupportedVersion { found: u32, max: u32 },
 
-If now: every algorithm must implement it (can `todo!()` the bodies).
-The trait signature is the expensive thing to change later.
+    #[error("unknown network kind — artifact may have been written by a newer version")]
+    UnknownKind,
 
-If defer: define the types but don't add the trait method yet. Add it
-when the first algorithm actually needs cross-session resume.
+    #[error("param count mismatch: descriptor implies {expected}, artifact has {actual}")]
+    ParamCountMismatch { expected: usize, actual: usize },
 
-Current lean: **Define the trait method now with `todo!()` bodies.** The types:
+    #[error("obs_scale length {actual} doesn't match obs_dim {expected}")]
+    ObsScaleMismatch { expected: usize, actual: usize },
+
+    #[error("hidden_dims must be empty for Linear kind, got {0} layers")]
+    LinearHiddenDims(usize),
+
+    #[error("hidden_dims must be non-empty for {kind:?} kind")]
+    MissingHiddenDims { kind: NetworkKind },
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+```
+
+Used by `save()`, `load()`, `to_policy()`, and `validate()`.
+
+### 4.7 TrainingCheckpoint — the resume point (types only, no trait methods)
+
+These types are defined now for forward compatibility. Trait methods
+(`Algorithm::checkpoint()`, `Optimizer::snapshot()`) are added later
+when the first algorithm actually implements resume-from-checkpoint.
+No `todo!()` stubs.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,7 +281,8 @@ pub struct OptimizerSnapshot {
     /// Which network this optimizer trains (e.g., "actor", "q1", "value").
     pub role: String,
     /// Optimizer configuration at time of snapshot.
-    pub config: OptimizerConfigSnapshot,
+    /// Uses the existing OptimizerConfig enum directly — no duplicate type.
+    pub config: OptimizerConfig,
     /// First moment estimates (Adam m).
     pub m: Vec<f64>,
     /// Second moment estimates (Adam v).
@@ -265,17 +290,10 @@ pub struct OptimizerSnapshot {
     /// Step count (Adam t).
     pub t: usize,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OptimizerConfigSnapshot {
-    pub kind: String,       // "Adam"
-    pub lr: f64,
-    pub beta1: f64,
-    pub beta2: f64,
-    pub eps: f64,
-    pub max_grad_norm: f64,
-}
 ```
+
+Note: `OptimizerSnapshot.config` uses the existing `OptimizerConfig` enum
+directly (with serde derives added). No separate snapshot config type.
 
 ---
 
@@ -323,7 +341,7 @@ pub trait QFunction: Send + Sync {
 
 3 implementations: LinearQ, MlpQ, AutogradQ.
 
-### 5.4 Algorithm trait — add `policy_artifact()` and `checkpoint()`
+### 5.4 Algorithm trait — add `policy_artifact()` only
 
 ```rust
 pub trait Algorithm: Send {
@@ -339,44 +357,32 @@ pub trait Algorithm: Send {
 
     /// Extract the current policy as a portable artifact.
     ///
-    /// Can be called after train() for the final policy, or between
-    /// training sessions for intermediate snapshots.
-    fn policy_artifact(&self) -> PolicyArtifact;
-
-    /// Extract full training state for later resumption.
+    /// Returns a **bare** artifact: descriptor + params, provenance = None.
+    /// The caller attaches provenance — the algorithm knows the policy state
+    /// but not the task name, seed, or training context.
     ///
-    /// Includes policy, critics, optimizer momentum — everything needed
-    /// to continue training without regression.
-    fn checkpoint(&self) -> TrainingCheckpoint;
+    /// Can be called after train() for the final policy, or at any time
+    /// for intermediate snapshots.
+    fn policy_artifact(&self) -> PolicyArtifact;
 }
 ```
 
-**OPEN 3: Should `train()` return type change to bundle metrics + artifact?**
+**No `checkpoint()` method.** The `TrainingCheckpoint` type exists (§4.7)
+but the trait method is added later when the first algorithm implements
+resume-from-checkpoint. This avoids `todo!()` stubs.
 
-Option A (current lean): Keep `Vec<EpochMetrics>`. Add `policy_artifact()` separately.
-- Less breaking. More flexible (call any time, not just after train).
-- Competition tests only assert on metrics — no code change needed in assertions.
+`train()` return type is **unchanged** (`Vec<EpochMetrics>`). The artifact
+is accessed via the separate `policy_artifact()` method — more flexible
+(callable any time) and non-breaking for existing competition assertions.
 
-Option B: Return `TrainingResult { metrics: Vec<EpochMetrics>, artifact: PolicyArtifact }`.
-- Can't forget to extract. More "foundational" — artifact is a result, not a query.
-- Larger break. Every caller must destructure.
+### 5.5 Optimizer, ValueFn, QFunction — no new trait methods yet
 
-### 5.5 Optimizer trait — add `snapshot()` and `load_snapshot()`
+`Optimizer::snapshot()` / `load_snapshot()` are deferred until checkpoint
+implementations begin. The `OptimizerSnapshot` type exists (§4.7) but
+no trait method forces a panic stub.
 
-```rust
-pub trait Optimizer: Send + Sync {
-    // ... existing methods unchanged ...
-
-    /// Snapshot the optimizer's internal state (momentum, variance, step count).
-    fn snapshot(&self, role: &str) -> OptimizerSnapshot;
-
-    /// Restore optimizer state from a snapshot.
-    fn load_snapshot(&mut self, snapshot: &OptimizerSnapshot);
-}
-```
-
-1 implementation: Adam. (OptimizerConfig is an enum — future optimizers
-like AdamW would also implement this.)
+`ValueFn::descriptor()` and `QFunction::descriptor()` are added in Phase 3
+when checkpoint types need them. Not needed for Tier 1 artifacts.
 
 ---
 
@@ -394,8 +400,7 @@ These types gain `#[derive(Serialize, Deserialize)]`:
 
 - `EpochMetrics` (needed for training curve in provenance)
 - `Activation` (already `Copy + Clone + Debug + PartialEq + Eq`)
-- `TrainingBudget` (for checkpoint metadata)
-- `OptimizerConfig` (for checkpoint metadata)
+- `OptimizerConfig` (used in `OptimizerSnapshot`)
 
 ### 6.3 Format: JSON v1
 
@@ -414,7 +419,7 @@ These types gain `#[derive(Serialize, Deserialize)]`:
 **File extension**: `.artifact.json` (policy artifacts), `.checkpoint.json` (training checkpoints)
 
 **Version field**: `version: u32` in every artifact.
-- Readers accept `version <= CURRENT_VERSION`
+- `load()` checks version after deserialization — returns `ArtifactError::UnsupportedVersion` if too high
 - Version bumps only for semantic changes to existing fields
 - New optional fields never require a version bump (JSON forward compat)
 
@@ -473,15 +478,25 @@ format from extension.
 
 ---
 
-## 7. Reconstruction
+## 7. Reconstruction and validation
+
+### 7.1 PolicyArtifact methods
 
 ```rust
+/// Current artifact format version.
+pub const CURRENT_VERSION: u32 = 1;
+
 impl PolicyArtifact {
     /// Reconstruct a live policy from this artifact.
     /// The returned policy is ready for forward() — inference/replay only.
-    pub fn into_policy(&self) -> Box<dyn Policy> {
+    ///
+    /// Returns Err if the artifact has an unsupported version, unknown kind,
+    /// or mismatched param count.
+    pub fn to_policy(&self) -> Result<Box<dyn Policy>, ArtifactError> {
+        self.validate()?;
         // Match on (kind, stochastic) to select constructor.
         // Call set_params() to load weights.
+        // Unknown kind (from future version) → ArtifactError::UnknownKind
     }
 
     /// Create an artifact from any live policy (no provenance).
@@ -495,20 +510,136 @@ impl PolicyArtifact {
         }
     }
 
+    /// Attach provenance to this artifact. Returns self for chaining.
+    pub fn with_provenance(mut self, provenance: TrainingProvenance) -> Self {
+        self.provenance = Some(provenance);
+        self
+    }
+
     /// Save to JSON file.
-    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()>;
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ArtifactError> {
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
 
-    /// Load from JSON file.
-    pub fn load(path: impl AsRef<Path>) -> io::Result<Self>;
+    /// Load from JSON file. Validates version on load.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ArtifactError> {
+        let json = std::fs::read_to_string(path)?;
+        let artifact: Self = serde_json::from_str(&json)?;
+        if artifact.version > CURRENT_VERSION {
+            return Err(ArtifactError::UnsupportedVersion {
+                found: artifact.version,
+                max: CURRENT_VERSION,
+            });
+        }
+        Ok(artifact)
+    }
 
-    /// Validate that params length matches descriptor's implied param count.
-    pub fn validate(&self) -> Result<(), String>;
+    /// Validate internal consistency.
+    pub fn validate(&self) -> Result<(), ArtifactError> {
+        // 1. Version check
+        if self.version > CURRENT_VERSION {
+            return Err(ArtifactError::UnsupportedVersion {
+                found: self.version,
+                max: CURRENT_VERSION,
+            });
+        }
+        // 2. obs_scale length matches obs_dim
+        if self.descriptor.obs_scale.len() != self.descriptor.obs_dim {
+            return Err(ArtifactError::ObsScaleMismatch {
+                expected: self.descriptor.obs_dim,
+                actual: self.descriptor.obs_scale.len(),
+            });
+        }
+        // 3. hidden_dims consistency with kind
+        match self.descriptor.kind {
+            NetworkKind::Linear => {
+                if !self.descriptor.hidden_dims.is_empty() {
+                    return Err(ArtifactError::LinearHiddenDims(
+                        self.descriptor.hidden_dims.len(),
+                    ));
+                }
+            }
+            NetworkKind::Mlp | NetworkKind::Autograd => {
+                if self.descriptor.hidden_dims.is_empty() {
+                    return Err(ArtifactError::MissingHiddenDims {
+                        kind: self.descriptor.kind,
+                    });
+                }
+            }
+            // Future kinds — can't validate, but to_policy() will
+            // return UnknownKind if it can't reconstruct.
+            _ => {}
+        }
+        // 4. param count (compute expected from descriptor, compare to actual)
+        let expected = compute_param_count(&self.descriptor);
+        if self.params.len() != expected {
+            return Err(ArtifactError::ParamCountMismatch {
+                expected,
+                actual: self.params.len(),
+            });
+        }
+        Ok(())
+    }
 }
 ```
 
-`from_policy()` is critical — Bevy examples don't go through
-`Algorithm::train()`, but they need to produce artifacts too. This bridges
-the gap: any `&dyn Policy` becomes a `PolicyArtifact` in one call.
+### 7.2 Provenance assembly patterns
+
+**The algorithm returns a bare artifact. The caller builds provenance.**
+
+The algorithm knows: policy state (descriptor + params).
+The caller knows: task name, seed, hyperparams, returned metrics.
+
+**Competition runner pattern:**
+
+```rust
+// Inside Competition::run()
+let metrics = algorithm.train(&mut env, self.budget, self.seed, &on_epoch);
+let artifact = algorithm.policy_artifact().with_provenance(
+    TrainingProvenance {
+        algorithm: algorithm.name().to_string(),
+        task: task.name().to_string(),
+        seed: self.seed,
+        epochs_trained: metrics.len(),
+        final_reward: metrics.last().map_or(f64::NAN, |m| m.mean_reward),
+        total_steps: metrics.iter().map(|m| m.total_steps).sum(),
+        wall_time_ms: metrics.iter().map(|m| m.wall_time_ms).sum(),
+        timestamp: now_iso8601(),
+        hyperparams: BTreeMap::new(), // caller populates if desired
+        metrics: metrics.clone(),
+        parent: None,
+    },
+);
+```
+
+**Curriculum / transfer learning pattern:**
+
+```rust
+// Load parent artifact
+let parent = PolicyArtifact::load("stage1.artifact.json")?;
+let parent_provenance = parent.provenance.clone();
+let warm_policy = parent.to_policy()?;
+
+// Train on harder task
+let mut td3 = Td3::new(warm_policy, ...);
+let metrics = td3.train(&mut hard_env, budget, seed, &on_epoch);
+
+// Build artifact with parent linkage
+let artifact = td3.policy_artifact().with_provenance(
+    TrainingProvenance {
+        algorithm: "TD3".to_string(),
+        task: "reaching-6dof-hard".to_string(),
+        parent: parent_provenance.map(Box::new),
+        // ... other fields ...
+        ..Default::default()
+    },
+);
+```
+
+The parent's full provenance chain is preserved — load a 5-stage
+curriculum artifact and you can trace back to the original training run.
 
 ---
 
@@ -521,7 +652,7 @@ pub struct RunResult {
     pub task_name: String,
     pub algorithm_name: String,
     pub metrics: Vec<EpochMetrics>,
-    pub artifact: PolicyArtifact,       // NEW
+    pub artifact: PolicyArtifact,       // NEW — includes provenance
 }
 ```
 
@@ -531,16 +662,15 @@ New methods on `CompetitionResult`:
 impl CompetitionResult {
     /// Save all artifacts to a directory.
     /// File naming: {task}_{algorithm}.artifact.json
-    pub fn save_artifacts(&self, dir: impl AsRef<Path>) -> io::Result<()>;
+    pub fn save_artifacts(&self, dir: impl AsRef<Path>) -> Result<(), ArtifactError>;
 
     /// Best artifact for a task (highest final reward).
     pub fn best_for_task(&self, task: &str) -> Option<&PolicyArtifact>;
 }
 ```
 
-After this change, every competition run automatically produces saveable
-artifacts. The `save_artifacts()` call is optional — but the artifacts
-are always there in `RunResult`.
+The competition runner builds provenance when constructing `RunResult`
+(it has the task, seed, metrics, algorithm name — everything needed).
 
 ### 8.2 Bevy replay pattern
 
@@ -553,7 +683,7 @@ let _metrics = cem.train(&mut env, budget, seed, &on_epoch);
 let artifact = cem.policy_artifact();
 
 // Phase 2: Replay (Bevy visualization)
-let policy = artifact.into_policy();
+let policy = artifact.to_policy()?;
 // Each frame:
 let obs = get_observation(&sim);
 let action = policy.forward(&obs);
@@ -565,20 +695,7 @@ No file I/O needed for this pattern. But saving is one line:
 
 ### 8.3 Curriculum / transfer learning
 
-```rust
-// Stage 1: Train on easy task
-let artifact_easy = cem.policy_artifact();
-artifact_easy.save("stage1.artifact.json")?;
-
-// Stage 2: Load and continue on hard task
-let loaded = PolicyArtifact::load("stage1.artifact.json")?;
-let mut warm_policy = loaded.into_policy();
-// Pass warm_policy to a new algorithm — weights are pre-trained
-let mut td3 = Td3::new(warm_policy, ...);
-let _metrics = td3.train(&mut hard_env, budget, seed, &on_epoch);
-let artifact_hard = td3.policy_artifact();
-// artifact_hard.provenance.parent == loaded.provenance
-```
+See §7.2 for the full provenance assembly pattern.
 
 ### 8.4 Policy comparison
 
@@ -586,8 +703,8 @@ let artifact_hard = td3.policy_artifact();
 let a = PolicyArtifact::load("cem_reaching.artifact.json")?;
 let b = PolicyArtifact::load("td3_reaching.artifact.json")?;
 
-let policy_a = a.into_policy();
-let policy_b = b.into_policy();
+let policy_a = a.to_policy()?;
+let policy_b = b.to_policy()?;
 
 // Run both on same environment, compare behavior
 for obs in test_observations {
@@ -599,98 +716,49 @@ for obs in test_observations {
 
 ---
 
-## 9. Open questions
-
-### OPEN 1: Should PolicyDescriptor and NetworkDescriptor be unified?
-
-**Separate (current lean):** Policies have `stochastic` flag that critics
-don't. Semantic clarity. Policies are the deployable output; critics are
-training infrastructure.
-
-**Unified:** 90% field overlap. One fewer type. Single reconstruction path.
-
-### OPEN 2: Define `checkpoint()` on Algorithm trait now, or defer?
-
-**Now (current lean):** Define the trait method. `todo!()` the bodies.
-The signature is the hard-to-change part. Implementations are easy to
-fill in one algorithm at a time.
-
-**Defer:** Define the types but no trait method. Add method later when
-first algorithm actually needs cross-session resume.
-
-### OPEN 3: Should `train()` return type change?
-
-**Keep `Vec<EpochMetrics>` + separate `policy_artifact()` (current lean):**
-Less breaking. More flexible. Competition assertions unchanged.
-
-**Return `TrainingResult` bundling both:** Can't forget to extract.
-More "foundational". Larger break.
-
-### OPEN 4: EpochMetrics — derive Serialize directly, or mirror type?
-
-**Derive directly (current lean):** serde is a required dep, not optional.
-No ceremony, no conversion.
-
-**Mirror type:** `SerializableEpochMetrics` with `From<EpochMetrics>`.
-Decouples public API from serde. Adds boilerplate.
-
-### OPEN 5: Replay buffer in checkpoint type?
-
-**Optional field, implement later (current lean):** Define
-`replay_buffer: Option<ReplayBufferSnapshot>` in `TrainingCheckpoint`.
-Always serialize as `None` for now. Fill in when cross-session off-policy
-training is needed.
-
-**Omit entirely:** Don't even define the field. Add when needed. Cleaner
-now but a structural change to the checkpoint format later.
-
-### OPEN 6: File naming convention?
-
-Options for auto-saved competition artifacts:
-- `{task}_{algorithm}.artifact.json` (simple, no seed — overwrite on rerun)
-- `{task}_{algorithm}_{seed}.artifact.json` (reproducibility)
-- `{task}_{algorithm}_{seed}_{timestamp}.artifact.json` (never overwrite)
-
----
-
-## 10. Implementation scope
+## 9. Implementation scope
 
 ### Trait changes (breaking)
 - `Policy::descriptor()` — 5 concrete impls
-- `ValueFn::descriptor()` — 3 concrete impls
-- `QFunction::descriptor()` — 3 concrete impls
 - `Algorithm::policy_artifact()` — 5 concrete impls
-- `Algorithm::checkpoint()` — 5 concrete impls (todo!() initially)
-- `Optimizer::snapshot()` + `load_snapshot()` — 1 concrete impl (Adam)
 
 ### New types
-- `PolicyDescriptor`, `PolicyKind`
-- `NetworkDescriptor`, `NetworkKind`
-- `PolicyArtifact` (with `save`, `load`, `into_policy`, `from_policy`, `validate`)
+- `NetworkKind` (shared enum)
+- `PolicyDescriptor`
+- `NetworkDescriptor` (defined now, used by checkpoint types)
+- `PolicyArtifact` (with `save`, `load`, `to_policy`, `from_policy`, `with_provenance`, `validate`)
 - `TrainingProvenance`
-- `TrainingCheckpoint`, `NetworkSnapshot`, `OptimizerSnapshot`, `OptimizerConfigSnapshot`
+- `ArtifactError`
+- `TrainingCheckpoint`, `NetworkSnapshot`, `OptimizerSnapshot` (types only, no trait methods)
 
 ### Serde derives on existing types
 - `EpochMetrics`
 - `Activation`
-- `TrainingBudget`
 - `OptimizerConfig`
 
 ### Infrastructure changes
 - `RunResult` gains `artifact: PolicyArtifact` field
 - `CompetitionResult` gains `save_artifacts()` and `best_for_task()`
-- `Cargo.toml`: add `serde`, `serde_json` as required deps
+- `Cargo.toml`: add `serde` (with `derive` feature), `serde_json` as required deps
+
+### Deferred trait methods (added when first implementation exists)
+- `ValueFn::descriptor()` — 3 impls (when checkpoint implementations begin)
+- `QFunction::descriptor()` — 3 impls (when checkpoint implementations begin)
+- `Algorithm::checkpoint()` — 5 impls (per-algorithm, as needed)
+- `Optimizer::snapshot()` + `load_snapshot()` — 1 impl (Adam)
 
 ### New tests
-- Round-trip: create artifact → save → load → validate → into_policy → forward matches
-- Every policy type: descriptor round-trip
+- Round-trip: create artifact → save → load → validate → to_policy → forward matches
+- Every policy type: descriptor correctness
 - Every algorithm: policy_artifact produces valid artifact after training
-- Provenance chain: parent linkage for curriculum learning
-- Competition: save_artifacts writes correct files
+- Validation: version check, param count, obs_scale length, hidden_dims consistency
+- Error cases: unsupported version, corrupted JSON, param count mismatch
+- Provenance: with_provenance builder, parent linkage
+- Competition: save_artifacts writes correct files, best_for_task returns highest reward
 
 ---
 
-## 11. What this enables — the timeline
+## 10. What this enables — the timeline
 
 ### Now
 - Competition tests save winning policies for inspection
@@ -704,7 +772,7 @@ Options for auto-saved competition artifacts:
 - Architecture search (try different hidden_dims, save best artifact)
 
 ### Medium
-- Resume training from checkpoint (full Tier 2 implementation)
+- Resume training from checkpoint (Tier 2 trait methods + implementations)
 - Policy distillation (train small policy to mimic large one)
 - Policy zoo / library (directory of artifacts with metadata)
 - Training analysis dashboards (load provenance, plot curves)
@@ -719,33 +787,37 @@ Options for auto-saved competition artifacts:
 
 ---
 
-## 12. Phasing (proposed)
+## 11. Phasing
 
 **Phase 1 — Foundation types + Policy trait surgery**
-- New types: PolicyDescriptor, PolicyKind, PolicyArtifact, TrainingProvenance
-- Serde derives on EpochMetrics, Activation
+- New deps: `serde` (with `derive`), `serde_json`
+- Serde derives on EpochMetrics, Activation, OptimizerConfig
+- New types: NetworkKind, PolicyDescriptor, PolicyArtifact, TrainingProvenance, ArtifactError
 - Policy::descriptor() on trait + 5 impls
-- PolicyArtifact::from_policy(), save(), load(), into_policy(), validate()
+- PolicyArtifact: from_policy(), with_provenance(), save(), load(), to_policy(), validate()
 - Round-trip tests for every policy type
+- Validation tests (version, param count, obs_scale, hidden_dims, error cases)
 
 **Phase 2 — Algorithm integration**
 - Algorithm::policy_artifact() on trait + 5 impls
 - RunResult gains artifact field
+- Competition runner builds provenance during run()
 - CompetitionResult gains save_artifacts(), best_for_task()
 - Competition tests verify artifacts
 
-**Phase 3 — Critic descriptors + checkpoint types**
-- NetworkDescriptor, NetworkKind
-- ValueFn::descriptor() + 3 impls
-- QFunction::descriptor() + 3 impls
-- TrainingCheckpoint, NetworkSnapshot, OptimizerSnapshot types
-- Algorithm::checkpoint() on trait + 5 todo!() impls
-- Optimizer::snapshot() + load_snapshot()
-
-**Phase 4 — Visual proof**
+**Phase 3 — Visual proof**
 - Train-then-replay Bevy example (CEM on reaching-2dof)
 - Trains inline (~20 epochs), switches to Bevy visualization
 - Saves artifact to disk as side effect
+- This is the user-facing proof that the system works
+
+**Phase 4 — Critic descriptors + checkpoint types (when needed)**
+- NetworkDescriptor already defined in Phase 1
+- ValueFn::descriptor() + 3 impls
+- QFunction::descriptor() + 3 impls
+- TrainingCheckpoint, NetworkSnapshot, OptimizerSnapshot types already defined
+- Algorithm::checkpoint() added to trait when first algorithm implements it
+- Optimizer::snapshot() + load_snapshot() added to trait when needed
 
 **Phase 5 — Checkpoint implementations (per-algorithm, as needed)**
 - CEM checkpoint (simple: policy + noise_std)
