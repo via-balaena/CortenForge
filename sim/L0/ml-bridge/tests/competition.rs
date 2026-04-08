@@ -38,7 +38,7 @@ use sim_ml_bridge::{
     CemHyperparams, Competition, LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue,
     MlpPolicy, MlpQ, MlpValue, OptimizerConfig, Ppo, PpoHyperparams, Reinforce,
     ReinforceHyperparams, RunResult, Sac, SacHyperparams, TaskConfig, Td3, Td3Hyperparams,
-    TrainingBudget, reaching_2dof, reaching_6dof,
+    TrainingBudget, obstacle_reaching_6dof, reaching_2dof, reaching_6dof,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1668,4 +1668,100 @@ fn budget_scaling_more_envs() {
     // At ~5,400 params, that's 1:27 candidates/param (vs 1:108 at baseline).
     // Still insufficient for gradient-free search, but 4x better coverage.
     eprintln!("\nCEM note: 200 candidates/gen (1:27 params/candidate) vs 50 (1:108) at baseline");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 6c: Obstacle avoidance task
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The obstacle avoidance task (`obstacle_reaching_6dof`) structurally
+// advantages gradient methods over CEM:
+//
+// 1. Nonlinear obs→action mapping (go-around requires spatial reasoning)
+// 2. Multi-modal reward landscape (two paths around the obstacle)
+// 3. Task-space reward (fingertip position, not joint angles)
+// 4. Penalty discontinuity (non-convex reward surface)
+//
+// Prediction: TD3 or SAC clearly outperform CEM at 50ep/50env with
+// 2-layer [64,64] — the nonlinear reward landscape breaks CEM's
+// gradient-free advantage that held on the smooth quadratic reaching task.
+
+// ── Test 13: Obstacle avoidance — 2-layer autograd ────────────────────────
+
+/// All 5 algorithms, autograd backends, 2 hidden layers (64+64), `ReLU`,
+/// Xavier/He init, 6-DOF obstacle avoidance task.
+///
+/// **The hypothesis**: a nonlinear reward landscape (obstacle penalty +
+/// task-space reaching) breaks CEM's dominance that held on the smooth
+/// quadratic `reaching_6dof` task.
+///
+/// On `reaching_6dof`, CEM (-3.07) beat TD3 (-4.08) at these settings
+/// (Test 9).  The obstacle task adds a penalty ridge that requires
+/// spatial reasoning — "go around" — which a linear/evolutionary
+/// approach can't represent but gradient-trained MLPs can.
+///
+/// Parameter counts (obstacle-reaching-6dof: obs=21, act=6):
+/// - `AutogradPolicy` [64,64]: 21*64 + 64 + 64*64 + 64 + 64*6 + 6 = 5,958
+/// - `AutogradQ` [64,64]:      27*64 + 64 + 64*64 + 64 + 64*1 + 1 = 6,017
+/// - CEM with 50 candidates exploring ~6K dims: ~120 params/candidate
+#[test]
+#[ignore = "multi-minute competition run"]
+fn competition_6dof_obstacle_autograd_2layer() {
+    let task = obstacle_reaching_6dof();
+    let comp = Competition::new_verbose(50, TrainingBudget::Epochs(50), 42);
+
+    let builders: Vec<&dyn Fn(&TaskConfig) -> Box<dyn Algorithm>> = vec![
+        &build_cem_autograd_2layer,
+        &build_reinforce_autograd_2layer,
+        &build_ppo_autograd_2layer,
+        &build_td3_autograd_2layer,
+        &build_sac_autograd_2layer,
+    ];
+
+    let result = comp.run(&[task], &builders).expect("competition failed");
+    result.print_summary();
+
+    let cem = result.find("obstacle-reaching-6dof", "CEM").unwrap();
+    let td3 = result.find("obstacle-reaching-6dof", "TD3").unwrap();
+    let sac = result.find("obstacle-reaching-6dof", "SAC").unwrap();
+    let ppo = result.find("obstacle-reaching-6dof", "PPO").unwrap();
+    let reinforce = result.find("obstacle-reaching-6dof", "REINFORCE").unwrap();
+
+    // All metrics must be finite.
+    for run in [cem, td3, sac, ppo, reinforce] {
+        run.assert_finite();
+    }
+
+    let r_cem = cem.final_reward().unwrap();
+    let r_td3 = td3.final_reward().unwrap();
+    let r_sac = sac.final_reward().unwrap();
+    let r_ppo = ppo.final_reward().unwrap();
+    let r_reinforce = reinforce.final_reward().unwrap();
+
+    result.print_ranked(
+        "obstacle-reaching-6dof",
+        "Phase 6c: Obstacle avoidance (50ep/50env, 2-layer autograd)",
+    );
+    print_reversal_check(
+        r_cem,
+        &[
+            ("TD3", r_td3),
+            ("SAC", r_sac),
+            ("PPO", r_ppo),
+            ("REINFORCE", r_reinforce),
+        ],
+    );
+
+    // The headline assertion: TD3 or SAC beats CEM on the nonlinear task.
+    let best_gradient = r_td3.max(r_sac);
+    assert!(
+        best_gradient > r_cem,
+        "Expected TD3 ({r_td3:.2}) or SAC ({r_sac:.2}) to beat CEM ({r_cem:.2}) \
+         on the obstacle avoidance task — the nonlinear reward landscape should \
+         break CEM's gradient-free advantage"
+    );
+
+    // Compare against reaching_6dof baseline (Test 9).
+    eprintln!("\nreaching-6dof baseline (Test 9, same settings):");
+    eprintln!("  CEM: -3.07, TD3: -4.08, SAC: -30.04, PPO: -9026, REINFORCE: -11980");
 }

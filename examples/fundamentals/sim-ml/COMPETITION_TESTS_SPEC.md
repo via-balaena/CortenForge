@@ -529,3 +529,52 @@ Next steps (Phase 6c): design a nonlinear task where CEM's gradient-free
 search fundamentally can't compete — obstacle avoidance, contact
 manipulation, or multi-waypoint reaching. On a smooth quadratic reward,
 CEM will always be competitive if given enough candidates.
+
+---
+
+## Phase 6c results (obstacle avoidance task)
+
+### Test 13: `competition_6dof_obstacle_autograd_2layer` (TBD)
+
+All 5 algorithms, autograd backends, 2 hidden layers (64+64), ReLU,
+Xavier/He init, 6-DOF obstacle avoidance task. Same budget as Test 9
+(50 envs, 50 epochs, seed 42). The only change: `obstacle_reaching_6dof()`
+instead of `reaching_6dof()`.
+
+**Task design**: Same 6-DOF arm, same target. A static obstacle (sphere,
+r=0.06) sits between the arm's rest position and the target. The agent
+must curve around it. Reward = `-dist(fingertip, target) - 10.0 * max(0,
+0.12 - dist(fingertip, obstacle))`. Contacts disabled — the obstacle is
+a distance-penalty ghost. Observation space: 21 dims (qpos + qvel +
+fingertip pos + obstacle pos + target pos).
+
+**Why this should break CEM**: The obstacle penalty creates a non-convex
+reward surface — the optimal policy must represent "go around," which is
+a nonlinear obs→action mapping. CEM's Gaussian perturbations smear across
+both paths around the obstacle. Gradient methods can commit to one path
+and follow the curvature.
+
+Parameter counts (obs=21, act=6):
+- `AutogradPolicy` [64,64]: 21×64 + 64 + 64×64 + 64 + 64×6 + 6 = 5,958
+- `AutogradQ` [64,64]:      27×64 + 64 + 64×64 + 64 + 64×1 + 1 = 6,017
+- CEM: 50 candidates in ~6K dims → ~120 params/candidate
+
+| Algorithm | Reward | Dones | Test 9 Reward | Change |
+|-----------|--------|-------|---------------|--------|
+| CEM | TBD | TBD | -3.07 | TBD |
+| TD3 | TBD | TBD | -4.08 | TBD |
+| SAC | TBD | TBD | -30.04 | TBD |
+| PPO | TBD | TBD | -9025.90 | TBD |
+| REINFORCE | TBD | TBD | -11979.50 | TBD |
+
+Ordering: TBD
+
+### Headline finding
+
+TBD — waiting for test results.
+
+### Analysis
+
+TBD — will compare against Test 9 (same settings, smooth quadratic task)
+to isolate the effect of the nonlinear reward landscape on algorithm
+ordering.
