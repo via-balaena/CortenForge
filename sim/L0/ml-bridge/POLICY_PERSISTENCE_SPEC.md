@@ -5,7 +5,7 @@
 > of every trait, every algorithm, every policy type. The currency of the
 > ML layer.
 
-**Status**: v2 — Open questions resolved, ready for implementation review
+**Status**: v3 — Nothing deferred, everything implemented
 **Crate**: `sim-ml-bridge`
 **New dependencies**: `serde`, `serde_json`
 
@@ -23,7 +23,7 @@ These mirror how logging was built — structural, universal, extensible.
 | **Forward-compatible** | Adding new policy kinds, new provenance fields, new checkpoint data never breaks existing readers. Unknown JSON fields are silently ignored. Version field gates structural changes. |
 | **Human-inspectable** | `cat policy.artifact.json` tells you the architecture, the weights, the training history. No hex editors, no binary decoders. Debuggability is non-negotiable. |
 | **Composable** | Artifacts are the transfer mechanism between training stages. Train with CEM → save → load as initialization for TD3 → save → deploy in Bevy. Each stage appends provenance. |
-| **No dead code on traits** | Every trait method must have a real implementation. No `todo!()` bodies, no panic stubs. If we aren't implementing it yet, the method doesn't go on the trait yet. Define the types now; add the trait methods when the first algorithm implements them. |
+| **No dead code on traits** | Every trait method has a real implementation. No `todo!()` bodies, no panic stubs. If it goes on the trait, it ships with working code for every implementor. |
 
 ---
 
@@ -74,9 +74,10 @@ Five things come out of training, at three tiers of scope:
 | **Replay buffer** | Stored transitions for off-policy | Resume TD3/SAC without re-collecting data |
 | **RNG state** | Exact random number generator state | Bit-exact reproducibility across resume |
 
-**Scope of this spec**: Tier 1 fully implemented. Tier 2 types defined,
-trait methods and implementations deferred until first real use. Tier 3
-types defined, everything else deferred.
+**Scope of this spec**: Tiers 1 and 2 fully implemented — types, trait
+methods, and real implementations for every algorithm. Tier 3 types
+defined, implementations deferred (replay buffers are large and the
+data model needs real-world checkpoint sizes to inform the design).
 
 ---
 
@@ -245,16 +246,17 @@ pub enum ArtifactError {
 
 Used by `save()`, `load()`, `to_policy()`, and `validate()`.
 
-### 4.7 TrainingCheckpoint — the resume point (types only, no trait methods)
+### 4.7 TrainingCheckpoint — the resume point
 
-These types are defined now for forward compatibility. Trait methods
-(`Algorithm::checkpoint()`, `Optimizer::snapshot()`) are added later
-when the first algorithm actually implements resume-from-checkpoint.
-No `todo!()` stubs.
+Full training state for resuming across sessions. Every algorithm
+implements `checkpoint()` with a real implementation — no stubs.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingCheckpoint {
+    /// Which algorithm produced this checkpoint (e.g., "CEM", "TD3").
+    /// Needed for reconstruction — tells the caller which from_checkpoint() to call.
+    pub algorithm_name: String,
     /// The trained policy at this point.
     pub policy_artifact: PolicyArtifact,
     /// Critic networks (V for PPO; Q1, Q2, targets for TD3/SAC).
@@ -294,6 +296,65 @@ pub struct OptimizerSnapshot {
 
 Note: `OptimizerSnapshot.config` uses the existing `OptimizerConfig` enum
 directly (with serde derives added). No separate snapshot config type.
+
+**Checkpoint contents per algorithm:**
+
+| Algorithm | policy | critics | optimizers | algorithm_state |
+|-----------|--------|---------|------------|-----------------|
+| CEM | actor | — | — | `noise_std` |
+| REINFORCE | actor | — | actor | `sigma` |
+| PPO | actor | value | actor, value | — |
+| TD3 | actor, actor_target | q1, q2, q1_target, q2_target | actor, q1, q2 | — |
+| SAC | actor | q1, q2, q1_target, q2_target | actor, q1, q2 | `log_alpha`, `alpha_lr` |
+
+**Reconstruction pattern:**
+
+Checkpoints capture learned state. Hyperparams are configuration the
+caller provides — you might want to resume with a different learning
+rate (annealing) or different batch size:
+
+```rust
+impl Td3 {
+    pub fn from_checkpoint(
+        checkpoint: &TrainingCheckpoint,
+        optimizer_config: OptimizerConfig,
+        hyperparams: Td3Hyperparams,
+    ) -> Result<Self, ArtifactError> {
+        // Reconstruct policy from checkpoint.policy_artifact
+        // Reconstruct critics from checkpoint.critics
+        // Reconstruct optimizers from checkpoint.optimizer_states
+        // Apply hyperparams
+    }
+}
+```
+
+Each algorithm has its own `from_checkpoint()` constructor (not on the
+trait — returns concrete `Self`, needs algorithm-specific hyperparams).
+
+### 4.8 Checkpoint save/load
+
+```rust
+impl TrainingCheckpoint {
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ArtifactError> {
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ArtifactError> {
+        let json = std::fs::read_to_string(path)?;
+        let checkpoint: Self = serde_json::from_str(&json)?;
+        // Version check via the embedded policy artifact
+        if checkpoint.policy_artifact.version > CURRENT_VERSION {
+            return Err(ArtifactError::UnsupportedVersion {
+                found: checkpoint.policy_artifact.version,
+                max: CURRENT_VERSION,
+            });
+        }
+        Ok(checkpoint)
+    }
+}
+```
 
 ---
 
@@ -341,7 +402,7 @@ pub trait QFunction: Send + Sync {
 
 3 implementations: LinearQ, MlpQ, AutogradQ.
 
-### 5.4 Algorithm trait — add `policy_artifact()` only
+### 5.4 Algorithm trait — add `policy_artifact()` and `checkpoint()`
 
 ```rust
 pub trait Algorithm: Send {
@@ -364,25 +425,44 @@ pub trait Algorithm: Send {
     /// Can be called after train() for the final policy, or at any time
     /// for intermediate snapshots.
     fn policy_artifact(&self) -> PolicyArtifact;
+
+    /// Extract full training state for later resumption.
+    ///
+    /// Includes policy, critics, optimizer momentum — everything needed
+    /// to continue training without regression. Each algorithm implements
+    /// this with real code that captures its specific internal state.
+    ///
+    /// Reconstruction is via per-algorithm `from_checkpoint()` constructors
+    /// (not on the trait — needs algorithm-specific hyperparams).
+    fn checkpoint(&self) -> TrainingCheckpoint;
 }
 ```
-
-**No `checkpoint()` method.** The `TrainingCheckpoint` type exists (§4.7)
-but the trait method is added later when the first algorithm implements
-resume-from-checkpoint. This avoids `todo!()` stubs.
 
 `train()` return type is **unchanged** (`Vec<EpochMetrics>`). The artifact
 is accessed via the separate `policy_artifact()` method — more flexible
 (callable any time) and non-breaking for existing competition assertions.
 
-### 5.5 Optimizer, ValueFn, QFunction — no new trait methods yet
+5 implementations for `policy_artifact()`: CEM, REINFORCE, PPO, TD3, SAC.
+5 implementations for `checkpoint()`: CEM, REINFORCE, PPO, TD3, SAC.
+5 `from_checkpoint()` constructors (not on trait, per-algorithm).
 
-`Optimizer::snapshot()` / `load_snapshot()` are deferred until checkpoint
-implementations begin. The `OptimizerSnapshot` type exists (§4.7) but
-no trait method forces a panic stub.
+### 5.5 Optimizer trait — add `snapshot()` and `load_snapshot()`
 
-`ValueFn::descriptor()` and `QFunction::descriptor()` are added in Phase 3
-when checkpoint types need them. Not needed for Tier 1 artifacts.
+```rust
+pub trait Optimizer: Send + Sync {
+    // ... existing methods unchanged ...
+
+    /// Snapshot the optimizer's internal state (momentum, variance, step count).
+    fn snapshot(&self, role: &str) -> OptimizerSnapshot;
+
+    /// Restore optimizer state from a snapshot.
+    fn load_snapshot(&mut self, snapshot: &OptimizerSnapshot);
+}
+```
+
+1 implementation: Adam (exposes `m`, `v`, `t` which are already fields
+on the struct). Future optimizers (AdamW, SGD+momentum) implement the
+same interface.
 
 ---
 
@@ -720,16 +800,25 @@ for obs in test_observations {
 
 ### Trait changes (breaking)
 - `Policy::descriptor()` — 5 concrete impls
+- `ValueFn::descriptor()` — 3 concrete impls
+- `QFunction::descriptor()` — 3 concrete impls
 - `Algorithm::policy_artifact()` — 5 concrete impls
+- `Algorithm::checkpoint()` — 5 concrete impls
+- `Optimizer::snapshot()` + `load_snapshot()` — 1 concrete impl (Adam)
+
+### Per-algorithm constructors
+- `Cem::from_checkpoint()` + `Reinforce::from_checkpoint()` + `Ppo::from_checkpoint()` + `Td3::from_checkpoint()` + `Sac::from_checkpoint()`
 
 ### New types
 - `NetworkKind` (shared enum)
 - `PolicyDescriptor`
-- `NetworkDescriptor` (defined now, used by checkpoint types)
+- `NetworkDescriptor`
 - `PolicyArtifact` (with `save`, `load`, `to_policy`, `from_policy`, `with_provenance`, `validate`)
 - `TrainingProvenance`
 - `ArtifactError`
-- `TrainingCheckpoint`, `NetworkSnapshot`, `OptimizerSnapshot` (types only, no trait methods)
+- `TrainingCheckpoint` (with `save`, `load`)
+- `NetworkSnapshot`
+- `OptimizerSnapshot`
 
 ### Serde derives on existing types
 - `EpochMetrics`
@@ -741,16 +830,12 @@ for obs in test_observations {
 - `CompetitionResult` gains `save_artifacts()` and `best_for_task()`
 - `Cargo.toml`: add `serde` (with `derive` feature), `serde_json` as required deps
 
-### Deferred trait methods (added when first implementation exists)
-- `ValueFn::descriptor()` — 3 impls (when checkpoint implementations begin)
-- `QFunction::descriptor()` — 3 impls (when checkpoint implementations begin)
-- `Algorithm::checkpoint()` — 5 impls (per-algorithm, as needed)
-- `Optimizer::snapshot()` + `load_snapshot()` — 1 impl (Adam)
-
 ### New tests
 - Round-trip: create artifact → save → load → validate → to_policy → forward matches
 - Every policy type: descriptor correctness
 - Every algorithm: policy_artifact produces valid artifact after training
+- Every algorithm: checkpoint round-trip (checkpoint → save → load → from_checkpoint → train continues)
+- Optimizer: snapshot → load_snapshot preserves momentum state
 - Validation: version check, param count, obs_scale length, hidden_dims consistency
 - Error cases: unsupported version, corrupted JSON, param count mismatch
 - Provenance: with_provenance builder, parent linkage
@@ -760,22 +845,23 @@ for obs in test_observations {
 
 ## 10. What this enables — the timeline
 
-### Now
+### Now (ships with this spec)
 - Competition tests save winning policies for inspection
 - Train-then-replay examples (one binary: train inline → Bevy visualization)
 - Compare policies across experiments
-
-### Near
-- Epoch-level checkpointing (call `policy_artifact()` from `on_epoch`)
+- Resume training from checkpoint (full Tier 2 — all 5 algorithms)
+- Epoch-level checkpointing (call `checkpoint()` or `policy_artifact()` from `on_epoch`)
 - Curriculum learning (load easy-task policy → continue on hard task)
+
+### Near (enabled by this foundation, built when needed)
 - Policy evaluation harness (load saved policy, evaluate on N episodes)
 - Architecture search (try different hidden_dims, save best artifact)
+- Policy distillation (train small policy to mimic large one)
+- Training analysis dashboards (load provenance, plot curves)
 
 ### Medium
-- Resume training from checkpoint (Tier 2 trait methods + implementations)
-- Policy distillation (train small policy to mimic large one)
 - Policy zoo / library (directory of artifacts with metadata)
-- Training analysis dashboards (load provenance, plot curves)
+- Replay buffer checkpointing (Tier 3 — large, needs real-world sizing data)
 
 ### Far
 - Export to deployment formats (ONNX, TFLite — built on top of artifacts)
@@ -789,39 +875,40 @@ for obs in test_observations {
 
 ## 11. Phasing
 
-**Phase 1 — Foundation types + Policy trait surgery**
+**Phase 1 — Foundation types + descriptor trait surgery**
 - New deps: `serde` (with `derive`), `serde_json`
 - Serde derives on EpochMetrics, Activation, OptimizerConfig
-- New types: NetworkKind, PolicyDescriptor, PolicyArtifact, TrainingProvenance, ArtifactError
+- New types: NetworkKind, PolicyDescriptor, NetworkDescriptor, ArtifactError
+- New types: PolicyArtifact, TrainingProvenance
 - Policy::descriptor() on trait + 5 impls
+- ValueFn::descriptor() on trait + 3 impls
+- QFunction::descriptor() on trait + 3 impls
 - PolicyArtifact: from_policy(), with_provenance(), save(), load(), to_policy(), validate()
-- Round-trip tests for every policy type
+- Round-trip tests for every policy type + value/Q type
 - Validation tests (version, param count, obs_scale, hidden_dims, error cases)
 
-**Phase 2 — Algorithm integration**
+**Phase 2 — Algorithm integration + checkpointing**
+- New types: TrainingCheckpoint, NetworkSnapshot, OptimizerSnapshot
+- Optimizer::snapshot() + load_snapshot() on trait + Adam impl
 - Algorithm::policy_artifact() on trait + 5 impls
+- Algorithm::checkpoint() on trait + 5 real impls:
+  - CEM: policy + noise_std
+  - REINFORCE: policy + actor optimizer + sigma
+  - PPO: policy + value + actor optimizer + value optimizer
+  - TD3: actor + actor_target + q1 + q2 + q1_target + q2_target + 3 optimizers
+  - SAC: actor + q1 + q2 + q1_target + q2_target + 2 optimizers + log_alpha
+- Per-algorithm from_checkpoint() constructors (5 impls)
+- Checkpoint round-trip tests for every algorithm
+
+**Phase 3 — Competition integration**
 - RunResult gains artifact field
 - Competition runner builds provenance during run()
 - CompetitionResult gains save_artifacts(), best_for_task()
+- TrainingCheckpoint save/load
 - Competition tests verify artifacts
 
-**Phase 3 — Visual proof**
+**Phase 4 — Visual proof**
 - Train-then-replay Bevy example (CEM on reaching-2dof)
 - Trains inline (~20 epochs), switches to Bevy visualization
 - Saves artifact to disk as side effect
 - This is the user-facing proof that the system works
-
-**Phase 4 — Critic descriptors + checkpoint types (when needed)**
-- NetworkDescriptor already defined in Phase 1
-- ValueFn::descriptor() + 3 impls
-- QFunction::descriptor() + 3 impls
-- TrainingCheckpoint, NetworkSnapshot, OptimizerSnapshot types already defined
-- Algorithm::checkpoint() added to trait when first algorithm implements it
-- Optimizer::snapshot() + load_snapshot() added to trait when needed
-
-**Phase 5 — Checkpoint implementations (per-algorithm, as needed)**
-- CEM checkpoint (simple: policy + noise_std)
-- REINFORCE checkpoint (policy + optimizer + sigma)
-- PPO checkpoint (policy + value + optimizers)
-- TD3 checkpoint (policy + targets + Q1/Q2 + targets + optimizers)
-- SAC checkpoint (full state)
