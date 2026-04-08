@@ -918,125 +918,214 @@ for obs in test_observations {
 ## 12. Spec grading rubric
 
 Implementation begins only when every criterion reaches A+.
+Each checkbox is pass/fail — verified by reading code, running grep,
+or reasoning from the spec. A criterion gets A+ when every box is
+checked. Any unchecked box means the spec has a gap to fix first.
 
-### Criterion 1: Codebase accuracy
+### Criterion 1: Codebase verification
 > Every claim about existing code is verified against the actual source.
+> Merge of accuracy + stress testing — you can't grade one without the other.
 
-- [ ] All 5 policy types enumerated (Linear, Mlp, Autograd, LinearStochastic, AutogradStochastic) — verify no missing types
-- [ ] All 3 ValueFn types enumerated (LinearValue, MlpValue, AutogradValue) — verify no missing types
-- [ ] All 3 QFunction types enumerated (LinearQ, MlpQ, AutogradQ) — verify no missing types
-- [ ] All 5 algorithm types enumerated (Cem, Reinforce, Ppo, Td3, Sac) — verify no missing types
-- [ ] Every field referenced on concrete types (obs_dim, act_dim, hidden_dims, obs_scale, activation) actually exists on those structs
-- [ ] Optimizer internal state (m, v, t) matches actual Adam struct fields
-- [ ] `Policy` trait current methods match spec's "existing methods unchanged" claims
-- [ ] `ValueFn` trait current methods match spec's claims
-- [ ] `QFunction` trait current methods match spec's claims
-- [ ] `Algorithm` trait current methods match spec's claims
-- [ ] `Optimizer` trait current methods match spec's claims
-- [ ] `EpochMetrics` fields match spec's usage in TrainingProvenance
-- [ ] `OptimizerConfig` enum variants match spec's usage in OptimizerSnapshot
-- [ ] Competition runner (`Competition::run()`) flow matches §7.2 provenance assembly pattern
-- [ ] `RunResult` current fields match spec's claims (before adding artifact)
-- [ ] MockAlgorithm in competition.rs tests — identified and accounted for in breaking changes
+**Trait impl counts** (grep `impl Trait for` in `sim/L0/ml-bridge/src/`):
+- [ ] `impl Policy for` — confirm exactly 5 types, list them, verify spec matches
+- [ ] `impl DifferentiablePolicy for` — list all, note which are also Policy impls
+- [ ] `impl StochasticPolicy for` — list all
+- [ ] `impl ValueFn for` — confirm exactly 3 types, list them
+- [ ] `impl QFunction for` — confirm exactly 3 types, list them
+- [ ] `impl Algorithm for` — confirm exactly 5 types, list them (include test mocks)
+- [ ] `impl Optimizer for` — confirm exactly 1 type (Adam)
+
+**Struct fields** (read each concrete type's struct definition):
+- [ ] For each policy type: verify obs_dim, act_dim, obs_scale are stored fields
+- [ ] For MlpPolicy: verify hidden_dim is a stored field (note: single usize, not Vec)
+- [ ] For AutogradPolicy: verify hidden layer info is stored (check if Vec<usize> or LayerOffsets)
+- [ ] For each policy type: verify activation is stored (or implicit — e.g., LinearPolicy has no activation)
+- [ ] For Adam: verify m, v, t are stored fields
+- [ ] For each algorithm: list every Box<dyn Policy/DifferentiablePolicy/StochasticPolicy> field
+- [ ] For each algorithm: list every Box<dyn ValueFn> field
+- [ ] For each algorithm: list every Box<dyn QFunction> field
+- [ ] For each algorithm: list every Box<dyn Optimizer> field (note: some use OptimizerConfig.build() inline)
+- [ ] For TD3: verify target networks are separate fields, count them
+- [ ] For SAC: verify target networks are separate fields, count them
+- [ ] For REINFORCE: verify sigma is a stored field
+- [ ] For SAC: verify log_alpha (or alpha) is a stored field
+- [ ] For CEM: verify noise_std is a stored field
+
+**Existing types and traits** (read the actual trait definitions):
+- [ ] Policy trait: list every method, confirm spec's "existing methods unchanged" is accurate
+- [ ] ValueFn trait: list every method
+- [ ] QFunction trait: list every method
+- [ ] Algorithm trait: list every method
+- [ ] Optimizer trait: list every method
+- [ ] EpochMetrics: list every field, confirm spec's TrainingProvenance usage matches
+- [ ] OptimizerConfig: list every variant and its fields
+- [ ] RunResult: list every field (before our changes)
+- [ ] CompetitionResult: list every method
+- [ ] Competition::run() flow: verify it matches §7.2 provenance assembly pattern
+- [ ] Activation enum: list variants, confirm serde compatibility
 
 **Grade**: ___
 
 ### Criterion 2: Type system soundness
 > Every proposed type, trait method, and impl is valid Rust.
 
-- [ ] `Policy::descriptor(&self) -> PolicyDescriptor` — object-safe (no `Self`, no generics)
-- [ ] `Algorithm::checkpoint(&self) -> TrainingCheckpoint` — object-safe
-- [ ] `Algorithm::policy_artifact(&self) -> PolicyArtifact` — object-safe
-- [ ] `Optimizer::snapshot(&self, role: &str) -> OptimizerSnapshot` — object-safe
-- [ ] `Optimizer::load_snapshot(&mut self, snapshot: &OptimizerSnapshot)` — object-safe
-- [ ] `PolicyArtifact::to_policy(&self) -> Result<Box<dyn Policy>, ArtifactError>` — trait objects work for return type
-- [ ] `#[non_exhaustive]` on `NetworkKind` — `match` arms with `_ =>` wildcard compile
-- [ ] Serde derives on `EpochMetrics` — `BTreeMap<String, f64>` serializes correctly
-- [ ] Serde derives on `OptimizerConfig` — enum with named fields serializes correctly
-- [ ] `TrainingProvenance.parent: Option<Box<TrainingProvenance>>` — recursive type with Box compiles, serde handles it
-- [ ] `PolicyArtifact` doesn't hold `Box<dyn Policy>` (would break Serialize) — stores flat `Vec<f64>` instead (confirmed)
-- [ ] All new types derive `Debug, Clone, Serialize, Deserialize` — no fields that block these derives
+**Object safety** (trait methods must work with `Box<dyn Trait>`):
+- [ ] `Policy::descriptor(&self) -> PolicyDescriptor` — no Self, no generics
+- [ ] `ValueFn::descriptor(&self) -> NetworkDescriptor` — no Self, no generics
+- [ ] `QFunction::descriptor(&self) -> NetworkDescriptor` — no Self, no generics
+- [ ] `Algorithm::policy_artifact(&self) -> PolicyArtifact` — no Self, no generics
+- [ ] `Algorithm::checkpoint(&self) -> TrainingCheckpoint` — no Self, no generics
+- [ ] `Optimizer::snapshot(&self, role: &str) -> OptimizerSnapshot` — no Self, no generics
+- [ ] `Optimizer::load_snapshot(&mut self, snapshot: &OptimizerSnapshot)` — no Self, no generics
+
+**Serde compatibility**:
+- [ ] `EpochMetrics` — all fields are serde-friendly (BTreeMap<String, f64> works)
+- [ ] `OptimizerConfig` — enum with named fields serializes correctly via serde
+- [ ] `Activation` — simple enum, serde derives don't conflict with existing derives
+- [ ] `TrainingProvenance.parent: Option<Box<TrainingProvenance>>` — recursive type compiles with serde
+- [ ] All new types: no fields that block `Debug, Clone, Serialize, Deserialize`
+- [ ] `PolicyArtifact` stores `Vec<f64>` not `Box<dyn Policy>` (dyn Trait can't derive Serialize)
+- [ ] `#[non_exhaustive]` on NetworkKind — match with `_ =>` wildcard compiles, serde deserializes unknown variants as error (not panic)
+
+**NaN / Infinity**:
+- [ ] `serde_json` rejects NaN and Infinity f64 by default — spec must address this
+- [ ] EpochMetrics.mean_reward can be NaN (assert_finite exists but isn't always called)
+- [ ] Spec specifies: validate all metrics are finite before serialization, OR document as known constraint, OR use custom serializer
 
 **Grade**: ___
 
 ### Criterion 3: Completeness
 > No gaps — every path through the system is specified.
 
+**Descriptor ↔ reconstruction mapping**:
 - [ ] Every concrete Policy type can produce a valid PolicyDescriptor
-- [ ] Every PolicyDescriptor can reconstruct the correct concrete Policy type via to_policy()
+- [ ] Every valid (kind, stochastic) combination maps to a concrete type OR a documented ArtifactError
+- [ ] Specifically: (Mlp, stochastic: true) — MlpStochasticPolicy doesn't exist. Spec addresses this.
+- [ ] Specifically: (Linear, stochastic: true) — LinearStochasticPolicy exists. Verify.
+- [ ] Specifically: (Autograd, stochastic: true) — AutogradStochasticPolicy exists. Verify.
 - [ ] Every concrete ValueFn type can produce a valid NetworkDescriptor
 - [ ] Every concrete QFunction type can produce a valid NetworkDescriptor
+
+**Param count formula**:
+- [ ] `compute_param_count()` formula is defined in the spec (not just called — actually specified)
+- [ ] Formula covers Linear (non-stochastic)
+- [ ] Formula covers Linear (stochastic)
+- [ ] Formula covers Mlp (non-stochastic, single hidden layer)
+- [ ] Formula covers Autograd (non-stochastic, arbitrary hidden layers)
+- [ ] Formula covers Autograd (stochastic, arbitrary hidden layers)
+- [ ] Each formula verified against actual n_params() output from constructing a test policy
+
+**Checkpoint completeness**:
 - [ ] Every algorithm's checkpoint() captures ALL mutable state that changes during training
 - [ ] Every algorithm has a from_checkpoint() that restores ALL captured state
-- [ ] Checkpoint table (§4.7) is complete — no missing networks or optimizer instances per algorithm
-- [ ] param count computation from PolicyDescriptor is specified for all NetworkKind variants
-- [ ] Error cases: what happens loading a Linear artifact with hidden_dims=[64]? (should fail validation)
-- [ ] Error cases: what happens loading a future NetworkKind? (to_policy returns UnknownKind)
-- [ ] Error cases: what happens with empty params? (param count mismatch)
-- [ ] Provenance chain: can a 5-stage curriculum artifact serialize/deserialize without stack overflow?
+- [ ] Checkpoint table (§4.7) has correct network count per algorithm (verified against struct fields)
+- [ ] Checkpoint table has correct optimizer count per algorithm (verified against struct fields)
+- [ ] SAC optimizer count verified: is it 2 or 3? (actor + q1 + q2 = 3? or actor + critic = 2?)
+
+**Edge cases**:
+- [ ] checkpoint() before train() — what happens? Spec addresses initial-state checkpoint.
+- [ ] policy_artifact() before train() — what happens? Returns initial random weights? Specified.
+- [ ] Loading artifact with mismatched version — ArtifactError::UnsupportedVersion
+- [ ] Loading artifact with unknown NetworkKind — ArtifactError::UnknownKind
+- [ ] Loading artifact with wrong param count — ArtifactError::ParamCountMismatch
+- [ ] Loading artifact with hidden_dims mismatch (Linear + hidden_dims=[64]) — ArtifactError::LinearHiddenDims
+- [ ] Loading corrupted JSON — ArtifactError::Json
+- [ ] Provenance chain depth: 5-stage curriculum — serializes without stack overflow
 
 **Grade**: ___
 
 ### Criterion 4: Breaking change audit
 > Every existing caller that breaks is identified with a migration path.
 
-- [ ] `Policy` trait — list every `impl Policy for X` in the codebase (including test mocks)
-- [ ] `ValueFn` trait — list every `impl ValueFn for X`
-- [ ] `QFunction` trait — list every `impl QFunction for X`
-- [ ] `Algorithm` trait — list every `impl Algorithm for X` (including MockAlgorithm in tests)
-- [ ] `Optimizer` trait — list every `impl Optimizer for X`
-- [ ] `RunResult` struct — list every place it's constructed or destructured
-- [ ] `EpochMetrics` — adding derives doesn't change existing behavior (no `deny_unknown_fields`)
-- [ ] Competition tests — identify which tests need changes and what changes
-- [ ] Bevy examples that use Algorithm/Policy — identify which need updates
+**Trait impls that need new methods**:
+- [ ] List every `impl Policy for X` (including test mocks outside ml-bridge src/)
+- [ ] List every `impl ValueFn for X` (including test mocks)
+- [ ] List every `impl QFunction for X` (including test mocks)
+- [ ] List every `impl Algorithm for X` (including MockAlgorithm in competition.rs tests)
+- [ ] List every `impl Optimizer for X`
+- [ ] For each, confirm the new method can be implemented (the type has the data needed)
+
+**Struct changes**:
+- [ ] RunResult — list every place it's constructed (competition.rs)
+- [ ] RunResult — list every place it's destructured or field-accessed (competition tests, any examples)
+- [ ] EpochMetrics — adding Serialize/Deserialize derives has no side effects on existing code
+- [ ] Activation — adding Serialize/Deserialize derives has no side effects
+- [ ] OptimizerConfig — adding Serialize/Deserialize derives has no side effects
+
+**Downstream consumers**:
+- [ ] Bevy examples that use Policy trait — list them, note they need descriptor()
+- [ ] Bevy examples that use Algorithm trait — list them, note they need policy_artifact() + checkpoint()
+- [ ] Competition tests — list every test function, note which need changes and what changes
+- [ ] Benchmarks — check if any benchmark code impls these traits
+
+**Dependency additions**:
+- [ ] `serde` + `serde_json` — check for workspace version conflicts in root Cargo.toml
+- [ ] `serde` derive feature — confirm workspace supports it or add it
 
 **Grade**: ___
 
 ### Criterion 5: Internal consistency
-> No contradictions between sections. Types match their usage.
+> No contradictions between sections. Types match their usage everywhere.
 
-- [ ] §4 type definitions match §5 trait signatures (same field names, same types)
+- [ ] §4 type definitions match §5 trait signatures (field names, types, method signatures)
 - [ ] §5 trait method counts match §9 implementation scope counts
-- [ ] §7 reconstruction pattern uses types exactly as defined in §4
-- [ ] §7.2 provenance assembly uses TrainingProvenance fields exactly as defined in §4.5
+- [ ] §7.1 to_policy() match arms cover every (kind, stochastic) combo from §4.2
+- [ ] §7.1 validate() checks reference every ArtifactError variant from §4.6
+- [ ] §7.2 provenance assembly pattern uses TrainingProvenance fields exactly as defined in §4.5
+- [ ] §6.4 JSON example field names match §4 struct field names exactly
+- [ ] §6.4 JSON example nesting matches struct nesting (descriptor inside artifact, metrics inside provenance)
 - [ ] §8.1 RunResult changes match §9 infrastructure changes
 - [ ] §11 phasing doesn't reference types before the phase that defines them
-- [ ] Checkpoint table (§4.7) matches Phase 2 checkpoint impl list (§11)
-- [ ] ArtifactError variants (§4.6) cover every error path in §7.1 methods
+- [ ] §4.7 checkpoint table matches §11 Phase 2 checkpoint impl list
+- [ ] §4.6 ArtifactError variants cover every error return in §7.1 AND §4.8
 
 **Grade**: ___
 
-### Criterion 6: Stress test against codebase
-> Actually run verification against the code — not just read the spec.
+### Criterion 6: Robustness
+> Edge cases, serialization limits, and real-world scenarios.
 
-- [ ] grep for every `impl Policy for` — confirm count matches spec's "5 impls"
-- [ ] grep for every `impl ValueFn for` — confirm count matches spec's "3 impls"
-- [ ] grep for every `impl QFunction for` — confirm count matches spec's "3 impls"
-- [ ] grep for every `impl Algorithm for` — confirm count matches spec's "5 impls"
-- [ ] grep for every `impl Optimizer for` — confirm count matches "1 impl"
-- [ ] For each policy type, verify obs_dim/act_dim/hidden_dims/obs_scale/activation are stored as fields (not computed)
-- [ ] For Adam, verify m/v/t are stored as fields accessible for snapshot
-- [ ] For each algorithm, verify which Box<dyn Policy>/Box<dyn ValueFn>/Box<dyn QFunction> fields exist
-- [ ] For each algorithm, verify which Box<dyn Optimizer> fields exist
-- [ ] For TD3/SAC, verify target networks are separate fields (not computed)
-- [ ] For REINFORCE, verify sigma is a stored field (not computed)
-- [ ] For SAC, verify log_alpha is a stored field
-- [ ] compute_param_count: verify the formula works for each (kind, stochastic) combination by comparing against actual n_params() output
-- [ ] serde_json can round-trip a BTreeMap<String, f64> (EpochMetrics.extra format)
-- [ ] serde_json can round-trip a recursive Option<Box<T>> (provenance parent chain)
+**Serialization edge cases**:
+- [ ] NaN/Infinity handling — spec has explicit policy (reject, sanitize, or custom serializer)
+- [ ] Empty params Vec (0-param policy) — round-trips correctly
+- [ ] Empty metrics Vec (0-epoch training) — provenance handles it
+- [ ] Empty obs_scale Vec (obs_dim = 0) — validation catches it or it's valid
+- [ ] Very long provenance chain (depth 100) — serde_json handles recursive Box without stack overflow
+- [ ] Unicode in task/algorithm names — serde_json handles it
+- [ ] f64 precision: save 1.23456789012345678 → load → exact bit match? (JSON f64 round-trip)
+
+**Scale**:
+- [ ] 20K-epoch training run: estimate provenance metrics Vec size in bytes. Is it acceptable in a single JSON file?
+- [ ] Million-param policy: estimate JSON artifact file size. Confirm binary escape hatch is sufficient.
+- [ ] Checkpoint frequency: calling checkpoint() every 100 epochs on TD3 (6 networks) — estimate per-call allocation cost
+
+**Backward/forward compatibility**:
+- [ ] Spec explicitly states: no `#[serde(deny_unknown_fields)]` on any type
+- [ ] Adding a new optional field to PolicyArtifact in future v2 — old code (v1) can still read it (serde ignores unknown fields)
+- [ ] Loading a v1 artifact with v2 code that added an optional field — missing field deserializes as None/default
 
 **Grade**: ___
 
 ### Criterion 7: Future-proofing
-> The design handles the "whole timeline" without refactoring.
+> Extensibility verified by concrete grep-based analysis, not thought experiments.
 
-- [ ] Adding a new PolicyKind (e.g., Cnn) — what changes? Only: new enum variant, new match arm in to_policy(), new descriptor impl. No structural changes.
-- [ ] Adding a new Algorithm (e.g., A2C) — what changes? Only: implement trait methods + from_checkpoint(). No structural changes.
-- [ ] Adding a new Optimizer (e.g., AdamW) — what changes? Only: implement snapshot/load_snapshot. No structural changes.
-- [ ] Switching from JSON to binary format — what changes? Only: save/load methods. Types, traits, validation unchanged.
-- [ ] Adding replay buffer to checkpoint — what changes? Only: uncomment field, add ReplayBufferSnapshot type. No trait changes.
-- [ ] 20K-epoch training run — provenance metrics Vec size? Estimate bytes and confirm acceptable.
-- [ ] Million-param policy — JSON artifact file size? Estimate and confirm the binary format escape hatch works.
+**Adding a new NetworkKind (e.g., Cnn)**:
+- [ ] grep every usage of `NetworkKind` — list all match arms and construction sites
+- [ ] Confirm changes are: 1 enum variant + 1 match arm in to_policy() + 1 descriptor impl + 1 param count formula case
+- [ ] Confirm `#[non_exhaustive]` means existing serialized artifacts still load (unknown variant = error, not panic)
+
+**Adding a new Algorithm (e.g., A2C)**:
+- [ ] grep every usage of `Algorithm` trait — list all places that iterate/dispatch over algorithms
+- [ ] Confirm changes are: impl Algorithm (3 methods) + from_checkpoint() constructor
+- [ ] No changes to existing algorithms, types, or infrastructure
+
+**Adding a new Optimizer (e.g., AdamW)**:
+- [ ] grep every usage of `Optimizer` trait — list all call sites
+- [ ] Confirm changes are: impl Optimizer (existing methods + snapshot + load_snapshot) + OptimizerConfig variant
+- [ ] No changes to existing optimizer or algorithm code
+
+**Format evolution**:
+- [ ] JSON → binary: confirm save/load are the only methods that touch the format — types, traits, validation are format-agnostic
+- [ ] Adding replay buffer to checkpoint: confirm it's an additive field, no structural changes to TrainingCheckpoint
 
 **Grade**: ___
 
@@ -1044,12 +1133,16 @@ Implementation begins only when every criterion reaches A+.
 
 | Criterion | Grade | Notes |
 |-----------|-------|-------|
-| 1. Codebase accuracy | | |
+| 1. Codebase verification | | |
 | 2. Type system soundness | | |
 | 3. Completeness | | |
 | 4. Breaking change audit | | |
 | 5. Internal consistency | | |
-| 6. Stress test against codebase | | |
+| 6. Robustness | | |
 | 7. Future-proofing | | |
 
 **Implementation gate**: All 7 criteria must be A+ before Phase 1 begins.
+
+When grading reveals a spec gap, the fix goes into the spec first (new
+section or updated section), then the checkbox gets re-evaluated. The
+rubric grades the spec — it doesn't grade the code.
