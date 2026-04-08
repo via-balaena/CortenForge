@@ -372,3 +372,83 @@ the Test 10 hypothesis: 200 epochs should give TD3 enough time to
 converge and hold. The key question is whether TD3's instability at
 low LR (the -1.95 → -9.81 regression) also appears at the original
 3e-4 LR with more epochs.
+
+### Test 10: `budget_scaling_more_epochs` (6478s)
+
+6b-1: 200 epochs, 50 envs, 2-layer [64,64] ReLU Xavier, seed 42.
+Baseline variable: epochs (50 → 200). Top 3 only (CEM, TD3, SAC).
+
+| Algorithm | Reward | Dones | Phase 6 Reward | Change |
+|-----------|--------|-------|----------------|--------|
+| TD3 | -5.22 | 0 | -4.08 | 1.3x worse |
+| CEM | -5.75 | 6 | -3.07 | 1.9x worse |
+| SAC | -31.67 | 0 | -30.04 | Slightly worse |
+
+Ordering: TD3 (-5.22) > CEM (-5.75) >> SAC (-31.67)
+
+**The ordering reversed.** TD3 overtakes CEM for the first time.
+
+### Headline finding
+
+The reversal happened — but not the way we predicted. TD3 didn't
+converge to a great policy while CEM plateaued. Instead, **both
+algorithms degraded from their 50-epoch performance**, and CEM
+degraded faster.
+
+- **CEM degraded 1.9x** (-3.07 → -5.75). CEM reached -2.19 at epoch
+  48 (its all-time best), then oscillated between -2 and -6 for the
+  remaining 150 epochs. After hitting `noise_min` (~epoch 75), CEM
+  can only make tiny perturbations. With no gradient signal, it
+  random-walks instead of converging — each generation's elite set
+  drifts aimlessly in 5,400-dim space.
+
+- **TD3 degraded 1.3x** (-4.08 → -5.22). TD3's eval trajectory was
+  volatile throughout:
+  ```
+  ep1: -9 → ep49: -4.08 → ep69: -3.89 → ep79: -19.25 → ep137: -6.09 → ep173: -3.99 → ep199: -5.22
+  ```
+  TD3 repeatedly found good policies (-3.89, -3.99) then drifted away.
+  The replay buffer's 50K capacity means it forgets early good
+  transitions — by epoch 100+, the buffer only holds the last ~2
+  epochs of data. Combined with the fixed exploration noise (0.1),
+  TD3 oscillates between exploitation and disruption.
+
+- **SAC collapsed.** -30.04 → -31.67. SAC's trajectory shows
+  catastrophic instability: -8.11 (ep1) → -42.28 (ep77) → stuck at
+  -24 (ep95-130) → brief recovery to -14.28 (ep153) → collapse to
+  -31.67. The 3e-4 LR is too aggressive for 200 epochs of
+  entropy-regularized training. (Test 11 showed 1e-4 stabilizes SAC
+  to -14.40 — but at only 50 epochs.)
+
+### Why both degraded
+
+The 50-epoch results were partially lucky — both algorithms happened to
+be at favorable points in their oscillation at epoch 49. With 200
+epochs:
+
+1. **CEM's noise schedule is wrong for long training.** It decays to
+   `noise_min` by epoch ~75 and then stalls. CEM needs either cyclical
+   noise (re-inject exploration periodically) or adaptive noise that
+   responds to reward stagnation.
+
+2. **TD3's replay buffer is too small.** At 50K capacity with 50 envs
+   × 500 steps = 25K transitions/epoch, the buffer only holds ~2
+   epochs. Old good-policy transitions are evicted, and TD3 has to
+   relearn from scratch when the current policy degrades. A larger
+   buffer (200K-500K) would retain more history.
+
+3. **SAC's LR is too aggressive.** 3e-4 works for 50 epochs but causes
+   divergence at 200. The entropy/exploitation oscillation amplifies
+   over time.
+
+### The reversal is real but fragile
+
+TD3 > CEM at 200 epochs, but the margin is thin (-5.22 vs -5.75) and
+both are worse than their 50-epoch results. The reversal confirms the
+*direction* of the hypothesis (gradient methods scale better than CEM
+with deeper networks) but reveals that raw epoch count isn't enough —
+the algorithms need hyperparameter tuning for long-horizon training.
+
+The clean win would be: TD3 with lower LR (1e-4) + more epochs (200) +
+larger replay buffer. That combines the stability from Test 11 with the
+training duration from Test 10. This is Phase 6c territory.
