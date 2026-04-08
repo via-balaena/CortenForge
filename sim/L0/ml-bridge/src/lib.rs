@@ -120,7 +120,9 @@ pub use sac::{Sac, SacHyperparams, gaussian_log_prob};
 pub use space::{
     ActionSpace, ActionSpaceBuilder, ObsSegment, ObservationSpace, ObservationSpaceBuilder,
 };
-pub use task::{TaskConfig, TaskConfigBuilder, reaching_2dof, reaching_6dof};
+pub use task::{
+    TaskConfig, TaskConfigBuilder, obstacle_reaching_6dof, reaching_2dof, reaching_6dof,
+};
 pub use td3::{Td3, Td3Hyperparams};
 pub use tensor::{Tensor, TensorSpec};
 pub use value::{QFunction, ValueFn, soft_update, soft_update_policy, soft_update_value};

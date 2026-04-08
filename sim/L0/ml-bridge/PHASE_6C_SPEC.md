@@ -1,6 +1,6 @@
 # Phase 6c — Obstacle Avoidance Task
 
-> **Status**: Draft — decisions locked, ready for implementation
+> **Status**: In progress — 6c-0 and 6c-1 implemented
 > **Crate**: sim-ml-bridge
 > **Parent spec**: AUTOGRAD_SPEC.md (Phase 6c), COMPETITION_TESTS_SPEC.md
 > **Branch**: main
@@ -76,7 +76,7 @@ the only new variable.
     <geom contype="0" conaffinity="0"/>
   </default>
   <worldbody>
-    <site name="target" pos="TBD" size="0.015"/>
+    <site name="target" pos="0.681474 0.154033 0.101028" size="0.015"/>
     <!-- Same 3-segment arm as reaching_6dof -->
     <body name="seg1" pos="0 0 0">
       <joint name="j1" type="hinge" axis="0 -1 0" damping="2.0"
@@ -101,7 +101,7 @@ the only new variable.
       </body>
     </body>
     <!-- Static obstacle (ghost — distance penalty only, no contacts) -->
-    <body name="obstacle" pos="TBD">
+    <body name="obstacle" pos="0.730 0.046 0.030">
       <geom name="obstacle" type="sphere" size="0.06"
             contype="0" conaffinity="0" mass="0"/>
     </body>
@@ -134,22 +134,24 @@ the only new variable.
 child bodies (`builder/mod.rs:280`), so the target site (on worldbody)
 gets index 0, and the fingertip site (on seg3) gets index 1.
 
-**Obstacle placement** (TBD — requires FK analysis):
+**Obstacle placement** (RESOLVED — FK analysis complete):
 
-The obstacle goes roughly midway between the arm's rest-state fingertip
-position and the target fingertip position. The exact position must be
-determined empirically by:
+FK results:
+- Rest-state fingertip (qpos=0): (0.750, 0.000, 0.000)
+- Target fingertip (qpos=[0.5,0.2,-0.8,0.1,0.5,-0.1]): (0.681, 0.154, 0.101)
+- Rest→target distance: 0.197 m
 
-1. Computing rest-state fingertip position (all qpos = 0)
-2. Computing target fingertip position (qpos = target_joints)
-3. Placing the obstacle at the midpoint, possibly offset slightly to
-   ensure the straight-line path is blocked but both "go around" paths
-   are feasible
+Obstacle placed at 30% of rest→target path: **(0.730, 0.046, 0.030)**.
 
-The obstacle radius (0.06 m) should be large enough that the arm can't
-squeeze past without detouring, but small enough that the detour is
-achievable within the joint limits. This will require tuning — see
-Open Questions.
+Midpoint (50%) was too close to target — fingertip-to-obstacle distance
+(0.098m) was less than `r_safe` (0.12m), causing penalty to fire at the
+goal. Moving to 30% gives:
+- Distance from target fingertip: 0.138m > `r_safe` (penalty = 0 at goal)
+- Distance from rest fingertip: 0.058m < `r_safe` (penalty fires at rest)
+
+The obstacle radius (0.06 m) with `r_safe=0.12` creates a penalty zone
+that fully blocks the straight-line path while leaving detour paths
+feasible within joint limits.
 
 ### Observation space
 
@@ -402,23 +404,23 @@ Baby steps. Each phase ships, gets analyzed, then informs the next.
 
 ## 6. Open questions
 
-1. **Obstacle position**: Needs FK analysis. Where exactly to place it?
-   Midpoint of rest→target fingertip path is the starting hypothesis.
+1. **Obstacle position**: RESOLVED — FK analysis placed obstacle at
+   (0.730, 0.046, 0.030), 30% along rest→target path. Midpoint (50%)
+   was too close to target (0.098m < r_safe). At 30%: target distance
+   0.138m > r_safe, rest distance 0.058m < r_safe.
 
-2. **Obstacle size**: 0.06m radius is a starting guess. Too small =
-   easy to avoid (CEM might still win). Too large = impossible to reach
-   target. May need a quick sweep (0.04, 0.06, 0.08) to find the sweet
-   spot where the task is solvable but requires a real detour.
+2. **Obstacle size**: RESOLVED — 0.06m radius confirmed. With r_safe=0.12,
+   penalty zone blocks the straight-line path while detour paths are
+   feasible within joint limits. Unit tests verify penalty fires at rest
+   and is zero at target.
 
-3. **Penalty coefficient (λ=10.0)**: Too high = policy is
-   obstacle-averse and never reaches target. Too low = policy ignores
-   obstacle and CEM wins by brute force. The ratio of penalty to
-   reaching reward at the obstacle boundary should make touching the
-   obstacle worse than a ~0.1m detour.
+3. **Penalty coefficient (λ=10.0)**: Locked. At rest, penalty ≈ 0.62
+   (10.0 × 0.062), comparable to reaching reward magnitude (~0.14).
+   Strong enough to force a detour, not so strong that reaching is
+   impossible.
 
-4. **Safe radius (r_safe=0.12)**: 2× obstacle radius. Defines the
-   penalty field width. Narrower = sharper cliff (harder to learn).
-   Wider = more gentle (easier to learn but weaker nonlinearity signal).
+4. **Safe radius (r_safe=0.12)**: Locked at 2× obstacle radius. Gives
+   0.018m margin at target position (0.138m - 0.12m = 0.018m).
 
 5. **Site ordering verification**: RESOLVED — verified that worldbody
    sites are processed before child body sites (`mod.rs:280` before
