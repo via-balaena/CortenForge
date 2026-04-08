@@ -452,3 +452,80 @@ the algorithms need hyperparameter tuning for long-horizon training.
 The clean win would be: TD3 with lower LR (1e-4) + more epochs (200) +
 larger replay buffer. That combines the stability from Test 11 with the
 training duration from Test 10. This is Phase 6c territory.
+
+### Test 12: `budget_scaling_more_envs` (7488s)
+
+6b-3: 200 environments, 50 epochs, 2-layer [64,64] ReLU Xavier, seed 42.
+Baseline variable: envs (50 → 200). All 5 algorithms.
+
+| Algorithm | Reward | Dones | Phase 6 Reward | Change |
+|-----------|--------|-------|----------------|--------|
+| CEM | -0.84 | 195 | -3.07 (0 dones) | 3.7x better |
+| SAC | -14.49 | 0 | -30.04 | 2.1x better |
+| TD3 | -19.57 | 0 | -4.08 | 4.8x worse |
+| PPO | -14317.50 | 0 | -9025.90 | 1.6x worse |
+| REINFORCE | -15164.81 | 0 | -11979.50 | 1.3x worse |
+
+Ordering: CEM (-0.84) >> SAC (-14.49) > TD3 (-19.57) >> PPO >> REINFORCE
+
+**CEM dominates completely.** -0.84 with 195 dones — better than CEM's
+level 0-1 result (-1.05, 49 dones) with a 1-hidden-layer network.
+
+### Findings
+
+- **CEM thrives with more candidates.** 200 candidates/generation
+  (1:27 params/candidate) vs 50 (1:108) at baseline. The 4x better
+  search density transforms CEM from "struggling in 5,400 dims" to
+  "reliably solving the task." CEM's learning curve was monotonically
+  decreasing — no oscillation, no regression. By epoch 35, CEM was
+  triggering dones. By epoch 49, 195 cumulative dones across training.
+
+- **TD3 collapsed (4.8x worse).** -4.08 → -19.57. Root cause: the
+  replay buffer (50K capacity) can't hold even one epoch of data.
+  200 envs × 500 steps = 100K transitions per epoch, so the buffer
+  wraps twice per epoch. TD3's core advantage — replaying diverse
+  past experience — is completely negated. The buffer only holds the
+  last half-epoch, making TD3 effectively on-policy with extra overhead.
+
+- **SAC improved (2.1x better).** -30.04 → -14.49. The 4x more data
+  per training epoch helps SAC's Q-function converge, partially
+  compensating for the aggressive LR. Same improvement magnitude as
+  Test 11's lower LR (-14.40), suggesting both interventions address
+  the same underlying issue (Q-estimate variance).
+
+- **On-policy methods got worse — hypothesis refuted.** REINFORCE
+  (-11,980 → -15,165) and PPO (-9,026 → -14,318) both degraded with
+  4x more data. This contradicts the prediction that more samples per
+  gradient estimate would help.
+
+  Root cause: the gradient computation likely sums (not averages)
+  log-prob gradients weighted by returns across all samples. 4x more
+  envs = 4x larger raw gradient magnitude = effectively 4x higher
+  learning rate. REINFORCE showed this clearly: improved to -10,303
+  by epoch 4, then diverged to -15,165 — classic LR-too-high
+  instability. The LR needs to be scaled down by 1/n_envs when
+  increasing environment count, or the gradient must be normalized
+  by batch size.
+
+### Phase 6b summary
+
+| Test | Variable | Winner | Key finding |
+|------|----------|--------|-------------|
+| 11 (LR) | 3e-4 → 1e-4 | CEM (-3.07) | SAC stabilized. TD3 transiently beat CEM at ep45 (-1.95). |
+| 10 (epochs) | 50 → 200 | TD3 (-5.22) | **Reversal confirmed** — but fragile. Both degraded. |
+| 12 (envs) | 50 → 200 | CEM (-0.84) | CEM's best result ever. Gradient methods collapsed. |
+
+**The picture**: CEM and gradient methods have complementary strengths.
+CEM scales with candidates (more envs). Gradient methods scale with
+training duration (more epochs). Neither scales well with the other's
+lever.
+
+The hypothesis that gradient methods would overtake CEM is **partially
+confirmed**: TD3 wins at 200 epochs (Test 10). But CEM wins harder at
+200 envs (Test 12). The real lesson is that algorithm ordering depends
+on *how* you scale the compute budget, not just *how much*.
+
+Next steps (Phase 6c): design a nonlinear task where CEM's gradient-free
+search fundamentally can't compete — obstacle avoidance, contact
+manipulation, or multi-waypoint reaching. On a smooth quadratic reward,
+CEM will always be competitive if given enough candidates.
