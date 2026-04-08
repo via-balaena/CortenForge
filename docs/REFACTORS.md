@@ -24,3 +24,13 @@ types), update that crate's imports and drop its direct nalgebra dep.
 
 **Scope**: ~120 `use nalgebra::` statements across sim/ (excluding
 sim-core internal, which correctly imports from nalgebra directly).
+
+---
+
+## Adopt PhysicsDelay and take_reported() in examples
+
+**Added**: 2026-04-08
+**Context**: The sim-bevy L1 API added `PhysicsDelay` and `take_reported()`
+for cleaner physics stepping in examples. Only one example uses them so far.
+
+**Scope**: ~99 other examples can incrementally adopt this pattern.

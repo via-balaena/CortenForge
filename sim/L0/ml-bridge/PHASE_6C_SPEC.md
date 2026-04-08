@@ -1,9 +1,9 @@
 # Phase 6c — Obstacle Avoidance Task
 
-> **Status**: In progress — 6c-0 and 6c-1 implemented
+> **Status**: In progress — 6c-0 and 6c-1 complete, 6c-2 and 6c-3 remaining
 > **Crate**: sim-ml-bridge
 > **Parent spec**: AUTOGRAD_SPEC.md (Phase 6c), COMPETITION_TESTS_SPEC.md
-> **Branch**: main
+> **Branch**: feature/phase-6c
 
 ---
 
@@ -273,114 +273,63 @@ penalty steers behavior, it doesn't gate termination.
 
 ## 4. Implementation plan
 
-### Phase 6c-0: Precursors (de-risk before building the task)
+### Phase 6c-0: Precursors — COMPLETE
 
-Two small, self-contained changes that 6c depends on. Ship and test
-these first. Both are purely mechanical — no design decisions.
+Committed: `28bbc69` (2026-04-08).
 
-#### 6c-0a: `SiteXpos` extractor
+- **6c-0a: `SiteXpos` extractor** — `SiteXpos(Range<usize>)` variant in
+  `space.rs`, `SiteRangeOutOfBounds` in `error.rs`, 2 tests. ~58 LOC.
+- **6c-0b: Custom task smoke test** — `tests/custom_task.rs`, CEM trains
+  3 epochs on custom `TaskConfig::builder()`, reward improves. ~50 LOC.
 
-Add a `SiteXpos(Range<usize>)` variant to `space.rs`. Mirrors the
-existing `Xpos` extractor exactly — reads `data.site_xpos[site_id]`
-instead of `data.xpos[body_id]`. ~58 lines across 2 files.
+Verification: `cargo test -p sim-ml-bridge --lib site_xpos` and
+`cargo test -p sim-ml-bridge --test custom_task --release`.
 
-**`space.rs` — 8 touch points** (same as Xpos):
+### Phase 6c-1: Task function — COMPLETE
 
-| # | Location | What | Lines |
-|---|----------|------|-------|
-| 1 | `Extractor` enum (line ~37) | `SiteXpos(Range<usize>)` variant | 1 |
-| 2 | `Extractor::dim()` (line ~59) | `Self::SiteXpos(r) => r.len() * 3` | 1 |
-| 3 | `Extractor::extract()` (line ~80) | Loop over `data.site_xpos[site]`, 3 floats each | 8 |
-| 4 | `ObservationSpaceBuilder` (line ~335) | `.site_xpos(Range<usize>)` builder method + doc comment | 5 |
-| 5 | `extractor_label()` (line ~481) | `"site_xpos({}..{})"` format string | 1 |
-| 6 | `validate_extractor()` (line ~514) | `check_site("site_xpos", r, model.nsite)` | 1 |
-| 7 | Tests | `extract_site_xpos()` — extract from pendulum model | ~16 |
-| 8 | Tests | `site_xpos_range_out_of_bounds()` — OOB validation | ~11 |
+Committed: `cc83630` (2026-04-08).
 
-**`error.rs` — new error variant + validation helper**:
+Added `obstacle_reaching_6dof()` to `task.rs` as a new stock task.
+The existing `reaching_6dof()` is unchanged. Exported from `lib.rs`.
 
-The existing pattern has separate error variants per index space:
-- `BodyRangeOutOfBounds { field, range, nbody }` for body-indexed fields
-- `MocapRangeOutOfBounds { field, range, nmocap }` for mocap-indexed fields
+**What was implemented:**
 
-Reusing `check_body()` for sites would produce `"nbody = 2"` in the
-error message when it means `"nsite = 2"`. Following the established
-pattern:
+1. FK analysis determined obstacle position: rest fingertip at
+   (0.750, 0, 0), target fingertip at (0.681, 0.154, 0.101). Midpoint
+   (50%) was too close to target (0.098m < r_safe=0.12m). Placed at
+   30% of rest→target path: (0.730, 0.046, 0.030).
+2. `MJCF_6DOF_OBSTACLE` constant with `fusestatic="false"`, obstacle
+   body, target site on worldbody.
+3. 21-dim obs: `all_qpos()` + `all_qvel()` + `SiteXpos(1..2)` +
+   `Xpos(4..5)` + `SiteXpos(0..1)`, with 21-element `obs_scale`.
+4. Reward: `-dist(fingertip, target) - 10.0 * max(0, 0.12 - dist(fingertip, obstacle))`.
+   Fingertip via `data.site_xpos[1]`, obstacle via `data.xpos[4]`,
+   target captured as `Vector3<f64>` via FK. Distances via `.norm()`.
+5. Done: `dist < 0.05 && vel < 1.0` using `data.site_xpos[1]`.
+   Truncated: `data.time > 5.0`.
+6. 7 unit tests: dims, build, step, reward sign, penalty fires near
+   obstacle, penalty zero at target config, site ordering verified.
 
-| # | Location | What | Lines |
-|---|----------|------|-------|
-| 9 | `error.rs` | `SiteRangeOutOfBounds { field, range, nsite }` variant | ~7 |
-| 10 | `space.rs` | `fn check_site(field, range, nsite)` helper | ~7 |
+Also in this commit: re-exported 6 nalgebra types from `sim-core`
+(`Vector3`, `UnitQuaternion`, `DVector`, `DMatrix`, `Matrix3`, `Matrix6`).
 
-**No shorthand needed.** There is no `all_xpos()` — per-body/site
-extractors all use explicit ranges. No `all_site_xpos()` needed.
+Verification: `cargo test -p sim-ml-bridge --lib obstacle` (7/7 pass).
 
-**Total: ~58 lines** (24 in space.rs logic, 7 in error.rs, 27 in tests).
-
-#### 6c-0b: Custom task training smoke test
-
-Prove that `TaskConfig::builder()` works end-to-end through actual
-training — not just build + reset. The builder path has a
-`builder_roundtrip()` unit test (`task.rs:679`) that validates
-construction and reset, but **no test has ever run a custom-built
-TaskConfig through an Algorithm**. The code path is identical to
-stock tasks under the hood, but this has never been exercised.
-
-| Item | Detail |
-|------|--------|
-| File | `sim/L0/ml-bridge/tests/custom_task.rs` (new integration test, auto-discovered by Cargo — no config changes) |
-| MJCF | Inline ~20 lines (private `MJCF_2DOF` in `task.rs` is not exported) |
-| Task | Custom `TaskConfig::builder()` with real reward (`-Σ(qpos - target)²`), not constant zero — proves the reward closure actually executes and CEM responds |
-| Algorithm | `Cem::new(LinearPolicy::new(...), CemHyperparams { ... })` |
-| Training | 3 epochs, 4 envs via `cem.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {})` |
-| Asserts | `metrics.len() == 3`, `mean_reward.is_finite()`, reward improves (last > first) |
-| Size | ~50 lines |
-| Why | De-risks the entire 6c competition test. If this fails, we find out in 5 seconds, not 60 minutes. |
-
-**Imports needed** (all publicly exported from `sim_ml_bridge`):
-
-```rust
-use sim_ml_bridge::{
-    Algorithm, Cem, CemHyperparams, LinearPolicy, TrainingBudget,
-    TaskConfig, ObservationSpace, ActionSpace,
-};
-use std::sync::Arc;
-```
-
-### Phase 6c-1: Task function
-
-Add `obstacle_reaching_6dof()` to `task.rs` as a new stock task.
-This is a new function alongside `reaching_6dof()` — the existing
-stock task is unchanged. The competition test builders are fully
-generic (read `task.obs_dim()`, `task.act_dim()`, `task.obs_scale()`
-at runtime), so no builder changes are needed.
-
-1. Determine obstacle position via FK analysis (run the sim, print
-   rest-state and target fingertip positions, choose midpoint)
-2. Build MJCF string with `fusestatic="false"`, obstacle body, target
-   site
-3. Implement 21-dim observation space using `SiteXpos` (fingertip,
-   target) and `Xpos` (obstacle), with matching 21-element `obs_scale`
-4. Implement reward using `data.site_xpos[1]` (fingertip) and
-   `data.xpos[4]` (obstacle) read directly from simulation state,
-   target captured as `Vector3<f64>`, distances via `.norm()`
-5. Implement done/truncated (same as reaching_6dof, using
-   `data.site_xpos[1]`)
-6. Unit tests: dims (obs=21, act=6), build, step, reward sign,
-   obstacle penalty fires when fingertip is near obstacle, penalty
-   is zero when far
-
-### Phase 6c-2: Competition test
+### Phase 6c-2: Competition test — TODO
 
 Add Test 13 (`competition_6dof_obstacle_autograd_2layer`) to
 `tests/competition.rs`.
 
 - Same setup as Test 9 (2-layer [64,64], seed 42, 50 envs, 50 epochs)
 - All 5 algorithms on the obstacle avoidance task
+- Task: `obstacle_reaching_6dof()` (imported from `sim_ml_bridge`)
 - Assert: TD3 or SAC beats CEM
 - Assert: MLP beats linear (add a linear comparison if time permits)
+- Expected runtime: ~60 min in release mode
 
-### Phase 6c-3: Document findings
+Verification: `cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture competition_6dof_obstacle`
+
+### Phase 6c-3: Document findings — TODO (blocked on 6c-2 results)
 
 Update `COMPETITION_TESTS_SPEC.md` with Test 13 results, analysis of
 whether the ordering reversed, and comparison to Tests 8-12.
