@@ -5,7 +5,7 @@
 > of every trait, every algorithm, every policy type. The currency of the
 > ML layer.
 
-**Status**: v4 — Grading rubric added, pending A+ before implementation
+**Status**: v6 — all grading gaps resolved, pending A+ before implementation
 **Crate**: `sim-ml-bridge`
 **New dependencies**: `serde`, `serde_json`
 
@@ -236,6 +236,12 @@ pub enum ArtifactError {
     #[error("hidden_dims must be non-empty for {kind:?} kind")]
     MissingHiddenDims { kind: NetworkKind },
 
+    #[error("unsupported combination: kind={kind:?} with stochastic={stochastic}")]
+    UnsupportedCombination { kind: NetworkKind, stochastic: bool },
+
+    #[error("non-finite f64 value in field `{field}`")]
+    NonFiniteValue { field: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
@@ -245,6 +251,13 @@ pub enum ArtifactError {
 ```
 
 Used by `save()`, `load()`, `to_policy()`, and `validate()`.
+
+`UnsupportedCombination` is returned by `to_policy()` for valid `NetworkKind`
+values that don't have a concrete type for the requested `stochastic` mode
+(e.g., `Mlp` + `stochastic: true` — `MlpStochasticPolicy` doesn't exist).
+
+`NonFiniteValue` is returned by `validate()` and `save()` when any `f64`
+field (params, metrics, etc.) contains NaN or Infinity (see §6.6).
 
 ### 4.7 TrainingCheckpoint — the resume point
 
@@ -299,13 +312,26 @@ directly (with serde derives added). No separate snapshot config type.
 
 **Checkpoint contents per algorithm:**
 
-| Algorithm | policy | critics | optimizers | algorithm_state |
-|-----------|--------|---------|------------|-----------------|
+| Algorithm | policy_artifact | critics (NetworkSnapshot vec) | optimizers | algorithm_state |
+|-----------|----------------|-------------------------------|------------|-----------------|
 | CEM | actor | — | — | `noise_std` |
 | REINFORCE | actor | — | actor | `sigma` |
 | PPO | actor | value | actor, value | — |
-| TD3 | actor, actor_target | q1, q2, q1_target, q2_target | actor, q1, q2 | — |
+| TD3 | actor | actor_target, q1, q2, q1_target, q2_target | actor, q1, q2 | — |
 | SAC | actor | q1, q2, q1_target, q2_target | actor, q1, q2 | `log_alpha`, `alpha_lr` |
+
+**TD3 target actor**: Stored in the `critics` Vec as a `NetworkSnapshot`
+with role `"actor_target"`, not in `policy_artifact`. `NetworkDescriptor`
+(not `PolicyDescriptor`) is sufficient because target actors are always
+deterministic — the `stochastic` flag is meaningless for target networks.
+
+**Checkpoint reconstruction note**: Each algorithm's `from_checkpoint()`
+must reconstruct the correct trait object type from `NetworkSnapshot`
+descriptors. TD3 needs `Box<dyn DifferentiablePolicy>` for both actor and
+actor_target; SAC needs `Box<dyn StochasticPolicy>` for its actor. The
+`NetworkSnapshot` descriptor (plus `algorithm_name` on the checkpoint)
+provides enough information for each algorithm's constructor to select the
+right concrete type.
 
 **Reconstruction pattern:**
 
@@ -356,6 +382,43 @@ impl TrainingCheckpoint {
 }
 ```
 
+### 4.9 State promotion — structural prerequisite
+
+The `checkpoint()` method has signature `fn checkpoint(&self) ->
+TrainingCheckpoint`. For `&self` to have access to mutable training state,
+that state must be stored on the algorithm struct — not as local variables
+inside `train()`.
+
+**Current situation**: All 5 algorithms build optimizers as local variables
+inside `train()`. Mutable scalars (noise_std, sigma, log_alpha) are also
+locals. After `train()` returns, this state is dropped.
+
+**Required change**: Before `checkpoint()` can work, each algorithm must
+promote optimizer instances and mutable scalars from `train()` locals to
+struct fields. This is a code-level prerequisite — not a new type or trait,
+but a structural change to algorithm internals.
+
+**Promoted state per algorithm:**
+
+| Algorithm | New struct fields | Initialized in |
+|-----------|-------------------|----------------|
+| CEM | `noise_std: f64` | `new()` from `hp.noise_std` |
+| REINFORCE | `optimizer: Box<dyn Optimizer>`, `sigma: f64` | `new()` from `optimizer_config.build(n_params)`, `hp.sigma_init` |
+| PPO | `actor_opt: Box<dyn Optimizer>`, `critic_opt: Box<dyn Optimizer>`, `sigma: f64` | `new()` from config + policy/value n_params, `hp.sigma_init` |
+| TD3 | `actor_opt: Box<dyn Optimizer>`, `q1_opt: Box<dyn Optimizer>`, `q2_opt: Box<dyn Optimizer>` | `new()` from config + network n_params |
+| SAC | `actor_opt: Box<dyn Optimizer>`, `q1_opt: Box<dyn Optimizer>`, `q2_opt: Box<dyn Optimizer>`, `log_alpha: f64` | `new()` from config + network n_params, `hp.alpha_init.ln()` |
+
+Optimizers can be built in `new()` because `n_params` is known at
+construction — every algorithm already receives its policy (and critics)
+as constructor arguments.
+
+**Semantic change**: Calling `train()` twice on the same algorithm instance
+now continues from previous state (optimizer momentum, sigma, noise_std,
+log_alpha) instead of resetting. This is intentional — it matches the
+checkpoint mental model: resuming training means continuing from where you
+left off, not restarting. If a fresh start is needed, construct a new
+algorithm instance.
+
 ---
 
 ## 5. Trait surgery
@@ -378,7 +441,20 @@ pub trait Policy: Send + Sync {
 
 5 implementations: LinearPolicy, MlpPolicy, AutogradPolicy,
 LinearStochasticPolicy, AutogradStochasticPolicy. Each is ~10 lines
-returning a struct literal from fields already stored on the struct.
+returning a struct literal from stored fields or derivable values.
+
+**Implementation notes per type:**
+- **LinearPolicy** / **LinearStochasticPolicy**: All descriptor fields
+  are stored directly. LinearPolicy has no activation field (purely linear,
+  no hidden layer) — `descriptor()` returns `Activation::Tanh` (unused
+  since `hidden_dims` is empty).
+- **MlpPolicy**: Has no `activation` field — hidden layer activation is
+  hardcoded to `tanh`. `descriptor()` returns `activation: Activation::Tanh`.
+- **AutogradPolicy** / **AutogradStochasticPolicy**: No `obs_dim` field —
+  derived from `self.obs_scale.len()`. Hidden dims are not stored directly
+  as `Vec<usize>` — they are derived from `layer_offsets: Vec<LayerOffsets>`
+  where each `LayerOffsets` has `in_dim` and `out_dim`. `descriptor()`
+  reconstructs `hidden_dims` from intermediate layer dimensions.
 
 ### 5.2 ValueFn trait — add `descriptor()`
 
@@ -432,6 +508,10 @@ pub trait Algorithm: Send {
     /// to continue training without regression. Each algorithm implements
     /// this with real code that captures its specific internal state.
     ///
+    /// Depends on state promotion (§4.9): optimizers and mutable scalars
+    /// must be struct fields, not train()-local variables. The `&self`
+    /// signature works because promoted fields live on the struct.
+    ///
     /// Reconstruction is via per-algorithm `from_checkpoint()` constructors
     /// (not on the trait — needs algorithm-specific hyperparams).
     fn checkpoint(&self) -> TrainingCheckpoint;
@@ -445,6 +525,16 @@ is accessed via the separate `policy_artifact()` method — more flexible
 5 implementations for `policy_artifact()`: CEM, REINFORCE, PPO, TD3, SAC.
 5 implementations for `checkpoint()`: CEM, REINFORCE, PPO, TD3, SAC.
 5 `from_checkpoint()` constructors (not on trait, per-algorithm).
+
+**Trait object types per algorithm:**
+- CEM stores `Box<dyn Policy>` — calls `descriptor()` directly.
+- REINFORCE, PPO, TD3 store `Box<dyn DifferentiablePolicy>` — `descriptor()`
+  is accessible through the supertrait chain (`DifferentiablePolicy: Policy`).
+- SAC stores `Box<dyn StochasticPolicy>` — `descriptor()` is accessible
+  through `StochasticPolicy: DifferentiablePolicy: Policy`.
+
+All five call `self.policy.descriptor()` uniformly — the supertrait
+resolution is transparent to the implementation.
 
 ### 5.5 Optimizer trait — add `snapshot()` and `load_snapshot()`
 
@@ -503,6 +593,14 @@ These types gain `#[derive(Serialize, Deserialize)]`:
 - Version bumps only for semantic changes to existing fields
 - New optional fields never require a version bump (JSON forward compat)
 
+**Forward-compatibility rules** (hard rules — never relax):
+- No type in this spec uses `#[serde(deny_unknown_fields)]`. Unknown fields
+  must be silently ignored so a v1 reader can load a v2 file that added new
+  fields without error.
+- All `Option<T>` fields use `#[serde(default)]`. This ensures a reader
+  that predates a new optional field silently defaults it to `None` instead
+  of failing on a missing key.
+
 ### 6.4 Example serialized artifact
 
 ```json
@@ -548,7 +646,27 @@ These types gain `#[derive(Serialize, Deserialize)]`:
 }
 ```
 
-### 6.5 Future binary format (not this spec)
+### 6.6 Finite-value policy
+
+`serde_json` rejects NaN and Infinity by default — `to_string` returns
+`Err`, not a JSON file with `null` or `"NaN"`. This is correct behavior:
+non-finite values in a policy artifact indicate a training bug, not valid
+data.
+
+**Hard rule**: All `f64` values in serialized types must be finite.
+
+- `validate()` checks: every element in `params`, and if provenance is
+  present, `final_reward` and every `metrics[i].mean_reward`. Returns
+  `ArtifactError::NonFiniteValue { field }` on first non-finite value.
+- `save()` calls `validate()` before serialization — a non-finite value
+  is caught as a structured error, not a serde panic.
+- The 0-epoch case in provenance assembly uses `0.0`, not `f64::NAN`:
+  `metrics.last().map_or(0.0, |m| m.mean_reward)`.
+- Algorithms must produce finite `mean_reward` values. The existing
+  `RunResult::assert_finite()` enforces this at test time; `validate()`
+  enforces it at serialization time.
+
+### 6.7 Future binary format (not this spec)
 
 When policies hit millions of params: JSON header (metadata, provenance)
 followed by raw `f64` binary blob (weights). Like safetensors but simpler.
@@ -574,9 +692,15 @@ impl PolicyArtifact {
     /// or mismatched param count.
     pub fn to_policy(&self) -> Result<Box<dyn Policy>, ArtifactError> {
         self.validate()?;
-        // Match on (kind, stochastic) to select constructor.
-        // Call set_params() to load weights.
-        // Unknown kind (from future version) → ArtifactError::UnknownKind
+        // Match on (kind, stochastic) to select constructor:
+        //   (Linear, false)   → LinearPolicy
+        //   (Linear, true)    → LinearStochasticPolicy
+        //   (Mlp,    false)   → MlpPolicy
+        //   (Mlp,    true)    → ArtifactError::UnsupportedCombination
+        //   (Autograd, false) → AutogradPolicy
+        //   (Autograd, true)  → AutogradStochasticPolicy
+        //   (unknown,  _)     → ArtifactError::UnknownKind
+        // Call set_params() to load weights after construction.
     }
 
     /// Create an artifact from any live policy (no provenance).
@@ -596,8 +720,9 @@ impl PolicyArtifact {
         self
     }
 
-    /// Save to JSON file.
+    /// Save to JSON file. Validates before serialization (§6.6).
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ArtifactError> {
+        self.validate()?;
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)?;
         Ok(())
@@ -652,7 +777,14 @@ impl PolicyArtifact {
             // return UnknownKind if it can't reconstruct.
             _ => {}
         }
-        // 4. param count (compute expected from descriptor, compare to actual)
+        // 4. Unsupported (kind, stochastic) combinations
+        if matches!(self.descriptor.kind, NetworkKind::Mlp) && self.descriptor.stochastic {
+            return Err(ArtifactError::UnsupportedCombination {
+                kind: self.descriptor.kind,
+                stochastic: self.descriptor.stochastic,
+            });
+        }
+        // 5. param count (compute expected from descriptor, compare to actual)
         let expected = compute_param_count(&self.descriptor);
         if self.params.len() != expected {
             return Err(ArtifactError::ParamCountMismatch {
@@ -660,10 +792,86 @@ impl PolicyArtifact {
                 actual: self.params.len(),
             });
         }
+        // 6. Finite-value check (§6.6) — reject NaN/Infinity before serialization
+        if self.params.iter().any(|v| !v.is_finite()) {
+            return Err(ArtifactError::NonFiniteValue {
+                field: "params".into(),
+            });
+        }
+        if let Some(ref prov) = self.provenance {
+            if !prov.final_reward.is_finite() {
+                return Err(ArtifactError::NonFiniteValue {
+                    field: "provenance.final_reward".into(),
+                });
+            }
+            for (i, m) in prov.metrics.iter().enumerate() {
+                if !m.mean_reward.is_finite() {
+                    return Err(ArtifactError::NonFiniteValue {
+                        field: format!("provenance.metrics[{i}].mean_reward"),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }
 ```
+
+### 7.1.1 compute_param_count() formula
+
+Used by `validate()` to verify that `params.len()` matches the descriptor's
+implied parameter count. Match on `(kind, stochastic)`:
+
+```rust
+fn compute_param_count(d: &PolicyDescriptor) -> usize {
+    match (d.kind, d.stochastic) {
+        // W[act_dim × obs_dim] + b[act_dim]
+        (NetworkKind::Linear, false) => d.obs_dim * d.act_dim + d.act_dim,
+
+        // W[act_dim × obs_dim] + b[act_dim] + log_std[act_dim]
+        (NetworkKind::Linear, true) => d.obs_dim * d.act_dim + 2 * d.act_dim,
+
+        // W1[H × obs_dim] + b1[H] + W2[act_dim × H] + b2[act_dim]
+        // MlpPolicy has a single hidden layer (hidden_dims.len() == 1).
+        (NetworkKind::Mlp, false) => {
+            let h = d.hidden_dims[0];
+            d.obs_dim * h + h + h * d.act_dim + d.act_dim
+        }
+
+        // MlpStochasticPolicy doesn't exist — caught by validate() step 4.
+        // Returns 0 as a safety net; validate() rejects before we get here.
+        (NetworkKind::Mlp, true) => 0,
+
+        // General multi-layer: sizes = [obs_dim, H1, ..., Hn, act_dim]
+        // Sum of (sizes[i] * sizes[i+1] + sizes[i+1]) for each layer.
+        (NetworkKind::Autograd, false) => {
+            let mut sizes = Vec::with_capacity(d.hidden_dims.len() + 2);
+            sizes.push(d.obs_dim);
+            sizes.extend_from_slice(&d.hidden_dims);
+            sizes.push(d.act_dim);
+            sizes.windows(2).map(|w| w[0] * w[1] + w[1]).sum()
+        }
+
+        // Same as above + log_std[act_dim]
+        (NetworkKind::Autograd, true) => {
+            let mut sizes = Vec::with_capacity(d.hidden_dims.len() + 2);
+            sizes.push(d.obs_dim);
+            sizes.extend_from_slice(&d.hidden_dims);
+            sizes.push(d.act_dim);
+            let base: usize = sizes.windows(2).map(|w| w[0] * w[1] + w[1]).sum();
+            base + d.act_dim
+        }
+
+        // Future kinds — can't compute, validation will reject via UnknownKind.
+        _ => 0,
+    }
+}
+```
+
+**Note**: The same formula applies to `NetworkDescriptor` for value/Q
+network validation. The only difference: `NetworkDescriptor` has no
+`stochastic` field, and Q-functions use `obs_dim + act_dim.unwrap()` as
+their effective input dimension.
 
 ### 7.2 Provenance assembly patterns
 
@@ -683,7 +891,7 @@ let artifact = algorithm.policy_artifact().with_provenance(
         task: task.name().to_string(),
         seed: self.seed,
         epochs_trained: metrics.len(),
-        final_reward: metrics.last().map_or(f64::NAN, |m| m.mean_reward),
+        final_reward: metrics.last().map_or(0.0, |m| m.mean_reward),
         total_steps: metrics.iter().map(|m| m.total_steps).sum(),
         wall_time_ms: metrics.iter().map(|m| m.wall_time_ms).sum(),
         timestamp: now_iso8601(),
@@ -829,6 +1037,20 @@ for obs in test_observations {
 - `RunResult` gains `artifact: PolicyArtifact` field
 - `CompetitionResult` gains `save_artifacts()` and `best_for_task()`
 - `Cargo.toml`: add `serde` (with `derive` feature), `serde_json` as required deps
+- Algorithm struct field additions: promote optimizer instances and mutable
+  scalars from `train()` locals to struct fields (§4.9)
+
+### Test mock updates
+- `MockQ` (`value.rs` tests): Only stores `p: Vec<f64>` — cannot produce
+  a `NetworkDescriptor`. Replace with a real `LinearQ` in the soft_update
+  tests, or add `obs_dim`, `act_dim`, `obs_scale` fields and a trivial
+  `descriptor()` returning `NetworkKind::Linear`.
+- `MockAlgorithm` (`competition.rs` tests): Only stores `name: &str` —
+  cannot implement `policy_artifact()` or `checkpoint()`. Add a
+  `LinearPolicy` field constructed in `MockAlgorithm::new()`. Implement
+  `policy_artifact()` as `PolicyArtifact::from_policy(&*self.policy)` and
+  `checkpoint()` as a minimal `TrainingCheckpoint` with empty critics,
+  optimizer_states, and algorithm_state.
 
 ### New tests
 - Round-trip: create artifact → save → load → validate → to_policy → forward matches
@@ -888,6 +1110,8 @@ for obs in test_observations {
 - Validation tests (version, param count, obs_scale, hidden_dims, error cases)
 
 **Phase 2 — Algorithm integration + checkpointing**
+- **Prerequisite**: State promotion (§4.9) — promote optimizer instances and
+  mutable scalars from train() locals to struct fields for all 5 algorithms
 - New types: TrainingCheckpoint, NetworkSnapshot, OptimizerSnapshot
 - Optimizer::snapshot() + load_snapshot() on trait + Adam impl
 - Algorithm::policy_artifact() on trait + 5 impls
@@ -896,7 +1120,7 @@ for obs in test_observations {
   - REINFORCE: policy + actor optimizer + sigma
   - PPO: policy + value + actor optimizer + value optimizer
   - TD3: actor + actor_target + q1 + q2 + q1_target + q2_target + 3 optimizers
-  - SAC: actor + q1 + q2 + q1_target + q2_target + 2 optimizers + log_alpha
+  - SAC: actor + q1 + q2 + q1_target + q2_target + 3 optimizers (actor, q1, q2) + log_alpha
 - Per-algorithm from_checkpoint() constructors (5 impls)
 - Checkpoint round-trip tests for every algorithm
 
@@ -936,20 +1160,20 @@ checked. Any unchecked box means the spec has a gap to fix first.
 - [ ] `impl Optimizer for` — confirm exactly 1 type (Adam)
 
 **Struct fields** (read each concrete type's struct definition):
-- [ ] For each policy type: verify obs_dim, act_dim, obs_scale are stored fields
+- [ ] For each policy type: verify obs_dim, act_dim, obs_scale are stored fields or derivable (AutogradPolicy derives obs_dim from obs_scale.len() — see §5.1)
 - [ ] For MlpPolicy: verify hidden_dim is a stored field (note: single usize, not Vec)
-- [ ] For AutogradPolicy: verify hidden layer info is stored (check if Vec<usize> or LayerOffsets)
-- [ ] For each policy type: verify activation is stored (or implicit — e.g., LinearPolicy has no activation)
+- [ ] For AutogradPolicy: verify hidden layer info is stored (Vec<LayerOffsets>, not Vec<usize> — descriptor() derives hidden_dims from offsets — see §5.1)
+- [ ] For each policy type: verify activation is stored or implicit (LinearPolicy has no activation field; MlpPolicy has no activation field, hardcodes Tanh — see §5.1)
 - [ ] For Adam: verify m, v, t are stored fields
-- [ ] For each algorithm: list every Box<dyn Policy/DifferentiablePolicy/StochasticPolicy> field
+- [ ] For each algorithm: list every Box<dyn Policy/DifferentiablePolicy/StochasticPolicy> field (note: TD3 uses DifferentiablePolicy, SAC uses StochasticPolicy — see §5.4)
 - [ ] For each algorithm: list every Box<dyn ValueFn> field
 - [ ] For each algorithm: list every Box<dyn QFunction> field
-- [ ] For each algorithm: list every Box<dyn Optimizer> field (note: some use OptimizerConfig.build() inline)
-- [ ] For TD3: verify target networks are separate fields, count them
-- [ ] For SAC: verify target networks are separate fields, count them
-- [ ] For REINFORCE: verify sigma is a stored field
-- [ ] For SAC: verify log_alpha (or alpha) is a stored field
-- [ ] For CEM: verify noise_std is a stored field
+- [ ] For each algorithm: verify optimizer instances are struct fields (requires state promotion per §4.9 — currently OptimizerConfig.build() inline)
+- [ ] For TD3: verify target networks are separate fields, count them (3: target_policy, target_q1, target_q2)
+- [ ] For SAC: verify target networks are separate fields, count them (2: target_q1, target_q2 — no target policy)
+- [ ] For REINFORCE: verify sigma is a stored field (requires state promotion per §4.9 — currently train()-local)
+- [ ] For SAC: verify log_alpha is a stored field (requires state promotion per §4.9 — currently train()-local)
+- [ ] For CEM: verify noise_std is a stored field (requires state promotion per §4.9 — currently train()-local)
 
 **Existing types and traits** (read the actual trait definitions):
 - [ ] Policy trait: list every method, confirm spec's "existing methods unchanged" is accurate
@@ -988,9 +1212,10 @@ checked. Any unchecked box means the spec has a gap to fix first.
 - [ ] `#[non_exhaustive]` on NetworkKind — match with `_ =>` wildcard compiles, serde deserializes unknown variants as error (not panic)
 
 **NaN / Infinity**:
-- [ ] `serde_json` rejects NaN and Infinity f64 by default — spec must address this
-- [ ] EpochMetrics.mean_reward can be NaN (assert_finite exists but isn't always called)
-- [ ] Spec specifies: validate all metrics are finite before serialization, OR document as known constraint, OR use custom serializer
+- [ ] `serde_json` rejects NaN and Infinity f64 by default — addressed in §6.6 (finite-value policy)
+- [ ] EpochMetrics.mean_reward can be NaN — validate() catches non-finite values before save() (§6.6)
+- [ ] 0-epoch provenance uses 0.0 not f64::NAN (§7.2)
+- [ ] Spec specifies: validate all f64 are finite before serialization, reject with ArtifactError::NonFiniteValue (§4.6, §6.6, §7.1)
 
 **Grade**: ___
 
@@ -999,31 +1224,31 @@ checked. Any unchecked box means the spec has a gap to fix first.
 
 **Descriptor ↔ reconstruction mapping**:
 - [ ] Every concrete Policy type can produce a valid PolicyDescriptor
-- [ ] Every valid (kind, stochastic) combination maps to a concrete type OR a documented ArtifactError
-- [ ] Specifically: (Mlp, stochastic: true) — MlpStochasticPolicy doesn't exist. Spec addresses this.
+- [ ] Every valid (kind, stochastic) combination maps to a concrete type OR a documented ArtifactError (§7.1 lists all 7 match arms)
+- [ ] Specifically: (Mlp, stochastic: true) — returns ArtifactError::UnsupportedCombination (§4.6, §7.1)
 - [ ] Specifically: (Linear, stochastic: true) — LinearStochasticPolicy exists. Verify.
 - [ ] Specifically: (Autograd, stochastic: true) — AutogradStochasticPolicy exists. Verify.
 - [ ] Every concrete ValueFn type can produce a valid NetworkDescriptor
 - [ ] Every concrete QFunction type can produce a valid NetworkDescriptor
 
 **Param count formula**:
-- [ ] `compute_param_count()` formula is defined in the spec (not just called — actually specified)
-- [ ] Formula covers Linear (non-stochastic)
-- [ ] Formula covers Linear (stochastic)
-- [ ] Formula covers Mlp (non-stochastic, single hidden layer)
-- [ ] Formula covers Autograd (non-stochastic, arbitrary hidden layers)
-- [ ] Formula covers Autograd (stochastic, arbitrary hidden layers)
+- [ ] `compute_param_count()` formula is defined in §7.1.1 with full Rust implementation
+- [ ] Formula covers Linear (non-stochastic): `obs_dim * act_dim + act_dim`
+- [ ] Formula covers Linear (stochastic): `obs_dim * act_dim + 2 * act_dim`
+- [ ] Formula covers Mlp (non-stochastic, single hidden layer): `obs_dim * H + H + H * act_dim + act_dim`
+- [ ] Formula covers Autograd (non-stochastic, arbitrary hidden layers): windowed sum
+- [ ] Formula covers Autograd (stochastic, arbitrary hidden layers): windowed sum + act_dim
 - [ ] Each formula verified against actual n_params() output from constructing a test policy
 
 **Checkpoint completeness**:
-- [ ] Every algorithm's checkpoint() captures ALL mutable state that changes during training
+- [ ] Every algorithm's checkpoint() captures ALL mutable state — requires state promotion (§4.9) so optimizers and scalars are on &self
 - [ ] Every algorithm has a from_checkpoint() that restores ALL captured state
-- [ ] Checkpoint table (§4.7) has correct network count per algorithm (verified against struct fields)
+- [ ] Checkpoint table (§4.7) has correct network count per algorithm (TD3 target_policy is in critics Vec as "actor_target")
 - [ ] Checkpoint table has correct optimizer count per algorithm (verified against struct fields)
-- [ ] SAC optimizer count verified: is it 2 or 3? (actor + q1 + q2 = 3? or actor + critic = 2?)
+- [ ] SAC optimizer count verified: 3 (actor, q1, q2) — confirmed in §4.7 table and §11 Phase 2
 
 **Edge cases**:
-- [ ] checkpoint() before train() — what happens? Spec addresses initial-state checkpoint.
+- [ ] checkpoint() before train() — returns initial-state checkpoint (optimizers at t=0, scalars at init values per §4.9)
 - [ ] policy_artifact() before train() — what happens? Returns initial random weights? Specified.
 - [ ] Loading artifact with mismatched version — ArtifactError::UnsupportedVersion
 - [ ] Loading artifact with unknown NetworkKind — ArtifactError::UnknownKind
@@ -1040,10 +1265,10 @@ checked. Any unchecked box means the spec has a gap to fix first.
 **Trait impls that need new methods**:
 - [ ] List every `impl Policy for X` (including test mocks outside ml-bridge src/)
 - [ ] List every `impl ValueFn for X` (including test mocks)
-- [ ] List every `impl QFunction for X` (including test mocks)
-- [ ] List every `impl Algorithm for X` (including MockAlgorithm in competition.rs tests)
+- [ ] List every `impl QFunction for X` (including MockQ in value.rs tests — needs descriptor fields, see §9 test mock updates)
+- [ ] List every `impl Algorithm for X` (including MockAlgorithm in competition.rs tests — needs policy field, see §9 test mock updates)
 - [ ] List every `impl Optimizer for X`
-- [ ] For each, confirm the new method can be implemented (the type has the data needed)
+- [ ] For each, confirm the new method can be implemented (the type has the data needed — mocks need updates per §9)
 
 **Struct changes**:
 - [ ] RunResult — list every place it's constructed (competition.rs)
@@ -1069,15 +1294,15 @@ checked. Any unchecked box means the spec has a gap to fix first.
 
 - [ ] §4 type definitions match §5 trait signatures (field names, types, method signatures)
 - [ ] §5 trait method counts match §9 implementation scope counts
-- [ ] §7.1 to_policy() match arms cover every (kind, stochastic) combo from §4.2
-- [ ] §7.1 validate() checks reference every ArtifactError variant from §4.6
+- [ ] §7.1 to_policy() match arms cover every (kind, stochastic) combo — 5 valid + 1 error (Mlp/true) + wildcard (unknown)
+- [ ] §7.1 validate() checks reference every ArtifactError variant from §4.6 (including NonFiniteValue and UnsupportedCombination)
 - [ ] §7.2 provenance assembly pattern uses TrainingProvenance fields exactly as defined in §4.5
 - [ ] §6.4 JSON example field names match §4 struct field names exactly
 - [ ] §6.4 JSON example nesting matches struct nesting (descriptor inside artifact, metrics inside provenance)
 - [ ] §8.1 RunResult changes match §9 infrastructure changes
 - [ ] §11 phasing doesn't reference types before the phase that defines them
-- [ ] §4.7 checkpoint table matches §11 Phase 2 checkpoint impl list
-- [ ] §4.6 ArtifactError variants cover every error return in §7.1 AND §4.8
+- [ ] §4.7 checkpoint table matches §11 Phase 2 checkpoint impl list (SAC = 3 optimizers in both)
+- [ ] §4.6 ArtifactError variants cover every error return in §7.1 AND §4.8 (10 variants total)
 
 **Grade**: ___
 
@@ -1085,13 +1310,13 @@ checked. Any unchecked box means the spec has a gap to fix first.
 > Edge cases, serialization limits, and real-world scenarios.
 
 **Serialization edge cases**:
-- [ ] NaN/Infinity handling — spec has explicit policy (reject, sanitize, or custom serializer)
-- [ ] Empty params Vec (0-param policy) — round-trips correctly
-- [ ] Empty metrics Vec (0-epoch training) — provenance handles it
-- [ ] Empty obs_scale Vec (obs_dim = 0) — validation catches it or it's valid
+- [ ] NaN/Infinity handling — §6.6 finite-value policy: validate() rejects, save() calls validate(), ArtifactError::NonFiniteValue
+- [ ] Empty params Vec (0-param policy) — round-trips correctly (JSON `[]`)
+- [ ] Empty metrics Vec (0-epoch training) — provenance handles it (JSON `[]`, final_reward = 0.0)
+- [ ] Empty obs_scale Vec (obs_dim = 0) — validate() passes if obs_dim == 0 and obs_scale == [] (both are 0)
 - [ ] Very long provenance chain (depth 100) — serde_json handles recursive Box without stack overflow
-- [ ] Unicode in task/algorithm names — serde_json handles it
-- [ ] f64 precision: save 1.23456789012345678 → load → exact bit match? (JSON f64 round-trip)
+- [ ] Unicode in task/algorithm names — serde_json handles it (JSON is UTF-8)
+- [ ] f64 precision: serde_json uses `ryu` for formatting — preserves enough digits for lossless round-trip of normal f64 values
 
 **Scale**:
 - [ ] 20K-epoch training run: estimate provenance metrics Vec size in bytes. Is it acceptable in a single JSON file?
@@ -1099,9 +1324,10 @@ checked. Any unchecked box means the spec has a gap to fix first.
 - [ ] Checkpoint frequency: calling checkpoint() every 100 epochs on TD3 (6 networks) — estimate per-call allocation cost
 
 **Backward/forward compatibility**:
-- [ ] Spec explicitly states: no `#[serde(deny_unknown_fields)]` on any type
+- [ ] Spec explicitly states: no `#[serde(deny_unknown_fields)]` — hard rule in §6.3
+- [ ] All Option<T> fields use `#[serde(default)]` — hard rule in §6.3
 - [ ] Adding a new optional field to PolicyArtifact in future v2 — old code (v1) can still read it (serde ignores unknown fields)
-- [ ] Loading a v1 artifact with v2 code that added an optional field — missing field deserializes as None/default
+- [ ] Loading a v1 artifact with v2 code that added an optional field — missing field deserializes as None/default via #[serde(default)]
 
 **Grade**: ___
 
