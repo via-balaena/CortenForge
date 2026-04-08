@@ -204,9 +204,19 @@ obstacle without discontinuities in the gradient. The policy gets
 smooth gradient information about *how close* it is — not a binary
 contact signal.
 
-Both distance computations use `data.site_xpos[1]` (fingertip) in the
-reward/done closures — exact position, consistent with what the policy
-observes via `SiteXpos`.
+**Implementation**: All positions read directly from simulation state
+inside the closure — no pre-captured constants needed:
+
+- Fingertip: `data.site_xpos[1]` (`Vector3<f64>`, exact site position)
+- Obstacle: `data.xpos[4]` (`Vector3<f64>`, body position — single
+  source of truth, automatically correct even if the obstacle were
+  ever made dynamic)
+- Target: captured as `Vector3<f64>` constant (computed once via FK at
+  task construction, same as `reaching_6dof`)
+
+Distance computations use nalgebra's `(a - b).norm()` instead of
+manual `dx*dx + dy*dy + dz*dz`. Both are equivalent but `.norm()` is
+cleaner when both operands are already `Vector3<f64>`.
 
 **Why distance, not contacts**: Distance gives the policy gradient
 information (closer = worse, with smooth falloff). Contact count is
@@ -338,19 +348,25 @@ use std::sync::Arc;
 ### Phase 6c-1: Task function
 
 Add `obstacle_reaching_6dof()` to `task.rs` as a new stock task.
+This is a new function alongside `reaching_6dof()` — the existing
+stock task is unchanged. The competition test builders are fully
+generic (read `task.obs_dim()`, `task.act_dim()`, `task.obs_scale()`
+at runtime), so no builder changes are needed.
 
 1. Determine obstacle position via FK analysis (run the sim, print
    rest-state and target fingertip positions, choose midpoint)
 2. Build MJCF string with `fusestatic="false"`, obstacle body, target
    site
-3. Implement observation space using `SiteXpos` (fingertip, target)
-   and `Xpos` (obstacle)
-4. Implement reward (distance to target + obstacle proximity penalty)
-   using `data.site_xpos[1]` for fingertip position
+3. Implement 21-dim observation space using `SiteXpos` (fingertip,
+   target) and `Xpos` (obstacle), with matching 21-element `obs_scale`
+4. Implement reward using `data.site_xpos[1]` (fingertip) and
+   `data.xpos[4]` (obstacle) read directly from simulation state,
+   target captured as `Vector3<f64>`, distances via `.norm()`
 5. Implement done/truncated (same as reaching_6dof, using
    `data.site_xpos[1]`)
-6. Unit tests: dims, build, step, reward sign, obstacle penalty fires
-   when fingertip is near obstacle, penalty is zero when far
+6. Unit tests: dims (obs=21, act=6), build, step, reward sign,
+   obstacle penalty fires when fingertip is near obstacle, penalty
+   is zero when far
 
 ### Phase 6c-2: Competition test
 
@@ -404,10 +420,11 @@ Baby steps. Each phase ships, gets analyzed, then informs the next.
    penalty field width. Narrower = sharper cliff (harder to learn).
    Wider = more gentle (easier to learn but weaker nonlinearity signal).
 
-5. **Site ordering verification**: The spec assumes target site = 0,
-   fingertip site = 1 based on document-order processing. Must verify
-   after MJCF parsing — a quick `assert_eq!(model.nsite, 2)` and
-   position check in the task constructor.
+5. **Site ordering verification**: RESOLVED — verified that worldbody
+   sites are processed before child body sites (`mod.rs:280` before
+   `mod.rs:287-289`), so target=site 0, fingertip=site 1. Still add
+   a runtime `assert_eq!(model.nsite, 2)` in the task constructor as
+   a safety check.
 
 ---
 
@@ -431,7 +448,9 @@ cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocaptur
 
 ## 8. Codebase stress test findings
 
-Issues found during spec review against the codebase (2026-04-08):
+Issues found during spec review against the codebase (2026-04-08).
+Second pass (post-6c-0 implementation) on 2026-04-08 confirmed all
+assumptions still hold.
 
 ### Resolved in this spec revision
 
@@ -439,9 +458,10 @@ Issues found during spec review against the codebase (2026-04-08):
 |-------|----------|------------|
 | `fusestatic` merges obstacle body | Critical | Added `fusestatic="false"` to `<compiler>` |
 | `xpos(seg3)` is 0.2m from fingertip, not 0.02m | Critical | Use `SiteXpos` extractor for true fingertip position |
-| No `SiteXpos` extractor exists | Blocker | Phase 6c-0a adds it (~58 LOC across `space.rs` + `error.rs`, 8 touch points mirroring `Xpos` + new `SiteRangeOutOfBounds` error variant) |
-| Custom `TaskConfig::builder()` never trained on | Risk | Phase 6c-0b smoke test (~50 LOC, inline MJCF, real reward, 3 epochs of CEM) |
+| No `SiteXpos` extractor exists | Blocker | Phase 6c-0a adds it (~58 LOC across `space.rs` + `error.rs`, 8 touch points mirroring `Xpos` + new `SiteRangeOutOfBounds` error variant). **Implemented and committed: `28bbc69`.** |
+| Custom `TaskConfig::builder()` never trained on | Risk | Phase 6c-0b smoke test (~50 LOC, inline MJCF, real reward, 3 epochs of CEM). **Implemented and committed: `28bbc69`.** |
 | No way to observe constants (target pos) | Design | Target is a site on worldbody, observed via `SiteXpos` |
+| Obstacle position captured as constant | Design | Read `data.xpos[4]` directly in closure instead — single source of truth, automatically correct if obstacle becomes dynamic |
 
 ### Verified as working
 
@@ -453,5 +473,14 @@ Issues found during spec review against the codebase (2026-04-08):
 | Zero-mass geoms | Safe | Contribute 0 to inertia, no errors |
 | `contact="disable"` | Correct | Skips entire collision pipeline (`collision/mod.rs:450`) |
 | Competition runner | Task-agnostic | Accepts any `TaskConfig`, reads dims at runtime |
-| Algorithm builders | Generic | All 14 autograd builders use `task.obs_dim()`/`task.act_dim()` |
+| Algorithm builders | Generic | All 14 autograd builders use `task.obs_dim()`/`task.act_dim()`/`task.obs_scale()` — obs_dim 12→21 requires zero builder changes |
 | `Xpos` extraction | Correct | Direct body indexing, extracted after `forward()` |
+| `SiteXpos` extraction | Correct | **6c-0a implemented.** 301 lib tests pass, 1 integration test passes. |
+| Custom task training path | Correct | **6c-0b implemented.** CEM trains 3 epochs, reward improves. |
+| Site ordering (target=0, fingertip=1) | Correct | Worldbody sites processed at `mod.rs:280` before child bodies at `mod.rs:287-289`. Body sites at `body.rs:256-264` before children. |
+| `fusestatic="false"` parsing | Correct | `parser.rs:477-480`, tested at `compiler.rs:352-371` |
+| `model.nsite = 2` | Correct | `build.rs:66` — one entry per `<site>` element |
+| `.site_xpos()` chainable + mixable with `.xpos()` | Correct | No uniqueness constraints, independent validation |
+| `Vector3<f64>` in closures | Correct | `Send + Sync + 'static`, `.norm()` available |
+| `data.xpos[4]` in reward closure | Correct | Public field, `&Data` passed to closure |
+| `max_episode_steps` | Correct | `competition.rs:55-58` — returns 500 for act_dim > 2 |
