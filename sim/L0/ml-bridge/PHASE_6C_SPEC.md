@@ -1,6 +1,6 @@
 # Phase 6c — Obstacle Avoidance Task
 
-> **Status**: In progress — 6c-0 and 6c-1 complete, 6c-2 and 6c-3 remaining
+> **Status**: Complete — all phases (6c-0 through 6c-3) done
 > **Crate**: sim-ml-bridge
 > **Parent spec**: AUTOGRAD_SPEC.md (Phase 6c), COMPETITION_TESTS_SPEC.md
 > **Branch**: feature/phase-6c
@@ -315,24 +315,28 @@ Also in this commit: re-exported 6 nalgebra types from `sim-core`
 
 Verification: `cargo test -p sim-ml-bridge --lib obstacle` (7/7 pass).
 
-### Phase 6c-2: Competition test — TODO
+### Phase 6c-2: Competition test — COMPLETE
 
-Add Test 13 (`competition_6dof_obstacle_autograd_2layer`) to
-`tests/competition.rs`.
+Committed: `c9c3640` (2026-04-08).
 
-- Same setup as Test 9 (2-layer [64,64], seed 42, 50 envs, 50 epochs)
-- All 5 algorithms on the obstacle avoidance task
-- Task: `obstacle_reaching_6dof()` (imported from `sim_ml_bridge`)
-- Assert: TD3 or SAC beats CEM
-- Assert: MLP beats linear (add a linear comparison if time permits)
-- Expected runtime: ~60 min in release mode
+Added Test 13 (`competition_6dof_obstacle_autograd_2layer`) to
+`tests/competition.rs`. Same setup as Test 9 (2-layer [64,64], seed 42,
+50 envs, 50 epochs), using `obstacle_reaching_6dof()`.
 
-Verification: `cargo test -p sim-ml-bridge --test competition --release -- --ignored --nocapture competition_6dof_obstacle`
+**Result**: CEM (-0.41) > TD3 (-0.55) > SAC (-0.97) >> PPO (-269) ≈
+REINFORCE (-269). Ordering identical to Test 9. The hypothesis that the
+nonlinear task would reverse the ordering was wrong — CEM still dominates.
+The soft penalty obstacle is not enough to break CEM's gradient-free
+advantage. All three top algorithms nearly solve the task.
 
-### Phase 6c-3: Document findings — TODO (blocked on 6c-2 results)
+Runtime: 3210s (~53 min) in release mode.
 
-Update `COMPETITION_TESTS_SPEC.md` with Test 13 results, analysis of
-whether the ordering reversed, and comparison to Tests 8-12.
+### Phase 6c-3: Document findings — COMPLETE
+
+Updated `COMPETITION_TESTS_SPEC.md` with full Test 13 results, analysis
+of why CEM still dominates (soft penalty, favorable reward scale,
+monotonic convergence), PPO/REINFORCE collapse analysis, and implications
+for next phases (hard contacts needed to truly break CEM).
 
 ---
 

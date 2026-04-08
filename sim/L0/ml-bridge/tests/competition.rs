@@ -1752,16 +1752,35 @@ fn competition_6dof_obstacle_autograd_2layer() {
         ],
     );
 
-    // The headline assertion: TD3 or SAC beats CEM on the nonlinear task.
-    let best_gradient = r_td3.max(r_sac);
+    // Verified ordering: CEM > TD3 > SAC >> PPO >> REINFORCE.
+    // The hypothesis that the nonlinear task would reverse the ordering
+    // was wrong — CEM still dominates.  All three top algorithms nearly
+    // solve the task (reward ≈ 0 means fingertip at target, no penalty).
+    // PPO/REINFORCE plateau at ~-269 (~-0.54/step — arm barely moves).
     assert!(
-        best_gradient > r_cem,
-        "Expected TD3 ({r_td3:.2}) or SAC ({r_sac:.2}) to beat CEM ({r_cem:.2}) \
-         on the obstacle avoidance task — the nonlinear reward landscape should \
-         break CEM's gradient-free advantage"
+        r_cem > r_td3,
+        "CEM ({r_cem:.2}) should beat TD3 ({r_td3:.2})"
+    );
+    assert!(
+        r_td3 > r_sac,
+        "TD3 ({r_td3:.2}) should beat SAC ({r_sac:.2})"
+    );
+    assert!(
+        r_sac > r_ppo,
+        "SAC ({r_sac:.2}) should beat PPO ({r_ppo:.2})"
     );
 
+    // CEM-TD3 gap: measure how close the race is.
+    let gap = r_cem - r_td3;
+    eprintln!("\nCEM-TD3 gap: {gap:.2} (CEM {r_cem:.2} vs TD3 {r_td3:.2})");
+    if gap < 0.5 {
+        eprintln!("  Gap < 0.5 — reversal plausible at higher epoch count");
+    }
+
     // Compare against reaching_6dof baseline (Test 9).
+    // NOTE: reward scales differ (task-space distance vs joint-space squared),
+    // so absolute values are not directly comparable.
     eprintln!("\nreaching-6dof baseline (Test 9, same settings):");
     eprintln!("  CEM: -3.07, TD3: -4.08, SAC: -30.04, PPO: -9026, REINFORCE: -11980");
+    eprintln!("  (different reward scale — joint-space squared vs task-space distance)");
 }

@@ -559,22 +559,85 @@ Parameter counts (obs=21, act=6):
 - `AutogradQ` [64,64]:      27×64 + 64 + 64×64 + 64 + 64×1 + 1 = 6,017
 - CEM: 50 candidates in ~6K dims → ~120 params/candidate
 
-| Algorithm | Reward | Dones | Test 9 Reward | Change |
-|-----------|--------|-------|---------------|--------|
-| CEM | TBD | TBD | -3.07 | TBD |
-| TD3 | TBD | TBD | -4.08 | TBD |
-| SAC | TBD | TBD | -30.04 | TBD |
-| PPO | TBD | TBD | -9025.90 | TBD |
-| REINFORCE | TBD | TBD | -11979.50 | TBD |
+| Algorithm | Reward | Dones | Wall (s) |
+|-----------|--------|-------|----------|
+| CEM | -0.41 | 0 | 158 |
+| TD3 | -0.55 | 0 | 694 |
+| SAC | -0.97 | 0 | 1003 |
+| PPO | -269.06 | 0 | 1082 |
+| REINFORCE | -269.13 | 0 | 273 |
 
-Ordering: TBD
+Ordering: CEM (-0.41) > TD3 (-0.55) > SAC (-0.97) >> PPO (-269) ≈ REINFORCE (-269)
+
+Total runtime: 3210s (~53 min).
 
 ### Headline finding
 
-TBD — waiting for test results.
+**The hypothesis was wrong.** CEM still dominates on the obstacle
+avoidance task. The ordering is identical to Test 9 (reaching_6dof):
+CEM > TD3 > SAC >> PPO >> REINFORCE.
+
+However, the top 3 algorithms (CEM, TD3, SAC) all nearly solve the task.
+A reward of -0.41 means the fingertip averages ~0.41/500 ≈ 0.0008m from
+the target per step — essentially zero. The obstacle penalty is not
+firing for any of them — they all learned to go around it.
 
 ### Analysis
 
-TBD — will compare against Test 9 (same settings, smooth quadratic task)
-to isolate the effect of the nonlinear reward landscape on algorithm
-ordering.
+**Why the obstacle didn't break CEM:**
+
+1. **The task is still solvable by local search.** The obstacle creates
+   a penalty ridge, but it doesn't create a hard wall. CEM's Gaussian
+   perturbations can find policies that curve around the obstacle because
+   the penalty is a soft linear ramp, not a discontinuity. CEM's elite
+   selection naturally prunes candidates that hit the penalty zone.
+
+2. **CEM's convergence trajectory was monotonic.** -0.81 → -0.41 over
+   50 epochs, still improving. No oscillation, no getting stuck. CEM
+   never struggled with the obstacle — it simply optimized through it.
+
+3. **The reward scale is more favorable.** The obstacle task uses
+   task-space Euclidean distance (`-dist(fingertip, target)`, range
+   ~0 to ~0.75) instead of joint-space squared error (`-Σ(qpos-target)²`,
+   range ~0 to ~12,000). The much smaller reward range means less
+   variance in CEM's fitness evaluation — each candidate's reward is
+   a more reliable signal.
+
+**PPO and REINFORCE collapsed:**
+
+Both plateau at -269 (≈ -0.54/step × 500 steps). The per-step reward
+of -0.54 is approximately the rest-state fingertip-to-target distance
+(0.197m) plus the obstacle penalty (10.0 × max(0, 0.12 - 0.058) = 0.62),
+totaling ~0.82. The actual -0.54 suggests partial learning — the arm
+moves slightly but doesn't reach the target. PPO showed a dramatic
+recovery from -511 to -269 at epoch 40 (finding the same local minimum
+as REINFORCE), but neither escaped it.
+
+**TD3 and SAC learned real policies:**
+
+TD3's eval trajectory (odd epochs only): -0.75 → -0.51 → -0.46 → -0.55.
+TD3 found a good region early and stayed near it, with some oscillation.
+SAC showed a late improvement: -0.86 (ep15-35) → -0.42 (ep37-45) → -0.97
+(ep49). SAC found the good region but couldn't hold it — same instability
+as Test 9.
+
+**CEM-TD3 gap: 0.14 reward units.** This is tighter than Test 9 (0.99
+gap on reaching_6dof), but the reward scales differ so the gaps aren't
+directly comparable.
+
+### Implications
+
+The soft-penalty obstacle is not enough to break CEM. The nonlinearity
+exists but it's smooth enough for evolutionary search to handle. To
+truly disadvantage CEM, the task needs:
+
+- **Hard contacts** (Phase 6c+1): discontinuous dynamics that create
+  sharp reward cliffs, not soft penalty ramps
+- **Multi-waypoint trajectories**: sequential goals that require temporal
+  reasoning, not just spatial avoidance
+- **Higher-dimensional action spaces**: more joints where CEM's
+  candidate budget becomes fundamentally insufficient
+
+The obstacle task successfully validated that all 5 algorithms handle
+the larger observation space (21 dims vs 12) and task-space rewards.
+It just didn't change the ordering.
