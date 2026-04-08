@@ -1,4 +1,4 @@
-//! RL-specific layer functions built on [`Tape`](crate::autograd::Tape).
+//! RL-specific layer functions built on [`Tape`].
 //!
 //! These are convenience functions that construct subgraphs on an existing
 //! tape. They are NOT types — just functions that take `&mut Tape` and
