@@ -1,0 +1,16 @@
+[package]
+name = "example-ml-persistence-train-then-replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bevy = { workspace = true }
+example-ml-shared = { path = "../../shared" }
+sim-bevy = { workspace = true }
+sim-core = { workspace = true }
+sim-ml-bridge = { workspace = true }
+
+[lints]
+workspace = true
