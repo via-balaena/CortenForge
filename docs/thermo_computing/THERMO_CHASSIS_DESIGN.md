@@ -39,6 +39,72 @@ This document does the same thing for the thermo crate.
   add a new thermostat?" is anything other than "implement the trait,
   done," the chassis is wrong.
 
+### Scope: this chassis is for passive forces only
+
+*Added by doc review S4, 2026-04-09.*
+
+This chassis is the bolt pattern for **passive forces only** —
+things that fire inside `mj_fwd_passive()` via sim-core's
+`cb_passive` callback and contribute to `qfrc_passive`. Controlled
+forces (motor commands, RL action injection, manual loads) still
+flow through sim-core's existing infrastructure: `cb_control` /
+`ctrl` for actuator commands, `qfrc_applied` / `xfrc_applied` for
+direct force injection. The thermo crate does not wrap, replace,
+or extend any of those paths.
+
+**Implication for components that need both** (e.g., D1's
+flashing-ratchet Brownian motor, where an RL policy gates a
+ratchet potential on/off): split the component into two halves
+that share state via an `Arc`:
+
+```rust
+// The passive half — a PassiveComponent that bolts onto this chassis.
+struct FlashingRatchetPotential {
+    on: Arc<AtomicBool>,           // shared with the controller half
+    bistable_params: ...,
+}
+impl PassiveComponent for FlashingRatchetPotential {
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>) {
+        if self.on.load(Ordering::Acquire) {
+            // contribute the bistable potential gradient
+        }
+        // when off, contribute nothing
+    }
+}
+
+// The controlled half — a cb_control callback (sim-core's existing hook).
+let on = Arc::new(AtomicBool::new(false));
+let on_for_passive = Arc::clone(&on);
+let on_for_control = Arc::clone(&on);
+
+PassiveStack::builder()
+    .with(FlashingRatchetPotential { on: on_for_passive, ... })
+    .build()
+    .install(&mut model);
+
+model.set_control_callback(move |m, d| {
+    // policy decides whether to flip the ratchet at this step
+    let flip = policy.decide(d);
+    on_for_control.store(flip, Ordering::Release);
+});
+```
+
+Both halves run in the same `step()` (control fires before
+passive), share the `Arc<AtomicBool>` state, and compose without
+either side knowing about the other. The chassis stays
+single-purpose (passive forces); the cross-cutting active +
+passive coordination is the user's composition of two existing
+sim-core hooks. **D1 (Brownian motor), D2 (stochastic resonance
+driver), and any future mixed active/passive component bolt onto
+the chassis through this pattern.**
+
+This is the only place the chassis acknowledges controlled forces.
+Everywhere else in this document, "component" means
+"`PassiveComponent` implementation." When the rest of the chassis
+says "the only mutable surface is `qfrc_out`," that is a property
+of the passive half — the controlled half is governed by sim-core's
+own contracts on `cb_control` / `qfrc_applied`.
+
 ---
 
 ## 1. Decision Log

@@ -129,13 +129,19 @@ sessions can reconstruct the *why* without re-running the analysis.
   Status block notes the S3 revision. Decision 6 file inventory bumped:
   stack.rs 160→170, total Phase 1 footprint 890→900. Common case becomes
   `envs.models` (one extra token); introspection case is `envs.stacks[i]`.*
-- [ ] **S4** — Add a "passive forces only" framing paragraph to chassis §0.
+- [x] **S4** — Add a "passive forces only" framing paragraph to chassis §0.
   D1 (flashing ratchet) hits this at the earliest payoff: it needs both a
   `cb_passive` consumer (the potential) and a `cb_control` consumer (the
   flash schedule). The chassis is silent on this and should sketch the
   multi-callback shared-state pattern in 5 sentences. **Acceptance**: chassis
   §0 has a paragraph explicitly naming "passive forces only" and showing the
-  shared-Arc pattern for D1-style components.
+  shared-Arc pattern for D1-style components. ✓ *Applied 2026-04-09 — chassis
+  §0 gains a "Scope: this chassis is for passive forces only" subsection
+  with the explicit framing, a concrete `FlashingRatchetPotential` +
+  `cb_control` shared-`Arc<AtomicBool>` code sketch, and a closing note
+  that "component" everywhere else in the chassis means "`PassiveComponent`
+  implementation." Unblocks D1, D2, and any future mixed active/passive
+  component without changing the chassis surface.*
 - [ ] **S5** — Call out D4's external dependencies. Currently D4 says "no fab
   dependency" but understates the cost: 3D printer with reproducible
   mechanical properties, material consistency, high-speed video + state
@@ -247,7 +253,8 @@ substrate.
 - [x] **S2** — Rewrite §3 Current State (or split into two files). ✓ done
   (small-fix version). File split deferred until post-Phase 1.
 - [x] **S3** — `install_per_env` returns `EnvBatch` instead of `Vec<Model>`.
-- [ ] **S4, S5, S6** — Smaller doc additions.
+- [x] **S4** — "Passive forces only" framing + flashing-ratchet sketch in chassis §0.
+- [ ] **S5, S6** — Smaller doc additions.
 - [ ] **N1, N2, N3, N4** — Polish pass.
 - [ ] Draft `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the revised chassis.
 
