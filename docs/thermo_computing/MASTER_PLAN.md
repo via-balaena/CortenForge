@@ -515,7 +515,10 @@ preceding gate is green.
   Gibbs sampler on the same energy.
 - **Phase 5**: Make the geometry/coupling differentiable through cf-design and
   hook the autograd engine to it. Train the array as an EBM to match a target
-  distribution (start with a 2D Gaussian mixture).
+  distribution (start with a 2D Gaussian mixture). **Gates on Q5** (cf-design
+  end-to-end differentiability) — escalated to active foreground recon by doc
+  review M3, scheduled in parallel with the Phase 1 spec drafting so the
+  build order past Phase 1 is informed by the answer rather than blind to it.
 - **Phase 6**: Bridge to THRML if `thrml-rs` exists (verify first, see Q3); if
   not, implement a minimal block-Gibbs sampler in Rust as the comparison point.
 - **Phase 7**: Wrap the sampler as an ml-bridge environment. Reward = sample
@@ -558,7 +561,58 @@ referenceability.
   conflate physical damping (joint friction) with thermodynamic damping (FDT
   pairing). Thermostat-owned `γ` keeps the two cleanly separated.
 - **Q5 — Is the cf-design → sim-core parameter pipeline already
-  differentiable end-to-end?** Phases 5+ depend on it. Recon needed.
+  differentiable end-to-end?** Phases 5+ depend on it, *and* the
+  D3 co-design experiment (the headline Research Direction) does
+  too. **Status (updated 2026-04-09 by doc review M3)**: escalated
+  from "deferred until Phase 5" to **active foreground recon,
+  scheduled in parallel with the Phase 1 spec drafting**. Target
+  resolution: before the Phase 1 spec is finalized, so the
+  Phase 1+ build order is informed by the answer rather than
+  committing to it blind.
+
+  **Why escalated**: the asymmetric risk argument. If Q5 turns
+  out "yes, cf-design is fully differentiable end-to-end," the
+  cost of the early recon was a half-day and the build order
+  is unchanged — no harm done. If Q5 turns out "no" (e.g.,
+  non-differentiable booleans, FD-only past a certain layer,
+  no autograd hookup at all), the build order *changes
+  substantially*. Plausible reactions to a "no":
+  1. Build the differentiable layer earlier — potentially
+     before D1 (Brownian motor), reordering the priority ladder.
+  2. Re-prioritize the Research Directions away from D3 toward
+     D1+D2+D4, which need much less differentiability.
+  3. Use a surrogate model (e.g., a small neural net trained
+     on cf-design output) and explicitly accept the boundary.
+  4. Implement the differentiable layer as a sim-thermostat-style
+     sibling crate that wraps cf-design with custom autograd.
+
+  Discovering this *after* months of Phases 1-4 commitment is
+  the kind of avoidable surprise sharpen-the-axe forbids. The
+  cost of doing the recon now is small; the cost of doing it
+  late is potentially months.
+
+  **Recon scope** (what to read, ~half-day):
+  - `crates/cf-design/src/` — locate the autograd integration
+    point (if any). Look for `Tensor`, `Variable`, `grad`,
+    `backward`, or interop with `sim-ml-bridge`'s autograd
+    engine.
+  - The cf-design Phase 5 commit history (per project memory:
+    "cf-design Phases 1–5 complete (including differentiable
+    design optimization)") — read the spec for the
+    differentiable design optimization phase.
+  - SDF library composition: are booleans (union, difference,
+    intersection) differentiable, or do they introduce
+    non-differentiable kinks at the boundary?
+  - Mesh extraction: marching cubes or a smooth alternative?
+    Marching cubes is non-differentiable at the topology
+    boundary.
+  - Existing examples or tests that exercise the
+    cf-design → sim-core parameter flow with gradients.
+
+  **Recon log entry**: will be opened when the recon starts,
+  named "2026-04-XX (part N) — Q5: cf-design end-to-end
+  differentiability". This question is the next item on the
+  recon queue after the Phase 1 spec is in flight.
 - **Q6 — What's the right reward signal for Phase 7?** ESS, integrated
   autocorrelation time, KL divergence to target, wall-clock to convergence?
   Different choices give different agents. Defer the decision to Phase 6

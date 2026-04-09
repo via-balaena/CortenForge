@@ -47,11 +47,18 @@ sessions can reconstruct the *why* without re-running the analysis.
   30→70, stack.rs 120→160, total 810→890. Chassis design round complete
   table updated to 7 rows. Master plan §Phase 1 caveat 1 (FD perturbation)
   marked RESOLVED with reference to Decision 7.*
-- [ ] **M3** — Move Q5 (cf-design end-to-end differentiability) from
+- [x] **M3** — Move Q5 (cf-design end-to-end differentiability) from
   "unresolved, gates Phase 5" to active foreground recon, scheduled in
   parallel with the Phase 1 spec drafting. **Acceptance**: master plan §5
   Q5 entry updated to "in-progress recon, target resolution before Phase 1
-  ships," with a recon log entry opened when the recon starts.
+  ships," with a recon log entry opened when the recon starts. ✓ *Applied
+  2026-04-09 — Q5 entry expanded with the asymmetric-risk argument, four
+  plausible "no" reactions, and concrete recon scope (~half-day reading
+  cf-design autograd integration, SDF boolean differentiability, mesh
+  extraction, the cf-design Phase 5 differentiable-optimization spec).
+  Phase 5 entry in §The Gap gains a "gates on Q5" forward-pointer. The
+  recon log entry itself is deferred until the recon starts (history is
+  written when it happens, not preemptively).*
 - [x] **M4** — Add `Welford::reset()` and `Welford::merge(&other)` to
   Decision 5's `WelfordOnline` API. `reset()` is needed because the burn-in
   story breaks for streaming Welford. `merge()` is needed for option β (100
@@ -207,8 +214,9 @@ substrate.
   FD/autograd contexts. ✓ done — Scheme A (`Stochastic` trait + RAII guard)
   recommended; full two-scheme treatment in chassis Decision 7.
 - [ ] **S1** — Resolve Q3 (`thrml-rs`) with a 5-min web search.
-- [ ] **M3** — Open Q5 (cf-design differentiability) as foreground recon in
-  parallel with Phase 1 spec drafting.
+- [x] **M3** — Open Q5 (cf-design differentiability) as foreground recon in
+  parallel with Phase 1 spec drafting. ✓ done — Q5 escalated, recon scope
+  named, recon log entry deferred until the recon actually starts.
 - [ ] **S2** — Rewrite §3 Current State (or split into two files).
 - [ ] **S3, S4, S5, S6** — Smaller doc additions, ~15 min total.
 - [ ] **N1, N2, N3, N4** — Polish pass.
