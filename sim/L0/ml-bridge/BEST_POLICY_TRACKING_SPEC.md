@@ -5,7 +5,7 @@
 > first-class capability — not a runner-level hack, not a post-hoc scan.
 > The algorithm owns its own best performance.
 
-**Status**: v6 — Phase 2 complete (commit `b7a4e20`). Phase 3 next.
+**Status**: v7 — All phases complete (commits `c87fdbc`–`877a9cb`).
 **Crate**: `sim-ml-bridge`
 **Depends on**: Policy Persistence (complete — commit `2919732`)
 **New dependencies**: None
@@ -864,12 +864,12 @@ metrics.
 - `save_artifacts_writes_best_files` — `.best.artifact.json` written + loadable
 - `validate_rejects_non_finite_best_reward` — `Infinity` in `best_reward` rejected
 
-**Phase 3** (estimated ~3):
-- 1 checkpoint round-trip preserves best state across resume
-- 1 backward compat: old checkpoint loads with default best fields
-- 1 resume training: best from previous session survives
+**Phase 3** (3 tests — done):
+- `checkpoint_round_trip_preserves_best_across_resume` — train → checkpoint → restore → verify best artifact matches
+- `old_checkpoint_without_best_fields_loads_with_defaults` — stripped fields → JSON round-trip → fallback to policy params
+- `resume_training_preserves_best_from_previous_session` — session 1 best survives resume if session 2 doesn't beat it
 
-**Total**: 14 done + ~3 remaining (Phase 3)
+**Total**: 17 tests (all done)
 
 ---
 
@@ -914,17 +914,31 @@ Verification: `cargo test -p sim-ml-bridge --lib` — 379 passed.
 `cargo test -p sim-ml-bridge --test competition` — 13 ignored (multi-
 minute), 0 failed.
 
-**Phase 3 — Checkpoint integration**
-- Add best state fields to `TrainingCheckpoint`
+**Phase 3 — Checkpoint integration** ✅ (commit `877a9cb`)
+- Add best state fields to `TrainingCheckpoint` (§8)
 - Update all 5 `checkpoint()` impls to use `self.best.to_checkpoint()`
 - Update all 5 `from_checkpoint()` impls to use `BestTracker::from_checkpoint()`
   (replace `BestTracker::new(policy.params())` placeholder from Phase 1)
+- Update `MockAlgorithm::checkpoint()` in `competition.rs`
+- Update `TrainingCheckpoint` struct literal in `artifact.rs` test
 - Remove `#[allow(dead_code)]` from `BestTracker::to_checkpoint()`,
-  `from_checkpoint()`, `reward()`, `epoch()` — all will have callers
-  after this phase
-- ~3 unit tests (round-trip, backward compat, resume tracking)
+  `from_checkpoint()` — both now have non-test callers (5 algos + mock)
+- `#[allow(dead_code)]` on `reward()`, `epoch()` **remains** —
+  `to_checkpoint()` accesses the fields directly, not through the
+  accessor methods. No non-test callers exist yet. Comment updated
+  to "non-test callers pending (visualization / analysis)".
+- 3 unit tests (round-trip, backward compat, resume tracking)
 
-Verification: `cargo test -p sim-ml-bridge --lib`
+Verification: `cargo test -p sim-ml-bridge --lib` — 382 passed.
+
+### Implementation note: `reward()`/`epoch()` accessors
+The Phase 3 plan assumed `to_checkpoint()` would call `self.reward()`
+and `self.epoch()`, giving them non-test callers. In practice,
+`to_checkpoint()` accesses the private fields directly (it's in the
+same struct impl block), so the accessors remain dead outside tests.
+This is correct — adding method indirection just to remove an
+`#[allow(dead_code)]` would be worse. These accessors will get real
+callers when visualization or analysis code reads best-epoch state.
 
 **Phase 4 — Example and external caller updates** ✅ (done in Phase 2)
 - ~~Update `train-then-replay` example~~ — done in Phase 2 (compile-
