@@ -53,16 +53,17 @@ docs/thermo_computing/
 ├── SUMMARY.md                       ← NEW: mdbook-style index
 ├── MASTER_PLAN.md                   ← REDUCED to a pointer file
 ├── 01_vision/
-│   ├── the_gap.md                   ← from MASTER_PLAN §1
-│   ├── research_directions.md       ← from MASTER_PLAN §2.0–2.5 (UNRANKED, foundation status added)
-│   └── synthesis.md                 ← from MASTER_PLAN §2 synthesis paragraph
+│   ├── vision.md                    ← from MASTER_PLAN §1 Vision (the endpoint)
+│   ├── research_directions.md       ← from MASTER_PLAN §2 D1–D5 + Foundational connection (UNRANKED, foundation status added)
+│   └── synthesis.md                 ← from MASTER_PLAN §2 Synthesis subsection
 ├── 02_foundations/
-│   ├── current_state.md             ← from MASTER_PLAN §3 (the live snapshot)
-│   ├── existing_substrate.md        ← from MASTER_PLAN §3 "What already exists" + "Adjacent capabilities"
+│   ├── working_principles.md        ← from MASTER_PLAN §0 Working Principles — Sharpen the Axe
+│   ├── current_state.md             ← from MASTER_PLAN §3 "Current state of the thermo line" (the live snapshot)
+│   ├── existing_substrate.md        ← from MASTER_PLAN §3 "What already exists" + "What does not yet exist" + "Adjacent capabilities"
 │   ├── chassis_design.md            ← PURE MOVE: THERMO_CHASSIS_DESIGN.md
 │   └── open_questions.md            ← from MASTER_PLAN §5
 ├── 03_phases/
-│   ├── overview.md                  ← from MASTER_PLAN §4
+│   ├── overview.md                  ← from MASTER_PLAN §4 The Gap (intro + Phase 1 spec + Phases 2–7)
 │   └── (per-phase spec files added later, not in this refactor)
 ├── 04_recon_log/
 │   ├── README.md                    ← NEW: explains append-by-adding-files + numbering
@@ -110,17 +111,20 @@ Each existing file's content is classified, with destination paths.
 
 ### 3.1 `MASTER_PLAN.md` (2610 lines) — REDUCE + EXTRACT + SPLIT
 
-The largest source. Sections distributed as follows:
+The largest source. Sections distributed as follows. Mapping was
+corrected during execution against the actual file structure — see
+§3.6 for the four discoveries that motivated the corrections.
 
 | Source range | New location | Type | Notes |
 |---|---|---|---|
-| §1 The Gap | `01_vision/the_gap.md` | EXTRACT | The §1 headline + tagline. Slow-changing. |
-| §2.0–2.5 Research Directions (D1–D5) | `01_vision/research_directions.md` | EXTRACT + EDIT | Drop the §2.4 priority ladder. Add `Foundation status:` field per direction. D3 → BLOCKED on Q5. D5 → NOT RECON'D. D1, D2, D4 → viable. **This is the only EDIT in the refactor.** |
-| §2 synthesis paragraph (the "CortenForge becomes the only..." sentence and surrounding) | `01_vision/synthesis.md` | EXTRACT | Carries the narrative weight that the rank-1 slot used to carry. |
-| §2.4 priority ladder | (deleted) | DELETE | Per refined Framing 3. Information preserved via `03_phases/overview.md` + per-direction `earliest phase` fields. |
-| §3 Current State | `02_foundations/current_state.md` | EXTRACT | The live snapshot. Updated post-refactor in a separate commit (see §4 follow-ons). |
-| §3 "What already exists" + "Adjacent capabilities" subsections | `02_foundations/existing_substrate.md` | EXTRACT | Slow-changing reference material. |
-| §4 Phases (1-7) | `03_phases/overview.md` | EXTRACT | Sequence of phases. Per-phase spec files added later. |
+| §0 Working Principles — Sharpen the Axe | `02_foundations/working_principles.md` | EXTRACT | Operating discipline for the initiative. Slow-changing. (Added §3.6 #1.) |
+| §1 Vision (the endpoint) | `01_vision/vision.md` | EXTRACT | Aspirational endpoint + "Why CortenForge is the right substrate" + "Headline research claim." Filename matches content. (Was `the_gap.md` in the original §3.1; renamed §3.6 #2.) |
+| §2 Research Directions (intro + D1–D5 + Foundational connection) | `01_vision/research_directions.md` | EXTRACT + EDIT | Drop the Priority ladder subsection. Add `Foundation status:` field per direction. D3 → BLOCKED on Q5. D5 → NOT RECON'D. D1, D2, D4 → viable. **This is the only EDIT in the refactor.** |
+| §2 Synthesis subsection (the "CortenForge becomes the only..." quote) | `01_vision/synthesis.md` | EXTRACT | Carries the narrative weight that the rank-1 slot used to carry. |
+| §2 Priority ladder subsection | (deleted) | DELETE | Per refined Framing 3. Information preserved via `03_phases/overview.md` + per-direction `earliest phase` fields. |
+| §3 "Current state of the thermo line" subsection | `02_foundations/current_state.md` | EXTRACT | The live snapshot. Updated post-refactor in a separate commit (see §7 follow-ons). |
+| §3 "What already exists" + "What does not yet exist" + "Adjacent capabilities" subsections | `02_foundations/existing_substrate.md` | EXTRACT | Slow-changing substrate reference, positive AND negative space. ("What does not yet exist" added §3.6 #3.) |
+| §4 The Gap (intro narrative + Phase 1 spec + Phases 2–7) | `03_phases/overview.md` | EXTRACT | All §4 content. The intro narrative ("phases ordered by dependency...") becomes the file's preamble. (Was "§4 Phases" in the original §3.1; corrected §3.6 #2.) |
 | §5 Open Questions (Q1-Q6) | `02_foundations/open_questions.md` | EXTRACT | Q-numbered register. Q5 status updated post-refactor. |
 | §6 Spec Index | `README.md` | EXTRACT | Tiny section (~5 lines). Folds into the top-level README — "what specs exist" is a navigation question. |
 | §7 Recon Log | `04_recon_log/*.md` | SPLIT | 14 entries → 14 files. See §3.4 below. |
@@ -186,6 +190,52 @@ of the form 'part N' point to `2026-04-09_part_NN_*.md`."
 | `01_vision/synthesis.md` | ~30 | Extracted, but standalone enough to count as effectively-new shaping. |
 | `04_recon_log/README.md` | ~25 | Numbering convention, append-by-adding-files convention, cross-reference convention. |
 
+### 3.6 Pre-execution discovery + corrections
+
+When the executing session began reading `MASTER_PLAN.md` to confirm
+the §3.1 mapping against the actual file, four gaps were found in
+the original §3.1 table. The plan was paused, the gaps surfaced, and
+the corrections below were applied before any file moves.
+
+1. **§0 Working Principles was unmapped.** A ~45-line section with
+   no row in §3.1. It would have been silently dropped during the
+   `MASTER_PLAN.md → pointer` reduction. Resolved: extracted to
+   `02_foundations/working_principles.md`. The operating discipline
+   is foundational to the initiative; the doc tree carries it
+   directly rather than relying on operator memory.
+
+2. **§1 / §4 label mismatch.** The original §3.1 labeled §1 as
+   "The Gap" (→ `the_gap.md`) and §4 as "Phases (1-7)"
+   (→ `overview.md`), but the actual `MASTER_PLAN.md` has §1 =
+   "Vision (the endpoint)" and §4 = "The Gap (working both ways
+   toward the middle)" containing the phase material. Resolved:
+   §1 Vision → `01_vision/vision.md` (filename matches content);
+   §4 The Gap → `03_phases/overview.md` (all §4 content including
+   intro narrative and the phase status table). No `the_gap.md`
+   file is created — the gap framing is captured in `overview.md`'s
+   preamble, not as a standalone file.
+
+3. **§3 "What does not yet exist" subsection was unmapped.** The
+   original §3.1 mapped "What already exists" + "Adjacent
+   capabilities" to `existing_substrate.md` but omitted the
+   "What does not yet exist" subsection (~24 lines) that sits
+   between them in the source. Resolved: added to
+   `existing_substrate.md`. Slow-changing substrate reference
+   covers both positive and negative space.
+
+4. **§2 sub-numbering references were stale.** The original §3.1
+   used "§2.0–2.5" and "§2.4 priority ladder", but actual §2 has
+   no `§2.N` numbering — only `### D1`–`### D5`,
+   `### Foundational connection`, `### Synthesis`, and
+   `### Priority ladder` subsections. Resolved: row labels now
+   reference actual subsection titles. No content impact.
+
+The corrections were applied to §3.1 (mapping table), §2 (target
+tree), and §4 (order of operations — added a new step for §0
+extraction). The rubric was re-graded in
+`REFACTOR_PLAN_RUBRIC_2026-04-09.md` §5b. The corrected plan is
+shippable; execution proceeds against the corrected plan.
+
 ## 4. Order of operations
 
 Each step is its own commit. Each commit is small enough to revert
@@ -196,18 +246,22 @@ tree in a broken state.
 |---|------|---|---|
 | 1 | Create directories | `mkdir 01_vision/ 02_foundations/ 03_phases/ 04_recon_log/ 05_doc_reviews/ 06_findings/`. Empty dirs. | Lets subsequent moves land in valid locations. |
 | 2 | Pure moves | `git mv THERMO_CHASSIS_DESIGN.md 02_foundations/chassis_design.md`, `git mv DOC_REVIEW_2026-04-09.md 05_doc_reviews/2026-04-09_doc_review.md`. | Zero content risk. Done first to clear simple work. |
-| 3 | Extract §1 The Gap | Create `01_vision/the_gap.md`. Remove §1 from `MASTER_PLAN.md`. | Smallest extract. Validates the extract pattern. |
-| 4 | Extract §2 Research Directions | Create `01_vision/research_directions.md` (unranked, foundation status added) + `01_vision/synthesis.md`. Remove §2 from `MASTER_PLAN.md`. **The only EDIT in the refactor.** | The load-bearing change. Done early so subsequent work doesn't need to re-edit it. |
-| 5 | Extract §3 Current State | Create `02_foundations/current_state.md` and `02_foundations/existing_substrate.md`. Remove §3 from `MASTER_PLAN.md`. | Mechanical extract. |
-| 6 | Extract §4 Phases | Create `03_phases/overview.md`. Remove §4 from `MASTER_PLAN.md`. | Mechanical extract. |
-| 7 | Extract §5 Open Questions + §6 Spec Index | Create `02_foundations/open_questions.md`. Remove §5+§6 from `MASTER_PLAN.md`. | Mechanical extract. |
-| 8 | Split §7 Recon Log | Create 14 files in `04_recon_log/`. Remove §7 from `MASTER_PLAN.md`. **Largest commit by file count, but each file is a verbatim copy of its source range.** | Done after all other extracts so MASTER_PLAN.md is now ~30 lines and easy to convert. |
-| 9 | Reduce `MASTER_PLAN.md` to pointer file | Rewrite the remaining file as a pointer with links to the new structure. | Last content commit. |
-| 10 | Write index files | `README.md`, `SUMMARY.md`, `04_recon_log/README.md`. | Index after content. |
-| 11 | Verify cross-references | Grep for stale "MASTER_PLAN" references inside `docs/thermo_computing/` and update where appropriate (footers, "see also" pointers in chassis design, doc review). External references (memory files) updated separately as a follow-on. | Single pass at the end. |
+| 3 | Extract §0 Working Principles | Create `02_foundations/working_principles.md`. Remove §0 from `MASTER_PLAN.md`. | Smallest extract, in source order. Validates the extract pattern. (Added §3.6 #1.) |
+| 4 | Extract §1 Vision | Create `01_vision/vision.md`. Remove §1 from `MASTER_PLAN.md`. | Mechanical extract. (Was "Extract §1 The Gap" in the original step list; corrected §3.6 #2.) |
+| 5 | Extract §2 Research Directions | Create `01_vision/research_directions.md` (unranked, foundation status added) + `01_vision/synthesis.md`. Remove §2 from `MASTER_PLAN.md`. **The only EDIT in the refactor.** | The load-bearing change. Done early so subsequent work doesn't need to re-edit it. |
+| 6 | Extract §3 Current State | Create `02_foundations/current_state.md` and `02_foundations/existing_substrate.md`. Remove §3 from `MASTER_PLAN.md`. | Mechanical extract. |
+| 7 | Extract §4 The Gap | Create `03_phases/overview.md` (intro narrative + Phase 1 spec + Phases 2–7). Remove §4 from `MASTER_PLAN.md`. | Mechanical extract. (Was "Extract §4 Phases" in the original step list; corrected §3.6 #2.) |
+| 8 | Extract §5 Open Questions + §6 Spec Index | Create `02_foundations/open_questions.md`. Remove §5+§6 from `MASTER_PLAN.md`. (§6 content is folded into the top-level `README.md` in step #11.) | Mechanical extract. |
+| 9 | Split §7 Recon Log | Create 14 files in `04_recon_log/`. Remove §7 from `MASTER_PLAN.md`. **Largest commit by file count, but each file is a verbatim copy of its source range.** | Done after all other extracts so `MASTER_PLAN.md` is now ~30 lines and easy to convert. |
+| 10 | Reduce `MASTER_PLAN.md` to pointer file | Rewrite the remaining file as a pointer with links to the new structure. | Last content commit. |
+| 11 | Write index files | `README.md` (with §6 Spec Index folded in), `SUMMARY.md`, `04_recon_log/README.md`, `06_findings/.gitkeep`. | Index after content. |
+| 12 | Verify cross-references | Grep for stale "MASTER_PLAN" references inside `docs/thermo_computing/` and update where appropriate (footers, "see also" pointers in chassis design, doc review). External references (memory files) updated separately as a follow-on. | Single pass at the end. |
 
-Estimated: ~11 commits. Plan is to do them all in one focused
-session.
+Estimated: ~12 commits (was 11 in the original plan; +1 for §0
+extraction added in §3.6 #1). Plan is to do them all in one
+focused session, plus one additional commit (this one) that lands
+the §3.1 / §3.6 / §4 corrections themselves before execution
+begins.
 
 ## 5. Decisions locked (from prior conversation)
 

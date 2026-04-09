@@ -279,6 +279,66 @@ the plan was a single document; the cost of executing on a B
 plan would have been hours, and the cost of un-doing a botched
 refactor would have been days. Always pay the minutes.
 
+## 5b. Pre-execution discovery + re-grade
+
+Applied 2026-04-09 by Claude (executing session, after the §5a
+post-fix self-assessment but before any file moves).
+
+When the executing session began reading `MASTER_PLAN.md` to
+confirm the §3.1 mapping against the actual file, four gaps were
+discovered in the §3.1 table that the §4 self-assessment and the
+§5a post-fix self-assessment had both missed. Both prior gradings
+had been done from the plan-author's mental model of the source
+file, not from a fresh read. The four gaps:
+
+1. **§0 Working Principles was unmapped** (~45 lines, no row in
+   §3.1). Would have been silently dropped during the
+   `MASTER_PLAN.md → pointer` reduction.
+2. **§1 / §4 label mismatch.** §3.1 used "§1 The Gap" and "§4
+   Phases" as row labels, but actual `MASTER_PLAN.md` has §1 =
+   "Vision (the endpoint)" and §4 = "The Gap (containing the phase
+   material)." A fresh executor could not interpret the mapping
+   without choosing between two plausible readings.
+3. **§3 "What does not yet exist" subsection unmapped** (~24 lines,
+   sits between two subsections that *were* mapped to
+   `existing_substrate.md`).
+4. **§2 sub-numbering references stale** (`§2.0–2.5`, `§2.4`)
+   when actual §2 has no `§2.N` numbering.
+
+Strict reading: gaps 1, 2, and 3 dropped **C1 Coverage** below A
+(orphaned content + ambiguous-destination content). Gap 2 dropped
+**C7 Executability** below A (a fresh executor could not run §3.1
+from the plan alone). Gap 4 was cosmetic and did not affect a
+grade.
+
+The executing session paused before any file moves, surfaced the
+gaps to the user, received green light to fix and proceed,
+patched the plan in §3.1, §3.6 (new), §2 (target tree), §4
+(order of operations — added a new step #3 for §0 extraction), and
+re-graded here. Re-grade after the patches:
+
+| # | Criterion | Grade | Reasoning |
+|---|---|---|---|
+| C1 | Coverage | **A** | §0, §1, §3 "What does not yet exist", and the §1/§4 ambiguity all have committed destinations in the patched §3.1. Zero orphaned content. Zero "decide later" decisions. New §3.6 explicitly documents the four discoveries and resolutions for future sessions. |
+| C2 | Reversibility | **A** | Unchanged. New step count is 12 (was 11); each step is still its own commit with the same independent-revert property. The plan-fix commit (this regrade + the §3.1 patches) is itself a separate revertable commit. |
+| C3 | Scope Discipline | **A** | Unchanged. The patches add no new scope — they correct mis-mapped existing content. The §6 non-scope list is untouched. |
+| C4 | Sequencing Safety | **A** | Unchanged. New step #3 (§0 extraction) slots cleanly into the source-order extract sequence and validates the extract pattern (smallest extract, in source order). Subsequent step numbers shift by 1 with no ordering change. |
+| C5 | Content Fidelity | **A** | Unchanged. The patches rename one destination filename (`the_gap.md` → `vision.md`), add three orphaned source ranges to existing destination files (or new ones), and correct stale section labels. No new EDITs introduced; the only EDIT is still the §2 foundation-status fields in step #5. |
+| C6 | Verifiability | **A** | Unchanged. Line-conservation band stays at +150 ± 50 — the four discoveries shift the expected delta by under 30 lines (preserving §0's 45 lines instead of dropping them, preserving §3 "What does not yet exist" 24 lines, etc., counterbalanced by the same lines reappearing in destination files). New step count (12 vs 11) doesn't materially affect the band. |
+| C7 | Executability | **A** | Patched §3.1 uses actual section titles and line ranges. New §3.6 documents the discovery process so a *future* fresh session can see how the plan was hardened. The plan can now be executed by a fresh session reading only the plan, without needing to consult `MASTER_PLAN.md` to disambiguate row labels. |
+
+**Aggregate**: **A across all seven criteria. Plan is shippable
+post-discovery patches.**
+
+Lesson for future paper-artifact gradings: even a careful self-
+assessment can miss what a fresh-eyes execution-time read catches.
+A two-pass discipline is worth applying to load-bearing paper
+artifacts: (1) author self-grades immediately after drafting, then
+(2) execution session does a fresh read and validates the mapping
+against the actual file before doing any work. Pass 2 is cheap and
+catches what pass 1 systematically misses (the author's mental
+model vs. the file).
+
 ## 6. Re-grading discipline
 
 Same cadence as the chassis design and the doc review:
