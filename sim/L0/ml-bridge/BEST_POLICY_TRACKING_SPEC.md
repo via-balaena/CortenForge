@@ -5,7 +5,7 @@
 > first-class capability — not a runner-level hack, not a post-hoc scan.
 > The algorithm owns its own best performance.
 
-**Status**: v5 — Phase 1 complete (commits `c87fdbc`, `66dcc46`). Phase 2 next.
+**Status**: v6 — Phase 2 complete (commit `b7a4e20`). Phase 3 next.
 **Crate**: `sim-ml-bridge`
 **Depends on**: Policy Persistence (complete — commit `2919732`)
 **New dependencies**: None
@@ -828,6 +828,22 @@ acceptable because:
 constructing a `PolicyDescriptor` struct literal must include it
 (e.g. `activation: Activation::Tanh`).
 
+### Implementation note: struct literal cascading
+Adding fields to `TrainingProvenance` forces updates to every struct
+literal in the codebase — not just the Phase 2 files. In practice
+this pulled all Phase 4 work (example + `artifact.rs` test literals)
+into Phase 2. Rust won't compile with missing fields, so this is
+unavoidable. Future specs should not phase struct-literal updates
+separately from the struct change.
+
+### Implementation note: `print_ranked` best_epoch
+`print_ranked()` computes best epoch inline from `metrics` via
+`enumerate().max_by()` rather than reading `provenance.best_epoch`.
+This is intentional — `print_ranked` operates on `RunResult` (which
+has `metrics` directly) and avoids unwrapping provenance. The inline
+computation is consistent with `best_reward()` also computing from
+metrics.
+
 ### Tests
 
 **Phase 1** (10 tests — done):
@@ -842,18 +858,18 @@ constructing a `PolicyDescriptor` struct literal must include it
 - `best_artifact_before_train_returns_initial_policy` — integration
 - `best_artifact_after_training_has_best_epoch_weights` — integration
 
-**Phase 2** (estimated ~4):
-- 1 `RunResult::best_reward()` matches manual scan
-- 1 provenance `best_reward`/`best_epoch` serde round-trip
-- 1 `save_artifacts()` writes `.best.artifact.json` files
-- 1 `best_reward` validation rejects non-finite
+**Phase 2** (4 tests — done):
+- `run_result_best_reward_matches_manual_scan` — best vs final divergence
+- `provenance_best_fields_serde_round_trip` — JSON round-trip preserves both fields
+- `save_artifacts_writes_best_files` — `.best.artifact.json` written + loadable
+- `validate_rejects_non_finite_best_reward` — `Infinity` in `best_reward` rejected
 
 **Phase 3** (estimated ~3):
 - 1 checkpoint round-trip preserves best state across resume
 - 1 backward compat: old checkpoint loads with default best fields
 - 1 resume training: best from previous session survives
 
-**Total**: ~17 tests
+**Total**: 14 done + ~3 remaining (Phase 3)
 
 ---
 
@@ -874,37 +890,47 @@ constructing a `PolicyDescriptor` struct literal must include it
 
 Verification: `cargo test -p sim-ml-bridge --lib` — 375 passed
 
-**Phase 2 — Provenance + competition integration**
+**Phase 2 — Provenance + competition integration** ✅ (commit `b7a4e20`)
 - Add `best_reward`, `best_epoch` to `TrainingProvenance`
 - Add `best_artifact` to `RunResult`, `best_reward()` helper
 - Update `Competition::run()` to extract best artifact
-- Update `print_ranked()` to show both columns
-- Update `save_artifacts()` and `best_for_task()`
+- Update `print_ranked()` to show both columns (Final Reward, Best
+  Reward, Best @, Dones — sorted by best reward)
+- Update `save_artifacts()` and `best_for_task()` (returns
+  `&r.best_artifact` now, not `&r.artifact`)
 - Add `best_reward` validation to `PolicyArtifact::validate()`
-- Update test `RunResult` constructions
-- ~4 unit tests
+- Update test `RunResult` constructions (5 sites)
+- 4 unit tests
+- **Pulled forward from Phase 4**: updated `train-then-replay` example
+  provenance literal + 4 `TrainingProvenance` test literals in
+  `artifact.rs` (required for compilation — Rust struct literals need
+  all fields)
+- `#[allow(dead_code)]` on `reward()`, `epoch()` remains — Phase 2
+  competition runner computes best from metrics (independent
+  verification), not from BestTracker accessors. `to_checkpoint()`,
+  `from_checkpoint()` still dead_code (Phase 3).
 
-Verification: `cargo test -p sim-ml-bridge --lib` +
-`cargo test -p sim-ml-bridge --test competition` (non-ignored only)
+Verification: `cargo test -p sim-ml-bridge --lib` — 379 passed.
+`cargo test -p sim-ml-bridge --test competition` — 13 ignored (multi-
+minute), 0 failed.
 
 **Phase 3 — Checkpoint integration**
 - Add best state fields to `TrainingCheckpoint`
 - Update all 5 `checkpoint()` impls to use `self.best.to_checkpoint()`
 - Update all 5 `from_checkpoint()` impls to use `BestTracker::from_checkpoint()`
+  (replace `BestTracker::new(policy.params())` placeholder from Phase 1)
+- Remove `#[allow(dead_code)]` from `BestTracker::to_checkpoint()`,
+  `from_checkpoint()`, `reward()`, `epoch()` — all will have callers
+  after this phase
 - ~3 unit tests (round-trip, backward compat, resume tracking)
 
 Verification: `cargo test -p sim-ml-bridge --lib`
 
-**Phase 4 — Example and external caller updates**
-- Update `examples/fundamentals/sim-ml/persistence/train-then-replay/src/main.rs:157`:
-  add `best_reward` and `best_epoch` to `TrainingProvenance` struct literal
-  - `best_reward`: compute from `metrics` via `max_by()` (returns `Option`)
-  - `best_epoch`: compute from `metrics` via `enumerate().max_by()`
-- Update any test `TrainingProvenance` struct literals in `artifact.rs`
-  (4 sites: lines 1055, 1082, 1119, 1132)
-
-Verification: `cargo build --examples` +
-`cargo test -p sim-ml-bridge --lib`
+**Phase 4 — Example and external caller updates** ✅ (done in Phase 2)
+- ~~Update `train-then-replay` example~~ — done in Phase 2 (compile-
+  required: Rust struct literals need all fields)
+- ~~Update `artifact.rs` test literals~~ — done in Phase 2 (same reason)
+- No remaining work — Phase 4 is empty.
 
 ---
 
