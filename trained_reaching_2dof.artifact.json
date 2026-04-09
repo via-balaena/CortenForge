@@ -1,0 +1,269 @@
+{
+  "version": 1,
+  "descriptor": {
+    "kind": "Linear",
+    "obs_dim": 4,
+    "act_dim": 2,
+    "hidden_dims": [],
+    "activation": "Tanh",
+    "obs_scale": [
+      0.3183098861837907,
+      0.3183098861837907,
+      0.1,
+      0.1
+    ],
+    "stochastic": false
+  },
+  "params": [
+    -0.5932978247245146,
+    0.04293458426587764,
+    0.019722288454966874,
+    -0.065991674550737,
+    -0.21427964901466048,
+    0.2325580922398836,
+    -0.11095501087811596,
+    -0.017297881930979114,
+    0.16067816739900545,
+    1.3060932543191401
+  ],
+  "provenance": {
+    "algorithm": "CEM",
+    "task": "reaching-2dof",
+    "seed": 42,
+    "epochs_trained": 20,
+    "final_reward": -0.8567109297886527,
+    "total_steps": 300000,
+    "wall_time_ms": 5935,
+    "timestamp": "2026-04-09T01:08:00Z",
+    "hyperparams": {
+      "elite_fraction": 0.2,
+      "max_episode_steps": 300.0,
+      "noise_decay": 0.95,
+      "noise_min": 0.01,
+      "noise_std": 0.3
+    },
+    "metrics": [
+      {
+        "epoch": 0,
+        "mean_reward": -8.24349124718757,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 226,
+        "extra": {
+          "elite_mean_reward": -1.850693486911829,
+          "noise_std": 0.285
+        }
+      },
+      {
+        "epoch": 1,
+        "mean_reward": -5.605868200651444,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 230,
+        "extra": {
+          "elite_mean_reward": -1.079015294691064,
+          "noise_std": 0.27075
+        }
+      },
+      {
+        "epoch": 2,
+        "mean_reward": -4.213428753049495,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 240,
+        "extra": {
+          "elite_mean_reward": -1.1000761703004172,
+          "noise_std": 0.25721249999999996
+        }
+      },
+      {
+        "epoch": 3,
+        "mean_reward": -3.7406311327546824,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 248,
+        "extra": {
+          "elite_mean_reward": -1.143088547295277,
+          "noise_std": 0.24435187499999994
+        }
+      },
+      {
+        "epoch": 4,
+        "mean_reward": -3.085279281493679,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 260,
+        "extra": {
+          "elite_mean_reward": -0.8716086184928029,
+          "noise_std": 0.23213428124999994
+        }
+      },
+      {
+        "epoch": 5,
+        "mean_reward": -2.8007639857435773,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 265,
+        "extra": {
+          "elite_mean_reward": -0.884917625224509,
+          "noise_std": 0.22052756718749994
+        }
+      },
+      {
+        "epoch": 6,
+        "mean_reward": -2.6293504245789325,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 279,
+        "extra": {
+          "elite_mean_reward": -0.7690131934680526,
+          "noise_std": 0.20950118882812493
+        }
+      },
+      {
+        "epoch": 7,
+        "mean_reward": -2.332659645286253,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 305,
+        "extra": {
+          "elite_mean_reward": -0.6783308779648488,
+          "noise_std": 0.19902612938671868
+        }
+      },
+      {
+        "epoch": 8,
+        "mean_reward": -2.4823045990038937,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 311,
+        "extra": {
+          "elite_mean_reward": -0.6895846873849234,
+          "noise_std": 0.18907482291738273
+        }
+      },
+      {
+        "epoch": 9,
+        "mean_reward": -1.6477649387168143,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 312,
+        "extra": {
+          "elite_mean_reward": -0.6484784877257954,
+          "noise_std": 0.1796210817715136
+        }
+      },
+      {
+        "epoch": 10,
+        "mean_reward": -1.4906264923734471,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 314,
+        "extra": {
+          "elite_mean_reward": -0.665429885406728,
+          "noise_std": 0.1706400276829379
+        }
+      },
+      {
+        "epoch": 11,
+        "mean_reward": -1.26598568388178,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 321,
+        "extra": {
+          "elite_mean_reward": -0.6044526703029024,
+          "noise_std": 0.162108026298791
+        }
+      },
+      {
+        "epoch": 12,
+        "mean_reward": -1.4330885752978058,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 327,
+        "extra": {
+          "elite_mean_reward": -0.5834624082631907,
+          "noise_std": 0.15400262498385145
+        }
+      },
+      {
+        "epoch": 13,
+        "mean_reward": -1.3213933540941096,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 327,
+        "extra": {
+          "elite_mean_reward": -0.5948572690390289,
+          "noise_std": 0.14630249373465887
+        }
+      },
+      {
+        "epoch": 14,
+        "mean_reward": -0.9096892086183691,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 327,
+        "extra": {
+          "elite_mean_reward": -0.5768494415153675,
+          "noise_std": 0.1389873690479259
+        }
+      },
+      {
+        "epoch": 15,
+        "mean_reward": -1.1891141779131014,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 326,
+        "extra": {
+          "elite_mean_reward": -0.5818032878497451,
+          "noise_std": 0.13203800059552961
+        }
+      },
+      {
+        "epoch": 16,
+        "mean_reward": -1.122024884189767,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 325,
+        "extra": {
+          "elite_mean_reward": -0.5731801808590425,
+          "noise_std": 0.12543610056575313
+        }
+      },
+      {
+        "epoch": 17,
+        "mean_reward": -0.8521636483125404,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 326,
+        "extra": {
+          "elite_mean_reward": -0.5645862126594667,
+          "noise_std": 0.11916429553746546
+        }
+      },
+      {
+        "epoch": 18,
+        "mean_reward": -1.082636328931184,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 325,
+        "extra": {
+          "elite_mean_reward": -0.5668136817121249,
+          "noise_std": 0.11320608076059219
+        }
+      },
+      {
+        "epoch": 19,
+        "mean_reward": -0.8567109297886527,
+        "done_count": 0,
+        "total_steps": 15000,
+        "wall_time_ms": 327,
+        "extra": {
+          "elite_mean_reward": -0.5643456076539949,
+          "noise_std": 0.10754577672256257
+        }
+      }
+    ],
+    "parent": null
+  }
+}
