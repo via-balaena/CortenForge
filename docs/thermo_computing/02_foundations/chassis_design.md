@@ -242,7 +242,8 @@ or implement only a fallback `apply`-only trait.
 Confidence: high. Five reasons in priority order:
 
 1. **Future-proofness against the Research Directions**.
-   `MASTER_PLAN.md` §2 names five concrete experiments. D1
+   [`../01_vision/research_directions.md`](../01_vision/research_directions.md)
+   names five concrete experiments. D1
    (Brownian ratchet/motor) and D2 (stochastic resonance with a
    sub-threshold periodic driver) are *not* thermostats but they
    are passive forces that bolt into `qfrc_passive` exactly the
@@ -2082,9 +2083,9 @@ of file-level review boundaries is not.
      test infrastructure (`test_utils`).
   3. Quick-start example: a short code block showing
      `PassiveStack::builder().with(LangevinThermostat::new(...)).build().install(&mut model)`.
-  4. Link to `docs/thermo_computing/THERMO_CHASSIS_DESIGN.md`
+  4. Link to `docs/thermo_computing/02_foundations/chassis_design.md`
      for the design rationale.
-  5. Link to `docs/thermo_computing/PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md`
+  5. Link to `docs/thermo_computing/03_phases/01_langevin_thermostat.md`
      once that exists.
 - **Module visibility**: `mod component;`, `mod stack;`,
   `mod diagnose;`, `mod langevin;` are all private — the

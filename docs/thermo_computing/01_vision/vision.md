@@ -39,8 +39,8 @@ printer. That's a different — and arguably more interesting — angle.
 > policy share a single parameter set — and where the simulated device matches
 > its 3D-printed twin within validated tolerances.
 
-(See §2's *Synthesis* for the longer version: same claim, framed in terms of
-the energy function the four subsystems share.)
+(See [`synthesis.md`](./synthesis.md) for the longer version: same claim,
+framed in terms of the energy function the four subsystems share.)
 
 Nobody has this. LAMMPS can't design. cf-design can't sample. PyTorch EBMs
 aren't physical. Extropic can't fab cheaply. The wedge is real.

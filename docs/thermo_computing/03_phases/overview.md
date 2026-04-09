@@ -129,8 +129,8 @@ temperature. Passing this is the gate to all of Phase 2+.
 > *independent* trajectories of 10⁵ steps each averaged across
 > runs — avoids autocorrelation analysis entirely; weak lean;
 > brings the std error to ~4.5% of `½kT`, **(γ)** loosen tolerance
-> to ~5-10% of `½kT`. See `THERMO_CHASSIS_DESIGN.md` Decision 5
-> for the full reasoning.
+> to ~5-10% of `½kT`. See [`../02_foundations/chassis_design.md`](../02_foundations/chassis_design.md)
+> Decision 5 for the full reasoning.
 
 **Phase 5+ caveats** (flagged here, addressed in later phases):
 1. **Derivatives / FD perturbation** — `cb_passive` fires inside
@@ -142,7 +142,8 @@ temperature. Passing this is the gate to all of Phase 2+.
    guard's lifetime and restores prior state on drop. Phase 5 FD
    loops wrap their perturbation block in the guard; the perturbed
    and baseline runs both produce zero noise, so the FD difference
-   recovers `∂F_det/∂qpos` exactly. See `THERMO_CHASSIS_DESIGN.md`
+   recovers `∂F_det/∂qpos` exactly. See
+   [`../02_foundations/chassis_design.md`](../02_foundations/chassis_design.md)
    Decision 7 for the full reasoning and the Scheme A vs. Scheme B
    trade-off.
 2. **Plugin passive forces fire after `cb_passive`** (`passive.rs:723-731`).
