@@ -881,3 +881,325 @@ pointing users to `install_per_env` for batch use.
   has a clear path if the constraint ever changes.
 - No code, no Cargo.toml changes, no new files written beyond
   this document.
+
+---
+
+### Decision 4 (2026-04-09): `Diagnose` trait surface
+
+- **Question**: What does the `Diagnose` trait — promised in
+  Decision 1 as "the orthogonal home for introspection" — look
+  like at Phase 1? Specifically: (a) do we ship it at all in
+  Phase 1, or defer until a real consumer appears? (b) if we
+  ship it, what methods does it expose at minimum?
+- **Why this is decision 4**: Decision 1 promised that
+  introspection has a home if needed; that promise needs to be
+  cashed out (or deferred deliberately) before the Phase 1 spec
+  can describe how tests interact with the components.
+- **Constraint from Decision 1**: `Diagnose` must be *orthogonal*
+  to `PassiveComponent`. Components opt in by implementing it;
+  components that don't have meaningful introspection
+  (e.g., a stateless driver) just don't implement it. The two
+  traits compose via trait bounds (`T: PassiveComponent + Diagnose`)
+  on consumers that need both.
+
+#### Who actually needs introspection in Phase 1?
+
+Walking through the planned Phase 1 surface:
+
+- **Equipartition test**: Tests the *concrete* `LangevinThermostat`
+  type. Uses concrete-type accessors directly (`thermostat.k_b_t()`,
+  `thermostat.gamma()`). **Does not need a trait.**
+- **Callback-firing-count test**: Verifies the callback is invoked
+  exactly once per `step()` and that the RNG advances by the
+  expected number of draws. **Does not need temperature or seed
+  introspection.**
+- **Reproducibility test**: Verifies that two `LangevinThermostat`
+  instances constructed with the same seed produce identical
+  trajectories. Uses concrete-type construction directly. **Does
+  not need a trait.**
+- **Multi-component diagnostic helper**: Doesn't exist in Phase 1.
+  No use case yet.
+- **Generic test helper that takes `T: PassiveComponent + Diagnose`**:
+  Doesn't exist in Phase 1. No use case yet.
+
+**Conclusion**: Phase 1 has *zero* generic consumers of
+introspection. Every Phase 1 test that needs to read parameters
+back can do so via concrete-type accessors on `LangevinThermostat`.
+
+This is the YAGNI question for Decision 4: ship a `Diagnose` trait
+that has no current consumer, defer it to when one appears, or
+ship a minimal version that doesn't lock in a structure?
+
+#### Scheme A — Defer `Diagnose` entirely to Phase 2+
+
+Don't ship `Diagnose` in Phase 1. The Phase 1 tests use
+concrete-type accessors on `LangevinThermostat` directly. When
+Phase 2 (or later) introduces a real generic introspection
+consumer — for example, a "summarize all components in this
+stack" debug helper, or a generic statistical-test runner that
+wants to assert temperatures across heterogeneous thermostats —
+*that* is when we add the trait, with its shape informed by the
+real consumer's needs.
+
+**Pros**:
+- **Smallest Phase 1 surface**. Less to maintain, less to test,
+  fewer files.
+- **No premature design**. The trait shape is informed by an
+  actual consumer when the consumer appears, not by a guess
+  about what consumers might want.
+- **Adding a trait later is non-breaking**. Existing code that
+  doesn't implement `Diagnose` keeps working; new code that
+  needs the trait adds it incrementally.
+- Honors Decision 1's "orthogonal trait *if needed*" framing
+  literally — Phase 1 doesn't need it, so Phase 1 doesn't ship
+  it.
+
+**Cons**:
+- The Decision 1 promise becomes purely architectural ("we have
+  a place to put it") with no concrete artifact in Phase 1.
+- A user reading the Phase 1 crate sees no "what's in this
+  stack?" debug helper at all — they have to print things
+  manually with concrete-type accessors.
+- Phase 2+ design pressure on the trait shape will be lower
+  because the trait will be designed in isolation, not against
+  shipping code.
+
+#### Scheme B — Minimal `Diagnose` with one method (`diagnostic_summary -> String`)
+
+Ship the trait in Phase 1 with exactly one required method:
+
+```rust
+pub trait Diagnose {
+    /// Human-readable one-line summary of this component's
+    /// configuration. Used for debug logging, error messages,
+    /// and visualization HUDs.
+    fn diagnostic_summary(&self) -> String;
+}
+```
+
+Component implementation:
+```rust
+impl Diagnose for LangevinThermostat {
+    fn diagnostic_summary(&self) -> String {
+        format!(
+            "LangevinThermostat(kT={:.6}, n_dofs={}, seed={})",
+            self.k_b_t,
+            self.gamma.len(),
+            self.seed,
+        )
+    }
+}
+```
+
+User code:
+```rust
+let thermostat = LangevinThermostat::new(gamma, kT, seed);
+println!("{}", thermostat.diagnostic_summary());
+// → "LangevinThermostat(kT=1.000000, n_dofs=1, seed=42)"
+```
+
+For multi-component setups, the `PassiveStack` could optionally
+get a `Display` impl that calls `diagnostic_summary()` on each
+component (out of scope for Decision 4, but trivially addable
+later).
+
+**Pros**:
+- **Tiny commitment** — one trait, one method, ~5 LOC of crate
+  code, ~5 LOC per implementing component.
+- **Instantly useful** for debug logging, test failure messages,
+  and error reporting. A test that fails with
+  "LangevinThermostat(kT=1.0, n_dofs=1, seed=42) failed
+  equipartition: measured 0.495 vs expected 0.5" is much easier
+  to debug than one that just says "failed."
+- **Doesn't lock in any specific introspection structure**. The
+  string is opaque to programmatic use; future Phase 2+ can add
+  typed accessor methods (`fn diagnostic_temperature(&self) ->
+  Option<f64>`, etc.) as additive trait methods with default
+  `None` implementations. Non-breaking.
+- **Establishes the trait as a real, shipping artifact** in
+  Phase 1, so future phases extend it rather than birthing it.
+
+**Cons**:
+- The `String` return type is opaque — programmatic access to
+  individual fields (kT, gamma, seed) still requires concrete-
+  type downcasting, which is inelegant for *generic* test
+  code.
+- Adds one more file/section to the Phase 1 crate that has no
+  test consumer of its own — the `diagnostic_summary` method is
+  used at debug time, not asserted on. Mild YAGNI tension.
+
+#### Scheme C — Full `Diagnose` with typed Option-returning methods
+
+Ship the full trait sketch from Decision 1:
+
+```rust
+pub trait Diagnose {
+    fn diagnostic_summary(&self) -> String;
+    fn diagnostic_temperature(&self) -> Option<f64> { None }
+    fn diagnostic_seed(&self) -> Option<u64> { None }
+    fn diagnostic_damping(&self) -> Option<&DVector<f64>> { None }
+}
+```
+
+Components opt into specific methods by overriding from the
+default `None`.
+
+**Pros**:
+- Generic test helpers can call `t.diagnostic_temperature()`
+  without downcasting.
+- The introspection contract is explicit at the trait level.
+- Matches Decision 1's literal sketch.
+
+**Cons**:
+- **Premature**: Phase 1 has no generic consumers of any of
+  these methods. The trait surface is designed for hypothetical
+  Phase 2+ users.
+- **Locks in specific physical concepts**: `temperature` is a
+  thermostat concept. A bistable element from Phase 3 has a
+  `barrier_height`, not a `temperature`. A stochastic driver
+  from Phase 2 has a `frequency` and `amplitude`, not a
+  `temperature`. We'd be adding methods to the trait that don't
+  generalize, then adding more methods later for each new
+  introspection key, then either bloating the trait or
+  fragmenting it.
+- **Mild violation of Decision 1's spirit**. Decision 1 said
+  the *core* trait stays minimal and physical concepts go on
+  *orthogonal* traits. Scheme C makes `Diagnose` itself a
+  thermostat-specific trait by baking thermostat methods into
+  it. If anything, the right Phase 2+ shape is *multiple*
+  orthogonal introspection traits (`HasTemperature`,
+  `HasPeriodicSchedule`, `HasBarrierHeight`), not one mega-
+  trait.
+
+#### Recommendation: **Scheme B — minimal `Diagnose` with `diagnostic_summary` only**
+
+Confidence: medium-high. It's a YAGNI judgment call where the
+right answer depends on how much we trust Phase 1's design
+pressure to inform the future. Four reasons for B over A and C:
+
+1. **Tiny cost, real value**. ~10 LOC of crate code total
+   (trait + one impl) buys debug-printable components forever.
+   Test failure messages get qualitatively better. The
+   LOC-to-value ratio is excellent.
+
+2. **Doesn't lock in introspection structure**. The string
+   return type is honest — "components describe themselves
+   however they want" — and future typed accessors can be
+   added as additive trait methods with default
+   implementations. Non-breaking, structurally compatible with
+   Scheme C as a future evolution.
+
+3. **Avoids Scheme C's category error**. `temperature`,
+   `damping`, and `seed` are *thermostat* concepts, not
+   *passive component* concepts. Baking them into a generic
+   `Diagnose` trait would imply that every passive component
+   has a temperature, which is false (drivers, ratchets,
+   custom drag laws don't). The "multiple narrow orthogonal
+   traits" pattern (`HasTemperature`, etc.) is the right
+   eventual shape, but it's not Phase 1 work.
+
+4. **Honors Decision 1 concretely**. Decision 1 said
+   introspection has a home if needed; Scheme B ships that
+   home with one method, satisfying the promise without
+   overdesigning. Scheme A defers the promise; Scheme B
+   delivers a minimal version of it.
+
+**Why I'm not recommending A**: it's the most defensible YAGNI
+position but it leaves the test failure messages of Phase 1
+worse than they need to be, and it pushes the design of the
+trait to a moment when the design pressure may be diffuse.
+Scheme B's 10-LOC cost is small enough that the YAGNI argument
+doesn't dominate.
+
+**Why I'm not recommending C**: it locks in thermostat-specific
+methods in a trait that's supposed to be orthogonal to the
+thermostat-vs-non-thermostat distinction. Scheme C is the right
+*direction* (typed introspection eventually exists) but the
+*shape* needs to be multiple narrow traits, not one mega-trait,
+and that design conversation belongs to Phase 2+ when there are
+real heterogeneous components to inform it.
+
+#### Sub-decisions inside Decision 4
+
+- **Trait name**: `Diagnose`. Locked from Decision 1, not
+  relitigated.
+- **Method name**: `diagnostic_summary`. Considered: `summary`
+  (too generic), `describe` (too verbose), `to_string` (clashes
+  with `Display`), `display_summary` (verbose). `diagnostic_*`
+  prefix matches the typed-accessor convention from Decision
+  1's sketch (`diagnostic_temperature`, etc.) so future phases
+  extend cleanly.
+- **Return type**: `String`, owned. Considered: `Cow<'static,
+  str>` (fancy), `&'static str` (impossible — formatting needs
+  allocation), `impl Display` (clean but harder to use in
+  format strings). Owned `String` is the simplest and most
+  compatible with downstream consumers (println!, format!,
+  thiserror).
+- **Default implementation**: none — `diagnostic_summary` is
+  a required method. Components that don't implement it just
+  don't implement `Diagnose`. Considered: providing a default
+  that returns `format!("{}", std::any::type_name::<Self>())`
+  — rejected because the type name alone is not useful, and a
+  forced `unimplemented!()`-by-default would be a footgun.
+- **Trait location**: `sim_thermostat::Diagnose`, declared in
+  `lib.rs` for Phase 1 (one trait, no submodule needed). When
+  Phase 2+ adds more orthogonal introspection traits, they can
+  share a `diagnose` submodule.
+- **Component opt-in**: every Phase 1 component that ships
+  with the crate (just `LangevinThermostat`) implements
+  `Diagnose`. User-defined components can implement it or not
+  at their discretion.
+- **`PassiveStack` does not implement `Diagnose` in Phase 1**.
+  Reason: the stack's diagnostic summary depends on its
+  contents, and we have no consumer asking for a stack-level
+  summary yet. Trivially addable later as
+  `impl Display for PassiveStack` that walks the components.
+  YAGNI.
+- **Send + Sync bounds on the trait**: not added. Components
+  that implement `PassiveComponent` are already `Send + Sync +
+  'static`, so any `T: PassiveComponent + Diagnose` is also
+  Send + Sync. Adding the bounds to `Diagnose` itself would be
+  redundant noise.
+
+#### DECISION (user confirmed): **Scheme B — minimal `Diagnose` with `diagnostic_summary` only**
+
+User cited the 80-20 framing: bulk of the value (debug-printable
+components, qualitatively better test failure messages) for a
+fraction of the cost (~10 LOC). Confirmed.
+
+Final API surface:
+
+```rust
+pub trait Diagnose {
+    /// Human-readable one-line summary of this component's
+    /// configuration. Used for debug logging, error messages,
+    /// and visualization HUDs.
+    fn diagnostic_summary(&self) -> String;
+}
+
+impl Diagnose for LangevinThermostat {
+    fn diagnostic_summary(&self) -> String {
+        format!(
+            "LangevinThermostat(kT={:.6}, n_dofs={}, seed={})",
+            self.k_b_t,
+            self.gamma.len(),
+            self.seed,
+        )
+    }
+}
+```
+
+Future Phase 2+ extensions are additive — typed accessor
+methods can be added with default `None` implementations
+without breaking existing code.
+
+#### Status
+
+- **Decision 4 RESOLVED.** Scheme B confirmed. The `Diagnose`
+  trait ships in Phase 1 with one method, every Phase 1
+  component implements it, and the door is open for additive
+  Phase 2+ extension into multiple narrow orthogonal traits
+  (`HasTemperature`, etc.) when real heterogeneous components
+  inform the shape.
+- No code, no Cargo.toml changes, no new files written beyond
+  this document.
