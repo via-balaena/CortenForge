@@ -5,7 +5,7 @@
 > of every trait, every algorithm, every policy type. The currency of the
 > ML layer.
 
-**Status**: v10 — Phase 3 complete (commit `4a2c24a`), Phase 4 next
+**Status**: v11 — All 4 phases complete (commit `2919732`)
 **Crate**: `sim-ml-bridge`
 **New dependencies**: `serde`, `serde_json`
 
@@ -1207,11 +1207,35 @@ for obs in test_observations {
 - No changes to external consumers — `tests/competition.rs` only references
   `RunResult` by type in function signatures, never constructs it directly.
 
-**Phase 4 — Visual proof**
+**Phase 4 — Visual proof** ✓ `2919732`
 - Train-then-replay Bevy example (CEM on reaching-2dof)
-- Trains inline (~20 epochs), switches to Bevy visualization
-- Saves artifact to disk as side effect
-- This is the user-facing proof that the system works
+- Trains inline (20 epochs, 50 envs headless), saves artifact, reconstructs
+  policy from artifact, then switches to single-arm Bevy visualization
+- 4 validation checks: training converged, artifact saved, policy
+  reconstructed, replay policy active — all PASS
+
+**Phase 4 implementation notes**:
+- Architecture: training happens in `main()` before `App::new()`. The Bevy
+  portion has zero training logic — pure inference replay. This is
+  fundamentally different from existing ML examples which train during the
+  Bevy loop.
+- Policy injection: `TrainedPolicyInput(Option<Box<dyn Policy>>)` resource
+  inserted before `app.run()`. Setup system uses `ResMut` + `.take()` to
+  move the policy out. Works because `Policy: Send + Sync`.
+- Camera: shared `setup_reaching_arms` spawns camera at distance=35
+  (calibrated for 50-arm rows). A `fix_camera` Startup system overrides
+  distance to 2.5 for the single-arm close-up.
+- CEM with linear policy on reaching-2dof doesn't trigger the `done`
+  threshold (requires very precise end-effector positioning). The arm
+  visibly reaches toward the target but truncates at max_episode_steps=300.
+  Validation check uses reward threshold (> -500) rather than `done` flag.
+- `now_iso8601()` duplicated from `competition.rs` (private there). Same
+  Hinnant algorithm, same `#[allow]` attributes. Could be made `pub` in a
+  future refactor.
+- Provenance attached with full CEM hyperparams in the `hyperparams`
+  BTreeMap, mirroring the competition runner pattern.
+- No `rand`/`rand_distr` dependency — CEM handles its own RNG internally,
+  replay is deterministic inference.
 
 ---
 
