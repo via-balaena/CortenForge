@@ -5,7 +5,7 @@
 > of every trait, every algorithm, every policy type. The currency of the
 > ML layer.
 
-**Status**: v9 — Phase 2 complete (commit `dee449b`), Phase 3 next
+**Status**: v10 — Phase 3 complete (commit `4a2c24a`), Phase 4 next
 **Crate**: `sim-ml-bridge`
 **New dependencies**: `serde`, `serde_json`
 
@@ -1090,12 +1090,13 @@ for obs in test_observations {
 - `Activation`
 - `OptimizerConfig` (with custom serde for `max_grad_norm` infinity — see §4.7 note)
 
-### Infrastructure changes
+### Infrastructure changes — Done
 - Algorithm struct field additions: promote optimizer instances and mutable
   scalars from `train()` locals to struct fields (§4.9) ✓ Phase 2
 - `Cargo.toml`: add `serde` (with `derive` feature), `serde_json` as required deps ✓ Phase 1
-- `RunResult` gains `artifact: PolicyArtifact` field — **Phase 3**
-- `CompetitionResult` gains `save_artifacts()` and `best_for_task()` — **Phase 3**
+- `RunResult` gains `artifact: PolicyArtifact` field ✓ Phase 3
+- `CompetitionResult` gains `save_artifacts()` and `best_for_task()` ✓ Phase 3
+- `now_iso8601()` private helper in `competition.rs` (Hinnant civil-date algorithm) ✓ Phase 3
 
 ### Test mock updates — Done
 - `MockQ` (`value.rs` tests): **Done (Phase 1)** — added `obs_dim`,
@@ -1105,7 +1106,7 @@ for obs in test_observations {
   `policy: Box<dyn Policy>` field (a `LinearPolicy::new(1, 1, &[1.0])`).
   Implements `policy_artifact()` and `checkpoint()` with minimal valid data.
 
-### Tests — 362 total (Phase 1: 336, Phase 2: +26)
+### Tests — 365 unit + 2 other = 367 total (Phase 1: 336, Phase 2: +26, Phase 3: +3)
 - Round-trip: create artifact → save → load → validate → to_policy → forward matches ✓
 - Every policy type: descriptor correctness ✓
 - Every algorithm: policy_artifact produces valid artifact ✓
@@ -1119,7 +1120,7 @@ for obs in test_observations {
 - Validation: version check, param count, obs_scale length, hidden_dims consistency ✓
 - Error cases: unsupported version, corrupted JSON, param count mismatch ✓
 - Provenance: with_provenance builder, parent linkage ✓
-- Competition: save_artifacts, best_for_task — **Phase 3**
+- Competition: artifacts have provenance, save_artifacts round-trip, best_for_task ✓ Phase 3
 
 ---
 
@@ -1177,30 +1178,34 @@ for obs in test_observations {
 - MockAlgorithm updated with LinearPolicy field + trait impls
 - 26 new tests (362 total), clippy clean
 
-**Phase 3 — Competition integration**
+**Phase 3 — Competition integration** ✓ `4a2c24a`
 - RunResult gains `artifact: PolicyArtifact` field (with provenance)
 - Competition runner builds provenance during `run()` — it has the task,
   seed, metrics, algorithm name, wall time (everything for TrainingProvenance)
 - `algorithm.policy_artifact()` returns a bare artifact; `run()` attaches
   provenance via `.with_provenance()` before storing on RunResult
 - CompetitionResult gains `save_artifacts()`, `best_for_task()`
-- Competition tests verify artifacts
+- 3 new tests (provenance correctness, save round-trip, best_for_task), 14 competition tests total
 
 **Phase 3 implementation notes**:
-- `Competition::run()` is in `competition.rs:216-263`. It currently pushes
-  `RunResult { task_name, algorithm_name, metrics }`. The change: call
-  `algorithm.policy_artifact()` after `train()`, attach provenance, add to
-  RunResult. The `algorithm` variable is `Box<dyn Algorithm>` — it has
-  `policy_artifact()` from the Phase 2 trait extension.
-- `RunResult` struct is at `competition.rs:19-26`. Adding `artifact` field
-  breaks the construction site in `run()` (line 254) and any test code
-  that constructs RunResult directly — grep for `RunResult {`.
-- `RunResult` derives `Clone` — `PolicyArtifact` also derives `Clone`, so
-  no issue.
-- MockAlgorithm already implements `policy_artifact()` (Phase 2) — its
-  artifact will have a tiny 1×1 LinearPolicy, which is fine for tests.
-- TrainingCheckpoint save/load is already done (Phase 2). Phase 3 only
-  needs PolicyArtifact save/load, which is also done (Phase 1).
+- `now_iso8601()` added as a private helper in `competition.rs`. Uses
+  Howard Hinnant's civil-date algorithm to convert epoch seconds to
+  year/month/day — zero external deps. Needs `#[allow(clippy::cast_possible_wrap,
+  clippy::cast_sign_loss)]` for the i64/u64 conversions in the algorithm.
+- 5 existing test `RunResult` constructions needed `artifact` field added.
+  Used a `dummy_artifact()` test helper (`PolicyArtifact::from_policy` with
+  a 1×1 `LinearPolicy`) to keep test code minimal.
+- `save_artifacts()` creates the directory with `create_dir_all` before
+  writing — callers don't need to pre-create it.
+- `best_for_task()` uses `NEG_INFINITY` as the fallback for missing
+  final_reward (empty metrics), so algorithms that ran 0 epochs still
+  participate in comparison but always lose.
+- The `metrics.clone()` in provenance assembly is the only allocation-heavy
+  line — it clones the full epoch history into the provenance. For long
+  training runs (20K+ epochs) this could be large in the JSON. Acceptable
+  for now; §10 "Near" mentions analysis dashboards that would consume this.
+- No changes to external consumers — `tests/competition.rs` only references
+  `RunResult` by type in function signatures, never constructs it directly.
 
 **Phase 4 — Visual proof**
 - Train-then-replay Bevy example (CEM on reaching-2dof)
