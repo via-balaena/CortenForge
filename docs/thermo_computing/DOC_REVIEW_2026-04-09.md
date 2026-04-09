@@ -187,10 +187,16 @@ sessions can reconstruct the *why* without re-running the analysis.
   bullet with the false-positive-rate rationale and explicit rejection of
   2σ (too flaky for the option-β ~5% std error) and 5σ (would miss
   discretization-bias detection).*
-- [ ] **N3** — Add a 5-line legend defining the Research Directions metadata
+- [x] **N3** — Add a 5-line legend defining the Research Directions metadata
   categories (`reach`: low/early/mid/long-term; `novelty`: low/med/high/very
   high/extreme). Currently used in §2 and the priority ladder but undefined.
   **Acceptance**: §2 has a legend block at the top defining the categories.
+  ✓ *Applied 2026-04-09 — §2 gains a "Status legend" subsection between
+  the intro paragraph and the D1 entry. Reach categories: low / early /
+  mid / long-term / moonshot. Novelty categories: low / med / high /
+  extreme / gate. Each category gets one sentence of definition. Closes
+  with the honest framing that these are author calibration and should
+  be revised as the build progresses.*
 - [ ] **N4** — Add a `debug_assert!` after the defensive `clear_passive_callback()`
   call inside `install_per_env`. Belt-and-suspenders: if the chassis says
   the call is "non-negotiable," the assertion validates the assumption.
@@ -279,7 +285,8 @@ substrate.
 - [x] **S6** — Thermostat persistence future-direction note.
 - [x] **N1** — §1 headline claim compressed to one sentence.
 - [x] **N2** — `n_sigma = 3` chassis convention named in Decision 5.
-- [ ] **N3, N4** — Polish pass continued.
+- [x] **N3** — Research Directions status legend added.
+- [ ] **N4** — Polish pass continued.
 - [ ] Draft `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the revised chassis.
 
 ---

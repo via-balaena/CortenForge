@@ -119,6 +119,30 @@ Five experiments + one foundational connection, ordered from earliest
 payoff to longest horizon. Each direction states: concept, physics
 grounding, the experiment, where it fits in the build, and why it matters.
 
+#### Status legend (added by doc review N3, 2026-04-09)
+
+Each direction (and the priority ladder at the bottom of §2) carries
+a `Status: idea / <reach> / <novelty>` line. The categories:
+
+- **Reach**: how far the experiment is from currently-shipping
+  CortenForge. `low` = achievable in the current branch with one
+  more phase shipped. `early` = within 1-2 phases. `mid` = within
+  3-4 phases. `long-term` = 5+ phases out, or has external
+  dependencies (printer, fab, measurement rig). `moonshot` = an
+  open research problem that may not work even with the full stack.
+- **Novelty**: how much of this would be new in the literature.
+  `low` = textbook physics, well-trodden experiment. `med` = a
+  variant of a published result, with at least one new ingredient.
+  `high` = a publishable result on its own. `extreme` = paper or
+  thesis material; either no prior work has the full stack to do
+  it, or the result would be a first-of-kind demonstration.
+  `gate` = not a research result itself but blocks other work
+  (e.g., the Phase 1-2 thermostat shipping).
+
+These are the author's calibration; treat them as priors that should
+be revised as the build progresses and the literature is read more
+carefully.
+
 ### D1 — The agent learns to *harvest* thermal noise (flashing ratchet)
 
 **Concept**: A flashing-ratchet Brownian motor controlled by an RL policy.
