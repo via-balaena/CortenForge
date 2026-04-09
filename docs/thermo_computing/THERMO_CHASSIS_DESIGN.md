@@ -733,9 +733,11 @@ impl PassiveStack {
     ///    `Arc<PassiveStack>` for env `i`.
     /// 4. Installs that fresh stack on the cloned model.
     ///
-    /// Returns N independent Models, each with its own
-    /// statistically-independent stack and (for stateful
-    /// components like `LangevinThermostat`) its own RNG.
+    /// Returns an `EnvBatch` containing N independent Models AND
+    /// the per-env stacks (S3 — doc review 2026-04-09): the common
+    /// case unwraps `envs.models`, but the introspection case can
+    /// reach `envs.stacks[i].diagnostic_summary()` without having
+    /// to recreate the stacks.
     ///
     /// **Use this for BatchSim setups.** Naïvely cloning a
     /// Model after installing a stack will share the underlying
@@ -745,18 +747,36 @@ impl PassiveStack {
         prototype: &Model,
         n: usize,
         build_one: F,
-    ) -> Vec<Model>
+    ) -> EnvBatch
     where
         F: Fn(usize) -> Arc<PassiveStack>,
     {
-        (0..n).map(|i| {
+        let mut models = Vec::with_capacity(n);
+        let mut stacks = Vec::with_capacity(n);
+        for i in 0..n {
             let stack = build_one(i);
             let mut model = prototype.clone();
             model.clear_passive_callback();  // defensive
-            stack.install(&mut model);
-            model
-        }).collect()
+            stack.clone().install(&mut model);
+            models.push(model);
+            stacks.push(stack);
+        }
+        EnvBatch { models, stacks }
     }
+}
+
+/// Result of `PassiveStack::install_per_env`. Holds N independent
+/// Models alongside the per-env stacks that produced them.
+///
+/// Common case: take the models with `envs.models` (a one-token
+/// unwrap; the field is `pub`).
+///
+/// Introspection case: reach into `envs.stacks[i]` to call
+/// diagnostic accessors, extract per-env RNG state for
+/// checkpointing, etc.
+pub struct EnvBatch {
+    pub models: Vec<Model>,
+    pub stacks: Vec<Arc<PassiveStack>>,
 }
 ```
 
@@ -776,7 +796,8 @@ let envs = PassiveStack::install_per_env(
             .build()
     },
 );
-// envs is Vec<Model>, ready for BatchSim::new(envs) or whatever
+// envs.models is Vec<Model>, ready for BatchSim::new(envs.models)
+// envs.stacks[i] is the per-env Arc<PassiveStack> for introspection
 ```
 
 The closure takes `i` (the env index) so users can vary
@@ -896,12 +917,22 @@ Confidence: high. Five reasons in priority order:
   (uninformative), `install_independent` (verbose), `replicate`
   (too short). `install_per_env` is the clearest match for the
   BatchSim mental model.
-- **Return type**: `Vec<Model>`. Simplest, most directly
-  composable with `BatchSim::new(envs)` or any other downstream
-  consumer. If a user wants the stacks back for inspection,
-  they can store them in the closure's outer scope. Considered:
-  `Vec<(Model, Arc<PassiveStack>)>` — rejected as imposing a
-  cost on the common case for an uncommon need.
+- **Return type**: `EnvBatch { pub models: Vec<Model>, pub
+  stacks: Vec<Arc<PassiveStack>> }` (revised by doc review S3,
+  2026-04-09). Originally `Vec<Model>` — that lost access to the
+  per-env stacks for any introspection use case (diagnostic
+  summaries, per-env RNG checkpointing, parameter inspection),
+  forcing the user to keep the stacks alive in the closure's
+  outer scope by hand. The `EnvBatch` form gives the common case
+  a one-token unwrap (`envs.models`) and the introspection case
+  works for free (`envs.stacks[i]`). Cost: one struct definition
+  with two `pub` fields (~10 LOC). Considered: a tuple
+  `(Vec<Model>, Vec<Arc<PassiveStack>>)` — rejected because
+  named fields are clearer at the call site (`envs.models`
+  vs `envs.0`); a single `Vec<(Model, Arc<PassiveStack>)>` —
+  rejected because the common case wants two separate Vecs
+  (`BatchSim::new(envs.models)` is one move, not a per-element
+  destructure).
 - **Closure signature**: `Fn(usize) -> Arc<PassiveStack>`. The
   index lets users vary parameters per env (parameter sweeps,
   varying ICs, varying seeds). Considered: `Fn() ->
@@ -933,25 +964,35 @@ Scheme D (modify sim-core) is named as the *eventual* right
 answer if a future user demands truly impossible-to-misuse
 semantics, but is Phase-1-out-of-scope.
 
-Final API surface:
+Final API surface (return type revised by doc review S3,
+2026-04-09 — `Vec<Model>` → `EnvBatch`):
 
 ```rust
+pub struct EnvBatch {
+    pub models: Vec<Model>,
+    pub stacks: Vec<Arc<PassiveStack>>,
+}
+
 impl PassiveStack {
     pub fn install_per_env<F>(
         prototype: &Model,
         n: usize,
         build_one: F,
-    ) -> Vec<Model>
+    ) -> EnvBatch
     where
         F: Fn(usize) -> Arc<PassiveStack>,
     {
-        (0..n).map(|i| {
+        let mut models = Vec::with_capacity(n);
+        let mut stacks = Vec::with_capacity(n);
+        for i in 0..n {
             let stack = build_one(i);
             let mut model = prototype.clone();
             model.clear_passive_callback();  // defensive — non-negotiable
-            stack.install(&mut model);
-            model
-        }).collect()
+            stack.clone().install(&mut model);
+            models.push(model);
+            stacks.push(stack);
+        }
+        EnvBatch { models, stacks }
     }
 }
 ```
@@ -965,6 +1006,12 @@ pointing users to `install_per_env` for batch use.
   provides one named API for the BatchSim case, defensively
   clears the inherited callback inside the loop, and documents
   the trap on the regular `install` method.
+- **Return type revised by doc review S3 (2026-04-09)**:
+  `Vec<Model>` → `EnvBatch { models, stacks }`. Common case
+  is unchanged ergonomically (`envs.models` instead of bare
+  `envs`); introspection case (per-env diagnostic summaries,
+  RNG checkpointing, parameter inspection) now works without
+  external bookkeeping. Adds ~10 LOC (one struct definition).
 - The Scheme D trapdoor is named in the document so future-us
   has a clear path if the constraint ever changes.
 - No code, no Cargo.toml changes, no new files written beyond
@@ -1995,7 +2042,7 @@ sim/L0/thermostat/                       (NEW directory)
 └── src/
     ├── lib.rs                           (~50 LOC: docs + re-exports)
     ├── component.rs                     (~70 LOC: PassiveComponent + Stochastic + tests)
-    ├── stack.rs                         (~160 LOC: builder + install + install_per_env + stochastic gating + tests)
+    ├── stack.rs                         (~170 LOC: builder + install + install_per_env + EnvBatch + stochastic gating + tests)
     ├── diagnose.rs                      (~20 LOC: trait + tests)
     ├── langevin.rs                      (~150 LOC: struct + impl + tests)
     └── test_utils.rs                    (~170 LOC: Welford + reset + merge + assertions + tests)
@@ -2003,7 +2050,7 @@ sim/L0/thermostat/                       (NEW directory)
     └── langevin_thermostat.rs           (~250 LOC: integration tests)
 ```
 
-Total Phase 1 footprint: **~890 LOC** across **8 files**.
+Total Phase 1 footprint: **~900 LOC** across **8 files**.
 Comparable to a small ml-bridge algorithm file plus its
 tests. Manageable, mechanical, swappable.
 
@@ -2024,7 +2071,11 @@ Architecture is observable from `ls sim/L0/thermostat/src/`.
   and the `as_stochastic` introspection hook on
   `PassiveComponent`). `stack.rs` grows from ~120 to ~160 LOC
   (adds `set_all_stochastic` and the `StochasticGuard` RAII
-  type). Total Phase 1 footprint moves from ~810 to ~890 LOC.
+  type).
+- **Updated by doc review S3 (2026-04-09)**: `stack.rs` grows
+  from ~160 to ~170 LOC (adds the `EnvBatch` struct and
+  `install_per_env` returns it instead of `Vec<Model>`). Total
+  Phase 1 footprint moves from ~810 to ~900 LOC.
 - No code, no Cargo.toml changes, no new files written beyond
   this document.
 

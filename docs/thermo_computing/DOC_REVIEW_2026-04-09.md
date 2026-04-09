@@ -117,13 +117,18 @@ sessions can reconstruct the *why* without re-running the analysis.
   (MASTER_PLAN.md + MASTER_PLAN_RECON_LOG.md) is deliberately deferred
   until post-Phase 1 — judge then whether the master plan has actually
   become unmanageable.*
-- [ ] **S3** — Reconsider `install_per_env`'s return type. Currently
+- [x] **S3** — Reconsider `install_per_env`'s return type. Currently
   `Vec<Model>` discards the per-env stacks; introspection (e.g., per-env
   `diagnostic_summary`) requires recreating them. Recommend `EnvBatch {
   models: Vec<Model>, stacks: Vec<Arc<PassiveStack>> }` — common case is a
   one-token unwrap, introspection case works for free. Borderline call.
   **Acceptance**: chassis Decision 3 either keeps `Vec<Model>` with explicit
-  acknowledgment of the trade-off, or updates the API to `EnvBatch`.
+  acknowledgment of the trade-off, or updates the API to `EnvBatch`. ✓
+  *Applied 2026-04-09 — chose EnvBatch. Decision 3 Scheme B body, user-code
+  example, "Return type" sub-decision, and Final API surface all updated.
+  Status block notes the S3 revision. Decision 6 file inventory bumped:
+  stack.rs 160→170, total Phase 1 footprint 890→900. Common case becomes
+  `envs.models` (one extra token); introspection case is `envs.stacks[i]`.*
 - [ ] **S4** — Add a "passive forces only" framing paragraph to chassis §0.
   D1 (flashing ratchet) hits this at the earliest payoff: it needs both a
   `cb_passive` consumer (the potential) and a `cb_control` consumer (the
@@ -241,7 +246,8 @@ substrate.
   named, recon log entry deferred until the recon actually starts.
 - [x] **S2** — Rewrite §3 Current State (or split into two files). ✓ done
   (small-fix version). File split deferred until post-Phase 1.
-- [ ] **S3, S4, S5, S6** — Smaller doc additions, ~15 min total.
+- [x] **S3** — `install_per_env` returns `EnvBatch` instead of `Vec<Model>`.
+- [ ] **S4, S5, S6** — Smaller doc additions.
 - [ ] **N1, N2, N3, N4** — Polish pass.
 - [ ] Draft `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the revised chassis.
 
