@@ -434,14 +434,30 @@ thermostat owns damping; model damping would compound). Use
 ImplicitFast / Implicit will work via the same `qfrc_passive` path —
 but Phase 1 only validates against Euler.
 
-**Validation**: 1-DOF damped harmonic oscillator with `M=1`, `k_spring=1`,
-`γ=0.1`, `k_B·T=1`, `h=0.001`. Run 10⁵ steps after a burn-in. Measure
-`⟨½ M qvel²⟩`. Must equal `½ k_B·T` to within sampling-error tolerance
-(target: well below `±2%` at this sample count — per sharpen-the-axe
-"validation must pass with margin"). Then sweep `γ ∈ {0.01, 0.1, 1.0}`
-and `k_B·T ∈ {0.5, 1.0, 2.0}` to confirm linear scaling in `T` and
-γ-independence of the stationary temperature. Passing this is the gate
-to all of Phase 2+.
+**Validation** (sketch — *the Phase 1 spec will revise the parameter set*):
+1-DOF damped harmonic oscillator with `M=1`, `k_spring=1`, `γ=0.1`,
+`k_B·T=1`, `h=0.001`. Measure `⟨½ M qvel²⟩` and assert it equals
+`½ k_B·T` within sampling-error tolerance. Then sweep
+`γ ∈ {0.01, 0.1, 1.0}` and `k_B·T ∈ {0.5, 1.0, 2.0}` to confirm
+linear scaling in `T` and γ-independence of the stationary
+temperature. Passing this is the gate to all of Phase 2+.
+
+> **Correction (chassis design Decision 5, 2026-04-09)**: the
+> original "10⁵ steps gives ~10⁻² sampling tolerance" calculation
+> from recon log part 2 was *too optimistic by ~10×*. It assumed
+> independent samples; actual samples from the Markov chain are
+> correlated. For γ=0.1, M=1, h=0.001, the velocity-squared
+> autocorrelation time is `τ_int ≈ M/(2γh) = 5000 steps`, giving
+> an *effective* sample count of `N_eff ≈ 10⁵ / (1 + 2·5000) ≈ 10`
+> for a 10⁵-step run. With chi-squared distributed `½Mv²` (relative
+> std `√2`), the standard error of the sample mean is then
+> `√2/√10 · (½kT) ≈ 0.22 · (½kT)` — about **±22% sampling noise**,
+> not ±2%. The Phase 1 spec will choose between three fixes:
+> **(α)** ~100× longer trajectories, **(β)** ~100 *independent*
+> trajectories of 10⁵ steps each averaged across runs (avoids
+> autocorrelation analysis entirely; weak lean), **(γ)** loosen
+> tolerance to ~5-10%. See `THERMO_CHASSIS_DESIGN.md` Decision 5
+> for the full reasoning.
 
 **Phase 5+ caveats** (flagged here, addressed in later phases):
 1. **Derivatives / FD perturbation** — `cb_passive` fires inside
@@ -531,7 +547,17 @@ referenceability.
 Child specs spawned from phases of the Gap will be linked here as they are
 written.
 
-- *(none yet — Phase 1 spec is the next artifact to produce)*
+- [`THERMO_CHASSIS_DESIGN.md`](./THERMO_CHASSIS_DESIGN.md) — bolt-pattern
+  design document for the `sim-thermostat` crate. Defines the
+  `PassiveComponent` trait, the `PassiveStack` builder + composer, the
+  clone-footgun resolution via `install_per_env`, the orthogonal
+  `Diagnose` trait, the `test_utils` chassis (Welford's algorithm),
+  and the on-disk crate layout. Six decisions (1-6), all RESOLVED.
+  Read this *before* the Phase 1 spec — every Phase 1 implementation
+  detail bolts into the chassis defined here.
+- *(Phase 1 spec — `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` — is the next
+  artifact to produce, drafted in a fresh session against the chassis
+  design above.)*
 
 ---
 
@@ -1627,6 +1653,19 @@ don't rewrite. This is the record of *why* the plan looks the way it does.
   This list is *not* a decision; it's the option space the spec
   needs to consider. Item 8 (where the thermostat lives) and the
   Phase 1 spec design will weigh these against each other.
+
+  > **Update (chassis design Decision 3, 2026-04-09)**: This
+  > clone-footgun option space is now **resolved at the chassis
+  > level**, not at the Phase 1 spec level. The chassis design
+  > chose **option (B)** — `PassiveStack::install_per_env(prototype,
+  > n, build_one)` — as the named API for BatchSim setups, with a
+  > defensive `model.clear_passive_callback()` inside the loop
+  > that makes the API bulletproof against the install-then-batch
+  > order. Option (D) (modify sim-core) is named in the chassis
+  > design as the *eventual* right answer if a future user
+  > demands truly impossible-to-misuse semantics, but is
+  > Phase-1-out-of-scope. See `THERMO_CHASSIS_DESIGN.md`
+  > Decision 3 for the full trade-off analysis.
 - **Caveat (caveat 3) from part 4 status updated**: Previously
   framed as "BatchSim parallel envs need their own
   `LangevinThermostat` instance — not a shared one — to keep RNG
@@ -1867,3 +1906,98 @@ don't rewrite. This is the record of *why* the plan looks the way it does.
   10. The validation parameter set (M=1, k_spring=1, γ=0.1,
       k_B·T=1, h=0.001, 10⁵ steps after burn-in) and the
       γ + T sweep grid.
+
+  > **Update (chassis design round, 2026-04-09)**: Items 1-3
+  > and 6-10 above are now answered by `THERMO_CHASSIS_DESIGN.md`
+  > (Decisions 1-6) and the existing recon log entries. Items 4
+  > and 5 — the two "new design surfaces" — are also resolved at
+  > the chassis level: item 4 by Decision 5 (`WelfordOnline` +
+  > `assert_within_n_sigma`), item 5 by Decision 3
+  > (`PassiveStack::install_per_env` with defensive clear). The
+  > Phase 1 spec inherits answers to all 10 items from the
+  > chassis design round; the only design decision left for the
+  > spec is choosing the validation parameter set fix
+  > (α/β/γ — see the corrected Phase 1 validation paragraph in
+  > §The Gap above and Decision 5 in the chassis doc).
+
+### 2026-04-09 (part 11) — Chassis design round complete
+
+- **Trigger**: After the Phase-1-blocking recon round (items 2-8)
+  closed in part 10, the user reframed the next step away from a
+  monolithic Phase 1 spec and toward a *bolt-pattern design*
+  document defining the swappable chassis of the `sim-thermostat`
+  crate. The framing was R34-explicit: "we might decide to redo
+  the entire thing, as long as the bolt patterns are the same,
+  we can swap it." The reference architecture was named
+  explicitly as `sim-ml-bridge`. A new artifact was opened:
+  `docs/thermo_computing/THERMO_CHASSIS_DESIGN.md`.
+- **Cadence**: Same sharpen-the-axe rhythm as the recon round
+  (one decision at a time, two schemes per decision,
+  recommendation + reasoning, user confirmation, log + commit),
+  applied at the *design layer* instead of the code-reading
+  layer.
+- **Six chassis decisions resolved**:
+
+  | # | Decision                  | Resolution                                                            |
+  |---|---------------------------|-----------------------------------------------------------------------|
+  | 1 | Core trait shape          | `PassiveComponent` — broad, callback-shaped, no physics in the trait  |
+  | 2 | Composition idiom         | `PassiveStack::builder().with(...).build().install(&mut model)`       |
+  | 3 | Clone footgun resolution  | `install_per_env(prototype, n, build_one)` + defensive clear inside loop |
+  | 4 | `Diagnose` trait surface  | Minimal: `diagnostic_summary -> String` only                          |
+  | 5 | Public test utilities     | `WelfordOnline` (Welford 1962) + `assert_within_n_sigma` + `sample_stats` |
+  | 6 | Crate layout              | Flat ml-bridge style: 5 source files + 1 test file at `sim/L0/thermostat/` |
+
+  Full reasoning for each decision lives in
+  [`THERMO_CHASSIS_DESIGN.md`](./THERMO_CHASSIS_DESIGN.md). The
+  recon log entries here capture the *meta* — that the round
+  happened, what it decided, what it found.
+- **Side findings surfaced during chassis design**:
+  - **Decision 5 — autocorrelation correction**: The recon log
+    part 2 claim of "10⁻² sampling tolerance for 10⁵ samples"
+    was off by ~10× because samples from the Markov chain are
+    correlated. Effective N ≈ 10, not 10⁵. The `§The Gap Phase 1
+    Validation` paragraph above now carries the corrected
+    calculation and a note that the Phase 1 spec will choose
+    between three fixes (α/β/γ).
+  - **Decision 3 — clone footgun resolved at chassis level**:
+    Item 7 / part 9 flagged the `Model::clone()` callback-
+    sharing footgun as needing Phase 1 spec resolution. Now
+    resolved at the chassis level (not the spec level) via
+    `PassiveStack::install_per_env`. The part 9 entry above
+    now carries an "update" note pointing to Decision 3.
+  - **Total chassis surface estimate**: ~790 LOC across 8
+    files (5 source + 2 test + 1 Cargo.toml). Comparable to a
+    small ml-bridge algorithm + tests. Manageable, mechanical,
+    swappable.
+- **Why the chassis design round was a separate phase from
+  spec drafting**: The user named the principle directly —
+  "the implementation may be wrong, that's OK, AS LONG AS the
+  bolt patterns are right." Designing the bolt patterns
+  *first*, then implementing one component against them,
+  produces a chassis that survives implementation surprises.
+  The Phase 1 implementation is now allowed to inform a chassis
+  revision if needed; the chassis is small enough (~250 LOC of
+  trait + composer + diagnose + test_utils) that revising it
+  is a focused operation, not a rewrite.
+- **Memory entry created during this round**:
+  [Genuine agreement, not passive](feedback_genuine_agreement.md)
+  — feedback memory established when the user noted that their
+  string of confirmed recommendations was genuine agreement,
+  not passive acceptance. Keep being decisive; don't water down
+  recommendations to extract artificial pushback.
+- **Did NOT yet draft**: any code, any Cargo.toml, any new
+  directories. Six decisions are designed, none are
+  implemented. The chassis is a paper artifact at the close of
+  this entry.
+- **Next action — IN A NEW SESSION**: draft the Phase 1 spec
+  (`PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md`) against the now-
+  finalized chassis. The spec is small because the chassis
+  answered everything except the validation parameter fix
+  (α/β/γ). Estimated size ~300-500 lines, half-day of focused
+  drafting. The new session should get a tailored prompt that
+  references:
+  - This master plan (with the chassis design round complete)
+  - `THERMO_CHASSIS_DESIGN.md` for the bolt patterns
+  - Decision 5's autocorrelation finding and the three fix
+    options for the validation parameter set
+  - The remaining sharpen-the-axe discipline for spec design
