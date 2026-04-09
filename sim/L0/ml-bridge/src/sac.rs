@@ -101,6 +101,8 @@ pub struct Sac {
     q2_opt: Box<dyn crate::optimizer::Optimizer>,
     /// Log of entropy temperature α (for gradient stability).
     log_alpha: f64,
+    /// Best-epoch policy snapshot.
+    best: crate::best_tracker::BestTracker,
 }
 
 impl Sac {
@@ -125,6 +127,7 @@ impl Sac {
         let q1_opt = optimizer_config.build(q1.n_params());
         let q2_opt = optimizer_config.build(q2.n_params());
         let log_alpha = hyperparams.alpha_init.ln();
+        let best = crate::best_tracker::BestTracker::new(policy.params());
 
         Self {
             policy,
@@ -138,6 +141,7 @@ impl Sac {
             q1_opt,
             q2_opt,
             log_alpha,
+            best,
         }
     }
 
@@ -189,6 +193,7 @@ impl Sac {
             .copied()
             .unwrap_or_else(|| hyperparams.alpha_init.ln());
 
+        let best = crate::best_tracker::BestTracker::new(policy.params());
         Ok(Self {
             policy,
             q1,
@@ -201,6 +206,7 @@ impl Sac {
             q1_opt,
             q2_opt,
             log_alpha,
+            best,
         })
     }
 }
@@ -532,6 +538,9 @@ impl Algorithm for Sac {
                 epoch_rewards.iter().sum::<f64>() / epoch_rewards.len() as f64
             };
 
+            self.best
+                .maybe_update(epoch, mean_reward, self.policy.params());
+
             let mut extra = BTreeMap::new();
             if epoch_updates > 0 {
                 extra.insert("q1_loss".into(), epoch_q1_loss / epoch_updates as f64);
@@ -562,6 +571,10 @@ impl Algorithm for Sac {
 
     fn policy_artifact(&self) -> PolicyArtifact {
         PolicyArtifact::from_policy(&*self.policy)
+    }
+
+    fn best_artifact(&self) -> PolicyArtifact {
+        self.best.to_artifact(self.policy.descriptor())
     }
 
     fn checkpoint(&self) -> TrainingCheckpoint {

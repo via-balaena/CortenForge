@@ -380,14 +380,14 @@ mod tests {
     struct MockAlgorithm {
         name: &'static str,
         policy: Box<dyn Policy>,
+        best: crate::best_tracker::BestTracker,
     }
 
     impl MockAlgorithm {
         fn new(name: &'static str) -> Self {
-            Self {
-                name,
-                policy: Box::new(LinearPolicy::new(1, 1, &[1.0])),
-            }
+            let policy = Box::new(LinearPolicy::new(1, 1, &[1.0]));
+            let best = crate::best_tracker::BestTracker::new(policy.params());
+            Self { name, policy, best }
         }
     }
 
@@ -417,9 +417,12 @@ mod tests {
             for epoch in 0..n_epochs {
                 let actions = crate::tensor::Tensor::zeros(&[n_envs, act_dim]);
                 let _ = env.step(&actions);
+                let mean_reward = -1.0;
+                self.best
+                    .maybe_update(epoch, mean_reward, self.policy.params());
                 let em = EpochMetrics {
                     epoch,
-                    mean_reward: -1.0,
+                    mean_reward,
                     done_count: 0,
                     total_steps: n_envs,
                     wall_time_ms: 0,
@@ -433,6 +436,10 @@ mod tests {
 
         fn policy_artifact(&self) -> PolicyArtifact {
             PolicyArtifact::from_policy(&*self.policy)
+        }
+
+        fn best_artifact(&self) -> PolicyArtifact {
+            self.best.to_artifact(self.policy.descriptor())
         }
 
         fn checkpoint(&self) -> TrainingCheckpoint {

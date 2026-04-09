@@ -76,6 +76,7 @@ pub mod autograd;
 pub mod autograd_layers;
 pub mod autograd_policy;
 pub mod autograd_value;
+pub(crate) mod best_tracker;
 pub mod cem;
 pub mod competition;
 pub mod env;

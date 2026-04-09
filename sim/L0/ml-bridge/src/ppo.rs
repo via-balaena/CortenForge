@@ -79,6 +79,8 @@ pub struct Ppo {
     critic_opt: Box<dyn crate::optimizer::Optimizer>,
     /// Current exploration noise σ (decayed each epoch).
     sigma: f64,
+    /// Best-epoch policy snapshot.
+    best: crate::best_tracker::BestTracker,
 }
 
 impl Ppo {
@@ -93,6 +95,7 @@ impl Ppo {
         let actor_opt = optimizer_config.build(policy.n_params());
         let critic_opt = optimizer_config.build(value_fn.n_params());
         let sigma = hyperparams.sigma_init;
+        let best = crate::best_tracker::BestTracker::new(policy.params());
         Self {
             policy,
             value_fn,
@@ -101,6 +104,7 @@ impl Ppo {
             actor_opt,
             critic_opt,
             sigma,
+            best,
         }
     }
 
@@ -152,6 +156,7 @@ impl Ppo {
             .copied()
             .unwrap_or(hyperparams.sigma_init);
 
+        let best = crate::best_tracker::BestTracker::new(policy.params());
         Ok(Self {
             policy,
             value_fn,
@@ -160,6 +165,7 @@ impl Ppo {
             actor_opt,
             critic_opt,
             sigma,
+            best,
         })
     }
 }
@@ -417,6 +423,9 @@ impl Algorithm for Ppo {
             let mean_reward = total_reward / n_envs as f64;
             let done_count = rollout.trajectories.iter().filter(|t| t.done).count();
 
+            self.best
+                .maybe_update(epoch, mean_reward, self.policy.params());
+
             let clip_fraction = if total_sample_count > 0 {
                 total_clip_count as f64 / total_sample_count as f64
             } else {
@@ -447,6 +456,10 @@ impl Algorithm for Ppo {
 
     fn policy_artifact(&self) -> PolicyArtifact {
         PolicyArtifact::from_policy(&*self.policy)
+    }
+
+    fn best_artifact(&self) -> PolicyArtifact {
+        self.best.to_artifact(self.policy.descriptor())
     }
 
     fn checkpoint(&self) -> TrainingCheckpoint {

@@ -95,6 +95,8 @@ pub struct Td3 {
     q1_opt: Box<dyn crate::optimizer::Optimizer>,
     /// Q2 optimizer.
     q2_opt: Box<dyn crate::optimizer::Optimizer>,
+    /// Best-epoch policy snapshot.
+    best: crate::best_tracker::BestTracker,
 }
 
 impl Td3 {
@@ -121,6 +123,7 @@ impl Td3 {
         let actor_opt = optimizer_config.build(policy.n_params());
         let q1_opt = optimizer_config.build(q1.n_params());
         let q2_opt = optimizer_config.build(q2.n_params());
+        let best = crate::best_tracker::BestTracker::new(policy.params());
 
         Self {
             policy,
@@ -134,6 +137,7 @@ impl Td3 {
             actor_opt,
             q1_opt,
             q2_opt,
+            best,
         }
     }
 
@@ -180,6 +184,7 @@ impl Td3 {
             }
         }
 
+        let best = crate::best_tracker::BestTracker::new(policy.params());
         Ok(Self {
             policy,
             target_policy,
@@ -192,6 +197,7 @@ impl Td3 {
             actor_opt,
             q1_opt,
             q2_opt,
+            best,
         })
     }
 }
@@ -479,6 +485,9 @@ impl Algorithm for Td3 {
                 epoch_rewards.iter().sum::<f64>() / epoch_rewards.len() as f64
             };
 
+            self.best
+                .maybe_update(epoch, mean_reward, self.policy.params());
+
             let mut extra = BTreeMap::new();
             if epoch_updates > 0 {
                 extra.insert("q1_loss".into(), epoch_q1_loss / epoch_updates as f64);
@@ -504,6 +513,10 @@ impl Algorithm for Td3 {
 
     fn policy_artifact(&self) -> PolicyArtifact {
         PolicyArtifact::from_policy(&*self.policy)
+    }
+
+    fn best_artifact(&self) -> PolicyArtifact {
+        self.best.to_artifact(self.policy.descriptor())
     }
 
     fn checkpoint(&self) -> TrainingCheckpoint {
