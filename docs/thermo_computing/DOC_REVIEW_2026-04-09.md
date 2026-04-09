@@ -20,13 +20,15 @@ sessions can reconstruct the *why* without re-running the analysis.
 
 ### Must-fix (5)
 
-- [ ] **M1** — Fix the off-by-2 wording bug in the Phase 1 sampling-error
+- [x] **M1** — Fix the off-by-2 wording bug in the Phase 1 sampling-error
   arithmetic. Both docs use `0.22 · (½kT)` and "±22% sampling noise"
   inconsistently. Pick one convention (recommend: error expressed as fraction
   of expected mean `½kT`) and propagate. **Acceptance**: master plan §The Gap
   → Phase 1 Validation correction box and chassis Decision 5 side finding
   both state std-error consistently as a fraction of `½kT` (≈45% for one run,
-  ≈4.5% for option β).
+  ≈4.5% for option β). ✓ *Applied 2026-04-09: master plan correction box and
+  chassis side finding now use `(½kT)·√2/√10 ≈ 0.45·(½kT)` and explicitly
+  state the "fraction of expected mean ½kT" tolerance convention.*
 - [ ] **M2** — Add a chassis-level decision (Decision 7) for stochastic
   gating in FD/autograd contexts. Currently filed only as a Phase 5+ caveat.
   Three candidate patterns to compare honestly: (1) orthogonal `Stochastic`
@@ -174,7 +176,7 @@ substrate.
 
 ## Suggested order of attack
 
-- [ ] **M1** — One-paragraph wording fix in two places. ~10 min.
+- [x] **M1** — One-paragraph wording fix in two places. ~10 min. ✓ done
 - [ ] **M4** — `Welford::reset()` and `Welford::merge()` added to Decision 5
   API surface. ~10 min in the doc.
 - [ ] **M5** — Tighten the `PassiveComponent` doc-contract (option 1:

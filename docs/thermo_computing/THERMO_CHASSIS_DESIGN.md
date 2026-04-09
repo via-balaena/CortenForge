@@ -1254,26 +1254,34 @@ So 10⁵ steps gives an *effective* sample count of:
 N_eff ≈ 10⁵ / (1 + 2·5000) ≈ 10
 ```
 
-For a chi-squared distributed `½ M v²` with mean `½ kT` and
-relative std `√2`, the standard error of the sample mean over
-N_eff = 10 effective samples is approximately
-`√2 · (½ kT) / √10 ≈ 0.22 · (½ kT)` — about **±22% sampling
-noise**, not ±2%.
+For chi-squared distributed `½ M v²` (mean `½ kT`, standard
+deviation `(½ kT)·√2`), the standard error of the sample mean
+over N_eff = 10 effective samples is
+`(½ kT)·√2/√10 ≈ 0.45 · (½ kT)` — about **±45% relative to
+the expected mean ½kT**, not ±2%.
 
-**Implication**: the part-2 reasoning was *too optimistic*.
-The test as currently parameterized cannot pass with margin
-at ±2% — the statistical noise dominates the discretization
-bias by about a factor of 20. Three plausible fixes (Phase 1
-spec design question, not Decision 5):
+**Tolerance convention** (locked in by doc review M1,
+2026-04-09): all sampling-error tolerances in the thermo line
+are expressed as a fraction of the expected mean (here `½kT`),
+not as a fraction of `kT`. The pre-correction wording mixed
+the two and was off by a factor of 2.
+
+**Implication**: the part-2 reasoning was *too optimistic*. The
+test as currently parameterized cannot pass with margin at ±2%
+of `½kT` — the statistical noise (±45% of `½kT`) dominates the
+discretization bias by more than an order of magnitude. Three
+plausible fixes (Phase 1 spec design question, not Decision 5):
 
 - **(α)** Increase total step count by ~100× to ~10⁷.
-- **(β)** Use multiple independent trajectories: e.g., 100
-  runs of 10⁵ steps each, with different seeds. Each run
-  gives one independent estimate; the standard error of the
-  100-estimate mean is `run_std / √100`. For 100 runs the
-  standard error is ~2% — in the right neighborhood.
-- **(γ)** Loosen the tolerance to match reality (~5-10%) and
-  accept that Phase 1 cannot detect discretization bias.
+- **(β)** Use multiple independent trajectories: e.g., 100 runs
+  of 10⁵ steps each, with different seeds. Each run gives one
+  independent estimate; the standard error of the 100-estimate
+  mean is `run_std / √100`, bringing the combined std error to
+  about **±4.5% of `½kT`** — in the right neighborhood for a
+  meaningful gate.
+- **(γ)** Loosen the tolerance to match reality (~5-10% of
+  `½kT`) and accept that Phase 1 cannot detect discretization
+  bias.
 
 I lean toward (β) — multiple independent trajectories — because
 it (i) avoids the autocorrelation analysis entirely, (ii) gives

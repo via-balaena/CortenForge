@@ -442,21 +442,29 @@ but Phase 1 only validates against Euler.
 linear scaling in `T` and γ-independence of the stationary
 temperature. Passing this is the gate to all of Phase 2+.
 
-> **Correction (chassis design Decision 5, 2026-04-09)**: the
-> original "10⁵ steps gives ~10⁻² sampling tolerance" calculation
-> from recon log part 2 was *too optimistic by ~10×*. It assumed
+> **Correction (chassis design Decision 5, 2026-04-09; tolerance
+> wording corrected 2026-04-09 doc review M1)**: the original
+> "10⁵ steps gives ~10⁻² sampling tolerance" calculation from
+> recon log part 2 was *too optimistic by ~20×*. It assumed
 > independent samples; actual samples from the Markov chain are
 > correlated. For γ=0.1, M=1, h=0.001, the velocity-squared
 > autocorrelation time is `τ_int ≈ M/(2γh) = 5000 steps`, giving
 > an *effective* sample count of `N_eff ≈ 10⁵ / (1 + 2·5000) ≈ 10`
-> for a 10⁵-step run. With chi-squared distributed `½Mv²` (relative
-> std `√2`), the standard error of the sample mean is then
-> `√2/√10 · (½kT) ≈ 0.22 · (½kT)` — about **±22% sampling noise**,
-> not ±2%. The Phase 1 spec will choose between three fixes:
-> **(α)** ~100× longer trajectories, **(β)** ~100 *independent*
-> trajectories of 10⁵ steps each averaged across runs (avoids
-> autocorrelation analysis entirely; weak lean), **(γ)** loosen
-> tolerance to ~5-10%. See `THERMO_CHASSIS_DESIGN.md` Decision 5
+> for a 10⁵-step run. With `½Mv²` chi-squared distributed (mean
+> `½kT`, standard deviation `(½kT)·√2`), the standard error of
+> the sample mean over `N_eff = 10` effective samples is
+> `(½kT)·√2/√10 ≈ 0.45 · (½kT)` — about **±45% relative to the
+> expected mean ½kT**, not ±2%. **Tolerance convention** (locked
+> in by this correction): in this document and all downstream
+> validation specs, sampling-error tolerances are always expressed
+> as a fraction of the expected mean (here `½kT`), not as a
+> fraction of `kT`. The earlier "±22%" wording confused the two
+> by a factor of 2. The Phase 1 spec will choose between three
+> fixes: **(α)** ~100× longer trajectories, **(β)** ~100
+> *independent* trajectories of 10⁵ steps each averaged across
+> runs — avoids autocorrelation analysis entirely; weak lean;
+> brings the std error to ~4.5% of `½kT`, **(γ)** loosen tolerance
+> to ~5-10% of `½kT`. See `THERMO_CHASSIS_DESIGN.md` Decision 5
 > for the full reasoning.
 
 **Phase 5+ caveats** (flagged here, addressed in later phases):
