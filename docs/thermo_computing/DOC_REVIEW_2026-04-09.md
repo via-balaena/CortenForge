@@ -50,7 +50,7 @@ sessions can reconstruct the *why* without re-running the analysis.
   methods added to the final API surface, full rationale + Chan/Pébay
   parallel-merge formula in the sub-decisions list, struct gains `#[derive(Clone)]`,
   test_utils.rs LOC bumped 150→170, total footprint 790→810.*
-- [ ] **M5** — Tighten the `PassiveComponent` trait contract on what it's
+- [x] **M5** — Tighten the `PassiveComponent` trait contract on what it's
   allowed to write to. Currently the trait gives `&mut Data` and the contract
   is implied by prose, not enforced. Two options: (1) hard doc-contract +
   debug-mode snapshot assertion in `PassiveStack::install`, (2) signature
@@ -58,7 +58,14 @@ sessions can reconstruct the *why* without re-running the analysis.
   with the stack providing a scratch buffer. Pick one. **Acceptance**:
   chassis Decision 1 trait doc-comment is a hard contract; if option (2) is
   chosen, the signature is updated and Decision 2's stack implementation
-  reflects the scratch-buffer pattern.
+  reflects the scratch-buffer pattern. ✓ *Applied 2026-04-09 — chose option
+  (2). Trait now `apply(&self, &Model, &Data, &mut DVector<f64>)`. Decision
+  1 has a "Trait contract revision" sub-section explaining the change and
+  consistency with item 2 / item 4 / item 6 "loud over silent" line.
+  Decision 2's Scheme B sketch and Final API surface install body now
+  allocate a scratch buffer per step and fold once into qfrc_passive.
+  Master plan §Phase 1 pseudocode updated `qfrc_passive[i] +=` →
+  `qfrc_out[i] +=` with prose nudge. Recon log entries left alone (history).*
 
 ### Should-fix (6)
 
@@ -182,8 +189,9 @@ substrate.
 - [x] **M1** — One-paragraph wording fix in two places. ~10 min. ✓ done
 - [x] **M4** — `Welford::reset()` and `Welford::merge()` added to Decision 5
   API surface. ~10 min in the doc. ✓ done
-- [ ] **M5** — Tighten the `PassiveComponent` doc-contract (option 1:
-  doc-only) or change the signature (option 2). ~10-30 min.
+- [x] **M5** — Tighten the `PassiveComponent` doc-contract (option 1:
+  doc-only) or change the signature (option 2). ~10-30 min. ✓ done — chose
+  option 2 (signature change with scratch buffer).
 - [ ] **M2** — Add Decision 7 to the chassis doc — stochastic gating for
   FD/autograd contexts. ~30 min of design + ~30 lines.
 - [ ] **S1** — Resolve Q3 (`thrml-rs`) with a 5-min web search.

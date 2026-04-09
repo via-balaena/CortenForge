@@ -235,11 +235,19 @@ in a known direction:
 
 #### DECISION (user confirmed): **Scheme A — broad `PassiveComponent`**
 
-Trait shape:
+Trait shape (revised by doc review M5, 2026-04-09 — see "Trait
+contract revision" below):
 
 ```rust
 pub trait PassiveComponent: Send + Sync + 'static {
-    fn apply(&self, model: &Model, data: &mut Data);
+    /// Add this component's per-DOF passive force contribution to
+    /// `qfrc_out`. The component MUST NOT mutate `data` — it is passed
+    /// immutably so the component can read state (`qpos`, `qvel`,
+    /// `model.timestep`, etc.) without being able to write to it.
+    /// `qfrc_out` is the only legal write target; it has length
+    /// `model.nv` and is shared (accumulating) with other components
+    /// in the same `PassiveStack`.
+    fn apply(&self, model: &Model, data: &Data, qfrc_out: &mut DVector<f64>);
 }
 ```
 
@@ -248,11 +256,60 @@ Introspection lives on the orthogonal `Diagnose` trait
 drivers, ratchets, custom drag laws, energy biases — implement
 `PassiveComponent` and bolt to the same chassis.
 
+##### Trait contract revision (doc review M5, 2026-04-09)
+
+The original Decision 1 trait gave each component `&mut Data` —
+exactly what `cb_passive` natively provides. That preserved
+maximum flexibility but enforced *nothing*: a buggy or hostile
+component could legally mutate `qpos`, `qvel`, `qfrc_actuator`,
+`time`, or any other field, breaking physics in ways that take
+days to debug. The contract was implied by prose, not by the
+type system.
+
+The revised trait moves the only mutable surface to a `&mut
+DVector<f64>` (the per-DOF force contribution) and demotes
+`Data` to immutable. Three consequences:
+
+1. **Type-enforced contract.** A component physically cannot
+   write to anything except its `qfrc_out` buffer. The class of
+   bugs M5 was opened to address becomes uncompilable.
+2. **Read-only access to `Data` is preserved.** Components still
+   read `data.qvel`, `data.qpos`, `data.time`, `model.timestep`
+   etc. through the immutable `&Data` and `&Model` references —
+   everything legitimate the previous signature allowed.
+3. **`PassiveStack::install` allocates a scratch buffer per
+   step**, runs each component into it (accumulating across the
+   stack), then writes `data.qfrc_passive += scratch` once at the
+   end. Allocation cost is one `DVector::zeros(nv)` per step —
+   tens of bytes at Phase 1 (`nv=1`) up to a few KB at the
+   largest plausible Phase 5+ scale (`nv ≈ 1000`); negligible
+   compared to one constraint solve. See Decision 2 for the
+   updated install body.
+
+Why this is the right call (consistent with the "loud over
+silent" line drawn in items 2, 4, and 6 of the master plan
+recon): every other "type-enforced vs. doc-trust" decision in
+this initiative has gone the same way. Item 2 chose sole-writer
+overwrite over additive (loud failure beats silent compounding).
+Item 4 chose `ChaCha8Rng` over `StdRng` (loud reproducibility
+beats silent algorithm-bump drift). Item 6 chose read-fresh over
+cache (loud robustness beats silent precompute hazard). M5
+applies the same principle to the trait contract itself.
+
+The breaking change is free *right now* because no code has
+been written. After Phase 1 ships, breaking the trait would
+ripple through every component implementation; before Phase 1
+ships, it's a one-line edit per (zero) implementations.
+
 #### Status
 
 - **Decision 1 RESOLVED.** Scheme A confirmed. The trait shape
   above is the chassis for every component the thermo crate ever
   ships.
+- **Trait signature revised by doc review M5 (2026-04-09)** —
+  `apply` now takes `&Data` and `&mut DVector<f64>` instead of
+  `&mut Data`. The "broad trait" decision itself is unchanged;
+  only the write-target contract is tightened.
 - No code, no Cargo.toml changes, no new files written beyond this
   document.
 
@@ -359,8 +416,15 @@ impl PassiveStack {
     pub fn install(self: Arc<Self>, model: &mut Model) {
         let me = Arc::clone(&self);
         model.set_passive_callback(move |m, d| {
+            // M5: components write into a scratch buffer, not into d
+            // directly. The stack folds the result into qfrc_passive
+            // after every component has run.
+            let mut scratch = DVector::zeros(d.qfrc_passive.len());
             for c in &me.components {
-                c.apply(m, d);
+                c.apply(m, d, &mut scratch);
+            }
+            for i in 0..scratch.len() {
+                d.qfrc_passive[i] += scratch[i];
             }
         });
     }
@@ -515,7 +579,25 @@ pub struct PassiveStackBuilder {
 
 impl PassiveStack {
     pub fn builder() -> PassiveStackBuilder { ... }
-    pub fn install(self: Arc<Self>, model: &mut Model) { ... }
+
+    /// Install the stack as the model's `cb_passive` callback.
+    /// Each step, allocates a scratch `DVector::zeros(model.nv)`,
+    /// runs every component into it (accumulating across the stack),
+    /// then folds the result into `data.qfrc_passive`. Components
+    /// see `&Data` and `&mut DVector<f64>` only — they cannot mutate
+    /// any other field by construction (M5).
+    pub fn install(self: Arc<Self>, model: &mut Model) {
+        let me = Arc::clone(&self);
+        model.set_passive_callback(move |m, d| {
+            let mut scratch = DVector::zeros(d.qfrc_passive.len());
+            for c in &me.components {
+                c.apply(m, d, &mut scratch);
+            }
+            for i in 0..scratch.len() {
+                d.qfrc_passive[i] += scratch[i];
+            }
+        });
+    }
 }
 
 impl PassiveStackBuilder {

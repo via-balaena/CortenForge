@@ -368,13 +368,20 @@ phases do not start until the previous gate is green. This implements the
 > trade-off table and full reasoning.
 
 The minimum viable first move. Implement a `LangevinThermostat` struct
-that installs itself as a `cb_passive` callback on the model and writes
-both an explicit damping force *and* a stochastic force into `qfrc_passive`:
+that wraps in a `PassiveStack` (chassis Decision 2) and installs as a
+`cb_passive` callback on the model. Each step, the thermostat contributes
+both an explicit damping force *and* a stochastic force to its per-DOF
+scratch buffer (chassis M5 contract); the stack folds the buffer into
+`qfrc_passive` once per step:
 
 ```
-qfrc_passive[i] += −γ_i · qvel[i]  +  sqrt(2 · γ_i · k_B · T / h) · randn()
-                   └── damping ──┘   └────── FDT-paired noise ──────┘
+qfrc_out[i] += −γ_i · qvel[i]  +  sqrt(2 · γ_i · k_B · T / h) · randn()
+                └── damping ──┘   └────── FDT-paired noise ──────┘
 ```
+
+After every component in the stack has run, the stack does
+`data.qfrc_passive += qfrc_out` once. The thermostat itself never sees
+or touches `data.qfrc_passive` directly.
 
 where `γ_i` is the thermostat damping coefficient on DOF `i`, owned by the
 thermostat instance (not by the model — see Q4).
