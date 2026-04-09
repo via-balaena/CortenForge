@@ -137,3 +137,33 @@ referenceability.
   autocorrelation time, KL divergence to target, wall-clock to convergence?
   Different choices give different agents. Defer the decision to Phase 6
   results.
+- **Q7 — D5 viability recon (placeholder; opens after D1–D4 close).** D5
+  (Brownian computer near the Landauer bound) has not had a
+  foundation-level recon round. Stack-fit is plausible at Phase 6+ but
+  the specific questions D5 implies — and does not yet name — need
+  investigation before commitment:
+  - **kT-scale energy accounting** in many-DOF mechanical systems —
+    can the Langevin chassis (or its successors) account for heat,
+    work, and entropy production at the precision Landauer-bound
+    claims require? What are the integrator/discretization error
+    floors on kT-scale energy budgets?
+  - **Theoretical framing** for non-quasistatic Landauer-bound
+    approach — the textbook `kT ln 2` is the quasistatic limit;
+    finite-time bit erasure has correction terms (Sagawa, Ueda,
+    Jarzynski). Which framework do we calibrate against?
+  - **Sim-only vs physical realization** — is D5 achievable in
+    simulation alone, or does it inherently require the printed-
+    device path (D4) to mean anything? If sim-only, what does
+    the validation gate look like?
+  - **Designable energy landscapes** — can a mechanical lattice
+    actually be parameterized such that under Langevin dynamics it
+    embodies a target computation (e.g., a 3-bit logic gate)?
+    What is the design lever — cf-design parameters? Phase 6 EBM
+    training? Both?
+
+  Recon when D1–D4 have closed (per the "don't attempt unless D1–D4
+  are working" guidance in
+  [`../01_vision/research_directions.md`](../01_vision/research_directions.md)
+  D5). Tracked here so future sessions don't lose the placeholder;
+  D5's `Foundation status` field in `research_directions.md` references
+  this entry as a forward link.
