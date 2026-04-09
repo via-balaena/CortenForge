@@ -13,6 +13,10 @@
 //!   Eliminates the dual param ownership wart: the optimizer holds only
 //!   momentum state (m, v), not a copy of the parameters.
 
+use serde::{Deserialize, Serialize};
+
+use crate::artifact::OptimizerSnapshot;
+
 // ── Optimizer trait ────────────────────────────────────────────────────────
 
 /// Trait for parameter optimizers.
@@ -61,6 +65,16 @@ pub trait Optimizer: Send + Sync {
 
     /// Number of parameters this optimizer manages.
     fn n_params(&self) -> usize;
+
+    /// Snapshot the optimizer's internal state (momentum, variance, step count).
+    fn snapshot(&self, role: &str) -> OptimizerSnapshot;
+
+    /// Restore optimizer state from a snapshot.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `snapshot.m.len() != self.n_params()`.
+    fn load_snapshot(&mut self, snapshot: &OptimizerSnapshot);
 }
 
 // ── Optimizer config ───────────────────────────────────────────────────────
@@ -68,7 +82,7 @@ pub trait Optimizer: Send + Sync {
 /// Configuration for creating an [`Optimizer`] instance.
 ///
 /// Derives `Copy` — SAC needs 5 optimizer instances from the same config.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum OptimizerConfig {
     /// Adam optimizer (Kingma & Ba, 2015).
     Adam {
@@ -81,8 +95,27 @@ pub enum OptimizerConfig {
         /// Small constant for numerical stability.
         eps: f64,
         /// Maximum L2 norm for gradient clipping. `f64::INFINITY` = no clipping.
+        /// Serialized as `null` when infinite, deserialized back to `INFINITY`.
+        #[serde(
+            serialize_with = "serialize_grad_norm",
+            deserialize_with = "deserialize_grad_norm"
+        )]
         max_grad_norm: f64,
     },
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde requires &f64
+fn serialize_grad_norm<S: serde::Serializer>(val: &f64, s: S) -> Result<S::Ok, S::Error> {
+    if val.is_infinite() {
+        s.serialize_none()
+    } else {
+        s.serialize_f64(*val)
+    }
+}
+
+fn deserialize_grad_norm<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    let opt: Option<f64> = Option::deserialize(d)?;
+    Ok(opt.unwrap_or(f64::INFINITY))
 }
 
 impl OptimizerConfig {
@@ -265,6 +298,34 @@ impl Optimizer for Adam {
 
     fn n_params(&self) -> usize {
         self.params.len()
+    }
+
+    fn snapshot(&self, role: &str) -> OptimizerSnapshot {
+        OptimizerSnapshot {
+            role: role.to_string(),
+            config: OptimizerConfig::Adam {
+                lr: self.lr,
+                beta1: self.beta1,
+                beta2: self.beta2,
+                eps: self.eps,
+                max_grad_norm: self.max_grad_norm,
+            },
+            m: self.m.clone(),
+            v: self.v.clone(),
+            t: self.t,
+        }
+    }
+
+    fn load_snapshot(&mut self, snapshot: &OptimizerSnapshot) {
+        assert!(
+            snapshot.m.len() == self.m.len(),
+            "Adam::load_snapshot: expected {} params, got {}",
+            self.m.len(),
+            snapshot.m.len(),
+        );
+        self.m.copy_from_slice(&snapshot.m);
+        self.v.copy_from_slice(&snapshot.v);
+        self.t = snapshot.t;
     }
 }
 
@@ -554,5 +615,70 @@ mod tests {
                 assert!(max_grad_norm.is_infinite());
             }
         }
+    }
+
+    // ── Snapshot ───────────────────────────────────────────────────────
+
+    #[test]
+    fn optimizer_snapshot_round_trip() {
+        let config = OptimizerConfig::adam(0.05);
+        let mut opt = config.build(3);
+        let mut p = [5.0, -3.0, 1.0];
+
+        // Do a few steps to accumulate momentum.
+        for _ in 0..10 {
+            let grad = [2.0 * p[0], 2.0 * p[1], 2.0 * p[2]];
+            opt.step_in_place(&mut p, &grad, false);
+        }
+
+        let snap = opt.snapshot("test");
+        assert_eq!(snap.role, "test");
+        assert_eq!(snap.m.len(), 3);
+        assert_eq!(snap.v.len(), 3);
+        assert_eq!(snap.t, 10);
+
+        // Load into a fresh optimizer.
+        let mut opt2 = config.build(3);
+        opt2.load_snapshot(&snap);
+
+        let snap2 = opt2.snapshot("test");
+        assert_eq!(snap.m, snap2.m);
+        assert_eq!(snap.v, snap2.v);
+        assert_eq!(snap.t, snap2.t);
+    }
+
+    #[test]
+    fn optimizer_snapshot_preserves_momentum() {
+        let config = OptimizerConfig::adam(0.05);
+
+        // Path A: continuous training, 20 steps.
+        let mut opt_a = config.build(1);
+        let mut pa = [5.0];
+        for _ in 0..20 {
+            let grad = [2.0 * pa[0]];
+            opt_a.step_in_place(&mut pa, &grad, false);
+        }
+
+        // Path B: train 10 steps, snapshot, load into fresh, train 10 more.
+        let mut opt_b = config.build(1);
+        let mut pb = [5.0];
+        for _ in 0..10 {
+            let grad = [2.0 * pb[0]];
+            opt_b.step_in_place(&mut pb, &grad, false);
+        }
+        let snap = opt_b.snapshot("actor");
+        let mut opt_b2 = config.build(1);
+        opt_b2.load_snapshot(&snap);
+        for _ in 0..10 {
+            let grad = [2.0 * pb[0]];
+            opt_b2.step_in_place(&mut pb, &grad, false);
+        }
+
+        assert!(
+            (pa[0] - pb[0]).abs() < 1e-12,
+            "interrupted training should match continuous: {:.15} vs {:.15}",
+            pa[0],
+            pb[0]
+        );
     }
 }

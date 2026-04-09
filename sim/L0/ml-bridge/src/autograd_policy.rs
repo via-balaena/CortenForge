@@ -15,6 +15,7 @@
 //! Each layer's W is row-major. Parameters are contiguous in a single
 //! `Vec<f64>` — same convention as [`MlpPolicy`](crate::MlpPolicy).
 
+use crate::artifact::{NetworkKind, PolicyDescriptor};
 use crate::autograd::{Tape, Var};
 use crate::autograd_layers::{Activation, gaussian_log_prob, linear_hidden, linear_tanh};
 use crate::policy::{DifferentiablePolicy, Policy, StochasticPolicy};
@@ -273,6 +274,24 @@ impl Policy for AutogradPolicy {
         self.params.copy_from_slice(params);
     }
 
+    fn descriptor(&self) -> PolicyDescriptor {
+        let hidden_dims: Vec<usize> = self
+            .layer_offsets
+            .iter()
+            .take(self.layer_offsets.len().saturating_sub(1))
+            .map(|l| l.out_dim)
+            .collect();
+        PolicyDescriptor {
+            kind: NetworkKind::Autograd,
+            obs_dim: self.obs_scale.len(),
+            act_dim: self.act_dim,
+            hidden_dims,
+            activation: self.activation,
+            obs_scale: self.obs_scale.clone(),
+            stochastic: false,
+        }
+    }
+
     fn forward(&self, obs: &[f32]) -> Vec<f64> {
         let (mut tape, param_vars, x) = self.setup_tape(obs);
         let output = self.forward_on_tape(&mut tape, &param_vars, &x);
@@ -500,6 +519,24 @@ impl Policy for AutogradStochasticPolicy {
             params.len(),
         );
         self.params.copy_from_slice(params);
+    }
+
+    fn descriptor(&self) -> PolicyDescriptor {
+        let hidden_dims: Vec<usize> = self
+            .layer_offsets
+            .iter()
+            .take(self.layer_offsets.len().saturating_sub(1))
+            .map(|l| l.out_dim)
+            .collect();
+        PolicyDescriptor {
+            kind: NetworkKind::Autograd,
+            obs_dim: self.obs_scale.len(),
+            act_dim: self.act_dim,
+            hidden_dims,
+            activation: self.activation,
+            obs_scale: self.obs_scale.clone(),
+            stochastic: true,
+        }
     }
 
     fn forward(&self, obs: &[f32]) -> Vec<f64> {

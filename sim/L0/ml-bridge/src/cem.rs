@@ -14,6 +14,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 use crate::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+use crate::artifact::{ArtifactError, PolicyArtifact, TrainingCheckpoint};
 use crate::policy::Policy;
 use crate::rollout::collect_episodic_rollout;
 use crate::vec_env::VecEnv;
@@ -57,16 +58,45 @@ pub struct CemHyperparams {
 pub struct Cem {
     policy: Box<dyn Policy>,
     hyperparams: CemHyperparams,
+    /// Current noise standard deviation (decayed each generation).
+    noise_std: f64,
 }
 
 impl Cem {
     /// Create a new CEM instance.
     #[must_use]
     pub fn new(policy: Box<dyn Policy>, hyperparams: CemHyperparams) -> Self {
+        let noise_std = hyperparams.noise_std;
         Self {
             policy,
             hyperparams,
+            noise_std,
         }
+    }
+
+    /// Reconstruct a CEM instance from a checkpoint.
+    ///
+    /// Restores the policy and `noise_std`. Hyperparams are provided by the
+    /// caller — you might want to resume with different decay settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if the policy can't be reconstructed.
+    pub fn from_checkpoint(
+        checkpoint: &TrainingCheckpoint,
+        hyperparams: CemHyperparams,
+    ) -> Result<Self, ArtifactError> {
+        let policy = checkpoint.policy_artifact.to_policy()?;
+        let noise_std = checkpoint
+            .algorithm_state
+            .get("noise_std")
+            .copied()
+            .unwrap_or(hyperparams.noise_std);
+        Ok(Self {
+            policy,
+            hyperparams,
+            noise_std,
+        })
     }
 }
 
@@ -104,7 +134,6 @@ impl Algorithm for Cem {
 
         let hp = self.hyperparams;
         let n_elites = ((hp.elite_fraction * n_envs as f64).floor() as usize).max(1);
-        let mut noise_std = hp.noise_std;
         let mut metrics = Vec::with_capacity(n_epochs);
 
         // Current best params (the "mean" of the elite distribution).
@@ -118,7 +147,7 @@ impl Algorithm for Cem {
             for _ in 0..n_envs {
                 let candidate: Vec<f64> = mean_params
                     .iter()
-                    .map(|&p| noise_std.mul_add(randn(&mut rng), p))
+                    .map(|&p| self.noise_std.mul_add(randn(&mut rng), p))
                     .collect();
                 population.push(candidate);
             }
@@ -169,10 +198,10 @@ impl Algorithm for Cem {
             let mean_reward: f64 = fitness.iter().map(|(_, f)| f).sum::<f64>() / n_envs as f64;
             let done_count = rollout.trajectories.iter().filter(|t| t.done).count();
 
-            noise_std = (noise_std * hp.noise_decay).max(hp.noise_min);
+            self.noise_std = (self.noise_std * hp.noise_decay).max(hp.noise_min);
 
             let mut extra = BTreeMap::new();
-            extra.insert("noise_std".into(), noise_std);
+            extra.insert("noise_std".into(), self.noise_std);
             extra.insert("elite_mean_reward".into(), elite_mean_reward);
 
             let em = EpochMetrics {
@@ -189,6 +218,20 @@ impl Algorithm for Cem {
 
         metrics
     }
+
+    fn policy_artifact(&self) -> PolicyArtifact {
+        PolicyArtifact::from_policy(&*self.policy)
+    }
+
+    fn checkpoint(&self) -> TrainingCheckpoint {
+        TrainingCheckpoint {
+            algorithm_name: "CEM".into(),
+            policy_artifact: self.policy_artifact(),
+            critics: vec![],
+            optimizer_states: vec![],
+            algorithm_state: BTreeMap::from([("noise_std".into(), self.noise_std)]),
+        }
+    }
 }
 
 // ── use rollout::Trajectory for len() ────────────────────────────────────
@@ -197,7 +240,7 @@ use crate::rollout::Trajectory;
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::{LinearPolicy, reaching_2dof};
@@ -288,5 +331,62 @@ mod tests {
             assert!(m.extra["noise_std"] >= 0.0);
             assert!(m.extra["elite_mean_reward"].is_finite());
         }
+    }
+
+    // ── Artifact / checkpoint tests ──────────────────────────────────
+
+    fn make_cem() -> (Cem, crate::TaskConfig) {
+        let task = reaching_2dof();
+        let policy = Box::new(LinearPolicy::new(
+            task.obs_dim(),
+            task.act_dim(),
+            task.obs_scale(),
+        ));
+        let hp = CemHyperparams {
+            elite_fraction: 0.2,
+            noise_std: 0.3,
+            noise_decay: 0.95,
+            noise_min: 0.01,
+            max_episode_steps: 300,
+        };
+        (Cem::new(policy, hp), task)
+    }
+
+    #[test]
+    fn cem_policy_artifact_valid() {
+        let (cem, _) = make_cem();
+        let artifact = cem.policy_artifact();
+        artifact.validate().unwrap();
+    }
+
+    #[test]
+    fn cem_checkpoint_before_train() {
+        let (cem, _) = make_cem();
+        let cp = cem.checkpoint();
+        assert_eq!(cp.algorithm_name, "CEM");
+        assert_eq!(cp.algorithm_state["noise_std"], 0.3);
+        assert!(cp.critics.is_empty());
+        assert!(cp.optimizer_states.is_empty());
+    }
+
+    #[test]
+    fn cem_checkpoint_round_trip() {
+        let (mut cem, task) = make_cem();
+        let mut env = task.build_vec_env(10).unwrap();
+        cem.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
+
+        let cp = cem.checkpoint();
+        assert!(cp.algorithm_state["noise_std"] < 0.3); // decayed
+
+        let hp = CemHyperparams {
+            elite_fraction: 0.2,
+            noise_std: 0.3,
+            noise_decay: 0.95,
+            noise_min: 0.01,
+            max_episode_steps: 300,
+        };
+        let cem2 = Cem::from_checkpoint(&cp, hp).unwrap();
+        assert_eq!(cem2.noise_std, cp.algorithm_state["noise_std"]);
+        assert_eq!(cem2.policy.params(), cem.policy.params());
     }
 }

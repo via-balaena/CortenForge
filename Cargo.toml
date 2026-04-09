@@ -251,6 +251,9 @@ members = [
     "examples/fundamentals/sim-ml/vec-env/td3",
     "examples/fundamentals/sim-ml/vec-env/sac",
 
+    # Examples — fundamentals / sim-ml / persistence
+    "examples/fundamentals/sim-ml/persistence/train-then-replay",
+
     # Examples — sdf-physics / cpu (SDF collision proof ladder, 16 baby steps)
     "examples/sdf-physics/cpu/01-sdf-grid",
     "examples/sdf-physics/cpu/02-thin-grid",

@@ -3504,6 +3504,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-ml-persistence-train-then-replay"
+version = "0.7.0"
+dependencies = [
+ "bevy",
+ "example-ml-shared",
+ "sim-bevy",
+ "sim-core",
+ "sim-ml-bridge",
+]
+
+[[package]]
 name = "example-ml-shared"
 version = "0.7.0"
 dependencies = [
@@ -7467,6 +7478,8 @@ dependencies = [
  "criterion",
  "nalgebra",
  "rand 0.9.2",
+ "serde",
+ "serde_json",
  "sim-core",
  "sim-mjcf",
  "thiserror 2.0.18",

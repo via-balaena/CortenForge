@@ -15,6 +15,9 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
+use crate::artifact::{PolicyArtifact, TrainingCheckpoint};
 use crate::vec_env::VecEnv;
 
 // ── Training types ─────────────────────────────────────────────────────────
@@ -25,7 +28,7 @@ use crate::vec_env::VecEnv;
 /// the diagnostics port — algorithms add keys (e.g., `"policy_loss"`,
 /// `"entropy"`, `"clip_fraction"`), never remove them. Competition tests
 /// that check specific keys continue working when new keys appear.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpochMetrics {
     /// Epoch index (0-based).
     pub epoch: usize,
@@ -91,6 +94,19 @@ pub trait Algorithm: Send {
         seed: u64,
         on_epoch: &dyn Fn(&EpochMetrics),
     ) -> Vec<EpochMetrics>;
+
+    /// Extract the current policy as a portable artifact.
+    ///
+    /// Returns a **bare** artifact: descriptor + params, provenance = None.
+    /// The caller attaches provenance — the algorithm knows the policy state
+    /// but not the task name, seed, or training context.
+    fn policy_artifact(&self) -> PolicyArtifact;
+
+    /// Extract full training state for later resumption.
+    ///
+    /// Includes policy, critics, optimizer momentum — everything needed
+    /// to continue training without regression.
+    fn checkpoint(&self) -> TrainingCheckpoint;
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────

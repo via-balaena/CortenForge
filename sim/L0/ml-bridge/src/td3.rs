@@ -17,6 +17,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 use crate::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+use crate::artifact::{ArtifactError, NetworkSnapshot, PolicyArtifact, TrainingCheckpoint};
 use crate::optimizer::OptimizerConfig;
 use crate::policy::DifferentiablePolicy;
 use crate::replay_buffer::ReplayBuffer;
@@ -85,8 +86,15 @@ pub struct Td3 {
     q2: Box<dyn QFunction>,
     target_q1: Box<dyn QFunction>,
     target_q2: Box<dyn QFunction>,
+    #[allow(dead_code)] // kept for from_checkpoint() reconstruction
     optimizer_config: OptimizerConfig,
     hyperparams: Td3Hyperparams,
+    /// Actor optimizer (momentum persists across `train()` calls).
+    actor_opt: Box<dyn crate::optimizer::Optimizer>,
+    /// Q1 optimizer.
+    q1_opt: Box<dyn crate::optimizer::Optimizer>,
+    /// Q2 optimizer.
+    q2_opt: Box<dyn crate::optimizer::Optimizer>,
 }
 
 impl Td3 {
@@ -110,6 +118,10 @@ impl Td3 {
         target_q1.set_params(q1.params());
         target_q2.set_params(q2.params());
 
+        let actor_opt = optimizer_config.build(policy.n_params());
+        let q1_opt = optimizer_config.build(q1.n_params());
+        let q2_opt = optimizer_config.build(q2.n_params());
+
         Self {
             policy,
             target_policy,
@@ -119,7 +131,68 @@ impl Td3 {
             target_q2,
             optimizer_config,
             hyperparams,
+            actor_opt,
+            q1_opt,
+            q2_opt,
         }
+    }
+
+    /// Reconstruct a TD3 instance from a checkpoint.
+    ///
+    /// Restores the actor, target actor, twin Q-networks, target Q-networks,
+    /// and optimizer momentum.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if any network can't be reconstructed.
+    pub fn from_checkpoint(
+        checkpoint: &TrainingCheckpoint,
+        optimizer_config: OptimizerConfig,
+        hyperparams: Td3Hyperparams,
+    ) -> Result<Self, ArtifactError> {
+        let policy = checkpoint.policy_artifact.to_differentiable_policy()?;
+
+        let find_critic = |role: &str| -> Result<_, ArtifactError> {
+            checkpoint.critics.iter().find(|c| c.role == role).ok_or(
+                ArtifactError::ParamCountMismatch {
+                    expected: 1,
+                    actual: 0,
+                },
+            )
+        };
+
+        let target_policy = find_critic("actor_target")?.to_differentiable_policy()?;
+        let q1 = find_critic("q1")?.to_q_function()?;
+        let q2 = find_critic("q2")?.to_q_function()?;
+        let target_q1 = find_critic("q1_target")?.to_q_function()?;
+        let target_q2 = find_critic("q2_target")?.to_q_function()?;
+
+        let mut actor_opt = optimizer_config.build(policy.n_params());
+        let mut q1_opt = optimizer_config.build(q1.n_params());
+        let mut q2_opt = optimizer_config.build(q2.n_params());
+
+        for snap in &checkpoint.optimizer_states {
+            match snap.role.as_str() {
+                "actor" => actor_opt.load_snapshot(snap),
+                "q1" => q1_opt.load_snapshot(snap),
+                "q2" => q2_opt.load_snapshot(snap),
+                _ => {}
+            }
+        }
+
+        Ok(Self {
+            policy,
+            target_policy,
+            q1,
+            q2,
+            target_q1,
+            target_q2,
+            optimizer_config,
+            hyperparams,
+            actor_opt,
+            q1_opt,
+            q2_opt,
+        })
     }
 }
 
@@ -156,11 +229,6 @@ impl Algorithm for Td3 {
             TrainingBudget::Epochs(n) => n,
             TrainingBudget::Steps(s) => s / (n_envs * hp.max_episode_steps).max(1),
         };
-
-        // Build 3 optimizers: actor, Q1, Q2 (momentum state only).
-        let mut actor_opt = self.optimizer_config.build(self.policy.n_params());
-        let mut q1_opt = self.optimizer_config.build(self.q1.n_params());
-        let mut q2_opt = self.optimizer_config.build(self.q2.n_params());
 
         // Infer dimensions from first reset.
         let current_obs_tensor = env
@@ -311,7 +379,7 @@ impl Algorithm for Td3 {
                         act_dim,
                     );
                     let mut q1p = self.q1.params().to_vec();
-                    q1_opt.step_in_place(&mut q1p, &q1_grad, false);
+                    self.q1_opt.step_in_place(&mut q1p, &q1_grad, false);
                     self.q1.set_params(&q1p);
 
                     let q2_grad = self.q2.mse_gradient_batch(
@@ -322,7 +390,7 @@ impl Algorithm for Td3 {
                         act_dim,
                     );
                     let mut q2p = self.q2.params().to_vec();
-                    q2_opt.step_in_place(&mut q2p, &q2_grad, false);
+                    self.q2_opt.step_in_place(&mut q2p, &q2_grad, false);
                     self.q2.set_params(&q2p);
 
                     // Track Q losses (mean batch MSE).
@@ -381,7 +449,7 @@ impl Algorithm for Td3 {
                         // We want to maximize J, so we do ascent on dJ/dθ = -(-dJ/dθ).
                         // Equivalently: descent on (-dJ/dθ).
                         let mut ap = self.policy.params().to_vec();
-                        actor_opt.step_in_place(&mut ap, &actor_grad, false);
+                        self.actor_opt.step_in_place(&mut ap, &actor_grad, false);
                         self.policy.set_params(&ap);
 
                         epoch_policy_loss +=
@@ -432,6 +500,50 @@ impl Algorithm for Td3 {
         }
 
         metrics
+    }
+
+    fn policy_artifact(&self) -> PolicyArtifact {
+        PolicyArtifact::from_policy(&*self.policy)
+    }
+
+    fn checkpoint(&self) -> TrainingCheckpoint {
+        TrainingCheckpoint {
+            algorithm_name: "TD3".into(),
+            policy_artifact: self.policy_artifact(),
+            critics: vec![
+                NetworkSnapshot {
+                    role: "actor_target".into(),
+                    descriptor: self.target_policy.descriptor().into(),
+                    params: self.target_policy.params().to_vec(),
+                },
+                NetworkSnapshot {
+                    role: "q1".into(),
+                    descriptor: self.q1.descriptor(),
+                    params: self.q1.params().to_vec(),
+                },
+                NetworkSnapshot {
+                    role: "q2".into(),
+                    descriptor: self.q2.descriptor(),
+                    params: self.q2.params().to_vec(),
+                },
+                NetworkSnapshot {
+                    role: "q1_target".into(),
+                    descriptor: self.target_q1.descriptor(),
+                    params: self.target_q1.params().to_vec(),
+                },
+                NetworkSnapshot {
+                    role: "q2_target".into(),
+                    descriptor: self.target_q2.descriptor(),
+                    params: self.target_q2.params().to_vec(),
+                },
+            ],
+            optimizer_states: vec![
+                self.actor_opt.snapshot("actor"),
+                self.q1_opt.snapshot("q1"),
+                self.q2_opt.snapshot("q2"),
+            ],
+            algorithm_state: BTreeMap::new(),
+        }
     }
 }
 
@@ -550,5 +662,51 @@ mod tests {
         assert_eq!(td3.policy.params(), td3.target_policy.params());
         assert_eq!(td3.q1.params(), td3.target_q1.params());
         assert_eq!(td3.q2.params(), td3.target_q2.params());
+    }
+
+    // ── Artifact / checkpoint tests ──────────────────────────────────
+
+    #[test]
+    fn td3_policy_artifact_valid() {
+        let (algo, _) = make_td3();
+        algo.policy_artifact().validate().unwrap();
+    }
+
+    #[test]
+    fn td3_checkpoint_before_train() {
+        let (algo, _) = make_td3();
+        let cp = algo.checkpoint();
+        assert_eq!(cp.algorithm_name, "TD3");
+        assert_eq!(cp.critics.len(), 5); // actor_target, q1, q2, q1_target, q2_target
+        assert_eq!(cp.optimizer_states.len(), 3); // actor, q1, q2
+        assert!(cp.algorithm_state.is_empty());
+    }
+
+    #[test]
+    fn td3_checkpoint_round_trip() {
+        let (mut algo, task) = make_td3();
+        let mut env = task.build_vec_env(4).unwrap();
+        algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
+
+        let cp = algo.checkpoint();
+        assert_eq!(cp.critics.len(), 5);
+
+        let hp = Td3Hyperparams {
+            gamma: 0.99,
+            tau: 0.005,
+            policy_noise: 0.2,
+            noise_clip: 0.5,
+            exploration_noise: 0.1,
+            policy_delay: 2,
+            batch_size: 32,
+            buffer_capacity: 10_000,
+            warmup_steps: 64,
+            max_episode_steps: 300,
+        };
+        let algo2 = Td3::from_checkpoint(&cp, OptimizerConfig::adam(3e-4), hp).unwrap();
+        assert_eq!(algo2.policy.params(), algo.policy.params());
+        assert_eq!(algo2.q1.params(), algo.q1.params());
+        assert_eq!(algo2.q2.params(), algo.q2.params());
+        assert_eq!(algo2.target_policy.params(), algo.target_policy.params());
     }
 }

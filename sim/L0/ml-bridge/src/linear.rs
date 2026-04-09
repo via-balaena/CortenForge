@@ -19,6 +19,8 @@
 //! keeps pre-activation values moderate, which matters for `tanh` (policy)
 //! and for gradient magnitude (all three).
 
+use crate::artifact::{NetworkDescriptor, NetworkKind, PolicyDescriptor};
+use crate::autograd_layers::Activation;
 use crate::policy::{DifferentiablePolicy, Policy, StochasticPolicy};
 use crate::value::{QFunction, ValueFn};
 
@@ -91,6 +93,18 @@ impl Policy for LinearPolicy {
             params.len(),
         );
         self.params.copy_from_slice(params);
+    }
+
+    fn descriptor(&self) -> PolicyDescriptor {
+        PolicyDescriptor {
+            kind: NetworkKind::Linear,
+            obs_dim: self.obs_dim,
+            act_dim: self.act_dim,
+            hidden_dims: vec![],
+            activation: Activation::Tanh,
+            obs_scale: self.obs_scale.clone(),
+            stochastic: false,
+        }
     }
 
     fn forward(&self, obs: &[f32]) -> Vec<f64> {
@@ -201,6 +215,17 @@ impl ValueFn for LinearValue {
         self.params.copy_from_slice(params);
     }
 
+    fn descriptor(&self) -> NetworkDescriptor {
+        NetworkDescriptor {
+            kind: NetworkKind::Linear,
+            obs_dim: self.obs_dim,
+            act_dim: None,
+            hidden_dims: vec![],
+            activation: Activation::Tanh,
+            obs_scale: self.obs_scale.clone(),
+        }
+    }
+
     fn forward(&self, obs: &[f32]) -> f64 {
         let s = self.scaled_obs(obs);
         let mut v = self.params[self.obs_dim]; // bias
@@ -288,6 +313,17 @@ impl QFunction for LinearQ {
             params.len(),
         );
         self.params.copy_from_slice(params);
+    }
+
+    fn descriptor(&self) -> NetworkDescriptor {
+        NetworkDescriptor {
+            kind: NetworkKind::Linear,
+            obs_dim: self.obs_dim,
+            act_dim: Some(self.act_dim),
+            hidden_dims: vec![],
+            activation: Activation::Tanh,
+            obs_scale: self.obs_scale.clone(),
+        }
     }
 
     fn forward(&self, obs: &[f32], action: &[f64]) -> f64 {
@@ -403,6 +439,18 @@ impl Policy for LinearStochasticPolicy {
             params.len(),
         );
         self.params.copy_from_slice(params);
+    }
+
+    fn descriptor(&self) -> PolicyDescriptor {
+        PolicyDescriptor {
+            kind: NetworkKind::Linear,
+            obs_dim: self.obs_dim,
+            act_dim: self.act_dim,
+            hidden_dims: vec![],
+            activation: Activation::Tanh,
+            obs_scale: self.obs_scale.clone(),
+            stochastic: true,
+        }
     }
 
     fn forward(&self, obs: &[f32]) -> Vec<f64> {

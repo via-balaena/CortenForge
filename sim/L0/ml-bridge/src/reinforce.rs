@@ -17,6 +17,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 use crate::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+use crate::artifact::{ArtifactError, PolicyArtifact, TrainingCheckpoint};
 use crate::optimizer::OptimizerConfig;
 use crate::policy::DifferentiablePolicy;
 use crate::rollout::collect_episodic_rollout;
@@ -59,8 +60,13 @@ pub struct ReinforceHyperparams {
 /// ```
 pub struct Reinforce {
     policy: Box<dyn DifferentiablePolicy>,
+    #[allow(dead_code)] // kept for from_checkpoint() reconstruction
     optimizer_config: OptimizerConfig,
     hyperparams: ReinforceHyperparams,
+    /// Optimizer instance (momentum persists across `train()` calls).
+    optimizer: Box<dyn crate::optimizer::Optimizer>,
+    /// Current exploration noise σ (decayed each epoch).
+    sigma: f64,
 }
 
 impl Reinforce {
@@ -71,11 +77,50 @@ impl Reinforce {
         optimizer_config: OptimizerConfig,
         hyperparams: ReinforceHyperparams,
     ) -> Self {
+        let optimizer = optimizer_config.build(policy.n_params());
+        let sigma = hyperparams.sigma_init;
         Self {
             policy,
             optimizer_config,
             hyperparams,
+            optimizer,
+            sigma,
         }
+    }
+
+    /// Reconstruct a REINFORCE instance from a checkpoint.
+    ///
+    /// Restores the policy, optimizer momentum, and sigma.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if the policy can't be reconstructed.
+    pub fn from_checkpoint(
+        checkpoint: &TrainingCheckpoint,
+        optimizer_config: OptimizerConfig,
+        hyperparams: ReinforceHyperparams,
+    ) -> Result<Self, ArtifactError> {
+        let policy = checkpoint.policy_artifact.to_differentiable_policy()?;
+        let mut optimizer = optimizer_config.build(policy.n_params());
+        if let Some(snap) = checkpoint
+            .optimizer_states
+            .iter()
+            .find(|s| s.role == "actor")
+        {
+            optimizer.load_snapshot(snap);
+        }
+        let sigma = checkpoint
+            .algorithm_state
+            .get("sigma")
+            .copied()
+            .unwrap_or(hyperparams.sigma_init);
+        Ok(Self {
+            policy,
+            optimizer_config,
+            hyperparams,
+            optimizer,
+            sigma,
+        })
     }
 }
 
@@ -114,16 +159,13 @@ impl Algorithm for Reinforce {
             TrainingBudget::Steps(s) => s / (n_envs * hp.max_episode_steps).max(1),
         };
 
-        // Build optimizer (momentum state only — no param copy needed).
-        let mut optimizer = self.optimizer_config.build(n_params);
-
-        let mut sigma = hp.sigma_init;
         let mut metrics = Vec::with_capacity(n_epochs);
 
         for epoch in 0..n_epochs {
             let t0 = Instant::now();
 
             // Collect one episode per env with stochastic actions.
+            let sigma = self.sigma; // local copy for closure
             let rollout = collect_episodic_rollout(
                 env,
                 &mut |_env_idx, obs| {
@@ -201,11 +243,11 @@ impl Algorithm for Reinforce {
 
             // Adam ascent step (in-place on policy params).
             let mut p = self.policy.params().to_vec();
-            optimizer.step_in_place(&mut p, &grad, true);
+            self.optimizer.step_in_place(&mut p, &grad, true);
             self.policy.set_params(&p);
 
             // Decay sigma.
-            sigma = (sigma * hp.sigma_decay).max(hp.sigma_min);
+            self.sigma = (self.sigma * hp.sigma_decay).max(hp.sigma_min);
 
             // Epoch stats.
             let epoch_steps: usize = rollout
@@ -222,7 +264,7 @@ impl Algorithm for Reinforce {
             let done_count = rollout.trajectories.iter().filter(|t| t.done).count();
 
             let mut extra = BTreeMap::new();
-            extra.insert("sigma".into(), sigma);
+            extra.insert("sigma".into(), self.sigma);
             extra.insert("policy_grad_norm".into(), grad_norm);
 
             let em = EpochMetrics {
@@ -239,12 +281,26 @@ impl Algorithm for Reinforce {
 
         metrics
     }
+
+    fn policy_artifact(&self) -> PolicyArtifact {
+        PolicyArtifact::from_policy(&*self.policy)
+    }
+
+    fn checkpoint(&self) -> TrainingCheckpoint {
+        TrainingCheckpoint {
+            algorithm_name: "REINFORCE".into(),
+            policy_artifact: self.policy_artifact(),
+            critics: vec![],
+            optimizer_states: vec![self.optimizer.snapshot("actor")],
+            algorithm_state: BTreeMap::from([("sigma".into(), self.sigma)]),
+        }
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::{LinearPolicy, reaching_2dof};
@@ -305,5 +361,50 @@ mod tests {
             last > first,
             "REINFORCE should improve reward: first={first:.1}, last={last:.1}"
         );
+    }
+
+    // ── Artifact / checkpoint tests ──────────────────────────────────
+
+    #[test]
+    fn reinforce_policy_artifact_valid() {
+        let (algo, _) = make_reinforce();
+        algo.policy_artifact().validate().unwrap();
+    }
+
+    #[test]
+    fn reinforce_checkpoint_before_train() {
+        let (algo, _) = make_reinforce();
+        let cp = algo.checkpoint();
+        assert_eq!(cp.algorithm_name, "REINFORCE");
+        assert_eq!(cp.algorithm_state["sigma"], 0.5);
+        assert_eq!(cp.optimizer_states.len(), 1);
+        assert_eq!(cp.optimizer_states[0].role, "actor");
+        assert_eq!(cp.optimizer_states[0].t, 0);
+    }
+
+    #[test]
+    fn reinforce_checkpoint_round_trip() {
+        let (mut algo, task) = make_reinforce();
+        let mut env = task.build_vec_env(10).unwrap();
+        algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
+
+        let cp = algo.checkpoint();
+        assert!(cp.algorithm_state["sigma"] < 0.5); // decayed
+        assert!(cp.optimizer_states[0].t > 0); // steps taken
+
+        let algo2 = Reinforce::from_checkpoint(
+            &cp,
+            OptimizerConfig::adam(0.05),
+            ReinforceHyperparams {
+                gamma: 0.99,
+                sigma_init: 0.5,
+                sigma_decay: 0.95,
+                sigma_min: 0.05,
+                max_episode_steps: 300,
+            },
+        )
+        .unwrap();
+        assert_eq!(algo2.policy.params(), algo.policy.params());
+        assert_eq!(algo2.sigma, cp.algorithm_state["sigma"]);
     }
 }

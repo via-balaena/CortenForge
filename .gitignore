@@ -105,6 +105,8 @@ cobertura.xml
 /checkpoints/
 /runs/
 /logs/
+*.artifact.json
+*.checkpoint.json
 
 # =============================================================================
 # External Tool Logs

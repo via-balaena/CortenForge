@@ -27,6 +27,8 @@
 //! - [`gaussian_log_prob`] — log π(a|s) under diagonal Gaussian, with per-dim
 //!   `log_std`. Differentiable w.r.t. `mu` and `log_std`.
 
+use serde::{Deserialize, Serialize};
+
 use crate::autograd::{Tape, Var};
 
 // ── Linear layers ─────────────────────────────────────────────────────────
@@ -102,7 +104,7 @@ pub fn linear_raw(
 /// Stored in autograd network types. Output layers are unaffected:
 /// policy output uses tanh (bounds to [-1, 1]), value/Q output uses
 /// raw (unbounded).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Activation {
     /// `tanh` — bounded to [-1, 1]. Default for compatibility with
     /// hand-coded MLP oracle.
