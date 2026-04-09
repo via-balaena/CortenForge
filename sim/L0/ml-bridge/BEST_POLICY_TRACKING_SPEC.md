@@ -5,7 +5,7 @@
 > first-class capability — not a runner-level hack, not a post-hoc scan.
 > The algorithm owns its own best performance.
 
-**Status**: v4 — Graded A+ (7/7 criteria, 73/73 checkboxes; 1 gap fixed: §7.3 tie-breaking)
+**Status**: v5 — Phase 1 complete (commits `c87fdbc`, `66dcc46`). Phase 2 next.
 **Crate**: `sim-ml-bridge`
 **Depends on**: Policy Persistence (complete — commit `2919732`)
 **New dependencies**: None
@@ -82,7 +82,7 @@ and duplicating the comparison/snapshot/artifact logic.
 /// `to_checkpoint()` → `from_checkpoint()` preserves the best state
 /// across training sessions.
 #[derive(Debug, Clone)]
-pub(crate) struct BestTracker {
+pub struct BestTracker {
     /// Policy weights at the best epoch.
     params: Vec<f64>,
     /// Mean reward at the best epoch.
@@ -99,9 +99,12 @@ checkpoint fields and through provenance fields. `Send + Sync` is
 automatic from field types (`Vec<f64>`, `f64`, `usize`), satisfying
 the `Algorithm: Send` trait bound.
 
-`pub(crate)` — shared across algorithm modules within `sim-ml-bridge`,
-not exposed in the public API. The public surface is the `best_artifact()`
-trait method and the provenance fields.
+**Visibility**: The module is declared `pub(crate) mod best_tracker` in
+`lib.rs`. Items inside use `pub` (not `pub(crate)`) because clippy
+rejects redundant `pub(crate)` inside a restricted module. The module-
+level visibility controls access — external crates cannot reach
+`BestTracker`. The public surface is the `best_artifact()` trait method
+and the provenance fields.
 
 ### 3.2 Constructor
 
@@ -110,7 +113,7 @@ impl BestTracker {
     /// Create a new tracker seeded with initial policy params.
     ///
     /// `NEG_INFINITY` reward guarantees the first real epoch always wins.
-    pub(crate) fn new(initial_params: &[f64]) -> Self {
+    pub fn new(initial_params: &[f64]) -> Self {
         Self {
             params: initial_params.to_vec(),
             reward: f64::NEG_INFINITY,
@@ -139,7 +142,7 @@ impl BestTracker {
     /// NaN rewards: `NaN > anything` is always `false` in IEEE 754, so
     /// NaN epochs are silently skipped. This is correct — NaN rewards
     /// indicate a training bug, not a best-epoch candidate.
-    pub(crate) fn maybe_update(&mut self, epoch: usize, reward: f64, params: &[f64]) {
+    pub fn maybe_update(&mut self, epoch: usize, reward: f64, params: &[f64]) {
         if reward > self.reward {
             self.reward = reward;
             self.epoch = epoch;
@@ -165,7 +168,7 @@ impl BestTracker {
     /// The descriptor comes from the caller (the current policy's
     /// architecture) — architecture doesn't change during training,
     /// only weights change. Provenance is `None` — the caller attaches it.
-    pub(crate) fn to_artifact(&self, descriptor: PolicyDescriptor) -> PolicyArtifact {
+    pub fn to_artifact(&self, descriptor: PolicyDescriptor) -> PolicyArtifact {
         PolicyArtifact {
             version: CURRENT_VERSION,
             descriptor,
@@ -189,12 +192,12 @@ fn best_artifact(&self) -> PolicyArtifact {
 ```rust
 impl BestTracker {
     /// Best-epoch mean reward (`NEG_INFINITY` if no training has occurred).
-    pub(crate) fn reward(&self) -> f64 {
+    pub const fn reward(&self) -> f64 {
         self.reward
     }
 
     /// Best-epoch index (0-based).
-    pub(crate) fn epoch(&self) -> usize {
+    pub const fn epoch(&self) -> usize {
         self.epoch
     }
 }
@@ -213,7 +216,7 @@ impl BestTracker {
     /// non-finite (NEG_INFINITY before training) → `None`.
     /// `serde_json` rejects non-finite f64 values, so `NEG_INFINITY`
     /// must never reach the serializer.
-    pub(crate) fn to_checkpoint(&self) -> (Vec<f64>, Option<f64>, usize) {
+    pub fn to_checkpoint(&self) -> (Vec<f64>, Option<f64>, usize) {
         let reward = if self.reward.is_finite() { Some(self.reward) } else { None };
         (self.params.clone(), reward, self.epoch)
     }
@@ -228,7 +231,7 @@ impl BestTracker {
     /// - If `reward` is `None` (pre-feature checkpoint or pre-training
     ///   checkpoint), restores to `NEG_INFINITY` — the first real epoch
     ///   will overwrite it.
-    pub(crate) fn from_checkpoint(
+    pub fn from_checkpoint(
         params: Option<Vec<f64>>,
         reward: Option<f64>,
         epoch: usize,
@@ -255,7 +258,10 @@ dependencies.
 Imports needed: `PolicyDescriptor`, `PolicyArtifact`, `CURRENT_VERSION`
 from `crate::artifact`.
 
-Re-exported from the module but not from `lib.rs` (`pub(crate)` only).
+Module declared as `pub(crate) mod best_tracker` in `lib.rs` — not
+re-exported publicly. Items inside the module use `pub` (not
+`pub(crate)`) to satisfy clippy; module-level visibility controls
+external access.
 
 ---
 
@@ -773,18 +779,19 @@ acceptable because:
 ## 12. Implementation scope
 
 ### New type
-- `BestTracker` in `src/best_tracker.rs` (~60 LOC)
+- `BestTracker` in `src/best_tracker.rs` (~120 LOC incl. tests)
 
 ### Trait change (breaking)
 - `Algorithm::best_artifact()` — 5 concrete impls + test mocks
 
-### Per-algorithm changes (1 field + 3 touch points each)
+### Per-algorithm changes (1 field + 4 touch points each)
 - 5 structs: add `best: BestTracker` field
 - 5 `new()` constructors: add `BestTracker::new(policy.params())`
+- 5 `from_checkpoint()` constructors: add `BestTracker::new(policy.params())`
+  in Phase 1, upgraded to `BestTracker::from_checkpoint(...)` in Phase 3
 - 5 `train()` loops: add `self.best.maybe_update(epoch, mean_reward, self.policy.params())`
 - 5 `best_artifact()` impls: `self.best.to_artifact(self.policy.descriptor())`
-- 5 `checkpoint()` impls: add `self.best.to_checkpoint()` fields
-- 5 `from_checkpoint()` impls: add `BestTracker::from_checkpoint(...)` call
+- 5 `checkpoint()` impls: add `self.best.to_checkpoint()` fields (Phase 3)
 
 ### Type changes (additive, forward-compatible)
 - `TrainingProvenance` gains `best_reward: Option<f64>`,
@@ -815,33 +822,57 @@ acceptable because:
   and `best_epoch` fields. This example constructs provenance directly
   (does not impl `Algorithm`).
 
-### Tests (estimated)
-- 3 `BestTracker` unit tests: `new()` state, `maybe_update()` logic
-  (improves, ties, NaN skip), `to_artifact()` construction
-- 1 `BestTracker` checkpoint round-trip test
-- 1 `BestTracker::from_checkpoint()` with `None` params (backward compat)
-- 1 per-algorithm integration test: verify `best_artifact()` after
-  training (best_reward >= final for non-monotonic algos)
-- 1 `best_artifact()` before `train()` returns initial policy
+### Implementation note: `PolicyDescriptor.activation`
+`PolicyDescriptor` has an `activation: Activation` field (from
+`autograd_layers`) not shown in spec code snippets. Any test helper
+constructing a `PolicyDescriptor` struct literal must include it
+(e.g. `activation: Activation::Tanh`).
+
+### Tests
+
+**Phase 1** (10 tests — done):
+- `new_starts_at_neg_infinity` — constructor state
+- `maybe_update_improves` — improves, ties (strict `>`), worse skipped
+- `maybe_update_skips_nan` — `NaN` epoch silently skipped
+- `to_artifact_builds_correctly` — version, params, provenance=None
+- `checkpoint_round_trip` — to_checkpoint → from_checkpoint preserves state
+- `checkpoint_pre_training_maps_neg_infinity_to_none` — serde safety
+- `from_checkpoint_with_none_params_falls_back` — pre-feature compat
+- `from_checkpoint_with_mismatched_length_falls_back` — arch mismatch
+- `best_artifact_before_train_returns_initial_policy` — integration
+- `best_artifact_after_training_has_best_epoch_weights` — integration
+
+**Phase 2** (estimated ~4):
 - 1 `RunResult::best_reward()` matches manual scan
 - 1 provenance `best_reward`/`best_epoch` serde round-trip
 - 1 `save_artifacts()` writes `.best.artifact.json` files
-- ~14 tests total
+- 1 `best_reward` validation rejects non-finite
+
+**Phase 3** (estimated ~3):
+- 1 checkpoint round-trip preserves best state across resume
+- 1 backward compat: old checkpoint loads with default best fields
+- 1 resume training: best from previous session survives
+
+**Total**: ~17 tests
 
 ---
 
 ## 13. Phasing
 
-**Phase 1 — `BestTracker` + trait surgery**
+**Phase 1 — `BestTracker` + trait surgery** ✅ (commit `c87fdbc`, `66dcc46`)
 - Create `src/best_tracker.rs` with full `BestTracker` impl
 - Add `best: BestTracker` field to all 5 algorithm structs
 - Initialize in `new()` from initial policy params
+- Initialize in `from_checkpoint()` with `BestTracker::new(policy.params())`
+  (placeholder — Phase 3 upgrades to `BestTracker::from_checkpoint()`)
 - Add `self.best.maybe_update(...)` to all 5 `train()` loops
 - Add `best_artifact()` to `Algorithm` trait + 5 impls
 - Update `MockAlgorithm`
-- ~7 unit tests (BestTracker unit + per-algorithm integration)
+- `#[allow(dead_code)]` on `reward()`, `epoch()`, `to_checkpoint()`,
+  `from_checkpoint()` — used in Phase 2/3 but not yet called
+- 10 tests (8 BestTracker unit + 2 integration: pre-train + post-train)
 
-Verification: `cargo test -p sim-ml-bridge --lib`
+Verification: `cargo test -p sim-ml-bridge --lib` — 375 passed
 
 **Phase 2 — Provenance + competition integration**
 - Add `best_reward`, `best_epoch` to `TrainingProvenance`
