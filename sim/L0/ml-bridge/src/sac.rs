@@ -20,6 +20,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 use crate::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+use crate::artifact::{ArtifactError, NetworkSnapshot, PolicyArtifact, TrainingCheckpoint};
 use crate::optimizer::OptimizerConfig;
 use crate::policy::StochasticPolicy;
 use crate::replay_buffer::ReplayBuffer;
@@ -89,8 +90,17 @@ pub struct Sac {
     q2: Box<dyn QFunction>,
     target_q1: Box<dyn QFunction>,
     target_q2: Box<dyn QFunction>,
+    #[allow(dead_code)] // kept for from_checkpoint() reconstruction
     optimizer_config: OptimizerConfig,
     hyperparams: SacHyperparams,
+    /// Actor optimizer (momentum persists across `train()` calls).
+    actor_opt: Box<dyn crate::optimizer::Optimizer>,
+    /// Q1 optimizer.
+    q1_opt: Box<dyn crate::optimizer::Optimizer>,
+    /// Q2 optimizer.
+    q2_opt: Box<dyn crate::optimizer::Optimizer>,
+    /// Log of entropy temperature α (for gradient stability).
+    log_alpha: f64,
 }
 
 impl Sac {
@@ -111,6 +121,11 @@ impl Sac {
         target_q1.set_params(q1.params());
         target_q2.set_params(q2.params());
 
+        let actor_opt = optimizer_config.build(policy.n_params());
+        let q1_opt = optimizer_config.build(q1.n_params());
+        let q2_opt = optimizer_config.build(q2.n_params());
+        let log_alpha = hyperparams.alpha_init.ln();
+
         Self {
             policy,
             q1,
@@ -119,7 +134,74 @@ impl Sac {
             target_q2,
             optimizer_config,
             hyperparams,
+            actor_opt,
+            q1_opt,
+            q2_opt,
+            log_alpha,
         }
+    }
+
+    /// Reconstruct a SAC instance from a checkpoint.
+    ///
+    /// Restores the stochastic actor, twin Q-networks, target Q-networks,
+    /// optimizer momentum, and entropy temperature.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if any network can't be reconstructed.
+    pub fn from_checkpoint(
+        checkpoint: &TrainingCheckpoint,
+        optimizer_config: OptimizerConfig,
+        hyperparams: SacHyperparams,
+    ) -> Result<Self, ArtifactError> {
+        let policy = checkpoint.policy_artifact.to_stochastic_policy()?;
+
+        let find_critic = |role: &str| -> Result<_, ArtifactError> {
+            checkpoint.critics.iter().find(|c| c.role == role).ok_or(
+                ArtifactError::ParamCountMismatch {
+                    expected: 1,
+                    actual: 0,
+                },
+            )
+        };
+
+        let q1 = find_critic("q1")?.to_q_function()?;
+        let q2 = find_critic("q2")?.to_q_function()?;
+        let target_q1 = find_critic("q1_target")?.to_q_function()?;
+        let target_q2 = find_critic("q2_target")?.to_q_function()?;
+
+        let mut actor_opt = optimizer_config.build(policy.n_params());
+        let mut q1_opt = optimizer_config.build(q1.n_params());
+        let mut q2_opt = optimizer_config.build(q2.n_params());
+
+        for snap in &checkpoint.optimizer_states {
+            match snap.role.as_str() {
+                "actor" => actor_opt.load_snapshot(snap),
+                "q1" => q1_opt.load_snapshot(snap),
+                "q2" => q2_opt.load_snapshot(snap),
+                _ => {}
+            }
+        }
+
+        let log_alpha = checkpoint
+            .algorithm_state
+            .get("log_alpha")
+            .copied()
+            .unwrap_or_else(|| hyperparams.alpha_init.ln());
+
+        Ok(Self {
+            policy,
+            q1,
+            q2,
+            target_q1,
+            target_q2,
+            optimizer_config,
+            hyperparams,
+            actor_opt,
+            q1_opt,
+            q2_opt,
+            log_alpha,
+        })
     }
 }
 
@@ -175,11 +257,6 @@ impl Algorithm for Sac {
             TrainingBudget::Steps(s) => s / (n_envs * hp.max_episode_steps).max(1),
         };
 
-        // Build 3 optimizers: actor, Q1, Q2 (momentum state only).
-        let mut actor_opt = self.optimizer_config.build(self.policy.n_params());
-        let mut q1_opt = self.optimizer_config.build(self.q1.n_params());
-        let mut q2_opt = self.optimizer_config.build(self.q2.n_params());
-
         // Infer dimensions from first reset.
         let current_obs_tensor = env
             .reset_all()
@@ -192,9 +269,7 @@ impl Algorithm for Sac {
             .map(|i| current_obs_tensor.row(i).to_vec())
             .collect();
 
-        // Entropy temperature (α) and its log for gradient stability.
-        let mut log_alpha = hp.alpha_init.ln();
-        let mut alpha = hp.alpha_init;
+        let mut alpha = self.log_alpha.exp();
         let mut metrics = Vec::with_capacity(n_epochs);
 
         for epoch in 0..n_epochs {
@@ -326,7 +401,7 @@ impl Algorithm for Sac {
                         act_dim,
                     );
                     let mut q1p = self.q1.params().to_vec();
-                    q1_opt.step_in_place(&mut q1p, &q1_grad, false);
+                    self.q1_opt.step_in_place(&mut q1p, &q1_grad, false);
                     self.q1.set_params(&q1p);
 
                     let q2_grad = self.q2.mse_gradient_batch(
@@ -337,7 +412,7 @@ impl Algorithm for Sac {
                         act_dim,
                     );
                     let mut q2p = self.q2.params().to_vec();
-                    q2_opt.step_in_place(&mut q2p, &q2_grad, false);
+                    self.q2_opt.step_in_place(&mut q2p, &q2_grad, false);
                     self.q2.set_params(&q2p);
 
                     // Track Q losses.
@@ -412,7 +487,7 @@ impl Algorithm for Sac {
                     epoch_policy_loss += policy_loss;
 
                     let mut ap = self.policy.params().to_vec();
-                    actor_opt.step_in_place(&mut ap, &actor_grad, true);
+                    self.actor_opt.step_in_place(&mut ap, &actor_grad, true);
                     self.policy.set_params(&ap);
 
                     // ── 4. Update α (auto-tuning) ────────────────────────
@@ -436,8 +511,8 @@ impl Algorithm for Sac {
 
                         // Gradient descent on log_alpha.
                         let alpha_grad = -(mean_log_pi + hp.target_entropy);
-                        log_alpha -= hp.alpha_lr * alpha_grad;
-                        alpha = log_alpha.exp();
+                        self.log_alpha -= hp.alpha_lr * alpha_grad;
+                        alpha = self.log_alpha.exp();
                     }
 
                     // ── 5. Soft update target Q-networks ─────────────────
@@ -484,12 +559,54 @@ impl Algorithm for Sac {
 
         metrics
     }
+
+    fn policy_artifact(&self) -> PolicyArtifact {
+        PolicyArtifact::from_policy(&*self.policy)
+    }
+
+    fn checkpoint(&self) -> TrainingCheckpoint {
+        TrainingCheckpoint {
+            algorithm_name: "SAC".into(),
+            policy_artifact: self.policy_artifact(),
+            critics: vec![
+                NetworkSnapshot {
+                    role: "q1".into(),
+                    descriptor: self.q1.descriptor(),
+                    params: self.q1.params().to_vec(),
+                },
+                NetworkSnapshot {
+                    role: "q2".into(),
+                    descriptor: self.q2.descriptor(),
+                    params: self.q2.params().to_vec(),
+                },
+                NetworkSnapshot {
+                    role: "q1_target".into(),
+                    descriptor: self.target_q1.descriptor(),
+                    params: self.target_q1.params().to_vec(),
+                },
+                NetworkSnapshot {
+                    role: "q2_target".into(),
+                    descriptor: self.target_q2.descriptor(),
+                    params: self.target_q2.params().to_vec(),
+                },
+            ],
+            optimizer_states: vec![
+                self.actor_opt.snapshot("actor"),
+                self.q1_opt.snapshot("q1"),
+                self.q2_opt.snapshot("q2"),
+            ],
+            algorithm_state: BTreeMap::from([
+                ("log_alpha".into(), self.log_alpha),
+                ("alpha_lr".into(), self.hyperparams.alpha_lr),
+            ]),
+        }
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::cast_precision_loss)]
+#[allow(clippy::unwrap_used, clippy::cast_precision_loss, clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::{LinearQ, LinearStochasticPolicy, reaching_2dof};
@@ -592,5 +709,54 @@ mod tests {
 
         assert_eq!(sac.q1.params(), sac.target_q1.params());
         assert_eq!(sac.q2.params(), sac.target_q2.params());
+    }
+
+    // ── Artifact / checkpoint tests ──────────────────────────────────
+
+    #[test]
+    fn sac_policy_artifact_valid() {
+        let (algo, _) = make_sac();
+        algo.policy_artifact().validate().unwrap();
+        // SAC uses a stochastic policy — artifact should reflect that.
+        assert!(algo.policy_artifact().descriptor.stochastic);
+    }
+
+    #[test]
+    fn sac_checkpoint_before_train() {
+        let (algo, _) = make_sac();
+        let cp = algo.checkpoint();
+        assert_eq!(cp.algorithm_name, "SAC");
+        assert_eq!(cp.critics.len(), 4); // q1, q2, q1_target, q2_target
+        assert_eq!(cp.optimizer_states.len(), 3); // actor, q1, q2
+        assert!(cp.algorithm_state.contains_key("log_alpha"));
+        assert!(cp.algorithm_state.contains_key("alpha_lr"));
+    }
+
+    #[test]
+    fn sac_checkpoint_round_trip() {
+        let (mut algo, task) = make_sac();
+        let mut env = task.build_vec_env(4).unwrap();
+        algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
+
+        let cp = algo.checkpoint();
+        assert_eq!(cp.critics.len(), 4);
+
+        let hp = SacHyperparams {
+            gamma: 0.99,
+            tau: 0.005,
+            alpha_init: 0.2,
+            auto_alpha: true,
+            target_entropy: -(task.act_dim() as f64),
+            alpha_lr: 3e-4,
+            batch_size: 32,
+            buffer_capacity: 10_000,
+            warmup_steps: 64,
+            max_episode_steps: 300,
+        };
+        let algo2 = Sac::from_checkpoint(&cp, OptimizerConfig::adam(3e-4), hp).unwrap();
+        assert_eq!(algo2.policy.params(), algo.policy.params());
+        assert_eq!(algo2.q1.params(), algo.q1.params());
+        assert_eq!(algo2.q2.params(), algo.q2.params());
+        assert_eq!(algo2.log_alpha, algo.log_alpha);
     }
 }

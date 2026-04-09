@@ -99,8 +99,8 @@ pub mod vec_env;
 
 pub use algorithm::{Algorithm, EpochMetrics, TrainingBudget};
 pub use artifact::{
-    ArtifactError, CURRENT_VERSION, NetworkDescriptor, NetworkKind, PolicyArtifact,
-    PolicyDescriptor, TrainingProvenance,
+    ArtifactError, CURRENT_VERSION, NetworkDescriptor, NetworkKind, NetworkSnapshot,
+    OptimizerSnapshot, PolicyArtifact, PolicyDescriptor, TrainingCheckpoint, TrainingProvenance,
 };
 pub use autograd::{Tape, Var};
 pub use autograd_layers::{

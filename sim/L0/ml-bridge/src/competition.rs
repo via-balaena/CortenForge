@@ -275,17 +275,24 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::artifact::{PolicyArtifact, TrainingCheckpoint};
+    use crate::linear::LinearPolicy;
+    use crate::policy::Policy;
     use crate::task::reaching_2dof;
     use crate::vec_env::VecEnv;
 
     /// Minimal Algorithm implementation for testing.
     struct MockAlgorithm {
         name: &'static str,
+        policy: Box<dyn Policy>,
     }
 
     impl MockAlgorithm {
         fn new(name: &'static str) -> Self {
-            Self { name }
+            Self {
+                name,
+                policy: Box::new(LinearPolicy::new(1, 1, &[1.0])),
+            }
         }
     }
 
@@ -327,6 +334,20 @@ mod tests {
                 metrics.push(em);
             }
             metrics
+        }
+
+        fn policy_artifact(&self) -> PolicyArtifact {
+            PolicyArtifact::from_policy(&*self.policy)
+        }
+
+        fn checkpoint(&self) -> TrainingCheckpoint {
+            TrainingCheckpoint {
+                algorithm_name: self.name.into(),
+                policy_artifact: self.policy_artifact(),
+                critics: vec![],
+                optimizer_states: vec![],
+                algorithm_state: BTreeMap::new(),
+            }
         }
     }
 

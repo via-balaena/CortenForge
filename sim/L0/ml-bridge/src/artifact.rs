@@ -20,9 +20,12 @@ use serde::{Deserialize, Serialize};
 use crate::algorithm::EpochMetrics;
 use crate::autograd_layers::Activation;
 use crate::autograd_policy::{AutogradPolicy, AutogradStochasticPolicy};
-use crate::linear::{LinearPolicy, LinearStochasticPolicy};
-use crate::mlp::MlpPolicy;
-use crate::policy::Policy;
+use crate::autograd_value::{AutogradQ, AutogradValue};
+use crate::linear::{LinearPolicy, LinearQ, LinearStochasticPolicy, LinearValue};
+use crate::mlp::{MlpPolicy, MlpQ, MlpValue};
+use crate::optimizer::OptimizerConfig;
+use crate::policy::{DifferentiablePolicy, Policy, StochasticPolicy};
+use crate::value::{QFunction, ValueFn};
 
 // ── Version ───────────────────────────────────────────────────────────────
 
@@ -92,6 +95,19 @@ pub struct NetworkDescriptor {
     pub activation: Activation,
     /// Per-observation-dimension scaling factors.
     pub obs_scale: Vec<f64>,
+}
+
+impl From<PolicyDescriptor> for NetworkDescriptor {
+    fn from(pd: PolicyDescriptor) -> Self {
+        Self {
+            kind: pd.kind,
+            obs_dim: pd.obs_dim,
+            act_dim: Some(pd.act_dim),
+            hidden_dims: pd.hidden_dims,
+            activation: pd.activation,
+            obs_scale: pd.obs_scale,
+        }
+    }
 }
 
 // ── TrainingProvenance ────────────────────────────────────────────────────
@@ -441,6 +457,284 @@ impl PolicyArtifact {
             });
         }
         Ok(artifact)
+    }
+}
+
+// ── Checkpoint types ─────────────────────────────────────────────────────
+
+/// Snapshot of a single network's state (critic, target, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkSnapshot {
+    /// Role in the algorithm (e.g., `"value"`, `"q1"`, `"q2_target"`, `"actor_target"`).
+    pub role: String,
+    /// Architecture descriptor.
+    pub descriptor: NetworkDescriptor,
+    /// Learned weights.
+    pub params: Vec<f64>,
+}
+
+impl NetworkSnapshot {
+    /// Reconstruct a live value function from this snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if the kind is unknown.
+    #[allow(unreachable_patterns)] // NetworkKind is #[non_exhaustive]
+    pub fn to_value_fn(&self) -> Result<Box<dyn ValueFn>, ArtifactError> {
+        let d = &self.descriptor;
+        let mut vf: Box<dyn ValueFn> = match d.kind {
+            NetworkKind::Linear => Box::new(LinearValue::new(d.obs_dim, &d.obs_scale)),
+            NetworkKind::Mlp => Box::new(MlpValue::new(d.obs_dim, d.hidden_dims[0], &d.obs_scale)),
+            NetworkKind::Autograd => Box::new(AutogradValue::new_with(
+                d.obs_dim,
+                &d.hidden_dims,
+                &d.obs_scale,
+                d.activation,
+            )),
+            _ => return Err(ArtifactError::UnknownKind),
+        };
+        vf.set_params(&self.params);
+        Ok(vf)
+    }
+
+    /// Reconstruct a live Q-function from this snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if the kind is unknown or `act_dim` is missing.
+    #[allow(unreachable_patterns)] // NetworkKind is #[non_exhaustive]
+    pub fn to_q_function(&self) -> Result<Box<dyn QFunction>, ArtifactError> {
+        let d = &self.descriptor;
+        let act_dim = d.act_dim.ok_or(ArtifactError::ParamCountMismatch {
+            expected: 1,
+            actual: 0,
+        })?;
+        let mut qf: Box<dyn QFunction> = match d.kind {
+            NetworkKind::Linear => Box::new(LinearQ::new(d.obs_dim, act_dim, &d.obs_scale)),
+            NetworkKind::Mlp => Box::new(MlpQ::new(
+                d.obs_dim,
+                d.hidden_dims[0],
+                act_dim,
+                &d.obs_scale,
+            )),
+            NetworkKind::Autograd => Box::new(AutogradQ::new_with(
+                d.obs_dim,
+                &d.hidden_dims,
+                act_dim,
+                &d.obs_scale,
+                d.activation,
+            )),
+            _ => return Err(ArtifactError::UnknownKind),
+        };
+        qf.set_params(&self.params);
+        Ok(qf)
+    }
+
+    /// Reconstruct a live differentiable policy from this snapshot.
+    ///
+    /// Used for TD3 target policy reconstruction from checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if the kind is unknown.
+    #[allow(unreachable_patterns)] // NetworkKind is #[non_exhaustive]
+    pub fn to_differentiable_policy(&self) -> Result<Box<dyn DifferentiablePolicy>, ArtifactError> {
+        let d = &self.descriptor;
+        let act_dim = d.act_dim.ok_or(ArtifactError::ParamCountMismatch {
+            expected: 1,
+            actual: 0,
+        })?;
+        let mut policy: Box<dyn DifferentiablePolicy> = match d.kind {
+            NetworkKind::Linear => Box::new(LinearPolicy::new(d.obs_dim, act_dim, &d.obs_scale)),
+            NetworkKind::Mlp => Box::new(MlpPolicy::new(
+                d.obs_dim,
+                d.hidden_dims[0],
+                act_dim,
+                &d.obs_scale,
+            )),
+            NetworkKind::Autograd => Box::new(AutogradPolicy::new_with(
+                d.obs_dim,
+                &d.hidden_dims,
+                act_dim,
+                &d.obs_scale,
+                d.activation,
+            )),
+            _ => return Err(ArtifactError::UnknownKind),
+        };
+        policy.set_params(&self.params);
+        Ok(policy)
+    }
+}
+
+/// Snapshot of an optimizer's internal state (momentum, variance, step count).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizerSnapshot {
+    /// Which network this optimizer trains (e.g., "actor", "q1", "value").
+    pub role: String,
+    /// Optimizer configuration at time of snapshot.
+    pub config: OptimizerConfig,
+    /// First moment estimates (Adam m).
+    pub m: Vec<f64>,
+    /// Second moment estimates (Adam v).
+    pub v: Vec<f64>,
+    /// Step count (Adam t).
+    pub t: usize,
+}
+
+/// Full training state for resuming across sessions.
+///
+/// Contains everything needed to reconstruct an algorithm instance and
+/// continue training without regression. Each algorithm implements
+/// `checkpoint()` to produce this, and has a `from_checkpoint()` constructor
+/// to restore from it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrainingCheckpoint {
+    /// Which algorithm produced this checkpoint (e.g., "CEM", "TD3").
+    pub algorithm_name: String,
+    /// The trained policy at this point.
+    pub policy_artifact: PolicyArtifact,
+    /// Critic networks (V for PPO; Q1, Q2, targets for TD3/SAC).
+    pub critics: Vec<NetworkSnapshot>,
+    /// Optimizer states (one per optimizer instance).
+    pub optimizer_states: Vec<OptimizerSnapshot>,
+    /// Algorithm-specific scalar state (`noise_std`, `sigma`, `alpha`, etc.).
+    pub algorithm_state: BTreeMap<String, f64>,
+}
+
+impl TrainingCheckpoint {
+    /// Save to JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if the file can't be written or the embedded
+    /// policy artifact has non-finite values.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ArtifactError> {
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load from JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if the file can't be read, JSON is invalid,
+    /// or the embedded policy artifact version is unsupported.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ArtifactError> {
+        let json = std::fs::read_to_string(path)?;
+        let checkpoint: Self = serde_json::from_str(&json)?;
+        if checkpoint.policy_artifact.version > CURRENT_VERSION {
+            return Err(ArtifactError::UnsupportedVersion {
+                found: checkpoint.policy_artifact.version,
+                max: CURRENT_VERSION,
+            });
+        }
+        Ok(checkpoint)
+    }
+}
+
+// ── Reconstruction helpers on PolicyArtifact ─────────────────────────────
+
+impl PolicyArtifact {
+    /// Reconstruct a live differentiable policy from this artifact.
+    ///
+    /// All current policy types implement `DifferentiablePolicy`, so this
+    /// works for every valid `(kind, stochastic)` combination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if validation fails, the kind is unknown,
+    /// or the (kind, stochastic) combination is unsupported.
+    #[allow(unreachable_patterns)] // NetworkKind is #[non_exhaustive]
+    pub fn to_differentiable_policy(&self) -> Result<Box<dyn DifferentiablePolicy>, ArtifactError> {
+        self.validate()?;
+        let d = &self.descriptor;
+        let mut policy: Box<dyn DifferentiablePolicy> = match (d.kind, d.stochastic) {
+            (NetworkKind::Linear, false) => {
+                Box::new(LinearPolicy::new(d.obs_dim, d.act_dim, &d.obs_scale))
+            }
+            (NetworkKind::Linear, true) => Box::new(LinearStochasticPolicy::new(
+                d.obs_dim,
+                d.act_dim,
+                &d.obs_scale,
+                0.0,
+            )),
+            (NetworkKind::Mlp, false) => Box::new(MlpPolicy::new(
+                d.obs_dim,
+                d.hidden_dims[0],
+                d.act_dim,
+                &d.obs_scale,
+            )),
+            (NetworkKind::Mlp, true) => {
+                return Err(ArtifactError::UnsupportedCombination {
+                    kind: d.kind,
+                    stochastic: d.stochastic,
+                });
+            }
+            (NetworkKind::Autograd, false) => Box::new(AutogradPolicy::new_with(
+                d.obs_dim,
+                &d.hidden_dims,
+                d.act_dim,
+                &d.obs_scale,
+                d.activation,
+            )),
+            (NetworkKind::Autograd, true) => Box::new(AutogradStochasticPolicy::new_with(
+                d.obs_dim,
+                &d.hidden_dims,
+                d.act_dim,
+                &d.obs_scale,
+                0.0,
+                d.activation,
+            )),
+            _ => return Err(ArtifactError::UnknownKind),
+        };
+        policy.set_params(&self.params);
+        Ok(policy)
+    }
+
+    /// Reconstruct a live stochastic policy from this artifact.
+    ///
+    /// Only valid for `stochastic: true` artifacts. Returns
+    /// `ArtifactError::UnsupportedCombination` for non-stochastic descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if validation fails, the kind is unknown,
+    /// or the descriptor is not stochastic.
+    #[allow(unreachable_patterns)] // NetworkKind is #[non_exhaustive]
+    pub fn to_stochastic_policy(&self) -> Result<Box<dyn StochasticPolicy>, ArtifactError> {
+        self.validate()?;
+        let d = &self.descriptor;
+        if !d.stochastic {
+            return Err(ArtifactError::UnsupportedCombination {
+                kind: d.kind,
+                stochastic: false,
+            });
+        }
+        let mut policy: Box<dyn StochasticPolicy> = match d.kind {
+            NetworkKind::Linear => Box::new(LinearStochasticPolicy::new(
+                d.obs_dim,
+                d.act_dim,
+                &d.obs_scale,
+                0.0,
+            )),
+            NetworkKind::Autograd => Box::new(AutogradStochasticPolicy::new_with(
+                d.obs_dim,
+                &d.hidden_dims,
+                d.act_dim,
+                &d.obs_scale,
+                0.0,
+                d.activation,
+            )),
+            _ => {
+                return Err(ArtifactError::UnsupportedCombination {
+                    kind: d.kind,
+                    stochastic: true,
+                });
+            }
+        };
+        policy.set_params(&self.params);
+        Ok(policy)
     }
 }
 
@@ -855,5 +1149,150 @@ mod tests {
         let gp = loaded.parent.unwrap();
         assert_eq!(gp.algorithm, "CEM");
         assert!(gp.parent.is_none());
+    }
+
+    // ── Checkpoint serde ─────────────────────────────────────────────
+
+    #[test]
+    fn checkpoint_save_load_round_trip() {
+        let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &SCALE);
+        let artifact = PolicyArtifact::from_policy(&policy);
+
+        let checkpoint = TrainingCheckpoint {
+            algorithm_name: "CEM".into(),
+            policy_artifact: artifact,
+            critics: vec![],
+            optimizer_states: vec![],
+            algorithm_state: BTreeMap::from([("noise_std".into(), 0.25)]),
+        };
+
+        let dir = std::env::temp_dir().join("ml_bridge_test_ckpt");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test.checkpoint.json");
+        checkpoint.save(&path).unwrap();
+
+        let loaded = TrainingCheckpoint::load(&path).unwrap();
+        assert_eq!(loaded.algorithm_name, "CEM");
+        assert_eq!(
+            loaded.policy_artifact.descriptor,
+            checkpoint.policy_artifact.descriptor
+        );
+        assert_eq!(
+            loaded.policy_artifact.params,
+            checkpoint.policy_artifact.params
+        );
+        assert_eq!(loaded.algorithm_state["noise_std"], 0.25);
+        assert!(loaded.critics.is_empty());
+        assert!(loaded.optimizer_states.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn network_snapshot_serde_round_trip() {
+        let snap = NetworkSnapshot {
+            role: "q1".into(),
+            descriptor: NetworkDescriptor {
+                kind: NetworkKind::Linear,
+                obs_dim: OBS_DIM,
+                act_dim: Some(ACT_DIM),
+                hidden_dims: vec![],
+                activation: Activation::Tanh,
+                obs_scale: SCALE.to_vec(),
+            },
+            params: vec![1.0, 2.0, 3.0],
+        };
+
+        let json = serde_json::to_string_pretty(&snap).unwrap();
+        let loaded: NetworkSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.role, "q1");
+        assert_eq!(loaded.params, vec![1.0, 2.0, 3.0]);
+        assert_eq!(loaded.descriptor.kind, NetworkKind::Linear);
+    }
+
+    #[test]
+    fn optimizer_snapshot_serde_round_trip() {
+        use crate::optimizer::OptimizerConfig;
+
+        let snap = OptimizerSnapshot {
+            role: "actor".into(),
+            config: OptimizerConfig::adam(0.001),
+            m: vec![0.1, 0.2],
+            v: vec![0.01, 0.02],
+            t: 42,
+        };
+
+        let json = serde_json::to_string_pretty(&snap).unwrap();
+        let loaded: OptimizerSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.role, "actor");
+        assert_eq!(loaded.m, vec![0.1, 0.2]);
+        assert_eq!(loaded.v, vec![0.01, 0.02]);
+        assert_eq!(loaded.t, 42);
+    }
+
+    #[test]
+    fn to_differentiable_policy_round_trip() {
+        let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &SCALE);
+        let artifact = PolicyArtifact::from_policy(&policy);
+
+        let dp = artifact.to_differentiable_policy().unwrap();
+        assert_eq!(dp.n_params(), policy.n_params());
+        assert_eq!(dp.params(), policy.params());
+    }
+
+    #[test]
+    fn to_stochastic_policy_round_trip() {
+        let policy = crate::linear::LinearStochasticPolicy::new(OBS_DIM, ACT_DIM, &SCALE, -0.5);
+        let artifact = PolicyArtifact::from_policy(&policy);
+
+        let sp = artifact.to_stochastic_policy().unwrap();
+        assert_eq!(sp.n_params(), policy.n_params());
+        assert_eq!(sp.params(), policy.params());
+    }
+
+    #[test]
+    fn to_stochastic_policy_rejects_non_stochastic() {
+        let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &SCALE);
+        let artifact = PolicyArtifact::from_policy(&policy);
+
+        assert!(artifact.to_stochastic_policy().is_err());
+    }
+
+    #[test]
+    fn network_snapshot_to_value_fn() {
+        let vf = LinearValue::new(OBS_DIM, &SCALE);
+        let snap = NetworkSnapshot {
+            role: "value".into(),
+            descriptor: vf.descriptor(),
+            params: vf.params().to_vec(),
+        };
+
+        let restored = snap.to_value_fn().unwrap();
+        assert_eq!(restored.n_params(), vf.n_params());
+        assert_eq!(restored.params(), vf.params());
+    }
+
+    #[test]
+    fn network_snapshot_to_q_function() {
+        let qf = LinearQ::new(OBS_DIM, ACT_DIM, &SCALE);
+        let snap = NetworkSnapshot {
+            role: "q1".into(),
+            descriptor: qf.descriptor(),
+            params: qf.params().to_vec(),
+        };
+
+        let restored = snap.to_q_function().unwrap();
+        assert_eq!(restored.n_params(), qf.n_params());
+        assert_eq!(restored.params(), qf.params());
+    }
+
+    #[test]
+    fn policy_descriptor_to_network_descriptor() {
+        let policy = LinearPolicy::new(OBS_DIM, ACT_DIM, &SCALE);
+        let pd = policy.descriptor();
+        let nd: NetworkDescriptor = pd.into();
+        assert_eq!(nd.kind, NetworkKind::Linear);
+        assert_eq!(nd.obs_dim, OBS_DIM);
+        assert_eq!(nd.act_dim, Some(ACT_DIM));
     }
 }

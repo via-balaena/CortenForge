@@ -16,6 +16,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 use crate::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+use crate::artifact::{ArtifactError, NetworkSnapshot, PolicyArtifact, TrainingCheckpoint};
 use crate::gae::compute_gae;
 use crate::optimizer::OptimizerConfig;
 use crate::policy::DifferentiablePolicy;
@@ -69,8 +70,15 @@ pub struct PpoHyperparams {
 pub struct Ppo {
     policy: Box<dyn DifferentiablePolicy>,
     value_fn: Box<dyn ValueFn>,
+    #[allow(dead_code)] // kept for from_checkpoint() reconstruction
     optimizer_config: OptimizerConfig,
     hyperparams: PpoHyperparams,
+    /// Actor optimizer (momentum persists across `train()` calls).
+    actor_opt: Box<dyn crate::optimizer::Optimizer>,
+    /// Critic optimizer (momentum persists across `train()` calls).
+    critic_opt: Box<dyn crate::optimizer::Optimizer>,
+    /// Current exploration noise σ (decayed each epoch).
+    sigma: f64,
 }
 
 impl Ppo {
@@ -82,12 +90,77 @@ impl Ppo {
         optimizer_config: OptimizerConfig,
         hyperparams: PpoHyperparams,
     ) -> Self {
+        let actor_opt = optimizer_config.build(policy.n_params());
+        let critic_opt = optimizer_config.build(value_fn.n_params());
+        let sigma = hyperparams.sigma_init;
         Self {
             policy,
             value_fn,
             optimizer_config,
             hyperparams,
+            actor_opt,
+            critic_opt,
+            sigma,
         }
+    }
+
+    /// Reconstruct a PPO instance from a checkpoint.
+    ///
+    /// Restores the policy, value function, optimizer momentum, and sigma.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactError` if the policy or value function can't be
+    /// reconstructed.
+    pub fn from_checkpoint(
+        checkpoint: &TrainingCheckpoint,
+        optimizer_config: OptimizerConfig,
+        hyperparams: PpoHyperparams,
+    ) -> Result<Self, ArtifactError> {
+        let policy = checkpoint.policy_artifact.to_differentiable_policy()?;
+        let value_fn = checkpoint
+            .critics
+            .iter()
+            .find(|c| c.role == "value")
+            .ok_or(ArtifactError::ParamCountMismatch {
+                expected: 1,
+                actual: 0,
+            })?
+            .to_value_fn()?;
+
+        let mut actor_opt = optimizer_config.build(policy.n_params());
+        let mut critic_opt = optimizer_config.build(value_fn.n_params());
+
+        if let Some(snap) = checkpoint
+            .optimizer_states
+            .iter()
+            .find(|s| s.role == "actor")
+        {
+            actor_opt.load_snapshot(snap);
+        }
+        if let Some(snap) = checkpoint
+            .optimizer_states
+            .iter()
+            .find(|s| s.role == "value")
+        {
+            critic_opt.load_snapshot(snap);
+        }
+
+        let sigma = checkpoint
+            .algorithm_state
+            .get("sigma")
+            .copied()
+            .unwrap_or(hyperparams.sigma_init);
+
+        Ok(Self {
+            policy,
+            value_fn,
+            optimizer_config,
+            hyperparams,
+            actor_opt,
+            critic_opt,
+            sigma,
+        })
     }
 }
 
@@ -143,11 +216,6 @@ impl Algorithm for Ppo {
             TrainingBudget::Steps(s) => s / (n_envs * hp.max_episode_steps).max(1),
         };
 
-        // Build separate optimizers for actor and critic (momentum state only).
-        let mut actor_opt = self.optimizer_config.build(n_policy_params);
-        let mut critic_opt = self.optimizer_config.build(n_value_params);
-
-        let mut sigma = hp.sigma_init;
         let mut metrics = Vec::with_capacity(n_epochs);
 
         for epoch in 0..n_epochs {
@@ -161,6 +229,7 @@ impl Algorithm for Ppo {
             let mut per_step_v: Vec<Vec<f64>> = (0..n_envs).map(|_| Vec::new()).collect();
             let mut env_done: Vec<bool> = vec![false; n_envs];
 
+            let sigma = self.sigma; // local copy for closure
             let rollout = collect_episodic_rollout(
                 env,
                 &mut |env_idx, obs| {
@@ -323,15 +392,15 @@ impl Algorithm for Ppo {
 
                 // Adam updates (in-place on network params).
                 let mut ap = self.policy.params().to_vec();
-                actor_opt.step_in_place(&mut ap, &actor_grad, true);
+                self.actor_opt.step_in_place(&mut ap, &actor_grad, true);
                 self.policy.set_params(&ap);
                 let mut cp = self.value_fn.params().to_vec();
-                critic_opt.step_in_place(&mut cp, &critic_grad, false);
+                self.critic_opt.step_in_place(&mut cp, &critic_grad, false);
                 self.value_fn.set_params(&cp);
             }
 
             // Decay sigma.
-            sigma = (sigma * hp.sigma_decay).max(hp.sigma_min);
+            self.sigma = (self.sigma * hp.sigma_decay).max(hp.sigma_min);
 
             // ── Epoch metrics ────────────────────────────────────────────
 
@@ -355,7 +424,7 @@ impl Algorithm for Ppo {
             };
 
             let mut extra = BTreeMap::new();
-            extra.insert("sigma".into(), sigma);
+            extra.insert("sigma".into(), self.sigma);
             extra.insert("clip_fraction".into(), clip_fraction);
             extra.insert("value_loss".into(), total_value_loss / hp.k_passes as f64);
             extra.insert("policy_grad_norm".into(), last_actor_grad_norm);
@@ -375,12 +444,33 @@ impl Algorithm for Ppo {
 
         metrics
     }
+
+    fn policy_artifact(&self) -> PolicyArtifact {
+        PolicyArtifact::from_policy(&*self.policy)
+    }
+
+    fn checkpoint(&self) -> TrainingCheckpoint {
+        TrainingCheckpoint {
+            algorithm_name: "PPO".into(),
+            policy_artifact: self.policy_artifact(),
+            critics: vec![NetworkSnapshot {
+                role: "value".into(),
+                descriptor: self.value_fn.descriptor(),
+                params: self.value_fn.params().to_vec(),
+            }],
+            optimizer_states: vec![
+                self.actor_opt.snapshot("actor"),
+                self.critic_opt.snapshot("value"),
+            ],
+            algorithm_state: BTreeMap::from([("sigma".into(), self.sigma)]),
+        }
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::{LinearPolicy, LinearValue, reaching_2dof};
@@ -459,5 +549,53 @@ mod tests {
             let cf = m.extra["clip_fraction"];
             assert!((0.0..=1.0).contains(&cf), "clip_fraction {cf} out of [0,1]");
         }
+    }
+
+    // ── Artifact / checkpoint tests ──────────────────────────────────
+
+    #[test]
+    fn ppo_policy_artifact_valid() {
+        let (algo, _) = make_ppo();
+        algo.policy_artifact().validate().unwrap();
+    }
+
+    #[test]
+    fn ppo_checkpoint_before_train() {
+        let (algo, _) = make_ppo();
+        let cp = algo.checkpoint();
+        assert_eq!(cp.algorithm_name, "PPO");
+        assert_eq!(cp.critics.len(), 1);
+        assert_eq!(cp.critics[0].role, "value");
+        assert_eq!(cp.optimizer_states.len(), 2);
+        assert_eq!(cp.algorithm_state["sigma"], 0.5);
+    }
+
+    #[test]
+    fn ppo_checkpoint_round_trip() {
+        let (mut algo, task) = make_ppo();
+        let mut env = task.build_vec_env(10).unwrap();
+        algo.train(&mut env, TrainingBudget::Epochs(3), 42, &|_| {});
+
+        let cp = algo.checkpoint();
+        assert!(cp.algorithm_state["sigma"] < 0.5);
+        assert!(cp.optimizer_states[0].t > 0);
+
+        let algo2 = Ppo::from_checkpoint(
+            &cp,
+            OptimizerConfig::adam(0.025),
+            PpoHyperparams {
+                clip_eps: 0.2,
+                k_passes: 2,
+                gamma: 0.99,
+                gae_lambda: 0.95,
+                sigma_init: 0.5,
+                sigma_decay: 0.95,
+                sigma_min: 0.05,
+                max_episode_steps: 300,
+            },
+        )
+        .unwrap();
+        assert_eq!(algo2.policy.params(), algo.policy.params());
+        assert_eq!(algo2.sigma, cp.algorithm_state["sigma"]);
     }
 }
