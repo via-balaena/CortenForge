@@ -171,6 +171,16 @@ fn main() {
             ("max_episode_steps".into(), hp.max_episode_steps as f64),
         ]),
         metrics: metrics.clone(),
+        best_reward: metrics.iter().map(|m| m.mean_reward).reduce(f64::max),
+        best_epoch: metrics
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                a.mean_reward
+                    .partial_cmp(&b.mean_reward)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map_or(0, |(i, _)| i),
         parent: None,
     });
 

@@ -60,6 +60,8 @@ pub struct Cem {
     hyperparams: CemHyperparams,
     /// Current noise standard deviation (decayed each generation).
     noise_std: f64,
+    /// Best-epoch policy snapshot.
+    best: crate::best_tracker::BestTracker,
 }
 
 impl Cem {
@@ -67,10 +69,12 @@ impl Cem {
     #[must_use]
     pub fn new(policy: Box<dyn Policy>, hyperparams: CemHyperparams) -> Self {
         let noise_std = hyperparams.noise_std;
+        let best = crate::best_tracker::BestTracker::new(policy.params());
         Self {
             policy,
             hyperparams,
             noise_std,
+            best,
         }
     }
 
@@ -92,10 +96,17 @@ impl Cem {
             .get("noise_std")
             .copied()
             .unwrap_or(hyperparams.noise_std);
+        let best = crate::best_tracker::BestTracker::from_checkpoint(
+            checkpoint.best_params.clone(),
+            checkpoint.best_reward,
+            checkpoint.best_epoch,
+            &checkpoint.policy_artifact.params,
+        );
         Ok(Self {
             policy,
             hyperparams,
             noise_std,
+            best,
         })
     }
 }
@@ -198,6 +209,9 @@ impl Algorithm for Cem {
             let mean_reward: f64 = fitness.iter().map(|(_, f)| f).sum::<f64>() / n_envs as f64;
             let done_count = rollout.trajectories.iter().filter(|t| t.done).count();
 
+            self.best
+                .maybe_update(epoch, mean_reward, self.policy.params());
+
             self.noise_std = (self.noise_std * hp.noise_decay).max(hp.noise_min);
 
             let mut extra = BTreeMap::new();
@@ -223,13 +237,21 @@ impl Algorithm for Cem {
         PolicyArtifact::from_policy(&*self.policy)
     }
 
+    fn best_artifact(&self) -> PolicyArtifact {
+        self.best.to_artifact(self.policy.descriptor())
+    }
+
     fn checkpoint(&self) -> TrainingCheckpoint {
+        let (best_params, best_reward, best_epoch) = self.best.to_checkpoint();
         TrainingCheckpoint {
             algorithm_name: "CEM".into(),
             policy_artifact: self.policy_artifact(),
             critics: vec![],
             optimizer_states: vec![],
             algorithm_state: BTreeMap::from([("noise_std".into(), self.noise_std)]),
+            best_params: Some(best_params),
+            best_reward,
+            best_epoch,
         }
     }
 }

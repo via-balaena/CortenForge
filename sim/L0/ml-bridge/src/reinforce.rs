@@ -67,6 +67,8 @@ pub struct Reinforce {
     optimizer: Box<dyn crate::optimizer::Optimizer>,
     /// Current exploration noise σ (decayed each epoch).
     sigma: f64,
+    /// Best-epoch policy snapshot.
+    best: crate::best_tracker::BestTracker,
 }
 
 impl Reinforce {
@@ -79,12 +81,14 @@ impl Reinforce {
     ) -> Self {
         let optimizer = optimizer_config.build(policy.n_params());
         let sigma = hyperparams.sigma_init;
+        let best = crate::best_tracker::BestTracker::new(policy.params());
         Self {
             policy,
             optimizer_config,
             hyperparams,
             optimizer,
             sigma,
+            best,
         }
     }
 
@@ -114,12 +118,19 @@ impl Reinforce {
             .get("sigma")
             .copied()
             .unwrap_or(hyperparams.sigma_init);
+        let best = crate::best_tracker::BestTracker::from_checkpoint(
+            checkpoint.best_params.clone(),
+            checkpoint.best_reward,
+            checkpoint.best_epoch,
+            &checkpoint.policy_artifact.params,
+        );
         Ok(Self {
             policy,
             optimizer_config,
             hyperparams,
             optimizer,
             sigma,
+            best,
         })
     }
 }
@@ -263,6 +274,9 @@ impl Algorithm for Reinforce {
             let mean_reward = total_reward / n_envs as f64;
             let done_count = rollout.trajectories.iter().filter(|t| t.done).count();
 
+            self.best
+                .maybe_update(epoch, mean_reward, self.policy.params());
+
             let mut extra = BTreeMap::new();
             extra.insert("sigma".into(), self.sigma);
             extra.insert("policy_grad_norm".into(), grad_norm);
@@ -286,13 +300,21 @@ impl Algorithm for Reinforce {
         PolicyArtifact::from_policy(&*self.policy)
     }
 
+    fn best_artifact(&self) -> PolicyArtifact {
+        self.best.to_artifact(self.policy.descriptor())
+    }
+
     fn checkpoint(&self) -> TrainingCheckpoint {
+        let (best_params, best_reward, best_epoch) = self.best.to_checkpoint();
         TrainingCheckpoint {
             algorithm_name: "REINFORCE".into(),
             policy_artifact: self.policy_artifact(),
             critics: vec![],
             optimizer_states: vec![self.optimizer.snapshot("actor")],
             algorithm_state: BTreeMap::from([("sigma".into(), self.sigma)]),
+            best_params: Some(best_params),
+            best_reward,
+            best_epoch,
         }
     }
 }

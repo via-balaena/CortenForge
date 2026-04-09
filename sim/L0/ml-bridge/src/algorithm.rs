@@ -102,6 +102,16 @@ pub trait Algorithm: Send {
     /// but not the task name, seed, or training context.
     fn policy_artifact(&self) -> PolicyArtifact;
 
+    /// Extract the best-epoch policy as a portable artifact.
+    ///
+    /// Returns the policy weights from the epoch with the highest
+    /// `mean_reward` seen during training. Before `train()` is called,
+    /// returns the initial policy (same as `policy_artifact()`).
+    ///
+    /// Returns a **bare** artifact: descriptor + best params,
+    /// provenance = None. The caller attaches provenance.
+    fn best_artifact(&self) -> PolicyArtifact;
+
     /// Extract full training state for later resumption.
     ///
     /// Includes policy, critics, optimizer momentum — everything needed
