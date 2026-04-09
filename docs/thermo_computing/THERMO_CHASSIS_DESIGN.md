@@ -548,3 +548,336 @@ PassiveStack::builder()
   one and only composition path for the thermo crate.
 - No code, no Cargo.toml changes, no new files written beyond
   this document.
+
+---
+
+### Decision 3 (2026-04-09): Clone footgun resolution
+
+- **Question**: When a user installs a `PassiveStack` on a
+  `Model` and then clones the `Model` for parallel envs, the
+  cloned Model inherits the *same* `Arc<dyn Fn...>` callback —
+  pointer-copied — which means it shares the captured
+  `Arc<PassiveStack>`, which means it shares every stateful
+  component inside (most importantly, every `Mutex<RNG>`).
+  Result: interleaved noise streams across envs (wrong physics)
+  and lock contention (perf disaster). What does the thermo
+  crate provide so this footgun is hard to trigger?
+- **Why this is decision 3**: Decisions 1 and 2 settled the
+  trait and the composer; Decision 2's `install` signature
+  takes `self: Arc<Self>`, which makes the footgun *physically
+  inescapable* without an explicit API response. We owe the
+  user one.
+- **What we cannot change**: `sim-core`'s
+  `Model::set_passive_callback` wraps the closure in
+  `Callback(Arc<dyn Fn...>)` internally
+  (`sim/L0/core/src/types/model.rs:1242`). This is verified
+  shipped behavior and modifying it is out of scope for the
+  thermo crate (item 8 / part 10 of the recon log explicitly
+  required zero sim-core changes; the entire sibling-crate
+  decision rests on this).
+- **What we cannot achieve**: A *fully loud* solution at the
+  type level. The fundamental cause is that `Model::clone()` is
+  a sim-core operation that the thermo crate cannot intercept
+  or override. **Every option below is a degree of "make the
+  right thing easy and the wrong thing harder," not "make the
+  wrong thing impossible."** This is unavoidable given the
+  chassis constraint, but it must be acknowledged honestly.
+
+#### Scheme A — Documentation only
+
+Provide no new API. Document loudly in the rustdoc of
+`PassiveStack::install` and in the crate README that:
+
+> If you intend to use this `Model` with `BatchSim` or otherwise
+> clone it, **install the stack AFTER cloning**, not before. The
+> passive callback is `Arc`-shared across clones; installing
+> before cloning means every parallel env shares the same RNG
+> mutex, producing interleaved noise streams (wrong physics)
+> and lock contention.
+
+User pattern (correct):
+```rust
+let prototype = sim_mjcf::load_model(xml)?;
+let envs: Vec<Model> = (0..N).map(|i| {
+    let mut model = prototype.clone();  // clone first, no callback
+    PassiveStack::builder()
+        .with(LangevinThermostat::new(gamma.clone(), kT, seed_base + i))
+        .build()
+        .install(&mut model);            // install after
+    model
+}).collect();
+```
+
+**Pros**:
+- Zero new API surface.
+- The user has full control.
+- The right pattern is straightforward once known.
+
+**Cons**:
+- **Silent footgun if the order is wrong**. Install-then-clone
+  is the natural mental model for many users (build everything
+  first, clone for parallelism second). Documentation alone is
+  exactly the failure mode sharpen-the-axe forbids — silent,
+  delayed, hard to debug.
+- Beginners and Claude-equivalents reading the codebase are not
+  guaranteed to read every rustdoc carefully before writing
+  their first batch-sim setup.
+
+#### Scheme B — `install_per_env` factory + defensive clear
+
+Provide a single focused helper on `PassiveStack` that takes a
+prototype, an env count, and a per-env stack-builder closure,
+and produces N independent `(Model, fresh callback)` pairs.
+**Defensively clears the prototype's callback on each clone**
+before installing the fresh stack.
+
+```rust
+impl PassiveStack {
+    /// Build `n` independent envs from a prototype Model.
+    ///
+    /// For each env `i`, this:
+    /// 1. Clones the prototype.
+    /// 2. **Clears any passive callback on the clone** (defensive
+    ///    — guarantees no shared state inherited from the
+    ///    prototype, even if the prototype was previously
+    ///    installed on).
+    /// 3. Calls `build_one(i)` to construct a fresh
+    ///    `Arc<PassiveStack>` for env `i`.
+    /// 4. Installs that fresh stack on the cloned model.
+    ///
+    /// Returns N independent Models, each with its own
+    /// statistically-independent stack and (for stateful
+    /// components like `LangevinThermostat`) its own RNG.
+    ///
+    /// **Use this for BatchSim setups.** Naïvely cloning a
+    /// Model after installing a stack will share the underlying
+    /// callback Arc across clones — see the warning on
+    /// [`PassiveStack::install`].
+    pub fn install_per_env<F>(
+        prototype: &Model,
+        n: usize,
+        build_one: F,
+    ) -> Vec<Model>
+    where
+        F: Fn(usize) -> Arc<PassiveStack>,
+    {
+        (0..n).map(|i| {
+            let stack = build_one(i);
+            let mut model = prototype.clone();
+            model.clear_passive_callback();  // defensive
+            stack.install(&mut model);
+            model
+        }).collect()
+    }
+}
+```
+
+User code (BatchSim setup with N envs, each with its own
+seed):
+```rust
+let envs = PassiveStack::install_per_env(
+    &prototype,
+    N,
+    |i| {
+        PassiveStack::builder()
+            .with(LangevinThermostat::new(
+                gamma.clone(),
+                kT,
+                seed_base + i as u64,
+            ))
+            .build()
+    },
+);
+// envs is Vec<Model>, ready for BatchSim::new(envs) or whatever
+```
+
+The closure takes `i` (the env index) so users can vary
+parameters per env (parameter sweeps, varying initial
+conditions, varying seeds). Seed derivation is the user's
+concern — the chassis doesn't impose a particular scheme.
+
+**Plus**: the rustdoc for `PassiveStack::install` (the regular
+single-env install) carries the same warning as Scheme A's
+documentation, pointing users to `install_per_env` for the
+batch case. So Scheme B *includes* Scheme A's documentation
+discipline — it adds an API on top of it, not as a replacement.
+
+**Pros**:
+- **Loud at the API level for the case that matters**. The
+  BatchSim case is the *only* case where the footgun is
+  triggerable (single-env users can't clone, so they can't
+  hit it). Scheme B provides exactly one API for that case
+  and documents it as THE batch-sim entry point.
+- **Defensive `clear_passive_callback` makes the API
+  bulletproof against the install-then-batch order**. Even
+  if the user installs the stack on the prototype first and
+  *then* calls `install_per_env`, the resulting envs are
+  still independent because each clone has its callback
+  cleared inside the loop. **The order of install vs
+  install_per_env doesn't matter** — install_per_env always
+  produces correct results.
+- **The closure-builder pattern matches Decision 2's
+  builder-pattern idiom**. The user is already mentally in
+  "build a stack with `.with(...).build()`" mode; the
+  closure is just "do that build, but per env."
+- **Doesn't require sim-core changes**. Honors item 8's
+  "zero sim-core changes" constraint.
+- **Doesn't add complexity to the trivial case**. Single-env
+  users use `builder().with(...).build().install(&mut
+  model)` exactly as Decision 2 shipped it. `install_per_env`
+  exists only for batch users.
+
+**Cons**:
+- Adds ~40 LOC of API surface to the chassis.
+- Doesn't *prevent* a user from doing
+  `model.clone()` → install → `model.clone()` again. The user
+  can still write the wrong code if they ignore the API. The
+  guard rail is "the right thing is one named API call;"
+  not "the wrong thing is impossible."
+- The closure-taking-an-index pattern is slightly less
+  beginner-friendly than `builder().with(...).build()`. But
+  the BatchSim use case is inherently more advanced anyway.
+
+#### Schemes considered and rejected
+
+- **Scheme C — `ThermoModel` wrapper type**: wrap `Model` in a
+  thermo-crate type that prevents naïve cloning. **Rejected**
+  because it fragments the ecosystem (every other sim-core API
+  works on `Model` directly), users have to learn a parallel
+  type, and ml-bridge specifically chose *not* to wrap `Model`
+  for the same reasons.
+- **Scheme D — Modify `sim-core::set_passive_callback` to take
+  a factory closure** (`Fn() -> impl Fn(...)` so a fresh
+  closure is produced per clone). **Rejected** because it
+  requires modifying sim-core's shipped callback infrastructure,
+  breaks the 3 existing in-tree `cb_passive` consumers in
+  `tests/integration/callbacks.rs`, and explicitly violates
+  item 8 / part 10's "zero sim-core changes" constraint that
+  the entire sibling-crate decision rests on. Worth flagging
+  as the *eventual* right answer if a future user demands
+  truly-impossible-to-misuse semantics, but Phase-1-out-of-
+  scope.
+- **Scheme E — Type-state on `PassiveStack`** (e.g.,
+  `InstalledPassiveStack` after install): doesn't propagate to
+  `Model::clone()`, which is where the actual sharing happens.
+  **Rejected** as not addressing the root cause.
+
+#### Recommendation: **Scheme B — `install_per_env` factory + defensive clear + warnings on `install`**
+
+Confidence: high. Five reasons in priority order:
+
+1. **Bulletproof against the actual footgun**. The
+   `clear_passive_callback` inside the loop guarantees per-env
+   independence regardless of what state the prototype is in.
+   A user who calls `install_per_env(&prototype, ...)` cannot
+   accidentally inherit shared state from the prototype, even
+   if the prototype was installed on. **This is the closest
+   thing to "loud at the API level" we can get without
+   modifying sim-core.**
+
+2. **Doesn't burden the trivial case**. Single-env users use
+   the Decision 2 builder pattern unchanged. Only BatchSim
+   users encounter the new helper, and the BatchSim case is
+   inherently more advanced.
+
+3. **The closure-builder mirror of Decision 2's builder
+   pattern is consistent**. `install_per_env(&prototype, n,
+   |i| PassiveStack::builder().with(...).build())` reads as
+   "do that builder thing, per env." The user is not learning
+   a new mental model — they're applying the existing one
+   inside a `for i in 0..n` loop the chassis manages.
+
+4. **Honors item 8's chassis constraint**. Zero sim-core
+   changes. The thermo crate stays a clean bolt-on.
+
+5. **Not the *true* solution, but the *honest* one**. The
+   true solution requires either modifying sim-core (Scheme D,
+   out of scope) or redesigning `Model::clone()` itself
+   (impossible). Scheme B is the best the chassis can offer
+   given the constraint, and naming it explicitly — "this is
+   loud at the API level, not at the type level, and here's
+   why" — preserves the integrity of the sharpen-the-axe
+   discipline more than pretending we have a fully loud
+   answer would.
+
+#### Sub-decisions inside Decision 3
+
+- **Function name**: `install_per_env`. Reads as "install one
+  stack per env, fresh each time." Considered: `install_batch`
+  (ambiguous w.r.t. sim-core's `BatchSim`), `install_n`
+  (uninformative), `install_independent` (verbose), `replicate`
+  (too short). `install_per_env` is the clearest match for the
+  BatchSim mental model.
+- **Return type**: `Vec<Model>`. Simplest, most directly
+  composable with `BatchSim::new(envs)` or any other downstream
+  consumer. If a user wants the stacks back for inspection,
+  they can store them in the closure's outer scope. Considered:
+  `Vec<(Model, Arc<PassiveStack>)>` — rejected as imposing a
+  cost on the common case for an uncommon need.
+- **Closure signature**: `Fn(usize) -> Arc<PassiveStack>`. The
+  index lets users vary parameters per env (parameter sweeps,
+  varying ICs, varying seeds). Considered: `Fn() ->
+  Arc<PassiveStack>` (no index — but then per-env variation
+  becomes external bookkeeping); `Fn(usize, u64) -> ...` (with
+  derived seed — rejected as imposing a seeding scheme on the
+  user, when seed derivation is the user's concern).
+- **Defensive clear is non-negotiable**. The
+  `model.clear_passive_callback()` inside the loop is what
+  makes Scheme B bulletproof against the install-then-batch
+  order. Document it explicitly in the rustdoc.
+- **Warning on `install`'s rustdoc**: required. The single-env
+  `install` method must warn about the clone footgun and point
+  users to `install_per_env` for batch use. This is the
+  Scheme A documentation discipline applied alongside Scheme B.
+- **No `clone_thermo_model` standalone helper**. Considered as
+  a third API, rejected because `install_per_env` already
+  covers the case (a user wanting one independent clone calls
+  `install_per_env(&prototype, 1, |_| ...)` and takes the
+  first element). Adding a parallel single-clone helper would
+  fragment the API.
+
+#### DECISION (user confirmed): **Scheme B — `install_per_env` factory + defensive clear + warnings on `install`**
+
+The chassis explicitly accepts a "loud at the API level, not at
+the type level" trade-off, with the understanding that this is
+the best the sibling-crate constraint from item 8 permits.
+Scheme D (modify sim-core) is named as the *eventual* right
+answer if a future user demands truly impossible-to-misuse
+semantics, but is Phase-1-out-of-scope.
+
+Final API surface:
+
+```rust
+impl PassiveStack {
+    pub fn install_per_env<F>(
+        prototype: &Model,
+        n: usize,
+        build_one: F,
+    ) -> Vec<Model>
+    where
+        F: Fn(usize) -> Arc<PassiveStack>,
+    {
+        (0..n).map(|i| {
+            let stack = build_one(i);
+            let mut model = prototype.clone();
+            model.clear_passive_callback();  // defensive — non-negotiable
+            stack.install(&mut model);
+            model
+        }).collect()
+    }
+}
+```
+
+Plus a loud warning in the rustdoc of `PassiveStack::install`
+pointing users to `install_per_env` for batch use.
+
+#### Status
+
+- **Decision 3 RESOLVED.** Scheme B confirmed. The chassis
+  provides one named API for the BatchSim case, defensively
+  clears the inherited callback inside the loop, and documents
+  the trap on the regular `install` method.
+- The Scheme D trapdoor is named in the document so future-us
+  has a clear path if the constraint ever changes.
+- No code, no Cargo.toml changes, no new files written beyond
+  this document.
