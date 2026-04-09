@@ -169,11 +169,16 @@ sessions can reconstruct the *why* without re-running the analysis.
 
 ### Nits (4)
 
-- [ ] **N1** — Compress the "headline research claim" paragraph in Vision §1
+- [x] **N1** — Compress the "headline research claim" paragraph in Vision §1
   to a tagline. The Synthesis sentence at the end of §2 already says it
   better; consider deleting the §1 longer version or swapping their roles.
   **Acceptance**: §1 has a single-sentence headline claim; the §2 Synthesis
-  sentence is the canonical version.
+  sentence is the canonical version. ✓ *Applied 2026-04-09 — §1 tagline
+  compressed to one sentence: "One Rust-native pipeline where geometry,
+  physics, energy model, and control policy share a single parameter set —
+  and where the simulated device matches its 3D-printed twin within validated
+  tolerances." Forward-pointer to §2 Synthesis added so the longer
+  energy-function-framed version is one click away.*
 - [ ] **N2** — Specify the chassis convention for `n_sigma` in
   `assert_within_n_sigma`. Currently undefined. Recommend 3σ as the default,
   documented in chassis Decision 5. **Acceptance**: Decision 5 names 3σ as
@@ -268,7 +273,8 @@ substrate.
 - [x] **S4** — "Passive forces only" framing + flashing-ratchet sketch in chassis §0.
 - [x] **S5** — D4 external-dependencies subsection.
 - [x] **S6** — Thermostat persistence future-direction note.
-- [ ] **N1, N2, N3, N4** — Polish pass.
+- [x] **N1** — §1 headline claim compressed to one sentence.
+- [ ] **N2, N3, N4** — Polish pass continued.
 - [ ] Draft `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the revised chassis.
 
 ---
