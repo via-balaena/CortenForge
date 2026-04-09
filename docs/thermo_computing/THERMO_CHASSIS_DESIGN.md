@@ -823,6 +823,7 @@ impl PassiveStack {
             let stack = build_one(i);
             let mut model = prototype.clone();
             model.clear_passive_callback();  // defensive
+            debug_assert!(model.cb_passive.is_none());  // N4
             stack.clone().install(&mut model);
             models.push(model);
             stacks.push(stack);
@@ -1010,6 +1011,20 @@ Confidence: high. Five reasons in priority order:
   `model.clear_passive_callback()` inside the loop is what
   makes Scheme B bulletproof against the install-then-batch
   order. Document it explicitly in the rustdoc.
+- **Debug-assert the clear** (added by doc review N4,
+  2026-04-09). Belt-and-suspenders for the non-negotiable
+  defensive clear: a `debug_assert!(model.cb_passive.is_none())`
+  immediately after `clear_passive_callback()` validates the
+  assumption that the clear actually cleared. Verified
+  feasible: `cb_passive` is `pub Option<...>` at
+  `sim/L0/core/src/types/model.rs:1002`, so the field is
+  directly readable from external crates. Zero release-mode
+  cost; catches any future regression in
+  `clear_passive_callback()`'s contract during test runs.
+  This is the same "make wrong code impossible by
+  construction *where you can*, debug-assert *where you
+  can't*" line that shapes the rest of the chassis (M5,
+  Decision 7).
 - **Warning on `install`'s rustdoc**: required. The single-env
   `install` method must warn about the clone footgun and point
   users to `install_per_env` for batch use. This is the
@@ -1054,6 +1069,10 @@ impl PassiveStack {
             let stack = build_one(i);
             let mut model = prototype.clone();
             model.clear_passive_callback();  // defensive — non-negotiable
+            debug_assert!(
+                model.cb_passive.is_none(),
+                "clear_passive_callback() must leave cb_passive None (N4)"
+            );
             stack.clone().install(&mut model);
             models.push(model);
             stacks.push(stack);

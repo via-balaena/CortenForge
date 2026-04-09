@@ -197,11 +197,16 @@ sessions can reconstruct the *why* without re-running the analysis.
   extreme / gate. Each category gets one sentence of definition. Closes
   with the honest framing that these are author calibration and should
   be revised as the build progresses.*
-- [ ] **N4** — Add a `debug_assert!` after the defensive `clear_passive_callback()`
+- [x] **N4** — Add a `debug_assert!` after the defensive `clear_passive_callback()`
   call inside `install_per_env`. Belt-and-suspenders: if the chassis says
   the call is "non-negotiable," the assertion validates the assumption.
   **Acceptance**: chassis Decision 3 final API surface includes the
-  debug-assert line.
+  debug-assert line. ✓ *Applied 2026-04-09. Verified `cb_passive` is `pub
+  Option<...>` at `sim/L0/core/src/types/model.rs:1002`, so external crates
+  can read it directly. `debug_assert!(model.cb_passive.is_none(), ...)`
+  added to both the Scheme B body sketch and the Final API surface, plus
+  a sub-decision bullet explaining the rationale (zero release-mode cost,
+  catches any future regression in `clear_passive_callback()`'s contract).*
 
 ---
 
@@ -286,7 +291,7 @@ substrate.
 - [x] **N1** — §1 headline claim compressed to one sentence.
 - [x] **N2** — `n_sigma = 3` chassis convention named in Decision 5.
 - [x] **N3** — Research Directions status legend added.
-- [ ] **N4** — Polish pass continued.
+- [x] **N4** — `debug_assert!` after defensive `clear_passive_callback()`.
 - [ ] Draft `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the revised chassis.
 
 ---
