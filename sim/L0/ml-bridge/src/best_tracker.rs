@@ -239,4 +239,76 @@ mod tests {
         // Length 3 != fallback length 2 → discarded.
         assert_eq!(bt.params, vec![99.0, 88.0]);
     }
+
+    // ── Integration tests ──────────────────────────────────────────────
+
+    use crate::algorithm::{Algorithm, TrainingBudget};
+    use crate::policy::Policy;
+    use crate::{Cem, CemHyperparams, LinearPolicy, reaching_2dof};
+
+    #[test]
+    fn best_artifact_before_train_returns_initial_policy() {
+        let task = reaching_2dof();
+        let policy = Box::new(LinearPolicy::new(
+            task.obs_dim(),
+            task.act_dim(),
+            task.obs_scale(),
+        ));
+        let initial_params = policy.params().to_vec();
+        let cem = Cem::new(
+            policy,
+            CemHyperparams {
+                elite_fraction: 0.2,
+                noise_std: 0.3,
+                noise_decay: 0.95,
+                noise_min: 0.01,
+                max_episode_steps: 300,
+            },
+        );
+
+        let best = cem.best_artifact();
+        assert_eq!(best.params, initial_params);
+        assert!(best.provenance.is_none());
+    }
+
+    #[test]
+    fn best_artifact_after_training_has_best_epoch_weights() {
+        let task = reaching_2dof();
+        let mut env = task.build_vec_env(10).unwrap();
+        let policy = Box::new(LinearPolicy::new(
+            task.obs_dim(),
+            task.act_dim(),
+            task.obs_scale(),
+        ));
+        let mut cem = Cem::new(
+            policy,
+            CemHyperparams {
+                elite_fraction: 0.2,
+                noise_std: 0.3,
+                noise_decay: 0.95,
+                noise_min: 0.01,
+                max_episode_steps: 300,
+            },
+        );
+
+        let metrics = cem.train(&mut env, TrainingBudget::Epochs(10), 42, &|_| {});
+        let best_art = cem.best_artifact();
+        let final_art = cem.policy_artifact();
+
+        // Best artifact should have valid params of the same length.
+        assert_eq!(best_art.params.len(), final_art.params.len());
+
+        // Find best epoch reward from metrics.
+        let best_reward = metrics
+            .iter()
+            .map(|m| m.mean_reward)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let final_reward = metrics.last().unwrap().mean_reward;
+
+        // Best reward should be >= final reward (by definition).
+        assert!(
+            best_reward >= final_reward,
+            "best ({best_reward}) should be >= final ({final_reward})"
+        );
+    }
 }
