@@ -501,12 +501,16 @@ mod tests {
         }
 
         fn checkpoint(&self) -> TrainingCheckpoint {
+            let (best_params, best_reward, best_epoch) = self.best.to_checkpoint();
             TrainingCheckpoint {
                 algorithm_name: self.name.into(),
                 policy_artifact: self.policy_artifact(),
                 critics: vec![],
                 optimizer_states: vec![],
                 algorithm_state: BTreeMap::new(),
+                best_params: Some(best_params),
+                best_reward,
+                best_epoch,
             }
         }
     }

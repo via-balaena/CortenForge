@@ -613,6 +613,15 @@ pub struct TrainingCheckpoint {
     pub optimizer_states: Vec<OptimizerSnapshot>,
     /// Algorithm-specific scalar state (`noise_std`, `sigma`, `alpha`, etc.).
     pub algorithm_state: BTreeMap<String, f64>,
+    /// Best-epoch policy weights (for `best_artifact()` after resume).
+    #[serde(default)]
+    pub best_params: Option<Vec<f64>>,
+    /// Best-epoch mean reward. `None` = no data (pre-feature or pre-training).
+    #[serde(default)]
+    pub best_reward: Option<f64>,
+    /// Best-epoch index (0-based, relative to start of training).
+    #[serde(default)]
+    pub best_epoch: usize,
 }
 
 impl TrainingCheckpoint {
@@ -1186,6 +1195,9 @@ mod tests {
             critics: vec![],
             optimizer_states: vec![],
             algorithm_state: BTreeMap::from([("noise_std".into(), 0.25)]),
+            best_params: None,
+            best_reward: None,
+            best_epoch: 0,
         };
 
         let dir = std::env::temp_dir().join("ml_bridge_test_ckpt");

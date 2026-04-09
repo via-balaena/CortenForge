@@ -96,7 +96,12 @@ impl Cem {
             .get("noise_std")
             .copied()
             .unwrap_or(hyperparams.noise_std);
-        let best = crate::best_tracker::BestTracker::new(policy.params());
+        let best = crate::best_tracker::BestTracker::from_checkpoint(
+            checkpoint.best_params.clone(),
+            checkpoint.best_reward,
+            checkpoint.best_epoch,
+            &checkpoint.policy_artifact.params,
+        );
         Ok(Self {
             policy,
             hyperparams,
@@ -237,12 +242,16 @@ impl Algorithm for Cem {
     }
 
     fn checkpoint(&self) -> TrainingCheckpoint {
+        let (best_params, best_reward, best_epoch) = self.best.to_checkpoint();
         TrainingCheckpoint {
             algorithm_name: "CEM".into(),
             policy_artifact: self.policy_artifact(),
             critics: vec![],
             optimizer_states: vec![],
             algorithm_state: BTreeMap::from([("noise_std".into(), self.noise_std)]),
+            best_params: Some(best_params),
+            best_reward,
+            best_epoch,
         }
     }
 }

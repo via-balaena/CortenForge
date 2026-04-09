@@ -193,7 +193,12 @@ impl Sac {
             .copied()
             .unwrap_or_else(|| hyperparams.alpha_init.ln());
 
-        let best = crate::best_tracker::BestTracker::new(policy.params());
+        let best = crate::best_tracker::BestTracker::from_checkpoint(
+            checkpoint.best_params.clone(),
+            checkpoint.best_reward,
+            checkpoint.best_epoch,
+            &checkpoint.policy_artifact.params,
+        );
         Ok(Self {
             policy,
             q1,
@@ -578,6 +583,7 @@ impl Algorithm for Sac {
     }
 
     fn checkpoint(&self) -> TrainingCheckpoint {
+        let (best_params, best_reward, best_epoch) = self.best.to_checkpoint();
         TrainingCheckpoint {
             algorithm_name: "SAC".into(),
             policy_artifact: self.policy_artifact(),
@@ -612,6 +618,9 @@ impl Algorithm for Sac {
                 ("log_alpha".into(), self.log_alpha),
                 ("alpha_lr".into(), self.hyperparams.alpha_lr),
             ]),
+            best_params: Some(best_params),
+            best_reward,
+            best_epoch,
         }
     }
 }

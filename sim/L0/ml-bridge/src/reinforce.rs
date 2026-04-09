@@ -118,7 +118,12 @@ impl Reinforce {
             .get("sigma")
             .copied()
             .unwrap_or(hyperparams.sigma_init);
-        let best = crate::best_tracker::BestTracker::new(policy.params());
+        let best = crate::best_tracker::BestTracker::from_checkpoint(
+            checkpoint.best_params.clone(),
+            checkpoint.best_reward,
+            checkpoint.best_epoch,
+            &checkpoint.policy_artifact.params,
+        );
         Ok(Self {
             policy,
             optimizer_config,
@@ -300,12 +305,16 @@ impl Algorithm for Reinforce {
     }
 
     fn checkpoint(&self) -> TrainingCheckpoint {
+        let (best_params, best_reward, best_epoch) = self.best.to_checkpoint();
         TrainingCheckpoint {
             algorithm_name: "REINFORCE".into(),
             policy_artifact: self.policy_artifact(),
             critics: vec![],
             optimizer_states: vec![self.optimizer.snapshot("actor")],
             algorithm_state: BTreeMap::from([("sigma".into(), self.sigma)]),
+            best_params: Some(best_params),
+            best_reward,
+            best_epoch,
         }
     }
 }

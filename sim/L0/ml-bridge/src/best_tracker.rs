@@ -70,13 +70,13 @@ impl BestTracker {
     }
 
     /// Best-epoch mean reward (`NEG_INFINITY` if no training has occurred).
-    #[allow(dead_code)] // used in Phase 2/3
+    #[allow(dead_code)] // non-test callers pending (visualization / analysis)
     pub const fn reward(&self) -> f64 {
         self.reward
     }
 
     /// Best-epoch index (0-based).
-    #[allow(dead_code)] // used in Phase 2/3
+    #[allow(dead_code)] // non-test callers pending (visualization / analysis)
     pub const fn epoch(&self) -> usize {
         self.epoch
     }
@@ -87,7 +87,6 @@ impl BestTracker {
     /// non-finite (`NEG_INFINITY` before training) → `None`.
     /// `serde_json` rejects non-finite f64 values, so `NEG_INFINITY`
     /// must never reach the serializer.
-    #[allow(dead_code)] // used in Phase 3
     pub fn to_checkpoint(&self) -> (Vec<f64>, Option<f64>, usize) {
         let reward = if self.reward.is_finite() {
             Some(self.reward)
@@ -107,7 +106,6 @@ impl BestTracker {
     /// - If `reward` is `None` (pre-feature checkpoint or pre-training
     ///   checkpoint), restores to `NEG_INFINITY` — the first real epoch
     ///   will overwrite it.
-    #[allow(dead_code)] // used in Phase 3
     pub fn from_checkpoint(
         params: Option<Vec<f64>>,
         reward: Option<f64>,
@@ -310,5 +308,133 @@ mod tests {
             best_reward >= final_reward,
             "best ({best_reward}) should be >= final ({final_reward})"
         );
+    }
+
+    // ── Phase 3: checkpoint integration tests ─────────────────────────
+
+    #[test]
+    fn checkpoint_round_trip_preserves_best_across_resume() {
+        let task = reaching_2dof();
+        let mut env = task.build_vec_env(10).unwrap();
+        let hp = CemHyperparams {
+            elite_fraction: 0.2,
+            noise_std: 0.3,
+            noise_decay: 0.95,
+            noise_min: 0.01,
+            max_episode_steps: 300,
+        };
+        let policy = Box::new(LinearPolicy::new(
+            task.obs_dim(),
+            task.act_dim(),
+            task.obs_scale(),
+        ));
+        let mut cem = Cem::new(policy, hp);
+        cem.train(&mut env, TrainingBudget::Epochs(5), 42, &|_| {});
+
+        let cp = cem.checkpoint();
+
+        // Checkpoint should contain best state.
+        assert!(cp.best_params.is_some());
+        let bp = cp.best_params.as_ref().unwrap();
+        assert_eq!(bp.len(), cem.best_artifact().params.len());
+
+        // Restore and verify best artifact matches.
+        let cem2 = Cem::from_checkpoint(&cp, hp).unwrap();
+        let original_best = cem.best_artifact();
+        let restored_best = cem2.best_artifact();
+        assert_eq!(restored_best.params, original_best.params);
+    }
+
+    #[test]
+    fn old_checkpoint_without_best_fields_loads_with_defaults() {
+        // Simulate a pre-feature checkpoint (no best_* fields) by
+        // constructing a TrainingCheckpoint with None/default best fields.
+        use crate::artifact::TrainingCheckpoint;
+        let task = reaching_2dof();
+        let policy = Box::new(LinearPolicy::new(
+            task.obs_dim(),
+            task.act_dim(),
+            task.obs_scale(),
+        ));
+        let cem = Cem::new(
+            policy,
+            CemHyperparams {
+                elite_fraction: 0.2,
+                noise_std: 0.3,
+                noise_decay: 0.95,
+                noise_min: 0.01,
+                max_episode_steps: 300,
+            },
+        );
+        let mut cp = cem.checkpoint();
+
+        // Strip best fields to simulate old checkpoint.
+        cp.best_params = None;
+        cp.best_reward = None;
+        cp.best_epoch = 0;
+
+        // Also verify JSON round-trip with missing fields.
+        let json = serde_json::to_string(&cp).unwrap();
+        let loaded: TrainingCheckpoint = serde_json::from_str(&json).unwrap();
+        assert!(loaded.best_params.is_none());
+        assert!(loaded.best_reward.is_none());
+        assert_eq!(loaded.best_epoch, 0);
+
+        // Restore algorithm — should fall back to policy params.
+        let hp = CemHyperparams {
+            elite_fraction: 0.2,
+            noise_std: 0.3,
+            noise_decay: 0.95,
+            noise_min: 0.01,
+            max_episode_steps: 300,
+        };
+        let cem2 = Cem::from_checkpoint(&loaded, hp).unwrap();
+        // Best artifact should equal the current policy (fallback).
+        assert_eq!(cem2.best_artifact().params, cem2.policy_artifact().params);
+    }
+
+    #[test]
+    fn resume_training_preserves_best_from_previous_session() {
+        let task = reaching_2dof();
+        let mut env = task.build_vec_env(10).unwrap();
+        let hp = CemHyperparams {
+            elite_fraction: 0.2,
+            noise_std: 0.3,
+            noise_decay: 0.95,
+            noise_min: 0.01,
+            max_episode_steps: 300,
+        };
+
+        // Session 1: train 10 epochs, record best.
+        let policy = Box::new(LinearPolicy::new(
+            task.obs_dim(),
+            task.act_dim(),
+            task.obs_scale(),
+        ));
+        let mut cem = Cem::new(policy, hp);
+        let metrics1 = cem.train(&mut env, TrainingBudget::Epochs(10), 42, &|_| {});
+        let session1_best_reward = metrics1
+            .iter()
+            .map(|m| m.mean_reward)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        // Checkpoint + restore.
+        let cp = cem.checkpoint();
+        let mut cem2 = Cem::from_checkpoint(&cp, hp).unwrap();
+
+        // Session 2: train 1 epoch with a different seed.
+        let metrics2 = cem2.train(&mut env, TrainingBudget::Epochs(1), 99, &|_| {});
+        let session2_reward = metrics2[0].mean_reward;
+
+        // The best after resume should be at least as good as session 1's best.
+        // If session 2's single epoch didn't beat session 1's best, the
+        // restored best should survive unchanged.
+        let best_art = cem2.best_artifact();
+        assert_eq!(best_art.params.len(), cem.best_artifact().params.len());
+
+        // If session 2 didn't beat session 1, best should equal session 1's best.
+        if session2_reward <= session1_best_reward {
+            assert_eq!(best_art.params, cem.best_artifact().params);
+        }
     }
 }
