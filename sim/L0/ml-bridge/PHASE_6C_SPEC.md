@@ -353,6 +353,32 @@ predecessor to compare against:
 
 Baby steps. Each phase ships, gets analyzed, then informs the next.
 
+### Cross-cutting: iterative training + visual comparison
+
+Once best-policy tracking (`BEST_POLICY_TRACKING_SPEC.md`) ships, every
+phase in this roadmap gains a curriculum workflow:
+
+1. **Train** — run the competition (or a single algorithm) on the task.
+2. **Extract best** — `algorithm.best_artifact()` gives the best-epoch
+   policy, not the final.
+3. **Visual replay** — load the artifact, reconstruct the policy via
+   `to_policy()`, render in Bevy. Watch the arm reach, avoid, or fail.
+4. **Resume training** — load the best artifact as warm-start for a new
+   training run. `TrainingProvenance.parent` chains the lineage
+   automatically (v1 → v2 → v3).
+5. **Compare side-by-side** — load two artifacts (e.g., v1 best vs v2
+   best), render both arms in the same Bevy scene, same environment.
+   See whether more training actually improved behavior.
+
+This workflow requires no new ml-bridge infrastructure — it composes
+`best_artifact()` (best-tracking spec) with `save()`/`load()`/`to_policy()`
+(persistence spec, already shipped). The only new work is a **side-by-side
+Bevy example** that renders two policies simultaneously.
+
+The workflow applies identically to 6c, 6c+1, and 6c+2. It also enables
+cross-phase transfer: train on 6c (ghost obstacle), extract best, warm-start
+on 6c+1 (real contacts). The provenance chain records the full history.
+
 ---
 
 ## 6. Open questions
