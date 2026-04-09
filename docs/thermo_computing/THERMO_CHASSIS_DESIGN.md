@@ -1686,6 +1686,22 @@ Confidence: high. Five reasons:
   the computed |z| score, and the n_sigma threshold. All
   numerics in scientific notation with 6 significant digits
   for precision in the failure message.
+- **Default `n_sigma` convention: 3σ** (added by doc review
+  N2, 2026-04-09). Tests in the thermo line should call
+  `assert_within_n_sigma(measured, expected, std_error, 3.0,
+  "...")` unless they have a specific reason to do otherwise.
+  3σ corresponds to a one-sided false-positive rate of ~0.13%
+  (~99.7% pass rate for a true-positive test under a normal
+  null), which is the standard "tight enough to catch real
+  bugs, loose enough to not flake on legitimate sampling
+  variation" balance for physics validation. Considered: 2σ
+  (~5% false-positive rate, too flaky — equipartition tests
+  in the option-β setup will produce ~5% std error and a
+  legitimate run would frequently land just outside 2σ); 5σ
+  (overkill — would only catch order-of-magnitude bugs and
+  miss the discretization-bias detection we *want* the gate
+  to do). 3σ is the chassis convention; individual tests
+  override only with a written rationale.
 - **Welford's `push` takes `f64` by value, not `&f64`**.
   f64 is Copy, no reason to take a reference.
 - **`reset()` ships in Phase 1** (added by doc review M4,

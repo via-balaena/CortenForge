@@ -179,10 +179,14 @@ sessions can reconstruct the *why* without re-running the analysis.
   and where the simulated device matches its 3D-printed twin within validated
   tolerances." Forward-pointer to §2 Synthesis added so the longer
   energy-function-framed version is one click away.*
-- [ ] **N2** — Specify the chassis convention for `n_sigma` in
+- [x] **N2** — Specify the chassis convention for `n_sigma` in
   `assert_within_n_sigma`. Currently undefined. Recommend 3σ as the default,
   documented in chassis Decision 5. **Acceptance**: Decision 5 names 3σ as
-  the chassis convention with a one-line rationale.
+  the chassis convention with a one-line rationale. ✓ *Applied 2026-04-09 —
+  Decision 5 sub-decisions list gains a "Default `n_sigma` convention: 3σ"
+  bullet with the false-positive-rate rationale and explicit rejection of
+  2σ (too flaky for the option-β ~5% std error) and 5σ (would miss
+  discretization-bias detection).*
 - [ ] **N3** — Add a 5-line legend defining the Research Directions metadata
   categories (`reach`: low/early/mid/long-term; `novelty`: low/med/high/very
   high/extreme). Currently used in §2 and the priority ladder but undefined.
@@ -274,7 +278,8 @@ substrate.
 - [x] **S5** — D4 external-dependencies subsection.
 - [x] **S6** — Thermostat persistence future-direction note.
 - [x] **N1** — §1 headline claim compressed to one sentence.
-- [ ] **N2, N3, N4** — Polish pass continued.
+- [x] **N2** — `n_sigma = 3` chassis convention named in Decision 5.
+- [ ] **N3, N4** — Polish pass continued.
 - [ ] Draft `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the revised chassis.
 
 ---
