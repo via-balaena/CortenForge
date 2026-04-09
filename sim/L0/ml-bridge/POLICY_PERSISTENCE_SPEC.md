@@ -5,7 +5,7 @@
 > of every trait, every algorithm, every policy type. The currency of the
 > ML layer.
 
-**Status**: v8 — Phase 1 complete (commit `066abea`), Phase 2 next
+**Status**: v9 — Phase 2 complete (commit `dee449b`), Phase 3 next
 **Crate**: `sim-ml-bridge`
 **New dependencies**: `serde`, `serde_json`
 
@@ -155,6 +155,12 @@ pub struct NetworkDescriptor {
     pub obs_scale: Vec<f64>,
 }
 ```
+
+**Conversion**: `impl From<PolicyDescriptor> for NetworkDescriptor` maps
+`act_dim` to `Some(act_dim)` and drops `stochastic`. Used by TD3's
+`checkpoint()` to store the target policy (a `DifferentiablePolicy` that
+returns `PolicyDescriptor`) as a `NetworkSnapshot` (which uses
+`NetworkDescriptor`).
 
 ### 4.4 PolicyArtifact — the deployable brain
 
@@ -319,6 +325,12 @@ pub struct OptimizerSnapshot {
 Note: `OptimizerSnapshot.config` uses the existing `OptimizerConfig` enum
 directly (with serde derives added). No separate snapshot config type.
 
+**Implementation note (infinity serde)**: `OptimizerConfig::Adam.max_grad_norm`
+defaults to `f64::INFINITY` (no clipping). `serde_json` rejects
+non-finite f64 values, so `max_grad_norm` has custom `serialize_with` /
+`deserialize_with` attributes: serializes infinity as `null`, deserializes
+`null` back to `f64::INFINITY`.
+
 **Checkpoint contents per algorithm:**
 
 | Algorithm | policy_artifact | critics (NetworkSnapshot vec) | optimizers | algorithm_state |
@@ -427,6 +439,21 @@ log_alpha) instead of resetting. This is intentional — it matches the
 checkpoint mental model: resuming training means continuing from where you
 left off, not restarting. If a fresh start is needed, construct a new
 algorithm instance.
+
+**Implementation note (borrow splitting)**: REINFORCE and PPO use a `&mut`
+closure passed to `collect_episodic_rollout()`. The closure captures
+`self.policy` and needs `sigma`. After promotion, both are on `self`,
+creating a borrow conflict. The solution: copy `sigma` to a local before
+the closure (`let sigma = self.sigma;`), use the local inside the closure,
+then update `self.sigma` after the closure returns. This matches the
+original code pattern (sigma was already a local) and avoids any
+restructuring of the rollout API.
+
+**Implementation note (dead_code)**: After promotion, `optimizer_config`
+fields on REINFORCE, PPO, TD3, and SAC are no longer read at runtime
+(optimizers are built once in `new()`). The fields are kept and annotated
+with `#[allow(dead_code)]` for introspection and `from_checkpoint()`
+reconstruction.
 
 ---
 
@@ -881,6 +908,28 @@ network validation. The only difference: `NetworkDescriptor` has no
 `stochastic` field, and Q-functions use `obs_dim + act_dim.unwrap()` as
 their effective input dimension.
 
+### 7.1.2 Reconstruction helpers (added Phase 2)
+
+`from_checkpoint()` constructors need to reconstruct trait objects from
+snapshots. These helpers provide type-safe reconstruction:
+
+**On `PolicyArtifact`** (same match logic as `to_policy()`, tighter return types):
+- `to_differentiable_policy() -> Result<Box<dyn DifferentiablePolicy>, ArtifactError>` —
+  all 5 policy types implement `DifferentiablePolicy`, so every valid
+  `(kind, stochastic)` combo works. Used by REINFORCE, PPO, TD3.
+- `to_stochastic_policy() -> Result<Box<dyn StochasticPolicy>, ArtifactError>` —
+  only `(Linear, true)` and `(Autograd, true)`. Returns
+  `UnsupportedCombination` for non-stochastic descriptors. Used by SAC.
+
+**On `NetworkSnapshot`** (reconstruct critics from checkpoint):
+- `to_value_fn() -> Result<Box<dyn ValueFn>, ArtifactError>` — used by PPO
+  (`role="value"`).
+- `to_q_function() -> Result<Box<dyn QFunction>, ArtifactError>` — used by
+  TD3 and SAC. Requires `descriptor.act_dim` to be `Some`.
+- `to_differentiable_policy() -> Result<Box<dyn DifferentiablePolicy>, ArtifactError>` —
+  used by TD3 for `role="actor_target"`. Requires `descriptor.act_dim` to
+  be `Some`.
+
 ### 7.2 Provenance assembly patterns
 
 **The algorithm returns a bare artifact. The caller builds provenance.**
@@ -1014,61 +1063,63 @@ for obs in test_observations {
 
 ## 9. Implementation scope
 
-### Trait changes (breaking)
-- `Policy::descriptor()` — 5 concrete impls
-- `ValueFn::descriptor()` — 3 concrete impls
-- `QFunction::descriptor()` — 3 concrete impls
-- `Algorithm::policy_artifact()` — 5 concrete impls
-- `Algorithm::checkpoint()` — 5 concrete impls
-- `Optimizer::snapshot()` + `load_snapshot()` — 1 concrete impl (Adam)
+### Trait changes (breaking) — Done
+- `Policy::descriptor()` — 5 concrete impls ✓ Phase 1
+- `ValueFn::descriptor()` — 3 concrete impls ✓ Phase 1
+- `QFunction::descriptor()` — 3 concrete impls ✓ Phase 1
+- `Algorithm::policy_artifact()` — 5 concrete impls ✓ Phase 2
+- `Algorithm::checkpoint()` — 5 concrete impls ✓ Phase 2
+- `Optimizer::snapshot()` + `load_snapshot()` — 1 concrete impl (Adam) ✓ Phase 2
 
-### Per-algorithm constructors
+### Per-algorithm constructors — Done (Phase 2)
 - `Cem::from_checkpoint()` + `Reinforce::from_checkpoint()` + `Ppo::from_checkpoint()` + `Td3::from_checkpoint()` + `Sac::from_checkpoint()`
 
-### New types
-- `NetworkKind` (shared enum)
-- `PolicyDescriptor`
-- `NetworkDescriptor`
-- `PolicyArtifact` (with `save`, `load`, `to_policy`, `from_policy`, `with_provenance`, `validate`)
-- `TrainingProvenance`
-- `ArtifactError`
-- `TrainingCheckpoint` (with `save`, `load`)
-- `NetworkSnapshot`
-- `OptimizerSnapshot`
+### New types — Done
+- `NetworkKind` (shared enum) ✓ Phase 1
+- `PolicyDescriptor` ✓ Phase 1
+- `NetworkDescriptor` ✓ Phase 1
+- `PolicyArtifact` (with `save`, `load`, `to_policy`, `to_differentiable_policy`, `to_stochastic_policy`, `from_policy`, `with_provenance`, `validate`) ✓ Phase 1+2
+- `TrainingProvenance` ✓ Phase 1
+- `ArtifactError` ✓ Phase 1
+- `TrainingCheckpoint` (with `save`, `load`) ✓ Phase 2
+- `NetworkSnapshot` (with `to_value_fn`, `to_q_function`, `to_differentiable_policy`) ✓ Phase 2
+- `OptimizerSnapshot` ✓ Phase 2
 
-### Serde derives on existing types
+### Serde derives on existing types — Done (Phase 1)
 - `EpochMetrics`
 - `Activation`
-- `OptimizerConfig`
+- `OptimizerConfig` (with custom serde for `max_grad_norm` infinity — see §4.7 note)
 
 ### Infrastructure changes
-- `RunResult` gains `artifact: PolicyArtifact` field
-- `CompetitionResult` gains `save_artifacts()` and `best_for_task()`
-- `Cargo.toml`: add `serde` (with `derive` feature), `serde_json` as required deps
 - Algorithm struct field additions: promote optimizer instances and mutable
-  scalars from `train()` locals to struct fields (§4.9)
+  scalars from `train()` locals to struct fields (§4.9) ✓ Phase 2
+- `Cargo.toml`: add `serde` (with `derive` feature), `serde_json` as required deps ✓ Phase 1
+- `RunResult` gains `artifact: PolicyArtifact` field — **Phase 3**
+- `CompetitionResult` gains `save_artifacts()` and `best_for_task()` — **Phase 3**
 
-### Test mock updates
+### Test mock updates — Done
 - `MockQ` (`value.rs` tests): **Done (Phase 1)** — added `obs_dim`,
   `act_dim`, `obs_scale` fields. `descriptor()` returns
   `NetworkKind::Linear`. `MockQ::new(p)` derives dimensions from param count.
-- `MockAlgorithm` (`competition.rs` tests): Only stores `name: &str` —
-  cannot implement `policy_artifact()` or `checkpoint()`. Add a
-  `LinearPolicy` field constructed in `MockAlgorithm::new()`. Implement
-  `policy_artifact()` as `PolicyArtifact::from_policy(&*self.policy)` and
-  `checkpoint()` as a minimal `TrainingCheckpoint` with empty critics,
-  optimizer_states, and algorithm_state.
+- `MockAlgorithm` (`competition.rs` tests): **Done (Phase 2)** — added
+  `policy: Box<dyn Policy>` field (a `LinearPolicy::new(1, 1, &[1.0])`).
+  Implements `policy_artifact()` and `checkpoint()` with minimal valid data.
 
-### New tests
-- Round-trip: create artifact → save → load → validate → to_policy → forward matches
-- Every policy type: descriptor correctness
-- Every algorithm: policy_artifact produces valid artifact after training
-- Every algorithm: checkpoint round-trip (checkpoint → save → load → from_checkpoint → train continues)
-- Optimizer: snapshot → load_snapshot preserves momentum state
-- Validation: version check, param count, obs_scale length, hidden_dims consistency
-- Error cases: unsupported version, corrupted JSON, param count mismatch
-- Provenance: with_provenance builder, parent linkage
-- Competition: save_artifacts writes correct files, best_for_task returns highest reward
+### Tests — 362 total (Phase 1: 336, Phase 2: +26)
+- Round-trip: create artifact → save → load → validate → to_policy → forward matches ✓
+- Every policy type: descriptor correctness ✓
+- Every algorithm: policy_artifact produces valid artifact ✓
+- Every algorithm: checkpoint round-trip (checkpoint → from_checkpoint → verify params match) ✓
+- Every algorithm: checkpoint before train (initial state) ✓
+- Optimizer: snapshot → load_snapshot preserves momentum state ✓
+- Optimizer: interrupted training matches continuous (momentum continuity) ✓
+- Checkpoint/snapshot serde round-trips ✓
+- Reconstruction helpers (to_value_fn, to_q_function, to_differentiable/stochastic_policy) ✓
+- PolicyDescriptor → NetworkDescriptor conversion ✓
+- Validation: version check, param count, obs_scale length, hidden_dims consistency ✓
+- Error cases: unsupported version, corrupted JSON, param count mismatch ✓
+- Provenance: with_provenance builder, parent linkage ✓
+- Competition: save_artifacts, best_for_task — **Phase 3**
 
 ---
 
@@ -1110,27 +1161,46 @@ for obs in test_observations {
 - 28 tests (descriptors, round-trips, validation, provenance, serde format)
 - MockQ updated with descriptor fields (Phase 2 still needs MockAlgorithm)
 
-**Phase 2 — Algorithm integration + checkpointing**
-- **Prerequisite**: State promotion (§4.9) — promote optimizer instances and
-  mutable scalars from train() locals to struct fields for all 5 algorithms
+**Phase 2 — Algorithm integration + checkpointing** ✓ `dee449b`
+- State promotion (§4.9): optimizers + mutable scalars moved to struct fields
+  for all 5 algorithms (see §4.9 implementation notes for borrow workaround)
 - New types: TrainingCheckpoint, NetworkSnapshot, OptimizerSnapshot
+- TrainingCheckpoint save/load with version check
 - Optimizer::snapshot() + load_snapshot() on trait + Adam impl
-- Algorithm::policy_artifact() on trait + 5 impls
-- Algorithm::checkpoint() on trait + 5 real impls:
-  - CEM: policy + noise_std
-  - REINFORCE: policy + actor optimizer + sigma
-  - PPO: policy + value + actor optimizer + value optimizer + sigma
-  - TD3: actor + actor_target + q1 + q2 + q1_target + q2_target + 3 optimizers
-  - SAC: actor + q1 + q2 + q1_target + q2_target + 3 optimizers (actor, q1, q2) + log_alpha
+  (see §4.7 implementation note for infinity serde)
+- Algorithm::policy_artifact() + checkpoint() on trait + 5 real impls
+- Reconstruction helpers: PolicyArtifact (to_differentiable_policy,
+  to_stochastic_policy) + NetworkSnapshot (to_value_fn, to_q_function,
+  to_differentiable_policy) — see §7.1.2
+- PolicyDescriptor → NetworkDescriptor From impl (for TD3 target_policy)
 - Per-algorithm from_checkpoint() constructors (5 impls)
-- Checkpoint round-trip tests for every algorithm
+- MockAlgorithm updated with LinearPolicy field + trait impls
+- 26 new tests (362 total), clippy clean
 
 **Phase 3 — Competition integration**
-- RunResult gains artifact field
-- Competition runner builds provenance during run()
-- CompetitionResult gains save_artifacts(), best_for_task()
-- TrainingCheckpoint save/load
+- RunResult gains `artifact: PolicyArtifact` field (with provenance)
+- Competition runner builds provenance during `run()` — it has the task,
+  seed, metrics, algorithm name, wall time (everything for TrainingProvenance)
+- `algorithm.policy_artifact()` returns a bare artifact; `run()` attaches
+  provenance via `.with_provenance()` before storing on RunResult
+- CompetitionResult gains `save_artifacts()`, `best_for_task()`
 - Competition tests verify artifacts
+
+**Phase 3 implementation notes**:
+- `Competition::run()` is in `competition.rs:216-263`. It currently pushes
+  `RunResult { task_name, algorithm_name, metrics }`. The change: call
+  `algorithm.policy_artifact()` after `train()`, attach provenance, add to
+  RunResult. The `algorithm` variable is `Box<dyn Algorithm>` — it has
+  `policy_artifact()` from the Phase 2 trait extension.
+- `RunResult` struct is at `competition.rs:19-26`. Adding `artifact` field
+  breaks the construction site in `run()` (line 254) and any test code
+  that constructs RunResult directly — grep for `RunResult {`.
+- `RunResult` derives `Clone` — `PolicyArtifact` also derives `Clone`, so
+  no issue.
+- MockAlgorithm already implements `policy_artifact()` (Phase 2) — its
+  artifact will have a tiny 1×1 LinearPolicy, which is fine for tests.
+- TrainingCheckpoint save/load is already done (Phase 2). Phase 3 only
+  needs PolicyArtifact save/load, which is also done (Phase 1).
 
 **Phase 4 — Visual proof**
 - Train-then-replay Bevy example (CEM on reaching-2dof)
