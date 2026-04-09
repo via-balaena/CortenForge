@@ -87,9 +87,19 @@ sessions can reconstruct the *why* without re-running the analysis.
 
 ### Should-fix (6)
 
-- [ ] **S1** — Resolve Q3 (`thrml-rs` existence) with a 5-minute web search.
+- [x] **S1** — Resolve Q3 (`thrml-rs` existence) with a 5-minute web search.
   No defensible reason to defer. **Acceptance**: Q3 entry in master plan §5
-  marked RESOLVED with the answer and a one-line recon log entry.
+  marked RESOLVED with the answer and a one-line recon log entry. ✓ *Applied
+  2026-04-09. Answer is "yes, with caveats": original `extropic-ai/thrml`
+  (JAX) exists, two community Rust ports exist on GitHub (`SashimiSaketoro`
+  and `Pingasmaster`), neither officially maintained by Extropic, neither
+  apparently on crates.io. Q3 expanded from binary to three-option Phase 6
+  trade-off: (A) depend on port, (B) implement minimal native (leading,
+  sharpen-the-axe consistent), (C) vendor/fork into `sim-thrml` sibling.
+  Phase 6 entry in §The Gap updated with cross-reference. New recon log
+  entry "2026-04-09 (part 12) — Doc review pass" opened to record M1, M4,
+  M5, M2, M3, S1 outcomes (more substantial than a one-liner because the
+  doc review pass is six items, not just S1).*
 - [ ] **S2** — Rewrite master plan §3 Current State to reflect the
   chassis-design-round outcome (so future-Jon doesn't have to read 10 recon
   log entries to reconstruct the snapshot). Bigger fix, optional: split into
@@ -213,7 +223,8 @@ substrate.
 - [x] **M2** — Add Decision 7 to the chassis doc — stochastic gating for
   FD/autograd contexts. ✓ done — Scheme A (`Stochastic` trait + RAII guard)
   recommended; full two-scheme treatment in chassis Decision 7.
-- [ ] **S1** — Resolve Q3 (`thrml-rs`) with a 5-min web search.
+- [x] **S1** — Resolve Q3 (`thrml-rs`) with a 5-min web search. ✓ done —
+  answer is "yes with caveats"; Phase 6 trade-off refined to three options.
 - [x] **M3** — Open Q5 (cf-design differentiability) as foreground recon in
   parallel with Phase 1 spec drafting. ✓ done — Q5 escalated, recon scope
   named, recon log entry deferred until the recon actually starts.

@@ -519,8 +519,15 @@ preceding gate is green.
   end-to-end differentiability) — escalated to active foreground recon by doc
   review M3, scheduled in parallel with the Phase 1 spec drafting so the
   build order past Phase 1 is informed by the answer rather than blind to it.
-- **Phase 6**: Bridge to THRML if `thrml-rs` exists (verify first, see Q3); if
-  not, implement a minimal block-Gibbs sampler in Rust as the comparison point.
+- **Phase 6**: Bridge to THRML or implement native. **Q3 RESOLVED 2026-04-09
+  (doc review S1)**: original `extropic-ai/thrml` (JAX) exists; two community
+  Rust ports exist on GitHub (`SashimiSaketoro/thrml-rs`,
+  `Pingasmaster/thrml-rs`), neither officially maintained by Extropic, neither
+  apparently on crates.io. Three Phase 6 options now in scope: (A) depend on
+  a community port, (B) implement a minimal native block-Gibbs sampler in
+  Rust (leading direction, ~few hundred LOC, sharpen-the-axe consistent),
+  (C) vendor / fork a port into a `sim-thrml` sibling crate. See Q3 in §5
+  for the full trade-off.
 - **Phase 7**: Wrap the sampler as an ml-bridge environment. Reward = sample
   quality. Train a controller to improve mixing.
 
@@ -547,10 +554,57 @@ referenceability.
   RK4 is excluded by the split-step API itself, which is fine for Langevin).
   No BAOAB or integrator bypass needed for Phase 1. See Recon Log entry
   2026-04-09 part 2 for the full trace.
-- **Q3 — Does `thrml-rs` exist?** The original prompt asserted it does. Not
-  verified. Resolution: a 5-minute web search before Phase 6 is committed. If
-  it doesn't exist, fall back to a native Rust block-Gibbs sampler (a few
-  hundred lines).
+- **Q3 — Does `thrml-rs` exist?** **RESOLVED 2026-04-09 (doc review S1)
+  via web search.** Answer is *"yes, but with caveats."*
+  - **Original THRML exists**: `extropic-ai/thrml` on GitHub — a JAX
+    library, "Thermodynamic Hypergraphical Model Library," focused on
+    block Gibbs sampling on sparse heterogeneous graphs and discrete
+    EBMs. Confirms the original prompt's premise.
+  - **Two community Rust ports exist**, both on GitHub, *neither
+    apparently published to crates.io*:
+    1. `SashimiSaketoro/thrml-rs` — described as a pure Rust
+       implementation of GPU-accelerated sampling for PGMs, with a
+       CPU/GPU/hybrid runtime abstraction (`GpuFast`, `CpuPrecise`,
+       `Adaptive` routing modes).
+    2. `Pingasmaster/thrml-rs` — "1:1 safe Rust rewrite of the JAX
+       version. Compatibility is NOT guaranteed. Speed ~2x better on
+       CPU, way worse on GPU."
+  - **Neither port is officially maintained by Extropic.** Both are
+    community ports of unknown maturity. Pingasmaster's explicit
+    "compatibility not guaranteed" warning is a red flag for
+    correctness-critical use.
+
+  **Implication for Phase 6**: the original "bridge to THRML or
+  implement native" framing remains correct, but the trade-off is
+  richer than "exists / doesn't exist." Three options for Phase 6:
+  - **(A) Depend on one of the community ports** — fastest path to a
+    working bridge, but inherits unknown maintenance status and the
+    "compatibility not guaranteed" risk. Pingasmaster's port is
+    likely more stable based on the description; Sashimi's has the
+    GPU story.
+  - **(B) Implement a minimal native block-Gibbs sampler** in Rust
+    (~few hundred LOC) — most consistent with the sharpen-the-axe
+    discipline ("best plans, best materials"). No external dep risk,
+    natively integrates with the `sim-thermostat` trait shape, full
+    control. Slower to ship.
+  - **(C) Vendor / fork one of the ports into a sibling crate**
+    (`sim/L0/thrml/` → `sim-thrml`) — middle ground. Inherits the
+    initial implementation, owns maintenance going forward, can
+    adapt to the chassis (e.g., implement `PassiveComponent` /
+    `Stochastic` directly).
+
+  **No commitment yet**, but the leading direction is **(B)** —
+  consistent with the same "narrow crates, full control, no external
+  silent-failure dependencies" reasoning that drove items 4 and 8 of
+  the recon round (`ChaCha8Rng` over `StdRng`, `sim-thermostat`
+  sibling crate over sim-core integration). Phase 6 spec will decide.
+
+  **What this changes about the build order**: nothing for Phases
+  1-5. Q3 was a Phase 6 question and remains a Phase 6 question; the
+  early resolution just sharpens the trade-off the Phase 6 spec will
+  face. The "5-minute web search" was the right move because deferring
+  it preserved an artificial "exists / doesn't exist" binary that
+  hid the real "three options" structure.
 - **Q4 — Default `dof_damping` is zero.** **RESOLVED 2026-04-09 (part 2) →
   option (a).** Thermostat carries its own `γ_thermostat[i]` parameter and
   writes both `−γ·qvel` *and* the FDT-paired noise into `qfrc_applied`. Reason:
@@ -2080,3 +2134,114 @@ don't rewrite. This is the record of *why* the plan looks the way it does.
   - Decision 5's autocorrelation finding and the three fix
     options for the validation parameter set
   - The remaining sharpen-the-axe discipline for spec design
+
+### 2026-04-09 (part 12) — Doc review pass: M1, M4, M5, M2, M3, S1
+
+- **Trigger**: Reviewer pass (Claude Opus 4.6, 1M context) over
+  `MASTER_PLAN.md` + `THERMO_CHASSIS_DESIGN.md`. Produced a
+  15-item checklist (5 must-fix, 6 should-fix, 4 nits) recorded
+  at `docs/thermo_computing/DOC_REVIEW_2026-04-09.md`. Items
+  applied one at a time as separate commits on the branch
+  `feature/thermo-doc-review`.
+- **Cadence**: Same sharpen-the-axe rhythm — one item per
+  commit, two-schemes-then-choose for design changes (M5 and
+  M2), explicit acceptance criteria, user confirmation for the
+  load-bearing chassis-altering items.
+- **Items closed in this entry**:
+  - **M1 — Phase 1 sampling-error tolerance wording fix**.
+    The original `0.22 · (½kT) ≈ ±22%` phrasing was off by
+    a factor of 2. Corrected to `(½kT)·√2/√10 ≈ 0.45·(½kT)`,
+    i.e. ±45% of the expected mean for one trajectory; option
+    (β) with 100 trajectories brings this to ±4.5% of `½kT`.
+    Locked in a tolerance convention: tolerances are always
+    expressed as a fraction of the expected mean, not as a
+    fraction of `kT`. Commit `75d90de`.
+  - **M4 — `Welford::reset()` and `merge()` added to chassis
+    Decision 5**. Without `reset()`, the streaming-Welford
+    burn-in story is broken. Without `merge()`, option (β)
+    has to materialize per-trajectory means and re-Welford
+    them. Both shipped in Phase 1; `merge` uses the
+    Chan/Pébay parallel formula. `WelfordOnline` gains
+    `#[derive(Clone)]`. Commit `031f777`.
+  - **M5 — Type-enforce `PassiveComponent` write target**.
+    Trait revised from `apply(&self, &Model, &mut Data)` to
+    `apply(&self, &Model, &Data, &mut DVector<f64>)`. Data
+    is now read-only; `qfrc_out` (length nv) is the only legal
+    write target. `PassiveStack::install` allocates a scratch
+    buffer per step, runs each component into it, and folds
+    the result into `data.qfrc_passive` once at the end. The
+    breaking change is free *right now* because no code has
+    been written; after Phase 1 ships, the same change would
+    be ripple-through painful. Same "loud over silent" line
+    as items 2, 4, 6. Commit `9bc030b`.
+  - **M2 — Decision 7: stochastic gating for FD/autograd**.
+    The Phase 5+ caveat about `cb_passive` firing inside
+    `forward_skip()` was previously punted. Doc review M2
+    escalated it to a chassis-level decision because
+    retrofitting trait shape at Phase 5 is breaking-change
+    territory. Two-scheme analysis: Scheme A (orthogonal
+    `Stochastic` opt-in trait + RAII `disable_stochastic()`
+    guard) vs Scheme B (RNG snapshot/restore on
+    `PassiveStack`). Scheme A confirmed. Every stochastic
+    component on the roadmap has state-independent noise, so
+    "disable noise during FD" gives the exactly-correct
+    derivative `∂F_det/∂qpos`. Scheme B is documented as the
+    additive future direction (`RngSnapshot` orthogonal trait)
+    if a state-dependent noise component ever lands. Commit
+    `034d9c8`.
+  - **M3 — Q5 (cf-design end-to-end differentiability)
+    escalated**. Q5 was previously a single-sentence
+    deferred-to-Phase 5 entry. Doc review M3 escalated it to
+    active foreground recon, scheduled in parallel with the
+    Phase 1 spec drafting, on the asymmetric-risk argument.
+    Discovering "no" after months of Phase 2-4 commitment is
+    exactly the avoidable surprise sharpen-the-axe forbids.
+    Recon scope named (cf-design autograd integration, SDF
+    boolean differentiability, marching cubes vs smooth
+    alternative, the cf-design Phase 5 differentiable-
+    optimization spec). Recon log entry name reserved for when
+    the recon actually starts. Commit `6ccc0ff`.
+  - **S1 — Q3 (`thrml-rs` existence) resolved**. 5-minute web
+    search. Answer is *"yes, but with caveats"*: original
+    `extropic-ai/thrml` (JAX) exists, two community Rust
+    ports exist on GitHub (`SashimiSaketoro/thrml-rs`,
+    `Pingasmaster/thrml-rs`), neither officially maintained
+    by Extropic, neither apparently on crates.io. Phase 6
+    options refined from "exists / doesn't" binary to (A)
+    depend on a port, (B) implement minimal native block-Gibbs
+    (~few hundred LOC, leading direction, sharpen-the-axe
+    consistent), (C) vendor / fork into a `sim-thrml` sibling
+    crate. No commitment yet — Phase 6 spec will decide. The
+    "5-minute web search" was the right move because deferring
+    it preserved an artificial binary that hid the real
+    three-option structure. This commit.
+- **Aggregate effect on the chassis**:
+  - Trait shape (Decision 1) revised twice: M5 added the
+    scratch buffer signature, M2 added the `as_stochastic`
+    introspection hook. Both additive and consistent.
+  - Stack API (Decision 2) revised twice: M5 added the
+    scratch-buffer install body, M2 added
+    `set_all_stochastic` and `disable_stochastic` RAII guard.
+  - Test utilities (Decision 5) gained `Welford::reset()` and
+    `merge()` (M4).
+  - File inventory: `component.rs` 30→70 LOC (Stochastic
+    trait), `stack.rs` 120→160 LOC (gating + guard),
+    `test_utils.rs` 150→170 LOC (reset + merge), total Phase
+    1 footprint 790→890 LOC.
+  - Decision count: 6→7. The chassis design round complete
+    table now has 7 rows.
+- **Open follow-ons after this entry** (the should-fix /
+  nit items still on the doc review checklist):
+  - S2 — Rewrite §3 Current State to reflect chassis-design-
+    round outcome (or split master plan into two files).
+  - S3 — Reconsider `install_per_env` return type
+    (`Vec<Model>` vs `EnvBatch`).
+  - S4 — Add "passive forces only" framing paragraph to
+    chassis §0.
+  - S5 — Call out D4's external dependencies (3D printer
+    accuracy, measurement infrastructure).
+  - S6 — Note thermostat persistence as a future direction.
+  - N1-N4 — polish pass.
+  - **Then**: draft the Phase 1 spec.
+- **Did NOT yet draft**: any code, any Cargo.toml, any new
+  directories. Doc review pass is paper-only by design.
