@@ -1966,9 +1966,9 @@ don't rewrite. This is the record of *why* the plan looks the way it does.
     `PassiveStack::install_per_env`. The part 9 entry above
     now carries an "update" note pointing to Decision 3.
   - **Total chassis surface estimate**: ~790 LOC across 8
-    files (5 source + 2 test + 1 Cargo.toml). Comparable to a
-    small ml-bridge algorithm + tests. Manageable, mechanical,
-    swappable.
+    files (6 source + 1 integration test + 1 Cargo.toml).
+    Comparable to a small ml-bridge algorithm + tests.
+    Manageable, mechanical, swappable.
 - **Why the chassis design round was a separate phase from
   spec drafting**: The user named the principle directly —
   "the implementation may be wrong, that's OK, AS LONG AS the
@@ -1976,9 +1976,10 @@ don't rewrite. This is the record of *why* the plan looks the way it does.
   *first*, then implementing one component against them,
   produces a chassis that survives implementation surprises.
   The Phase 1 implementation is now allowed to inform a chassis
-  revision if needed; the chassis is small enough (~250 LOC of
-  trait + composer + diagnose + test_utils) that revising it
-  is a focused operation, not a rewrite.
+  revision if needed; the chassis is small enough (~320 LOC of
+  trait + composer + diagnose + test_utils, per Decision 6's
+  file inventory: 30 + 120 + 20 + 150) that revising it is a
+  focused operation, not a rewrite.
 - **Memory entry created during this round**:
   [Genuine agreement, not passive](feedback_genuine_agreement.md)
   — feedback memory established when the user noted that their
