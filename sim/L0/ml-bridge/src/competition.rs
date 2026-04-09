@@ -8,7 +8,11 @@
 //! Each (task, algorithm) pair gets a fresh [`VecEnv`](crate::VecEnv) — no
 //! cross-contamination between runs.
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use crate::algorithm::{Algorithm, EpochMetrics, TrainingBudget};
+use crate::artifact::{ArtifactError, PolicyArtifact, TrainingProvenance};
 use crate::error::EnvError;
 use crate::task::TaskConfig;
 
@@ -23,6 +27,8 @@ pub struct RunResult {
     pub algorithm_name: String,
     /// Per-epoch metrics from [`Algorithm::train()`].
     pub metrics: Vec<EpochMetrics>,
+    /// Trained policy artifact with provenance (task, seed, metrics, wall time).
+    pub artifact: PolicyArtifact,
 }
 
 impl RunResult {
@@ -92,6 +98,37 @@ impl CompetitionResult {
             .collect()
     }
 
+    /// Save all artifacts to a directory.
+    ///
+    /// File naming: `{task}_{algorithm}.artifact.json`.  Creates `dir` if
+    /// it doesn't exist.  Each artifact is validated before writing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArtifactError`] if validation fails or a file can't be written.
+    pub fn save_artifacts(&self, dir: impl AsRef<Path>) -> Result<(), ArtifactError> {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir)?;
+        for run in &self.runs {
+            let filename = format!("{}_{}.artifact.json", run.task_name, run.algorithm_name);
+            run.artifact.save(dir.join(filename))?;
+        }
+        Ok(())
+    }
+
+    /// Best artifact for a task (highest final reward).
+    #[must_use]
+    pub fn best_for_task(&self, task: &str) -> Option<&PolicyArtifact> {
+        self.for_task(task)
+            .into_iter()
+            .max_by(|a, b| {
+                let ra = a.final_reward().unwrap_or(f64::NEG_INFINITY);
+                let rb = b.final_reward().unwrap_or(f64::NEG_INFINITY);
+                ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|r| &r.artifact)
+    }
+
     /// Print a ranked results table for one task to stderr.
     ///
     /// Sorts algorithms by final reward (best first), prints a formatted
@@ -148,6 +185,42 @@ impl CompetitionResult {
         }
         eprintln!();
     }
+}
+
+// ── Timestamp helper ───────────────────────────────────────────────────────
+
+/// Returns the current UTC time as an ISO 8601 string (e.g. `"2026-04-08T14:30:00Z"`).
+///
+/// Uses a standard civil-date algorithm (Howard Hinnant) to convert epoch
+/// seconds to year/month/day. No external crate needed.
+#[allow(
+    clippy::many_single_char_names,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+fn now_iso8601() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let sec = secs % 60;
+    let min = (secs / 60) % 60;
+    let hour = (secs / 3600) % 24;
+
+    // Days since 1970-01-01 → civil date (Hinnant algorithm).
+    let z = (secs / 86400) as i64 + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = (z - era * 146_097) as u64; // day of era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let year = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
 }
 
 // ── Competition ─────────────────────────────────────────────────────────────
@@ -251,10 +324,27 @@ impl Competition {
                     );
                 }
 
+                let artifact = algorithm
+                    .policy_artifact()
+                    .with_provenance(TrainingProvenance {
+                        algorithm: name.to_string(),
+                        task: task.name().to_string(),
+                        seed: self.seed,
+                        epochs_trained: metrics.len(),
+                        final_reward: metrics.last().map_or(0.0, |m| m.mean_reward),
+                        total_steps: metrics.iter().map(|m| m.total_steps).sum(),
+                        wall_time_ms: metrics.iter().map(|m| m.wall_time_ms).sum(),
+                        timestamp: now_iso8601(),
+                        hyperparams: BTreeMap::new(),
+                        metrics: metrics.clone(),
+                        parent: None,
+                    });
+
                 runs.push(RunResult {
                     task_name: task.name().to_string(),
                     algorithm_name: name.to_string(),
                     metrics,
+                    artifact,
                 });
             }
         }
@@ -280,6 +370,11 @@ mod tests {
     use crate::policy::Policy;
     use crate::task::reaching_2dof;
     use crate::vec_env::VecEnv;
+
+    /// Minimal artifact for tests that don't care about artifact content.
+    fn dummy_artifact() -> PolicyArtifact {
+        PolicyArtifact::from_policy(&LinearPolicy::new(1, 1, &[1.0]))
+    }
 
     /// Minimal Algorithm implementation for testing.
     struct MockAlgorithm {
@@ -431,6 +526,7 @@ mod tests {
                     extra: BTreeMap::new(),
                 },
             ],
+            artifact: dummy_artifact(),
         };
         assert_eq!(run.final_reward(), Some(-2.0));
         assert_eq!(run.total_dones(), 3);
@@ -442,6 +538,7 @@ mod tests {
             task_name: "t".into(),
             algorithm_name: "a".into(),
             metrics: vec![],
+            artifact: dummy_artifact(),
         };
         assert_eq!(run.final_reward(), None);
         assert_eq!(run.total_dones(), 0);
@@ -460,6 +557,7 @@ mod tests {
                 wall_time_ms: 0,
                 extra: BTreeMap::new(),
             }],
+            artifact: dummy_artifact(),
         };
         run.assert_finite(); // should not panic
     }
@@ -478,6 +576,7 @@ mod tests {
                 wall_time_ms: 0,
                 extra: BTreeMap::new(),
             }],
+            artifact: dummy_artifact(),
         };
         run.assert_finite();
     }
@@ -496,6 +595,7 @@ mod tests {
                 wall_time_ms: 0,
                 extra: BTreeMap::new(),
             }],
+            artifact: dummy_artifact(),
         };
         run.assert_finite();
     }
@@ -526,5 +626,84 @@ mod tests {
         let result = comp.run(&tasks, &[builder]).unwrap();
         let for_algo = result.for_algorithm("Mock");
         assert_eq!(for_algo.len(), 2);
+    }
+
+    // ── Phase 3: Artifact integration ────────────────────────────────
+
+    #[test]
+    fn competition_artifacts_have_provenance() {
+        let seed = 99;
+        let comp = Competition::new(2, TrainingBudget::Epochs(3), seed);
+        let tasks = [reaching_2dof()];
+
+        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("AlgoP"));
+
+        let result = comp.run(&tasks, &[builder]).unwrap();
+        let run = result.find("reaching-2dof", "AlgoP").unwrap();
+
+        let prov = run
+            .artifact
+            .provenance
+            .as_ref()
+            .expect("artifact should have provenance");
+        assert_eq!(prov.algorithm, "AlgoP");
+        assert_eq!(prov.task, "reaching-2dof");
+        assert_eq!(prov.seed, seed);
+        assert_eq!(prov.epochs_trained, 3);
+        assert_eq!(prov.metrics.len(), 3);
+        assert!(prov.parent.is_none());
+        // Timestamp should be a valid ISO 8601 string (basic sanity check).
+        assert!(prov.timestamp.ends_with('Z'));
+        assert!(prov.timestamp.contains('T'));
+    }
+
+    #[test]
+    fn competition_save_artifacts() {
+        let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
+        let tasks = [reaching_2dof()];
+
+        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("Saver"));
+
+        let result = comp.run(&tasks, &[builder]).unwrap();
+
+        let dir = std::env::temp_dir().join("ml_bridge_save_test");
+        let _ = std::fs::remove_dir_all(&dir); // clean slate
+        result.save_artifacts(&dir).unwrap();
+
+        let path = dir.join("reaching-2dof_Saver.artifact.json");
+        assert!(path.exists(), "artifact file should exist");
+
+        // Round-trip: load it back and verify.
+        let loaded = PolicyArtifact::load(&path).unwrap();
+        assert!(loaded.provenance.is_some());
+        assert_eq!(loaded.provenance.as_ref().unwrap().algorithm, "Saver");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn competition_best_for_task() {
+        let comp = Competition::new(2, TrainingBudget::Epochs(3), 42);
+        let tasks = [reaching_2dof()];
+
+        // Both use MockAlgorithm (same reward), but we can still verify
+        // best_for_task returns Some with correct provenance.
+        let builder_a: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("BestA"));
+        let builder_b: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("BestB"));
+
+        let result = comp.run(&tasks, &[builder_a, builder_b]).unwrap();
+
+        let best = result.best_for_task("reaching-2dof");
+        assert!(best.is_some());
+        // Both mocks produce identical reward, so best is one of them.
+        let prov = best.unwrap().provenance.as_ref().unwrap();
+        assert_eq!(prov.task, "reaching-2dof");
+
+        // Non-existent task returns None.
+        assert!(result.best_for_task("no-such-task").is_none());
     }
 }
