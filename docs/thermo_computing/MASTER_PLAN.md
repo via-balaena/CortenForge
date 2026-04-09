@@ -318,27 +318,41 @@ phases do not start until the previous gate is green. This implements the
 ### Phase 1 — Langevin thermostat (1-DOF)
 
 The minimum viable first move. Add a `LangevinThermostat` that, each step,
-writes a stochastic force into the existing `qfrc_applied` buffer:
+writes both an explicit damping force *and* a stochastic force into the
+existing `qfrc_applied` buffer between `step1()` and `step2()`:
 
 ```
-qfrc_applied[i] += sqrt(2 * γ_i * k_B * T / dt) * randn()
+qfrc_applied[i] += −γ_i · qvel[i]  +  sqrt(2 · γ_i · k_B · T / h) · randn()
+                   └── damping ──┘   └────── FDT-paired noise ──────┘
 ```
 
-where `γ_i` is the thermostat damping coefficient on DOF `i` (initially equal
-to `dof_damping[i]`, later configurable independently of structural damping).
+where `γ_i` is the thermostat damping coefficient on DOF `i`, owned by the
+thermostat (not by the model — see Q4).
 
-**Splitting strategy**: BAOAB-style — apply the stochastic Ornstein-Uhlenbeck
-update to velocities in closed form *outside* the existing integrator, so
-that implicit-fast doesn't see the noise and can stay numerically clean. This
-sidesteps the "implicit step + naive √dt noise → wrong invariant distribution"
-problem.
+**Scheme**: Explicit Langevin (Euler-Maruyama). Both damping and noise are
+external forces; the existing forward pipeline + `integrate()` do the rest.
+No BAOAB splitting, no integrator bypass, no model mutation. The
+discretization temperature error scales as `O(h · γ / M)` and is below the
+validation test's sampling-error tolerance at the chosen parameters (see
+Recon Log, 2026-04-09 part 2). Upgrade path to BAOAB / Eulerdamp is clear
+if higher accuracy is later needed.
 
-**Where it lives**: Not a new crate. A small extension to sim-core's forward
-step. A `Thermostat` trait + `LangevinThermostat` impl, opt-in, default off.
+**Where it lives**: Not a new crate. A small `thermostat` submodule of
+sim-core (or alongside `forward/`). A `Thermostat` trait + `LangevinThermostat`
+impl, opt-in, default off. The integration point is the documented split-step
+hook between `data.step1()` and `data.step2()`.
 
-**Validation**: 1-DOF damped harmonic oscillator (mass on a spring), 10⁵
-steps, measure `⟨½mv²⟩`. Must equal `½k_B·T` to within sampling error. Then
-sweep `γ` and `T` to confirm scaling.
+**Model setup**: Set `dof_damping = 0` on the thermostatted DOFs (the
+thermostat owns damping). Use `Integrator::Euler`. RK4 is unsupported by the
+split-step API; ImplicitFast / Implicit work via the same `qfrc_applied`
+hook but are not needed for Phase 1.
+
+**Validation**: 1-DOF damped harmonic oscillator with `M=1`, `k_spring=1`,
+`γ=0.1`, `k_B·T=1`, `h=0.001`. Run 10⁵ steps after a burn-in. Measure
+`⟨½ M qvel²⟩`. Must equal `½ k_B·T` to within sampling-error tolerance
+(target: `±2%` at this sample count). Then sweep `γ ∈ {0.01, 0.1, 1.0}` and
+`k_B·T ∈ {0.5, 1.0, 2.0}` to confirm linear scaling in `T` and γ-independence
+of the stationary temperature. Passing this is the gate to all of Phase 2+.
 
 ### Phases 2–7
 
@@ -377,21 +391,29 @@ referenceability.
   constrained Langevin dynamics (Lelièvre, Stoltz, *Free Energy Computations*)
   — needs a half-day read before Phase 2 can claim a meaningful equipartition
   test on articulated bodies.
-- **Q2 — Implicit integrator interaction.** Implicit-fast does a Newton solve
-  on the smooth dynamics. BAOAB splitting (apply OU step outside the
-  integrator) should sidestep this, but needs verification on a real model
-  before Phase 1 ships. Concretely: does the integrator interface allow a
-  "velocity update from the outside" between steps without breaking
-  invariants?
+- **Q2 — Implicit integrator interaction.** **RESOLVED 2026-04-09 (part 2).**
+  Recon of `forward/mod.rs` and `integrate/mod.rs` showed that the canonical
+  force-injection point is `qfrc_applied` between `step1()` and `step2()`,
+  not a velocity update outside the integrator. Forces written there are
+  folded into `qfrc_smooth` and projected by the constraint solver before
+  `qacc` is computed; the `integrate()` step then propagates the noise through
+  `qvel`. This is integrator-agnostic (Euler, ImplicitFast, Implicit all work;
+  RK4 is excluded by the split-step API itself, which is fine for Langevin).
+  No BAOAB or integrator bypass needed for Phase 1. See Recon Log entry
+  2026-04-09 part 2 for the full trace.
 - **Q3 — Does `thrml-rs` exist?** The original prompt asserted it does. Not
   verified. Resolution: a 5-minute web search before Phase 6 is committed. If
   it doesn't exist, fall back to a native Rust block-Gibbs sampler (a few
   hundred lines).
-- **Q4 — Default `dof_damping` is zero.** A thermostat that scales noise by
-  damping gives zero noise on undamped DOFs, which is wrong for the user's
-  intent. Need to decide: (a) thermostat carries its own damping coefficient
-  independent of model damping, or (b) thermostat requires the model to set
-  damping. Tentatively (a) — separation of concerns.
+- **Q4 — Default `dof_damping` is zero.** **RESOLVED 2026-04-09 (part 2) →
+  option (a).** Thermostat carries its own `γ_thermostat[i]` parameter and
+  writes both `−γ·qvel` *and* the FDT-paired noise into `qfrc_applied`. Reason:
+  `model.implicit_damping` is the canonical per-DOF damping vector populated
+  from `jnt_damping` at model init (`model_init.rs:911`) and consumed by
+  Eulerdamp, the constraint solver, the implicit-fast `qacc` computation, and
+  the derivatives engine. It is model-owned state. Mutating it per step would
+  conflate physical damping (joint friction) with thermodynamic damping (FDT
+  pairing). Thermostat-owned `γ` keeps the two cleanly separated.
 - **Q5 — Is the cf-design → sim-core parameter pipeline already
   differentiable end-to-end?** Phases 5+ depend on it. Recon needed.
 - **Q6 — What's the right reward signal for Phase 7?** ESS, integrated
@@ -473,3 +495,65 @@ don't rewrite. This is the record of *why* the plan looks the way it does.
   Research Directions inform *which experiments* to run within each phase,
   not the phase order itself.
 - **Next action unchanged**: still draft the Phase 1 spec.
+
+### 2026-04-09 (part 2) — Forward step + integrator code recon
+
+- **Trigger**: Read `forward/mod.rs`, `integrate/mod.rs`, `integrate/euler.rs`,
+  and traced `implicit_damping` usage across the crate to resolve Q2 and
+  tighten Q4 before drafting the Phase 1 spec.
+- **Pipeline structure**: `step()` → `forward()` → `integrate()`. The forward
+  pipeline is split into `forward_pos_vel()` (FK, collision, velocity FK,
+  energy, sensors) and `forward_acc()` (actuation, RNE, passive, constraint
+  solve, qacc). `cb_control` fires at the boundary between them.
+- **Documented force-injection API**: `step1()` runs `forward_pos_vel()` +
+  `cb_control`; `step2()` runs `forward_acc()` + `integrate()`. The user is
+  *expected* to write into `ctrl`, `qfrc_applied`, or `xfrc_applied` between
+  step1 and step2. The doc comment on `step1` literally calls this out as
+  the RL force-injection point. The thermostat is just another consumer of
+  this hook. RK4 is excluded by design (multi-stage substeps recompute
+  `forward()` internally) — fine, since Langevin + RK4 is mathematically
+  problematic anyway.
+- **Force flow trace**: `qfrc_applied[i] += …` → folded into `qfrc_smooth` in
+  `constraint/mod.rs:78-87` (`qfrc_smooth = qfrc_applied + qfrc_actuator +
+  qfrc_passive − qfrc_bias`, plus `xfrc_applied` projection) → constraint
+  solver computes `qfrc_constraint` → `mj_fwd_acceleration` computes `qacc`
+  with `M_hat = M − h·∂f/∂v` for implicit integrators → `integrate()` does
+  `qvel += qacc * h` (or the Eulerdamp `(M + h·D)·qacc_new = rhs` solve when
+  `implicit_damping > 0`). Position integration `qpos += qvel * h` then runs
+  in `mj_integrate_pos` with proper SO(3) handling for ball/free joints, and
+  `mj_normalize_quat` cleans up quaternion drift.
+- **`implicit_damping` is model-owned state**: Populated from `jnt_damping`
+  at model init (`model_init.rs:911`). Consumed by Eulerdamp
+  (`integrate/mod.rs:85,94,136`), the constraint solver
+  (`constraint/mod.rs:149,221`), implicit-fast acceleration
+  (`forward/acceleration.rs:103`), and the derivatives engine
+  (`derivatives/hybrid.rs:78`). Mutating it per step would couple thermostat
+  damping to model damping in ways that break separation of concerns.
+- **Free wake-up bonus**: `island/sleep.rs:132-150,522-539` already inspects
+  both `qfrc_applied` and `xfrc_applied` for wake detection. **A sleeping
+  body receiving thermal noise wakes up automatically.** No thermostat-
+  specific logic needed for islanded simulations. Correctness win for free.
+- **Q2 RESOLVED**: Use `qfrc_applied` injection between step1/step2. No
+  BAOAB, no integrator bypass. Integrator-agnostic across Euler /
+  ImplicitFast / Implicit.
+- **Q4 RESOLVED (option a)**: Thermostat owns its own `γ_thermostat[i]` and
+  writes both `−γ·qvel` and the FDT noise into `qfrc_applied`. Model damping
+  stays untouched.
+- **Phase 1 algorithm sharpened**: Explicit Langevin (Euler-Maruyama). For
+  `M=1, k_spring=1, γ=0.1, k_B·T=1, h=0.001`: natural frequency `ω=1`,
+  `h·ω=0.001`, damping ratio `ζ=γ/(2√(kM))=0.05` (underdamped, healthy
+  mixing), discretization temperature error `O(h·γ/M) ≈ 10⁻⁴` — well below
+  the `~10⁻²` sampling-error tolerance for 10⁵ samples. Equipartition test
+  should pass with margin.
+- **Did NOT resolve**: Q1 (constraint projection — irrelevant for 1-DOF
+  Phase 1, gates Phase 2), Q3 (`thrml-rs` existence — gates Phase 6),
+  Q5 (cf-design end-to-end differentiability — gates Phase 5), Q6 (Phase 7
+  reward signal — defer until Phase 6 results inform the choice).
+- **Phase-1-blocking recon items still open** (small, listed in the post-
+  recon report): PRNG conventions, `qfrc_applied` lifecycle / auto-clearing,
+  existing usage patterns for writing into `qfrc_applied`, `model.timestep`
+  variability, statistical-test infrastructure conventions, where the
+  thermostat module should live in the crate, public mutability of
+  `Data::qfrc_applied`.
+- **Next action**: Answer the Phase-1-blocking recon items (small focused
+  recon round), *then* draft the Phase 1 spec.
