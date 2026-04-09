@@ -1553,3 +1553,379 @@ amortizes across Phase 2-5 statistical tests.
   alongside any other documentation updates.
 - No code, no Cargo.toml changes, no new files written
   beyond this document.
+
+---
+
+### Decision 6 (2026-04-09): Crate layout
+
+- **Question**: What is the on-disk layout of `sim/L0/thermostat/`
+  at Phase 1? Specifically: how many files in `src/`, what
+  goes in each, where do unit tests vs integration tests live,
+  what's in the crate-level rustdoc on `lib.rs`?
+- **Why this is decision 6**: Decisions 1-5 settled the
+  *contents* of the chassis (trait, composer, clone handling,
+  introspection, test utilities). Decision 6 settles the
+  *organization*. Until this is resolved, the Phase 1 spec
+  cannot reference file paths.
+- **Constraint from item 8**: Crate location is
+  `sim/L0/thermostat/`, package name `sim-thermostat`. Deps
+  are `sim-core`, `nalgebra`, `rand`, `rand_chacha`,
+  `rand_distr`. This is locked.
+- **What lives in the crate** (sum of Decisions 1-5):
+  - `PassiveComponent` trait (Decision 1)
+  - `PassiveStack` + `PassiveStackBuilder` + `install` +
+    `install_per_env` (Decisions 2 + 3)
+  - `Diagnose` trait (Decision 4)
+  - `LangevinThermostat` struct + impl (the Phase 1 component)
+  - `WelfordOnline` + `assert_within_n_sigma` + `sample_stats`
+    test utilities (Decision 5)
+
+#### Reference architecture: ml-bridge
+
+`sim-ml-bridge` has the following top-level layout
+(from earlier recon):
+
+```
+sim/L0/ml-bridge/
+├── Cargo.toml
+├── src/
+│   ├── lib.rs                # door
+│   ├── env.rs                # Environment trait
+│   ├── space.rs              # Action/Observation spaces
+│   ├── replay_buffer.rs
+│   ├── autograd_policy.rs
+│   ├── cem.rs                # CEM algorithm
+│   ├── sac.rs                # SAC algorithm
+│   ├── ppo.rs                # PPO algorithm
+│   ├── td3.rs                # TD3 algorithm
+│   └── reinforce.rs          # REINFORCE algorithm
+└── tests/
+    └── competition.rs        # cross-algorithm integration test
+```
+
+The pattern: **flat top-level files in `src/`, one concept per
+file**. Each algorithm is its own file. Traits and infrastructure
+(env, space) are also top-level files. `lib.rs` is a door — it
+contains crate docs and re-exports, no type definitions.
+Integration tests live in `tests/`.
+
+The thermo crate is a structural sibling to ml-bridge, so its
+layout should mirror this pattern unless there's a strong reason
+to deviate.
+
+#### Three schemes
+
+**Scheme A — flat ml-bridge style**
+
+```
+sim/L0/thermostat/
+├── Cargo.toml
+├── src/
+│   ├── lib.rs           # door: crate docs + re-exports only
+│   ├── component.rs     # PassiveComponent trait
+│   ├── stack.rs         # PassiveStack + PassiveStackBuilder
+│   ├── diagnose.rs      # Diagnose trait
+│   ├── langevin.rs      # LangevinThermostat
+│   └── test_utils.rs    # WelfordOnline + assertion helpers
+└── tests/
+    └── langevin_thermostat.rs   # Phase 1 integration tests
+```
+
+`lib.rs` looks like:
+```rust
+//! Stochastic and passive force chassis for sim-core.
+//!
+//! [crate-level docs — see "Sub-decisions" for what goes here]
+
+mod component;
+mod stack;
+mod diagnose;
+mod langevin;
+pub mod test_utils;
+
+pub use component::PassiveComponent;
+pub use stack::{PassiveStack, PassiveStackBuilder};
+pub use diagnose::Diagnose;
+pub use langevin::LangevinThermostat;
+```
+
+**Pros**:
+- **Matches ml-bridge structurally** — the user explicitly
+  named ml-bridge as the reference architecture for this
+  crate. Engineers reading the workspace see two L0 sibling
+  crates with identical layouts.
+- **Architecture visible from `ls`** — a directory listing
+  reveals the chassis (component/stack/diagnose), the Phase
+  1 component (langevin), and the test infrastructure
+  (test_utils) in five lines.
+- **Each file has one concern** — easy to review, easy to
+  diff, easy to navigate.
+- **Trivial to extend** — Phase 2+ adds new component files
+  (`baoab.rs`, `brownian_ratchet.rs`) at the top of `src/`,
+  same as ml-bridge adds new algorithms.
+- `lib.rs` stays small (under 50 LOC including docs and
+  re-exports) — easy to read at a glance.
+
+**Cons**:
+- 5 source files for ~400 LOC of code feels like a lot of
+  files. (It isn't — ml-bridge has 10+ files for less code
+  per file.)
+
+**Scheme B — chassis/components hierarchical**
+
+```
+sim/L0/thermostat/
+├── Cargo.toml
+├── src/
+│   ├── lib.rs
+│   ├── chassis/
+│   │   ├── mod.rs
+│   │   ├── component.rs    # PassiveComponent trait
+│   │   ├── stack.rs        # PassiveStack
+│   │   └── diagnose.rs     # Diagnose trait
+│   ├── components/
+│   │   └── langevin.rs     # LangevinThermostat
+│   └── test_utils.rs
+└── tests/
+    └── langevin_thermostat.rs
+```
+
+**Pros**:
+- Visually separates chassis (the swappable bolt patterns)
+  from components (the swappable implementations).
+- Phase 2+ adds files only inside `components/`, leaving
+  `chassis/` untouched — emphasizes the R34 stability
+  property.
+
+**Cons**:
+- **Deeper directory structure than the existing sim/L0
+  crates use**. None of `sim-types`, `sim-simd`, `sim-core`,
+  `sim-mjcf`, `sim-urdf`, `sim-ml-bridge` use a
+  chassis/components split. We'd be inventing a new
+  organizational pattern for this one crate.
+- **Module path noise**: `sim_thermostat::components::langevin::LangevinThermostat`
+  vs. `sim_thermostat::LangevinThermostat`. The lib.rs
+  re-exports flatten this for users, but internal code paths
+  get longer.
+- **Premature** for Phase 1 with one component. The split
+  pays off only when there are many components and a clear
+  chassis-vs-component review boundary. Phase 1 has neither.
+
+**Scheme C — single lib.rs**
+
+```
+sim/L0/thermostat/
+├── Cargo.toml
+├── src/
+│   └── lib.rs   # everything: trait, stack, diagnose, langevin, test_utils
+└── tests/
+    └── langevin_thermostat.rs
+```
+
+**Pros**:
+- Smallest possible file count.
+
+**Cons**:
+- **Diverges from ml-bridge** with no offsetting benefit.
+- **Architecture not visible from `ls`** — a directory
+  listing shows only `lib.rs`, hiding the chassis-component
+  separation we've been designing for the entire chassis
+  document.
+- **lib.rs grows linearly with components**. Phase 2 doubles
+  it; Phase 4-5 might triple it. Hard to navigate as a
+  ~1000+ LOC file.
+- **No file-level review boundary**. Reviewing a change to
+  `LangevinThermostat` means reading a diff that touches
+  the same file as the trait, the stack, and the test
+  utilities — they're not visually separated.
+
+#### Recommendation: **Scheme A — flat ml-bridge style**
+
+Confidence: high. Three reasons:
+
+1. **ml-bridge precedent is unambiguous and the user named
+   it explicitly as the reference architecture**. Diverging
+   from it would force engineers to learn two layouts for two
+   structurally-parallel L0 crates. The "readability and
+   organization are the highest priority" principle is
+   directly served by matching the existing pattern.
+
+2. **The "five files reveal the architecture" property is
+   real and matters**. A first-time reader who runs `ls
+   sim/L0/thermostat/src/` sees `component.rs`, `stack.rs`,
+   `diagnose.rs`, `langevin.rs`, `test_utils.rs` — and they
+   immediately know the chassis is in the first three files,
+   the implementation is in the fourth, and the test
+   helpers are in the fifth. This is the
+   architecture-from-types property the user has asked for
+   repeatedly.
+
+3. **Mechanical extension to Phase 2+**. Adding `baoab.rs`,
+   `brownian_ratchet.rs`, `stochastic_driver.rs` is
+   one-file-per-component, no module restructuring. Matches
+   how ml-bridge added cem/sac/ppo/td3/reinforce
+   incrementally.
+
+**Why I'm not recommending B**: it invents a hierarchy that
+no other sim/L0 crate uses, and the "chassis vs components"
+visual separation is already achieved in Scheme A by file
+naming (the chassis files have generic names —
+`component.rs`, `stack.rs`, `diagnose.rs` — while the
+component files have physics-specific names —
+`langevin.rs`). The hierarchy adds module path noise without
+adding clarity.
+
+**Why I'm not recommending C**: it's the simplest layout but
+the "everything in one file" property defeats the
+chassis-component-test_utils separation we've been
+designing. The cost of 4 extra files is trivial; the loss
+of file-level review boundaries is not.
+
+#### Sub-decisions inside Decision 6
+
+- **`lib.rs` is a door, not a workshop**. Only crate-level
+  rustdoc and `pub use` re-exports. No type definitions, no
+  function definitions, no impl blocks. Matches ml-bridge.
+- **lib.rs rustdoc contents**:
+  1. Crate purpose paragraph (1-2 lines)
+  2. Architecture summary (~10 lines): name the chassis
+     (`PassiveComponent` + `PassiveStack` + `Diagnose`), name
+     the Phase 1 component (`LangevinThermostat`), name the
+     test infrastructure (`test_utils`).
+  3. Quick-start example: a short code block showing
+     `PassiveStack::builder().with(LangevinThermostat::new(...)).build().install(&mut model)`.
+  4. Link to `docs/thermo_computing/THERMO_CHASSIS_DESIGN.md`
+     for the design rationale.
+  5. Link to `docs/thermo_computing/PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md`
+     once that exists.
+- **Module visibility**: `mod component;`, `mod stack;`,
+  `mod diagnose;`, `mod langevin;` are all private — the
+  modules themselves aren't part of the public API, only the
+  re-exports are. **Exception**: `pub mod test_utils;` is
+  public because users of the crate can import the test
+  helpers directly (`use sim_thermostat::test_utils::WelfordOnline;`).
+- **Re-exports**: at minimum,
+  `pub use component::PassiveComponent;`,
+  `pub use stack::{PassiveStack, PassiveStackBuilder};`,
+  `pub use diagnose::Diagnose;`,
+  `pub use langevin::LangevinThermostat;`. Five public types
+  total at Phase 1; matches the surface area of a focused
+  Rust crate.
+- **Unit tests live inside each module file** with
+  `#[cfg(test)] mod tests { ... }`. Standard Rust convention.
+  Matches ml-bridge.
+- **Integration tests live in `sim/L0/thermostat/tests/`**,
+  not in `sim-conformance-tests`. Reason: the thermo tests
+  depend on `rand`, `rand_chacha`, `rand_distr`, which
+  `sim-conformance-tests` does not pull in (verified in
+  item 7 part 9). Adding these deps to
+  `sim-conformance-tests` to host one crate's tests would
+  pollute the test crate's deps for every other sim test.
+  ml-bridge precedent: it has its own
+  `sim/L0/ml-bridge/tests/competition.rs` separate from
+  `sim-conformance-tests`. The thermo crate follows the
+  same pattern.
+- **Phase 1 integration test file**: single file
+  `tests/langevin_thermostat.rs` containing the equipartition
+  test, callback-firing-count test, and reproducibility test.
+  Split into per-test-category files only when the file grows
+  beyond ~500 LOC. For Phase 1 with ~10-20 tests, one file
+  is fine.
+- **No `examples/` directory in Phase 1**. Examples are a
+  Phase 2+ concern (after Phase 1 has shipped a working
+  thermostat, an example demonstrating "watch a particle
+  thermalize" is valuable — but not before).
+- **No `benches/` directory in Phase 1**. Benchmarking is
+  not the Phase 1 validation gate; equipartition is. Add
+  benches when there's a performance question to answer
+  (probably Phase 4+ when coupled bistable arrays start
+  stressing the per-step cost).
+- **No `README.md` in the crate at Phase 1**. The
+  crate-level rustdoc serves the same purpose, and CLAUDE.md
+  + the user's "museum-plaque READMEs" preference suggests
+  READMEs go in examples, not in core sim crates. (Verified:
+  `sim/L0/core`, `sim/L0/ml-bridge`, etc. don't have
+  READMEs.) Skip.
+
+#### Final Phase 1 file inventory
+
+```
+sim/L0/thermostat/                       (NEW directory)
+├── Cargo.toml                           (~20 LOC)
+└── src/
+    ├── lib.rs                           (~50 LOC: docs + re-exports)
+    ├── component.rs                     (~30 LOC: trait + tests)
+    ├── stack.rs                         (~120 LOC: builder + install + install_per_env + tests)
+    ├── diagnose.rs                      (~20 LOC: trait + tests)
+    ├── langevin.rs                      (~150 LOC: struct + impl + tests)
+    └── test_utils.rs                    (~150 LOC: Welford + assertions + tests)
+└── tests/
+    └── langevin_thermostat.rs           (~250 LOC: integration tests)
+```
+
+Total Phase 1 footprint: **~790 LOC** across **8 files**.
+Comparable to a small ml-bridge algorithm file plus its
+tests. Manageable, mechanical, swappable.
+
+#### DECISION (user confirmed): **Scheme A — flat ml-bridge style**
+
+The thermo crate matches `sim-ml-bridge` structurally: top-level
+files in `src/`, one concept per file, `lib.rs` is a door,
+integration tests in the crate's own `tests/` directory.
+Architecture is observable from `ls sim/L0/thermostat/src/`.
+
+#### Status
+
+- **Decision 6 RESOLVED.** Scheme A confirmed. The Phase 1
+  file inventory above is the on-disk layout the crate ships
+  with.
+- No code, no Cargo.toml changes, no new files written beyond
+  this document.
+
+---
+
+## 2. Chassis design round complete
+
+All six decisions resolved:
+
+| # | Decision                       | Resolution |
+|---|--------------------------------|------------|
+| 1 | Core trait shape               | `PassiveComponent` (broad, callback-shaped) |
+| 2 | Composition idiom              | `PassiveStack::builder().with(...).build()` |
+| 3 | Clone footgun resolution       | `install_per_env` + defensive clear + warnings |
+| 4 | `Diagnose` trait surface       | Minimal: `diagnostic_summary -> String` only |
+| 5 | Public test utilities          | `WelfordOnline` + `assert_within_n_sigma` + `sample_stats` |
+| 6 | Crate layout                   | Flat ml-bridge style, 5 source files + 1 test file |
+
+The chassis is structurally complete. Phase 1 implementation
+will be a learning exercise *for* the chassis (per the user's
+"we might decide to redo the entire thing, as long as the bolt
+patterns are the same, we can swap it" framing). If anything
+about the trait shape, composer ergonomics, or test utilities
+turns out wrong during Phase 1, the chassis is small enough
+to revise without rewriting components.
+
+### Open follow-ons before the Phase 1 spec
+
+These came up during chassis design but are not chassis
+decisions:
+
+- **Documentation pass to the master plan**. Three things need
+  updating:
+  1. The recon log part 2's claim of "10⁻² sampling tolerance
+     for 10⁵ samples" is incorrect due to autocorrelation
+     (Decision 5 side finding). Effective N ≈ 10, not 10⁵.
+  2. The recon log part 9 (item 7) flagged the clone footgun
+     as needing Phase 1 spec resolution. Now resolved
+     (Decision 3); the master plan should reference it.
+  3. §The Gap Phase 1 needs the validation parameter set
+     revised to reflect the autocorrelation finding. The
+     three options are α (longer trajectories), β (multiple
+     independent trajectories), γ (looser tolerance); the
+     Phase 1 spec will choose, weak lean is β.
+- **Phase 1 spec drafting**. With the chassis nailed down,
+  the spec can be small and focused: implement
+  `LangevinThermostat` against the trait, write the three
+  Phase 1 tests using `test_utils`, choose the validation
+  parameter fix, document the seed/RNG path. Estimated spec
+  size: ~300-500 lines. Half-day of focused drafting.
