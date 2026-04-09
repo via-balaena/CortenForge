@@ -1203,3 +1203,353 @@ without breaking existing code.
   inform the shape.
 - No code, no Cargo.toml changes, no new files written beyond
   this document.
+
+---
+
+### Decision 5 (2026-04-09): Public test utilities
+
+- **Question**: What statistical-test assertion helpers does the
+  chassis ship as `pub` test utilities? The recon round
+  established (item 7 part 9) that the thermostat's
+  equipartition test will be the workspace's *first*
+  statistical-sampling validation test — no convention to
+  inherit, so the chassis must establish one. The helpers must
+  be reusable across phases (Phase 2 free + articulated body
+  equipartition, Phase 3 Kramers escape rate, Phase 4 Ising
+  joint distribution, Phase 5 EBM target match), not specific
+  to Phase 1's 1-DOF damped harmonic oscillator.
+- **Why this is decision 5**: Phase 1's equipartition test is
+  the test infrastructure consumer. Until Decision 5 settles
+  what helpers exist, the Phase 1 spec cannot describe how the
+  test code is structured. Decision 5 also surfaces a
+  Phase-1-validation finding (see "Side finding" below) that
+  affects the master plan's validation parameters and will
+  shape the spec.
+
+#### Side finding (surfaced during Decision 5 reasoning) — the 10⁵ step count may be insufficient
+
+**This belongs in the Phase 1 spec, not the chassis design,
+but I want to flag it here because it came up while thinking
+about what test helpers we need.** The master plan §The Gap
+Phase 1 validation parameters are: M=1, k_spring=1, γ=0.1,
+k_B·T=1, h=0.001, 10⁵ steps after burn-in. The recon log
+part 2 claimed "discretization temperature error ≈ 10⁻⁴ —
+well below the ~10⁻² sampling-error tolerance for 10⁵
+samples," and called the test "should pass with margin."
+
+The "10⁻² tolerance for 10⁵ samples" calculation assumes
+**independent samples**, which they are not. For a 1D damped
+harmonic oscillator, the velocity-squared autocorrelation
+decays at rate `2γ/M`, giving an integrated autocorrelation
+time of approximately `M / (2γh)` steps. With M=1, γ=0.1,
+h=0.001:
+
+```
+τ_int ≈ 1 / (2 · 0.1 · 0.001) = 5000 steps
+```
+
+So 10⁵ steps gives an *effective* sample count of:
+
+```
+N_eff ≈ 10⁵ / (1 + 2·5000) ≈ 10
+```
+
+For a chi-squared distributed `½ M v²` with mean `½ kT` and
+relative std `√2`, the standard error of the sample mean over
+N_eff = 10 effective samples is approximately
+`√2 · (½ kT) / √10 ≈ 0.22 · (½ kT)` — about **±22% sampling
+noise**, not ±2%.
+
+**Implication**: the part-2 reasoning was *too optimistic*.
+The test as currently parameterized cannot pass with margin
+at ±2% — the statistical noise dominates the discretization
+bias by about a factor of 20. Three plausible fixes (Phase 1
+spec design question, not Decision 5):
+
+- **(α)** Increase total step count by ~100× to ~10⁷.
+- **(β)** Use multiple independent trajectories: e.g., 100
+  runs of 10⁵ steps each, with different seeds. Each run
+  gives one independent estimate; the standard error of the
+  100-estimate mean is `run_std / √100`. For 100 runs the
+  standard error is ~2% — in the right neighborhood.
+- **(γ)** Loosen the tolerance to match reality (~5-10%) and
+  accept that Phase 1 cannot detect discretization bias.
+
+I lean toward (β) — multiple independent trajectories — because
+it (i) avoids the autocorrelation analysis entirely, (ii) gives
+trivially clean statistics, (iii) exercises the seed/RNG path
+under normal use, and (iv) total step count remains 10⁷ which
+runs in seconds. **But this is a Phase 1 spec decision, not a
+Decision 5 chassis decision**, so I'm flagging it here and
+deferring the actual choice to spec time.
+
+The reason it surfaces in Decision 5: the choice of fix
+determines whether the test helpers need autocorrelation
+analysis (α and γ require it; β doesn't). My recommendation
+below assumes β-style "multiple independent trajectories" is
+the likely fix, which keeps the Phase 1 helper surface
+minimal. If the spec ends up choosing α instead, we add
+`integrated_autocorrelation_time` as an additive helper later
+— non-breaking.
+
+#### What helpers does the chassis actually need to ship?
+
+Walking through the candidate helpers:
+
+- **`assert_within_n_sigma(measured, expected, std_error,
+  n_sigma, description)`** — the assertion + diagnostic
+  message. Takes the standard error pre-computed by the
+  caller. Prints everything needed to debug a failure.
+  **Required for Phase 1.**
+- **`WelfordOnline`** — streaming mean + variance accumulator.
+  For tests that run 10⁵–10⁷ steps and don't want to allocate
+  a giant `Vec<f64>` just to compute mean and variance at the
+  end. **Required for Phase 1** (the alternative is allocating
+  a Vec or rolling `(sum, sum_sq)` manually with the
+  numerical-stability footgun that Welford's algorithm exists
+  to avoid).
+- **`sample_stats(&[f64]) -> (mean, variance)`** —
+  convenience wrapper around `WelfordOnline` for the case
+  where the user already has a Vec. **Trivially useful.**
+- **`integrated_autocorrelation_time(&[f64]) -> f64`** —
+  Sokal-style automatic-windowing autocorrelation analysis.
+  **DEFERRED to Phase 2+** — only needed if the Phase 1 spec
+  chooses option (α) or (γ) above. If it chooses (β) (multiple
+  independent trajectories), this is unnecessary.
+- **`burn_in_skip(&[f64], n) -> &[f64]`** — discard the first
+  N samples. **Not shipping** — it's literal slice indexing
+  (`&data[n..]`) and a helper would just be noise.
+- **Domain-specific helpers like `assert_equipartition(...)`**
+  — explicitly **not shipping**. Decision 1 (broad trait,
+  no physics in the chassis) and Decision 4 (no thermostat-
+  specific concepts in `Diagnose`) both reject baking
+  physics into the chassis. The same logic applies to test
+  helpers: ship statistical primitives, let the test code
+  apply them to specific physics.
+
+#### Three schemes
+
+**Scheme A — minimal: just `assert_within_n_sigma`**
+
+Ship one assertion helper. The test author computes mean,
+variance, and standard error themselves with manual loops or
+inline math.
+
+**Pros**: smallest surface, ~10 LOC of crate code.
+
+**Cons**: every Phase 1+ statistical test re-implements
+mean/variance computation. Welford's algorithm is non-trivial
+to write correctly from scratch — the naive `(sum, sum_sq)`
+approach has well-known catastrophic-cancellation failure
+modes for series with large mean and small variance, which is
+*exactly* the equipartition case (mean ≈ 0.5, variance also
+~0.5 but visible only after subtracting mean²). Asking every
+test author to re-implement this correctly is asking for
+silent statistical bugs.
+
+**Scheme B — focused toolkit: assertion + WelfordOnline + sample_stats**
+
+Ship the three helpers above:
+```rust
+pub fn assert_within_n_sigma(
+    measured: f64,
+    expected: f64,
+    standard_error: f64,
+    n_sigma: f64,
+    description: &str,
+);
+
+pub struct WelfordOnline { /* ... */ }
+impl WelfordOnline {
+    pub fn new() -> Self;
+    pub fn push(&mut self, x: f64);
+    pub fn count(&self) -> usize;
+    pub fn mean(&self) -> f64;
+    pub fn variance(&self) -> f64;  // unbiased (n-1 denominator)
+    pub fn std_error_of_mean(&self) -> f64;
+}
+
+pub fn sample_stats(data: &[f64]) -> (f64, f64);
+```
+
+The streaming `WelfordOnline` is the primary tool for tests
+that don't want to materialize all samples; `sample_stats` is
+the convenience for tests that already have a slice.
+
+**Pros**: covers the 80-20 of statistical test needs; correct
+implementations of mean/variance that Phase 1+ tests don't
+have to re-derive; numerical-stability built in (Welford);
+standard error of mean is a one-line accessor.
+
+**Cons**: ~80 LOC of crate code (Welford has more state than
+the naive version). One more module to maintain.
+
+**Scheme C — domain-specific: helpers per physics**
+
+```rust
+pub fn assert_equipartition(
+    samples: &[f64],
+    mass: f64,
+    kT: f64,
+    n_sigma: f64,
+);
+pub fn assert_kramers_rate(...);
+pub fn assert_ising_distribution(...);
+```
+
+**Rejected** for the same reason Decisions 1 and 4 reject
+baking physics into traits: it couples the chassis to specific
+test scenarios, fragments as new tests appear, and forces
+chassis edits for every new physics validation. The chassis
+should ship statistical primitives; physics goes in the test
+code itself.
+
+#### Recommendation: **Scheme B — focused toolkit**
+
+Confidence: high. Five reasons:
+
+1. **The numerical stability case is real**. Naive
+   `(sum, sum_sq)` mean/variance computation fails
+   catastrophically for the equipartition case (large mean,
+   variance comparable to mean²). Welford's algorithm exists
+   precisely to avoid this. Asking Phase 1+ test authors to
+   reimplement Welford correctly is the kind of silent-bug
+   trap sharpen-the-axe forbids.
+
+2. **The streaming use case is real**. 10⁵ steps × 8 bytes
+   = 800 KB per quantity tracked. Multiply by 10 quantities
+   for parameter sweeps = 8 MB per test. With 100
+   independent trajectories per parameter combination (per
+   the Phase 1 spec sketch above) = 800 MB. Materializing
+   everything is wasteful when streaming computes the same
+   answer in O(1) memory per quantity.
+
+3. **Ship-once amortization**. Phase 2 (free + articulated
+   body equipartition), Phase 3 (Kramers rate), Phase 4
+   (Ising joint distribution), Phase 5 (EBM target match)
+   all need exactly these three helpers. Every additional
+   helper added now amortizes across 4+ future phases.
+
+4. **Established test pattern**. Once `WelfordOnline` +
+   `assert_within_n_sigma` is the convention, every later
+   thermo-line statistical test reads structurally
+   identically: build a Welford accumulator per quantity,
+   push samples in the inner loop, assert at the end. This
+   is the "mechanical" property the user explicitly asked
+   for at the test level.
+
+5. **No physics baked in**. The helpers operate on `f64` and
+   `&[f64]`; the physics interpretation lives in the test
+   code. This honors Decision 1 + Decision 4's "chassis
+   stays minimal, physics goes in components/tests" line.
+
+#### Sub-decisions inside Decision 5
+
+- **Module path**: `sim_thermostat::test_utils`. `pub mod
+  test_utils;` declared in `lib.rs`. Public, not feature-
+  gated. Matches the workspace convention (sim-ml-bridge,
+  sim-core do not feature-gate test utilities).
+- **`WelfordOnline` field privacy**: fields are private
+  (`count`, `mean`, `m2`); only the public accessor methods
+  (`mean()`, `variance()`, `std_error_of_mean()`,
+  `count()`) are exposed. Reason: the M2 field is an
+  intermediate quantity, not a meaningful statistic to
+  expose.
+- **Variance is unbiased (n-1 denominator)**. The biased
+  (n) version is rarely what statistical tests want;
+  unbiased is the default for sample-based estimates.
+- **Standard error of mean accessor**: `std_error_of_mean()
+  -> f64`. Returns `(variance / count).sqrt()`. Convenience
+  — saves the test author from typing
+  `(welford.variance() / welford.count() as
+  f64).sqrt()` at every site.
+- **`sample_stats` returns `(mean, variance)`** in that
+  order. Considered: `(mean, std)`, `(mean, std_error)`,
+  named struct. Tuple is the simplest; (mean, variance) is
+  the most general (the caller can take sqrt or divide by N
+  themselves).
+- **`assert_within_n_sigma` description parameter**: takes
+  `&str` (not `String`), borrows for the assertion message.
+  Test authors pass string literals; no allocation in the
+  pass case.
+- **Failure message format**: includes the description, the
+  measured value, the expected value, the standard error,
+  the computed |z| score, and the n_sigma threshold. All
+  numerics in scientific notation with 6 significant digits
+  for precision in the failure message.
+- **Welford's `push` takes `f64` by value, not `&f64`**.
+  f64 is Copy, no reason to take a reference.
+- **`integrated_autocorrelation_time` is NOT in Phase 1**.
+  Deferred to whichever later phase needs single-trajectory
+  correlated-sample tests. If Phase 1 spec ends up choosing
+  fix (α) (10× longer trajectories) over fix (β) (multiple
+  independent trajectories), we add this as an additive
+  helper at that point. Non-breaking.
+- **No domain-specific helpers** (`assert_equipartition`,
+  etc.). Test code applies the primitives to specific
+  physics; the primitives stay general.
+
+#### Open follow-on triggered by this decision
+
+- **Phase 1 spec must choose between (α), (β), and (γ)** for
+  the validation parameter set. My weak recommendation is
+  (β) — multiple independent trajectories — because it
+  avoids autocorrelation analysis, exercises the seed/RNG
+  path under normal use, and gives clean statistics. But
+  this is a spec decision, not a chassis decision. Decision
+  5 ships helpers compatible with all three options.
+
+- **The master plan §The Gap Phase 1 validation parameters
+  paragraph needs revision** to reflect the autocorrelation
+  finding. I will not edit the master plan as part of
+  Decision 5 — that's a separate documentation update we
+  can do at the end of the chassis design round, alongside
+  any other recon/master-plan updates.
+
+#### DECISION (user confirmed): **Scheme B — focused toolkit (ship Welford's algorithm in the chassis)**
+
+`WelfordOnline` is the standard numerically-stable streaming
+variance accumulator (Welford 1962, used internally by numpy
+and scipy). Shipped once in the chassis so Phase 1+ test
+authors never have to reimplement it correctly. Final API
+surface:
+
+```rust
+// In sim_thermostat::test_utils
+
+pub fn assert_within_n_sigma(
+    measured: f64,
+    expected: f64,
+    standard_error: f64,
+    n_sigma: f64,
+    description: &str,
+);
+
+pub struct WelfordOnline { /* count, mean, m2 — all private */ }
+impl WelfordOnline {
+    pub fn new() -> Self;
+    pub fn push(&mut self, x: f64);
+    pub fn count(&self) -> usize;
+    pub fn mean(&self) -> f64;
+    pub fn variance(&self) -> f64;          // unbiased (n-1)
+    pub fn std_error_of_mean(&self) -> f64; // sqrt(variance / count)
+}
+
+pub fn sample_stats(data: &[f64]) -> (f64, f64); // (mean, variance)
+```
+
+Ships in Phase 1; covers the 80-20 of statistical-test needs;
+amortizes across Phase 2-5 statistical tests.
+
+#### Status
+
+- **Decision 5 RESOLVED.** Scheme B confirmed. Welford's
+  algorithm + assertion helper + sample_stats convenience are
+  the chassis test utilities for Phase 1.
+- **Side finding deferred to documentation pass**: the master
+  plan's 10⁵-step validation parameter calculation needs
+  revision (autocorrelation makes effective N ≈ 10, not 10⁵).
+  Will be addressed at the end of the chassis design round
+  alongside any other documentation updates.
+- No code, no Cargo.toml changes, no new files written
+  beyond this document.
