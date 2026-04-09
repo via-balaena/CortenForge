@@ -30,7 +30,10 @@
 - **ml-bridge RL** algorithms with policy persistence + best-policy tracking
   (recently merged: `4260a58`, `228d044`).
 - **cf-design** (Phases 1–5 complete) with implicit surface composition,
-  mechanism library, and differentiable design optimization.
+  mechanism library, and finite-difference design optimization with
+  analytic ∂f/∂θ at the SDF field level only (full pipeline is not
+  end-to-end differentiable; see [Q5 in `open_questions.md`](./open_questions.md)
+  for the finding and build-order implications).
 
 ## What does *not* yet exist (in code)
 

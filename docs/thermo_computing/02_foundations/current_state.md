@@ -57,11 +57,19 @@ review pass.*
     on crates.io, neither officially maintained. Three Phase 6
     options (depend / native / vendor); leading direction is native.
   - Q4 (zero default `dof_damping`) — RESOLVED part 2.
-  - Q5 (cf-design end-to-end differentiability) — ESCALATED 2026-04-09
-    doc review M3 to active foreground recon, parallel with Phase 1
-    spec drafting. Gates Phase 5 and the D3 headline experiment.
+  - Q5 (cf-design end-to-end differentiability) — RESOLVED 2026-04-09
+    ([recon log part 13](../04_recon_log/2026-04-09_part_13_q5_cf_design.md)):
+    **NO.** cf-design has analytic ∂f/∂θ at the SDF field level only;
+    mesh extraction (marching cubes + dual contouring) is topologically
+    discrete, mass properties are unwired to `param_gradient`, and
+    sim-core's forward step has no autograd handshake. The shipping
+    Phase 5 "differentiable design optimization" is actually centered
+    finite differences over the full `θ → SDF → mesh → Model → simulate
+    → J` pipeline. D3 (co-design) demoted from headline experiment to
+    "blocked on cf-design foundation, revisit when D2/D4 force the
+    question." Phases 1-4 unaffected.
   - Q6 (Phase 7 reward signal) — deferred until Phase 6 results.
-- **Next action**: complete the doc review pass (S2-S6, N1-N4),
-  resolve Q5 in parallel, then draft
-  `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the now-finalized
-  chassis.
+- **Next action**: draft
+  [`../03_phases/01_langevin_thermostat.md`](../03_phases/01_langevin_thermostat.md)
+  against the now-finalized chassis. The doc review pass and Q5 recon
+  are both complete.
