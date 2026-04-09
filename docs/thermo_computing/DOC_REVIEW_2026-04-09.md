@@ -100,12 +100,23 @@ sessions can reconstruct the *why* without re-running the analysis.
   entry "2026-04-09 (part 12) — Doc review pass" opened to record M1, M4,
   M5, M2, M3, S1 outcomes (more substantial than a one-liner because the
   doc review pass is six items, not just S1).*
-- [ ] **S2** — Rewrite master plan §3 Current State to reflect the
+- [x] **S2** — Rewrite master plan §3 Current State to reflect the
   chassis-design-round outcome (so future-Jon doesn't have to read 10 recon
   log entries to reconstruct the snapshot). Bigger fix, optional: split into
   `MASTER_PLAN.md` (forward-looking, kept current) + `MASTER_PLAN_RECON_LOG.md`
   (append-only, never edited). **Acceptance**: §3 paragraph reflects the
   current chassis state at minimum; split is a follow-on if desired.
+  ✓ *Applied 2026-04-09 (small-fix version). §3 gains a new "Current state
+  of the thermo line" subsection at the top — the canonical "where we are
+  right now" — covering recon round complete, chassis design round complete
+  (7 decisions), doc review must-fixes complete, Phase 1 not yet started,
+  crate inventory, all 6 open questions with current status, next action.
+  Existing "What already exists in CortenForge" subsection (codebase
+  baseline) preserved unchanged. "What does not yet exist" rewritten to
+  reflect chassis-design vs not-yet-coded distinction. The file split
+  (MASTER_PLAN.md + MASTER_PLAN_RECON_LOG.md) is deliberately deferred
+  until post-Phase 1 — judge then whether the master plan has actually
+  become unmanageable.*
 - [ ] **S3** — Reconsider `install_per_env`'s return type. Currently
   `Vec<Model>` discards the per-env stacks; introspection (e.g., per-env
   `diagnostic_summary`) requires recreating them. Recommend `EnvBatch {
@@ -228,7 +239,8 @@ substrate.
 - [x] **M3** — Open Q5 (cf-design differentiability) as foreground recon in
   parallel with Phase 1 spec drafting. ✓ done — Q5 escalated, recon scope
   named, recon log entry deferred until the recon actually starts.
-- [ ] **S2** — Rewrite §3 Current State (or split into two files).
+- [x] **S2** — Rewrite §3 Current State (or split into two files). ✓ done
+  (small-fix version). File split deferred until post-Phase 1.
 - [ ] **S3, S4, S5, S6** — Smaller doc additions, ~15 min total.
 - [ ] **N1, N2, N3, N4** — Polish pass.
 - [ ] Draft `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the revised chassis.
