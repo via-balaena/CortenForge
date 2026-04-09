@@ -142,13 +142,20 @@ sessions can reconstruct the *why* without re-running the analysis.
   that "component" everywhere else in the chassis means "`PassiveComponent`
   implementation." Unblocks D1, D2, and any future mixed active/passive
   component without changing the chassis surface.*
-- [ ] **S5** — Call out D4's external dependencies. Currently D4 says "no fab
+- [x] **S5** — Call out D4's external dependencies. Currently D4 says "no fab
   dependency" but understates the cost: 3D printer with reproducible
   mechanical properties, material consistency, high-speed video + state
   classification, calibration loop for measuring effective `T`/`γ`/barrier.
   **Acceptance**: master plan §2 D4 entry has an "external dependencies"
   subsection naming the printer + measurement infrastructure as real
-  engineering effort.
+  engineering effort. ✓ *Applied 2026-04-09 — D4 gains a four-bullet
+  "External dependencies" subsection: (1) printer with reproducible
+  mechanical properties (FDM vs SLA trade-off, anisotropy, batch
+  variation), (2) print material consistency (~10% PLA batch-to-batch),
+  (3) high-speed video + state classification infrastructure (none exists
+  in CortenForge yet, parallel build), (4) per-device calibration loop
+  for measuring effective `T`/`γ`/barrier height. Stack-fit clarified
+  from "no fab dependency" to "no fab-house dependency."*
 - [ ] **S6** — Add a one-sentence "future direction" note for thermostat
   persistence/checkpointing. ChaCha8 state + gamma + kT + seed are trivially
   serializable; ml-bridge already has policy persistence as a precedent.
@@ -254,7 +261,8 @@ substrate.
   (small-fix version). File split deferred until post-Phase 1.
 - [x] **S3** — `install_per_env` returns `EnvBatch` instead of `Vec<Model>`.
 - [x] **S4** — "Passive forces only" framing + flashing-ratchet sketch in chassis §0.
-- [ ] **S5, S6** — Smaller doc additions.
+- [x] **S5** — D4 external-dependencies subsection.
+- [ ] **S6** — Thermostat persistence future-direction note.
 - [ ] **N1, N2, N3, N4** — Polish pass.
 - [ ] Draft `PHASE_1_LANGEVIN_THERMOSTAT_SPEC.md` against the revised chassis.
 

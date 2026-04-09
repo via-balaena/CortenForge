@@ -215,7 +215,48 @@ Gaussian mixture). Train a printable mechanical sampler in cf-design + sim
 + thermostat. Print. Measure. Quantify the sim-to-real gap.
 
 **Stack fit**: After Phase 5. Hardware loop is real but fully owned — no
-fab dependency.
+fab-house dependency.
+
+**External dependencies** (added by doc review S5, 2026-04-09 — these
+are real engineering effort, not afterthoughts):
+- **3D printer with reproducible mechanical properties**. FDM is
+  cheap and accessible but has poor layer-to-layer consistency,
+  anisotropic stiffness, and visible buckling-mode artifacts. SLA
+  / DLP gives smoother surfaces and more uniform stiffness but
+  needs post-cure handling and material-specific calibration. The
+  print process directly affects barrier height and coupling
+  stiffness — both first-order parameters in the EBM.
+- **Print material consistency**. PLA stiffness varies batch-to-batch
+  by ~10% (humidity, age, supplier); resin stiffness varies with
+  cure time and temperature. The same digital design printed twice
+  can produce devices with measurably different sample distributions.
+  The Phase 1+ thermo line treats `γ` and `kT` as known parameters;
+  D4 must measure them per-print, not assume them.
+- **High-speed video + state classification infrastructure**. To
+  measure a printed device's *actual* sample distribution, the
+  pipeline needs (a) a high-speed camera capable of resolving the
+  switching events (typical bistable mechanical timescale: 10-1000 Hz),
+  (b) lighting and contrast that survive the print's surface finish,
+  (c) a state classifier (probably a small CV pipeline or ML model)
+  that maps frame → discrete state with high enough accuracy that
+  classification noise doesn't dominate the measured distribution.
+  None of this exists in CortenForge yet; it's a parallel build.
+- **Per-device calibration loop**. The simulated device's `T`, `γ`,
+  barrier height *will not* exactly match the printed device's
+  effective values. D4 needs a calibration step: measure the
+  printed device's switching rate as a function of (something
+  user-controllable, e.g., shaker amplitude or temperature),
+  back out the effective Kramers parameters, and compare against
+  the simulation under matched effective parameters. The
+  sim-to-real gap is then a *meaningful* quantity, not a hardware-
+  vs-software calibration error.
+
+These dependencies don't kill D4 — every one is achievable with
+off-the-shelf hardware and a few weeks of measurement-rig build —
+but they should be planned as real engineering effort, not
+hand-waved as "we have a printer." The "no fab dependency" claim
+is true at the *fab-house* level (we don't need an Extropic or
+Intel); it is *not* true at the engineering-effort level.
 
 **Why it matters**: Closes the design → simulate → fabricate loop for a
 probabilistic computing device. **No software-only stack can do this. No
