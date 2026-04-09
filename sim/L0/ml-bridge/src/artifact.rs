@@ -139,6 +139,13 @@ pub struct TrainingProvenance {
     pub hyperparams: BTreeMap<String, f64>,
     /// Full training curve — every epoch's metrics.
     pub metrics: Vec<EpochMetrics>,
+    /// Best epoch's mean reward (highest across all epochs).
+    /// `None` = no data (0-epoch training, or pre-feature artifact).
+    #[serde(default)]
+    pub best_reward: Option<f64>,
+    /// Epoch index that achieved the best reward (0-based).
+    #[serde(default)]
+    pub best_epoch: usize,
     /// If these weights were initialized from a prior artifact (curriculum, transfer).
     #[serde(default)]
     pub parent: Option<Box<Self>>,
@@ -362,6 +369,13 @@ impl PolicyArtifact {
                 return Err(ArtifactError::NonFiniteValue {
                     field: "provenance.final_reward".into(),
                 });
+            }
+            if let Some(br) = prov.best_reward {
+                if !br.is_finite() {
+                    return Err(ArtifactError::NonFiniteValue {
+                        field: "provenance.best_reward".into(),
+                    });
+                }
             }
             for (i, m) in prov.metrics.iter().enumerate() {
                 if !m.mean_reward.is_finite() {
@@ -1063,6 +1077,8 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".into(),
             hyperparams: BTreeMap::new(),
             metrics: vec![],
+            best_reward: None,
+            best_epoch: 0,
             parent: None,
         });
         assert!(matches!(
@@ -1090,6 +1106,8 @@ mod tests {
             timestamp: "2026-04-08T12:00:00Z".into(),
             hyperparams: BTreeMap::new(),
             metrics: vec![],
+            best_reward: Some(-1.5),
+            best_epoch: 0,
             parent: None,
         };
         let a = a.with_provenance(prov);
@@ -1127,6 +1145,8 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".into(),
             hyperparams: BTreeMap::new(),
             metrics: vec![],
+            best_reward: None,
+            best_epoch: 0,
             parent: None,
         };
         let parent = TrainingProvenance {
@@ -1140,6 +1160,8 @@ mod tests {
             timestamp: "2026-02-01T00:00:00Z".into(),
             hyperparams: BTreeMap::new(),
             metrics: vec![],
+            best_reward: Some(-1.0),
+            best_epoch: 0,
             parent: Some(Box::new(grandparent)),
         };
 

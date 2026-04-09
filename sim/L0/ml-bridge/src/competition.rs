@@ -29,6 +29,8 @@ pub struct RunResult {
     pub metrics: Vec<EpochMetrics>,
     /// Trained policy artifact with provenance (task, seed, metrics, wall time).
     pub artifact: PolicyArtifact,
+    /// Best-epoch policy artifact with provenance.
+    pub best_artifact: PolicyArtifact,
 }
 
 impl RunResult {
@@ -36,6 +38,15 @@ impl RunResult {
     #[must_use]
     pub fn final_reward(&self) -> Option<f64> {
         self.metrics.last().map(|m| m.mean_reward)
+    }
+
+    /// Best epoch's mean reward, or `None` if no epochs ran.
+    #[must_use]
+    pub fn best_reward(&self) -> Option<f64> {
+        self.metrics
+            .iter()
+            .map(|m| m.mean_reward)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
     }
 
     /// Total done triggers across all epochs.
@@ -112,51 +123,72 @@ impl CompetitionResult {
         for run in &self.runs {
             let filename = format!("{}_{}.artifact.json", run.task_name, run.algorithm_name);
             run.artifact.save(dir.join(filename))?;
+            let best_filename = format!(
+                "{}_{}.best.artifact.json",
+                run.task_name, run.algorithm_name
+            );
+            run.best_artifact.save(dir.join(best_filename))?;
         }
         Ok(())
     }
 
-    /// Best artifact for a task (highest final reward).
+    /// Best artifact for a task (highest best reward).
     #[must_use]
     pub fn best_for_task(&self, task: &str) -> Option<&PolicyArtifact> {
         self.for_task(task)
             .into_iter()
             .max_by(|a, b| {
-                let ra = a.final_reward().unwrap_or(f64::NEG_INFINITY);
-                let rb = b.final_reward().unwrap_or(f64::NEG_INFINITY);
+                let ra = a.best_reward().unwrap_or(f64::NEG_INFINITY);
+                let rb = b.best_reward().unwrap_or(f64::NEG_INFINITY);
                 ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|r| &r.artifact)
+            .map(|r| &r.best_artifact)
     }
 
     /// Print a ranked results table for one task to stderr.
     ///
-    /// Sorts algorithms by final reward (best first), prints a formatted
-    /// table with algorithm name, final reward, and total dones, followed
-    /// by the ordering string (e.g., "CEM > TD3 > SAC").
+    /// Sorts algorithms by best reward (best first), prints a formatted
+    /// table with algorithm name, final reward, best reward, best epoch,
+    /// and total dones, followed by the ordering string.
     pub fn print_ranked(&self, task: &str, title: &str) {
         let runs = self.for_task(task);
-        let mut ranked: Vec<(&str, f64, usize)> = runs
+        let mut ranked: Vec<(&str, f64, f64, usize, usize)> = runs
             .iter()
             .map(|r| {
                 (
                     r.algorithm_name.as_str(),
                     r.final_reward().unwrap_or(f64::NAN),
+                    r.best_reward().unwrap_or(f64::NAN),
+                    r.metrics
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| {
+                            a.mean_reward
+                                .partial_cmp(&b.mean_reward)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map_or(0, |(i, _)| i),
                     r.total_dones(),
                 )
             })
             .collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
         eprintln!("\n=== {title} ===");
-        eprintln!("{:<12} {:>14} {:>10}", "Algorithm", "Final Reward", "Dones");
-        eprintln!("{}", "-".repeat(40));
-        for (name, reward, dones) in &ranked {
-            eprintln!("{name:<12} {reward:>14.2} {dones:>10}");
+        eprintln!(
+            "{:<12} {:>14} {:>13} {:>8} {:>10}",
+            "Algorithm", "Final Reward", "Best Reward", "Best @", "Dones"
+        );
+        eprintln!("{}", "-".repeat(61));
+        for (name, final_r, best_r, best_at, dones) in &ranked {
+            eprintln!("{name:<12} {final_r:>14.2} {best_r:>13.2} {best_at:>8} {dones:>10}");
         }
 
-        let ordering: Vec<&str> = ranked.iter().map(|(n, _, _)| *n).collect();
-        eprintln!("\nOrdering (best → worst): {}", ordering.join(" > "));
+        let ordering: Vec<&str> = ranked.iter().map(|(n, _, _, _, _)| *n).collect();
+        eprintln!(
+            "\nOrdering by best (best → worst): {}",
+            ordering.join(" > ")
+        );
     }
 
     /// Print a summary table of all results to stderr.
@@ -324,27 +356,53 @@ impl Competition {
                     );
                 }
 
-                let artifact = algorithm
-                    .policy_artifact()
-                    .with_provenance(TrainingProvenance {
-                        algorithm: name.to_string(),
-                        task: task.name().to_string(),
-                        seed: self.seed,
-                        epochs_trained: metrics.len(),
-                        final_reward: metrics.last().map_or(0.0, |m| m.mean_reward),
-                        total_steps: metrics.iter().map(|m| m.total_steps).sum(),
-                        wall_time_ms: metrics.iter().map(|m| m.wall_time_ms).sum(),
-                        timestamp: now_iso8601(),
-                        hyperparams: BTreeMap::new(),
-                        metrics: metrics.clone(),
-                        parent: None,
-                    });
+                let artifact = algorithm.policy_artifact();
+                let best_artifact = algorithm.best_artifact();
+
+                // Strict `>` matches BestTracker (§3.3): ties keep the earlier epoch.
+                let (best_epoch, best_reward) = {
+                    let mut bi = 0;
+                    let mut br = f64::NEG_INFINITY;
+                    for (i, m) in metrics.iter().enumerate() {
+                        if m.mean_reward > br {
+                            br = m.mean_reward;
+                            bi = i;
+                        }
+                    }
+                    if metrics.is_empty() {
+                        (0, None)
+                    } else if br.is_finite() {
+                        (bi, Some(br))
+                    } else {
+                        (0, None)
+                    }
+                };
+
+                let provenance = TrainingProvenance {
+                    algorithm: name.to_string(),
+                    task: task.name().to_string(),
+                    seed: self.seed,
+                    epochs_trained: metrics.len(),
+                    final_reward: metrics.last().map_or(0.0, |m| m.mean_reward),
+                    best_reward,
+                    best_epoch,
+                    total_steps: metrics.iter().map(|m| m.total_steps).sum(),
+                    wall_time_ms: metrics.iter().map(|m| m.wall_time_ms).sum(),
+                    timestamp: now_iso8601(),
+                    hyperparams: BTreeMap::new(),
+                    metrics: metrics.clone(),
+                    parent: None,
+                };
+
+                let artifact = artifact.with_provenance(provenance.clone());
+                let best_artifact = best_artifact.with_provenance(provenance);
 
                 runs.push(RunResult {
                     task_name: task.name().to_string(),
                     algorithm_name: name.to_string(),
                     metrics,
                     artifact,
+                    best_artifact,
                 });
             }
         }
@@ -534,6 +592,7 @@ mod tests {
                 },
             ],
             artifact: dummy_artifact(),
+            best_artifact: dummy_artifact(),
         };
         assert_eq!(run.final_reward(), Some(-2.0));
         assert_eq!(run.total_dones(), 3);
@@ -546,6 +605,7 @@ mod tests {
             algorithm_name: "a".into(),
             metrics: vec![],
             artifact: dummy_artifact(),
+            best_artifact: dummy_artifact(),
         };
         assert_eq!(run.final_reward(), None);
         assert_eq!(run.total_dones(), 0);
@@ -565,6 +625,7 @@ mod tests {
                 extra: BTreeMap::new(),
             }],
             artifact: dummy_artifact(),
+            best_artifact: dummy_artifact(),
         };
         run.assert_finite(); // should not panic
     }
@@ -584,6 +645,7 @@ mod tests {
                 extra: BTreeMap::new(),
             }],
             artifact: dummy_artifact(),
+            best_artifact: dummy_artifact(),
         };
         run.assert_finite();
     }
@@ -603,6 +665,7 @@ mod tests {
                 extra: BTreeMap::new(),
             }],
             artifact: dummy_artifact(),
+            best_artifact: dummy_artifact(),
         };
         run.assert_finite();
     }
@@ -712,5 +775,122 @@ mod tests {
 
         // Non-existent task returns None.
         assert!(result.best_for_task("no-such-task").is_none());
+    }
+
+    // ── Phase 2: Best-policy tracking ────────────────────────────────
+
+    #[test]
+    fn run_result_best_reward_matches_manual_scan() {
+        let run = RunResult {
+            task_name: "t".into(),
+            algorithm_name: "a".into(),
+            metrics: vec![
+                EpochMetrics {
+                    epoch: 0,
+                    mean_reward: -5.0,
+                    done_count: 0,
+                    total_steps: 10,
+                    wall_time_ms: 0,
+                    extra: BTreeMap::new(),
+                },
+                EpochMetrics {
+                    epoch: 1,
+                    mean_reward: -1.0,
+                    done_count: 0,
+                    total_steps: 10,
+                    wall_time_ms: 0,
+                    extra: BTreeMap::new(),
+                },
+                EpochMetrics {
+                    epoch: 2,
+                    mean_reward: -3.0,
+                    done_count: 0,
+                    total_steps: 10,
+                    wall_time_ms: 0,
+                    extra: BTreeMap::new(),
+                },
+            ],
+            artifact: dummy_artifact(),
+            best_artifact: dummy_artifact(),
+        };
+        // Best is epoch 1 (-1.0), not final epoch 2 (-3.0).
+        assert_eq!(run.best_reward(), Some(-1.0));
+        assert_eq!(run.final_reward(), Some(-3.0));
+    }
+
+    #[test]
+    fn provenance_best_fields_serde_round_trip() {
+        let comp = Competition::new(2, TrainingBudget::Epochs(5), 42);
+        let tasks = [reaching_2dof()];
+
+        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("Serde"));
+
+        let result = comp.run(&tasks, &[builder]).unwrap();
+        let run = result.find("reaching-2dof", "Serde").unwrap();
+
+        let prov = run.artifact.provenance.as_ref().unwrap();
+        // best_reward should be Some (mock produces finite rewards).
+        assert!(prov.best_reward.is_some());
+
+        // Round-trip through JSON.
+        let json = serde_json::to_string(&prov).unwrap();
+        let loaded: TrainingProvenance = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.best_reward, prov.best_reward);
+        assert_eq!(loaded.best_epoch, prov.best_epoch);
+    }
+
+    #[test]
+    fn save_artifacts_writes_best_files() {
+        let comp = Competition::new(2, TrainingBudget::Epochs(1), 42);
+        let tasks = [reaching_2dof()];
+
+        let builder: &dyn Fn(&TaskConfig) -> Box<dyn Algorithm> =
+            &|_task| Box::new(MockAlgorithm::new("BestSave"));
+
+        let result = comp.run(&tasks, &[builder]).unwrap();
+
+        let dir = std::env::temp_dir().join("ml_bridge_best_save_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        result.save_artifacts(&dir).unwrap();
+
+        let final_path = dir.join("reaching-2dof_BestSave.artifact.json");
+        let best_path = dir.join("reaching-2dof_BestSave.best.artifact.json");
+        assert!(final_path.exists(), "final artifact file should exist");
+        assert!(best_path.exists(), "best artifact file should exist");
+
+        // Both should load and have provenance.
+        let loaded_best = PolicyArtifact::load(&best_path).unwrap();
+        assert!(loaded_best.provenance.is_some());
+        assert_eq!(
+            loaded_best.provenance.as_ref().unwrap().algorithm,
+            "BestSave"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_rejects_non_finite_best_reward() {
+        let mut a = dummy_artifact();
+        a.provenance = Some(TrainingProvenance {
+            algorithm: "test".into(),
+            task: "test".into(),
+            seed: 0,
+            epochs_trained: 1,
+            final_reward: -1.0,
+            total_steps: 100,
+            wall_time_ms: 50,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            hyperparams: BTreeMap::new(),
+            metrics: vec![],
+            best_reward: Some(f64::INFINITY),
+            best_epoch: 0,
+            parent: None,
+        });
+        assert!(matches!(
+            a.validate(),
+            Err(ArtifactError::NonFiniteValue { .. })
+        ));
     }
 }
